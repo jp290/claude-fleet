@@ -7,7 +7,7 @@ import { basename, resolve } from "node:path";
 import { check, get, post, restartSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
-import { deriveTaskMetadata, type TaskCluster } from "../task-metadata";
+import { deriveTaskMetadata, type SymbolIndex, type TaskCluster } from "../task-metadata";
 import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict,
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
@@ -4243,6 +4243,95 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ fullUnknown, digestUnknown }));
     await post(`/api/tasks/${derivedTask.id}/delete`, {});
     await post(`/api/tasks/${unknownTask.id}/delete`, {});
+
+    // --- QUOTE IS NOT INTENT, and the range half of a surface (S1, 2026-09-12).
+    //
+    // The cost of the old reading was measured, not suspected: in the what-if projection over the
+    // live fleet.json the R2 verdict `gate-aenderer` stood on 20 of 37 rows, and it stood there
+    // because the derivation had swept `e2e-isolated.sh` and `e2e/pins.ts` out of QUOTED VERIFY
+    // CHAINS. Those rows change no gate. Both checks below are RED before that change: the first
+    // because the old scan returned the two cited paths, the second because `ranges` did not exist.
+    const gateTracked = new Set([
+      "server.ts", "e2e/pins.ts", "e2e-isolated.sh", "task-metadata.ts", "docs/guide.md",
+    ]);
+    const deriveGate = (text: string, symbolIndex?: SymbolIndex | null) =>
+      deriveTaskMetadata({ text }, { trackedPaths: gateTracked, project: "fleet",
+        ...(symbolIndex === undefined ? {} : { symbolIndex }) });
+
+    const quoted = deriveGate([
+      "ZIEL: task-metadata.ts leitet die Flaeche aus Aenderungszielen ab.",
+      "VERIFY: Gate-Kette plus `./e2e-isolated.sh`, und `bun e2e/pins.ts` muss gruen bleiben.",
+    ].join("\n"));
+    check("surface: a path cited only in a verify line or a quoted command is NOT a change target",
+      quoted.files?.join(" ") === "task-metadata.ts"
+      && !quoted.files.includes("e2e/pins.ts") && !quoted.files.includes("e2e-isolated.sh"),
+      JSON.stringify(quoted));
+
+    // The complement, and it is the check that keeps the rule from being a blanket ban: the SAME
+    // two paths named as work, outside any command, still form a surface. Without this a future
+    // widening of the mask would pass silently while quietly blinding the projector.
+    const namedAsWork = deriveGate("BAU: e2e/pins.ts bekommt ein neues Paar, e2e-isolated.sh ruft es.");
+    check("surface: the same two paths named as WORK, not as proof, remain a surface",
+      namedAsWork.files?.join(" ") === "e2e-isolated.sh e2e/pins.ts", JSON.stringify(namedAsWork));
+
+    // `datei#symbol`: the FILE half already resolved before this change (neither `#` nor `:` is in
+    // the path token's character class). What is new is the RANGE, and its absence is a first-class
+    // answer — a lane has no graphify-out/, and an empty list there would read as "measured, points
+    // at nothing" rather than as "never measured".
+    const withSymbol = "FLAECHE: server.ts#mergeJob, dazu server.ts:4100-4180.";
+    const noIndex = deriveGate(withSymbol, null);
+    check("surface: a datei#symbol reference is a FILE surface, and without a graph ranges is null",
+      noIndex.files?.join(" ") === "server.ts" && noIndex.ranges === null, JSON.stringify(noIndex));
+
+    const index: SymbolIndex = new Map([["server.ts", [
+      { file: "server.ts", symbol: "mergeJob", startLine: 1200, endLine: 1310 },
+      { file: "server.ts", symbol: "taskView", startLine: 2500, endLine: 2560 },
+    ]]]);
+    const resolved = deriveGate(withSymbol, index);
+    check("surface: with a graph, datei#symbol resolves to its range and datei:zeile carries its own",
+      JSON.stringify(resolved.ranges) === JSON.stringify([
+        { file: "server.ts", symbol: "mergeJob", startLine: 1200, endLine: 1310 },
+        { file: "server.ts", symbol: "", startLine: 4100, endLine: 4180 },
+      ]), JSON.stringify(resolved.ranges));
+    // an unresolvable symbol contributes NO range — the index is partial by construction (137 of
+    // ~600 tracked files on the live graph), and inventing a span for a miss is the one reading
+    // that would make a wave collide on nothing.
+    const missing = deriveGate("FLAECHE: server.ts#neverIndexedSymbol", index);
+    check("surface: a symbol the graph does not carry adds no range, and the file surface stands",
+      missing.files?.join(" ") === "server.ts" && JSON.stringify(missing.ranges) === "[]",
+      JSON.stringify(missing));
+
+    // ...and the whole thing is PERSISTED now, which `cluster` deliberately still is not. `sha`
+    // hashes every input the derivation read, so the second poll reuses the first one's result
+    // rather than re-reading a 10 000-node graph per row per 2 s.
+    interface SRow { id: string; surface?: { files: string[]; ranges: unknown; origin: string; sha: string; at: number } }
+    const surfaceTask = ((await (await post("/api/tasks", {
+      text: "BAU: fleet-e2e.ts bekommt eine Zeile.\nVERIFY: `bun e2e/pins.ts` bleibt gruen.",
+      queue: false, repo: REPO,
+    })).json()) as { task: { id: string } }).task;
+    const surfaceOf = async (): Promise<SRow["surface"]> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: SRow[] })
+        .tasks.find((row) => row.id === surfaceTask.id)?.surface;
+    const surfaceFirst = await surfaceOf();
+    const surfaceSecond = await surfaceOf();
+    check("surface: the derived surface is stored on the row, quote-filtered, with ranges null off-graph",
+      surfaceFirst?.files.join(" ") === "fleet-e2e.ts" && surfaceFirst.origin === "derived"
+      && surfaceFirst.ranges === null && typeof surfaceFirst.sha === "string" && !!surfaceFirst.sha,
+      JSON.stringify(surfaceFirst));
+    check("surface: a second read reuses the stored surface instead of re-deriving it",
+      !!surfaceSecond && surfaceSecond.sha === surfaceFirst?.sha && surfaceSecond.at === surfaceFirst.at,
+      JSON.stringify({ surfaceFirst, surfaceSecond }));
+    // and it is a CACHE: the BRIEF is one of the hashed inputs, so pinning one moves the sha and
+    // the surface is re-derived. Without this the stored value would be a stamp, not a hash, and a
+    // row could carry a surface older than the text it describes.
+    await post(`/api/tasks/${surfaceTask.id}/brief`, {
+      text: "BAU: .gitignore bekommt eine Zeile.\nVERIFY: `bun e2e/pins.ts` bleibt gruen.",
+    });
+    const surfaceAfterBrief = await surfaceOf();
+    check("surface: a new brief re-derives it — the stored sha is an INPUT hash, not a write stamp",
+      surfaceAfterBrief?.files.join(" ") === ".gitignore fleet-e2e.ts"
+      && surfaceAfterBrief.sha !== surfaceFirst?.sha, JSON.stringify(surfaceAfterBrief));
+    await post(`/api/tasks/${surfaceTask.id}/delete`, {});
   }
 
   // --- Queue Waves: pure, advisory first-fit over known facts. Kept beside Task.files/cluster

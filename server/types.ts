@@ -13,7 +13,7 @@ import { LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_FAIL_NAME_MAX, LANE_SUITE_
 import type { RefineValidation } from "../refine-validate";
 import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, type FleetReportStatus,
   type LaneAnchor } from "../src/protocol";
-import type { TaskCluster, TaskFilesOrigin } from "../task-metadata";
+import type { TaskCluster, TaskFilesOrigin, TaskSurface } from "../task-metadata";
 
 const MAX_SLOTS = 16; // fixed places — the sidebar always shows all of them
 
@@ -1088,6 +1088,15 @@ interface Task {
   // by. Absent means nobody has proposed one — never an empty proposal.
   cluster?: TaskCluster; // read-only projection from the known file surface. Not persisted: its
   // process map and the repository index can move while the task text remains unchanged.
+  surface?: TaskSurface; // the DERIVED surface — files, and the ranges inside them — computed once
+  // and stored, unlike `cluster` above. It is a cache and says so: `sha` hashes every input the
+  // derivation read (text, brief, confirmed files, the git index stamp, the graph stamp), so a
+  // stored surface is reused only while all of them are unchanged and is otherwise recomputed. That
+  // is what lets it be persisted without becoming the thing `files`/`filesOrigin` refuse to be — a
+  // weaker origin promoted by surviving a reload. `origin` carries the same two values and follows
+  // the same rule: a stored `confirmed` surface still comes from `files`, never from prose.
+  // `ranges: null` means NO SYMBOL INDEX WAS AVAILABLE (a lane has no graphify-out/), which is not
+  // the same fact as an empty list — "not measured" against "measured, nothing to point at".
   status: "pending" | "queued" | "sent" | "done" | "archived";
   releasedBy?: "owner" | "machine"; // WHO handed this draft to the machine — written at the
   // RELEASE (see releaseTask) and by nothing else. NOT a synonym for the outcome row's

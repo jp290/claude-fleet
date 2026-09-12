@@ -83,6 +83,31 @@ producer of the bytes a lane is founded on — pinned in `e2e/pins.ts`.
    (`AGENTS.md`). Nothing in the queue may render an absent brief, an unreadable surface or an
    unresolvable repo as a pass.
 
+6. **Eine Wartenotiz nennt den Grund, der für DIESE Zeile gilt — und ein PERMANENTER Grund schlägt
+   jeden temporären.** `tickDispatch` prüft die Harness-Automatisierbarkeit einer Zeile
+   (`server.ts#harnessAutomatableFor`) VOR beiden Lane-Deckeln, weil sie die einzige Eigenschaft in
+   dieser Schleife ist, die sich durch Warten nie ändert: kein schließendes Lane macht einen
+   ablehnenden Adapter automatisierbar, während beide Deckel per Konstruktion vorübergehend sind.
+   Stand die Prüfung darunter, erreichte der dauerhafte Grund die Zeile nur in den Fenstern, in denen
+   der vorübergehende gerade nicht griff — `waiting` schreibt bei Änderung, der letzte Schreiber
+   gewinnt, und der Deckel ist fast immer voll. Gemessen an einer Scratch-Instanz (Tick 250 ms): die
+   Harness-Notiz erschien ~4 s nach dem Schließen eines Lanes und wurde vom nächsten Tick dauerhaft
+   von der Deckel-Notiz überschrieben. Live war das `746513d1` (Spawn `pi-zai`), die stundenlang
+   `waiting: 2/2 lanes busy in claude-fleet — land or close one` trug, obwohl der Deckel nie ihr
+   Grund war (Controller-Messung 2026-09-07 04:47–05:14).
+   Drei Sätze gehören dazu und sind je ein Check, nicht ein Versprechen (`e2e/tasks.ts` §(e6),
+   Form-Pins in `e2e/pins.ts`):
+   - **Die Gegenprobe.** Eine Zeile, die NUR am Deckel hängt, meldet weiterhin den Deckel. Ohne sie
+     hieße „nenne den dauerhaften Grund" bloß, die halbe Queue wegzuklassifizieren.
+   - **Der MASTER-STOP bleibt darüber.** Eine Zeile, die der Tick unter gestoppter Queue gar nicht
+     ansieht, behält ihre Notiz byte-genau — sonst begänne der Zuschlag EINES Programs, Sätze auf
+     jede fremde `queued`-Zeile der Fleet zu malen.
+   - **Die Notiz nennt, WELCHE der zwei Bedingungen ablehnte** (`server.ts#harnessAutomationWhy`,
+     eine Fassung, zwei Leser): bei GESETZTEM `FLEET_HARNESS_AUTOMATION` lehnt `pi-zai` mit seinem
+     eigenen `automatable: false` ab, und ein Hinweis auf den Flag schickte den Leser zu einer
+     Env-Änderung, die nichts ändert. Übrig bleibt für eine solche Zeile genau ein Weg, und die
+     Notiz sagt ihn: *hand dispatch only* (`POST /api/tasks/:id/dispatch`).
+
 An invariant that RETIRED with the analyst, named so nobody looks for it: *"nothing starts
 unattended against a tree it was not read on."* There is no reading, so there is no staleness, and a
 guard nobody can clear is a deadlock wearing a safety property's clothes — which is why that guard

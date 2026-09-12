@@ -5673,6 +5673,16 @@ function harnessAutomatableFor(h: Harness): boolean {
   return HARNESS_AUTOMATION && h.automatable;
 }
 
+// WHICH OF THE TWO CONDITIONS declined, in one sentence, beside the predicate that reads them. There
+// are exactly two ("the operator's flag" AND "the adapter's own claim"), and a message that named
+// only the flag was wrong in half the cases it was written for: with FLEET_HARNESS_AUTOMATION SET,
+// `pi-zai` still declines on its own `automatable: false`, and a reader told "the flag is off" goes
+// looking for an env change that would change nothing. createWatchForSlot already said it correctly
+// and this is its wording, lifted so the queue's wait-note cannot say the other thing.
+const harnessAutomationWhy = (): string => HARNESS_AUTOMATION
+  ? "FLEET_HARNESS_AUTOMATION is set; the adapter declines"
+  : "FLEET_HARNESS_AUTOMATION is off; no named harness is automatable without it";
+
 async function claudeAlive(s: Slot): Promise<boolean> {
   const st = await paneAgentAt(sess(s.id), commsFor(s));
   // "unprobed" is the undeclared-command waiver: an operator who never declared what FLEET_CMD
@@ -5895,7 +5905,7 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     // server-narrativ-archiv.md#createwatchforslot). A merge watch reads the merge terminal factor
     // instead and demonstrably fires on exactly such a lane.
     if (kind === "lane" && !harnessAutomatable(t))
-      return json({ error: `harness ${harnessOf(t.harness).id} is not automatable — its slot never reads as alive to the done-looking predicate, so this watch could never fire (${HARNESS_AUTOMATION ? "FLEET_HARNESS_AUTOMATION is set; the adapter declines" : "FLEET_HARNESS_AUTOMATION is off; no named harness is automatable without it"})` }, 409);
+      return json({ error: `harness ${harnessOf(t.harness).id} is not automatable — its slot never reads as alive to the done-looking predicate, so this watch could never fire (${harnessAutomationWhy()})` }, 409);
     const terminal = kind === "merge" ? mergeTerminalFor(t.id, t.cwd, t.worktree.branch) : null;
     if (kind === "merge" && !terminal && !mergeInflight.has(t.id) && !mergeStart.has(t.id))
       return json({ error: "no running or persisted terminal merge exists for this lane identity" }, 409);
@@ -10203,6 +10213,41 @@ async function tickDispatch(): Promise<void> {
       const waiting = (note: string): void => {
         if (next.note !== note) { next.note = note; saveState(); }
       };
+      // WHICH AGENT this row would run: its own persisted, SET-time-validated choice, DEFAULT_SPAWN
+      // on absence (taskSpawnOf — the one bridge, pinned). The release doors refuse a stored
+      // non-automatable choice, but the owner's ▸ queue and create-and-release are attended acts
+      // that do not; a row that reaches the queue anyway must say WHY it never starts instead of
+      // sitting silent, and it must not fall back to the default adapter. Same predicate as the
+      // release door and canDeliver's slot gate. SKIPS rather than returns, like the two caps below
+      // and the free-slot check: this is a property of one row, not of the machine, and a single
+      // such row must not hold every unrelated row in the queue behind it.
+      //
+      // AND IT RUNS BEFORE BOTH LANE CAPS, which is where it belongs and where it did NOT sit until
+      // 2026-09-12. This gate is the only one here that names a PERMANENT property of the row: no
+      // number of lanes closing will ever make a non-automatable harness automatable, while both
+      // caps are temporary by construction. Below the caps, the permanent reason was therefore
+      // displayed only in the transient windows in which the temporary one happened not to hold.
+      //
+      // Measured on a scratch instance (tick 250 ms, repo cap 1, FLEET_HARNESS_AUTOMATION=1, one
+      // pi-zai row and one claude row queued): at a FULL cap both rows carried the IDENTICAL repo-cap
+      // note, so the row that can never start was indistinguishable from the row merely waiting for a
+      // slot. When the cap freed, the pi-zai row's note flipped to this sentence for ~4 s and the very
+      // next tick — once the claude row's lane had taken the slot back — overwrote it with the cap
+      // note again, permanently. `waiting` writes on change and last writer wins, and the cap is full
+      // almost always. That is what the live symptom was: 746513d1 sat at `waiting: 2/2 lanes busy in
+      // claude-fleet — land or close one` while the true reason was that no unattended path may drive
+      // `pi-zai` at all (Controller measurement 2026-09-07 04:47-05:14; the tick skipped it in two
+      // free windows and started later rows instead).
+      //
+      // The counter-proof is the other half of the rule and is a check, not a promise: a row that
+      // hangs ONLY on a cap still gets the cap's own sentence. Hoisting this gate must not turn every
+      // held row into a harness report — that would be classifying the whole queue away.
+      const rowSpawn = taskSpawnOf(next);
+      const rowH = harnessOf(rowSpawn.harness);
+      if (!harnessAutomatableFor(rowH)) {
+        waiting(`waiting: harness ${rowH.id} is not automatable — no unattended path may drive it, hand dispatch only (${harnessAutomationWhy()})`);
+        continue;
+      }
       // count lanes in the task's TARGET repo: the cap bounds unattended fan-out per project —
       // a hand-driven lane in an unrelated repo used to eat the budget and stall the queue
       // with no signal.
@@ -10249,20 +10294,6 @@ async function tickDispatch(): Promise<void> {
           waiting(`waiting: ${programLanes}/${programCap} lanes busy in program "${title}" — land or close one of ITS lanes`);
           continue;
         }
-      }
-      // WHICH AGENT this row would run: its own persisted, SET-time-validated choice, DEFAULT_SPAWN
-      // on absence (taskSpawnOf — the one bridge, pinned). The release doors refuse a stored
-      // non-automatable choice, but the owner's ▸ queue and create-and-release are attended acts
-      // that do not; a row that reaches the queue anyway must say WHY it never starts instead of
-      // sitting silent, and it must not fall back to the default adapter. Same predicate as the
-      // release door and canDeliver's slot gate. SKIPS rather than returns, like the two caps above
-      // and the collision check: this is a property of one row, not of the machine, and a single
-      // such row must not hold every unrelated row in the queue behind it.
-      const rowSpawn = taskSpawnOf(next);
-      const rowH = harnessOf(rowSpawn.harness);
-      if (!harnessAutomatableFor(rowH)) {
-        waiting(`waiting: harness ${rowH.id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)`);
-        continue;
       }
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) { waiting("waiting: no free slot"); return; }

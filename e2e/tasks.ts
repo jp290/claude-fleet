@@ -2265,6 +2265,122 @@ export async function run(ctx: Ctx): Promise<void> {
     await restartSrv();
   }
 
+  // --- (e6) A ROW WHOSE HARNESS NO UNATTENDED PATH MAY DRIVE MUST SAY SO, NOT REPORT BACKPRESSURE
+  // (server.ts#tickDispatch, the harness-automation gate above both lane caps). R6, filed on a
+  // Controller measurement of 2026-09-07 04:47-05:14: `746513d1` (spawn pi-zai/glm-5.3/high) stood
+  // `queued` carrying `waiting: 2/2 lanes busy in claude-fleet — land or close one` and was skipped
+  // in two free windows while later rows started. A reader takes that note for backpressure and
+  // waits for a slot that changes nothing.
+  //
+  // THE DEFECT WAS ORDER, NOT A MISSING SENTENCE — measured before anything was changed, on a
+  // scratch instance with the tick at 250 ms: the harness note DID appear, for ~4 s after a lane
+  // closed, and the very next tick overwrote it with the cap note again, permanently. `waiting`
+  // writes on change and the last writer wins, so a PERMANENT reason (no number of lanes closing
+  // makes a declining adapter automatable) reached the row only inside the transient windows in
+  // which a TEMPORARY one happened not to hold.
+  //
+  // FOUR CHECKS, and the second is the one without which the first is worthless: classifying every
+  // held row as a harness case would satisfy Done 1 and be a strictly worse board.
+  //   (a) FULL cap + non-automatable spawn -> the HARNESS sentence, with "hand dispatch only".
+  //       Mutation: move the gate back below the caps -> red (this is the live half of the pins'
+  //       position rule, and it is red on exactly the arrangement that shipped until 2026-09-12).
+  //   (b) COUNTER-PROOF, same tick, same cap: a row with the default spawn gets the CAP sentence.
+  //       Mutation: always write the harness note -> red.
+  //   (c) the sentence is stable once the cap frees — it is not a flicker.
+  //   (d) the row never held the queue: a later automatable row starts while it stays queued.
+  //
+  // FLEET_HARNESS_AUTOMATION=1 IS PART OF THE FIXTURE, deliberately. The wrapper runs with it at 0,
+  // where EVERY named harness is non-automatable because of the FLAG — a green there would be
+  // measuring the flag instead of the row. With it set, `pi-zai` declines on its own
+  // `automatable: false`, which is the case the live row was. ---
+  {
+    type HRow = { id: string; status: string; note?: string | null; slot?: number | null };
+    type HSlot = { id: number; cwd: string | null; worktree: { repo: string } | null };
+    const hSess = async (): Promise<{ slots: HSlot[]; tasks: HRow[]; dispatch: { maxLanes: number } }> =>
+      (await (await get("/api/sessions")).json()) as
+        { slots: HSlot[]; tasks: HRow[]; dispatch: { maxLanes: number } };
+    const hRow = async (id: string): Promise<HRow | undefined> => (await hSess()).tasks.find((t) => t.id === id);
+    const hTill = async (id: string, ok: (r: HRow | undefined) => boolean): Promise<HRow | undefined> => {
+      let last = await hRow(id);
+      for (let i = 0; i < 80 && !ok(last); i++) { await Bun.sleep(250); last = await hRow(id); }
+      return last;
+    };
+    const HARNESS_NOTE = "waiting: harness pi-zai is not automatable — no unattended path may drive it,"
+      + " hand dispatch only (FLEET_HARNESS_AUTOMATION is set; the adapter declines)";
+    const CAP_NOTE = `waiting: 1/1 lanes busy in ${basename(REPO2)} (machine default) — land or close one`;
+
+    await restartSrv({ FLEET_DISPATCH_MAX_LANES: "1", FLEET_HARNESS_AUTOMATION: "1" });
+    for (const x of (await hSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+    await Bun.sleep(600);
+    for (const t of (await hSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+
+    // PRECONDITION AS ITSELF, and only for what is READABLE: the cap really is 1 (or no row is ever
+    // cap-held and (a) measures nothing), and pi-zai still declines on its OWN claim — `automatable`
+    // is published, the operator's flag deliberately is not (see the route's comment). The flag half
+    // is therefore proven by (a) instead, which asserts the sentence INCLUDING which of the two
+    // conditions declined: if FLEET_HARNESS_AUTOMATION had not reached this server, the note would
+    // read "is off; no named harness is automatable without it" and (a) falls with that diff in hand.
+    const hCfg = await hSess();
+    const hCatalog = ((await (await get("/api/harnesses")).json()) as
+      { harnesses?: { id: string; automatable?: boolean }[] }).harnesses ?? [];
+    const hPiZai = hCatalog.find((x) => x.id === "pi-zai");
+    check("(e6) fixture: the cap is 1 and pi-zai declines on its OWN claim, so the flag is not what this block measures",
+      hCfg.dispatch.maxLanes === 1 && hPiZai !== undefined && hPiZai.automatable === false,
+      JSON.stringify({ maxLanes: hCfg.dispatch.maxLanes, piZai: hPiZai ?? null }));
+
+    // one attended lane fills the repo cap, so BOTH rows below are cap-held at the same instant —
+    // which is what makes (a) and (b) a controlled pair rather than two separate windows
+    const hLane = (await (await post("/api/lanes", { repo: REPO2 })).json()) as { slot?: number };
+    await post("/api/dispatch", { on: true });
+    const hHarnessRow = (await (await post("/api/tasks", {
+      text: "(e6) row whose spawn no unattended path may drive — the note must name the HARNESS",
+      queue: true, repo: REPO2, harness: "pi-zai", model: "glm-5.3", effort: "high",
+    })).json()) as { task: { id: string; spawn?: { harness?: string } } };
+    const hCapRow = (await (await post("/api/tasks", {
+      text: "(e6) counter-proof row with the default spawn — the note must name the CAP",
+      queue: true, repo: REPO2,
+    })).json()) as { task: { id: string } };
+    check("(e6) fixture: the non-automatable spawn is STORED on the row, and one attended lane holds the repo cap",
+      hHarnessRow.task.spawn?.harness === "pi-zai" && typeof hLane.slot === "number",
+      JSON.stringify({ spawn: hHarnessRow.task.spawn ?? null, lane: hLane.slot ?? null }));
+
+    const hHeldHarness = await hTill(hHarnessRow.task.id, (r) => (r?.note ?? "") === HARNESS_NOTE);
+    const hHeldCap = await hTill(hCapRow.task.id, (r) => (r?.note ?? "") === CAP_NOTE);
+    check("(e6)(a) a non-automatable row at a FULL cap reports its HARNESS and 'hand dispatch only' — the cap is not its reason and never will be",
+      hHeldHarness?.status === "queued" && (hHeldHarness?.note ?? "") === HARNESS_NOTE,
+      JSON.stringify({ status: hHeldHarness?.status, note: hHeldHarness?.note ?? null }));
+    check("(e6)(b) COUNTER-PROOF, same cap and same tick: a row that hangs only on the cap still reports the CAP — the hoist did not classify the queue away",
+      hHeldCap?.status === "queued" && (hHeldCap?.note ?? "") === CAP_NOTE,
+      JSON.stringify({ status: hHeldCap?.status, note: hHeldCap?.note ?? null }));
+
+    // (c)+(d) the cap frees. The automatable row must START — which is (d), the proof that one
+    // undrivable row never held the sweep — and the undrivable row must keep the SAME sentence
+    // across the transition, which is (c): before the hoist it flipped for ~4 s and flipped back.
+    if (typeof hLane.slot === "number") await post(`/api/slots/${hLane.slot}/kill`, {});
+    const hStarted = await hTill(hCapRow.task.id, (r) => r?.status === "sent");
+    let hStable = true;
+    let hDrift: string | null = null;
+    for (let i = 0; i < 12; i++) { // ~3 s across and past the moment the freed slot is taken again
+      const now = (await hRow(hHarnessRow.task.id))?.note ?? "";
+      if (now !== HARNESS_NOTE) { hStable = false; hDrift = now; break; }
+      await Bun.sleep(250);
+    }
+    check("(e6)(c+d) a later automatable row starts while the undrivable one stays queued, and its sentence does not flicker back to the cap's",
+      hStarted?.status === "sent" && typeof hStarted?.slot === "number"
+      && (await hRow(hHarnessRow.task.id))?.status === "queued" && hStable,
+      JSON.stringify({ started: hStarted?.status, slot: hStarted?.slot ?? null, stable: hStable, drift: hDrift }));
+
+    // cleanup — dispatcher OFF first (a killed lane's tail can requeue its task and a live tick would
+    // then leak a fresh lane), then the lanes, the rows, and the env this block armed.
+    await post("/api/dispatch", { on: false });
+    for (const x of (await hSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+    for (const id of [hHarnessRow.task.id, hCapRow.task.id]) {
+      await post(`/api/tasks/${id}/done`, {});
+      await post(`/api/tasks/${id}/delete`, {});
+    }
+    await restartSrv();
+  }
+
   // --- (d3) THE COUNTER-PROOF TO (d). An empty anchor block in a foreign tree is, on its own,
   // equally compatible with a planner that selects nothing anywhere. So the same seam is driven
   // once more with the only difference that may matter: the target repository's git toplevel. ROOT

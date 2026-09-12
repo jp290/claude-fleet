@@ -959,11 +959,36 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   nichts getippt), teilweise adressiert feuert er weiter und nennt die Hälfte, die schon einen Leser
   hat.
 - **Schreiber:** Eine Owner-Antwort über `POST /api/attention/:id/answer` schreibt genau einen
-  `attention-answer`-Zeiger zusammen mit dem `answered`-Status. Einen `audit-red`-Zeiger schreibt
+  `attention-answer`-Zeiger zusammen mit dem `answered`-Status. **Und seit 2026-09-12 schreibt
+  `POST /api/tasks/:id/criterion-confirm` denselben Zeiger für jede Zeile, die genau um diesen Akt
+  gebeten hat** — siehe den eigenen Absatz unten. Einen `audit-red`-Zeiger schreibt
   **jede der beiden Audit-Senken** (der lokale Lauf und das Helfer-Ergebnis), je aktivem Program
   genau EINEN pro Audit-Zeile — ein zweiter Aufruf für dieselbe Zeile schreibt nichts. Ein Program,
   das nicht mehr `active` ist, ist kein Leser: seine Covers bleiben unadressiert und behalten den
   Ping, statt still zu verschwinden.
+- **Der zweite Schreiber: `POST /api/tasks/:id/criterion-confirm`** (Owner-Route, `server.ts#answerAttentionsForCriterion`).
+  Der Owner-Confirm eines Done-Kriteriums beantwortet jede Attention-Zeile, die um genau ihn gebeten
+  hat — Status `answered`, `answer.by: "owner"`, ein `attention-answer`-Zeiger je Zeile, alles im
+  SELBEN State-Cut wie das Kriterium. Die Antwort nennt `attentionAnswered: [<ids>]`, und die
+  Audit-Zeilen tragen `via=criterion-confirm`. **Der Anlass ist gemessen:** Attention `1050d69f`
+  (kind `decision`, 2026-09-11 21:23) verlangte wörtlich `POST /api/tasks/c62aa3e9/criterion-confirm`;
+  der Confirm kam am 2026-09-12 06:10, die Zeile blieb bis 11:03 `open` und wurde von Hand
+  beantwortet — fünf Stunden, in denen das Board dem Owner eine Entscheidung zeigte, die entschieden
+  war. Der Join ist `provenance.taskId` und **nur** er; eine Zeile ohne ihn sagt UNKNOWN darüber,
+  zu welcher Task sie gehört, und wird nicht angefasst. Eine Zeile wird genau dann beantwortet, wenn
+  ALLES davon gilt:
+  - `status: "open"` (`answered`/`refused` sind Quittungen; `send-uncertain` trägt Text, der schon in
+    der Pane des Requesters stehen kann — dieselbe Grenze, die `answerAttention` für beide
+    Prinzipale zieht) **und** `kind: "decision"`,
+  - `provenance.taskId === <task>`,
+  - **und** entweder der Text nennt `criterion-confirm` (case-insensitive) **oder** der Requester
+    sitzt auf dem Slot der Task (`Task.slot`) — zwei Arme derselben Frage, keiner davon „jede
+    Entscheidung dieser Task".
+  - Das Program der Zeile ist `active`. Sonst bleibt die Zeile OFFEN und sichtbar, statt in
+    niemandes Inbox geschlossen zu werden — wörtlich `answerAttention`s eigene Begründung.
+  Ein Confirm ohne passende Zeile ändert nichts (`attentionAnswered: []`), und der zweite Confirm
+  ist die alte 409 (`criterion already confirmed`) und schreibt darum nichts nach. Der Confirm
+  bleibt im Übrigen, was er war: er entlässt zusätzlich ein `awaiting: "owner"` am Slot der Task.
 - **Antwort POST read:** `{ok: true, existing: false, entry}` beim ersten Mal, `{ok: true,
   existing: true, entry}` bei jedem weiteren. Die Quittung ist **kein Lock**: ein zweites Lesen
   überschreibt `readBy`/`readAt` nie, denn der erste Leser ist die Tatsache.

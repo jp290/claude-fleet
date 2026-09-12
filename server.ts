@@ -50,6 +50,8 @@ import {
   type TaskFilesOrigin, type TrackedSnapshot, type SymbolIndex, type SymbolIndexSnapshot,
   type SymbolRange, type TaskSurface,
 } from "./task-metadata";
+import { buildCardPrompt, parseCardAnswer, validateCard, CARD_MARK, CARD_KEY,
+  type TaskCardBody } from "./card-extract";
 import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NOTE_HUB_FILES,
   type NoteInput, type NoteRow, type KeyedUpsert } from "./task-notes";
 // The LAND fold of the collision facts. The wave button does not re-decide R1/R2/R3 or the program
@@ -107,7 +109,7 @@ import {
   type AttentionRequest, type TaskKind, type Task, type TaskBrief, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
-  type TaskCriterion, type TaskFilesProposal,
+  type TaskCard, type TaskCriterion, type TaskFilesProposal,
   type RefineChild, type RefineProposal,
   type TaskRefine, type LaneForm, type LaneRef, type SuccessionRetirement, type CodexRecoveryState,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
@@ -183,6 +185,12 @@ const AUDIT_ADJUDICATION_FILE = `${import.meta.dir}/audit-adjudications.jsonl`;
 // AFTER its audit row was written. A SIDE rail for the identical reason the adjudication rail is
 // one, and the pattern is copied rather than re-invented (see THE HELPER ARTEFACT RAIL below).
 const HELPER_ARTIFACT_FILE = `${import.meta.dir}/helper-artifacts.jsonl`;
+// THE CARD TRAIL — one line per extraction attempt, successful or not. It is a trail and not a
+// field for the reason every trail here exists: `Task.card` says what the row looks like NOW, and
+// this says what it cost and how often the reading failed. Without it "the extractor is fine" and
+// "the extractor has been returning gaps for a week" are the same observation. Same appendEvent
+// discipline/rotation as the trails above.
+const CARD_FILE = `${import.meta.dir}/cards.jsonl`;
 // the PENDING side of that trail: lands whose audit has not produced a row yet. Not an event log
 // (no rotation, no history) — a small mutable mirror of the in-memory queue, rewritten whole on
 // every mutation. Absent file = nothing pending. See savePostLandAuditQueue for why it exists.
@@ -10230,6 +10238,136 @@ async function tickBriefSweep(): Promise<void> {
   }
 }
 
+// --- THE CARD TICK (S3): one small model turns each row's prose into a fixed shape, once.
+//
+// It sits beside the brief sweep because it is the same kind of machine — a paced, bounded,
+// throwaway worker over open auftrag rows — and deliberately does NOT share its flag: the brief
+// compiler rewrites how a request is SAID, this one only reads what it already says. Either can
+// be armed without the other.
+//
+// DEFAULT OFF, and off means NO TIMER IS REGISTERED (see the setInterval at the bottom of this
+// file), not a timer that returns early. That is the same bargain FLEET_BRIEF_MS strikes and it is
+// the one that makes the suites safe: every wrapper sets FLEET_CARD_MS=0, so no suite can spawn a
+// real agent by forgetting a stand-in. Arming it in production is an OWNER act — watchdog.sh is
+// not touched by the lane that built this.
+const CARD_TICK_MS = Math.max(0, Number(process.env.FLEET_CARD_MS ?? 0) | 0); // 0 = off, the default
+const CARD_ON = CARD_TICK_MS > 0;
+const CARD_CMD = process.env.FLEET_CARD_CMD ?? null; // tests: subprocess stand-in, like FLEET_REVIEW_CMD
+// The extractor is the CHEAPEST tier in this file and says so by name. It reads one string and
+// writes one JSON object; nothing about that work improves with a bigger model, and the
+// deterministic validator behind it is what carries the correctness, not the model.
+const CARD_MODEL = process.env.FLEET_CARD_MODEL && MODEL_RE.test(process.env.FLEET_CARD_MODEL)
+  ? process.env.FLEET_CARD_MODEL : "claude-haiku-4-5-20251001";
+const CARD_BATCH_CAP = 4;      // one tick extracts at most this many
+const CARD_MAX_ATTEMPTS = 3;   // consecutive failures before a row stops retrying itself
+const CARD_BACKOFF_MS = 60_000;
+const CARD_TIMEOUT_MS = 120_000; // one prose paragraph in, one JSON object out
+
+// A row needs a card when it has none, or when the text the card was read FROM has moved since.
+// `card.at` is the comparison point and `t.brief.at` the moving fact — the same staleness question
+// Task.surface answers with a hash, asked here against a timestamp because a card is a READING of
+// the text and not a projection of it: re-reading an unchanged text would buy nothing.
+function cardDue(t: Task, now: number): boolean {
+  if (!CARD_ON) return false;
+  if (t.kind !== "auftrag" || dispatchingTasks.has(t.id)) return false;
+  if (t.status !== "pending" && t.status !== "queued") return false;
+  const r = cardRetry.get(t.id);
+  if (r && (r.attempts >= CARD_MAX_ATTEMPTS || now - r.at < CARD_BACKOFF_MS * 2 ** r.attempts)) return false;
+  if (!t.card) return true;
+  return (t.brief?.at ?? 0) > t.card.at;
+}
+const cardRetry = new Map<string, { attempts: number; at: number }>();
+let cardSweepBusy = false;
+
+// The two halves are kept apart on purpose: this one spawns and parses, `validateCard` decides.
+// A future transport change touches only this function; what a card MEANS stays pure and testable.
+// ABSENT means "the transport reported no usage", never 0. Today the card is pinned to the claude
+// route, which reports none at all — the field is here so a later route change records what it
+// costs rather than quietly reporting nothing.
+const cardTokens = (run: WorkerRunObservation): { tokens?: number } => {
+  const total = (run.usage?.input ?? 0) + (run.usage?.output ?? 0);
+  return run.usage && total > 0 ? { tokens: total } : {};
+};
+async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | null,
+  index: SymbolIndexSnapshot | null): Promise<TaskCard> {
+  const started = Date.now();
+  let observed: WorkerRunObservation = { model: CARD_MODEL };
+  // The text is the WHOLE input — brief first when there is one, because that is the text a lane
+  // would actually receive, with the raw draft behind it so nothing the owner wrote is dropped.
+  const source = [t.brief?.text, t.text].filter((x): x is string => !!x).join("\n\n");
+  const answer = await runWorker({
+    // TEXT_ONLY is the contract, not a setting: the whole design rests on the extractor having no
+    // repository to read, so that nothing it says can be anything but a claim about the text.
+    worker: "card", cmd: CARD_CMD, tools: TEXT_ONLY_TOOLS, timeoutMs: CARD_TIMEOUT_MS, model: CARD_MODEL,
+    observe: (run) => { observed = run; },
+  }, buildCardPrompt(source, harnessOf(null).effortLevels), repo);
+  const raw = parseCardAnswer(answer);
+  const ms = Date.now() - started;
+  if (!raw) {
+    // An unreadable answer is a card with EVERY field missing, not an exception: the row then
+    // carries the honest record "this was read and nothing could be established", and the retry
+    // backoff above stops it from being asked forever.
+    return { ziel: "", rolle: { harness: null, model: null, effort: null },
+      surface: { files: [], symbols: [], ranges: index ? [] : null },
+      done: "", verify: "", verboten: [],
+      model: observed.model, at: Date.now(), ms, valid: false,
+      gaps: ["answer: the extractor returned no readable card object"],
+      ...cardTokens(observed) };
+  }
+  const checked = validateCard(raw, {
+    trackedPaths: snapshot?.paths ?? new Set<string>(),
+    symbolIndex: index?.index ?? null,
+    harnessKnown: (v) => HARNESSES.some((h) => h.id === v),
+    modelKnown: (v) => MODEL_RE.test(v),
+    effortKnown: (v) => HARNESSES.some((h) => h.effortLevels.includes(v)),
+  });
+  return { ...checked.body, model: observed.model, at: Date.now(), ms,
+    valid: checked.valid, gaps: checked.gaps,
+    ...cardTokens(observed) };
+}
+
+async function tickCardSweep(): Promise<void> {
+  if (cardSweepBusy || !CARD_ON) return;
+  cardSweepBusy = true;
+  try {
+    const now = Date.now();
+    const due = tasks.filter((t) => cardDue(t, now) && taskRepoOf(t) !== null);
+    if (!due.length) return;
+    const repo = taskRepoOf(due[0])!;
+    const batch = due.filter((t) => taskRepoOf(t) === repo).slice(0, CARD_BATCH_CAP);
+    if (!existsSync(repo) || !statSync(repo).isDirectory()) {
+      for (const t of batch) cardRetry.set(t.id, { attempts: (cardRetry.get(t.id)?.attempts ?? 0) + 1, at: Date.now() });
+      console.log(`card extractor: repo not found, leaving ${batch.length} row(s) unread: ${repo}`);
+      return;
+    }
+    const snapshot = trackedSnapshotFor(repo);
+    const index = symbolIndexFor(repo);
+    let wrote = false;
+    for (const t of batch) {
+      try {
+        const card = await extractCard(t, repo, snapshot, index);
+        t.card = card;
+        cardRetry.delete(t.id);
+        wrote = true;
+        // EVERY run is a line, valid or not. A trail that recorded only successes would say the
+        // extractor never fails, which is the one thing it cannot be trusted to say about itself.
+        await appendEvent(CARD_FILE, { at: card.at, taskId: t.id, model: card.model, ms: card.ms,
+          valid: card.valid, gaps: card.gaps, ...(card.tokens ? { tokens: card.tokens } : {}) });
+      } catch (e) {
+        cardRetry.set(t.id, { attempts: (cardRetry.get(t.id)?.attempts ?? 0) + 1, at: Date.now() });
+        console.log(`card extractor: read failed for ${t.id}, the row keeps its prose: ${e instanceof Error ? e.message : e}`);
+        logError("tickCardSweep", e);
+        await appendEvent(CARD_FILE, { at: Date.now(), taskId: t.id, model: CARD_MODEL, ms: 0,
+          valid: false, gaps: [`run: ${e instanceof Error ? e.message : String(e)}`.slice(0, 300)] });
+      }
+    }
+    for (const id of [...cardRetry.keys()]) if (!tasks.some((t) => t.id === id)) cardRetry.delete(id);
+    if (wrote) saveState();
+  } finally {
+    cardSweepBusy = false;
+  }
+}
+
 // --- ↻ refine (briefs/task-refine.md): the brief compiler on the queue. One read-only worker
 // turns a raw request into what a person would have written as a work brief — files, done-
 // criterion, verification — or into the two or three separate tasks it really was. ATTENDED ONLY
@@ -10255,6 +10393,37 @@ const normFileList = (v: unknown): string[] | undefined => {
   const f = v.filter((e): e is string => typeof e === "string" && !!e.trim())
     .map((e) => e.trim().slice(0, 300)).slice(0, MAX_REFINE_FILES);
   return f.length ? f : undefined;
+};
+// THE CARD read back off disk. Degrades to ABSENT whole, like every record here — but with one
+// extra property that is worth more than the parse: `valid` is DERIVED from `gaps`, never read.
+// The two are a pair by construction in validateCard, and deriving it here means a hand-edited
+// state file cannot produce the one shape that would be a lie — a card that lists what it could
+// not establish and calls itself valid anyway. Nothing is re-validated against the tree (that
+// needs a repository and this is the loader); the card is a READING, and the tick re-reads it when
+// the text moves.
+const normTaskCard = (v: unknown): TaskCard | undefined => {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const raw = v as Record<string, unknown>;
+  if (typeof raw.model !== "string" || !raw.model) return undefined;
+  const str = (x: unknown): string => (typeof x === "string" ? x : "").slice(0, 400);
+  const strs = (x: unknown): string[] => (Array.isArray(x) ? x : [])
+    .filter((e): e is string => typeof e === "string" && !!e.trim()).map((e) => e.slice(0, 300)).slice(0, 20);
+  const role = (raw.rolle && typeof raw.rolle === "object" ? raw.rolle : {}) as Record<string, unknown>;
+  const surface = (raw.surface && typeof raw.surface === "object" ? raw.surface : {}) as Record<string, unknown>;
+  const field = (x: unknown): string | null => typeof x === "string" && x ? x.slice(0, 64) : null;
+  const gaps = strs(raw.gaps);
+  const tokens = Number(raw.tokens);
+  return {
+    ziel: str(raw.ziel), done: str(raw.done), verify: str(raw.verify), verboten: strs(raw.verboten),
+    rolle: { harness: field(role.harness), model: field(role.model), effort: field(role.effort) },
+    surface: { files: strs(surface.files), symbols: strs(surface.symbols),
+      // null survives as null: "no symbol index was available" is not an empty range list.
+      ranges: normSurfaceRanges(surface.ranges) },
+    ...(field(raw.program) ? { program: field(raw.program)! } : {}),
+    model: raw.model.slice(0, 64), at: Number(raw.at) || 0, ms: Number(raw.ms) || 0,
+    ...(Number.isFinite(tokens) && tokens > 0 ? { tokens } : {}),
+    valid: gaps.length === 0, gaps,
+  };
 };
 // The DERIVED surface read back off disk. It degrades to ABSENT whole — and unlike the proposal
 // below, the cost of a wrong one is bounded by construction rather than by this parser: every
@@ -11497,6 +11666,10 @@ const WORKER_ROUTES = {
   cleanReview: { route: "claude" },
   digest: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_DIGEST),
   refine: { route: "claude" },
+  // The one worker in this table whose model is chosen at the CALL SITE (CARD_MODEL, a Haiku) and
+  // not by the route: it is pinned to the claude route because the transport must accept a
+  // per-call `model`, which the codex-exec route cannot express.
+  card: { route: "claude" },
 } satisfies Record<WorkerName, WorkerRouteConfig>;
 function workerRouteFor(worker: WorkerName): WorkerRouteConfig {
   return WORKER_ROUTES[worker];
@@ -24176,6 +24349,9 @@ if (existsSync(STATE_FILE)) {
           // one degrades to ABSENT and is re-derived on the first read — never to a partial surface,
           // because half a file list reads as a narrower change than the row really is.
           surface: normTaskSurface((t as { surface?: unknown }).surface),
+          // THE CARD. Restored as a reading, never as an authority — nothing dispatches from it,
+          // and `valid` is recomputed from `gaps` rather than believed (normTaskCard).
+          card: normTaskCard((t as { card?: unknown }).card),
           // malformed degrades to ABSENT, never to a shorter brief. Two predecessor fields are
           // deliberately NOT migrated and not restored: `eval`, whose criteria were judged under a
           // different contract, and `analysis`, the retired queue analyst's verdict — a persisted
@@ -25020,6 +25196,11 @@ setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispat
 // FLEET_BRIEF_MS at 0, or the suite spawns a real agent. (A second timer stood beside it until
 // 2026-09-10 — the queue analyst's sweep on FLEET_ANALYSIS_MS.)
 if (BRIEF_ON) setInterval(() => void tickBriefSweep().catch((e: unknown) => logError("tickBriefSweep", e)), BRIEF_TICK_MS);
+// Same shape, same bargain: an unset FLEET_CARD_MS registers NO timer, so "off" is a property of
+// the process and not of a guard inside the sweep. The log line exists because the opposite
+// mistake — believing it armed when it is not — is the one that costs a week of silence.
+if (CARD_ON) setInterval(() => void tickCardSweep().catch((e: unknown) => logError("tickCardSweep", e)), CARD_TICK_MS);
+console.log(`[fleet] card extractor ${CARD_ON ? `armed: FLEET_CARD_MS=${CARD_TICK_MS} model=${CARD_MODEL}` : "off (FLEET_CARD_MS unset or 0) — no tick registered"}`);
 setInterval(() => void tickHarvest().catch((e: unknown) => logError("tickHarvest", e)), 5000);
 // the helper-claim lapse sweep, not on the 100 ms poll: liveness is decided by the clock
 // (helperClaimOf); this tick only books the lapse, so seconds of lateness cost nothing.

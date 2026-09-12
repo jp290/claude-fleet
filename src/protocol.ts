@@ -372,6 +372,12 @@ export const WORKER_CONTRACTS = {
   // contract therefore always spells `tasks` — an empty array plus `unchanged: true` is how it
   // says "already brief-shaped" (refine-prompt.ts).
   refine: { mark: "a read-only BRIEF COMPILER for a fleet task queue", key: "tasks" },
+  // The SHAPE EXTRACTOR (card-extract.ts). TEXT_ONLY: unlike every worker above it, it is given no
+  // repository and no tools — it reads one queued request's own words and returns a fixed object,
+  // and what it returns is then checked against this tree rather than believed. The mark and the
+  // key are declared HERE for the same reason all nine are: runWorker verifies the prompt carries
+  // its mark before spawning, and polls the transcript for the key.
+  card: { mark: "a read-only SHAPE EXTRACTOR for a fleet task queue", key: "card" },
 } satisfies Record<string, WorkerContract>;
 export type WorkerName = keyof typeof WORKER_CONTRACTS;
 

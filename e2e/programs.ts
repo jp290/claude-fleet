@@ -3619,7 +3619,22 @@ export async function run(ctx: Ctx): Promise<void> {
     plant(planted);
     const plantedBytes = JSON.stringify(planted, null, 2);
     writeFileSync(`${ROOT}/fleet.json`, plantedBytes, { mode: 0o600 });
-    const logAt = existsSync(`${ROOT}/server.log`) ? statSync(`${ROOT}/server.log`).size : 0;
+    // CHARACTERS, not bytes — the slice below cuts a UTF-16 string, so the offset has to be
+    // measured in the same unit. `statSync().size` is BYTES, and server.log is full of em dashes
+    // and umlauts: every non-ASCII character makes the byte count exceed the string length, so a
+    // byte offset skips too far and the window silently loses its own opening lines.
+    //
+    // MEASURED, not reasoned (2026-09-12): the founding startup-refusal matrix — all 17 arms, and
+    // they run late enough for the drift to have accumulated — went red together while the refusal
+    // messages were demonstrably correct in server.log. On main the file's byte→UTF-16 skew was
+    // 1005 and every arm passed; on a tree whose server printed ONE extra line per boot carrying an
+    // em dash (299 boots) the skew reached 1617, which is more than the distance from the
+    // `REFUSING TO START` line to end-of-file — so the window began past it and kept only the
+    // trailing stderr block. Deterministic, invisible in the 400-char tail the check prints, and
+    // triggered by adding a log line anywhere in the server. The two sibling probes in
+    // e2e/tasks.ts already measure `.length`; this was the one site that did not.
+    const logAt = existsSync(`${ROOT}/server.log`)
+      ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
     const spawn = await tmuxOut("new-session", "-d", "-s", "srv",
       `cd '${ROOT}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK='${fleetSock}' exec bun server.ts >> server.log 2>&1`);
     let stopped = false;

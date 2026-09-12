@@ -10464,12 +10464,19 @@ const normSurfaceRanges = (v: unknown): SymbolRange[] | null => {
   }
   return out;
 };
-const normTaskSurface = (v: unknown): TaskSurface | undefined => {
+// `rowOrigin` is what the two lines above restored onto `filesOrigin`, and the surface must AGREE
+// with it or it is dropped. That is the one forgery this parser has to stop by itself: `sha` is
+// computed from public inputs, so a hand-edited state file could carry a surface whose hash checks
+// out and whose `origin` says "confirmed" over a list nobody confirmed — and every R3 reader
+// downstream treats that word as the owner's act. A disagreeing surface is not repaired into the
+// weaker value either; it is dropped, and the first read derives a fresh one from the row itself.
+const normTaskSurface = (v: unknown, rowOrigin: TaskFilesOrigin | undefined): TaskSurface | undefined => {
   if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
   const raw = v as Partial<TaskSurface>;
   const files = normFileList(raw.files);
   const origin = raw.origin === "confirmed" || raw.origin === "derived" ? raw.origin : null;
   if (!files || !origin || typeof raw.sha !== "string" || !raw.sha) return undefined;
+  if (origin !== (rowOrigin ?? "derived")) return undefined;
   return { files, ranges: normSurfaceRanges(raw.ranges), origin,
     at: Number(raw.at) || 0, sha: raw.sha.slice(0, 64) };
 };
@@ -24365,7 +24372,8 @@ if (existsSync(STATE_FILE)) {
           // hand-edited entry cannot make a reader believe a surface it did not derive. A malformed
           // one degrades to ABSENT and is re-derived on the first read — never to a partial surface,
           // because half a file list reads as a narrower change than the row really is.
-          surface: normTaskSurface((t as { surface?: unknown }).surface),
+          surface: normTaskSurface((t as { surface?: unknown }).surface,
+            t.filesOrigin === "derived" || !normFileList(t.files) ? undefined : "confirmed"),
           // THE CARD. Restored as a reading, never as an authority — nothing dispatches from it,
           // and `valid` is recomputed from `gaps` rather than believed (normTaskCard).
           card: normTaskCard((t as { card?: unknown }).card),

@@ -4332,6 +4332,25 @@ export async function run(ctx: Ctx): Promise<void> {
     check("surface: a new brief re-derives it — the stored sha is an INPUT hash, not a write stamp",
       surfaceAfterBrief?.files.join(" ") === ".gitignore fleet-e2e.ts"
       && surfaceAfterBrief.sha !== surfaceFirst?.sha, JSON.stringify(surfaceAfterBrief));
+    // ...and the stored `origin` cannot be forged apart from the row. `sha` is computed from public
+    // inputs, so a hand-edited state could carry a hash that checks out over an `origin:"confirmed"`
+    // nobody confirmed — and every R3 reader downstream treats that word as the owner's act. Written
+    // into fleet.json BY HAND and reloaded, which is the shape §(h6) uses for the same class of hole.
+    const forgedId = surfaceTask.id;
+    await tmuxOut("kill-session", "-t", "srv");
+    const forgedRaw = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { tasks?: { id: string; surface?: unknown; files?: unknown; filesOrigin?: unknown }[] };
+    const forgedRow = forgedRaw.tasks?.find((row) => row.id === forgedId);
+    const hadSurface = !!forgedRow?.surface;
+    if (forgedRow) forgedRow.surface = { files: ["server.ts"], ranges: null,
+      origin: "confirmed", at: Date.now(), sha: "0".repeat(32) };
+    writeFileSync(`${ROOT}/fleet.json`, `${JSON.stringify(forgedRaw)}\n`);
+    await restartSrv();
+    const afterForge = await surfaceOf();
+    check("surface: a stored origin:'confirmed' on a row that confirmed nothing is DROPPED at load",
+      hadSurface && afterForge?.origin === "derived" && !afterForge.files.includes("server.ts"),
+      JSON.stringify({ hadSurface, afterForge }));
+
     await post(`/api/tasks/${surfaceTask.id}/delete`, {});
   }
 

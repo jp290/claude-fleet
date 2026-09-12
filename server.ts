@@ -79,6 +79,9 @@ import {
   PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, PROGRAM_PROFILE_KINDS, loadProgramProfile,
   PROGRAM_LINEAGE_MAX, loadProgramLineage, foundingOccupantFrom, foundingIdentityFrom,
   PROGRAM_INBOX_MAX, loadProgramInbox, type ProgramRecordLoss, loadProgramRecordLoss,
+  MESSAGES_MAX, loadMessages, MESSAGE_IDEMPOTENCY_KEY_MAX,
+  type Message, type Messages, type MessageAddress, type MessagePayload,
+  loadMessageAddress, loadMessagePayload,
   PROGRAM_RECORD_LOSS_ERROR_MAX,
   PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, loadProgramHandover,
   type ProgramHandover, type ProgramHandoverObligation, type ProgramHandoverDetail,
@@ -1521,6 +1524,44 @@ function appendProgramInbox(program: Program, kind: ProgramInboxKind, ref: strin
   return entry;
 }
 
+// === THE ADDRESSED MESSAGE RAIL — the one writer (ACP-18) =======================================
+const addressLabel = (a: MessageAddress): string =>
+  a.kind === "program" ? `program:${a.id}` : `role:${a.role}`;
+const sameAddress = (a: MessageAddress, b: MessageAddress): boolean =>
+  a.kind === "program" ? b.kind === "program" && a.id === b.id
+    : b.kind === "role" && a.role === b.role;
+const samePayload = (a: MessagePayload, b: MessagePayload): boolean =>
+  a.kind === "text" && b.kind === "text" && a.text === b.text;
+
+// THE ONE WRITER, on appendProgramInbox's terms and pinned the same way: a second assignment to
+// `messages` is how a capped record starts disagreeing with its own `dropped`. Capped identically —
+// past MESSAGES_MAX the oldest READ entries go first and only then the oldest unread, so a full rail
+// loses what somebody already saw before it loses what nobody has.
+//
+// THE CALLER SAVES (saveStateNow), the same property and the same reason as appendProgramInbox.
+//
+// IDEMPOTENCY is the caller's to ask for and this rail's to keep, but only WITHIN the live entries:
+// the dedupe in sendMessage scans what the record currently holds. A key whose message the cap has
+// already evicted can therefore mint a NEW id — a NAMED boundary, not a bug, because an unbounded
+// dedupe memory would be a second unbounded record hiding behind a bounded one. The two existing
+// inbox producers (recordLand, writeAuditInboxEntries) scan live entries for the same reason and
+// carry the same limit. This is explicitly NOT an exactly-once promise; docs/self-api.md says so.
+function appendMessage(from: MessageAddress, to: MessageAddress, payload: MessagePayload,
+  idempotencyKey: string, replyTo: string | null): Message {
+  const entry: Message = { id: randomBytes(12).toString("hex"), from, to, at: Date.now(),
+    payload, idempotencyKey, replyTo, readBy: null, readAt: null };
+  let entries = [...messages.entries, entry];
+  let dropped = messages.dropped;
+  while (entries.length > MESSAGES_MAX) {
+    const readIdx = entries.findIndex((e) => e.readBy !== null);
+    entries = readIdx >= 0 ? entries.filter((_, i) => i !== readIdx) : entries.slice(1);
+    dropped++;
+  }
+  messages = { v: 1, entries, dropped };
+  audit("message_append", undefined, `${addressLabel(from)} -> ${addressLabel(to)} ${entry.id}`);
+  return entry;
+}
+
 const foundingRoot = (founding: ProgramFounding): string =>
   founding.v === 1 ? founding.canonicalRoot : founding.targetRoot;
 const foundingProfileKind = (founding: ProgramFounding): ProgramFoundingProfileKind =>
@@ -2078,6 +2119,14 @@ let fleetEvents: FleetEvent[] = [];
 let clarifications: ClarificationRequest[] = [];
 let fleetReports: FleetReport[] = [];
 let attentionRequests: AttentionRequest[] = [];
+// THE ADDRESSED MESSAGE RAIL (see Message). Fleet-level rather than a Program field: a message has
+// two ends that are not the same principal. `messagesLost` is its SCAR, in ProgramRecordLoss's
+// shape and for its reason — an unreadable record degrades to an EMPTY one, which is byte-identical
+// to "nobody ever sent anything", and that is the one answer this rail may never give. The loss
+// type is named for the Program records that needed it first; one shape for one question is why it
+// is reused here instead of grown a third time.
+let messages: Messages = { v: 1, entries: [], dropped: 0 };
+let messagesLost: ProgramRecordLoss | undefined;
 let tasks: Task[] = [];
 // Delivery is an EVENT keyed by the audit row's `at`, not a per-session nudge. Keep its marker in
 // fleet.json rather than rewriting the append-only audit ledger: that makes "nobody was available"
@@ -2794,6 +2843,7 @@ function queueStateSave(): Promise<void> {
     commandJobs: [...commandJobs.values()],
     slots: active, recents, pins, shares, autos, watches,
     events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks, programs, studios,
+    messages, ...(messagesLost ? { messagesLost } : {}),
     supervisor,
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
@@ -7971,6 +8021,183 @@ async function readProgramInboxEntry(s: Slot, id: string): Promise<Response> {
   audit("program_inbox_read", s.id, `${program.id} ${entry.id}`);
   await saveStateNow();
   return json({ ok: true, existing: false, entry });
+}
+
+// === THE ADDRESSED MESSAGE RAIL — resolver and the three doors (ACP-18) =========================
+// The inbox above is a Program's own pointer record. This rail is the other direction of the same
+// need: a FREE, ADDRESSED message from one principal to another, and its answer, both readable
+// after either end has had a succession. Everything here derives identity server-side; nothing a
+// caller can write names a sender.
+
+// WHO THE CALLER IS AS A SENDER. Never from a body — a body-set sender would make the two hard
+// properties unprovable in one stroke, because any principal could then claim any address.
+type MessageSender = { ok: true; from: MessageAddress } | { ok: false; response: Response };
+function messageSenderFor(s: Slot): MessageSender {
+  if (s.worktree && s.label !== STEWARD_LABEL)
+    return { ok: false, response: json({ error: "a lane does not address principals — a lane files its result, and its MAIN speaks for the program" }, 409) };
+  const sup = isBoundSupervisor(s);
+  const bound = boundProgramForMain(s);
+  // BOTH is an ambiguous principal, and picking one silently is how a message gets attributed to a
+  // sender that never sent it. Named instead — boundProgramForMain's own ambiguity answer, verbatim
+  // in spirit: the owner separates the roles, this route does not guess.
+  if (sup && bound.ok)
+    return { ok: false, response: json({ error: `ambiguous sender: this session is the bound Supervisor AND the bound MAIN of program ${bound.program.id} — the owner must separate the two before it addresses anyone` }, 409) };
+  if (sup) return { ok: true, from: { kind: "role", role: "supervisor" } };
+  if (bound.ok) return { ok: true, from: { kind: "program", id: bound.program.id } };
+  return { ok: false, response: json({ error: bound.error }, 409) };
+}
+
+// THE ADDRESSES THIS SESSION MAY READ — the mirror of the sender rule, computed the same way: you
+// read what is addressed to a principal you ARE. Ambiguity is NOT refused here, and that asymmetry
+// is deliberate: sending under two identities would forge an attribution, reading under both only
+// shows a session what was addressed to it either way.
+function messageAddressesFor(s: Slot): MessageAddress[] {
+  if (s.worktree && s.label !== STEWARD_LABEL) return [];
+  const out: MessageAddress[] = [];
+  if (isBoundSupervisor(s)) out.push({ kind: "role", role: "supervisor" });
+  const bound = boundProgramForMain(s);
+  if (bound.ok) out.push({ kind: "program", id: bound.program.id });
+  return out;
+}
+
+// THE RESOLVER, and it answers THREE things that must never collapse into one:
+//   · NOT AN ADDRESS AT ALL (unknown program id, a role nobody can ever hold) → 409, NOTHING is
+//     stored. Storing here would be inventing a mailbox.
+//   · A REAL ADDRESS NOBODY HOLDS RIGHT NOW (no bound MAIN, dead occupant, no Supervisor bound) →
+//     the message IS stored and the answer NAMES that nobody holds it; the next holder reads it.
+//     This case is the entire point of addressing a principal instead of a pane: a succession is
+//     exactly the window in which an address is momentarily unheld.
+//   · A REAL ADDRESS WITH A LIVE HOLDER → stored, holder named.
+type AddressResolution =
+  | { ok: true; holder: Slot | null; note: string | null }
+  | { ok: false; error: string };
+function resolveMessageAddress(a: MessageAddress): AddressResolution {
+  if (a.kind === "role") {
+    // The one named-but-unresolvable member. It documents the dead end instead of hiding it, and a
+    // later owner-promoted Controller binding turns this branch into a resolution — a resolver
+    // change, never a record migration, because the address shape already carries it.
+    if (a.role === "controller")
+      return { ok: false, error: 'role "controller" is named but not addressable: the Controller is Scope and holds no binding — address the Program it is MAIN of as {kind:"program",id}' };
+    if (!supervisor)
+      return { ok: true, holder: null,
+        note: "no Supervisor is bound right now — the message is stored, and the next bound Supervisor reads it" };
+    const live = slotFrom(supervisor.slot);
+    const held = !!(live?.cwd && live.openedAt === supervisor.openedAt);
+    return { ok: true, holder: held ? live! : null,
+      note: held ? null : "the bound Supervisor occupant is gone or was replaced — the message is stored, and the next bound Supervisor reads it" };
+  }
+  const program = programs.find((p) => p.id === a.id);
+  if (!program) return { ok: false, error: `unknown program ${a.id}` };
+  if (program.status !== "active")
+    return { ok: true, holder: null,
+      note: `program ${a.id} is ${program.status} — the message is stored, but no MAIN is executing that program` };
+  const main = program.main;
+  if (!main)
+    return { ok: true, holder: null,
+      note: `program ${a.id} has no bound MAIN right now — the message is stored, and the next bound MAIN reads it` };
+  const live = slotFrom(main.slot);
+  const held = !!(live?.cwd && live.openedAt === main.openedAt);
+  return { ok: true, holder: held ? live! : null,
+    note: held ? null : `the bound MAIN of program ${a.id} is gone or was replaced — the message is stored, and the next bound MAIN reads it` };
+}
+
+const NO_MESSAGE_ADDRESS = "not a principal with an address — this rail answers a bound Program-MAIN or the bound Supervisor";
+
+// GET /api/self/messages — the pull half. Pure projection, stamps nothing, newest first.
+function messageViewFor(s: Slot): Response {
+  const mine = messageAddressesFor(s);
+  if (!mine.length) return json({ error: NO_MESSAGE_ADDRESS }, 409);
+  const unknown: string[] = [];
+  // THE ONE DEGRADATION THIS READER MUST NEVER RENDER AS HEALTH, on programInboxView's terms: the
+  // loader refuses to repair, so the rail arrives here EMPTY — byte-identical to "nobody ever sent
+  // anything". The scar is persisted, so this line survives the save that erases the broken bytes.
+  if (messagesLost)
+    unknown.push(`the message record was unreadable at ${new Date(messagesLost.at).toISOString()} (${messagesLost.error}) and loaded as empty; every message written before then is gone, so the entries below are what was written AFTER that and never the whole history.`);
+  const entries = messages.entries
+    .filter((m) => mine.some((a) => sameAddress(a, m.to)))
+    .sort((a, b) => b.at - a.at);
+  // NAMED `droppedFleetWide` rather than `dropped`: the cap is on the whole rail, so this number is
+  // not "how many of YOUR messages fell off" and must not read like it.
+  if (messages.dropped > 0)
+    unknown.push(`${messages.dropped} messages have fallen off the fleet-wide cap of ${MESSAGES_MAX} since this record began; an unknown share of them was addressed here.`);
+  return json({ addresses: mine, unread: entries.filter((m) => m.readBy === null).length,
+    droppedFleetWide: messages.dropped, entries, unknown });
+}
+
+// POST /api/self/messages — the send half.
+// GUARD ORDER is STN-1's (401 at the dispatcher → 409 not-a-principal → 400 body → 409 policy):
+// a caller that cannot address anyone is told THAT, before its body is graded on a rail it may not
+// use at all.
+async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
+  const sender = messageSenderFor(s);
+  if (!sender.ok) return sender.response;
+  if (!body) return json({ error: "body must be an object" }, 400);
+  const extra = Object.keys(body).filter((k) => !["to", "payload", "idempotencyKey", "replyTo"].includes(k));
+  if (extra.length)
+    return json({ error: `body reads only to, payload, idempotencyKey, replyTo — [${extra.join(", ")}] is not read: the SENDER is derived from this session's binding and can never be named in a body` }, 400);
+  const to = loadMessageAddress(body.to, "to");
+  if (typeof to === "string") return json({ error: to }, 400);
+  const payload = loadMessagePayload(body.payload, "payload");
+  if (typeof payload === "string") return json({ error: payload }, 400);
+  if (typeof body.idempotencyKey !== "string" || body.idempotencyKey === ""
+    || body.idempotencyKey.length > MESSAGE_IDEMPOTENCY_KEY_MAX)
+    return json({ error: `idempotencyKey must be a non-empty string of at most ${MESSAGE_IDEMPOTENCY_KEY_MAX} chars` }, 400);
+  const key = body.idempotencyKey;
+  const replyTo = body.replyTo === undefined || body.replyTo === null ? null : body.replyTo;
+  if (replyTo !== null && (typeof replyTo !== "string" || !/^[0-9a-f]{24}$/.test(replyTo)))
+    return json({ error: "replyTo must be 24 hex characters or null" }, 400);
+
+  // IDEMPOTENCY FIRST, before the address is resolved. A replay must answer the same way it did the
+  // first time even if the receiving Program has since been retired — otherwise "send it again if
+  // you are unsure" would be advice that breaks precisely when it is followed late.
+  const prior = messages.entries.find((m) => sameAddress(m.from, sender.from) && m.idempotencyKey === key);
+  if (prior) {
+    // Same key, different act: a CONFLICT rather than a second message. The key is the caller's
+    // claim that this is the same act; honouring two different acts under one key would silently
+    // lose one of them.
+    if (!sameAddress(prior.to, to) || !samePayload(prior.payload, payload) || prior.replyTo !== replyTo)
+      return json({ error: `idempotencyKey ${key} was already used by this sender for a different message (${prior.id}) — one key names one act` }, 409);
+    return json({ ok: true, existing: true, message: prior });
+  }
+
+  const resolved = resolveMessageAddress(to);
+  if (!resolved.ok) return json({ error: resolved.error }, 409);
+
+  // REPLY AUTHORISATION, with ONE sentence for "no such message" and for "not addressed to you".
+  // Deliberately UNLIKE readProgramInboxEntry, which separates 409-foreign from 404-unknown: there
+  // the id space is the caller's own Program and the two answers send it to two different places.
+  // Here a distinguishable answer would let any principal probe for the existence of traffic
+  // between two others, so non-disclosure wins over navigability at this door.
+  if (replyTo !== null) {
+    const mine = messageAddressesFor(s);
+    const parent = messages.entries.find((m) => m.id === replyTo);
+    if (!parent || !mine.some((a) => sameAddress(a, parent.to)))
+      return json({ error: "replyTo names no message addressed to this sender" }, 409);
+  }
+
+  const entry = appendMessage(sender.from, to, payload, key, replyTo);
+  await saveStateNow();
+  // A MESSAGE CONFERS NOTHING. It is text addressed to a principal: no owner right, no release,
+  // land or deploy authority travels with it, and no route reads it as an instruction.
+  return json({ ok: true, existing: false, message: entry,
+    holder: resolved.holder ? { slot: resolved.holder.id, openedAt: resolved.holder.openedAt } : null,
+    note: resolved.note });
+}
+
+// POST /api/self/messages/:id/read — the RECEIPT, and like the inbox's it is not a lock: a second
+// read answers existing:true and rewrites nothing, because the FIRST reader is the fact.
+async function readMessageFor(s: Slot, id: string): Promise<Response> {
+  const mine = messageAddressesFor(s);
+  if (!mine.length) return json({ error: NO_MESSAGE_ADDRESS }, 409);
+  const entry = messages.entries.find((m) => m.id === id && mine.some((a) => sameAddress(a, m.to)));
+  // ONE answer for "no such message" and "not yours" — the replyTo door's reasoning, same rail.
+  if (!entry) return json({ error: "unknown message" }, 404);
+  if (entry.readBy !== null) return json({ ok: true, existing: true, message: entry });
+  entry.readBy = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
+  entry.readAt = Date.now();
+  audit("message_read", s.id, `${entry.id} ${addressLabel(entry.to)}`);
+  await saveStateNow();
+  return json({ ok: true, existing: false, message: entry });
 }
 
 // ACP-16 · THE SECOND CONSUMER OF THE BRACKET ABOVE. A bound Program-MAIN releases a pending row
@@ -23056,6 +23283,33 @@ if (existsSync(STATE_FILE)) {
     if (Array.isArray((persisted as { attentionRequests?: unknown }).attentionRequests))
       attentionRequests = ((persisted as { attentionRequests: unknown[] }).attentionRequests)
         .map(attentionFrom).filter((a): a is AttentionRequest => a !== null);
+    // ACP-18 · the addressed message rail, and it does NOT follow the drop-malformed-rows rule of
+    // its four neighbours above. Those are arrays of independent rows; this is a CAPPED record whose
+    // `dropped` counter is only true while one writer maintains it, so a partial load would leave
+    // the count describing a history the entries no longer match. Closed/versioned/default-absent
+    // instead — and the degradation is SCARRED, because an empty rail reads exactly like a rail
+    // nobody ever wrote to. The first loss wins: a later boot has no broken bytes left to observe,
+    // and moving `at` forward would redate the loss onto messages that were already gone.
+    const pml = (persisted as { messagesLost?: unknown }).messagesLost;
+    if (pml !== undefined) {
+      const read = loadProgramRecordLoss(pml);
+      if (read.ok) messagesLost = read.loss;
+      else {
+        console.error(`messagesLost unreadable: ${read.error} — loaded as absent`);
+        audit("messages_unreadable", undefined, `scar unreadable: ${read.error}`);
+      }
+    }
+    const pmsg = (persisted as { messages?: unknown }).messages;
+    if (pmsg !== undefined) {
+      const read = loadMessages(pmsg);
+      if (read.ok) messages = read.messages;
+      else {
+        console.error(`messages unreadable: ${read.error} — loaded as empty`);
+        audit("messages_unreadable", undefined, read.error);
+        messagesLost ??= { v: 1, at: Date.now(),
+          error: read.error.slice(0, PROGRAM_RECORD_LOSS_ERROR_MAX) };
+      }
+    }
     const pap = (persisted as { auditPings?: unknown }).auditPings;
     if (pap && typeof pap === "object" && !Array.isArray(pap))
       for (const [key, raw] of Object.entries(pap as Record<string, unknown>)) {
@@ -26224,6 +26478,27 @@ Bun.serve<WSData>({
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return await readProgramInboxEntry(s, selfInboxRead[1]!);
+    }
+
+    // ACP-18 · THE ADDRESSED MESSAGE RAIL, on the same credential lane as the inbox doors above and
+    // deliberately beside them: same self-token, same 401 shape and flat cost. The difference is the
+    // SCOPE — the inbox answers the bound MAIN of ONE Program about that Program's own pointers,
+    // while these three answer any principal that HOLDS AN ADDRESS about traffic addressed to it.
+    // The sender is derived from the binding on every verb; no body on this rail names a principal.
+    if (url.pathname === "/api/self/messages" && (req.method === "GET" || req.method === "POST")) {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (req.method === "GET") return messageViewFor(s);
+      return await sendMessageFor(s, await readJson(req));
+    }
+
+    const selfMessageRead = /^\/api\/self\/messages\/([0-9a-f]{24})\/read$/.exec(url.pathname);
+    if (selfMessageRead && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      return await readMessageFor(s, selfMessageRead[1]!);
     }
 
     // Worker result reports are the immutable sibling of clarifications on the SAME FleetEvent

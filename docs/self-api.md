@@ -964,6 +964,128 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 - **Zahlen ohne Pull:** `GET /api/self/program-execution` trägt je Program `status.inbox =
   {unread, oldestAt}` (ältester UNGELESENER Eintrag, `null` = nichts ungelesen).
 
+
+## messages — `GET /api/self/messages`, `POST /api/self/messages`, `POST /api/self/messages/:id/read`
+
+Die **adressierte Nachricht zwischen Prinzipalen** und ihre Antwort — die andere Hälfte dessen, was
+`inbox` nicht kann. Ein Inbox-Eintrag ist ein ZEIGER, der EINEM Program gehört, keinen Absender
+nennt und keinen Rumpf trägt; eine Nachricht hat zwei Enden, einen Text und eine Antwortkante.
+Darum ein **eigener Record**, kein Feld an `Program.inbox` (der Pin `RULE_INBOX` §I1 hält den
+Eintrag ausdrücklich empfängerlos).
+
+**Die Adresse ist nie eine Slot-Nummer**, und das ist der ganze Grund, dass zwei Eigenschaften
+gleichzeitig gelten: ein Slot wird recycelt, eine Program-Id und eine Rollenbindung nicht.
+
+- **SICHTBARKEIT entscheidet die ADRESSE.** Der Nachfolger einer zurückgetretenen Occupation löst
+  auf dieselbe Adresse auf und liest dieselbe Nachricht unter derselben Id.
+- **Die QUITTUNG entscheidet das Occupant-Tripel** `{slot, openedAt, sessionId}`. Der Record sagt
+  weiter exakt, wer gelesen hat; eine spätere Occupation überschreibt das nie.
+
+```
+curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" http://<fleet-host>:<port>/api/self/messages
+
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"to":{"kind":"program","id":"<24-hex>"},"payload":{"kind":"text","text":"…"},
+       "idempotencyKey":"<frei gewählt>","replyTo":null}' \
+  http://<fleet-host>:<port>/api/self/messages
+
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  http://<fleet-host>:<port>/api/self/messages/<message-id>/read
+```
+
+- **Scope: Prinzipal-gebunden, Nicht-Lane.** Absender ist, wer die Session IST — aus der Bindung
+  abgeleitet, nie aus dem Body. Eine gebundene Program-MAIN sendet als `{kind:"program",id}`, der
+  exakt gebundene Supervisor (`isBoundSupervisor`) als `{kind:"role",role:"supervisor"}`.
+- **Adress-Union, geschlossen:** `{kind:"program", id}` | `{kind:"role", role}` mit
+  `role ∈ {supervisor, controller}`.
+- **`role:"controller"` ist BENANNT, aber nicht auflösbar** — 409, und **nichts wird gespeichert**.
+  Der Controller ist Scope und hält keine Bindung (`docs/controller.md`). Wer ihn heute erreichen
+  will, adressiert **das Program, dessen MAIN er ist**, als `{kind:"program",id}`. Die Rolle steht
+  trotzdem in der Union: so ist die Sackgasse dokumentiert statt erfunden, und eine spätere
+  owner-promovierte Controller-Bindung ist eine Änderung am AUFLÖSER, keine Migration am Record.
+- **Eine Nachricht verleiht NICHTS.** Sie ist Text an einen Prinzipal: keine Owner-, Release-,
+  Land- oder Deploy-Berechtigung reist mit ihr, und keine Route liest sie als Anweisung.
+
+**Antwort GET:** `{addresses, unread, droppedFleetWide, entries: [{id, from, to, at, payload,
+idempotencyKey, replyTo, readBy, readAt}], unknown: []}`, **neueste zuerst**. `addresses` sind die
+Adressen, die diese Session gerade hält — eine Session kann unter mehreren lesen. `droppedFleetWide`
+heißt so, wie es heißt: der Deckel liegt auf dem GANZEN Record, die Zahl ist also nicht „so viele
+DEINER Nachrichten fielen ab"; ist sie > 0, steht daneben eine `unknown`-Zeile, die genau das sagt.
+
+**Die drei Antworten auf eine Adresse, und sie dürfen nie zu einer werden:**
+
+| Fall | Antwort | Gespeichert? |
+|---|---|---|
+| Unbekannte Program-Id · `role:"controller"` | 409, benannt | **nein** |
+| Gültige Adresse, **niemand hält sie gerade** (kein gebundener MAIN, tote Occupation, kein Supervisor gebunden; auch ein `completed`/`abandoned` Program) | 200 mit `note`, `holder:null` | **ja** — der nächste Halter liest sie |
+| Gültige Adresse mit lebendem Halter | 200, `holder:{slot,openedAt}` | ja |
+
+Der mittlere Fall ist der Zweck der Übung, nicht ein Randfall: **eine Succession ist genau das
+Fenster, in dem eine Adresse kurz unbesetzt ist.**
+
+**Idempotenz — und ihre benannte Grenze.** `idempotencyKey` ist auf `(Absender, Key)` eindeutig:
+
+- Gleicher Absender + Key + Empfänger + Payload + `replyTo` ⇒ `{ok:true, existing:true, message}`,
+  es wird **nichts angehängt**. Der Record ist persistiert, das gilt also auch **über einen
+  Neustart**. Die Prüfung läuft **vor** der Adressauflösung — ein Replay antwortet wie beim ersten
+  Mal, auch wenn das Ziel-Program inzwischen zurückgezogen wurde.
+- Gleicher Absender + Key, aber **abweichender** Empfänger, Payload oder `replyTo` ⇒ **409**. Ein
+  Key benennt EINEN Vorgang; zwei Vorgänge unter einem Key hieße, einen davon still zu verlieren.
+- **Die Grenze, ausdrücklich: das ist keine Exactly-once-Zusage.** Die Dedupe liest die LEBENDEN
+  Einträge. Fällt eine Nachricht über den Deckel (`MESSAGES_MAX`, gelesene zuerst), kann derselbe
+  Key **neu minten**. Zugesagt ist Idempotenz **innerhalb der Retention** — ein unbegrenzter
+  Dedupe-Speicher wäre ein zweiter unbegrenzter Record hinter einem begrenzten. Dieselbe Grenze
+  tragen die beiden vorhandenen Inbox-Produzenten (`server.ts#recordLand`,
+  `server.ts#writeAuditInboxEntries`) aus demselben Grund.
+
+**`replyTo` — die Antwortkante ist ein FELD, keine Konvention.** Zulässig ist nur die Id einer
+Nachricht, die an **eine eigene Adresse** des Absenders gerichtet ist. Sonst: **409
+`replyTo names no message addressed to this sender`** — **eine** Antwort für „gibt es nicht" und
+für „gehört dir nicht". Das weicht **bewusst** von `POST /api/self/inbox/:id/read` ab, das
+409-fremd und 404-unbekannt trennt: dort ist der Id-Raum das eigene Program und die zwei Antworten
+schicken den Aufrufer an zwei verschiedene Orte, hier könnte jeder Prinzipal sonst auf die Existenz
+von Verkehr zwischen zwei anderen prüfen. Nicht-Offenlegung schlägt Navigierbarkeit an dieser Tür.
+
+**Quittung.** `POST /api/self/messages/:id/read` stempelt das Occupant-Tripel und ist **kein
+Lock**: ein zweites Lesen antwortet `{ok:true, existing:true}` und schreibt **nichts** um — der
+ERSTE Leser ist der Fakt. Eine Id, die es nicht gibt **oder** die nicht an eine eigene Adresse
+gerichtet ist, bekommt dieselbe **404 `unknown message`** (siehe `replyTo`).
+
+**Ablehnungen im Einzelnen**
+
+| Situation | Code | Satz |
+|---|---|---|
+| Lane (kein Steward) | 409 | `a lane does not address principals — a lane files its result, and its MAIN speaks for the program` |
+| Weder gebundene MAIN noch Supervisor | 409 | der Satz von `boundProgramForMain` |
+| Gebundener Supervisor **und** gebundene MAIN | 409 | `ambiguous sender: …` — der Owner trennt die Rollen, die Route rät nicht |
+| GET/read ohne jede Adresse | 409 | `not a principal with an address — this rail answers a bound Program-MAIN or the bound Supervisor` |
+| Fremder Body-Schlüssel | 400 | `body reads only to, payload, idempotencyKey, replyTo — […] is not read: the SENDER is derived from this session's binding and can never be named in a body` |
+| `payload.kind` unbekannt | 400 | `payload kind must be one of text` |
+| `payload.text` leer/über 2000 | 400 | `payload text must be a non-empty string of at most 2000 chars` |
+| `idempotencyKey` leer/über 200 | 400 | `idempotencyKey must be a non-empty string of at most 200 chars` |
+| Unbekannte Program-Id | 409 | `unknown program <id>` |
+| `role:"controller"` | 409 | `role "controller" is named but not addressable: …` |
+| Key erneut, anderer Inhalt | 409 | `idempotencyKey <key> was already used by this sender for a different message (<id>) — one key names one act` |
+| `replyTo` unbekannt oder fremd | 409 | `replyTo names no message addressed to this sender` |
+| `:id/read` unbekannt oder fremd | 404 | `unknown message` |
+
+**Deckel:** `MESSAGES_MAX` = 200 Einträge auf dem GANZEN Record (gelesene fallen zuerst, `dropped`
+zählt) · Text 2000 Zeichen (`MAX_SUPERVISOR_NUDGE_TEXT` — derselbe Deckel wie beim Nudge, damit zwei
+Kanäle nicht zwei Deckel haben) · `idempotencyKey` 200 Zeichen.
+
+**Payload-Union.** Heute genau ein Mitglied, `{kind:"text", text}`. Ein unbekannter `payload.kind`
+wird mit benanntem Satz **abgelehnt**, der Record trägt `v:1`. **Was das beweist und was nicht:** es
+hält die HEUTIGEN Textnachrichten stabil lesbar. Es beweist **nicht**, dass ein zweiter Payload-Typ
+migrationsfrei landet — das könnte nur der zweite Typ selbst. Die Tür ist offen gelassen, mehr nicht.
+
+**Was der Loader mit einem alten `fleet.json` tut:** ohne den Key lädt der Record **leer** und
+bekommt kein Backfill. Ein **unlesbarer** Record lädt als LEER, meldet sich (`console.error` +
+Audit-Zeile `messages_unreadable`) und hinterlässt eine **persistierte Narbe** (`messagesLost`), die
+`GET /api/self/messages` als erste `unknown`-Zeile rendert — denn ein leerer Rail liest sich sonst
+exakt wie einer, an den nie jemand geschrieben hat. Die erste Narbe gewinnt: ein späterer Boot
+sieht keine kaputten Bytes mehr, und `at` nach vorn zu schieben würde den Verlust auf Nachrichten
+umdatieren, die längst weg waren.
+
 ## jobs — `POST /api/self/jobs`, `GET /api/self/jobs/:id`
 
 Arbeit von hier nach dort auslagern, mit Quittung. Eine Session übergibt ihren **eigenen Baum** und

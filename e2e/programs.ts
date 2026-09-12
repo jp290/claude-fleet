@@ -129,6 +129,10 @@ interface FleetState {
   tasks?: Record<string, unknown>[];
   // read narrowly by the D1 report-join fixture, which only ever asks which ids are present
   fleetReports?: { id?: string }[];
+  // ACP-18 · the addressed message rail. Forged by the cap/legacy probes, which need the record's
+  // exact persisted shape rather than the projection the route renders.
+  messages?: { v?: number; entries?: Record<string, unknown>[]; dropped?: number } | unknown;
+  messagesLost?: Record<string, unknown>;
   watches?: Record<string, unknown>[];
   events?: Record<string, unknown>[];
   stewardToken?: string;
@@ -275,6 +279,26 @@ const selfPost = (path: string, token: string, body: unknown): Promise<Response>
     method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
     body: JSON.stringify(body),
   });
+interface MessageRow {
+  id: string; from: Record<string, unknown>; to: Record<string, unknown>; at: number;
+  payload: { kind: string; text?: string }; idempotencyKey: string; replyTo: string | null;
+  readBy: { slot: number; openedAt: number; sessionId: string | null } | null; readAt: number | null;
+}
+interface MessageView {
+  addresses: Record<string, unknown>[]; unread: number; droppedFleetWide: number;
+  entries: MessageRow[]; unknown: string[];
+}
+const selfMessages = async (token: string): Promise<{ response: Response; view: MessageView | null; error: string | null }> => {
+  const response = await fetch(`${BASE}/api/self/messages`, { headers: { "x-fleet-self-token": token } });
+  const body = await response.json() as MessageView & { error?: string };
+  return { response, view: typeof body.error === "string" ? null : body, error: body.error ?? null };
+};
+const selfSend = (token: string, body: unknown): Promise<Response> => selfPost("/api/self/messages", token, body);
+const selfMessageRead = (token: string, id: string): Promise<Response> =>
+  fetch(`${BASE}/api/self/messages/${id}/read`, { method: "POST", headers: { "x-fleet-self-token": token } });
+const sentId = async (r: Response): Promise<string> =>
+  ((await r.clone().json()) as { message?: { id?: string } }).message?.id ?? "";
+
 const programPost = (id: string, action: "confirm" | "activate" | "complete" | "discard" | "bootstrap-main",
   body: unknown = {}, headers: Record<string, string> = H): Promise<Response> =>
   fetch(`${BASE}/api/programs/${id}/${action}`, {
@@ -2339,6 +2363,195 @@ export async function run(ctx: Ctx): Promise<void> {
     handoverOpenRows.length >= 1 && handoverTaskRows.length >= handoverOpenRows.length,
     `open=${handoverOpenRows.length} total=${handoverTaskRows.length}`);
 
+
+  // --- ACP-18 · THE ADDRESSED MESSAGE RAIL, planted HERE so the succession below carries it. ----
+  // THE ONE PROPERTY NOTHING ELSE ON THIS RAIL HAS. A nudge is pane-only and refuses a replaced
+  // occupant; a transition watch is deleted by dropWatchesFor when its registrant's slot ends; the
+  // Program inbox survives a succession but carries no sender, no body and no reply edge. So the
+  // exchange is driven LIVE through both doors while A is still the predecessor, and read again by
+  // A's SUCCESSOR below the transfer — the same ids, the same thread.
+  //
+  // Program B is a SECOND principal with its own live bound MAIN: a message needs two ends, and
+  // binding both to one occupant would make the sender ambiguous (and prove nothing about address
+  // vs. occupant). Its binding is planted with srv down, the technique every binding fixture here
+  // uses, because bootstrapping a second real MAIN would prove the bootstrap and not this rail.
+  const msgProgramB = await activateNewProgram("Message rail: the addressed receiver program");
+  const msgFreeSlot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const msgBOpen = await post(`/api/slots/${msgFreeSlot}/open`, { cwd: REPO, label: "message-rail-receiver" });
+  const msgBSlot = msgBOpen.ok ? msgFreeSlot : 0;
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const msgPlantState = readState();
+  const msgBSlotRow = msgPlantState.slots?.[String(msgBSlot)];
+  const msgBRow = msgPlantState.programs?.find((p) => p.id === msgProgramB.id);
+  if (msgBRow && msgBSlotRow)
+    (msgBRow as unknown as Record<string, unknown>).main = { slot: msgBSlot,
+      openedAt: msgBSlotRow.openedAt ?? 0, sessionId: msgBSlotRow.sessionId ?? null, boundAt: Date.now() };
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(msgPlantState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const msgAToken = slotToken(mainSlot);
+  const msgBToken = slotToken(msgBSlot);
+  check("message rail setup: two Programs each carry their own live bound MAIN with a distinct self credential",
+    msgBSlot > 0 && msgBSlot !== mainSlot
+      && /^[0-9a-f]{32}$/.test(msgAToken) && /^[0-9a-f]{32}$/.test(msgBToken) && msgAToken !== msgBToken
+      && (await ownerPrograms()).find((p) => p.id === msgProgramB.id)?.main?.slot === msgBSlot,
+    `A=slot${mainSlot}/${msgProgramB.id.slice(0, 6)} B=slot${msgBSlot} tokens=${msgAToken.length}/${msgBToken.length}`);
+
+  // THE HIN-WEG. A addresses B by PROGRAM ID; the sender is never in the body.
+  const msgOutKey = "rail-out-1";
+  const msgOutText = "A to B: the addressed question that must outlive the sender's own succession.";
+  const msgOut = await selfSend(msgAToken, { to: { kind: "program", id: msgProgramB.id },
+    payload: { kind: "text", text: msgOutText }, idempotencyKey: msgOutKey });
+  const msgOutId = await sentId(msgOut);
+  const msgOutBody = await msgOut.json() as { holder?: { slot?: number } | null; note?: string | null;
+    message?: { from?: Record<string, unknown> } };
+  check("message rail: a bound MAIN addresses another Program, the server derives the SENDER from the binding, and the live holder is named",
+    msgOut.ok && /^[0-9a-f]{24}$/.test(msgOutId)
+      && JSON.stringify(msgOutBody.message?.from) === JSON.stringify({ kind: "program", id: mainProgram.id })
+      && msgOutBody.holder?.slot === msgBSlot && msgOutBody.note === null,
+    `${msgOut.status} id=${msgOutId} from=${JSON.stringify(msgOutBody.message?.from)} holder=${JSON.stringify(msgOutBody.holder)}`);
+
+  const msgBView = await selfMessages(msgBToken);
+  const msgBSeen = msgBView.view?.entries.find((e) => e.id === msgOutId);
+  const msgBReceipt = await selfMessageRead(msgBToken, msgOutId);
+  const msgBReceiptBody = await msgBReceipt.json() as { existing?: boolean; message?: MessageRow };
+  check("message rail: B reads what is addressed to B, and the receipt stamps B's exact occupant triple",
+    msgBView.response.ok && !!msgBSeen && msgBSeen.payload.text === msgOutText
+      && msgBSeen.readBy === null && msgBView.view?.unread === 1
+      && msgBReceipt.ok && msgBReceiptBody.existing === false
+      && msgBReceiptBody.message?.readBy?.slot === msgBSlot
+      && msgBReceiptBody.message.readBy.openedAt === (readState().slots?.[String(msgBSlot)]?.openedAt ?? -1)
+      && typeof msgBReceiptBody.message.readAt === "number",
+    `view=${msgBView.response.status} seen=${!!msgBSeen} receipt=${msgBReceipt.status} ${JSON.stringify(msgBReceiptBody.message?.readBy)}`);
+
+  // THE RUECKWEG, and `replyTo` is a FIELD rather than a convention — that is what makes "the
+  // message and its answer under the same references" an assertion instead of a habit.
+  const msgReplyText = "B to A: the answer, carried on the reply edge and not on a convention.";
+  const msgReply = await selfSend(msgBToken, { to: { kind: "program", id: mainProgram.id },
+    payload: { kind: "text", text: msgReplyText }, idempotencyKey: "rail-reply-1", replyTo: msgOutId });
+  const msgReplyId = await sentId(msgReply);
+  const msgAView = await selfMessages(msgAToken);
+  const msgASeen = msgAView.view?.entries.find((e) => e.id === msgReplyId);
+  check("message rail: B answers on the reply edge, and the PREDECESSOR A already reads the answer under the same two ids",
+    msgReply.ok && /^[0-9a-f]{24}$/.test(msgReplyId) && msgReplyId !== msgOutId
+      && msgAView.response.ok && !!msgASeen && msgASeen.replyTo === msgOutId
+      && msgASeen.payload.text === msgReplyText
+      && JSON.stringify(msgASeen.from) === JSON.stringify({ kind: "program", id: msgProgramB.id }),
+    `${msgReply.status} reply=${msgReplyId} seen=${JSON.stringify(msgASeen ?? null)}`);
+
+  // IDEMPOTENCY IS THE SENDE-SIDE, and the read receipt's `existing:true` proves nothing about it.
+  const msgReplay = await selfSend(msgAToken, { to: { kind: "program", id: msgProgramB.id },
+    payload: { kind: "text", text: msgOutText }, idempotencyKey: msgOutKey });
+  const msgReplayBody = await msgReplay.json() as { existing?: boolean; message?: { id?: string } };
+  const msgConflict = await selfSend(msgAToken, { to: { kind: "program", id: msgProgramB.id },
+    payload: { kind: "text", text: `${msgOutText} — but different` }, idempotencyKey: msgOutKey });
+  const msgConflictText = await msgConflict.text();
+  const msgConflictTo = await selfSend(msgAToken, { to: { kind: "role", role: "supervisor" },
+    payload: { kind: "text", text: msgOutText }, idempotencyKey: msgOutKey });
+  const msgCountAfterReplay = (readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1;
+  check("message rail idempotency: the same key replays the SAME message, and the same key with a different body or receiver is a named 409 that appends nothing",
+    msgReplay.ok && msgReplayBody.existing === true && msgReplayBody.message?.id === msgOutId
+      && msgConflict.status === 409 && msgConflictText.includes("one key names one act")
+      && msgConflictText.includes(msgOutId)
+      && msgConflictTo.status === 409
+      && msgCountAfterReplay === 2,
+    `replay=${msgReplay.status}/${msgReplayBody.existing} conflict=${msgConflict.status} conflictTo=${msgConflictTo.status} rows=${msgCountAfterReplay}`);
+
+  // …and it must survive a RESTART, because the record is the dedupe memory: a process-local map
+  // would answer `existing:false` here and mint a second message for one act.
+  await restartSrv();
+  const msgReplayAfterBoot = await selfSend(slotToken(mainSlot), { to: { kind: "program", id: msgProgramB.id },
+    payload: { kind: "text", text: msgOutText }, idempotencyKey: msgOutKey });
+  const msgReplayAfterBootBody = await msgReplayAfterBoot.json() as { existing?: boolean; message?: { id?: string } };
+  check("message rail idempotency: the dedupe is the persisted record, so the same key still replays the same id across a restart",
+    msgReplayAfterBoot.ok && msgReplayAfterBootBody.existing === true
+      && msgReplayAfterBootBody.message?.id === msgOutId
+      && ((readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1) === 2,
+    `${msgReplayAfterBoot.status} existing=${msgReplayAfterBootBody.existing} id=${msgReplayAfterBootBody.message?.id}`);
+
+  // THE FOUR REFUSALS, and the two that must NOT be the same answer: an address that does not
+  // resolve stores NOTHING, while a real address nobody holds right now STORES and says so.
+  const msgUnknownProgram = await selfSend(msgAToken, { to: { kind: "program", id: "0".repeat(24) },
+    payload: { kind: "text", text: "nobody" }, idempotencyKey: "rail-unknown" });
+  const msgUnknownText = await msgUnknownProgram.text();
+  const msgController = await selfSend(msgAToken, { to: { kind: "role", role: "controller" },
+    payload: { kind: "text", text: "the controller" }, idempotencyKey: "rail-controller" });
+  const msgControllerText = await msgController.text();
+  const msgRowsAfterRefusals = (readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1;
+  check("message rail: an address that does not resolve is a NAMED 409 that stores nothing — an unknown Program and the named-but-unaddressable Controller role each say which they are",
+    msgUnknownProgram.status === 409 && msgUnknownText.includes("unknown program")
+      && msgController.status === 409
+      && msgControllerText.includes('role "controller" is named but not addressable')
+      && msgControllerText.includes("address the Program it is MAIN of")
+      && msgRowsAfterRefusals === 2,
+    `unknown=${msgUnknownProgram.status}:${msgUnknownText} controller=${msgController.status}:${msgControllerText} rows=${msgRowsAfterRefusals}`);
+
+  // A REAL ADDRESS NOBODY HOLDS: stored, holder null, and the note says why. This is the succession
+  // window itself, so treating it as a refusal would break the rail exactly when it is needed.
+  const msgUnheldProgram = await activateNewProgram("Message rail: an active program with no bound MAIN");
+  const msgUnheld = await selfSend(msgAToken, { to: { kind: "program", id: msgUnheldProgram.id },
+    payload: { kind: "text", text: "stored for whoever binds next" }, idempotencyKey: "rail-unheld" });
+  const msgUnheldBody = await msgUnheld.json() as { holder?: unknown; note?: string | null; message?: { id?: string } };
+  check("message rail: a VALID address nobody holds right now stores the message and NAMES that nobody holds it — never a silent discard and never a refusal",
+    msgUnheld.ok && msgUnheldBody.holder === null
+      && (msgUnheldBody.note ?? "").includes("has no bound MAIN right now")
+      && (msgUnheldBody.note ?? "").includes("the next bound MAIN reads it")
+      && ((readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1) === 3,
+    `${msgUnheld.status} holder=${JSON.stringify(msgUnheldBody.holder)} note=${msgUnheldBody.note}`);
+
+  // THE BODY CANNOT NAME A SENDER, a lane cannot address anyone, and the payload union is closed.
+  const msgForgedSender = await selfSend(msgAToken, { from: { kind: "program", id: msgProgramB.id },
+    to: { kind: "program", id: msgProgramB.id }, payload: { kind: "text", text: "forged" },
+    idempotencyKey: "rail-forge" });
+  const msgForgedText = await msgForgedSender.text();
+  const msgLane = await post("/api/lanes", { repo: REPO });
+  const msgLaneSlot = (await msgLane.json() as { slot?: number }).slot ?? 0;
+  const msgLaneSend = await selfSend(slotToken(msgLaneSlot), { to: { kind: "program", id: msgProgramB.id },
+    payload: { kind: "text", text: "from a lane" }, idempotencyKey: "rail-lane" });
+  const msgLaneText = await msgLaneSend.text();
+  const msgUnknownPayload = await selfSend(msgAToken, { to: { kind: "program", id: msgProgramB.id },
+    payload: { kind: "contextpack", ref: "x" }, idempotencyKey: "rail-payload" });
+  const msgUnknownPayloadText = await msgUnknownPayload.text();
+  const msgEmptyPayload = await selfSend(msgAToken, { to: { kind: "program", id: msgProgramB.id },
+    payload: { kind: "text", text: "   " }, idempotencyKey: "rail-empty" });
+  const msgHugePayload = await selfSend(msgAToken, { to: { kind: "program", id: msgProgramB.id },
+    payload: { kind: "text", text: "x".repeat(2001) }, idempotencyKey: "rail-huge" });
+  check("message rail: the body may not name a sender, a lane may not address a principal, and the payload union is closed against an unknown kind, an empty text and an oversized one",
+    msgForgedSender.status === 400 && msgForgedText.includes("[from] is not read")
+      && msgForgedText.includes("derived from this session's binding")
+      && msgLaneSlot > 0 && msgLaneSend.status === 409 && msgLaneText.includes("a lane does not address principals")
+      && msgUnknownPayload.status === 400 && msgUnknownPayloadText.includes("payload kind must be one of text")
+      && msgEmptyPayload.status === 400 && msgHugePayload.status === 400
+      && ((readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1) === 3,
+    `forge=${msgForgedSender.status} lane=${msgLaneSend.status} kind=${msgUnknownPayload.status} empty=${msgEmptyPayload.status} huge=${msgHugePayload.status}`);
+
+  // NON-DISCLOSURE at the two doors that take an id. A principal must not be able to probe for the
+  // existence of traffic between two others, so "no such message" and "not addressed to you" get
+  // ONE answer — deliberately unlike POST /api/self/inbox/:id/read, whose id space is the caller's
+  // own Program and whose two answers send it to two different places.
+  const msgForeignReply = await selfSend(msgBToken, { to: { kind: "program", id: mainProgram.id },
+    payload: { kind: "text", text: "answering a message addressed to someone else" },
+    idempotencyKey: "rail-foreign-reply", replyTo: msgReplyId });
+  const msgForeignReplyText = await msgForeignReply.text();
+  const msgAbsentReply = await selfSend(msgBToken, { to: { kind: "program", id: mainProgram.id },
+    payload: { kind: "text", text: "answering nothing" },
+    idempotencyKey: "rail-absent-reply", replyTo: "f".repeat(24) });
+  const msgAbsentReplyText = await msgAbsentReply.text();
+  const msgForeignRead = await selfMessageRead(msgBToken, msgReplyId);
+  const msgForeignReadText = await msgForeignRead.text();
+  const msgAbsentRead = await selfMessageRead(msgBToken, "e".repeat(24));
+  check("message rail non-disclosure: a replyTo and a read of a message addressed to ANOTHER principal answer exactly as an absent one does — one sentence, one status, no existence leak",
+    msgForeignReply.status === 409 && msgAbsentReply.status === 409
+      && msgForeignReplyText === msgAbsentReplyText
+      && msgForeignReplyText.includes("replyTo names no message addressed to this sender")
+      && msgForeignRead.status === 404 && msgAbsentRead.status === 404
+      && msgForeignReadText === await msgAbsentRead.text()
+      && msgForeignReadText.includes("unknown message")
+      && (readState().messages as { entries?: { id?: string; readBy?: unknown }[] } | undefined)?.entries
+        ?.find((e) => e.id === msgReplyId)?.readBy === null,
+    `reply=${msgForeignReply.status}|${msgAbsentReply.status} same=${msgForeignReplyText === msgAbsentReplyText} read=${msgForeignRead.status}|${msgAbsentRead.status}`);
+  if (msgLaneSlot > 0) await post(`/api/slots/${msgLaneSlot}/kill`, {});
+
   const carry = "Continue with the first bounded Program move.";
   const successorLabel = "program-succession-success";
   const receiptsBeforeSuccession = await contextReceipts();
@@ -2563,6 +2776,176 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify({ successor: successorSlot, predecessor: mainSlot,
       view: inboxSuccessorView.view, error: inboxSuccessorView.error }));
 
+
+
+  // --- ACP-18 · THE SAME THREAD, READ BY THE SENDER'S SUCCESSOR. ------------------------------
+  // THE PROPERTY THE RAIL EXISTS FOR, and the strongest form of it available here: A did not
+  // RECEIVE the thread, A OPENED it — and A is gone. Its FleetEvents, its watches and its open
+  // attentions died with its slot; a nudge to it would now refuse with "gone or was replaced" and
+  // a transition watch it had registered would have been deleted outright by dropWatchesFor.
+  // The successor resolves to the SAME ADDRESS, so it reads both ends of the thread under the same
+  // two ids — while B's receipt on the outbound message still names B's occupant, untouched.
+  //
+  // BREAKS IF: visibility is ever keyed on the occupant triple instead of the address (the
+  // successor then sees nothing), or the receipt is ever re-stamped on read (B's fact is lost).
+  const msgSuccessorView = await selfMessages(inboxSuccessorToken);
+  const msgSuccessorReply = msgSuccessorView.view?.entries.find((e) => e.id === msgReplyId);
+  const msgStoredOut = (readState().messages as { entries?: MessageRow[] } | undefined)?.entries
+    ?.find((e) => e.id === msgOutId);
+  check("message rail survives succession: A's SUCCESSOR reads the answer under the same ids on the same reply edge, and B's receipt on the outbound half still names B",
+    msgSuccessorView.response.ok && successorSlot !== null && successorSlot !== mainSlot
+      && !!msgSuccessorReply && msgSuccessorReply.replyTo === msgOutId
+      && msgSuccessorReply.payload.text === msgReplyText
+      && JSON.stringify(msgSuccessorReply.from) === JSON.stringify({ kind: "program", id: msgProgramB.id })
+      && JSON.stringify(msgSuccessorView.view?.addresses) === JSON.stringify([{ kind: "program", id: mainProgram.id }])
+      && msgStoredOut?.readBy?.slot === msgBSlot
+      && msgStoredOut.readBy.openedAt === (readState().slots?.[String(msgBSlot)]?.openedAt ?? -1),
+    JSON.stringify({ successor: successorSlot, predecessor: mainSlot,
+      reply: msgSuccessorReply ?? null, outReceipt: msgStoredOut?.readBy ?? null }));
+
+  // …and the successor can ANSWER on the same edge, which is what makes this a round trip rather
+  // than an inheritance of read access. The reply-to authorisation must accept it for the same
+  // reason the view did: the parent is addressed to an address this session now holds.
+  const msgSuccessorAnswer = await selfSend(inboxSuccessorToken, { to: { kind: "program", id: msgProgramB.id },
+    payload: { kind: "text", text: "A's successor continues the thread its predecessor opened." },
+    idempotencyKey: "rail-successor-answer", replyTo: msgReplyId });
+  const msgSuccessorAnswerId = await sentId(msgSuccessorAnswer);
+  const msgBFinal = await selfMessages(msgBToken);
+  const msgBFinalSeen = msgBFinal.view?.entries.find((e) => e.id === msgSuccessorAnswerId);
+  check("message rail survives succession: the successor ANSWERS on the edge its predecessor opened, and B reads it as coming from the same Program address",
+    msgSuccessorAnswer.ok && /^[0-9a-f]{24}$/.test(msgSuccessorAnswerId)
+      && !!msgBFinalSeen && msgBFinalSeen.replyTo === msgReplyId
+      && JSON.stringify(msgBFinalSeen.from) === JSON.stringify({ kind: "program", id: mainProgram.id }),
+    `${msgSuccessorAnswer.status} id=${msgSuccessorAnswerId} seen=${JSON.stringify(msgBFinalSeen ?? null)}`);
+
+  // A RECYCLED OR FOREIGN OCCUPANT SEES NOTHING OF IT. B's MAIN binding is the same SLOT with a new
+  // openedAt — the exact "same number, different session" case a slot-keyed rail would answer
+  // wrongly, and the one the criterion names. The address no longer resolves to it, so its view is
+  // empty of B's traffic and a direct read of a known id is the non-disclosing 404.
+  await post(`/api/slots/${msgBSlot}/kill`, {});
+  const msgRecycleOpen = await post(`/api/slots/${msgBSlot}/open`, { cwd: REPO, label: "message-rail-recycled" });
+  const msgRecycledToken = slotToken(msgBSlot);
+  const msgRecycledView = await selfMessages(msgRecycledToken);
+  const msgRecycledRead = await selfMessageRead(msgRecycledToken, msgOutId);
+  check("message rail: the SAME SLOT recycled into a new occupant is not the address — it reads none of B's thread and a direct read of a known id is the same 404 an absent one gets",
+    msgRecycleOpen.ok && /^[0-9a-f]{32}$/.test(msgRecycledToken) && msgRecycledToken !== msgBToken
+      && msgRecycledView.response.status === 409
+      && (msgRecycledView.error ?? "").includes("not a principal with an address")
+      && msgRecycledRead.status === 404,
+    `open=${msgRecycleOpen.status} view=${msgRecycledView.response.status}:${msgRecycledView.error} read=${msgRecycledRead.status}`);
+  await post(`/api/slots/${msgBSlot}/kill`, {});
+
+
+  // --- ACP-18 · THE RECORD ITSELF: cap, the eviction boundary, legacy, and the scar. ------------
+  // These are PLANTED with srv down — the technique every record fixture here uses — because what
+  // is under test is the LOADER and the cap, and driving 200 real sends would prove the doors again
+  // and the record not at all. They run last on purpose: each one replaces the live rail above.
+  const msgPlant = async (record: unknown, lost?: unknown): Promise<void> => {
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const st = readState() as FleetState & Record<string, unknown>;
+    if (record === undefined) delete st.messages; else st.messages = record;
+    if (lost === undefined) delete st.messagesLost; else st.messagesLost = lost as Record<string, unknown>;
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+    await restartSrv();
+  };
+  const msgAddrA = { kind: "program", id: mainProgram.id };
+  const msgRow = (n: number, key: string, read: boolean): Record<string, unknown> => ({
+    id: String(900000 + n).padStart(24, "0"), from: msgAddrA, to: msgAddrA,
+    at: Date.now() - 600_000 + n, payload: { kind: "text", text: `planted ${n}` },
+    idempotencyKey: key, replyTo: null,
+    readBy: read ? { slot: mainSlot, openedAt: bound?.openedAt ?? 1, sessionId: null } : null,
+    readAt: read ? Date.now() - 500_000 : null });
+
+  // LEGACY: no key at all loads EMPTY, gets no backfill, and — the half that matters — leaves NO
+  // scar. "Nobody ever sent anything" and "what was here could not be read" are different answers.
+  await msgPlant(undefined);
+  const msgLegacyView = await selfMessages(slotToken(successorSlot));
+  check("message rail legacy: a state file without the key loads as an empty rail with no scar line and no backfill",
+    msgLegacyView.response.ok && msgLegacyView.view?.entries.length === 0
+      && msgLegacyView.view.unread === 0 && msgLegacyView.view.droppedFleetWide === 0
+      && msgLegacyView.view.unknown.length === 0
+      && readState().messagesLost === undefined,
+    JSON.stringify(msgLegacyView.view ?? msgLegacyView.error));
+
+  // UNREADABLE: an unknown key is a REFUSAL, never a field-by-field repair. The record degrades to
+  // EMPTY — byte-identical to legacy above — so the loss is SCARRED and the reader says so FIRST.
+  // BREAKS IF: the loader ever repairs, or the scar is boot-scoped instead of persisted.
+  await msgPlant({ v: 1, entries: [], dropped: 0, extra: 1 });
+  const msgScarView = await selfMessages(slotToken(successorSlot));
+  const msgScarStored = readState().messagesLost as { v?: number; at?: number; error?: string } | undefined;
+  check("message rail unreadable: an unknown key loads the rail as EMPTY, scars it durably, and the reader's FIRST unknown line says the entries are not the whole history",
+    msgScarView.response.ok && msgScarView.view?.entries.length === 0
+      && (msgScarView.view?.unknown[0] ?? "").includes("was unreadable at")
+      && (msgScarView.view?.unknown[0] ?? "").includes("never the whole history")
+      && msgScarStored?.v === 1 && typeof msgScarStored.at === "number"
+      && (msgScarStored.error ?? "").includes("must contain exactly v, entries, dropped"),
+    JSON.stringify({ unknown: msgScarView.view?.unknown, scar: msgScarStored }));
+
+  // …and the scar is a SCAR: a later VALID record does not bring back what was lost, and the first
+  // loss keeps its date rather than being re-stamped by the boot that finds healthy bytes.
+  const msgScarAt = msgScarStored?.at ?? 0;
+  await msgPlant({ v: 1, entries: [msgRow(1, "after-the-loss", false)], dropped: 0 },
+    { v: 1, at: msgScarAt, error: msgScarStored?.error ?? "x" });
+  const msgAfterScarView = await selfMessages(slotToken(successorSlot));
+  check("message rail unreadable: a valid record written after the loss still reports the scar, with the ORIGINAL date — a later record never un-loses what is gone",
+    msgAfterScarView.response.ok && msgAfterScarView.view?.entries.length === 1
+      && (msgAfterScarView.view?.unknown[0] ?? "").includes(new Date(msgScarAt).toISOString())
+      && (readState().messagesLost as { at?: number } | undefined)?.at === msgScarAt,
+    JSON.stringify({ at: msgScarAt, unknown: msgAfterScarView.view?.unknown }));
+
+  // OVER THE CAP is a refusal too, and NOT a silent truncation to 200: a record that held more than
+  // the writer can produce is a record this server did not write, and shortening it would invent a
+  // history. Named with the limit, and the entries are NOT trimmed into a plausible-looking rail.
+  await msgPlant({ v: 1, dropped: 0,
+    entries: Array.from({ length: 201 }, (_, i) => msgRow(i, `cap-${i}`, false)) });
+  const msgCapView = await selfMessages(slotToken(successorSlot));
+  check("message rail cap: 201 rows load as an EMPTY scarred rail naming the limit — never quietly cut down to 200",
+    msgCapView.response.ok && msgCapView.view?.entries.length === 0
+      && ((readState().messagesLost as { error?: string } | undefined)?.error ?? "")
+        .includes("entries must hold at most 200 rows"),
+    JSON.stringify({ entries: msgCapView.view?.entries.length, scar: readState().messagesLost }));
+
+  // THE EVICTION ORDER AND THE IDEMPOTENCY BOUNDARY, in one fixture because they are one fact.
+  // The rail is FULL and every row is READ; one more send must drop the OLDEST READ row and COUNT
+  // it. Its key then no longer exists in the record — so a replay of that key MINTS A NEW MESSAGE.
+  // That is the documented limit of the promise (idempotency WITHIN retention, never exactly-once),
+  // and it is asserted rather than merely written down: a reader who believed otherwise would be
+  // relying on a guarantee this rail does not give.
+  const msgEvictKey = "cap-0";
+  await msgPlant({ v: 1, dropped: 0,
+    entries: Array.from({ length: 200 }, (_, i) => msgRow(i, `cap-${i}`, true)) }, undefined);
+  const msgFullBefore = readState().messages as { entries?: { idempotencyKey?: string }[]; dropped?: number } | undefined;
+  const msgPushOut = await selfSend(slotToken(successorSlot), { to: msgAddrA,
+    payload: { kind: "text", text: "the row that pushes the oldest read one off" }, idempotencyKey: "cap-push" });
+  const msgAfterPush = readState().messages as { entries?: { id?: string; idempotencyKey?: string }[]; dropped?: number } | undefined;
+  const msgEvictedGone = !(msgAfterPush?.entries ?? []).some((e) => e.idempotencyKey === msgEvictKey);
+  const msgReplayEvicted = await selfSend(slotToken(successorSlot), { to: msgAddrA,
+    payload: { kind: "text", text: "planted 0" }, idempotencyKey: msgEvictKey });
+  const msgReplayEvictedBody = await msgReplayEvicted.json() as { existing?: boolean; message?: { id?: string } };
+  check("message rail cap: the oldest READ row is evicted first and COUNTED, and a replay of its key mints a NEW message — idempotency holds WITHIN the retention and is not exactly-once",
+    msgPushOut.ok && (msgFullBefore?.entries?.length ?? 0) === 200 && (msgFullBefore?.dropped ?? -1) === 0
+      && (msgAfterPush?.entries?.length ?? 0) === 200 && (msgAfterPush?.dropped ?? -1) === 1
+      && msgEvictedGone
+      && msgReplayEvicted.ok && msgReplayEvictedBody.existing === false
+      && msgReplayEvictedBody.message?.id !== String(900000).padStart(24, "0"),
+    `before=${msgFullBefore?.entries?.length}/${msgFullBefore?.dropped} after=${msgAfterPush?.entries?.length}/${msgAfterPush?.dropped} gone=${msgEvictedGone} replay=${msgReplayEvicted.status}/${msgReplayEvictedBody.existing}`);
+
+  // …and the UNREAD rows are the ones a full rail protects: with nothing read, the oldest UNREAD
+  // goes, which is the only remaining order — but it must not go while a READ row is still there.
+  await msgPlant({ v: 1, dropped: 4, entries: [
+    msgRow(1, "unread-oldest", false), msgRow(2, "read-newer", true),
+    ...Array.from({ length: 198 }, (_, i) => msgRow(100 + i, `filler-${i}`, false)),
+  ] }, undefined);
+  await selfSend(slotToken(successorSlot), { to: msgAddrA,
+    payload: { kind: "text", text: "one more" }, idempotencyKey: "cap-push-2" });
+  const msgOrder = readState().messages as { entries?: { idempotencyKey?: string }[]; dropped?: number } | undefined;
+  check("message rail cap: a full rail loses what somebody already SAW before it loses what nobody has — the read row goes, the older unread one stays, and dropped keeps counting from its stored value",
+    (msgOrder?.entries ?? []).some((e) => e.idempotencyKey === "unread-oldest")
+      && !(msgOrder?.entries ?? []).some((e) => e.idempotencyKey === "read-newer")
+      && (msgOrder?.dropped ?? -1) === 5,
+    `unreadKept=${(msgOrder?.entries ?? []).some((e) => e.idempotencyKey === "unread-oldest")} readGone=${!(msgOrder?.entries ?? []).some((e) => e.idempotencyKey === "read-newer")} dropped=${msgOrder?.dropped}`);
+  await msgPlant(undefined, undefined);
 
   // --- D1 · A DECIDED REPORT IS VISIBLE TO THE SUCCESSOR, WHICH NEVER RECEIVED IT. -----------
   // A worker's typed report is filed to ONE MAIN occupant, and the only door that occupant had was

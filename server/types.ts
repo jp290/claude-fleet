@@ -8,7 +8,7 @@ import type { ServerWebSocket } from "bun";
 import type { LaneWatchEventKind, LaneWatchEventPayload, MergeWatchEventPayload, AuditWatchEventPayload,
   DeployWatchEventPayload, CommandJobArtifactPayload, CommandJobWatchEventPayload, ClarificationEventPayload,
   ClarificationBasis } from "../lane-signals";
-import { LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_TAIL_MAX,
+import { LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_FAIL_NAME_MAX, LANE_SUITE_EVENT_TAIL_MAX,
   type LaneSuiteWatchEventPayload } from "../lane-signals";
 import type { RefineValidation } from "../refine-validate";
 import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, type FleetReportStatus,
@@ -735,12 +735,15 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       || typeof p.branch !== "string" || !p.branch
       || !(p.exitCode === null || (typeof p.exitCode === "number" && Number.isInteger(p.exitCode)))
       || !Array.isArray(p.fails) || p.fails.some((n) => typeof n !== "string")
+      || typeof p.failCount !== "number" || !Number.isInteger(p.failCount) || p.failCount < 0
       || typeof p.tail !== "string"
       || !(p.reason === undefined || (typeof p.reason === "string" && p.reason.length <= 200))) return null;
     return { ...base, subjectJobId: e.subjectJobId, kind: e.kind,
       payload: { result: p.result as LaneSuiteWatchEventPayload["result"],
         branch: p.branch.slice(0, 200), exitCode: p.exitCode as number | null,
-        fails: p.fails.slice(0, LANE_SUITE_EVENT_FAILS_MAX).map((n) => String(n).slice(0, 200)),
+        fails: p.fails.slice(0, LANE_SUITE_EVENT_FAILS_MAX)
+          .map((n) => String(n).slice(0, LANE_SUITE_EVENT_FAIL_NAME_MAX)),
+        failCount: p.failCount,
         tail: p.tail.slice(0, LANE_SUITE_EVENT_TAIL_MAX),
         ...(p.reason !== undefined ? { reason: p.reason } : {}) } };
   }

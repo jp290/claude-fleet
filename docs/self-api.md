@@ -1341,9 +1341,16 @@ hier land-dann-`kill-session -t srv` ist).
 Server beim TERMINALEN Ausgang eines Angebots (`server.ts#mintLaneSuiteEvents`, gerufen aus dem
 einen Schreiber eines Verdikts, `reportLaneSuite`) ein Event an die anbietende Lane, **grün wie
 rot**, über dieselbe Zustellung, über die ein Lane-Watch feuert. Es trägt Job-Id, `result`,
-`exitCode`, die Fail-Namen (20 gedeckelt) und die LETZTE Ausgabezeile — und den Satz, dass der
-Volltext auf `GET /api/self/suite-offer` liegt, denn eine Pane ist der falsche Ort für einen
-Suite-Tail. Zwei Eigenschaften, beide gemessen erkauft:
+`exitCode`, eine STICHPROBE der Fail-Namen (`fails`, 3 × 120 Zeichen) samt `failCount` — der
+WAHREN Zahl — und die LETZTE Ausgabezeile, plus den Satz, dass der Volltext auf
+`GET /api/self/suite-offer` liegt; eine Pane ist der falsche Ort für einen Suite-Tail. **Die
+Stichprobe ist klein, weil die Zeile die heiße Schleife mitfährt:** ein FleetEvent reist über
+`/api/sessions`, das jeder offene Tab alle 2 s pollt, unter einem GEMESSENEN Budget von 14 KiB mit
+rund 1 300 B Luft (`e2e/tasks.ts`, `docs/data-saver.md` §1) — die erste Fassung trug 20 Namen à 200
+Zeichen, also 4 KB pro roter Zeile und damit das Budget dreifach gesprengt bei einem einzigen Rot.
+`failCount` ist das, was die Kürzung ehrlich macht: „12 failure(s), 3 named here … (the rest are on
+the job)" sagt etwas, das eine still abgeschnittene Liste nicht sagt. Zwei Eigenschaften, beide
+gemessen erkauft:
 
 - **`idleSec: 0`.** Der Default 60 s stellt einer ARBEITENDEN Session nie zu (gemessen 2026-09-07,
   Slot 10: zwei Lane-Watches starben `subject-gone`, ein Merge-Watch blieb `pending`). Eine Lane,
@@ -1353,6 +1360,12 @@ Suite-Tail. Zwei Eigenschaften, beide gemessen erkauft:
   ihres vollen Kontexts pro Poll (gemessen 2026-09-12 an Slot 4, „gefühlt in jeder zweiten Lane").
   Der Deckel ist deshalb nicht der Watch-Deckel, sondern `slotDeliveryBudget` direkt an der
   Mint-Stelle; ist er voll, sagt es die Trail-Zeile `lane_suite_event_skipped`.
+- **Der Deckel der Owner-Zeilen ist der EIGENE** (`LANE_SUITE_RED_INBOX_MAX`, 20), nicht der
+  geteilte `FLEET_EVENT_MAX_OPEN_PER_SLOT` (5) der Report-Tür. Geteilt wäre er in genau der
+  Richtung falsch, die zählt: fünf ungelesene fleet-reports hätten jedes danach gemeldete Rot
+  stillgelegt — die Unsichtbarkeit wäre über den Rückstand eines FREMDEN Kanals zurückgekommen.
+  Ein Rot wird nur von anderen ungelesenen ROTS verdrängt, und die Trail-Zeile benennt diesen
+  einen Fall.
 
 **Zugestellt wird nur an DIESELBE Belegung** (`slot` + `openedAt` des Angebots). Trägt der Slot
 inzwischen eine andere Session, verfällt die Zustellung mit einer benannten Trail-Zeile — ein
@@ -1380,7 +1393,8 @@ curl -s -X POST -H "x-fleet-token: $FLEET_TOKEN" \
 ```
 
 `GET /api/lane-suite/reds` (Owner-Route) nennt die OFFENEN roten Vorschauen: `eventId` · `jobId` ·
-`at` · `status` · `branch` · `result` · `exitCode` · `fails[]` · `tail` · `job{…}` · `door`.
+`at` · `status` · `branch` · `result` · `exitCode` · `fails[]` (Stichprobe) · `failCount` ·
+`tail` · `job{…}` · `door`.
 Autorität ist die Posteingangs-Zeile, nicht `laneSuiteJobs`: die Map ist auf `LANE_SUITE_KEEP` (20)
 gedeckelte Angebote begrenzt, eine offene Zeile dagegen wird nicht geprunt — `job: null` heißt
 also „die Job-Zeile ist verdrängt", nie „es gibt kein Rot". Quittiert wird durch dieselbe Tür wie

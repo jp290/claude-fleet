@@ -74,11 +74,11 @@ interface EventRow {
   receiverSessionId?: string | null;
   subjectJobId?: string;
   payload?: { result?: string; branch?: string; exitCode?: number | null; fails?: string[];
-    tail?: string; reason?: string };
+    failCount?: number; tail?: string; reason?: string };
 }
 interface RedPreviewRow {
   eventId?: string; jobId?: string; at?: number; status?: string; branch?: string; result?: string;
-  exitCode?: number | null; fails?: string[]; tail?: string; door?: string;
+  exitCode?: number | null; fails?: string[]; failCount?: number; tail?: string; door?: string;
   job?: { slot?: number; state?: string; helper?: string | null; treeSha?: string | null } | null;
 }
 interface PersistedLaneSuiteJob {
@@ -518,6 +518,16 @@ export async function run(): Promise<void> {
       && redLane.payload.fails[0] === "the land gate refuses a dirty tree"
       && redOwner?.payload?.fails?.length === 2 && redOwner.payload.tail === "2 FAILURES",
     JSON.stringify({ lane: redLane?.payload, owner: redOwner?.payload }));
+  // THE SAMPLE IS LABELLED AS ONE. `fails` is capped at LANE_SUITE_EVENT_FAILS_MAX because this row
+  // rides the 2 s `/api/sessions` poll under a measured 14 KiB budget (e2e/tasks.ts), so on a real
+  // 4000-check suite it is three names out of twelve — and `failCount` is what keeps that honest.
+  // Here the two are equal (2 of 2), which is exactly why the check asserts the FIELD and not a
+  // difference: a payload that dropped the count would still look right on this fixture.
+  check("(LS.8) …and the TRUE failure count rides beside the sample, on both rows",
+    redLane?.payload?.failCount === 2 && redOwner?.payload?.failCount === 2
+      && greenLane?.payload?.failCount === 0,
+    JSON.stringify({ lane: redLane?.payload?.failCount, owner: redOwner?.payload?.failCount,
+      green: greenLane?.payload?.failCount }));
 
   // ===== (LS.8b) THE STATE IS READABLE WITHOUT THE LANE ==========================================
   // The route reads the OWNER ROWS and joins the job, never the other way round: `laneSuiteJobs` is
@@ -528,7 +538,8 @@ export async function run(): Promise<void> {
   const mine = reds.find((r) => r.jobId === redJob);
   check("(LS.8b) THE OPEN RED PREVIEWS ARE A ROUTE: it names this job, its branch and its failures",
     mine !== undefined && mine.result === "red" && mine.branch === ln.branch
-      && mine.eventId === redOwner?.id && mine.fails?.length === 2 && mine.status === "inbox",
+      && mine.eventId === redOwner?.id && mine.fails?.length === 2 && mine.failCount === 2
+      && mine.status === "inbox",
     `${reds.length} red(s): ${JSON.stringify(reds.map((r) => `${r.jobId}:${r.result}:${r.status}`))}`);
   check("(LS.8b) …with the lane side JOINED, not assumed — which slot offered it and which machine ran it",
     mine?.job?.slot === ln.slot && mine.job.state === "reported" && mine.job.helper === DEVICE_NAME,
@@ -700,6 +711,7 @@ export async function run(): Promise<void> {
   check("(LS.9) THE OWNER'S RED ROW HYDRATES ACROSS THE RESTART, payload and terminal state intact",
     survived?.status === "acknowledged" && survived.delivery === "inbox"
       && survived.payload?.result === "red" && survived.payload.fails?.length === 2
+      && survived.payload.failCount === 2
       && survived.payload.branch === ln.branch && survived.payload.tail === "2 FAILURES",
     JSON.stringify({ status: survived?.status, payload: survived?.payload }));
 

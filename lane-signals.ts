@@ -264,13 +264,26 @@ export interface CommandJobWatchEventView {
 // ONE declaration for both ends of this payload: the mint (server.ts#laneSuiteEventPayload) and
 // the hydration (server/types.ts#fleetEventFrom). Two copies would let a persisted row be wider
 // than a fresh one, which is exactly the drift a pane budget cannot afford.
-export const LANE_SUITE_EVENT_FAILS_MAX = 20;
+//
+// AND THE NUMBERS ARE SMALL ON PURPOSE. A FleetEvent rides `/api/sessions`, which every open tab
+// polls every 2 s under a MEASURED 14 KiB budget with about 1 300 B of headroom (e2e/tasks.ts,
+// docs/data-saver.md §1). The first version of this payload carried 20 names at 200 chars — 4 KB
+// per red row, i.e. the budget three times over on a single red. The job keeps the full list
+// (50 × 300, `server.ts#helperFailNames`) and `GET /api/self/suite-offer` serves it; this payload
+// is a HINT and is sized like one. `failCount` is what makes the truncation honest: three names
+// and "of twelve" says something a silently cut list does not.
+export const LANE_SUITE_EVENT_FAILS_MAX = 3;
+export const LANE_SUITE_EVENT_FAIL_NAME_MAX = 120;
 export const LANE_SUITE_EVENT_TAIL_MAX = 200;
 export interface LaneSuiteWatchEventPayload {
   result: "green" | "red" | "unknown";
   branch: string;
   exitCode: number | null;
+  // at most LANE_SUITE_EVENT_FAILS_MAX names — a sample, never the list
   fails: string[];
+  // how many there really were. `failCount > fails.length` is the ordinary case on a real suite
+  // and the message says so; a reader must never take `fails` for the whole truth.
+  failCount: number;
   tail: string;
   reason?: string;
 }
@@ -405,11 +418,14 @@ const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 // It says `landed`/`gated` nowhere on purpose: a preview gates nothing and never has.
 export function laneSuiteWatchMessage(jobId: string, event: LaneSuiteWatchEventView): string {
   const p = event.payload;
-  const shown = p.fails.slice(0, 5);
-  const failed = p.fails.length === 0
+  // the SAMPLE is labelled as one. `failCount` is the number that matters and the names are three
+  // of it at most — saying "2 failures: a, b" over a run that had twelve would be the worst kind
+  // of wrong here, because it reads like a complete answer.
+  const failed = p.failCount === 0
     ? "no failing check names were recorded"
-    : `${p.fails.length} named failure(s): ${shown.join(", ")}`
-      + `${p.fails.length > shown.length ? ` (+${p.fails.length - shown.length} more)` : ""}`;
+    : p.fails.length >= p.failCount
+      ? `${p.failCount} named failure(s): ${p.fails.join(", ")}`
+      : `${p.failCount} failure(s), ${p.fails.length} named here: ${p.fails.join(", ")} (the rest are on the job)`;
   const why = p.reason ? ` Reason: ${p.reason}.` : "";
   return `[fleet] preview suite [event ${event.id}] job ${jobId} on ${p.branch} reached terminal `
     + `result=${p.result}; exit=${p.exitCode === null ? "none" : p.exitCode}; ${failed}.${why} `

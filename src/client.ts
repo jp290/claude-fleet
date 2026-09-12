@@ -11197,9 +11197,10 @@ function opsSummary(e: FleetEventRow): string {
     return `result=${String(p.result)} · ${String(p.cmd)} · ${Array.isArray(p.artifacts) ? p.artifacts.length : 0} artefact(s)`;
   // the branch rides along because a preview row names no slot the owner could look the tree up by:
   // the lane that offered it is usually gone by the time he reads this.
+  // the TRUE count, not the length of the sample the row carries (it is capped at three)
   if (e.kind === "lane-suite")
     return `result=${String(p.result)} · ${String(p.branch)}`
-      + ` · ${Array.isArray(p.fails) ? p.fails.length : 0} named failure(s)`;
+      + ` · ${typeof p.failCount === "number" ? p.failCount : 0} failure(s)`;
   return `${p.ahead ?? "?"} ahead / ${p.dirty ?? "?"} dirty`;
 }
 

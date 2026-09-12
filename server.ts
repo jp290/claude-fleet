@@ -19237,11 +19237,23 @@ function suiteLockView(): GateLock | null {
 // The pid/birth files, their order, and mkdir-as-the-claim are the shell's, unchanged. The REAP is
 // not here at all — see holdSuiteLock.
 let suiteLockHeld = false;
+// …AND WHICH JOB OF THIS PROCESS IS HOLDING IT (2026-09-12). Merge jobs are keyed per SLOT
+// (`mergeInflight`), so two lands of this server can be in flight at once — and until this existed
+// the second one was DENIED instantly (`if (suiteLockHeld) return false`) and then ran the whole
+// rebase → gate → fast-forward span UNSERIALIZED beside the first. That is not a theory: of the
+// five land notes in this repo carrying `ffRounds` (546 notes, measured 2026-09-12), THREE moved
+// main by another land of this very server, the 2026-09-12 pair (c42c5a65 → af494028) among them —
+// each of them buying a second full gate chain on the one suite this machine has.
+// NOT A SECOND MUTEX, and the distinction is the whole safety of it: this is the SAME lock, with an
+// in-process contender now QUEUEING on it the way a cross-process contender always did. What stays
+// an instant refusal is a take by the SAME owner — nesting a hold inside itself would wait for
+// itself forever, and the ff retry chain is exactly the caller that asks twice.
+let suiteLockOwner: symbol | null = null;
 // The contention poll. A losing attempt is one failed `mkdir` and costs nothing, but nothing is
 // gained by spinning either: the wrappers themselves re-check at 15 s, and against a budget
 // measured in minutes five seconds of latency is not a number anyone can feel.
 const SUITE_LOCK_POLL_MS = 5_000;
-function suiteLockTryTake(): boolean {
+function suiteLockTryTake(owner: symbol | null = null): boolean {
   try { mkdirSync(SUITE_LOCK); } catch { return false; } // mkdir IS the claim — atomic, as in the shell
   // Refuse to hold what we cannot be identified as, exactly as e2e-stage.sh refuses (`_st_self_birth`
   // empty → exit 3): a lock without a birth fingerprint is one no contender may ever safely reap
@@ -19253,14 +19265,13 @@ function suiteLockTryTake(): boolean {
     writeFileSync(`${SUITE_LOCK}/birth`, `${birth}\n`, { mode: 0o600 });
   } catch { return false; } // pid written or not, a death here leaves a reapable dir, never a park
   suiteLockHeld = true;
+  suiteLockOwner = owner;
   return true;
 }
-// Is THIS process already inside a hold OF ITS OWN? Merge jobs are keyed per SLOT (mergeInflight),
-// so two lands can be in flight at once — and holdSuiteLock refuses a second take with an instant
-// `false` that is indistinguishable from "the machine was busy for the whole budget". The
-// clean-path gate asks this first and, when another land of this server holds the machine, runs
-// UNHELD exactly as it did before M1 (its wrappers queue) rather than dying `waitedOut` in ms.
-const suiteLockHeldHere = (): boolean => suiteLockHeld;
+// GONE ON 2026-09-12: `suiteLockHeldHere()` used to let the SECOND land of this server skip the
+// take and run unserialized beside the first, which is the ffRounds class this box was paying for.
+// A second land now queues on `suiteLockOwner` instead — same lock, one holder at a time — so
+// there is nothing left for a caller to ask, and a reader who needs the fact reads the owner.
 // …AND IS IT INSIDE SOMEBODY ELSE'S? (M1, 2026-09-06.) The hand-down `e2e-stage.sh` has honoured
 // since 2026-09-04 runs in the other direction too: a `bun server.ts` started from inside a suite
 // wrapper is in exactly the position that wrapper's own staged steps are in — the machine is
@@ -19368,11 +19379,17 @@ function suiteLockReapStale(): boolean {
 // tree, and the caller words it that way. Since M5 a `false` additionally means what it says: a
 // LIVE holder was there the whole time, because a corpse is reaped above and the lock retaken in
 // the same pass rather than waited out.
-async function holdSuiteLock(budgetMs: number): Promise<boolean> {
-  if (suiteLockHeld) return false; // one hold per process: a second land must not nest inside the first
+async function holdSuiteLock(budgetMs: number, owner: symbol | null = null): Promise<boolean> {
+  // ONE HOLD PER OWNER, not per process: a take nested inside this job's own hold must be refused
+  // instantly (it would otherwise queue behind itself), and a caller that names no owner is the
+  // legacy shape and keeps the old refusal. A DIFFERENT owner falls through to the loop below and
+  // waits — `suiteLockTryTake`'s `mkdir` fails against our own dir exactly as it does against
+  // anyone else's, and `suiteLockReapStale` keeps a lock whose pid is alive with a matching birth,
+  // i.e. ours, so the wait is against our own `releaseSuiteLock` and nothing here can eat it.
+  if (suiteLockHeld && (owner === null || suiteLockOwner === owner)) return false;
   const deadline = Date.now() + budgetMs;
   for (;;) {
-    if (suiteLockTryTake()) return true;
+    if (suiteLockTryTake(owner)) return true;
     // A reaped corpse is retaken IMMEDIATELY, not after a poll: the dir is gone the instant the
     // rmdir returns, and sleeping first would hand it to whoever polls next. `Bun.sleep(0)` all the
     // same, so a pathological reap/re-create cycle can never starve this server's event loop.
@@ -19398,9 +19415,15 @@ for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const)
   process.on(sig, () => { releaseSuiteLock(); process.exit(0); });
 // Never removes a lock that is no longer ours: if a contender reaped us (a recycled pid, a torn
 // write) and took it, the dir belongs to them and this must not touch it.
-function releaseSuiteLock(): void {
+function releaseSuiteLock(owner: symbol | null = null): void {
   if (!suiteLockHeld) return;
+  // A NAMED owner gives back only its OWN hold: with two lands in flight, the one that releases
+  // early (it turned out not to be the clean path) must never hand away the hold the other one is
+  // running its gate under. The no-arg call is the signal handler's — on the way out of the
+  // process, whatever this process holds goes back.
+  if (owner !== null && suiteLockOwner !== owner) return;
   suiteLockHeld = false;
+  suiteLockOwner = null;
   try {
     if (readFileSync(`${SUITE_LOCK}/pid`, "utf8").trim() !== String(process.pid)) return;
     rmSync(`${SUITE_LOCK}/pid`, { force: true });
@@ -20188,6 +20211,27 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   // below is the ONE place that writes it — a per-`res =` site would be forgotten on exactly the
   // path that matters. 0 at FLEET_LAND_WAIT_ROUNDS=0 and the field then never appears anywhere.
   let waitRounds = 0;
+  // THIS JOB'S IDENTITY AS A HOLDER OF THE ONE MUTEX (2026-09-12). Unique per job, so two lands of
+  // this server queue for the machine instead of the second one being refused and running beside
+  // the first; `releaseSuiteLock(holdOwner)` can therefore never give away the other land's hold.
+  const holdOwner: symbol = Symbol(`land:${s.id}:${branch}`);
+  // How long this job stood in front of the mutex, and whether it was ever refused. Out here
+  // because the take moved AHEAD of the pre-pass rebase (see the block at the top of the try) while
+  // the two places that read it — the gate hand-down and the `waitedOut` verdict — are still far
+  // below it. `gateInherited` likewise: it is a fact about the machine this server runs inside,
+  // read once at entry rather than twice with a rebase and an agent in between.
+  let gateWaitMs = 0;
+  let gateInherited: number | null = null;
+  let preHoldDenied = false;
+  // WRITE SITE 1 of 2 (the verify GATE made visible — see that region). Every runVerify on this
+  // path goes through here, the repair loop's re-runs included, so the board says "slot N ·
+  // running land gate · <branch>" for as long as the gate is actually holding the machine-wide
+  // mutex — and stops saying it the moment the run ends, on any exit. Hoisted out of the clean
+  // branch on 2026-09-12 because the TAKE now happens before the rebase, and a job standing in
+  // that queue is the state the board most needs to be able to name. Sight only: nothing below
+  // reads `serverRuns`, and deleting this wrapper restores today's behaviour byte for byte.
+  const gateRun = <T,>(fn: () => Promise<T>): Promise<T> =>
+    reportServerRun(`land:${s.id}`, { slot: s.id, label: s.label, branch, suite: "land gate", cwd }, fn);
   const bindCandidate = async (r: MergeLast): Promise<MergeLast> => {
     const reviewable = r.status === "resolved" || r.status === "awaiting-author"
       || (r.status === "interrupted" && (r.conflicted?.length ?? 0) > 0);
@@ -20263,6 +20307,57 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     detail: "a merge run started here and never produced a verdict — the server was interrupted mid-run." });
   await saveStateNow();
   try {
+    // --- THE MACHINE IS TAKEN BEFORE THE REBASE, NOT AFTER IT (owner brief, 2026-09-12) --------
+    // M1 pulled the hold forward to the first gate. It was still ~200 lines and an unbounded number
+    // of seconds BEHIND the pre-pass rebase — the author gate, two code graphs and a resolver agent
+    // can all sit in that window — and everything in it is time in which ANOTHER land of this
+    // server may move main under the tree we just rebased. Then the fast-forward at the far end is
+    // refused, the ff retry chain re-rebases and RE-RUNS THE WHOLE GATE: ~107 s of work on the one
+    // suite of this box, plus its queue, bought twice for one land.
+    // MEASURED on this repo (2026-09-12): 5 of 546 land notes carry `ffRounds`, and THREE of those
+    // five had main moved under them by a land of this same server — the pair of that morning,
+    // c42c5a65 → af494028, is one of them (`git notes --ref=fleet/land show af494028`, ffRounds 1).
+    // So the rebase→gate→fast-forward span is now ONE serialized stretch: whoever gets the machine
+    // reads main, rebases onto it, verifies and fast-forwards before the next land reads main at
+    // all. A second land of this server therefore waits BEFORE its rebase instead of discovering
+    // after its verify that it rebased onto a main that no longer exists.
+    // THE BUDGET IS THE SAME ONE, and there is no second clock: this is M2's loop, moved, with
+    // VERIFY_WAIT_MS per round and LAND_WAIT_ROUNDS rounds — the gate region below no longer takes
+    // anything, it only reads what happened here. A denial is still a verdict and not a fallback
+    // (`gateNeverRan`), still only on the clean path, and still never `ok:false`.
+    // WHO IS EXEMPT, and both exemptions are somebody else's decision that this must not overturn:
+    //   · a server running INSIDE a suite wrapper's hold (`gateInherited`) takes nothing, as M1 —
+    //     the machine is already held on its behalf and queueing for it would deadlock every land.
+    //   · a land with NO gate configured, and a DOCS-ONLY land whose short chain spawns no suite
+    //     (M5, owner 2026-09-07): neither needs the machine, and making either queue for it is the
+    //     710 s that M5 measured and removed. The plan is computed here from `main...HEAD` in the
+    //     lane, which is the lane's own change set and therefore the SAME file list before and after
+    //     a clean rebase — the authoritative plan below is still recomputed against the rebased
+    //     tree and is the only one any verdict is ever written from. The cost of the exemption,
+    //     stated rather than hidden: those lands can still lose a fast-forward, and say so.
+    const mainAtEntry = (await git(root, "rev-parse", main)).out;
+    const entryPlan = await verifyPlanFor(cwd, root, mainAtEntry);
+    gateInherited = inheritedSuiteHolder();
+    if (gateInherited === null && entryPlan && !entryPlan.proportional) {
+      const askedAt = Date.now();
+      for (;;) {
+        // inside gateRun, so the board keeps saying "running land gate" while this job is
+        // standing in the queue — the queue is the part that takes the minutes.
+        gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS, holdOwner));
+        if (gateHeld || waitRounds >= LAND_WAIT_ROUNDS) break;
+        waitRounds++;
+        // the only place this state is visible: running, nothing measured, round N of the
+        // queue. Written BEFORE the next hold is asked for, so a poller that catches this job
+        // between two budgets reads the round it is actually about to spend.
+        mergeWaiting.set(s.id, { round: waitRounds, retryAt: Date.now() });
+      }
+      mergeWaiting.delete(s.id);
+      gateWaitMs = Date.now() - askedAt;
+      if (gateHeld) gateHoldPid = process.pid;
+      // NOT turned into a verdict here: this job does not yet know whether it is on the clean path,
+      // and a denial is only a verdict for a land that was going to take the machine. Carried down.
+      else preHoldDenied = true;
+    }
     // script first, agent only for what needs judgment: a conflict-free rebase is done
     // right here and the model never spawns
     const pre = await tryScriptRebase(cwd, main);
@@ -20294,6 +20389,22 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
           ? `a merge run started re-rebasing ${unreviewed.length} unreviewed conflict resolution${unreviewed.length === 1 ? "" : "s"} here and never produced a verdict — the server was interrupted mid-run.`
           : `a merge run started resolving ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"} here and never produced a verdict — the server was interrupted mid-run.` });
       await saveStateNow();
+    }
+    // --- AN AGENT IS NOT A SUITE, SO IT DOES NOT GET THE MACHINE (owner brief, 2026-09-12) ----
+    // The take above is SPECULATIVE: whether this is the clean path is knowable only now, one line
+    // after `pre` and `unreviewed` exist. Everything below this point on the other path is agent
+    // time — the author gate types into a human-paced pane, the resolver thinks for minutes, the
+    // repair loop for minutes more — and parking this machine's ONE suite mutex across that is the
+    // exact inverse of what the hold is for. So it goes back HERE, before `wakeAuthor`, and the
+    // state that says we hold it goes back with it, so nothing below can hand a child a pid the
+    // lock no longer names.
+    // The conflict path then behaves as it did before this change: its gate runs unheld and its own
+    // wrappers queue. It cannot lose a fast-forward it never reaches — this path always stops for
+    // human review — so giving the machine up here costs it no ff round.
+    if (gateHoldPid !== null && !(pre.clean && unreviewed.length === 0)) {
+      releaseSuiteLock(holdOwner);
+      gateHoldPid = null;
+      gateHeld = false;
     }
     const laneTask = tasks.find((t) => t.slot === s.id)?.text ?? null;
     // ② FORK IN THE ROAD, and the only one this job has: who resolves. The author gets first
@@ -20401,15 +20512,6 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // there the owner's own checkout is not yet the question — and answering `dirty-main`
         // there would hide unreviewed resolutions behind a fact about somebody else's tree.
         const dirtyStop = cleanPath ? await dirtyMainStop(root, main, mainSha, branch, {}) : null;
-        // WRITE SITE 1 of 2 (the verify GATE made visible — see that region). Every runVerify on
-        // this path goes through here, the repair loop's re-runs included, so the board says
-        // "slot N · running land gate · <branch>" for as long as the gate is actually holding the
-        // machine-wide mutex — and stops saying it the moment the run ends, on any exit. Sight
-        // only: nothing below reads `serverRuns`, and deleting this wrapper restores today's
-        // behaviour byte for byte. `runVerify` returning `undefined` for an unconfigured repo is
-        // a sub-millisecond row and stays true while it is up: the gate step DID run, it declined.
-        const gateRun = <T,>(fn: () => Promise<T>): Promise<T> =>
-          reportServerRun(`land:${s.id}`, { slot: s.id, label: s.label, branch, suite: "land gate", cwd }, fn);
         // `null` on the M3 stop: no plan is even computed, so nothing below can take the machine,
         // spawn a chain, or write a verify verdict about a land that is not going to happen.
         const firstVerifyPlan = dirtyStop ? null : await verifyPlanFor(cwd, root, mainSha);
@@ -20435,12 +20537,13 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // retry rounds, the ff-merge and the land record. That is deliberate for the retry (the
         // whole point is not to give the machine back between rounds) and it is the price of the
         // reviewer being on: a fleet that enables ② holds the mutex across an agent call.
-        let gateWaitMs = 0;
         let gateDenied: NonNullable<MergeLast["verify"]> | null = null;
-        // ALREADY INSIDE SOMEBODY'S HOLD? Then there is nothing to take and nothing to wait for —
+        // ALREADY INSIDE SOMEBODY'S HOLD? Then there was nothing to take and nothing to wait for —
         // the machine is held ON THIS SERVER'S BEHALF by the wrapper that started it, and taking it
-        // again is the deadlock this check exists to avoid. Validated against the lock file and the
-        // process table, so a stale export cannot fake it.
+        // again is the deadlock that check exists to avoid. Validated against the lock file and the
+        // process table, so a stale export cannot fake it. Read at ENTRY since 2026-09-12, with
+        // `gateWaitMs`, `waitRounds` and `preHoldDenied`: the take itself now happens in front of
+        // the pre-pass rebase, and this region only reads what it did.
         // --- …BUT THE SHORT CHAIN NEVER ASKS FOR THE MACHINE (M5, owner 2026-09-07) -----------
         // A docs-only candidate runs VERIFY_PROPORTIONAL_CMD — `bun install --frozen-lockfile &&
         // bun e2e/pins.ts`. It sources no e2e-stage.sh, boots no server, opens no socket, binds no
@@ -20455,10 +20558,20 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // claim no reader of it could act on). Everything else about M1 is unchanged.
         // NOT touched, deliberately: the ff retry chain below. A retry classifies a DIFFERENT tree
         // (main moved under it), so it asks for the mutex exactly as it did before M1 — which is
-        // also why `gateInherited` is still computed here for a proportional plan: it is a FACT
-        // about the machine this job is running inside, and the retry reads it as one.
+        // also why `gateInherited` is still read for a proportional plan: it is a FACT about the
+        // machine this job is running inside, and the retry reads it as one.
+        // Since the take moved ahead of the rebase (2026-09-12) the entry plan already applies this
+        // exemption, so a docs-only land normally arrives here holding nothing. This line is the
+        // SECOND half of the same decision and not a repetition of it: the plan below is the
+        // authoritative one, computed against the REBASED tree, and if that one says docs-only
+        // while the entry plan did not, the hold is given back here rather than parked across a
+        // chain that has no staged step to inherit it.
         const gateProportional = firstVerifyPlan?.proportional === true;
-        const gateInherited = cleanPath && firstVerifyPlan ? inheritedSuiteHolder() : null;
+        if (gateProportional && gateHoldPid !== null) {
+          releaseSuiteLock(holdOwner);
+          gateHoldPid = null;
+          gateHeld = false;
+        }
         // --- …AND A DENIAL IS A WIEDERVORLAGE, NOT A DEATH (M2, owner 2026-09-06) -------------
         // The hold is asked for again instead of ending the job, at most LAND_WAIT_ROUNDS times.
         // THE JOB STAYS IN FLIGHT for it — no tick, no persisted `waiting` row, no second door:
@@ -20470,37 +20583,17 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // A FRESH `holdSuiteLock` PER ROUND, not a longer budget: each take reaps a corpse and
         // retries at the 5 s poll, so a machine that frees up between rounds is taken at once —
         // and the round boundary is the only place a reader can be told "still queueing" from.
-        // Nothing is re-read between rounds, deliberately: main may well have moved, and the tree
-        // that answers for that is the ff retry chain below, which re-rebases and re-gates under
-        // the very hold this loop won. Doing it here too would be a second copy of that decision.
         // At LAND_WAIT_ROUNDS=0 the loop runs its body once and breaks — M1's code path exactly.
-        if (gateInherited === null && cleanPath && firstVerifyPlan && !gateProportional && !suiteLockHeldHere()) {
-          const askedAt = Date.now();
-          for (;;) {
-            // inside gateRun, so the board keeps saying "running land gate" while this job is
-            // standing in the queue — the queue is the part that takes the minutes.
-            gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS));
-            // THE THIRD EXIT, and it is not a cap: ANOTHER LAND OF THIS SERVER now holds the
-            // machine. `mergeInflight` is keyed per slot, so two clean paths can be in flight at
-            // once (the pre-loop guard reads this same fact and lets the second one run UNHELD,
-            // M1's fallback) — but the race is winnable AFTER that read: both jobs enter here with
-            // nobody holding, one wins the mkdir, and from that moment `holdSuiteLock` refuses the
-            // loser at its first line, instantly, for as long as we hold it. Going round again
-            // then waits for nothing and buys nothing; it would only write `waitRounds: N` onto a
-            // verdict whose rounds cost 0 ms — a false number in the very ledger M1 built to count
-            // this class. So this land stops with M1's verdict, which is the true one.
-            if (gateHeld || waitRounds >= LAND_WAIT_ROUNDS || suiteLockHeldHere()) break;
-            waitRounds++;
-            // the only place this state is visible: running, nothing measured, round N of the
-            // queue. Written BEFORE the next hold is asked for, so a poller that catches this job
-            // between two budgets reads the round it is actually about to spend.
-            mergeWaiting.set(s.id, { round: waitRounds, retryAt: Date.now() });
-          }
-          mergeWaiting.delete(s.id);
-          gateWaitMs = Date.now() - askedAt;
-          if (gateHeld) gateHoldPid = process.pid;
-          else gateDenied = gateNeverRan(firstVerifyPlan, mainSha, gateWaitMs, waitRounds);
-        }
+        // THE LOOP ITSELF NOW RUNS AT THE TOP OF THE JOB (2026-09-12), in front of the pre-pass
+        // rebase. What is left here is the half that could not move: a denial only becomes a
+        // VERDICT for a land that was going to take the machine, and whether this is such a land —
+        // clean path, a plan, not docs-only, not inside a wrapper's hold — is knowable only now.
+        // A denied conflict-path land keeps its old behaviour: no `waitedOut`, gate runs unheld.
+        // THE SAME BUDGET AND NO SECOND CLOCK: nothing is asked for again here, so the wait this
+        // verdict reports is the one the loop above actually spent — `gateWaitMs` over
+        // `waitRounds + 1` holds of VERIFY_WAIT_MS, exactly as M2 worded it.
+        if (gateInherited === null && cleanPath && firstVerifyPlan && !gateProportional && preHoldDenied)
+          gateDenied = gateNeverRan(firstVerifyPlan, mainSha, gateWaitMs, waitRounds);
         const gateHoldBy = gateInherited ?? gateHoldPid;
         const gateChildHold = gateProportional ? null : gateHoldBy;
         let verify = dirtyStop ? undefined : gateDenied
@@ -20688,7 +20781,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                 const mainNow = (await git(root, "rev-parse", main)).out;
                 const mainMoved = /^[0-9a-f]{40,64}$/.test(mainNow) && mainNow !== mainBefore;
                 if (mainMoved && ffRounds < LAND_FF_RETRY_ROUNDS && !ffHeld && !ffLockDenied) {
-                  ffHeld = await holdSuiteLock(VERIFY_WAIT_MS);
+                  ffHeld = await holdSuiteLock(VERIFY_WAIT_MS, holdOwner);
                   if (ffHeld) gateHoldPid = process.pid; // ours now, and the finally below owns it
                   ffLockDenied = !ffHeld;
                 }
@@ -20793,7 +20886,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     // M1 · the machine goes back on EVERY exit, thrown ones included — but only what this job
     // TOOK (`gateHoldPid`), never a hold a wrapper is keeping for us. `releaseSuiteLock` also never
     // removes a lock this process no longer owns, so this cannot take one away from anyone else.
-    if (gateHoldPid !== null) releaseSuiteLock();
+    if (gateHoldPid !== null) releaseSuiteLock(holdOwner);
     // M2 · and the "still queueing" row goes with it on every exit, thrown ones included: the loop
     // that set it clears it on its own way out, and this is the second owner for the paths that
     // never get there — a slot left claiming it is waiting for a machine no job is asking for is

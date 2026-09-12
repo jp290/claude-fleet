@@ -703,7 +703,7 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
     // …and the server half: the hold the clean path takes is the SAME primitive the retry chain
     // takes, asked for BEFORE the gate rather than between its rounds. Both call sites pinned, so
     // deleting the first one silently restores the queue this cut removed.
-    const m1Take = server.includes("gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS));");
+    const m1Take = server.includes("gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS, holdOwner));");
     // `gateChildHold` since M5 (2026-09-07), not `gateHoldBy` — same hand-down, one filter in
     // front of it (the short chain is minted nothing; see the M5 rows below).
     const m1Hand = server.includes("runVerify(cwd, mainSha, firstVerifyPlan, gateChildHold, gateHeld ? gateWaitMs : 0)");
@@ -716,6 +716,26 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
     pin("the clean land path asks for the suite mutex BEFORE the first gate, hands that hold to the gate, and gives it back on a signal as well as on every code path",
       m1Take && m1Hand && m1Retry && m1Signal,
       `take=${m1Take} handDown=${m1Hand} retryInherits=${m1Retry} signalRelease=${m1Signal}`);
+    // …AND IT IS TAKEN IN FRONT OF THE PRE-PASS REBASE (owner brief, 2026-09-12). An ORDER, which
+    // is exactly what no compiler and no single verdict can see: a take that slides back BEHIND
+    // `tryScriptRebase` still compiles, still holds the machine for the gate, still releases — and
+    // silently reopens the window in which another land of this server moves main under this
+    // tree, which costs a full second gate chain (`ffRounds`, measured: 3 of this repo's 5 such
+    // notes were this server racing itself). Held as the three facts that make the span one:
+    //   · the take precedes the pre-pass rebase,
+    //   · an in-process contender QUEUES on the same lock (`suiteLockOwner`) rather than being
+    //     refused and running beside us — without this the order buys nothing,
+    //   · and the hold is given back before an AGENT runs, because a resolver is not a suite.
+    const preTake = server.indexOf("gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS, holdOwner));");
+    const preRebase = server.indexOf("const pre = await tryScriptRebase(cwd, main);");
+    const preOwnerQueue = server.includes("if (suiteLockHeld && (owner === null || suiteLockOwner === owner)) return false;")
+      && server.includes("const holdOwner: symbol = Symbol(`land:${s.id}:${branch}`);");
+    const preAgentRelease = server.indexOf("if (gateHoldPid !== null && !(pre.clean && unreviewed.length === 0)) {");
+    const preAuthor = server.indexOf("const authorGate = pre.clean ? \"clean\" : await wakeAuthor(");
+    pin("the suite mutex is taken BEFORE the pre-pass rebase and held to the fast-forward, an in-process contender queues on it instead of running beside the holder, and it is handed back before any resolver agent runs",
+      preTake > 0 && preRebase > preTake && preOwnerQueue
+        && preAgentRelease > preRebase && preAuthor > preAgentRelease,
+      `take=${preTake} rebase=${preRebase} ownerQueue=${preOwnerQueue} release=${preAgentRelease} authorGate=${preAuthor}`);
     // M2 (2026-09-07) — …AND A DENIAL IS ASKED AGAIN, A BOUNDED NUMBER OF TIMES. The bound is the
     // whole safety of it and it is one expression: the loop takes the hold, and leaves ONLY on a
     // grant or on the cap. Widen that condition and a land can queue forever holding a slot; drop
@@ -724,12 +744,17 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
     // at all — which is exactly the condition no unit test has. The cap's declaration is pinned
     // with it, because the way back out of this cut is `FLEET_LAND_WAIT_ROUNDS=0` and it has to
     // keep meaning byte-for-byte M1: one take, no round, no field, no sentence.
-    const m2Loop = server.includes("if (gateHeld || waitRounds >= LAND_WAIT_ROUNDS || suiteLockHeldHere()) break;")
+    // The third exit ("this server already holds the machine for another land") is GONE since
+    // 2026-09-12: it was the line that let the second land run unserialized, and a contender of
+    // this process now queues on the lock instead. So the loop leaves on a grant or on the cap,
+    // and on nothing else — widen it again and a land can queue forever holding a slot.
+    const m2Loop = server.includes("if (gateHeld || waitRounds >= LAND_WAIT_ROUNDS) break;")
+      && !server.includes("const suiteLockHeldHere =") && !server.includes("|| suiteLockHeldHere()")
       && server.includes("mergeWaiting.set(s.id, { round: waitRounds, retryAt: Date.now() });");
     const m2Cap = /const LAND_WAIT_ROUNDS = Math\.min\(3, Math\.max\(0, Number\(process\.env\.FLEET_LAND_WAIT_ROUNDS \?\? 1\) \| 0\)\);/.test(server);
     // the counter-proof lives in the suite, exactly as the ff retry's `"0"` arm does
     const m2Zero = read("e2e/programs.ts").includes('FLEET_LAND_WAIT_ROUNDS: "0"');
-    pin("a land denied the suite mutex goes back for it a BOUNDED number of rounds — the loop leaves on a grant, on FLEET_LAND_WAIT_ROUNDS (whose 0 is the way back to M1), or on this server already holding the machine for another land",
+    pin("a land denied the suite mutex goes back for it a BOUNDED number of rounds — the loop leaves on a grant or on FLEET_LAND_WAIT_ROUNDS (whose 0 is the way back to M1), and on nothing else",
       m2Loop && m2Cap && m2Zero, `loop=${m2Loop} cap=${m2Cap} zeroArm=${m2Zero}`);
     // M5 (2026-09-07) — THE SERVER REAPS NOW, AND ONLY THE THREE WAYS THE WRAPPER DOES.
     // Another pair with no compiler between its halves, and a nastier one than most: the shell's
@@ -759,7 +784,12 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
       // instead of a docs-only land quietly running a suite beside somebody else's.
       const shortCmd = /const VERIFY_PROPORTIONAL_CMD = '([^']+)'/.exec(server)?.[1] ?? "";
       const m5Plan = server.includes("const gateProportional = firstVerifyPlan?.proportional === true;");
-      const m5Skip = server.includes("&& !gateProportional && !suiteLockHeldHere()");
+      // TWO HALVES since the take moved ahead of the rebase (2026-09-12), and both are needed: the
+      // ENTRY plan keeps a docs-only land out of the queue in the first place (that queue is the
+      // 710 s M5 measured), and the authoritative plan gives the hold BACK if it disagrees — a
+      // chain with no staged step must never be parked on the machine, whichever plan noticed.
+      const m5Skip = server.includes("if (gateInherited === null && entryPlan && !entryPlan.proportional) {")
+        && server.includes("if (gateProportional && gateHoldPid !== null) {");
       const m5NoMint = server.includes("const gateChildHold = gateProportional ? null : gateHoldBy;");
       const m5CmdIsSuiteless = shortCmd !== "" && !/e2e-[a-z0-9-]*\.sh|e2e-stage/.test(shortCmd);
       pin("a docs-only land does not take the suite mutex at all: the short chain spawns no suite (its command names no wrapper), so the gate neither queues for the machine nor is minted a hold it has no staged step to inherit",

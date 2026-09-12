@@ -2,7 +2,7 @@
 // own conflict-free script pre-pass, identity-bound confirm-land, the V1 deterministic
 // verify gate, and the orphan reattach / remove / discard flows.
 import { spawnSync } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, fakeClaudeInPane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
@@ -1108,6 +1108,154 @@ export async function run(lc: LaneCtx): Promise<void> {
     // discarded, not landed: the marker would make every later clean lane in this suite queue too
     await post(`/api/slots/${lnVw.slot}/kill`, {});
     await post("/api/worktrees/discard", { repo: REPO, path: lnVw.cwd, branch: lnVw.branch });
+  }
+
+  // (C3b) THE MACHINE IS TAKEN BEFORE THE REBASE, so two lands of ONE server can never both be
+  // rebased onto the same main. Until 2026-09-12 the hold began at the first GATE, ~200 lines and
+  // an unbounded number of seconds after the pre-pass rebase, and a second land of the same server
+  // was refused the lock INSTANTLY (`suiteLockHeld`, one hold per process) and then ran that whole
+  // span beside the first. Both then rebased onto the same main, both declared a land, one won the
+  // fast-forward and the other was refused it — `ff-lost` → re-rebase → RE-RUN THE WHOLE GATE.
+  // That is ~107 s of work on the single suite this box has, plus its queue, bought twice for one
+  // land, and it is measured rather than imagined: of the 546 land notes in this repo five carry
+  // `ffRounds`, and THREE of those five had main moved under them by a land of this same server
+  // (the 2026-09-12 pair c42c5a65 → af494028 among them).
+  //
+  // The assertion is deliberately NOT "the lock was taken" — that is a fact about a mkdir, and a
+  // fixture can be satisfied by a hold that serializes nothing. It is the OUTCOME that only
+  // serialization can produce: NEITHER land carries `ffRounds`, and the second one's note names
+  // the first one's tip as its own base. Two lands that overlap cannot both get that, whichever of
+  // them wins — the loser is refused the fast-forward BY DEFINITION (its base is no longer main)
+  // and its note says so. So this is one check that fails from either side of the race.
+  //
+  // Read off the LAND NOTES and not off the merge row: a successful land tears its lane down, so
+  // `/api/slots/:id/merge` is 400 by the time either verdict could be asked for — the note is the
+  // durable artifact, and it is also the one the owner brief names.
+  //
+  // Three pieces of fixture do the work. A PRIVATE suite lock, because this suite's own server is
+  // started inside e2e-stage.sh's hold (`FLEET_SUITE_LOCK_HELD_BY`) and a server that knows it is
+  // inside somebody's hold takes nothing — against a lock dir of our own `inheritedSuiteHolder()`
+  // is null and the take is real. The product's own TEST-ONLY ff latch, which parks a land one
+  // step before its fast-forward, i.e. INSIDE the hold, for as long as this fixture wants. And a
+  // 60 s wait budget, because the suite's own 5 s would expire while the second land queues and
+  // turn this into a `waitedOut` measurement of something else.
+  {
+    const phLock = `${ROOT}/prehold-suite.lock`;
+    const phLatch = `${ROOT}/prehold-ff.latch`;
+    const phArm = (): void => {
+      for (const f of [`${phLatch}.reached`, `${phLatch}.release`]) rmSync(f, { force: true });
+      writeFileSync(phLatch, "armed\n", { mode: 0o600 });
+    };
+    const phParked = async (): Promise<boolean> => {
+      for (let i = 0; i < 600; i++) {
+        if (existsSync(`${phLatch}.reached`)) return true;
+        await Bun.sleep(100);
+      }
+      return false;
+    };
+    const phMain = (): string =>
+      spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"]).stdout.toString().trim();
+    type PhNote = { branch?: string; mainBefore?: string; mainAfter?: string; ffRounds?: number;
+      waitRounds?: number; verify?: { ok?: boolean | null; mainSha?: string } };
+    const phNote = (sha: string): PhNote | null => {
+      const r = spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "show", sha]);
+      if (r.status !== 0) return null;
+      try { return JSON.parse(r.stdout.toString()) as PhNote; } catch { return null; }
+    };
+    // a clean lane with NO sabotage marker in it — fakeverify is green on such a tree, so both
+    // lands take the clean auto-land path, which is the only one that reaches a fast-forward
+    const phLane = async (name: string): Promise<{ slot: number; cwd: string; branch: string }> => {
+      const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as
+        { slot: number; cwd: string; branch: string };
+      await Bun.write(`${ln.cwd}/${name}.txt`, `clean lane work, no sabotage marker — ${name}\n`);
+      spawnSync("git", ["-C", ln.cwd, "add", `${name}.txt`]);
+      spawnSync("git", ["-C", ln.cwd, "commit", "-qm", `prehold ${name} lane work`]);
+      return ln;
+    };
+    rmSync(phLock, { recursive: true, force: true });
+    for (const f of [phLatch, `${phLatch}.reached`, `${phLatch}.release`]) rmSync(f, { force: true });
+    await restartSrv({
+      FLEET_SUITE_LOCK: phLock,
+      FLEET_TEST_LAND_FF_LATCH: phLatch,
+      FLEET_VERIFY_WAIT_MS: "60000",
+      FLEET_VERIFY_TIMEOUT_MS: "60000",
+    });
+    const lnP1 = await phLane("preholdfirst");
+    const lnP2 = await phLane("preholdsecond");
+    const p1Base = spawnSync("git", ["-C", lnP1.cwd, "rev-parse", "HEAD~1"]).stdout.toString().trim();
+    const p2Base = spawnSync("git", ["-C", lnP2.cwd, "rev-parse", "HEAD~1"]).stdout.toString().trim();
+    const mainAtStart = phMain();
+    // the premise of the whole race, failing as ITSELF: both lanes must fork from the SAME main.
+    // If they did not, the second land would have nothing to be overtaken by and the check below
+    // would read "serialized" having measured two independent lands.
+    check("(C3b) setup: two clean lanes, both forked from the same main, both committed",
+      p1Base === mainAtStart && p2Base === mainAtStart && p1Base !== "",
+      JSON.stringify({ mainAtStart, p1Base, p2Base }));
+    await settleForMerge(lnP1.slot);
+    await settleForMerge(lnP2.slot);
+    phArm();
+    await post(`/api/slots/${lnP1.slot}/merge`, {});
+    const p1Parked = await phParked();
+    check("(C3b) setup: the first land is parked one step before its fast-forward, holding the machine",
+      p1Parked, p1Parked ? "latch reached" : "the first land never reached the ff latch");
+    // FIRED WHILE THE FIRST LAND STILL HOLDS THE MACHINE. Under the cut this must block before its
+    // pre-pass rebase; without it, it rebases onto `mainAtStart` right here and the sleep below is
+    // what gives it time to do so — so a hold that slid back behind the rebase fails this arm
+    // rather than passing it by being fast.
+    const p2Fired = await post(`/api/slots/${lnP2.slot}/merge`, {});
+    await Bun.sleep(3_000);
+    // …and only NOW may the first land move main
+    writeFileSync(`${phLatch}.release`, "go\n", { mode: 0o600 });
+    const vP1 = await waitMerge(lnP1.slot);
+    const p1Tip = phMain();
+    const vP2 = await waitMerge(lnP2.slot);
+    const p2Tip = phMain();
+    const nP1 = phNote(p1Tip);
+    const nP2 = phNote(p2Tip);
+    check("(C3b) two lands of ONE server are serialized across the whole rebase→gate→fast-forward span: both land, NEITHER carries ffRounds, and the second one's base IS the first one's tip",
+      p2Fired.ok && vP1.gone && vP2.gone
+        && nP1?.branch === lnP1.branch && nP1.ffRounds === undefined && nP1.mainBefore === mainAtStart
+        && nP2?.branch === lnP2.branch && nP2.ffRounds === undefined && nP2.mainBefore === p1Tip
+        && p1Tip !== mainAtStart && p2Tip !== p1Tip,
+      JSON.stringify({ mainAtStart, p1Tip, p2Tip, first: nP1, second: nP2,
+        fired: p2Fired.ok, goneFirst: vP1.gone, goneSecond: vP2.gone }));
+    // …and the second land's GATE ran against the main it actually landed on, in its first and only
+    // round. This is the half the ff retry chain would repair after the fact: a retried land also
+    // ends with `verify.mainSha === <the new main>`, which is exactly why the round count above is
+    // the discriminator and this line is the corroboration rather than the proof.
+    check("(C3b) the second land verified the tree it landed — one gate run, against the post-first-land main",
+      nP2?.verify?.ok === true && nP2.verify?.mainSha === p1Tip && nP2.waitRounds === undefined,
+      JSON.stringify({ verify: nP2?.verify, waitRounds: nP2?.waitRounds, p1Tip }));
+
+    // (C3b-ii) THE GEGENPROBE, and it is what keeps the arm above from being a claim about a hold
+    // that simply stops the world: this machine's suite mutex binds SUITES, never the owner's own
+    // hands. A commit made in the main checkout while a land sits inside its hold still takes the
+    // fast-forward away from it — the ff retry chain then re-rebases, RE-RUNS the gate against the
+    // new main and lands, and `ffRounds: 1` says so on the note. If this arm ever went green with
+    // no round recorded, the ledger the whole class is counted from would be silently lying.
+    const lnP3 = await phLane("preholdintruder");
+    await settleForMerge(lnP3.slot);
+    const p3Start = phMain();
+    phArm();
+    await post(`/api/slots/${lnP3.slot}/merge`, {});
+    const p3Parked = await phParked();
+    check("(C3b) setup: the intruder arm's land is parked one step before its fast-forward",
+      p3Parked, p3Parked ? "latch reached" : "the intruder arm's land never reached the ff latch");
+    await Bun.write(`${REPO}/prehold-intruder-main.txt`, "a commit of the main checkout itself\n");
+    spawnSync("git", ["-C", REPO, "add", "prehold-intruder-main.txt"]);
+    spawnSync("git", ["-C", REPO, "commit", "-qm", "prehold intruder commit on main"]);
+    const intruder = phMain();
+    writeFileSync(`${phLatch}.release`, "go\n", { mode: 0o600 });
+    const vP3 = await waitMerge(lnP3.slot);
+    const p3Tip = phMain();
+    const nP3 = phNote(p3Tip);
+    check("(C3b) a commit of the main checkout DURING the hold still steals the fast-forward — the land re-rebases, re-verifies against the new main and records ffRounds: 1",
+      vP3.gone && intruder !== p3Start && nP3?.branch === lnP3.branch && nP3.ffRounds === 1
+        && nP3.mainBefore === intruder && nP3.verify?.mainSha === intruder && nP3.verify?.ok === true,
+      JSON.stringify({ p3Start, intruder, p3Tip, note: nP3, gone: vP3.gone }));
+    rmSync(phLock, { recursive: true, force: true });
+    for (const f of [phLatch, `${phLatch}.reached`, `${phLatch}.release`]) rmSync(f, { force: true });
+    await restartSrv(); // back to the suite's own lock, budgets and latch-less server
   }
 
   // (C4) a verify command that IGNORES the term it is sent — the case a timeout alone cannot end.

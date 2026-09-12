@@ -141,6 +141,11 @@ diese vier nicht mit.**
   Auto-Lift-Entscheid vom 6.9. in dieser Form geoeffnet) · S6 Kartenfelder beim Filen. Alle sechs sind
   Fleet-Betrieb-Zeilen mit bestaetigter Flaeche, Spawn opus[1m]/high, Karten-Form (ZIEL/FLAECHE/DONE/VERIFY/
   VERBOTEN): S1 b2f439fe · S3 9b691419 · S2 ebfb7d71 · S4 a672b626 · S6 08ec67c0 · S5 b8cb3c75.
+- **STAND 21:1x (Auto-Tick 2): WELLEN-NACHWEIS ERBRACHT** — Audit 19:45 GREEN auf dem Second-host, 4238/0,
+  mainSha bb6fa892, ein Cover {1188, 847d4aff}; Kommentar auf f6db3487 geschrieben (Kriterium korrigiert:
+  eine Welle = ein Land = EIN Cover, nicht zwei). Astra-Notiz a2e9d5d9 von mir gelandet (docs-Kette, auf
+  Abnahme Slot 10). Slot 6 hat DEPLOYT (deployGap 1, HEAD c5244918). Welle 1 auf Slot 1 bei 50 %, S8 auf
+  Slot 4 bei 40 %; Slot 3 frei, nichts queued (Welle 2 wartet auf Welle 1; S7 bewusst pending).
 - **STAND 19:4x (Auto-Tick 1):** Slot 7s Welle (18e87e67+201d0240) ist 18:46 GELANDET (mainAfter 847d4aff,
   verified, landedBy Slot 6); die Audit-Zeile mit zwei Covers fehlt noch — sie ist der Wellen-NACHWEIS und
   wird vom naechsten Tick geprueft. Welle 1 der Karten-Serie laeuft auf Slot 1 (45 %), S8 auf Slot 4

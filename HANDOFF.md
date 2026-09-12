@@ -1,3 +1,59 @@
+# HANDOFF — Orchestrator Slot 5 (Fable 5.1, Haupt-Checkout, Owner-Token): Karten-Serie S1–S6 gefilt und als zwei Dreierwellen geplant, Astra-Brief zur Agenten-Schnittstelle queued, Wellen-Nachweis offen; 2026-09-12 17:2x, ctx NICHT MESSBAR (ctx:null am eigenen Slot)
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **ROLLE (unveraendert):** Orchestrator, nicht Betriebs-MAIN (Slot 6, Program Fleet-Betrieb f170dc46). Slot 6s
+  Lanes weder treiben noch watchen. Slot 11 (Astra Worktrail) NICHT killen. Keine lokalen Hintergrund-Watcher
+  (Mac 16 MB frei, Swap 2,7/4 GB) — Rueckweg ist `POST /api/self/autos`.
+- **OWNER-RICHTUNG 17:0x: „soll gleich laufen, ich will mich nicht weiter kuemmern."** Gemeint ist die
+  Karten-Serie aus `docs/messungen/2026-09-12-spezifizierung-buendelung-befund.md` (Commit 978ede07): S1
+  Ableitung repariert+persistiert · S2 Kollision auf Bereichsebene · S3 Karte per Haiku-Tick · S4 Struktur
+  ueberlebt Bestaetigung · S5 MAIN-Batch-Bestaetigung (Owner hat „alles vernuenftig" gesagt, damit ist der
+  Auto-Lift-Entscheid vom 6.9. in dieser Form geoeffnet) · S6 Kartenfelder beim Filen. Alle sechs sind
+  Fleet-Betrieb-Zeilen mit bestaetigter Flaeche, Spawn opus[1m]/high, Karten-Form (ZIEL/FLAECHE/DONE/VERIFY/
+  VERBOTEN): S1 b2f439fe · S3 9b691419 · S2 ebfb7d71 · S4 a672b626 · S6 08ec67c0 · S5 b8cb3c75.
+- **DIE PROJEKTION ZEIGT ZWEI DREIERWELLEN** (`bun task-land-waves.ts --state fleet.json --default-repo
+  /Users/owner/claude-fleet` — ohne `--default-repo` fallen Zeilen ohne eigenes `repo` als unknown-repo
+  heraus, der Live-Server nimmt FLEET_DISPATCH_REPO): Welle 1 {b2f439fe, 9b691419, ebfb7d71}, Welle 2
+  {a672b626, 08ec67c0, b8cb3c75}, je 3 430 s Ersparnis; Reihenfolge innerhalb der Welle = Abhaengigkeit.
+  **Auto `4f8e6441` (alle 15 min, 12 Laeufe) dispatcht Welle 1 ueber `POST /api/wave/dispatch`, sobald ein
+  Lane-Slot frei ist** (Deckel 3, heute Slots 1/3/7 belegt). Welle 2 erst NACH dem Land von Welle 1 (S4/S6/S5
+  brauchen S3). Slot 6 ist per `/send` informiert und angewiesen, nichts einzeln freizugeben; er landet nur.
+- **Astra-Brief `c6e7def9` (Leichtgewicht, codex/gpt-6-astra/medium) ist QUEUED** — der Tick startet ihn beim
+  naechsten freien Slot (FLEET_HARNESS_AUTOMATION=1, codex automatable). Inhalt: Agenten-Schnittstelle
+  (curl vs. ctl.sh-Pflichtschicht vs. MCP) und der eingehende Kanal; Owner-Frage „Konsole statt Web-API"
+  ausdruecklich beantworten. Output: docs/messungen/2026-09-13-agenten-schnittstelle-entscheid.md.
+- **Wellen-NACHWEIS der ersten echten Welle (Slot 7, fleet/260912114433-1188) noch offen:** Auto `b319ac3f`
+  (17:24) prueft post-land-audits.jsonl auf eine Zeile mit ZWEI Covers, kommentiert auf f6db3487.
+- Deploy-Gap 11 Commits + Bundle stale: Slot 6 plant den Deploy nach dem naechsten gruenen Audit. 12
+  Nudge-Fehler seit Boot, Fix ungedeployt.
+
+## 1. WAS DIESE SESSION GETAN HAT
+
+- Succession von Slot 4 uebernommen 15:5x; Nachweis-Auto neu armiert (das alte starb mit Slot 4).
+- Analyse mit zwei Analyst-Agenten (Wellen-Module, Spezifizierungskette), Messnotiz committet (978ede07).
+  Kernzahlen: 37 offene Zeilen → 37 Einzelwellen; abgeleitet-als-bestaetigt → nur 3 Mehrfachwellen, 18
+  gate-aenderer durch zitierte Verify-Kommandos; server.ts-Lanes konfligieren 2,4 % vs 1,7 % andere;
+  416/517 Dispatches Roh-Prosa; Haiku 4.5 spawnbar (geprobt).
+- Sieben Zeilen gefilt (zwei Erstfassungen ohne Spawn geloescht und mit Spawn neu gefilt).
+
+## 2. OFFEN, mit Traeger
+
+- Welle 1 dispatchen (Auto 4f8e6441, ich) → Land (Slot 6) → Welle 2 (ich) → Land (Slot 6).
+- Wellen-Nachweis (Auto b319ac3f, ich).
+- Astra c6e7def9: Tick; Ergebnis lesen und dem Owner in einem Satz melden (ich).
+- Leichtgewicht-Feld-Zeilen (60fff186 from · 666d0b67 refine · df50b95b criterion · e0c1ba07 filesProposal)
+  werden nach S3 Konsumenten der Karte — Slot 10 (Astra-Controller) noch NICHT informiert (Kontextkosten;
+  erst wenn S3 gelandet ist).
+
+## 3. NICHT GEMESSEN
+
+Ob der Tick die codex-Zeile wirklich vor Welle 1 nimmt (Race um den ersten freien Slot). Ob eine
+Dreierwelle in einer Opus-Lane in den Kontext passt (fertige Einzel-Lanes 140–190k; die Wave-Brief-Regel
+`POST /api/self/wave/split` ist der Ausweg). RAM je Suite auf dem Second-host.
+
+---
+
 # HANDOFF — Orchestrator Slot 4 (Fable 5.1, Haupt-Checkout, Owner-Token): die erste echte Welle laeuft, Second-host auf drei Suite-Slots, Land-Pipeline geschlossen; 2026-09-12 16:0x, ctx NICHT MESSBAR (ctx:null am eigenen Slot — Schaetzung ~35 %)
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

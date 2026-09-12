@@ -1337,6 +1337,62 @@ Fragen von Tier 2 nicht scheitern lassen, sondern still falsch beantworten. Das 
 Job-Datensatz (`laneSuiteJobs`, in `fleet.json` persistiert wie die Claims, weil das Deploy-Ritual
 hier land-dann-`kill-session -t srv` ist).
 
+**DAS ERGEBNIS KOMMT IN DEINE PANE — NICHT POLLEN.** Seit dem Schnitt dieser Zeile mintet der
+Server beim TERMINALEN Ausgang eines Angebots (`server.ts#mintLaneSuiteEvents`, gerufen aus dem
+einen Schreiber eines Verdikts, `reportLaneSuite`) ein Event an die anbietende Lane, **grün wie
+rot**, über dieselbe Zustellung, über die ein Lane-Watch feuert. Es trägt Job-Id, `result`,
+`exitCode`, die Fail-Namen (20 gedeckelt) und die LETZTE Ausgabezeile — und den Satz, dass der
+Volltext auf `GET /api/self/suite-offer` liegt, denn eine Pane ist der falsche Ort für einen
+Suite-Tail. Zwei Eigenschaften, beide gemessen erkauft:
+
+- **`idleSec: 0`.** Der Default 60 s stellt einer ARBEITENDEN Session nie zu (gemessen 2026-09-07,
+  Slot 10: zwei Lane-Watches starben `subject-gone`, ein Merge-Watch blieb `pending`). Eine Lane,
+  die ihr Angebot gemacht hat und weiterarbeitet, wartet nicht auf Ruhe.
+- **`watchId: null`, kein Abo.** Eine Lane DARF nicht abonnieren (`/api/self/watch` antwortet ihr
+  409), und genau das war die Lücke: sie pollte `GET /api/self/suite-offer` Zug für Zug, zum Preis
+  ihres vollen Kontexts pro Poll (gemessen 2026-09-12 an Slot 4, „gefühlt in jeder zweiten Lane").
+  Der Deckel ist deshalb nicht der Watch-Deckel, sondern `slotDeliveryBudget` direkt an der
+  Mint-Stelle; ist er voll, sagt es die Trail-Zeile `lane_suite_event_skipped`.
+
+**Zugestellt wird nur an DIESELBE Belegung** (`slot` + `openedAt` des Angebots). Trägt der Slot
+inzwischen eine andere Session, verfällt die Zustellung mit einer benannten Trail-Zeile — ein
+Verdikt über einen Baum, den diese Session nie übergeben hat, wäre schlimmer als keines. In der
+Praxis kommt es dazu nicht: `expireHelperClaims` reapt ein Angebot, dessen Lane weg ist, schon
+bevor ein Verdikt angenommen werden kann (dann **409** `no live claim for this preview`).
+
+**UND EIN ROTES VERDIKT BEKOMMT EINEN ZWEITEN EMPFÄNGER: den Owner.** Dieselbe Mint-Stelle legt
+für `result: "red"` zusätzlich eine Zeile in den **Owner-Posteingang** (`receiverSlot: null`,
+`delivery: "inbox"`). Der Grund ist gemessen: am 2026-09-11 endeten zwei rote Vorschauläufe
+(`968a80797a57`, `4b5599e7c78c`) als Job-Zeile in `fleet.json` — und weiter nichts. Kein
+Board-Element liest `laneSuiteJobs`, `POST /api/post-land-audits/adjudicate` erreicht einen JOB
+nicht, und ein Watch kann darauf nicht feuern. Der einzige Kanal war, dass die Lane das Rot selbst
+in ihren Report schrieb; der erste der beiden lag zwei Stunden unbesehen. **Die Owner-Zeile hängt
+an keiner Lane:** sie hat keinen Occupant, den ein Recycling entwerten könnte, `inbox` ist kein
+`pending`-Zustand (der Transport-Tick fasst sie nie an), und offene Zeilen werden nie geprunt.
+**Ein grünes Verdikt legt keine an** — sonst wäre die Liste in einer Woche Rauschen.
+
+**Lesen und quittieren, ohne die Lane:**
+
+```
+curl -s -H "x-fleet-token: $FLEET_TOKEN" http://<fleet-host>:<port>/api/lane-suite/reds
+curl -s -X POST -H "x-fleet-token: $FLEET_TOKEN" \
+  http://<fleet-host>:<port>/api/events/<eventId>/ack
+```
+
+`GET /api/lane-suite/reds` (Owner-Route) nennt die OFFENEN roten Vorschauen: `eventId` · `jobId` ·
+`at` · `status` · `branch` · `result` · `exitCode` · `fails[]` · `tail` · `job{…}` · `door`.
+Autorität ist die Posteingangs-Zeile, nicht `laneSuiteJobs`: die Map ist auf `LANE_SUITE_KEEP` (20)
+gedeckelte Angebote begrenzt, eine offene Zeile dagegen wird nicht geprunt — `job: null` heißt
+also „die Job-Zeile ist verdrängt", nie „es gibt kein Rot". Quittiert wird durch dieselbe Tür wie
+jede andere Posteingangs-Zeile, `POST /api/events/:id/ack`. **Das Quittieren ist ein „jemand hat
+hingesehen", kein Urteil:** eine Vorschau gated nichts, sie wird durch diese Schiene nicht zum
+Gate, und es gibt dafür keinen `verdict`-Parameter wie bei der Audit-Adjudikation.
+
+**Was KEINE solche Zeile erzeugt** (die Gegenprobe gegen Lärm): `withdrawn` · `abandoned` ·
+`lapsed` · `reaped`. Keiner dieser Ausgänge schreibt je ein `result`, und die Mint-Stelle ist aus
+genau einem Aufrufer erreichbar — die Abwesenheit ist strukturell, kein Filter, den jemand
+mitpflegen muss.
+
 
 ## fleet-report — `POST /api/self/fleet-report`, `GET /api/self/fleet-report`
 

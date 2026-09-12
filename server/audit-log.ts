@@ -218,6 +218,10 @@ type AuditEvent =
   | "watch_fire" | "watch_skip" | "watch_superseded"
   | "fleet_event_delivered" | "fleet_event_send_uncertain" | "fleet_event_held" | "fleet_event_ack" | "fleet_event_owner_ack"
   | "fleet_event_receiver_gone" | "fleet_event_subject_gone" | "fleet_event_prune"
+  // the preview rail (server.ts#mintLaneSuiteEvents). `_skipped` is its own word and not a
+  // `fleet_event_*` one deliberately: nothing was minted, so a reader counting minted rows must
+  // not find it among them — and a red that could NOT be filed is the loudest line this rail has.
+  | "lane_suite_event" | "lane_suite_event_skipped"
   | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune"
   | "clarification_reply_send_uncertain"
   | "fleet_report_open" | "fleet_report_prune"

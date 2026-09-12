@@ -11175,6 +11175,7 @@ function opsSubject(e: FleetEventRow): string {
   if (e.kind === "post-land-audit") return `${e.subjectRepo ?? "?"} @ ${(e.subjectMainAfter ?? "").slice(0, 8)}`;
   if (e.kind === "deploy-terminal") return `deploy ${e.subjectDeployId ?? "?"}`;
   if (e.kind === "command-job") return `command job ${e.subjectJobId ?? "?"}`;
+  if (e.kind === "lane-suite") return `preview suite ${e.subjectJobId ?? "?"}`;
   return `slot ${e.subjectSlot ?? "?"} · ${e.subjectBranch ?? "?"}`;
 }
 
@@ -11194,6 +11195,11 @@ function opsSummary(e: FleetEventRow): string {
     return `ok=${p.ok === true ? "YES" : p.ok === false ? "NO" : "UNVERIFIED"} · stage=${String(p.stage)}`;
   if (e.kind === "command-job")
     return `result=${String(p.result)} · ${String(p.cmd)} · ${Array.isArray(p.artifacts) ? p.artifacts.length : 0} artefact(s)`;
+  // the branch rides along because a preview row names no slot the owner could look the tree up by:
+  // the lane that offered it is usually gone by the time he reads this.
+  if (e.kind === "lane-suite")
+    return `result=${String(p.result)} · ${String(p.branch)}`
+      + ` · ${Array.isArray(p.fails) ? p.fails.length : 0} named failure(s)`;
   return `${p.ahead ?? "?"} ahead / ${p.dirty ?? "?"} dirty`;
 }
 

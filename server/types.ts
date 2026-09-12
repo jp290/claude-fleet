@@ -8,6 +8,8 @@ import type { ServerWebSocket } from "bun";
 import type { LaneWatchEventKind, LaneWatchEventPayload, MergeWatchEventPayload, AuditWatchEventPayload,
   DeployWatchEventPayload, CommandJobArtifactPayload, CommandJobWatchEventPayload, ClarificationEventPayload,
   ClarificationBasis } from "../lane-signals";
+import { LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_TAIL_MAX,
+  type LaneSuiteWatchEventPayload } from "../lane-signals";
 import type { RefineValidation } from "../refine-validate";
 import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, type FleetReportStatus,
   type LaneAnchor } from "../src/protocol";
@@ -349,6 +351,20 @@ interface CommandJobFleetEvent extends FleetEventBase {
   kind: "command-job";
   payload: CommandJobWatchEventPayload;
 }
+// THE ONE ROW IN THIS UNION NOBODY SUBSCRIBED FOR — and the two receivers it can carry.
+// A lane may not hold a Watch, so `watchId` is null on both and there is no reservation to spend;
+// the mint site (server.ts#mintLaneSuiteEvents) is therefore the only thing bounding them, which is
+// why it reads slotDeliveryBudget itself. The receiver split is the whole design:
+//   · receiverSlot = the OFFERING lane, delivery "pane" — the terminal verdict of its own preview,
+//     green or red. It is minted only while that slot still carries the offer's occupation.
+//   · receiverSlot = null (the owner), delivery "inbox" — RED ONLY, and it exists because the lane
+//     row does not: a lane that dies, or simply never writes the red into its report, used to make
+//     a red preview indistinguishable from a green one. This row outlives the lane by construction.
+interface LaneSuiteFleetEvent extends FleetEventBase {
+  subjectJobId: string;
+  kind: "lane-suite";
+  payload: LaneSuiteWatchEventPayload;
+}
 interface ClarificationFleetEvent extends FleetEventBase {
   subjectSlot: number;
   subjectBranch: string;
@@ -377,7 +393,8 @@ interface SupervisorTransitionFleetEvent extends FleetEventBase {
   payload: SupervisorTransitionEventPayload;
 }
 type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent
-  | CommandJobFleetEvent | ClarificationFleetEvent | FleetReportFleetEvent | SupervisorTransitionFleetEvent;
+  | CommandJobFleetEvent | LaneSuiteFleetEvent | ClarificationFleetEvent | FleetReportFleetEvent
+  | SupervisorTransitionFleetEvent;
 
 // `send-uncertain` mirrors the FleetEvent transport state exactly (see FACT 2 in tickWatches): it is
 // persisted BEFORE tmux is touched, so a process death anywhere after that point is visible after
@@ -704,6 +721,27 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     return { ...base, subjectJobId: e.subjectJobId, kind: e.kind,
       payload: { result: p.result as CommandJobWatchEventPayload["result"], cmd: p.cmd as string,
         exitCode: p.exitCode as number | null, artifacts,
+        ...(p.reason !== undefined ? { reason: p.reason } : {}) } };
+  }
+  if (e.kind === "lane-suite") {
+    if (typeof e.subjectJobId !== "string" || !/^[0-9a-f]{12}$/.test(e.subjectJobId)) return null;
+    const p = e.payload as Partial<LaneSuiteWatchEventPayload> | undefined;
+    // `fails` and `tail` are rebuilt through the SAME caps the mint applies (server.ts#laneSuiteEventPayload)
+    // rather than trusted at whatever width the file carries: a hand-edited or older fleet.json must
+    // not be able to widen a pane hint past the budget the live path is bounded by. An EMPTY fails
+    // list and an EMPTY tail are both legitimate and are never read as a missing field — a green run
+    // names no failure, and a helper may report no output at all.
+    if (!p || !["green", "red", "unknown"].includes(String(p.result))
+      || typeof p.branch !== "string" || !p.branch
+      || !(p.exitCode === null || (typeof p.exitCode === "number" && Number.isInteger(p.exitCode)))
+      || !Array.isArray(p.fails) || p.fails.some((n) => typeof n !== "string")
+      || typeof p.tail !== "string"
+      || !(p.reason === undefined || (typeof p.reason === "string" && p.reason.length <= 200))) return null;
+    return { ...base, subjectJobId: e.subjectJobId, kind: e.kind,
+      payload: { result: p.result as LaneSuiteWatchEventPayload["result"],
+        branch: p.branch.slice(0, 200), exitCode: p.exitCode as number | null,
+        fails: p.fails.slice(0, LANE_SUITE_EVENT_FAILS_MAX).map((n) => String(n).slice(0, 200)),
+        tail: p.tail.slice(0, LANE_SUITE_EVENT_TAIL_MAX),
         ...(p.reason !== undefined ? { reason: p.reason } : {}) } };
   }
   if (e.kind === "supervisor-transition") {
@@ -2245,7 +2283,7 @@ export type {
   BoxPin, WSData, Share, ShareComment, Auto, WatchBase, LaneWatch, MergeWatch, AuditWatch,
   DeployWatch, TransitionWatch, CommandJobWatch, Watch, FleetEventStatus, FleetEventRecoveryState,
   FleetEventRecovery, FleetEventBase, LaneFleetEvent, MergeFleetEvent, AuditFleetEvent,
-  DeployFleetEvent, CommandJobFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
+  DeployFleetEvent, CommandJobFleetEvent, LaneSuiteFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
   HelperCmdCheck,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReportBasis, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,

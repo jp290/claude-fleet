@@ -64,6 +64,23 @@ interface OfferPayload {
   // module down with a TypeError instead of failing the named check.
   helper?: HelperPresenceView;
 }
+// The event rows as /api/sessions carries them. Every field past `id` is OPTIONAL for the reason
+// this module states about `remote` above: what is under test is that the SERVER writes them, and a
+// mandatory field would let a server that stopped writing one take the module down with a TypeError
+// instead of failing the named check.
+interface EventRow {
+  id: string; kind?: string; delivery?: string; status?: string; watchId?: string | null;
+  receiverSlot?: number | null; receiverOpenedAt?: number | null; receiverIdleSec?: number;
+  receiverSessionId?: string | null;
+  subjectJobId?: string;
+  payload?: { result?: string; branch?: string; exitCode?: number | null; fails?: string[];
+    tail?: string; reason?: string };
+}
+interface RedPreviewRow {
+  eventId?: string; jobId?: string; at?: number; status?: string; branch?: string; result?: string;
+  exitCode?: number | null; fails?: string[]; tail?: string; door?: string;
+  job?: { slot?: number; state?: string; helper?: string | null; treeSha?: string | null } | null;
+}
 interface PersistedLaneSuiteJob {
   id: string; state: string; offeredAt: number; claim: unknown;
   claimWas?: { deviceId: string; name: string; claimedAt: number; expiresAt: number };
@@ -145,6 +162,16 @@ export async function run(): Promise<void> {
   // (FLEET_DEVICE_ONLINE_MS in e2e-isolated.sh) so that refusal is observable at all — which means
   // a beat from earlier in this module is not a standing permission and must not be treated as one.
   const beat = (): Promise<Response> => hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME });
+
+  // THE RAIL'S TWO READ SURFACES. `events` is the owner poll's own array — the same rows the board
+  // renders — and `reds` is the route this cut adds. Both are read fresh on every call: a snapshot
+  // taken once and compared twice would turn a row that arrived late into a row that never came.
+  const eventsOf = async (): Promise<EventRow[]> =>
+    (await bodyOf<{ events?: EventRow[] }>(await get("/api/sessions"))).events ?? [];
+  const suiteEventsFor = async (job: string): Promise<EventRow[]> =>
+    (await eventsOf()).filter((e) => e.kind === "lane-suite" && e.subjectJobId === job);
+  const redsOf = async (): Promise<RedPreviewRow[]> =>
+    (await bodyOf<{ reds?: RedPreviewRow[] }>(await get("/api/lane-suite/reds"))).reds ?? [];
 
   // the audit ledger, counted in LINES. The main runner boots with no FLEET_POSTLAND_AUDIT_CMD, so
   // the file is typically absent — absent is 0 rows, which is exactly the quantity (LS.5) compares.
@@ -426,6 +453,105 @@ export async function run(): Promise<void> {
   check("(LS.4b) THE AUDIT LEDGER STILL DID NOT MOVE — the rail cannot reach it either",
     auditLines() === ledgerBefore, `before=${ledgerBefore} after=${auditLines()}`);
 
+  // ===== (LS.8) THE VERDICT HAS A RAIL — a red preview no longer falls into an unread file ======
+  // MEASURED TWICE on 2026-09-11 (jobs 968a80797a57 and 4b5599e7c78c). A reported RED landed in
+  // `fleet.json#laneSuiteJobs` and then NOTHING happened: no board element reads that map, the
+  // adjudication door is an AUDIT door and a preview is a job, and no watch can fire on it because
+  // a lane may not subscribe (/api/self/watch answers a lane 409). The only channel left was the
+  // lane writing the red into its own terminal report — so a red the lane did not mention, or did
+  // not live to mention, was indistinguishable from a green. The first of the two lay two hours
+  // unread; the second was seen only because that lane happened to be disciplined.
+  //
+  // The same gap has a LANE-facing half, measured 2026-09-12 at slot 4: unable to subscribe, a lane
+  // polled GET /api/self/suite-offer turn after turn at the cost of its whole context per poll.
+  //
+  // THE TWO ROWS BELOW ARE THE FIX, and the asymmetry between them is the whole design. Both come
+  // out of ONE mint (server.ts#mintLaneSuiteEvents) at the ONE place a preview verdict is ever
+  // written (reportLaneSuite), which is why (LS.9) can prove the negative by construction.
+  //
+  // NOTHING HERE ASSERTS A DELIVERED PANE. This harness runs FLEET_CMD=true, so no pane is alive to
+  // type into and the transport tick turns a pending row `receiver-gone` — which is the transport
+  // working, not the rail failing. What is under test is that the ROW EXISTS, names the right
+  // receiver, and carries the verdict; the status is printed, never asserted.
+  const greenEvents = await suiteEventsFor(jobId);
+  const greenLane = greenEvents.find((e) => e.receiverSlot === ln.slot);
+  check("(LS.8) A GREEN PREVIEW REACHES THE OFFERING LANE — exactly one row, addressed to its pane",
+    greenEvents.length === 1 && greenLane !== undefined && greenLane.delivery === "pane"
+      && greenLane.receiverSlot === ln.slot,
+    `${greenEvents.length} row(s): ${JSON.stringify(greenEvents.map((e) => ({ r: e.receiverSlot, d: e.delivery, s: e.status })))}`);
+  // `idleSec: 0` is the measured half of it (2026-09-07, slot 10): a WORKING session never reaches
+  // the 60 s default, so a row that waits for rest is a row that never arrives. And `watchId: null`
+  // is the structural half — nobody subscribed, because a lane cannot.
+  check("(LS.8) …and it waits for NO IDLE and holds NO watch: the two things a lane could not have",
+    greenLane?.receiverIdleSec === 0 && greenLane.watchId === null,
+    JSON.stringify({ idleSec: greenLane?.receiverIdleSec, watchId: greenLane?.watchId, status: greenLane?.status }));
+  check("(LS.8) …carrying the verdict itself, not a pointer to it: result, exit code and the branch",
+    greenLane?.payload?.result === "green" && greenLane.payload.exitCode === 0
+      && greenLane.payload.branch === ln.branch && greenLane.payload.tail === "ALL PASS",
+    JSON.stringify(greenLane?.payload));
+  // THE COUNTER-DIRECTION of the same row, and the one that makes "no gate" checkable: a GREEN
+  // preview files NOTHING for the owner. If it did, the rail would be noise within a day and the
+  // reds route would stop being a list of things that need eyes.
+  check("(LS.8) A GREEN PREVIEW FILES NOTHING FOR THE OWNER — no inbox row, and the reds list ignores it",
+    !greenEvents.some((e) => e.receiverSlot === null)
+      && !(await redsOf()).some((r) => r.jobId === jobId),
+    JSON.stringify((await redsOf()).map((r) => `${r.jobId}:${r.result}`)));
+
+  // …and the red one, which gets BOTH rows. The owner row is the one that does not depend on the
+  // lane being well-behaved, or alive.
+  const redEvents = await suiteEventsFor(redJob);
+  const redLane = redEvents.find((e) => e.receiverSlot === ln.slot);
+  const redOwner = redEvents.find((e) => e.receiverSlot === null);
+  check("(LS.8) A RED PREVIEW REACHES THE LANE **AND** THE OWNER — two rows, one job, two receivers",
+    redEvents.length === 2 && redLane?.delivery === "pane" && redOwner?.delivery === "inbox"
+      && redOwner.receiverOpenedAt === null && redOwner.watchId === null,
+    `${redEvents.length} row(s): ${JSON.stringify(redEvents.map((e) => ({ r: e.receiverSlot, d: e.delivery, s: e.status })))}`);
+  // THE POINT OF THE OWNER ROW: `inbox` is not a pending state, so the transport tick never touches
+  // it and no pane can turn it terminal. It is closed by a human reading it, and by nothing else.
+  check("(LS.8) …and the owner's row is OUT OF THE TRANSPORT: status `inbox`, no receiver occupant to lose",
+    redOwner?.status === "inbox" && redOwner.receiverSlot === null
+      && (redOwner.receiverSessionId === undefined || redOwner.receiverSessionId === null),
+    JSON.stringify({ status: redOwner?.status, slot: redOwner?.receiverSlot, sess: redOwner?.receiverSessionId }));
+  check("(LS.8) …and both rows name WHAT failed, not merely that something did",
+    redLane?.payload?.result === "red" && redLane.payload.exitCode === 1
+      && redLane.payload.fails?.length === 2
+      && redLane.payload.fails[0] === "the land gate refuses a dirty tree"
+      && redOwner?.payload?.fails?.length === 2 && redOwner.payload.tail === "2 FAILURES",
+    JSON.stringify({ lane: redLane?.payload, owner: redOwner?.payload }));
+
+  // ===== (LS.8b) THE STATE IS READABLE WITHOUT THE LANE ==========================================
+  // The route reads the OWNER ROWS and joins the job, never the other way round: `laneSuiteJobs` is
+  // bounded at LANE_SUITE_KEEP settled offers, so a busy fleet evicts a red out from under an owner
+  // who has not looked yet. An open inbox row is never pruned (pruneFleetEvents drops terminal rows
+  // only), which is what makes "still open" a durable fact rather than a lucky one.
+  const reds = await redsOf();
+  const mine = reds.find((r) => r.jobId === redJob);
+  check("(LS.8b) THE OPEN RED PREVIEWS ARE A ROUTE: it names this job, its branch and its failures",
+    mine !== undefined && mine.result === "red" && mine.branch === ln.branch
+      && mine.eventId === redOwner?.id && mine.fails?.length === 2 && mine.status === "inbox",
+    `${reds.length} red(s): ${JSON.stringify(reds.map((r) => `${r.jobId}:${r.result}:${r.status}`))}`);
+  check("(LS.8b) …with the lane side JOINED, not assumed — which slot offered it and which machine ran it",
+    mine?.job?.slot === ln.slot && mine.job.state === "reported" && mine.job.helper === DEVICE_NAME,
+    JSON.stringify(mine?.job));
+  // THE DOOR IS NAMED ON THE ROW, and it says what acknowledging does NOT do. A preview gates
+  // nothing today, and a reader who mistook this list for an adjudication queue would be wrong in
+  // the one direction this slice must not move.
+  check("(LS.8b) …and the row names its own door and disclaims authority in the same sentence",
+    (mine?.door ?? "").includes("/api/events/") && (mine?.door ?? "").includes("gates nothing"),
+    JSON.stringify(mine?.door));
+  // ACKNOWLEDGING IS WHAT CLOSES IT — the same door every other owner-inbox row uses, so there is
+  // no second lifecycle to keep right. After the ack the row is terminal and leaves the list; the
+  // fact that it HAPPENED stays on the event.
+  const ackRes = await post(`/api/events/${redOwner?.id ?? ""}/ack`, {});
+  const ackBody = await bodyOf<{ ok?: boolean; event?: { status?: string } }>(ackRes);
+  check("(LS.8b) THE RED IS QUITTIERBAR: one ack closes the row through the ordinary owner door",
+    ackRes.ok && ackBody.ok === true && ackBody.event?.status === "acknowledged",
+    `${ackRes.status} ${JSON.stringify(ackBody).slice(0, 200)}`);
+  check("(LS.8b) …and an acknowledged red leaves the OPEN list while the event itself remains",
+    !(await redsOf()).some((r) => r.jobId === redJob)
+      && (await suiteEventsFor(redJob)).some((e) => e.receiverSlot === null && e.status === "acknowledged"),
+    JSON.stringify((await redsOf()).map((r) => r.jobId)));
+
   // ===== (LS.6) THE MUTEX: withdrawing is what gives the suite back ==============================
   // "I run it locally" must be a transition the server witnessed, not an intention in a pane —
   // otherwise nothing stops the tree being measured twice, which is the invariant the whole portal
@@ -543,6 +669,76 @@ export async function run(): Promise<void> {
     (claimGone.status === 404 || claimGone.status === 409) && goneErr.includes("is gone")
       && !(await jobs()).some((j) => j.id === goneId),
     `${claimGone.status} ${JSON.stringify(goneErr)}`);
+
+  // ===== (LS.9) THE COUNTER-PROBES — the rail must stay SILENT for everything that is not a verdict
+  // A rail that fires on a non-event is worse than no rail: within a week the list is noise and the
+  // owner stops reading it, which puts the red back where it was. So the three non-verdict endings
+  // a preview has are measured HERE rather than argued from the code — a withdrawal, an abandonment
+  // and a lane that died holding an offer.
+  //
+  // The first two are the jobs (LS.6) already ended: job3 was withdrawn free, job4 was abandoned
+  // while the stand-in device held it. Neither ever carried a result, and the mint is reachable
+  // from exactly one caller (reportLaneSuite, the only writer of a LaneSuiteResult) — so the
+  // absence below is structural rather than a filter somebody has to keep remembering. That is the
+  // reason it is worth asserting: the day a second mint site appears, this is what fails.
+  check("(LS.9) A WITHDRAWN OFFER RAISES NOTHING — no lane row, no owner row, nothing on the reds list",
+    (await suiteEventsFor(job3)).length === 0 && !(await redsOf()).some((r) => r.jobId === job3),
+    `events=${JSON.stringify(await suiteEventsFor(job3))} reds=${JSON.stringify((await redsOf()).map((r) => r.jobId))}`);
+  check("(LS.9) …and neither does an ABANDONED one, though a machine really was running it",
+    (await suiteEventsFor(job4)).length === 0 && !(await redsOf()).some((r) => r.jobId === job4),
+    `events=${JSON.stringify(await suiteEventsFor(job4))} reds=${JSON.stringify((await redsOf()).map((r) => r.jobId))}`);
+  check("(LS.9) …and an offer whose LANE WAS KILLED raises nothing either — it was reaped, never reported",
+    (await suiteEventsFor(goneId)).length === 0,
+    JSON.stringify(await suiteEventsFor(goneId)));
+
+  // ===== (LS.9b) A VERDICT FOR A SLOT THAT IS NO LONGER THE OFFERER ==============================
+  // Slot ids are recycled, so `openedAt` is the only thing separating the lane that made an offer
+  // from whoever holds that number now, and a preview verdict typed into the WRONG session would be
+  // worse than none: it is a green about a tree that session never handed over.
+  //
+  // The refusal that produces the non-delivery is the CLAIM's, one layer up: `expireHelperClaims`
+  // runs at the top of every result POST and reaps an offer whose occupation is gone, which clears
+  // the live claim — so the verdict never reaches the mint at all. That is the honest reading of
+  // this check and it is stated rather than dressed up: what is proven is that the occupation is
+  // gone, the verdict is refused BY NAME, and NOTHING was minted for that job.
+  const recycled: Lane = await openLane(REPO, "suiterecycle");
+  const recycledTok = await selfTokenOf(recycled.slot);
+  await beat(); // the mint gate wants a machine that is beating NOW (LS.0)
+  const recycledOffer = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", recycledTok));
+  const recycledJob = recycledOffer.offer?.id ?? "";
+  const recycledClaim = await hpost("/api/helper/claim", { jobId: recycledJob, deviceId: DEVICE });
+  check("(LS.9b) setup: a lane offers its preview and the stand-in device really claims it",
+    /^[0-9a-f]{12}$/.test(recycledJob) && recycledClaim.ok,
+    `job=${recycledJob} claim=${recycledClaim.status}`);
+  await post(`/api/slots/${recycled.slot}/kill`, {});
+  for (let i = 0; i < 60; i++) {
+    const sx = await bodyOf<{ slots: { id: number; cwd: string | null }[] }>(await get("/api/sessions"));
+    if (!sx.slots.find((x) => x.id === recycled.slot)?.cwd) break;
+    await Bun.sleep(100);
+  }
+  const orphanRes = await hpost("/api/helper/result", { jobId: recycledJob, exitCode: 1, tail: "FAIL  something\n1 FAILURES" });
+  const orphanErr = (await bodyOf(orphanRes)).error ?? "";
+  check("(LS.9b) THE VERDICT IS REFUSED BY NAME, never typed into whoever holds that slot number now",
+    orphanRes.status === 409 && orphanErr.includes("no live claim"),
+    `${orphanRes.status} ${JSON.stringify(orphanErr)}`);
+  check("(LS.9b) …and NOTHING was minted for it: not a pane row, and not an owner row either",
+    (await suiteEventsFor(recycledJob)).length === 0
+      && !(await redsOf()).some((r) => r.jobId === recycledJob),
+    `events=${JSON.stringify(await suiteEventsFor(recycledJob))}`);
+
+  // ===== (LS.9c) THE ONE SENTENCE THE BRIEF OWES A LANE ==========================================
+  // The lane-facing half of this gap was a POLL: unable to subscribe, a lane read
+  // GET /api/self/suite-offer turn after turn at the cost of its whole context per poll, and then
+  // apologised for it. A delivery nobody is told about is only half a fix, so the founding brief
+  // says it — and says it in the exit footer, which is the part of the brief every non-clarify lane
+  // gets. Read out of the SERVER's own text rather than a copy, so a reworded footer fails here.
+  const footerSrc = readFileSync(`${ROOT}/server.ts`, "utf8");
+  const footer = footerSrc.slice(footerSrc.indexOf("const LANE_EXIT_FOOTER = `"));
+  const footerText = footer.slice(0, footer.indexOf("\n`;"));
+  check("(LS.9c) the founding brief tells a lane the result COMES TO IT, and not to poll for it",
+    footerText.includes("/api/self/suite-offer") && /[Dd]o not poll/.test(footerText)
+      && footerText.includes("delivered into this pane"),
+    JSON.stringify(footerText.slice(footerText.indexOf("/api/self/suite-offer") - 120, footerText.indexOf("/api/self/suite-offer") + 160)));
 
   // cleanup: the offering lane's slot, and the scratch clone
   await post(`/api/slots/${ln.slot}/kill`, {});

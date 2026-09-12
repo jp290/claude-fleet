@@ -39,3 +39,29 @@ Zwei Suite-Offers an den Second-host blieben je 180 s **frei und unbeansprucht**
 `0a7c6f226e35` (Lane `fleet/260912093942-9caf`), zwei verschiedene Lanes, beide nach Ablauf des
 FREE-Budgets lokal zurückgefallen. Ein dritter Lauf ging am selben Tag auf Bitte des Orchestrators
 sehr wohl auf den Second-host (Job `4bdd96`), also ist der Pfad nicht tot. Gehört zu `7e601e57`.
+
+## Nachtrag 16:5x — der Speicherdruck ist gemessen, und er hat meinen eigenen Rückweg getötet
+
+Zwei Lanes hatten an diesem Tag berichtet, die Maschine werfe unter Speicherdruck
+Hintergrundtasks ab (drei Suite-Waiter, ein `clean-review`-Lauf, je in der Warteschleife vor
+`acquired`, ohne verwaisten Runner). Das stand hier und in `docs/verify-tiering.md` §11.2v als
+**Vermutung**. Es ist jetzt eine Messung, weil es ein drittes Mal zugeschlagen hat — auf den
+Hintergrund-Watcher, mit dem die Program-MAIN auf ein Preview-Verdikt wartete. Die Harness meldete
+wörtlich `stopped because the system is running low on memory`.
+
+**Gemessen, mit Methode:** `memory_pressure` sagt `System-wide memory free percentage: 33%`;
+`sysctl vm.swapusage` sagt **`used = 2697.44M` von `total = 4096.00M`** (1 398 M frei);
+die größten Prozesse sind ~ein Dutzend `claude`-Sessions mit je 0,15–0,30 GB RSS. Die Zahl
+„0,3 GB frei" aus `vm_stat` (Pages free + inactive) ist ein **falscher Proxy** und wird hier
+ausdrücklich nicht verwendet — auf macOS ist der Swap-Verbrauch das Signal, nicht die freie Seite.
+
+**Die operative Folge, und sie ist eine Regel, keine Beobachtung: ein lokaler
+Hintergrund-Watcher (`run_in_background` + `until`-Schleife) ist auf diesem Host KEIN
+verlässlicher Rückweg.** Er stirbt lautlos unter Speicherdruck, und wer sich abgewendet hat,
+wartet dann auf ein Ereignis, dessen Melder weg ist. Verlässlich ist, was **im Server** lebt:
+`POST /api/self/watch` für Lane/Merge/Audit, und für alles ohne Watch-Art ein One-Shot
+`POST /api/self/autos` (`everySec: null`). Der Auto trägt die bekannte `sendText`-Gefahr
+(paste-buffer ohne Clearing) — das ist der Preis und er ist kleiner als ein verlorener Rückweg.
+
+**Nicht gemessen:** ob der Speicherdruck auch die drei `e2e/slots.ts`-Fails aus §11.2v erklärt.
+Die Korrelation ist da (derselbe Tag, dieselbe Maschine), die Kausalität nicht geprüft.

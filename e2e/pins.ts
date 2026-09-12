@@ -2237,6 +2237,50 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && /if \(!harnessAutomatableFor\(rowH\)\) \{/.test(tBody)
     && /waiting\(`waiting: harness \$\{rowH\.id\} is not automatable/.test(tBody),
     tBody.match(/harnessAutomatableFor[^\n]*/)?.[0] ?? "no row gate");
+  // ...and it runs BEFORE both lane caps, which is the whole of the R6 finding and is a POSITION, so
+  // no runtime check on a fleet whose cap happens to be free can see it. This gate names the one
+  // PERMANENT property in the loop — no number of lanes closing makes a declining adapter
+  // automatable — while both caps are temporary by construction. Below them, the permanent reason
+  // reached the row only inside the transient windows in which a temporary one did not hold, and
+  // `waiting` writes on change with last-writer-wins: measured on a scratch instance, the harness
+  // note appeared for ~4 s after a lane closed and was overwritten by the cap note on the next tick,
+  // permanently. That is how 746513d1 came to sit at `waiting: 2/2 lanes busy in claude-fleet` for
+  // hours while nothing about the cap was its reason (2026-09-07 04:47-05:14).
+  //
+  // The MASTER STOP stays above it and that is deliberate, not an oversight: a row the fleet queue
+  // never looks at must keep its note byte-identical, or one program's grant would start painting
+  // sentences onto every unrelated queued row in the fleet.
+  const harnessGateIdx = tBody.indexOf("if (!harnessAutomatableFor(rowH)) {");
+  const masterStopIdx = tBody.indexOf("if (!dispatchOn && !pd) continue;");
+  pin("the harness-automation gate runs BEFORE both lane caps and AFTER the per-row master stop — a permanent reason outranks a temporary one",
+    masterStopIdx > 0 && harnessGateIdx > masterStopIdx
+      && tBody.indexOf("if (lanes >= repoCap.max)") > harnessGateIdx
+      && tBody.indexOf("if (next.programId) {") > harnessGateIdx
+      && tBody.indexOf("if (!free) {") > harnessGateIdx,
+    JSON.stringify({ masterStopIdx, harnessGateIdx, repoCapIdx: tBody.indexOf("if (lanes >= repoCap.max)"),
+      progGuardIdx: tBody.indexOf("if (next.programId) {"), freeIdx: tBody.indexOf("if (!free) {") }));
+  // ...and the note says the two things a reader needs and NEITHER of them falsely: the harness, that
+  // the only remaining path is a hand dispatch, and WHICH of the two conditions declined. The last one
+  // is why the sentence is derived rather than written twice — with the flag SET, `pi-zai` still
+  // declines on its own `automatable: false`, and a note that said "FLEET_HARNESS_AUTOMATION off"
+  // there would send the owner after an env change that changes nothing.
+  const whyFn = server.match(/const harnessAutomationWhy = [\s\S]*?;\n/)?.[0] ?? "";
+  const whyReaders = server.split("harnessAutomationWhy()").length - 1;
+  pin("the harness wait-note names the harness, 'hand dispatch only' and the condition that actually declined — from the one derived sentence",
+    /waiting\(`waiting: harness \$\{rowH\.id\} is not automatable — no unattended path may drive it, hand dispatch only \(\$\{harnessAutomationWhy\(\)\}\)`\)/.test(tBody)
+      && whyFn.includes("FLEET_HARNESS_AUTOMATION is set; the adapter declines")
+      && whyFn.includes("FLEET_HARNESS_AUTOMATION is off; no named harness is automatable without it")
+      && whyReaders === 2
+      && !/FLEET_HARNESS_AUTOMATION off\)/.test(tBody),
+    `note=${tBody.match(/waiting\(`waiting: harness[^`]*`\)/)?.[0] ?? "none"} readers=${whyReaders}`);
+  // ...and it still SKIPS. A property of one row may never stop the sweep, and hoisting the gate made
+  // that more load-bearing rather than less: it is now the FIRST note-writing branch, so a `return`
+  // here would hold every row behind the oldest non-automatable one in the queue.
+  const harnessStmt = tBody.slice(harnessGateIdx, tBody.indexOf("}", tBody.indexOf("continue;", harnessGateIdx)) + 1);
+  pin("the harness gate holds only its own row — it continues, and one such row never stops the sweep",
+    harnessGateIdx > 0 && /\bcontinue;/.test(harnessStmt) && !/\breturn;/.test(harnessStmt),
+    harnessStmt.replace(/\s+/g, " ").slice(0, 200));
+
   // THE TWO CAPS AND THEIR ORDER, pinned as SHAPE because no runtime test can see the difference
   // between "the program cap narrows the repo cap" and "the program cap replaced it". A later
   // refactor that hoists the program check above the repo check, or that drops the repo check for

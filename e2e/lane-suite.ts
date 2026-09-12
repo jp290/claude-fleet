@@ -750,7 +750,8 @@ export async function run(): Promise<void> {
   check("(LS.9c) the founding brief tells a lane the result COMES TO IT, and not to poll for it",
     footerText.includes("/api/self/suite-offer") && /[Dd]o not poll/.test(footerText)
       && footerText.includes("delivered into this pane"),
-    JSON.stringify(footerText.slice(footerText.indexOf("/api/self/suite-offer") - 120, footerText.indexOf("/api/self/suite-offer") + 160)));
+    JSON.stringify(footerText.slice(Math.max(0, footerText.indexOf("/api/self/suite-offer") - 120),
+      footerText.indexOf("/api/self/suite-offer") + 160)));
 
   // cleanup: the offering lane's slot, and the scratch clone
   await post(`/api/slots/${ln.slot}/kill`, {});

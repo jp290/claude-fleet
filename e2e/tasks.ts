@@ -5580,6 +5580,10 @@ export async function run(ctx: Ctx): Promise<void> {
     // --- the deterministic half. No server, no worker: this is the part that decides what a card
     // MEANS, and it must be provable without either.
     const cardCtx = {
+      // names BOTH symbols as work, so the graph check below is what decides them — a source that
+      // did not name `#neverThere` would refuse it one step earlier and measure the wrong rule.
+      sourceText: "BAU: server.ts#taskView, server.ts#neverThere und task-metadata.ts."
+        + "\nVERIFY: `bun e2e/pins.ts`.",
       trackedPaths: new Set(["server.ts", "e2e/pins.ts", "task-metadata.ts"]),
       symbolIndex: new Map([["server.ts", [
         { file: "server.ts", symbol: "taskView", startLine: 2500, endLine: 2560 },
@@ -5594,10 +5598,11 @@ export async function run(ctx: Ctx): Promise<void> {
       surface: { files: ["server.ts", "does/not/exist.ts"], symbols: ["server.ts#taskView", "server.ts#neverThere"] },
       verboten: ["nichts in src/client.ts"],
     }, cardCtx);
+    check("(j2) card: server.ts survives because the SOURCE names it as work, not only as proof",
+      invented.body.surface.files.includes("server.ts"), JSON.stringify(invented.body.surface.files));
     check("(j2) card: an untracked path and an unresolvable symbol become GAPS, never card content",
       invented.valid === false && invented.body.surface.files.join(" ") === "server.ts"
       && invented.body.surface.symbols.join(" ") === "server.ts#taskView"
-      && invented.gaps.length === 2
       && invented.gaps.some((g) => g.includes("does/not/exist.ts") && g.includes("not tracked"))
       && invented.gaps.some((g) => g.includes("neverThere") && g.includes("does not resolve")),
       JSON.stringify(invented));
@@ -5617,6 +5622,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(j2) card: an unregistered harness or effort degrades to null and is named — never defaulted",
       badRole.body.rolle.harness === null && badRole.body.rolle.effort === null
       && badRole.body.rolle.model === "claude-opus-5"
+      && badRole.gaps.filter((g) => g.startsWith("rolle.")).length === 2
       && badRole.gaps.some((g) => g.includes("rolle.harness")) && badRole.gaps.some((g) => g.includes("rolle.effort")),
       JSON.stringify(badRole));
     check("(j2) card: an unreadable answer is null, not a throw and not a half-card",
@@ -5688,10 +5694,24 @@ export async function run(ctx: Ctx): Promise<void> {
     // validator behind it. The stand-in cannot prove the model obeys, so what is proven here is the
     // half that does not depend on a model: a cited path the answer put in `surface` is checked
     // against the tree, and `e2e/pins.ts` in a VERIFY line never becomes surface content.
-    const citedOnly = validateCard({ verify: "bun e2e/pins.ts", surface: { files: [] } }, cardCtx);
-    check("(j2) card: a path named only as the verify command is not surface content",
-      citedOnly.body.verify === "bun e2e/pins.ts" && citedOnly.body.surface.files.length === 0,
-      JSON.stringify(citedOnly.body));
+    // ...and the rule is ENFORCED here, not merely requested in the prompt: the extractor claims
+    // `e2e/pins.ts`, the path IS tracked, and it is still refused — because in the source it stands
+    // only inside a quoted verify command. That is DONE (3) of the S3 line as a mechanical property.
+    const citedOnly = validateCard({ verify: "bun e2e/pins.ts",
+      surface: { files: ["e2e/pins.ts", "task-metadata.ts"] } }, cardCtx);
+    check("(j2) card: a tracked path the source names ONLY in a verify command is refused as surface",
+      citedOnly.body.surface.files.join(" ") === "task-metadata.ts"
+      && citedOnly.body.verify === "bun e2e/pins.ts"
+      && citedOnly.gaps.some((g) => g.includes("e2e/pins.ts") && g.includes("only as proof")),
+      JSON.stringify(citedOnly));
+    // the other half of the same rule: a path nobody named at all is refused by the same line, so a
+    // model that invents a plausible tracked file gets a gap rather than a surface.
+    const unnamed = validateCard({ surface: { files: ["server.ts", "e2e/pins.ts"] } },
+      { ...cardCtx, sourceText: "BAU: irgendetwas ohne Pfad." });
+    check("(j2) card: a tracked path the source never names is refused by the same rule",
+      unnamed.body.surface.files.length === 0
+      && unnamed.gaps.filter((g) => g.startsWith("surface.files")).length === 2,
+      JSON.stringify(unnamed));
     // (4) EVERY run is a ledger line, valid or not.
     const cardLedger = `${ROOT}/cards.jsonl`;
     const cardLines = existsSync(cardLedger)

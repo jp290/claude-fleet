@@ -147,10 +147,19 @@ wird danach gegen eine Tatsache geprüft, die dieser Prozess selbst feststellen 
 
 | Feld | geprüft gegen |
 |---|---|
-| `surface.files` | `git ls-files` (der Tracked-Snapshot aus `task-metadata.ts`) |
-| `surface.symbols` | `graphify-out/graph.json`; ohne Graph nur die Existenz der Datei, `ranges` bleibt `null` |
+| `surface.files` | `git ls-files` (der Tracked-Snapshot aus `task-metadata.ts`) **und** den INTENT-Text der Zeile |
+| `surface.symbols` | denselben Intent-Text **und** `graphify-out/graph.json`; ohne Graph nur die Existenz der Datei, `ranges` bleibt `null` |
 | `verify` | die bekannten Kettenschritte (`verify-proportion.ts#LOCAL_PROOF_STEPS`) |
 | `rolle.*` | die registrierten Harness-/Modell-/Effort-Validatoren |
+
+**Die Zitatregel ist ERZWUNGEN, nicht erbeten.** Der Prompt bittet den Extraktor, einen Pfad aus
+einer Kommandozeile nicht als Fläche zu lesen; `validateCard` ENTSCHEIDET es: jeder Wert muss im
+Intent-Text der Zeile stehen — dem Text mit maskierten Verify-Zeilen und zitierten Kommandos
+(`task-metadata.ts#intentText`, dieselbe Maske, die S1 fährt). Ein Modell, das `e2e/pins.ts` aus
+der Verify-Zeile als Fläche zurückgibt, bekommt eine `gaps`-Zeile, obwohl der Pfad getrackt ist.
+Dieselbe Zeile fängt die andere Hälfte: einen plausiblen getrackten Pfad, den die Anfrage
+überhaupt nicht nennt. Damit ist `card.surface` eine BEGRÜNDETE VERENGUNG der abgeleiteten Fläche
+aus S1 — das Modell wählt aus dem, was der Text nennt, und kann nichts hinzufügen.
 
 Was nicht besteht, wird **niemals repariert, ersetzt oder geraten** — es wird eine Zeile in `gaps`,
 in den Worten des Extraktors. `valid` ist das UND dieser Prüfungen, kein Urteil über die Arbeit,

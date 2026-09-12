@@ -10326,6 +10326,9 @@ async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | nu
       ...cardTokens(observed) };
   }
   const checked = validateCard(raw, {
+    // the SAME string the extractor was given, so the quote rule is decided against the text the
+    // answer was actually about and not against a second reading of the row
+    sourceText: source,
     trackedPaths: snapshot?.paths ?? new Set<string>(),
     symbolIndex: index?.index ?? null,
     harnessKnown: (v) => HARNESSES.some((h) => h.id === v),

@@ -22,6 +22,7 @@
 // it could not establish.
 import { defuseDelimiters } from "./src/protocol";
 import { LOCAL_PROOF_STEPS } from "./verify-proportion";
+import { intentText } from "./task-metadata";
 import type { SymbolIndex, SymbolRange } from "./task-metadata";
 
 // The extractor's own contract mark and answer key. Deliberately NOT added to WORKER_CONTRACTS:
@@ -49,6 +50,11 @@ export interface RawCard {
 }
 
 export interface CardValidationContext {
+  // The row's own text, exactly as the extractor saw it. It is what makes the quote rule a
+  // MECHANICAL property instead of a request in the prompt: a path the text names only inside a
+  // quoted command or a verify line is masked out of the intent text, so it cannot become surface
+  // content however confidently the model returns it.
+  sourceText: string;
   trackedPaths: ReadonlySet<string>;
   // null = this checkout carries no graph. A symbol is then checked against FILE EXISTENCE only,
   // and `ranges` stays null — the same three-valued reading Task.surface.ranges uses.
@@ -112,10 +118,18 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   };
 
   const rawSurface = (raw.surface && typeof raw.surface === "object" ? raw.surface : {}) as Record<string, unknown>;
+  // THE QUOTE RULE, ENFORCED RATHER THAN REQUESTED. The prompt asks the extractor not to read a
+  // path out of a command; this decides it. A value must appear in the row's INTENT text — the text
+  // with its verify lines and quoted commands masked out (task-metadata.ts#intentText) — or it is a
+  // gap. The two failures it catches are one fact from the reader's side: the model returned
+  // something the request does not name AS WORK, whether it invented it or lifted it from a proof.
+  const intent = intentText(ctx.sourceText);
+  const named = (value: string): boolean => intent.includes(value);
   const files: string[] = [];
   for (const path of list(rawSurface.files)) {
-    if (ctx.trackedPaths.has(path)) files.push(path);
-    else gaps.push(`surface.files: "${path}" is not tracked in this repository`);
+    if (!ctx.trackedPaths.has(path)) { gaps.push(`surface.files: "${path}" is not tracked in this repository`); continue; }
+    if (!named(path)) { gaps.push(`surface.files: "${path}" is not named as a change target in the request (only as proof, or not at all)`); continue; }
+    files.push(path);
   }
   const symbols: string[] = [];
   const ranges: SymbolRange[] = [];
@@ -125,6 +139,10 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
     const [file, symbol] = split;
     if (!ctx.trackedPaths.has(file)) {
       gaps.push(`surface.symbols: "${ref}" names an untracked file`);
+      continue;
+    }
+    if (!named(ref)) {
+      gaps.push(`surface.symbols: "${ref}" is not named as a change target in the request`);
       continue;
     }
     if (!ctx.symbolIndex) {

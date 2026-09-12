@@ -13,7 +13,8 @@ export interface FleetEventRow {
     | "subject-gone" | "inbox";
   delivery?: "pane" | "inbox";
   kind: "lane-ready" | "host-commit-ready" | "merge-terminal" | "post-land-audit"
-    | "deploy-terminal" | "command-job" | "clarification-request" | "fleet-report" | "supervisor-transition";
+    | "deploy-terminal" | "command-job" | "lane-suite" | "clarification-request" | "fleet-report"
+    | "supervisor-transition";
   subjectSlot?: number; subjectBranch?: string; subjectCwd?: string;
   subjectRepo?: string; subjectMainAfter?: string; subjectDeployId?: string; subjectJobId?: string;
   payload?: Record<string, unknown>;

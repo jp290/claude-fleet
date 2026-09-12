@@ -38,7 +38,7 @@ import { collectRepoMap, firstCommentLine, renderRepoMap } from "../repo-map";
 // rendered hint shows the tail `${eventAck(id)}` actually contributes, which a source scan cannot.
 import {
   attentionAnswerMessage, auditWatchMessage, clarificationReplyMessage, clarificationWatchMessage,
-  commandJobWatchMessage, deployWatchMessage, laneWatchMessage, mergeWatchMessage,
+  commandJobWatchMessage, deployWatchMessage, laneSuiteWatchMessage, laneWatchMessage, mergeWatchMessage,
 } from "../lane-signals";
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
 import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
@@ -4448,7 +4448,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
 {
   const RULE_KINDS = "the FleetEvent kind set is closed";
   const expected = ["lane-ready", "host-commit-ready", "merge-terminal", "post-land-audit",
-    "deploy-terminal", "command-job", "clarification-request", "fleet-report",
+    "deploy-terminal", "command-job", "lane-suite", "clarification-request", "fleet-report",
     "supervisor-transition"].sort();
   const signals = read("lane-signals.ts");
   const laneKinds = (signals.match(/export type LaneWatchEventKind =([^;\n]+)/)?.[1] ?? "")
@@ -4462,7 +4462,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const union = (server.match(/type FleetEvent =([\s\S]*?);/)?.[1] ?? "")
     .split("|").map((w) => w.trim()).filter(Boolean);
   const got = [...found].sort();
-  pin(`${RULE_KINDS} — the interfaces yield exactly the nine known kinds`,
+  pin(`${RULE_KINDS} — the interfaces yield exactly the ten known kinds`,
     JSON.stringify(got) === JSON.stringify(expected), `[${got.join(",")}]`);
   pin(`${RULE_KINDS} — every union member is one of those interfaces (no kind enters off-list)`,
     union.length > 0 && union.every((m) => new RegExp(`interface ${m} extends FleetEventBase \\{`).test(server)),
@@ -6944,6 +6944,8 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       payload: { ok: true, stage: "boot", target: "a".repeat(40), bootHead: "a".repeat(40), hitTarget: true, bundleStale: false, at: 0 } }),
     commandJobWatchMessage: commandJobWatchMessage("j1", { id: "e5", kind: "command-job",
       payload: { result: "green", cmd: "bun run build", exitCode: 0, artifacts: [] } }),
+    laneSuiteWatchMessage: laneSuiteWatchMessage("j2", { id: "e7", kind: "lane-suite",
+      payload: { result: "red", branch: "fleet/probe", exitCode: 1, fails: ["a check"], tail: "12 FAILURES" } }),
     clarificationWatchMessage: clarificationWatchMessage(7, "fleet/probe", { id: "e6", kind: "clarification-request",
       payload: { requestId: "r1", question: "q", taskId: null, originId: null, programId: null, basis: "lane-watch" } }),
     clarificationReplyMessage: clarificationReplyMessage("r1", "q", "a"),

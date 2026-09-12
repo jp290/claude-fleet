@@ -249,6 +249,37 @@ export interface CommandJobWatchEventView {
   payload: CommandJobWatchEventPayload;
 }
 
+// THE PREVIEW VERDICT a lane gets back for the suite it handed to another machine. It is the one
+// payload in this family whose receiver DID NOT SUBSCRIBE: a lane may not hold a watch
+// (/api/self/watch is non-lane-only), so before this existed the only way a lane could learn its
+// own answer was to poll GET /api/self/suite-offer turn after turn, at the cost of its whole
+// context per poll. The fields are therefore chosen for a lane that must decide ONE thing from the
+// pane text alone — keep going or look — and nothing else:
+//   · `result` and `exitCode` are the verdict and its provenance-free half.
+//   · `fails` is capped here rather than at the reader: a red preview of a 4000-check suite names
+//     as many failures as it likes, and a pane hint is not a report.
+//   · `tail` is ONE line, deliberately. The full output lives on the job; a hint that pasted a
+//     suite tail into a composer would be the same context cost the poll had.
+//   · `branch` because a lane that rebased since the handover must be able to see WHICH tree.
+// ONE declaration for both ends of this payload: the mint (server.ts#laneSuiteEventPayload) and
+// the hydration (server/types.ts#fleetEventFrom). Two copies would let a persisted row be wider
+// than a fresh one, which is exactly the drift a pane budget cannot afford.
+export const LANE_SUITE_EVENT_FAILS_MAX = 20;
+export const LANE_SUITE_EVENT_TAIL_MAX = 200;
+export interface LaneSuiteWatchEventPayload {
+  result: "green" | "red" | "unknown";
+  branch: string;
+  exitCode: number | null;
+  fails: string[];
+  tail: string;
+  reason?: string;
+}
+export interface LaneSuiteWatchEventView {
+  id: string;
+  kind: "lane-suite";
+  payload: LaneSuiteWatchEventPayload;
+}
+
 export type ClarificationBasis = "program-main" | "lane-watch" | "program-main+lane-watch";
 // Closed server-stamped provenance only. The question is the one caller field admitted by the
 // request route; no receiver, command, or arbitrary detail can hitch a ride through persistence.
@@ -368,6 +399,25 @@ export function commandJobWatchMessage(jobId: string, event: CommandJobWatchEven
 }
 
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+// THE PREVIEW HINT. Two sentences the lane needs and a pointer, and the LAST of them names where
+// the full text is — the whole point of the one-line tail is that the pane never carries the run.
+// It says `landed`/`gated` nowhere on purpose: a preview gates nothing and never has.
+export function laneSuiteWatchMessage(jobId: string, event: LaneSuiteWatchEventView): string {
+  const p = event.payload;
+  const shown = p.fails.slice(0, 5);
+  const failed = p.fails.length === 0
+    ? "no failing check names were recorded"
+    : `${p.fails.length} named failure(s): ${shown.join(", ")}`
+      + `${p.fails.length > shown.length ? ` (+${p.fails.length - shown.length} more)` : ""}`;
+  const why = p.reason ? ` Reason: ${p.reason}.` : "";
+  return `[fleet] preview suite [event ${event.id}] job ${jobId} on ${p.branch} reached terminal `
+    + `result=${p.result}; exit=${p.exitCode === null ? "none" : p.exitCode}; ${failed}.${why} `
+    + `Last line: ${oneLine(p.tail) || "(no output recorded)"} `
+    + `This preview GATES NOTHING — it is the run you handed to another machine, not a land gate. `
+    + `The full output, the fails and the helper's name are on GET /api/self/suite-offer. `
+    + `${eventAck(event.id)}`;
+}
 
 export function clarificationWatchMessage(
   slot: number,

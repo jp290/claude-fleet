@@ -11,6 +11,8 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   type MergeWatchEventPayload,
   type AuditWatchEventPayload, type DeployWatchEventPayload,
   commandJobWatchMessage, type CommandJobWatchEventPayload, type CommandJobArtifactPayload,
+  laneSuiteWatchMessage, type LaneSuiteWatchEventPayload,
+  LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_TAIL_MAX,
   type ClarificationBasis,
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE,
   laneSpentLooking,
@@ -97,6 +99,7 @@ import {
   type ClarificationFleetEvent, type FleetReportFleetEvent, type SupervisorTransitionFleetEvent,
   type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition,
   type AttentionKind,
+  type LaneSuiteFleetEvent,
   type AttentionRequest, type TaskKind, type Task, type TaskBrief, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
@@ -9473,7 +9476,9 @@ const LANE_EXIT_FOOTER = `
    not land anything, and does not deploy.
 
 3. THEN GO IDLE. Do not poll for a reply and do not schedule a check-in to wait for one: the server
-   delivers the report to your coordinator, and any answer arrives in this pane on its own.
+   delivers the report to your coordinator, and any answer arrives in this pane on its own. The same
+   holds for a preview you hand to another machine: after POST /api/self/suite-offer you go idle and
+   the terminal result — green or red — is delivered into this pane by itself. Do not poll.
 
 `;
 
@@ -12681,6 +12686,8 @@ async function tickWatches(): Promise<void> {
         ? deployWatchMessage(event.subjectDeployId, event)
         : event.kind === "command-job"
         ? commandJobWatchMessage(event.subjectJobId, event)
+        : event.kind === "lane-suite"
+        ? laneSuiteWatchMessage(event.subjectJobId, event)
         : event.kind === "supervisor-transition"
         ? supervisorTransitionMessage(event)
         : laneWatchMessage(event.subjectSlot, event.subjectBranch, event);
@@ -15068,6 +15075,126 @@ function commandJobEventPayload(j: CommandJob, r: CommandJobResult): CommandJobW
     ...(r.reason ? { reason: r.reason.slice(0, 200) } : {}) };
 }
 
+// THE PREVIEW VERDICT AS A PANE HINT. Derived from the job and its result and from nothing else,
+// so the sentence in the lane's pane and `GET /api/self/suite-offer` can never disagree about what
+// happened. Both caps come from lane-signals.ts, shared with the hydration validator.
+function laneSuiteEventPayload(j: LaneSuiteJob, r: LaneSuiteResult): LaneSuiteWatchEventPayload {
+  return {
+    result: r.result, branch: j.branch.slice(0, 200), exitCode: r.exitCode,
+    fails: r.fails.slice(0, LANE_SUITE_EVENT_FAILS_MAX).map((n) => n.slice(0, 200)),
+    // the LAST line of the retained tail, not the tail: what a lane needs from a pane hint is the
+    // one line a human would read first ("ALL PASS", "12 FAILURES"), and the rest is a file.
+    tail: (r.tail.split("\n").filter((l) => l.trim()).pop() ?? "").slice(0, LANE_SUITE_EVENT_TAIL_MAX),
+    ...(r.reason ? { reason: r.reason.slice(0, 200) } : {}),
+  };
+}
+
+// THE RAIL A RED PREVIEW DID NOT HAVE. Measured twice on 2026-09-11 (jobs 968a80797a57 and
+// 4b5599e7c78c): a reported red landed in `fleet.json#laneSuiteJobs` and nothing else happened —
+// no board element reads that map, no adjudication path reaches it (it is a job, not an audit
+// row), and no watch can fire on it, because a lane may not subscribe. The only channel was the
+// lane writing the red into its own report, so a red was indistinguishable from a green whenever
+// the lane died first or simply did not. The first of the two lay two hours unread.
+//
+// TWO ROWS, and the asymmetry is the fix rather than a convenience:
+//   · THE LANE ROW fires for GREEN AND RED alike, and it is the answer to the second half of the
+//     same gap: a lane that cannot subscribe was polling GET /api/self/suite-offer turn after
+//     turn, paying its whole context per poll. `idleSec: 0` is deliberate and is the measured
+//     lesson (2026-09-07, slot 10): a working session never reaches the default 60 s of idle, so
+//     a delivery that waits for rest is a delivery that never arrives.
+//   · THE OWNER ROW fires for RED ONLY, and it is what makes the process independent of the lane.
+//     `delivery: "inbox"`, receiver null — no pane, no occupant, nothing that can be recycled out
+//     from under it. It is acknowledged through POST /api/events/:id/ack and is never pruned while
+//     it is open (pruneFleetEvents drops terminal rows only), so an unread red stays unread and
+//     visible instead of decaying into silence.
+//
+// NOTHING IS GATED BY EITHER. A preview gates nothing today and this rail changes that in no
+// direction: both rows are notifications, and the only state they carry is "has somebody looked".
+//
+// WHY THERE IS NO `withdrawn`/`abandoned` BRANCH: this function is reachable from exactly one
+// caller, reportLaneSuite, which is the only place a LaneSuiteResult is ever written. A withdrawn,
+// abandoned, lapsed or reaped job has no result and never passes here — the absence is structural,
+// not a filter somebody has to keep remembering.
+async function mintLaneSuiteEvents(j: LaneSuiteJob): Promise<void> {
+  const r = j.result;
+  if (!r) return;
+  const now = Date.now();
+  const payload = laneSuiteEventPayload(j, r);
+  const common = { watchId: null, receiverIdleSec: 0, subjectJobId: j.id,
+    kind: "lane-suite" as const, payload, createdAt: now,
+    attempts: 0, deliveredAt: null, acknowledgedAt: null };
+  const minted: LaneSuiteFleetEvent[] = [];
+  // THE OCCUPATION TEST, and it is the fork between the two rows rather than a guard: slot ids are
+  // recycled, so `openedAt` is the only thing separating the lane that made this offer from
+  // whoever holds that number now. A mismatch does not suppress the owner row — it is precisely
+  // the case the owner row exists for. The sweep (expireHelperClaims) reaps an offer whose lane is
+  // gone before a verdict can be accepted at all, so this is expected to read `present` for a
+  // reported job; it is written as the decision anyway, for the same reason laneSuiteClaimOf is:
+  // the clock and the identity decide, the sweep is bookkeeping.
+  const lane = slots.find((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
+  if (lane) {
+    const budget = slotDeliveryBudget(lane.id);
+    if (budget.free === 0) {
+      audit("lane_suite_event_skipped", lane.id,
+        `job=${j.id} ${r.result} no delivery budget`
+        + ` (${budget.deliveryDebts} open + ${budget.armedReservations} armed of ${budget.cap})`);
+    } else {
+      minted.push({ ...common, id: randomBytes(12).toString("hex"),
+        receiverSlot: lane.id, receiverOpenedAt: lane.openedAt, receiverSessionId: lane.sessionId,
+        status: "pending", delivery: "pane" });
+    }
+  } else {
+    audit("lane_suite_event_skipped", j.slot,
+      `job=${j.id} ${r.result} the offering occupation is gone (slot ${j.slot} openedAt ${j.slotOpenedAt}) — no pane delivery`);
+  }
+  if (r.result === "red") {
+    if (ownerInboxDebts() >= FLEET_EVENT_MAX_OPEN_PER_SLOT) {
+      // NAMED, never silent: the owner inbox being full is itself the thing that would hide a red,
+      // and a red that could not be filed must leave the loudest trace this path has.
+      audit("lane_suite_event_skipped", j.slot,
+        `job=${j.id} RED could not be filed — the owner inbox holds ${ownerInboxDebts()} open rows of ${FLEET_EVENT_MAX_OPEN_PER_SLOT}`);
+    } else {
+      minted.push({ ...common, id: randomBytes(12).toString("hex"),
+        receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null,
+        status: "inbox", delivery: "inbox" });
+    }
+  }
+  if (!minted.length) return;
+  fleetEvents = [...fleetEvents, ...minted];
+  for (const e of minted)
+    audit("lane_suite_event", e.receiverSlot ?? undefined,
+      `${e.id} job=${j.id} ${r.result} → ${e.receiverSlot === null ? "owner inbox" : `slot ${e.receiverSlot}`}`);
+  await saveStateNow();
+}
+
+// THE OPEN RED PREVIEWS, readable WITHOUT the lane that produced them. The authority is the owner
+// inbox row and not `laneSuiteJobs`: the map is bounded at LANE_SUITE_KEEP settled offers and a
+// busy fleet evicts a red out from under an owner who has not looked yet, whereas an open inbox
+// row is never pruned. The job is JOINED where it still exists, and its absence is stated rather
+// than hidden — "the job row has been evicted" is a different sentence from "there is no red".
+function openRedPreviews(): Record<string, unknown>[] {
+  return fleetEvents
+    .filter((e): e is LaneSuiteFleetEvent => e.kind === "lane-suite" && e.delivery === "inbox"
+      && !FLEET_EVENT_TERMINAL.includes(e.status))
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map((e) => {
+      const j = laneSuiteJobs.get(e.subjectJobId);
+      return {
+        eventId: e.id, jobId: e.subjectJobId, at: e.createdAt, status: e.status,
+        branch: e.payload.branch, result: e.payload.result, exitCode: e.payload.exitCode,
+        fails: e.payload.fails, tail: e.payload.tail,
+        ...(e.payload.reason ? { reason: e.payload.reason } : {}),
+        // the lane side, and every field of it is `null` when the job is gone rather than omitted:
+        // an absent key reads as "not applicable", and here it means "no longer answerable".
+        job: j ? { slot: j.slot, slotOpenedAt: j.slotOpenedAt, repo: j.repo, state: j.state,
+          treeSha: j.treeSha, commitSha: j.commitSha, offeredAt: j.offeredAt,
+          helper: j.result?.remote.name ?? null, reportedAt: j.result?.remote.reportedAt ?? null }
+          : null,
+        door: "acknowledge with POST /api/events/<eventId>/ack — this closes the row, it adjudicates nothing and gates nothing",
+      };
+    });
+}
+
 // THE LANE'S WAITING POLICY — advisory, served, and pinned. Nothing on the server enforces these:
 // the wait is a foreground loop in the lane's own pane. They live here anyway because the rulebook
 // quotes them, and a rule whose number drifts from the code is worse than no rule (e2e/pins.ts
@@ -16771,6 +16898,10 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
   // key here — stamped once, present on every verdict including the unmeasurable ones, and already
   // what the lane sorts by. Deliberately NOT called `auditAt`: a preview writes no ledger row, and
   // the whole fork above exists so nothing downstream can mistake one for an audit.
+  // THE RAIL, and it goes down AFTER the verdict is persisted for the same reason the command
+  // path's does: a mint over a result that did not survive saveStateNow would be a notification
+  // about a fact nobody can read back.
+  await mintLaneSuiteEvents(j);
   return json({ ok: true, kind: "lane-suite", result, ...(reason ? { reason } : {}), artifactAt: now });
 }
 // The command verdict. Same shape and same rules as the preview's — it lands in the JOB, no ledger
@@ -28873,6 +29004,12 @@ Bun.serve<WSData>({
     // --- the OPERATIONS inbox (owner side), separate from attention: completion FACTS a subscription
     // asked for with delivery:"inbox". No new payload — the rows ride /api/sessions as `events`. Its
     // twin is POST /api/self/events/:id/ack, which refuses exactly the rows this route accepts.
+    // --- THE OPEN RED PREVIEWS. A lane-suite job carries no ledger row and no board element, so
+    // before this route a red preview was readable only from `fleet.json` by hand. It is a READ and
+    // nothing else: no adjudication, no gate, no state change — the row is closed through the ack
+    // door below, which is the same door every other inbox row uses.
+    if (url.pathname === "/api/lane-suite/reds" && req.method === "GET")
+      return json({ reds: openRedPreviews() });
     const eventOwnerAck = /^\/api\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);
     if (eventOwnerAck && req.method === "POST")
       return await ownerAcknowledgeFleetEvent(eventOwnerAck[1]);

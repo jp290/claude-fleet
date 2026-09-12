@@ -18,7 +18,7 @@ type MergeEventRow = {
 type MergeWatchRow = { id: string; kind: "merge"; slot: number; target: number; targetCwd: string;
   targetBranch: string; armed: boolean; firedAt: number | null; lastResult: string | null };
 const mergeEvents = async (): Promise<MergeEventRow[]> =>
-  (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as MergeEventRow[])
+  (((await (await get("/api/events")).json()) as { events: unknown[] }).events as MergeEventRow[])
     .filter((e) => e.kind === "merge-terminal");
 const mergeWatches = async (): Promise<MergeWatchRow[]> =>
   (((await (await get("/api/sessions")).json()) as { watches: unknown[] }).watches as MergeWatchRow[])

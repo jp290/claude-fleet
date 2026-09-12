@@ -9,7 +9,7 @@ import { pollPlan } from "./pollplan";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
-import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, type FleetEventRow } from "./opsevents";
+import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsSubject, opsSummary, type OpsPollRow } from "./opsevents";
 import {
   projectTaskWaves,
   type ProjectedWaveTask, type TaskWaveProjection, type TaskWaveUnresolved,
@@ -5422,7 +5422,8 @@ async function refresh() {
       helperOnlineMs?: number;
       attentionOpen?: number;
       reportsAwaitingOwner?: number;
-      events?: FleetEventRow[];
+      // the owner poll's CUT and PROJECTION of the trail (src/opsevents.ts#opsPollRow); full rows: GET /api/events
+      events?: OpsPollRow[];
       deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null };
     if (data.v) {
       if (!bundleV) bundleV = data.v;
@@ -11072,10 +11073,11 @@ renderAttnBtn();
 // to — a merge outcome, a post-land audit, a deploy, a lane reaching a completion predicate.
 // Acknowledging is a receipt that the owner saw it, nothing else; it starts no work.
 //
-// Zero payload cost: the rows already ride /api/sessions as `events` (they are the owner's only
-// view of a receiver-gone event), so this panel reads what the 2 s poll already carries.
+// No request of its own: the 2 s poll carries exactly the rows this panel can show, projected to
+// the fields it prints (src/opsevents.ts#opsPollRow). Every other row — terminal, receiver-gone,
+// and the inbox reports the section below loads itself — lives behind GET /api/events.
 const opsdlg = $("opsdlg"), opspanel = $("opspanel"), opsbtn = $("opsbtn");
-let opsRows: FleetEventRow[] = [];
+let opsRows: OpsPollRow[] = [];
 let opsBusy = false;
 
 // --- the THIRD class in this panel, and the one whose rows are not events at all: worker reports
@@ -11115,7 +11117,7 @@ const ownerReportAwaiting = (r: OwnerReportRow): boolean => !r.decision && r.liv
 // inbox event, and the orphaned bound row whose event went terminal on teardown and arrives here as
 // nothing at all. Leaving fleet-report rows in this class would count the first kind twice and show
 // it in two places, with an `acknowledge` button beside a `reject` one for the same row.
-const opsOpenNonReport = (rows: FleetEventRow[]): FleetEventRow[] =>
+const opsOpenNonReport = (rows: OpsPollRow[]): OpsPollRow[] =>
   opsOpen(rows).filter((e) => e.kind !== "fleet-report");
 
 function renderOpsBtn() {
@@ -11134,7 +11136,7 @@ function renderOpsBtn() {
   opsbtn.style.display = n > 0 || m > 0 || opsdlg.style.display === "flex" ? "" : "none";
 }
 
-function setOpsEvents(rows: FleetEventRow[]) {
+function setOpsEvents(rows: OpsPollRow[]) {
   opsRows = rows;
   renderOpsBtn();
   if (opsdlg.style.display === "flex") renderOpsDlg();
@@ -11166,45 +11168,11 @@ opsdlg.addEventListener("click", (e) => {
 
 // who this row is FOR. Slot-bound rows name their receiver occupant; an owner row names nobody,
 // because nobody is what it has — saying "receiver slot null" would read as a lost binding.
-function opsReceiver(e: FleetEventRow): string {
+function opsReceiver(e: OpsPollRow): string {
   return e.receiverSlot === null ? "filed for you" : `receiver slot ${e.receiverSlot}`;
 }
 
-// what this row is ABOUT — the join key the owner would otherwise have to reconstruct by hand
-function opsSubject(e: FleetEventRow): string {
-  if (e.kind === "post-land-audit") return `${e.subjectRepo ?? "?"} @ ${(e.subjectMainAfter ?? "").slice(0, 8)}`;
-  if (e.kind === "deploy-terminal") return `deploy ${e.subjectDeployId ?? "?"}`;
-  if (e.kind === "command-job") return `command job ${e.subjectJobId ?? "?"}`;
-  if (e.kind === "lane-suite") return `preview suite ${e.subjectJobId ?? "?"}`;
-  return `slot ${e.subjectSlot ?? "?"} · ${e.subjectBranch ?? "?"}`;
-}
-
-// terse and per kind, never the whole payload: the point is whether the owner must look further.
-function opsSummary(e: FleetEventRow): string {
-  const p = e.payload ?? {};
-  const verify = p.verify as { ok?: boolean | null } | undefined;
-  if (e.kind === "merge-terminal")
-    return `${String(p.status)} · landed=${p.landed === true ? "YES" : "NO"}`
-      + (verify ? ` · verify=${verify.ok === true ? "ok" : verify.ok === false ? "FAILED" : "unverified"}` : "");
-  if (e.kind === "post-land-audit") return `result=${String(p.result)}`;
-  // the join key, not the prose: the report TEXT is rendered whole below, because for this one
-  // kind the text IS the delivery — a summary the owner has to look past would be a half-delivery.
-  if (e.kind === "fleet-report")
-    return `${String(p.status)} · task ${typeof p.taskId === "string" ? p.taskId.slice(0, 8) : "—"}`;
-  if (e.kind === "deploy-terminal")
-    return `ok=${p.ok === true ? "YES" : p.ok === false ? "NO" : "UNVERIFIED"} · stage=${String(p.stage)}`;
-  if (e.kind === "command-job")
-    return `result=${String(p.result)} · ${String(p.cmd)} · ${Array.isArray(p.artifacts) ? p.artifacts.length : 0} artefact(s)`;
-  // the branch rides along because a preview row names no slot the owner could look the tree up by:
-  // the lane that offered it is usually gone by the time he reads this.
-  // the TRUE count, not the length of the sample the row carries (it is capped at three)
-  if (e.kind === "lane-suite")
-    return `result=${String(p.result)} · ${String(p.branch)}`
-      + ` · ${typeof p.failCount === "number" ? p.failCount : 0} failure(s)`;
-  return `${p.ahead ?? "?"} ahead / ${p.dirty ?? "?"} dirty`;
-}
-
-function opsRow(e: FleetEventRow): HTMLElement {
+function opsRow(e: OpsPollRow): HTMLElement {
   const row = el("div", "attnrow open");
   const head = el("div", "attnhead");
   // a worker report carries its own verdict, so the chip shows it: a `failed` and a `complete`
@@ -11218,11 +11186,6 @@ function opsRow(e: FleetEventRow): HTMLElement {
   head.appendChild(el("span", "attnmeta", `${opsReceiver(e)} · ${fmtSince(e.createdAt)}`));
   row.appendChild(head);
   row.appendChild(el("div", "attntext", opsSummary(e)));
-  // The one kind whose payload is prose for a human. Rendered in full and never truncated here:
-  // the server already caps it at MAX_FLEET_REPORT_TEXT, and this panel is the only place the
-  // owner sees it — there is no pane it was also typed into.
-  if (e.kind === "fleet-report" && typeof (e.payload ?? {}).text === "string")
-    row.appendChild(el("div", "attntext", String((e.payload ?? {}).text)));
   const btns = el("div", "shrbtns");
   const ack = el("button", "shrbtn primary", "acknowledge") as HTMLButtonElement;
   ack.title = "a receipt that you saw this — it starts nothing and changes no lane";
@@ -11308,7 +11271,7 @@ function ownerReportRowEl(r: OwnerReportRow): HTMLElement {
 
 // the read-only twin of opsRow: same facts, no affordance. It carries no acknowledge button because
 // the owner is not the principal who could have read the pane text, and the server refuses him here.
-function opsUnackedRow(e: FleetEventRow, now: number): HTMLElement {
+function opsUnackedRow(e: OpsPollRow, now: number): HTMLElement {
   const row = el("div", "attnrow uncertain");
   const head = el("div", "attnhead");
   head.appendChild(el("span", "attnkind", e.kind));

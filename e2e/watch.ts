@@ -22,7 +22,8 @@ import { auditWatchMessage, laneHostCommitLooking, laneSpentLooking, laneStalled
 import { composerArrival, composerHoldsExactly, composerResidue, composerRows,
   type ComposerArrival } from "../composer";
 import { FLEET_REPORT_STATUSES, type FleetReportEventPayload, type FleetReportStatus } from "../src/protocol";
-import { PANE_ACK_STALE_MS, opsOpen, opsUnacked } from "../src/opsevents";
+import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsPollRow, opsPollVisible, opsSubject, opsSummary,
+  type OpsPollSource } from "../src/opsevents";
 // the terminal status words, taken from the one place that defines them rather than re-listed here:
 // the retention check below counts exactly the rows pruneFleetEvents counts.
 import { FLEET_EVENT_TERMINAL } from "../server/types";
@@ -127,14 +128,14 @@ const watchRows = async (): Promise<WatchRow[]> =>
 const watchRow = async (id: string): Promise<WatchRow | undefined> =>
   (await watchRows()).find((w) => w.id === id);
 const eventRows = async (): Promise<FleetEventRow[]> =>
-  ((await (await get("/api/sessions")).json()) as { events: FleetEventRow[] }).events;
+  ((await (await get("/api/events")).json()) as { events: FleetEventRow[] }).events;
 const eventForWatch = async (watchId: string): Promise<FleetEventRow | undefined> =>
   (await eventRows()).find((e) => e.watchId === watchId);
 const deployWatchRows = async (): Promise<DeployWatchRow[]> =>
   (((await (await get("/api/sessions")).json()) as { watches: unknown[] }).watches as DeployWatchRow[])
     .filter((w) => w.kind === "deploy");
 const deployEventRows = async (): Promise<DeployEventRow[]> =>
-  (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as DeployEventRow[])
+  (((await (await get("/api/events")).json()) as { events: unknown[] }).events as DeployEventRow[])
     .filter((e) => e.kind === "deploy-terminal");
 const waitDeployEvent = async (watchId: string): Promise<DeployEventRow | undefined> => {
   let found: DeployEventRow | undefined;
@@ -198,7 +199,7 @@ const replyClarification = (tok: string, id: string, text: unknown): Promise<Res
     body: JSON.stringify({ text }),
   });
 const clarificationEventRows = async (): Promise<ClarificationEventRow[]> =>
-  (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as ClarificationEventRow[])
+  (((await (await get("/api/events")).json()) as { events: unknown[] }).events as ClarificationEventRow[])
     .filter((e) => e.kind === "clarification-request");
 const selfFleetReport = (tok: string | null, body: unknown): Promise<Response> =>
   fetch(`${BASE}/api/self/fleet-report`, {
@@ -214,7 +215,7 @@ const selfFleetReports = async (tok: string): Promise<{ response: Response; repo
   return { response, reports: body.reports ?? [] };
 };
 const fleetReportEventRows = async (): Promise<FleetReportEventRow[]> =>
-  (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as FleetReportEventRow[])
+  (((await (await get("/api/events")).json()) as { events: unknown[] }).events as FleetReportEventRow[])
     .filter((e) => e.kind === "fleet-report");
 // V1b — the return-path projection, read off the ROUTE. It is derived per request and persisted
 // nowhere, so a fleet.json read would answer `undefined` for every program and look like a missing
@@ -2689,8 +2690,9 @@ export async function run(): Promise<void> {
         && inboxEvent.payload.basis === "owner-inbox" && inboxEvent.payload.text === inboxText,
       JSON.stringify({ status: inboxRes.status, report: inboxReport, event: inboxEvent }));
 
-    // The owner's sight of it is the SAME payload the board already polls — the panel reads
-    // /api/sessions `events`, which is where fleetReportEventRows() just read it from. What must
+    // The owner's sight of it is the full trail, GET /api/events, which is where
+    // fleetReportEventRows() just read it from (the panel itself loads report bodies from
+    // GET /api/fleet-report and counts them off the poll's `reportsAwaitingOwner`). What must
     // also hold is that no SESSION sees it: fleetReportsFor binds worker OR receiver, and an
     // owner row has no receiver at all.
     const inboxScope = await selfFleetReports(b4Tok.get(taskLane.slot) ?? "");
@@ -2890,7 +2892,7 @@ export async function run(): Promise<void> {
     capState.events = [...(capState.events ?? []), ...filler, ...adversarial];
     writeFileSync(b4Path, JSON.stringify(capState, null, 2), { mode: 0o600 });
     await restartSrv();
-    const allAfterHydration = ((await (await get("/api/sessions")).json()) as
+    const allAfterHydration = ((await (await get("/api/events")).json()) as
       { events: { id: string }[] }).events;
     const survivedAdversarial = adversarial.filter((row) =>
       allAfterHydration.some((e) => e.id === row.id)).map((row) => row.id);
@@ -4948,7 +4950,7 @@ export async function run(): Promise<void> {
 
     const waitJobEvent = async (watchId: string): Promise<Record<string, unknown> | undefined> => {
       for (let i = 0; i < 80; i++) {
-        const rows = ((await (await get("/api/sessions")).json()) as
+        const rows = ((await (await get("/api/events")).json()) as
           { events: Record<string, unknown>[] }).events.filter((e) => e.watchId === watchId);
         if (rows.length) return rows[0];
         await Bun.sleep(250);
@@ -4958,7 +4960,7 @@ export async function run(): Promise<void> {
     const ev = sub.watch ? await waitJobEvent(sub.watch.id) : undefined;
     const evPayload = (ev?.payload ?? {}) as { result?: string; cmd?: string; exitCode?: number | null;
       artifacts?: { path: string; sha256: string; bytes: number }[] };
-    const evCount = ((await (await get("/api/sessions")).json()) as
+    const evCount = ((await (await get("/api/events")).json()) as
       { events: Record<string, unknown>[] }).events.filter((e) => e.watchId === sub.watch?.id).length;
     check("job watch: the verdict fires EXACTLY ONCE, with the command, the exit code and the artefact rows",
       !!ev && ev.kind === "command-job" && ev.subjectJobId === jobId && evCount === 1
@@ -5392,7 +5394,7 @@ export async function run(): Promise<void> {
     const allWatches = async (): Promise<TransitionWatchRow[]> =>
       ((await (await get("/api/sessions")).json()) as { watches: TransitionWatchRow[] }).watches;
     const allEvents = async (): Promise<TransitionEventRow[]> =>
-      ((await (await get("/api/sessions")).json()) as { events: TransitionEventRow[] }).events;
+      ((await (await get("/api/events")).json()) as { events: TransitionEventRow[] }).events;
     const transitionTexts = async (slot: number): Promise<number> =>
       (await plogRead()).filter((e) => e.slot === slot && e.text.startsWith("[fleet Supervisor transition ")).length;
     const complete = (tok: string, id: string, text: string): Promise<Response> =>
@@ -5611,7 +5613,10 @@ export async function run(): Promise<void> {
       // re-inlined there would leave every check below measuring code the bundle never runs
       check("client: the ops panel takes both event classes from src/opsevents.ts, the module under test",
         /import \{[^}]*\bopsUnacked\b[^}]*\} from "\.\/opsevents"/.test(cliSrc)
-          && /import \{[^}]*\bopsOpen\b[^}]*\} from "\.\/opsevents"/.test(cliSrc),
+          && /import \{[^}]*\bopsOpen\b[^}]*\} from "\.\/opsevents"/.test(cliSrc)
+          && /import \{[^}]*\bopsSubject\b[^}]*\} from "\.\/opsevents"/.test(cliSrc)
+          && /import \{[^}]*\bopsSummary\b[^}]*\} from "\.\/opsevents"/.test(cliSrc)
+          && !/\nfunction ops(Subject|Summary)\b/.test(cliSrc),
         "the opsevents import in src/client.ts");
       // the rows below are shaped by hand, so the imports are widened to the loose signatures the
       // fixtures were written against — the functions themselves are the module's own
@@ -5668,6 +5673,93 @@ export async function run(): Promise<void> {
         ids(filed) === "filed,filed2" && ids(unacked) === "stale"
           && !filed.some((f) => unacked.some((u) => u.id === f.id)),
         `filed=[${ids(filed)}] unacked=[${ids(unacked)}]`);
+
+      // (4b) THE OWNER POLL'S PROJECTION LOSES NOTHING THE PANEL PRINTS. /api/sessions carries
+      // opsPollRow(e) for the rows opsPollVisible admits, never the stored row. The expected strings
+      // are written from each fixture's FACTS, not computed from the full row: a key dropped from
+      // OPS_POLL_PAYLOAD_KEYS (or a subject/recovery field dropped from the row) prints `undefined`
+      // or `?` where a fact stood, and the line below names the kind it happened to.
+      const base = (o: Record<string, unknown>): OpsPollSource => ({ id: "p", watchId: "w1",
+        receiverSlot: 4, receiverOpenedAt: NOW - 9000, receiverSessionId: "sess", receiverIdleSec: 0,
+        createdAt: NOW - STALE - 1000, status: "delivered", delivery: "pane", attempts: 1,
+        deliveredAt: NOW - STALE - 1000, acknowledgedAt: null, subjectCwd: "/probe/cwd", ...o }) as unknown as OpsPollSource;
+      const kinds: [OpsPollSource, string, string][] = [
+        [base({ id: "k1", kind: "lane-ready", subjectSlot: 7, subjectBranch: "fleet/probe-ready",
+          payload: { ahead: 3, dirty: 1, idleMs: 5, observed: true, gitOp: false, awaiting: null, hostCommits: false } }),
+          "slot 7 · fleet/probe-ready", "3 ahead / 1 dirty"],
+        [base({ id: "k2", kind: "host-commit-ready", subjectSlot: 8, subjectBranch: "main",
+          payload: { ahead: 4, dirty: 2, idleMs: 5, observed: true, gitOp: null, awaiting: "main", hostCommits: true } }),
+          "slot 8 · main", "4 ahead / 2 dirty"],
+        [base({ id: "k3", kind: "merge-terminal", subjectSlot: 3, subjectBranch: "fleet/probe-merge",
+          payload: { status: "blocked", landed: false, branch: "fleet/probe-merge", at: NOW,
+            verify: { ok: false, timedOut: true }, conflicted: ["code.txt"] } }),
+          "slot 3 · fleet/probe-merge", "blocked · landed=NO · verify=FAILED"],
+        [base({ id: "k4", kind: "post-land-audit", subjectRepo: "probe-repo", subjectMainAfter: "abcdef1234567890",
+          payload: { result: "red", mainSha: "f".repeat(40), covers: [{ branch: "b", mainAfter: "c" }],
+            checks: { ran: 9, failed: 1 } } }),
+          "probe-repo @ abcdef12", "result=red"],
+        [base({ id: "k5", kind: "deploy-terminal", subjectDeployId: "0a1b2c3d",
+          payload: { ok: false, stage: "restart", target: "t", bootHead: null, hitTarget: null, bundleStale: null, at: NOW } }),
+          "deploy 0a1b2c3d", "ok=NO · stage=restart"],
+        [base({ id: "k6", kind: "command-job", subjectJobId: "0123456789ab",
+          payload: { result: "green", cmd: "bun run build", exitCode: 0,
+            artifacts: [{ path: "dist/a.js", sha256: "d".repeat(64), bytes: 1 },
+              { path: "dist/b.js", sha256: "e".repeat(64), bytes: 2 }] } }),
+          "command job 0123456789ab", "result=green · bun run build · 2 artefact(s)"],
+        [base({ id: "k7", kind: "lane-suite", subjectJobId: "ba9876543210", receiverSlot: null,
+          receiverOpenedAt: null, receiverSessionId: null, watchId: null, status: "inbox", delivery: "inbox",
+          deliveredAt: null, payload: { result: "red", branch: "fleet/probe-suite", exitCode: 1,
+            fails: ["a", "b", "c"], failCount: 12, tail: "t".repeat(200) } }),
+          "preview suite ba9876543210", "result=red · fleet/probe-suite · 12 failure(s)"],
+        [base({ id: "k8", kind: "fleet-report", subjectSlot: 5, subjectBranch: "fleet/probe-report", watchId: null,
+          payload: { reportId: "0".repeat(24), status: "needs-main", text: "the whole report",
+            taskId: "deadbeefcafe", originId: null, programId: null, basis: "lane-watch" } }),
+          "slot 5 · fleet/probe-report", "needs-main · task deadbeef"],
+      ];
+      const labelMiss = kinds.map(([full, subject, summary]) => {
+        const p = opsPollRow(full);
+        return opsSubject(p) === subject && opsSummary(p) === summary ? ""
+          : `${full.kind}: subject=${JSON.stringify(opsSubject(p))} summary=${JSON.stringify(opsSummary(p))}`;
+      }).filter(Boolean);
+      check("owner poll projection: every kind's projected row prints the same subject and summary facts as its full row",
+        labelMiss.length === 0, labelMiss.join(" | ") || `${kinds.length} kinds`);
+
+      // …and the fields the panel reads OUTSIDE the two labels: the class it falls in, who it is
+      // for, the clock it ages on and the four recovery lines of an uncertain row.
+      const recovered = base({ id: "rec", kind: "fleet-report", subjectSlot: 5, subjectBranch: "b", watchId: null,
+        status: "send-uncertain", deliveredAt: null, payload: { status: "failed" },
+        recovery: { state: "blocked", reason: "probe reason", nextAction: "probe next", effect: "probe effect", updatedAt: NOW } });
+      const classRows = [...kinds.map(([f]) => f), recovered,
+        ...[...excluded, justOver, justUnder].map((r) => base({ ...r, kind: "lane-ready" }))];
+      const fieldMiss = classRows.filter((f) => {
+        const p = opsPollRow(f);
+        return opsOpen([p]).length !== opsOpen([f]).length || opsUnacked([p], NOW).length !== opsUnacked([f], NOW).length
+          || p.receiverSlot !== f.receiverSlot || p.createdAt !== f.createdAt || p.deliveredAt !== f.deliveredAt
+          || JSON.stringify(p.recovery ?? null) !== JSON.stringify(f.recovery
+            ? { state: f.recovery.state, reason: f.recovery.reason, nextAction: f.recovery.nextAction, effect: f.recovery.effect }
+            : null);
+      }).map((f) => f.id);
+      check("owner poll projection: class, receiver, clock and recovery lines survive the projection unchanged",
+        fieldMiss.length === 0, `differ=[${fieldMiss}]`);
+
+      // THE CUT: what the panel lists (filed, not a report) plus every pane row that can age into
+      // opsUnacked — at ANY age, because the board judges the age on its own clock between polls.
+      const cutLedger = [...classRows,
+        base({ id: "ack-inbox", kind: "lane-suite", receiverSlot: null, status: "acknowledged", delivery: "inbox",
+          acknowledgedAt: NOW, payload: {} }),
+        base({ id: "subj-gone", kind: "lane-ready", status: "subject-gone" })];
+      const cut = cutLedger.filter(opsPollVisible).map((e) => e.id).sort().join(",");
+      check("owner poll cut: filed non-report rows and unacknowledged pane rows at any age — nothing terminal, no inbox report",
+        cut === "k1,k2,k3,k4,k5,k6,k7,k8,rec,filed,fresh,stale".split(",").sort().join(","), cut);
+
+      // …and what it must NOT carry: the payload bodies no label prints and the binding fields no
+      // panel line reads. These are the bytes the poll was paying for nobody.
+      const projected = JSON.stringify(kinds.map(([f]) => opsPollRow(f)).concat(opsPollRow(recovered)));
+      const leaked = ["whole report", "t".repeat(200), "sha256", "dist/a.js", "conflicted", "timedOut", "mainSha",
+        "covers", "watchId", "receiverOpenedAt", "receiverSessionId", "receiverIdleSec", "attempts", "subjectCwd",
+        "updatedAt", '"fails"', "idleMs", "hostCommits", "bootHead"].filter((k) => projected.includes(k));
+      check("owner poll projection: no payload body and no binding field the panel never prints rides along",
+        leaked.length === 0, `leaked=[${leaked}]`);
 
       // (5) the rendering, by regex over the source and weaker than a render test on purpose. Two
       // things must hold: the words are the ones the data supports, and the row offers NO ack — the

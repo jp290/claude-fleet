@@ -40,7 +40,7 @@ const selfDeployWatch = (token: string, deployId: string): Promise<Response> =>
     body: JSON.stringify({ kind: "deploy", deployId, idleSec: 0 }),
   });
 const deployEvents = async (): Promise<DeployEventRow[]> =>
-  (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as DeployEventRow[])
+  (((await (await get("/api/events")).json()) as { events: unknown[] }).events as DeployEventRow[])
     .filter((e) => e.kind === "deploy-terminal");
 
 // the tick is 10 s wide, so "not yet" and "wrong" are different answers. Poll for the expected

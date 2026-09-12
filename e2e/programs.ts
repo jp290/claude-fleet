@@ -9097,8 +9097,13 @@ export async function run(ctx: Ctx): Promise<void> {
       payload?: { status?: string; landed?: boolean; branch?: string } };
     type PmWatch = { id: string; kind?: string; slot: number; slotOpenedAt?: number;
       target?: number; targetBranch?: string; armed: boolean };
-    const pmPoll = async (): Promise<{ events: PmEvent[]; watches: PmWatch[] }> =>
-      (await (await get("/api/sessions")).json()) as { events: PmEvent[]; watches: PmWatch[] };
+    // the full trail is GET /api/events (the poll carries only the ops panel's projected cut);
+    // the watches still ride the poll
+    const pmPoll = async (): Promise<{ events: PmEvent[]; watches: PmWatch[] }> => {
+      const [ev, poll] = await Promise.all([get("/api/events"), get("/api/sessions")]);
+      return { events: ((await ev.json()) as { events: PmEvent[] }).events,
+        watches: ((await poll.json()) as { watches: PmWatch[] }).watches };
+    };
     // JOINED ON THE BRANCH, never on the slot id: slot numbers are recycled inside this very
     // section, and a count keyed on one would fold two different lanes into one number.
     const pmEvents = async (branch: string): Promise<PmEvent[]> =>
@@ -9503,7 +9508,7 @@ export async function run(ctx: Ctx): Promise<void> {
     type FfEvent = { id: string; watchId: string | null; kind: string; subjectSlot: number };
     const ffWatchId = ffWatchBody.watch?.id ?? "";
     const ffLaneEvents = async (): Promise<FfEvent[]> =>
-      ((await (await get("/api/sessions")).json()) as { events: FfEvent[] }).events
+      ((await (await get("/api/events")).json()) as { events: FfEvent[] }).events
         .filter((e) => e.watchId === ffWatchId && ffWatchId !== "");
     let ffEvents = await ffLaneEvents();
     for (let i = 0; i < 200 && ffEvents.length === 0; i++) {

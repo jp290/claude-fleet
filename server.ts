@@ -73,6 +73,7 @@ import {
   type DispositionWorker, type DispositionVerdict,
   type FleetReportStatus,
 } from "./src/protocol";
+import { opsPollRow, opsPollVisible } from "./src/opsevents";
 // the persisted domain model and its parsers — P4 Slice 1 moved them out whole; see server/types.ts
 import {
   MAX_SLOTS, watchKind, TRANSITION_AWAITING_MAX, TRANSITION_DEADLINE_MIN_SEC,
@@ -28468,10 +28469,13 @@ Bun.serve<WSData>({
         // the event-triggered siblings: an armed subscription nobody can SEE is the silent state this
         // feature exists to remove, so it rides the owner poll.
         watches,
-        // Typed Watch completions are durable objects; pane text is only their transport. The
-        // owner sees every receiver binding and terminal/uncertain state here, including events
-        // whose receiver has gone and that therefore cannot appear in any current /api/self row.
-        events: fleetEvents,
+        // Typed Watch completions are durable objects; pane text is only their transport. The poll
+        // carries the CUT the ops panel can show, PROJECTED to what it prints — one definition for
+        // both ends (src/opsevents.ts#opsPollVisible, #opsPollRow). Carried whole, this array was
+        // 182 857 B on the live fleet (2026-09-13) of which the board rendered none, and it made the
+        // 14 KiB budget in e2e/tasks.ts a wager on fleet activity. Every row, including events whose
+        // receiver has gone and that cannot appear in any current /api/self row: GET /api/events.
+        events: fleetEvents.filter(opsPollVisible).map(opsPollRow),
         // ONE NUMBER, on purpose: the attention inbox rides the app's most expensive path as the count of
         // rows that still want the owner; the bodies are behind GET /api/attention. OMITTED AT ZERO like
         // harness/effort: this payload is measured against a 12 KiB budget (e2e/tasks.ts, docs/data-saver.md
@@ -29812,6 +29816,10 @@ Bun.serve<WSData>({
     // door below, which is the same door every other inbox row uses.
     if (url.pathname === "/api/lane-suite/reds" && req.method === "GET")
       return json({ reds: openRedPreviews() });
+    // THE FULL TRAIL, owner side — every row the owner poll no longer carries (terminal,
+    // receiver-gone, subject-gone, inbox reports) with its whole payload. Explicit and never polled
+    // by the board; /api/sessions carries only the projected cut (src/opsevents.ts#opsPollRow).
+    if (url.pathname === "/api/events" && req.method === "GET") return json({ events: fleetEvents });
     const eventOwnerAck = /^\/api\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);
     if (eventOwnerAck && req.method === "POST")
       return await ownerAcknowledgeFleetEvent(eventOwnerAck[1]);

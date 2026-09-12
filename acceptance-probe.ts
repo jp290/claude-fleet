@@ -226,7 +226,7 @@ if (openX.ok) {
       deliveredAt?: number | null; acknowledgedAt?: number | null; subjectRepo?: string;
       subjectMainAfter?: string; payload: AuditWatchEventPayload };
     const eventFor = async (watchId: string): Promise<EventRow | undefined> =>
-      (((await (await get("/api/sessions")).json()) as { events?: EventRow[] }).events ?? [])
+      (((await (await get("/api/events")).json()) as { events?: EventRow[] }).events ?? [])
         .find((e) => e.watchId === watchId);
     // ESTABLISH, don't assert: poll until the transport reaches a terminal answer, and keep the last
     // reading either way so a failure reports the state it really saw rather than "undefined".

@@ -921,7 +921,7 @@ export async function run(): Promise<void> {
   check("stn1 complete twin: a replaced registrant is refused 409, the watch is disarmed with its reason, and no event exists",
     orphanRes.status === 409 && orphanText.includes("gone or was replaced")
       && orphanRow?.armed === false && (orphanRow.lastResult ?? "").includes("gone or replaced")
-      && !((await (await get("/api/sessions")).json()) as { events: TransitionEventRow[] }).events
+      && !((await (await get("/api/events")).json()) as { events: TransitionEventRow[] }).events
         .some((e) => e.watchId === reg2.watch?.id)
       && (await plogRead()).length === plogBeforeOrphan,
     `${orphanRes.status} ${orphanText} ${JSON.stringify(orphanRow ?? null)}`);

@@ -121,7 +121,7 @@ export async function run(): Promise<void> {
     let interruptedEvents: { watchId: string; kind: string; status: string;
       payload?: { status?: string; landed?: boolean } }[] = [];
     for (let i = 0; i < 160; i++) {
-      interruptedEvents = ((await (await get("/api/sessions")).json()) as
+      interruptedEvents = ((await (await get("/api/events")).json()) as
         { events: { watchId: string; kind: string; status: string;
           payload?: { status?: string; landed?: boolean } }[] }).events
         .filter((e) => e.watchId === subscribed.watch?.id);

@@ -89,7 +89,7 @@ type AuditFleetEvent = {
     covers: { branch: string; mainAfter: string }[]; checks: { ran: number; failed: number } | null; reason?: string };
 };
 const auditEvents = async (): Promise<AuditFleetEvent[]> =>
-  (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as AuditFleetEvent[])
+  (((await (await get("/api/events")).json()) as { events: unknown[] }).events as AuditFleetEvent[])
     .filter((e) => e.kind === "post-land-audit");
 const waitAuditEvent = async (watchId: string): Promise<AuditFleetEvent | undefined> => {
   let event: AuditFleetEvent | undefined;

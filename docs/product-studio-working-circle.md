@@ -602,7 +602,9 @@ and keeps the semantic side in provenance-bearing prose:
   line, the owner-playtest entry. `fleetReports` are prunable and their text is a pointer; a
   derivation that needs the report text to know the Program's state is wrong by construction.
 - **Steps 3 and 4 return as T1 worker reports:** `POST /api/self/fleet-report` with
-  `{status: complete|needs-main|failed, text}` (`src/protocol.ts#FLEET_REPORT_STATUSES`, `server.ts#openFleetReport`). The text
+  `{status: complete|needs-main|failed, text}` (`src/protocol.ts#FLEET_REPORT_STATUSES`, which also
+  carries `handoff` — a lane laying its baton down, never a step-3/4 result — and
+  `server.ts#openFleetReport`). The text
   begins with the worker label and the lane HEAD sha, then the artifact path, the critic verdict
   path and the one named defect or `none`. Achievement, unknowns, falsifiers and the worker's own
   self-attack stay in the tracked critic/report artifact the text points at.

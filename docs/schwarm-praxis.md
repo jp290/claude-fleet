@@ -123,7 +123,9 @@ Dazu genau eine angehängte Zeile in `docs/messungen/INDEX.md`:
 ### 6. Ernten — und der Schritt, ohne den der Schwarm nur Papier ist
 
 Jede Lane meldet mit `POST /api/self/fleet-report` — Body genau `{status, text}`, `status` eines von
-`complete` · `needs-main` · `failed` (`src/protocol.ts`, `FLEET_REPORT_STATUSES`), Text bis
+`complete` · `needs-main` · `failed` · `handoff` (`src/protocol.ts`, `FLEET_REPORT_STATUSES`; die
+vierte ist kein Urteil, sondern der Staffelstab einer Lane, deren Kontext voll läuft —
+`docs/self-api.md` §fleet-report/§succeed), Text bis
 `MAX_FLEET_REPORT_TEXT` = 4000 Zeichen —, landet ihre Notiz und schließt. Die Route ist lane-only:
 eine MAIN oder der `⚙ steward` bekommt dort 409. Die Program-MAIN liest die Zeilen mit
 `GET /api/self/fleet-report` und quittiert jede mit `POST /api/self/events/<eventId>/ack` —

@@ -878,7 +878,19 @@ export async function run(lc: LaneCtx): Promise<void> {
       laneRetire.status === 409 && laneRetireText.includes("a lane lands"),
       `${laneRetire.status} ${laneRetireText.slice(0, 160)}`);
 
+    // …and what the LEDGER says about a lane that took two sessions. The kill is the teardown this
+    // fixture needs anyway, and it is the cheapest disposition that writes a row: `successions` is
+    // the only field on it that can say the lane spanned more than one conversation, because
+    // sessionMs measures the LAST session alone — which is exactly why it must be on the row and
+    // not inferred from the count of prompts in a pane nobody keeps.
     await post(`/api/slots/${batonSlotId}/kill`, {});
+    const batonOutcome = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
+      { outcomes: { branch: string; disposition: string; successions?: number; commitCount: number }[] })
+      .outcomes.find((o) => o.branch === batonBranch);
+    check("(baton) the outcome row counts the batons — one lane, two sessions, one commit",
+      batonOutcome?.successions === 1 && batonOutcome.commitCount === 1
+        && batonOutcome.disposition === "killed-dirty",
+      JSON.stringify(batonOutcome ?? null).slice(0, 240));
     spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", batonCwd]);
     await post(`/api/tasks/${batonTaskId}/delete`, {});
   }

@@ -1207,15 +1207,21 @@ export async function run(lc: LaneCtx): Promise<void> {
     // …and only NOW may the first land move main
     writeFileSync(`${phLatch}.release`, "go\n", { mode: 0o600 });
     const vP1 = await waitMerge(lnP1.slot);
-    const p1Tip = phMain();
     const vP2 = await waitMerge(lnP2.slot);
+    // READ BACKWARDS FROM THE FINAL TIP, and not by sampling main between the two lands: the second
+    // land is released by the first one's own `finally`, so any `git rev-parse` in that window is a
+    // race with it — and a fixture that reads the first tip a moment too late would find the
+    // SECOND note under it and fail as a regression. Walking `mainBefore` back from the tip is the
+    // same fact without the clock: main went mainAtStart → first → second, each in ONE round.
     const p2Tip = phMain();
-    const nP1 = phNote(p1Tip);
     const nP2 = phNote(p2Tip);
+    const p1Tip = nP2?.mainBefore ?? "";
+    const nP1 = p1Tip === "" ? null : phNote(p1Tip);
     check("(C3b) two lands of ONE server are serialized across the whole rebase→gate→fast-forward span: both land, NEITHER carries ffRounds, and the second one's base IS the first one's tip",
       p2Fired.ok && vP1.gone && vP2.gone
-        && nP1?.branch === lnP1.branch && nP1.ffRounds === undefined && nP1.mainBefore === mainAtStart
-        && nP2?.branch === lnP2.branch && nP2.ffRounds === undefined && nP2.mainBefore === p1Tip
+        && nP1?.branch === lnP1.branch && nP1.ffRounds === undefined
+        && nP1.mainBefore === mainAtStart && nP1.mainAfter === p1Tip
+        && nP2?.branch === lnP2.branch && nP2.ffRounds === undefined && nP2.mainAfter === p2Tip
         && p1Tip !== mainAtStart && p2Tip !== p1Tip,
       JSON.stringify({ mainAtStart, p1Tip, p2Tip, first: nP1, second: nP2,
         fired: p2Fired.ok, goneFirst: vP1.gone, goneSecond: vP2.gone }));

@@ -7007,6 +7007,53 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     skip(`${RULE_SIGIL} — tails ending in an interpolation are not judgeable from source`,
       `not measured: ${unjudged.join(", ")}`);
 
+  // --- HALF THREE: the pane texts a tick builds INLINE. Half two's universe is the set of BUILDER
+  //     NAMES assigned to `const text`, so a tick that composes its hint from literals on the spot
+  //     contributes no name and was never in the subject at all. Read 2026-09-12 at the source: the
+  //     inbox nudge closed on `… aus $FLEET_SELF_TOKEN).` and EVERY row above stayed green, while
+  //     the Program-MAIN reported 82 unaccepted `inboxNudgeSend` deliveries to a codex pane in one
+  //     boot. The relapse list below missed the same text by one character — the `)` before the
+  //     period — which is why a substring list can never be the subject. The member set is
+  //     DERIVED the same way as the other two halves — a function that calls sendText and assigns a
+  //     `const text` opening on a string literal, with no `*Message(` call in the expression (that
+  //     is half two's half, and a runtime value like `body.text.trim()` is nobody's).
+  const FN_DECL = /(?:async )?function (\w+)\([\s\S]*?\n\}/g;
+  const inlineSenders: string[] = [];
+  const inlineBad: string[] = [];
+  const inlineUnread: string[] = [];
+  const inlineUnjudged: string[] = [];
+  let fnsScanned = 0;
+  for (const m of serverU.text.matchAll(FN_DECL)) {
+    fnsScanned++;
+    const body = m[0], name = m[1]!;
+    if (!body.includes("sendText(")) continue;
+    for (const a of body.matchAll(/const text = ((?:[^;]|\n)*?);/g)) {
+      const rhs = a[1]!;
+      if (/\b\w*Message\s*\(/.test(rhs) || !/^\s*[`"']/.test(rhs)) continue;
+      inlineSenders.push(name);
+      // the same tail judge as half two, fed ONLY the assignment: a tick body is full of other
+      // statement-terminating literals (log lines, keys) that are not the pane hint.
+      const r = judgeTails(`const text = ${rhs};`);
+      if (!r.tails) { inlineUnread.push(name); continue; }
+      for (const lit of r.flagged) inlineBad.push(`${name}: …${JSON.stringify(lit.slice(-48))}`);
+      if (r.unjudgeable) inlineUnjudged.push(`${name}×${r.unjudgeable}`);
+    }
+  }
+  // fails as ITSELF, twice over: a body scan that stopped parsing server.ts, and an inline hint
+  // whose tail could not be read, are both "not measured" — never the green of a clean tail. An
+  // EMPTY member set is the same answer: if every tick hint ever moves behind a builder, half two
+  // owns them and THIS row is what says so out loud instead of passing over nothing.
+  pin(`${RULE_SIGIL} — the inline tick pane-hint surface is readable`,
+    fnsScanned > 100 && inlineSenders.length > 0 && inlineUnread.length === 0,
+    inlineUnread.length ? `no tail found: ${inlineUnread.join(", ")}`
+      : `${fnsScanned} function(s) scanned, inline hint(s): [${[...new Set(inlineSenders)].sort().join(", ")}]`);
+  pin(`${RULE_SIGIL} — source: no inline tick pane hint ends on $NAME`,
+    inlineBad.length === 0,
+    inlineBad.length ? inlineBad.join("; ") : `${new Set(inlineSenders).size} tick hint(s) clean`);
+  if (inlineUnjudged.length)
+    skip(`${RULE_SIGIL} — inline tick hints ending in an interpolation are not judgeable from source`,
+      `not measured: ${inlineUnjudged.join(", ")}`);
+
   // THE COUNTER-PROBE, both directions, on the predicate itself — three lines of fixture, no parser.
   // Without it "narrow enough" is an opinion; with it, over-broad and under-broad both fail here.
   const PROBE = [
@@ -7021,12 +7068,16 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
 
   // --- THE MEASURED OLD FORM, negatively. Named as the byte sequence the live failure carried, so
   //     a reintroduction fails under the sentence that describes the incident and not under a regex.
-  const OLD_FORMS = ["x-fleet-self-token from $FLEET_SELF_TOKEN.", "x-fleet-self-token aus $FLEET_SELF_TOKEN."];
+  // the 2026-09-12 form differs from the 2026-09-05 pair by ONE character — the `)` before the
+  // period — which is exactly why a substring list is kept beside the derived universe and not
+  // instead of it: this row names the byte sequence, half three names the surface.
+  const OLD_FORMS = ["x-fleet-self-token from $FLEET_SELF_TOKEN.", "x-fleet-self-token aus $FLEET_SELF_TOKEN.",
+    "x-fleet-self-token aus $FLEET_SELF_TOKEN)."];
   const relapsed = OLD_FORMS.filter((f) =>
     serverU.text.includes(f) || read("lane-signals.ts").includes(f)
     || Object.values(rendered).some((t) => t.includes(f)));
-  pin(`${RULE_SIGIL} — the exact live-failure tail of 2026-09-05 is gone from both hint universes`,
-    relapsed.length === 0, relapsed.length ? `back: ${relapsed.join(" | ")}` : "neither form present");
+  pin(`${RULE_SIGIL} — the exact live-failure tails of 2026-09-05 and 2026-09-12 are gone from every hint universe`,
+    relapsed.length === 0, relapsed.length ? `back: ${relapsed.join(" | ")}` : `none of the ${OLD_FORMS.length} measured forms present`);
 }
 
 // --- THE ADJUDICATION RAIL'S ACTOR (I14). The land path stopped guessing who acted on 2026-08-23

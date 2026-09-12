@@ -1,4 +1,4 @@
-# Der Inbox-Nudge stirbt an einem Composer, der 129 Zeichen haelt — und es ist weder ein Timeout noch ein fremder Rest
+# Der Inbox-Nudge stirbt nach Enter; die gemeldeten 129 Zeichen sind nur die erste Bildschirmzeile
 
 Gemessen 2026-09-11 von der Owner-MAIN, nach dem Deploy `43be29af` (Baum `512c1abb`).
 Anlass: ein Beleg-Watcher, der pruefen sollte, ob K1 den Fehler beendet. Er hat ihn nicht beendet,
@@ -12,7 +12,8 @@ Befundes benennt die falsche Ursache, und ein Fix entlang ihr waere Arbeit am Pr
     inboxNudgeSend — prompt not accepted — composer still holds 129 chars after 3000ms;
                      Fleet payload rollback cleared
 
-Neun Vorkommen zwischen 12:06 und 14:08, dann weitere ab 14:27 auf dem neuen Baum.
+Korrektur aus der von Program-MAIN an diese Lane gegebenen Messung `4d53b489`: **zwoelf**
+Vorkommen zwischen 12:51:53 und 14:49:30, im Takt des Inbox-Nudge-Cooldowns.
 Empfaenger in allen Faellen: **Slot 10, Program `f9dc8e10`, Harness codex.**
 
 ## 1 · ES IST KEIN K1-REGRESS — das ist bewiesen, nicht vermutet
@@ -28,28 +29,33 @@ Beides war bis hier eine Behauptung. Jetzt ist es gemessen. **Der Fehlerzaehler 
 per-Boot** (`errors.since` == Bootzeit) — leer nach einem Deploy beweist deshalb nie etwas, und
 genau deshalb lief der Watcher.
 
-## 2 · ES IST KEIN FREMDER COMPOSER-REST
+## 2 · 129 IST KEINE PAYLOAD-LAENGE UND KEIN PRAEFIX
 
-Vier Beobachtungen, jede einzeln nachpruefbar:
+Die fruehere Fassung dieses Abschnitts rekonstruierte den Text mit der achtstelligen Anzeige-ID
+des Programs. Die Program-MAIN hat dagegen den tatsaechlichen einzeiligen Text aus
+`streams/prompts.jsonl` gelesen: **193 Zeichen / 195 Bytes**, zwoelfmal byte-identisch. Die
+24-stellige gespeicherte Program-ID erklaert die Differenz von 16 Zeichen zur rekonstruierten
+177-Zeichen-Fassung. Die geloggte Nutzlast wird hier nicht erneut aus einem Template nachgebaut.
 
-1. **Die Zahl ist konstant.** 129, ueber neun Vorkommen, zwei Boots, zwei Stunden. Ein Composer,
-   in dem jemand arbeitet, hat wechselnde Laengen.
-2. **129 ist ein exakter Praefix unserer EIGENEN Nutzlast**, mitten im Wort geschnitten:
+Vier belegte Punkte ersetzen die alte Praefix-Deutung:
 
-       [fleet inbox] 5 ungelesene Eintraege in der Inbox deines Programs f9dc8e10 —
-       GET /api/self/inbox, dann POST /api/self/inbox/<id>/        <- hier endet Zeichen 129
-
-   Die Nutzlast ist **177** Zeichen. 177 − 129 = **48** = genau der fehlende Schwanz
-   `read (x-fleet-self-token aus $FLEET_SELF_TOKEN).`
-3. **Die Pane wurde gelesen.** Composer leer (Platzhalter sichtbar), Footer
+1. `sendText` bildet die Fehlerzahl aus `awaitComposer` → `readComposer` → `composerResidue`.
+   Fuer den Codex-Glyph-Composer liest `composerResidue` nur `raw[i]`, also die erste sichtbare
+   Composerzeile (`composer.ts#composerResidue`). **129 ist ihre Umbruchbreite**, nicht die Menge
+   Text im Eingabepuffer.
+2. Der spaetere Rollback liest mit `readExactComposer` → `composerRows` die Glyph-Zeile und alle
+   Fortsetzungszeilen. Das Verdikt `Fleet payload rollback cleared` ist nur hinter
+   `composerHoldsExactly(read.rows, payload)` erreichbar. Damit standen beim Rollback alle
+   **193 Zeichen** von Fleet und nichts Fremdes im gemessenen Composerbereich; nur die Diagnose
+   untertrieb sie auf 129.
+3. **Die Pane wurde vor dem Send gelesen.** Composer leer (Platzhalter sichtbar), Footer
    `gpt-6-astra medium · ~/claude-fleet · Main [default]`.
-4. **Die naheliegende Hypothese ist GEPRUEFT UND WIDERLEGT**, nicht offen: eine verrutschte
+4. **Die naheliegende Gegenhypothese ist geprueft und widerlegt:** eine verrutschte
    Codex-Sub-Agent-Ansicht („Direct input is disabled") wuerde das Bild erklaeren — der Footer sagt
    `Main [default]`, sie liegt also nicht vor.
 
-Damit gilt die stehende Regel unveraendert und wird hier nicht geschwaecht: ungesendeter Text in
-einem Composer ist Claude Codes eigener Rest, nie ein Owner-Entwurf. Hier ist es nicht einmal das —
-es ist **Fleets eigene Nutzlast**.
+Damit gilt die stehende Regel unveraendert: Der Exact-Reader sah **Fleets volle eigene Nutzlast**,
+keinen Owner-Entwurf. Aus der Zahl 129 allein ist keinerlei Textinhalt ableitbar.
 
 ## 3 · ES IST KEIN TIMEOUT — und das stoesst die bisherige Fassung um
 
@@ -61,8 +67,10 @@ Unterschied zwischen ihnen ist der ganze Befund:
 | `prompt not submitted — the composer still held only part of the N-char payload … no Enter was sent` | `awaitArrival` == `"partial"`, **VOR** Enter | Paste noch unterwegs, Enter wurde bewusst unterdrueckt |
 | `prompt not accepted — composer still holds N chars after …` | `awaitComposer` **NACH** Enter, danach `rollbackOwnComposerPayload` | Enter ist gefeuert, der Composer leert sich nicht |
 
-**Wir bekommen die zweite.** Also ist Enter zum Messzeitpunkt laengst gesendet, und der Composer
-haelt danach den **Anfang** der Nutzlast, waehrend der Schwanz verbraucht ist.
+**Wir bekommen die zweite.** Also ist Enter zum Messzeitpunkt laengst gesendet. Der einzeilige
+Sensor sieht danach 129 Zeichen; der unmittelbar folgende Exact-Reader sieht weiterhin die
+vollstaendige 193-Zeichen-Nutzlast ueber alle Bildschirmzeilen. Die alte Behauptung, der Schwanz
+sei verbraucht, ist damit widerlegt.
 
 Die archivierte Zeile `3d6285f9` fuehrt den Fall als `ACCEPT_WAIT_MS`-Naht („fest, keine
 Lastkopplung, keine zweite Lesung") — also als Zeitproblem. **Das kann nicht die Ursache sein:**
@@ -71,14 +79,15 @@ stattfindet. Wer die Zeile als Timeout-Tuning wieder aufnimmt, baut am Befund vo
 
 ## 4 · WAS NICHT ESTABLISHED IST — und wie die naechste Probe aussehen muss
 
-**Warum Enter genau die fuehrenden 129 Zeichen stehen laesst.** Verdacht, ausdruecklich UNGEPRUEFT:
-ein 177-Zeichen-Paste bricht im Codex-Composer ueber mehrere Zeilen, und Enter reicht nur eine ein.
+**Warum Codex Enter nicht als Submit annahm, ist offen.** Eine Laengenschwelle aus 60 / 120 / 130 /
+177 Zeichen waere ein Artefakt des einzeiligen Sensors und ist als Probe verworfen.
 
-Waere das richtig, ist die Messgroesse die **LAENGE**, nicht die Zeit. Die Probe dazu:
-gestufte Nutzlasten (60 / 120 / 130 / 177 Zeichen) gegen eine **WEGWERF-Codex-Pane** — nie gegen
-eine lebende, und nie gegen Slot 10. Gesucht ist die Schwelle, ab der ein Rest bleibt.
+Die verbleibende Trennung hat genau zwei Arme in einer Wegwerf-Codex-Pane: (i) den tatsaechlich
+gelesenen 193-Zeichen-Text mit gleich langem Ersatz fuer `$FLEET_SELF_TOKEN`, und (ii) einen kurzen
+Text mit terminalem `$FLEET_SELF_TOKEN`. Damit variiert je Arm nur Laenge oder terminales Dollar-
+Token. Der 66-Zeichen-Erfolg unten trennt beides nicht, weil er zugleich kurz war und kein `$` trug.
 
-**Trifft es nur codex?** Alle neun Vorkommen liegen auf EINER codex-Pane. Gegenprobe am selben Tag:
+**Trifft es nur codex?** Alle zwoelf Vorkommen liegen auf EINER codex-Pane. Gegenprobe am selben Tag:
 ein Text von ueber 2 000 Zeichen an Slot 4 (claude, Opus 5) ging mit `acceptance: "observed"` durch.
 Das stuetzt „codex-spezifisch" und schwaecht „reine Laengenschwelle" — aber es ist **eine**
 Stichprobe je Seite und kein Beweis. Die Probe aus dem Absatz darueber muss beide Harnesses fahren.
@@ -137,3 +146,68 @@ Ein `tmux send-keys` von Hand hat keine Acceptance-Probe, kein Journal und keine
 hier 66 Zeichen Owner-Text vernichtet, und ohne die Kenntnis des Wortlauts waere die Nachricht
 verloren gewesen. Regel daraus: **eine fremde Pane wird nie per `send-keys` angesprochen**, auch
 nicht „nur fuer ein Enter".
+
+## 7 · PHASE-1-URSACHENPROBE 2026-09-12 — VOR DEM PAYLOAD AN DER IDENTITAET GESTOPPT
+
+Diese Lane startete fuenfmal den vorhandenen Real-TUI-Weg aus `acceptance-probe.sh` in einer selbst
+erzeugten Instanz. Der letzte Lauf war isoliert als Socket `fleetcomposerphase161661`, Port `26061`
+und State
+`~/.local/state/claude-fleet/probe-1e1dcd50-phase1-20260912/fleet-composer-phase1-instance-61661`;
+installiert war `codex-cli 0.153.4`. Der Wrapper beendet in seinem Trap exakt diesen tmux-Server.
+Nach dem Lauf waren weder ein solcher Prozess noch ein solcher Socket vorhanden.
+
+Reproduzierbarer Aufruf:
+
+```sh
+/Users/owner/.local/state/claude-fleet/probe-1e1dcd50-phase1-20260912/run.sh
+```
+
+Die Sonde nutzte `e2e/harness.ts#tmuxOut`, zustandsgepollte Plain-Captures fuer Readiness und
+`capture-pane -p -e` plus `composerRows` fuer den exakten Composer. Drei Probeaufbaufehler wurden
+vor jeder Eingabe als solche abgewiesen: fehlende gebundene Session-ID, Update-Menue/Readiness und
+ein Raw-SGR-Capture, auf das faelschlich die Plain-Header-Regel angewandt war. Der korrigierte
+fuenfte Lauf bewies lebenden Codex, Header und settled Modell, fand danach aber ueber
+`GET /api/slots/2/codex-candidates` **null** neue, diesem Pane-Leben eindeutig zuordenbare Rollouts:
+
+```text
+Error: slot 2 has 0 new Codex candidates, expected exactly one
+```
+
+Das ist die fehlende Faehigkeit genau benannt: Vor dem ersten Prompt lieferte der Adapter keinen
+eindeutig bindbaren Transcript-Kandidaten. Ob noch keine Rollout-Datei bestand oder die vorhandene
+Candidate-Selektion sie nicht diesem Pane-Leben zuordnen konnte, wurde nicht beobachtet und bleibt
+`unknown`. Die verlangte Reihenfolge „Session/Transcript-Identitaet beweisen, dann Enter testen"
+war damit in dieser Sonde zirkulaer. Die danach geplante Leer-Composer-Pruefung wurde nicht mehr
+erreicht. Nach fuenf Probeaufbau-Laeufen wurde der Retry-Deckel eingehalten und keine sechste Pane
+gestartet.
+
+**Kein Runtime-Ergebnis:** In allen fuenf Laeufen scheiterte eine Vorbedingung, bevor
+`POST /send {submit:false}` erreicht wurde. Deshalb gibt es hier absichtlich keinen angeblich
+„tatsaechlich geloggten Sendtext", keine Payload-Laenge, keinen angenommenen Prompt und keine
+Gegenprobe. H1, H2 und der vermutete dritte Mechanismus „terminales `$` oeffnet Codex' Mention-
+Overlay und dessen Enter wird nicht zum Submit" bleiben durch diese Lane **unknown**. Die
+Fixture-Kommentare in `acceptance-probe.ts` sind kein Runtime-Beleg.
+
+Der genannte Fix-Hash `1e1dcd50` war in diesem Checkout kein aufloesbares Git-Objekt; seine Diff
+wurde daher nicht behauptet. Fuer den aktuellen Baum ist nur der deterministische Pin belegt:
+`bun e2e/pins.ts` endet `ALL PASS` und sagt, dass keiner der 13 abgeleiteten Fleet-Hint-Builder auf
+einem `$NAME`-Token endet, die alte Schlussform als Gegenfixture erkannt wird und die konkrete alte
+Fehlerschlussform aus beiden Hint-Universen verschwunden ist. Das stuetzt den beabsichtigten Fix,
+ersetzt aber keinen ausgefuehrten Codex-Turn.
+
+**Ein kleinster Produktfix zur einzig verifizierten Produktluecke:** In `server.ts#sendText` darf
+die Post-Enter-Diagnose ihre Laenge nicht mehr aus `awaitComposer`/`composerResidue` bilden. Sie
+soll einen frischen `readExactComposer` verwenden und bei `kind:"rows"` die sichtbaren
+Fortsetzungszeilen beziehungsweise den bekannten Payloadvergleich melden. Der deterministische
+Test gehoert in `e2e/watch.ts` neben die vorhandenen ACP-26-Frames: ein umbrechender Codex-Frame
+muss 193 Payload-Zeichen statt 129 Zeichen erster Zeile diagnostizieren. Das macht die Zustellung
+nicht heil und behauptet keinen H1/H2-Entscheid; es verhindert aber, dass der Sensor erneut eine
+falsche Laengenursache verschreibt.
+
+**Offene Grenze fuer Phase 2:** Die echte Ursachenprobe braucht einen Zwei-Stufen-Join: den leeren
+Composer ohne Transcript-Pin beweisen und den Prompt in der isolierten Pane senden, danach genau
+den dadurch neu entstandenen Rollout anhand Spawn-Fenster, cwd und exaktem Prompt binden und erst
+dann die Vorher-/Nachher-Frames auswerten. Diese
+Scope-Erweiterung wurde nach dem Retry-Deckel nicht automatisch ausgefuehrt. Die Program-MAIN soll
+die Korrekturen aus Notiz `4d53b489` sowie diesen Probeaufbau-Befund in Task `4d53b489` aufnehmen;
+der Zustellungsfix selbst und Originalphasen 2/3 bleiben offen.

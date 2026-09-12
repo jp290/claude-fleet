@@ -1,3 +1,65 @@
+# HANDOFF — Orchestrator Slot 5 → Nachfolgerin (Fable 5.1, Haupt-Checkout, Owner-Token): Karten-Serie laeuft, Wellen-Nachweis erbracht, Succession auf Owner-Anweisung; 2026-09-12 22:0x, ctx NICHT MESSBAR (Ursache unten, gefunden)
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **ROLLE:** Orchestrator, nicht Betriebs-MAIN (Slot 6 = Program Fleet-Betrieb f170dc46; Slot 6 faehrt auf
+  Owner-Anweisung 22:0x ebenfalls seine Succession — ihre Nachfolgerin ist dann die MAIN). Slot 6s Lanes weder
+  treiben noch watchen. Slot 11 (Astra Worktrail) NICHT killen. Keine lokalen Hintergrund-Watcher (Mac-RAM).
+- **DEINE AUTOS SIND MIT SLOT 5 GESTORBEN — ZUERST NEU ARMIEREN:** ein einziges Self-Auto alle 5400 s
+  (Owner 18:2x: „alle 15 min ist viel zu viel", 90-min-Takt), Text = die Arbeitsliste unten. Kein 15-min-Takt.
+- **ARBEITSLISTE JE TICK (Fakten zuerst: Owner-Poll, fleet.json tasks+merges+fleetReports,
+  post-land-audits.jsonl, lane-outcomes.jsonl, GET /api/helper/jobs):**
+  (a) Welle 1 der Karten-Serie auf Slot 1, Branch `fleet/260912161659-de75`, Zeilen b2f439fe (S1) / 9b691419
+  (S3) / ebfb7d71 (S2): Stand 21:5x 9 Commits, 51 %, faehrt Vorschau; gelandet = alle drei done + Outcome-Zeile
+  fuer die Branch. Landet Slot 6 bzw. dessen Nachfolgerin.
+  (b) Welle 1 gelandet UND Lane-Slot frei → Projektion `bun task-land-waves.ts --state fleet.json
+  --default-repo /Users/owner/claude-fleet`, dann `POST /api/wave/dispatch` fuer Welle 2 {a672b626 S4,
+  08ec67c0 S6, b8cb3c75 S5} — oder die Menge, die die Projektion zeigt (S9 c5f26326 kann dazukommen; Kappe 3).
+  (c) S8 ab632dae (Staffelstab fuer Lanes) laeuft auf Slot 4 (41 %). S7 5ac5565d (Wellen-Budget statt
+  Konstante 3) ist Gate-Aenderer, geht EINZELN nach Welle 2 (queue-en, Tick nimmt sie).
+  (d) Nichts steht in der Queue: Slot 3 ist frei und bleibt es, bis Welle 1 landet.
+  (e) Owner nur bei ROT oder echter Entscheidung ansprechen; sonst je Tick genau ein Satz.
+- **WELLEN-NACHWEIS IST ERBRACHT** (Kommentar auf f6db3487, 21:1x): Audit 19:45 green, 4238/0, mainSha
+  bb6fa892, EIN Cover {1188, 847d4aff} — eine Welle = ein Land = ein Cover (die Erwartung „zwei Covers" aus
+  c7fd25dd war falsch, korrigiert). Nichts mehr zu tun.
+- **WARUM KEINE SUCCESSION LIEF (Owner-Frage 22:0x, beantwortet, Kommentar auf 42c53378):** (1) `tickMigrate`
+  wird nur bei `FLEET_MIGRATE_PCT > 0` registriert (server.ts ~24714) — Variable in .env/watchdog.sh NICHT
+  gesetzt, der Tick lief live noch nie. (2) `contextWindowFor` kennt „claude-fable-5" und „fable", NICHT
+  „claude-fable-5-1" (src/protocol.ts ~248) → `contextFill` null → jeder Fable-Orchestrator ist `ctx: null`
+  und fuer den Tick unsichtbar. Fix (1) = `.env`-Zeile `FLEET_MIGRATE_PCT=30` + srv-Neustart (Owner-Akt);
+  Fix (2) = ein Tabelleneintrag + Pin, Traeger 42c53378 (Leichtgewicht, pending). **Bis dahin: Fuellstand
+  NICHT messbar — plane die eigene Uebergabe nach Tool-Output-Volumen (Suite-Tails in Dateien) und uebergib
+  nach ~6–8 Ticks freiwillig.**
+- **ASTRA-BEFUNDE — der Owner will sie besprechen (22:0x, offen):** Notiz gelandet als a2e9d5d9
+  (`docs/messungen/2026-09-13-agenten-schnittstelle-entscheid.md`, 219 Z.). Kern in vier Saetzen: HTTP als
+  Transport behalten (Board/Telefon, Helper, Hub haengen daran; Konsole-statt-Web-API ist die falsche Achse).
+  Erster teurer Bruch: der Inbox-Nudge speichert den Dedupe-Key auch bei `unobservable` (server.ts ~12161), eine
+  ungelesene Inbox kann ohne bestaetigten Weckruf stumm bleiben; Auto ignoriert den Rueckgabewert ebenso
+  (~9210), Merge-Verdikt setzt danach `mark(true)` (~20103) — drei getrennte Folgeschnitte. Ausgehend:
+  rollenbezogene ctl-Self-Verben fuer ALLE Rollen (ctl.sh heute nur Controller, in AGENTS.md 0x, in 44/517
+  Prompts). Eingehend: MCP-Tools sind kein Push-Ersatz (unsupported), Claude Code Channels als isolierte Probe
+  pruefen, Hooks nur zum Nachholen, /loop nicht als Watch-Ersatz. Der konkrete Nudge-Befund haengt an 1e1dcd50.
+  Zahlen: Live-GET 295 B/16,5 ms, ctl events 111 B/688 ms, je Einzelprobe. Offen laut Astra: Zustellnenner,
+  Binary-Abgleich, OOM-Ursache, reale MCP-/Harness-Abnahme.
+- Deploy: Slot 6 hat 21:0x deployt (deployGap 1). Slot 1 (Leichtgewicht-Baustein db7e7b57) und Slot 3
+  (Astra-Notiz) habe ich auf Abnahme von Slot 10 gelandet; c71b96eb (Integration) liegt pending bei Slot 10.
+
+## 1. WAS DIESE SESSION GETAN HAT (15:5x–22:0x)
+
+- Succession von Slot 4; Analyse Buendelung+Spezifizierung mit zwei Analyst-Agenten → Messnotiz 978ede07;
+  Karten-Serie S1–S9 gefilt (Fleet-Betrieb, alle mit bestaetigter Flaeche, Karten-Form ZIEL/FLAECHE/DONE/
+  VERIFY/VERBOTEN); Astra-Brief gefilt, gelaufen, gelandet; zwei Lands fuer Slot 10; Welle 1 ueber die Tuer
+  dispatcht; Wellen-Nachweis geschrieben; Slot 6 zweimal korrigiert (rote Vorschau gemeldet, Kontextangabe
+  31/32 % vs gemessen 39 %); Ursache der fehlenden Successions gefunden.
+
+## 2. NICHT GEMESSEN
+
+Ob eine Dreierwelle in einer Opus-Lane in den Kontext passt (Slot 1 bei 51 % nach 9 Commits — Self-Split ist
+der Ausweg). Ob der Tick die codex-Zeile immer vor einer Welle nimmt (heute: ja, einmal). RAM je Suite auf dem
+Second-host.
+
+---
+
 # HANDOFF — Program-MAIN Fleet-Betrieb (Program `f170dc46`), Slot 6, Opus 5; 2026-09-12 18:3x, ctx GEMESSEN 39,1 % (391 288 / 1 000 000)
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

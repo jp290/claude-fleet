@@ -127,7 +127,29 @@ verifiziert, das sie verändert, und ein Rot ließe sich zwischen „die Änderu
 Änderung hat das Messinstrument verschoben" nicht mehr trennen. Dieselbe Trennung, die
 `docs/verify-tiering.md` §11.7 für den Flake-Beweis verlangt.
 
-*Falsifiziert durch:* ein Wellen-Kandidat mit n>1, in dem eine Zeile `isolatedPreview:true` trägt.
+*Falsifiziert durch:* ein Wellen-Kandidat mit n>1, in dem eine Zeile die Gate-Apparatur anfasst.
+
+**Nachtrag 2026-09-12 — R2 hat seitdem ein EIGENES Prädikat, `task-land-waves.ts#isGateMachinery`.**
+Die Fassung oben lieh sich `isolatedPreview === true`, und das ist die Antwort auf eine andere
+Frage: `verify-proportion.ts` empfiehlt damit einen isolierten VORSCHAULAUF, und die Empfehlung gilt
+für jeden Pfad unter `e2e/` — zu Recht, ein neues Check-Modul verdient eine Tier-2-Vorschau. R2
+fragt dagegen, ob die Zeile das MESSINSTRUMENT verschiebt. Gemessen an den 42 offenen
+`auftrag`-Zeilen (Baum `edbc153a`, `bun task-land-waves.ts --state fleet.json`): 18 Flächen nennen
+`e2e/pins.ts`, 17 `e2e-isolated.sh`, und jede gut geformte Code-Zeile legt einen Check neben seine
+Familie unter `e2e/<familie>.ts`. Das geliehene Flag hielt also genau die Zeilen allein, die TESTS
+MITBRINGEN; bündelbar blieben nur testlose. Ein Check-Modul ist kein Gate, es ist ein Passagier, den
+das Gate trägt.
+
+Gate-Apparatur ist seitdem: jedes `e2e-*.sh` (inkl. `e2e-stage.sh`, `e2e-isolated.sh`), jedes
+`fleet-e2e*.ts`, dazu `e2e/harness.ts`, `e2e/ctx.ts`, `e2e/pins.ts`, `merge-prompt.ts`,
+`verify-proportion.ts`, `watchdog.sh`. Die beiden Globs sind der Regelteil, die sechs Einzelnamen
+der Listenteil; `e2e/pins.ts` befestigt beide Richtungen gegen den Baum (jeder Wrapper auf Platte
+wird erkannt · jeder Einzelname existiert noch · ein Check-Modul daneben wird NICHT erkannt).
+`verify-proportion.ts` bleibt unverändert — seine Beweis-Empfehlung war nie falsch. §7.3 bleibt
+unberührt. **`clarify-prompt.ts` steht bewusst NICHT auf der Liste** (Owner-Vorgabe 2026-09-12): es
+steht in der `e2e-or-merge-land`-Regel wegen seiner Beweislast, aber es baut den Gründungsbrief
+einer Clarify-Lane und gehört keinem Schritt der Verify-Kette an — `merge-prompt.ts` dagegen liegt
+im Merge-/Land-Pfad und wird vom Gate selbst typgeprüft.
 
 ### R3 — Gebündelt wird auf BESTÄTIGTER Fläche, und die Bündelung folgt der Überlappung
 

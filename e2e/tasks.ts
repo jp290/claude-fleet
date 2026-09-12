@@ -4272,10 +4272,13 @@ export async function run(ctx: Ctx): Promise<void> {
     // The third row is the ORDER of the two verdicts, not a repeat of the second: it names the
     // same gate file with a DERIVED surface, and R3 must answer first — "gate changer" asserted
     // over a surface read out of the row's prose would be a claim about the text, not the gate.
+    // The file is `e2e-stage.sh` and not a module under `e2e/`: since 2026-09-12 R2 reads
+    // `isGateMachinery`, so only the apparatus itself answers here — the check-module case is its
+    // own pair of probes at the end of this section.
     const gate = landWavesOf(landProject([
-      landRow("ga", 1, ["e2e/x.ts"]),
-      landRow("gb", 2, ["e2e/x.ts", "src/b.ts"]),
-      landRow("gd", 3, ["e2e/x.ts"], { filesOrigin: "derived" }),
+      landRow("ga", 1, ["e2e-stage.sh"]),
+      landRow("gb", 2, ["e2e-stage.sh", "src/b.ts"]),
+      landRow("gd", 3, ["e2e-stage.sh"], { filesOrigin: "derived" }),
     ]));
     check("land waves: R2 — a gate changer lands alone, but only R3 speaks for an underived surface",
       JSON.stringify(gate.map((w) => [w.ids, w.reasonAgainst, w.savingsSec]))
@@ -4369,6 +4372,36 @@ export async function run(ctx: Ctx): Promise<void> {
       taskClientSource.length
         ? "src/client.ts carries no projectLandWaves( call or no Lande-Wellen section"
         : taskClientReadError || "client source unreadable");
+
+    // --- R2 reads the APPARATUS, not the proof recommendation (2026-09-12). The pair below is the
+    // whole finding: until this change `classify` asked `verificationProportionFor(files)
+    // .isolatedPreview === true`, which is TRUE for every path under `e2e/` — so the two rows in
+    // (d), each of which merely ADDS a check next to its family, were held apart as "gate changers"
+    // and only testless rows could ever form a wave. Over the real 42 open auftrag rows that was 18
+    // surfaces naming e2e/pins.ts and 17 naming e2e-isolated.sh.
+    //
+    // MUTATION: put `proportion.isolatedPreview === true` back into classify and (d) goes red —
+    // both rows fall to "gate-aenderer" and the wave splits in two. (e) is the control that keeps
+    // the widening honest: it is the SAME two rows, and the one that additionally touches the
+    // apparatus must still land alone, or the predicate would have bought its bundling by giving up
+    // R2 entirely.
+    const checkModules = landWavesOf(landProject([
+      landRow("ma", 1, ["server.ts", "e2e/attention.ts"]),
+      landRow("mb", 2, ["server.ts", "e2e/tasks.ts"]),
+    ]));
+    check("land waves: two rows that each ADD a check module fold into one wave — a check module is not the gate",
+      JSON.stringify(checkModules.map((w) => [w.ids, w.reasonAgainst, w.sharedFiles, w.savingsSec]))
+        === JSON.stringify([[["ma", "mb"], null, ["server.ts"], CODE_LAND_SEC]]),
+      JSON.stringify(checkModules));
+
+    const machinery = landWavesOf(landProject([
+      landRow("na", 1, ["server.ts", "e2e/attention.ts", "e2e-stage.sh"]),
+      landRow("nb", 2, ["server.ts", "e2e/tasks.ts"]),
+    ]));
+    check("land waves: the same pair splits again as soon as one row touches the apparatus itself",
+      JSON.stringify(machinery.map((w) => [w.ids, w.reasonAgainst, w.savingsSec]))
+        === JSON.stringify([[["na"], "gate-aenderer", 0], [["nb"], null, 0]]),
+      JSON.stringify(machinery));
   }
 
   // --- W2 · the file surface of an EXISTING row: PROPOSE (self) / CONFIRM (owner). The pair that

@@ -67,6 +67,42 @@ export interface LandWaveProjection {
 // audit leaves behind.
 export const LAND_WAVE_MAX_DEFAULT = 3;
 
+// R2 ASKS A DIFFERENT QUESTION THAN THE PROOF RECOMMENDATION, and until 2026-09-12 it borrowed the
+// answer to the wrong one. `verify-proportion.ts#verificationProportionFor(...).isolatedPreview`
+// says "this change should be PREVIEWED in isolation" — a recommendation about how much proof to
+// buy, and it is true for every path under `e2e/`, because a new check module deserves a Tier-2
+// preview. R2 says "whoever changes the GATE lands alone" — a statement about the measuring
+// apparatus itself, so that a red audit stays separable into "the change is wrong" and "the change
+// moved the instrument" (docs/queue-wellen-2026-09-06.md §2 R2, the same cut
+// docs/verify-tiering.md §11.7 demands of a flake proof).
+//
+// The two coincided nowhere useful. Measured over the 42 open auftrag rows of the real fleet.json
+// (tree edbc153a): 18 surfaces name `e2e/pins.ts` and 17 name `e2e-isolated.sh` — and every
+// well-formed code row adds a check under `e2e/<family>.ts`, so borrowing the preview flag made R2
+// hold back exactly the rows that BRING TESTS and leave only testless ones bundlable. A check
+// module is not the gate; it is a passenger the gate carries.
+//
+// Hence this list, and hence it is a RULE and not a snapshot: the two globs cover every wrapper and
+// every runner in the tree, present and future, so adding `e2e-foo.sh` needs no edit here. Only the
+// named singletons are spelled out, and `e2e/pins.ts` pins BOTH directions of that (a wrapper on
+// disk the predicate misses, and a named file that no longer exists).
+//
+// `verify-proportion.ts` stays untouched on purpose — its recommendation was never wrong. And
+// `clarify-prompt.ts`, its neighbour in the E2E rule there, is deliberately absent here (owner,
+// 2026-09-12): it builds a clarify lane's founding brief and belongs to no step of the verify
+// chain, while `merge-prompt.ts` sits in the merge/land path and is type-checked by the gate itself.
+export const GATE_MACHINERY_FILES: readonly string[] = [
+  "e2e/harness.ts", "e2e/ctx.ts", "e2e/pins.ts",
+  "merge-prompt.ts", "verify-proportion.ts", "watchdog.sh",
+];
+
+/** R2's own predicate: does this path change the apparatus that would verify the wave? */
+export function isGateMachinery(path: string): boolean {
+  return GATE_MACHINERY_FILES.includes(path)
+    || /^e2e-.*\.sh$/.test(path)
+    || /^fleet-e2e.*\.ts$/.test(path);
+}
+
 // Mediane 2026-09, docs/messungen/2026-09-06-merge-prozess-robust.md §1.
 // ONE definition on purpose: the board prices a wave with exactly the numbers
 // `bun task-land-waves.ts --state fleet.json` prices it with, or the CLI check run after a land
@@ -99,11 +135,13 @@ function classify(task: TaskWaveInput): ClassifiedRow {
   // "kein-program" (2026-09-07) slots in beneath it and leaves the order of the three older reasons
   // untouched: it is the second ABSENCE, and a row without a program cannot be bundled at all — so
   // "its surface is only derived" would answer a question that no longer decides anything.
+  // R2 reads `isGateMachinery` above and NOT `proportion.isolatedPreview` (2026-09-12) — the two
+  // answer different questions, and the block above that predicate says which.
   const reasonAgainst: LandWaveReasonAgainst | null =
     !files.length ? "keine-flaeche"
       : !programId ? "kein-program"
         : task.filesOrigin !== "confirmed" ? "flaeche-nur-abgeleitet"
-          : proportion.isolatedPreview === true ? "gate-aenderer"
+          : files.some(isGateMachinery) ? "gate-aenderer"
             : null;
   return { id: task.id, created: task.created, files, programId, klasse, reasonAgainst };
 }

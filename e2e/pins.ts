@@ -49,6 +49,7 @@ import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 // replaces was a hand-kept copy of the roles going stale, so a pin that re-spelled them would be
 // the same defect one layer up.
 import { buildRepoGraph, roleOf, type PathRole } from "../server/deploy-classify";
+import { GATE_MACHINERY_FILES, isGateMachinery } from "../task-land-waves";
 import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
 import { readContextManifest } from "../context-manifest";
 import { validUseWhen, validateContextPacks } from "../context-pack-validator";
@@ -2360,6 +2361,39 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && /IT IS NOT COUPLED TO UNDO_STACK_MAX/.test(landWaves ?? "")
       && /export const LAND_WAVE_MAX_DEFAULT/.test(landWaves ?? ""),
     `door=${capDoorAt > 0} identifier=${/wIds\.length > LAND_WAVE_MAX_DEFAULT/.test(capDoor)} disclaimer=${/IT IS NOT COUPLED TO UNDO_STACK_MAX/.test(landWaves ?? "")}`);
+
+  // (2b) R2'S PREDICATE IS FASTENED TO THE FILES ON DISK (2026-09-12). `isGateMachinery` is what
+  // makes a row land alone, and its other side is a SHELL SCRIPT and a directory listing — nothing
+  // tsc can reach. Three rules, and the third is the one the change was made for:
+  //   A. every wrapper and runner in the tree answers TRUE. The predicate says this with two globs
+  //      rather than a list, so A also fails the day someone replaces them with a literal list and
+  //      a new `e2e-foo.sh` appears beside it.
+  //   B. every singleton the list names still EXISTS. A list that outlives its files silently
+  //      shrinks R2, and the shrinking is invisible: rows simply start bundling.
+  //   C. a check module under `e2e/` that is not one of those singletons answers FALSE — the whole
+  //      finding. `verify-proportion.ts#ruleFor` classifies all of `e2e/` as `e2e-or-merge-land`
+  //      (isolatedPreview:true), which is the right PROOF recommendation and the wrong answer to
+  //      "did this row change the gate": borrowing it held back every row that brings tests.
+  //      C is what goes red if the predicate is ever pointed back at isolatedPreview.
+  const rootEntries = readdirSync(ROOT);
+  const wrappersAndRunners = rootEntries
+    .filter((f) => /^e2e-.*\.sh$/.test(f) || /^fleet-e2e.*\.ts$/.test(f)).sort();
+  const missedMachinery = wrappersAndRunners.filter((f) => !isGateMachinery(f));
+  pin("R2: every e2e wrapper and fleet-e2e runner on disk is gate machinery",
+    wrappersAndRunners.length >= 6 && missedMachinery.length === 0,
+    `${wrappersAndRunners.length} on disk${missedMachinery.length ? ` · MISSED: ${missedMachinery.join(", ")}` : ""}`);
+  const goneMachinery = GATE_MACHINERY_FILES.filter((f) => !exists(f));
+  pin("R2: every file the gate-machinery list names singly still exists",
+    GATE_MACHINERY_FILES.length > 0 && goneMachinery.length === 0,
+    `${GATE_MACHINERY_FILES.length} named${goneMachinery.length ? ` · GONE: ${goneMachinery.join(", ")}` : ""}`);
+  const checkModules = readdirSync(`${ROOT}/e2e`)
+    .filter((f) => f.endsWith(".ts")).map((f) => `e2e/${f}`)
+    .filter((f) => !GATE_MACHINERY_FILES.includes(f)).sort();
+  const misreadModules = checkModules.filter(isGateMachinery);
+  pin("R2: a check module beside its family is NOT gate machinery — the passenger is not the apparatus",
+    checkModules.length >= 10 && misreadModules.length === 0
+      && ["e2e/harness.ts", "e2e/ctx.ts", "e2e/pins.ts"].every(isGateMachinery),
+    `${checkModules.length} check modules${misreadModules.length ? ` · MISREAD: ${misreadModules.join(", ")}` : ""}`);
 
   // (3) THE AUDIT COVER'S `proportional` IS THE GATE'S OWN, and the whole pass-through is source-
   // only: recordLand hands `prov.verify?.proportional === true` to schedulePostLandAudit, that

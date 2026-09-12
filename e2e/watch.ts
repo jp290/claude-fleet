@@ -3341,22 +3341,37 @@ export async function run(): Promise<void> {
         standing: afterSecond?.decision ?? null }));
 
     // --- criterion (d), measured rather than asserted in prose: the door judges and actuates
-    // nothing. The queue row is a REAL one, the lanes are alive, no text reached any pane, and the
-    // report tail is exactly as long as it was — an accepted row is kept the way a terminal row is.
+    // nothing — no Task.status, no lane teardown, no retention pass. The queue row is a REAL one,
+    // the lanes are alive, and the report tail is exactly as long as it was: an accepted row is
+    // kept the way a terminal row is.
+    //
+    // THE ONE THING THE DOOR NOW DOES WRITE, and this clause replaced "no text reached any pane"
+    // on 2026-09-12: the verdict is CARRIED to the lane that filed the report
+    // (server.ts#deliverFleetReportDecision). Until then a rejected lane learned its verdict only
+    // if a human or the Controller forwarded it — measured 2026-09-06 on slot 11, reports 097cd80b
+    // and b8188322 — and the reject loop could not close without a third party. The old assertion
+    // `laneWritesAfter === 0` was the old contract, not a safety property, and it is REPLACED here
+    // rather than dropped: a carry is exactly one line per decision, into the reporting lane's own
+    // pane, and nothing else moves. Stated per lane and by CONTENT, so "the door started writing
+    // other things into panes" and "one lane got two copies" both still fail.
     const d1TaskAfter = ((await (await get("/api/tasks")).json()) as { tasks?: { id: string; status: string }[] })
       .tasks?.find((t) => t.id === d1TaskId);
     const laneStillOpen = ((await (await get("/api/sessions")).json()) as
       { slots: { id: number; cwd: string | null }[] }).slots
       .filter((x) => [acceptLane.slot, rejectLane.slot, terminalLane.slot].includes(x.id) && x.cwd).length;
     const plogAfterDecision = await plogRead();
-    const laneWritesAfter = plogAfterDecision.slice(plogBeforeDecision)
-      .filter((entry) => [acceptLane.slot, rejectLane.slot, terminalLane.slot].includes(entry.slot)).length;
-    check("D1 the decision actuates nothing: Task.status, the lanes, the worker panes and report retention are untouched",
+    const decidedLanes = [acceptLane.slot, rejectLane.slot, terminalLane.slot];
+    const laneWrites = plogAfterDecision.slice(plogBeforeDecision)
+      .filter((entry) => decidedLanes.includes(entry.slot));
+    const carriesPerLane = decidedLanes.map((slot) => laneWrites.filter((e) => e.slot === slot).length);
+    check("D1 the decision actuates nothing BUT the carry: Task.status, the lanes and report retention are untouched, and each decided lane gets exactly ONE verdict line",
       d1TaskId !== "" && d1TaskAfter?.status === d1TaskStatusBefore
-        && laneStillOpen === 3 && laneWritesAfter === 0
+        && laneStillOpen === 3
+        && carriesPerLane.every((n) => n === 1)
+        && laneWrites.every((e) => e.text.startsWith("[fleet] YOUR REPORT WAS"))
         && (await selfFleetReports(d1OtherTok)).reports.length === reportsBeforeDecision,
       JSON.stringify({ task: [d1TaskStatusBefore, d1TaskAfter?.status], lanes: laneStillOpen,
-        paneWrites: laneWritesAfter, reports: reportsBeforeDecision }));
+        carriesPerLane, texts: laneWrites.map((e) => e.text.slice(0, 40)), reports: reportsBeforeDecision }));
 
     // --- and it is the ROW's fact, not this process's memory. The malformed plants ride the same
     // restart: a Program row that invents either transport half, and an incomplete decision, must
@@ -3404,13 +3419,22 @@ export async function run(): Promise<void> {
     const d1Retention = JSON.parse(readFileSync(d1Path, "utf8")) as { fleetReports?: FleetReportRow[] };
     const retentionBase = d1Retention.fleetReports?.find((r) => r.id === acceptReport?.id);
     const heldId = "e0".padEnd(24, "0");
+    // `decisionDelivery: null` on BOTH plants, and it is not decoration: these rows are built by
+    // SPREADING a real decided row, so without it the undecided plant would carry the carry record
+    // of the row it was copied from — a verdict nobody gave, delivered. fleetReportFrom refuses
+    // exactly that pair (a delivery requires a decision) and DISCARDS the row at hydration, which
+    // is the parser working: the plant would vanish and this check would read `held: false` while
+    // reporting nothing about retention at all. Measured on 2026-09-12, the run that introduced the
+    // field. An undecided row has no carry by construction, so saying so is what the plant means.
     const heldProgramRow = retentionBase ? { ...retentionBase, id: heldId,
-      reportedAt: Math.max(1, retentionBase.reportedAt - 200_000), decision: null } : null;
+      reportedAt: Math.max(1, retentionBase.reportedAt - 200_000),
+      decision: null, decisionDelivery: null } : null;
     const decidedProgramRows = retentionBase ? Array.from({ length: 21 }, (_, index) => ({
       ...retentionBase, id: (0xe100 + index).toString(16).padStart(24, "0"),
       reportedAt: Math.max(1, retentionBase.reportedAt - 100_000 + index),
       decision: { disposition: "accepted" as const, at: retentionBase.reportedAt - 50_000,
         by: { slot: d1Main, openedAt: Number(d1MainRow.openedAt), sessionId: null }, reason: null },
+      decisionDelivery: null,
     })) : [];
     if (heldProgramRow) d1Retention.fleetReports?.push(heldProgramRow, ...decidedProgramRows);
     writeFileSync(d1Path, JSON.stringify(d1Retention, null, 2), { mode: 0o600 });

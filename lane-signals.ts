@@ -457,6 +457,33 @@ export function clarificationReplyMessage(requestId: string, question: string, a
   return `[fleet] CLARIFICATION ANSWER [request ${requestId}] to question: ${oneLine(question)}\n${answer}`;
 }
 
+// THE VERDICT ON A LANE'S OWN FILED REPORT, carried back into the lane's pane. Same shape and same
+// reason as the clarification answer above: the lane filed exactly this row and may hold more than
+// one, so the id is named and the verdict is the first thing on the line — a lane that reads only
+// the head of the paste must still learn which way it went.
+//
+// THE REJECT REASON IS NOT COLLAPSED TO ONE LINE, unlike a clarification's question: that `oneLine`
+// exists to keep a QUOTED-BACK subject short, while this text IS the payload — it is the repair
+// instruction, and folding its structure away is how a lane re-files the same work twice. It is
+// already bounded at the door (MAX_FLEET_REPORT_DECISION_REASON).
+//
+// `null` and "the MAIN gave none" are one sentence here on purpose: for the lane the operative fact
+// is that no repair instruction came with the refusal, and inventing a difference between an absent
+// field and an empty one would hand the reader a distinction the door does not make.
+export function fleetReportDecisionMessage(
+  reportId: string,
+  disposition: "accepted" | "rejected",
+  reason: string | null,
+): string {
+  const head = `[fleet] YOUR REPORT WAS ${disposition.toUpperCase()} [fleet-report ${reportId}]`;
+  if (disposition === "accepted")
+    return `${head}${reason ? `\n${reason}` : ""}\nThe receiving MAIN took the work. Nothing is `
+      + `landed or deployed by this message.`;
+  return `${head}\n${reason ?? "The MAIN gave no reason."}\nThis is the verdict of the MAIN that `
+    + `received your report, not a server predicate. Repair and file again with `
+    + `POST /api/self/fleet-report; a new report is a new row and is judged on its own.`;
+}
+
 // The owner-facing twin of the message above, and it names the request id for the same reason: the
 // receipt must be EXACT. A MAIN may hold several open attention requests, and an answer that only
 // said "the owner replied" would be unattributable to the thing it answers.

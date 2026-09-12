@@ -38,6 +38,7 @@ import { collectRepoMap, firstCommentLine, renderRepoMap } from "../repo-map";
 // rendered hint shows the tail `${eventAck(id)}` actually contributes, which a source scan cannot.
 import {
   attentionAnswerMessage, auditWatchMessage, clarificationReplyMessage, clarificationWatchMessage,
+  fleetReportDecisionMessage,
   commandJobWatchMessage, deployWatchMessage, laneSuiteWatchMessage, laneWatchMessage, mergeWatchMessage,
 } from "../lane-signals";
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
@@ -4901,6 +4902,88 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && server.includes('if (!report || !decision || decision.by === "owner") continue;'),
     `refusal=${autoCloseRefusalFn.includes('d.by === "owner"')}`);
 
+  // --- D1c · THE CARRY BACK TO THE LANE. Until 2026-09-12 neither door told the worker anything —
+  // form (i) of the three the finding named: not a send that failed, not an owner-only send, NO send.
+  // Measured 2026-09-06: reports 097cd80b and b8188322 were rejected and the lane in slot 11 learned
+  // it only because the Controller forwarded the news by hand. Every rule below is SOURCE, because
+  // each failure is silent at runtime — a second deliverer, a carry wired into one door only, or a
+  // carry hoisted above the already-decided refusal all pass every fixture the day they are written.
+  const carryFn = server.match(/async function deliverFleetReportDecision\([\s\S]*?\n\}/)?.[0] ?? "";
+  const carrySites = server.split("deliverFleetReportDecision(").length - 2; // declaration excluded
+  pin(`${RULE_RECEIVER} — ONE deliverer carries a verdict to the lane, and BOTH doors call it (D1c)`,
+    carryFn !== "" && carrySites === 2
+      && decisionDoor.includes("await deliverFleetReportDecision(report);")
+      && ownerDoor.includes("await deliverFleetReportDecision(report);"),
+    `fn=${carryFn !== ""} sites=${carrySites} self=${decisionDoor.includes("deliverFleetReportDecision")}`
+      + ` owner=${ownerDoor.includes("deliverFleetReportDecision")}`);
+  // THE ORDER, in both doors and for the same two reasons: the verdict must be RECORDED before it is
+  // carried (a paste that raced the row would tell a lane about a judgement no row holds), and the
+  // carry must sit BELOW the already-decided refusal (a second call would otherwise paste a second,
+  // duplicate verdict into a lane that had already read the first). This is the mutation the runtime
+  // exactly-once check is written against, held here as position rather than as behaviour.
+  const orderOk = (door: string): boolean => {
+    const decided = door.indexOf("if (report.decision)");
+    const stamp = door.indexOf("report.decision = {");
+    const carry = door.indexOf("await deliverFleetReportDecision(report);");
+    return decided > 0 && stamp > decided && carry > stamp;
+  };
+  pin(`${RULE_RECEIVER} — the carry runs after the verdict is stamped and below the already-decided refusal, in both doors (D1c)`,
+    orderOk(decisionDoor) && orderOk(ownerDoor),
+    `self=${orderOk(decisionDoor)} owner=${orderOk(ownerDoor)}`);
+  // EXACTLY ONCE, keyed on the stored fact rather than on the callers' manners — and the guard is
+  // the FIRST branch, so no later edit can put work above it.
+  pin(`${RULE_RECEIVER} — the deliverer refuses a second carry on the stored delivery record itself (D1c)`,
+    carryFn.includes("if (report.decisionDelivery !== undefined && report.decisionDelivery !== null) return;")
+      && carryFn.indexOf("report.decisionDelivery !== undefined") < carryFn.indexOf("slotFrom("),
+    carryFn.match(/if \(report\.decisionDelivery[^\n]*/)?.[0] ?? "no guard");
+  // THE OCCUPATION, and that a failure is NAMED rather than dropped: slot AND openedAt, because a
+  // carry keyed on the slot NUMBER would paste one lane's verdict into whoever holds that number now.
+  // The session id is deliberately NOT part of the gate — clarificationReceiverFor's doctrine and the
+  // slot-12 measurement of 2026-09-07 — and this pin holds that in BOTH directions: a future edit
+  // that adds the comparison would withhold a verdict from a live Codex lane whose bind moved the id
+  // inside one occupation, which is the exact failure the carry exists to end.
+  pin(`${RULE_RECEIVER} — the carry gates the worker's OCCUPATION, never the session id, and records WHY it did not deliver (D1c)`,
+    carryFn.includes("worker.openedAt !== report.worker.openedAt")
+      && !/worker\.sessionId !== report\.worker\.sessionId\s*\n?\s*\?/.test(carryFn)
+      && !carryFn.includes("|| worker.sessionId !== report.worker.sessionId")
+      && carryFn.includes('stamp("worker-gone"')
+      && carryFn.includes("RECYCLED")
+      // …and it is carried as EVIDENCE on the delivered line, so a moved id is observable without
+      // ever having been a refusal
+      && carryFn.includes("the pane's session id moved since filing")
+      && !/report\.decisionDelivery = \{/.test(decisionDoor + ownerDoor),
+    `openedAt=${carryFn.includes("worker.openedAt !== report.worker.openedAt")}`
+      + ` gatesSession=${/worker\.sessionId !== report\.worker\.sessionId\s*\n?\s*\?/.test(carryFn)}`);
+  // …and the four states are ONE closed list across the type, the parser and this deliverer. A state
+  // the deliverer writes and the parser does not admit is a row DISCARDED at the next boot, one at a
+  // time and with every check green.
+  const deliveryStates = (server.match(/FLEET_REPORT_DELIVERY_STATES = \[([^\]]*)\]/)?.[1] ?? "")
+    .split(",").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
+  const stampedStates = [...carryFn.matchAll(/stamp\("([a-z-]+)"/g)].map((m) => m[1]!);
+  pin(`${RULE_RECEIVER} — the delivery states are one closed list, and the deliverer writes exactly them (D1c)`,
+    JSON.stringify(deliveryStates) === JSON.stringify(["delivered", "send-uncertain", "worker-gone", "blocked"])
+      && stampedStates.length === 4
+      && stampedStates.every((w) => deliveryStates.includes(w))
+      && new Set(stampedStates).size === 4
+      && reportRowParser.includes("FLEET_REPORT_DELIVERY_STATES.includes(d.state as FleetReportDeliveryState)")
+      // a carry can only exist for a row that was judged, and only "delivered" explains nothing
+      && reportRowParser.includes("if (decision === undefined || decision === null) return null;")
+      && reportRowParser.includes('d.state === "delivered" ? d.reason !== null'),
+    `declared=[${deliveryStates.join(",")}] written=[${stampedStates.join(",")}]`);
+  // THE TRANSPORT MARKER, replyClarification's FACT 2 one rail over: persisted BEFORE tmux is
+  // touched, so a death mid-send is an UNKNOWN afterwards rather than a delivery nobody observed.
+  // And nothing replays it — the decision door is shut by then, so this row is a record, not a debt.
+  pin(`${RULE_RECEIVER} — the carry persists send-uncertain before the paste, and no tick replays it (D1c)`,
+    carryFn.indexOf('stamp("send-uncertain"') > 0
+      && carryFn.indexOf('stamp("send-uncertain"') < carryFn.indexOf("await sendText(")
+      && carryFn.indexOf("await saveStateNow();") < carryFn.indexOf("await sendText(")
+      && carryFn.indexOf("await saveStateNow();") > carryFn.indexOf('stamp("send-uncertain"')
+      // the only pane-touching caller in this family, and the waiver it takes is the ONE
+      // replyClarification takes: the work-prompt policy, never the kill-switch or the liveness probe
+      && carryFn.includes("canDeliver(worker, { now: Date.now(), harness: false, idleMs: 0 })")
+      && !/killSwitch|alive: false|quietHours: false/.test(carryFn),
+    `marker=${carryFn.indexOf('stamp("send-uncertain"')} send=${carryFn.indexOf("await sendText(")}`);
+
   // --- D2 · THE AUTOMATIC LANE CLOSE, the acceptance door's only consumer. Three halves can drift
   // without a compiler noticing, and each one is a behaviour that closes panes unattended: the
   // FLAG NAME (env string vs the doc that tells an owner how to arm it), the DISPOSITION WORD (the
@@ -7000,10 +7083,26 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       payload: { requestId: "r1", question: "q", taskId: null, originId: null, programId: null, basis: "lane-watch" } }),
     clarificationReplyMessage: clarificationReplyMessage("r1", "q", "a"),
     attentionAnswerMessage: attentionAnswerMessage("r1", "decision", "raised", "answer"),
+    // BOTH branches, because they are two different tails and only one of them is rendered by a
+    // single call: the accepted form ends on the MAIN's own reason when it gave one, the rejected
+    // form on the re-file instruction. A table that rendered one would leave the other unmeasured.
+    fleetReportDecisionAccepted: fleetReportDecisionMessage("a".repeat(24), "accepted", "took the work"),
+    fleetReportDecisionRejected: fleetReportDecisionMessage("a".repeat(24), "rejected", null),
   };
   // BOTH DIRECTIONS. A derived builder that lane-signals exports but this table forgot would
   // otherwise leave the rule green over a hint nobody rendered.
-  const exported = new Set(Object.keys(rendered));
+  // the table's KEYS are fixture names, not builder names — a builder with more than one shape is
+  // rendered under one key per shape (fleetReportDecisionMessage: accepted and rejected). So the
+  // coverage question is asked over the builders those keys STAND FOR, declared here beside them,
+  // and a builder that reaches this file with neither its own key nor an entry here is still
+  // `missing`. Without this the two-shape builder would read as uncovered while being rendered
+  // twice, and the honest repair for that is to say which key covers what, not to widen the match.
+  const RENDERED_UNDER: Record<string, string> = {
+    hostCommitReady: "laneWatchMessage",
+    fleetReportDecisionAccepted: "fleetReportDecisionMessage",
+    fleetReportDecisionRejected: "fleetReportDecisionMessage",
+  };
+  const exported = new Set(Object.keys(rendered).map((k) => RENDERED_UNDER[k] ?? k));
   const missing = [...builders].filter((n) => LANE_SIGNAL_MESSAGE_EXPORTS.has(n) && !exported.has(n));
   pin(`${RULE_SIGIL} — every derived builder exported by lane-signals.ts is rendered here`,
     missing.length === 0, missing.length ? `no fixture for: ${missing.join(", ")}` : `${exported.size} rendered`);

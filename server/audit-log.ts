@@ -229,6 +229,13 @@ type AuditEvent =
   // wrote is the record, readable back by the deciding MAIN); an owner verdict has no session to
   // read it from, so this line and the row are the only places it surfaces.
   | "fleet_report_owner_decision"
+  // the CARRY of a verdict back to the lane that filed the report, and all three outcomes are named
+  // because they are three different facts: the bytes reached the pane, the send did not resolve, or
+  // nothing was attempted (the worker occupant is gone or recycled, or canDeliver refused). The row
+  // holds the same three states; this is the half that survives a report the retention took, and the
+  // only place the verdicts of BOTH doors report their delivery under one word.
+  | "fleet_report_decision_delivered" | "fleet_report_decision_send_uncertain"
+  | "fleet_report_decision_undelivered"
   // the owner-facing twin: a bound Program-MAIN raised something, and what the owner did about it.
   // `attention_refused` is a RECEIPT that the owner saw it and declined — the silent closure this
   // channel exists to make impossible.

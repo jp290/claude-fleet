@@ -7779,7 +7779,10 @@ export async function run(ctx: Ctx): Promise<void> {
   // module — see it for why. Declared out here because the cleanup lives outside this block.
   const landFixtureMains: number[] = [];
   {
-    type LandTask = { id: string; kind: string; status: string; programId?: string; slot?: number | null };
+    type LandTask = { id: string; kind: string; status: string; programId?: string; slot?: number | null;
+      // the note is what NAMES the writer when a row moves under this section (every `queued`
+      // writer stamps one), so the probes here can diagnose a retirement failure without a rerun
+      note?: string | null };
     type LandSlot = { id: number; cwd: string | null; label: string | null;
       git: { dirty: number; ahead: number } | null; lastOutput: number;
       worktree: { branch: string } | null };
@@ -8054,6 +8057,159 @@ export async function run(ctx: Ctx): Promise<void> {
         && slRejectRes?.ok === true,
       JSON.stringify({ laneTok: greenLaneTok !== "", filed: slFirstReport, decided: slRejectRes }));
 
+    // --- D1c · THE VERDICT REACHES THE LANE. Until 2026-09-12 it did not, and decideFleetReport's
+    // own comment said so ("no text into the worker's pane"): of the three shapes the finding asked
+    // to tell apart — no send, a send that fails silently, a send that serves only the owner — it
+    // was the FIRST. Measured 2026-09-06 on slot 11: reports 097cd80b and b8188322 were rejected and
+    // the lane learned it only because the Controller forwarded the news by hand; `server.log`
+    // carries no delivery line for either. The cost is a reject loop that cannot close without a
+    // third party, on a fleet where the lane cap is 2 and the suite mutex is the bottleneck.
+    //
+    // Driven on the row the fixture above just REJECTED, through the live doors, so what is measured
+    // is the carry the real decision path performs — not a planted one.
+    const laneHistory = async (): Promise<{ text: string; ts: number }[]> => greenLaneSlot === null
+      ? [] : ((await (await get(`/api/slots/${greenLaneSlot}/history`)).json()) as
+        { history: { text: string; ts: number }[] }).history;
+    type ReportRow = { id: string; decision?: { disposition?: string; reason?: string | null } | null;
+      decisionDelivery?: { state?: string; at?: number; reason?: string | null } | null };
+    const reportRow = async (id: string): Promise<ReportRow | undefined> =>
+      ((await (await get("/api/fleet-report")).json()) as { reports?: ReportRow[] })
+        .reports?.find((r) => r.id === id);
+    // the paste is asynchronous behind sendText's input chain, so the wait is for the HISTORY entry
+    // this decision would add — never a fixed sleep, which measures the observer
+    const waitVerdictPaste = async (needle: string, ms = 20_000): Promise<string> => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        const hit = (await laneHistory()).find((h) => h.text.includes(needle));
+        if (hit) return hit.text;
+        if (Date.now() >= deadline) return "";
+        await Bun.sleep(150);
+      }
+    };
+    const rejectPaste = slFirstReport.id === null ? "" : await waitVerdictPaste(slFirstReport.id);
+    const rejectRow = slFirstReport.id === null ? undefined : await reportRow(slFirstReport.id);
+    // Mutation: delete the `await deliverFleetReportDecision(report);` line from decideFleetReport
+    // and this check is red — the verdict is recorded and nothing reaches the lane, which is exactly
+    // the measured state before this cut.
+    check("fleet-report carry: the REJECTED lane is told in its own pane, with the verdict and the MAIN's reason, and the row records the delivery",
+      slFirstReport.id !== null
+        && rejectPaste.includes("YOUR REPORT WAS REJECTED")
+        && rejectPaste.includes(slFirstReport.id)
+        && rejectPaste.includes(slRejectReason)
+        && rejectRow?.decisionDelivery?.state === "delivered"
+        && rejectRow?.decisionDelivery?.reason === null
+        && typeof rejectRow?.decisionDelivery?.at === "number",
+      JSON.stringify({ paste: rejectPaste.slice(0, 200), delivery: rejectRow?.decisionDelivery ?? null }));
+    // EXACTLY ONE CARRY PER DECISION. The second call is refused by the already-decided branch, and
+    // the property this asserts is that the carry sits BELOW it: nothing is pasted a second time and
+    // the stored delivery record is not re-stamped.
+    // Mutation: hoist the carry above `if (report.decision)` in either door (or drop the deliverer's
+    // own `decisionDelivery` guard together with it) and the lane reads the same verdict twice.
+    const pasteCountOf = async (needle: string): Promise<number> =>
+      (await laneHistory()).filter((h) => h.text.includes(needle)).length;
+    const rejectPastesBefore = slFirstReport.id === null ? -1 : await pasteCountOf(slFirstReport.id);
+    const secondVerdict = slFirstReport.id === null ? null
+      : await mainDecides(slFirstReport.id, "reject", slRejectReason);
+    await Bun.sleep(600); // a window for a duplicate paste to appear, so "none did" is a waited answer
+    const rejectPastesAfter = slFirstReport.id === null ? -2 : await pasteCountOf(slFirstReport.id);
+    const rejectRowAfter = slFirstReport.id === null ? undefined : await reportRow(slFirstReport.id);
+    check("fleet-report carry: a second decision on the same report is refused and carries NOTHING a second time",
+      secondVerdict?.ok === false && (secondVerdict?.body ?? "").includes("already rejected")
+        && rejectPastesBefore === 1 && rejectPastesAfter === 1
+        && rejectRowAfter?.decisionDelivery?.at === rejectRow?.decisionDelivery?.at,
+      JSON.stringify({ second: secondVerdict, before: rejectPastesBefore, after: rejectPastesAfter,
+        atBefore: rejectRow?.decisionDelivery?.at ?? null, atAfter: rejectRowAfter?.decisionDelivery?.at ?? null }));
+
+    // THE OCCUPATION, NOT THE SLOT NUMBER — the half a same-session check can never reach. A
+    // slot id is reusable, so a carry keyed on the number would paste one lane's verdict into
+    // whoever holds that number now, which is worse than silence. Driven through the OWNER door on
+    // purpose: it is the door that opens exactly when the RECEIVER occupant is gone, it uses the
+    // same one deliverer, and an owner-inbox row is the shape a lane outside a program files.
+    //
+    // Mutation: compare `worker.slot` alone instead of the triple and the verdict is pasted into the
+    // NEW occupant's pane — this check fails on the history assertion, not on the row.
+    //
+    // …and it is a DISPATCHED TASK lane, not a hand-opened one, because openFleetReport's
+    // owner-inbox fallback requires `s.taskId` in as many words ("a lane with no task at all keeps
+    // its 409: nothing dispatched it, so nothing is owed a terminal result"). A hand lane cannot
+    // file at all, and this block would then be measuring its own fixture. No programId: that is
+    // what routes the row to the owner inbox and therefore to the owner door.
+    const recycleRowId = await makeTask({ text: "D1c: a lane whose slot is recycled under the verdict", repo: REPO2 });
+    await post(`/api/tasks/${recycleRowId}/dispatch`, {});
+    const recycleTaskRow = await slRow(recycleRowId);
+    const recycleSlot = recycleTaskRow?.slot ?? null;
+    const recycleTok = recycleSlot === null ? ""
+      : readState().slots?.[String(recycleSlot)]?.selfToken ?? "";
+    const recycleFiled = recycleSlot === null ? null : await fetch(`${BASE}/api/self/fleet-report`,
+      { method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": recycleTok },
+        body: JSON.stringify({ status: "complete", text: "D1c: filed, then this slot gets recycled under the verdict." }) });
+    const recycleFiledRaw = recycleFiled === null ? "" : await recycleFiled.text();
+    const recycleReportId = recycleFiled?.ok
+      ? (JSON.parse(recycleFiledRaw) as { report?: { id?: string } }).report?.id ?? null : null;
+    const recycleOpenedAt = recycleSlot === null ? null
+      : ((await (await get("/api/sessions")).json()) as { slots: { id: number; openedAt?: number }[] })
+        .slots.find((x) => x.id === recycleSlot)?.openedAt ?? null;
+    const recycleBasis = recycleFiled?.ok
+      ? (JSON.parse(recycleFiledRaw) as { report?: { basis?: string; receiver?: unknown } }).report?.basis ?? null : null;
+    check("fleet-report carry fixture: a task lane outside any program files an OWNER-INBOX report, and its occupation is on record",
+      recycleSlot !== null && /^[0-9a-f]{32}$/.test(recycleTok) && recycleReportId !== null
+        && recycleBasis === "owner-inbox" && typeof recycleOpenedAt === "number",
+      JSON.stringify({ slot: recycleSlot, reportId: recycleReportId, basis: recycleBasis,
+        openedAt: recycleOpenedAt, filed: recycleFiledRaw.slice(0, 200) }));
+    // …and now the SAME slot number is handed to a different session. `openedAt` must actually move,
+    // or this block would be asserting the triple against a triple that never changed.
+    if (recycleSlot !== null) await post(`/api/slots/${recycleSlot}/kill`, {});
+    await Bun.sleep(400);
+    const recycleReopen = recycleSlot === null ? null
+      : await post(`/api/slots/${recycleSlot}/open`, { cwd: REPO2 });
+    const recycleNewOpenedAt = recycleSlot === null ? null
+      : ((await (await get("/api/sessions")).json()) as { slots: { id: number; openedAt?: number }[] })
+        .slots.find((x) => x.id === recycleSlot)?.openedAt ?? null;
+    check("fleet-report carry fixture: the slot NUMBER came back under a new session — the occupation moved",
+      recycleReopen?.ok === true && typeof recycleNewOpenedAt === "number"
+        && recycleNewOpenedAt !== recycleOpenedAt,
+      JSON.stringify({ reopen: recycleReopen?.status ?? null, before: recycleOpenedAt, after: recycleNewOpenedAt }));
+    const recycleHistBefore = recycleSlot === null ? -1
+      : (((await (await get(`/api/slots/${recycleSlot}/history`)).json()) as
+        { history: { text: string }[] }).history).length;
+    const recycleVerdict = recycleReportId === null ? null
+      : await post(`/api/fleet-report/${recycleReportId}/reject`,
+        { reason: "judged after the lane that filed it was gone" });
+    await Bun.sleep(600); // the same waited window: "nothing was pasted" must be an answer, not a race
+    const recycleRow = recycleReportId === null ? undefined : await reportRow(recycleReportId);
+    const recycleHist = recycleSlot === null ? [] : ((await (await get(`/api/slots/${recycleSlot}/history`))
+      .json()) as { history: { text: string }[] }).history;
+    check("fleet-report carry: a RECYCLED worker slot receives NOTHING, and the row NAMES the recycle instead of dropping it silently",
+      recycleVerdict?.ok === true
+        && recycleRow?.decision?.disposition === "rejected"
+        && recycleRow?.decisionDelivery?.state === "worker-gone"
+        && (recycleRow?.decisionDelivery?.reason ?? "").includes("RECYCLED")
+        && (recycleRow?.decisionDelivery?.reason ?? "").includes(String(recycleOpenedAt))
+        && recycleHistBefore === 0 && recycleHist.length === 0
+        && !recycleHist.some((h) => h.text.includes("YOUR REPORT WAS")),
+      JSON.stringify({ verdict: recycleVerdict?.status ?? null, delivery: recycleRow?.decisionDelivery ?? null,
+        histBefore: recycleHistBefore, hist: recycleHist.map((h) => h.text.slice(0, 60)) }));
+    // TEARDOWN, AND IT IS A CHECK RATHER THAN A HOPE. `makeTask` pushes onto `madeTasks`, but the
+    // loop that DELETES that list ran ~2000 lines above this block — every row minted after it is
+    // the minting block's own to remove. `done` is not removal: a retired row keeps riding
+    // `tasks: tasks.map(taskDigest)` in the 2 s owner poll, and that poll is weighed against a
+    // 14 KiB budget in e2e/tasks.ts, a MODULE that runs after this one. Measured on a scratch
+    // instance: a leftover row costs 94 B queued and 91 B done, before its note. So a fixture row
+    // left behind here is not untidiness — it is a byte charged to a budget six sections away,
+    // where it reads as someone else's regression. (The same class, same file, cost the dc4ec8b5
+    // lane 12 fails from one pending row on 2026-09-12.)
+    if (recycleSlot !== null) await post(`/api/slots/${recycleSlot}/kill`, {});
+    await post(`/api/tasks/${recycleRowId}/done`, {});
+    await post(`/api/tasks/${recycleRowId}/delete`, {});
+    const recycleGone = !((await (await get("/api/tasks")).json()) as { tasks?: { id: string }[] })
+      .tasks?.some((t) => t.id === recycleRowId);
+    const recycleSlotFree = recycleSlot === null ? false
+      : ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+        .slots.find((x) => x.id === recycleSlot)?.cwd === null;
+    check("fleet-report carry teardown: this block's own row and slot are GONE — a leftover here is charged to a byte budget two modules away",
+      recycleGone && recycleSlotFree,
+      JSON.stringify({ row: recycleGone ? "deleted" : recycleRowId, slotFree: recycleSlotFree, slot: recycleSlot }));
+
     const slAuditBeforeRefusal = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).length;
     const slLandRefused = await selfLand(landTok, greenRowId);
     const slLandRefusedText = await slLandRefused.text();
@@ -8076,6 +8232,18 @@ export async function run(ctx: Ctx): Promise<void> {
         && slAcceptRes?.ok === true,
       JSON.stringify({ filed: slSecondReport, decided: slAcceptRes }));
 
+    // …AND THE LANE MUST BE DONE-LOOKING AGAIN BEFORE THE LAND, which is a REAL coupling this
+    // fixture did not have before 2026-09-12 and not a papered-over flake: the accept above is now
+    // CARRIED into the lane's pane (server.ts#deliverFleetReportDecision), the paste is pane output,
+    // and pane output resets the lane's idle clock. The self-land door requires idle + clean + ahead
+    // and answers 409 `the lane is not done-looking (no signal)` until it settles — measured on the
+    // run that introduced the carry, where this land and the six provenance checks behind it fell
+    // together on that one 409. The cost is real and belongs in the open: telling a lane its verdict
+    // delays its own land by one idle threshold, and a MAIN that lands straight after accepting must
+    // retry or subscribe. Waiting here measures the door's contract instead of the race.
+    const landReady = greenLaneSlot === null ? false : await waitDoneLooking(greenLaneSlot);
+    check("self-land acceptance fixture: the lane settles again after the accept was carried into its pane",
+      landReady, landReady ? "done-looking" : doneLookingWhy);
     const landRes = await selfLand(landTok, greenRowId);
     const landRespBody = await landRes.json() as { running?: boolean; candidate?: string; laneSlot?: number;
       selfLand?: string; watch?: { kind?: string; target?: number }; error?: string };
@@ -8252,7 +8420,13 @@ export async function run(ctx: Ctx): Promise<void> {
         && repairedBody.candidate !== redVerdict?.candidateSha && repairedRow?.status === "done"
         && spawnSync("git", ["-C", REPO2, "log", "--oneline", "-4"]).stdout.toString().includes("selfland red repaired"),
       JSON.stringify({ ready: repairedReady, res: repaired.status, body: repairedBody,
-        row: repairedRow?.status, wasCandidate: redVerdict?.candidateSha?.slice(0, 8) }));
+        // THE ROW'S NOTE, not merely its status — added 2026-09-12 after this check fell with
+        // `row:"queued"` and nothing else, which cost a 35-minute rerun to get no further. Every
+        // writer of `queued` stamps a note that names itself (the dispatcher's requeue, the boot
+        // reconcile's "requeued after restart", a wave hand-back), so printing it turns "the row
+        // did not retire" into "THIS path un-retired it" without a second run.
+        row: repairedRow?.status, note: repairedRow?.note ?? null,
+        wasCandidate: redVerdict?.candidateSha?.slice(0, 8) }));
 
     // --- (4) THE GUARDED RUNG: conflict is MAIN work. Owner policy 2026-08-23, verbatim: "a
     // git/content conflict inside the confirmed Program scope … the MAIN inspects both sides,

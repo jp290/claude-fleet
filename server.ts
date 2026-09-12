@@ -7,7 +7,7 @@ import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
 import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage,
   mergeWatchMessage, auditWatchMessage, deployWatchMessage, laneWatchEventKind, laneWatchPayload,
-  clarificationWatchMessage, clarificationReplyMessage,
+  clarificationWatchMessage, clarificationReplyMessage, fleetReportDecisionMessage,
   type MergeWatchEventPayload,
   type AuditWatchEventPayload, type DeployWatchEventPayload,
   commandJobWatchMessage, type CommandJobWatchEventPayload, type CommandJobArtifactPayload,
@@ -76,6 +76,7 @@ import {
   ATTENTION_KINDS, fleetEventFrom, clarificationFrom, fleetReportFrom, attentionFrom,
   MAX_CLARIFICATION_QUESTION, MAX_CLARIFICATION_ANSWER, MAX_FLEET_REPORT_TEXT, MAX_ATTENTION_TEXT,
   FLEET_REPORT_DISPOSITIONS, MAX_FLEET_REPORT_DECISION_REASON,
+  MAX_FLEET_REPORT_DELIVERY_REASON,
   MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT, ATTENTION_CANDIDATE_SHA_RE,
   validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind,
   PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, PROGRAM_PROFILE_KINDS, loadProgramProfile,
@@ -100,6 +101,7 @@ import {
   type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition,
   type AttentionKind,
   type LaneSuiteFleetEvent,
+  type FleetReportDeliveryState,
   type AttentionRequest, type TaskKind, type Task, type TaskBrief, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
@@ -7330,6 +7332,107 @@ function settleFleetEventAcknowledged(event: FleetEvent): void {
 //
 // It moves NOTHING else: no Task.status, no land, no lane teardown, no text into the worker's pane,
 // and no retention pass of its own. A report stays a MESSAGE; this records what was done with it.
+// THE CARRY, and it is the whole of the 2026-09-06 finding: BOTH decision doors above recorded a
+// verdict and neither one told the lane. decideFleetReport's own comment said so in as many words
+// ("no text into the worker's pane"), so this was form (i) of the three the brief asked to tell
+// apart — not a send that failed, not a send that only served the owner, but NO send at all. The
+// lane in slot 11 learned of reports 097cd80b and b8188322 being rejected because the Controller
+// forwarded the news by hand; `server.log` carries no delivery line for either. The cost is not
+// lost data, it is a loop that cannot close without a third party: the lane sits idle holding a
+// slot while the lane cap is 2 and the suite mutex is the real bottleneck.
+//
+// IT IS NOT A NEW CHANNEL, and that is a constraint rather than a description. A lane receives
+// events today by one mechanism — bytes pasted into its pane, through the one choke-point, with a
+// durable marker written before tmux is touched — and that is replyClarification's shape exactly.
+// No FleetEvent is minted: a lane cannot subscribe to a Watch (POST /api/self/watch answers a lane
+// 409) and would therefore never acknowledge one, so an event addressed to it would sit in its
+// delivery budget until retention took it, which is the failure this repair exists to remove, one
+// rail over.
+//
+// EXACTLY ONCE PER DECISION, and the key is the stored record rather than the caller's good
+// manners: `decisionDelivery` present means this verdict has already been carried, whatever
+// happened to it, and a second attempt returns without touching the pane. Both doors refuse a
+// second DECISION on their own (first decision wins, 409), so in today's arrangement this guard is
+// the belt to that brace — it is what keeps the pair honest if a caller is ever added or the
+// refusal is ever reordered below the carry.
+//
+// THE OCCUPANT TRIPLE DECIDES, never the slot number. A report carries the occupation that filed
+// it; a slot number that has since been recycled belongs to a different session, and pasting one
+// lane's verdict into another lane's pane is a worse outcome than silence. The mismatch is NAMED
+// on the row rather than dropped — an absent delivery and a refused one are different facts, and a
+// reader that could not tell them apart would read every loss as "not carried yet".
+//
+// It moves nothing else, in the discipline of the doors it serves: no Task.status, no land, no
+// lane teardown, no retention pass. The verdict was already recorded when this runs.
+async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
+  const decision = report.decision;
+  if (!decision) return;
+  if (report.decisionDelivery !== undefined && report.decisionDelivery !== null) return;
+  const stamp = (state: FleetReportDeliveryState, reason: string | null): void => {
+    report.decisionDelivery = { state, at: Date.now(),
+      reason: reason === null ? null : reason.slice(0, MAX_FLEET_REPORT_DELIVERY_REASON) };
+  };
+  const worker = slotFrom(report.worker.slot);
+  // THE OCCUPATION — slot AND openedAt — and the two ways it can fail name themselves, because they
+  // are two different stories: an empty slot is a lane that ended, a recycled one is a lane that
+  // ended and whose NUMBER somebody else now holds. The second is the case the slot number alone
+  // cannot see, and it is the one that would paste a stranger's verdict into a working pane.
+  //
+  // `sessionId` IS CARRIED AND NOT GATED, which is clarificationReceiverFor's doctrine verbatim and
+  // decideFleetReport's own measured reason one door over: a Codex bind moves a slot's session id
+  // from null to an id INSIDE one occupation (server.ts, the codex_bind and codex_owner_bind
+  // writers), and slot 12 on 2026-09-07 was made unjudgeable by exactly that comparison. Gating it
+  // here would withhold the verdict from a live lane sitting in its own worktree — which is the
+  // failure this carry exists to end, re-created for one harness class. The occupation is the
+  // binding; the session id is a fact about it, and it travels in the audit line as evidence.
+  const gone = !worker?.cwd ? "the slot is empty — the worker lane ended before its report was judged"
+    : worker.openedAt !== report.worker.openedAt
+      ? `slot ${report.worker.slot} has been RECYCLED — it is occupied by a later session (openedAt ${worker.openedAt}, the report was filed by ${report.worker.openedAt})`
+    : null;
+  if (gone || !worker) {
+    const why = gone ?? "the worker slot could not be resolved";
+    stamp("worker-gone", why);
+    audit("fleet_report_decision_undelivered", report.worker.slot,
+      `${report.id} ${decision.disposition} ${why}`.slice(0, 300));
+    return;
+  }
+  // This lane FILED the report and its exit footer says the answer arrives in this pane on its own,
+  // so the verdict is the answer to the lane's own act — replyClarification's waiver, for
+  // replyClarification's reason, and the same one line of it: the unattended WORK-PROMPT policy is
+  // waived, the kill-switch, the fresh liveness probe, the blocking-screen read and quiet hours are
+  // not. `idleMs: 0` because a lane that has just filed and gone quiet is the normal receiver here.
+  const deliverable = await canDeliver(worker, { now: Date.now(), harness: false, idleMs: 0 });
+  if (!deliverable.ok) {
+    stamp("blocked", `delivery refused by ${deliverable.gate}${deliverable.detail ? `: ${deliverable.detail}` : ""}`);
+    audit("fleet_report_decision_undelivered", worker.id,
+      `${report.id} ${decision.disposition} gate=${deliverable.gate}`);
+    return;
+  }
+  const text = fleetReportDecisionMessage(report.id, decision.disposition, decision.reason);
+  // THE TRANSPORT MARKER, mirroring replyClarification's and tickWatches' FACT 2: persisted before
+  // tmux is touched, so a death anywhere below is visible afterwards as an UNKNOWN rather than as a
+  // delivery that may or may not have happened. Nothing replays it — the decision door is shut by
+  // then — so this row is a record, never a debt.
+  stamp("send-uncertain", "persisted before the paste; the send did not resolve");
+  await saveStateNow();
+  try {
+    await sendText(worker, text, true);
+  } catch (e) {
+    audit("fleet_report_decision_send_uncertain", worker.id,
+      `${report.id} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
+    return;
+  }
+  const at = Date.now();
+  worker.history = [...worker.history, { text, ts: at }].slice(-MAX_HISTORY);
+  saveHistory(worker);
+  logPrompt(worker, text, "auto", at);
+  stamp("delivered", null);
+  audit("fleet_report_decision_delivered", worker.id,
+    `${report.id} ${decision.disposition}`
+    + (worker.sessionId === report.worker.sessionId ? ""
+      : ` (the pane's session id moved since filing: ${report.worker.sessionId ?? "none"} -> ${worker.sessionId ?? "none"})`));
+}
+
 async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDisposition,
   body: Record<string, unknown> | null): Promise<Response> {
   const report = fleetReports.find((r) => r.id === id);
@@ -7387,9 +7490,16 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
   // and overwriting them would erase the one record that says what happened to that delivery.
   const event = report.eventId === null ? undefined : fleetEvents.find((e) => e.id === report.eventId);
   if (event && !FLEET_EVENT_TERMINAL.includes(event.status)) settleFleetEventAcknowledged(event);
-  // No audit word of its own: the durable record of this act is the row it just wrote — persisted,
-  // hydrated and projected — and a trail line would be the weaker copy of it. What the trail does
-  // carry is the transport half above, under the same word the explicit ack route writes.
+  // …and the OTHER endpoint, which until 2026-09-12 did not exist: the lane that filed this row
+  // learns the verdict. AFTER the decision is recorded, never before — the durable fact is what a
+  // successor reconstructs from, and a paste that raced it could tell a lane about a judgement no
+  // row carried. It is deliberately below the already-decided refusal above, which is what makes a
+  // second call on the same report carry nothing a second time.
+  await deliverFleetReportDecision(report);
+  // No audit word of its own for the VERDICT: the durable record of this act is the row it just
+  // wrote — persisted, hydrated and projected — and a trail line would be the weaker copy of it.
+  // What the trail does carry is the transport half above, under the same word the explicit ack
+  // route writes, and the carry's own outcome, which no row of this response shows.
   await saveStateNow();
   return json({ ok: true, report });
 }
@@ -7450,6 +7560,12 @@ async function ownerDecideFleetReport(id: string, disposition: FleetReportDispos
   // rather than leaving it there as a debt the owner has already paid.
   const event = fleetEvents.find((e) => e.id === report.eventId);
   if (event && !FLEET_EVENT_TERMINAL.includes(event.status)) settleFleetEventAcknowledged(event);
+  // …and the lane learns the verdict here too, through the SAME one deliverer. The two doors differ
+  // in who may judge and in what they write to the trail; they do not differ in whether the worker
+  // is told, and a carry wired into only one of them would make the answer depend on which
+  // principal happened to be reachable. This door is in fact the likelier one to reach a LIVE lane:
+  // it opens exactly when the RECEIVER occupant is gone, which says nothing about the worker.
+  await deliverFleetReportDecision(report);
   // THE ONE PLACE THIS DOOR WRITES A TRAIL LINE WHERE ITS SELF TWIN DOES NOT, and the asymmetry is
   // the point rather than an inconsistency: a MAIN's verdict is readable back through its own
   // GET /api/self/fleet-report and through the Program view, while an owner verdict has no session

@@ -15,10 +15,21 @@
 - **DER DEPLOY IST FÄLLIG UND HAT EINE NEUE BEDINGUNG.** `codeBehind: true`. Er aktiviert mit
   `32b062ad` eine **Änderung am Suite-Mutex dieses Hosts** (`suiteLockOwner`, Take vor dem Rebase) —
   das Land-Gate lief im ALTEN Prozess, die neue Sperre ist also verifiziert, aber nie gelaufen.
-  Deshalb: **erst das Post-Land-Audit auf `32b062ad` grün sehen** (Watch `60c97fa6` war armiert und
-  stirbt mit mir — neu abonnieren oder `post-land-audits.jsonl` lesen), dann `POST /api/deploy`.
+  **NACHTRAG 18:4x: das Audit auf `32b062ad` IST GRÜN — `4205 checks / 0 failed`, audited tip ==
+  `mainAfter`.** Damit ist die neue Mutex-Semantik einmal gegen die volle Suite gelaufen und die
+  Vorbedingung des Deploys ist erfüllt; `post-land-audits.jsonl` trägt die Zeile. Dann
+  `POST /api/deploy`.
   Die Route nimmt **kein Self-Token** (`unauthorized`) — sie ist Owner/Steward. Owner-Freigabe für
   den Deploy liegt vor (Orchestrator 15:0x, „Idle-Uhren frei").
+- **ABER UM 18:4x WAR DER DEPLOY ZWEIFACH BLOCKIERT — prüfe beides, statt zu feuern.** (a) Job
+  `4b3db694` stand `claimed` auf Slot 7 (Baum `f136a99b`): die Wellen-Lane hat also schon rebast und
+  ihr neuer Vorschaulauf läuft auf dem Helfer. Ein `srv`-Kill mitten hinein riskiert den Claim, und
+  das ist ein ~35-min-Lauf des Second-host. (b) Die Audit-Warteschlange trug einen **fremden** Cover
+  (`fleet/260912125546-…`, nicht aus diesem Program) und drei `e2e-isolated`-Prozesse liefen —
+  `POST /api/deploy` antwortet bei laufendem Post-Land-Audit **409**. Sensoren, beide in einer Zeile:
+  `python3 -c 'import json; [print(r["id"], r["state"]) for r in json.load(open("fleet.json"))["laneSuiteJobs"] if r["state"] in ("claimed","offered")]'`
+  und `cat post-land-audit-queue.json`. **Ein Prozess-grep allein taugt nicht** — er zählt auch die
+  Vorschaulaufe fremder Lanes und schweigt in den drei bekannten Nullfenstern.
 - **EINE SCHULD AN EIN FREMDES PROGRAM:** `f9dc8e10` (Leichtgewicht) wartet auf meine Rückmeldung,
   **sobald `server.ts` frei ist** — das ist genau dann, wenn die Wellen-Lane gelandet oder
   geschlossen ist. Zugesagt über die Message-Rail (`377b108a`), also nicht pane-flüchtig. Ich habe

@@ -2790,18 +2790,36 @@ export async function run(ctx: Ctx): Promise<void> {
   // successor then sees nothing), or the receipt is ever re-stamped on read (B's fact is lost).
   const msgSuccessorView = await selfMessages(inboxSuccessorToken);
   const msgSuccessorReply = msgSuccessorView.view?.entries.find((e) => e.id === msgReplyId);
+  // THE HALF A VIEW OF INBOUND ROWS ONLY WOULD HAVE LOST: the question the PREDECESSOR asked. The
+  // reply names it in `replyTo`, so without this the successor would hold an id it cannot resolve —
+  // the predecessor's question exactly as gone as it is on every rail this one replaces.
+  const msgSuccessorOwnOutbound = msgSuccessorView.view?.entries.find((e) => e.id === msgOutId);
   const msgStoredOut = (readState().messages as { entries?: MessageRow[] } | undefined)?.entries
     ?.find((e) => e.id === msgOutId);
-  check("message rail survives succession: A's SUCCESSOR reads the answer under the same ids on the same reply edge, and B's receipt on the outbound half still names B",
+  check("message rail survives succession: A's SUCCESSOR resolves BOTH ends of the thread its predecessor opened — the answer and the question replyTo names — while B's receipt on the outbound half still names B and only the inbound row counts as unread",
     msgSuccessorView.response.ok && successorSlot !== null && successorSlot !== mainSlot
       && !!msgSuccessorReply && msgSuccessorReply.replyTo === msgOutId
       && msgSuccessorReply.payload.text === msgReplyText
+      && !!msgSuccessorOwnOutbound && msgSuccessorOwnOutbound.payload.text === msgOutText
+      && msgSuccessorView.view?.unread === 1
       && JSON.stringify(msgSuccessorReply.from) === JSON.stringify({ kind: "program", id: msgProgramB.id })
       && JSON.stringify(msgSuccessorView.view?.addresses) === JSON.stringify([{ kind: "program", id: mainProgram.id }])
       && msgStoredOut?.readBy?.slot === msgBSlot
       && msgStoredOut.readBy.openedAt === (readState().slots?.[String(msgBSlot)]?.openedAt ?? -1),
     JSON.stringify({ successor: successorSlot, predecessor: mainSlot,
-      reply: msgSuccessorReply ?? null, outReceipt: msgStoredOut?.readBy ?? null }));
+      reply: msgSuccessorReply ?? null, outbound: !!msgSuccessorOwnOutbound,
+      unread: msgSuccessorView.view?.unread, outReceipt: msgStoredOut?.readBy ?? null }));
+
+  // …and seeing your own outbound row is NOT the right to receipt it: a receipt records who the
+  // message reached, so the sender receipting its own would forge exactly that fact.
+  const msgSuccessorReceiptsOwn = await selfMessageRead(inboxSuccessorToken, msgOutId);
+  const msgSuccessorReceiptsOwnText = await msgSuccessorReceiptsOwn.text();
+  check("message rail: a principal SEES its own outbound row but may not receipt it — a receipt is the addressee's, and it is named as that rather than hidden as unknown",
+    msgSuccessorReceiptsOwn.status === 409
+      && msgSuccessorReceiptsOwnText.includes("a receipt is the addressee's")
+      && (readState().messages as { entries?: MessageRow[] } | undefined)?.entries
+        ?.find((e) => e.id === msgOutId)?.readBy?.slot === msgBSlot,
+    `${msgSuccessorReceiptsOwn.status} ${msgSuccessorReceiptsOwnText}`);
 
   // …and the successor can ANSWER on the same edge, which is what makes this a round trip rather
   // than an inheritance of read access. The reply-to authorisation must accept it for the same

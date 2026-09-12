@@ -1283,13 +1283,24 @@ export async function run(): Promise<void> {
   // beside it is a principal with a DIFFERENT address, not a lesser one.
   const msgMainViewBeforeSuccession = await readMessages(msgMainToken);
   const msgMainSeesAnswer = msgMainViewBeforeSuccession.view?.entries.find((e) => e.id === msgSupAnswerId);
-  const msgMainSeesRoleRow = msgMainViewBeforeSuccession.view?.entries.some((e) => e.id === msgToRoleId);
+  // The MAIN sees the role-addressed row because it SENT it, not because it holds the role — and
+  // the difference is exactly what the receipt door refuses: seeing your own outbound message is
+  // not the right to record that it reached its addressee.
+  const msgMainOwnOutbound = msgMainViewBeforeSuccession.view?.entries.find((e) => e.id === msgToRoleId);
   const msgMainReadsRoleRow = await readMessage(msgMainToken, msgToRoleId);
-  check("message rail role: the MAIN sees the answer addressed to its Program but NOT the row addressed to the role, and a direct read of it is the non-disclosing 404",
+  const msgMainReadsRoleRowText = await msgMainReadsRoleRow.text();
+  const msgStranger = await readMessages(msgSupToken);
+  check("message rail role: the MAIN reads the answer addressed to its Program and its OWN outbound row, but may not receipt the latter — it holds the Program address, never the role",
     msgMainViewBeforeSuccession.response.ok && !!msgMainSeesAnswer
-      && msgMainSeesAnswer.replyTo === msgToRoleId && msgMainSeesRoleRow === false
-      && msgMainReadsRoleRow.status === 404,
-    `answer=${!!msgMainSeesAnswer} roleRow=${msgMainSeesRoleRow} read=${msgMainReadsRoleRow.status}`);
+      && msgMainSeesAnswer.replyTo === msgToRoleId
+      && !!msgMainOwnOutbound
+      && JSON.stringify(msgMainViewBeforeSuccession.view?.addresses)
+        === JSON.stringify([{ kind: "program", id: msgProgramId }])
+      && msgMainReadsRoleRow.status === 409
+      && msgMainReadsRoleRowText.includes("a receipt is the addressee's")
+      // …and the role holder's own view is a DIFFERENT set: it holds the role, not the Program
+      && msgStranger.view?.entries.some((e) => e.id === msgToRoleId) === true,
+    `answer=${!!msgMainSeesAnswer} own=${!!msgMainOwnOutbound} read=${msgMainReadsRoleRow.status} addresses=${JSON.stringify(msgMainViewBeforeSuccession.view?.addresses)}`);
 
   // THE REAL SUCCESSION. The binding MOVES to a new occupant; the role does not.
   const msgSupOpenedAt = readState().slots?.[String(msgSupSlot)]?.openedAt ?? 0;

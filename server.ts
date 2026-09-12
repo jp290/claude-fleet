@@ -8113,14 +8113,21 @@ function messageViewFor(s: Slot): Response {
   // anything". The scar is persisted, so this line survives the save that erases the broken bytes.
   if (messagesLost)
     unknown.push(`the message record was unreadable at ${new Date(messagesLost.at).toISOString()} (${messagesLost.error}) and loaded as empty; every message written before then is gone, so the entries below are what was written AFTER that and never the whole history.`);
+  // BOTH ENDS OF THE CALLER'S OWN THREADS, and the outbound half is not a convenience. A reply
+  // carries `replyTo`, so a view of inbound rows only would hand a successor an id it cannot
+  // resolve — the predecessor's question would be exactly as lost as it is on every rail this one
+  // replaces. Still ADDRESS-keyed on both sides, so a recycled occupant resolves to neither.
   const entries = messages.entries
-    .filter((m) => mine.some((a) => sameAddress(a, m.to)))
+    .filter((m) => mine.some((a) => sameAddress(a, m.to) || sameAddress(a, m.from)))
     .sort((a, b) => b.at - a.at);
   // NAMED `droppedFleetWide` rather than `dropped`: the cap is on the whole rail, so this number is
   // not "how many of YOUR messages fell off" and must not read like it.
   if (messages.dropped > 0)
     unknown.push(`${messages.dropped} messages have fallen off the fleet-wide cap of ${MESSAGES_MAX} since this record began; an unknown share of them was addressed here.`);
-  return json({ addresses: mine, unread: entries.filter((m) => m.readBy === null).length,
+  // `unread` counts only what was addressed TO the caller: a message it sent itself is not news,
+  // and counting it would make an idle MAIN look like it owes an answer to its own question.
+  return json({ addresses: mine,
+    unread: entries.filter((m) => m.readBy === null && mine.some((a) => sameAddress(a, m.to))).length,
     droppedFleetWide: messages.dropped, entries, unknown });
 }
 
@@ -8190,8 +8197,15 @@ async function readMessageFor(s: Slot, id: string): Promise<Response> {
   const mine = messageAddressesFor(s);
   if (!mine.length) return json({ error: NO_MESSAGE_ADDRESS }, 409);
   const entry = messages.entries.find((m) => m.id === id && mine.some((a) => sameAddress(a, m.to)));
-  // ONE answer for "no such message" and "not yours" — the replyTo door's reasoning, same rail.
-  if (!entry) return json({ error: "unknown message" }, 404);
+  if (!entry) {
+    // A RECEIPT IS THE ADDRESSEE'S. The caller's own OUTBOUND row is visible to it in the view
+    // above, so naming this case discloses nothing it cannot already see — and it is a different
+    // statement from "no such message", which is why it gets a different sentence.
+    const own = messages.entries.find((m) => m.id === id && mine.some((a) => sameAddress(a, m.from)));
+    if (own) return json({ error: "this message was sent by this principal — a receipt is the addressee's" }, 409);
+    // ONE answer for "no such message" and "not yours" — the replyTo door's reasoning, same rail.
+    return json({ error: "unknown message" }, 404);
+  }
   if (entry.readBy !== null) return json({ ok: true, existing: true, message: entry });
   entry.readBy = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
   entry.readAt = Date.now();

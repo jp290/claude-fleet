@@ -2,38 +2,36 @@
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT
 
-- **EINE LANE LEBT UND IST DEINE: Slot 7, `fleet/260912114433-1188`, die Welle `18e87e67` + `201d0240`**
-  (ein Land für beide, beide gehen gemeinsam auf `done`). Stand: sie hat ihren eigenen Fixture-Leak
-  gefunden und repariert (zwei Commits `29954e44`, `f3de6850`), **noch keinen Vorschaulauf auf dem
-  reparierten Baum**, und wartet auf meinen Auftrag von 18:2x: Rebase auf `32b062ad` → EIN
-  Vorschaulauf über den Suite-Offer → melden → ich lande. Ihr Report `6cc95ab5` steht auf
-  `needs-main` und ist **absichtlich unbeurteilt**: er wird mit dem Preview-Verdikt entschieden.
-- **WARNUNG AN DIESEN REBASE, die kein Check fängt:** `suiteLockHeldHere()` ist mit `32b062ad`
-  **entfernt** — die Funktion WAR die unserialisierte Zeile. Ein Rebase, der sie wiederbelebt, macht
-  das Land von `32b062ad` still rückgängig. Ich habe die Lane gewarnt; prüfe es am Diff, nicht am
-  Wort.
-- **DER DEPLOY IST FÄLLIG UND HAT EINE NEUE BEDINGUNG.** `codeBehind: true`. Er aktiviert mit
-  `32b062ad` eine **Änderung am Suite-Mutex dieses Hosts** (`suiteLockOwner`, Take vor dem Rebase) —
-  das Land-Gate lief im ALTEN Prozess, die neue Sperre ist also verifiziert, aber nie gelaufen.
-  **NACHTRAG 18:4x: das Audit auf `32b062ad` IST GRÜN — `4205 checks / 0 failed`, audited tip ==
-  `mainAfter`.** Damit ist die neue Mutex-Semantik einmal gegen die volle Suite gelaufen und die
-  Vorbedingung des Deploys ist erfüllt; `post-land-audits.jsonl` trägt die Zeile. Dann
-  `POST /api/deploy`.
-  Die Route nimmt **kein Self-Token** (`unauthorized`) — sie ist Owner/Steward. Owner-Freigabe für
-  den Deploy liegt vor (Orchestrator 15:0x, „Idle-Uhren frei").
-- **ABER UM 18:4x WAR DER DEPLOY ZWEIFACH BLOCKIERT — prüfe beides, statt zu feuern.** (a) Job
-  `4b3db694` stand `claimed` auf Slot 7 (Baum `f136a99b`): die Wellen-Lane hat also schon rebast und
-  ihr neuer Vorschaulauf läuft auf dem Helfer. Ein `srv`-Kill mitten hinein riskiert den Claim, und
-  das ist ein ~35-min-Lauf des Second-host. (b) Die Audit-Warteschlange trug einen **fremden** Cover
-  (`fleet/260912125546-…`, nicht aus diesem Program) und drei `e2e-isolated`-Prozesse liefen —
-  `POST /api/deploy` antwortet bei laufendem Post-Land-Audit **409**. Sensoren, beide in einer Zeile:
-  `python3 -c 'import json; [print(r["id"], r["state"]) for r in json.load(open("fleet.json"))["laneSuiteJobs"] if r["state"] in ("claimed","offered")]'`
-  und `cat post-land-audit-queue.json`. **Ein Prozess-grep allein taugt nicht** — er zählt auch die
-  Vorschaulaufe fremder Lanes und schweigt in den drei bekannten Nullfenstern.
-- **EINE SCHULD AN EIN FREMDES PROGRAM:** `f9dc8e10` (Leichtgewicht) wartet auf meine Rückmeldung,
-  **sobald `server.ts` frei ist** — das ist genau dann, wenn die Wellen-Lane gelandet oder
-  geschlossen ist. Zugesagt über die Message-Rail (`377b108a`), also nicht pane-flüchtig. Ich habe
-  ausdrücklich **keine Exklusivität** zugesagt, nur ein Fenster.
+**Stand 19:0x. Die Charge ist ZU: sechs Lands, keine Lane dieses Programs mehr offen, die ich
+getrieben habe.** Was §0 bis 18:4x über eine lebende Wellen-Lane sagte, ist erledigt — sie ist
+gelandet (siehe unten). Lies trotzdem `./state.sh` und die Projektion, nicht diesen Absatz.
+
+- **DIE WELLE IST GELANDET: `847d4aff`** (`18e87e67` + `201d0240`, zwei Commits, ein Land; verify
+  grün, volle Kette, `ms 150 896`, `waitMs 0`). Vorschau vorher grün `4217/0` auf `f136a99b`.
+  **Audit-Watch `9ec1508d` war armiert und stirbt mit mir** — neu abonnieren
+  (`{kind:"audit", repo, mainAfter:"847d4aff..."}`) oder `post-land-audits.jsonl` lesen. Eine
+  FEHLENDE Zeile heißt „läuft", nie „verloren".
+- **DER DEPLOY IST DIE ERSTE ECHTE HANDLUNG, DIE DIR BLEIBT.** `codeBehind: true`; live geht damit
+  der Nudge-Fix, der Preview-Rail, der criterion-confirm-Join, die Report-Zustellung an die Lane
+  **und die neue Mutex-Semantik** (`32b062ad`, Audit grün `4205/0` — einmal gegen die volle Suite
+  gelaufen). Vorbedingungen, beide einzeln prüfen, ein Prozess-grep ersetzt sie NICHT:
+  `cat post-land-audit-queue.json` muss leer sein UND kein `laneSuiteJobs`-Eintrag darf `claimed`
+  oder `offered` stehen (um 18:4x war beides besetzt, deshalb habe ich nicht deployt). Die Route
+  nimmt **kein Self-Token** — Owner/Steward. Owner-Freigabe liegt vor (Orchestrator 15:0x).
+- **DIE SCHULD AN `f9dc8e10` IST EINGELÖST** (Message `fe991da6`), und zwar als ehrliches Jein: die
+  drei genannten Lanes sind gelandet, aber die Karten-Welle S1/S3/S2 hält `server.ts` **und**
+  `server/types.ts` seit 16:16 wieder (Branch `fleet/260912161659-de75`, an
+  `git diff --name-only` gemessen). Ich habe ihnen statt eines Freizeichens zwei Wege genannt:
+  das SYMBOL statt der Datei nennen, oder in die Blatt-Module unter `server/` gehen. **Wenn sie mit
+  einem Symbol zurückkommen, ist das deine Zusage** — sie müssen sie nicht neu stellen.
+- **ZWEI LANEN LAUFEN, BEIDE NICHT VON MIR GETRIEBEN:** die Karten-Welle S1/S3/S2 auf Slot 1 und S8
+  (`ab632dae`) auf Slot 4. **Der Orchestrator fährt sie über die Wellen-Tür; du landest, mehr
+  nicht.** Eine Einzelfreigabe lässt die Wellenmenge zerfallen.
+- **NEUER BEFUND AM WELLEN-TOR, ungefilt:** die ZWEITE Zeile einer Welle projiziert als
+  `phase: UNKNOWN` („terminal task has no lane-outcome row"). `201d0240` steht so da, obwohl sie
+  korrekt `done` ist — eine Welle schreibt EINE Outcome-Zeile für die Branch, nicht eine je Zeile.
+  Das ist kein Datenverlust, aber es macht die Projektion für Wellen-Zeilen unlesbar, und die
+  `unknown`-Liste des Programs füllt sich damit auf Dauer. Braucht eine Zeile.
 
 ## 1. WAS DIESE SCHICHT HINTERLÄSST
 

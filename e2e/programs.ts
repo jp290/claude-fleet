@@ -2495,6 +2495,10 @@ export async function run(ctx: Ctx): Promise<void> {
   const msgUnheld = await selfSend(msgAToken, { to: { kind: "program", id: msgUnheldProgram.id },
     payload: { kind: "text", text: "stored for whoever binds next" }, idempotencyKey: "rail-unheld" });
   const msgUnheldBody = await msgUnheld.json() as { holder?: unknown; note?: string | null; message?: { id?: string } };
+  // …and this row is the only GENUINELY FOREIGN message this fixture has: neither addressed TO nor
+  // sent FROM B. The non-disclosure probe below needs exactly that, and the first helper run proved
+  // why — it had used one of B's OWN outbound rows, which is a third case with its own answer.
+  const msgUnheldId = msgUnheldBody.message?.id ?? "";
   check("message rail: a VALID address nobody holds right now stores the message and NAMES that nobody holds it — never a silent discard and never a refusal",
     msgUnheld.ok && msgUnheldBody.holder === null
       && (msgUnheldBody.note ?? "").includes("has no bound MAIN right now")
@@ -2532,15 +2536,24 @@ export async function run(ctx: Ctx): Promise<void> {
   // existence of traffic between two others, so "no such message" and "not addressed to you" get
   // ONE answer — deliberately unlike POST /api/self/inbox/:id/read, whose id space is the caller's
   // own Program and whose two answers send it to two different places.
+  //
+  // THE FOREIGN ID IS `msgUnheldId`, and picking it correctly is the whole probe. The first helper
+  // run failed here with read=409|404 because this used one of B's OWN outbound rows: that is a
+  // THIRD case, answered 409 by design (the caller already sees the row in its own view, so naming
+  // it leaks nothing) and asserted separately below the succession. Only a row that is neither TO
+  // nor FROM the caller tests what this check claims to test.
+  //
+  // THE LOAD-BEARING MUTATION IS "answer foreign differently from absent" — not the older brief's
+  // "turn the 409 into a 404", which cannot colour this red now that both answers are one form.
   const msgForeignReply = await selfSend(msgBToken, { to: { kind: "program", id: mainProgram.id },
     payload: { kind: "text", text: "answering a message addressed to someone else" },
-    idempotencyKey: "rail-foreign-reply", replyTo: msgReplyId });
+    idempotencyKey: "rail-foreign-reply", replyTo: msgUnheldId });
   const msgForeignReplyText = await msgForeignReply.text();
   const msgAbsentReply = await selfSend(msgBToken, { to: { kind: "program", id: mainProgram.id },
     payload: { kind: "text", text: "answering nothing" },
     idempotencyKey: "rail-absent-reply", replyTo: "f".repeat(24) });
   const msgAbsentReplyText = await msgAbsentReply.text();
-  const msgForeignRead = await selfMessageRead(msgBToken, msgReplyId);
+  const msgForeignRead = await selfMessageRead(msgBToken, msgUnheldId);
   const msgForeignReadText = await msgForeignRead.text();
   const msgAbsentRead = await selfMessageRead(msgBToken, "e".repeat(24));
   check("message rail non-disclosure: a replyTo and a read of a message addressed to ANOTHER principal answer exactly as an absent one does — one sentence, one status, no existence leak",

@@ -1,3 +1,99 @@
+# HANDOFF — Orchestrator Slot 13 (Fable 5.1, Haupt-Checkout, Owner-Token): Buendel-Mechanik entsperrt, drei Lands, zwei Successionen, Astra zurueckgeholt; 2026-09-12 13:0x, ctx GEMESSEN 36,2 %
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **ROLLE UND MANDAT (Owner, woertlich sinngemaess, 2026-09-12 11:xx):** „Ich will, dass du einen guten
+  Ueberblick ueber alles behaeltst und dich um die wichtigsten Punkte kuemmerst, bis sie wirklich laufen"
+  — konkret die Task-Buendel-Mechanik, „der groesste Hebel". Und: „wir muessen Claude Fleet sauber ans
+  Laufen kriegen." Das ist die Absicht hinter allem unten. Du bist NICHT die Betriebs-MAIN (das ist
+  Slot 6, Program Fleet-Betrieb f170dc46); du treibst nicht ihre Lanes, du haeltst den Ueberblick,
+  filst mit hartem Kriterium, schaerfst Briefs, dispatchst nur, was sonst liegen bleibt, und
+  beobachtest NICHT per Watch, was der MAIN gehoert (Owner 12:5x: „deabonniere die Events, die Main
+  sollte die bekommen" — meine Watches sind geloescht, Slot 6 hat die Uebergabe per /send).
+- **DAS EINE ZIEL:** eine ECHTE Welle — zwei Zeilen desselben Programs, eine Lane, ein Land. Sie ist
+  noch NIE gelaufen (0 Wellen im Audit-Ledger, Handoff `1c8b8653` sagte dasselbe). Heute sind die zwei
+  Sperren gefallen, die das verhinderten (§1). Was fehlt, ist nur die Probe `f6db3487`: zwei
+  zusammengehoerige offene Zeilen aus Fleet-Betrieb waehlen, ihre Flaechen am Board bestaetigen
+  (Pfade OHNE Kommando-Erwaehnungen wie `e2e-isolated.sh`), `bun task-land-waves.ts --state fleet.json
+  --default-repo "$PWD"` muss eine Welle der Groesse 2 zeigen (Ersparnis 1 715 s), dann `▸ start wave`
+  (`POST /api/wave/dispatch {ids}`), Slot 6 landet. Erst nach dem Deploy (unten), sonst fehlt dem Board
+  die Tuer.
+- **DEPLOY STEHT AUS:** der Live-Server dient den Stand von 2026-09-11 19:57, main ist ~24 Commits
+  weiter (Message-Rail `9792949d`, Flaechenbestaetigung `f8b4a478`, R2 `c42c5a65` — alle Audits gruen,
+  ausser R2, das lief noch). `POST /api/deploy` wurde 12:3x korrekt verweigert, weil das Land von
+  Slot 1 (`fleet/260912092950-7913`, Task 2cca4a44, gestartet 11:43 von Slot 6) in ff-Retry lief. Slot 6
+  hat den Auftrag, nach gruenem Audit zu deployen. Pruefen: `deployGap.codeBehind` auf `/api/sessions`.
+  Kein Program haengt heute an einem Idle-Beleg.
+- **SLOT 11 IST DIE ZURUECKGEHOLTE ASTRA (gpt-6-astra, medium), NICHT KILLEN.** Sie schrieb den
+  Worktrail-Bericht (`d0d8907f`), wurde 11:29 mit dem Owner-Token geschlossen (vermutlich Slot 6s
+  Aufraeumen nach Antritt 11:23; nicht bewiesen), und ist per `codex-bind` + `restart` resumt
+  (`resumed:true`, Recall bestaetigt: sie nennt d0d8907f). Der Owner arbeitet mit ihr.
+- **DIE ZWEITE OWNER-TOKEN-LEICHE:** Program Land-Pipeline `233e1c2b` zeigt `main slot 11`, dahinter
+  lebt seit 10:58 nichts (die alte „astar"-MAIN wurde ebenfalls per Owner-Token gekillt). Ich habe
+  KEINE neue MAIN gegruendet: das Program hat ausser R2 (gelandet) nur fuenf Notizen. Entscheidung
+  fuer den Owner: schliessen oder neu binden.
+
+## 1. WAS HEUTE PASSIERT IST — mit dem Warum
+
+- **Diagnose (drei Astra-Berichte, alle auf main):** `docs/messungen/codebase-report-2026-09-12.md`
+  (Gewicht: 297 Audits, 34 % rot, 27 % unknown; 808/976 Commits beruehren Docs),
+  `audit-ursachen-und-lane-diffmix-2026-09-12.md` (von 181 nicht-gruenen Audits: 3 echte Fehler,
+  65 Flake-Familien, 94 ungeklaert, davon 55 `exit 42`; Fleet-Diffs 55,76 % Docs),
+  `suite-tiering-vorschlag-2026-09-12.md` (0 ms fuer das Gate; die Zeit liegt im Audit + Mutex),
+  `opus-lane-kontextkosten-2026-09-12.md` (eine Opus-Lane: 69k Tokens nach Turn 1, 177k median beim
+  ersten Schreiben, 52 Bash-Aufrufe davor, 77 % ihres Kontexts liegen VOR dem ersten Schreiben; 77 %
+  der ersten Kommandos sind cat/grep ueber den Baum).
+- **Warum nichts lief (gemessen 11:0x):** 110 pending / 0 queued / 1 sent — niemand releaset;
+  Attention `1050d69f` stand fuenf Stunden `open`, obwohl der Controller um 06:10 per criterion-confirm
+  entschieden hatte; Slot 1 (Betriebs-MAIN) sass bei 40 % idle mit Entwurf im Composer; das Audit-Ledger
+  kannte null Successionen. Die Nudge-129-Sache (78 Fehler seit Boot) ist codex-spezifisch: Fleets
+  eigene 177-Zeichen-Nutzlast bleibt zu 129 im Codex-Composer haengen — KEIN fremder Rest
+  (Astras Notiz `docs/messungen/2026-09-11-inbox-nudge-composer-129.md`; Zeile `1e1dcd50`).
+- **Die Buendel-Maschine** (`task-waves.ts`, `task-land-waves.ts`, `wave-brief.ts`,
+  `server.ts#landWaveProjectionNow`, `POST /api/wave/dispatch`, Board-Knopf `▸ start wave`) ist komplett
+  und hatte NULL Mal gefeuert, aus drei Gruenden: (a) R3 verlangt bestaetigte Flaeche, 0/42 Zeilen hatten
+  eine — heute geschlossen durch `f8b4a478` (Position 4 `f547e2f0`: derived-Liste am Board bestaetigbar,
+  Pfad fuer Pfad abwaehlbar; Bundle gebaut, Board dient es); (b) R2 „Gate-Aenderer" war als
+  `isolatedPreview===true` implementiert, also JEDE Zeile mit einem Check unter `e2e/` landete allein —
+  heute geschlossen durch `c42c5a65` (`task-land-waves.ts#isGateMachinery`, Zeile `4b76bfd4`);
+  (c) Datei-Ueberlappung als Kriterium: `server.ts` steht in 28/42 Flaechen, in Fleet-Betrieb falten
+  alle 14 Zeilen zu EINER Komponente — Design, nicht Bug; Program ist das echte Kriterium, die Kappe 3
+  schneidet. Nicht behoben, bewusst.
+- **Gefilt (alle mit hartem Kriterium + Verify):** `dc4ec8b5` criterion-confirm beantwortet die
+  Attention, die ihn erbat (Lane Slot 3) · `4b76bfd4` R2-Praedikat (GELANDET) · `10ddd013` geschaerft um
+  Kriterium (4): das Suite-Ergebnis wird der anbietenden Lane in die Pane zugestellt — weil 60 von 113
+  Lanes mit Suite-Offer sich am Ende fuer ihre Polling-Schleife entschuldigen (Owner: „gefuehlt jede
+  zweite"); Lane Slot 5.
+- **Gelandet ueber die Owner-Route (Owner-Delegation „mach was du meinst"):** `f8b4a478` (verify
+  gruen 179 s, Audit gruen 4168/0), `c42c5a65` (verify gruen 425 s inkl. 275 s Warten; Helfer-Preview
+  war rot 1/4165 in einer M2-Mutex-Timing-Probe in `e2e/programs.ts`, ausserhalb der Flaeche — Audit
+  entscheidet). `9792949d` (Message-Rail) landete Slot 1/6.
+- **Successionen:** Slot 1 → Slot 6 (auf meine /send-Anweisung; HANDOFF `6f693e6f`), Slot 8 abgetreten
+  (Fragen waren ueberholt). Die Maschine kann es; sie tut es nur, wenn jemand es sagt.
+
+## 2. DIE DREI LOESUNGEN, DIE NOCH NICHT GEFILT SIND (Owner hat sie gesehen, 12:5x)
+
+1. **Land haelt den Suite-Mutex ab dem REBASE, nicht erst ab dem Verify.** Heute rebast `mergeJob`
+   VOR dem Lock; die Wrapper nehmen den Mutex je Suite; bewegt sich main waehrend des Wartens, kommt die
+   ff-Retry-Runde (`holdSuiteLock`, server.ts ~20278/20487) und faehrt die ganze Kette nochmal. Belege
+   heute: Slot 4 waitMs 275 000, Slot 1 seit 11:43 in Retry. Ein Schnitt in `server.ts#mergeJob`,
+   Program Land-Pipeline oder Fleet-Betrieb; Kriterium: Rounds>1 im Land-Note kommen nicht mehr vor.
+2. **Der Brief liefert die Naehte:** je abgeleiteter Flaechen-Datei die im Brief genannten Symbole mit
+   Zeilenbereich und ±20-Zeilen-Ausschnitt (gedeckelt, ~8 KB), an `server.ts#briefAndSend` neben dem
+   `notesBlock`. Ziel: Bash-Aufrufe vor dem ersten Schreiben median 52 → <20. Das ist der erste Schnitt
+   der v2-Zeile `2d020389` (Kontextpacks/Bereichs-MAIN), die PROGRAMLOS ist — Owner wollte die Bindung
+   an Astras Program Leichtgewicht `f9dc8e10` entscheiden („antworte gleich darauf"), offen.
+3. **Kein Owner-Token-Kill durch MAINs auf Slots, die sie nicht geoeffnet haben** — Regelbuch-Zeile,
+   Owner-Promotion; hat heute Slot 11 zweimal gekostet.
+
+## 3. WAS ICH NICHT GEMESSEN HABE
+
+Wer Slot 11 um 10:58 und 11:29 gekillt hat (Audit sagt nur `owner`); ob der rote M2-Check der
+R2-Preview auf main wiederkehrt; die ff-Retry-Rundenzahl von Slot 1 (Land-Notes tragen kein
+Rounds-Feld). `.hub-prototype/` liegt ungetrackt im Haupt-Checkout (Owner-Artefakt, unangetastet).
+
+---
+
 # HANDOFF — Owner-MAIN Slot 8 (Opus 5, Haupt-Checkout, Owner-Token): keine Lane getrieben, kein Land, zwei Zeilen gefilt, zehn Worktrees auf dem Second-host weg; 2026-09-12 11:3x
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

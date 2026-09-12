@@ -19,6 +19,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, check, get, post, restartSrv } from "./harness";
+import { laneSuiteWatchMessage } from "../lane-signals";
 import { openLane, type Lane } from "./lane-helpers";
 
 interface HelperJob {
@@ -528,6 +529,25 @@ export async function run(): Promise<void> {
       && greenLane?.payload?.failCount === 0,
     JSON.stringify({ lane: redLane?.payload?.failCount, owner: redOwner?.payload?.failCount,
       green: greenLane?.payload?.failCount }));
+  // THE TWO ZEROES ARE DIFFERENT SENTENCES. `failCount === 0` on a GREEN means there were none; on
+  // a RED it means the parser found no name in the retained tail — which is the exact state that
+  // bought `fails[]` (2026-09-05, job c893717a: red 1 of 3717, and WHICH one was unanswerable from
+  // this box). The hint is RENDERED here rather than source-scanned, because that is the only way
+  // to see the sentence a pane would actually receive.
+  const hintGreen = laneSuiteWatchMessage("j", { id: "e", kind: "lane-suite",
+    payload: { result: "green", branch: "b", exitCode: 0, fails: [], failCount: 0, tail: "ALL PASS" } });
+  const hintRedBlind = laneSuiteWatchMessage("j", { id: "e", kind: "lane-suite",
+    payload: { result: "red", branch: "b", exitCode: 1, fails: [], failCount: 0, tail: "1 FAILURES" } });
+  const hintRedCut = laneSuiteWatchMessage("j", { id: "e", kind: "lane-suite",
+    payload: { result: "red", branch: "b", exitCode: 1, fails: ["a", "b", "c"], failCount: 12, tail: "12 FAILURES" } });
+  check("(LS.8) the pane hint keeps a green's zero apart from a red whose names could not be read",
+    hintGreen.includes("no failures") && !hintGreen.includes("could not be read")
+      && hintRedBlind.includes("NO failing check name could be read"),
+    `green=${JSON.stringify(hintGreen.slice(0, 130))} redBlind=${JSON.stringify(hintRedBlind.slice(0, 150))}`);
+  check("(LS.8) …and a TRUNCATED list says so: the true count first, the sample named as a sample",
+    hintRedCut.includes("12 failure(s), 3 named here") && hintRedCut.includes("the rest are on the job")
+      && hintRedCut.length < 800,
+    `${hintRedCut.length}B ${JSON.stringify(hintRedCut.slice(0, 180))}`);
 
   // ===== (LS.8b) THE STATE IS READABLE WITHOUT THE LANE ==========================================
   // The route reads the OWNER ROWS and joins the job, never the other way round: `laneSuiteJobs` is

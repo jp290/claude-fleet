@@ -443,6 +443,40 @@ interface FleetReportDecision {
   reason: string | null;
 }
 
+// THE DELIVERY HALF OF A VERDICT, and it is a separate fact from the verdict itself for the reason
+// FleetReportDecision is separate from the FleetEvent: the decision is what the MAIN judged, this is
+// what happened when that judgement was carried to the lane that filed the report. Until this cut
+// there was no carrier at all — decideFleetReport's own comment said "no text into the worker's
+// pane" — so a rejected lane learned its verdict only when a human or the Controller forwarded it,
+// and every reject loop needed a third party to close (measured 2026-09-06 on slot 11, reports
+// 097cd80b and b8188322).
+//
+// FOUR STATES, because the three ways this can fail to reach a pane are three different facts and
+// none of them may read as the fourth:
+//  · "delivered"      — the bytes were pasted into the worker's pane and tmux reported success.
+//  · "send-uncertain" — persisted BEFORE tmux was touched and never resolved: the process died
+//    mid-send, or the paste threw after tmux may already have taken part of it. NOTHING replays it
+//    — the decision door is closed by then (first decision wins), so this row is a record of an
+//    unknown, never a debt. Reading it as either delivered or lost would be a claim nobody made.
+//  · "worker-gone"    — the occupant that filed the report is no longer the occupant of that slot,
+//    or the slot is empty. The OCCUPATION decides (slot AND openedAt), never the slot number alone:
+//    a recycled slot holds somebody else's session, and pasting another lane's verdict into it would
+//    be worse than silence. `reason` names WHICH of the two did not match. The session id is carried
+//    and never gated — clarificationReceiverFor's rule, and the slot-12 measurement behind it: a
+//    Codex bind moves that id inside one occupation, and gating it would withhold the verdict from a
+//    live lane.
+//  · "blocked"        — a live, matching occupant that canDeliver refused (kill-switch, dead pane,
+//    blocking screen, quiet hours). `reason` carries the gate, so "we did not try" is legible as
+//    itself rather than as "the lane was gone".
+// `reason` is null exactly on "delivered": there is nothing to explain about an act that worked.
+const FLEET_REPORT_DELIVERY_STATES = ["delivered", "send-uncertain", "worker-gone", "blocked"] as const;
+type FleetReportDeliveryState = typeof FLEET_REPORT_DELIVERY_STATES[number];
+interface FleetReportDecisionDelivery {
+  state: FleetReportDeliveryState;
+  at: number;
+  reason: string | null;
+}
+
 // A report is the immutable result sibling of a ClarificationRequest. Transport state belongs to
 // its FleetEvent; this row carries only the lane-stamped report and the exact two endpoint
 // occupants. In particular there is no attempt/task lifecycle identity here.
@@ -476,6 +510,13 @@ interface FleetReport {
   // fleetReportFrom checks the two together — an owner-inbox row (receiver null) can structurally
   // never carry one, because the owner is a principal with no occupant to be the decider.
   decision?: FleetReportDecision | null;
+  // THE CARRY OF THAT DECISION to the lane that filed the report, minted by the one deliverer both
+  // doors call and never by anything else. Absent means "no decision has been carried yet", which
+  // is the only honest reading for a row persisted before this field existed AND for an undecided
+  // row: the two are told apart by `decision`, not by this. Its presence is also the idempotence
+  // fact — a decision is carried EXACTLY once, and the deliverer refuses a second attempt on the
+  // strength of this key rather than on the door's refusal, so the pair cannot drift apart.
+  decisionDelivery?: FleetReportDecisionDelivery | null;
 }
 
 // THE OWNER-FACING TWIN of ClarificationRequest, with the roles flipped: there a worker asks its
@@ -888,6 +929,23 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
         || by.slot !== r.receiver.slot || by.openedAt !== r.receiver.openedAt)) return null;
     }
   }
+  // The delivery half, default-deny and BOUND TO THE DECISION: absent and null are the same
+  // not-yet-carried fact and both pass, a present record must be complete and must name one of the
+  // four states — and it may not exist on a row that was never judged, because a carry of a verdict
+  // nobody gave is not a half-record but a contradiction. `reason` is checked against the state it
+  // explains: null exactly on "delivered", a non-empty bounded string on the three that failed, so
+  // a hydrated row can never say "it did not arrive" while explaining nothing.
+  const delivery = r.decisionDelivery;
+  if (delivery !== undefined && delivery !== null) {
+    if (typeof delivery !== "object" || Array.isArray(delivery)) return null;
+    if (decision === undefined || decision === null) return null;
+    const d = delivery as Partial<FleetReportDecisionDelivery>;
+    if (!FLEET_REPORT_DELIVERY_STATES.includes(d.state as FleetReportDeliveryState)
+      || typeof d.at !== "number" || !Number.isFinite(d.at) || d.at <= 0) return null;
+    if (d.state === "delivered" ? d.reason !== null
+      : !(typeof d.reason === "string" && !!d.reason.trim()
+        && d.reason.length <= MAX_FLEET_REPORT_DELIVERY_REASON)) return null;
+  }
   return raw as FleetReport;
 }
 
@@ -943,6 +1001,10 @@ const MAX_FLEET_REPORT_TEXT = 4000;
 // The decision's optional prose. Far smaller than the report it judges on purpose: the report is
 // the work, this is one sentence saying what the MAIN did with it.
 const MAX_FLEET_REPORT_DECISION_REASON = 500;
+// The cap on the sentence that explains a FAILED carry. Smaller than the decision reason on purpose:
+// this is a server-composed diagnosis (a gate name, an occupant mismatch), never prose from a
+// principal, and a bound keeps a hydrated row from carrying an unbounded string into every view.
+const MAX_FLEET_REPORT_DELIVERY_REASON = 300;
 
 // Its own constants, copied from the clarification values rather than aliased: the two channels
 // answer to different principals and one may be retuned without silently retuning the other.
@@ -2307,7 +2369,8 @@ export type {
   DeployFleetEvent, CommandJobFleetEvent, LaneSuiteFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
   HelperCmdCheck,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
-  ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReportBasis, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
+  ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReportBasis,
+  FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
   Task, TaskBrief, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
@@ -2330,6 +2393,7 @@ export {
   ATTENTION_KINDS, fleetEventRecoveryFrom, fleetEventFrom, clarificationFrom, fleetReportFrom,
   attentionFrom, MAX_CLARIFICATION_QUESTION, MAX_CLARIFICATION_ANSWER, MAX_FLEET_REPORT_TEXT,
   FLEET_REPORT_DISPOSITIONS, MAX_FLEET_REPORT_DECISION_REASON,
+  FLEET_REPORT_DELIVERY_STATES, MAX_FLEET_REPORT_DELIVERY_REASON,
   MAX_ATTENTION_TEXT, MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT,
   ATTENTION_CANDIDATE_SHA_RE, ATTENTION_BRANCH_RE, validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT,
   TASK_KINDS, isTaskKind, loadTaskKind, TASK_VERDICTS, isTaskVerdict, TASK_TOUCHED_MAX,

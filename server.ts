@@ -10371,6 +10371,9 @@ async function tickCardSweep(): Promise<void> {
         cardRetry.set(t.id, { attempts: (cardRetry.get(t.id)?.attempts ?? 0) + 1, at: Date.now() });
         console.log(`card extractor: read failed for ${t.id}, the row keeps its prose: ${e instanceof Error ? e.message : e}`);
         logError("tickCardSweep", e);
+        // `model` on an error row is the model that WOULD have run, the same convention every
+        // other worker's error record in this file carries — nothing ran, so there is nothing
+        // else true to write, and an absent field would make the row unjoinable with the rest.
         await appendEvent(CARD_FILE, { at: Date.now(), taskId: t.id, model: CARD_MODEL, ms: 0,
           valid: false, gaps: [`run: ${e instanceof Error ? e.message : String(e)}`.slice(0, 300)] });
       }

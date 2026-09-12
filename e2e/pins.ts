@@ -245,7 +245,17 @@ const SOURCE_DIR = ((): string | null => {
   } else if (configured.size === 0 && !sourceEnvPresent) {
     skip("leak-pin: no identity source, unprobed", "FLEET identity env and source-checkout .env absent");
   } else {
-    const publicExamples = /^(?:localhost|0\.0\.0\.0|127\.0\.0\.1|::|::1|100\.64\.0\.1)$/i;
+    // The loopback spellings are listed TWICE on purpose, and only the second pair is reachable.
+    // A bare `::`/`::1` never arrives here: `new URL("http://::1")` THROWS, so that spelling is
+    // already counted as a malformed value below. What a configured IPv6 loopback actually becomes
+    // is the bracketed form `new URL()` renders — `[::1]`, and every longer spelling normalises
+    // into it (`[0:0:0:0:0:0:0:1]` -> `[::1]`). Listing only the bare pair left the reachable one
+    // unfiltered, where the bracket rule below correctly reads it as a routable IP literal and
+    // makes it a needle: a host configured on IPv6 loopback then searches the tree for `[::1]` and
+    // goes red on tracked prose that merely SPELLS it (e2e/tasks.ts carries it as fixture data).
+    // The bare pair stays because it is the spelling a reader looks for; the bracketed pair is the
+    // one that does the work.
+    const publicExamples = /^(?:localhost|0\.0\.0\.0|127\.0\.0\.1|::|::1|\[::\]|\[::1\]|100\.64\.0\.1)$/i;
     const reservedDomains = /(?:^|\.)(?:example\.(?:com|org|net)|example|invalid|test)$/i;
     const malformed: string[] = [];
     const hosts = [...new Set([...configured.values()].flatMap((value) => value.split(","))
@@ -290,9 +300,18 @@ const SOURCE_DIR = ((): string | null => {
       return parent && !reservedDomains.test(parent) ? [host, parent] : [host];
     }))];
 
-    if (malformed.length > 0 || identities.length === 0) {
+    // Two different facts used to share one red. A malformed value means the configuration could
+    // not be READ, and that stays a hard failure. An empty identity set after a clean read means
+    // the opposite: every field parsed, and none of them names a routable host — reachable through
+    // ordinary configuration, since FLEET_ALLOWED_HOSTS and FLEET_SHARE_HOSTS both default to "".
+    // Reporting that as "identity source is probeable: false" denies a fact that HOLDS and sends
+    // the reader hunting a broken .env. It is the unprobed case, and it says so under its own name.
+    if (malformed.length > 0) {
       pin("leak-pin: identity source is probeable", false,
         `${configured.size} configured field(s), ${malformed.length} malformed value(s), ${identities.length} searchable host(s)`);
+    } else if (identities.length === 0) {
+      skip("leak-pin: no routable identity configured, unprobed",
+        `${configured.size} configured field(s) read, 0 routable host(s) among them`);
     } else {
       const args = ["-C", ROOT, "grep", "-I", "-i", "-n", "-F"];
       for (const identity of identities) args.push("-e", identity);

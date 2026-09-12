@@ -12077,9 +12077,16 @@ async function tickInboxNudge(): Promise<void> {
         || `${session}|${currentUnreadIds.join(",")}` !== key) continue;
       const quietKinds = (program.inbox?.entries ?? [])
         .some((entry) => entry.readBy === null && entry.kind === "audit-red");
+      // THE TOKEN NAME IS NOT THE LAST TOKEN. Until 2026-09-12 this hint closed on
+      // `… aus $FLEET_SELF_TOKEN).` — the one shape RULE_SIGIL forbids, measured 2026-09-05 on a
+      // codex pane, where a `$NAME` at the cursor opens the mention overlay that eats the Enter.
+      // Whether that is what killed THIS hint's sends is not established (the separating probe is
+      // still open: docs/messungen/2026-09-11-inbox-nudge-composer-129.md §4) — the form violates
+      // a standing rule either way. The credential's origin still belongs here; its POSITION moved.
       const text = `[fleet inbox] ${unreadIds.length} ungelesene Eintraege in der Inbox deines Programs ${program.id}`
         + `${quietKinds ? " (audit-red nicht mitgezaehlt: es tippt nie in eine Pane)" : ""} — `
-        + "GET /api/self/inbox, dann POST /api/self/inbox/<id>/read (x-fleet-self-token aus $FLEET_SELF_TOKEN).";
+        + "Self-Token aus $FLEET_SELF_TOKEN im Header x-fleet-self-token: "
+        + "GET /api/self/inbox, dann POST /api/self/inbox/<id>/read.";
       let acceptance: Acceptance;
       try {
         ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));

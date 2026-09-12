@@ -1837,6 +1837,162 @@ const loadProgramInbox = (value: unknown): ProgramInboxRead => {
   return { ok: true, inbox: { v: 1, entries, dropped: r.dropped as number } };
 };
 
+// === THE ADDRESSED MESSAGE RAIL (ACP-18) ========================================================
+// WHAT THE PROGRAM INBOX STRUCTURALLY CANNOT BE. An inbox entry is a POINTER owned by ONE Program,
+// naming no sender and carrying no body (PROGRAM_INBOX_ENTRY_KEYS, and the I1 pin that keeps a
+// receiver key off it). This record is the other half: a free, ADDRESSED message between two
+// principals, with a sender, a body and a reply edge. It is a fleet-level record rather than a
+// Program field for exactly the reason the inbox IS one — an inbox belongs to a single Program,
+// and a message has two ends that are not the same principal.
+//
+// THE ADDRESS IS NEVER A SLOT NUMBER, and that single choice is what makes the two hard properties
+// hold at once: a slot is recycled, a Program id and a role binding are not. VISIBILITY is decided
+// by the ADDRESS — so the successor of a retired occupant resolves to the same address and reads
+// the same message under the same id. The READ RECEIPT is decided by the OCCUPANT TRIPLE — so the
+// record still says exactly who read it, and a later occupant never overwrites that. Two different
+// questions; a slot-keyed record answers both with one wrong answer.
+type MessageRole = "supervisor" | "controller";
+// `controller` is carried DELIBERATELY as a well-formed but unresolvable address. The Controller is
+// Scope and holds no binding (docs/controller.md), so naming it here is how the dead end is
+// DOCUMENTED rather than invented: the loader accepts the address, the resolver refuses it by name,
+// and a later owner-promoted binding is a resolver change instead of a record migration. A MAIN
+// that wants to reach the Controller today addresses the Program the Controller is MAIN of.
+const MESSAGE_ROLES: MessageRole[] = ["supervisor", "controller"];
+type MessageAddress = { kind: "program"; id: string } | { kind: "role"; role: MessageRole };
+// CLOSED BY KIND, with exactly one member today. An unknown kind is a named refusal rather than a
+// tolerated extra — but the honest limit of what that buys: it keeps TODAY's text records stably
+// readable, and it does NOT prove a second payload type will land without migration. Only the
+// second type could prove that; this is the door left unlocked for it, not the walk through it.
+type MessagePayload = { kind: "text"; text: string };
+const MESSAGE_PAYLOAD_KINDS = ["text"];
+const MESSAGE_IDEMPOTENCY_KEY_MAX = 200;
+const MESSAGE_ENTRY_KEYS = ["id", "from", "to", "at", "payload", "idempotencyKey", "replyTo", "readBy", "readAt"];
+interface Message {
+  id: string;                       // 24 hex, minted by appendMessage
+  from: MessageAddress;             // DERIVED from the sender's binding, never read from a body
+  to: MessageAddress;
+  at: number;
+  payload: MessagePayload;
+  idempotencyKey: string;           // scoped to (from, to, payload) WITHIN the retention below
+  replyTo: string | null;           // the answer edge — a field, never a convention
+  readBy: { slot: number; openedAt: number; sessionId: string | null } | null;
+  readAt: number | null;            // null exactly when readBy is null
+}
+interface Messages { v: 1; entries: Message[]; dropped: number }
+// The cap is on the RECORD, like PROGRAM_INBOX_MAX and for its reason: a hand-written file cannot
+// make the fleet carry an unbounded history either. It is ALSO the boundary of the idempotency
+// promise — see appendMessage: dedupe reads the live entries, so a key whose message has been
+// evicted can mint again. That is a named limit, not exactly-once.
+const MESSAGES_MAX = 200;
+type MessagesRead = { ok: true; messages: Messages } | { ok: false; error: string };
+
+const loadMessageAddress = (value: unknown, what: string): MessageAddress | string => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `${what} must be an object`;
+  const r = value as Record<string, unknown>;
+  if (r.kind === "program") {
+    if (Object.keys(r).some((k) => !["kind", "id"].includes(k)) || Object.keys(r).length !== 2)
+      return `${what} must contain exactly kind, id`;
+    if (typeof r.id !== "string" || !/^[0-9a-f]{24}$/.test(r.id))
+      return `${what} id must be 24 hex characters`;
+    return { kind: "program", id: r.id };
+  }
+  if (r.kind === "role") {
+    if (Object.keys(r).some((k) => !["kind", "role"].includes(k)) || Object.keys(r).length !== 2)
+      return `${what} must contain exactly kind, role`;
+    if (typeof r.role !== "string" || !MESSAGE_ROLES.includes(r.role as MessageRole))
+      return `${what} role must be one of ${MESSAGE_ROLES.join(", ")}`;
+    return { kind: "role", role: r.role as MessageRole };
+  }
+  return `${what} kind must be one of program, role`;
+};
+
+const loadMessagePayload = (value: unknown, what: string): MessagePayload | string => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `${what} must be an object`;
+  const r = value as Record<string, unknown>;
+  if (r.kind !== "text") return `${what} kind must be one of ${MESSAGE_PAYLOAD_KINDS.join(", ")}`;
+  if (Object.keys(r).some((k) => !["kind", "text"].includes(k)) || Object.keys(r).length !== 2)
+    return `${what} must contain exactly kind, text`;
+  if (typeof r.text !== "string" || r.text.trim() === "" || r.text.length > MAX_SUPERVISOR_NUDGE_TEXT)
+    return `${what} text must be a non-empty string of at most ${MAX_SUPERVISOR_NUDGE_TEXT} chars`;
+  return { kind: "text", text: r.text };
+};
+
+const loadMessageEntry = (value: unknown, index: number): Message | string => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `entry ${index} must be an object`;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !MESSAGE_ENTRY_KEYS.includes(k))
+    || Object.keys(r).length !== MESSAGE_ENTRY_KEYS.length)
+    return `entry ${index} must contain exactly ${MESSAGE_ENTRY_KEYS.join(", ")}`;
+  if (typeof r.id !== "string" || !/^[0-9a-f]{24}$/.test(r.id))
+    return `entry ${index} id must be 24 hex characters`;
+  const from = loadMessageAddress(r.from, `entry ${index} from`);
+  if (typeof from === "string") return from;
+  const to = loadMessageAddress(r.to, `entry ${index} to`);
+  if (typeof to === "string") return to;
+  if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0)
+    return `entry ${index} at must be a positive number`;
+  const payload = loadMessagePayload(r.payload, `entry ${index} payload`);
+  if (typeof payload === "string") return payload;
+  if (typeof r.idempotencyKey !== "string" || r.idempotencyKey === ""
+    || r.idempotencyKey.length > MESSAGE_IDEMPOTENCY_KEY_MAX)
+    return `entry ${index} idempotencyKey must be a non-empty string of at most ${MESSAGE_IDEMPOTENCY_KEY_MAX} chars`;
+  if (r.replyTo !== null && (typeof r.replyTo !== "string" || !/^[0-9a-f]{24}$/.test(r.replyTo)))
+    return `entry ${index} replyTo must be 24 hex characters or null`;
+  if (r.readBy !== null) {
+    if (!r.readBy || typeof r.readBy !== "object" || Array.isArray(r.readBy))
+      return `entry ${index} readBy must be an object or null`;
+    const by = r.readBy as Record<string, unknown>;
+    if (Object.keys(by).some((k) => !["slot", "openedAt", "sessionId"].includes(k))
+      || Object.keys(by).length !== 3)
+      return `entry ${index} readBy must contain exactly slot, openedAt, sessionId`;
+    if (!Number.isInteger(by.slot) || (by.slot as number) < 1 || (by.slot as number) > MAX_SLOTS)
+      return `entry ${index} readBy slot must be an integer in 1..${MAX_SLOTS}`;
+    if (typeof by.openedAt !== "number" || !Number.isFinite(by.openedAt) || by.openedAt <= 0)
+      return `entry ${index} readBy openedAt must be a positive number`;
+    if (by.sessionId !== null && typeof by.sessionId !== "string")
+      return `entry ${index} readBy sessionId must be a string or null`;
+  }
+  if (r.readAt !== null && (typeof r.readAt !== "number" || !Number.isFinite(r.readAt) || r.readAt <= 0))
+    return `entry ${index} readAt must be a positive number or null`;
+  // the receipt is ONE fact in two fields, exactly as on the inbox entry and for its reason
+  if ((r.readBy === null) !== (r.readAt === null))
+    return `entry ${index} readBy and readAt must be null together`;
+  const by = r.readBy as { slot: number; openedAt: number; sessionId: string | null } | null;
+  return { id: r.id, from, to, at: r.at, payload, idempotencyKey: r.idempotencyKey,
+    replyTo: r.replyTo as string | null,
+    readBy: by === null ? null : { slot: by.slot, openedAt: by.openedAt, sessionId: by.sessionId },
+    readAt: r.readAt as number | null };
+};
+
+// CLOSED, VERSIONED, DEFAULT-ABSENT, in loadProgramInbox's discipline and for its reason: a record
+// nobody can parse is not a shorter record, it is no record, and the caller REPORTS that instead of
+// repairing it row by row. A repair would turn "these messages were lost" into "there were never
+// any", which is the one answer a message rail may never give.
+const loadMessages = (value: unknown): MessagesRead => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "must be an object" };
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["v", "entries", "dropped"].includes(k)) || Object.keys(r).length !== 3)
+    return { ok: false, error: "must contain exactly v, entries, dropped" };
+  if (r.v !== 1) return { ok: false, error: "v must be 1" };
+  if (!Array.isArray(r.entries)) return { ok: false, error: "entries must be an array" };
+  if (r.entries.length > MESSAGES_MAX)
+    return { ok: false, error: `entries must hold at most ${MESSAGES_MAX} rows` };
+  if (!Number.isInteger(r.dropped) || (r.dropped as number) < 0)
+    return { ok: false, error: "dropped must be a non-negative integer" };
+  const entries: Message[] = [];
+  const ids = new Set<string>();
+  for (const [index, raw] of r.entries.entries()) {
+    const entry = loadMessageEntry(raw, index);
+    if (typeof entry === "string") return { ok: false, error: entry };
+    // the id is the ADDRESS the read route and every replyTo resolve; two rows under one id make
+    // both a coin toss, so a duplicate is a broken record rather than a duplicate message
+    if (ids.has(entry.id)) return { ok: false, error: `entry ${index} repeats id ${entry.id}` };
+    ids.add(entry.id);
+    entries.push(entry);
+  }
+  return { ok: true, messages: { v: 1, entries, dropped: r.dropped as number } };
+};
+
 // --- THE PROGRAM HANDOVER RECORD (the seventh) --------------------------------------------------
 // WHAT A RETIRING MAIN OWED, kept because nothing else keeps it. A succession kills the
 // predecessor's slot, and that teardown deletes its autos and its watches outright and refuses its
@@ -2099,6 +2255,7 @@ export type {
   PromotionSelfLand, PromotionPolicy, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
   ProgramInboxKind, ProgramInboxEntry, ProgramInbox, ProgramInboxRead,
+  MessageRole, MessageAddress, MessagePayload, Message, Messages, MessagesRead,
   ProgramHandoverKind, ProgramHandoverDetail, ProgramHandoverObligation, ProgramHandover,
   ProgramHandoverRead, ProgramRecordLoss, ProgramRecordLossRead,
   ProgramFoundingMode, ProgramFoundingOccupant, ProgramFoundingV1, ProgramFoundingProfileKind,
@@ -2123,6 +2280,8 @@ export {
   PROGRAM_INBOX_MAX, PROGRAM_INBOX_KINDS, PROGRAM_INBOX_ENTRY_KEYS, PROGRAM_INBOX_REF_MAX,
   PROGRAM_RECORD_LOSS_ERROR_MAX,
   loadProgramInboxEntry, loadProgramInbox,
+  MESSAGE_ROLES, MESSAGE_PAYLOAD_KINDS, MESSAGE_ENTRY_KEYS, MESSAGE_IDEMPOTENCY_KEY_MAX,
+  MESSAGES_MAX, loadMessageAddress, loadMessagePayload, loadMessageEntry, loadMessages,
   PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, PROGRAM_HANDOVER_KINDS,
   loadProgramHandover, loadProgramRecordLoss,
   foundingOccupantFrom, foundingIdentityFrom,

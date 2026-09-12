@@ -2704,6 +2704,14 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     // pin below keeps that half honest. `refusal` is its own shape: not a gate (it decides nothing
     // by itself) and emphatically not a widening.
     "supervisorRefusal [refusal]",
+    // ACP-18 · the addressed message rail's TWO readers, both OUTSIDE the dispatcher and both of a
+    // shape none of the four above describes: they neither gate a route nor widen a query, they
+    // DERIVE THE CALLER'S OWN ADDRESS — "is this session the principal `role:supervisor`?" — so the
+    // Supervisor can send and be sent to under a name that survives its own succession. Their own
+    // shape (`principal`) rather than `unclassified`, because two entries parked in the catch-all
+    // would blunt exactly the distinction this pin exists to keep.
+    "messageSenderFor [principal]",
+    "messageAddressesFor [principal]",
   ];
   // literal routes AND regex routes, both by position: a regex route between two literals would
   // otherwise be named after the literal above it, which is a different door.
@@ -2723,6 +2731,11 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       : /(?:\|\||&&)\s*$/.test(before) ? "widening"
       : /if \($/.test(before) && /^isBoundSupervisor\(s\)\)\s*\n\s*return json\(\{ error: "[^"]*" \}, 409\)/.test(after) ? "exclusion"
       : /^isBoundSupervisor\(s\) \? null : NOT_SUPERVISOR;/.test(after) ? "refusal"
+      // ACP-18: the caller's own address, not a route decision. Both forms are spelled out so a
+      // reader of a DIFFERENT shape cannot drift into this bucket; the function name in the entry
+      // keeps the same line appearing elsewhere from passing as one of these two.
+      : /^isBoundSupervisor\(s\)\) out\.push\(\{ kind: "role", role: "supervisor" \}\);/.test(after) ? "principal"
+      : /const sup = $/.test(before) ? "principal"
       : "unclassified";
     let route = "OUTSIDE THE ROUTE DISPATCHER";
     if (svDispatcherAt >= 0 && at > svDispatcherAt) {
@@ -7245,6 +7258,72 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     /^## inbox/m.test(selfApiInbox) && selfApiInbox.includes("GET /api/self/inbox")
       && selfApiInbox.includes("/api/self/inbox/:id/read"),
     `section=${/^## inbox/m.test(selfApiInbox)} get=${selfApiInbox.includes("GET /api/self/inbox")} read=${selfApiInbox.includes("/api/self/inbox/:id/read")}`);
+
+  // ACP-18 · THE ADDRESSED MESSAGE RAIL. Same discipline as the inbox above, pinned for the same
+  // reasons — plus the two properties that are this rail's own and that no compiler can see.
+  const RULE_MESSAGES = "an addressed message names principals, never slots";
+  const msgIface = server.match(/interface Message \{[\s\S]*?\n\}/)?.[0] ?? "";
+  const msgAddr = server.match(/type MessageAddress = [^\n]*/)?.[0] ?? "";
+  // M1 — THE ADDRESS IS A CLOSED UNION OF PRINCIPALS AND CARRIES NO SLOT. A `slot` on either end is
+  // how criterion (1) and (2) die together: a recycled occupant would inherit the mailbox of the
+  // one before it, and a successor would lose the thread it is supposed to continue.
+  pin(`${RULE_MESSAGES} — MessageAddress is a closed program|role union and no address field is a slot`,
+    msgAddr.includes('{ kind: "program"; id: string }') && msgAddr.includes('{ kind: "role"; role: MessageRole }')
+      && msgIface !== "" && /\bfrom: MessageAddress;/.test(msgIface) && /\bto: MessageAddress;/.test(msgIface)
+      && !/\b(from|to)Slot\b/.test(msgIface),
+    msgAddr === "" ? "type MessageAddress not found in the server universe"
+      : msgIface === "" ? "interface Message not found in the server universe"
+        : `union=${msgAddr.includes('{ kind: "role"; role: MessageRole }')} ends=${/\bfrom: MessageAddress;/.test(msgIface)}`);
+  // M2 — THE SENDER IS DERIVED, NEVER READ FROM A BODY. One line of `body.from` would make every
+  // other property on this rail unprovable, because any principal could then claim any address.
+  const msgSend = server.match(/async function sendMessageFor\([\s\S]*?\n\}\n/)?.[0] ?? "";
+  pin(`${RULE_MESSAGES} — sendMessageFor derives the sender from the binding and reads a closed body that cannot name one`,
+    msgSend !== "" && msgSend.includes("messageSenderFor(s)")
+      && msgSend.includes('["to", "payload", "idempotencyKey", "replyTo"]')
+      && !/body\.(from|sender|slot)\b/.test(msgSend),
+    msgSend === "" ? "sendMessageFor not found in the server universe"
+      : `derived=${msgSend.includes("messageSenderFor(s)")} closed=${msgSend.includes('["to", "payload", "idempotencyKey", "replyTo"]')}`);
+  // M3 — ONE PREDICATE FOR THE ROLE. A second copy of the Supervisor rule is how the view and the
+  // delivery start disagreeing about who holds the role; both message readers go through the one
+  // predicate, and the reader-set pin above additionally names them.
+  const msgSender = server.match(/function messageSenderFor\([\s\S]*?\n\}/)?.[0] ?? "";
+  const msgAddrs = server.match(/function messageAddressesFor\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_MESSAGES} — both principal derivations resolve the role through isBoundSupervisor and never through a label or a slot number`,
+    msgSender !== "" && msgAddrs !== ""
+      && msgSender.includes("isBoundSupervisor(s)") && msgAddrs.includes("isBoundSupervisor(s)")
+      && !/supervisor\.slot\s*===/.test(msgSender) && !/supervisor\.slot\s*===/.test(msgAddrs)
+      && !/SUPERVISOR_LABEL/.test(msgSender) && !/SUPERVISOR_LABEL/.test(msgAddrs),
+    msgSender === "" || msgAddrs === "" ? "messageSenderFor or messageAddressesFor not found in the server universe"
+      : `sender=${msgSender.includes("isBoundSupervisor(s)")} reader=${msgAddrs.includes("isBoundSupervisor(s)")}`);
+  // M4 — THE ONE WRITER, counted like the inbox's: `dropped` is only a true number while a single
+  // function maintains it, so a second assignment anywhere in the universe is the violation.
+  const msgWriters = (server.match(/\bmessages = \{/g) ?? []).length;
+  const msgAppend = server.match(/function appendMessage\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_MESSAGES} — appendMessage is the only writer of the record`,
+    msgWriters === 1 && msgAppend !== "" && msgAppend.includes("messages = {")
+      && msgAppend.includes("MESSAGES_MAX") && msgAppend.includes('audit("message_append"'),
+    msgAppend === "" ? "appendMessage not found in the server universe"
+      : `assignments=${msgWriters} capped=${msgAppend.includes("MESSAGES_MAX")}`);
+  // M5 — CLOSED AND VERSIONED, in loadProgramInbox's exact discipline: an unknown key is a refusal
+  // and never a tolerated extra, and a v2 shape can never be read as a v1 record.
+  const msgLoader = server.match(/const loadMessages = \(value: unknown\): MessagesRead => \{[\s\S]*?\n\};/)?.[0] ?? "";
+  const msgPayload = server.match(/const loadMessagePayload = [\s\S]*?\n\};/)?.[0] ?? "";
+  pin(`${RULE_MESSAGES} — loadMessages is closed and versioned and loadMessagePayload refuses an unknown payload kind`,
+    msgLoader !== "" && msgLoader.includes('Object.keys(r).some((k) => !["v", "entries", "dropped"]')
+      && msgLoader.includes("r.v !== 1") && msgLoader.includes("MESSAGES_MAX")
+      && msgPayload !== "" && msgPayload.includes('r.kind !== "text"'),
+    msgLoader === "" ? "loadMessages not found in the server universe"
+      : `closed=${msgLoader.includes("r.v !== 1")} payload=${msgPayload.includes('r.kind !== "text"')}`);
+  // M6 — THE DOC SEAM, on the inbox seam's terms. The idempotency LIMIT is pinned by name because it
+  // is the one promise a reader would otherwise over-read: dedupe lives inside the retention, so a
+  // replay after a cap eviction can mint again. A doc that omitted that would be claiming
+  // exactly-once, which this rail does not provide.
+  pin(`${RULE_MESSAGES} — docs/self-api.md carries §messages, names all three route paths and states the idempotency boundary`,
+    /^## messages/m.test(selfApiInbox) && selfApiInbox.includes("GET /api/self/messages")
+      && selfApiInbox.includes("POST /api/self/messages")
+      && selfApiInbox.includes("/api/self/messages/:id/read")
+      && /[Ee]xactly-once/.test(selfApiInbox),
+    `section=${/^## messages/m.test(selfApiInbox)} get=${selfApiInbox.includes("GET /api/self/messages")} read=${selfApiInbox.includes("/api/self/messages/:id/read")} limit=${/[Ee]xactly-once/.test(selfApiInbox)}`);
 }
 
 // ================================================================================================

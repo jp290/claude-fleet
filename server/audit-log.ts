@@ -306,6 +306,15 @@ type AuditEvent =
   // the bound MAIN stamped its receipt on one inbox entry. Detail names the program and the entry
   // id; there is no row for a REPEATED read, because a receipt that already exists is not an event.
   | "program_inbox_read"
+  // ACP-18 · the addressed message rail. `message_append` is the ONE writer's row and names the two
+  // ADDRESSES plus the message id — never the body, which is the caller's text and not the trail's.
+  // `message_read` is the receipt, and like the inbox there is no row for a repeated read.
+  // `messages_unreadable` is the record-level degradation: the rail loaded EMPTY, which reads
+  // exactly like "nobody ever sent anything", so the trail is one of the two places that can still
+  // say otherwise (the other is the persisted scar on the rail's own reader).
+  | "message_append"
+  | "message_read"
+  | "messages_unreadable"
   // a terminal land armed the merge subscription its bound Program-MAIN never made
   // (armProgramMainLandWatch), or declined to because that MAIN's return path is full. The second
   // row is the one that matters: a MAIN told nothing must not be told nothing SILENTLY.

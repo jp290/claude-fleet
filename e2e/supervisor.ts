@@ -76,6 +76,30 @@ const historyOf = async (slot: number): Promise<string> => {
 const sameBinding = (a: SupervisorBinding | null, b: SupervisorBinding | null): boolean =>
   JSON.stringify(a) === JSON.stringify(b);
 
+// ACP-18 · the addressed message rail, read and written through its own doors on the same
+// credential lane every other self route here uses.
+interface MessageRow {
+  id: string; from: unknown; to: unknown; at: number;
+  payload: { kind: string; text?: string }; idempotencyKey: string; replyTo: string | null;
+  readBy: { slot: number; openedAt: number; sessionId: string | null } | null; readAt: number | null;
+}
+interface MessageView {
+  addresses: unknown[]; unread: number; droppedFleetWide: number;
+  entries: MessageRow[]; unknown: string[];
+}
+const sendMessage = (token: string, body: unknown): Promise<Response> =>
+  fetch(`${BASE}/api/self/messages`, {
+    method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
+    body: JSON.stringify(body),
+  });
+const readMessages = async (token: string): Promise<{ response: Response; view: MessageView | null; error: string | null }> => {
+  const response = await fetch(`${BASE}/api/self/messages`, { headers: { "x-fleet-self-token": token } });
+  const body = await response.json() as MessageView & { error?: string };
+  return { response, view: typeof body.error === "string" ? null : body, error: body.error ?? null };
+};
+const readMessage = (token: string, id: string): Promise<Response> =>
+  fetch(`${BASE}/api/self/messages/${id}/read`, { method: "POST", headers: { "x-fleet-self-token": token } });
+
 // A HANDOFF commit is compared against the session's openedAt in whole seconds on the git side and
 // in milliseconds on the slot side; waiting past the next full second is what makes "newer" true.
 const commitHandoff = async (openedAt: number, body: string): Promise<number> => {
@@ -1182,4 +1206,138 @@ export async function run(): Promise<void> {
   if (laneSlot) await post(`/api/slots/${laneSlot}/kill`, {});
   await post(`/api/slots/${bindId}/kill`, {});
   await post(`/api/slots/${twinId}/kill`, {});
+
+  // ============================================================================================
+  // ACP-18 · THE ADDRESSED MESSAGE RAIL, ROLE END — MAIN → Supervisor → answer, across a REAL
+  // Supervisor succession.
+  // ============================================================================================
+  // WHY THIS BELONGS HERE AND NOT IN e2e/programs.ts. The Program half of this rail proves that an
+  // address outlives its holder when the address is a PROGRAM. This half proves the other member
+  // of the union, and it is the harder one: a role has no row of its own, so "who holds
+  // role:supervisor" is a single binding that succession MOVES (succeedSupervisor rewrites it).
+  // Nothing but a real succession measures that — a planted binding would prove the fixture.
+  //
+  // It runs LAST, after the bind cut has left the binding stale, so it owns the state it needs and
+  // disturbs no earlier check.
+  const msgSupOpen = await bootstrap({ cwd: ROOT, label: "message-rail-supervisor" });
+  const msgSupBody = await msgSupOpen.json() as { ok?: boolean; slot?: number; replaced?: unknown };
+  const msgSupSlot = msgSupBody.slot ?? 0;
+  const msgSupToken = readState().slots?.[String(msgSupSlot)]?.selfToken ?? "";
+  check("message rail role setup: a fresh Supervisor is bound and carries its own self credential",
+    msgSupOpen.ok && msgSupSlot > 0 && /^[0-9a-f]{32}$/.test(msgSupToken)
+      && (await ownerRead()).supervisor?.slot === msgSupSlot,
+    `${msgSupOpen.status} slot=${msgSupSlot} token=${msgSupToken.length}`);
+
+  // the OTHER end: an ordinary session bound as the MAIN of one active Program, planted through
+  // fleet.json exactly as the nudge receiver above is and for the same reason.
+  const msgMainFree = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const msgMainOpen = await post(`/api/slots/${msgMainFree}/open`, { cwd: ROOT, label: "message-rail-main" });
+  const msgMainSlot = msgMainOpen.ok ? msgMainFree : 0;
+  const msgProgramId = `${"d".repeat(20)}0001`;
+  {
+    const row = readState().slots?.[String(msgMainSlot)];
+    await installPrograms([programFixture(msgProgramId, "active",
+      { slot: msgMainSlot, openedAt: row?.openedAt ?? 0, sessionId: row?.sessionId ?? null, boundAt: Date.now() },
+      "Message rail: the Program whose MAIN addresses the role")], false);
+  }
+  const msgMainToken = readState().slots?.[String(msgMainSlot)]?.selfToken ?? "";
+  check("message rail role setup: a plain session is the live bound MAIN of one active Program and holds a distinct credential",
+    msgMainSlot > 0 && /^[0-9a-f]{32}$/.test(msgMainToken) && msgMainToken !== msgSupToken
+      && (await ownerRead()).programs.find((p) => p.id === msgProgramId)?.main?.slot === msgMainSlot,
+    `slot=${msgMainSlot} program=${msgProgramId.slice(-4)}`);
+
+  // HIN: the MAIN addresses the ROLE, never the Supervisor's slot number.
+  const msgRoleText = "MAIN to the role: a question the next Supervisor must still be able to read.";
+  const msgToRole = await sendMessage(msgMainToken, { to: { kind: "role", role: "supervisor" },
+    payload: { kind: "text", text: msgRoleText }, idempotencyKey: "role-out-1" });
+  const msgToRoleBody = await msgToRole.json() as
+    { message?: { id?: string; from?: unknown; to?: unknown }; holder?: { slot?: number } | null };
+  const msgToRoleId = msgToRoleBody.message?.id ?? "";
+  check("message rail role: a bound MAIN addresses role:supervisor, the stored address is the ROLE and not a slot, and the live holder is the bound Supervisor",
+    msgToRole.ok && /^[0-9a-f]{24}$/.test(msgToRoleId)
+      && JSON.stringify(msgToRoleBody.message?.to) === JSON.stringify({ kind: "role", role: "supervisor" })
+      && JSON.stringify(msgToRoleBody.message?.from) === JSON.stringify({ kind: "program", id: msgProgramId })
+      && msgToRoleBody.holder?.slot === msgSupSlot,
+    `${msgToRole.status} id=${msgToRoleId} to=${JSON.stringify(msgToRoleBody.message?.to)} holder=${JSON.stringify(msgToRoleBody.holder)}`);
+
+  // RUECK: the Supervisor answers on the reply edge, and its OWN sender is the role — derived from
+  // isBoundSupervisor, never claimed in the body.
+  const msgSupView = await readMessages(msgSupToken);
+  const msgSupSeen = msgSupView.view?.entries.find((e) => e.id === msgToRoleId);
+  const msgSupReceipt = await readMessage(msgSupToken, msgToRoleId);
+  const msgSupAnswerText = "Supervisor to the Program: the answer, on the edge the MAIN opened.";
+  const msgSupAnswer = await sendMessage(msgSupToken, { to: { kind: "program", id: msgProgramId },
+    payload: { kind: "text", text: msgSupAnswerText }, idempotencyKey: "role-reply-1", replyTo: msgToRoleId });
+  const msgSupAnswerBody = await msgSupAnswer.json() as { message?: { id?: string; from?: unknown } };
+  const msgSupAnswerId = msgSupAnswerBody.message?.id ?? "";
+  check("message rail role: the bound Supervisor reads what is addressed to the role, receipts it under its own occupant, and answers as role:supervisor",
+    msgSupView.response.ok
+      && JSON.stringify(msgSupView.view?.addresses) === JSON.stringify([{ kind: "role", role: "supervisor" }])
+      && !!msgSupSeen && msgSupSeen.payload.text === msgRoleText
+      && msgSupReceipt.ok
+      && msgSupAnswer.ok && /^[0-9a-f]{24}$/.test(msgSupAnswerId)
+      && JSON.stringify(msgSupAnswerBody.message?.from) === JSON.stringify({ kind: "role", role: "supervisor" }),
+    `view=${msgSupView.response.status} seen=${!!msgSupSeen} receipt=${msgSupReceipt.status} answer=${msgSupAnswer.status} from=${JSON.stringify(msgSupAnswerBody.message?.from)}`);
+
+  // A SESSION THAT DOES NOT HOLD THE ROLE READS NOTHING OF IT — the address decides, and the MAIN
+  // beside it is a principal with a DIFFERENT address, not a lesser one.
+  const msgMainViewBeforeSuccession = await readMessages(msgMainToken);
+  const msgMainSeesAnswer = msgMainViewBeforeSuccession.view?.entries.find((e) => e.id === msgSupAnswerId);
+  const msgMainSeesRoleRow = msgMainViewBeforeSuccession.view?.entries.some((e) => e.id === msgToRoleId);
+  const msgMainReadsRoleRow = await readMessage(msgMainToken, msgToRoleId);
+  check("message rail role: the MAIN sees the answer addressed to its Program but NOT the row addressed to the role, and a direct read of it is the non-disclosing 404",
+    msgMainViewBeforeSuccession.response.ok && !!msgMainSeesAnswer
+      && msgMainSeesAnswer.replyTo === msgToRoleId && msgMainSeesRoleRow === false
+      && msgMainReadsRoleRow.status === 404,
+    `answer=${!!msgMainSeesAnswer} roleRow=${msgMainSeesRoleRow} read=${msgMainReadsRoleRow.status}`);
+
+  // THE REAL SUCCESSION. The binding MOVES to a new occupant; the role does not.
+  const msgSupOpenedAt = readState().slots?.[String(msgSupSlot)]?.openedAt ?? 0;
+  const msgHandoff = await commitHandoff(msgSupOpenedAt, "## Supervisor succession\nthe message rail continues\n");
+  const msgSuccession = await succeed(msgSupToken, { label: "message-rail-supervisor-2",
+    carry: "Continue the addressed thread the predecessor opened." });
+  const msgSuccessionBody = await msgSuccession.json() as { ok?: boolean; slot?: number };
+  const msgSupSlot2 = msgSuccessionBody.slot ?? 0;
+  const msgSupToken2 = readState().slots?.[String(msgSupSlot2)]?.selfToken ?? "";
+  check("message rail role succession setup: a real succession moved the binding to a different occupant",
+    msgHandoff === 0 && msgSuccession.ok && msgSupSlot2 > 0 && msgSupSlot2 !== msgSupSlot
+      && (await ownerRead()).supervisor?.slot === msgSupSlot2
+      && /^[0-9a-f]{32}$/.test(msgSupToken2) && msgSupToken2 !== msgSupToken,
+    `handoff=${msgHandoff} ${msgSuccession.status} ${msgSupSlot}→${msgSupSlot2}`);
+
+  // THE PROPERTY. The successor resolves to the SAME ROLE, so it reads the same row under the same
+  // id — while the receipt still names the PREDECESSOR that actually read it.
+  // BREAKS IF: the role address is ever resolved through the slot number or the label instead of
+  // the binding, or the receipt is re-stamped when a later occupant reads.
+  const msgSupView2 = await readMessages(msgSupToken2);
+  const msgSurvived = msgSupView2.view?.entries.find((e) => e.id === msgToRoleId);
+  check("message rail role survives succession: the NEW Supervisor reads the same row under the same id, and the receipt still names the PREDECESSOR occupant",
+    msgSupView2.response.ok && !!msgSurvived && msgSurvived.payload.text === msgRoleText
+      && msgSurvived.readBy?.slot === msgSupSlot && msgSurvived.readBy.slot !== msgSupSlot2
+      && JSON.stringify(msgSupView2.view?.addresses) === JSON.stringify([{ kind: "role", role: "supervisor" }]),
+    JSON.stringify({ predecessor: msgSupSlot, successor: msgSupSlot2, row: msgSurvived ?? null }));
+
+  // …and it can CONTINUE the thread, which is what makes this a round trip rather than inherited
+  // read access. The MAIN reads the successor's answer as coming from the same ROLE address.
+  const msgSupAnswer2 = await sendMessage(msgSupToken2, { to: { kind: "program", id: msgProgramId },
+    payload: { kind: "text", text: "The next Supervisor continues the same thread." },
+    idempotencyKey: "role-reply-2", replyTo: msgToRoleId });
+  const msgSupAnswer2Id = (await msgSupAnswer2.clone().json() as { message?: { id?: string } }).message?.id ?? "";
+  const msgMainFinal = await readMessages(msgMainToken);
+  const msgMainFinalSeen = msgMainFinal.view?.entries.find((e) => e.id === msgSupAnswer2Id);
+  // the predecessor is retiring on a grace timer; its credential must not still speak for the role
+  const msgPredecessorSend = await sendMessage(msgSupToken, { to: { kind: "program", id: msgProgramId },
+    payload: { kind: "text", text: "the retired predecessor" }, idempotencyKey: "role-reply-stale" });
+  check("message rail role survives succession: the successor ANSWERS as the same role, the MAIN reads it as role:supervisor, and the retired predecessor no longer speaks for the role",
+    msgSupAnswer2.ok && !!msgMainFinalSeen && msgMainFinalSeen.replyTo === msgToRoleId
+      && JSON.stringify(msgMainFinalSeen.from) === JSON.stringify({ kind: "role", role: "supervisor" })
+      // 409 while the retiring pane is still up, 401 once the grace timer has taken it: both are
+      // "this credential no longer speaks for the role", and which one lands is a race with the
+      // retirement, not a property of the rail.
+      && (msgPredecessorSend.status === 409 || msgPredecessorSend.status === 401),
+    `answer=${msgSupAnswer2.status} seen=${JSON.stringify(msgMainFinalSeen ?? null)} predecessor=${msgPredecessorSend.status}`);
+
+  await post(`/api/slots/${msgMainSlot}/kill`, {});
+  await post(`/api/slots/${msgSupSlot2}/kill`, {});
+
 }

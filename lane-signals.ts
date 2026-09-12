@@ -422,7 +422,11 @@ export function laneSuiteWatchMessage(jobId: string, event: LaneSuiteWatchEventV
   // of it at most — saying "2 failures: a, b" over a run that had twelve would be the worst kind
   // of wrong here, because it reads like a complete answer.
   const failed = p.failCount === 0
-    ? "no failing check names were recorded"
+    // TWO DIFFERENT ZEROES, and collapsing them would erase the measurement that bought `fails[]`
+    // in the first place (2026-09-05, job c893717a: red 1 of 3717 and WHICH one was not answerable
+    // from this box). A green names none because there were none; a RED that names none means the
+    // parser found nothing in the retained tail, which is an absence of knowledge, not of failures.
+    ? (p.result === "red" ? "NO failing check name could be read — look at the job" : "no failures")
     : p.fails.length >= p.failCount
       ? `${p.failCount} named failure(s): ${p.fails.join(", ")}`
       : `${p.failCount} failure(s), ${p.fails.length} named here: ${p.fails.join(", ")} (the rest are on the job)`;

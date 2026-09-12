@@ -177,6 +177,56 @@ What it does not do: it never widens a lane's surface, never confirms a `files` 
 note, and a CLARIFY lane receives no package at all — for the exit footer's reason, that such a lane
 was told to settle what done means and stop.
 
+### 6b. The integration seam — one hunk, not yet applied
+
+`server.ts` was held by another lane when the block was built, so the wiring is written down here
+rather than applied. Three places, and two of them are one-liners.
+
+**(a) the import**, beside the `./context-plan` line:
+`import { buildSnippetPackage, planSnippets, renderSnippetBlock, type SnippetFile } from "./context-snippets";`
+
+**(b) `server.ts#repoManifestContextPlan`** — its `ls-tree` loop already reads every line; only the
+MODE is thrown away. Add `blobModes: ReadonlyMap<string, string>` to the return type, change
+`const [, type, sha]` to `const [mode, type, sha]`, add `if (mode) blobModes.set(path, mode);` beside
+the `blobShas` line, and carry `blobModes` out of both `return`s. `programMainContextPlan`
+destructures only `repoPlan`/`blobShas` and needs no change. The mode is required because it is the
+only thing separating a regular blob from a SYMLINK, and a symlink is the escape no path check sees.
+
+**(c) `server.ts#briefAndSend`** — destructure `blobModes`, hoist `const repoRoot = await
+repoRootOf(wt.repo);`, and after `notesBlock`, before `studioLaneBlock`:
+
+```ts
+const snipRows = waveRows.map((row) => ({ id: row.id, files: taskView(row).files ?? [] }));
+const snippetPlan = clarify ? null : planSnippets({ briefText: brief, tracked: blobModes, rows: snipRows });
+const snippetFiles: SnippetFile[] = [];
+for (const path of snippetPlan?.reads ?? []) {
+  const read = await gitReadRaw(repoRoot, "show", `${head}:${path}`);
+  snippetFiles.push({ path, text: read.code === 0 ? read.out : null, blob: blobShas.get(path) ?? null });
+}
+const snippetBlock = snippetPlan
+  ? renderSnippetBlock(buildSnippetPackage(snippetPlan, snippetFiles, { commit: head, rows: snipRows }))
+  : "";
+```
+
+then `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`.
+
+Two details are not negotiable. **`gitReadRaw`, never `gitRead`:** `gitRead` trims, and losing a
+leading blank line shifts every line number after it by one — precisely the number the label claims.
+**The position before `anchorBlock`:** the context receipt hashes the anchor block ALONE, so anything
+appended after it would be hashed as an anchor. `deliveredBytes` then follows by itself, because it
+is computed from `deliveredBrief`; no receipt field is needed, since the version and the selection
+are in the delivered block (path, symbol, lines, blob, commit) and checkable there.
+
+**(d) the integration check belongs in `e2e/tasks.ts` (d3)** — the Fleet-tree dispatch, the only
+place that delivers inside a REAL git repository (`ROOT`; `fleet-e2e.ts` otherwise runs from a
+staging copy that is no worktree at all). Extend `fBrief` with one qualified reference; the existing
+`fPrompt.startsWith(fBrief + "\n\nContextPlan v2 anchors")` must then find the anchor block by
+`indexOf`, because the source package sits between them. Then two assertions: the delivered excerpt
+is byte-identical to `git show <fHead>:<path>` cut at the lines the label itself names, and
+`fReceipt.deliveredBytes === byteLength(fPrompt)` with the block present. The mutation that removes
+`${snippetBlock}` from `deliveredBrief` reds the first one — no "Quellpaket" in `fPrompt`. That check
+is SPECIFIED here, not run: without the surface it cannot be, and it is not claimed as if it were.
+
 ## 7. Checklist for a good brief
 
 - [ ] **Environment:** the files/constraints/interfaces this task actually touches — curated, not exhaustive.

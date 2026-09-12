@@ -4558,6 +4558,54 @@ export async function run(ctx: Ctx): Promise<void> {
       (await post("/api/tasks/deadbeef/files", { files: [WFILE] })).status === 404
       && (await wPropose("deadbeef", [WFILE])).status === 404);
 
+    // --- (3b) THE DERIVED-SURFACE REVIEW — the manual half of S2 (2026-09-12). Until this cut the
+    // confirm door had exactly ONE producer on the board: a parked proposal. A row that already
+    // carried a mechanically derived list could only be confirmed by retyping it, and measured over
+    // the 42 open auftrag rows that day the result was 42 waves of one and 0 confirmed. The derived
+    // lists also carried COMMAND MENTIONS as paths (17 rows named `e2e-isolated.sh`, 18
+    // `e2e/pins.ts`), mostly because the brief quoted the verify line — so what the board now sends
+    // is a SUBSET of the derived list with those unticked, and that subset is what is proven here.
+    // The row is minted OUTSIDE the impact program and shares no file with it, so nothing in this
+    // sub-block can move the wave that (5) and W3 measure. ---
+    const WKEEP = "code.txt";       // the path the work really touches
+    const WDROP = "e2e/pins.ts";    // tracked in the fixture repo AND merely quoted — the false positive
+    const wD = await wMint(`repair the sentinel in ${WKEEP}; verify the result with bun ${WDROP}`);
+    const wDBase = await wFull(wD);
+    check("(w2/3b) fixture: the row derives BOTH paths — the work file and the merely QUOTED command",
+      wDBase?.filesOrigin === "derived"
+      && [...(wDBase.files ?? [])].sort().join(" ") === [WKEEP, WDROP].sort().join(" ")
+      && wDBase.filesProposal === undefined, JSON.stringify(wDBase));
+    const wDSub = await post(`/api/tasks/${wD}/files`, { files: [WKEEP] });
+    const wDRow = await wFull(wD);
+    // the load-bearing half is the NEGATIVE one: `confirmed` replaces the derivation rather than
+    // joining it (task-metadata.ts#deriveTaskMetadata), so an unticked path must not reappear
+    // through the prose that named it — which is the only way this feature could silently undo itself
+    check("(w2/3b) a SUBSET of the derived list confirms as itself, and the unticked path is NOT re-derived back on",
+      wDSub.ok && wDRow?.filesOrigin === "confirmed"
+      && wDRow.files?.join(" ") === WKEEP && !wDRow.files?.includes(WDROP),
+      `${wDSub.status} ${JSON.stringify(wDRow)}`);
+    check("(w2/3b) the ledger records it as the OWNER's own list — never as a promoted proposal",
+      ((await (await get("/api/audit?limit=300")).json()) as { events: { event?: string; detail?: string }[] })
+        .events.some((e) => e.event === "task_files_confirm" && (e.detail ?? "").startsWith(wD)
+          && (e.detail ?? "").includes("1 path(s) via owner")),
+      JSON.stringify(wDRow));
+    // …and the wiring that produces that subset, cut from the REAL browser source. There is no DOM
+    // in this harness, so what is asserted is the SHAPE the block must keep: the list is read off
+    // the ticked boxes at click time (never off a remembered array that could drift from the paths
+    // on screen), an empty selection is answered locally instead of being POSTed as an empty
+    // surface, and nothing here confirms without the owner's click.
+    const wUiStart = taskClientSource.indexOf('} else if (t.filesOrigin === "derived"');
+    const wUiEnd = taskClientSource.indexOf("// --- end DERIVED SURFACE REVIEW ---", wUiStart);
+    const wUi = wUiStart >= 0 && wUiEnd > wUiStart ? taskClientSource.slice(wUiStart, wUiEnd) : "";
+    check("(w2/3b) the client sends the TICKED paths only, reads them at click time, and never POSTs an empty selection",
+      wUi.includes("// --- DERIVED SURFACE REVIEW")
+      && /t\.kind === "auftrag" && \(t\.status === "pending" \|\| t\.status === "queued"\)/.test(wUi)
+      && /picks\.filter\(\(p\) => p\.box\.checked\)\.map\(\(p\) => p\.path\)/.test(wUi)
+      && /if \(!files\.length\) \{ toast\([^\n]*\); return; \}/.test(wUi)
+      && /qAct\(t\.id, "files", \{ files \}\)/.test(wUi)
+      && wUi.includes("box.checked = true"),
+      wUi.slice(0, 160) || "DERIVED SURFACE REVIEW block not found in src/client.ts");
+
     // --- (4) THE RELOAD REGRESSION. The one promotion this feature must never perform is the one
     // a restart could make for free: a persisted `derived` surface becoming `confirmed` because it
     // was simply read back. Proven in BOTH directions in one reload — the derived row stays
@@ -4568,8 +4616,8 @@ export async function run(ctx: Ctx): Promise<void> {
     let w3Note = "";
     await wPropose(wParked, [WGHOST]);
     await restartSrv();
-    const [wRelA, wRelB, wRelDerived, wRelParked] =
-      await Promise.all([wFull(wA), wFull(wB), wFull(wC), wFull(wParked)]);
+    const [wRelA, wRelB, wRelDerived, wRelParked, wRelSubset] =
+      await Promise.all([wFull(wA), wFull(wB), wFull(wC), wFull(wParked), wFull(wD)]);
     check("(w2) reload: a persisted DERIVED surface is re-derived and never promoted to confirmed",
       wRelDerived?.filesOrigin === "derived" && wRelDerived.files?.join(" ") === WFILE,
       JSON.stringify(wRelDerived));
@@ -4577,6 +4625,12 @@ export async function run(ctx: Ctx): Promise<void> {
       wRelA?.filesOrigin === "confirmed" && wRelA.files?.join(" ") === WFILE
       && wRelB?.filesOrigin === "confirmed" && wRelB.files?.join(" ") === WFILE,
       JSON.stringify({ a: wRelA, b: wRelB }));
+    // the subset from (3b) through the same restart: the row's prose still names the unticked path,
+    // so a reload that re-derived over the confirmation would put it back — and the owner's act
+    // would have lasted exactly until the next boot
+    check("(w2) reload: a confirmed SUBSET survives whole — the unticked path does not return from the prose",
+      wRelSubset?.filesOrigin === "confirmed" && wRelSubset.files?.join(" ") === WKEEP
+      && !wRelSubset.files?.includes(WDROP), JSON.stringify(wRelSubset));
     check("(w2) reload: a parked proposal comes back as a PROPOSAL — it never becomes the surface",
       wRelParked?.filesProposal?.files.join(" ") === WGHOST
       && wRelParked.filesOrigin === "derived" && wRelParked.files?.join(" ") === WFILE,

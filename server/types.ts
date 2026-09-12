@@ -525,7 +525,20 @@ function fleetEventRecoveryFrom(raw: unknown): FleetEventRecovery | undefined | 
 function fleetEventFrom(raw: unknown): FleetEvent | null {
   if (!raw || typeof raw !== "object") return null;
   const e = raw as Partial<FleetEvent> & Record<string, unknown>;
-  const watchless = e.kind === "clarification-request" || e.kind === "fleet-report";
+  // A row minted BY A WATCH carries its id; these kinds are minted without one. For a
+  // clarification and a fleet-report that is because a worker ASKS rather than subscribes. For
+  // `lane-suite` the reason is different and stronger: a LANE MAY NOT SUBSCRIBE AT ALL
+  // (/api/self/watch answers a lane 409), so the verdict of its own preview has to reach it with
+  // no Watch to hang on — the absence is the feature. MEASURED, and it is why this line reads the
+  // way it does: with `lane-suite` missing here, `watchless !== (watchId === null)` rejected BOTH
+  // preview rows at every boot, silently, and the deploy ritual of this repo is land-then-restart —
+  // so every open red would have been erased by the next deploy. e2e/lane-suite.ts (LS.9) is the
+  // probe that caught it on the first run that could.
+  const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"
+    || e.kind === "lane-suite";
+  // …and the kinds that may name the OWNER instead of a session. Same list on both sides of the
+  // equivalence below, so a kind can never be admitted to one half and not the other.
+  const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite";
   // The owner-principal receiver, all three fields or none: a half-null triple is malformed, not a
   // transport choice — exactly as an unknown `delivery` is.
   const ownerReceiver = e.receiverSlot === null && e.receiverOpenedAt === null
@@ -550,14 +563,19 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     // be persisted without the other (a slot-bound inbox report would be typed at nobody; an
     // owner-receiver pane report would be typed at a pane that does not exist).
     || (e.kind === "clarification-request" && e.delivery === "inbox")
-    // THE OWNER PRINCIPAL EXISTS FOR EXACTLY ONE KIND. Every other event is a Watch completion
-    // addressed to the session that subscribed, and a null triple there names nobody at all: it
-    // could never be delivered, never go receiver-gone, and never be acked by the session it was
-    // minted for — but it WOULD count as an owner debt and squat a place at the inbox ceiling
-    // until someone acked a row they never asked for. Fail-closed, at the base, before any
-    // per-kind branch can be reasoned about separately.
-    || (ownerReceiver && e.kind !== "fleet-report")
-    || (e.kind === "fleet-report" && (e.delivery === "inbox") !== ownerReceiver)
+    // THE OWNER PRINCIPAL EXISTS FOR EXACTLY TWO KINDS (it was one until the preview rail: a red
+    // `lane-suite` files an owner row precisely so the process does not depend on the lane being
+    // alive or well-behaved). Every OTHER event is a Watch completion addressed to the session
+    // that subscribed, and a null triple there names nobody at all: it could never be delivered,
+    // never go receiver-gone, and never be acked by the session it was minted for — but it WOULD
+    // count as an owner debt and squat a place at the inbox ceiling until someone acked a row they
+    // never asked for. Fail-closed, at the base, before any per-kind branch can be reasoned about
+    // separately.
+    || (ownerReceiver && !ownerAddressable)
+    // …and for both of them the transport and the receiver are ONE fact, checked as an equivalence
+    // so neither half can be persisted without the other: a slot-bound inbox row would be typed at
+    // nobody, an owner-receiver pane row at a pane that does not exist.
+    || (ownerAddressable && (e.delivery === "inbox") !== ownerReceiver)
     // FACT 2 selects `pending` alone, so an owner row can never be sent and can never go
     // receiver-gone: `inbox` until the owner acks it, `acknowledged` after. Anything else on such
     // a row is a state no code path can produce and is refused rather than repaired.

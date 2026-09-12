@@ -2827,11 +2827,15 @@ export async function run(ctx: Ctx): Promise<void> {
   const msgRecycledToken = slotToken(msgBSlot);
   const msgRecycledView = await selfMessages(msgRecycledToken);
   const msgRecycledRead = await selfMessageRead(msgRecycledToken, msgOutId);
-  check("message rail: the SAME SLOT recycled into a new occupant is not the address — it reads none of B's thread and a direct read of a known id is the same 404 an absent one gets",
+  // BOTH doors answer 409 here rather than 404, and that is the right pair: this occupant is not a
+  // PRINCIPAL at all, which is a different statement from "that message is not yours" (the 404 the
+  // non-disclosure check above proves). Telling a session it holds no address leaks nothing about
+  // what exists; it is the same answer it would get with an empty rail.
+  check("message rail: the SAME SLOT recycled into a new occupant is not the address — it holds no address at all, so it reads none of B's thread and a direct read of a known id tells it only that",
     msgRecycleOpen.ok && /^[0-9a-f]{32}$/.test(msgRecycledToken) && msgRecycledToken !== msgBToken
       && msgRecycledView.response.status === 409
       && (msgRecycledView.error ?? "").includes("not a principal with an address")
-      && msgRecycledRead.status === 404,
+      && msgRecycledRead.status === 409,
     `open=${msgRecycleOpen.status} view=${msgRecycledView.response.status}:${msgRecycledView.error} read=${msgRecycledRead.status}`);
   await post(`/api/slots/${msgBSlot}/kill`, {});
 

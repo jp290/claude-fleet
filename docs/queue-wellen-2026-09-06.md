@@ -267,6 +267,24 @@ darf) parkt einen Vorschlag NEBEN der Fläche, `POST /api/tasks/:id/files` (Owne
 `{files, filesOrigin:"confirmed"}` auf dieselbe Zeile — ohne Kinder, ohne Archivierung.
 Pfad-Findings melden, sie gaten nicht; `audit.jsonl` hält fest, dass der Owner sie sehen konnte.
 
+**NACHTRAG 2026-09-12 — die Tür stand, der Weg dorthin fehlte.** Gemessen mit
+`bun task-land-waves.ts --state fleet.json`: 42 offene `auftrag`-Zeilen, 42 Wellen der Größe 1,
+0 `confirmed` — fünf Tage nach dem Bau von S2 also derselbe Befund wie davor. Der Grund war nicht
+die Route, sondern ihr einziger Produzent am Board: bestätigen konnte der Owner nur einen
+GEPARKTEN VORSCHLAG, und den parkt nur eine Lane. Eine Zeile mit einer bereits abgeleiteten Liste
+hatte keinen Knopf. Seitdem bietet `src/client.ts#renderQueueDetail` die vorhandene
+`derived`-Liste auch ohne Vorschlag zur manuellen Bestätigung an — ein expliziter Owner-Akt beim
+Review einer offenen Zeile, vor dem Release.
+
+Die Liste wird dabei **pro Pfad abgewählt** (Checkbox, Default an), und das ist der eigentliche
+Inhalt des Nachtrags: dieselbe Messung fand, dass die Ableitung KOMMANDO-ERWÄHNUNGEN als Pfade
+trägt — 17 der 42 Flächen nannten `e2e-isolated.sh`, 18 `e2e/pins.ts`, meist weil der Brief die
+Verify-Zeile zitierte. Eine Bestätigung der rohen Liste hätte die Wellen zwar sofort wachsen
+lassen, aber auf einer Fläche, die die Zeile nie anfasst: aus einer Prosa-Vermutung wäre ein Fakt
+geworden, und R2 (gate-ändernde Pfade) hätte danach auf erfundenen Kanten entschieden. Gesendet
+wird genau die verbleibende Auswahl, gelesen am Klick; eine leere Auswahl sendet nichts. Keine
+neue Route, kein Auto-Heben, keine Änderung an `task-metadata.ts`.
+
 ### S3 — „▸ start wave": ein Owner-Knopf, eine Lane, n Zeilen
 
 Der Knopf gründet EINE Lane auf einen Kandidaten aus S1 (n≤3), mit einem Brief, der die n Zeilen in

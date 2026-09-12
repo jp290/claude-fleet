@@ -1616,6 +1616,18 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       && /return \(a\.files \?\? \[\]\)\.some\(\(file\) => bFiles\.has\(file\)\);/.test(wavesCode)
       && !wavesCode.includes("modelEdges") && !wavesCode.includes("analysisOn")
       && !wavesCode.includes("blockedByRunning") && !wavesCode.includes("trustedCollides"), "");
+  // …and the door that feeds it. The derived-surface review (src/client.ts, 2026-09-12) gave the
+  // owner's confirm a SECOND producer — the mechanically derived list, offered path by path — and
+  // the whole point of that cut was that it opens no new route: every file-surface act on the board
+  // still lands on the one owner handler that already existed. This is the must-agree pair, and the
+  // count is deliberate: three acts (promote a proposal · discard a proposal · confirm the ticked
+  // derived paths), so a fourth producer has to come here and say what it is.
+  const surfaceActs = [...client.matchAll(/qAct\(t\.id, "files", /g)].length;
+  pin("every file-surface act on the board goes through the one existing owner route",
+    surfaceActs === 3
+      && server.includes(String.raw`const taskFiles = /^\/api\/tasks\/([a-z0-9]+)\/files$/`)
+      && !/"files-confirm"|\/files\/confirm/.test(client),
+    `${surfaceActs} file-surface act(s) in the client`);
 
   // --- AND WHAT SURVIVED IT. The brief compiler was fused to the analyst on one switch until
   // 2026-08-08 and is the half that stayed; these rules are what keep the cut from having taken it

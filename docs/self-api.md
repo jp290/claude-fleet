@@ -707,6 +707,28 @@ Landewellen-Sensor lieferte darum 44 Wellen der Größe 1, jede mit dem Grund
 `flaeche-nur-abgeleitet` und 0 s Ersparnis. Eine Fläche wird NIE automatisch von `derived` nach
 `confirmed` gehoben; das tauft eine Prosa-Vermutung in einen Fakt um.
 
+**NACHTRAG 2026-09-12 — die abgeleitete Liste ist jetzt am Board bestätigbar, Pfad für Pfad.** Der
+`{"files":[…]}`-Arm oben hatte am Board bis dahin genau einen Produzenten: einen geparkten
+Vorschlag. Eine Zeile, die schon eine MECHANISCH ABGELEITETE Liste trug, konnte der Owner nur
+bestätigen, indem er sie abtippte — gemessen am 2026-09-12 über 42 offene `auftrag`-Zeilen: 42
+Wellen der Größe 1, 0 `confirmed`. Seitdem zeigt `src/client.ts#renderQueueDetail` die vorhandene
+`derived`-Liste auch OHNE Vorschlag zur Bestätigung an. Zwei Eigenschaften sind der Inhalt des
+Schnitts, nicht Kosmetik:
+
+- **Jeder Pfad ist einzeln ABWÄHLBAR** (Checkbox, Default an). Grund ist dieselbe Messung: die
+  abgeleitete Liste trägt KOMMANDO-ERWÄHNUNGEN als Pfade — 17 der 42 Flächen nannten
+  `e2e-isolated.sh`, 18 `e2e/pins.ts`, meist weil der Brief die Verify-Zeile zitierte. Eine
+  Bestätigung der rohen Liste würde genau diese Erwähnungen zu Fakten taufen.
+- **Gesendet wird exakt die verbleibende Auswahl**, am Klick von den angehakten Boxen gelesen, über
+  dieselbe Route und denselben `via owner`-Auditpfad wie eine getippte Liste. Eine LEERE Auswahl
+  sendet nichts und sagt es — sie ist keine leere Fläche.
+
+Kein Auto-Bestätigen, keine neue Route, kein neues Feld: die Route nahm eine benannte Liste schon
+vorher an. Beweise: `e2e/tasks.ts` (w2/3b) für die Teilmenge, ihren Ledger-Eintrag und das Wiring,
+plus den Reload-Check in (4) — die Prosa der Zeile nennt den abgewählten Pfad weiterhin, und
+`confirmed` ERSETZT die Ableitung (`task-metadata.ts#deriveTaskMetadata`), statt sich mit ihr zu
+vereinigen, sonst stünde der abgewählte Pfad nach dem nächsten Boot wieder da.
+
 
 
 ## notes — `GET /api/self/notes`, `POST /api/self/notes/:id/verdict`

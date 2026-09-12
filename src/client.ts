@@ -8401,6 +8401,45 @@ function renderQueueDetail() {
     fdb.onclick = () => void qAct(t.id, "files", { accept: false });
     facts.appendChild(fdb);
     overview.appendChild(facts);
+  } else if (t.filesOrigin === "derived" && t.files?.length
+    && t.kind === "auftrag" && (t.status === "pending" || t.status === "queued")) {
+    // --- DERIVED SURFACE REVIEW (the manual half of S2). Without a parked proposal the row still
+    // HAS a list — the mechanically derived one — and until 2026-09-12 the only way to confirm it
+    // was to retype it. Measured that day over 42 open auftrag rows: 42 waves of one, 0 confirmed,
+    // while the derived list carried COMMAND MENTIONS as paths (17 rows named `e2e-isolated.sh`,
+    // 18 `e2e/pins.ts`, mostly because the brief quoted the verify line). So the list is offered
+    // per path and every path is DESELECTABLE: confirming it whole would christen those mentions
+    // as facts. Nothing here confirms by itself — the button is the owner's act, and it sends
+    // exactly the boxes that are still ticked, read off the DOM at click time so "the paths shown"
+    // and "the paths sent" cannot drift apart.
+    const picks: { path: string; box: HTMLInputElement }[] = [];
+    overview.appendChild(el("div", "shellhint",
+      "nothing below is confirmed. Untick what the row does not actually touch — a path the brief"
+      + " merely QUOTED (a verify command, a doc reference) is the common false positive — then confirm."));
+    for (const path of t.files) {
+      const row = el("label", "qrawack");
+      const box = el("input", "") as HTMLInputElement;
+      box.type = "checkbox";
+      box.checked = true;
+      row.appendChild(box);
+      row.appendChild(el("span", "", path));
+      picks.push({ path, box });
+      overview.appendChild(row);
+    }
+    const dacts = el("div", "pkdacts");
+    const db = el("button", "shrbtn primary", "✓ confirm the ticked paths") as HTMLButtonElement;
+    db.title = "writes the ticked paths onto THIS row as its confirmed surface — no children, no"
+      + " archive. Only a confirmed surface may be bundled into a land wave";
+    db.onclick = () => {
+      const files = picks.filter((p) => p.box.checked).map((p) => p.path);
+      // an empty selection is NOT an empty surface: the route would answer 400 and the row would
+      // keep its derived list either way, so the click is answered here and no request is sent.
+      if (!files.length) { toast("no path is ticked — nothing was sent; this row keeps its derived surface"); return; }
+      void qAct(t.id, "files", { files });
+    };
+    dacts.appendChild(db);
+    overview.appendChild(dacts);
+    // --- end DERIVED SURFACE REVIEW ---
   }
   if (t.cluster) overview.appendChild(el("div", "shellhint",
     `cluster projection: ${[t.cluster.projekt, t.cluster.prozess, t.cluster.unterprozess].filter(Boolean).join(" / ")}`));

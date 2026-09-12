@@ -1,3 +1,79 @@
+# HANDOFF — Owner-MAIN Slot 8 (Opus 5, Haupt-Checkout, Owner-Token): keine Lane getrieben, kein Land, zwei Zeilen gefilt, zehn Worktrees auf dem Second-host weg; 2026-09-12 11:3x
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **DER ERSTE SATZ DES ABSCHNITTS DARUNTER IST TOT. „MD-RENDERER DARF NICHT GELANDET WERDEN" IST
+  ERLEDIGT — `ced365d8` ist `done / landed`, `69611632` liegt auf main, das Post-Land-Audit war
+  gruen (4134/0), der Worktree `1d74` ist weg.** Wer §0 der vorigen Uebergabe liest und danach
+  handelt, handelt auf einer vier Stunden alten Lage. Stehen bleibt nur die KORREKTUR darin, weil
+  sie eine Diagnose-Bewegung ist und nicht ein Zustand: jene Fassung sagte, die Staleness-Rechnung
+  und die Static-Map „kennen `hub.js` nicht". **Falsch, und zwar in die teure Richtung.** Die
+  PRODUKTION kannte es vollstaendig (`BUNDLES` vierstellig, `STATIC` zehn Eintraege,
+  `package.json` baut `hub.js`); falsch waren ausschliesslich vier e2e-Fixtures, die DREI Bundles
+  anlegen und gegen `BUNDLES.length == 4` pruefen. **Die Regel daraus:** wird ein Lane-Preview rot
+  auf genau der Flaeche, die der Branch anfasst, ist die erste Frage, WELCHE HAELFTE luegt — der
+  Code oder die Behauptung ueber ihn. Wer hier `server.ts` angefasst haette, haette Heiles
+  repariert und die eigentliche Luecke stehen lassen.
+
+- **AUF DEM SECOND-HOST SIND ZEHN WORKTREES WEG, UND KEIN LEDGER DIESER MASCHINE WEISS DAS.**
+  `~/private-repo-a.worktrees/` ist leer, `git worktree list` dort zeigt nur noch `main`
+  (`6516a1a`). Vorher selbst geprueft, nicht uebernommen: alle zehn `ahead=0` gegen `main`, alle
+  `dirty=0`, kein Slot der dortigen `fleet.json` zeigte auf einen (Slots 6/7 sitzen im
+  Haupt-Checkout, nicht in einem Worktree). Owner-Wort liegt vor. **Konsequenz fuer die naechste
+  Session:** `docs/messungen/2026-09-11-host-aufteilung-entscheid.md` §7 fuehrt diese zehn
+  Worktrees als VORHANDEN — dieser Satz ist ab jetzt historisch. Der dortige Haupt-Checkout ist
+  weiterhin schmutzig (`M serve-dexter/jobs.json`), das war nicht Teil des Auftrags.
+
+- **`.hub-prototype/` IST EIN VIER TAGE ALTER DETACHED WORKTREE MITTEN IM HAUPT-CHECKOUT, UND
+  NIEMAND HAT IHN JE BENANNT.** Registriert unter `.git/worktrees/-hub-prototype`, HEAD
+  `45622dbf` (2026-09-08), unberuehrt seit dem 08.09. 13:25. Weil sein VERZEICHNIS im
+  Haupt-Checkout liegt, steht es als `?? .hub-prototype/` in `git status --porcelain` —
+  **der Haupt-Checkout ist dadurch permanent nicht clean.** Heute blockiert das keinen fremden
+  Land, denn `server.ts#dirtyMainStop` vergleicht nur die UEBERLAPPUNG mit den Pfaden des Lands.
+  Gefaehrlich ist es fuer jeden Sensor, der „ist main clean" OHNE Pfadschnitt liest: der bekommt
+  hier auf Dauer ein falsches Nein. Entweder wegraeumen oder bewusst stehenlassen — aber wissen,
+  dass er da ist.
+
+## 1. WAS DIESE SESSION HINTERLAESST
+
+- **Kein Land, kein Deploy, keine Lane getrieben** — die Ausnahmebedingung der Vorgaengerin
+  (fremdes Program + keine Self-Land-Promotion + Attention verlangt den Owner-Akt) ist in dieser
+  Sitzung **nie eingetreten**. Punkt 1 des Antrittsbriefs war bei meiner Ankunft schon konvergent:
+  Lane 1d74 und Slot 4 hatten den Befund unabhaengig und deckungsgleich, Attention `64675e11`
+  stand offen. Mein Beitrag war die Gegenprobe am Code, nicht die Loesung.
+- **Zwei Zeilen gefilt, beide leben und sind in fremder Hand** (`source: "owner"`, Program
+  `f170dc46`, die Kappe zaehlt nur `source:"main"` — `server.ts:8576`):
+  `10ddd013` (rotes Lane-Preview hat keinen Rail) und `1e1dcd50` (129-Zeichen-Ursache).
+  **`10ddd013` ist seither von Slot 1 geschaerft worden, und die Schaerfung ist BESSER als meine
+  Zeile:** ich hatte das Symptom zweimal genannt, sie nennt den Mechanismus — keine Suite-Art
+  unter den fuenf Event-Arten in `fleet.json#events`, und `SUITE_OFFER_WAIT_HELD_MS` = 800 000 ms
+  gegen gemessene 2 262 000 ms echter Laufzeit, also ueberlebt JEDES geclaimte Angebot seinen
+  Waiter. `1e1dcd50` ist vom Owner nach Phase 1 (`40cae03c`, Report `6f0cdb85`) **bewusst
+  geparkt**: „jetzt kein Neustart/Freigabe", zwei weitere Analysen sollen gemeinsam beurteilt
+  werden. Ihr `note: lane closed before landing — review and requeue if still wanted` ist hier
+  also KEINE Falschaussage, sondern zutreffend — anders als in den drei Second-host-Faellen aus §7.
+- **Ein Direkt-Commit:** dieser Handoff. `bun e2e/pins.ts` ALL PASS, `merges` leer (kein Land
+  unterwegs). Land-seitige Ledger sehen ihn nicht, `./state.sh`s Land-Zahlen untertreiben
+  entsprechend.
+
+## 2. WAS GEMESSEN IST UND WAS NICHT
+
+**GEMESSEN:** alle Zahlen oben · die zwoelf Fail-Namen von `4b5599e7c78c` und ihre Zuordnung zu
+`BUNDLES`/`STATIC` gegen den Code beider Baeume · der Buendel-Stand zum Zeitpunkt 2026-09-12 11:2x
+(16 Pins auf 11 Aufgaben; drei Urteile, und sie liegen auf der NOTIZ-Zeile, nicht auf der
+Auftragszeile — `4aeeec19 erledigt`, Buendel 2/6 `ba7df947 offen`, Buendel 5/6 `58f61b33 offen`;
+alle sechs Buendel sind angeheftet, vier davon ohne Urteil) · dass `69611632` auf main liegt und
+`f547e2f0` als `sent` auf Slot 3 laeuft.
+
+**AUSDRUECKLICH NICHT GEPRUEFT:** die Implementierung der vier Fixture-Reparaturen, die nach
+meiner Vorlage gelandet sind — ich habe den Befund belegt, nicht den Fix gelesen · ob
+`docs/arbeitsfolge-fleet-2026-09-11.md` nach Position 4 eine Fortsetzung hat (Astras Sache) · der
+Inhalt von `.hub-prototype` (nur Alter, HEAD und Git-Status gemessen).
+
+---
+
+# (VORHERIGE UEBERGABE)
+
 # HANDOFF — Owner-MAIN Slot 9 (Opus 5, Haupt-Checkout, Owner-Token): drei Lands, ein Deploy, zwei rote Previews mit sehr verschiedenem Gewicht; 2026-09-11 20:5x, ctx GEMESSEN 30,3 %
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

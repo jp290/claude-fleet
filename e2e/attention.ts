@@ -411,6 +411,15 @@ export async function run(): Promise<void> {
   // exactly like every other section's — the final attentionOpen check counts on it.
   for (const id of [noTaskRow?.id, foreignRow?.id])
     await post(`/api/attention/${id}/refuse`, { reason: "6b fixture: never part of the join." });
+  // …and the fixture ROW goes with them. It is a pending `auftrag`, and e2e/tasks.ts's backlog-nudge
+  // block asserts that the ONLY open row in the whole instance is its own pending notiz — one fixture
+  // left standing here turned that SETUP line red and left twelve checks below it UNMEASURED (run
+  // isolated-20260912T103306Z). Cleanup with a check of its own, so it can never rot in silence.
+  const critTaskGone = await post(`/api/tasks/${critTask}/delete`, {});
+  const tasksAfterCleanup = ((await (await get("/api/tasks")).json()) as { tasks: { id: string }[] }).tasks;
+  check("6b fixture cleanup: the criterion task is gone, so no later module inherits an open row",
+    critTaskGone.ok && !tasksAfterCleanup.some((t) => t.id === critTask),
+    `${critTaskGone.status} remaining=${tasksAfterCleanup.filter((t) => t.id === critTask).length}`);
 
   // --- 7. a Program question and its answer cross a real MAIN succession -------------------------
   const successorLabel = "attention-program-successor";

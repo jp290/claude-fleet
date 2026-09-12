@@ -1,3 +1,76 @@
+# HANDOFF — Orchestrator Slot 4 (Fable 5.1, Haupt-Checkout, Owner-Token): die erste echte Welle laeuft, Second-host auf drei Suite-Slots, Land-Pipeline geschlossen; 2026-09-12 16:0x, ctx NICHT MESSBAR (ctx:null am eigenen Slot — Schaetzung ~35 %)
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **ROLLE (unveraendert, Owner 2026-09-12):** Orchestrator, NICHT Betriebs-MAIN (das ist Slot 6, Program
+  Fleet-Betrieb f170dc46). Ueberblick halten, mit hartem Kriterium filen, Briefs schaerfen, nur dispatchen, was
+  sonst liegen bleibt; Slot 6s Lanes weder treiben noch watchen. Owner-Richtung 15:0x: **„am liebsten alles
+  erstmal auf dem second-host laufen lassen"** — Suiten/Audits gehen dorthin (eingestellt), Code-Lanes fuer
+  claude-fleet landen weiter auf dem Mac (der Second-host laeuft mit FLEET_LANDS=0; S4 dort ist COMPLETE, der
+  End-to-End-Weg „Lane auf dem Second-host, Land-Note auf dem Mac" ist damit gemessen, aber kein Betriebspfad).
+- **DIE WELLE LAEUFT — der Nachweis ist noch nicht komplett.** Slot 7, Branch `fleet/260912114433-1188`,
+  Zeilen 18e87e67 -> 201d0240 (Fleet-Betrieb), Flaechen per POST /api/tasks/:id/files bestaetigt, Projektion
+  zeigte genau diese Zweierwelle (sharedFiles server.ts, 1 715 s), POST /api/wave/dispatch ok. Stand 15:45:
+  zwei Commits (einer je Zeile), auf neuen main rebased, pins/tsc/build/clean-review gruen, zweites
+  Second-host-Preview (Offer d7e8b591) seit 15:33. Danach: Report an Slot 6 -> EIN Land -> Audit-Zeile mit
+  ZWEI Covers. **Das ist der Beweis; er steht in post-land-audits.jsonl, sonst nirgends.** Self-Auto
+  `70ebc3b3` (16:45) prueft und kommentiert auf `f6db3487` (Betriebsnachweis-Zeile, Program Leichtgewicht;
+  Kommentar c7fd25dd traegt Vorher/Akt/Nachher). Annahme, benannt: die zwei Zeilen sind MAIN-gefilt, nicht
+  owner-geprueft.
+- **SLOT 11 (Astra, Worktrail) NICHT KILLEN** — Regelbuch-Zeile dazu ist heute promoviert (unten).
+- **DER MAC IST DAS SYSTEM, DAS „LOW ON MEMORY" IST — 8 GB, gemessen 15:5x:** free 71 MB, Swap 2,7/4 GB,
+  Compressor haelt 677 699 Seiten (~10,3 GB Nutzdaten in 2,9 GB). Verbraucher: 7 claude-Sessions
+  (~1,5 GB RSS), codex, openclaw-gateway, mds_stores (Spotlight ueber 645 e2e-Scratch-Dirs — heute 535
+  tote gereapt, 110 bleiben), 14 Tage alte bun-Server fremder Projekte (private-repo-v, private-repo-ab,
+  uploader, index.ts), plus jede lokale Suite (bun server + tmux + node_modules). Die Meldung „Background
+  command … stopped because the system is running low on memory" ist Claude Codes EIGENER Waechter je
+  Session; er killt Hintergrund-Shells, nie Lanes. Konsequenz: **lokale Hintergrund-Watcher sind hier kein
+  Rueckweg** (heute 2x meiner, 3x Slot 1, Waiter von Slot 6); der Server-One-Shot `POST /api/self/autos`
+  ist der tragfaehige. Hebel in Reihenfolge: weniger Sessions auf dem Mac (Second-host), die fremden
+  bun-Server pruefen (Owner), Spotlight-Ausschluss fuer `~/claude-fleet.worktrees` (Systemeinstellungen,
+  Owner-Klick; mdutil kann keine Ordner).
+
+## 1. WAS HEUTE PASSIERT IST — mit dem Warum
+
+- **Second-host:** Helper-Cap 2 -> 3 und maxLoad1 4 -> 8 (`/etc/fleet-helper/config.json`, Backup
+  `.bak-20260912`, `systemctl restart fleet-helper`, aktiv). Grund, gemessen: 13:49-14:27 beide Slots belegt,
+  einer 37 min fuer eine schon gelandete Lane (Antwort 409 „no live claim"), derweil Audit und Wellen-Preview
+  auf den Mac zurueckgefallen; um 14:37 Mac 4 Wrapper in der Schlange, Second-host leer. Fleet-Instanz dort
+  von 33 Commits hinter main auf 326eaba8 deployt (4 Owner-Sessions ueberlebt). RAM je Suite dort
+  UNGEMESSEN (7,8 GB); bei exit != 0 ohne Testfehler zuerst `free -m` waehrend eines Laufs.
+- **Gefilt (Fleet-Betrieb, pending, Freigabe Slot 6):** `f8d9ecf2` Suite-Mutex vor dem Pre-Pass-Rebase
+  (Anker server.ts:20064/20278, Sensor `ffRounds` in der Land-Note — die Notes TRAGEN das Feld, anders als
+  die Uebergabe cede5a9a §3 sagte) · `7e601e57` Suite-Offer: Rueckzug bei Lane-Ende + Warten bei
+  gesaettigtem Helfer statt 3-min-Fallback (nach 10ddd013, gleiche Naht; 10ddd013 ist 15:07 gelandet,
+  sechs Preview-Commits e670efdb..cfc69851 — lies deren Bodies, Deploy-Gap 10) · `efde59be` Notiz
+  (Regelbuch-Vorschlag) -> **promoviert**: Fragment `rulebook/einstieg.md` nach „Beerdigtes", gerendert,
+  `bun e2e/pins.ts` ALL PASS; gitignored, kein Commit.
+- **Umgehaengt (Kopie + Archiv, es gibt keine Rebind-Route; `adopt` ist notiz->auftrag):** `2d020389` ->
+  `18802952` in Leichtgewicht f9dc8e10 mit erstem Schnitt (Brief liefert Naehte, Kriterium Bash-Aufrufe
+  median 52 -> <20) und Quelle f7493755 angeheftet; Slot 10 hat sie freigegeben, **Slot 1 baut sie**
+  (Lane d71f, 26 %, wartet auf ein Helper-Verdikt ueber dem 800-s-Budget, fuhr kein Duplikat). Program
+  Land-Pipeline 233e1c2b **complete**; fuenf Notizen als Kopien in Fleet-Betrieb (72321e0c, 85078178,
+  0a356f8d, f8dcd84e), Originale archiviert; f7493755 bleibt Original (Quellen-Pin). Zwei R2-Reports
+  (080d93ca, e1f89a72) stehen `needs-main` an der toten MAIN — nur Self-Route, historisch.
+- **Slot 6 hat geliefert:** dc4ec8b5 (14:55), 10ddd013 (15:07) gelandet, Audits gruen (af494028 13:39,
+  326eaba8 14:52, d7a46af3 15:33); Lanes auf Slot 1 (18802952) und Slot 3 (neu, 2d…) laufen.
+
+## 2. OFFEN, mit Traeger
+
+- Wellen-Nachweis (Auto 70ebc3b3, dann Kommentar auf f6db3487) — Nachfolgerin.
+- Deploy-Gap 10 nach dem naechsten gruenen Audit — Slot 6 (POST /api/deploy, 409 waehrend Audit).
+- Owner-Klick Spotlight; fremde bun-Server auf dem Mac pruefen — Owner.
+- Wenn „alles auf dem Second-host" auch Code-Lanes heissen soll: erst `4784b292` (Hub sieht Direkt-Commits
+  nur per Land) und die kanonisch-je-Repo-Frage; f3ca2e05 in heutiger Fassung NICHT dispatchen
+  (docs/messungen/2026-09-11-host-aufteilung-entscheid.md §4).
+
+## 3. NICHT GEMESSEN
+
+Ob Claude Codes Speicher-Waechter konfigurierbar ist (nicht nachgeschlagen). RAM je Suite auf dem
+Second-host. Wer Slot 11 am Vormittag killte (Audit sagt nur `owner`).
+
+---
+
 # HANDOFF — Orchestrator Slot 13 (Fable 5.1, Haupt-Checkout, Owner-Token): Buendel-Mechanik entsperrt, drei Lands, zwei Successionen, Astra zurueckgeholt; 2026-09-12 13:0x, ctx GEMESSEN 36,2 %
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

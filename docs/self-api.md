@@ -1008,7 +1008,16 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 
 **Antwort GET:** `{addresses, unread, droppedFleetWide, entries: [{id, from, to, at, payload,
 idempotencyKey, replyTo, readBy, readAt}], unknown: []}`, **neueste zuerst**. `addresses` sind die
-Adressen, die diese Session gerade hält — eine Session kann unter mehreren lesen. `droppedFleetWide`
+Adressen, die diese Session gerade hält — eine Session kann unter mehreren lesen.
+
+**Du siehst BEIDE Enden deiner eigenen Fäden**, nicht nur den Eingang: eine Zeile ist dabei, wenn
+`to` **oder** `from` eine deiner Adressen ist. Das ist keine Bequemlichkeit — eine Antwort nennt ihre
+Frage in `replyTo`, und eine reine Eingangs-Sicht gäbe einem Nachfolger eine Id in die Hand, die er
+nicht auflösen kann: die Frage seines Vorgängers wäre genau so verloren wie auf jeder Fläche, die
+diese hier ersetzt. Beide Seiten bleiben **adress**-geschlüsselt, ein recycelter Occupant löst also
+auf keine von beiden auf. `unread` zählt **nur den Eingang** — eine selbst gesendete Zeile ist keine
+Neuigkeit, und sie mitzuzählen ließe eine untätige MAIN aussehen, als schulde sie ihrer eigenen
+Frage eine Antwort. `droppedFleetWide`
 heißt so, wie es heißt: der Deckel liegt auf dem GANZEN Record, die Zahl ist also nicht „so viele
 DEINER Nachrichten fielen ab"; ist sie > 0, steht daneben eine `unknown`-Zeile, die genau das sagt.
 
@@ -1048,8 +1057,12 @@ von Verkehr zwischen zwei anderen prüfen. Nicht-Offenlegung schlägt Navigierba
 
 **Quittung.** `POST /api/self/messages/:id/read` stempelt das Occupant-Tripel und ist **kein
 Lock**: ein zweites Lesen antwortet `{ok:true, existing:true}` und schreibt **nichts** um — der
-ERSTE Leser ist der Fakt. Eine Id, die es nicht gibt **oder** die nicht an eine eigene Adresse
-gerichtet ist, bekommt dieselbe **404 `unknown message`** (siehe `replyTo`).
+ERSTE Leser ist der Fakt. **Eine Quittung gehört dem EMPFÄNGER:** die eigene AUSGANGS-Zeile siehst
+du zwar, quittieren kannst du sie nicht (**409 `this message was sent by this principal — a receipt
+is the addressee's`**) — eine Quittung hält fest, wen die Nachricht erreicht hat, und der Absender,
+der seine eigene quittiert, fälschte genau diesen Fakt. Sie wird hier **benannt** statt versteckt,
+denn sie steht ohnehin in seiner eigenen Sicht. Eine Id, die es nicht gibt **oder** die weder an
+noch von einer eigenen Adresse ist, bekommt dieselbe **404 `unknown message`** (siehe `replyTo`).
 
 **Ablehnungen im Einzelnen**
 
@@ -1067,6 +1080,7 @@ gerichtet ist, bekommt dieselbe **404 `unknown message`** (siehe `replyTo`).
 | `role:"controller"` | 409 | `role "controller" is named but not addressable: …` |
 | Key erneut, anderer Inhalt | 409 | `idempotencyKey <key> was already used by this sender for a different message (<id>) — one key names one act` |
 | `replyTo` unbekannt oder fremd | 409 | `replyTo names no message addressed to this sender` |
+| `:id/read` auf die eigene AUSGANGS-Zeile | 409 | `this message was sent by this principal — a receipt is the addressee's` |
 | `:id/read` unbekannt oder fremd | 404 | `unknown message` |
 
 **Deckel:** `MESSAGES_MAX` = 200 Einträge auf dem GANZEN Record (gelesene fallen zuerst, `dropped`

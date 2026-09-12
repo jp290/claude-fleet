@@ -481,9 +481,13 @@ const watchdog = read("watchdog.sh");
 const server = serverU.text;
 
 {
-  // Clarifications and fleet reports are the only FleetEvent kinds without a Watch. Keep both
+  // THREE FleetEvent kinds carry no Watch, and the third joined them for a different reason than
+  // the first two: a clarification and a fleet-report are ASKED for, while a `lane-suite` verdict
+  // reaches a lane that COULD NOT have subscribed (/api/self/watch answers a lane 409). Keep both
   // directions of that persisted discriminant coupled: accepting null on any Watch-backed kind
-  // loses provenance, while requiring a string on either sibling invents a Watch that does not exist.
+  // loses provenance, while requiring a string on any of the three invents a Watch that does not
+  // exist — and THAT direction is not hypothetical, it dropped both preview rows at every boot
+  // until e2e/lane-suite.ts (LS.9) measured a restart.
   // CUT THROUGH THE UNIVERSE'S span(), not through two bare indexOf calls on the joined text:
   // once the parser lives in `server/persist.ts` and its terminator in the core, a raw slice
   // between them would hand this rule a body spanning half the server — and a body that big makes
@@ -492,20 +496,25 @@ const server = serverU.text;
   const mintSpan = serverU.span("async function openClarification(", "async function replyClarification(");
   const parser = parserSpan?.text ?? "";
   const mint = mintSpan?.text ?? "";
-  const watchlessKinds = 'const watchless = e.kind === "clarification-request" || e.kind === "fleet-report";';
+  const watchlessKinds = 'const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"\n'
+    + '    || e.kind === "lane-suite";';
   const watchlessEquivalence = parser.includes(watchlessKinds)
     && parser.includes('    || (watchless !== (e.watchId === null))\n'
       + "    || !(ownerReceiver || (Number.isInteger(e.receiverSlot)");
   const nullMints = (mint.match(/watchId: null/g) ?? []).length;
   const missingAnchor = [parserSpan === null ? "fleetEventFrom" : "", mintSpan === null ? "openClarification" : ""]
     .filter(Boolean);
-  pin("FleetEvent watchId is null exactly for clarification-request and fleet-report, and a string for every Watch event",
+  pin("FleetEvent watchId is null exactly for clarification-request, fleet-report and lane-suite, and a string for every Watch event",
     missingAnchor.length === 0
       && /watchId: string \| null/.test(server)
       && watchlessEquivalence
       && mint.includes("const event: ClarificationFleetEvent")
       && mint.includes("const event: FleetReportFleetEvent")
       && nullMints === 2
+      // the third watchless mint lives in its own function and is counted there rather than
+      // widened into `mint`'s span: one `watchId: null`, shared by both rows it can produce.
+      && (serverU.span("async function mintLaneSuiteEvents(", "// THE OPEN RED PREVIEWS")?.text
+        .match(/watchId: null/g) ?? []).length === 1
       && (server.match(/watchId: w\.id/g) ?? []).length >= 4,
     missingAnchor.length > 0
       ? `anchor not found in the server universe: ${missingAnchor.join(", ")}`
@@ -4686,10 +4695,14 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // THREE fields carry "who was this filed to" — the transport (`delivery`), the event payload's
   // `basis`, and the persisted FleetReport's `basis`. Each is pinned to the receiver separately,
   // because an unbound one does not fail loudly: it hydrates and then LIES to whichever sight
-  // reads it. The fourth clause keeps the owner principal to the one kind that can have one.
+  // reads it. The fourth and fifth clauses keep the owner principal to the kinds that can have one
+  // — TWO since the preview rail (a red `lane-suite` files an owner row so the process outlives
+  // the lane), and both are read off ONE `ownerAddressable` list so a kind can never be admitted
+  // to the membership test without also being admitted to the transport equivalence.
   const ownerEquivalences = [
-    '|| (ownerReceiver && e.kind !== "fleet-report")',
-    '|| (e.kind === "fleet-report" && (e.delivery === "inbox") !== ownerReceiver)',
+    'const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite";',
+    '|| (ownerReceiver && !ownerAddressable)',
+    '|| (ownerAddressable && (e.delivery === "inbox") !== ownerReceiver)',
     '|| ((p.basis === "owner-inbox") !== ownerReceiver)) return null;',
     '|| (e.kind === "clarification-request" && e.delivery === "inbox")',
     '|| (ownerReceiver && e.status !== "inbox" && e.status !== "acknowledged")',

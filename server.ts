@@ -46,7 +46,7 @@ import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
 import {
   clusterForFiles, deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp, readSymbolIndexSnapshot,
-  symbolGraphStamp, surfaceSha, surfaceFresh,
+  symbolGraphStamp, surfaceSha,
   type TaskFilesOrigin, type TrackedSnapshot, type SymbolIndex, type SymbolIndexSnapshot,
   type SymbolRange, type TaskSurface,
 } from "./task-metadata";
@@ -2502,17 +2502,21 @@ function trackedSnapshotFor(repoRaw: string): TrackedSnapshot | null {
 // reason: it is a REPOSITORY fact shared by every row, and re-reading a 10 000-node graph per row
 // per 2 s poll is not a projection, it is a load. `null` is the lane's honest answer — graphify-out/
 // is gitignored and lives only in the main checkout.
-type SymbolIndexCache = { snapshot: SymbolIndexSnapshot | null; checkedAt: number };
+// The cache is keyed on the graph file's own stamp, and it caches the FAILURES too. It has to: a
+// graph.json that exists but does not parse reads null forever, and a cache that only remembered
+// successes would re-read ten megabytes per row per 2 s poll for as long as the file stayed broken.
+// A failure is retried after 5 s, the same grace the tracked snapshot above gives an unreadable index.
+type SymbolIndexCache = { snapshot: SymbolIndexSnapshot | null; stamp: string | null; checkedAt: number };
 const symbolIndexCache = new Map<string, SymbolIndexCache>();
 function symbolIndexFor(repoRaw: string): SymbolIndexSnapshot | null {
   const repo = repoCanon(repoRaw);
   const now = Date.now();
-  const hit = symbolIndexCache.get(repo);
   const stamp = symbolGraphStamp(repo);
-  if (hit?.snapshot && hit.snapshot.stamp === stamp) return hit.snapshot;
-  if (hit && !hit.snapshot && stamp === null && now - hit.checkedAt < 5000) return null;
+  const hit = symbolIndexCache.get(repo);
+  // same file as last time: a successful read stands until the file moves, a failed one for 5 s
+  if (hit && hit.stamp === stamp && (hit.snapshot || now - hit.checkedAt < 5000)) return hit.snapshot;
   const snapshot = readSymbolIndexSnapshot(repo);
-  symbolIndexCache.set(repo, { snapshot, checkedAt: now });
+  symbolIndexCache.set(repo, { snapshot, stamp, checkedAt: now });
   return snapshot;
 }
 
@@ -2532,7 +2536,9 @@ function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
   const confirmedFiles = t.filesOrigin === "derived" ? undefined : t.files;
   const sha = surfaceSha({ text: t.text, brief: t.brief?.text ?? null, confirmedFiles,
     indexStamp: snapshot?.indexStamp ?? null, graphStamp: index?.stamp ?? null });
-  if (surfaceFresh(t.surface, sha)) return t.surface!;
+  // read directly rather than through a predicate: tsc narrows `t.surface` here and cannot narrow
+  // through a helper, and a `!` to paper over that is exactly the assertion this repo does not take.
+  if (t.surface && t.surface.sha === sha) return t.surface;
   const metadata = deriveTaskMetadata({ text: t.text, brief: t.brief?.text ?? null, confirmedFiles },
     { trackedPaths: snapshot?.paths ?? new Set<string>(), project, repoRoot,
       symbolIndex: index?.index ?? null });

@@ -5676,8 +5676,13 @@ export async function run(ctx: Ctx): Promise<void> {
     // (2) THE MODEL THAT RAN, not the constant the call site meant. The brief compiler stamps
     // SUMMARY_MODEL on every brief no matter which route answered it; this field is read back from
     // the worker observation, so a stand-in run says so instead of claiming a Haiku ran.
+    // The DISCRIMINATING form, not a literal: under a stand-in runWorker observes SUMMARY_MODEL,
+    // so a card that named the call site's own CARD_MODEL could only have been stamped from the
+    // constant. Asserting the summary model by name would instead pin an operator's environment.
     check("(j2) card.model carries the model that RAN, not the tier constant the call site named",
-      cCard?.model === "claude-sonnet-5[1m]" && typeof cCard.ms === "number" && cCard.ms >= 0,
+      typeof cCard?.model === "string" && !!cCard.model
+      && cCard.model !== "claude-haiku-4-5-20251001"
+      && typeof cCard.ms === "number" && cCard.ms >= 0,
       JSON.stringify({ model: cCard?.model, ms: cCard?.ms }));
     // (3) the quote rule reaches the card too — through the extractor's prompt, and through the
     // validator behind it. The stand-in cannot prove the model obeys, so what is proven here is the

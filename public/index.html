@@ -1128,6 +1128,9 @@
   .attnkind.k-decision { color: var(--accent); border-color: #33436b; }
   .attnkind.k-blocked { color: var(--danger); border-color: #6b3333; }
   .attnkind.k-review-ready { color: #3fb950; border-color: #2f5c38; }
+  /* a lane laying its baton down is neither a verdict nor a decision owed — it is work CONTINUING,
+     so it must not read green like a finished slice nor red like a failure. */
+  .attnkind.k-handoff { color: var(--amber); border-color: #6b5a33; }
   .attnprog { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
   .attnmeta { flex: none; color: var(--dim); font-size: 10.5px; }
   .attntext { color: var(--text); white-space: pre-wrap; word-break: break-word; line-height: 1.45; }

@@ -244,6 +244,13 @@ type AuditEvent =
   // a full-window main session spent its bounded three-attempt handoff budget. The detail says
   // "gave up" so exhaustion is visible rather than indistinguishable from a disabled tick.
   | "migrate_gave_up"
+  // A LANE HANDED ITS BATON TO A FRESH SESSION ON THE SAME WORKTREE (server.ts#succeedLane). Its
+  // own word rather than slot_open's, because slot_open says a session started and this says the
+  // WORK continued across a session boundary: the branch is unchanged, the queue rows are
+  // unchanged, and nothing landed. The detail carries the branch and the running count, since the
+  // slot id is recycled and the count is the only thing that says a lane spanned n sessions —
+  // sessionMs on the outcome row measures the LAST one alone.
+  | "lane_succession"
   | "dispatch_switch"
   | "guest_action"
   // a lane's own account of a verify-suite run: one line per phase change, so a run that dies

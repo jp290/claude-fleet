@@ -2123,8 +2123,8 @@ export async function run(): Promise<void> {
       selfFleetReport(completeTok, { status: "complete", text: "x".repeat(4001) }),
       selfFleetReport(completeTok, { status: "complete", text: "spoof", receiver: { slot: foreignMain } }),
     ]);
-    check("fleet-report validation: the exported three-value status is closed and the body is exactly status+text",
-      JSON.stringify(FLEET_REPORT_STATUSES) === JSON.stringify(["complete", "needs-main", "failed"])
+    check("fleet-report validation: the exported four-value status is closed and the body is exactly status+text",
+      JSON.stringify(FLEET_REPORT_STATUSES) === JSON.stringify(["complete", "needs-main", "failed", "handoff"])
         && invalids.every((r) => r.status === 400) && (await fleetReportEventRows()).length === 0,
       invalids.map((r) => r.status).join("/"));
 
@@ -5814,25 +5814,59 @@ export async function run(): Promise<void> {
         && nudge.includes("Server-Prädikat, keine Meldung von dir")
         && nudge.indexOf("HANDOFF.md schreiben UND committen") < nudge.indexOf("POST /api/self/succeed")
         && nudge.includes("x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN"), nudge);
-    check("tickMigrate never nudges a lane, the ⚙ steward, or a ctx:null slot",
-      (await migratePrompts(lane.slot)).length === 0
-        && (await migratePrompts(stewardId)).length === 0
+    // THE LANE RAIL, 2026-09-12. Until this cut the check here asserted that a lane received
+    // NOTHING — its only exit was to land, which is precisely what a lane too full to work well is
+    // least able to do well. It now gets its OWN text on its OWN threshold
+    // (FLEET_LANE_MIGRATE_PCT, armed by the wrapper beside FLEET_MIGRATE_PCT). The steward and the
+    // ctx:null control still get nothing, which is the half of the old contract that never moved.
+    let laneNudges = await migratePrompts(lane.slot);
+    for (let i = 0; i < 80 && laneNudges.length === 0; i++) {
+      await Bun.sleep(100);
+      laneNudges = await migratePrompts(lane.slot);
+    }
+    const laneNudge = laneNudges[0]?.text ?? "";
+    check("tickMigrate nudges an above-threshold LANE exactly once — same measured opening, the lane's own three acts",
+      laneNudges.length === 1 && laneNudge.includes("50%")
+        && laneNudge.includes("1000000 Tokens im Fenster")
+        && laneNudge.includes("Server-Prädikat, keine Meldung von dir")
+        && laneNudge.includes("DIESEM Worktree")
+        && laneNudge.indexOf("committe") < laneNudge.indexOf("status `handoff`")
+        && laneNudge.indexOf("status `handoff`") < laneNudge.indexOf("POST /api/self/succeed"),
+      `${laneNudges.length}: ${laneNudge}`);
+    check("…and the two texts are not one: a lane is never told to write and commit HANDOFF.md",
+      !laneNudge.includes("HANDOFF.md") && !nudge.includes("handoff`"), `${nudge.slice(0, 80)} | ${laneNudge.slice(0, 80)}`);
+    check("tickMigrate never nudges the ⚙ steward or a ctx:null slot",
+      (await migratePrompts(stewardId)).length === 0
         && (await migratePrompts(unknownId)).length === 0,
-      JSON.stringify({ lane: (await migratePrompts(lane.slot)).length,
-        steward: (await migratePrompts(stewardId)).length, unknown: (await migratePrompts(unknownId)).length }));
+      JSON.stringify({ steward: (await migratePrompts(stewardId)).length,
+        unknown: (await migratePrompts(unknownId)).length }));
 
     const tickMs = Number(process.env.FLEET_MIGRATE_TICK_MS ?? 60_000) | 0;
     await Bun.sleep(tickMs * 4 + 500);
-    check("a second migration tick inside MIGRATE_COOLDOWN_MS sends no second prompt",
-      (await migratePrompts(mainId)).length === 1, `${(await migratePrompts(mainId)).length} prompt(s)`);
+    check("a second migration tick inside MIGRATE_COOLDOWN_MS sends no second prompt, on either rail",
+      (await migratePrompts(mainId)).length === 1 && (await migratePrompts(lane.slot)).length === 1,
+      `main=${(await migratePrompts(mainId)).length} lane=${(await migratePrompts(lane.slot)).length}`);
+
+    // TWO THRESHOLDS, NOT ONE KNOB WITH TWO READERS. The restart resets the process-local marker,
+    // so both 50% slots are eligible again; zeroing only the LANE threshold must therefore move
+    // exactly one of the two counts. A shared knob (or a lane rail reading MIGRATE_PCT) would
+    // either freeze both or move both, and both readings fail here.
+    await restartSrv({ FLEET_LANE_MIGRATE_PCT: "0" });
+    await Bun.sleep(tickMs * 4 + 500);
+    check("FLEET_LANE_MIGRATE_PCT=0 silences the LANE rail alone — the main rail, re-armed by the restart, sends again",
+      (await migratePrompts(mainId)).length === 2 && (await migratePrompts(lane.slot)).length === 1,
+      `main=${(await migratePrompts(mainId)).length} lane=${(await migratePrompts(lane.slot)).length}`);
 
     // Restart resets the process-local marker. With the threshold still armed this same 50% slot
     // would be nudged again; overriding it to zero proves the stronger default-off contract: no
-    // timer is registered, rather than a timer that merely decides not to send.
+    // timer is registered, rather than a timer that merely decides not to send. The lane count is
+    // read with it because MIGRATE_PCT is the MASTER switch: with no timer registered, the lane
+    // rail cannot fire either, whatever its own (still non-zero) threshold says.
     await restartSrv({ FLEET_MIGRATE_PCT: "0" });
     await Bun.sleep(tickMs * 4 + 500);
-    check("FLEET_MIGRATE_PCT=0 registers no migration tick — an eligible fresh process sends nothing",
-      (await migratePrompts(mainId)).length === 1, `${(await migratePrompts(mainId)).length} total prompt(s)`);
+    check("FLEET_MIGRATE_PCT=0 registers no migration tick — neither rail sends, whatever the lane threshold is",
+      (await migratePrompts(mainId)).length === 2 && (await migratePrompts(lane.slot)).length === 1,
+      `main=${(await migratePrompts(mainId)).length} lane=${(await migratePrompts(lane.slot)).length}`);
 
     for (const id of [mainId, lane.slot, stewardId, unknownId]) if (id) await post(`/api/slots/${id}/kill`, {});
     for (const file of usageFiles) rmSync(file, { force: true });

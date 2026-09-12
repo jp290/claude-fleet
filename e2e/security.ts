@@ -242,9 +242,15 @@ const PRE_AUTH_ROUTES = [
   // route calls — there is no second merge implementation.
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/land$/`,
   '~ /^\\/api\\/self\\/events\\/([a-z0-9]+)\\/ack$/', // same slot+session credential; idempotent receipt only
-  '= /api/self/succeed',  // non-lane only: one successor, caller retires on grace. The committed
-  // HANDOFF gate still holds the unbound, Supervisor and game-maker rails; a Standard Program-MAIN
-  // hands over the Program's own measured record in the founding brief instead (2026-09-08).
+  '= /api/self/succeed',  // one successor for the caller's own session, never a named target. For a
+  // MAIN: a free slot in the same cwd, caller retires on grace; the committed HANDOFF gate still
+  // holds the unbound, Supervisor and game-maker rails, while a Standard Program-MAIN hands over the
+  // Program's own measured record in the founding brief instead (2026-09-08). For a LANE (2026-09-12,
+  // succeedLane): a fresh session in the SAME slot on the SAME worktree and branch, which is why it
+  // is no longer a 409 here — what bounds it is that it moves NOTHING: no land, no merge (a running
+  // one refuses it), no second worktree, no queue-row status change, no repo it is not already in,
+  // and a tree with one uncommitted or untracked line refuses it outright. The steward stays 409 on
+  // both doors and a lane stays 409 on /retire.
   '= /api/self/retire',   // non-lane only: immediately retire the token's own slot after reporting
   // added 2026-08-07. The widest READ on the every-session tier —
   // it is the only self route whose payload is not this slot's own row but a fleet-wide ledger

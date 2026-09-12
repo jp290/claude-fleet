@@ -281,6 +281,36 @@ Await erneut; Owner-Kill/Recycling bleibt erlaubt, kann den alten Request aber n
 Nachfolge umlenken. Kein freier Slot oder kein frischer sauberer Handoff = 409, und die Vorgängerin bleibt
 stehen.
 
+**Eine LANE succeedet auch — seit 2026-09-12, und auf einer eigenen Schiene** (`server.ts#succeedLane`).
+Vorher war das eine 409 („a lane lands — it does not migrate"); gemessen wurde, warum diese Antwort falsch
+war: Slot 7 endete am 2026-09-12 bei 48,7 % von 1M (Zweierwelle, ein roter Vorschaulauf, drei Reparaturen,
+111 Suite-Wrapper- und 49 FAIL-Zeilen im Pane-Stream) — eine Lane, die zu voll ist, um gut zu arbeiten, ist
+in der Regel auch zu voll, um sauber zu landen, und „dann lande eben" hieß: wirf den halbfertigen Schnitt
+weg. Die Nachfolgerin ist deshalb **keine neue Lane**, sondern eine frische Session auf DEMSELBEN Worktree,
+Branch, Slot, mit denselben Queue-Zeilen und demselben Program; Modell/Effort erbt sie wie oben, ein
+Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
+
+- **Vorbedingung ist ein SAUBERER Baum, und sie ist hart:** `git status --porcelain` muss leer sein
+  (untracked eingeschlossen), sonst 409 mit den ersten 20 Statuszeilen im Feld `status`. Der Nachfolger
+  erbt den BRANCH — alles Uncommittete ist schlicht verloren, ein Staffelstab ohne Commit ist kein
+  Staffelstab. Ein laufender Merge auf diesem Slot ist ebenfalls 409.
+- **Der erste Prompt der Nachfolgerin** ist servergebaut und trägt: den Auftrag im Wortlaut (`brief ?? text`
+  je Zeile, bei einer Welle alle Zeilen in der Sensor-Reihenfolge), `git log --oneline <base>..HEAD`, den
+  Beleg, dass der Baum sauber ist, den Text des letzten `handoff`-Reports DIESES Occupants — und dieselbe
+  `LANE_EXIT_FOOTER`, die jede Lane bekommt, aus derselben Konstante.
+- **`carry` ist auf dieser Schiene 409**, nicht ignoriert: der `handoff`-Report IST der eine Übergabekanal
+  (§fleet-report). Zwei Kanäle könnten einander widersprechen, ohne dass jemand sagen kann, welchem die
+  Nachfolgerin gefolgt ist.
+- **`POST /api/self/retire` bleibt für eine Lane 409.** Retire würde die Session beenden und die committete
+  Arbeit als verwaisten Worktree zurücklassen; dort hat eine Lane weiterhin genau einen Ausgang.
+- **Zählung:** `Slot.laneSuccessions` (persistiert) zählt die Übergaben, und die Outcome-Zeile trägt sie als
+  `successions: n` — nur wenn n > 0. Sie ist das einzige Feld dort, das sagen kann, dass eine Lane über
+  mehrere Sessions lief: `sessionMs` misst nur die LETZTE.
+- **Der Anstoß kommt vom Server, nicht aus dem Bauch der Lane:** `tickMigrate` nudget seit demselben Schnitt
+  auch Lanes, mit eigener Schwelle `FLEET_LANE_MIGRATE_PCT` (Default 40, 0 = aus) und eigenem Text.
+  `FLEET_MIGRATE_PCT` bleibt der Hauptschalter — ist er 0, wird der Timer gar nicht registriert und keine
+  der beiden Schienen feuert. Live ist er 0, also ist die Schiene ARMIERBAR, nicht armiert.
+
 
 ## Program-MAIN-Ausführungsschiene (der Gründungsbrief benennt sie)
 
@@ -1427,11 +1457,18 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report \
   (`body must contain only status and text`) — dieselbe Form wie bei `release`: was ein Request
   nicht nennen kann, kann er nicht erschleichen. Worker, Empfänger und Provenienz (`taskId`,
   `originId`, `programId`) stempelt der Server aus dem Slot.
-- **`status` ist genau einer von drei** (`FLEET_REPORT_STATUSES` in `src/protocol.ts`, dieselbe
+- **`status` ist genau einer von vier** (`FLEET_REPORT_STATUSES` in `src/protocol.ts`, dieselbe
   Liste, aus der die Fußzeile ihren Text interpoliert):
   `complete` (die Scheibe ist fertig UND verifiziert) · `needs-main` (fertig, soweit möglich, eine
-  Entscheidung steht aus) · `failed` (es hat nicht funktioniert, und die Lane sagt es).
+  Entscheidung steht aus) · `failed` (es hat nicht funktioniert, und die Lane sagt es) ·
+  `handoff` (der Staffelstab: der Kontext läuft voll, die Lane übergibt an eine frische Session auf
+  DEMSELBEN Worktree — fertig / offen / nächster Schritt / offene Zahlen, danach
+  `POST /api/self/succeed`, siehe §succeed).
   Alles andere ist 400 mit der erlaubten Liste im Fehlertext.
+- **`handoff` ist kein Urteil über die Arbeit**, sondern das Übergabedokument. Es bewegt wie jeder
+  Report keine Zeile, braucht keinen `HANDOFF.md`-Commit (das ist die Datei des Haupt-Checkouts,
+  nicht die einer Lane) und liegt genau dort, wo das Ergebnis derselben Lane ohnehin landet: in der
+  Program-Inbox. Die MAIN sieht also eine Lane mit einem Nachfolge-Eintrag, kein neues Land.
 - **`text` ist PROSA für einen menschlichen Leser**, nicht-leer und ≤ `MAX_FLEET_REPORT_TEXT`
   (4000 Zeichen). Es gibt bewusst keinen JSON-Ergebniskörper: der Empfänger ist eine Session, die
   liest, kein Reducer.

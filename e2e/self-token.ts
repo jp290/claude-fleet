@@ -138,21 +138,31 @@ export async function run(ctx: Ctx): Promise<void> {
   check("the lane-only self routes answer a PLAIN session 409 not-a-lane — never 401, never 200",
     refusals.every((r) => r.endsWith(":409")), refusals.join(" "));
 
-  // --- THE OPPOSITE SCOPE: succeed/retire belong only to a plain main session. A lane already has
-  // a lifecycle verb — land — and the steward is a standing role, so both refusals are 409 with
-  // their own reason. 401 would falsely tell either caller to hunt for another credential. ---
+  // --- THE OPPOSITE SCOPE: /retire belongs only to a plain main session, and the steward gets
+  // neither door. A lane retiring would end its session and leave committed work as an orphan
+  // worktree, so it keeps exactly one exit there; the steward is a standing role. Both refusals are
+  // 409 with their own reason — 401 would falsely tell either caller to hunt for another credential.
+  //
+  // /succeed IS NO LONGER IN THAT SENTENCE. Since 2026-09-12 a lane has its own succession rail
+  // (server.ts#succeedLane, proved end to end in e2e/lanes-lifecycle.ts), so what is checked here is
+  // that the lane REACHES it: the refusal it gets for a `carry` is its own rail's — the handoff
+  // report is the one handover channel — and no longer "a lane lands". Driven with `carry` on
+  // purpose: it is the one shape of this call that proves the rail was entered while spawning
+  // nothing, so the lane this file goes on using below is still the session it was. ---
   const successionPost = (path: "succeed" | "retire", token: string, body: unknown = {}) =>
     fetch(`${BASE}/api/self/${path}`, {
       method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
       body: JSON.stringify(body),
     });
   const laneSuccession = await Promise.all([
-    successionPost("succeed", selfTok), successionPost("retire", selfTok),
+    successionPost("succeed", selfTok, { carry: "a lane has no second handover channel" }),
+    successionPost("retire", selfTok),
   ]);
   const laneSuccessionText = await Promise.all(laneSuccession.map((r) => r.text()));
-  check("a LANE is refused 409 by both /api/self/succeed and /retire — it lands, it does not migrate",
+  check("a LANE is refused 409 by both doors — /retire because it lands, /succeed only because its own rail takes no carry",
     laneSuccession.every((r) => r.status === 409)
-      && laneSuccessionText.every((t) => t.includes("a lane lands")),
+      && (laneSuccessionText[0] ?? "").includes("takes no carry")
+      && (laneSuccessionText[1] ?? "").includes("a lane lands"),
     laneSuccession.map((r, i) => `${r.status}:${laneSuccessionText[i]}`).join(" | "));
 
   const oldPlainLabel = pSelf.label ?? "";

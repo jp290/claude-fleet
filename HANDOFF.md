@@ -92,6 +92,50 @@ Wer Slot 11 um 10:58 und 11:29 gekillt hat (Audit sagt nur `owner`); ob der rote
 R2-Preview auf main wiederkehrt; die ff-Retry-Rundenzahl von Slot 1 (Land-Notes tragen kein
 Rounds-Feld). `.hub-prototype/` liegt ungetrackt im Haupt-Checkout (Owner-Artefakt, unangetastet).
 
+## 4. FUER MENSCHEN: DIE VISION DES OWNERS UND WAS HEUTE KLAR WURDE
+
+Der Owner hat die Vision heute so gefasst (11:0x, sinngemaess): Claude Fleet orchestriert UND managt
+CLI-Agenten verschiedener Anbieter. Jede Session ist eine kurzlebige Instanz des Projekts, bekommt
+ihre Rolle und die Ablaeufe des Protokolls EFFIZIENT erklaert (ein „schmaler Kaefig"), verhaelt sich
+konform (Abschlussbericht, Funde notieren, Tasks anlegen), und aus Berichten/Notizen/Tasks entsteht
+ein Wissensspeicher, den auch fremde Sessions nutzen koennen (Beispiel: sein Bewerbungs-Repo sollte
+erfahren, was Fleet heute ist — der Agent dort fand sich im Repo nicht zurecht). Heute fuehlte sich
+die Benutzung „wie Kraut und Rueben" an: Tasks und Successionen liefen nicht, Sessions liefen zu
+schnell voll.
+
+Was die Messungen dazu sagen, in fuenf Saetzen: (1) Es fehlt kein Feature — Programs, Tasks, Notes,
+Receipts, Reports, Self-API, Wellen existieren. (2) Der Kaefig ist nicht schmal: das Regelbuch ist 921
+Zeilen / 84 KB und wird von jeder MAIN bei jedem Turn bezahlt; 56 % der gelandeten Zeilen sind Docs.
+(3) Die drei Tueren Release, Zustellung, Succession sind Handarbeit oder loechrig (Attention nicht
+auto-geschlossen, Nudge an codex stirbt, Preview-Ergebnis erreicht die Lane nicht, Watch ist Lanes
+verboten → Polling). (4) Eine Opus-Lane verbrennt 10–18 % Kontext mit Orientierung im 29k-Zeilen
+server.ts, weil der Brief die Naehte nicht nennt. (5) Verifikation kostet 25 min je Land, 34 % rot,
+davon 3 echte Fehler in 181 — der Apparat erzeugt Rot und Schreibarbeit.
+
+Daraus die Reihenfolge, die der Owner angenommen hat: erst die Tueren bedienen (heute getan), dann
+die Welle beweisen (§0), dann Papier-Stopp/Regelbuch eindampfen (Owner-Entscheid, offen), dann der
+schmale Kaefig als Rollenkarte je Rolle mit fuenf Verben (berichten, Fund notieren, Task anlegen,
+freigeben, uebergeben) plus ein Einstiegspunkt fuer fremde Sessions (KNOWLEDGE.md oder Route) — das
+IST Program Leichtgewicht `f9dc8e10`, kein neues Program. Der Owner will ausserdem, dass Sessions
+knapper berichten: „klare Ausgabe, die ich direkt verstehe, und andere Sessions mit weniger Token."
+
+## 5. ARBEITSWEISE, DIE SICH HEUTE BEWAEHRT HAT
+
+- Astra-Briefs nach der Grok-Schablone (Memory `feedback-astra-brief-template`), je ein Schnitt, Sol-
+  Subagenten low/medium, Bericht als `docs/messungen/*.md` mit Frontmatter, DONE MEANS mit Kommando.
+  Vier Berichte an einem Vormittag, alle reproduzierbar. Astra-Sessions sind wertvoll: nach dem
+  Bericht NICHT killen, der Owner will Rueckfragen stellen (Slot 11).
+- Nicht diagnostizieren und warten: filen (`POST /api/tasks`), schaerfen (`POST /api/tasks/:id/brief`
+  — Kommentare erreichen den Brief NICHT), dispatchen (`POST /api/tasks/:id/dispatch`), landen
+  (`POST /api/slots/:id/merge`), Bundle bauen (`bun run build`, wenn `bundleStale`), Deploy
+  (`POST /api/deploy`, 409 waehrend Land/Audit). Watches nur fuer das, was keiner MAIN gehoert.
+- Sessions per `/send` in die Succession schicken, wenn sie ueber 30–35 % stehen; sie tun es dann.
+- Composer-Rest in einer Pane ist nie ein Owner-Entwurf; POST /send merged damit und ist der einzige
+  Weg mit Quittung. Nie `send-keys` in eine fremde Pane.
+- Antworten an den Owner: Zahlen in Tabellen, „getan / naechster Akt / wer", kein Narrativ.
+  Memory dazu: `feedback-drive-top-points-until-they-run`.
+
+
 ---
 
 # HANDOFF — Owner-MAIN Slot 8 (Opus 5, Haupt-Checkout, Owner-Token): keine Lane getrieben, kein Land, zwei Zeilen gefilt, zehn Worktrees auf dem Second-host weg; 2026-09-12 11:3x

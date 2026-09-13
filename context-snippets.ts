@@ -5,8 +5,11 @@
 // persisted here, nothing is registered, and no row is written. The anchor block says WHERE to look
 // and copies no source; the notes block hands over what someone WROTE about a surface. Between them
 // sat the measured cost this module answers: a lane whose brief names `server.ts#briefAndSend`
-// still has to find it, and the baseline for that search is a median of 52 Bash calls before the
-// first file change (docs/messungen/opus-lane-kontextkosten-2026-09-12.md §17-32).
+// still has to find it. The baseline (docs/messungen/opus-lane-kontextkosten-2026-09-12.md) counts a
+// median of 52 Bash calls before the first PRODUCTIVE MARKER — the first `Edit`/`Write`/
+// `NotebookEdit` or `git commit` — and for 153 of its 187 lanes that marker is the commit, so it is
+// not "the first file change". That number is the cost this module aims at; that it lowers it is
+// unmeasured until lanes have run with the block.
 //
 // TWO PHASES, AND THE SPLIT IS THE POINT. `planSnippets` is pure over the brief text plus the tree
 // LISTING (paths and modes — what `git ls-tree -r` already yields at the delivery seam) and answers
@@ -30,6 +33,8 @@ export const SNIPPET_BLOCK_MAX_BYTES = 8192;
 export const SNIPPET_HIT_MAX_LINES = 120;
 /** Context sizes pass two tries, widest first. Never below what pass one already placed. */
 export const SNIPPET_CONTEXT_LADDER = [SNIPPET_CONTEXT_LINES, 12, 6, 2] as const;
+/** The omission line's own ceiling inside the block: a long list is cut and says how much it cut. */
+export const SNIPPET_OMISSION_MAX_BYTES = 1024;
 
 // Source kinds whose definitions this module can locate. Anything else is refused by name:
 // "no snippet" and "nothing to snip here" are different facts and a reader must be able to tell.
@@ -123,6 +128,8 @@ export interface SnippetHit {
 export interface SnippetPackage {
   readonly shown: readonly SnippetHit[];
   readonly omitted: readonly SnippetOmission[];
+  /** How many omissions the rendered line lists (in `orderedOmissions` order); the rest are counted. */
+  readonly listed: number;
   /** UTF-8 bytes of the rendered block — 0 when nothing is delivered. */
   readonly bytes: number;
   /** The commit the excerpts were cut from; named in the block so the version is checkable. */
@@ -222,10 +229,11 @@ export function planSnippets(request: SnippetRequest): SnippetPlan {
     if (/[a-z][A-Z]/.test(token)) add(token, null, match.index ?? 0);
   }
 
-  // A bare symbol with no surface left to search is named as such, not silently dropped.
+  // A bare symbol with no surface left to search is named as such, not silently dropped — unless the
+  // brief also qualified it: that request already has its own answer, and the echo would list it twice.
   const usable = refs.filter((ref) => {
     if (ref.paths.length > 0) return true;
-    pushOmission(omitted, `#${ref.symbol}`, "symbol-not-found");
+    if (!qualifiedSymbols.has(ref.symbol)) pushOmission(omitted, `#${ref.symbol}`, "symbol-not-found");
     return false;
   });
   // QUALIFIED FIRST, and only then the brief's order. The brief that wrote `context-plan.ts#planContext`
@@ -404,7 +412,11 @@ export function buildSnippetPackage(
   // THE BUDGET IS MEASURED ON THE RENDERED BLOCK, not on a sum of per-hit costs. The omission line
   // is part of the block, and a `budget-exhausted` entry LENGTHENS it — an accounting that ignored
   // that overshot 8192 by exactly the list of what it had already dropped.
-  const draft = (): SnippetPackage => ({ shown, omitted, bytes: 0, commit, showTasks });
+  // The omission line is capped on its own, so a brief that names forty missing things cannot evict
+  // the excerpts it did get — and cut, it still counts what it no longer names.
+  const listCap = Math.min(SNIPPET_OMISSION_MAX_BYTES, maxBytes);
+  const draft = (): SnippetPackage => ({ shown, omitted,
+    listed: listedWithin(orderedOmissions(omitted), listCap), bytes: 0, commit, showTasks });
   const fits = (): boolean => byteLength(renderSnippetBlock(draft())) <= maxBytes;
   const linesOf = fileLines;
   const hitFor = (entry: Resolved, context: number, lastLine?: number): SnippetHit => {
@@ -485,23 +497,58 @@ export function buildSnippetPackage(
     const dropped = shown.pop()!;
     pushOmission(omitted, `${dropped.path}#${dropped.symbols.join("+")}`, "budget-exhausted");
   }
-  if (shown.length === 0) return { shown: [], omitted, bytes: 0, commit, showTasks };
-  return { shown, omitted, bytes: byteLength(renderSnippetBlock(draft())), commit, showTasks };
+  // With hits left the block fits (the loop above). With none, the header alone may still push the
+  // omission line over a small cap: shorten the list until it fits, and below that deliver nothing.
+  const final = draft();
+  for (let listed = final.listed; listed >= 0; listed--) {
+    const candidate = { ...final, listed };
+    const bytes = byteLength(renderSnippetBlock(candidate));
+    if (bytes <= maxBytes) return { ...candidate, bytes };
+  }
+  return { shown: [], omitted: [], listed: 0, bytes: 0, commit, showTasks };
 }
+
+// A bare token that resolved nowhere is the brief's PROSE, not a source it named: every camelCase
+// word of a brief without a file surface lands there. Everything else — a qualified reference, a
+// refused path, an ambiguous or unreadable source, a budget drop — is something the brief asked for.
+const namedByBrief = (entry: SnippetOmission): boolean =>
+  !(entry.ref.startsWith("#") && entry.why === "symbol-not-found");
+
+/** Rendering order of the omission line: what the brief named first, prose tokens after. Stable. */
+export const orderedOmissions = (omitted: readonly SnippetOmission[]): SnippetOmission[] =>
+  [...omitted.filter(namedByBrief), ...omitted.filter((entry) => !namedByBrief(entry))];
+
+const omissionLine = (ordered: readonly SnippetOmission[], listed: number): string => {
+  const parts = ordered.slice(0, listed).map((entry) => `${entry.ref} (${entry.why})`);
+  if (listed < ordered.length) parts.push(`… ${ordered.length - listed} weitere gekuerzt`);
+  return `ausgelassen: ${parts.join(" · ")}`;
+};
+
+// The largest prefix whose line fits. Each entry adds more bytes than the shrinking "weitere" count
+// can take away, so the first prefix that does not fit ends the search.
+const listedWithin = (ordered: readonly SnippetOmission[], maxBytes: number): number => {
+  let listed = 0;
+  while (listed < ordered.length && byteLength(omissionLine(ordered, listed + 1)) <= maxBytes) listed++;
+  return listed;
+};
 
 /**
  * The delivered block, or the empty string — which is what keeps a dispatch with nothing to say
  * byte-identical to every dispatch before this module existed.
  *
- * Omissions ride along only when something was shown: a brief that named no symbol at all must not
- * grow a block whose whole content is a list of words it did not find.
+ * A block with NO excerpt still renders when the brief explicitly named a source that could not be
+ * delivered (missing, ambiguous, refused, binary, unreadable, over budget): a lane told nothing
+ * would go looking for exactly that source. A brief whose only misses are prose tokens, or that
+ * named no symbol at all, renders nothing.
  */
 export function renderSnippetBlock(pkg: SnippetPackage): string {
-  if (pkg.shown.length === 0) return "";
-  const lines = [`Quellpaket — exakte Ausschnitte${pkg.commit ? ` aus ${pkg.commit.slice(0, 12)}` : ""}`
-    + ` (deterministisch gewaehlt; Zeilennummern sind die dieses Stands):`];
+  const ordered = orderedOmissions(pkg.omitted);
+  if (pkg.shown.length === 0 && !ordered.some(namedByBrief)) return "";
+  const at = pkg.commit ? ` aus ${pkg.commit.slice(0, 12)}` : "";
+  const lines = [pkg.shown.length > 0
+    ? `Quellpaket — exakte Ausschnitte${at} (deterministisch gewaehlt; Zeilennummern sind die dieses Stands):`
+    : `Quellpaket — kein Ausschnitt${at}; im Brief genannt, aber nicht geliefert:`];
   for (const hit of pkg.shown) lines.push(renderHit(hit, pkg.showTasks));
-  if (pkg.omitted.length > 0)
-    lines.push(`ausgelassen: ${pkg.omitted.map((entry) => `${entry.ref} (${entry.why})`).join(" · ")}`);
+  if (ordered.length > 0) lines.push(omissionLine(ordered, Math.min(pkg.listed, ordered.length)));
   return `\n\n${lines.join("\n")}`;
 }

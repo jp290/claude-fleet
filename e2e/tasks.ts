@@ -2487,12 +2487,44 @@ export async function run(ctx: Ctx): Promise<void> {
   // receipt's head. The dispatcher is off here by design: this is the attended button, so no tick
   // can consume the row underneath the probe.
   {
-    const fBrief = "FLEET-FRAME FIXTURE — this lane is inside the Fleet checkout itself";
+    // THE SOURCE PACKAGE rides on the same dispatch (docs/tailored-context.md §6a/§6b). The fixture is
+    // committed into ROOT BEFORE the lane forks, and main is moved AFTER — inside the founding boot
+    // grace, before the tail reads anything — with the symbol's lines shifted and its body changed. So
+    // an excerpt cut from the integration tip instead of the lane's own commit is visibly different
+    // bytes at the labelled lines. A symlink to the same file proves the MODE reached the gate (a
+    // listing without modes would read it as a regular blob), and an absent symbol that the block
+    // still names proves omissions are delivered.
+    const SNIP_PATH = "snippet-probe/fixture.ts";
+    const snipPad = (tag: string) => Array.from({ length: 30 }, (_, i) => `// ${tag} filler ${i}`);
+    const snipLaneText = [...snipPad("head"), "export function snippetProbeTarget(input: string): string {",
+      "  return `lane-commit:${input}`;", "}", ...snipPad("tail"), ""].join("\n");
+    const snipMainText = ["// moved 1", "// moved 2", "// moved 3", ...snipPad("head"),
+      "export function snippetProbeTarget(input: string): string {", "  return `main-moved:${input}`;", "}",
+      ...snipPad("tail"), ""].join("\n");
+    const gitRoot = (...args: string[]) => spawnSync("git", ["-C", ROOT, ...args], { encoding: "utf8" });
+    mkdirSync(`${ROOT}/snippet-probe`, { recursive: true });
+    writeFileSync(`${ROOT}/${SNIP_PATH}`, snipLaneText);
+    rmSync(`${ROOT}/snippet-probe/link.ts`, { force: true });
+    spawnSync("ln", ["-s", "fixture.ts", `${ROOT}/snippet-probe/link.ts`]);
+    gitRoot("add", "snippet-probe");
+    const snipCommitted = gitRoot("commit", "-qm", "snippet probe fixture (the lane's commit)").status === 0;
+    const snipLaneSha = gitRoot("rev-parse", "HEAD").stdout.trim();
+    const snipLaneBlob = gitRoot("rev-parse", `${snipLaneSha}:${SNIP_PATH}`).stdout.trim();
+    const snipLinkMode = gitRoot("ls-tree", snipLaneSha, "snippet-probe/link.ts").stdout.split(" ")[0];
+    check("(d3) fixture: the snippet source and its symlink are committed at the lane's future fork point",
+      snipCommitted && /^[0-9a-f]{40}$/.test(snipLaneSha) && snipLinkMode === "120000",
+      JSON.stringify({ snipCommitted, snipLaneSha, snipLinkMode }));
+    const fBrief = "FLEET-FRAME FIXTURE — this lane is inside the Fleet checkout itself"
+      + ` · lies ${SNIP_PATH}#snippetProbeTarget, ${SNIP_PATH}#snippetProbeAbsent und snippet-probe/link.ts#snippetProbeTarget`;
     const fT = (await (await post("/api/tasks", { text: "fleet-frame-probe", queue: false, repo: ROOT })).json()) as { task: { id: string } };
     await post(`/api/tasks/${fT.task.id}/brief`, { text: fBrief });
     const fBefore = await contextReceipts();
     const fd = await post(`/api/tasks/${fT.task.id}/dispatch`, {});
     const fdJ = (await fd.json()) as { ok?: boolean; slot?: number };
+    // main moves NOW: the worktree has forked, the tail is still in its boot grace (FOUNDING_BOOT_GRACE_MS)
+    writeFileSync(`${ROOT}/${SNIP_PATH}`, snipMainText);
+    gitRoot("add", SNIP_PATH);
+    const snipMoved = gitRoot("commit", "-qm", "snippet probe: main moves under the lane").status === 0;
     let fReceipt: ContextReceipt | undefined;
     let fPrompt = "";
     for (let i = 0; i < 24; i++) { // same window as (d): sendText lands after the boot sleep
@@ -2503,8 +2535,37 @@ export async function run(ctx: Ctx): Promise<void> {
       await Bun.sleep(500);
     }
     const fHead = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+    // THE EXCERPT, read back out of the delivered bytes by the label's OWN line numbers and compared
+    // with the lane commit's blob at exactly those lines. The block sits between the brief and the
+    // anchors, so the anchor check below finds its block by position rather than by prefix.
+    const snipLabelRe = new RegExp(`^- ${SNIP_PATH.replace(/[./]/g, "\\$&")}#snippetProbeTarget · Zeilen (\\d+)-(\\d+) · blob ([0-9a-f]{12})`);
+    const fLines = fPrompt.split("\n");
+    const snipLabelAt = fLines.findIndex((line) => snipLabelRe.test(line));
+    const snipLabel = snipLabelAt >= 0 ? snipLabelRe.exec(fLines[snipLabelAt]!) : null;
+    const snipFrom = Number(snipLabel?.[1] ?? 0);
+    const snipTo = Number(snipLabel?.[2] ?? 0);
+    const snipShown = snipLabelAt >= 0 ? fLines.slice(snipLabelAt + 2, snipLabelAt + 2 + snipTo - snipFrom + 1).join("\n") : null;
+    const snipAtLane = gitRoot("show", `${snipLaneSha}:${SNIP_PATH}`).stdout.split("\n").slice(snipFrom - 1, snipTo).join("\n");
+    const snipAtMain = snipMainText.split("\n").slice(snipFrom - 1, snipTo).join("\n");
+    const snipOmitted = fLines.find((line) => line.startsWith("ausgelassen: ")) ?? "";
+    check("(d3) the delivered brief carries the named symbol's excerpt BYTE-IDENTICAL from the lane's commit, though main moved before the brief was cut",
+      snipMoved && fHead !== snipLaneSha && fReceipt?.head === fHead
+      && fPrompt.includes(`\n\nQuellpaket — exakte Ausschnitte aus ${snipLaneSha.slice(0, 12)} `)
+      && snipLabel !== null && snipLabel[3] === snipLaneBlob.slice(0, 12)
+      && snipFrom > 1 && snipTo > snipFrom
+      && fLines[snipLabelAt + 1] === "```" && fLines[snipLabelAt + 2 + snipTo - snipFrom + 1] === "```"
+      && snipShown === snipAtLane && snipShown !== snipAtMain && snipShown.includes("lane-commit:")
+      && snipOmitted.includes(`${SNIP_PATH}#snippetProbeAbsent (symbol-not-found)`)
+      && snipOmitted.includes("snippet-probe/link.ts#snippetProbeTarget (not-a-regular-file)")
+      && fPrompt.indexOf("\n\nQuellpaket") < fPrompt.indexOf("\n\nContextPlan v2 anchors"),
+      JSON.stringify({ snipMoved, lane: snipLaneSha, head: fHead, receiptHead: fReceipt?.head ?? null,
+        label: fLines[snipLabelAt] ?? null, omitted: snipOmitted, shown: snipShown?.slice(0, 160) ?? null }));
+    check("(d3) the receipt's deliveredBytes is exactly the UTF-8 length of the delivered brief, source package included",
+      !!fReceipt && fPrompt.includes("\n\nQuellpaket")
+      && fReceipt.deliveredBytes === new TextEncoder().encode(fPrompt).byteLength,
+      JSON.stringify({ deliveredBytes: fReceipt?.deliveredBytes ?? null, prompt: new TextEncoder().encode(fPrompt).byteLength }));
     check("a dispatch INSIDE the Fleet checkout still renders the two-pack anchor block (the derivation is not a blanket refusal)",
-      fd.ok && fdJ.ok === true && fPrompt.startsWith(`${fBrief}\n\nContextPlan v2 anchors`)
+      fd.ok && fdJ.ok === true && fPrompt.startsWith(fBrief) && fPrompt.includes("\n\nContextPlan v2 anchors")
       && fReceipt?.selected.map((pack) => pack.id).sort().join(",") === "portable-core,verify-e2e"
       && fReceipt.omitted.length === 4 && fReceipt.omitted.every((entry) => entry.why !== "source-unavailable"),
       `${fd.status} ${JSON.stringify(fReceipt ?? null)} ${fPrompt.slice(0, 200)}`);
@@ -2545,6 +2606,10 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", ROOT, "worktree", "remove", "--force", fLane]);
       rmSync(`${ROOT}.worktrees`, { recursive: true, force: true }); // the parent dir createWorktree mkdir'd
     }
+    // the fixture leaves ROOT's TREE as it found it; the two commits stay (history only moves forward
+    // here, as with the supervisor succession commit)
+    gitRoot("rm", "-rq", "snippet-probe");
+    gitRoot("commit", "-qm", "snippet probe: fixture removed");
   }
 
   // --- (d5) N1: THE PENDING NOTES STANDING ON THIS LANE'S FILES

@@ -12,7 +12,7 @@ export async function run(): Promise<void> {
   // assert the server-stamped fact reaches GET /api/lane-outcomes. Own throwaway repo so the
   // records are precise and independent of the merge sequence above. ---
   {
-    type Outcome = { ts: number; branch: string | null; base: string | null; headSha: string | null;
+    type Outcome = { ts: number; branch: string | null; base: string | null; forkSha?: string; headSha: string | null;
       disposition: string; model: string | null; briefHash: string | null; shortstat: string;
       // optional at the reader because legacy ledger rows predate all four fields. Fresh lane rows
       // always carry harness/effort (null means default adapter/level); only task lanes carry ids.
@@ -332,6 +332,117 @@ export async function run(): Promise<void> {
     check("outcome: clean auto-land record carries that job's verify verdict (verified:true), not null",
       rec7?.verified === true && rec7?.confirmedByHuman === false,
       JSON.stringify({ verified: rec7?.verified, confirmed: rec7?.confirmedByHuman }));
+
+    // (7-fork) THE ORIGINAL FORK SURVIVES THE REBASE-LAND. `base` on a land is the commit the lane
+    // was replayed onto; `forkSha` is where it forked. oc7 forked BEFORE "auto main work" and landed
+    // after it, so the two must differ and base must be exactly that main commit. The counter-proof
+    // is oc5: nothing moved main while it lived, so its landed row must carry forkSha === base — a
+    // field that merely copied `base`, or one that always differed, fails one of the two.
+    const gitOut = (repo: string, ...a: string[]) =>
+      spawnSync("git", ["-C", repo, ...a], { encoding: "utf8" }).stdout.trim();
+    const noteOf = (sha: string | undefined): { forkSha?: string; mainBefore?: string } | null => {
+      try { return sha ? JSON.parse(gitOut(oRepo, "notes", "--ref=fleet/land", "show", sha)) : null; } catch { return null; }
+    };
+    const autoMainSha = gitOut(oRepo, "rev-parse", "HEAD~1"); // the lane's commit is HEAD, "auto main work" its parent
+    check("forkSha: a clean auto-land whose main moved keeps the ORIGINAL fork — forkSha != base, base = the main it was rebased onto",
+      /^[0-9a-f]{40}$/.test(rec7?.forkSha ?? "") && rec7?.forkSha !== rec7?.base && rec7?.base === autoMainSha
+      && gitOut(oRepo, "rev-parse", `${autoMainSha}~1`) === rec7?.forkSha,
+      JSON.stringify({ forkSha: rec7?.forkSha, base: rec7?.base, autoMainSha }));
+    const note7 = noteOf(rec7?.mainAfter);
+    check("forkSha: the fleet/land note of that land carries the same forkSha beside its mainBefore",
+      !!note7 && note7.forkSha === rec7?.forkSha && note7.mainBefore === rec7?.base, JSON.stringify(note7));
+    const rec5Landed = (await readOutcomes()).find((o) => o.branch === oc5.branch && o.disposition === "landed");
+    check("forkSha counter-proof: a land with main UNMOVED during the lane carries forkSha === base (and so does its note)",
+      /^[0-9a-f]{40}$/.test(rec5Landed?.forkSha ?? "") && rec5Landed?.forkSha === rec5Landed?.base
+      && noteOf(rec5Landed?.mainAfter)?.forkSha === rec5Landed?.base, JSON.stringify({ forkSha: rec5Landed?.forkSha, base: rec5Landed?.base }));
+    check("forkSha: a reverted row (no live slot) states no forkSha rather than inventing one",
+      !!rec5 && !("forkSha" in rec5), JSON.stringify(rec5?.forkSha ?? null));
+    check("forkSha: the owner confirm-land of a conflict (main moved) records forkSha != base on row and note",
+      !!recR?.forkSha && recR.forkSha !== recR.base && noteOf(recR.mainAfter)?.forkSha === recR.forkSha,
+      JSON.stringify({ forkSha: recR?.forkSha, base: recR?.base }));
+
+    // (7-score) land-collision-stats.ts against a HAND-BUILT ledger whose answer is computed here,
+    // never by the script. a.txt has 120 lines; main changed line 2 between fork and base. Lanes on
+    // base: L1 line 2 (touches → real), L2 line 30 (within 40, not touching → R4 false positive),
+    // L3 line 100 (outside 40 → R4 true negative, file rule false positive), L4 only b.txt but the
+    // resolver ran (real, predicted by neither → false negative), L5 forked AT base (main unmoved →
+    // nothing to collide with). Each twice, so 10 scorable rows reach state.sh's threshold. Plus one
+    // row without forkSha (must be lane-only, never scored) and one with an unknown head (unreadable).
+    {
+      const cRepo = `${REPO}.collision`;
+      const g = (...a: string[]) => gitOut(cRepo, "-c", "user.email=e2e@test", "-c", "user.name=e2e", ...a);
+      spawnSync("git", ["init", "-q", "-b", "main", cRepo]);
+      const aTxt = (edit: Record<number, string>) =>
+        Array.from({ length: 120 }, (_, i) => edit[i + 1] ?? `l${i + 1}`).join("\n") + "\n";
+      await Bun.write(`${cRepo}/a.txt`, aTxt({}));
+      await Bun.write(`${cRepo}/b.txt`, "b\n");
+      g("add", "a.txt", "b.txt");
+      g("commit", "-qm", "fork");
+      const cFork = g("rev-parse", "HEAD");
+      await Bun.write(`${cRepo}/a.txt`, aTxt({ 2: "main2" }));
+      g("commit", "-qam", "main moved");
+      const cBase = g("rev-parse", "HEAD");
+      const laneAt = async (from: string, file: string, content: string): Promise<string> => {
+        g("checkout", "-q", "--detach", from);
+        await Bun.write(`${cRepo}/${file}`, content);
+        g("commit", "-qam", `lane ${file}`);
+        const head = g("rev-parse", "HEAD");
+        g("checkout", "-q", "main");
+        return head;
+      };
+      const rows: Record<string, unknown>[] = [];
+      const row = (branch: string, headSha: string, extra: Record<string, unknown>) =>
+        rows.push({ ts: rows.length + 1, disposition: "landed", branch, repo: cRepo, base: cBase, headSha,
+          mainAfter: headSha, resolvedConflict: false, ...extra });
+      for (const k of ["x", "y"]) {
+        row(`L1${k}`, await laneAt(cBase, "a.txt", aTxt({ 2: `lane2${k}` })), { forkSha: cFork });
+        row(`L2${k}`, await laneAt(cBase, "a.txt", aTxt({ 2: "main2", 30: `lane30${k}` })), { forkSha: cFork });
+        row(`L3${k}`, await laneAt(cBase, "a.txt", aTxt({ 2: "main2", 100: `lane100${k}` })), { forkSha: cFork });
+        row(`L4${k}`, await laneAt(cBase, "b.txt", `b lane${k}\n`), { forkSha: cFork, resolvedConflict: true });
+        row(`L5${k}`, await laneAt(cBase, "a.txt", aTxt({ 2: `unmoved${k}` })), { forkSha: cBase });
+      }
+      row("lane-only", rows[0].headSha as string, {});
+      row("unreadable", "0".repeat(40), { forkSha: cFork });
+      rows.push({ ts: 99, disposition: "killed-dirty", branch: "killed", repo: cRepo, base: cBase, headSha: cBase, forkSha: cFork });
+      const ledgerPath = `${cRepo}/lane-outcomes.jsonl`;
+      await Bun.write(ledgerPath, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+      const scoreRun = spawnSync(process.execPath, [`${sourceRoot}/land-collision-stats.ts`, "--ledger", ledgerPath], { encoding: "utf8" });
+      type Score = { total?: { rows: number; measured: number; laneOnly: number; unreadable: number; mainMoved: number;
+        real: number; resolvedConflict: number;
+        range: { tp: number; fp: number; fn: number; tn: number; precision: number | null; recall: number | null };
+        file: { tp: number; fp: number; fn: number; tn: number; precision: number | null; recall: number | null } };
+        rows?: { branch: string; status: string }[] };
+      let score: Score = {};
+      try { score = JSON.parse(scoreRun.stdout) as Score; } catch { /* asserted below as itself */ }
+      check("collision-stats fixture: the script ran and printed JSON", scoreRun.status === 0 && !!score.total,
+        `${scoreRun.status} ${scoreRun.stderr.slice(0, 300)}`);
+      const t = score.total;
+      check("collision-stats: 12 landed rows → 10 scored, 1 lane-only (no forkSha), 1 unreadable, killed row ignored, main moved on 8",
+        t?.rows === 12 && t.measured === 10 && t.laneOnly === 1 && t.unreadable === 1 && t.mainMoved === 8
+        && score.rows?.find((r) => r.branch === "lane-only")?.status === "lane-only"
+        && score.rows?.find((r) => r.branch === "unreadable")?.status === "unreadable", JSON.stringify(t));
+      check("collision-stats: real 4 (2 touching, 2 resolver); R4-range tp2 fp2 fn2 tn4 → P 0.5 R 0.5",
+        t?.real === 4 && t.resolvedConflict === 2
+        && t.range.tp === 2 && t.range.fp === 2 && t.range.fn === 2 && t.range.tn === 4
+        && t.range.precision === 0.5 && t.range.recall === 0.5, JSON.stringify(t?.range));
+      check("collision-stats: the file fallback over-connects — tp2 fp4 fn2 tn2 → P 1/3 R 0.5",
+        t?.file.tp === 2 && t.file.fp === 4 && t.file.fn === 2 && t.file.tn === 2
+        && Math.abs((t.file.precision ?? 0) - 1 / 3) < 1e-9 && t.file.recall === 0.5, JSON.stringify(t?.file));
+      const missing = spawnSync(process.execPath, [`${sourceRoot}/land-collision-stats.ts`, "--ledger", `${cRepo}/absent.jsonl`], { encoding: "utf8" });
+      check("collision-stats rejects: an absent ledger exits 2 saying UNKNOWN, never prints a zero score",
+        missing.status === 2 && missing.stdout === "" && missing.stderr.includes("UNKNOWN"), `${missing.status} ${missing.stdout}${missing.stderr}`);
+      for (const f of ["state.sh", "land-collision-stats.ts", "task-land-waves.ts", "task-waves.ts", "verify-proportion.ts"])
+        copyFileSync(`${sourceRoot}/${f}`, `${cRepo}/${f}`);
+      await Bun.write(`${cRepo}/server.ts`, "// fixture\n");
+      const cState = spawnSync("sh", ["state.sh"], { cwd: cRepo, encoding: "utf8",
+        env: { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}` } }).stdout;
+      const forkLine = cState.split("\n").find((l) => l.includes("forkSha on")) ?? "";
+      check("state.sh: one forkSha line — 12/13 rows carry it (the killed one too), 11 landed, and from 10 on it prints the R4 score",
+        forkLine.includes("forkSha on 12/13 rows, 11 landed with mainAfter")
+        && forkLine.includes("R4-range±40 P 0.50 R 0.50 (tp 2 fp 2 fn 2 tn 4)")
+        && forkLine.includes("file P 0.33 R 0.50 (tp 2 fp 4 fn 2 tn 2)"), forkLine || cState.slice(-600));
+      rmSync(cRepo, { recursive: true, force: true });
+    }
 
     // (7a) TASK→DISPATCH→SLOT→OUTCOME provenance, including the process boundary. The first lane
     // names every attended spawn pin, then the real server is restarted before teardown: the

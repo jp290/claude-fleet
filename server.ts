@@ -15013,6 +15013,10 @@ interface LandProvenance {
   // was configured — never "the push went fine", which is why this is written from the push's own
   // return value and never defaulted.
   hubPush?: HubPushResult;
+  // …and where the lane FORKED (LaneOutcome.forkSha, the same `worktree.baseSha`). The note's own
+  // `mainBefore` is the rebase target, so without this a note cannot say what main did while the
+  // lane lived. Absent where the slot recorded no fork — never `mainBefore` standing in for it.
+  forkSha?: string;
 }
 // The outcome of ONE push attempt, and both halves are terminal: there is no retry and no rebase
 // against the hub (that is W5d). `ok:false` says the fleet's history stopped at this machine, which
@@ -15058,6 +15062,7 @@ async function writeLandNote(repo: string, branch: string, mainBefore: string, m
   try {
     const note = {
       branch, mainBefore, mainAfter,
+      ...(prov.forkSha ? { forkSha: prov.forkSha } : {}),
       ...(prov.conflicted && prov.conflicted.length ? { conflicted: prov.conflicted } : {}),
       ...(prov.resolverDetail ? { resolverDetail: prov.resolverDetail } : {}),
       ...(prov.resolvedBy ? { resolvedBy: prov.resolvedBy } : {}),
@@ -18649,6 +18654,13 @@ interface LaneOutcome {
   ts: number;
   branch: string | null;
   base: string | null;   // the lane's fork point (base branch tip when forked)
+  // THE ORIGINAL FORK, which `base` stops being on a rebase-land: there the land site hands over
+  // `mainBefore` (the commit the lane was replayed onto) and `base` reports that. This is
+  // `worktree.baseSha` unchanged, so `forkSha..base` is exactly what main did while the lane lived —
+  // the half the R4 collision measurement (land-collision-stats.ts) cannot recover once the slot is
+  // gone. Absent where the slot recorded none (lanes attached before baseSha existed, and every
+  // `reverted` row) — absence says "this row cannot say", never "main did not move".
+  forkSha?: string;
   headSha: string | null;
   disposition: LaneDisposition;
   model: string | null;  // s.model, or null when unpinned — recorded honestly, NEVER guessed
@@ -18960,6 +18972,9 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     ts,
     branch: s.worktree.branch,
     base,
+    // read off the SLOT and never off `facts`: the land site's baseSha is the rebase target, which
+    // is precisely the value this field exists to keep apart from the fork
+    ...(s.worktree.baseSha ? { forkSha: s.worktree.baseSha } : {}),
     headSha,
     disposition,
     model: s.model ?? null,
@@ -20684,7 +20699,8 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
     // other field on this line is: the merge job that spawned those workers ended minutes ago and
     // this verdict is the only thing that saw them.
     ...(reviewed?.resolverRuns?.length ? { resolverRuns: reviewed.resolverRuns } : {}),
-    ...(currentCandidate ? { candidateSha: currentCandidate.candidateSha } : {}) };
+    ...(currentCandidate ? { candidateSha: currentCandidate.candidateSha } : {}),
+    ...(s.worktree?.baseSha ? { forkSha: s.worktree.baseSha } : {}) };
   // same declaration-before-the-advance as the clean auto-land path (see markLandIntent)
   const laneTip = currentCandidate?.candidateSha ?? (await git(repo, "rev-parse", branch)).out;
   await markLandIntent(repo, main, branch, mainBefore, laneTip, prov);
@@ -21683,7 +21699,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               // EVERY round, not just the first: a retry moves main from a different commit, so the
               // marker a crash leaves behind has to describe the round that is actually in flight.
               const prov: LandProvenance = { verify, confirmedByHuman: false, actor,
-                ...(ffRounds ? { ffRounds } : {}), ...(waitRounds ? { waitRounds } : {}) };
+                ...(ffRounds ? { ffRounds } : {}), ...(waitRounds ? { waitRounds } : {}),
+                ...(s.worktree?.baseSha ? { forkSha: s.worktree.baseSha } : {}) };
               await markLandIntent(root, main, branch, mainBefore, (await git(root, "rev-parse", branch)).out, prov);
               await waitForLandFfTestLatch(); // TEST-ONLY, inert in production (see LAND_FF_LATCH)
               // --- M3 · THE SECOND LOOK, and it is not a repetition of the first ---------------

@@ -165,6 +165,22 @@ else:
     if o:
         print(f"    conflict resolver ran {res}/{len(o)} · repair rounds: max {worst}"
               f" — the loop arms only on !clean AND verify red (server.ts, MERGE_REPAIR_ROUNDS)")
+    # R4 becomes scorable only on landed rows that kept their original fork (LaneOutcome.forkSha).
+    # Under 10 such rows a precision/recall is noise, so the count stands alone until then.
+    fk = [r for r in o if r.get('forkSha')]
+    fl = [r for r in fk if r.get('disposition') == 'landed' and r.get('mainAfter')]
+    line = f"    forkSha on {len(fk)}/{len(o)} rows, {len(fl)} landed with mainAfter"
+    if len(fl) < 10:
+        line += " — R4 precision/recall from 10 on (land-collision-stats.ts)"
+    else:
+        try:
+            p = subprocess.run(['bun', 'land-collision-stats.ts', '--ledger', os.path.join(MAIN, 'lane-outcomes.jsonl'),
+                                '--forked-only', '--table'], capture_output=True, text=True, timeout=300)
+            line += f" · {p.stdout.strip()}" if p.returncode == 0 and p.stdout.strip() \
+                else f" · R4 score UNKNOWN — land-collision-stats.ts exited {p.returncode}: {p.stderr.strip()[:120]}"
+        except (OSError, subprocess.TimeoutExpired) as e:
+            line += f" · R4 score UNKNOWN — {type(e).__name__}"
+    print(line)
 
 # the gate's two budgets live on the land notes, not in the outcome rows. One cat-file --batch
 # reads every note in one process; GIT_OPTIONAL_LOCKS=0 keeps these read-only calls off .git/index.lock

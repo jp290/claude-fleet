@@ -169,6 +169,14 @@ Lane-Brief-Template mit DELEGATION, Rollenkarten MAIN/Orchestrator, Gueteklassen
 AGENTS.md-Absatz Sub-Agents), gegenseitig nicht lesen. Ergebnis: `docs/messungen/2026-09-14-rollen-briefe-
 modellklassen-{fable,astra}.md`. Danach: Synthese Orchestrator + Owner, Abschnitt fuer Abschnitt.
 
+**Stand ~21:3x:** beide gelandet (Fable `fc743413`, Astra `ab03a032`, Astra bestaetigt: Parallelentwurf nicht
+gelesen). Entscheidungsvorlage `docs/messungen/2026-09-14-rollen-briefe-synthese.md` (Fable-Subagent des
+Orchestrators): Form von Fable, Semantik von Astra; vier Schnitte (Render schrumpfen · Delegation gebrieft
+und messbar · Klassen-Register erst im Schatten · Rollenkarten); fuenf Owner-Fragen mit Empfehlung. Vom
+Orchestrator nachgeprueft: eine `KLASSE:`-Kopfzeile macht eine Karte heute zu Prosa
+(`card-extract.ts#parseFormattedCard`, Probe mit/ohne Zeile) — der Parser muss vor jedem Template-Schnitt
+erweitert werden. **Wartet auf die fuenf Owner-Antworten**; danach Schnitte filen, G1 (§5d) freigeben.
+
 ## 5b. Suiten, RAM, Handoff-Rauschen — Owner 2026-09-13 „alles angehen"
 
 Gemessen (Slot 5): volle Suite ~39 min (2 311–2 350 s, ~4 400 Checks), 69 % davon Luecken ≥ 3 s;
@@ -199,13 +207,56 @@ Screenshot-Bestandsaufnahme → Owner markiert in eigenen Worten → eine Lane m
 woertlich → Vorher/Nachher-Screenshot (Rechner + Handy). Neue Knoepfe gehen zuerst ins
 „Mehr"-Panel (`1b47e29a`). Offen beim Owner: linke Spalte zuerst? Screenshots erlaubt?
 
+## 5d. Spiele mit Astra — Astra → zwei Grok-Sessions → Game-Studio (Richtung `262a8f71`)
+
+Owner 2026-09-13 13:3x woertlich: „Wir sollten hier Grok fragen, was die mittlerweile am besten etablierten
+Art und Weisen sind, Spiele mit Astra zu bauen, und wie man Astra am besten dazu bekommt, Arbeit anzuweisen
+oder auch selbst Subagenten zu benutzen … Neben diesen beiden Punkten sollten wir ihr dann einfach erklaeren,
+nach welcher Struktur wir das Ganze haben wollen, damit Claude Fleet es am Ende sauber weiterentwickeln kann
+… anstatt uns in Workflows zu verirren." Reihenfolge laut Zeile: nach Task-Aggregation, Worktrail IV und
+Rollen/Briefe — die ersten beiden sind gelandet, Rollen/Briefe steht in der Synthese (§5). Program:
+Private-repo-j `9ce08219` (MAIN-Bindung Slot 2 ist tot; Slot 2 ist heute Supervisor).
+
+| # | Schritt | Wer | NACH | Ergebnis |
+|---|---|---|---|---|
+| G1 | Die zwei Grok-Prompts scharf formulieren — (1) **Astra-Orchestrierung**: wie bringt man Astra dazu, Arbeit anzuweisen und selbst Sub-Agents zu nutzen; (2) **Astra Game-Development Best Practices**: die etabliertesten Wege, Spiele mit Astra zu bauen — je ein kopierfertiger Prompt mit dem, was Grok ueber Fleet wissen muss (Harness codex/gpt-6-astra, native Sub-Agent-Threads, Studio-Laeufe aus docs/game-maker/worktrail-audit-II/-III: was scheiterte, Owner hat die Spiele nicht gespielt), oeffentlich-sicher | Astra-Lane (medium), Fleet-Betrieb | Synthese §5 entschieden | `docs/messungen/…-grok-fragen-spiele-astra.md` |
+| G2 | Zwei Grok-Sessions, eine je Frage; Antworten woertlich als Notiz unter `262a8f71` | **Owner** (kein Netz von dieser Maschine) | G1 | zwei Notizen |
+| G3 | Ziel-Struktur fuer das Game-Studio: Program → Studio → Akte → Lanes, Objekte/Ledger/Verify, Delegation ab Harness-Ebene (codex-Sub-Agents) statt nur per Prompt, Gueteklassen aus der Rollen-Synthese, was Fleet danach uebernimmt | Astra-Lane (high), Brief nach docs/astra-briefbaustein-2026-09-07.md | G2 + Owner-Entscheid Rollen/Gueteklassen | Vorschlagsdoc, kein Code |
+| G4 | Owner entscheidet die Struktur; danach Private-repo-j neu aufsetzen: die fuenf pending Biber-Zeilen (`32fed872`, `ad3b3960`, `6e7de1eb`, `0610f3a5`, `e80466c9`, alle Karte ungueltig) gegen die neue Struktur lesen — uebernehmen, neu filen oder archivieren; Mandat `a33d7300` bleibt Quelle | Orchestrator + Owner | G3 | Program mit gebundener MAIN und erster Welle |
+
+G1 ist klein und darf frueher laufen, sobald die Rollen-Synthese entschieden ist; G3/G4 bleiben „zuletzt"
+im Sinne des Owners — erst wenn Wellen 3–5 dieses Plans stehen oder der Owner das Studio vorzieht.
+
+## 5e. Nachbar-Programs und programlose Owner-Richtungen — damit der Plan vollstaendig ist
+
+**Leichtgewicht `f9dc8e10` (MAIN = Astra-Controller Slot 10, faehrt selbst):** 14 offene Auftraege — Feld-
+Schnitte (`60fff186` from, `666d0b67` refine, `df50b95b` criterion, `e0c1ba07` filesProposal, `f6db3487`
+filesOrigin-Nachweis), sieben `[NACHFOLGE:…]`-Zeilen (`531bab26`, `60257e41`, `67abe12c`, `9940ec64`,
+`a05fa7ff`, `a17a630b`, `db756205`), `42c53378`, `04f55eba`. Dieser Plan gibt sie nicht frei; der Orchestrator
+prueft nur Flaechen-Kollisionen mit Fleet-Betrieb (meist `server.ts`) vor jeder eigenen Freigabe.
+
+**Programlose Owner-Richtungen und Auftraege:**
+
+| Zeile | Was | Einordnung |
+|---|---|---|
+| `3f7363bf` | Pruefapparatur deterministisch und leichter (Owner 09-08; 26 % rote, 20 % unknown Audits) | nach 1fc3a5c8/d7b4b47d neu messen — die Suite-Arbeit ist ihr erster Teil; dann ins Program holen |
+| `0694cb78` | Docs ohne Suite und ohne eigenen git-HEAD (Teil 1 erfuellt) | Teil 2 zusammen mit `5ca92bfb` Land-Chronik/`7363b89f` HANDOFF-Rotation lesen |
+| `233ee108` | Dokument „wie Prozesse wirklich aussehen sollen" (agentische Analyse + Auto-Dispatch) | wird von Welle 4/5 (Starten nach Plan, Politik) praktisch beantwortet; danach als Doc schliessen |
+| `e9c47a54` | Merge-Zustandsflaeche luegt oder haengt (MergeLast) | Nachbar von `11441e5e` — zusammen schaerfen, nach 35bc6afe |
+| `812e8458` | Sicherheit der Session-Kommunikation spaeter | bewusst spaeter (Owner) |
+| `9fe80661` README aus der Codebase · `e1ce58fd`, `fa1112eb` Steward-Briefs | klein; `fa1112eb` ist Nachbar von e9c47a54 | Lueckenfueller nach Kartenpruefung |
+
+**Fleet-Betrieb, bisher ungenannt:** `1832c7eb`/`7ed73694` Lebenszyklus S5c/S12 (codex sol) und `66df05b4`
+nach Welle 5 neu bewerten; `ee824afd` Channels-Probe und `ff88072c` agentische Code-Bewertung (Karte
+ungueltig) — nach 35bc6afe neu lesen; `e4409bf2` clarify first.
+
 ## 6. Unter der Schnittlinie — bewusst spaeter
 
 - `e04d15f0` Init je Repo — Karte ungueltig (`.fleet/init.md` steht unter FLAECHE statt NEU); nach Welle 3 neu lesen lassen oder mit NEU neu filen.
 - `146c06f0` Inbox-Nudge — Slot 9 entscheidet den Zeitpunkt.
 - `ee47b0f8` (Lebenszyklus S5b, ohne Fertig-Kriterium/Pruefweg) und `f3ca2e05` (erst klaeren) — brauchen menschliches Anreichern, starten nie von selbst.
 - e2e-Test-Paket — erst nach K1.
-- Private-repo-j `262a8f71` — ganz zuletzt.
+- Private-repo-j `262a8f71` — ausgearbeitet als Spur §5d (G1–G4).
 
 ## 7. Was dieser Plan nicht behauptet
 

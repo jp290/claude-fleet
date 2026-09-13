@@ -181,6 +181,18 @@ const PRE_AUTH_ROUTES = [
   // other's filing door. It writes into no pane, starts nothing and reaches no foreign slot.
   '= /api/self/tasks',
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/release$/`,
+  // S5, 2026-09-13 · THE CARD-SURFACE CONFIRMATION — a bound Program-MAIN (or the bound ⚙ steward)
+  // turns the file surface its OWN rows' VALID cards already name into `filesOrigin:"confirmed"`,
+  // in one call. REVIEWED, and what bounds it: non-lane only (409); the program comes from the exact
+  // MAIN binding and the target repo from the caller's own checkout, and a single id of another
+  // program or repository refuses the WHOLE batch before any row is touched; the body carries `ids`
+  // and nothing else (a closed set); the paths are the card's — already validated against the tree,
+  // re-checked at the call — never the prose derivation, so nothing is lifted by machine (no
+  // auto-lift, docs/queue-wellen-2026-09-06.md §7.1.3); a row the owner already confirmed is skipped,
+  // never overwritten. It starts nothing, moves no status, writes into no pane and reaches no
+  // foreign slot: the one thing it changes is which rows the wave sensor may bundle, which the
+  // owner sees on the board and the owner's own POST /api/tasks/:id/files can overwrite.
+  '= /api/self/tasks/confirm-cards',
   // W2 · the PROPOSE half of the file-surface pair, added 2026-09-07. REVIEWED, and the review is
   // the entry: it is the one self route in this family that answers a LANE, and it is deliberate.
   // What bounds it is that it writes NOTHING the owner has not confirmed — the row's own

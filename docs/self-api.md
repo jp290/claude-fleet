@@ -592,6 +592,34 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
     tick start one first`.
 
 
+## confirm-cards — `POST /api/self/tasks/confirm-cards`
+
+Die gebundene Program-MAIN (oder der gebundene `⚙ steward`) bestätigt in EINEM Aufruf die
+Datei-Fläche, die die **gültigen Karten** ihrer eigenen Zeilen schon nennen:
+`files = card.surface.files`, `filesOrigin:"confirmed"`. Kein Auto-Lift (`docs/queue-wellen-2026-09-06.md`
+§7.1.3): ohne diesen Aufruf wird nichts bestätigt, und Prosa-Ableitungen werden nie gehoben.
+Handler: `server.ts#confirmCardsForMain`.
+
+```
+curl -X POST http://<fleet-host>:<port>/api/self/tasks/confirm-cards \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"ids":["<taskId>","<taskId>"]}'
+```
+
+- **Body:** nur `ids` (1–20, eindeutig). Jedes andere Feld ⇒ 400; das Program kommt aus der
+  Bindung, der Repo aus dem eigenen Checkout, die Pfade aus der Karte der Zeile.
+- **Ganz oder gar nicht (409, nichts geschrieben):** Lane (`a lane may not confirm a card surface …`),
+  keine/mehrdeutige Bindung (Wortlaut von `boundProgramForMain`), eine Id eines anderen Programs,
+  eine Zeile, die nicht auf den eigenen Checkout zielt. Unbekannte Id ⇒ 404.
+- **Übersprungen und in `skipped[{id, reason}]` benannt:** keine gültige Karte mit Datei-Fläche,
+  bereits bestätigte Fläche (auch die des Owners — sie wird nie überschrieben), Karten-Pfad nicht
+  mehr getrackt, `notiz`/`richtung`/`betrieb`, Status weder `pending` noch `queued`.
+- **Antwort:** `{ok, sessionIdMatch, confirmed:[{id, files}], skipped:[{id, reason}]}`.
+- **Spur:** eine `audit.jsonl`-Zeile `task_cards_confirm` je Batch mit mindestens einer Bestätigung
+  (`slot`, `programId`, `ids`, `n`).
+- Danach sieht der Wellen-Sensor die Zeilen als bestätigte Fläche (`reasonAgainst` nicht mehr
+  `flaeche-nur-abgeleitet`). Die Owner-Tür `POST /api/tasks/:id/files` bleibt und überschreibt.
+
 ## notes-assign — `POST /api/self/tasks/:id/notes`
 
 **Eine Notiz als QUELLE an eine Zeile hängen (N3, 2026-09-09).** Bis dahin erreichte eine `notiz`

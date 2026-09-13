@@ -8741,6 +8741,83 @@ async function sharpenBriefForMain(s: Slot, id: string, body: Record<string, unk
     task: { id: t.id, kind: t.kind, status: t.status, programId: t.programId } });
 }
 
+// S5 · THE CARD-SURFACE CONFIRMATION AS A BATCH OF THE PROGRAM-MAIN (queue row b8cb3c75, owner
+// decision 2026-09-12). Measured (docs/messungen/2026-09-12-spezifizierung-buendelung-befund.md §2):
+// 28 of 37 rows were single waves only because nobody had confirmed their surface, and the one
+// producer of `filesOrigin:"confirmed"` on an existing row was an owner click per row. This door
+// lets the bound MAIN confirm, for rows of ITS OWN program, what their VALID card already names —
+// in one act, one audit line. What it deliberately is not (docs/queue-wellen-2026-09-06.md §7.1.3):
+//   · no auto-lift — nothing here runs without this call, and the paths come from the card, never
+//     from the prose derivation;
+//   · no reach — the program comes from the binding and the repo from the caller's checkout, so a
+//     single foreign-program or foreign-repo id refuses the WHOLE batch (409) and writes nothing;
+//   · no overwrite of an owner act — a row that already carries a confirmed surface is skipped.
+// Row-level misfits (no valid card, a card path the tree no longer tracks, a status or kind a
+// surface is not confirmed on) are SKIPPED and named, never a batch failure: they are facts about
+// one row, and refusing the other n-1 over them would push the MAIN back to one call per row.
+const CONFIRM_CARDS_MAX = 20;
+async function confirmCardsForMain(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return json({ error: bound.error }, 409);
+  const { program, sessionIdMatch } = bound;
+  if (!body) return json({ error: "invalid json" }, 400);
+  const extra = Object.keys(body).filter((k) => k !== "ids");
+  if (extra.length)
+    return json({ error: `this door reads ids only — [${extra.join(", ")}] is not read: the program comes from this session's MAIN binding and the files from each row's own card` }, 400);
+  const raw = body.ids;
+  if (!Array.isArray(raw) || !raw.length || raw.some((x) => typeof x !== "string" || !/^[a-z0-9]{1,64}$/.test(x)))
+    return json({ error: "ids must be a non-empty list of task ids" }, 400);
+  const ids = raw as string[];
+  if (new Set(ids).size !== ids.length) return json({ error: "ids must be distinct" }, 400);
+  if (ids.length > CONFIRM_CARDS_MAX)
+    return json({ error: `at most ${CONFIRM_CARDS_MAX} ids per call` }, 400);
+  const rows = ids.map((id) => tasks.find((x) => x.id === id));
+  const missing = ids.filter((_, i) => !rows[i]);
+  if (missing.length) return json({ error: `unknown task(s): ${missing.join(", ")} — nothing confirmed` }, 404);
+  const found = rows as Task[];
+  // ALL OR NOTHING over the bracket, checked for every id before any row is touched.
+  const foreign = found.filter((t) => t.programId !== program.id).map((t) => t.id);
+  if (foreign.length)
+    return json({ error: `task(s) ${foreign.join(", ")} belong to no program of this MAIN — a Program-MAIN confirms only rows of program ${program.id}; nothing confirmed` }, 409);
+  const mainRepo = await repoKeyOf(s);
+  if (!mainRepo)
+    return json({ error: "this session's checkout is not a git repository — the rows' target repo cannot be compared; nothing confirmed" }, 409);
+  const crossRepo = found.filter((t) => { const target = t.repo ?? DISPATCH_REPO; return !target || repoCanon(target) !== mainRepo; })
+    .map((t) => t.id);
+  if (crossRepo.length)
+    return json({ error: `task(s) ${crossRepo.join(", ")} do not target ${basename(mainRepo)}, where this MAIN is bound — a confirmation never reaches across repositories; nothing confirmed` }, 409);
+  const snapshot = trackedSnapshotFor(mainRepo);
+  const confirmed: { id: string; files: string[] }[] = [];
+  const skipped: { id: string; reason: string }[] = [];
+  for (const t of found) {
+    const card = t.card;
+    const reason = t.kind !== "auftrag" ? `a ${t.kind} is advisory — it carries no work surface to bundle by`
+      : t.status !== "pending" && t.status !== "queued" ? `task is ${t.status} — a surface is confirmed while the row is still open`
+        : t.filesOrigin === "confirmed" || (t.files?.length && t.filesOrigin === undefined) ? "the row already carries a confirmed surface"
+          : !card?.valid || !card.surface.files.length ? "no valid card with a file surface on this row"
+            : !snapshot ? "the tracked tree is unreadable — the card's paths cannot be re-checked"
+              : null;
+    const gone = !reason && card && snapshot ? card.surface.files.filter((f) => !snapshot.paths.has(f)) : [];
+    if (reason || gone.length) {
+      skipped.push({ id: t.id, reason: reason ?? `card path(s) no longer tracked: ${gone.join(", ")}` });
+      continue;
+    }
+    confirmed.push({ id: t.id, files: [...card!.surface.files] });
+  }
+  for (const c of confirmed) {
+    const t = found.find((x) => x.id === c.id)!;
+    t.files = c.files;
+    t.filesOrigin = "confirmed";
+    t.filesProposal = undefined;
+  }
+  if (confirmed.length) {
+    audit("task_cards_confirm", s.id, `${confirmed.map((c) => c.id).join(",")} program=${program.id}`,
+      { programId: program.id, ids: confirmed.map((c) => c.id).join(","), n: confirmed.length });
+    await saveStateNow();
+  }
+  return json({ ok: true, sessionIdMatch, confirmed, skipped });
+}
+
 async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // The authority bracket answers first and IN ITS OWN WORDS — "not bound" and "ambiguously bound"
   // stay two different refusals, because they tell the caller to go fix two different things.
@@ -27820,6 +27897,19 @@ Bun.serve<WSData>({
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not sharpen a brief — the brief is the work order a lane was founded on, and the producer does not rewrite what it is measured against" }, 409);
       return sharpenBriefForMain(s, selfTaskBrief[1]!, await readJson(req));
+    }
+
+    // S5 · Program-MAIN card-surface confirmation (confirmCardsForMain). Non-lane only for the family's
+    // reason — a lane executes the row it was founded on and does not decide which surface the rows
+    // its own MAIN bundles stand on. Placed ABOVE the release route like the brief door, because
+    // this handler reads a body and the release route's "reads no body" pin covers the region below.
+    if (url.pathname === "/api/self/tasks/confirm-cards" && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not confirm a card surface — a lane executes the row it was founded on, it does not decide what the rows its own MAIN bundles stand on" }, 409);
+      return confirmCardsForMain(s, await readJson(req));
     }
 
     // ACP-16 · Program-MAIN release. Non-lane only, like its attention neighbour above and for the

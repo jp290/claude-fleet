@@ -46,6 +46,10 @@ type AuditEvent =
   // owner's own body or from a named proposal, and — decisively — which of them the target repo
   // does not track: that finding never gates, so the ledger is where "he could see it" is recorded.
   | "task_files_propose" | "task_files_confirm" | "task_files_dismiss"
+  // S5 · the bound Program-MAIN confirms, in ONE act, the surfaces the VALID cards of its own rows
+  // name (POST /api/self/tasks/confirm-cards). One line per batch that confirmed anything; the
+  // fields carry slot, programId, the confirmed ids and their count.
+  | "task_cards_confirm"
   // THE NOTE LIFECYCLE (N2). A lane reports a verdict on a note its own founding brief delivered
   // (note_verdict, detail: note id, verdict, branch) and a land makes an `erledigt` one wirksam by
   // closing the row (note_closed_by_land, detail: note id and the branch that claimed it). Booked

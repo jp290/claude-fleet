@@ -515,6 +515,17 @@ vermaßen. Was hier steht, ändert die SCHNITTLISTE, nicht die Messung.*
    Board. Ausdrücklich verworfen: auf `↻ refine` aufsatteln (ein Split ist keine Bestätigung) und
    `derived → confirmed` automatisch heben (das tauft eine Prosa-Vermutung in einen Fakt um).
 
+   **Nachtrag 2026-09-12 (Owner-Entscheid „klingt vernuenftig alles", Queue-Zeile b8cb3c75):** der
+   bestätigende Akt darf zusätzlich von der **gebundenen Program-MAIN als Batch** kommen —
+   `POST /api/self/tasks/confirm-cards` (`server.ts#confirmCardsForMain`, self-token, nicht-Lane-only)
+   schreibt für die genannten Zeilen des EIGENEN Programs `card.surface.files` als
+   `{files, filesOrigin:"confirmed"}`, eine `audit.jsonl`-Zeile `task_cards_confirm` je Batch. Der
+   Auto-Lift bleibt verworfen: nichts läuft ohne diesen Aufruf, und die Pfade stammen aus einer
+   gegen den Baum validierten KARTE, nie aus der Prosa-Ableitung. Ganz oder gar nicht über das
+   Bracket (fremdes Program oder fremder Repo ⇒ 409, nichts geschrieben); Zeilen ohne gültige Karte
+   oder mit bestehender Owner-Bestätigung werden übersprungen und benannt. Die Owner-Tür
+   `POST /api/tasks/:id/files` bleibt unverändert und überschreibt jederzeit.
+
 ### 7.2 Warum die Fläche allein nicht reicht
 
 Die Frage zerfällt in zwei Risiken, und nur eines ist offen.

@@ -6304,6 +6304,16 @@ export async function run(ctx: Ctx): Promise<void> {
         && mLaneText.includes("a lane may not file a queue row")
         && (await mAll()).length === mBeforeBody,
       `token=${mLaneToken.length} lane=${!!mLaneIsLane} ${mLaneRes?.status}:${mLaneText}`);
+    // S5 (b8cb3c75): the card-surface confirmation refuses the same lane in its own sentence — a lane
+    // does not decide what the rows its MAIN bundles stand on. Same precondition as (5).
+    const mLaneConfirm = mLaneToken ? await fetch(`${BASE}/api/self/tasks/confirm-cards`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": mLaneToken },
+      body: JSON.stringify({ ids: ["deadbeef"] }) }) : null;
+    const mLaneConfirmText = mLaneConfirm ? await mLaneConfirm.text() : "";
+    check("(s5) a LANE calling confirm-cards is 409 `a lane may not confirm a card surface`, never 401",
+      /^[0-9a-f]{32}$/.test(mLaneToken) && !!mLaneIsLane && mLaneConfirm?.status === 409
+        && mLaneConfirmText.includes("a lane may not confirm a card surface"),
+      `${mLaneConfirm?.status}:${mLaneConfirmText}`);
 
     // (6) A NON-LANE WITH NO BINDING is refused too, in boundProgramForMain's OWN words — a
     // different sentence from (5), because it sends the caller to fix a different thing.

@@ -273,6 +273,43 @@ done
 echo "  deploy gap = commits above newer than that start time (server code only;"
 echo "  client changes go live on 'bun run build' alone)"
 echo
+# Three answers, never a silent green: equal · a measured distance · UNKNOWN with its reason. The
+# remote name follows server.ts#HUB_REMOTE when this shell carries FLEET_HUB_REMOTE, else `hub`.
+HUB=${FLEET_HUB_REMOTE:-hub}
+echo "=== hub vs local main  (remote: $HUB) ==="
+hub_sensor() {
+  local_sha=$(git -C "$MAIN_CHECKOUT" rev-parse --verify -q refs/heads/main) \
+    || { echo "  UNKNOWN: no local refs/heads/main"; return; }
+  git -C "$MAIN_CHECKOUT" config --get "remote.$HUB.url" >/dev/null \
+    || { echo "  UNKNOWN: no remote '$HUB' configured"; return; }
+  err=$(mktemp "${TMPDIR:-/tmp}/state-hub.XXXXXX")
+  # BatchMode: a key prompt fails fast instead of waiting; macOS has no `timeout` to cut a hang.
+  out=$(GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=5' \
+    git -C "$MAIN_CHECKOUT" ls-remote "$HUB" refs/heads/main 2>"$err")
+  rc=$?
+  first=$(head -1 "$err" | cut -c1-120); rm -f "$err"
+  [ "$rc" -eq 0 ] || { echo "  UNKNOWN: ls-remote failed (exit $rc): $first"; return; }
+  hub_sha=$(printf '%s\n' "$out" | awk '$2=="refs/heads/main"{print $1}')
+  [ -n "$hub_sha" ] || { echo "  UNKNOWN: hub has no refs/heads/main"; return; }
+  h8=$(printf '%.8s' "$hub_sha"); l8=$(printf '%.8s' "$local_sha")
+  if [ "$hub_sha" = "$local_sha" ]; then echo "  hub main = $h8 = local main"; return; fi
+  git -C "$MAIN_CHECKOUT" cat-file -e "$hub_sha^{commit}" 2>/dev/null \
+    || { echo "  hub main $h8 · local main $l8 · distance UNKNOWN: hub sha not in local objects"; return; }
+  set -- $(git -C "$MAIN_CHECKOUT" rev-list --left-right --count "$hub_sha...$local_sha")
+  if [ "$1" -eq 0 ]; then
+    oldest=$(git -C "$MAIN_CHECKOUT" log --reverse --format='%ct %cI' "$hub_sha..$local_sha" | head -1)
+    age_h=$(( ($(date +%s) - ${oldest%% *}) / 3600 ))
+    echo "  hub main $h8 · local main $l8 · hub BEHIND $2 commit(s), oldest unpushed ${oldest#* } (${age_h}h)"
+  elif [ "$2" -eq 0 ]; then
+    echo "  hub main $h8 · local main $l8 · hub AHEAD $1 commit(s)"
+  else
+    echo "  hub main $h8 · local main $l8 · DIVERGED $1/$2 (hub-only/local-only)"
+  fi
+}
+hub_sensor
+echo "  (a direct commit in the main checkout never calls server.ts#recordLand, so"
+echo "   server.ts#pushLandToHub never pushes it — only the NEXT land closes this gap)"
+echo
 echo "=== machine hygiene (nothing reaps these) ==="
 echo "  leaked e2e tmux sockets: $(ls /private/tmp/tmux-501/ 2>/dev/null | grep -c fleet)"
 echo "  TMPDIR e2e scratch:      $(du -shc "${TMPDIR:-/tmp}"/fleet-e2e-instance-* 2>/dev/null | tail -1 | cut -f1)"

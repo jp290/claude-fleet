@@ -71,7 +71,9 @@ export interface StewardCtx {
 //   · SERVER STATE one module plants and a later one reads without re-creating it — slots 1+2 are
 //     opened once in slots.ts (`/api/slots/1/open`, `/api/slots/2/open`) and read by history,
 //     summary, transport, autos, share and intake until restart.ts kills them (its "kill
-//     semantics" section), which is why `core` carries the slots family too;
+//     semantics" section), which is why `core` carries the slots family too; and outcomes.ts leaves
+//     the Program of its restart probe CONFIRMED, which tasks.ts reuses (its comment says so) — the
+//     first `--shard` run found that edge: 3 FAILs + a TypeError at tasks.ts, run 2026-09-13 21:57;
 //   · a return value handed on in the runner (stewardCore.run → stewardOutcomes/security).
 // Everything else opens and kills its own slots and lanes (each module's header says so) and is a
 // unit of its own. `seconds` is the measured SERIAL duration of the unit's modules in the reference
@@ -82,8 +84,8 @@ export interface ShardUnit { unit: string; seconds: number; modules: readonly st
 export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "pure", seconds: 0, modules: ["context-packs", "context-plan", "prompts", "briefstats"] },
   { unit: "auth", seconds: 1, modules: ["auth", "dirs-pins"] },
-  { unit: "core", seconds: 1406, modules: ["slots", "history", "summary", "transport", "autos", "share",
-    "review", "self-token", "programs", "trailstats", "tasks", "intake", "restart", "steward-core",
+  { unit: "core", seconds: 1461, modules: ["slots", "history", "summary", "transport", "autos", "share",
+    "review", "self-token", "programs", "trailstats", "outcomes", "tasks", "intake", "restart", "steward-core",
     "steward-outcomes", "security"] },
   { unit: "lanes", seconds: 375, modules: ["lanes-basic", "lanes-lifecycle", "merge"] },
   { unit: "watch", seconds: 224, modules: ["watch"] },
@@ -97,7 +99,6 @@ export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "lane-suite", seconds: 5, modules: ["lane-suite"] },
   { unit: "supervisor", seconds: 47, modules: ["supervisor"] },
   { unit: "ref-advance", seconds: 5, modules: ["ref-advance"] },
-  { unit: "outcomes", seconds: 55, modules: ["outcomes"] },
   { unit: "land-durability", seconds: 98, modules: ["land-durability"] },
   { unit: "sweep", seconds: 1, modules: ["sweep"] },
   { unit: "verify-queue", seconds: 97, modules: ["verify-queue"] },

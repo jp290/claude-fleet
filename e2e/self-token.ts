@@ -128,6 +128,7 @@ export async function run(ctx: Ctx): Promise<void> {
     ["/api/self/verify-intent", { method: "POST", body: JSON.stringify({ phase: "start" }) }],
     ["/api/self/clarifications", { method: "POST", body: JSON.stringify({ question: "a plain session is not a worker lane" }) }],
     ["/api/self/fleet-report", { method: "POST", body: JSON.stringify({ status: "complete", text: "a plain session is not a worker lane" }) }],
+    ["/api/self/harness-block", { method: "POST", body: JSON.stringify({ signal: "denied", tool: "Bash", detail: "a plain session's hook asks" }) }],
   ];
   const refusals = await Promise.all(laneOnly.map(async ([path, init]) => {
     const r = await fetch(BASE + path, {
@@ -137,6 +138,76 @@ export async function run(ctx: Ctx): Promise<void> {
   }));
   check("the lane-only self routes answer a PLAIN session 409 not-a-lane — never 401, never 200",
     refusals.every((r) => r.endsWith(":409")), refusals.join(" "));
+
+  // --- THE HARNESS-BLOCK RAIL (.claude/hooks/lane-permission.ts → POST /api/self/harness-block). The
+  // hook decides locally from two pane facts the server bakes, and reports here; these checks pin
+  // both facts on a real pane and the door's three promises — one event at the receiver, a repeat
+  // deduplicated into it, the third identical call escalated — plus the refusals. The lane has no
+  // Program, so its receiver is the owner inbox. ---
+  const laneFlag = await paneEnv(`s${lnTok.slot}`, "FLEET_SELF_LANE");
+  const plainFlag = await paneEnv("s2", "FLEET_SELF_LANE");
+  const laneUrl = await paneEnv(`s${lnTok.slot}`, "FLEET_SELF_URL");
+  // null is "the pane never answered" and fails as itself; "" is the unset variable the plain pane must show
+  check("harness-block: FLEET_SELF_LANE=1 is baked into a LANE pane and absent from a PLAIN pane (the hook's lane criterion)",
+    laneFlag === "1" && plainFlag === "", `lane=[${laneFlag}] plain=[${plainFlag}]`);
+  check("harness-block: FLEET_SELF_URL in a lane pane is this server's own base URL (the hook's only host source)",
+    laneUrl === BASE, `pane=[${laneUrl}] base=[${BASE}]`);
+  const hb = (token: string, body: unknown) => fetch(`${BASE}/api/self/harness-block`, {
+    method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
+    body: JSON.stringify(body),
+  });
+  type HbEvent = { id: string; kind: string; status: string; receiverSlot: number | null; subjectSlot?: number;
+    payload?: { signal?: string; detail?: string; count?: number; escalated?: boolean; key?: string } };
+  const hbDetail = `for v in probe-${Date.now()}; do rm -rf $SP/$v; done`;
+  const hbRows = async (): Promise<HbEvent[]> =>
+    ((await (await get("/api/events")).json()) as { events?: HbEvent[] }).events
+      ?.filter((e) => e.kind === "harness-block" && e.subjectSlot === lnTok.slot && e.payload?.detail === hbDetail) ?? [];
+  const hbAudit = (key: string): number => {
+    try {
+      return readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n")
+        .filter((l) => l.includes('"event":"harness_block"') && l.includes(`key=${key}`)).length;
+    } catch { return -1; }
+  };
+  check("harness-block precondition: no row for this probe's request exists yet", (await hbRows()).length === 0);
+  const hb1 = await hb(selfTok, { signal: "denied", tool: "Bash", detail: hbDetail });
+  const hb1J = (await hb1.json()) as { ok?: boolean; event?: string; deduped?: boolean; count?: number; escalated?: boolean };
+  const after1 = await hbRows();
+  check("harness-block: a lane's first report mints EXACTLY ONE owner-inbox event naming the lane and the request",
+    hb1.status === 200 && hb1J.deduped === false && hb1J.count === 1 && after1.length === 1
+      && after1[0]?.id === hb1J.event && after1[0]?.receiverSlot === null && after1[0]?.status === "inbox"
+      && after1[0]?.payload?.signal === "denied" && after1[0]?.payload?.escalated === false,
+    `${hb1.status} ${JSON.stringify(hb1J)} rows=${JSON.stringify(after1)}`);
+  const hb2 = await hb(selfTok, { signal: "denied", tool: "Bash", detail: hbDetail });
+  const hb2J = (await hb2.json()) as typeof hb1J;
+  const after2 = await hbRows();
+  // THE COUNTER-PROBE for the dedupe: remove it and this reads rows=2
+  check("harness-block: the SAME report again is deduplicated into the open row — no second event, its count raised to 2",
+    hb2.status === 200 && hb2J.deduped === true && hb2J.event === hb1J.event && after2.length === 1
+      && after2[0]?.payload?.count === 2,
+    `${hb2.status} ${JSON.stringify(hb2J)} rows=${after2.length} count=${after2[0]?.payload?.count}`);
+  const hb3 = await hb(selfTok, { signal: "denied", tool: "Bash", detail: hbDetail });
+  const hb3J = (await hb3.json()) as typeof hb1J;
+  const after3 = await hbRows();
+  check("harness-block: the THIRD identical report escalates — one new row flagged escalated beside the unread first",
+    hb3.status === 200 && hb3J.deduped === false && hb3J.escalated === true && after3.length === 2
+      && after3.filter((e) => e.payload?.escalated === true).length === 1,
+    `${hb3.status} ${JSON.stringify(hb3J)} rows=${JSON.stringify(after3.map((e) => e.payload))}`);
+  const hbKey = after1[0]?.payload?.key ?? "";
+  check("harness-block: every report writes one harness_block audit line — three calls, three lines, none carrying the token",
+    /^[0-9a-f]{16}$/.test(hbKey) && hbAudit(hbKey) === 3
+      && !readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").some((l) => l.includes('"event":"harness_block"') && l.includes(selfTok)),
+    `key=${hbKey} lines=${hbAudit(hbKey)}`);
+  const hbBad = await Promise.all([
+    hb("0".repeat(32), { signal: "denied", tool: "Bash", detail: hbDetail }),
+    hb(selfTok, { signal: "denied", tool: "Bash", detail: hbDetail, slot: 2 }),
+    hb(selfTok, { signal: "approved", tool: "Bash", detail: hbDetail }),
+  ]);
+  check("harness-block refuses: an unknown token 401, a foreign body field 400, an unknown signal 400 — and mints nothing",
+    hbBad.map((r) => r.status).join(",") === "401,400,400" && (await hbRows()).length === 2,
+    hbBad.map((r) => r.status).join(","));
+  for (const e of after3) await post(`/api/events/${e.id}/ack`, {});
+  check("harness-block cleanup: the owner acknowledges both rows, freeing the inbox for later sections",
+    (await hbRows()).every((e) => e.status === "acknowledged"), JSON.stringify((await hbRows()).map((e) => e.status)));
 
   // --- THE OPPOSITE SCOPE: /retire belongs only to a plain main session, and the steward gets
   // neither door. A lane retiring would end its session and leave committed work as an orphan

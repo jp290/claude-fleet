@@ -230,6 +230,10 @@ type AuditEvent =
   // `fleet_event_*` one deliberately: nothing was minted, so a reader counting minted rows must
   // not find it among them — and a red that could NOT be filed is the loudest line this rail has.
   | "lane_suite_event" | "lane_suite_event_skipped"
+  // a lane's hook reported a dialog only a human could answer (server.ts#openHarnessBlock). ONE
+  // `harness_block` row per report — deny or wait, minted, deduplicated or skipped alike — because
+  // the count and the escalation are judged from the reports, not from the rows they minted.
+  | "harness_block"
   | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune"
   | "clarification_reply_send_uncertain"
   | "fleet_report_open" | "fleet_report_prune"

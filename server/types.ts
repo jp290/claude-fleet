@@ -9,7 +9,8 @@ import type { LaneWatchEventKind, LaneWatchEventPayload, MergeWatchEventPayload,
   DeployWatchEventPayload, CommandJobArtifactPayload, CommandJobWatchEventPayload, ClarificationEventPayload,
   ClarificationBasis } from "../lane-signals";
 import { LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_FAIL_NAME_MAX, LANE_SUITE_EVENT_TAIL_MAX,
-  type LaneSuiteWatchEventPayload } from "../lane-signals";
+  type LaneSuiteWatchEventPayload, HARNESS_BLOCK_DETAIL_MAX, HARNESS_BLOCK_TOOL_MAX,
+  type HarnessBlockEventPayload } from "../lane-signals";
 import type { RefineValidation } from "../refine-validate";
 import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, type FleetReportStatus,
   type LaneAnchor } from "../src/protocol";
@@ -366,6 +367,17 @@ interface LaneSuiteFleetEvent extends FleetEventBase {
   kind: "lane-suite";
   payload: LaneSuiteWatchEventPayload;
 }
+// A lane's Claude Code session hit a dialog only a human can answer (.claude/hooks/lane-permission.ts).
+// Watchless like `lane-suite` — a lane may not subscribe, and its receiver never asked — and
+// owner-addressable, because a lane with no live Program-MAIN must still reach SOMEONE. The subject
+// is the occupation, not just the slot number: the same number next week is a different lane.
+interface HarnessBlockFleetEvent extends FleetEventBase {
+  subjectSlot: number;
+  subjectBranch: string;
+  subjectOpenedAt: number;
+  kind: "harness-block";
+  payload: HarnessBlockEventPayload;
+}
 interface ClarificationFleetEvent extends FleetEventBase {
   subjectSlot: number;
   subjectBranch: string;
@@ -395,7 +407,7 @@ interface SupervisorTransitionFleetEvent extends FleetEventBase {
 }
 type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent
   | CommandJobFleetEvent | LaneSuiteFleetEvent | ClarificationFleetEvent | FleetReportFleetEvent
-  | SupervisorTransitionFleetEvent;
+  | SupervisorTransitionFleetEvent | HarnessBlockFleetEvent;
 
 // `send-uncertain` mirrors the FleetEvent transport state exactly (see FACT 2 in tickWatches): it is
 // persisted BEFORE tmux is touched, so a process death anywhere after that point is visible after
@@ -585,10 +597,10 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
   // so every open red would have been erased by the next deploy. e2e/lane-suite.ts (LS.9) is the
   // probe that caught it on the first run that could.
   const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"
-    || e.kind === "lane-suite";
+    || e.kind === "lane-suite" || e.kind === "harness-block";
   // …and the kinds that may name the OWNER instead of a session. Same list on both sides of the
   // equivalence below, so a kind can never be admitted to one half and not the other.
-  const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite";
+  const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite" || e.kind === "harness-block";
   // The owner-principal receiver, all three fields or none: a half-null triple is malformed, not a
   // transport choice — exactly as an unknown `delivery` is.
   const ownerReceiver = e.receiverSlot === null && e.receiverOpenedAt === null
@@ -613,9 +625,9 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     // be persisted without the other (a slot-bound inbox report would be typed at nobody; an
     // owner-receiver pane report would be typed at a pane that does not exist).
     || (e.kind === "clarification-request" && e.delivery === "inbox")
-    // THE OWNER PRINCIPAL EXISTS FOR EXACTLY TWO KINDS (it was one until the preview rail: a red
+    // THE OWNER PRINCIPAL EXISTS FOR EXACTLY THREE KINDS (it was one until the preview rail: a red
     // `lane-suite` files an owner row precisely so the process does not depend on the lane being
-    // alive or well-behaved). Every OTHER event is a Watch completion addressed to the session
+    // alive or well-behaved; `harness-block` joined for a lane with no live Program-MAIN). Every OTHER event is a Watch completion addressed to the session
     // that subscribed, and a null triple there names nobody at all: it could never be delivered,
     // never go receiver-gone, and never be acked by the session it was minted for — but it WOULD
     // count as an owner debt and squat a place at the inbox ceiling until someone acked a row they
@@ -814,6 +826,22 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
         failCount: p.failCount,
         tail: p.tail.slice(0, LANE_SUITE_EVENT_TAIL_MAX),
         ...(p.reason !== undefined ? { reason: p.reason } : {}) } };
+  }
+  if (e.kind === "harness-block") {
+    if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0
+      || typeof e.subjectBranch !== "string" || !e.subjectBranch
+      || typeof e.subjectOpenedAt !== "number" || !Number.isFinite(e.subjectOpenedAt) || e.subjectOpenedAt <= 0) return null;
+    const p = e.payload as Partial<HarnessBlockEventPayload> | undefined;
+    if (!p || (p.signal !== "denied" && p.signal !== "waiting")
+      || !(p.tool === null || (typeof p.tool === "string" && p.tool.length <= HARNESS_BLOCK_TOOL_MAX))
+      || typeof p.detail !== "string" || p.detail.length > HARNESS_BLOCK_DETAIL_MAX
+      || typeof p.key !== "string" || !/^[0-9a-f]{16}$/.test(p.key)
+      || !Number.isInteger(p.count) || (p.count ?? 0) < 1
+      || typeof p.escalated !== "boolean") return null;
+    return { ...base, subjectSlot: Number(e.subjectSlot), subjectBranch: e.subjectBranch,
+      subjectOpenedAt: e.subjectOpenedAt, kind: e.kind,
+      payload: { signal: p.signal, tool: p.tool, detail: p.detail, key: p.key, count: p.count!,
+        escalated: p.escalated } };
   }
   if (e.kind === "supervisor-transition") {
     if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0
@@ -2426,7 +2454,7 @@ export type {
   DeployWatch, TransitionWatch, CommandJobWatch, Watch, FleetEventStatus, FleetEventRecoveryState,
   FleetEventRecovery, FleetEventBase, LaneFleetEvent, MergeFleetEvent, AuditFleetEvent,
   DeployFleetEvent, CommandJobFleetEvent, LaneSuiteFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
-  HelperCmdCheck,
+  HelperCmdCheck, HarnessBlockFleetEvent,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReportBasis,
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,

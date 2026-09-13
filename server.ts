@@ -12,6 +12,7 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   type AuditWatchEventPayload, type DeployWatchEventPayload,
   commandJobWatchMessage, type CommandJobWatchEventPayload, type CommandJobArtifactPayload,
   laneSuiteWatchMessage, type LaneSuiteWatchEventPayload,
+  harnessBlockMessage, HARNESS_BLOCK_DETAIL_MAX, HARNESS_BLOCK_TOOL_MAX,
   LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_FAIL_NAME_MAX, LANE_SUITE_EVENT_TAIL_MAX,
   type ClarificationBasis,
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE,
@@ -108,7 +109,7 @@ import {
   type ClarificationFleetEvent, type FleetReportFleetEvent, type SupervisorTransitionFleetEvent,
   type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition, type FleetReportDecision,
   type AttentionKind,
-  type LaneSuiteFleetEvent,
+  type LaneSuiteFleetEvent, type HarnessBlockFleetEvent,
   type FleetReportDeliveryState,
   type AttentionRequest, type TaskKind, type Task, type TaskBrief, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
@@ -4819,7 +4820,12 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
     // self-scheduling credential: EVERY session with a cwd gets it, lane or not, ⚙ steward
     // included — it reaches only this slot's own row and its /api/self planning family; the two
     // lane-only questions keep their 409s. Why the widening is safe: server-narrativ-archiv.md#ensureslot
-    const selfExport = `export FLEET_SELF_TOKEN='${occupant.selfToken}'; export FLEET_SELF_SLOT='${occupant.slot}'; `;
+    // …plus the two facts a hook in the pane cannot derive (.claude/hooks/lane-permission.ts): WHERE
+    // this server listens — the pane has no other host source, and none may be written into a
+    // tracked file — and WHETHER this is a lane, read from `s.worktree`, the predicate every lane-only
+    // /api/self route answers 409 on. FLEET_SELF_SLOT is in every pane and says nothing about it.
+    const selfExport = `export FLEET_SELF_TOKEN='${occupant.selfToken}'; export FLEET_SELF_SLOT='${occupant.slot}'; `
+      + `export FLEET_SELF_URL='http://${HOST}:${PORT}'; ${s.worktree ? "export FLEET_SELF_LANE='1'; " : ""}`;
     // the steward token is keyed on the steward LABEL, not the worktree flag. Env is only injectable
     // at spawn, so a live relabel takes effect on the pane's next (re)spawn, never patched in.
     const stewardExport = occupant.label === STEWARD_LABEL && stewardToken
@@ -7062,6 +7068,105 @@ function markFleetEventReceiverGone(slotId: number): boolean {
   }
   if (dirty) pruneFleetEvents(slotId);
   return dirty;
+}
+
+// THE HARNESS-BLOCK RAIL (.claude/hooks/lane-permission.ts → POST /api/self/harness-block). Measured
+// 2026-09-13: a lane in bypass mode sat on Claude Code's "Dangerous rm operation on possibly-empty
+// variable path … Do you want to proceed?" and no Fleet sensor saw it. The hook now denies such a
+// dialog locally; this door is how somebody HEARS about it — the deny, or a dialog no hook answered.
+//
+// RECEIVER: the lane's live Program-MAIN, else the owner inbox. Not the report's receiver chain
+// (clarificationReceiverFor) on purpose: that chain can refuse, and a lane stuck on a dialog is
+// exactly the fact that must not be refused for want of a watch.
+// DEDUPE: one OPEN row per (occupation, receiver, key, escalated). A lane repeating the same call is
+// one fact, and a second row would spend the receiver's budget on news it already holds; the open
+// row's `count` is raised instead.
+// ESCALATION at HARNESS_BLOCK_ESCALATE_AT: the first deny is the harness catching a slip, the second
+// identical one is a verbatim retry the deny text allows for, the THIRD says the text did not work —
+// a loop that needs a person, which gets its own row even while the first is still unread.
+// COUNTS are this process's memory, per occupation: a restart forgets them, and an escalation that
+// needs three more reports after a deploy is an acceptable cost for not persisting a counter.
+const HARNESS_BLOCK_ESCALATE_AT = 3;
+// the owner half has its own ceiling for the reason mintLaneSuiteEvents gives: sharing the report
+// door's would let a looping lane silence fleet-reports, or the reverse.
+const HARNESS_BLOCK_INBOX_MAX = 10;
+const HARNESS_BLOCK_COUNT_KEYS_MAX = 500;
+const harnessBlockCounts = new Map<string, number>();
+
+async function openHarnessBlock(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
+  if (!body || Object.keys(body).some((key) => key !== "signal" && key !== "tool" && key !== "detail"))
+    return json({ error: "body must contain only signal, tool and detail" }, 400);
+  if (body.signal !== "denied" && body.signal !== "waiting")
+    return json({ error: "signal must be 'denied' or 'waiting'" }, 400);
+  if (!(body.tool === undefined || body.tool === null || typeof body.tool === "string"))
+    return json({ error: "tool must be a string or null" }, 400);
+  if (typeof body.detail !== "string") return json({ error: "detail must be a string" }, 400);
+  const signal = body.signal;
+  const tool = typeof body.tool === "string" && body.tool ? body.tool.slice(0, HARNESS_BLOCK_TOOL_MAX) : null;
+  // the hook redacts too; the server does not trust it to, because the trail is the server's
+  const detail = body.detail.replace(/[0-9a-fA-F]{32,}/g, "…").replace(/\s+/g, " ").trim()
+    .slice(0, HARNESS_BLOCK_DETAIL_MAX);
+  const key = createHash("sha256").update(`${signal}\n${tool ?? ""}\n${detail}`).digest("hex").slice(0, 16);
+
+  if (harnessBlockCounts.size >= HARNESS_BLOCK_COUNT_KEYS_MAX)
+    for (const k of [...harnessBlockCounts.keys()]) {
+      const [slot, openedAt] = k.split(":").map(Number);
+      if (!slots.some((x) => x.id === slot && x.openedAt === openedAt && x.cwd)) harnessBlockCounts.delete(k);
+    }
+  const countKey = `${s.id}:${s.openedAt}:${key}`;
+  const count = (harnessBlockCounts.get(countKey) ?? 0) + 1;
+  harnessBlockCounts.set(countKey, count);
+  const escalated = count >= HARNESS_BLOCK_ESCALATE_AT;
+
+  const program = s.programId ? programs.find((p) => p.id === s.programId) : undefined;
+  const main = program?.status === "active" && programOccupancy(program) === "live" ? program.main! : null;
+  const receiver = main ? `slot ${main.slot}` : "owner inbox";
+  const booked = (outcome: string): void => audit("harness_block", s.id,
+    `${signal} tool=${tool ?? "-"} key=${key} n=${count}${escalated ? " escalated" : ""} → ${receiver}: ${outcome}`);
+
+  const open = fleetEvents.find((e): e is HarnessBlockFleetEvent => e.kind === "harness-block"
+    && !FLEET_EVENT_TERMINAL.includes(e.status) && e.subjectSlot === s.id && e.subjectOpenedAt === s.openedAt
+    && e.receiverSlot === (main?.slot ?? null) && e.payload.key === key && e.payload.escalated === escalated);
+  if (open) {
+    // IN PLACE, not a replaced row: tickWatches holds event objects across awaits and writes their
+    // status back onto the object it holds — a copy swapped into the array would lose that write.
+    open.payload = { ...open.payload, count };
+    booked(`deduplicated into ${open.id}`);
+    await saveStateNow();
+    return json({ ok: true, event: open.id, deduped: true, count, escalated });
+  }
+  if (main) {
+    const budget = slotDeliveryBudget(main.slot);
+    if (budget.free === 0) {
+      booked(`skipped, no delivery budget (${budget.deliveryDebts} open + ${budget.armedReservations} armed of ${budget.cap})`);
+      return json({ error: "harness-block receiver has no FleetEvent delivery budget", count, escalated }, 409);
+    }
+  } else {
+    const openInbox = fleetEvents.filter((e) => e.kind === "harness-block" && e.receiverSlot === null
+      && !FLEET_EVENT_TERMINAL.includes(e.status)).length;
+    if (openInbox >= HARNESS_BLOCK_INBOX_MAX) {
+      booked(`skipped, ${openInbox} unacknowledged harness-block rows already in the owner inbox (cap ${HARNESS_BLOCK_INBOX_MAX})`);
+      return json({ error: "owner inbox has no harness-block budget", count, escalated }, 409);
+    }
+  }
+  const event: HarnessBlockFleetEvent = {
+    id: randomBytes(12).toString("hex"), watchId: null,
+    receiverSlot: main?.slot ?? null, receiverOpenedAt: main?.openedAt ?? null,
+    receiverSessionId: main?.sessionId ?? null,
+    // 0, the measured lesson mintLaneSuiteEvents names: a working MAIN never idles 60 s
+    receiverIdleSec: 0,
+    subjectSlot: s.id, subjectBranch: s.worktree!.branch, subjectOpenedAt: s.openedAt,
+    kind: "harness-block",
+    payload: { signal, tool, detail, key, count, escalated },
+    createdAt: Date.now(),
+    ...(main ? { status: "pending" as const, delivery: "pane" as const }
+      : { status: "inbox" as const, delivery: "inbox" as const }),
+    attempts: 0, deliveredAt: null, acknowledgedAt: null,
+  };
+  fleetEvents = [...fleetEvents, event];
+  booked(`minted ${event.id}`);
+  await saveStateNow();
+  return json({ ok: true, event: event.id, deduped: false, count, escalated });
 }
 
 async function openClarification(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
@@ -13728,6 +13833,8 @@ async function tickWatches(): Promise<void> {
         ? laneSuiteWatchMessage(event.subjectJobId, event)
         : event.kind === "supervisor-transition"
         ? supervisorTransitionMessage(event)
+        : event.kind === "harness-block"
+        ? harnessBlockMessage(event.subjectSlot, event.subjectBranch, event)
         : laneWatchMessage(event.subjectSlot, event.subjectBranch, event, laneSelfWord(event));
       let acceptance: Acceptance;
       try {
@@ -28129,6 +28236,17 @@ Bun.serve<WSData>({
       if (!s.worktree || s.label === STEWARD_LABEL)
         return json({ error: "not a worker lane — MAIN and the steward cannot file a fleet report" }, 409);
       return openFleetReport(s, await readJson(req));
+    }
+
+    // a lane's Claude Code hook reporting a dialog only a human could answer (openHarnessBlock). Lane-
+    // only on the same predicate FLEET_SELF_LANE is baked from, so hook and door can never disagree
+    // about who is a lane; the steward's worktree counts, because nobody answers its pane either.
+    if (url.pathname === "/api/self/harness-block" && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (!s.worktree) return json({ error: "not a lane — only a lane's hook denies a dialog instead of asking" }, 409);
+      return openHarnessBlock(s, await readJson(req));
     }
 
     // …and the door that JUDGES one of those rows. Deliberately NOT folded into the event-ack

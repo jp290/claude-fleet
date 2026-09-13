@@ -295,6 +295,28 @@ export interface LaneSuiteWatchEventView {
   payload: LaneSuiteWatchEventPayload;
 }
 
+// THE LANE THAT HIT A HUMAN-ONLY DIALOG (.claude/hooks/lane-permission.ts). Minted by
+// server.ts#openHarnessBlock from the hook's own report, never from a Watch: a lane may not
+// subscribe, and the MAIN or owner who should hear it never asked. `detail` is the request as the
+// hook saw it (capped, credential-shaped runs redacted), `key` the server's dedupe identity of
+// signal+tool+detail, `count` how often THIS occupation sent that key, `escalated` the one row per
+// key that says the deny text alone did not break a loop.
+export const HARNESS_BLOCK_DETAIL_MAX = 300;
+export const HARNESS_BLOCK_TOOL_MAX = 64;
+export interface HarnessBlockEventPayload {
+  signal: "denied" | "waiting";
+  tool: string | null;
+  detail: string;
+  key: string;
+  count: number;
+  escalated: boolean;
+}
+export interface HarnessBlockEventView {
+  id: string;
+  kind: "harness-block";
+  payload: HarnessBlockEventPayload;
+}
+
 export type ClarificationBasis = "program-main" | "lane-watch" | "program-main+lane-watch";
 // Closed server-stamped provenance only. The question is the one caller field admitted by the
 // request route; no receiver, command, or arbitrary detail can hitch a ride through persistence.
@@ -469,6 +491,19 @@ export function laneSuiteWatchMessage(jobId: string, event: LaneSuiteWatchEventV
     + `Last line: ${oneLine(p.tail) || "(no output recorded)"} `
     + `This preview GATES NOTHING — it is the run you handed to another machine, not a land gate. `
     + `The full output, the fails and the helper's name are on GET /api/self/suite-offer. `
+    + `${eventAck(event.id)}`;
+}
+
+export function harnessBlockMessage(slot: number, branch: string, event: HarnessBlockEventView): string {
+  const p = event.payload;
+  const what = p.signal === "denied"
+    ? `Claude Code asked a human to approve a ${p.tool ?? "tool"} call; the fleet hook DENIED it and the lane was told to rephrase or skip, so it should carry on by itself.`
+    : `its pane shows a dialog no hook answered, so it will NOT continue on its own. Read the pane before typing anything — a paste+Enter picks the preselected option.`;
+  const loud = p.escalated
+    ? ` ESCALATED: the same ${p.signal} arrived ${p.count} times from this lane — the deny text is not getting it unstuck.`
+    : "";
+  return `[fleet] LANE BLOCKED BY THE HARNESS: slot ${slot} (${branch}) [event ${event.id}] — ${what}${loud} `
+    + `Request: ${oneLine(p.detail) || "(none recorded)"} `
     + `${eventAck(event.id)}`;
 }
 

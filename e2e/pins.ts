@@ -40,6 +40,7 @@ import {
   attentionAnswerMessage, auditWatchMessage, clarificationReplyMessage, clarificationWatchMessage,
   fleetReportDecisionMessage,
   commandJobWatchMessage, deployWatchMessage, laneSuiteWatchMessage, laneWatchMessage, mergeWatchMessage,
+  harnessBlockMessage,
 } from "../lane-signals";
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
 import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
@@ -54,6 +55,9 @@ import { GATE_MACHINERY_FILES, isGateMachinery } from "../task-land-waves";
 import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
 import { readContextManifest } from "../context-manifest";
 import { validUseWhen, validateContextPacks } from "../context-pack-validator";
+// the lane-permission hook is IMPORTED for its pure decision and SPAWNED for its stdin/exit contract —
+// Claude Code runs the file, so only the file run proves what the session sees
+import { HARNESS_BLOCK_ROUTE, WAITING_NOTIFICATIONS, decide as hookDecide } from "../.claude/hooks/lane-permission";
 
 const ROOT = resolve(import.meta.dir, "..");
 const read = (rel: string): string => readFileSync(`${ROOT}/${rel}`, "utf8");
@@ -498,14 +502,14 @@ const server = serverU.text;
   const parser = parserSpan?.text ?? "";
   const mint = mintSpan?.text ?? "";
   const watchlessKinds = 'const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"\n'
-    + '    || e.kind === "lane-suite";';
+    + '    || e.kind === "lane-suite" || e.kind === "harness-block";';
   const watchlessEquivalence = parser.includes(watchlessKinds)
     && parser.includes('    || (watchless !== (e.watchId === null))\n'
       + "    || !(ownerReceiver || (Number.isInteger(e.receiverSlot)");
   const nullMints = (mint.match(/watchId: null/g) ?? []).length;
   const missingAnchor = [parserSpan === null ? "fleetEventFrom" : "", mintSpan === null ? "openClarification" : ""]
     .filter(Boolean);
-  pin("FleetEvent watchId is null exactly for clarification-request, fleet-report and lane-suite, and a string for every Watch event",
+  pin("FleetEvent watchId is null exactly for clarification-request, fleet-report, lane-suite and harness-block, and a string for every Watch event",
     missingAnchor.length === 0
       && /watchId: string \| null/.test(server)
       && watchlessEquivalence
@@ -515,6 +519,9 @@ const server = serverU.text;
       // the third watchless mint lives in its own function and is counted there rather than
       // widened into `mint`'s span: one `watchId: null`, shared by both rows it can produce.
       && (serverU.span("async function mintLaneSuiteEvents(", "// THE OPEN RED PREVIEWS")?.text
+        .match(/watchId: null/g) ?? []).length === 1
+      // …and the fourth in openHarnessBlock, the one row a lane's hook mints for itself
+      && (serverU.span("async function openHarnessBlock(", "async function openClarification(")?.text
         .match(/watchId: null/g) ?? []).length === 1
       && (server.match(/watchId: w\.id/g) ?? []).length >= 4,
     missingAnchor.length > 0
@@ -4572,7 +4579,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const RULE_KINDS = "the FleetEvent kind set is closed";
   const expected = ["lane-ready", "host-commit-ready", "merge-terminal", "post-land-audit",
     "deploy-terminal", "command-job", "lane-suite", "clarification-request", "fleet-report",
-    "supervisor-transition"].sort();
+    "supervisor-transition", "harness-block"].sort();
   const signals = read("lane-signals.ts");
   const laneKinds = (signals.match(/export type LaneWatchEventKind =([^;\n]+)/)?.[1] ?? "")
     .split("|").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
@@ -4585,7 +4592,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const union = (server.match(/type FleetEvent =([\s\S]*?);/)?.[1] ?? "")
     .split("|").map((w) => w.trim()).filter(Boolean);
   const got = [...found].sort();
-  pin(`${RULE_KINDS} — the interfaces yield exactly the ten known kinds`,
+  pin(`${RULE_KINDS} — the interfaces yield exactly the eleven known kinds`,
     JSON.stringify(got) === JSON.stringify(expected), `[${got.join(",")}]`);
   pin(`${RULE_KINDS} — every union member is one of those interfaces (no kind enters off-list)`,
     union.length > 0 && union.every((m) => new RegExp(`interface ${m} extends FleetEventBase \\{`).test(server)),
@@ -4824,7 +4831,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // the lane), and both are read off ONE `ownerAddressable` list so a kind can never be admitted
   // to the membership test without also being admitted to the transport equivalence.
   const ownerEquivalences = [
-    'const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite";',
+    'const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite" || e.kind === "harness-block";',
     '|| (ownerReceiver && !ownerAddressable)',
     '|| (ownerAddressable && (e.delivery === "inbox") !== ownerReceiver)',
     '|| ((p.basis === "owner-inbox") !== ownerReceiver)) return null;',
@@ -7208,6 +7215,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     laneSuiteWatchMessage: laneSuiteWatchMessage("j2", { id: "e7", kind: "lane-suite",
       payload: { result: "red", branch: "fleet/probe", exitCode: 1, fails: ["a check"], failCount: 1,
         tail: "12 FAILURES" } }),
+    harnessBlockMessage: harnessBlockMessage(7, "fleet/probe", { id: "e8", kind: "harness-block",
+      payload: { signal: "denied", tool: "Bash", detail: "rm -rf $SP/$v", key: "0".repeat(16), count: 3, escalated: true } }),
     clarificationWatchMessage: clarificationWatchMessage(7, "fleet/probe", { id: "e6", kind: "clarification-request",
       payload: { requestId: "r1", question: "q", taskId: null, originId: null, programId: null, basis: "lane-watch" } }),
     clarificationReplyMessage: clarificationReplyMessage("r1", "q", "a"),
@@ -7921,6 +7930,103 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const surfaceDerived = /valid: gaps\.length === 0, surfaceValid: cardSurfaceValid\(gaps\), gaps,/.test(srv);
   pin(`${RULE_CARD_V2} — confirm-cards reads surfaceValid (not valid), and the loader derives it from gaps`,
     surfaceConfirm && surfaceDerived, `confirm=${surfaceConfirm} derived=${surfaceDerived}`);
+}
+
+// 2026-09-13 · A LANE NEVER WAITS ON A DIALOG NOBODY ANSWERS. The two sides that no compiler joins:
+// .claude/settings.json (JSON, read by Claude Code) and the hook file it names; and the hook's
+// stdin/stdout/exit contract, which only a spawned run shows. The door's own promises (one event,
+// dedupe, escalation) are behaviour and live in e2e/self-token.ts.
+{
+  const RULE_HOOK = "a lane's permission dialog is denied by the tracked hook .claude/settings.json names";
+  const HOOK_REL = ".claude/hooks/lane-permission.ts";
+  type HookCmd = { type?: string; command?: string; async?: boolean; timeout?: number };
+  type HookGroup = { matcher?: string; hooks?: HookCmd[] };
+  let settings: { hooks?: Record<string, HookGroup[]> } | null = null;
+  try { settings = JSON.parse(read(".claude/settings.json")); } catch { settings = null; }
+  pin(`${RULE_HOOK} — .claude/settings.json exists and parses`, settings !== null);
+  const groups = (event: string): HookGroup[] => settings?.hooks?.[event] ?? [];
+  const cmds = (event: string): HookCmd[] => groups(event).flatMap((g) => g.hooks ?? []);
+  const hookCmd = (mode: string) => `bun "$CLAUDE_PROJECT_DIR/${HOOK_REL}" ${mode}`;
+  const decideCmds = cmds("PermissionRequest").filter((c) => c.command === hookCmd("decide"));
+  const reportCmds = cmds("PermissionRequest").filter((c) => c.command === hookCmd("report"));
+  pin(`${RULE_HOOK} — PermissionRequest runs \`decide\` SYNCHRONOUSLY (async would make the deny arrive after the dialog)`,
+    decideCmds.length === 1 && decideCmds[0]!.async !== true && groups("PermissionRequest").some((g) => (g.matcher ?? "") === ""),
+    `decide=${decideCmds.length} async=${decideCmds[0]?.async}`);
+  const notifyGroup = groups("Notification").find((g) => (g.hooks ?? []).some((c) => c.command === hookCmd("report")));
+  const notifyMatch = (notifyGroup?.matcher ?? "").split("|").sort();
+  pin(`${RULE_HOOK} — \`report\` is ASYNC on PermissionRequest and on exactly the hook's WAITING_NOTIFICATIONS`,
+    reportCmds.length === 1 && reportCmds[0]!.async === true
+      && (notifyGroup?.hooks ?? []).every((c) => c.async === true)
+      && JSON.stringify(notifyMatch) === JSON.stringify([...WAITING_NOTIFICATIONS].sort()),
+    `report=${reportCmds.length} matcher=[${notifyMatch.join("|")}]`);
+  // both directions: every file the settings name exists, and every hook file is named
+  const named = [...read(".claude/settings.json").matchAll(/\$CLAUDE_PROJECT_DIR\/([^"\\ ]+)/g)].map((m) => m[1]!);
+  const hookFiles = exists(".claude/hooks") ? readdirSync(`${ROOT}/.claude/hooks`).map((f) => `.claude/hooks/${f}`) : [];
+  pin(`${RULE_HOOK} — every path the settings name exists, and every file in .claude/hooks/ is named`,
+    named.length > 0 && named.every(exists) && hookFiles.length > 0 && hookFiles.every((f) => named.includes(f)),
+    `named=[${[...new Set(named)].join(",")}] files=[${hookFiles.join(",")}]`);
+  // TRACKED, or no lane ever sees it: createWorktree copies only settings.local.json. Read off
+  // .gitignore rather than `git check-ignore`, because the post-land audit runs from a git archive.
+  const ignored = read(".gitignore").split("\n").some((l) => l.trim() === ".claude/settings.json");
+  pin(`${RULE_HOOK} — .claude/settings.json is not gitignored (an ignored copy never reaches a lane)`, !ignored);
+  // MERGED, never replaced: the graphify guards the file carried before it was tracked, with no
+  // account-name path (the reason it was ignored) and a silent exit where graphify is not installed
+  const graphify = (matcher: string, mode: string) => groups("PreToolUse").some((g) => g.matcher === matcher
+    && (g.hooks ?? []).some((c) => c.command === `[ -x "$HOME/.local/bin/graphify" ] || exit 0; exec "$HOME/.local/bin/graphify" hook-guard ${mode}`));
+  pin(`${RULE_HOOK} — the graphify guards survive beside it, through $HOME and with no /Users/ path`,
+    graphify("Bash|Grep", "search") && graphify("Read|Glob", "read") && !read(".claude/settings.json").includes("/Users/"),
+    `search=${graphify("Bash|Grep", "search")} read=${graphify("Read|Glob", "read")}`);
+  // the two pane facts the hook reads are the two ensureSlot bakes, and the route it posts to is served
+  const srvHook = read("server.ts");
+  const bakesLane = srvHook.includes("export FLEET_SELF_URL='http://${HOST}:${PORT}'; ${s.worktree ? \"export FLEET_SELF_LANE='1'; \" : \"\"}");
+  const hookSrc = read(HOOK_REL);
+  pin(`${RULE_HOOK} — ensureSlot bakes FLEET_SELF_LANE from s.worktree and FLEET_SELF_URL, the hook reads exactly those, and the server serves its route`,
+    bakesLane && hookSrc.includes('env.FLEET_SELF_LANE === "1"') && hookSrc.includes("env.FLEET_SELF_URL")
+      && srvHook.includes(`url.pathname === "${HARNESS_BLOCK_ROUTE}" && req.method === "POST"`),
+    `bakes=${bakesLane} route=${HARNESS_BLOCK_ROUTE}`);
+
+  // THE CONTRACT, SPAWNED. Every case exits 0 — exit 2 would block the session — and only a lane's
+  // PermissionRequest produces output.
+  const LANE = { FLEET_SELF_LANE: "1", FLEET_SELF_TOKEN: "f".repeat(32) };
+  const rmReq = JSON.stringify({ hook_event_name: "PermissionRequest", tool_name: "Bash",
+    tool_input: { command: "for v in a b; do rm -rf $SP/$v; done" } });
+  const run = (mode: string, stdin: string, env: Record<string, string>) => {
+    const base = Object.fromEntries(Object.entries(process.env)
+      .filter(([k]) => !k.startsWith("FLEET_SELF_"))) as Record<string, string>;
+    const r = spawnSync("bun", [`${ROOT}/${HOOK_REL}`, mode], { input: stdin, env: { ...base, ...env }, encoding: "utf8", timeout: 10_000 });
+    return { code: r.status, out: (r.stdout ?? "").trim() };
+  };
+  const lane = run("decide", rmReq, LANE);
+  let laneDecision: { behavior?: string; message?: string } = {};
+  try { laneDecision = JSON.parse(lane.out).hookSpecificOutput?.decision ?? {}; } catch { laneDecision = {}; }
+  pin(`${RULE_HOOK} — spawned: a LANE's PermissionRequest is denied with the request verbatim and the \${VAR:?} rewrite`,
+    lane.code === 0 && laneDecision.behavior === "deny"
+      && (laneDecision.message ?? "").includes("for v in a b; do rm -rf $SP/$v; done")
+      && (laneDecision.message ?? "").includes('"${SP:?}/${v:?}"')
+      && !(laneDecision.message ?? "").includes("f".repeat(32)),
+    `exit=${lane.code} behavior=${laneDecision.behavior}`);
+  const cases: [string, string, Record<string, string>][] = [
+    ["a PLAIN session (token, no FLEET_SELF_LANE) gets no output — Claude Code asks as usual", rmReq, { FLEET_SELF_TOKEN: "f".repeat(32) }],
+    ["FLEET_SELF_LANE=0 is not a lane", rmReq, { ...LANE, FLEET_SELF_LANE: "0" }],
+    ["a lane flag without a token is not a lane", rmReq, { FLEET_SELF_LANE: "1" }],
+    ["BROKEN JSON in a lane passes instead of crashing into a deny", "{\"hook_event_name\": \"PermissionRe", LANE],
+    ["EMPTY stdin in a lane passes", "", LANE],
+    ["a JSON ARRAY in a lane passes", "[1,2]", LANE],
+  ];
+  const silent = cases.map(([why, stdin, env]) => ({ why, ...run("decide", stdin, env) }));
+  pin(`${RULE_HOOK} — spawned: non-lanes and malformed input exit 0 with NO output (= ask)`,
+    silent.every((c) => c.code === 0 && c.out === ""),
+    silent.filter((c) => c.code !== 0 || c.out !== "").map((c) => `${c.why}: exit=${c.code} out=${c.out.slice(0, 40)}`).join("; ") || `${silent.length} cases`);
+  // report with nowhere to send is still exit 0 and silent — the deny never depended on it
+  const orphanReport = run("report", rmReq, LANE);
+  pin(`${RULE_HOOK} — spawned: \`report\` without FLEET_SELF_URL exits 0 and prints nothing`,
+    orphanReport.code === 0 && orphanReport.out === "", `exit=${orphanReport.code}`);
+  // the pure decision: which notifications count as waiting, and that report never denies
+  const note = (type: string) => hookDecide(JSON.stringify({ hook_event_name: "Notification", notification_type: type, message: "m" }), LANE).kind;
+  pin(`${RULE_HOOK} — decide: permission_prompt is reported as waiting, idle_prompt is not, and neither is denied`,
+    note("permission_prompt") === "report" && note("idle_prompt") === "pass"
+      && hookDecide(rmReq, { FLEET_SELF_TOKEN: "x" }).kind === "pass",
+    `permission_prompt=${note("permission_prompt")} idle_prompt=${note("idle_prompt")}`);
 }
 
 console.log(rows.join("\n"));

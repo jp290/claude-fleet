@@ -7,7 +7,7 @@ set -u
 # Same hermetic reason as e2e-isolated.sh: launched from inside a lane, this script's env
 # carries the pane's scoped credentials, and tmux bakes its server env into every pane it
 # spawns. Strip them so the server's OWN issuing logic is the only source of a self token.
-unset FLEET_SELF_TOKEN FLEET_SELF_SLOT FLEET_STEWARD_TOKEN
+unset FLEET_SELF_TOKEN FLEET_SELF_SLOT FLEET_SELF_URL FLEET_SELF_LANE FLEET_STEWARD_TOKEN
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # SOCK/PORT/DIR from $$ so concurrent runs never share a socket/port. The port base comes from
 # the PORT BAND TABLE in e2e-isolated.sh — never pick one here. It moved off 15200 because

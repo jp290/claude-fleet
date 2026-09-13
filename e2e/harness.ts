@@ -191,7 +191,8 @@ export const readText = async (p: string): Promise<string> => {
 let probeSeq = 1;
 export async function paneEnv(target: string, varName: string, timeoutMs = 20_000): Promise<string | null> {
   const marker = `envprobe-${varName.toLowerCase().replaceAll("_", "-")}-${probeSeq++}`;
-  const line = new RegExp(`^${marker}=\\[([0-9a-zA-Z._/-]*)\\]$`, "m");
+  // `:` admitted for FLEET_SELF_URL (http://host:port); still no quote, space or `$` a pane could echo back
+  const line = new RegExp(`^${marker}=\\[([0-9a-zA-Z._/:-]*)\\]$`, "m");
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await tmuxOut("send-keys", "-t", target, `printf '${marker}=[%s]\\n' "$${varName}"`, "Enter");

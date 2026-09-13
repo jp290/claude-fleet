@@ -1259,7 +1259,8 @@ curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 
 **Nicht lane-only, und das ist eine Entscheidung, kein Versehen.** Die lane-only Routen sind es,
 weil ihre Antwort außerhalb einer Lane undefiniert ist (`drift`, `gate`, `criterion`,
-`verify-intent`, `suite-offer`, `wave/split`, `clarifications`, `notes` + `notes/:id/verdict`);
+`verify-intent`, `suite-offer`, `wave/split`, `clarifications`, `notes` + `notes/:id/verdict`,
+`harness-block`);
 `tasks/:id/notes` ist nicht-lane-only, weil eine Lane die Zeile AUSFÜHRT, auf die sie gegründet
 wurde — sie wählt nicht, wogegen die Zeilen gearbeitet werden, die ihre eigene MAIN freigibt;
 `watch` ist nicht-lane-only, weil eine Lane, die auf eine Lane wartet, eine
@@ -1960,6 +1961,74 @@ will, joint das Outcome-Ledger, nie eine Pane.
 fremde oder programmlose Lane schließen, einen dirty- oder `ahead>0`-Baum töten, Text in eine Pane
 schreiben, oder vom Dispatch-Tick aus laufen — nichts auf dem Lane-START-Pfad beendet eine Lane. Der
 Worktree bleibt liegen wie nach jedem Kill.
+
+## harness-block — `POST /api/self/harness-block`
+
+**Wer erfährt, dass eine Lane an einem Dialog hängt, den nur ein Mensch beantworten kann.**
+Gemessener Anlass (2026-09-13): Lane `2d3c8f44` (Slot 5) stand im Bypass-Modus auf Claude Codes
+„Dangerous rm operation on possibly-empty variable path: $SP/$v … Do you want to proceed? ❯ 1. Yes /
+2. No“. Kein Fleet-Sensor sah es (`server.ts#paneReadiness` kennt Blocks nur für codex/pi), und ein
+Server-Paste+Enter hätte die vorausgewählte „1. Yes“ getroffen.
+
+**Zwei Hälften, und nur die zweite ist diese Route.** `.claude/settings.json` (getrackt) registriert
+`.claude/hooks/lane-permission.ts` zweimal:
+
+- **`PermissionRequest` → `decide`** (synchron, rein lokal, kein Netz): in einer Lane gibt der Hook
+  `decision.behavior: "deny"` mit einem Grund aus, der die Anfrage WÖRTLICH zitiert und eine sichere
+  Umformulierung nennt (für ein `rm` mit ungeschützter Variable `"${SP:?}/${v:?}"`). Außerhalb einer
+  Lane gibt er NICHTS aus — Claude Code fragt dann genau wie ohne Hook. Exit ist immer 0: kaputtes
+  Hook-JSON blockiert nie (Exit 2 wäre blockierend).
+- **`PermissionRequest` und `Notification` (`permission_prompt|elicitation_dialog|agent_needs_input`)
+  → `report`** (`async: true`, das Netz verzögert also nie eine Entscheidung): POST an diese Route.
+  `idle_prompt` ist bewusst nicht dabei — eine idle Lane ist das normale Ende eines Zuges, und die
+  done-looking-Sensoren sehen sie ohnehin.
+
+**Gemessen mit Kontrolle** (claude 2.1.270, Scratch-tmux, `--dangerously-skip-permissions`): ohne
+Hook erscheint der Dialog; mit dem Deny-Hook erscheint er nicht, das Modell bekommt den Grund als
+Tool-Fehler und macht mit dem nächsten Schritt weiter, ohne dass jemand tippt; der Report-POST kommt
+an. `permission_prompt` feuert auch im Bypass-Modus (6 s nach dem Dialog). **Was ein Hook NICHT
+bekommt:** den Fragetext des Dialogs — die Eingabe trägt nur `tool_name` + `tool_input`. Der Grund
+zitiert darum die Anfrage, nicht die Frage.
+
+**Das Lane-Kriterium ist `FLEET_SELF_LANE='1'`,** gebacken von `server.ts#ensureSlot` aus
+`s.worktree` — demselben Prädikat, auf das jede lane-only Route hier 409 antwortet (auch diese).
+`FLEET_SELF_SLOT` steht seit `d02f1ec` in JEDER Pane und taugt dafür nicht. Daneben backt
+`ensureSlot` `FLEET_SELF_URL` (`http://<FLEET_HOST>:<FLEET_PORT>`): die Pane hat sonst keine
+Host-Quelle, und in eine getrackte Datei darf keine. Eine Pane, die vor diesem Schnitt gespawnt
+wurde, trägt beides nicht — der Hook reicht dort `ask` durch, bis zum nächsten Spawn.
+
+```
+curl -s -X POST "$FLEET_SELF_URL/api/self/harness-block" \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"signal":"denied","tool":"Bash","detail":"for v in a; do rm -rf $SP/$v; done"}'
+```
+
+- **Der Body trägt genau `signal` (`denied`|`waiting`), `tool` (String oder null) und `detail`**;
+  jedes weitere Feld ist 400. Slot, Branch und Empfänger kommen aus der Token-Zeile. `detail` wird
+  serverseitig auf `HARNESS_BLOCK_DETAIL_MAX` (300) gekappt und jede 32+-Hex-Folge zu `…` redigiert
+  — der Hook tut es auch, der Server verlässt sich nicht darauf.
+- **Empfänger:** die LIVE gebundene Program-MAIN der Lane (Pane-Zustellung, `receiverIdleSec: 0`),
+  sonst die Owner-Inbox. Nicht die Empfängerkette der Reports: die kann ablehnen, und eine hängende
+  Lane ist genau der Fakt, der nicht mangels Watch abgelehnt werden darf.
+- **Dedupe:** eine OFFENE `harness-block`-Zeile je (Lane-Belegung, Empfänger, `key`, `escalated`);
+  `key` = sha256(signal, tool, detail), 16 Hex. Ein zweiter gleicher Aufruf erzeugt keine Zeile, er
+  hebt `payload.count` der offenen. Antwort `{ok, event, deduped, count, escalated}`.
+- **Eskalation ab dem 3. gleichen Aufruf** (`HARNESS_BLOCK_ESCALATE_AT`): der erste Deny ist ein
+  Ausrutscher, der zweite gleiche ist der wörtliche Retry, den der Deny-Text noch zulässt, der dritte
+  sagt, dass der Text nicht wirkt — eine Schleife, die einen Menschen braucht. Sie bekommt EINE
+  eigene Zeile (`escalated: true`), auch solange die erste ungelesen ist. Gezählt wird im
+  Serverprozess je Belegung; ein Neustart vergisst die Zählung.
+- **Budget:** bei einer MAIN `server.ts#slotDeliveryBudget` (`free === 0` ⇒ 409, nichts gemintet);
+  für die Owner-Inbox ein eigener Deckel `HARNESS_BLOCK_INBOX_MAX` (10 offene), damit eine
+  schleifende Lane keine Reports verdrängt und umgekehrt.
+- **Trail:** JEDER Aufruf schreibt genau eine `harness_block`-Zeile in `audit.jsonl` — gemintet,
+  dedupliziert oder übersprungen — mit Signal, Tool, Key, Zählung und Empfänger, nie mit dem Token.
+- **Ablehnungen:** 401 ohne/mit unbekanntem Token · 409 `not a lane` für eine Nicht-Lane · 400 für
+  einen fremden Body · 409 ohne Zustellbudget.
+
+**Außerhalb dieses Schnitts:** ein Push an den Owner (eigener Punkt „Decision-Push“), codex/pi
+(dort bleibt der Bildschirm-Muster-Weg), merge-/review-Worker (sie laufen mit
+`--setting-sources ""` und laden die Datei nicht).
 
 ## land — `POST /api/self/tasks/:id/land`
 

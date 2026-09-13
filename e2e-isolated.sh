@@ -15,7 +15,9 @@ set -u
 # the export widened from lanes to every session with a cwd — MORE required, in fact: the check is
 # no longer "absent" (which contamination made fail loudly) but "present and equal to THIS slot's
 # persisted token", and an inherited credential would be a wrong value, not a missing one.
-unset FLEET_SELF_TOKEN FLEET_SELF_SLOT FLEET_STEWARD_TOKEN
+# FLEET_SELF_URL / FLEET_SELF_LANE (2026-09-13) for the same reason: an inherited LANE flag would make a
+# plain test pane read as a lane, and e2e/self-token.ts asserts the plain pane shows none.
+unset FLEET_SELF_TOKEN FLEET_SELF_SLOT FLEET_SELF_URL FLEET_SELF_LANE FLEET_STEWARD_TOKEN
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # SOCK/PORT/DIR are derived from $$ so concurrent runs (e.g. two worktree lanes)
 # never share a socket/port — one run's kill-server can't hit another's server.

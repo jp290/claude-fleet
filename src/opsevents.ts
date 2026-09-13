@@ -16,7 +16,7 @@ export interface FleetEventRow {
   delivery?: "pane" | "inbox";
   kind: "lane-ready" | "host-commit-ready" | "merge-terminal" | "post-land-audit"
     | "deploy-terminal" | "command-job" | "lane-suite" | "clarification-request" | "fleet-report"
-    | "supervisor-transition";
+    | "supervisor-transition" | "harness-block";
   subjectSlot?: number; subjectBranch?: string; subjectCwd?: string;
   subjectRepo?: string; subjectMainAfter?: string; subjectDeployId?: string; subjectJobId?: string;
   payload?: Record<string, unknown>;
@@ -109,6 +109,7 @@ export const OPS_POLL_PAYLOAD_KEYS: Readonly<Record<FleetEventRow["kind"], reado
   "clarification-request": [],
   "fleet-report": ["status", "taskId"],
   "supervisor-transition": [],
+  "harness-block": ["signal", "tool", "count", "escalated"],
 };
 
 export function opsPollRow(e: OpsPollSource): OpsPollRow {
@@ -158,6 +159,10 @@ export function opsSummary(e: OpsPollRow): string {
   // the branch rides along because a preview row names no slot the owner could look the tree up by:
   // the lane that offered it is usually gone by the time he reads this.
   // the TRUE count, not the length of the sample the row carries (it is capped at three)
+  if (e.kind === "harness-block")
+    return `${p.signal === "denied" ? "dialog DENIED" : "WAITING for a person"}`
+      + ` · ${typeof p.tool === "string" ? p.tool : "—"} · ${typeof p.count === "number" ? p.count : 1}×`
+      + (p.escalated === true ? " · ESCALATED" : "");
   if (e.kind === "lane-suite")
     return `result=${String(p.result)} · ${String(p.branch)}`
       + ` · ${typeof p.failCount === "number" ? p.failCount : 0} failure(s)`;

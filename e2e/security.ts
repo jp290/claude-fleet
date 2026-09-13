@@ -106,6 +106,11 @@ const PRE_AUTH_ROUTES = [
   // and no body field can nominate one; the body is the closed three-value status plus length-capped
   // text. The row is report-only: no land, dispatch, auto, Watch or tick gates on its status.
   '= /api/self/fleet-report',
+  // The harness-block door (2026-09-13): a lane's own Claude Code hook reporting a dialog it denied or
+  // is stuck on. POST only, lane-only (a recognized non-lane gets 409), closed three-field body; the
+  // receiver is derived from the lane's live Program-MAIN binding or is the owner inbox, never named
+  // by the body. It mints a notification row and grants nothing: no land, dispatch, auto or Watch.
+  '= /api/self/harness-block',
   // The PROGRAM INBOX, the durable pull half of the same back-channel, and the narrowest entry on
   // this list: both verbs are PROGRAM-BOUND on top of the non-lane rule — the caller must be the
   // current bound MAIN of an ACTIVE Program (boundProgramForMain, slot AND openedAt), so a lane, a

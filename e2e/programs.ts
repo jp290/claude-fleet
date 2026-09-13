@@ -10326,6 +10326,13 @@ exit 0
     const m5MainBeforeReap = main2Of();
     const m5R = await m1Land("m5 reap", "m5-reap.txt");
     const m5RLanded = await ffrDone(m5R.row);
+    // `done` is not "the chain ended" — the same window (8e iii) waits out (c7fc3b32): landLane marks
+    // the task done before its remaining awaits, and the hold goes back only in the merge job's
+    // `finally`. Measured here on second-host job 62d460bbc9c5: gateRuns 1, note ok, `lockLeft: true`.
+    // Bounded, so a hold never given back still exists after 10 s and stays red.
+    const m5FreeT0 = Date.now();
+    while (existsSync(ffrLock) && Date.now() - m5FreeT0 < 10_000) await Bun.sleep(50);
+    const m5FreeWaitMs = Date.now() - m5FreeT0;
     const m5RMain = main2Of();
     const m5RNote = ((): M5Verdict => {
       try {
@@ -10339,7 +10346,8 @@ exit 0
         && m5RNote.verify?.ok === true && m5RNote.verify?.waitedOut === undefined
         && !existsSync(ffrLock),
       JSON.stringify({ fired: m5R.fired, done: m5RLanded, gateRuns: m5RRuns,
-        mainMoved: m5RMain !== m5MainBeforeReap, note: m5RNote.verify, lockLeft: existsSync(ffrLock) }));
+        mainMoved: m5RMain !== m5MainBeforeReap, note: m5RNote.verify, lockLeft: existsSync(ffrLock),
+        waitedForLockMs: m5FreeWaitMs }));
 
     // (ii) GEGENPROBE — THE MANUAL PARK. A dir with NO pid file is a human taking this machine off
     // the board, and it is the one lock state that never resolves on its own. The reaper must walk
@@ -10658,6 +10666,11 @@ exit 0
     spawnSync("kill", [m2Occ]);
     rmSync(ffrLock, { recursive: true, force: true }); // the machine frees up mid-round
     const m2Landed = await ffrDone(m2W.row);
+    // the same bounded wait as (8e iii) and (i) M5: the hold of the round that ran goes back in the
+    // merge job's `finally`, after the task already reads done
+    const m2FreeT0 = Date.now();
+    while (existsSync(ffrLock) && Date.now() - m2FreeT0 < 10_000) await Bun.sleep(50);
+    const m2FreeWaitMs = Date.now() - m2FreeT0;
     const m2Main = main2Of();
     const m2Note = m2NoteOf(m2Main);
     check("(i) M2: a land denied the machine stays RUNNING and says which round it is in — waitRound 1 with the instant it asked, nothing spawned, and the occupant still holding the lock",
@@ -10669,7 +10682,7 @@ exit 0
     check("(i) M2: …and it LANDS in that round — the second hold takes the freed mutex, the gate runs exactly once, and main moves onto the lane's work",
       m2Landed && m2Main !== m2MainBefore && ffrLogRuns().length === 1 && !existsSync(ffrLock),
       JSON.stringify({ done: m2Landed, mainMoved: m2Main !== m2MainBefore,
-        gateRuns: ffrLogRuns().length, lockLeft: existsSync(ffrLock) }));
+        gateRuns: ffrLogRuns().length, lockLeft: existsSync(ffrLock), waitedForLockMs: m2FreeWaitMs }));
     // THE NOTE, for the same reason (8e ii) reads it and not the verdict: the land tore the lane
     // down, and the note is what outlives it. Three facts, each false on its own if the round was
     // not really spent — the count, the gate verdict of the round that RAN, and a queue at least

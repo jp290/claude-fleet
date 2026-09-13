@@ -3832,3 +3832,54 @@ NUR in `e2e/slots.ts`, in keinem Register. Eine Flake-Familie ohne Registereintr
 Form: die naechste Session liest sie korrekt als Regress und sucht in ihrem eigenen Diff.
 **Rate: UNGEZAEHLT** — eine Sichtung, und `docs/e2e-trail.md` ist noch nicht dagegen gerechnet.
 Wer sie das naechste Mal sieht, rechnet sie dort und traegt die Zahl hier nach.
+
+### 11.2w Eine vierundzwanzigste Familie: der Self-Land-Check „a REPAIRED candidate … lands" in `e2e/programs.ts` — KEIN Sonden-Flake, sondern ein PRODUKTFEHLER im Dispatch-Tail (2026-09-13 registriert; Mechanismus am Code gelesen, Interleaving per Latch ERZWUNGEN; REPARIERT in `<fix-sha>`)
+
+**Fingerprint** (Detail der Check-Zeile, seit dem 2026-09-12 traegt sie die Note der Zeile):
+
+> `"row":"queued","note":"dispatch failed: slot changed before submit; lane kept (git status failed — worktree gone?)"`
+
+daneben `res:200, body.running:true, selfLand:"green-only"` — der Self-Land wurde ANGENOMMEN und
+lief; die Zeile stand danach trotzdem auf `queued`.
+
+**Sichtungen, ueber beide Register gerechnet:** Mac-Trail 2 von 312 Laeufen, die den Check
+enthalten (`isolated-20260912T200247Z-81908` auf `aa830e16`, `isolated-20260912T213002Z-1922` auf
+`993506a0`; Detail bis auf Ids identisch) · second-host-Post-Land-Audits 2 von 94 gemessenen
+(54 gruen + 40 rot seit dem ersten Trail-Eintrag des Checks am 2026-08-24; `a10af8de` und
+`cefbfabb`, dort jeweils der EINZIGE Fail; das Ledger traegt kein Detail, die Note ist dort nicht
+gelesen). **Alle vier Sichtungen liegen ab 2026-09-12 20:02Z** — vorher 0 Rot in ~300 Laeufen. Was
+das Fenster seitdem trifft, ist NICHT gemessen; der Mechanismus unten braucht es nicht, er erklaert
+das Rot ohne Timing-Annahme ueber die Rate.
+
+**Mechanismus** (am Code gelesen, Schritt fuer Schritt):
+
+1. `server.ts#dispatchTask` setzt die Zeile auf `sent` und gibt `briefAndSend(…)` als `tail`
+   zurueck; die Owner-Route `POST /api/tasks/:id/dispatch` wartet NICHT darauf
+   (`r.tail.catch(() => {})`). Der Gruendungsbrief laeuft also DETACHED: `FOUNDING_BOOT_GRACE_MS`
+   (4 s), Gates, Readiness, Kontextplan, dann `sendText`.
+2. Die Self-Land-Sektion fuehrt Rot-Land, No-Progress-Retry, Reparatur-Commit und den zweiten
+   Self-Land in wenigen Sekunden nach dem Dispatch aus — innerhalb dieses Fensters. (Trail:
+   `already landed` → `red gate` ~4 s, `red gate` → `no-progress` 53 ms.)
+3. Der reparierte Land laeuft durch `server.ts#landLane`: `removeWorktreeSafe`, dann die Zeile auf
+   `done` („landed (<branch>)"), dann `killSlot` → `teardownSlotOccupant` leert `cwd`/Occupant.
+4. Das haengende `sendText` prueft `sameBoundPane` — der Occupant ist weg — und wirft
+   `slot changed before submit` (bzw. `… before paste`, je nach Zeile, an der es steht).
+5. Der `catch` von `briefAndSend` ruft `requeue`: `removeWorktreeSafe` scheitert am schon
+   entfernten Baum (`git status failed — worktree gone?` → „lane kept"), und die Funktion schrieb
+   **bedingungslos** `next.status = "queued"` — ueber die gelandete `done`-Zeile. Dieselbe Schreibung
+   hat ebenso den `pending` eines Abbruchs (`detachSlotTasks`) zu `queued` gemacht.
+
+**Reparatur** (`server.ts#briefAndSend`, `requeue`): Besitz wird ZUERST gelesen, vor jedem
+Teardown — nur Zeilen, die noch `sent` auf diesem Slot stehen, darf der Tail zuruecksetzen; laeuft
+auf der eigenen Lane ein Merge (`mergeInflight`/`mergeStart`), beruehrt er weder Baum noch Zeile.
+Sonst schreibt er nichts und hinterlaesst `dispatch_requeue_skipped` im `audit.jsonl`. Weder der
+Progress-Guard noch die Land-Promotion sind angefasst.
+
+**Sonde** (`e2e/lanes-lifecycle.ts`, Requeue-Familie, Block (c)): parkt den Tail per
+`FLEET_TEST_SEND_BEFORE_PASTE_LATCH` an einer bekannten Zeile, landet die Lane waehrend des Parkens
+(Vorbedingungen als eigene Checks: geparkt · gelandet und `done`), gibt den Latch frei und verlangt
+`done` + `landed …`-Note + die Skip-Zeile. **Ohne Fix rot** (Mutation: die Besitz-Pruefung
+entfernt und die Schleife wieder ueber alle Wellenzeilen) mit genau dem Fingerprint:
+`"status":"queued","note":"dispatch failed: slot changed before paste; lane kept (git status failed — worktree gone?)"`.
+
+**Ein Rot dieses Checks NACH `<fix-sha>` ist wieder ECHT.**

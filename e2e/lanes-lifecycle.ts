@@ -270,6 +270,59 @@ export async function run(lc: LaneCtx): Promise<void> {
     if (typeof slotD === "number") await post(`/api/slots/${slotD}/kill`, {});
     if (cwdD) spawnSync("git", ["worktree", "remove", "--force", cwdD], { cwd: REPO });
     await post("/api/autos/switch", { on: true });
+
+    // (c) A LANDED ROW IS NOT THE TAIL'S TO REQUEUE. The founding brief is delivered by a DETACHED
+    // tail (briefAndSend), and a lane can land inside that window: landLane marks the row `done`
+    // and kills the slot, the pending send then throws "slot changed …", and the requeue used to
+    // write the landed row back to `queued` (e2e trail 2026-09-12, the self-land progress guard's
+    // "REPAIRED candidate" check, twice with note `dispatch failed: slot changed before submit;
+    // lane kept (git status failed — worktree gone?)`). The interleaving is FORCED, not timed:
+    // the send-before-paste latch parks the tail at a known line, the land runs to completion
+    // while it is parked, and only then is the tail released.
+    // Mutation caught: dropping the ownership read at the top of briefAndSend#requeue.
+    const latch = `${ROOT}/requeue-landed-latch`;
+    for (const f of [latch, `${latch}.reached`, `${latch}.release`]) rmSync(f, { force: true });
+    const marker = `requeue-landed-probe-${Date.now()}`;
+    writeFileSync(latch, marker, { mode: 0o600 });
+    await restartSrv({ FLEET_TEST_SEND_BEFORE_PASTE_LATCH: latch });
+    await post("/api/dispatch", { on: false }); // a requeued row must not be re-dispatched under the check
+    const rlId = ((await (await post("/api/tasks", { text: marker })).json()) as { task: { id: string } }).task.id;
+    const rlStart = await post(`/api/tasks/${rlId}/dispatch`, {});
+    const rlSlot = ((await rlStart.json()) as { slot?: number }).slot;
+    let rlReached = false;
+    for (let i = 0; i < 300 && !rlReached; i++) { rlReached = exists(`${latch}.reached`); if (!rlReached) await Bun.sleep(50); }
+    check("landed-requeue probe setup: the founding send is PARKED at the pre-paste latch",
+      rlStart.ok && typeof rlSlot === "number" && rlReached, `${rlStart.status} slot=${rlSlot} reached=${rlReached}`);
+    const rlCwd = (await sess()).slots.find((s) => s.id === rlSlot)?.cwd ?? "";
+    let rlLanded = false;
+    let rlAtLand: Sess["tasks"][number] | undefined;
+    if (rlReached && typeof rlSlot === "number" && rlCwd) {
+      writeFileSync(`${rlCwd}/requeue-landed.txt`, "landed while the brief was parked\n");
+      spawnSync("git", ["-C", rlCwd, "add", "requeue-landed.txt"]);
+      spawnSync("git", ["-C", rlCwd, "commit", "-qm", "requeue landed probe"]);
+      await settleForMerge(rlSlot);
+      await post(`/api/slots/${rlSlot}/merge`, {});
+      rlLanded = (await waitMerge(rlSlot)).gone;
+      rlAtLand = rowOf(await sess(), rlId);
+    }
+    check("landed-requeue probe setup: the lane LANDED while the tail was parked, and the land retired the row",
+      rlLanded && rlAtLand?.status === "done" && !exists(`${latch}.release`),
+      JSON.stringify({ landed: rlLanded, row: rlAtLand }));
+    writeFileSync(`${latch}.release`, "release\n", { mode: 0o600 });
+    // the tail's terminal is either the row moving or its skip line on the trail — polled, never slept
+    const rlSkipped = (): boolean => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n")
+      .some((l) => l.includes('"dispatch_requeue_skipped"') && l.includes(rlId));
+    let rlAfter = rowOf(await sess(), rlId);
+    for (let i = 0; i < 200 && rlAfter?.status === "done" && !rlSkipped(); i++) {
+      await Bun.sleep(50);
+      rlAfter = rowOf(await sess(), rlId);
+    }
+    check("a row landed under a parked founding brief STAYS done — the released tail requeues nothing it no longer owns",
+      rlLanded && rlAfter?.status === "done" && (rlAfter.note ?? "").startsWith("landed") && rlSkipped(),
+      JSON.stringify({ row: rlAfter, skipped: rlSkipped() }));
+    await post(`/api/tasks/${rlId}/delete`, {});
+    for (const f of [latch, `${latch}.reached`, `${latch}.release`]) rmSync(f, { force: true });
+    await restartSrv();
   }
 
   // --- ↻ restart: the one slot verb that is NOT a teardown. Every other exit (kill, shelve, the

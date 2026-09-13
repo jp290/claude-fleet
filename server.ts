@@ -10042,8 +10042,25 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // Two paths reach here with the slot no longer ours or the tree adopted by another session; both
   // are read from the live slot list, and `next.slot` is cleared either way — a `queued` row must
   // not keep pointing at a slot it has let go of. History: server-narrativ-archiv.md#briefandsend
+  //
+  // THE TAIL IS DETACHED, so another path may have finished with this lane before it gets here —
+  // and a row this tail no longer owns is not its to write. Measured 2026-09-12 (e2e trail,
+  // `dispatch failed: slot changed before submit; lane kept (git status failed — worktree gone?)`):
+  // a lane landed inside the ~5 s founding window, landLane marked the row `done` and killed the
+  // slot, the pending sendText then threw, and this requeue put the landed row back on `queued`.
+  // The same write overwrote an abort's `pending` (detachSlotTasks) with `queued`. So ownership is
+  // read FIRST, before the teardown below detaches anything: a row still `sent` on this slot. And a
+  // land that is RUNNING on this lane owns it outright — no teardown under its rebase, no row write
+  // it would then fail to retire; it ends the row itself.
   const requeue = async (note: string): Promise<void> => {
     const ours = free.cwd === wt.path && free.worktree?.branch === wt.branch;
+    const landing = ours && (mergeInflight.has(free.id) || mergeStart.has(free.id));
+    const owned = waveRows.filter((row) => row.status === "sent" && row.slot === free.id);
+    if (landing || owned.length === 0) {
+      audit("dispatch_requeue_skipped", free.id,
+        `${next.id} ${landing ? "land running" : `row is ${next.status}`} (${wt.branch}): ${note}`.slice(0, 240));
+      return;
+    }
     const other = slots.find((s) => s.id !== free.id && s.cwd === wt.path);
     let kept = "";
     if (other) {
@@ -10053,17 +10070,14 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       if (fail) kept = `; lane kept (${fail.error.split("\n")[0]})`;
       else if (ours) await killSlot(free, "reopen");
     }
-    next.status = "queued";
-    next.slot = null;
-    next.note = `${note}${kept}`.slice(0, 200);
-    // EVERY row of the wave, not only the head. This path tears the lane down, so a follower left
-    // on `sent` would point at a slot that no longer holds it — and `queued` is right here for the
-    // same reason it is right for the head: a post-spawn hold is transient and the dispatcher picks
-    // the row up again. (An ABORT is the other shape and keeps its own answer: detachSlotTasks.)
-    for (const follower of wave?.followers ?? []) {
-      follower.status = "queued";
-      follower.slot = null;
-      follower.note = next.note;
+    // EVERY OWNED row of the wave, not only the head. This path tears the lane down, so a follower
+    // left on `sent` would point at a slot that no longer holds it — and `queued` is right here for
+    // the same reason it is right for the head: a post-spawn hold is transient and the dispatcher
+    // picks the row up again. (An ABORT is the other shape and keeps its own answer: detachSlotTasks.)
+    for (const row of owned) {
+      row.status = "queued";
+      row.slot = null;
+      row.note = `${note}${kept}`.slice(0, 200);
     }
     saveState();
   };

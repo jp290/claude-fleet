@@ -15,7 +15,7 @@
 // no flag runs every step, byte-for-byte the sequence below. The trail family runs in every shard
 // (it audits its own process's rows). Each shard needs its own server instance: e2e-isolated.sh
 // derives SOCK/PORT/DIR from $$, so `FLEET_E2E_SHARD=k/n ./e2e-isolated.sh` per shard is enough.
-import { REPO, SOCK, check, failures, results } from "./e2e/harness";
+import { REPO, SOCK, check, failures, post, results } from "./e2e/harness";
 import { newCtx, parseShard, shardPlan, SHARD_UNITS, type LaneCtx, type StewardCtx } from "./e2e/ctx";
 import * as contextPacks from "./e2e/context-packs";
 import * as contextPlan from "./e2e/context-plan";
@@ -277,6 +277,19 @@ const steps: Step[] = [
 const unitMs = new Map<string, number>();
 let completed = false;
 try {
+
+// THE BASE FIXTURE OF A SHARD WITHOUT `core`. The whole suite opens slot 1 and slot 2 in its first
+// server-touching family (slots.ts, same two calls, same cwds) and never closes them before
+// restart.ts — so every module in between meets an open PLAIN slot 2 and uses it as its
+// non-worktree negative control (`/api/slots/2/diff|land|shelve|risk|commit|merge` → 400). A shard
+// that skips slots.ts must re-create that world or those controls measure "no such slot" instead:
+// `--shard 2/4` on 2026-09-13 failed `shelve rejects a non-worktree slot` exactly so. Shard mode
+// only; the flag-less run reaches this state through slots.run() as before.
+if (myUnits && !myUnits.has("core")) {
+  const o1 = await post("/api/slots/1/open", { cwd: "~/claude-fleet" });
+  const o2 = await post("/api/slots/2/open", { cwd: "~" });
+  if (!o1.ok || !o2.ok) throw new Error(`shard base fixture: slot 1 → ${o1.status}, slot 2 → ${o2.status}`);
+}
 
 for (const step of steps) {
   if (step.lane && !REPO) continue;

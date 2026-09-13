@@ -8,7 +8,7 @@ import { CONTEXT_PLAN_OMISSION_REASONS, planContext } from "../context-plan";
 import { createHash } from "node:crypto";
 import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, observedSourceHash, planRepoContext,
   readContextManifest, stampObservedSourceHashes } from "../context-manifest";
-import { SNIPPET_BLOCK_MAX_BYTES, SNIPPET_CONTEXT_LINES, buildSnippetPackage, definitionLines,
+import { SNIPPET_BLOCK_MAX_BYTES, SNIPPET_CONTEXT_LINES, SNIPPET_OMISSION_MAX_BYTES, buildSnippetPackage, definitionLines,
   planSnippets, renderSnippetBlock, snippetPathRefusal, symbolSpan,
   type SnippetFile, type SnippetRow } from "../context-snippets";
 
@@ -301,11 +301,17 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
   const escaped = pack("siehe ../outside.ts#alphaOne und /etc/shadow.ts#alphaOne und link.ts#alphaOne");
   // …and the bare `alphaOne` those three lines also contain must NOT become a hit in alpha.ts: the
   // brief chose files, all three were refused, and a same-named symbol elsewhere is not the answer.
-  check("snippets: a path escape, an absolute path and a symlink deliver NO excerpt, each with its reason",
-    escaped.built.shown.length === 0 && escaped.block === ""
+  // …and the refusals are IN the block although nothing was shown: a lane told nothing about a
+  // source its brief named goes looking for exactly that source.
+  check("snippets: a path escape, an absolute path and a symlink deliver NO excerpt, each with its reason — visibly",
+    escaped.built.shown.length === 0 && !escaped.block.includes("```")
     && escaped.built.omitted.map((entry) => entry.why).join(",")
-      === "path-outside-repo,path-outside-repo,not-a-regular-file",
-    JSON.stringify(escaped.built.omitted));
+      === "path-outside-repo,path-outside-repo,not-a-regular-file"
+    && escaped.block === "\n\nQuellpaket — kein Ausschnitt aus c0ffee0c0ffe; im Brief genannt, aber nicht geliefert:\n"
+      + "ausgelassen: ../outside.ts#alphaOne (path-outside-repo) · /etc/shadow.ts#alphaOne (path-outside-repo)"
+      + " · link.ts#alphaOne (not-a-regular-file)"
+    && escaped.built.bytes === new TextEncoder().encode(escaped.block).byteLength,
+    JSON.stringify({ omitted: escaped.built.omitted, block: escaped.block }));
 
   // (3) A SYMBOL THE TREE DOES NOT HAVE, and one it has TWICE. Neither may pick "some hit": the
   // brief named one thing, and choosing among candidates would be the module inventing the answer.
@@ -316,10 +322,62 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     JSON.stringify(missing.built.omitted));
   const twoRows: SnippetRow[] = [{ id: "t1", files: ["alpha.ts"] }, { id: "t2", files: ["beta.ts"] }];
   const ambiguous = pack("lies `alphaOne`", twoRows, snipFiles("alpha.ts", "beta.ts"));
-  check("snippets: a bare symbol defined in two surface files is symbol-ambiguous and delivers nothing",
+  check("snippets: a bare symbol defined in two surface files is symbol-ambiguous, delivers no excerpt, and says so",
     ambiguous.built.shown.length === 0
-    && JSON.stringify(ambiguous.built.omitted) === JSON.stringify([{ ref: "#alphaOne", why: "symbol-ambiguous" }]),
-    JSON.stringify(ambiguous.built.omitted));
+    && JSON.stringify(ambiguous.built.omitted) === JSON.stringify([{ ref: "#alphaOne", why: "symbol-ambiguous" }])
+    && !ambiguous.block.includes("```") && ambiguous.block.endsWith("\nausgelassen: #alphaOne (symbol-ambiguous)")
+    && missing.block.endsWith("\nausgelassen: alpha.ts#alphaMissing (symbol-not-found)"),
+    JSON.stringify({ omitted: ambiguous.built.omitted, block: ambiguous.block, missing: missing.block }));
+
+  // (3b) THE PRIVATE OVERLAY AND OPERATIVE STATE: named, refused by name, and not one byte of content.
+  // The tree listing omits them today only because they are gitignored — this is the rule without that.
+  const privTracked = new Map([...snipTracked, [".env", "100644"], ["fleet.json", "100644"]]);
+  const privPlan = planSnippets({ briefText: "lies CLAUDE.md#secret .env#TOKEN fleet.json#slots",
+    rows: snipRows, tracked: privTracked });
+  const privBuilt = buildSnippetPackage(privPlan, [], { rows: snipRows, commit: "c0ffee0c0ffee" });
+  const privBlock = renderSnippetBlock(privBuilt);
+  // `.env#TOKEN` is not even a reference (the path token needs an extension), so the path gate is
+  // asserted on its own for it — a later widening of the pattern must still meet the refusal.
+  check("snippets: CLAUDE.md, .env and fleet.json are private-source — planned for no read, listed in the block",
+    privPlan.reads.length === 0 && privBuilt.shown.length === 0
+    && snippetPathRefusal(".env", privTracked) === "private-source"
+    && privBuilt.omitted.map((entry) => `${entry.ref}:${entry.why}`).join(",")
+      === "CLAUDE.md#secret:private-source,fleet.json#slots:private-source"
+    && privBlock.endsWith("ausgelassen: CLAUDE.md#secret (private-source) · fleet.json#slots (private-source)"),
+    JSON.stringify({ reads: privPlan.reads, omitted: privBuilt.omitted, block: privBlock }));
+
+  // (3c) ONLY PROSE MISSED: bare tokens with no surface to search are the brief's words, not sources.
+  const prose = planSnippets({ briefText: "die Lane liest deliveredBytes und blobModes", rows: [], tracked: snipTracked });
+  const proseBlock = renderSnippetBlock(buildSnippetPackage(prose, [], { commit: "c0ffee0c0ffee" }));
+  check("snippets: a brief whose only misses are bare prose tokens renders nothing",
+    prose.omitted.length === 2 && proseBlock === "", JSON.stringify({ omitted: prose.omitted, block: proseBlock }));
+
+  // (3d) A LONG LIST OF MISSES is cut under its own ceiling and counts what it cut; the named ones
+  // come before the prose tokens, and the whole block still honours the cap.
+  const manyBrief = Array.from({ length: 120 }, (_, i) => `alpha.ts#missingSymbolNumber${i}`).join(" ")
+    + " sowie proseTokenOne";
+  const many = planSnippets({ briefText: manyBrief, rows: [], tracked: snipTracked });
+  const manyBuilt = buildSnippetPackage(many, snipFiles("alpha.ts"), { commit: "c0ffee0c0ffee" });
+  const manyBlock = renderSnippetBlock(manyBuilt);
+  const manyLine = manyBlock.split("\n").find((line) => line.startsWith("ausgelassen: ")) ?? "";
+  check("snippets: only omissions, 121 of them — the line is cut at its ceiling, names the cut count, named refs first",
+    manyBuilt.shown.length === 0 && manyBuilt.omitted.length === 121
+    && manyBuilt.listed > 0 && manyBuilt.listed < 121
+    && new TextEncoder().encode(manyLine).byteLength <= SNIPPET_OMISSION_MAX_BYTES
+    && manyLine.endsWith(` · … ${121 - manyBuilt.listed} weitere gekuerzt`)
+    && manyLine.startsWith("ausgelassen: alpha.ts#missingSymbolNumber0 (symbol-not-found)")
+    && !manyLine.includes("proseTokenOne")
+    && manyBuilt.bytes === new TextEncoder().encode(manyBlock).byteLength
+    && manyBuilt.bytes <= SNIPPET_BLOCK_MAX_BYTES,
+    JSON.stringify({ listed: manyBuilt.listed, bytes: manyBuilt.bytes, line: manyLine.slice(-120) }));
+  const tinyCap = buildSnippetPackage(many, snipFiles("alpha.ts"), { commit: "c0ffee0c0ffee", maxBytes: 200 });
+  const belowHeader = buildSnippetPackage(many, snipFiles("alpha.ts"), { commit: "c0ffee0c0ffee", maxBytes: 40 });
+  check("snippets: a small cap shortens an omission-only block until it fits; below the header it delivers nothing",
+    tinyCap.listed >= 1 && tinyCap.listed < manyBuilt.listed
+    && new TextEncoder().encode(renderSnippetBlock(tinyCap)).byteLength <= 200
+    && tinyCap.bytes === new TextEncoder().encode(renderSnippetBlock(tinyCap)).byteLength
+    && renderSnippetBlock(belowHeader) === "" && belowHeader.bytes === 0,
+    JSON.stringify({ listed: tinyCap.listed, bytes: tinyCap.bytes, below: belowHeader.bytes }));
 
   // (4) WHAT COUNTS AS A MENTION. A qualified reference and a camelCase/backticked token, never an
   // ALL-CAPS heading — `AUFTRAG` and `DONE` are the brief's own furniture and resolve nothing.

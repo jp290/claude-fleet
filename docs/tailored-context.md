@@ -139,16 +139,18 @@ already applies to `.env`.)
 
 ### 6a. The source package (`context-snippets.ts`, 2026-09-12)
 
-> **Status:** the pure building block exists and is checked (`e2e/context-plan.ts`, thirteen
-> `snippets:` checks). It is NOT yet wired into `briefAndSend` — the delivery seam is held by other
-> lanes; the integration is one named hunk waiting on the owning MAIN.
+> **Status:** wired into `server.ts#briefAndSend` (§6b) and checked twice — hermetically in
+> `e2e/context-plan.ts` (the `snippets:` checks) and on a real dispatch in `e2e/tasks.ts` (d3). A
+> functional land is not an effect: whether lanes read less is measured afterwards, on lanes that ran
+> with the block.
 
 The checklist below asks a brief to "establish the relevant environment". Until now the brief could
 only POINT: the anchor block names a file and a heading and copies no source, and the notes block
 hands over what someone *wrote* about a surface. Neither gets the lane to the code. The measured
-price of that last step is `docs/messungen/opus-lane-kontextkosten-2026-09-12.md` §17-32 — a median
-of 52 Bash calls before an Opus lane's first file change, with 153 of 187 observed lanes reaching
-their first *commit* before any of them.
+price of that last step is `docs/messungen/opus-lane-kontextkosten-2026-09-12.md` — a median of 52
+Bash calls before an Opus lane's first PRODUCTIVE MARKER, which that note defines as the first
+`Edit`, `Write`, `NotebookEdit` or `git commit`. It is not the first file change: for 153 of the 187
+lanes the first marker observed is the commit, and a write through Bash before it is not counted.
 
 `context-snippets.ts` closes that one gap and nothing more. It reads the symbols the brief itself
 names — `path#symbol`, a backticked token, or a camelCase token — and returns the exact lines of
@@ -167,65 +169,60 @@ Four properties are the whole design, and each was paid for by a wrong first ver
 - **A label may never out-claim its excerpt.** Overlaps merge only after every range is final: an
   earlier version fused four symbols 210 lines apart, then clipped the result and shipped a label
   naming three symbols the delivered lines did not contain.
-- **Every refusal has its own name.** Absolute path, `..` escape, symlink, gitlink, untracked,
-  private overlay, unsupported kind, binary, unreadable, symbol-not-found, symbol-ambiguous,
-  budget-exhausted. A qualified reference that was refused also BLOCKS the bare fallback for that
-  symbol — answering `link.ts#alphaOne` with `alpha.ts#alphaOne` is picking some hit and labelling
-  it as the one asked for.
+- **Every refusal has its own name — and is delivered.** Absolute path, `..` escape, symlink,
+  gitlink, untracked, private overlay, unsupported kind, binary, unreadable, symbol-not-found,
+  symbol-ambiguous, budget-exhausted. A qualified reference that was refused also BLOCKS the bare
+  fallback for that symbol — answering `link.ts#alphaOne` with `alpha.ts#alphaOne` is picking some
+  hit and labelling it as the one asked for. A source the brief named but that yields no excerpt
+  still renders a block (`kein Ausschnitt … im Brief genannt, aber nicht geliefert`) under the same
+  cap; the omission line has its own ceiling (`SNIPPET_OMISSION_MAX_BYTES`), lists what the brief
+  named before prose tokens, and a cut list says how many it no longer names. Only a brief whose
+  misses are all bare prose tokens, or that names no symbol, renders nothing.
 
 What it does not do: it never widens a lane's surface, never confirms a `files` list, never judges a
 note, and a CLARIFY lane receives no package at all — for the exit footer's reason, that such a lane
 was told to settle what done means and stop.
 
-### 6b. The integration seam — one hunk, not yet applied
+### 6b. The integration seam
 
-`server.ts` was held by another lane when the block was built, so the wiring is written down here
-rather than applied. Three places, and two of them are one-liners.
+Three places in `server.ts`, and the draft this section used to carry (written against an older
+tree) was wrong in one of them: it cut the excerpts at `head`.
 
-**(a) the import**, beside the `./context-plan` line:
-`import { buildSnippetPackage, planSnippets, renderSnippetBlock, type SnippetFile } from "./context-snippets";`
+**(a) the listing carries modes.** `server.ts#treeListingAt` is the one `ls-tree -r` parse; it
+returns tracked paths, blob shas and git's MODE per path, and `server.ts#repoManifestContextPlan`
+passes `blobModes` out beside `blobShas`. The mode is required because it is the only thing
+separating a regular blob from a SYMLINK, and a symlink is the escape no path check sees.
 
-**(b) `server.ts#repoManifestContextPlan`** — its `ls-tree` loop already reads every line; only the
-MODE is thrown away. Add `blobModes: ReadonlyMap<string, string>` to the return type, change
-`const [, type, sha]` to `const [mode, type, sha]`, add `if (mode) blobModes.set(path, mode);` beside
-the `blobShas` line, and carry `blobModes` out of both `return`s. `programMainContextPlan`
-destructures only `repoPlan`/`blobShas` and needs no change. The mode is required because it is the
-only thing separating a regular blob from a SYMLINK, and a symlink is the escape no path check sees.
+**(b) the commit is the LANE'S, not the integration tip.** `head` in `briefAndSend` is
+`integrationHead` — read after the ~4 s founding boot grace, so main may already have moved past the
+commit the worktree forked from. An excerpt from there names lines the lane's own files do not have.
+`server.ts#laneSnippetBlock` reads `HEAD` in the lane's tree, reuses the head listing only when both
+commits are the same and lists the lane commit otherwise, reads exactly the planned files as raw
+blobs (size-bounded by `CONTEXT_MANIFEST_MAX_SOURCE_BYTES`), and renders one package for all rows of
+the lane — a wave shares the single 8192-byte cap. A lane commit that cannot be read throws, and the
+catch requeues, exactly as for an unreadable integration head.
 
-**(c) `server.ts#briefAndSend`** — destructure `blobModes`, hoist `const repoRoot = await
-repoRootOf(wt.repo);`, and after `notesBlock`, before `studioLaneBlock`:
+**(c) `server.ts#briefAndSend`** — after `notesBlock`, `snippetBlock` (empty for a clarify lane),
+then the slot identity is re-checked before the send (every await since the readiness wait was git or
+state work), and the delivered bytes are
+`${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`.
+claude, codex and pi receive the same text through `sendText`.
 
-```ts
-const snipRows = waveRows.map((row) => ({ id: row.id, files: taskView(row).files ?? [] }));
-const snippetPlan = clarify ? null : planSnippets({ briefText: brief, tracked: blobModes, rows: snipRows });
-const snippetFiles: SnippetFile[] = [];
-for (const path of snippetPlan?.reads ?? []) {
-  const read = await gitReadRaw(repoRoot, "show", `${head}:${path}`);
-  snippetFiles.push({ path, text: read.code === 0 ? read.out : null, blob: blobShas.get(path) ?? null });
-}
-const snippetBlock = snippetPlan
-  ? renderSnippetBlock(buildSnippetPackage(snippetPlan, snippetFiles, { commit: head, rows: snipRows }))
-  : "";
-```
-
-then `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`.
-
-Two details are not negotiable. **`gitReadRaw`, never `gitRead`:** `gitRead` trims, and losing a
+Two details are not negotiable. **Raw bytes, never `gitRead`:** `gitRead` trims, and losing a
 leading blank line shifts every line number after it by one — precisely the number the label claims.
 **The position before `anchorBlock`:** the context receipt hashes the anchor block ALONE, so anything
 appended after it would be hashed as an anchor. `deliveredBytes` then follows by itself, because it
-is computed from `deliveredBrief`; no receipt field is needed, since the version and the selection
+is computed from `deliveredBrief`; no receipt field is added, since the version and the selection
 are in the delivered block (path, symbol, lines, blob, commit) and checkable there.
 
-**(d) the integration check belongs in `e2e/tasks.ts` (d3)** — the Fleet-tree dispatch, the only
-place that delivers inside a REAL git repository (`ROOT`; `fleet-e2e.ts` otherwise runs from a
-staging copy that is no worktree at all). Extend `fBrief` with one qualified reference; the existing
-`fPrompt.startsWith(fBrief + "\n\nContextPlan v2 anchors")` must then find the anchor block by
-`indexOf`, because the source package sits between them. Then two assertions: the delivered excerpt
-is byte-identical to `git show <fHead>:<path>` cut at the lines the label itself names, and
-`fReceipt.deliveredBytes === byteLength(fPrompt)` with the block present. The mutation that removes
-`${snippetBlock}` from `deliveredBrief` reds the first one — no "Quellpaket" in `fPrompt`. That check
-is SPECIFIED here, not run: without the surface it cannot be, and it is not claimed as if it were.
+**(d) the integration check is `e2e/tasks.ts` (d3)** — the Fleet-tree dispatch, the only place that
+delivers inside a REAL git repository (`ROOT`). It commits a fixture (a padded `.ts` file and a
+symlink to it) into ROOT, dispatches, and moves main inside the boot grace with the symbol's lines
+shifted and its body changed. Asserted: the receipt's head is the moved tip, the block names the
+lane commit, the excerpt equals the lane commit's blob at the label's own lines and differs from
+main's lines there, the symlink reference is `not-a-regular-file` and an absent symbol is listed, and
+`fReceipt.deliveredBytes === byteLength(fPrompt)`. Removing `${snippetBlock}` from `deliveredBrief`
+reds the excerpt check (no "Quellpaket" in the prompt).
 
 ### 6c. The head order of a dispatched brief — the KARTE first (queue row a672b626, 2026-09-13)
 
@@ -236,7 +233,7 @@ head in FRONT of its prose. The order of a single-row dispatch, as `server.ts#br
    `FLAECHE` · `DONE` · `VERIFY` · `VERBOTEN`, closed by `--- AUFTRAG ---`; at most 1.5 KB
    (`CARD_HEAD_MAX_BYTES`, per-field byte budgets, a final clip as guard).
 2. **the prose** — `brief ?? text`, unchanged; the card is a reading of it, never a replacement.
-3. notes block · studio lane block · anchor block · exit footer — order and bytes unchanged.
+3. notes block · source package (§6b) · studio lane block · anchor block · exit footer.
 
 A wave brief does the same per row (`renderWaveBrief`: each `--- ZEILE n VON m ---` opens with that
 row's head when it has a valid card). The receipt books `briefSource: "card"` whenever the head was

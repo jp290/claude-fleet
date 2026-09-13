@@ -33,6 +33,7 @@ import {
 } from "./rulebook";
 import { validateRefineProposal, type RefineValidation } from "./refine-validate";
 import { planContext, type ContextPlan, type ContextPlanInput, type ContextPlanSelection } from "./context-plan";
+import { buildSnippetPackage, planSnippets, renderSnippetBlock, type SnippetFile } from "./context-snippets";
 import {
   CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest,
   stampObservedSourceHashes, type ContextManifestRead,
@@ -10360,7 +10361,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // merge Program-MAIN founding does, deliberately with no frame branch: a Fleet-only or
     // foreign-only rule would be a second, quieter policy. `repoRootOf` throws → the catch requeues.
     const base = planContext(planFacts);
-    const { repoPlan, blobShas } = await repoManifestContextPlan(await repoRootOf(wt.repo), head, planFacts);
+    const { repoPlan, blobShas, blobModes } = await repoManifestContextPlan(await repoRootOf(wt.repo), head, planFacts);
     const plan: ContextPlan = {
       selected: stampObservedSourceHashes([...base.selected, ...repoPlan.selected], blobShas),
       omitted: [...base.omitted, ...repoPlan.omitted] };
@@ -10430,7 +10431,15 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
         noteCandidates.filter((n) => n.status === "pending" || pinnedIds(waveRows).has(n.id)));
     const noteRows = laneSources.reachable;
     const notesBlock = renderNotesBlock(laneSources.shown, undefined, laneSources.overflow);
-    const deliveredBrief = `${brief}${notesBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`;
+    // THE SOURCE PACKAGE (docs/tailored-context.md §6a): the exact lines of the symbols the brief
+    // names, cut from the LANE'S commit — `head` above is the integration tip, and main may have
+    // moved since the worktree forked. POSITION before the studio block and the anchors, for the
+    // anchors' reason: the receipt hashes the anchor block alone. Clarify gets none, like the notes.
+    const snippetBlock = clarify ? "" : await laneSnippetBlock(wt.path, head, { blobShas, blobModes }, brief, waveRows);
+    // Every await since the readiness wait was git or state work, and a kill or re-open in that window
+    // must not receive this text — the same re-check the boot sleep gets, at the last moment it helps.
+    if (identityLost()) { await requeue("slot changed during brief assembly — requeued"); return; }
+    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     await sendText(free, deliveredBrief, true);
@@ -10471,6 +10480,38 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   } catch (e) {
     await requeue(`dispatch failed: ${e instanceof Error ? e.message : e}`.slice(0, 120));
   }
+}
+
+// The lane's source package, rendered (context-snippets.ts). THE COMMIT IS THE LANE'S OWN HEAD, read
+// from its tree — never the integration tip, which moves under a lane that already forked: an excerpt
+// from there would name lines the lane's files do not have. The listing is reused when both commits
+// agree and read again when they do not, modes included, because the mode is what refuses a symlink.
+// Only the files the plan names are read, raw (a trimmed read shifts every line number the label
+// claims), size-bounded; a file this seam could not read is `source-unreadable` in the block.
+async function laneSnippetBlock(lanePath: string, head: string,
+  headListing: { readonly blobShas: ReadonlyMap<string, string>; readonly blobModes: ReadonlyMap<string, string> },
+  brief: string, rows: readonly Task[]): Promise<string> {
+  const rev = await gitRead(lanePath, "rev-parse", "--verify", "HEAD^{commit}");
+  if (rev.code !== 0 || !/^[0-9a-f]{40,64}$/.test(rev.out)) throw new Error("could not read the lane commit for the source package");
+  const commit = rev.out;
+  const listing = commit === head ? { ok: true, ...headListing } : await treeListingAt(lanePath, commit);
+  if (!listing.ok) throw new Error("could not list the lane commit for the source package");
+  const snipRows = rows.map((row) => ({ id: row.id, files: taskView(row).files ?? [] }));
+  const plan = planSnippets({ briefText: brief, tracked: listing.blobModes, rows: snipRows });
+  const files: SnippetFile[] = [];
+  for (const path of plan.reads) {
+    const blob = listing.blobShas.get(path) ?? null;
+    let text: string | null = null;
+    if (blob) {
+      const size = await gitRead(lanePath, "cat-file", "-s", blob);
+      if (size.code === 0 && /^\d+$/.test(size.out) && Number(size.out) <= CONTEXT_MANIFEST_MAX_SOURCE_BYTES) {
+        const read = await gitReadRaw(lanePath, "cat-file", "blob", blob);
+        if (read.code === 0) text = read.out;
+      }
+    }
+    files.push({ path, text, blob });
+  }
+  return renderSnippetBlock(buildSnippetPackage(plan, files, { commit, rows: snipRows }));
 }
 
 type ContextReceiptSelection = {
@@ -22579,25 +22620,27 @@ async function showAtHead(repoRoot: string, head: string, path: string, maxBytes
 // so a receipt names the version of each source it pointed at — seed and repo pack alike — for the
 // cost of the `ls-tree` this seam already ran. NOTHING is read to compute a version; only the
 // manifest's own sources are read, and only because the validator checks their anchors.
-async function repoManifestContextPlan(repoRoot: string, head: string,
-  facts: Omit<ContextPlanInput, "sourceTree">): Promise<{ repoPlan: ContextPlan; blobShas: ReadonlyMap<string, string> }> {
-  const raw = await showAtHead(repoRoot, head, CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES);
-  const manifest: ContextManifestRead = raw.kind === "unread"
-    ? { kind: "invalid", detail: "manifest could not be read at head within its byte bound" }
-    : readContextManifest(raw.kind === "bytes" ? raw.text : null);
-
-  // ONE listing, two readers: `trackedPaths` gates what the validator may believe, and the blob
-  // shas beside them ARE the source versions the receipt stamps. `-r` without `--name-only` costs
-  // the same call and adds the object name — a path that is quoted here (a name with a control
-  // character) is quoted under `--name-only` too, so tracked-path behaviour is unchanged.
-  // It runs even with no manifest: the Fleet seeds still need their version.
+type TreeListing = {
+  readonly ok: boolean;
+  readonly trackedPaths: ReadonlySet<string>;
+  readonly blobShas: ReadonlyMap<string, string>;
+  /** git's own mode per path — the only thing separating a regular blob from a SYMLINK or gitlink. */
+  readonly blobModes: ReadonlyMap<string, string>;
+};
+// ONE listing, three readers: `trackedPaths` gates what the validator may believe, the blob shas
+// beside them ARE the source versions the receipt stamps, and the modes gate the source package.
+// `-r` without `--name-only` costs the same call and adds the object name — a path that is quoted
+// here (a name with a control character) is quoted under `--name-only` too, so tracked-path
+// behaviour is unchanged.
+async function treeListingAt(dir: string, commit: string): Promise<TreeListing> {
   const trackedPaths = new Set<string>();
   const blobShas = new Map<string, string>();
-  const tracked = await gitRead(repoRoot, "ls-tree", "-r", head);
+  const blobModes = new Map<string, string>();
+  const tracked = await gitRead(dir, "ls-tree", "-r", commit);
   if (tracked.code === 0) for (const line of tracked.out.split("\n")) {
     const tab = line.indexOf("\t");
     if (tab < 0) continue;
-    const [, type, sha] = line.slice(0, tab).split(" ");
+    const [mode, type, sha] = line.slice(0, tab).split(" ");
     const path = line.slice(tab + 1);
     if (!path) continue;
     // A submodule entry (`commit`) is TRACKED but has no blob: it stayed in this set under
@@ -22605,9 +22648,23 @@ async function repoManifestContextPlan(repoRoot: string, head: string,
     // pack pointing at one from "anchor unchecked" to "untracked" — a different sentence about the
     // same undeliverable pack.
     trackedPaths.add(path);
+    if (mode) blobModes.set(path, mode);
     if (type === "blob" && sha) blobShas.set(path, sha);
   }
-  if (manifest.kind === "absent") return { repoPlan: { selected: [], omitted: [] }, blobShas };
+  return { ok: tracked.code === 0, trackedPaths, blobShas, blobModes };
+}
+
+async function repoManifestContextPlan(repoRoot: string, head: string,
+  facts: Omit<ContextPlanInput, "sourceTree">): Promise<{ repoPlan: ContextPlan; blobShas: ReadonlyMap<string, string>;
+    blobModes: ReadonlyMap<string, string> }> {
+  const raw = await showAtHead(repoRoot, head, CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES);
+  const manifest: ContextManifestRead = raw.kind === "unread"
+    ? { kind: "invalid", detail: "manifest could not be read at head within its byte bound" }
+    : readContextManifest(raw.kind === "bytes" ? raw.text : null);
+
+  // It runs even with no manifest: the Fleet seeds still need their version.
+  const { trackedPaths, blobShas, blobModes } = await treeListingAt(repoRoot, head);
+  if (manifest.kind === "absent") return { repoPlan: { selected: [], omitted: [] }, blobShas, blobModes };
 
   const sourceBytes = new Map<string, string>();
   if (manifest.kind === "packs") {
@@ -22619,7 +22676,7 @@ async function repoManifestContextPlan(repoRoot: string, head: string,
       if (bytes.kind === "bytes") sourceBytes.set(path, bytes.text);
     }
   }
-  return { repoPlan: planRepoContext({ manifest, repo: { trackedPaths, sourceBytes }, facts }), blobShas };
+  return { repoPlan: planRepoContext({ manifest, repo: { trackedPaths, sourceBytes }, facts }), blobShas, blobModes };
 }
 
 // The Fleet seeds and the repository's own declared packs land in ONE plan and one receipt. In a

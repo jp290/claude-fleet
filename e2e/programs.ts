@@ -10044,7 +10044,7 @@ exit 0
     // a land WITHOUT the ff latch: the retry chain is never reached (the gate stops the land long
     // before the fast-forward), so arming it would leave this waiting for a `reached` file that
     // cannot appear.
-    const m1Land = async (name: string, file: string): Promise<{ row: string; slot: number | null; fired: boolean }> => {
+    const m1Land = async (name: string, file: string): Promise<{ row: string; slot: number | null; fired: boolean; refusal?: string }> => {
       for (const f of [ffrLatch, `${ffrLatch}.reached`, `${ffrLatch}.release`]) try { rmSync(f); } catch { /* absent */ }
       const row = await makeTask({ text: `m1 ${name}`, programId: ffrProgram.id, repo: REPO2 });
       ffrRows.push(row);
@@ -10055,7 +10055,11 @@ exit 0
         spawnSync("git", ["-C", lane.cwd, "commit", "-qm", `m1 ${name}`]);
       }
       if (lane.slot !== null) { ffrLanes.push(lane.slot); await waitDoneLooking(lane.slot); }
-      return { row, slot: lane.slot, fired: ffrTok === "" ? false : (await selfLand(ffrTok, row)).ok };
+      if (ffrTok === "") return { row, slot: lane.slot, fired: false, refusal: "no MAIN token" };
+      // the door's own words ride along when it refuses: `fired:false` alone cannot say WHICH rung
+      // stopped the land (first seen on second-host job 8f6f445167f9, arm (iv), no text to read)
+      const r = await selfLand(ffrTok, row);
+      return { row, slot: lane.slot, fired: r.ok, ...(r.ok ? {} : { refusal: `${r.status} ${(await r.text()).slice(0, 300)}` }) };
     };
     const m1AuditBefore = m1AuditRows().length;
     const m1MainBefore = main2Of();
@@ -10379,7 +10383,7 @@ exit 0
         && (m5DVerdict.verify?.out ?? "").includes("suite mutex: NOT TAKEN")
         && m5DVerdict.verify?.waitMs === undefined
         && m5LockPid() === m5Occupant && ffrAlive(m5Occupant),
-      JSON.stringify({ fired: m5D.fired, verify: m5DVerdict?.verify,
+      JSON.stringify({ fired: m5D.fired, refusal: m5D.refusal, slot: m5D.slot, verify: m5DVerdict?.verify,
         lockPid: m5LockPid(), occupant: m5Occupant }));
 
     ffrReset();

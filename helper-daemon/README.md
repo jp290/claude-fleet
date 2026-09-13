@@ -38,9 +38,12 @@ answer it, and all it does is switch a box on so it can start pulling.
   anything: the moment the grace lapses the local drain takes the job, which is the same fallback
   the expiry rail above provides, one step earlier.
   **AND IT ONLY EVER HOLDS A JOB THIS DAEMON COULD ACTUALLY TAKE** (2026-09-08, `server.ts`, grep
-  `helperClaimBar`). Three kinds of audit entry are never offered — a repo whose audit is its own
+  `helperClaimBar`). Four kinds of audit entry are never offered — a repo whose audit is its own
   repo-worker executable, an entry whose every land passed the docs-only gate (the Fleet audits that
-  one with install+pins in seconds), and a parked entry with no command — and the Fleet's drain asks
+  one with install+pins in seconds), a parked entry with no command, and (2026-09-13) a repo whose
+  tree fails the Fleet audit command's own `[ -f … ] ||` guard or has no `package.json` for this
+  daemon's install — measured 2026-09-02: private-repo-p was bundled and cloned here twice to end in
+  `exit 127`, where the same entry declines locally in 223 ms. The Fleet's drain asks
   the same predicate the job list and the claim door do, so none of them waits out the grace for an
   offer that could never arrive.
   **THE OFFSET RUNS FROM CLAIMABILITY, NOT FROM THE LAND** (2026-09-07, `server.ts`, grep

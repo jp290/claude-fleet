@@ -15453,7 +15453,7 @@ const coverKey = (c: AuditCover): string => `${c.branch}\u0000${c.mainAfter}\u00
 const entryRunsShortChain = (repo: string, covers: AuditCover[]): boolean =>
   covers.length > 0 && covers.every((c) => c.proportional === true) && repoRunsShortChain(repo);
 // COULD ANY HELPER EVER TAKE THIS ENTRY — one predicate, four readers, and the reason it is not
-// four lists. The answer is "no" for three different reasons, they sit at three different doors
+// four lists. The answer is "no" for several different reasons, they sit at three different doors
 // (the claim, the job list, the wake rail) and a fourth reader — the drain's grace — has to ask the
 // same question to know whether waiting for an offer buys anything. Until 2026-09-08 each site
 // carried its own hand-copy of the reasons, and BOTH directions of that drift were already live:
@@ -15465,7 +15465,23 @@ const entryRunsShortChain = (repo: string, covers: AuditCover[]): boolean =>
 //
 // `null` IS "a helper could take it" — the ok case is the empty one, so a new arm added here is
 // refused everywhere at once instead of silently offered by whichever door forgot it.
-type HelperClaimBar = "unconfigured" | "repo-worker" | "short-chain";
+type HelperClaimBar = "unconfigured" | "repo-worker" | "foreign-tree" | "short-chain";
+// THE PRECONDITION A GUARDED AUDIT COMMAND DECLARES, read off the command itself. The live env
+// default opens with `[ -f fleet-e2e.ts ] || { … exit 42; }` (watchdog.sh#AUDIT_CMD): locally that
+// guard turns a foreign repo into a 223 ms `unknown exit 42`. The helper never runs that string — it
+// runs `bun install --frozen-lockfile` and then its own `cfg.suiteCmd` (helper-daemon/daemon.ts#work)
+// — so on the remote path nothing stood in front of the tree. Measured 2026-09-02
+// (post-land-audits.jsonl, 02131402): private-repo-p was bundled, sent to the second-host and cloned there
+// twice, to end in `exit 127, Bun could not find a package.json`, 92 and 152 ms of measuring nothing.
+// SO: a command that carries such a guard names the files it needs, and a helper additionally needs
+// `package.json` for the install it always runs first. A command with NO guard declares nothing this
+// server can read — the harness stand-in, an owner's own script — and is offered exactly as before.
+// Read at the repo TOPLEVEL, the tree the bundle is built from, with the same existsSync the short
+// chain's own sentinel uses (repoRunsShortChain) — synchronous by necessity, see helperClaimBar.
+function auditCmdPreconditions(cmd: string): string[] {
+  const guards = [...cmd.matchAll(/\[ -f ([\w./-]+) \] \|\|/g)].map((m) => m[1]!);
+  return guards.length ? [...new Set([...guards, "package.json"])] : [];
+}
 function helperClaimBar(repo: string, covers: AuditCover[]): HelperClaimBar | null {
   const chosen = auditCmdFor(repo);
   // nobody's work until something is configured — parked, and (in the drain) not runnable HERE either
@@ -15474,6 +15490,11 @@ function helperClaimBar(repo: string, covers: AuditCover[]): HelperClaimBar | nu
   // handing it a repo's OWN audit executable would measure the wrong suite and file it under the
   // right repo
   if (chosen.source === "repo-worker") return "repo-worker";
+  // …and the tree the env default was never written for: its own guard would decline it here in
+  // milliseconds, and a helper would bundle, transfer and clone the whole repo to learn the same.
+  // Not offered, so the drain runs it at once and it lands as the guard's `unknown exit 42`.
+  const root = repoCanon(repo);
+  if (auditCmdPreconditions(chosen.cmd).some((f) => !existsSync(`${root}/${f}`))) return "foreign-tree";
   // …and the same argument in the other direction: this tree's measurement is install+pins, seconds
   // here, and a helper would spend ~9 minutes of another machine running the FULL suite and file the
   // result as if the short chain had been the question
@@ -15488,6 +15509,8 @@ function helperClaimBar(repo: string, covers: AuditCover[]): HelperClaimBar | nu
 const HELPER_CLAIM_BAR_REASON: Record<HelperClaimBar, string> = {
   unconfigured: "no audit command is configured for this repo — the entry is parked, not offered",
   "repo-worker": "this repo's audit is its own repo-worker command — it runs on this machine only, never offered",
+  "foreign-tree": "this repo's tree lacks what the audit command's own guard requires (plus the package.json a helper installs from)"
+    + " — the guard declines it on this machine in milliseconds, never offered",
   "short-chain": "every land in this entry passed the docs-only gate — it is audited by the short chain"
     + " (install+pins) on this machine only, never offered",
 };
@@ -17433,8 +17456,8 @@ function helperJobsView(forDevice?: string): {
   for (const [repo, q] of auditQueue) {
     if (!q.covers.length) continue;
     // NOT OFFERED: an entry no helper could ever take — a repo whose audit is its own repo-worker
-    // executable, one with no command at all, one every land of which passed the docs-only gate.
-    // The three reasons and the argument for each are helperClaimBar's; this door only has to
+    // executable, one with no command at all, one whose tree fails the command's own guard, one every
+    // land of which passed the docs-only gate. The reasons and the argument for each are helperClaimBar's; this door only has to
     // refuse them. The job stays local; nothing is dropped, the drain runs it here and, since it
     // asks the same predicate, does not hold it for a helper first.
     if (helperClaimBar(repo, q.covers)) continue;

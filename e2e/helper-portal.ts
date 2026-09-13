@@ -19,7 +19,8 @@
 // section seeds one instead of reusing the harness's.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { BASE, ROOT, check, get, post } from "./harness";
 import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 
@@ -1518,6 +1519,125 @@ export async function run(h: {
     await post(`/api/helper/devices/${SATBOX}/mode`, { mode: "active" });
     await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
     check("(K9) teardown: the machine is idle with an empty queue",
+      await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0, JSON.stringify((await jobs()).jobs));
+  }
+
+  // ===== (K10) A TREE THE AUDIT COMMAND'S OWN GUARD WOULD DECLINE IS NEVER HANDED OVER ============
+  // Measured 2026-09-02 (post-land-audits.jsonl, 02131402): private-repo-p — no package.json, no
+  // fleet-e2e.ts — was bundled, sent to the second-host and cloned there twice, to come back
+  // `unknown exit 127` after 92 and 152 ms, while the SAME entry run locally was a 223 ms
+  // `unknown exit 42` from the command's own `[ -f fleet-e2e.ts ]` guard. The fix is one more arm of
+  // server.ts#helperClaimBar, read off that guard: not listed, not claimable, no bundle, and the
+  // drain runs it here at once.
+  //
+  // THE FIXTURE: the server runs a GUARDED audit command (the live shape, with the harness stand-in
+  // behind the guard). Three trees land while the drain is held by a fourth: a foreign one (DECOY —
+  // neither file), a half one (the sentinel but no package.json, which the helper's install needs)
+  // and a fleet-shaped control with both. The drain is held by a REPO-WORKER latch rather than a
+  // timed stand-in: a repo-worker entry is never offered and never graced, so it takes the drain at
+  // once and holds it exactly until this section lets go. The control is held for the helper by a
+  // long grace, so "not offered" below can never be read off an entry the drain simply got to first.
+  {
+    const stand = process.env.FLEET_POSTLAND_AUDIT_CMD ?? "";
+    const GUARDED = `[ -f fleet-e2e.ts ] || { echo "audit skipped: not the fleet repo"; exit 42; }; '${stand}'`;
+    const idOf = (dir: string): string => createHash("sha256").update(realpathSync(dir)).digest("hex").slice(0, 12);
+    const fleetShaped = async (dir: string, files: string[]): Promise<void> => {
+      await seedRepo(dir);
+      for (const f of files) await Bun.write(`${dir}/${f}`, f === "package.json" ? "{}\n" : "// the fleet sentinel\n");
+      spawnSync("git", ["-C", dir, "add", "-A"]);
+      spawnSync("git", ["-C", dir, "commit", "-qm", "fleet-shaped tree"]);
+    };
+    const HALF = `${REPO}-guardhalf`;
+    const FLO = `${REPO}-guardfleet`;
+    const BLK = `${REPO}-guardblock`;
+    await fleetShaped(HALF, ["fleet-e2e.ts"]);
+    await fleetShaped(FLO, ["fleet-e2e.ts", "package.json"]);
+    await seedRepo(BLK);
+    const REL = `${REPO}-guardblock.release`;
+    const LATCH = `${REPO}-guardblock-audit`;
+    await Bun.write(LATCH, ["#!/bin/sh",
+      `i=0; while [ ! -f ${JSON.stringify(REL)} ] && [ "$i" -lt 400 ]; do sleep 0.2; i=$((i + 1)); done`,
+      'echo "PASS  guard section blocker released"', 'echo "ALL PASS"', "exit 0"].join("\n"));
+    chmodSync(LATCH, 0o755);
+
+    await killSrv();
+    check("(K10) setup: the server restarts with a GUARDED audit command, a long grace, and a work budget the latch fits in",
+      stand.startsWith("/") && await startSrv({ audit: true, extra: { FLEET_POSTLAND_AUDIT_CMD: GUARDED,
+        FLEET_POSTLAND_AUDIT_TIMEOUT_MS: "120000", FLEET_AUDIT_HELPER_GRACE_MS: "120000",
+        FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: "120000" } }),
+      `stand-in=${stand}`);
+    await Bun.sleep(750);
+    await setAuditMode("green");
+    await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
+    await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.1 });
+    const blkSet = await post("/api/repo-worker", { repo: BLK, worker: "audit", cmd: LATCH });
+    const blkLane = await openLane(BLK, "guardblock");
+    const blkLanded = await driveMerge(blkLane, blkLane.branch);
+    check("(K10) setup: a repo-worker latch holds the drain",
+      blkSet.ok && blkLanded.gone && await waitLocalRun(BLK), `set=${blkSet.status} live=${await liveRepo()}`);
+
+    const foreignBefore = (await rowsFor(DECOY)).length;
+    const halfBefore = (await rowsFor(HALF)).length;
+    const floBefore = (await rowsFor(FLO)).length;
+    for (const [dir, name] of [[DECOY, "guardforeign"], [HALF, "guardhalf"], [FLO, "guardfleet"]] as const) {
+      const ln = await openLane(dir, name);
+      await driveMerge(ln, ln.branch);
+    }
+    const floSha = spawnSync("git", ["-C", FLO, "rev-parse", "main"]).stdout.toString().trim();
+    const listed = (await jobs()).jobs;
+    const floJob = listed.find((j) => j.repo === base(FLO));
+    check("(K10) setup: the fleet-shaped control is queued and offered, and its id is the sha256 of its realpath",
+      !!floJob && floJob.kind === "audit" && floJob.id === idOf(FLO) && floJob.claim === null
+        && (await liveRepo()) === base(BLK),
+      `${JSON.stringify(listed.map((j) => `${j.repo}:${j.kind}:${j.id}`))} want=${idOf(FLO)} live=${await liveRepo()}`);
+
+    // MUTATION: delete the `foreign-tree` arm from helperClaimBar ⇒ DECOY and HALF are listed and
+    // their claims answer 200 with a bundle on disk ⇒ both checks below go red.
+    const bundleDir = `${tmpdir()}/fleet-helper-bundles`;
+    const bundlesFor = (id: string): string[] => {
+      try { return readdirSync(bundleDir).filter((f) => f.startsWith(`${id}-`)); } catch { return []; }
+    };
+    const foreignClaim = await hpost("/api/helper/claim", { jobId: idOf(DECOY), deviceId: DEVICE });
+    const foreignErr = ((await foreignClaim.json()) as { error?: string; job?: unknown });
+    const halfClaim = await hpost("/api/helper/claim", { jobId: idOf(HALF), deviceId: DEVICE });
+    const halfErr = ((await halfClaim.json()) as { error?: string; job?: unknown });
+    check("(K10) A FOREIGN TREE IS NOT HANDED OVER: off the list, its claim is a 409 naming the guard, no job object, no bundle built",
+      !listed.some((j) => j.repo === base(DECOY)) && foreignClaim.status === 409
+        && (foreignErr.error ?? "").includes("guard") && foreignErr.job === undefined
+        && bundlesFor(idOf(DECOY)).length === 0,
+      `listed=${listed.some((j) => j.repo === base(DECOY))} ${foreignClaim.status} ${JSON.stringify(foreignErr)} bundles=${bundlesFor(idOf(DECOY))}`);
+    check("(K10) …and neither is a tree with the sentinel but no package.json — the helper installs before it runs anything",
+      !listed.some((j) => j.repo === base(HALF)) && halfClaim.status === 409
+        && (halfErr.error ?? "").includes("package.json") && bundlesFor(idOf(HALF)).length === 0,
+      `listed=${listed.some((j) => j.repo === base(HALF))} ${halfClaim.status} ${JSON.stringify(halfErr)}`);
+
+    const floClaim = await hpost("/api/helper/claim", { jobId: floJob?.id ?? "", deviceId: DEVICE });
+    const floBody = (await floClaim.json()) as { job?: { mainSha?: string } };
+    const floBundles = bundlesFor(idOf(FLO));
+    check("(K10) THE FLEET-SHAPED CONTROL IS HANDED OVER UNCHANGED — claimed on its landed sha, and its bundle IS in the directory the probe above reads",
+      floClaim.status === 200 && floBody.job?.mainSha === floSha && floBundles.length === 1,
+      `${floClaim.status} ${JSON.stringify(floBody)} want=${floSha} bundles=${JSON.stringify(floBundles)} dir=${bundleDir}`);
+    const floReport = await hpost("/api/helper/result",
+      { jobId: floJob?.id ?? "", exitCode: 0, tail: "PASS  the fleet-shaped control, remote\nALL PASS" });
+
+    await Bun.write(REL, "go\n");
+    const foreignRows = await waitRowsFor(DECOY, foreignBefore + 1, 120_000);
+    const halfRows = await waitRowsFor(HALF, halfBefore + 1, 60_000);
+    const floRows = await waitRowsFor(FLO, floBefore + 1, 30_000);
+    const foreignRow = foreignRows[0];
+    check("(K10) …AND THE FOREIGN ENTRY IS ANSWERED HERE, as the guard's own non-measurement: local, unknown, exit 42",
+      foreignRows.length === foreignBefore + 1 && !!foreignRow && !foreignRow.remote
+        && foreignRow.result === "unknown" && foreignRow.exitCode === 42
+        && foreignRow.out.includes("audit skipped: not the fleet repo"),
+      JSON.stringify(foreignRow).slice(0, 300));
+    check("(K10) …the half tree is run here too (its guard passes locally), and the control's only row is the remote one",
+      halfRows.length === halfBefore + 1 && !halfRows[0]?.remote
+        && floReport.ok && floRows.length === floBefore + 1 && floRows[0]?.remote?.name === DEVICE_NAME
+        && floRows[0]?.mainSha === floSha,
+      `half=${JSON.stringify(halfRows[0]).slice(0, 160)} flo=${JSON.stringify(floRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
+
+    await post("/api/repo-worker", { repo: BLK, worker: "audit", cmd: "" }); // leave the register as found
+    check("(K10) teardown: the machine is idle with an empty queue",
       await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0, JSON.stringify((await jobs()).jobs));
   }
 }

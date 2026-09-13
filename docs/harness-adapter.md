@@ -172,7 +172,14 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
     Suite-Mutex von `e2e-stage.sh` NICHT, die Serialisierung leistet allein der Server; (d) exit 42 aus einem
     Repo-Worker bleibt `unknown` (unconfigured ≠ skipped ≠ grün); (e) **das Helfer-Portal bietet einen
     Audit-Job eines Repos mit Repo-Worker NIE an** — der Daemon kennt nur `cfg.suiteCmd`, ein Claim auf die
-    Job-ID antwortet 409; der Job bleibt lokal. (f) Boot: ein pendender Queue-Eintrag eines Repos ohne
+    Job-ID antwortet 409; der Job bleibt lokal. **Seit 2026-09-13 ebenso nie ein Repo, dessen Baum den
+    Guard des Env-Kommandos nicht erfüllt** (`server.ts#auditCmdPreconditions`, Arm `foreign-tree` von
+    `server.ts#helperClaimBar`): trägt das Kommando ein `[ -f <datei> ] ||`, braucht der Repo-Toplevel diese
+    Datei(en) plus `package.json` (der Daemon installiert immer zuerst), sonst kein Listeneintrag, Claim 409,
+    kein Bundle — und der Drain fährt den Eintrag sofort lokal, wo der Guard ihn als `unknown exit 42`
+    bucht. Anlass: private-repo-p wurde am 2026-09-02 zweimal gebündelt und auf den Second-host geklont, um mit
+    `exit 127` nichts zu messen. Ein Kommando OHNE Guard erklärt keine Vorbedingung und wird wie bisher
+    angeboten. (f) Boot: ein pendender Queue-Eintrag eines Repos ohne
     Kommando wird GEPARKT (geladen, damit der nächste Save eines anderen Repos ihn nicht verwirft; nicht
     gedraint, nicht als `waiting` gezeigt, nicht angeboten) und beim ersten Boot mit Kommando gedraint.
     Beweis: `e2e/repo-worker-audit.ts` via `./e2e-postland-audit.sh` — kein Gate fährt sie.

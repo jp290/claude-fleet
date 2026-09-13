@@ -53,10 +53,67 @@ export interface PhaseMergeFacts {
   last: { status: string; landed: boolean; candidateSha: string | null } | null;
 }
 
-// I6 — the NEWEST lane-outcome row for this task id, or null when the ledger has none.
+// I6 — the NEWEST lane-outcome row for this task id, or null when the ledger has none. `wave` is
+// set only when the row was reached through a land wave's branch (phaseOutcomeFor below), and then
+// names that branch and the head row the outcome row is keyed by.
 export interface PhaseOutcomeFacts {
   disposition: string | null;
   headSha: string | null;
+  wave?: { branch: string; head: string };
+}
+
+// I6 as an index, built ONCE per view off ledger rows the caller has already sorted newest first.
+// Rows without a string taskId belong to no row here and are skipped rather than guessed at — in
+// BOTH maps, so a hand-opened lane's outcome can never be borrowed by a queue row via its branch.
+export interface PhaseOutcomeIndex {
+  byTask: ReadonlyMap<string, PhaseOutcomeFacts>;
+  byBranch: ReadonlyMap<string, { head: string; facts: PhaseOutcomeFacts }>;
+}
+
+export function phaseOutcomeIndex(sortedRows: readonly Record<string, unknown>[]): PhaseOutcomeIndex {
+  const byTask = new Map<string, PhaseOutcomeFacts>();
+  const byBranch = new Map<string, { head: string; facts: PhaseOutcomeFacts }>();
+  for (const row of sortedRows) {
+    const taskId = typeof row.taskId === "string" ? row.taskId : null;
+    if (taskId === null) continue;
+    const facts: PhaseOutcomeFacts = {
+      disposition: typeof row.disposition === "string" ? row.disposition : null,
+      headSha: typeof row.headSha === "string" ? row.headSha : null,
+    };
+    if (!byTask.has(taskId)) byTask.set(taskId, facts);
+    if (typeof row.branch === "string" && row.branch !== "" && !byBranch.has(row.branch))
+      byBranch.set(row.branch, { head: taskId, facts });
+  }
+  return { byTask, byBranch };
+}
+
+// THE WAVE JOIN. A wave lane lands n rows and writes ONE outcome row, keyed by the head's taskId
+// (buildLaneOutcome reads `s.taskId`, which is the head alone) — so every follower read by its own
+// id finds nothing and fell to R2 UNKNOWN although it landed exactly like the head. The follower
+// still names its branch: landLane stamps `landed (<branch>)` on every row it carries, and dispatch
+// stamps `wave lane <branch> (with <head>)`. Both are the server's own sentences, like `waiting:`,
+// never producer prose.
+//
+// The branch alone is not trusted: the outcome row's HEAD must still be a row on the same slot as
+// this one (`t.slot`, the N:1 edge landLane marks by). A head that is gone, or sits on another slot,
+// leaves the row on its own-id join — and so on R2, which is the honest answer when the edge cannot
+// be shown. Only terminal rows take this path; a sent row's outcome (a candidate sha) is untouched.
+const WAVE_BRANCH_NOTE = /^(?:landed \((\S+)\)$|wave lane (\S+) \()/;
+
+export function phaseOutcomeFor(
+  task: { id: string; status: string; note: string | null; slot: number | null },
+  index: PhaseOutcomeIndex,
+  slotOfTask: (id: string) => number | null | undefined,
+): PhaseOutcomeFacts | null {
+  const own = index.byTask.get(task.id) ?? null;
+  if (!TERMINAL.includes(task.status) || task.slot === null || task.note === null) return own;
+  const m = WAVE_BRANCH_NOTE.exec(task.note);
+  const branch = m?.[1] ?? m?.[2];
+  const hit = branch ? index.byBranch.get(branch) : undefined;
+  if (!branch || !hit) return own;
+  if (hit.head === task.id) return hit.facts;
+  if (slotOfTask(hit.head) !== task.slot) return own;
+  return { ...hit.facts, wave: { branch, head: hit.head } };
 }
 
 // I2 + I3 are one field: `lane` is null when no live slot owns the row (the slot triple found
@@ -136,6 +193,8 @@ export const PHASE_RULES: readonly PhaseRule[] = [
     id: "R1", phase: "CONTINUE",
     prose: "terminal status with a landed outcome row",
     holds: (v) => terminal(v) && v.outcome?.disposition === "landed",
+    detail: (v) => v.outcome?.wave
+      ? `joined via wave branch ${v.outcome.wave.branch}, outcome row of head ${v.outcome.wave.head}` : "",
   },
   {
     id: "R2", phase: "UNKNOWN",

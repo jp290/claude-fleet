@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, tmuxOut, typeScreen } from "./harness";
-import { phaseOf, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
+import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { laneDoneLooking, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
 import { setMergeMode, settleForMerge } from "./lane-helpers";
@@ -1568,6 +1568,56 @@ export async function run(ctx: Ctx): Promise<void> {
       && r2reverted.phase === "UNKNOWN" && r2reverted.unknown?.includes("reverted") === true
       && /\d/.test(r2none.unknown ?? "") && /\d/.test(r2reverted.unknown ?? ""),
     JSON.stringify({ r2none, r2reverted }));
+
+  // THE WAVE JOIN (program-phase.ts#phaseOutcomeFor). A wave lane lands n rows and writes ONE
+  // outcome row keyed by the head; landLane stamps `landed (<branch>)` and the slot on all n. Built
+  // through the same index + join the two server views call, over ledger-shaped rows.
+  const wvBranch = "fleet/260912114433-1188";
+  const wvIndex = phaseOutcomeIndex([
+    { ts: 3, taskId: "wvhead", branch: wvBranch, disposition: "landed", headSha: "e".repeat(40) },
+    // the follower's OWN older lane, killed — newest-by-id alone would read this and say UNKNOWN
+    { ts: 2, taskId: "wvfollow2", branch: "fleet/older-lane", disposition: "killed-empty", headSha: null },
+    // a hand-opened lane (no taskId) must never be borrowed by a row naming its branch
+    { ts: 1, branch: "fleet/manual-lane", disposition: "landed", headSha: "f".repeat(40) },
+  ]);
+  const wvSlots: Record<string, number | null> = { wvhead: 7, wvfollow: 7, wvfollow2: 7 };
+  const wvRow = (id: string, over: { status?: string; note?: string | null; slot?: number | null } = {}) => {
+    const t = { id, status: "done", note: `landed (${wvBranch})` as string | null, slot: 7 as number | null, ...over };
+    return phaseOf(phaseInput({ task: { id, kind: "auftrag", status: t.status, note: t.note }, lane: null,
+      outcome: phaseOutcomeFor(t, wvIndex, (tid) => wvSlots[tid]) }));
+  };
+  const wvHead = wvRow("wvhead");
+  const wvFollow = wvRow("wvfollow");
+  const wvFollowKilledBefore = wvRow("wvfollow2");
+  const wvFollowArchived = wvRow("wvfollow", { status: "archived" });
+  // BREAKS IF: the join reads the outcome by taskId alone (the pre-fix server) — the follower then
+  // has no row and lands on R2 "terminal task has no lane-outcome row".
+  check("phase wave (1): two rows landed by ONE wave (one outcome row, taskId = head) project the same terminal phase — the follower via its branch, never UNKNOWN",
+    wvHead.phase === "CONTINUE" && wvFollow.phase === wvHead.phase && wvFollow.unknown === null
+      && wvFollowKilledBefore.phase === "CONTINUE" && wvFollowArchived.phase === "CONTINUE"
+      && wvFollow.candidate.sha === "e".repeat(40)
+      && basisHas(wvFollow, `joined via wave branch ${wvBranch}, outcome row of head wvhead`)
+      && !basisHas(wvHead, "joined via wave branch"),
+    JSON.stringify({ wvHead, wvFollow, wvFollowKilledBefore, wvFollowArchived }));
+
+  const wvNoBranch = wvRow("wvlone", { note: null });
+  const wvUnlandedBranch = wvRow("wvlone2", { note: "landed (fleet/never-recorded)" });
+  // slot recycle: the branch exists, but its head sits on ANOTHER slot than this row
+  const wvOtherSlot = wvRow("wvstray", { slot: 3 });
+  const wvHeadGone = phaseOf(phaseInput({ task: { id: "wvorphan", kind: "auftrag", status: "done",
+    note: `landed (${wvBranch})` }, lane: null,
+    outcome: phaseOutcomeFor({ id: "wvorphan", status: "done", note: `landed (${wvBranch})`, slot: 7 },
+      wvIndex, () => undefined) }));
+  const wvManual = wvRow("wvmanual", { note: "landed (fleet/manual-lane)" });
+  const wvSentFollower = phaseOutcomeFor({ id: "wvfollow", status: "sent", note: `wave lane ${wvBranch} (with wvhead)`, slot: 7 },
+    wvIndex, (tid) => wvSlots[tid]);
+  // BREAKS IF: the branch join fires without the slot guard, on prose that names no recorded branch,
+  // on a taskId-less ledger row, or on a non-terminal row.
+  check("phase wave (2): a terminal row without an outcome row and without a provable wave branch stays UNKNOWN — no note, unrecorded branch, head on another slot, head gone, hand-opened lane",
+    [wvNoBranch, wvUnlandedBranch, wvOtherSlot, wvHeadGone, wvManual].every((r) =>
+      r.phase === "UNKNOWN" && r.unknown?.includes("no lane-outcome row") === true)
+      && wvSentFollower === null,
+    JSON.stringify({ wvNoBranch, wvUnlandedBranch, wvOtherSlot, wvHeadGone, wvManual, wvSentFollower }));
 
   const r3 = phaseOf(phaseInput({ task: { id: "t3", kind: "auftrag", status: "queued", note: null },
     lane: null, openAttention: 1 }));

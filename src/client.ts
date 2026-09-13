@@ -12,9 +12,9 @@ import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
 import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsSubject, opsSummary, type OpsPollRow } from "./opsevents";
 import {
   projectTaskWaves,
-  type ProjectedWaveTask, type TaskWaveProjection, type TaskWaveUnresolved,
+  type ProjectedWaveTask, type TaskCardSize, type TaskWaveProjection, type TaskWaveUnresolved,
 } from "../task-waves";
-import { projectLandWaves, LAND_WAVE_COSTS_2026_09,
+import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_ROWS_MAX,
   type LandWave, type LandWaveCosts, type LandWaveProjection } from "../task-land-waves";
 // the same first-sentence reduction the dispatched notes block renders with — imported rather than
 // re-spelled so the wave evidence and the brief's note lines cut a row at the same place
@@ -268,6 +268,8 @@ interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: 
   briefAt?: number;
   // deterministic file/cluster facts from taskDigest. Absence is UNKNOWN, never an empty surface.
   files?: string[]; filesOrigin?: "confirmed" | "derived";
+  // the row's card size (a valid card only) — the land fold's weight; absent = mittel there
+  size?: TaskCardSize;
   // the PROPOSED surface (W2), carried WHOLE on the poll rather than as a shape digest: `files`
   // above already rides it, and a proposal reduced to a count would be the one list on this row a
   // reader could not hold against the one it is meant to replace — which is the entire act the
@@ -303,7 +305,9 @@ interface TaskRefineFull { at: number; model: string;
   // proposal knowingly or not at all. ABSENT on an `unchanged` proposal, which has no children.
   validation?: { verdict: "pass" | "fail" | "unknown";
     findings: { code: string; severity: "error" | "unknown"; child: number; detail: string }[] } }
-interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string }
+// `waveBudget` is the server's live FLEET_LAND_WAVE_BUDGET: the board's land fold must cut with the
+// number the wave door checks, or it offers waves the door refuses. Absent on an older server.
+interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string; waveBudget?: number }
 let fleet: SlotInfo[] = [];
 // the harness catalogue, fetched ONCE (it is a server constant) the first time the picker opens.
 // Empty until then, and every reader treats empty as "only the default exists" — so a failed or
@@ -7310,9 +7314,10 @@ function qLandWaveProjection(): LandWaveProjection {
   return projectLandWaves({
     tasks: tasksList.map((t) => ({
       id: t.id, repo: t.repo, kind: t.kind, status: t.status, created: t.created,
-      files: t.files, filesOrigin: t.filesOrigin, programId: t.programId,
+      files: t.files, filesOrigin: t.filesOrigin, programId: t.programId, size: t.size,
     })),
     dispatchRepo: dispatch.repo,
+    ...(dispatch.waveBudget ? { budget: dispatch.waveBudget } : {}),
     costs: Q_LAND_WAVE_COSTS,
   });
 }
@@ -9094,7 +9099,8 @@ function renderQueue() {
       addSection("Lande-Wellen", landWaves.length,
         "Which rows could land TOGETHER in one lane: connected components over CONFIRMED file"
         + " surfaces, class-pure and INSIDE ONE PROGRAM (files alone fold almost every row into one"
-        + ` clump), at most ${land.maxWave} rows. The saving is median seconds per avoided land`
+        + ` clump), cut at a budget of ${land.budget} size units (klein=1 · mittel=2 · gross=3, no card size = mittel)`
+        + ` and at most ${LAND_WAVE_ROWS_MAX} rows. The saving is median seconds per avoided land`
         + " (gate + post-land audit); a wave of one names the reason against bundling.",
         true);
       for (const { repo, wave } of landWaves) {

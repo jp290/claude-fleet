@@ -291,6 +291,11 @@ und er ist genau so groß wie die Ersparnis riskant macht: Wellen tauschen Masch
 Attributionsarbeit des Owners. Der Tausch lohnt sich, solange die Welle klein (2–3) und klassenrein
 ist — die Zahl 3 ist dieselbe, die `UNDO_STACK_MAX` aus derselben Überlegung schon trägt.
 
+> **Überholt 2026-09-12 (S7, Zeile `5ac5565d`):** Die Wellengröße ist kein Zeilen-Deckel 3 mehr,
+> sondern ein Größenbudget; Begründung und Abwägung in §4 (6). Position 3 oben ist durch Regel 1
+> des Wellen-Briefs (ein Commit je Zeile) zurückgekauft, und die Kopplung an `UNDO_STACK_MAX` war
+> Zufall (§5 S3, letzter Punkt).
+
 ---
 
 ## 4. Die Antworten auf die fünf Fragen
@@ -322,6 +327,41 @@ ohnehin `claude-opus-5[1m]/high` — hier ist nichts zu ändern. Der **Merge-Res
 Kollisionen (`ANALYSIS_ON` ist aus, §1.1), müsste für Wellen also erst einen abgeschalteten Sensor
 wiederbeleben · und der Owner-Rückweg `undo-land` ist 3 Records tief, also auf eine Größenordnung
 ausgelegt, die eine Person überblickt. Der Tick bleibt, wie er ist: oldest-first, eine Zeile.
+
+**(6) Wellengröße — Nachtrag 2026-09-12 (S7, Zeile `5ac5565d`).** Die erste Fassung schnitt jede
+Komponente bei `LAND_WAVE_MAX_DEFAULT = 3` Zeilen und begründete die Zahl damit, dass ein rotes
+Audit über mehr Zeilen von Hand nicht mehr zuzuordnen sei. Diese Begründung trägt nicht mehr: der
+Wellen-Brief verlangt einen Commit je Zeile (Regel 1), und damit ist der Bisect über eine Welle ein
+Bisect über ihre Commits, egal ob es drei oder fünf sind. Einen Messgrund hatte die 3 nie
+(`docs/messungen/2026-09-12-spezifizierung-buendelung-befund.md` §4).
+
+Die Grenze, die es wirklich gibt, ist der **Kontext der Lane**: eine Wellen-Lane baut alle ihre
+Zeilen in EINER Session. Einzel-Lanes liefen bei 140–190k Tokens, laufende Lanes standen bei
+27–43 % von 1M. Drei kleine Zeilen kosten diesen Kontext weniger als zwei große. Deshalb schneidet
+`task-land-waves.ts#wavesFor` jetzt nach einem Budget: jede Zeile wiegt ihre Kartengröße
+(`card.size`: klein = 1, mittel = 2, gross = 3), und eine Welle nimmt Zeilen in (created, id)-Ordnung
+auf, solange die Summe ≤ `LAND_WAVE_BUDGET_DEFAULT` = 5 bleibt (Env `FLEET_LAND_WAVE_BUDGET`). Das
+sind fünf kleine, zwei mittlere plus eine kleine oder eine große plus zwei kleine Zeilen. Eine Zeile
+ohne Kartengröße wiegt **mittel**: Unbekannt ist nicht klein. Darüber gilt eine harte Obergrenze von
+`LAND_WAVE_ROWS_MAX` = 6 Zeilen, die auch ein weiter gestelltes Budget nicht öffnet. Die Wellen-Tür
+prüft dieselbe Summe und nennt in der Ablehnung Budget und Summe.
+
+*Die Abwägung, ausdrücklich:* Eine Welle spart Gate und Audit (n−1)-mal (§3), macht das **Bauen**
+aber seriell: n Zeilen, die in n Lanes parallel entstünden, entstehen in einer Lane nacheinander.
+Größere Wellen senken die Mutex-Zeit, nicht die Wandzeit bis zum letzten Land. Durchsatz kommt aus
+mehr Lanes, nicht aus größeren Wellen; das Budget begrenzt nur, wie viel eine einzelne Lane tragen
+kann, ohne dass ihr Kontext die Qualität drückt.
+
+*Rückweg:* Eine Welle ist EIN Land und damit EIN `undo-land`-Record. Die Undo-Tiefe
+(`server.ts#UNDO_STACK_MAX`, 3 je Repo) zählt Lands, nicht Zeilen; eine Welle von fünf Zeilen
+belegt sie genau wie eine von einer, und keine der beiden Zahlen sagt etwas über die andere.
+
+*Was sich an kartenlosen Zeilen ändert:* Drei Zeilen ohne Kartengröße wiegen 6 > 5 und schneiden
+jetzt 2 + 1 statt 3. Auf dem Live-`fleet.json` vom 2026-09-13 ändert das nichts, weil dort keine
+einzige offene Zeile bündelbar ist (40 Zeilen, 40 Einzelwellen: 30× `flaeche-nur-abgeleitet`,
+7× `kein-program`, 3× `keine-flaeche`; 0 Karten). Die Größe kommt aus der Karte: der Extraktor
+übernimmt sie nur, wenn der Zeilentext sie nennt (Kopf „KLEINE LANE“ oder eine Zeile
+„GROESSE: klein“), und die Create-Türen nehmen `card.size` direkt an.
 
 ---
 
@@ -474,6 +514,8 @@ berührt (Regelbuch, Lane discipline); `bun e2e/pins.ts` grün.
 * **`LAND_WAVE_MAX_DEFAULT` ist nicht an `UNDO_STACK_MAX` gekoppelt**, und das steht jetzt
   ausdrücklich am Konstanten-Kommentar plus als Pin: eine Welle von n ist EIN Land mit EINEM
   undo-Record, die Zahl 3 ist das Bisect-Budget eines Lesers, und die Übereinstimmung war Zufall.
+  *(2026-09-12 abgelöst durch das Größenbudget `LAND_WAVE_BUDGET_DEFAULT` = 5, §4 (6); der
+  Kommentar zur Undo-Unabhängigkeit und der Pin gelten für das Budget weiter.)*
 
 *Schnittlinie:* Hier hört die Liste auf. Eine automatische Wellenbildung im Tick, eine
 Prioritätsspalte in der Queue und ein Bisect-Assistent für rote Wellen-Audits sind erkennbar

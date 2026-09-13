@@ -951,7 +951,9 @@ falsch). Für beide ist Abbrechen die falsche Antwort und Mitmachen auch.
     und ein Split hinter einem Report ließe ihn eine Zeile benennen, die die Lane nicht mehr trägt.
 
 Die Owner-Seite ist `POST /api/wave/dispatch` (Owner-Token, kein Self-Spiegel): `{"ids":[…]}` mit
-2 bis `LAND_WAVE_MAX_DEFAULT` (3) Zeilen. Sie prüft die Menge gegen den Sensor selbst — die ids
+2 bis `LAND_WAVE_ROWS_MAX` (6) Zeilen, deren Kartengrößen (klein = 1, mittel = 2, gross = 3, ohne
+Größe = mittel) zusammen höchstens das Wellen-Budget wiegen (`FLEET_LAND_WAVE_BUDGET`, Default
+`LAND_WAVE_BUDGET_DEFAULT` = 5; darüber 400 mit Budget und Summe). Sie prüft die Menge gegen den Sensor selbst — die ids
 müssen EXAKT eine Welle sein, die `task-land-waves.ts` in diesem Moment projiziert, sonst 409 mit
 dem, was der Sensor stattdessen sagt. Automatische Wellenbildung im Tick gibt es NICHT; sie steht
 ausdrücklich unter der Schnittlinie von §5.

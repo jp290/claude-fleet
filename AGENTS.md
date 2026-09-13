@@ -157,8 +157,9 @@ ROLLE: harness / model / effort
 ```
 
 Both create doors (`POST /api/tasks`, `POST /api/self/tasks`) also take the same fields as an
-optional `card{ziel, surface{files, symbols}, done, verify, verboten}` (`ROLLE` travels as the
-top-level spawn triple). It is validated by `card-extract.ts#validateCard` against the row's repo;
+optional `card{ziel, surface{files, symbols}, done, verify, verboten, size}` (`ROLLE` travels as the
+top-level spawn triple; `size` is `klein`/`mittel`/`gross`, the row's weight against the land-wave
+budget — absent weighs `mittel`). It is validated by `card-extract.ts#validateCard` against the row's repo;
 any gap — an untracked path, an unresolvable symbol, a verify naming no chain step — is a 400 naming
 it, and nothing is filed. A valid card's surface is read before the prose reading; without a card
 nothing changes.

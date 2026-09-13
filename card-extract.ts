@@ -23,6 +23,7 @@
 import { defuseDelimiters } from "./src/protocol";
 import { LOCAL_PROOF_STEPS } from "./verify-proportion";
 import { intentText } from "./task-metadata";
+import { isTaskCardSize, type TaskCardSize } from "./task-waves";
 import type { SymbolIndex, SymbolRange } from "./task-metadata";
 
 // The extractor's own contract mark and answer key. Deliberately NOT added to WORKER_CONTRACTS:
@@ -41,12 +42,16 @@ export interface TaskCardBody {
   verify: string;
   verboten: string[];
   program?: string;
+  // the lane size the row's own text states (KLEINE / MITTLERE / GROSSE LANE); absent = not stated.
+  // The land fold weighs a row by it (task-land-waves.ts#landWaveUnits), so it is quote-checked
+  // like a path: a size the text does not name is a gap, never a guess.
+  size?: TaskCardSize;
 }
 
 /** What the model is allowed to have said. Every field is re-checked before it becomes a card. */
 export interface RawCard {
   ziel?: unknown; rolle?: unknown; surface?: unknown;
-  done?: unknown; verify?: unknown; verboten?: unknown; program?: unknown;
+  done?: unknown; verify?: unknown; verboten?: unknown; program?: unknown; size?: unknown;
 }
 
 export interface CardValidationContext {
@@ -73,6 +78,16 @@ const text1 = (v: unknown): string => (typeof v === "string" ? v : "").replace(/
 const list = (v: unknown): string[] => (Array.isArray(v) ? v : [])
   .filter((e): e is string => typeof e === "string" && !!e.trim())
   .map((e) => e.trim().slice(0, 300)).slice(0, MAX_LIST);
+
+// Where a text NAMES a size: the fleet's filing header ("KLEINE LANE", "MITTLERE LANE", "GROSSE
+// LANE") or a labelled line ("GROESSE: klein"). Deliberately narrow — "klein" alone is an ordinary
+// German word, and a size lifted out of "ein kleiner Fix" would be the plausible guess rule 3 forbids.
+const SIZE_NAMED: Readonly<Record<TaskCardSize, RegExp>> = {
+  klein: /\bkleine?\s+lane\b|\b(?:groesse|größe|size)\s*[:=]\s*klein\b/i,
+  mittel: /\bmittlere?\s+lane\b|\b(?:groesse|größe|size)\s*[:=]\s*mittel\b/i,
+  gross: /\b(?:grosse?|große?)\s+lane\b|\b(?:groesse|größe|size)\s*[:=]\s*(?:gross|groß)\b/i,
+};
+export const sizeNamedIn = (text: string, size: TaskCardSize): boolean => SIZE_NAMED[size].test(text);
 
 /** `server.ts#taskView` → ["server.ts", "taskView"]; anything else → null. */
 export function splitSymbolRef(ref: string): [string, string] | null {
@@ -166,11 +181,22 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
 
   const program = typeof raw.program === "string" && raw.program.trim()
     ? raw.program.trim().slice(0, 64) : undefined;
+  const rawSize = typeof raw.size === "string" ? raw.size.trim().toLowerCase() : "";
+  let size: TaskCardSize | undefined;
+  if (rawSize && !isTaskCardSize(rawSize))
+    gaps.push(`size: "${rawSize.slice(0, 20)}" is not one of klein, mittel, gross`);
+  else if (rawSize && isTaskCardSize(rawSize)) {
+    // the whole source text, not the intent text: the size sits in the header, and no verify line
+    // or quoted command is a place a lane size would ever be read from
+    if (sizeNamedIn(ctx.sourceText, rawSize)) size = rawSize;
+    else gaps.push(`size: "${rawSize}" is not stated in the request`);
+  }
   const body: TaskCardBody = {
     ziel, rolle, done, verify,
     surface: { files, symbols, ranges: ctx.symbolIndex ? ranges : null },
     verboten: list(raw.verboten),
     ...(program ? { program } : {}),
+    ...(size ? { size } : {}),
   };
   return { body, valid: gaps.length === 0, gaps: gaps.slice(0, MAX_LIST) };
 }
@@ -223,7 +249,8 @@ export function buildCardPrompt(text: string, effortLevels: readonly string[]): 
     '  "done": "one checkable sentence: how a reader decides it is finished",',
     '  "verify": "the command or chain step the text names as proof",',
     '  "verboten": ["constraints the text states as forbidden"],',
-    '  "program": ""',
+    '  "program": "",',
+    '  "size": "klein, mittel or gross — only when the text states the lane size (e.g. KLEINE LANE)"',
     "}}",
     `\`effort\` is one of: ${effortLevels.join(", ")}. Every string field may be "", every list may be [].`,
   ].join("\n");

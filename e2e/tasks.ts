@@ -14,7 +14,8 @@ import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, ups
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
-  type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
+  LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits,
+  type LandWave, type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
 import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
   type InstanceLink } from "../src/protocol";
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
@@ -4578,10 +4579,10 @@ export async function run(ctx: Ctx): Promise<void> {
       id, created, files, filesOrigin: "confirmed", programId: "prog-a",
       repo: "/repo/a", kind: "auftrag", status: "pending", ...extra,
     });
-    const landProject = (tasks: TaskWaveInput[], maxWave?: number): LandWaveProjection =>
+    const landProject = (tasks: TaskWaveInput[], budget?: number): LandWaveProjection =>
       projectLandWaves({
         tasks, dispatchRepo: "/repo/default", costs: LAND_COSTS,
-        ...(maxWave === undefined ? {} : { maxWave }),
+        ...(budget === undefined ? {} : { budget }),
       });
     const landWavesOf = (p: LandWaveProjection, repo = "/repo/a") =>
       p.repos.find((r) => r.repo === repo)?.waves ?? [];
@@ -4684,16 +4685,51 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(triple.map((w) => w.ids)) === JSON.stringify([["ta", "tb"], ["tc"]]),
       JSON.stringify(triple));
 
-    const chain = landWavesOf(landProject([
-      landRow("ka", 1, ["src/f1.ts"]),
-      landRow("kb", 2, ["src/f1.ts", "src/f2.ts"]),
-      landRow("kc", 3, ["src/f2.ts", "src/f3.ts"]),
-      landRow("kd", 4, ["src/f3.ts"]),
-    ], 3));
-    check("land waves: a component longer than maxWave is cut in created order, and the remainder carries no verdict",
-      JSON.stringify(chain.map((w) => [w.ids, w.savingsSec, w.reasonAgainst]))
-        === JSON.stringify([[["ka", "kb", "kc"], 2 * CODE_LAND_SEC, null], [["kd"], 0, null]]),
-      JSON.stringify(chain));
+    // --- S7 (5ac5565d): THE WAVE IS CUT BY A SIZE BUDGET, NOT BY THREE ROWS. Every fixture is ONE
+    // component (a chain over f1..fn), so the only thing that can split it is the cut itself. All
+    // four checks are red on the old code, which cut every component at three rows regardless of size.
+    const sized = (prefix: string, sizes: (TaskWaveInput["size"] | null)[]): TaskWaveInput[] =>
+      sizes.map((size, i) => landRow(`${prefix}${i}`, i + 1, [`src/f${i}.ts`, `src/f${i + 1}.ts`],
+        size ? { size } : {}));
+    const idsOf = (waves: LandWave[]) => waves.map((w) => w.ids.length);
+    const five = landWavesOf(landProject(sized("k", Array(5).fill("klein"))));
+    check(`land waves: S7 (1) — five small rows sharing a surface are ONE wave at budget ${LAND_WAVE_BUDGET_DEFAULT}`,
+      JSON.stringify(five.map((w) => [w.ids.length, w.units, w.savingsSec, w.reasonAgainst]))
+        === JSON.stringify([[5, 5, 4 * CODE_LAND_SEC, null]]) && LAND_WAVE_BUDGET_DEFAULT === 5,
+      JSON.stringify(five));
+    const threeBig = landWavesOf(landProject(sized("g", ["gross", "gross", "gross"])));
+    const bigTwoSmall = landWavesOf(landProject(sized("b", ["gross", "klein", "klein"])));
+    const twoMidSmall = landWavesOf(landProject(sized("m", ["mittel", "mittel", "klein"])));
+    check("land waves: S7 (1) — three large rows are three waves (3+3 > 5), one large plus two small is one",
+      JSON.stringify(idsOf(threeBig)) === "[1,1,1]"
+      && threeBig.every((w) => w.units === 3 && w.reasonAgainst === null)
+      && JSON.stringify(idsOf(bigTwoSmall)) === "[3]" && bigTwoSmall[0].units === 5
+      && JSON.stringify(idsOf(twoMidSmall)) === "[3]",
+      JSON.stringify({ threeBig: idsOf(threeBig), bigTwoSmall: idsOf(bigTwoSmall), twoMidSmall: idsOf(twoMidSmall) }));
+    const sixSmall = landWavesOf(landProject(sized("s", Array(6).fill("klein"))));
+    const sevenSmall = landWavesOf(landProject(sized("v", Array(7).fill("klein"))));
+    // the row ceiling on its own: a budget wide enough for eight small rows still cuts at six
+    const wideSmall = landWavesOf(landProject(sized("w", Array(8).fill("klein")), 100));
+    check(`land waves: S7 (2) — six and seven small rows cut at the budget of 5 in created order, and no wave ever exceeds ${LAND_WAVE_ROWS_MAX} rows`,
+      JSON.stringify(sixSmall.map((w) => w.ids)) === JSON.stringify([["s0", "s1", "s2", "s3", "s4"], ["s5"]])
+      && JSON.stringify(idsOf(sevenSmall)) === "[5,2]"
+      && JSON.stringify(idsOf(wideSmall)) === "[6,2]" && LAND_WAVE_ROWS_MAX === 6,
+      JSON.stringify({ six: sixSmall.map((w) => w.ids), seven: idsOf(sevenSmall), wide: idsOf(wideSmall) }));
+    // (4) absence weighs MEDIUM, never small: three cardless rows are 6 units, so they cut 2+1 —
+    // the one place the old three-row cut and the budget disagree on a queue without cards
+    const cardless = landWavesOf(landProject(sized("n", [null, null, null])));
+    const cardlessFour = landWavesOf(landProject(sized("q", [null, null, "klein"])));
+    check("land waves: S7 (4) — a row without a size weighs mittel: three cardless rows cut 2+1, two plus a small one stay one",
+      JSON.stringify(cardless.map((w) => [w.ids, w.units, w.reasonAgainst]))
+        === JSON.stringify([[["n0", "n1"], 4, null], [["n2"], 2, null]])
+      && landWaveUnits(undefined) === 2 && landWaveUnits(null) === 2
+      && JSON.stringify(idsOf(cardlessFour)) === "[3]" && cardlessFour[0].units === 5,
+      JSON.stringify({ cardless, cardlessFour: idsOf(cardlessFour) }));
+    // a row heavier than the whole budget is never dropped — it stands alone
+    const overweight = landWavesOf(landProject(sized("o", ["gross", "klein"]), 2));
+    check("land waves: S7 — a row that alone outweighs the budget still forms its own wave, nothing is dropped",
+      JSON.stringify(overweight.map((w) => w.ids)) === JSON.stringify([["o0"], ["o1"]]),
+      JSON.stringify(overweight));
 
     // (a) the whole point of the second criterion: an IDENTICAL confirmed surface is not enough.
     // Two rows that overlap perfectly but belong to different programs must stay two waves, or the
@@ -4742,7 +4778,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const landPurityInput: ProjectLandWavesInput = {
       tasks: [landRow("pb", 2, ["src/b.ts"]), landRow("pa", 1, ["src/b.ts", "src/a.ts"]),
         landRow("pc", 3, ["src/b.ts"], { programId: "prog-b" })],
-      dispatchRepo: "/repo/default", maxWave: 2, costs: LAND_COSTS,
+      dispatchRepo: "/repo/default", budget: 2, costs: LAND_COSTS,
     };
     const landBefore = JSON.stringify(landPurityInput);
     const landOnce = projectLandWaves(landPurityInput);
@@ -5112,10 +5148,18 @@ export async function run(ctx: Ctx): Promise<void> {
       check("(w3) one id is refused as the OTHER button, not as a wave that is too small",
         w3One.status === 400 && (await w3Err(w3One)).includes("▸ start button"),
         `${w3One.status} ${await w3Err(w3One)}`);
+      // S7 (3): four cardless rows weigh 4 × mittel = 8 units, over the budget of 5 — the refusal
+      // names the budget AND the sum, so the owner reads which of the two moved
       const w3Many = await w3Start({ ids: [wA, wB, wC, wParked] });
-      check("(w3) more rows than the cap is refused, and the refusal names the bisect it protects",
-        w3Many.status === 400 && (await w3Err(w3Many)).includes("attributable"),
-        `${w3Many.status} ${await w3Err(w3Many)}`);
+      const w3ManyErr = await w3Err(w3Many);
+      check("(s7) a set over the size budget is refused, and the refusal names the budget and the sum",
+        w3Many.status === 400 && w3ManyErr.includes("weigh 8 size units")
+        && w3ManyErr.includes(`budget is ${LAND_WAVE_BUDGET_DEFAULT}`), `${w3Many.status} ${w3ManyErr}`);
+      const w3Seven = await w3Start({ ids: ["r1", "r2", "r3", "r4", "r5", "r6", "r7"] });
+      const w3SevenErr = await w3Err(w3Seven);
+      check(`(s7) more than ${LAND_WAVE_ROWS_MAX} rows is refused before any lookup, whatever the sizes`,
+        w3Seven.status === 400 && w3SevenErr.includes(`at most ${LAND_WAVE_ROWS_MAX} rows`)
+        && w3SevenErr.includes("7 were given"), `${w3Seven.status} ${w3SevenErr}`);
       const w3Dup = await w3Start({ ids: [wA, wA] });
       check("(w3) a repeated id is refused before anything else reads it",
         w3Dup.status === 400 && (await w3Err(w3Dup)).includes("distinct"),
@@ -5864,6 +5908,22 @@ export async function run(ctx: Ctx): Promise<void> {
       && citedOnly.body.verify === "bun e2e/pins.ts"
       && citedOnly.gaps.some((g) => g.includes("e2e/pins.ts") && g.includes("only as proof")),
       JSON.stringify(citedOnly));
+    // S7: the SIZE is quote-checked like a path. The filing header states it; an ordinary "kleiner"
+    // in prose does not, and a value outside the three classes is a gap rather than a nearest guess.
+    const sizeCtx = (sourceText: string) => ({ ...cardCtx, sourceText });
+    const sizeHeader = validateCard({ size: "Klein" }, sizeCtx("[FLEET-BETRIEB · S7 KARTE · KLEINE LANE · claude] ZIEL: x"));
+    const sizeMid = validateCard({ size: "mittel" }, sizeCtx("[X · MITTLERE LANE] ZIEL: y"));
+    const sizeProse = validateCard({ size: "klein" }, sizeCtx("ZIEL: ein kleiner Fix an server.ts"));
+    const sizeBogus = validateCard({ size: "winzig" }, sizeCtx("[X · KLEINE LANE]"));
+    const sizeAbsent = validateCard({}, sizeCtx("[X · GROSSE LANE]"));
+    check("(s7) card size: stated in the header it is kept (normalised); named only in prose or outside the classes it is a gap",
+      sizeHeader.body.size === "klein" && !sizeHeader.gaps.some((g) => g.startsWith("size"))
+      && sizeMid.body.size === "mittel"
+      && sizeProse.body.size === undefined && sizeProse.gaps.some((g) => g.startsWith("size") && g.includes("not stated"))
+      && sizeBogus.body.size === undefined && sizeBogus.gaps.some((g) => g.includes("not one of klein, mittel, gross"))
+      && sizeAbsent.body.size === undefined && !sizeAbsent.gaps.some((g) => g.startsWith("size")),
+      JSON.stringify({ sizeHeader: sizeHeader.body.size, sizeMid: sizeMid.body.size,
+        prose: sizeProse.gaps, bogus: sizeBogus.gaps, absent: sizeAbsent.body.size }));
     // the other half of the same rule: a path nobody named at all is refused by the same line, so a
     // model that invents a plausible tracked file gets a gap rather than a surface.
     const unnamed = validateCard({ surface: { files: ["server.ts", "e2e/pins.ts"] } },
@@ -5963,7 +6023,7 @@ export async function run(ctx: Ctx): Promise<void> {
         { id: "aaaa1111", text: "ROW-A-PROSA", brief: null, criterion: null, card: cardBody },
         { id: "bbbb2222", text: "ROW-B-PROSA", brief: "ROW-B-BRIEF", criterion: null, card: null },
       ],
-      sharedFiles: ["wave-brief.ts"], klasse: "code", baseUrl: "http://127.0.0.1:1" });
+      sharedFiles: ["wave-brief.ts"], klasse: "code", units: 3, budget: 5, baseUrl: "http://127.0.0.1:1" });
     const rowA = wave.slice(wave.indexOf("--- ZEILE 1 VON 2"), wave.indexOf("--- ZEILE 2 VON 2"));
     const rowB = wave.slice(wave.indexOf("--- ZEILE 2 VON 2"));
     check("(j2) wave brief: a row with a card opens with its KARTE head before its prose; a row without keeps brief ?? text",
@@ -5972,6 +6032,10 @@ export async function run(ctx: Ctx): Promise<void> {
       && rowA.includes("\nVERBOTEN: kein Auto-Dispatch\n")
       && !rowB.includes("KARTE") && rowB.includes("\n\nROW-B-BRIEF"),
       JSON.stringify(rowA.slice(0, 300)));
+    check("(s7) wave brief: names the wave's size sum against its budget, and the self-split rule still stands",
+      wave.includes("\n  Budget:              3 von 5 Größeneinheiten (klein=1 · mittel=2 · gross=3; ohne Kartengröße = mittel)\n")
+      && wave.includes("3. REICHT DIE FLÄCHE NICHT, TEILE DICH SELBST.") && wave.includes("/api/self/wave/split"),
+      wave.slice(0, 900));
     const huge = "ä".repeat(400);
     const fat = renderCardHead({ ...cardBody, ziel: huge, done: huge, verify: huge,
       surface: { files: Array(20).fill(huge), symbols: Array(20).fill(huge), ranges: null },

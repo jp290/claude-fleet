@@ -26,6 +26,14 @@ export interface TaskWaveRange {
   endLine: number;
 }
 
+// A row's SIZE CLASS, as its card states it (card-extract.ts#validateCard). Declared here and not
+// in card-extract.ts for the reason TaskWaveRange is: that module reaches the filesystem through
+// task-metadata.ts, and src/client.ts bundles the land fold that weighs rows by this.
+export const TASK_CARD_SIZES = ["klein", "mittel", "gross"] as const;
+export type TaskCardSize = typeof TASK_CARD_SIZES[number];
+export const isTaskCardSize = (value: unknown): value is TaskCardSize =>
+  typeof value === "string" && (TASK_CARD_SIZES as readonly string[]).includes(value);
+
 export interface TaskWaveInput {
   id: string;
   repo?: string;
@@ -44,6 +52,9 @@ export interface TaskWaveInput {
   // beside the file surface. The parallel projection below ignores it: two rows of different
   // programs that touch the same file still collide.
   programId?: string;
+  // Read by the LAND fold only: the row's weight against the wave budget. Absent = medium there
+  // (task-land-waves.ts#landWaveUnits); the parallel projection below ignores it.
+  size?: TaskCardSize;
 }
 
 export interface ProjectTaskWavesInput {

@@ -58,10 +58,10 @@ import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NO
 // boundary: it asks THIS projector whether the ids it was handed are one of its own waves, so the
 // board, `bun task-land-waves.ts --state fleet.json` and the door all answer from one classifier.
 import {
-  LAND_WAVE_COSTS_2026_09, LAND_WAVE_MAX_DEFAULT, projectLandWaves,
+  LAND_WAVE_COSTS_2026_09, LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, projectLandWaves,
   type LandWave, type LandWaveProjection,
 } from "./task-land-waves";
-import type { TaskWaveInput } from "./task-waves";
+import { isTaskCardSize, type TaskCardSize, type TaskWaveInput } from "./task-waves";
 import { renderWaveBrief, withCardHead } from "./wave-brief";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
@@ -2329,6 +2329,7 @@ type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   // against the one below it — and comparing them is the entire act the confirm button ends. The
   // list is capped at MAX_REFINE_FILES like every other declared surface here.
   & Partial<Pick<Task, "filesProposal">>
+  & { size?: TaskCardSize }
   // A brief's timestamp is its bounded top-level generation. The text stays exclusively on
   // GET /api/tasks; every polling client can still invalidate stale full data before claiming
   // which bytes release will send.
@@ -2359,6 +2360,9 @@ function taskDigest(t: Task): TaskDigest {
     ...(view.files ? { files: view.files } : {}),
     ...(view.filesOrigin ? { filesOrigin: view.filesOrigin } : {}),
     ...(view.cluster ? { cluster: view.cluster } : {}),
+    // the ONE card field the poll carries: the board's land fold weighs rows by it, and a board
+    // that projected without it would offer waves the door (which reads it) refuses
+    ...(taskSizeOf(t) ? { size: taskSizeOf(t) } : {}),
     ...(t.filesProposal ? { filesProposal: t.filesProposal } : {}),
     ...(t.brief ? { briefAt: t.brief.at } : {}),
     // the two-tier rule: the poll carries only whether a criterion exists and
@@ -9744,6 +9748,7 @@ interface WaveDispatch {
   wasStatus: Map<string, Task["status"]>;
   sharedFiles: string[];
   klasse: "docs" | "code";
+  units: number;
 }
 // THE ONE BRIDGE from a queue row to a spawn choice: the row's own persisted, SET-time-validated
 // field, DEFAULT_SPAWN on absence. Every unattended reader goes through this accessor — never a
@@ -9756,14 +9761,26 @@ const taskSpawnOf = (t: Task): DispatchSpawn => t.spawn ?? DEFAULT_SPAWN;
 // `bun task-land-waves.ts --state fleet.json` and for the wave door — a door that re-stated R1, R2,
 // R3 and the program boundary would be a second classifier to keep in step with this one, and the
 // day they disagreed the button would bundle rows the board had already refused to bundle.
+// The wave budget in size units (task-land-waves.ts#LAND_WAVE_BUDGET_DEFAULT says why a budget and
+// not a row count). An unreadable value falls back to the pinned default rather than to 1 or to
+// "no bound": a typo in the plist must not quietly turn the bundling off or open it without limit.
+const LAND_WAVE_BUDGET = ((): number => {
+  const raw = Number(process.env.FLEET_LAND_WAVE_BUDGET);
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : LAND_WAVE_BUDGET_DEFAULT;
+})();
+// A row's size as the land fold weighs it: a VALID card's, else none — the same "only a valid card
+// is read" rule the card head and the card surface follow. None weighs medium.
+const taskSizeOf = (t: Task): TaskCardSize | undefined => t.card?.valid ? t.card.size : undefined;
 function landWaveProjectionNow(): LandWaveProjection {
   const rows: TaskWaveInput[] = tasks
     .filter((t) => t.kind === "auftrag" && (t.status === "queued" || t.status === "pending"))
     .map((t) => {
       const view = taskView(t);
+      const size = taskSizeOf(t);
       return { id: t.id, kind: t.kind, status: t.status, created: t.created,
         ...(t.repo ? { repo: t.repo } : {}),
         ...(t.programId ? { programId: t.programId } : {}),
+        ...(size ? { size } : {}),
         ...(view.files ? { files: view.files } : {}),
         ...(view.filesOrigin ? { filesOrigin: view.filesOrigin } : {}),
         // The RANGE half, straight off the stored surface and unmodified: `null` travels as null,
@@ -9775,6 +9792,7 @@ function landWaveProjectionNow(): LandWaveProjection {
   return projectLandWaves({
     tasks: rows,
     ...(DISPATCH_REPO ? { dispatchRepo: DISPATCH_REPO } : {}),
+    budget: LAND_WAVE_BUDGET,
     costs: LAND_WAVE_COSTS_2026_09,
   });
 }
@@ -10004,7 +10022,8 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
           // a wave brief that quoted one would hand the lane an anchor nobody promoted
           criterion: row.criterion?.confirmedAt ? row.criterion.text : null,
           card: row.card?.valid ? row.card : null })),
-        sharedFiles: wave.sharedFiles, klasse: wave.klasse, baseUrl: `http://${HOST}:${PORT}` })
+        sharedFiles: wave.sharedFiles, klasse: wave.klasse, units: wave.units, budget: LAND_WAVE_BUDGET,
+        baseUrl: `http://${HOST}:${PORT}` })
       // a VALID card goes in front of the prose as a KARTE head; an absent or invalid one leaves
       // the bytes exactly as they were, which is what keeps briefSourceOf's "card" honest
       : withCardHead(next.card?.valid ? next.card : null, next.brief?.text ?? next.text);
@@ -10562,6 +10581,7 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
       // null survives as null: "no symbol index was available" is not an empty range list.
       ranges: normSurfaceRanges(surface.ranges) },
     ...(field(raw.program) ? { program: field(raw.program)! } : {}),
+    ...(isTaskCardSize(raw.size) ? { size: raw.size } : {}),
     model: raw.model.slice(0, 64), at: Number(raw.at) || 0, ms: Number(raw.ms) || 0,
     ...(Number.isFinite(tokens) && tokens > 0 ? { tokens } : {}),
     valid: gaps.length === 0, gaps,
@@ -10689,9 +10709,9 @@ function refineChildCard(c: RefineChild, programId: string | undefined,
 function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, programId: string | undefined):
   { ok: true; card: TaskCard } | { ok: false; status: 400 | 409; error: string } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
-    return { ok: false, status: 400, error: "card must be an object {ziel, surface{files, symbols}, done, verify, verboten}" };
+    return { ok: false, status: 400, error: "card must be an object {ziel, surface{files, symbols}, done, verify, verboten, size?}" };
   const c = raw as Record<string, unknown>;
-  const known = ["ziel", "surface", "done", "verify", "verboten"];
+  const known = ["ziel", "surface", "done", "verify", "verboten", "size"];
   const extra = Object.keys(c).filter((k) => !known.includes(k));
   if (extra.length) return { ok: false, status: 400, error: `card reads ${known.join(", ")} only — [${extra.join(", ")}] is not read` };
   const snapshot = repoRaw ? trackedSnapshotFor(repoRaw) : null;
@@ -10702,7 +10722,8 @@ function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, prog
     .filter((v): v is string => typeof v === "string");
   const now = Date.now();
   const checked = validateCard({ ...c, ...(programId ? { program: programId } : {}) },
-    cardValidationContext(`${text}\nFLAECHE: ${declared.join(" ")}`, snapshot, repoRaw ? symbolIndexFor(repoRaw) : null));
+    // an author's size is its own declaration, exactly like the surface line beside it
+    cardValidationContext(`${text}\nFLAECHE: ${declared.join(" ")}${typeof c.size === "string" ? `\nGROESSE: ${c.size.trim().toLowerCase()}` : ""}`, snapshot, repoRaw ? symbolIndexFor(repoRaw) : null));
   if (!checked.valid) return { ok: false, status: 400, error: `card rejected, nothing filed: ${checked.gaps.join("; ")}` };
   return { ok: true, card: { ...checked.body, model: "author", at: now, ms: 0, valid: true, gaps: [] } };
 }
@@ -28693,7 +28714,8 @@ Bun.serve<WSData>({
         // `maxLanes` is the EFFECTIVE cap for the dispatch repo, not the env constant: the board
         // renders it as "up to N lanes in <repo>", and after a per-repo entry the env number is no
         // longer what the tick counts against — a UI that keeps printing it states a budget nothing uses.
-        dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: repoLaneCap(DISPATCH_REPO).max, repo: DISPATCH_REPO },
+        dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: repoLaneCap(DISPATCH_REPO).max, repo: DISPATCH_REPO,
+          waveBudget: LAND_WAVE_BUDGET },
         // The brief compiler's mode as a global runtime fact, never inferred per row from a stored
         // brief. It sat beside an `analysis: { on }` sibling until 2026-09-10; that fact is gone
         // with the analyst, and a client reading it must not silently degrade to "on".
@@ -30122,17 +30144,21 @@ Bun.serve<WSData>({
       const wIds = wRaw as string[];
       if (new Set(wIds).size !== wIds.length)
         return json({ error: "ids must be distinct — a row cannot be in a wave twice" }, 400);
-      // The two bounds say DIFFERENT things and keep their own words. One row is not a smaller
-      // wave, it is the other button; and the upper bound is the reader's bisect budget, not a
-      // capacity limit (task-land-waves.ts states why it is not UNDO_STACK_MAX).
+      // The bounds say DIFFERENT things and keep their own words. One row is not a smaller wave, it
+      // is the other button; the row ceiling holds whatever the sizes say; and the budget is the
+      // lane's context, weighed by each row's size class (task-land-waves.ts#LAND_WAVE_BUDGET_DEFAULT
+      // states why, and why it is not UNDO_STACK_MAX).
       if (wIds.length < 2)
         return json({ error: "a wave carries at least two rows — for one row the ▸ start button is the door" }, 400);
-      if (wIds.length > LAND_WAVE_MAX_DEFAULT)
-        return json({ error: `a wave carries at most ${LAND_WAVE_MAX_DEFAULT} rows — beyond that a red post-land audit is no longer attributable across it by hand` }, 400);
+      if (wIds.length > LAND_WAVE_ROWS_MAX)
+        return json({ error: `a wave carries at most ${LAND_WAVE_ROWS_MAX} rows, whatever their size — ${wIds.length} were given` }, 400);
       const wRows = wIds.map((id) => tasks.find((x) => x.id === id));
       const wMissing = wIds.filter((_, i) => !wRows[i]);
       if (wMissing.length) return json({ error: `unknown task(s): ${wMissing.join(", ")}` }, 404);
       const wFound = wRows as Task[];
+      const wUnits = wFound.reduce((sum, t) => sum + landWaveUnits(taskSizeOf(t)), 0);
+      if (wUnits > LAND_WAVE_BUDGET)
+        return json({ error: `these rows weigh ${wUnits} size units and a wave's budget is ${LAND_WAVE_BUDGET} (klein=1 · mittel=2 · gross=3, a row without a card size weighs mittel) — one lane builds every row of a wave in one context` }, 400);
       // The per-row locks, in the same words the single-row door uses and each naming the row it
       // refused: a wave that reported one collective "not startable" would make the owner guess.
       for (const t of wFound) {
@@ -30191,7 +30217,8 @@ Bun.serve<WSData>({
       const wWas = new Map(wFollowers.map((t) => [t.id, t.status] as const));
       const wr = await dispatchTask(wHead, wFree, true, false,
         { harness: wHarnessId, model: wModel.model, effort: wEffort.effort },
-        { followers: wFollowers, wasStatus: wWas, sharedFiles: wWave.sharedFiles, klasse: wWave.klasse });
+        { followers: wFollowers, wasStatus: wWas, sharedFiles: wWave.sharedFiles, klasse: wWave.klasse,
+          units: wWave.units });
       if (!wr.ok) return json({ error: wr.error }, 500);
       wr.tail.catch(() => {}); // the tail requeues the whole wave on every failure itself
       audit("task_wave_dispatch", wr.slot,

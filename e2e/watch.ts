@@ -5820,14 +5820,14 @@ export async function run(): Promise<void> {
         base({ id: "subj-gone", kind: "lane-ready", status: "subject-gone" })];
       const cut = cutLedger.filter(opsPollVisible).map((e) => e.id).sort().join(",");
       check("owner poll cut: filed non-report rows and unacknowledged pane rows at any age — nothing terminal, no inbox report",
-        cut === "k1,k2,k3,k4,k5,k6,k7,k8,rec,filed,fresh,stale".split(",").sort().join(","), cut);
+        cut === "k1,k2,k3,k4,k5,k6,k7,k8,k9,rec,filed,fresh,stale".split(",").sort().join(","), cut);
 
       // …and what it must NOT carry: the payload bodies no label prints and the binding fields no
       // panel line reads. These are the bytes the poll was paying for nobody.
       const projected = JSON.stringify(kinds.map(([f]) => opsPollRow(f)).concat(opsPollRow(recovered)));
       const leaked = ["whole report", "t".repeat(200), "sha256", "dist/a.js", "conflicted", "timedOut", "mainSha",
         "covers", "watchId", "receiverOpenedAt", "receiverSessionId", "receiverIdleSec", "attempts", "subjectCwd",
-        "updatedAt", '"fails"', "idleMs", "hostCommits", "bootHead"].filter((k) => projected.includes(k));
+        "updatedAt", '"fails"', "idleMs", "hostCommits", "bootHead", "d".repeat(300), "0123456789abcdef"].filter((k) => projected.includes(k));
       check("owner poll projection: no payload body and no binding field the panel never prints rides along",
         leaked.length === 0, `leaked=[${leaked}]`);
 

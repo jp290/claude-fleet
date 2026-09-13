@@ -190,3 +190,6 @@ start` hat weder tty noch Agent.
   kanonischen Host stranden. Was `fleet-sync.sh` weiter leistet, ist die Gegenprobe: Ausgang `3`
   (DIVERGED) misst, dass der Folger doch abgewichen ist — durch einen Land vor dem Schalter, einen
   Handgriff an `git`, oder eine Fleet, die ohne die Variable gestartet wurde.
+- **Kein Push am Direkt-Commit:** der Hub bekommt `main` nur über `server.ts#pushLandToHub`, gerufen
+  aus `server.ts#recordLand` — ein Direkt-Commit im Haupt-Checkout erreicht ihn erst mit dem
+  NÄCHSTEN Land, bis dahin altert der Hub still. Sensor: `./state.sh`, Abschnitt hub vs local main.

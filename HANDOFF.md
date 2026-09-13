@@ -1,3 +1,16 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb (f170dc46) Slot 9 → Nachfolgerin, 2026-09-13 ~22:0x (Server-Nudge bei 33,9 %)
+
+Kein Land in Flug, keine Lane reviewbar. Deploy live `c86bcee9` (`codeBehind:false`), `FLEET_MIGRATE_PCT='32'` in `.env` live, second-host-Daemon `9b8b52b7` (Heartbeat bestaetigt, `maxParallelSuites` 3). Notiz-Zeile ging nicht: Program-Deckel beratender Zeilen 10/10.
+
+OFFEN, in dieser Reihenfolge:
+- (a) Audit-Watch auf `c86bcee9` (Start-Plan-Land) neu armieren. Rot vom second-host zuerst auf `No space left` pruefen — ein nackter `ENOSPC`-Grep trifft den injizierten Test „state save coalescing (c)".
+- (b) §11.2b (`42 marks, 1..41`) heute 4x, alle second-host; carried-flake (`4da98102`) stempelt es still. Zeile `6748bdf7` pending — Freigabe entscheiden.
+- (c) pending gefilet, je mit Kriterium: `11441e5e` Merge-Verdikt verliert eine MAIN-Nachfolge (`receiver-gone`) · `1733502c` Land-Guard zaehlt „server did not come up" als Messung (heute am Hooks-Land bezahlt) · `42141e34` pi-zai-Lane ohne `idle` ⇒ Self-Land 409 (GLM-Lanes nur ueber Owner-Bearer).
+- (d) Plan §3 Welle 0 (4): der MAIN-Nudge kam (diese Uebergabe). Eine LANE-Staffelstab-Nachricht (40 %) ist noch nicht gesehen: `grep -c 'Diese Lane übergibt jetzt den Staffelstab' streams/prompts.jsonl` (war 13:x Baseline).
+- (e) `start-plan.ts`-CLI zeigt fuer Repos ohne Overlay `cap.max 3`, die Route `1` (CLI liest `FLEET_DISPATCH_MAX_LANES` nicht); Wellen sonst byte-gleich mit `--default-repo`. Flag ja/nein offen.
+- (f) `1fc3a5c8` (Suite -22 %): wird „(iv) M5: a DOCS-ONLY land" rot, Detail lesen (traegt jetzt den Ablehnungstext); bei Idle-Ueberschneidung `FLEET_MERGE_IDLE_MS` aus `SRV_ENV` in `e2e-isolated.sh` streichen.
+- (g) Owner: Regelbuch-Vorschlag aus dem 56d2e084-Report (Vorschau-Pflicht / Report-Deckel) wartet auf Promotion; γ-Frage „adjudiziertes Rot fuer accepted-by-land zulassen" (+9 Reports).
+
 # HANDOFF — Orchestrator Slot 7 → Nachfolgerin (Opus 5 high, Haupt-Checkout, Owner-Token): Denkauftrag Rollen/Briefe fertig + Synthese wartet auf Owner, Spiele-Spur G1–G4 geplant, Second-host-Suiten ZURUECK auf 3 (tmpfs voll), C1 laeuft; 2026-09-13 ~21:4x, ctx GEMESSEN 33 %
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

@@ -55,6 +55,9 @@ export interface TaskWaveInput {
   // Read by the LAND fold only: the row's weight against the wave budget. Absent = medium there
   // (task-land-waves.ts#landWaveUnits); the parallel projection below ignores it.
   size?: TaskCardSize;
+  // Read by the LAND fold only: queue ids this row waits on (its card's `after`). The fold never
+  // places the row in a wave before theirs; the parallel projection below ignores it.
+  after?: readonly string[];
 }
 
 export interface ProjectTaskWavesInput {

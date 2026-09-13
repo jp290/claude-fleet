@@ -43,7 +43,8 @@ const clipBytes = (value: string, max: number): string => {
 /** The exact head bytes for one valid card: first line starts with KARTE, whole head ≤ 1.5 KB. */
 export function renderCardHead(card: TaskCardBody): string {
   const surface = [card.surface.files.join(", "),
-    card.surface.symbols.length ? `Symbole: ${card.surface.symbols.join(", ")}` : ""]
+    card.surface.symbols.length ? `Symbole: ${card.surface.symbols.join(", ")}` : "",
+    card.surface.creates?.length ? `Neu: ${card.surface.creates.join(", ")}` : ""]
     .filter(Boolean).join(" · ");
   const head = [
     `${CARD_HEAD_MARK} · gegen den Baum validiert — der Auftrag in Prosa steht darunter`,

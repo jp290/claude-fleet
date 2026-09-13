@@ -53,7 +53,7 @@ import {
   type TaskFilesOrigin, type TrackedSnapshot, type SymbolIndex, type SymbolIndexSnapshot,
   type SymbolRange, type TaskSurface,
 } from "./task-metadata";
-import { buildCardPrompt, parseCardAnswer, validateCard, declaresSymbol, cardSurfaceValid, CARD_MARK, CARD_KEY,
+import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardSurfaceValid, CARD_MARK, CARD_KEY,
   CARD_VALIDATOR_VERSION, type TaskCardBody, type CardValidationContext } from "./card-extract";
 import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NOTE_HUB_FILES,
   type NoteInput, type NoteRow, type KeyedUpsert } from "./task-notes";
@@ -9777,11 +9777,19 @@ function landWaveProjectionNow(): LandWaveProjection {
     .map((t) => {
       const view = taskView(t);
       const size = taskSizeOf(t);
+      // A file the row will ADD is surface too — two rows creating the same file collide — but it is
+      // not part of `view.files`, which only ever holds tracked paths (confirm copies those alone).
+      // Read off a surfaceValid card, the same bar confirm-cards sets for the card's files.
+      const files = [...(view.files ?? []), ...(t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])];
+      // `after` is read off ANY card: its ids were checked against the queue, and an order
+      // constraint can only hold a row back, never bundle it.
+      const after = t.card?.after ?? [];
       return { id: t.id, kind: t.kind, status: t.status, created: t.created,
         ...(t.repo ? { repo: t.repo } : {}),
         ...(t.programId ? { programId: t.programId } : {}),
         ...(size ? { size } : {}),
-        ...(view.files ? { files: view.files } : {}),
+        ...(files.length ? { files } : {}),
+        ...(after.length ? { after } : {}),
         ...(view.filesOrigin ? { filesOrigin: view.filesOrigin } : {}),
         // The RANGE half, straight off the stored surface and unmodified: `null` travels as null,
         // because "this checkout has no symbol graph" is the fact the collision rule falls back on,
@@ -10484,8 +10492,21 @@ const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | n
     modelKnown: (v) => MODEL_RE.test(v),
     effortKnown: (v) => HARNESSES.some((h) => h.effortLevels.includes(v)),
     declares: (file, symbol) => !!snapshot?.paths.has(file) && declaresSymbol(sourceOf(file), symbol),
+    rowKnown: (id) => tasks.some((t) => t.id === id),
   };
 };
+// THE FILING FORMAT NEEDS NO MODEL (card-extract.ts#parseFormattedCard): a row whose own text opens
+// with the headers is read by the parser and checked by the same validator against the same tree.
+// `model: "format"` names the producer the way "author" and "refine" do — no extractor ran. Read
+// from `t.text` alone, because the headers are the filer's and a brief placed before them would
+// hide them; `null` hands the row to the extractor exactly as before.
+function formatCardOf(t: Task, snapshot: TrackedSnapshot | null, index: SymbolIndexSnapshot | null): TaskCard | null {
+  const raw = parseFormattedCard(t.text);
+  if (!raw) return null;
+  const checked = validateCard(raw, cardValidationContext(t.text, snapshot, index));
+  return { ...checked.body, model: "format", at: Date.now(), ms: 0, valid: checked.valid,
+    surfaceValid: checked.surfaceValid, validatorVersion: CARD_VALIDATOR_VERSION, gaps: checked.gaps };
+}
 async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | null,
   index: SymbolIndexSnapshot | null): Promise<TaskCard> {
   const started = Date.now();
@@ -10540,13 +10561,14 @@ async function tickCardSweep(): Promise<void> {
     let wrote = false;
     for (const t of batch) {
       try {
-        const card = await extractCard(t, repo, snapshot, index);
+        const formatted = formatCardOf(t, snapshot, index);
+        const card = formatted ?? await extractCard(t, repo, snapshot, index);
         t.card = card;
         cardRetry.delete(t.id);
         wrote = true;
         // EVERY run is a line, valid or not. A trail that recorded only successes would say the
         // extractor never fails, which is the one thing it cannot be trusted to say about itself.
-        await appendEvent(CARD_FILE, { at: card.at, taskId: t.id, model: card.model, ms: card.ms,
+        await appendEvent(CARD_FILE, { at: card.at, taskId: t.id, source: formatted ? "format" : "model", model: card.model, ms: card.ms,
           valid: card.valid, surfaceValid: card.surfaceValid, validatorVersion: card.validatorVersion,
           gaps: card.gaps, ...(card.tokens ? { tokens: card.tokens } : {}) });
       } catch (e) {
@@ -10556,7 +10578,7 @@ async function tickCardSweep(): Promise<void> {
         // `model` on an error row is the model that WOULD have run, the same convention every
         // other worker's error record in this file carries — nothing ran, so there is nothing
         // else true to write, and an absent field would make the row unjoinable with the rest.
-        await appendEvent(CARD_FILE, { at: Date.now(), taskId: t.id, model: CARD_MODEL, ms: 0,
+        await appendEvent(CARD_FILE, { at: Date.now(), taskId: t.id, source: "model", model: CARD_MODEL, ms: 0,
           valid: false, gaps: [`run: ${e instanceof Error ? e.message : String(e)}`.slice(0, 300)] });
       }
     }
@@ -10620,8 +10642,10 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
     rolle: { harness: field(role.harness), model: field(role.model), effort: field(role.effort) },
     surface: { files: strs(surface.files), symbols: strs(surface.symbols),
       // null survives as null: "no symbol index was available" is not an empty range list.
-      ranges: normSurfaceRanges(surface.ranges) },
+      ranges: normSurfaceRanges(surface.ranges),
+      ...(strs(surface.creates).length ? { creates: strs(surface.creates) } : {}) },
     ...(field(raw.program) ? { program: field(raw.program)! } : {}),
+    ...(strs(raw.after).length ? { after: strs(raw.after) } : {}),
     ...(isTaskCardSize(raw.size) ? { size: raw.size } : {}),
     model: raw.model.slice(0, 64), at: Number(raw.at) || 0, ms: Number(raw.ms) || 0,
     ...(Number.isFinite(tokens) && tokens > 0 ? { tokens } : {}),

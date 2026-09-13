@@ -6165,7 +6165,8 @@ export async function run(): Promise<void> {
       fleetReports?: Record<string, unknown>[]; tasks?: Record<string, unknown>[];
     };
     const ablProgram = "a".repeat(23) + "b";
-    const emptySlot = Number(Object.entries(ablState.slots).find(([, v]) => !v.cwd)?.[0] ?? 0);
+    // fleet.json persists OCCUPIED slots only, so an empty slot is a number the map does not carry
+    const emptySlot = Array.from({ length: 16 }, (_, i) => i + 1).find((id) => !ablState.slots[String(id)]?.cwd) ?? 0;
     const now = Date.now();
     const sha = (n: number): string => n.toString(16).padStart(40, "c");
     // one report per case: its status, whether its land is newer than the report, its audit colour
@@ -6222,6 +6223,12 @@ export async function run(): Promise<void> {
       rows = await ablReports();
     }
     const row = (name: string): AblReport | undefined => rows.find((r) => r.id === ids[name]);
+    // the probe fails as ITSELF when a plant did not hydrate: every check below would otherwise read
+    // an absent row as "undecided" and the refusals would pass on nothing (measured on the first run:
+    // emptySlot 0 made fleetReportFrom discard all seven rows)
+    check("accepted-by-land setup: all seven planted reports hydrated on a real empty worker slot",
+      emptySlot > 0 && rows.filter((r) => Object.values(ids).includes(r.id)).length === 7,
+      JSON.stringify({ emptySlot, seen: rows.filter((r) => Object.values(ids).includes(r.id)).length }));
     // BREAKS IF: the rule is removed, or it stops stamping the rule principal and the land it read.
     check("accepted-by-land: a complete report whose lane landed behind a GREEN audit is accepted by rule, names mainAfter, and its verdict was carried",
       row("green")?.decision?.disposition === "accepted"
@@ -6234,8 +6241,8 @@ export async function run(): Promise<void> {
       JSON.stringify(row("unknown")?.decision));
     // BREAKS IF: the rule ignores the audit colour (the mutation §D names), the status, the task, or the land's age.
     check("accepted-by-land refusals: a RED audit, a needs-main report, a still-sent task and a land older than the report all stay undecided",
-      !row("red")?.decision && !row("needsMain")?.decision && !row("sent")?.decision && !row("staleLand")?.decision
-        && rows.filter((r) => Object.values(ids).includes(r.id)).length === 7,
+      !!row("red") && !row("red")?.decision && !!row("needsMain") && !row("needsMain")?.decision
+        && !!row("sent") && !row("sent")?.decision && !!row("staleLand") && !row("staleLand")?.decision,
       JSON.stringify(Object.keys(cases).map((k) => [k, row(k)?.decision?.disposition ?? null])));
     const ruleLines = auditRows().filter((a) => a.event === "fleet_report_rule_decision");
     check("accepted-by-land writes exactly one audit line per rule decision, naming report, land and origin",
@@ -6244,7 +6251,7 @@ export async function run(): Promise<void> {
         && !ruleLines.some((a) => [ids.red, ids.needsMain, ids.sent, ids.staleLand].some((id) => (a.detail ?? "").includes(id!))),
       JSON.stringify(ruleLines.map((a) => a.detail)));
     check("accepted-by-land: a land with NO audit yet is pending at boot, never accepted",
-      !row("pending")?.decision, JSON.stringify(row("pending")));
+      !!row("pending") && !row("pending")?.decision, JSON.stringify(row("pending")));
     appendFileSync(auditFile, `${JSON.stringify({ at: Date.now(), startedAt: Date.now() - 5, ms: 1, repo: REPO,
       main: "main", mainSha: sha(7), result: "green", cmd: "abl", exitCode: 0, out: "", checks: null,
       covers: [{ branch: "fleet/abl-pending", mainAfter: sha(7), at: now - 30_000 }] })}\n`);

@@ -8,6 +8,7 @@ import { check, get, post, restartSrv, afterTick, paneEnv, plantScreen, plogRead
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
 import { buildCardPrompt, parseCardAnswer, validateCard, CARD_MARK } from "../card-extract";
+import { renderWaveBrief, renderCardHead, CARD_HEAD_MAX_BYTES } from "../wave-brief";
 import { deriveTaskMetadata, type SymbolIndex, type TaskCluster } from "../task-metadata";
 import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict,
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
@@ -5352,6 +5353,8 @@ export async function run(ctx: Ctx): Promise<void> {
     interface JFinding { code: string; severity: string; child: number; detail: string; path?: string; verify?: string }
     interface JValidation { verdict: string; findings: JFinding[] }
     interface JFull extends JRow { text: string;
+      card?: { model: string; valid: boolean; gaps: string[]; ziel: string; done: string; verify: string;
+        surface: { files: string[] } };
       refine?: JRow["refine"] & { model: string; proposal: { unchanged: boolean; reason?: string; tasks?: JChild[] };
         validation?: JValidation } }
     const jRows = async (): Promise<JRow[]> => ((await (await get("/api/sessions")).json()) as { tasks: JRow[] }).tasks;
@@ -5382,7 +5385,9 @@ export async function run(ctx: Ctx): Promise<void> {
     spawnSync("chmod", ["+x", FAKEENH_R]);
     const SPLIT = JSON.stringify({ unchanged: false, tasks: [
       { text: "part one: keep the pane's scrollback", doneCriterion: "10k lines survive a reconnect", verify: "./e2e-isolated.sh", files: ["server.ts"] },
-      { text: "part two: colour the output", doneCriterion: "ANSI colour reaches the browser", verify: "./e2e-isolated.sh", files: ["src/client.ts"] },
+      // fleet-e2e.ts IS tracked in testrepo and server.ts is not — so the two children are the two
+      // card outcomes of the S4 promote: part two validates, part one keeps its folded text
+      { text: "part two: mark the fixture sentinel", doneCriterion: "the sentinel line is in fleet-e2e.ts", verify: "./e2e-isolated.sh", files: ["fleet-e2e.ts"] },
     ] });
     await fakeRefine(SPLIT);
     const jDispatchRepo = ((await (await get("/api/sessions")).json()) as { dispatch: { repo: string } }).dispatch.repo;
@@ -5456,12 +5461,32 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(j) the children carry NO brief — a promoted split meets the compiler fresh",
       jMinted.every((k) => k.briefAt === undefined), JSON.stringify(jMinted.map((k) => k.briefAt ?? null)));
     const jKidFull = jMinted[0] ? await jFull(jMinted[0].id) : undefined;
-    check("(j) a child's row text is the compiled brief: the request, then files, done and verify",
-      (jKidFull?.text ?? "").startsWith("part one: keep the pane's scrollback")
+    // S4 (queue row a672b626): the promote used to fold done/verify/files back into the row text,
+    // destroying the one structure refine produces. A child whose card VALIDATES carries them as
+    // card FIELDS and its text is the request alone. Part one names server.ts, which testrepo does
+    // not track — its card is invalid, no KARTE head will ever carry it, so its text keeps the
+    // folded form and the lane loses nothing.
+    const jKidCard = jKidFull?.card;
+    check("(j) a child whose card does NOT validate keeps the folded text: the request, then files, done and verify",
+      jKidCard?.model === "refine" && jKidCard.valid === false
+      && jKidCard.gaps.some((g) => g.includes("server.ts") && g.includes("not tracked"))
+      && (jKidFull?.text ?? "").startsWith("part one: keep the pane's scrollback")
       && (jKidFull?.text ?? "").includes("Files: server.ts")
       && (jKidFull?.text ?? "").includes("Done: 10k lines survive a reconnect")
       && (jKidFull?.text ?? "").includes("Verify: ./e2e-isolated.sh"),
-      JSON.stringify(jKidFull?.text ?? null));
+      JSON.stringify({ text: jKidFull?.text ?? null, card: jKidCard ?? null }));
+    const jKid2 = jMinted[1] ? await jFull(jMinted[1].id) : undefined;
+    check("(j) a child whose card VALIDATES carries done/verify/files as card fields with model refine",
+      jKid2?.card?.model === "refine" && jKid2.card.valid === true && JSON.stringify(jKid2.card.gaps) === "[]"
+      && jKid2.card.done === "the sentinel line is in fleet-e2e.ts" && jKid2.card.verify === "./e2e-isolated.sh"
+      && jKid2.card.surface.files.join(" ") === "fleet-e2e.ts"
+      && jKid2.card.ziel === "part two: mark the fixture sentinel",
+      JSON.stringify(jKid2?.card ?? null));
+    check("(j) …and its text does NOT say them a second time",
+      jKid2?.text === "part two: mark the fixture sentinel"
+      && !(jKid2?.text ?? "").includes("Done:") && !(jKid2?.text ?? "").includes("Verify:")
+      && !(jKid2?.text ?? "").includes("Files:"),
+      JSON.stringify(jKid2?.text ?? null));
     // …and it carries them as a FIELD as well, not only folded into that prose. The paths are the
     // one thing on a child that did not come out of a model run on this row — the refiner verified
     // them against the tree and the owner confirmed them — and they are the only machine-readable
@@ -5859,8 +5884,102 @@ export async function run(ctx: Ctx): Promise<void> {
       && cardRow.valid === true && JSON.stringify(cardRow.gaps) === "[]",
       JSON.stringify({ lines: cardLines.length, cardRow }));
 
+    // --- S4 (queue row a672b626): THE CARD REACHES THE LANE FIRST. A valid card puts a KARTE head
+    // in front of the prose, and the receipt says so; an invalid card changes nothing — neither the
+    // bytes nor the source — because its head would carry a reading the tree refused.
+    const autoPromptFor = async (prefix: RegExp): Promise<string> => {
+      for (let i = 0; i < 24; i++) {
+        const hit = ((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] })
+          .prompts.filter((p) => p.source === "auto").map((p) => p.text ?? "").find((text) => prefix.test(text));
+        if (hit) return hit;
+        await Bun.sleep(500);
+      }
+      return "";
+    };
+    const receiptFor = async (taskId: string): Promise<ContextReceipt | undefined> => {
+      for (let i = 0; i < 24; i++) {
+        const hit = (await contextReceipts()).receipts.find((receipt) => receipt.taskId === taskId);
+        if (hit) return hit;
+        await Bun.sleep(500);
+      }
+      return undefined;
+    };
+    const cDispatch = await post(`/api/tasks/${cOff.id}/dispatch`, {});
+    const cDispatchJ = (await cDispatch.json()) as { ok?: boolean; slot?: number };
+    const cPrompt = await autoPromptFor(/^KARTE[\s\S]*BAU: fleet-e2e\.ts bekommt eine Zeile\./);
+    const cReceipt = await receiptFor(cOff.id);
+    check("(j2) a dispatch of a row with a VALID card opens with a KARTE head, the prose behind it",
+      cDispatch.ok && cPrompt.split("\n")[0].startsWith("KARTE")
+      && cPrompt.includes("\nZIEL: fleet-e2e.ts bekommt eine Zeile\n")
+      && cPrompt.includes("\nFLAECHE: fleet-e2e.ts\n") && cPrompt.includes("\nVERIFY: bun e2e/pins.ts\n")
+      && cPrompt.indexOf("KARTE") < cPrompt.indexOf("BAU: fleet-e2e.ts bekommt eine Zeile."),
+      `${cDispatch.status} ${JSON.stringify(cPrompt.slice(0, 400))}`);
+    check("(j2) …and its receipt books briefSource card, hashed over those exact bytes",
+      cReceipt?.briefSource === "card" && cReceipt.briefHash === briefHashOf(cPrompt),
+      JSON.stringify(cReceipt ?? null));
+    if (typeof cDispatchJ.slot === "number") await post(`/api/slots/${cDispatchJ.slot}/kill`, {});
+
+    // the NEGATIVE: the extractor now names an untracked path, so the card stores valid:false
+    const badAnswer = JSON.stringify({ card: {
+      ziel: "gibt-es-nicht.ts bekommt eine Zeile", rolle: { harness: "", model: "", effort: "" },
+      surface: { files: ["gibt-es-nicht.ts"], symbols: [] },
+      done: "die Zeile steht da", verify: "bun e2e/pins.ts", verboten: [],
+    } });
+    await Bun.write(FAKECARD, `#!/bin/sh\ncat >/dev/null\ncat <<'JSON'\n${badAnswer}\nJSON\n`);
+    const cBad = ((await (await post("/api/tasks", {
+      text: "INVALID-CARD-PROBE: gibt-es-nicht.ts bekommt eine Zeile.", queue: false, repo: REPO,
+    })).json()) as { task: { id: string } }).task;
+    let cBadCard: CRow["card"];
+    for (let i = 0; i < 40 && !cBadCard; i++) { cBadCard = await cardOf(cBad.id); if (!cBadCard) await Bun.sleep(250); }
+    check("(j2) fixture: the second row carries a card that did NOT validate",
+      cBadCard?.valid === false && cBadCard.gaps.some((g) => g.includes("gibt-es-nicht.ts")),
+      JSON.stringify(cBadCard ?? null));
+    const bDispatch = await post(`/api/tasks/${cBad.id}/dispatch`, {});
+    const bDispatchJ = (await bDispatch.json()) as { ok?: boolean; slot?: number };
+    const bPrompt = await autoPromptFor(/^INVALID-CARD-PROBE/);
+    const bReceipt = await receiptFor(cBad.id);
+    check("(j2) a row whose card is INVALID is dispatched exactly as before: no KARTE head, briefSource raw",
+      bDispatch.ok && bPrompt.startsWith("INVALID-CARD-PROBE: gibt-es-nicht.ts") && !bPrompt.includes("KARTE ·")
+      && bReceipt?.briefSource === "raw" && bReceipt.briefHash === briefHashOf(bPrompt),
+      `${bDispatch.status} ${JSON.stringify(bPrompt.slice(0, 120))} ${JSON.stringify(bReceipt ?? null)}`);
+    if (typeof bDispatchJ.slot === "number") await post(`/api/slots/${bDispatchJ.slot}/kill`, {});
+
+    await post(`/api/tasks/${cBad.id}/delete`, {});
     await post(`/api/tasks/${cOff.id}/delete`, {});
     await restartSrv({ FLEET_DISPATCH_REPO: REPO });
+  }
+
+  // --- S4 (a672b626) THE WAVE BRIEF quotes each row's card as a head before that row's prose, and
+  // the head holds its byte cap even when every field arrives at its validator maximum. Pure: the
+  // renderer has no clock, no git and no state, so the whole string is asserted without a server.
+  {
+    const cardBody = {
+      ziel: "Welle zitiert die Karte", rolle: { harness: null, model: null, effort: null },
+      surface: { files: ["wave-brief.ts"], symbols: ["wave-brief.ts#renderWaveBrief"], ranges: null },
+      done: "der Kopf steht vor der Prosa", verify: "bun e2e/pins.ts", verboten: ["kein Auto-Dispatch"],
+    };
+    const wave = renderWaveBrief({
+      rows: [
+        { id: "aaaa1111", text: "ROW-A-PROSA", brief: null, criterion: null, card: cardBody },
+        { id: "bbbb2222", text: "ROW-B-PROSA", brief: "ROW-B-BRIEF", criterion: null, card: null },
+      ],
+      sharedFiles: ["wave-brief.ts"], klasse: "code", baseUrl: "http://127.0.0.1:1" });
+    const rowA = wave.slice(wave.indexOf("--- ZEILE 1 VON 2"), wave.indexOf("--- ZEILE 2 VON 2"));
+    const rowB = wave.slice(wave.indexOf("--- ZEILE 2 VON 2"));
+    check("(j2) wave brief: a row with a card opens with its KARTE head before its prose; a row without keeps brief ?? text",
+      rowA.includes(`\n\n${renderCardHead(cardBody)}\n\nROW-A-PROSA`)
+      && rowA.includes("\nFLAECHE: wave-brief.ts · Symbole: wave-brief.ts#renderWaveBrief\n")
+      && rowA.includes("\nVERBOTEN: kein Auto-Dispatch\n")
+      && !rowB.includes("KARTE") && rowB.includes("\n\nROW-B-BRIEF"),
+      JSON.stringify(rowA.slice(0, 300)));
+    const huge = "ä".repeat(400);
+    const fat = renderCardHead({ ...cardBody, ziel: huge, done: huge, verify: huge,
+      surface: { files: Array(20).fill(huge), symbols: Array(20).fill(huge), ranges: null },
+      verboten: Array(20).fill(huge) });
+    check("(j2) card head: every field at its maximum (multi-byte) still fits the 1.5 KB cap with its closing line",
+      new TextEncoder().encode(fat).byteLength <= CARD_HEAD_MAX_BYTES && fat.startsWith("KARTE")
+      && fat.endsWith("--- AUFTRAG ---"),
+      `${new TextEncoder().encode(fat).byteLength} bytes`);
   }
 
   // --- (k) THE RAW START. "▸ start lane" gates on nothing, by design: an attended click outranks

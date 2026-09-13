@@ -15,6 +15,54 @@
 //     dispatches lands exactly the row it was founded on;
 //   · the SELF-SPLIT door, because the surface that bundled these rows is a declaration and the
 //     lane is the first party in a position to find out it did not reach.
+import type { TaskCardBody } from "./card-extract";
+
+// THE CARD HEAD — the six-field reading of a row (card-extract.ts), put IN FRONT of the prose a
+// lane receives (docs/messungen/2026-09-12-spezifizierung-buendelung-befund.md §3/§4 S4: 416 of
+// 517 dispatches handed a lane 1.8–10.8 KB of raw prose to re-derive surface, done and verify
+// from, at lane prices). Only a VALID card reaches here — the caller decides that — so every line
+// below survived a check against the tree; the prose stays behind it as the source it was read
+// from, never dropped. Byte-capped because the head exists to be SHORT: a card that grew into a
+// second brief would buy nothing over the prose it precedes.
+export const CARD_HEAD_MARK = "KARTE";
+export const CARD_HEAD_MAX_BYTES = 1500;
+const utf8 = new TextEncoder();
+const clipBytes = (value: string, max: number): string => {
+  if (utf8.encode(value).byteLength <= max) return value;
+  let out = "";
+  let used = utf8.encode("…").byteLength;
+  for (const ch of value) {
+    const size = utf8.encode(ch).byteLength;
+    if (used + size > max) break;
+    out += ch;
+    used += size;
+  }
+  return `${out}…`;
+};
+
+/** The exact head bytes for one valid card: first line starts with KARTE, whole head ≤ 1.5 KB. */
+export function renderCardHead(card: TaskCardBody): string {
+  const surface = [card.surface.files.join(", "),
+    card.surface.symbols.length ? `Symbole: ${card.surface.symbols.join(", ")}` : ""]
+    .filter(Boolean).join(" · ");
+  const head = [
+    `${CARD_HEAD_MARK} · gegen den Baum validiert — der Auftrag in Prosa steht darunter`,
+    `ZIEL: ${clipBytes(card.ziel, 300)}`,
+    `FLAECHE: ${clipBytes(surface || "—", 280)}`,
+    `DONE: ${clipBytes(card.done, 300)}`,
+    `VERIFY: ${clipBytes(card.verify, 180)}`,
+    `VERBOTEN: ${clipBytes(card.verboten.length ? card.verboten.join(" · ") : "—", 220)}`,
+    "--- AUFTRAG ---",
+  ].join("\n");
+  // the field budgets above sum to ~1.42 KB with every label, so this clip is a guard that never
+  // fires on a well-formed card — it exists so a future field cannot silently outgrow the cap
+  return clipBytes(head, CARD_HEAD_MAX_BYTES);
+}
+
+/** A row's lane-facing body: the card head before the prose when a valid card exists, else the prose. */
+export function withCardHead(card: TaskCardBody | null, prose: string): string {
+  return card ? `${renderCardHead(card)}\n\n${prose}` : prose;
+}
 
 export interface WaveBriefRow {
   id: string;
@@ -23,6 +71,8 @@ export interface WaveBriefRow {
   brief: string | null;
   /** the owner-confirmed done-criterion, when the row carries one */
   criterion: string | null;
+  /** the row's card when it is VALID — rendered as a KARTE head before `brief ?? text`; null otherwise */
+  card: TaskCardBody | null;
 }
 
 export interface WaveBriefInput {
@@ -35,7 +85,7 @@ export interface WaveBriefInput {
 }
 
 const numbered = (row: WaveBriefRow, at: number, total: number): string => {
-  const body = (row.brief ?? row.text).trim();
+  const body = withCardHead(row.card, (row.brief ?? row.text).trim());
   const criterion = row.criterion?.trim();
   return `--- ZEILE ${at + 1} VON ${total} · ${row.id} ---
 

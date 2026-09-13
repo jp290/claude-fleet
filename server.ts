@@ -51,7 +51,7 @@ import {
   type SymbolRange, type TaskSurface,
 } from "./task-metadata";
 import { buildCardPrompt, parseCardAnswer, validateCard, CARD_MARK, CARD_KEY,
-  type TaskCardBody } from "./card-extract";
+  type TaskCardBody, type CardValidationContext } from "./card-extract";
 import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NOTE_HUB_FILES,
   type NoteInput, type NoteRow, type KeyedUpsert } from "./task-notes";
 // The LAND fold of the collision facts. The wave button does not re-decide R1/R2/R3 or the program
@@ -62,7 +62,7 @@ import {
   type LandWave, type LandWaveProjection,
 } from "./task-land-waves";
 import type { TaskWaveInput } from "./task-waves";
-import { renderWaveBrief } from "./wave-brief";
+import { renderWaveBrief, withCardHead } from "./wave-brief";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
 import {
@@ -9835,10 +9835,16 @@ async function dispatchSourceTree(repo: string): Promise<"fleet" | "foreign"> {
 //   clarify  — buildClarifyBrief's deterministic frame; NOT folded into "raw" (a clarify lane
 //              produces no commits by design, so it would read as a raw-brief abort every time it works)
 //   founding — a server-built Program-MAIN/Supervisor founding template; no task text is involved
-type BriefSource = "compiled" | "owner" | "main" | "raw" | "clarify" | "founding";
+//   card     — the row carries a VALID card, so the brief opened with its KARTE head (wave-brief.ts
+//              #renderCardHead) in front of whatever prose followed. It outranks the brief's author
+//              because it is the fact that changed the first bytes the lane read; the prose behind
+//              the head is still the row's brief or draft, exactly as the other values would name it.
+//              Owner-ordered 2026-09-12 (queue row a672b626), not a side effect of the seam.
+type BriefSource = "compiled" | "owner" | "main" | "raw" | "clarify" | "founding" | "card";
 
 function briefSourceOf(t: Task, clarify: boolean): BriefSource {
   if (clarify) return "clarify";
+  if (t.card?.valid) return "card";
   if (!t.brief) return "raw";
   if (t.brief.by === "main") return "main";
   return t.brief.edited || t.brief.model === "owner" ? "owner" : "compiled";
@@ -9902,9 +9908,12 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
           brief: row.brief?.text ?? null,
           // the CONFIRMED criterion only: an unconfirmed proposal is the producer's own draft, and
           // a wave brief that quoted one would hand the lane an anchor nobody promoted
-          criterion: row.criterion?.confirmedAt ? row.criterion.text : null })),
+          criterion: row.criterion?.confirmedAt ? row.criterion.text : null,
+          card: row.card?.valid ? row.card : null })),
         sharedFiles: wave.sharedFiles, klasse: wave.klasse, baseUrl: `http://${HOST}:${PORT}` })
-      : next.brief?.text ?? next.text;
+      // a VALID card goes in front of the prose as a KARTE head; an absent or invalid one leaves
+      // the bytes exactly as they were, which is what keeps briefSourceOf's "card" honest
+      : withCardHead(next.card?.valid ? next.card : null, next.brief?.text ?? next.text);
   // read HERE, at the same moment the bytes are chosen — not at receipt time. The row is mutable
   // and a later reader cannot tell whether an edit came before or after this delivery.
   const briefSource = briefSourceOf(next, clarify);
@@ -10316,6 +10325,18 @@ const cardTokens = (run: WorkerRunObservation): { tokens?: number } => {
   const total = (run.usage?.input ?? 0) + (run.usage?.output ?? 0);
   return run.usage && total > 0 ? { tokens: total } : {};
 };
+// The facts a card is validated against, in one place: the extractor tick and the refine promote
+// below must check a card against the same tree and the same registered adapters, or "valid"
+// would mean two things depending on which writer produced the card.
+const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | null,
+  index: SymbolIndexSnapshot | null): CardValidationContext => ({
+  sourceText,
+  trackedPaths: snapshot?.paths ?? new Set<string>(),
+  symbolIndex: index?.index ?? null,
+  harnessKnown: (v) => HARNESSES.some((h) => h.id === v),
+  modelKnown: (v) => MODEL_RE.test(v),
+  effortKnown: (v) => HARNESSES.some((h) => h.effortLevels.includes(v)),
+});
 async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | null,
   index: SymbolIndexSnapshot | null): Promise<TaskCard> {
   const started = Date.now();
@@ -10342,16 +10363,9 @@ async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | nu
       gaps: ["answer: the extractor returned no readable card object"],
       ...cardTokens(observed) };
   }
-  const checked = validateCard(raw, {
-    // the SAME string the extractor was given, so the quote rule is decided against the text the
-    // answer was actually about and not against a second reading of the row
-    sourceText: source,
-    trackedPaths: snapshot?.paths ?? new Set<string>(),
-    symbolIndex: index?.index ?? null,
-    harnessKnown: (v) => HARNESSES.some((h) => h.id === v),
-    modelKnown: (v) => MODEL_RE.test(v),
-    effortKnown: (v) => HARNESSES.some((h) => h.effortLevels.includes(v)),
-  });
+  // the SAME string the extractor was given, so the quote rule is decided against the text the
+  // answer was actually about and not against a second reading of the row
+  const checked = validateCard(raw, cardValidationContext(source, snapshot, index));
   return { ...checked.body, model: observed.model, at: Date.now(), ms,
     valid: checked.valid, gaps: checked.gaps,
     ...cardTokens(observed) };
@@ -10539,6 +10553,13 @@ const filesProposalBy = (s: Slot): string => clampStr(
 // queue. All of them benefit more from one predictable shape than from whatever layout the model
 // felt like emitting. (A refined child arrives with no brief and no verdict, which is exactly
 // right: the sweep's uniform rule is "never analysed → analyse", and it applies here unchanged.)
+//
+// THIS COMPOSITION IS NOW THE CARD'S SOURCE, and the row text only when the card did not validate
+// (docs/messungen/2026-09-12-spezifizierung-buendelung-befund.md §3: refine produced structure and
+// the promote folded it straight back into prose). A child whose card is valid carries done,
+// verify and files as FIELDS and its text is the request alone — the KARTE head delivers the rest
+// at dispatch. A child whose card is not valid gets no head, so the folded text stays its text:
+// dropping done/verify there would hand the lane less than it got before the card existed.
 function refineChildText(c: RefineChild): string {
   return [
     c.text,
@@ -10546,6 +10567,18 @@ function refineChildText(c: RefineChild): string {
     ...(c.doneCriterion ? ["", `Done: ${c.doneCriterion}`] : []),
     ...(c.verify ? [`Verify: ${c.verify}`] : []),
   ].join("\n").slice(0, MAX_TASK_TEXT).trim();
+}
+
+// The card a refined child carries — the refiner's own fields, run through the SAME validator the
+// extractor tick uses (card-extract.ts#validateCard), against the folded text as source so the
+// quote rule sees the paths the refiner named. `model: "refine"` names the producer: no extractor
+// ran, and a card that claimed one would repeat the mis-stamp TaskCard.model exists to avoid.
+function refineChildCard(c: RefineChild, programId: string | undefined,
+  snapshot: TrackedSnapshot | null, index: SymbolIndexSnapshot | null, now: number): TaskCard {
+  const checked = validateCard({ ziel: c.text, surface: { files: c.files, symbols: [] },
+    done: c.doneCriterion, verify: c.verify, verboten: [], ...(programId ? { program: programId } : {}) },
+  cardValidationContext(refineChildText(c), snapshot, index));
+  return { ...checked.body, model: "refine", at: now, ms: 0, valid: checked.valid, gaps: checked.gaps };
 }
 
 // Parse + validate the worker's answer. Every off-contract shape THROWS, because the caller's
@@ -30130,20 +30163,24 @@ Bun.serve<WSData>({
       // (refine-validate.ts). It does NOT gate — a proposal with hallucinated paths still promotes if the
       // owner says so — but the ledger records that he could see it and confirmed anyway.
       const rRepoRaw = t.repo ?? (DISPATCH_REPO || null);
-      const rValidation = refineValidationFor(t,
-        rRepoRaw ? trackedSnapshotFor(rRepoRaw) : null).validation ?? null;
+      const rSnapshot = rRepoRaw ? trackedSnapshotFor(rRepoRaw) : null;
+      const rValidation = refineValidationFor(t, rSnapshot).validation ?? null;
       const now = Date.now();
       const originId = t.originId ?? t.id;
+      const rSymbols = rRepoRaw ? symbolIndexFor(rRepoRaw) : null;
       const kids: Task[] = proposal.tasks.map((c) => {
         const id = randomBytes(4).toString("hex");
+        const card = refineChildCard(c, t.programId, rSnapshot, rSymbols, now);
         return {
-          id, originId, ...(t.programId ? { programId: t.programId } : {}), text: refineChildText(c),
+          id, originId, ...(t.programId ? { programId: t.programId } : {}),
+          // a valid card carries done/verify/files as fields — the text does not say them twice
+          text: card.valid ? c.text.slice(0, MAX_TASK_TEXT).trim() : refineChildText(c), card,
           // source "owner": the owner is confirming this text. NO `brief` — a child is a NEW
           // draft and must reach the compiler as one. `repo` rides along, or the split would silently retarget
           // the dispatcher default. Children land `pending`, never `queued`: releasing stays a separate owner act.
           source: "owner", from: null, kind: "auftrag", repo: t.repo,
-          // the ONE thing a child inherits besides its text: the paths the refiner verified against the tree.
-          // Not a model judgement ABOUT this row the way `brief` is.
+          // the paths the refiner verified against the tree, as the row's confirmed surface (the card
+          // above holds them too, as a READING). Not a model judgement ABOUT this row the way `brief` is.
           ...(c.files.length ? {
             files: c.files.slice(0, MAX_REFINE_FILES), filesOrigin: "confirmed" as const,
           } : {}),

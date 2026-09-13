@@ -2083,15 +2083,16 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && receiptWrites.every((w) => /briefHash: briefHashOf\(deliveredBrief\)/.test(w)
       && /briefSource(: FOUNDING_BRIEF_SOURCE)?,/.test(w)),
     `${receiptWrites.length} writer(s), ${receiptWrites.filter((w) => !/briefHash/.test(w)).length} without briefHash`);
-  // The set is CLOSED at the type, and every literal in it is produced by something: five by the
-  // dispatch-seam derivation, the sixth by the founding constant. A value in the union that no
+  // The set is CLOSED at the type, and every literal in it is produced by something: six by the
+  // dispatch-seam derivation, the seventh by the founding constant. A value in the union that no
   // writer can emit is a category the ledger promises and never delivers. ("main" joined 2026-09-11
   // with POST /api/self/tasks/:id/brief — a MAIN-sharpened brief booked as "owner" would put the
   // very falsehood that door was built to end into a RATE.)
   const briefSourceType = /type BriefSource = ([^;]+);/.exec(server)?.[1] ?? "";
   pin("BriefSource is a closed set whose every literal has a producer",
-    briefSourceType.trim() === '"compiled" | "owner" | "main" | "raw" | "clarify" | "founding"'
+    briefSourceType.trim() === '"compiled" | "owner" | "main" | "raw" | "clarify" | "founding" | "card"'
     && /if \(clarify\) return "clarify";/.test(server)
+    && /if \(t\.card\?\.valid\) return "card";/.test(server)
     && /if \(!t\.brief\) return "raw";/.test(server)
     && /if \(t\.brief\.by === "main"\) return "main";/.test(server)
     && /t\.brief\.edited \|\| t\.brief\.model === "owner" \? "owner" : "compiled"/.test(server)
@@ -2162,7 +2163,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
 
   // ...and the READER of that ledger carries the same two sets, in a second file, as literal arrays.
   // tsc holds neither to the other — two independent literal unions are both perfectly well typed —
-  // so a sixth briefSource or a renamed disposition would leave briefstats.ts silently booking real
+  // so a new briefSource or a renamed disposition would leave briefstats.ts silently booking real
   // rows as `unknownSource` or as malformed, which is a hole that reads like data. Stated as a set
   // comparison rather than as a copied list, so a value added tomorrow is covered tomorrow.
   const briefstats = read("briefstats.ts");
@@ -2170,7 +2171,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     [...src.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]!).sort();
   const readerSources = literals(/export const BRIEF_SOURCES = \[([^\]]+)\]/.exec(briefstats)?.[1] ?? "");
   pin("briefstats.ts's BRIEF_SOURCES is server.ts's BriefSource union, value for value",
-    readerSources.length === 6 && readerSources.join() === literals(briefSourceType).join(),
+    readerSources.length === 7 && readerSources.join() === literals(briefSourceType).join(),
     `reader=[${readerSources}] server=[${literals(briefSourceType)}]`);
   const dispositionType = /type LaneDisposition = ([^;]+);/.exec(server)?.[1] ?? "";
   const readerDispositions = literals(/export const LANE_DISPOSITIONS = \[([^\]]+)\]/.exec(briefstats)?.[1] ?? "");

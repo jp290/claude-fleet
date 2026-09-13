@@ -987,7 +987,7 @@ const commitBusy = new Map<number, "quick" | "agent">();
 // (NEVER STARTED — it never looked at the tree). The timing fields are optional on both sides: a
 // record deserialized from an older server has none.
 type VerifyVerdict = { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean;
-  timedOut?: true; waitedOut?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true;
+  timedOut?: true; waitedOut?: true; serverDown?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true;
   exitCode?: number | null };
 interface MergeState { running: boolean;
   // "interrupted" is the durable marker a merge run leaves about itself before it starts: a run
@@ -1354,6 +1354,13 @@ function verifyBadge(v: VerifyVerdict | undefined): HTMLElement {
     b.onclick = (e) => { e.stopPropagation(); showVerifyOutput(v); };
     return b;
   }
+  if (v.serverDown) {
+    // the chain's own non-measurement: a suite's server never came up, so no check ran
+    const b = el("span", "vbadge skip", "verify — server down");
+    b.title = `\`${v.cmd}\` never measured this tree — a suite's own server did not come up, so no check ran; click to view the kept instance's server.log tail`;
+    b.onclick = (e) => { e.stopPropagation(); showVerifyOutput(v); };
+    return b;
+  }
   if (v.ok === null) {
     const b = el("span", "vbadge skip", "verify — skipped");
     b.title = `\`${v.cmd}\` declined to verify this tree (it verified NOTHING — not a pass) — click to view what it said`;
@@ -1386,10 +1393,12 @@ function showVerifyOutput(v: VerifyVerdict): void {
   const panel = el("div", "panel riskpanel");
   panel.appendChild(el("h2", "", v.waitedOut ? "verify — never started, output so far"
     : v.timedOut ? "verify — timed out, output so far"
+    : v.serverDown ? "verify — a suite server did not come up, output"
     : skipped ? "verify — skipped, output" : "verify ✗ — output"));
   panel.appendChild(el("div", `diffstat ${skipped ? "warn" : "err"}`,
     `${v.cmd} · ${v.waitedOut ? `killed while still queued behind the suite mutex — this tree was never looked at${spentText(v)}`
       : v.timedOut ? `killed at the work timeout — nothing was checked${spentText(v)}`
+      : v.serverDown ? "a suite's own server did not come up — nothing was checked"
       : skipped ? "declined to verify this tree — nothing was checked" : "exit non-zero"}`));
   const box = el("div", "difftxt");
   box.textContent = v.out || "(no output captured)";
@@ -10429,7 +10438,7 @@ function renderAkteDetail(d: Dossier) {
     if (n.state === "unreadable") { akteStep(host, "note", 0, `note on ${n.sha.slice(0, 8)} is unreadable`, n.why); continue; }
     const note = n.note ?? {};
     const v = note.verify as { cmd?: string; ok?: boolean | null; out?: string; ms?: number;
-      timedOut?: true; waitedOut?: true } | undefined;
+      timedOut?: true; waitedOut?: true; serverDown?: true } | undefined;
     akteStep(host, "note", typeof note.at === "number" ? note.at : 0, `landed onto ${n.sha.slice(0, 8)}`,
       `${note.confirmedByHuman ? "confirmed by the owner" : "unattended"}`
       + `${Array.isArray(note.conflicted) && note.conflicted.length ? ` · resolved ${note.conflicted.length} conflict(s)` : ""}`);
@@ -10442,6 +10451,7 @@ function renderAkteDetail(d: Dossier) {
     const word = v.ok === true ? "passed" : v.ok === false ? "FAILED"
       : v.timedOut ? "was killed at the timeout — nothing was measured"
         : v.waitedOut ? "never started (queued behind the suite mutex) — nothing was measured"
+          : v.serverDown ? "never measured (a suite server did not come up) — nothing was measured"
           : "declined to verify (skipped) — nothing was measured";
     host.appendChild(el("div", "aktehead", `verify ${word}`));
     host.appendChild(el("div", "aktepre", v.cmd ?? "(no command recorded)"));

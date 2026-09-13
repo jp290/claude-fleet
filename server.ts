@@ -6144,7 +6144,8 @@ function mergeEventPayload(outcome: MergeLast): MergeWatchEventPayload {
   return {
     status: outcome.status, landed: outcome.landed, branch: outcome.branch, at: outcome.at,
     ...(v ? { verify: { ok: v.ok, ...(v.timedOut ? { timedOut: true as const } : {}),
-      ...(v.waitedOut ? { waitedOut: true as const } : {}), ...(v.stale ? { stale: true as const } : {}) } } : {}),
+      ...(v.waitedOut ? { waitedOut: true as const } : {}), ...(v.serverDown ? { serverDown: true as const } : {}),
+      ...(v.stale ? { stale: true as const } : {}) } } : {}),
     ...(outcome.conflicted?.length ? { conflicted: outcome.conflicted.slice(0, 50).map((f) => f.slice(0, 200)) } : {}),
     ...(outcome.resolvedBy ? { resolvedBy: outcome.resolvedBy } : {}),
   };
@@ -9124,6 +9125,8 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
 // and the direction of that reset is safe — after a restart the MAIN may re-verify once more, it
 // can never land something unverified.
 const selfConfirmSpent = new Map<string, string>(); // task id -> candidate already re-verified here
+// task id -> candidate whose one server-did-not-come-up re-run was already started (see guard (10))
+const serverDownRetrySpent = new Map<string, string>();
 async function guardedConfirmJob(lane: Slot, cwd: string, repo: string, main: string,
   branch: string, actor: LandActor): Promise<void> {
   // the verdict as it stands BEFORE the confirm — it is what a non-land outcome must preserve.
@@ -9322,10 +9325,22 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
   const unmeasuredGate = lastVerify !== null && lastVerify.ok === null;
   const killedGate = unmeasuredGate
     && (lastVerify.waitedOut === true || lastVerify.timedOut === true);
+  // …and the chain's OWN non-measurement (measured 2026-09-13, hooks land `a60b610f`): a suite whose
+  // server never came up exits before its first check, so the red it used to record measured
+  // nothing, and the next call was refused as "repair or escalate" — the reparation had to be
+  // forced in as a new commit. ONCE per candidate and not like the kills, because here the premise
+  // can hold after all: a tree whose server.ts cannot boot fails exactly this way, every time. One
+  // re-run separates the harness race (§11.2i) from that; a second identical answer is a
+  // measurement of the boot, and the guard binds again. Memory-resident like selfConfirmSpent, and
+  // for the same safe reason: a restart buys one more re-run, never a land.
+  const serverDownGate = unmeasuredGate && lastVerify.serverDown === true;
+  const serverDownRetry = serverDownGate && !holdsResolution && pending?.candidateSha === candidate
+    && serverDownRetrySpent.get(t.id) !== candidate;
   const unchangedRetry = pending !== null && pending.landed !== true
     && pending.candidateSha === candidate && !resolvedCandidate
     && !(holdsResolution && !guardedRung)
-    && !(killedGate && !holdsResolution);
+    && !(killedGate && !holdsResolution)
+    && !serverDownRetry;
   if (unchangedRetry) {
     // WHAT THE REFUSAL SAYS is decided by the same fact, and it is decided here rather than in the
     // guard's condition because the two questions differ: whether to refuse, and what the caller is
@@ -9335,8 +9350,17 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
     // sending a MAIN to hunt a fault in a tree no gate ever looked at.
     const gate = !unmeasuredGate ? "measured"
       : lastVerify.waitedOut === true ? "never-started"
-      : lastVerify.timedOut === true ? "timed-out" : "skipped";
-    const why = gate === "never-started"
+      : lastVerify.timedOut === true ? "timed-out"
+      : lastVerify.serverDown === true ? "server-down" : "skipped";
+    // the spent re-run is its own sentence: nothing was measured, but the same bytes have now failed
+    // to boot twice, so the MAIN is sent to the kept server.log rather than told there is no defect
+    if (gate === "server-down" && !holdsResolution)
+      return json({ error: `no progress since the last verdict: ${pending.status} on the same candidate ${candidate.slice(0, 8)}, and a suite's own server did NOT COME UP again after the one re-run this candidate gets — no check ran, but identical bytes failing to boot twice is what a tree whose server cannot start looks like; read the kept instance's server.log, then repair or escalate`,
+        candidate, gate, last: { status: pending.status, at: pending.at,
+          verify: { ok: null, serverDown: true as const } } }, 409);
+    const why = gate === "server-down"
+      ? "never measured it — a suite's own server did not come up"
+      : gate === "never-started"
       ? "NEVER STARTED — it was queued behind the suite mutex for its whole wait budget and was killed there"
       : gate === "timed-out"
         ? "was KILLED mid-run at the work budget"
@@ -9347,7 +9371,8 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
       candidate, gate, last: { status: pending.status, at: pending.at,
         verify: lastVerify ? { ok: lastVerify.ok,
           ...(lastVerify.waitedOut ? { waitedOut: true as const } : {}),
-          ...(lastVerify.timedOut ? { timedOut: true as const } : {}) } : null } }, 409);
+          ...(lastVerify.timedOut ? { timedOut: true as const } : {}),
+          ...(lastVerify.serverDown ? { serverDown: true as const } : {}) } : null } }, 409);
   }
   // (11) THE WORK MUST NOT ALREADY HAVE BEEN REFUSED — the precondition this ladder presupposed and
   // never asked (rejectedReportForLand; measured 2026-09-07, and the incident is written down at that
@@ -9413,7 +9438,10 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
     if ("hold" in carry)
       return json({ error: `${carry.hold.detail} — a "${policy.selfLand}" promotion never lands an unreviewed conflict resolution; the owner grants the "guarded" rung for that`,
         selfLand: policy.selfLand, last: carry.hold.last }, 409);
-    audit("self_land_start", s.id, `${t.id} program=${program.id} lane=${lane.id} candidate=${candidate.slice(0, 8)} policy=${policy.selfLand}`);
+    // spent where the run actually starts, not at the guard: a later rung that refuses must not
+    // consume the one re-run a server-down verdict earns
+    if (serverDownRetry) serverDownRetrySpent.set(t.id, candidate);
+    audit("self_land_start", s.id, `${t.id} program=${program.id} lane=${lane.id} candidate=${candidate.slice(0, 8)} policy=${policy.selfLand}${serverDownRetry ? " retry=server-down" : ""}`);
     // …and the SAME job the owner route starts, started the same way. Kept as a literal call rather
     // than behind a shared wrapper on purpose: the pin that matters is that `mergeJob(` has exactly
     // two textual call sites and both are routes, and a wrapper would let a third caller — a tick —
@@ -14546,6 +14574,15 @@ const VERIFY_SKIP_EXIT = 42; // the command's way of saying "I verified nothing"
 // server deploy instead of at the owner's next kickstart. Only consulted on exit 0 (a non-zero exit
 // is already not a pass), and a false positive can only ever cost an auto-land, never grant one.
 const VERIFY_SKIP_MARK = /^verify skipped:/m;
+// A FOURTH NON-MEASUREMENT, and the only one the chain reports about itself rather than our clock
+// about it: e2e-stage.sh#stage_server_start_failed. A suite whose own server never bound exits 3
+// with this line — BEFORE a single check ran — so the red it used to record was a verdict about
+// nothing (measured 2026-09-13: hooks land `a60b610f`, `e2e-claude-gate.sh: server did not come up
+// (phase 3 …)`, zero FAIL lines, no server.log, §11.2i). BOTH halves are required: exit 3 alone is
+// any command's business, and the phrase alone can sit in a real red's output. The exit is the
+// chain's — `a && b && suite` exits with the suite's status, so the 3 survives the `&&` walk.
+const VERIFY_SERVER_DOWN_EXIT = 3;
+const VERIFY_SERVER_DOWN_MARK = /^\S+: server did not come up \(phase: /m;
 // TEST-ONLY fault injection, 0 (absent) in every real deployment: widen the window between
 // "the integration branch moved" and "the land is recorded" so a suite can kill the server
 // inside it deterministically. The window is a few milliseconds of real code and cannot be hit
@@ -14888,15 +14925,21 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
     // the two can never both be written: a chain that reported a wait of its own is by definition
     // not this one.
     else if (proportional && heldSuiteLock === null) notes.push(`[suite mutex: NOT TAKEN — this gate is the docs-only short chain (${steps.join(", ")}), which spawns no suite and needs no machine, so it neither queued for ${SUITE_LOCK} nor held it]`);
-    const note = notes.length ? `\n${notes.join("\n")}` : "";
     // the skip test runs over the FULL output, not the retained window: a command that declines
     // early and then prints past the cap would otherwise have its own declaration truncated away
     const skipped = !timedOut && !waitedOut
       && (code === VERIFY_SKIP_EXIT || (code === 0 && VERIFY_SKIP_MARK.test(`${out}${err}`)));
+    // over the FULL output for the same reason: the marker is printed to stderr and followed by a
+    // 40-line server.log tail, and a long chain before it can push it out of the retained window
+    const serverDown = !timedOut && !waitedOut && !skipped
+      && code === VERIFY_SERVER_DOWN_EXIT && VERIFY_SERVER_DOWN_MARK.test(`${out}${err}`);
+    if (serverDown) notes.push(`[verify NEVER MEASURED — a suite's own server did not come up (exit ${VERIFY_SERVER_DOWN_EXIT}, "server did not come up"), so no check ran against this tree and this is NOT a verdict about it; the kept instance's server.log says whether the tree could not boot or the harness raced (docs/verify-tiering.md §11.2i)]`);
+    const note = notes.length ? `\n${notes.join("\n")}` : "";
     const kept = retainRunOutput(out, err, Math.max(0, VERIFY_OUT_CAP - byteLen(note)));
-    return { cmd, ok: timedOut || waitedOut || skipped ? null : code === 0, proportional, steps,
+    return { cmd, ok: timedOut || waitedOut || skipped || serverDown ? null : code === 0, proportional, steps,
       ...(timedOut ? { timedOut: true as const } : {}),
       ...(waitedOut ? { waitedOut: true as const } : {}),
+      ...(serverDown ? { serverDown: true as const } : {}),
       // p.exitCode, not the awaited status: Bun reports null for a signal death, which is the
       // honest answer for a process this server killed — a number there would read as a verdict
       // the command never reached.
@@ -15013,6 +15056,9 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   //   ok: null + waitedOut    — the gate was QUEUED behind the suite mutex for VERIFY_WAIT_MS and
   //                             killed there. It never started: the weakest statement of the six,
   //                             and the one the 2026-08-06 record told as `ok:false`.
+  //   ok: null + serverDown   — the chain REPORTED that a suite's own server never came up (exit 3 +
+  //                             e2e-stage.sh#stage_server_start_failed's line): no check ran. The
+  //                             chain's own statement, so it never co-occurs with a kill or a skip.
   // `timedOut` and `waitedOut` are mutually exclusive (runVerify arms one clock at a time).
   // THE INVARIANT: `field absent` is the ONLY state that auto-lands. ok:false, SKIPPED, TIMED OUT
   // and NEVER STARTED all stop for the owner — both kills ride inside ok:null so they belong to
@@ -15028,7 +15074,7 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // Every new run also names whether it used the docs-only proportional chain and its exact ordered
   // steps. Optional only for old persisted verdicts/notes, which cannot honestly reconstruct them.
   verify?: { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean;
-    timedOut?: true; waitedOut?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true;
+    timedOut?: true; waitedOut?: true; serverDown?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true;
     exitCode?: number | null; proportional?: boolean; steps?: LocalProofStep[] };
   // set when main WAS advanced (the land is recorded — note + undo) but the lane teardown
   // failed afterwards; distinct from `detail` so "landed but not torn down" is machine-readable
@@ -21233,7 +21279,8 @@ function freshConfirmRefusal(fresh: MergeLast["verify"]): string {
     return "the resolved candidate could not be verified: no verify command is configured for this repo — nothing was landed";
   if (fresh.ok === false)
     return `the resolved candidate was re-verified FRESH and the gate is RED (${fresh.cmd}) — nothing was landed; repair the tree, or escalate`.slice(0, 600);
-  const why = fresh.timedOut ? "timed out" : fresh.waitedOut ? "never started" : "skipped";
+  const why = fresh.timedOut ? "timed out" : fresh.waitedOut ? "never started"
+    : fresh.serverDown ? "a suite server did not come up" : "skipped";
   return `the resolved candidate's fresh verification never produced a measurement (${fresh.cmd}, ${why}) — unknown is never green, so nothing was landed`.slice(0, 600);
 }
 
@@ -21807,6 +21854,8 @@ function cleanVerifyStop(verify: NonNullable<MergeLast["verify"]>, branch: strin
     return { status: "resolved", landed: false, branch, at: Date.now(), verify,
       detail: (verify.waitedOut
         ? `clean rebase, but verify NEVER STARTED (${verify.cmd}) — killed after ${VERIFY_WAIT_MS}ms still queued behind the suite mutex, so it never looked at this tree and this is NOT a verdict about it; it did not auto-land.${spent}${rounds} Re-run the gate once the machine is free, or land if intended.`
+        : verify.serverDown
+        ? `clean rebase, but verify NEVER MEASURED this tree (${verify.cmd}) — a suite's own server did not come up (exit ${VERIFY_SERVER_DOWN_EXIT}), so no check ran and this is NOT a verdict about it; it did not auto-land.${spent} Read the kept instance's server.log: a race of the harness re-runs green, a tree that cannot boot fails the same way again.`
         : verify.timedOut
         ? `clean rebase, but verify TIMED OUT after ${VERIFY_TIMEOUT_MS}ms of work (${verify.cmd}) — killed mid-run, so nothing was verified and this is NOT a verdict about the tree; it did not auto-land.${spent} Read the output, re-run the gate, or land if intended.`
         : `clean rebase, but verify SKIPPED itself (${verify.cmd}) — nothing was verified, so this did not auto-land; review the output, then land if intended.`).slice(0, 600) };
@@ -22297,6 +22346,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
           // would hide that the gate stopped running at all.
           const repairVerdict = verify?.ok === true ? "passed"
             : verify?.waitedOut ? "never got to run" : verify?.timedOut ? "timed out"
+            : verify?.serverDown ? "never measured (a suite server did not come up)"
             : verify?.ok === null ? "skipped itself" : "still failed";
           const repairNote = repairRounds > 0
             ? ` verify ${repairVerdict} after ${repairRounds} repair round${repairRounds === 1 ? "" : "s"}.`
@@ -22315,6 +22365,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             : verify?.ok === false ? " Verify FAILED on this tree — read its output before landing."
             : verify?.waitedOut ? ` Verify NEVER STARTED on this tree — it was killed after ${VERIFY_WAIT_MS}ms still queued behind the suite mutex; that is a fact about the machine, not about this tree.`
             : verify?.timedOut ? ` Verify TIMED OUT on this tree (${VERIFY_TIMEOUT_MS}ms of work) — nothing was verified; that is not a failure of this tree.`
+            : verify?.serverDown ? " Verify NEVER MEASURED this tree — a suite's own server did not come up, so no check ran; read the kept instance's server.log before landing."
             : verify?.ok === null ? " Verify SKIPPED itself on this tree — nothing was verified." : "";
           res = { status: "resolved", landed: false, branch, at: Date.now(),
             conflicted: unreviewed, resolvedBy, verify, ...(repairRounds > 0 ? { repairRounds } : {}),

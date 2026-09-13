@@ -39,6 +39,32 @@ export function appendEvent(file: string, obj: Record<string, unknown>): Promise
 export function appendEventStrict(file: string, obj: Record<string, unknown>): Promise<void> {
   return queueEventWrite(file, obj);
 }
+// The state-file writer's scheduler: a burst of save requests collapses into one physical write,
+// with no timer (docs/messungen/2026-09-11-knackpunkte-verschlankung-astra.md §K6). At most ONE
+// run waits behind the running one; every request made while it waits joins it and gets its
+// promise. The body is taken when the run STARTS, so it covers every mutation made before that —
+// which is what makes joining sound: a joiner's intent is always in the snapshot it waits for.
+// The converse is the barrier rule: a request made while a run is already writing never gets that
+// run's promise (its snapshot predates the request) but the next one's. A failed run rejects every
+// request joined to it — a barrier caller must see its write did not land — reports once, and
+// leaves the chain usable, so the next request writes afresh. Injected, not imported: this file
+// is a leaf, and the probe in e2e/land-durability.ts drives it with a fake write.
+export function coalescedSaver(snapshot: () => string, write: (body: string) => void | Promise<void>,
+  onError: (e: unknown) => void): () => Promise<void> {
+  let tail: Promise<void> = Promise.resolve(); // settles after the latest scheduled run; never rejects
+  let waiting: Promise<void> | null = null; // scheduled, not yet started
+  return () => {
+    if (waiting) return waiting;
+    const run = tail.then(async () => {
+      waiting = null; // from here a new request may postdate this snapshot, so it gets a new run
+      await write(snapshot());
+    });
+    waiting = run;
+    tail = run.catch(onError);
+    return run;
+  };
+}
+
 // The READ counterpart of appendEvent, rotation-aware (a single-file reader is invisible to
 // rotation: at AUDIT_ROTATE_BYTES the whole history becomes `x.jsonl.1` and `x.jsonl` restarts
 // empty, so it would return a near-empty answer with NO error — the ledger looks young rather

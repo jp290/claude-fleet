@@ -12,9 +12,12 @@
 // Both are reproduced here against a REAL kill of the real server, not a simulated one.
 import { spawnSync } from "node:child_process";
 import {
-  chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync,
+  chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { coalescedSaver } from "../server/persist";
 import { BASE, REPO, ROOT, check, get, post, restartSrv, tmuxOut } from "./harness";
 import { setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 import { resolveSourceTree } from "./trail-emit";
@@ -70,7 +73,83 @@ interface AuditEvent { event?: string; detail?: string }
 const auditEvents = async (): Promise<AuditEvent[]> =>
   ((await (await get("/api/audit?limit=1000")).json()) as { events: AuditEvent[] }).events;
 
+// The state writer's burst coalescing (server/persist.ts#coalescedSaver), driven in-process with
+// the real scheduler and a fake write into a scratch file: the durability contract it must keep
+// is the same one this module proves against a killed server — a barrier caller's intent is on
+// disk when its promise resolves, and a failed write reaches that caller. No server, no timer.
+export async function stateSaveCoalescing(): Promise<void> {
+  const file = join(mkdtempSync(join(tmpdir(), "fleet-coalesce-")), "state.json");
+  const onDisk = (): number => (JSON.parse(readFileSync(file, "utf8")) as { n: number }).n;
+  const state = { n: 0 };
+  const snapshot = (): string => JSON.stringify(state);
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  {
+    let writes = 0;
+    let errors = 0;
+    const save = coalescedSaver(snapshot, (b) => { writes++; writeFileSync(file, b); }, () => { errors++; });
+    let last: Promise<void> = Promise.resolve();
+    for (let i = 1; i <= 50; i++) { state.n = i; last = save(); void last.catch(() => undefined); }
+    await last;
+    await tick();
+    check("state save coalescing (a): 50 saveState calls in one tick are at most 2 write runs, file holds the 50th",
+      writes <= 2 && writes >= 1 && onDisk() === 50 && errors === 0,
+      `writes=${writes} onDisk=${onDisk()} errors=${errors}`);
+  }
+
+  {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    let signalStarted: () => void = () => undefined;
+    const started = new Promise<void>((r) => { signalStarted = r; });
+    const bodies: number[] = [];
+    const save = coalescedSaver(snapshot, async (b) => {
+      if (bodies.length === 0) { signalStarted(); await gate; }
+      bodies.push((JSON.parse(b) as { n: number }).n);
+      writeFileSync(file, b);
+    }, () => undefined);
+    state.n = 100;
+    const first = save();
+    await started; // run 1 has taken its snapshot and is writing
+    state.n = 101;
+    const barrier = save();
+    let runsAtResolve = -1;
+    const settled = barrier.then(() => { runsAtResolve = bodies.length; });
+    release();
+    await first;
+    await settled;
+    check("state save coalescing (b): saveStateNow during a running write resolves only after a second run that holds the mutation",
+      barrier !== first && runsAtResolve === 2 && bodies[0] === 100 && bodies[1] === 101 && onDisk() === 101,
+      `sameRun=${barrier === first} runsAtResolve=${runsAtResolve} bodies=${bodies.join(",")} onDisk=${onDisk()}`);
+  }
+
+  {
+    let failNext = true;
+    let writes = 0;
+    const logged: unknown[] = [];
+    const save = coalescedSaver(snapshot, (b) => {
+      if (failNext) { failNext = false; throw new Error("injected ENOSPC"); }
+      writes++;
+      writeFileSync(file, b);
+    }, (e) => { logged.push(e); });
+    state.n = 200;
+    const outcome = async (p: Promise<void>): Promise<string> => {
+      try { await p; return "resolved"; } catch (e) { return e instanceof Error ? e.message : String(e); }
+    };
+    const [barrier, joined] = await Promise.all([outcome(save()), outcome(save())]);
+    await tick();
+    state.n = 201;
+    const next = await outcome(save());
+    check("state save coalescing (c): an injected write failure rejects the barrier caller, and the next save writes",
+      barrier === "injected ENOSPC" && joined === "injected ENOSPC" && logged.length === 1
+        && next === "resolved" && writes === 1 && onDisk() === 201,
+      `barrier=${barrier} joined=${joined} logged=${logged.length} next=${next} writes=${writes} onDisk=${onDisk()}`);
+  }
+  rmSync(dirname(file), { recursive: true, force: true });
+}
+
 export async function run(): Promise<void> {
+  await stateSaveCoalescing();
   const MAIN = g(REPO, "symbolic-ref", "--short", "HEAD").out || "main";
   const receiver = ((await (await get("/api/sessions")).json()) as
     { slots: { id: number; cwd: string | null }[] }).slots.find((s) => s.cwd === null)?.id ?? 0;

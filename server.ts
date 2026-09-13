@@ -126,7 +126,7 @@ import {
   type SlotStreamOccupant,
 } from "./server/types";
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
-import { appendEvent, appendEventStrict, readLedger, readEventLog } from "./server/persist";
+import { appendEvent, appendEventStrict, coalescedSaver, readLedger, readEventLog } from "./server/persist";
 import { audit, AUDIT_FILE } from "./server/audit-log";
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
@@ -2892,10 +2892,9 @@ function boxFor(s: Pick<Slot, "container" | "containerContext">): { container: s
   return { container: s.container ?? CONTAINER_NAME, containerContext: s.containerContext ?? CONTAINER_CONTEXT };
 }
 
-// writes are serialized: overlapping fire-and-forget writes to the same file can interleave
-let saveChain: Promise<void> = Promise.resolve();
 let stateSeq = 0; // makes each temp file's name unique WITHIN this process; the pid makes it unique across
-function queueStateSave(): Promise<void> {
+// the state body as it stands NOW — called by the saver when a write run starts, never per request
+function stateSnapshot(): string {
   const active: Record<string, { cwd: string; label: string | null; openedAt: number;
     successionRetirement: SuccessionRetirement | null; mission: string | null;
     awaiting: "owner" | "main" | null;
@@ -2913,7 +2912,7 @@ function queueStateSave(): Promise<void> {
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
-  const body = JSON.stringify({ token: persistedToken, stewardToken, helperToken,
+  return JSON.stringify({ token: persistedToken, stewardToken, helperToken,
     helperClaims: Object.fromEntries(helperClaims), helperLapses, helperDevices: [...helperDevices.values()],
     helperUpdates: [...helperUpdates.values()],
     // …and the lane-suite offers, for the SAME reason the claims are persisted: the deploy ritual
@@ -2931,50 +2930,52 @@ function queueStateSave(): Promise<void> {
     repoBases, repoWorkers, repoLaneCaps, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
     landPending: Object.fromEntries(landPending), mainDirectPreflights,
   }, null, 2);
-  // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
-  // intact, not a torn file that boot reads as "empty" and then re-persists as the
-  // new truth (which would eat every share, task, lane tag and session pin at once).
-  //
-  // Four properties this file needs that a plain write+rename does not give (data-audit-2026-07-27
-  // item 9), all of them because THIS file is the credential store — owner token, steward token,
-  // every lane selfToken, every share secret — and losing it is a total lockout, not a lost setting:
-  //  1. UNIQUE tmp name. A fixed `fleet.json.tmp` is a shared target: two servers over the same
-  //     import.meta.dir interleave into one temp file and both rename it over the state. The
-  //     pidfile guard at boot is the primary defence; this is the one that holds if it is defeated.
-  //  2. Mode 0600 AT CREATION (`wx`, O_EXCL|O_CREAT), not chmod-after — the old order left every
-  //     credential in the file world-readable for the window between write and chmod.
-  //  3. fsync the temp before the rename, and the DIRECTORY after it. Without the first, a power
-  //     loss can order the rename ahead of the data and leave exactly the zero-length file the
-  //     temp+rename design exists to rule out; without the second the rename itself can be lost.
-  //     Deliberately NOT extended to the .jsonl ledgers: those are append-only trails where a
-  //     torn tail line costs one row and every reader already skips it, so paying two fsyncs per
-  //     event there would be real cost against a loss this file's readers cannot absorb.
-  //  4. The PREVIOUS GOOD file is kept as .bak here, at rename time, while it is still known-good.
-  //     Boot used to make the .bak — from the already-corrupt file it had just failed to parse,
-  //     which preserves the damage and overwrites the last readable state with it.
-  const tmp = `${STATE_FILE}.${process.pid}.${stateSeq++}.tmp`;
-  const raw = saveChain
-    .then(() => {
-      const fd = openSync(tmp, "wx", 0o600);
-      try {
-        writeSync(fd, body);
-        fsyncSync(fd);
-      } finally { closeSync(fd); }
-      // best-effort: an unreadable/absent current state is not a reason to fail the save
-      try { copyFileSync(STATE_FILE, `${STATE_FILE}.bak`); } catch { /* first save, or no prior file */ }
-      renameSync(tmp, STATE_FILE);
-      const dir = openSync(import.meta.dir, "r");
-      try { fsyncSync(dir); } finally { closeSync(dir); }
-    })
-  // Keep the serializer usable after one failed write, but do not erase that failure from the
-  // caller that asked for a durability barrier. A founding may not open a pane after its marker
-  // failed to reach disk, and boot recovery may not serve requests after its cleanup failed.
-  saveChain = raw.catch((e: unknown) => {
-      try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* nothing more to do about the temp */ }
-      logError("saveState", e);
-    });
-  return raw;
 }
+// tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
+// intact, not a torn file that boot reads as "empty" and then re-persists as the
+// new truth (which would eat every share, task, lane tag and session pin at once).
+//
+// Four properties this file needs that a plain write+rename does not give (data-audit-2026-07-27
+// item 9), all of them because THIS file is the credential store — owner token, steward token,
+// every lane selfToken, every share secret — and losing it is a total lockout, not a lost setting:
+//  1. UNIQUE tmp name. A fixed `fleet.json.tmp` is a shared target: two servers over the same
+//     import.meta.dir interleave into one temp file and both rename it over the state. The
+//     pidfile guard at boot is the primary defence; this is the one that holds if it is defeated.
+//  2. Mode 0600 AT CREATION (`wx`, O_EXCL|O_CREAT), not chmod-after — the old order left every
+//     credential in the file world-readable for the window between write and chmod.
+//  3. fsync the temp before the rename, and the DIRECTORY after it. Without the first, a power
+//     loss can order the rename ahead of the data and leave exactly the zero-length file the
+//     temp+rename design exists to rule out; without the second the rename itself can be lost.
+//     Deliberately NOT extended to the .jsonl ledgers: those are append-only trails where a
+//     torn tail line costs one row and every reader already skips it, so paying two fsyncs per
+//     event there would be real cost against a loss this file's readers cannot absorb.
+//  4. The PREVIOUS GOOD file is kept as .bak here, at rename time, while it is still known-good.
+//     Boot used to make the .bak — from the already-corrupt file it had just failed to parse,
+//     which preserves the damage and overwrites the last readable state with it.
+function writeStateFile(body: string): void {
+  const tmp = `${STATE_FILE}.${process.pid}.${stateSeq++}.tmp`;
+  try {
+    const fd = openSync(tmp, "wx", 0o600);
+    try {
+      writeSync(fd, body);
+      fsyncSync(fd);
+    } finally { closeSync(fd); }
+    // best-effort: an unreadable/absent current state is not a reason to fail the save
+    try { copyFileSync(STATE_FILE, `${STATE_FILE}.bak`); } catch { /* first save, or no prior file */ }
+    renameSync(tmp, STATE_FILE);
+    const dir = openSync(import.meta.dir, "r");
+    try { fsyncSync(dir); } finally { closeSync(dir); }
+  } catch (e) {
+    try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* nothing more to do about the temp */ }
+    throw e;
+  }
+}
+// Writes are serialized AND coalesced (server/persist.ts#coalescedSaver): a burst of requests is
+// one snapshot and one write run, and overlapping writes to the same file can never interleave.
+// The rejection still reaches the caller that asked for a durability barrier: a founding may not
+// open a pane after its marker failed to reach disk, and boot recovery may not serve requests
+// after its cleanup failed.
+const queueStateSave = coalescedSaver(stateSnapshot, writeStateFile, (e) => logError("saveState", e));
 function saveState(): void {
   void queueStateSave();
 }

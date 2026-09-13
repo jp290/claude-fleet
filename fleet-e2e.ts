@@ -202,7 +202,9 @@ const steps: Step[] = [
   { unit: "ref-advance", lane: true, run: async () => {
     await refAdvance.run();
   } },
-  { unit: "outcomes", lane: true, run: async () => {
+  // `core`, not a unit of its own: it leaves the Program of its restart probe CONFIRMED, and
+  // tasks.run() below reuses exactly that row (the first --shard run found the edge).
+  { unit: "core", lane: true, run: async () => {
     await outcomes.run();
   } },
   // what the merge/land path can still say after the process running it was killed. Last in the

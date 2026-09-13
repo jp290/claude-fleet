@@ -80,6 +80,9 @@ export interface WaveBriefInput {
   /** files at least two of these rows stand on — the evidence FOR bundling them, from the sensor */
   sharedFiles: readonly string[];
   klasse: "docs" | "code";
+  /** the wave's summed size units and the budget it was cut against (task-land-waves.ts#LAND_WAVE_BUDGET_DEFAULT) */
+  units: number;
+  budget: number;
   /** `http://host:port` — the split door is quoted with the same base every other self route is */
   baseUrl: string;
 }
@@ -98,7 +101,7 @@ ${body}${criterion ? `\n\nDONE-KRITERIUM DIESER ZEILE (vom Owner bestätigt): ${
  * row — that lane gets the ordinary brief, and silently degrading here would hide which one it got.
  */
 export function renderWaveBrief(input: WaveBriefInput): string {
-  const { rows, sharedFiles, klasse, baseUrl } = input;
+  const { rows, sharedFiles, klasse, units, budget, baseUrl } = input;
   if (rows.length < 2) throw new Error("a wave brief needs at least two rows");
   const ids = rows.map((r) => r.id);
   return `DIESE LANE TRÄGT EINE WELLE: ${rows.length} QUEUE-ZEILEN, EIN LAND.
@@ -110,6 +113,7 @@ sind es weiterhin ${rows.length} getrennte Aufträge, und du erledigst sie als s
 
   Reihenfolge (fest):  ${ids.join(" → ")}
   Klasse:              ${klasse}
+  Budget:              ${units} von ${budget} Größeneinheiten (klein=1 · mittel=2 · gross=3; ohne Kartengröße = mittel)
   Gemeinsame Dateien:  ${sharedFiles.length ? sharedFiles.join(", ") : "— (keine, die zwei Zeilen teilen)"}
 
 DREI REGELN, DIE NUR FÜR EINE WELLEN-LANE GELTEN:

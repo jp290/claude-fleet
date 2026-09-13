@@ -16,11 +16,11 @@
 // bottom reaches the filesystem and the metadata derivation through Bun globals inside
 // `import.meta.main`, never through a top-level node import, so the client bundle stays clean.
 import { verificationProportionFor } from "./verify-proportion";
-import type { TaskWaveInput, TaskWaveRange } from "./task-waves";
+import { isTaskCardSize, type TaskCardSize, type TaskWaveInput, type TaskWaveRange } from "./task-waves";
 
 export type LandWaveClass = "docs" | "code";
 // Every reason a row is alone in its wave. `null` is the fourth case and means the opposite of a
-// verdict: the row IS bundlable and found no partner (or the cap cut it off) — not "reason unknown".
+// verdict: the row IS bundlable and found no partner (or the budget cut it off) — not "reason unknown".
 export type LandWaveReasonAgainst =
   "gate-aenderer" | "flaeche-nur-abgeleitet" | "kein-program" | "keine-flaeche";
 
@@ -31,7 +31,7 @@ export interface LandWaveCosts {
 export interface ProjectLandWavesInput {
   tasks: readonly TaskWaveInput[];
   dispatchRepo?: string;
-  maxWave?: number;
+  budget?: number;
   costs: LandWaveCosts;
 }
 
@@ -42,6 +42,8 @@ export interface LandWave {
   // one has none by construction: "shared" needs a second row, and printing its own surface here
   // would read like an overlap it does not have.
   sharedFiles: string[];
+  // the wave's summed size units (LAND_WAVE_SIZE_UNITS) — what the budget cut measured
+  units: number;
   savingsSec: number;
   reasonAgainst: LandWaveReasonAgainst | null;
 }
@@ -49,23 +51,39 @@ export interface LandWave {
 export interface LandWaveRepo { repo: string; waves: LandWave[] }
 export interface LandWaveUnresolved { id: string; created: number; reason: "unknown-repo" }
 export interface LandWaveProjection {
-  maxWave: number;
+  budget: number;
   repos: LandWaveRepo[];
   unresolved: LandWaveUnresolved[];
 }
 
-// The owner's own bound in docs/queue-wellen-2026-09-06.md §5 S3: a wave must stay small enough for
-// one person to attribute a red post-land audit across its rows BY HAND, because the wave buys its
-// saving by giving up the per-row bisect that n separate lands would have handed the reader for
-// free. That is the whole reason for the number, and it is a reader's budget, not a stack depth.
+// THE WAVE IS CUT BY A BUDGET, NOT BY A ROW COUNT (S7, 2026-09-12). Until then the bound was the
+// constant 3, justified as the reader's bisect budget for a red post-land audit. That bisect is
+// bought back by the brief's one-commit-per-row rule (wave-brief.ts), so the number had no
+// measurement behind it (docs/messungen/2026-09-12-spezifizierung-buendelung-befund.md §4). The
+// limit that does exist is the LANE'S CONTEXT: one lane builds every row of its wave in one
+// session, single lanes ran at 140–190k tokens, and three small rows cost that lane less than two
+// large ones. So each row weighs its card's size class and a wave takes rows while the sum stays
+// within the budget: five small, or two medium plus one small, or one large plus two small.
 //
-// IT IS NOT COUPLED TO UNDO_STACK_MAX, and the two agreeing on 3 is a coincidence this line exists
-// to disarm (owner ask, W3 2026-09-07). The undo stack counts LANDS, and a wave of n rows is ONE
-// land with ONE undo record — so a wave of 3 costs the undo stack exactly what a wave of 1 costs
-// it, and raising either bound says nothing about the other. Pinned in e2e/pins.ts so a future
-// change to this number is a deliberate one rather than a silent widening of the bisect a red
-// audit leaves behind.
-export const LAND_WAVE_MAX_DEFAULT = 3;
+// A ROW WITHOUT A SIZE WEIGHS MEDIUM. Absence is not smallness, and the one direction this sensor
+// must not fall is packing unmeasured rows tighter than measured ones.
+//
+// THE ROW BOUND STAYS, AS A HARD CEILING. Six small rows fit a budget of 6, but a seventh commit,
+// a seventh brief section and a seventh row to hand back on a split do not get cheaper because
+// each row is small. It also caps what FLEET_LAND_WAVE_BUDGET can widen.
+//
+// IT IS NOT COUPLED TO UNDO_STACK_MAX. The undo stack counts LANDS, and a wave of n rows is ONE
+// land with ONE undo record — so a wave of five costs the undo stack exactly what a wave of one
+// costs it, and raising either bound says nothing about the other. The default is pinned in
+// e2e/pins.ts so a change to it is deliberate rather than a silent widening.
+export const LAND_WAVE_BUDGET_DEFAULT = 5;
+export const LAND_WAVE_ROWS_MAX = 6;
+export const LAND_WAVE_SIZE_UNITS: Readonly<Record<TaskCardSize, number>> = { klein: 1, mittel: 2, gross: 3 };
+
+/** A row's weight against the wave budget; no size (no card, or a card that did not state one) is medium. */
+export function landWaveUnits(size: TaskCardSize | null | undefined): number {
+  return LAND_WAVE_SIZE_UNITS[size ?? "mittel"];
+}
 
 // R2 ASKS A DIFFERENT QUESTION THAN THE PROOF RECOMMENDATION, and until 2026-09-12 it borrowed the
 // answer to the wrong one. `verify-proportion.ts#verificationProportionFor(...).isolatedPreview`
@@ -112,7 +130,7 @@ export const LAND_WAVE_COSTS_2026_09: LandWaveCosts = {
 };
 
 interface ClassifiedRow {
-  id: string; created: number; files: string[]; programId: string | null;
+  id: string; created: number; files: string[]; programId: string | null; units: number;
   ranges: readonly TaskWaveRange[] | null;
   klasse: LandWaveClass; reasonAgainst: LandWaveReasonAgainst | null;
 }
@@ -181,7 +199,7 @@ function classify(task: TaskWaveInput): ClassifiedRow {
         : task.filesOrigin !== "confirmed" ? "flaeche-nur-abgeleitet"
           : files.some(isGateMachinery) ? "gate-aenderer"
             : null;
-  return { id: task.id, created: task.created, files, programId,
+  return { id: task.id, created: task.created, files, programId, units: landWaveUnits(task.size),
     // absent and null are ONE fact here: not measured. Only an array reaches the collision rule.
     ranges: task.ranges ?? null, klasse, reasonAgainst };
 }
@@ -240,13 +258,38 @@ function waveOf(members: readonly ClassifiedRow[], costs: LandWaveCosts): LandWa
     ids: members.map((member) => member.id),
     klasse,
     sharedFiles: [...counts.entries()].filter(([, n]) => n > 1).map(([file]) => file).sort(textOrder),
+    units: members.reduce((sum, member) => sum + member.units, 0),
     savingsSec: (members.length - 1) * perLandSec,
-    // A wave cut out of a bundlable component carries no reason AGAINST bundling — the cap did it.
+    // A wave cut out of a bundlable component carries no reason AGAINST bundling — the budget did it.
     reasonAgainst: members.length === 1 ? members[0].reasonAgainst : null,
   };
 }
 
-function wavesFor(rows: readonly ClassifiedRow[], maxWave: number, costs: LandWaveCosts): LandWave[] {
+/**
+ * Cut one component into waves in its (created, id) order: a row joins the open wave while the
+ * summed units stay within `budget` and the wave has fewer than LAND_WAVE_ROWS_MAX rows, otherwise
+ * it opens the next one. Greedy and order-preserving on purpose — a best-fit packing would reorder
+ * the rows a lane commits in, and the same queue must always project the same waves. A row that
+ * alone outweighs the budget still forms a wave of one; the budget never drops a row.
+ */
+function cutByBudget(component: readonly ClassifiedRow[], budget: number): ClassifiedRow[][] {
+  const out: ClassifiedRow[][] = [];
+  let open: ClassifiedRow[] = [];
+  let units = 0;
+  for (const row of component) {
+    if (open.length && (units + row.units > budget || open.length >= LAND_WAVE_ROWS_MAX)) {
+      out.push(open);
+      open = [];
+      units = 0;
+    }
+    open.push(row);
+    units += row.units;
+  }
+  if (open.length) out.push(open);
+  return out;
+}
+
+function wavesFor(rows: readonly ClassifiedRow[], budget: number, costs: LandWaveCosts): LandWave[] {
   const built: { key: ClassifiedRow; wave: LandWave }[] = [];
   for (const row of rows) if (row.reasonAgainst !== null) built.push({ key: row, wave: waveOf([row], costs) });
   // R1 and the program boundary are both enforced by CONSTRUCTION, not by a later filter:
@@ -266,18 +309,16 @@ function wavesFor(rows: readonly ClassifiedRow[], maxWave: number, costs: LandWa
       byProgram.set(program, group);
     }
     for (const bundlable of byProgram.values()) for (const component of componentsOf(bundlable))
-      for (let at = 0; at < component.length; at += maxWave) {
-        const members = component.slice(at, at + maxWave);
+      for (const members of cutByBudget(component, budget))
         built.push({ key: members[0], wave: waveOf(members, costs) });
-      }
   }
   return built.sort((a, b) => rowOrder(a.key, b.key)).map((entry) => entry.wave);
 }
 
 /** Project open auftrag rows into advisory LAND waves without mutating the supplied facts. */
 export function projectLandWaves(input: ProjectLandWavesInput): LandWaveProjection {
-  const maxWave = typeof input.maxWave === "number" && Number.isFinite(input.maxWave)
-    ? Math.max(1, Math.floor(input.maxWave)) : LAND_WAVE_MAX_DEFAULT;
+  const budget = typeof input.budget === "number" && Number.isFinite(input.budget)
+    ? Math.max(1, Math.floor(input.budget)) : LAND_WAVE_BUDGET_DEFAULT;
   const dispatchRepo = input.dispatchRepo?.trim() || undefined;
   // Both open shapes: `queued` is released work, `pending` is a draft the owner has not released —
   // and today every open auftrag row is pending, so a queued-only sensor would project nothing.
@@ -301,14 +342,14 @@ export function projectLandWaves(input: ProjectLandWavesInput): LandWaveProjecti
 
   const repos: LandWaveRepo[] = [...byRepo.entries()]
     .sort(([a], [b]) => textOrder(a, b))
-    .map(([repo, rows]) => ({ repo, waves: wavesFor(rows, maxWave, input.costs) }));
+    .map(([repo, rows]) => ({ repo, waves: wavesFor(rows, budget, input.costs) }));
   unresolved.sort(rowOrder);
-  return { maxWave, repos, unresolved };
+  return { budget, repos, unresolved };
 }
 
 // --- CLI: the same projector for shell/read-only consumers. The MAIN runs it in the main checkout
 // (a lane has no fleet.json) to check the done sentence after a land:
-//   bun task-land-waves.ts --state fleet.json [--default-repo REPO] [--max-wave N]
+//   bun task-land-waves.ts --state fleet.json [--default-repo REPO] [--budget N]
 const argAfter = (name: string): string | null => {
   const at = process.argv.indexOf(name);
   const value = at >= 0 ? process.argv[at + 1] : undefined;
@@ -317,14 +358,15 @@ const argAfter = (name: string): string | null => {
 
 interface StateTask {
   id?: unknown; kind?: unknown; status?: unknown; created?: unknown; repo?: unknown; programId?: unknown;
+  card?: { valid?: unknown; size?: unknown };
 }
 
 async function cli(): Promise<void> {
   const statePath = argAfter("--state");
   if (!statePath)
-    throw new Error("usage: bun task-land-waves.ts --state FILE [--default-repo REPO] [--max-wave N]");
+    throw new Error("usage: bun task-land-waves.ts --state FILE [--default-repo REPO] [--budget N]");
   const defaultRepo = argAfter("--default-repo");
-  const maxWaveArg = argAfter("--max-wave");
+  const budgetArg = argAfter("--budget");
   const state = await Bun.file(statePath).json() as { tasks?: unknown };
   const tasks = Array.isArray(state.tasks) ? state.tasks as StateTask[] : [];
 
@@ -352,6 +394,8 @@ async function cli(): Promise<void> {
       created: typeof task.created === "number" ? task.created : 0,
       ...(typeof task.repo === "string" && task.repo ? { repo: task.repo } : {}),
       ...(typeof task.programId === "string" && task.programId ? { programId: task.programId } : {}),
+      // the same reading server.ts#landWaveProjectionNow makes: a VALID card's size, else none (= medium)
+      ...(task.card?.valid === true && isTaskCardSize(task.card.size) ? { size: task.card.size } : {}),
       ...(derived?.files ? { files: derived.files } : {}),
       ...(derived?.filesOrigin ? { filesOrigin: derived.filesOrigin } : {}),
       // null when the checkout carries no graphify-out/, which is the honest answer for a lane and
@@ -363,7 +407,7 @@ async function cli(): Promise<void> {
   const projection = projectLandWaves({
     tasks: rows,
     ...(defaultRepo ? { dispatchRepo: defaultRepo } : {}),
-    ...(maxWaveArg && Number.isFinite(Number(maxWaveArg)) ? { maxWave: Number(maxWaveArg) } : {}),
+    ...(budgetArg && Number.isFinite(Number(budgetArg)) ? { budget: Number(budgetArg) } : {}),
     costs: LAND_WAVE_COSTS_2026_09,
   });
   process.stdout.write(`${JSON.stringify({ version: 1, costs: LAND_WAVE_COSTS_2026_09, ...projection })}\n`);

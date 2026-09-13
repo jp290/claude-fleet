@@ -2092,9 +2092,9 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // fields the create doors read; authorCardFrom's closed list decides it. A field renamed on one
   // side only would teach filers a 400 — and no compiler sees prose.
   const cardDoorFields = /const known = \[([^\]]+)\];\n  const extra = Object\.keys\(c\)/.exec(server)?.[1] ?? "";
-  const agentsCard = /optional `card\{ziel, surface\{files, symbols\}, done, verify, verboten\}`/.test(read("AGENTS.md"));
+  const agentsCard = /optional `card\{ziel, surface\{files, symbols\}, done, verify, verboten, size\}`/.test(read("AGENTS.md"));
   pin("AGENTS.md's card template names exactly the card fields the create doors read",
-    cardDoorFields.replace(/\s/g, "") === '"ziel","surface","done","verify","verboten"' && agentsCard
+    cardDoorFields.replace(/\s/g, "") === '"ziel","surface","done","verify","verboten","size"' && agentsCard
     && /ZIEL: [^\n]*\nFLAECHE: [^\n]*\nDONE: [^\n]*\nVERIFY: [^\n]*\nVERBOTEN: [^\n]*\nROLLE: /.test(read("AGENTS.md")),
     `door=[${cardDoorFields}] agents=${agentsCard}`);
   const briefSourceType = /type BriefSource = ([^;]+);/.exec(server)?.[1] ?? "";
@@ -2459,21 +2459,30 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       quoted.length === 0 ? "the brief quotes no self route — the split door went missing from it"
         : `${quoted.length} quoted: ${quoted.join(", ")}${unregistered.length ? ` · UNREGISTERED: ${unregistered.join(", ")}` : ""}`);
   }
-  // (2) THE WAVE CAP AND THE UNDO DEPTH ARE INDEPENDENT, and the owner's W3 ask is that this be
-  // NAMED rather than left to coincide at 3 — a future hand that raises one of them must not be
-  // able to believe it has said something about the other. Both halves: the door bounds on the
-  // IDENTIFIER, so there is one definition and no literal to drift from it, and the constant's own
-  // comment carries the disclaimer, so raising it means reading why the number is what it is.
+  // (2) THE WAVE BUDGET (S7, 5ac5565d) HAS ONE DEFINITION, A PINNED DEFAULT, AND IS NOT THE UNDO
+  // DEPTH. The door bounds on IDENTIFIERS — the live budget (env over the default) and the row
+  // ceiling — so no literal can drift from the sensor's cut; the defaults are pinned by VALUE, so a
+  // widening is a deliberate edit here and not a silent one there; and the constant's comment still
+  // says in writing that a wave is ONE undo record, because the old cap agreed with UNDO_STACK_MAX
+  // on 3 by coincidence and the new budget must not be read as a statement about it either.
   const landWaves = ((): string | null => { try { return read("task-land-waves.ts"); } catch { return null; } })();
   const capDoorAt = server.indexOf('url.pathname === "/api/wave/dispatch"');
   const capDoor = capDoorAt < 0 ? "" : server.slice(capDoorAt, capDoorAt + 4000);
-  pin("the wave cap has ONE definition, and it says in writing that it is not UNDO_STACK_MAX",
+  const budgetDefault = /export const LAND_WAVE_BUDGET_DEFAULT = (\d+);/.exec(landWaves ?? "")?.[1] ?? null;
+  const rowsMax = /export const LAND_WAVE_ROWS_MAX = (\d+);/.exec(landWaves ?? "")?.[1] ?? null;
+  const units = /LAND_WAVE_SIZE_UNITS[^=]*= \{ klein: 1, mittel: 2, gross: 3 \}/.test(landWaves ?? "");
+  const envRead = /const LAND_WAVE_BUDGET = \(\(\): number => \{\n\s+const raw = Number\(process\.env\.FLEET_LAND_WAVE_BUDGET\);[\s\S]{0,160}: LAND_WAVE_BUDGET_DEFAULT;/.test(server);
+  pin("the wave budget: default 5, ceiling 6 rows, klein/mittel/gross = 1/2/3, env over default, and it is not UNDO_STACK_MAX",
     landWaves !== null && capDoorAt > 0
-      && /wIds\.length > LAND_WAVE_MAX_DEFAULT/.test(capDoor)
-      && !/wIds\.length > \d/.test(capDoor)
-      && /IT IS NOT COUPLED TO UNDO_STACK_MAX/.test(landWaves ?? "")
-      && /export const LAND_WAVE_MAX_DEFAULT/.test(landWaves ?? ""),
-    `door=${capDoorAt > 0} identifier=${/wIds\.length > LAND_WAVE_MAX_DEFAULT/.test(capDoor)} disclaimer=${/IT IS NOT COUPLED TO UNDO_STACK_MAX/.test(landWaves ?? "")}`);
+      && budgetDefault === "5" && rowsMax === "6" && units && envRead
+      && /wIds\.length > LAND_WAVE_ROWS_MAX/.test(capDoor)
+      && /wUnits > LAND_WAVE_BUDGET\)/.test(capDoor)
+      && !/wIds\.length > \d/.test(capDoor) && !/wUnits > \d/.test(capDoor)
+      && !/LAND_WAVE_MAX_DEFAULT/.test(server + (landWaves ?? ""))
+      && /IT IS NOT COUPLED TO UNDO_STACK_MAX/.test(landWaves ?? ""),
+    `door=${capDoorAt > 0} default=${budgetDefault} rowsMax=${rowsMax} units=${units} env=${envRead}`
+      + ` rowsIdent=${/wIds\.length > LAND_WAVE_ROWS_MAX/.test(capDoor)} budgetIdent=${/wUnits > LAND_WAVE_BUDGET\)/.test(capDoor)}`
+      + ` disclaimer=${/IT IS NOT COUPLED TO UNDO_STACK_MAX/.test(landWaves ?? "")}`);
 
   // (2b) R2'S PREDICATE IS FASTENED TO THE FILES ON DISK (2026-09-12). `isGateMachinery` is what
   // makes a row land alone, and its other side is a SHELL SCRIPT and a directory listing — nothing

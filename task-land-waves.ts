@@ -4,7 +4,8 @@
 // shared files. This module asks the opposite, which rows may LAND TOGETHER in one lane: connected
 // components over shared files INSIDE ONE PROGRAM, cut by the three rules of
 // docs/queue-wellen-2026-09-06.md §2 (R1 class purity · R2 a gate changer lands alone · R3 only a
-// CONFIRMED surface may be bundled). A sensor, not a motor: nothing here dispatches, lands or writes.
+// CONFIRMED surface may be bundled — or, since 2026-09-13, a CARD surface on range evidence, §7.1.3).
+// A sensor, not a motor: nothing here dispatches, lands or writes.
 //
 // The program is the SECOND criterion beside the surface, and it is what keeps the fold from
 // collapsing: over the 31 open auftrag rows measured for docs/queue-wellen-2026-09-06.md §2 R3,
@@ -22,7 +23,7 @@ export type LandWaveClass = "docs" | "code";
 // Every reason a row is alone in its wave. `null` is the fourth case and means the opposite of a
 // verdict: the row IS bundlable and found no partner (or the budget cut it off) — not "reason unknown".
 export type LandWaveReasonAgainst =
-  "gate-aenderer" | "flaeche-nur-abgeleitet" | "kein-program" | "keine-flaeche";
+  "gate-aenderer" | "flaeche-nur-abgeleitet" | "flaeche-ohne-bereich" | "kein-program" | "keine-flaeche";
 
 export interface LandWaveCosts {
   fullGateSec: number; docsGateSec: number; fullAuditSec: number; docsAuditSec: number;
@@ -132,6 +133,8 @@ export const LAND_WAVE_COSTS_2026_09: LandWaveCosts = {
 interface ClassifiedRow {
   id: string; created: number; files: string[]; programId: string | null; units: number; after: string[];
   ranges: readonly TaskWaveRange[] | null;
+  // true for a surface the card tick lifted without a confirming act (`filesOrigin:"card"`)
+  card: boolean;
   klasse: LandWaveClass; reasonAgainst: LandWaveReasonAgainst | null;
 }
 
@@ -167,7 +170,16 @@ const near = (a: TaskWaveRange, b: TaskWaveRange): boolean =>
  * index to one range, and a range always overlaps itself.
  */
 function collidesOn(a: ClassifiedRow, b: ClassifiedRow, file: string): boolean {
-  return rangesCollide(rangesIn(a, file), rangesIn(b, file));
+  const ra = rangesIn(a, file), rb = rangesIn(b, file);
+  // THE WACHE OF THE AUTO-LIFT (docs/queue-wellen-2026-09-06.md §7.1.3, 2026-09-13). The fallback
+  // above exists so that not-known never reads as not-colliding — for a CONFIRMED surface, where
+  // somebody vouched for the file list and a shared file is the only evidence there is. A CARD
+  // surface was vouched for by nobody: a coarse card (`server.ts`, no symbol) would, through that
+  // fallback, bundle exactly the clump §7.2 calls the sore point, with no act anyone signed. So an
+  // edge that involves a card surface needs ranges on BOTH sides. This only ever separates rows,
+  // and separating is what every card row got before the lift (a derived surface bundles never).
+  if (a.card || b.card) return !!ra.length && !!rb.length && rangesCollide(ra, rb);
+  return rangesCollide(ra, rb);
 }
 
 /** R4 on two range lists of ONE file — the rule land-collision-stats.ts scores against real hunks. */
@@ -197,13 +209,19 @@ function classify(task: TaskWaveInput): ClassifiedRow {
   // "its surface is only derived" would answer a question that no longer decides anything.
   // R2 reads `isGateMachinery` above and NOT `proportion.isolatedPreview` (2026-09-12) — the two
   // answer different questions, and the block above that predicate says which.
+  // "flaeche-ohne-bereich" (2026-09-13) is R3 for a CARD surface: the card tick lifted it without a
+  // confirming act, and such a surface bundles on range evidence only (collidesOn). A card row with
+  // no range in any of its files can therefore never find an edge — it is named for that, rather
+  // than sitting in a component as a bundlable row that silently never bundles.
+  const card = task.filesOrigin === "card";
   const reasonAgainst: LandWaveReasonAgainst | null =
     !files.length ? "keine-flaeche"
       : !programId ? "kein-program"
-        : task.filesOrigin !== "confirmed" ? "flaeche-nur-abgeleitet"
-          : files.some(isGateMachinery) ? "gate-aenderer"
-            : null;
-  return { id: task.id, created: task.created, files, programId, units: landWaveUnits(task.size),
+        : task.filesOrigin !== "confirmed" && !card ? "flaeche-nur-abgeleitet"
+          : card && !(task.ranges ?? []).some((range) => files.includes(range.file)) ? "flaeche-ohne-bereich"
+            : files.some(isGateMachinery) ? "gate-aenderer"
+              : null;
+  return { id: task.id, created: task.created, files, programId, units: landWaveUnits(task.size), card,
     after: [...new Set(task.after ?? [])].filter((id) => id !== task.id),
     // absent and null are ONE fact here: not measured. Only an array reaches the collision rule.
     ranges: task.ranges ?? null, klasse, reasonAgainst };
@@ -441,7 +459,7 @@ async function cli(): Promise<void> {
   if (!run.success)
     throw new Error(`task-metadata failed: ${run.stderr.toString().trim() || `exit ${run.exitCode}`}`);
   const meta = JSON.parse(run.stdout.toString()) as {
-    tasks?: Record<string, { files?: string[]; filesOrigin?: "confirmed" | "derived";
+    tasks?: Record<string, { files?: string[]; filesOrigin?: "confirmed" | "card" | "derived";
       ranges?: TaskWaveRange[] | null }>;
   };
 

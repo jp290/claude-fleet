@@ -13,7 +13,11 @@ export const TASK_PROCESSES = [
   "server", "client-ui", "e2e-gates", "docs", "harness-adapter", "betrieb", "cross-cutting",
 ] as const;
 export type TaskProcess = (typeof TASK_PROCESSES)[number];
-export type TaskFilesOrigin = "confirmed" | "derived";
+// "card" (2026-09-13): the surface a surfaceValid card names, lifted onto a Program row by the card
+// tick without a confirming act (server.ts#liftCardSurface). Stronger than "derived" — it passed the
+// quote rule, the tracked tree and the symbol declaration — but not the owner's act, so the land
+// fold bundles it only on range evidence (task-land-waves.ts#collidesOn), never on a shared file.
+export type TaskFilesOrigin = "confirmed" | "card" | "derived";
 export interface TaskCluster {
   projekt: string;
   prozess: TaskProcess;
@@ -440,6 +444,7 @@ interface StateTask {
   files?: unknown;
   filesOrigin?: unknown;
   brief?: { text?: unknown } | null;
+  card?: { gaps?: unknown; surface?: { ranges?: unknown } } | null;
 }
 
 const argAfter = (name: string): string | null => {
@@ -481,7 +486,20 @@ function cli(): void {
       ? task.files.filter((value): value is string => typeof value === "string" && !!value.trim()) : [];
     // Derived metadata is never meant to be persisted. If a hand-edited state does so anyway,
     // re-derive it instead of promoting the weaker source to confirmed on reload.
-    const confirmedFiles = task.filesOrigin === "derived" ? [] : rawFiles;
+    // A card lift is not confirmed either, and it is never promoted here. It is reported as what the
+    // server projects (server.ts#taskSurfaceOf): the lifted files with the card's own ranges — but
+    // only while the card beside it still has no surface gap (card-extract.ts#cardSurfaceValid, the
+    // predicate the loader derives, spelled out because that module imports this one).
+    const cardGaps = Array.isArray(task.card?.gaps) ? task.card.gaps : null;
+    if (task.filesOrigin === "card" && rawFiles.length && cardGaps
+      && !cardGaps.some((g) => typeof g === "string" && g.startsWith("surface."))) {
+      const cardRanges = task.card?.surface?.ranges;
+      const cluster = clusterForFiles(rawFiles, snapshot?.project ?? (repoRaw ? projectLabel(repoRaw) : null));
+      output[task.id] = { files: rawFiles, filesOrigin: "card", ...(cluster ? { cluster } : {}),
+        ranges: Array.isArray(cardRanges) ? cardRanges as SymbolRange[] : null };
+      continue;
+    }
+    const confirmedFiles = task.filesOrigin === "derived" || task.filesOrigin === "card" ? [] : rawFiles;
     output[task.id] = deriveTaskMetadata({
       text: typeof task.text === "string" ? task.text : null,
       brief: typeof task.brief?.text === "string" ? task.brief.text : null,

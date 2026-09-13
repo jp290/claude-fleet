@@ -1122,9 +1122,11 @@ interface Task {
   // task/brief, but that weaker derivation is never written back over the owner-confirmed field.
   // Absent means UNKNOWN, never "touches nothing"; loadState and the projector both preserve that.
   filesOrigin?: TaskFilesOrigin; // confirmed = persisted refine-confirm fact; derived = read-only
-  // server projection from exact path tokens. A legacy persisted `files` field is confirmed by the
-  // old field's contract. The two values must never collapse: dispatch/model consumers prefer the
-  // confirmed surface, and derived metadata is recomputed from the current tracked tree.
+  // server projection from exact path tokens; card = the card tick's lift of a surfaceValid card on
+  // a program row (server.ts#liftCardSurface), persisted, bundled on range evidence only. A legacy
+  // persisted `files` field is confirmed by the old field's contract. The values must never collapse:
+  // dispatch/model consumers prefer the confirmed surface, and derived metadata is recomputed from
+  // the current tracked tree.
   filesProposal?: TaskFilesProposal; // a PROPOSED surface for this row, parked BESIDE `files` and
   // never merged into it. Written by a lane or another self-principal through
   // POST /api/self/tasks/:id/files-proposal; only the owner's POST /api/tasks/:id/files turns one

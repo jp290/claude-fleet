@@ -267,7 +267,7 @@ interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: 
   // Bounded generation/presence only; the brief text remains on GET /api/tasks.
   briefAt?: number;
   // deterministic file/cluster facts from taskDigest. Absence is UNKNOWN, never an empty surface.
-  files?: string[]; filesOrigin?: "confirmed" | "derived";
+  files?: string[]; filesOrigin?: "confirmed" | "card" | "derived";
   // the row's card size (a valid card only) — the land fold's weight; absent = mittel there
   size?: TaskCardSize;
   // the PROPOSED surface (W2), carried WHOLE on the poll rather than as a shape digest: `files`
@@ -8371,7 +8371,16 @@ function renderQueueDetail() {
   // for a split that never happened. WHO confirmed it is in audit.jsonl, which is where a
   // provenance question belongs.
   const origin = t.filesOrigin === "confirmed" ? "confirmed by the owner"
-    : t.filesOrigin === "derived" ? "mechanically derived" : "origin unavailable";
+    : t.filesOrigin === "card" ? "lifted from the row's card"
+      : t.filesOrigin === "derived" ? "mechanically derived" : "origin unavailable";
+  // THE ORIGIN AS ITS OWN CHIP (2026-09-13): "card" sits between the other two and bundles by a
+  // different rule than either, so it is named where the eye lands rather than inside the sentence.
+  if (t.files?.length && t.filesOrigin) overview.appendChild(chip(t.filesOrigin,
+    t.filesOrigin === "confirmed" ? "ok" : t.filesOrigin === "card" ? "" : "dim",
+    t.filesOrigin === "confirmed" ? "confirmed surface — bundles on a shared file or on nearby ranges"
+      : t.filesOrigin === "card" ? "card surface, lifted without a confirming act — bundles only where both rows"
+        + " name nearby ranges (FLEET_CARD_AUTOLIFT); confirming it below makes it a confirmed surface"
+        : "derived from prose — never bundled until confirmed"));
   overview.appendChild(el("div", "shellhint", t.files?.length
     ? `known files · ${origin}: ${t.files.join(", ")}`
     : "file surface unknown — absence is not an empty surface"));
@@ -8407,7 +8416,7 @@ function renderQueueDetail() {
     fdb.onclick = () => void qAct(t.id, "files", { accept: false });
     facts.appendChild(fdb);
     overview.appendChild(facts);
-  } else if (t.filesOrigin === "derived" && t.files?.length
+  } else if ((t.filesOrigin === "derived" || t.filesOrigin === "card") && t.files?.length
     && t.kind === "auftrag" && (t.status === "pending" || t.status === "queued")) {
     // --- DERIVED SURFACE REVIEW (the manual half of S2). Without a parked proposal the row still
     // HAS a list — the mechanically derived one — and until 2026-09-12 the only way to confirm it
@@ -8440,7 +8449,7 @@ function renderQueueDetail() {
       const files = picks.filter((p) => p.box.checked).map((p) => p.path);
       // an empty selection is NOT an empty surface: the route would answer 400 and the row would
       // keep its derived list either way, so the click is answered here and no request is sent.
-      if (!files.length) { toast("no path is ticked — nothing was sent; this row keeps its derived surface"); return; }
+      if (!files.length) { toast(`no path is ticked — nothing was sent; this row keeps its ${t.filesOrigin} surface`); return; }
       void qAct(t.id, "files", { files });
     };
     dacts.appendChild(db);
@@ -9098,7 +9107,7 @@ function renderQueue() {
     if (landWaves.length) {
       addSection("Lande-Wellen", landWaves.length,
         "Which rows could land TOGETHER in one lane: connected components over CONFIRMED file"
-        + " surfaces, class-pure and INSIDE ONE PROGRAM (files alone fold almost every row into one"
+        + " surfaces (and CARD surfaces, joined by nearby ranges only), class-pure and INSIDE ONE PROGRAM (files alone fold almost every row into one"
         + ` clump), cut at a budget of ${land.budget} size units (klein=1 · mittel=2 · gross=3, no card size = mittel)`
         + ` and at most ${LAND_WAVE_ROWS_MAX} rows. The saving is median seconds per avoided land`
         + " (gate + post-land audit); a wave of one names the reason against bundling.",

@@ -611,6 +611,27 @@ vermaßen. Was hier steht, ändert die SCHNITTLISTE, nicht die Messung.*
    das Bündeln nicht mehr) oder mit bestehender Owner-Bestätigung werden übersprungen und benannt. Die Owner-Tür
    `POST /api/tasks/:id/files` bleibt unverändert und überschreibt jederzeit.
 
+   **Nachtrag 2026-09-13 (Owner-Delegation an den Orchestrator: „ja, NACH α"; Posten 3 der A–E-Rangliste,
+   `docs/messungen/2026-09-13-task-aggregation-a-e-fable.md` §B): der Auto-Lift ist nicht mehr
+   verworfen — er ersetzt die MAIN-Liveness als Vorbedingung des Bündelns.** Der Karten-Tick
+   (`server.ts#tickCardSweep` → `#liftCardSurface`) schreibt `{files: card.surface.files,
+   filesOrigin:"card"}`, wenn `card.surfaceValid && files.length && programId` — für jede offene
+   `auftrag`-Zeile, auch eine, deren Karte vor dem Lift gelesen wurde. Was den Satz von oben („das
+   tauft eine Prosa-Vermutung in einen Fakt um") weiter trägt: gehoben wird keine Prosa, sondern eine
+   gegen Zitatregel, `git ls-files` und Symbol-Deklaration validierte Karte — und sie wird NICHT zu
+   `confirmed`, sondern zu einem eigenen dritten Wert. Die zwei Wachen:
+   (1) **Bereichs-Wache** — `task-land-waves.ts#collidesOn` zieht eine Kante über eine `card`-Fläche
+   nur mit Ranges BEIDER Seiten in der geteilten Datei; der Datei-Rückfall (§R4) bleibt bestätigten
+   Flächen vorbehalten. Eine grobe Karte (`server.ts` ohne Symbol) baut damit nie den Klumpen aus
+   §7.2, sondern bleibt Welle 1 mit dem neuen Grund `flaeche-ohne-bereich`. (2) **Programlose Zeilen
+   bleiben `kein-program`** — das ist eine Owner-Zuweisung, keine Lesung. Vorrang: eine `confirmed`-Zeile
+   wird nie überschrieben; `confirm-cards` und die Owner-Tür heben eine `card`-Zeile weiter auf
+   `confirmed`. Verliert die Karte ihre Fläche oder die Zeile ihr Program, zieht der Tick den Lift
+   zurück. **Rückfalltür:** `FLEET_CARD_AUTOLIFT=0` (`off`/`false`/`no`) — der Tick zieht jeden Lift
+   zurück, und die Projektion liest einen gespeicherten schon beim ersten Lesen nach dem Neustart
+   nicht mehr als `card`; ein unerkannter Wert loggt eine Zeile und bleibt AUS. Sonden: `(lift)` in
+   `e2e/tasks.ts`.
+
 ### 7.2 Warum die Fläche allein nicht reicht
 
 Die Frage zerfällt in zwei Risiken, und nur eines ist offen.

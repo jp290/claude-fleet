@@ -2534,9 +2534,20 @@ function symbolIndexFor(repoRaw: string): SymbolIndexSnapshot | null {
 // `at` is the stamp of the DERIVATION, not of a write.
 function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
   index: SymbolIndexSnapshot | null, project: string | null, repoRoot: string | null): TaskSurface | null {
-  const confirmedFiles = t.filesOrigin === "derived" ? undefined : t.files;
+  const confirmedFiles = t.filesOrigin === "derived" || t.filesOrigin === "card" ? undefined : t.files;
   const sha = surfaceSha({ text: t.text, brief: t.brief?.text ?? null, confirmedFiles,
     indexStamp: snapshot?.indexStamp ?? null, graphStamp: index?.stamp ?? null });
+  // A CARD LIFT (liftCardSurface) is read as one only while the switch is on and the card beside it
+  // still has no surface gap — so FLEET_CARD_AUTOLIFT=0 takes effect at the first read after a
+  // restart, not at the next tick. The ranges are the card's own: the lift names the card's files,
+  // and the prose reading below would resolve symbols the card never claimed.
+  if (t.filesOrigin === "card" && t.files?.length && t.card?.surfaceValid && CARD_AUTOLIFT_ON) {
+    const liftSha = `lift-${surfaceSha({ text: t.text, brief: t.brief?.text ?? null, confirmedFiles: t.files,
+      indexStamp: snapshot?.indexStamp ?? null, graphStamp: index?.stamp ?? null })}-${t.card.at}`;
+    if (t.surface && t.surface.sha === liftSha) return t.surface;
+    t.surface = { files: [...t.files], ranges: t.card.surface.ranges, origin: "card", at: Date.now(), sha: liftSha };
+    return t.surface;
+  }
   // A VALID CARD'S SURFACE COMES BEFORE THE REGEX (S6, queue row 08ec67c0). The card's paths already
   // passed the tracked-tree check when it was validated, so the prose reading below is the fallback
   // for rows without one — never a second opinion over it. A confirmed list still outranks both:
@@ -8933,8 +8944,9 @@ async function sharpenBriefForMain(s: Slot, id: string, body: Record<string, unk
 // names — in one act, one audit line. The surface, not the whole card (2026-09-13): a role, size or
 // verify gap says nothing about which files a row touches, and requiring `valid` refused correct,
 // tracked file lists over a harness spelled "Codex". What it deliberately is not (docs/queue-wellen-2026-09-06.md §7.1.3):
-//   · no auto-lift — nothing here runs without this call, and the paths come from the card, never
-//     from the prose derivation;
+//   · not the auto-lift — that one (liftCardSurface, 2026-09-13) writes `filesOrigin:"card"`, which
+//     bundles on range evidence only; this door writes "confirmed", and the paths come from the card,
+//     never from the prose derivation;
 //   · no reach — the program comes from the binding and the repo from the caller's checkout, so a
 //     single foreign-program or foreign-repo id refuses the WHOLE batch (409) and writes nothing;
 //   · no overwrite of an owner act — a row that already carries a confirmed surface is skipped.
@@ -10676,6 +10688,49 @@ function cardDue(t: Task, now: number): boolean {
 const cardRetry = new Map<string, { attempts: number; at: number }>();
 let cardSweepBusy = false;
 
+// --- THE AUTO-LIFT `filesOrigin:"card"` (docs/queue-wellen-2026-09-06.md §7.1.3, Nachtrag
+// 2026-09-13; owner delegation "ja, NACH α"). Until this, a card surface reached the land fold only
+// through a confirming act — confirm-cards by a LIVE bound MAIN, or the owner's door — and that act
+// checked nothing the card had not already checked (confirmCardsForMain reads `surfaceValid` and
+// copies `card.surface.files`). Programs without a live MAIN therefore never bundled at all
+// (docs/messungen/2026-09-13-task-aggregation-a-e-fable.md §B). So the tick writes the card's files
+// onto the row as `filesOrigin:"card"` when the card has no surface gap, names at least one file and
+// the row belongs to a program. What keeps the lift from being the §7.1.3 risk: it is its OWN origin,
+// and the land fold bundles a card surface on range evidence only (task-land-waves.ts#collidesOn),
+// so a coarse card never builds the clump. Confirming stays the override and is never overwritten.
+//
+// DEFAULT ON, and an unrecognised value is OFF and says so — FLEET_LANE_AUTOCLOSE's shape with the
+// opposite default. Off is also the way BACK: the tick withdraws every lift it wrote, and the
+// projection ignores a persisted one even before the tick runs (taskSurfaceOf).
+const CARD_AUTOLIFT_RAW = (process.env.FLEET_CARD_AUTOLIFT ?? "").trim();
+const CARD_AUTOLIFT_OFF_RE = /^(0|off|false|no)$/i;
+const CARD_AUTOLIFT_ON = !CARD_AUTOLIFT_RAW || /^(1|true|on|yes)$/i.test(CARD_AUTOLIFT_RAW);
+if (CARD_AUTOLIFT_RAW && !CARD_AUTOLIFT_ON && !CARD_AUTOLIFT_OFF_RE.test(CARD_AUTOLIFT_RAW))
+  console.log(`[fleet] FLEET_CARD_AUTOLIFT=${JSON.stringify(CARD_AUTOLIFT_RAW)} is not a recognised`
+    + " value — the card auto-lift is OFF. Recognised: 1/true/on/yes · 0/off/false/no.");
+
+/** Bring one row's lifted surface in line with its card; true when the row changed. */
+function liftCardSurface(t: Task): boolean {
+  // the owner's or the MAIN's act, and a legacy persisted list read by the old contract, are never touched
+  if (t.filesOrigin === "confirmed" || (t.files?.length && t.filesOrigin === undefined)) return false;
+  // a closed row keeps what it was dispatched with
+  if (t.kind !== "auftrag" || (t.status !== "pending" && t.status !== "queued")) return false;
+  const card = t.card;
+  const files = CARD_AUTOLIFT_ON && t.programId && card?.surfaceValid && card.surface.files.length
+    ? card.surface.files : null;
+  if (files) {
+    if (t.filesOrigin === "card" && t.files?.join("\u0000") === files.join("\u0000")) return false;
+    t.files = [...files];
+    t.filesOrigin = "card";
+    return true;
+  }
+  // the card moved, lost its program or the switch went off: the lift is withdrawn, never kept stale
+  if (t.filesOrigin !== "card") return false;
+  t.files = undefined;
+  t.filesOrigin = undefined;
+  return true;
+}
+
 // The two halves are kept apart on purpose: this one spawns and parses, `validateCard` decides.
 // A future transport change touches only this function; what a card MEANS stays pure and testable.
 // ABSENT means "the transport reported no usage", never 0. Today the card is pinned to the claude
@@ -10765,6 +10820,11 @@ async function tickCardSweep(): Promise<void> {
   if (cardSweepBusy || !CARD_ON) return;
   cardSweepBusy = true;
   try {
+    // EVERY open row, not only the due ones: a card read before the lift existed is never due again,
+    // and a switch turned off must withdraw lifts on rows whose card nobody re-reads.
+    let lifted = 0;
+    for (const t of tasks) if (liftCardSurface(t)) lifted++;
+    if (lifted) saveState();
     const now = Date.now();
     const due = tasks.filter((t) => cardDue(t, now) && taskRepoOf(t) !== null);
     if (!due.length) return;
@@ -10783,6 +10843,7 @@ async function tickCardSweep(): Promise<void> {
         const formatted = formatCardOf(t, snapshot, index);
         const card = formatted ?? await extractCard(t, repo, snapshot, index);
         t.card = card;
+        liftCardSurface(t);
         cardRetry.delete(t.id);
         wrote = true;
         // EVERY run is a line, valid or not. A trail that recorded only successes would say the
@@ -10904,7 +10965,7 @@ const normTaskSurface = (v: unknown, rowOrigin: TaskFilesOrigin | undefined): Ta
   if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
   const raw = v as Partial<TaskSurface>;
   const files = normFileList(raw.files);
-  const origin = raw.origin === "confirmed" || raw.origin === "derived" ? raw.origin : null;
+  const origin = raw.origin === "confirmed" || raw.origin === "card" || raw.origin === "derived" ? raw.origin : null;
   if (!files || !origin || typeof raw.sha !== "string" || !raw.sha) return undefined;
   if (origin !== (rowOrigin ?? "derived")) return undefined;
   return { files, ranges: normSurfaceRanges(raw.ranges), origin,
@@ -25072,7 +25133,10 @@ if (existsSync(STATE_FILE)) {
           // the file surface degrades to ABSENT, never to []: "[]" reads as "touches nothing" in the
           // collision check. A persisted `derived` value is recomputed, never promoted to "confirmed".
           files: t.filesOrigin === "derived" ? undefined : normFileList(t.files),
-          filesOrigin: t.filesOrigin === "derived" || !normFileList(t.files) ? undefined : "confirmed",
+          // "card" comes back as "card" (liftCardSurface) — never as "confirmed", which would turn a
+          // machine reading into the owner's act by surviving a restart
+          filesOrigin: t.filesOrigin === "derived" || !normFileList(t.files) ? undefined
+            : t.filesOrigin === "card" ? "card" : "confirmed",
           // A parked PROPOSAL survives the reload as a proposal and by no path becomes the surface:
           // it is restored into its own field, and the two lines above read `t.files`/`t.filesOrigin`
           // alone. Malformed degrades to ABSENT — a proposal nobody can read is not a weaker
@@ -25086,7 +25150,8 @@ if (existsSync(STATE_FILE)) {
           // one degrades to ABSENT and is re-derived on the first read — never to a partial surface,
           // because half a file list reads as a narrower change than the row really is.
           surface: normTaskSurface((t as { surface?: unknown }).surface,
-            t.filesOrigin === "derived" || !normFileList(t.files) ? undefined : "confirmed"),
+            t.filesOrigin === "derived" || !normFileList(t.files) ? undefined
+              : t.filesOrigin === "card" ? "card" : "confirmed"),
           // THE CARD. Restored as a reading, never as an authority — nothing dispatches from it,
           // and `valid` is recomputed from `gaps` rather than believed (normTaskCard).
           card: normTaskCard((t as { card?: unknown }).card),

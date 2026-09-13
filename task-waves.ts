@@ -3,7 +3,7 @@
 // This module is deliberately browser-safe: facts enter through ProjectTaskWavesInput and the
 // result describes a view only. It has no DOM, Node, persistence, or dispatch dependency.
 
-export type TaskWaveFilesOrigin = "confirmed" | "derived";
+export type TaskWaveFilesOrigin = "confirmed" | "card" | "derived";
 
 // EVERY EDGE HERE IS DETERMINISTIC. Until 2026-09-10 a second kind rode beside the file surface:
 // the queue analyst's `collides`, admitted only on a fresh verdict while the analyst was on

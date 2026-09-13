@@ -5108,7 +5108,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // the ticked boxes at click time (never off a remembered array that could drift from the paths
     // on screen), an empty selection is answered locally instead of being POSTed as an empty
     // surface, and nothing here confirms without the owner's click.
-    const wUiStart = taskClientSource.indexOf('} else if (t.filesOrigin === "derived"');
+    const wUiStart = taskClientSource.indexOf('} else if ((t.filesOrigin === "derived" || t.filesOrigin === "card")');
     const wUiEnd = taskClientSource.indexOf("// --- end DERIVED SURFACE REVIEW ---", wUiStart);
     const wUi = wUiStart >= 0 && wUiEnd > wUiStart ? taskClientSource.slice(wUiStart, wUiEnd) : "";
     check("(w2/3b) the client sends the TICKED paths only, reads them at click time, and never POSTs an empty selection",
@@ -6282,9 +6282,143 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const id of [fRow, fProse]) await post(`/api/tasks/${id}/delete`, {});
     for (const id of [rOld, rGood, rLie]) await post(`/api/tasks/${id}/delete`, {});
 
+    // --- (lift) THE AUTO-LIFT `filesOrigin:"card"` ON THE TICK (docs/queue-wellen-2026-09-06.md §7.1.3,
+    // Nachtrag 2026-09-13). Formatted rows, so no model is involved and the card is decided by the
+    // parser and the validator alone: a surfaceValid card with files on a PROGRAM row is lifted; the
+    // same card without a program, a card with a surface gap, and a row the owner confirmed are not.
+    // Then the switch: FLEET_CARD_AUTOLIFT=0 withdraws the lift and lifts nothing new, an unknown
+    // value says so in server.log and stays off.
+    const liftProgramRes = await post("/api/programs", {
+      title: "Card auto-lift probe", intent: "Prove the card tick lifts program rows only.",
+      successCriterion: "filesOrigin card appears on the program row alone.",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    });
+    const liftProgram = ((await liftProgramRes.json()) as { program?: { id: string } }).program?.id ?? "";
+    const liftProgramConfirm = liftProgram ? await post(`/api/programs/${liftProgram}/confirm`, {}) : null;
+    const liftRow = async (label: string, flaeche: string, programId: string | null): Promise<string> =>
+      ((await (await post("/api/tasks", { text: ["ROLLE: claude/claude-opus-5/high", "GROESSE: klein",
+        `FLAECHE: ${flaeche}`, "VERIFY: bun e2e/pins.ts", `DONE: die Zeile steht in ${flaeche}`,
+        `${label}: ${flaeche} bekommt eine Zeile.`].join("\n"), queue: false, repo: REPO,
+        ...(programId ? { programId } : {}) })).json()) as { task?: { id: string } }).task?.id ?? "";
+    interface LRow { id: string; files?: string[]; filesOrigin?: string; card?: { model: string; valid: boolean; surfaceValid?: boolean } }
+    const lRows = async (): Promise<LRow[]> => ((await (await get("/api/sessions")).json()) as { tasks: LRow[] }).tasks;
+    const lFull = async (id: string): Promise<LRow | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: LRow[] }).tasks.find((t) => t.id === id);
+    const lWait = async (id: string, done: (row: LRow | undefined) => boolean): Promise<LRow | undefined> => {
+      let row: LRow | undefined;
+      for (let i = 0; i < 40; i++) {
+        row = await lFull(id);
+        if (done(row)) return row;
+        await Bun.sleep(250);
+      }
+      return row;
+    };
+    const lLift = await liftRow("LIFT-PROBE", "fleet-e2e.ts", liftProgram);
+    const lNoProg = await liftRow("LIFT-NOPROG", "fleet-e2e.ts", null);
+    const lGap = await liftRow("LIFT-GAP", "gibt-es-nicht-lift.ts", liftProgram);
+    const lConf = await liftRow("LIFT-CONF", "fleet-e2e.ts", liftProgram);
+    // FIXTURE PRECONDITION, failing as itself: the program is confirmed and every row carries a card
+    // from THIS boot's tick, read by the format parser — otherwise no line below measured the lift.
+    const lCards = await Promise.all([lLift, lNoProg, lGap, lConf].map((id) => lWait(id, (row) => !!row?.card)));
+    check("(lift) fixture: a confirmed program and four formatted rows, each with a format card from the tick",
+      liftProgramRes.ok && !!liftProgramConfirm?.ok && lCards.every((row) => row?.card?.model === "format")
+      && lCards[0]?.card?.surfaceValid === true && lCards[1]?.card?.surfaceValid === true
+      && lCards[2]?.card?.surfaceValid === false,
+      JSON.stringify({ liftProgram, cards: lCards.map((row) => row?.card ?? null) }));
+    const lLifted = await lWait(lLift, (row) => row?.filesOrigin === "card");
+    const lLiftDigest = (await lRows()).find((t) => t.id === lLift);
+    check("(lift) a surfaceValid card with files on a PROGRAM row lifts the row to filesOrigin card — full view and poll digest",
+      lLifted?.filesOrigin === "card" && lLifted.files?.join(" ") === "fleet-e2e.ts"
+      && lLiftDigest?.filesOrigin === "card" && lLiftDigest.files?.join(" ") === "fleet-e2e.ts",
+      JSON.stringify({ full: lLifted ?? null, digest: lLiftDigest ?? null }));
+    // the owner confirms a DIFFERENT list over the lifted row, so an overwrite by the next tick is visible
+    await lWait(lConf, (row) => row?.filesOrigin === "card");
+    const lConfRes = await post(`/api/tasks/${lConf}/files`, { files: ["fleet-e2e.ts", ".gitignore"] });
+    // negative controls need ticks that MUST have run: 700 ms tick, 2.5 s wait; lLift above is the positive
+    await Bun.sleep(2500);
+    const lNoProgRow = await lFull(lNoProg);
+    const lGapRow = await lFull(lGap);
+    check("(lift) no lift without a program, and none over a card with a surface gap",
+      lNoProgRow?.card?.surfaceValid === true && lNoProgRow.filesOrigin !== "card"
+      && lGapRow?.card?.surfaceValid === false && lGapRow.filesOrigin !== "card",
+      JSON.stringify({ noProgram: lNoProgRow ?? null, gap: lGapRow ?? null }));
+    const lConfRow = await lFull(lConf);
+    check("(lift) a row the owner CONFIRMED over its card lift stays confirmed with the owner's list across later ticks",
+      lConfRes.ok && lConfRow?.filesOrigin === "confirmed" && lConfRow.files?.join(" ") === "fleet-e2e.ts .gitignore",
+      `${lConfRes.status} ${JSON.stringify(lConfRow ?? null)}`);
+    // --- the switch. FLEET_CARD_AUTOLIFT=0: the persisted lift is not read as one, the tick withdraws it
+    // from the state file, and a fresh program row gets its card but no lift.
+    await restartSrv({ FLEET_DISPATCH_REPO: REPO, FLEET_CARD_MS: "700", FLEET_CARD_CMD: FAKECARD, FLEET_CARD_AUTOLIFT: "0" });
+    const lOff = await liftRow("LIFT-OFF", "fleet-e2e.ts", liftProgram);
+    const lOffRow = await lWait(lOff, (row) => !!row?.card);
+    await Bun.sleep(2500);
+    const lOffLater = await lFull(lOff);
+    const lWithdrawn = await lFull(lLift);
+    const lConfOff = await lFull(lConf);
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const lState = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: { id: string; filesOrigin?: string; files?: string[] }[] })
+      .tasks ?? [];
+    const lPersisted = lState.find((t) => t.id === lLift);
+    check("(lift) FLEET_CARD_AUTOLIFT=0: a fresh program row gets its card and NO lift, the old lift is withdrawn in view and state file, confirmed stays",
+      lOffRow?.card?.model === "format" && lOffRow.card.surfaceValid === true && lOffLater?.filesOrigin !== "card"
+      && lWithdrawn?.filesOrigin !== "card" && !!lPersisted && lPersisted.filesOrigin === undefined && lPersisted.files === undefined
+      && lConfOff?.filesOrigin === "confirmed",
+      JSON.stringify({ off: lOffLater ?? null, withdrawn: lWithdrawn ?? null, persisted: lPersisted ?? null, confirmed: lConfOff ?? null }));
+    const lLogBefore = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
+    await restartSrv({ FLEET_DISPATCH_REPO: REPO, FLEET_CARD_MS: "700", FLEET_CARD_CMD: FAKECARD, FLEET_CARD_AUTOLIFT: "vielleicht" });
+    await Bun.sleep(2500);
+    const lLog = readFileSync(`${ROOT}/server.log`, "utf8").slice(lLogBefore);
+    const lOffUnknown = await lFull(lOff);
+    check("(lift) an unrecognised FLEET_CARD_AUTOLIFT value logs one line naming it and the lift stays OFF",
+      lLog.includes('FLEET_CARD_AUTOLIFT="vielleicht" is not a recognised value — the card auto-lift is OFF')
+      && lOffUnknown?.card?.surfaceValid === true && lOffUnknown.filesOrigin !== "card",
+      JSON.stringify({ log: lLog.split("\n").filter((l) => l.includes("AUTOLIFT")), row: lOffUnknown ?? null }));
+    for (const id of [lLift, lNoProg, lGap, lConf, lOff]) await post(`/api/tasks/${id}/delete`, {});
+
     await post(`/api/tasks/${cBad.id}/delete`, {});
     await post(`/api/tasks/${cOff.id}/delete`, {});
     await restartSrv({ FLEET_DISPATCH_REPO: REPO });
+  }
+
+  // --- (lift) THE WACHE, pure (task-land-waves.ts#collidesOn + #classify, 2026-09-13). A card surface
+  // bundles on range evidence only: the file fallback stays with confirmed surfaces. The shared-file
+  // pair is built so that EVERY row has a range somewhere (never "flaeche-ohne-bereich") but none in
+  // the shared file — so the only thing that can join them is the fallback itself, and the mutation
+  // "fallback for card too" turns the first check red.
+  {
+    const liftCosts = LAND_WAVE_COSTS_2026_09;
+    const cardRow = (id: string, created: number, files: string[], ranges: TaskWaveInput["ranges"],
+      extra: Partial<TaskWaveInput> = {}): TaskWaveInput => ({
+      id, created, files, filesOrigin: "card", programId: "prog-lift", ranges,
+      repo: "/repo/lift", kind: "auftrag", status: "pending", ...extra,
+    });
+    const liftWaves = (tasks: TaskWaveInput[]) =>
+      (projectLandWaves({ tasks, costs: liftCosts }).repos.find((r) => r.repo === "/repo/lift")?.waves ?? [])
+        .map((w) => [w.ids, w.reasonAgainst, w.sharedFiles]);
+    const rangeAt = (file: string, startLine: number) => [{ file, symbol: "s", startLine, endLine: startLine + 5 }];
+    const fbA = cardRow("la", 1, ["shared.ts", "a.ts"], rangeAt("a.ts", 10));
+    const fbB = cardRow("lb", 2, ["shared.ts", "b.ts"], rangeAt("b.ts", 10));
+    const fbCard = liftWaves([fbA, fbB]);
+    check("(lift) wache: two CARD rows on the same file without ranges there are NOT joined — two waves, no reason against",
+      JSON.stringify(fbCard) === JSON.stringify([[["la"], null, []], [["lb"], null, []]]), JSON.stringify(fbCard));
+    const fbConfirmed = liftWaves([{ ...fbA, filesOrigin: "confirmed" }, { ...fbB, filesOrigin: "confirmed" }]);
+    check("(lift) gegenprobe: the SAME two rows as CONFIRMED surfaces join through the file fallback",
+      JSON.stringify(fbConfirmed) === JSON.stringify([[["la", "lb"], null, ["shared.ts"]]]), JSON.stringify(fbConfirmed));
+    const fbMixed = liftWaves([{ ...fbA, filesOrigin: "confirmed" }, cardRow("lb", 2, ["shared.ts"], rangeAt("shared.ts", 10))]);
+    check("(lift) wache: a confirmed row without a range and a card row WITH one on the shared file are not joined — the card side needs ranges on both",
+      JSON.stringify(fbMixed) === JSON.stringify([[["la"], null, []], [["lb"], null, []]]), JSON.stringify(fbMixed));
+    const nearCard = liftWaves([cardRow("na", 1, ["shared.ts"], rangeAt("shared.ts", 100)),
+      cardRow("nb", 2, ["shared.ts"], rangeAt("shared.ts", 100 + LAND_WAVE_RANGE_GAP)),
+      cardRow("nc", 3, ["shared.ts"], rangeAt("shared.ts", 5000))]);
+    check("(lift) positive: card rows with NEARBY ranges in the shared file bundle; a far range in it stays alone",
+      JSON.stringify(nearCard) === JSON.stringify([[["na", "nb"], null, ["shared.ts"]], [["nc"], null, []]]), JSON.stringify(nearCard));
+    const coarse = liftWaves([cardRow("ca", 1, ["server.ts"], null), cardRow("cb", 2, ["server.ts"], []),
+      cardRow("cc", 3, ["server.ts"], rangeAt("server.ts", 10), { programId: undefined }),
+      cardRow("cd", 4, ["server.ts"], rangeAt("server.ts", 10), { filesOrigin: "derived" })]);
+    check("(lift) a coarse card (no range in any of its files, graph absent or empty) is a wave of one `flaeche-ohne-bereich`; no program stays `kein-program`, derived stays derived",
+      JSON.stringify(coarse) === JSON.stringify([[["ca"], "flaeche-ohne-bereich", []], [["cb"], "flaeche-ohne-bereich", []],
+        [["cc"], "kein-program", []], [["cd"], "flaeche-nur-abgeleitet", []]]), JSON.stringify(coarse));
   }
 
   // --- S4 (a672b626) THE WAVE BRIEF quotes each row's card as a head before that row's prose, and

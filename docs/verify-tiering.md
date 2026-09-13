@@ -1813,10 +1813,9 @@ one carrier of a fact and starts waiting on another, the new carrier's position 
 write order is part of the change. Here the two carriers bracket the write the check downstream
 depends on. Moving a wait is never a local edit — the read points BELOW it move with it.
 
-### 11.2i An eleventh family: the suite-server PHASE RESTART races the dying tmux server (2026-08-27 filed; 2026-09-13 REPAIRED, `<LANDING-SHA>`)
+### 11.2i An eleventh family: the suite-server PHASE RESTART races the dying tmux server (2026-08-27 filed; 2026-09-13 REPAIRED, `1e4f8f24`)
 
-**Status: repaired in `<LANDING-SHA>` (2026-09-13; the MAIN writes the landing sha here after the
-land).** A red on these lines AFTER that sha is ECHT again. Mechanism of the repair: every
+**Status: repaired in `1e4f8f24` (2026-09-13).** A red on these lines AFTER that sha is ECHT again. Mechanism of the repair: every
 `new-session` that follows a kill on the same socket (`e2e-claude-gate.sh` before phase 1, 1→2,
 2→3; `e2e-clean-review.sh` before phase 1 and 1→2) first calls `e2e-stage.sh#stage_await_server_gone`,
 which waits — bounded at ~10 s, 0.1 s steps — until two consecutive readings show no `srv` session on

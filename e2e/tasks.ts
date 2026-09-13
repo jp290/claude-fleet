@@ -5982,6 +5982,68 @@ export async function run(ctx: Ctx): Promise<void> {
       `${new TextEncoder().encode(fat).byteLength} bytes`);
   }
 
+  // --- S6 (queue row 08ec67c0) THE AUTHOR'S CARD. Whoever files a row may hand its card along; it
+  // is validated against the row's repo by the same validator the extractor tick uses, a gap is a
+  // 400 that files nothing, and a valid card's surface is what every surface reader sees before the
+  // prose reading. The text names code.txt and the card names ctx-mod.txt (both tracked in
+  // testrepo), so "the projection used the card" and "the regex happened to agree" cannot coincide.
+  {
+    interface ARow { id: string; files?: string[]; filesOrigin?: string;
+      card?: { model: string; valid: boolean; gaps: string[]; surface: { files: string[] } } }
+    const aDigest = async (id: string): Promise<ARow | undefined> =>
+      ((await (await get("/api/sessions")).json()) as { tasks: ARow[] }).tasks.find((t) => t.id === id);
+    const aFull = async (id: string): Promise<ARow | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: ARow[] }).tasks.find((t) => t.id === id);
+    const aText = "AUTHOR-CARD-PROBE: code.txt bekommt eine Zeile.";
+    const aCard = { ziel: "ctx-mod.txt bekommt eine Zeile", surface: { files: ["ctx-mod.txt"], symbols: [] },
+      done: "die Zeile steht in ctx-mod.txt", verify: "bun e2e/pins.ts", verboten: ["kein Auto-Dispatch"] };
+    const aRes = await post("/api/tasks", { text: aText, queue: false, repo: REPO, card: aCard });
+    const aId = ((await aRes.json()) as { task?: { id: string } }).task?.id ?? "";
+    const aCtl = ((await (await post("/api/tasks", { text: aText, queue: false, repo: REPO })).json()) as { task: { id: string } }).task.id;
+    const aRow = await aFull(aId);
+    check("(s6) a filing with a valid card stores it as card{model:author, valid:true}",
+      aRes.ok && aRow?.card?.model === "author" && aRow.card.valid === true
+      && JSON.stringify(aRow.card.gaps) === "[]" && aRow.card.surface.files.join(" ") === "ctx-mod.txt",
+      `${aRes.status} ${JSON.stringify(aRow ?? null)}`);
+    const aView = await aDigest(aId);
+    const aCtlView = await aDigest(aCtl);
+    check("(s6) the wave projection's surface is card.surface.files, not the regex reading of the same text",
+      aView?.files?.join(" ") === "ctx-mod.txt" && aView.filesOrigin === "derived"
+      && aCtlView?.files?.join(" ") === "code.txt",
+      JSON.stringify({ card: aView, control: aCtlView }));
+
+    const aBefore = ((await (await get("/api/tasks")).json()) as { tasks: unknown[] }).tasks.length;
+    const aBad = await post("/api/tasks", { text: "AUTHOR-CARD-BAD: gibt-es-nicht.ts", queue: false, repo: REPO,
+      card: { ...aCard, surface: { files: ["gibt-es-nicht.ts"], symbols: [] } } });
+    const aBadText = await aBad.text();
+    const aAfter = ((await (await get("/api/tasks")).json()) as { tasks: unknown[] }).tasks.length;
+    check("(s6) an untracked path in the card is a 400 naming the path verbatim, and nothing is filed",
+      aBad.status === 400 && aBadText.includes("gibt-es-nicht.ts") && aBadText.includes("not tracked")
+      && aAfter === aBefore, `${aBad.status} ${aBadText} rows ${aBefore}->${aAfter}`);
+    const aShape = await post("/api/tasks", { text: "AUTHOR-CARD-SHAPE", queue: false, repo: REPO, card: "ctx-mod.txt" });
+    check("(s6) a card that is not an object is a 400, never a silently ignored field",
+      aShape.status === 400 && (await aShape.text()).includes("card must be an object"), String(aShape.status));
+    check("(s6) a filing WITHOUT a card stores none — the door is unchanged for every existing caller",
+      (await aFull(aCtl))?.card === undefined, JSON.stringify(await aFull(aCtl)));
+
+    // ./register.sh reads the SAME stored card before the projector's prose reading. It is not part
+    // of the staged instance, so the checkout's copy is run beside this instance's fleet.json.
+    const aCheckout = resolve(realpathSync(`${ROOT}/node_modules`), "..");
+    const aReg = `${ROOT}/register-s6.sh`;
+    writeFileSync(aReg, readFileSync(`${aCheckout}/register.sh`, "utf8"));
+    await Bun.sleep(1500); // saveState is debounced; the render reads the file
+    const aOut = spawnSync("sh", [aReg], { encoding: "utf8", timeout: 60_000 }).stdout ?? "";
+    rmSync(aReg, { force: true });
+    const aLines = aOut.split("\n");
+    const aAt = aLines.findIndex((l) => l.trimStart().startsWith(`${aId} `));
+    const aCtlAt = aLines.findIndex((l) => l.trimStart().startsWith(`${aCtl} `));
+    check("(s6) ./register.sh shows the card row as surface [karte] with the card's files; the twin stays [abgeleitet]",
+      aAt >= 0 && (aLines[aAt + 1] ?? "").trim() === "surface [karte]: ctx-mod.txt"
+      && aCtlAt >= 0 && (aLines[aCtlAt + 1] ?? "").trim() === "surface [abgeleitet]: code.txt",
+      JSON.stringify({ card: aLines.slice(aAt, aAt + 2), twin: aLines.slice(aCtlAt, aCtlAt + 2), head: aOut.slice(0, 200) }));
+    for (const id of [aId, aCtl]) await post(`/api/tasks/${id}/delete`, {});
+  }
+
   // --- (k) THE RAW START. "▸ start lane" gates on nothing, by design: an attended click outranks
   // every advisory. What that cost was legibility — starting a row that would be delivered as the
   // owner's bare draft looked exactly like starting one somebody had sharpened: same button, one
@@ -6189,6 +6251,15 @@ export async function run(ctx: Ctx): Promise<void> {
     check("ACP-23 (3b): an unknown kind is a 400 naming the same four categories the other create doors accept",
       mBadKind.status === 400 && mBadKindText.includes("auftrag, richtung, notiz, betrieb"),
       `${mBadKind.status}:${mBadKindText}`);
+    // S6 (08ec67c0): the MAIN door reads the same optional card as the owner door, through the same
+    // validator — an untracked path is a 400 naming it, and the filing cap is untouched by it.
+    const mCardBefore = (await mAll()).length;
+    const mBadCard = await mFile(mToken, { text: "s6 main card probe", kind: "auftrag",
+      card: { ziel: "z", surface: { files: ["gibt-es-nicht-main.ts"], symbols: [] }, done: "d", verify: "bun e2e/pins.ts", verboten: [] } });
+    const mBadCardText = await mBadCard.text();
+    check("(s6) the MAIN filing door refuses a card with an untracked path as a 400 naming it, minting nothing",
+      mBadCard.status === 400 && mBadCardText.includes("gibt-es-nicht-main.ts") && (await mAll()).length === mCardBefore,
+      `${mBadCard.status}:${mBadCardText}`);
 
     // (4) THE BODY CANNOT NOMINATE ANYTHING. `programId` answers in its own sentence (naming the
     // program the binding already decided), and the rest of the world's fields are refused as a

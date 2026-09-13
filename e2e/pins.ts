@@ -2088,6 +2088,15 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // writer can emit is a category the ledger promises and never delivers. ("main" joined 2026-09-11
   // with POST /api/self/tasks/:id/brief — a MAIN-sharpened brief booked as "owner" would put the
   // very falsehood that door was built to end into a RATE.)
+  // S6 (08ec67c0) · THE FILING TEMPLATE IS A DOC↔CODE PAIR. AGENTS.md tells every filer which card
+  // fields the create doors read; authorCardFrom's closed list decides it. A field renamed on one
+  // side only would teach filers a 400 — and no compiler sees prose.
+  const cardDoorFields = /const known = \[([^\]]+)\];\n  const extra = Object\.keys\(c\)/.exec(server)?.[1] ?? "";
+  const agentsCard = /optional `card\{ziel, surface\{files, symbols\}, done, verify, verboten\}`/.test(read("AGENTS.md"));
+  pin("AGENTS.md's card template names exactly the card fields the create doors read",
+    cardDoorFields.replace(/\s/g, "") === '"ziel","surface","done","verify","verboten"' && agentsCard
+    && /ZIEL: [^\n]*\nFLAECHE: [^\n]*\nDONE: [^\n]*\nVERIFY: [^\n]*\nVERBOTEN: [^\n]*\nROLLE: /.test(read("AGENTS.md")),
+    `door=[${cardDoorFields}] agents=${agentsCard}`);
   const briefSourceType = /type BriefSource = ([^;]+);/.exec(server)?.[1] ?? "";
   pin("BriefSource is a closed set whose every literal has a producer",
     briefSourceType.trim() === '"compiled" | "owner" | "main" | "raw" | "clarify" | "founding" | "card"'
@@ -2523,14 +2532,14 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const crBody = crStart < 0 ? "" : server.slice(crStart, server.indexOf("\n}\n", crStart));
   pin("createTaskForMain's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
     crStart > 0 && crBody.length > 500 && crBody.length < 20_000, `${crBody.length} bytes`);
-  pin("the Program-MAIN filing door DERIVES program and repo and reads a CLOSED body — text, kind, and the spawn triple",
+  pin("the Program-MAIN filing door DERIVES program and repo and reads a CLOSED body — text, kind, the spawn triple and an optional card",
     crBody.length > 0
       && /const bound = boundProgramForMain\(s\);/.test(crBody)
       && /programId: program\.id,/.test(crBody)
       && /const mainRepo = await repoKeyOf\(s\);/.test(crBody)
       && /repo: mainRepo,/.test(crBody)
       && /if \(body\.programId !== undefined\)/.test(crBody)
-      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort"\];/.test(crBody)
+      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "card"\];/.test(crBody)
       && /Object\.keys\(body\)\.filter\(\(k\) => !SELF_TASK_FIELDS\.includes\(k\)\)/.test(crBody),
     crBody.length > 0 ? "derivation + closed body" : "createTaskForMain missing");
   // THE SPAWN TRIPLE HAS ONE SET-TIME VALIDATOR, and both create doors go through it: the same

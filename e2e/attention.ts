@@ -10,7 +10,7 @@
 // mistake two earlier probes died of (8e2b3e5).
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { BASE, REPO, ROOT, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, tmuxOut } from "./harness";
+import { BASE, REPO, ROOT, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut } from "./harness";
 
 interface AttentionRow {
   id: string; raisedAt: number; kind: "decision" | "blocked" | "review-ready"; text: string;
@@ -109,8 +109,7 @@ export async function run(): Promise<void> {
 
   // The binding is a SERVER fact, so it is planted as one: two active programs, each bound to the
   // exact occupant triple of its own MAIN. Nothing the routes below send can nominate a program.
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const planted = JSON.parse(readFileSync(statePath, "utf8")) as {
     slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
     attentionRequests?: unknown[]; tasks?: Record<string, unknown>[];
@@ -306,8 +305,7 @@ export async function run(): Promise<void> {
     `${noReason.status} ${refused.status} ${refuseAgain.status} ${answerRefused.status} ${refuseAnswered.status}`);
 
   // --- 6. historical send-uncertain rows keep their one safe retry ------------------------------
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const legacyPending = JSON.parse(readFileSync(statePath, "utf8")) as { attentionRequests?: AttentionRow[] };
   const legacyPendingRow = legacyPending.attentionRequests?.find((a) => a.id === reviewReady?.id);
   if (legacyPendingRow) {
@@ -546,8 +544,7 @@ export async function run(): Promise<void> {
 
   // --- 9. the writer cap drops the oldest read pointer before any unread pointer ------------------
   const capRow = await raised(await selfRaise(successorToken, { kind: "decision", text: "Append the 101st inbox pointer." }));
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const capState = JSON.parse(readFileSync(statePath, "utf8")) as {
     programs?: { id: string; inbox?: { v: 1; entries: Omit<InboxEntry, "subject">[]; dropped: number } }[];
     slots?: Record<string, { openedAt?: number; sessionId?: string | null }>;
@@ -624,8 +621,7 @@ export async function run(): Promise<void> {
   // Pre-provenance rows are a distinct historical shape: absence means UNKNOWN and must stay
   // absent on both disk and the owner route. Normalizing it to a five-null object would invent an
   // observation about fields the old server never knew existed.
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const withLegacy = JSON.parse(readFileSync(statePath, "utf8")) as { attentionRequests?: AttentionRow[] };
   const legacyId = "d".repeat(24);
   withLegacy.attentionRequests = [...(withLegacy.attentionRequests ?? []), {

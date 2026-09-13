@@ -3,7 +3,7 @@
 // verify gate, and the orphan reattach / remove / discard flows.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
+import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, fakeClaudeInPane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 import { projectPromotionPolicyFacts } from "../land-candidate";
@@ -816,8 +816,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   check("ACP-03 Q4 setup: current server first wrote a complete verdict to downgrade into a legacy fixture",
     legacyWritten.last?.status === "resolved" && /^[0-9a-f]{40,64}$/.test(legacyWritten.last.diffHash ?? ""),
     JSON.stringify(legacyWritten.last));
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const legacyState = (await Bun.file(`${ROOT}/fleet.json`).json()) as
     { merges?: Record<string, Record<string, unknown>> };
   const legacyRow = legacyState.merges?.[String(lnLegacy.slot)];
@@ -1865,8 +1864,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       beforeTo.every((n) => n === 1) && !!recyclProg, JSON.stringify({ sends: beforeTo, program: recyclProg }));
     // killing the scratch server before editing its scratch fleet.json makes the plant
     // deterministic — no process can overwrite it (the ACP-03 Q4 fixture's discipline)
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const toState = (await Bun.file(`${ROOT}/fleet.json`).json()) as
       { merges?: Record<string, Record<string, unknown>>;
         programs?: Record<string, unknown>[] };

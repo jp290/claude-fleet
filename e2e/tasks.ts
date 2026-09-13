@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { check, get, post, restartSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
+import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
 import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, CARD_MARK, CARD_VALIDATOR_VERSION } from "../card-extract";
@@ -1325,8 +1325,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // can make the boot prune drop older owner rows another module minted, and only the snapshot
     // brings those back.
     {
-      await tmuxOut("kill-session", "-t", "srv");
-      await Bun.sleep(500);
+      await stopSrv();
       let fx: Record<string, unknown> | null = null;
       let fxError = "";
       try { fx = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as Record<string, unknown>; }
@@ -1370,8 +1369,7 @@ export async function run(ctx: Ctx): Promise<void> {
         check("…and the cut is real in both directions: the 3 open reds reach the poll, the 20 acknowledged rows do not",
           JSON.stringify(onPoll) === JSON.stringify(openIds), JSON.stringify(onPoll));
 
-        await tmuxOut("kill-session", "-t", "srv");
-        await Bun.sleep(500);
+        await stopSrv();
         const back = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as Record<string, unknown>;
         writeFileSync(`${ROOT}/fleet.json`, JSON.stringify({ ...back, events: priorEvents }), { mode: 0o600 });
       }
@@ -6251,8 +6249,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const rOld = await plantRow("REREAD-PROBE old invalid: fleet-e2e.ts bekommt eine Zeile.");
     const rGood = await plantRow("REREAD-PROBE old valid: fleet-e2e.ts bekommt eine Zeile.");
     const rLie = await plantRow("REREAD-PROBE lying surfaceValid: fleet-e2e.ts bekommt eine Zeile.");
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     interface PState { tasks?: { id: string; card?: Record<string, unknown> }[] }
     const pState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PState;
     const plantedAt = Date.now() - 60_000;
@@ -6420,8 +6417,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const lOffLater = await lFull(lOff);
     const lWithdrawn = await lFull(lLift);
     const lConfOff = await lFull(lConf);
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const lState = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: { id: string; filesOrigin?: string; files?: string[] }[] })
       .tasks ?? [];
     const lPersisted = lState.find((t) => t.id === lLift);
@@ -6726,8 +6722,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // The binding is PLANTED through the state file, the same way e2e/programs.ts plants its stale
     // and complete-bound fixtures: the bootstrap route spawns a fresh session and waits for a
     // harness screen, and none of that founding path is what this section measures.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const mPlanted = mState();
     const mSlotRow = mPlanted.slots?.[String(mSlot)];
     const mProgramRow = mPlanted.programs?.find((p) => p.id === mMainProgram);
@@ -7034,8 +7029,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // The binding is PLANTED through the state file, exactly as section (m) plants its own: the
     // bootstrap route spawns a session and waits for a harness screen, and none of that founding
     // path is what this section measures.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const nPlanted = nState();
     const nSlotRow = nPlanted.slots?.[String(nSlot)];
     const nProgramRow = nPlanted.programs?.find((p) => p.id === nBoundProgram);
@@ -7161,8 +7155,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // are re-interpretations of the backlog — an invented "owner" would credit the owner with text
     // they may never have written, and a dropped author on the NEW rows would erase the repair.
     // The same reload proves the new entry PERSISTS, which no in-memory probe can say.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const nLegacyPlant = nState();
     const nLegacyRow = nLegacyPlant.tasks?.find((t) => t.id === nLegacyId);
     if (nLegacyRow) nLegacyRow.brief = { text: "a brief pinned before authors were recorded", at: 1_700_000_000_000, model: "owner", edited: true };
@@ -7251,8 +7244,7 @@ export async function run(ctx: Ctx): Promise<void> {
       c0Row(`c0term${String(n).padStart(4, "0")}`, n % 2 === 0 ? "done" : "archived");
     const c0Ids = (rows: Record<string, unknown>[]): string[] => rows.map((r) => String(r.id));
     const c0Plant = async (rows: Record<string, unknown>[]): Promise<string[]> => {
-      await tmuxOut("kill-session", "-t", "srv");
-      await Bun.sleep(500);
+      await stopSrv();
       const planted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as C0State;
       planted.tasks = rows;
       writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(planted, null, 2), { mode: 0o600 });
@@ -7272,8 +7264,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // it, so every detail string names the intruders rather than leaving the reader to guess.
     const c0Foreign = (got: string[]): string[] => got.filter((id) => !id.startsWith("c0"));
     // Snapshot the bytes on disk with NO server running, so nothing can save over the restore point.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const c0Snapshot = readFileSync(`${ROOT}/fleet.json`, "utf8");
     await restartSrv();
 
@@ -7390,8 +7381,7 @@ export async function run(ctx: Ctx): Promise<void> {
         + ` foreign=${JSON.stringify(c0Foreign(c0N3Got))}`);
 
     // Leave the queue as this section found it — the planted lists replaced it wholesale.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     writeFileSync(`${ROOT}/fleet.json`, c0Snapshot, { mode: 0o600 });
     await restartSrv();
     const c0Restored = ((await (await get("/api/tasks")).json()) as { tasks: C0Row[] }).tasks;

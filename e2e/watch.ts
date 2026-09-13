@@ -27,7 +27,7 @@ import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsPollRow, opsPollVisible, ops
 // the terminal status words, taken from the one place that defines them rather than re-listed here:
 // the retention check below counts exactly the rows pruneFleetEvents counts.
 import { FLEET_EVENT_TERMINAL } from "../server/types";
-import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, srvEnv, tmuxOut } from "./harness";
+import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, srvEnv, tmuxOut } from "./harness";
 
 interface WatchRow {
   id: string; slot: number; target: number; targetCwd: string; targetBranch: string;
@@ -1556,8 +1556,7 @@ export async function run(): Promise<void> {
       [watchedSub, agreedSub, conflictSub, conflictSub2, multiSub1, multiSub2, replacedMainSub]
         .every((x) => x.response.ok && (x.body.watch?.slotOpenedAt ?? 0) > 0));
 
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const clarificationStatePath = `${ROOT}/fleet.json`;
     const planted = JSON.parse(readFileSync(clarificationStatePath, "utf8")) as {
       slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
@@ -1751,8 +1750,7 @@ export async function run(): Promise<void> {
 
     // Restart across the open debt, then lower only the persisted receiver idle gate so FACT 2 can
     // deliver immediately without waiting a production minute in the suite.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const restartImage = JSON.parse(readFileSync(clarificationStatePath, "utf8")) as {
       events?: Record<string, unknown>[]; clarifications?: Record<string, unknown>[];
     };
@@ -2011,8 +2009,7 @@ export async function run(): Promise<void> {
     // only this section's synthetic population while the server is stopped, so the later global
     // /api/sessions payload-budget check measures the product's bounded steady state rather than
     // test pollution from nine throwaway occupants.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const cleaned = JSON.parse(readFileSync(clarificationStatePath, "utf8")) as {
       events?: { kind?: string }[]; clarifications?: unknown[]; programs?: { id?: string }[];
     };
@@ -2063,8 +2060,7 @@ export async function run(): Promise<void> {
         && new Set([mainTok, foreignTok, completeTok, needsTok, failedTok, noReceiverTok, stewardTok]).size === 7
         && reportComposerMode.length > 0 && existsSync(reportComposerMode));
 
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const reportStatePath = `${ROOT}/fleet.json`;
     const planted = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
       slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
@@ -2190,8 +2186,7 @@ export async function run(): Promise<void> {
     // Restart from an image where one report delivery is immediately eligible. This proves the row
     // and all three status values survive independently of transport, then drives the eligible event
     // through the measured composer-held/rollback-cleared recovery seam before Ack closes it.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const restartImage = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
       events?: { id?: string; kind?: string; receiverIdleSec?: number }[]; fleetReports?: unknown[];
     };
@@ -2340,8 +2335,7 @@ export async function run(): Promise<void> {
       // Restart from the persisted image with the `failed` report's row immediately eligible, the
       // composer holding, the recovery latch on that row and the knob set to `value`.
       const restartWithKnob = async (value: string, extra: Record<string, string> = {}): Promise<void> => {
-        await tmuxOut("kill-session", "-t", "srv");
-        await Bun.sleep(500);
+        await stopSrv();
         const image = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
           events?: { id?: string; receiverIdleSec?: number }[];
         };
@@ -2475,8 +2469,7 @@ export async function run(): Promise<void> {
       clearLatch(recoveryLatch);
     }
 
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const recycleImage = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
       events?: { id?: string; kind?: string; receiverIdleSec?: number }[];
     };
@@ -2543,8 +2536,7 @@ export async function run(): Promise<void> {
     // Cross the report retention threshold with valid old rows whose events are already absent.
     // This is deliberately a separate fixture check: if the planted rows cannot hydrate, the
     // audit assertion below must not masquerade as a missing-prune defect.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const pruneImage = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
       fleetReports?: FleetReportRow[]; slots?: Record<string, { taskId?: string }>;
     };
@@ -2595,8 +2587,7 @@ export async function run(): Promise<void> {
 
     for (const slot of [completeLane.slot, needsLane.slot, failedLane.slot, noReceiverLane.slot,
       stewardLane.slot, main, foreignMain]) await post(`/api/slots/${slot}/kill`, {});
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const cleaned = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
       events?: { kind?: string }[]; fleetReports?: unknown[]; programs?: { id?: string }[];
     };
@@ -2647,8 +2638,7 @@ export async function run(): Promise<void> {
     check("B4 fixtures: two distinct receiver occupants watch the same lane", w1.ok && w2.ok,
       `${w1.status}/${w2.status}`);
 
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const b4Path = `${ROOT}/fleet.json`;
     const b4Planted = JSON.parse(readFileSync(b4Path, "utf8")) as {
       slots: Record<string, Record<string, unknown>>; watches?: Record<string, unknown>[];
@@ -2809,8 +2799,7 @@ export async function run(): Promise<void> {
     // --- the ceiling is hard, and refuses loudly ---------------------------------------------
     // The owner inbox has no session death to turn its rows terminal — only his own ack. Without
     // a ceiling this array is the unbounded fleet.json the whole delivery budget exists to stop.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const capState = JSON.parse(readFileSync(b4Path, "utf8")) as { events?: Record<string, unknown>[] };
     const filler = Array.from({ length: 25 }, (_, i) => ({
       id: `b4cap${String(i).padStart(8, "0")}`, watchId: null,
@@ -2928,8 +2917,7 @@ export async function run(): Promise<void> {
 
     for (const slot of [noTaskLane.slot, twoWatchLane.slot, legacyLane.slot, capLane.slot,
       inboxMain, inboxMain2]) await post(`/api/slots/${slot}/kill`, {});
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const b4Cleaned = JSON.parse(readFileSync(b4Path, "utf8")) as {
       events?: { kind?: string }[]; fleetReports?: unknown[];
     };
@@ -2986,8 +2974,7 @@ export async function run(): Promise<void> {
     const d1TaskStatusBefore = d1Task.task?.status ?? "";
     const d1Path = `${ROOT}/fleet.json`;
     const d1ProgramId = "e".repeat(24);
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const d1Plant = JSON.parse(readFileSync(d1Path, "utf8")) as {
       slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
     };
@@ -3029,8 +3016,7 @@ export async function run(): Promise<void> {
     // Plant only shapes the public watch route cannot create directly: one merge control, two
     // recycled same-slot lane watches, and five old spent rows that make pruneSpentWatches
     // observable when the report spends the sixth.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const d3dPlant = JSON.parse(readFileSync(d1Path, "utf8")) as { watches?: WatchRow[] };
     const persistedMainWatch = d3dPlant.watches?.find((w) => w.id === mainLaneWatch?.id);
     const persistedProgramlessWatch = d3dPlant.watches?.find((w) => w.id === programlessLaneWatch?.id);
@@ -3152,8 +3138,7 @@ export async function run(): Promise<void> {
     // Remove only the deliberately recycled watch before the lane becomes done-looking: it proved
     // the writer-side occupant guard above, but belongs to no live receiver and is not part of the
     // no-twin assertion. The valid foreign watch remains and may notify its own receiver.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const beforeDone = JSON.parse(readFileSync(d1Path, "utf8")) as {
       watches?: WatchRow[]; fleetReports?: FleetReportRow[]; events?: FleetEventRow[];
     };
@@ -3215,8 +3200,7 @@ export async function run(): Promise<void> {
         && wrongOccupantText.includes("not the current bound MAIN of an active program"),
       `${wrongOccupant.status} ${wrongOccupantText}`);
     // Same numeric slot, different occupation: boundProgramForMain must compare openedAt too.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const recycledPlant = JSON.parse(readFileSync(d1Path, "utf8")) as
       { programs?: { id?: string; main?: { openedAt?: number } }[] };
     const recycledProgram = recycledPlant.programs?.find((p) => p.id === d1ProgramId);
@@ -3229,8 +3213,7 @@ export async function run(): Promise<void> {
       recycledSameSlot.status === 409
         && recycledSameSlotText.includes("not the current bound MAIN of an active program"),
       `${recycledSameSlot.status} ${recycledSameSlotText}`);
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const restoredBinding = JSON.parse(readFileSync(d1Path, "utf8")) as
       { programs?: { id?: string; main?: { openedAt?: number } }[] };
     const restoredProgram = restoredBinding.programs?.find((p) => p.id === d1ProgramId);
@@ -3300,8 +3283,7 @@ export async function run(): Promise<void> {
     // The measured succession window is the decisive counterexample: the row belongs to the
     // Program, so a successor may judge it while the predecessor slot is still live in grace.
     const reboundAt = Date.now();
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const d1Rebound = JSON.parse(readFileSync(d1Path, "utf8")) as {
       programs?: { id?: string; main?: Record<string, unknown>;
         lineage?: { entries?: Record<string, unknown>[] } }[];
@@ -3378,8 +3360,7 @@ export async function run(): Promise<void> {
     // --- and it is the ROW's fact, not this process's memory. The malformed plants ride the same
     // restart: a Program row that invents either transport half, and an incomplete decision, must
     // be DISCARDED whole rather than repaired into a different principal or judgement.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const d1Hydrate = JSON.parse(readFileSync(d1Path, "utf8")) as { fleetReports?: FleetReportRow[] };
     const forgedBase = d1Hydrate.fleetReports?.find((r) => r.id === rejectReport?.id);
     const forged: FleetReportRow[] = forgedBase ? [
@@ -3416,8 +3397,7 @@ export async function run(): Promise<void> {
     // BREAKS IF: pruneFleetReports treats an eventless Program row as terminal before it has a
     // decision. Twenty-one decided clones cross the cap; the older undecided counterexample must
     // survive while decided rows are eligible for the bounded tail.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const d1Retention = JSON.parse(readFileSync(d1Path, "utf8")) as { fleetReports?: FleetReportRow[] };
     const retentionBase = d1Retention.fleetReports?.find((r) => r.id === acceptReport?.id);
     const heldId = "e0".padEnd(24, "0");
@@ -3452,8 +3432,7 @@ export async function run(): Promise<void> {
         .filter((r) => retained.some((standing) => standing.id === r.id)).length }));
 
     // BREAKS IF: openFleetReport branches on programId presence rather than ACTIVE status.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const d1Inactive = JSON.parse(readFileSync(d1Path, "utf8")) as
       { programs?: { id?: string; status?: string }[] };
     const inactiveProgram = d1Inactive.programs?.find((p) => p.id === d1ProgramId);
@@ -3471,8 +3450,7 @@ export async function run(): Promise<void> {
       programlessLane.slot,
       d1Main, d1Other]) await post(`/api/slots/${slot}/kill`, {});
     if (d1TaskId) await post(`/api/tasks/${d1TaskId}/delete`, {});
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const d1Cleaned = JSON.parse(readFileSync(d1Path, "utf8")) as {
       events?: { kind?: string }[]; fleetReports?: unknown[]; programs?: { id?: string }[];
     };
@@ -3562,8 +3540,7 @@ export async function run(): Promise<void> {
     const d2Path = `${ROOT}/fleet.json`;
     const d2ProgramId = "b".repeat(24);
     const d2TaskId = (slot: number): string => `d2task${String(slot).padStart(6, "0")}`;
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const d2Plant = JSON.parse(readFileSync(d2Path, "utf8")) as {
       slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
     };
@@ -3624,8 +3601,7 @@ export async function run(): Promise<void> {
       { status: "complete", text: "D2 fixture: this planted verdict names no lineage holder." });
     const outsideRow = (await outsideFiled.json() as { report?: FleetReportRow }).report;
     if (outsideRow) {
-      await tmuxOut("kill-session", "-t", "srv");
-      await Bun.sleep(500);
+      await stopSrv();
       const outsidePlant = JSON.parse(readFileSync(d2Path, "utf8")) as {
         fleetReports?: FleetReportRow[]; slots?: Record<string, { openedAt?: number; sessionId?: string | null }>;
       };
@@ -3857,8 +3833,7 @@ export async function run(): Promise<void> {
 
     for (const l of d2Refusers) await post(`/api/slots/${l.slot}/kill`, {});
     if (d2Main) await post(`/api/slots/${d2Main}/kill`, {});
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const d2Cleaned = JSON.parse(readFileSync(d2Path, "utf8")) as {
       events?: { kind?: string }[]; fleetReports?: unknown[]; programs?: { id?: string }[];
     };
@@ -3928,8 +3903,7 @@ export async function run(): Promise<void> {
     const d3Path = `${ROOT}/fleet.json`;
     const d3ProgramId = "c".repeat(24);
     const d3SessProgramId = "d".repeat(24);
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const d3Plant = JSON.parse(readFileSync(d3Path, "utf8")) as {
       slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
       watches?: Record<string, unknown>[];
@@ -4037,8 +4011,7 @@ export async function run(): Promise<void> {
     // door compared all three), and the owner door could not help because the occupant was ALIVE —
     // a report with no principal at all. Planted from BOTH sides so the arm does not depend on how
     // this harness happens to assign session ids.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const sessPlant = JSON.parse(readFileSync(d3Path, "utf8")) as {
       slots: Record<string, Record<string, unknown>>;
       fleetReports?: { id?: string; receiver?: { sessionId?: string | null } }[];
@@ -4176,8 +4149,7 @@ export async function run(): Promise<void> {
     // caller of the prune — and the awaiting row must still be there afterwards.
     const holdLane = await d3NewLane();
     const holdTok = await paneEnv(`s${holdLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const keepPlant = JSON.parse(readFileSync(d3Path, "utf8")) as {
       slots: Record<string, Record<string, unknown>>; fleetReports?: Record<string, unknown>[];
     };
@@ -4228,8 +4200,7 @@ export async function run(): Promise<void> {
     for (const l of [orphanLane, judgedLane, sessionLane, inboxLane, holdLane])
       await post(`/api/slots/${l.slot}/kill`, {});
     if (d3SessMain) await post(`/api/slots/${d3SessMain}/kill`, {});
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const d3Cleaned = JSON.parse(readFileSync(d3Path, "utf8")) as {
       events?: { kind?: string }[]; fleetReports?: unknown[]; programs?: { id?: string }[];
     };
@@ -4271,8 +4242,7 @@ export async function run(): Promise<void> {
     // The Program binding exists only so the projection can expose this MAIN's budget. The lanes
     // deliberately remain program-less after S3b: the four Watches below are both reservations and
     // exact legacy receiver evidence, so these older doors still exercise their FleetEvent cap.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const budgetStatePath = `${ROOT}/fleet.json`;
     const budgetPlant = JSON.parse(readFileSync(budgetStatePath, "utf8")) as {
       slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
@@ -4368,8 +4338,7 @@ export async function run(): Promise<void> {
 
     for (const slot of [bMain, ...budgetLanes.map((l) => l.slot)])
       await post(`/api/slots/${slot}/kill`, {});
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const budgetCleanup = JSON.parse(readFileSync(budgetStatePath, "utf8")) as {
       events?: { kind?: string }[]; fleetReports?: unknown[]; programs?: { id?: string }[];
     };
@@ -5096,8 +5065,7 @@ export async function run(): Promise<void> {
   // Plant the exact durable image a crash after the pre-send marker leaves, plus a legacy spent
   // Watch and malicious extra payload keys. Load must preserve uncertainty, invent no legacy event,
   // and rebuild the payload whitelist rather than retaining free text. ---
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const statePath = `${ROOT}/fleet.json`;
   type EventState = { events?: unknown[]; watches?: unknown[] };
   let eventState: EventState | null = null;
@@ -5491,8 +5459,7 @@ export async function run(): Promise<void> {
     // nothing about registration. The supervisor module's baseline asserts a null binding, so
     // this block removes it again on its way out.
     const bindSupervisor = async (binding: Record<string, unknown> | null): Promise<void> => {
-      await tmuxOut("kill-session", "-t", "srv");
-      await Bun.sleep(500);
+      await stopSrv();
       const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as Record<string, unknown>;
       st.supervisor = binding;
       writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
@@ -5578,8 +5545,7 @@ export async function run(): Promise<void> {
     // --- expiry and the fail-closed parser, across one restart. The first watch's deadline is
     // moved into the past; two malformed transition rows (an inbox one, an awaiting-less one) are
     // planted beside it and must not load. ---
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     {
       const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { watches?: Record<string, unknown>[] };
       const row = (st.watches ?? []).find((w) => w.id === first?.id);
@@ -5931,8 +5897,7 @@ export async function run(): Promise<void> {
     // Stop before editing fleet.json: a live saveState chain is allowed to replace the file, so an
     // edit made while srv runs would be a probe racing its subject. restartSrv starts it again with
     // the same FLEET_* env after the identities and usage files are in place.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const statePath = `${ROOT}/fleet.json`;
     type MigrateState = { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string; openedAt?: number }>;
       programs?: Record<string, unknown>[] };
@@ -6106,8 +6071,7 @@ export async function run(): Promise<void> {
     // rail cannot fire either, whatever its own (still non-zero) threshold says.
     // The planted Program leaves with this restart (the srv is down while the file is edited, same
     // reason as the plant above); the slot it bound is killed below with the rest.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const migrateCleaned = JSON.parse(readFileSync(statePath, "utf8")) as { programs?: { id?: string }[] };
     migrateCleaned.programs = (migrateCleaned.programs ?? []).filter((p) => p.id !== migrateProgramId);
     writeFileSync(statePath, JSON.stringify(migrateCleaned, null, 2), { mode: 0o600 });
@@ -6156,8 +6120,7 @@ export async function run(): Promise<void> {
     // main binding names this living occupant and whose inbox has unread entries. Minting those
     // through their real producers (attention, fleet-report, audit ledger) would measure those
     // paths, which other blocks already do.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const holdStatePath = `${ROOT}/fleet.json`;
     const holdProgramId = "c0ffee".repeat(4);
     const holdImage = JSON.parse(readFileSync(holdStatePath, "utf8")) as
@@ -6231,8 +6194,7 @@ export async function run(): Promise<void> {
 
     writeFileSync(holdMode, "normal\n");
     if (holdSlot) await post(`/api/slots/${holdSlot}/kill`, {});
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const holdCleaned = JSON.parse(readFileSync(holdStatePath, "utf8")) as { programs?: { id?: string }[] };
     holdCleaned.programs = (holdCleaned.programs ?? []).filter((p) => p.id !== holdProgramId);
     writeFileSync(holdStatePath, JSON.stringify(holdCleaned, null, 2), { mode: 0o600 });
@@ -6250,8 +6212,7 @@ export async function run(): Promise<void> {
     const ablStatePath = `${ROOT}/fleet.json`;
     const outcomeFile = `${ROOT}/lane-outcomes.jsonl`;
     const auditFile = `${ROOT}/post-land-audits.jsonl`;
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const ablState = JSON.parse(readFileSync(ablStatePath, "utf8")) as {
       slots: Record<string, { openedAt?: number; cwd?: string | null }>; programs?: Record<string, unknown>[];
       fleetReports?: Record<string, unknown>[]; tasks?: Record<string, unknown>[];
@@ -6359,8 +6320,7 @@ export async function run(): Promise<void> {
 
     // cleanup: this block's plants leave the state and both ledgers exactly as later modules expect
     await post(`/api/slots/${ablLane.slot}/kill`, {});
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const ablClean = JSON.parse(readFileSync(ablStatePath, "utf8")) as {
       programs?: { id?: string }[]; fleetReports?: { id?: string }[]; tasks?: { id?: string }[] };
     ablClean.programs = (ablClean.programs ?? []).filter((p) => p.id !== ablProgram);

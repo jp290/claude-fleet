@@ -700,6 +700,10 @@ export async function run(ctx: Ctx): Promise<void> {
     // This list is hand-kept — harness.restartSrv() forwards every FLEET_* and this one does not
     // — so a new server knob has to be added in both places.
     "FLEET_AUTOS_TICK_MS", "FLEET_DISPATCH_TICK_MS",
+    // and the land/commit idle gate: e2e/lane-helpers.ts#settleForMerge waits the wrapper's value,
+    // so a server restarted here without it would gate at the 3 s production default and refuse
+    // every land the helper already calls settled
+    "FLEET_MERGE_IDLE_MS",
     // without this the post-restart server reverts to the prod journal cap (6) and the honest
     // filter-then-count cap 429s the later anchor fixtures — the leaky slice-window cap used to
     // let exactly those extra POSTs through, which is how this gap stayed invisible until the fix

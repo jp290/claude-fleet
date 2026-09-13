@@ -2,7 +2,7 @@
 // rail and the Tier-1 signal surface.
 import { spawnSync } from "node:child_process";
 import { readFileSync, renameSync, rmSync, statSync } from "node:fs";
-import { BASE, ROOT, REPO, check, get, post, readText, restartSrv, tmuxOut } from "./harness";
+import { BASE, ROOT, REPO, check, get, post, readText, restartSrv, stopSrv, tmuxOut } from "./harness";
 import type { StewardCtx } from "./ctx";
 import type { DigJ } from "./steward-core";
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
@@ -667,8 +667,7 @@ export async function run(sc: StewardCtx): Promise<void> {
       if (st.slots?.[flA.slot] && st.slots?.[flB.slot]) break;
       await Bun.sleep(100);
     }
-    await tmuxOut("kill-session", "-t", "srv"); // patch the state file while nothing can rewrite it
-    await Bun.sleep(500);
+    await stopSrv(); // patch the state file while nothing can rewrite it
     const flState = JSON.parse(await readText(`${ROOT}/fleet.json`)) as { merges?: Record<string, unknown> };
     flState.merges = { ...(flState.merges ?? {}),
       [flA.slot]: { status: "merged", landed: true, branch: flA.branch, at: Date.now(),

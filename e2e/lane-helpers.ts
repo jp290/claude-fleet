@@ -66,10 +66,12 @@ export const waitMerge = async (slot: number, opts: { requireVerdict?: boolean }
 };
 
 // FIX 9 adds an idle gate: a merge is refused while the pane produced output within
-// MERGE_IDLE_MS (3s). A freshly-spawned lane pane emits its shell prompt, so wait until
+// MERGE_IDLE_MS (3s in production). A freshly-spawned lane pane emits its shell prompt, so wait until
 // the slot's lastOutput is stale enough before firing a merge that must start a job.
 // Deterministic: polls the server's own clock/lastOutput, returns the instant it clears.
-export const MERGE_IDLE_MS = 3000;
+// Read back off the SAME env the server got (FLEET_MERGE_IDLE_MS, parsed and floored as server.ts
+// does), so the wait and the gate are one number — a harness that sets no knob keeps 3000.
+export const MERGE_IDLE_MS = Math.max(500, Number(process.env.FLEET_MERGE_IDLE_MS ?? 3000) | 0);
 export const settleForMerge = async (slot: number): Promise<void> => {
   for (let i = 0; i < 80; i++) {
     const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };

@@ -18,7 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { coalescedSaver } from "../server/persist";
-import { BASE, REPO, ROOT, check, get, post, restartSrv, tmuxOut } from "./harness";
+import { BASE, REPO, ROOT, check, get, post, restartSrv, stopSrv, tmuxOut } from "./harness";
 import { setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 import { resolveSourceTree } from "./trail-emit";
 
@@ -359,8 +359,7 @@ export async function run(): Promise<void> {
       migAfter !== migBefore, `${migBefore.slice(0, 8)} -> ${migAfter.slice(0, 8)}`);
 
     // rewrite the QUIESCENT state file from the stack shape back to the single-record shape
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const path = `${ROOT}/fleet.json`;
     let st: { undoLands?: Record<string, unknown> } | null = null;
     let stateError = "";
@@ -1087,8 +1086,7 @@ async function readLandPending(): Promise<Record<string, unknown>> {
 // left behind. Mode is re-asserted explicitly: writeFileSync only applies `mode` when it creates
 // the file, and the suite checks fleet.json is 600 later on.
 async function plantMarker(m: { main: string; branch: string; mainBefore: string; laneTip: string }): Promise<void> {
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const path = `${ROOT}/fleet.json`;
   let st: Record<string, unknown> | null = null;
   let stateError = "";

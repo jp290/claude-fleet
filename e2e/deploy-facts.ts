@@ -7,13 +7,18 @@
 // checks below commit into it and re-time its files, instead of asserting whatever the real
 // checkout happens to look like while the suite runs.
 //
-// The facts are cached on the 10 s git tick (see refreshDeployFacts), so every assertion polls for
-// the value it expects rather than reading once and hoping the tick already fired.
+// The facts are cached on the git tick (see refreshDeployFacts), so every assertion polls for the
+// value it expects rather than reading once and hoping the tick already fired. The tick is 10 s in
+// production; this module runs its servers at DEPLOY_FACTS_TICK_MS (FLEET_GIT_TICK_MS, a test knob
+// with the default pinned in e2e/pins.ts), because every settle below otherwise out-waits most of a
+// 10 s tick — ~70 s of this family on trail isolated-20260913T155454Z-52907. Polling for the value
+// makes the check the same at any cadence; only the waiting shrinks.
 import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { BASE, check, get, paneEnv, post, restartSrv, ROOT } from "./harness";
 
 const TMP = process.env.TMPDIR ?? "/tmp";
+const DEPLOY_FACTS_TICK_MS = "2000";
 const FIX = `${TMP}/fleet-e2e-deploy-${process.pid}`;
 
 interface Gap {
@@ -51,7 +56,7 @@ async function settle(want: (f: Facts) => boolean, ms = 14_000): Promise<Facts> 
   for (;;) {
     last = await facts().catch(() => ({}) as Facts);
     if (want(last) || Date.now() > until) return last;
-    await Bun.sleep(400);
+    await Bun.sleep(150);
   }
 }
 
@@ -65,6 +70,10 @@ const commit = (file: string, body: string): void => {
 };
 
 export async function run(): Promise<void> {
+  // planted in THIS process's env so every restartSrv below carries it (harness whitelist), and
+  // restored before the module's last restart, so no later module inherits the fast tick
+  const priorGitTick = process.env.FLEET_GIT_TICK_MS;
+  process.env.FLEET_GIT_TICK_MS = DEPLOY_FACTS_TICK_MS;
   rmSync(FIX, { recursive: true, force: true });
   mkdirSync(`${FIX}/public`, { recursive: true });
   mkdirSync(`${FIX}/src`, { recursive: true });
@@ -443,6 +452,8 @@ export async function run(): Promise<void> {
   }
 
   // back to the wrapper's own env for every module after this one
+  if (priorGitTick === undefined) delete process.env.FLEET_GIT_TICK_MS;
+  else process.env.FLEET_GIT_TICK_MS = priorGitTick;
   await restartSrv();
   rmSync(FIX, { recursive: true, force: true });
   check("§4 the real checkout is measurable again after the fixture is gone",

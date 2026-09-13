@@ -5914,9 +5914,19 @@ export async function run(): Promise<void> {
     const lane = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
     const stewardId = await openPlain("⚙ steward");
     const unknownId = await openPlain("migrate-unknown");
-    check("migration tick setup: main, lane, steward and ctx-unknown controls are all active",
-      mainId > 0 && lane.slot > 0 && stewardId > 0 && unknownId > 0,
-      JSON.stringify({ mainId, lane: lane.slot, stewardId, unknownId }));
+    // TWO MORE CONTROLS, 2026-09-13. `boundId` is a claude MAIN the planted Program below binds, so
+    // the main rail has an unbound AND a bound reader of the same 50%. `piId` is a FOREIGN harness
+    // at the same fill: the stand-in `pi` makes it probe `alive`, and the restart below arms
+    // FLEET_HARNESS_AUTOMATION, so canDeliver would admit it — only the tick's claude filter keeps it
+    // silent. Without both of those the "no prompt" row would measure the harness gate instead.
+    const boundId = await openPlain("migrate-bound-main");
+    const piId = await freeSlot();
+    const piOpen = piId
+      ? await post(`/api/slots/${piId}/open`, { cwd: REPO, label: "migrate-pi", harness: "pi", model: "openai-codex/gpt-5.6-sol" })
+      : null;
+    check("migration tick setup: main, lane, steward, ctx-unknown, bound-main and pi controls are all active",
+      mainId > 0 && lane.slot > 0 && stewardId > 0 && unknownId > 0 && boundId > 0 && piId > 0 && !!piOpen?.ok,
+      JSON.stringify({ mainId, lane: lane.slot, stewardId, unknownId, boundId, piId, piStatus: piOpen?.status }));
 
     // Stop before editing fleet.json: a live saveState chain is allowed to replace the file, so an
     // edit made while srv runs would be a probe racing its subject. restartSrv starts it again with
@@ -5924,10 +5934,11 @@ export async function run(): Promise<void> {
     await tmuxOut("kill-session", "-t", "srv");
     await Bun.sleep(500);
     const statePath = `${ROOT}/fleet.json`;
-    let state: { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string }> } | null = null;
+    type MigrateState = { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string; openedAt?: number }>;
+      programs?: Record<string, unknown>[] };
+    let state: MigrateState | null = null;
     let stateError = "";
-    try { state = JSON.parse(readFileSync(statePath, "utf8")) as
-      { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string }> }; }
+    try { state = JSON.parse(readFileSync(statePath, "utf8")) as MigrateState; }
     catch (e) { stateError = e instanceof Error ? e.message : String(e); }
     check("migration tick setup precondition: fleet state is readable before context mutation",
       state !== null, stateError);
@@ -5935,8 +5946,24 @@ export async function run(): Promise<void> {
       [mainId, "e2e0feed-0000-4000-8000-000000000101"],
       [lane.slot, "e2e0feed-0000-4000-8000-000000000102"],
       [stewardId, "e2e0feed-0000-4000-8000-000000000103"],
+      [boundId, "e2e0feed-0000-4000-8000-000000000104"],
     ]);
-    for (const [id, sid] of ids) if (state?.slots?.[String(id)]) state.slots[String(id)]!.sessionId = sid;
+    const piSid = "e2e0feed-0000-4000-8000-000000000105";
+    for (const [id, sid] of [...ids, [piId, piSid] as const])
+      if (state?.slots?.[String(id)]) state.slots[String(id)]!.sessionId = sid;
+    // Planted, not driven, for the hold block's reason further down: the tick reads only an ACTIVE
+    // Program whose main names this living occupant (boundProgramForMain), and minting one through
+    // the founding routes would measure those routes.
+    const migrateProgramId = "e2e0feed".repeat(3);
+    const migrateAt = Date.now() - 5000;
+    if (state) state.programs = [...(state.programs ?? []), {
+      id: migrateProgramId, title: "Migrate rail fixture", intent: "Tell a bound MAIN its own succession gate",
+      successCriterion: "The bound MAIN is nudged without a HANDOFF commit", nonGoals: [], decisions: [],
+      evidence: [], openQuestions: [], status: "active", createdAt: migrateAt - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: migrateAt - 900, activatedAt: migrateAt - 800,
+      main: { slot: boundId, openedAt: state.slots?.[String(boundId)]?.openedAt,
+        sessionId: ids.get(boundId), boundAt: migrateAt - 700 },
+    }];
     if (state) writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
 
     const usageFiles: string[] = [];
@@ -5951,7 +5978,20 @@ export async function run(): Promise<void> {
       } } })}\n`);
       usageFiles.push(file);
     }
-    await restartSrv();
+    // Pi's own usage format (piContextFile): the header proves cwd + UUID, the newest assistant
+    // usage row is input+cacheRead+cacheWrite. 129 200 of the GPT window 258 400 is the same 50%.
+    if (state) {
+      const piReal = realpathSync(state.slots?.[String(piId)]?.cwd ?? REPO);
+      const piDir = `${process.env.HOME}/.pi/agent/sessions/--${piReal.replace(/^\/+/, "").replaceAll("/", "-")}--`;
+      mkdirSync(piDir, { recursive: true });
+      const file = `${piDir}/2026-09-13T00-00-00.000Z_${piSid}.jsonl`;
+      writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: piSid,
+        timestamp: "2026-09-13T00:00:00.000Z", cwd: piReal })}\n${JSON.stringify({ type: "message",
+        message: { role: "assistant", usage: { input: 29_200, output: 9_000_000, cacheRead: 100_000,
+          cacheWrite: 0, reasoning: 0, totalTokens: 9_129_200 } } })}\n`);
+      usageFiles.push(file);
+    }
+    await restartSrv({ FLEET_HARNESS_AUTOMATION: "1" });
 
     type CtxRow = { id: number; ctx: { pct: number; windowTokens: number } | null };
     const ctxRows = ((await (await get("/api/sessions")).json()) as { slots: CtxRow[] }).slots;
@@ -5960,6 +6000,22 @@ export async function run(): Promise<void> {
       ctxOf(mainId)?.pct === 50 && ctxOf(lane.slot)?.pct === 50 && ctxOf(stewardId)?.pct === 50
         && ctxOf(unknownId) === null,
       JSON.stringify({ main: ctxOf(mainId), lane: ctxOf(lane.slot), steward: ctxOf(stewardId), unknown: ctxOf(unknownId) }));
+    // The two new controls must be DELIVERABLE subjects, or their rows below measure nothing: the
+    // bound MAIN is 50% and bound live; the pi slot is 50% on its own window AND probes alive.
+    let piAgent: string | null = null;
+    for (let i = 0; i < 60 && piAgent !== "alive"; i++) {
+      piAgent = ((await (await get("/api/sessions")).json()) as { slots: { id: number; agent: string | null }[] })
+        .slots.find((x) => x.id === piId)?.agent ?? null;
+      if (piAgent !== "alive") await Bun.sleep(200);
+    }
+    const migrateProgramLive = ((await (await get("/api/programs")).json()) as
+      { programs?: { id: string; status: string; health?: { occupancy?: string } }[] })
+      .programs?.find((p) => p.id === migrateProgramId) ?? null;
+    check("migration tick setup: the bound MAIN is 50% and its planted Program is ACTIVE and bound live; the pi slot is 50% of 258400 and probes alive",
+      ctxOf(boundId)?.pct === 50 && migrateProgramLive?.status === "active"
+        && migrateProgramLive.health?.occupancy === "live"
+        && ctxOf(piId)?.pct === 50 && ctxOf(piId)?.windowTokens === 258_400 && piAgent === "alive",
+      JSON.stringify({ bound: ctxOf(boundId), program: migrateProgramLive, pi: ctxOf(piId), piAgent }));
 
     const migratePrompts = async (slot: number) => (await plogRead())
       .filter((e) => e.slot === slot && e.text.startsWith("[fleet] Dein Kontext ist bei "));
@@ -5997,6 +6053,23 @@ export async function run(): Promise<void> {
       `${laneNudges.length}: ${laneNudge}`);
     check("…and the two texts are not one: a lane is never told to write and commit HANDOFF.md",
       !laneNudge.includes("HANDOFF.md") && !nudge.includes("handoff`"), `${nudge.slice(0, 80)} | ${laneNudge.slice(0, 80)}`);
+    // THE ROLE, read off the binding (2026-09-13). The unbound main above is still told the HANDOFF
+    // commit; the bound Standard Program-MAIN beside it must not be, because handleSelfSucceed
+    // demands no such commit on its rail. BREAKS IF: migrateMessage loses its rail argument (both
+    // mains get the HANDOFF text) or migrateRailOf stops consulting boundProgramForMain.
+    let boundNudges = await migratePrompts(boundId);
+    for (let i = 0; i < 80 && boundNudges.length === 0; i++) {
+      await Bun.sleep(100);
+      boundNudges = await migratePrompts(boundId);
+    }
+    const boundNudge = boundNudges[0]?.text ?? "";
+    check("a bound Standard Program-MAIN is nudged once WITHOUT HANDOFF.md — offene Pflichten, then self/succeed with optional carry",
+      boundNudges.length === 1 && !boundNudge.includes("HANDOFF.md")
+        && boundNudge.includes("50%") && boundNudge.includes("Server-Prädikat, keine Meldung von dir")
+        && boundNudge.indexOf("offene Pflichten") >= 0
+        && boundNudge.indexOf("offene Pflichten") < boundNudge.indexOf("POST /api/self/succeed")
+        && boundNudge.includes("carry") && nudge.includes("HANDOFF.md schreiben UND committen"),
+      `${boundNudges.length}: ${boundNudge}`);
     check("tickMigrate never nudges the ⚙ steward or a ctx:null slot",
       (await migratePrompts(stewardId)).length === 0
         && (await migratePrompts(unknownId)).length === 0,
@@ -6008,6 +6081,13 @@ export async function run(): Promise<void> {
     check("a second migration tick inside MIGRATE_COOLDOWN_MS sends no second prompt, on either rail",
       (await migratePrompts(mainId)).length === 1 && (await migratePrompts(lane.slot)).length === 1,
       `main=${(await migratePrompts(mainId)).length} lane=${(await migratePrompts(lane.slot)).length}`);
+    // Read AFTER the main, lane and bound prompts arrived plus four more ticks, so the pi slot sat
+    // in every one of those `due` scans at 50%, alive, with harness automation on. BREAKS IF: the
+    // claude filter in tickMigrate is removed — the stand-in accepts the paste and this counts 1.
+    check("tickMigrate never nudges a NON-claude harness slot above the threshold, while the claude slots beside it were nudged",
+      (await migratePrompts(piId)).length === 0 && (await migratePrompts(mainId)).length === 1
+        && (await migratePrompts(boundId)).length === 1,
+      `pi=${(await migratePrompts(piId)).length} main=${(await migratePrompts(mainId)).length} bound=${(await migratePrompts(boundId)).length}`);
 
     // TWO THRESHOLDS, NOT ONE KNOB WITH TWO READERS. The restart resets the process-local marker,
     // so both 50% slots are eligible again; zeroing only the LANE threshold must therefore move
@@ -6024,13 +6104,20 @@ export async function run(): Promise<void> {
     // timer is registered, rather than a timer that merely decides not to send. The lane count is
     // read with it because MIGRATE_PCT is the MASTER switch: with no timer registered, the lane
     // rail cannot fire either, whatever its own (still non-zero) threshold says.
+    // The planted Program leaves with this restart (the srv is down while the file is edited, same
+    // reason as the plant above); the slot it bound is killed below with the rest.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const migrateCleaned = JSON.parse(readFileSync(statePath, "utf8")) as { programs?: { id?: string }[] };
+    migrateCleaned.programs = (migrateCleaned.programs ?? []).filter((p) => p.id !== migrateProgramId);
+    writeFileSync(statePath, JSON.stringify(migrateCleaned, null, 2), { mode: 0o600 });
     await restartSrv({ FLEET_MIGRATE_PCT: "0" });
     await Bun.sleep(tickMs * 4 + 500);
     check("FLEET_MIGRATE_PCT=0 registers no migration tick — neither rail sends, whatever the lane threshold is",
       (await migratePrompts(mainId)).length === 2 && (await migratePrompts(lane.slot)).length === 1,
       `main=${(await migratePrompts(mainId)).length} lane=${(await migratePrompts(lane.slot)).length}`);
 
-    for (const id of [mainId, lane.slot, stewardId, unknownId]) if (id) await post(`/api/slots/${id}/kill`, {});
+    for (const id of [mainId, lane.slot, stewardId, unknownId, boundId, piId]) if (id) await post(`/api/slots/${id}/kill`, {});
     for (const file of usageFiles) rmSync(file, { force: true });
   }
 

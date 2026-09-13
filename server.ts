@@ -13420,11 +13420,35 @@ interface MigrateAttempt { sessionId: string; nudges: number; lastAt: number; ga
 const migrateTried = new Map<number, MigrateAttempt>();
 const MIGRATE_MAX_NUDGES = 3;
 
-function migrateMessage(fill: ContextFill): string {
-  return `[fleet] Dein Kontext ist bei ${fill.pct}% (${fill.usedTokens} von ${fill.windowTokens} Tokens im Fenster). `
-    + "Das ist ein Server-Prädikat, keine Meldung von dir. Übergib jetzt in dieser Reihenfolge: "
+// WHICH SUCCESSION RAIL a non-lane slot is on, answered by the SAME bracket handleSelfSucceed
+// classifies by — so the nudge names the gate the succeed call will actually apply. Until
+// 2026-09-13 every main was told "HANDOFF.md schreiben UND committen", which for a Standard
+// Program-MAIN is a gate that does not exist (its handover is the Program record the server already
+// owns) and for a game-maker names the right file but the wrong content. Unbound, ambiguous and the
+// Supervisor keep the HANDOFF rail: that is where handleSelfSucceed still demands the commit.
+type MigrateRail = "standard-main" | "game-maker-main" | "handoff";
+function migrateRailOf(s: Slot): MigrateRail {
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return "handoff";
+  return isGameMaker(bound.program) ? "game-maker-main" : "standard-main";
+}
+
+function migrateMessage(fill: ContextFill, rail: MigrateRail): string {
+  const opening = `[fleet] Dein Kontext ist bei ${fill.pct}% (${fill.usedTokens} von ${fill.windowTokens} Tokens im Fenster). `
+    + "Das ist ein Server-Prädikat, keine Meldung von dir. Übergib jetzt in dieser Reihenfolge: ";
+  const succeed = "POST /api/self/succeed mit dem x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN";
+  if (rail === "standard-main")
+    return opening
+      + "(1) offene Pflichten dort lesbar machen, wo die Nachfolgerin sie liest — Program-Tasks, fleet-reports, "
+      + "Inbox —, nichts nur im Pane-Text; ein Übergabe-Commit ist für eine gebundene Program-MAIN kein Gate; "
+      + `(2) ${succeed}, optional mit \`carry\` (ein Satz: das Erste, was du als Nächstes tätest).`;
+  if (rail === "game-maker-main")
+    return opening
+      + "(1) den Abschnitt `## Current game checkpoint` in HANDOFF.md aktualisieren UND committen; "
+      + `(2) ${succeed}, ohne \`carry\` — der Checkpoint ist der eine Übergabekanal.`;
+  return opening
     + "(1) HANDOFF.md schreiben UND committen; "
-    + "(2) POST /api/self/succeed mit dem x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN.";
+    + `(2) ${succeed}.`;
 }
 
 // THE LANE'S VERSION OF THE SAME EXIT, and the three steps differ because a lane's handover
@@ -13451,6 +13475,11 @@ async function tickMigrate(): Promise<void> {
   const due: { s: Slot; fill: ContextFill; lane: boolean; attempt: MigrateAttempt }[] = [];
   for (const s of slots) {
     if (!s.cwd || s.label === STEWARD_LABEL || s.awaiting === "owner" || !s.sessionId) continue;
+    // CLAUDE ONLY, on both rails. contextFill answers for codex/pi/pi-zai too, but the handover band
+    // is a claude fact: Codex compacts its own window, and a Pi/GLM session at 80% is operating
+    // state, not succession pressure (owner, 2026-09-06). Another harness is "not this tick's
+    // business", never "0%" — so it is skipped before the fill is read, not after.
+    if (harnessOf(s.harness) !== CLAUDE_HARNESS) continue;
     // TWO RAILS, ONE TICK. The kind is read off the slot and decides BOTH the threshold and the
     // text; a lane is no longer skipped here (it was until 2026-09-12, when the only exit a lane
     // had was the land it might be nowhere near). `awaiting === "owner"` still covers the clarify
@@ -13479,8 +13508,11 @@ async function tickMigrate(): Promise<void> {
       // ...and the KIND is re-checked with the rest of the identity: a slot recycled from a lane
       // into a plain checkout (or back) during these awaits would otherwise be handed the other
       // rail's instructions, which name an exit it does not have.
-      if (!verdict.ok || s.sessionId !== attempt.sessionId || !s.cwd || (s.worktree !== null) !== lane) continue;
-      const text = lane ? laneMigrateMessage(fill) : migrateMessage(fill);
+      if (!verdict.ok || s.sessionId !== attempt.sessionId || !s.cwd || (s.worktree !== null) !== lane
+        || harnessOf(s.harness) !== CLAUDE_HARNESS) continue;
+      // the rail is read HERE, after the awaits, for the same reason the kind is re-checked: a
+      // binding that moved while canDeliver ran must not be answered with the stale rail's gate.
+      const text = lane ? laneMigrateMessage(fill) : migrateMessage(fill, migrateRailOf(s));
       let acceptance: Acceptance;
       try {
         ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));

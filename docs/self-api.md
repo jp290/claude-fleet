@@ -320,6 +320,12 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   auch Lanes, mit eigener Schwelle `FLEET_LANE_MIGRATE_PCT` (Default 40, 0 = aus) und eigenem Text.
   `FLEET_MIGRATE_PCT` bleibt der Hauptschalter — ist er 0, wird der Timer gar nicht registriert und keine
   der beiden Schienen feuert. Live ist er 0, also ist die Schiene ARMIERBAR, nicht armiert.
+- **Beide Schienen sind claude-only (seit 2026-09-13):** `tickMigrate` überspringt jeden Slot, dessen
+  Harness nicht claude ist, bevor es den Füllstand liest — Codex kompaktiert selbst, und das
+  Übergabeband gilt nur für claude. Die MAIN-Nachricht trägt die Nachfolge-Schiene
+  (`server.ts#migrateRailOf`, dieselbe Bindung wie `handleSelfSucceed`): eine gebundene Standard-
+  Program-MAIN wird nicht mehr zu einem HANDOFF-Commit aufgefordert, ein Game-Maker zum Checkpoint
+  ohne `carry`, eine ungebundene Session weiter zu HANDOFF.md. Die Lane-Nachricht ist unverändert.
 
 
 ## Program-MAIN-Ausführungsschiene (der Gründungsbrief benennt sie)

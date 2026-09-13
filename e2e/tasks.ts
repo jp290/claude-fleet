@@ -16,6 +16,8 @@ import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
   LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits,
   type LandWave, type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
+import { projectStartPlan, startPlanChecks, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
+  type StartPlanLane, type StartPlanRow } from "../start-plan";
 import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
   type InstanceLink } from "../src/protocol";
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
@@ -6480,6 +6482,135 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(lift) a coarse card (no range in any of its files, graph absent or empty) is a wave of one `flaeche-ohne-bereich`; no program stays `kein-program`, derived stays derived",
       JSON.stringify(coarse) === JSON.stringify([[["ca"], "flaeche-ohne-bereich", []], [["cb"], "flaeche-ohne-bereich", []],
         [["cc"], "kein-program", []], [["cd"], "flaeche-nur-abgeleitet", []]]), JSON.stringify(coarse));
+  }
+
+  // --- (sp) THE START PLAN, pure (start-plan.ts#projectStartPlan, Schnitt 1). Every wave gets ONE
+  // `next`, and the fixture is laid so each reason is reached by exactly one row: waves of one
+  // (distinct programs, confirmed surfaces), lanes 7/8/9 running, repo cap 5. Rows `c` and `d` hang
+  // ONLY on the no-range fallback (task-land-waves.ts#rangesCollide) — the mutation
+  // "Rueckfall = disjunkt" turns them into `now` and this check red. Row `h` is the counter-proof that
+  // a collision is not universal: a range far from the lane's in the same file starts.
+  {
+    const spRepo = "/repo/sp";
+    const spValid = { valid: true, surfaceValid: true, done: "done sentence", verify: "bun e2e/pins.ts", size: "klein", gaps: [] };
+    const spRow = (id: string, created: number, files: string[] | null, o: { status?: string; after?: string[];
+      ranges?: StartPlanRow["ranges"]; card?: StartPlanCardFacts | null; text?: string; programId?: string } = {}) => ({
+      wave: { id, created, kind: "auftrag", status: o.status ?? "queued", repo: spRepo, programId: o.programId ?? `p-${id}`,
+        filesOrigin: "confirmed" as const, ...(files ? { files } : {}), ...(o.after ? { after: o.after } : {}),
+        ranges: o.ranges ?? null } satisfies TaskWaveInput,
+      row: { id, status: o.status ?? "queued", programId: o.programId ?? `p-${id}`, files, ranges: o.ranges ?? null,
+        after: o.after ?? [], checks: startPlanChecks({ text: o.text ?? `row ${id}`, source: "main",
+          card: o.card === undefined ? spValid : o.card }) } satisfies StartPlanRow,
+    });
+    const at = (file: string, symbol: string, startLine: number) => [{ file, symbol, startLine, endLine: startLine + 5 }];
+    const spFixture = [
+      spRow("a", 1, ["a.ts"], { after: ["z"] }),
+      spRow("b", 2, ["shared.ts"]),
+      spRow("c", 3, ["shared.ts"]),
+      spRow("d", 4, ["lane.ts"]),
+      spRow("e", 5, ["e.ts"], { card: { ...spValid, valid: false, gaps: ["verify: no command named"] } }),
+      spRow("f", 6, ["shared.ts"], { status: "pending" }),
+      spRow("g", 7, ["g.ts"], { text: "[idee scout-A 08-07] TITEL: a sketch" }),
+      spRow("h", 8, ["far.ts"], { ranges: at("far.ts", "hs", 10) }),
+      spRow("i", 9, ["near.ts"], { ranges: at("near.ts", "is", 100) }),
+      spRow("j", 10, ["j.ts"], { card: null }),
+      spRow("k", 11, ["k.ts"]),
+    ];
+    const spLanes: StartPlanLane[] = [
+      { slot: 7, repo: spRepo, programId: null, files: ["lane.ts"], ranges: null },
+      { slot: 8, repo: spRepo, programId: null, files: ["far.ts"], ranges: at("far.ts", "ls", 5000) },
+      { slot: 9, repo: spRepo, programId: null, files: ["near.ts"], ranges: at("near.ts", "ns", 120) },
+    ];
+    const spInput = (fixture: typeof spFixture, lanes: StartPlanLane[], caps: StartPlanInput["caps"],
+      statuses: Record<string, string> = {}): StartPlanInput => ({
+      projection: projectLandWaves({ tasks: fixture.map((f) => f.wave), costs: LAND_WAVE_COSTS_2026_09 }),
+      rows: fixture.map((f) => f.row), lanes, caps,
+      statuses: { z: "sent", ...Object.fromEntries(fixture.map((f) => [f.row.id, f.row.status])), ...statuses },
+    });
+    const spMain = spInput(spFixture, spLanes, { [spRepo]: { max: 5, source: "repo", programs: {} } });
+    const spMainJson = JSON.stringify(spMain);
+    const spPlan = projectStartPlan(spMain);
+    const spNexts = (plan: StartPlan) => plan.repos.flatMap((r) => r.waves.map((w) => [w.ids.join("+"), w.next]));
+    const spGot = spNexts(spPlan);
+    check("(sp) start plan: after on a non-done row · collision with an earlier wave and with a running lane on the no-range fallback · card-invalid, no card and scout unchecked · pending unreleased · a far range starts · the cap",
+      JSON.stringify(spGot) === JSON.stringify([
+        ["a", { after: "z" }],
+        ["b", "now"],
+        ["c", { collides: { row: "b", file: "shared.ts" } }],
+        ["d", { collides: { slot: 7, file: "lane.ts" } }],
+        ["e", { unchecked: ["e"] }],
+        ["f", { unreleased: ["f"] }],
+        ["g", { unchecked: ["g"] }],
+        ["h", "now"],
+        ["i", { collides: { slot: 9, file: "near.ts", symbol: "is" } }],
+        ["j", { unchecked: ["j"] }],
+        ["k", { cap: "5/5 lanes busy in sp (repo cap)" }],
+      ]), JSON.stringify(spGot));
+    const spWave = (id: string) => spPlan.repos[0]?.waves.find((w) => w.ids.includes(id));
+    check("(sp) each wave row carries its checks straight off the card and the row's source — invalid card with its gap, no card as null, scout flagged",
+      JSON.stringify(spWave("e")?.rows[0]?.checks) === JSON.stringify({ cardValid: false, surfaceValid: true, done: "done sentence",
+        verify: "bun e2e/pins.ts", size: "klein", filedBy: "main", gaps: ["verify: no command named"], scout: false })
+      && JSON.stringify(spWave("j")?.rows[0]?.checks) === JSON.stringify({ cardValid: null, surfaceValid: null, done: null,
+        verify: null, size: null, filedBy: "main", gaps: [], scout: false })
+      && spWave("g")?.rows[0]?.checks?.scout === true && spWave("g")?.rows[0]?.checks?.cardValid === true
+      && spPlan.repos[0]?.lanes === 3 && JSON.stringify(spPlan.repos[0]?.cap) === JSON.stringify({ max: 5, source: "repo" }),
+      JSON.stringify(spPlan.repos[0]?.waves.map((w) => w.rows)));
+    check("(sp) purity: two calls give the identical plan and the input is not mutated",
+      JSON.stringify(projectStartPlan(spMain)) === JSON.stringify(spPlan) && JSON.stringify(spMain) === spMainJson);
+    // `after` satisfied, an unknown surface on either side, and the program cap — each on its own fixture
+    const spDone = spNexts(projectStartPlan(spInput([spRow("a", 1, ["a.ts"], { after: ["z"] })], [],
+      { [spRepo]: { max: 5, source: "default", programs: {} } }, { z: "done" })));
+    const spUnknown = spNexts(projectStartPlan(spInput([spRow("u", 1, null), spRow("v", 2, ["v.ts"])],
+      [{ slot: 4, repo: spRepo, programId: null, files: null, ranges: null }], { [spRepo]: { max: 5, source: "default", programs: {} } })));
+    const spProgram = spNexts(projectStartPlan(spInput([spRow("p", 1, ["p.ts"], { programId: "prog" })],
+      [{ slot: 3, repo: "/repo/other", programId: "prog", files: ["x.ts"], ranges: null }],
+      { [spRepo]: { max: 5, source: "default", programs: { prog: 1 } } })));
+    const spNoCap = spNexts(projectStartPlan(spInput([spRow("n", 1, ["n.ts"])], [], {})));
+    check("(sp) after on a DONE row starts · an unknown surface (row or lane) collides as `*` · the program cap counts lanes machine-wide · a repo without a cap never starts",
+      JSON.stringify([spDone, spUnknown, spProgram, spNoCap]) === JSON.stringify([
+        [["a", "now"]],
+        [["u", { collides: { slot: 4, file: "*" } }], ["v", { collides: { slot: 4, file: "*" } }]],
+        [["p", { cap: "1/1 lanes busy in program prog" }]],
+        [["n", { cap: "no lane cap known for sp" }]],
+      ]), JSON.stringify([spDone, spUnknown, spProgram, spNoCap]));
+  }
+
+  // --- (sp) THE START PLAN, live: GET /api/start-plan is owner-only, a read, and prints the SAME
+  // object `bun start-plan.ts --state fleet.json` prints over this instance's own state file.
+  {
+    const spA = (await (await post("/api/tasks", { text: "START-PLAN-A edits fleet-e2e.ts", queue: false, repo: REPO })).json()) as { task?: { id: string } };
+    const spB = (await (await post("/api/tasks", { text: "START-PLAN-B edits fleet-e2e.ts", queue: false, repo: REPO })).json()) as { task?: { id: string } };
+    const spIds = [spA.task?.id, spB.task?.id].filter((id): id is string => !!id);
+    const spAnon = await fetch(`${BASE}/api/start-plan`);
+    check("(sp) GET /api/start-plan is owner-token-only", spAnon.status === 401, String(spAnon.status));
+    // the CLI reads the state FILE, so wait until the server has written both rows to it
+    const spOnDisk = async (): Promise<boolean> => {
+      for (let i = 0; i < 50; i++) {
+        try {
+          const rows = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: { id: string }[] }).tasks ?? [];
+          if (spIds.every((id) => rows.some((t) => t.id === id))) return true;
+        } catch { /* a write in progress reads as not-yet */ }
+        await Bun.sleep(100);
+      }
+      return false;
+    };
+    const spSaved = spIds.length === 2 && await spOnDisk();
+    const spGet = async (): Promise<string> => JSON.stringify(await (await get("/api/start-plan")).json());
+    const spRoute1 = await spGet();
+    const spCli = spawnSync("bun", [`${ROOT}/start-plan.ts`, "--state", `${ROOT}/fleet.json`, "--default-repo", REPO],
+      { encoding: "utf8", env: { ...process.env, FLEET_DISPATCH_REPO: REPO } });
+    const spRoute2 = await spGet();
+    const spCliOut = spCli.stdout.trim();
+    const spPlanLive = JSON.parse(spRoute2) as StartPlan;
+    const spMine = spPlanLive.repos.flatMap((r) => r.waves).filter((w) => w.ids.some((id) => spIds.includes(id)));
+    check("(sp) PROBE: both fixture rows reached the state file and the CLI ran",
+      spSaved && spCli.status === 0, `saved=${spSaved} exit=${spCli.status} ${spCli.stderr.slice(0, 300)}`);
+    check("(sp) the route and `bun start-plan.ts --state fleet.json` print the same object, and it carries the two rows with next + checks",
+      (spCliOut === spRoute1 || spCliOut === spRoute2) && spPlanLive.version === 1
+      && spMine.flatMap((w) => w.ids).sort().join(" ") === [...spIds].sort().join(" ")
+      && spMine.every((w) => w.next !== undefined && w.rows.every((r) => r.checks?.filedBy === "owner")),
+      JSON.stringify({ route: spRoute2.slice(0, 600), cli: spCliOut.slice(0, 600) }));
+    for (const id of spIds) await post(`/api/tasks/${id}/delete`, {});
   }
 
   // --- S4 (a672b626) THE WAVE BRIEF quotes each row's card as a head before that row's prose, and

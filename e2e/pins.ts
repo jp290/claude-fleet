@@ -2229,6 +2229,29 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const tBody = server.slice(tStart, server.indexOf("\n}\n", tStart));
   pin("tickDispatch's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",
     tStart > 0 && tBody.length > 500 && tBody.length < 20_000, `${tBody.length} bytes`);
+  // THE START PLAN IS A SENSOR IN SCHNITT 1 (docs/messungen/2026-09-13-queue-pipeline-system-entwurf.md
+  // §5): the owner reads for some days what WOULD have started before the tick starts anything by
+  // it. So neither the tick nor the two doors that start or release a row may reach the plan — not
+  // by name and not through startPlanNow, whose only caller is the read route. The probe half fails
+  // as itself: a server that no longer imports start-plan.ts would make the absence below vacuous.
+  {
+    const spImport = /import \{[^}]*\bprojectStartPlan\b[^}]*\} from "\.\/start-plan";/.test(server);
+    const spCallers = [...server.matchAll(/(?<!function )\bstartPlanNow\(\)/g)].map((m) => m.index ?? -1);
+    const spRoute = server.indexOf('url.pathname === "/api/start-plan" && req.method === "GET"');
+    pin("start plan PROBE: server.ts imports start-plan.ts and serves GET /api/start-plan", spImport && spRoute > 0,
+      `import=${spImport} route=${spRoute > 0}`);
+    const bodyOf = (head: string): string => {
+      const at = server.indexOf(head);
+      return at < 0 ? "" : server.slice(at, server.indexOf("\n}\n", at));
+    };
+    const starters = ["async function tickDispatch", "async function dispatchTask", "function releaseTaskForMain"]
+      .map((head) => [head, bodyOf(head)] as const);
+    const reach = starters.filter(([, body]) => !body || /\b(?:startPlanNow|projectStartPlan|startPlanChecks)\b|start-plan/.test(body))
+      .map(([head, body]) => body ? head : `${head} (not found)`);
+    pin("tickDispatch, dispatchTask and releaseTaskForMain never reach the start plan — it is a read in Schnitt 1",
+      reach.length === 0 && spCallers.length === 1 && spCallers[0] > spRoute && spCallers[0] - spRoute < 200,
+      reach.join(", ") || `${spCallers.length} startPlanNow() call(s)`);
+  }
   // THE ONE SOURCE, at the one call a tick can make. The tick MAY now hand dispatchTask a spawn —
   // but only the ROW's own persisted, SET-time-validated choice, through the one accessor
   // (taskSpawnOf = t.spawn ?? DEFAULT_SPAWN). Any other argument here — a request value, an env

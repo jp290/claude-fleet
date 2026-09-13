@@ -261,6 +261,7 @@ ungueltig) — nach 35bc6afe neu lesen; `e4409bf2` clarify first.
 - `ee47b0f8` (Lebenszyklus S5b, ohne Fertig-Kriterium/Pruefweg) und `f3ca2e05` (erst klaeren) — brauchen menschliches Anreichern, starten nie von selbst.
 - e2e-Test-Paket — erst nach K1.
 - Private-repo-j `262a8f71` — ausgearbeitet als Spur §5d (G1–G4).
+- Lease-Locks nach dem Astra/Solo-Muster (Notiz `3ecfd6d3`, Owner-Eingang 2026-09-13 22:0x) — nach dem Land von `6d841a14`: ein Lease ist die Laufzeit-Haelfte des exklusiven Write-Sets aus SYSTEM.md §Act, das heute nirgends erzwungen ist (die Kollisionspruefung beim Start fiel 2026-09-10 weg). Erster Nutzer: Commit im Haupt-Checkout statt der python-Handregel.
 
 ## 7. Was dieser Plan nicht behauptet
 

@@ -97,6 +97,16 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
 - **Was die Nachricht ist und was nicht:** sie nennt Slot, Branch und die Fakten (`N ahead / M dirty`) und
   sagt ausdrücklich, dass „LOOKS done" ein Server-Prädikat ist und kein Bericht der Lane — die vier
   Zwillingszustände oben sind ihr nicht unterscheidbar. **Nie auf diese Nachricht allein landen.** Pane lesen.
+- **Seit 2026-09-13 trägt `lane-ready` das eigene Wort der Lane** (`lane-signals.ts#LaneSelfWord`,
+  gelesen beim ZUSTELLEN, nicht beim Minten, gejoint auf Slot + `openedAt` + Branch):
+  `Terminal report from that lane: NONE on file … PREMATURE` oder `… <reportId> (status=…) is on file`,
+  dazu ein noch `open`/`claimed` Preview-Suite-Angebot dieser Lane. Anlass, gemessen 2026-09-12 an
+  Program-MAIN Slot 6: drei von vier Weckrufen trafen eine Lane, die ihre Verifikation im HINTERGRUND
+  fuhr (Suite-Ticket, Monitor, Shells) — formal idle + clean + ahead>0, aber ohne Report; nur die
+  vierte hatte gefilt. Das Feld trennt den vorzeitigen vom echten Fall ohne Pane-Lesung, **ersetzt sie
+  aber nicht**: eine Lane kann nach dem Report weiterarbeiten (Slot 1 bot danach noch eine Suite an).
+  `not read` heisst, der Join konnte nicht laufen — nie „keiner". Das Prädikat selbst ist unverändert;
+  ein Kind-Prozess-Sensor existiert nicht (eine idle Claude-Pane hat dauerhaft Kinder: caffeinate, MCP).
 - Stirbt das Ziel, während du wartest, wird der Watch entwaffnet statt gelöscht, mit Grund
   (`target session ended — no notification will come`) — sichtbar in `GET /api/self`. In die Pane kommt dabei
   NICHTS.

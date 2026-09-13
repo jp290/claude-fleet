@@ -329,7 +329,37 @@ export function laneWatchPayload(v: LaneSignalView): LaneWatchEventPayload {
   };
 }
 
-export function laneWatchMessage(slot: number, branch: string, event: LaneWatchEventView): string {
+// --- WHAT THE LANE HAS SAID ITSELF, beside what the predicate says about it.
+//
+// Measured 2026-09-12 (Program-MAIN slot 6, events 081df3b8 · b5f52966 · a3078cf0 · 040126d2): three
+// of four lane-ready deliveries reached a lane that was still waiting on verification it ran in the
+// BACKGROUND — a suite ticket, a monitor, six shells. idle + clean + ahead>0 was formally true in all
+// four; only the fourth lane had filed its terminal fleet-report. The report is the one existing
+// server fact that separated them (the audit trail orders every report and fire), so it rides along.
+// It is read at DELIVERY, not at mint: a report filed while the event waited on a busy receiver is
+// news the pane should get. `null` = not read, which the text says instead of guessing "none".
+// It does NOT make the message a report and does not replace the pane read — a lane can file and
+// keep working, and an offered preview suite can still be running after it (slot 1 did exactly that).
+export interface LaneSelfWord {
+  report: { id: string; status: string } | null;
+  // an offer of this lane in state open/claimed — verification that is demonstrably not finished
+  suiteOffer: { id: string; state: string } | null;
+}
+
+function laneSelfWordLine(w: LaneSelfWord | null): string {
+  if (!w) return `Terminal report from that lane: not read. `;
+  const offer = w.suiteOffer
+    ? ` A preview suite it offered is still ${w.suiteOffer.state} (job ${w.suiteOffer.id}), so its verification is not finished.`
+    : "";
+  if (!w.report)
+    return `Terminal report from that lane: NONE on file — it has not filed its fleet-report, so treat `
+      + `this signal as PREMATURE; a lane waiting on verification it runs in the background looks exactly like this.${offer} `;
+  return `Terminal report from that lane: ${w.report.id} (status=${w.report.status}) is on file — its own `
+    + `word, which still does not tell you what the pane is doing now.${offer} `;
+}
+
+export function laneWatchMessage(slot: number, branch: string, event: LaneWatchEventView,
+  word: LaneSelfWord | null): string {
   const { id, kind, payload: p } = event;
   const ack = `After reading, acknowledge event ${id}: POST /api/self/events/${id}/ack with `
     + `x-fleet-self-token from the FLEET_SELF_TOKEN environment variable.`;
@@ -344,6 +374,7 @@ export function laneWatchMessage(slot: number, branch: string, event: LaneWatchE
     + `${p.ahead} ahead / ${p.dirty} dirty. That is the server's predicate over facts `
     + `(idle + clean + ahead>0), NOT a report from that lane: it reads identically for a lane running a `
     + `suite, a lane parked waiting on the owner, and a lane that compiled a brief instead of building. `
+    + laneSelfWordLine(word)
     + `Read the pane before you act, and never land on this message alone. ${ack}`;
 }
 

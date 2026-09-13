@@ -722,12 +722,35 @@ export async function run(): Promise<void> {
       && laneWatchSignal({ ...HC, awaiting: "owner" }, T) === null);
     const hostText = laneWatchMessage(7, "lane-branch", {
       id: "promptfixture", kind: laneWatchEventKind("host-commit-looking"), payload: laneWatchPayload(HC),
-    });
+    }, null);
     check("watch text: the weaker arm says UNCOMMITTED, expected zero-ahead, and the exact host commit action",
       hostText.includes("LOOKS ready for a host commit")
       && hostText.includes("The work is UNCOMMITTED, 0 ahead is expected for this harness, and the next step is a host commit via POST /api/slots/7/commit.")
       && hostText.includes("server's weaker predicate") && hostText.includes("NOT a report from that lane"),
       hostText);
+    // THE PREMATURE AND THE HONEST lane-ready, rendered from the same event: only the lane's own word
+    // differs, and the text must differ with it — while the pane-read rule stays in BOTH.
+    const DL = { ...HC, git: { dirty: 0, ahead: 2 }, hostCommits: false };
+    const doneEvent = { id: "promptdone", kind: laneWatchEventKind("done-looking"), payload: laneWatchPayload(DL) };
+    const premature = laneWatchMessage(7, "lane-branch", doneEvent, { report: null, suiteOffer: null });
+    const reported = laneWatchMessage(7, "lane-branch", doneEvent,
+      { report: { id: "rep1", status: "complete" }, suiteOffer: null });
+    const offered = laneWatchMessage(7, "lane-branch", doneEvent,
+      { report: { id: "rep1", status: "complete" }, suiteOffer: { id: "job1", state: "claimed" } });
+    const unread = laneWatchMessage(7, "lane-branch", doneEvent, null);
+    check("watch text: a done-looking lane WITHOUT a terminal report is named PREMATURE",
+      premature.includes("Terminal report from that lane: NONE on file") && premature.includes("PREMATURE"),
+      premature);
+    check("watch text: a done-looking lane WITH a terminal report names it and is not called premature",
+      reported.includes("Terminal report from that lane: rep1 (status=complete) is on file")
+      && !reported.includes("PREMATURE") && !reported.includes("NONE on file"), reported);
+    check("watch text: an open/claimed preview offer is named even beside a filed report",
+      offered.includes("rep1 (status=complete)") && offered.includes("still claimed (job job1)"), offered);
+    check("watch text: an unread word says 'not read', never 'none'",
+      unread.includes("Terminal report from that lane: not read.") && !unread.includes("NONE"), unread);
+    check("watch text: the report line never replaces the pane read — every variant keeps 'never land on this message alone'",
+      [premature, reported, offered, unread].every((t) => t.includes("Read the pane before you act, and never land on this message alone")
+        && t.includes("NOT a report from that lane")));
     // Product proof, not a comment: ahead>0 and ahead===0 keep the two completion predicates
     // disjoint across unknowns, harness ownership, dirty state and awaiting-owner.
     let both = 0, hostSeen = 0, doneSeen = 0, cases = 0;

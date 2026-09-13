@@ -7141,8 +7141,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const laneEvent = { id: "e1", kind: "lane-ready" as const,
     payload: { ahead: 3, dirty: 0, idleMs: 120_000, observed: true, gitOp: false, awaiting: null, hostCommits: false } };
   const rendered: Record<string, string> = {
-    laneWatchMessage: laneWatchMessage(7, "fleet/probe", laneEvent),
-    hostCommitReady: laneWatchMessage(7, "fleet/probe", { ...laneEvent, kind: "host-commit-ready" }),
+    laneWatchMessage: laneWatchMessage(7, "fleet/probe", laneEvent, { report: null, suiteOffer: { id: "j3", state: "claimed" } }),
+    laneReported: laneWatchMessage(7, "fleet/probe", laneEvent, { report: { id: "r2", status: "complete" }, suiteOffer: null }),
+    hostCommitReady: laneWatchMessage(7, "fleet/probe", { ...laneEvent, kind: "host-commit-ready" }, null),
     mergeWatchMessage: mergeWatchMessage(7, "/tmp/probe", { id: "e2", kind: "merge-terminal",
       payload: { status: "merged", landed: true, branch: "fleet/probe", at: 0, verify: { ok: true } } }),
     auditWatchMessage: auditWatchMessage("probe", "a".repeat(40), { id: "e3", kind: "post-land-audit",
@@ -7174,6 +7175,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // twice, and the honest repair for that is to say which key covers what, not to widen the match.
   const RENDERED_UNDER: Record<string, string> = {
     hostCommitReady: "laneWatchMessage",
+    laneReported: "laneWatchMessage",
     fleetReportDecisionAccepted: "fleetReportDecisionMessage",
     fleetReportDecisionRejected: "fleetReportDecisionMessage",
   };

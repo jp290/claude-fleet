@@ -222,6 +222,43 @@ Nabenkanten und keine Kollisionen.
 *Falsifiziert durch:* ein gelandetes Paar, dessen Bereiche mehr als 40 Zeilen auseinander lagen und
 das trotzdem den Merge-Resolver brauchte.
 
+#### Jetzt messbar (Nachtrag 2026-09-13, Land `<LANDING-SHA — setzt die MAIN>`)
+
+Die Luecke oben ist geschlossen: `server.ts#buildLaneOutcome` schreibt `forkSha` =
+`worktree.baseSha` unveraendert NEBEN `base`, und `writeLandNote` traegt dasselbe Feld auf der
+`fleet/land`-Note. Abwesend heisst „diese Zeile kann es nicht sagen" (Lanes ohne `baseSha`, jede
+`reverted`-Zeile), nie „main stand still". `forkSha..base` ist damit genau das, was main waehrend der
+Laufzeit der Lane tat.
+
+`bun land-collision-stats.ts --ledger lane-outcomes.jsonl [--repo R] [--last N] [--table]` rechnet je
+gelandeter Zeile mit `forkSha` und `mainAfter`, alles in `base`-Koordinaten:
+
+| | |
+|---|---|
+| Lane-Seite | `git diff base..headSha`, Hunks der ALTEN Seite. Nicht `forkSha...headSha`: nach einem Rebase-Land ist die Merge-Base forkSha selbst, und dieser Diff zaehlte mains Zwischen-Commits der Lane zu |
+| main-Seite | `git diff forkSha..base`, Hunks der NEUEN Seite |
+| Vorhersage | R4 (`task-land-waves.ts#rangesCollide`, ±40) mit den Hunks als Bereichen · daneben der Datei-Rueckfall |
+| Realitaet | ein Hunk-Paar ≤ 1 Zeile auseinander (git konfliktet auch auf Nachbarzeilen) oder beidseitig binaer geaendert, ODER `resolvedConflict` |
+
+Einheit ist die ZEILE (vorhergesagt = irgendeine gemeinsame Datei kollidiert). Zwei Grenzen stehen
+im Modulkopf und gehoeren zur Zahl: (1) R4 bekommt hier die ECHTEN Bereiche, also das Beste, was die
+Regel je leisten kann. Kartenflaechen lassen sich nicht nachtraeglich rekonstruieren: von 452 gelandeten
+Zeilen mit `taskId` standen am 2026-09-13 noch 36 in `fleet.json`, 2 davon mit Kartenflaeche. Darum
+ist der Range-Recall gegen Hunk-Ueberlappung konstruktionsbedingt 1; ein Range-Fehlschlag kommt nur
+aus `resolvedConflict` ohne beruehrende Hunks. Aussagekraeftig ist die PRAEZISION: wie viele 40-Zeilen-
+und wie viele Datei-Kanten echt waren. (2) Die main-Seite ist das ganze Intervall, nicht EIN
+Partner — gemessen wird Lane gegen main, also das, was ein zweit-landendes Buendel antrifft.
+
+`./state.sh` (Abschnitt land health) zeigt die Zahl der Zeilen mit `forkSha` und ab 10 gelandeten
+solchen Zeilen Praezision/Recall. Beweis: `e2e/outcomes.ts` (forkSha ≠ base bei bewegtem main,
+= base als Gegenprobe, auf Zeile und Note; das Skript auf einem handgebauten Ledger mit von Hand
+gerechneter Trefferquote).
+
+**Erste Messung (Live-Ledger, 2026-09-13, vor dem Land):** `measured 0/591 · lane-only 591 ·
+unreadable 0` — keine Zeile traegt `forkSha`, die Lane-Haelfte ist fuer alle 591 lesbar. Die
+Kennzahl beginnt mit dem ersten Land nach diesem Einbau. Die Schwelle aus der A–E-Notiz §C gilt:
+**ein Range-Recall < 0,9 stoppt parallele Buendel, bevor sie gebaut werden.**
+
 #### Was die Regel auf der HEUTIGEN Queue tut — und warum die Komponentenzahl trotzdem steht
 
 `bun task-land-waves.ts --state fleet.json` liefert vorher wie nachher **42 Wellen**, und auch

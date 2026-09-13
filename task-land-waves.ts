@@ -167,7 +167,11 @@ const near = (a: TaskWaveRange, b: TaskWaveRange): boolean =>
  * index to one range, and a range always overlaps itself.
  */
 function collidesOn(a: ClassifiedRow, b: ClassifiedRow, file: string): boolean {
-  const ra = rangesIn(a, file), rb = rangesIn(b, file);
+  return rangesCollide(rangesIn(a, file), rangesIn(b, file));
+}
+
+/** R4 on two range lists of ONE file — the rule land-collision-stats.ts scores against real hunks. */
+export function rangesCollide(ra: readonly TaskWaveRange[], rb: readonly TaskWaveRange[]): boolean {
   if (!ra.length || !rb.length) return true;
   return ra.some((x) => rb.some((y) => near(x, y)));
 }

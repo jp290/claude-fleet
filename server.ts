@@ -17,7 +17,10 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE,
   laneSpentLooking,
   MERGE_ERROR_REASONS, type MergeErrorReason } from "./lane-signals";
-import { phaseOf, type Phase, type PhaseInput, type PhaseOutcomeFacts } from "./program-phase";
+import {
+  phaseOf, phaseOutcomeFor, phaseOutcomeIndex, type Phase, type PhaseInput, type PhaseOutcomeFacts,
+  type PhaseOutcomeIndex,
+} from "./program-phase";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt } from "./refine-prompt";
@@ -1808,19 +1811,11 @@ function programPhaseInput(t: Task, programId: string, outcome: PhaseOutcomeFact
   };
 }
 
-// I6: the NEWEST lane-outcome row per task id, off a list the caller has already sorted newest
-// first. Rows without a string taskId belong to no row here and are skipped rather than guessed at.
-function newestOutcomeByTask(sortedRows: Record<string, unknown>[]): Map<string, PhaseOutcomeFacts> {
-  const byTask = new Map<string, PhaseOutcomeFacts>();
-  for (const row of sortedRows) {
-    const taskId = typeof row.taskId === "string" ? row.taskId : null;
-    if (taskId === null || byTask.has(taskId)) continue;
-    byTask.set(taskId, {
-      disposition: typeof row.disposition === "string" ? row.disposition : null,
-      headSha: typeof row.headSha === "string" ? row.headSha : null,
-    });
-  }
-  return byTask;
+// I6: the outcome a row projects with — its own id's newest row, or for a terminal WAVE follower
+// the one row its branch landed under (program-phase.ts#phaseOutcomeFor states the join and its
+// guard). The head's slot is read off the live `tasks` list, the same list the views iterate.
+function programPhaseOutcome(t: Task, index: PhaseOutcomeIndex): PhaseOutcomeFacts | null {
+  return phaseOutcomeFor(t, index, (id) => tasks.find((x) => x.id === id)?.slot);
 }
 
 // The newest PRESENT fleet-report row for one task inside one program, projected down to the four
@@ -1889,7 +1884,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
     const outcomeRows = outcomeLedger.rows.filter((row) => row.programId === p.id);
     outcomeRows.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0)
       - (typeof a.ts === "number" ? a.ts : 0));
-    const outcomeByTask = newestOutcomeByTask(outcomeRows);
+    const outcomeIndex = phaseOutcomeIndex(outcomeRows);
     const receiptRows = receiptLedger.rows.filter((row) => row.programId === p.id);
     receiptRows.sort((a, b) => (typeof b.at === "number" ? b.at : 0)
       - (typeof a.at === "number" ? a.at : 0));
@@ -1976,7 +1971,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
         rows: programTasks.map((t) => {
           // DERIVED per request, stored nowhere. `phase` says where the row sits on the rail; it
           // never says the work is good, and nothing here moves a persisted status.
-          const derived = phaseOf(programPhaseInput(t, p.id, outcomeByTask.get(t.id) ?? null, now));
+          const derived = phaseOf(programPhaseInput(t, p.id, programPhaseOutcome(t, outcomeIndex), now));
           if (derived.unknown !== null) unknown.push(derived.unknown);
           return {
             id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy ?? null,
@@ -23027,7 +23022,7 @@ async function supervisorView(s: Slot): Promise<Response> {
   const now = Date.now();
   // I6 for the rollup, built ONCE off the whole ledger newest-first — the same derivation the
   // Program view does per program, so the two brackets cannot disagree about the same row.
-  const phaseOutcomes = newestOutcomeByTask([...outcomeLedger.rows].sort((a, b) => num(b.ts) - num(a.ts)));
+  const phaseOutcomes = phaseOutcomeIndex([...outcomeLedger.rows].sort((a, b) => num(b.ts) - num(a.ts)));
   const ordered = [...programs].sort((a, b) => b.createdAt - a.createdAt);
   const portfolio = ordered.slice(0, SUPERVISOR_VIEW_PROGRAMS).map((p) => {
     const main = p.main ?? null;
@@ -23041,7 +23036,7 @@ async function supervisorView(s: Slot): Promise<Response> {
     const phases: Partial<Record<Phase, number>> = {};
     let unknownPhased = 0;
     for (const t of programTasks) {
-      const derived = phaseOf(programPhaseInput(t, p.id, phaseOutcomes.get(t.id) ?? null, now));
+      const derived = phaseOf(programPhaseInput(t, p.id, programPhaseOutcome(t, phaseOutcomes), now));
       phases[derived.phase] = (phases[derived.phase] ?? 0) + 1;
       if (derived.phase === "UNKNOWN") unknownPhased++;
     }

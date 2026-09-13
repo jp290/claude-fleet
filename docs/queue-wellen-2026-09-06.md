@@ -516,6 +516,11 @@ berührt (Regelbuch, Lane discipline); `bun e2e/pins.ts` grün.
   undo-Record, die Zahl 3 ist das Bisect-Budget eines Lesers, und die Übereinstimmung war Zufall.
   *(2026-09-12 abgelöst durch das Größenbudget `LAND_WAVE_BUDGET_DEFAULT` = 5, §4 (6); der
   Kommentar zur Undo-Unabhängigkeit und der Pin gelten für das Budget weiter.)*
+* **Eine Welle = EINE Outcome-Zeile, und die Folgezeilen joinen über die Branch** (Nachtrag
+  2026-09-13): `buildLaneOutcome` schreibt nur `s.taskId`, also die Kopfzeile. Die Phasen-Projektion
+  liest für eine terminale Folgezeile deshalb die Outcome-Zeile der Branch aus ihrer Land-Notiz
+  `landed (<branch>)`, sofern die Kopfzeile noch auf demselben `t.slot` steht
+  (`program-phase.ts#phaseOutcomeFor`); vorher projizierte jede Folgezeile `phase: UNKNOWN`.
 
 *Schnittlinie:* Hier hört die Liste auf. Eine automatische Wellenbildung im Tick, eine
 Prioritätsspalte in der Queue und ein Bisect-Assistent für rote Wellen-Audits sind erkennbar

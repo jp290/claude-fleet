@@ -1,3 +1,33 @@
+# HANDOFF — Orchestrator Slot 7 (Fable 5.1, ab 00:1x Opus 5 high auf Owner-Wechsel; Haupt-Checkout, Owner-Token): Karten-Serie S1–S9 KOMPLETT gelandet, Arbeitsliste leer, Rolle wartet auf Owner-Entscheid; 2026-09-13 08:3x, ctx GEMESSEN 29,6 %
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **ARBEITSLISTE DES ORCHESTRATORS IST LEER.** Welle 1 (S1/S2/S3, 093103da), S8 (bbd87a0e), Welle 2 (S4/S5/S6,
+  963bd3de), S7 (aae0e19d) und S9 (a10af8de) sind gelandet; Audits gruen ausser S9. Nichts mehr zu dispatchen.
+  Der Owner wurde 08:3x gefragt, ob die Orchestrator-Rolle weiter besetzt bleibt — seine Antwort gilt, nicht diese Zeile.
+- **S9-AUDIT a10af8de ROT, 1/4340, NICHT BEURTEILT:** einziger Fail `self-land progress guard: a REPAIRED candidate is
+  admitted on the very next call and lands`. S9 fasst den Land-Pfad nicht an; derselbe Check fiel 2026-09-12 auf
+  aa830e16 und 993506a0 (Baeume ohne S9) mit „dispatch failed: slot changed before submit". Weder in
+  docs/verify-tiering.md noch in docs/e2e-trail.md registriert. Gehoert der Program-MAIN Fleet-Betrieb (jetzt Slot 4).
+- **NICHTS DAVON IST LIVE.** Server bootHead a2e9d5d9, 28 Commits hinter main, bundleStale true. Drei Owner-Akte
+  offen, alle drei ihm genannt: (1) Deploy (Attention 2ce656f3 von der MAIN) · (2) `FLEET_CARD_MS` in .env — ohne
+  ihn bekommt KEINE bestehende Zeile eine Karte (gemessen 08:3x: 0 von 110 offenen Zeilen mit card) · (3)
+  `FLEET_MIGRATE_PCT` in .env — ohne ihn ist S8s Staffelstab gelandet, aber aus (Notiz ca9a4b30).
+- **OWNER-RICHTUNGEN DIESER NACHT, gefilt, alle pending auf Program f170dc46:**
+  e3e5084a Handover-Record fuer JEDE Rolle (Owner: „ein Handoff-Record fuer alles" statt neuer Rollen; Record
+  verweist nur per ID, kopiert keinen Zustand; spaeter Anschluss an ein Wissenssystem) · ee824afd Channels-Probe
+  (Claude Code 2.1.270 traegt `--channels`/`mcp_channel_*`/`channel_acknowledged` hinter einem Gate, mechanisch
+  gegen PreToolUse als Kontrolle) · 1b47e29a „⋯ mehr"-Knopf mit Panel (OFFEN: welche Flaeche — Owner nicht
+  beantwortet, Vermutung Slot-Zeile) · ff88072c Code-Bewertung je Aufgabe opt-in (`review: advisory`; OFFEN:
+  zusaetzlich `required`? Vorschlag nein) · 21ade485 Modell-Leistungsgruppen + Konfig-Menue: Owner-gepinnter
+  Brief in der Astra-Schablone, NICHT dispatcht (Board-Knopf, codex/Astra medium).
+- **BEFUND FUER DIE KARTE e3e5084a UND FUER 42c53378:** ein /model-Wechsel in der Pane aendert den Slot-Datensatz
+  nicht — nach dem Owner-Wechsel stand Slot 7 auf `claude-fable-5-1`, per `POST /api/slots/7/model` nachgezogen.
+  Nebenwirkung: unter Opus ist ctx messbar, unter Fable nie (contextWindowFor kennt die Fable-5.1-ID nicht).
+- **BETRIEB:** „sieht fertig aus" alarmierte an Welle 2 zweimal falsch — einmal hing die Lane ~30 min an einer
+  Claude-Code-Bestaetigungsfrage (rm -rf auf Scratch-Pfad, per Enter bestaetigt). Der Mac lief die Nacht an der
+  Speichergrenze (8 GB, Swap 2,7/4 GB); Audits gleichmaessig 38 min.
+
 # HANDOFF — Program-MAIN Fleet-Betrieb (Program `f170dc46`), Slot 3, Opus 5 → Nachfolgerin; 2026-09-13 06:4x, ctx GEMESSEN 29,8 %
 
 Nur was KEIN Record traegt. Zustand: `./state.sh`, `GET /api/self/program-execution`, `GET /api/self/attention`.

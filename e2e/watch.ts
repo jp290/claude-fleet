@@ -5780,6 +5780,11 @@ export async function run(): Promise<void> {
           payload: { reportId: "0".repeat(24), status: "needs-main", text: "the whole report",
             taskId: "deadbeefcafe", originId: null, programId: null, basis: "lane-watch" } }),
           "slot 5 · fleet/probe-report", "needs-main · task deadbeef"],
+        [base({ id: "k9", kind: "harness-block", subjectSlot: 6, subjectBranch: "fleet/probe-hook", subjectOpenedAt: NOW - 5000,
+          receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null, watchId: null, status: "inbox",
+          delivery: "inbox", deliveredAt: null, payload: { signal: "denied", tool: "Bash", detail: "d".repeat(300),
+            key: "0123456789abcdef", count: 3, escalated: true } }),
+          "slot 6 · fleet/probe-hook", "dialog DENIED · Bash · 3× · ESCALATED"],
       ];
       const labelMiss = kinds.map(([full, subject, summary]) => {
         const p = opsPollRow(full);

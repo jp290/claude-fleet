@@ -1,6 +1,8 @@
-// graph-coverage.ts — how many top-level `function` declarations of server.ts + server/*.ts the
-// graphify graph does NOT carry as a node label. Above 10 % the graph is not usable for symbol
-// resolution; use rg/ast-grep (docs/messungen/2026-09-13-worktrail-iv-agents-ctxpacks-fable.md §3.5).
+// graph-coverage.ts — share of server function declarations missing from the graphify graph.
+//
+// Counts top-level `function` declarations of server.ts + server/*.ts that the graph does NOT carry
+// as a node label. Above 10 % the graph is not usable for symbol resolution; use rg/ast-grep
+// (docs/messungen/2026-09-13-worktrail-iv-agents-ctxpacks-fable.md §3.5).
 //
 //   bun graph-coverage.ts --graph <path/to/graph.json>
 //

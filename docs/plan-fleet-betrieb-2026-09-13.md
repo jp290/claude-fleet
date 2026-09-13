@@ -228,6 +228,16 @@ Private-repo-j `9ce08219` (MAIN-Bindung Slot 2 ist tot; Slot 2 ist heute Supervi
 | G3 | Ziel-Struktur fuer das Game-Studio: Program → Studio → Akte → Lanes, Objekte/Ledger/Verify, Delegation ab Harness-Ebene (codex-Sub-Agents) statt nur per Prompt, Gueteklassen aus der Rollen-Synthese, was Fleet danach uebernimmt | Astra-Lane (high), Brief nach docs/astra-briefbaustein-2026-09-07.md | G2 + Owner-Entscheid Rollen/Gueteklassen | Vorschlagsdoc, kein Code |
 | G4 | Owner entscheidet die Struktur; danach Private-repo-j neu aufsetzen: die fuenf pending Biber-Zeilen (`32fed872`, `ad3b3960`, `6e7de1eb`, `0610f3a5`, `e80466c9`, alle Karte ungueltig) gegen die neue Struktur lesen — uebernehmen, neu filen oder archivieren; Mandat `a33d7300` bleibt Quelle | Orchestrator + Owner | G3 | Program mit gebundener MAIN und erster Welle |
 
+**Stand 2026-09-13 22:5x (Slot 5, Owner „klingt gut"):** G1 ist von der Synthese entkoppelt (es formuliert
+nur Fragen) und als `a5878da7` gefilet (Astra medium, pending, ersetzt `4fb19940`; Freigabe am naechsten
+freien Platz nach `35bc6afe`/`31df1009`). **Owner 23:0x: das Spiel wird KOMPLETT NEU begonnen** — neues Repo
+auf dem **Second-host** (Owner-Entscheid 2026-09-11: dort alles ausser iOS), Technik-Stack offen (G1 fragt Grok
+danach), private-repo-j hoechstens Steinbruch. Headless ist kein Hindernis, gemessen per ssh: Playwright-Chromium
+dort rendert Canvas 2D (Pixel zurueckgelesen) und WebGL2, WebGL aber nur ueber SwiftShader (Software) — die
+Radeon (renderD128) nutzt der Browser nicht. Der Mensch sieht das Spiel im Browser eines anderen Geraets.
+Folge fuer G4: die fuenf alten Biber-Zeilen werden archiviert statt gegen die neue Struktur gelesen; das
+Mandat `a33d7300` ist Eingang fuer die Spielidee, nicht Vertrag.
+
 G1 ist klein und darf frueher laufen, sobald die Rollen-Synthese entschieden ist; G3/G4 bleiben „zuletzt"
 im Sinne des Owners — erst wenn Wellen 3–5 dieses Plans stehen oder der Owner das Studio vorzieht.
 

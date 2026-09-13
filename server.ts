@@ -67,6 +67,10 @@ import {
   type LandWave, type LandWaveProjection,
 } from "./task-land-waves";
 import { isTaskCardSize, type TaskCardSize, type TaskWaveInput } from "./task-waves";
+// The START PLAN sensor (read-only): which land wave would start next, and what its rows passed.
+// Only GET /api/start-plan reads it — tickDispatch does not import it (pinned in e2e/pins.ts).
+import { projectStartPlan, startPlanChecks, type StartPlan, type StartPlanLane, type StartPlanRepoCaps,
+  type StartPlanRow } from "./start-plan";
 import { renderWaveBrief, withCardHead } from "./wave-brief";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
@@ -10043,6 +10047,43 @@ function landWaveProjectionNow(): LandWaveProjection {
     budget: LAND_WAVE_BUDGET,
     costs: LAND_WAVE_COSTS_2026_09,
   });
+}
+// THE START PLAN over the live state: the land projection above, the running lanes with the surface
+// their rows carry (taskView, the same reading the projection makes), and both lane caps as
+// tickDispatch computes them (repoLaneCap, programDispatchCap). A lane's repo is stored canonical,
+// the projection keys by the row's own repo string, so the lane is mapped back through repoCanon.
+function startPlanNow(): StartPlan {
+  const projection = landWaveProjectionNow();
+  const surfaceOf = (t: Task): { files: string[] | null; ranges: StartPlanRow["ranges"] } => {
+    const files = [...(taskView(t).files ?? []), ...(t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])];
+    return { files: files.length ? files : null, ranges: t.surface?.ranges ?? null };
+  };
+  const statuses: Record<string, string> = {};
+  const rows: StartPlanRow[] = [];
+  for (const t of tasks) {
+    statuses[t.id] = t.status;
+    if (t.kind !== "auftrag" || (t.status !== "queued" && t.status !== "pending")) continue;
+    rows.push({ id: t.id, status: t.status, programId: t.programId ?? null, ...surfaceOf(t),
+      after: t.card?.after ?? [], checks: startPlanChecks({ text: t.text, source: t.source, card: t.card ?? null }) });
+  }
+  const projectionRepoFor = new Map(projection.repos.map((r) => [repoCanon(r.repo), r.repo]));
+  const lanes: StartPlanLane[] = slots.filter((s) => s.cwd && (s.worktree || s.programId)).map((s) => {
+    const own = tasks.filter((t) => t.slot === s.id && t.status === "sent").map(surfaceOf);
+    return { slot: s.id, programId: s.programId,
+      repo: s.worktree ? projectionRepoFor.get(s.worktree.repo) ?? s.worktree.repo : null,
+      files: own.length && own.every((x) => x.files) ? own.flatMap((x) => x.files ?? []) : null,
+      ranges: own.some((x) => x.ranges) ? own.flatMap((x) => x.ranges ?? []) : null };
+  });
+  const programIds = [...new Set(rows.map((r) => r.programId).filter((p): p is string => !!p))].sort();
+  const caps: Record<string, StartPlanRepoCaps> = {};
+  for (const { repo } of projection.repos) {
+    const cap = repoLaneCap(repo);
+    caps[repo] = { ...cap, programs: Object.fromEntries(programIds.map((id) => {
+      const p = programs.find((x) => x.id === id);
+      return [id, programDispatchCap(p ? programDispatchGrant(p) : undefined, cap.max)];
+    })) };
+  }
+  return projectStartPlan({ projection, rows, statuses, lanes, caps });
 }
 // `wave` carries the FOLLOWERS of a land wave — the rows behind the head, already validated by the
 // wave door against the sensor's own projection. Empty for every other dispatch, and every dispatch
@@ -30801,6 +30842,9 @@ Bun.serve<WSData>({
     // Surface/cluster fields are read-only views over the current tracked tree; never persist the
     // weaker derivation merely because a dashboard was opened.
     if (url.pathname === "/api/tasks" && req.method === "GET") return json({ tasks: tasks.map(taskView) });
+    // The start plan (start-plan.ts): what would start next and what each row passed. A read — no
+    // state write, no audit row, no dispatch; the same object `bun start-plan.ts --state fleet.json` prints.
+    if (url.pathname === "/api/start-plan" && req.method === "GET") return json(startPlanNow());
     // The reversible category route. `adopt` predates the four-value model and remains below as a
     // compatibility alias for notiz→auftrag; this route is the complete owner surface, including
     // the route back. It sits past tokenGate, like every other owner task mutation.

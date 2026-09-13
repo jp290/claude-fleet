@@ -118,6 +118,46 @@ Lane-Kontext (`79681633`), Subagent-Notiz `504b0854` (DELEGATION-Zeile, AGENTS.m
 Form: zwei unabhaengige Denkauftraege (Fable, Astra), gleiche Eingaenge, ein Vergleich — Ergebnis ist
 ein Vorschlag an den Owner, kein Code.
 
+**Stand 2026-09-13 ~19:4x:** `cc8f31bd` ist gelandet (`6871514c`): Start 71 387 Tokens = fester
+Praefix 32 467 (davon ~30 200 Werkzeug-Schemas) + Lane-CLAUDE.md-Render 18 335 + Skill-Listing 6 618
++ Brief/globale CLAUDE.md/MEMORY.md/Agent-Listing je ~2,6–2,9 k; kuerzbar am meisten Render (~6,6 k),
+ungenutzte Werkzeuge (≥4,9 k), Listings (2,3–8,1 k). **Entscheid (Orchestrator, delegiert):** der
+Doppel-Denkauftrag wartet NICHT auf die 10-Lane-Messung von K1, sondern startet, sobald `25b90648`
+gelandet ist; K1-Zahlen kommen als spaeter Eingang dazu. Grund: Rollen, Briefe und Modellklassen
+haengen nicht an der Wirkungszahl, nur ihre Datenschicht-Abgrenzung — und die ist ein Abschnitt,
+kein Vorbehalt fuer den ganzen Auftrag. Denkblock-Partner: `21ade485` (Modellklassen, Owner-Gedanke
+„Gueteklassen: ein Job traegt, welche Klasse ihn ausfuehrt, verbunden mit der Sub-Agent/Worker/
+Skript-Konfiguration" als Kommentar) und `c269023d` (Provider-Profile).
+
+## 5b. Suiten, RAM, Handoff-Rauschen — Owner 2026-09-13 „alles angehen"
+
+Gemessen (Slot 5): volle Suite ~39 min (2 311–2 350 s, ~4 400 Checks), 69 % davon Luecken ≥ 3 s;
+Second-host bei 3 Suiten 91–94 % CPU-frei, ~270 MB je Suite; Land-Gate haelt den Mutex schon ueber
+die ganze Kette (`holdSuiteLock` im `gateRun`), Gate-Warten 3 d p50 0 / p90 275 s.
+
+| Zeile / Akt | Was | Modell | Reihenfolge |
+|---|---|---|---|
+| Second-host `maxParallelSuites` 3 → 4 | Config geaendert 19:28, Backup `config.json.bak-20260913-suites3`; greift erst nach Daemon-Neustart — ein Hintergrund-Waechter startet neu, sobald `running` 0 ist (sonst beim naechsten `daemon-update`). Nach einem Tag messen, dann 5 | — | laeuft |
+| `1fc3a5c8` | Suite schneller 1/2: lange Test-Wartezeiten kuerzen (500 s in 36 Checks, 227 s in e2e/programs.ts) | Opus 5 | nach `f6903d1e` |
+| `d7b4b47d` | Suite schneller 2/2: Sharding-Probe `--shard k/n`, Abhaengigkeitskarte | Fable 5.1 (Owner-Wunsch) | nach `1fc3a5c8` |
+| `1a5c49fb` | RAM der Slots/Sessions: messen, zerlegen, Rangliste (Baseline: Mac Swap 2,66 GB, ~33 Playwright-MCP-Prozesse fuer 7 Claude-Sessions) | Astra, medium | als naechste Mess-Lane frei |
+| `7363b89f` | HANDOFF entruempeln: Rotation + state.sh-Warnung (271 HANDOFF-Commits/14 d, Datei 572 KB) | Opus 5 | frei |
+| `5ca92bfb` | Land-Chronik: eine Zeile je Land aus den Land-Notizen, kein Squash | Opus 5 | frei |
+
+Squash-Entscheid: kein Umschreiben, kein Squash beim Land (509/674 Lands sind schon ein Commit).
+Ein gesquashter LESE-Branch am Hub waere eine Einbahnstrasse fuer spaeter; vorher fehlt, dass
+Land-Notizen ueberhaupt zum Hub reisen (gemessen: der Hub traegt nur `main` + `second-host/*`).
+
+## 5c. UI — nach diesem Plan
+
+Owner 2026-09-13: die Kernansicht bleibt; umstrukturiert werden die linke Spalte (`#side`: Kopf,
+Werkzeugleiste, Session-Liste) und die rechte (`#board`, „Session brief") EINZELN. Die „Lage"-Sicht
+(was laeuft / startet / wartet / wo der Owner gebraucht wird) gehoert ins Hub-Overlay
+(`docs/fleet-hub-overlay-2026-09-06.md`), nicht in diese Spalten. Vorgehen je Spalte: nummerierte
+Screenshot-Bestandsaufnahme → Owner markiert in eigenen Worten → eine Lane mit seinen Worten
+woertlich → Vorher/Nachher-Screenshot (Rechner + Handy). Neue Knoepfe gehen zuerst ins
+„Mehr"-Panel (`1b47e29a`). Offen beim Owner: linke Spalte zuerst? Screenshots erlaubt?
+
 ## 6. Unter der Schnittlinie — bewusst spaeter
 
 - `e04d15f0` Init je Repo — Karte ungueltig (`.fleet/init.md` steht unter FLAECHE statt NEU); nach Welle 3 neu lesen lassen oder mit NEU neu filen.
@@ -128,7 +168,7 @@ ein Vorschlag an den Owner, kein Code.
 
 ## 7. Was dieser Plan nicht behauptet
 
-- Die Token-Zerlegung des Start-Kontexts ist abgeleitet (43 k Boden aus anderen Projekten, Dateigroessen); `cc8f31bd` misst sie.
+- Die Token-Zerlegung des Start-Kontexts war abgeleitet; `cc8f31bd` hat sie gemessen (§5, Stand), meine fruehere 11-k-Schaetzung fuer den Render war zu niedrig (gemessen 18 335).
 - Ob Code-Ausschnitte das Einlesen wirklich senken, ist ungemessen — K1 entscheidet.
 - Ob eine graphify-Antwort auf die richtige Datei zeigte, ist ungemessen; rg/Read nach einer Query ist gewollter Ablauf, kein Gegenbeleg.
 - Fremd-Harness-Lanes (codex/pi) sind in den Einlese-Zahlen nicht enthalten.

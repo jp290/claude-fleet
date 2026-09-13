@@ -1,3 +1,56 @@
+# HANDOFF — Orchestrator Slot 5 → Nachfolgerin (Opus 5 high, Haupt-Checkout, Owner-Token): Plan Fleet-Betrieb steht und laeuft, Suiten/RAM/Handoff/Chronik gefilet, Second-host auf 4 Suite-Plaetze (Neustart ausstehend); 2026-09-13 ~19:5x, ctx GEMESSEN 37,6 %
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **DEIN BRIEF IST `docs/plan-fleet-betrieb-2026-09-13.md`** (Owner-Auftrag, Commits 181875bd/8f9468e7 + dieser). Rolle wie dort §2:
+  Orchestrator filet/schaerft/gibt welleweise frei; Program-MAIN Fleet-Betrieb **Slot 9** landet/deployt/treibt Lanes.
+  Keine Lane-Watches armieren. Nachrichten an Slot 9 buendeln (eine kostet ihren vollen Kontext).
+- **Owner hat die Checkpoint-Entscheidungen K1–K3 an dich delegiert** („Bitte beantworte die Fragen selbst"); K2 (Scharfschalten
+  der automatischen Freigabe) trotzdem VORHER melden.
+- **OWNER-STIL:** einfache Worte, keine Optionslisten, will ein durchdachtes System, schaetzt Messungen und ehrliche Korrekturen.
+  Er ruft oft `/sharpen3` — dann Prompt schaerfen UND ausfuehren. „Gib dir Muehe. Own your work."
+
+## 0.1 IN FLUG (gemessen ~19:4x)
+
+| Was | Zustand |
+|---|---|
+| e23a727a Kontext-Uebergabe | GELANDET 83989719; Slot 9 hat `FLEET_MIGRATE_PCT='32'` in .env gesetzt, wirkt nach ihrem Deploy |
+| 56d2e084 Lane-Anleitung | GELANDET 7c19d416 |
+| cc8f31bd Startkontext-Messung | GELANDET 6871514c (71 k = 32 k Praefix/Werkzeuge + 18 k Lane-Render + 6,6 k Skills + je ~2,7 k Brief/global/MEMORY/Agents) |
+| 25b90648 Code-Ausschnitte in den Brief | laeuft Slot 1 (umgehaengt aus Leichtgewicht c71b96eb, dort archiviert) |
+| f6903d1e graphify 1/2 | laeuft Slot 4 |
+| **Second-host maxParallelSuites 3→4** | `/etc/fleet-helper/config.json` geaendert 19:28, Backup `.bak-20260913-suites3`. **Greift erst nach Daemon-Neustart.** Mein Hintergrund-Waechter (startet neu bei `helperDevices[0].running==0`) STIRBT mit meiner Session — neu aufsetzen: Owner-Poll `helperDevices[0]` lesen, bei running 0 `ssh second-hostowner@<second-host> 'sudo -n systemctl restart fleet-helper'`, danach muss der Poll `maxParallelSuites: 4` zeigen. Oder Slot 9s daemon-update erledigt es mit. Nach ~1 Tag messen (RAM/Swap/Flakes), dann 5 |
+
+## 0.2 NEU GEFILET HEUTE (alle Fleet-Betrieb f170dc46, Autor-Karte gueltig, pending)
+
+Freigabe-Kette: 57d7ec3b Anzeiger → 35bc6afe Anreichern („volle Kette") → 6d841a14 Starten nach Plan → f1aeba10 Politik (HART/HINWEIS).
+graphify 2/2 31df1009. Suiten: 1fc3a5c8 Wartezeiten (Opus, nach f6903d1e) → d7b4b47d Sharding-Probe (Fable 5.1, Owner-Wunsch).
+RAM: 1a5c49fb (codex/gpt-6-astra/medium, Astra-Brief-Schablone) — naechste Mess-Lane, jetzt frei. 7363b89f HANDOFF-Rotation, 5ca92bfb Land-Chronik (beide klein, frei).
+Notiz 504b0854 (Subagents) + Kommentare an 6bd2e49c und 21ade485.
+
+## 0.3 REIHENFOLGE DANACH
+
+1. Waechter fuer den Second-host-Neustart neu aufsetzen (oben).
+2. Takt halten: max 2 bauende Lanes + 1 Mess-Lane. Freigeben, sobald Plaetze frei: 1a5c49fb (Mess-Lane), dann 57d7ec3b nach 25b90648-Land
+   (beide e2e/tasks.ts), 1fc3a5c8 nach f6903d1e-Land, 7363b89f/5ca92bfb als kleine Lueckenfueller.
+3. **Rollen/Briefe + Modellklassen als EIN Doppel-Denkauftrag** (Plan §5): ENTSCHIEDEN, er startet nach dem Land von 25b90648, nicht erst nach K1.
+   Zu tun: zwei auftrag-Zeilen filen — eine Fable-5.1-Lane, eine Astra (Schablone docs/astra-briefbaustein-2026-09-07.md + Memory
+   feedback-astra-brief-template, effort medium) —, gleiche Eingaenge: 6bd2e49c (Owner-Worte + 3 Kommentare), 21ade485 (+ Gueteklassen-Kommentar),
+   c269023d, 504b0854, 6871514c-Note, 79681633, Worktrail IV 60b23ebc. Ergebnis je ein Vorschlagsdoc, danach Synthese mit dem Owner; AGENTS.md/SYSTEM.md
+   nur ueber propose/promote. Sorgfaeltig briefen — das ist dem Owner „wirklich wichtig".
+4. K1 nach Deploy von 25b90648 an 10 Lanes messen (Messskript-Muster: Kontext bei erster Aenderung p50, Ziel < 120 k statt 151 k).
+
+## 0.4 OFFENE OWNER-FRAGEN (unbeantwortet)
+
+- UI (Plan §5c): linke Spalte zuerst? Screenshots vom Board (Playwright, Owner-Token) erlaubt?
+- „zu zweit entwickeln": zweite PERSON oder zwei eigene Rechner? (Squash-Idee → Lese-Branch am Hub; zuerst Land-Notizen zum Hub pushen — noch NICHT gefilet, erst nach Antwort.)
+
+## 0.5 UNGEPRUEFT / ACHTUNG
+
+- merges["1"] stand ~19:1x auf `interrupted` ohne Verdikt (Branch fleet/260913165448-dbf3), Slot 9 informiert.
+- Rote Audits a10af8de/cefbfabb (Slot 9). Helfer-daemon-update (Slot 9).
+- Mac: Swap 2,66 GB, Kompressor ~9,7 GB; ~33 Playwright-MCP-Prozesse fuer 7 Claude-Sessions — Befund geht in 1a5c49fb, nichts selbst abschalten (globale Settings = Owner).
+
 # HANDOFF — Orchestrator Slot 8 → Nachfolgerin (Opus 5 high, Haupt-Checkout, Owner-Token): vier Analysen gelandet (Second-host, Pipeline-System, Lane-Kontext, Worktrail IV), Kontext-Uebergabe als live AUS gefunden und Fix in Flug, Program-MAIN jetzt Slot 9; 2026-09-13 17:0x, ctx GEMESSEN 30,4 %
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

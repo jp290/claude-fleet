@@ -42,8 +42,10 @@ export const CARD_KEY = "card";
 //                    `surfaceValid` beside `valid`
 //   3 (2026-09-13) — `surface.creates` (a planned NEW file is checked as untracked-under-a-tracked-
 //                    directory instead of refused as untracked); `after` (queue ids the row waits on)
+//   4 (2026-09-14) — verify aliases: "volle Kette"/"full chain" = every LOCAL_PROOF_STEPS entry,
+//                    "e2e-isolated" with or without `./` and `.sh` = the isolated step
 // Bump it whenever a change here can turn a refusal into an acceptance.
-export const CARD_VALIDATOR_VERSION = 3;
+export const CARD_VALIDATOR_VERSION = 4;
 
 export interface TaskCardRole { harness: string | null; model: string | null; effort: string | null }
 // `creates` are files the row will ADD. They cannot pass `files`' tracked-tree check by definition,
@@ -133,6 +135,31 @@ const SIZE_NAMED: Readonly<Record<TaskCardSize, RegExp>> = {
 };
 export const sizeNamedIn = (text: string, size: TaskCardSize): boolean => SIZE_NAMED[size].test(text);
 
+// `\b` before `./e2e-` would never match — a word boundary needs a word character, and `.` is
+// not one. The two alternatives are therefore anchored differently ON PURPOSE.
+const namesChainStep = (verify: string): boolean =>
+  LOCAL_PROOF_STEPS.some((step) => verify.includes(step)) || /(?:\bbunx?\b|\.\/e2e-)/.test(verify);
+
+// THE TWO NAMED ALIASES of a verify value, and nothing beyond them. The filing format itself writes
+// "VERIFY: volle Kette" (the comment above FORMAT_KEYS), and "e2e-isolated" without `./` slipped
+// past the command regex — measured 2026-09-13: 3 of 8 waiting Fleet-Betrieb rows refused on that
+// spelling alone. An alias is rewritten into the step names the lane brief then shows; a value that
+// ALSO names another command keeps its own words behind the steps, so the rewrite never drops one.
+// The isolated suite is not a gate step (verify-proportion.ts#LOCAL_PROOF_STEPS stays the gate's
+// chain) and is named by its trail label.
+const ISOLATED_STEP = "isolated";
+const FULL_CHAIN_ALIAS = /\b(?:volle\s+kette|full\s+chain)\b/gi;
+const ISOLATED_ALIAS = /(?<![\w./-])(?:\.\/)?e2e-isolated(?:\.sh)?(?![\w-])(?!\.\w)/gi;
+function verifyAliased(verify: string): { verify: string; aliased: boolean } {
+  // `search`, not `test`: a global regex's `test` carries lastIndex from one call into the next
+  const full = verify.search(FULL_CHAIN_ALIAS) >= 0;
+  const isolated = verify.search(ISOLATED_ALIAS) >= 0;
+  if (!full && !isolated) return { verify, aliased: false };
+  const steps = [...(full ? LOCAL_PROOF_STEPS : []), ...(isolated ? [ISOLATED_STEP] : [])].join(", ");
+  const rest = verify.replace(FULL_CHAIN_ALIAS, "").replace(ISOLATED_ALIAS, "");
+  return { verify: namesChainStep(rest) ? `${steps} — ${verify}` : steps, aliased: true };
+}
+
 /** `server.ts#taskView` → ["server.ts", "taskView"]; anything else → null. */
 export function splitSymbolRef(ref: string): [string, string] | null {
   const at = ref.indexOf("#");
@@ -150,14 +177,11 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   if (!ziel) gaps.push("ziel: the extractor returned no goal sentence");
   const done = text1(raw.done);
   if (!done) gaps.push("done: no checkable done sentence");
-  const verify = text1(raw.verify);
+  const { verify, aliased } = verifyAliased(text1(raw.verify));
   // The verify field is checked against the chain this repo actually runs, not against being
   // non-empty: "run the tests" is the shape of an answer, not one.
   if (!verify) gaps.push("verify: no command named");
-  // `\b` before `./e2e-` would never match — a word boundary needs a word character, and `.` is
-  // not one. The two alternatives are therefore anchored differently ON PURPOSE.
-  else if (!LOCAL_PROOF_STEPS.some((step) => verify.includes(step))
-    && !/(?:\bbunx?\b|\.\/e2e-)/.test(verify))
+  else if (!aliased && !namesChainStep(verify))
     gaps.push(`verify: "${verify}" names no known chain step (${LOCAL_PROOF_STEPS.join(", ")})`);
 
   const rawRole = (raw.rolle && typeof raw.rolle === "object" ? raw.rolle : {}) as Record<string, unknown>;

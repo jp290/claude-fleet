@@ -5874,6 +5874,35 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     "gameMakerMachineError does not reject an unreadable Fleet or candidate common-dir");
 }
 
+// --- THE OWNER RESEED READS THE SEAM TWICE (§11.2b). A stat taken only BEFORE the capture lets a line
+// written in between reach the seed AND the live bytes — the `42 marks, 1..41` duplicate the runtime
+// check caught at ~1 %, a rate no single suite run can prove away. So the ORDER is pinned: stat →
+// capture → stat, the exact case gated on equal sizes, a round cap, and a fallback that stays on the
+// gap-safe side (the stat before the last capture). Remove the second stat and this goes red.
+{
+  const seedSpan = serverU.span("async function ownerSeedCapture(", "\n}\n");
+  const body = seedSpan?.text ?? "";
+  const beforeAt = body.indexOf("let before = await sizeOf()");
+  const captureAt = body.indexOf('tmux("capture-pane", "-t", target.paneId');
+  const afterAt = body.indexOf("const after = await sizeOf()");
+  const exitAt = body.indexOf("if (after === before || after === null || round >= OWNER_SEED_ROUNDS) return { cap: cap.out, seedUntil: before }");
+  const advanceAt = body.indexOf("before = after;");
+  const wsAt = server.indexOf("websocket: {");
+  const wsBody = wsAt < 0 ? "" : server.slice(wsAt, server.indexOf("\n  },\n});", wsAt));
+  const ownerAt = wsBody.indexOf("// Owner reconnect at a width that already matches");
+  const ownerBranch = ownerAt < 0 ? "" : wsBody.slice(ownerAt, wsBody.indexOf("ws.data.ready = true", ownerAt));
+  pin("owner reseed seeds between two stream stats: stat → capture → stat, exact only when equal, capped at 3 rounds, fallback never past a pre-capture stat",
+    seedSpan !== null
+      && beforeAt >= 0 && captureAt > beforeAt && afterAt > captureAt && exitAt > afterAt && advanceAt > exitAt
+      && /const OWNER_SEED_ROUNDS = 3;/.test(server)
+      && body.includes("if (before === null) return { cap: cap.out, seedUntil: 0 }")
+      && (body.match(/if \(!live\(\)\) return null;/g) ?? []).length === 3
+      && ownerBranch.includes("await ownerSeedCapture(s, occupant, streamFile, target, seedLines)")
+      && ownerBranch.includes("ws.data.seedUntil = seeded.seedUntil")
+      && !ownerBranch.includes("stat(streamFile)") && !ownerBranch.includes('tmux("capture-pane"'),
+    `span=${seedSpan !== null} before=${beforeAt} capture=${captureAt} after=${afterAt} exit=${exitAt} advance=${advanceAt} owner=${ownerAt}`);
+}
+
 // Standard and Game-Maker founding share one durable v2 transition. These rules pin the three
 // boundaries a happy-path bootstrap cannot prove: closed marker identity, marker/Slot publication
 // before pane creation, and the typed unknown response that preserves a pending recovery marker.

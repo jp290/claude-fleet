@@ -11473,6 +11473,35 @@ function afterSeed(ws: ServerWebSocket<WSData>, from: number, chunk: Uint8Array)
   return drop > 0 ? chunk.subarray(drop) : chunk;
 }
 
+// The owner reseed's capture and the stream position it covers (websocket.open, matching-width
+// branch). stat1 → capture → stat2: equal sizes mean no byte reached the stream file while the
+// capture ran, so stat1 is exactly where the seed ends. Unequal: capture again, stat2 becomes the
+// new stat1, at most OWNER_SEED_ROUNDS captures. HARD INVARIANT (gap safety): seedUntil is never
+// larger than a stat read BEFORE the capture that is sent — at the cap that is the stat before the
+// last capture, i.e. the old behaviour, at worst a duplicate line and never a missing one. A stat
+// that fails keeps the same side: no stat before the capture ⇒ 0 (skip nothing). Residual, measured
+// not proven: a line tmux has painted but pipe-pane has not yet written would still be in both
+// (0/800 in the capture-before-stat probe, §11.2b). null = the slot changed at an await boundary.
+const OWNER_SEED_ROUNDS = 3;
+async function ownerSeedCapture(s: Slot, occupant: SlotStreamOccupant, streamFile: string, target: TmuxTarget,
+  seedLines: number): Promise<{ cap: string; seedUntil: number } | null> {
+  const sizeOf = async (): Promise<number | null> => {
+    try { return (await stat(streamFile)).size; } catch { return null; } // briefly missing during recreate
+  };
+  const live = () => sameSlotStreamOccupant(s, occupant) && !slotTeardownInflight.has(s.id);
+  let before = await sizeOf();
+  for (let round = 1; ; round++) {
+    if (!live()) return null;
+    const cap = await tmux("capture-pane", "-t", target.paneId, "-e", "-p", "-S", `-${seedLines}`);
+    if (!live()) return null;
+    if (before === null) return { cap: cap.out, seedUntil: 0 };
+    const after = await sizeOf();
+    if (!live()) return null;
+    if (after === before || after === null || round >= OWNER_SEED_ROUNDS) return { cap: cap.out, seedUntil: before };
+    before = after;
+  }
+}
+
 // `from` = the chunk's offset in the slot's stream file, or -1 for a synthetic control chunk
 function broadcast(s: Slot, from: number, chunk: Uint8Array): void {
   for (const ws of s.clients) {
@@ -31820,16 +31849,14 @@ Bun.serve<WSData>({
         // in the seed AND still on its way. s.offset is the SHARED broadcast cursor and must not move (that
         // would punch the range out of every other client); the overlap is dropped for this one socket by
         // afterSeed(). The position is read BEFORE the capture on purpose — a gap is worse than an overlap.
+        // But a single stat-before is only a LOWER bound: a line written between that stat and the capture
+        // is in the seed AND at/after seedUntil, so it went out twice (§11.2b, `42 marks, 1..41`). Hence
+        // ownerSeedCapture(): stat → capture → stat, and only an unchanged size makes seedUntil exact.
         // Narrativ: server-narrativ-archiv.md#websocket-open
-        try {
-          const size = (await stat(streamFile)).size;
-          if (sameSlotStreamOccupant(s, occupant) && !slotTeardownInflight.has(s.id)) ws.data.seedUntil = size;
-        } catch {
-          // stream file briefly missing during recreate — skip nothing, replay what arrives
-        }
-        const cap = await tmux("capture-pane", "-t", target.paneId, "-e", "-p", "-S", `-${seedLines}`);
-        if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
-        ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
+        const seeded = await ownerSeedCapture(s, occupant, streamFile, target, seedLines);
+        if (!seeded) return;
+        ws.data.seedUntil = seeded.seedUntil;
+        ws.send(new TextEncoder().encode(crlf(seeded.cap) + "\r\n"));
       }
       if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) {
         s.clients.delete(ws);

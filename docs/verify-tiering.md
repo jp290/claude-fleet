@@ -1135,6 +1135,37 @@ gelandet — das Verdikt kam **18:32**, der Land-Commit traegt **18:24:44**. Das
 Stunden unbesehen. Dieselbe Klasse wie der Nudge-Befund vom selben Tag: ein Ergebnis, dessen
 Scheitern nur in eine Datei faellt, die niemand liest, ist von „gruen" nicht unterscheidbar.
 
+**ROOT-CAUSED UND BEHOBEN 2026-09-14 in `<REPAIR-SHA>` — die Familie war ein Server-Duplikat, kein
+Flake.** Die Saetze „not root-caused" oben sind damit ueberholt; ein Rot dieses Checks NACH
+`<REPAIR-SHA>` ist wieder ECHT und gehoert dem, der es sieht.
+
+*Mechanismus.* `server.ts#websocket.open`, Owner-Zweig (Reconnect bei passender Breite), las
+`stat(streamFile).size` in `ws.data.seedUntil` und fuehrte DANACH `tmux capture-pane` aus;
+`server.ts#afterSeed` verwirft pro Socket nur Bytes unter `seedUntil`. Eine Zeile, die zwischen
+diesem stat und der Aufnahme in die Pane kam, stand im Seed UND lag ab `seedUntil` im Strom — sie ging
+genau einmal doppelt raus. Das ist die Signatur `N marks, 1..N-1` mit dem Nachbarcheck `seed 1..16,
+live to 41`. Design-Commit `a70e1d05` hatte „Duplikat statt Luecke" bewusst gewaehlt; das bleibt
+richtig, nur war ein einzelnes stat eine zu grobe Untergrenze.
+
+*Reparatur (Weg A).* `server.ts#ownerSeedCapture`: stat1 → capture → stat2. Gleich ⇒ waehrend der
+Aufnahme kam kein Byte in die Datei, `seedUntil = stat1` ist exakt. Ungleich ⇒ neue Aufnahme, stat2
+wird stat1, Deckel `OWNER_SEED_ROUNDS = 3`; am Deckel (und bei einem fehlgeschlagenen stat2) gilt das
+stat VOR der letzten Aufnahme, also das alte Verhalten. Harte Invariante: `seedUntil` ist nie groesser
+als ein stat, das VOR der gesendeten Aufnahme gelesen wurde — hoechstens Duplikat, nie Luecke. Gast-
+und Resize-Zweig sind unberuehrt, `afterSeed` ebenso. `e2e/pins.ts` haelt Reihenfolge, Deckel und
+Rueckfall fest (Mutation „zweites stat entfernen" ⇒ Pin rot).
+
+*Messung (2026-09-14, Second-host).* Rohsonde (pipe-pane `exec cat >>`, Tropfschleife, 200 Versuche je
+Modus): einfaches stat **33/200** Versuche mit Naht-Duplikat, Doppel-stat **0/200** (Mac: 0/200), in
+keinem Modus eine Luecke. Gezielte Schleife des Check-Blocks aus `e2e/slots.ts` gegen eine
+Scratch-Instanz, Seed in Suite-Groesse (3000 Zeilen): Baum vor der Reparatur **3 von 20 rot**, jeweils
+`42 marks, 1..41`; reparierter Baum **30 von 30 gruen**.
+
+*Rest-Unsicherheit, benannt statt verschwiegen:* eine Zeile, die tmux schon gemalt, `pipe-pane` aber
+noch nicht in die Datei geschrieben hat, stuende weiterhin in Seed UND Strom — das Doppel-stat sieht
+sie nicht. Gemessen 0/800 (Vorlane, Aufnahme VOR stat) und 0/200 je Host mit Doppel-stat; das ist
+eine Messung, kein Beweis, dass der Pipe-Lag nie ein Duplikat erzeugt.
+
 ### 11.2c A sixth family: the `stalled` fixture's pane-observation race (2026-08-06 → 2026-08-07)
 
 Signature: up to four FAILs inside `e2e/review.ts`'s `stalled` block with **one** root —

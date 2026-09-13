@@ -41,6 +41,34 @@ Inhalten als an einem strengen Leser.
 Takt: hoechstens zwei bauende Lanes gleichzeitig plus eine reine Mess-Lane (Mac 8 GB, ein Suite-Mutex).
 Freigegeben wird welleweise; eine Welle beginnt, wenn ihre NACH-Zeilen gelandet sind.
 
+## 2a. Stand und Freigabe-Reihenfolge (Orchestrator Slot 7, 2026-09-13 ~20:5x)
+
+Gelandet seit dem Plan: `e23a727a` (83989719), `56d2e084` (7c19d416), `cc8f31bd` (6871514c), `1a5c49fb`
+RAM 1 (4fdc3ebb), `f6903d1e` graphify 1/2 (5927e099), `25b90648` Quellpaket im Brief (bdc9acdd).
+Deploy von bdc9acdd: Slot 9, sobald kein Audit laeuft. Second-host `maxParallelSuites` 4: Neustart steht aus.
+
+Laufend (Deckel 3): `1fc3a5c8` Suite 1/2 (bauend) · `adfc7506` RAM 2, Astra high (Mess-Lane) ·
+`4f033335` Denkauftrag Fable; `8a3b1c46` Denkauftrag Astra steht `queued` und startet am naechsten freien Platz.
+
+Reihenfolge danach — aus NACH-Ketten und Kartenflaechen, nicht nach Alter:
+
+| # | Zeile | wartet auf | warum hier |
+|---|---|---|---|
+| 1 | `57d7ec3b` Startplan-Anzeiger | freier Platz | Kopf der Freigabe-Kette; teilt server.ts/e2e/tasks.ts/pins mit 31df1009, 35bc6afe, 6d841a14 |
+| 2 | `d7b4b47d` Sharding-Probe (Fable) | Land 1fc3a5c8 | NACH-Kette; Flaeche fleet-e2e.ts/e2e/ctx.ts disjunkt zu 57d7ec3b |
+| 3 | `35bc6afe` Karte anreichern + `31df1009` graphify 2/2 | Land 57d7ec3b | untereinander disjunkt (card-extract.ts+tasks.ts gegen pins+server.ts), also parallel |
+| 4 | `6d841a14` Starten nach Plan | Land 35bc6afe | gross, allein bauen; teilt e2e/tasks.ts mit 35bc6afe |
+| 5 | `f1aeba10` Politik | Land 6d841a14 und K2 | Scharfschalten vorher melden |
+| — | `7363b89f`, `5ca92bfb` | ein bauender Platz ohne kettenreife Zeile | nur pins-Beruehrung, rebasen billig |
+
+Unter der Linie, mit Grund: `e3e5084a` Handover-Record (gueltig, aber Nachfolge-Pfad — nach Welle 5 neu
+bewerten); `1b47e29a` Mehr-Knopf (wartet auf Owner-Antwort zur UI, §5c); `11441e5e`, `1733502c`,
+`42141e34` (heute gefilet, Karte ungueltig — nach 35bc6afe neu lesen lassen, sonst von Hand
+schaerfen); `146c06f0`, `e04d15f0`, `ee47b0f8`, `f3ca2e05` wie §6.
+
+Takt bleibt 2 bauend + 1 Mess-Lane; solange zwei Denk-Lanes und RAM 2 laufen, baut nur eine Lane. Das ist
+gewollt: der Mac hat heute zweimal Hintergrundprozesse wegen Speichermangel beendet (RAM 2 klaert, ob mehr geht).
+
 ## 3. Die Wellen
 
 ### Welle 0 — Betrieb (Slot 9, sofort)
@@ -99,6 +127,12 @@ fehlende Groesse, Symbol-/Rollen-Luecke. `hold` als Notbremse. Nach dem Land nur
   Kontext bei der ersten Aenderung p50 < 120 k (heute 151 k) und weniger Bash davor. Ja ⇒ als
   naechstes ein Test-Paket fuer e2e-Lanes (ctxPack `e2e-check-schreiben`, Worktrail IV §3.4) filen.
   Nein ⇒ zuerst verstehen, warum, kein zweites Paket. *Entscheidet: Orchestrator (delegiert).*
+  **Verfahren (Slot 7, 2026-09-13):** `python3 docs/messungen/k1-kontext-erste-aenderung.py --since <Boot des
+  Deploys> --rows` — vorher und nachher durch dieselbe Definition (Kontext der Assistant-Nachricht, die die
+  erste Edit/Write- oder schreibende Bash-Aktion ausloest), dazu getrennt: Lanes MIT geliefertem Quellpaket.
+  Basis nach dieser Definition, 14 d bis 20:5x: **p50 134 k, p90 185 k, Bash davor p50 23, n=178**. Die 151 k
+  oben stammen aus einer anderen, nicht festgehaltenen Definition und sind kein Vergleichswert. Neues
+  Kriterium: p50 der Lanes MIT Quellpaket < 115 k (−15 %) und Bash davor sinkt, n ≥ 10.
 - **K2 — ist die Automatik scharf genug, aber nicht zu streng?** Nach Deploy von `57d7ec3b` und
   `35bc6afe`: der Anzeiger zeigt, wie viele offene Fleet-Betrieb-Auftraege HART bestehen. Unter der
   Haelfte ⇒ Gruende zaehlen und dem Owner vorlegen, bevor `f1aeba10` scharf geschaltet wird.
@@ -129,6 +163,12 @@ kein Vorbehalt fuer den ganzen Auftrag. Denkblock-Partner: `21ade485` (Modellkla
 „Gueteklassen: ein Job traegt, welche Klasse ihn ausfuehrt, verbunden mit der Sub-Agent/Worker/
 Skript-Konfiguration" als Kommentar) und `c269023d` (Provider-Profile).
 
+**Stand ~20:5x (Slot 7):** gefilet und freigegeben als `4f033335` (Fable 5.1 high) und `8a3b1c46` (Astra
+medium, Astra-Schablone) — gleicher Kern (Owner-Worte, Fragen F1–F6, Gliederung §1–§8 mit Entwuerfen:
+Lane-Brief-Template mit DELEGATION, Rollenkarten MAIN/Orchestrator, Gueteklassen-Datensatz,
+AGENTS.md-Absatz Sub-Agents), gegenseitig nicht lesen. Ergebnis: `docs/messungen/2026-09-14-rollen-briefe-
+modellklassen-{fable,astra}.md`. Danach: Synthese Orchestrator + Owner, Abschnitt fuer Abschnitt.
+
 ## 5b. Suiten, RAM, Handoff-Rauschen — Owner 2026-09-13 „alles angehen"
 
 Gemessen (Slot 5): volle Suite ~39 min (2 311–2 350 s, ~4 400 Checks), 69 % davon Luecken ≥ 3 s;
@@ -140,7 +180,8 @@ die ganze Kette (`holdSuiteLock` im `gateRun`), Gate-Warten 3 d p50 0 / p90 275 
 | Second-host `maxParallelSuites` 3 → 4 | Config geaendert 19:28, Backup `config.json.bak-20260913-suites3`; greift erst nach Daemon-Neustart — ein Hintergrund-Waechter startet neu, sobald `running` 0 ist (sonst beim naechsten `daemon-update`). Nach einem Tag messen, dann 5 | — | laeuft |
 | `1fc3a5c8` | Suite schneller 1/2: lange Test-Wartezeiten kuerzen (500 s in 36 Checks, 227 s in e2e/programs.ts) | Opus 5 | nach `f6903d1e` |
 | `d7b4b47d` | Suite schneller 2/2: Sharding-Probe `--shard k/n`, Abhaengigkeitskarte | Fable 5.1 (Owner-Wunsch) | nach `1fc3a5c8` |
-| `1a5c49fb` | RAM der Slots/Sessions: messen, zerlegen, Rangliste (Baseline: Mac Swap 2,66 GB, ~33 Playwright-MCP-Prozesse fuer 7 Claude-Sessions) | Astra, medium | als naechste Mess-Lane frei |
+| `1a5c49fb` | RAM der Slots/Sessions: messen, zerlegen, Rangliste (Baseline: Mac Swap 2,66 GB, ~33 Playwright-MCP-Prozesse fuer 7 Claude-Sessions) | Astra, medium | gelandet 4fdc3ebb — flach (8 min, 2 k Reasoning-Tokens): „outside/other" 3,8 GB ungeklaert, RSS statt Footprint, MCP-Hebel unbewiesen |
+| `adfc7506` | RAM 2/2: optimieren statt messen — F1–F9, Top-3-Hebel mit Probe (Wegwerf-Pane auf eigenem Socket), Schnitte als Filing-Bloecke | Astra, high (Owner) | laeuft |
 | `7363b89f` | HANDOFF entruempeln: Rotation + state.sh-Warnung (271 HANDOFF-Commits/14 d, Datei 572 KB) | Opus 5 | frei |
 | `5ca92bfb` | Land-Chronik: eine Zeile je Land aus den Land-Notizen, kein Squash | Opus 5 | frei |
 

@@ -9,15 +9,6 @@
             "command": "[ -x \"$HOME/.local/bin/graphify\" ] || exit 0; exec \"$HOME/.local/bin/graphify\" hook-guard search"
           }
         ]
-      },
-      {
-        "matcher": "Read|Glob",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "[ -x \"$HOME/.local/bin/graphify\" ] || exit 0; exec \"$HOME/.local/bin/graphify\" hook-guard read"
-          }
-        ]
       }
     ],
     "PermissionRequest": [

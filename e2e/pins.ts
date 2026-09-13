@@ -7987,13 +7987,16 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // .gitignore rather than `git check-ignore`, because the post-land audit runs from a git archive.
   const ignored = read(".gitignore").split("\n").some((l) => l.trim() === ".claude/settings.json");
   pin(`${RULE_HOOK} — .claude/settings.json is not gitignored (an ignored copy never reaches a lane)`, !ignored);
-  // MERGED, never replaced: the graphify guards the file carried before it was tracked, with no
-  // account-name path (the reason it was ignored) and a silent exit where graphify is not installed
+  // MERGED, never replaced: the graphify search guard the file carried before it was tracked, with no
+  // account-name path (the reason it was ignored) and a silent exit where graphify is not installed.
+  // The read guard is GONE on purpose (owner 2026-09-13, worktrail IV §3.5: 74 % of reads followed a
+  // query anyway) — a re-added one is caught here, not rediscovered in the nudge count.
   const graphify = (matcher: string, mode: string) => groups("PreToolUse").some((g) => g.matcher === matcher
     && (g.hooks ?? []).some((c) => c.command === `[ -x "$HOME/.local/bin/graphify" ] || exit 0; exec "$HOME/.local/bin/graphify" hook-guard ${mode}`));
-  pin(`${RULE_HOOK} — the graphify guards survive beside it, through $HOME and with no /Users/ path`,
-    graphify("Bash|Grep", "search") && graphify("Read|Glob", "read") && !read(".claude/settings.json").includes("/Users/"),
-    `search=${graphify("Bash|Grep", "search")} read=${graphify("Read|Glob", "read")}`);
+  const readGuard = cmds("PreToolUse").some((c) => (c.command ?? "").includes("hook-guard read"));
+  pin(`${RULE_HOOK} — the graphify search guard survives beside it (no read guard), through $HOME and with no /Users/ path`,
+    graphify("Bash|Grep", "search") && !readGuard && !read(".claude/settings.json").includes("/Users/"),
+    `search=${graphify("Bash|Grep", "search")} read=${readGuard}`);
   // the two pane facts the hook reads are the two ensureSlot bakes, and the route it posts to is served
   const srvHook = read("server.ts");
   const bakesLane = srvHook.includes("export FLEET_SELF_URL='http://${HOST}:${PORT}'; ${s.worktree ? \"export FLEET_SELF_LANE='1'; \" : \"\"}");

@@ -317,7 +317,9 @@ soften a claim you did not verify.
 
 Graphify in a lane: `graphify-out/` is git-ignored and exists only in the main checkout, so a
 worktree never has its own graph — a missing graph under that ignored directory is the normal
-state, never a stop. A brief line like "graphify query before raw search" means: query the main
+state, never a stop. Use graphify for architecture and module/community questions; for symbol
+search use `rg`/`ast-grep`, because the graph does not carry roughly a fifth of the functions
+(`bun graph-coverage.ts --graph <graph.json>` measures it). A brief line like "graphify query before raw search" means: query the main
 checkout's graph read-only via this command (the derivation works from any worktree):
 
 ```sh

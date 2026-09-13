@@ -10,6 +10,7 @@ import { laneDoneLooking, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
 import { setMergeMode, settleForMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
+import { projectLandWaves, LAND_WAVE_COSTS_2026_09 } from "../task-land-waves";
 
 type ProgramStatus = "proposed" | "confirmed" | "active" | "complete";
 interface ProgramContent {
@@ -5978,6 +5979,92 @@ export async function run(ctx: Ctx): Promise<void> {
       && capLastText.includes(`release cap reached (${RELEASE_CAP}/${RELEASE_CAP} released rows not yet started)`)
       && (await queuedOfMain()) === RELEASE_CAP,
     `before=${queuedBeforeCap} statuses=${capStatuses.join(",")} last=${capLastText}`);
+
+  // === S5 (b8cb3c75) · THE CARD-SURFACE CONFIRMATION AS A BATCH ================================
+  // Same live binding, same REPO. The rows are filed through the owner door WITH a card (S6), so
+  // each carries a valid card whose files testrepo tracks; the text names none of them, so the
+  // surface the confirmation writes can only have come from the card.
+  const selfConfirm = (token: string, body: unknown): Promise<Response> =>
+    fetch(`${BASE}/api/self/tasks/confirm-cards`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
+      body: JSON.stringify(body) });
+  const cardFor = (files: string[]) => ({ ziel: "s5 probe", surface: { files, symbols: [] },
+    done: "die Flaeche ist bestaetigt", verify: "bun e2e/pins.ts", verboten: [] });
+  type S5Row = { id: string; programId?: string; files?: string[]; filesOrigin?: string; status: string };
+  const s5Digest = async (): Promise<S5Row[]> =>
+    ((await (await get("/api/sessions")).json()) as { tasks: S5Row[] }).tasks;
+  // "absent" = no wave carries the id at all; `null` = a wave carries it and has NO objection. The
+  // two must stay apart: `null` is exactly the success S5 (5) looks for.
+  const s5Waves = async (ids: string[]): Promise<Record<string, string | null>> => {
+    const rows = await s5Digest();
+    const p = projectLandWaves({ tasks: rows.map((t) => ({ id: t.id, kind: "auftrag", status: t.status as "pending",
+      created: 0, ...(t.programId ? { programId: t.programId } : {}), ...(t.files ? { files: t.files } : {}),
+      ...(t.filesOrigin ? { filesOrigin: t.filesOrigin as "confirmed" | "derived" } : {}) }))
+      .filter((t) => ids.includes(t.id)), dispatchRepo: REPO, costs: LAND_WAVE_COSTS_2026_09 });
+    return Object.fromEntries(ids.map((id) => {
+      const wave = p.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(id));
+      return [id, wave ? wave.reasonAgainst : "absent"];
+    }));
+  };
+  // not makeTask: a refused card is a 400 without a `task`, and the fixture check below must fail
+  // AS ITSELF rather than as a TypeError that ends the module
+  const s5Make = async (fields: Record<string, unknown>): Promise<string> => {
+    const created = (await (await post("/api/tasks", { queue: false, ...fields })).json()) as { task?: TaskRow };
+    if (created.task) madeTasks.push(created.task.id);
+    return created.task?.id ?? "";
+  };
+  const s5A = await s5Make({ text: "s5 row A", programId: mainProgram.id, card: cardFor(["code.txt"]) });
+  const s5B = await s5Make({ text: "s5 row B", programId: mainProgram.id, card: cardFor(["code.txt", "ctx-mod.txt"]) });
+  const s5C = await s5Make({ text: "s5 row C", programId: mainProgram.id, card: cardFor(["fleet-e2e.ts"]) });
+  const s5NoCard = await s5Make({ text: "s5 row without a card", programId: mainProgram.id });
+  const s5Foreign = await s5Make({ text: "s5 foreign row", programId: foreignProgram.id, card: cardFor(["code.txt"]) });
+  const s5Ids = [s5A, s5B, s5C];
+  const s5WavesBefore = await s5Waves(s5Ids);
+  check("S5 fixture: three rows of P carry a card and are NOT confirmed yet — the sensor refuses them as derived-only",
+    [...s5Ids, s5NoCard, s5Foreign].every(Boolean) && s5Ids.every((id) => s5WavesBefore[id] === "flaeche-nur-abgeleitet"),
+    JSON.stringify({ ids: [...s5Ids, s5NoCard, s5Foreign], waves: s5WavesBefore }));
+
+  // (2) ALL OR NOTHING: one foreign-program id in the body refuses the whole batch.
+  const s5DigestBefore = JSON.stringify((await s5Digest()).filter((t) => [...s5Ids, s5Foreign].includes(t.id)).map((t) => [t.id, t.files, t.filesOrigin]));
+  const s5Mixed = await selfConfirm(successorToken, { ids: [s5A, s5Foreign] });
+  const s5MixedText = await s5Mixed.text();
+  check("S5 (2): a batch naming a row of another program is 409 naming it, and NOTHING is confirmed",
+    s5Mixed.status === 409 && s5MixedText.includes(s5Foreign) && s5MixedText.includes("nothing confirmed")
+      && JSON.stringify((await s5Digest()).filter((t) => [...s5Ids, s5Foreign].includes(t.id)).map((t) => [t.id, t.files, t.filesOrigin])) === s5DigestBefore,
+    `${s5Mixed.status}:${s5MixedText}`);
+
+  // (1)+(4): three valid-card rows and one card-less row in ONE call.
+  const s5AuditFrom = auditLines();
+  const s5Res = await selfConfirm(successorToken, { ids: [...s5Ids, s5NoCard] });
+  const s5Body = (await s5Res.json()) as { ok?: boolean; confirmed?: { id: string; files: string[] }[];
+    skipped?: { id: string; reason: string }[] };
+  const s5After = (await s5Digest()).filter((t) => s5Ids.includes(t.id));
+  const s5Want: Record<string, string> = { [s5A]: "code.txt", [s5B]: "code.txt ctx-mod.txt", [s5C]: "fleet-e2e.ts" };
+  const s5Audit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).slice(s5AuditFrom)
+    .map((l) => JSON.parse(l) as { event?: string; slot?: number; programId?: string; ids?: string; n?: number })
+    .filter((r) => r.event === "task_cards_confirm");
+  check("S5 (1): the MAIN confirms three rows of P in one call — filesOrigin confirmed, files = card.surface.files, ONE audit line",
+    s5Res.status === 200 && s5Body.ok === true && s5Body.confirmed?.length === 3
+      && s5After.length === 3 && s5After.every((t) => t.filesOrigin === "confirmed" && t.files?.join(" ") === s5Want[t.id])
+      && s5Audit.length === 1 && s5Audit[0]?.slot === successorSlot && s5Audit[0]?.programId === mainProgram.id
+      && s5Audit[0]?.n === 3 && s5Audit[0]?.ids === s5Ids.join(","),
+    `${s5Res.status} ${JSON.stringify(s5Body)} rows=${JSON.stringify(s5After)} audit=${JSON.stringify(s5Audit)}`);
+  check("S5 (4): a row without a valid card is skipped and NAMED in the answer, never confirmed from its prose",
+    s5Body.skipped?.length === 1 && s5Body.skipped[0]?.id === s5NoCard
+      && (s5Body.skipped[0]?.reason ?? "").includes("no valid card")
+      && (await s5Digest()).find((t) => t.id === s5NoCard)?.filesOrigin !== "confirmed",
+    JSON.stringify(s5Body.skipped ?? null));
+  const s5WavesAfter = await s5Waves(s5Ids);
+  check("S5 (5): afterwards the wave sensor no longer refuses those rows as derived-only",
+    s5Ids.every((id) => s5WavesAfter[id] !== "flaeche-nur-abgeleitet" && s5WavesAfter[id] !== "absent"),
+    JSON.stringify(s5WavesAfter));
+  const s5Again = (await (await selfConfirm(successorToken, { ids: [s5A] })).json()) as { confirmed?: unknown[]; skipped?: { reason: string }[] };
+  check("S5: a second confirmation of an already-confirmed row writes nothing and says why",
+    s5Again.confirmed?.length === 0 && (s5Again.skipped?.[0]?.reason ?? "").includes("already carries a confirmed surface"),
+    JSON.stringify(s5Again));
+  const s5Extra = await selfConfirm(successorToken, { ids: [s5C], programId: mainProgram.id });
+  check("S5: the body is a closed set — a programId beside ids is a 400, never read",
+    s5Extra.status === 400 && (await s5Extra.text()).includes("[programId]"), String(s5Extra.status));
 
   // Leave the queue and the two switches exactly as this section found them: every row it minted is
   // deleted (none of them is `sent`, so none is a running lane's founding row), and the master stops

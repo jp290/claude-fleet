@@ -51,10 +51,10 @@
 
 import { existsSync } from "node:fs";
 
-/** where the delivered text came from — server.ts's BriefSource, the six values a receipt carries */
-export const BRIEF_SOURCES = ["compiled", "owner", "main", "raw", "clarify", "founding"] as const;
+/** where the delivered text came from — server.ts's BriefSource, the seven values a receipt carries */
+export const BRIEF_SOURCES = ["compiled", "owner", "main", "raw", "clarify", "founding", "card"] as const;
 export type BriefSource = (typeof BRIEF_SOURCES)[number];
-/** the five a LANE can be founded by. `founding` describes a Program-MAIN/Supervisor, never a lane. */
+/** the six a LANE can be founded by. `founding` describes a Program-MAIN/Supervisor, never a lane. */
 export type LaneBriefSource = Exclude<BriefSource, "founding">;
 
 /** the five terminal shapes of a lane — LaneOutcome.disposition, NOT DispositionVerdict */

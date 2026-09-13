@@ -227,6 +227,28 @@ is byte-identical to `git show <fHead>:<path>` cut at the lines the label itself
 `${snippetBlock}` from `deliveredBrief` reds the first one — no "Quellpaket" in `fPrompt`. That check
 is SPECIFIED here, not run: without the surface it cannot be, and it is not claimed as if it were.
 
+### 6c. The head order of a dispatched brief — the KARTE first (queue row a672b626, 2026-09-13)
+
+A row that carries a **valid** card (`Task.card`, `card-extract.ts`) is delivered with the card as a
+head in FRONT of its prose. The order of a single-row dispatch, as `server.ts#briefAndSend` assembles it:
+
+1. **KARTE head** — `wave-brief.ts#renderCardHead`: first line starts `KARTE`, then `ZIEL` ·
+   `FLAECHE` · `DONE` · `VERIFY` · `VERBOTEN`, closed by `--- AUFTRAG ---`; at most 1.5 KB
+   (`CARD_HEAD_MAX_BYTES`, per-field byte budgets, a final clip as guard).
+2. **the prose** — `brief ?? text`, unchanged; the card is a reading of it, never a replacement.
+3. notes block · studio lane block · anchor block · exit footer — order and bytes unchanged.
+
+A wave brief does the same per row (`renderWaveBrief`: each `--- ZEILE n VON m ---` opens with that
+row's head when it has a valid card). The receipt books `briefSource: "card"` whenever the head was
+delivered (the wave: the head row's card). **No card, or `valid: false`: no head, and the bytes and
+`briefSource` (`raw`/`compiled`/`owner`/`main`) are exactly what they were** — a head built from a
+reading the tree refused would put an unestablished claim first. A clarify lane gets no head: it
+ignores the brief by design.
+
+Where refine fits: `refine-confirm` no longer folds `done`/`verify`/`files` into the child's text when
+the child's card validates (`server.ts#refineChildCard`, `model: "refine"`); the head delivers them.
+A child whose card does not validate keeps the folded text, so it never receives less than before.
+
 ## 7. Checklist for a good brief
 
 - [ ] **Environment:** the files/constraints/interfaces this task actually touches — curated, not exhaustive.

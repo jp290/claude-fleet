@@ -109,9 +109,12 @@ gültig überschreibt; Lane und Steward werden abgewiesen. Nach jedem externen A
 Occupant-Identität erneut geprüft. Keine Aussage hier behauptet, alle Reports, Watches oder offenen
 Fragen würden automatisch übertragen.
 
-## Bekannte offene Grenze
+## Kontext-Hinweis des Servers
 
-Der Produktions-Tick `migrateMessage` fordert weiterhin pauschal „HANDOFF.md schreiben UND
-committen“ und unterscheidet Standard-Program-MAIN, Legacy, Game-Maker und Supervisor nicht. Das ist
-ein bekannter Code-Widerspruch außerhalb dieses Doku-Schnitts; bis zu seiner Reparatur ist seine
-Nachricht ein veralteter Hinweis, nicht das Nachfolge-Gate von `handleSelfSucceed`.
+Der Tick `server.ts#tickMigrate` (nur registriert bei `FLEET_MIGRATE_PCT > 0`) stupst ausschließlich
+Slots der claude-Harness an; codex/pi/pi-zai sind nicht zuständig, nicht 0 %. Seine MAIN-Nachricht
+(`server.ts#migrateMessage`) folgt der Schiene, die `server.ts#migrateRailOf` über dieselbe Bindung
+wie `handleSelfSucceed` bestimmt: gebundene Standard-Program-MAIN → offene Pflichten lesbar machen,
+dann `succeed` mit optionalem `carry`, kein HANDOFF-Commit · Game-Maker → Checkpoint committen,
+`succeed` ohne `carry` · ungebunden, mehrdeutig gebunden, Supervisor → HANDOFF.md schreiben und
+committen. Der Hinweis ist ein Server-Prädikat, nicht das Gate; das Gate bleibt `handleSelfSucceed`.

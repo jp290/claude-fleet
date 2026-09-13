@@ -4,11 +4,11 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rena
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
-import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, tmuxOut, typeScreen } from "./harness";
+import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, typeScreen } from "./harness";
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { laneDoneLooking, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
-import { setMergeMode, settleForMerge } from "./lane-helpers";
+import { MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09 } from "../task-land-waves";
 
@@ -344,8 +344,7 @@ const waitForLabel = async (label: string): Promise<number | null> => {
 export async function run(ctx: Ctx): Promise<void> {
   // Legacy state has no programs member. Stop the scratch server before editing its state, then
   // restart through the shared helper; the helper's first kill is harmless against an absent srv.
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const legacyReceipt: ContextReceipt = {
     id: "1".repeat(32), hash: "2".repeat(64), at: 1, repo: REPO, head: "3".repeat(40),
     taskId: null, originId: null, programId: null, slot: 1, branch: "main",
@@ -894,8 +893,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // unreadable inbox to an ABSENT one, so a handover that printed `0 unread` here would be stating
   // a number it never measured. This is the one source in the block that can be lost without
   // anything else noticing, so it is the one the fixture takes away.
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const fleetInboxPlant = readState();
   const fleetInboxRow = fleetInboxPlant.programs?.find((p) => p.id === fleetProgram.id);
   if (fleetInboxRow) fleetInboxRow.inbox =
@@ -1098,8 +1096,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // reads as "nothing was ever owed" — and here that is worse than for the inbox, because this
   // record IS the only copy. Corrupt → boot → the Program's own reader → an ordinary save → a
   // second boot → the same reader. The second boot never sees a broken byte.
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const handoverPlant = readState();
   const handoverRow = handoverPlant.programs?.find((p) => p.id === fleetProgram.id);
   if (handoverRow) handoverRow.handover =
@@ -1287,8 +1284,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const foreignStatusSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
   const foreignStatusOpen = foreignStatusSlot > 0
     ? await post(`/api/slots/${foreignStatusSlot}/open`, { cwd: REPO, label: "d2-foreign-main" }) : null;
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const statusState = readState();
   const statusOccupant = statusState.slots?.[String(statusSlot)];
   const staleStatusRow = statusState.programs?.find((p) => p.id === staleStatusProgram.id);
@@ -1356,8 +1352,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const d2BaseAt = Date.now() + 5_000;
   const d2AuditAt = d2BaseAt + 300;
   const d2UncoveredAt = d2BaseAt + 400;
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const d2OutcomePath = `${ROOT}/lane-outcomes.jsonl`;
   const d2AuditPath = `${ROOT}/post-land-audits.jsonl`;
   const d2AdjudicationPath = `${ROOT}/audit-adjudications.jsonl`;
@@ -1516,8 +1511,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && !Object.prototype.hasOwnProperty.call(historicalAdj, "actor"),
     JSON.stringify(historicalAdj ?? null));
 
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   writeFileSync(d2OutcomePath, readFileSync(d2OutcomePath, "utf8").split("\n")
     .filter((line) => line && !line.includes('"branch":"d2-status-')).join("\n") + "\n", { mode: 0o600 });
   writeFileSync(d2AuditPath, readFileSync(d2AuditPath, "utf8").split("\n")
@@ -1768,8 +1762,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && !!recycleOpen?.ok && !!recycleBefore?.openedAt && /^[0-9a-f]{32}$/.test(recycleBefore.selfToken ?? ""),
     JSON.stringify({ executionLaneBody, recycleSlot, recycleStatus: recycleOpen?.status, recycleBefore }));
 
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const executionState = readState();
   const executionSlotRow = executionState.slots?.[String(executionLaneBody.slot)];
   const executionMainRow = executionState.slots?.[String(executionMainSlot)];
@@ -2049,8 +2042,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && !activeAfterKill?.unknown.some((line) => line.includes(matchingTaskId)),
     JSON.stringify({ before: runningRow?.phase, after: killedRow, unknown: activeAfterKill?.unknown }));
   await post(`/api/slots/${recycleSlot}/kill`, {});
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const executionCleanup = readState();
   executionCleanup.tasks = (executionCleanup.tasks ?? [])
     .filter((t) => t.id !== matchingTaskId && t.id !== unattributedTaskId && t.id !== orphanTaskId);
@@ -2098,8 +2090,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const inboxEntryReport = "2222".repeat(6);   // newer, fleet-report, and it stays UNREAD across the succession
   const inboxDanglingEntry = "3333".repeat(6); // points at a row retention already dropped
   const inboxPlantAt = Date.now() - 60_000;
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const inboxPlantState = readState();
   const inboxPlantMain = { slot: mainSlot ?? 0, openedAt: bound?.openedAt ?? 0, sessionId: bound?.sessionId ?? null };
   const inboxRecycleRow = inboxRecycleSlot === null ? undefined : inboxPlantState.slots?.[String(inboxRecycleSlot)];
@@ -2256,8 +2247,7 @@ export async function run(ctx: Ctx): Promise<void> {
 
   // --- Program-aware succession: HANDOFF gate first, then one active slot+openedAt authority. ---
   const ambiguousProgram = await activateNewProgram("Ambiguous Program-MAIN succession refusal");
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const ambiguousState = readState();
   const ambiguousRow = ambiguousState.programs?.find((p) => p.id === ambiguousProgram.id);
   if (ambiguousRow && bound) ambiguousRow.main = { ...bound };
@@ -2434,8 +2424,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const msgFreeSlot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
   const msgBOpen = await post(`/api/slots/${msgFreeSlot}/open`, { cwd: REPO, label: "message-rail-receiver" });
   const msgBSlot = msgBOpen.ok ? msgFreeSlot : 0;
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const msgPlantState = readState();
   const msgBSlotRow = msgPlantState.slots?.[String(msgBSlot)];
   const msgBRow = msgPlantState.programs?.find((p) => p.id === msgProgramB.id);
@@ -2934,8 +2923,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // is under test is the LOADER and the cap, and driving 200 real sends would prove the doors again
   // and the record not at all. They run last on purpose: each one replaces the live rail above.
   const msgPlant = async (record: unknown, lost?: unknown): Promise<void> => {
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const st = readState() as FleetState & Record<string, unknown>;
     if (record === undefined) delete st.messages; else st.messages = record;
     if (lost === undefined) delete st.messagesLost; else st.messagesLost = lost as Record<string, unknown>;
@@ -3061,8 +3049,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // pair must not be able to give. The id is distinct so nothing above can be reattached by it, and
   // the row is removed again below, in the same discipline as that cleanup.
   const d1TaskId = "d1reporttaskrow";
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const d1TaskState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: unknown[] };
   d1TaskState.tasks = [...(d1TaskState.tasks ?? []), {
     id: d1TaskId, originId: null, programId: mainProgram.id,
@@ -3092,8 +3079,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const decidedReportId = "c".repeat(24);
   const decidedReportEventId = "d".repeat(24);
   const decidedAt = Date.now() - 5000;
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const reportPlantState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
     { fleetReports?: unknown[] };
   const decidedReceiver = { slot: bound?.slot ?? 0, openedAt: bound?.openedAt ?? 0,
@@ -3127,8 +3113,7 @@ export async function run(ctx: Ctx): Promise<void> {
       viaReportRoute: (successorReports.reports ?? []).map((r) => r.id) }));
   // …and D1 takes its own plants back out, for the same reason the block above states: a task row
   // and a report row left on the active Program would ride into every later module's view of it.
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const d1Cleanup = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
     { tasks?: { id?: string }[]; fleetReports?: { id?: string }[];
       attentionRequests?: { id?: string }[]; programs?: { id?: string; inbox?: unknown }[] };
@@ -3236,8 +3221,7 @@ export async function run(ctx: Ctx): Promise<void> {
       ...(decision === null ? {} : { decision: { disposition: decision.disposition, at: decision.at,
         by: gReceiver, reason: decision.disposition === "rejected" ? gRejectReason : "read the diff and took the work" } }),
     });
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const gPlant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { fleetReports?: unknown[] };
     gPlant.fleetReports = [...(gPlant.fleetReports ?? []),
       gRow(gRejectedId, gLaneRejected, gBase, { disposition: "rejected", at: gBase + 1000 }),
@@ -3351,8 +3335,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // D2 takes its own plants back out, in the D1 block's discipline: six report rows left on the
     // ledger would ride into every later module's reading of it.
     await post(`/api/slots/${gLaneRejectedUndecided.slot}/kill`, {});
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const gCleanup = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { fleetReports?: { id?: string }[] };
     gCleanup.fleetReports = (gCleanup.fleetReports ?? []).filter((r) => !gPlantIds.includes(r.id ?? ""));
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(gCleanup, null, 2), { mode: 0o600 });
@@ -3667,8 +3650,7 @@ export async function run(ctx: Ctx): Promise<void> {
     [...after].every((id) => before.has(id));
   const expectFoundingStartupRefusal = async (name: string,
     plant: (state: FleetState) => void, expected: string, fleetSock = SOCK): Promise<void> => {
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const baseline = readState();
     const planted = structuredClone(baseline);
     plant(planted);
@@ -4010,8 +3992,7 @@ export async function run(ctx: Ctx): Promise<void> {
   }).catch(() => null);
   const gmCrashSlot = await waitForLabel(gmCrashLabel);
   const gmCrashMarker = (await ownerPrograms()).find((p) => p.id === gmCrashProgram.id)?.founding;
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const gmCrashReceipt: ContextReceipt = {
     id: "d".repeat(32), hash: "e".repeat(64), at: Date.now(), repo: realpathSync(gameWt),
     head: gitIn(gameWt, "rev-parse", "HEAD").stdout.trim(), taskId: null, originId: null,
@@ -4072,8 +4053,7 @@ export async function run(ctx: Ctx): Promise<void> {
   if (gmWrongDurable === null)
     throw new Error("game-maker wrong-target fixture never reached durable slot identity parity");
   const gmStaleSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const planted = readState();
   const plantedAt = Date.now();
   const staleRow = planted.programs?.find((p) => p.id === gmStaleProgram.id);
@@ -4298,8 +4278,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const gmDormantSiblingSlots = (await sessions()).slots.filter((slot) => !slot.cwd).slice(0, 2);
   const gmDormantSiblingSlot = gmDormantSiblingSlots[0]?.id ?? 0;
   const gmDormantSiblingTarget = gmDormantSiblingSlots[1]?.id ?? 0;
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const gmDormantSiblingState = readState();
   const gmDormantSiblingAt = Date.now();
   const gmDormantSiblingProgram = gmDormantSiblingState.programs?.find((p) => p.id === gmRefusalProgram.id);
@@ -4435,8 +4414,7 @@ export async function run(ctx: Ctx): Promise<void> {
       || !sameRootDurable.selfToken || otherTarget < 1)
       throw new Error("Standard recovery fixtures never reached durable exact identities");
 
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const standardRecoveryState = readState();
     const differentRow = standardRecoveryState.programs?.find((p) => p.id === differentRootProgram.id);
     const otherRow = standardRecoveryState.programs?.find((p) => p.id === otherSlotProgram.id);
@@ -5326,8 +5304,7 @@ export async function run(ctx: Ctx): Promise<void> {
   }
   const postReceiptCrashReached = await waitForSuccessionLatch(`${postReceiptCrashLatch}.reached`,
     "post-receipt crash fixture: the Standard receipt is durable before server death");
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   clearSuccessionLatch(postReceiptCrashLatch);
   await restartSrv();
   await postReceiptCrashPending;
@@ -5560,8 +5537,7 @@ export async function run(ctx: Ctx): Promise<void> {
       body: JSON.stringify({ kind: "decision", text }) });
   const attentionBeforeProbes = readState().attentionRequests ?? [];
   const twinId = "a1b2c3d4e5f6a1b2c3d4e5f6";
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const twinState = readState();
   const twinSource = twinState.programs?.find((p) => p.id === mainProgram.id);
   if (twinSource) twinState.programs?.push({ ...twinSource, id: twinId,
@@ -5621,8 +5597,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // openedAt — only the session id inside the pane was re-minted (/clear, resume, respawn). Both
   // halves are planted because at runtime both are server-owned facts; what is under test is the
   // COMPARISON the route now refuses to gate on, and the value it reports instead.
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const divergentState = readState();
   divergentState.programs = (divergentState.programs ?? []).filter((x) => x.id !== twinId);
   const divergentRow = divergentState.programs.find((x) => x.id === mainProgram.id);
@@ -5663,8 +5638,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // …and the OTHER non-unknown arm, because a projection that only ever said `divergent` would
   // pass the check above. Same occupation, same recorded id — only the pane's id is planted to
   // match — and the answer flips to `exact`. One restart buys the one state the land door admits.
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const exactState = readState();
   const exactSlotRow = exactState.slots?.[String(successorSlot)];
   if (exactSlotRow) exactSlotRow.sessionId = recordedSession;
@@ -5687,8 +5661,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // Put the state back the way the sections below expect to find it: the twin is already gone, the
   // planted session ids return to the null pair the succession check proved, and the attention row
   // this section raised is removed rather than left to age into another module's counts.
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const probeCleanup = readState();
   probeCleanup.attentionRequests = attentionBeforeProbes;
   const cleanupRow = probeCleanup.programs?.find((x) => x.id === mainProgram.id);
@@ -5729,8 +5702,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // and the comparison would read as "the two sights agree" while nothing was ever compared.
   check("V1b fixture: a plain slot is open to be bound as Supervisor and carries its own credential",
     !!svOpen?.ok && /^[0-9a-f]{32}$/.test(svToken), `${svSlotId} ${svOpen?.status}`);
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const closedState = readState();
   const svSlotRow = closedState.slots?.[String(svSlotId)];
   closedState.supervisor = { slot: svSlotId, openedAt: svSlotRow?.openedAt,
@@ -5823,8 +5795,7 @@ export async function run(ctx: Ctx): Promise<void> {
       eventsAfter: (afterState.events ?? []).filter((e) => e.receiverSlot === successorSlot).length }));
   // Put it back exactly: the planted watches and the planted binding both go, because the sections
   // below run on this same MAIN and e2e/supervisor.ts opens on the fact that no Supervisor is bound.
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const v1bCleanup = readState();
   v1bCleanup.supervisor = null;
   v1bCleanup.watches = (v1bCleanup.watches ?? []).filter((w) => !plantedWatchIds.includes(String(w.id)));
@@ -6123,8 +6094,7 @@ export async function run(ctx: Ctx): Promise<void> {
   //   s5Surf  one surface.files gap       → skipped, and the reason says it is the surface
   const s5Role = await s5Make({ text: "s5 row with a role-only gap", programId: mainProgram.id, card: cardFor(["ctx-mod.txt"]) });
   const s5Surf = await s5Make({ text: "s5 row with a surface gap", programId: mainProgram.id, card: cardFor(["code.txt"]) });
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const s5Plant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: { id: string; card?: Record<string, unknown> }[] };
   let s5Planted = 0;
   for (const t of s5Plant.tasks ?? []) {
@@ -6710,8 +6680,7 @@ export async function run(ctx: Ctx): Promise<void> {
     ? { ...lineageCapStaleMain, via: "succeed", endedAt: null, endedBy: null }
     : { slot: 1 + (i % 16), openedAt: 1000 + i, sessionId: null, boundAt: 2000 + i,
       via: i === 0 ? "bootstrap" : "succeed", endedAt: 2001 + i, endedBy: "succeed" });
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const completeBoundState = readState();
   const completeBoundRow = completeBoundState.programs?.find((p) => p.id === completeBoundProgram.id);
   if (completeBoundRow && successorSlot !== null && recycledState?.openedAt) {
@@ -6870,8 +6839,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // vanished" would satisfy the danger half on its own, so a well-formed `guarded` record sits
     // beside the malformed one and must survive that same restart.
     const controlProgram = await activateNewProgram("Promotion loader control");
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const loaderState = readState();
     const dangerRow = loaderState.programs?.find((x) => x.id === promoProgram.id);
     const controlRow = loaderState.programs?.find((x) => x.id === controlProgram.id);
@@ -6896,8 +6864,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // the opposite of what it meant. A probe that cannot build its own field must fail as itself.
     const shapeCarriers: string[] = [];
     for (let i = 0; i < 4; i++) shapeCarriers.push((await activateNewProgram(`Promotion loader shape ${i}`)).id);
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const shapes: unknown[] = [
       { v: 1, selfLand: "green-only" },                                  // no confirmedAt at all
       { v: 1, selfLand: "always", confirmedAt: Date.now() },             // value outside the set
@@ -7012,8 +6979,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // must stay writable. (The live-bound refusal is measured on a real bound MAIN in the
     // Game-Maker section above, where a live occupant actually exists.)
     const staleProgram = await activateNewProgram("Execution profile on a stale binding");
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const staleState = readState();
     const staleRow = staleState.programs?.find((x) => x.id === staleProgram.id);
     if (staleRow) staleRow.main = { slot: 14, openedAt: 1, sessionId: null, boundAt: 1 };
@@ -7070,8 +7036,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const profileCarriers: string[] = [];
     for (let i = 0; i < 4; i++) profileCarriers.push((await activateNewProgram(`Profile loader shape ${i}`)).id);
     const profileControl = await activateNewProgram("Profile loader control");
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const profileShapes: unknown[] = [
       { v: 2, kind: "game-maker", confirmedAt: Date.now() },              // a version nobody knows
       { v: 1, kind: "game-studio", confirmedAt: Date.now() },             // a kind outside the set
@@ -7393,8 +7358,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // to absent and costs the Program nothing, exactly as a malformed profile does.
     const bindingCarrier = await activateNewProgram("Studio binding loader carrier");
     await bindTo(bindingCarrier.id, { id: "private-repo-p" });
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const studioState = readState();
     const goodStudio = (studioState.studios ?? []).find((x) => (x as { id?: string }).id === "private-repo-p");
     const badStudioRows: unknown[] = [
@@ -7428,8 +7392,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // storing one.
     const bindingShapeResults: string[] = [];
     for (const shape of badBindings.slice(1)) {
-      await tmuxOut("kill-session", "-t", "srv");
-      await Bun.sleep(500);
+      await stopSrv();
       const shapeState = readState();
       const row = shapeState.programs?.find((x) => x.id === bindingCarrier.id);
       if (row) (row as unknown as Record<string, unknown>).studio = shape;
@@ -7992,7 +7955,7 @@ export async function run(ctx: Ctx): Promise<void> {
         .flatMap((line) => { try { return [JSON.parse(line) as { event?: string; slot?: number; detail?: string }]; } catch { return []; } });
     // done-looking is a SERVER predicate over git facts refreshed on the slow tick plus a pane idle
     // clause — so a fixture that only commits and calls would race the tick and read as "the route
-    // refuses a finished lane". Polled on the same facts the predicate reads (MERGE_IDLE_MS=3000).
+    // refuses a finished lane". Polled on the same facts the predicate reads (MERGE_IDLE_MS).
     //
     // `lastOutput > 0` IS A CLAUSE, not decoration: 0 means this pane's output was never observed,
     // and the subtraction below happily turns it into ~1.79e12 ms — so without it this helper
@@ -8009,7 +7972,7 @@ export async function run(ctx: Ctx): Promise<void> {
         const body = await slSess();
         const row = body.slots.find((x) => x.id === slot);
         if (row?.git && row.git.dirty === 0 && row.git.ahead > 0
-          && row.lastOutput > 0 && body.now - row.lastOutput >= 3000) return true;
+          && row.lastOutput > 0 && body.now - row.lastOutput >= MERGE_IDLE_MS) return true;
         last = row ? JSON.stringify({ slot, git: row.git,
           observed: row.lastOutput > 0, idleMs: row.lastOutput > 0 ? body.now - row.lastOutput : null })
           : `slot ${slot} has no row`;
@@ -8520,7 +8483,7 @@ export async function run(ctx: Ctx): Promise<void> {
       for (let i = 0; i < 120; i++) {
         const body = await slSess();
         const row = body.slots.find((x) => x.id === slot);
-        if (row && body.now - row.lastOutput >= 3000) return true;
+        if (row && body.now - row.lastOutput >= MERGE_IDLE_MS) return true;
         await Bun.sleep(250);
       }
       return false;
@@ -9188,8 +9151,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const bfOther = "8d5e1a02-77c3-41f6-9e0b-2a4c8b6d3157";
     const bfUnknownRow = "0".repeat(8);
     const bfPlant = async (mutate: (main: Record<string, unknown>, slot: Record<string, unknown>) => void): Promise<boolean> => {
-      await tmuxOut("kill-session", "-t", "srv");
-      await Bun.sleep(500);
+      await stopSrv();
       const st = readState();
       const prog = (st.programs ?? []).find((x) => x.id === ladderProgram.id);
       const slotRow = ladderSlot === null ? undefined : st.slots?.[String(ladderSlot)];
@@ -9615,8 +9577,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // as ITSELF instead of reading as "the loader rejected it".
     const ffHistoricalDetail = ffVerdict?.detail ?? "";
     const ffPlantPersisted = async (overrides: Partial<FfVerdict>): Promise<boolean> => {
-      await tmuxOut("kill-session", "-t", "srv");
-      await Bun.sleep(500);
+      await stopSrv();
       const st = readState();
       const key = ffLane.slot === null ? "" : String(ffLane.slot);
       const row = key === "" ? undefined : st.merges?.[key];
@@ -10779,8 +10740,7 @@ exit 0
   // These four Programs exist only to exercise mutually exclusive bootstrap states. Remove those
   // fixtures from the persisted registry after their own restart proof so the later sessions-poll
   // byte-budget check measures the product surface, not accumulated test-only digests.
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const cleaned = readState();
   cleaned.programs = (cleaned.programs ?? []).filter((p) => bootstrapBaselineIds.has(p.id));
   // …and the SAME rule for what those fixtures left in the event trail. Every land of a
@@ -10893,8 +10853,7 @@ exit 0
     { ...k2Task("k2bad1", "pending", k2MalformedHeld), status: "lane" },
   ];
   const k2Plant = async (programs: Record<string, unknown>[], rows: Record<string, unknown>[]): Promise<void> => {
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const planted = readState() as FleetState & Record<string, unknown>;
     planted.programs = programs as unknown as Program[];
     planted.tasks = rows;
@@ -10982,8 +10941,7 @@ exit 0
     `total=${k2AllHeld.length} kept=${[k2Held, k2Free, k2MalformedHeld].filter((id) => k2AllHeld.includes(id)).length}`);
 
   // Restore the registry the sections after this one read (supervisor.run() binds across it).
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(k2Snapshot, null, 2), { mode: 0o600 });
   await restartSrv();
   const k2Restored = await k2Ids();

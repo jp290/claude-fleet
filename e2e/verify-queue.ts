@@ -312,13 +312,25 @@ export async function run(): Promise<void> {
     // sourcing the stage script IS taking the lock (that is the whole design), so a probe that
     // must block is killed rather than waited out: the first line is printed before the loop's
     // first `sleep 15`, which is precisely the property under test.
+    // Captured into FILES, read once the shell has exited. With pipes the read waited for EOF, and
+    // the killed shell's `sleep $FLEET_SUITE_POLL_SEC` child — orphaned, still holding the write
+    // end — kept it open for the rest of its 15 s: every blocking probe cost ~15.2 s for a line
+    // printed in milliseconds (trail isolated-20260913T155454Z-52907). The poll stays at its real
+    // 15 s on purpose; the kill still lands long before the first sleep ends, so "speaks before
+    // the first sleep" is measured exactly as before.
+    let sayN = 0;
     const stageSay = async (killAfterMs: number, extra: Record<string, string> = {}): Promise<string> => {
+      const base = `${PROBE}.say${sayN++}`;
       const p = Bun.spawn(["sh", "-c", `. "${STAGE}"`],
-        { cwd: SRC, env: { ...process.env, FLEET_SUITE_LOCK: PROBE, ...extra }, stdout: "pipe", stderr: "pipe" });
+        { cwd: SRC, env: { ...process.env, FLEET_SUITE_LOCK: PROBE, ...extra },
+          stdout: Bun.file(`${base}.out`), stderr: Bun.file(`${base}.err`) });
       const t = killAfterMs > 0 ? setTimeout(() => { try { p.kill(); } catch { /* already gone */ } }, killAfterMs) : null;
-      const out = `${await new Response(p.stdout).text()}${await new Response(p.stderr).text()}`;
       await p.exited;
       if (t) clearTimeout(t);
+      const read = (f: string): string => { try { return readFileSync(f, "utf8"); } catch { return ""; } };
+      const out = `${read(`${base}.out`)}${read(`${base}.err`)}`;
+      rmSync(`${base}.out`, { force: true });
+      rmSync(`${base}.err`, { force: true });
       return out;
     };
     check("§2b fixture: the stage script is reachable from inside the instance (node_modules → source tree)",

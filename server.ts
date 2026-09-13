@@ -2687,7 +2687,15 @@ const TICK_FLOOR_MS = 100;
 const AUTOS_TICK_MS = Math.max(TICK_FLOOR_MS, Number(process.env.FLEET_AUTOS_TICK_MS ?? 5000) | 0);
 const DISPATCH_TICK_MS = Math.max(TICK_FLOOR_MS, Number(process.env.FLEET_DISPATCH_TICK_MS ?? 8000) | 0);
 const GIT_TIMEOUT_MS = Number(process.env.FLEET_GIT_TIMEOUT_MS) || 30_000;
-const MERGE_IDLE_MS = 3000; // don't start a rebase while the pane is actively producing output
+// The git/liveness display cache's cadence (tickGit). Unset is the old 10 s literal; the suites
+// shorten it for the families whose whole subject IS that cache (e2e/deploy-facts.ts), because
+// there every assertion otherwise out-waits a 10 s tick. Floor 1 s, not TICK_FLOOR_MS: one pass
+// spawns about a dozen subprocesses per slot, and tickGit already skips a round while busy.
+const GIT_TICK_MS = Math.max(1000, Number(process.env.FLEET_GIT_TICK_MS ?? 10_000) | 0);
+// don't start a rebase while the pane is actively producing output. Unset is the old 3000 literal;
+// the isolated suite shortens it (every land there first out-waits the pane's own shell prompt),
+// floor 500 ms so a stray value can never turn the gate into a no-op.
+const MERGE_IDLE_MS = Math.max(500, Number(process.env.FLEET_MERGE_IDLE_MS ?? 3000) | 0);
 let persistedToken: string | null = null;
 // --- steward principal: a scoped token bound to whichever slot currently carries the
 // recognized steward label (docs/steward.md, "⚙ steward"), not to a fixed slot id — the
@@ -26091,7 +26099,7 @@ setInterval(() => void poll(), 100);
 setInterval(() => void tickAutos().catch((e: unknown) => logError("tickAutos", e)), AUTOS_TICK_MS);
 // the event-triggered delivery next to the time-triggered one — same cadence, same choke-point
 setInterval(() => void tickWatches().catch((e: unknown) => logError("tickWatches", e)), AUTOS_TICK_MS);
-setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), 10_000);
+setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), GIT_TICK_MS);
 void tickGit().catch((e: unknown) => logError("tickGit", e)); // warm the badge cache so the first paint isn't blank
 setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispatch", e)), DISPATCH_TICK_MS);
 // the brief compiler, off by default: a harness without a FLEET_ENHANCE_CMD stand-in MUST leave

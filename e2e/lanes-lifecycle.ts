@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
-import { BASE, REPO, ROOT, check, get, plogRead, post, restartSrv, tmuxOut } from "./harness";
+import { BASE, REPO, ROOT, check, get, plogRead, post, restartSrv, stopSrv, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
@@ -814,8 +814,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     // Planted through the state file exactly as the migration and acceptance-door fixtures do,
     // because no owner route binds an EXISTING lane to a row, and the subject of this block is the
     // handover, not the dispatch that would otherwise have to precede it.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const batonProgramId = "ba7017".padEnd(24, "0");
     const plant = batonState();
     const plantedAt = Date.now();
@@ -954,8 +953,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     // that has to be raised. The report row goes with it for the same reason it exists here: it is
     // the planted Program's, it counts into `reportsAwaitingOwner` once that Program has no live
     // MAIN, and nothing outside this block ever reads it.
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const unplant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
       { programs?: { id: string }[]; fleetReports?: { id: string }[] };
     unplant.programs = (unplant.programs ?? []).filter((p) => p.id !== batonProgramId);

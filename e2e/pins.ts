@@ -8050,6 +8050,44 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     `permission_prompt=${note("permission_prompt")} idle_prompt=${note("idle_prompt")}`);
 }
 
+// ================================================================================================
+// the suite's shortened waits are TEST settings — the production defaults under them do not move
+// ================================================================================================
+// e2e-isolated.sh runs its server with shorter timers than production so a full suite spends its
+// time measuring instead of waiting (2026-09-13: 69 % of a 2 618 s run were gaps of 3 s or more).
+// Every such timer is an env knob whose UNSET value is the production literal. The cut is only
+// honest while that stays true: a knob whose default drifted would re-time the live fleet, and
+// the suite — which sets the knob — could never notice. So the defaults are pinned here, where no
+// suite env reaches, next to the one pair where the TEST side mirrors the server's parse.
+{
+  const RULE_DEFAULTS = "a timer the isolated suite shortens keeps its production default when unset";
+  const defaults: [string, RegExp][] = [
+    ["tickGit cadence 10 s", /const GIT_TICK_MS = Math\.max\(1000, Number\(process\.env\.FLEET_GIT_TICK_MS \?\? 10_000\) \| 0\);/],
+    ["tickGit is scheduled on that cadence", /setInterval\(\(\) => void tickGit\(\)\.catch\(\(e: unknown\) => logError\("tickGit", e\)\), GIT_TICK_MS\);/],
+    ["merge/commit idle gate 3 s", /const MERGE_IDLE_MS = Math\.max\(500, Number\(process\.env\.FLEET_MERGE_IDLE_MS \?\? 3000\) \| 0\);/],
+    ["autos tick 5 s", /Number\(process\.env\.FLEET_AUTOS_TICK_MS \?\? 5000\)/],
+    ["dispatch tick 8 s", /Number\(process\.env\.FLEET_DISPATCH_TICK_MS \?\? 8000\)/],
+    ["verify work budget 120 s", /Number\(process\.env\.FLEET_VERIFY_TIMEOUT_MS \?\? 120_000\)/],
+    ["verify queue budget 900 s", /Number\(process\.env\.FLEET_VERIFY_WAIT_MS \?\? 900_000\)/],
+    ["ready-marker wait 20 s", /Number\(process\.env\.FLEET_READY_WAIT_MS \?\? 20_000\)/],
+    ["acceptance window 3 s", /Number\(process\.env\.FLEET_ACCEPT_WAIT_MS \?\? 3000\)/],
+    ["device-online window 90 s", /Number\(process\.env\.FLEET_DEVICE_ONLINE_MS \?\? 90_000\)/],
+    ["server suite-lock poll 5 s", /^const SUITE_LOCK_POLL_MS = 5_000;$/m],
+    ["founding boot grace 4 s", /^const FOUNDING_BOOT_GRACE_MS = 4000;$/m],
+  ];
+  const moved = defaults.filter(([, re]) => !re.test(server)).map(([name]) => name);
+  pin(`${RULE_DEFAULTS} — server.ts`, moved.length === 0,
+    moved.length ? `default changed or knob reshaped: ${moved.join("; ")}` : `${defaults.length} defaults`);
+  const stageSh = read("e2e-stage.sh");
+  pin(`${RULE_DEFAULTS} — e2e-stage.sh's suite-mutex poll is 15 s`,
+    /^FLEET_SUITE_POLL_SEC="\$\{FLEET_SUITE_POLL_SEC:-15\}"$/m.test(stageSh), "default poll cadence changed");
+  // the harness waits on the SAME number the server gates on: identical parse, identical default
+  const helpers = read("e2e/lane-helpers.ts");
+  pin(`${RULE_DEFAULTS} — e2e/lane-helpers.ts parses FLEET_MERGE_IDLE_MS exactly as server.ts does`,
+    /export const MERGE_IDLE_MS = Math\.max\(500, Number\(process\.env\.FLEET_MERGE_IDLE_MS \?\? 3000\) \| 0\);/.test(helpers),
+    "the harness idle wait and the server idle gate can disagree");
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

@@ -6,7 +6,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { BASE, H, REPO, ROOT, check, get, plogRead, post, restartSrv, tmuxOut } from "./harness";
+import { BASE, H, REPO, ROOT, check, get, plogRead, post, restartSrv, stopSrv, tmuxOut } from "./harness";
 
 interface SupervisorBinding {
   slot: number;
@@ -231,8 +231,7 @@ export async function run(): Promise<void> {
     handoffStatus === 0, String(handoffStatus));
 
   // --- ambiguity: one session holding two authorities has no defined transfer order. ---
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const ambiguousId = `${"a".repeat(20)}beef`;
   const fixtureState = readState() as FleetState & Record<string, unknown>;
   const now = Date.now();
@@ -340,8 +339,7 @@ export async function run(): Promise<void> {
   // The ambiguity fixture leaves the run through the same door it came in — a Program row of this
   // module's making would otherwise ride the owner poll for every later section, and that payload
   // is size-bounded by a check downstream.
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const finalState = readState() as FleetState & Record<string, unknown>;
   finalState.programs = (finalState.programs ?? []).filter((p) => p.id !== ambiguousId);
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(finalState, null, 2), { mode: 0o600 });
@@ -394,8 +392,7 @@ export async function run(): Promise<void> {
   const unboundId = `${"c".repeat(20)}0004`;
   const fixtureIds = [activeId, proposedId, staleId, unboundId];
   const installPrograms = async (rows: Record<string, unknown>[], awaitingOwner: boolean): Promise<void> => {
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
+    await stopSrv();
     const st = readState() as FleetState & Record<string, unknown>;
     st.programs = [...(st.programs ?? []).filter((p) => !fixtureIds.includes(String(p.id))), ...rows];
     const slotRow = (st.slots ?? {})[String(receiverSlot)];
@@ -901,8 +898,7 @@ export async function run(): Promise<void> {
   const reg2 = await (await selfPost("/api/self/watch", ctlTok,
     { kind: "transition", idleSec: 0, deadlineSec: 120, awaiting: "a second question, to be orphaned" })).json() as
     { watch?: TransitionWatchRow };
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   {
     const st = readState() as FleetState & { watches?: TransitionWatchRow[] };
     const row = (st.watches ?? []).find((w) => w.id === reg2.watch?.id);
@@ -1357,8 +1353,7 @@ export async function run(): Promise<void> {
   // identical reason: an active Program of this module's making would otherwise ride the owner poll
   // through every later module, and one with a binding whose slot was just killed is exactly the
   // shape several of them measure. The messages it carries go with it — nothing later reads them.
-  await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  await stopSrv();
   const msgCleanup = readState() as FleetState & Record<string, unknown>;
   msgCleanup.programs = (msgCleanup.programs ?? []).filter((p) => p.id !== msgProgramId);
   delete msgCleanup.messages;

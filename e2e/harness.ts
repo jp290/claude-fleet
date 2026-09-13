@@ -106,9 +106,25 @@ export const get = (path: string): Promise<Response> => fetch(BASE + path, { hea
 // into this process's env, is dropped by every call here. restart.ts's FLEET_REPO_DIR was such a
 // variable and cost 12 red checks in a later module (2026-08-03); it now plants itself in
 // process.env for exactly this reason. Anything server-only added later must do the same.
-export async function restartSrv(extra: Record<string, string> = {}): Promise<void> {
+// Stop the srv session and return once its server PROCESS is gone — the moment it can no longer
+// write fleet.json or hold the port. Replaces a fixed 500 ms sleep that ~370 stops a run paid in
+// full while the server exits in ~20 ms (measured 2026-09-13 on a scratch instance). The pid comes
+// from the server's own fleet.pid, read BEFORE the kill; no pid (already stopped) returns at once.
+// Bounded at 5 s, the same grace server.ts#claimInstanceLock gives a successor, so a server that
+// is slow to die is still covered by the lock on the next boot.
+export async function stopSrv(): Promise<void> {
+  let pid = 0;
+  try { pid = Number.parseInt(readFileSync(`${ROOT}/fleet.pid`, "utf8").trim(), 10) || 0; } catch { /* none */ }
   await tmuxOut("kill-session", "-t", "srv");
-  await Bun.sleep(500);
+  const alive = (): boolean => {
+    if (pid <= 0 || pid === process.pid) return false;
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+  for (let i = 0; i < 200 && alive(); i++) await Bun.sleep(25);
+}
+
+export async function restartSrv(extra: Record<string, string> = {}): Promise<void> {
+  await stopSrv();
   const own = new Set(["FLEET_HOST", "FLEET_PORT", "FLEET_SOCK", "FLEET_TOKEN"]);
   const env = Object.entries(process.env)
     .filter(([k, v]) => k.startsWith("FLEET_") && !k.startsWith("FLEET_E2E_") && !own.has(k) && !(k in extra) && v)
@@ -116,10 +132,12 @@ export async function restartSrv(extra: Record<string, string> = {}): Promise<vo
     .map(([k, v]) => `${k}='${String(v).replaceAll("'", "'\\''")}' `).join("");
   await tmuxOut("new-session", "-d", "-s", "srv",
     `cd '${ROOT}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} ${env}exec bun server.ts >> server.log 2>&1`);
-  for (let i = 0; i < 160; i++) {
+  // same 40 s bound as before, polled finer: a boot answers in ~160 ms, so a 250 ms step was most
+  // of the wait
+  for (let i = 0; i < 800; i++) {
     const ok = await get("/api/sessions").then((r) => r.ok).catch(() => false);
     if (ok) return;
-    await Bun.sleep(250);
+    await Bun.sleep(50);
   }
   throw new Error("srv never came back after restartSrv — the rest of this run would be meaningless");
 }

@@ -4782,6 +4782,24 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && footer.includes("FLEET_REPORT_STATUSES.join")
       && statuses.every((status) => reportSection.includes(status)),
     `declared=[${declared.join(",")}]`);
+  // …and the report CAP is one number across route, footer and AGENTS.md. Measured price of it living
+  // only in docs/self-api.md: 130/181 Claude lanes hit "text must be at most … chars" at least once,
+  // 334 retries in 14 days (docs/messungen/2026-09-13-worktrail-iv-agents-ctxpacks-fable.md §2.1).
+  // The footer interpolates the constant, so it cannot drift by construction — the pin holds that
+  // construction (no literal) and the prose half, which can drift, against the declared value.
+  const capDeclared = read("server/types.ts").match(/const MAX_FLEET_REPORT_TEXT = (\d+);/)?.[1] ?? null;
+  const agentsReporting = ((): string => {
+    const doc = read("AGENTS.md");
+    const at = doc.indexOf("\n## Reporting");
+    return at < 0 ? "" : doc.slice(at).split(/\n## /)[1] ?? "";
+  })();
+  const capInAgents = agentsReporting.match(/at most (\d+) characters/)?.[1] ?? null;
+  pin(`${RULE_RECEIVER} — the report cap is one number across route constant, footer and AGENTS.md §Reporting`,
+    capDeclared !== null && footer.includes("${MAX_FLEET_REPORT_TEXT}") && !footer.includes(capDeclared)
+      && capInAgents === capDeclared && agentsReporting.includes("MAX_FLEET_REPORT_TEXT"),
+    capDeclared === null ? "MAX_FLEET_REPORT_TEXT declaration not found in server/types.ts"
+      : `declared=${capDeclared} footerInterpolates=${footer.includes("${MAX_FLEET_REPORT_TEXT}")} `
+        + `footerLiteral=${footer.includes(capDeclared)} agents=${capInAgents}`);
   // …and the BOOT clause, pinned separately because it is the one rule that lives nowhere near
   // the parser and is therefore the one a future parser fix will forget. The reconciliation asks
   // "did this event's endpoint survive the restart"; `fleetEventReceiver` answers null for an

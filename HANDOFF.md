@@ -1,4 +1,45 @@
-# HANDOFF — Orchestrator Slot 5 → Nachfolgerin (Opus 5 high, Haupt-Checkout, Owner-Token): Plan Fleet-Betrieb steht und laeuft, Suiten/RAM/Handoff/Chronik gefilet, Second-host auf 4 Suite-Plaetze (Neustart ausstehend); 2026-09-13 ~19:5x, ctx GEMESSEN 37,6 %
+# HANDOFF — Orchestrator Slot 7 → Nachfolgerin (Opus 5 high, Haupt-Checkout, Owner-Token): Denkauftrag Rollen/Briefe fertig + Synthese wartet auf Owner, Spiele-Spur G1–G4 geplant, Second-host-Suiten ZURUECK auf 3 (tmpfs voll), C1 laeuft; 2026-09-13 ~21:4x, ctx GEMESSEN 33 %
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **DEIN BRIEF bleibt `docs/plan-fleet-betrieb-2026-09-13.md`** — lies §2a (Stand + Freigabe-Reihenfolge mit Grund), §4 K1 (Verfahren), §5 (Stand Rollen/Briefe), §5b (Second-host-Zeile), §5d (Spiele-Spur G1–G4), §5e (alles bisher Ungeplante, eingeordnet). Rolle wie §2: filen/schaerfen/freigeben; Slot 9 landet/deployt. Nachrichten an Slot 9 buendeln.
+- **Owner-Stil** unveraendert (einfache Worte, keine Optionslisten, Messungen, ehrliche Korrekturen; `/sharpen3` = schaerfen UND ausfuehren). Owner sagte heute: der Plan muss VOLLSTAENDIG sein — vor jedem Plan-Bericht gegen die Queue abgleichen (§5e ist das Muster: alle offenen Nicht-Notiz-Zeilen aktiver Programs + programlose Owner-Richtungen).
+- **Meine Hintergrund-Waechter sterben mit mir.** Neu aufsetzen: ein `until`-Loop auf Statuswechsel von `1fc3a5c8`, `57d7ec3b`, `1aaf7eb8` in fleet.json (60-s-Takt; der Mac hat heute zweimal Hintergrundprozesse wegen Speichermangel beendet — leicht halten).
+
+## 0.1 IN FLUG (gemessen ~21:4x, Deckel 3 voll, merges leer)
+
+| Zeile | Slot | Nach dem Land |
+|---|---|---|
+| `1fc3a5c8` Suite 1/2 Wartezeiten | 3 | `d7b4b47d` Sharding-Probe (Fable) freigeben |
+| `57d7ec3b` Startplan-Anzeiger | 4 | `35bc6afe` + `31df1009` parallel freigeben (Flaechen disjunkt) |
+| `1aaf7eb8` C1: Second-host-Suite-Scratch auf Disk, Retention schuetzt aktive Runs | 1 | Slot 9: Helfer-daemon-update, an einem Lauf pruefen, dass /tmp nicht waechst |
+
+## 0.2 HEUTE IN MEINER SCHICHT (Commits)
+
+Gelandet: `4fdc3ebb` RAM 1 · `5927e099` graphify 1/2 · `bdc9acdd` Quellpaket im Lane-Brief (deployt von Slot 9 **20:51:02**, ok) · `fc743413` Denkauftrag Fable · `ab03a032` Denkauftrag Astra · `79fb4c96` RAM 2 (Astra high). Direkt-Commits (docs, pins gruen, kein Land lief): `cb6b4ae4` Plan §2a + K1-Skript · `cae1c010` Spiele-Spur + §5e + Synthese · `7c5cd581` Second-host-Ruecknahme.
+
+## 0.3 ENTSCHEIDUNGEN, DIE STEHEN
+
+- **Second-host `maxParallelSuites` wieder 3** (`/etc/fleet-helper/config.json`; 4er-Fassung als `config.json.bak-20260913-suites4`). Grund, live per ssh 21:3x: `/tmp` ist tmpfs 3 930 MB, 98 % voll (94 MB frei), 68 `fleet-e2e-instance-*`, 46 > 24 h; ~1,8 GB nichtresident = fast der ganze Swap (1 982/2 276). Slot 9 informiert (Receipt observed): Second-host-Rot zuerst auf ENOSPC pruefen. Wieder 4 erst nach C1-Land + Vierer-Pilot (Schnitt C5 in 79fb4c96).
+- **K1:** Stichtag = Deploy 2026-09-13T20:51. Messen mit `python3 docs/messungen/k1-kontext-erste-aenderung.py --since 2026-09-13T20:51 --rows`, sobald ≥ 10 claude-Lanes NACH dem Stichtag eine Aenderung haben. Basis (gleiche Definition): p50 134 k, p90 185 k, Bash davor 23, n=178. Kriterium: Lanes MIT geliefertem Quellpaket p50 < 115 k und weniger Bash. Die alten 151 k sind kein Vergleichswert.
+- **Rollen/Briefe:** beide Entwuerfe + Synthese `docs/messungen/2026-09-14-rollen-briefe-synthese.md` (Fable-Subagent; Form Fable + Semantik Astra; vier Schnitte). Von mir mechanisch geprueft: eine `KLASSE:`-Kopfzeile macht eine Karte heute zu Prosa (`card-extract.ts#parseFormattedCard`) → Parser-Erweiterung ist Schritt 0 jedes Template-Schnitts. Die uebrigen Repo-Belege der Synthese hat der Subagent geprueft, nicht ich.
+- **Spiele-Spur (§5d, Owner bestaetigt „ja genau"):** G1 Astra-Lane formuliert zwei Grok-Prompts (Astra-Orchestrierung; Astra Game-Development Best Practices) → G2 Owner fragt Grok in zwei Sessions, Antworten als Notizen unter `262a8f71` → G3 Astra entwirft Studio-Struktur → G4 Owner-Entscheid, Private-repo-j neu. G1 erst filen, wenn die Synthese-Fragen beantwortet sind.
+
+## 0.4 OFFENE OWNER-FRAGEN (alle unbeantwortet, zuletzt 21:4x gestellt)
+
+1. **46 Second-host-e2e-Instanzen > 24 h loeschen** (~2,3 GB tmpfs)? Vorher pruefen, dass kein Prozess sie benutzt. Laut 79fb4c96 Owner-Akt.
+2. **Fuenf Synthese-Fragen** (je Empfehlung „ja"): Klassen `kopf·hand·urteil·form`, Harness nur Executor-Attribut · eigene `KLASSE:`-Zeile, ROLLE bleibt Override · `kopf`-Default Fable, Opus 5 high Alternative · Sub-Agents im Pilot read-only · gesperrter Provider: warten mit Grund statt Auto-Wechsel.
+3. **Browser-MCP nur in Browser-Aufgaben** (C2 aus 79fb4c96: Probe −203 MB je Claude, −169 MB je Codex) — beruehrt globale Plugin-Settings.
+4. UI (§5c): linke Spalte zuerst? Screenshots erlaubt? · „zu zweit": zweite Person oder zwei Rechner?
+
+## 0.5 UNGEPRUEFT / ACHTUNG
+
+- RAM-2-Schnitte C2–C6 (79fb4c96 §Schnitte) NICHT gefilet: C4 (Transkript-Leser Bytebudget) und C6 (Socket-/Scratch-Sensor) brauchen keinen Owner, C2/C3 schon, C5 erst nach C1. Filing-Bloecke dort tragen `codex/gpt-6-astra/high` — Modellpolitik: Bau-Lanes Opus 5 high.
+- K1-Skript: die Bash-Schreibheuristik ist nicht gegen eine Hand-Stichprobe geprueft.
+- RAM-2-Zahlen ausser tmpfs/Swap/Instanzen nicht von mir nachgemessen.
+- `1aaf7eb8` beruehrt vermutlich auch `e2e-isolated.sh`/`e2e-stage.sh` — moegliche Rebase-Reibung mit `1fc3a5c8` (e2e-stage.sh).
+
+# (vorheriger Abschnitt) HANDOFF — Orchestrator Slot 5 → Nachfolgerin (Opus 5 high, Haupt-Checkout, Owner-Token): Plan Fleet-Betrieb steht und laeuft, Suiten/RAM/Handoff/Chronik gefilet, Second-host auf 4 Suite-Plaetze (Neustart ausstehend); 2026-09-13 ~19:5x, ctx GEMESSEN 37,6 %
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT
 

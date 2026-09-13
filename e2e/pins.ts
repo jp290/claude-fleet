@@ -7859,6 +7859,25 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const textOnly = /worker: "card", cmd: CARD_CMD, tools: TEXT_ONLY_TOOLS,/.test(srv);
   pin(`${RULE_CARD} — the card worker runs TEXT_ONLY, with no repository to read`,
     textOnly, `textOnly=${textOnly}`);
+
+  // 2026-09-13 · the three defects between card and bundling. Each half is a mechanism the e2e
+  // family proves on behaviour; these pin that the mechanism is the one the docs name.
+  const RULE_CARD_V2 = "a card is refused by the tree, not by a stale graph or a foreign field";
+  const cx = read("card-extract.ts");
+  const versionConst = /^export const CARD_VALIDATOR_VERSION = 2;$/m.test(cx);
+  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 2 (bump it when a rule change can turn a refusal into an acceptance)`,
+    versionConst, `const=${versionConst}`);
+  const declFallback = /if \(!ctx\.declares\(file, symbol\)\) \{/.test(cx)
+    && /declares: \(file, symbol\) => !!snapshot\?\.paths\.has\(file\) && declaresSymbol\(sourceOf\(file\), symbol\),/.test(srv);
+  pin(`${RULE_CARD_V2} — a symbol the graph lacks is looked up as a declaration in the tracked file, through the ONE shared context`,
+    declFallback, `declFallback=${declFallback}`);
+  const reread = /if \(!t\.card\.valid && \(t\.card\.validatorVersion \?\? 1\) < CARD_VALIDATOR_VERSION\) return true;/.test(srv);
+  pin(`${RULE_CARD_V2} — cardDue re-reads only an INVALID card from an older validator`,
+    reread, `reread=${reread}`);
+  const surfaceConfirm = /: !card\.surfaceValid \? /.test(srv) && !/!card\?\.valid \|\| !card\.surface\.files\.length/.test(srv);
+  const surfaceDerived = /valid: gaps\.length === 0, surfaceValid: cardSurfaceValid\(gaps\), gaps,/.test(srv);
+  pin(`${RULE_CARD_V2} — confirm-cards reads surfaceValid (not valid), and the loader derives it from gaps`,
+    surfaceConfirm && surfaceDerived, `confirm=${surfaceConfirm} derived=${surfaceDerived}`);
 }
 
 console.log(rows.join("\n"));

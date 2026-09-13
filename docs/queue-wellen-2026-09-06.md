@@ -569,8 +569,9 @@ vermaßen. Was hier steht, ändert die SCHNITTLISTE, nicht die Messung.*
    `{files, filesOrigin:"confirmed"}`, eine `audit.jsonl`-Zeile `task_cards_confirm` je Batch. Der
    Auto-Lift bleibt verworfen: nichts läuft ohne diesen Aufruf, und die Pfade stammen aus einer
    gegen den Baum validierten KARTE, nie aus der Prosa-Ableitung. Ganz oder gar nicht über das
-   Bracket (fremdes Program oder fremder Repo ⇒ 409, nichts geschrieben); Zeilen ohne gültige Karte
-   oder mit bestehender Owner-Bestätigung werden übersprungen und benannt. Die Owner-Tür
+   Bracket (fremdes Program oder fremder Repo ⇒ 409, nichts geschrieben); Zeilen ohne Karte mit
+   gültiger FLÄCHE (`card.surfaceValid`; seit 2026-09-13 blockiert eine `rolle`-/`size`-/`verify`-Lücke
+   das Bündeln nicht mehr) oder mit bestehender Owner-Bestätigung werden übersprungen und benannt. Die Owner-Tür
    `POST /api/tasks/:id/files` bleibt unverändert und überschreibt jederzeit.
 
 ### 7.2 Warum die Fläche allein nicht reicht

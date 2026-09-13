@@ -6099,9 +6099,9 @@ export async function run(ctx: Ctx): Promise<void> {
       && s5Audit.length === 1 && s5Audit[0]?.slot === successorSlot && s5Audit[0]?.programId === mainProgram.id
       && s5Audit[0]?.n === 3 && s5Audit[0]?.ids === s5Ids.join(","),
     `${s5Res.status} ${JSON.stringify(s5Body)} rows=${JSON.stringify(s5After)} audit=${JSON.stringify(s5Audit)}`);
-  check("S5 (4): a row without a valid card is skipped and NAMED in the answer, never confirmed from its prose",
+  check("S5 (4): a row without a card is skipped and NAMED in the answer, never confirmed from its prose",
     s5Body.skipped?.length === 1 && s5Body.skipped[0]?.id === s5NoCard
-      && (s5Body.skipped[0]?.reason ?? "").includes("no valid card")
+      && (s5Body.skipped[0]?.reason ?? "").includes("no card on this row")
       && (await s5Digest()).find((t) => t.id === s5NoCard)?.filesOrigin !== "confirmed",
     JSON.stringify(s5Body.skipped ?? null));
   const s5WavesAfter = await s5Waves(s5Ids);
@@ -6112,6 +6112,42 @@ export async function run(ctx: Ctx): Promise<void> {
   check("S5: a second confirmation of an already-confirmed row writes nothing and says why",
     s5Again.confirmed?.length === 0 && (s5Again.skipped?.[0]?.reason ?? "").includes("already carries a confirmed surface"),
     JSON.stringify(s5Again));
+  // DEFEKT 2 (2026-09-13): bundling needs the SURFACE, not the whole card. Measured live: a correct,
+  // tracked file list was refused because the same card also said `rolle.harness: "Codex"`. Two rows
+  // filed with a valid card, then planted (server down) with the gaps the extractor really wrote:
+  //   s5Role  only rolle/size/verify gaps  → confirmed, files from its card
+  //   s5Surf  one surface.files gap       → skipped, and the reason says it is the surface
+  const s5Role = await s5Make({ text: "s5 row with a role-only gap", programId: mainProgram.id, card: cardFor(["ctx-mod.txt"]) });
+  const s5Surf = await s5Make({ text: "s5 row with a surface gap", programId: mainProgram.id, card: cardFor(["code.txt"]) });
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const s5Plant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: { id: string; card?: Record<string, unknown> }[] };
+  let s5Planted = 0;
+  for (const t of s5Plant.tasks ?? []) {
+    if (!t.card) continue;
+    if (t.id === s5Role) {
+      t.card = { ...t.card, valid: false, gaps: ['rolle.harness: "Codex" is not a registered harness',
+        'size: "winzig" is not one of klein, mittel, gross', 'verify: "run the tests" names no known chain step'] };
+      s5Planted++;
+    }
+    if (t.id === s5Surf) {
+      t.card = { ...t.card, valid: false, gaps: ['surface.files: "gone.txt" is not tracked in this repository'] };
+      s5Planted++;
+    }
+  }
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(s5Plant, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const s5GapRes = await selfConfirm(successorToken, { ids: [s5Role, s5Surf] });
+  const s5GapBody = (await s5GapRes.json()) as { confirmed?: { id: string; files: string[] }[]; skipped?: { id: string; reason: string }[] };
+  const s5GapRows = (await s5Digest()).filter((t) => t.id === s5Role || t.id === s5Surf);
+  check("S5 surface: a card whose ONLY gaps are rolle/size/verify is confirmed by its file surface; a surface.files gap is skipped naming the surface",
+    !!s5Role && !!s5Surf && s5Planted === 2 && s5GapRes.status === 200
+      && JSON.stringify(s5GapBody.confirmed) === JSON.stringify([{ id: s5Role, files: ["ctx-mod.txt"] }])
+      && s5GapBody.skipped?.length === 1 && s5GapBody.skipped[0]?.id === s5Surf
+      && (s5GapBody.skipped[0]?.reason ?? "").includes("surface.files")
+      && s5GapRows.find((t) => t.id === s5Role)?.filesOrigin === "confirmed"
+      && s5GapRows.find((t) => t.id === s5Surf)?.filesOrigin !== "confirmed",
+    `planted=${s5Planted} ${s5GapRes.status} ${JSON.stringify(s5GapBody)} rows=${JSON.stringify(s5GapRows)}`);
   const s5Extra = await selfConfirm(successorToken, { ids: [s5C], programId: mainProgram.id });
   check("S5: the body is a closed set — a programId beside ids is a 400, never read",
     s5Extra.status === 400 && (await s5Extra.text()).includes("[programId]"), String(s5Extra.status));

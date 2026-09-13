@@ -148,7 +148,7 @@ wird danach gegen eine Tatsache geprüft, die dieser Prozess selbst feststellen 
 | Feld | geprüft gegen |
 |---|---|
 | `surface.files` | `git ls-files` (der Tracked-Snapshot aus `task-metadata.ts`) **und** den INTENT-Text der Zeile |
-| `surface.symbols` | denselben Intent-Text **und** `graphify-out/graph.json`; ohne Graph nur die Existenz der Datei, `ranges` bleibt `null` |
+| `surface.symbols` | denselben Intent-Text **und** `graphify-out/graph.json`, danach eine Top-Level-Deklaration in der getrackten Datei (`card-extract.ts#declaresSymbol` — der Graph ist ein Schnappschuss; eine Datei mit so aufgelöstem Symbol trägt keine `ranges`); ohne Graph nur die Existenz der Datei, `ranges` bleibt `null` |
 | `verify` | die bekannten Kettenschritte (`verify-proportion.ts#LOCAL_PROOF_STEPS`) |
 | `rolle.*` | die registrierten Harness-/Modell-/Effort-Validatoren |
 
@@ -165,8 +165,11 @@ Was nicht besteht, wird **niemals repariert, ersetzt oder geraten** — es wird 
 in den Worten des Extraktors. `valid` ist das UND dieser Prüfungen, kein Urteil über die Arbeit,
 und eine Karte mit `valid:false` wird trotzdem gespeichert: „hier wurde gelesen, und das hier
 konnte nicht belegt werden" ist mehr wert als ein fehlendes Feld, das sich wie „niemand hat
-geschaut" liest. Beim Laden wird `valid` aus `gaps` NEU BERECHNET, nie geglaubt — eine
-handgeschriebene `fleet.json` kann also nicht die eine Form erzeugen, die eine Lüge wäre.
+geschaut" liest. Beim Laden werden `valid` und `surfaceValid` (keine `surface.*`-Lücke — das,
+was `confirm-cards` fürs Bündeln liest) aus `gaps` NEU BERECHNET, nie geglaubt — eine
+handgeschriebene `fleet.json` kann also nicht die eine Form erzeugen, die eine Lüge wäre. Jede
+Karte trägt `validatorVersion` (`card-extract.ts#CARD_VALIDATOR_VERSION`); eine UNGÜLTIGE Karte
+älterer oder fehlender Version liest der Tick genau einmal neu (`server.ts#cardDue`), eine gültige nie.
 
 **Die Karte ist eine LESUNG, keine Autorität.** Nichts dispatcht aus ihr, `rolle` ist nicht
 `Task.spawn`, und `card.model` trägt das Modell, das WIRKLICH LIEF (aus der

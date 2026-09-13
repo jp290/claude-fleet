@@ -53,8 +53,8 @@ import {
   type TaskFilesOrigin, type TrackedSnapshot, type SymbolIndex, type SymbolIndexSnapshot,
   type SymbolRange, type TaskSurface,
 } from "./task-metadata";
-import { buildCardPrompt, parseCardAnswer, validateCard, CARD_MARK, CARD_KEY,
-  type TaskCardBody, type CardValidationContext } from "./card-extract";
+import { buildCardPrompt, parseCardAnswer, validateCard, declaresSymbol, cardSurfaceValid, CARD_MARK, CARD_KEY,
+  CARD_VALIDATOR_VERSION, type TaskCardBody, type CardValidationContext } from "./card-extract";
 import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NOTE_HUB_FILES,
   type NoteInput, type NoteRow, type KeyedUpsert } from "./task-notes";
 // The LAND fold of the collision facts. The wave button does not re-decide R1/R2/R3 or the program
@@ -8745,14 +8745,16 @@ async function sharpenBriefForMain(s: Slot, id: string, body: Record<string, unk
 // decision 2026-09-12). Measured (docs/messungen/2026-09-12-spezifizierung-buendelung-befund.md §2):
 // 28 of 37 rows were single waves only because nobody had confirmed their surface, and the one
 // producer of `filesOrigin:"confirmed"` on an existing row was an owner click per row. This door
-// lets the bound MAIN confirm, for rows of ITS OWN program, what their VALID card already names —
-// in one act, one audit line. What it deliberately is not (docs/queue-wellen-2026-09-06.md §7.1.3):
+// lets the bound MAIN confirm, for rows of ITS OWN program, what their card's VALID SURFACE already
+// names — in one act, one audit line. The surface, not the whole card (2026-09-13): a role, size or
+// verify gap says nothing about which files a row touches, and requiring `valid` refused correct,
+// tracked file lists over a harness spelled "Codex". What it deliberately is not (docs/queue-wellen-2026-09-06.md §7.1.3):
 //   · no auto-lift — nothing here runs without this call, and the paths come from the card, never
 //     from the prose derivation;
 //   · no reach — the program comes from the binding and the repo from the caller's checkout, so a
 //     single foreign-program or foreign-repo id refuses the WHOLE batch (409) and writes nothing;
 //   · no overwrite of an owner act — a row that already carries a confirmed surface is skipped.
-// Row-level misfits (no valid card, a card path the tree no longer tracks, a status or kind a
+// Row-level misfits (no card, a surface gap, a card path the tree no longer tracks, a status or kind a
 // surface is not confirmed on) are SKIPPED and named, never a batch failure: they are facts about
 // one row, and refusing the other n-1 over them would push the MAIN back to one call per row.
 const CONFIRM_CARDS_MAX = 20;
@@ -8794,9 +8796,11 @@ async function confirmCardsForMain(s: Slot, body: Record<string, unknown> | null
     const reason = t.kind !== "auftrag" ? `a ${t.kind} is advisory — it carries no work surface to bundle by`
       : t.status !== "pending" && t.status !== "queued" ? `task is ${t.status} — a surface is confirmed while the row is still open`
         : t.filesOrigin === "confirmed" || (t.files?.length && t.filesOrigin === undefined) ? "the row already carries a confirmed surface"
-          : !card?.valid || !card.surface.files.length ? "no valid card with a file surface on this row"
-            : !snapshot ? "the tracked tree is unreadable — the card's paths cannot be re-checked"
-              : null;
+          : !card ? "no card on this row — nothing names a surface to confirm"
+            : !card.surfaceValid ? `the card's surface has gaps: ${card.gaps.filter((g) => g.startsWith("surface.")).join("; ").slice(0, 300)}`
+              : !card.surface.files.length ? "the card names no file surface"
+                : !snapshot ? "the tracked tree is unreadable — the card's paths cannot be re-checked"
+                  : null;
     const gone = !reason && card && snapshot ? card.surface.files.filter((f) => !snapshot.paths.has(f)) : [];
     if (reason || gone.length) {
       skipped.push({ id: t.id, reason: reason ?? `card path(s) no longer tracked: ${gone.join(", ")}` });
@@ -10413,6 +10417,12 @@ const CARD_TIMEOUT_MS = 120_000; // one prose paragraph in, one JSON object out
 // `card.at` is the comparison point and `t.brief.at` the moving fact — the same staleness question
 // Task.surface answers with a hash, asked here against a timestamp because a card is a READING of
 // the text and not a projection of it: re-reading an unchanged text would buy nothing.
+// The one exception is a REFUSAL by older rules: an invalid card checked by a validator older than
+// CARD_VALIDATOR_VERSION (or by one that recorded none) is read once more, because the refusal may
+// belong to a rule that has since been fixed (measured 2026-09-13: 16 of 18 invalid cards carried a
+// symbol gap the graph, not the tree, produced). The re-read card carries the current version, so
+// this is exactly one extra reading per row per version, through the same cap and backoff. A VALID
+// card is never re-read for this — a newer validator is not a reason to doubt an acceptance.
 function cardDue(t: Task, now: number): boolean {
   if (!CARD_ON) return false;
   if (t.kind !== "auftrag" || dispatchingTasks.has(t.id)) return false;
@@ -10420,6 +10430,7 @@ function cardDue(t: Task, now: number): boolean {
   const r = cardRetry.get(t.id);
   if (r && (r.attempts >= CARD_MAX_ATTEMPTS || now - r.at < CARD_BACKOFF_MS * 2 ** r.attempts)) return false;
   if (!t.card) return true;
+  if (!t.card.valid && (t.card.validatorVersion ?? 1) < CARD_VALIDATOR_VERSION) return true;
   return (t.brief?.at ?? 0) > t.card.at;
 }
 const cardRetry = new Map<string, { attempts: number; at: number }>();
@@ -10437,15 +10448,31 @@ const cardTokens = (run: WorkerRunObservation): { tokens?: number } => {
 // The facts a card is validated against, in one place: the extractor tick and the refine promote
 // below must check a card against the same tree and the same registered adapters, or "valid"
 // would mean two things depending on which writer produced the card.
+// `declares` reads the tracked file from the snapshot's own checkout — validateCard asks it only for
+// a path it has already found in `trackedPaths` — and keeps each file's text for the life of this
+// one context, so a card naming five symbols in server.ts reads server.ts once. An unreadable file
+// (tracked but deleted in the working tree) declares nothing.
 const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | null,
-  index: SymbolIndexSnapshot | null): CardValidationContext => ({
-  sourceText,
-  trackedPaths: snapshot?.paths ?? new Set<string>(),
-  symbolIndex: index?.index ?? null,
-  harnessKnown: (v) => HARNESSES.some((h) => h.id === v),
-  modelKnown: (v) => MODEL_RE.test(v),
-  effortKnown: (v) => HARNESSES.some((h) => h.effortLevels.includes(v)),
-});
+  index: SymbolIndexSnapshot | null): CardValidationContext => {
+  const sources = new Map<string, string>();
+  const sourceOf = (file: string): string => {
+    const hit = sources.get(file);
+    if (hit !== undefined) return hit;
+    let text = "";
+    try { text = snapshot ? readFileSync(resolve(snapshot.repo, file), "utf8") : ""; } catch { text = ""; }
+    sources.set(file, text);
+    return text;
+  };
+  return {
+    sourceText,
+    trackedPaths: snapshot?.paths ?? new Set<string>(),
+    symbolIndex: index?.index ?? null,
+    harnessKnown: (v) => HARNESSES.some((h) => h.id === v),
+    modelKnown: (v) => MODEL_RE.test(v),
+    effortKnown: (v) => HARNESSES.some((h) => h.effortLevels.includes(v)),
+    declares: (file, symbol) => !!snapshot?.paths.has(file) && declaresSymbol(sourceOf(file), symbol),
+  };
+};
 async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | null,
   index: SymbolIndexSnapshot | null): Promise<TaskCard> {
   const started = Date.now();
@@ -10468,7 +10495,8 @@ async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | nu
     return { ziel: "", rolle: { harness: null, model: null, effort: null },
       surface: { files: [], symbols: [], ranges: index ? [] : null },
       done: "", verify: "", verboten: [],
-      model: observed.model, at: Date.now(), ms, valid: false,
+      model: observed.model, at: Date.now(), ms, valid: false, surfaceValid: true,
+      validatorVersion: CARD_VALIDATOR_VERSION,
       gaps: ["answer: the extractor returned no readable card object"],
       ...cardTokens(observed) };
   }
@@ -10476,8 +10504,8 @@ async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | nu
   // answer was actually about and not against a second reading of the row
   const checked = validateCard(raw, cardValidationContext(source, snapshot, index));
   return { ...checked.body, model: observed.model, at: Date.now(), ms,
-    valid: checked.valid, gaps: checked.gaps,
-    ...cardTokens(observed) };
+    valid: checked.valid, surfaceValid: checked.surfaceValid, validatorVersion: CARD_VALIDATOR_VERSION,
+    gaps: checked.gaps, ...cardTokens(observed) };
 }
 
 async function tickCardSweep(): Promise<void> {
@@ -10506,7 +10534,8 @@ async function tickCardSweep(): Promise<void> {
         // EVERY run is a line, valid or not. A trail that recorded only successes would say the
         // extractor never fails, which is the one thing it cannot be trusted to say about itself.
         await appendEvent(CARD_FILE, { at: card.at, taskId: t.id, model: card.model, ms: card.ms,
-          valid: card.valid, gaps: card.gaps, ...(card.tokens ? { tokens: card.tokens } : {}) });
+          valid: card.valid, surfaceValid: card.surfaceValid, validatorVersion: card.validatorVersion,
+          gaps: card.gaps, ...(card.tokens ? { tokens: card.tokens } : {}) });
       } catch (e) {
         cardRetry.set(t.id, { attempts: (cardRetry.get(t.id)?.attempts ?? 0) + 1, at: Date.now() });
         console.log(`card extractor: read failed for ${t.id}, the row keeps its prose: ${e instanceof Error ? e.message : e}`);
@@ -10552,10 +10581,12 @@ const normFileList = (v: unknown): string[] | undefined => {
   return f.length ? f : undefined;
 };
 // THE CARD read back off disk. Degrades to ABSENT whole, like every record here — but with one
-// extra property that is worth more than the parse: `valid` is DERIVED from `gaps`, never read.
+// extra property that is worth more than the parse: `valid` is DERIVED from `gaps`, never read —
+// and so is `surfaceValid` (no `surface.*` gap), for the same reason one field narrower.
 // The two are a pair by construction in validateCard, and deriving it here means a hand-edited
 // state file cannot produce the one shape that would be a lie — a card that lists what it could
-// not establish and calls itself valid anyway. Nothing is re-validated against the tree (that
+// not establish and calls itself valid anyway. `validatorVersion` IS read (absent = before it was
+// recorded): it is not a claim about the tree but the date of the rules, and cardDue reads it. Nothing is re-validated against the tree (that
 // needs a repository and this is the loader); the card is a READING, and the tick re-reads it when
 // the text moves.
 const normTaskCard = (v: unknown): TaskCard | undefined => {
@@ -10570,6 +10601,7 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
   const field = (x: unknown): string | null => typeof x === "string" && x ? x.slice(0, 64) : null;
   const gaps = strs(raw.gaps);
   const tokens = Number(raw.tokens);
+  const validatorVersion = Number(raw.validatorVersion);
   return {
     ziel: str(raw.ziel), done: str(raw.done), verify: str(raw.verify), verboten: strs(raw.verboten),
     rolle: { harness: field(role.harness), model: field(role.model), effort: field(role.effort) },
@@ -10580,7 +10612,8 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
     ...(isTaskCardSize(raw.size) ? { size: raw.size } : {}),
     model: raw.model.slice(0, 64), at: Number(raw.at) || 0, ms: Number(raw.ms) || 0,
     ...(Number.isFinite(tokens) && tokens > 0 ? { tokens } : {}),
-    valid: gaps.length === 0, gaps,
+    ...(Number.isInteger(validatorVersion) && validatorVersion > 0 ? { validatorVersion } : {}),
+    valid: gaps.length === 0, surfaceValid: cardSurfaceValid(gaps), gaps,
   };
 };
 // The DERIVED surface read back off disk. It degrades to ABSENT whole — and unlike the proposal
@@ -10688,7 +10721,8 @@ function refineChildCard(c: RefineChild, programId: string | undefined,
   const checked = validateCard({ ziel: c.text, surface: { files: c.files, symbols: [] },
     done: c.doneCriterion, verify: c.verify, verboten: [], ...(programId ? { program: programId } : {}) },
   cardValidationContext(refineChildText(c), snapshot, index));
-  return { ...checked.body, model: "refine", at: now, ms: 0, valid: checked.valid, gaps: checked.gaps };
+  return { ...checked.body, model: "refine", at: now, ms: 0, valid: checked.valid,
+    surfaceValid: checked.surfaceValid, validatorVersion: CARD_VALIDATOR_VERSION, gaps: checked.gaps };
 }
 
 // THE AUTHOR'S CARD (S6, queue row 08ec67c0): whoever files a row knows its files and symbols at
@@ -10721,7 +10755,8 @@ function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, prog
     // an author's size is its own declaration, exactly like the surface line beside it
     cardValidationContext(`${text}\nFLAECHE: ${declared.join(" ")}${typeof c.size === "string" ? `\nGROESSE: ${c.size.trim().toLowerCase()}` : ""}`, snapshot, repoRaw ? symbolIndexFor(repoRaw) : null));
   if (!checked.valid) return { ok: false, status: 400, error: `card rejected, nothing filed: ${checked.gaps.join("; ")}` };
-  return { ok: true, card: { ...checked.body, model: "author", at: now, ms: 0, valid: true, gaps: [] } };
+  return { ok: true, card: { ...checked.body, model: "author", at: now, ms: 0, valid: true, surfaceValid: true,
+    validatorVersion: CARD_VALIDATOR_VERSION, gaps: [] } };
 }
 
 // Parse + validate the worker's answer. Every off-contract shape THROWS, because the caller's

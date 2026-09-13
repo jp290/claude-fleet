@@ -1189,6 +1189,11 @@ interface TaskCard extends TaskCardBody {
   ms: number;
   tokens?: number;
   valid: boolean;
+  // no `surface.*` gap: the files may be bundled by even when a role/size/verify field is refused
+  // (server.ts#confirmCardsForMain). Derived from `gaps` on load, like `valid`.
+  surfaceValid: boolean;
+  // CARD_VALIDATOR_VERSION the card was checked with; absent = before it was recorded (server.ts#cardDue)
+  validatorVersion?: number;
   gaps: string[];
 }
 type BriefAuthor = "owner" | "main";

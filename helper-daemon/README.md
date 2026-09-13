@@ -50,9 +50,26 @@ answer it, and all it does is switch a box on so it can start pulling.
   it while nobody could take the job. Measured: in three of five local runs the drain started
   7 / 5 / 14 ms after the `helper_result` of the same repo. The clock now starts when the blocker
   ends, so the grace is time this daemon really had. It is deliberately NOT persisted across a
-  Fleet restart, and a machine that is beating but busy with a lane preview is still counted as a
-  candidate — that daemon returns at `freeSuiteSlots<=0` before it asks for the job list, which no
-  clock on the Fleet side can see.
+  Fleet restart.
+  **A FULL MACHINE STRETCHES THE WAIT INSTEAD OF LOSING THE JOB** (2026-09-13, `server.ts`, grep
+  `helperSaturation`; measured 2026-09-12 13:49–14:27, both work-horse slots held while a lane's
+  preview and an audit both fell back to the Fleet after 180 s / 60 s). When every claim-capable
+  device is full — its own `running`/`maxParallelSuites`, or the claims the Fleet holds for it,
+  whichever is larger — and the Fleet knows those claims, the audit grace runs to the earliest
+  claim `expiresAt` plus two sweep intervals, capped at `FLEET_VERIFY_WAIT_MS`; a lane's unclaimed
+  suite offer is served the same wait as `waitPolicy.unclaimedMs` with a `reason` ("helper saturated
+  until ~HH:MM"). A device that never reported a cap, or reports full with no claim the Fleet knows,
+  is not saturated, and nothing changes for it. Each local audit run logs its reason
+  (`post-land audit LOCAL: …` in `server.log`).
+- **A job the Fleet takes back is ended here, not finished.** A lane that lands, is closed or is
+  recycled takes its preview offer with it (the Fleet reaps it in the slot teardown); an audit
+  claim that lapsed is offered again. Either way the Fleet would answer the verdict with `409 no
+  live claim`. So while anything runs, every tick asks for the job list — **even at
+  `freeSuiteSlots<=0` and even in `quiet`** — and a run whose job is no longer listed under the
+  claim it got (`withdrawnRuns`) is aborted: its process tree gets TERM, then KILL after 5 s, and
+  nothing is reported. Measured 2026-09-12 (7e601e57): before this, a full daemon never asked, and
+  ran a landed lane's preview for 37 minutes to that 409. A list that could not be read aborts
+  nothing.
 - **Parallel runs are COUNTED, never derived from the load average.** `maxParallelSuites` (default
   `1`) is how many jobs this machine will run at once; the daemon claims only while the number of
   jobs it already has in flight is below it. The load cap stays as a *second* condition and never

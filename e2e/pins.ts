@@ -6840,9 +6840,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       `freeSlots@${freeAt} jobsList@${listAt} awaitsWork=${/await work\(/.test(tickFn)}`);
     pin(`${RULE_PAR} (b) a run above cap 1 gets its own FLEET_SUITE_LOCK, and at cap 1 the shared one is left alone`,
       /cfg\.maxParallelSuites > 1\s*\n?\s*\? \{ FLEET_SUITE_LOCK: `\$\{runDir\}\/e2e\.lock` \} : \{\}/.test(workFn)
-        && /runArgv\(j\.argv!, clone, logPath, timeoutMs, suiteEnv\)/.test(workFn)
-        && /runCmd\(cfg\.suiteCmd, clone, logPath, timeoutMs, suiteEnv\)/.test(workFn),
-      `suiteEnv=${/maxParallelSuites > 1/.test(workFn)} passedToRun=${/, suiteEnv\)/.test(workFn)}`);
+        // the trailing `ctl.signal` is the withdrawal switch (7e601e57) — the lock still travels with the run
+        && /runArgv\(j\.argv!, clone, logPath, timeoutMs, suiteEnv(, ctl\.signal)?\)/.test(workFn)
+        && /runCmd\(cfg\.suiteCmd, clone, logPath, timeoutMs, suiteEnv(, ctl\.signal)?\)/.test(workFn),
+      `suiteEnv=${/maxParallelSuites > 1/.test(workFn)} passedToRun=${/, suiteEnv(, ctl\.signal)?\)/.test(workFn)}`);
     pin(`${RULE_PAR} (c) the claim door reads the device's own pair, and the restore keeps the cap while forgetting the count`,
       /dev\?\.maxParallelSuites !== undefined && \(dev\.running \?\? 0\) >= dev\.maxParallelSuites/.test(claimDoor)
         && claimDoor.indexOf("maxParallelSuites") < claimDoor.indexOf("laneSuiteJobs.get(jobId)")

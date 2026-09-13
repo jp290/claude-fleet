@@ -4544,6 +4544,27 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && /\n  hubPush\?: HubPushResult;/.test(provDecl),
     JSON.stringify({ pushAt, note: recordBody.indexOf("await writeLandNote("),
       redExits: (hubPushBody.match(/ok: false, remote: HUB_REMOTE/g) ?? []).length }));
+  // …and the owner's graph follows the moved main (Worktrail IV §3.5, Owner 2026-09-13), from the
+  // same choke point and with none of the land's weight: not awaited, no suite lock, and only ever
+  // in the PRIMARY checkout that holds main — a graphify-out/ in a lane blocks its land
+  // (buildCodeGraph's comment). `graphify watch` and git hooks stay buried
+  // (docs/work-register-2026-08-06.md §7), so neither verb may appear in the step's bodies.
+  const graphRebuild = serverU.span("async function rebuildMainCheckoutGraph(", "\n}\n")?.text ?? "";
+  const graphSchedule = serverU.span("function scheduleMainGraphRebuild(", "\n}\n")?.text ?? "";
+  const graphBodies = graphRebuild + graphSchedule;
+  const graphSpawnAt = graphRebuild.indexOf('runGraphStep(["graphify", ".", "--code-only"], holder.path)');
+  pin(`${RULE_LAND} — a moved main rebuilds the graph code-only in the PRIMARY checkout, coalesced, unawaited, lock-free, never watch or hooks`,
+    graphSpawnAt > 0
+      && graphRebuild.indexOf("if (!holder.primary)") > 0 && graphRebuild.indexOf("if (!holder.primary)") < graphSpawnAt
+      && graphRebuild.indexOf('"check-ignore", "-q", "graphify-out/"') > 0 && graphRebuild.indexOf('"check-ignore", "-q", "graphify-out/"') < graphSpawnAt
+      && (graphRebuild.match(/runGraphStep\(/g) ?? []).length === 1
+      && !/\bwatch\b|hook|\.git\/|SUITE_LOCK|holdSuiteLock|\bthrow\b/.test(graphBodies.replace(/^\s*\/\/.*$/gm, ""))
+      && graphSchedule.includes("if (mainGraphRunning) { mainGraphAgain = { repo, main }; return; }")
+      && recordBody.includes("\n  scheduleMainGraphRebuild(repo, main);\n")
+      && !/await scheduleMainGraphRebuild/.test(server)
+      && (server.match(/scheduleMainGraphRebuild\(/g) ?? []).length === 2,
+    JSON.stringify({ rebuild: graphRebuild.length, schedule: graphSchedule.length, spawnAt: graphSpawnAt,
+      callers: (server.match(/scheduleMainGraphRebuild\(/g) ?? []).length - 1 }));
   // …and the CHANNEL is READ, not guessed. `tokenChannel` mirrors tokenFrom's own precedence
   // (bearer → cookie → query); if the two ever disagree the suspect flag would be stamped on the
   // wrong requests and nothing at runtime would notice. Asserted as "both read the same three

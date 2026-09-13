@@ -89,6 +89,12 @@ answer it, and all it does is switch a box on so it can start pulling.
   line. At `1` the shared default lock is deliberately left alone: that is what makes a
   hand-started suite on that machine serialize against this daemon's.
 
+  At **every** cap each run gets `TMPDIR=<run dir>/tmp`, so the suite's instance (and the red one
+  it keeps) lands on the work dir's disk beside `tree/` instead of in `/tmp` — on the work-horse a
+  3.9 GB tmpfs that stood 98 % full of kept instances nothing ever pruned (2026-09-13). The lock
+  path is a literal in `e2e-stage.sh` and tmux follows `TMUX_TMPDIR`, so neither moves with it.
+  `keepRuns` counts FINISHED run dirs: a run still in flight is never pruned and never counted.
+
   The heartbeat carries `running` and `maxParallelSuites`, so the board shows `1/2 suite slots`,
   and the Fleet's claim door refuses a device whose own last heartbeat said it was full. That
   refusal uses nothing but the machine's own words — a device that reports neither field (a browser

@@ -6909,6 +6909,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       `freeSlots@${freeAt} jobsList@${listAt} awaitsWork=${/await work\(/.test(tickFn)}`);
     pin(`${RULE_PAR} (b) a run above cap 1 gets its own FLEET_SUITE_LOCK, and at cap 1 the shared one is left alone`,
       /cfg\.maxParallelSuites > 1\s*\n?\s*\? \{ FLEET_SUITE_LOCK: `\$\{runDir\}\/e2e\.lock` \} : \{\}/.test(workFn)
+        // C1 (2026-09-13): the scratch rides at EVERY cap, the lock only above 1 — both in the one env
+        && /const suiteEnv: Record<string, string> = \{ TMPDIR: scratch, \.\.\.lockEnv \};/.test(workFn)
+        && /const scratch = `\$\{runDir\}\/tmp`;/.test(workFn)
         // the trailing `ctl.signal` is the withdrawal switch (7e601e57) — the lock still travels with the run
         && /runArgv\(j\.argv!, clone, logPath, timeoutMs, suiteEnv(, ctl\.signal)?\)/.test(workFn)
         && /runCmd\(cfg\.suiteCmd, clone, logPath, timeoutMs, suiteEnv(, ctl\.signal)?\)/.test(workFn),

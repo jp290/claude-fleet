@@ -8010,6 +8010,13 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_SHARD} — booted modules ⊆ listed, none twice, none phantom`,
     booted.length > 30 && unlisted.length === 0 && twice.length === 0 && phantom.length === 0,
     `booted=${booted.length} listed=${listed.length} unlisted=[${unlisted}] twice=[${twice}] phantom=[${phantom}]`);
+  // the runner's own startup check on the step NAMES fires only when the runner boots — behind a
+  // server start and the suite mutex (2026-09-13: 26 min of queue for a unit renamed in the table
+  // and not in the runner). The same fact, here, costs milliseconds and no server.
+  const stepUnits = [...runner.matchAll(/\{ unit: "([\w-]+)"/g)].map((m) => m[1]!);
+  const unknownSteps = stepUnits.filter((u) => !SHARD_UNITS.some((x) => x.unit === u));
+  pin(`${RULE_SHARD} — every step's unit name in the runner is a unit the table knows`,
+    stepUnits.length > 20 && unknownSteps.length === 0, `steps=${stepUnits.length} unknown=[${unknownSteps}]`);
   // the seconds are a measurement, and the balance the plan computes is only as honest as they are:
   // a unit with no weight silently rides along wherever the tie-break puts it
   pin(`${RULE_SHARD} — every unit carries a non-negative measured weight and a non-empty module list`,

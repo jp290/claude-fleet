@@ -176,9 +176,15 @@ export interface PromptLogEntry {
   openedAt?: number; sessionId?: string | null; sendId?: string; delivery?: string;
 }
 export const plogPath = `${ROOT}/streams/prompts.jsonl`;
-export const plogRead = async (): Promise<PromptLogEntry[]> =>
-  (await Bun.file(plogPath).text()).trim().split("\n").filter(Boolean)
-    .map((l) => JSON.parse(l) as PromptLogEntry);
+// A log that does not exist yet is an EMPTY log, not a crash: the server creates the file on the
+// first prompt it delivers, so a shard that runs no send-heavy family before its first plogRead
+// (lanes-lifecycle in `--shard 2/4`, 2026-09-13) would otherwise die on ENOENT and take every
+// later check with it. A count that stays 0 across a send still fails its check — honestly.
+export const plogRead = async (): Promise<PromptLogEntry[]> => {
+  const f = Bun.file(plogPath);
+  if (!(await f.exists())) return [];
+  return (await f.text()).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as PromptLogEntry);
+};
 
 export const readText = async (p: string): Promise<string> => {
   try {

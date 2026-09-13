@@ -34,7 +34,9 @@ Inhalten als an einem strengen Leser.
   Welle 5 das uebernimmt), faehrt die Checkpoint-Messungen, haelt diesen Plan aktuell.
 - **Program-MAIN Fleet-Betrieb (Slot 9):** treibt Lanes, landet, deployt, beurteilt Audits, faehrt die
   „nach dem Land"-Schritte, die in den Zeilen stehen.
-- **Owner:** drei Entscheidungen, sonst nichts (§4).
+- **Owner:** hat die drei Checkpoint-Entscheidungen (§4) am 2026-09-13 an den Orchestrator delegiert
+  („Bitte beantworte die Fragen selbst"). Der Orchestrator entscheidet sie an den Zahlen und berichtet
+  Entscheidung + Zahlen; K2 (Scharfschalten) wird trotzdem vorher gemeldet, nicht nachher.
 
 Takt: hoechstens zwei bauende Lanes gleichzeitig plus eine reine Mess-Lane (Mac 8 GB, ein Suite-Mutex).
 Freigegeben wird welleweise; eine Welle beginnt, wenn ihre NACH-Zeilen gelandet sind.
@@ -96,11 +98,11 @@ fehlende Groesse, Symbol-/Rollen-Luecke. `hold` als Notbremse. Nach dem Land nur
 - **K1 — wirkt die Datenschicht?** Nach Deploy von `25b90648`, an 10 natuerlichen claude-Lanes:
   Kontext bei der ersten Aenderung p50 < 120 k (heute 151 k) und weniger Bash davor. Ja ⇒ als
   naechstes ein Test-Paket fuer e2e-Lanes (ctxPack `e2e-check-schreiben`, Worktrail IV §3.4) filen.
-  Nein ⇒ zuerst verstehen, warum, kein zweites Paket. *Owner entscheidet mit den Zahlen.*
+  Nein ⇒ zuerst verstehen, warum, kein zweites Paket. *Entscheidet: Orchestrator (delegiert).*
 - **K2 — ist die Automatik scharf genug, aber nicht zu streng?** Nach Deploy von `57d7ec3b` und
   `35bc6afe`: der Anzeiger zeigt, wie viele offene Fleet-Betrieb-Auftraege HART bestehen. Unter der
   Haelfte ⇒ Gruende zaehlen und dem Owner vorlegen, bevor `f1aeba10` scharf geschaltet wird.
-  *Owner entscheidet das Scharfschalten.*
+  *Entscheidet: Orchestrator (delegiert), vorher gemeldet.*
 - **K3 — eine Woche `card-valid`:** die MAIN nennt die ersten fuenf Selbststarts einzeln und zaehlt,
   was an HART haengen blieb. Still gelockert wird nie.
 

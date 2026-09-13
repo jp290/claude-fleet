@@ -15887,15 +15887,47 @@ function helperFailNames(raw: unknown): string[] | undefined {
 // Deliberately NOT asked: whether that device already holds another claim. It may finish and take
 // this one next, and the grace is short — refusing on that would make the common case (one helper,
 // two lands) fall straight back to today's behaviour.
+const isHelperClaimCandidate = (d: HelperDevice, now: number): boolean =>
+  (d.desiredMode ?? DEVICE_MODE_DEFAULT) === "active" && (!d.mode || d.mode === "active")
+  && now - d.lastSeen <= HELPER_FRESH_MS;
 function helperClaimCandidateExists(now = Date.now()): boolean {
-  for (const d of helperDevices.values()) {
-    if ((d.desiredMode ?? DEVICE_MODE_DEFAULT) !== "active") continue;
-    if (d.mode && d.mode !== "active") continue;
-    if (now - d.lastSeen > HELPER_FRESH_MS) continue;
-    return true;
-  }
+  for (const d of helperDevices.values()) if (isHelperClaimCandidate(d, now)) return true;
   return false;
 }
+// …AND IS EVERY SUCH MACHINE FULL, AND UNTIL WHEN? The second question both waits in front of the
+// portal ask — a lane's unclaimed preview offer and the drain's grace — and the one they could not
+// ask until 2026-09-13. Measured the day before (7e601e57): both second-host slots held from 13:49 to
+// 14:27, a lane offered at the start of that, waited its 180 s for a claim that could not come and
+// ran the suite on this box; the audit behind it went local the same way after its 60 s grace. At
+// 14:37 this box had four suite wrappers queued and the other machine none. Neither wait was wrong
+// about "a machine is there" — it was blind to "and it is busy until a moment this server knows".
+//
+// FULL is read from the device's OWN words (`maxParallelSuites`, `running`) joined with the claims
+// this server holds for it — the larger count wins, because a claim the daemon has not yet counted
+// on its next beat is still a slot taken. The END is the earliest `expiresAt` among those claims:
+// an upper bound (a real run reports before its claim would lapse), which is the safe direction for
+// a wait, never a guess that runs out early.
+// `null` is "not saturated" and covers four cases that must keep today's behaviour: no candidate at
+// all, one candidate with a free slot, one that never reported a cap (absent is uncapped, as at the
+// claim door), and one that says it is full while this server knows none of its claims — there is
+// no end to wait for, so there is nothing to extend a wait to.
+interface HelperSaturation { until: number }
+function helperSaturation(now = Date.now()): HelperSaturation | null {
+  const held = heldClaimsByDevice();
+  let until = 0;
+  for (const d of helperDevices.values()) {
+    if (!isHelperClaimCandidate(d, now)) continue;
+    const mine = held.get(d.id) ?? [];
+    if (d.maxParallelSuites === undefined || !mine.length
+      || Math.max(d.running ?? 0, mine.length) < d.maxParallelSuites) return null;
+    const end = Math.min(...mine.map((c) => c.expiresAt));
+    until = until ? Math.min(until, end) : end;
+  }
+  return until ? { until } : null;
+}
+// what a saturated wait adds on top of the claim's end: one daemon poll (the same cadence as
+// HELPER_SWEEP_MS) for the freed machine to see the list again, and one more for its claim to land
+const HELPER_SATURATION_SLACK_MS = 2 * HELPER_SWEEP_MS;
 // THE PRESENCE READING — one sentence about the whole register, for the two doors that have to
 // answer "is there another machine at all?" from INSIDE a session (/api/self/gate and the
 // suite-offer door). Until it existed, a lane could not ask: the register is the OWNER's panel, and
@@ -16265,6 +16297,29 @@ function openRedPreviews(): Record<string, unknown>[] {
 //     is the measured p50 of a full run: waiting longer than the run itself takes is never right.
 const SUITE_OFFER_WAIT_FREE_MS = 180_000;
 const SUITE_OFFER_WAIT_HELD_MS = 800_000;
+// …and the number an UNCLAIMED offer actually waits, served beside the two constants rather than in
+// place of `freeMs`: the rulebook quotes `freeMs` and e2e/pins.ts holds it there. It is `freeMs`
+// unless every claim-capable helper is FULL (helperSaturation) — then it runs to the earliest known
+// end of that machine's claims plus the slack, never below `freeMs` and never past FLEET_VERIFY_WAIT_MS,
+// the same wait budget a land gate queues under. Past that cap the lane falls back as before: a
+// helper that stays busy longer than a land would wait for the mutex buys nothing by being waited on.
+// Measured from the OFFER's own time when there is one, because that is where the lane's clock starts.
+interface SuiteOfferWait {
+  freeMs: number; heldMs: number; unclaimedMs: number;
+  saturatedUntil: number | null; reason: string | null;
+}
+function suiteOfferWait(offeredAt = Date.now()): SuiteOfferWait {
+  const base = { freeMs: SUITE_OFFER_WAIT_FREE_MS, heldMs: SUITE_OFFER_WAIT_HELD_MS };
+  const sat = helperSaturation();
+  if (!sat) return { ...base, unclaimedMs: SUITE_OFFER_WAIT_FREE_MS, saturatedUntil: null, reason: null };
+  const want = sat.until + HELPER_SATURATION_SLACK_MS - offeredAt;
+  return {
+    ...base, unclaimedMs: Math.min(VERIFY_WAIT_MS, Math.max(SUITE_OFFER_WAIT_FREE_MS, want)),
+    saturatedUntil: sat.until,
+    reason: `helper saturated until ~${new Date(sat.until).toTimeString().slice(0, 5)}`
+      + (want > VERIFY_WAIT_MS ? ` — later than the ${Math.round(VERIFY_WAIT_MS / 60_000)} min wait cap, so the wait stops at the cap` : ""),
+  };
+}
 // The portal's own credential. Server-minted and persisted like the steward's, and deliberately
 // NEITHER the owner token (which opens the whole board) NOR a slot's self token (which is scoped to
 // one pane and rotates under it). Scope is by POSITION, the same model the steward token uses: the
@@ -16405,6 +16460,10 @@ async function drainPostLandAudits(): Promise<void> {
       // Re-read every iteration rather than hoisted: the loop awaits a whole suite between passes,
       // and both the clock and the device register move while it runs.
       const graceOn = AUDIT_HELPER_GRACE_MS > 0 && helperClaimCandidateExists();
+      // …and whether every such machine is FULL right now (helperSaturation). Only asked under a
+      // grace: without one the owner has not given the portal first refusal at all, and a saturated
+      // helper is no reason to invent it.
+      const saturation = graceOn ? helperSaturation() : null;
       // the earliest moment a grace-skipped entry becomes drainable, 0 = nothing was skipped for it
       let graceUntil = 0;
       const entry = [...auditQueue.entries()].find(([r, q]) => {
@@ -16433,7 +16492,16 @@ async function drainPostLandAudits(): Promise<void> {
         // stopped being somebody else's (auditClaimableSince, and see its comment for the three
         // measured cases this line is). Absent — the entry was never blocked — is the cover time,
         // which is today's behaviour unchanged.
-        const readyAt = Math.max(youngest, auditClaimableSince.get(r) ?? 0) + AUDIT_HELPER_GRACE_MS;
+        const since = Math.max(youngest, auditClaimableSince.get(r) ?? 0);
+        // A SATURATED HELPER STRETCHES THE GRACE to the earliest end of its claims (plus the slack
+        // for its next poll), capped at FLEET_VERIFY_WAIT_MS from the same origin — the rule the
+        // lane's offer follows (suiteOfferWait), for the same measured reason: a 60 s grace that
+        // expires while the only other machine is 20 minutes into its second suite hands this box a
+        // 37-minute run the other machine would have taken next. The cap keeps "never starves".
+        const readyAt = saturation
+          ? Math.max(since + AUDIT_HELPER_GRACE_MS,
+            Math.min(saturation.until + HELPER_SATURATION_SLACK_MS, since + VERIFY_WAIT_MS))
+          : since + AUDIT_HELPER_GRACE_MS;
         if (readyAt <= Date.now()) return true;
         graceUntil = graceUntil ? Math.min(graceUntil, readyAt) : readyAt;
         return false;
@@ -16446,6 +16514,17 @@ async function drainPostLandAudits(): Promise<void> {
         break;
       }
       const [repo, q] = entry;
+      // WHY THIS BOX RUNS IT, one line per local run — so "it ran here although a helper was free
+      // in ten minutes" is a question the log answers rather than one the ledger has to be joined
+      // against the device register for. Derived from the same three readings the find just used.
+      const localBar = helperClaimBar(repo, q.covers);
+      console.log(`post-land audit LOCAL: ${basename(repo)} ${q.main} (${q.covers.length} land(s)) — ${
+        localBar ? `not offerable to a helper (${localBar})`
+        : AUDIT_HELPER_GRACE_MS <= 0 ? "no helper grace configured"
+        : !graceOn ? "no claim-capable helper is beating"
+        : saturation && saturation.until + HELPER_SATURATION_SLACK_MS > Date.now()
+          ? `the helper is saturated until ${new Date(saturation.until).toISOString()}, past the ${Math.round(VERIFY_WAIT_MS / 60_000)} min wait cap`
+        : "the helper grace ran out and nobody claimed it"}`);
       // THE SELECTION AND THIS MARK ARE ONE TURN — no `await` sits between them. That is what makes
       // "the drain committed to this repo" observable by the claim route with no window in which
       // both sides believe they won (see auditRunningRepo).
@@ -17170,8 +17249,16 @@ function kickAuditDrain(): void {
 // computed from a moment no later than now; an entry that was BLOCKED during that pass never
 // reached the grace math and stamps its claimability at release, so its readyAt is now+GRACE too.
 // Both cases are ≥ the armed moment, which is exactly what the single guard needs.
+// …with ONE exception the saturated wait created: an armed moment can now lie far out (a helper's
+// claim end, up to FLEET_VERIFY_WAIT_MS away), and a later pass can legitimately compute an EARLIER
+// one — the helper freed up and a new land arrived under the plain grace. Keeping the far timer
+// would hold that land for the old helper's whole claim, so an earlier moment re-arms. A later one
+// still never does, which is the argument above unchanged.
+let auditGraceAt = 0;
 function armAuditGraceKick(readyAt: number): void {
-  if (auditGraceTimer) return;
+  if (auditGraceTimer && readyAt >= auditGraceAt) return;
+  if (auditGraceTimer) clearTimeout(auditGraceTimer);
+  auditGraceAt = readyAt;
   auditGraceTimer = setTimeout(() => {
     auditGraceTimer = null;
     kickAuditDrain();
@@ -17442,6 +17529,34 @@ interface HelperDeviceView {
   wakeConfigured: boolean;
 }
 function helperDevicesView(): HelperDeviceView[] {
+  const held = heldClaimsByDevice();
+  // newest heartbeat first: the map's own order is oldest-first (it is an eviction order, not a
+  // reading order), and the machine that just spoke is the one the owner is looking for.
+  return [...helperDevices.values()].sort((a, b) => b.lastSeen - a.lastSeen).map((d) => ({
+    id: d.id, name: d.name, lastSeen: d.lastSeen,
+    // the three reported fields ride only when the device actually reported them — absent is
+    // "never said", which the panel draws differently from any value it could invent here
+    ...(d.mode ? { mode: d.mode } : {}),
+    ...(d.load !== undefined ? { load: d.load } : {}),
+    ...(d.capabilities?.length ? { capabilities: d.capabilities } : {}),
+    desiredMode: d.desiredMode ?? DEVICE_MODE_DEFAULT, desiredSet: !!d.desiredMode,
+    claims: held.get(d.id) ?? [],
+    // identity first, name only for rows written before deviceId was booked (see HelperLapse)
+    lapses: helperLapses.filter((l) => (l.deviceId ? l.deviceId === d.id : l.name === d.name)).length,
+    ...(d.daemonSha ? { daemonSha: d.daemonSha } : {}),
+    // shipped as a PAIR or not at all: "2 running" with no cap beside it is a number the panel
+    // cannot draw a meaning for, and inventing the missing half here is exactly the lie the
+    // absent-means-never-said rule above exists to prevent
+    ...(d.maxParallelSuites !== undefined
+      ? { maxParallelSuites: d.maxParallelSuites, running: d.running ?? 0 } : {}),
+    update: helperUpdateView(d.id),
+    ...(d.lastWakeAt ? { lastWakeAt: d.lastWakeAt } : {}),
+    wakeConfigured: !!HELPER_WAKE_ADDR && !!wakeMacFor(d.id),
+  }));
+}
+// THE LIVE CLAIMS, PER DEVICE — the join the board draws and helperSaturation counts, done once so
+// "what is that machine holding" has one answer on both.
+function heldClaimsByDevice(): Map<string, HelperDeviceClaimView[]> {
   const held = new Map<string, HelperDeviceClaimView[]>();
   const push = (deviceId: string, c: HelperDeviceClaimView): void => {
     const list = held.get(deviceId);
@@ -17466,29 +17581,7 @@ function helperDevicesView(): HelperDeviceView[] {
     const c = helperUpdateClaimOf(u);
     if (c) push(u.deviceId, { kind: "daemon-update", repo: basename(u.repo), ref: u.main, expiresAt: c.expiresAt });
   }
-  // newest heartbeat first: the map's own order is oldest-first (it is an eviction order, not a
-  // reading order), and the machine that just spoke is the one the owner is looking for.
-  return [...helperDevices.values()].sort((a, b) => b.lastSeen - a.lastSeen).map((d) => ({
-    id: d.id, name: d.name, lastSeen: d.lastSeen,
-    // the three reported fields ride only when the device actually reported them — absent is
-    // "never said", which the panel draws differently from any value it could invent here
-    ...(d.mode ? { mode: d.mode } : {}),
-    ...(d.load !== undefined ? { load: d.load } : {}),
-    ...(d.capabilities?.length ? { capabilities: d.capabilities } : {}),
-    desiredMode: d.desiredMode ?? DEVICE_MODE_DEFAULT, desiredSet: !!d.desiredMode,
-    claims: held.get(d.id) ?? [],
-    // identity first, name only for rows written before deviceId was booked (see HelperLapse)
-    lapses: helperLapses.filter((l) => (l.deviceId ? l.deviceId === d.id : l.name === d.name)).length,
-    ...(d.daemonSha ? { daemonSha: d.daemonSha } : {}),
-    // shipped as a PAIR or not at all: "2 running" with no cap beside it is a number the panel
-    // cannot draw a meaning for, and inventing the missing half here is exactly the lie the
-    // absent-means-never-said rule above exists to prevent
-    ...(d.maxParallelSuites !== undefined
-      ? { maxParallelSuites: d.maxParallelSuites, running: d.running ?? 0 } : {}),
-    update: helperUpdateView(d.id),
-    ...(d.lastWakeAt ? { lastWakeAt: d.lastWakeAt } : {}),
-    wakeConfigured: !!HELPER_WAKE_ADDR && !!wakeMacFor(d.id),
-  }));
+  return held;
 }
 // THE MAC LIVES IN THE ENVIRONMENT AND NOWHERE ELSE. Not in fleet.json (which is a state file this
 // repo's own tooling prints), not in a tracked file (this repo is public), not in a response and
@@ -28418,7 +28511,7 @@ Bun.serve<WSData>({
           .sort((a, b) => b.offeredAt - a.offeredAt)[0] ?? null;
         return json({
           offer: last ? laneSuiteView(last) : null,
-          waitPolicy: { freeMs: SUITE_OFFER_WAIT_FREE_MS, heldMs: SUITE_OFFER_WAIT_HELD_MS },
+          waitPolicy: suiteOfferWait(existing?.offeredAt),
           suiteLock: suiteLockView(),
           helper: helperPresence(), // …and WHO could take it, same reading as /api/self/gate's
         });
@@ -28426,7 +28519,11 @@ Bun.serve<WSData>({
       // ONE OPEN OFFER PER SLOT. A second POST returns the first with `existing: true` rather than
       // minting a rival — the same idempotent shape createWatchForSlot uses, and for the same
       // reason: a caller that retries must not end up holding two of anything.
-      if (existing) return json({ offer: laneSuiteView(existing), existing: true, helper: helperPresence() });
+      // `waitPolicy` rides on BOTH minting answers too: "how long is this offer worth waiting for" is
+      // decided in the same instant the offer is, and the saturated reason is what a lane would
+      // otherwise only learn by polling GET — which is the loop the report rail exists to end.
+      if (existing) return json({ offer: laneSuiteView(existing), existing: true, helper: helperPresence(),
+        waitPolicy: suiteOfferWait(existing.offeredAt) });
       // NO OFFER WITHOUT A MACHINE THAT COULD TAKE IT. Before this, a lane in a fleet where nothing
       // was beating still got an open job back and then waited SUITE_OFFER_WAIT_FREE_MS (180 s) for
       // a claim that could not arrive — pure delay on the lane's own preview, and invisible from
@@ -28442,8 +28539,7 @@ Bun.serve<WSData>({
       const presence = helperPresence();
       if (!presence.online)
         return json({ offer: null, reason: "no helper online", helper: presence,
-          waitPolicy: { freeMs: SUITE_OFFER_WAIT_FREE_MS, heldMs: SUITE_OFFER_WAIT_HELD_MS },
-          suiteLock: suiteLockView() });
+          waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
       const job: LaneSuiteJob = {
         id: randomBytes(6).toString("hex"), slot: s.id, slotOpenedAt: s.openedAt,
         repo: s.worktree.repo, cwd: s.cwd!, branch: s.worktree.branch, offeredAt: Date.now(),
@@ -28452,7 +28548,8 @@ Bun.serve<WSData>({
       laneSuiteJobs.set(job.id, job);
       audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`);
       await saveStateNow();
-      return json({ offer: laneSuiteView(job), existing: false, helper: presence });
+      return json({ offer: laneSuiteView(job), existing: false, helper: presence,
+        waitPolicy: suiteOfferWait(job.offeredAt) });
     }
 
     // THE COMMAND DOOR — a session hands another machine a TREE AND A COMMAND, and gets a receipt.

@@ -1391,8 +1391,13 @@ Dateien reisen NICHT mit**; ihre Zahl steht als `untracked` im Job, damit ein gr
   Routenname bleibt auch für eine Vorschau der post-land-Name: es ist die EINE Route, die diese
   Bytes ausliefert, und eine zweite Fläche für dieselbe Datei wäre teurer als ein schiefer Pfad.
   **Eine Lane liest also Id und Größe, die Bytes holt der Owner.**
-- `waitPolicy{freeMs,heldMs}` — die Wartezahlen aus `SUITE_OFFER_WAIT_FREE_MS` /
-  `SUITE_OFFER_WAIT_HELD_MS`, damit die Lane sie nicht aus dem Gedächtnis zitiert.
+- `waitPolicy{freeMs,heldMs,unclaimedMs,saturatedUntil,reason}` — die Wartezahlen aus
+  `SUITE_OFFER_WAIT_FREE_MS` / `SUITE_OFFER_WAIT_HELD_MS`, damit die Lane sie nicht aus dem
+  Gedächtnis zitiert, und seit 2026-09-13 an GET **und** beiden POST-Antworten. `unclaimedMs` ist,
+  wie lange ein UNGECLAIMTES Angebot wirklich zu warten lohnt: `freeMs`, außer jeder claim-fähige
+  Helfer ist voll (`server.ts#helperSaturation`) — dann bis zum frühesten bekannten Claim-Ende plus
+  Puffer ab `offeredAt`, nie unter `freeMs`, nie über `FLEET_VERIFY_WAIT_MS`; `saturatedUntil`
+  (epoch ms) und `reason` („helper saturated until ~HH:MM") stehen dann daneben, sonst `null`.
 - `helper{online,name,mode,lastSeenAgeMs}` — dieselbe Präsenz-Lesung wie in `/api/self/gate`, und
   sie reist an JEDER Antwort dieser Tür mit (GET, `existing`, frisch gemintet, abgelehnt), damit
   eine Lane nicht in derselben Sekunde hier „online" lesen und dort abgelehnt werden kann.

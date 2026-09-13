@@ -101,7 +101,12 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   war es die volle Kette — Abwesenheit ist nie Harmlosigkeit. Ein proportionaler Eintrag wird dem
   Helfer-Portal weder angeboten noch für es zurückgehalten (`server.ts#helperJobsView`,
   `server.ts#helperClaim`), weil der Daemon die volle Suite fährt und damit etwas anderes messen
-  würde als die Frage. Anlass, am Ledger nachgelesen: 76f3376 und 10ba7af (2026-09-04), je EINE
+  würde als die Frage. **Seit 2026-09-13 wartet ein Eintrag auf einen VOLLEN Helfer**
+  (`server.ts#helperSaturation`): ist jedes claim-fähige Gerät voll und kennt der Server dessen
+  Claims, läuft die Gnadenfrist bis zum frühesten Claim-`expiresAt` plus zwei Sweep-Intervalle,
+  gedeckelt bei `FLEET_VERIFY_WAIT_MS`; dieselbe Lesung liefert einer Lane `waitPolicy.unclaimedMs`
+  am Suite-Offer. Jeder lokale Lauf nennt seinen Grund in `server.log` (`post-land audit LOCAL: …`).
+  Anlass, am Ledger nachgelesen: 76f3376 und 10ba7af (2026-09-04), je EINE
   Docs-Datei, bekamen je ein volles `./e2e-isolated.sh` — 1562 s bzw. 1530 s, beide ROT, 9 bzw. 1
   von 3633 Checks gefallen, beide als Flake adjudiziert. Beide liefen zufaellig auf dem Helfer, es
   kostete also 52 Minuten der ANDEREN Maschine plus Claim-Fenster; lokal waere es dieselbe Zeit am

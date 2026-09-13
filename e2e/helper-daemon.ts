@@ -24,7 +24,7 @@ import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
 import { failNamesOf, freeSuiteSlots, inQuietHours, loadConfig, localMode, stricter, tailOf, trailIdOf,
-  EXIT_CONFIG, EXIT_UPDATED, type HelperConfig } from "../helper-daemon/daemon";
+  withdrawnRuns, EXIT_CONFIG, EXIT_UPDATED, type HelperConfig, type JobView } from "../helper-daemon/daemon";
 
 interface Row {
   at: number; ms: number; repo: string; main: string; mainSha: string; result: string; reason?: string;
@@ -113,6 +113,26 @@ export async function run(h: {
     freeSuiteSlots(cap(2), 0) === 2 && freeSuiteSlots(cap(2), 1) === 1 && freeSuiteSlots(cap(2), 2) === 0
       && freeSuiteSlots(cap(2), 3) === 0,
     `free@0..3=${[0, 1, 2, 3].map((n) => freeSuiteSlots(cap(2), n)).join(",")}`);
+  // THE WITHDRAWAL READING (7e601e57). A run ends when a job list asked for AFTER its claim no
+  // longer carries it under THAT claim — and on nothing weaker. The four negatives are the half that
+  // keeps a healthy run alive: a job still held by me, an unreadable claim time on either side, and
+  // a list that was already on its way before my claim came back.
+  const jv = (id: string, claim: { name: string; claimedAt?: number } | null): JobView =>
+    ({ id, repo: "r", main: "main", branches: [], covers: 0, claim, localRunning: false });
+  const mine = new Map([
+    ["aaaaaaaaaaaa", { claimedAt: 100, since: 1000 }],   // still mine
+    ["bbbbbbbbbbbb", { claimedAt: 100, since: 1000 }],   // gone from the list (reaped)
+    ["cccccccccccc", { claimedAt: 100, since: 1000 }],   // listed again OPEN (lapsed, re-offered)
+    ["dddddddddddd", { claimedAt: 100, since: 1000 }],   // listed under ANOTHER claim
+    ["eeeeeeeeeeee", { claimedAt: 100, since: 5000 }],   // claimed after this list was asked for
+    ["ffffffffffff", { claimedAt: undefined, since: 1000 }], // claim time never came back
+  ]);
+  const listNow = [jv("aaaaaaaaaaaa", { name: "me", claimedAt: 100 }), jv("cccccccccccc", null),
+    jv("dddddddddddd", { name: "other", claimedAt: 200 }), jv("ffffffffffff", { name: "me", claimedAt: 300 })];
+  const gone = withdrawnRuns(mine, listNow, 2000).sort();
+  check("(HD) withdrawnRuns aborts exactly the runs the fleet took back — reaped, re-offered, re-claimed — and never one it still holds for me",
+    JSON.stringify(gone) === JSON.stringify(["bbbbbbbbbbbb", "cccccccccccc", "dddddddddddd"]),
+    JSON.stringify(gone));
   // …and the config door: a value this rail has no reading for must not reach the arithmetic above.
   // A 0 would make a machine claim nothing forever and silently, which is the failure mode every
   // other floor in loadConfig exists to refuse.
@@ -990,6 +1010,42 @@ export async function run(h: {
       parallelLocks.length === 2 && new Set(parallelLocks).size === 2
         && parallelLocks.every((l) => l.startsWith(`${WORK}/run-`) && l.endsWith("/e2e.lock")),
       `locks=${JSON.stringify(parallelLocks)}`);
+
+    // --- A FULL MACHINE STILL HEARS THAT A JOB WAS TAKEN BACK (7e601e57) --------------------------
+    // Measured 2026-09-12: a lane landed, the fleet reaped its preview within the minute, and the
+    // second-host — both slots busy — ran that preview on for 37 more minutes, to a `409 no live claim`.
+    // A full daemon used to return before asking for the job list at all, so it could not learn it.
+    // Here the machine is exactly that full (2 of 2, latched runs), one of its lanes is killed, and
+    // the daemon must end THAT run without reporting it, keep the other, and use the freed slot.
+    // MUTATION: restore `if (free <= 0) return;` in front of the list request in daemon.ts#tick (or
+    // drop the withdrawnRuns loop) ⇒ no abort line, the victim's run stays latched ⇒ red.
+    const heldRefs = ((await devRow(CAP2BOX))?.claims ?? []).map((c) => c.ref);
+    const victimIdx = capLanes.findIndex((ln) => ln.branch === heldRefs[0]);
+    const victimJob = capJobs[victimIdx] ?? "";
+    const keptIdx = capLanes.findIndex((ln) => ln.branch === heldRefs[1]);
+    const bodiesBefore = reportedBodies.length;
+    check("(HD.10) setup: the victim is one of the two runs this full machine holds",
+      victimIdx >= 0 && keptIdx >= 0 && victimIdx !== keptIdx && /^[0-9a-f]{12}$/.test(victimJob),
+      `held=${JSON.stringify(heldRefs)} victim=${victimIdx} kept=${keptIdx}`);
+    await post(`/api/slots/${capLanes[victimIdx]!.slot}/kill`, {});
+    const aborted = await waitLog(two.log, `job ${victimJob} is no longer this machine's`, 15_000);
+    const ended = await waitLog(two.log, `for ${victimJob} ended by withdrawal`, 15_000);
+    check("(HD.10) A FULL DAEMON ABORTS THE RUN WHOSE LANE IS GONE — within a few polls, and reports nothing for it",
+      aborted && ended && !reportedBodies.slice(bodiesBefore).some((b) => b.jobId === victimJob)
+        && !logText(two.log).includes(`reported ${victimJob}`),
+      `aborted=${aborted} ended=${ended} reports=${JSON.stringify(reportedBodies.slice(bodiesBefore).map((b) => b.jobId))}`);
+    const refill = await (async (): Promise<string[]> => {
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const refs = ((await devRow(CAP2BOX))?.claims ?? []).map((c) => c.ref);
+        if ((refs.length === 2 && !refs.includes(heldRefs[0]!)) || Date.now() >= deadline) return refs;
+        await Bun.sleep(200);
+      }
+    })();
+    check("(HD.10) …the other run is untouched, and the freed slot takes the job that was waiting",
+      refill.length === 2 && refill.includes(heldRefs[1]!) && !refill.includes(heldRefs[0]!)
+        && (await openJobs()) === 0,
+      `claims=${JSON.stringify(refill)} open=${await openJobs()}`);
     await Bun.write(REL, "go\n");
     two.proc.kill();
     await two.proc.exited;

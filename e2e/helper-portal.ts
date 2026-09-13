@@ -1371,7 +1371,153 @@ export async function run(h: {
       `stored=${JSON.stringify({ max: rebooted?.maxParallelSuites, running: rebooted?.running })}`
       + ` claim=${afterRestart.status}`);
 
+    // ===== (K9a) A CLAIMED OFFER DOES NOT OUTLIVE ITS LANE ==========================================
+    // Measured 2026-09-12 (7e601e57): a lane landed while the second-host ran its preview; the helper
+    // worked on for 37 minutes and was told `409 no live claim` at the end. The fleet half of the
+    // fix is that the job LEAVES THE LIST the moment the lane is gone — the list is the only thing
+    // the daemon reads, so it is the only place it can learn to stop (helper-daemon/daemon.ts
+    // #withdrawnRuns, driven live in e2e/helper-daemon.ts HD.10). Both of K8's offers are still
+    // held by DEVICE here, so one lane is killed and the other is the control.
+    // MUTATION: delete `reapLaneSuiteOffersFor(s.id)` from teardownSlotOccupant AND the `!live` arm
+    // of expireHelperClaims (the list route sweeps first, so either alone still reaps) ⇒ job A stays
+    // listed as claimed ⇒ red.
+    const listedBeforeKill = (await jobs()).jobs.filter((j) => j.id === jobA || j.id === jobB);
     await post(`/api/slots/${capA.slot}/kill`, {});
+    const listedAfterKill = (await jobs()).jobs;
+    const lateA = await hpost("/api/helper/result", { jobId: jobA, exitCode: 0, tail: "ALL PASS" });
+    check("(K9a) A CLAIMED PREVIEW WHOSE LANE IS KILLED LEAVES THE HELPER'S JOB LIST AT ONCE — the other claim stays",
+      listedBeforeKill.length === 2 && listedBeforeKill.every((j) => j.claim !== null)
+        && !listedAfterKill.some((j) => j.id === jobA)
+        && listedAfterKill.some((j) => j.id === jobB && j.claim?.name === DEVICE_NAME),
+      `before=${JSON.stringify(listedBeforeKill.map((j) => `${j.id}:${j.claim?.name ?? "open"}`))}`
+      + ` after=${JSON.stringify(listedAfterKill.map((j) => `${j.id}:${j.claim?.name ?? "open"}`))}`);
+    check("(K9a) …and a verdict for it is refused, which is exactly why a helper should stop rather than finish",
+      lateA.status === 409, `${lateA.status} ${JSON.stringify(await lateA.json())}`);
     await post(`/api/slots/${capB.slot}/kill`, {});
+  }
+
+  // ===== (K9) A FULL HELPER IS WAITED FOR, NOT GIVEN UP ON AFTER 180 s ============================
+  // Measured 2026-09-12 13:49–14:27 (7e601e57): both second-host slots were held; a lane offered its
+  // preview, waited SUITE_OFFER_WAIT_FREE_MS for a claim that could not come and ran the suite on
+  // this box, and the audit behind it went local after its 60 s grace the same way. At 14:37 this box
+  // had four suite wrappers queued and the other machine none. server.ts#helperSaturation is the
+  // reading both waits were missing: every claim-capable helper full, and the earliest end of its
+  // claims known.
+  //
+  // THE FIXTURE is K8's capacity box, its cap 2 filled by two REAL claims this section makes, and
+  // beating the whole time — the freshness window is a few seconds here, so a probe that stopped
+  // beating would read "no candidate" and pass the negative check below for the wrong reason.
+  // DEVICE is wished off first: it never reported a cap, so it would be an uncapped candidate and
+  // the helper would never read as saturated at all.
+  {
+    const SATBOX = "e2ecapacitybox1";
+    const SAT_GRACE_MS = 8000;
+    await killSrv();
+    check("(K9) setup: the server restarts with an 8 s grace and a 6 s freshness window",
+      await startSrv({ audit: true, extra: { FLEET_AUDIT_HELPER_GRACE_MS: String(SAT_GRACE_MS),
+        FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: "2000" } }));
+    await Bun.sleep(750);
+    await setAuditMode("green");
+    await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "off" });
+    let satRunning = 0;
+    const beatSat = (): Promise<Response> => hpost("/api/helper/device",
+      { deviceId: SATBOX, name: "capacity box (e2e)", mode: "active", load: 0.1, running: satRunning, maxParallelSuites: 2 });
+    await beatSat();
+    const beater = setInterval(() => { void beatSat().catch(() => {}); }, 1000);
+    interface OfferAnswer {
+      offer?: { id?: string; offeredAt?: number } | null;
+      waitPolicy?: { freeMs?: number; heldMs?: number; unclaimedMs?: number; saturatedUntil?: number | null; reason?: string | null };
+    }
+    const offerAs = async (slot: number, method: "GET" | "POST"): Promise<OfferAnswer> => {
+      const tok = await selfTokenOf(slot);
+      const r = await fetch(`${BASE}/api/self/suite-offer`, { method,
+        headers: { "x-fleet-self-token": tok, "content-type": "application/json" },
+        ...(method === "POST" ? { body: "{}" } : {}) });
+      return (await r.json()) as OfferAnswer;
+    };
+    const satRow = async (): Promise<OwnerDeviceView | undefined> =>
+      ((await ownerDevices()) ?? []).find((d) => d.id === SATBOX);
+    try {
+      const s1 = await openLane(REPO, "satone");
+      const s2 = await openLane(REPO, "sattwo");
+      const s3 = await openLane(REPO, "satthree");
+      const o1 = await offerAs(s1.slot, "POST");
+      const o2 = await offerAs(s2.slot, "POST");
+      const c1 = await hpost("/api/helper/claim", { jobId: o1.offer?.id ?? "", deviceId: SATBOX });
+      const c2 = await hpost("/api/helper/claim", { jobId: o2.offer?.id ?? "", deviceId: SATBOX });
+      satRunning = 2;
+      await beatSat();
+      const full = await satRow();
+      const earliest = Math.min(...(full?.claims ?? []).map((c) => c.expiresAt));
+      check("(K9) setup: the capped helper holds both its slots — two live claims, and its own beat says 2 of 2",
+        c1.status === 200 && c2.status === 200 && full?.claims.length === 2
+          && full.running === 2 && full.maxParallelSuites === 2 && Number.isFinite(earliest),
+        `claims=${c1.status}/${c2.status} row=${JSON.stringify({ claims: full?.claims.length, running: full?.running })}`);
+
+      // (b) THE LANE'S WAIT. MUTATION: make suiteOfferWait return `unclaimedMs: SUITE_OFFER_WAIT_FREE_MS`
+      // whatever helperSaturation says ⇒ unclaimedMs === 180000 and no reason ⇒ red.
+      const o3 = await offerAs(s3.slot, "POST");
+      const w3 = o3.waitPolicy;
+      const offeredAt = o3.offer?.offeredAt ?? 0;
+      check("(K9) A SATURATED HELPER STRETCHES THE LANE'S WAIT: the offer answer names the claim end and waits past 180 s for it",
+        !!o3.offer?.id && w3?.freeMs === 180000 && w3.heldMs === 800000 && w3.saturatedUntil === earliest
+          && (w3.unclaimedMs ?? 0) > 180000 && (w3.unclaimedMs ?? 0) >= earliest - offeredAt
+          && (w3.unclaimedMs ?? Infinity) <= 900000 && /^helper saturated until ~\d\d:\d\d/.test(w3.reason ?? ""),
+        `${JSON.stringify(w3)} earliest-offeredAt=${earliest - offeredAt}`);
+      const g3 = await offerAs(s3.slot, "GET");
+      check("(K9) …and the lane's own GET reads the same wait for the same offer",
+        g3.waitPolicy?.unclaimedMs === w3?.unclaimedMs && g3.waitPolicy?.saturatedUntil === earliest,
+        `get=${JSON.stringify(g3.waitPolicy)} post=${JSON.stringify(w3)}`);
+
+      // (b') THE AUDIT'S GRACE, same reading. MUTATION: drop the `saturation ?` arm of the drain's
+      // readyAt ⇒ the drain takes the land at ~8 s ⇒ a local row appears ⇒ red.
+      const rowsBeforeSat = (await newRepoRows()).length;
+      const satLand = await openLane(REPO, "satland");
+      const satLanded = await driveMerge(satLand, satLand.branch);
+      const satSha = headOf();
+      await Bun.sleep(SAT_GRACE_MS + 4000);
+      const heldAudit = await jobFor(REPO);
+      const stillFull = await satRow();
+      check("(K9) A SATURATED HELPER STRETCHES THE AUDIT GRACE: 12 s after the land, past the 8 s grace, the job is still offered and unrun here",
+        satLanded.gone && !!heldAudit && heldAudit.claim === null && heldAudit.localRunning === false
+          && (await liveRepo()) === null && (await newRepoRows()).length === rowsBeforeSat
+          && stillFull?.claims.length === 2 && Date.now() - (stillFull?.lastSeen ?? 0) < 6000,
+        `${JSON.stringify(heldAudit)} live=${await liveRepo()} rows=${(await newRepoRows()).length}/${rowsBeforeSat}`
+        + ` claims=${stillFull?.claims.length} beatAge=${Date.now() - (stillFull?.lastSeen ?? 0)}ms`);
+      // …and it was held FOR that machine: a slot frees (its lane goes), the machine says so, and it
+      // takes exactly that tree.
+      await post(`/api/slots/${s1.slot}/kill`, {});
+      satRunning = 1;
+      await beatSat();
+      const satClaim = heldAudit ? await hpost("/api/helper/claim", { jobId: heldAudit.id, deviceId: SATBOX }) : null;
+      const satClaimBody = (await satClaim?.json()) as { job?: { mainSha?: string } } | undefined;
+      const satReport = await hpost("/api/helper/result",
+        { jobId: heldAudit?.id ?? "", exitCode: 0, tail: "PASS  held for the saturated helper\nALL PASS" });
+      const satRows = await waitNewRepoRows(rowsBeforeSat + 1);
+      check("(K9) …and the moment a slot frees, that machine claims the held tree and closes it REMOTE — no local twin",
+        satClaim?.status === 200 && satClaimBody?.job?.mainSha === satSha && satReport.ok
+          && satRows.filter((r) => r.mainSha === satSha).length === 1
+          && !!satRows.find((r) => r.mainSha === satSha)?.remote,
+        `claim=${satClaim?.status} report=${satReport.status}`
+        + ` rows=${JSON.stringify(satRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
+
+      // (c) THE GEGENPROBE: no claim-capable helper, the same open offer ⇒ today's 180 s. MUTATION:
+      // extend whenever any claim exists, candidate or not ⇒ unclaimedMs stays stretched ⇒ red.
+      await post(`/api/helper/devices/${SATBOX}/mode`, { mode: "off" });
+      const g3off = await offerAs(s3.slot, "GET");
+      check("(K9) with NO claim-capable helper the wait is today's 180 s — no machine, nothing to wait for",
+        g3off.waitPolicy?.unclaimedMs === 180000 && g3off.waitPolicy.saturatedUntil === null
+          && g3off.waitPolicy.reason === null && !!g3off.offer?.id,
+        JSON.stringify(g3off.waitPolicy));
+      await post(`/api/slots/${s2.slot}/kill`, {});
+      await post(`/api/slots/${s3.slot}/kill`, {});
+    } finally {
+      clearInterval(beater);
+    }
+    // leave the register as the sections after this one expect it
+    await post(`/api/helper/devices/${SATBOX}/mode`, { mode: "active" });
+    await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
+    check("(K9) teardown: the machine is idle with an empty queue",
+      await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0, JSON.stringify((await jobs()).jobs));
   }
 }

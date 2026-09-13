@@ -176,15 +176,15 @@ export function localMode(cfg: HelperConfig, at: Date, load1: number): { mode: M
 }
 
 // --- the wire ----------------------------------------------------------------------------------
-interface JobView {
+export interface JobView {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
-  claim: { name: string } | null; localRunning: boolean;
+  claim: { name: string; claimedAt?: number } | null; localRunning: boolean;
 }
 // The claim answer as it comes off the wire — unvalidated by us, so the two ref fields are typed
 // the way the server actually serves them: a lane-suite claim carries `branch`, an audit claim
 // carries `main`, and neither kind ever carries both (server.ts#helperClaim, #claimLaneSuite).
 interface ClaimedJob {
-  id: string; kind?: string; repo: string; main?: string; mainSha: string;
+  id: string; kind?: string; repo: string; main?: string; mainSha: string; claimedAt?: number;
   branch?: string; treeSha?: string; untracked?: number;
   // THE COMMAND KIND's three fields. `argv` is what this process execs — the fleet split the
   // allowlisted command line at its own perimeter, so there is no parser and no shell here. `cmd` is
@@ -236,8 +236,43 @@ function childEnv(): Record<string, string> {
 // is the suite itself and the timeout below can actually kill it. With a redirection in the string
 // sh must stay alive to own the pipe, and the kill would land on sh while the suite ran on.
 async function runCmd(cmd: string, cwd: string, logPath: string, timeoutMs: number,
-  extraEnv: Record<string, string> = {}): Promise<{ code: number | null; timedOut: boolean }> {
-  return await runArgv(["sh", "-c", cmd], cwd, logPath, timeoutMs, extraEnv);
+  extraEnv: Record<string, string> = {}, signal?: AbortSignal): Promise<{ code: number | null; timedOut: boolean }> {
+  return await runArgv(["sh", "-c", cmd], cwd, logPath, timeoutMs, extraEnv, signal);
+}
+// THE WITHDRAWN RUN'S TREE, not only its head. A real ./e2e-isolated.sh is a wrapper around a bun
+// runner and a tmux server of its own, and killing the wrapper alone leaves the runner alive under
+// init — the fleet's own rulebook measured that on the other side. So the descendants are listed
+// ONCE, before the first signal (a later walk finds nothing: they have reparented), and both stages
+// signal that list: TERM first, so the wrapper's EXIT trap tears its tmux socket down, then KILL.
+const ABORT_KILL_GRACE_MS = 5_000;
+async function descendantsOf(root: number): Promise<number[]> {
+  const found: number[] = [];
+  let level = [root];
+  for (let depth = 0; depth < 8 && level.length; depth++) {
+    const next: number[] = [];
+    for (const pid of level) {
+      try {
+        const g = Bun.spawn(["pgrep", "-P", String(pid)], { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
+        const out = await new Response(g.stdout).text();
+        await g.exited;
+        for (const line of out.split("\n")) {
+          const kid = Number(line.trim());
+          if (kid > 0 && !found.includes(kid)) { found.push(kid); next.push(kid); }
+        }
+      } catch { /* no pgrep, or the pid is gone — the head still gets its signal */ }
+    }
+    level = next;
+  }
+  return found;
+}
+async function killTree(proc: { pid: number; kill(sig?: number): void }): Promise<void> {
+  const kids = await descendantsOf(proc.pid);
+  const signal = (sig: number): void => {
+    try { proc.kill(sig); } catch { /* already gone */ }
+    for (const kid of kids) { try { process.kill(kid, sig); } catch { /* already gone */ } }
+  };
+  signal(15);
+  setTimeout(() => signal(9), ABORT_KILL_GRACE_MS);
 }
 // THE SAME RUNNER WITHOUT A SHELL, and it is the whole of "no shell interpolation" on this machine.
 // `runCmd` above keeps `sh -c` because its command comes out of THIS machine's own config file
@@ -249,7 +284,8 @@ async function runCmd(cmd: string, cwd: string, logPath: string, timeoutMs: numb
 // `childEnv()`, so it can only add what this process deliberately puts there — never re-admit
 // something the strip above removed by accident.
 async function runArgv(argv: string[], cwd: string, logPath: string, timeoutMs: number,
-  extraEnv: Record<string, string> = {}): Promise<{ code: number | null; timedOut: boolean }> {
+  extraEnv: Record<string, string> = {}, signal?: AbortSignal): Promise<{ code: number | null; timedOut: boolean }> {
+  if (signal?.aborted) return { code: null, timedOut: false };
   const fd = openSync(logPath, "a");
   try {
     const proc = Bun.spawn(argv, {
@@ -257,9 +293,12 @@ async function runArgv(argv: string[], cwd: string, logPath: string, timeoutMs: 
     });
     let timedOut = false;
     const t = setTimeout(() => { timedOut = true; proc.kill("SIGKILL"); }, timeoutMs);
+    const onAbort = (): void => { void killTree(proc); };
+    signal?.addEventListener("abort", onAbort, { once: true });
     const code = await proc.exited;
     clearTimeout(t);
-    return { code: timedOut ? null : code, timedOut };
+    signal?.removeEventListener("abort", onAbort);
+    return { code: timedOut || signal?.aborted ? null : code, timedOut };
   } finally { closeSync(fd); }
 }
 
@@ -396,6 +435,32 @@ export function freeSuiteSlots(cfg: HelperConfig, running: number): number {
 // the rest of this tick and every tick after it already sees the slot as taken. Reserving around
 // the WHOLE call and not (as the old flag did) around the part after the claim is deliberate: two
 // claim POSTs in flight for the same machine is the race this counter exists to refuse.
+// THE RUNS THIS PROCESS HOLDS A CLAIM FOR, and the switch that ends each one. Measured 2026-09-12
+// (7e601e57): a lane landed and its preview offer was reaped on the fleet within the minute, while
+// this daemon ran the preview on for 37 more minutes and was told `409 no live claim` at the end.
+// Nothing here had asked the one question that would have ended it sooner: is my job still on
+// the list? `claimedAt` is what the claim answered; `since` is when this process learned it, so a
+// job list that was ALREADY on its way before the claim came back can never read as a withdrawal.
+interface InFlight { claimedAt: number | undefined; since: number; abort: AbortController }
+const inFlight = new Map<string, InFlight>();
+// WHICH OF MY RUNS HAS THE FLEET TAKEN BACK — pure, exported, and checked in e2e/helper-daemon.ts
+// (HD.1) for the same reason freeSuiteSlots is. A run is withdrawn when a job list asked for AFTER
+// its claim came back no longer carries the job, or carries it under a DIFFERENT claim (it lapsed
+// and was offered again — the fleet would refuse this verdict with the same 409). Nothing else
+// counts: a list that could not be read is no evidence, and aborting on it would throw away a
+// healthy run over a network blip.
+export function withdrawnRuns(running: ReadonlyMap<string, { claimedAt: number | undefined; since: number }>,
+  jobs: readonly JobView[], askedAt: number): string[] {
+  const out: string[] = [];
+  for (const [id, r] of running) {
+    if (r.since > askedAt) continue;
+    const listed = jobs.find((j) => j.id === id);
+    if (!listed || !listed.claim
+      || (r.claimedAt !== undefined && listed.claim.claimedAt !== undefined && listed.claim.claimedAt !== r.claimedAt))
+      out.push(id);
+  }
+  return out;
+}
 function start(cfg: HelperConfig, job: JobView): void {
   runningJobs++;
   void work(cfg, job)
@@ -438,10 +503,17 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
   // this machine takes N suites at once, and a hand-started one is then the N+1st.
   const suiteEnv: Record<string, string> = cfg.maxParallelSuites > 1
     ? { FLEET_SUITE_LOCK: `${runDir}/e2e.lock` } : {};
+  // registered from here to the `finally`; `tick` pulls the switch (see withdrawnRuns). A withdrawn
+  // run REPORTS NOTHING: the fleet has already refused the verdict, and every step below that would
+  // report a failure caused by the kill itself returns on `withdrawn` first.
+  const ctl = new AbortController();
+  inFlight.set(j.id, { claimedAt: j.claimedAt, since: Date.now(), abort: ctl });
+  const withdrawn = (): boolean => ctl.signal.aborted;
 
   try {
     const bundlePath = `${runDir}/job.bundle`;
     const bundleRes = await api(cfg, `/api/helper/bundle/${j.id}`);
+    if (withdrawn()) return;
     if (!bundleRes.ok) { await report(cfg, j, 127, `the bundle download answered HTTP ${bundleRes.status}`); return; }
     await Bun.write(bundlePath, await bundleRes.arrayBuffer());
 
@@ -462,7 +534,8 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
       return;
     }
     const cloneCmd = `git clone -q -b ${sh(ref)} ${sh(bundlePath)} ${sh(clone)}`;
-    const cloned = await runCmd(cloneCmd, runDir, logPath, 300_000);
+    const cloned = await runCmd(cloneCmd, runDir, logPath, 300_000, {}, ctl.signal);
+    if (withdrawn()) return;
     if (cloned.code !== 0) { await report(cfg, j, 127, `the clone failed (exit ${cloned.code})`, logPath); return; }
     // Measured HERE — before the belt below and before anything is installed or run — so that every
     // report from this point on carries the tree it is talking about, including the two that say
@@ -483,7 +556,8 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
       return;
     }
 
-    const installed = await runCmd(cfg.installCmd, clone, logPath, 900_000);
+    const installed = await runCmd(cfg.installCmd, clone, logPath, 900_000, {}, ctl.signal);
+    if (withdrawn()) return;
     // A TREE THAT COULD NOT BE PREPARED MEASURED NOTHING, and `unknown` is the only honest verdict
     // for it. Exit 127 is the code the server's shared classifier reads as "could not be started"
     // (server.ts#remoteVerdictOf) — reporting 1 here would put a RED on the ledger for a suite that
@@ -506,8 +580,12 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
       ? j.timeoutMs : cfg.suiteTimeoutSec * 1000;
     const started = Date.now();
     const ran = isCommand
-      ? await runArgv(j.argv!, clone, logPath, timeoutMs, suiteEnv)
-      : await runCmd(cfg.suiteCmd, clone, logPath, timeoutMs, suiteEnv);
+      ? await runArgv(j.argv!, clone, logPath, timeoutMs, suiteEnv, ctl.signal)
+      : await runCmd(cfg.suiteCmd, clone, logPath, timeoutMs, suiteEnv, ctl.signal);
+    if (withdrawn()) {
+      log(`${isCommand ? "command" : "suite"} for ${j.id} ended by withdrawal after ${Math.round((Date.now() - started) / 1000)}s — nothing reported`);
+      return;
+    }
     log(`${isCommand ? `command ${j.cmd ?? j.argv!.join(" ")}` : "suite"} finished exit=${ran.code}`
       + ` timedOut=${ran.timedOut} in ${Math.round((Date.now() - started) / 1000)}s`);
     // HASHED BEFORE THE REPORT AND BEFORE THE `finally` BELOW REMOVES THE CLONE — and hashed even on
@@ -527,6 +605,7 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
       ran.timedOut ? `the ${isCommand ? "command" : "suite"} passed ${Math.round(timeoutMs / 1000)}s and was killed here` : "",
       logPath, clonedSha, artifacts, ran.timedOut ? timeoutMs : undefined);
   } finally {
+    inFlight.delete(j.id);
     try { rmSync(clone, { recursive: true, force: true }); } catch { /* the verdict is already sent */ }
     try { rmSync(`${runDir}/job.bundle`, { force: true }); } catch { /* idem */ }
     pruneRuns(cfg);
@@ -776,14 +855,28 @@ export async function tick(cfg: HelperConfig, st: LoopState): Promise<void> {
     log(`owner wish is off — silent for ${cfg.offRecheckSec}s, no requests at all`);
     return;
   }
-  if (mode === "quiet") return; // reachable, taking no work
-  // THE COUNT DECIDES, AND IT DECIDES BEFORE THE LIST IS EVEN ASKED FOR. A machine with no free
-  // slot has nothing to learn from the job list, and asking anyway would be the request the mode
-  // design spends so much care avoiding. `free` is what the machine may START, so a job already
-  // running here is subtracted whatever the load average happens to say about it.
-  const free = freeSuiteSlots(cfg, runningJobs);
+  // THE COUNT DECIDES WHAT MAY START, and a machine with no free slot and nothing running has nothing
+  // to learn from the job list — asking anyway would be the request the mode design spends so much
+  // care avoiding. `free` is what the machine may START, so a job already running here is subtracted
+  // whatever the load average happens to say about it.
+  // …BUT A MACHINE THAT IS RUNNING SOMETHING ASKS ANYWAY, full or quiet: the list is the only place
+  // it can learn that the fleet took a job back (withdrawnRuns). Before 2026-09-13 a full machine
+  // returned here without asking, which is exactly the state — both slots busy — in which a lane's
+  // land left a preview running for 37 minutes nobody could read.
+  const free = mode === "quiet" ? 0 : freeSuiteSlots(cfg, runningJobs);
+  if (free <= 0 && inFlight.size === 0) return;
+  const askedAt = Date.now();
+  const listRes = await api(cfg, `/api/helper/jobs?deviceId=${cfg.deviceId}`);
+  const list = await bodyOf<{ jobs?: JobView[] }>(listRes);
+  if (listRes.ok && Array.isArray(list.jobs)) {
+    for (const id of withdrawnRuns(inFlight, list.jobs, askedAt)) {
+      const r = inFlight.get(id);
+      if (!r || r.abort.signal.aborted) continue;
+      log(`job ${id} is no longer this machine's on the fleet (withdrawn, reaped or lapsed) — aborting its run`);
+      r.abort.abort();
+    }
+  }
   if (free <= 0) return;
-  const list = await bodyOf<{ jobs?: JobView[] }>(await api(cfg, `/api/helper/jobs?deviceId=${cfg.deviceId}`));
   // Sliced to `free`, so a tick that arrives at an empty machine with three open jobs fills every
   // slot at once rather than one per poll — and one that arrives with one slot left takes one job.
   const open = (list.jobs ?? []).filter((j) => !j.claim && !j.localRunning).slice(0, free);

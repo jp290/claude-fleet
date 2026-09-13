@@ -599,9 +599,11 @@ export async function run(): Promise<void> {
   check("(LS) withdrawing an OPEN offer succeeds, and that 200 is the permission to run locally",
     wd.ok && wdBody.mayRunLocally === true && wdBody.offer?.state === "withdrawn",
     `${wd.status} ${JSON.stringify(wdBody.offer)}`);
-  check("(LS.6) the GET, POST and free-withdraw wire shapes stay byte-for-byte closed over the old keys",
+  // The POST carries `waitPolicy` since 2026-09-13 (the saturated wait, server.ts#suiteOfferWait):
+  // the one key added deliberately, and named here so any OTHER drift still fails this check.
+  check("(LS.6) the GET, POST and free-withdraw wire shapes stay byte-for-byte closed over their keys",
     keysOf(wireGet) === "offer,waitPolicy,suiteLock,helper" && keysOf(wireGet.offer) === OFFER_WIRE_KEYS
-      && keysOf(offer3) === "offer,existing,helper" && keysOf(offer3.offer) === OFFER_WIRE_KEYS
+      && keysOf(offer3) === "offer,existing,helper,waitPolicy" && keysOf(offer3.offer) === OFFER_WIRE_KEYS
       && keysOf(wdBody) === "ok,offer,mayRunLocally" && keysOf(wdBody.offer) === OFFER_WIRE_KEYS,
     JSON.stringify({ get: keysOf(wireGet), getOffer: keysOf(wireGet.offer), post: keysOf(offer3),
       postOffer: keysOf(offer3.offer), withdraw: keysOf(wdBody), withdrawOffer: keysOf(wdBody.offer) }));

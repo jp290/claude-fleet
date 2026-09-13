@@ -7,7 +7,7 @@ import { basename, resolve } from "node:path";
 import { check, get, post, restartSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
-import { buildCardPrompt, parseCardAnswer, validateCard, CARD_MARK } from "../card-extract";
+import { buildCardPrompt, parseCardAnswer, validateCard, declaresSymbol, CARD_MARK, CARD_VALIDATOR_VERSION } from "../card-extract";
 import { renderWaveBrief, renderCardHead, CARD_HEAD_MAX_BYTES } from "../wave-brief";
 import { deriveTaskMetadata, type SymbolIndex, type TaskCluster } from "../task-metadata";
 import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict,
@@ -5795,6 +5795,9 @@ export async function run(ctx: Ctx): Promise<void> {
       harnessKnown: (v: string) => v === "claude" || v === "pi",
       modelKnown: (v: string) => /^[a-z0-9.[\]-]+$/.test(v),
       effortKnown: (v: string) => ["low", "medium", "high"].includes(v),
+      // no declaration anywhere: the graph alone decides `#neverThere` below, as it did before the
+      // declaration fallback existed — the fallback gets its own fixture further down
+      declares: () => false,
     };
     const invented = validateCard({
       ziel: "etwas aendern", done: "der Check ist gruen", verify: "bun e2e/pins.ts",
@@ -5820,6 +5823,64 @@ export async function run(ctx: Ctx): Promise<void> {
       noGraph.body.surface.symbols.join(" ") === "server.ts#taskView"
       && noGraph.body.surface.files.join(" ") === "server.ts" && noGraph.body.surface.ranges === null,
       JSON.stringify(noGraph.body.surface));
+    // DEFEKT 1 (2026-09-13): the graph is a SNAPSHOT of the tree, not the tree. Measured live: 16 of
+    // 18 invalid cards carried a surface.symbols gap, and `server.ts#taskDigest` was one of them —
+    // declared in server.ts, absent from graph.json. A symbol the graph does not know is therefore
+    // looked up as a DECLARATION in the tracked file before it becomes a gap; only when both fail
+    // does the gap stand. The source here is the REAL server.ts this suite runs, so "declared" is a
+    // fact about the tree and not a fixture's say-so.
+    const srvSource = readFileSync(`${ROOT}/server.ts`, "utf8");
+    check("(j2) card fixture: the test graph does NOT carry taskDigest, and server.ts really declares it",
+      !cardCtx.symbolIndex.get("server.ts")?.some((e) => e.symbol === "taskDigest")
+      && /^function taskDigest\(/m.test(srvSource), "");
+    const declCtx = { ...cardCtx,
+      sourceText: "BAU: server.ts#taskView, server.ts#taskDigest und server.ts#gibtEsNicht.",
+      declares: (file: string, symbol: string) => file === "server.ts" && declaresSymbol(srvSource, symbol) };
+    const declared = validateCard({ surface: {
+      symbols: ["server.ts#taskView", "server.ts#taskDigest", "server.ts#gibtEsNicht"] } }, declCtx);
+    check("(j2) card: a symbol the graph lacks but the tracked file DECLARES is surface, not a gap; an invented one stays a gap",
+      declared.body.surface.symbols.join(" ") === "server.ts#taskView server.ts#taskDigest"
+      && !declared.gaps.some((g) => g.includes("taskDigest"))
+      && declared.gaps.some((g) => g.includes("server.ts#gibtEsNicht") && g.includes("does not resolve"))
+      && declared.surfaceValid === false,
+      JSON.stringify({ symbols: declared.body.surface.symbols, gaps: declared.gaps }));
+    // …and the range list is not allowed to LIE by omission. A declaration carries no range, so a
+    // file with one declaration-only symbol drops ALL its ranges: task-land-waves.ts#collidesOn reads
+    // "no range in this file" as "where is unknown → collides", while a partial list would read as
+    // "only near taskView" and could separate two rows that meet at taskDigest.
+    check("(j2) card: a declaration-resolved symbol leaves its file WITHOUT ranges — never a partial range list",
+      JSON.stringify(declared.body.surface.ranges) === "[]",
+      JSON.stringify(declared.body.surface.ranges));
+    // The filing SHORTHAND `datei#a/#b/#c` (21 of 38 surface gaps in the live ledger, 2026-09-13):
+    // every member of a chain attached to the file is named; a symbol outside the chain, the same
+    // chain under ANOTHER file, and a chain that stands only in a verify line are not.
+    const chainCtx = { ...cardCtx, trackedPaths: new Set(["server.ts", "src/client.ts"]),
+      sourceText: "BAU: server.ts#taskView/#gibtEsNicht, server.ts#helperClaim, #taskDigest und src/client.ts#qTaskSummary.\nVERIFY: server.ts#helperClaim/#normTaskCard",
+      declares: (file: string, symbol: string) => file === "server.ts" && declaresSymbol(srvSource, symbol) };
+    const chained = validateCard({ surface: { symbols: ["server.ts#taskView", "server.ts#taskDigest",
+      "server.ts#gibtEsNicht", "server.ts#qTaskSummary", "server.ts#normTaskCard", "server.ts#dispatchTask"] } }, chainCtx);
+    const chainGap = (sym: string, why: string): boolean => chained.gaps.some((g) => g.includes(`server.ts#${sym}"`) && g.includes(why));
+    check("(j2) card: `datei#a/#b` and `datei#a, #b` name every chain member as work; another file's chain, a verify-line chain and an unnamed symbol stay gaps",
+      chained.body.surface.symbols.join(" ") === "server.ts#taskView server.ts#taskDigest"
+      && !chained.gaps.some((g) => g.includes("taskView") || g.includes("taskDigest"))
+      && chainGap("gibtEsNicht", "does not resolve") && chainGap("qTaskSummary", "not named")
+      && chainGap("normTaskCard", "not named") && chainGap("dispatchTask", "not named"),
+      JSON.stringify({ symbols: chained.body.surface.symbols, gaps: chained.gaps }));
+    const declProbe = {
+      fn: declaresSymbol(srvSource, "taskDigest"), asyncFn: declaresSymbol(srvSource, "helperClaim"),
+      constTop: declaresSymbol(srvSource, "CARD_BATCH_CAP"), typeTop: declaresSymbol(srvSource, "SymbolIndexCache"),
+      invented: declaresSymbol(srvSource, "gibtEsNicht"), prefix: declaresSymbol(srvSource, "taskDig"),
+      regex: declaresSymbol(srvSource, "taskDigest|x"), dotted: declaresSymbol(srvSource, "a.b"),
+      synthetic: ["export interface Foo {", "export default async function Bar() {", "enum Baz {", "let qux = 1", "class Quux {"]
+        .every((line, i) => declaresSymbol(line, ["Foo", "Bar", "Baz", "qux", "Quux"][i])),
+      commentOnly: declaresSymbol("// function ghost() lived here once", "ghost"),
+      nested: declaresSymbol("function outer() {\n  const inner = 1;\n}", "inner"),
+    };
+    check("(j2) declaresSymbol: top-level function/async/const/type/interface/enum/class/let are declarations; comments, nested locals, prefixes and non-identifiers are not",
+      declProbe.fn && declProbe.asyncFn && declProbe.constTop && declProbe.typeTop && declProbe.synthetic
+      && !declProbe.invented && !declProbe.prefix && !declProbe.regex && !declProbe.dotted
+      && !declProbe.commentOnly && !declProbe.nested,
+      JSON.stringify(declProbe));
     const badRole = validateCard({
       rolle: { harness: "invented-harness", model: "claude-opus-5", effort: "turbo" },
     }, cardCtx);
@@ -5829,6 +5890,12 @@ export async function run(ctx: Ctx): Promise<void> {
       && badRole.gaps.filter((g) => g.startsWith("rolle.")).length === 2
       && badRole.gaps.some((g) => g.includes("rolle.harness")) && badRole.gaps.some((g) => g.includes("rolle.effort")),
       JSON.stringify(badRole));
+    // DEFEKT 2: bundling reads the SURFACE, not the whole card. A role gap is a fact about who should
+    // run the row and says nothing about which files it touches — so it clears surfaceValid while
+    // `valid` (what the dispatch head reads) stays false.
+    check("(j2) card: surfaceValid is true when only non-surface fields have gaps, false as soon as one surface.* gap exists",
+      badRole.valid === false && badRole.surfaceValid === true && invented.surfaceValid === false,
+      JSON.stringify({ badRole: [badRole.valid, badRole.surfaceValid], invented: invented.surfaceValid }));
     check("(j2) card: an unreadable answer is null, not a throw and not a half-card",
       parseCardAnswer("this is not JSON at all") === null
       && parseCardAnswer('{"other": {"ziel": "x"}}') === null
@@ -6003,6 +6070,85 @@ export async function run(ctx: Ctx): Promise<void> {
       && bReceipt?.briefSource === "raw" && bReceipt.briefHash === briefHashOf(bPrompt),
       `${bDispatch.status} ${JSON.stringify(bPrompt.slice(0, 120))} ${JSON.stringify(bReceipt ?? null)}`);
     if (typeof bDispatchJ.slot === "number") await post(`/api/slots/${bDispatchJ.slot}/kill`, {});
+
+    // --- DEFEKT 3 (2026-09-13): a card read by an OLDER validator is not the last word. Without a
+    // version, cardDue answered "has a card, brief unmoved → done" forever, so the 18 cards read
+    // before the symbol fix would have stayed invalid after it. Three planted rows, planted with the
+    // tick OFF so none of them is read before the plant:
+    //   rOld   valid:false, no validatorVersion  → re-read exactly ONCE by the next tick
+    //   rGood  valid:true,  no validatorVersion  → never re-read (a valid card is not re-litigated)
+    //   rLie   surfaceValid:true beside a surface.* gap, current version → loads surfaceValid:false
+    await restartSrv({ FLEET_DISPATCH_REPO: REPO });
+    const plantRow = async (text: string): Promise<string> =>
+      ((await (await post("/api/tasks", { text, queue: false, repo: REPO })).json()) as { task?: { id: string } }).task?.id ?? "";
+    const rOld = await plantRow("REREAD-PROBE old invalid: fleet-e2e.ts bekommt eine Zeile.");
+    const rGood = await plantRow("REREAD-PROBE old valid: fleet-e2e.ts bekommt eine Zeile.");
+    const rLie = await plantRow("REREAD-PROBE lying surfaceValid: fleet-e2e.ts bekommt eine Zeile.");
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    interface PState { tasks?: { id: string; card?: Record<string, unknown> }[] }
+    const pState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PState;
+    const plantedAt = Date.now() - 60_000;
+    const oldCard = (extra: Record<string, unknown>): Record<string, unknown> => ({
+      ziel: "fleet-e2e.ts bekommt eine Zeile", rolle: { harness: null, model: null, effort: null },
+      surface: { files: ["fleet-e2e.ts"], symbols: [], ranges: null }, done: "", verify: "", verboten: [],
+      model: "planted-before-validator-version", at: plantedAt, ms: 0, ...extra });
+    let planted = 0;
+    for (const t of pState.tasks ?? []) {
+      if (t.id === rOld) { t.card = oldCard({ valid: false, gaps: ['rolle.harness: "Codex" is not a registered harness'] }); planted++; }
+      if (t.id === rGood) { t.card = oldCard({ valid: true, gaps: [] }); planted++; }
+      if (t.id === rLie) {
+        t.card = oldCard({ valid: true, surfaceValid: true, validatorVersion: CARD_VALIDATOR_VERSION,
+          model: "planted-lie", gaps: ['surface.files: "gone.ts" is not tracked in this repository'] });
+        planted++;
+      }
+    }
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(pState, null, 2), { mode: 0o600 });
+    const ledgerLinesFor = (id: string): number => existsSync(cardLedger)
+      ? readFileSync(cardLedger, "utf8").split("\n").filter((l) => l.includes(`"taskId":"${id}"`)).length : 0;
+    const ledgerBefore = { old: ledgerLinesFor(rOld), good: ledgerLinesFor(rGood), lie: ledgerLinesFor(rLie) };
+    // FIXTURE PRECONDITION, failing as itself: three rows planted, none of them ever read before.
+    check("(j2) reread fixture: three rows planted with hand-written cards and no ledger line yet",
+      !!rOld && !!rGood && !!rLie && planted === 3
+      && ledgerBefore.old === 0 && ledgerBefore.good === 0 && ledgerBefore.lie === 0,
+      JSON.stringify({ rOld, rGood, rLie, planted, ledgerBefore }));
+    // FAKECARD still answers badAnswer (an untracked path), so the re-read card is valid:false AGAIN
+    // — which is exactly the shape that must NOT loop: the second invalid reading carries the current
+    // version, and "the same row not a second time" is only provable on a card that stays invalid.
+    await restartSrv({ FLEET_DISPATCH_REPO: REPO, FLEET_CARD_MS: "700", FLEET_CARD_CMD: FAKECARD });
+    interface VCard { model: string; at: number; valid: boolean; surfaceValid?: boolean; validatorVersion?: number; gaps: string[] }
+    const vCard = async (id: string): Promise<VCard | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: { id: string; card?: VCard }[] }).tasks.find((t) => t.id === id)?.card;
+    const lie = await vCard(rLie);
+    check("(j2) a hand-edited card claiming surfaceValid:true beside a surface.* gap LOADS as surfaceValid:false (derived, never read)",
+      lie?.model === "planted-lie" && lie.surfaceValid === false && lie.valid === false,
+      JSON.stringify(lie ?? null));
+    const goodLoaded = await vCard(rGood);
+    check("(j2) a planted gapless card loads surfaceValid:true — the derivation is not a blanket false",
+      goodLoaded?.surfaceValid === true && goodLoaded.valid === true, JSON.stringify(goodLoaded ?? null));
+    let reread: VCard | undefined;
+    for (let i = 0; i < 40; i++) {
+      reread = await vCard(rOld);
+      if (reread && reread.model !== "planted-before-validator-version") break;
+      await Bun.sleep(250);
+    }
+    check("(j2) an INVALID card without validatorVersion is re-read by the next tick and stamped with the current version",
+      !!reread && reread.model !== "planted-before-validator-version" && reread.at > plantedAt
+      && reread.validatorVersion === CARD_VALIDATOR_VERSION && reread.valid === false
+      && reread.gaps.some((g) => g.includes("gibt-es-nicht.ts")),
+      JSON.stringify(reread ?? null));
+    // the NEGATIVE CONTROLS need a window in which the tick MUST have run several times: 700 ms tick,
+    // 4 s wait. The positive above proves the tick is armed in this very boot.
+    await Bun.sleep(4000);
+    const rereadLater = await vCard(rOld);
+    const goodLater = await vCard(rGood);
+    const ledgerAfter = { old: ledgerLinesFor(rOld), good: ledgerLinesFor(rGood), lie: ledgerLinesFor(rLie) };
+    check("(j2) …exactly ONCE: the re-read invalid card is not read again, and a VALID old card and a current-version card are never re-read",
+      ledgerAfter.old === 1 && ledgerAfter.good === 0 && ledgerAfter.lie === 0
+      && rereadLater?.at === reread?.at
+      && goodLater?.model === "planted-before-validator-version" && goodLater.at === plantedAt,
+      JSON.stringify({ ledgerAfter, rereadAt: [reread?.at, rereadLater?.at], good: goodLater ?? null }));
+    for (const id of [rOld, rGood, rLie]) await post(`/api/tasks/${id}/delete`, {});
 
     await post(`/api/tasks/${cBad.id}/delete`, {});
     await post(`/api/tasks/${cOff.id}/delete`, {});

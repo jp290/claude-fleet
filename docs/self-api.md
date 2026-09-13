@@ -595,7 +595,9 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
 ## confirm-cards — `POST /api/self/tasks/confirm-cards`
 
 Die gebundene Program-MAIN (oder der gebundene `⚙ steward`) bestätigt in EINEM Aufruf die
-Datei-Fläche, die die **gültigen Karten** ihrer eigenen Zeilen schon nennen:
+Datei-Fläche, die die **Karten mit gültiger Fläche** ihrer eigenen Zeilen schon nennen
+(`card.surfaceValid`: keine `surface.*`-Lücke — eine Lücke in `rolle`, `size` oder `verify` blockiert
+das Bündeln nicht, seit 2026-09-13):
 `files = card.surface.files`, `filesOrigin:"confirmed"`. Kein Auto-Lift (`docs/queue-wellen-2026-09-06.md`
 §7.1.3): ohne diesen Aufruf wird nichts bestätigt, und Prosa-Ableitungen werden nie gehoben.
 Handler: `server.ts#confirmCardsForMain`.
@@ -611,7 +613,8 @@ curl -X POST http://<fleet-host>:<port>/api/self/tasks/confirm-cards \
 - **Ganz oder gar nicht (409, nichts geschrieben):** Lane (`a lane may not confirm a card surface …`),
   keine/mehrdeutige Bindung (Wortlaut von `boundProgramForMain`), eine Id eines anderen Programs,
   eine Zeile, die nicht auf den eigenen Checkout zielt. Unbekannte Id ⇒ 404.
-- **Übersprungen und in `skipped[{id, reason}]` benannt:** keine gültige Karte mit Datei-Fläche,
+- **Übersprungen und in `skipped[{id, reason}]` benannt:** keine Karte, eine `surface.*`-Lücke
+  (die Lücken stehen im Grund), eine Karte ohne Datei-Fläche,
   bereits bestätigte Fläche (auch die des Owners — sie wird nie überschrieben), Karten-Pfad nicht
   mehr getrackt, `notiz`/`richtung`/`betrieb`, Status weder `pending` noch `queued`.
 - **Antwort:** `{ok, sessionIdMatch, confirmed:[{id, files}], skipped:[{id, reason}]}`.

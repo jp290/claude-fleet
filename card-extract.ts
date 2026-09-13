@@ -10,7 +10,8 @@
 // reads nothing but the row's own text (TEXT_ONLY: no repository, no tools), and every field it
 // returns is then checked against a FACT this process can establish on its own —
 //   files   → `git ls-files` (task-metadata.ts's tracked snapshot)
-//   symbols → graphify-out/graph.json (task-metadata.ts's symbol index), else file existence
+//   symbols → graphify-out/graph.json (task-metadata.ts's symbol index), then a top-level
+//             declaration in the tracked file; with no graph at all, file existence
 //   verify  → the known chain steps (verify-proportion.ts#LOCAL_PROOF_STEPS)
 //   rolle   → the registered harness/model/effort validators, passed in by the caller
 // What survives is `card`. What does not is a line in `gaps`, in the model's own words, and is
@@ -31,6 +32,16 @@ import type { SymbolIndex, SymbolRange } from "./task-metadata";
 // through the same door but keyed here so the prompt and the poller cannot drift apart.
 export const CARD_MARK = "a read-only SHAPE EXTRACTOR for a fleet task queue";
 export const CARD_KEY = "card";
+// The version of the rules below. A stored card records the version it was checked with, and the
+// extractor tick re-reads an INVALID card from an older (or unrecorded) version exactly once
+// (server.ts#cardDue) — so a validator fix reaches the cards it would have passed, instead of
+// leaving them refused by a rule that no longer exists. A valid card is never re-read for this.
+//   1 (implicit, unrecorded) — symbols resolved through the graph only
+//   2 (2026-09-13) — a symbol the graph lacks resolves through a declaration in the tracked file;
+//                    the filing shorthand `datei#a/#b` (or `,#b`) names every symbol in its chain;
+//                    `surfaceValid` beside `valid`
+// Bump it whenever a change here can turn a refusal into an acceptance.
+export const CARD_VALIDATOR_VERSION = 2;
 
 export interface TaskCardRole { harness: string | null; model: string | null; effort: string | null }
 export interface TaskCardSurface { files: string[]; symbols: string[]; ranges: SymbolRange[] | null }
@@ -68,9 +79,33 @@ export interface CardValidationContext {
   harnessKnown: (value: string) => boolean;
   modelKnown: (value: string) => boolean;
   effortKnown: (value: string) => boolean;
+  // Does the tracked FILE declare this symbol? Asked only for a symbol the graph does not carry: the
+  // graph is a snapshot rebuilt now and then, and measured on 2026-09-13 it lacked
+  // `server.ts#taskDigest` and `server.ts#helperClaim`, both declared in the tree. The caller reads
+  // the file (see declaresSymbol); this module stays pure.
+  declares: (file: string, symbol: string) => boolean;
 }
 
-export interface CardValidation { body: TaskCardBody; valid: boolean; gaps: string[] }
+// `valid` answers "may this card head a dispatch"; `surfaceValid` answers the narrower "may its
+// files be bundled by": a role, size or verify gap says nothing about which files a row touches.
+export interface CardValidation { body: TaskCardBody; valid: boolean; surfaceValid: boolean; gaps: string[] }
+export const cardSurfaceValid = (gaps: readonly string[]): boolean => !gaps.some((g) => g.startsWith("surface."));
+
+const IDENT_SRC = "[A-Za-z_$][A-Za-z0-9_$]*";
+const IDENTIFIER = new RegExp(`^${IDENT_SRC}$`);
+/**
+ * A TOP-LEVEL declaration of `symbol` in a TypeScript source: `function`/`async function`, `const`,
+ * `let`, `var`, `class`, `type`, `interface`, `enum`, each optionally `export`ed (`export default`
+ * too). Anchored at column 0 on purpose — a nested local (`  const card = …`) is not a symbol a
+ * request can name as work, and a word in a comment is not a declaration. Deterministic, no model.
+ */
+export function declaresSymbol(source: string, symbol: string): boolean {
+  if (!IDENTIFIER.test(symbol)) return false;
+  const name = symbol.replace(/\$/g, "\\$");
+  return new RegExp(
+    `^(?:export\\s+(?:default\\s+)?)?(?:declare\\s+)?(?:(?:async\\s+)?function\\*?|const|let|var|(?:abstract\\s+)?class|type|interface|(?:const\\s+)?enum)\\s+${name}(?![A-Za-z0-9_$])`,
+    "m").test(source);
+}
 
 const MAX_SENTENCE = 400;
 const MAX_LIST = 20;
@@ -140,6 +175,17 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   // something the request does not name AS WORK, whether it invented it or lifted it from a proof.
   const intent = intentText(ctx.sourceText);
   const named = (value: string): boolean => intent.includes(value);
+  // The fleet's filing shorthand names several symbols of one file in one token:
+  // `server.ts#taskDigest/#handleIntake/#dispatchTask` (or `,#`). The extractor rightly expands it, and the
+  // literal `includes` above then refused every member but the first — 21 of 38 surface gaps in the
+  // live ledger on 2026-09-13, more than any other cause. Still a QUOTE: the chain must stand in the
+  // intent text, attached to that file, so nothing masked and nothing unnamed gets through.
+  const namedInChain = (file: string, symbol: string): boolean => {
+    const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const chain = new RegExp(`(?<![A-Za-z0-9_./-])${escaped}#(${IDENT_SRC}(?:\\s*[/,]\\s*#${IDENT_SRC})*)`, "g");
+    for (const hit of intent.matchAll(chain)) if (hit[1].split(/\s*[/,]\s*#/).includes(symbol)) return true;
+    return false;
+  };
   const files: string[] = [];
   for (const path of list(rawSurface.files)) {
     if (!ctx.trackedPaths.has(path)) { gaps.push(`surface.files: "${path}" is not tracked in this repository`); continue; }
@@ -148,6 +194,8 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   }
   const symbols: string[] = [];
   const ranges: SymbolRange[] = [];
+  // files in which at least one symbol stood only as a declaration, with no range to show for it
+  const rangeless = new Set<string>();
   for (const ref of list(rawSurface.symbols)) {
     const split = splitSymbolRef(ref);
     if (!split) { gaps.push(`surface.symbols: "${ref}" is not a datei#symbol reference`); continue; }
@@ -156,7 +204,7 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
       gaps.push(`surface.symbols: "${ref}" names an untracked file`);
       continue;
     }
-    if (!named(ref)) {
+    if (!named(ref) && !namedInChain(file, symbol)) {
       gaps.push(`surface.symbols: "${ref}" is not named as a change target in the request`);
       continue;
     }
@@ -167,9 +215,15 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
       continue;
     }
     const hit = ctx.symbolIndex.get(file)?.find((entry) => entry.symbol === symbol);
-    if (!hit) { gaps.push(`surface.symbols: "${ref}" does not resolve in the symbol graph`); continue; }
+    if (hit) { symbols.push(ref); ranges.push(hit); continue; }
+    // A graph that does not know a symbol is a graph that has not seen it — not proof the tree
+    // lacks it. The declaration in the tracked file is the second, independent fact.
+    if (!ctx.declares(file, symbol)) {
+      gaps.push(`surface.symbols: "${ref}" does not resolve — not in the symbol graph, and ${file} declares no top-level ${symbol}`);
+      continue;
+    }
     symbols.push(ref);
-    ranges.push(hit);
+    rangeless.add(file);
   }
   // A file a validated symbol lives in is part of the surface whether or not the model listed it
   // twice; this is a UNION of established facts, never an inference about the work.
@@ -193,12 +247,20 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   }
   const body: TaskCardBody = {
     ziel, rolle, done, verify,
-    surface: { files, symbols, ranges: ctx.symbolIndex ? ranges : null },
+    // A file with a declaration-only symbol keeps NO ranges: a partial list would tell
+    // task-land-waves.ts#collidesOn "only near the resolved symbol", and two rows meeting at the
+    // unresolved one would be separated. No range in a file already reads as "where is unknown".
+    surface: { files, symbols, ranges: ctx.symbolIndex ? ranges.filter((r) => !rangeless.has(r.file)) : null },
     verboten: list(raw.verboten),
     ...(program ? { program } : {}),
     ...(size ? { size } : {}),
   };
-  return { body, valid: gaps.length === 0, gaps: gaps.slice(0, MAX_LIST) };
+  // `surfaceValid` is re-derived from the STORED gaps on every load, so the cap may not cut away the
+  // only surface gap: it takes the last slot rather than let a reload call the surface clean.
+  const kept = gaps.slice(0, MAX_LIST);
+  const firstSurfaceGap = gaps.find((g) => g.startsWith("surface."));
+  if (firstSurfaceGap && cardSurfaceValid(kept)) kept[MAX_LIST - 1] = firstSurfaceGap;
+  return { body, valid: gaps.length === 0, surfaceValid: cardSurfaceValid(gaps), gaps: kept };
 }
 
 /** Strict-JSON parse of one worker answer. A shape this cannot read is a gap, never a throw. */

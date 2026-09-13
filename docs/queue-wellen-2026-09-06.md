@@ -222,7 +222,7 @@ Nabenkanten und keine Kollisionen.
 *Falsifiziert durch:* ein gelandetes Paar, dessen Bereiche mehr als 40 Zeilen auseinander lagen und
 das trotzdem den Merge-Resolver brauchte.
 
-#### Jetzt messbar (Nachtrag 2026-09-13, Land `<LANDING-SHA — setzt die MAIN>`)
+#### Jetzt messbar (Nachtrag 2026-09-13, Land `1f9da6b6`)
 
 Die Luecke oben ist geschlossen: `server.ts#buildLaneOutcome` schreibt `forkSha` =
 `worktree.baseSha` unveraendert NEBEN `base`, und `writeLandNote` traegt dasselbe Feld auf der

@@ -5881,7 +5881,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && programLoadBody.includes("has a bootstrap founding marker but is not unbound"),
     "closed parser or startup refusal missing");
   pin(`${RULE_GM_FOUNDING} — marker save rejects to its caller, precedes openSlot, and exact openedAt comes from that marker`,
-    server.includes("const raw = saveChain") && server.includes("return raw;")
+    server.includes("tail = run.catch(onError);") && server.includes("    return run;\n  };")
+      && server.includes("const queueStateSave = coalescedSaver(")
       && bootstrapBody.indexOf("await persistProgramFounding") >= 0
       && bootstrapBody.indexOf("await persistProgramFounding") < bootstrapBody.indexOf("await openSlot")
       && succeedBody.indexOf("await persistProgramFounding") >= 0

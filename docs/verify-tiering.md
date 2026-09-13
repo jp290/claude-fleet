@@ -3833,7 +3833,7 @@ Form: die naechste Session liest sie korrekt als Regress und sucht in ihrem eige
 **Rate: UNGEZAEHLT** — eine Sichtung, und `docs/e2e-trail.md` ist noch nicht dagegen gerechnet.
 Wer sie das naechste Mal sieht, rechnet sie dort und traegt die Zahl hier nach.
 
-### 11.2w Eine vierundzwanzigste Familie: der Self-Land-Check „a REPAIRED candidate … lands" in `e2e/programs.ts` — KEIN Sonden-Flake, sondern ein PRODUKTFEHLER im Dispatch-Tail (2026-09-13 registriert; Mechanismus am Code gelesen, Interleaving per Latch ERZWUNGEN; REPARIERT in `<fix-sha>`)
+### 11.2w Eine vierundzwanzigste Familie: der Self-Land-Check „a REPAIRED candidate … lands" in `e2e/programs.ts` — KEIN Sonden-Flake, sondern ein PRODUKTFEHLER im Dispatch-Tail (2026-09-13 registriert; Mechanismus am Code gelesen, Interleaving per Latch ERZWUNGEN; REPARIERT in `22f1d1a2` + `f8f3ee90`)
 
 **Fingerprint** (Detail der Check-Zeile, seit dem 2026-09-12 traegt sie die Note der Zeile):
 
@@ -3885,4 +3885,4 @@ noch die Land-Promotion sind angefasst.
 entfernt, die Schleife wieder ueber alle Wellenzeilen) mit genau dem Fingerprint:
 `"status":"queued","note":"dispatch failed: slot changed before paste; lane kept (git status failed — worktree gone?)"`.
 
-**Ein Rot dieses Checks NACH `<fix-sha>` ist wieder ECHT.**
+**Ein Rot dieses Checks NACH `f8f3ee90` ist wieder ECHT.**

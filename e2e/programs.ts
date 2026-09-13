@@ -1036,9 +1036,13 @@ export async function run(ctx: Ctx): Promise<void> {
   const chainLabel = "program-main-fleet-third";
   const bToken = fleetSuccessionBody.slot === undefined
     ? "" : readState().slots?.[String(fleetSuccessionBody.slot)]?.selfToken ?? "";
+  // A's own open decision is REBOUND to B by the succession (server.ts#attentionSuccessorFor, since
+  // 2026-09-13), so it names B as requester without B having raised it — only a row with any other
+  // text would be something B asked itself.
   const bFresh = {
     attention: (readState().attentionRequests ?? []).filter((a) =>
-      (a as { requester?: { slot?: number } }).requester?.slot === fleetSuccessionBody.slot).length,
+      (a as { requester?: { slot?: number } }).requester?.slot === fleetSuccessionBody.slot
+      && (a as { text?: string }).text !== fleetSaveText).length,
     autos: (readState().autos ?? []).filter((a) =>
       (a as { slot?: number }).slot === fleetSuccessionBody.slot).length,
   };

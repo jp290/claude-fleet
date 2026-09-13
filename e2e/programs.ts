@@ -9970,8 +9970,16 @@ exit 0
         && ffrRunsDuring[1]?.lockpid === String(ffrSrvPid),
       JSON.stringify({ parked: ffrParked, lockPid: ffrHeldPid, srvPid: ffrSrvPid,
         birth: ffrHeldBirth.slice(0, 40), runs: ffrRunsDuring }));
+    // `done` IS NOT "the chain ended". server.ts#landLane marks the task done BEFORE applyLandToNotes,
+    // the merge-event mint and killSlot, and the hold goes back only in the job's own `finally` after
+    // landLane returns — so a lock read at the instant ffrDone sees `done` lands inside that window.
+    // Measured on job f3fa8b354070 and 0e531f5da6b6 (red, "still exists") and 3c4b51807644 on the same
+    // code path (gone at the first read). The bounded wait keeps the claim falsifiable: a hold that is
+    // never given back still exists after 10 s, and that stays red.
+    const ffrFreeT0 = Date.now();
+    while (existsSync(ffrLock) && Date.now() - ffrFreeT0 < 10_000) await Bun.sleep(50);
     check("(iii) the hold is given back: once the chain ends the mutex is free again, on the land path too",
-      !existsSync(ffrLock), `${ffrLock} still exists`);
+      !existsSync(ffrLock), `${ffrLock} still exists ${Date.now() - ffrFreeT0}ms after the task read done`);
 
     // (iv) A RED GATE IN THE RETRY ROUND. Same race, same chain — and the round's own verdict is
     // what stands. `ff-lost` here would be a lie about a tree that failed, and green would be a

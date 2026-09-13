@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
-import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage,
+import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage, type LaneSelfWord,
   mergeWatchMessage, auditWatchMessage, deployWatchMessage, laneWatchEventKind, laneWatchPayload,
   clarificationWatchMessage, clarificationReplyMessage, fleetReportDecisionMessage,
   type MergeWatchEventPayload,
@@ -7313,6 +7313,22 @@ function fleetReportMessage(event: FleetReportFleetEvent): string {
     + `x-fleet-self-token from the FLEET_SELF_TOKEN environment variable.`;
 }
 
+// The lane's own word at the moment its lane-ready event is typed (lane-signals.ts#LaneSelfWord).
+// Joined on the occupant, never the bare slot id: a report of a previous lane on this number is not
+// this lane's report. Called only after laneEventSubject said "present", so the live slot IS the
+// subject; anything else answers `null` (not read) rather than a "none" the join never measured.
+function laneSelfWord(event: LaneFleetEvent): LaneSelfWord | null {
+  const t = slotFrom(event.subjectSlot);
+  if (!t?.cwd || t.worktree?.branch !== event.subjectBranch
+    || (event.subjectOpenedAt !== undefined && t.openedAt !== event.subjectOpenedAt)) return null;
+  const report = fleetReports.filter((r) => r.worker.slot === t.id && r.worker.openedAt === t.openedAt
+    && r.worker.branch === event.subjectBranch).sort((a, b) => b.reportedAt - a.reportedAt)[0];
+  const offer = [...laneSuiteJobs.values()].find((j) => j.slot === t.id && j.slotOpenedAt === t.openedAt
+    && (j.state === "open" || j.state === "claimed"));
+  return { report: report ? { id: report.id, status: report.status } : null,
+    suiteOffer: offer ? { id: offer.id, state: offer.state } : null };
+}
+
 // ONE delivery per lane end. A terminal report makes the done-looking predicate redundant for
 // this exact receiver and lane; merge watches remain armed because a land is a different fact.
 function disarmLaneWatchesForReport(s: Slot,
@@ -13345,7 +13361,7 @@ async function tickWatches(): Promise<void> {
         ? laneSuiteWatchMessage(event.subjectJobId, event)
         : event.kind === "supervisor-transition"
         ? supervisorTransitionMessage(event)
-        : laneWatchMessage(event.subjectSlot, event.subjectBranch, event);
+        : laneWatchMessage(event.subjectSlot, event.subjectBranch, event, laneSelfWord(event));
       let acceptance: Acceptance;
       try {
         ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));

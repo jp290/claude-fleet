@@ -486,7 +486,7 @@ export async function run(): Promise<void> {
     if (signal) {
       const text = laneWatchMessage(7, "host-branch", {
         id: "typedfixture", kind: laneWatchEventKind(signal), payload: laneWatchPayload(h),
-      });
+      }, null);
       check("host-commit watch text names the weaker fact and exact host action",
         text.includes("LOOKS ready for a host commit")
         && text.includes("The work is UNCOMMITTED, 0 ahead is expected for this harness, and the next step is a host commit via POST /api/slots/7/commit.")
@@ -4752,6 +4752,71 @@ export async function run(): Promise<void> {
     ackA.ok && ackAJ.existing === false && ackAJ.event?.status === "acknowledged"
     && ackA2.ok && ackA2J.existing === true && ackA2J.event?.acknowledgedAt === ackAJ.event.acknowledgedAt,
     JSON.stringify({ ackAJ, ackA2J }));
+
+  // --- THE LANE'S OWN WORD, both directions on ONE lane. Measured 2026-09-12 (Program-MAIN slot 6):
+  // three of four lane-ready deliveries reached a lane still waiting on background verification, and
+  // only the honest one had filed its fleet-report. First fire: committed, no report → the text must
+  // say PREMATURE. The lane then files its report (receiver evidence = the spent watch) and a second
+  // subscription fires on the unchanged predicate → the text must name that report. Same lane, same
+  // git facts: only the word moved, so only the word can have moved the text. ---
+  {
+    const rcv = await freeSlot();
+    const rcvOpen = rcv ? await post(`/api/slots/${rcv}/open`, { cwd: REPO }) : null;
+    const rcvTok = rcv ? await paneEnv(`s${rcv}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const wl = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${wl.cwd}/watch-word.txt`, "the work whose report the watcher cannot see\n");
+    spawnSync("git", ["-C", wl.cwd, "add", "watch-word.txt"]);
+    spawnSync("git", ["-C", wl.cwd, "commit", "-qm", "watch word lane work"]);
+    const wlTok = await paneEnv(`s${wl.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    // fails as ITSELF: without a live receiver, a committed lane and both credentials neither
+    // direction below measured anything
+    check("lane-word fixture: a receiver, a committed lane and both scoped credentials exist",
+      !!rcvOpen?.ok && wl.slot > 0 && wl.slot !== rcv && /^[0-9a-f]{32}$/.test(rcvTok)
+        && /^[0-9a-f]{32}$/.test(wlTok) && rcvTok !== wlTok,
+      JSON.stringify({ rcv, open: rcvOpen?.status, lane: wl.slot }));
+    const wordLogStart = (await plogRead()).length;
+    const wordMessages = async () => (await plogRead()).slice(wordLogStart)
+      .filter((e) => e.slot === rcv && e.text.startsWith(`[fleet] slot ${wl.slot} `));
+    const deliveredFor = async (watchId: string): Promise<FleetEventRow | undefined> => {
+      let ev: FleetEventRow | undefined;
+      for (let i = 0; i < 180 && ev?.status !== "delivered"; i++) {
+        await Bun.sleep(250);
+        ev = await eventForWatch(watchId);
+      }
+      return ev;
+    };
+
+    const w1 = (await (await post(`/api/slots/${rcv}/watch`, { target: wl.slot, idleSec: 0 })).json()) as
+      { watch?: WatchRow };
+    const ev1 = w1.watch ? await deliveredFor(w1.watch.id) : undefined;
+    const msg1 = (await wordMessages())[0]?.text ?? "";
+    check("lane-word: a committed lane WITHOUT a terminal report is delivered as PREMATURE",
+      ev1?.kind === "lane-ready" && ev1.status === "delivered"
+        && msg1.includes("Terminal report from that lane: NONE on file") && msg1.includes("PREMATURE")
+        && msg1.includes("never land on this message alone"),
+      `${ev1?.status} ${msg1.slice(0, 600)}`);
+    if (ev1) await ackEvent(rcvTok, ev1.id);
+
+    const filed = await selfFleetReport(wlTok, { status: "complete", text: "lane-word probe: done and verified" });
+    const filedJ = (await filed.json()) as { report?: FleetReportRow };
+    check("lane-word fixture: the lane files its terminal report to the watching receiver",
+      filed.ok && !!filedJ.report?.id && filedJ.report.receiver?.slot === rcv,
+      `${filed.status} ${JSON.stringify(filedJ).slice(0, 200)}`);
+
+    const w2 = (await (await post(`/api/slots/${rcv}/watch`, { target: wl.slot, idleSec: 0 })).json()) as
+      { watch?: WatchRow; existing?: boolean };
+    const ev2 = w2.watch && w2.watch.id !== w1.watch?.id ? await deliveredFor(w2.watch.id) : undefined;
+    const msg2 = (await wordMessages())[1]?.text ?? "";
+    check("lane-word: the SAME lane WITH its terminal report is delivered naming that report, not as premature",
+      ev2?.kind === "lane-ready" && ev2.status === "delivered"
+        && msg2.includes(`Terminal report from that lane: ${filedJ.report?.id} (status=complete) is on file`)
+        && !msg2.includes("PREMATURE") && !msg2.includes("NONE on file")
+        && msg2.includes("never land on this message alone"),
+      `${ev2?.status} ${msg2.slice(0, 600)}`);
+    if (ev2) await ackEvent(rcvTok, ev2.id);
+    await post(`/api/slots/${wl.slot}/kill`, {});
+    await post(`/api/slots/${rcv}/kill`, {});
+  }
 
   // --- DEPLOY OUTCOME: same subscription/event/transport/ack rail, joined only by deploy id. ---
   const deployLedger = `${ROOT}/deploys.jsonl`;

@@ -479,6 +479,7 @@ export interface LandCandidateVerifyRun {
   readonly stale?: boolean;
   readonly timedOut?: true;
   readonly waitedOut?: true;
+  readonly serverDown?: true;
   readonly startedAt?: number;
   readonly ms?: number;
   readonly waitMs?: number;

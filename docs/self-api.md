@@ -2115,8 +2115,18 @@ unterscheidbar, weil sie den Aufrufer an verschiedene Stellen schicken):
    Kandidat war auf dieser Sprosse dauerhaft tot. **Ein SKIP (`ok:null` ohne beide Flags) ist
    ausgenommen von der Ausnahme:** er ist die eigene Entscheidung des Kommandos über genau diese
    Bytes, identische Bytes überspringen identisch — die Prämisse des Guards hält.
+   **Und EINMAL je Kandidat seit 2026-09-14: ein Gate, dessen Suite-Server nie hochkam.** Meldet die
+   Kette selbst `e2e-stage.sh#stage_server_start_failed` (exit 3 UND die Zeile „server did not come
+   up (phase: …"), setzt `runVerify` `verify.ok:null` + `serverDown` — kein Check lief, nie grün, nie
+   Auto-Land (gemessen am Hooks-Land `a60b610f`, §11.2i: 0 FAIL-Zeilen, kein server.log, und der
+   Neuland-Aufruf war als no-progress verweigert). Der identische Kandidat wird genau einmal neu
+   zugelassen (`server.ts#serverDownRetrySpent`, speicherresident, verbraucht erst beim Job-Start);
+   ein zweites `serverDown` auf denselben Bytes bindet wieder mit `gate:"server-down"` und schickt
+   zur `server.log` der aufbewahrten Instanz — ein Baum, dessen Server nicht bootet, scheitert genau
+   so, jedes Mal. Exit 3 ohne Zeile oder Zeile mit exit 1 bleibt `ok:false`.
    **Die Ablehnung nennt ihren Zustand:** das Feld `gate` trägt `measured` · `never-started` ·
-   `timed-out` · `skipped`, und nur bei `measured` heißt der Satz noch „repair or escalate". Ein
+   `timed-out` · `server-down` · `skipped`, und nur bei `measured` und dem verbrauchten
+   `server-down` heißt der Satz noch „repair or escalate". Ein
    unvermessenes Verdikt schickt niemanden auf Fehlersuche in einem Baum, den kein Gate gelesen hat.
 10. **Die Arbeit darf nicht schon ABGELEHNT sein** (`server.ts#rejectedReportForLand`, seit
     2026-09-08). Trägt der neueste ENTSCHIEDENE `fleetReport` dieser Arbeit — gefunden über

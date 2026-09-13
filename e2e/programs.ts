@@ -9741,6 +9741,19 @@ if [ -f "$d/ffretry.skip.$n" ]; then
   echo "verify declined: scripted skip on run $n"
   exit 42
 fi
+# \`down\` is the chain's OWN non-measurement: e2e-stage.sh#stage_server_start_failed's exact line on
+# stderr and its exit 3. The two GEGENPROBEN split it: \`downred\` prints the line but exits 1 (a real
+# red that merely mentions it), \`exit3\` exits 3 without the line (any command's own business).
+if [ -f "$d/ffretry.down.$n" ] || [ -f "$d/ffretry.downred.$n" ]; then
+  printf '%s: server did not come up (phase: %s; instance kept: %s)\n' "e2e-claude-gate.sh" "phase 3 scripted run $n" "$d" >&2
+  printf '%s: no server.log exists in %s\n' "e2e-claude-gate.sh" "$d" >&2
+  [ -f "$d/ffretry.down.$n" ] && exit 3
+  exit 1
+fi
+if [ -f "$d/ffretry.exit3.$n" ]; then
+  echo "verify FAIL: scripted exit 3 without the marker on run $n"
+  exit 3
+fi
 echo "verify OK: scripted green on run $n"
 exit 0
 `, { mode: 0o755 });
@@ -9821,10 +9834,10 @@ exit 0
       writeFileSync(`${ffrLatch}.release`, "go\n", { mode: 0o600 });
       return { row, slot: lane.slot, fired, reached, intruder };
     };
-    type FfrVerdict = { status?: string; landed?: boolean; errorReason?: string; detail?: string;
+    type FfrVerdict = { status?: string; landed?: boolean; errorReason?: string; detail?: string; at?: number;
       ffRounds?: number; waitRounds?: number; candidateSha?: string;
       verify?: { ok?: boolean | null; mainSha?: string; waitedOut?: true; timedOut?: true;
-        ms?: number; waitMs?: number } };
+        serverDown?: true; exitCode?: number | null; out?: string; ms?: number; waitMs?: number } };
     const ffrSettled = async (slot: number | null, ms = 120_000): Promise<FfrVerdict | null> => {
       const deadline = Date.now() + ms;
       for (;;) {
@@ -10219,6 +10232,78 @@ exit 0
       JSON.stringify({ verdict: m1SkipVerdict, res: m1SkipAgain?.status, text: m1SkipText.slice(0, 320) }));
     rmSync(`${ROOT}/ffretry.skip.1`, { force: true });
     if (m1Skip.slot !== null) await post(`/api/slots/${m1Skip.slot}/kill`, {});
+
+    // (viii-d) THE CHAIN'S OWN NON-MEASUREMENT (measured 2026-09-13, hooks land `a60b610f`): a
+    // suite whose server never came up exits 3 before its first check — `e2e-claude-gate.sh: server
+    // did not come up (phase 3 …)`, zero FAIL lines, no server.log — and that red used to bind the
+    // next call as "repair or escalate", so the reparation had to be forced in as a new commit.
+    // Now: ok:null with its own flag, never landed, and exactly ONE re-run of the identical
+    // candidate — because a tree whose server cannot boot fails the same way every time, the
+    // second identical answer binds again. Runs 1 AND 2 are scripted down, so the arm measures the
+    // admission and the re-binding on the same bytes.
+    ffrReset();
+    writeFileSync(`${ROOT}/ffretry.down.1`, "down\n");
+    writeFileSync(`${ROOT}/ffretry.down.2`, "down\n");
+    const mdMainBefore = main2Of();
+    const mdLand = await m1Land("server-down", "m1-server-down.txt");
+    const mdVerdict = await ffrSettled(mdLand.slot);
+    check("(viii-d1) a chain that says its suite server did not come up records ok:null + serverDown, exit 3, never lands, and says NEVER MEASURED instead of failed",
+      mdLand.fired && mdVerdict?.landed === false && mdVerdict.status === "resolved"
+        && mdVerdict.verify?.ok === null && mdVerdict.verify?.serverDown === true
+        && mdVerdict.verify?.exitCode === 3 && mdVerdict.verify?.timedOut === undefined
+        && mdVerdict.verify?.waitedOut === undefined
+        && (mdVerdict.detail ?? "").includes("NEVER MEASURED")
+        && !(mdVerdict.detail ?? "").includes("verify failed")
+        && (mdVerdict.verify?.out ?? "").includes("server did not come up")
+        && main2Of() === mdMainBefore,
+      JSON.stringify({ fired: mdLand.fired, refusal: mdLand.refusal, verdict: mdVerdict, mainMoved: main2Of() !== mdMainBefore }));
+    const mdReady = mdLand.slot === null ? false : await waitDoneLooking(mdLand.slot);
+    const mdRetry = ffrTok === "" ? null : await selfLand(ffrTok, mdLand.row);
+    const mdRetryBody = mdRetry === null ? null : await mdRetry.json() as { running?: boolean; candidate?: string; error?: string };
+    const mdVerdict2 = await ffrSettled(mdLand.slot);
+    const mdRuns = ffrLogRuns();
+    check("(viii-d2) the identical candidate is admitted ONCE after a server-down verdict: the chain really runs again on the same bytes, and a second server-down still lands nothing",
+      mdReady && mdRetry?.ok === true && mdRetryBody?.running === true
+        && typeof mdVerdict?.candidateSha === "string" && mdRetryBody.candidate === mdVerdict.candidateSha
+        && mdRuns.length === 2 && mdVerdict2?.verify?.serverDown === true && mdVerdict2.landed === false
+        && mdVerdict2.at !== mdVerdict?.at && main2Of() === mdMainBefore,
+      JSON.stringify({ ready: mdReady, res: mdRetry?.status, body: mdRetryBody, runs: mdRuns, verdict2: mdVerdict2 }));
+    const mdReady3 = mdLand.slot === null ? false : await waitDoneLooking(mdLand.slot);
+    const mdThird = ffrTok === "" ? null : await selfLand(ffrTok, mdLand.row);
+    const mdThirdText = mdThird === null ? "" : await mdThird.text();
+    const mdThirdBody = ((): { gate?: string } => {
+      try { return JSON.parse(mdThirdText) as { gate?: string }; } catch { return {}; }
+    })();
+    check("(viii-d3) the re-run is spent: a second server-down on the same bytes binds the guard again (409, gate server-down), sending the MAIN to the kept server.log — and no third chain ran",
+      mdReady3 && mdThird?.status === 409 && mdThirdBody.gate === "server-down"
+        && mdThirdText.includes("server.log") && mdThirdText.includes("no progress since the last verdict")
+        && ffrLogRuns().length === 2,
+      JSON.stringify({ ready: mdReady3, res: mdThird?.status, text: mdThirdText.slice(0, 320), runs: ffrLogRuns().length }));
+    for (const f of ["down.1", "down.2"]) rmSync(`${ROOT}/ffretry.${f}`, { force: true });
+    if (mdLand.slot !== null) await post(`/api/slots/${mdLand.slot}/kill`, {});
+
+    // (viii-e) GEGENPROBEN, one per half of the classifier — widen it to either half alone and one
+    // of these goes green: the marker with exit 1 is a measured red that merely MENTIONS a server,
+    // and exit 3 without the marker is any command's own business. Both stay ok:false, and the
+    // identical candidate stays refused as "repair or escalate".
+    for (const [file, name] of [["downred", "marker-exit1"], ["exit3", "exit3-no-marker"]] as const) {
+      ffrReset();
+      writeFileSync(`${ROOT}/ffretry.${file}.1`, `${file}\n`);
+      const gpLand = await m1Land(name, `m1-${name}.txt`);
+      const gpVerdict = await ffrSettled(gpLand.slot);
+      const gpReady = gpLand.slot === null ? false : await waitDoneLooking(gpLand.slot);
+      const gpAgain = ffrTok === "" ? null : await selfLand(ffrTok, gpLand.row);
+      const gpText = gpAgain === null ? "" : await gpAgain.text();
+      check(`(viii-e) GEGENPROBE ${name}: a measured red stays ok:false without serverDown, and the unchanged candidate is still refused — repair or escalate`,
+        gpVerdict?.verify?.ok === false && gpVerdict.verify?.serverDown === undefined
+          && gpVerdict.verify?.exitCode === (file === "exit3" ? 3 : 1) && gpVerdict.landed === false
+          && gpReady && gpAgain?.status === 409
+          && gpText.includes("no progress since the last verdict — repair or escalate")
+          && ffrLogRuns().length === 1,
+        JSON.stringify({ verdict: gpVerdict, res: gpAgain?.status, text: gpText.slice(0, 220), runs: ffrLogRuns().length }));
+      rmSync(`${ROOT}/ffretry.${file}.1`, { force: true });
+      if (gpLand.slot !== null) await post(`/api/slots/${gpLand.slot}/kill`, {});
+    }
 
     // --- (8g) M5 · THE CORPSE IS REAPED, AND THE SHORT CHAIN NEVER ASKS FOR THE MACHINE ---------
     // (8f) proved the denial. M5 is about the two ways that denial was being handed out for

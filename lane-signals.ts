@@ -169,6 +169,7 @@ export interface MergeWatchVerifyPayload {
   ok: boolean | null;
   timedOut?: true;
   waitedOut?: true;
+  serverDown?: true;
   stale?: true;
 }
 export interface MergeWatchEventPayload {
@@ -409,6 +410,7 @@ export function mergeWatchMessage(slot: number, cwd: string, event: MergeWatchEv
   const verify = p.verify === undefined ? "unverified (no verify result)"
     : p.verify.waitedOut ? "verify never started"
     : p.verify.timedOut ? "verify timed out"
+    : p.verify.serverDown ? "verify never measured (a suite server did not come up)"
     : p.verify.ok === true ? "verify green"
     : p.verify.ok === false ? "verify RED"
     : "verify skipped";

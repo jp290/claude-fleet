@@ -20,7 +20,7 @@ export const setMergeMode = (m: string) => Bun.write(`${REPO.replace(/\/[^/]+$/,
 // The timing fields are optional here for the same reason they are on the server: a verdict
 // deserialized from an older record carries none of them.
 export type VerifyField = { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean;
-  timedOut?: true; waitedOut?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true;
+  timedOut?: true; waitedOut?: true; serverDown?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true;
   exitCode?: number | null; proportional?: boolean; steps?: string[] };
 // `cleanReview` is the ② advisory reviewer's verdict, present only when FLEET_CLEAN_REVIEW gates
 // (fleet-e2e-clean-review.ts's gate phase). Optional, so the modules that never see it are unaffected.

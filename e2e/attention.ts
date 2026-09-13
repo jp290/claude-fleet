@@ -423,6 +423,9 @@ export async function run(): Promise<void> {
 
   // --- 7. a Program question and its answer cross a real MAIN succession -------------------------
   const successorLabel = "attention-program-successor";
+  // the row §7b follows past the succession: it must still be OPEN after a later, unrelated teardown
+  const carriedText = "Carried across the succession: still mine to ask?";
+  const carriedDecision = await raised(await selfRaise(tokA, { kind: "decision", text: carriedText }));
   const successionPending = selfSucceed(tokA, { label: successorLabel, carry: "Continue the attention fixture." });
   const successorSlot = await waitForLabel(successorLabel);
   if (successorSlot !== null)
@@ -451,6 +454,34 @@ export async function run(): Promise<void> {
     JSON.stringify({ succession: successionResponse.status, predecessorGone, successorSlot,
       survived: survived?.status, listed: successorRows.some((a) => a.id === secondDecision?.id),
       response: successionResponseText }));
+
+  // --- 7b. the question MOVES to the successor, so no later reconcile can refuse it -------------
+  // Measured 2026-09-13 (§D of the task-aggregation note): 9 of 9 refused attentions read
+  // `requester session ended`. Surviving the predecessor's own handoff teardown was not enough — the
+  // row still named the dead occupant, so the NEXT teardown of any slot refused it.
+  const successorOpenedAt = successorSlot === null ? undefined
+    : (JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { openedAt?: number }> })
+      .slots?.[String(successorSlot)]?.openedAt;
+  const rebound = readRow(carriedDecision?.id);
+  const bystander = await freeSlot();
+  const bystanderOpen = bystander ? await post(`/api/slots/${bystander}/open`, { cwd: REPO, label: "attention-bystander" }) : null;
+  if (bystander) await post(`/api/slots/${bystander}/kill`, {});
+  const afterBystander = readRow(carriedDecision?.id);
+  const reraise = successorToken ? await selfRaise(successorToken, { kind: "decision", text: carriedText }) : null;
+  const reraiseBody = reraise ? await reraise.json() as { existing?: boolean; request?: AttentionRow } : {};
+  // BREAKS IF: reconcileAttention refuses a gone requester without asking the Program's lineage for a
+  // `succeed` successor, or the succession cut leaves `requester` on the predecessor.
+  check("attention rebinds on succession: the open row names the successor occupant, survives a later unrelated owner teardown, and the successor's re-raise finds it instead of minting a twin",
+    !!carriedDecision && successorSlot !== null && typeof successorOpenedAt === "number"
+      && rebound?.status === "open" && rebound.requester.slot === successorSlot
+      && rebound.requester.openedAt === successorOpenedAt
+      && !!bystanderOpen?.ok && afterBystander?.status === "open" && afterBystander.refusedReason === null
+      && afterBystander.requester.slot === successorSlot
+      && reraise?.ok === true && reraiseBody.existing === true && reraiseBody.request?.id === carriedDecision.id,
+    JSON.stringify({ successorSlot, successorOpenedAt, rebound: rebound?.requester, status: rebound?.status,
+      afterBystander: [afterBystander?.status, afterBystander?.refusedReason, afterBystander?.requester],
+      reraise: [reraise?.status, reraiseBody.existing, reraiseBody.request?.id] }));
+  await post(`/api/attention/${carriedDecision?.id}/refuse`, { reason: "7b fixture: proven, closed by hand." });
 
   // --- 8. one-line idle nudge, process-local dedupe, explicit opt-out -----------------------------
   const inboxLineCount = (text: string): number => text.split("\n").filter((line) => line.includes("[fleet inbox]")).length;

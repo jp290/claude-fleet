@@ -378,7 +378,7 @@ const lines = [
   `report ${rep.id}  ${new Date(rep.reportedAt).toISOString()}`,
   `  status ${rep.status}   basis ${rep.basis}`,
   `  worker slot ${rep.worker?.slot} (${rep.worker?.branch ?? "-"})   receiver ${rep.receiver ? "slot " + rep.receiver.slot : "owner-inbox"}`,
-  `  decision ${d ? `${d.disposition} by slot ${d.by?.slot ?? "?"} at ${new Date(d.at).toISOString()}` : "UNDECIDED"}`,
+  `  decision ${d ? `${d.disposition} by ${d.by === "owner" ? "owner" : d.by?.rule ? `rule ${d.by.rule} (${String(d.mainAfter ?? "").slice(0, 12)})` : `slot ${d.by?.slot ?? "?"}`} at ${new Date(d.at).toISOString()}` : "UNDECIDED"}`,
   `  task ${rep.provenance?.taskId ?? "-"}   program ${rep.provenance?.programId ?? "-"}`,
   "",
   shown,

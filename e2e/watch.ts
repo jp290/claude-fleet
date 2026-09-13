@@ -6146,4 +6146,130 @@ export async function run(): Promise<void> {
     writeFileSync(holdStatePath, JSON.stringify(holdCleaned, null, 2), { mode: 0o600 });
     await restartSrv(); // back to the wrapper's FLEET_HARNESS_AUTOMATION=0 and the default gates
   }
+
+  // === ACCEPTED-BY-LAND (server.ts#acceptByLandReading) ========================================
+  // Owner 2026-09-13, §D of docs/messungen/2026-09-13-task-aggregation-a-e-fable.md: 29 of 38
+  // undecided reports were `complete` behind a land with a green or unknown audit. Planted with srv
+  // down (reports, a Program, one `sent` task on a LIVE lane) plus ledger rows, because the rule
+  // reads exactly the three durable facts a land leaves. One positive per audit colour, the four
+  // named refusals, and the tick that closes a row whose audit arrives after boot.
+  {
+    const ablLane = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    const ablStatePath = `${ROOT}/fleet.json`;
+    const outcomeFile = `${ROOT}/lane-outcomes.jsonl`;
+    const auditFile = `${ROOT}/post-land-audits.jsonl`;
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const ablState = JSON.parse(readFileSync(ablStatePath, "utf8")) as {
+      slots: Record<string, { openedAt?: number; cwd?: string | null }>; programs?: Record<string, unknown>[];
+      fleetReports?: Record<string, unknown>[]; tasks?: Record<string, unknown>[];
+    };
+    const ablProgram = "a".repeat(23) + "b";
+    const emptySlot = Number(Object.entries(ablState.slots).find(([, v]) => !v.cwd)?.[0] ?? 0);
+    const now = Date.now();
+    const sha = (n: number): string => n.toString(16).padStart(40, "c");
+    // one report per case: its status, whether its land is newer than the report, its audit colour
+    const cases = {
+      green: { status: "complete", land: "after", audit: "green" },
+      unknown: { status: "complete", land: "after", audit: "unknown" },
+      red: { status: "complete", land: "after", audit: "red" },
+      needsMain: { status: "needs-main", land: "after", audit: "green" },
+      sent: { status: "complete", land: "after", audit: "green", sent: true },
+      staleLand: { status: "complete", land: "before", audit: "green" },
+      pending: { status: "complete", land: "after", audit: null },
+    } as const;
+    const ids: Record<string, string> = {};
+    let n = 0;
+    for (const [name, c] of Object.entries(cases)) {
+      n++;
+      const id = (0xab000 + n).toString(16).padStart(24, "0");
+      ids[name] = id;
+      const branch = `fleet/abl-${name}`;
+      const sent = "sent" in c && c.sent;
+      const worker = sent
+        ? { slot: ablLane.slot, openedAt: ablState.slots[String(ablLane.slot)]?.openedAt ?? 1, sessionId: null, cwd: ablLane.cwd, branch }
+        : { slot: emptySlot, openedAt: 1, sessionId: null, cwd: `/tmp/abl-${name}`, branch };
+      const taskId = `abltask${name}`;
+      ablState.tasks = [...(ablState.tasks ?? []), { id: taskId, originId: null, programId: ablProgram,
+        text: `accepted-by-land fixture ${name}`, source: "owner", from: null, kind: "auftrag", repo: REPO,
+        status: sent ? "sent" : "done", releasedBy: "owner", created: now - 90_000,
+        slot: sent ? ablLane.slot : null, note: null }];
+      ablState.fleetReports = [...(ablState.fleetReports ?? []), { id, reportedAt: now - 60_000,
+        status: c.status, text: `accepted-by-land fixture ${name}`, worker,
+        provenance: { taskId, originId: null, programId: ablProgram, instance: null },
+        receiver: null, basis: "program", eventId: null }];
+      const ts = c.land === "after" ? now - 30_000 : now - 120_000;
+      appendFileSync(outcomeFile, `${JSON.stringify({ ts, branch, disposition: "landed", repo: REPO,
+        mainAfter: sha(n), programId: ablProgram })}\n`);
+      if (c.audit) appendFileSync(auditFile, `${JSON.stringify({ at: now - 20_000 + n, startedAt: now - 25_000,
+        ms: 1, repo: REPO, main: "main", mainSha: sha(n), result: c.audit, cmd: "abl", exitCode: c.audit === "green" ? 0 : 1,
+        out: "", checks: null, covers: [{ branch, mainAfter: sha(n), at: ts }] })}\n`);
+    }
+    ablState.programs = [...(ablState.programs ?? []), {
+      id: ablProgram, title: "accepted-by-land fixture", intent: "Close landed reports by rule",
+      successCriterion: "Rule closes exactly the landed complete rows", nonGoals: [], decisions: [], evidence: [],
+      openQuestions: [], status: "active", createdAt: now - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: now - 900, activatedAt: now - 800 }];
+    writeFileSync(ablStatePath, JSON.stringify(ablState, null, 2), { mode: 0o600 });
+    await restartSrv({ FLEET_ACCEPT_BY_LAND_MS: "300" });
+    type AblReport = { id: string; decision?: { disposition?: string; by?: unknown; mainAfter?: string; reason?: string } | null;
+      decisionDelivery?: { state?: string } | null };
+    const ablReports = async (): Promise<AblReport[]> =>
+      ((await (await get("/api/fleet-report")).json()) as { reports?: AblReport[] }).reports ?? [];
+    let rows = await ablReports();
+    for (let i = 0; i < 40 && !rows.find((r) => r.id === ids.green)?.decision; i++) {
+      await Bun.sleep(100);
+      rows = await ablReports();
+    }
+    const row = (name: string): AblReport | undefined => rows.find((r) => r.id === ids[name]);
+    // BREAKS IF: the rule is removed, or it stops stamping the rule principal and the land it read.
+    check("accepted-by-land: a complete report whose lane landed behind a GREEN audit is accepted by rule, names mainAfter, and its verdict was carried",
+      row("green")?.decision?.disposition === "accepted"
+        && JSON.stringify(row("green")?.decision?.by) === JSON.stringify({ rule: "accepted-by-land" })
+        && row("green")?.decision?.mainAfter === sha(1)
+        && row("green")?.decisionDelivery?.state === "worker-gone",
+      JSON.stringify(row("green")));
+    check("accepted-by-land: an UNKNOWN audit on the land is accepted too, and the reason says unknown",
+      row("unknown")?.decision?.disposition === "accepted" && (row("unknown")?.decision?.reason ?? "").includes("unknown"),
+      JSON.stringify(row("unknown")?.decision));
+    // BREAKS IF: the rule ignores the audit colour (the mutation §D names), the status, the task, or the land's age.
+    check("accepted-by-land refusals: a RED audit, a needs-main report, a still-sent task and a land older than the report all stay undecided",
+      !row("red")?.decision && !row("needsMain")?.decision && !row("sent")?.decision && !row("staleLand")?.decision
+        && rows.filter((r) => Object.values(ids).includes(r.id)).length === 7,
+      JSON.stringify(Object.keys(cases).map((k) => [k, row(k)?.decision?.disposition ?? null])));
+    const ruleLines = auditRows().filter((a) => a.event === "fleet_report_rule_decision");
+    check("accepted-by-land writes exactly one audit line per rule decision, naming report, land and origin",
+      ruleLines.filter((a) => (a.detail ?? "").includes(ids.green!) && a.detail!.includes("via=boot")).length === 1
+        && ruleLines.filter((a) => (a.detail ?? "").includes(ids.unknown!)).length === 1
+        && !ruleLines.some((a) => [ids.red, ids.needsMain, ids.sent, ids.staleLand].some((id) => (a.detail ?? "").includes(id!))),
+      JSON.stringify(ruleLines.map((a) => a.detail)));
+    check("accepted-by-land: a land with NO audit yet is pending at boot, never accepted",
+      !row("pending")?.decision, JSON.stringify(row("pending")));
+    appendFileSync(auditFile, `${JSON.stringify({ at: Date.now(), startedAt: Date.now() - 5, ms: 1, repo: REPO,
+      main: "main", mainSha: sha(7), result: "green", cmd: "abl", exitCode: 0, out: "", checks: null,
+      covers: [{ branch: "fleet/abl-pending", mainAfter: sha(7), at: now - 30_000 }] })}\n`);
+    for (let i = 0; i < 40 && !row("pending")?.decision; i++) {
+      await Bun.sleep(150);
+      rows = await ablReports();
+    }
+    check("accepted-by-land: the TICK closes the pending row once its green audit is on the trail",
+      row("pending")?.decision?.disposition === "accepted"
+        && auditRows().some((a) => a.event === "fleet_report_rule_decision" && (a.detail ?? "").includes(ids.pending!)
+          && a.detail!.includes("via=tick")),
+      JSON.stringify(row("pending")?.decision));
+
+    // cleanup: this block's plants leave the state and both ledgers exactly as later modules expect
+    await post(`/api/slots/${ablLane.slot}/kill`, {});
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const ablClean = JSON.parse(readFileSync(ablStatePath, "utf8")) as {
+      programs?: { id?: string }[]; fleetReports?: { id?: string }[]; tasks?: { id?: string }[] };
+    ablClean.programs = (ablClean.programs ?? []).filter((p) => p.id !== ablProgram);
+    ablClean.fleetReports = (ablClean.fleetReports ?? []).filter((r) => !Object.values(ids).includes(r.id ?? ""));
+    ablClean.tasks = (ablClean.tasks ?? []).filter((t) => !(t.id ?? "").startsWith("abltask"));
+    writeFileSync(ablStatePath, JSON.stringify(ablClean, null, 2), { mode: 0o600 });
+    for (const file of [outcomeFile, auditFile])
+      writeFileSync(file, readFileSync(file, "utf8").split("\n").filter((l) => l && !l.includes("fleet/abl-")).map((l) => `${l}\n`).join(""));
+    await restartSrv();
+  }
 }

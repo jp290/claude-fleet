@@ -237,6 +237,9 @@ type AuditEvent =
   // wrote is the record, readable back by the deciding MAIN); an owner verdict has no session to
   // read it from, so this line and the row are the only places it surfaces.
   | "fleet_report_owner_decision"
+  // …and the RULE half (accepted-by-land): no session and no owner took it, so like the owner verdict
+  // the row and this line are where it surfaces — one line per closed report, naming the land.
+  | "fleet_report_rule_decision"
   // the CARRY of a verdict back to the lane that filed the report, and all three outcomes are named
   // because they are three different facts: the bytes reached the pane, the send did not resolve, or
   // nothing was attempted (the worker occupant is gone or recycled, or canDeliver refused). The row
@@ -248,6 +251,8 @@ type AuditEvent =
   // `attention_refused` is a RECEIPT that the owner saw it and declined — the silent closure this
   // channel exists to make impossible.
   | "attention_open" | "attention_answered" | "attention_refused" | "attention_prune"
+  // an open row of an active Program handed to the MAIN that succeeded its requester (never an owner kill)
+  | "attention_rebound"
   | "attention_answer_send_uncertain"
   // a full-window main session spent its bounded three-attempt handoff budget. The detail says
   // "gave up" so exhaustion is visible rather than indistinguishable from a disabled tick.

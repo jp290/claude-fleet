@@ -10216,7 +10216,7 @@ type DossierTask = { id: string; text: string; kind: string; source: string; sta
   match: string };
 type DossierAudit = { at: number; result: string; mainSha: string; covers: string[]; reason?: string;
   exitCode: number | null; out: string; cmd: string; fails?: string[];
-  adjudication?: { verdict: string; at: number; by: string; note?: string } };
+  adjudication?: { verdict: string; at: number; by: string | { rule: string }; note?: string } };
 interface Dossier {
   branch: string; repo: string | null; worktree: string | null;
   slot: number | null; liveSlot: number | null;
@@ -10456,7 +10456,8 @@ function renderAkteDetail(d: Dossier) {
     // an un-adjudicated red is the state the whole adjudication rail exists to make visible:
     // "nobody has looked at this yet" is different from "someone looked and called it noise"
     if (a.adjudication)
-      host.appendChild(el("div", "shrsub", `owner ruled "${a.adjudication.verdict}" ${fmtTs(a.adjudication.at)}`
+      host.appendChild(el("div", "shrsub", `${typeof a.adjudication.by === "object"
+        ? `rule ${a.adjudication.by.rule} carried` : "owner ruled"} "${a.adjudication.verdict}" ${fmtTs(a.adjudication.at)}`
         + `${a.adjudication.note ? ` — ${a.adjudication.note}` : ""}`));
     else if (a.result === "red")
       host.appendChild(el("div", "akteunknownw", "un-adjudicated — nobody has ruled on this red yet"));

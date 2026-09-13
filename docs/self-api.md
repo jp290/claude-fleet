@@ -971,6 +971,18 @@ Attention eines **aktiven** Programs ebenfalls an die Nachfolgerin übergeht. Ei
 refused die offene Attention dagegen weiter mit `requester session ended`. `readBy` ist eine
 **Quittung**, kein Schlüssel: keine Route filtert an ihr.
 
+**Attention bei Succession: UMHÄNGEN, nicht nur überleben (seit 2026-09-13).** Bis dahin überlebte
+eine offene Attention nur den Handoff-Teardown der Vorgängerin selbst; die Zeile nannte weiter den
+toten Occupant, und der NÄCHSTE Reconcile (irgendein anderer Slot-Teardown, ein Boot) refuste sie
+mit `requester session ended` — 9 von 9 Refusals im Bestand, dieselbe S12-Frage dreimal gestellt.
+Jetzt setzt der Bindungs-Schnitt in `server.ts#succeedProgramMain` `requester` jeder offenen Zeile
+des Programs auf die Nachfolgerin (Audit-Wort `attention_rebound`), und `reconcileAttention` tut
+dasselbe für jede Zeile, deren Fragesteller weg ist, wenn die Lineage des Programs dessen Eintrag
+als `endedBy: "succeed"` führt und die aktuelle Bindung lebt (`attentionSuccessorFor`). Folge für
+die Nachfolgerin: stellt sie denselben Satz erneut, bekommt sie `existing: true` statt eines
+Zwillings — und die Zeilen zählen gegen IHREN Deckel von 5 offenen. Ein Owner-Kill schreibt nie
+`succeed` und refused weiter; eine recycelte Slot-Nummer ist kein Occupant und erbt nichts.
+
 ```
 curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" http://<fleet-host>:<port>/api/self/inbox
 curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
@@ -1697,8 +1709,8 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report/<report-id>/acc
   wird auf seiner EIGENEN Uhr gepruned (`pruneFleetEvents`, je Empfänger); der Report ist das
   BEURTEILTE Objekt mit eigener Retention. Ein Urteil auf dem Event verschwände, während die Zeile,
   die es beurteilt, noch da ist — und es überlüde ein Wort (`acknowledged`) mit zwei Bedeutungen.
-- **`decision` ist EIN Objekt oder es ist nicht da**: `{disposition, at, by:{slot,openedAt,sessionId}|"owner",
-  reason}`. `disposition` ist genau einer von zwei (`FLEET_REPORT_DISPOSITIONS` in `server/types.ts`):
+- **`decision` ist EIN Objekt oder es ist nicht da**: `{disposition, at, by:{slot,openedAt,sessionId}|"owner"|{rule:"accepted-by-land"},
+  reason, mainAfter?}` — `mainAfter` steht GENAU auf einem Regelurteil (Abschnitt „Regelentscheide" unten). `disposition` ist genau einer von zwei (`FLEET_REPORT_DISPOSITIONS` in `server/types.ts`):
   `accepted` · `rejected`. Fehlt der Schlüssel oder ist er `null`, ist die Zeile UNBEURTEILT — eine
   vor dieser Tür persistierte Zeile bleibt beobachtbar unbeurteilt und wird nie zu einem Urteil
   repariert, das niemand gefällt hat. `reason` ist optionale Prosa ≤ 500 Zeichen oder `null`.
@@ -1847,6 +1859,49 @@ exakt wie „niemand hat hingesehen". Darum:
 Die Lane-Fußzeile (`LANE_EXIT_FOOTER`) bleibt **unverändert**: sie sagt der LANE, wie sie endet —
 committen, einen getypten Report filen, idle gehen. Was die MAIN danach mit dem Report tut, ist
 nicht ihr Wissen und gehört nicht in ihren Brief.
+
+### Regelentscheide — wer entscheidet was (seit 2026-09-13, keine Route)
+
+Owner-Entscheid 2026-09-13 („Bitte entscheide du"), Spezifikation
+`docs/messungen/2026-09-13-task-aggregation-a-e-fable.md` §D. Gemessen dort: 37 von 38
+unentschiedenen Reports gehörten zu gelandeten Lanes, 9 von 9 Attention-Refusals waren
+Succession-Artefakte, 2 von 6 unbeurteilten Rot-Audits trugen schon ein Owner-`flake` derselben
+Signatur. Drei Klassen entscheidet seither eine Regel, jede mit benannter Ablehnung:
+
+| Klasse | Entscheider | Regel |
+|---|---|---|
+| Report `complete` + Lane gelandet + grüner/unknown Audit | **niemand** | Land ist die Annahme; Report schließt als `accepted-by-land` mit `mainAfter` |
+| Report `complete` + Lane gelandet + roter Audit | MAIN | die Rot-Adjudikation IST die Entscheidung |
+| Report `needs-main` + gelandet | MAIN (Program) / Owner (owner-inbox) | die Frage im Report ist offen, das Land beantwortet sie nicht |
+| Report auf laufender Lane (`sent`) | MAIN | wie heute |
+| Attention `review-ready` | niemand | ein Land mit `mainAfter` nach `raisedAt` beantwortet sie (**nicht gebaut**) |
+| Attention `blocked` (Deckel/Kappe) | MAIN/Steward | wie heute |
+| Attention `decision` mit Deploy/Wire-Autorität/Regelwiderspruch | **Owner** | wie heute |
+| Attention `decision` sonst (Kriterium, Folge, Landen) | MAIN | wie heute |
+| Attention bei Succession des Fragestellers | niemand | **umhängen auf die Nachfolgerin statt `refused`** (§inbox oben) |
+| Rot-Audit, einzige Check-Signatur in ≤ 14 d schon Owner-`flake` | niemand | Adjudikation `flake` mit `by:{rule:"carried-flake", from:{auditAt, at}}` |
+| Rot-Audit, neue Signatur | MAIN (Program des Lands) / Owner | wie heute |
+
+**`accepted-by-land`** (`server.ts#acceptByLandReading`, Tick `FLEET_ACCEPT_BY_LAND_MS`, Default
+60 000, `0` schaltet den Timer ab; zusätzlich einmal beim Boot über den Bestand und nach jeder
+geschriebenen Audit-Zeile). Schließt einen unentschiedenen Report genau dann, wenn: `status`
+`complete` · seine Task-Zeile nicht `sent` · `lane-outcomes.jsonl` trägt für `worker.branch` eine
+Zeile `landed` mit `ts ≥ reportedAt` (die früheste davon zählt; ein älteres Land hat die berichtete
+Arbeit nicht integriert) und mit `repo` + `mainAfter` · mindestens eine Audit-Zeile deckt dieses
+`mainAfter` und KEINE davon ist rot. Kein Audit ist „pending", nie grün. Das Urteil trägt
+`by:{rule:"accepted-by-land"}`, `mainAfter` und einen `reason` mit der Audit-Farbe; das Event wird
+wie bei den Türen quittiert, der Worker bekommt die Zustellung über denselben einen Zusteller
+(`decisionDelivery`), und `audit.jsonl` bekommt je Urteil eine Zeile `fleet_report_rule_decision`
+(`via=boot|tick|audit`). Ein Regelurteil öffnet den automatischen Lane-Schluss NICHT (wie ein
+Owner-Urteil) und bewegt sonst nichts.
+
+**`carried-flake`** (`server.ts#carryFlakeReading`, beim Boot über den ganzen Trail und in beiden
+Audit-Senken vor dem Event). Trägt ein Owner-`flake` auf ein neues Rot, wenn: das Rot genau EINE
+Signatur hat (`fails` dedupliziert ein Name UND `checks.failed === fails.length`) · eine frühere rote
+Zeile ≤ 14 Tage davor exakt dieselbe einzige Signatur trägt · deren NEUESTES Urteil `flake` vom
+OWNER ist (ein Backfill- oder Regelurteil ist nie Quelle, das Fenster kann sich nicht selbst
+verlängern). Zwei Signaturen, keine benannten Fails, zu alte oder umbeurteilte Quelle ⇒ keine Regel.
+Das Rot bleibt rot; das Board zeigt „rule carried-flake carried".
 
 ### Der automatische Lane-Schluss — `FLEET_LANE_AUTOCLOSE` (keine Route)
 

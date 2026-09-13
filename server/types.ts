@@ -437,11 +437,19 @@ type FleetReportDisposition = typeof FLEET_REPORT_DISPOSITIONS[number];
 // may collapse them: an owner decision was taken from OUTSIDE the program, after the bound MAIN
 // could no longer take it, and a row that recorded it as the MAIN's would claim a judgement by a
 // session that had already ended.
+//
+// THE THIRD PRINCIPAL is a RULE, and only one exists: `accepted-by-land` (owner 2026-09-13, note
+// docs/messungen/2026-09-13-task-aggregation-a-e-fable.md §D). A `complete` report whose lane landed
+// and whose audit on that land is green or unknown is closed by the land itself — the MAIN that
+// landed it already took the work. `mainAfter` is present EXACTLY on a rule verdict: it is the
+// evidence the rule read, and a rule verdict without it would be a judgement nobody can re-derive.
+type FleetReportRuleName = "accepted-by-land";
 interface FleetReportDecision {
   disposition: FleetReportDisposition;
   at: number;
-  by: { slot: number; openedAt: number; sessionId: string | null } | "owner";
+  by: { slot: number; openedAt: number; sessionId: string | null } | "owner" | { rule: FleetReportRuleName };
   reason: string | null;
+  mainAfter?: string;
 }
 
 // THE DELIVERY HALF OF A VERDICT, and it is a separate fact from the verdict itself for the reason
@@ -923,7 +931,15 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
       || typeof d.at !== "number" || !Number.isFinite(d.at) || d.at <= 0
       || !(d.reason === null || (typeof d.reason === "string" && !!d.reason.trim()
         && d.reason.length <= MAX_FLEET_REPORT_DECISION_REASON))) return null;
-    if (d.by !== "owner") {
+    const rule = typeof d.by === "object" && d.by !== null && "rule" in d.by;
+    // a rule verdict is `accepted`, names the land it read, and names nothing else; any other
+    // verdict carries no mainAfter at all, so the two shapes can never be mixed on hydration
+    if (rule) {
+      const by = d.by as { rule?: unknown };
+      if (by.rule !== "accepted-by-land" || Object.keys(by).length !== 1 || d.disposition !== "accepted"
+        || typeof d.mainAfter !== "string" || !/^[0-9a-f]{7,64}$/.test(d.mainAfter)) return null;
+    } else if (d.mainAfter !== undefined) return null;
+    if (d.by !== "owner" && !rule) {
       if (!occupant(d.by, false)) return null;
       const by = d.by as { slot: number; openedAt: number; sessionId: string | null };
       if (r.basis !== "program" && (r.receiver === null || r.receiver === undefined

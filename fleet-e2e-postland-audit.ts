@@ -798,6 +798,57 @@ check("(H2) old ledger rows tolerate an absent checks field without manufacturin
   (await rowAt(OLD_AT))?.checks === undefined && (await rowAt(NEW_AT))?.checks === undefined,
   `old=${JSON.stringify((await rowAt(OLD_AT))?.checks)} new=${JSON.stringify((await rowAt(NEW_AT))?.checks)}`);
 
+// ===== (H3) CARRIED FLAKE — a red whose ONE signature the owner already judged flake ==============
+// Owner 2026-09-13 (§D of docs/messungen/2026-09-13-task-aggregation-a-e-fable.md): two of six open
+// reds carried an owner flake verdict on the same single check. Sources are judged through the real
+// owner door; targets are planted after, and the boot pass is the rule under test. One positive and
+// the three refusals: two signatures, a source older than 14 days, a source the owner re-judged real.
+const DAY = 24 * 3600_000;
+const H3 = Date.now();
+const h3Row = (at: number, fails: string[]): string => `${JSON.stringify({ at, startedAt: at, ms: 1, repo: REPO,
+  main: "main", mainSha: `h3${at}`, result: "red", cmd: "x", exitCode: 1, out: `${fails.length} FAILURES`,
+  fails, checks: { ran: 50, failed: fails.length }, covers: [] })}\n`;
+const SIG = "(H3) reseed + live bytes stand-in";
+const SIG_OLD = "(H3) signature judged too long ago";
+const SIG_REAL = "(H3) signature re-judged real";
+const srcFlake = H3 - 3 * DAY, srcOld = H3 - 20 * DAY, srcReal = H3 - 2 * DAY;
+appendFileSync(`${import.meta.dir}/post-land-audits.jsonl`,
+  h3Row(srcFlake, [SIG]) + h3Row(srcOld, [SIG_OLD]) + h3Row(srcReal, [SIG_REAL]));
+const h3Judge = async (at: number, verdict: string): Promise<number> =>
+  (await post("/api/post-land-audits/adjudicate", { at, verdict, note: "(H3) owner source" })).status;
+const h3Judged = [await h3Judge(srcFlake, "flake"), await h3Judge(srcOld, "flake"),
+  await h3Judge(srcReal, "flake"), await h3Judge(srcReal, "real")];
+const tPos = H3 - 1 * DAY, tTwo = H3 - 1 * DAY + 1, tOld = H3 - 1 * DAY + 2, tReal = H3 - 1 * DAY + 3;
+appendFileSync(`${import.meta.dir}/post-land-audits.jsonl`,
+  h3Row(tPos, [SIG]) + h3Row(tTwo, [SIG, "(H3) a second failing check"]) + h3Row(tOld, [SIG_OLD]) + h3Row(tReal, [SIG_REAL]));
+await killSrv();
+check("(H3) fixture: four owner judgements accepted and the server came back over the planted reds",
+  h3Judged.every((st) => st === 200) && await startSrv({ audit: true }), JSON.stringify(h3Judged));
+let h3Pos = await rowAt(tPos);
+for (let i = 0; i < 40 && !h3Pos?.adjudication; i++) { await Bun.sleep(100); h3Pos = await rowAt(tPos); }
+type H3Adj = Adj & { by: unknown };
+const h3By = (r: AdjRow | undefined): unknown => (r?.adjudication as H3Adj | undefined)?.by;
+// BREAKS IF: the boot pass is removed, or the carried verdict is stamped as the owner's own.
+check("(H3) a red whose single signature carries an owner flake ≤14 d old is adjudicated flake BY RULE, naming its source — and stays red",
+  h3Pos?.result === "red" && h3Pos.adjudication?.verdict === "flake"
+    && JSON.stringify(h3By(h3Pos)) === JSON.stringify({ rule: "carried-flake", from: { auditAt: srcFlake,
+      at: railRows().filter((r) => r.auditAt === srcFlake).map((r) => (r as { at?: number }).at).at(-1) } })
+    && (h3Pos.adjudication.note ?? "").includes(SIG),
+  JSON.stringify(h3Pos?.adjudication));
+// BREAKS IF: the rule compares only one of several signatures, ignores the 14-day window, or reads
+// any historical flake instead of the newest verdict of the source row.
+check("(H3) refusals: two signatures, a source older than 14 days, and a source re-judged real all stay UNJUDGED",
+  (await rowAt(tTwo))?.adjudication === undefined && (await rowAt(tOld))?.adjudication === undefined
+    && (await rowAt(tReal))?.adjudication === undefined,
+  JSON.stringify([tTwo, tOld, tReal].map((at) => railRows().filter((r) => r.auditAt === at))));
+const h3Rail = railRows().length;
+await killSrv();
+check("(H3) the server came back a second time", await startSrv({ audit: true }));
+await Bun.sleep(500);
+check("(H3) the carry is IDEMPOTENT — a second boot adds no second rule judgement",
+  railRows().length === h3Rail && railRows().filter((r) => r.auditAt === tPos).length === 1,
+  `rail=${railRows().length} was=${h3Rail}`);
+
 // ===== (J) CHECK COUNTS + THE ONE-SHOT RED-AUDIT EVENT =========================================
 // Runs last: it deliberately enables the new scheduler, opens negative receiver fixtures, and
 // restarts over both pending and delivered markers. Every earlier section therefore continues to

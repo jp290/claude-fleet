@@ -4954,10 +4954,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // occupant would DISCARD every owner verdict at the next boot — silently, one whole row at a time.
   pin(`${RULE_RECEIVER} — an owner verdict is stamped "owner" and survives hydration (D1b)`,
     ownerDoor.includes('by: "owner"') && !/by: \{ slot/.test(ownerDoor)
-      && reportRowParser.includes('if (d.by !== "owner")')
+      && reportRowParser.includes('if (d.by !== "owner" && !rule)')
       && /by\.openedAt !== r\.receiver\.openedAt/.test(reportRowParser)
       && !/by\.sessionId !== r\.receiver\.sessionId/.test(reportRowParser),
-    `stamp=${ownerDoor.includes('by: "owner"')} parser=${reportRowParser.includes('if (d.by !== "owner")')}`);
+    `stamp=${ownerDoor.includes('by: "owner"')} parser=${reportRowParser.includes('if (d.by !== "owner" && !rule)')}`);
   // The owner door actuates nothing either, and no TICK may reach it: an owner act is what closes a
   // report, and a scheduled one would age an absence into a verdict nobody gave.
   const ownerForbidden = ["sendText", "mergeJob", "killSlot", "landLane", "detachSlotTasks",
@@ -4989,6 +4989,34 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && server.includes('if (!report || !decision || decision.by === "owner") continue;'),
     `refusal=${autoCloseRefusalFn.includes('d.by === "owner"')}`);
 
+  // --- D1d · RULE DECISIONS (owner 2026-09-13, §D of the task-aggregation note). Each rule is a
+  // silent auto-verdict if one conjunct goes missing, and every such mutation passes a fixture that
+  // happens not to plant that case — so the refusals are held as SOURCE here as well.
+  const ablReading = server.match(/function acceptByLandReading\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — accepted-by-land refuses a red audit, a non-complete report, a sent task, a land older than the report and a missing audit (D1d)`,
+    ablReading.includes('report.status !== "complete"')
+      && ablReading.includes('task?.status === "sent"')
+      && ablReading.includes("o.ts < report.reportedAt")
+      && ablReading.includes('covering.find((row) => row.result === "red")')
+      && ablReading.includes("if (!newest) return { accept: false"),
+    `fn=${ablReading !== ""}`);
+  const carryReading = server.match(/function carryFlakeReading\([\s\S]*?\n\}/)?.[0] ?? "";
+  const carrySinks = server.split('if (row.result === "red") await carryFlakeAdjudications("audit", row.at);').length - 1;
+  pin(`${RULE_RECEIVER} — carried-flake carries only ONE signature from an OWNER flake inside 14 days, in both audit sinks (D1d)`,
+    carryReading.includes('adj.verdict !== "flake" || adj.by !== "owner"')
+      && carryReading.includes("row.at - prior.at > CARRIED_FLAKE_WINDOW_MS")
+      && /const CARRIED_FLAKE_WINDOW_MS = 14 \* 24 \* 3600_000;/.test(server)
+      && carryReading.includes("names.length > 1")
+      && carrySinks === 2 && !/appendEvent\(POSTLAND_AUDIT_FILE/.test(carryReading),
+    `fn=${carryReading !== ""} sinks=${carrySinks}`);
+  const reconcileFn = server.match(/function reconcileAttention\([\s\S]*?\n\}/)?.[0] ?? "";
+  const successorFn = server.match(/function attentionSuccessorFor\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — attention is rebound only to a successor the Program lineage records via succeed; everything else still refuses (D1d)`,
+    successorFn.includes('e.endedBy === "succeed"')
+      && reconcileFn.indexOf("attentionSuccessorFor(a)") >= 0
+      && reconcileFn.indexOf("attentionSuccessorFor(a)") < reconcileFn.indexOf('refuseAttention(a, "requester session ended")'),
+    `successor=${successorFn !== ""} reconcile=${reconcileFn !== ""}`);
+
   // --- D1c · THE CARRY BACK TO THE LANE. Until 2026-09-12 neither door told the worker anything —
   // form (i) of the three the finding named: not a send that failed, not an owner-only send, NO send.
   // Measured 2026-09-06: reports 097cd80b and b8188322 were rejected and the lane in slot 11 learned
@@ -4997,10 +5025,14 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // carry hoisted above the already-decided refusal all pass every fixture the day they are written.
   const carryFn = server.match(/async function deliverFleetReportDecision\([\s\S]*?\n\}/)?.[0] ?? "";
   const carrySites = server.split("deliverFleetReportDecision(").length - 2; // declaration excluded
-  pin(`${RULE_RECEIVER} — ONE deliverer carries a verdict to the lane, and BOTH doors call it (D1c)`,
-    carryFn !== "" && carrySites === 2
+  // …and the RULE (accepted-by-land, 2026-09-13) is the third caller: a verdict nobody typed reaches
+  // the lane through the same deliverer, never a second one.
+  const ruleTick = server.match(/async function tickAcceptByLand\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — ONE deliverer carries a verdict to the lane, and BOTH doors and the land rule call it (D1c)`,
+    carryFn !== "" && carrySites === 3
       && decisionDoor.includes("await deliverFleetReportDecision(report);")
-      && ownerDoor.includes("await deliverFleetReportDecision(report);"),
+      && ownerDoor.includes("await deliverFleetReportDecision(report);")
+      && ruleTick.includes("await deliverFleetReportDecision(report);"),
     `fn=${carryFn !== ""} sites=${carrySites} self=${decisionDoor.includes("deliverFleetReportDecision")}`
       + ` owner=${ownerDoor.includes("deliverFleetReportDecision")}`);
   // THE ORDER, in both doors and for the same two reasons: the verdict must be RECORDED before it is

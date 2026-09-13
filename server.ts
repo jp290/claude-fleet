@@ -106,7 +106,7 @@ import {
   type LaneFleetEvent, type MergeFleetEvent, type AuditFleetEvent, type DeployFleetEvent,
   type CommandJobFleetEvent,
   type ClarificationFleetEvent, type FleetReportFleetEvent, type SupervisorTransitionFleetEvent,
-  type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition,
+  type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition, type FleetReportDecision,
   type AttentionKind,
   type LaneSuiteFleetEvent,
   type FleetReportDeliveryState,
@@ -7221,8 +7221,7 @@ function newestDecidedReportForLand(cwd: string, branch: string): FleetReport | 
   return newest;
 }
 function rejectedReportForLand(cwd: string, branch: string): {
-  id: string; at: number; reason: string | null;
-  by: { slot: number; openedAt: number; sessionId: string | null } | "owner";
+  id: string; at: number; reason: string | null; by: FleetReportDecision["by"];
 } | null {
   const newest = newestDecidedReportForLand(cwd, branch);
   const decision = newest?.decision;
@@ -7258,7 +7257,7 @@ function reportStandingForLand(cwd: string, branch: string): LandReportStanding 
 // part that differs between the doors, because what a caller can DO about it differs.
 function rejectedReportRefusal(v: NonNullable<ReturnType<typeof rejectedReportForLand>>,
   exit: string): string {
-  const who = v.by === "owner" ? "the owner" : `slot ${v.by.slot}`;
+  const who = v.by === "owner" ? "the owner" : "rule" in v.by ? `rule ${v.by.rule}` : `slot ${v.by.slot}`;
   // the receiver's own words, collapsed and capped: the reason IS the refusal's content, and a
   // reader who has to go find it will land instead of reading it.
   const why = v.reason
@@ -7886,6 +7885,86 @@ function fleetReportOwnerView(): (FleetReport & { liveness: ReportReceiverLivene
       || b.reportedAt - a.reportedAt);
 }
 
+// === ACCEPTED-BY-LAND — the first decision a RULE takes, and the only one on this rail ============
+// Owner 2026-09-13 ("Bitte entscheide du"), specification docs/messungen/2026-09-13-task-aggregation-
+// a-e-fable.md §D: 37 of 38 undecided reports belonged to lanes that had already LANDED, 29 of them
+// `complete` behind a green or unknown audit. Landing IS the acceptance — somebody integrated the
+// work — so those rows were not open questions, they were bookkeeping nobody had done, and they
+// buried the nine that do ask something.
+//
+// What the rule may close, each conjunct a named refusal below rather than a silent skip:
+//  · status `complete` — `needs-main` asks a question the land does not answer; `failed`/`handoff`
+//    are not results;
+//  · the report's task row is not `sent` — a running lane's report is still the MAIN's to read;
+//  · a `landed` outcome for the report's BRANCH at or after the report — a land older than the
+//    report did not integrate what the report describes (a respawn on the same branch);
+//  · a post-land audit covering that land's `mainAfter`, and NONE of them red. No audit yet is
+//    pending, never green; a red is the MAIN's (its adjudication is the decision).
+// It moves nothing else, in the doors' own discipline: no Task.status, no land, no teardown.
+const ACCEPT_BY_LAND_MS = Math.max(0, Number(process.env.FLEET_ACCEPT_BY_LAND_MS ?? 60_000) | 0);
+type AcceptByLandReading =
+  | { accept: true; mainAfter: string; audit: "green" | "unknown"; auditAt: number }
+  | { accept: false; why: string };
+function acceptByLandReading(report: FleetReport, outcomeRows: Record<string, unknown>[],
+  auditRows: PostLandAuditRow[]): AcceptByLandReading {
+  if (report.decision) return { accept: false, why: `already ${report.decision.disposition}` };
+  if (report.status !== "complete")
+    return { accept: false, why: `status ${report.status} — only a complete report is closed by its land` };
+  const task = report.provenance.taskId ? tasks.find((t) => t.id === report.provenance.taskId) : undefined;
+  if (task?.status === "sent") return { accept: false, why: `task ${task.id} is still sent — the lane is running` };
+  let land: Record<string, unknown> | null = null;
+  for (const o of outcomeRows) {
+    if (o.disposition !== "landed" || o.branch !== report.worker.branch
+      || typeof o.ts !== "number" || o.ts < report.reportedAt) continue;
+    if (!land || o.ts < (land.ts as number)) land = o;
+  }
+  if (!land) return { accept: false, why: `no landed outcome for ${report.worker.branch} at or after the report` };
+  if (typeof land.mainAfter !== "string" || !land.mainAfter || typeof land.repo !== "string" || !land.repo)
+    return { accept: false, why: "the landed outcome carries no repo/mainAfter to join an audit to" };
+  const mainAfter = land.mainAfter;
+  const repo = repoCanon(land.repo);
+  const covering = auditRows.filter((row) => auditRowMatches(row, repo, mainAfter));
+  const red = covering.find((row) => row.result === "red");
+  if (red) return { accept: false, why: `post-land audit at ${red.at} on ${mainAfter.slice(0, 12)} is RED` };
+  const newest = covering.reduce<PostLandAuditRow | null>((n, row) => !n || row.at > n.at ? row : n, null);
+  if (!newest) return { accept: false, why: `no post-land audit covers ${mainAfter.slice(0, 12)} yet` };
+  return { accept: true, mainAfter, audit: newest.result === "green" ? "green" : "unknown", auditAt: newest.at };
+}
+
+let acceptByLandBusy = false;
+async function tickAcceptByLand(origin: "boot" | "tick" | "audit"): Promise<number> {
+  if (acceptByLandBusy || !fleetReports.some((r) => !r.decision && r.status === "complete")) return 0;
+  acceptByLandBusy = true;
+  try {
+    const [outcomes, audited] = await Promise.all([
+      readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE), readLedger<unknown>(POSTLAND_AUDIT_FILE)]);
+    const auditRows = audited.rows.map(validAuditRow).filter((r): r is PostLandAuditRow => r !== null);
+    let closed = 0;
+    for (const report of fleetReports) {
+      // re-read per row: a door may have judged it while the ledgers were being read
+      const reading = acceptByLandReading(report, outcomes.rows, auditRows);
+      if (!reading.accept) continue;
+      report.decision = { disposition: "accepted", at: Date.now(), by: { rule: "accepted-by-land" },
+        reason: `accepted-by-land: landed as ${reading.mainAfter.slice(0, 12)}, post-land audit ${reading.audit}`,
+        mainAfter: reading.mainAfter };
+      // the transport half exactly as both doors settle it: a decided report must not be re-pasted
+      const event = report.eventId === null ? undefined : fleetEvents.find((e) => e.id === report.eventId);
+      if (event && !FLEET_EVENT_TERMINAL.includes(event.status)) settleFleetEventAcknowledged(event);
+      audit("fleet_report_rule_decision", report.worker.slot,
+        `${report.id} accepted-by-land mainAfter=${reading.mainAfter.slice(0, 12)} audit=${reading.audit}@${reading.auditAt} via=${origin}`);
+      await deliverFleetReportDecision(report);
+      closed++;
+    }
+    if (closed > 0) {
+      if (origin === "boot") console.log(`accepted-by-land: ${closed} landed report(s) closed at boot`);
+      await saveStateNow();
+    }
+    return closed;
+  } finally {
+    acceptByLandBusy = false;
+  }
+}
+
 // The same teardown act for the OTHER promise a slot can leave behind: an open suite offer in the
 // helper portal. The 15 s lapse sweep reaps it anyway and the claim path re-checks liveness, so
 // this is not what makes the rail correct — it is what keeps the portal from showing a human a job
@@ -8297,7 +8376,7 @@ async function ambientLandSubject(e: ProgramInboxEntry):
 // it from the absence of a self route: adjudication is owner-positioned (POST
 // /api/post-land-audits/adjudicate), and what this MAIN can do is raise attention.
 type AuditRedSubject = AuditSubject & {
-  adjudicated: { at: number; verdict: AdjudicationVerdict; by: "owner" | "backfill"; note?: string } | null;
+  adjudicated: { at: number; verdict: AdjudicationVerdict; by: AdjudicationBy; note?: string } | null;
   door: string;
 };
 async function auditRedSubject(e: ProgramInboxEntry, ctx: InboxJoinCtx):
@@ -9402,7 +9481,9 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
 
 // A live binding sees its Program's rows across succession; an unbound or foreign occupant sees
 // only rows addressed to its own exact requester triple. The open cap and dedupe stay requester-
-// scoped in openAttention, so inheriting sight never inherits the predecessor's raise budget.
+// scoped in openAttention — and since 2026-09-13 a succession REBINDS the open rows to the successor
+// (rebindAttentionToSuccessor), so the successor re-raising the same sentence finds the existing row
+// instead of minting the third copy of it (the S12 question was asked three times that way).
 function attentionFor(s: Slot): AttentionRequest[] {
   const bound = boundProgramForMain(s);
   return attentionRequests.filter((a) => attentionBound(a, s)
@@ -9418,7 +9499,32 @@ function refuseAttention(a: AttentionRequest, reason: string, at = Date.now()): 
   audit("attention_refused", a.requester.slot, `${a.id} ${reason}`);
 }
 
-// A deliberate handoff of an active Program preserves its question for the successor. Every other
+// THE SUCCESSOR OF A REQUESTER, and only a proven one. Measured 2026-09-13 (docs/messungen/
+// 2026-09-13-task-aggregation-a-e-fable.md §D): 9 of 9 refused attentions read `requester session
+// ended`, and the handoff survival above did not stop it — it kept the row alive through the
+// predecessor's OWN teardown and then let the next reconcile (any other slot's teardown, a boot)
+// refuse it, because the row still named a session that no longer existed. The row now moves.
+// Proof is the Program's own lineage: the requester occupant's entry ENDED BY `succeed`, and the
+// Program's current binding is live. An owner kill never writes `succeed`, so it still refuses; a
+// recycled slot number is not an occupant and matches nothing.
+function attentionSuccessorFor(a: AttentionRequest): AttentionRequest["requester"] | null {
+  const program = programs.find((p) => p.id === a.programId);
+  const main = program?.status === "active" ? program.main : undefined;
+  if (!program || !main || (main.slot === a.requester.slot && main.openedAt === a.requester.openedAt)) return null;
+  const live = slotFrom(main.slot);
+  if (!live?.cwd || live.openedAt !== main.openedAt) return null;
+  const succeeded = (program.lineage?.entries ?? []).some((e) => e.slot === a.requester.slot
+    && e.openedAt === a.requester.openedAt && e.endedBy === "succeed");
+  return succeeded ? { slot: live.id, openedAt: live.openedAt, sessionId: live.sessionId } : null;
+}
+function rebindAttentionToSuccessor(a: AttentionRequest, to: AttentionRequest["requester"]): void {
+  const from = a.requester;
+  a.requester = to;
+  audit("attention_rebound", to.slot,
+    `${a.id} program=${a.programId} from slot ${from.slot} (openedAt ${from.openedAt})`);
+}
+
+// A deliberate handoff of an active Program hands its open question to the successor. Every other
 // disappearance still fails closed: an owner kill, land, boot reconcile or recycled slot may not
 // turn the row into somebody else's question merely because the slot number came back.
 function reconcileAttention(teardownSlotId?: number, why?: SlotEnding): boolean {
@@ -9428,9 +9534,17 @@ function reconcileAttention(teardownSlotId?: number, why?: SlotEnding): boolean 
     const requester = slotFrom(a.requester.slot);
     const gone = teardownSlotId === a.requester.slot || !requester?.cwd
       || requester.openedAt !== a.requester.openedAt || requester.sessionId !== a.requester.sessionId;
+    if (!gone) continue;
+    const successor = attentionSuccessorFor(a);
+    if (successor) {
+      rebindAttentionToSuccessor(a, successor);
+      dirty = true;
+      continue;
+    }
+    // a handoff with no successor bound yet (retire) keeps today's survival; the next reconcile
+    // that still finds no successor refuses it
     const program = programs.find((p) => p.id === a.programId);
-    const survives = why === "handoff" && program?.status === "active";
-    if (!gone || survives) continue;
+    if (why === "handoff" && program?.status === "active") continue;
     refuseAttention(a, "requester session ended");
     dirty = true;
   }
@@ -12613,6 +12727,10 @@ function laneAutoCloseRefusal(s: Slot, now: number): string | null {
     // let a door built to UNBLOCK an owner start killing panes unattended on his behalf.
     if (d.by === "owner")
       return "a report of this lane was judged by the owner, not by its MAIN";
+    // …and neither does a RULE verdict, for the same reason one step further out: accepted-by-land
+    // reads a land, not a MAIN that is finished with this lane.
+    if ("rule" in d.by)
+      return "a report of this lane was accepted by rule, not by its MAIN";
     const by = d.by;
     // the decision names the receiver OCCUPATION. fleetReportFrom enforces this on the way in and
     // decideFleetReport on the way through, which is precisely why it is re-tested here: a
@@ -12669,6 +12787,7 @@ async function tickLaneAutoClose(): Promise<void> {
       // reason and written out for it: an actuator that could close a lane on a verdict taken from
       // outside its Program is the one shape the branch above exists to make impossible.
       if (!report || !decision || decision.by === "owner") continue;
+      if ("rule" in decision.by) continue;
       const occupant = { openedAt: s.openedAt, sessionId: s.sessionId, cwd: s.cwd };
       // the ledger's OWN recorder, with its own git reads — never a second count of this lane's
       // commits. buildLaneOutcome resolves killed-dirty vs killed-empty from `commitCount` itself.
@@ -16804,8 +16923,10 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   // the confusion the view exists to remove. The drain clears it in the same synchronous block that
   // consumes the entry; see its `finally`.
   await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
+  if (row.result === "red") await carryFlakeAdjudications("audit", row.at);
   await mintAuditEvents(row);
   await writeAuditInboxEntries(row); // a red addresses the Program whose land it covers — see the writer
+  void tickAcceptByLand("audit").catch((e: unknown) => logError("tickAcceptByLand", e));
   const named = covers.map((c) => c.branch).join(", ").slice(0, 120);
   audit("postland_audit", undefined,
     `${result}${proportional ? " proportional" : ""} ${basename(repo)} ${main}@${mainSha.slice(0, 8)}`
@@ -17989,8 +18110,10 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   markAuditClaimable(repo, now);
   try { rmSync(claim.bundle, { force: true }); } catch { /* the helper has its copy */ }
   await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
+  if (row.result === "red") await carryFlakeAdjudications("audit", row.at);
   await mintAuditEvents(row);
   await writeAuditInboxEntries(row); // the remote red is the same fact — same rail, same writer
+  void tickAcceptByLand("audit").catch((e: unknown) => logError("tickAcceptByLand", e));
   // THE COMPARISON THE FIELD EXISTS FOR. It changes NO verdict — a mismatch does not make a red
   // green, and inventing that rule here would be a new gate nobody asked for — but it must never be
   // something a reader has to go looking for: a row whose helper ran a different tree than this
@@ -18293,11 +18416,14 @@ const MAX_ADJUDICATION_NOTE = 300;
 // `by` is stamped server-side, never read from the body: "owner" is a human decision, "backfill" is
 // the one-shot migration below. A reader must be able to tell them apart — a judgement nobody typed
 // is weaker evidence than one somebody did, and hiding that would be the whole point, inverted.
+// …and a third principal since 2026-09-13: the RULE `carried-flake` (see carryFlakeReading), which
+// names the owner judgement it carried forward — `from` is that adjudication's key (auditAt + at).
+type AdjudicationBy = "owner" | "backfill" | { rule: "carried-flake"; from: { auditAt: number; at: number } };
 interface AuditAdjudication {
   at: number;                  // when the judgement was made
   auditAt: number;             // the audit row it judges (that row's `at`)
   verdict: AdjudicationVerdict;
-  by: "owner" | "backfill";
+  by: AdjudicationBy;
   // WHICH CHANNEL the owner judged through, measured exactly as ownerLandActor measures it on the
   // land path. `by` above already names the only principal this route has, so the fact worth
   // recording is the channel — the board's cookie, a script's bearer, a typed `?token=`.
@@ -18306,6 +18432,15 @@ interface AuditAdjudication {
   // Absence says "this row cannot say" — the loader below never fills it in with a guessed cookie.
   actor?: LandActor;
   note?: string;
+}
+// A rule row reads back as the rule ONLY when its whole shape is there; anything else falls through
+// to the loader's historical default rather than inventing a source judgement.
+function carriedFlakeBy(raw: unknown): AdjudicationBy | null {
+  if (!raw || typeof raw !== "object") return null;
+  const by = raw as { rule?: unknown; from?: { auditAt?: unknown; at?: unknown } };
+  if (by.rule !== "carried-flake" || !by.from || typeof by.from.auditAt !== "number"
+    || typeof by.from.at !== "number") return null;
+  return { rule: "carried-flake", from: { auditAt: by.from.auditAt, at: by.from.at } };
 }
 // newest-wins per audit row, so a mis-judgement is corrected by adjudicating again and the rail
 // keeps the whole history — the same append-only-with-latest-reading shape as every trail here.
@@ -18318,7 +18453,7 @@ async function adjudicationsByAudit(): Promise<Map<number, AuditAdjudication>> {
     if (!Number.isFinite(auditAt) || !ADJUDICATION_VERDICTS.includes(verdict as AdjudicationVerdict)) continue;
     const rec: AuditAdjudication = {
       at: typeof r.at === "number" ? r.at : 0, auditAt, verdict: verdict as AdjudicationVerdict,
-      by: r.by === "backfill" ? "backfill" : "owner",
+      by: r.by === "backfill" ? "backfill" : carriedFlakeBy(r.by) ?? "owner",
       // PRESENCE-GATED, never defaulted: loadLandActor turns anything unreadable into the honest
       // `unknown` arm, but a row that never had the key at all must stay WITHOUT the field. Reading
       // it unconditionally would stamp every historical judgement with an actor nobody measured.
@@ -18415,6 +18550,70 @@ async function writeAuditInboxEntries(row: PostLandAuditRow): Promise<void> {
     setAuditPing(row.at, { status: "program-inbox",
       lastResult: `delivered to program inbox: ${named.join(",")}` });
   if (wrote || all) await saveStateNow();
+}
+// === CARRIED FLAKE — a red whose ONE failing check the owner already judged `flake` ==============
+// Owner 2026-09-13, docs/messungen/2026-09-13-task-aggregation-a-e-fable.md §D: two of six unjudged
+// reds ("reseed + live bytes") carried a flake verdict on the SAME single check from 6.7 days before.
+// Asking the owner again for a judgement he already gave is noise that trains the scroll-past reflex
+// this rail was built against. So the rule carries it — and carries NOTHING else:
+//  · the red must name exactly ONE signature: its `fails` deduplicate to one name AND account for
+//    every failed check (`checks.failed === fails.length`). Two or more names, no names, or a fail
+//    count the names do not cover is not a signature the rule can compare — no rule;
+//  · the source is an OWNER verdict `flake` that is still the newest verdict of an earlier red whose
+//    signature is exactly that one name, at most 14 days older. A backfill or another carried row
+//    is never a source, so the window cannot chain itself forward without a human;
+//  · the row stays RED. This writer has no reach into POSTLAND_AUDIT_FILE, like the owner door.
+const CARRIED_FLAKE_WINDOW_MS = 14 * 24 * 3600_000;
+const auditSignature = (row: PostLandAuditRow): string | null => {
+  const fails = Array.isArray(row.fails) ? row.fails : [];
+  const names = [...new Set(fails)];
+  return names.length === 1 && row.checks !== null && row.checks?.failed === fails.length ? names[0]! : null;
+};
+type CarriedFlakeReading =
+  | { carry: true; signature: string; source: AuditAdjudication }
+  | { carry: false; why: string };
+function carryFlakeReading(row: PostLandAuditRow, rows: PostLandAuditRow[],
+  judged: Map<number, AuditAdjudication>): CarriedFlakeReading {
+  if (row.result !== "red") return { carry: false, why: `result ${row.result}` };
+  if (judged.has(row.at) || auditAdjudicationClaims.has(row.at)) return { carry: false, why: "already adjudicated" };
+  const names = [...new Set(Array.isArray(row.fails) ? row.fails : [])];
+  if (names.length > 1) return { carry: false, why: `${names.length} fail signatures — a rule carries only one` };
+  const signature = auditSignature(row);
+  if (signature === null) return { carry: false, why: "no single named signature accounts for the failed checks" };
+  let source: AuditAdjudication | null = null;
+  for (const prior of rows) {
+    if (prior.at >= row.at || row.at - prior.at > CARRIED_FLAKE_WINDOW_MS || prior.result !== "red") continue;
+    const adj = judged.get(prior.at);
+    if (!adj || adj.verdict !== "flake" || adj.by !== "owner" || auditSignature(prior) !== signature) continue;
+    if (!source || adj.at > source.at) source = adj;
+  }
+  if (!source) return { carry: false, why: "no owner flake verdict on the same signature within 14 days" };
+  return { carry: true, signature, source };
+}
+// Called once per audit sink row and once at boot over the whole trail (retroactive, counted).
+async function carryFlakeAdjudications(origin: "boot" | "audit", only?: number): Promise<number> {
+  const { rows: raw } = await readLedger<unknown>(POSTLAND_AUDIT_FILE);
+  const rows = raw.map(validAuditRow).filter((r): r is PostLandAuditRow => r !== null && typeof r.at === "number");
+  const judged = await adjudicationsByAudit();
+  let carried = 0;
+  for (const row of rows) {
+    if (only !== undefined && row.at !== only) continue;
+    const reading = carryFlakeReading(row, rows, judged);
+    if (!reading.carry) continue;
+    const from = { auditAt: reading.source.auditAt, at: reading.source.at };
+    const rec: AuditAdjudication = { at: Date.now(), auditAt: row.at, verdict: "flake",
+      by: { rule: "carried-flake", from },
+      note: `carried from the owner's flake on audit ${from.auditAt} (${new Date(from.auditAt).toISOString()}): ${reading.signature}`
+        .slice(0, MAX_ADJUDICATION_NOTE) };
+    auditAdjudicationClaims.add(row.at);
+    judged.set(row.at, rec);
+    await appendEvent(AUDIT_ADJUDICATION_FILE, rec as unknown as Record<string, unknown>);
+    audit("postland_audit", undefined,
+      `adjudicated flake by rule carried-flake — red audit at ${row.at} from ${from.auditAt} via=${origin}: ${reading.signature}`.slice(0, 240));
+    carried++;
+  }
+  if (origin === "boot" && carried > 0) console.log(`carried-flake: ${carried} red audit row(s) carried at boot`);
+  return carried;
 }
 // the owner write. Mirrors writeDisposition: validate and append in one place, return the Response.
 async function writeAuditAdjudication(body: Record<string, unknown> | null, req: Request): Promise<Response> {
@@ -23657,6 +23856,14 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       // successor appended via `succeed`
       appendProgramLineage(program, lineageEntryFromMain(program.main, "succeed"),
         oldMain ? { main: oldMain, endedBy: "succeed" } : null);
+      // …and the open attention of the predecessor moves in the SAME cut, so there is no window in
+      // which the binding has moved and the question still names a session that is leaving.
+      const oldRequesters = new Map(attentionRequests.map((a) => [a.id, a.requester]));
+      for (const a of attentionRequests) {
+        if (a.programId !== program.id || (a.status !== "open" && a.status !== "send-uncertain")) continue;
+        const successor = attentionSuccessorFor(a);
+        if (successor) rebindAttentionToSuccessor(a, successor);
+      }
       delete program.founding;
       s.successionRetirement = retirement;
       successionStarted.set(s.id, predecessor.selfToken);
@@ -23668,6 +23875,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         if (oldMain) program.main = oldMain; else delete program.main;
         if (oldLineage) program.lineage = oldLineage; else delete program.lineage;
         if (oldHandover) program.handover = oldHandover; else delete program.handover;
+        for (const a of attentionRequests) a.requester = oldRequesters.get(a.id) ?? a.requester;
         program.founding = founding;
         if (sameSuccessionOccupant(s, predecessor)) {
           s.successionRetirement = oldRetirement;
@@ -25436,8 +25644,13 @@ try {
   console.log(`post-land audit trail: runtime distribution not seeded (${e instanceof Error ? e.message : e})`
     + " — the board shows an elapsed clock with no comparison until three audits have run.");
 }
-// fire-and-forget (backfillUnknowableAudits): nothing at boot waits on it.
-void backfillUnknowableAudits();
+// fire-and-forget (backfillUnknowableAudits): nothing at boot waits on it. The carried-flake pass runs
+// behind it so a backfilled row is already judged when the rule reads the rail.
+void backfillUnknowableAudits().then(() => carryFlakeAdjudications("boot"))
+  .catch((e: unknown) => logError("carryFlakeAdjudications", e));
+// …and the retroactive pass of accepted-by-land over every report the state file brought back. The
+// same function the tick runs, so the boot count and the live rule cannot disagree about a row.
+void tickAcceptByLand("boot").catch((e: unknown) => logError("tickAcceptByLand", e));
 // ...and resume the PENDING side against the CURRENT integration tip: the suite measures a TREE,
 // so auditing the newest tip subsumes every land folded into it, and `covers` still names them all.
 if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
@@ -25527,6 +25740,7 @@ if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch((e: unknow
 // uses instead of minting a knob of its own — the close is level-triggered and nothing waits on it.
 if (LANE_AUTOCLOSE_ON) setInterval(() => void tickLaneAutoClose().catch((e: unknown) => logError("tickLaneAutoClose", e)), AUTOS_TICK_MS);
 if (BACKLOG_NUDGE_MS > 0) setInterval(() => void tickBacklogNudge().catch((e: unknown) => logError("tickBacklogNudge", e)), BACKLOG_NUDGE_MS);
+if (ACCEPT_BY_LAND_MS > 0) setInterval(() => void tickAcceptByLand("tick").catch((e: unknown) => logError("tickAcceptByLand", e)), ACCEPT_BY_LAND_MS);
 if (AUDIT_PING_MS > 0) setInterval(() => void tickAuditPing().catch((e: unknown) => logError("tickAuditPing", e)), AUDIT_PING_MS);
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickInboxNudge().catch((e: unknown) => logError("tickInboxNudge", e)), INBOX_NUDGE_MS);
 if (MIGRATE_PCT > 0) setInterval(() => void tickMigrate().catch((e: unknown) => logError("tickMigrate", e)), MIGRATE_TICK_MS);
@@ -27220,7 +27434,8 @@ async function ledgersView(prior: Record<string, unknown> | null): Promise<Ledge
           at: num(r.at), result: str(r.result) || "unknown", main: str(r.main), mainSha: str(r.mainSha),
           covers: covers.map((c) => str((c as { branch?: unknown } | null)?.branch)).filter(Boolean).slice(0, 12),
           ...(typeof r.reason === "string" ? { reason: r.reason.slice(0, 200) } : {}),
-          ...(adj ? { adjudication: { verdict: adj.verdict, at: adj.at, by: adj.by,
+          ...(adj ? { adjudication: { verdict: adj.verdict, at: adj.at,
+            by: typeof adj.by === "string" ? adj.by : `rule:${adj.by.rule}`,
             ...(adj.note ? { note: adj.note.slice(0, 200) } : {}) } } : {}),
           ...((): Record<string, unknown> => { // the artefact rail, joined here too
             const a = artifactViewFor(num(r.at));

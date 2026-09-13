@@ -7864,9 +7864,19 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // family proves on behaviour; these pin that the mechanism is the one the docs name.
   const RULE_CARD_V2 = "a card is refused by the tree, not by a stale graph or a foreign field";
   const cx = read("card-extract.ts");
-  const versionConst = /^export const CARD_VALIDATOR_VERSION = 2;$/m.test(cx);
-  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 2 (bump it when a rule change can turn a refusal into an acceptance)`,
+  const versionConst = /^export const CARD_VALIDATOR_VERSION = 3;$/m.test(cx);
+  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 3 (bump it when a rule change can turn a refusal into an acceptance)`,
     versionConst, `const=${versionConst}`);
+  // v3 (2026-09-13): the filing format. A formatted row is read by the PARSER before the extractor
+  // is ever started, and the ledger says which of the two produced each card.
+  const formatFirst = /const formatted = formatCardOf\(t, snapshot, index\);\n\s+const card = formatted \?\? await extractCard\(t, repo, snapshot, index\);/.test(srv)
+    && /taskId: t\.id, source: formatted \? "format" : "model",/.test(srv);
+  pin(`${RULE_CARD_V2} — the card tick asks parseFormattedCard before the extractor, and cards.jsonl carries source format|model`,
+    formatFirst, `formatFirst=${formatFirst}`);
+  const createsRule = /if \(ctx\.trackedPaths\.has\(path\)\) \{ gaps\.push\(`surface\.creates: /.test(cx)
+    && /rowKnown: \(id\) => tasks\.some\(\(t\) => t\.id === id\),/.test(srv);
+  pin(`${RULE_CARD_V2} — NEU is refused when tracked (never waved through surface.files), NACH is checked against the queue`,
+    createsRule, `createsRule=${createsRule}`);
   const declFallback = /if \(!ctx\.declares\(file, symbol\)\) \{/.test(cx)
     && /declares: \(file, symbol\) => !!snapshot\?\.paths\.has\(file\) && declaresSymbol\(sourceOf\(file\), symbol\),/.test(srv);
   pin(`${RULE_CARD_V2} — a symbol the graph lacks is looked up as a declaration in the tracked file, through the ONE shared context`,

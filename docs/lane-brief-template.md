@@ -17,6 +17,32 @@ readable and editable in the queue before the lane starts, and an owner edit pin
 Placeholders in `{braces}`. Drop any section that is genuinely empty rather than
 padding it.
 
+## The filing head — a queue row that is its own card
+
+A queue row whose text OPENS with these lines needs no card extractor: `card-extract.ts#parseFormattedCard`
+reads them, `card-extract.ts#validateCard` checks them against the tree like any other card, and
+`cards.jsonl` books the card as `source:"format"` (spec: `docs/messungen/2026-09-13-task-aggregation-a-e-fable.md` §A).
+Every filing door takes it as plain row text — owner `POST /api/tasks`, the MAIN's self-filing, the
+steward, intake — so there is one grammar, not four.
+
+```text
+[{optional title line}]
+ROLLE: {harness-id}/{model-id}/{effort}        e.g. claude/claude-opus-5[1m]/high
+GROESSE: klein|mittel|gross
+FLAECHE: {tracked paths and datei#symbol, comma-separated; datei#a/#b for several symbols; — for none}
+NEU: {files the row will ADD — untracked, in a tracked directory or under docs/messungen/}   (optional)
+NACH: {queue ids this row waits on}                                                          (optional)
+VERIFY: {at least one chain step name: install, pins, tsc, build, … or a bun / ./e2e- command}
+DONE: {one checkable sentence}
+{prose — its first line is the card's goal}
+```
+
+The five lines without "(optional)" must all be there, each once; otherwise the row is prose and the
+extractor reads it. Symbols are top-level declarations only — no routes, no local variables. A path
+that already exists goes under FLAECHE, never under NEU (a tracked NEU path is a card gap). A NACH id
+that is not a queue row is a card gap; a valid one keeps the row out of every land wave before its
+target's (`task-land-waves.ts#wavesFor`).
+
 ---
 
 ```text

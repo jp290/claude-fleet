@@ -130,7 +130,7 @@ export const LAND_WAVE_COSTS_2026_09: LandWaveCosts = {
 };
 
 interface ClassifiedRow {
-  id: string; created: number; files: string[]; programId: string | null; units: number;
+  id: string; created: number; files: string[]; programId: string | null; units: number; after: string[];
   ranges: readonly TaskWaveRange[] | null;
   klasse: LandWaveClass; reasonAgainst: LandWaveReasonAgainst | null;
 }
@@ -200,6 +200,7 @@ function classify(task: TaskWaveInput): ClassifiedRow {
           : files.some(isGateMachinery) ? "gate-aenderer"
             : null;
   return { id: task.id, created: task.created, files, programId, units: landWaveUnits(task.size),
+    after: [...new Set(task.after ?? [])].filter((id) => id !== task.id),
     // absent and null are ONE fact here: not measured. Only an array reaches the collision rule.
     ranges: task.ranges ?? null, klasse, reasonAgainst };
 }
@@ -236,6 +237,8 @@ function componentsOf(rows: readonly ClassifiedRow[]): ClassifiedRow[][] {
       const a = find(members[x]), b = find(members[y]);
       if (a !== b) parent[a] = b;
     }
+  // A Map keeps insertion order, and a group is inserted at its first member: the components come
+  // out in the order of `rows`, which is the AFTER order wavesFor hands in, not a re-sort by date.
   const groups = new Map<number, ClassifiedRow[]>();
   rows.forEach((row, i) => {
     const root = find(i);
@@ -243,7 +246,7 @@ function componentsOf(rows: readonly ClassifiedRow[]): ClassifiedRow[][] {
     group.push(row);
     groups.set(root, group);
   });
-  return [...groups.values()].sort((a, b) => rowOrder(a[0], b[0]));
+  return [...groups.values()];
 }
 
 function waveOf(members: readonly ClassifiedRow[], costs: LandWaveCosts): LandWave {
@@ -289,9 +292,64 @@ function cutByBudget(component: readonly ClassifiedRow[], budget: number): Class
   return out;
 }
 
-function wavesFor(rows: readonly ClassifiedRow[], budget: number, costs: LandWaveCosts): LandWave[] {
-  const built: { key: ClassifiedRow; wave: LandWave }[] = [];
-  for (const row of rows) if (row.reasonAgainst !== null) built.push({ key: row, wave: waveOf([row], costs) });
+// --- `NACH:` — A ROW NEVER LANDS IN A WAVE BEFORE THE ROW IT WAITS ON (card `after`).
+//
+// Two orders, both stable against (created, id). The ROW order puts every row behind its open
+// `after` rows, so a component, its budget cut and a wave's own commit order all inherit it. The
+// WAVE order is needed as well, because a wave is keyed by its first row: rows X < A < R with X and
+// R sharing a file and R waiting on A make the wave {X, R} start before {A} in row order. Waves are
+// therefore placed only once every row they wait on is placed. Waves can still wait on each other
+// crosswise ({X, R} on {A}, {A, Y} on {X}); then the earliest stuck wave of several rows is
+// dissolved into waves of one — rows of one never wait crosswise, since the row order honours every
+// edge it can. A cycle among the rows themselves (A after R, R after A) has no honourable order:
+// it is broken only once no other row is ready — then its older row goes first and that one edge is
+// dropped, rather than one bad card stopping every bundle of the repo.
+function afterOrder(rows: readonly ClassifiedRow[]): ClassifiedRow[] {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const placed = new Set<string>();
+  const rest = [...rows];
+  const out: ClassifiedRow[] = [];
+  while (rest.length) {
+    const ready = rest.findIndex((row) => row.after.every((id) => !byId.has(id) || placed.has(id)));
+    const [row] = rest.splice(ready < 0 ? 0 : ready, 1);
+    placed.add(row.id);
+    out.push(row);
+  }
+  return out;
+}
+
+function placeByAfter(entries: { members: ClassifiedRow[]; wave: LandWave }[],
+  rank: ReadonlyMap<string, number>, costs: LandWaveCosts): LandWave[] {
+  const rankOf = (entry: { members: ClassifiedRow[] }): number => rank.get(entry.members[0].id) ?? 0;
+  const pending = [...entries].sort((a, b) => rankOf(a) - rankOf(b));
+  const placed = new Set<string>();
+  const out: LandWave[] = [];
+  // only an edge the row order honours binds a wave (see the block above)
+  const waitsOn = (row: ClassifiedRow, id: string): boolean =>
+    (rank.get(id) ?? Infinity) < (rank.get(row.id) ?? 0);
+  while (pending.length) {
+    const ready = pending.findIndex((entry) => entry.members.every((row) => row.after.every((id) =>
+      !waitsOn(row, id) || placed.has(id) || entry.members.some((member) => member.id === id))));
+    if (ready >= 0) {
+      const [entry] = pending.splice(ready, 1);
+      for (const row of entry.members) placed.add(row.id);
+      out.push(entry.wave);
+      continue;
+    }
+    const split = pending.findIndex((entry) => entry.members.length > 1);
+    if (split < 0) { out.push(...pending.map((entry) => entry.wave)); break; }
+    const [entry] = pending.splice(split, 1);
+    pending.push(...entry.members.map((row) => ({ members: [row], wave: waveOf([row], costs) })));
+    pending.sort((a, b) => rankOf(a) - rankOf(b));
+  }
+  return out;
+}
+
+function wavesFor(inputRows: readonly ClassifiedRow[], budget: number, costs: LandWaveCosts): LandWave[] {
+  const rows = afterOrder(inputRows);
+  const rank = new Map(rows.map((row, i) => [row.id, i]));
+  const built: { members: ClassifiedRow[]; wave: LandWave }[] = [];
+  for (const row of rows) if (row.reasonAgainst !== null) built.push({ members: [row], wave: waveOf([row], costs) });
   // R1 and the program boundary are both enforced by CONSTRUCTION, not by a later filter:
   // components are computed inside a single (class, program) bucket, so neither a docs row and a
   // code row nor two rows of different programs can end up in one wave however far their files
@@ -310,9 +368,9 @@ function wavesFor(rows: readonly ClassifiedRow[], budget: number, costs: LandWav
     }
     for (const bundlable of byProgram.values()) for (const component of componentsOf(bundlable))
       for (const members of cutByBudget(component, budget))
-        built.push({ key: members[0], wave: waveOf(members, costs) });
+        built.push({ members, wave: waveOf(members, costs) });
   }
-  return built.sort((a, b) => rowOrder(a.key, b.key)).map((entry) => entry.wave);
+  return placeByAfter(built, rank, costs);
 }
 
 /** Project open auftrag rows into advisory LAND waves without mutating the supplied facts. */
@@ -358,7 +416,7 @@ const argAfter = (name: string): string | null => {
 
 interface StateTask {
   id?: unknown; kind?: unknown; status?: unknown; created?: unknown; repo?: unknown; programId?: unknown;
-  card?: { valid?: unknown; size?: unknown };
+  card?: { valid?: unknown; size?: unknown; surfaceValid?: unknown; after?: unknown; surface?: { creates?: unknown } };
 }
 
 async function cli(): Promise<void> {
@@ -384,9 +442,14 @@ async function cli(): Promise<void> {
   };
 
   const rows: TaskWaveInput[] = [];
+  const strings = (v: unknown): string[] => Array.isArray(v) ? v.filter((e): e is string => typeof e === "string") : [];
   for (const task of tasks) {
     if (typeof task.id !== "string") continue;
     const derived = meta.tasks?.[task.id];
+    // the same two card readings server.ts#landWaveProjectionNow makes: creates off a surfaceValid
+    // card join the files, after off any card
+    const files = [...(derived?.files ?? []), ...(task.card?.surfaceValid === true ? strings(task.card.surface?.creates) : [])];
+    const after = strings(task.card?.after);
     rows.push({
       id: task.id,
       kind: typeof task.kind === "string" ? task.kind : undefined,
@@ -396,7 +459,8 @@ async function cli(): Promise<void> {
       ...(typeof task.programId === "string" && task.programId ? { programId: task.programId } : {}),
       // the same reading server.ts#landWaveProjectionNow makes: a VALID card's size, else none (= medium)
       ...(task.card?.valid === true && isTaskCardSize(task.card.size) ? { size: task.card.size } : {}),
-      ...(derived?.files ? { files: derived.files } : {}),
+      ...(files.length ? { files } : {}),
+      ...(after.length ? { after } : {}),
       ...(derived?.filesOrigin ? { filesOrigin: derived.filesOrigin } : {}),
       // null when the checkout carries no graphify-out/, which is the honest answer for a lane and
       // the one that sends collidesOn back to the file level.

@@ -9,6 +9,7 @@ import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
 import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, CARD_MARK, CARD_VALIDATOR_VERSION } from "../card-extract";
 import { renderWaveBrief, renderCardHead, CARD_HEAD_MAX_BYTES } from "../wave-brief";
+import { LOCAL_PROOF_STEPS } from "../verify-proportion";
 import { deriveTaskMetadata, type SymbolIndex, type TaskCluster } from "../task-metadata";
 import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict,
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
@@ -6087,6 +6088,36 @@ export async function run(ctx: Ctx): Promise<void> {
       && citedOnly.body.verify === "bun e2e/pins.ts"
       && citedOnly.gaps.some((g) => g.includes("e2e/pins.ts") && g.includes("only as proof")),
       JSON.stringify(citedOnly));
+    // VERIFY ALIASES (validator 4): the filing format's own "volle Kette" and a bare "e2e-isolated"
+    // are proofs, written back as the step names; prose that only sounds like a proof stays a gap.
+    const verifyOf = (value: string) => {
+      const v = validateCard({ verify: value }, cardCtx);
+      return { verify: v.body.verify, gap: v.gaps.some((g) => g.startsWith("verify")) };
+    };
+    const fullSteps = LOCAL_PROOF_STEPS.join(", ");
+    const aliasAccepted = {
+      full: verifyOf("volle Kette"),
+      fullEn: verifyOf("full chain"),
+      fullOffer: verifyOf("volle Kette; e2e-isolated per Suite-Offer"),
+      isoSh: verifyOf("e2e-isolated.sh"),
+      isoDot: verifyOf("./e2e-isolated.sh."),
+      isoMixed: verifyOf("./e2e-isolated.sh und bun e2e/pins.ts"),
+    };
+    const aliasRefused = {
+      tests: verifyOf("run the tests"),
+      testsDe: verifyOf("Tests laufen lassen"),
+      lookalike: verifyOf("e2e-isolated-prep anschauen"),
+    };
+    check("(v4) card verify: \"volle Kette\" and \"e2e-isolated\" are proofs written as chain step names; \"run the tests\" stays a gap",
+      Object.values(aliasAccepted).every((a) => !a.gap)
+      && aliasAccepted.full.verify === fullSteps && aliasAccepted.fullEn.verify === fullSteps
+      && aliasAccepted.fullOffer.verify === `${fullSteps}, isolated`
+      && aliasAccepted.isoSh.verify === "isolated" && aliasAccepted.isoDot.verify === "isolated"
+      && aliasAccepted.isoMixed.verify === "isolated — ./e2e-isolated.sh und bun e2e/pins.ts"
+      && Object.values(aliasRefused).every((r) => r.gap)
+      && aliasRefused.tests.verify === "run the tests" && aliasRefused.testsDe.verify === "Tests laufen lassen"
+      && CARD_VALIDATOR_VERSION >= 4,
+      JSON.stringify({ aliasAccepted, aliasRefused, CARD_VALIDATOR_VERSION }));
     // S7: the SIZE is quote-checked like a path. The filing header states it; an ordinary "kleiner"
     // in prose does not, and a value outside the three classes is a gap rather than a nearest guess.
     const sizeCtx = (sourceText: string) => ({ ...cardCtx, sourceText });

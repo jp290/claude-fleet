@@ -15584,6 +15584,8 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
   // under `verify.proportional`. `prov.verify` absent (no gate configured) or `proportional` absent
   // (an older persisted verdict) both mean NOT PROVEN and buy the full suite.
   schedulePostLandAudit(repo, main, branch, mainAfter, prov.verify?.proportional === true);
+  // the owner's graph follows the moved main — synchronous and never awaited, like the line above
+  scheduleMainGraphRebuild(repo, main);
   // ...and only now is the land fully recorded. Clearing LAST, after the note and the audit
   // trigger, is deliberate: a death anywhere above leaves the marker, boot re-runs this whole
   // function, and every step of it is idempotent (`pushUndo` REPLACES the identical record, a
@@ -20201,6 +20203,53 @@ async function buildCodeGraph(repo: string, dir: string, ref: string): Promise<s
   } catch {
     return null; // graphify (or tar) not on this machine — not an error here, just no map
   }
+}
+
+// THE OWNER'S MAP, kept current by the land that moved it (Worktrail IV §3.5, Owner 2026-09-13).
+// Measured before this existed: queries ran a median 48 commits behind main, 31 hand updates
+// against 252 lands. So every main-MOVING land (recordLand) re-runs the same keyless
+// `graphify . --code-only` buildCodeGraph uses — but in the checkout that HOLDS main, because that
+// is where the owner's sessions query `graphify-out/`. Three refusals, each a skip with one log line:
+//   · main checked out nowhere (advanceIntegration's `branch -f` arm): no tree moved, nothing to map.
+//   · the holder is a LINKED worktree: an untracked graphify-out/ there blocks lands (buildCodeGraph).
+//   · graphify-out/ is not gitignored in that repo: the build would leave the primary checkout of a
+//     foreign repo (or an e2e scratch repo) with an untracked directory nobody asked for.
+// Never `graphify watch`, never `graphify hook install` — the hook route is buried
+// (docs/work-register-2026-08-06.md §7). Fire-and-forget and OUTSIDE the suite mutex: it takes no
+// lock, the land path never awaits it, and a failure is `null` plus a log line, never a land verdict.
+// At most ONE build at a time; a land arriving during one only sets `mainGraphAgain`, so a burst of
+// lands costs two builds, not N.
+let mainGraphRunning = false;
+let mainGraphAgain: { repo: string; main: string } | null = null;
+async function rebuildMainCheckoutGraph(repo: string, main: string): Promise<number | null> {
+  try {
+    const holder = (await listWorktrees(repo)).find((w) => w.branch === main);
+    if (!holder) { console.log(`graph: ${basename(repo)} — ${main} checked out nowhere, no rebuild`); return null; }
+    if (!holder.primary) { console.log(`graph: ${basename(repo)} — ${main} is held by a linked worktree, no rebuild`); return null; }
+    if ((await gitRead(holder.path, "check-ignore", "-q", "graphify-out/")).code !== 0) {
+      console.log(`graph: ${basename(repo)} — graphify-out/ is not gitignored, no rebuild`);
+      return null;
+    }
+    const code = await runGraphStep(["graphify", ".", "--code-only"], holder.path);
+    if (code !== 0) { console.log(`graph: ${basename(repo)} — graphify . --code-only exited ${code}`); return null; }
+    return code;
+  } catch (e) {
+    console.log(`graph: ${basename(repo)} — rebuild failed: ${e instanceof Error ? e.message : "threw"}`.slice(0, 240));
+    return null;
+  }
+}
+function scheduleMainGraphRebuild(repo: string, main: string): void {
+  if (mainGraphRunning) { mainGraphAgain = { repo, main }; return; }
+  mainGraphRunning = true;
+  void (async () => {
+    let next: { repo: string; main: string } | null = { repo, main };
+    while (next) {
+      mainGraphAgain = null;
+      await rebuildMainCheckoutGraph(next.repo, next.main);
+      next = mainGraphAgain;
+    }
+    mainGraphRunning = false;
+  })();
 }
 
 // THE LANDING ANCHORS FOR THE TWO MUTATING WORKERS — computed HERE, at the call site, and appended

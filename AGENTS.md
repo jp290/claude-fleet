@@ -252,9 +252,15 @@ paraphrase it.
 For the recommendation flag, `isolatedPreview: true` means run the preview; `"self-assess"` means
 apply the existing merge-/land-path self-assessment in the rule below.
 
-`./e2e-isolated.sh` is the slow tier and is NOT part of the above. Run it only if you touched the
-`e2e/` lifecycle, a suite wrapper, or the merge/land path. Suites take a shared mutex, so a run may
-wait a long time before it starts — that is normal, not a hang.
+`./e2e-isolated.sh` is the slow tier and is NOT part of the above. It is owed only if you touched
+the `e2e/` lifecycle, a suite wrapper, the merge/land path, or a statement some check asserts
+(`supports.*`, `effortLevels`, a contract default) — a brief line demanding it does not widen this
+rule, and a docs-only lane never owes it. When it is owed and a helper is online (`GET
+/api/self/gate` carries `helper`), OFFER it first (`POST /api/self/suite-offer`) and go idle: the
+verdict is delivered into your pane. Run it locally only after the offer's wait budget expires (or
+when the run proves a repair to the suites themselves), in the foreground with a timeout — never in
+a `sleep` loop over a log. Suites take a shared mutex, so a run may wait a long time before it
+starts — that is normal, not a hang.
 
 Never kill a suite run by name pattern. The server runs the same script for its post-land audit, and
 a pattern kill takes that down too, which records a red audit that measured nothing. Kill your own
@@ -325,5 +331,8 @@ never run `graphify update`/`save-result` from a lane against the main graph.
 ## Reporting
 
 Summary, the quoted verification tails, and one line for anything left unresolved. Report only your
-slice. If you changed `CLAUDE.md`, say so as TEXT in the report — it is git-ignored and your copy
+slice. The report body is `{status, text}` and nothing else; `text` is at most 4000 characters
+(`MAX_FLEET_REPORT_TEXT` in `server/types.ts`) — write it to a scratch file first, check `wc -c`,
+then POST once. Numbers and long tails belong in the tracked note or commit body, not in the report;
+the report points at them. If you changed `CLAUDE.md`, say so as TEXT in the report — it is git-ignored and your copy
 dies with this working copy, so someone else has to carry the change over by hand.

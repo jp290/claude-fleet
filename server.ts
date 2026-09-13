@@ -10230,15 +10230,20 @@ const LANE_EXIT_FOOTER = `
    verified, needs-main = you finished what you could and a decision is owed, failed = it did not
    work and you are saying so, handoff = your context is filling and you are laying the baton down
    (done / open / next step / open numbers) for a fresh session that continues on THIS worktree —
-   file it, then POST /api/self/succeed. \`text\` is prose for a human reader: what you did, the quoted
-   verification result, and one line for anything left unresolved. The body takes ONLY those two
-   fields. A report is a MESSAGE, never a state change — it does not move your task's status, does
-   not land anything, and does not deploy.
+   file it, then POST /api/self/succeed. \`text\` is prose for a human reader, at most
+   ${MAX_FLEET_REPORT_TEXT} characters (write it to your scratchpad, check \`wc -c\`, then POST once):
+   what you did, the quoted verification result, and one line for anything left unresolved. The
+   body takes ONLY those two fields. A report is a MESSAGE, never a state change — it does not move
+   your task's status, does not land anything, and does not deploy.
 
 3. THEN GO IDLE. Do not poll for a reply and do not schedule a check-in to wait for one: the server
    delivers the report to your coordinator, and any answer arrives in this pane on its own. The same
    holds for a preview you hand to another machine: after POST /api/self/suite-offer you go idle and
    the terminal result — green or red — is delivered into this pane by itself. Do not poll.
+   The same holds while your OWN verify runs: run it in the foreground with a timeout sized to the
+   gate's \`timeoutMs\`, or in the background and wait for its completion event — never a
+   \`sleep\`/\`tail\` loop over a log (a \`nohup\` log is block-buffered; "0 PASS lines" is an
+   observer error, not a hang). A \`waitedOut\` verdict never looked at your tree; it is not red.
 
 `;
 

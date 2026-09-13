@@ -279,8 +279,8 @@ async function killTree(proc: { pid: number; kill(sig?: number): void }): Promis
 // (`installCmd`, `suiteCmd`) — a string an owner wrote here, where a shell is the point. A command
 // JOB's line came over the wire, so it arrives pre-split as argv and is exec'd directly: no quoting,
 // no glob, no `&&`, no substitution, and nothing for a crafted string to escape out of.
-// `extraEnv` is the ONE way anything FLEET_-prefixed gets back into a child, and it exists for a
-// single value: this run's own suite lock (see `suiteEnv` in `work`). It is applied AFTER
+// `extraEnv` is the ONE way anything FLEET_-prefixed gets back into a child, and it exists for two
+// values: this run's own suite lock and its scratch TMPDIR (see `suiteEnv` in `work`). It is applied AFTER
 // `childEnv()`, so it can only add what this process deliberately puts there — never re-admit
 // something the strip above removed by accident.
 async function runArgv(argv: string[], cwd: string, logPath: string, timeoutMs: number,
@@ -501,13 +501,25 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
   // against each other through the suite's own lock, and moving the daemon off it would end that
   // silently for every operator who never touched the new field. Above 1 the operator has said
   // this machine takes N suites at once, and a hand-started one is then the N+1st.
-  const suiteEnv: Record<string, string> = cfg.maxParallelSuites > 1
+  //
+  // THE SCRATCH MOVES AT EVERY CAP, and unlike the lock that is no change of meaning: every wrapper
+  // puts its instance at `${TMPDIR:-/tmp}/fleet-e2e-*-$$` and KEEPS it on a red, and nothing but
+  // this directory's prune ever reaches a run dir. Measured on the work-horse 2026-09-13
+  // (docs/messungen/2026-09-14-ram-optimierung-astra.md §F7): /tmp is a 3 930 MB tmpfs, 98 % full,
+  // 68 kept instances, and its non-resident pages were ~1.8 GB of that machine's 2.3 GB swap. The
+  // lock is a literal /tmp path in e2e-stage.sh, not derived from TMPDIR, so cap-1 serialization
+  // is untouched; tmux sockets follow TMUX_TMPDIR, which is not set here either.
+  const scratch = `${runDir}/tmp`;
+  mkdirSync(scratch, { recursive: true });
+  const lockEnv: Record<string, string> = cfg.maxParallelSuites > 1
     ? { FLEET_SUITE_LOCK: `${runDir}/e2e.lock` } : {};
+  const suiteEnv: Record<string, string> = { TMPDIR: scratch, ...lockEnv };
   // registered from here to the `finally`; `tick` pulls the switch (see withdrawnRuns). A withdrawn
   // run REPORTS NOTHING: the fleet has already refused the verdict, and every step below that would
   // report a failure caused by the kill itself returns on `withdrawn` first.
   const ctl = new AbortController();
   inFlight.set(j.id, { claimedAt: j.claimedAt, since: Date.now(), abort: ctl });
+  activeRunDirs.add(runDir);
   const withdrawn = (): boolean => ctl.signal.aborted;
 
   try {
@@ -606,9 +618,11 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
       logPath, clonedSha, artifacts, ran.timedOut ? timeoutMs : undefined);
   } finally {
     inFlight.delete(j.id);
+    activeRunDirs.delete(runDir);
+    // the clone goes, `tmp/` stays: a red's kept instance is the evidence, and `pruneRuns` bounds it
     try { rmSync(clone, { recursive: true, force: true }); } catch { /* the verdict is already sent */ }
     try { rmSync(`${runDir}/job.bundle`, { force: true }); } catch { /* idem */ }
-    pruneRuns(cfg);
+    pruneRuns(cfg.workDir, cfg.keepRuns, activeRunDirs);
   }
 }
 
@@ -802,17 +816,24 @@ function pruneTrees(cfg: HelperConfig): void {
   } catch { /* an unlistable workDir is reported by the next mkdir, not here */ }
 }
 
-// keep the last N run directories: a daemon that never prunes fills the disk of a machine nobody
-// logs into, which is the failure mode of every long-lived helper.
-function pruneRuns(cfg: HelperConfig): void {
+// keep the last N FINISHED run directories: a daemon that never prunes fills the disk of a machine
+// nobody logs into, which is the failure mode of every long-lived helper.
+// A RUN STILL IN FLIGHT IS NEVER A CANDIDATE, and it does not count against `keepRuns` either. Above
+// cap 1 a long run is routinely the OLDEST directory while shorter ones finish past it, and the old
+// sort-and-slice removed it mid-run — its clone, and since the scratch moved here, the instance
+// its suite was writing into. Not counting it keeps the promise to reds: the `keepRuns` newest
+// finished runs survive however many are running beside them (on disk: keepRuns + the cap).
+const activeRunDirs = new Set<string>();
+export function pruneRuns(workDir: string, keepRuns: number, active: ReadonlySet<string>): void {
   try {
     // sorted by the MILLISECOND SUFFIX, not lexically: a run directory is `run-<jobid>-<ms>` and a
     // plain string sort orders by job id first, which would prune whichever job happens to sort low
     // rather than whichever run is oldest.
-    const runs = readdirSync(cfg.workDir).filter((d) => /^run-[a-f0-9]+-\d+$/.test(d))
+    const done = readdirSync(workDir).filter((d) => /^run-[a-f0-9]+-\d+$/.test(d))
+      .filter((d) => !active.has(`${workDir}/${d}`))
       .sort((a, b) => Number(a.split("-").pop()) - Number(b.split("-").pop()));
-    for (const d of runs.slice(0, Math.max(0, runs.length - cfg.keepRuns)))
-      rmSync(`${cfg.workDir}/${d}`, { recursive: true, force: true });
+    for (const d of done.slice(0, Math.max(0, done.length - keepRuns)))
+      rmSync(`${workDir}/${d}`, { recursive: true, force: true });
   } catch { /* a workDir that cannot be listed is reported by the next mkdir, not here */ }
 }
 

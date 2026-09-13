@@ -23,7 +23,7 @@ import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
-import { failNamesOf, freeSuiteSlots, inQuietHours, loadConfig, localMode, stricter, tailOf, trailIdOf,
+import { failNamesOf, freeSuiteSlots, inQuietHours, loadConfig, localMode, pruneRuns, stricter, tailOf, trailIdOf,
   withdrawnRuns, EXIT_CONFIG, EXIT_UPDATED, type HelperConfig, type JobView } from "../helper-daemon/daemon";
 
 interface Row {
@@ -133,6 +133,28 @@ export async function run(h: {
   check("(HD) withdrawnRuns aborts exactly the runs the fleet took back — reaped, re-offered, re-claimed — and never one it still holds for me",
     JSON.stringify(gone) === JSON.stringify(["bbbbbbbbbbbb", "cccccccccccc", "dddddddddddd"]),
     JSON.stringify(gone));
+  // THE PRUNE AND THE RUN IN FLIGHT (C1, 2026-09-13). The oldest dir is a run still going — above cap
+  // 1 the normal shape of a long suite beside short ones — and each finished run keeps a red
+  // instance in its `tmp/`. keepRuns 2 must leave the running one AND the two newest finished.
+  // MUTATION: drop the `active` filter in daemon.ts#pruneRuns ⇒ run-…-1 is removed ⇒ red; count the
+  // active one against keepRuns instead ⇒ run-…-4's kept instance is removed ⇒ red.
+  const pruneFix = `${ROOT}/daemon-prune-fixture`;
+  rmSync(pruneFix, { recursive: true, force: true });
+  const pruneDirs = ["run-aaaaaaaaaaaa-1", "run-bbbbbbbbbbbb-2", "run-cccccccccccc-3", "run-dddddddddddd-4", "run-eeeeeeeeeeee-5"];
+  for (const d of pruneDirs) {
+    mkdirSync(`${pruneFix}/${d}/tmp/fleet-e2e-instance-4242`, { recursive: true });
+    writeFileSync(`${pruneFix}/${d}/tmp/fleet-e2e-instance-4242/server.log`, "red evidence\n");
+  }
+  mkdirSync(`${pruneFix}/tree-0123456789ab`, { recursive: true });
+  pruneRuns(pruneFix, 2, new Set([`${pruneFix}/run-aaaaaaaaaaaa-1`]));
+  const pruneLeft = readdirSync(pruneFix).sort();
+  const keptRed = ["run-dddddddddddd-4", "run-eeeeeeeeeeee-5"]
+    .every((d) => existsSync(`${pruneFix}/${d}/tmp/fleet-e2e-instance-4242/server.log`));
+  check("(HD) pruneRuns never removes a run in flight, and keeps the keepRuns newest FINISHED runs with their kept red instance",
+    JSON.stringify(pruneLeft) === JSON.stringify(["run-aaaaaaaaaaaa-1", "run-dddddddddddd-4", "run-eeeeeeeeeeee-5", "tree-0123456789ab"])
+      && keptRed,
+    `left=${JSON.stringify(pruneLeft)} keptRed=${keptRed}`);
+  rmSync(pruneFix, { recursive: true, force: true });
   // …and the config door: a value this rail has no reading for must not reach the arithmetic above.
   // A 0 would make a machine claim nothing forever and silently, which is the failure mode every
   // other floor in loadConfig exists to refuse.
@@ -274,14 +296,16 @@ export async function run(h: {
   const SUITE = `${ROOT}/fakedaemonsuite`;
   await Bun.write(SUITE, [
     "#!/bin/sh",
-    `echo "run pwd=$(pwd) files=$(ls | tr '\\n' ',') recur=[\${FLEET_POSTLAND_AUDIT_CMD:-}] token=[\${FLEET_TOKEN:-}]"`,
+    `echo "run pwd=$(pwd) files=$(ls | tr '\\n' ',') recur=[\${FLEET_POSTLAND_AUDIT_CMD:-}] token=[\${FLEET_TOKEN:-}] tmp=[\${TMPDIR:-}]"`,
     `echo "${TRAIL} stand-in trail marker"`,
+    // the wrapper's own instance line, verbatim in shape — a red keeps it, which is what C1 is about
+    'mkdir -p "${TMPDIR:-/tmp}/fleet-e2e-instance-$$" && echo "kept red" > "${TMPDIR:-/tmp}/fleet-e2e-instance-$$/server.log"',
     'mkdir -p "$PWD/e2e-trail"',
     `printf '%s\\n' '${JSON.stringify({ ok: false, check: "remote trail failure alpha" })}' '${JSON.stringify({ ok: false, check: "remote trail failure beta" })}' > "$PWD/e2e-trail/${TRAIL}.jsonl"`,
     'echo "FAIL  remote trail failure alpha"',
     'echo "FAIL  remote trail failure beta"',
     'i=0; while [ "$i" -lt 60 ]; do echo "trailing filler $i"; i=$((i + 1)); done',
-    `echo "run pwd=$(pwd) files=$(ls | tr '\\n' ',') recur=[\${FLEET_POSTLAND_AUDIT_CMD:-}] token=[\${FLEET_TOKEN:-}]"`,
+    `echo "run pwd=$(pwd) files=$(ls | tr '\\n' ',') recur=[\${FLEET_POSTLAND_AUDIT_CMD:-}] token=[\${FLEET_TOKEN:-}] tmp=[\${TMPDIR:-}]"`,
     `echo "PASS  trail: the run wrote a durable per-check trail  (file=$PWD/e2e-trail/${TRAIL}.jsonl rows=${REMOTE_PRE_TRAIL_CHECKS})"`,
     `echo "PASS  trail: one row per check() call — trail rows match the suite's result count  (rows=${REMOTE_PRE_TRAIL_CHECKS} results=${REMOTE_PRE_TRAIL_CHECKS})"`,
     'echo "PASS  trail: the trail is outside the instance dir"',
@@ -543,6 +567,26 @@ export async function run(h: {
   check("(HD) …and the suite inherited no FLEET_* — a nested fleet must not audit its own lands",
     out.includes("recur=[]") && out.includes("token=[]"),
     out.split("\n")[0]?.slice(0, 240) ?? "(no tail)");
+  // C1 (2026-09-13): the suite's TMPDIR is its own run dir's `tmp/`, BESIDE the tree — never /tmp,
+  // which on the work-horse is a tmpfs that kept reds filled to 98 %. The clone is thrown away after
+  // the report; the red instance must still be there, because pruneRuns is what bounds it now.
+  // MUTATION: drop TMPDIR from daemon.ts#work's suiteEnv ⇒ tmp=[] or the harness's own ⇒ red.
+  const ranTmp = /tmp=\[([^\]]*)\]/.exec(out)?.[1] ?? "";
+  const cloneGone = await (async (): Promise<boolean> => {
+    const deadline = Date.now() + 15_000;
+    while (existsSync(ranIn) && Date.now() < deadline) await Bun.sleep(200);
+    return ranIn !== "" && !existsSync(ranIn);
+  })();
+  const keptInstance = ((): string[] => {
+    try { return readdirSync(ranTmp).filter((d) => d.startsWith("fleet-e2e-instance-")); } catch { return []; }
+  })();
+  check("(HD) THE SUITE'S SCRATCH IS <run dir>/tmp BESIDE tree — and the red instance it kept outlives the clone",
+    // the run dir is compared by NAME: TMPDIR is the daemon's spelling of WORK, pwd the physical one
+    /\/daemonwork\/run-[a-f0-9]{12}-\d+\/tmp$/.test(ranTmp)
+      && /(run-[a-f0-9]{12}-\d+)\/tmp$/.exec(ranTmp)?.[1] === /(run-[a-f0-9]{12}-\d+)\/tree$/.exec(ranIn)?.[1]
+      && cloneGone && keptInstance.length === 1
+      && readFileSync(`${ranTmp}/${keptInstance[0]}/server.log`, "utf8") === "kept red\n",
+    `tmp=${ranTmp} pwd=${ranIn} cloneGone=${cloneGone} kept=${JSON.stringify(keptInstance)}`);
 
   // ===== (HD.5) `off` MEANS NOT ONE REQUEST =====================================================
   // The precondition first, because "no requests" is also what a dead process produces: the counter
@@ -903,7 +947,7 @@ export async function run(h: {
     const SLOW = `${ROOT}/fakeslowsuite`;
     await Bun.write(SLOW, [
       "#!/bin/sh",
-      `echo "slow suite start pwd=$(pwd) lock=[${"$"}{FLEET_SUITE_LOCK:-}]"`,
+      `echo "slow suite start pwd=$(pwd) lock=[${"$"}{FLEET_SUITE_LOCK:-}] tmp=[${"$"}{TMPDIR:-}]"`,
       `i=0; while [ ! -f ${JSON.stringify(REL)} ] && [ "$i" -lt 400 ]; do sleep 0.2; i=$((i + 1)); done`,
       'echo "PASS  the slow stand-in was released"',
       "exit 0",
@@ -948,14 +992,27 @@ export async function run(h: {
     // one place the child's environment is legible from here. UNORDERED on purpose: a run dir is
     // `run-<random hex job id>-<ts>`, so sorting these names orders them by a random id and not by
     // time. Every assertion below is therefore a statement about the SET, never about position.
-    const locks = (): string[] => {
+    const envOf = (re: RegExp): string[] => {
       let dirs: string[] = [];
       try { dirs = readdirSync(WORK).filter((d) => d.startsWith("run-")); } catch { return []; }
       return dirs.map((d) => {
         let text = "";
         try { text = readFileSync(`${WORK}/${d}/suite.log`, "utf8"); } catch { return null; }
-        return /lock=\[([^\]]*)\]/.exec(text)?.[1] ?? null;
+        return re.exec(text)?.[1] ?? null;
       }).filter((x): x is string => x !== null);
+    };
+    const locks = (): string[] => envOf(/lock=\[([^\]]*)\] tmp=/);
+    // …and the TMPDIR each got (C1), paired with the run dir whose log printed it: a scratch is only
+    // "its own" when it names THAT run's `tmp/`, not merely some run's
+    const tmpsOwn = (): { dir: string; tmp: string }[] => {
+      let dirs: string[] = [];
+      try { dirs = readdirSync(WORK).filter((d) => d.startsWith("run-")); } catch { return []; }
+      return dirs.flatMap((d) => {
+        let text = "";
+        try { text = readFileSync(`${WORK}/${d}/suite.log`, "utf8"); } catch { return []; }
+        const tmp = /slow suite start .* tmp=\[([^\]]*)\]/.exec(text)?.[1];
+        return tmp === undefined ? [] : [{ dir: d, tmp }];
+      });
     };
 
     // --- CAP 1 (the default): one job, and the machine stops there -------------------------------
@@ -972,6 +1029,7 @@ export async function run(h: {
     const oneOpen = await openJobs();
     const oneRow = await devRow(CAP1BOX);
     const oneLocks = locks();  // only the slow stand-in prints a `lock=[…]` line, so this set is HD.10's own
+    const oneTmps = tmpsOwn();
     check("(HD.10) AT THE DEFAULT CAP OF 1 A SECOND JOB IS NOT CLAIMED: four polls pass with three jobs open in front of a daemon that already runs one",
       oneHeld === 1 && oneOpen === 3, `held=${oneHeld} stillOpen=${oneOpen}`);
     check("(HD.10) …and the machine SAYS so on its own heartbeat — 1 of 1, the pair no load figure could give",
@@ -979,6 +1037,10 @@ export async function run(h: {
       `${JSON.stringify({ running: oneRow?.running, max: oneRow?.maxParallelSuites })}`);
     check("(HD.10) …and at cap 1 the run keeps the DEFAULT suite lock: a hand-started suite over there still serializes against this one",
       oneLocks.length === 1 && oneLocks[0] === "", `locks=${JSON.stringify(oneLocks)}`);
+    // MUTATION: give TMPDIR only above cap 1 (next to FLEET_SUITE_LOCK) ⇒ tmp=[] or the harness's ⇒ red
+    check("(HD.10) …but its SCRATCH still leaves /tmp: even at cap 1 TMPDIR is that run's own <run dir>/tmp, and it exists",
+      oneTmps.length === 1 && oneTmps[0]!.tmp === `${WORK}/${oneTmps[0]!.dir}/tmp` && existsSync(oneTmps[0]!.tmp),
+      `tmps=${JSON.stringify(oneTmps)}`);
     one.proc.kill();
     await one.proc.exited;
 
@@ -1010,6 +1072,14 @@ export async function run(h: {
       parallelLocks.length === 2 && new Set(parallelLocks).size === 2
         && parallelLocks.every((l) => l.startsWith(`${WORK}/run-`) && l.endsWith("/e2e.lock")),
       `locks=${JSON.stringify(parallelLocks)}`);
+    // the cap-1 run above may or may not survive the prune, so this too is read as a set: every run
+    // that printed a scratch names its OWN dir, and the two live runs' scratches differ
+    const twoTmps = tmpsOwn();
+    const liveTmps = twoTmps.filter((t) => parallelLocks.includes(`${WORK}/${t.dir}/e2e.lock`));
+    check("(HD.10) …AND EACH PARALLEL RUN GOT ITS OWN SCRATCH — TMPDIR is that run's <run dir>/tmp, two runs never share one",
+      liveTmps.length === 2 && new Set(liveTmps.map((t) => t.tmp)).size === 2
+        && twoTmps.every((t) => t.tmp === `${WORK}/${t.dir}/tmp` && existsSync(t.tmp)),
+      `tmps=${JSON.stringify(twoTmps)}`);
 
     // --- A FULL MACHINE STILL HEARS THAT A JOB WAS TAKEN BACK (7e601e57) --------------------------
     // Measured 2026-09-12: a lane landed, the fleet reaped its preview within the minute, and the

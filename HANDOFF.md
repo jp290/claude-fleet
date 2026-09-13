@@ -1,3 +1,66 @@
+# HANDOFF — Orchestrator Slot 8 → Nachfolgerin (Opus 5 high, Haupt-Checkout, Owner-Token): vier Analysen gelandet (Second-host, Pipeline-System, Lane-Kontext, Worktrail IV), Kontext-Uebergabe als live AUS gefunden und Fix in Flug, Program-MAIN jetzt Slot 9; 2026-09-13 17:0x, ctx GEMESSEN 30,4 %
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **ROLLE:** Orchestrator, NICHT Program-MAIN. Program-MAIN Fleet-Betrieb f170dc46 = **Slot 9** (seit 16:5x, Nachfolgerin von
+  Slot 4). Sie landet und deployt. Lanes treibt SIE; der Orchestrator filet/schaerft/gibt frei und legt Reihenfolge (NACH).
+  Owner hat heute gefragt, warum ICH die Lane-Events bekomme: nur weil ich sie selbst abonnierte. Keine Lane-Watches mehr
+  armieren; Reports gehen per Program-Basis an die MAIN.
+- **Jede Nachricht an eine MAIN kostet deren vollen Kontext.** Buendeln. Meine "bitte landen"-Pings haben Slot 4 heute
+  ueber 40 % getrieben, ohne dass sie uebergab.
+- **OWNER-STIL HEUTE:** einfache Worte, keine Fachfragen mit Optionslisten ("Verstehe nicht.."), delegiert gern
+  ("entscheide du"), will ein "smartes System" statt Einzelflicken, und dass ich selbst nachdenke, was ich tue und warum.
+
+### 0.1 IN FLUG (gemessen 17:0x)
+
+| Slot | Zeile | Was | Zustand |
+|---|---|---|---|
+| – | 601f75dc γ | Entscheidungen per Regel schliessen | **GELANDET** (4da98102 + 545b60bb) |
+| 1 | 51df715e Auto-Lift | filesOrigin "card" + Bereichs-Wache | **laeuft** seit 17:1x |
+| 3 | 20fb7151 Hooks | Sicherheitsabfrage ablehnen statt haengen | **Land GESCHEITERT**: clean rebase, verify rot, kept; Verdikt erreichte niemanden (receiver-gone, alter Slot 4). Slot 9 ist informiert. settings.json-Ueberschreiben vorab geprueft: verlustfrei |
+| – | c82ae6e5 | Helfer-Portal-Buendel (7e601e57 + 02131402) | **GELANDET** (80b9b650 + b984fcac). Offen: **daemon-update-Job** auf dem Second-host + Deploy, sonst wirkt nur die halbe Aenderung |
+| 4 | e23a727a | tickMigrate nur claude + rollenrichtige MAIN-Nachricht | 16:5x gestartet. Danach **Arming `.env` FLEET_MIGRATE_PCT='32'** (Owner-Freigabe 2026-09-13 ~16:3x) — ERST nach Land+Deploy, sonst stupst es Codex-Sessions und Program-MAINs falsch an |
+
+Deploy-Luecke 15 Commits (ba6177e8 Formatkarten, Dispatch-Fixes, β …), `codeBehind:true`. Deploy = Slot 9.
+
+### 0.2 WAS HEUTE (Slot 8) ENTSCHIEDEN / GELANDET IST
+
+- **Attention 90a6ae45 → (C)** (Owner delegiert): I4 bleibt, Sonde als c7fc3b32 gerettet, Folgezeile jetzt **146c06f0**
+  (Slot 4 hat 68ffbe09 + 1e1dcd50 gebuendelt).
+- Gelandet: β 1f9da6b6 · Worktrail IV 60b23ebc · GLM Second-host 551cee57 · Pipeline-Entwurf a66e60a5 · GLM Lane-Kontext 79681633.
+- **Second-host (551cee57):** Audits laufen fast voll remote; ~11 Lane-Vorschauen/Tag fallen lokal zurueck (180-s-Warten);
+  Land-Gates immer lokal. Posten 1+2 = c82ae6e5 (in Flug).
+- **Pipeline als System (a66e60a5):** Engpass ist die FREIGABE (7 d: 176 Filings, 38 Freigaben, alle von Hand; Tick liest
+  weder Welle noch NACH noch Kollision). Drei Schnitte: (1) Startplan-Sensor read-only — **noch nicht gefilet**;
+  (2) Tick startet nach Plan = **Owner-Entscheid** (§5-Schnittlinie faellt); (3) Freigabe-Politik je Program
+  manual|card-valid|all = **Owner-Entscheid**. Mein offener Vorschlag an den Owner: (1) filen, Fleet-Betrieb auf card-valid.
+  Owner hat noch NICHT geantwortet.
+- **Lane-Kontext (79681633, GLM kritisch):** p50 25 % / p90 42 % / max 89 %; >50 % nur e2e-/Viele-Dateien-Lanes; Erdung
+  ~120 k = 47 % des Medians; kein messbarer Qualitaetsabfall. "Worker haben Worker": Daten tragen es NICHT (0/142 Lanes
+  nutzen schon das freie Task-Tool; keine Dispatch-Tuer fuer Lanes). Empfehlung: Rail bewaffnen (= e23a727a + Arming),
+  Erdung senken (c71b96eb/ctxPacks), EINE GLM-Paritaetsprobe als normale e2e/server-Lane. Dem Owner noch nicht berichtet
+  — das ist dein erster Bericht.
+- **Succession Slot 14 → Slot 6** (private-repo-a) gefahren; der Server-Brief nennt dort faelschlich state.sh/register.sh
+  → Zeile **e04d15f0** (.fleet/init.md je Repo).
+- Aufraeum-Prompt fuer eine Owner-eigene Speicher-Session geschrieben (im Transkript, nicht gefilet). Mac: 8 GB, Swap 2,6 GB.
+
+### 0.3 REIHENFOLGE DANACH
+
+1. Owner den Lane-Kontext-Befund (79681633) einfach berichten; Antwort zu Pipeline-Schnitt (1)–(3) holen.
+2. Nach e23a727a-Land + Deploy: Arming FLEET_MIGRATE_PCT='32' in `.env` (gequotet), srv-Restart ueber Slot 9; pruefen,
+   dass die naechste Lane ueber 40 % eine laneMigrateMessage bekommt.
+3. Freigeben, wenn Plaetze frei und NACH erfuellt: 56d2e084 Lane-Anleitung (NACH Hooks+γ) · e04d15f0 Init je Repo
+   (NACH Hooks+γ) · 146c06f0 Inbox-Nudge (Slot 9 entscheidet).
+4. Richtung 6bd2e49c (AGENTS.md/Rollen/Briefe) — nimm Worktrail IV + Lane-Kontext-Note als Eingang.
+   Offene Owner-Frage (17:1x, Tweet "ripgrep schlaegt Embeddings"): graphify nicht loeschen, aber entschaerfen
+   (Read|Glob-Hook raus, Post-Land code-only-Rebuild, Abdeckungs-Sonde; Worktrail IV Posten 4) — filen, wenn er Ja sagt.
+5. Ganz zuletzt Richtung 262a8f71 (Private-repo-j). Biber-Program-Bindung ist TOT, Leichtgewicht-MAIN = Astra-Controller.
+
+### 0.4 OFFEN / UNGEPRUEFT
+- Rote Audits a10af8de/cefbfabb unbeurteilt (Slot 9).
+- Nach Hooks-Deploy: Regelbuch-Zeile "Pane traegt nur FLEET_SELF_TOKEN + FLEET_SELF_SLOT" in rulebook/ nachziehen.
+- Bei jedem Hand-Dispatch gilt der Deckel nicht; Mac-RAM ist knapp.
+
 # HANDOFF — Orchestrator Slot 6 → Nachfolgerin (Opus 5 high, Haupt-Checkout, Owner-Token): Buendel-Kette live + GLM-kontrolliert, A–E-Analyse gelandet, Lanes α(gelandet)/β/γ/Hooks/Worktrail-IV in Flug, EIN Owner-Entscheid blockiert einen Lane-Platz seit 05:59; 2026-09-13 13:5x, ctx GEMESSEN 30 %
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

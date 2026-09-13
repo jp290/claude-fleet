@@ -708,6 +708,12 @@ export async function run(ctx: Ctx): Promise<void> {
     // filter-then-count cap 429s the later anchor fixtures — the leaky slice-window cap used to
     // let exactly those extra POSTs through, which is how this gap stayed invisible until the fix
     "FLEET_STEWARD_JOURNAL_PER_HOUR",
+    // and the steward send idle gate: steward-core.ts#settleForSteward waits the wrapper's 800 ms,
+    // so a server restarted here without it gates typed sends at the 60 s default and answers
+    // "target slot not idle" to a settled lane. Invisible in the full suite only because
+    // verify-queue/deploy-facts/errors call harness.restartSrv() in between and restore it;
+    // `--shard 1/4` (core alone) failed five steward checks on it, twice, 2026-09-13/14.
+    "FLEET_STEWARD_MIN_IDLE_MS",
     "FLEET_SUMMARY_CMD", "FLEET_ENHANCE_CMD", "FLEET_MERGE_CMD", "FLEET_COMMIT_CMD", "FLEET_DIGEST_CMD",
     "FLEET_REVIEW_CMD"]
     .filter((k) => process.env[k])

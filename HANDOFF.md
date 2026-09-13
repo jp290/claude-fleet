@@ -1,3 +1,59 @@
+# HANDOFF — Orchestrator Slot 7 → Nachfolgerin (Opus 5 high, Haupt-Checkout, Owner-Token): Server deployt, Karten-Tick live, Kartendefekt-Fix laeuft; NAECHSTER AUFTRAG VOM OWNER = Queue aufraeumen → Task-Formulierung → einfache Owner-Sicht; 2026-09-13 10:2x, ctx GEMESSEN 34,8 %
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **ROLLE:** Orchestrator, NICHT Program-MAIN. Program-MAIN Fleet-Betrieb f170dc46 = **Slot 4** (Opus). Sie landet
+  und deployt; du nicht. Slot 11 (Astra Worktrail) nicht killen. Keine Owner-Token-Kills auf fremden Slots.
+  Meine Watches/Autos sind mit Slot 7 gestorben: neu armieren, was du brauchst (`idleSec:0`, Events ACKen).
+- **MODELL:** Owner hat mich 00:1x per /model auf Opus 5 gestellt (als Default gespeichert); Datensatz nachgezogen
+  (`POST /api/slots/:id/model`). Unter Opus ist `ctx` messbar, unter Fable nie (42c53378). Uebergabe bei 30–35 %.
+
+### 0.1 LAUFENDE KETTE — zuerst zu Ende bringen (Owner 09:3x: „deploy … setz das Buendeln sauber und vernuenftig
+auf so dass es laeuft, lass das ganze am ende von einem GLM agenten kontrollieren")
+
+1. ERLEDIGT: Deploy f79c3689 09:34, boot ok, bootHead 0c2cd734, bundleStale false. `.env:35`
+   `FLEET_CARD_MS='60000'` (Backup der alten .env im Scratchpad von Slot 7), live im srv-Env gemessen.
+2. BEFUND 10:0x: Karten-Tick schreibt, aber 10/38 Karten gueltig (cards.jsonl). Drei Code-Defekte:
+   Symbol-Falschnegativ gegen den unvollstaendigen graphify-Graphen (`server.ts#taskDigest` existiert, fehlt im
+   Graphen) · `server.ts#confirmCardsForMain` verlangt `card.valid` statt gueltiger Flaeche · `server.ts#cardDue`
+   liest eine ungueltige Karte nie neu.
+3. LAEUFT: Fix-Lane **353226bb** auf **Slot 3** (fleet/260913080623-293e, 10:2x noch 0 ahead). Brief = die
+   Zeile (surfaceValid, Deklarationssuche, CARD_VALIDATOR_VERSION + einmaliges Wiederlesen).
+4. Slot 4 hat um 10:0x EINE Nachricht mit dem Plan bekommen (acceptance observed): landen → deployen →
+   `POST /api/self/tasks/confirm-cards` fuer ihre offenen auftrag-Zeilen, ohne Rueckmeldung an mich.
+   Sensoren: Land-Note/Outcome fuer 293e · `deploys.jsonl` neue boot-Zeile · `audit.jsonl` `task_cards_confirm`.
+5. DANN DU: GLM-Kontrolle **1abe669f** (pending, Brief steht in der Zeile: C1–C7, read-only, Token-Regel)
+   starten per `POST /api/tasks/1abe669f/dispatch {"harness":"pi-zai","model":"glm-5.3","effort":"high","acknowledged":true}`.
+   pi-zai hat KEINEN /api/self/watch (409) → Hintergrund-Watcher auf ihren Worktree `ahead>0 && clean`.
+   Ergebnis: Notiz `docs/messungen/2026-09-13-buendelung-live-kontrolle-glm.md`; FAILs dem Owner in einfacher Sprache.
+   Faellt die Fix-Lane durch oder bleibt die Quote nach Wiederlesen niedrig: erst messen, dann dem Owner melden —
+   GLM nicht auf einen kaputten Stand loslassen.
+
+### 0.2 DER NAECHSTE OWNER-AUFTRAG (10:2x, woertlich im Kern: „task queue gruendlich aufraeumen und durchgehen, so
+dass alle notizen usw. unter irgendeinem Dach bzw Task oder auch Buendel", „den ganzen prozess … verstehen was am
+ende wirklich rauskommt und ob das ganze richtig abgearbeitet wird", „danach … ob Tasks auch vernuenftig formuliert
+werden", „eine moeglichst einfach formulierte Variante die der Owner sehen kann", „fuer die 'Decision' Push
+Benachrichtigungen relevant, vllt … ein abgestimmter wegwerf agent … der genau die Daten benutzt die er braucht").
+**Eins nach dem anderen; jeder Punkt endet mit einem kurzen Owner-Bericht in einfacher Sprache vor dem naechsten.**
+
+1. **Queue aufraeumen.** Stand 10:2x: 111 offen = notiz 66 · auftrag 40 · richtung 4 · betrieb 1; 31 ohne Program.
+   ZUERST eine Lesung, keine Loeschung: den Weg einer Zeile verfolgen (Filen → Karte → confirm-cards → Welle →
+   Dispatch → Land → Audit/Outcome) und je Station mit einer Zahl aus fleet.json / cards.jsonl / lane-outcomes.jsonl
+   belegen, wo Zeilen liegenbleiben. Dann jede offene Zeile unter ein Dach (Program, Auftrag als Quelle per
+   `POST /api/self/tasks/:id/notes` bzw. Owner-Tuer, oder Buendel). Archivieren/Umhaengen ja, loeschen nur mit Owner.
+   Werkzeug: `./register.sh` (lebende Ableitung), `bun task-land-waves.ts --state fleet.json --default-repo …`.
+2. **Task-Formulierung.** An echten Karten messen: welche Luecken (cards.jsonl gaps), Ursache Text oder Pruefer?
+   Heute sichtbar: Rollen als Prosa („Codex", „Opus 5"), Verify ohne Kettenschritt, geplante neue Dateien als
+   „nicht getrackt". Verbesserung erst nach der Messung vorschlagen.
+3. **Einfache Owner-Sicht + Decision-Push.** Frage: Wegwerf-Agent je Anlass mit genau den noetigen Daten?
+   Zuerst messen, welche Daten eine Entscheidung wirklich braucht (Attention-Zeilen, fleetReports). Nachbarn:
+   Astra-Notiz a2e9d5d9 (Zustellung), 21ade485 (Leistungsgruppen, Astra-Brief gepinnt, nicht dispatcht).
+
+### 0.3 OFFEN VON FRUEHER (unveraendert)
+- S9-Audit a10af8de rot 1/4340 (self-land progress guard), unbeurteilt; Slot 5 (2d3c8f44) jagt genau diese Race.
+- Owner-Akt offen: `FLEET_MIGRATE_PCT` (Staffelstab S8 aus, Notiz ca9a4b30). Owner-Fragen offen: Flaeche des
+  „⋯ mehr"-Knopfs (1b47e29a) · `required`-Variante der Code-Bewertung (ff88072c).
+
 # HANDOFF — Orchestrator Slot 7 (Fable 5.1, ab 00:1x Opus 5 high auf Owner-Wechsel; Haupt-Checkout, Owner-Token): Karten-Serie S1–S9 KOMPLETT gelandet, Arbeitsliste leer, Rolle wartet auf Owner-Entscheid; 2026-09-13 08:3x, ctx GEMESSEN 29,6 %
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

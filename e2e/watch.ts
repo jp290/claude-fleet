@@ -4306,10 +4306,13 @@ export async function run(): Promise<void> {
     // FOUR RESERVATIONS. Every target is a fresh lane with no commits, so the done-looking
     // predicate never classifies it and none of these can fire — a fire would DISARM, quietly
     // turning the four the doors count into three with no check noticing.
-    for (const l of budgetLanes.slice(0, 4)) {
+    // the check is named by ORDINAL, not by slot id: the id is an allocation artifact that shifts
+    // with whatever the suite opened before this section (a `--shard` run allocates differently),
+    // and a check name that carries it stops being one name across runs. The id rides in the detail.
+    for (const [i, l] of budgetLanes.slice(0, 4).entries()) {
       const armed = await post(`/api/slots/${bMain}/watch`, { target: l.slot, idleSec: 3600 });
-      check(`V1b: the MAIN subscribes to lane ${l.slot} — one armed reservation`,
-        armed.ok, `${armed.status} ${await armed.text()}`);
+      check(`V1b: the MAIN subscribes to lane #${i + 1} — one armed reservation`,
+        armed.ok, `slot=${l.slot} ${armed.status} ${await armed.text()}`);
     }
     // …AND ONE DEBT. An accepted report is exactly the act the fifth place pays for, so this call
     // must still succeed: four reservations leave one.
@@ -4597,9 +4600,10 @@ export async function run(): Promise<void> {
     // to five, and a SIXTH distinct valid target — `tgt`, a real lane — is refused. The cap is the
     // LAST check createWatchForSlot makes, so every earlier reason has to be excluded for the
     // refusal to mean anything; that is why these are five live lanes and not five cheap bad ids. ---
-    for (const p of peers.slice(1)) {
+    // named by ordinal for the same reason as V1b above: the slot id is not the check's identity
+    for (const [i, p] of peers.slice(1).entries()) {
       const r = await selfWatch(cTok, { target: p.slot, idleSec: 3600 });
-      check(`self-watch fills the cap: subscribing to peer lane ${p.slot}`, r.ok, `${r.status} ${await r.text()}`);
+      check(`self-watch fills the cap: subscribing to peer lane #${i + 1}`, r.ok, `slot=${p.slot} ${r.status} ${await r.text()}`);
     }
     const capped = await selfWatch(cTok, { target: tgt.slot, idleSec: 3600 });
     const cappedText = await capped.text();

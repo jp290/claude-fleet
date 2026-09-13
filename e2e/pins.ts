@@ -36,6 +36,7 @@ import {
 } from "../capability-map";
 import { collectRepoMap, firstCommentLine, renderRepoMap } from "../repo-map";
 import { HANDOFF_WARN_KB, splitHandoff } from "../handoff-rotate";
+import { SHARD_UNITS } from "./ctx";
 // the pane-hint builders are IMPORTED and CALLED by the sigil rule at the end of this file: only a
 // rendered hint shows the tail `${eventAck(id)}` actually contributes, which a source scan cannot.
 import {
@@ -7989,6 +7990,30 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     exists("e2e/ctl.ts") && runner.includes('import * as ctl from "./e2e/ctl"')
       && runner.includes("await ctl.run();"),
     `module=${exists("e2e/ctl.ts")} imported=${runner.includes('import * as ctl from "./e2e/ctl"')} called=${runner.includes("await ctl.run();")}`);
+}
+
+// --- THE SHARD TABLE NAMES EVERY MODULE THE RUNNER BOOTS, ONCE (2026-09-14) ---------------------
+// A must-agree pair with no compiler between its halves: fleet-e2e.ts imports the check modules and
+// tags each step with a UNIT; e2e/ctx.ts#SHARD_UNITS lists which modules form which unit. A module
+// imported but listed nowhere would run in NO shard (`--shard k/n` drops what no unit claims) — the
+// vacuum-green shape, one shard at a time. A module listed twice would run in two. The runner's
+// own startup check covers only the unit NAMES; this pin covers the modules.
+{
+  const RULE_SHARD = "every check module the runner boots sits in exactly one shard unit";
+  const runner = read("fleet-e2e.ts");
+  const booted = [...runner.matchAll(/^import \* as \w+ from "\.\/e2e\/([\w-]+)";$/gm)].map((m) => m[1]!)
+    .filter((m) => m !== "trail"); // the trail family runs in every shard by construction
+  const listed = SHARD_UNITS.flatMap((u) => u.modules);
+  const unlisted = booted.filter((m) => !listed.includes(m));
+  const twice = listed.filter((m, i) => listed.indexOf(m) !== i);
+  const phantom = listed.filter((m) => !booted.includes(m));
+  pin(`${RULE_SHARD} — booted modules ⊆ listed, none twice, none phantom`,
+    booted.length > 30 && unlisted.length === 0 && twice.length === 0 && phantom.length === 0,
+    `booted=${booted.length} listed=${listed.length} unlisted=[${unlisted}] twice=[${twice}] phantom=[${phantom}]`);
+  // the seconds are a measurement, and the balance the plan computes is only as honest as they are:
+  // a unit with no weight silently rides along wherever the tie-break puts it
+  pin(`${RULE_SHARD} — every unit carries a non-negative measured weight and a non-empty module list`,
+    SHARD_UNITS.every((u) => Number.isFinite(u.seconds) && u.seconds >= 0 && u.modules.length > 0));
 }
 
 // --- THE CARD STAMPS THE MODEL THAT RAN (S3, 2026-09-12) -----------------------------------------

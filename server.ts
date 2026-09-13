@@ -2537,6 +2537,18 @@ function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
   const confirmedFiles = t.filesOrigin === "derived" ? undefined : t.files;
   const sha = surfaceSha({ text: t.text, brief: t.brief?.text ?? null, confirmedFiles,
     indexStamp: snapshot?.indexStamp ?? null, graphStamp: index?.stamp ?? null });
+  // A VALID CARD'S SURFACE COMES BEFORE THE REGEX (S6, queue row 08ec67c0). The card's paths already
+  // passed the tracked-tree check when it was validated, so the prose reading below is the fallback
+  // for rows without one — never a second opinion over it. A confirmed list still outranks both:
+  // the card is a reading, and `origin` stays "derived" because confirming is a separate act. The
+  // card's own `at` joins the sha, so a replaced card is never answered from the cached surface.
+  if (!confirmedFiles?.length && t.card?.valid && t.card.surface.files.length) {
+    const cardSha = `card-${sha}-${t.card.at}`;
+    if (t.surface && t.surface.sha === cardSha) return t.surface;
+    t.surface = { files: [...t.card.surface.files], ranges: t.card.surface.ranges, origin: "derived",
+      at: Date.now(), sha: cardSha };
+    return t.surface;
+  }
   // read directly rather than through a predicate: tsc narrows `t.surface` here and cannot narrow
   // through a helper, and a `!` to paper over that is exactly the assertion this repo does not take.
   if (t.surface && t.surface.sha === sha) return t.surface;
@@ -9179,10 +9191,10 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   // words the attended ▸ start button sends, validated below by the same validators. The refusal
   // keeps its historic "text and kind only" opening as a stable prefix — the spawn triple is named
   // separately because it is optional and travels as a unit, not three independent fields.
-  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort"];
+  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card"];
   const extra = Object.keys(body).filter((k) => !SELF_TASK_FIELDS.includes(k));
   if (extra.length)
-    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort) — [${extra.join(", ")}] is not read: repo comes from this session's checkout, and a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
+    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort) and an optional card — [${extra.join(", ")}] is not read: repo comes from this session's checkout, and a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
   if (typeof body.text !== "string" || !body.text.trim())
     return json({ error: "text must be a non-empty string" }, 400);
   // (3) THE KIND, through the SAME four-value validator the owner and steward create routes use —
@@ -9223,11 +9235,16 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
     if (openPendingAdvisory >= PROGRAM_MAX_PENDING_ADVISORY)
       return json({ error: `program advisory filing cap reached (${openPendingAdvisory}/${PROGRAM_MAX_PENDING_ADVISORY} pending advisory rows awaiting owner disposition) — ask the owner to dispose or drop one first` }, 409);
   }
+  const mainText = body.text.slice(0, MAX_TASK_TEXT).trim();
+  // (5b) THE AUTHOR'S CARD, validated against the row's own repo before anything is minted
+  const authorCard = body.card === undefined ? null : authorCardFrom(body.card, mainText, mainRepo, program.id);
+  if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
   const id = randomBytes(4).toString("hex");
   const t: Task = {
-    id, originId: id, text: body.text.slice(0, MAX_TASK_TEXT).trim(),
+    id, originId: id, text: mainText,
     source: "main", from: null, kind, repo: mainRepo, programId: program.id,
     ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
+    ...(authorCard?.ok ? { card: authorCard.card } : {}),
     // THE STATUS THIS ROUTE CANNOT BE TALKED OUT OF: a literal, not anything derived from the
     // request. And no `releasedBy` — that field exists so an unreleased row stays distinguishable
     // from one somebody released, and a filing has not been released by anyone.
@@ -10579,6 +10596,38 @@ function refineChildCard(c: RefineChild, programId: string | undefined,
     done: c.doneCriterion, verify: c.verify, verboten: [], ...(programId ? { program: programId } : {}) },
   cardValidationContext(refineChildText(c), snapshot, index));
   return { ...checked.body, model: "refine", at: now, ms: 0, valid: checked.valid, gaps: checked.gaps };
+}
+
+// THE AUTHOR'S CARD (S6, queue row 08ec67c0): whoever files a row knows its files and symbols at
+// that moment, so both create doors accept `card{ziel,surface{files,symbols},done,verify,verboten}`
+// and run it through the SAME validator and context the extractor tick uses. Two differences, both
+// because the author is present and the extractor is not:
+//   · ANY gap is a 400 naming it (an untracked path verbatim), and nothing is filed. A stored
+//     `valid:false` card would also block the extractor tick on the row (cardDue: a card exists),
+//     so the honest-record bargain the tick strikes would cost this row its fallback reading.
+//   · the quote rule is decided against the text PLUS the author's own surface line. The rule exists
+//     so a model cannot lift a path out of a proof line; an author declaring the surface is the
+//     declaration itself — a verify line in the text is still masked (task-metadata.ts#intentText).
+// `model: "author"` names the producer. Absent card: the door behaves exactly as before.
+function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, programId: string | undefined):
+  { ok: true; card: TaskCard } | { ok: false; status: 400 | 409; error: string } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    return { ok: false, status: 400, error: "card must be an object {ziel, surface{files, symbols}, done, verify, verboten}" };
+  const c = raw as Record<string, unknown>;
+  const known = ["ziel", "surface", "done", "verify", "verboten"];
+  const extra = Object.keys(c).filter((k) => !known.includes(k));
+  if (extra.length) return { ok: false, status: 400, error: `card reads ${known.join(", ")} only — [${extra.join(", ")}] is not read` };
+  const snapshot = repoRaw ? trackedSnapshotFor(repoRaw) : null;
+  if (!snapshot)
+    return { ok: false, status: 409, error: `the tracked tree of ${repoRaw ?? "(no repo)"} is unreadable — a card cannot be validated against it, and an unvalidated card is not stored` };
+  const surface = (c.surface && typeof c.surface === "object" ? c.surface : {}) as Record<string, unknown>;
+  const declared = [surface.files, surface.symbols].flatMap((v) => Array.isArray(v) ? v : [])
+    .filter((v): v is string => typeof v === "string");
+  const now = Date.now();
+  const checked = validateCard({ ...c, ...(programId ? { program: programId } : {}) },
+    cardValidationContext(`${text}\nFLAECHE: ${declared.join(" ")}`, snapshot, repoRaw ? symbolIndexFor(repoRaw) : null));
+  if (!checked.valid) return { ok: false, status: 400, error: `card rejected, nothing filed: ${checked.gaps.join("; ")}` };
+  return { ok: true, card: { ...checked.body, model: "author", at: now, ms: 0, valid: true, gaps: [] } };
 }
 
 // Parse + validate the worker's answer. Every off-contract shape THROWS, because the caller's
@@ -29907,11 +29956,17 @@ Bun.serve<WSData>({
         if (!existsSync(dir) || !statSync(dir).isDirectory()) return json({ error: `repo is not a directory: ${dir}` }, 400);
         taskRepo = dir;
       }
+      const ownerText = body.text.slice(0, MAX_TASK_TEXT).trim();
+      // the author's card (authorCardFrom): validated against the repo the row will dispatch into
+      const authorCard = body.card === undefined ? null
+        : authorCardFrom(body.card, ownerText, taskRepo ?? (DISPATCH_REPO || null), taskProgramId);
+      if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
       const id = randomBytes(4).toString("hex");
       const t: Task = {
-        id, originId: id, text: body.text.slice(0, MAX_TASK_TEXT).trim(),
+        id, originId: id, text: ownerText,
         source: "owner", from: null, kind: isTaskKind(body.kind) ? body.kind : "auftrag", repo: taskRepo,
         ...(taskProgramId ? { programId: taskProgramId } : {}),
+        ...(authorCard?.ok ? { card: authorCard.card } : {}),
         ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
         status: body.queue === true ? "queued" : "pending", created: Date.now(), slot: null,
         note: body.queue === true ? taskKindNote(isTaskKind(body.kind) ? body.kind : "auftrag") : null,

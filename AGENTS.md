@@ -141,6 +141,28 @@ Unless the request says otherwise: take one narrow landable slice, reuse an exis
 avoid new files and parallel mutation, stop after the requested act, and keep context and output
 small. An explicit override must name its scope and reason; it cannot override a hard invariant.
 
+### Filing a queue row — the card template
+
+Whoever files a work row knows its files and symbols at that moment; write them down instead of
+leaving a later reader to re-derive them from prose. Text shape, one or two lines each, reasoning
+after the six fields:
+
+```text
+ZIEL: one sentence — what changes
+FLAECHE: repo-relative files · datei#symbol references (the change targets, not the proof)
+DONE: one checkable sentence
+VERIFY: the command or chain step that proves it
+VERBOTEN: what the work must not touch or do
+ROLLE: harness / model / effort
+```
+
+Both create doors (`POST /api/tasks`, `POST /api/self/tasks`) also take the same fields as an
+optional `card{ziel, surface{files, symbols}, done, verify, verboten}` (`ROLLE` travels as the
+top-level spawn triple). It is validated by `card-extract.ts#validateCard` against the row's repo;
+any gap — an untracked path, an unresolvable symbol, a verify naming no chain step — is a 400 naming
+it, and nothing is filed. A valid card's surface is read before the prose reading; without a card
+nothing changes.
+
 ### Context self-management
 
 Managing your own context is your job, not your caller's. Measured on this fleet (owner,

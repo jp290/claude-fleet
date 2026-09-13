@@ -415,6 +415,15 @@ eigene MAIN freigibt. Der `⚙ steward` darf.
 Lane (409, an der Route): `a lane may not file a queue row — a lane executes the row it was founded
 on, it does not fill the queue its own MAIN releases from`.
 
+**Optionale Karte (seit 08ec67c0):** der Body darf neben `text`/`kind`/Spawn-Tripel ein
+`card{ziel, surface{files, symbols}, done, verify, verboten}` tragen (dieselbe Form nimmt die
+Owner-Tür `POST /api/tasks`). Validiert wird mit `card-extract.ts#validateCard` gegen den Repo der
+Zeile (`server.ts#authorCardFrom`); jede Lücke — untracked Pfad, nicht auflösbares Symbol, Verify
+ohne bekannten Kettenschritt — ist 400 mit dem Befund wörtlich, und nichts wird gefilt. Gespeichert
+als `Task.card{model:"author", valid:true}`; Oberfläche, Wellen-Projektion und `register.sh`
+(`surface [karte]`) lesen `card.surface.files` vor der Prosa-Ableitung. Ohne `card` unverändert.
+Vorlage: `AGENTS.md` §Filing a queue row.
+
 ### Der abgeleitete Program-Status (`GET /api/self/program-execution`)
 
 Jede Program-Zeile trägt `status`: eine pro Request berechnete Sicht, die nichts speichert und

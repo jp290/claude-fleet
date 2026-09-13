@@ -126,6 +126,15 @@ if tasks is not None:
         meta = METADATA.get(t.get("id"), {})
         surface = meta.get("files") if isinstance(meta.get("files"), list) else []
         origin = meta.get("filesOrigin") if meta.get("filesOrigin") in ("confirmed", "derived") else None
+        # A VALID CARD's surface comes before the prose reading (server.ts#taskSurfaceOf, same order):
+        # its paths were checked against the tracked tree when the card was validated, so this reads
+        # a stored server fact and parses no path itself. valid = no gaps, as server.ts#normTaskCard
+        # derives it. A confirmed surface still outranks the card.
+        card = t.get("card") if isinstance(t.get("card"), dict) else {}
+        card_files = [f for f in ((card.get("surface") or {}).get("files") or []) if isinstance(f, str) and f]
+        if origin != "confirmed" and card.get("model") and not card.get("gaps") and card_files:
+            surface, origin = card_files, "karte"
+            meta = {}  # the projector's cluster belongs to the prose surface, not to this one
         cluster = meta.get("cluster") if isinstance(meta.get("cluster"), dict) else None
         rows.append({
             "id": t.get("id", "?"),
@@ -162,7 +171,7 @@ if tasks is not None:
                 "slot" if r["status"] == "sent" else "—"
         print(f"  {r['id']}  {r['kind']:<4} {r['status']:<7} {r['src']:<6} {flags} {v:<22} {waits:<5} {clip(r['text'], 66)}")
         if r["surface"]:
-            tag = "[bestätigt/mechanisch]" if r["origin"] == "confirmed" else "[abgeleitet]"
+            tag = "[bestätigt/mechanisch]" if r["origin"] == "confirmed" else "[karte]" if r["origin"] == "karte" else "[abgeleitet]"
             print(f"        surface {tag}: {' '.join(r['surface'])}")
             if r["cluster"]:
                 sub = f"/{r['cluster']['unterprozess']}" if r["cluster"].get("unterprozess") else ""

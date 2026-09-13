@@ -1,3 +1,60 @@
+# HANDOFF — Orchestrator Slot 6 → Nachfolgerin (Opus 5 high, Haupt-Checkout, Owner-Token): Buendel-Kette live + GLM-kontrolliert, A–E-Analyse gelandet, Lanes α(gelandet)/β/γ/Hooks/Worktrail-IV in Flug, EIN Owner-Entscheid blockiert einen Lane-Platz seit 05:59; 2026-09-13 13:5x, ctx GEMESSEN 30 %
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **ROLLE:** Orchestrator, NICHT Program-MAIN. Program-MAIN Fleet-Betrieb f170dc46 = **Slot 4** (Opus). Sie landet
+  und deployt; du nicht. Slot 11 (Astra, wartet auf den Owner) nicht anfassen. Keine Owner-Token-Kills auf fremden Slots.
+  Meine Watches/Hintergrund-Watcher sterben mit Slot 6: neu armieren, was du brauchst (`idleSec:0`, Events ACKen).
+- **OWNER-STIL HEUTE:** will einfache Berichte, „eins nach dem anderen", entscheidet gern delegiert („Bitte entscheide
+  du") — aber Architektur-Invarianten und §7.1.3-artige Umkehrungen bleiben seine.
+- **REBASE-FALLE, heute selbst bezahlt:** eine Lane-Sha existiert nach dem Land nicht mehr (9f1d64c5 → 7b32f032).
+  Watcher auf „ist gelandet" nie per `merge-base --is-ancestor <lane-sha>` bauen, sondern auf `lane-outcomes.jsonl`
+  (Branch-Name) oder den Commit-Subject.
+
+### 0.1 WARUM GERADE SO WENIG LAEUFT (Owner-Frage 13:5x, gemessen)
+
+Repo-Deckel claude-fleet = **3** (`repoLaneCaps`), γ `601f75dc` steht `queued` mit „3/3 lanes busy". Belegt von:
+1. **Slot 1 = fe050453** — fertig seit **05:59**, Report 69303b2f complete, wartet auf **Owner-Attention 90a6ae45**
+   (Architektur: I4 „Attention-Antwort tippt nie in eine Pane" aufheben (A) / Lane verwerfen, Sonde fce2ba78 retten (B) /
+   I4 halten, sichtbaren Nicht-Zustellzustand ohne sendText nachbauen, Sonde retten (C); Slot-4-Empfehlung **(C)**,
+   ich stimme zu — der sendText-Pfad hatte 82 Fehlschlaege). **Diese eine Antwort gibt einen Deckelplatz frei.** ZUERST
+   dem Owner in einfacher Sprache vorlegen.
+2. **Slot 3 = 20fb7151 (Hooks-Lane)** — hing selbst auf genau dem rm-Dialog, den sie abschaffen soll (ihr Smoke-Test
+   enthielt `rm -rf $SP/$v` im echo-String). Ich habe 13:5x Enter gedrueckt (Befehl harmlos: echo + bun mit Fake-Token).
+   Pane lesen, ob sie weiterlaeuft.
+3. **Slot 5 = β 2f8897ab (forkSha)** — arbeitet.
+Ausserhalb des Deckels (Hand-Dispatch, read-only): **Slot 7 = 506b8502 Worktrail IV** (Fable 5.1), 13:34 gestartet.
+
+### 0.2 WAS HEUTE GELANDET IST (git log e1662965..HEAD mit Bodies ist die Wahrheit)
+
+- 286349c7 Karten-Fix (surfaceValid, Deklarations-Fallback, Wiederlesen) · deployt a6e521bd · Audit gruen 4355/0.
+- 9bff20a5 GLM-Kontrollnote (C1–C3/C5/C6 PASS; C4 formal FAIL nur wegen veraltetem Brief) · Audit gruen.
+- 22f1d1a2 + f8f3ee90 Dispatch-Fixes (Slot-5-Race-Lane 2d3c8f44) · Audit f8f3ee90 gruen 4358/0.
+- 7b32f032 **A–E-Notiz** `docs/messungen/2026-09-13-task-aggregation-a-e-fable.md` — Kernbefund: Kartenluecken sind ein
+  FORMAT-, kein Modellproblem (Opus/Fable = Haiku, n=3). Rangliste: α Format · γ Regeln · Auto-Lift · β forkSha · ctxPack.
+- ba6177e8 **α 41ebf3a1** Filing-Format als deterministische Karte + NEU/NACH. Audit bei Uebergabe noch offen.
+- **DEPLOY-LUECKE:** Server laeuft 286349c7, `codeBehind:true` (22f1d1a2/f8f3ee90/ba6177e8 nicht live). Deploy = Slot 4,
+  verweigert 409 waehrend Audit.
+
+### 0.3 REIHENFOLGE DANACH (Owner-Plan, wortgetreu in den Zeilen)
+
+1. β/γ/Hooks landen lassen (Slot 4). γ braucht einen freien Deckelplatz → siehe 0.1.
+2. **Auto-Lift** (Rangliste Posten 3): ICH habe entschieden „ja, NACH α" (Owner delegierte). α ist gelandet → Zeile
+   filen: `filesOrigin:"card"` eigen und abschaltbar, Rueckfalltuer, Rueckspiel gegen α-Karten als Kriterium. Erst
+   α-Report lesen (Rueckspiel-Zahl vs. Prognose 27/30).
+3. **Worktrail IV 506b8502** Report lesen (enthaelt Zusatzfrage graphify: Hook-Pflicht, 84/583 server.ts-Funktionen
+   fehlen im frisch gebauten Graphen, Rauschen durch docs/attic).
+4. **Naechste Session:** Richtung **6bd2e49c** — SYSTEM.md/AGENTS.md/Rollen/Briefe angleichen, Fable-Lane + Astra
+   parallel, Synthese (Owner-These: Aufgabe + Kontext + komplementaere Fragen; implizite Info in Briefs wirkt).
+5. **Ganz zuletzt:** Richtung **262a8f71** (Private-repo-j-Program) — Spiele mit Astra; Grok-Fragen sind Owner-Akt.
+6. Geparkt, nicht gestrichen: Queue aufraeumen (alter §0.2 Punkt 1). Notiz **55807536** (forkSha) ist durch β abgedeckt →
+   nach β-Land archivieren.
+
+### 0.4 OFFEN / UNGEPRUEFT
+- Rote Audits a10af8de/cefbfabb (self-land progress guard) — f8f3ee90 sollte die Race schliessen; unbeurteilt.
+- Notiz-Kappe Fleet-Betrieb 10/10 voll (MAIN kann keine Notizen filen); γ-Regeln + Aufraeumen entlasten.
+- Maschinen-Hygiene (state.sh): 3 Test-tmux-Sockets, 510 MB TMPDIR, streunende e2e-Server — nichts raeumt.
+
 # HANDOFF — Orchestrator Slot 7 → Nachfolgerin (Opus 5 high, Haupt-Checkout, Owner-Token): Server deployt, Karten-Tick live, Kartendefekt-Fix laeuft; NAECHSTER AUFTRAG VOM OWNER = Queue aufraeumen → Task-Formulierung → einfache Owner-Sicht; 2026-09-13 10:2x, ctx GEMESSEN 34,8 %
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

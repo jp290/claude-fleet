@@ -1,3 +1,38 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb (Program `f170dc46`), Slot 3, Opus 5 → Nachfolgerin; 2026-09-13 06:4x, ctx GEMESSEN 29,8 %
+
+Nur was KEIN Record traegt. Zustand: `./state.sh`, `GET /api/self/program-execution`, `GET /api/self/attention`.
+
+## 0. WAS BEIM ANTRITT GILT
+
+- **Sieben Lands dieser Schicht, alle mit gruenem Post-Land-Audit (4258–4338 Checks, je 0 failed):**
+  S8 `bbd87a0e` · Welle S1/S3/S2 `093103da` · `40ec981e` `8015633c` · `eb8132be` `fd8793af` ·
+  Welle S4/S6/S5 `963bd3de` · S7 `aae0e19d`. **Nichts davon ist live** (`codeBehind: true`).
+- **ZWEI OWNER-ENTSCHEIDUNGEN OFFEN, beide als Attention:** `2ce656f3` Deploy (Verb 2) · `70a63717`
+  I4-Widerspruch zu `fe050453`. Nicht selbst deployen, `fe050453` NICHT landen, bevor I4 entschieden ist:
+  die Lane (Slot 1, Kandidat `fce2ba78`) baut synchrone `sendText`-Zustellung in `answerAttention`, was
+  I4 (`docs/program-lebenszyklus-architektur-2026-09-04.md:35`) ausdruecklich verbietet. Die Lane bleibt
+  stehen. Ihr Report `69303b2f` ist ungeurteilt. Bei (A) danach die Architektur-Doc nachziehen.
+- **S9 `c5f26326` (Slot 5, Kandidat `80a4064f`) IST NICHT GELANDET.** Land-Verify rot an
+  `e2e-claude-gate.sh` phase 3 „server did not come up", Instanz ohne `server.log` (nie gemessen).
+  Self-Land verweigert denselben Kandidaten ohne neuen Nachweis. Report `b6abb54b` von mir mit
+  Rerun-Auftrag rejected (erreicht die Lane). Kommt ein neuer complete-Report mit gruenem Tail: landen.
+- **Land-Verdikte gehen an die MAIN, nicht an die Lane** — eine rote Land-Note muss die MAIN der Lane
+  selbst zutragen (Report-`reject` mit `reason`, max. 500 Zeichen). Sonst steht die Lane still.
+
+## 1. BEFUNDE OHNE ZEILE (Advisory-Filing-Cap 10/10 voll — nicht umgehen)
+
+- **Flake „(iii) the hold is given back" (`e2e/programs.ts`):** 2 Rots auf dem second-host (Baeume `82be04e4`,
+  `963bd3de`), beide im Rerun gruen; Mac-Trail ~95/95 gruen. Ursache von Lane `fe050453` gefunden (Race:
+  `landLane` setzt `done` vor dem finally-Release), Sonden-Fix `fce2ba78` haengt an der I4-Entscheidung —
+  bei (B)/(C) diesen einen Commit retten.
+- **Flake „self-land progress guard: a REPAIRED candidate is admitted …":** rot im Mac-Trail auf `aa830e16`
+  und `993506a0` (2/312), beide `dispatch failed: slot changed before submit`; unregistriert.
+- **Wellen-Budget-Nebenwirkung (S7):** heute 0 Karten ⇒ jede Zeile „mittel"=2 ⇒ Budget 5 ⇒ nach dem Deploy
+  nur **2** kartenlose Zeilen je Welle statt 3 — gegen die Owner-Richtung „mehr in eine Welle".
+  `FLEET_LAND_WAVE_BUDGET=6` in `.env` stellt 3 her (Owner-Akt). Dem Owner in Attention-Nähe nennen.
+- **14-KB-Payload-Check** war auf main wacklig (14 132–15 079 B); `8015633c` misst jetzt ohne `events`.
+  Rest-Abhaengigkeit: Task-Digests (94 B/Zeile) — von Lane `40ec981e` offen gemeldet.
+
 # HANDOFF — Orchestrator Slot 5 → Nachfolgerin (Fable 5.1, Haupt-Checkout, Owner-Token): Karten-Serie laeuft, Wellen-Nachweis erbracht, Succession auf Owner-Anweisung; 2026-09-12 22:0x, ctx NICHT MESSBAR (Ursache unten, gefunden)
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

@@ -361,6 +361,35 @@ stage_server_start_failed() {
   return 3
 }
 
+# stage_await_server_gone SOCK PORT — docs/verify-tiering.md §11.2i. A phase restart that kills its
+# suite server and spawns the next one at once can hand `new-session` to a tmux server that is still
+# dying: tmux answers "server exited unexpectedly", the pane never runs, and the phase waits out a
+# bind that cannot come. So before each such spawn: wait until no `srv` session is left on SOCK —
+# either no server answers, or the one that answers still holds OTHER sessions (a live server, not a
+# dying one) — read twice in a row, AND nothing listens on PORT any more. Bounded (~10 s, 0.1 s
+# steps); past the bound it says so and returns, so a stuck wait costs a line, not a hang.
+stage_await_server_gone() {
+  _st_gone_deadline=$(( $(date +%s) + 10 ))
+  _st_gone_seen=0
+  _st_gone_t0=$(date +%s)
+  while [ "$(date +%s)" -le "$_st_gone_deadline" ]; do
+    _st_gone_sessions=$(tmux -L "$1" list-sessions -F '#{session_name}' 2>/dev/null)
+    _st_gone_rc=$?
+    _st_gone_port=$(curl -s -o /dev/null --connect-timeout 0.2 -m 0.5 -w '%{http_code}' "http://127.0.0.1:$2/" 2>/dev/null)
+    if [ "$_st_gone_port" = "000" ] && { [ "$_st_gone_rc" != 0 ] \
+        || { [ -n "$_st_gone_sessions" ] && ! printf '%s\n' "$_st_gone_sessions" | grep -qx srv; }; }; then
+      _st_gone_seen=$((_st_gone_seen + 1))
+      [ "$_st_gone_seen" -ge 2 ] && return 0
+    else
+      _st_gone_seen=0
+    fi
+    sleep 0.1
+  done
+  printf 'e2e-stage: old suite server on socket %s / port %s not confirmed gone after %ss — spawning anyway\n' \
+    "$1" "$2" "$(( $(date +%s) - _st_gone_t0 ))" >&2
+  return 0
+}
+
 # --- dead-socket reap (owner decision 2026-08-05, hygiene before continuous operation). tmux
 # never unlinks a -L socket file when its server exits, so every instance leaves one behind —
 # the machine had accumulated 171 dead sockets in days. Reap here, holding the suite lock, the

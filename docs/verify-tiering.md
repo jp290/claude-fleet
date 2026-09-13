@@ -1813,11 +1813,23 @@ one carrier of a fact and starts waiting on another, the new carrier's position 
 write order is part of the change. Here the two carriers bracket the write the check downstream
 depends on. Moving a wait is never a local edit — the read points BELOW it move with it.
 
-### 11.2i An eleventh family: the suite-server PHASE RESTART races the dying tmux server (2026-08-27, filed — NOT repaired)
+### 11.2i An eleventh family: the suite-server PHASE RESTART races the dying tmux server (2026-08-27 filed; 2026-09-13 REPAIRED, `<LANDING-SHA>`)
 
-**Status: open.** Filed from a live triple-proof; the fix is proposed, not built. A red on these
-lines is still a flake candidate until someone lands the wait — after that land, this section gets
-its repair stamp and a red there is ECHT again.
+**Status: repaired in `<LANDING-SHA>` (2026-09-13; the MAIN writes the landing sha here after the
+land).** A red on these lines AFTER that sha is ECHT again. Mechanism of the repair: every
+`new-session` that follows a kill on the same socket (`e2e-claude-gate.sh` before phase 1, 1→2,
+2→3; `e2e-clean-review.sh` before phase 1 and 1→2) first calls `e2e-stage.sh#stage_await_server_gone`,
+which waits — bounded at ~10 s, 0.1 s steps — until two consecutive readings show no `srv` session on
+the socket (no server answers, or the one that answers holds only other sessions) and nothing
+listening on the port. Past the bound it prints one line and spawns anyway, so the wait can cost
+seconds but never hangs a gate.
+
+The sighting that bought the build (2026-09-13, land gate of `fleet/260913100026-c16a`, tree
+`a60b610f`): `e2e-claude-gate.sh: server did not come up (phase 3 …)`, tmux `server exited
+unexpectedly`, no `server.log`, zero FAIL lines; the same tree's phase-3 boot in a scratch copy
+answered HTTP 200 after 1 s. An unloaded reproduction did NOT hit it (240 kill→spawn cycles, 40 of
+them with a bun HTTP server and six panes: 0 × `exited unexpectedly`, port free immediately) — the
+race needs the contention the gate runs under, which is why the wait is a precondition, not a retry.
 
 **The mechanism, one root with two known mouths.** Both `e2e-clean-review.sh` (phase 1 → 2 handover,
 `tmux kill-session -t srv` immediately followed by `new-session` on the same socket/port, lines
@@ -1852,7 +1864,7 @@ FAIL lines and six `ALL PASS` before it, and the kept instance
 chain on the identical tree: `GATE_EXIT=0`, 0 FAILs. The family's hit rate is not negligible — this
 was one of two chain runs.
 
-**Proposed fix (not built; suite edits were out of the finding lane's mandate):** before each
+**The fix as first proposed (built 2026-09-13, see Status):** before each
 `new-session` that follows a kill on the same socket, wait for `tmux has-session` to report the old
 server actually gone (bounded), instead of racing the death. Two call sites, one guard.
 

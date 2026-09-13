@@ -190,6 +190,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # fleet-e2e-claude-gate.ts sizes its windows from the same variable instead of restating a number.
 AUTOS_TICK=250
 DISP_TICK=250
+stage_await_server_gone "$SOCK" "$PORT"   # §11.2i: the kill-server above may still be dying
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_CARD_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_DISPATCH_TICK_MS=$DISP_TICK FLEET_CMD=claude FLEET_ACCEPT_WAIT_MS=300 FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (a loaded dev box can take >2s) instead of a fixed sleep —
@@ -219,6 +220,7 @@ code=$?
 # entirely — leaving them up would put panes in the socket that answer the wrong question.
 if [ "$code" = 0 ]; then
   tmux -L "$SOCK" kill-server 2>/dev/null
+  stage_await_server_gone "$SOCK" "$PORT"   # §11.2i: never spawn into a dying tmux server
   tmux -L "$SOCK" new-session -d -s srv \
     "cd '$DIR2' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_CARD_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_CMD=harn FLEET_HARNESS_COMMS=harn FLEET_HARNESS_MODEL_FLAG=--model FLEET_WORKER_HARNESS=container FLEET_DISPATCH_REPO='$WORKER_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
   # default-shell decides what interprets every pane command tmux builds, and one phase-2 check
@@ -253,6 +255,7 @@ fi
 # canonical stand-in and deliberately leaves no process for a readiness probe to find.
 if [ "$code" = 0 ]; then
   tmux -L "$SOCK" kill-server 2>/dev/null
+  stage_await_server_gone "$SOCK" "$PORT"   # §11.2i: never spawn into a dying tmux server
   tmux -L "$SOCK" new-session -d -s srv \
     "cd '$DIR3' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_CARD_MS=0 FLEET_CMD=true FLEET_HARNESS_COMMS= exec bun server.ts >> server.log 2>&1"
   _hc=000

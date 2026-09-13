@@ -1844,8 +1844,9 @@ export async function run(ctx: Ctx): Promise<void> {
       byp.ok && bypJ.ok === true && bypRow?.status === "sent", `${byp.status} ${JSON.stringify({ bypJ, bypRow })}`);
 
     // cleanup — dispatcher OFF FIRST: killing the bypass lane below can land inside its own
-    // brief tail, whose identity re-check then REQUEUES the task; with the tick still on, that
-    // requeued probe could be re-dispatched into a freshly freed slot and leak a lane. Then
+    // brief tail. Since 2026-09-13 that tail no longer requeues a row the kill already detached
+    // (briefAndSend#requeue reads ownership first), but the dispatcher stays off here anyway: any
+    // row this section leaves `queued` could otherwise be re-dispatched into a freed slot. Then
     // kill every lane this section spawned (never the persistence lane) and delete the probes.
     await post("/api/dispatch", { on: false });
     for (const id of await laneIds()) if (!lanes0.has(id) && id !== ctx.restartSelfSlot) await post(`/api/slots/${id}/kill`, {});

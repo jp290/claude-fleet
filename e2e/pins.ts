@@ -2423,21 +2423,21 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // THE TRANSITION HAS ONE WRITER, and the rule is stated in both directions: every release goes
   // through releaseTask (so `by` cannot be forgotten), and the direct writes of "queued" stay the
   // helper's own line plus the documented restores that are deliberately NOT releases:
-  //   1. the requeue after a failed post-spawn gate (briefAndSend#requeue, the HEAD of the lane);
+  //   1. the requeue after a failed post-spawn gate (briefAndSend#requeue) — ONE loop over the
+  //      rows the tail still OWNS, head and wave followers alike (until 2026-09-13 two writes, one
+  //      for the head and one for the followers; folded when ownership became the loop's filter);
   //   2. the boot reconcile of an orphaned `sent` row;
-  //   3. the same requeue applied to a wave's FOLLOWERS — one restore, n rows, and it is written
-  //      out rather than folded into (1) because the head and the followers are separate objects;
-  //   4. W3's self-split: a wave lane hands back the rows the bundling surface did not reach.
-  // (3) and (4) are restores for the same reason (1) is: these rows WERE released, the lane simply
-  // is not the place they get done, so `pending` — the abort's answer — would withdraw a release
-  // nobody withdrew.
+  //   3. W3's self-split: a wave lane hands back the rows the bundling surface did not reach.
+  // The followers in (1) and the rows in (3) are restores for the same reason the head is: these
+  // rows WERE released, the lane simply is not the place they get done, so `pending` — the abort's
+  // answer — would withdraw a release nobody withdrew.
   const releaseCalls = [...server.matchAll(/(?<!function )releaseTask\(([^)]*)\)/g)].map((m) => m[1].trim());
   pin("releaseTask has exactly the two known call sites — the owner's ▸ queue and the Program-MAIN door",
     releaseCalls.length === 2 && releaseCalls.includes('t, "owner"') && releaseCalls.includes('t, "machine"'),
     releaseCalls.join(" | ") || "no releaseTask call");
   const queuedWrites = (server.match(/\bstatus = "queued";/g) ?? []).length;
   pin("\"queued\" is written by releaseTask plus exactly the documented non-release restores",
-    queuedWrites === 5
+    queuedWrites === 4
       && /function releaseTask\(t: Task, by: "owner" \| "machine"\): void \{\n  t\.status = "queued";/.test(server),
     `${queuedWrites} direct writes of status = "queued"`);
   // W3 · ▸ START WAVE. Two pairs whose other side is not TypeScript.

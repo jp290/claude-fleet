@@ -59,7 +59,7 @@ Reihenfolge danach — aus NACH-Ketten und Kartenflaechen, nicht nach Alter:
 | 3 | `35bc6afe` Karte anreichern + `31df1009` graphify 2/2 | Land 57d7ec3b | untereinander disjunkt (card-extract.ts+tasks.ts gegen pins+server.ts), also parallel |
 | 4 | `6d841a14` Starten nach Plan | Land 35bc6afe | gross, allein bauen; teilt e2e/tasks.ts mit 35bc6afe |
 | 5 | `f1aeba10` Politik | Land 6d841a14 und K2 | Scharfschalten vorher melden |
-| — | `7363b89f`, `5ca92bfb` | ein bauender Platz ohne kettenreife Zeile | nur pins-Beruehrung, rebasen billig |
+| — | `7363b89f`, `5ca92bfb`, `81030f46` (C4), dann `f38d8e15` (C6) | ein bauender Platz ohne kettenreife Zeile | pins-/state.sh-Beruehrung bzw. server.ts in eigenen Funktionen; C6 nach 7363b89f (beide state.sh) |
 
 Unter der Linie, mit Grund: `e3e5084a` Handover-Record (gueltig, aber Nachfolge-Pfad — nach Welle 5 neu
 bewerten); `1b47e29a` Mehr-Knopf (wartet auf Owner-Antwort zur UI, §5c); `11441e5e`, `1733502c`,
@@ -191,6 +191,9 @@ die ganze Kette (`holdSuiteLock` im `gateRun`), Gate-Warten 3 d p50 0 / p90 275 
 | `1a5c49fb` | RAM der Slots/Sessions: messen, zerlegen, Rangliste (Baseline: Mac Swap 2,66 GB, ~33 Playwright-MCP-Prozesse fuer 7 Claude-Sessions) | Astra, medium | gelandet 4fdc3ebb — flach (8 min, 2 k Reasoning-Tokens): „outside/other" 3,8 GB ungeklaert, RSS statt Footprint, MCP-Hebel unbewiesen |
 | **Second-host 4 Suiten ZURUECKGENOMMEN** (Slot 7, 21:3x) | RAM 2 §F7 + Live-Messung: `/tmp` ist tmpfs 3 930 MB, 98 % voll (94 MB frei), 68 e2e-Instanzen (46 > 24 h), ~1,8 GB davon nichtresident = fast der ganze Swap. Config wieder 3 (`config.json.bak-20260913-suites4` behalten), Neustart-Waechter gestoppt, Slot 9 informiert. Altbestand loeschen = Owner-Akt (gefragt). Dauerfix `1aaf7eb8` (C1: Scratch auf Disk, Retention schuetzt aktive Runs) freigegeben; 4 erst nach C1 + Vierer-Pilot (C5) | — | laeuft |
 | `adfc7506` | RAM 2/2: optimieren statt messen — F1–F9, Top-3-Hebel mit Probe (Wegwerf-Pane auf eigenem Socket), Schnitte als Filing-Bloecke | Astra, high (Owner) | gelandet 79fb4c96 — Rangliste: (1) Second-host-tmpfs-Scratch, (2) Browser-MCP nur in Browser-Aufgaben: Probe −203 MB Claude / −169 MB Codex, (3) fertige Sessions freigeben, (4) Transkript-Leser mit Bytebudget −60 MB, (5) Suite-Zulassung erst nach C1; Schnitte C1–C6 |
+| **Second-host-Altbestand GELOESCHT** (Slot 7, ~21:5x, nach Owner-Vorgabe „solche Dinge selbst proaktiv") | 46 Instanzen > 24 h, laut sudo-Probe ueber cwd/fd aller /proc von keinem Prozess referenziert, 2 334 MB. Nachgemessen Slot 5 21:3x: `/tmp` 37 % (2 511 MB frei), 20 Instanzen, 0 aelter als 24 h, zwei davon von laufenden Prozessen referenziert. C5 (Vierer-Pilot) bleibt nach dem C1-Land | — | erledigt |
+| `81030f46` | C4 aus 79fb4c96: Bytebudget fuer `transcriptTail`/`tickHarvest` (heute ganze Datei bzw. ganzer Zuwachs; Probe −60 MB) | Opus 5 | frei — server.ts in anderen Funktionen als die Freigabe-Kette |
+| `f38d8e15` | C6 aus 79fb4c96: Hygiene-Block in state.sh lebend/tot/unknown (zaehlt heute den Live-Socket als Leak) | Opus 5 | nach `7363b89f` (beide state.sh) |
 | `7363b89f` | HANDOFF entruempeln: Rotation + state.sh-Warnung (271 HANDOFF-Commits/14 d, Datei 572 KB) | Opus 5 | frei |
 | `5ca92bfb` | Land-Chronik: eine Zeile je Land aus den Land-Notizen, kein Squash | Opus 5 | frei |
 

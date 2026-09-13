@@ -21,8 +21,8 @@ type AuditEvent =
   | "guest_ws_connect" | "guest_ws_disconnect"
   | "auto_fire" | "auto_skip"
   | "task_dispatch" // the manual start button — an owner act, distinct from the tick's spawns
-  // a detached founding-brief tail failed AFTER another path finished with its lane (a land retired
-  // the row, an abort detached it, or a land is still running) — the requeue writes nothing, and
+  // a detached founding-brief tail failed AFTER a land finished with its lane (the row is `done` or
+  // `archived`, or a land is still running) — the requeue writes nothing, and
   // this row is the only trace that it wanted to (server.ts#briefAndSend, requeue)
   | "dispatch_requeue_skipped"
   // pending → queued through the Program-MAIN door (releaseTaskForMain). Recorded SEPARATELY from

@@ -3866,20 +3866,23 @@ das Rot ohne Timing-Annahme ueber die Rate.
    `slot changed before submit` (bzw. `… before paste`, je nach Zeile, an der es steht).
 5. Der `catch` von `briefAndSend` ruft `requeue`: `removeWorktreeSafe` scheitert am schon
    entfernten Baum (`git status failed — worktree gone?` → „lane kept"), und die Funktion schrieb
-   **bedingungslos** `next.status = "queued"` — ueber die gelandete `done`-Zeile. Dieselbe Schreibung
-   hat ebenso den `pending` eines Abbruchs (`detachSlotTasks`) zu `queued` gemacht.
+   **bedingungslos** `next.status = "queued"` — ueber die gelandete `done`-Zeile.
 
-**Reparatur** (`server.ts#briefAndSend`, `requeue`): Besitz wird ZUERST gelesen, vor jedem
-Teardown — nur Zeilen, die noch `sent` auf diesem Slot stehen, darf der Tail zuruecksetzen; laeuft
-auf der eigenen Lane ein Merge (`mergeInflight`/`mergeStart`), beruehrt er weder Baum noch Zeile.
-Sonst schreibt er nichts und hinterlaesst `dispatch_requeue_skipped` im `audit.jsonl`. Weder der
-Progress-Guard noch die Land-Promotion sind angefasst.
+**Reparatur** (`server.ts#briefAndSend`, `requeue`): eine TERMINALE Zeile (`done` = gelandet,
+`archived`) setzt der Tail nie zurueck, und laeuft auf der eigenen Lane ein Merge
+(`mergeInflight`/`mergeStart`), beruehrt er weder Baum noch Zeile. Bleibt nichts uebrig, schreibt er
+nichts und hinterlaesst `dispatch_requeue_skipped` im `audit.jsonl`. Das `pending` eines Kills
+(`detachSlotTasks`) ist NICHT terminal und behaelt die heutige Antwort — eine verlorene Lane
+requeued ihre Zeile (`e2e/tasks.ts`, „a lost lane requeues the foreign-harness row …"). Eine erste
+Fassung, die nur noch `sent`-Zeilen zuruecksetzte, fiel genau an diesem Check (Helfer-Vorschau
+second-host, Job `02ef72914ed6`, 4343 Checks / 1 rot) und ist verworfen. Weder der Progress-Guard
+noch die Land-Promotion sind angefasst.
 
 **Sonde** (`e2e/lanes-lifecycle.ts`, Requeue-Familie, Block (c)): parkt den Tail per
 `FLEET_TEST_SEND_BEFORE_PASTE_LATCH` an einer bekannten Zeile, landet die Lane waehrend des Parkens
 (Vorbedingungen als eigene Checks: geparkt · gelandet und `done`), gibt den Latch frei und verlangt
 `done` + `landed …`-Note + die Skip-Zeile. **Ohne Fix rot** (Mutation: die Besitz-Pruefung
-entfernt und die Schleife wieder ueber alle Wellenzeilen) mit genau dem Fingerprint:
+entfernt, die Schleife wieder ueber alle Wellenzeilen) mit genau dem Fingerprint:
 `"status":"queued","note":"dispatch failed: slot changed before paste; lane kept (git status failed — worktree gone?)"`.
 
 **Ein Rot dieses Checks NACH `<fix-sha>` ist wieder ECHT.**

@@ -10043,19 +10043,18 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // are read from the live slot list, and `next.slot` is cleared either way — a `queued` row must
   // not keep pointing at a slot it has let go of. History: server-narrativ-archiv.md#briefandsend
   //
-  // THE TAIL IS DETACHED, so another path may have finished with this lane before it gets here —
-  // and a row this tail no longer owns is not its to write. Measured 2026-09-12 (e2e trail,
-  // `dispatch failed: slot changed before submit; lane kept (git status failed — worktree gone?)`):
-  // a lane landed inside the ~5 s founding window, landLane marked the row `done` and killed the
-  // slot, the pending sendText then threw, and this requeue put the landed row back on `queued`.
-  // The same write overwrote an abort's `pending` (detachSlotTasks) with `queued`. So ownership is
-  // read FIRST, before the teardown below detaches anything: a row still `sent` on this slot. And a
-  // land that is RUNNING on this lane owns it outright — no teardown under its rebase, no row write
-  // it would then fail to retire; it ends the row itself.
+  // THE TAIL IS DETACHED, so a LAND may have finished with this lane before it gets here. Measured
+  // 2026-09-12 (e2e trail, `dispatch failed: slot changed before submit; lane kept (git status
+  // failed — worktree gone?)`): a lane landed inside the ~5 s founding window, landLane marked the
+  // row `done` and killed the slot, the pending sendText then threw, and this requeue put the landed
+  // row back on `queued`. So a TERMINAL row (`done` — landed; `archived`) is never the tail's to
+  // write, and a land that is still RUNNING on this lane owns it outright: no teardown under its
+  // rebase, no row write it would then fail to retire. A kill's `pending` is NOT terminal and keeps
+  // today's answer — a lost lane requeues its row (e2e/tasks.ts, the foreign-harness kill probe).
   const requeue = async (note: string): Promise<void> => {
     const ours = free.cwd === wt.path && free.worktree?.branch === wt.branch;
     const landing = ours && (mergeInflight.has(free.id) || mergeStart.has(free.id));
-    const owned = waveRows.filter((row) => row.status === "sent" && row.slot === free.id);
+    const owned = waveRows.filter((row) => row.status !== "done" && row.status !== "archived");
     if (landing || owned.length === 0) {
       audit("dispatch_requeue_skipped", free.id,
         `${next.id} ${landing ? "land running" : `row is ${next.status}`} (${wt.branch}): ${note}`.slice(0, 240));

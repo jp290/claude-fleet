@@ -207,7 +207,11 @@ export async function run(ctx: Ctx): Promise<void> {
     await Bun.write(`${idl.cwd}/identity.txt`, "reviewed while the slot gets recycled\n");
     spawnSync("git", ["-C", idl.cwd, "add", "identity.txt"]);
     spawnSync("git", ["-C", idl.cwd, "commit", "-qm", "identity-case lane work"]);
-    void post(`/api/slots/${idl.slot}/review`, {}); // deliberately NOT awaited — it is still running below
+    // deliberately NOT awaited here — it is still running below. Settled into a value at once, so a
+    // transport error while it waits is a red row further down, never an unhandled rejection
+    const idlFirst = post(`/api/slots/${idl.slot}/review`, {}).then(
+      async (r) => ({ status: r.status, body: (await r.json().catch(() => null)) as { findings?: unknown } | null }),
+      (e: unknown) => ({ status: 0, body: { error: e instanceof Error ? e.message : String(e) } as { findings?: unknown } }));
     await Bun.sleep(1500);
     await post(`/api/slots/${idl.slot}/kill`, {}); // recycle the slot out from under the running review
     const idlRec = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
@@ -217,7 +221,15 @@ export async function run(ctx: Ctx): Promise<void> {
       idlRec?.review?.state === "inflight", JSON.stringify(idlRec?.review ?? null));
     const idlNew = (await (await post(`/api/slots/${idl.slot}/open-worktree`,
       { repo: REPO, branch: "e2e-review-identity" })).json()) as { cwd?: string };
-    await Bun.sleep(8000); // the first review completes in here, against a slot that moved on
+    // the completion barrier is the first POST's own answer, not a clock: server.ts#reviewResponse
+    // answers only after `await job.p`, and job.p (server.ts#startReview) is the chain whose .then
+    // holds the cache write under test. A fixed sleep read the cache BEFORE a slower review reached
+    // that write, so a misfiling server passed; this wait lasts exactly as long as the review does.
+    // A review that FAILED never reached the write either — that is a fixture miss, and says so.
+    const idlFirstRes = await idlFirst;
+    check("identity-case fixture: the recycled slot's first review ran to completion before the cache is read",
+      idlFirstRes.status === 200 && Array.isArray(idlFirstRes.body?.findings),
+      `${idlFirstRes.status} ${JSON.stringify(idlFirstRes.body).slice(0, 160)}`);
     const idlAfter = (await (await get(`/api/slots/${idl.slot}/review`)).json()) as { cached: boolean };
     check("a review completing after a slot recycle is NOT filed under the new lane",
       idlAfter.cached === false, `${JSON.stringify(idlAfter)} newCwd=${idlNew.cwd}`);

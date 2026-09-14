@@ -150,7 +150,7 @@ sich) — welcher Effekt ueberwiegt, ist eine Messung, die dieser Schnitt nicht 
 
 **9. Nachtrag 2026-09-14: `core` geteilt — gemessen.** Folgeschnitt aus §6, Lane
 `fleet/260914092857-f3cb`, Commit „split shard unit core — programs carries its own self-token run"
-(Lane-Baum `626734d1`, gleiche SHA-Konvention wie §4). Schnitt: neue Unit `programs` =
+(Lane-Baum `626734d1`, gleiche SHA-Konvention wie §4; auf main `09959344`, der Nachtrag selbst `97053887`). Schnitt: neue Unit `programs` =
 {self-token, programs}; `core` behaelt self-token und verliert programs. self-token ist damit das
 EINE Modul in zwei Units — der Runner-Schritt traegt `unit: "core", alsoIn: ["programs"]` und laeuft
 einmal je Shard, der eine der beiden Units haelt. Die zweite Kante aus §6 (K1, outcomes → tasks)

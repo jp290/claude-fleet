@@ -61,7 +61,8 @@ export async function run(): Promise<void> {
     `trail=${trailFile} instance=${ROOT}`);
 
   // WHERE msSincePrev WENT, on every row this run wrote: four exclusive phases plus `rest`, summing
-  // to msSincePrev, none negative. A negative `rest` is a double-booked second — the exact defect
+  // to msSincePrev EXACTLY (rest is the remainder, both sides are the same integer Date.now ticks —
+  // no tolerance), none negative. A negative `rest` is a double-booked second — the exact defect
   // exclusive attribution exists to prevent. Under FLEET_E2E_PHASES=0 the opposite must hold.
   const badPhases = rows.filter((r) => {
     const p = r.phases;
@@ -69,7 +70,7 @@ export async function run(): Promise<void> {
     if (!p) return true;
     const parts = [p.boot, p.tmux, p.http, p.sleep, p.rest];
     return parts.some((n) => typeof n !== "number" || n < 0)
-      || Math.abs(parts.reduce((s, n) => s + n, 0) - r.msSincePrev) > 50;
+      || parts.reduce((s, n) => s + n, 0) !== r.msSincePrev;
   });
   check(PHASES_ON
     ? "trail: every row carries phases (boot/tmux/http/sleep/rest) that sum to its msSincePrev"
@@ -84,9 +85,7 @@ export async function run(): Promise<void> {
     !PHASES_ON || (["tmux", "http", "sleep"] as const).every((ph) => booked.includes(ph)),
     `booked=${booked.join(",")} calls=${JSON.stringify(phaseClock.calls())}`);
 
-  // the attribution itself, on a synthetic clock. restartSrv (boot, 0→100) runs a get() and a sleep
-  // inside it, and a fetch started at 90 outlives it to 130; then nothing, a bare sleep 150→170 and
-  // a bare fetch 175→185. Expected, exclusively: boot 100, http 30 + 10, sleep 20, rest 40 of 200.
+  // the attribution itself, on a synthetic clock — the scenario the clock= lines below replay:
   let clock = 0;
   const pc = createPhaseClock(() => clock, "/r", "e2e/trail-emit.ts", "e2e/harness.ts");
   const hold = <T>(v: T): { p: Promise<T>; go: () => void } => {
@@ -100,6 +99,19 @@ export async function run(): Promise<void> {
     e.stack = `Error\n    at timed (/r/e2e/trail-emit.ts:9:1)\n    at x (/r/e2e/harness.ts:1:1)\n    at run (/r/${file}:${line}:3)`;
     return e;
   };
+  //   t        | event                                         | exclusive owner of the interval
+  //   0→10     | boot starts (restart.ts:11)                   | boot
+  //   10→40    | get() inside boot (restart.ts:12)             | boot  (not outermost: no top entry)
+  //   40→60    | sleep inside boot (restart.ts:13)             | boot  (not outermost: no top entry)
+  //   60→90    | boot still polling                            | boot
+  //   90→100   | fetch starts inside boot (tasks.ts:21)        | boot  (started inside boot: no top entry)
+  //   100→130  | boot ended, that fetch outlives it            | http  30
+  //   130→150  | nothing running                               | rest  20
+  //   150→170  | bare sleep (watch.ts:31)                      | sleep 20, top sleep 20 @ watch.ts:31
+  //   170→175  | nothing running                               | rest  5
+  //   175→185  | bare fetch (tasks.ts:22)                      | http  10, top http 10 @ tasks.ts:22
+  //   185→200  | nothing running, cut at 200                   | rest  15
+  //   totals   | boot 100 · http 40 · sleep 20 · tmux 0 · rest 40 (= 200) · top boot 100 @ restart.ts:11
   const boot = pc.timed("boot", () => bootH.p, stackAt("e2e/restart.ts", 11));
   clock = 10; const g = pc.timed("http", () => innerGet.p, stackAt("e2e/restart.ts", 12));
   clock = 40; innerGet.go(); await g;
@@ -113,14 +125,24 @@ export async function run(): Promise<void> {
   clock = 175; const bg = pc.timed("http", () => bareGet.p, stackAt("e2e/tasks.ts", 22));
   clock = 185; bareGet.go(); await bg;
   const synth = pc.cut(200);
-  check("trail: phase attribution is exclusive by priority — nested and overlapping calls never double-book",
-    synth.ms.boot === 100 && synth.ms.http === 40 && synth.ms.sleep === 20 && synth.ms.tmux === 0
-      && synth.top.boot?.ms === 100 && synth.top.boot.at === "e2e/restart.ts:11"
-      // a call STARTED inside boot is boot's (a get() in restartSrv looks exactly like that), so the
-      // only outermost http call is the bare one — its time counts, the overlapping one's site does not
-      && synth.top.http?.ms === 10 && synth.top.http.at === "e2e/tasks.ts:22"
-      && synth.top.sleep?.ms === 20 && synth.top.sleep.at === "e2e/watch.ts:31",
-    JSON.stringify(synth));
+  // one red, one claim: each check names the conjuncts that died, not a blob
+  const died = (parts: [string, boolean][]): string => parts.filter(([, ok]) => !ok).map(([n]) => n).join(" · ");
+  const totalsDied = died([
+    [`boot=${synth.ms.boot}≠100`, synth.ms.boot === 100], [`http=${synth.ms.http}≠40`, synth.ms.http === 40],
+    [`sleep=${synth.ms.sleep}≠20`, synth.ms.sleep === 20], [`tmux=${synth.ms.tmux}≠0`, synth.ms.tmux === 0],
+  ]);
+  check("trail: phase totals are exclusive by priority — nested and overlapping calls never double-book",
+    totalsDied === "", totalsDied);
+  // a call STARTED inside boot is boot's (a get() in restartSrv looks exactly like that), so the only
+  // outermost http call is the bare one — its time counts, the overlapping one's site does not
+  const siteDied = died([
+    [`boot=${JSON.stringify(synth.top.boot)}`, synth.top.boot?.ms === 100 && synth.top.boot.at === "e2e/restart.ts:11"],
+    [`http=${JSON.stringify(synth.top.http)}`, synth.top.http?.ms === 10 && synth.top.http.at === "e2e/tasks.ts:22"],
+    [`sleep=${JSON.stringify(synth.top.sleep)}`, synth.top.sleep?.ms === 20 && synth.top.sleep.at === "e2e/watch.ts:31"],
+    [`tmux=${JSON.stringify(synth.top.tmux)}`, synth.top.tmux === undefined],
+  ]);
+  check("trail: phaseTop names the longest OUTERMOST call per phase and its call site",
+    siteDied === "", siteDied);
   const row = withPhases(trailRow("x", true, "", 200, 200), synth);
   check("trail: rest is msSincePrev minus the four phases, and a cut starts the next row empty",
     row.phases?.rest === 40 && JSON.stringify(pc.cut(260)) === JSON.stringify({ ms: { boot: 0, tmux: 0, http: 0, sleep: 0 }, top: {} }),

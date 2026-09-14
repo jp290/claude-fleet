@@ -36,6 +36,8 @@ One JSON object per line, one line per `check()` call. `e2e/trail-emit.ts` owns 
 | `msSincePrev` | wall-clock ms since the **previous** check returned (see §4) |
 | `ts` | epoch ms |
 | `detail` | only on `ok:false`, capped at `TRAIL_DETAIL_MAX` = 2000 chars + `…[truncated]` |
+| `phases` | since 2026-09-14: `{boot, tmux, http, sleep, rest}` ms — where `msSincePrev` went (§4a); absent in older files |
+| `phaseTop` | since 2026-09-14: per phase with any outermost call, the longest one in this row as `{ms, at}` (`at` = `path:line`) |
 
 `detail` is the only unbounded input (a check may hand `check()` a whole transcript), hence the
 cap. Everything else is bounded by construction. Measured 2026-07-27: 887 rows, 220 440 bytes —
@@ -103,6 +105,41 @@ every one of ~870 call sites; an absent field would have beaten a wrong number, 
 named field beats both.
 
 The first row of a run measures from harness import, i.e. suite start.
+
+### 4a. `phases` — what `msSincePrev` was spent on
+
+2026-09-14. `msSincePrev` names how long the way from the previous check was, not what it was
+spent on: on `isolated-20260914T043130Z-27323` 217 checks with 3–10 s gaps carried 1 070 of 2 122 s
+and the row could attribute none of it. Since then every row also carries `phases`, built in
+`e2e/trail-emit.ts#createPhaseClock`:
+
+| phase | what is timed | wrapped at |
+| --- | --- | --- |
+| `boot` | a srv stop/restart, including the polls inside it | `e2e/harness.ts#stopSrv`, `#restartSrv` |
+| `tmux` | one tmux call, or a whole pane env probe | `e2e/harness.ts#tmuxOut`, `#paneEnv` |
+| `http` | every `fetch` of the runner process — `post()`/`get()` and the direct calls alike | `globalThis.fetch`, wrapped once |
+| `sleep` | every `Bun.sleep` | `Bun.sleep`, wrapped once |
+| `rest` | `msSincePrev` minus the four: synchronous work (`spawnSync` git fixtures, JSON parsing), `setTimeout` waits, direct `Bun.spawn` of tmux, WebSocket waits | — |
+
+**Exclusive, by priority.** The four are not stopwatches: `restartSrv` polls with `get()` and
+`Bun.sleep`, `paneEnv` is a loop of tmux calls and sleeps, and a check may await two fetches at once.
+Summed stopwatches would count one second two or three times. Every start and end of a timed call
+is a transition instead, and the interval since the previous one is booked to the highest-priority
+phase active during it (`boot > tmux > http > sleep`) or to nothing. The four never overlap, so
+`boot + tmux + http + sleep + rest === msSincePrev` holds exactly, and `e2e/trail.ts` asserts it on
+every row of the run it belongs to.
+
+**`phaseTop` is a sample, not a sum.** Per row and phase it names the single longest *outermost*
+call (a `get()` started inside `restartSrv` is `boot`'s work and never its own entry) and where it
+was made: the first stack frame outside `trail-emit.ts` and `harness.ts`. A call from a harness helper
+that already awaited names the helper line, because the calling check's frame has left the stack by
+then. Summing `phaseTop` by site gives a lower bound per site; whether the bound covers most of
+a phase is a number the reader has to compute (sum of `phaseTop[p].ms` over sum of `phases[p]`).
+
+**Cost and switch.** About 1.3 µs per timed call on the Mac (wrapped against raw `Bun.sleep(0)`,
+2026-09-14), plus one stack format per row and phase. `FLEET_E2E_PHASES=0` turns the wrapping and
+both fields off, which exists only for the overhead comparison. `trailstats.ts` ignores both fields;
+`e2e/trailstats.ts` checks that rows with, without and mixed `phases` give the same answer.
 
 ## 5. Failure is silent by design
 

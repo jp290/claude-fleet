@@ -10944,7 +10944,18 @@ interface AttentionRow {
   status: "open" | "send-uncertain" | "answered" | "refused";
   answer: { text: string; at: number; by: "owner" } | null;
   refusedReason: string | null; closedAt: number | null;
+  // derived by the server at read time for an ANSWERED row, null otherwise (server.ts#attentionDelivery)
+  delivery: AttentionDelivery | null;
 }
+type AttentionNudgeReading =
+  | { outcome: "unknown"; why: string }
+  | { outcome: "accepted"; at: number }
+  | { outcome: "unobserved"; at: number; acceptance: string }
+  | { outcome: "not-accepted"; at: number; failure: string; reason: string };
+type AttentionDelivery =
+  | { state: "read"; entryId: string; since: number; readAt: number; readBy: { slot: number } }
+  | { state: "unread"; entryId: string; since: number; lastNudge: AttentionNudgeReading }
+  | { state: "unknown"; why: string };
 const attndlg = $("attndlg"), attnpanel = $("attnpanel"), attnbtn = $("attnbtn");
 let attentionOpen = 0;
 let attnRows: AttentionRow[] = [];
@@ -11063,7 +11074,22 @@ function attnClosedRow(a: AttentionRow): HTMLElement {
   const line = el("div", "attnclosed", `${a.text} → ${outcome}`);
   line.title = outcome;
   row.appendChild(line);
+  if (a.delivery) row.appendChild(attnDeliveryLine(a.delivery));
   return row;
+}
+
+// The answer is a Program inbox pointer, never a paste — so "answered" says nothing about whether
+// the MAIN has it. This line says what the server can prove, and "unknown" where it cannot.
+function attnDeliveryLine(d: AttentionDelivery): HTMLElement {
+  if (d.state === "read")
+    return el("div", "shrhint", `read by slot ${d.readBy.slot} · ${fmtSince(d.readAt)}`);
+  if (d.state === "unknown") return el("div", "attnwarn", `delivery unknown — ${d.why}`);
+  const n = d.lastNudge;
+  const nudge = n.outcome === "unknown" ? `last nudge unknown (${n.why})`
+    : n.outcome === "accepted" ? `last nudge accepted ${fmtSince(n.at)}`
+    : n.outcome === "unobserved" ? `last nudge typed, acceptance ${n.acceptance} ${fmtSince(n.at)}`
+    : `last nudge NOT accepted ${fmtSince(n.at)}: ${n.reason}`;
+  return el("div", n.outcome === "accepted" ? "shrhint" : "attnwarn", `unread since ${fmtSince(d.since)} · ${nudge}`);
 }
 
 function renderAttnDlg() {

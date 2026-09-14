@@ -564,6 +564,22 @@ interface AttentionRequest {
   refusedReason: string | null;
   closedAt: number | null;
 }
+// THE DELIVERY STATE OF AN ANSWERED ATTENTION — a READ-TIME join, never a persisted key, so it
+// lives here as the shape of a view and has no parser (68ffbe09, owner decision (C) on attention
+// 90a6ae45: answerAttention types nothing into a pane, I4). Exactly two facts feed it: the Program
+// inbox pointer whose `ref` is the attention id, with its durable read receipt, and the inbox
+// nudge's last attempt on the bound MAIN, which lives in server memory only. `unknown` is the word
+// for everything those two cannot prove — never a synonym for delivered.
+type AttentionNudgeReading =
+  | { outcome: "unknown"; why: string }
+  | { outcome: "accepted"; at: number }
+  | { outcome: "unobserved"; at: number; acceptance: "unobservable" | "not-applicable" }
+  | { outcome: "not-accepted"; at: number; failure: "SendRefused" | "SendNotAccepted" | "send-failed"; reason: string };
+type AttentionDelivery =
+  | { state: "read"; entryId: string; since: number; readAt: number;
+    readBy: { slot: number; openedAt: number; sessionId: string | null } }
+  | { state: "unread"; entryId: string; since: number; lastNudge: AttentionNudgeReading }
+  | { state: "unknown"; why: string };
 const ATTENTION_KINDS: AttentionKind[] = ["decision", "blocked", "review-ready"];
 
 function fleetEventRecoveryFrom(raw: unknown): FleetEventRecovery | undefined | null {
@@ -2459,7 +2475,8 @@ export type {
   HelperCmdCheck, HarnessBlockFleetEvent,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReportBasis,
-  FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
+  FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,
+  AttentionNudgeReading, AttentionDelivery, TaskKind,
   Task, TaskBrief, TaskCard, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,

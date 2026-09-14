@@ -21,6 +21,12 @@ interface AttentionRow {
   status: "open" | "send-uncertain" | "answered" | "refused";
   answer: { text: string; at: number; by: "owner" } | null;
   refusedReason: string | null; closedAt: number | null;
+  delivery?: {
+    state: "read" | "unread" | "unknown"; entryId?: string; since?: number; readAt?: number; why?: string;
+    readBy?: { slot: number; openedAt: number; sessionId: string | null };
+    lastNudge?: { outcome: "unknown" | "accepted" | "unobserved" | "not-accepted"; at?: number; why?: string;
+      failure?: string; reason?: string; acceptance?: string };
+  } | null;
 }
 interface InboxEntry {
   id: string; kind: "attention-answer" | "fleet-report" | "audit-red"; at: number; ref: string;
@@ -617,6 +623,116 @@ export async function run(): Promise<void> {
 
   for (const slot of [mainA, mainB, mainC, successorSlot, lane.slot])
     if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
+
+  // --- 12. where an owner answer IS: the DERIVED delivery state (68ffbe09) ----------------------
+  // Owner decision (C) on attention 90a6ae45: I4 stays (answerAttention types nothing), and the
+  // owner's list and the MAIN's own GET say where the answer is instead — derived from the two facts
+  // that exist: the inbox pointer and its read receipt (durable), and the inbox nudge's last attempt
+  // on the bound MAIN (memory only). The live case this closes: 150 inbox nudges failed on one codex
+  // MAIN ("composer still holds 129 chars") while every answered row simply read `answered`.
+  // Fixture: fake-pi in mode "hold" keeps its buffer through Enter — the deterministic form of a
+  // pane that does not accept the paste (the same stand-in e2e/watch.ts's unattended-send block uses).
+  // BREAKS IF: the views stop joining the pointer (no `delivery`), a failed nudge is not recorded or
+  // not scoped to the pointer it carried (no `not-accepted` + reason), the process-local reading
+  // survives a restart as anything but `unknown`, or the receipt is not read back as `read`.
+  {
+    const deliveryMode = process.env.FLEET_E2E_COMPOSER_MODE ?? "";
+    const dSlot = await freeSlot();
+    // `pi`, not `pi-unfenced`: the inbox nudge goes through canDeliver's foreign-harness gate, and
+    // pi-unfenced is `automatable: false` forever — the gate would refuse before any send.
+    const dOpen = dSlot ? await post(`/api/slots/${dSlot}/open`, { cwd: REPO, label: "attention-delivery-main", harness: "pi" }) : null;
+    const dTok = dSlot ? await paneEnv(`s${dSlot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    check("attention delivery fixture: a `pi` MAIN with the stand-in composer is open, with its credential and the composer mode file",
+      !!dOpen?.ok && dSlot > 0 && /^[0-9a-f]{32}$/.test(dTok) && deliveryMode !== "",
+      JSON.stringify({ dSlot, open: dOpen?.status, tok: dTok.length, mode: deliveryMode !== "" }));
+    await stopSrv();
+    const dImage = JSON.parse(readFileSync(statePath, "utf8")) as
+      { slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[] };
+    const dRow = dImage.slots[String(dSlot)] ?? {};
+    const programD = "d1".repeat(12);
+    const dAt = Date.now() - 5000;
+    dImage.programs = [...(dImage.programs ?? []), {
+      id: programD, title: "Attention delivery fixture D", intent: "Say where an owner answer is",
+      successCriterion: "read / unread with the last nudge / unknown", nonGoals: [], decisions: [], evidence: [],
+      openQuestions: [], status: "active", createdAt: dAt - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: dAt - 900, activatedAt: dAt - 800,
+      main: { slot: dSlot, openedAt: dRow.openedAt, sessionId: dRow.sessionId ?? null, boundAt: dAt - 700 },
+    }];
+    writeFileSync(statePath, JSON.stringify(dImage, null, 2), { mode: 0o600 });
+    await restartSrv();
+
+    const dAnswered = await raised(await selfRaise(dTok, { kind: "decision", text: "Where does my answer end up?" }));
+    const dOpenRow = await raised(await selfRaise(dTok, { kind: "blocked", text: "Leave this one open." }));
+    const dAnswer = await post(`/api/attention/${dAnswered?.id}/answer`, { text: "In your inbox, not your pane." });
+    const dAnswerBody = await dAnswer.json() as { inbox?: string };
+    const dEntry = (await selfInbox(dTok)).view?.entries.find((e) => e.id === dAnswerBody.inbox);
+    const selfRow = async (id: string | undefined): Promise<AttentionRow | undefined> =>
+      (await selfAttention(dTok)).find((a) => a.id === id);
+    const ownerRow = async (id: string | undefined): Promise<AttentionRow | undefined> =>
+      (await ownerRows()).find((a) => a.id === id);
+    const before = await selfRow(dAnswered?.id);
+    const beforeOwner = await ownerRow(dAnswered?.id);
+    const openSelf = await selfRow(dOpenRow?.id);
+    const openOwner = await ownerRow(dOpenRow?.id);
+    // (a) no nudge has run (the timer is off): the pointer is unread since its own `at`, and the
+    // nudge reading is UNKNOWN — the absence of an attempt is not a delivery.
+    check("attention delivery (a): an answered row reads `unread` since its inbox pointer with the last nudge UNKNOWN in both views, and an open row carries null",
+      dAnswer.ok && !!dEntry && before?.delivery?.state === "unread" && before.delivery.entryId === dEntry.id
+        && before.delivery.since === dEntry.at && before.delivery.lastNudge?.outcome === "unknown"
+        && JSON.stringify(beforeOwner?.delivery) === JSON.stringify(before.delivery)
+        && openSelf?.status === "open" && openSelf.delivery === null && openOwner?.delivery === null,
+      JSON.stringify({ self: before?.delivery, owner: beforeOwner?.delivery, open: [openSelf?.delivery, openOwner?.delivery] }));
+
+    // (b) the nudge runs against a composer that does NOT accept: the row says so, with the reason.
+    writeFileSync(deliveryMode, "hold\n");
+    await restartSrv({ FLEET_HARNESS_AUTOMATION: "1", FLEET_INBOX_NUDGE_MS: "250", FLEET_BACKLOG_NUDGE_IDLE_MS: "300" });
+    // lastOutput !== 0 is a hard guard in tickInboxNudge: one Enter into the EMPTY composer redraws it.
+    await tmuxOut("send-keys", "-t", `s${dSlot}`, "Enter");
+    await Bun.sleep(1200);
+    const dNudges = async () => (await plogRead()).filter((e) => e.slot === dSlot && e.text.startsWith("[fleet inbox] "));
+    let nudged = await dNudges();
+    for (let i = 0; i < 100 && nudged.length === 0; i++) {
+      await Bun.sleep(100);
+      nudged = await dNudges();
+    }
+    const failedSelf = await selfRow(dAnswered?.id);
+    const failedOwner = await ownerRow(dAnswered?.id);
+    const failedNudge = failedSelf?.delivery?.lastNudge;
+    check("attention delivery (b): after an inbox nudge the composer did NOT accept, the answered row reads `unread` with the last nudge `not-accepted`, its failure class and reason, in both views",
+      nudged.length === 1 && nudged[0]?.delivery === "SendNotAccepted"
+        && failedSelf?.delivery?.state === "unread" && failedSelf.delivery.entryId === dEntry?.id
+        && failedNudge?.outcome === "not-accepted" && failedNudge.failure === "SendNotAccepted"
+        && (failedNudge.reason ?? "").includes("prompt not accepted") && typeof failedNudge.at === "number"
+        && JSON.stringify(failedOwner?.delivery) === JSON.stringify(failedSelf.delivery)
+        && readRow(dAnswered?.id)?.status === "answered" && !("delivery" in (readRow(dAnswered?.id) ?? {})),
+      JSON.stringify({ nudges: nudged.map((e) => e.delivery ?? null), self: failedSelf?.delivery, owner: failedOwner?.delivery }));
+    writeFileSync(deliveryMode, "normal\n");
+
+    // (c) GEGENPROBE: the reading lived in the process. After a restart it is UNKNOWN again — never
+    // `accepted`, never the stale `not-accepted` — while the durable half (unread since) is unchanged.
+    await restartSrv();
+    const afterRestart = await selfRow(dAnswered?.id);
+    check("attention delivery (c): after a server restart the nudge reading is UNKNOWN (memory only), the pointer still `unread` since the same instant",
+      afterRestart?.delivery?.state === "unread" && afterRestart.delivery.since === dEntry?.at
+        && afterRestart.delivery.lastNudge?.outcome === "unknown"
+        && (afterRestart.delivery.lastNudge.why ?? "").includes("since this server started"),
+      JSON.stringify(afterRestart?.delivery));
+
+    // (d) the MAIN's receipt is the one fact that says `read`.
+    const dRead = dEntry ? await fetch(`${BASE}/api/self/inbox/${dEntry.id}/read`,
+      { method: "POST", headers: { "x-fleet-self-token": dTok } }) : null;
+    const readSelf = await selfRow(dAnswered?.id);
+    const readOwner = await ownerRow(dAnswered?.id);
+    check("attention delivery (d): the bound MAIN's inbox receipt turns the row `read`, naming the reader slot and readAt, in both views",
+      !!dRead?.ok && readSelf?.delivery?.state === "read" && readSelf.delivery.readBy?.slot === dSlot
+        && typeof readSelf.delivery.readAt === "number" && readSelf.delivery.entryId === dEntry?.id
+        && JSON.stringify(readOwner?.delivery) === JSON.stringify(readSelf.delivery),
+      JSON.stringify({ status: dRead?.status, self: readSelf?.delivery, owner: readOwner?.delivery }));
+
+    await post(`/api/attention/${dOpenRow?.id}/refuse`, { reason: "12 fixture: delivery block, closed by hand." });
+    await post(`/api/programs/${programD}/complete`, {});
+    if (dSlot) await post(`/api/slots/${dSlot}/kill`, {});
+  }
 
   // Pre-provenance rows are a distinct historical shape: absence means UNKNOWN and must stay
   // absent on both disk and the owner route. Normalizing it to a five-null object would invent an

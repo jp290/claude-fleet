@@ -330,6 +330,13 @@ echo "=== machine hygiene (nothing reaps these) ==="
 echo "  leaked e2e tmux sockets: $(ls /private/tmp/tmux-501/ 2>/dev/null | grep -c fleet)"
 echo "  TMPDIR e2e scratch:      $(du -shc "${TMPDIR:-/tmp}"/fleet-e2e-instance-* 2>/dev/null | tail -1 | cut -f1)"
 echo "  suites running now:      $(ps -eo command | grep -c '^/bin/sh ./e2e-isolated.sh')"
+# silent at or below the threshold; handoff-rotate.ts#HANDOFF_WARN_KB is the same number (e2e/pins.ts)
+if [ -f "$MAIN_CHECKOUT/HANDOFF.md" ]; then
+  handoff_bytes=$(wc -c < "$MAIN_CHECKOUT/HANDOFF.md" | tr -d ' ')
+  [ "$handoff_bytes" -gt $((64 * 1024)) ] && echo "  HANDOFF.md $((handoff_bytes / 1024)) KB — rotieren (bun handoff-rotate.ts --dry-run)"
+else
+  echo "  HANDOFF.md UNKNOWN — not found in $MAIN_CHECKOUT"
+fi
 echo
 echo "=== config sensor (Wert+Quelle je FLEET_*, und ob ein Repo-Overlay den env-Wert schlaegt) ==="
 python3 - <<'PY'

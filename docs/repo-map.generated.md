@@ -32,7 +32,7 @@ Scope and sources, so the omissions are not silent:
 - `server/` — The server's own modules, cut out of `server.ts` by the Generalsanierung (P4): `types.ts` holds the persisted domain model and its `*From`/`load*` parsers, `errors.ts` the in-memory error channel (`logError`/`errorsView`), `persist.ts` the append-only JSONL event log and its rotation-aware ledger readers, `tmux.ts` the tmux socket and process wrappers, `transport.ts` the gzip/byte-ledger wrappers and the static-asset table (anchored on `PUB`, one level up from this directory), `dir-explorer.ts` the folder picker's caps, its slow-folder memory and the file readability and write-deny rules, `audit-log.ts` the security event trail — the `AuditEvent` vocabulary, `audit()` and `AUDIT_FILE` (anchored on `PUB` like `transport.ts`, so the ledger stays at the repo root), `http.ts` the leaf every other module may import — the `json()` response helper plus `HOST`/`PORT`, binding nothing from the core, `auth.ts` the token and share-credential surface (`tokenFrom`, `secretEq`, the share cookie gates, `ALLOWED_HOSTS` and the `guard` that answers the DNS-rebinding and cross-origin checks); `server.ts` stays the entry and keeps the state holders — including `transportReport` and `listDirs`/`findDirs`/`dirInfo`, which read core state the modules may not import.
 - `src/` — Modules shared across the server, the browser bundle and the suites — protocol types, the client, share rendering, shell quoting, markdown, backoff.
 
-## Top-level `.ts` and `.sh` files (57)
+## Top-level `.ts` and `.sh` files (58)
 
 - `acceptance-probe.sh` — ACP-25 REAL-TUI ACCEPTANCE PROBE — not a gate. It boots an isolated Fleet instance on its own
 - `acceptance-probe.ts` — ACP-25 real-TUI acceptance probe (driver: acceptance-probe.sh). Every check below is against the
@@ -69,6 +69,7 @@ Scope and sources, so the omissions are not silent:
 - `handoff-rotate.ts` — handoff-rotate.ts — keeps HANDOFF.md's top `#` section and appends every other one, byte for byte, to docs/attic.
 - `land-candidate.ts` — land-candidate.ts — pure, read-only projection of merge facts for future PromotionPolicy work.
 - `land-collision-stats.ts` — Read-only score of the R4 collision rule against what landed lanes really collided on.
+- `land-quality.ts` — The delayed truth about a land — were the lines it inserted rewritten by main within days?
 - `lane-signals.ts` — --- `done-looking` as a DETERMINISTIC predicate (docs/attic/perception-layer.md §3).
 - `merge-prompt.ts` — The conflict-resolver agent's prompt, extracted as a PURE function so its INFORMATION
 - `program-phase.ts` — --- WHERE A PROGRAM ROW SITS ON THE RAIL, as a pure function over facts Fleet already holds.

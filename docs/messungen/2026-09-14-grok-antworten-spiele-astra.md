@@ -1,6 +1,6 @@
 ---
 frage: Was antwortete Grok (zwei Sessions, 2026-09-14) auf die beiden Prompts aus docs/messungen/2026-09-14-grok-fragen-spiele-astra.md — Astra-Orchestrierung und Astra-Game-Development?
-urteil: ROHMATERIAL, WOERTLICH, Antwort 2 vollstaendig (Owner 2026-09-14 09:1x, Board-Editor); Antwort 1 noch als Fragment — der zweite Einfuegeversuch brachte Antwort 2 doppelt. Auswertung und die daraus gefileten Zeilen in eigener Notiz. Groks eigener Schluss: naechster Auftrag = Empfehlung 1 (Stack-Duell 24 h / ein spielbarer Wasser-Schnitt in einem Thread) als isolierte Lane mit messbarem Abbruch, kein neues Rollenpapier.
+urteil: ROHMATERIAL, WOERTLICH, Antwort 2 vollstaendig (Owner 2026-09-14 09:1x, Board-Editor); Antwort 1 seit 12:4x per Chat, mit drei markierten Luecken; das aeltere Fragment bleibt darunter — der zweite Einfuegeversuch brachte Antwort 2 doppelt. Auswertung und die daraus gefileten Zeilen in eigener Notiz. Groks eigener Schluss: naechster Auftrag = Empfehlung 1 (Stack-Duell 24 h / ein spielbarer Wasser-Schnitt in einem Thread) als isolierte Lane mit messbarem Abbruch, kein neues Rollenpapier.
 bereich: [spiele, astra, grok, orchestrierung, game-dev]
 belege: [Prompts: docs/messungen/2026-09-14-grok-fragen-spiele-astra.md (490953f9); Plan §5d docs/plan-fleet-betrieb-2026-09-13.md; Richtung 262a8f71]
 nicht-gemessen: alles — das ist Recherche eines Dritten; Quellen darin sind ungeprueft, bis eine Auswertungs-Zeile sie nachschlaegt
@@ -13,9 +13,233 @@ Beide Antworten woertlich, vom Owner eingefuegt (Grok-Sessions 2026-09-14). Prom
 
 ## Antwort 1 — Astra-Orchestrierung (Prompt 1)
 
-<!-- HIER EINFUEGEN: die ORCHESTRIERUNGS-Antwort (Sub-Agent-Threads vs Worktrees, MAIN-Pruefung, Beispielbrief, A/B/C). Beim letzten Einfuegen kam hier ein zweites Mal die Game-Dev-Antwort an. -->
+Woertlich, vom Owner 2026-09-14 12:4x per Chat an die Orchestratorin durchgereicht (nicht ueber den
+Board-Editor). DREI LUECKEN, alle als `<!-- LUECKE -->` markiert: der Anfang fehlt (der Text setzt
+mitten im Satz ein), ein Satz in §1 ist abgeschnitten, und der Uebergang von §5 zu „Drei
+Empfehlungen" samt Empfehlung 1 fehlt. Eine Vollfassung ueber den Editor ersetzt diesen Block.
 
-### Antwort 1 — Fragment aus dem Terminal-Paste (unvollstaendig, bis die Vollfassung oben steht)
+<!-- LUECKE: Anfang der Antwort (Stand-der-Recherche-Zeile, Vorspann bis „…startet ihr Astra mit") fehlt -->
+
+…startet ihr Astra mit `codex -m gpt-6-astra` bzw. `model = "gpt-6-astra"` in `config.toml`. Ab etwa CLI 0.153.x ist Astra wählbar; 0.154.0 (9.9.2026) nimmt Astra in den Picker und ergänzt experimentelle Worktrees. Azure nennt 0.152.1 und 0.153.0 als mit Astra **validiert**, inkl. Multi-Agent-Orchestrierung — das ist Versionskompatibilität, kein Qualitätsbeweis für Spiele.
+
+**Fehlende Astra-Belege (ausdrücklich).**
+- Keine öffentliche Anleitung „Astra formuliert selbst geeignete Teilaufträge für Spiele".
+- Kein reproduzierbarer Vergleich native Threads vs. getrennte Worktree-Sessions unter Astra.
+- Kein Beleg, dass Astra Selbstbehauptungen (Kommentar = Beweis) zuverlässiger erkennt als frühere Modelle.
+- Codex Cloud: Astra dort laut inoffizieller Modellspiegelung **nicht** verfügbar; lokal/CLI/IDE ja.
+- Community-Setups (Astra-Orchestrator + Luna-Subagents, Drittanbieter-Gateways) sind keine OpenAI-Vorgabe.
+
+---
+
+### 1. Instruktionen und Harness-Einstellungen für Delegation
+
+#### Belegt: Wann Codex überhaupt delegiert
+
+Offizielle Codex-Doku beschreibt **zwei** Auslöser, die sich je nach Seite leicht widersprechen:
+
+1. **Explizite Nutzeranweisung** — Formulierungen wie „spawn two agents", „delegate this work in parallel", „use one agent per point". Eine Konzepteite sagt zusätzlich: Codex spawne **nicht automatisch** und solle Subagents nur nutzen, wenn ihr ausdrücklich parallel Arbeit verlangt.
+2. **Projekt-/Skill-Texte** — aktuelle Subagent-Seite: lokale Codex-Releases delegieren auch, wenn `AGENTS.md` oder Skills Delegation verlangen.
+
+Das ist ein **Doku-Widerspruch** (Juli-Konzepteite vs. spätere How-to-Seite). Für den Pilot gilt konservativ: Delegation nur dann als Absicht behandeln, wenn der Brief *und* `AGENTS.md` sie namentlich verlangen; nicht darauf vertrauen, dass Astra „von selbst" sinnvoll teilt.
+
+Offizielle Prompt-Form für parallele Arbeit: Arbeitsteilung sagen, warten oder nicht warten sagen, gewünschte Rückgabe sagen. Beispiel aus der Doku:
+
+> Review this branch with parallel subagents. Spawn one subagent for security risks, one for test gaps, and one for maintainability. Wait for all three, then summarize the findings by category with file references.
+
+#### Belegt: Harness-Knöpfe
+
+In `config.toml` unter `[agents]`:
+
+| Einstellung | Öffentliche Wirkung |
+|---|---|
+| `enabled` | Multi-Agent-Tools an/aus (Default an) |
+| `max_concurrent_threads_per_session` / Legacy `max_threads` | Deckel offener Kind-Threads (Default oft 6) |
+| `max_depth` | Schachtelung; Default 1 = Kinder dürfen nicht weiter delegieren |
+| `default_subagent_model` / `default_subagent_reasoning_effort` | Spawn-Defaults |
+| Custom-Agent-TOML in `.codex/agents/` | `name`, `description`, `developer_instructions`; optional `model`, `sandbox_mode` |
+
+Eingebaute Rollen: `explorer` (leseintensiv), `worker` (Umsetzung), `default`. Custom-Agent mit `sandbox_mode = "read-only"` ist das dokumentierte Muster für Beweis-Sammlung ohne Schreibrecht.
+
+`AGENTS.md` lädt vor der Arbeit: Build/Test-Befehle, Kon<!-- LUECKE: Satz abgeschnitten -->…geer Default `max_threads ≈ 6` **nicht** konservativ. Öffentliche Issues zeigen 429er schon bei Parent + wenigen Kindern.
+
+---
+
+### 2. Native Sub-Agent-Threads vs. getrennte Sessions mit Worktrees
+
+#### Was nativ ist (Codex)
+
+Native Threads: Parent nutzt `spawn_agent` / Follow-ups; Codex wartet, sammelt, schließt Threads; `/agent` wechselt. Kind erbt Sandbox und Freigabemodus des Parents, außer Custom-Agent setzt `sandbox_mode`. Es gibt **keine** offizielle Aussage, dass native Threads automatisch eigene Git-Worktrees bekommen. Parallel schreibende Kinder teilen denselben Baum — genau die Warnung der Doku.
+
+Im Codex-Quelltext existiert `fork_turns` (wie viel Elternkontext an Kinder geht). Das ist Implementierungsdetail, keine Nutzer-Garantie für vollständige Kontextübernahme.
+
+#### Was Worktrees isoliert
+
+**Codex-App (dokumentiert, nicht experimental):** Modus *Worktree* legt einen Git-Worktree an (`$CODEX_HOME/worktrees`), eigener Dateibaum, geteiltes `.git`. Ein Branch nur in einem Worktree gleichzeitig. Ignorierte Dateien nur mit `.worktreeinclude`. Codex-managed Worktrees sind wegwerfbar.
+
+**Codex CLI 0.154.0 (9.9.2026, experimental):** `--worktree` / `/worktree` für neue oder geforkte Sessions; Feature erst aktivieren. Gilt für Session/Fork/`codex exec`, **nicht** als dokumentierte Auto-Isolation jedes nativen Kindes.
+
+**Claude Code (Vergleich, nicht Astra):** Sessions mit `--worktree`; Subagents mit `isolation: worktree`. Offiziell: Worktrees isolieren Dateiedits; Subagents teilen Arbeit in einer Session. Es gibt dokumentierte Bugs (cwd-Bleed in den Parent).
+
+„Claude Fleet" als Produktname ist öffentlich vor allem ein Drittrepo, nicht euer internes MAIN/Lanes/Gate. Übertragbar ist nur das Muster: isolierter Checkout + begrenzter Auftrag + serverseitiges Merge-Gate.
+
+#### Vergleich (belegt vs. Schlussfolgerung)
+
+| Achse | Native Threads (Codex) | Getrennte Session + Worktree |
+|---|---|---|
+| Kontextübernahme | Parent orchestriert; Summaries zurück; `fork_turns` im Code, Umfang nicht nutzergarantiert | **Belegt:** kein automatischer Chat-Kontext. Brief muss Quellen tragen |
+| Schreibisolation | **Belegt:** gemeinsamer Baum, Konfliktrisiko | **Belegt:** eigener Checkout. Branch-Exklusivität beachten |
+| Unabhängige Kritik | Dieselbe Session/Modelllinie synthetisiert. Kein zweiter Wahrnehmungskanal | Zweite Session kann denselben Diff ohne Parent-Narrativ lesen. **Unabhängig ≠ wahr** |
+| Kosten | Mehr Tokens je Kind; Quota/429 bei Parallelität | Zweite Session + zweites Reasoning; Worktree-Plattenplatz |
+| Integration | Automatisches Wait/Consolidate | Owner/MAIN muss Diff mergen; passt zu eurem Gate |
+
+**Meinung, als Übertragung markiert:** Lesende Exploration → native Threads mit `read-only`. Schreibende Lane → **eine** Session in einem Worktree, nicht drei native Writer. Das ist Harness-Physik plus RAM, kein Astra-Superpower.
+
+---
+
+### 3. Wie MAIN Ergebnisse prüft — und welche Fehler belegt sind
+
+#### Belegte Prüfinstrumente (Codex, modellunabhängig)
+
+Offizielle Best Practices: nicht bei „Änderung gemacht" stehen bleiben; Tests laufen, Checks, Verhalten bestätigen, Diff prüfen. `/review` gegen Basisbranch, uncommitted oder Commit; `/diff`. `AGENTS.md` soll „Done" und Verifikation enthalten.
+
+Das prüft **Baum und Tests**, nicht Geschmack und nicht „ist das Spiel spielbar". Owner-Stand 13.09. bleibt maßgeblich: nicht gespielt = nicht abgenommen. Das ist euer interner Befund, kein OpenAI-Satz.
+
+#### Prüfprotokoll, das die öffentlichen Lücken schließt
+
+MAIN sollte Handoffs **nicht** am Kind-Text messen. Minimal:
+
+1. **Tatsächlicher Diff** — `git diff` / `/diff` gegen den Auftrag; Dateien außerhalb der Schreibfläche = Fail.
+2. **Revision** — Commit-Hash im Worktree, nicht „ich habe gepatcht".
+3. **Testausgabe** — Roh-Log der genannten Befehle, nicht Paraphrase.
+4. **Ausgelassene Pflichten** — Brief-Checkliste Punkt für Punkt; fehlender Punkt = unfertig, kein Teil-Erfolg.
+5. **Nicht zugestellte Resultate** — Thread geschlossen ohne Artifact-Pfad; Quota vollgelaufen; Spawn abgelehnt.
+
+Unabhängige Produktwahrnehmung (anderer Browser-Rechner, Mensch) bleibt außerhalb des Modells. Interne Private-repo-p-Synthese (Kommentar als Beweis) ist **Erfahrungsbericht**, übertragbar als Prüfvorschrift, nicht als Astra-Messung.
+
+#### Typische Fehler — getrennt
+
+**Belegt öffentlich (Harness):**
+- Fertige Subagents zählen weiter gegen das Thread-Limit, bis explizit geschlossen.
+- Mehr als wenige gleichzeitige Streams: 429, auch Parent+Kinder. Ab ~29.8.2026 in einem dokumentierten Pro-Setup.
+- Je nach Parent-Modell: Kinder ignorieren konfiguriertes Billigmodell, Threads fehlen in `/agent`, Token-Bleed. Issue vom 12.7.2026, CLI 0.144.1 — **nicht** an Astra gebunden.
+- Parallel schreiben im selben Baum: offizielle Warnung, kein Einzelfall-Blog.
+
+**Erfahrungsbericht intern (keine Astra-Kontrollgruppe):**
+- Selbstbehauptung im Proof (Private-repo-j I, 26.08.).
+- Historische Proofs nach Reparatur, kein Produktstopp (Private-repo-j II, 27.08.).
+- Hoher Prozessanteil, unklare Trennung zweier Anläufe (Private-Repo-C).
+- Gate bleibt offen nach vielen Critic-Runden; Aufwand in Browserstart/Lesbarkeit/Brief (Private-repo-f, 19.08.).
+- MAIN akzeptiert Kommentar als Beweis (Private-repo-p, 03.09.).
+
+**Nicht belegt:** Astra sei immun gegen diese Fehler. OpenAI behauptet leichtere Nachvollziehbarkeit und weniger Iteration bis „production quality" — Vendor-Claim ohne euer Abnahmekriterium.
+
+---
+
+### 4. Kurze Brief-Form und nutzbarer Beispielbrief
+
+#### Was nachweislich dokumentiert ist (nicht „wirkt nachweislich in Spielen")
+
+Belegt als *empfohlene Form*, nicht als Outcome-Studie:
+
+- Vierfelder: Goal / Context / Constraints / Done when.
+- Bei Delegation: Teilung, Wait-Regel, Rückgabeform.
+- Für Astra: Quellen, Vorlagen, Constraints, Checks.
+- Schmale Custom-Agents, Toolfläche = Job, kein Driften.
+
+„Nachweislich kürzer = besser" ist **nicht** belegt. Unbelegte Prompt-Wirkung = Hypothese.
+
+#### Beispielbrief (direkt nutzbar)
+
+Status: **Übertragung** der offiziellen Vierfelder-Form auf euren Scope. Wirkung auf Astra: Hypothese.
+
+```text
+ROLLE: Lesender Subagent (explorer). Kein Schreiben außer einer Datei unter /tmp/handoff/.
+
+ZIEL
+Karten, wie im aktuellen Checkout Wasser gerendert und als Spielzustand
+geführt wird. Keine Feature-Arbeit. Kein Damm-Gameplay erfinden.
+
+QUELLEN (nur diese)
+- Repo-Root inkl. AGENTS.md
+- Suche nach: water, dam, beaver, canvas, webgl, swiftshader
+- docs/ oder README, falls vorhanden
+Nicht nutzen: alte Demo-Videos, Chat-Erinnerungen, „früher hat's geklappt".
+
+BEFUGNISSE
+- Lesen, Suchen, Tests im Dry-Run lesen
+- Höchstens bestehende headless Testdateien ausführen, wenn der Befehl
+  in AGENTS.md steht
+- Keine Commits, keine Abhängigkeiten installieren, die nicht schon da sind
+- Keine zweiten Agenten spawnen (max_depth bleibt 1)
+
+SCHREIBFLÄCHE
+Nur /tmp/handoff/water-map.md
+Verboten: src/, public/, package.json, Testdaten, AGENTS.md
+
+ABSCHLUSSBEWEIS (ohne das ist der Auftrag unfertig)
+Datei mit:
+1. Dateipfaden + Symbolnamen für Renderpfad (Canvas2D vs WebGL2)
+2. Wo Wasser ein Spielzustand ist — oder wörtlich: „kein Zustand, nur Optik"
+3. Befehl, der auf dieser Maschine (headless Linux, ≤8 GB) eine
+   sichtbare Wasserfläche startet; oder „kein reproduzierbarer Startbefehl"
+4. Rohauszug der letzten 30 Zeilen, falls ein Befehl lief
+Kein Satz der Form „funktioniert", „demo ready", „Damm wirkt".
+
+RÜCKGABE
+- Pfad der Handoff-Datei
+- git rev-parse HEAD
+- Liste unerledigter Briefpunkte
+MAIN prüft Diff (muss leer sein im Repo) + Handoff-Datei.
+
+STOP-GRENZE
+Nach 25 Minuten Wandzeit oder nach 1 fehlgeschlagenen Testdurchlauf: stoppen,
+Handoff mit Lücken schreiben. Keine Reparaturspuren, kein zweiter Anlauf
+im selben Thread. Keine Promotion nach main.
+```
+
+Schreibende Variante: eine Datei oder ein Verzeichnis als Schreibfläche; Done when = *menschlich* im anderen Browser sichtbares Verhalten plus Testlog; Promotion bleibt Owner.
+
+---
+
+### 5. Kleiner Vergleich — ohne Delegationszahl als Erfolg
+
+**Belegt als Designregel:** Subagent-Zahl und Prozessmenge sind Kosten, keine Qualität. Offiziell steigen Tokens mit jedem Kind. Interne Audits zeigen Prozess ohne spielbare Abnahme.
+
+**Versuchsplan (Meinung/Übertragung, messbar):**
+
+Gleicher Auftrag, neues Repo, Steinbruch nur als gelesene Vorlage, Stack frei aber Startziel fest:
+
+> „Eine leere Karte, ein Biber, ein Wasserfeld. Spieler kann einen Damm-Balken setzen. Wasser staut sich sichtbar (Canvas2D reicht). Kein Gegner, keine Ökonomie, kein Sieg."
+
+Drei Arme à ein Lauf, nicht parallel auf derselben Maschine (RAM + 429):
+
+| Arm | Harness |
+|---|---|
+| A | Eine Astra-Session, keine Subagents, lokaler Checkout |
+| B | Astra-MAIN + ein nativer `explorer` (read-only), danach MAIN schreibt selbst |
+| C | Astra in `codex exec --worktree` (CLI ≥ 0.154, Feature an), ein Writer, eigener Checkout |
+
+**Messgrößen (Empfänger = Owner oder benannter Prüfer, anderer Browser):**
+- Zeit bis *spielbare* Änderung: erste Session-Startzeit → Zeitpunkt, an dem der Prüfer den Damm setzt und Stau *sieht* (nicht Agent-Behaupt<!-- LUECKE: Rest der Messgroessen, Ueberschrift „Drei Empfehlungen" und Empfehlung 1 fehlen; der Text setzt mitten in Empfehlung 1 wieder ein -->…budget: 45 min inkl. MAIN-Prüfung.
+- Abbruch: Spawn ohne Brief, Schreibversuch im Repo, oder „Wasser wirkt" ohne Pfad/Log.
+
+**2. Eine Schreibfläche, ein Writer, Worktree sobald CLI 0.154 trägt.**
+Keine parallelen Writer auf dem Hauptcheckout. Native Threads nicht für gleichzeitige Edits.
+- Erfolg: spielbarer Damm-Stau auf dem menschlichen Browser-Rechner; `git diff` nur in der vereinbarten Fläche; Testlog angehängt.
+- Zeitbudget: 3 h Wandzeit für den ersten Slice (leere Karte + Wasser + ein Damm).
+- Abbruch: zweiter Writer, Merge-Konflikt im selben Baum, oder nach 3 h kein vom Menschen gesehener Stau — Slice verwerfen, nicht „weiter reparieren".
+
+**3. MAIN prüft Artefakte, nicht Prosa.**
+Checkliste: Diff, HEAD, Testrohlog, Briefpunkte, Stop-Grenze. `/review` und `/diff` als Werkzeug, nicht als Abnahme. Owner spielt oder der Slice gilt als nicht geliefert.
+- Erfolg: Prüfer braucht ≤ 20 min und entscheidet promote / reject ohne Agent-Kommentar als Beweis.
+- Zeitbudget: 20 min Prüfung pro Handoff.
+- Abbruch: Kommentar ohne Diff, wiederverwendeter Alt-Proof, oder Gate-Diskussion länger als die Spielfrist.
+
+---
+
+**Kurzfassung:** Astra kann im Codex-Harness Threads starten, warten und zusammenfassen. Geeignete Teilaufträge entstehen öffentlich belegt durch *euren* Brief, `AGENTS.md` und Custom-Agents — nicht durch eine dokumentierte Astra-Autonomie für RTS. Native Threads teilen den Baum; Isolation ist Worktree/Session, bei CLI noch experimental. Wirksamkeit in eurem Spiel ist ungemessen. Der Pilot wertet sichtbaren Stau und Prüferzeit, nicht die Zahl der Agenten.
+
+### Antwort 1 — aelteres Fragment aus dem Terminal-Paste (deckt u.a. den fehlenden Anfang: Modellkarte, Erfahrungsberichte)
 
 - Belegt zu Astra als MODELL, nicht zur Delegation: gpt-6-astra, Kontext 1 050 000 / Output 128 000,
   Efforts low|medium|high|xhigh|max, kein `none`; Tools computer_use, code_interpreter, apply_patch;

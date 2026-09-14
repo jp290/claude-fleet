@@ -628,6 +628,9 @@ for (const s of (await dispSess()).slots) if (s.worktree && !lanesBefore.has(s.i
   const cmd0 = await startCmdOf();
   check("↻ restart: a fresh slot is pinned with --session-id, not resumed",
     !!pin0 && cmd0.includes(`--session-id ${pin0}`), `pin=${pin0} cmd=${cmd0.slice(-160)}`);
+  // a plain (non-lane) session keeps its ambient MCPs: the text-lane profile is a LANE property only
+  check("a plain slot under a real claude spawns WITHOUT --strict-mcp-config (MAIN/plain sessions keep ambient MCPs)",
+    cmd0.includes("claude") && !cmd0.includes("--strict-mcp-config"), cmd0.slice(-160));
 
   // (a) a pin whose transcript never existed — the fake claude writes none. The conversation is
   // genuinely gone, so the route must SAY so and the pane must start fresh.
@@ -703,6 +706,114 @@ for (const s of (await dispSess()).slots) if (s.worktree && !lanesBefore.has(s.i
   // throwaway project folder we caused and never anything that was already there.
   rmSync(trFile, { force: true });
   try { rmdirSync(trDir); } catch { /* not ours to empty — leave it */ }
+}
+
+// --- THE LANE MCP PROFILE (Slot.browser, 2026-09-14). A lane that does not ask for a browser starts
+// claude with --strict-mcp-config (zero MCP servers, so no Playwright children — measured on the real
+// binary: docs/harness-adapter.md); a lane that asks keeps the ambient set. Only this suite can see it:
+// the flag is on agentCmd's claude branch. Every row reads the PANE's own command line, never the 200,
+// and the profile must survive the respawn a lane actually meets — a ↻ restart that RESUMES. ---
+{
+  const laneRepo = `${process.cwd()}/dispatchrepo`;
+  const paneCmd = async (slot: number): Promise<string> => {
+    let cmd = "";
+    for (let i = 0; i < 40; i++) {
+      cmd = (await tmuxOut("display-message", "-p", "-t", `s${slot}`, "#{pane_start_command}")).out;
+      if (cmd.includes("claude")) break;
+      await Bun.sleep(250);
+    }
+    return cmd;
+  };
+  type StateRow = { sessionId?: string | null; browser?: unknown };
+  const stateSlot = (slot: number): StateRow | null => {
+    try {
+      return (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, StateRow> })
+        .slots?.[String(slot)] ?? null;
+    } catch { return null; }
+  };
+  const sessBrowser = async (slot: number): Promise<unknown> =>
+    ((await (await get("/api/sessions")).json()) as { slots: { id: number; browser?: unknown }[] })
+      .slots.find((x) => x.id === slot)?.browser;
+
+  // (1) the default: a text lane, and its ↻ restart that resumes
+  const tRes = await post("/api/lanes", { repo: laneRepo });
+  const tJ = (await tRes.json()) as { slot?: number; cwd?: string; error?: string };
+  check("MCP profile: POST /api/lanes opens a default (text) lane under a real claude", tRes.ok && !!tJ.slot, JSON.stringify(tJ));
+  if (tJ.slot && tJ.cwd) {
+    const T = tJ.slot;
+    const tCmd = await paneCmd(T);
+    // the probe's own precondition, failing as ITSELF: no claude line means nothing was measured
+    check("MCP profile precondition: the text lane's pane carries the claude line", tCmd.includes("claude"), tCmd.slice(-160) || "no pane command");
+    check("a lane with no browser need spawns claude with --strict-mcp-config (no ambient MCP, no Playwright children)",
+      tCmd.includes("--strict-mcp-config"), tCmd.slice(-200));
+    const tView = await sessBrowser(T);
+    check("the text lane's session row carries no browser field", tView === undefined, JSON.stringify(tView));
+    let pinT: string | null = null;
+    for (let i = 0; i < 40; i++) { pinT = stateSlot(T)?.sessionId ?? null; if (pinT) break; await Bun.sleep(250); }
+    const tDir = `${process.env.HOME}/.claude/projects/${tJ.cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    const tFile = `${tDir}/${pinT}.jsonl`;
+    if (pinT) await Bun.write(tFile, `${JSON.stringify({ type: "user", timestamp: "2026-09-14T09:00:00Z" })}\n`);
+    const tR = await post(`/api/slots/${T}/restart`, {});
+    const tRJ = (await tR.json()) as { resumed?: boolean };
+    const tRCmd = await paneCmd(T);
+    check("MCP profile precondition: the text lane's ↻ restart really resumed its pinned conversation",
+      !!pinT && tR.ok && tRJ.resumed === true && tRCmd.includes(`--resume ${pinT}`), `${JSON.stringify(tRJ)} ${tRCmd.slice(-160)}`);
+    check("a RESUMED text lane keeps its profile — --strict-mcp-config on the --resume line",
+      tRCmd.includes("--strict-mcp-config"), tRCmd.slice(-200));
+    await post(`/api/slots/${T}/kill`, {});
+    rmSync(tFile, { force: true });
+    try { rmdirSync(tDir); } catch { /* not ours to empty — leave it */ }
+  }
+
+  // (2) the explicit browser lane: ambient MCPs, the profile persisted and carried through a respawn
+  const bRes = await post("/api/lanes", { repo: laneRepo, browser: true });
+  const bJ = (await bRes.json()) as { slot?: number; error?: string };
+  check("MCP profile: POST /api/lanes accepts browser:true for the claude adapter", bRes.ok && !!bJ.slot, JSON.stringify(bJ));
+  if (bJ.slot) {
+    const B = bJ.slot;
+    const bCmd = await paneCmd(B);
+    check("MCP profile precondition: the browser lane's pane carries the claude line", bCmd.includes("claude"), bCmd.slice(-160) || "no pane command");
+    check("a lane that names browser:true spawns claude WITHOUT --strict-mcp-config (ambient MCPs, Playwright included)",
+      !bCmd.includes("--strict-mcp-config"), bCmd.slice(-200));
+    check("the browser lane's profile is persisted on the slot (fleet.json browser:true)", stateSlot(B)?.browser === true,
+      JSON.stringify(stateSlot(B)?.browser));
+    const bView = await sessBrowser(B);
+    check("the browser lane's session row says browser:true", bView === true, JSON.stringify(bView));
+    const bR = await post(`/api/slots/${B}/restart`, {});
+    const bRCmd = await paneCmd(B);
+    check("a ↻ restarted browser lane keeps its profile — still no --strict-mcp-config",
+      bR.ok && bRCmd.includes("claude") && !bRCmd.includes("--strict-mcp-config"), bRCmd.slice(-200));
+    await post(`/api/slots/${B}/kill`, {});
+  }
+
+  // (3) the task door: a row that stores browser:true starts its lane through ▸ start as a browser lane
+  const qRes = await post("/api/tasks", { text: "mcp-profile-browser-row", queue: false, browser: true });
+  const qJ = (await qRes.json()) as { task?: { id: string; spawn?: { browser?: unknown } } };
+  check("POST /api/tasks persists browser:true on the row's spawn choice", qRes.ok && qJ.task?.spawn?.browser === true,
+    JSON.stringify(qJ.task?.spawn));
+  if (qJ.task) {
+    const qd = await post(`/api/tasks/${qJ.task.id}/dispatch`, {});
+    const qdJ = (await qd.json()) as { slot?: number; error?: string };
+    const qCmd = typeof qdJ.slot === "number" ? await paneCmd(qdJ.slot) : "";
+    check("▸ start of a browser row spawns a lane WITHOUT --strict-mcp-config (the row's choice reaches the pane)",
+      qd.ok && qCmd.includes("claude") && !qCmd.includes("--strict-mcp-config"), `${qd.status} ${JSON.stringify(qdJ)} ${qCmd.slice(-160)}`);
+    if (typeof qdJ.slot === "number") await post(`/api/slots/${qdJ.slot}/kill`, {});
+    await post(`/api/tasks/${qJ.task.id}/delete`, {});
+  }
+  // ...and a body `false` wins per field over the row, exactly like harness/model/effort. A SECOND row,
+  // not a re-start of the first: that one's post-spawn tail may still be running against its lane.
+  const q2Res = await post("/api/tasks", { text: "mcp-profile-browser-row-overridden", queue: false, browser: true });
+  const q2J = (await q2Res.json()) as { task?: { id: string } };
+  check("queue a second browser row for the body-override counter-proof", q2Res.ok && !!q2J.task, String(q2Res.status));
+  if (q2J.task) {
+    const qd2 = await post(`/api/tasks/${q2J.task.id}/dispatch`, { browser: false });
+    const qd2J = (await qd2.json()) as { slot?: number; error?: string };
+    const q2Cmd = typeof qd2J.slot === "number" ? await paneCmd(qd2J.slot) : "";
+    check("▸ start with body browser:false over a browser row spawns a TEXT lane (body wins per field)",
+      qd2.ok && q2Cmd.includes("--strict-mcp-config"), `${qd2.status} ${JSON.stringify(qd2J)} ${q2Cmd.slice(-160)}`);
+    if (typeof qd2J.slot === "number") await post(`/api/slots/${qd2J.slot}/kill`, {});
+    await post(`/api/tasks/${q2J.task.id}/delete`, {});
+  }
 }
 
 console.log(results.join("\n"));

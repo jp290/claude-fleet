@@ -345,6 +345,23 @@ Netzwerkkosten werden nicht als null behauptet.
     unabhängig zurück. Bewusst NICHT gebaut: eine Fehlermeldung für Image↔Kontext-Kopplung — Fleet fragt
     `docker` per Stufe-1-Entscheid nichts, kann das also nicht wissen; es meldet dockers eigener Fehler in der
     Pane. Tiefe: `docs/container.md`, Abschnitt „Per slot, not per fleet".
+  - **Lanes starten seit 2026-09-14 OHNE Browser-MCP, außer die Aufgabe verlangt einen** (Schnitt C2 aus
+    `docs/messungen/2026-09-14-ram-optimierung-astra.md` §F4: 203 MiB je Claude-Pane, 3 von 193
+    Lane-Verzeichnissen riefen in 14 Tagen überhaupt ein Playwright-Tool). `browser: true` ist eine
+    Spawn-Option wie `effort` — `POST /api/lanes`, `…/open-worktree`, `Task.spawn` (beide Create-Türen) und
+    die Dispatch-/Wellen-Tür (Body-Feld gewinnt, sonst die Zeile); am Slot persistiert (`Slot.browser`), also
+    trägt Heal, ↻ Restart, Server-Neustart und `succeedLane` das Profil weiter. Gelesen wird es NUR für einen
+    Slot mit Worktree (`server.ts#ensureSlot`, `browserMcp: !s.worktree || occupant.browser`): MAINs,
+    Controller und Plain-Sessions behalten ihre ambienten MCPs. Je Adapter disponiert (`Harness.browserProfile`,
+    auch in `GET /api/harnesses`): **claude `apply`** — Text-Lane bekommt `--strict-mcp-config`
+    (`server.ts#agentCmd`), das lädt NULL MCP-Server; es entfallen also bewusst auch figma-/github-Plugin
+    und die claude.ai-Connectoren (am 2026-09-14 alle drei unauthentisiert bzw. 400). **codex `apply`** —
+    `-c` mit der VOLLEN `mcp_servers.playwright`-Definition samt `enabled=false`
+    (`server.ts#CODEX_TEXT_LANE_MCP`, frische und resume-Form); alle anderen Codex-MCPs bleiben. **pi-Familie
+    `not-applicable`**, **container `unsupported`**: dort ist `browser: true` ein **400**. Fleet schreibt dafür
+    weder `~/.claude/settings.json` noch `~/.codex/config.toml` (Pin in `e2e/pins.ts`). Gemessen am
+    2026-09-14 auf eigenem tmux-Socket, Kinder nach Executable-/Skriptposition gezählt: claude ambient 2 →
+    strict 0; codex frisch ambient 2 → Override 0; `codex resume <id>` mit Override 0.
   - **`composer` — Annahme wird BEOBACHTET, nicht geechot (ACP-25, 2026-08-22).** Ein Adapter darf
     deklarieren, wo seine TUI den Composer malt (`{kind:"glyph", re}` = letzte Zeile mit diesem Glyph;
     `{kind:"rules"}` = Region zwischen den letzten zwei Vollbreiten-Linien). `sendText` liest den

@@ -525,6 +525,10 @@ export async function run(ctx: Ctx): Promise<void> {
     resumeCmd.includes(`codex resume '${OLD_A}' --dangerously-bypass-approvals-and-sandbox`)
       && resumeCmd.includes("--model 'gpt-5-codex'")
       && resumeCmd.includes("-c model_reasoning_effort='high'"), resumeCmd.slice(-260));
+  // a PLAIN (non-lane) Codex slot keeps its ambient MCPs on the resume line too — the text-lane override
+  // (server.ts#CODEX_TEXT_LANE_MCP) is a lane property and must never reach a MAIN's respawn
+  check("a resumed plain Codex slot carries no text-lane playwright override",
+    resumeCmd.includes("codex resume") && !resumeCmd.includes("mcp_servers.playwright"), resumeCmd.slice(-260));
   check("resume preserves the owner-selected pin and disconnect advisory", resumed?.sessionId === OLD_A
     && resumed.disconnectSeenAt === disconnected?.disconnectSeenAt, JSON.stringify(resumed));
   const persistedRow = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, {

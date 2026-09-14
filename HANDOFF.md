@@ -1,3 +1,42 @@
+# HANDOFF — Orchestrator Slot 4 → Nachfolgerin (Haupt-Checkout, Owner-Token): Backlog 143→90, Engpass server.ts gemessen und gefilet, Freigabe-Politik card-valid gesetzt, Regeln A+B promoviert, S1 mit Owner-Antworten vorbereitet; 2026-09-14 18:0x, ctx GEMESSEN 19,6 % (`./ctl.sh ctx`, vor dem Handoff-Schreiben)
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **Program-MAIN Fleet-Betrieb ist SLOT 1** (seit ~15:10; Slot 8 war die Vorgaengerin). Vor jedem `POST /send` `GET /api/programs` main.slot lesen — ich habe es einmal falsch gehabt und rechtzeitig gemerkt. Rollenschnitt unveraendert: Lane-Treiben gehoert der MAIN, Orchestratorin = Entscheidungspunkte, Filen/Schaerfen, Owner-Session-Arbeit.
+- **Modell dieser Pane:** der Owner hat sie waehrend der Schicht per `/model` auf Fable 5.1 gestellt (Datensatz sagt noch `claude-opus-5[1m]`). Nachfolge explizit mit `model: claude-fable-5-1[1m]` (17 Spawns im Ledger, MODELLPOLITIK: Fable orchestriert) angefordert.
+- **`./ctl.sh` benutzen** (`merges` vor jedem Direkt-Commit, `ctx`, `dispatch`, `lock --reap`). Das Regelbuch nennt seit dieser Schicht die Verben statt der Rezepte (Fragmente untracked, kein Commit).
+- **Freigabe-Politik Fleet-Betrieb = `card-valid` seit 18:11** (`POST /api/programs/f170dc46…/release {"release":{"v":1,"policy":"card-valid"}}`, Owner-Entscheid ueber Attention `9d10e142`, an mich delegiert). Wirkung sofort gemessen: claude-fleet von 1/3 auf 3/3 Lanes, 18 Zeilen freigegeben, die zwei Buendel-Wellen `7ed73694+1b47e29a` und `66df05b4+e3e5084a` sind als EINE Lane gestartet — die ersten Mehr-Zeilen-Lands seit 7 Tagen (0 von 116 vorher). Rueckfalltuer: `{"release":null}`.
+- **Regeln A und B sind promoviert und gerendert** (Attention `9d10e142`, Punkte 2+3; `rulebook/einstieg.md` Kontext-Band-Absatz, `rulebook/lane-discipline.md` Namensmuster-Absatz; Pins ALL PASS 18:0x). A: HANDOFF.md nur bei echter Nachfolge. B: nie eine PID aus Lock/`gate` beenden.
+
+## 0.0 ERSTER AUFTRAG: S1 LANE-REGELBUCH SCHRUMPFEN — MIT DEM OWNER, ANTWORTEN LIEGEN VOR (`f4c2033d`)
+
+Gemessen 17:4x: Lane-Render **36 482 Zeichen** (Ziel < 20 000), Tuer-Probe 6 (Ziel 0), Geschichte-Probe 4, 9 Attic-Verweise. Fragmente der Lane: loader 3 264 · lane-discipline 23 467 · self-scheduling 9 734.
+**Owner-Antworten (17:5x, per Auswahl):** (1) AGENTS-Dubletten (~5 200 Z.: Verify-Kette, proportionale Verifikation, Suite-Offer, roter Check, Runner-Regel) STREICHEN, je Thema ein Verweis-Satz auf `AGENTS.md` §. (2) self-scheduling: Owner fragt, ob Context-Packs eleganter waeren als ein achtes Fragment — Antwort unten. (3) Geschichten: Regel bleibt, Geschichte ins Attic mit §-Verweis (bestehendes Muster). (4) Gegenlesen: **Streichliste als Tabelle VOR dem Render** (Absatz · gestrichen/gekuerzt/verschoben · Grund · Zeichen), erst nach Owner-OK rendern.
+**Antwort zu (2), am Code geprueft:** Context-Packs (`context-packs.ts`) sind Zeiger (path+anchor) mit Triggern always/verification/landing/task-queue/harness-selection/deployment — keine Rollen-Achse. Die MAIN-Tueren (watch/release/succeed) haben aber schon einen Traeger: `server.ts#RAIL_TAIL` nennt release, watch merge/audit und land woertlich, `docs/self-api.md` traegt die Feldformen. Die Regelbuch-Absaetze dazu sind Dubletten plus drei Host-Lehren (idleSec:0, Budget, 409-Scope-Liste). **Empfehlung:** fuer S1 die MAIN-Absaetze aus `self-scheduling` nach `einstieg` verschieben (kein achtes Fragment, keine Pin-Arithmetik); ob sie spaeter ganz aus dem Regelbuch in Rail/Pack wandern, entscheidet S4 (`b3767fc4`, Rollenkarten). Ein Pack mit Rollen-Trigger waere ein kleiner Code-Schnitt, aber nicht noetig, um S1 zu erfuellen.
+**Pflicht beim Bau:** jede Streichung in `docs/attic/regelbuch-bedeutungsprobe-2026-08-18.md` als Schnitt eintragen (Pin „every rule of the meaning probe stands in the fragment its Fragment column names“, 118 Zeilen) — sonst stirbt jedes Land an Stufe 1. Zwei curl-Rezepte (drift, gate) auf `${FLEET_SELF_URL:-…}` kuerzen. Rechnerisch ~18 500 Z. erreichbar. Dazu im selben Zug (DONE von f4c2033d): Astra-Baustein R3 in `docs/astra-briefbaustein-2026-09-07.md` durch Verweis auf die Nachfolge-Schiene ersetzen, `self/notes`-Satz streichen (getrackt ⇒ Commit).
+
+## 0.1 IN FLUG (18:1x) — Lanes gehoeren Slot 1
+
+Sent: `7ed73694`+`1b47e29a` (Buendel), `66df05b4`+`e3e5084a` (Buendel), `8056f3fe`; Slot 3 `1e74ba8b` (Audit-Shards, laeuft seit 14:41, Commit `c3eba7ae`); Slot 7 Land ohne Verdikt. Queued: `bf6fc2ea`, `3cbbe209`, `5421694d` (alle „collides on server.ts“). Gelandet heute durch mich angestossen: `4b2d39bf` (Watch-Idempotenz, Hand-Dispatch nach Regel „zweimal gleiches Audit-Rot“, gelandet ~17:5x).
+
+## 0.2 HEUTE IN MEINER SCHICHT (14:3x–18:1x)
+
+- **Backlog aufgeraeumt:** 143 → 90 offen (52 archiviert mit Beleg, 10 als Kommentar an ihre Auftraege, 5 notiz→auftrag). Tabelle + Korrektur der Archiv-Vorbedingung: `docs/messungen/2026-09-14-backlog-aufraeumen.md` (`13530391`). Volle Zeilen vorher gesichert: `~/claude-fleet-private/tasks-archive-backlog-2026-09-14.jsonl`. `220d9dcd` (tasks-archive.jsonl) bleibt sinnvoll, ist keine Vorbedingung. Ziel <60 nicht erreicht; naechster Hebel: 13 auftrag-`KEEP?` in der Tabelle.
+- **Engpass gemessen:** 1/3 Lanes, alle queued „collides with lane 3 on server.ts“ — Lane ohne Ranges blockiert die Datei fuer ihre ganze Laufzeit; Datei-Kollision laut `land-collision-stats` zu 80 % Fehlalarm (P 0.20, n=34), Hunk-Regel P 0.60 ohne verpassten Konflikt. Gefilet `5421694d` (Start-Kollision gegen ECHTE Hunks laufender Lanen, konservativ). Range-Abdeckung 30/65 offene Auftraege; `3cbbe209` hebt sie.
+- **Rollen-Synthese:** Owner hat alle 5 Fragen aus §4 wie empfohlen entschieden (Kommentar an `fa07734f`). S2 `8b2baf60`/S3 `fa07734f` haben ungueltige Karten → erst nach `3cbbe209`. S4-Text `b3767fc4` = Owner-Session.
+- **Hygiene:** toter Suite-Lock gereapt; geleakter e2e-tmux-Server `fleetprobe877` (12.09.) per Socket beendet; 23 Testinstanzen (810 MB) bewusst belassen.
+- Regelbuch: Land-Sensor und ctx-Rezept durch `./ctl.sh merges`/`ctx` ersetzt (E12-Muster `s["ctx"]` erhalten).
+
+## 0.3 OFFEN BEIM OWNER
+
+1. S1-Streichliste gegenlesen (Tabelle kommt von der Nachfolgerin). 2. S4-Rollenkarten-Text. 3. Handoff-Dynamik: Regel A ist promoviert; ob die Orchestratorin an ein Program gebunden wird, bleibt offen.
+
+## 0.4 UNGEPRUEFT
+
+- Ob `card-valid` heute Nacht Zeilen startet, die eine Owner-Klaerung brauchten (Politik startet nur Karten mit Done+Verify+Baumbeleg; `1ed2f6a0` CLARIFY FIRST hat keine gueltige Karte, geprueft 18:1x).
+- 26 `owner_auth_fail` ohne Detail und 85 `self_heal_recreate` in 2 Tagen (`audit.jsonl`) — nicht eingeordnet.
+- Ob Fable als Nachfolgerin den Effort-Wert `high` annimmt (Spawn-Validierung je Harness).
+
 # HANDOFF — Orchestrator Slot 9 → Nachfolgerin (Haupt-Checkout, Owner-Token): Handoff-Dynamik diagnostiziert, Grok-Antwort 1 + Prompt 3 committet, Grok-Gegenlesen in Zeilen verwandelt (4 auftrag, 3 notiz), Klassen-Register als Router-Vorstufe geschaerft; 2026-09-14 13:1x, ctx GEMESSEN 34,3 % (Server-Praedikat, `/api/sessions`)
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

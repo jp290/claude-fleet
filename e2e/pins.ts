@@ -8607,6 +8607,45 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     read("state.sh").includes(`-gt $((${HANDOFF_WARN_KB} * 1024))`), `threshold ${HANDOFF_WARN_KB} KB`);
 }
 
+// state.sh "machine hygiene" is a SENSOR. Counting names listed the live `claudefleet` as a leak —
+// an invitation to exactly the kill the rulebook forbids (docs/messungen/2026-09-14-ram-optimierung-astra.md
+// §F6). Held twice: textually (no destructive verb, tmux only reads the probed socket) and by running
+// the block over a fake TMUX_TMPDIR whose two dead sockets are `claudefleet` and `fleettest1`.
+{
+  const RULE_HYGIENE = "state.sh machine hygiene skips the production socket claudefleet and never kills or deletes";
+  const state = read("state.sh");
+  const from = state.indexOf('echo "=== machine hygiene');
+  const block = from < 0 ? "" : state.slice(from, state.indexOf('echo "=== config sensor', from));
+  const code = block.split("\n").filter((l) => !l.trimStart().startsWith("#")).join("\n");
+  const destructive = code.match(/\b(rm|rmdir|unlink|kill|pkill|killall)\b/g) ?? [];
+  const tmuxCalls = code.match(/\btmux -[^\n]*/g) ?? [];
+  const foreignTmux = tmuxCalls.filter((c) => !/^tmux -S "\$hy_sock" (list-sessions|display-message) /.test(c));
+  pin(`${RULE_HYGIENE} — no destructive verb, tmux only lists/displays the probed socket`,
+    code.length > 0 && destructive.length === 0 && tmuxCalls.length > 0 && foreignTmux.length === 0,
+    `${block.length} B block; destructive=${JSON.stringify(destructive)} foreign tmux=${JSON.stringify(foreignTmux)}`);
+
+  const dir = mkdtempSync(`${tmpdir()}/fleet-pins-hy-`);
+  try {
+    const sockdir = `${dir}/tmux-${process.getuid?.() ?? 0}`;
+    mkdirSync(sockdir, { mode: 0o700 });
+    // bound, never listening: the file stays and a connect is refused — what a SIGKILLed server leaves
+    for (const name of ["claudefleet", "fleettest1"]) {
+      spawnSync("python3", ["-c", "import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])", `${sockdir}/${name}`]);
+    }
+    const run = spawnSync("sh", ["-c", code], {
+      encoding: "utf8", timeout: 15_000,
+      env: { ...process.env, TMUX_TMPDIR: dir, TMPDIR: dir, MAIN_CHECKOUT: dir },
+    });
+    const out = run.stdout ?? "";
+    pin(`${RULE_HYGIENE} — over dead claudefleet + fleettest1 it counts one dead test socket and names production once`,
+      run.status === 0 && out.includes("e2e tmux sockets: 0 live · 1 dead · 0 unknown")
+        && /no process RAM: fleettest1$/m.test(out) && out.split("claudefleet").length === 2,
+      `exit ${String(run.status)}; ${out.split("\n").filter((l) => /sockets|claudefleet|dead|unknown/.test(l)).join(" | ").slice(0, 300)}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // ================================================================================================
 // Land-Chronik — one line per land off the notes, and a land with no audit row yet is RUNNING
 // ================================================================================================

@@ -69,8 +69,8 @@ import {
 import { isTaskCardSize, type TaskCardSize, type TaskWaveInput } from "./task-waves";
 // The START PLAN: which land wave starts next, and what its rows passed. GET /api/start-plan shows it,
 // tickDispatch starts by it and the wave door resolves its ids in it (pinned in e2e/pins.ts).
-import { projectStartPlan, startPlanChecks, startPlanWaitNote, type StartPlan, type StartPlanLane,
-  type StartPlanRepoCaps, type StartPlanRow, type StartPlanWave } from "./start-plan";
+import { projectStartPlan, releaseVerdict, startPlanCardPaths, startPlanChecks, startPlanWaitNote, type StartPlan,
+  type StartPlanLane, type StartPlanReleaseVerdict, type StartPlanRepoCaps, type StartPlanRow, type StartPlanWave } from "./start-plan";
 import { renderWaveBrief, withCardHead } from "./wave-brief";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
@@ -104,6 +104,7 @@ import {
   type ProgramHandover, type ProgramHandoverObligation, type ProgramHandoverDetail,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
+  PROGRAM_RELEASE_POLICIES, loadProgramRelease, type ProgramReleasePolicy, loadTaskHold,
   type Studio, type StudioContent, type ProgramStudioBinding, type StudioStage,
   type StudioBriefAudience,
   type BoxPin, type WSData, type Share, type ShareComment, type Auto, type WatchBase, type MergeWatch,
@@ -2313,6 +2314,8 @@ function capTasks(list: Task[]): Task[] {
 function releaseTask(t: Task, by: "owner" | "machine"): void {
   t.status = "queued";
   t.releasedBy = by;
+  // a release is the act a hold waits for (TaskHold) — whoever releases, the stop is lifted with it
+  t.hold = undefined;
 }
 const MAX_TASK_TEXT = 20_000;
 // What a task looks like on /api/sessions. The prompt `text` is deliberately absent: that
@@ -9058,6 +9061,15 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // (4) Only pending → queued is a RELEASE. A `queued` row is already released (by whichever door),
   // a `sent` row is running, and a terminal row is history; naming the status the caller actually
   // hit is what lets a nervous retry read its own answer instead of a generic refusal.
+  // ONE EXCEPTION, and it is the hold's counter-act rather than a second release: a HELD queued row is
+  // released already, so this door lifts the hold and writes nothing else (TaskHold).
+  if (t.status === "queued" && t.hold) {
+    t.hold = undefined;
+    audit("task_hold", s.id, `${t.id} program=${program.id} lifted`);
+    await saveStateNow();
+    return json({ ok: true, sessionIdMatch, lifted: "hold",
+      task: { id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy, programId: t.programId } });
+  }
   if (t.status !== "pending")
     return json({ error: `task is ${t.status} — only a pending row can be released` }, 409);
   // (2) THE REPO COMES FROM THE BINDING'S CHECKOUT. A released row spawns an unattended lane in its
@@ -9092,8 +9104,11 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // bounded twice over by the two dispatch caps — counting them here would be a third number
   // pretending to bound the same resource. The product this per-object cap implies is stated at
   // PROGRAM_MAX_RELEASED, where the number lives.
+  // ONLY UNDER `manual` (Schnitt 3): under `card-valid`/`all` the released set is the program's queue
+  // itself, bounded by PROGRAM_MAX_PENDING and both lane caps — a cap on a count the policy no longer
+  // keeps would refuse a hand release the policy could have made on its own.
   const openReleased = tasks.filter((x) => x.programId === program.id && x.status === "queued").length;
-  if (openReleased >= PROGRAM_MAX_RELEASED)
+  if (programReleasePolicy(t) === "manual" && openReleased >= PROGRAM_MAX_RELEASED)
     return json({ error: `program release cap reached (${openReleased}/${PROGRAM_MAX_RELEASED} released rows not yet started) — let the tick start one first` }, 409);
   // (5) THROUGH THE HELPER, never a bare assignment: releaseTask is where `by` cannot be forgotten,
   // and a machine release that recorded nothing would be indistinguishable from the attended lands
@@ -9107,6 +9122,40 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // and handleSelfSucceed answer with.
   return json({ ok: true, sessionIdMatch,
     task: { id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy, programId: t.programId } });
+}
+
+// THE HOLD (Schnitt 3) — a bound Program-MAIN's stop on one row of its OWN program, over its
+// program's release policy: while it stands the tick starts the row under no policy, `queued`
+// included, and the row says so. The counter-act is POST /api/self/tasks/:id/release (releaseTask
+// lifts every hold). The scope is releaseTaskForMain's, derived the same way: the program from the
+// binding, the repo from the caller's checkout, nothing from a body. Idempotent — a second hold on
+// a held row answers ok and writes nothing. A running or terminal row is not held: a hold stops a
+// START, and those rows have started or ended.
+async function holdTaskForMain(s: Slot, id: string): Promise<Response> {
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return json({ error: bound.error }, 409);
+  const { program, sessionIdMatch } = bound;
+  const t = tasks.find((x) => x.id === id);
+  if (!t) return json({ error: "unknown task" }, 404);
+  if (t.programId !== program.id)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN holds only rows of program ${program.id}` }, 409);
+  if (t.kind !== "auftrag")
+    return json({ error: `a ${t.kind} is advisory — the dispatcher never runs this, there is no start to hold` }, 409);
+  if (t.status !== "pending" && t.status !== "queued")
+    return json({ error: `task is ${t.status} — only a pending or queued row can be held` }, 409);
+  const mainRepo = await repoKeyOf(s);
+  if (!mainRepo)
+    return json({ error: "this session's checkout is not a git repository — the row's target repo cannot be compared" }, 409);
+  const target = t.repo ?? DISPATCH_REPO;
+  if (!target || repoCanon(target) !== mainRepo)
+    return json({ error: `task does not target ${basename(mainRepo)}, where this MAIN is bound — a hold never reaches across repositories` }, 409);
+  if (!t.hold) {
+    t.hold = { by: "main", slot: s.id, at: Date.now() };
+    audit("task_hold", s.id, `${t.id} program=${program.id} held`);
+    await saveStateNow();
+  }
+  return json({ ok: true, sessionIdMatch, hold: t.hold,
+    task: { id: t.id, kind: t.kind, status: t.status, programId: t.programId } });
 }
 
 // --- THE GUARDED CONFIRMATION, and the two things that keep it from becoming a loop.
@@ -10124,24 +10173,35 @@ function landWaveProjectionNow(): LandWaveProjection {
 // their rows carry (taskView, the same reading the projection makes), and both lane caps as
 // tickDispatch computes them (repoLaneCap, programDispatchCap). A lane's repo is stored canonical,
 // the projection keys by the row's own repo string, so the lane is mapped back through repoCanon.
-// The RELEASE policy is `manual` for every program until Schnitt 3: the release is the check, so the
-// plan orders and bundles released rows and never refuses one for its card (start-plan.ts#StartPlanRelease).
+// Since Schnitt 3 each row carries its PROGRAM's release policy and its hold, and the plan reads the
+// release verdict from them (start-plan.ts#releaseVerdict) — the row builder below is the one both the
+// plan and the tick's last re-check before a start read, so the two can never judge a row differently.
+// Under a policy other than `manual` the card's backed paths join the row's surface: a row the policy
+// starts with an unresolved symbol has no card lift (liftCardSurface needs a gapless surface), and the
+// plan needs its files for the collision edge. A `manual` row's surface is byte for byte what it was.
+const startPlanSurfaceOf = (t: Task): { files: string[] | null; ranges: StartPlanRow["ranges"] } => {
+  const read = [...(taskView(t).files ?? []), ...(t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])];
+  const files = programReleasePolicy(t) === "manual" ? read : [...new Set([...read, ...startPlanCardPaths(t.card ?? null)])];
+  return { files: files.length ? files : null, ranges: t.surface?.ranges ?? null };
+};
+const startPlanRowOf = (t: Task): StartPlanRow => {
+  const policy = programReleasePolicy(t);
+  return { id: t.id, status: t.status, programId: t.programId ?? null, ...startPlanSurfaceOf(t),
+    after: t.card?.after ?? [],
+    checks: startPlanChecks({ text: t.text, source: t.source, card: t.card ?? null, briefAt: t.brief?.at ?? null }),
+    ...(policy !== "manual" ? { release: policy } : {}), ...(t.hold ? { held: true } : {}) };
+};
 function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()): StartPlan {
-  const surfaceOf = (t: Task): { files: string[] | null; ranges: StartPlanRow["ranges"] } => {
-    const files = [...(taskView(t).files ?? []), ...(t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])];
-    return { files: files.length ? files : null, ranges: t.surface?.ranges ?? null };
-  };
   const statuses: Record<string, string> = {};
   const rows: StartPlanRow[] = [];
   for (const t of tasks) {
     statuses[t.id] = t.status;
     if (t.kind !== "auftrag" || (t.status !== "queued" && t.status !== "pending")) continue;
-    rows.push({ id: t.id, status: t.status, programId: t.programId ?? null, ...surfaceOf(t),
-      after: t.card?.after ?? [], checks: startPlanChecks({ text: t.text, source: t.source, card: t.card ?? null }) });
+    rows.push(startPlanRowOf(t));
   }
   const projectionRepoFor = new Map(projection.repos.map((r) => [repoCanon(r.repo), r.repo]));
   const lanes: StartPlanLane[] = slots.filter((s) => s.cwd && (s.worktree || s.programId)).map((s) => {
-    const own = tasks.filter((t) => t.slot === s.id && t.status === "sent").map(surfaceOf);
+    const own = tasks.filter((t) => t.slot === s.id && t.status === "sent").map(startPlanSurfaceOf);
     return { slot: s.id, programId: s.programId,
       repo: s.worktree ? projectionRepoFor.get(s.worktree.repo) ?? s.worktree.repo : null,
       files: own.length && own.every((x) => x.files) ? own.flatMap((x) => x.files ?? []) : null,
@@ -10156,7 +10216,7 @@ function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()):
       return [id, programDispatchCap(p ? programDispatchGrant(p) : undefined, cap.max)];
     })) };
   }
-  return projectStartPlan({ projection, release: "manual", rows, statuses, lanes, caps });
+  return projectStartPlan({ projection, rows, statuses, lanes, caps });
 }
 // THE PLAN'S WAVES BESIDE THE LAND WAVES THEY WERE READ FROM, in the plan's order. projectStartPlan
 // maps every projected repo and wave one to one and in order, so the pair at the same index is the
@@ -11383,6 +11443,32 @@ const programDispatchCap = (pd: ProgramDispatch | undefined, repoMax: number): n
   const machine = DISPATCH_MAX_LANES_PER_PROGRAM ?? repoMax;
   return Math.min(pd?.maxLanes ?? machine, machine);
 };
+// THE OWNER'S RELEASE POLICY for one row (Program.release, Schnitt 3) — the single reader of that
+// record. An ACTIVE program's policy, else `manual`: a completed program's leftover pending rows must
+// not start on a policy set while it ran (programDispatchGrant's rule), and a row without a program
+// has no policy to be released by at all.
+const programReleasePolicy = (t: Pick<Task, "programId">): ProgramReleasePolicy => {
+  if (!t.programId) return "manual";
+  const p = programs.find((x) => x.id === t.programId);
+  return p?.status === "active" && p.release ? p.release.policy : "manual";
+};
+// …whether the TICK looks at a row at all: released by hand, or pending under a policy that might
+// release it. A pending row under `manual` is not the tick's, and its note stays byte-identical.
+const tickOwnsRow = (t: Task): boolean =>
+  t.status === "queued" || (t.status === "pending" && programReleasePolicy(t) !== "manual");
+// …and the verdict on one row as it stands NOW, through the same row builder the plan reads.
+const releaseVerdictNow = (t: Task): StartPlanReleaseVerdict => releaseVerdict(startPlanRowOf(t));
+// Does this program have a MAIN that can land what a policy starts? The exact binding
+// boundProgramForMain accepts — an active program whose `main` names a live slot opened at that
+// instant, and no second active program naming the same occupant — read without a caller slot.
+const programMainLive = (programId: string): boolean => {
+  const p = programs.find((x) => x.id === programId);
+  if (!p || p.status !== "active" || !p.main) return false;
+  const { slot, openedAt } = p.main;
+  const occupant = slotFrom(slot);
+  return !!occupant?.cwd && occupant.openedAt === openedAt
+    && programs.filter((x) => x.status === "active" && x.main?.slot === slot && x.main.openedAt === openedAt).length === 1;
+};
 let dispatchBusy = false;
 async function tickDispatch(): Promise<void> {
   if (dispatchBusy || !DISPATCH_REPO) return;
@@ -11401,19 +11487,20 @@ async function tickDispatch(): Promise<void> {
     // waves (startPlanWaves): `after` holds a row behind the row it waits on, a known shared file
     // holds it behind running work and behind an earlier wave still in line, and rows the land fold
     // bundles start as ONE lane. The plan is the same object GET /api/start-plan shows the owner.
-    // Only the ORDER and the BUNDLING of released rows change — the plan runs under the `manual`
-    // release policy, so no row the owner or a MAIN did not release is ever a candidate to start.
+    // WHICH rows count as released is each program's release policy (Schnitt 3, programReleasePolicy):
+    // under `manual`, the default, only a row the owner or a MAIN released; under `card-valid`/`all` also
+    // a pending row the policy releases (start-plan.ts#releaseVerdict). A hold stops a row under all.
     // Advisory categories are never dispatchable: the land fold reads `auftrag` rows only, and
     // dispatchTask repeats the lock for every caller.
-    // A wave is the tick's only if one of its rows is RELEASED: an all-pending wave has no row that
-    // could carry a note, and a pending row's note stays byte-identical. A wave with a row already
-    // being dispatched (the attended doors) is skipped whole.
-    // The plan derives every open row's surface; with nothing released there is nothing it could
+    // A wave is the tick's only if one of its rows is (tickOwnsRow): an all-pending wave of a `manual`
+    // program has no row that could carry a note, and its notes stay byte-identical. A wave with a row
+    // already being dispatched (the attended doors) is skipped whole.
+    // The plan derives every open row's surface; with no row the tick owns there is nothing it could
     // start, so the common idle tick stays the one cheap pass over the queue it always was.
-    if (!tasks.some((t) => t.kind === "auftrag" && t.status === "queued" && !dispatchingTasks.has(t.id))) return;
+    if (!tasks.some((t) => t.kind === "auftrag" && tickOwnsRow(t) && !dispatchingTasks.has(t.id))) return;
     const candidates = startPlanWaves().flatMap(({ plan, land }) => {
       const rows = plan.ids.map((id) => tasks.find((t) => t.id === id)).filter((t): t is Task => !!t);
-      if (rows.length !== plan.ids.length || !rows.some((t) => t.status === "queued")
+      if (rows.length !== plan.ids.length || !rows.some(tickOwnsRow)
         || rows.some((t) => dispatchingTasks.has(t.id))) return [];
       return [{ plan, land, rows }];
     });
@@ -11439,11 +11526,18 @@ async function tickDispatch(): Promise<void> {
       if (!dispatchOn && !pd) continue;
       // a released task that cannot run RIGHT NOW says why on its own row instead of sitting silent
       // until the owner digs (the stalled-queue finding, 2026-08-04). Written only on change, so the
-      // 8 s tick doesn't churn saveState. Onto every RELEASED row of the wave, never a pending one.
+      // 8 s tick doesn't churn saveState. Onto every row the tick owns (tickOwnsRow). A row the plan did
+      // NOT release carries its OWN reason (the policy's refusal, a hold): it outlasts every lane closing.
+      const verdicts = new Map(plan.rows.map((r) => [r.id, r.release] as const));
       const waiting = (note: string): void => {
-        const changed = rows.filter((row) => row.status === "queued" && row.note !== note);
-        for (const row of changed) row.note = note;
-        if (changed.length) saveState();
+        let changed = 0;
+        for (const row of rows) {
+          if (!tickOwnsRow(row)) continue;
+          const own = verdicts.get(row.id);
+          const text = own && !own.released && own.why ? `waiting: not released — ${own.why}`.slice(0, 300) : note;
+          if (row.note !== text) { row.note = text; changed++; }
+        }
+        if (changed) saveState();
       };
       // WHICH AGENT this row would run: its own persisted, SET-time-validated choice, DEFAULT_SPAWN
       // on absence (taskSpawnOf — the one bridge, pinned). The release doors refuse a stored
@@ -11537,6 +11631,14 @@ async function tickDispatch(): Promise<void> {
           waiting(`waiting: ${programLanes}/${programCap} lanes busy in program "${title}" — land or close one of ITS lanes`);
           continue;
         }
+        // A POLICY START WITHOUT A MAIN TO LAND IT (entwurf §4 F2): a program with no exact live binding
+        // starts at most ONE lane by policy, instead of piling up lanes nobody adjudicates. A row
+        // released by hand keeps the two caps above as its only bound.
+        if (rows.some((row) => { const v = verdicts.get(row.id); return !!v?.released && v.by === "policy"; })
+          && programLanes >= 1 && !programMainLive(next.programId)) {
+          waiting("waiting: no bound MAIN to land — one lane at a time");
+          continue;
+        }
       }
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) { waiting("waiting: no free slot"); return; }
@@ -11582,9 +11684,18 @@ async function tickDispatch(): Promise<void> {
         if (pre.gate === "quiet-hours") continue;
         return; // task stays queued
       }
-      // canDeliver awaited: a row the owner unqueued, started or deleted meanwhile is not the plan's
-      // any more, and a wave is started whole or not at all. The next tick reads a fresh plan.
-      if (rows.some((row) => row.status !== "queued" || !tasks.includes(row) || dispatchingTasks.has(row.id))) return;
+      // canDeliver awaited: a row unqueued, started, deleted or held meanwhile — or whose policy or card
+      // moved — is not the plan's any more (verdict read fresh through the plan's own row builder), and a
+      // wave is started whole or not at all. The next tick reads a fresh plan.
+      const fresh = new Map(rows.map((row) => [row.id, releaseVerdictNow(row)] as const));
+      if (rows.some((row) => !fresh.get(row.id)?.released || !tasks.includes(row) || dispatchingTasks.has(row.id))) return;
+      // A POLICY RELEASE is written as a release — releaseTask, `by` machine, one task_release row naming
+      // the policy — so the trail tells a policy start from a hand release.
+      const byPolicy = rows.filter((row) => { const v = fresh.get(row.id); return !!v?.released && v.by === "policy"; });
+      for (const row of byPolicy) {
+        releaseTask(row, "machine");
+        audit("task_release", undefined, `${row.id} program=${row.programId} by=policy ${programReleasePolicy(row)}`);
+      }
       // A WAVE OF n > 1 hands its followers to the one dispatch core the attended wave door uses —
       // same edge (`t.slot`), same brief, same one land — with the land fold's own evidence for the
       // bundle. Every row is `queued` here, so that is the status a failed spawn restores.
@@ -11596,6 +11707,13 @@ async function tickDispatch(): Promise<void> {
       const r = await dispatchTask(next, free, false, false, taskSpawnOf(next), handover);
       // the machine's sibling of the owner's task_wave_dispatch, written once per started wave
       if (r.ok && handover) audit("task_wave_start", r.slot, `${plan.ids.join("+")} ${land.klasse} saves=${land.savingsSec}s by=tick`);
+      // the START NOTE of a policy start names the policy and the gaps it started past (the verdict's hints)
+      if (r.ok) for (const row of byPolicy) {
+        const v = fresh.get(row.id);
+        const hints = v?.released ? v.hints : [];
+        row.note = `${row.note ?? ""} · started by policy ${programReleasePolicy(row)}${hints.length ? ` — hint: ${hints.join("; ")}` : ""}`.slice(0, 500);
+      }
+      if (r.ok && byPolicy.length) saveState();
       if (r.ok) await r.tail;
       return; // serial by design — one lane per tick, whichever wave got past every gate
     }
@@ -25083,6 +25201,48 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     await saveStateNow();
     return json({ ok: true, program: publicProgram(program) });
   }
+  // THE RELEASE POLICY DOOR (Schnitt 3) — the only writer of `program.release`, its own route for the
+  // dispatch door's reason: it reads a BODY carrying an owner decision. `{"release": {"v":1,"policy":
+  // "card-valid"}}` sets, `{"release": null}` clears back to the default. What `card-valid` and `all`
+  // widen is WHICH rows count as released (start-plan.ts#releaseVerdict); every gate on a start — the
+  // master stop or the dispatch grant, both lane caps, the harness bolt, a hold — still holds.
+  // NO STATUS GATE, for the dispatch door's reason: programReleasePolicy reads the policy against the
+  // program's CURRENT status on every tick, so a gate here would be a second, drifting copy of that rule.
+  const programReleaseRoute = /^\/api\/programs\/([^/]+)\/release$/.exec(url.pathname);
+  if (programReleaseRoute) {
+    if (req.method !== "POST") return json({ error: "bad request" }, 400);
+    const program = programs.find((p) => p.id === programReleaseRoute[1]);
+    if (!program) return json({ error: "unknown program" }, 404);
+    const body = await readJson(req);
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      return json({ error: "invalid json" }, 400);
+    const extra = Object.keys(body).filter((k) => k !== "release");
+    if (extra.length)
+      return json({ error: `this door reads release only — [${extra.join(", ")}] is not read` }, 400);
+    if (!("release" in body))
+      return json({ error: 'release is required — send {"release": {"v":1,"policy":"card-valid"}} to set, {"release": null} to clear' }, 400);
+    if (body.release === null) {
+      const had = program.release !== undefined;
+      delete program.release;
+      if (had) audit("program_release", undefined, `${program.id} cleared`);
+      await saveStateNow();
+      return json({ ok: true, program: publicProgram(program) });
+    }
+    const raw = body.release;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      return json({ error: "release must be an object or null" }, 400);
+    const fields = raw as Record<string, unknown>;
+    const unknown = Object.keys(fields).filter((k) => k !== "v" && k !== "policy");
+    if (unknown.length)
+      return json({ error: `unknown release key(s): ${unknown.join(", ")} — v1 is exactly {v, policy}; confirmedAt is stamped here` }, 400);
+    if (fields.v !== 1) return json({ error: "v must be 1 — this server knows no other release-policy schema" }, 400);
+    if (typeof fields.policy !== "string" || !PROGRAM_RELEASE_POLICIES.includes(fields.policy as ProgramReleasePolicy))
+      return json({ error: `policy must be one of: ${PROGRAM_RELEASE_POLICIES.join(", ")}` }, 400);
+    program.release = { v: 1, policy: fields.policy as ProgramReleasePolicy, confirmedAt: Date.now() };
+    audit("program_release", undefined, `${program.id} policy=${program.release.policy}`);
+    await saveStateNow();
+    return json({ ok: true, program: publicProgram(program) });
+  }
   const action = /^\/api\/programs\/([^/]+)\/(confirm|activate|complete|discard|bootstrap-main)$/.exec(url.pathname);
   if (!action || req.method !== "POST") return json({ error: "bad request" }, 400);
   const program = programs.find((p) => p.id === action[1]);
@@ -25519,6 +25679,8 @@ if (existsSync(STATE_FILE)) {
           // pre-field and malformed rows stay ABSENT — never "owner": the field exists so a released
           // row can be told apart from one nobody recorded, and a hand-edit must not mint either.
           releasedBy: t.releasedBy === "owner" || t.releasedBy === "machine" ? t.releasedBy : undefined,
+          // a hold that half-survived a hand edit still stops the start (loadTaskHold)
+          hold: loadTaskHold((t as { hold?: unknown }).hold),
           // the file surface degrades to ABSENT, never to []: "[]" reads as "touches nothing" in the
           // collision check. A persisted `derived` value is recomputed, never promoted to "confirmed".
           files: t.filesOrigin === "derived" ? undefined : normFileList(t.files),
@@ -25735,6 +25897,8 @@ if (existsSync(STATE_FILE)) {
         // here means "the global switch decides this program alone" — the legacy behaviour, never
         // a narrower-looking guess at what the owner meant.
         const programDispatch = loadProgramDispatch(x.dispatch);
+        // the RELEASE POLICY, with the same discipline: unreadable degrades to ABSENT, i.e. `manual`
+        const programRelease = loadProgramRelease(x.release);
         // the lineage: a row that never had the key is a legacy row and gets its one honest
         // backfill entry from `main`; a row that HAS the key but cannot be read loads as ABSENT and
         // is reported — never backfilled over, because that would make an unreadable record look
@@ -25830,6 +25994,7 @@ if (existsSync(STATE_FILE)) {
           ...(profile ? { profile } : {}),
           ...(studioBinding ? { studio: studioBinding } : {}),
           ...(programDispatch ? { dispatch: programDispatch } : {}),
+          ...(programRelease ? { release: programRelease } : {}),
           ...(founding ? { founding } : {}),
           ...(lineage ? { lineage } : {}),
           ...(inbox ? { inbox } : {}),
@@ -28949,6 +29114,19 @@ Bun.serve<WSData>({
       return releaseTaskForMain(s, selfTaskRelease[1]);
     }
 
+    // Schnitt 3 · Program-MAIN hold — the counter-act to the release policy (holdTaskForMain). Non-lane
+    // only for the release door's reason, and like it reads no body: the id from the path, the program
+    // from the binding, the repo from the checkout.
+    const selfTaskHold = /^\/api\/self\/tasks\/([a-z0-9]+)\/hold$/.exec(url.pathname);
+    if (selfTaskHold && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not hold a queue row — holding is the bracket above lanes, like releasing" }, 409);
+      return holdTaskForMain(s, selfTaskHold[1]);
+    }
+
     // ACP · Program-MAIN land. Non-lane only for the same "one edge per role" reason as its three
     // neighbours, and steward-excluded for the reason succeed/retire exclude it: the steward is a
     // standing role across programs, not the MAIN of one. Placed BELOW the release route so that
@@ -29414,7 +29592,7 @@ Bun.serve<WSData>({
     // Programs are owner truth after proposal. They deliberately take the same tokenGate as the
     // task owner API, but are checked before the steward dispatcher so a steward credential is a
     // plain owner-auth failure (401), never a second authority over confirm/activate/complete.
-    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch))?$/.test(url.pathname)) {
+    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch|release))?$/.test(url.pathname)) {
       if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
       return handleOwnerProgramRoute(req, url);
     }

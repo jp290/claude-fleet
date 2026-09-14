@@ -31,6 +31,9 @@ type AuditEvent =
   // attended") and not the RELEASE question ("who released it"). This row is the only carrier of
   // the second answer that a later attended click cannot erase.
   | "task_release"
+  // a Program-MAIN held a row against its program's release policy, or a release lifted a hold on a
+  // row that was already queued (server.ts#holdTaskForMain, #releaseTaskForMain)
+  | "task_hold"
   | "task_kind" // owner changed a task's category; detail records id and both values
   // the owner released a task the queue analyst had flagged. Recorded because the analyst is
   // advisory: without a trace, an override is indistinguishable from an ordinary promote, and
@@ -135,6 +138,10 @@ type AuditEvent =
   // UNATTENDED; a ledger that merged it into program_promotion could not say whether the owner
   // opened landing or opened starting.
   | "program_dispatch"
+  // the owner set or cleared a Program's RELEASE POLICY (POST /api/programs/:id/release) — which pending
+  // rows count as released without a per-row act. Its own event beside program_dispatch: that one
+  // opens starting under a stopped fleet, this one widens the set of rows a start may pick.
+  | "program_release"
   // the studio inventory itself: created, or changed with a rev bump. A studio is a SHARED source
   // several Programs may bind, so a change is dateable in its own right — the binding keeps the rev
   // it was made against, and this row is where the other side of that comparison comes from.

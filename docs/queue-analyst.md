@@ -237,7 +237,8 @@ Die Vertrauensgrenzen im Präsens stehen in `CLAUDE.md` §Deploy; hier die Vollr
   ZWEITER Lane-Deckel je Program, der nach dem Repo-Deckel geprüft
   wird und darum ausschließlich verengen kann — ungesetzt kann er nie derjenige sein, der hält) und
   `FLEET_PROGRAM_MAX_RELEASED` (`server.ts#PROGRAM_MAX_RELEASED`, Default 5, Deckel für Pfad (3) oben: freigegebene,
-  vom Tick noch nicht gestartete Zeilen je Program)). Er wählt
+  vom Tick noch nicht gestartete Zeilen je Program — seit Schnitt 3 nur unter der Freigabe-Politik `manual`,
+  `docs/self-api.md` §release)). Er wählt
   aus, spawnt und brieft — **landen kann er nichts**, kein Tick ruft `mergeJob` (nur die Route;
   Owner-Entscheid vom 2026-08-04: „noch nicht", erst echte Läufe ansehen). Seit 2026-08-04 (Queue-Umbau,
   Session 21):

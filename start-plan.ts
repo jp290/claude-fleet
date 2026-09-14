@@ -9,9 +9,9 @@
 // one projection, never a second one for the board (pinned in e2e/pins.ts).
 //
 // Every wave also carries its rows' `checks`, straight off the card and the row's provenance
-// (owner 2026-09-13: "sicherstellen, dass das, was dann startet, geprüft wird oder wurde"). No new
-// check is invented; the card already knows these facts, this only makes them visible beside the
-// start decision.
+// (owner 2026-09-13: "sicherstellen, dass das, was dann startet, geprüft wird oder wurde"), and the
+// `release` verdict read from them under the row's program policy (Schnitt 3, releaseVerdict). No
+// new check is invented; the card already knows these facts.
 //
 // Pure like its sibling. The CLI at the bottom reaches the filesystem only inside `import.meta.main`.
 import { rangesCollide, LAND_WAVE_BUDGET_DEFAULT, type LandWaveClass, type LandWaveProjection,
@@ -29,14 +29,20 @@ export interface StartPlanChecks {
   gaps: string[];
   // an `[idee scout-*]` sketch is never started directly (rulebook), whatever its card says
   scout: boolean;
+  // the paths the card BACKS — its tracked files plus the files it creates, each one checked by the
+  // validator; null = no card. A path that failed its check is not in here, it is a `surface.*` gap.
+  cardFiles: number | null;
+  // the brief was rewritten after the card was read, so the card speaks about an older text
+  cardStale: boolean;
 }
 
 export interface StartPlanCardFacts {
   valid?: unknown; surfaceValid?: unknown; done?: unknown; verify?: unknown; size?: unknown; gaps?: unknown;
+  at?: unknown; surface?: { files?: unknown; creates?: unknown } | null;
 }
 
 /** The checks a row carries, read off its card and its source — the one reader for server and CLI. */
-export function startPlanChecks(row: { text: string; source: string; card?: StartPlanCardFacts | null }): StartPlanChecks {
+export function startPlanChecks(row: { text: string; source: string; card?: StartPlanCardFacts | null; briefAt?: number | null }): StartPlanChecks {
   const card = row.card ?? null;
   const text1 = (v: unknown): string | null => typeof v === "string" && v.trim() ? v.trim() : null;
   return {
@@ -48,7 +54,68 @@ export function startPlanChecks(row: { text: string; source: string; card?: Star
     filedBy: row.source,
     gaps: card && Array.isArray(card.gaps) ? card.gaps.filter((g): g is string => typeof g === "string") : [],
     scout: /\[idee scout-/.test(row.text),
+    cardFiles: card ? startPlanCardPaths(card).length : null,
+    cardStale: !!card && typeof card.at === "number" && typeof row.briefAt === "number" && row.briefAt > card.at,
   };
+}
+
+/**
+ * The paths a card backs, for the COLLISION reading of a row a policy may start: its files (only a
+ * validated path is stored) and the files it creates. A row whose card has a `surface.*` gap on
+ * files is never released by `card-valid`, so what this returns for it is never what starts it.
+ */
+export function startPlanCardPaths(card: StartPlanCardFacts | null): string[] {
+  const list = (v: unknown): string[] => Array.isArray(v) ? v.filter((e): e is string => typeof e === "string") : [];
+  return card ? [...list(card.surface?.files), ...list(card.surface?.creates)] : [];
+}
+
+// WHO DECIDED THAT A ROW MAY START — a PROGRAM's policy, set by the owner (server.ts, the release
+// door). `manual` is the fleet before Schnitt 3 and every program's default: the owner's or a MAIN's
+// release IS the check, so a queued row starts whatever its card says and a pending one never does.
+// `card-valid` also starts a PENDING row whose card carries what an unattended start cannot do
+// without; `all` starts every pending row. A queued row is released under every policy, a held row
+// under none, and an `[idee scout-*]` sketch is never started by a policy at all.
+export type StartPlanRelease = "manual" | "card-valid" | "all";
+export const START_PLAN_RELEASES: readonly StartPlanRelease[] = ["manual", "card-valid", "all"];
+
+export type StartPlanReleaseVerdict =
+  | { released: true; by: "release" | "policy"; hints: string[] }
+  // `why: null` = nothing to say on the row: a pending row under `manual` waits for a release, as it always did
+  | { released: false; why: string | null };
+
+// The gaps an unattended start cannot do without (owner 2026-09-13: "was startet, muss geprueft
+// sein" — and "ich mache mir Sorgen, ob es zu streng wird"). HARD is only what safety rests on: a
+// done sentence, a verify path, and files the tree backs, because the plan reads them for collisions.
+// Every other gap — no size (weighs mittel), an unresolved symbol, a role field (default spawn), a
+// goal or an `after` id the validator refused — starts and is named as a hint in the start note.
+const HARD_GAP = /^(?:done|answer|verify|surface\.files|surface\.creates):/;
+const clip = (s: string, n: number): string => s.length > n ? `${s.slice(0, n - 1)}…` : s;
+
+/** Is this row released, and by what? Pure over the row's status, its program's policy, a hold and its checks. */
+export function releaseVerdict(row: { status: string; checks: StartPlanChecks; release?: StartPlanRelease; held?: boolean }): StartPlanReleaseVerdict {
+  if (row.held) return { released: false, why: "held by its MAIN — a release lifts the hold" };
+  if (row.status === "queued") return { released: true, by: "release", hints: [] };
+  const policy = row.release ?? "manual";
+  if (row.status !== "pending" || policy === "manual") return { released: false, why: null };
+  const c = row.checks;
+  if (c.scout) return { released: false, why: "an [idee scout-*] sketch is never started by a policy" };
+  if (policy === "all") return { released: true, by: "policy", hints: [] };
+  const gap = (re: RegExp): string => { const g = c.gaps.find((x) => re.test(x)); return g ? ` (${clip(g, 90)})` : ""; };
+  const hard: string[] = [];
+  if (c.filedBy !== "owner" && c.filedBy !== "main")
+    hard.push(`filed by ${c.filedBy} — only the owner's rows and its MAIN's start by policy`);
+  if (c.cardValid === null) hard.push("no card yet");
+  else {
+    if (!c.done || c.gaps.some((g) => /^(?:done|answer):/.test(g))) hard.push(`no done criterion${gap(/^(?:done|answer):/)}`);
+    if (!c.verify || c.gaps.some((g) => g.startsWith("verify:"))) hard.push(`no verify path${gap(/^verify:/)}`);
+    if (!c.cardFiles || c.gaps.some((g) => /^surface\.(?:files|creates):/.test(g)))
+      hard.push(`files not backed by the tree${gap(/^surface\.(?:files|creates):/)}`);
+    if (c.cardStale) hard.push("the brief changed after the card was read");
+  }
+  if (hard.length) return { released: false, why: `card-valid needs ${hard.join("; ")}` };
+  const hints = [...(c.size ? [] : ["no size (weighs mittel)"]),
+    ...c.gaps.filter((g) => !HARD_GAP.test(g)).map((g) => clip(g, 90))];
+  return { released: true, by: "policy", hints };
 }
 
 // An open row the projection may name. `files: null` = no surface known — it makes no collision edge
@@ -57,6 +124,8 @@ export interface StartPlanRow {
   id: string; status: string; programId: string | null;
   files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null;
   after: readonly string[]; checks: StartPlanChecks;
+  // the row's PROGRAM policy (absent = manual) and whether its MAIN holds it — releaseVerdict's inputs
+  release?: StartPlanRelease; held?: boolean;
 }
 export interface StartPlanLane {
   slot: number; repo: string | null; programId: string | null;
@@ -70,15 +139,8 @@ export interface StartPlanRepoCaps extends StartPlanCap {
   programs: Readonly<Record<string, number>>;
 }
 
-// WHO DECIDED THAT A ROW MAY START. `manual` is the fleet today: the owner's or a MAIN's release IS
-// the check, and a queued row without a valid card starts as it always did — Schnitt 2 changes the
-// ORDER and the BUNDLING of released rows, never their set. `card-valid` is the Schnitt-3 policy the
-// sensor already shows: only a valid card, and never a scout sketch, may start.
-export type StartPlanRelease = "manual" | "card-valid";
-
 export interface StartPlanInput {
   projection: LandWaveProjection;
-  release: StartPlanRelease;
   rows: readonly StartPlanRow[];
   // EVERY queue row's status, for `after` — a target that is not a row of the queue is not done
   statuses: Readonly<Record<string, string>>;
@@ -101,11 +163,11 @@ export interface StartPlanWave {
   units: number;
   reasonAgainst: LandWaveReasonAgainst | null;
   next: StartPlanNext;
-  rows: { id: string; status: string; checks: StartPlanChecks | null }[];
+  rows: { id: string; status: string; checks: StartPlanChecks | null; release: StartPlanReleaseVerdict | null }[];
 }
 export interface StartPlanRepo { repo: string; lanes: number; cap: StartPlanCap | null; waves: StartPlanWave[] }
 export interface StartPlan {
-  version: 1; budget: number; release: StartPlanRelease; repos: StartPlanRepo[]; unresolved: LandWaveUnresolved[];
+  version: 1; budget: number; repos: StartPlanRepo[]; unresolved: LandWaveUnresolved[];
 }
 
 interface Surface { files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null }
@@ -162,15 +224,11 @@ export function projectStartPlan(input: StartPlanInput): StartPlan {
         // 1. AFTER is hard: the target must be done. An id inside the same wave is ordered by the lane.
         for (const row of known) for (const id of row.after)
           if (!wave.ids.includes(id) && input.statuses[id] !== "done") return { after: id };
-        // 2. The owner's release is the decision; a pending partner holds the whole wave.
-        const unreleased = known.filter((row) => row.status !== "queued").map((row) => row.id);
+        // 2. A release decides — the owner's, a MAIN's, or the program's policy (releaseVerdict);
+        //    a partner that is not released holds the whole wave.
+        const unreleased = known.filter((row) => !releaseVerdict(row).released).map((row) => row.id);
         if (unreleased.length) return { unreleased };
-        // 3. Under the card-valid policy only a valid card, and never a scout sketch, may start.
-        if (input.release === "card-valid") {
-          const unchecked = known.filter((row) => row.checks.cardValid !== true || row.checks.scout).map((row) => row.id);
-          if (unchecked.length) return { unchecked };
-        }
-        // 4. Collision with running work first, then with an earlier wave that is still in line.
+        // 3. Collision with running work first, then with an earlier wave that is still in line.
         for (const row of known) for (const lane of repoLanes) {
           const hit = collision(row, lane);
           if (hit) return { collides: { slot: lane.slot, ...hit } };
@@ -179,7 +237,7 @@ export function projectStartPlan(input: StartPlanInput): StartPlan {
           const hit = collision(row, earlier.row);
           if (hit) return { collides: { row: earlier.row.id, ...hit } };
         }
-        // 5. The two lane caps, in tickDispatch's order and with its sentences.
+        // 4. The two lane caps, in tickDispatch's order and with its sentences.
         if (!caps) return { cap: `no lane cap known for ${basenameOf(repo)}` };
         const lanes = repoLanes.length + nowInRepo;
         if (lanes >= caps.max)
@@ -199,23 +257,23 @@ export function projectStartPlan(input: StartPlanInput): StartPlan {
         const programId = known[0]?.programId;
         if (programId) nowByProgram.set(programId, (nowByProgram.get(programId) ?? 0) + 1);
       }
-      // A wave CLAIMS its files against later waves unless it waits on a human act (release) or
-      // failed a check: such a wave does not start under this policy until someone acts, and letting
-      // it hold released rows behind it would be the one-row-holds-the-queue stall tickDispatch's
-      // skip-not-return comments describe. Everything else — now, after, collides, cap — is in line.
+      // A wave CLAIMS its files against later waves unless it is not released (no release, a card its
+      // program's policy refuses, a hold) or was handed no row: such a wave does not start until someone
+      // acts, and letting it hold released rows behind it would be the one-row-holds-the-queue stall
+      // tickDispatch's skip-not-return comments describe. Everything else — now, after, collides, cap — is in line.
       const claims = typeof next === "string" || !("unreleased" in next || "unchecked" in next);
       if (claims) for (const row of known) claimed.push({ row });
       return {
         ids: [...wave.ids], klasse: wave.klasse, units: wave.units, reasonAgainst: wave.reasonAgainst, next,
         rows: wave.ids.map((id) => {
           const row = rowById.get(id);
-          return { id, status: row?.status ?? "unknown", checks: row?.checks ?? null };
+          return { id, status: row?.status ?? "unknown", checks: row?.checks ?? null, release: row ? releaseVerdict(row) : null };
         }),
       };
     });
     return { repo, lanes: repoLanes.length, cap: caps ? { max: caps.max, source: caps.source } : null, waves: out };
   });
-  return { version: 1, budget: input.projection.budget, release: input.release, repos,
+  return { version: 1, budget: input.projection.budget, repos,
     unresolved: [...input.projection.unresolved] };
 }
 
@@ -227,7 +285,7 @@ export function projectStartPlan(input: StartPlanInput): StartPlan {
 export function startPlanWaitNote(next: Exclude<StartPlanNext, "now">): string {
   if ("after" in next) return `waiting: after ${next.after} not landed`;
   if ("unreleased" in next) return `waiting: wave partner ${next.unreleased.join(", ")} is not released`;
-  if ("unchecked" in next) return `waiting: ${next.unchecked.join(", ")} not checked — no valid card`;
+  if ("unchecked" in next) return `waiting: ${next.unchecked.join(", ")} not checked — the plan was handed no row for it`;
   if ("collides" in next) {
     const { slot, row, file, symbol } = next.collides;
     return `waiting: collides with ${slot !== undefined ? `lane ${slot}` : `row ${row} ahead in the plan`} on ${file}${symbol ? `#${symbol}` : ""}`;
@@ -246,7 +304,7 @@ const argAfter = (name: string): string | null => {
 
 interface StateTask {
   id?: unknown; kind?: unknown; text?: unknown; source?: unknown; status?: unknown; slot?: unknown; programId?: unknown;
-  card?: (StartPlanCardFacts & { after?: unknown; surface?: { creates?: unknown } }) | null;
+  card?: (StartPlanCardFacts & { after?: unknown }) | null; brief?: { at?: unknown } | null; hold?: unknown;
 }
 interface StateSlot { worktree?: { repo?: unknown } | null; programId?: unknown }
 
@@ -277,9 +335,17 @@ async function cli(): Promise<void> {
   const { resolve } = await import("node:path");
   const canon = (repo: string): string => { try { return realpathSync(resolve(repo)); } catch { return repo; } };
 
+  // the program policies as server.ts#programReleasePolicy reads them: an ACTIVE program's record, else manual
+  const policies = new Map<string, StartPlanRelease>();
+  for (const p of Array.isArray(state.programs) ? state.programs as { id?: unknown; status?: unknown; release?: { policy?: unknown } }[] : [])
+    if (typeof p.id === "string" && p.status === "active" && START_PLAN_RELEASES.includes(p.release?.policy as StartPlanRelease))
+      policies.set(p.id, p.release?.policy as StartPlanRelease);
+  const policyOf = (task: StateTask): StartPlanRelease =>
+    typeof task.programId === "string" ? policies.get(task.programId) ?? "manual" : "manual";
   const surfaceOf = (task: StateTask): Surface => {
     const derived = typeof task.id === "string" ? meta.tasks?.[task.id] : undefined;
-    const files = [...(derived?.files ?? []), ...(task.card?.surfaceValid === true ? strings(task.card.surface?.creates) : [])];
+    const read = [...(derived?.files ?? []), ...(task.card?.surfaceValid === true ? strings(task.card.surface?.creates) : [])];
+    const files = policyOf(task) === "manual" ? read : [...new Set([...read, ...startPlanCardPaths(task.card ?? null)])];
     return { files: files.length ? files : null, ranges: derived?.ranges ?? null };
   };
   const statuses: Record<string, string> = {};
@@ -292,7 +358,10 @@ async function cli(): Promise<void> {
     rows.push({ id: task.id, status, programId: typeof task.programId === "string" && task.programId ? task.programId : null,
       ...surfaceOf(task), after: strings(task.card?.after),
       checks: startPlanChecks({ text: typeof task.text === "string" ? task.text : "",
-        source: typeof task.source === "string" ? task.source : "unknown", card: task.card ?? null }) });
+        source: typeof task.source === "string" ? task.source : "unknown", card: task.card ?? null,
+        briefAt: typeof task.brief?.at === "number" ? task.brief.at : null }),
+      ...(policyOf(task) !== "manual" ? { release: policyOf(task) } : {}),
+      ...(task.hold ? { held: true } : {}) });
   }
 
   // a lane's repo is stored canonical; map it back onto the projection's own repo string
@@ -330,8 +399,7 @@ async function cli(): Promise<void> {
     caps[repo] = { ...cap, programs: Object.fromEntries(programIds.map((id) => [id, Math.min(grants.get(id) ?? machine, machine)])) };
   }
 
-  // the policy the tick runs under (server.ts#startPlanNow): every program is `manual` until Schnitt 3
-  process.stdout.write(`${JSON.stringify(projectStartPlan({ projection, release: "manual", rows, statuses, lanes, caps }))}\n`);
+  process.stdout.write(`${JSON.stringify(projectStartPlan({ projection, rows, statuses, lanes, caps }))}\n`);
 }
 
 if (import.meta.main) {

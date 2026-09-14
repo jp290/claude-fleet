@@ -1,4 +1,4 @@
----
+ | Lauf | Baum (Trail-`tree`, Vor-Rebase-SHA, s. Hinweis) | Checks |---
 frage: Kann ./e2e-isolated.sh in n unabhaengigen Shards laufen, und was bringt das an Wanduhr?
 urteil: Ja, per --shard k/n ohne Verhaltensaenderung ohne Flag (Vereinigung der Check-Namen aus 4 seriellen Shards gegen den ungeshardeten Lauf ist diff-leer, 4 378 = 4 378), aber eine Unit `core` aus 17 gekoppelten Modulen traegt 58 % der Suite (1 239 von 2 120 s), deckelt die Wanduhr ab n=2 auf ~21 statt 35 min (Faktor 1,7) und macht n=4 wertlos, bis programs/tasks von der self-token-Lane entkoppelt sind; die Laeufe fanden fuenf versteckte Kanten, die keine Karte sah
 bereich: [verify, e2e, suite-kontention, multi-host]
@@ -72,7 +72,7 @@ Register-Historie. Und ein Flake, kein Befund: `an unattended send whose payload
 rolls its own payload back out of the composer` (watch) fiel in Shard 3 (1. Lauf) und im fremden
 Vollauf `isolated-20260913T201053Z-85738` derselben Nacht; Register 23 gruen / 2 rot; in 3b gruen.
 
-**4. Der Beweis: n=4 seriell gegen ungeshardet.** Alle Laeufe auf dem Mac, seriell durch den
+**4. Der Beweis: n=4 seriell gegen ungeshardet.** HINWEIS ZU DEN SHAS: jede Commit-SHA in dieser Notiz ist die SHA des Lane-Baums, auf dem der Lauf gemessen wurde (identisch mit dem `tree`-Feld der genannten Trail-Dateien unter `e2e-trail/`). Die Lane landet per Rebase, auf main heissen dieselben Commits anders — die MAIN traegt nach dem Land die main-SHAs nach, zuordenbar ueber die Commit-Subjects: „--shard k/n im Runner" (b371155c), „outcomes gehoert in die Shard-Unit core" (4d1465fd), „der outcomes-Schritt im Runner heisst core" (c0f476e6), „Shard-Basisfixture" (b1beb0de), „zwei Watch-Checknamen tragen den Ordinal" (deb0fa80), „restart.ts traegt FLEET_STEWARD_MIN_IDLE_MS" (1b6350c3). Alle Laeufe auf dem Mac, seriell durch den
 Suite-Mutex, `FLEET_E2E_SHARD=k/4 ./e2e-isolated.sh` bzw. ohne Env.
 
 | Lauf | Baum | Checks | Failures | Runner-Dauer | Units |

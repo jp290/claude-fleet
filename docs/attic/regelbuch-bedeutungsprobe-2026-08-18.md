@@ -45,6 +45,22 @@ extrahierbares Muster ist ein FAIL unter eigenem Namen, nie ein stilles Bestehen
 laeuft ueber zwei physische Zeilen und lieferte einem zeilenweisen Parser NULL Muster, was auf
 `all([]) === true` hinauslief — die vakuum-gruene Form derselben Krankheit wie `F6`.
 
+## Schnitt S1 (2026-09-14): der Lane-Render unter 20 000 Zeichen
+
+Owner-OK 2026-09-14 19:0x auf die Streichliste `docs/messungen/2026-09-14-s1-streichliste.md`. Nach dem
+Muster von Schnitt C wandern fuenf Regeln in ein anderes Fragment als ihr id-Praefix sagt, und die
+Spalte sagt, wo sie wirklich stehen: `F3` (watch antwortet einer Lane 409), `F4` (succeed/retire:
+Lane und Steward 409), `F7` (Watch-Nachricht ist Server-Praedikat) und `F8` (succeed braucht frischen
+Handoff) sind mit den MAIN-Tueren aus `self-scheduling` nach `einstieg` gezogen — eine Lane bekommt
+auf jede dieser Tueren 409, der Lane-Render soll sie nicht tragen (Tuer-Probe = 0); `D40`
+(main-seitige Doc-Analyse committen, bevor man eine Lane spawnt) ist eine Handlung der MAIN und
+steht deshalb ebenfalls in `einstieg`. Eine Zeile ist GESTRICHEN: `D4` (Verify-Kette woertlich im
+Regelbuch) — die Kette steht seit S1 nur noch in `AGENTS.md` §Verify, gehalten von `RULE_VERIFY`
+in `e2e/pins.ts`; das Regelbuch verweist. Die Tabelle traegt damit 117 Zeilen. Die uebrigen
+Kuerzungen von S1 (AGENTS-Dubletten je ein Verweis-Satz, Suiten-Innenleben je ein Satz mit
+Attic-Verweis, Geschichten ins Attic) lassen jedes Kern-Muster in seinem Fragment stehen — die
+Muster sind die Regel, nicht ihre Erzaehlung.
+
 | id | Ort | Fragment | Regel | Kern-Muster |
 |---|---|---|---|---|
 | L1 | C | loader | Claude-Session liest aus AGENTS.md den portablen Vertrag; Rest ist Nachschlag | <code>AGENTS.md</code> |
@@ -81,7 +97,6 @@ laeuft ueber zwei physische Zeilen und lieferte einem zeilenweisen Parser NULL M
 | D1 | C | lane-discipline | proportionale Verifikation: erst self/gate fragen | <code>localProof.steps</code> |
 | D2 | C | lane-discipline | Suite am Tail beurteilen | <code>ALL PASS</code> |
 | D3 | C | lane-discipline | review-sweep = mechanische Review-Haelfte | <code>bun review-sweep.ts</code> |
-| D4 | C | lane-discipline | Verify-Kette woertlich vorhanden | <code>bun install --frozen-lockfile && bun e2e/pins.ts</code> |
 | D5 | C | lane-discipline | pins ist erste Stufe des Land-Gates und wird ausgefuehrt | <code>ERSTE Stufe</code> |
 | D6 | C | lane-discipline | e2e-isolated: Vorschau, Pflicht nur bei benannten Ausloesern | <code>Tier-2-Vorschau, kein Gate</code> |
 | D7 | C | lane-discipline | Ausloeser: Aussage aendern, ueber die eine Behauptung steht | <code>Behauptung steht</code> |
@@ -117,7 +132,7 @@ laeuft ueber zwei physische Zeilen und lieferte einem zeilenweisen Parser NULL M
 | D37 | C | lane-discipline | Bodies sind das Befund-Register | <code>Commit-BODIES</code> |
 | D38 | C | lane-discipline | Wissen aus main: lesen, nicht aus Working Tree | <code>git show main:</code> |
 | D39 | C | lane-discipline | Strukturaenderungen ziehen doc-Claims in derselben Lane mit | <code>Wissenspflege</code> |
-| D40 | C | lane-discipline | main-seitige Doc-Analyse committen vor Lane-Spawn | <code>committen, bevor</code> |
+| D40 | C | einstieg | main-seitige Doc-Analyse committen vor Lane-Spawn | <code>committen, bevor</code> |
 | D41 | C | einstieg | Steward: eigener Worktree, landet nie selbst | <code>⚙ steward</code> |
 | D42 | C | lane-discipline | Demo bricht ohne Gate-Signal; eigener typecheck/build | <code>kein Gate hier sagt es</code> |
 | D43 | C | lane-discipline | Client-Bundles bauen vor Deploy | <code>bun run build before any client deploy</code> · <code>gitignored build artifacts</code> |
@@ -132,12 +147,12 @@ laeuft ueber zwei physische Zeilen und lieferte einem zeilenweisen Parser NULL M
 | S4 | C | supervisor | den Owner NICHT fragen, ob ein Entwurf seiner ist | <code>NICHT, ob ein Entwurf seiner ist</code> |
 | F1 | C | self-scheduling | Self-Env-Vars in jeder Pane; vor Gebrauch pruefen | <code>FLEET_SELF_TOKEN</code> |
 | F2 | C | self-scheduling | lane-only: vier Routen, 409 nie 401 | <code>verify-intent</code> |
-| F3 | C | self-scheduling | watch: Lane bekommt 409 | <code>lane may not subscribe</code> · <code>409</code> |
-| F4 | C | self-scheduling | succeed/retire: Lane und Steward 409 | <code>stehende Rolle</code> |
+| F3 | C | einstieg | watch: Lane bekommt 409 | <code>lane may not subscribe</code> · <code>409</code> |
+| F4 | C | einstieg | succeed/retire: Lane und Steward 409 | <code>stehende Rolle</code> |
 | F5 | C | self-scheduling | autos: Deckel 5, Mindestintervall, Run-Cap | <code>max 5</code> |
 | F6 | C | self-scheduling | Self-Scheduling nie gegen expliziten Stop | <code>explicit stop instruction</code> |
-| F7 | C | self-scheduling | Watch-Nachricht = Server-Praedikat; Pane lesen | <code>nie auf sie allein landen</code> |
-| F8 | C | self-scheduling | succeed: frischer committeter Handoff, sonst 409 | <code>jünger als diese Session</code> |
+| F7 | C | einstieg | Watch-Nachricht = Server-Praedikat; Pane lesen | <code>nie auf sie allein landen</code> |
+| F8 | C | einstieg | succeed: frischer committeter Handoff, sonst 409 | <code>jünger als diese Session</code> |
 | P1 | C | deploy | watchdog-Aenderungen brauchen kickstart | <code>launchctl kickstart</code> |
 | P2 | C | deploy | public-Repo: Leck-grep vor Commit leer | <code>muss LEER sein</code> |
 | P3 | C | deploy | alte Branches: nie blind git merge main | <code>421 fremde Commits</code> |

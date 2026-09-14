@@ -69,7 +69,7 @@ Danach — und bis der Watch feuert — sind GENAU DIESE FÜNF ZÜGE ERLAUBT. Si
 Zustand nicht an, also brechen sie die Regel „Warten ist ereignisgetrieben" nicht:
 
   (1) Verstetigen: das Dokument schreiben und committen, das nach R2 fällig ist.
-  (2) Den HANDOFF-Abschnitt nach R3 schreiben oder nachziehen.
+  (2) Offene Fragen und ungefilte Stufen nach R3 in Zeilen ablegen, die eine Succession ueberleben.
   (3) Die NÄCHSTEN Zeilen filen, ohne sie freizugeben:
         curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
           -d '{"text":"<Brief>","kind":"auftrag","harness":"claude","model":"claude-opus-5[1m]","effort":"high"}' \
@@ -148,32 +148,30 @@ Ein Edit am Haupt-Checkout ist ein Vorgang von Sekunden, kein Zustand: lange off
 gefährlicher als schnell committen.
 
 ────────────────────────────────────────────────────────────────────────
-R3 — DER HANDOFF-ABSCHNITT IST DIE BEDINGUNG DEINER EIGENEN NACHFOLGE
+R3 — NACHFOLGE FOLGT DER ROLLENBINDUNG, NICHT EINEM HANDOFF-ABSCHNITT
 ────────────────────────────────────────────────────────────────────────
-Das ist keine Empfehlung, sondern ein Gate: `POST /api/self/succeed` antwortet 409 mit
-„HANDOFF.md must exist, be clean, and have a commit newer than this session — otherwise the
-successor would have nothing to read", solange `HANDOFF.md` fehlt, schmutzig ist oder ihr jüngster
-Commit älter als deine Sessioneröffnung ist. Ohne Abschnitt bist du strukturell unschließbar.
+Der Server waehlt die Nachfolge-Schiene aus deiner Bindung (`server.ts#migrateRailOf`, geprueft von
+`server.ts#handleSelfSucceed`): eine exakt gebundene aktive Program-MAIN succeedet OHNE neuen
+HANDOFF-Commit — offene Pflichten stehen in Program-, Task-, Report- und Inbox-Sichten, und
+`GET /api/self/program-execution` liefert der Nachfolgerin den vollstaendigen `handover`. Nur eine
+ungebundene Legacy-Session oder der Supervisor braucht weiterhin einen sauberen HANDOFF-Commit,
+juenger als die Session; ein Game-Maker seinen committeten Game-Checkpoint. Regel A (Owner-Promotion
+2026-09-14): HANDOFF.md wird nur bei echter Nachfolge committet, nie fuer Zwischenstaende.
 
-WANN: nach JEDEM abgeschlossenen bounded Akt — nicht am Sessionende. Deine Harness kompaktiert
-selbst; was nur im Transkript stand, ist nach einer Selbstkompaktierung weg, und du merkst es nicht.
+WAS DU DESHALB TUST, nach JEDEM abgeschlossenen bounded Akt — nicht am Sessionende, denn deine
+Harness kompaktiert selbst und du merkst es nicht:
+  1. Jede OFFENE Owner-Frage als Attention oder Queue-Zeile ablegen, nie nur im Transkript. Eine
+     Succession raeumt deine offenen Attentions still ab (`refusedReason: "requester session ended"`)
+     — die Nachfolgerin muss die Frage NEU STELLEN koennen, also steht ihr voller Wortlaut in einer
+     Zeile, die die Succession ueberlebt.
+  2. Die dauerhaften Pfade deiner Dokumente aus R2 in Zeile oder Report nennen (getrackt, nie /tmp).
+  3. Die noch nicht gefilten Stufen deines Plans als Zeilen filen (`kind:"auftrag"`, ungefreigegeben),
+     mit Reihenfolge und Done-Kriterium — sonst existieren sie nach deinem Tod nicht mehr.
 
-WAS HINEIN MUSS, fünf Punkte, jeder als Zeile:
-  1. Die Kette in Flug: welcher Akt läuft, auf welchem Slot, welchen Watch du dafür armed hast (Id).
-  2. Jede OFFENE Owner-Frage im VOLLEN WORTLAUT. Eine Succession räumt deine offenen Attentions
-     still ab (`refusedReason: "requester session ended"`) — eine Attention-Id allein ist wertlos,
-     die Nachfolgerin muss die Frage NEU STELLEN können.
-  3. Die dauerhaften Pfade deiner Dokumente aus R2 (getrackte Pfade, nie /tmp).
-  4. Die noch nicht gefilten Stufen deines Plans, als Text, mit ihrer Reihenfolge und ihrem
-     Done-Kriterium — sonst existieren sie nach deinem Tod nicht mehr.
-  5. Deine Füllstandszeile nach R5.
-
-Der Zug (dein cwd ist der Haupt-Checkout; erst der Sensor aus R2, dann):
-  git add HANDOFF.md && git commit -m "docs(handoff): <Program> — <Stand in einer Zeile>"
-
-Und als Nachfolgerin dein ERSTER Akt, vor allem anderen:
+Und als Nachfolgerin dein ERSTER Akt, vor allem anderem:
+  curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" http://<fleet-host>:<port>/api/self/program-execution
   curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" http://<fleet-host>:<port>/api/self/attention
-Findest du dort die Frage deiner Vorgängerin als `refused`, ist sie UNBEANTWORTET, nicht abgelehnt
+Findest du dort die Frage deiner Vorgaengerin als `refused`, ist sie UNBEANTWORTET, nicht abgelehnt
 — stell sie neu.
 
 ────────────────────────────────────────────────────────────────────────
@@ -207,15 +205,15 @@ R5 — DU HAST KEINEN FÜLLSTANDSSENSOR, ALSO MELDEST DU IHN SELBST
 Der Owner-Poll zeigt für deinen Slot `ctx: null`. Das heißt UNMESSBAR, nicht leer: niemand kann
 deinen Füllstand von außen sehen, auch der Controller nicht.
 
-Der Zug: in JEDEN Bericht und in den HANDOFF-Abschnitt eine Zeile in genau dieser Form —
+Der Zug: in JEDEN Bericht eine Zeile in genau dieser Form —
 
   ctx: unmessbar (codex) · Selbstschätzung ~NN % · seit Gründung: <N> Akte, <M> Reports gelesen
 
 Die Tilde ist Pflicht: eine geschätzte Zahl ohne sie sieht aus wie eine Messung und wird als eine
 weiterverwendet. „Etwa halb voll" ist ein gültiger Wert; Schweigen ist keiner.
 
-Ab ~25–30 % Selbstschätzung fängst du keine NEUE unklare Tiefenarbeit mehr an und schreibst den
-HANDOFF-Abschnitt nach R3 — eine laufende kurze Kette darf zu Ende laufen.
+Ab ~25–30 % Selbstschätzung fängst du keine NEUE unklare Tiefenarbeit mehr an und legst offene
+Pflichten nach R3 ab — eine laufende kurze Kette darf zu Ende laufen.
 
 UND: eine SELBSTKOMPAKTIERUNG deiner Harness ist KEIN Succession-Druck. Ein Sprung von 78 % auf
 18 % ist Betriebszustand. Melde ihn als das („self-compact, kein Kontextverlust an Fakten, die im
@@ -255,7 +253,7 @@ Am Code (`server.ts`, `server/types.ts`) bzw. an einer Doc gelesen, nicht aus de
 | `POST /api/self/tasks/:id/release` dispatcht nicht, liest keinen Body | `server.ts#releaseTaskForMain`; `docs/self-api.md` §release |
 | `GET /api/self/inbox` — program-gebunden, Nicht-Lane, nur Zeiger, überlebt Succession | `server.ts#programInboxFor`; `docs/self-api.md` §inbox |
 | `GET /api/self/program-execution` liefert `phase`, `phaseBasis`, `candidate`, `nextAction`, `unknown[]` | `docs/self-api.md` §tasks; `program-phase.ts#phaseOf` |
-| `POST /api/self/succeed` verweigert 409 ohne frischen, sauberen `HANDOFF.md`-Commit | `server.ts#handleSelfSucceed`, `server.ts#handoffCommittedAfterOpen` (Wortlaut der 409 wörtlich übernommen) |
+| `POST /api/self/succeed` verlangt den frischen, sauberen `HANDOFF.md`-Commit nur von einer ungebundenen Legacy-Session und vom Supervisor; eine exakt gebundene Program-MAIN succeedet ohne ihn | `server.ts#handleSelfSucceed`, `server.ts#migrateRailOf`, `server.ts#handoffCommittedAfterOpen` |
 | Succession räumt offene Attentions still ab (`requester session ended`) | `CLAUDE.md` §„Eine Succession toetet deine offenen Attentions"; `server.ts#succeedProgramMain` fasst `attentionRequests` nicht an |
 | `POST /api/self/attention` — Nicht-Lane-only, `kind` ∈ `decision · blocked · review-ready`, Text ≤ 2000 | `server.ts#openAttention`; `server/types.ts#ATTENTION_KINDS`, `MAX_ATTENTION_TEXT` |
 | `POST /api/self/clarifications/:id/reply` existiert, Id ist 24-hex; `POST /api/self/clarifications` ist LANE-only | `server.ts`, Regex `^/api/self/clarifications/([0-9a-f]{24})/reply$` und die 409 `not a lane — only a worker lane can open a clarification` |
@@ -268,9 +266,6 @@ Am Code (`server.ts`, `server/types.ts`) bzw. an einer Doc gelesen, nicht aus de
 
 **NICHT verifiziert, und darum steht es nirgends als Zug im Baustein:**
 
-- **`/api/self/notes` gibt es nicht.** Die Routenliste in `server.ts` kennt keinen solchen Pfad; der
-  Weg zu einem fremden Program bleibt eine Queue-Notiz über `POST /api/self/tasks` mit
-  `kind:"notiz"`. Wer die Route in einen Brief schreibt, schreibt einen 404 hinein.
 - **Ob die codex-TUI selbst einen Füllstand anzeigt**, wurde nicht an einer Pane geprüft. R5 baut
   deshalb ausschließlich auf Selbstauskunft und nicht auf einen vermuteten TUI-Sensor.
 - **Die konkrete `<repo>`- und `<candidate-sha>`-Form des `{kind:"audit"}`-Watches** ist aus

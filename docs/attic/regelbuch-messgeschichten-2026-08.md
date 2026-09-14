@@ -54,6 +54,13 @@ beiden Korrekturen (2026-08-07 und 2026-08-09):
   nicht dieses Dokument** — und ein Absatz, der eine Handarbeit empfiehlt, ist der erste, den man gegen den
   Code prüft.
 
+**Nachtrag Schnitt S1 (2026-09-14):** die Messung hinter `idleSec:0` (aus `self-scheduling` in den
+Einstieg gezogen): gemessen 2026-09-07 04:47–05:20 an Slot 10 — zwei Lane-Watches starben
+`subject-gone`, weil die Lane gelandet und geschlossen war, bevor die Pane 60 s idle wurde; ein
+Merge-Watch blieb `pending`; gleichzeitig hielt jedes unquittierte Event Budget
+(`server.ts#slotDeliveryBudget`), darum „max 5 active watches" bei nur drei armierten. Seit
+`./ctl.sh watch` (idleSec Default 0) und `./ctl.sh events --ack` ist der Handgriff ein Verb.
+
 ## §2 Der Land-Takt (Streichung der 12-min-Wartepflicht, Owner-Entscheid 2026-08-07)
 
 Heutige Regel: `CLAUDE.md` §Einstieg („Der Land-Takt"). Die zwei Messungen, die die alten
@@ -272,6 +279,11 @@ Die Korrektur-Bauformen darin sind absichtlich unveraendert. Bei Widerspruch gil
   genau das ist passiert (sie kopierte `continuity.ts` nie in ihr Scratch-Verzeichnis und starb seit `13c5728`
   bei JEDEM Lauf am Boot, unentdeckt, weil kein Gate sie fährt — gefunden und behoben 2026-07-27 in Lane
   `b5e6`).
+
+**Nachtrag Schnitt S1 (2026-09-14):** die Zahlen hinter dem Owner-Entscheid 2026-09-06 20:3x
+(Stau-Beseitigung), aus dem Lane-Render genommen: der Mac-Mutex trug an diesem Tag ~7 h Suiten bei
+~30 min Gate-Arbeit, 3 von 11 Audits liefen in den 45-min-Timeout. Seither verlangt ein Brief die
+Vorschau nur in den Faellen von `AGENTS.md` §Verify.
 
 ## §10 Sonde vor Code (Originalblock)
 
@@ -899,3 +911,14 @@ an einer Behauptung haengt.
 - **Ein Suite-Lauf hinter `nohup … > log` ist BLOCKGEPUFFERT:** „0 PASS-Zeilen" bei lebendem Prozess
   ist ein Messfehler des Beobachters, kein Haenger. Fortschritt liest man an der `server.log` der
   Instanz oder am Trail (`docs/e2e-trail.md`).
+
+## §16 Eigene Commit-Shas nach einem Rebase-Land (Originalblock, Schnitt S1 2026-09-14)
+
+Bezahlt am 2026-09-05: §11.2j der Tiering-Doc landete korrekt datiert, aber mit `ee98c8d`/`2c40368`;
+auf main heissen dieselben Commits `c36c1e9`/`1db9296`, und `git merge-base --is-ancestor ee98c8d main`
+sagt NEIN. Es trifft genau die Saetze, die am meisten zaehlen — „ein Rot dort NACH <sha> ist wieder
+ECHT" wird wertlos, wenn <sha> nirgends aufloest, und ein frischer Klon findet das Objekt gar nicht.
+Die Lane ist nicht schuld: sie KANN ihre Landing-Sha nicht kennen. Regel (im Lane-Render): die Lane
+schreibt den Satz mit einem Platzhalter oder ihrer Branch, die MAIN setzt nach dem Land die echten
+Shas ein — pruefbar mit `git merge-base --is-ancestor <sha> main` je zitierter Sha, bevor der Fix als
+datiert gilt.

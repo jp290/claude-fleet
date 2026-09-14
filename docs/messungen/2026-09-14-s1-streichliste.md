@@ -1,7 +1,7 @@
 # S1 — Streichliste fuer den Lane-Render (2026-09-14, Orchestrator Slot 8, VOR dem Render)
 
 Zeile `f4c2033d` (Rollen-Synthese S1). Owner-Vorgabe 17:5x: Streichliste als Tabelle VOR dem Render,
-Render erst nach Owner-OK. Diese Notiz IST die Tabelle; gerendert ist noch nichts.
+Render erst nach Owner-OK. §0–§5 sind die Tabelle vor dem Render; §6 ist der Bau danach.
 
 ## 0. Gemessen (Render aus `rulebook.ts#renderRulebook("lane")`, 18:4x)
 
@@ -162,3 +162,45 @@ Zeichen: reicht er nicht, faellt als Naechstes lane#34 (Demo, 474) auf einen Sat
    nicht, er ordnet um.
 3. **Der Rueckweg-Satz im Lane-Fragment nennt die MAIN-Tueren beim Namen** (watch/release/succeed),
    ohne Routenform — damit die Tuer-Probe 0 zeigt, ohne dass die Lane sie fuer nicht existent haelt.
+
+## 6. GEBAUT (19:1x–19:4x, Owner-OK „ok ok ok" 19:0x, dazu „denk auch selbst gut nach")
+
+| Messung | vorher | nachher | Ziel |
+|---|---|---|---|
+| Lane-Render (`renderRulebook("lane")`) | 36 763 | **19 956** | < 20 000 |
+| davon loader · lane-discipline · self-scheduling | 3 231 · 23 488 · 9 612 | 2 963 · 13 640 · 3 322 | — |
+| Tuer-Probe | 6 | **0** | 0 |
+| Geschichte-Probe je Lane-Fragment | 3 · 1 | **0 · 0** | ≤ 3 |
+| Attic-Verweise im Lane-Render | 9 | 7 | — |
+| Main-Render (CLAUDE.md) | 86 142 | 75 196 | — |
+| `bun e2e/pins.ts` | — | **ALL PASS** (117/117 placed, byte for byte) | ALL PASS |
+
+**Wo ich von der Tabelle abgewichen bin, und warum (eigenes Urteil, nicht nur das OK):**
+1. **Suite-Offer behaelt die Zahlen 180 s / 800 s.** Ein Pin verlangt sie im Fragment
+   („the suite-offer waiting numbers are the same in rulebook/lane-discipline.md and server.ts") —
+   der erste Pins-Lauf ohne die Zahlen war rot. Die Tabelle (Zeile 2, „Zahlen raus") war falsch.
+2. **Die drei Mutex-Bullets (Zeilen 9–11) sind EIN Bullet „Suite-Mutex"** statt drei Saetzen: die
+   erste Fassung mit drei Bullets lag bei 22 635 Zeichen, 2 600 ueber dem Ziel — die Entwurfssaetze
+   der Tabelle waren zu lang geschaetzt.
+3. **Der launchd-PATH-Absatz ist aus `loader` nach `deploy` gezogen** (Zeile 20 sagte „Loader
+   unangetastet"): er ist eine Host-Deploy-Tatsache, keine Lane-Regel, und kostete jede Lane 270 Zeichen.
+   Keine L-Zeile haengt daran.
+4. **Zusaetzliche Kuerzungen, die nicht in der Tabelle standen** (noetig fuer < 20 000): review-sweep ohne
+   `--queue`-Klausel (die Lane mintet keine Notizen); CLARIFY-Lane ohne den Steward-409-Satz; die Bloecke
+   `CLAUDE.md nur KOPIERT`, `rg -uu`, Commit-Bodies (`git log -1 69e4b8d`-Beispiel weg), `git show main:`,
+   Wissenspflege, Demo, `NEVER bun server.ts` (Geschichte 2026-07-19 weg) je auf den Handlungssatz;
+   self#0/#1 ohne die `d02f1ec`-Vorgeschichte und ohne die Controller-Anekdote; im gate-curl nur noch
+   `verify` + `rulebookDrifted` (die anderen Felder handelt eine Lane nie). Jedes Kern-Muster steht.
+5. **Ein toter Pfad repariert:** `docs/harvest-portabilitaet-J-2026-08-21.md` liegt seit dem Attic-Umzug
+   unter `docs/attic/`; der alte Render zitierte den toten Pfad mit `:190`, was den Pfad-Pin umging.
+6. **Der `/api/self/notes`-Satz im Astra-Baustein war FALSCH, nicht nur ueberfluessig:** `server.ts`
+   traegt `GET /api/self/notes` (Zeile ~30066). Gestrichen; dazu R3 durch die Nachfolge-Schiene ersetzt,
+   die zwei R3-Querverweise (Zeile 72, 218), der R5-Satz „und in den HANDOFF-Abschnitt" und die
+   Verifikationstabelle (succeed-Zeile) nachgezogen.
+7. **Nicht angefasst:** `einstieg` traegt weiterhin 4 Geschichte-Treffer (ausserhalb S1, Main-Render); die
+   einstieg-Absaetze „Rueckweg als Mechanismus" und der verschobene watch-Block ueberlappen inhaltlich —
+   das Zusammenziehen ist S4 (`b3767fc4`, Rollenkarten), nicht S1.
+
+**Betrieb:** die Fragmente sind untracked; die naechste Lane bekommt den neuen Render beim Spawn
+(`server.ts` liest `rulebook/` zur Spawn-Zeit, kein Deploy noetig). Laufende Lanes sehen ab jetzt
+`rulebookDrifted: true` — erwartet, kein Befund.

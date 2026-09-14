@@ -70,6 +70,9 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # errors. fleet-e2e-postland-audit.ts was still missing from the list on 2026-07-28 — the harness
 # guarding the whole tier-2 path was the one with no type coverage — which is why the pins step
 # above now derives the list's completeness from the files on disk instead of trusting this line.
+# That derivation was itself a hand-kept entry list until 2026-09-14 (Astra finding 4): src/hub.ts
+# and six tool scripts reached no compiler. The pin now walks imports from this list over every .ts
+# git knows of; a file it does not reach must be listed here or exempted by name in the pin.
 # ./e2e-clean-review.sh is the gate's FIRST land-path coverage ever (§8 Step 2) — it
 # drives tryScriptRebase → runVerify → advanceIntegration → recordLand → landLane end to end and
 # is the only suite exercising runCleanReview, which is live in shadow mode on this fleet. It is
@@ -88,7 +91,7 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # fails the gate. Keep it last, and keep it to suite names.
 # NOT here: ./e2e-isolated.sh (§5 — measurably non-deterministic under load, which is why it is
 # tier 2 AFTER the land, not a gate).
-VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bun e2e/pins.ts && bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun e2e/pins.ts src/client.ts src/share.ts src/helper.ts server.ts fleet-e2e.ts fleet-e2e-claude-gate.ts fleet-e2e-clean-review.ts fleet-e2e-security.ts fleet-e2e-postland-audit.ts fleet-e2e-harness.ts merge-prompt.ts && bun run build && ./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh'
+VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bun e2e/pins.ts && bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun e2e/pins.ts src/client.ts src/share.ts src/helper.ts src/hub.ts server.ts fleet-e2e.ts fleet-e2e-claude-gate.ts fleet-e2e-clean-review.ts fleet-e2e-security.ts fleet-e2e-postland-audit.ts fleet-e2e-harness.ts merge-prompt.ts acceptance-probe.ts graph-coverage.ts land-collision-stats.ts land-quality.ts lane-context-cost.ts drills/drill-3-clean-review.ts && bun run build && ./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh'
 VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 
 # --- VERIFICATION TIER 2: the post-land audit (server.ts, grep POSTLAND_AUDIT_CMD) --------------

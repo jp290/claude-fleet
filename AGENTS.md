@@ -236,9 +236,10 @@ The full chain, copyable and in order:
 bun install --frozen-lockfile
 bun e2e/pins.ts
 bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun \
-  e2e/pins.ts src/client.ts src/share.ts src/helper.ts server.ts fleet-e2e.ts fleet-e2e-claude-gate.ts \
-  fleet-e2e-clean-review.ts fleet-e2e-security.ts fleet-e2e-postland-audit.ts \
-  fleet-e2e-harness.ts merge-prompt.ts
+  e2e/pins.ts src/client.ts src/share.ts src/helper.ts src/hub.ts server.ts fleet-e2e.ts \
+  fleet-e2e-claude-gate.ts fleet-e2e-clean-review.ts fleet-e2e-security.ts fleet-e2e-postland-audit.ts \
+  fleet-e2e-harness.ts merge-prompt.ts acceptance-probe.ts graph-coverage.ts land-collision-stats.ts \
+  land-quality.ts lane-context-cost.ts drills/drill-3-clean-review.ts
 bun run build
 ./e2e-clean-review.sh
 ./e2e-security.sh

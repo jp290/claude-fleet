@@ -66,7 +66,7 @@ export async function run(): Promise<void> {
   // exclusive attribution exists to prevent. Under FLEET_E2E_PHASES=0 the opposite must hold.
   const badPhases = rows.filter((r) => {
     const p = r.phases;
-    if (!PHASES_ON) return p !== undefined || r.phaseTop !== undefined;
+    if (!PHASES_ON) return p !== undefined || r.phaseTop !== undefined || r.phaseSum !== undefined;
     if (!p) return true;
     const parts = [p.boot, p.tmux, p.http, p.sleep, p.rest];
     return parts.some((n) => typeof n !== "number" || n < 0)
@@ -93,7 +93,8 @@ export async function run(): Promise<void> {
     const p = new Promise<T>((res) => { go = () => res(v); });
     return { p, go };
   };
-  const bootH = hold(0), innerGet = hold(0), innerSleep = hold(0), lateFetch = hold(0), bare = hold(0), bareGet = hold(0);
+  const bootH = hold(0), innerGet = hold(0), innerSleep = hold(0), lateFetch = hold(0), bareGet = hold(0);
+  const poll1 = hold(0), poll2 = hold(0), lone = hold(0);
   const stackAt = (file: string, line: number): Error => {
     const e = new Error();
     e.stack = `Error\n    at timed (/r/e2e/trail-emit.ts:9:1)\n    at x (/r/e2e/harness.ts:1:1)\n    at run (/r/${file}:${line}:3)`;
@@ -107,11 +108,14 @@ export async function run(): Promise<void> {
   //   90→100   | fetch starts inside boot (tasks.ts:21)        | boot  (started inside boot: no top entry)
   //   100→130  | boot ended, that fetch outlives it            | http  30
   //   130→150  | nothing running                               | rest  20
-  //   150→170  | bare sleep (watch.ts:31)                      | sleep 20, top sleep 20 @ watch.ts:31
+  //   150→160  | poll sleep #1 (watch.ts:31)                   | sleep 10
+  //   160→170  | poll sleep #2, same line (watch.ts:31)        | sleep 10
   //   170→175  | nothing running                               | rest  5
   //   175→185  | bare fetch (tasks.ts:22)                      | http  10, top http 10 @ tasks.ts:22
-  //   185→200  | nothing running, cut at 200                   | rest  15
-  //   totals   | boot 100 · http 40 · sleep 20 · tmux 0 · rest 40 (= 200) · top boot 100 @ restart.ts:11
+  //   185→197  | one lone sleep (review.ts:9)                  | sleep 12
+  //   197→200  | nothing running, cut at 200                   | rest  3
+  //   totals   | boot 100 · http 40 · sleep 32 · tmux 0 · rest 28 (= 200) · top boot 100 @ restart.ts:11
+  //   sleep    | longest single call: 12 @ review.ts:9 · largest sum: 20 over 2 calls @ watch.ts:31
   const boot = pc.timed("boot", () => bootH.p, stackAt("e2e/restart.ts", 11));
   clock = 10; const g = pc.timed("http", () => innerGet.p, stackAt("e2e/restart.ts", 12));
   clock = 40; innerGet.go(); await g;
@@ -120,16 +124,20 @@ export async function run(): Promise<void> {
   clock = 90; const lf = pc.timed("http", () => lateFetch.p, stackAt("e2e/tasks.ts", 21));
   clock = 100; bootH.go(); await boot;
   clock = 130; lateFetch.go(); await lf;
-  clock = 150; const b = pc.timed("sleep", () => bare.p, stackAt("e2e/watch.ts", 31));
-  clock = 170; bare.go(); await b;
+  clock = 150; const b1 = pc.timed("sleep", () => poll1.p, stackAt("e2e/watch.ts", 31));
+  clock = 160; poll1.go(); await b1;
+  const b2 = pc.timed("sleep", () => poll2.p, stackAt("e2e/watch.ts", 31));
+  clock = 170; poll2.go(); await b2;
   clock = 175; const bg = pc.timed("http", () => bareGet.p, stackAt("e2e/tasks.ts", 22));
   clock = 185; bareGet.go(); await bg;
+  const b3 = pc.timed("sleep", () => lone.p, stackAt("e2e/review.ts", 9));
+  clock = 197; lone.go(); await b3;
   const synth = pc.cut(200);
   // one red, one claim: each check names the conjuncts that died, not a blob
   const died = (parts: [string, boolean][]): string => parts.filter(([, ok]) => !ok).map(([n]) => n).join(" · ");
   const totalsDied = died([
     [`boot=${synth.ms.boot}≠100`, synth.ms.boot === 100], [`http=${synth.ms.http}≠40`, synth.ms.http === 40],
-    [`sleep=${synth.ms.sleep}≠20`, synth.ms.sleep === 20], [`tmux=${synth.ms.tmux}≠0`, synth.ms.tmux === 0],
+    [`sleep=${synth.ms.sleep}≠32`, synth.ms.sleep === 32], [`tmux=${synth.ms.tmux}≠0`, synth.ms.tmux === 0],
   ]);
   check("trail: phase totals are exclusive by priority — nested and overlapping calls never double-book",
     totalsDied === "", totalsDied);
@@ -138,14 +146,21 @@ export async function run(): Promise<void> {
   const siteDied = died([
     [`boot=${JSON.stringify(synth.top.boot)}`, synth.top.boot?.ms === 100 && synth.top.boot.at === "e2e/restart.ts:11"],
     [`http=${JSON.stringify(synth.top.http)}`, synth.top.http?.ms === 10 && synth.top.http.at === "e2e/tasks.ts:22"],
-    [`sleep=${JSON.stringify(synth.top.sleep)}`, synth.top.sleep?.ms === 20 && synth.top.sleep.at === "e2e/watch.ts:31"],
+    [`sleep=${JSON.stringify(synth.top.sleep)}`, synth.top.sleep?.ms === 12 && synth.top.sleep.at === "e2e/review.ts:9"],
     [`tmux=${JSON.stringify(synth.top.tmux)}`, synth.top.tmux === undefined],
   ]);
   check("trail: phaseTop names the longest OUTERMOST call per phase and its call site",
     siteDied === "", siteDied);
+  // the poll loop: two short sleeps from one line outweigh the longest single call from another
+  const sumDied = died([
+    [`sleep=${JSON.stringify(synth.sum.sleep)}`, synth.sum.sleep?.ms === 20 && synth.sum.sleep.n === 2 && synth.sum.sleep.at === "e2e/watch.ts:31"],
+    [`http=${JSON.stringify(synth.sum.http)}`, synth.sum.http?.ms === 10 && synth.sum.http.n === 1 && synth.sum.http.at === "e2e/tasks.ts:22"],
+  ]);
+  check("trail: phaseSum names the site whose outermost calls sum to the most, with their count",
+    sumDied === "", sumDied);
   const row = withPhases(trailRow("x", true, "", 200, 200), synth);
   check("trail: rest is msSincePrev minus the four phases, and a cut starts the next row empty",
-    row.phases?.rest === 40 && JSON.stringify(pc.cut(260)) === JSON.stringify({ ms: { boot: 0, tmux: 0, http: 0, sleep: 0 }, top: {} }),
+    row.phases?.rest === 28 && JSON.stringify(pc.cut(260)) === JSON.stringify({ ms: { boot: 0, tmux: 0, http: 0, sleep: 0 }, top: {}, sum: {} }),
     JSON.stringify(row.phases));
   check("trail: the call site skips the probe, and falls back to the harness frame only when nothing else is on the stack",
     callSiteOf("Error\n    at timed (/r/e2e/trail-emit.ts:9:1)\n    at async plantScreen (/r/e2e/harness.ts:321:11)", "/r",

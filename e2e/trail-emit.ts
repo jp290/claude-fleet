@@ -171,16 +171,20 @@ export const trailFile = TRAIL_DIR ? join(TRAIL_DIR, `${TRAIL_RUN}.jsonl`) : nul
 // — the property e2e/trail.ts asserts on every row of the run.
 //
 // The call site. Each row names, per phase, the single longest OUTERMOST call and where it was made
-// (a get() inside restartSrv is boot's work, not a separate http wait). The site is the first stack
+// (a get() inside restartSrv is boot's work, not a separate http wait) — and, separately, the site
+// whose outermost calls SUM to the most, with their count: a poll loop is forty 250 ms sleeps from
+// one line, which the longest single call never names (measured on a partial run 2026-09-14: the
+// longest-call sample covered 77 of 506 sleep seconds in the 3–10 s band). The site is the first stack
 // frame outside this file and outside harness.ts, so a sleep inside plantScreen names the check
 // module that called plantScreen when the stack still holds it; after an await it no longer does,
 // and then the harness frame is the honest answer. The Error is created at call time (~0.2 µs) and
-// its stack string is only formatted when that call becomes the row's longest.
+// its stack formatted when an outermost call ends (~0.6 µs).
 export type Phase = "boot" | "tmux" | "http" | "sleep";
 export const PHASE_PRIORITY: readonly Phase[] = ["boot", "tmux", "http", "sleep"];
 export type PhaseMs = Record<Phase, number>;
 export interface PhaseSite { ms: number; at: string }
-export interface PhaseCut { ms: PhaseMs; top: Partial<Record<Phase, PhaseSite>> }
+export interface PhaseSum extends PhaseSite { n: number }
+export interface PhaseCut { ms: PhaseMs; top: Partial<Record<Phase, PhaseSite>>; sum: Partial<Record<Phase, PhaseSum>> }
 
 const zeroPhases = (): PhaseMs => ({ boot: 0, tmux: 0, http: 0, sleep: 0 });
 
@@ -205,7 +209,8 @@ interface OpenCall { phase: Phase; start: number; outer: boolean; err: Error | n
 export const createPhaseClock = (now: () => number, root: string, self: string, plumbing: string) => {
   const active: PhaseMs = zeroPhases();
   let acc: PhaseMs = zeroPhases();
-  let top: Partial<Record<Phase, { ms: number; err: Error | null }>> = {};
+  let top: Partial<Record<Phase, PhaseSite>> = {};
+  let sums = new Map<string, PhaseSum & { phase: Phase }>();
   let last = now();
   let rowStart = last;
   // instrumented calls per phase over the whole run — the multiplier of the per-call overhead
@@ -231,7 +236,11 @@ export const createPhaseClock = (now: () => number, root: string, self: string, 
     active[c.phase]--;
     if (!c.outer) return;
     const ms = t - Math.max(c.start, rowStart);
-    if (ms > (top[c.phase]?.ms ?? -1)) top = { ...top, [c.phase]: { ms, err: c.err } };
+    const at = c.err ? callSiteOf(c.err.stack ?? "", root, self, plumbing) : "unknown";
+    if (ms > (top[c.phase]?.ms ?? -1)) top = { ...top, [c.phase]: { ms, at } };
+    const key = `${c.phase} ${at}`;
+    const prev = sums.get(key);
+    sums.set(key, { phase: c.phase, at, ms: (prev?.ms ?? 0) + ms, n: (prev?.n ?? 0) + 1 });
   };
   return {
     calls: (): PhaseMs => ({ ...calls }),
@@ -244,13 +253,13 @@ export const createPhaseClock = (now: () => number, root: string, self: string, 
     // close the row at `t` (the check's own timestamp) and start the next one there
     cut(t: number): PhaseCut {
       advance(t);
-      const out: PhaseCut = { ms: acc, top: {} };
-      for (const p of PHASE_PRIORITY) {
-        const hit = top[p];
-        if (hit) out.top[p] = { ms: hit.ms, at: hit.err ? callSiteOf(hit.err.stack ?? "", root, self, plumbing) : "unknown" };
-      }
+      const sum: Partial<Record<Phase, PhaseSum>> = {};
+      for (const { phase, at, ms, n } of sums.values())
+        if (ms > (sum[phase]?.ms ?? -1)) sum[phase] = { ms, at, n };
+      const out: PhaseCut = { ms: acc, top, sum };
       acc = zeroPhases();
       top = {};
+      sums = new Map();
       rowStart = t;
       return out;
     },
@@ -304,12 +313,14 @@ export interface TrailRow {
   phases?: PhaseMs & { rest: number };
   // per phase with any outermost call: the longest one inside this row and its call site
   phaseTop?: Partial<Record<Phase, PhaseSite>>;
+  // per phase with any outermost call: the site whose calls sum to the most inside this row, and how many
+  phaseSum?: Partial<Record<Phase, PhaseSum>>;
 }
 
 export const withPhases = (row: TrailRow, cut: PhaseCut): TrailRow => ({
   ...row,
   phases: { ...cut.ms, rest: row.msSincePrev - PHASE_PRIORITY.reduce((s, p) => s + cut.ms[p], 0) },
-  ...(Object.keys(cut.top).length > 0 ? { phaseTop: cut.top } : {}),
+  ...(Object.keys(cut.top).length > 0 ? { phaseTop: cut.top, phaseSum: cut.sum } : {}),
 });
 
 export const trailRow = (check: string, ok: boolean, detail: string, msSincePrev: number, ts: number): TrailRow => ({

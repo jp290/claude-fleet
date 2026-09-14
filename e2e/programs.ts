@@ -10845,6 +10845,17 @@ exit 0
     await setPromotion(pzProgram.id, { v: 1, selfLand: "green-only" });
     const pzRowId = await makeTask({ text: "self-land pi-zai row", programId: pzProgram.id, repo: REPO2,
       harness: "pi-zai", model: "glm-5.3", effort: "high" });
+    // THE STAND-IN'S COMPOSER, set to `unobservable` for the founding delivery only. In `normal` the
+    // stand-in submits on EVERY newline of a paste, so a multi-line brief leaves only its last line
+    // in the composer, and sendText's arrival probe reads that residue as `partial`: the second
+    // helper run of this arm (job 5b47f28fa86c) requeued the row with `dispatch failed: prompt not
+    // submitted — the composer still held only part of the 2334-char payload after 800ms; no Enter`.
+    // That is the stand-in's line handling, not Pi's and not the door under test. `unobservable`
+    // keeps the whole paste in the buffer and paints no composer, so delivery ends on the honest
+    // `unobservable` acceptance. The mode file is shared by every stand-in, so it goes back to
+    // `normal` the moment the brief is logged.
+    const pzComposerMode = process.env.FLEET_E2E_COMPOSER_MODE ?? "";
+    if (pzComposerMode) writeFileSync(pzComposerMode, "unobservable\n");
     const pzDispatch = await post(`/api/tasks/${pzRowId}/dispatch`, {});
     const pzLaneSlot = (await slRow(pzRowId))?.slot ?? null;
     const pzLaneCwd = pzLaneSlot === null ? "" : (await slSess()).slots.find((x) => x.id === pzLaneSlot)?.cwd ?? "";
@@ -10863,6 +10874,7 @@ exit 0
       if (!pzBriefLogged && (await slRow(pzRowId))?.status !== "sent") break;
       if (!pzBriefLogged) await Bun.sleep(250);
     }
+    if (pzComposerMode) writeFileSync(pzComposerMode, "normal\n");
     if (pzLaneCwd && pzBriefLogged) {
       writeFileSync(`${pzLaneCwd}/selfland-pizai.txt`, "work of a lane whose harness no unattended path may drive\n");
       spawnSync("git", ["-C", pzLaneCwd, "add", "selfland-pizai.txt"]);
@@ -10877,7 +10889,7 @@ exit 0
       if (pzAgent?.agent !== "alive") await Bun.sleep(250);
     }
     check("declined-harness self-land fixture: a bound MAIN owns a pi-zai lane whose brief was delivered, whose stand-in Pi is genuinely live (agent=alive), and which is idle, clean and ahead on a row still sent",
-      pzBoot.ok && /^[0-9a-f]{32}$/.test(pzTok) && pzDispatch.ok && pzLaneSlot !== null && !!pzLaneCwd
+      pzBoot.ok && /^[0-9a-f]{32}$/.test(pzTok) && pzComposerMode !== "" && pzDispatch.ok && pzLaneSlot !== null && !!pzLaneCwd
         && pzBriefLogged && pzAgent?.harness === "pi-zai" && pzAgent.agent === "alive" && pzReady
         && pzRowAtFixture?.status === "sent" && pzRowAtFixture.slot === pzLaneSlot,
       JSON.stringify({ boot: pzBoot.status, dispatch: pzDispatch.status, lane: pzLaneSlot, briefLogged: pzBriefLogged,

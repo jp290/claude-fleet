@@ -179,6 +179,23 @@ export function localMode(cfg: HelperConfig, at: Date, load1: number): { mode: M
 export interface JobView {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
   claim: { name: string; claimedAt?: number } | null; localRunning: boolean;
+  shard?: string;
+}
+// WHAT THIS DAEMON'S CODE CAN RUN, sent on every heartbeat. Not a config field on purpose: the fleet
+// offers a sharded audit (`shard: "k/n"`) only to a device that declares `audit-shard`, because a
+// daemon without the `shardEnv` fork below would run the whole suite and file it under one shard.
+// A tree that predates this list sends none, and the fleet stops offering on that beat.
+export const DAEMON_FEATURES: readonly string[] = ["audit-shard"];
+// THE SHARD FORK, pure and exported (e2e/helper-daemon.ts HD.1): the env a shard job's suite gets.
+// `{}` for a job with no shard; `null` for a shard string this daemon cannot read — that job is
+// reported unrunnable (127 → unknown), never run whole in its place. The shape is the runner's own
+// (fleet-e2e.ts#parseShard): k/n, 1 ≤ k ≤ n.
+export function shardEnv(shard: string | undefined): Record<string, string> | null {
+  if (shard === undefined) return {};
+  const m = /^(\d+)\/(\d+)$/.exec(shard);
+  if (!m) return null;
+  const k = Number(m[1]); const n = Number(m[2]);
+  return n >= 1 && k >= 1 && k <= n ? { FLEET_E2E_SHARD: `${k}/${n}` } : null;
 }
 // The claim answer as it comes off the wire — unvalidated by us, so the two ref fields are typed
 // the way the server actually serves them: a lane-suite claim carries `branch`, an audit claim
@@ -191,6 +208,7 @@ interface ClaimedJob {
   // carried beside it for the log line only. A `command` claim that arrives WITHOUT `argv` is
   // unrunnable and is reported as such (127 → unknown), never approximated from `cmd`.
   cmd?: string; argv?: string[]; timeoutMs?: number; artifacts?: string[];
+  shard?: string; // `k/n` on a sharded audit claim — see shardEnv
 }
 
 // THE ONLY PLACE A REQUEST IS MADE, so that "the token is a header" and "every request is logged as
@@ -279,8 +297,8 @@ async function killTree(proc: { pid: number; kill(sig?: number): void }): Promis
 // (`installCmd`, `suiteCmd`) — a string an owner wrote here, where a shell is the point. A command
 // JOB's line came over the wire, so it arrives pre-split as argv and is exec'd directly: no quoting,
 // no glob, no `&&`, no substitution, and nothing for a crafted string to escape out of.
-// `extraEnv` is the ONE way anything FLEET_-prefixed gets back into a child, and it exists for two
-// values: this run's own suite lock and its scratch TMPDIR (see `suiteEnv` in `work`). It is applied AFTER
+// `extraEnv` is the ONE way anything FLEET_-prefixed gets back into a child, and it exists for three
+// values: this run's own suite lock, its scratch TMPDIR and a shard job's FLEET_E2E_SHARD (see `suiteEnv` in `work`). It is applied AFTER
 // `childEnv()`, so it can only add what this process deliberately puts there — never re-admit
 // something the strip above removed by accident.
 async function runArgv(argv: string[], cwd: string, logPath: string, timeoutMs: number,
@@ -504,8 +522,15 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
   const clone = `${runDir}/tree`;
   const logPath = `${runDir}/suite.log`;
   mkdirSync(runDir, { recursive: true });
-  log(`claimed ${j.kind ?? "audit"} ${j.repo} ${j.main}@${j.mainSha.slice(0, 8)} → ${runDir}`
+  log(`claimed ${j.kind ?? "audit"} ${j.repo} ${j.main}@${j.mainSha.slice(0, 8)}${j.shard ? ` shard ${j.shard}` : ""} → ${runDir}`
     + ` (slot ${runningJobs} of ${cfg.maxParallelSuites})`);
+  // A shard string this daemon cannot read fails as ITSELF, before a byte is downloaded: running the
+  // whole suite in its place would file a full run under one shard of the fleet's merge.
+  const shardVars = j.kind === "command" ? {} : shardEnv(j.shard);
+  if (shardVars === null) {
+    await report(cfg, j, 127, `the claim named shard ${JSON.stringify(j.shard)}, which is not k/n — this daemon cannot run that job`);
+    return;
+  }
 
   // EACH PARALLEL RUN NEEDS ITS OWN MUTEX FILE, or `maxParallelSuites` buys nothing at all:
   // ./e2e-isolated.sh takes /tmp/fleet-e2e.lock through e2e-stage.sh INSIDE the clone, so two runs
@@ -530,7 +555,9 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
   mkdirSync(scratch, { recursive: true });
   const lockEnv: Record<string, string> = cfg.maxParallelSuites > 1
     ? { FLEET_SUITE_LOCK: `${runDir}/e2e.lock` } : {};
-  const suiteEnv: Record<string, string> = { TMPDIR: scratch, ...lockEnv };
+  // …and the shard, the ONE further FLEET_ key a child may receive: ./e2e-isolated.sh passes it to its
+  // runner, which runs only the units e2e/ctx.ts#shardPlan assigns to k. Absent on an unsharded job.
+  const suiteEnv: Record<string, string> = { TMPDIR: scratch, ...lockEnv, ...shardVars };
   // registered from here to the `finally`; `tick` pulls the switch (see withdrawnRuns). A withdrawn
   // run REPORTS NOTHING: the fleet has already refused the verdict, and every step below that would
   // report a failure caused by the kill itself returns on `withdrawn` first.
@@ -880,6 +907,7 @@ export async function tick(cfg: HelperConfig, st: LoopState): Promise<void> {
       // count the claim that follows was decided against and never a figure from mid-decision.
       running: runningJobs, maxParallelSuites: cfg.maxParallelSuites,
       ...(daemonSha ? { daemonSha } : {}),
+      features: DAEMON_FEATURES,
     }),
   });
   const wish = (await bodyOf<{ desiredMode?: string }>(beat)).desiredMode;

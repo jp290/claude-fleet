@@ -23,8 +23,8 @@ import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
-import { failNamesOf, freeSuiteSlots, inQuietHours, jobsToStart, loadConfig, localMode, pruneRuns, stricter, tailOf, trailIdOf,
-  withdrawnRuns, EXIT_CONFIG, EXIT_UPDATED, type HelperConfig, type JobView } from "../helper-daemon/daemon";
+import { failNamesOf, freeSuiteSlots, inQuietHours, jobsToStart, loadConfig, localMode, pruneRuns, shardEnv, stricter, tailOf,
+  trailIdOf, withdrawnRuns, DAEMON_FEATURES, EXIT_CONFIG, EXIT_UPDATED, type HelperConfig, type JobView } from "../helper-daemon/daemon";
 
 interface Row {
   at: number; ms: number; repo: string; main: string; mainSha: string; result: string; reason?: string;
@@ -185,6 +185,19 @@ export async function run(h: {
   check("(HD) the cap defaults to 1, floors at 1 and takes whole slots — 0, a negative and a fraction cannot describe this machine",
     cfgWith(undefined) === 1 && cfgWith(0) === 1 && cfgWith(-3) === 1 && cfgWith(2.9) === 2 && cfgWith(2) === 2,
     `default=${cfgWith(undefined)} zero=${cfgWith(0)} neg=${cfgWith(-3)} frac=${cfgWith(2.9)}`);
+
+  // THE SHARD FORK (the sharded audit). The suite env a shard job gets is exactly FLEET_E2E_SHARD=k/n,
+  // an unsharded job gets nothing, and a shard string the runner would refuse is refused HERE — as null,
+  // which `work` reports as unrunnable instead of running the whole suite under one shard's name.
+  // MUTATION: make the malformed arm return `{}` ⇒ "0/3", "4/3" and "x" read as an unsharded job ⇒ red.
+  check("(HD) a shard job's suite gets FLEET_E2E_SHARD=k/n, an unsharded one nothing, and a malformed shard is refused — never run whole",
+    JSON.stringify(shardEnv(undefined)) === "{}" && JSON.stringify(shardEnv("2/3")) === '{"FLEET_E2E_SHARD":"2/3"}'
+      && JSON.stringify(shardEnv("1/1")) === '{"FLEET_E2E_SHARD":"1/1"}'
+      && shardEnv("0/3") === null && shardEnv("4/3") === null && shardEnv("x") === null && shardEnv("") === null
+      && shardEnv("2/3; rm -rf /") === null,
+    `2/3=${JSON.stringify(shardEnv("2/3"))} 0/3=${JSON.stringify(shardEnv("0/3"))} x=${JSON.stringify(shardEnv("x"))}`);
+  check("(HD) the daemon declares audit-shard — the word the fleet offers shard jobs on",
+    DAEMON_FEATURES.includes("audit-shard"), JSON.stringify(DAEMON_FEATURES));
 
   check("(HD) the tail and the trail id are taken exactly the way the portal asks a human to take them",
     tailOf("a\nb\nc\nd", 2) === "c\nd" && trailIdOf(`noise ${TRAIL} more`) === TRAIL

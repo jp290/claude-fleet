@@ -5294,12 +5294,13 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     `fn=${ablReading !== ""}`);
   const carryReading = server.match(/function carryFlakeReading\([\s\S]*?\n\}/)?.[0] ?? "";
   const carrySinks = server.split('if (row.result === "red") await carryFlakeAdjudications("audit", row.at);').length - 1;
-  pin(`${RULE_RECEIVER} — carried-flake carries only ONE signature from an OWNER flake inside 14 days, in both audit sinks (D1d)`,
+  // THREE sinks since the sharded audit (server.ts#writeShardedAuditRow): local run, remote helper, sharded run
+  pin(`${RULE_RECEIVER} — carried-flake carries only ONE signature from an OWNER flake inside 14 days, in all three audit sinks (D1d)`,
     carryReading.includes('adj.verdict !== "flake" || adj.by !== "owner"')
       && carryReading.includes("row.at - prior.at > CARRIED_FLAKE_WINDOW_MS")
       && /const CARRIED_FLAKE_WINDOW_MS = 14 \* 24 \* 3600_000;/.test(server)
       && carryReading.includes("names.length > 1")
-      && carrySinks === 2 && !/appendEvent\(POSTLAND_AUDIT_FILE/.test(carryReading),
+      && carrySinks === 3 && !/appendEvent\(POSTLAND_AUDIT_FILE/.test(carryReading),
     `fn=${carryReading !== ""} sinks=${carrySinks}`);
   const reconcileFn = server.match(/function reconcileAttention\([\s\S]*?\n\}/)?.[0] ?? "";
   const successorFn = server.match(/function attentionSuccessorFor\([\s\S]*?\n\}/)?.[0] ?? "";
@@ -7079,6 +7080,53 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && /\bargv\?: string\[\]/.test(claimedJob) && /argv: j\.argv/.test(claimFn),
     `missing view=[${missView}] claim=[${missClaim}] daemon=[${missDaemon}]`);
 
+  // --- THE SHARDED AUDIT (FLEET_AUDIT_SHARDS). Three halves no running suite can hold alone:
+  //   (a) n absent/1/unreadable IS TODAY — every new branch sits behind `AUDIT_SHARDS > 1` or an open
+  //       run (which only n>1 opens), the unsharded row literal and job push carry no shard field, and a
+  //       state file without runs gets no new key. A suite at n=1 passes whether or not the guards exist;
+  //       this is what fails when one goes missing.
+  //   (b) THE HANDSHAKE on both doors plus the daemon's own word: listed only under `shardCapable`,
+  //       claimed only with the feature, the feature NOT sticky on the heartbeat, and the daemon sends it.
+  //   (c) THE MERGE ORDER: green only when all n reported green, red before unknown.
+  const RULE_SHARDS = "a sharded audit changes nothing at n=1, is offered and claimed only by a daemon declaring audit-shard, and is green only when all n shards are";
+  const shardParse = serverU.span("function parseAuditShards(", "\n}")?.text ?? null;
+  const shardRowOf = serverU.span("function shardedAuditRowOf(", "\n}")?.text ?? null;
+  const shardClaimFn = serverU.span("async function claimAuditShard(", "\n}")?.text ?? null;
+  const unshardedClaim = serverU.span("async function helperClaim(", "\n}")?.text ?? null;
+  const expireFn = serverU.span("function expireHelperClaims(", "\n}")?.text ?? null;
+  const shardViewFn = serverU.span("function helperJobsView(", "// --- THE OWNER'S HALF OF THE REGISTER")?.text ?? null;
+  const resultFn = serverU.span("async function helperResult(", "\n}")?.text ?? null;
+  const heartbeat = serverU.span('if (url.pathname === "/api/helper/device" && req.method === "POST")', "const d = setHelperDevice(")?.text ?? null;
+  const shardParts: [string, string | null][] = [["parse", shardParse], ["rowOf", shardRowOf], ["claimShard", shardClaimFn],
+    ["claim", unshardedClaim], ["expire", expireFn], ["view", shardViewFn], ["result", resultFn], ["heartbeat", heartbeat]];
+  if (shardParts.some(([, t]) => t === null))
+    pin(RULE_SHARDS, false, shardParts.map(([n, t]) => `${n}=${t !== null}`).join(" "));
+  else {
+    const unshardedRow = /const row: PostLandAuditRow = \{[\s\S]*?\n  \};/.exec(resultFn!)?.[0] ?? "";
+    pin(`${RULE_SHARDS} (a) n=1 is today: an empty or unreadable FLEET_AUDIT_SHARDS is 1, and every shard branch is guarded`,
+      /if \(t === ""\) return 1;/.test(shardParse!) && /stay unsharded \(1\)"\);\n  return 1;/.test(shardParse!)
+        && /const AUDIT_SHARDS = parseAuditShards\(process\.env\.FLEET_AUDIT_SHARDS\);/.test(server)
+        && /if \(!c && \(shardRun \|\| AUDIT_SHARDS > 1\)\)/.test(shardViewFn!)
+        && /if \(AUDIT_SHARDS > 1 \|\| auditShardRuns\.has\(repo\)\)/.test(unshardedClaim!)
+        && /if \(auditShardRuns\.size && settleAuditShardRuns\(now\)\)/.test(expireFn!)
+        && /\.\.\.\(auditShardRuns\.size \? \{ auditShardRuns: /.test(server)
+        && unshardedRow !== "" && !/shard/.test(unshardedRow),
+      `row=${unshardedRow !== ""} rowNamesShard=${/shard/.test(unshardedRow)}`);
+    pin(`${RULE_SHARDS} (b) both doors read the feature, the heartbeat replaces it every beat, and the daemon declares it`,
+      /if \(shardCapable\) jobs\.push\(\.\.\.auditShardJobViews\(/.test(shardViewFn!)
+        && /features\?\.includes\(AUDIT_SHARD_FEATURE\)/.test(shardViewFn!)
+        && /if \(!helperDevices\.get\(deviceId\)\?\.features\?\.includes\(AUDIT_SHARD_FEATURE\)\)/.test(shardClaimFn!)
+        && /const AUDIT_SHARD_FEATURE = "audit-shard";/.test(server)
+        && /reported\.features = Array\.isArray\(body\?\.features\)[\s\S]*?: undefined;/.test(heartbeat!)
+        && /export const DAEMON_FEATURES: readonly string\[\] = \["audit-shard"\];/.test(daemonSrc)
+        && /features: DAEMON_FEATURES,/.test(daemonSrc),
+      `view=${/shardCapable/.test(shardViewFn!)} claim=${/AUDIT_SHARD_FEATURE/.test(shardClaimFn!)} daemon=${/DAEMON_FEATURES/.test(daemonSrc)}`);
+    pin(`${RULE_SHARDS} (c) the merge is green only with all n green, and red outranks unknown`,
+      /const allGreen = reported\.length === n && reported\.every\(\(x\) => x\.r\.result === "green"\);/.test(shardRowOf!)
+        && /reds\.length \? "red" : allGreen \? "green" : "unknown"/.test(shardRowOf!),
+      `allGreenNeedsN=${/reported\.length === n/.test(shardRowOf!)}`);
+  }
+
   // --- THE S1 HANDSHAKE. A command job is offered ONLY to a device whose heartbeat named a
   // `daemonSha`, and the claim refuses one that did not. Both halves, because the jobs list alone is
   // not a gate: a device may POST a jobId it learned any other way.
@@ -7162,7 +7210,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     pin(`${RULE_PAR} (b) a run above cap 1 gets its own FLEET_SUITE_LOCK, and at cap 1 the shared one is left alone`,
       /cfg\.maxParallelSuites > 1\s*\n?\s*\? \{ FLEET_SUITE_LOCK: `\$\{runDir\}\/e2e\.lock` \} : \{\}/.test(workFn)
         // C1 (2026-09-13): the scratch rides at EVERY cap, the lock only above 1 — both in the one env
-        && /const suiteEnv: Record<string, string> = \{ TMPDIR: scratch, \.\.\.lockEnv \};/.test(workFn)
+        // …and a shard job's FLEET_E2E_SHARD beside them (the sharded audit, shardEnv) — spread LAST of the three
+        && /const suiteEnv: Record<string, string> = \{ TMPDIR: scratch, \.\.\.lockEnv, \.\.\.shardVars \};/.test(workFn)
         && /const scratch = `\$\{runDir\}\/tmp`;/.test(workFn)
         // the trailing `ctl.signal` is the withdrawal switch (7e601e57) — the lock still travels with the run
         && /runArgv\(j\.argv!, clone, logPath, timeoutMs, suiteEnv(, ctl\.signal)?\)/.test(workFn)
@@ -7876,14 +7925,16 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const auditProgramJoin = server.match(/async function programsForAuditRow\([\s\S]*?\n\}/)?.[0] ?? "";
   const auditRunBody = server.match(/async function runPostLandAudit\([\s\S]*?\n\}\n/)?.[0] ?? "";
   const helperResultBody = server.match(/async function helperResult\([\s\S]*?\n\}\n/)?.[0] ?? "";
+  // the third sink (the sharded audit's one row) walks the same two steps in the same order
+  const shardRowBody = server.match(/async function writeShardedAuditRow\([\s\S]*?\n\}\n/)?.[0] ?? "";
   const afterMint = (body: string): boolean => {
     const mint = body.indexOf("await mintAuditEvents(row);");
     const write = body.indexOf("await writeAuditInboxEntries(row);");
     return mint >= 0 && write === mint + "await mintAuditEvents(row);\n  ".length;
   };
-  pin(`${RULE_INBOX} — a red audit addresses its Program from BOTH sinks, joined on repo+branch+mainAfter, and only a COMPLETE hand-off silences the ping`,
+  pin(`${RULE_INBOX} — a red audit addresses its Program from EVERY sink, joined on repo+branch+mainAfter, and only a COMPLETE hand-off silences the ping`,
     auditInboxWriter !== "" && auditProgramJoin !== "" && auditRunBody !== "" && helperResultBody !== ""
-      && afterMint(auditRunBody) && afterMint(helperResultBody)
+      && afterMint(auditRunBody) && afterMint(helperResultBody) && afterMint(shardRowBody)
       && auditProgramJoin.includes("o.repo !== row.repo") && auditProgramJoin.includes("o.branch !== cover.branch")
       && auditProgramJoin.includes("o.mainAfter !== cover.mainAfter")
       && auditProgramJoin.includes('o.disposition !== "landed"')
@@ -7896,7 +7947,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     auditInboxWriter === "" ? "writeAuditInboxEntries not found in the server universe"
       : auditProgramJoin === "" ? "programsForAuditRow not found in the server universe"
         : auditRunBody === "" || helperResultBody === "" ? "runPostLandAudit or helperResult not found in the server universe"
-          : `local=${afterMint(auditRunBody)} remote=${afterMint(helperResultBody)} tip=${auditProgramJoin.includes("o.mainAfter !== cover.mainAfter")} complete=${auditInboxWriter.includes("addressed === row.covers.length")}`);
+          : `local=${afterMint(auditRunBody)} remote=${afterMint(helperResultBody)} sharded=${afterMint(shardRowBody)} tip=${auditProgramJoin.includes("o.mainAfter !== cover.mainAfter")} complete=${auditInboxWriter.includes("addressed === row.covers.length")}`);
   // …and the state the suppression is EXPRESSED in. `program-inbox` is a fourth status, not a
   // flavour of `delivered` (nothing was typed), so the tick must skip it and the loader must accept
   // it back — a loader that dropped it would turn every restart into a repeat paste.

@@ -28,6 +28,7 @@ interface HelperJob {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
   oldestAt: number;
   claim: { name: string; claimedAt: number; expiresAt: number } | null; localRunning: boolean;
+  shard?: string; // `k/n` on a sharded audit job (K11) and on nothing else
 }
 interface HelperJobs {
   claimTimeoutMs: number; configured: boolean; jobs: HelperJob[];
@@ -105,6 +106,10 @@ interface Row {
     // what is under test is that the server writes them, and a mandatory field would let a server
     // that stopped writing one take this module down with a TypeError instead of failing a check.
     jobId?: string; artifact?: { bytes: number; sha256: string; url: string } };
+  // the sharded audit's per-shard account (K11). Optional for the reason every remote field is.
+  shards?: { k: number; jobId: string; result: string; ms: number | null; ran: number | null;
+    failed: number | null; exitCode: number | null; name?: string; trail?: string }[];
+  fails?: string[];
 }
 interface LiveView {
   postLandAuditLive: { running: { repo: string | null; phase: string } | null } | null;
@@ -478,6 +483,15 @@ export async function run(h: {
     remote?.checks?.ran === 2 && remote.checks.failed === 0, JSON.stringify(remote?.checks));
   check("(K) the row NAMES the remote command rather than quoting this machine's audit command",
     remote?.cmd.includes("remote helper") === true && remote.cmd.includes(DEVICE_NAME), remote?.cmd);
+  // THE n=1 HALF OF THE SHARDED AUDIT, on the row this section just wrote with FLEET_AUDIT_SHARDS unset:
+  // exactly the keys, in exactly the order, an unsharded remote row has always had — no `shards`, and the
+  // job it came out of carried no `shard` (the list above is compared as a whole). The read surface joins
+  // `adjudication`/`ping` on at the END, so those two are cut before comparing.
+  const n1Keys = Object.keys(remote ?? {}).filter((k) => k !== "adjudication" && k !== "ping").join(",");
+  check("(K) with FLEET_AUDIT_SHARDS unset the remote row has exactly the unsharded keys, in order — no `shards`, and the job carried no `shard`",
+    n1Keys === "at,startedAt,ms,repo,main,mainSha,result,cmd,exitCode,out,checks,covers,remote"
+      && queued?.shard === undefined && remote?.cmd === `remote helper (${DEVICE_NAME}): ./e2e-isolated.sh`,
+    `keys=${n1Keys} shard=${queued?.shard} cmd=${remote?.cmd}`);
   check("(K) reporting released the claim and emptied the job from the portal",
     !(await jobFor(REPO)), JSON.stringify((await jobs()).jobs));
   const lateReport = await hpost("/api/helper/result", { jobId: queued?.id ?? "", exitCode: 0, tail: "ALL PASS" });
@@ -1638,6 +1652,235 @@ export async function run(h: {
 
     await post("/api/repo-worker", { repo: BLK, worker: "audit", cmd: "" }); // leave the register as found
     check("(K10) teardown: the machine is idle with an empty queue",
+      await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0, JSON.stringify((await jobs()).jobs));
+  }
+
+  // ===== (K11) THE SHARDED AUDIT — FLEET_AUDIT_SHARDS: one entry, n helper jobs, ONE ledger row ====
+  // server.ts#AuditShardRun. Measured before it (2026-09-14): every second-host audit one serial run of
+  // 1 830–2 010 s, land→verdict 75–100 min. The runner already splits (`--shard k/n`); what is proven
+  // here is the server's half: the fan-out, the capability guard, the merge (green only with all n
+  // green, a red is red, a lapse is unknown), the local fallback staying unsharded, and an unreadable
+  // value staying 1.
+  //
+  // THE FIXTURE: shards 3, a long grace (so the drain leaves a fresh entry for the helper), a 20 s claim
+  // window (so the lapse is reachable) and a 1 s sweep — which makes the freshness window 3 s, hence the
+  // beater. SHARDBOX declares `audit-shard`; DEVICE beats beside it WITHOUT the feature, the old daemon.
+  {
+    const SHARDBOX = "e2eshardbox01";
+    const SHARD_NAME = "shard box (e2e)";
+    const sha12 = (s: string): string => createHash("sha256").update(s).digest("hex").slice(0, 12);
+    const wholeIdOf = (dir: string): string => sha12(realpathSync(dir));
+    const shardIdsOf = (dir: string, n: number): string[] =>
+      Array.from({ length: n }, (_, i) => sha12(`${realpathSync(dir)} shard:${i + 1}/${n}`));
+    let beatBox = true;
+    const beat = async (): Promise<void> => {
+      if (beatBox) await hpost("/api/helper/device", { deviceId: SHARDBOX, name: SHARD_NAME, mode: "active", load: 0.1,
+        running: 0, maxParallelSuites: 3, features: ["audit-shard"] });
+      await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.1 });
+    };
+    const boxJobs = async (): Promise<HelperJobs> =>
+      (await (await hget(`/api/helper/jobs?deviceId=${SHARDBOX}`)).json()) as HelperJobs;
+    const repoJobs = (list: HelperJobs): HelperJob[] => list.jobs.filter((j) => j.repo === base(REPO));
+    interface ClaimBody { job?: { id: string; mainSha: string; shard?: string; claimedAt: number }; error?: string }
+    const claimAll = async (ids: string[]): Promise<{ statuses: number[]; bodies: ClaimBody[] }> => {
+      const res = await Promise.all(ids.map((id) => hpost("/api/helper/claim", { jobId: id, deviceId: SHARDBOX })));
+      return { statuses: res.map((r) => r.status), bodies: await Promise.all(res.map(async (r) => (await r.json()) as ClaimBody)) };
+    };
+    const report = (id: string, body: Record<string, unknown>): Promise<Response> =>
+      hpost("/api/helper/result", { jobId: id, ...body });
+    const shardLine = (r: Row | undefined): string =>
+      (r?.shards ?? []).map((s) => `${s.k}:${s.result}:${s.ran}:${s.failed}:${s.exitCode}`).join(",");
+
+    await killSrv();
+    check("(K11) setup: the server restarts with FLEET_AUDIT_SHARDS=3, a long grace, a 20 s claim window and a 1 s sweep",
+      await startSrv({ audit: true, extra: { FLEET_AUDIT_SHARDS: "3", FLEET_AUDIT_HELPER_GRACE_MS: "120000",
+        FLEET_HELPER_CLAIM_TIMEOUT_MS: "20000", FLEET_HELPER_SWEEP_MS: "1000" } }));
+    await Bun.sleep(750);
+    await setAuditMode("green");
+    await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
+    await beat();
+    const beater = setInterval(() => { void beat().catch(() => {}); }, 700);
+    try {
+      // (1) FAN-OUT, and the guard on both doors. MUTATION: drop `if (shardCapable)` in helperJobsView ⇒
+      // DEVICE is listed three shard jobs ⇒ the guard check goes red; drop the feature test in
+      // claimAuditShard ⇒ DEVICE's claim answers 200 ⇒ red.
+      const ids = shardIdsOf(REPO, 3);
+      const rowsBefore = (await newRepoRows()).length;
+      const g = await openLane(REPO, "shardgreen");
+      const gLanded = await driveMerge(g, g.branch);
+      const gSha = headOf();
+      await Bun.sleep(1500);
+      const fan = repoJobs(await boxJobs());
+      check("(K11) FAN-OUT: one land under FLEET_AUDIT_SHARDS=3 is offered as THREE audit jobs 1/3..3/3, unclaimed, not run here",
+        gLanded.gone && fan.length === 3 && fan.map((j) => j.shard).join(",") === "1/3,2/3,3/3"
+          && fan.every((j) => j.kind === "audit" && j.claim === null && j.covers === 1 && j.branches.includes(g.branch))
+          && fan.map((j) => j.id).join(",") === ids.join(",") && (await liveRepo()) === null
+          && (await newRepoRows()).length === rowsBefore,
+        `${JSON.stringify(fan.map((j) => `${j.shard}:${j.id}:${j.claim ? "claimed" : "open"}`))} want=${ids} live=${await liveRepo()}`);
+      const plainList = repoJobs(await jobs());
+      const plainClaim = await hpost("/api/helper/claim", { jobId: ids[0], deviceId: DEVICE });
+      const plainErr = (await plainClaim.json()) as { error?: string; job?: unknown };
+      check("(K11) THE CAPABILITY GUARD: a daemon that never declared audit-shard is listed NO shard job, and its claim of one is a 409",
+        plainList.length === 0 && plainClaim.status === 409 && (plainErr.error ?? "").includes("audit-shard")
+          && plainErr.job === undefined,
+        `listed=${JSON.stringify(plainList.map((j) => j.shard ?? "whole"))} ${plainClaim.status} ${JSON.stringify(plainErr)}`);
+      const wholeClaim = await hpost("/api/helper/claim", { jobId: wholeIdOf(REPO), deviceId: SHARDBOX });
+      const wholeErr = (await wholeClaim.json()) as { error?: string };
+      check("(K11) should-reject: the WHOLE-suite job id is refused while the same audit is offered as shards",
+        wholeClaim.status === 409 && (wholeErr.error ?? "").includes("3 shards"), `${wholeClaim.status} ${JSON.stringify(wholeErr)}`);
+
+      // (2) THREE CONCURRENT CLAIMS, ONE TREE. They race the bundle build on purpose (a daemon with three
+      // free slots POSTs all three in one tick). MUTATION: build a bundle per claim without the shared
+      // opening ⇒ two of three answer 409 "try again" ⇒ red.
+      const g3 = await claimAll(ids);
+      const minClaimedAt = Math.min(...g3.bodies.map((b) => b.job?.claimedAt ?? Infinity));
+      check("(K11) three CONCURRENT shard claims are all granted, each naming its shard, all on the one landed tree",
+        g3.statuses.every((st) => st === 200) && g3.bodies.every((b) => b.job?.mainSha === gSha)
+          && g3.bodies.map((b) => b.job?.shard).join(",") === "1/3,2/3,3/3",
+        `${g3.statuses} ${JSON.stringify(g3.bodies.map((b) => b.job ? `${b.job.shard}@${b.job.mainSha.slice(0, 8)}` : b.error))} want=${gSha.slice(0, 8)}`);
+      const bundles = await Promise.all(ids.map(async (id) => {
+        const r = await hget(`/api/helper/bundle/${id}`);
+        return { status: r.status, sha: createHash("sha256").update(new Uint8Array(await r.arrayBuffer())).digest("hex") };
+      }));
+      check("(K11) …and every shard downloads the SAME bundle — one tree, by construction",
+        bundles.every((b) => b.status === 200) && new Set(bundles.map((b) => b.sha)).size === 1,
+        JSON.stringify(bundles.map((b) => `${b.status}:${b.sha.slice(0, 8)}`)));
+      const boxRow = ((await ownerDevices()) ?? []).find((d) => d.id === SHARDBOX);
+      check("(K11) EACH SHARD HOLDS ONE SLOT: the owner's board shows three audit claims on that one machine",
+        boxRow?.claims.length === 3 && boxRow.claims.every((c) => c.kind === "audit" && c.repo === base(REPO)),
+        JSON.stringify(boxRow?.claims));
+
+      // (3) ALL GREEN. MUTATION: write the row on the FIRST report ⇒ a row exists after two ⇒ red.
+      const r1 = await report(ids[0]!, { exitCode: 0, fails: [], trail: "isolated-20260914T1200Z-1111",
+        tail: "PASS  shard one a\nPASS  shard one b\nALL PASS" });
+      const r2 = await report(ids[1]!, { exitCode: 0, fails: [], trail: "isolated-20260914T1200Z-2222",
+        tail: "PASS  shard two a\nPASS  shard two b\nALL PASS" });
+      await Bun.sleep(1200);
+      const midList = repoJobs(await boxJobs());
+      check("(K11) NO ROW WHILE A SHARD IS OUT: two green reports write nothing, and only shard 3/3 stays listed, claimed",
+        r1.ok && r2.ok && (await newRepoRows()).length === rowsBefore
+          && midList.length === 1 && midList[0]?.shard === "3/3" && midList[0].claim?.name === SHARD_NAME,
+        `${r1.status}/${r2.status} rows=${(await newRepoRows()).length}/${rowsBefore} list=${JSON.stringify(midList.map((j) => j.shard))}`);
+      const r3 = await report(ids[2]!, { exitCode: 0, fails: [], trail: "isolated-20260914T1200Z-3333",
+        tail: "PASS  shard three a\nALL PASS" });
+      const r3Body = (await r3.json()) as { result?: string; auditResult?: string; artifactAt?: number };
+      const gRows = await waitNewRepoRows(rowsBefore + 1, 20_000);
+      const gRow = gRows.find((r) => r.mainSha === gSha);
+      check("(K11) ALL THREE GREEN ⇒ ONE green row: checks.ran is the SUM (2+2+1), and `shards` carries each shard's own count",
+        r3.ok && gRows.length === rowsBefore + 1 && gRow?.result === "green" && gRow.exitCode === 0
+          && gRow.checks?.ran === 5 && gRow.checks.failed === 0
+          && shardLine(gRow) === "1:green:2:0:0,2:green:2:0:0,3:green:1:0:0"
+          && (gRow.shards ?? []).map((s) => s.jobId).join(",") === ids.join(",")
+          && gRow.covers.some((c) => c.branch === g.branch) && gRow.remote?.name === SHARD_NAME,
+        `rows=${gRows.length - rowsBefore} ${JSON.stringify(gRow).slice(0, 400)}`);
+      check("(K11) …ms runs from the FIRST claim to the LAST result, and the answer that wrote the row hands back its key",
+        !!gRow && gRow.startedAt === minClaimedAt && gRow.remote?.claimedAt === minClaimedAt
+          && gRow.ms === (gRow.remote?.reportedAt ?? 0) - minClaimedAt && gRow.ms >= 0
+          && r3Body.auditResult === "green" && r3Body.artifactAt === gRow.at,
+        `startedAt=${gRow?.startedAt} firstClaim=${minClaimedAt} ms=${gRow?.ms} reportedAt=${gRow?.remote?.reportedAt} answer=${JSON.stringify(r3Body)}`);
+      const lateShard = await report(ids[0]!, { exitCode: 0, tail: "ALL PASS" });
+      check("(K11) should-reject: a second report for a shard of a finished run is a 409 — one run, one row",
+        lateShard.status === 409, `${lateShard.status}`);
+
+      // (4) ONE RED. The red is shard 2 and shard 3 reports AFTER it, green, so a merge that kept only the
+      // last report's fails (or verdict) goes red here. MUTATION: drop the `reds.length ? "red"` arm ⇒ unknown ⇒ red.
+      const rowsBeforeRed = (await newRepoRows()).length;
+      const red = await openLane(REPO, "shardred");
+      await driveMerge(red, red.branch);
+      const redSha = headOf();
+      await Bun.sleep(1500);
+      const redClaims = await claimAll(ids);
+      await report(ids[0]!, { exitCode: 0, fails: [], tail: "PASS  one ok\nALL PASS" });
+      await report(ids[1]!, { exitCode: 1, fails: ["alpha check", "beta check"],
+        tail: "PASS  two ok\nFAIL  alpha check\nFAIL  beta check\n2 FAILURES" });
+      await report(ids[2]!, { exitCode: 0, fails: [], tail: "PASS  three ok\nALL PASS" });
+      const redRows = await waitNewRepoRows(rowsBeforeRed + 1, 20_000);
+      const redRow = redRows.find((r) => r.mainSha === redSha);
+      check("(K11) ONE RED SHARD ⇒ the row is RED, with that shard's fails, its exit code, and the sums across all three",
+        redClaims.statuses.every((st) => st === 200) && redRow?.result === "red" && redRow.exitCode === 1
+          && JSON.stringify(redRow.fails) === '["alpha check","beta check"]'
+          && redRow.checks?.ran === 5 && redRow.checks.failed === 2
+          && shardLine(redRow) === "1:green:1:0:0,2:red:3:2:1,3:green:1:0:0"
+          && redRow.out.includes("FAIL  alpha check") && redRow.reason === undefined,
+        `${redClaims.statuses} ${JSON.stringify(redRow).slice(0, 500)}`);
+
+      // (5) ONE LAPSED ⇒ UNKNOWN, NEVER GREEN. Two green reports and a third claim that never comes back.
+      // MUTATION: drop `reported.length === n` from the merge ⇒ a green row ⇒ red.
+      const rowsBeforeLapse = (await newRepoRows()).length;
+      const lapse = await openLane(REPO, "shardlapse");
+      await driveMerge(lapse, lapse.branch);
+      const lapseSha = headOf();
+      await Bun.sleep(1500);
+      const lapseClaims = await claimAll(ids);
+      await report(ids[0]!, { exitCode: 0, fails: [], tail: "PASS  one ok\nALL PASS" });
+      await report(ids[1]!, { exitCode: 0, fails: [], tail: "PASS  two ok\nALL PASS" });
+      const lapseRows = await waitNewRepoRows(rowsBeforeLapse + 1, 45_000);
+      const lapseRow = lapseRows.find((r) => r.mainSha === lapseSha);
+      check("(K11) ONE SHARD LAPSED ⇒ the row is UNKNOWN, never green: no exit code, no counts, and the reason names the lapsed shard",
+        lapseClaims.statuses.every((st) => st === 200) && lapseRow?.result === "unknown" && lapseRow.exitCode === null
+          && lapseRow.checks === null && (lapseRow.reason ?? "").includes("shard 3/3 lapsed")
+          && shardLine(lapseRow) === "1:green:1:0:0,2:green:1:0:0,3:unknown:null:null:null"
+          && lapseRow.shards?.[2]?.ms === null && !!lapseRow.remote,
+        `${lapseClaims.statuses} ${JSON.stringify(lapseRow).slice(0, 500)}`);
+      const lateLapsed = await report(ids[2]!, { exitCode: 0, tail: "ALL PASS" });
+      const afterLapse = await boxJobs();
+      await Bun.sleep(2500); // a (wrong) local twin would start within a sweep of the row
+      check("(K11) …the lapse is BOOKED against the shard's own job, its late verdict is a 409, and the tree is NOT re-audited here",
+        lateLapsed.status === 409 && afterLapse.lapsed.some((l) => l.id === ids[2] && l.name === SHARD_NAME)
+          && (await newRepoRows()).filter((r) => r.mainSha === lapseSha).length === 1 && (await liveRepo()) === null,
+        `${lateLapsed.status} lapsed=${JSON.stringify(afterLapse.lapsed.map((l) => l.id))} rows=${(await newRepoRows()).filter((r) => r.mainSha === lapseSha).length}`);
+
+      // (6) NO SHARD-CAPABLE HELPER ⇒ LOCAL, UNSHARDED, AT ONCE. DEVICE keeps beating active without the
+      // feature. MUTATION: drop the feature from the drain's grace candidate ⇒ the entry is held the whole
+      // 120 s grace for a machine that is never offered its shards ⇒ no row inside 30 s ⇒ red.
+      beatBox = false;
+      await post(`/api/helper/devices/${SHARDBOX}/mode`, { mode: "off" });
+      const rowsBeforeLocal = (await newRepoRows()).length;
+      const loc = await openLane(REPO, "shardlocal");
+      await driveMerge(loc, loc.branch);
+      const locSha = headOf();
+      const locRows = await waitNewRepoRows(rowsBeforeLocal + 1, 30_000);
+      const locRow = locRows.find((r) => r.mainSha === locSha);
+      check("(K11) with NO shard-capable helper the drain runs it HERE at once — a local row, unsharded, no remote",
+        !!locRow && locRow.result === "green" && !locRow.remote && locRow.shards === undefined,
+        `rows=${locRows.length - rowsBeforeLocal} ${JSON.stringify(locRow).slice(0, 300)}`);
+    } finally {
+      clearInterval(beater);
+    }
+    await waitNoLocalRun(60_000);
+
+    // (7) AN UNREADABLE VALUE STAYS 1, AND SAYS SO. MUTATION: parse "three" as anything but 1 ⇒ no log line
+    // and/or no whole job ⇒ red.
+    await killSrv();
+    const logBefore = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
+    check("(K11) setup: the server restarts with FLEET_AUDIT_SHARDS=three",
+      await startSrv({ audit: true, extra: { FLEET_AUDIT_SHARDS: "three", FLEET_AUDIT_HELPER_GRACE_MS: "120000",
+        FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: "15000" } }));
+    await Bun.sleep(750);
+    await post(`/api/helper/devices/${SHARDBOX}/mode`, { mode: "active" });
+    await hpost("/api/helper/device", { deviceId: SHARDBOX, name: SHARD_NAME, mode: "active", load: 0.1,
+      running: 0, maxParallelSuites: 3, features: ["audit-shard"] });
+    const bootLog = readFileSync(`${ROOT}/server.log`, "utf8").slice(logBefore);
+    const rowsBeforeBad = (await newRepoRows()).length;
+    const bad = await openLane(REPO, "shardbadvalue");
+    await driveMerge(bad, bad.branch);
+    const badSha = headOf();
+    await Bun.sleep(1500);
+    const badList = repoJobs(await boxJobs());
+    const badClaim = await hpost("/api/helper/claim", { jobId: badList[0]?.id ?? "", deviceId: SHARDBOX });
+    const badReport = await report(badList[0]?.id ?? "", { exitCode: 0, tail: "PASS  whole again\nALL PASS" });
+    const badRows = await waitNewRepoRows(rowsBeforeBad + 1, 20_000);
+    const badRow = badRows.find((r) => r.mainSha === badSha);
+    const badKeys = Object.keys(badRow ?? {}).filter((k) => k !== "adjudication" && k !== "ping").join(",");
+    check("(K11) an UNREADABLE FLEET_AUDIT_SHARDS logs one line and stays 1: one whole job, and a row with exactly the unsharded keys",
+      bootLog.includes('FLEET_AUDIT_SHARDS="three" is not a shard count') && badList.length === 1
+        && badList[0]?.shard === undefined && badList[0]?.id === wholeIdOf(REPO)
+        && badClaim.status === 200 && badReport.ok && badRow?.result === "green" && badRow.shards === undefined
+        && badKeys === "at,startedAt,ms,repo,main,mainSha,result,cmd,exitCode,out,checks,covers,remote",
+      `log=${bootLog.includes("FLEET_AUDIT_SHARDS")} list=${JSON.stringify(badList.map((j) => j.shard ?? j.id))} claim=${badClaim.status} keys=${badKeys}`);
+    // leave the register as the harness after this one expects it: the shard box is no candidate
+    await post(`/api/helper/devices/${SHARDBOX}/mode`, { mode: "off" });
+    check("(K11) teardown: the machine is idle with an empty queue",
       await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0, JSON.stringify((await jobs()).jobs));
   }
 }

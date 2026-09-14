@@ -2952,6 +2952,10 @@ function stateSnapshot(): string {
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   return JSON.stringify({ token: persistedToken, stewardToken, helperToken,
     helperClaims: Object.fromEntries(helperClaims), helperLapses, helperDevices: [...helperDevices.values()],
+    // the sharded runs, for the claims' reason (a deploy mid-run must not hand the tree to the drain
+    // while n helpers still run it). Only written when one exists, so a FLEET_AUDIT_SHARDS=1 state
+    // file carries no new key at all.
+    ...(auditShardRuns.size ? { auditShardRuns: [...auditShardRuns.values()] } : {}),
     helperUpdates: [...helperUpdates.values()],
     // …and the lane-suite offers, for the SAME reason the claims are persisted: the deploy ritual
     // here is land-then-`kill-session -t srv`, ~10× a day, and an offer that lived only in memory
@@ -16172,6 +16176,11 @@ const HELPER_CLAIM_BAR_REASON: Record<HelperClaimBar, string> = {
 // timed out, could not be started, or declined to run is `unknown` — never green, and never red
 // either (a failed measurement is not evidence of a defect).
 interface PostLandAuditChecks { ran: number; failed: number; ranIsLowerBound?: true }
+interface PostLandAuditShard {
+  k: number; jobId: string; result: "green" | "red" | "unknown";
+  ms: number | null; ran: number | null; failed: number | null; exitCode: number | null;
+  name?: string; trail?: string;
+}
 interface PostLandAuditRow {
   at: number;          // when the run finished (row time)
   startedAt: number;
@@ -16230,6 +16239,11 @@ interface PostLandAuditRow {
   // machine, and every row written before this field existed says nothing whatever about it.
   workMs?: number;
   covers: AuditCover[];
+  // Present ONLY on a row a SHARDED run produced (FLEET_AUDIT_SHARDS, see AuditShardRun): one entry per
+  // shard, in `k` order, including the ones that produced nothing — `result:"unknown"` with `ms`,
+  // `ran`, `failed` and `exitCode` null is a shard that lapsed or never ran, and the row's own
+  // `reason` says which. Absent on every unsharded row, historical or new.
+  shards?: PostLandAuditShard[];
   // Present ONLY on a row a remote helper produced (see THE REMOTE HELPER PORTAL). Its absence is
   // the statement "this machine measured it itself" — which is why the field is optional rather
   // than a nullable one every historical row would suddenly claim to have answered.
@@ -16412,6 +16426,79 @@ interface HelperClaim {
   bundle: string;        // path of the bundle file this claim handed out
 }
 const helperClaims = new Map<string, HelperClaim>(); // repo toplevel -> the live claim on it
+// --- THE SHARDED AUDIT: one queue entry, n helper jobs, one ledger row --------------------------
+// Measured before this existed (2026-09-14): every second-host audit was ONE serial run of 1 830–2 010 s,
+// the chain strictly one after another, land→verdict 75–100 min — long enough that `undo-land` was
+// buried under later lands before the verdict could name one. The runner has split itself since
+// 2026-09-13 (`fleet-e2e.ts --shard k/n`, FLEET_E2E_SHARD through e2e-isolated.sh, the union of four
+// shards' check names equal to the unsharded run: docs/messungen/2026-09-14-suite-sharding-probe.md),
+// and the second-host runs up to maxParallelSuites at once. What was missing is THIS side.
+//
+// THE SHAPE. With FLEET_AUDIT_SHARDS=n>1 an offerable audit entry is listed as n jobs, each `k/n`.
+// The FIRST shard claim builds the one bundle and FREEZES the covers and the sha, exactly as an
+// unsharded claim does — every later shard of that run is handed the same bundle, so n machines (or
+// n slots of one) can only ever measure one tree. The run ends when every shard is TERMINAL
+// (reported, lapsed, or closed) and then writes ONE row, through the same sinks helperResult uses.
+//
+// THE MERGE, and its order is the whole safety argument: green ONLY when all n shards reported
+// green; any red makes the row red (a red is a measurement, and a missing sibling cannot unmeasure
+// it); otherwise — a lapsed, never-run or unmeasured shard — `unknown`, never green. A partial green
+// is the one lie this rail must not tell: n−1 green shards say nothing about the checks the
+// missing one owns.
+//
+// WHAT STAYS AS IT IS: n absent or 1 is today byte for byte (no run is ever opened, no job carries
+// `shard`, the claim and result paths below are not reached). The LOCAL drain never shards — it runs
+// the configured command unchanged, so a Mac fallback is the serial suite it always was. Unsharded
+// claims restored from before a flip keep working through their own path.
+const AUDIT_SHARDS_MAX = 8;
+// A VALUE THIS SERVER CANNOT READ FALLS BACK TO 1 AND SAYS SO. Not a refusal to boot: the knob is a
+// latency optimisation, and a typo in .env must cost the speed-up, never tier 2 itself.
+function parseAuditShards(raw: string | undefined): number {
+  const t = (raw ?? "").trim();
+  if (t === "") return 1;
+  if (/^[1-9]\d*$/.test(t) && Number(t) <= AUDIT_SHARDS_MAX) return Number(t);
+  console.log(`[fleet] FLEET_AUDIT_SHARDS=${JSON.stringify(t.slice(0, 40))} is not a shard count 1..${AUDIT_SHARDS_MAX}`
+    + " — post-land audits stay unsharded (1)");
+  return 1;
+}
+const AUDIT_SHARDS = parseAuditShards(process.env.FLEET_AUDIT_SHARDS);
+// THE CAPABILITY GUARD. A daemon that does not know `shard` runs `cfg.suiteCmd` whole — so a shard job
+// handed to it would come back as a FULL suite filed under one shard, n times over. The heartbeat's
+// `features` list is the daemon CODE's own word (helper-daemon/daemon.ts#DAEMON_FEATURES), not an
+// owner's config line, and it is NOT sticky: every heartbeat replaces it, so a daemon rolled back to an
+// older tree loses the feature on its next beat. A commit-ancestry floor like the command kind's
+// (daemonKnowsCommandKind) was not an option: a lane cannot know the sha its own commit lands under.
+const AUDIT_SHARD_FEATURE = "audit-shard";
+interface AuditShardClaim { deviceId: string; name: string; claimedAt: number; expiresAt: number }
+interface AuditShardResult {
+  deviceId: string; name: string; claimedAt: number; reportedAt: number;
+  exitCode: number | null; result: "green" | "red" | "unknown"; reason?: string;
+  tail: string; fails?: string[]; trail?: string; clonedSha?: string;
+  checks: PostLandAuditChecks | null; noMeasure: HelperNoMeasure;
+}
+// `closed` is the terminal state of a shard that produced no result, and `why` keeps the three apart:
+//   · lapsed   — a machine claimed it and never reported inside its claim window;
+//   · unclaimed — nobody claimed it before the run's window (first claim + claim timeout) shut;
+//   · sibling  — never started, because another shard had already ruled green out (a red, an unknown,
+//     a lapse). Running it would cost a whole shard to change a verdict that can no longer be green.
+interface AuditShardSlot {
+  k: number; jobId: string; claim: AuditShardClaim | null; result?: AuditShardResult;
+  closed?: { at: number; why: "lapsed" | "unclaimed" | "sibling"; name?: string; claimedAt?: number };
+}
+interface AuditShardRun {
+  repo: string; main: string; mainSha: string; n: number;
+  firstClaimAt: number; openUntil: number;
+  covers: AuditCover[];  // FROZEN at the first claim, the same freeze an unsharded claim makes
+  bundle: string;        // ONE bundle for all n shards — the reason they cannot measure different trees
+  shards: AuditShardSlot[];
+}
+const auditShardRuns = new Map<string, AuditShardRun>(); // repo toplevel -> its open sharded run
+// the first claim's bundle build, shared: a daemon with three free slots POSTs three claims in one
+// tick, and without this each would build its own bundle and two would be told "try again"
+const auditShardOpening = new Map<string, Promise<{ run: AuditShardRun } | { error: string; status: number }>>();
+const auditShardJobId = (repo: string, k: number, n: number): string =>
+  createHash("sha256").update(`${repo} shard:${k}/${n}`).digest("hex").slice(0, 12);
+const shardTerminal = (s: AuditShardSlot): boolean => !!s.result || !!s.closed;
 // A lapse is a FACT about this fleet, not a note in a log: it says a job was promised to a machine
 // that never answered. Kept bounded and served on the portal so the owner can see a helper that
 // keeps taking jobs it does not finish.
@@ -16531,13 +16618,14 @@ interface HelperDevice {
   maxParallelSuites?: number;
   running?: number;
   lastWakeAt?: number;       // when a magic packet last LEFT this box for it. Not "it woke up" — see sendWakeFrame
+  features?: string[];       // what the daemon's CODE says it can do (AUDIT_SHARD_FEATURE) — replaced on every beat
 }
 const helperDevices = new Map<string, HelperDevice>();
 // What a heartbeat is allowed to carry. Keys are present only when the device actually sent them,
 // so a plain lastSeen touch (the claim paths) can spread this over the stored row without erasing
 // the last real report.
 type HelperHeartbeat = { mode?: DeviceMode; load?: number; capabilities?: string[]; daemonSha?: string;
-  maxParallelSuites?: number; running?: number };
+  maxParallelSuites?: number; running?: number; features?: string[] };
 // Foreign strings land in a ledger row, a console line and an audit detail — same treatment the
 // device name already gets: printable only, and short.
 function printableShort(raw: string, cap: number): string {
@@ -16563,8 +16651,11 @@ function helperFailNames(raw: unknown): string[] | undefined {
 const isHelperClaimCandidate = (d: HelperDevice, now: number): boolean =>
   (d.desiredMode ?? DEVICE_MODE_DEFAULT) === "active" && (!d.mode || d.mode === "active")
   && now - d.lastSeen <= HELPER_FRESH_MS;
-function helperClaimCandidateExists(now = Date.now()): boolean {
-  for (const d of helperDevices.values()) if (isHelperClaimCandidate(d, now)) return true;
+// `feature` narrows the candidates to devices that declared it — the sharded audit's grace must not
+// hold an entry for a machine whose daemon would never be offered its shards.
+function helperClaimCandidateExists(now = Date.now(), feature?: string): boolean {
+  for (const d of helperDevices.values())
+    if (isHelperClaimCandidate(d, now) && (!feature || !!d.features?.includes(feature))) return true;
   return false;
 }
 // …AND IS EVERY SUCH MACHINE FULL, AND UNTIL WHEN? The second question both waits in front of the
@@ -17132,7 +17223,9 @@ async function drainPostLandAudits(): Promise<void> {
       // …and, when the owner has granted one, SKIPPING the ones still inside the portal's grace.
       // Re-read every iteration rather than hoisted: the loop awaits a whole suite between passes,
       // and both the clock and the device register move while it runs.
-      const graceOn = AUDIT_HELPER_GRACE_MS > 0 && helperClaimCandidateExists();
+      // Under FLEET_AUDIT_SHARDS the candidate must also be a machine its shards are offered to.
+      const graceOn = AUDIT_HELPER_GRACE_MS > 0
+        && helperClaimCandidateExists(Date.now(), AUDIT_SHARDS > 1 ? AUDIT_SHARD_FEATURE : undefined);
       // …and whether every such machine is FULL right now (helperSaturation). Only asked under a
       // grace: without one the owner has not given the portal first refusal at all, and a saturated
       // helper is no reason to invent it.
@@ -17141,6 +17234,10 @@ async function drainPostLandAudits(): Promise<void> {
       let graceUntil = 0;
       const entry = [...auditQueue.entries()].find(([r, q]) => {
         if (helperClaimOf(r)) return false;
+        // …and a SHARDED run is held until its row is written, not until each claim's clock: a run
+        // with n−1 shards reported and one lapsed is still a row owed (settleAuditShardRuns writes it
+        // on the next sweep), and the drain taking the tree in that gap would be the second audit.
+        if (auditShardRuns.has(r)) return false;
         // …and the ONE question the portal's three doors ask too (helperClaimBar), asked here for
         // the grace's sake. Two consequences fall out of the same answer, and they are opposite:
         //   · `unconfigured` — the repo has no command any more (the worker was cleared after the
@@ -17766,6 +17863,9 @@ function expireHelperClaims(): boolean {
       + ` without a result — ${c.covers.length} land(s) fall back to the local drain`);
     changed = true;
   }
+  // …the SHARDED runs, whose lapse is NOT a fallback: the tree is a row owed as `unknown` (see
+  // settleAuditShardRuns). Reached only when a run exists, i.e. never under FLEET_AUDIT_SHARDS 1.
+  if (auditShardRuns.size && settleAuditShardRuns(now)) changed = true;
   // …and the SAME sweep for the second job kind, extended here rather than added as a sibling tick
   // on purpose: this is the one function every claim path already calls, and a second sweep with
   // its own call sites is one forgotten call away from a job that never expires.
@@ -17956,6 +18056,7 @@ function setHelperDevice(deviceId: string, name: string, reported?: HelperHeartb
   for (const [k] of helperDevices) {
     if (helperDevices.size <= HELPER_DEVICE_KEEP) break;
     if (k === deviceId || [...helperClaims.values()].some((c) => c.deviceId === k)) continue;
+    if ([...auditShardRuns.values()].some((r) => r.shards.some((s) => s.claim?.deviceId === k))) continue;
     helperDevices.delete(k);
   }
   return d;
@@ -18084,6 +18185,9 @@ interface HelperJobView {
   cmd?: string;
   timeoutMs?: number;
   artifacts?: string[];   // the GLOBS asked for; the receipt's rows are the answer to them
+  // `k/n` on a SHARDED audit job and on nothing else — the exact string the daemon hands the suite as
+  // FLEET_E2E_SHARD. Listed only to a device that declared AUDIT_SHARD_FEATURE.
+  shard?: string;
 }
 // `forDevice` is the asking device's id, when it gave one: a daemon-update is offered to the ONE
 // device it is addressed to and appears in nobody else's list — a browser on the portal page, or
@@ -18103,6 +18207,11 @@ function helperJobsView(forDevice?: string): {
       localRunning: false,
     });
   }
+  // THE SHARD HANDSHAKE — the capability reading helperClaimCandidateExists and claimAuditShard make
+  // too: shard jobs appear only in the list of a device whose own last heartbeat declared the feature.
+  // A browser (no deviceId) and every older daemon see NO audit job at all while shards are on — the
+  // fail-closed direction; the drain then runs the entry here, unsharded.
+  const shardCapable = !!(forDevice && helperDevices.get(forDevice)?.features?.includes(AUDIT_SHARD_FEATURE));
   for (const [repo, q] of auditQueue) {
     if (!q.covers.length) continue;
     // NOT OFFERED: an entry no helper could ever take — a repo whose audit is its own repo-worker
@@ -18112,6 +18221,13 @@ function helperJobsView(forDevice?: string): {
     // asks the same predicate, does not hold it for a helper first.
     if (helperClaimBar(repo, q.covers)) continue;
     const c = helperClaimOf(repo);
+    // a live UNSHARDED claim (restored from before a flip) keeps its own job below; anything else under
+    // an open run or FLEET_AUDIT_SHARDS>1 is offered as shards
+    const shardRun = auditShardRuns.get(repo);
+    if (!c && (shardRun || AUDIT_SHARDS > 1)) {
+      if (shardCapable) jobs.push(...auditShardJobViews(repo, q, shardRun));
+      continue;
+    }
     jobs.push({
       id: helperJobId(repo), kind: "audit", repo: basename(repo), main: q.main,
       branches: q.covers.map((x) => x.branch).slice(0, 10),
@@ -18237,6 +18353,12 @@ function heldClaimsByDevice(): Map<string, HelperDeviceClaimView[]> {
   };
   for (const [repo, c] of helperClaims)
     if (helperClaimOf(repo)) push(c.deviceId, { kind: "audit", repo: basename(repo), ref: c.main, expiresAt: c.expiresAt });
+  // ONE ROW PER SHARD CLAIM: each is one suite on that machine, so helperSaturation counts it as one slot
+  const now = Date.now();
+  for (const run of auditShardRuns.values())
+    for (const s of run.shards)
+      if (s.claim && now < s.claim.expiresAt)
+        push(s.claim.deviceId, { kind: "audit", repo: basename(run.repo), ref: run.main, expiresAt: s.claim.expiresAt });
   // the STATE guard beside the clock, the same pair helperJobsView uses: a settled offer nulls its
   // claim (reported/withdrawn/reaped all do), so this is belt-and-braces — but "holds a preview" is
   // a sentence about another machine's next 13 minutes, and it may not survive one forgotten null.
@@ -18322,6 +18444,7 @@ function helperWorkAwaitingClaim(deviceId: string): boolean {
     if (!q.covers.length) continue;
     if (helperClaimBar(repo, q.covers)) continue;
     if (helperClaimOf(repo)) continue;
+    if (auditShardRuns.has(repo)) continue; // a sharded run is already somebody's; its open shards wait for that machine
     if (auditRunningRepo === repo || runningPostLandAudit?.repo === repo) continue;
     return true;
   }
@@ -18580,7 +18703,12 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   const upd = helperUpdateById(jobId);
   if (upd) return await claimDaemonUpdate(upd, deviceId);
   const hit = [...auditQueue.entries()].find(([r, q]) => helperJobId(r) === jobId && q.covers.length);
-  if (!hit) return json({ error: "no such open audit job — it may already have been audited" }, 404);
+  if (!hit) {
+    // a SHARD job's id is its own hash (auditShardJobId), so it never matches the find above
+    const shard = auditShardJobOf(jobId);
+    if (shard) return await claimAuditShard(shard.repo, shard.k, shard.n, deviceId);
+    return json({ error: "no such open audit job — it may already have been audited" }, 404);
+  }
   const [repo, q] = hit;
   // the same rule as helperJobsView's, on the door and not only on the list: a job that was never
   // offered must not be claimable by a client that knows the id shape
@@ -18592,6 +18720,10 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   if (held) return json({ error: `already claimed by ${held.name} — it expires ${new Date(held.expiresAt).toISOString()}` }, 409);
   if (auditRunningRepo === repo || runningPostLandAudit?.repo === repo)
     return json({ error: "the local drain is already auditing this tree — nothing to take over" }, 409);
+  // …and the whole-suite job is not offered while shards are: a client that kept the old id (or knows
+  // its shape) must not run the tree whole beside, or instead of, its shards
+  if (AUDIT_SHARDS > 1 || auditShardRuns.has(repo))
+    return json({ error: `this audit is offered as ${auditShardRuns.get(repo)?.n ?? AUDIT_SHARDS} shards — claim a shard job, not the whole suite` }, 409);
   const id = helperJobId(repo);
   const file = `${HELPER_BUNDLE_DIR}/${id}-${randomBytes(4).toString("hex")}.bundle`;
   const built = await buildHelperBundle(repo, q.main, file);
@@ -18818,6 +18950,8 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   if (lane) return await reportLaneSuite(lane, body);
   const cmdJob = commandJobs.get(jobId);
   if (cmdJob) return await reportCommandJob(cmdJob, body);
+  const shardHit = auditShardSlotOf(jobId);
+  if (shardHit) return await reportAuditShard(shardHit.run, shardHit.slot, body);
   const hit = [...helperClaims.entries()].find(([r, c]) => c.id === jobId && helperClaimOf(r));
   // A LAPSED CLAIM IS REFUSED, deliberately: past the timeout the job belongs to the local drain
   // again, so accepting a late verdict would write a row about a tree this machine may be auditing
@@ -18906,6 +19040,310 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   // box wants, and dropping the old key would silence it with no error anywhere.
   return json({ ok: true, result, ...(reason ? { reason } : {}), auditAt: row.at, artifactAt: row.at });
 }
+
+// --- THE SHARDED AUDIT: the moving parts (the argument is at AuditShardRun) ---------------------
+// Which queue entry and shard a shard job id names. An OPEN run answers with its own ids and its own
+// `n` (a restart under a different FLEET_AUDIT_SHARDS must not orphan a run in flight); an entry with
+// no run yet answers under the configured n.
+function auditShardJobOf(jobId: string): { repo: string; k: number; n: number } | null {
+  for (const [repo, q] of auditQueue) {
+    if (!q.covers.length) continue;
+    const run = auditShardRuns.get(repo);
+    if (run) {
+      const s = run.shards.find((x) => x.jobId === jobId);
+      if (s) return { repo, k: s.k, n: run.n };
+      continue;
+    }
+    if (AUDIT_SHARDS < 2) continue;
+    for (let k = 1; k <= AUDIT_SHARDS; k++)
+      if (auditShardJobId(repo, k, AUDIT_SHARDS) === jobId) return { repo, k, n: AUDIT_SHARDS };
+  }
+  return null;
+}
+function auditShardSlotOf(jobId: string): { run: AuditShardRun; slot: AuditShardSlot } | null {
+  for (const run of auditShardRuns.values()) {
+    const slot = run.shards.find((s) => s.jobId === jobId);
+    if (slot) return { run, slot };
+  }
+  return null;
+}
+// the list's projection: one job per shard that could still be claimed or is claimed right now. A
+// terminal shard, one whose claim ran out but is not swept yet, and an unclaimed one past the run's
+// window are not offerable — the same three exclusions the lane-suite list makes for its own states.
+function auditShardJobViews(repo: string, q: { main: string; covers: AuditCover[] },
+  run: AuditShardRun | undefined): HelperJobView[] {
+  const now = Date.now();
+  const n = run?.n ?? AUDIT_SHARDS;
+  const covers = run?.covers ?? q.covers;
+  const localRunning = auditRunningRepo === repo || runningPostLandAudit?.repo === repo;
+  const out: HelperJobView[] = [];
+  for (let k = 1; k <= n; k++) {
+    const s = run?.shards[k - 1];
+    if (s && shardTerminal(s)) continue;
+    const live = s?.claim && now < s.claim.expiresAt ? s.claim : null;
+    if (s?.claim && !live) continue;
+    if (run && !live && now >= run.openUntil) continue;
+    out.push({
+      id: s?.jobId ?? auditShardJobId(repo, k, n), kind: "audit", repo: basename(repo), main: run?.main ?? q.main,
+      branches: covers.map((x) => x.branch).slice(0, 10), covers: covers.length,
+      oldestAt: Math.min(...covers.map((x) => x.at)),
+      claim: live ? { name: live.name, claimedAt: live.claimedAt, expiresAt: live.expiresAt } : null,
+      localRunning, shard: `${k}/${n}`,
+    });
+  }
+  return out;
+}
+// The run is OPENED by its first claim, and opened ONCE: the bundle build is shared by every claim
+// that arrives while it is in progress, and the checks after the await are the unsharded claim's own
+// (the drain may have committed to the tree meanwhile — throwing a bundle away is cheaper than the
+// duplicate run the alternative would authorize).
+function openAuditShardRun(repo: string, main: string, n: number): Promise<{ run: AuditShardRun } | { error: string; status: number }> {
+  const opening = (async (): Promise<{ run: AuditShardRun } | { error: string; status: number }> => {
+    const file = `${HELPER_BUNDLE_DIR}/${helperJobId(repo)}-${randomBytes(4).toString("hex")}.bundle`;
+    const built = await buildHelperBundle(repo, main, file);
+    auditShardOpening.delete(repo);
+    if ("error" in built) {
+      try { rmSync(file, { force: true }); } catch { /* never written */ }
+      return { error: built.error, status: 500 };
+    }
+    const q = auditQueue.get(repo);
+    if (!q?.covers.length || helperClaimOf(repo) || auditShardRuns.has(repo)
+      || auditRunningRepo === repo || runningPostLandAudit?.repo === repo) {
+      try { rmSync(file, { force: true }); } catch { /* nothing to clean */ }
+      return { error: "the tree was taken while the bundle was being built — try again", status: 409 };
+    }
+    const now = Date.now();
+    const run: AuditShardRun = {
+      repo, main: q.main, mainSha: built.sha, n, firstClaimAt: now, openUntil: now + HELPER_CLAIM_TIMEOUT_MS,
+      covers: q.covers.slice(), bundle: file,
+      shards: Array.from({ length: n }, (_, i) => ({ k: i + 1, jobId: auditShardJobId(repo, i + 1, n), claim: null })),
+    };
+    auditShardRuns.set(repo, run);
+    return { run };
+  })();
+  auditShardOpening.set(repo, opening);
+  return opening;
+}
+async function claimAuditShard(repo: string, k: number, n: number, deviceId: string): Promise<Response> {
+  const q = auditQueue.get(repo);
+  if (!q?.covers.length) return json({ error: "no such open audit job — it may already have been audited" }, 404);
+  // the same door rule as helperClaim's: never claimable if it would never have been listed
+  const bar = helperClaimBar(repo, q.covers);
+  if (bar) return json({ error: HELPER_CLAIM_BAR_REASON[bar] }, 409);
+  if (!helperDevices.get(deviceId)?.features?.includes(AUDIT_SHARD_FEATURE))
+    return json({ error: `this audit is offered as ${n} shards, and this device's last heartbeat did not declare`
+      + ` "${AUDIT_SHARD_FEATURE}" — a daemon that cannot run one shard would run the whole suite under its name` }, 409);
+  const held = helperClaimOf(repo);
+  if (held) return json({ error: `already claimed whole by ${held.name} — it expires ${new Date(held.expiresAt).toISOString()}` }, 409);
+  if (auditRunningRepo === repo || runningPostLandAudit?.repo === repo)
+    return json({ error: "the local drain is already auditing this tree — nothing to take over" }, 409);
+  if (!auditShardRuns.has(repo)) {
+    const opened = await (auditShardOpening.get(repo) ?? openAuditShardRun(repo, q.main, n));
+    if ("error" in opened) return json({ error: opened.error }, opened.status);
+  }
+  const run = auditShardRuns.get(repo);
+  if (!run || run.n !== n) return json({ error: "the sharded run for this tree changed while the claim waited — try again" }, 409);
+  const now = Date.now();
+  closeOpenShards(run, now);
+  const slot = run.shards[k - 1];
+  if (!slot) return json({ error: `no shard ${k}/${n} in this run` }, 404);
+  if (slot.result) return json({ error: `shard ${k}/${n} was already reported` }, 409);
+  if (slot.closed) return json({ error: `shard ${k}/${n} is closed (${slot.closed.why}) — the row is owed without it` }, 409);
+  if (slot.claim && now < slot.claim.expiresAt)
+    return json({ error: `shard ${k}/${n} is already claimed by ${slot.claim.name} — it expires ${new Date(slot.claim.expiresAt).toISOString()}` }, 409);
+  if (slot.claim) return json({ error: `shard ${k}/${n} lapsed and is being booked — it is not offered again` }, 409);
+  const name = helperDeviceName(deviceId);
+  slot.claim = { deviceId, name, claimedAt: now, expiresAt: now + HELPER_CLAIM_TIMEOUT_MS };
+  if (helperDevices.has(deviceId)) setHelperDevice(deviceId, name); // touch lastSeen
+  audit("helper_claim", undefined,
+    `${name} claimed shard ${k}/${n} of ${basename(repo)} ${run.main}@${run.mainSha.slice(0, 8)} (${run.covers.length} land(s))`);
+  await saveStateNow();
+  return json({ job: { id: slot.jobId, kind: "audit", repo: basename(repo), main: run.main, mainSha: run.mainSha,
+    branches: run.covers.map((c) => c.branch), covers: run.covers.length,
+    claimedAt: now, expiresAt: slot.claim.expiresAt, name, shard: `${k}/${n}` } });
+}
+// One shard's verdict. Classified by the SHARED classifier, stored on the slot, and turned into a row
+// only when the last shard of the run is terminal. A lapsed claim is refused for the unsharded
+// reason: past its window the shard is booked as lapsed, and a late verdict would contradict a row
+// that may already be written.
+async function reportAuditShard(run: AuditShardRun, slot: AuditShardSlot, body: Record<string, unknown> | null): Promise<Response> {
+  const c = slot.claim;
+  const now = Date.now();
+  if (!c || now >= c.expiresAt || shardTerminal(slot))
+    return json({ error: "no live claim for this shard — it lapsed, was closed, or was already reported" }, 409);
+  const rawExit = body?.exitCode;
+  const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
+  const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
+  const fails = helperFailNames(body?.fails);
+  const trail = typeof body?.trail === "string" && body.trail.trim() ? body.trail.trim().slice(0, 120) : undefined;
+  const clonedSha = typeof body?.clonedSha === "string" && /^[0-9a-f]{40}$/.test(body.clonedSha)
+    ? body.clonedSha : undefined;
+  const { result, reason } = remoteVerdictOf(exitCode);
+  slot.result = {
+    deviceId: c.deviceId, name: c.name, claimedAt: c.claimedAt, reportedAt: now,
+    exitCode, result, ...(reason ? { reason } : {}), tail, ...(fails !== undefined ? { fails } : {}),
+    ...(trail ? { trail } : {}), ...(clonedSha ? { clonedSha } : {}),
+    // same cast argument as helperResult's: only a non-null, non-skip, non-126/127 code is measured
+    checks: result !== "unknown" ? postLandAuditChecks(tail, exitCode as number, fails) : null,
+    noMeasure: helperNoMeasureOf(body, exitCode),
+  };
+  slot.claim = null;
+  audit("helper_result", undefined,
+    `${result} shard ${slot.k}/${run.n} of ${basename(run.repo)} ${run.main}@${run.mainSha.slice(0, 8)} from ${c.name}`
+    + `${clonedSha ? ` (ran ${clonedSha.slice(0, 8)})` : " (the helper named no clone sha)"}`
+    + `${trail ? ` [${trail}]` : ""}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
+  closeOpenShards(run, now);
+  const shard = `${slot.k}/${run.n}`;
+  if (run.shards.every(shardTerminal)) {
+    const row = await writeShardedAuditRow(run, slot.jobId);
+    // `result` stays THIS shard's verdict in every answer; `auditResult` is the row's, present only on
+    // the answer that wrote it — and so are the row keys, the one upload this run can file a log under
+    return json({ ok: true, result, ...(reason ? { reason } : {}), shard, auditResult: row.result,
+      auditAt: row.at, artifactAt: row.at });
+  }
+  await saveStateNow();
+  return json({ ok: true, result, ...(reason ? { reason } : {}), shard,
+    pending: run.shards.filter((s) => !shardTerminal(s)).length });
+}
+// Close the shards nobody should start any more: every unclaimed one once green is ruled out (a red,
+// an unmeasured result or a lapse on a sibling), or once the run's window has shut. Claimed ones are
+// never closed here — they report or lapse on their own clock.
+function closeOpenShards(run: AuditShardRun, now: number): boolean {
+  const ruledOut = run.shards.some((s) => !!s.closed || (!!s.result && s.result.result !== "green"));
+  const shut = now >= run.openUntil;
+  if (!ruledOut && !shut) return false;
+  let changed = false;
+  for (const s of run.shards) {
+    if (shardTerminal(s) || s.claim) continue;
+    s.closed = { at: now, why: ruledOut ? "sibling" : "unclaimed" };
+    changed = true;
+  }
+  return changed;
+}
+// The sweep's half: book lapses, close what can no longer start, and write the row of every run that
+// is complete. Synchronous up to the row write, which settles on its own (see writeShardedAuditRow).
+function settleAuditShardRuns(now: number): boolean {
+  let changed = false;
+  for (const run of [...auditShardRuns.values()]) {
+    for (const s of run.shards) {
+      if (shardTerminal(s) || !s.claim || now < s.claim.expiresAt) continue;
+      const c = s.claim;
+      s.closed = { at: now, why: "lapsed", name: c.name, claimedAt: c.claimedAt };
+      s.claim = null;
+      helperLapses = [{ id: s.jobId, repo: run.repo, name: c.name, deviceId: c.deviceId,
+        claimedAt: c.claimedAt, expiredAt: now, covers: run.covers.length },
+        ...helperLapses].slice(0, HELPER_LAPSE_KEEP);
+      audit("helper_claim_expired", undefined,
+        `${c.name} held shard ${s.k}/${run.n} of ${basename(run.repo)} ${run.main}@${run.mainSha.slice(0, 8)}`
+        + ` for ${Math.round((now - c.claimedAt) / 1000)}s without a result — the run's row will be unknown`);
+      changed = true;
+    }
+    if (closeOpenShards(run, now)) changed = true;
+    if (run.shards.every(shardTerminal)) {
+      void writeShardedAuditRow(run).catch((e: unknown) => logError("writeShardedAuditRow", e));
+      changed = true;
+    }
+  }
+  return changed;
+}
+// THE MERGE (the rules and why: AuditShardRun). Pure over the run.
+function shardedAuditRowOf(run: AuditShardRun, now: number, jobId: string | undefined): PostLandAuditRow {
+  const n = run.n;
+  const reported = run.shards.flatMap((s) => (s.result ? [{ s, r: s.result }] : []));
+  const reds = reported.filter((x) => x.r.result === "red");
+  const allGreen = reported.length === n && reported.every((x) => x.r.result === "green");
+  const result: PostLandAuditRow["result"] = reds.length ? "red" : allGreen ? "green" : "unknown";
+  const why = (s: AuditShardSlot): string =>
+    s.result ? `shard ${s.k}/${n} (${s.result.name}): ${s.result.reason ?? s.result.result}`
+    : s.closed?.why === "lapsed" ? `shard ${s.k}/${n} lapsed — ${s.closed.name ?? "a helper"} claimed it and reported nothing`
+    : s.closed?.why === "sibling" ? `shard ${s.k}/${n} was not run — a sibling had already ruled green out`
+    : `shard ${s.k}/${n} was never claimed`;
+  const reason = result === "unknown"
+    ? run.shards.filter((s) => s.result?.result !== "green").map(why).join("; ") : undefined;
+  // ms = FIRST CLAIM to LAST RESULT. The first claim is read off the shards (the run is opened a
+  // microtask before its opener's claim is stamped); a run with a shard that never reported ends now.
+  const claimTimes = run.shards.flatMap((s) => (s.result ? [s.result.claimedAt]
+    : s.closed?.claimedAt !== undefined ? [s.closed.claimedAt] : []));
+  const start = claimTimes.length ? Math.min(...claimTimes) : run.firstClaimAt;
+  const end = reported.length === n ? Math.max(...reported.map((x) => x.r.reportedAt)) : now;
+  const names = [...new Set(run.shards.flatMap((s) => s.result ? [s.result.name] : s.closed?.name ? [s.closed.name] : []))];
+  const nameList = names.length ? names.join(", ") : "no helper";
+  // red shards' sections first: the retention below keeps FAIL lines, and the red is what a reader opens the row for
+  const ordered = [...reds, ...reported.filter((x) => x.r.result !== "red")];
+  const out = retainRunOutput(ordered.map((x) =>
+    `── shard ${x.s.k}/${n} (${x.r.name}) ${x.r.result} exit ${x.r.exitCode ?? "none"} ──\n${x.r.tail}`).join("\n"),
+    "", HELPER_TAIL_CAP).trim();
+  const anyFails = reported.some((x) => x.r.fails !== undefined);
+  const fails = [...new Set(ordered.flatMap((x) => x.r.fails ?? []))].slice(0, HELPER_FAILS_KEEP);
+  const counted = reported.filter((x) => x.r.checks !== null);
+  const checks: PostLandAuditChecks | null = result === "unknown" || !counted.length ? null : {
+    ran: counted.reduce((a, x) => a + (x.r.checks?.ran ?? 0), 0),
+    failed: counted.reduce((a, x) => a + (x.r.checks?.failed ?? 0), 0),
+    ...(counted.length < n || counted.some((x) => x.r.checks?.ranIsLowerBound) ? { ranIsLowerBound: true as const } : {}),
+  };
+  // the clone sha: a DIVERGENT one wins, because the divergence is the fact a reader must not miss;
+  // otherwise the one every reporting shard agreed on
+  const shas = reported.flatMap((x) => (x.r.clonedSha ? [x.r.clonedSha] : []));
+  const clonedSha = shas.find((s) => s !== run.mainSha) ?? shas[0];
+  const trail = (reds[0] ?? reported[0])?.r.trail;
+  const noMeasure = result === "unknown" ? reported.find((x) => x.r.result === "unknown")?.r.noMeasure ?? {} : {};
+  return {
+    at: now, startedAt: start, ms: end - start,
+    repo: run.repo, main: run.main, mainSha: run.mainSha, result, ...(reason ? { reason } : {}),
+    cmd: `remote helper (${nameList}): FLEET_E2E_SHARD=k/${n} ./e2e-isolated.sh`,
+    exitCode: result === "green" ? 0 : result === "red" ? reds[0]?.r.exitCode ?? null : null,
+    out, ...(anyFails ? { fails } : {}), checks, covers: run.covers,
+    shards: run.shards.map((s) => ({
+      k: s.k, jobId: s.jobId, result: s.result?.result ?? "unknown",
+      ms: s.result ? s.result.reportedAt - s.result.claimedAt : null,
+      ran: s.result?.checks?.ran ?? null, failed: s.result?.checks?.failed ?? null,
+      exitCode: s.result?.exitCode ?? null,
+      ...(s.result?.name ?? s.closed?.name ? { name: s.result?.name ?? s.closed?.name } : {}),
+      ...(s.result?.trail ? { trail: s.result.trail } : {}),
+    })),
+    remote: { name: nameList, claimedAt: start, reportedAt: end, ...(trail ? { trail } : {}),
+      ...(clonedSha ? { clonedSha } : {}), ...noMeasure, ...(jobId ? { jobId } : {}) },
+  };
+}
+// THE THIRD AUDIT SINK — the same sequence helperResult runs after its row, in the same order, so a
+// sharded red reaches the watch, the inbox, the carried flake and acceptance exactly as a whole one
+// does. Everything before the first await is ONE turn: the row is built, the covers consumed and the
+// run dropped together, so the drain can never see a consumed run with its covers still queued.
+async function writeShardedAuditRow(run: AuditShardRun, jobId?: string): Promise<PostLandAuditRow> {
+  const now = Date.now();
+  const row = shardedAuditRowOf(run, now, jobId);
+  lastPostLandAudit = row;
+  recordAuditDuration(row); // a no-op for a remote row by contract — see auditCounts
+  const q = auditQueue.get(run.repo);
+  if (q) {
+    const frozen = new Set(run.covers.map(coverKey));
+    const rest = q.covers.filter((c) => !frozen.has(coverKey(c)));
+    q.covers.length = 0;
+    q.covers.push(...rest);
+    if (!q.covers.length) auditQueue.delete(run.repo);
+    savePostLandAuditQueue();
+  }
+  auditShardRuns.delete(run.repo);
+  markAuditClaimable(run.repo, now);
+  try { rmSync(run.bundle, { force: true }); } catch { /* the helpers have their copies */ }
+  await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
+  if (row.result === "red") await carryFlakeAdjudications("audit", row.at);
+  await mintAuditEvents(row);
+  await writeAuditInboxEntries(row);
+  void tickAcceptByLand("audit").catch((e: unknown) => logError("tickAcceptByLand", e));
+  const divergence = row.remote?.clonedSha && row.remote.clonedSha !== run.mainSha
+    ? ` — A SHARD RAN ${row.remote.clonedSha.slice(0, 8)}, NOT THE ${run.mainSha.slice(0, 8)} THIS ROW IS FILED UNDER` : "";
+  audit("helper_result", undefined,
+    `${row.result} ${basename(run.repo)} ${run.main}@${run.mainSha.slice(0, 8)} from ${run.n} shards`
+    + ` (${row.remote?.name ?? ""}) ran=${row.checks?.ran ?? "?"}${row.reason ? ` — ${row.reason}` : ""}${divergence}`.slice(0, 240));
+  if (row.result !== "green")
+    console.log(`POST-LAND AUDIT ${row.result.toUpperCase()} (remote, ${run.n} shards): ${run.main}@${run.mainSha.slice(0, 8)}`
+      + ` in ${basename(run.repo)} after landing ${run.covers.map((c) => c.branch).join(", ").slice(0, 120)}`
+      + `${row.reason ? ` (${row.reason.slice(0, 200)})` : ""}${divergence} — this audit gates nothing; ↩ undo-land is the rollback.`);
+  await saveStateNow();
+  kickAuditDrain();
+  return row;
+}
 // The portal's own gate. The owner's own credential opens it too — checked FIRST and synchronously,
 // so opening the page from the board costs nothing — and every other credential pays the same flat
 // 400 ms the owner gate pays, with no escalating lockout for the same reason it has none.
@@ -18989,6 +19427,16 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
         return json({ error: `${f} must be an integer between 0 and ${DEVICE_SLOTS_MAX}` }, 400);
       reported[f] = v;
     }
+    // THE FEATURE LIST — the daemon code's own word about what it can run (AUDIT_SHARD_FEATURE). NOT
+    // sticky, unlike every field above: a heartbeat without it CLEARS it, so a daemon rolled back to a
+    // tree that predates a feature stops being offered that feature's jobs on its next beat. An
+    // unknown string is kept (a newer daemon is not refused over a word this server cannot read yet).
+    if (body?.features !== undefined
+      && (!Array.isArray(body.features) || body.features.some((f) => typeof f !== "string")))
+      return json({ error: "features must be an array of strings" }, 400);
+    reported.features = Array.isArray(body?.features)
+      ? (body.features as string[]).map((f) => printableShort(f, DEVICE_CAP_LEN)).filter(Boolean).slice(0, DEVICE_CAPS_KEEP)
+      : undefined;
     const d = setHelperDevice(deviceId, name, reported);
     await saveStateNow();
     // `device` keeps its exact old shape plus optional fields, so a pre-stage-A client reads it
@@ -19133,6 +19581,17 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
       return new Response(Bun.file(uc.bundle), {
         headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
           "content-disposition": `attachment; filename="${upd.id}-${uc.mainSha.slice(0, 8)}.bundle"` },
+      });
+    }
+    // a SHARD job downloads the run's one bundle, off that shard's own live claim
+    const shardHit = auditShardSlotOf(bundle[1]!);
+    if (shardHit) {
+      const sc = shardHit.slot.claim;
+      if (!sc || Date.now() >= sc.expiresAt) return json({ error: "no live claim for this job" }, 409);
+      if (!existsSync(shardHit.run.bundle)) return json({ error: "the bundle is gone — let the claim lapse and take it again" }, 410);
+      return new Response(Bun.file(shardHit.run.bundle), {
+        headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
+          "content-disposition": `attachment; filename="${shardHit.slot.jobId}-${shardHit.run.mainSha.slice(0, 8)}.bundle"` },
       });
     }
     const claim = [...helperClaims.entries()].find(([r, c]) => c.id === bundle[1] && helperClaimOf(r))?.[1];
@@ -25604,6 +26063,16 @@ if (existsSync(STATE_FILE)) {
       for (const [repo, c] of Object.entries(persistedClaims as Record<string, HelperClaim>))
         if (c && typeof c.id === "string" && typeof c.expiresAt === "number" && Array.isArray(c.covers))
           helperClaims.set(repo, c);
+    // …and the sharded runs, shape-checked the same way: a torn run is dropped rather than repaired,
+    // and its covers are still in the queue file, so the drain audits them locally — never lost.
+    const persistedShardRuns = (persisted as { auditShardRuns?: unknown }).auditShardRuns;
+    if (Array.isArray(persistedShardRuns))
+      for (const r of persistedShardRuns as AuditShardRun[])
+        if (r && typeof r.repo === "string" && typeof r.mainSha === "string" && typeof r.bundle === "string"
+          && Number.isInteger(r.n) && r.n >= 2 && r.n <= AUDIT_SHARDS_MAX && typeof r.firstClaimAt === "number"
+          && typeof r.openUntil === "number" && Array.isArray(r.covers) && Array.isArray(r.shards)
+          && r.shards.length === r.n && r.shards.every((s, i) => s && s.k === i + 1 && typeof s.jobId === "string"))
+          auditShardRuns.set(r.repo, r);
     // A stale restored offer is handled by the ordinary sweep, not filtered here (laneSuiteClaimOf,
     // the reap of a lane whose slot did not come back, LANE_SUITE_KEEP eviction).
     if (Array.isArray((persisted as { laneSuiteJobs?: unknown }).laneSuiteJobs))
@@ -25646,6 +26115,9 @@ if (existsSync(STATE_FILE)) {
               && d.maxParallelSuites > 0 && d.maxParallelSuites <= DEVICE_SLOTS_MAX
               ? { maxParallelSuites: d.maxParallelSuites } : {}),
             ...(typeof d.lastWakeAt === "number" && Number.isFinite(d.lastWakeAt) ? { lastWakeAt: d.lastWakeAt } : {}),
+            ...(Array.isArray(d.features)
+              ? { features: d.features.filter((f): f is string => typeof f === "string").slice(0, DEVICE_CAPS_KEEP) }
+              : {}),
           });
     // the update rows, for the same reason the claims are: a deploy here is land-then-restart, and
     // a queued update that vanished with the restart would be a wish the owner made and nobody kept

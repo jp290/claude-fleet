@@ -47,6 +47,13 @@ laufen nacheinander (gemessen 2026-09-14 21:5x an drei Astra-Zeilen und der Sol-
 zaehlt `NEU` als Flaeche (`start-plan.ts#startPlanCardPaths`); die INDEX-Zeile setzt die Orchestratorin
 bei der Ernte.
 
+**Ein leeres `FLAECHE:` reicht NICHT gegen Kollisionen** (gemessen 2026-09-14 22:0x): die drei Zeilen
+standen trotzdem hinter einer laufenden Lane, weil die Flaeche aus den `server.ts#symbol`-Belegen im
+Brieftext abgeleitet wird (`GET /api/start-plan` → `collides {slot, file: "server.ts"}`). Nach dem Filen
+deshalb die Flaeche bestaetigen — genau die `NEU`-Datei:
+`POST /api/tasks/:id/files {"files":["docs/messungen/<notiz>.md"]}` (Owner-Token). Danach zeigt der
+Startplan `next: "now"`, und zwei der drei Zeilen starteten binnen 25 s.
+
 Nach dem Kopf der Brief in dieser Reihenfolge (Schablone vom 2026-09-11): englischer System-Prefix
 („You are GPT-6 Astra executing a brief … Infer intent. Bias towards action. … Return only the OUTPUT
 specified.") · ZIEL · PRIORITY · AUTONOMY · EFFORT · DELEGATION · CONTEXT (Dateien in Reihenfolge) ·

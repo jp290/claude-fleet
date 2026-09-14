@@ -186,6 +186,12 @@ const PRE_AUTH_ROUTES = [
   // other's filing door. It writes into no pane, starts nothing and reaches no foreign slot.
   '= /api/self/tasks',
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/release$/`,
+  // Schnitt 3 (2026-09-14) · THE HOLD, the counter-act to a program's release policy. REVIEWED: same
+  // principal and same derivation as the release door beside it — non-lane only (409), the program
+  // from the exact MAIN binding, the repo from the caller's checkout, no body read (pinned in
+  // e2e/pins.ts). It only ever STOPS a start (a flag on a pending/queued row of its own program); it
+  // starts nothing, writes into no pane and reaches no foreign slot.
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/hold$/`,
   // S5, 2026-09-13 · THE CARD-SURFACE CONFIRMATION — a bound Program-MAIN (or the bound ⚙ steward)
   // turns the file surface its OWN rows' VALID cards already name into `filesOrigin:"confirmed"`,
   // in one call. REVIEWED, and what bounds it: non-lane only (409); the program comes from the exact
@@ -371,7 +377,10 @@ const PRE_AUTH_ROUTES = [
   // `dispatch` joined this alternation 2026-09-05 with the program-scoped dispatch door. REVIEWED,
   // not merely widened: the route is inside the block whose FIRST statement is the owner tokenGate,
   // exactly like its four neighbours here, so it is pre-auth in position and owner-only in effect.
-  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch))?$/`,
+  // `release` joined 2026-09-14 (Schnitt 3) with the release-policy door, for `dispatch`'s reason:
+  // it widens WHICH rows start unattended, so it is the owner's alone — written by this route only
+  // (pinned in e2e/pins.ts), tokenGate first, and a self token meets the same 401 here.
+  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch|release))?$/`,
   // The studio inventory itself, beside the Programs regex and for its reasons: a Studio is owner
   // truth about the workflow (stages, gates, brief blocks), several Programs may bind the same one,
   // and the handler sits before the steward interceptor only so a steward credential meets the same

@@ -1,3 +1,47 @@
+# HANDOFF — Orchestrator Slot 8 → Nachfolgerin (Haupt-Checkout, Owner-Token): Queue-Intelligenz E1–E5 gefilet und Welle 1 laeuft, Variantenpaar land-quality.ts (Opus vs codex) in Flug, Rollen-Synthese S1–S4 gefilet (S1/S4 mit Owner), Wissens-System Schritt 1 erledigt, Grok-Antworten: 2 von 3 da; 2026-09-14 09:2x, ctx GEMESSEN 33,7 % (Server-Praedikat)
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **Owner-Vorgabe 2026-09-14 (dreimal, dauerhaft, Memory `feedback-owner-out-of-eval-loop`):** „ich will mich selbst soweit wenn moeglich komplett rausnehmen" — Bewertung, Variantenwahl, Findings-Verarbeitung OHNE Owner-Stufe entwerfen; knappe Faelle per Default-Regel + Ledger, nie Rueckfrage. AUSNAHME auf seinen Wunsch: die **Rollen-Synthese** (S1/S4, Regelbuch-Fragmente, Klassenvokabular) will er SELBST mitbauen — Slot „Rollen-Studio" im Haupt-Checkout mit ihm, nicht per Tick.
+- **Der Brief ist `docs/messungen/2026-09-14-queue-intelligenz-schichten.md`** (drei Schichten kartiert, §5 Entscheidungen E1–E5, §6 Reihenfolge). Rolle: filen/schaerfen/freigeben/vergleichen. Program-MAIN Fleet-Betrieb = **Slot 5** (seit 06:03; landet/deployt).
+- **Commit-Regel:** vor jedem Direkt-Commit `merges` in fleet.json lesen; `running`/`interrupted` ohne verify = Land laeuft. Ich habe heute ZWEI docs-Commits unter dem laufenden Land von Slot 4 gesetzt (cfd9fc21, 023102ee/378deae8) — je eine ff-Retry-Runde bezahlt. Nicht wiederholen.
+- **Hintergrund-Waechter sterben mit mir und mit dem RAM** (zweimal vom System gekillt, 31–38 % frei). Rueckweg = `POST /api/self/autos` One-Shot (laeuft auf dem Server); aktiv: Auto `05576f42` auf Slot 8 (stirbt mit dem Slot — neu setzen).
+
+## 0.1 IN FLUG (gemessen 09:2x)
+
+| Zeile | Slot | Was | Danach |
+|---|---|---|---|
+| `fcc2f89c` E1a Karten-Vertrag (creates/after, rolle beratend, Rohantwort ins Ledger, Validator v5) | 4 | **Land laeuft seit 09:28** (ff-Retry wegen meiner Commits) | danach lesen alle ungueltigen Karten neu; dann `bc974919` (Karten-A/B) freigeben |
+| `0e6b7d3d` E2 land-quality.ts **VARIANTE A** (Opus 5 high) | 1 | arbeitet, Branch `fleet/260914071328-d3e2` | **NUR EINE der beiden landet** |
+| `7eb74615` E2 land-quality.ts **VARIANTE B** (codex gpt-5.6-sol high) | 3 | arbeitet, Branch `fleet/260914071334-201a` | Vergleich nach Doc §5 E4: DONE-Teile erfuellt (Skript laeuft, reproduziert Probe Opus 84/20, codex 16/7) > Gate gruen > kleinerer Diff; Gleichstand ⇒ kleinerer Diff. Gewinner-Branch an Slot 5 nennen, Verlierer `shelved` (Branch bleibt). Ergebnis als Mess-Notiz `docs/messungen/2026-09-XX-variantenpaar-1.md`. Beide per Hand-Knopf gestartet (Deckel ignoriert), damit B nicht As Land auf main sieht. |
+| `3bd9821e` E2/E3 fleet-reports.jsonl + Receipt{snippet, model nie null} | — | queued; Startplan hielt sie wegen Schein-Kollision (Doc-Pfad im Text) — Pfad aus allen 7 Briefs entfernt; startet, wenn ein Slot frei wird | |
+
+Pending (Welle 2/3): `bc974919` Karten-A/B (nach fcc2f89c) · `3c07a604` Quellpaket-Wirkung (jederzeit) · `6067c240` Worktrail Lauf 1 (nach land-quality; **Pflichtteil dazu: Zuordnung/Ausmisten** — 7 Auftraege + 20 Notizen + 3 Richtungen ohne Program, Owner „macht Sinn") · `1ed2f6a0` Variantengruppe clarify-first (nach Paar-Vergleich) · `21ade485` Brief geschaerft (nach 3c07a604) · Rollen: `8b2baf60` S2, `fa07734f` S3-Schatten (mechanisch, nach Welle 1) · `f4c2033d` S1, `b3767fc4` S4 (**nur in der Owner-Session**).
+
+## 0.2 HEUTE IN MEINER SCHICHT
+
+- Commits: `9e8db642` (Doc + E1–E5) · `82972c6e`, `cfd9fc21`, `023102ee`, `378deae8` (Grok-Ablage) · 12 Commits in FREMDEN Repos: CLAUDE.md mit `@AGENTS.md` (Wissens-System Schritt 1; Claude Code laedt AGENTS.md nicht — Sonde 2026-09-13), private-repo-t auf Branch `gate0`.
+- `.env`: `FLEET_CARD_MODEL='claude-sonnet-5'` (Owner-Wille; wirkt ab naechstem srv-Start; `bc974919` entscheidet mit Zahl, ob es bleibt).
+- Gefilet: 8 Zeilen QUEUE-INTELLIGENZ, 4 Zeilen ROLLEN-SYNTHESE, alle Program Fleet-Betrieb, alle mit ROLLE/GROESSE/FLAECHE/VERIFY/DONE.
+- Grok G2: **Antwort 2 (Game-Dev) vollstaendig** in `docs/messungen/2026-09-14-grok-antworten-spiele-astra.md`; **RAG-Antwort** (zu Notiz 922b37c7) in `2026-09-14-grok-antwort-rag-suche.md`; **Antwort 1 (Orchestrierung) FEHLT** — Owner-Paste kam zweimal als Duplikat von Antwort 2; Platzhalter + Terminal-Fragment stehen in der Datei. Owner fuegt ueber den Board-Editor ein (`/api/file/write`); danach committen und auswerten.
+- Naechste Spiele-Zeile laut Grok selbst: Empfehlung 1 (Stack-Duell 24 h: Canvas2D-Sim vs Pixi/Phaser 4.2.1, 10 k Ticks < 2 ms, Chromium-RSS < 2 GB) als isolierte Lane auf dem SECOND-HOST mit messbarem Abbruch; dann „Teich/Damm/Welle" 3–5 Tage. Noch NICHT gefilet — erst Antwort 1 lesen.
+
+## 0.3 BEFUNDE, DIE STEHEN (Kurzform, Zahlen im Doc)
+
+- 21/41 Karten ungueltig, 12 am Vertrag, max. 4 modellabhaengig · Brief 13 KB, Quellpaket 56 %, Modell/Effort steuern nichts · `Task.criterion` 0/200, Reports auf keinem Ledger, `review: none` 293/294 · Zeilen-Nacharbeit ≤3 d: 24 % Opus, 44 % codex (das erste mechanische Qualitaetssignal) · Notiz-Kanal schliesst 3/69.
+- SYSTEM.md seit 2026-08-20 unveraendert („Act Lead" dort, in AGENTS.md „nicht gebaut"); AGENTS.md lebt (5 Commits 12./13.09.).
+- Startplan liest JEDEN Pfad im Text als Flaeche — ein zitiertes Doc erzeugt Schein-Kollisionen. Beim Filen keine Pfade zitieren, die nicht Aenderungsziel sind (bis fcc2f89c `creates` kann).
+
+## 0.4 OFFEN BEIM OWNER (nur das, was wirklich seins ist)
+
+1. Antwort 1 (Orchestrierung) einfuegen. 2. Rollen-Session terminieren (S1/S4; die fuenf Fragen aus `2026-09-14-rollen-briefe-synthese.md` §4 wollte er selbst beantworten, Terminal-Paste-Bug verhinderte es). 3. Welche Mac-Sessions schliessen (6, 14, 15, 16 bei 85 %, 11, 2) — nicht selbst geoeffnet, kein Kill ohne ihn.
+
+## 0.5 UNGEPRUEFT
+
+- Ob Slot 5 meine `/send`-Nachricht (Paar: nur eine landet) verarbeitet hat — keine Antwort erwartet, aber nicht bestaetigt.
+- Wissens-System Schritt 2 (globale Datei statt `~/.codex/AGENTS.md`-Kopie mit totem Pfad, Home-Memory ins attic) — NICHT begonnen.
+- Alle Shas hier `git merge-base --is-ancestor` nicht erneut geprueft (Direkt-Commits, kein Rebase — sie bleiben).
+
 # HANDOFF — Orchestrator Slot 5 → Nachfolgerin (Opus 5 high, Haupt-Checkout, Owner-Token): Spiele-Spur neu (Spiel komplett neu, Second-host), G1 vorgezogen, Wissens-System/RAG recherchiert (nichts bauen), C4/C6 gefilet; 2026-09-13 ~23:1x, ctx GEMESSEN 29,7 %
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

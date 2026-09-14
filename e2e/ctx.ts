@@ -80,13 +80,22 @@ export interface StewardCtx {
 // trail isolated-20260913T155454Z-52907 (4 384 checks, 2 619 s, tree before 67c36fc8). It decides
 // the BALANCE only — a wrong weight makes a shard slow, never wrong. Order here is irrelevant to
 // execution: the runner keeps its own module order and merely skips units not in the shard.
+//
+// ONE MODULE IN TWO UNITS: self-token. Its only hand-on is ctx.restartSelfTok/restartSelfSlot — a
+// lane it opens and keeps alive — and programs.ts is the one reader outside `core`'s chain. So
+// `programs` carries its own self-token run instead of dragging `core` along: a shard holding both
+// units runs it once (the runner tags that step with both), two shards run it twice, 23 s and the
+// same check names. `core` and `programs` are weighted from the serial shard 1b/1c measurements
+// (docs/messungen/2026-09-14-suite-sharding-probe.md §6: programs 613 s, self-token 23 s, core
+// 1 239 s with programs), not from the reference trail — the trail never split them.
 export interface ShardUnit { unit: string; seconds: number; modules: readonly string[] }
 export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "pure", seconds: 0, modules: ["context-packs", "context-plan", "prompts", "briefstats"] },
   { unit: "auth", seconds: 1, modules: ["auth", "dirs-pins"] },
-  { unit: "core", seconds: 1461, modules: ["slots", "history", "summary", "transport", "autos", "share",
-    "review", "self-token", "programs", "trailstats", "outcomes", "tasks", "intake", "restart", "steward-core",
+  { unit: "core", seconds: 626, modules: ["slots", "history", "summary", "transport", "autos", "share",
+    "review", "self-token", "trailstats", "outcomes", "tasks", "intake", "restart", "steward-core",
     "steward-outcomes", "security"] },
+  { unit: "programs", seconds: 636, modules: ["self-token", "programs"] },
   { unit: "lanes", seconds: 375, modules: ["lanes-basic", "lanes-lifecycle", "merge"] },
   { unit: "watch", seconds: 224, modules: ["watch"] },
   { unit: "attention", seconds: 19, modules: ["attention"] },

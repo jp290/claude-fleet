@@ -3,7 +3,7 @@
 // accept it for — including both opposite scope rules (lane-only questions vs main-only exit).
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, REPO2, REPO3, ROOT, TOKEN, check, get, paneEnv, plogRead, post } from "./harness";
+import { BASE, REPO, REPO2, REPO3, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, stopSrv } from "./harness";
 import type { Ctx } from "./ctx";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor } from "../verify-proportion";
 import {
@@ -650,9 +650,11 @@ export async function run(ctx: Ctx): Promise<void> {
     rmSync(rbRepo, { recursive: true, force: true });
   }
 
-  // --- THE SUCCESS PATH: the handoff is committed after THIS slot opened, one successor receives
-  // the server-built founding ritual, and the caller disappears even if it never remembers to call
-  // /retire. A private repo keeps this commit from moving the shared REPO under the drift fixture. ---
+  // --- THE SUCCESS PATH, without a HANDOFF.md (e3e5084a): an unbound session hands its line on as
+  // a role-lineage record the successor reads at GET /api/self — obligations by id, an optional
+  // `intent` OR `pointer`. One successor receives the server-built founding ritual, and the caller
+  // disappears even if it never remembers to call /retire. A private repo keeps the pointer commit
+  // below from moving the shared REPO under the drift fixture. ---
   {
     const sr = `${ROOT}/succession-repo`;
     rmSync(sr, { recursive: true, force: true });
@@ -660,44 +662,82 @@ export async function run(ctx: Ctx): Promise<void> {
     spawnSync("git", ["-C", sr, "init", "-q", "-b", "main"]);
     spawnSync("git", ["-C", sr, "config", "user.email", "t@t"]);
     spawnSync("git", ["-C", sr, "config", "user.name", "t"]);
-    writeFileSync(`${sr}/HANDOFF.md`, "## old handoff\nnot for this session\n");
-    spawnSync("git", ["-C", sr, "add", "HANDOFF.md"]);
-    spawnSync("git", ["-C", sr, "commit", "-qm", "old handoff"]);
+    writeFileSync(`${sr}/README.md`, "a checkout with no HANDOFF.md at all\n");
+    spawnSync("git", ["-C", sr, "add", "README.md"]);
+    spawnSync("git", ["-C", sr, "commit", "-qm", "init"]);
 
-    const free = ((await (await get("/api/sessions")).json()) as
-      { slots: { id: number; cwd: string | null }[] }).slots.find((x) => x.cwd === null)?.id ?? 0;
+    type LineageRecord = { v?: number; lineageId?: string; role?: string; from?: { slot: number; openedAt: number };
+      to?: { slot: number; openedAt: number }; obligations?: Record<string, unknown>[]; intent?: string | null;
+      pointer?: string | null; supersededBy?: { slot: number; openedAt: number } | null };
+    type LineageView = { lineageId?: string; state?: string; record?: LineageRecord | null;
+      handoverLost?: { error?: string } | null } | null;
+    const selfLineage = async (tok: string): Promise<LineageView | undefined> =>
+      ((await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": tok } })).json()) as { lineage?: LineageView }).lineage;
+    type SuccRow = { id: number; cwd: string | null; label: string | null; model: string | null; effort?: string; harness?: string; openedAt?: number };
+    const succRows = async (): Promise<SuccRow[]> =>
+      ((await (await get("/api/sessions")).json()) as { slots: SuccRow[] }).slots;
+    const persistedLine = (): LineageRecord[] =>
+      (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { lineageHandovers?: LineageRecord[] }).lineageHandovers ?? [];
+
+    const free = (await succRows()).find((x) => x.cwd === null)?.id ?? 0;
     const opened = free ? await post(`/api/slots/${free}/open`,
       { cwd: sr, label: "main-before", model: "claude-sonnet-5" }) : null;
-    check("self-succeed setup: a private plain main session is open", !!opened?.ok, `${free}:${opened?.status}`);
+    check("self-succeed setup: a private plain main session is open in a checkout WITHOUT HANDOFF.md",
+      !!opened?.ok && !spawnSync("git", ["-C", sr, "ls-files", "HANDOFF.md"], { encoding: "utf8" }).stdout.trim()
+        && !readFileSync(`${sr}/README.md`, "utf8").includes("## "), `${free}:${opened?.status}`);
     const oldTok = free ? await paneEnv(`s${free}`, "FLEET_SELF_TOKEN") ?? "" : "";
     check("self-succeed setup: the caller's pane carries its own token", /^[0-9a-f]{32}$/.test(oldTok), oldTok);
+    const oldOpenedAt = (await succRows()).find((x) => x.id === free)?.openedAt ?? 0;
+    // ONE obligation that dies with the predecessor, so the record has something to name by id — and a
+    // body the record must NOT copy
+    const AUTO_BODY = "lineage-body-marker: this check-in text must never appear inside a handover record";
+    const armed = await fetch(`${BASE}/api/self/autos`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": oldTok },
+      body: JSON.stringify({ text: AUTO_BODY, inSec: 3600 }) });
+    const autoId = ((await armed.json()) as { auto?: { id?: string } }).auto?.id ?? "";
+    check("self-succeed setup: the predecessor holds one scheduled check-in", armed.ok && autoId !== "", autoId);
 
-    const staleHandoff = await successionPost("succeed", oldTok);
-    const staleHandoffText = await staleHandoff.text();
-    check("POST /api/self/succeed refuses a handoff committed before this session opened",
-      staleHandoff.status === 409 && staleHandoffText.includes("successor would have nothing to read"),
-      `${staleHandoff.status} ${staleHandoffText}`);
+    // --- the channel refusals, each of which opens NOTHING ---
+    const occupied = async (): Promise<number> => (await succRows()).filter((x) => x.cwd).length;
+    const occupiedBefore = await occupied();
+    const overCap = await successionPost("succeed", oldTok, { intent: "I".repeat(2001) });
+    const overCapText = await overCap.text();
+    const twoChannels = await successionPost("succeed", oldTok, { intent: "resume the queue",
+      pointer: "docs/handoff-2026-09-14.md#next" });
+    const twoChannelsText = await twoChannels.text();
+    const carryAndIntent = await successionPost("succeed", oldTok, { intent: "resume", carry: "also this" });
+    const carryAndIntentText = await carryAndIntent.text();
+    const undated = await successionPost("succeed", oldTok, { pointer: "docs/handoff.md#next" });
+    const undatedText = await undated.text();
+    writeFileSync(`${sr}/handoff-2026-09-14.md`, "## next\nnot committed yet\n");
+    const uncommitted = await successionPost("succeed", oldTok, { pointer: "handoff-2026-09-14.md#next" });
+    const uncommittedText = await uncommitted.text();
+    rmSync(`${sr}/handoff-2026-09-14.md`, { force: true });
+    check("POST /api/self/succeed: intent over its cap is 400 NAMING the cap, and no successor opens",
+      overCap.status === 400 && overCapText.includes("at most 2000 characters") && (await occupied()) === occupiedBefore,
+      `${overCap.status} ${overCapText}`);
+    check("POST /api/self/succeed: intent AND pointer is 409 with the one-channel sentence, and so is carry beside intent",
+      twoChannels.status === 409 && twoChannelsText.includes("exactly one handover channel")
+        && carryAndIntent.status === 409 && carryAndIntentText.includes("exactly one handover channel")
+        && (await occupied()) === occupiedBefore,
+      `${twoChannels.status} ${twoChannelsText} | ${carryAndIntent.status} ${carryAndIntentText}`);
+    check("POST /api/self/succeed: an undated pointer is 400 and a pointer at an uncommitted file is 409",
+      undated.status === 400 && undatedText.includes("DATED section")
+        && uncommitted.status === 409 && uncommittedText.includes("committed and clean")
+        && (await occupied()) === occupiedBefore,
+      `${undated.status} ${undatedText} | ${uncommitted.status} ${uncommittedText}`);
 
-    // git timestamps are whole seconds while openedAt is milliseconds. Cross a second boundary so
-    // this fixture proves the intended ordering rather than depending on timestamp truncation.
-    await Bun.sleep(1100);
-    writeFileSync(`${sr}/HANDOFF.md`, "## current handoff\nthis is the successor's ground truth\n\n## older material\nignore first\n");
-    spawnSync("git", ["-C", sr, "add", "HANDOFF.md"]);
-    const hc = spawnSync("git", ["-C", sr, "commit", "-qm", "fresh session handoff"]);
-    check("self-succeed setup: HANDOFF.md is freshly committed and clean",
-      hc.status === 0 && spawnSync("git", ["-C", sr, "status", "--porcelain", "--", "HANDOFF.md"])
-        .stdout.toString().trim() === "", hc.stderr.toString());
-
+    // --- A → B: no HANDOFF commit, a capped label, the intent ---
+    const INTENT = "Absicht: erst die offene Welle landen, dann den Audit lesen.\nKorrektur: Slot 3 ist NICHT frei.";
     const longLabel = `next-${"x".repeat(60)}`;
-    const carry = "C".repeat(600);
-    const succeeded = await successionPost("succeed", oldTok, { label: longLabel, carry });
-    const sj = (await succeeded.json()) as { ok?: boolean; slot?: number; label?: string | null };
-    check("POST /api/self/succeed opens exactly one labelled successor and caps the label at MAX_LABEL",
+    const succeeded = await successionPost("succeed", oldTok, { label: longLabel, intent: INTENT });
+    const sj = (await succeeded.json()) as { ok?: boolean; slot?: number; label?: string | null;
+      lineage?: { lineageId?: string; obligations?: number } };
+    check("POST /api/self/succeed: an UNBOUND session succeeds with no HANDOFF.md commit, one labelled successor, label capped at MAX_LABEL",
       succeeded.ok && sj.ok === true && !!sj.slot && sj.slot !== free
-        && sj.label === longLabel.slice(0, 40), `${succeeded.status} ${JSON.stringify(sj)}`);
-    const rows = ((await (await get("/api/sessions")).json()) as
-      { slots: { id: number; cwd: string | null; label: string | null; model: string | null; harness?: string }[] }).slots;
-    const successor = rows.find((x) => x.id === sj.slot);
+        && sj.label === longLabel.slice(0, 40) && /^[0-9a-f]{24}$/.test(sj.lineage?.lineageId ?? ""),
+      `${succeeded.status} ${JSON.stringify(sj)}`);
+    const successor = (await succRows()).find((x) => x.id === sj.slot);
     check("the successor inherits cwd, model and default harness from the caller",
       successor?.cwd === sr && successor.model === "claude-sonnet-5" && successor.harness === undefined,
       JSON.stringify(successor));
@@ -707,51 +747,58 @@ export async function run(ctx: Ctx): Promise<void> {
       founding = (await plogRead()).find((e) => e.slot === sj.slot && e.text.startsWith("[fleet succession]"))?.text ?? "";
       if (!founding) await Bun.sleep(100);
     }
-    const ritual = ["./state.sh", "./register.sh", "obersten Abschnitt von HANDOFF.md", "Live-Queue"]
-      .map((x) => founding.indexOf(x));
-    check("the server-built founding brief orders state · register · HANDOFF top · Live-Queue and says the predecessor is retiring",
+    const ritual = ["./state.sh", "./register.sh", "lineage.record", "Live-Queue"].map((x) => founding.indexOf(x));
+    check("the founding brief names the LINE RECORD instead of HANDOFF.md: state · register · lineage.record · Live-Queue",
       ritual.every((x) => x >= 0) && ritual.every((x, i) => i === 0 || ritual[i - 1]! < x)
-        && founding.includes("Die Vorgängerin zieht sich gerade zurück"), founding.slice(0, 500));
-    check("the optional inter-session carry is capped at 500 characters",
-      founding.includes("C".repeat(500)) && !founding.includes("C".repeat(501)), `brief=${founding.length} chars`);
+        && founding.includes("Die Vorgängerin zieht sich gerade zurück")
+        && founding.includes(`Linien-Record ${sj.lineage?.lineageId}`) && founding.includes("1 Pflichten per ID")
+        && !founding.includes("alles Übergebene steht in HANDOFF.md") && !founding.includes("Absicht: erst"),
+      founding.slice(0, 600));
+
+    const successorTok = sj.slot ? await paneEnv(`s${sj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const lineB = await selfLineage(successorTok);
+    const recB = lineB?.record;
+    check("the successor reads its line record at GET /api/self: from/to as the two occupations, lineageId, intent verbatim",
+      lineB?.state === "present" && lineB.lineageId === sj.lineage?.lineageId && recB?.lineageId === lineB.lineageId
+        && recB?.role === "generic" && recB.from?.slot === free && recB.from.openedAt === oldOpenedAt
+        && recB.to?.slot === sj.slot && recB?.to?.openedAt === successor?.openedAt
+        && recB.intent === INTENT && recB.pointer === null && recB.supersededBy === null,
+      JSON.stringify(lineB));
+    check("the record's obligations are ids only — the auto by id, owedBy the predecessor occupation, its re-arm door, and NO body",
+      recB?.obligations?.length === 1
+        && JSON.stringify(Object.keys(recB.obligations[0] ?? {}).sort()) === JSON.stringify(["id", "kind", "owedBy", "reArm"])
+        && recB.obligations[0]?.kind === "auto" && recB.obligations[0]?.id === autoId
+        && recB.obligations[0]?.owedBy === `slot ${free}@${oldOpenedAt}` && recB.obligations[0]?.reArm === "POST /api/self/autos"
+        && !JSON.stringify(lineB).includes("lineage-body-marker"),
+      JSON.stringify(recB?.obligations));
 
     let oldGone = false;
     for (let i = 0; i < 50 && !oldGone; i++) {
-      const ss = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots;
-      oldGone = ss.find((x) => x.id === free)?.cwd === null;
+      oldGone = (await succRows()).find((x) => x.id === free)?.cwd === null;
       if (!oldGone) await Bun.sleep(100);
     }
     check("the grace deadline retires the predecessor and clears its label even without /retire",
-      oldGone, JSON.stringify(((await (await get("/api/sessions")).json()) as
-        { slots: { id: number; cwd: string | null; label: string | null }[] }).slots.find((x) => x.id === free)));
-
-    const successorTok = sj.slot ? await paneEnv(`s${sj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+      oldGone, JSON.stringify((await succRows()).find((x) => x.id === free)));
 
     // --- the OVERRIDE: a MAIN that moved to another model in its pane (/model) hands the successor
     // the record it actually wants, instead of the spawn-time one it inherited (2026-09-02: four
     // slots on the record's claude-opus-5[1m], Fable in the pane, every successor born on the
     // record). Absent = inherit, proven above. Present = validated exactly as open would validate
     // it, and a rejected pair opens NOTHING — the predecessor stays, the slot count does not move.
-    type SuccRow = { id: number; cwd: string | null; model: string | null; effort?: string };
-    const succRows = async (): Promise<SuccRow[]> =>
-      ((await (await get("/api/sessions")).json()) as { slots: SuccRow[] }).slots;
-    await Bun.sleep(1100); // same whole-second git-vs-ms boundary as the first handoff above
-    writeFileSync(`${sr}/HANDOFF.md`, "## second handoff\nfor the override successor\n");
-    spawnSync("git", ["-C", sr, "add", "HANDOFF.md"]);
-    check("override setup: a second HANDOFF.md commit, newer than the successor",
-      spawnSync("git", ["-C", sr, "commit", "-qm", "second handoff"]).status === 0);
-    const occupiedBefore = (await succRows()).filter((x) => x.cwd).length;
+    // The carry cap rides here: `carry` alone is still the tiny unpersisted bridge it always was. ---
+    const occupiedBeforeOverride = await occupied();
     const badModel = await successionPost("succeed", successorTok, { model: "no spaces allowed" });
     const badModelText = await badModel.text();
     const badEffort = await successionPost("succeed", successorTok, { effort: "turbo" });
     const badEffortText = await badEffort.text();
     check("POST /api/self/succeed with an invalid model is 400 (the open route's own wording) and opens no successor",
       badModel.status === 400 && badModelText.includes("bad model")
-        && (await succRows()).filter((x) => x.cwd).length === occupiedBefore, `${badModel.status} ${badModelText}`);
+        && (await occupied()) === occupiedBeforeOverride, `${badModel.status} ${badModelText}`);
     check("POST /api/self/succeed with an unknown effort is 400 naming the adapter's levels, and opens no successor",
       badEffort.status === 400 && badEffortText.includes("bad effort (one of: low, medium, high, xhigh, max)")
-        && (await succRows()).filter((x) => x.cwd).length === occupiedBefore, `${badEffort.status} ${badEffortText}`);
-    const overridden = await successionPost("succeed", successorTok, { model: "claude-opus-5[1m]", effort: "max" });
+        && (await occupied()) === occupiedBeforeOverride, `${badEffort.status} ${badEffortText}`);
+    const carry = "C".repeat(600);
+    const overridden = await successionPost("succeed", successorTok, { model: "claude-opus-5[1m]", effort: "max", carry });
     const oj = (await overridden.json()) as { ok?: boolean; slot?: number };
     const overrideRow = (await succRows()).find((x) => x.id === oj.slot);
     check("POST /api/self/succeed {model, effort} opens the successor ON THE OVERRIDE — the record it will heal and restart from",
@@ -761,17 +808,65 @@ export async function run(ctx: Ctx): Promise<void> {
     check("...while the predecessor's own record is untouched by the override (it retires on the grace deadline as before)",
       (await succRows()).find((x) => x.id === sj.slot)?.model === "claude-sonnet-5",
       JSON.stringify((await succRows()).find((x) => x.id === sj.slot)));
+    let overrideBrief = "";
+    for (let i = 0; i < 40 && !overrideBrief; i++) {
+      overrideBrief = (await plogRead()).find((e) => e.slot === oj.slot && e.text.startsWith("[fleet succession]"))?.text ?? "";
+      if (!overrideBrief) await Bun.sleep(100);
+    }
+    check("the optional inter-session carry is capped at 500 characters",
+      overrideBrief.includes("C".repeat(500)) && !overrideBrief.includes("C".repeat(501)), `brief=${overrideBrief.length} chars`);
+
+    // --- B → C on the SAME line: B's record now says who superseded it, so two slots carrying the same
+    // label are told apart by record ---
+    const overrideTok = oj.slot ? await paneEnv(`s${oj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const lineC = await selfLineage(overrideTok);
+    const onDisk = persistedLine().filter((r) => r.lineageId === sj.lineage?.lineageId);
+    const recordToB = onDisk.find((r) => r.to?.slot === sj.slot);
+    check("the line survives a second succession: C inherits the lineageId, and B's record carries supersededBy = C's occupation",
+      lineC?.state === "present" && lineC.lineageId === sj.lineage?.lineageId && lineC.record?.from?.slot === sj.slot
+        && lineC?.record?.intent === null && lineC?.record?.pointer === null && onDisk.length === 2
+        && recordToB?.supersededBy?.slot === oj.slot && recordToB?.supersededBy?.openedAt === overrideRow?.openedAt,
+      JSON.stringify({ lineC, onDisk }));
 
     const retired = await successionPost("retire", successorTok);
-    const retiredRow = ((await (await get("/api/sessions")).json()) as
-      { slots: { id: number; cwd: string | null; label: string | null }[] }).slots.find((x) => x.id === sj.slot);
+    const retiredRow = (await succRows()).find((x) => x.id === sj.slot);
     check("POST /api/self/retire immediately removes the reporting successor and clears its label",
       retired.ok && retiredRow?.cwd === null && retiredRow.label === null,
       `${retired.status} ${JSON.stringify(retiredRow)}`);
-    const overrideTok = oj.slot ? await paneEnv(`s${oj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
-    const retired2 = await successionPost("retire", overrideTok);
-    check("override successor: retired (cleanup)", retired2.ok
-      && (await succRows()).find((x) => x.id === oj.slot)?.cwd === null, String(retired2.status));
+
+    // --- C → D with a POINTER at a committed, dated section ---
+    writeFileSync(`${sr}/handoff-2026-09-14.md`, "## next\nthe committed, dated section\n");
+    spawnSync("git", ["-C", sr, "add", "handoff-2026-09-14.md"]);
+    spawnSync("git", ["-C", sr, "commit", "-qm", "dated handoff section"]);
+    const pointed = await successionPost("succeed", overrideTok, { pointer: "handoff-2026-09-14.md#next" });
+    const pj = (await pointed.json()) as { ok?: boolean; slot?: number };
+    const pointerTok = pj.slot ? await paneEnv(`s${pj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const lineD = await selfLineage(pointerTok);
+    check("a pointer at a committed, dated section is carried as the record's one channel (intent null)",
+      pointed.ok && lineD?.state === "present" && lineD.record?.pointer === "handoff-2026-09-14.md#next"
+        && lineD.record.intent === null && lineD.lineageId === sj.lineage?.lineageId,
+      `${pointed.status} ${JSON.stringify(lineD)}`);
+    await successionPost("retire", overrideTok);
+
+    // --- DURABLE, and a record that cannot be read back is LOST, never "nothing owed" ---
+    await restartSrv();
+    const lineDAfterBoot = await selfLineage(pointerTok);
+    check("the line record survives a server restart byte-for-byte on the successor's own reader",
+      lineDAfterBoot?.state === "present" && JSON.stringify(lineDAfterBoot.record) === JSON.stringify(lineD?.record),
+      JSON.stringify(lineDAfterBoot));
+    await stopSrv();
+    const plant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { lineageHandovers?: Record<string, unknown>[] };
+    // a body smuggled into an obligation: the closed loader refuses the whole record
+    plant.lineageHandovers = (plant.lineageHandovers ?? []).map((r) => (r.to as { slot?: number } | undefined)?.slot === pj.slot
+      ? { ...r, obligations: [{ kind: "auto", id: "deadbeef", owedBy: "slot 1@1", reArm: null, text: "a copied body" }] } : r);
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(plant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const lineDLost = await selfLineage(pointerTok);
+    check("a record carrying a body is refused by the loader and read as handoverLost — never as a record with nothing owed",
+      lineDLost?.state === "lost" && lineDLost.record === null
+        && (lineDLost.handoverLost?.error ?? "").includes("ids only, never a body"),
+      JSON.stringify(lineDLost));
+    await successionPost("retire", pointerTok);
     rmSync(sr, { recursive: true, force: true });
   }
 

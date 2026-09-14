@@ -265,19 +265,22 @@ curl -X POST http://<fleet-host>:<port>/api/self/supervisor-watch/<watchId>/comp
 
 ## succeed / retire — `POST /api/self/succeed`, `POST /api/self/retire`
 
-**`POST /api/self/succeed` — der Ausgang einer MAIN-Session.** Erst `HANDOFF.md` schreiben UND committen;
-der Commit muss jünger als diese Session sein und die Datei sauber. Dann:
+**`POST /api/self/succeed` — der Ausgang einer MAIN-Session.** Welche Übergabe verlangt wird, hängt an der
+Schiene (`server.ts#handleSelfSucceed`): eine ungebundene Session (Orchestrator, Controller, Legacy-MAIN)
+und der Supervisor schreiben seit e3e5084a einen **Linien-Record** (unten) und brauchen KEINEN
+`HANDOFF.md`-Commit mehr; eine Standard-Program-MAIN übergibt ihren Program-Record (§Program-MAIN); nur
+der Game-Maker behält den frischen, sauberen `HANDOFF.md`-Commit mit seinem Checkpoint. Dann:
 
 ```
 curl -X POST http://<fleet-host>:<port>/api/self/succeed \
   -H "content-type: application/json" \
   -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
-  -d '{"carry":"das Erste, was ich als Nächstes täte"}'
+  -d '{"intent":"Absicht, Korrekturen, Reihenfolge — höchstens 2000 Zeichen"}'
 ```
 
 Fleet öffnet einen freien Slot im selben cwd mit Modell/Harness der Vorgängerin, schickt den servergebauten
 Gründungsbrief und räumt den alten Slot nach der Grace-Frist. `carry` ist optional und auf 500 Zeichen
-begrenzt; der echte Transfer ist `HANDOFF.md`. **`model` und `effort` sind optional (seit 2026-09-02):**
+begrenzt; es ist ein unpersistierter Prompt-Satz, kein Transfer. **`model` und `effort` sind optional (seit 2026-09-02):**
 abwesend = wörtliche Vererbung aus dem Datensatz der Vorgängerin; vorhanden = der Nachfolger wird darauf
 geöffnet, validiert exakt wie `open`/`dispatch` gegen die geerbte Harness (`MODEL_RE` bzw.
 `HARNESS_MODEL_RE`, Effort aus `effortLevels` des Adapters), ungültig = 400 und KEIN Slot geöffnet;
@@ -288,8 +291,40 @@ Datensatzes — den korrigiert für einen LEBENDEN Slot die Owner-Route unten (�
 Slot sofort. Während `succeed` läuft, antwortet `retire` für exakt diese Session 409. `succeed` hält ab
 Request-Eintritt `{slot, openedAt, cwd, selfToken}` fest und prüft diese Identität nach dem Git-Handoff-
 Await erneut; Owner-Kill/Recycling bleibt erlaubt, kann den alten Request aber nicht auf die generische
-Nachfolge umlenken. Kein freier Slot oder kein frischer sauberer Handoff = 409, und die Vorgängerin bleibt
-stehen.
+Nachfolge umlenken. Kein freier Slot (oder, nur beim Game-Maker, kein frischer sauberer Handoff) = 409, und
+die Vorgängerin bleibt stehen.
+
+### Der Linien-Record — `GET /api/self` → `lineage` (seit e3e5084a)
+
+Eine **Linie** ist eine stabile ID je Rolle: `Slot.lineageId`, geprägt von der ersten generischen oder
+Supervisor-Nachfolge, geerbt von jeder Nachfolgerin (für eine Program-MAIN ist die Linie die Program-ID,
+und sie bekommt keinen Linien-Record). Jede Nachfolge schreibt EINEN Record
+(`server/types.ts#LineageHandover`), persistiert in `fleet.json` unter `lineageHandovers`:
+
+- `from` / `to` als `{slot, openedAt}` — die zwei Belegungen, nicht die Slotnummern;
+- `obligations[]` — **nur IDs**: `{kind: watch|auto|inbox|report, id, owedBy: "slot N@openedAt", reArm}`.
+  Gemessen wird, was mit der Vorgängerin stirbt: armierte Watches und Autos, unquittierte FleetEvents
+  (`inbox`), unentschiedene an sie adressierte Reports. Nichts wird neu armiert; `reArm` nennt die Tür
+  (`null`, wo keine Nachfolger-Tür existiert). Der Loader ist geschlossen: ein Obligation-Objekt mit einem
+  fünften Feld (etwa einem kopierten Text) macht den ganzen Record unlesbar — ein Body passt strukturell
+  nicht hinein;
+- `intent` (höchstens 2000 Zeichen) ODER `pointer` (`pfad.md#anker`, ein getrackter, sauberer, datierter
+  Abschnitt, `YYYY-MM-DD` in Pfad oder Anker) — **genau ein Übergabekanal**. Beides = 409, einer davon
+  neben `carry` = 409; `intent` über dem Deckel = 400 mit dem Deckel im Text; undatierter/fehlgeformter
+  Pointer = 400; Pointer auf uncommittete Datei = 409. Lane- und Program-MAIN-Schiene verweigern
+  `intent`/`pointer` mit 409 (ihr Kanal ist der `handoff`-Report bzw. der Program-Record);
+- `supersededBy` — `null`, bis die Linie weiterzieht; dann trägt der Record, der die Rolle an die
+  Vorgängerin gab, die Belegung der Nachfolgerin. Zwei gleich benannte Slots in der Grace-Frist sind so per
+  Record unterscheidbar.
+
+Die Nachfolgerin liest `GET /api/self` → `lineage: {lineageId, state, record, handoverLost, losses, records}`
+(`null` = diese Session hält keine Linie). `state: "lost"` heißt: kein an diese Belegung adressierter Record
+ist lesbar — ein vom Loader abgewiesener Record hinterlässt eine Narbe (`lineageHandoverLosses`), und genau
+die steht in `handoverLost`; es heißt NIE „nichts geschuldet". Der Record wird geschrieben, nachdem der
+Gründungsbrief zugestellt ist, im selben State-Schnitt wie die Retirement-Frist; vorher wird der Entwurf
+gegen den eigenen Loader geprüft, und ein unlesbarer Entwurf verweigert die Nachfolge, bevor ein Slot
+öffnet. Behalten werden je Linie die fünf jüngsten Records (gekürzt wird nur ein bereits abgelöster).
+`HANDOFF.md` ist für diese Schienen Historie, kein Gate.
 
 **Eine LANE succeedet auch — seit 2026-09-12, und auf einer eigenen Schiene** (`server.ts#succeedLane`).
 Vorher war das eine 409 („a lane lands — it does not migrate"); gemessen wurde, warum diese Antwort falsch
@@ -325,7 +360,8 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   Übergabeband gilt nur für claude. Die MAIN-Nachricht trägt die Nachfolge-Schiene
   (`server.ts#migrateRailOf`, dieselbe Bindung wie `handleSelfSucceed`): eine gebundene Standard-
   Program-MAIN wird nicht mehr zu einem HANDOFF-Commit aufgefordert, ein Game-Maker zum Checkpoint
-  ohne `carry`, eine ungebundene Session weiter zu HANDOFF.md. Die Lane-Nachricht ist unverändert.
+  ohne `carry`, eine ungebundene Session (und der Supervisor) seit e3e5084a zum Linien-Record mit
+  optionalem `intent` ODER `pointer`. Die Lane-Nachricht ist unverändert.
 
 
 ## Program-MAIN-Ausführungsschiene (der Gründungsbrief benennt sie)

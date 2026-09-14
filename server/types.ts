@@ -20,7 +20,9 @@ import type { TaskCardBody } from "../card-extract";
 
 const MAX_SLOTS = 16; // fixed places — the sidebar always shows all of them
 
-type DispatchSpawn = { harness: string | null; model: string | null; effort: string | null };
+// `browser`: the lane needs the Playwright MCP (Slot.browser). Absent = a text lane, which is the
+// default; only `true` is ever stored, so every row that predates the field keeps its exact shape.
+type DispatchSpawn = { harness: string | null; model: string | null; effort: string | null; browser?: true };
 
 interface SlotStreamOccupant { slot: number; openedAt: number; selfToken: string }
 
@@ -1483,6 +1485,11 @@ interface Slot {
   // silently falling back to the default one.
   effort: string | null; // per-slot reasoning level for harnesses that have one (Pi's --thinking);
   // null = pass no flag. Validated against the HARNESS's own closed set, never a charset.
+  browser: boolean; // THIS LANE's MCP profile: true = it starts with the ambient Playwright MCP
+  // (the state before 2026-09-14), false = a text lane that starts without it. Read ONLY for a slot
+  // with a worktree — a MAIN or plain session keeps its ambient MCPs whatever this says (ensureSlot).
+  // Measured cost it removes: docs/messungen/2026-09-14-ram-optimierung-astra.md §F4. Same lifetime
+  // as `effort`: chosen at spawn, persisted so a heal/restart/resume keeps the profile, cleared on open/kill.
   taskId: string | null; // the queue row that spawned this lane. Carried because the outcome
   // recorder runs at TEARDOWN — by then the slot is the only object that still names the run.
   // null for a hand-opened lane and cleared with the occupant, exactly like releasedBy below.

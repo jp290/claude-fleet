@@ -234,13 +234,14 @@ const BASE_CMD = process.env.FLEET_CMD ?? "claude";
 // adapter's spawnCmd (HARNESSES calls this function rather than restating it).
 // Why the session id is pinned: docs/sanierung-2026-09/server-narrativ-archiv.md#slotcmd
 function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null,
-  effort: string | null = null): string {
-  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort)}; exec ${SHELL}`;
+  effort: string | null = null, browserMcp = true): string {
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
+// `browserMcp` false = a text lane (Slot.browser): claude starts with NO ambient MCP server.
 function agentCmd(sessionId: string | null, resume: boolean, model: string | null,
-  effort: string | null): string {
+  effort: string | null, browserMcp = true): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   let cmd = sessionId && claude
     ? `${BASE_CMD} ${resume ? "--resume" : "--session-id"} ${sessionId}`
@@ -255,6 +256,13 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     // admits only effortLevels). Both halves pinned in e2e/pins.ts. Narrativ: server-narrativ-archiv.md#agentcmd
     if (effort) cmd += ` --effort '${effort}'`;
     cmd += " --prompt-suggestions false";
+    // A TEXT LANE. `--strict-mcp-config` with no --mcp-config loads zero MCP servers — the same flag
+    // TEXT_ONLY_TOOLS gives the worker tier. Measured 2026-09-14 on claude 2.1.270 (scratch tmux
+    // socket, idle pane after 45 s): ambient = 2 Playwright children, with the flag = 0. Claude has no
+    // per-server switch on the command line, so this drops EVERY ambient MCP (the figma/github
+    // plugins and the claude.ai connectors too); a lane that needs one is a browser lane. Nothing is
+    // written to ~/.claude/settings.json — the profile lives on this line only (pinned).
+    if (!browserMcp) cmd += " --strict-mcp-config";
   }
   // A declared foreign harness: same quoting rule (HARNESS_MODEL_RE admits `*`, so the quotes carry
   // more weight here). No DEFAULT_MODEL fallback on purpose — that constant is a claude model id.
@@ -362,8 +370,11 @@ interface Harness {
   // so the trust entry and the shell can never disagree about which directory this is. Adapters
   // without that need ignore it, the same way every adapter but the container one ignores
   // `container`.
+  //
+  // `browserMcp` is the lane's MCP profile, already resolved by ensureSlot: false only for a lane that
+  // did not ask for a browser (Slot.browser). An adapter whose `browserProfile` is not "apply" ignores it.
   spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null;
-    container: string; containerContext: string; cwd: string }): string;
+    container: string; containerContext: string; cwd: string; browserMcp: boolean }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -506,6 +517,15 @@ interface Harness {
   // is not the UI but that `supports` stops being a property of the harness and becomes a function
   // of (harness × containerised), because a containerised claude loses transcript, worker and ctx.
   role: "agent" | "place";
+  // THE BROWSER PROFILE (Slot.browser), disposed per adapter because silence is not a decision:
+  //   "apply"          — the spawn line honours `browserMcp` (claude, codex), so a request may name
+  //                      `browser: true` and a lane without it starts with no Playwright MCP;
+  //   "not-applicable" — the agent has no MCP layer that could start a browser (the pi family);
+  //   "unsupported"    — there could be one, but this adapter cannot switch it (the container: the
+  //                      MCP config lives in the box, not on the host line).
+  // Only "apply" accepts `browser: true` at a door; the other two answer 400 rather than carrying a
+  // choice the pane would never see.
+  browserProfile: "apply" | "not-applicable" | "unsupported";
 }
 
 // Adapter #1 — the default. `spawnCmd` CALLS slotCmd rather than reimplementing it, so the
@@ -515,7 +535,7 @@ interface Harness {
 // and ensureSlot must not record one it never passed.
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
-  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort),
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp),
   // The worker line, verbatim what summaryViaSession built for itself before this member existed —
   // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
   // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier
@@ -568,6 +588,7 @@ const CLAUDE_HARNESS: Harness = {
   supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false },
   note: null,
   role: "agent",
+  browserProfile: "apply", // --strict-mcp-config on a text lane (agentCmd)
 };
 
 // --- Full local access is the normal state for a local agent harness (owner decision 2026-08-12):
@@ -710,6 +731,7 @@ const PI_HARNESS: Harness = {
   // adds none: full local access is the normal operating mode. The note says so at pick time.
   note: "full local access: edits, git/commit, Fleet, tmux and network run with the owner's own reach (owner decision 2026-08-12)",
   role: "agent",
+  browserProfile: "not-applicable", // Pi has no MCP layer — inherited by pi-unfenced
 };
 
 // Adapter #2b — Pi pinned to Z.ai's Coding Plan and exactly GLM-5.3. Pi 0.84.0 ships the `zai`
@@ -761,6 +783,7 @@ const PI_ZAI_HARNESS: Harness = {
   },
   note: "fixed provider zai/glm-5.3 (Coding Plan); key from ~/.config/claude-fleet/secrets/zai-coding-plan.key; full local reach like pi; process-local agent directory leaves ~/.pi untouched",
   role: "agent",
+  browserProfile: "not-applicable", // Pi has no MCP layer
 };
 
 // Adapter #2c — Pi pinned to OpenCode Zen's one free Ox Alpha preview model. This is NOT an
@@ -826,6 +849,7 @@ const PI_OX_HARNESS: Harness = {
   },
   note: "fixed anonymous opencode/x-preview-f-free via Pi; no billing credential and no model/provider fallback; availability and provider terms may change",
   role: "agent",
+  browserProfile: "not-applicable", // Pi has no MCP layer
 };
 
 // Adapter #3 — the formerly exceptional unfenced Pi. Since the 2026-08-12 full-access decision its
@@ -1076,6 +1100,7 @@ const CONTAINER_HARNESS: Harness = {
   note: `defaults: container '${CONTAINER_NAME}' on docker --context '${CONTAINER_CONTEXT}' — both settable per slot at spawn.`
     + " You start the container and bind-mount the worktree at the SAME path — Fleet never does",
   role: "place",
+  browserProfile: "unsupported", // the MCP config lives inside the box; nothing on the host line can switch it
 };
 
 // Adapter #5 — Codex (`@openai/codex`, the OpenAI CLI). Every flag below is MEASURED against the
@@ -1088,6 +1113,13 @@ const CONTAINER_HARNESS: Harness = {
 // /opt/homebrew, so a bare `npm i -g` would have been a brew-global write, which a worktree lane
 // may not make. `~/.local/bin` is already on PATH_EXPORT (watchdog.sh exports it), so the pane
 // resolves `codex` by the same route it resolves `claude`.
+// A CODEX TEXT LANE: only the FULL server definition switches the Playwright MCP off (measured by Astra
+// 2026-09-14, docs/messungen/2026-09-14-ram-optimierung-astra.md §F4): `plugins."playwright@…".enabled=false`
+// left both children running, and `mcp_servers.playwright.enabled=false` alone failed at start with
+// `invalid transport`. Every other Codex MCP (node_repl, computer-use, the other plugins) stays loaded.
+// Re-measured on codex-cli 0.153.4 the same day, fresh and `codex resume <id>`: 0 Playwright children.
+// A per-launch `-c` override — ~/.codex/config.toml is never written for it (pinned).
+const CODEX_TEXT_LANE_MCP = `'mcp_servers.playwright={command="npx",args=["@playwright/mcp@latest"],enabled=false}'`;
 const CODEX_HARNESS: Harness = {
   id: "codex",
   // No subcommand: `codex` alone is the interactive TUI, which is the form a slot wants
@@ -1123,6 +1155,8 @@ const CODEX_HARNESS: Harness = {
     // that constant is a claude model id and Codex has never heard of it.
     if (o.model) cmd += ` --model '${o.model}'`;
     if (o.effort) cmd += ` -c model_reasoning_effort='${o.effort}'`;
+    // a text lane (Slot.browser), fresh AND resume form — see CODEX_TEXT_LANE_MCP
+    if (!o.browserMcp) cmd += ` -c ${CODEX_TEXT_LANE_MCP}`;
     const trust = SPAWN_PATH_RE.test(o.cwd)
       ? `grep -qxF '[projects."${o.cwd}"]' "$HOME/.codex/config.toml" 2>/dev/null || printf '\n[projects."%s"]\ntrust_level = "trusted"\n' '${o.cwd}' >> "$HOME/.codex/config.toml"; `
       : "";
@@ -1243,6 +1277,7 @@ const CODEX_HARNESS: Harness = {
   // picker: an unauthenticated pane LOOKS alive, because it is.
   note: "you run `codex login` yourself — an un-authenticated pane waits on its sign-in screen and still probes alive",
   role: "agent",
+  browserProfile: "apply",
 };
 
 // The probe is now PER SLOT (commsFor, one region below), which fixes a FACT that used to be a lie:
@@ -1351,6 +1386,20 @@ function effortOf(body: Record<string, unknown> | null, h: Harness): { ok: true;
 const effortErrFor = (h: Harness) =>
   h.supports.effort ? `bad effort (one of: ${h.effortLevels.join(", ")})` : `harness ${h.id} takes no effort`;
 
+// The lane's browser profile (Slot.browser). Absent/false/null = a text lane, the default; `true` only
+// for an adapter whose profile applies — refused, not dropped, for the others, for the reason effortOf
+// gives. `undefined` in the answer means "the body did not name it", so a door can fall back per field.
+function browserOf(body: Record<string, unknown> | null, h: Harness):
+  { ok: true; browser: boolean | undefined } | { ok: false; error: string } {
+  const b = body?.browser;
+  if (b === undefined) return { ok: true, browser: undefined };
+  if (b === null || b === false) return { ok: true, browser: false };
+  if (b !== true) return { ok: false, error: "browser must be a boolean" };
+  if (h.browserProfile !== "apply")
+    return { ok: false, error: `harness ${h.id} takes no browser profile (${h.browserProfile})` };
+  return { ok: true, browser: true };
+}
+
 // The SET-time validator for a queue row's persisted agent choice (Task.spawn): the same three
 // validators the attended ▸ start route runs, in the same order — harness first, because it is
 // what model and effort are judged by. All-absent answers `undefined`, never an all-null object:
@@ -1366,8 +1415,10 @@ function taskSpawnFromBody(body: Record<string, unknown> | null):
   if (!m.ok) return { ok: false, error: modelErrFor(harness) };
   const e = effortOf(body, harness);
   if (!e.ok) return { ok: false, error: effortErrFor(harness) };
-  return { ok: true, spawn: h.harness === null && m.model === null && e.effort === null
-    ? undefined : { harness: h.harness, model: m.model, effort: e.effort } };
+  const b = browserOf(body, harness);
+  if (!b.ok) return b;
+  return { ok: true, spawn: h.harness === null && m.model === null && e.effort === null && !b.browser
+    ? undefined : { harness: h.harness, model: m.model, effort: e.effort, ...(b.browser ? { browser: true } : {}) } };
 }
 
 // Task.review at a door. `undefined` = the body did not name it (nothing changes); `null` = clear the
@@ -1434,7 +1485,7 @@ const taskKindNote = (kind: TaskKind): string | null =>
 // all-null result degrades to ABSENT — the field never reloads as an empty choice.
 const loadTaskSpawn = (value: unknown): DispatchSpawn | undefined => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const raw = value as { harness?: unknown; model?: unknown; effort?: unknown };
+  const raw = value as { harness?: unknown; model?: unknown; effort?: unknown; browser?: unknown };
   const harness = typeof raw.harness === "string"
     && HARNESSES.some((h) => h.id === raw.harness && h !== CLAUDE_HARNESS) ? raw.harness : null;
   const h = harnessOf(harness);
@@ -1442,7 +1493,9 @@ const loadTaskSpawn = (value: unknown): DispatchSpawn | undefined => {
     && (h.modelRe ?? SLOT_MODEL_RE).test(raw.model) ? raw.model : null;
   const effort = typeof raw.effort === "string" && h.supports.effort
     && h.effortLevels.includes(raw.effort) ? raw.effort : null;
-  return harness === null && model === null && effort === null ? undefined : { harness, model, effort };
+  const browser = raw.browser === true && h.browserProfile === "apply";
+  return harness === null && model === null && effort === null && !browser ? undefined
+    : { harness, model, effort, ...(browser ? { browser: true } : {}) };
 };
 
 const MAX_COMMENTS_PER_TASK = 50;
@@ -1478,6 +1531,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   container: null,
   containerContext: null,
   effort: null,
+  browser: false,
   taskId: null,
   originId: null,
   programId: null,
@@ -2976,11 +3030,12 @@ function stateSnapshot(): string {
     harness: string | null; effort: string | null;
     container: string | null; containerContext: string | null;
     taskId: string | null; originId: string | null; programId: string | null;
-    releasedBy: "owner" | "machine" | null; laneSuccessions: number; lineageId: string | null; selfToken: string }> = {};
+    releasedBy: "owner" | "machine" | null; laneSuccessions: number; lineageId: string | null; selfToken: string;
+    browser?: true }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, lineageId: s.lineageId, selfToken: s.selfToken };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, lineageId: s.lineageId, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   return JSON.stringify({ token: persistedToken, stewardToken, helperToken,
@@ -4703,7 +4758,7 @@ const attachBusy = new Set<string>();
 
 async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null,
   harness: string | null = null, effort: string | null = null, form: LaneForm = "worktree",
-  box: BoxPin = NO_BOX, parent: LaneAnchor | undefined = undefined): Promise<{ cwd: string; branch: string }> {
+  box: BoxPin = NO_BOX, parent: LaneAnchor | undefined = undefined, browser = false): Promise<{ cwd: string; branch: string }> {
   const h = harnessOf(harness);
   // Refuse before createWorktree: a main-only adapter must not leave an orphan working copy as the
   // side effect of discovering its policy too late.
@@ -4721,7 +4776,7 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   // tick: until the root has the ref, worktreeRisk and drift read a branch that is not there and
   // would report an absence as a fact about the lane.
   await syncLaneRefs(ref, wt.path);
-  await openSlot(s, wt.path, ref, model, null, harness, effort, box);
+  await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser);
   // a manual lane (no branch given → createWorktree auto-named it `fleet/<stamp>-<hex>`)
   // has no task text to derive a label from the way the dispatcher does (~tickDispatch,
   // `⎇ ${next.from} ...`) — so it must NEVER surface that raw uniqueness timestamp as the
@@ -4780,6 +4835,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
   model: string | null;
   harness: string | null;
   effort: string | null;
+  browser: boolean;
   container: string | null;
   containerContext: string | null;
 }
@@ -4787,7 +4843,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
 const slotSpawnOccupant = (s: Slot): SlotSpawnOccupant | null => s.cwd ? {
   slot: s.id, cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, label: s.label,
   sessionId: s.sessionId, model: s.model, harness: s.harness, effort: s.effort,
-  container: s.container, containerContext: s.containerContext,
+  browser: s.browser, container: s.container, containerContext: s.containerContext,
 } : null;
 
 // label is a captured spawn input, not occupant identity: the owner may relabel a live session
@@ -4795,7 +4851,7 @@ const slotSpawnOccupant = (s: Slot): SlotSpawnOccupant | null => s.cwd ? {
 const sameSlotSpawnOccupant = (s: Slot, expected: SlotSpawnOccupant): boolean =>
   s.id === expected.slot && s.cwd === expected.cwd && s.openedAt === expected.openedAt
   && s.selfToken === expected.selfToken && s.sessionId === expected.sessionId && s.model === expected.model
-  && s.harness === expected.harness && s.effort === expected.effort
+  && s.harness === expected.harness && s.effort === expected.effort && s.browser === expected.browser
   && s.container === expected.container && s.containerContext === expected.containerContext;
 
 const SLOT_POST_CAPTURE_LATCH = process.env.FLEET_TEST_SLOT_POST_CAPTURE_LATCH ?? null;
@@ -4918,7 +4974,9 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
       // one variable to both is the point: Pi's write fence is anchored at it, so a fence built
       // from anything else would grant a directory the pane is not in.
         `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: occupant.model,
-          effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant) })}`);
+          effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant),
+          // the MCP profile is a LANE property only: a MAIN or plain session keeps its ambient MCPs
+          browserMcp: !s.worktree || occupant.browser })}`);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
       // state commit nor blind cleanup, because the named tmux session may already be the successor's.
@@ -5026,7 +5084,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   model: string | null = null, label: string | null = null,
   harness: string | null = null, effort: string | null = null,
   // one parameter for the pair: a container and its daemon are one decision, never chosen apart.
-  box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null): Promise<void> {
+  box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null,
+  browser = false): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   await waitForSlotTeardown(s.id);
@@ -5099,6 +5158,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.model = model; // same reason — slotCmd bakes it at spawn; a recycled slot never inherits one
   s.harness = harness; // ...and this one decides WHICH BINARY the pane runs, so inheriting it
   s.effort = effort;   // would silently spawn the previous occupant's agent for a new session
+  s.browser = browser; // ...and a text lane must not inherit a browser lane's MCP profile, or back
   s.container = box.container;               // ...and these two decide WHICH MACHINE it runs on,
   s.containerContext = box.containerContext; // which is the same rule one step further out
 
@@ -5252,6 +5312,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.model = null;
   s.harness = null;
   s.effort = null;
+  s.browser = false;
   s.taskId = null;
   s.originId = null;
   s.programId = null;
@@ -6789,13 +6850,14 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
     releasedBy: s.releasedBy };
   const harness = s.harness;
   const box: BoxPin = { container: s.container, containerContext: s.containerContext };
+  const browser = s.browser; // the successor runs the same MCP profile as the lane it continues
   const successions = s.laneSuccessions + 1;
   // the slot briefly has no cwd inside openSlot's teardown; without this reservation the dispatch
   // tick could read it as free and found a different lane into it mid-handover.
   laneSpawn.add(s.id);
   try {
     try {
-      await openSlot(s, cwd, ref, spawn.model, label, harness, spawn.effort, box);
+      await openSlot(s, cwd, ref, spawn.model, label, harness, spawn.effort, box, null, browser);
     } catch (e) {
       // The predecessor's pane is already gone at this point and its rows went back to the queue
       // with detachSlotTasks' reason, which is the recoverable state: the worktree and its commits
@@ -10582,7 +10644,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // A fresh clone's branch exists only in the clone — mirror it up NOW: until the root has the
     // ref, every root-side reader (drift, risk, the land path) reports an absence. No-op for a worktree.
     await syncLaneRefs(dRef, wt.path);
-    await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort);
+    await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort, NO_BOX, null, spawn.browser === true);
     free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
     // An attended click IS a release — the only one that never passes through `queued` — stamped
     // OVER whatever the row carried: the lane that actually ran was attended. The tick's path
@@ -27075,6 +27137,8 @@ if (existsSync(STATE_FILE)) {
         if (typeof pm === "string" && (hOf.modelRe ?? SLOT_MODEL_RE).test(pm)) s.model = pm;
         const pe = (v as { effort?: unknown }).effort;
         if (typeof pe === "string" && hOf.supports.effort && hOf.effortLevels.includes(pe)) s.effort = pe;
+        // the lane profile survives a restart (resume keeps it); only `true` on an adapter it applies to
+        if ((v as { browser?: unknown }).browser === true && hOf.browserProfile === "apply") s.browser = true;
         // Queue provenance survives a server restart with the lane. Old slot rows omit both and
         // therefore retain the initialized nulls; no branch-name or git inference fills them in.
         const pti = (v as { taskId?: unknown }).taskId;
@@ -30944,6 +31008,8 @@ Bun.serve<WSData>({
             // default harness". What each harness SUPPORTS is static and rides GET /api/harnesses once.
             ...(s.harness ? { harness: s.harness } : {}),
             ...(s.effort ? { effort: s.effort } : {}),
+            // a lane that starts WITH the Playwright MCP; omitted for the default text lane and every non-lane
+            ...(s.worktree && s.browser ? { browser: true } : {}),
             // Codex binds its rollout lazily after the first prompt. This typed advisory is the
             // owner's whole v1 control surface: ambiguity/loss are visible but never automated,
             // and a rendered disconnect while the TUI is alive remains Codex's own retry problem.
@@ -31456,6 +31522,8 @@ Bun.serve<WSData>({
       if (!laneModel.ok) return json({ error: modelErrFor(laneHarness) }, 400);
       const laneEffort = effortOf(body, laneHarness);
       if (!laneEffort.ok) return json({ error: effortErrFor(laneHarness) }, 400);
+      const laneBrowser = browserOf(body, laneHarness);
+      if (!laneBrowser.ok) return json({ error: laneBrowser.error }, 400);
       const laneBox = boxOf(body, laneHarness);
       if (!laneBox.ok) return json({ error: laneBox.why }, 400);
       const laneForm = laneFormOf(body, laneHarness); // explicit form wins; absent → the adapter's
@@ -31484,14 +31552,15 @@ Bun.serve<WSData>({
           if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree already open in a slot" }, 409);
           const attachBase = await integrationBranch(top.out);
           await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
-            baseSha: await laneForkSha(wt.path, attachBase) }, laneModel.model, null, laneH.harness, laneEffort.effort);
+            baseSha: await laneForkSha(wt.path, attachBase) }, laneModel.model, null, laneH.harness, laneEffort.effort,
+            NO_BOX, null, laneBrowser.browser === true);
           free.label = wt.branch.replace(/^fleet\//, "⎇ ");
           delete shelved[wt.path]; // resuming clears the shelve note — the lane is active again
           saveState();
           void tickGit().catch(() => {});
           return json({ ok: true, slot: free.id, cwd: free.cwd, branch: wt.branch });
         }
-        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box, laneParent.parent);
+        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box, laneParent.parent, laneBrowser.browser === true);
         return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch, form: laneForm.form });
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "lane failed" },
@@ -31936,6 +32005,8 @@ Bun.serve<WSData>({
       return json({
         harnesses: HARNESSES.map((h) => ({
           id: h.id, supports: h.supports, effortLevels: h.effortLevels, note: h.note,
+          // apply | not-applicable | unsupported — whether a lane on it may name `browser: true`
+          browserProfile: h.browserProfile,
           // whether an UNATTENDED path may ever drive this harness. The adapter's claim, not the
           // fleet's answer: the operator's FLEET_HARNESS_AUTOMATION is the second condition and is
           // deliberately not published here — a `false` on this field means "never, flag or not".
@@ -32419,6 +32490,8 @@ Bun.serve<WSData>({
       if (!wModel.ok) return json({ error: modelErrFor(wHarness) }, 400);
       const wEffort = effortOf(wNames("effort") ? wBody : { effort: wRowSpawn.effort }, wHarness);
       if (!wEffort.ok) return json({ error: effortErrFor(wHarness) }, 400);
+      const wBrowser = browserOf(wBody?.browser !== undefined ? wBody : { browser: wRowSpawn.browser }, wHarness);
+      if (!wBrowser.ok) return json({ error: wBrowser.error }, 400);
       const wFree = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
       if (!wFree) return json({ error: "no free slot" }, 409);
       // captured BEFORE dispatchTask mutates anything, for the reason its own `wasStatus` is: a
@@ -32426,7 +32499,7 @@ Bun.serve<WSData>({
       // `pending` are not the same row to the tick.
       const wWas = new Map(wFollowers.map((t) => [t.id, t.status] as const));
       const wr = await dispatchTask(wHead, wFree, true, false,
-        { harness: wHarnessId, model: wModel.model, effort: wEffort.effort },
+        { harness: wHarnessId, model: wModel.model, effort: wEffort.effort, ...(wBrowser.browser ? { browser: true } : {}) },
         { followers: wFollowers, wasStatus: wWas, sharedFiles: wWave.sharedFiles, klasse: wWave.klasse,
           units: wWave.units });
       if (!wr.ok) return json({ error: wr.error }, 500);
@@ -32471,6 +32544,9 @@ Bun.serve<WSData>({
       if (!dModel.ok) return json({ error: modelErrFor(dHarness) }, 400);
       const dEffort = effortOf(dNames("effort") ? dBody : { effort: dRowSpawn.effort }, dHarness);
       if (!dEffort.ok) return json({ error: effortErrFor(dHarness) }, 400);
+      // the browser profile falls back the same way: a body boolean wins, else the row's own choice
+      const dBrowser = browserOf(dBody?.browser !== undefined ? dBody : { browser: dRowSpawn.browser }, dHarness);
+      if (!dBrowser.ok) return json({ error: dBrowser.error }, 400);
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) return json({ error: "no free slot" }, 409);
       // A RAW START is one where the lane receives the owner's DRAFT rather than a brief — the
@@ -32482,7 +32558,7 @@ Bun.serve<WSData>({
       // BYTES the lane gets — rather than left standing as a flag that is now true of every row.
       const rawAck = dBody?.acknowledged === true && !t.brief;
       const r = await dispatchTask(t, free, true, clarify,
-        { harness: dHarnessId, model: dModel.model, effort: dEffort.effort });
+        { harness: dHarnessId, model: dModel.model, effort: dEffort.effort, ...(dBrowser.browser ? { browser: true } : {}) });
       if (!r.ok) return json({ error: r.error }, 500);
       r.tail.catch(() => {}); // the tail requeues on every failure itself; nothing to add here
       // the mode and the EFFECTIVE harness ride in the audit detail, never a second event name: one "an
@@ -33006,11 +33082,13 @@ Bun.serve<WSData>({
         if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
         const bo = boxOf(body, hh);
         if (!bo.ok) return json({ error: bo.why }, 400);
+        const wo = browserOf(body, hh);
+        if (!wo.ok) return json({ error: wo.error }, 400);
         const fo = laneFormOf(body, hh); // explicit form wins; absent → the adapter's
         if (!fo.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
         laneSpawn.add(s.id); // reserve before the first await — see laneSpawn
         try {
-          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent);
+          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent, wo.browser === true);
           return json({ ok: true, cwd: r.cwd, branch: r.branch, form: fo.form });
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "worktree failed",

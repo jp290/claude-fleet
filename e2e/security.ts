@@ -957,6 +957,14 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     /full local access/.test(piNote) && /git\/commit/.test(piNote) && /network/.test(piNote)
     && !/fence/.test(piNote), piNote);
 
+  // THE BROWSER PROFILE is disposed per adapter, never left to silence (Slot.browser, 2026-09-14): the
+  // catalogue publishes it so a picker can say why a pi or container lane has no browser choice.
+  const profiles = (cat.harnesses as { id: string; browserProfile?: string }[])
+    .map((h) => `${h.id}:${h.browserProfile ?? "MISSING"}`).sort().join(",");
+  check("§6 the catalogue disposes the browser profile per adapter — claude/codex apply, pi family not-applicable, container unsupported",
+    profiles === "claude:apply,codex:apply,container:unsupported,pi-ox:not-applicable,pi-unfenced:not-applicable,pi-zai:not-applicable,pi:not-applicable",
+    profiles);
+
   // TWO AXES, NOT ONE. `container` answers "where does this run"; claude/pi/codex answer "what am
   // I working with". They shared one field until 2026-08-10, so the picker listed the hull in the
   // harness dropdown as a peer of claude — and `codex in a box` could not be expressed at all. The

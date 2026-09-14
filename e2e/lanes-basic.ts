@@ -80,6 +80,12 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("the codex spawn line writes the lane's trust entry before starting codex",
       lnFlat.includes('trust_level = "trusted"') && lnFlat.indexOf("trust_level") < lnFlat.indexOf("codex --dangerously"),
       lnFlat.slice(0, 200));
+    // THE TEXT-LANE MCP PROFILE (Slot.browser, 2026-09-14): a lane that names no browser starts codex with
+    // the FULL playwright server definition switched off — the only override measured to leave no
+    // Playwright children (server.ts#CODEX_TEXT_LANE_MCP). Every other -c key stays as it was.
+    check("a codex lane with no browser need spawns with the playwright MCP override (enabled=false)",
+      lnFlat.includes(`-c 'mcp_servers.playwright={command="npx",args=["@playwright/mcp@latest"],enabled=false}'`),
+      lnFlat.slice(-260));
     // --- THE ADAPTER NO LONGER PREFERS A FORM. Clone existed to keep a codex lane's repository
     // inside a write sandbox; the 2026-08-12 full-access spawn erects none, so a request that
     // names no form falls through to the default worktree — same shape as every other lane, and
@@ -113,6 +119,34 @@ export async function run(lc: LaneCtx): Promise<void> {
   // branch it mirrored back into REPO at spawn
   if (lnW.cwd) rmSync(lnW.cwd, { recursive: true, force: true });
   if (lnW.branch) spawnSync("git", ["branch", "-qD", lnW.branch], { cwd: REPO });
+  // ...and the BROWSER lane on codex: browser:true keeps the ambient MCP set, so the line carries no
+  // playwright override at all — the half that makes "Default AUS" a choice rather than a removal.
+  const lnB = (await (await post("/api/lanes", { repo: REPO, harness: "codex", browser: true })).json()) as
+    { slot?: number; cwd?: string; branch?: string; error?: string };
+  check("POST /api/lanes accepts browser:true for the codex adapter", !!lnB.slot, JSON.stringify(lnB));
+  if (lnB.slot) {
+    const lnBFlat = (await tmuxOut("display-message", "-p", "-t", `s${lnB.slot}`, "#{pane_start_command}")).out.replaceAll("\\", "");
+    check("MCP profile precondition: the codex browser lane's pane carries the codex line",
+      /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox/.test(lnBFlat), lnBFlat.slice(-160) || "no pane command");
+    check("a codex lane with browser:true spawns WITHOUT the playwright override (ambient MCPs kept)",
+      !lnBFlat.includes("mcp_servers.playwright"), lnBFlat.slice(-260));
+    await post(`/api/slots/${lnB.slot}/kill`, {});
+  }
+  if (lnB.cwd) spawnSync("git", ["worktree", "remove", "--force", lnB.cwd], { cwd: REPO });
+  if (lnB.branch) spawnSync("git", ["branch", "-qD", lnB.branch], { cwd: REPO });
+  // the adapters the profile does NOT apply to answer 400 BEFORE a working copy exists, each naming its
+  // disposition — refused, never dropped: a browser the owner asked for and the pane never had is the
+  // same failure an ignored effort is. Plus the malformed value, which must not coerce to either profile.
+  for (const [body, want] of [
+    [{ harness: "pi", browser: true }, "harness pi takes no browser profile (not-applicable)"],
+    [{ harness: "container", browser: true }, "harness container takes no browser profile (unsupported)"],
+    [{ browser: "yes" }, "browser must be a boolean"],
+  ] as const) {
+    const r = await post("/api/lanes", { repo: REPO, ...body });
+    const rj = (await r.json()) as { error?: string };
+    check(`POST /api/lanes refuses ${JSON.stringify(body)} with 400 and its reason`,
+      r.status === 400 && rj.error === want, `${r.status} ${JSON.stringify(rj)}`);
+  }
   // THE NON-REGRESSION ROW, and the most important one here: a lane with no harness is still a
   // worktree AND its persisted record carries no `form` key at all. The absence is the assertion —
   // every lane that predates this field must serialize byte-identically, or a state file written by

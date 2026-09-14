@@ -2387,11 +2387,13 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     dStart > 0 && dBody.length > 500 && dBody.length < 20_000, `${dBody.length} bytes`);
   // The attended route may name all three adapter choices. The tick still calls the short form
   // below, so DEFAULT_SPAWN is its entire spawn decision; pin every field to null rather than
-  // relying on an optional property whose absence could acquire a meaning later.
-  pin("the attended dispatch carries model+harness+effort, while the tick default keeps all three null",
-    /type DispatchSpawn = \{ harness: string \| null; model: string \| null; effort: string \| null \};/.test(server)
+  // relying on an optional property whose absence could acquire a meaning later. The ONE optional
+  // field, `browser?: true` (2026-09-14), is the exception by design: its absence already HAS its
+  // meaning — a text lane, the default — so DEFAULT_SPAWN carries none and the tick spawns text lanes.
+  pin("the attended dispatch carries model+harness+effort+browser, while the tick default keeps all three null and no browser",
+    /type DispatchSpawn = \{ harness: string \| null; model: string \| null; effort: string \| null; browser\?: true \};/.test(server)
     && /const DEFAULT_SPAWN: DispatchSpawn = \{ harness: null, model: null, effort: null \};/.test(server)
-    && /openSlot\(free, wt\.path, dRef, spawn\.model, null, spawn\.harness, spawn\.effort\)/.test(dBody),
+    && /openSlot\(free, wt\.path, dRef, spawn\.model, null, spawn\.harness, spawn\.effort, NO_BOX, null, spawn\.browser === true\)/.test(dBody),
     dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 180) ?? "no openSlot call");
   const tStart = server.indexOf("async function tickDispatch");
   const tBody = server.slice(tStart, server.indexOf("\n}\n", tStart));
@@ -2882,7 +2884,8 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const xStart = server.indexOf("const CODEX_HARNESS: Harness = {");
   const xBody = xStart < 0 ? "" : server.slice(xStart, server.indexOf("\n};\n", xStart));
   pin("the codex adapter's literal is bounded and non-empty (an unfound one would make the rules below vacuous)",
-    xStart > 0 && xBody.length > 500 && xBody.length < 12_000, `${xBody.length} bytes`);
+    // 14 KB: the literal stood at 11.9 KB when the 2026-09-14 text-lane profile added its append
+    xStart > 0 && xBody.length > 500 && xBody.length < 14_000, `${xBody.length} bytes`);
   const xCode = xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   // automation-eligibility FLIPPED 2026-08-12, and the pin flips WITH its condition: the flip is
   // only sound alongside the declared readiness seam (trust and sign-in were measured in rendered
@@ -3782,6 +3785,53 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   pin("effortLevels and supports.effort agree in both directions on every adapter that states them together",
     adapters.length >= 2 && adapters.every((a) => a.effort === (a.levels !== "")),
     adapters.map((a) => `${a.effort}/${a.levels === "" ? "empty" : "set"}`).join(" ") || "no adapter pair matched");
+}
+
+{
+  // THE LANE MCP PROFILE (Slot.browser, 2026-09-14). A text lane starts without the Playwright MCP;
+  // every half of that is string concatenation on a shell line, so no compiler sees it drift. The
+  // suites prove the flag reaches a pane (fleet-e2e-claude-gate.ts, e2e/lanes-basic.ts, e2e/restart.ts);
+  // these rows hold the SHAPE every future spawn inherits — and the one promise no suite can observe:
+  // Fleet switches the profile per launch and never by writing the owner's global plugin settings.
+  const acStart = server.indexOf("function agentCmd(");
+  const acBody = server.slice(acStart, server.indexOf("\n}\n", acStart));
+  const claudeBranch = acBody.slice(acBody.indexOf("if (claude) {"), acBody.indexOf("else if (HARNESS_MODEL_FLAG"));
+  const acCode = acBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("agentCmd appends --strict-mcp-config exactly once, only on the claude branch, only when browserMcp is off",
+    (acCode.match(/--strict-mcp-config/g) ?? []).length === 1
+    && /if \(!browserMcp\) cmd \+= " --strict-mcp-config";/.test(claudeBranch),
+    `branch=${claudeBranch.length}b`);
+  pin("the codex text-lane override is the FULL playwright server definition with enabled=false, single-quoted",
+    /\nconst CODEX_TEXT_LANE_MCP = `'mcp_servers\.playwright=\{command="npx",args=\["@playwright\/mcp@latest"\],enabled=false\}'`;\n/.test(server),
+    server.match(/const CODEX_TEXT_LANE_MCP = [^\n]*/)?.[0] ?? "no constant");
+  const cxStart = server.indexOf("const CODEX_HARNESS: Harness = {");
+  const cxCode = (cxStart < 0 ? "" : server.slice(cxStart, server.indexOf("\n};\n", cxStart)))
+    .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  // AFTER the fresh/resume ternary, so both forms carry it — one append, not one per form
+  const cxTernary = cxCode.indexOf("let cmd = o.resume && o.sessionId");
+  const cxAppend = cxCode.indexOf("if (!o.browserMcp) cmd += ` -c ${CODEX_TEXT_LANE_MCP}`;");
+  pin("the codex spawn appends the override once, after the fresh/resume choice, only when browserMcp is off",
+    cxTernary > 0 && cxAppend > cxTernary && (cxCode.match(/CODEX_TEXT_LANE_MCP/g) ?? []).length === 1,
+    `ternary@${cxTernary} append@${cxAppend}`);
+  pin("ensureSlot resolves the profile for LANES only — a slot without a worktree keeps its ambient MCPs",
+    /browserMcp: !s\.worktree \|\| occupant\.browser \}\)/.test(server), "browserMcp: !s.worktree || occupant.browser");
+  const applies = [...server.matchAll(/\n  browserProfile: "(apply|not-applicable|unsupported)",/g)].map((m) => m[1]);
+  pin("exactly claude and codex apply the browser profile; the other adapter literals dispose it explicitly",
+    applies.filter((a) => a === "apply").length === 2 && applies.length === 6, applies.join(",") || "no browserProfile literal");
+  // THE NEGATIVE PROMISE. Code lines only (comments explain these files and may name them). The one
+  // config.toml writer that exists is codex's per-path TRUST prelude, and it may append nothing but a
+  // `[projects."…"]` table with `trust_level` — no `plugins`, no `mcp_servers`, no `enabled` key.
+  const codeLines = server.split("\n").filter((l) => !l.trim().startsWith("//"));
+  const settingsJson = codeLines.filter((l) => /settings\.json/.test(l));
+  const configToml = codeLines.filter((l) => /config\.toml/.test(l));
+  pin("Fleet writes no global plugin settings: no code line names ~/.claude/settings.json",
+    settingsJson.length === 0, settingsJson.map((l) => l.trim().slice(0, 80)).join(" | "));
+  pin("Fleet writes no global plugin settings: the only config.toml code line is the codex trust prelude",
+    configToml.length === 1 && /printf '\\n\[projects\."%s"\]\\ntrust_level = "trusted"\\n'/.test(configToml[0] ?? "")
+    && !/plugins|mcp_servers|enabled/.test(configToml[0] ?? ""),
+    configToml.map((l) => l.trim().slice(0, 80)).join(" | ") || "no config.toml line");
+  pin("Fleet writes no global plugin settings: enabledPlugins is never named in code",
+    !codeLines.some((l) => /enabledPlugins/.test(l)), "");
 }
 
 {

@@ -106,6 +106,21 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   Claims, läuft die Gnadenfrist bis zum frühesten Claim-`expiresAt` plus zwei Sweep-Intervalle,
   gedeckelt bei `FLEET_VERIFY_WAIT_MS`; dieselbe Lesung liefert einer Lane `waitPolicy.unclaimedMs`
   am Suite-Offer. Jeder lokale Lauf nennt seinen Grund in `server.log` (`post-land audit LOCAL: …`).
+  **`FLEET_AUDIT_SHARDS=n` (2..8) teilt einen Helfer-Audit in n parallele Jobs** (`server.ts#AuditShardRun`):
+  ein offerierbarer Eintrag erscheint als n Audit-Jobs mit `shard:"k/n"`, jeder läuft auf dem Daemon mit
+  `FLEET_E2E_SHARD=k/n` (`helper-daemon/daemon.ts#shardEnv`) und belegt dort einen Suite-Slot. Der ERSTE
+  Shard-Claim baut das eine Bundle und friert Covers und Sha ein; alle n Shards messen damit denselben Baum.
+  Die Zeile entsteht erst, wenn jeder Shard terminal ist (`server.ts#writeShardedAuditRow`, dieselben Senken
+  wie ein ungeteilter Helfer-Audit): **grün nur, wenn alle n grün berichten**; ein Rot macht die Zeile rot
+  (vereinigte `fails`); ein verfallener, nie geclaimter oder unmessbarer Shard macht sie `unknown`, nie grün.
+  `ms` läuft vom ersten Claim bis zum letzten Ergebnis, `checks.ran` ist die Summe, `shards[]` nennt je Shard
+  `k, jobId, result, ms, ran, failed, exitCode`. Angeboten und geclaimt wird ein Shard nur von einem Gerät,
+  dessen letzter Heartbeat `features:["audit-shard"]` trägt (die Liste kommt aus dem Daemon-CODE und wird
+  bei jedem Beat ersetzt, ein zurückgerollter Daemon verliert sie also sofort). Ohne ein solches Gerät hält
+  die Gnadenfrist nichts fest, und der lokale Lauf bleibt ungeteilt. Fehlt der Wert, ist er 1 oder
+  unlesbar (dann eine Logzeile), ist alles wie vorher. Bekannte Grenze: nur der Shard, der die Zeile
+  schreibt, erhält `artifactAt`, also hängt höchstens EIN `suite.log` an der Zeile. Rollout-Reihenfolge:
+  Deploy, Daemon-Update, erst dann `.env`; zurück geht es über `.env`.
   Anlass, am Ledger nachgelesen: 76f3376 und 10ba7af (2026-09-04), je EINE
   Docs-Datei, bekamen je ein volles `./e2e-isolated.sh` — 1562 s bzw. 1530 s, beide ROT, 9 bzw. 1
   von 3633 Checks gefallen, beide als Flake adjudiziert. Beide liefen zufaellig auf dem Helfer, es

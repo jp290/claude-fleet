@@ -3,7 +3,7 @@ frage: Variantenpaar 1 (E4, Paarung von Hand) — zwei Lanes, gleicher Brief (`l
 urteil: VARIANTE A (Opus 5, Branch fleet/260914071328-d3e2, Commit daacdab9) landet, Stufe 1 entscheidet — sie reproduziert die Probe aus §3 exakt (fix3d(code) opus 20/84, codex 7/16; vom Orchestrator selbst nachgerechnet, 21 s @378deae8), Variante B (codex, fleet/260914071334-201a, 7e758850) liefert 22/84 und loest fuer 130 Lands den Harness nicht auf. Stufe 2 und 3 haetten B bevorzugt (volle lokale Kette ALL PASS; 386 statt 409 Zeilen), kommen aber nicht zum Zug. Verlierer shelved, Branch bleibt.
 bereich: [varianten, land-quality, modellklassen, codex, opus]
 belege: [eigene Laeufe beider Skripte am 2026-09-14 10:0x (A: --since 14d --at 378deae8; B: --since 14d am Tip bb546bf2, kennt kein --at), Lane-Reports 1be9850b (A) und 40371c84 (B), Pane-Tails Slot 1 und 3, git diff --stat main...HEAD je Worktree]
-nicht-gemessen: der Server-Land-Gate fuer A (laeuft nach dieser Notiz ueber Slot 5); warum B fuer 130 Lands harness=unknown liefert (nicht untersucht); ob Bs +2 eine UTC-Tagesgrenzen-Definition ist (B behauptet es, A reproduziert die Probe mit Commit-Zeit-Semantik); Tokenkosten je Lane (nur ctx-Prozent)
+nicht-gemessen: der Server-Land-Gate fuer A (erster Versuch rot am Repo-Map-Pin, nicht am Skript; zweiter Versuch laeuft ueber Slot 5); warum B fuer 130 Lands harness=unknown liefert (nicht untersucht); ob Bs +2 eine UTC-Tagesgrenzen-Definition ist (B behauptet es, A reproduziert die Probe mit Commit-Zeit-Semantik); Tokenkosten je Lane (nur ctx-Prozent)
 stand: 2026-09-14
 ---
 
@@ -19,8 +19,6 @@ gestartet, damit die zweite das Land der ersten nicht sieht. Vergleich nach §5 
 |---|---|---|
 | Branch / Commit | `fleet/260914071328-d3e2` / daacdab9 | `fleet/260914071334-201a` / 7e758850 |
 | Diff | 4 Dateien, +409/-0 (Skript 370, verify-tiering §6.3 +28, state.sh +10, .gitignore +1) | 4 Dateien, +386/-0 (Skript 372, verify-tiering +12, state.sh +1, .gitignore +1) |
-| Lane-Laufzeit | ~15 min (Report 09:28 lokal) | ~54 min („Worked for 53m 49s") |
-| Kontext am Ende | 20 % von 1M | 71 % von 258 400 |
 | CLI | `--since --at --json --summary --out --root` | `--since --json` (kein `--at`: „jetzt" ist immer der Tip) |
 | Laufzeit `--since 14d` (eigener Lauf) | 20,9 s, 812 blame-Aufrufe | 125,0 s |
 | fix3d(code) opus / codex | **20/84 · 7/16** (Probe exakt) | 22/84 · 7/16 |
@@ -56,7 +54,9 @@ Zwei Befunde neben der Regel, die beim Bau des Mechanismus (E4, `variants[]`) za
 
 - Slot 5 (Program-MAIN Fleet-Betrieb) landet A; 7eb74615 wird shelved, `fleet/260914071334-201a`
   bleibt als Datum.
-- Der erste Datenpunkt fuer E4: Opus 15 min / 20 % gegen codex 54 min / 71 %, beide mit landbarem
-  Ergebnis, nur eines trifft das DONE. Ein Paar ist kein Trend.
+- Der erste Datenpunkt fuer E4: beide Lanes lieferten ein landbares Ergebnis, nur eines trifft das
+  DONE. Ein Paar ist kein Trend. **Lane-Zeit und Kontext-Prozent sind hier KEIN Signal** (Owner
+  2026-09-14): codex kompaktiert selbst in einem 258 400-Fenster, die Prozentzahl ist Betriebszustand;
+  die Lane-Zeit enthaelt bei B die volle lokale Suite. Beides gehoert nicht in den Vergleicher.
 - Nach dem Land von A gilt `docs/verify-tiering.md` §6.3 als Beschreibung; `./state.sh` zeigt das
   14-d-Aggregat aus dem Ledger.

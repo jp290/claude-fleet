@@ -117,7 +117,7 @@ fuer n=2 und n=4. Die Owner-Erwartung „~10–15 min" erreicht n=4 NICHT — ni
 sondern weil `core` eine Unit ist. Auf dem Second-host (ungeshardet 1 835–1 839 s = 30,6 min)
 skaliert dasselbe Verhaeltnis auf ~18 min.
 
-**6. Was `core` teilen wuerde** (nicht gemacht, ausserhalb der Flaeche). Die Kante, die programs
+**6. Was `core` teilen wuerde** (hier nicht gemacht, ausserhalb der Flaeche; gemacht und gemessen: §9). Die Kante, die programs
 (613 s in Shard 1b) und tasks (257 s) an den Rest bindet, ist EIN Feld: `ctx.restartSelfTok` aus
 `e2e/self-token.ts` (23 s) — plus K1 (outcomes → tasks, 49 s). Liefe self-token in jedem Shard,
 der es braucht (Kosten: 23 s und 96 doppelte Check-Namen — die Vereinigung bliebe identisch),
@@ -147,6 +147,46 @@ langsam zu malen — Signatur von Speicherdruck, `e2e/programs.ts`), §11.2v (s2
 Flake dieser Nacht). Sharding aendert zweierlei: parallel steigt die Last je Sonde, aber jede Sonde
 sieht eine Instanz mit WENIGER Vorgeschichte (Shard 2–4 hatten je 5–13 Server-Boots weniger vor
 sich) — welcher Effekt ueberwiegt, ist eine Messung, die dieser Schnitt nicht faehrt.
+
+**9. Nachtrag 2026-09-14: `core` geteilt — gemessen.** Folgeschnitt aus §6, Lane
+`fleet/260914092857-f3cb`, Commit „split shard unit core — programs carries its own self-token run"
+(Lane-Baum `626734d1`, gleiche SHA-Konvention wie §4). Schnitt: neue Unit `programs` =
+{self-token, programs}; `core` behaelt self-token und verliert programs. self-token ist damit das
+EINE Modul in zwei Units — der Runner-Schritt traegt `unit: "core", alsoIn: ["programs"]` und laeuft
+einmal je Shard, der eine der beiden Units haelt. Die zweite Kante aus §6 (K1, outcomes → tasks)
+bleibt in `core`; sie musste nicht geloest werden, weil `core` ohne programs schon unter der Schranke
+liegt. Der Pin `RULE_SHARD` prueft jetzt fuer JEDES Modul „Units in der Tabelle = Units seines
+Runner-Schritts" (zwei Mutationen: `alsoIn` gestrichen → rot `self-token:core,programs≠core`;
+programs-Schritt als `core` getaggt → rot `programs:programs≠core`; der alte Pin sah beide nicht).
+
+Ohne Flag: `diff <(git show main:fleet-e2e.ts | grep -o 'await [a-zA-Z]*\.run(') <(grep -o 'await [a-zA-Z]*\.run(' fleet-e2e.ts)` → leer.
+Alle Laeufe seriell auf dem Mac, Baum `626734d1` (Trail-`tree`), Runner-Dauer = Trail-Spanne.
+
+| Lauf | Trail | Checks | Failures | Runner-Dauer | Units (Runner-ms je Unit, `shard-unit`-Zeilen) |
+| --- | --- | --- | --- | --- | --- |
+| ungeshardet | `isolated-20260914T103128Z-72499` | 4 495 | 0 (ALL PASS) | 2 213 s | alle |
+| Shard 1/4 | `isolated-20260914T093312Z-74522` | 730 | 0 | 687 s | programs 687 s (inkl. self-token) |
+| Shard 2/4 | `isolated-20260914T094446Z-49168` | 1 970 | 0 | 649 s | core 649 s |
+| Shard 3/4 | `isolated-20260914T100459Z-64606` | 1 028 | 0 | 420 s | pure 0 · auth 1 · lanes 300 · attention 15 · lane-risk 4 · concurrency 11 · supervisor 35 · ref-advance 4 · verify-queue 44 · errors 4 |
+| Shard 4/4 | `isolated-20260914T101708Z-64098` | 899 | 0 | 414 s | watch 178 · explorer 1 · drops 2 · land-provenance 116 · ctl 14 · lane-suite 4 · land-durability 74 · sweep 1 · deploy-facts 24 |
+
+**Vereinigung der Check-Namen (M4) der vier Shards gegen den ungeshardeten Lauf: 4 454 = 4 454,
+`comm -3` LEER.** 108 Namen kommen in mehr als einem Shard vor: 12 Trail-Familie (alle vier Shards)
+und 96 self-token (Shard 1 und 2) — genau die in §6 vorhergesagten 96. Checks-Summe 4 627 = 4 495 +
+3 × 12 + 96.
+
+| n | laengster Shard (seriell) | ungeshardet | Faktor |
+| --- | --- | --- | --- |
+| 4, vor dem Schnitt (§5) | core 1 239 s | 2 120 s | 1,71 |
+| 4, nach dem Schnitt | programs 687 s | 2 213 s | 3,22 |
+
+Vorhergesagte Wanduhr bei paralleler Ausfuehrung (gleiche Ableitung wie §5, ohne Lastaufschlag):
+**~11,5 min statt ~37 min**. Die Wrapper-Wanduhren (694 / 654 / 563 / 724 s) enthalten Staging und
+Schlange vor dem Mutex und taugen nicht als Laufzeit. Nicht gemessen: n=2 (die Tabelle plant
+1 210 / 1 210 Gewichts-Sekunden) und jeder parallele Lauf. Ablauf-Befund: die Harness-Speicherbremse
+toetete die Hintergrund-Kette dreimal (einmal mitten in Shard 3/4, dessen Instanz ueber die eigene
+Wrapper-PID aufgeraeumt und der Shard vollstaendig neu gefahren wurde; zweimal nur den Warte-Waiter)
+— dieselbe Signatur wie §Methode „Laeufe"; die detachte Kette ueberlebte jedes Mal.
 
 ## Methode
 
@@ -196,4 +236,7 @@ ts	phase	entscheidung	warum	beleg	ergebnis
 2026-09-13T22:48:00Z	vorfall	Live-Server (pid 70255) ueber die PID aus /tmp/fleet-e2e.lock/pid beendet, ohne Identitaet zu pruefen	fuer den eigenen Baseline-Wrapper gehalten; der Server hielt per holdSuiteLock	server.log 00:48:05 „[watchdog] srv was down, restarted"	Watchdog-Neustart nach ~2 s; Push an Owner; welcher Land-Hold abbrach, ist aus der Lane nicht lesbar
 2026-09-13T22:49:00Z	laeufe	keine weiteren Kills; 1c und finale Baseline hinter die verwaiste Baseline gehaengt	Null-Risiko vor Zeitersparnis	chain5.sh	Deadlock: chain5 wartete auf eine exit=-Zeile, deren Schreiber (chain4) ich selbst beendet hatte — 5 h ohne Suite, von der MAIN um 06:06 gemeldet
 2026-09-14T04:06:00Z	laeufe	chain5 ueber die eigene PID beendet, 1c + finale Baseline neu gestartet	Identitaet geprueft: /bin/sh, ppid 1, pgrep-Treffer	chain6.sh	1c gruen 06:27; Baseline gruen 07:06 (4 419 / 0, 2 122 s); Vereinigung gegen sie ebenfalls diff-leer
+2026-09-14T09:29:00Z	§9 schnitt	self-token in zwei Units statt programs-eigenem Token	einzige Kante programs→core ist ctx.restartSelfTok/Slot (M2); 23 s und identische Namen, Pruefung unveraendert	e2e/ctx.ts#SHARD_UNITS, fleet-e2e.ts	core 626 / programs 636 Gewichts-s
+2026-09-14T09:30:00Z	§9 pin	RULE_SHARD auf Units-Gleichheit je Modul statt „none twice"	Doppellistung muss erlaubt sein, aber nur wo der Runner-Schritt sie traegt	e2e/pins.ts	zwei Mutationen rot
+2026-09-14T11:15:00Z	§9 laeufe	Shard 1–4 + ungeshardet seriell auf 626734d1	Beweislauf ueber die Suite selbst, lokal	chain.sh (Scratchpad)	alle ALL PASS; comm -3 leer; laengster Shard 687 s
 ```

@@ -689,12 +689,20 @@ export async function run(): Promise<void> {
     // lastOutput !== 0 is a hard guard in tickInboxNudge: one Enter into the EMPTY composer redraws it.
     await tmuxOut("send-keys", "-t", `s${dSlot}`, "Enter");
     await Bun.sleep(1200);
-    const dNudges = async () => (await plogRead()).filter((e) => e.slot === dSlot && e.text.startsWith("[fleet inbox] "));
+    // keyed on THIS Program's id, never the slot number alone: slots recycle across modules, and
+    // e2e/watch.ts's hold block leaves its own `[fleet inbox]` line on whatever slot it had — on the
+    // helper run of 2026-09-14 that was this block's slot 5, the loop below matched the stale line at
+    // once, and (b) read the views before this block's nudge had run.
+    const dNudges = async () => (await plogRead())
+      .filter((e) => e.slot === dSlot && e.text.startsWith("[fleet inbox] ") && e.text.includes(programD));
     let nudged = await dNudges();
     for (let i = 0; i < 100 && nudged.length === 0; i++) {
       await Bun.sleep(100);
       nudged = await dNudges();
     }
+    check("attention delivery fixture (b): the inbox nudge for THIS Program was attempted and journalled as not accepted",
+      nudged.length === 1 && nudged[0]?.delivery === "SendNotAccepted",
+      JSON.stringify(nudged.map((e) => ({ delivery: e.delivery ?? null, ts: e.ts }))));
     const failedSelf = await selfRow(dAnswered?.id);
     const failedOwner = await ownerRow(dAnswered?.id);
     const failedNudge = failedSelf?.delivery?.lastNudge;

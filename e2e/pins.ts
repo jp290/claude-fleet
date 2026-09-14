@@ -8133,13 +8133,13 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // family proves on behaviour; these pin that the mechanism is the one the docs name.
   const RULE_CARD_V2 = "a card is refused by the tree, not by a stale graph or a foreign field";
   const cx = read("card-extract.ts");
-  // v4 (2026-09-14): the verify aliases "volle Kette"/"full chain" and "e2e-isolated".
-  const versionConst = /^export const CARD_VALIDATOR_VERSION = 4;$/m.test(cx);
-  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 4 (bump it when a rule change can turn a refusal into an acceptance)`,
+  // v5 (2026-09-14): rolle normalised and advisory; the prompt asks for creates and after.
+  const versionConst = /^export const CARD_VALIDATOR_VERSION = 5;$/m.test(cx);
+  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 5 (bump it when a rule change can turn a refusal into an acceptance)`,
     versionConst, `const=${versionConst}`);
   // v3 (2026-09-13): the filing format. A formatted row is read by the PARSER before the extractor
   // is ever started, and the ledger says which of the two produced each card.
-  const formatFirst = /const formatted = formatCardOf\(t, snapshot, index\);\n\s+const card = formatted \?\? await extractCard\(t, repo, snapshot, index\);/.test(srv)
+  const formatFirst = /const formatted = formatCardOf\(t, snapshot, index\);\n\s+const run: \{ answer\?: string \} = \{\};\n\s+const card = formatted \?\? await extractCard\(t, repo, snapshot, index, \(answer\) => \{ run\.answer = answer; \}\);/.test(srv)
     && /taskId: t\.id, source: formatted \? "format" : "model",/.test(srv);
   pin(`${RULE_CARD_V2} — the card tick asks parseFormattedCard before the extractor, and cards.jsonl carries source format|model`,
     formatFirst, `formatFirst=${formatFirst}`);
@@ -8155,8 +8155,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_CARD_V2} — cardDue re-reads only an INVALID card from an older validator`,
     reread, `reread=${reread}`);
   const surfaceConfirm = /: !card\.surfaceValid \? /.test(srv) && !/!card\?\.valid \|\| !card\.surface\.files\.length/.test(srv);
-  const surfaceDerived = /valid: gaps\.length === 0, surfaceValid: cardSurfaceValid\(gaps\), gaps,/.test(srv);
-  pin(`${RULE_CARD_V2} — confirm-cards reads surfaceValid (not valid), and the loader derives it from gaps`,
+  const surfaceDerived = /valid: cardValid\(gaps\), surfaceValid: cardSurfaceValid\(gaps\), gaps,/.test(srv)
+    && /export const cardValid = \(gaps: readonly string\[\]\): boolean => gaps\.every\(cardAdvisoryGap\);/.test(cx);
+  pin(`${RULE_CARD_V2} — confirm-cards reads surfaceValid (not valid), and the loader derives both from gaps through the one advisory rule`,
     surfaceConfirm && surfaceDerived, `confirm=${surfaceConfirm} derived=${surfaceDerived}`);
 }
 

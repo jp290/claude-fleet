@@ -2333,7 +2333,7 @@ ein zweiter Rewrite auf einem geteilten `main`, auf den jederzeit ein Land fast-
 waere teurer als der Fehler. Diese Abwaegung teile ich.
 
 **Exposure, von mir nachgemessen, damit niemand sie schaetzt:**
-- `git grep -inE 'example|100\.64\.0\.1'` im Arbeitsbaum: **leer**. Der Pin ist gruen.
+- die Leak-Probe aus dem Regelbuch (`CLAUDE.md` §Deploy, Klarname und Tailscale-IP als Suchmuster) im Arbeitsbaum: **leer**. Der Pin ist gruen.
 - **`origin/main` (public, GitHub) enthaelt es NICHT** — und kann es nicht per fast-forward
   bekommen: lokale main und die publizierte Historie sind zwei verschiedene Baeume
   (1868 voraus / 1679 zurueck). Das ist die alte Umschreibung vor dem Push, kein Zufall.

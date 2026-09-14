@@ -36,6 +36,7 @@ import {
 } from "../capability-map";
 import { collectRepoMap, firstCommentLine, renderRepoMap } from "../repo-map";
 import { HANDOFF_WARN_KB, splitHandoff } from "../handoff-rotate";
+import { VERIFY_SKIP_EXIT as LAND_LOG_SKIP_EXIT, renderLandLog, verifyLabel, type MainCommit } from "../land-log";
 import { SHARD_UNITS } from "./ctx";
 // the pane-hint builders are IMPORTED and CALLED by the sigil rule at the end of this file: only a
 // rendered hint shows the tail `${eventAck(id)}` actually contributes, which a source scan cannot.
@@ -8592,6 +8593,70 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 
   pin("state.sh warns about HANDOFF.md above handoff-rotate.ts#HANDOFF_WARN_KB",
     read("state.sh").includes(`-gt $((${HANDOFF_WARN_KB} * 1024))`), `threshold ${HANDOFF_WARN_KB} KB`);
+}
+
+// ================================================================================================
+// Land-Chronik — one line per land off the notes, and a land with no audit row yet is RUNNING
+// ================================================================================================
+// land-log.ts is a view, so the only thing to hold is what it says. The formatter is pure and runs on
+// a FIXTURE: two days of main, four lands (a three-commit land, a failed gate with no audit row, a
+// no-gate land judged by a covers-less audit row, a note whose mainAfter left main), direct commits
+// on both days and one commit before the window. The label that must never drift is the missing
+// audit row: it is "laeuft" (queued or running), never a claim that the audit was lost or passed.
+{
+  const RULE_LANDLOG = "land-log.ts prints one line per land and one direct-commit line per day";
+  const t = (day: number, h: number, mi = 0) => Date.UTC(2026, 8, day, h, mi);
+  const long = "feat(a): first of three — a subject long enough to be cut at the sixty-character column";
+  const commits: MainCommit[] = [
+    { sha: "c9".repeat(20), at: t(2, 10), subject: "docs(handoff): Slot 1" },
+    { sha: "c8".repeat(20), at: t(2, 9, 30), subject: "chore: no gate" },
+    { sha: "c7".repeat(20), at: t(2, 9), subject: "fix: direct on main" },
+    { sha: "c6".repeat(20), at: t(1, 12), subject: "feat(a): third" },
+    { sha: "c5".repeat(20), at: t(1, 11, 50), subject: "feat(a): second" },
+    { sha: "c4".repeat(20), at: t(1, 11, 40), subject: long },
+    { sha: "c3".repeat(20), at: t(1, 8), subject: "fix(b): gate said no" },
+    { sha: "c2".repeat(20), at: t(1, 7), subject: "docs(handoff): Slot 0" },
+    { sha: "c1".repeat(20), at: t(1, 6), subject: "docs(handoff): before the window" },
+  ];
+  const sha = (n: number) => `c${n}`.repeat(20);
+  const notes = [
+    { branch: "fleet/L3", mainBefore: sha(7), mainAfter: sha(8), at: t(2, 9, 30), verify: null },
+    { branch: "fleet/L2", mainBefore: sha(3), mainAfter: sha(6), at: t(1, 12), verify: { ok: true, proportional: true, exitCode: 0 } },
+    { branch: "fleet/L0", mainBefore: "dead".repeat(10), mainAfter: "beef".repeat(10), at: t(1, 11), verify: { ok: true, proportional: false } },
+    { branch: "fleet/L1", mainBefore: sha(2), mainAfter: sha(3), at: t(1, 8), verify: { ok: false, exitCode: 1 } },
+    { branch: "fleet/old", mainBefore: sha(0), mainAfter: sha(1), at: t(1, 6), verify: { ok: true } },
+  ];
+  const audits = [
+    { at: 100, result: "red", mainSha: sha(9), covers: [{ branch: "fleet/L2", mainAfter: sha(6) }] },
+    { at: 200, result: "green", mainSha: sha(9), covers: [{ branch: "fleet/L2", mainAfter: sha(6) }, { branch: "fleet/old", mainAfter: sha(1) }] },
+    { at: 300, result: "unknown", mainSha: sha(8), covers: [] },
+  ];
+  const lines = renderLandLog({ notes, audits, commits, sinceMs: t(1, 7) });
+  const land = (b: string) => lines.find((l) => l.includes(` ${b} `)) ?? "";
+  const expectL2 = `2026-09-01 12:00  c6c6c6c6  ${"fleet/L2".padEnd(23)}    3 Commits  ${long.slice(0, 59)}…  verify proportional  audit gruen`;
+  pin(`${RULE_LANDLOG} — the column layout, on a three-commit land whose first subject is cut`,
+    land("fleet/L2") === expectL2, `got: ${land("fleet/L2")}`);
+  pin(`${RULE_LANDLOG} — newest day first, lands newest first, the day's direct-commit line after its lands`,
+    lines.length === 6 && ["fleet/L3", "(direkt)", "fleet/L2", "fleet/L0", "fleet/L1", "(direkt)"].every((k, i) => lines[i]?.includes(` ${k} `)),
+    lines.map((l) => l.slice(0, 44)).join(" | "));
+  pin(`${RULE_LANDLOG} — a land with no audit row is "laeuft", never lost; a covers-less row joins over mainSha`,
+    land("fleet/L1").endsWith("verify failed        audit laeuft") && !lines.some((l) => /verloren|lost/i.test(l))
+      && land("fleet/L3").endsWith("verify skipped       audit unknown") && land("fleet/L3").includes("  1 Commit   chore: no gate"),
+    `L1: ${land("fleet/L1").slice(-34)} · L3: ${land("fleet/L3").slice(-34)}`);
+  pin(`${RULE_LANDLOG} — a land whose mainAfter is not on main claims no count and no subject`,
+    land("fleet/L0").includes("  ? Commits  ? (mainAfter nicht auf main)"), land("fleet/L0"));
+  pin(`${RULE_LANDLOG} — direct commits are counted per day, HANDOFF among them, the window cut respected`,
+    lines[1]?.endsWith("  2 Direkt-Commits, davon 1 HANDOFF") === true && lines[5]?.endsWith("  1 Direkt-Commit, davon 1 HANDOFF") === true,
+    `${lines[1]} | ${lines[5]}`);
+  const noLedger = renderLandLog({ notes, audits: null, commits, sinceMs: t(1, 7) }).filter((l) => !l.includes("(direkt)"));
+  pin(`${RULE_LANDLOG} — with no audit ledger every land says "audit ?", not a verdict`,
+    noLedger.length === 4 && noLedger.every((l) => l.endsWith("audit ?")), noLedger.map((l) => l.slice(-10)).join(" | "));
+  const labels = [verifyLabel(null), verifyLabel({ ok: true, exitCode: LAND_LOG_SKIP_EXIT }), verifyLabel({ ok: null }),
+    verifyLabel({ ok: false }), verifyLabel({ ok: true, proportional: true }), verifyLabel({ ok: true })];
+  pin(`${RULE_LANDLOG} — verify reads no gate, the skip exit and a waitedOut as skipped`,
+    labels.join(",") === "skipped,skipped,skipped,failed,proportional,ok", labels.join(","));
+  pin("land-log.ts#VERIFY_SKIP_EXIT is server.ts#VERIFY_SKIP_EXIT",
+    new RegExp(`^const VERIFY_SKIP_EXIT = ${LAND_LOG_SKIP_EXIT};`, "m").test(server), `land-log says ${LAND_LOG_SKIP_EXIT}`);
 }
 
 console.log(rows.join("\n"));

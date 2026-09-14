@@ -127,6 +127,26 @@ export async function run(ctx: Ctx): Promise<void> {
       && scoped.slowest[0]!.check === C && scoped.slowest[0]!.n === 3
       && scoped.slowest[0]!.totalMs === 600 && scoped.slowest[0]!.medianMs === 200,
     JSON.stringify(scoped.slowest));
+  // TWO GENERATIONS OF ROWS, ONE ANSWER. Since 2026-09-14 a row carries `phases` + `phaseTop`
+  // (e2e/trail-emit.ts); the register holds thousands of files written before that. The reader must
+  // give the same answer over old rows, new rows and a mix — a field it does not know is never damage.
+  const plain = [
+    row({ run: "r1", check: C, ok: false, tree: A, ms: 100 }),
+    row({ run: "r2", check: C, ok: false, tree: B, ms: 300 }),
+    row({ run: "r2", check: "sib", ok: true, tree: B, ms: 7 }),
+  ];
+  const phased: TrailRecord[] = plain.map((r) => {
+    const ms = typeof r.msSincePrev === "number" ? r.msSincePrev : 0;
+    const extra = { phases: { boot: 0, tmux: 0, http: ms, sleep: 0, rest: 0 }, phaseTop: { http: { ms, at: "e2e/x.ts:1" } } };
+    return { ...r, ...extra };
+  });
+  const mixed = [phased[0]!, plain[1]!, phased[2]!];
+  const answer = (rs: TrailRecord[]) => JSON.stringify(trailStats(rs, { now: T, check: C }));
+  check("trailstats: rows with and without `phases` read identically — old trail files stay readable",
+    answer(plain) === answer(phased) && answer(plain) === answer(mixed)
+      && trailStats(mixed, { now: T }).outOfScope.malformed === 0 && trailStats(mixed, { now: T }).rows === 3,
+    `plain=${answer(plain).slice(0, 200)} mixed=${answer(mixed).slice(0, 200)}`);
+
   // a suite filter is exact and says so: the other suite is out of scope, not malformed
   const bySuite = trailStats([
     row({ run: "r1", check: C, ok: false, tree: A }),

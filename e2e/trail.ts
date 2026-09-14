@@ -8,6 +8,12 @@
 import { readFileSync } from "node:fs";
 import { ROOT, check, results } from "./harness";
 import {
+  PHASES_ON,
+  PHASE_PRIORITY,
+  callSiteOf,
+  createPhaseClock,
+  phaseClock,
+  withPhases,
   TRAIL_DETAIL_MAX,
   TRAIL_DIRTY,
   TRAIL_RUN,
@@ -53,6 +59,78 @@ export async function run(): Promise<void> {
   check("trail: the trail is outside the instance dir, so a GREEN run's rows survive its cleanup",
     !!trailFile && trailFile !== ROOT && !trailFile.startsWith(`${ROOT}/`),
     `trail=${trailFile} instance=${ROOT}`);
+
+  // WHERE msSincePrev WENT, on every row this run wrote: four exclusive phases plus `rest`, summing
+  // to msSincePrev, none negative. A negative `rest` is a double-booked second — the exact defect
+  // exclusive attribution exists to prevent. Under FLEET_E2E_PHASES=0 the opposite must hold.
+  const badPhases = rows.filter((r) => {
+    const p = r.phases;
+    if (!PHASES_ON) return p !== undefined || r.phaseTop !== undefined;
+    if (!p) return true;
+    const parts = [p.boot, p.tmux, p.http, p.sleep, p.rest];
+    return parts.some((n) => typeof n !== "number" || n < 0)
+      || Math.abs(parts.reduce((s, n) => s + n, 0) - r.msSincePrev) > 50;
+  });
+  check(PHASES_ON
+    ? "trail: every row carries phases (boot/tmux/http/sleep/rest) that sum to its msSincePrev"
+    : "trail: FLEET_E2E_PHASES=0 writes no phases field on any row",
+  rows.length > 0 && badPhases.length === 0,
+  `rows=${rows.length} bad=${badPhases.length} first=${JSON.stringify(badPhases[0] ?? null).slice(0, 300)}`);
+  // ...and the probe is not vacuous: every shard of the runner drives tmux, polls over HTTP and
+  // sleeps, so a phase with zero booked ms means a wrapper silently missed its primitive. `boot` is
+  // left out on purpose — a shard need not restart srv, and it shares the one `timed` path anyway.
+  const booked = PHASE_PRIORITY.filter((ph) => rows.some((r) => (r.phases?.[ph] ?? 0) > 0));
+  check("trail: phases is not vacuous — tmux, http and sleep each booked time in this run",
+    !PHASES_ON || (["tmux", "http", "sleep"] as const).every((ph) => booked.includes(ph)),
+    `booked=${booked.join(",")} calls=${JSON.stringify(phaseClock.calls())}`);
+
+  // the attribution itself, on a synthetic clock. restartSrv (boot, 0→100) runs a get() and a sleep
+  // inside it, and a fetch started at 90 outlives it to 130; then nothing, a bare sleep 150→170 and
+  // a bare fetch 175→185. Expected, exclusively: boot 100, http 30 + 10, sleep 20, rest 40 of 200.
+  let clock = 0;
+  const pc = createPhaseClock(() => clock, "/r", "e2e/trail-emit.ts", "e2e/harness.ts");
+  const hold = <T>(v: T): { p: Promise<T>; go: () => void } => {
+    let go = (): void => {};
+    const p = new Promise<T>((res) => { go = () => res(v); });
+    return { p, go };
+  };
+  const bootH = hold(0), innerGet = hold(0), innerSleep = hold(0), lateFetch = hold(0), bare = hold(0), bareGet = hold(0);
+  const stackAt = (file: string, line: number): Error => {
+    const e = new Error();
+    e.stack = `Error\n    at timed (/r/e2e/trail-emit.ts:9:1)\n    at x (/r/e2e/harness.ts:1:1)\n    at run (/r/${file}:${line}:3)`;
+    return e;
+  };
+  const boot = pc.timed("boot", () => bootH.p, stackAt("e2e/restart.ts", 11));
+  clock = 10; const g = pc.timed("http", () => innerGet.p, stackAt("e2e/restart.ts", 12));
+  clock = 40; innerGet.go(); await g;
+  const s1 = pc.timed("sleep", () => innerSleep.p, stackAt("e2e/restart.ts", 13));
+  clock = 60; innerSleep.go(); await s1;
+  clock = 90; const lf = pc.timed("http", () => lateFetch.p, stackAt("e2e/tasks.ts", 21));
+  clock = 100; bootH.go(); await boot;
+  clock = 130; lateFetch.go(); await lf;
+  clock = 150; const b = pc.timed("sleep", () => bare.p, stackAt("e2e/watch.ts", 31));
+  clock = 170; bare.go(); await b;
+  clock = 175; const bg = pc.timed("http", () => bareGet.p, stackAt("e2e/tasks.ts", 22));
+  clock = 185; bareGet.go(); await bg;
+  const synth = pc.cut(200);
+  check("trail: phase attribution is exclusive by priority — nested and overlapping calls never double-book",
+    synth.ms.boot === 100 && synth.ms.http === 40 && synth.ms.sleep === 20 && synth.ms.tmux === 0
+      && synth.top.boot?.ms === 100 && synth.top.boot.at === "e2e/restart.ts:11"
+      // a call STARTED inside boot is boot's (a get() in restartSrv looks exactly like that), so the
+      // only outermost http call is the bare one — its time counts, the overlapping one's site does not
+      && synth.top.http?.ms === 10 && synth.top.http.at === "e2e/tasks.ts:22"
+      && synth.top.sleep?.ms === 20 && synth.top.sleep.at === "e2e/watch.ts:31",
+    JSON.stringify(synth));
+  const row = withPhases(trailRow("x", true, "", 200, 200), synth);
+  check("trail: rest is msSincePrev minus the four phases, and a cut starts the next row empty",
+    row.phases?.rest === 40 && JSON.stringify(pc.cut(260)) === JSON.stringify({ ms: { boot: 0, tmux: 0, http: 0, sleep: 0 }, top: {} }),
+    JSON.stringify(row.phases));
+  check("trail: the call site skips the probe, and falls back to the harness frame only when nothing else is on the stack",
+    callSiteOf("Error\n    at timed (/r/e2e/trail-emit.ts:9:1)\n    at async plantScreen (/r/e2e/harness.ts:321:11)", "/r",
+      "e2e/trail-emit.ts", "e2e/harness.ts") === "e2e/harness.ts:321"
+      && callSiteOf("Error\n    at /r/e2e/trail-emit.ts:9:1\n    at post (/r/e2e/harness.ts:94:3)\n    at run (/r/e2e/tasks.ts:77:20)",
+        "/r", "e2e/trail-emit.ts", "e2e/harness.ts") === "e2e/tasks.ts:77"
+      && callSiteOf("Error\n    at sleep (native)", "/r", "e2e/trail-emit.ts", "e2e/harness.ts") === "unknown");
 
   const stagedRoot = "/staged-wrapper";
   const stagedSource = resolveSourceTree(stagedRoot, "/non-work-tree/node_modules",

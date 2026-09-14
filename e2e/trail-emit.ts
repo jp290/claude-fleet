@@ -156,6 +156,130 @@ const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "
 export const TRAIL_RUN = `${TRAIL_SUITE}-${stamp}-${process.pid}`;
 export const trailFile = TRAIL_DIR ? join(TRAIL_DIR, `${TRAIL_RUN}.jsonl`) : null;
 
+// --- WHERE msSincePrev GOES -------------------------------------------------------------------
+// msSincePrev says HOW LONG the way from the previous check was, never WHAT it spent it on
+// (measured 2026-09-14 on isolated-20260914T043130Z-27323: 217 checks with 3–10 s gaps carry
+// 1 070 s, half the run, and the row could not attribute a second of it). So every wait primitive
+// the suite shares is timed in exactly four phases, and whatever none of them covered is `rest`.
+//
+// EXCLUSIVE, BY PRIORITY — not four stopwatches. restartSrv polls with get() and Bun.sleep, paneEnv
+// is a loop of tmuxOut and Bun.sleep, and a check may `Promise.all` two fetches: summed stopwatches
+// would count one wall-clock second two or three times and `rest` would go negative. Instead every
+// start/end of an instrumented call is a transition, and the interval since the previous transition
+// is booked to the HIGHEST-priority phase active during it (boot > tmux > http > sleep) or to
+// nothing. The four phases therefore never overlap, and `rest = msSincePrev − Σ phases` holds exactly
+// — the property e2e/trail.ts asserts on every row of the run.
+//
+// The call site. Each row names, per phase, the single longest OUTERMOST call and where it was made
+// (a get() inside restartSrv is boot's work, not a separate http wait). The site is the first stack
+// frame outside this file and outside harness.ts, so a sleep inside plantScreen names the check
+// module that called plantScreen when the stack still holds it; after an await it no longer does,
+// and then the harness frame is the honest answer. The Error is created at call time (~0.2 µs) and
+// its stack string is only formatted when that call becomes the row's longest.
+export type Phase = "boot" | "tmux" | "http" | "sleep";
+export const PHASE_PRIORITY: readonly Phase[] = ["boot", "tmux", "http", "sleep"];
+export type PhaseMs = Record<Phase, number>;
+export interface PhaseSite { ms: number; at: string }
+export interface PhaseCut { ms: PhaseMs; top: Partial<Record<Phase, PhaseSite>> }
+
+const zeroPhases = (): PhaseMs => ({ boot: 0, tmux: 0, http: 0, sleep: 0 });
+
+// the first frame outside `self` and `plumbing`, as `path:line` relative to `root`; a `plumbing`
+// frame only when nothing else is on the stack. Pure over the stack string, so e2e/trail.ts feeds it one.
+export const callSiteOf = (stack: string, root: string, self: string, plumbing: string): string => {
+  let fallback = "";
+  for (const line of stack.split("\n")) {
+    const m = /((?:\/)[^():\s]+):(\d+):\d+\)?$/.exec(line.trim());
+    if (!m || !m[1] || !m[2]) continue;
+    const file = m[1].startsWith(`${root}/`) ? m[1].slice(root.length + 1) : m[1];
+    if (file === self) continue;
+    if (file === plumbing) { fallback ||= `${file}:${m[2]}`; continue; }
+    return `${file}:${m[2]}`;
+  }
+  return fallback || "unknown";
+};
+
+interface OpenCall { phase: Phase; start: number; outer: boolean; err: Error | null }
+
+// One accountant per run. `now` is injected so the attribution is checkable on a synthetic clock.
+export const createPhaseClock = (now: () => number, root: string, self: string, plumbing: string) => {
+  const active: PhaseMs = zeroPhases();
+  let acc: PhaseMs = zeroPhases();
+  let top: Partial<Record<Phase, { ms: number; err: Error | null }>> = {};
+  let last = now();
+  let rowStart = last;
+  // instrumented calls per phase over the whole run — the multiplier of the per-call overhead
+  const calls: PhaseMs = zeroPhases();
+  const dominant = (): Phase | null => PHASE_PRIORITY.find((p) => active[p] > 0) ?? null;
+  const advance = (t: number): void => {
+    const d = dominant();
+    if (d && t > last) acc = { ...acc, [d]: acc[d] + (t - last) };
+    last = t;
+  };
+  const begin = (phase: Phase, err: Error | null): OpenCall => {
+    const t = now();
+    advance(t);
+    // outermost = nothing of equal or higher priority already running
+    const outer = PHASE_PRIORITY.slice(0, PHASE_PRIORITY.indexOf(phase) + 1).every((p) => active[p] === 0);
+    active[phase]++;
+    calls[phase]++;
+    return { phase, start: t, outer, err };
+  };
+  const end = (c: OpenCall): void => {
+    const t = now();
+    advance(t);
+    active[c.phase]--;
+    if (!c.outer) return;
+    const ms = t - Math.max(c.start, rowStart);
+    if (ms > (top[c.phase]?.ms ?? -1)) top = { ...top, [c.phase]: { ms, err: c.err } };
+  };
+  return {
+    calls: (): PhaseMs => ({ ...calls }),
+    timed<T>(phase: Phase, fn: () => Promise<T>, err: Error | null = null): Promise<T> {
+      const c = begin(phase, err);
+      let p: Promise<T>;
+      try { p = fn(); } catch (e) { end(c); throw e; }
+      return p.finally(() => end(c));
+    },
+    // close the row at `t` (the check's own timestamp) and start the next one there
+    cut(t: number): PhaseCut {
+      advance(t);
+      const out: PhaseCut = { ms: acc, top: {} };
+      for (const p of PHASE_PRIORITY) {
+        const hit = top[p];
+        if (hit) out.top[p] = { ms: hit.ms, at: hit.err ? callSiteOf(hit.err.stack ?? "", root, self, plumbing) : "unknown" };
+      }
+      acc = zeroPhases();
+      top = {};
+      rowStart = t;
+      return out;
+    },
+  };
+};
+
+// FLEET_E2E_PHASES=0 switches the whole probe off (no wrapping, no fields) — it exists for the
+// with/without overhead measurement and for nothing else.
+export const PHASES_ON = process.env.FLEET_E2E_PHASES !== "0";
+export const phaseClock = createPhaseClock(Date.now, ROOT, "e2e/trail-emit.ts", "e2e/harness.ts");
+export const timed = <T>(phase: Phase, fn: () => Promise<T>): Promise<T> =>
+  PHASES_ON ? phaseClock.timed(phase, fn, new Error()) : fn();
+
+// Bun.sleep and fetch are wrapped ONCE, here, before any check module runs — the ~560 sleep call
+// sites and ~300 direct fetch sites stay untouched. fetch covers post()/get() and every direct call.
+let installed = false;
+export const installPhaseProbes = (): void => {
+  if (installed || !PHASES_ON) return;
+  installed = true;
+  const sleep = Bun.sleep;
+  Bun.sleep = ((ms: number | Date) => phaseClock.timed("sleep", () => sleep(ms), new Error())) as typeof Bun.sleep;
+  const f = globalThis.fetch;
+  globalThis.fetch = Object.assign(
+    (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+      phaseClock.timed("http", () => f(input, init), new Error()),
+    f,
+  ) as typeof fetch;
+};
+
 export interface TrailRow {
   v: number;
   run: string;
@@ -175,7 +299,18 @@ export interface TrailRow {
   msSincePrev: number;
   ts: number;
   detail?: string;
+  // where msSincePrev went (see the phase block above): four exclusive phases + `rest`, summing to
+  // msSincePrev exactly. Absent in files written before 2026-09-14 and under FLEET_E2E_PHASES=0.
+  phases?: PhaseMs & { rest: number };
+  // per phase with any outermost call: the longest one inside this row and its call site
+  phaseTop?: Partial<Record<Phase, PhaseSite>>;
 }
+
+export const withPhases = (row: TrailRow, cut: PhaseCut): TrailRow => ({
+  ...row,
+  phases: { ...cut.ms, rest: row.msSincePrev - PHASE_PRIORITY.reduce((s, p) => s + cut.ms[p], 0) },
+  ...(Object.keys(cut.top).length > 0 ? { phaseTop: cut.top } : {}),
+});
 
 export const trailRow = (check: string, ok: boolean, detail: string, msSincePrev: number, ts: number): TrailRow => ({
   v: TRAIL_SCHEMA,
@@ -200,13 +335,16 @@ let stopped = false;
 // run's outcome. A write that fails stops the trail for the rest of the run instead of throwing
 // — the loss is visible as the missing/short file, which e2e/trail.ts asserts on.
 export function writeTrailRow(check: string, ok: boolean, detail: string, msSincePrev: number, ts: number): void {
+  // cut BEFORE the early return: a disabled trail must not carry one run's phases into nothing
+  const cut = PHASES_ON ? phaseClock.cut(ts) : null;
   if (stopped || !trailFile) return;
   try {
     if (fd === null) {
       mkdirSync(dirname(trailFile), { recursive: true });
       fd = openSync(trailFile, "a");
     }
-    writeSync(fd, `${JSON.stringify(trailRow(check, ok, detail, msSincePrev, ts))}\n`);
+    const row = trailRow(check, ok, detail, msSincePrev, ts);
+    writeSync(fd, `${JSON.stringify(cut ? withPhases(row, cut) : row)}\n`);
   } catch {
     stopped = true;
   }

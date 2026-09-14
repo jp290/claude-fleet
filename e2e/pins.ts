@@ -48,6 +48,7 @@ import {
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
 import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
 import { readEventLog, readLedger } from "../server/persist";
+import { readJsonl } from "../briefstats";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
@@ -2199,6 +2200,14 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     pin(`${RULE_LEDGER} — readEventLog inherits it`,
       viaEventLog.total === 1 && viaEventLog.rows.every((r) => r !== null && typeof r === "object"),
       `total=${viaEventLog.total}`);
+    // briefstats.ts#readJsonl was a hand copy of this reader that kept the old defect after 99c8d74d.
+    // Run it, not grep it: a delegation that re-grew its own parse loop must still turn this red.
+    const brief = `${dir}/briefstats.jsonl`;
+    writeFileSync(brief, `${valid[0]}\nnull\n`);
+    const viaBrief = await readJsonl<Record<string, unknown>>(brief);
+    pin(`${RULE_LEDGER} — briefstats.ts#readJsonl inherits it (one record + one null line → rows=1 malformed=1)`,
+      viaBrief.rows.length === 1 && viaBrief.malformed === 1 && JSON.stringify(viaBrief.rows) === `[${valid[0]}]`,
+      `rows=${JSON.stringify(viaBrief.rows).slice(0, 120)} malformed=${viaBrief.malformed}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

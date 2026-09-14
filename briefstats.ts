@@ -50,6 +50,7 @@
 // of these two ledgers can separate them; inventing a third state would only hide that.
 
 import { existsSync } from "node:fs";
+import { readLedger } from "./server/persist";
 
 /** where the delivered text came from — server.ts's BriefSource, the seven values a receipt carries */
 export const BRIEF_SOURCES = ["compiled", "owner", "main", "raw", "clarify", "founding", "card"] as const;
@@ -393,21 +394,13 @@ export function briefStats(
 // --- the CLI half: the only part of this file that knows a path exists.
 
 /**
- * appendEvent's read counterpart, rotation-aware — server.ts's readLedger, copied because this CLI
- * must not import the server. At AUDIT_ROTATE_BYTES the whole history becomes `x.jsonl.1` and
- * `x.jsonl` restarts empty: a single-file reader answers from a near-empty ledger with NO error,
- * so the file looks young rather than truncated. `.1` first — that order is chronological.
+ * appendEvent's read counterpart, rotation-aware — server/persist.ts#readLedger itself, not a copy.
+ * That module is a leaf (it imports only node:fs and ./errors, never server.ts), so this CLI takes the
+ * one read door instead of re-spelling it: the hand copy that stood here kept delivering a parseable
+ * non-record line (`null`, `42`, `[…]`) as a row after 99c8d74d closed that hole in readLedger.
  */
 export async function readJsonl<T>(file: string): Promise<{ rows: T[]; malformed: number }> {
-  const rows: T[] = [];
-  let malformed = 0;
-  for (const f of [`${file}.1`, file]) {
-    if (!existsSync(f)) continue;
-    for (const line of (await Bun.file(f).text()).split("\n")) {
-      if (!line) continue;
-      try { rows.push(JSON.parse(line) as T); } catch { malformed++; } // a torn line is a hole, reported as one
-    }
-  }
+  const { rows, malformed } = await readLedger<T>(file);
   return { rows, malformed };
 }
 

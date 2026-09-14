@@ -1135,9 +1135,9 @@ gelandet — das Verdikt kam **18:32**, der Land-Commit traegt **18:24:44**. Das
 Stunden unbesehen. Dieselbe Klasse wie der Nudge-Befund vom selben Tag: ein Ergebnis, dessen
 Scheitern nur in eine Datei faellt, die niemand liest, ist von „gruen" nicht unterscheidbar.
 
-**ROOT-CAUSED UND BEHOBEN 2026-09-14 in `<REPAIR-SHA>` — die Familie war ein Server-Duplikat, kein
+**ROOT-CAUSED UND BEHOBEN 2026-09-14 in `02e991c8` — die Familie war ein Server-Duplikat, kein
 Flake.** Die Saetze „not root-caused" oben sind damit ueberholt; ein Rot dieses Checks NACH
-`<REPAIR-SHA>` ist wieder ECHT und gehoert dem, der es sieht.
+`02e991c8` ist wieder ECHT und gehoert dem, der es sieht.
 
 *Mechanismus.* `server.ts#websocket.open`, Owner-Zweig (Reconnect bei passender Breite), las
 `stat(streamFile).size` in `ws.data.seedUntil` und fuehrte DANACH `tmux capture-pane` aus;

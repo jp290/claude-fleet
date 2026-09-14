@@ -5438,6 +5438,7 @@ async function refresh() {
       // the window those rows are judged against, and it rides with them — see deviceOnlineMs
       helperOnlineMs?: number;
       attentionOpen?: number;
+      programsStale?: number;
       reportsAwaitingOwner?: number;
       // the owner poll's CUT and PROJECTION of the trail (src/opsevents.ts#opsPollRow); full rows: GET /api/events
       events?: OpsPollRow[];
@@ -5494,6 +5495,8 @@ async function refresh() {
     // the attention inbox's whole share of the 2s poll: one number. It paints the badge, and while
     // the panel is open a CHANGE in it is what re-fetches the rows — the panel never polls itself.
     setAttentionOpen(data.attentionOpen ?? 0);
+    programsStale = typeof data.programsStale === "number"
+      && Number.isInteger(data.programsStale) && data.programsStale > 0 ? data.programsStale : 0;
     setReportsAwaitingOwner(data.reportsAwaitingOwner ?? 0);
     // the operations inbox reads the events the poll already carries — no extra request, and the
     // 📥 badge counts only rows that were minted FOR it (delivery inbox, still awaiting the owner)
@@ -5553,7 +5556,8 @@ async function refresh() {
         p.main?.slot ?? null, p.main?.openedAt ?? null, p.deliveryBudgetNote ?? null,
         // the identity half moves with the OCCUPANT, not with the program: a pane keyed without it
         // would keep painting `identity exact` over a session that has since been re-minted.
-        p.health?.sessionIdMatch ?? null, p.health?.occupancy ?? null]) : "prog-gone";
+        p.health?.sessionIdMatch ?? null, p.health?.occupancy ?? null,
+        p.executionStatus ?? null]) : "prog-gone";
       if (dk !== qDetailKey) { qDetailKey = dk; renderQueueDetail(); }
     } else if (qShell?.isOpen() && qPick !== null) {
       const t = tasksList.find((x) => x.id === qPick);
@@ -6549,6 +6553,14 @@ interface ProgramInfo extends ProgramDigest {
   // foreign surface, and anything that is not one of the three known words is rendered as
   // unreadable, never as a match.
   health?: { occupancy?: string; sessionIdMatch?: string } | null;
+  // D2's additive owner-list projection. `status` is already the persisted Program lifecycle,
+  // so the server calls this response-only field `executionStatus`. Every nested value stays
+  // optional at this wire boundary: a partial or older response is unreadable, never a zero.
+  executionStatus?: {
+    main?: { slot?: number | null; occupancy?: string; sessionIdMatch?: string };
+    attention?: { open?: number };
+    lanes?: { running?: number; queued?: number; waiting?: number };
+  } | null;
 }
 
 const wireRecord = (value: unknown): Record<string, unknown> | null =>
@@ -6608,6 +6620,7 @@ let programsBusy = false;
 let programsForceQueued = false;
 let programsDigestKey = "";
 const PROGRAMS_FLOOR_MS = 30_000;
+let programsStale = 0;             // fleet-wide count from the 2 s owner poll; absent means zero
 
 async function loadPrograms(force = false): Promise<void> {
   if (programsBusy) { if (force) programsForceQueued = true; return; }
@@ -6968,6 +6981,54 @@ function programHealthState(p: ProgramInfo, read: "unread" | "ok" | "fail"): {
       : `There is no live bound occupant to compare an identity against (occupancy ${occupancy || "unread"}),`
         + " so no comparison is made. A stale binding names an occupant that is gone, and matching"
         + " its recorded id against whoever holds the slot now would answer a question nobody asked." };
+}
+
+type ProgramStatusFact = { label: string; tone: "ok" | "dim" | "warn"; sentence: string };
+interface ProgramStatusRender {
+  facts: ProgramStatusFact[];
+  reason: string | null;
+}
+
+// The executable rendering model for D2's IN-MEMORY half. It accepts the Program row rather than
+// loose counters so omitting `executionStatus` in a fixture takes the same path as an older server:
+// one explicit unreadable sentence and no invented zeros. The ledger half cannot be read on this
+// owner surface; renderProgramDetail names that boundary beside these facts.
+function programStatusRender(p: ProgramInfo, read: "unread" | "ok" | "fail"): ProgramStatusRender {
+  if (read !== "ok") return { facts: [], reason: read === "fail"
+    ? "The last GET /api/programs did not answer, so the Program status projection is cached and unreadable."
+    : "GET /api/programs has not been read yet, so the Program status projection is unknown." };
+  const status = p.executionStatus;
+  const main = status?.main;
+  const attention = status?.attention;
+  const lanes = status?.lanes;
+  const occupancy = main?.occupancy;
+  const slot = main?.slot;
+  const sessionIdMatch = main?.sessionIdMatch;
+  const open = attention?.open;
+  const running = lanes?.running;
+  const queued = lanes?.queued;
+  const waiting = lanes?.waiting;
+  const count = (value: unknown): value is number =>
+    typeof value === "number" && Number.isInteger(value) && value >= 0;
+  if ((occupancy !== "live" && occupancy !== "stale" && occupancy !== "unbound")
+    || (sessionIdMatch !== "exact" && sessionIdMatch !== "divergent" && sessionIdMatch !== "unknown")
+    || !(slot === null || (Number.isInteger(slot) && (slot as number) > 0))
+    || !count(open) || !count(running) || !count(queued) || !count(waiting))
+    return { facts: [], reason: "This Program row carries no complete D2 status projection this build can read; missing values stay unknown." };
+  return { reason: null, facts: [
+    { label: `MAIN status ${occupancy} · slot ${slot ?? "—"}`,
+      tone: occupancy === "live" ? "ok" : occupancy === "stale" ? "warn" : "dim",
+      sentence: slot === null ? "the Program has no bound MAIN slot"
+        : `the server projects slot ${slot} as ${occupancy}; occupancy is derived from slot and openedAt` },
+    { label: `${open} attention open`, tone: open > 0 ? "warn" : "dim",
+      sentence: "open or send-uncertain attention rows assigned to this Program" },
+    { label: `${running} running`, tone: running > 0 ? "ok" : "dim",
+      sentence: "occupied lanes assigned to this Program" },
+    { label: `${queued} queued`, tone: queued > 0 ? "warn" : "dim",
+      sentence: "queued task rows assigned to this Program" },
+    { label: `${waiting} waiting`, tone: waiting > 0 ? "warn" : "dim",
+      sentence: "queued Program rows whose dispatcher note starts with waiting:" },
+  ] };
 }
 
 // the picker's pinned + recent roots as an <input list=> source. Shared by the task composer and
@@ -7537,6 +7598,19 @@ function renderProgramDetail(shell: Shell, id: string): void {
   // …and the identity sentence in full where it COSTS something: a divergent identity is a MAIN
   // whose lands are already being refused, and a tooltip is not where an owner finds that out.
   if (hs.state === "divergent") shell.detail.appendChild(el("div", "pkdwarn", hs.sentence));
+
+  const projected = programStatusRender(p, programsRead);
+  const status = qDetailSection(shell.detail, "Program status");
+  if (projected.reason) status.appendChild(el("div", "pkdwarn", projected.reason));
+  else {
+    const statusFacts = el("div", "ocfacts");
+    for (const fact of projected.facts)
+      statusFacts.appendChild(chip(fact.label, fact.tone, fact.sentence));
+    status.appendChild(statusFacts);
+  }
+  status.appendChild(el("div", "shellhint",
+    "This owner list carries D2's in-memory projection only. lastLand, lastAudit and deploy exist"
+    + " only on the bound MAIN's self projection, so this board cannot attribute or render them."));
 
   if (p.intent || p.successCriterion) {
     const frame = qDetailSection(shell.detail, "Frame", true, false);
@@ -8922,7 +8996,8 @@ function renderQueue() {
     qLaneKey(laneJoins),
     // the MARK is derived from the slots, so it moves without any program field moving. Leaving
     // it out of the key would freeze a MAIN at `live` for as long as no task changed.
-    programsRead, programsList.map((p) => [p.id, p.status, p.title, programMark(p).mark]),
+    programsRead, programsStale,
+    programsList.map((p) => [p.id, p.status, p.title, programMark(p).mark]),
     [...model.work, ...model.history].map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.briefAt,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
       t.refine?.at, t.refining, t.comments?.n])]);
@@ -8938,7 +9013,8 @@ function renderQueue() {
       `${n("backlog")} backlog`, intakeOn ? "✉ intake on" : ""].filter(Boolean).join(" · "));
   } else if (qView === "programs") {
     shell.setSubtitle(programsRead === "fail" ? "Programs unavailable — the last read failed"
-      : `${programsList.length} program${programsList.length === 1 ? "" : "s"}`);
+      : `${programsList.length} program${programsList.length === 1 ? "" : "s"}`
+        + (programsStale > 0 ? ` · ${programsStale} stale active` : ""));
   } else if (qView === "history") {
     const count = tasksList.filter(qClosed).length;
     shell.setSubtitle(`${count} done or archived task${count === 1 ? "" : "s"}`);

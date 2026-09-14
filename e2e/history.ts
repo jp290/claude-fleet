@@ -1,6 +1,6 @@
 // Prompt history per slot, the global append-only prompt log and the /api/prompts directory
 // served from it, plus the transcript and session-brief reads.
-import { statSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { appendFileSync, statSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { check, get, post, plogPath, plogRead, ROOT } from "./harness";
 import { WORKER_CONTRACTS } from "../src/protocol";
@@ -148,7 +148,21 @@ export async function run(): Promise<void> {
       check("transcript entries are structured", tr1j.entries.every((e) => (e.role === "user" || e.role === "assistant") && e.blocks.length > 0));
       const tr2 = await get(`/api/slots/${trFree}/transcript?after=${tr1j.total}`);
       const tr2j = (await tr2.json()) as { entries: unknown[]; total: number };
-      check("transcript incremental fetch returns nothing new", tr2.ok && tr2j.entries.length === 0 && tr2j.total >= tr1j.total, `total=${tr2j.total}`);
+      // `total` EQUAL, not `>=`: nothing was appended, so a total that grew with empty entries is
+      // the frozen-reader shape (lines counted, never delivered) and must not pass
+      check("transcript incremental fetch returns nothing new", tr2.ok && tr2j.entries.length === 0 && tr2j.total === tr1j.total,
+        `total=${tr2j.total} vs ${tr1j.total} entries=${tr2j.entries.length}`);
+      // the other half: an incremental fetch after a real append must deliver exactly the appended
+      // lines, numbered absolutely — the only fetch above had nothing to deliver, so a reader that
+      // stopped after its first poll passed it
+      appendFileSync(`${trProj}/own.jsonl`, `${trLine("user", "a follow-up question")}${trLine("assistant", "a follow-up answer")}`);
+      const tr3 = await get(`/api/slots/${trFree}/transcript?after=${tr1j.total}`);
+      const tr3j = (await tr3.json()) as { entries: { n: number; role: string; blocks: { text: string }[] }[]; total: number };
+      check("transcript incremental fetch after an append returns exactly the appended entries",
+        tr3.ok && tr3j.total === tr1j.total + 2
+          && JSON.stringify(tr3j.entries.map((e) => [e.n, e.role, e.blocks.map((b) => b.text).join("")]))
+            === JSON.stringify([[tr1j.total + 1, "user", "a follow-up question"], [tr1j.total + 2, "assistant", "a follow-up answer"]]),
+        `total=${tr3j.total} vs ${tr1j.total}+2 entries=${JSON.stringify(tr3j.entries).slice(0, 300)}`);
       await post(`/api/slots/${trFree}/kill`, {});
     }
     rmSync(trProj, { recursive: true, force: true }); // it lives outside the repo — do not leave it

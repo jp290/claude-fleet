@@ -1423,6 +1423,51 @@ export async function run(ctx: Ctx): Promise<void> {
       && !Object.prototype.hasOwnProperty.call(d2OwnerProgram.executionStatus, "deploy"),
     JSON.stringify(d2OwnerProgram?.executionStatus ?? null));
 
+  // THE CLIENT HALF, executed rather than regexed. This suite's scratch tree exposes the checkout
+  // through node_modules, the same bridge the outcome-family client checks use. Cut out the pure
+  // rendering model, transpile that exact source, and feed it the owner route's real wire spelling.
+  // BREAKS IF: renderProgramDetail stops consuming the model, stale softens into live/dim, any of
+  // the three lane counters or attention disappears, or the executionStatus field is omitted.
+  let d2ClientSource = "";
+  let d2ClientError = "";
+  try {
+    d2ClientSource = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+  } catch (e) { d2ClientError = e instanceof Error ? e.message : String(e); }
+  const d2RenderStart = d2ClientSource.indexOf("type ProgramStatusFact =");
+  const d2RenderEnd = d2ClientSource.indexOf("// the picker's pinned + recent roots", d2RenderStart);
+  const d2RenderSource = d2RenderStart >= 0 && d2RenderEnd > d2RenderStart
+    ? d2ClientSource.slice(d2RenderStart, d2RenderEnd) : "";
+  const d2RenderFn = d2RenderSource
+    ? new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(d2RenderSource)
+      + "\nreturn programStatusRender;")() as
+        ((program: Record<string, unknown>, read: "unread" | "ok" | "fail") =>
+          { facts: { label: string; tone: string; sentence: string }[]; reason: string | null })
+    : null;
+  check("program detail status fixture: the client rendering model is executable from src/client.ts",
+    d2RenderFn !== null, d2ClientError || d2RenderSource.slice(0, 120) || "rendering model not found");
+  const d2Rendered = d2RenderFn?.({ executionStatus: {
+    main: { slot: 12, occupancy: "stale", sessionIdMatch: "unknown" },
+    attention: { open: 2 }, lanes: { running: 1, queued: 3, waiting: 1 },
+  } }, "ok") ?? null;
+  const d2RenderedLabels = d2Rendered?.facts.map((fact) => `${fact.tone}:${fact.label}`) ?? [];
+  check("program detail status: stale MAIN, attention and every lane count are visible from the owner projection",
+    d2ClientSource.includes("const projected = programStatusRender(p, programsRead);")
+      && d2ClientSource.includes("statusFacts.appendChild(chip(fact.label, fact.tone, fact.sentence));")
+      && JSON.stringify(d2RenderedLabels) === JSON.stringify([
+        "warn:MAIN status stale · slot 12", "warn:2 attention open",
+        "ok:1 running", "warn:3 queued", "warn:1 waiting",
+      ]), JSON.stringify(d2Rendered ?? null));
+  const d2ProjectionOmitted = d2RenderFn?.({}, "ok") ?? null;
+  check("program detail status: omitting executionStatus is visibly unreadable, never six invented zeroes",
+    d2ProjectionOmitted?.facts.length === 0
+      && d2ProjectionOmitted.reason?.includes("no complete D2 status projection") === true,
+    JSON.stringify(d2ProjectionOmitted ?? null));
+  check("program list status: programsStale from the owner poll is visible in the Programs header",
+    d2ClientSource.includes("programsStale?: number;")
+      && d2ClientSource.includes("programsStale = typeof data.programsStale === \"number\"")
+      && d2ClientSource.includes("programsStale > 0 ? ` · ${programsStale} stale active` : \"\""),
+    "refresh + Programs subtitle in src/client.ts");
+
   const d2ForeignExecution = await selfExecution(foreignStatusToken);
   // BREAKS IF: programExecutionView projects all Programs instead of the exact bound occupant's Programs.
   check("program status: a MAIN of another program does not see this program's status",

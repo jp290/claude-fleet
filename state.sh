@@ -336,10 +336,56 @@ hub_sensor
 echo "  (a direct commit in the main checkout never calls server.ts#recordLand, so"
 echo "   server.ts#pushLandToHub never pushes it — only the NEXT land closes this gap)"
 echo
-echo "=== machine hygiene (nothing reaps these) ==="
-echo "  leaked e2e tmux sockets: $(ls /private/tmp/tmux-501/ 2>/dev/null | grep -c fleet)"
-echo "  TMPDIR e2e scratch:      $(du -shc "${TMPDIR:-/tmp}"/fleet-e2e-instance-* 2>/dev/null | tail -1 | cut -f1)"
-echo "  suites running now:      $(ps -eo command | grep -c '^/bin/sh ./e2e-isolated.sh')"
+echo "=== machine hygiene (read-only: this block never kills or deletes — reaping is its own cut) ==="
+# Counting socket NAMES listed the live `claudefleet` as a leak and a dead file like a process holding
+# RAM (docs/messungen/2026-09-14-ram-optimierung-astra.md §F6). So: production is named and skipped
+# (no tmux call reaches it), every other fleet socket is probed — live, dead (the file answers
+# "no server running"/"Connection refused"), or unknown (anything else, a 2 s timeout included).
+# A live one's owner is its tmux server's cwd; unreadable is unknown, never dead.
+hy_sockdir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+hy_live=0; hy_dead=0; hy_unknown=0; hy_dead_names=""; hy_lines=""
+for hy_sock in "$hy_sockdir"/*fleet*; do
+  [ -S "$hy_sock" ] || continue
+  hy_name=${hy_sock##*/}
+  case $hy_name in claudefleet) continue ;; esac
+  hy_err=$(perl -e 'alarm 2; exec @ARGV' tmux -S "$hy_sock" list-sessions 2>&1 >/dev/null) && hy_rc=0 || hy_rc=$?
+  if [ "$hy_rc" -eq 0 ]; then
+    hy_live=$((hy_live + 1))
+    hy_pid=$(perl -e 'alarm 2; exec @ARGV' tmux -S "$hy_sock" display-message -p '#{pid}' 2>/dev/null)
+    hy_cwd=$([ -n "$hy_pid" ] && lsof -a -p "$hy_pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+    case $hy_cwd in
+      "") hy_owner="unknown (server cwd not readable)" ;;
+      */fleet-e2e-instance-*) hy_owner="e2e instance ${hy_cwd##*/}" ;;
+      "$MAIN_CHECKOUT") hy_owner="main checkout" ;;
+      *) hy_owner="cwd ${hy_cwd#"$HOME"/}" ;;
+    esac
+    hy_lines="$hy_lines    live     $hy_name — owner: $hy_owner
+"
+  elif printf '%s' "$hy_err" | grep -Eq 'no server running|Connection refused'; then
+    hy_dead=$((hy_dead + 1)); hy_dead_names="$hy_dead_names $hy_name"
+  else
+    hy_unknown=$((hy_unknown + 1))
+    hy_lines="$hy_lines    unknown  $hy_name — tmux exit $hy_rc: $(printf '%s' "$hy_err" | head -1 | cut -c1-60)
+"
+  fi
+done
+echo "  production socket claudefleet: not probed, never counted"
+echo "  e2e tmux sockets: $hy_live live · $hy_dead dead · $hy_unknown unknown"
+printf '%s' "$hy_lines"
+[ "$hy_dead" -gt 0 ] && echo "    dead     socket file, no server, no process RAM:$(printf '%s' "$hy_dead_names" | cut -c1-120)"
+# Scratch is DISK: allocated (du -sk) and logical (du -Ak) differ ~2x here, and neither is resident RAM.
+# Both walks run side by side — each costs seconds over a few hundred thousand files.
+set -- "${TMPDIR:-/tmp}"/fleet-e2e-instance-*
+if [ -e "$1" ]; then
+  hy_fs=$(df -Y "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR == 2 { print $2 }')
+  [ -n "$hy_fs" ] || hy_fs=$(df -T "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR == 2 { print $2 }')
+  hy_sizes=$( { du -skc "$@" 2>/dev/null | tail -1 | awk '{ printf "a %d\n", $1 }' & du -Akc "$@" 2>/dev/null | tail -1 | awk '{ printf "l %d\n", $1 }'; wait; } )
+  hy_mib() { printf '%s\n' "$hy_sizes" | awk -v k="$1" '$1 == k { printf "%.0f MiB", $2 / 1024; f = 1 } END { if (!f) printf "UNKNOWN" }'; }
+  echo "  TMPDIR e2e scratch: $# dirs · $(hy_mib a) allocated (du -sk) · $(hy_mib l) logical (du -Ak) · filesystem ${hy_fs:-UNKNOWN} — disk, not RAM"
+else
+  echo "  TMPDIR e2e scratch: 0 dirs"
+fi
+echo "  suites running now: $(ps -eo command | grep -c '^/bin/sh ./e2e-isolated.sh')"
 # silent at or below the threshold; handoff-rotate.ts#HANDOFF_WARN_KB is the same number (e2e/pins.ts)
 if [ -f "$MAIN_CHECKOUT/HANDOFF.md" ]; then
   handoff_bytes=$(wc -c < "$MAIN_CHECKOUT/HANDOFF.md" | tr -d ' ')

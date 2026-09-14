@@ -465,16 +465,26 @@ const routeSet = (src: string): string[] => [...new Set([
   ...[...src.matchAll(LITERAL)].map((m) => `= ${m[1]}`),
   ...[...src.matchAll(REGEXP)].map((m) => `~ ${m[1]}`),
 ])].sort();
-// every `url.pathname` use the two extractors above do NOT recognize, minus the two forms that
-// deliberately narrow rather than route (the share-host whitelist, the STATIC map lookup)
+// every path read the two extractors above do NOT consume. A line is judged by its RESIDUE: each
+// spelling `routeSet` reads (LITERAL, REGEXP) and the two forms that deliberately narrow rather than
+// route (the share-host whitelist, the STATIC map lookup) are cut out, and a `pathname` still left
+// over is a form nobody reads. Keyed on the bare word, not on `url.pathname`: the older whole-line
+// filter only looked at lines carrying the literal text `url.pathname` and then passed a line as
+// soon as ONE recognized form was on it, so `url["pathname"]`, url[`pathname`], a named regex's
+// `BACK.test(url.pathname)` and an unread second form beside a read one all routed past it.
+// TOKENLESS adds the spellings that reach the path without the word at all: a computed key on
+// `url` (`url[k]`), a destructure OF `url`, and `req.url` read raw instead of via `new URL(req.url)`.
+// Whole-line comments are skipped — they route nothing, and one names "the pathname" in prose.
+const RECOGNIZED = [LITERAL, REGEXP, /\]\.includes\(url\.pathname\)/g, /STATIC\[url\.pathname\]/g];
+const TOKENLESS = /\burl\s*\[|\}\s*=\s*url\b|(?<!new URL\()\breq\.url\b/;
 const unrecognized = (src: string): string[] =>
-  (src.match(/.*url\.pathname.*/g) ?? []).map((l) => l.trim()).filter((l) =>
-    !/url\.pathname === "/.test(l) && !/\.(?:exec|test)\(url\.pathname\)/.test(l)
-    && !/\]\.includes\(url\.pathname\)/.test(l) && !/STATIC\[url\.pathname\]/.test(l));
-// THE ALIAS GAP. Both functions above key on the literal text `url.pathname`, so a route that
-// reads the path under any other name — `const { pathname } = url`, `const p = url.pathname` —
-// is invisible to BOTH: it routes, `routeSet` never sees it, `unrecognized` never flags it, and
-// the allowlist check passes while an unauthenticated route exists. That is the file's own
+  src.split("\n").map((l) => l.trim()).filter((l) => !/^(?:\/\/|\*(?:\s|$))/.test(l)).filter((l) =>
+    /pathname/i.test(RECOGNIZED.reduce((rest, re) => rest.replace(re, ""), l)) || TOKENLESS.test(l));
+// THE ALIAS GAP. `routeSet` keys on the literal text `url.pathname`, so a route that reads the
+// path under any other name — `const { pathname } = url`, `const p = url.pathname` — is invisible
+// to it: it routes, `routeSet` never sees it, and the allowlist check passes while an
+// unauthenticated route exists (`unrecognized` flags the BINDING since 2026-09-14; before, it was
+// blind to both). That is the file's own
 // premise (see the header: "every syntactic form that reaches a route must be one the extractor
 // recognizes") turned against it, so the alias is banned outright in the pinned regions rather
 // than taught to the extractor: one recognized spelling is what makes the pin legible at all.
@@ -488,74 +498,80 @@ const pathAliases = (src: string): string[] => [
 ];
 
 // --- §2 fixtures: the dangerous owner surface ------------------------------------------------
-// `ownerSafe` marks the probes whose invalid-body owner call is provably side-effect-free, so the
-// positive control can prove the route exists without the matrix itself changing fleet state.
+// `owner` marks the probes whose invalid-body owner call is provably side-effect-free, so the
+// positive control can prove the route exists without the matrix itself changing fleet state —
+// and it is the EXACT status that call answers, not a flag. The control used to exclude only
+// 401/403/404, so a 500 from a broken handler read as "the owner is admitted": a crash was the
+// existence proof. An exact status is a route that ran its own validation and said so; a 5xx cannot
+// be written here (the type admits 200/400/409 only). Measured 2026-09-14 on a
+// scratch instance with the suite's FLEET_DISPATCH_REPO set (without it, the task dispatch probe
+// answers 400 "no target repo" instead of 409).
 // /api/dispatch is the one exclusion: it reads `body.on` with no validation (server.ts ~5393).
-interface Probe { path: string; method: "GET" | "POST"; body?: unknown; ownerSafe?: boolean }
+interface Probe { path: string; method: "GET" | "POST"; body?: unknown; owner?: 200 | 400 | 409 }
 const dangerous = (slot: number): Probe[] => [
-  { path: "/send", method: "POST", body: { slot, text: "x" }, ownerSafe: true },
-  { path: `/api/slots/${slot}/kill`, method: "POST", body: {}, ownerSafe: true },
-  { path: `/api/slots/${slot}/open`, method: "POST", body: { model: "not a model!" }, ownerSafe: true },
-  { path: `/api/slots/${slot}/open-worktree`, method: "POST", body: {}, ownerSafe: true },
-  { path: `/api/slots/${slot}/share`, method: "POST", body: { password: "short" }, ownerSafe: true },
-  { path: `/api/slots/${slot}/unshare`, method: "POST", body: {}, ownerSafe: true },
-  { path: `/api/slots/${slot}/rename`, method: "POST", body: { label: "sec" }, ownerSafe: true },
-  { path: `/api/slots/${slot}/mission`, method: "POST", body: { mission: "sec" }, ownerSafe: true },
+  { path: "/send", method: "POST", body: { slot, text: "x" }, owner: 400 },
+  { path: `/api/slots/${slot}/kill`, method: "POST", body: {}, owner: 200 },
+  { path: `/api/slots/${slot}/open`, method: "POST", body: { model: "not a model!" }, owner: 400 },
+  { path: `/api/slots/${slot}/open-worktree`, method: "POST", body: {}, owner: 400 },
+  { path: `/api/slots/${slot}/share`, method: "POST", body: { password: "short" }, owner: 400 },
+  { path: `/api/slots/${slot}/unshare`, method: "POST", body: {}, owner: 200 },
+  { path: `/api/slots/${slot}/rename`, method: "POST", body: { label: "sec" }, owner: 400 },
+  { path: `/api/slots/${slot}/mission`, method: "POST", body: { mission: "sec" }, owner: 400 },
   // the record a slot is next SPAWNED from — its value lands in a shell word on the next heal or
   // restart, so the route is dangerous in the same way `open` is. An invalid model answers the
   // owner a side-effect-free 400 (record untouched), which is what carries the positive control.
-  { path: `/api/slots/${slot}/model`, method: "POST", body: { model: "not a model!" }, ownerSafe: true },
-  { path: `/api/slots/${slot}/land`, method: "POST", body: {}, ownerSafe: true },
-  { path: `/api/slots/${slot}/merge`, method: "POST", body: {}, ownerSafe: true },
-  { path: `/api/slots/${slot}/shelve`, method: "POST", body: {}, ownerSafe: true },
-  { path: `/api/slots/${slot}/autos`, method: "POST", body: {}, ownerSafe: true },
-  { path: "/api/worktrees/remove", method: "POST", body: {}, ownerSafe: true },
-  { path: "/api/worktrees/discard", method: "POST", body: {}, ownerSafe: true },
-  { path: "/api/repos/undo-land", method: "POST", body: {}, ownerSafe: true },
-  { path: "/api/repo-base", method: "POST", body: {}, ownerSafe: true },
+  { path: `/api/slots/${slot}/model`, method: "POST", body: { model: "not a model!" }, owner: 400 },
+  { path: `/api/slots/${slot}/land`, method: "POST", body: {}, owner: 400 },
+  { path: `/api/slots/${slot}/merge`, method: "POST", body: {}, owner: 400 },
+  { path: `/api/slots/${slot}/shelve`, method: "POST", body: {}, owner: 400 },
+  { path: `/api/slots/${slot}/autos`, method: "POST", body: {}, owner: 400 },
+  { path: "/api/worktrees/remove", method: "POST", body: {}, owner: 400 },
+  { path: "/api/worktrees/discard", method: "POST", body: {}, owner: 400 },
+  { path: "/api/repos/undo-land", method: "POST", body: {}, owner: 400 },
+  { path: "/api/repo-base", method: "POST", body: {}, owner: 400 },
   // the per-repo unattended lane cap: the one owner setting that WIDENS how many sessions the
   // machine starts by itself, so a scoped credential reaching it would be a queue that meters
   // itself. An empty body answers the owner a side-effect-free 400 (no entry written), which is
   // what carries the positive control.
-  { path: "/api/repo-lane-cap", method: "POST", body: {}, ownerSafe: true },
-  { path: "/api/autos/switch", method: "POST", body: {}, ownerSafe: true },
-  { path: "/api/autos/quiet", method: "POST", body: { start: 99, end: 99 }, ownerSafe: true },
-  { path: "/api/dispositions", method: "POST", body: {}, ownerSafe: true },
+  { path: "/api/repo-lane-cap", method: "POST", body: {}, owner: 400 },
+  { path: "/api/autos/switch", method: "POST", body: {}, owner: 400 },
+  { path: "/api/autos/quiet", method: "POST", body: { start: 99, end: 99 }, owner: 400 },
+  { path: "/api/dispositions", method: "POST", body: {}, owner: 400 },
   // the tier-2 adjudication rail's only writer. A judgement on a red audit is EVIDENCE that someone
   // looked, and evidence any principal can forge is worse than none — an empty body answers the
   // owner a side-effect-free 400 (no verdict), so it carries the positive control too.
-  { path: "/api/post-land-audits/adjudicate", method: "POST", body: {}, ownerSafe: true },
-  { path: "/api/tasks", method: "POST", body: {}, ownerSafe: true },
+  { path: "/api/post-land-audits/adjudicate", method: "POST", body: {}, owner: 400 },
+  { path: "/api/tasks", method: "POST", body: {}, owner: 400 },
   // GET /api/tasks serves the full prompt texts (intake mail included) that the 2 s poll no
   // longer carries — a read route, but the most content-bearing one the queue has
-  { path: "/api/tasks", method: "GET", ownerSafe: true },
+  { path: "/api/tasks", method: "GET", owner: 200 },
   // Full Program bodies are owner-only. Empty POST is a side-effect-free named 400; GET proves
   // the content-bearing read exists while the principal matrix proves scoped credentials do not.
-  { path: "/api/programs", method: "POST", body: {}, ownerSafe: true },
-  { path: "/api/programs", method: "GET", ownerSafe: true },
+  { path: "/api/programs", method: "POST", body: {}, owner: 400 },
+  { path: "/api/programs", method: "GET", owner: 200 },
   // The studio inventory is owner truth about the WORKFLOW a Program binds — stages, spawn triples,
   // gates, brief blocks — so it is owner-only for the reason the Program bodies above are: a session
   // that could write it would be choosing the workflow it is judged by. Empty POST is a
   // side-effect-free named 400 (no id), which is what lets it carry the positive control.
-  { path: "/api/studios", method: "POST", body: {}, ownerSafe: true },
-  { path: "/api/studios", method: "GET", ownerSafe: true },
+  { path: "/api/studios", method: "POST", body: {}, owner: 400 },
+  { path: "/api/studios", method: "GET", owner: 200 },
   { path: "/api/dispatch", method: "POST", body: {} },
   // the board editor's pair (§F5). The WRITE route is the only one on this server that puts bytes
   // into a file the caller named, so an auth regression here is not a leak — it is arbitrary code
   // reaching disk. Both answer the owner a side-effect-free 400 on an empty body (no slot), which
   // is what lets them carry the positive control; the containment guards themselves (realpath
   // prefix, the .env/fleet.json refusal, the hash conflict) are proved in fleet-e2e-security.ts §10.
-  { path: "/api/file/write", method: "POST", body: {}, ownerSafe: true },
+  { path: "/api/file/write", method: "POST", body: {}, owner: 400 },
   // the second write route: the owner's drop lands as a FILE inside a session's working directory,
   // so an auth regression here is the same class of thing. An empty JSON body names no active slot,
   // so the owner's own call is a side-effect-free 400 and carries the positive control.
-  { path: `/api/slots/${slot}/upload`, method: "POST", body: {}, ownerSafe: true },
-  { path: "/api/tree", method: "GET", ownerSafe: true },
-  { path: "/api/sessions", method: "GET", ownerSafe: true },
-  { path: "/api/audit", method: "GET", ownerSafe: true },
-  { path: "/api/prompts", method: "GET", ownerSafe: true },
-  { path: "/api/steward/token", method: "GET", ownerSafe: true },
-  { path: "/api/lanes", method: "POST", body: {}, ownerSafe: true },
+  { path: `/api/slots/${slot}/upload`, method: "POST", body: {}, owner: 400 },
+  { path: "/api/tree", method: "GET", owner: 400 },
+  { path: "/api/sessions", method: "GET", owner: 200 },
+  { path: "/api/audit", method: "GET", owner: 200 },
+  { path: "/api/prompts", method: "GET", owner: 200 },
+  { path: "/api/steward/token", method: "GET", owner: 200 },
+  { path: "/api/lanes", method: "POST", body: {}, owner: 400 },
 ];
 // The task-scoped + guest surface (2026-08-05): these routes sat outside the matrix and were
 // protected only by §1's structural pin (tokenGate last in the chain). §2 is the mechanism that
@@ -563,24 +579,24 @@ const dangerous = (slot: number): Probe[] => [
 // special-cases one principal inline — and it was silent on exactly the newest clarify-adjacent
 // surface. `fix` is a DONE fixture task: criterion-confirm / brief / dispatch answer a
 // side-effect-free 409 to the owner (proving the route exists) and must answer 401/403 to every
-// other principal. The mutating task actions and the guest routes ride matrix-only (no ownerSafe
+// other principal. The mutating task actions and the guest routes ride matrix-only (no `owner`
 // control), same stance as /api/dispatch.
 const taskSurface = (fix: string): Probe[] => [
-  { path: `/api/tasks/${fix}/criterion-confirm`, method: "POST", body: {}, ownerSafe: true },
+  { path: `/api/tasks/${fix}/criterion-confirm`, method: "POST", body: {}, owner: 409 },
   // the brief is a PROMPT a lane will execute — an unauthenticated write here would be arbitrary
   // remote code execution through the back door, so it belongs on this matrix more than most
-  { path: `/api/tasks/${fix}/brief`, method: "POST", body: { text: "probe" }, ownerSafe: true },
-  { path: `/api/tasks/${fix}/dispatch`, method: "POST", body: {}, ownerSafe: true },
+  { path: `/api/tasks/${fix}/brief`, method: "POST", body: { text: "probe" }, owner: 409 },
+  { path: `/api/tasks/${fix}/dispatch`, method: "POST", body: {}, owner: 409 },
   // ↻ refine spawns a repo-reading agent and refine-confirm mints task rows — both answer the
   // owner a side-effect-free 409 on this DONE fixture (wrong status / no proposal), so both can
   // carry the positive control while every other principal must be denied outright
-  { path: `/api/tasks/${fix}/refine`, method: "POST", body: {}, ownerSafe: true },
-  { path: `/api/tasks/${fix}/refine-confirm`, method: "POST", body: {}, ownerSafe: true },
+  { path: `/api/tasks/${fix}/refine`, method: "POST", body: {}, owner: 409 },
+  { path: `/api/tasks/${fix}/refine-confirm`, method: "POST", body: {}, owner: 409 },
   // W2 · the CONFIRM of a row's file surface — the only writer of `filesOrigin:"confirmed"` that a
   // request can reach, and therefore the door a scoped credential must never open (its lane-facing
   // twin, /api/self/tasks/:id/files-proposal, deliberately cannot promote). On this DONE fixture
   // the owner gets a side-effect-free 409, which is what lets it carry the positive control.
-  { path: `/api/tasks/${fix}/files`, method: "POST", body: {}, ownerSafe: true },
+  { path: `/api/tasks/${fix}/files`, method: "POST", body: {}, owner: 409 },
   { path: `/api/tasks/${fix}/adopt`, method: "POST", body: {} },
   { path: `/api/tasks/${fix}/queue`, method: "POST", body: {} },
   { path: `/api/tasks/${fix}/archive`, method: "POST", body: {} },
@@ -588,7 +604,7 @@ const taskSurface = (fix: string): Probe[] => [
   // a read, not a write, and on the matrix for what it READS: an error message quotes filesystem
   // paths and git output off the owner's own machine, so it belongs to the owner alone. GET with
   // no side effect at all, which makes it the cheapest possible positive control.
-  { path: "/api/errors", method: "GET", ownerSafe: true },
+  { path: "/api/errors", method: "GET", owner: 200 },
 ];
 
 const fire = (p: Probe, headers: Record<string, string>): Promise<Response> =>
@@ -613,9 +629,33 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // this ever passes without the alias detector firing, the detector has stopped working and the
   // two checks below it would go quietly vacuous.
   const ALIAS_PROBE = 'const { pathname } = url;\n  if (pathname === "/api/back-door") return json({ ok: true });';
-  check("§1 the alias detector fires on a destructured route that both older extractors are blind to",
-    pathAliases(ALIAS_PROBE).length > 0 && routeSet(ALIAS_PROBE).length === 0 && unrecognized(ALIAS_PROBE).length === 0,
-    `aliases=[${pathAliases(ALIAS_PROBE).join(" | ")}] routes=[${routeSet(ALIAS_PROBE).join(" | ")}] stray=[${unrecognized(ALIAS_PROBE).join(" | ")}]`);
+  check("§1 the alias detector fires on a destructured route that the route extractor is blind to",
+    pathAliases(ALIAS_PROBE).length > 0 && routeSet(ALIAS_PROBE).length === 0,
+    `aliases=[${pathAliases(ALIAS_PROBE).join(" | ")}] routes=[${routeSet(ALIAS_PROBE).join(" | ")}]`);
+  // …and the same proof for every routing spelling `routeSet` cannot read, one check per form. Each
+  // probe is a WORKING back door in that form; the check holds only if the extractor really misses it
+  // (else the probe tests nothing) AND one of the two region detectors fires on it — which is what
+  // turns the three region checks red on it. Measured against the detectors as they stood before
+  // 2026-09-14: six of the eight slipped past all three (Astra finding 1, repro R1 for the first);
+  // the renamed destructuring (alias binding regex) and the template-string comparison (old line
+  // filter) were already caught and ride along so a rewrite cannot lose them.
+  const BACK_DOOR = '"/api/back-door"';
+  const blindForms: [string, string][] = [
+    ["computed property url[\"pathname\"]", `if (url["pathname"] === ${BACK_DOOR}) return json({ ok: true });`],
+    ["template-string key url[`pathname`]", `if (url[\`pathname\`] === ${BACK_DOOR}) return json({ ok: true });`],
+    ["renamed destructuring { pathname: p }", `const { pathname: p } = url;\n  if (p === ${BACK_DOOR}) return json({ ok: true });`],
+    ["an unread form beside a read one on the same line", `if (url.pathname === "/favicon.ico" || url["pathname"] === ${BACK_DOOR}) return json({ ok: true });`],
+    ["a named regex tested against url.pathname", `const BACK = /^\\/api\\/back-door$/;\n  if (BACK.test(url.pathname)) return json({ ok: true });`],
+    ["a computed key without the word (url[k])", `const k = "path" + "name";\n  if (url[k] === ${BACK_DOOR}) return json({ ok: true });`],
+    ["a template-string comparison", `if (url.pathname === \`/api/back-door\`) return json({ ok: true });`],
+    ["req.url read raw", `if (req.url.endsWith("/api/back-door")) return json({ ok: true });`],
+  ];
+  for (const [form, probe] of blindForms) {
+    const routes = routeSet(probe), stray = unrecognized(probe), aliases = pathAliases(probe);
+    check(`§1 a route spelled as ${form} turns the pin red (the extractor misses it, a detector fires)`,
+      !routes.some((r) => r.includes("back-door")) && stray.length + aliases.length > 0,
+      `routes=[${routes.join(" | ")}] stray=[${stray.join(" | ")}] aliases=[${aliases.join(" | ")}]`);
+  }
   const preAlias = pathAliases(preAuth);
   check("§1 the pre-auth region routes on `url.pathname` only — no alias the allowlist pin cannot see",
     preAlias.length === 0, preAlias.join(" | "));
@@ -670,7 +710,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const sess = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] };
   const idle = sess.slots.find((s) => !s.cwd);
   check("§2 an idle slot is available as the matrix's blast-radius-free target", !!idle, JSON.stringify(sess.slots.map((s) => s.id + (s.cwd ? "*" : ""))));
-  // a DONE task as the matrix's task-scoped fixture — every ownerSafe probe on it answers 409
+  // a DONE task as the matrix's task-scoped fixture — every owner-controlled probe on it answers 409
   // before any mutation (no criterion, no verdict, not pending/queued), so the owner control
   // proves existence without touching state
   const fixT = (await (await post("/api/tasks", { text: "sec-matrix-fixture", queue: false })).json()) as { task: { id: string } };
@@ -709,11 +749,21 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   }
   // the anti-tautology control: the same probes, with the owner token, must NOT be denied —
   // otherwise the matrix above would pass just as well against a list of routes that don't exist.
-  const ownerProbes = probes.filter((p) => p.ownerSafe);
+  // Admission is the probe's OWN expected status, never "anything but a denial": a 500/502/503 is a
+  // handler that crashed or a proxy that never reached it, and neither proves the route exists.
+  const ownerProbes = probes.filter((p) => p.owner !== undefined);
+  const ownerMisses = (res: { probe: Probe; status: number }[]) => res.filter((r) => r.status !== r.probe.owner);
+  // the guard's own negative control, one check per server-error code: fed that status on every
+  // probe, the comparison must reject all of them — else the live control below is vacuous for it
+  for (const code of [500, 502, 503]) {
+    const injected = ownerMisses(ownerProbes.map((probe) => ({ probe, status: code })));
+    check(`§2 control guard: an injected ${code} on every owner probe is rejected, never read as admission`,
+      ownerProbes.length > 0 && injected.length === ownerProbes.length, `${injected.length}/${ownerProbes.length} rejected`);
+  }
   const ownerRes = await Promise.all(ownerProbes.map(async (probe) => ({ probe, status: (await fire(probe, H)).status })));
-  const denied = ownerRes.filter((r) => r.status === 401 || r.status === 403 || r.status === 404);
-  check(`§2 control: the owner is admitted on all ${ownerProbes.length} of them (so the denials above are about auth, not missing routes)`,
-    denied.length === 0, denied.map((r) => `${r.probe.path}:${r.status}`).join(" "));
+  const missed = ownerMisses(ownerRes);
+  check(`§2 control: the owner gets each probe's expected status on all ${ownerProbes.length} of them (so the denials above are about auth, not missing or crashing routes)`,
+    missed.length === 0, missed.map((r) => `${r.probe.path}:${r.status}≠${r.probe.owner}`).join(" "));
   await post(`/api/tasks/${fixT.task.id}/delete`, {}); // the task-surface fixture, retired
 
   if (!REPO) return; // §3–§5 need a lane; the lane sections of the suite are repo-gated too

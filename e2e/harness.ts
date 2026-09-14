@@ -3,7 +3,7 @@
 import { resolve } from "node:path";
 import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { writeTrailRow } from "./trail-emit";
+import { installPhaseProbes, timed, writeTrailRow } from "./trail-emit";
 
 export const IP = process.env.FLEET_E2E_HOST ?? "127.0.0.1";
 // match the server's env so the whole suite can target an isolated instance
@@ -33,6 +33,9 @@ const LIVE_PORT = 8790;
 if ((SOCK === LIVE_SOCK || PORT === LIVE_PORT) && !process.env.FLEET_E2E_ALLOW_LIVE)
   throw new Error(`refusing to run against the live fleet (socket=${SOCK} port=${PORT}) — use one of the ./e2e-*.sh wrappers (or set FLEET_E2E_ALLOW_LIVE=1)`);
 export const BASE = `http://${IP}:${PORT}`;
+// Bun.sleep + fetch timed for the trail's `phases` from here on — before this module's own first
+// await and before any check module body runs (e2e/trail-emit.ts, "WHERE msSincePrev GOES")
+installPhaseProbes();
 // the suite copy this runs from: the modules live in e2e/, every state file the server writes
 // (fleet.json, streams/, audit.jsonl, …) sits next to server.ts one level up.
 export const ROOT = resolve(import.meta.dir, "..");
@@ -80,11 +83,13 @@ export function check(name: string, ok: boolean, detail = ""): void {
   prevCheck = ts;
 }
 
-export async function tmuxOut(...args: string[]): Promise<{ out: string; code: number }> {
-  const p = Bun.spawn(["tmux", "-L", SOCK, ...args], { stdout: "pipe", stderr: "pipe" });
-  const out = await new Response(p.stdout).text();
-  const code = await p.exited;
-  return { out, code };
+export function tmuxOut(...args: string[]): Promise<{ out: string; code: number }> {
+  return timed("tmux", async () => {
+    const p = Bun.spawn(["tmux", "-L", SOCK, ...args], { stdout: "pipe", stderr: "pipe" });
+    const out = await new Response(p.stdout).text();
+    const code = await p.exited;
+    return { out, code };
+  });
 }
 
 const state = (await Bun.file(`${ROOT}/fleet.json`).json()) as { token?: string };
@@ -112,7 +117,10 @@ export const get = (path: string): Promise<Response> => fetch(BASE + path, { hea
 // from the server's own fleet.pid, read BEFORE the kill; no pid (already stopped) returns at once.
 // Bounded at 5 s, the same grace server.ts#claimInstanceLock gives a successor, so a server that
 // is slow to die is still covered by the lock on the next boot.
-export async function stopSrv(): Promise<void> {
+export function stopSrv(): Promise<void> {
+  return timed("boot", stopSrvUntimed);
+}
+async function stopSrvUntimed(): Promise<void> {
   let pid = 0;
   try { pid = Number.parseInt(readFileSync(`${ROOT}/fleet.pid`, "utf8").trim(), 10) || 0; } catch { /* none */ }
   await tmuxOut("kill-session", "-t", "srv");
@@ -123,7 +131,10 @@ export async function stopSrv(): Promise<void> {
   for (let i = 0; i < 200 && alive(); i++) await Bun.sleep(25);
 }
 
-export async function restartSrv(extra: Record<string, string> = {}): Promise<void> {
+export function restartSrv(extra: Record<string, string> = {}): Promise<void> {
+  return timed("boot", () => restartSrvUntimed(extra));
+}
+async function restartSrvUntimed(extra: Record<string, string>): Promise<void> {
   await stopSrv();
   const own = new Set(["FLEET_HOST", "FLEET_PORT", "FLEET_SOCK", "FLEET_TOKEN"]);
   const env = Object.entries(process.env)
@@ -213,7 +224,10 @@ export const readText = async (p: string): Promise<string> => {
 // lines back into one logical line, which is what the caller means by "the line the pane printed"
 // (and it trims trailing whitespace, closing the same hole for a `$`-anchored match).
 let probeSeq = 1;
-export async function paneEnv(target: string, varName: string, timeoutMs = 20_000): Promise<string | null> {
+export function paneEnv(target: string, varName: string, timeoutMs = 20_000): Promise<string | null> {
+  return timed("tmux", () => paneEnvUntimed(target, varName, timeoutMs));
+}
+async function paneEnvUntimed(target: string, varName: string, timeoutMs: number): Promise<string | null> {
   const marker = `envprobe-${varName.toLowerCase().replaceAll("_", "-")}-${probeSeq++}`;
   // `:` admitted for FLEET_SELF_URL (http://host:port); still no quote, space or `$` a pane could echo back
   const line = new RegExp(`^${marker}=\\[([0-9a-zA-Z._/:-]*)\\]$`, "m");

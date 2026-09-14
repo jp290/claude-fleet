@@ -75,6 +75,8 @@ bestätigten Programs im Blick. Er ersetzt weder deren fachliche Program-MAIN no
 - **`ctl.sh dispatch`** startet mit Owner-Credential eine Queue-Zeile; Controller-Scope gewährt dieses Credential nicht.
 - **`ctl.sh wait merge`** wartet einmalig auf einen konkreten Merge-Terminalfakt statt in der Pane zu pollen.
 - **`ctl.sh wait change`** wartet einmalig auf eine benannte State-Änderung; es ist kein permanenter Portfolio-Monitor.
+- **`ctl.sh send --main`** schickt eine Textdatei per Owner-`/send` an die MAIN eines Programs: `main.slot` wird aus `GET /api/programs` und `/api/sessions` unmittelbar vor dem POST gelesen, nie aus dem Gedächtnis. Abgesagt ohne POST wird bei fehlender oder staler Bindung, fremdem Occupant (openedAt ≠ Bindung — der recycelte Slot), Lane-Slot und fehlendem Agenten; ein nacktes `send <slot>` gibt es nicht. Welcher Text und wann bleibt Entscheidung der Aufruferin.
+- **`ctl.sh commit main`** (auch `commit-main` geschrieben) wartet begrenzt (`--budget`, Sekunden) auf `merges` exit 0 und committet dann den bereits gestagten Index im Haupt-Checkout mit `-m <msgfile>`; sonst benannte Absage „a land is running (slot N) — nothing committed". Eine ungefragte Live-Hälfte (kein Owner-Token) ist `unknown` und sagt ebenfalls ab; das Verb staget nichts und umgeht keinen Hook.
 
 ## Arbeitsweise ohne Dauerpolling
 

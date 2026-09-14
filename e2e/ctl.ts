@@ -28,7 +28,7 @@
 // FLEET_CTL_TOKEN / FLEET_CTL_HOME. Those three env overrides exist for exactly this, and their
 // absence is what a real controller runs with.
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { BASE, REPO, ROOT, TOKEN, check, get, post, results } from "./harness";
 import { openLane, setMergeMode, settleForMerge } from "./lane-helpers";
@@ -205,9 +205,9 @@ export async function run(): Promise<void> {
   // actually carry it — a pin over a list nothing prints would guard a doc against nothing.
   const usage = await ctl([]);
   const VERBS = ["merges", "lock", "ctx", "report", "watch", "events", "land", "dispatch",
-    "wait merge", "wait change"];
+    "wait merge", "wait change", "send", "commit main"];
   const missing = VERBS.filter((v) => !usage.out.includes(`  ${v}`));
-  check("ctl usage: a bare ./ctl.sh prints all ten verbs and exits 0",
+  check("ctl usage: a bare ./ctl.sh prints all twelve verbs and exits 0",
     usage.code === 0 && missing.length === 0, `exit ${usage.code} missing=[${missing.join(", ")}]`);
   const bogus = await ctl(["nosuchverb"]);
   check("ctl usage: an unknown verb exits 2 and names itself",
@@ -585,6 +585,152 @@ export async function run(): Promise<void> {
     lReap.code === 0 && rj2?.reaped === true && !existsSync(LOCK),
     `exit ${lReap.code} ${JSON.stringify(rj2)} exists=${existsSync(LOCK)}`);
   rmSync(LOCK, { recursive: true, force: true });
+
+  // === send --main ==============================================================================
+  // The refusal matrix needs Programs BOUND to occupants in five different wrong states, and this
+  // instance has none: binding one is a founding flow or a planted state behind a server restart,
+  // and neither belongs in a module that shares its instance with every lane family after it. So
+  // the matrix runs against a STUB of the two read routes and the /send door, which is the one
+  // boundary the verb talks across — and the stub's two premises are measured against the REAL
+  // routes first, so a stub that drifted from the server fails as the fixture it is.
+  const msgFile = `${ROOT}/ctl-send-text.txt`;
+  writeFileSync(msgFile, "ctl send probe text\n");
+  const realSessions = (await (await get("/api/sessions")).json()) as { slots: Record<string, unknown>[] };
+  const realPrograms = (await (await get("/api/programs")).json()) as { programs?: unknown };
+  const realRow = realSessions.slots.find((s) => s.id === free) ?? {};
+  check("ctl send setup: the real routes serve what the stub serves — `programs` is a list, and a session row carries openedAt, worktree and agent",
+    Array.isArray(realPrograms.programs) && ["openedAt", "worktree", "agent"].every((k) => k in realRow),
+    `programs=${Array.isArray(realPrograms.programs)} rowKeys=[${Object.keys(realRow).join(",")}]`);
+  const unknownProgram = await ctl(["send", "--main", "0000feedfacefeedface0000", msgFile]);
+  check("ctl send --main: a program this fleet does not have is refused against the REAL route, with its id, exit 1",
+    unknownProgram.code === 1 && unknownProgram.err.includes("no program 0000feedfacefeedface0000")
+      && unknownProgram.err.includes("nothing sent"),
+    `exit ${unknownProgram.code} ${unknownProgram.err.slice(0, 200)}`);
+
+  const sendPosts: { body: { slot?: number; text?: string }; auth: string | null }[] = [];
+  const bound = (id: string, slot: number | null, openedAt: number, occupancy: string) =>
+    ({ id, title: id, main: slot === null ? null : { slot, openedAt, sessionId: null, boundAt: 1 }, health: { occupancy } });
+  const stub = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    async fetch(req) {
+      const path = new URL(req.url).pathname;
+      if (path === "/api/programs") return Response.json({ programs: [
+        bound("p-ok", 4, 1000, "live"), bound("p-lane", 5, 2000, "live"), bound("p-stale", 6, 3000, "stale"),
+        bound("p-noagent", 7, 4000, "live"), bound("p-recycled", 8, 5000, "live"), bound("p-unbound", null, 0, "unbound"),
+      ] });
+      if (path === "/api/sessions") return Response.json({ slots: [
+        { id: 4, cwd: "/main", openedAt: 1000, worktree: null, agent: "alive" },
+        { id: 5, cwd: "/lane", openedAt: 2000, worktree: { repo: "/r", branch: "fleet/spawning" }, agent: "alive" },
+        { id: 6, cwd: "/lane", openedAt: 3001, worktree: null, agent: "alive" },
+        { id: 7, cwd: "/main", openedAt: 4000, worktree: null, agent: "no-agent" },
+        { id: 8, cwd: "/main", openedAt: 5001, worktree: null, agent: "alive" },
+      ] });
+      if (path === "/send" && req.method === "POST") {
+        const body = (await req.json()) as { slot?: number; text?: string };
+        sendPosts.push({ body, auth: req.headers.get("authorization") });
+        return Response.json({ ok: true, receipt: { sendId: "stub", at: 1, submitRequested: true, acceptance: "accepted",
+          receiver: { slot: body.slot, openedAt: 1000, sessionId: null } } });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  const stubEnv = { FLEET_CTL_URL: `http://127.0.0.1:${stub.port}` };
+  const sendLane = await ctl(["send", "--main", "p-lane", msgFile], stubEnv);
+  check("ctl send --main: a MAIN slot that carries a LANE is refused, named, and nothing is POSTed",
+    sendLane.code === 1 && sendLane.err.includes("slot 5 is a LANE (fleet/spawning)") && sendPosts.length === 0,
+    `exit ${sendLane.code} posts=${sendPosts.length} ${sendLane.err.slice(0, 200)}`);
+  const sendRecycled = await ctl(["send", "--main", "p-recycled", msgFile], stubEnv);
+  check("ctl send --main: a slot whose occupant is not the bound one (openedAt differs) is refused as recycled, no POST",
+    sendRecycled.code === 1 && sendRecycled.err.includes("a recycled slot") && sendPosts.length === 0,
+    `exit ${sendRecycled.code} posts=${sendPosts.length} ${sendRecycled.err.slice(0, 200)}`);
+  const sendStale = await ctl(["send", "--main", "p-stale", msgFile], stubEnv);
+  check("ctl send --main: a binding the server calls stale is refused, no POST",
+    sendStale.code === 1 && sendStale.err.includes("MAIN binding is stale") && sendPosts.length === 0,
+    `exit ${sendStale.code} posts=${sendPosts.length} ${sendStale.err.slice(0, 200)}`);
+  const sendNoAgent = await ctl(["send", "--main", "p-noagent", msgFile], stubEnv);
+  check("ctl send --main: a MAIN slot with no agent alive is refused, naming the probe's answer, no POST",
+    sendNoAgent.code === 1 && sendNoAgent.err.includes("no agent alive in slot 7 (agent=no-agent)") && sendPosts.length === 0,
+    `exit ${sendNoAgent.code} posts=${sendPosts.length} ${sendNoAgent.err.slice(0, 200)}`);
+  const sendUnbound = await ctl(["send", "--main", "p-unbound", msgFile, "--json"], stubEnv);
+  check("ctl send --main: a Program with no bound MAIN is refused, its --json says sent:false, no POST",
+    sendUnbound.code === 1 && sendUnbound.err.includes("has no bound MAIN")
+      && (sendUnbound.json as { sent?: boolean })?.sent === false && sendPosts.length === 0,
+    `exit ${sendUnbound.code} posts=${sendPosts.length} json=${JSON.stringify(sendUnbound.json)}`);
+  const sendBare = await ctl(["send", "4", msgFile], stubEnv);
+  check("ctl send: a bare slot number is refused with exit 2 and points at --main, no POST",
+    sendBare.code === 2 && sendBare.err.includes("send --main") && sendPosts.length === 0,
+    `exit ${sendBare.code} posts=${sendPosts.length} ${sendBare.err.slice(0, 160)}`);
+  // the positive control LAST, so every "no POST" above is a count the stub could have raised
+  const sendOk = await ctl(["send", "--main", "p-ok", msgFile, "--json"], stubEnv);
+  check("ctl send --main: a live, non-lane MAIN with an agent gets exactly one POST — its slot, the file's text, the owner bearer",
+    sendOk.code === 0 && (sendOk.json as { sent?: boolean; slot?: number })?.sent === true && sendPosts.length === 1
+      && sendPosts[0]?.body.slot === 4 && sendPosts[0]?.body.text === "ctl send probe text\n"
+      && sendPosts[0]?.auth === `Bearer ${TOKEN}`,
+    `exit ${sendOk.code} posts=${JSON.stringify(sendPosts.map((p) => p.body))} ${sendOk.err.slice(0, 160)}`);
+  stub.stop(true);
+
+  // === commit-main ==============================================================================
+  // A throwaway HOME: its own git repo and its own fleet.json, so the commit lands in neither this
+  // instance's tree nor anyone's checkout. The live half of the sensor still asks the REAL instance
+  // (FLEET_CTL_URL stays BASE) — slot 999 is no lane there, so `busy` below comes from the persisted
+  // `interrupted` verdict alone, which is the state the fixture controls.
+  const CH = `${ROOT}/ctl-commit-home`;
+  rmSync(CH, { recursive: true, force: true });
+  mkdirSync(`${CH}/hooks-none`, { recursive: true });
+  const cg = (...a: string[]): string => gitOut(CH, ...a);
+  cg("init", "-q"); cg("config", "user.name", "ctl probe"); cg("config", "user.email", "ctl@probe");
+  cg("config", "core.hooksPath", `${CH}/hooks-none`); cg("config", "commit.gpgsign", "false");
+  writeFileSync(`${CH}/seed.txt`, "seed\n"); cg("add", "seed.txt"); cg("commit", "-qm", "seed");
+  const commitMsg = `${ROOT}/ctl-commit-msg.txt`;
+  writeFileSync(commitMsg, "chore: ctl commit-main probe\n");
+  const busyState = JSON.stringify({ merges: { "999": { status: "interrupted", landed: false, at: 1 } }, slots: {} });
+  writeFileSync(`${CH}/fleet.json`, busyState);
+  writeFileSync(`${CH}/staged.txt`, "staged\n"); cg("add", "staged.txt");
+  const homeEnv = { FLEET_CTL_HOME: CH };
+  const commitsBefore = cg("rev-list", "--count", "HEAD");
+
+  const t0 = Date.now();
+  const cmBusy = await ctl(["commit-main", "-m", commitMsg, "--budget", "2"], homeEnv);
+  const busyMs = Date.now() - t0;
+  check("ctl commit-main: while merges says busy it waits out the budget and refuses by name — nothing committed",
+    cmBusy.code === 1 && cmBusy.err.includes("a land is running (slot 999) — nothing committed")
+      && busyMs >= 1800 && cg("rev-list", "--count", "HEAD") === commitsBefore,
+    `exit ${cmBusy.code} ${busyMs}ms commits ${commitsBefore}->${cg("rev-list", "--count", "HEAD")} ${cmBusy.err.slice(0, 200)}`);
+
+  // the busy verdict clears WHILE the verb waits: it must commit, and only after the clear
+  const t1 = Date.now();
+  // tmp + rename, so the sensor never reads a half-written state file (the server's own save shape)
+  const clearer = setTimeout(() => {
+    writeFileSync(`${CH}/fleet.json.tmp`, JSON.stringify({ merges: {}, slots: {} }));
+    renameSync(`${CH}/fleet.json.tmp`, `${CH}/fleet.json`);
+  }, 2500);
+  const cmWaited = await ctl(["commit", "main", "-m", commitMsg, "--budget", "60", "--json"], homeEnv);
+  clearTimeout(clearer);
+  const waitedMs = Date.now() - t1;
+  check("ctl commit main: it waits for merges exit 0, then commits the staged index with the message file",
+    cmWaited.code === 0 && (cmWaited.json as { committed?: boolean; sha?: string })?.committed === true
+      && (cmWaited.json as { sha?: string })?.sha === cg("rev-parse", "HEAD") && waitedMs >= 2400
+      && cg("log", "-1", "--format=%s") === "chore: ctl commit-main probe"
+      && cg("show", "--name-only", "--format=", "HEAD") === "staged.txt",
+    `exit ${cmWaited.code} ${waitedMs}ms head="${cg("log", "-1", "--format=%s")}" files=${cg("show", "--name-only", "--format=", "HEAD")} ${cmWaited.err.slice(0, 160)}`);
+
+  const commitsMid = cg("rev-list", "--count", "HEAD");
+  const cmNothing = await ctl(["commit-main", "-m", commitMsg], homeEnv);
+  check("ctl commit-main: with nothing staged git's own refusal comes back, exit 1 — the verb stages nothing",
+    cmNothing.code === 1 && cmNothing.err.includes("git commit in") && cmNothing.err.includes("nothing committed")
+      && cg("rev-list", "--count", "HEAD") === commitsMid,
+    `exit ${cmNothing.code} ${cmNothing.err.slice(0, 200)}`);
+
+  writeFileSync(`${CH}/later.txt`, "later\n"); cg("add", "later.txt");
+  const cmUnknown = await ctl(["commit-main", "-m", commitMsg], { ...homeEnv, FLEET_CTL_TOKEN: "", FLEET_TOKEN: "" });
+  check("ctl commit-main: an unasked live half (no owner token) is UNKNOWN and refuses — never read as 'no land running'",
+    cmUnknown.code === 1 && cmUnknown.err.includes("UNKNOWN") && cmUnknown.err.includes("nothing committed")
+      && cg("rev-list", "--count", "HEAD") === commitsMid,
+    `exit ${cmUnknown.code} ${cmUnknown.err.slice(0, 200)}`);
+  const cmNoMsg = await ctl(["commit-main"], homeEnv);
+  check("ctl commit-main: no -m is refused with exit 2 before the sensor is asked",
+    cmNoMsg.code === 2 && cmNoMsg.err.includes("-m <msgfile>"), `exit ${cmNoMsg.code} ${cmNoMsg.err.slice(0, 160)}`);
+  for (const p of [CH, msgFile, commitMsg]) rmSync(p, { recursive: true, force: true });
 
   // === credentials ==============================================================================
   // Every verb must name the credential it is missing rather than failing as the route.

@@ -24,7 +24,7 @@
 # CLI's space — `wait-merge` is typed `./ctl.sh wait merge 5`.
 set -u
 
-CTL_VERBS="merges lock ctx report watch events land dispatch wait-merge wait-change"
+CTL_VERBS="merges lock ctx report watch events land dispatch wait-merge wait-change send commit-main"
 
 usage() {
   cat <<'USAGE'
@@ -41,6 +41,10 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
   dispatch <taskId> [--force] [--json]   hand-start a queued row, refusing over the lane cap
   wait merge <slot> [--json]       block until that lane's merge is terminal
   wait change [--tasks a,b,c] [--json]   block until fleet state moves, then print what moved
+  send --main <programId> <textfile> [--json]
+                                   resolve the Program's bound MAIN slot NOW, refuse a lane/dead/recycled one, then /send
+  commit main -m <msgfile> [--budget <sec>] [--json]      (also typed commit-main)
+                                   wait (bounded) for `merges` exit 0, then git commit the staged index in the main checkout
 
 Credentials (each verb names the one it is missing and exits 2):
   FLEET_CTL_URL    else FLEET_HOST from <home>/.env, port FLEET_PORT or 8790
@@ -156,12 +160,13 @@ js_run() { bun "$CTL_TMP"; }
 verb=${1:-}
 [ -n "$verb" ] || { usage; exit 0; }
 shift 2>/dev/null || true
-# `wait merge` / `wait change` are one verb each, typed with a space
-if [ "$verb" = "wait" ]; then
+# `wait merge` / `wait change` / `commit main` are one verb each, typed with a space (the dashed
+# spelling `commit-main` reaches the same branch directly)
+if [ "$verb" = "wait" ] || [ "$verb" = "commit" ]; then
   sub=${1:-}
-  [ -n "$sub" ] || { printf 'ctl.sh wait: say `wait merge <slot>` or `wait change`\n' >&2; exit 2; }
+  [ -n "$sub" ] || { printf 'ctl.sh %s: say `wait merge <slot>`, `wait change` or `commit main -m <msgfile>`\n' "$verb" >&2; exit 2; }
   shift
-  verb="wait-$sub"
+  verb="$verb-$sub"
 fi
 
 CTL_JSON=0
@@ -721,6 +726,161 @@ for (;;) {
     process.exit(0);
   }
 }
+EOF
+  js_run
+  ;;
+
+# ================================================================================================
+send)
+# ------------------------------------------------------------------------------------------------
+# POST /send to a Program's MAIN, addressed by PROGRAM, never by a slot number the caller remembers.
+# The incident this exists for (2026-09-14 12:08): a MAIN had succeeded from slot 5 to slot 8, a
+# dispatch filled the freed slot 5 with a spawning lane, and an owner /send to "slot 5" in the same
+# move killed that lane. /send addresses a NUMBER with no occupant pin, so the number has to be read
+# the instant before it is used — which is all this verb does: GET /api/programs and /api/sessions
+# together, then the POST, with nothing in between that waits.
+#
+# FIVE REFUSALS, each named, none of them a POST: no bound MAIN · a binding the server already calls
+# stale · a slot whose occupant is not the bound one (openedAt differs — the recycled-slot case, read
+# here from the SAME two responses rather than trusting `health` alone) · a slot that is a LANE · a
+# slot with no agent alive. `agent` is the git tick's cached probe, and its `null` ("not probed yet")
+# is refused as UNKNOWN; `unprobed` is accepted because it is the server's own delivery waiver
+# (server.ts#claudeAlive) for a command nobody declared. What remains is a window of milliseconds
+# between the read and the POST; the server-side occupant pin is bf6fc2ea's half, not this verb's.
+#
+# A bare `send <slot>` is refused on purpose: it is exactly the hand move this verb replaces.
+  mode=""; program=""; textfile=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) CTL_JSON=1 ;;
+      --main) mode=main; shift; program=${1:-} ;;
+      --*) printf 'send: unknown flag %s\n' "$1" >&2; exit 2 ;;
+      *) textfile=$1 ;;
+    esac
+    shift
+  done
+  if [ "$mode" != "main" ]; then
+    printf 'send: only `send --main <programId> <textfile>` — a slot number typed by hand is the recycled-slot hazard this verb removes\n' >&2
+    exit 2
+  fi
+  [ -n "$program" ] || { printf 'send --main: give a program id\n' >&2; exit 2; }
+  [ -n "$textfile" ] || { printf 'send --main %s: give the file holding the text\n' "$program" >&2; exit 2; }
+  [ -s "$textfile" ] || { printf 'send --main %s: %s is missing or empty — nothing sent\n' "$program" "$textfile" >&2; exit 2; }
+  need_owner send
+  export CTL_PROGRAM="$program" CTL_TEXTFILE="$textfile"
+  js_head
+  cat >> "$CTL_TMP" <<'EOF'
+const want = process.env.CTL_PROGRAM;
+const text = fs.readFileSync(process.env.CTL_TEXTFILE, "utf8");
+const refuse = (reason, extra = {}) => {
+  if (JSONOUT) console.log(JSON.stringify({ ok: false, sent: false, program: want, refused: reason, ...extra }, null, 2));
+  console.error(`send --main ${want}: REFUSED — ${reason} — nothing sent`);
+  process.exit(1);
+};
+// both reads in ONE await: the answer is only as fresh as the older of the two
+const [pr, se] = await Promise.all([api("/api/programs", { headers: ownerH() }), api("/api/sessions", { headers: ownerH() })]);
+if (!pr.ok || !se.ok) {
+  console.error(`send --main ${want}: /api/programs ${pr.status} /api/sessions ${se.status} — could not resolve, nothing sent`);
+  process.exit(2);
+}
+const p = (pr.body.programs ?? []).find((x) => x.id === want);
+if (!p) refuse(`no program ${want} on this fleet`);
+const main = p.main ?? null;
+const label = `program ${want} (${String(p.title ?? "-").slice(0, 60)})`;
+if (!main || typeof main.slot !== "number") refuse(`${label} has no bound MAIN`);
+const occupancy = p.health?.occupancy ?? "unknown";
+if (occupancy !== "live") refuse(`${label}: its MAIN binding is ${occupancy} — slot ${main.slot} no longer holds the bound occupant`, { slot: main.slot, occupancy });
+const row = (se.body.slots ?? []).find((x) => x.id === main.slot);
+if (!row || !row.cwd) refuse(`${label}: slot ${main.slot} is empty`, { slot: main.slot });
+if (row.openedAt !== main.openedAt)
+  refuse(`${label}: slot ${main.slot} holds a different occupant than the bound MAIN (openedAt ${row.openedAt} ≠ ${main.openedAt}) — a recycled slot`, { slot: main.slot });
+if (row.worktree) refuse(`${label}: slot ${main.slot} is a LANE (${row.worktree.branch ?? "?"}), not a MAIN`, { slot: main.slot });
+const agent = row.agent ?? null;
+if (agent !== "alive" && agent !== "unprobed")
+  refuse(`${label}: no agent alive in slot ${main.slot} (agent=${agent ?? "UNKNOWN — not probed yet"})`, { slot: main.slot, agent });
+
+const r = await api("/send", { method: "POST", headers: ownerH(), body: JSON.stringify({ slot: main.slot, text }) });
+const receiver = r.body?.receipt?.receiver ?? null;
+// the route pins its receipt to the occupant it actually typed into; one that is not the bound MAIN
+// means the slot moved inside the window above, and saying "sent" would hide exactly that.
+const wrongOccupant = receiver !== null && receiver.openedAt !== main.openedAt;
+const lines = [`send --main ${want} → slot ${main.slot}: ${r.status} ${r.ok ? `receipt ${r.body.receipt?.sendId} acceptance=${r.body.receipt?.acceptance ?? "?"}` : (r.body?.error ?? JSON.stringify(r.body).slice(0, 300))}`];
+if (wrongOccupant) lines.push(`  DELIVERED TO A DIFFERENT OCCUPANT (openedAt ${receiver.openedAt} ≠ bound ${main.openedAt}) — the slot moved between the read and the POST`);
+out({ ok: r.ok && !wrongOccupant, sent: r.ok, program: want, slot: main.slot, status: r.status, receipt: r.body?.receipt ?? null, error: r.ok ? null : (r.body?.error ?? null) }, lines);
+process.exit(r.ok && !wrongOccupant ? 0 : 1);
+EOF
+  js_run
+  ;;
+
+# ================================================================================================
+commit-main)
+# ------------------------------------------------------------------------------------------------
+# A direct commit in the main checkout, but only when no land is in flight — the rule "read the
+# merges sensor before a direct commit" as one move instead of a memory. A land rebases onto main;
+# a commit landing under it moves the ground the land's verify just measured.
+#
+# The sensor is THIS SCRIPT's `merges`, called as a child and read through its --json, so there is
+# one land sensor and not a second copy of its union/busy rule. Three answers stop the commit, each
+# named: busy past the budget ("a land is running (slot N) — nothing committed"), a sensor that could
+# not run, and a live half that was never asked (no owner token: a lane's FIRST land has no persisted
+# verdict while it runs, so a persisted-only "nothing busy" is not a no). A sensor that fails to
+# answer is retried within the same budget before it is refused.
+#
+# WHAT IT COMMITS is the index as the caller staged it — this verb stages nothing and chooses nothing.
+# git's own refusal (nothing staged, a hook) is passed through. The window between the sensor's last
+# exit 0 and `git commit` is one process spawn wide; it is narrowed, not closed.
+  msgfile=""; budget=${FLEET_CTL_WAIT_MAX_SEC:-600}
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) CTL_JSON=1 ;;
+      -m) shift; msgfile=${1:-} ;;
+      --budget) shift; budget=${1:-} ;;
+      *) printf 'commit-main: unknown argument %s\n' "$1" >&2; exit 2 ;;
+    esac
+    shift
+  done
+  [ -n "$msgfile" ] || { printf 'commit-main: give the message file with -m <msgfile>\n' >&2; exit 2; }
+  [ -s "$msgfile" ] || { printf 'commit-main: %s is missing or empty — nothing committed\n' "$msgfile" >&2; exit 2; }
+  case "$budget" in ''|*[!0-9]*) printf 'commit-main: --budget wants whole seconds, got "%s"\n' "$budget" >&2; exit 2 ;; esac
+  need_state commit-main
+  msgabs=$(cd "$(dirname "$msgfile")" && pwd -P)/$(basename "$msgfile")
+  export CTL_MSGFILE="$msgabs" CTL_BUDGET_SEC="$budget" CTL_POLL_SEC="${FLEET_CTL_POLL_SEC:-15}"
+  export CTL_SCRIPT="$CTL_DIR/$(basename "$0")"
+  js_head
+  cat >> "$CTL_TMP" <<'EOF'
+const { spawnSync } = require("child_process");
+const pollMs = Math.max(1, Number(process.env.CTL_POLL_SEC || 15)) * 1000;
+const deadline = Date.now() + Number(process.env.CTL_BUDGET_SEC) * 1000;
+const refuse = (code, reason, extra = {}) => {
+  if (JSONOUT) console.log(JSON.stringify({ ok: false, committed: false, refused: reason, ...extra }, null, 2));
+  console.error(`commit-main: ${reason} — nothing committed`);
+  process.exit(code);
+};
+const sleep = () => new Promise((res) => setTimeout(res, Math.max(0, Math.min(pollMs, deadline - Date.now()))));
+let sensor;
+for (;;) {
+  const r = spawnSync("sh", [process.env.CTL_SCRIPT, "merges", "--json"], { encoding: "utf8" });
+  try { sensor = JSON.parse(r.stdout); } catch { sensor = null; }
+  // a sensor that did not answer is retried inside the budget — a fleet.json caught mid-write is not
+  // a verdict — and refused by name once the budget is spent; it is never read as "no land running"
+  if (sensor === null || (r.status !== 0 && r.status !== 1)) {
+    if (Date.now() >= deadline)
+      refuse(2, `the merges sensor could not run (exit ${r.status}: ${String(r.stderr ?? "").trim().slice(0, 200)})`);
+    await sleep();
+    continue;
+  }
+  if (sensor.liveKnown !== true)
+    refuse(1, "the live half of merges is UNKNOWN (no owner token) — a lane's first land has no persisted verdict while it runs");
+  if (r.status === 0 && (sensor.busy ?? []).length === 0) break;
+  if (Date.now() >= deadline)
+    refuse(1, `a land is running (slot ${(sensor.busy ?? []).join(", ")})`, { busy: sensor.busy ?? [], budgetSec: Number(process.env.CTL_BUDGET_SEC) });
+  await sleep();
+}
+const c = spawnSync("git", ["-C", HOME, "commit", "-F", process.env.CTL_MSGFILE], { encoding: "utf8" });
+if (c.status !== 0)
+  refuse(1, `git commit in ${HOME} refused (exit ${c.status}): ${`${c.stdout ?? ""}${c.stderr ?? ""}`.trim().split("\n").slice(0, 3).join(" | ").slice(0, 300)}`);
+const sha = (spawnSync("git", ["-C", HOME, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout ?? "").trim();
+out({ ok: true, committed: true, sha, home: HOME }, [`commit-main: ${sha.slice(0, 12)} committed in ${HOME} — merges read exit 0 immediately before`]);
 EOF
   js_run
   ;;

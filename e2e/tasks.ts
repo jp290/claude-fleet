@@ -17,7 +17,7 @@ import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
   LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits,
   type LandWave, type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
-import { projectStartPlan, startPlanChecks, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
+import { projectStartPlan, startPlanChecks, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
   type StartPlanLane, type StartPlanRow } from "../start-plan";
 import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
   type InstanceLink } from "../src/protocol";
@@ -6553,8 +6553,8 @@ export async function run(ctx: Ctx): Promise<void> {
       { slot: 9, repo: spRepo, programId: null, files: ["near.ts"], ranges: at("near.ts", "ns", 120) },
     ];
     const spInput = (fixture: typeof spFixture, lanes: StartPlanLane[], caps: StartPlanInput["caps"],
-      statuses: Record<string, string> = {}): StartPlanInput => ({
-      projection: projectLandWaves({ tasks: fixture.map((f) => f.wave), costs: LAND_WAVE_COSTS_2026_09 }),
+      statuses: Record<string, string> = {}, release: StartPlanInput["release"] = "card-valid"): StartPlanInput => ({
+      projection: projectLandWaves({ tasks: fixture.map((f) => f.wave), costs: LAND_WAVE_COSTS_2026_09 }), release,
       rows: fixture.map((f) => f.row), lanes, caps,
       statuses: { z: "sent", ...Object.fromEntries(fixture.map((f) => [f.row.id, f.row.status])), ...statuses },
     });
@@ -6597,13 +6597,39 @@ export async function run(ctx: Ctx): Promise<void> {
       [{ slot: 3, repo: "/repo/other", programId: "prog", files: ["x.ts"], ranges: null }],
       { [spRepo]: { max: 5, source: "default", programs: { prog: 1 } } })));
     const spNoCap = spNexts(projectStartPlan(spInput([spRow("n", 1, ["n.ts"])], [], {})));
-    check("(sp) after on a DONE row starts · an unknown surface (row or lane) collides as `*` · the program cap counts lanes machine-wide · a repo without a cap never starts",
+    // Schnitt 2: a WHOLE surface nobody knows is no collision edge (start-plan.ts#collision) — the
+    // mutation back to "unknown collides with everything" turns u and v into `collides` and this red.
+    check("(sp) after on a DONE row starts · an unknown surface (row or lane) makes no collision edge · the program cap counts lanes machine-wide · a repo without a cap never starts",
       JSON.stringify([spDone, spUnknown, spProgram, spNoCap]) === JSON.stringify([
         [["a", "now"]],
-        [["u", { collides: { slot: 4, file: "*" } }], ["v", { collides: { slot: 4, file: "*" } }]],
+        [["u", "now"], ["v", "now"]],
         [["p", { cap: "1/1 lanes busy in program prog" }]],
         [["n", { cap: "no lane cap known for sp" }]],
       ]), JSON.stringify([spDone, spUnknown, spProgram, spNoCap]));
+    // THE RELEASE POLICY THE TICK RUNS UNDER (Schnitt 2): `manual` — the release is the check, so an
+    // invalid card, no card and a scout sketch that are RELEASED start exactly as they did before the
+    // tick read the plan; the same three rows under `card-valid` stay `unchecked` (the check above).
+    // A pending row stays unreleased under both: no policy of this cut widens the released set.
+    const spManual = projectStartPlan(spInput([spFixture[4], spFixture[6], spFixture[9], spFixture[5]], [],
+      { [spRepo]: { max: 5, source: "repo", programs: {} } }, {}, "manual"));
+    check("(sp) release manual: a released row with an invalid card, a scout sketch and a row without a card are `now`; a pending row stays unreleased",
+      spManual.release === "manual" && JSON.stringify(spNexts(spManual)) === JSON.stringify([
+        ["e", "now"], ["f", { unreleased: ["f"] }], ["g", "now"], ["j", "now"],
+      ]), JSON.stringify({ release: spManual.release, nexts: spNexts(spManual) }));
+    // THE NOTES THE TICK WRITES, one sentence per reason (entwurf §4 F4 step 5)
+    const spNotes = [
+      startPlanWaitNote({ after: "2f8897ab" }),
+      startPlanWaitNote({ unreleased: ["aa11", "bb22"] }),
+      startPlanWaitNote({ collides: { slot: 3, file: "server.ts", symbol: "taskView" } }),
+      startPlanWaitNote({ collides: { row: "cc33", file: "server.ts" } }),
+    ];
+    check("(sp) the wait-notes name the reason: after <id> · wave partner <ids> not released · lane or earlier row + file#symbol",
+      JSON.stringify(spNotes) === JSON.stringify([
+        "waiting: after 2f8897ab not landed",
+        "waiting: wave partner aa11, bb22 is not released",
+        "waiting: collides with lane 3 on server.ts#taskView",
+        "waiting: collides with row cc33 ahead in the plan on server.ts",
+      ]), JSON.stringify(spNotes));
   }
 
   // --- (sp) THE START PLAN, live: GET /api/start-plan is owner-only, a read, and prints the SAME
@@ -6642,6 +6668,125 @@ export async function run(ctx: Ctx): Promise<void> {
       && spMine.every((w) => w.next !== undefined && w.rows.every((r) => r.checks?.filedBy === "owner")),
       JSON.stringify({ route: spRoute2.slice(0, 600), cli: spCliOut.slice(0, 600) }));
     for (const id of spIds) await post(`/api/tasks/${id}/delete`, {});
+  }
+
+  // --- (sp-tick) THE TICK STARTS BY THE PLAN (Schnitt 2, server.ts#tickDispatch). Three facts on one
+  // live instance, all in REPO2 with confirmed surfaces that exist nowhere else in this run:
+  //   (1) two released rows of ONE program sharing a confirmed file start as ONE lane — both rows on
+  //       one slot, the wave note on them, and exactly one `task_wave_start … by=tick`;
+  //   (2) a projected wave with a PENDING partner does not start: its released row carries
+  //       `waiting: wave partner <id> is not released`, the pending row's note stays null;
+  //   (3) A, B (collides with A on one file, no range), C (card `after` B) start in the order A, B, C
+  //       with the collision note on B while A runs and the after note on C while B runs. A "land" is
+  //       emulated as the owner's `done` plus a kill — the plan reads a done row and a closed lane,
+  //       which is exactly what landLane leaves behind; the land path itself is not under test here.
+  // C's `after` needs a card, and no door writes one without a model, so it is PLANTED with the
+  // server stopped (the (j2) pattern). The fixture preconditions fail as themselves.
+  {
+    interface TRow { id: string; status: string; note?: string | null; slot?: number | null }
+    const tRows = async (): Promise<TRow[]> => ((await (await get("/api/sessions")).json()) as { tasks: TRow[] }).tasks;
+    const tRow = async (id: string): Promise<TRow | undefined> => (await tRows()).find((t) => t.id === id);
+    const tUntil = async (done: (rows: TRow[]) => boolean, tries = 160): Promise<TRow[]> => {
+      let rows = await tRows();
+      for (let i = 0; i < tries && !done(rows); i++) { await Bun.sleep(250); rows = await tRows(); }
+      return rows;
+    };
+    const tOf = (rows: TRow[], id: string): TRow | undefined => rows.find((t) => t.id === id);
+    const tProgram = async (title: string): Promise<string> => {
+      const res = await post("/api/programs", { title, intent: `${title}: prove the tick starts by the plan.`,
+        successCriterion: `${title}: the rows start in the plan's order.`, nonGoals: [], decisions: [], evidence: [], openQuestions: [] });
+      const id = ((await res.json()) as { program?: { id: string } }).program?.id ?? "";
+      return id && (await post(`/api/programs/${id}/confirm`, {})).ok ? id : "";
+    };
+    // distinct `created` per row: the plan orders by (created, id), and two rows filed in one
+    // millisecond would be ordered by their random ids instead of by the fixture's intent
+    const tTask = async (text: string, files: string[], programId?: string): Promise<string> => {
+      await Bun.sleep(15);
+      const id = ((await (await post("/api/tasks", { text, queue: false, repo: REPO2, ...(programId ? { programId } : {}) })).json()) as
+        { task?: { id: string } }).task?.id ?? "";
+      return id && (await post(`/api/tasks/${id}/files`, { files })).ok ? id : "";
+    };
+    await post("/api/dispatch", { on: false });
+    for (const t of await tRows()) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+    const tWaveP = await tProgram("sp-tick wave");
+    const tPartnerP = await tProgram("sp-tick partner");
+    const tW1 = await tTask("SP-TICK wave row 1 on sp-tick-wave.ts", ["sp-tick-wave.ts"], tWaveP);
+    const tW2 = await tTask("SP-TICK wave row 2 on sp-tick-wave.ts", ["sp-tick-wave.ts"], tWaveP);
+    const tX1 = await tTask("SP-TICK partner row released", ["sp-tick-partner.ts"], tPartnerP);
+    const tX2 = await tTask("SP-TICK partner row NOT released", ["sp-tick-partner.ts"], tPartnerP);
+    const tA = await tTask("SP-TICK row A on sp-tick-hub.ts", ["sp-tick-hub.ts"]);
+    const tB = await tTask("SP-TICK row B on sp-tick-hub.ts", ["sp-tick-hub.ts"]);
+    const tC = await tTask("SP-TICK row C after B", ["sp-tick-c.ts"]);
+    const tIds = [tW1, tW2, tX1, tX2, tA, tB, tC];
+    await stopSrv();
+    const tState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: { id: string; card?: Record<string, unknown> }[] };
+    const tCRow = (tState.tasks ?? []).find((t) => t.id === tC);
+    if (tCRow) tCRow.card = { ziel: "sp-tick-c.ts bekommt eine Zeile", rolle: { harness: null, model: null, effort: null },
+      surface: { files: ["sp-tick-c.ts"], symbols: [], ranges: null }, done: "the line stands", verify: "bun e2e/pins.ts",
+      verboten: [], after: [tB], model: "planted-after", at: Date.now(), ms: 0, gaps: [] };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(tState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    // a clean field in REPO2 — no lane there, and two free slots for the wave and for A
+    for (const x of ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { repo: string } | null }[] }).slots)
+      if (x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2)) await post(`/api/slots/${x.id}/kill`, {});
+    await Bun.sleep(600);
+    for (const id of [tW1, tW2, tX1, tA, tB, tC]) await post(`/api/tasks/${id}/queue`, {});
+    const tPlan = (await (await get("/api/start-plan")).json()) as StartPlan;
+    const tNexts = Object.fromEntries(tPlan.repos.flatMap((r) => r.waves).filter((w) => w.ids.some((id) => tIds.includes(id)))
+      .map((w) => [w.ids.join("+"), w.next]));
+    const tFree = ((await (await get("/api/sessions")).json()) as { slots: { cwd: string | null }[] }).slots.filter((x) => !x.cwd).length;
+    check("(sp-tick) fixture: seven rows with confirmed surfaces, C's planted after-card loaded, the plan projects the pair as one wave, and two slots are free",
+      tIds.every(Boolean) && !!tWaveP && !!tPartnerP && !!tCRow && tFree >= 2 && tPlan.release === "manual"
+      && JSON.stringify(tNexts[`${tW1}+${tW2}`]) === '"now"'
+      && JSON.stringify(tNexts[`${tX1}+${tX2}`]) === JSON.stringify({ unreleased: [tX2] })
+      && JSON.stringify(tNexts[tC]) === JSON.stringify({ after: tB }),
+      JSON.stringify({ ids: tIds, free: tFree, nexts: tNexts }));
+
+    await post("/api/autos/switch", { on: true });
+    await post("/api/dispatch", { on: true });
+    let tLive = await tUntil((rows) => tOf(rows, tW1)?.status === "sent" && tOf(rows, tA)?.status === "sent"
+      && (tOf(rows, tB)?.note ?? "").startsWith("waiting: collides"));
+    const tAudit = ((await (await get("/api/audit?limit=300")).json()) as { events: { event?: string; slot?: number; detail?: string }[] }).events
+      .filter((e) => e.event === "task_wave_start" && (e.detail ?? "").includes(tW1));
+    const w1 = tOf(tLive, tW1), w2 = tOf(tLive, tW2), a = tOf(tLive, tA);
+    check("(sp-tick)(1) two released rows of one program sharing a confirmed file start as ONE lane with ONE task_wave_start by=tick",
+      w1?.status === "sent" && w2?.status === "sent" && typeof w1.slot === "number" && w1.slot === w2.slot
+      && (w1.note ?? "").startsWith("wave lane ") && (w1.note ?? "").includes("2 rows, one land")
+      && tAudit.length === 1 && tAudit[0]?.slot === w1.slot && tAudit[0]?.detail === `${tW1}+${tW2} code saves=${
+        LAND_WAVE_COSTS_2026_09.fullGateSec + LAND_WAVE_COSTS_2026_09.fullAuditSec}s by=tick`,
+      JSON.stringify({ w1, w2, audit: tAudit }));
+    check("(sp-tick)(2) a wave with a pending partner does not start — the released row says so, the pending row keeps a null note",
+      tOf(tLive, tX1)?.status === "queued" && tOf(tLive, tX1)?.note === `waiting: wave partner ${tX2} is not released`
+      && tOf(tLive, tX2)?.status === "pending" && (tOf(tLive, tX2)?.note ?? null) === null,
+      JSON.stringify({ x1: tOf(tLive, tX1), x2: tOf(tLive, tX2) }));
+    check("(sp-tick)(3a) A starts first; B waits on A's lane by name and file, C waits on B",
+      a?.status === "sent" && tOf(tLive, tB)?.status === "queued" && tOf(tLive, tC)?.status === "queued"
+      && tOf(tLive, tB)?.note === `waiting: collides with lane ${a.slot} on sp-tick-hub.ts`
+      && tOf(tLive, tC)?.note === `waiting: after ${tB} not landed`,
+      JSON.stringify({ a, b: tOf(tLive, tB), c: tOf(tLive, tC) }));
+    const tLand = async (id: string): Promise<void> => {
+      const slot = (await tRow(id))?.slot;
+      await post(`/api/tasks/${id}/done`, {});
+      if (typeof slot === "number") await post(`/api/slots/${slot}/kill`, {});
+    };
+    await tLand(tA);
+    tLive = await tUntil((rows) => tOf(rows, tB)?.status === "sent" && (tOf(rows, tC)?.note ?? "").startsWith("waiting: after"));
+    check("(sp-tick)(3b) after A lands, B starts and C still waits on B",
+      tOf(tLive, tB)?.status === "sent" && tOf(tLive, tC)?.status === "queued" && tOf(tLive, tC)?.note === `waiting: after ${tB} not landed`,
+      JSON.stringify({ b: tOf(tLive, tB), c: tOf(tLive, tC) }));
+    await tLand(tB);
+    tLive = await tUntil((rows) => tOf(rows, tC)?.status === "sent");
+    check("(sp-tick)(3c) after B lands, C starts — the order was A, B, C",
+      tOf(tLive, tC)?.status === "sent", JSON.stringify({ c: tOf(tLive, tC) }));
+
+    await post("/api/dispatch", { on: false });
+    for (const id of [tW1, tC]) { const slot = (await tRow(id))?.slot; if (typeof slot === "number") await post(`/api/slots/${slot}/kill`, {}); }
+    await Bun.sleep(600);
+    for (const id of tIds) {
+      const row = await tRow(id);
+      if (row?.status === "queued") await post(`/api/tasks/${id}/unqueue`, {});
+      if (row && row.status !== "sent") await post(`/api/tasks/${id}/delete`, {});
+    }
   }
 
   // --- S4 (a672b626) THE WAVE BRIEF quotes each row's card as a head before that row's prose, and

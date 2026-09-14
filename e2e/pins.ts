@@ -2229,14 +2229,19 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const tBody = server.slice(tStart, server.indexOf("\n}\n", tStart));
   pin("tickDispatch's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",
     tStart > 0 && tBody.length > 500 && tBody.length < 20_000, `${tBody.length} bytes`);
-  // THE START PLAN IS A SENSOR IN SCHNITT 1 (docs/messungen/2026-09-13-queue-pipeline-system-entwurf.md
-  // §5): the owner reads for some days what WOULD have started before the tick starts anything by
-  // it. So neither the tick nor the two doors that start or release a row may reach the plan — not
-  // by name and not through startPlanNow, whose only caller is the read route. The probe half fails
-  // as itself: a server that no longer imports start-plan.ts would make the absence below vacuous.
+  // THE TICK STARTS BY THE START PLAN SINCE SCHNITT 2 (docs/messungen/2026-09-13-queue-pipeline-
+  // system-entwurf.md §5). Four rules over the source, none visible to tsc:
+  //   · the tick walks startPlanWaves() and nothing else — no second oldest-first sweep over `tasks`
+  //     beside it, which is how a plan-driven tick quietly grows a second decider;
+  //   · the plan runs under the `manual` release policy in the one place it is built, so no row the
+  //     owner or a MAIN did not release becomes startable and no released row is refused for its
+  //     card (Schnitt 3 is the policy cut, not this one);
+  //   · dispatchTask and releaseTaskForMain still never reach the plan — the dispatch core starts
+  //     what it is handed, and a release is a decision, not a projection;
+  //   · GET /api/start-plan and the wave door read the same plan (one projection for board, door, tick).
+  // The probe half fails as itself: a server that no longer imports start-plan.ts makes the rest vacuous.
   {
     const spImport = /import \{[^}]*\bprojectStartPlan\b[^}]*\} from "\.\/start-plan";/.test(server);
-    const spCallers = [...server.matchAll(/(?<!function )\bstartPlanNow\(\)/g)].map((m) => m.index ?? -1);
     const spRoute = server.indexOf('url.pathname === "/api/start-plan" && req.method === "GET"');
     pin("start plan PROBE: server.ts imports start-plan.ts and serves GET /api/start-plan", spImport && spRoute > 0,
       `import=${spImport} route=${spRoute > 0}`);
@@ -2244,13 +2249,33 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       const at = server.indexOf(head);
       return at < 0 ? "" : server.slice(at, server.indexOf("\n}\n", at));
     };
-    const starters = ["async function tickDispatch", "async function dispatchTask", "function releaseTaskForMain"]
-      .map((head) => [head, bodyOf(head)] as const);
-    const reach = starters.filter(([, body]) => !body || /\b(?:startPlanNow|projectStartPlan|startPlanChecks)\b|start-plan/.test(body))
-      .map(([head, body]) => body ? head : `${head} (not found)`);
-    pin("tickDispatch, dispatchTask and releaseTaskForMain never reach the start plan — it is a read in Schnitt 1",
-      reach.length === 0 && spCallers.length === 1 && spCallers[0] > spRoute && spCallers[0] - spRoute < 200,
-      reach.join(", ") || `${spCallers.length} startPlanNow() call(s)`);
+    const reach = ["async function dispatchTask", "function releaseTaskForMain"]
+      .filter((head) => { const body = bodyOf(head); return !body || /\b(?:startPlanNow|startPlanWaves|projectStartPlan|startPlanChecks)\b|start-plan/.test(body); });
+    const planFn = server.match(/function startPlanNow\([\s\S]*?\n\}\n/)?.[0] ?? "";
+    const wavesFn = server.match(/function startPlanWaves\(\)[\s\S]*?\n\}\n/)?.[0] ?? "";
+    const wDoorAt = server.indexOf('url.pathname === "/api/wave/dispatch"');
+    const wDoor = wDoorAt < 0 ? "" : server.slice(wDoorAt, wDoorAt + 6000);
+    pin("tickDispatch walks the start plan's waves under the manual release policy — no oldest-first sweep beside it; dispatchTask and releaseTaskForMain never reach the plan",
+      /const candidates = startPlanWaves\(\)\.flatMap\(/.test(tBody)
+      && !/tasks\.filter\(/.test(tBody) && !/landWaveProjectionNow\(\)/.test(tBody)
+      && /projectStartPlan\(\{ projection, release: "manual",/.test(planFn)
+      && (server.match(/projectStartPlan\(/g) ?? []).length === 1
+      && /const plan = startPlanNow\(projection\);/.test(wavesFn)
+      && /url\.pathname === "\/api\/start-plan" && req\.method === "GET"\) return json\(startPlanNow\(\)\)/.test(server)
+      && /const wPlanWaves = startPlanWaves\(\);/.test(wDoor) && !/landWaveProjectionNow\(\)/.test(wDoor)
+      && reach.length === 0,
+      JSON.stringify({ tick: /startPlanWaves\(\)/.test(tBody), sweep: /tasks\.filter\(/.test(tBody), manual: /release: "manual"/.test(planFn),
+        door: /startPlanWaves\(\)/.test(wDoor), reach }));
+    // ...and the plan's verdict is a gate that SKIPS, sits after the harness gate and before both
+    // caps, and leaves the CAP verdict to the live caps: a plan counted before this instant must never
+    // be the reason a lane starts past a full repo, and must never write a second cap sentence.
+    const planGate = tBody.indexOf('if (plan.next !== "now" && !("cap" in plan.next)) {');
+    const planStmt = planGate < 0 ? "" : tBody.slice(planGate, tBody.indexOf("}", tBody.indexOf("continue;", planGate)) + 1);
+    pin("the plan's verdict gate skips its own wave, runs after the harness gate and before both caps, and never decides a cap",
+      planGate > tBody.indexOf("if (!harnessAutomatableFor(rowH)) {")
+      && planGate < tBody.indexOf("if (lanes >= repoCap.max)")
+      && /waiting\(startPlanWaitNote\(plan\.next\)\);\s*continue;/.test(planStmt) && !/\breturn;/.test(planStmt),
+      planStmt.replace(/\s+/g, " ").slice(0, 200) || "no plan gate");
   }
   // THE ONE SOURCE, at the one call a tick can make. The tick MAY now hand dispatchTask a spawn —
   // but only the ROW's own persisted, SET-time-validated choice, through the one accessor
@@ -2258,10 +2283,11 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // default, a computed harness — is the change that would hand an unattended lane an agent nobody
   // validated at set time, and it is invisible to tsc (the parameter accepts any DispatchSpawn) and
   // to every runtime test on a fleet with FLEET_HARNESS_AUTOMATION off, which is every suite.
-  // one nested paren level, because the expected argument list itself contains a call
+  // one nested paren level, because the expected argument list itself contains a call. The sixth
+  // argument is the wave hand-over (Schnitt 2) — followers of a start-plan wave, never a spawn.
   const tickCalls = [...tBody.matchAll(/dispatchTask\(((?:[^()]|\([^()]*\))*)\)/g)].map((m) => m[1].trim());
   pin("the tick's dispatch call carries the ROW's persisted choice through taskSpawnOf and nothing else",
-    tickCalls.length === 1 && tickCalls[0] === "next, free, false, false, taskSpawnOf(next)",
+    tickCalls.length === 1 && tickCalls[0] === "next, free, false, false, taskSpawnOf(next), handover",
     tickCalls.join(" | ") || "no dispatchTask call");
   // ...and the accessor itself stays the one bridge from a row to a choice: the row's own field,
   // DEFAULT_SPAWN on absence. A second derivation, or a fallback to anything but DEFAULT_SPAWN,
@@ -3401,9 +3427,10 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     progDispGrantFn || "programDispatchGrant missing");
   // ...and the QUIET-HOURS WAIVER is that one named pair and nothing looser: an ACTIVE grant AND a
   // row the MACHINE released. Widening it to "any row of a granted program" would hand an owner's
-  // 3am ▸ queue click an unattended lane, which is precisely what the window defers.
+  // 3am ▸ queue click an unattended lane, which is precisely what the window defers. For a wave the
+  // pair holds for EVERY row (Schnitt 2): one owner-released row makes the whole lane an owner act.
   pin("quiet hours are waived for exactly one pair — an active program grant and a machine-released row",
-    /const quietWaived = !!pd && next\.releasedBy === "machine";/.test(tBody)
+    /const quietWaived = !!pd && rows\.every\(\(row\) => row\.releasedBy === "machine"\);/.test(tBody)
     && /\.\.\.\(quietWaived \? \{ quietHours: false \} : \{\}\)/.test(tBody)
     && /if \(pre\.gate === "quiet-hours"\) continue;/.test(tBody),
     tBody.match(/const quietWaived[^\n]*/)?.[0] ?? "no waiver");

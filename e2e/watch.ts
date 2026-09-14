@@ -6059,6 +6059,13 @@ export async function run(): Promise<void> {
           delivery: "inbox", deliveredAt: null, payload: { signal: "denied", tool: "Bash", detail: "d".repeat(300),
             key: "0123456789abcdef", count: 3, escalated: true } }),
           "slot 6 · fleet/probe-hook", "dialog DENIED · Bash · 3× · ESCALATED"],
+        [base({ id: "k10", kind: "lane-review", subjectSlot: 9, subjectBranch: "fleet/probe-review", subjectOpenedAt: NOW - 7000,
+          receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null, watchId: null, status: "inbox",
+          delivery: "inbox", deliveredAt: null, payload: { taskId: "cafebabe1234", programId: null,
+            diffSha: "e".repeat(40), head: "9".repeat(40), model: "claude-opus-5[1m]", describedThisDiff: false,
+            raw: false, findingCount: 2, notes: "n".repeat(250),
+            findings: [{ title: "a finding title", file: "server.ts", line: 3, impact: "high" }] } }),
+          "slot 9 · fleet/probe-review", "③ 2 finding(s) · task cafebabe · this diff: NO"],
       ];
       const labelMiss = kinds.map(([full, subject, summary]) => {
         const p = opsPollRow(full);
@@ -6094,14 +6101,15 @@ export async function run(): Promise<void> {
         base({ id: "subj-gone", kind: "lane-ready", status: "subject-gone" })];
       const cut = cutLedger.filter(opsPollVisible).map((e) => e.id).sort().join(",");
       check("owner poll cut: filed non-report rows and unacknowledged pane rows at any age — nothing terminal, no inbox report",
-        cut === "k1,k2,k3,k4,k5,k6,k7,k8,k9,rec,filed,fresh,stale".split(",").sort().join(","), cut);
+        cut === "k1,k2,k3,k4,k5,k6,k7,k8,k9,k10,rec,filed,fresh,stale".split(",").sort().join(","), cut);
 
       // …and what it must NOT carry: the payload bodies no label prints and the binding fields no
       // panel line reads. These are the bytes the poll was paying for nobody.
       const projected = JSON.stringify(kinds.map(([f]) => opsPollRow(f)).concat(opsPollRow(recovered)));
       const leaked = ["whole report", "t".repeat(200), "sha256", "dist/a.js", "conflicted", "timedOut", "mainSha",
         "covers", "watchId", "receiverOpenedAt", "receiverSessionId", "receiverIdleSec", "attempts", "subjectCwd",
-        "updatedAt", '"fails"', "idleMs", "hostCommits", "bootHead", "d".repeat(300), "0123456789abcdef"].filter((k) => projected.includes(k));
+        "updatedAt", '"fails"', "idleMs", "hostCommits", "bootHead", "d".repeat(300), "0123456789abcdef",
+        "n".repeat(250), "a finding title", "e".repeat(40)].filter((k) => projected.includes(k));
       check("owner poll projection: no payload body and no binding field the panel never prints rides along",
         leaked.length === 0, `leaked=[${leaked}]`);
 

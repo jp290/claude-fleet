@@ -7752,7 +7752,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const nBlank = await nSharpen(nToken, nClosedId, { text: "   " });
     check("ACP-25 (6): by/model/edited in the body are 400 as a closed set — even naming the value the server writes itself — and a missing or blank text never mints a brief",
       nBodyBy.status === 400 && nBodyByText.includes("[by]")
-        && nBodyByText.includes("this door reads text only")
+        && nBodyByText.includes("this door reads text and review only")
         && nBodyMain.status === 400
         && nBodyModel.status === 400 && nBodyModelText.includes("model") && nBodyModelText.includes("edited")
         && nNoText.status === 400 && nBlank.status === 400
@@ -7809,10 +7809,52 @@ export async function run(ctx: Ctx): Promise<void> {
         && nReRow.brief.by === "main",
       `legacy=${nOverLegacy.status}:${nOverLegacyText} own=${nReSharpen.status} row=${JSON.stringify(nReRow?.brief)}`);
 
+    // (9) THE REVIEW OPT-IN THROUGH THE MAIN'S BRIEF DOOR, and where its verdict goes. The door reads
+    // `review` beside `text` (and 400s an unknown value); a row of this Program that asked for ③ has
+    // its verdict FILED to this live bound MAIN's pane — not to the owner inbox, which is only the
+    // fallback for a lane with no live MAIN (e2e/review.ts (O) measures that half). The fleet-wide
+    // tick is ON here (the suite's own env), so this is also the proof that it serves opted rows.
+    const nRevId = await nMake("acp25 row whose lane the MAIN wants reviewed", nBoundProgram);
+    const nRevBad = await nSharpen(nToken, nRevId, { text: "sharpened with a review ask", review: "maybe" });
+    const nRevBadText = await nRevBad.text();
+    const nRevOk = await nSharpen(nToken, nRevId, { text: "sharpened with a review ask", review: "advisory" });
+    const nRevRow = await nRow(nRevId) as NRow & { review?: string } | undefined;
+    check("review opt-in via the MAIN brief door: an unknown value is 400 naming the allowed ones, `advisory` is stored beside the brief",
+      nRevBad.status === 400 && nRevBadText.includes("none, advisory")
+        && nRevOk.status === 200 && nRevRow?.review === "advisory" && nRevRow.brief?.by === "main",
+      `bad=${nRevBad.status}:${nRevBadText} ok=${nRevOk.status} row=${JSON.stringify(nRevRow?.review)}`);
+    const nRevSlot = ((await (await post(`/api/tasks/${nRevId}/dispatch`, {})).json()) as { slot?: number }).slot;
+    let nRevCwd = "";
+    for (let i = 0; i < 60 && typeof nRevSlot === "number" && !nRevCwd; i++) {
+      nRevCwd = (await nSess()).find((x) => x.id === nRevSlot)?.cwd ?? "";
+      if (!nRevCwd) await Bun.sleep(100);
+    }
+    let nRevCommit = 1;
+    if (nRevCwd) {
+      writeFileSync(`${nRevCwd}/acp25-review.txt`, "work of a program lane that asked for ③\n");
+      for (let i = 0; i < 8 && nRevCommit !== 0; i++) {
+        nRevCommit = spawnSync("git", ["-C", nRevCwd, "add", "acp25-review.txt"]).status === 0
+          ? spawnSync("git", ["-C", nRevCwd, "commit", "-qm", "acp25 review lane work"]).status ?? 1 : 1;
+        if (nRevCommit !== 0) await Bun.sleep(250);
+      }
+    }
+    type NEvent = { kind: string; receiverSlot: number | null; delivery?: string; payload?: { taskId?: string; programId?: string | null } };
+    let nRevEvents: NEvent[] = [];
+    for (let i = 0; i < 45 && nRevCommit === 0 && nRevEvents.length === 0; i++) {
+      await Bun.sleep(1000);
+      nRevEvents = ((await (await get("/api/events")).json()) as { events: NEvent[] }).events
+        .filter((e) => e.kind === "lane-review" && e.payload?.taskId === nRevId);
+    }
+    check("review opt-in: a Program row's verdict is filed ONCE to the live bound MAIN's pane (receiver = its slot), never to the owner inbox",
+      nRevCommit === 0 && nRevEvents.length === 1 && nRevEvents[0]!.receiverSlot === nSlot
+        && nRevEvents[0]!.delivery === "pane" && nRevEvents[0]!.payload?.programId === nBoundProgram,
+      `slot=${nRevSlot} commit=${nRevCommit} events=${JSON.stringify(nRevEvents)}`);
+    if (typeof nRevSlot === "number") await post(`/api/slots/${nRevSlot}/kill`, {});
+
     // Leave the board as this section found it: every row it minted is deleted, the planted MAIN's
     // slot is closed, and both Programs are completed rather than left active for the modules after
     // this one to inherit.
-    for (const id of [nOkId, nOwnerId, nForeignId, nLooseId, nLaneTarget, nClosedId, nLegacyId])
+    for (const id of [nOkId, nOwnerId, nForeignId, nLooseId, nLaneTarget, nClosedId, nLegacyId, nRevId])
       await post(`/api/tasks/${id}/delete`, {});
     await post(`/api/slots/${nSlot}/kill`, {});
     await post(`/api/programs/${nBoundProgram}/complete`, {});

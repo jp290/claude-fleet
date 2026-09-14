@@ -44,7 +44,7 @@ import {
   attentionAnswerMessage, auditWatchMessage, clarificationReplyMessage, clarificationWatchMessage,
   fleetReportDecisionMessage,
   commandJobWatchMessage, deployWatchMessage, laneSuiteWatchMessage, laneWatchMessage, mergeWatchMessage,
-  harnessBlockMessage,
+  harnessBlockMessage, laneReviewMessage,
 } from "../lane-signals";
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
 import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
@@ -512,14 +512,14 @@ const server = serverU.text;
   const parser = parserSpan?.text ?? "";
   const mint = mintSpan?.text ?? "";
   const watchlessKinds = 'const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"\n'
-    + '    || e.kind === "lane-suite" || e.kind === "harness-block";';
+    + '    || e.kind === "lane-suite" || e.kind === "harness-block" || e.kind === "lane-review";';
   const watchlessEquivalence = parser.includes(watchlessKinds)
     && parser.includes('    || (watchless !== (e.watchId === null))\n'
       + "    || !(ownerReceiver || (Number.isInteger(e.receiverSlot)");
   const nullMints = (mint.match(/watchId: null/g) ?? []).length;
   const missingAnchor = [parserSpan === null ? "fleetEventFrom" : "", mintSpan === null ? "openClarification" : ""]
     .filter(Boolean);
-  pin("FleetEvent watchId is null exactly for clarification-request, fleet-report, lane-suite and harness-block, and a string for every Watch event",
+  pin("FleetEvent watchId is null exactly for clarification-request, fleet-report, lane-suite, harness-block and lane-review, and a string for every Watch event",
     missingAnchor.length === 0
       && /watchId: string \| null/.test(server)
       && watchlessEquivalence
@@ -532,6 +532,9 @@ const server = serverU.text;
         .match(/watchId: null/g) ?? []).length === 1
       // …and the fourth in openHarnessBlock, the one row a lane's hook mints for itself
       && (serverU.span("async function openHarnessBlock(", "async function openClarification(")?.text
+        .match(/watchId: null/g) ?? []).length === 1
+      // …and the fifth in fileLaneReview, the verdict a task row asked for (Task.review)
+      && (serverU.span("async function fileLaneReview(", "// --- THE AUTOMATIC LANE CLOSE")?.text
         .match(/watchId: null/g) ?? []).length === 1
       && (server.match(/watchId: w\.id/g) ?? []).length >= 4,
     missingAnchor.length > 0
@@ -2326,7 +2329,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && /t\.programId !== program\.id/.test(sharpenBody)
       && /const mainRepo = await repoKeyOf\(s\);/.test(sharpenBody)
       && /repoCanon\(target\) !== mainRepo/.test(sharpenBody)
-      && /Object\.keys\(body \?\? \{\}\)\.filter\(\(k\) => k !== "text"\)/.test(sharpenBody)
+      && /Object\.keys\(body \?\? \{\}\)\.filter\(\(k\) => k !== "text" && k !== "review"\)/.test(sharpenBody)
       && /t\.brief\?\.edited && t\.brief\.by === "owner"/.test(sharpenBody)
       && /t\.brief\?\.edited && t\.brief\.by === undefined/.test(sharpenBody)
       && /audit\("main_brief", s\.id/.test(sharpenBody),
@@ -4855,7 +4858,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const RULE_KINDS = "the FleetEvent kind set is closed";
   const expected = ["lane-ready", "host-commit-ready", "merge-terminal", "post-land-audit",
     "deploy-terminal", "command-job", "lane-suite", "clarification-request", "fleet-report",
-    "supervisor-transition", "harness-block"].sort();
+    "supervisor-transition", "harness-block", "lane-review"].sort();
   const signals = read("lane-signals.ts");
   const laneKinds = (signals.match(/export type LaneWatchEventKind =([^;\n]+)/)?.[1] ?? "")
     .split("|").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
@@ -4868,7 +4871,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const union = (server.match(/type FleetEvent =([\s\S]*?);/)?.[1] ?? "")
     .split("|").map((w) => w.trim()).filter(Boolean);
   const got = [...found].sort();
-  pin(`${RULE_KINDS} — the interfaces yield exactly the eleven known kinds`,
+  pin(`${RULE_KINDS} — the interfaces yield exactly the twelve known kinds`,
     JSON.stringify(got) === JSON.stringify(expected), `[${got.join(",")}]`);
   pin(`${RULE_KINDS} — every union member is one of those interfaces (no kind enters off-list)`,
     union.length > 0 && union.every((m) => new RegExp(`interface ${m} extends FleetEventBase \\{`).test(server)),
@@ -5125,7 +5128,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // the lane), and both are read off ONE `ownerAddressable` list so a kind can never be admitted
   // to the membership test without also being admitted to the transport equivalence.
   const ownerEquivalences = [
-    'const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite" || e.kind === "harness-block";',
+    'const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite" || e.kind === "harness-block"\n    || e.kind === "lane-review";',
     '|| (ownerReceiver && !ownerAddressable)',
     '|| (ownerAddressable && (e.delivery === "inbox") !== ownerReceiver)',
     '|| ((p.basis === "owner-inbox") !== ownerReceiver)) return null;',
@@ -7620,6 +7623,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
         tail: "12 FAILURES" } }),
     harnessBlockMessage: harnessBlockMessage(7, "fleet/probe", { id: "e8", kind: "harness-block",
       payload: { signal: "denied", tool: "Bash", detail: "rm -rf $SP/$v", key: "0".repeat(16), count: 3, escalated: true } }),
+    laneReviewMessage: laneReviewMessage(7, "fleet/probe", { id: "e9", kind: "lane-review",
+      payload: { taskId: "deadbeef", programId: null, diffSha: "a".repeat(40), head: "b".repeat(40), model: "claude-opus-5[1m]",
+        describedThisDiff: true, raw: false, findingCount: 1, notes: "could not read $HOME",
+        findings: [{ title: "unchecked $VAR", file: "server.ts", line: 12, impact: "high" }] } }),
     clarificationWatchMessage: clarificationWatchMessage(7, "fleet/probe", { id: "e6", kind: "clarification-request",
       payload: { requestId: "r1", question: "q", taskId: null, originId: null, programId: null, basis: "lane-watch" } }),
     clarificationReplyMessage: clarificationReplyMessage("r1", "q", "a"),

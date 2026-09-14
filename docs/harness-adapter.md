@@ -144,6 +144,23 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   (`SUMMARY_MODEL`, max 2 gleichzeitig, genau einmal pro Git-State, nie auf `⚙ steward` oder einem
   Nicht-Lane-Slot). Ein Harness ohne `FLEET_REVIEW_CMD`-Stand-in MUSS `FLEET_AUTO_REVIEW_MS=0` setzen, sonst
   startet die Suite einen echten Agenten — `e2e-claude-gate.sh` und `e2e-clean-review.sh` tun das deshalb.
+- **Zwei Türen, zwei Schalter (2026-09-14).** Der fleet-weite Schalter `FLEET_AUTO_REVIEW_MS` und das
+  Zeilenfeld `Task.review` sind ZWEI Türen zu demselben Reviewer, und keine öffnet die andere.
+  `review: "advisory"` an einer Task-Zeile (gesetzt beim Filen `POST /api/tasks`, über beide Brief-Türen
+  oder den ③-Haken am Board, `POST /api/tasks/:id/review`; `"none"` löscht das Feld) lässt ③ auf der Lane
+  DIESER Zeile laufen, sobald sie done-looking ist — **auch bei `FLEET_AUTO_REVIEW_MS=0`**. Dann läuft
+  `server.ts#tickAutoReview` im Opt-in-Modus auf eigener Periode `FLEET_REVIEW_OPTIN_TICK_MS` (default
+  15000; `0` schließt diese Tür ebenfalls) und überspringt jede Lane, deren Zeile nicht fragt, VOR jedem
+  Git-Read — der Kill-Switch bleibt für alle anderen zu. Ist der fleet-weite Tick an, bedient er die
+  Opt-in-Zeilen mit. Das Verdikt steht wie immer auf der Outcome-Zeile (`review`) und wird zusätzlich als
+  FleetEvent `lane-review` gefilet (`server.ts#fileLaneReview`): an die live gebundene Program-MAIN der
+  Zeile (Pane), sonst — kein Program, keine live MAIN oder kein Zustellbudget — in die Owner-Inbox 📥. Das
+  Event trägt `diffSha` (`git patch-id --stable` des gelesenen Diffs), `head`, `model`,
+  `describedThisDiff` (`null` = nicht feststellbar) und die Findings. Ein Diff bekommt genau EIN Verdikt:
+  ein Amend/Rebase ohne Diff-Änderung spawnt keinen zweiten Reviewer. **Es gated nichts** — kein Land,
+  kein Dispatch, kein Report-Urteil liest es; ein Land ohne oder gegen das Verdikt bleibt möglich. Ein
+  `required`-Modus (MAIN-Selbstlandung verweigert ohne Verdikt) ist bewusst NICHT gebaut: erst `advisory`
+  messen.
 
 ## Modell-Tiers
 

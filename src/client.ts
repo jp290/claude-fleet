@@ -268,6 +268,9 @@ interface TaskInfo { id: string; source: ServerTask["source"]; from?: string;
   // observation grouping, its chip and its guards went dead without one compiler word. Widen this
   // FIRST when the server's set changes — tsc then names every site that has to follow.
   kind?: "auftrag" | "richtung" | "notiz" | "betrieb"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string; repo?: string; programId?: string;
+  // Task.review: "advisory" = ③ reviews this row's lane once it looks done and files the verdict
+  // (server.ts#fileLaneReview). Absent = not asked for; the server never sends "none".
+  review?: "advisory";
   // Bounded generation/presence only; the brief text remains on GET /api/tasks.
   briefAt?: number;
   // deterministic file/cluster facts from taskDigest. Absence is UNKNOWN, never an empty surface.
@@ -5575,6 +5578,8 @@ async function refresh() {
         // exactly as a comment does — without them the sources section would keep showing a spent
         // detach button and a verdict list that is one report behind.
         t.notes?.n, t.notes?.at, t.verdicts?.n, t.verdicts?.at,
+        // the ③ haken is set from another tab or by a MAIN's brief door just as a comment is
+        t.review,
         briefCompilerOn,
         // the lane line moves with the SLOTS (state, dirty, a recycled pointer), not with the row
         qLaneKey(new Map([[t.id, qLaneJoinOf(t.id)]])),
@@ -8941,6 +8946,27 @@ function renderQueueDetail() {
       place(release, "release");
     }
     if (t.status === "queued") acts.appendChild(mk("hold", "unqueue"));
+  }
+  // THE ③ HAKEN (Task.review): ask for an agentic code review of THIS row's lane. Offered while the
+  // row can still reach a lane or runs in one — `sent` is the case that matters, the reviewer fires
+  // when the lane looks done. Advisory by construction: the sentence says so, because a reader who
+  // thought it gated the land would wait for it.
+  if (t.kind === "auftrag" && (t.status === "pending" || t.status === "queued" || t.status === "sent")) {
+    const g = el("label", "qrawack");
+    const box = el("input", "") as HTMLInputElement;
+    box.type = "checkbox";
+    box.checked = t.review === "advisory";
+    box.onchange = () => {
+      box.disabled = true;
+      void qAct(t.id, "review", { review: box.checked ? "advisory" : "none" }).then((ok) => {
+        if (!ok) box.checked = !box.checked;
+        box.disabled = false;
+      });
+    };
+    g.appendChild(box);
+    g.appendChild(el("span", "", "③ review this lane's code when it looks done — advisory: the verdict goes to "
+      + (t.programId ? "its Program-MAIN (your 📥 inbox if none is live)" : "your 📥 inbox") + " and gates nothing"));
+    acts.appendChild(g);
   }
   if (t.status === "archived") acts.appendChild(mk("restore", "unarchive"));
   if (t.status !== "done" && t.status !== "archived") acts.appendChild(mk("done", "done"));

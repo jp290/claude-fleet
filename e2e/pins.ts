@@ -8088,24 +8088,42 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 // A must-agree pair with no compiler between its halves: fleet-e2e.ts imports the check modules and
 // tags each step with a UNIT; e2e/ctx.ts#SHARD_UNITS lists which modules form which unit. A module
 // imported but listed nowhere would run in NO shard (`--shard k/n` drops what no unit claims) — the
-// vacuum-green shape, one shard at a time. A module listed twice would run in two. The runner's
-// own startup check covers only the unit NAMES; this pin covers the modules.
+// vacuum-green shape, one shard at a time. A module listed in two units runs in both shards — only
+// ever on purpose (self-token, 2026-09-14: `programs` carries its own lane token run), so it is legal
+// only where the runner's step for that module names exactly those units (`unit` + `alsoIn`); a
+// table-only listing would silently claim a run the runner never makes — and a step tagged with one
+// unit while the table lists its module under another is the same lie in the other direction. The runner's own
+// startup check covers only the unit NAMES; this pin covers the modules.
 {
-  const RULE_SHARD = "every check module the runner boots sits in exactly one shard unit";
+  const RULE_SHARD = "every check module the runner boots sits in a shard unit, and in several only as its step says";
   const runner = read("fleet-e2e.ts");
-  const booted = [...runner.matchAll(/^import \* as \w+ from "\.\/e2e\/([\w-]+)";$/gm)].map((m) => m[1]!)
+  const imports = [...runner.matchAll(/^import \* as (\w+) from "\.\/e2e\/([\w-]+)";$/gm)];
+  const booted = imports.map((m) => m[2]!)
     .filter((m) => m !== "trail"); // the trail family runs in every shard by construction
+  const moduleOf = new Map(imports.map((m) => [m[1]!, m[2]!]));
   const listed = SHARD_UNITS.flatMap((u) => u.modules);
   const unlisted = booted.filter((m) => !listed.includes(m));
-  const twice = listed.filter((m, i) => listed.indexOf(m) !== i);
   const phantom = listed.filter((m) => !booted.includes(m));
-  pin(`${RULE_SHARD} — booted modules ⊆ listed, none twice, none phantom`,
-    booted.length > 30 && unlisted.length === 0 && twice.length === 0 && phantom.length === 0,
-    `booted=${booted.length} listed=${listed.length} unlisted=[${unlisted}] twice=[${twice}] phantom=[${phantom}]`);
+  // a step is `{ unit: "x"[, alsoIn: [...]]… } },`; its units, per module it awaits
+  const stepUnitsOf = new Map<string, string[]>();
+  for (const st of runner.matchAll(/\{ unit: "([\w-]+)"(?:, alsoIn: \[([^\]]*)\])?[^]*?\n  \} \},/g)) {
+    const units = [st[1]!, ...[...(st[2] ?? "").matchAll(/"([\w-]+)"/g)].map((m) => m[1]!)].sort();
+    for (const call of st[0].matchAll(/await (\w+)\.run\(/g)) {
+      const mod = moduleOf.get(call[1]!);
+      if (mod) stepUnitsOf.set(mod, units);
+    }
+  }
+  const multi = [...new Set(listed.filter((m, i) => listed.indexOf(m) !== i))];
+  const unitsListing = (m: string) => SHARD_UNITS.filter((u) => u.modules.includes(m)).map((u) => u.unit).sort();
+  const twice = [...new Set(listed)].filter((m) => JSON.stringify(unitsListing(m)) !== JSON.stringify(stepUnitsOf.get(m) ?? []));
+  pin(`${RULE_SHARD} — booted modules ⊆ listed, none phantom, every module's table units = its runner step's units`,
+    booted.length > 30 && stepUnitsOf.size === booted.length && unlisted.length === 0 && twice.length === 0 && phantom.length === 0,
+    `booted=${booted.length} stepMapped=${stepUnitsOf.size} listed=${listed.length} multi=[${multi}] unlisted=[${unlisted}] mismatched=[${twice.map((m) => `${m}:${unitsListing(m)}≠${stepUnitsOf.get(m) ?? []}`)}] phantom=[${phantom}]`);
   // the runner's own startup check on the step NAMES fires only when the runner boots — behind a
   // server start and the suite mutex (2026-09-13: 26 min of queue for a unit renamed in the table
   // and not in the runner). The same fact, here, costs milliseconds and no server.
-  const stepUnits = [...runner.matchAll(/\{ unit: "([\w-]+)"/g)].map((m) => m[1]!);
+  const stepUnits = [...runner.matchAll(/\{ unit: "([\w-]+)"(?:, alsoIn: \[([^\]]*)\])?/g)]
+    .flatMap((m) => [m[1]!, ...[...(m[2] ?? "").matchAll(/"([\w-]+)"/g)].map((x) => x[1]!)]);
   const unknownSteps = stepUnits.filter((u) => !SHARD_UNITS.some((x) => x.unit === u));
   pin(`${RULE_SHARD} — every step's unit name in the runner is a unit the table knows`,
     stepUnits.length > 20 && unknownSteps.length === 0, `steps=${stepUnits.length} unknown=[${unknownSteps}]`);

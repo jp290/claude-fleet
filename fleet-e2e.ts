@@ -88,8 +88,9 @@ let sc: StewardCtx | null = null;
 // One step per contiguous run of same-unit modules, in the suite's original order; `lane` marks
 // the steps of the worktree-lane block (skipped without FLEET_E2E_REPO, exactly as the `if (REPO)`
 // bracket did). The comments are the sections' own — they explain the ORDER, which is why the
-// order is kept even inside a shard.
-interface Step { unit: string; lane?: true; run: () => Promise<void> }
+// order is kept even inside a shard. `alsoIn` names further units the step belongs to: it runs once
+// in a shard holding ANY of them, and its time counts to the first of them that shard holds.
+interface Step { unit: string; alsoIn?: readonly string[]; lane?: true; run: () => Promise<void> }
 const steps: Step[] = [
   // --- PURE-function unit tests (no server needed) ---
   { unit: "pure", run: async () => {
@@ -173,7 +174,8 @@ const steps: Step[] = [
   { unit: "concurrency", lane: true, run: async () => {
     await concurrency.run();
   } },
-  { unit: "core", lane: true, run: async () => {
+  // in `programs` too: its lane token is the one hand-on programs.run() reads (e2e/ctx.ts#SHARD_UNITS)
+  { unit: "core", alsoIn: ["programs"], lane: true, run: async () => {
     await selfToken.run(ctx);
   } },
   // the LANE-SUITE half of the remote helper portal — right after the self-token family whose
@@ -184,7 +186,7 @@ const steps: Step[] = [
   } },
   // Programs are planning-session artifacts above lanes. They use both the plain session and the
   // surviving lane self-token established immediately above, and restart the scratch server once.
-  { unit: "core", lane: true, run: async () => {
+  { unit: "programs", lane: true, run: async () => {
     await programs.run(ctx);
   } },
   // the cross-program Supervisor binding sits ABOVE the Program brackets, so it runs directly after
@@ -270,7 +272,7 @@ const steps: Step[] = [
 // every step names a unit the table knows — the table is what a shard is computed from
 {
   const known = new Set(SHARD_UNITS.map((u) => u.unit));
-  const stray = steps.map((s) => s.unit).filter((u) => !known.has(u));
+  const stray = steps.flatMap((s) => [s.unit, ...(s.alsoIn ?? [])]).filter((u) => !known.has(u));
   if (stray.length) throw new Error(`runner steps name units missing from e2e/ctx.ts#SHARD_UNITS: ${stray.join(", ")}`);
 }
 
@@ -293,10 +295,11 @@ if (myUnits && !myUnits.has("core")) {
 
 for (const step of steps) {
   if (step.lane && !REPO) continue;
-  if (myUnits && !myUnits.has(step.unit)) continue;
+  const owner = [step.unit, ...(step.alsoIn ?? [])].find((u) => !myUnits || myUnits.has(u));
+  if (!owner) continue;
   const t0 = Date.now();
   await step.run();
-  unitMs.set(step.unit, (unitMs.get(step.unit) ?? 0) + (Date.now() - t0));
+  unitMs.set(owner, (unitMs.get(owner) ?? 0) + (Date.now() - t0));
 }
 
 // --- the run's own per-check trail. Last on purpose: it compares its row count against every

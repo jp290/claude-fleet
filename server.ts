@@ -44,7 +44,7 @@ import {
   type ContextPackMode,
   type ContextPackTrigger,
 } from "./context-packs";
-import { composerArrival, composerHoldsExactly, composerRows, composerResidue,
+import { composerArrival, composerBuffer, composerHoldsExactly, composerRows,
   type ComposerArrival, type ComposerForm } from "./composer";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
@@ -5480,12 +5480,15 @@ interface BoundSlotPane {
 const sameBoundPane = (s: Slot, bound: BoundSlotPane): boolean =>
   sameSlotStreamOccupant(s, bound.occupant) && !slotTeardownInflight.has(s.id);
 
+// The WHOLE buffer, every visual row: the pre-paste occupancy refusal and the post-Enter acceptance
+// read both ask what the input buffer holds, and a glyph-row-only read answered "129 chars" for a
+// 193-char buffer (1e1dcd50, measured H1: docs/messungen/2026-09-14-inbox-nudge-composer-h1-diskriminator.md).
 async function readComposer(s: Slot, bound: BoundSlotPane): Promise<string | null> {
   if (!sameBoundPane(s, bound)) return null;
   const form = bound.composer;
   if (!form) return null;
   const cap = await tmux("capture-pane", "-p", "-e", "-t", bound.paneId);
-  return cap.code === 0 && sameBoundPane(s, bound) ? composerResidue(form, cap.out) : null;
+  return cap.code === 0 && sameBoundPane(s, bound) ? composerBuffer(form, cap.out) : null;
 }
 
 type ExactComposerRead = { kind: "rows"; rows: string[] } | { kind: "unobservable" } | { kind: "failed" };

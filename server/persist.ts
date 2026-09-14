@@ -75,6 +75,10 @@ export function coalescedSaver(snapshot: () => string, write: (body: string) => 
 // what was actually PARSED across BOTH generations and `malformed` is the hole, reported
 // separately; that is the same discipline continuityView already applies to this same prompt
 // journal (continuity.ts, the `outOfScope.malformed` counter) — copied, not re-invented.
+// A line that PARSES but is not a record (`null`, `42`, `"x"`, `[…]`) is a hole too: appendEvent
+// only ever writes objects, and every caller reads fields off a row, so delivering one throws a
+// TypeError in the consumer while `malformed` still says 0. Only the record SHAPE is checked here —
+// each row type's fields stay the caller's business (validAuditRow, validDeployRow, …).
 // Bounded by construction: exactly two files, each capped at the rotation threshold.
 export interface Ledger<T> { rows: T[]; total: number; malformed: number }
 export async function readLedger<T>(file: string): Promise<Ledger<T>> {
@@ -84,11 +88,15 @@ export async function readLedger<T>(file: string): Promise<Ledger<T>> {
     if (!existsSync(f)) continue;
     for (const line of (await Bun.file(f).text()).split("\n")) {
       if (!line) continue;
+      let row: unknown;
       try {
-        rows.push(JSON.parse(line) as T);
+        row = JSON.parse(line);
       } catch {
         malformed++; // a torn mid-append line — a hole, and reported as one
+        continue;
       }
+      if (row === null || typeof row !== "object" || Array.isArray(row)) malformed++;
+      else rows.push(row as T);
     }
   }
   return { rows, total: rows.length, malformed };

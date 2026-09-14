@@ -284,7 +284,7 @@ else if (!pid) {
     const now = birthOf(pid);
     if (!birth) { state = "unknown"; birthState = "missing"; why = `pid ${pid} is alive but the lock has no birth fingerprint — not reaping a possibly live legacy holder`; }
     else if (!now) { state = "unknown"; birthState = "unmeasurable"; why = `pid ${pid} is alive but its birth fingerprint is unmeasurable — not reaping a possibly live holder`; }
-    else if (now === birth) { state = "held"; birthState = "matched"; why = `held by live pid ${pid} with proven identity`; }
+    else if (now === birth) { state = "held"; birthState = "matched"; why = `${rd(LOCK + "/held-by-fleet-server") === pid ? `held by the fleet server itself — never kill this pid ${pid} — ` : ""}held by live pid ${pid} with proven identity`; }
     else { state = "stale"; birthState = "changed"; why = `pid ${pid} is alive but its birth fingerprint changed — a recycled-pid lock`; }
   }
 }
@@ -300,7 +300,7 @@ if (process.env.CTL_REAP === "1") {
   else {
     // re-read both files immediately before the rmdir: the reap/re-acquire race is microseconds wide
     if (rd(LOCK + "/pid") === pid && rd(LOCK + "/birth") === birth) {
-      try { fs.rmSync(LOCK + "/pid", { force: true }); fs.rmSync(LOCK + "/birth", { force: true }); fs.rmdirSync(LOCK); reaped = true; }
+      try { fs.rmSync(LOCK + "/held-by-fleet-server", { force: true }); fs.rmSync(LOCK + "/pid", { force: true }); fs.rmSync(LOCK + "/birth", { force: true }); fs.rmdirSync(LOCK); reaped = true; }
       catch (e) { reapRefused = "rmdir failed: " + String(e).slice(0, 120); }
     } else reapRefused = "the lock changed under us between the read and the reap — left alone";
   }

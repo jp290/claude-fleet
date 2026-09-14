@@ -97,7 +97,13 @@ export FLEET_LANE_AUTOCLOSE=0
 # reader should not have to learn them twice:
 #   held   — a live pid holds it. Named with its elapsed time and its command line, so "which
 #            suite is in front of me" is answered by the line rather than by a follow-up `ps`.
-#   stale  — the recorded pid is gone. NOTHING is running; we reap it and take the lock.
+#            When the holder is the FLEET SERVER (server.ts#suiteLockTryTake writes the marker
+#            `held-by-fleet-server` beside `pid`, naming its own pid), every line over that live
+#            pid says so verbatim: "held by the fleet server itself — never kill this pid". A lane
+#            killed the pid it read from this lock on 2026-09-14 and took the live server down
+#            mid-land. The marker changes WORDING only — which dir is reaped is decided exactly as
+#            before, and a live pid with a proven birth is never an orphan here with or without it.
+#   stale — the recorded pid is gone. NOTHING is running; we reap it and take the lock.
 #   parked — the dir exists with NO pid file. A human parked the machine on purpose; this is the
 #            one state that never resolves on its own, and a waiter must not read it as "soon".
 # Every emission is throttled through _st_say_at, including the reap: a lock dir that resists
@@ -270,6 +276,7 @@ while :; do
   # state, i.e. exactly when it must instead be reported.
   _st_hp=$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)
   _st_hb=$(cat "$FLEET_SUITE_LOCK/birth" 2>/dev/null || true)
+  _st_srv=$(cat "$FLEET_SUITE_LOCK/held-by-fleet-server" 2>/dev/null || true)
   _st_dead=0
   _st_reap=0
   if [ ! -d "$FLEET_SUITE_LOCK" ]; then
@@ -286,15 +293,21 @@ while :; do
     fi
   elif kill -0 "$_st_hp" 2>/dev/null; then
     _st_birth_now=$(_st_birth_of "$_st_hp")
+    _st_srv_say=""
+    if [ "$_st_srv" = "$_st_hp" ]; then
+      _st_srv_say="held by the fleet server itself — never kill this pid $_st_hp; it gives the mutex back when its land ends — "
+    fi
     if [ -z "$_st_hb" ]; then
-      _st_why="unknown — recorded pid $_st_hp is alive, but the lock has no process-birth fingerprint; not reaping a possibly live legacy holder"
+      _st_why="${_st_srv_say}unknown — recorded pid $_st_hp is alive, but the lock has no process-birth fingerprint; not reaping a possibly live legacy holder"
     elif ! _st_valid_birth "$_st_hb"; then
-      _st_why="unknown — recorded pid $_st_hp is alive, but its process-birth fingerprint is malformed; not reaping a possibly live holder"
+      _st_why="${_st_srv_say}unknown — recorded pid $_st_hp is alive, but its process-birth fingerprint is malformed; not reaping a possibly live holder"
     elif [ -z "$_st_birth_now" ]; then
-      _st_why="unknown — recorded pid $_st_hp is alive, but its current process-birth fingerprint is unmeasurable; not reaping a possibly live holder"
+      _st_why="${_st_srv_say}unknown — recorded pid $_st_hp is alive, but its current process-birth fingerprint is unmeasurable; not reaping a possibly live holder"
     elif [ "$_st_birth_now" = "$_st_hb" ]; then
-      _st_why="held by live pid $_st_hp with proven identity (up $(ps -o etime= -p "$_st_hp" 2>/dev/null | tr -d ' ')): $(ps -o command= -p "$_st_hp" 2>/dev/null | cut -c1-70)"
+      _st_why="${_st_srv_say}held by live pid $_st_hp with proven identity (up $(ps -o etime= -p "$_st_hp" 2>/dev/null | tr -d ' ')): $(ps -o command= -p "$_st_hp" 2>/dev/null | cut -c1-70)"
     else
+      # NO server wording here even when the marker names this pid: the birth changed, so the live
+      # process is NOT the server that wrote the marker — it died and its pid was recycled.
       _st_dead=1
       _st_reap=1
       _st_why="stale — recorded pid $_st_hp is alive but its process-birth fingerprint changed; reaping the recycled-pid lock"
@@ -321,7 +334,8 @@ while :; do
     _st_cur_pid=$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)
     _st_cur_birth=$(cat "$FLEET_SUITE_LOCK/birth" 2>/dev/null || true)
     if [ "$_st_cur_pid" = "$_st_hp" ] && [ "$_st_cur_birth" = "$_st_hb" ]; then
-      rm -f "$FLEET_SUITE_LOCK/pid" "$FLEET_SUITE_LOCK/birth" && rmdir "$FLEET_SUITE_LOCK" 2>/dev/null || true
+      # the server's marker goes with the other two, or the rmdir fails on a dir that is not empty
+      rm -f "$FLEET_SUITE_LOCK/held-by-fleet-server" "$FLEET_SUITE_LOCK/pid" "$FLEET_SUITE_LOCK/birth" && rmdir "$FLEET_SUITE_LOCK" 2>/dev/null || true
     fi
     continue
   fi

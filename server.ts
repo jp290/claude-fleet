@@ -21114,10 +21114,13 @@ function suiteLockView(): GateLock | null {
   const current = processBirthFingerprint(pid);
   if (stored.state === "matched" && current !== null && stored.value === current) {
     const state = heldMs > SUITE_HOLD_OVERDUE_MS ? "overdue" : "held";
+    let server = false;
+    try { server = readFileSync(`${SUITE_LOCK}/${SUITE_LOCK_SERVER_MARKER}`, "utf8").trim() === raw; } catch { /* a wrapper's hold */ }
     return gateLock(pid, true, heldMs, acquiredAt, true,
       { stored: stored.value, current, state: "matched" }, state, state === "overdue" ? "inspect holder" : "wait",
       `recorded pid ${pid} is alive and its process-birth fingerprint matches`,
-      state === "overdue" ? "the holder is probably wedged; inspect before killing anything" : "a suite is holding the mutex");
+      server ? `held by the fleet server itself — never kill this pid (${pid}); it gives the mutex back when its land ends`
+        : state === "overdue" ? "the holder is probably wedged; inspect before killing anything" : "a suite is holding the mutex");
   }
   if (stored.state === "matched" && current !== null && stored.value !== current)
     return gateLock(pid, true, heldMs, acquiredAt, false,
@@ -21167,6 +21170,16 @@ let suiteLockOwner: symbol | null = null;
 // gained by spinning either: the wrappers themselves re-check at 15 s, and against a budget
 // measured in minutes five seconds of latency is not a number anyone can feel.
 const SUITE_LOCK_POLL_MS = 5_000;
+// THE SERVER NAMES ITSELF AS THE HOLDER (2026-09-14). A pid file says WHICH process holds the
+// machine, never WHAT it is — and a lane that read /tmp/fleet-e2e.lock/pid and killed that pid
+// killed the live server mid-land (Slot 3 on 2026-09-14 00:48: watchdog restart, land 1aaf7eb8
+// interrupted and landed again). So beside `pid` and `birth` the server writes this marker, holding
+// its own pid; e2e-stage.sh#_st_srv reads it and every wait line it prints over such a hold says
+// "held by the fleet server itself — never kill this pid". Written LAST (after pid and birth) so a
+// death between the writes still leaves a shape the reapers already know; removed FIRST on release.
+// Every reaper of this lock (e2e-stage.sh, ctl.sh lock --reap, docker-verify.sh, suiteLockReapStale)
+// removes it with the other two files, or its `rmdir` would fail on a non-empty dir.
+const SUITE_LOCK_SERVER_MARKER = "held-by-fleet-server";
 function suiteLockTryTake(owner: symbol | null = null): boolean {
   try { mkdirSync(SUITE_LOCK); } catch { return false; } // mkdir IS the claim — atomic, as in the shell
   // Refuse to hold what we cannot be identified as, exactly as e2e-stage.sh refuses (`_st_self_birth`
@@ -21177,7 +21190,15 @@ function suiteLockTryTake(owner: symbol | null = null): boolean {
   try {
     writeFileSync(`${SUITE_LOCK}/pid`, `${process.pid}\n`, { mode: 0o600 });
     writeFileSync(`${SUITE_LOCK}/birth`, `${birth}\n`, { mode: 0o600 });
-  } catch { return false; } // pid written or not, a death here leaves a reapable dir, never a park
+    writeFileSync(`${SUITE_LOCK}/${SUITE_LOCK_SERVER_MARKER}`, `${process.pid}\n`, { mode: 0o600 });
+  } catch {
+    // ALIVE and not holding: give back what was written, or a live pid with a matching birth would
+    // park the machine for this server's whole life with nobody believing it holds anything.
+    // A death inside this cleanup still leaves a reapable dir, never a park.
+    for (const f of [SUITE_LOCK_SERVER_MARKER, "birth", "pid"]) try { rmSync(`${SUITE_LOCK}/${f}`, { force: true }); } catch { /* best effort */ }
+    try { rmdirSync(SUITE_LOCK); } catch { /* not empty or gone: a reaper's shape now */ }
+    return false;
+  }
   suiteLockHeld = true;
   suiteLockOwner = owner;
   return true;
@@ -21283,6 +21304,7 @@ function suiteLockReapStale(): boolean {
   // and we touch nothing.
   if (readSuiteLockFile("pid") !== hp || readSuiteLockFile("birth") !== hb) return false;
   try {
+    rmSync(`${SUITE_LOCK}/${SUITE_LOCK_SERVER_MARKER}`, { force: true });
     rmSync(`${SUITE_LOCK}/pid`, { force: true });
     rmSync(`${SUITE_LOCK}/birth`, { force: true });
     rmdirSync(SUITE_LOCK);
@@ -21340,6 +21362,7 @@ function releaseSuiteLock(owner: symbol | null = null): void {
   suiteLockOwner = null;
   try {
     if (readFileSync(`${SUITE_LOCK}/pid`, "utf8").trim() !== String(process.pid)) return;
+    rmSync(`${SUITE_LOCK}/${SUITE_LOCK_SERVER_MARKER}`, { force: true });
     rmSync(`${SUITE_LOCK}/pid`, { force: true });
     rmSync(`${SUITE_LOCK}/birth`, { force: true });
     rmdirSync(SUITE_LOCK);

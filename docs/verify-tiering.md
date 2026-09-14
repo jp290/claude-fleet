@@ -558,6 +558,34 @@ Mutex 35–41 min. Im gemessenen Fall genuegt der eine Halter allein: er lief ab
 um 08:43, das Audit fragte um 08:16:42 — auch als einziger Konkurrent haette es das Budget gerissen.
 Deckel 1 senkt die HAEUFIGKEIT, er schliesst den Fall nicht aus.
 
+### 6.3 land-quality — was weder Gate noch Audit sagt: hat der Land gehalten? (2026-09-14)
+
+Gate und Audit beweisen einen BAUM, nie eine Lane: gruen heisst „uebersetzt, Suite gruen", nicht
+„die eingefuegten Zeilen blieben stehen". `bun land-quality.ts [--since 14d] [--json]` liest
+`lane-outcomes.jsonl`, `post-land-audits.jsonl`, `audit-adjudications.jsonl`, `fleet.json` und git
+(read-only) und schreibt je gelandeter Lane eine Zeile nach `land-quality.jsonl` (gitignored, bei
+jedem Lauf ganz neu geschrieben): `insertedLines`, `reworkLines3d`/`7d` (vom Land eingefuegte Zeilen,
+die ein spaeterer main-Commit binnen 3/7 d ueberschrieb — `git blame` der Alt-Seite jedes spaeteren
+Hunks, zurueckgefuehrt auf die Commits `base..mainAfter`), `reworkByFixSubject` (ein `fix…`-Commit
+ueberschrieb binnen 3 d eingefuegte CODE-Zeilen), `auditRed` (ein rotes Audit, dessen `covers[]`
+Branch+`mainAfter` nennt; zaehlt, solange die NEUESTE Adjudikation nicht `flake` ist —
+`auditVerdict` traegt sie), dazu Modell/Harness/Effort/Karten-Groesse/`ownerPrompts`. Offenes
+Fenster ⇒ `null`, nie 0; „jetzt" ist die Commit-Zeit von `--at` (Default main), darum sind zwei
+Laeufe gegen dieselbe main byte-identisch. `./state.sh` zeigt das 14-d-Aggregat aus dem
+geschriebenen Ledger (`--summary`, ohne git) in drei Zeilen.
+
+Messung @`378deae8`, `--since 14d`, 20–25 s (812 blame-Aufrufe; die Probe der Mess-Notiz
+`docs/messungen/2026-09-14-queue-intelligenz-schichten.md` §3 brauchte 423 s fuer 3 920, weil sie
+jeden Hunk jedes Commits blamte statt nur Dateien, die ein Land der letzten 7 d beruehrt hat):
+`fix3d(code)` claude/opus-5 **20/84 (24 %)**, codex **7/16 (44 %)** — die Probe exakt reproduziert.
+Die Zahl dort heisst „rework3d", ist aber die `fix…`-Code-Variante; die Nacharbeit durch IRGENDEINEN
+spaeteren Commit liegt bei opus-5 63/100 (63 %), codex 12/23 — auch das deckt sich mit der Probe
+(`anyLinesRewritten3d`). Querprobe der Zuordnung: fuer 5 zufaellige Lands Ganzdatei-Blame bei
+`mainAfter` gegen den letzten main-Commit ≤ +3 d — die Differenz der Land-Zeilen ist 5/5 gleich
+`reworkLines3d`. Grenzen: keine Move-Erkennung (verschobene Zeile = Nacharbeit), `fix`-Praefix als
+einziger Korrektur-Marker, `size` erst seit den Karten (09-13) vorhanden und darum im 3-d-Fenster
+noch ueberall `null`.
+
 ## 7. Relative to the `post-land-audit` lane
 
 Read first-hand: `git -C …/post-land-audit diff main...HEAD` (5 lane commits, +892/−21).

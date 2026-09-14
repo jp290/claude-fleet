@@ -182,6 +182,16 @@ else:
             line += f" · R4 score UNKNOWN — {type(e).__name__}"
     print(line)
 
+# did the lands HOLD — line rework and audit red per land (docs/verify-tiering.md §6.3). Read off the
+# written ledger, never recomputed here: the blame pass is `bun land-quality.ts --since 14d`'s job.
+try:
+    p = subprocess.run(['bun', 'land-quality.ts', '--summary', '--since', '14d', '--root', MAIN],
+                       capture_output=True, text=True, timeout=60)
+    print(p.stdout.rstrip() if p.returncode == 0 else
+          f"  land-quality UNKNOWN — {p.stderr.strip()[:140]} (run: bun land-quality.ts --since 14d)")
+except (OSError, subprocess.TimeoutExpired) as e:
+    print(f"  land-quality UNKNOWN — {type(e).__name__}")
+
 # the gate's two budgets live on the land notes, not in the outcome rows. One cat-file --batch
 # reads every note in one process; GIT_OPTIONAL_LOCKS=0 keeps these read-only calls off .git/index.lock
 env = {**os.environ, 'GIT_OPTIONAL_LOCKS': '0'}

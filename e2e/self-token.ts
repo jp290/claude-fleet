@@ -742,9 +742,16 @@ export async function run(ctx: Ctx): Promise<void> {
       successor?.cwd === sr && successor.model === "claude-sonnet-5" && successor.harness === undefined,
       JSON.stringify(successor));
 
+    // bound to the OCCUPANT, not the slot number: a retired successor's slot is recycled within this
+    // block, and the first "[fleet succession]" line on that number is the previous occupant's brief
+    const successionBriefOf = async (slot: number | undefined): Promise<string> => {
+      const openedAt = (await succRows()).find((x) => x.id === slot)?.openedAt;
+      return (await plogRead()).findLast((e) => e.slot === slot && e.openedAt === openedAt
+        && e.text.startsWith("[fleet succession]"))?.text ?? "";
+    };
     let founding = "";
     for (let i = 0; i < 40 && !founding; i++) {
-      founding = (await plogRead()).find((e) => e.slot === sj.slot && e.text.startsWith("[fleet succession]"))?.text ?? "";
+      founding = await successionBriefOf(sj.slot);
       if (!founding) await Bun.sleep(100);
     }
     // (b) a repo WITHOUT .fleet/init.md: the neutral entry — lineage.record, HANDOFF.md, README/AGENTS —
@@ -822,7 +829,7 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify((await succRows()).find((x) => x.id === sj.slot)));
     let overrideBrief = "";
     for (let i = 0; i < 40 && !overrideBrief; i++) {
-      overrideBrief = (await plogRead()).find((e) => e.slot === oj.slot && e.text.startsWith("[fleet succession]"))?.text ?? "";
+      overrideBrief = await successionBriefOf(oj.slot);
       if (!overrideBrief) await Bun.sleep(100);
     }
     check("the optional inter-session carry is capped at 500 characters",
@@ -863,7 +870,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const pj = (await pointed.json()) as { ok?: boolean; slot?: number };
     let longBrief = "";
     for (let i = 0; i < 40 && !longBrief; i++) {
-      longBrief = (await plogRead()).find((e) => e.slot === pj.slot && e.text.startsWith("[fleet succession]"))?.text ?? "";
+      longBrief = await successionBriefOf(pj.slot);
       if (!longBrief) await Bun.sleep(100);
     }
     check("an init.md over the cap is cut at 2000 characters with a visible note naming the cap and the full length — never silently",

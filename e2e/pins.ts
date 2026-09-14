@@ -4346,6 +4346,8 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     server.indexOf("async function tickWatches("));
   const receiverGuardBody = server.slice(server.indexOf("function receiverStillMatchesFleetEvent("),
     server.indexOf("function terminalizeFleetReportRecovery("));
+  const receiverIsBody = server.slice(server.indexOf("function fleetEventReceiverIs("),
+    server.indexOf("function fleetEventReceiver(e: FleetEvent)"));
   const recoveryLatch = recoveryBody.indexOf("await waitForFleetReportRecoveryTestLatch(event, expected);");
   const recoveryGuard = recoveryBody.indexOf("receiverStillMatchesFleetEvent(event, receiver, expected)");
   const recoverySend = recoveryBody.indexOf("await sendText(receiver, text, true, { rollbackOwnPayload: true })");
@@ -4357,9 +4359,15 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && nonAcceptanceBody.includes("if (fleetReportRecoveryExhausted(event)) {")
       && recoveryBody.includes('recordFleetReportNonAcceptance(event, e instanceof SendNotAccepted ? e.rollback : null, "recovery")')
       && receiverGuardBody.includes("event.receiverOpenedAt === expected.openedAt")
-      && receiverGuardBody.includes("event.receiverSessionId === expected.sessionId")
       && receiverGuardBody.includes("s.openedAt === expected.openedAt")
       && receiverGuardBody.includes("s.sessionId === expected.sessionId")
+      // the session-id half is the ONE receiver predicate every event door shares (66df05b4): exact,
+      // or null minted before this occupation's recorded learn of exactly its current id
+      && receiverGuardBody.includes("fleetEventReceiverIs(event, s)")
+      && receiverIsBody.includes("e.receiverOpenedAt !== s.openedAt")
+      && receiverIsBody.includes("if (e.receiverSessionId === s.sessionId) return true;")
+      && receiverIsBody.includes("e.receiverSessionId === null && learned !== null && s.sessionId === learned.id")
+      && receiverIsBody.includes("e.createdAt <= learned.at")
       && recoveryLatch >= 0 && recoveryGuard > recoveryLatch && recoverySend > recoveryGuard
       && recoveryBody.includes("terminalizeFleetReportRecovery(event,")
       && server.includes('event.status = "receiver-gone";') && !recoveryBody.includes("selfLandTaskForMain("),

@@ -21,7 +21,8 @@
 // NOT what this file is for: e2e/dirs-pins.ts, an unrelated neighbour, tests the directory picker's
 // bookmark list. "Pin" there is a UI feature; "pin" here is a fastener between two files.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import {
@@ -34,6 +35,7 @@ import {
   UNMODELED_CAPABILITY_DIMENSIONS, renderSystemCapabilities,
 } from "../capability-map";
 import { collectRepoMap, firstCommentLine, renderRepoMap } from "../repo-map";
+import { HANDOFF_WARN_KB, splitHandoff } from "../handoff-rotate";
 // the pane-hint builders are IMPORTED and CALLED by the sigil rule at the end of this file: only a
 // rendered hint shows the tail `${eventAck(id)}` actually contributes, which a source scan cannot.
 import {
@@ -8190,6 +8192,80 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_DEFAULTS} — e2e/lane-helpers.ts parses FLEET_MERGE_IDLE_MS exactly as server.ts does`,
     /export const MERGE_IDLE_MS = Math\.max\(500, Number\(process\.env\.FLEET_MERGE_IDLE_MS \?\? 3000\) \| 0\);/.test(helpers),
     "the harness idle wait and the server idle gate can disagree");
+}
+
+// ================================================================================================
+// HANDOFF.md rotation — the archive gets every byte the handoff loses, and nothing else
+// ================================================================================================
+// handoff-rotate.ts slices HANDOFF.md as bytes: the top `#` section stays, the rest is appended to
+// docs/attic/handoff-archiv-<date>.md. Its whole value is that nothing is lost or rewritten, so the
+// rule is held on a FIXTURE through the file run, not on the live HANDOFF.md (a lane never touches
+// it). The fixture carries the three ways a heading scan goes wrong: `#` inside a ``` fence, `#`
+// inside a ~~~~ fence that a ``` line does not close, and `#hashtag` with no space — plus a
+// preamble, umlauts (bytes != chars), a CRLF heading and a last line with no newline.
+{
+  const RULE_ROTATE = "handoff-rotate.ts keeps the top # section and appends the rest byte-exact to the archive";
+  const fixture = Buffer.from([
+    "vorspann\n",
+    "# HANDOFF — neueste Übergabe\n", "## 0. unterabschnitt\n", "```sh\n# kein abschnitt (fence)\n```\n", "text\n\n",
+    "# HANDOFF — ältere ü\n", "~~~~\n# noch fence\n```\n# noch fence, ``` schliesst ~~~~ nicht\n~~~~\n", "#hashtag ohne leerzeichen\n",
+    "# HANDOFF — älteste\r\n", "letzte zeile ohne newline",
+  ].join(""), "utf8");
+  const split = splitHandoff(fixture);
+  const headings = split.archived.map((s) => s.heading);
+  pin(`${RULE_ROTATE} — the split sees exactly the unfenced h1 headings`,
+    split.kept?.heading === "# HANDOFF — neueste Übergabe"
+      && JSON.stringify(headings) === JSON.stringify(["# HANDOFF — ältere ü", "# HANDOFF — älteste"])
+      && fixture.subarray(split.keepEnd).toString("utf8").startsWith("# HANDOFF — ältere ü\n"),
+    `kept=${JSON.stringify(split.kept?.heading)} archived=${JSON.stringify(headings)}`);
+
+  const dir = mkdtempSync(`${tmpdir()}/fleet-pins-handoff-`);
+  try {
+    const handoff = `${dir}/HANDOFF.md`;
+    const archive = `${dir}/docs/attic/handoff-archiv-2026-01-02.md`;
+    const run = (...extra: string[]) => spawnSync("bun", [`${ROOT}/handoff-rotate.ts`, "--root", dir, "--date", "2026-01-02", ...extra],
+      { encoding: "utf8", timeout: 10_000 });
+    writeFileSync(handoff, fixture);
+
+    const dry = run("--dry-run");
+    pin(`${RULE_ROTATE} — --dry-run names every section it would archive and touches nothing`,
+      dry.status === 0 && headings.every((h) => dry.stdout.includes(h)) && !existsSync(archive)
+        && readFileSync(handoff).equals(fixture),
+      `exit ${String(dry.status)} ${(dry.stderr || "").trim().slice(0, 120)}`);
+
+    // a pre-existing archive is APPENDED to, never replaced
+    rmSync(`${dir}/docs`, { recursive: true, force: true });
+    mkdirSync(`${dir}/docs/attic`, { recursive: true });
+    const prior = Buffer.from("# frueheres archiv\n", "utf8");
+    writeFileSync(archive, prior);
+    const real = run();
+    const kept = readFileSync(handoff);
+    const archived = readFileSync(archive);
+    pin(`${RULE_ROTATE} — bytes before = kept + appended, in order, on top of the prior archive`,
+      real.status === 0 && kept.equals(fixture.subarray(0, split.keepEnd))
+        && archived.equals(Buffer.concat([prior, fixture.subarray(split.keepEnd)]))
+        && kept.length + archived.length - prior.length === fixture.length,
+      `exit ${String(real.status)}; ${fixture.length} B before, ${kept.length} B kept, ${archived.length - prior.length} B appended`);
+
+    const again = run();
+    pin(`${RULE_ROTATE} — a handoff with one section is left alone`,
+      again.status === 0 && again.stdout.includes("nothing to rotate") && readFileSync(handoff).equals(kept)
+        && readFileSync(archive).equals(archived),
+      `exit ${String(again.status)}`);
+
+    // the archive now ends without a newline (the fixture's last line): appending would glue the next
+    // heading onto it, so the run must refuse and leave HANDOFF.md whole
+    writeFileSync(handoff, fixture);
+    const refused = run();
+    pin(`${RULE_ROTATE} — it refuses to append behind an archive whose last line has no newline`,
+      refused.status === 2 && readFileSync(handoff).equals(fixture) && readFileSync(archive).equals(archived),
+      `exit ${String(refused.status)} ${(refused.stderr || "").trim().slice(0, 120)}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  pin("state.sh warns about HANDOFF.md above handoff-rotate.ts#HANDOFF_WARN_KB",
+    read("state.sh").includes(`-gt $((${HANDOFF_WARN_KB} * 1024))`), `threshold ${HANDOFF_WARN_KB} KB`);
 }
 
 console.log(rows.join("\n"));

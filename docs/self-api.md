@@ -1110,6 +1110,30 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   Audit-Zeile `program_inbox_unreadable`) — nie feldweise repariert.
 - **Zahlen ohne Pull:** `GET /api/self/program-execution` trägt je Program `status.inbox =
   {unread, oldestAt}` (ältester UNGELESENER Eintrag, `null` = nichts ungelesen).
+- **Wo eine Owner-Antwort ist — `delivery` an jeder Attention-Zeile (seit 2026-09-14,
+  `server.ts#attentionDelivery`).** `GET /api/self/attention` und die Owner-Liste `GET /api/attention`
+  tragen je Zeile ein ABGELEITETES `delivery`, zur Lesezeit berechnet und nie gespeichert (in
+  `fleet.json` steht es nicht). `answerAttention` tippt weiter nichts in eine Pane (I4, Owner-Entscheid
+  (C) auf Attention `90a6ae45`); das Feld sagt nur, was die zwei vorhandenen Fakten beweisen:
+  - `null` — die Zeile ist nicht `answered` (offen, `send-uncertain`, refused): es gibt keine Antwort,
+    deren Verbleib man fragen könnte.
+  - `{state: "read", entryId, since, readAt, readBy}` — der `attention-answer`-Zeiger trägt seine
+    Quittung (`POST /api/self/inbox/:id/read`). Das ist der einzige Zustand, der „hat es" heißt.
+  - `{state: "unread", entryId, since, lastNudge}` — Zeiger ohne Quittung seit `since` (= `entry.at`).
+    `lastNudge` ist der letzte Inbox-Nudge-VERSUCH an die live gebundene MAIN, der GENAU diesen Zeiger
+    trug: `{outcome: "accepted", at}` · `{outcome: "unobserved", at, acceptance}` (getippt, Annahme
+    nicht beobachtbar) · `{outcome: "not-accepted", at, failure, reason}` mit `failure` ∈
+    `SendRefused|SendNotAccepted|send-failed` und dem Fehlertext (≤ 300 Zeichen) ·
+    `{outcome: "unknown", why}`. Der Versuch lebt NUR im Serverprozess (`inboxNudgeTried`): nach einem
+    Neustart, nach einer Succession, vor dem ersten Versuch oder wenn der letzte Versuch diesen Zeiger
+    nicht trug, heißt er `unknown` — nie „zugestellt". Ein Gate, das den Nudge gar nicht erst senden
+    lässt (Idle, Automation), ist kein Versuch und erscheint nicht.
+  - `{state: "unknown", why}` — kein Zeiger nennt die Zeile (vom Deckel verdrängt, vor der
+    Zeiger-Schiene beantwortet) oder die Program-Zeile fehlt. Das Fehlen eines Zeigers beweist nichts
+    über die Pane.
+  Anlass: 150 Inbox-Nudges scheiterten auf einer codex-MAIN („composer still holds 129 chars",
+  `docs/messungen/2026-09-14-inbox-nudge-composer-h1-diskriminator.md`), während jede beantwortete
+  Zeile nur `answered` las. Beweis: `e2e/attention.ts` §12 (a)–(d).
 
 
 ## messages — `GET /api/self/messages`, `POST /api/self/messages`, `POST /api/self/messages/:id/read`

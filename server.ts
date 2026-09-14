@@ -116,7 +116,7 @@ import {
   type AttentionKind,
   type LaneSuiteFleetEvent, type HarnessBlockFleetEvent,
   type FleetReportDeliveryState,
-  type AttentionRequest, type TaskKind, type Task, type TaskBrief, type TaskComment,
+  type AttentionRequest, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type Task, type TaskBrief, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskCard, type TaskCriterion, type TaskFilesProposal,
@@ -5456,7 +5456,7 @@ class SendNotAccepted extends Error {
 // neither of those two — "send-failed" says only that the attempt did not complete.
 type PromptDelivery = "sent" | "uncertain" | "unobserved" | Acceptance
   | "SendRefused" | "SendNotAccepted" | "send-failed";
-function sendFailureDelivery(e: unknown): PromptDelivery {
+function sendFailureDelivery(e: unknown): "SendRefused" | "SendNotAccepted" | "send-failed" {
   if (e instanceof SendRefused) return "SendRefused";
   if (e instanceof SendNotAccepted) return "SendNotAccepted";
   return "send-failed";
@@ -9645,10 +9645,45 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
 // scoped in openAttention — and since 2026-09-13 a succession REBINDS the open rows to the successor
 // (rebindAttentionToSuccessor), so the successor re-raising the same sentence finds the existing row
 // instead of minting the third copy of it (the S12 question was asked three times that way).
-function attentionFor(s: Slot): AttentionRequest[] {
+function attentionFor(s: Slot): (AttentionRequest & { delivery: AttentionDelivery | null })[] {
   const bound = boundProgramForMain(s);
   return attentionRequests.filter((a) => attentionBound(a, s)
-    || (bound.ok && a.programId === bound.program.id));
+    || (bound.ok && a.programId === bound.program.id))
+    .map((a) => ({ ...a, delivery: attentionDelivery(a) }));
+}
+
+// WHERE AN ANSWER IS, derived at read time and nowhere stored (68ffbe09, owner decision (C) on
+// attention 90a6ae45). answerAttention writes a Program inbox pointer and types nothing (I4), and the
+// only transport to a pane is the inbox nudge — which failed 150 times on one codex MAIN without the
+// owner's list ever saying so (docs/messungen/2026-09-14-inbox-nudge-composer-h1-diskriminator.md).
+// Two facts, and each word below is only as strong as the fact behind it:
+//   read     the pointer carries its durable receipt: who read it, when.
+//   unread   the pointer exists without one, since `since` — plus what the LAST nudge attempt that
+//            covered this pointer did on the bound MAIN. That attempt lives in this process only, so
+//            after a restart, a succession, or before any attempt it is `unknown`, never delivered.
+//   unknown  no pointer to read: the capped inbox dropped it, the row predates the rail, or the
+//            Program row is gone. Absence of a pointer proves nothing about the pane.
+// Open and refused rows carry `null`: there is no answer whose delivery could be asked about.
+function attentionDelivery(a: AttentionRequest): AttentionDelivery | null {
+  if (a.status !== "answered") return null;
+  const program = programs.find((p) => p.id === a.programId);
+  if (!program) return { state: "unknown", why: `Program ${a.programId} is not in the state` };
+  const entry = program.inbox?.entries.find((e) => e.kind === "attention-answer" && e.ref === a.id);
+  if (!entry) return { state: "unknown",
+    why: "no attention-answer pointer names this row (dropped by the inbox cap, or answered before the pointer rail)" };
+  if (entry.readBy !== null && entry.readAt !== null)
+    return { state: "read", entryId: entry.id, since: entry.at, readAt: entry.readAt, readBy: entry.readBy };
+  return { state: "unread", entryId: entry.id, since: entry.at, lastNudge: inboxNudgeReading(program, entry.id) };
+}
+function inboxNudgeReading(program: Program, entryId: string): AttentionNudgeReading {
+  const main = program.status === "active" && programOccupancy(program) === "live" ? program.main : undefined;
+  const s = main ? slotFrom(main.slot) : null;
+  if (!main || !s) return { outcome: "unknown", why: "the Program has no live bound MAIN a nudge could reach" };
+  const last = inboxNudgeTried.get(s.id)?.last ?? null;
+  if (!last || last.session !== backlogSessionKey(s) || !last.ids.includes(entryId))
+    return { outcome: "unknown", why: "no inbox nudge covering this entry was attempted on the bound MAIN "
+      + `since this server started (${new Date(SERVER_BOOT_AT).toISOString()})` };
+  return last.reading;
 }
 
 function refuseAttention(a: AttentionRequest, reason: string, at = Date.now()): void {
@@ -9716,12 +9751,13 @@ function reconcileAttention(teardownSlotId?: number, why?: SlotEnding): boolean 
 // Open first, then newest raised first. The program TITLE is joined at read time from programId —
 // denormalizing it would freeze a title the owner may since have corrected, and the join failing is
 // itself worth seeing, so a missing program renders as an explicit null rather than a guess.
-function attentionOwnerView(): (AttentionRequest & { programTitle: string | null })[] {
+function attentionOwnerView(): (AttentionRequest & { programTitle: string | null; delivery: AttentionDelivery | null })[] {
   const rank = (a: AttentionRequest): number =>
     a.status === "open" || a.status === "send-uncertain" ? 0 : 1;
   return [...attentionRequests]
     .sort((x, y) => rank(x) - rank(y) || y.raisedAt - x.raisedAt)
-    .map((a) => ({ ...a, programTitle: programs.find((p) => p.id === a.programId)?.title ?? null }));
+    .map((a) => ({ ...a, programTitle: programs.find((p) => p.id === a.programId)?.title ?? null,
+      delivery: attentionDelivery(a) }));
 }
 
 async function answerAttention(id: string, body: Record<string, unknown> | null): Promise<Response> {
@@ -13164,7 +13200,12 @@ async function tickLaneAutoClose(): Promise<void> {
 interface BacklogNudgeMarker {
   session: string; openKey: string; lastAt: number; count: number;
 }
-interface InboxNudgeMarker { key: string; lastAt: number }
+// `last` is the attempt's OUTCOME, kept beside the dedupe key for exactly one reader: the derived
+// attention delivery state (attentionDelivery). It names the session and the pointer ids the attempt
+// covered, so a reading can never be borrowed by a later occupant or by a pointer it did not carry.
+interface InboxNudgeAttempt { session: string; ids: string[];
+  reading: Exclude<AttentionNudgeReading, { outcome: "unknown" }> }
+interface InboxNudgeMarker { key: string; lastAt: number; last: InboxNudgeAttempt | null }
 // One entry per SLOT, with the session identity inside it: slot ids recycle, session identities do
 // not. The self-token fallback gives unpinned/custom harness sessions that same lifecycle boundary.
 const backlogNudgeTried = new Map<number, BacklogNudgeMarker>();
@@ -13485,11 +13526,18 @@ async function tickInboxNudge(): Promise<void> {
         // `key` here instead would be the opposite error: it would mark THIS unread set as already
         // nudged and the program would never be told again, so the prior key is carried unchanged
         // (empty for a first attempt — no real key is ever empty, it always contains a `|`).
-        inboxNudgeTried.set(s.id, { key: prior?.key ?? "", lastAt: Date.now() });
+        const failedAt = Date.now();
+        inboxNudgeTried.set(s.id, { key: prior?.key ?? "", lastAt: failedAt, last: { session, ids: unreadIds,
+          reading: { outcome: "not-accepted", at: failedAt, failure: sendFailureDelivery(e),
+            reason: (e instanceof Error ? e.message : String(e)).slice(0, 300) } } });
         continue;
       }
       const sentAt = Date.now();
-      inboxNudgeTried.set(s.id, { key, lastAt: sentAt });
+      inboxNudgeTried.set(s.id, { key, lastAt: sentAt, last: { session, ids: unreadIds,
+        reading: acceptance === "observed" ? { outcome: "accepted", at: sentAt }
+          : acceptance === "not-observed"
+            ? { outcome: "not-accepted", at: sentAt, failure: "SendNotAccepted", reason: "acceptance not observed" }
+            : { outcome: "unobserved", at: sentAt, acceptance } } });
       s.history = [...s.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, text, "auto", sentAt, undefined, acceptance);

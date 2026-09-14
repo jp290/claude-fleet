@@ -1,3 +1,26 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb (f170dc46) Slot 5 → Nachfolgerin, 2026-09-14 ~11:0x (ctx GEMESSEN 31,8 %)
+
+Der Program-Record (GET /api/self/program-execution) ist die Zustandsquelle; hier steht nur, was er nicht traegt.
+
+## 1. Deploy blockiert durch ein doppeltes Rot
+- Live-Server = ba557b75 (Deploy 85bf4d22). Main ist weiter: 24a04501 C4, f8804bb1/07b821f8 Freigabe-Politik, 4a905807 Verdikt-Nachfolge, 58c10f75 Lock-Marker, bb546bf2 Karten-Vertrag, 81a85c08 land-quality, 754c37ed E3, 3a1c952a Astra-Notiz. `.env` FLEET_CARD_MODEL='claude-sonnet-5' wirkt erst mit dem Deploy.
+- Audits bb546bf2 und 754c37ed ROT, je 4491/1, IDENTISCHE Signatur: e2e/watch.ts „clarification identical retry …" (healed=0, 200, answered; gefallen ist Pane-Text ODER awaiting===null, das Detail sagt es nicht). Letztes volles Gruen 4a905807. Beide Lands beruehren Clarifications nicht; beide Rots sind die ersten Second-host-Audits nach dem daemon-update 09:24 (9b8b52b7→96c866e7).
+- Einordnung laeuft als Lane 71ee4882 (queued): Sonde reparieren + watch-Shard lokal auf HEAD / 4a905807 / neuem Baum. Gruen auf dem Mac ⇒ Umgebung ⇒ deployen; Rot ⇒ Commit-Grenze nennen. Urteil ueber die Rots ist die Owner-Route /api/post-land-audits/adjudicate.
+
+## 2. Nach dem Deploy: EINE Attention an den Owner (Scharfschalten ist seins)
+- Fleet-Betrieb auf `card-valid` (POST /api/programs/f170dc46…/release, Owner-Route). Hinweis: seit bb546bf2 sind Karten mit NUR Rollen-Luecken valid.
+- Regelvorschlaege (Promotion): (a) HANDOFF.md nur bei echter Nachfolge committen, sonst Program-Record/Commit-Body (Lane 7363b89f); (b) nie eine PID aus /tmp/fleet-e2e.lock/pid oder /api/self/gate beenden, nur die eigene notierte Suite-PID (Lane 389f415f).
+
+## 3. Freigabe-Reihenfolge vom Orchestrator (Lane-Treiben liegt komplett bei der MAIN)
+queued: de754f94 Core-Unit · c3837cab Phasen je Trail-Zeile · 8dc26d58 Client-Quelle · 71ee4882 (s.o.). laufend: 1a5d3f2d (Slot 3), bc974919 (Slot 1), 3bd9821e (Slot 4, wartet auf Second-host-Lauf abd278c2).
+pending, freigeben wenn NACH gelandet: a2356a5e + 1e74ba8b NACH de754f94 · 35654b07 NACH de754f94+a2356a5e · aa819dd4 NACH 1e74ba8b · d71c7549 und 8056f3fe ohne NACH (freigeben, sobald Lane-Platz frei). f4d81b09 (daemon-update verwaist Audit-Claim) pending, eigene Einschaetzung: freigeben.
+ROLLOUT: a2356a5e aendert watchdog.sh ⇒ nach Land `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` + neue Verify-Zeile ins rulebook-Fragment rendern (bun e2e/pins.ts). 1e74ba8b landet inert ⇒ nach Deploy + Second-host daemon-update FLEET_AUDIT_SHARDS='3' in .env, erstes sharded Audit gegen das letzte serielle vergleichen. Aus c3837cab kommen bis zu drei Kuerzungs-Zeilen — die MAIN filet sie.
+
+## 4. Gelernt heute
+- daemon-update: der Daemon claimt im selben Poll auch ein wartendes Audit und toetet es mit exit 75 → Claim haengt ~45 min (f4d81b09). Vor dem Update den Audit-Queue-Stand pruefen.
+- Direkt-Commits anderer Sessions auf main waehrend eines Lands → ff-lost nach 2 Runden (fcc2f89c, 09:09–09:21). Neu landen reicht.
+- Variantenpaare (E4) entscheidet der Orchestrator; nie beide landen.
+
 # HANDOFF — Orchestrator Slot 8 → Nachfolgerin (Haupt-Checkout, Owner-Token): Queue-Intelligenz E1–E5 gefilet und Welle 1 laeuft, Variantenpaar land-quality.ts (Opus vs codex) in Flug, Rollen-Synthese S1–S4 gefilet (S1/S4 mit Owner), Wissens-System Schritt 1 erledigt, Grok-Antworten: 2 von 3 da; 2026-09-14 09:2x, ctx GEMESSEN 33,7 % (Server-Praedikat)
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

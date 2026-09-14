@@ -35,6 +35,7 @@ type AuditEvent =
   // row that was already queued (server.ts#holdTaskForMain, #releaseTaskForMain)
   | "task_hold"
   | "task_kind" // owner changed a task's category; detail records id and both values
+  | "task_review" // Task.review set or cleared; detail records id, both values and which door (owner|main)
   // the owner released a task the queue analyst had flagged. Recorded because the analyst is
   // advisory: without a trace, an override is indistinguishable from an ordinary promote, and
   // nothing could ever be calibrated against how often its objections were right
@@ -245,6 +246,9 @@ type AuditEvent =
   // `harness_block` row per report — deny or wait, minted, deduplicated or skipped alike — because
   // the count and the escalation are judged from the reports, not from the rows they minted.
   | "harness_block"
+  // a ③ verdict for a row that asked for one (server.ts#fileLaneReview): minted, deduplicated or
+  // skipped alike — one line each, so "the reviewer ran and nobody heard" is readable off the trail
+  | "lane_review"
   | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune"
   | "clarification_reply_send_uncertain"
   | "fleet_report_open" | "fleet_report_prune"

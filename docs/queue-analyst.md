@@ -206,6 +206,23 @@ Auswahl ist `cardDue`: eine dispatchbare `auftrag`-Zeile ohne Karte, oder eine, 
 ist als `card.at`. Eine Eskalation auf ein stärkeres Modell bei `valid:false` ist ein benannter
 Haken und ausdrücklich NICHT gebaut.
 
+## 3c. Die Review-Bitte — `review` an der Zeile (2026-09-14)
+
+Owner 2026-09-12: *„vllt sollten wir zu manchen aufgaben auch eine agentische bewertung des codes oder
+sowas laufen lassen"*. `Task.review` ist das Feld dafür, mit genau zwei Tür-Werten:
+
+| Wert | gespeichert als | Wirkung |
+|---|---|---|
+| fehlt / `"none"` | Feld ABWESEND | wie bisher — ③ läuft nur, wenn der fleet-weite Tick an ist |
+| `"advisory"` | `review: "advisory"` | ③ läuft für die Lane dieser Zeile, sobald sie done-looking ist, auch bei `FLEET_AUTO_REVIEW_MS=0`; das Verdikt geht als `lane-review`-Event an die Program-MAIN bzw. die Owner-Inbox |
+
+Setzbar beim Filen (`POST /api/tasks`), über die Owner-Brief-Tür `POST /api/tasks/:id/brief` und die
+MAIN-Brief-Tür `POST /api/self/tasks/:id/brief` (Body-Feld `review` neben `text`), und über den ③-Haken
+im Detail einer `auftrag`-Zeile (`POST /api/tasks/:id/review`, erlaubt in `pending`/`queued`/`sent`).
+Ein anderer Wert ist 400 `review must be one of: none, advisory`. Jede Änderung schreibt eine
+`task_review`-Zeile (`<id>:<vorher>-><nachher> by=owner|main`). Ein Load normalisiert einen
+unbekannten Wert auf ABWESEND; die Poll-Digest (`taskDigest`) trägt das Feld. Mechanik und Empfängerwahl: `docs/harness-adapter.md` §auto-③.
+
 ## 4. What this deliberately is not
 
 It is **not a safety gate**, and since 2026-09-10 there is no worker here that could be mistaken for

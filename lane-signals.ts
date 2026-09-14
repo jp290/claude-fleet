@@ -318,6 +318,39 @@ export interface HarnessBlockEventView {
   payload: HarnessBlockEventPayload;
 }
 
+// THE ③ VERDICT A TASK ROW ASKED FOR (Task.review = "advisory"). Minted by server.ts#fileLaneReview
+// when the reviewer finishes on that row's lane, never from a Watch: the row's author asked for it at
+// filing time, not the receiver. Advisory and nothing more — it gates no land and closes no report.
+// `diffSha` is the `git patch-id --stable` of the diff the reviewer READ (null = not establishable);
+// `describedThisDiff` compares it with the lane's diff at filing time (null = unknown, never "yes").
+export const LANE_REVIEW_FINDINGS_MAX = 5;
+export const LANE_REVIEW_TITLE_MAX = 200;
+export const LANE_REVIEW_FILE_MAX = 300;
+export const LANE_REVIEW_NOTES_MAX = 300;
+export interface LaneReviewEventFinding {
+  title: string;
+  file: string;
+  line: number | null;
+  impact: "high" | "medium" | "low";
+}
+export interface LaneReviewEventPayload {
+  taskId: string;
+  programId: string | null;
+  diffSha: string | null;
+  head: string | null;
+  model: string;
+  describedThisDiff: boolean | null;
+  raw: boolean;
+  findingCount: number;
+  findings: LaneReviewEventFinding[];
+  notes: string;
+}
+export interface LaneReviewEventView {
+  id: string;
+  kind: "lane-review";
+  payload: LaneReviewEventPayload;
+}
+
 export type ClarificationBasis = "program-main" | "lane-watch" | "program-main+lane-watch";
 // Closed server-stamped provenance only. The question is the one caller field admitted by the
 // request route; no receiver, command, or arbitrary detail can hitch a ride through persistence.
@@ -506,6 +539,25 @@ export function harnessBlockMessage(slot: number, branch: string, event: Harness
     : "";
   return `[fleet] LANE BLOCKED BY THE HARNESS: slot ${slot} (${branch}) [event ${event.id}] — ${what}${loud} `
     + `Request: ${oneLine(p.detail) || "(none recorded)"} `
+    + `${eventAck(event.id)}`;
+}
+
+// Says "advisory" and "gates nothing" in the text itself: the receiver reads it like a lane report,
+// and a verdict that sounded like a gate would be obeyed as one.
+export function laneReviewMessage(slot: number, branch: string, event: LaneReviewEventView): string {
+  const p = event.payload;
+  const described = p.describedThisDiff === true ? "yes"
+    : p.describedThisDiff === false ? "NO — the diff of the lane moved after the reviewer read it" : "unknown";
+  const found = p.raw
+    ? "the reviewer answered off-contract — no findings could be read; its text is in GET /api/lane-outcomes once the lane ends."
+    : p.findingCount === 0
+    ? "no findings."
+    : `${p.findingCount} finding(s): ${p.findings.map((f) => `[${f.impact}] ${oneLine(f.title)} (${f.file}${f.line !== null ? `:${f.line}` : ""})`).join("; ")}.`;
+  return `[fleet] ③ REVIEW VERDICT for slot ${slot} (${branch}) [event ${event.id}] — task ${p.taskId} asked for it. `
+    + `Advisory: it gates nothing, and landing stays your decision. `
+    + `reviewer=${p.model}; diff=${p.diffSha ? p.diffSha.slice(0, 12) : "unknown"}; head=${p.head ? p.head.slice(0, 8) : "unknown"}; `
+    + `describedThisDiff=${described}. ${found}`
+    + `${p.notes ? ` Reviewer notes: ${oneLine(p.notes)}` : ""} `
     + `${eventAck(event.id)}`;
 }
 

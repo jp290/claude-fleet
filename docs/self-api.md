@@ -793,7 +793,10 @@ Body), das Repo aus dem eigenen Checkout, die Zeile muss ein `auftrag` dieses Pr
 `pending` oder `queued` — ab `sent` stehen die Bytes schon in einer Pane, und ein späterer Umschrieb
 hieße, der Datensatz widerspräche der Lane, die er gegründet hat.
 
-**Der Body ist GESCHLOSSEN:** nur `text`. `by`, `model`, `edited` werden mit 400 abgelehnt statt
+**Der Body ist GESCHLOSSEN:** nur `text` und — seit 2026-09-14 — `review` (`"advisory"` | `"none"`,
+die Review-Bitte der Zeile, `docs/queue-analyst.md` §3c; das Verdikt kommt dann als FleetEvent
+`lane-review` in DEINE Pane und wird wie jedes Event über `POST /api/self/events/:id/ack` quittiert —
+es ist beratend und gated deine Landung nicht). `by`, `model`, `edited` werden mit 400 abgelehnt statt
 verworfen — ein still ignoriertes Feld ist ein Feld, das der Aufrufer für berücksichtigt hält, und
 genau diese drei sind die, deren ganzer Sinn ist, dass ein Aufrufer sie nicht benennen kann. Der
 Autor wird aus dem Slot des Tokens gestempelt.

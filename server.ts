@@ -13,6 +13,7 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   commandJobWatchMessage, type CommandJobWatchEventPayload, type CommandJobArtifactPayload,
   laneSuiteWatchMessage, type LaneSuiteWatchEventPayload,
   harnessBlockMessage, HARNESS_BLOCK_DETAIL_MAX, HARNESS_BLOCK_TOOL_MAX,
+  laneReviewMessage, LANE_REVIEW_FINDINGS_MAX, LANE_REVIEW_TITLE_MAX, LANE_REVIEW_FILE_MAX, LANE_REVIEW_NOTES_MAX,
   LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_FAIL_NAME_MAX, LANE_SUITE_EVENT_TAIL_MAX,
   type ClarificationBasis,
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE,
@@ -92,7 +93,7 @@ import {
   FLEET_REPORT_DISPOSITIONS, MAX_FLEET_REPORT_DECISION_REASON,
   MAX_FLEET_REPORT_DELIVERY_REASON,
   MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT, ATTENTION_CANDIDATE_SHA_RE,
-  validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind,
+  validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind, TASK_REVIEW_MODES,
   PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, PROGRAM_PROFILE_KINDS, loadProgramProfile,
   PROGRAM_LINEAGE_MAX, loadProgramLineage, foundingOccupantFrom, foundingIdentityFrom,
   PROGRAM_INBOX_MAX, loadProgramInbox, type ProgramRecordLoss, loadProgramRecordLoss,
@@ -120,7 +121,7 @@ import {
   type ClarificationFleetEvent, type FleetReportFleetEvent, type SupervisorTransitionFleetEvent,
   type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition, type FleetReportDecision,
   type AttentionKind,
-  type LaneSuiteFleetEvent, type HarnessBlockFleetEvent,
+  type LaneSuiteFleetEvent, type HarnessBlockFleetEvent, type LaneReviewFleetEvent, type TaskReviewMode,
   type FleetReportDeliveryState,
   type AttentionRequest, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type Task, type TaskBrief, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
@@ -1369,6 +1370,26 @@ function taskSpawnFromBody(body: Record<string, unknown> | null):
     ? undefined : { harness: h.harness, model: m.model, effort: e.effort } };
 }
 
+// Task.review at a door. `undefined` = the body did not name it (nothing changes); `null` = clear the
+// field (`"none"` or JSON null); a value = store it. Anything else is the caller's error, named with
+// the allowed values so the fix is in the answer.
+function taskReviewFromBody(body: Record<string, unknown> | null):
+  { ok: true; review: TaskReviewMode | null | undefined } | { ok: false; error: string } {
+  const v = body?.review;
+  if (v === undefined) return { ok: true, review: undefined };
+  if (v === null || v === "none") return { ok: true, review: null };
+  if (v === "advisory") return { ok: true, review: v };
+  return { ok: false, error: `review must be one of: ${TASK_REVIEW_MODES.join(", ")}` };
+}
+const loadTaskReview = (v: unknown): TaskReviewMode | undefined => (v === "advisory" ? v : undefined);
+
+// the ONE writer of Task.review, so every door books the same audit line. The caller saves.
+function setTaskReview(t: Task, review: TaskReviewMode | null, by: "owner" | "main", slot?: number): void {
+  const before = t.review ?? "none";
+  if (review) t.review = review; else delete t.review;
+  if (before !== (t.review ?? "none")) audit("task_review", slot, `${t.id}:${before}->${t.review ?? "none"} by=${by}`);
+}
+
 // WHICH BOX and WHICH DAEMON this one session runs in — the pair that used to be frozen fleet-wide
 // in the process env. Absence is the important case and it has exactly one meaning: "the fleet's
 // default", which is the NEUTRAL context, never the operator's ambient one. That property is the
@@ -2347,7 +2368,7 @@ const MAX_TASK_TEXT = 20_000;
 // blockers and staleness, enough to GROUP and label a row. It is gone with its producer, and so is
 // the per-row git process its staleness arm asked for on every poll.
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
-  & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "programId" | "files" | "filesOrigin" | "cluster">>
+  & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "programId" | "review" | "files" | "filesOrigin" | "cluster">>
   // …and the PROPOSED surface beside the confirmed one. Carried WHOLE rather than as a shape
   // digest, unlike `refine` and `comments` beside it: `files` itself already rides this poll, so a
   // proposal reduced to a count would be the one file list on the row a reader could not compare
@@ -2382,6 +2403,7 @@ function taskDigest(t: Task): TaskDigest {
     ...(t.note ? { note: t.note } : {}),
     ...(t.repo ? { repo: t.repo } : {}),
     ...(t.programId ? { programId: t.programId } : {}),
+    ...(t.review ? { review: t.review } : {}),
     ...(view.files ? { files: view.files } : {}),
     ...(view.filesOrigin ? { filesOrigin: view.filesOrigin } : {}),
     ...(view.cluster ? { cluster: view.cluster } : {}),
@@ -9180,11 +9202,14 @@ async function sharpenBriefForMain(s: Slot, id: string, body: Record<string, unk
   // A CLOSED BODY, like the filing door's: `by`, `model` and `edited` are refused rather than
   // dropped, because a field silently ignored is a field the caller believes was honoured — and
   // these three are exactly the ones whose whole point is that a caller cannot nominate them.
-  const extra = Object.keys(body ?? {}).filter((k) => k !== "text");
+  const extra = Object.keys(body ?? {}).filter((k) => k !== "text" && k !== "review");
   if (extra.length)
-    return json({ error: `this door reads text only — [${extra.join(", ")}] is not read: the author is stamped from this session's own slot and can never be named in a request` }, 400);
+    return json({ error: `this door reads text and review only — [${extra.join(", ")}] is not read: the author is stamped from this session's own slot and can never be named in a request` }, 400);
   const text = typeof body?.text === "string" ? body.text.slice(0, MAX_TASK_TEXT).trim() : "";
   if (!text) return json({ error: "bad text" }, 400);
+  const mainReview = taskReviewFromBody(body);
+  if (!mainReview.ok) return json({ error: mainReview.error }, 400);
+  if (mainReview.review !== undefined) setTaskReview(t, mainReview.review, "main", s.id);
   // `edited:true` is the PIN (briefDue: a row carrying a brief is never recompiled) and `by:"main"`
   // is the authorship — the two facts that rode on one boolean until now. `model` carries the
   // author here for the same reason it carries the literal "owner" on the door next door: on a
@@ -9194,7 +9219,7 @@ async function sharpenBriefForMain(s: Slot, id: string, body: Record<string, unk
   await saveStateNow();
   // sessionIdMatch is REPORTED, never gated — ACP-13's doctrine, as at every neighbouring door.
   return json({ ok: true, sessionIdMatch, brief: t.brief,
-    task: { id: t.id, kind: t.kind, status: t.status, programId: t.programId } });
+    task: { id: t.id, kind: t.kind, status: t.status, programId: t.programId, ...(t.review ? { review: t.review } : {}) } });
 }
 
 // S5 · THE CARD-SURFACE CONFIRMATION AS A BATCH OF THE PROGRAM-MAIN (queue row b8cb3c75, owner
@@ -13331,6 +13356,10 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
 // `sum-` background agent), which is what makes firing it unprompted acceptable.
 const AUTO_REVIEW_MS = Number(process.env.FLEET_AUTO_REVIEW_MS ?? 15_000) | 0; // 0 disables the tick
 const AUTO_REVIEW_IDLE_MS = Number(process.env.FLEET_AUTO_REVIEW_IDLE_MS ?? 60_000) | 0;
+// THE SECOND DOOR (Task.review = "advisory"): the period of the tick that runs ③ ONLY for rows that
+// asked for it, registered when the fleet-wide tick above is off. 0 closes this door as well — two
+// doors, two switches, and neither opens the other.
+const REVIEW_OPTIN_TICK_MS = Math.max(0, Number(process.env.FLEET_REVIEW_OPTIN_TICK_MS ?? 15_000) | 0);
 // Opt-in only: a backlog is advisory and must never wake a deployment whose owner did not arm it.
 const BACKLOG_NUDGE_MS = Math.max(0, Number(process.env.FLEET_BACKLOG_NUDGE_MS ?? 0) | 0);
 const AUDIT_PING_MS = Math.max(0, Number(process.env.FLEET_AUDIT_PING_MS ?? 0) | 0);
@@ -13384,7 +13413,10 @@ const STALLED_IDLE_MS = Number(process.env.FLEET_STALLED_IDLE_MS ?? 30 * 60_000)
 const AUTO_REVIEW_MAX_CONCURRENT = 2;
 let autoReviewRunning = 0;
 let autoReviewBusy = false;
-async function tickAutoReview(): Promise<void> {
+// `optInOnly` is the second door's tick (REVIEW_OPTIN_TICK_MS, fleet-wide tick off): every lane
+// whose row did not ask for a review is skipped BEFORE any read, so FLEET_AUTO_REVIEW_MS=0 stays a
+// kill switch for all of them. The fleet-wide tick passes false and serves opted-in rows as well.
+async function tickAutoReview(optInOnly: boolean): Promise<void> {
   if (autoReviewBusy) return;
   autoReviewBusy = true;
   try {
@@ -13393,6 +13425,8 @@ async function tickAutoReview(): Promise<void> {
       if (autoReviewRunning >= AUTO_REVIEW_MAX_CONCURRENT) break;
       if (!s.cwd || !s.worktree) continue;          // a non-lane slot has no lane diff to review
       if (s.label === STEWARD_LABEL) continue;      // the planning pane is not lane work
+      const optIn = laneReviewTask(s);
+      if (optInOnly && !optIn) continue;
       if (reviewInflight.has(s.id)) continue;       // one agent per slot, whoever started it
       if (!laneDoneLooking(laneSignalView(s, now), AUTO_REVIEW_IDLE_MS)) continue;
       // the predicate reads the ~10s gitOp cache; a merge/commit/rebase that STARTED since then
@@ -13401,19 +13435,134 @@ async function tickAutoReview(): Promise<void> {
       if (await gitOpInProgress(s.cwd)) continue;
       const rs = await reviewState(s.cwd);
       if (!rs) continue;
-      if (reviewCache.get(s.id)?.key === rs.key) continue;   // already reviewed THIS tree
+      const cached = reviewCache.get(s.id);
+      if (cached?.key === rs.key) {                 // already reviewed THIS tree…
+        // …and a row that asked for the verdict is still owed it when that review was not ours
+        // (the owner's own ③ click). fileLaneReview files one result once.
+        if (optIn) await fileLaneReview(s, optIn, cached.result);
+        continue;
+      }
       if (reviewAutoTried.get(s.id) === rs.key) continue;    // this state already got its one spawn
+      if (optIn) {
+        // ONE VERDICT PER DIFF, not per tree: an amend or a rebase moves HEAD and the cache key while
+        // the diff the reviewer would read is byte-identical. Asked in content terms (patch-id), the
+        // same identity the outcome row's covered/superseded relation is computed in.
+        const diffNow = await lanePatchIdNow(s);
+        if (diffNow !== null && (laneReviewFiledFor(optIn.id, diffNow) || cached?.result.patchId === diffNow)) {
+          reviewAutoTried.set(s.id, rs.key);
+          if (cached?.result.patchId === diffNow) await fileLaneReview(s, optIn, cached.result);
+          continue;
+        }
+      }
       reviewAutoTried.set(s.id, rs.key);
       autoReviewRunning++;
+      // the occupation this review is FOR, frozen now: filing happens up to REVIEW_TIMEOUT_MS later
+      const subject = { slot: s.id, openedAt: s.openedAt, branch: s.worktree.branch, cwd: s.cwd };
       // fire-and-forget: the tick must never hold its own busy flag across a 180s agent run, and
       // a failed auto-review changes nothing — no retry, no state change, no alarm. It is COUNTED
       // though: reviewAutoTried was already set above, so a throw here means this tree has spent
       // its one spawn and will never be auto-reviewed again, and that is worth being able to see.
-      void startReview(s, rs).p.catch((e: unknown) => logError("autoReview", e)).finally(() => { autoReviewRunning--; });
+      void startReview(s, rs).p
+        .then((result) => (optIn ? fileLaneReview(s, optIn, result, subject) : undefined))
+        .catch((e: unknown) => logError("autoReview", e)).finally(() => { autoReviewRunning--; });
     }
   } finally {
     autoReviewBusy = false;
   }
+}
+
+// --- THE REVIEW A ROW ASKED FOR (Task.review = "advisory") --------------------------------------
+// Owner 2026-09-12: "vllt sollten wir zu manchen aufgaben auch eine agentische bewertung des codes
+// oder sowas laufen lassen". The fleet-wide switch (FLEET_AUTO_REVIEW_MS) is off live, so the one
+// place that could ask for ③ was the whole fleet. This is the per-row door, and it is advisory
+// exactly like the tick it rides: the verdict lands on the outcome row as before (reviewCache →
+// outcomeReview) and is FILED as a `lane-review` FleetEvent — nothing reads it to land, dispatch,
+// accept a report or close a lane.
+
+// the row whose lane this slot is, when it asked for a review. `sent` + `slot` is the pair a row holds
+// exactly while its lane runs, which also covers a wave's followers (the slot's taskId names only its
+// head); a queue-less hand-opened lane has no row and never qualifies.
+function laneReviewTask(s: Slot): Task | undefined {
+  if (!s.taskId) return undefined;
+  return tasks.find((t) => t.status === "sent" && t.slot === s.id && t.review === "advisory");
+}
+
+// the content identity of the lane's diff NOW, through runReview's own base and reads — so it compares
+// equal to a ReviewResult.patchId exactly when the reviewer would read the same diff again
+async function lanePatchIdNow(s: Slot): Promise<string | null> {
+  if (!s.cwd || !s.worktree) return null;
+  const base = await laneBaseRef(s);
+  if (!base) return null;
+  const cd = await gitRead(s.cwd, "diff", "--no-color", `${base}...HEAD`);
+  const ud = await gitRead(s.cwd, "diff", "HEAD", "--no-color");
+  return cd.code === 0 && ud.code === 0 ? await patchIdOf(s.cwd, cd.out, ud.out) : null;
+}
+
+// WHAT WAS ALREADY FILED. The event rows are the half that survives a restart (until pruned); the
+// set is the half that survives the prune; the WeakSet holds one result filed once even when it has
+// no diff identity at all (patchId null), which the other two cannot key.
+const laneReviewFiled = new Set<string>();
+const laneReviewFiledResults = new WeakSet<ReviewResult>();
+const laneReviewFiledFor = (taskId: string, diffSha: string): boolean =>
+  laneReviewFiled.has(`${taskId} ${diffSha}`)
+  || fleetEvents.some((e) => e.kind === "lane-review" && e.payload.taskId === taskId && e.payload.diffSha === diffSha);
+// the owner half's own ceiling, for harness-block's reason: sharing another rail's would let one silence the other
+const LANE_REVIEW_INBOX_MAX = 20;
+
+async function fileLaneReview(s: Slot, t: Task, result: ReviewResult,
+  subject = { slot: s.id, openedAt: s.openedAt, branch: s.worktree?.branch ?? "", cwd: s.cwd ?? "" }): Promise<void> {
+  if (laneReviewFiledResults.has(result)) return;
+  if (result.patchId !== null && laneReviewFiledFor(t.id, result.patchId)) { laneReviewFiledResults.add(result); return; }
+  if (!subject.branch) return;
+  // DID IT DESCRIBE THIS DIFF — asked of the lane as it is at filing time, and only of the SAME
+  // occupation: a lane that ended or was replaced meanwhile has no "now" to compare with (null).
+  const same = s.id === subject.slot && s.openedAt === subject.openedAt && s.cwd === subject.cwd
+    && s.worktree?.branch === subject.branch;
+  const diffNow = same ? await lanePatchIdNow(s) : null;
+  const describedThisDiff = result.patchId !== null && diffNow !== null ? result.patchId === diffNow : null;
+  const program = t.programId ? programs.find((p) => p.id === t.programId) : undefined;
+  const live = program?.status === "active" && programOccupancy(program) === "live" ? program.main! : null;
+  const budget = live ? slotDeliveryBudget(live.slot) : null;
+  const main = live && budget && budget.free > 0 ? live : null;
+  const receiver = main ? `slot ${main.slot}` : "owner inbox";
+  const why = live && !main ? ` (program ${program!.id} MAIN slot ${live.slot} has no delivery budget)` : "";
+  const booked = (outcome: string): void => audit("lane_review", subject.slot,
+    `${t.id} diff=${result.patchId?.slice(0, 12) ?? "unknown"} described=${describedThisDiff ?? "unknown"}`
+    + ` findings=${result.findings.length}${result.raw ? " raw" : ""} → ${receiver}${why}: ${outcome}`);
+  laneReviewFiledResults.add(result);
+  if (result.patchId !== null) laneReviewFiled.add(`${t.id} ${result.patchId}`);
+  if (!main) {
+    const openInbox = fleetEvents.filter((e) => e.kind === "lane-review" && e.receiverSlot === null
+      && !FLEET_EVENT_TERMINAL.includes(e.status)).length;
+    if (openInbox >= LANE_REVIEW_INBOX_MAX) {
+      booked(`skipped, ${openInbox} unacknowledged lane-review rows already in the owner inbox (cap ${LANE_REVIEW_INBOX_MAX})`);
+      return;
+    }
+  }
+  const event: LaneReviewFleetEvent = {
+    id: randomBytes(12).toString("hex"), watchId: null,
+    receiverSlot: main?.slot ?? null, receiverOpenedAt: main?.openedAt ?? null,
+    receiverSessionId: main?.sessionId ?? null,
+    // 0, the measured lesson mintLaneSuiteEvents names: a working MAIN never idles 60 s
+    receiverIdleSec: 0,
+    subjectSlot: subject.slot, subjectBranch: subject.branch, subjectOpenedAt: subject.openedAt,
+    kind: "lane-review",
+    payload: {
+      taskId: t.id, programId: t.programId ?? null, diffSha: result.patchId, head: result.head,
+      model: result.model, describedThisDiff, raw: result.raw, findingCount: result.findings.length,
+      findings: result.findings.slice(0, LANE_REVIEW_FINDINGS_MAX).map((f) => ({
+        title: f.title.slice(0, LANE_REVIEW_TITLE_MAX), file: f.file.slice(0, LANE_REVIEW_FILE_MAX),
+        line: f.line, impact: f.impact })),
+      notes: result.raw ? "" : result.notes.slice(0, LANE_REVIEW_NOTES_MAX),
+    },
+    createdAt: Date.now(),
+    ...(main ? { status: "pending" as const, delivery: "pane" as const }
+      : { status: "inbox" as const, delivery: "inbox" as const }),
+    attempts: 0, deliveredAt: null, acknowledgedAt: null,
+  };
+  fleetEvents = [...fleetEvents, event];
+  booked(`minted ${event.id}`);
+  await saveStateNow();
 }
 
 // --- THE AUTOMATIC LANE CLOSE, and the fact that finally makes one safe ------------------------
@@ -14564,6 +14713,8 @@ async function tickWatches(): Promise<void> {
         ? supervisorTransitionMessage(event)
         : event.kind === "harness-block"
         ? harnessBlockMessage(event.subjectSlot, event.subjectBranch, event)
+        : event.kind === "lane-review"
+        ? laneReviewMessage(event.subjectSlot, event.subjectBranch, event)
         : laneWatchMessage(event.subjectSlot, event.subjectBranch, event, laneSelfWord(event));
       let acceptance: Acceptance;
       try {
@@ -26454,6 +26605,8 @@ if (existsSync(STATE_FILE)) {
           // pre-field and malformed rows stay ABSENT — never "owner": the field exists so a released
           // row can be told apart from one nobody recorded, and a hand-edit must not mint either.
           releasedBy: t.releasedBy === "owner" || t.releasedBy === "machine" ? t.releasedBy : undefined,
+          // the review opt-in: the one stored value or ABSENT — a hand-edited "none" or typo asks for nothing
+          review: loadTaskReview((t as { review?: unknown }).review),
           // a hold that half-survived a hand edit still stops the start (loadTaskHold)
           hold: loadTaskHold((t as { hold?: unknown }).hold),
           // the file surface degrades to ABSENT, never to []: "[]" reads as "touches nothing" in the
@@ -27378,8 +27531,15 @@ setInterval(() => {
 // the wake rail, armed only when an address is configured: without one every pass would refuse,
 // and a timer that can only ever do nothing is a timer that should not exist.
 if (HELPER_WAKE_ADDR) setInterval(() => void tickHelperWake().catch((e: unknown) => logError("tickHelperWake", e)), HELPER_WAKE_TICK_MS);
-// auto-③ on done-looking lanes (advisory; FLEET_AUTO_REVIEW_MS=0 turns the tick off entirely)
-if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch((e: unknown) => logError("tickAutoReview", e)), AUTO_REVIEW_MS);
+// auto-③ on done-looking lanes (advisory; FLEET_AUTO_REVIEW_MS=0 turns the fleet-wide tick off entirely)
+if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview(false).catch((e: unknown) => logError("tickAutoReview", e)), AUTO_REVIEW_MS);
+// …and the per-row door (Task.review) while it is off: the same tick, reading ONLY rows that asked.
+// It returns before any git read while no `sent` row carries the field, so an unused door costs one
+// array scan per period. Never registered beside the fleet-wide tick, which serves those rows itself.
+else if (REVIEW_OPTIN_TICK_MS > 0) setInterval(() => {
+  if (tasks.some((t) => t.status === "sent" && t.review === "advisory"))
+    void tickAutoReview(true).catch((e: unknown) => logError("tickAutoReview", e));
+}, REVIEW_OPTIN_TICK_MS);
 // the automatic close of a SPENT lane whose terminal report a bound MAIN judged. OFF unless the
 // owner armed FLEET_LANE_AUTOCLOSE: absence registers no timer at all, so the feature does not
 // exist rather than existing and declining. It rides the scheduler cadence the watch tick already
@@ -32050,6 +32210,8 @@ Bun.serve<WSData>({
       // harness first). Absence persists nothing — the row stays legacy-shaped, DEFAULT_SPAWN its meaning.
       const spawnChoice = taskSpawnFromBody(body);
       if (!spawnChoice.ok) return json({ error: spawnChoice.error }, 400);
+      const reviewChoice = taskReviewFromBody(body);
+      if (!reviewChoice.ok) return json({ error: reviewChoice.error }, 400);
       let taskProgramId: string | undefined;
       if (body.programId !== undefined) {
         if (typeof body.programId !== "string" || !body.programId)
@@ -32082,6 +32244,7 @@ Bun.serve<WSData>({
         ...(taskProgramId ? { programId: taskProgramId } : {}),
         ...(authorCard?.ok ? { card: authorCard.card } : {}),
         ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
+        ...(reviewChoice.review ? { review: reviewChoice.review } : {}),
         status: body.queue === true ? "queued" : "pending", created: Date.now(), slot: null,
         note: body.queue === true ? taskKindNote(isTaskKind(body.kind) ? body.kind : "auftrag") : null,
         // create-and-release in one call is still a release (see releaseTask, which the separate
@@ -32131,6 +32294,24 @@ Bun.serve<WSData>({
       saveState();
       audit("task_kind", undefined, `${t.id}:${before}->${t.kind}`);
       return json({ ok: true, task: t });
+    }
+    // THE REVIEW OPT-IN (Task.review), the board's own door: the ③ haken on a row. Allowed while the
+    // row can still reach a lane or is running in one — a `sent` row is the case that matters most,
+    // because the reviewer fires when its lane goes done-looking. An auftrag only: nothing else runs.
+    const taskReview = /^\/api\/tasks\/([a-z0-9]+)\/review$/.exec(url.pathname);
+    if (req.method === "POST" && taskReview) {
+      const t = tasks.find((x) => x.id === taskReview[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      const body = await readJson(req);
+      const choice = taskReviewFromBody(body);
+      if (!choice.ok) return json({ error: choice.error }, 400);
+      if (choice.review === undefined) return json({ error: `review must be one of: ${TASK_REVIEW_MODES.join(", ")}` }, 400);
+      if (t.kind !== "auftrag") return json({ error: `${t.kind} never runs in a lane — there is no code to review` }, 409);
+      if (t.status !== "pending" && t.status !== "queued" && t.status !== "sent")
+        return json({ error: `task is ${t.status} — its lane has ended, so there is nothing left to review` }, 409);
+      const unchanged = (t.review ?? null) === choice.review;
+      if (!unchanged) { setTaskReview(t, choice.review, "owner"); saveState(); }
+      return json({ ok: true, review: t.review ?? "none", ...(unchanged ? { unchanged: true } : {}) });
     }
     // ▸ START WAVE (S3 of docs/queue-wellen-2026-09-06.md §5): ONE lane, n queue rows, ONE land.
     // The attended sibling of ▸ start — same spawn triple, same free-slot rule, same "an attended
@@ -32470,6 +32651,11 @@ Bun.serve<WSData>({
       const body = await readJson(req);
       const text = typeof body?.text === "string" ? body.text.slice(0, MAX_TASK_TEXT).trim() : "";
       if (!text) return json({ error: "bad text" }, 400);
+      // the review opt-in rides the brief door too: "how this row is said" and "whether its code is
+      // read back" are both settled before the release, by the same hand
+      const briefReview = taskReviewFromBody(body);
+      if (!briefReview.ok) return json({ error: briefReview.error }, 400);
+      if (briefReview.review !== undefined) setTaskReview(t, briefReview.review, "owner");
       // `by` is stamped POSITIVELY rather than left to be inferred from `edited`, and that is the
       // whole repair: `edited` is the PIN against recompilation, and reading it as authorship is
       // what let this door — owner-authenticated, but reachable by anything holding the bearer —
@@ -32478,7 +32664,7 @@ Bun.serve<WSData>({
       // that absence exactly as it did (server/types.ts, BriefAuthor).
       t.brief = { text, at: Date.now(), model: "owner", edited: true, by: "owner" };
       saveState();
-      return json({ ok: true, brief: t.brief });
+      return json({ ok: true, brief: t.brief, ...(t.review ? { review: t.review } : {}) });
     }
     // A COMMENT — the one text on this row the OWNER writes (everything else is machine output or the
     // original request). Allowed in EVERY status on purpose: the most useful remark is often about a row

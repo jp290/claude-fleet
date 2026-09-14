@@ -1,7 +1,8 @@
 // The 🔍 review agent (owner click) and auto-③ (the server running it itself on a done-looking
 // lane) — every guard rail asserted as a fact via the stand-in's per-cwd spawn log.
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, check, get, post, paneEnv, reviewRunsFor, lastReviewPromptFor } from "./harness";
+import { BASE, REPO, check, get, post, paneEnv, reviewRunsFor, lastReviewPromptFor, restartSrv } from "./harness";
+import { settleForMerge, waitMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -475,5 +476,155 @@ export async function run(ctx: Ctx): Promise<void> {
       .outcomes.find((o) => o.branch === hb.branch);
     check("a failed read never becomes coverage on the outcome row (state:none, no phantom superseded)",
       hbRec?.review?.state === "none", JSON.stringify(hbRec?.review ?? null).slice(0, 240));
+  }
+
+  // --- (O) THE REVIEW A ROW ASKS FOR (Task.review = "advisory"). Owner 2026-09-12: ③ per task, not
+  // per fleet. Measured on a server whose fleet-wide tick is OFF (FLEET_AUTO_REVIEW_MS=0) — the live
+  // setting — so every spawn below is the per-row door and nothing else. The stand-in's per-cwd
+  // spawn log is the fact, as in (A)–(F). Mutations each check names: registering the opt-in tick
+  // without its row filter (the control lane gets a run), filing nothing (no event), deduping on the
+  // commit sha instead of the diff (the amend spawns again), gating the land on a verdict. ---
+  {
+    await restartSrv({ FLEET_AUTO_REVIEW_MS: "0", FLEET_REVIEW_OPTIN_TICK_MS: "1000" });
+    const ctl = REPO.replace(/\/[^/]+$/, "");
+    type ORow = { id: string; review?: string; status: string };
+    type OEvent = { id: string; kind: string; receiverSlot: number | null; status: string; delivery?: string;
+      subjectSlot?: number; subjectBranch?: string; payload?: Record<string, unknown> };
+    const oRow = async (id: string): Promise<ORow | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: ORow[] }).tasks.find((t) => t.id === id);
+    const oReviews = async (taskId: string): Promise<OEvent[]> =>
+      ((await (await get("/api/events")).json()) as { events: OEvent[] }).events
+        .filter((e) => e.kind === "lane-review" && e.payload?.taskId === taskId);
+    const oMake = async (text: string, extra: Record<string, unknown> = {}): Promise<Response> =>
+      post("/api/tasks", { text, kind: "auftrag", repo: REPO, ...extra });
+    const oGit = (dir: string, ...a: string[]): number => {
+      for (let i = 0; i < 8; i++) {
+        if (spawnSync("git", ["-C", dir, ...a]).status === 0) return 0;
+        spawnSync("sleep", ["0.25"]);
+      }
+      return 1;
+    };
+    // a dispatched lane with one commit of its own — the shape auto-③ reviews
+    const oLane = async (id: string, file: string): Promise<{ slot: number; cwd: string; branch: string } | null> => {
+      const slot = ((await (await post(`/api/tasks/${id}/dispatch`, {})).json()) as { slot?: number }).slot;
+      if (typeof slot !== "number") return null;
+      let cwd = "", branch = "";
+      for (let i = 0; i < 60 && !(cwd && branch); i++) {
+        const sl = ((await (await get("/api/sessions")).json()) as
+          { slots: { id: number; cwd: string | null; worktree?: { branch: string } | null }[] }).slots.find((x) => x.id === slot);
+        cwd = sl?.cwd ?? ""; branch = sl?.worktree?.branch ?? "";
+        if (!(cwd && branch)) await Bun.sleep(100);
+      }
+      if (!cwd) return null;
+      await Bun.write(`${cwd}/${file}`, `work in ${file} the row asked a reviewer to read\n`);
+      return oGit(cwd, "add", file) === 0 && oGit(cwd, "commit", "-qm", `${file} lane work`) === 0
+        ? { slot, cwd, branch } : null;
+    };
+
+    // (4) THE DOOR REFUSES AN UNKNOWN VALUE, naming the allowed ones — at filing and at the board's route
+    const oBadCreate = await oMake("review opt-in: a value nobody defined", { review: "yes" });
+    const oBadCreateText = await oBadCreate.text();
+    const oPlainRes = await oMake("review opt-in: the control row, no field");
+    const oPlain = ((await oPlainRes.json()) as { task?: ORow }).task;
+    const oBadSet = await post(`/api/tasks/${oPlain?.id}/review`, { review: "sometimes" });
+    const oBadSetText = await oBadSet.text();
+    const oEmptySet = await post(`/api/tasks/${oPlain?.id}/review`, {});
+    check("review opt-in (4): an unknown review value is 400 naming `none, advisory` — at POST /api/tasks and at the board's review route — and no row carries it",
+      oBadCreate.status === 400 && oBadCreateText.includes("review must be one of: none, advisory")
+        && oBadSet.status === 400 && oBadSetText.includes("none, advisory") && oEmptySet.status === 400
+        && !!oPlain && (await oRow(oPlain.id))?.review === undefined,
+      `create=${oBadCreate.status}:${oBadCreateText} set=${oBadSet.status}:${oBadSetText} empty=${oEmptySet.status}`);
+
+    // (6) THE BOARD'S ROUTE writes and clears the field the ③ haken shows; a notiz has no lane to review
+    const oOpted = ((await (await oMake("review opt-in: the row that asks for ③", { review: "advisory" })).json()) as { task?: ORow }).task;
+    const oToggleOn = await post(`/api/tasks/${oPlain?.id}/review`, { review: "advisory" });
+    const oOnRow = await oRow(oPlain?.id ?? "");
+    const oToggleOff = await post(`/api/tasks/${oPlain?.id}/review`, { review: "none" });
+    const oOffRow = await oRow(oPlain?.id ?? "");
+    const oNote = ((await (await post("/api/tasks", { text: "review opt-in: a note", kind: "notiz" })).json()) as { task?: ORow }).task;
+    const oNoteSet = await post(`/api/tasks/${oNote?.id}/review`, { review: "advisory" });
+    check("review opt-in (6): filing stores review:advisory; the board route sets it and `none` removes the field again; a notiz is 409",
+      oOpted?.review === "advisory" && (await oRow(oOpted.id))?.review === "advisory"
+        && oToggleOn.status === 200 && oOnRow?.review === "advisory"
+        && oToggleOff.status === 200 && oOffRow !== undefined && !("review" in oOffRow)
+        && oNoteSet.status === 409,
+      `opted=${JSON.stringify(oOpted?.review)} on=${oToggleOn.status}:${oOnRow?.review} off=${oToggleOff.status}:${JSON.stringify(oOffRow)} note=${oNoteSet.status}`);
+    if (oNote) await post(`/api/tasks/${oNote.id}/delete`, {});
+
+    // (1) BOTH ROWS RUN IN A LANE with the fleet-wide tick off: the opted row's lane is reviewed, the
+    // control row's lane is not — the kill switch stays closed for every lane that did not ask
+    const oA = oOpted ? await oLane(oOpted.id, "optin-review.txt") : null;
+    const oB = oPlain ? await oLane(oPlain.id, "optin-control.txt") : null;
+    check("review opt-in setup: both rows were dispatched into lanes that committed work",
+      !!oA && !!oB, `opted=${JSON.stringify(oA)} control=${JSON.stringify(oB)}`);
+    let oEvents: OEvent[] = [];
+    // the git fact cache refreshes on the 10s tickGit, so done-looking can only hold after it
+    for (let i = 0; i < 45 && oA && oEvents.length === 0; i++) {
+      await Bun.sleep(1000);
+      oEvents = await oReviews(oOpted!.id);
+    }
+    await Bun.sleep(4000); // several more opt-in ticks, on both lanes
+    check("review opt-in (1): with FLEET_AUTO_REVIEW_MS=0 the opted row's lane got EXACTLY ONE reviewer, the control row's lane none",
+      !!oA && !!oB && reviewRunsFor(oA.cwd) === 1 && reviewRunsFor(oB.cwd) === 0,
+      `opted=${oA ? reviewRunsFor(oA.cwd) : "-"} control=${oB ? reviewRunsFor(oB.cwd) : "-"}`);
+
+    // (2) THE VERDICT IS FILED to the owner inbox (no Program on this row), with its model, the diff
+    // it read and whether that is still the lane's diff — and exactly once
+    const oEv = oEvents[0];
+    const oP = (oEv?.payload ?? {}) as { diffSha?: unknown; head?: unknown; model?: unknown; describedThisDiff?: unknown;
+      findingCount?: unknown; findings?: unknown[]; programId?: unknown; raw?: unknown };
+    check("review opt-in (2): one lane-review event in the owner inbox names the lane, the model, the diff sha (patch-id), describedThisDiff:true and the findings",
+      oEvents.length === 1 && oEv?.receiverSlot === null && oEv.status === "inbox" && oEv.delivery === "inbox"
+        && oEv.subjectSlot === oA?.slot && oEv.subjectBranch === oA?.branch
+        && typeof oP.diffSha === "string" && /^[0-9a-f]{40}$/.test(oP.diffSha)
+        && typeof oP.head === "string" && /^[0-9a-f]{40}$/.test(oP.head)
+        && typeof oP.model === "string" && oP.model.length > 0
+        && oP.describedThisDiff === true && oP.raw === false && oP.programId === null
+        && oP.findingCount === 2 && (oP.findings?.length ?? 0) === 2,
+      JSON.stringify(oEvents).slice(0, 400));
+
+    // (3) ONE VERDICT PER DIFF: an amend moves HEAD (and the tree's cache key) while the diff is the
+    // same — no second reviewer, no second event
+    const oHeadBefore = oA ? spawnSync("git", ["-C", oA.cwd, "rev-parse", "HEAD"]).stdout.toString().trim() : "";
+    const oAmend = oA ? oGit(oA.cwd, "commit", "--amend", "--no-edit", "--date=2001-01-01T00:00:00") : 1;
+    const oHeadAfter = oA ? spawnSync("git", ["-C", oA.cwd, "rev-parse", "HEAD"]).stdout.toString().trim() : "";
+    await Bun.sleep(7000); // idle gate (1.5 s) plus several opt-in ticks on the amended tree
+    check("review opt-in (3): an amend that keeps the diff moves HEAD but spawns no second reviewer and files no second verdict",
+      oAmend === 0 && oHeadBefore !== oHeadAfter && !!oA && reviewRunsFor(oA.cwd) === 1
+        && (await oReviews(oOpted?.id ?? "")).length === 1,
+      `amend=${oAmend} head ${oHeadBefore.slice(0, 8)}->${oHeadAfter.slice(0, 8)} runs=${oA ? reviewRunsFor(oA.cwd) : "-"} events=${(await oReviews(oOpted?.id ?? "")).length}`);
+
+    // …and the outcome row carries the same verdict, as it always has
+    if (oA) await post(`/api/slots/${oA.slot}/kill`, {});
+    if (oB) await post(`/api/slots/${oB.slot}/kill`, {});
+    const oRec = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
+      { outcomes: { branch: string | null; review?: { state?: string; patchId?: string | null; findings?: unknown[] } }[] })
+      .outcomes.find((o) => o.branch === oA?.branch);
+    check("review opt-in (1b): the opted lane's outcome row carries the verdict (covered) with the same diff sha the event named",
+      oRec?.review?.state === "covered" && oRec.review.patchId === oP.diffSha && (oRec.review.findings?.length ?? 0) === 2,
+      JSON.stringify(oRec?.review ?? null).slice(0, 240));
+
+    // (5) NO GATE: an opted row whose reviewer FAILS (no verdict at all) still lands
+    await Bun.write(`${ctl}/reviewfail`, "1");
+    const oC = ((await (await oMake("review opt-in: a row that lands without any verdict", { review: "advisory" })).json()) as { task?: ORow }).task;
+    const oCLane = oC ? await oLane(oC.id, "optin-nogate.txt") : null;
+    let oLanded = false;
+    if (oCLane) {
+      await settleForMerge(oCLane.slot);
+      await post(`/api/slots/${oCLane.slot}/merge`, {});
+      await waitMerge(oCLane.slot);
+      const oCRec = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
+        { outcomes: { branch: string | null; disposition?: string; review?: { state?: string } }[] })
+        .outcomes.find((o) => o.branch === oCLane.branch);
+      oLanded = oCRec?.disposition === "landed" && oCRec.review?.state !== "covered" && oCRec.review?.state !== "superseded";
+    }
+    spawnSync("rm", ["-f", `${ctl}/reviewfail`]);
+    check("review opt-in (5): a row that asked for ③ lands with NO verdict on record — the review gates nothing",
+      !!oCLane && oLanded && (await oReviews(oC?.id ?? "")).length === 0,
+      `lane=${JSON.stringify(oCLane)} landed=${oLanded} events=${(await oReviews(oC?.id ?? "")).length}`);
+
+    for (const id of [oOpted?.id, oPlain?.id, oC?.id]) if (id) await post(`/api/tasks/${id}/delete`, {});
+    for (const e of [...await oReviews(oOpted?.id ?? "")]) await post(`/api/events/${e.id}/ack`, {});
+    await restartSrv();
   }
 }

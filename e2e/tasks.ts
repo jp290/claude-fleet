@@ -3639,11 +3639,15 @@ export async function run(ctx: Ctx): Promise<void> {
       manualReceipt?.briefSource === "raw" && manualPrompt.startsWith("manual-start-probe")
       && manualReceipt?.briefHash === briefHashOf(manualPrompt),
       `${JSON.stringify(manualPrompt.slice(0, 80))} ${JSON.stringify(manualReceipt ?? null)}`);
-    check("a task without a Program gets one receipt with honest null adapter/program facts",
+    // model is the one fact NOT null here since 2026-09-14: the slot pins none, so the receipt names
+    // the default the spawn line used (docs/self-api.md §"Die zwei Ledger") instead of a null a later
+    // reader cannot resolve against the server's FLEET_MODEL.
+    check("a task without a Program gets one receipt with honest null adapter/program facts and the resolved default model",
       !!manualReceipt && (await contextReceipts()).total === manualReceiptsBefore.total + 1
       && manualReceipt.taskId === mT.task.id && manualReceipt.originId === mT.task.id
       && manualReceipt.programId === null && manualReceipt.harness === null
-      && manualReceipt.model === null && manualReceipt.effort === null,
+      && manualReceipt.model === FLEET_DEFAULT_MODEL && manualReceipt.modelOrigin === "default"
+      && manualReceipt.effort === null,
       JSON.stringify(manualReceipt ?? null));
     if (typeof mdJ.slot === "number") await post(`/api/slots/${mdJ.slot}/kill`, {});
     await post(`/api/tasks/${mT.task.id}/delete`, {});

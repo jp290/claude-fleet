@@ -23,7 +23,7 @@ import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
-import { failNamesOf, freeSuiteSlots, inQuietHours, loadConfig, localMode, pruneRuns, stricter, tailOf, trailIdOf,
+import { failNamesOf, freeSuiteSlots, inQuietHours, jobsToStart, loadConfig, localMode, pruneRuns, stricter, tailOf, trailIdOf,
   withdrawnRuns, EXIT_CONFIG, EXIT_UPDATED, type HelperConfig, type JobView } from "../helper-daemon/daemon";
 
 interface Row {
@@ -133,6 +133,26 @@ export async function run(h: {
   check("(HD) withdrawnRuns aborts exactly the runs the fleet took back — reaped, re-offered, re-claimed — and never one it still holds for me",
     JSON.stringify(gone) === JSON.stringify(["bbbbbbbbbbbb", "cccccccccccc", "dddddddddddd"]),
     JSON.stringify(gone));
+  // THE UPDATE STARTS ALONE (2026-09-14 09:24, secondhostlinux1): one poll claimed an audit AND the
+  // daemon-update, the update exited 75, and the audit's claim sat on the fleet ~45 min with no run
+  // behind it. MUTATION: drop the update branch in daemon.ts#jobsToStart ⇒ the idle list starts both
+  // ⇒ red; drop `running === 0` ⇒ the busy machine starts the update beside its run ⇒ red; drop the
+  // claimed-and-idle fall-through ⇒ a dead predecessor's update claim parks the machine ⇒ red.
+  const kindJob = (id: string, kind: string, claim: { name: string; claimedAt?: number } | null = null): JobView =>
+    ({ ...jv(id, claim), kind });
+  const ids = (js: JobView[]): string => js.map((j) => j.id).join(",");
+  const audit = kindJob("a00000000001", "audit"), preview = kindJob("b00000000002", "lane-suite");
+  const update = kindJob("u00000000009", "daemon-update");
+  const idleWithUpdate = jobsToStart([audit, update, preview], 2, 0);
+  const busyWithUpdate = jobsToStart([audit, update], 1, 1);
+  const busyUpdateMine = jobsToStart([audit, kindJob("u00000000009", "daemon-update", { name: "me", claimedAt: 1 })], 1, 1);
+  const idleStaleUpdate = jobsToStart([audit, kindJob("u00000000009", "daemon-update", { name: "me", claimedAt: 1 })], 2, 0);
+  const noUpdate = jobsToStart([audit, preview, kindJob("c00000000003", "audit")], 2, 0);
+  check("(HD) a listed daemon-update starts ALONE and only on an empty machine — nothing is claimed beside it, before it, or while it runs",
+    ids(idleWithUpdate) === "u00000000009" && ids(busyWithUpdate) === "" && ids(busyUpdateMine) === ""
+      && ids(idleStaleUpdate) === "a00000000001" && ids(noUpdate) === "a00000000001,b00000000002",
+    `idle=[${ids(idleWithUpdate)}] busy=[${ids(busyWithUpdate)}] inFlight=[${ids(busyUpdateMine)}]`
+    + ` staleClaim=[${ids(idleStaleUpdate)}] noUpdate=[${ids(noUpdate)}]`);
   // THE PRUNE AND THE RUN IN FLIGHT (C1, 2026-09-13). The oldest dir is a run still going — above cap
   // 1 the normal shape of a long suite beside short ones — and each finished run keeps a red
   // instance in its `tmp/`. keepRuns 2 must leave the running one AND the two newest finished.

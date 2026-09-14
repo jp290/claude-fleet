@@ -7325,6 +7325,30 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 }
 
 {
+  // A DAEMON-UPDATE STARTS ALONE, ON AN EMPTY MACHINE. Measured 2026-09-14 09:24 on
+  // secondhostlinux1: one poll claimed the waiting post-land audit AND the update; the update swapped
+  // and exited 75, and the audit's claim stayed on the fleet ~45 min with no run behind it — the
+  // deploy behind that audit waited with it. The behaviour is checked in e2e/helper-daemon.ts (HD),
+  // which runs only in ./e2e-isolated.sh; this pin is the gate's half: tick() must pick its starts
+  // through jobsToStart, and jobsToStart must still carry both rules (nothing beside or before the
+  // update; the update only at running 0).
+  const RULE_UPD = "a helper daemon offered its own daemon-update claims nothing else in that poll and starts the update only with no job running";
+  const src = exists("helper-daemon/daemon.ts") ? read("helper-daemon/daemon.ts") : "";
+  if (src === "") skip(RULE_UPD, "helper-daemon/daemon.ts is not in this tree");
+  else {
+    const tickFn = /export async function tick\(cfg: HelperConfig, st: LoopState\)[\s\S]*?\n\}/.exec(src)?.[0] ?? "";
+    const pickFn = /export function jobsToStart\([\s\S]*?\n\}/.exec(src)?.[0] ?? "";
+    const routed = /const open = jobsToStart\(list\.jobs \?\? \[\], free, runningJobs\);/.test(tickFn)
+      && /for \(const j of open\) start\(cfg, j\);/.test(tickFn);
+    const updateFirst = /const update = jobs\.find\(\(j\) => j\.kind === "daemon-update"\);/.test(pickFn)
+      && /if \(update && \(running > 0 \|\| !update\.claim\)\) return running === 0 \? \[update\] : \[\];/.test(pickFn);
+    const neverBeside = /j\.kind !== "daemon-update"/.test(pickFn);
+    pin(RULE_UPD, tickFn !== "" && pickFn !== "" && routed && updateFirst && neverBeside,
+      `tick=${tickFn !== ""} jobsToStart=${pickFn !== ""} routed=${routed} updateGate=${updateFirst} excludedFromSlice=${neverBeside}`);
+  }
+}
+
+{
   const RULE_D2 = "program status is a read-only projection and the poll derives only stale active Programs";
   const sessionsAt = server.indexOf('url.pathname === "/api/sessions"');
   const tasksAt = sessionsAt < 0 ? -1 : server.indexOf("tasks: tasks.map(taskDigest)", sessionsAt);

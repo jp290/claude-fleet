@@ -461,6 +461,23 @@ export function withdrawnRuns(running: ReadonlyMap<string, { claimedAt: number |
   }
   return out;
 }
+// WHAT THIS TICK MAY START — pure, exported, checked in e2e/helper-daemon.ts (HD.1) and pinned in
+// e2e/pins.ts. A `daemon-update` ends this process with exit 75, and every claim the process holds
+// at that moment is left on the fleet with nobody running it until it EXPIRES. Measured 2026-09-14
+// 09:24 on secondhostlinux1: one poll saw an idle machine, an open audit and the update, claimed
+// BOTH, the update swapped and exited, and the audit's claim sat on the fleet for ~45 min with no
+// run behind it (and the deploy behind the audit with it). Hence two rules, and only these:
+//   · while an update is listed for this machine, NOTHING ELSE is started — not beside it, and not
+//     while it waits for the running jobs to drain (otherwise a busy queue starves it forever);
+//   · the update itself starts only when `running` is 0 — this process holds no other claim.
+// One exception keeps a dead predecessor from parking the machine: an update listed as CLAIMED
+// while nothing runs here is not this process's (its own claim is always counted in `running`, from
+// `start` to the `finally`), so ordinary jobs go on until that stale claim lapses or is reported.
+export function jobsToStart(jobs: readonly JobView[], free: number, running: number): JobView[] {
+  const update = jobs.find((j) => j.kind === "daemon-update");
+  if (update && (running > 0 || !update.claim)) return running === 0 ? [update] : [];
+  return jobs.filter((j) => j.kind !== "daemon-update" && !j.claim && !j.localRunning).slice(0, Math.max(0, free));
+}
 function start(cfg: HelperConfig, job: JobView): void {
   runningJobs++;
   void work(cfg, job)
@@ -900,7 +917,8 @@ export async function tick(cfg: HelperConfig, st: LoopState): Promise<void> {
   if (free <= 0) return;
   // Sliced to `free`, so a tick that arrives at an empty machine with three open jobs fills every
   // slot at once rather than one per poll — and one that arrives with one slot left takes one job.
-  const open = (list.jobs ?? []).filter((j) => !j.claim && !j.localRunning).slice(0, free);
+  // A listed daemon-update overrides the slice: alone, and only on an empty machine (jobsToStart).
+  const open = jobsToStart(list.jobs ?? [], free, runningJobs);
   for (const j of open) start(cfg, j);
 }
 

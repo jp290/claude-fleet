@@ -10848,23 +10848,41 @@ exit 0
     const pzDispatch = await post(`/api/tasks/${pzRowId}/dispatch`, {});
     const pzLaneSlot = (await slRow(pzRowId))?.slot ?? null;
     const pzLaneCwd = pzLaneSlot === null ? "" : (await slSess()).slots.find((x) => x.id === pzLaneSlot)?.cwd ?? "";
-    if (pzLaneCwd) {
+    // THE FOUNDING TAIL FIRST. dispatch answers 200 before briefAndSend has typed the brief (4 s
+    // boot grace, then the delivery), and a failed delivery REQUEUES the row while keeping a lane
+    // that already carries a commit. The first helper run of this arm (job ab31b8bb5af0) committed
+    // inside that window: the fixture read `sent` + idle/clean/ahead, the tail then requeued, and
+    // both checks below read `task is queued` — a measurement of the fixture, not of the door. So
+    // the commit waits for the brief to be LOGGED (logPrompt runs only after sendText returned),
+    // and the fixture prints the row's status and note, so a requeue names its own reason.
+    let pzBriefLogged = false;
+    for (let i = 0; pzLaneSlot !== null && i < 120 && !pzBriefLogged; i++) {
+      const hist = ((await (await get(`/api/slots/${pzLaneSlot}/history`)).json()) as
+        { history?: { text: string }[] }).history ?? [];
+      pzBriefLogged = hist.some((h) => h.text.includes("self-land pi-zai row"));
+      if (!pzBriefLogged && (await slRow(pzRowId))?.status !== "sent") break;
+      if (!pzBriefLogged) await Bun.sleep(250);
+    }
+    if (pzLaneCwd && pzBriefLogged) {
       writeFileSync(`${pzLaneCwd}/selfland-pizai.txt`, "work of a lane whose harness no unattended path may drive\n");
       spawnSync("git", ["-C", pzLaneCwd, "add", "selfland-pizai.txt"]);
       spawnSync("git", ["-C", pzLaneCwd, "commit", "-qm", "selfland pi-zai work"]);
     }
-    const pzReady = pzLaneSlot === null ? false : await waitDoneLooking(pzLaneSlot);
+    const pzReady = pzLaneSlot === null || !pzBriefLogged ? false : await waitDoneLooking(pzLaneSlot);
+    const pzRowAtFixture = await slRow(pzRowId);
     type PzSlot = { id: number; harness?: string; agent?: string | null };
     let pzAgent: PzSlot | undefined;
     for (let i = 0; i < 80 && pzAgent?.agent !== "alive"; i++) {
       pzAgent = ((await (await get("/api/sessions")).json()) as { slots: PzSlot[] }).slots.find((x) => x.id === pzLaneSlot);
       if (pzAgent?.agent !== "alive") await Bun.sleep(250);
     }
-    check("declined-harness self-land fixture: a bound MAIN owns a pi-zai lane whose stand-in Pi is genuinely live (agent=alive), idle, clean and ahead",
+    check("declined-harness self-land fixture: a bound MAIN owns a pi-zai lane whose brief was delivered, whose stand-in Pi is genuinely live (agent=alive), and which is idle, clean and ahead on a row still sent",
       pzBoot.ok && /^[0-9a-f]{32}$/.test(pzTok) && pzDispatch.ok && pzLaneSlot !== null && !!pzLaneCwd
-        && pzAgent?.harness === "pi-zai" && pzAgent.agent === "alive" && pzReady,
-      JSON.stringify({ boot: pzBoot.status, dispatch: pzDispatch.status, lane: pzLaneSlot, agent: pzAgent ?? null,
-        ready: pzReady, why: pzReady ? "" : doneLookingWhy }));
+        && pzBriefLogged && pzAgent?.harness === "pi-zai" && pzAgent.agent === "alive" && pzReady
+        && pzRowAtFixture?.status === "sent" && pzRowAtFixture.slot === pzLaneSlot,
+      JSON.stringify({ boot: pzBoot.status, dispatch: pzDispatch.status, lane: pzLaneSlot, briefLogged: pzBriefLogged,
+        row: { status: pzRowAtFixture?.status ?? null, slot: pzRowAtFixture?.slot ?? null, note: pzRowAtFixture?.note ?? null },
+        agent: pzAgent?.agent ?? null, harness: pzAgent?.harness ?? null, ready: pzReady, why: pzReady ? "" : doneLookingWhy }));
     // THE POLICY IS UNTOUCHED, on the same lane at the same instant: the Watch route still refuses it
     // as a target. Without this the land below could be a regression that made pi-zai automatable.
     const pzWatch = pzMainSlot === null || pzLaneSlot === null ? null

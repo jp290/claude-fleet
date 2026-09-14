@@ -144,6 +144,7 @@ import { json, HOST, PORT } from "./server/http";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
 import { tokenFrom, secretEq, commentStrike, authFails, failStrike, shareGate, closeShareClients,
   guard } from "./server/auth";
+import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 
 // lines of scrollback every WS connect is seeded with, from a fresh capture-pane. Capture
 // output is line-aligned and already reflowed to the pane's width, so it can neither begin
@@ -5068,7 +5069,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.codexRecoveryState = null;
   s.codexDisconnectSeenAt = null;
   s.history = []; // ...including a fresh prompt history
-  harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0) }); // sentinel: harvest the NEW transcript from byte 0
+  harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0), skipping: 0 }); // sentinel: harvest the NEW transcript from byte 0
   startCache.delete(s.id); // the fresh session gets a fresh start anchor
   // a recycled slot must never show a previous lane's verdict, but a reviewable one follows its
   // BRANCH into the park (parkMergeVerdict). Park before restore, so a reattach round-trips.
@@ -12126,9 +12127,11 @@ async function transcriptPayload(s: Slot, afterRaw: number):
 // transcripts. Composed sends are suppressed via recentComposed (they're in the transcript
 // too). At boot the cursor seeds to end-of-file so old history is never re-logged.
 // Incremental by BYTE OFFSET — transcripts grow to tens of MB, re-reading them whole
-// every tick would be constant I/O for nothing. Only new bytes are read; the partial
-// trailing line is carried as raw bytes so a chunk boundary can't split a UTF-8 char.
-const harvest = new Map<number, { file: string; offset: number; rest: Buffer }>();
+// every tick would be constant I/O for nothing. Only new bytes are read, at most a fixed
+// budget per tick; the partial trailing line is carried as raw bytes so a chunk boundary
+// can't split a UTF-8 char, and a line past its own cap is dropped and reported to the
+// error channel, never silently (server/transcript-read.ts#harvestStep).
+const harvest = new Map<number, HarvestCursor>();
 let harvestBusy = false;
 async function tickHarvest(): Promise<void> {
   if (harvestBusy || !/^claude(\s|$)/.test(BASE_CMD)) return;
@@ -12149,26 +12152,17 @@ async function tickHarvest(): Promise<void> {
       if (!cur || cur.file !== file) {
         // no cursor = first sight since boot → skip existing content; a NEW file for an
         // already-tracked slot (fresh claude after self-heal, recycled slot) reads from 0
-        cur = { file, offset: cur ? 0 : size, rest: Buffer.alloc(0) };
+        cur = { file, offset: cur ? 0 : size, rest: Buffer.alloc(0), skipping: 0 };
         harvest.set(s.id, cur);
       }
-      if (size < cur.offset) { cur.offset = 0; cur.rest = Buffer.alloc(0); } // rewritten — resync
       if (size === cur.offset) continue;
       let lines: string[];
       try {
-        const buf = Buffer.alloc(size - cur.offset);
-        const fd = openSync(file, "r");
-        const n = readSync(fd, buf, 0, buf.length, cur.offset);
-        closeSync(fd);
-        cur.offset += n;
-        let chunk = Buffer.concat([cur.rest, buf.subarray(0, n)]);
-        lines = [];
-        let nl: number;
-        while ((nl = chunk.indexOf(0x0a)) !== -1) {
-          lines.push(chunk.subarray(0, nl).toString("utf8"));
-          chunk = chunk.subarray(nl + 1);
-        }
-        cur.rest = Buffer.from(chunk); // copy — a subarray would pin the whole read buffer
+        const step = harvestStep(cur, size);
+        harvest.set(s.id, step.cursor);
+        for (const d of step.dropped)
+          logError("tickHarvest", new Error(`slot ${s.id}: ${d.why} — ${d.bytes} transcript bytes not harvested`));
+        lines = step.lines;
       } catch {
         continue; // transient read error — next tick retries from the same offset
       }
@@ -12232,26 +12226,14 @@ const summaryInflight = new Map<number, Promise<SummaryResult>>();
 const summarizerSids = new Set<string>();
 
 // last N transcript entries flattened to plain text — same file + parser the
-// transcript view uses, so the agent reads exactly what the owner would see
-function transcriptTail(s: Slot, maxEntries: number): string {
+// transcript view uses, so the agent reads exactly what the owner would see. Reads a fixed
+// byte budget backwards, never the whole file; a cut that cost entries is marked on the
+// first line (server/transcript-read.ts)
+function transcriptTail(s: Slot, maxEntries: number, maxChars: number): string {
   const file = transcriptFile(s);
   if (!file) return "";
   try {
-    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean).slice(-300);
-    const entries: TEntry[] = [];
-    for (const [i, line] of lines.entries()) {
-      try {
-        const e = viewEntry(JSON.parse(line), i);
-        if (e) entries.push(e);
-      } catch {
-        // partial mid-append line — skip
-      }
-    }
-    return entries.slice(-maxEntries).map((e) =>
-      e.blocks.map((b) =>
-        `[${e.role}${b.t === "text" ? "" : `/${b.t}${b.name ? `:${b.name}` : ""}`}] ${b.text}`,
-      ).join("\n"),
-    ).join("\n");
+    return transcriptTailText(file, maxEntries, maxChars, viewEntry);
   } catch {
     return "";
   }
@@ -12617,7 +12599,7 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
     ...(landability ? ["## landability", landability, ""] : []),
     "## commits", lg.code === 0 && lg.out ? lg.out : "(none)",
     "", "## uncommitted diff", (d.code === 0 ? d.out.slice(0, 60_000) : "") || "(clean)",
-    "", "## transcript tail", transcriptTail(s, 30).slice(-40_000) || "(no transcript)",
+    "", "## transcript tail", transcriptTail(s, 30, 40_000) || "(no transcript)",
     "DATA>>>",
     "",
     "FINALLY: respond in ONE message with STRICT JSON, no markdown fences, exactly:",

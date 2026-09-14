@@ -120,3 +120,56 @@ Keine technische Grünmeldung als Spaßbeweis, keine Screenshots als Beweis tats
 Kein ausführliches Studio-Regelwerk, keine privaten Daten erfragen, keine Umsetzung beginnen.
 ```
 Quellen im Repo: `docs/plan-fleet-betrieb-2026-09-13.md` §5d; `AGENTS.md`; `docs/messungen/2026-08-26-private-repo-j-worktrail-audit.md`; `docs/messungen/2026-08-27-private-repo-j-worktrail-audit-II.md`; `docs/worktrail-audit-II/private-repo-c.md`; `docs/worktrail-audit-II/private-repo-f.md`; `docs/messungen/2026-09-03-private-repo-p-worktrail-audit-synthese.md`; `docs/game-maker/README.md`; `docs/messungen/2026-09-14-rollen-briefe-synthese.md`; `docs/messungen/2026-09-11-host-aufteilung-entscheid.md`. Spielidee und RAM-Nennwert: Owner-Auftrag 13.09.2026.
+
+## Prompt 3 — Astra effektiv einsetzen (Harness, Effort, Kontext, Brief-Form)
+
+```text
+KONTEXT
+Recherchiere zum Stand 14.09.2026, wie man das Modell gpt-6-astra heute wirksam einsetzt —
+primär in der Codex CLI, sekundär in anderen Harnesses (API, Cursor, eigene Agent-Loops),
+falls dort belastbare Belege existieren. Kennzeichne, was nur für gpt-5.6-Modelle belegt ist.
+Unser Setup: Codex CLI (0.154.x), gpt-6-astra, AGENTS.md wird automatisch geladen, Full-Access
+(Bypass-Flag + Trust-Eintrag in config.toml), eine Session pro tmux-Pane, Briefs kommen als
+Paste in den Composer. Was wir selbst beobachtet haben, ohne kontrollierten Vergleich:
+- Effort-Stufen low|medium|high|xhigh|max; wir fahren Astra-Sessions auf medium, Opus-Lanes high.
+- Modellkarte nennt 1 050 000 Kontext / 128 000 Output; unser Abo-Fenster meldet 258 400
+  (272 000 × 95 %). Codex kompaktiert selbst; ~96 % des Verbrauchs sind Input (Verlauf + Tool-Ausgaben).
+- Astra fragt bei weichen Briefs zurück; ein härterer (nicht längerer) Brief mit System-Prefix,
+  PRIORITY / AUTONOMY / EFFORT / DONE MEANS / DO NOT und „Tu es. Keine Rückfrage." wirkte besser.
+- Tools laut Modellkarte: computer_use, code_interpreter, apply_patch; Sub-Agent-Katalog nennt
+  gpt-5.6/Terra/Luna als Kinder — Kinder auf Astra selbst sind teuer und bei uns unbelegt.
+- Ein Paste in Codex' Trust-/Sign-in-Screen beantwortet den Screen und verschluckt den Brief.
+
+FRAGEN
+1. Welche config.toml-/CLI-Einstellungen sind für Astra belegt wirksam: model_reasoning_effort,
+   Kompaktierungs-Schwellen, Tool-Ausgaben-Limits, Sandbox/Approval-Modi, MCP? Welche Defaults
+   sind Fallen? Was ändert xhigh/max messbar gegenüber medium/high (Qualität, Zeit, Tokens)?
+2. Prompt- und Brief-Form: Was ist für Astra belegt (System-Prefix, Reihenfolge der Felder,
+   Länge, explizite Autonomie-Ansage, Stop-Grenzen, Antwortformat)? Wann fragt es zurück, und
+   welche Formulierung schließt das nachweislich? Unterschied zu gpt-5.6-Sol?
+3. Kontextführung über lange Sessions: Kompaktierung vs. frische Session vs. Handoff-Datei —
+   was ist für Codex belegt, wo verliert Astra Pflichten (ausgelassene Schritte, „fertig" ohne
+   Artefakt, Selbstbehauptung im Proof)? Welche Gegenmaßnahmen sind reproduzierbar?
+4. Modellwahl je Aufgabenklasse: Wo ist Astra belegt besser als gpt-5.6-Sol / Opus-Klasse
+   (Planung, Repo-weite Änderungen, Review, Tests, UI), wo nicht, und wo ist es nur teurer?
+   Kosten je Ergebnis, nicht je Token.
+5. Multi-Agent: native Sub-Agent-Threads in Codex mit Astra als Eltern — belegte Muster,
+   Kosten, Fehlermodi (verrutschte Ansicht, verlorene Resultate); wann sind getrennte Sessions
+   mit eigener Worktree besser?
+6. Andere Harnesses: Gibt es belastbare Berichte zu Astra außerhalb von Codex (API-Agent-Loops,
+   Cursor, Aider, eigene Tool-Runner)? Nur nennen, wenn Quelle + Datum + Modellversion stehen.
+
+AUSGABE-REGELN
+Antworte Deutsch, entlang der Fragen; für Frage 1 eine kompakte Tabelle Einstellung | belegte
+Wirkung | Quelle | Datum | Version. Jede tragende Aussage mit direktem Link, Publikations-/
+Updatedatum, Modell-/Harness-Version; fehlende Angaben markieren. Trenne belegt /
+Erfahrungsbericht / Meinung; markiere, was von gpt-5.6 auf Astra nur übertragen ist.
+Höchstens 3 Empfehlungen, jede mit messbarem Erfolgskriterium, Zeitbudget und Abbruchkriterium
+für einen Pilot bei uns. Unbelegte Prompt-Wirkung als Hypothese führen.
+
+NICHT
+Keine erfundenen Einstellungen, Flags, Benchmarks oder Quellen; keine allgemeinen
+Prompt-Engineering-Ratschläge ohne Astra-/Codex-Beleg; keine privaten Daten erfragen;
+keine Umsetzung, kein Regelwerk für uns entwerfen.
+```
+Quellen im Repo: `docs/harness-adapter.md` §Harness-Adapter; `~/.codex/config.toml` (privat); Memory `feedback-astra-brief-template`, `feedback-astra-effort-medium`, `feedback-codex-ctx-is-not-succession-pressure`; `docs/messungen/2026-09-14-grok-antworten-spiele-astra.md` (Antwort-1-Fragment: Modellkarte, Sub-Agent-Katalog); Rulebook §Codex-Dispatch wartet auf Readiness.

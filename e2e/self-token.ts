@@ -747,12 +747,18 @@ export async function run(ctx: Ctx): Promise<void> {
       founding = (await plogRead()).find((e) => e.slot === sj.slot && e.text.startsWith("[fleet succession]"))?.text ?? "";
       if (!founding) await Bun.sleep(100);
     }
-    const ritual = ["./state.sh", "./register.sh", "lineage.record", "Live-Queue"].map((x) => founding.indexOf(x));
-    check("the founding brief names the LINE RECORD instead of HANDOFF.md: state · register · lineage.record · Live-Queue",
-      ritual.every((x) => x >= 0) && ritual.every((x, i) => i === 0 || ritual[i - 1]! < x)
+    // (b) a repo WITHOUT .fleet/init.md: the neutral entry — lineage.record, HANDOFF.md, README/AGENTS —
+    // and not one of claude-fleet's own entry points (2026-09-13: slot 14 in ~/private-repo-a went
+    // searching ~/.claude for ./state.sh)
+    const neutral = ["lineage.record", "HANDOFF.md", "README.md bzw. AGENTS.md"].map((x) => founding.indexOf(x));
+    check("the founding brief names the LINE RECORD; a repo without .fleet/init.md gets the neutral entry: lineage.record · HANDOFF.md · README/AGENTS",
+      neutral.every((x) => x >= 0) && neutral.every((x, i) => i === 0 || neutral[i - 1]! < x)
         && founding.includes("Die Vorgängerin zieht sich gerade zurück")
         && founding.includes(`Linien-Record ${sj.lineage?.lineageId}`) && founding.includes("1 Pflichten per ID")
         && !founding.includes("alles Übergebene steht in HANDOFF.md") && !founding.includes("Absicht: erst"),
+      founding.slice(0, 600));
+    check("...and it names none of claude-fleet's entry points: no state.sh, no register.sh, no Fleet-Board",
+      founding !== "" && ["state.sh", "register.sh", "Fleet-Board"].every((x) => !founding.includes(x)),
       founding.slice(0, 600));
 
     const successorTok = sj.slot ? await paneEnv(`s${sj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
@@ -797,6 +803,12 @@ export async function run(ctx: Ctx): Promise<void> {
     check("POST /api/self/succeed with an unknown effort is 400 naming the adapter's levels, and opens no successor",
       badEffort.status === 400 && badEffortText.includes("bad effort (one of: low, medium, high, xhigh, max)")
         && (await occupied()) === occupiedBeforeOverride, `${badEffort.status} ${badEffortText}`);
+    // (a) the repo now carries a tracked .fleet/init.md: B → C quotes its lines verbatim as the steps
+    const INIT = "1. Lies docs/einstieg-marker.md.\n2. Fahre make ground-marker.";
+    mkdirSync(`${sr}/.fleet`, { recursive: true });
+    writeFileSync(`${sr}/.fleet/init.md`, `${INIT}\n`);
+    spawnSync("git", ["-C", sr, "add", ".fleet/init.md"]);
+    spawnSync("git", ["-C", sr, "commit", "-qm", "repo entry"]);
     const carry = "C".repeat(600);
     const overridden = await successionPost("succeed", successorTok, { model: "claude-opus-5[1m]", effort: "max", carry });
     const oj = (await overridden.json()) as { ok?: boolean; slot?: number };
@@ -815,6 +827,10 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     check("the optional inter-session carry is capped at 500 characters",
       overrideBrief.includes("C".repeat(500)) && !overrideBrief.includes("C".repeat(501)), `brief=${overrideBrief.length} chars`);
+    check("a repo with a tracked .fleet/init.md: the brief carries its lines verbatim right after the order line, and no neutral entry",
+      overrideBrief.includes(`Beginne exakt in dieser Reihenfolge:\n${INIT}\n`)
+        && !overrideBrief.includes("README.md bzw. AGENTS.md") && !overrideBrief.includes("abgeschnitten"),
+      overrideBrief.slice(0, 600));
 
     // --- B → C on the SAME line: B's record now says who superseded it, so two slots carrying the same
     // label are told apart by record ---
@@ -838,8 +854,23 @@ export async function run(ctx: Ctx): Promise<void> {
     writeFileSync(`${sr}/handoff-2026-09-14.md`, "## next\nthe committed, dated section\n");
     spawnSync("git", ["-C", sr, "add", "handoff-2026-09-14.md"]);
     spawnSync("git", ["-C", sr, "commit", "-qm", "dated handoff section"]);
+    // (c) an init.md over the 2000-character cap is cut, and the cut says so
+    const HEAD_LINE = "1. Kopf-Marker bleibt sichtbar.";
+    const longInit = `${HEAD_LINE}\n${"2. ".padEnd(2400, "L")}TAIL-MARKER`;
+    writeFileSync(`${sr}/.fleet/init.md`, `${longInit}\n`);
+    spawnSync("git", ["-C", sr, "commit", "-qam", "long repo entry"]);
     const pointed = await successionPost("succeed", overrideTok, { pointer: "handoff-2026-09-14.md#next" });
     const pj = (await pointed.json()) as { ok?: boolean; slot?: number };
+    let longBrief = "";
+    for (let i = 0; i < 40 && !longBrief; i++) {
+      longBrief = (await plogRead()).find((e) => e.slot === pj.slot && e.text.startsWith("[fleet succession]"))?.text ?? "";
+      if (!longBrief) await Bun.sleep(100);
+    }
+    check("an init.md over the cap is cut at 2000 characters with a visible note naming the cap and the full length — never silently",
+      longBrief.includes(`Beginne exakt in dieser Reihenfolge:\n${longInit.slice(0, 2000)}\n`)
+        && !longBrief.includes("TAIL-MARKER") && !longBrief.includes(longInit.slice(0, 2001))
+        && longBrief.includes(`.fleet/init.md abgeschnitten: 2000 von ${longInit.length} Zeichen gezeigt`),
+      longBrief.slice(-400));
     const pointerTok = pj.slot ? await paneEnv(`s${pj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
     const lineD = await selfLineage(pointerTok);
     check("a pointer at a committed, dated section is carried as the record's one channel (intent null)",

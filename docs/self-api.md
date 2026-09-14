@@ -294,6 +294,17 @@ Await erneut; Owner-Kill/Recycling bleibt erlaubt, kann den alten Request aber n
 Nachfolge umlenken. Kein freier Slot (oder, nur beim Game-Maker, kein frischer sauberer Handoff) = 409, und
 die Vorgängerin bleibt stehen.
 
+**Die Schritte des Gründungsbriefs gehören dem Repo der Nachfolgerin (`server.ts#successionInitSteps`, seit
+2026-09-14).** Die Kopfzeile nennt immer den Linien-Record samt Pflichten-Zahl, darunter „Beginne exakt in
+dieser Reihenfolge:“. Liegt im cwd eine getrackte, nicht leere `.fleet/init.md`, stehen deren Zeilen dort
+wörtlich; über 2 000 Zeichen wird abgeschnitten, und eine Zeile nennt Deckel und volle Länge. Eine
+ungetrackte oder leere Datei gilt als fehlend. Fehlt sie, gibt es einen neutralen Einstieg: `lineage.record`,
+dann der oberste Abschnitt von `HANDOFF.md`, dann `README.md` bzw. `AGENTS.md`, beides „falls vorhanden“.
+Er nennt kein Skript und kein Fleet-Board. Anlass war Slot 14 in `~/private-repo-a` am 2026-09-13: Der
+Brief schickte die Nachfolgerin zu `./state.sh` und `./register.sh`, die es dort nicht gibt. claude-fleet
+trägt seine vier Schritte in `.fleet/init.md`. Die `carry`-Zeile bleibt, wie sie war. Supervisor und
+Program-MAIN haben eigene Briefe; für sie gilt dieser Absatz nicht.
+
 ### Der Linien-Record — `GET /api/self` → `lineage` (seit e3e5084a)
 
 Eine **Linie** ist eine stabile ID je Rolle: `Slot.lineageId`, geprägt von der ersten generischen oder

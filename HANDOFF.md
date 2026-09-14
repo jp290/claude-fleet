@@ -1,3 +1,35 @@
+# HANDOFF — Orchestrator Slot 4 → Nachfolgerin (Haupt-Checkout, Owner-Token): Schnitt-Kandidat 56669352 wartet auf sein Audit, drei Astra-Auftraege gefilt (Kontingent-Sensor + docs/astra-auftraege.md), Freigabe-Richtung 247c2f37 fuer die naechste Owner-Session, Shard-Rollout haengt an einer Owner-Antwort; 2026-09-14 21:5x, ctx GEMESSEN 32,6 % (Server-Prädikat)
+
+## 0. SOFORT BEIM ANTRITT
+
+- **Watches erben nichts.** Mein Audit-Watch auf `56669352` (2f51e352) und meine zwei Hintergrund-Watcher sterben mit mir. Neu legen: `./ctl.sh watch audit 56669352`. Das laufende Audit (Claim bis 22:14) deckt nur `9e22b1b3`; `4c387c00` + `56669352` kommen ins NAECHSTE, Ergebnis also gegen ~22:50.
+- **Modell:** der Owner hat heute Abend mehrfach per `/model` gewechselt, zuletzt auf Opus 5. Ich succeede deshalb mit `claude-opus-5[1m]/high` (MODELLPOLITIK-Versuch „Orchestrator auf Opus"). Datensatz und Pane muessen passen: `./ctl.sh ctx` zeigt das Label, `POST /api/slots/:id/model` zieht den Datensatz nach, wenn der Owner wieder wechselt.
+- **Program-MAIN Fleet-Betrieb ist nicht mehr Slot 1** — um 20:5x war es Slot 8. Vor jedem `/send` `GET /api/programs` main.slot lesen. Lane-Treiben und Landen bleiben bei ihr.
+- **Codex-Kontingent beim Antritt messen** (neue Regel im MAIN-Render, `docs/astra-auftraege.md` §1). 21:3x: 33 % verbraucht bei 35 % verstrichenem Wochenfenster, Reset Sa 19.09. 10:19.
+
+## 1. OFFEN BEIM OWNER (je eine Frage, nicht wiederholen)
+
+1. **Shard-Rollout `528aa37c`:** der Code (`458724c6`) ist gelandet, aber nicht scharf — Second-host-Daemon `96c866e7` meldet keine `features`, `FLEET_AUDIT_SHARDS` fehlt in `.env`, Audits dauern weiter 33–34 min. Die Bedingung „sobald helperClaims leer" tritt nie ein: Audits claimen lueckenlos (20:21, 20:55, 21:29). Vorgeschlagen und am Code geprueft: Second-host `quiet` (`POST /api/helper/devices/secondhostlinux1/mode`) → laufende Jobs enden, der Server faehrt neue Audits nach 60 s lokal (`server.ts#isHelperClaimCandidate`) → bei `running 0` Update queuen → `active` → Heartbeat mit `audit-shard` pruefen → `.env` + `POST /api/deploy` ohne laufendes Audit/Land. Preis ~1 h gebremster Takt. **Antwort des Owners steht aus.** Nicht ohne sie draenieren. Warum nicht einfach dazwischen queuen: der alte Daemon startet das Update neben laufenden Jobs (Update-Job steht zuerst in `server.ts#helperJobsView`, `open.slice(0, free)`), der Neustart toetet sie, ein toter Audit-Claim blockiert bis 45 min (`HELPER_CLAIM_TIMEOUT_MS`).
+2. **Freigabe-Richtung `247c2f37`** (Owner: „in der naechsten Session angehen"): Befund, Lesart und Sicherheitsrand stehen in der Zeile. Die Astra-Analyse `d3082219` bereitet die Vorlage vor — erst ernten, dann mit dem Owner reden.
+3. **Sol-Test `8e21d437`:** wartet auf „System laeuft richtig"; die Verdrahtungsprobe `4725b5cb` laeuft in Slot 1.
+
+## 2. SCHNITT FUER DIE VEROEFFENTLICHUNG
+
+Owner will die letzten Fixes abwarten, dann ueber die Hauptmaschine (Sonnet-Subagenten) Leaks pruefen und veroeffentlichen. Kriterien: die drei wichtigen Lanes gelandet (erledigt: `5a0aeeb5`, `9e22b1b3`, `4c387c00`+`56669352`), ein gruenes Audit deckt `56669352` (>4 500 ran, 0 failed), Leak-Probe am Commit leer. **Wird das Audit gruen, dem Owner `56669352` als Schnitt nennen.** Leak gefunden und gefixt: `e6ae44fb` (Archiv zitierte die Probe mit Klarname/IP) — der Hub traegt die alte Zeile in der Historie, der Scrub muss Historie abdecken. Paket Runde 5 als Vorlage: `~/claude-fleet-private/publish-r5-2026-09-07/`.
+
+## 3. IN MEINER SCHICHT (19:0x–21:5x)
+
+- Ersatzzeilen fuer ungueltige Karten: `4725b5cb` (Sol-Probe, laeuft), `d3765352` (Orchestrator-Rollenkarte, NACH `e3e5084a` — der ist gelandet), `0bcfee35` (lange Lanes: Kontext als Budget, mit Kandidat F Sub-Agent-Erdung). Attention `06574f9d` beantwortet mit (a) Kopfleiste; gelandet als `bf2821c3`.
+- Regelbuch: `succeed` hat eine Lane-Schiene (`server.ts#succeedLane`) — zwei Fragmente korrigiert; Astra-Verweis in `rulebook/einstieg.md`. Render + pins gruen.
+- Astra-Lauf 1 (Anleitung `a3094316`, Korrektur `bede7d1e`): `d3082219` Freigabe-Analyse (high) · `9a54f3d4` Sichtung der 12 Zeilen ohne Program · `aa0841f5` Karten-Schaerfer. Eingaben ohne Token unter `~/claude-fleet-private/astra-inputs-2026-09-14/`. **Ernte = deine Arbeit:** Notiz lesen, zwei Belege pruefen, INDEX-Zeile setzen, dann umsetzen (Ersatzzeilen filen, archivieren). Astra schreibt keine Queue.
+- Backlog-Befund 20:5x (Startplan): 13 freigegeben und nur durch 3/3 Plaetze + Kollisionen an `server.ts` gehalten, 12 ohne Program, 14 in Leichtgewicht (`manual`), 8 ungueltige Karten, 4 gehalten.
+- Direkt-Commits ohne Land-Ledger: `e6ae44fb`, `a3094316`, `bede7d1e` (alle docs, pins gruen).
+
+## 4. UNGEPRUEFT
+
+- Ob Astra-Lanes mit leerem FLAECHE + NEU wirklich ohne Kollision starten (Karten gueltig, Start noch nicht beobachtet).
+- Ob die Lane-Kopie des Regelbuchs nach dem 19:4x-Render bei neuen Lanes 20 768 Bytes traegt — an einer Lane gemessen (`fleet-260914171426-69ff`), nicht an allen.
+
 # HANDOFF — Orchestrator Slot 8 → Nachfolgerin (Haupt-Checkout, Owner-Token): S1 Lane-Regelbuch GEBAUT (36 763 → 19 956 Zeichen, Tuer-Probe 0, pins ALL PASS), Sol-Richtung des Owners gefilt + Verdrahtungs-Messzeile, Audit zu 119c1b3e rot mit NEUEM Einzel-Fail; 2026-09-14 19:5x, ctx GEMESSEN 33,2 % (`./ctl.sh ctx`)
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

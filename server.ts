@@ -11389,6 +11389,9 @@ async function tickDispatch(): Promise<void> {
     // A wave is the tick's only if one of its rows is RELEASED: an all-pending wave has no row that
     // could carry a note, and a pending row's note stays byte-identical. A wave with a row already
     // being dispatched (the attended doors) is skipped whole.
+    // The plan derives every open row's surface; with nothing released there is nothing it could
+    // start, so the common idle tick stays the one cheap pass over the queue it always was.
+    if (!tasks.some((t) => t.kind === "auftrag" && t.status === "queued" && !dispatchingTasks.has(t.id))) return;
     const candidates = startPlanWaves().flatMap(({ plan, land }) => {
       const rows = plan.ids.map((id) => tasks.find((t) => t.id === id)).filter((t): t is Task => !!t);
       if (rows.length !== plan.ids.length || !rows.some((t) => t.status === "queued")

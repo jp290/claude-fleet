@@ -137,7 +137,8 @@ export async function run(ctx: Ctx): Promise<void> {
   ];
   const phased: TrailRecord[] = plain.map((r) => {
     const ms = typeof r.msSincePrev === "number" ? r.msSincePrev : 0;
-    const extra = { phases: { boot: 0, tmux: 0, http: ms, sleep: 0, rest: 0 }, phaseTop: { http: { ms, at: "e2e/x.ts:1" } } };
+    const extra = { phases: { boot: 0, tmux: 0, http: ms, sleep: 0, rest: 0 }, phaseTop: { http: { ms, at: "e2e/x.ts:1" } },
+      phaseSum: { http: { ms, n: 1, at: "e2e/x.ts:1" } } };
     return { ...r, ...extra };
   });
   const mixed = [phased[0]!, plain[1]!, phased[2]!];

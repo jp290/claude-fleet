@@ -38,6 +38,7 @@ One JSON object per line, one line per `check()` call. `e2e/trail-emit.ts` owns 
 | `detail` | only on `ok:false`, capped at `TRAIL_DETAIL_MAX` = 2000 chars + `…[truncated]` |
 | `phases` | since 2026-09-14: `{boot, tmux, http, sleep, rest}` ms — where `msSincePrev` went (§4a); absent in older files |
 | `phaseTop` | since 2026-09-14: per phase with any outermost call, the longest one in this row as `{ms, at}` (`at` = `path:line`) |
+| `phaseSum` | since 2026-09-14: per phase, the call site whose outermost calls in this row sum to the most, as `{ms, n, at}` |
 
 `detail` is the only unbounded input (a check may hand `check()` a whole transcript), hence the
 cap. Everything else is bounded by construction. Measured 2026-07-27: 887 rows, 220 440 bytes —
@@ -129,16 +130,20 @@ phase active during it (`boot > tmux > http > sleep`) or to nothing. The four ne
 `boot + tmux + http + sleep + rest === msSincePrev` holds exactly, and `e2e/trail.ts` asserts it on
 every row of the run it belongs to.
 
-**`phaseTop` is a sample, not a sum.** Per row and phase it names the single longest *outermost*
-call (a `get()` started inside `restartSrv` is `boot`'s work and never its own entry) and where it
-was made: the first stack frame outside `trail-emit.ts` and `harness.ts`. A call from a harness helper
-that already awaited names the helper line, because the calling check's frame has left the stack by
-then. Summing `phaseTop` by site gives a lower bound per site; whether the bound covers most of
-a phase is a number the reader has to compute (sum of `phaseTop[p].ms` over sum of `phases[p]`).
+**`phaseTop` and `phaseSum` are samples, not sums.** Per row and phase, `phaseTop` names the single
+longest *outermost* call (a `get()` started inside `restartSrv` is `boot`'s work and never its own
+entry), and `phaseSum` the site whose outermost calls add up to the most, with their count. Both
+are needed: a poll loop is forty 250 ms sleeps from one line, which the longest single call never
+names. On a partial run on 2026-09-14, the longest-call sample covered 77 of 506 sleep seconds in
+the 3–10 s band. The site is the first stack frame outside `trail-emit.ts` and `harness.ts`. A call
+from a harness helper that has already awaited names the helper line, because the calling check's
+frame has left the stack by then. Summing either field by site gives a lower bound per site; how much
+of a phase it covers is a number the reader computes (sum of `phaseSum[p].ms` over sum of
+`phases[p]`).
 
 **Cost and switch.** About 1.3 µs per timed call on the Mac (wrapped against raw `Bun.sleep(0)`,
-2026-09-14), plus one stack format per row and phase. `FLEET_E2E_PHASES=0` turns the wrapping and
-both fields off, which exists only for the overhead comparison. `trailstats.ts` ignores both fields;
+2026-09-14), plus one stack format (~0.6 µs) per outermost call. `FLEET_E2E_PHASES=0` turns the wrapping and
+all three fields off, which exists only for the overhead comparison. `trailstats.ts` ignores all three fields;
 `e2e/trailstats.ts` checks that rows with, without and mixed `phases` give the same answer.
 
 ## 5. Failure is silent by design

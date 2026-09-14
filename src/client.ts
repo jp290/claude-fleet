@@ -19,6 +19,7 @@ import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_ROWS_MAX,
 // the same first-sentence reduction the dispatched notes block renders with — imported rather than
 // re-spelled so the wave evidence and the brief's note lines cut a row at the same place
 import { noteFirstSentence } from "../task-notes";
+import type { Task as ServerTask } from "../server/types";
 // everything this file and server.ts must say identically — see src/protocol.ts. Importing rather
 // than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
 import {
@@ -257,7 +258,10 @@ const agentHarnesses = (): HarnessInfo[] => harnesses.filter((h) => (h.role ?? "
 // what the 2 s poll carries per task — mirrors server.ts's TaskDigest. No `text`: the prompt
 // bodies are fetched once from /api/tasks when the queue overlay opens (see loadTaskTexts).
 // The optional fields are absent, not null, when unset.
-interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: string;
+// `source` is the SERVER's own union, imported rather than mirrored: the mirror said
+// owner|intake|steward after ACP-23 added "main", and the `as` cast in refresh hid it, so every
+// MAIN-filed row rendered as "owner". A new producer now fails tsc in taskSourceLabel's switch.
+interface TaskInfo { id: string; source: ServerTask["source"]; from?: string;
   // MIRRORS server.ts's TASK_KINDS — and it is a claim about a foreign surface, not a type the
   // server hands us. It said `"lane" | "note"` for the whole life of the four-kind rename
   // (dd0c9a8): every `kind === "note"` below still compiled and was simply false forever, so the
@@ -7190,9 +7194,20 @@ const qTouchedLine = (t: TaskInfo): string => {
   if (t.kind !== "notiz" || n === 0) return "";
   return `beruehrt von ${n} Land${n === 1 ? "" : "s"}, zuletzt ${t.touched![0].sha.slice(0, 7)}`;
 };
+// the producer chip of a queue row, shared by the row and its detail. Exhaustive on purpose: the
+// `never` arm is what turns a new server-side source into a compile error here instead of a label
+// that silently falls through to "owner".
+function taskSourceLabel(t: Pick<TaskInfo, "source" | "from">): string {
+  switch (t.source) {
+    case "owner": return "owner";
+    case "intake": return `✉ ${t.from ?? "intake"}`;
+    case "steward": return "⚙ steward";
+    case "main": return t.from ? `▣ main ${t.from}` : "▣ main";
+    default: { const unknown: never = t.source; return String(unknown); }
+  }
+}
 function qTaskSummary(t: TaskInfo, text: string, now: number): { title: string; facts: QRowFacts } {
-  const source = t.source === "intake" ? `✉ ${t.from ?? "intake"}`
-    : t.source === "steward" ? "⚙ steward" : "owner";
+  const source = taskSourceLabel(t);
   const tag = qTag(text);
   return {
     title: qFirstLine(text),
@@ -8361,8 +8376,7 @@ function renderQueueDetail() {
   // neighbour of the main action above.
   const danger = qDetailSection(shell.detail, "Danger zone", true, false);
   const meta = el("div", "ocfacts");
-  meta.appendChild(chip(t.source === "intake" ? `✉ ${t.from ?? "intake"}`
-    : t.source === "steward" ? "⚙ steward" : "owner"));
+  meta.appendChild(chip(taskSourceLabel(t)));
   if (qAdvisory(t)) meta.appendChild(chip(`${t.kind} — not work`, "dim",
     "an advisory row does not assign work. Change its Kind to auftrag to enter the normal workflow"));
   if (t.refining) meta.appendChild(chip("↻ refining…", "dim",

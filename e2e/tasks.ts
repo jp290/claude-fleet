@@ -5632,7 +5632,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const jKid2 = jMinted[1] ? await jFull(jMinted[1].id) : undefined;
     check("(j) a child whose card VALIDATES carries done/verify/files as card fields with model refine",
       jKid2?.card?.model === "refine" && jKid2.card.valid === true && JSON.stringify(jKid2.card.gaps) === "[]"
-      && jKid2.card.done === "the sentinel line is in fleet-e2e.ts" && jKid2.card.verify === "./e2e-isolated.sh"
+      && jKid2.card.done === "the sentinel line is in fleet-e2e.ts" && jKid2.card.verify === "isolated"
       && jKid2.card.surface.files.join(" ") === "fleet-e2e.ts"
       && jKid2.card.ziel === "part two: mark the fixture sentinel",
       JSON.stringify(jKid2?.card ?? null));

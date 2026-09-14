@@ -3070,6 +3070,15 @@ capture itself may be in it and get resent: that residual window is one capture-
 spawn wide instead of a poll tick, and it is inherent to every capture-based seed here.
 ```
 
+**Korrektur 2026-09-14 (der letzte Satz oben gilt fuer den Owner-Pfad nicht mehr).** Seit `02e991c8`
+liest `server.ts#ownerSeedCapture` stat → capture → stat: nur eine unveraenderte Groesse macht
+`seedUntil` exakt, sonst wird erneut gecaptured, hoechstens `OWNER_SEED_ROUNDS` Mal. Das Duplikat
+entsteht auf dem Owner-Pfad nur noch am Rundendeckel (dort gilt `seedUntil` = Stat vor der letzten
+Capture, das alte Verhalten) oder durch Pipe-Lag (eine Zeile, die tmux schon gemalt, `pipe-pane`
+aber noch nicht geschrieben hat; gemessen 0/800, §11.2b in `docs/verify-tiering.md`). Der
+**Gast-Pfad** (`ws.data.share`) bleibt capture-basiert ohne Naht-Cursor: er setzt kein `seedUntil`,
+fuer ihn gilt der Satz weiter.
+
 ## FleetEventStatus
 
 ### subject-gone — die Messung, die das Wort gepraegt hat

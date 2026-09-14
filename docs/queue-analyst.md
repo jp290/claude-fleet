@@ -144,7 +144,7 @@ bytes are settled — nothing in this fleet claims to have READ one.
 Neben dem Brief-Kompiler steht seit `FLEET_CARD_MS` ein zweiter, KLEINERER Tick. Er schreibt die
 Zeile nicht um; er LIEST sie: `card-extract.ts` gibt einem Haiku genau einen String — den Brief,
 sonst den Rohtext — und bekommt ein festes Objekt zurück
-(`{ziel, rolle{harness,model,effort}, surface{files,symbols}, done, verify, verboten, program?}`).
+(`{ziel, rolle{harness,model,effort}, surface{files,symbols,creates}, done, verify, verboten, program?, size?, after?}`).
 
 **Der Extraktor bekommt KEIN Repository und keine Werkzeuge** (`tools: TEXT_ONLY_TOOLS`, gepinnt in
 `e2e/pins.ts`). Das ist kein Sparzwang, sondern die Konstruktion: jedes Feld, das er zurückgibt,
@@ -155,7 +155,9 @@ wird danach gegen eine Tatsache geprüft, die dieser Prozess selbst feststellen 
 | `surface.files` | `git ls-files` (der Tracked-Snapshot aus `task-metadata.ts`) **und** den INTENT-Text der Zeile |
 | `surface.symbols` | denselben Intent-Text **und** `graphify-out/graph.json`, danach eine Top-Level-Deklaration in der getrackten Datei (`card-extract.ts#declaresSymbol` — der Graph ist ein Schnappschuss; eine Datei mit so aufgelöstem Symbol trägt keine `ranges`); ohne Graph nur die Existenz der Datei, `ranges` bleibt `null` |
 | `verify` | die bekannten Kettenschritte (`verify-proportion.ts#LOCAL_PROOF_STEPS`) |
-| `rolle.*` | die registrierten Harness-/Modell-/Effort-Validatoren |
+| `surface.creates` | NICHT getrackt, im Intent-Text genannt, Verzeichnis getrackt (`docs/messungen/` frei) — eine geplante NEUE Datei |
+| `after` | eine Queue-Zeile, im Text genannt |
+| `rolle.*` | **beratend** (seit Validator 5): erst normalisiert — Harness case-insensitiv, Modell-Aliasse (`Opus 5`→`claude-opus-5[1m]`, `Sonnet 5`→`claude-sonnet-5`, `Astra`→`gpt-6-astra`, `Fable 5.1`→`claude-fable-5-1[1m]`), ein Tripel `harness/model/effort` in einem Feld, ein Rollenname vor dem Harness abgeschnitten —, dann gegen die registrierten Harnesses/Efforts und den `MODEL_RE`-Zeichensatz (keine Registry: die Lücke heißt „not a model id"). Eine unauflösbare Rolle bleibt Lücke, macht die Karte aber NICHT ungültig (`card-extract.ts#cardValid`): `rolle` hat keinen Konsumenten, gespawnt wird aus `Task.spawn` |
 
 **Die Zitatregel ist ERZWUNGEN, nicht erbeten.** Der Prompt bittet den Extraktor, einen Pfad aus
 einer Kommandozeile nicht als Fläche zu lesen; `validateCard` ENTSCHEIDET es: jeder Wert muss im
@@ -168,7 +170,7 @@ aus S1 — das Modell wählt aus dem, was der Text nennt, und kann nichts hinzuf
 
 Was nicht besteht, wird **niemals repariert, ersetzt oder geraten** — es wird eine Zeile in `gaps`,
 in den Worten des Extraktors. `valid` ist das UND dieser Prüfungen, kein Urteil über die Arbeit,
-und eine Karte mit `valid:false` wird trotzdem gespeichert: „hier wurde gelesen, und das hier
+(außer den beratenden `rolle.*`-Lücken), und eine Karte mit `valid:false` wird trotzdem gespeichert: „hier wurde gelesen, und das hier
 konnte nicht belegt werden" ist mehr wert als ein fehlendes Feld, das sich wie „niemand hat
 geschaut" liest. Beim Laden werden `valid` und `surfaceValid` (keine `surface.*`-Lücke — das,
 was `confirm-cards` fürs Bündeln liest) aus `gaps` NEU BERECHNET, nie geglaubt — eine
@@ -184,7 +186,10 @@ gleich welche Route geantwortet hat). Beide Hälften sind in `e2e/pins.ts` befes
 Karte ihn nicht wiederholt.
 
 Jeder Lauf — auch ein gescheiterter — ist eine Zeile in `cards.jsonl`
-(`taskId, model, ms, valid, gaps`). Ein Trail, der nur Erfolge schriebe, sagte, der Extraktor falle
+(`taskId, source, model, ms, valid, surfaceValid, validatorVersion, gaps`). Ein Modell-Lauf trägt
+dazu die ROHANTWORT (`answer`, auf 4 KB UTF-8 gekürzt, `answerBytes` = volle Größe;
+`card-extract.ts#cardAnswerForLedger`), damit ein Validator-Bump gegen das schon Gesagte geprüft
+werden kann statt jede ungültige Zeile erneut durchs Modell zu schicken. Ein Trail, der nur Erfolge schriebe, sagte, der Extraktor falle
 nie aus, und das ist das Einzige, was er über sich selbst nicht sagen darf.
 
 | env | default | |

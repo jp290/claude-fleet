@@ -55,7 +55,7 @@ import {
   type TaskFilesOrigin, type TrackedSnapshot, type SymbolIndex, type SymbolIndexSnapshot,
   type SymbolRange, type TaskSurface,
 } from "./task-metadata";
-import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardSurfaceValid, CARD_MARK, CARD_KEY,
+import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardSurfaceValid, cardValid, cardAnswerForLedger, CARD_MARK, CARD_KEY,
   CARD_VALIDATOR_VERSION, type TaskCardBody, type CardValidationContext } from "./card-extract";
 import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NOTE_HUB_FILES,
   type NoteInput, type NoteRow, type KeyedUpsert } from "./task-notes";
@@ -11037,8 +11037,10 @@ function formatCardOf(t: Task, snapshot: TrackedSnapshot | null, index: SymbolIn
   return { ...checked.body, model: "format", at: Date.now(), ms: 0, valid: checked.valid,
     surfaceValid: checked.surfaceValid, validatorVersion: CARD_VALIDATOR_VERSION, gaps: checked.gaps };
 }
+// `answered` receives the worker's raw answer before anything parses it — the tick writes it to
+// cards.jsonl, so a validator bump can be judged against what the model already said.
 async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | null,
-  index: SymbolIndexSnapshot | null): Promise<TaskCard> {
+  index: SymbolIndexSnapshot | null, answered: (answer: string) => void): Promise<TaskCard> {
   const started = Date.now();
   let observed: WorkerRunObservation = { model: CARD_MODEL };
   // The text is the WHOLE input — brief first when there is one, because that is the text a lane
@@ -11050,6 +11052,7 @@ async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | nu
     worker: "card", cmd: CARD_CMD, tools: TEXT_ONLY_TOOLS, timeoutMs: CARD_TIMEOUT_MS, model: CARD_MODEL,
     observe: (run) => { observed = run; },
   }, buildCardPrompt(source, harnessOf(null).effortLevels), repo);
+  answered(answer);
   const raw = parseCardAnswer(answer);
   const ms = Date.now() - started;
   if (!raw) {
@@ -11097,7 +11100,8 @@ async function tickCardSweep(): Promise<void> {
     for (const t of batch) {
       try {
         const formatted = formatCardOf(t, snapshot, index);
-        const card = formatted ?? await extractCard(t, repo, snapshot, index);
+        const run: { answer?: string } = {};
+        const card = formatted ?? await extractCard(t, repo, snapshot, index, (answer) => { run.answer = answer; });
         t.card = card;
         liftCardSurface(t);
         cardRetry.delete(t.id);
@@ -11106,7 +11110,8 @@ async function tickCardSweep(): Promise<void> {
         // extractor never fails, which is the one thing it cannot be trusted to say about itself.
         await appendEvent(CARD_FILE, { at: card.at, taskId: t.id, source: formatted ? "format" : "model", model: card.model, ms: card.ms,
           valid: card.valid, surfaceValid: card.surfaceValid, validatorVersion: card.validatorVersion,
-          gaps: card.gaps, ...(card.tokens ? { tokens: card.tokens } : {}) });
+          gaps: card.gaps, ...(card.tokens ? { tokens: card.tokens } : {}),
+          ...(run.answer !== undefined ? cardAnswerForLedger(run.answer) : {}) });
       } catch (e) {
         cardRetry.set(t.id, { attempts: (cardRetry.get(t.id)?.attempts ?? 0) + 1, at: Date.now() });
         console.log(`card extractor: read failed for ${t.id}, the row keeps its prose: ${e instanceof Error ? e.message : e}`);
@@ -11186,7 +11191,7 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
     model: raw.model.slice(0, 64), at: Number(raw.at) || 0, ms: Number(raw.ms) || 0,
     ...(Number.isFinite(tokens) && tokens > 0 ? { tokens } : {}),
     ...(Number.isInteger(validatorVersion) && validatorVersion > 0 ? { validatorVersion } : {}),
-    valid: gaps.length === 0, surfaceValid: cardSurfaceValid(gaps), gaps,
+    valid: cardValid(gaps), surfaceValid: cardSurfaceValid(gaps), gaps,
   };
 };
 // The DERIVED surface read back off disk. It degrades to ABSENT whole — and unlike the proposal

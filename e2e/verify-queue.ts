@@ -366,8 +366,29 @@ export async function run(): Promise<void> {
     check("§2b the blocked probe left the holder's birth fingerprint untouched",
       readFileSync(`${PROBE}/birth`, "utf8").trim() === thisBirth, readFileSync(`${PROBE}/birth`, "utf8").trim());
 
+    // HELD BY THE FLEET SERVER (2026-09-14): a lane killed the pid it read from this lock and it
+    // was the live server. With server.ts#suiteLockTryTake's marker naming the holder, the line
+    // says so verbatim — and still names the proven identity, and still does not reap.
+    writeFileSync(`${PROBE}/held-by-fleet-server`, `${process.pid}\n`);
+    const serverSay = await stageSay(2500);
+    check("§2b a live holder the server marker names is called the fleet server, verbatim, with its pid",
+      serverSay.includes(`— held by the fleet server itself — never kill this pid ${process.pid};`)
+        && serverSay.includes(`held by live pid ${process.pid} with proven identity `)
+        && !/ acquired after /.test(serverSay), JSON.stringify(serverSay.slice(0, 500)));
+    check("§2b the blocked probe left the server's hold untouched — pid, birth and marker",
+      readFileSync(`${PROBE}/pid`, "utf8").trim() === String(process.pid)
+        && readFileSync(`${PROBE}/birth`, "utf8").trim() === thisBirth
+        && readFileSync(`${PROBE}/held-by-fleet-server`, "utf8").trim() === String(process.pid),
+      readdirSync(PROBE).join(","));
+
+    // the marker stays for the recycled case: the birth changed, so the live process is NOT the
+    // server that wrote it — no server wording, and the reap must still get through a dir that
+    // holds three files, not two
     writeFileSync(`${PROBE}/birth`, `${differentValidBirth(thisBirth)}\n`);
     const recycledSay = await stageSay(5000);
+    check("§2b a recycled pid under a stale server marker is not called the fleet server, and the marker is reaped with the lock",
+      !recycledSay.includes("held by the fleet server itself") && !existsSync(`${PROBE}/held-by-fleet-server`),
+      JSON.stringify(recycledSay.slice(0, 400)));
     check("§2b a live recycled PID is called stale because its birth fingerprint changed",
       new RegExp(`waiting [01]s for [^\\n]* — stale — recorded pid ${process.pid} is alive but its process-birth fingerprint changed`).test(recycledSay)
         && !recycledSay.includes("held by live pid"), JSON.stringify(recycledSay.slice(0, 400)));

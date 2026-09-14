@@ -807,6 +807,46 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
         m5Plan && m5Skip && m5NoMint && m5CmdIsSuiteless,
         `planFlag=${m5Plan} takeSkipped=${m5Skip} noMint=${m5NoMint} cmdSuiteless=${m5CmdIsSuiteless} cmd=${JSON.stringify(shortCmd)}`);
     }
+    // THE SERVER NAMES ITSELF AS THE HOLDER (2026-09-14). A lane read /tmp/fleet-e2e.lock/pid,
+    // killed that pid, and it was the live server holding the machine for a land (watchdog restart
+    // 00:48:05, land 1aaf7eb8 interrupted). A pid file cannot say WHAT holds it, so the server
+    // writes `held-by-fleet-server` beside it and e2e-stage.sh turns that into a wait line that
+    // says "never kill this pid". Four facts, each falsifiable alone, all invisible to a compiler:
+    //   · the marker is written BEFORE the hold is believed (`suiteLockHeld = true`), after pid/birth;
+    //   · release removes it, and the land job's `finally` is what calls release;
+    //   · every reaper that rmdirs this lock removes it too, or a non-empty dir reads as a PARK;
+    //   · the shell reads it over a live pid and prints the phrase verbatim.
+    {
+      const body = (head: string): string => {
+        const at = server.indexOf(head);
+        return at < 0 ? "" : server.slice(at, server.indexOf("\n}\n", at));
+      };
+      const markerWrite = "writeFileSync(`${SUITE_LOCK}/${SUITE_LOCK_SERVER_MARKER}`, `${process.pid}\\n`, { mode: 0o600 });";
+      const markerRm = "rmSync(`${SUITE_LOCK}/${SUITE_LOCK_SERVER_MARKER}`, { force: true });";
+      const named = server.includes('const SUITE_LOCK_SERVER_MARKER = "held-by-fleet-server";');
+      const take = body("function suiteLockTryTake(");
+      const tBirth = take.indexOf("writeFileSync(`${SUITE_LOCK}/birth`");
+      const tMarker = take.indexOf(markerWrite);
+      const tHeld = take.indexOf("suiteLockHeld = true;");
+      const writtenBeforeHold = tBirth > 0 && tMarker > tBirth && tHeld > tMarker;
+      const release = body("function releaseSuiteLock(");
+      const removedOnRelease = release.includes(markerRm)
+        && release.indexOf(markerRm) < release.indexOf("rmSync(`${SUITE_LOCK}/pid`");
+      const finalRelease = server.indexOf("    if (gateHoldPid !== null) releaseSuiteLock(holdOwner);");
+      const finallyAt = finalRelease > 0 ? server.lastIndexOf("  } finally {", finalRelease) : -1;
+      const releaseInFinally = finallyAt > 0 && finalRelease - finallyAt < 1500
+        && !/\n  \} (catch|finally)/.test(server.slice(finallyAt + 1, finalRelease));
+      const serverReap = body("function suiteLockReapStale(").includes(markerRm);
+      const shellReads = stage.includes('_st_srv=$(cat "$FLEET_SUITE_LOCK/held-by-fleet-server" 2>/dev/null || true)')
+        && stage.includes('if [ "$_st_srv" = "$_st_hp" ]; then');
+      const shellSays = stage.includes('_st_srv_say="held by the fleet server itself — never kill this pid $_st_hp;')
+        && (stage.match(/_st_why="\$\{_st_srv_say\}/g) ?? []).length === 4;
+      const shellReap = stage.includes('rm -f "$FLEET_SUITE_LOCK/held-by-fleet-server" "$FLEET_SUITE_LOCK/pid" "$FLEET_SUITE_LOCK/birth" && rmdir "$FLEET_SUITE_LOCK"');
+      const ctlReap = read("ctl.sh").includes('fs.rmSync(LOCK + "/held-by-fleet-server", { force: true }); fs.rmSync(LOCK + "/pid", { force: true });');
+      pin("the fleet server marks its own suite-mutex hold (held-by-fleet-server) before it believes it holds, removes the marker on the release its land's finally runs, every reaper removes it with pid/birth, and e2e-stage.sh names such a holder verbatim: \"held by the fleet server itself — never kill this pid\"",
+        named && writtenBeforeHold && removedOnRelease && releaseInFinally && serverReap && shellReads && shellSays && shellReap && ctlReap,
+        `named=${named} writtenBeforeHold=${writtenBeforeHold} removedOnRelease=${removedOnRelease} releaseInFinally=${releaseInFinally} serverReap=${serverReap} shellReads=${shellReads} shellSays=${shellSays} shellReap=${shellReap} ctlReap=${ctlReap}`);
+    }
   }
   // THE FIFO SEAM (2026-09-05). The mutex used to be a race: `sleep 15` + retry `mkdir`, no order,
   // so waiting longer bought nothing — measured, slot 7's post-land audit waited 2h45m and lost

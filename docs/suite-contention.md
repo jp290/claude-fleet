@@ -261,6 +261,19 @@ deliberate blind spot is kept rather than corrected: an all-zero pid file reads 
 `kill -0 0` addresses the caller's own process group and no wrapper would reap such a lock either —
 **reaping something the wrapper would keep is the one direction a mirror of it must never take.**
 
+**The server marks its own hold (2026-09-14).** Beside `pid` and `birth` the server writes
+`held-by-fleet-server` (its pid; `server.ts#suiteLockTryTake`, written after both, removed first by
+`server.ts#releaseSuiteLock`). It changes no row of the table above — it only changes WORDS: every
+wait line `e2e-stage.sh` prints over that live pid, the board's `suiteLock.effect` and `ctl.sh lock`
+say *"held by the fleet server itself — never kill this pid"*. Cause: a lane read
+`/tmp/fleet-e2e.lock/pid`, killed that pid, and took the live server down mid-land (watchdog restart
+2026-09-14 00:48:05, land `1aaf7eb8` interrupted). Every reaper removes the marker with the other
+two files, or its `rmdir` fails on a non-empty dir. Residue: a reaper that does not know the marker (a
+lane worktree forked before this change) facing a server that died holding (SIGKILL, crash — the
+signal handler releases on TERM/INT/HUP) leaves a marker-only dir, which reads `parked` until a human
+removes it. `docker-verify.sh` removes neither `birth` nor the marker and was already unable to
+reap a birth-carrying lock.
+
 *Why the §7 bullet was right and is now wrong.* It was written when a stale holder cost one lost
 retry and the next wrapper contender cleared it. Since M1 every clean land takes this lock, and on a
 quiet box **no wrapper ever contends** — so a corpse denies every land, one after another, until a

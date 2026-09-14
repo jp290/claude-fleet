@@ -3448,7 +3448,7 @@ dritten Rundgang zeigt, ist diese Familie und kein Regress am `fleet-report`-Pfa
 Folge 2/3/4 und faellt trotzdem, gehoert sie dem, der sie sieht — dann ist wirklich ein anderer
 Konjunkt gefallen, und heute sagt das `detail` nicht welcher.
 
-### 11.2r Eine zwanzigste Familie: das Watch-Idempotenz-Paar in `e2e/watch.ts` — und die Haelfte der Sichtungen ist per Konstruktion unattribuierbar (2026-09-06 registriert; Mechanismus AM PROBENCODE gelesen; NICHT repariert)
+### 11.2r Eine zwanzigste Familie: das Watch-Idempotenz-Paar in `e2e/watch.ts` — und die Haelfte der Sichtungen ist per Konstruktion unattribuierbar (2026-09-06 registriert; Mechanismus AM PROBENCODE gelesen; 2026-09-14 Wurzel AM SERVERCODE gelesen, per Sonde provoziert, REPARIERT in `<FIX-SHA>` — siehe Nachtrag)
 
 Ebenfalls aus der Uebergabe („gemessen, aber nicht registriert", dort als ein Paar mit 4/557 auf
 vier Baeumen gefuehrt). Nachgerechnet zerfaellt es in zwei Checks mit verschiedenen Nennern:
@@ -3498,6 +3498,47 @@ messbar — heute ist die Haelfte ihrer Sichtungen ein Loch im Register, kein Da
 Aussage ueber die Idempotenz und kein Befund am Watch-Pfad — es ist diese Registerluecke. Stehen
 zwei VERSCHIEDENE Ids da, ist wirklich ein zweites Watch entstanden, und das gehoert dem, der es
 sieht.
+
+#### Nachtrag 2026-09-14: der Mechanismus, am Code gelesen und provoziert — REPARIERT in `<FIX-SHA>`
+
+Anlass war die 5. Sichtung (Audit auf `ea2d0c52`, Second-host-Instanz `run-26ea1a205005-1789395087099`):
+`a9abb2ac vs 1747d340`, und die `server.log` derselben Instanz traegt fuer BEIDE Ids `created event …
+for slot 6`. Es entstand also nicht nur ein zweites Watch — beide FEUERTEN.
+
+**Mechanismus.** Der Dedup in `server.ts#createWatchForSlot` akzeptierte fuer `kind:"lane"` nur ein
+ARMED Watch als Duplikat. `tickWatches` (alle `FLEET_AUTOS_TICK_MS` = 250 ms in der Suite) entwaffnet
+ein Lane-Watch aber im ersten Tick, in dem das Ziel done-looking ist — und `tgt` traegt einen
+Commit, ist also nach `FLEET_AUTO_REVIEW_IDLE_MS` = 1 500 ms Ruhe done-looking (der Kommentar im
+Self-Block von `e2e/watch.ts` sagt genau das). Faellt dieser Tick zwischen die zwei POSTs, findet
+der zweite kein armed Watch, mintet ein neues, und der Level-Trigger feuert es sofort erneut: das
+GLEICHE Lane-Ende zweimal in dieselbe Pane. Das erklaert beide Formen der Tabelle oben mit EINER
+Ursache: Tick vor dem zweiten POST ⇒ zwei verschiedene Ids; Tick zwischen zweitem POST und der
+`armed`-Zaehlung ⇒ gleiche Ids, Zaehlung 0. Der Folgefehler `delete the spent transport Watch (404/200)`
+passt dazu, dass die zusaetzliche verbrauchte Zeile `wA` aus der Retention (`WATCH_KEEP_SPENT`)
+schob — das ist gefolgert, nicht an der Instanz nachgemessen.
+
+**Fix.** Ein VERBRAUCHTES Lane-Watch desselben Empfaenger-Occupants (`slotOpenedAt`) auf dieselbe
+Ziel-Identitaet ist weiter das Duplikat, solange dessen Lane-Ende steht: das Ziel klassifiziert noch
+mit dem Praedikat, das feuerte (Event-`kind`), `subjectOpenedAt` ist derselbe, die Pane war
+beobachtet, seit `firedAt` kam keine Ausgabe, UND der Empfaenger hat das Event noch nicht
+quittiert. Jede Ausgabe danach ist neue Arbeit, und ein Ack schliesst die Nachricht — danach ist ein
+Abo eine NEUE Frage, und ein neues Watch beantwortet sie. Die Ack-Grenze ist nicht optional: die
+erste Fassung ohne sie fiel den `lane-word`-Check in `e2e/watch.ts` (dort wird nach dem Ack desselben
+Lane-Endes bewusst neu abonniert, und die zweite Zustellung muss den inzwischen abgelegten Report
+nennen). Im §11.2r-Rennen ist das Event Millisekunden alt und kann nicht quittiert sein.
+
+**Sonde.** `e2e/watch.ts` provoziert die Verliererseite des Rennens deterministisch: nachdem `eventA`
+existiert (wA sicher verbraucht) und `tgt` seitdem nichts gedruckt hat, abonniert es erneut.
+Vor dem Fix ROT, danach gruen — die Transkripte stehen im Commit-Body. Die GEGENPROBE haelt `tgt`
+nach dem Fire laut und zeigt, dass ein Abo dann ein NEUES Watch ist, der Dedup also keine neue
+Frage schluckt. Der urspruengliche Check ist in seine drei Konjunkte zerlegt, jeder mit eigenem
+`detail`; die Zeilenzaehlung zaehlt jetzt die Watches DIESES Empfaengers auf DIESES Ziel, armed ODER
+verbraucht, statt aller armed Watches des Slots — ein erlaubter Fire zwischen den Calls ist dann
+kein Rot mehr, ein verbrauchter Zwilling aber schon. `delete the spent transport Watch` traegt sein
+`detail` bereits seit `d3ce75ad`; der Satz oben, es habe keines, ist damit ueberholt.
+
+**Fuer den Leser eines roten Laufs NACH `<FIX-SHA>`:** ein Rot an einer der drei
+`re-subscribing …`-Zeilen oder an der Replay-Sonde ist wieder ECHT und gehoert dem, der es sieht.
 
 ### 11.2t EINE SICHTUNG, keine Familie: der Codex-Resume-Heal in `e2e/restart.ts` — und das erste Rot, dessen Beleg NICHT MEHR AUFFINDBAR war (2026-09-07)
 

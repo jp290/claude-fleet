@@ -6081,6 +6081,26 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     jobIdentity = { job };
   }
 
+  // THE LANE END A SPENT WATCH ALREADY SAID (docs/verify-tiering.md §11.2r). tickWatches spends a
+  // lane watch on the first tick the target looks done, so a re-subscription can arrive one tick
+  // AFTER the first one fired. Armed-only dedup then minted a second watch, the level trigger fired
+  // it at once, and the receiver's pane got the SAME lane end twice. A spent watch of this receiver
+  // occupant is therefore still the duplicate while that end stands AND its news is still open: the
+  // target still classifies with the predicate that fired, its pane was observed, nothing printed
+  // since the fire, and the receiver has not acknowledged the event. Any output after firedAt is new
+  // work, and an Ack closes the news — after either, a subscription is a NEW question and a new watch
+  // answers it (the lane-word block in e2e/watch.ts re-asks after its Ack and must be answered).
+  const now = Date.now();
+  const laneSig = kind === "lane" ? laneSignalView(identity!.t, now) : null;
+  const laneSignal = laneSig ? laneWatchSignal(laneSig, AUTO_REVIEW_IDLE_MS) : null;
+  const laneEndStands = (w: Watch): boolean => {
+    if (!laneSig || !laneSignal || !laneSig.observed || laneSig.idleMs === null) return false;
+    if (w.firedAt === null || w.slotOpenedAt !== s.openedAt) return false;
+    const fired = fleetEvents.find((e): e is LaneFleetEvent => e.watchId === w.id
+      && (e.kind === "lane-ready" || e.kind === "host-commit-ready"));
+    return fired?.kind === laneWatchEventKind(laneSignal) && fired.status !== "acknowledged"
+      && fired.subjectOpenedAt === identity!.t.openedAt && now - laneSig.idleMs <= w.firedAt;
+  };
   const dup = watches.find((w) => {
     if (w.slot !== s.id || watchKind(w) !== kind) return false;
     if (kind === "audit") return watchKind(w) === "audit" && "repo" in w
@@ -6099,9 +6119,10 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     if (kind === "transition") return "awaiting" in w && w.armed && w.awaiting === String(b.awaiting);
     // A merge duplicate is the same subscription only while armed. Once fired, the terminal/inflight
     // distinction below decides whether this is a stale repeat or a subscription to a newer run.
+    // A lane duplicate is the armed watch, or the spent one whose lane end still stands (above).
     return watchKind(w) === kind && "target" in w && w.target === identity!.t.id
       && w.targetCwd === identity!.cwd && w.targetBranch === identity!.branch
-      && (kind === "lane" || kind === "merge" ? w.armed : true);
+      && (kind === "lane" ? w.armed || laneEndStands(w) : kind === "merge" ? w.armed : true);
   });
   if (dup) return json({ ok: true, watch: dup, existing: true });
   // A persisted terminal is level-triggered once per receiver. The fired row is the receipt; without

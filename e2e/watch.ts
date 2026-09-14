@@ -4657,14 +4657,23 @@ export async function run(): Promise<void> {
     `${wAJ.watch?.slotOpenedAt} vs ${persistedOpenedAt(aId)}`);
   check("the watch pins the target's BRANCH, not just its recycled slot id",
     wAJ.watch?.targetBranch === tgt.branch, `${wAJ.watch?.targetBranch} vs ${tgt.branch}`);
-  // a second subscribe is the same subscription, not a second one: two armed watches would deliver
-  // the same news twice into one pane
+  // a second subscribe is the same subscription, not a second one: two watches would deliver the
+  // same news twice into one pane. THREE claims, three checks, each printing what it read — as one
+  // conjunction with an id-pair detail, half its sightings were red with two EQUAL ids and said
+  // nothing (docs/verify-tiering.md §11.2r). The row count is scoped to THIS receiver occupant and
+  // THIS target, armed or spent: `tgt` carries a commit, so the tick may legitimately spend wA
+  // between these calls (that is the race §11.2r names), and an armed-only count over the whole
+  // slot read that fire as a missing watch while a spent TWIN would have slipped past it.
   const wDup = (await (await post(`/api/slots/${aId}/watch`, { target: tgt.slot })).json()) as
     { watch: WatchRow; existing?: boolean };
-  check("re-subscribing to the same target returns the SAME watch, never a second",
-    wDup.existing === true && wDup.watch?.id === wAJ.watch.id
-    && (await watchRows()).filter((w) => w.slot === aId && w.armed).length === 1,
-    `${wDup.watch?.id} vs ${wAJ.watch.id}`);
+  const dupRows = (await watchRows()).filter((w) => w.slot === aId && w.target === tgt.slot
+    && w.targetBranch === tgt.branch && w.slotOpenedAt === wAJ.watch.slotOpenedAt);
+  check("re-subscribing to the same target returns the SAME watch, never a second: answered existing:true",
+    wDup.existing === true, `existing=${wDup.existing} armed=${wDup.watch?.armed} firedAt=${wDup.watch?.firedAt}`);
+  check("re-subscribing to the same target returns the SAME watch, never a second: the same id",
+    wDup.watch?.id === wAJ.watch.id, `${wDup.watch?.id} vs ${wAJ.watch.id}`);
+  check("re-subscribing to the same target returns the SAME watch, never a second: one row for this receiver and target",
+    dupRows.length === 1, JSON.stringify(dupRows.map((w) => `${w.id}:armed=${w.armed}:firedAt=${w.firedAt}`)));
 
   // the busy receiver: same target, but its pane is loud and the gate is two seconds. The wait for
   // lastOutput>0 is what makes this a test of the BUSY gate rather than a race with it: until
@@ -4752,6 +4761,58 @@ export async function run(): Promise<void> {
   const capA = await tmuxOut("capture-pane", "-t", `s${aId}`, "-p");
   check("the notification is really in the receiving pane, not just the log",
     capA.out.includes("[fleet] slot "), capA.out.slice(-200));
+
+  // --- THE §11.2r RACE, PROVOKED INSTEAD OF WAITED FOR. The re-subscribe above races the tick that
+  // spends wA; here wA has fired for certain (eventA exists) and `tgt` has not printed since, so
+  // this is the losing side of that race, every run. Before the fix the armed-only dedup minted a
+  // second watch that fired at once and typed the same lane end into this pane again. ---
+  const tgtLastOutput = async (): Promise<number> =>
+    ((await (await get("/api/sessions")).json()) as { slots: { id: number; lastOutput: number }[] })
+      .slots.find((x) => x.id === tgt.slot)?.lastOutput ?? 0;
+  const spentA = await watchRow(wAJ.watch.id);
+  const quietSince = await tgtLastOutput();
+  const openEventA = await eventForWatch(wAJ.watch.id);
+  // unacknowledged is part of the condition: an Ack closes the news, and a subscription after it is
+  // a new question the lane-word block below re-asks on purpose
+  check("replay setup: wA is spent, its event unacknowledged, and the target has printed nothing since it fired",
+    spentA?.armed === false && spentA.firedAt !== null && quietSince > 0 && quietSince <= spentA.firedAt
+    && !!openEventA && openEventA.acknowledgedAt === null,
+    `armed=${spentA?.armed} firedAt=${spentA?.firedAt} lastOutput=${quietSince} event=${openEventA?.status}`);
+  const wReplay = (await (await post(`/api/slots/${aId}/watch`, { target: tgt.slot })).json()) as
+    { watch?: WatchRow; existing?: boolean };
+  const replayRows = (await watchRows()).filter((w) => w.slot === aId && w.target === tgt.slot
+    && w.targetBranch === tgt.branch && w.slotOpenedAt === wAJ.watch.slotOpenedAt);
+  check("a re-subscribe after the fire, same lane end, returns the SPENT watch as existing — no second watch",
+    wReplay.existing === true && wReplay.watch?.id === wAJ.watch.id && wReplay.watch?.armed === false
+    && replayRows.length === 1,
+    `existing=${wReplay.existing} ${wReplay.watch?.id} vs ${wAJ.watch.id} rows=${JSON.stringify(replayRows.map((w) => `${w.id}:${w.armed}`))}`);
+  // GEGENPROBE: the dedup must not swallow a NEW question. Once `tgt` prints after the fire, that
+  // lane end is over; kept loud, it cannot look done again, so a subscribe mints a fresh watch that
+  // cannot fire, and deleting it leaves no spent row to shift this receiver's retention.
+  let tgtKeeperOn = true;
+  const tgtKeeper = (async (): Promise<void> => {
+    while (tgtKeeperOn) {
+      try { await tmuxOut("send-keys", "-t", `s${tgt.slot}`, "echo watch-new-work", "Enter"); } catch { /* best effort */ }
+      await Bun.sleep(250);
+    }
+  })();
+  let newWork = 0;
+  for (let i = 0; i < 60 && !(newWork > (spentA?.firedAt ?? Infinity)); i++) {
+    await Bun.sleep(250);
+    newWork = await tgtLastOutput();
+  }
+  const wNew = (await (await post(`/api/slots/${aId}/watch`, { target: tgt.slot, idleSec: 3600 })).json()) as
+    { watch?: WatchRow; existing?: boolean };
+  const delNew = wNew.watch?.id && wNew.watch.id !== wAJ.watch.id
+    ? await post(`/api/watches/${wNew.watch.id}/delete`, {}) : null;
+  tgtKeeperOn = false;
+  await tgtKeeper;
+  check("replay setup: the target printed after the fire",
+    newWork > (spentA?.firedAt ?? Infinity), `lastOutput=${newWork} firedAt=${spentA?.firedAt}`);
+  check("GEGENPROBE: after new output the same subscribe is a NEW watch, not the spent one",
+    wNew.existing !== true && !!wNew.watch?.id && wNew.watch.id !== wAJ.watch.id && wNew.watch.armed === true
+    && delNew?.ok === true,
+    `existing=${wNew.existing} ${wNew.watch?.id} vs ${wAJ.watch.id} armed=${wNew.watch?.armed} delete=${delNew?.status}`);
 
   check("busy transport owes the already-created event without typing or minting another",
     eventB?.status === "pending" && (await ownerWatchMessages(bId)).length === 0

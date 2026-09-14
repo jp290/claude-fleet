@@ -17,8 +17,8 @@ import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
   LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits,
   type LandWave, type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
-import { projectStartPlan, startPlanChecks, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
-  type StartPlanLane, type StartPlanRow } from "../start-plan";
+import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
+  type StartPlanLane, type StartPlanRelease, type StartPlanRow } from "../start-plan";
 import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
   type InstanceLink } from "../src/protocol";
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
@@ -6525,13 +6525,15 @@ export async function run(ctx: Ctx): Promise<void> {
     const spRepo = "/repo/sp";
     const spValid = { valid: true, surfaceValid: true, done: "done sentence", verify: "bun e2e/pins.ts", size: "klein", gaps: [] };
     const spRow = (id: string, created: number, files: string[] | null, o: { status?: string; after?: string[];
-      ranges?: StartPlanRow["ranges"]; card?: StartPlanCardFacts | null; text?: string; programId?: string } = {}) => ({
+      ranges?: StartPlanRow["ranges"]; card?: StartPlanCardFacts | null; text?: string; programId?: string;
+      release?: StartPlanRelease; held?: boolean } = {}) => ({
       wave: { id, created, kind: "auftrag", status: o.status ?? "queued", repo: spRepo, programId: o.programId ?? `p-${id}`,
         filesOrigin: "confirmed" as const, ...(files ? { files } : {}), ...(o.after ? { after: o.after } : {}),
         ranges: o.ranges ?? null } satisfies TaskWaveInput,
       row: { id, status: o.status ?? "queued", programId: o.programId ?? `p-${id}`, files, ranges: o.ranges ?? null,
         after: o.after ?? [], checks: startPlanChecks({ text: o.text ?? `row ${id}`, source: "main",
-          card: o.card === undefined ? spValid : o.card }) } satisfies StartPlanRow,
+          card: o.card === undefined ? spValid : o.card }),
+        ...(o.release ? { release: o.release } : {}), ...(o.held ? { held: true } : {}) } satisfies StartPlanRow,
     });
     const at = (file: string, symbol: string, startLine: number) => [{ file, symbol, startLine, endLine: startLine + 5 }];
     const spFixture = [
@@ -6539,12 +6541,12 @@ export async function run(ctx: Ctx): Promise<void> {
       spRow("b", 2, ["shared.ts"]),
       spRow("c", 3, ["shared.ts"]),
       spRow("d", 4, ["lane.ts"]),
-      spRow("e", 5, ["e.ts"], { card: { ...spValid, valid: false, gaps: ["verify: no command named"] } }),
+      spRow("e", 5, ["e.ts"], { status: "pending", release: "card-valid", card: { ...spValid, valid: false, gaps: ["verify: no command named"] } }),
       spRow("f", 6, ["shared.ts"], { status: "pending" }),
-      spRow("g", 7, ["g.ts"], { text: "[idee scout-A 08-07] TITEL: a sketch" }),
+      spRow("g", 7, ["g.ts"], { status: "pending", release: "card-valid", text: "[idee scout-A 08-07] TITEL: a sketch" }),
       spRow("h", 8, ["far.ts"], { ranges: at("far.ts", "hs", 10) }),
       spRow("i", 9, ["near.ts"], { ranges: at("near.ts", "is", 100) }),
-      spRow("j", 10, ["j.ts"], { card: null }),
+      spRow("j", 10, ["j.ts"], { status: "pending", release: "card-valid", card: null }),
       spRow("k", 11, ["k.ts"]),
     ];
     const spLanes: StartPlanLane[] = [
@@ -6553,8 +6555,8 @@ export async function run(ctx: Ctx): Promise<void> {
       { slot: 9, repo: spRepo, programId: null, files: ["near.ts"], ranges: at("near.ts", "ns", 120) },
     ];
     const spInput = (fixture: typeof spFixture, lanes: StartPlanLane[], caps: StartPlanInput["caps"],
-      statuses: Record<string, string> = {}, release: StartPlanInput["release"] = "card-valid"): StartPlanInput => ({
-      projection: projectLandWaves({ tasks: fixture.map((f) => f.wave), costs: LAND_WAVE_COSTS_2026_09 }), release,
+      statuses: Record<string, string> = {}): StartPlanInput => ({
+      projection: projectLandWaves({ tasks: fixture.map((f) => f.wave), costs: LAND_WAVE_COSTS_2026_09 }),
       rows: fixture.map((f) => f.row), lanes, caps,
       statuses: { z: "sent", ...Object.fromEntries(fixture.map((f) => [f.row.id, f.row.status])), ...statuses },
     });
@@ -6563,26 +6565,27 @@ export async function run(ctx: Ctx): Promise<void> {
     const spPlan = projectStartPlan(spMain);
     const spNexts = (plan: StartPlan) => plan.repos.flatMap((r) => r.waves.map((w) => [w.ids.join("+"), w.next]));
     const spGot = spNexts(spPlan);
-    check("(sp) start plan: after on a non-done row · collision with an earlier wave and with a running lane on the no-range fallback · card-invalid, no card and scout unchecked · pending unreleased · a far range starts · the cap",
+    check("(sp) start plan: after on a non-done row · collision with an earlier wave and with a running lane on the no-range fallback · card-invalid, no card and scout pending under card-valid unreleased · pending unreleased · a far range starts · the cap",
       JSON.stringify(spGot) === JSON.stringify([
         ["a", { after: "z" }],
         ["b", "now"],
         ["c", { collides: { row: "b", file: "shared.ts" } }],
         ["d", { collides: { slot: 7, file: "lane.ts" } }],
-        ["e", { unchecked: ["e"] }],
+        ["e", { unreleased: ["e"] }],
         ["f", { unreleased: ["f"] }],
-        ["g", { unchecked: ["g"] }],
+        ["g", { unreleased: ["g"] }],
         ["h", "now"],
         ["i", { collides: { slot: 9, file: "near.ts", symbol: "is" } }],
-        ["j", { unchecked: ["j"] }],
+        ["j", { unreleased: ["j"] }],
         ["k", { cap: "5/5 lanes busy in sp (repo cap)" }],
       ]), JSON.stringify(spGot));
     const spWave = (id: string) => spPlan.repos[0]?.waves.find((w) => w.ids.includes(id));
     check("(sp) each wave row carries its checks straight off the card and the row's source — invalid card with its gap, no card as null, scout flagged",
       JSON.stringify(spWave("e")?.rows[0]?.checks) === JSON.stringify({ cardValid: false, surfaceValid: true, done: "done sentence",
-        verify: "bun e2e/pins.ts", size: "klein", filedBy: "main", gaps: ["verify: no command named"], scout: false })
+        verify: "bun e2e/pins.ts", size: "klein", filedBy: "main", gaps: ["verify: no command named"], scout: false,
+        cardFiles: 0, cardStale: false })
       && JSON.stringify(spWave("j")?.rows[0]?.checks) === JSON.stringify({ cardValid: null, surfaceValid: null, done: null,
-        verify: null, size: null, filedBy: "main", gaps: [], scout: false })
+        verify: null, size: null, filedBy: "main", gaps: [], scout: false, cardFiles: null, cardStale: false })
       && spWave("g")?.rows[0]?.checks?.scout === true && spWave("g")?.rows[0]?.checks?.cardValid === true
       && spPlan.repos[0]?.lanes === 3 && JSON.stringify(spPlan.repos[0]?.cap) === JSON.stringify({ max: 5, source: "repo" }),
       JSON.stringify(spPlan.repos[0]?.waves.map((w) => w.rows)));
@@ -6606,16 +6609,89 @@ export async function run(ctx: Ctx): Promise<void> {
         [["p", { cap: "1/1 lanes busy in program prog" }]],
         [["n", { cap: "no lane cap known for sp" }]],
       ]), JSON.stringify([spDone, spUnknown, spProgram, spNoCap]));
-    // THE RELEASE POLICY THE TICK RUNS UNDER (Schnitt 2): `manual` — the release is the check, so an
-    // invalid card, no card and a scout sketch that are RELEASED start exactly as they did before the
-    // tick read the plan; the same three rows under `card-valid` stay `unchecked` (the check above).
-    // A pending row stays unreleased under both: no policy of this cut widens the released set.
-    const spManual = projectStartPlan(spInput([spFixture[4], spFixture[6], spFixture[9], spFixture[5]], [],
-      { [spRepo]: { max: 5, source: "repo", programs: {} } }, {}, "manual"));
-    check("(sp) release manual: a released row with an invalid card, a scout sketch and a row without a card are `now`; a pending row stays unreleased",
-      spManual.release === "manual" && JSON.stringify(spNexts(spManual)) === JSON.stringify([
+    // A RELEASE IS THE CHECK FOR A QUEUED ROW under every policy (Schnitt 3: released = queued OR the
+    // policy): an invalid card, a scout sketch and a row without a card that are RELEASED start exactly
+    // as they did before the tick read the plan — under `manual` and under `card-valid` alike. A pending
+    // row of a `manual` program stays unreleased.
+    const spQueued = (release?: StartPlanRelease) => [
+      spRow("e", 5, ["e.ts"], { release, card: { ...spValid, valid: false, gaps: ["verify: no command named"] } }),
+      spRow("f", 6, ["shared.ts"], { status: "pending" }),
+      spRow("g", 7, ["g.ts"], { release, text: "[idee scout-A 08-07] TITEL: a sketch" }),
+      spRow("j", 10, ["j.ts"], { release, card: null }),
+    ];
+    const spManual = projectStartPlan(spInput(spQueued(), [], { [spRepo]: { max: 5, source: "repo", programs: {} } }));
+    const spQueuedCv = projectStartPlan(spInput(spQueued("card-valid"), [], { [spRepo]: { max: 5, source: "repo", programs: {} } }));
+    check("(sp) a QUEUED row is released under manual and card-valid alike — invalid card, scout sketch and no card are `now`; a pending manual row stays unreleased",
+      JSON.stringify(spNexts(spManual)) === JSON.stringify([
         ["e", "now"], ["f", { unreleased: ["f"] }], ["g", "now"], ["j", "now"],
-      ]), JSON.stringify({ release: spManual.release, nexts: spNexts(spManual) }));
+      ]) && JSON.stringify(spNexts(spQueuedCv)) === JSON.stringify(spNexts(spManual)),
+      JSON.stringify({ manual: spNexts(spManual), cardValid: spNexts(spQueuedCv) }));
+    // --- (rel) THE RELEASE VERDICT (Schnitt 3, start-plan.ts#releaseVerdict). HARD is only what an
+    // unattended start rests on — done, verify, files the tree backs, the owner's or the MAIN's filing,
+    // no scout sketch; every other gap starts and is named as a hint. Each row below fails EXACTLY one
+    // HARD condition, so dropping any single clause from the verdict turns exactly its row `released`.
+    {
+      const full: StartPlanCardFacts = { valid: false, surfaceValid: false, done: "die Zeile steht", verify: "bun e2e/pins.ts",
+        at: 100, surface: { files: ["x.ts"], creates: [] },
+        gaps: ['surface.symbols: "x.ts#nope" does not resolve', 'rolle.harness: "Codex" is not a registered harness'] };
+      const rv = (o: { status?: string; release?: StartPlanRelease; held?: boolean; source?: string; text?: string;
+        card?: StartPlanCardFacts | null; briefAt?: number }) => releaseVerdict({ status: o.status ?? "pending",
+        release: o.release ?? "card-valid", held: o.held,
+        checks: startPlanChecks({ text: o.text ?? "row", source: o.source ?? "owner",
+          card: o.card === undefined ? full : o.card, briefAt: o.briefAt ?? null }) });
+      const got = {
+        hints: rv({}),
+        main: rv({ source: "main", card: { ...full, size: "klein", gaps: [], valid: true, surfaceValid: true } }),
+        noVerify: rv({ card: { ...full, verify: "", gaps: ["verify: no command named"] } }),
+        badVerify: rv({ card: { ...full, gaps: ['verify: "run it" names no known chain step'] } }),
+        noDone: rv({ card: { ...full, done: "", gaps: ["done: no checkable done sentence"] } }),
+        answer: rv({ card: { ...full, done: "", verify: "", surface: { files: [] }, gaps: ["answer: the extractor returned no readable card object"] } }),
+        unbacked: rv({ card: { ...full, gaps: ['surface.files: "gibt-es-nicht.ts" is not tracked in this repository'] } }),
+        noFiles: rv({ card: { ...full, surface: { files: [], creates: [] }, gaps: [] } }),
+        steward: rv({ source: "steward" }),
+        intake: rv({ source: "intake" }),
+        scout: rv({ text: "[idee scout-B 09-14] TITEL: a sketch" }),
+        noCard: rv({ card: null }),
+        stale: rv({ briefAt: 200 }),
+        held: rv({ held: true }),
+        heldQueued: rv({ status: "queued", held: true }),
+        queued: rv({ status: "queued", card: null, source: "steward" }),
+        manual: rv({ release: "manual" }),
+        all: rv({ release: "all", card: null, source: "intake" }),
+        allScout: rv({ release: "all", text: "[idee scout-B 09-14] TITEL" }),
+        sent: rv({ status: "sent" }),
+      };
+      const released = Object.entries(got).filter(([, v]) => v.released).map(([k]) => k);
+      const why = (k: keyof typeof got): string => { const v = got[k]; return v.released ? "RELEASED" : v.why ?? "null"; };
+      check("(rel) card-valid releases a pending row with done, verify and backed files past a missing size, a symbol and a role gap — named as hints; the MAIN's row too",
+        JSON.stringify(got.hints) === JSON.stringify({ released: true, by: "policy", hints: ["no size (weighs mittel)",
+          'surface.symbols: "x.ts#nope" does not resolve', 'rolle.harness: "Codex" is not a registered harness'] })
+        && JSON.stringify(got.main) === JSON.stringify({ released: true, by: "policy", hints: [] }),
+        JSON.stringify({ hints: got.hints, main: got.main }));
+      check("(rel) each HARD condition holds its own row with a named reason — verify, done, backed files, source, scout, card, freshness, hold",
+        released.sort().join(" ") === "all hints main queued"
+        && why("noVerify").includes("no verify path") && why("badVerify").includes("no verify path")
+        && why("noDone").includes("no done criterion") && why("answer").includes("no done criterion")
+        && why("unbacked").includes("files not backed by the tree") && why("unbacked").includes("gibt-es-nicht.ts")
+        && why("noFiles").includes("files not backed by the tree")
+        && why("steward").includes("filed by steward") && why("intake").includes("filed by intake")
+        && why("scout").includes("scout") && why("allScout").includes("scout")
+        && why("noCard").includes("no card yet") && why("stale").includes("brief changed after the card")
+        && why("held").startsWith("held by its MAIN") && why("heldQueued").startsWith("held by its MAIN")
+        && JSON.stringify(got.manual) === JSON.stringify({ released: false, why: null })
+        && JSON.stringify(got.sent) === JSON.stringify({ released: false, why: null })
+        && JSON.stringify(got.queued) === JSON.stringify({ released: true, by: "release", hints: [] }),
+        JSON.stringify(Object.fromEntries(Object.keys(got).map((k) => [k, why(k as keyof typeof got)]))));
+      // …and the plan reads the verdict: a policy-released pending row is `now`, a held queued row holds its wave
+      const relPlan = spNexts(projectStartPlan(spInput([
+        spRow("p1", 1, ["p1.ts"], { status: "pending", release: "card-valid", card: { ...full } }),
+        spRow("p2", 2, ["p2.ts"], { status: "queued", held: true }),
+        spRow("p3", 3, ["p3.ts"], { status: "pending", release: "manual", card: { ...full } }),
+      ], [], { [spRepo]: { max: 5, source: "repo", programs: {} } })));
+      check("(rel) the plan starts a policy-released pending row, holds a held queued row and leaves a manual pending row unreleased",
+        JSON.stringify(relPlan) === JSON.stringify([["p1", "now"], ["p2", { unreleased: ["p2"] }], ["p3", { unreleased: ["p3"] }]]),
+        JSON.stringify(relPlan));
+    }
     // THE NOTES THE TICK WRITES, one sentence per reason (entwurf §4 F4 step 5)
     const spNotes = [
       startPlanWaitNote({ after: "2f8897ab" }),
@@ -6736,7 +6812,7 @@ export async function run(ctx: Ctx): Promise<void> {
       .map((w) => [w.ids.join("+"), w.next]));
     const tFree = ((await (await get("/api/sessions")).json()) as { slots: { cwd: string | null }[] }).slots.filter((x) => !x.cwd).length;
     check("(sp-tick) fixture: seven rows with confirmed surfaces, C's planted after-card loaded, the plan projects the pair as one wave, and two slots are free",
-      tIds.every(Boolean) && !!tWaveP && !!tPartnerP && !!tCRow && tFree >= 2 && tPlan.release === "manual"
+      tIds.every(Boolean) && !!tWaveP && !!tPartnerP && !!tCRow && tFree >= 2
       && JSON.stringify(tNexts[`${tW1}+${tW2}`]) === '"now"'
       && JSON.stringify(tNexts[`${tX1}+${tX2}`]) === JSON.stringify({ unreleased: [tX2] })
       && JSON.stringify(tNexts[tC]) === JSON.stringify({ after: tB }),
@@ -6787,6 +6863,130 @@ export async function run(ctx: Ctx): Promise<void> {
       if (row?.status === "queued") await post(`/api/tasks/${id}/unqueue`, {});
       if (row && row.status !== "sent") await post(`/api/tasks/${id}/delete`, {});
     }
+  }
+
+  // --- (rel-tick) THE RELEASE POLICY ON THE TICK (Schnitt 3, server.ts#programReleasePolicy). One
+  // active program P on `card-valid` WITHOUT a MAIN, one active program M left on the default. Every
+  // row is PENDING — nobody released any of them — and each fails exactly the thing its name says:
+  //   rA  done + verify + backed file, no size, a symbol and a role gap  → starts, hints in the note
+  //   rB  the same card on another file → waits: P has no bound MAIN, one policy lane at a time
+  //   rNoVerify · rUnbacked · rScout · rSteward · rHeld → wait, each with its own named reason
+  //   rManual (program M) the same valid card as rA → untouched: pending, note null
+  // Cards are PLANTED with the server stopped (no door writes a card with gaps; the (sp-tick) pattern).
+  {
+    interface RRow { id: string; status: string; note?: string | null; slot?: number | null }
+    const rRows = async (): Promise<RRow[]> => ((await (await get("/api/sessions")).json()) as { tasks: RRow[] }).tasks;
+    const rOf = (rows: RRow[], id: string): RRow | undefined => rows.find((t) => t.id === id);
+    const rProgram = async (title: string): Promise<string> => {
+      const res = await post("/api/programs", { title, intent: `${title}: prove the release policy on the tick.`,
+        successCriterion: `${title}: exactly the checked row starts.`, nonGoals: [], decisions: [], evidence: [], openQuestions: [] });
+      const id = ((await res.json()) as { program?: { id: string } }).program?.id ?? "";
+      return id && (await post(`/api/programs/${id}/confirm`, {})).ok && (await post(`/api/programs/${id}/activate`, {})).ok ? id : "";
+    };
+    const rTask = async (text: string, programId: string): Promise<string> => {
+      await Bun.sleep(15);
+      return ((await (await post("/api/tasks", { text, queue: false, repo: REPO2, programId })).json()) as
+        { task?: { id: string } }).task?.id ?? "";
+    };
+    await post("/api/dispatch", { on: false });
+    for (const t of await rRows()) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+    const rP = await rProgram("rel-tick card-valid");
+    const rM = await rProgram("rel-tick manual");
+    const rA = await rTask("REL-TICK A: rel-a.ts bekommt eine Zeile", rP);
+    const rB = await rTask("REL-TICK B: rel-b.ts bekommt eine Zeile", rP);
+    const rNoVerify = await rTask("REL-TICK no verify", rP);
+    const rUnbacked = await rTask("REL-TICK unbacked file", rP);
+    const rScout = await rTask("[idee scout-R 09-14] REL-TICK scout sketch", rP);
+    const rSteward = await rTask("REL-TICK steward filing", rP);
+    const rHeld = await rTask("REL-TICK held", rP);
+    const rManual = await rTask("REL-TICK manual program", rM);
+    const rIds = [rA, rB, rNoVerify, rUnbacked, rScout, rSteward, rHeld, rManual];
+    await stopSrv();
+    const rState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { tasks?: { id: string; source?: string; card?: Record<string, unknown>; hold?: unknown }[] };
+    const rAt = Date.now() - 60_000;
+    const rCard = (file: string, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+      ziel: `${file} bekommt eine Zeile`, rolle: { harness: null, model: null, effort: null },
+      surface: { files: [file], symbols: [], ranges: null }, done: "die Zeile steht", verify: "bun e2e/pins.ts",
+      verboten: [], model: "planted-rel", at: rAt, ms: 0,
+      gaps: [`surface.symbols: "${file}#nope" does not resolve`, 'rolle.harness: "Codex" is not a registered harness'], ...over });
+    const rPlant: Record<string, { card: Record<string, unknown>; source?: string; hold?: unknown }> = {
+      [rA]: { card: rCard("rel-a.ts") },
+      [rB]: { card: rCard("rel-b.ts") },
+      [rNoVerify]: { card: rCard("rel-nv.ts", { verify: "", gaps: ["verify: no command named"] }) },
+      [rUnbacked]: { card: rCard("rel-ub.ts", { surface: { files: [], symbols: [], ranges: null },
+        gaps: ['surface.files: "gibt-es-nicht.ts" is not tracked in this repository'] }) },
+      [rScout]: { card: rCard("rel-sc.ts") },
+      [rSteward]: { card: rCard("rel-st.ts"), source: "steward" },
+      [rHeld]: { card: rCard("rel-hd.ts"), hold: { by: "main", slot: 9, at: rAt } },
+      [rManual]: { card: rCard("rel-mn.ts") },
+    };
+    let rPlanted = 0;
+    for (const t of rState.tasks ?? []) {
+      const plant = rPlant[t.id];
+      if (!plant) continue;
+      t.card = plant.card;
+      if (plant.source) t.source = plant.source;
+      if (plant.hold) t.hold = plant.hold;
+      rPlanted++;
+    }
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    for (const x of ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { repo: string } | null }[] }).slots)
+      if (x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2)) await post(`/api/slots/${x.id}/kill`, {});
+    await Bun.sleep(600);
+    const rSet = await post(`/api/programs/${rP}/release`, { release: { v: 1, policy: "card-valid" } });
+    const rSetBody = (await rSet.json()) as { program?: { release?: { v: number; policy: string; confirmedAt: number } } };
+    const rPlan = (await (await get("/api/start-plan")).json()) as StartPlan;
+    const rVerdict = (id: string) => rPlan.repos.flatMap((r) => r.waves).flatMap((w) => w.rows).find((r) => r.id === id)?.release;
+    check("(rel-tick) fixture: two active programs, eight planted pending rows, the policy set through the owner door, and the plan releases exactly rA and rB by policy",
+      rIds.every(Boolean) && !!rP && !!rM && rPlanted === 8 && rSet.ok && rSetBody.program?.release?.policy === "card-valid"
+      && rIds.filter((id) => rVerdict(id)?.released).sort().join(" ") === [rA, rB].sort().join(" ")
+      && JSON.stringify(rVerdict(rManual)) === JSON.stringify({ released: false, why: null }),
+      JSON.stringify({ ids: rIds, planted: rPlanted, set: rSet.status, verdicts: rIds.map((id) => [id, rVerdict(id)]) }));
+
+    await post("/api/autos/switch", { on: true });
+    await post("/api/dispatch", { on: true });
+    const rWant = (rows: RRow[]): boolean => rOf(rows, rA)?.status === "sent"
+      && (rOf(rows, rB)?.note ?? "").startsWith("waiting: no bound MAIN")
+      && [rNoVerify, rUnbacked, rScout, rSteward, rHeld].every((id) => (rOf(rows, id)?.note ?? "").startsWith("waiting: not released"));
+    let rLive = await rRows();
+    for (let i = 0; i < 160 && !rWant(rLive); i++) { await Bun.sleep(250); rLive = await rRows(); }
+    const rAudit = ((await (await get("/api/audit?limit=300")).json()) as { events: { event?: string; detail?: string }[] }).events
+      .filter((e) => e.event === "task_release" && (e.detail ?? "").startsWith(rA));
+    const a = rOf(rLive, rA);
+    check("(rel-tick) under card-valid a PENDING row with done, verify and a backed file starts without size and past a symbol and a role gap — the start note names them as hints, the trail names the policy",
+      a?.status === "sent" && typeof a.slot === "number"
+      && (a.note ?? "").includes(" · started by policy card-valid — hint: no size (weighs mittel); surface.symbols: \"rel-a.ts#nope\" does not resolve; rolle.harness: \"Codex\" is not a registered harness")
+      && rAudit.length === 1 && rAudit[0]?.detail === `${rA} program=${rP} by=policy card-valid`,
+      JSON.stringify({ a, audit: rAudit }));
+    check("(rel-tick) a program without a bound MAIN starts ONE policy lane — the second valid row waits with the named note",
+      rOf(rLive, rB)?.status === "pending" && rOf(rLive, rB)?.note === "waiting: no bound MAIN to land — one lane at a time",
+      JSON.stringify(rOf(rLive, rB)));
+    const rNote = (id: string): string => rOf(rLive, id)?.note ?? "";
+    check("(rel-tick) no verify path · unbacked files · a scout sketch · a steward filing · a hold — each stays pending with its own named reason",
+      [rNoVerify, rUnbacked, rScout, rSteward, rHeld].every((id) => rOf(rLive, id)?.status === "pending")
+      && rNote(rNoVerify).startsWith("waiting: not released — card-valid needs no verify path (verify: no command named)")
+      && rNote(rUnbacked).startsWith("waiting: not released — card-valid needs files not backed by the tree (surface.files: \"gibt-es-nicht.ts\"")
+      && rNote(rScout) === "waiting: not released — an [idee scout-*] sketch is never started by a policy"
+      && rNote(rSteward).startsWith("waiting: not released — card-valid needs filed by steward")
+      && rNote(rHeld) === "waiting: not released — held by its MAIN — a release lifts the hold",
+      JSON.stringify([rNoVerify, rUnbacked, rScout, rSteward, rHeld].map((id) => rOf(rLive, id))));
+    check("(rel-tick) a manual program's pending row with the same valid card is untouched — pending, note null",
+      rOf(rLive, rManual)?.status === "pending" && (rOf(rLive, rManual)?.note ?? null) === null,
+      JSON.stringify(rOf(rLive, rManual)));
+
+    await post("/api/dispatch", { on: false });
+    const aSlot = (await rRows()).find((t) => t.id === rA)?.slot;
+    if (typeof aSlot === "number") await post(`/api/slots/${aSlot}/kill`, {});
+    await Bun.sleep(600);
+    await post(`/api/programs/${rP}/release`, { release: null });
+    for (const id of rIds) {
+      const row = rOf(await rRows(), id);
+      if (row?.status === "queued") await post(`/api/tasks/${id}/unqueue`, {});
+      if (row && row.status !== "sent") await post(`/api/tasks/${id}/delete`, {});
+    }
+    for (const id of [rP, rM]) if (id) await post(`/api/programs/${id}/complete`, {});
   }
 
   // --- S4 (a672b626) THE WAVE BRIEF quotes each row's card as a head before that row's prose, and

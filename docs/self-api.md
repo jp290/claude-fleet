@@ -559,7 +559,11 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
 - Deckel: **`PROGRAM_MAX_RELEASED` freigegebene, noch nicht gestartete Zeilen pro Program**
   (`FLEET_PROGRAM_MAX_RELEASED`, Default 5). Gezählt werden ausschließlich `queued`-Zeilen des
   Programs; `sent`-Zeilen sind Lanes und bereits doppelt durch die zwei Dispatch-Deckel gebunden.
-  Der Deckel bindet QUEUE-TIEFE und sonst nichts.
+  Der Deckel bindet QUEUE-TIEFE und sonst nichts — und **nur unter der Freigabe-Politik `manual`**
+  (Abschnitt unten): unter `card-valid`/`all` ist die freigegebene Menge die Queue des Programs selbst.
+- **Auf einer GEHALTENEN `queued`-Zeile** hebt die Route den Hold auf und schreibt sonst nichts:
+  `{ok:true, sessionIdMatch, lifted:"hold", task:{…}}`, ein `task_hold`-Audit-Event (`… lifted`).
+  Auf einer gehaltenen `pending`-Zeile ist es die normale Freigabe — `releaseTask` hebt jeden Hold mit auf.
 - Ablehnungen — jede sagt in ihren eigenen Worten, was der Aufrufer zu reparieren hat:
   - **als LANE 409** (an der Route, vor dem Handler):
     `a lane may not release a queue row — releasing is the bracket above lanes`. Eine Lane FÜHRT
@@ -596,6 +600,53 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
     pi-zai-Zeile).
   - **Deckel** (409): `program release cap reached (N/M released rows not yet started) — let the
     tick start one first`.
+
+### Freigabe als Program-Politik — `manual` | `card-valid` | `all` (Schnitt 3)
+
+Welche `pending`-Zeilen eines Programs der Tick OHNE Einzelfreigabe starten darf, ist eine
+Owner-Entscheidung je Program: `POST /api/programs/:id/release` (Owner-Token, **nie** eine Self-Route)
+mit `{"release": {"v":1,"policy":"card-valid"}}`, zurück auf den Default mit `{"release": null}`.
+Abwesend heißt `manual` — die Welt vor Schnitt 3: nur `queued` startet. Gelesen wird die Politik nur
+auf einem AKTIVEN Program (`server.ts#programReleasePolicy`); ein Body einer Self-Route erreicht sie
+nie (in `e2e/pins.ts` gepinnt).
+
+`released(t) = queued ODER (card-valid UND alle HART-Bedingungen) ODER all` — und ein Hold sperrt
+unter jeder Politik, `queued` eingeschlossen. Das Urteil steht je Zeile im Startplan
+(`GET /api/start-plan` → `rows[].release`, `start-plan.ts#releaseVerdict`).
+
+- **HART** (sonst startet nichts von selbst): Fertig-Kriterium (keine `done:`/`answer:`-Lücke) ·
+  Prüfweg (keine `verify:`-Lücke) · von der Karte BELEGTE Dateien (mindestens eine, keine
+  `surface.files:`/`surface.creates:`-Lücke — der Startplan braucht sie für Kollisionen) · Quelle
+  `owner` oder `main` (nur die exakt gebundene MAIN kann `main`-Zeilen filen) · kein `[idee scout-*]`
+  (gilt auch unter `all`) · die Karte ist nicht älter als der Brief.
+- **HINWEIS** (startet, die Lücke steht in der Start-Note `… · started by policy card-valid — hint: …`):
+  fehlende Größe (zählt als mittel) · `surface.symbols`-Lücken · `rolle.*`-Lücken (Default-Spawn) ·
+  jede andere Lücke.
+- Eine nicht freigegebene Zeile trägt ihren eigenen Grund: `waiting: not released — card-valid needs …`
+  bzw. `… held by its MAIN — a release lifts the hold`. Eine `pending`-Zeile eines `manual`-Programs
+  bleibt byte-gleich (keine Note).
+- Ein Program **ohne exakte, lebende MAIN-Bindung** startet per Politik höchstens EINE Lane:
+  `waiting: no bound MAIN to land — one lane at a time`.
+- Ein Politik-Start ist eine Freigabe: `releaseTask(…, "machine")` und ein `task_release`-Event
+  `<id> program=<pid> by=policy <policy>`. Alle übrigen Gates des Ticks bleiben.
+
+## hold — `POST /api/self/tasks/:id/hold`
+
+Die Gegen-Tür zur Politik: die gebundene Program-MAIN sperrt eine `pending`- oder `queued`-Zeile
+ihres EIGENEN Programs gegen jeden Start des Ticks. Kein Body; Program aus der Bindung, Repo aus dem
+Checkout, `slot`/`at` aus dem Token. Idempotent (zweiter Aufruf: `ok`, nichts geschrieben). Aufheben:
+`POST /api/self/tasks/:id/release` (oder der `▸ queue` des Owners). Nicht-Lane-only wie `release`.
+
+```
+curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/hold \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
+```
+
+Antwort: `{ok:true, sessionIdMatch, hold:{by:"main",slot,at}, task:{id,kind,status,programId}}`,
+beim ersten Setzen ein `task_hold`-Event (`… held`). Ablehnungen: Lane (409 `a lane may not hold a
+queue row …`) · keine/mehrdeutige Bindung (409, `boundProgramForMain`) · unbekannt (404) · fremdes
+Program (409 `… holds only rows of program <id>`) · `kind != auftrag` (409) · Status weder
+`pending` noch `queued` (409) · kein git-Checkout oder anderes Repo (409).
 
 
 ## confirm-cards — `POST /api/self/tasks/confirm-cards`

@@ -2236,9 +2236,9 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // system-entwurf.md §5). Four rules over the source, none visible to tsc:
   //   · the tick walks startPlanWaves() and nothing else — no second oldest-first sweep over `tasks`
   //     beside it, which is how a plan-driven tick quietly grows a second decider;
-  //   · the plan runs under the `manual` release policy in the one place it is built, so no row the
-  //     owner or a MAIN did not release becomes startable and no released row is refused for its
-  //     card (Schnitt 3 is the policy cut, not this one);
+  //   · the plan is built in one place, from ONE row builder (startPlanRowOf) that the tick's last
+  //     re-check before a start reads too, and a row's release policy reaches it only through
+  //     programReleasePolicy — the Program record, never a request (Schnitt 3, pinned below);
   //   · dispatchTask and releaseTaskForMain still never reach the plan — the dispatch core starts
   //     what it is handed, and a release is a decision, not a projection;
   //   · GET /api/start-plan and the wave door read the same plan (one projection for board, door, tick).
@@ -2258,16 +2258,18 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     const wavesFn = server.match(/function startPlanWaves\(\)[\s\S]*?\n\}\n/)?.[0] ?? "";
     const wDoorAt = server.indexOf('url.pathname === "/api/wave/dispatch"');
     const wDoor = wDoorAt < 0 ? "" : server.slice(wDoorAt, wDoorAt + 6000);
-    pin("tickDispatch walks the start plan's waves under the manual release policy — no oldest-first sweep beside it; dispatchTask and releaseTaskForMain never reach the plan",
+    pin("tickDispatch walks the start plan's waves, built from the one row builder — no oldest-first sweep beside it; dispatchTask and releaseTaskForMain never reach the plan",
       /const candidates = startPlanWaves\(\)\.flatMap\(/.test(tBody)
       && !/tasks\.filter\(/.test(tBody) && !/landWaveProjectionNow\(\)/.test(tBody)
-      && /projectStartPlan\(\{ projection, release: "manual",/.test(planFn)
+      && /projectStartPlan\(\{ projection, rows, statuses, lanes, caps \}\)/.test(planFn)
+      && /rows\.push\(startPlanRowOf\(t\)\);/.test(planFn)
+      && /const releaseVerdictNow = \(t: Task\): StartPlanReleaseVerdict => releaseVerdict\(startPlanRowOf\(t\)\);/.test(server)
       && (server.match(/projectStartPlan\(/g) ?? []).length === 1
       && /const plan = startPlanNow\(projection\);/.test(wavesFn)
       && /url\.pathname === "\/api\/start-plan" && req\.method === "GET"\) return json\(startPlanNow\(\)\)/.test(server)
       && /const wPlanWaves = startPlanWaves\(\);/.test(wDoor) && !/landWaveProjectionNow\(\)/.test(wDoor)
       && reach.length === 0,
-      JSON.stringify({ tick: /startPlanWaves\(\)/.test(tBody), sweep: /tasks\.filter\(/.test(tBody), manual: /release: "manual"/.test(planFn),
+      JSON.stringify({ tick: /startPlanWaves\(\)/.test(tBody), sweep: /tasks\.filter\(/.test(tBody), rowBuilder: /startPlanRowOf/.test(planFn),
         door: /startPlanWaves\(\)/.test(wDoor), reach }));
     // ...and the plan's verdict is a gate that SKIPS, sits after the harness gate and before both
     // caps, and leaves the CAP verdict to the live caps: a plan counted before this instant must never
@@ -2491,8 +2493,11 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // rows WERE released, the lane simply is not the place they get done, so `pending` — the abort's
   // answer — would withdraw a release nobody withdrew.
   const releaseCalls = [...server.matchAll(/(?<!function )releaseTask\(([^)]*)\)/g)].map((m) => m[1].trim());
-  pin("releaseTask has exactly the two known call sites — the owner's ▸ queue and the Program-MAIN door",
-    releaseCalls.length === 2 && releaseCalls.includes('t, "owner"') && releaseCalls.includes('t, "machine"'),
+  // The third is the tick's POLICY release (Schnitt 3): a pending row a program's release policy
+  // releases passes `queued` through the same helper, so `by` and the lifted hold cannot be forgotten.
+  pin("releaseTask has exactly the three known call sites — the owner's ▸ queue, the Program-MAIN door and the tick's policy release",
+    releaseCalls.length === 3 && releaseCalls.includes('t, "owner"') && releaseCalls.includes('t, "machine"')
+    && /for \(const row of byPolicy\) \{\n        releaseTask\(row, "machine"\);/.test(tBody),
     releaseCalls.join(" | ") || "no releaseTask call");
   const queuedWrites = (server.match(/\bstatus = "queued";/g) ?? []).length;
   pin("\"queued\" is written by releaseTask plus exactly the documented non-release restores",
@@ -3406,6 +3411,33 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     progDispWrites.length === 2 && progDispRouteStart > 0 && progDispRouteEnd > progDispRouteStart
     && progDispWrites.every((m) => m.index > progDispRouteStart && m.index < progDispRouteEnd),
     `${progDispWrites.length} write(s): ${progDispWrites.map((m) => m[0]).join(" | ")}`);
+  // --- THE RELEASE POLICY (Schnitt 3) IS NEVER READ FROM A SELF BODY. It widens which rows start
+  // unattended, so a MAIN that could set it would release its own queue past every card check — the
+  // shape the per-row release door exists to keep attended. Three halves over the source, because no
+  // runtime probe on a fleet without a policy (every fleet by default) can see a second writer that
+  // never fired: (1) `program.release` is written — set AND cleared — only inside the owner route;
+  // (2) the one reader of the record is programReleasePolicy, and it reads the PROGRAM, never a
+  // request; (3) the hold route, the one self door of this cut, reads no body at all.
+  const relWrites = [...serverExec.matchAll(/(?:\w+)\.release = |delete (?:\w+)\.release\b/g)];
+  const relRouteStart = serverExec.indexOf("const programReleaseRoute = /^");
+  const relRouteEnd = serverExec.indexOf("const action = /^", relRouteStart);
+  const relReaders = [...serverExec.matchAll(/\bp\??\.release\b|program\.release\b/g)];
+  const relPolicyFn = serverExec.match(/const programReleasePolicy = [\s\S]*?\n\};/)?.[0] ?? "";
+  const relPolicyAt = serverExec.indexOf("const programReleasePolicy = ");
+  const inside = (at: number | undefined, from: number, to: number): boolean => at !== undefined && at > from && at < to;
+  const holdRouteAt = server.indexOf("const selfTaskHold = ");
+  const holdRoute = holdRouteAt < 0 ? "" : server.slice(holdRouteAt, server.indexOf("const selfTaskLand", holdRouteAt));
+  const holdFnAt = server.indexOf("async function holdTaskForMain(");
+  const holdFn = holdFnAt < 0 ? "" : server.slice(holdFnAt, server.indexOf("\n}\n", holdFnAt));
+  pin("program.release is written only by the owner release door, read only through programReleasePolicy off the Program record, and the self hold door reads no body",
+    relWrites.length === 2 && relRouteStart > 0 && relRouteEnd > relRouteStart
+    && relWrites.every((m) => m.index > relRouteStart && m.index < relRouteEnd)
+    && /return p\?\.status === "active" && p\.release \? p\.release\.policy : "manual";/.test(relPolicyFn)
+    && relReaders.length >= 2
+    && relReaders.every((m) => inside(m.index, relPolicyAt, relPolicyAt + relPolicyFn.length) || inside(m.index, relRouteStart, relRouteEnd))
+    && holdRoute.length > 0 && /return holdTaskForMain\(s, selfTaskHold\[1\]\);/.test(holdRoute) && !/readJson/.test(holdRoute)
+    && holdFn.length > 0 && !/\bbody\b|\breq\b|readJson/.test(holdFn),
+    JSON.stringify({ writes: relWrites.map((m) => m[0]), readers: relReaders.length, holdRoute: holdRoute.length, holdFn: holdFn.length }));
   // ...and it is READ through exactly one predicate in the tick. The record's whole meaning is
   // "may the tick start this program's rows under a stopped fleet", and that question is asked in
   // four places (entry guard, per-row master stop, per-program cap, quiet-hours waiver). A second

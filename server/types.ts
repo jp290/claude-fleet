@@ -1169,6 +1169,7 @@ interface Task {
   // not a discard: "a reading was attempted and here is what it could not establish" is worth more
   // than an absent field, which reads as "nobody looked".
   status: "pending" | "queued" | "sent" | "done" | "archived";
+  hold?: TaskHold; // a Program-MAIN's STOP on this row (POST /api/self/tasks/:id/hold) — see TaskHold
   releasedBy?: "owner" | "machine"; // WHO handed this draft to the machine — written at the
   // RELEASE (see releaseTask) and by nothing else. NOT a synonym for the outcome row's
   // `confirmedByHuman`, which answers the LAND art ("did the owner press ⏫, or did it auto-land
@@ -1258,6 +1259,18 @@ interface TaskCard extends TaskCardBody {
   validatorVersion?: number;
   gaps: string[];
 }
+// THE HOLD, the counter-act to a program's release policy (Schnitt 3). While it stands the tick starts
+// the row under NO policy — `queued` included — and says so on the row; a release lifts it
+// (server.ts#releaseTask). Written only by the bound MAIN of the row's own program, never from a
+// body: `slot` and `at` are stamped from the caller's token. Absent = nobody held it. A malformed
+// persisted hold loads as a hold (loadTaskHold): a stop that half-survived a hand edit must not start work.
+interface TaskHold { by: "main"; slot: number; at: number }
+const loadTaskHold = (value: unknown): TaskHold | undefined => {
+  if (value === undefined || value === null || value === false) return undefined;
+  const r = (typeof value === "object" && !Array.isArray(value) ? value : {}) as Record<string, unknown>;
+  return { by: "main", slot: typeof r.slot === "number" && Number.isInteger(r.slot) ? r.slot : 0,
+    at: typeof r.at === "number" && Number.isFinite(r.at) ? r.at : 0 };
+};
 type BriefAuthor = "owner" | "main";
 interface TaskBrief { text: string; at: number; model: string; edited: boolean; by?: BriefAuthor }
 // One remark, timestamped and individually deletable. `id` exists for the delete: an index would
@@ -1531,6 +1544,11 @@ interface Program {
   // backfilled at load and never written by a self route — a Program-MAIN releases rows, it does
   // not grant itself the permission to have them started.
   dispatch?: ProgramDispatch;
+  // THE SEVENTH RECORD — the owner's RELEASE POLICY (see ProgramRelease). `dispatch` says whether the
+  // tick may start this program's RELEASED rows under a stopped fleet; this says which rows count as
+  // released without a per-row act. Written by exactly one route (POST /api/programs/:id/release),
+  // cleared by the same one with {"release": null}, never backfilled and never written by a self route.
+  release?: ProgramRelease;
   // A Game-Maker founding crosses pane creation, prompt delivery and a durable authority move.
   // This intent is the crash boundary between those acts: it names exactly the candidate Fleet
   // may roll back after a restart, without overloading Slot.programId (task/lane provenance).
@@ -1629,6 +1647,27 @@ const loadProgramProfile = (value: unknown): ProgramProfile | undefined => {
   if (typeof r.kind !== "string" || !PROGRAM_PROFILE_KINDS.includes(r.kind as ProgramProfileKind)) return undefined;
   if (typeof r.confirmedAt !== "number" || !Number.isFinite(r.confirmedAt) || r.confirmedAt <= 0) return undefined;
   return { v: 1, kind: r.kind as ProgramProfileKind, confirmedAt: r.confirmedAt };
+};
+
+// === THE PROGRAM RELEASE POLICY (Schnitt 3, docs/messungen/2026-09-13-queue-pipeline-system-entwurf.md §5)
+// WHICH pending rows of this program the tick may start without a per-row release: `card-valid` — a
+// row whose card carries a done sentence, a verify path and files the tree backs, filed by the owner
+// or the program's MAIN (start-plan.ts#releaseVerdict); `all` — every pending row. `manual` is
+// stored when the owner said so; ABSENT means the same behaviour and that nobody said anything.
+// loadProgramDispatch's four properties: CLOSED, VERSIONED, DEFAULT-ABSENT, `confirmedAt` stamped
+// server-side. It widens what starts UNATTENDED, so anything but a well-formed v1 record loads as
+// ABSENT — manual — never as a guess at the looser policy.
+const PROGRAM_RELEASE_POLICIES = ["manual", "card-valid", "all"] as const;
+type ProgramReleasePolicy = typeof PROGRAM_RELEASE_POLICIES[number];
+interface ProgramRelease { v: 1; policy: ProgramReleasePolicy; confirmedAt: number }
+const loadProgramRelease = (value: unknown): ProgramRelease | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["v", "policy", "confirmedAt"].includes(k))) return undefined;
+  if (r.v !== 1) return undefined;
+  if (typeof r.policy !== "string" || !PROGRAM_RELEASE_POLICIES.includes(r.policy as ProgramReleasePolicy)) return undefined;
+  if (typeof r.confirmedAt !== "number" || !Number.isFinite(r.confirmedAt) || r.confirmedAt <= 0) return undefined;
+  return { v: 1, policy: r.policy as ProgramReleasePolicy, confirmedAt: r.confirmedAt };
 };
 
 // === THE PROGRAM-SCOPED DISPATCH RECORD ====================================================
@@ -2491,7 +2530,7 @@ export type {
   ProgramValidation, SupervisorBinding, ProgramDigest, DispatchSpawn, SlotStreamOccupant,
   StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
-  StudioContentRead, ProgramStudioBinding, ProgramDispatch,
+  StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold,
 };
 export {
   MAX_SLOTS, watchKind, TRANSITION_AWAITING_MAX, TRANSITION_DEADLINE_MIN_SEC,
@@ -2516,6 +2555,7 @@ export {
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,
+  PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold,
   HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck,
   HELPER_ARTIFACT_GLOB_MAX, HELPER_ARTIFACT_MAX, HELPER_ARTIFACT_PATH_MAX,
   helperArtifactGlobsFrom, helperArtifactsFrom,

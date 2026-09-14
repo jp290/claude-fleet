@@ -6005,6 +6005,61 @@ export async function run(ctx: Ctx): Promise<void> {
       && (await queuedOfMain()) === RELEASE_CAP,
     `before=${queuedBeforeCap} statuses=${capStatuses.join(",")} last=${capLastText}`);
 
+  // === SCHNITT 3 · THE HOLD, AND THE CAP UNDER A RELEASE POLICY ==================================
+  // Same live binding, the cap above is FULL (5 queued rows of P). The hold is the MAIN's stop over
+  // its program's release policy; a release lifts it. Four facts: a hold is stamped from the token
+  // and idempotent; a foreign program's row is refused; a release on a held QUEUED row lifts the hold
+  // and nothing else; and PROGRAM_MAX_RELEASED binds only under `manual` — the same held pending row
+  // the full cap refuses (hold kept) is released once the owner sets `card-valid`, which lifts its hold.
+  const selfHold = (token: string, id: string): Promise<Response> =>
+    fetch(`${BASE}/api/self/tasks/${id}/hold`, { method: "POST", headers: { "x-fleet-self-token": token } });
+  type HoldRow = TaskRow & { hold?: { by: string; slot: number; at: number } };
+  const holdRow = async (id: string): Promise<HoldRow | undefined> => (await allTasks()).find((t) => t.id === id) as HoldRow | undefined;
+  const holdPending = await makeTask({ text: "schnitt3 hold probe", programId: mainProgram.id });
+  const holdAuditFrom = auditLines();
+  const hold1 = await selfHold(successorToken, holdPending);
+  const hold1Body = (await hold1.json()) as { ok?: boolean; hold?: { slot: number; at: number } };
+  const hold2 = (await (await selfHold(successorToken, holdPending)).json()) as { ok?: boolean; hold?: { at: number } };
+  const holdTrail = auditSince(holdAuditFrom).filter((r) => r.event === "task_hold");
+  const holdForeign = await selfHold(successorToken, foreignId);
+  const holdForeignText = await holdForeign.text();
+  check("Schnitt 3 hold: a bound MAIN holds its own pending row — stamped with its slot, idempotent, one task_hold row; a foreign program's row is 409",
+    hold1.status === 200 && hold1Body.ok === true && hold1Body.hold?.slot === successorSlot
+      && hold2.ok === true && hold2.hold?.at === hold1Body.hold?.at
+      && (await holdRow(holdPending))?.hold?.slot === successorSlot && (await holdRow(holdPending))?.status === "pending"
+      && holdTrail.length === 1 && holdTrail[0]?.detail === `${holdPending} program=${mainProgram.id} held`
+      && holdForeign.status === 409 && holdForeignText.includes(`holds only rows of program ${mainProgram.id}`)
+      && !(await holdRow(foreignId))?.hold,
+    JSON.stringify({ hold1: hold1.status, hold1Body, hold2, trail: holdTrail, foreign: `${holdForeign.status} ${holdForeignText}` }));
+  const heldQueued = capIds[0]!;
+  const holdQ = await selfHold(successorToken, heldQueued);
+  const liftQ = await selfRelease(successorToken, heldQueued);
+  const liftQBody = (await liftQ.json()) as { ok?: boolean; lifted?: string };
+  check("Schnitt 3 hold: a release on a held QUEUED row lifts the hold and nothing else — still queued, the cap count unchanged",
+    holdQ.status === 200 && liftQ.status === 200 && liftQBody.lifted === "hold"
+      && (await holdRow(heldQueued))?.status === "queued" && !(await holdRow(heldQueued))?.hold
+      && (await queuedOfMain()) === RELEASE_CAP,
+    JSON.stringify({ holdQ: holdQ.status, liftQ: liftQ.status, liftQBody, row: await holdRow(heldQueued) }));
+  const capRefused = await selfRelease(successorToken, holdPending);
+  const capRefusedText = await capRefused.text();
+  const policySet = await post(`/api/programs/${mainProgram.id}/release`, { release: { v: 1, policy: "card-valid" } });
+  const policyBad = await post(`/api/programs/${mainProgram.id}/release`, { release: { v: 1, policy: "sometimes" } });
+  const policySelf = await fetch(`${BASE}/api/programs/${mainProgram.id}/release`, { method: "POST",
+    headers: { "content-type": "application/json", "x-fleet-self-token": successorToken }, body: JSON.stringify({ release: { v: 1, policy: "all" } }) });
+  const underPolicy = await selfRelease(successorToken, holdPending);
+  const underPolicyRow = await holdRow(holdPending);
+  const policyCleared = await post(`/api/programs/${mainProgram.id}/release`, { release: null });
+  const programAfter = (await ownerPrograms()).find((x) => x.id === mainProgram.id) as { release?: unknown } | undefined;
+  check("Schnitt 3 cap: under manual the full cap refuses the held row and keeps the hold; under card-valid the SAME release passes and lifts it; the policy door is owner-only and closed",
+    capRefused.status === 409 && capRefusedText.includes("release cap reached")
+      && policySet.ok && policyBad.status === 400 && policySelf.status === 401
+      && underPolicy.status === 200 && underPolicyRow?.status === "queued" && !underPolicyRow.hold
+      && policyCleared.ok && programAfter !== undefined && !("release" in programAfter),
+    JSON.stringify({ capRefused: `${capRefused.status} ${capRefusedText}`, set: policySet.status, bad: policyBad.status,
+      self: policySelf.status, underPolicy: underPolicy.status, row: underPolicyRow, cleared: policyCleared.status, release: programAfter?.release }));
+  // back to the state the S5 section below expects: nothing of this probe left queued in P
+  await post(`/api/tasks/${holdPending}/unqueue`, {});
+
   // === S5 (b8cb3c75) · THE CARD-SURFACE CONFIRMATION AS A BATCH ================================
   // Same live binding, same REPO. The rows are filed through the owner door WITH a card (S6), so
   // each carries a valid card whose files testrepo tracks; the text names none of them, so the

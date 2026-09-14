@@ -416,9 +416,13 @@ const SOURCE_DIR = ((): string | null => {
   // "ends by propagating its exit code" would be a rule about something they never claimed to be.
   const stagers = shellScripts.filter((f) =>
     /^e2e-[a-z-]+\.sh$/.test(f) && /^\s*stage_instance\s+\S/m.test(read(f)));
-  const noRunner = stagers.filter((f) => !/\bbun\s+fleet-e2e[a-z-]*\.ts\b/.test(read(f)));
+  // Both halves read the CODE lines only. The runner half read the whole file until 2026-09-14
+  // (Astra finding 5): `# eval "… bun fleet-e2e.ts"` — the runner commented out — still matched,
+  // so the one mutation this rule exists for passed as long as it left a comment behind.
+  const codeLines = (f: string) => read(f).split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  const noRunner = stagers.filter((f) => !codeLines(f).some((l) => /\bbun\s+fleet-e2e[a-z-]*\.ts\b/.test(l)));
   const noExit = stagers.filter((f) => {
-    const lines = read(f).split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+    const lines = codeLines(f);
     return lines[lines.length - 1] !== "exit $code";
   });
   pin("every staged suite RUNS a runner and ends by propagating its exit code (a decapitated wrapper exits 0 having measured nothing)",
@@ -986,14 +990,49 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
   // absent from this list, so the harness guarding the whole tier-2 path had no type coverage at all.
   // src/helper.ts (the remote helper portal's page script, 2026-08-26) is an ENTRY too — nothing
   // imports it, so unlike src/md.ts it gets no coverage by being reached from client.ts.
+  //
+  // A HAND-KEPT ENTRY LIST WAS STILL A SNAPSHOT (Astra finding 4, 2026-09-14): it named server.ts,
+  // three browser entries and the fleet-e2e-*.ts harnesses, and so it went green while src/hub.ts
+  // (built into public/hub.js by `bun run build`) and six tool scripts reached no compiler at all.
+  // The rule is now over the TREE: every .ts git knows of (tracked, or new and not ignored — a lane
+  // sees its fresh file go red before it commits it) is either reached from the tsc list through
+  // imports, or named in TSC_EXEMPT with its reason. Reachability uses Bun's own import scanner,
+  // which drops type-only imports: that can only UNDER-count coverage (a false red, fixed by listing
+  // the file), never claim a file tsc does not see. Measured equal to `tsc --listFilesOnly` on the
+  // tree it replaced: the same seven files missing from both.
+  const TSC_EXEMPT = new Map<string, string>([]);
   const tscArgs = /--types bun ([^&]+?)(?:&&|$)/.exec(verifyCmd)?.[1]?.trim().split(/\s+/) ?? [];
-  const entries = [
-    "server.ts", "src/client.ts", "src/share.ts", "src/helper.ts", "fleet-e2e.ts",
-    ...readdirSync(ROOT).filter((f) => /^fleet-e2e-.*\.ts$/.test(f)).sort(),
-  ];
-  const uncovered = entries.filter((f) => !tscArgs.includes(f));
-  pin("watchdog.sh's tsc list covers every entry file on disk", uncovered.length === 0,
-    `${tscArgs.length} listed, uncovered=[${uncovered}]`);
+  const lsTs = spawnSync("git", ["-C", ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "*.ts"],
+    { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
+  const treeTs = lsTs.status === 0 ? [...new Set(lsTs.stdout.split("\0").filter((f) => f && exists(f)))] : [];
+  const scanner = new Bun.Transpiler({ loader: "ts" });
+  const unscannable: string[] = [];
+  const reached = new Set<string>();
+  const queue = tscArgs.filter((f) => exists(f));
+  while (queue.length > 0) {
+    const f = queue.pop()!;
+    if (reached.has(f)) continue;
+    reached.add(f);
+    let found: { path: string; kind: string }[] = [];
+    try { found = scanner.scanImports(read(f).replace(/^#!.*/, "")); } catch { unscannable.push(f); }
+    for (const imp of found) {
+      if (imp.kind === "require-call" || !imp.path.startsWith(".")) continue;
+      const base = resolve(ROOT, f, "..", imp.path).slice(ROOT.length + 1);
+      const hit = [base, `${base}.ts`, base.replace(/\.js$/, ".ts"), `${base}/index.ts`]
+        .find((c) => c.endsWith(".ts") && exists(c) && statSync(`${ROOT}/${c}`).isFile());
+      if (hit !== undefined && !reached.has(hit)) queue.push(hit);
+    }
+  }
+  // a derivation that could not run must fail as ITSELF: an empty tree has nothing uncovered
+  pin("the tree's .ts set for the type-gate coverage rule is derived from git, and the derivation ran",
+    lsTs.status === 0 && treeTs.length > 0 && unscannable.length === 0,
+    lsTs.status === 0 ? `${treeTs.length} .ts file(s), unscannable=[${unscannable}]`
+      : (lsTs.error?.message || lsTs.stderr || `git ls-files exited ${String(lsTs.status)}`).trim().slice(0, 160));
+  const uncovered = treeTs.filter((f) => !reached.has(f) && !TSC_EXEMPT.has(f)).sort();
+  const staleExempt = [...TSC_EXEMPT.keys()].filter((f) => !treeTs.includes(f) || reached.has(f));
+  pin("every .ts in the tree reaches watchdog.sh's tsc list through imports, or is exempt by name with a reason",
+    tscArgs.length > 0 && uncovered.length === 0 && staleExempt.length === 0,
+    `${tscArgs.length} listed, ${reached.size} reached, ${TSC_EXEMPT.size} exempt; uncovered=[${uncovered}] stale-exempt=[${staleExempt}]`);
   const ghosts = tscArgs.filter((f) => !exists(f));
   pin("every file in watchdog.sh's tsc list exists", ghosts.length === 0, ghosts.join(", "));
 }
@@ -8120,7 +8159,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 // startup check covers only the unit NAMES; this pin covers the modules.
 {
   const RULE_SHARD = "every check module the runner boots sits in a shard unit, and in several only as its step says";
-  const runner = read("fleet-e2e.ts");
+  // `//` lines are dropped before any scan (Astra finding 5, 2026-09-14): a `// await x.run(check);`
+  // is an import that runs nothing, and the step scan below counted it as the module's run.
+  const runner = read("fleet-e2e.ts").split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
   const imports = [...runner.matchAll(/^import \* as (\w+) from "\.\/e2e\/([\w-]+)";$/gm)];
   const booted = imports.map((m) => m[2]!)
     .filter((m) => m !== "trail"); // the trail family runs in every shard by construction
@@ -8143,6 +8184,11 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_SHARD} — booted modules ⊆ listed, none phantom, every module's table units = its runner step's units`,
     booted.length > 30 && stepUnitsOf.size === booted.length && unlisted.length === 0 && twice.length === 0 && phantom.length === 0,
     `booted=${booted.length} stepMapped=${stepUnitsOf.size} listed=${listed.length} multi=[${multi}] unlisted=[${unlisted}] mismatched=[${twice.map((m) => `${m}:${unitsListing(m)}≠${stepUnitsOf.get(m) ?? []}`)}] phantom=[${phantom}]`);
+  // the trail family is exempt from the table, not from running: outside every step, so the step
+  // scan above never sees it — its own top-level call is what says it still runs
+  pin(`${RULE_SHARD} — the trail family, outside every step, is still awaited by the runner`,
+    moduleOf.get("trail") === "trail" && /^await trail\.run\(/m.test(runner),
+    `imported=${moduleOf.get("trail") === "trail"} awaited=${/^await trail\.run\(/m.test(runner)}`);
   // the runner's own startup check on the step NAMES fires only when the runner boots — behind a
   // server start and the suite mutex (2026-09-13: 26 min of queue for a unit renamed in the table
   // and not in the runner). The same fact, here, costs milliseconds and no server.

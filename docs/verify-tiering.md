@@ -3448,7 +3448,7 @@ dritten Rundgang zeigt, ist diese Familie und kein Regress am `fleet-report`-Pfa
 Folge 2/3/4 und faellt trotzdem, gehoert sie dem, der sie sieht — dann ist wirklich ein anderer
 Konjunkt gefallen, und heute sagt das `detail` nicht welcher.
 
-### 11.2r Eine zwanzigste Familie: das Watch-Idempotenz-Paar in `e2e/watch.ts` — und die Haelfte der Sichtungen ist per Konstruktion unattribuierbar (2026-09-06 registriert; Mechanismus AM PROBENCODE gelesen; 2026-09-14 Wurzel AM SERVERCODE gelesen, per Sonde provoziert, REPARIERT in `<FIX-SHA>` — siehe Nachtrag)
+### 11.2r Eine zwanzigste Familie: das Watch-Idempotenz-Paar in `e2e/watch.ts` — und die Haelfte der Sichtungen ist per Konstruktion unattribuierbar (2026-09-06 registriert; Mechanismus AM PROBENCODE gelesen; 2026-09-14 Wurzel AM SERVERCODE gelesen, per Sonde provoziert, REPARIERT in `119c1b3e` — siehe Nachtrag)
 
 Ebenfalls aus der Uebergabe („gemessen, aber nicht registriert", dort als ein Paar mit 4/557 auf
 vier Baeumen gefuehrt). Nachgerechnet zerfaellt es in zwei Checks mit verschiedenen Nennern:
@@ -3499,7 +3499,7 @@ Aussage ueber die Idempotenz und kein Befund am Watch-Pfad — es ist diese Regi
 zwei VERSCHIEDENE Ids da, ist wirklich ein zweites Watch entstanden, und das gehoert dem, der es
 sieht.
 
-#### Nachtrag 2026-09-14: der Mechanismus, am Code gelesen und provoziert — REPARIERT in `<FIX-SHA>`
+#### Nachtrag 2026-09-14: der Mechanismus, am Code gelesen und provoziert — REPARIERT in `119c1b3e`
 
 Anlass war die 5. Sichtung (Audit auf `ea2d0c52`, Second-host-Instanz `run-26ea1a205005-1789395087099`):
 `a9abb2ac vs 1747d340`, und die `server.log` derselben Instanz traegt fuer BEIDE Ids `created event …
@@ -3537,7 +3537,7 @@ verbraucht, statt aller armed Watches des Slots — ein erlaubter Fire zwischen 
 kein Rot mehr, ein verbrauchter Zwilling aber schon. `delete the spent transport Watch` traegt sein
 `detail` bereits seit `d3ce75ad`; der Satz oben, es habe keines, ist damit ueberholt.
 
-**Fuer den Leser eines roten Laufs NACH `<FIX-SHA>`:** ein Rot an einer der drei
+**Fuer den Leser eines roten Laufs NACH `119c1b3e`:** ein Rot an einer der drei
 `re-subscribing …`-Zeilen oder an der Replay-Sonde ist wieder ECHT und gehoert dem, der es sieht.
 
 ### 11.2t EINE SICHTUNG, keine Familie: der Codex-Resume-Heal in `e2e/restart.ts` — und das erste Rot, dessen Beleg NICHT MEHR AUFFINDBAR war (2026-09-07)

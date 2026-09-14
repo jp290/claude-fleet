@@ -552,3 +552,24 @@ export function renderSnippetBlock(pkg: SnippetPackage): string {
   if (ordered.length > 0) lines.push(omissionLine(ordered, Math.min(pkg.listed, ordered.length)));
   return `\n\n${lines.join("\n")}`;
 }
+
+export interface SnippetReceipt {
+  /** UTF-8 bytes of the delivered block — 0 exactly when `renderSnippetBlock` delivers nothing. */
+  readonly bytes: number;
+  /** Excerpts shown; a merged range covering two symbols is one. */
+  readonly hits: number;
+  /** What the brief NAMED and did not get, in rendering order — prose tokens are not a request. */
+  readonly omitted: readonly SnippetOmission[];
+}
+
+/**
+ * The receipt's account of the source package, derived from the SAME package the block is rendered
+ * from — so a row reads 0/0/[] exactly when the brief carried no block, never when it merely had
+ * nothing to show.
+ */
+export function snippetReceipt(pkg: SnippetPackage): SnippetReceipt {
+  const block = renderSnippetBlock(pkg);
+  if (block === "") return { bytes: 0, hits: 0, omitted: [] };
+  return { bytes: byteLength(block), hits: pkg.shown.length,
+    omitted: orderedOmissions(pkg.omitted).filter(namedByBrief).map((entry) => ({ ref: entry.ref, why: entry.why })) };
+}

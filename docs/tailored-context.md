@@ -212,8 +212,12 @@ Two details are not negotiable. **Raw bytes, never `gitRead`:** `gitRead` trims,
 leading blank line shifts every line number after it by one — precisely the number the label claims.
 **The position before `anchorBlock`:** the context receipt hashes the anchor block ALONE, so anything
 appended after it would be hashed as an anchor. `deliveredBytes` then follows by itself, because it
-is computed from `deliveredBrief`; no receipt field is added, since the version and the selection
-are in the delivered block (path, symbol, lines, blob, commit) and checkable there.
+is computed from `deliveredBrief`. The version and the selection are in the delivered block (path,
+symbol, lines, blob, commit) and checkable there. Since 2026-09-14 the receipt also carries the
+block's COUNT as `snippet: {bytes, hits, omitted}` (`context-snippets.ts#snippetReceipt`, derived
+from the same package the block is rendered from; `0/0/[]` = no block), so the share of a brief the
+source package took is readable from the ledger without the prompt journal. Field reference:
+`docs/self-api.md` §„Die zwei Ledger".
 
 **(d) the integration check is `e2e/tasks.ts` (d3)** — the Fleet-tree dispatch, the only place that
 delivers inside a REAL git repository (`ROOT`). It commits a fixture (a padded `.ts` file and a

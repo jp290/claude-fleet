@@ -33,7 +33,7 @@ import {
 } from "./rulebook";
 import { validateRefineProposal, type RefineValidation } from "./refine-validate";
 import { planContext, type ContextPlan, type ContextPlanInput, type ContextPlanSelection } from "./context-plan";
-import { buildSnippetPackage, planSnippets, renderSnippetBlock, type SnippetFile } from "./context-snippets";
+import { buildSnippetPackage, planSnippets, snippetReceipt, renderSnippetBlock, type SnippetFile, type SnippetReceipt } from "./context-snippets";
 import {
   CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest,
   stampObservedSourceHashes, type ContextManifestRead,
@@ -171,6 +171,10 @@ const STEWARD_JOURNAL_FILE = `${import.meta.dir}/steward-journal.jsonl`;
 // per-lane attributed-outcome trail — one server-stamped fact per lane terminal event (see
 // buildLaneOutcome). Rotated by appendEvent at AUDIT_ROTATE_BYTES, same as AUDIT_FILE.
 const LANE_OUTCOME_FILE = `${import.meta.dir}/lane-outcomes.jsonl`;
+// every fleet-report, twice: one `open` row with the full text when it is filed and one `decision`
+// row when it is judged. Append-only — the live list in fleet.json is a bounded tail
+// (pruneFleetReports, FLEET_REPORT_KEEP) and this is what survives it.
+const FLEET_REPORT_LEDGER_FILE = `${import.meta.dir}/fleet-reports.jsonl`;
 // Immutable evidence of the exact ContextPlan pointers delivered with a founding brief. Selection
 // is always freshly derived; only this delivery receipt is historical and append-only.
 const CONTEXT_RECEIPT_FILE = `${import.meta.dir}/context-receipts.jsonl`;
@@ -178,6 +182,9 @@ const CONTEXT_RECEIPT_FILE = `${import.meta.dir}/context-receipts.jsonl`;
 // WITHOUT it predates the field and is v1 — that is the only honest way to keep the ledger's
 // byte-reconstruction promise across a renderer change.
 const CONTEXT_ANCHOR_RENDERER = "v2";
+// The `snippet` of a receipt whose brief carried no source-package block (every founding brief, and
+// a clarify lane). Written, never omitted: an ABSENT field dates a row from before the count existed.
+const NO_SNIPPET_RECEIPT = { bytes: 0, hits: 0, omitted: [] } as const;
 // the owner disposition rail — one append-only label per advisory output the owner ruled on
 // (see the DISPOSITION region below). Same appendEvent discipline/rotation as the two above.
 const DISPOSITION_FILE = `${import.meta.dir}/dispositions.jsonl`;
@@ -7423,6 +7430,17 @@ const REJECTED_LAND_EXIT_MAIN = "Have the lane repair and file again, then decid
   + "accepted report clears this. A rejection is never re-decided, and this route has no override — "
   + "if the rejection itself was wrong, the owner lands from the board.";
 
+function ledgerReportOpen(report: FleetReport): Promise<void> {
+  return appendEvent(FLEET_REPORT_LEDGER_FILE, { kind: "open", id: report.id, taskId: report.provenance.taskId,
+    programId: report.provenance.programId, slot: report.worker.slot, branch: report.worker.branch,
+    status: report.status, basis: report.basis, text: report.text, at: report.reportedAt });
+}
+// called right after a door or the rule stamps `report.decision`; the row copies that stamp
+function ledgerReportDecision(report: FleetReport, decision: FleetReportDecision): Promise<void> {
+  return appendEvent(FLEET_REPORT_LEDGER_FILE, { kind: "decision", id: report.id, disposition: decision.disposition,
+    by: decision.by, reason: decision.reason, mainAfter: decision.mainAfter ?? null, at: decision.at });
+}
+
 function pruneFleetReports(): void {
   const terminal = fleetReports.filter((report) => {
     if (report.basis === "program") return !!report.decision;
@@ -7521,11 +7539,14 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
     };
     const entry = appendProgramInbox(program, "fleet-report", id);
     fleetReports = [...fleetReports, report];
+    // the line is serialized NOW, in filing order; awaited below, so no await opens inside this block
+    const ledgered = ledgerReportOpen(report);
     audit("fleet_report_open", s.id,
       `${id} receiver=program:${program.id} status=${status} basis=program inbox=${entry.id}`);
     pruneFleetReports();
     disarmLaneWatchesForReport(s,
       programOccupancy(program) === "live" ? program.main! : null, id);
+    await ledgered;
     await saveStateNow();
     return json({ ok: true, report, inbox: entry.id });
   }
@@ -7595,10 +7616,12 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   };
   fleetReports = [...fleetReports, report];
   fleetEvents = [...fleetEvents, event];
+  const ledgered = ledgerReportOpen(report);
   audit("fleet_report_open", s.id,
     `${id} receiver=${bound ? bound.receiver.slot : "owner-inbox"} status=${status} basis=${report.basis}`);
   pruneFleetReports();
   disarmLaneWatchesForReport(s, bound?.receiver ?? null, id);
+  await ledgered;
   await saveStateNow();
   return json({ ok: true, report });
 }
@@ -7913,6 +7936,7 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
   const at = Date.now();
   report.decision = { disposition, at,
     by: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId }, reason };
+  const ledgered = ledgerReportDecision(report, report.decision);
   // …and the transport half, through the ack route's OWN writer rather than a second one. A MAIN
   // that judged the report has by construction received it, so leaving the event open would let
   // recoverFleetReportDelivery re-paste a report already decided. An already-terminal event is left
@@ -7925,6 +7949,7 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
   // successor reconstructs from, and a paste that raced it could tell a lane about a judgement no
   // row carried. It is deliberately below the already-decided refusal above, which is what makes a
   // second call on the same report carry nothing a second time.
+  await ledgered;
   await deliverFleetReportDecision(report);
   // No audit word of its own for the VERDICT: the durable record of this act is the row it just
   // wrote — persisted, hydrated and projected — and a trail line would be the weaker copy of it.
@@ -7983,6 +8008,7 @@ async function ownerDecideFleetReport(id: string, disposition: FleetReportDispos
 
   const at = Date.now();
   report.decision = { disposition, at, by: "owner", reason };
+  const ledgered = ledgerReportDecision(report, report.decision);
   // The transport half, through the ack route's own writer, exactly as the self door does it. For
   // an orphaned bound row the event is already terminal (`receiver-gone`) and is left byte-for-byte
   // as it is — that status is evidence of a loss, not an open debt. For an OWNER-INBOX row it is
@@ -7995,6 +8021,7 @@ async function ownerDecideFleetReport(id: string, disposition: FleetReportDispos
   // is told, and a carry wired into only one of them would make the answer depend on which
   // principal happened to be reachable. This door is in fact the likelier one to reach a LIVE lane:
   // it opens exactly when the RECEIVER occupant is gone, which says nothing about the worker.
+  await ledgered;
   await deliverFleetReportDecision(report);
   // THE ONE PLACE THIS DOOR WRITES A TRAIL LINE WHERE ITS SELF TWIN DOES NOT, and the asymmetry is
   // the point rather than an inconsistency: a MAIN's verdict is readable back through its own
@@ -8086,11 +8113,13 @@ async function tickAcceptByLand(origin: "boot" | "tick" | "audit"): Promise<numb
       report.decision = { disposition: "accepted", at: Date.now(), by: { rule: "accepted-by-land" },
         reason: `accepted-by-land: landed as ${reading.mainAfter.slice(0, 12)}, post-land audit ${reading.audit}`,
         mainAfter: reading.mainAfter };
+      const ledgered = ledgerReportDecision(report, report.decision);
       // the transport half exactly as both doors settle it: a decided report must not be re-pasted
       const event = report.eventId === null ? undefined : fleetEvents.find((e) => e.id === report.eventId);
       if (event && !FLEET_EVENT_TERMINAL.includes(event.status)) settleFleetEventAcknowledged(event);
       audit("fleet_report_rule_decision", report.worker.slot,
         `${report.id} accepted-by-land mainAfter=${reading.mainAfter.slice(0, 12)} audit=${reading.audit}@${reading.auditAt} via=${origin}`);
+      await ledgered;
       await deliverFleetReportDecision(report);
       closed++;
     }
@@ -10645,7 +10674,9 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // names, cut from the LANE'S commit — `head` above is the integration tip, and main may have
     // moved since the worktree forked. POSITION before the studio block and the anchors, for the
     // anchors' reason: the receipt hashes the anchor block alone. Clarify gets none, like the notes.
-    const snippetBlock = clarify ? "" : await laneSnippetBlock(wt.path, head, { blobShas, blobModes }, brief, waveRows);
+    const snippet = clarify ? { block: "", receipt: NO_SNIPPET_RECEIPT }
+      : await laneSnippetBlock(wt.path, head, { blobShas, blobModes }, brief, waveRows);
+    const snippetBlock = snippet.block;
     // Every await since the readiness wait was git or state work, and a kill or re-open in that window
     // must not receive this text — the same re-check the boot sleep gets, at the last moment it helps.
     if (identityLost()) { await requeue("slot changed during brief assembly — requeued"); return; }
@@ -10665,7 +10696,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       id: randomBytes(16).toString("hex"), hash, at, repo: wt.repo, head,
       taskId: free.taskId ?? null, originId: free.originId ?? null,
       programId: free.programId ?? null, slot: free.id, branch: wt.branch,
-      harness: free.harness, model: free.model, effort: free.effort,
+      harness: free.harness, ...receiptModel(free), effort: free.effort,
       mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
       deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength,
       truncated: false,
@@ -10680,6 +10711,9 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       noteSources: noteRows.filter((row) => row.taskIds?.length)
         .map((row) => ({ id: row.id, taskIds: row.taskIds! })),
       ...(laneSources.unknown.length ? { noteSourcesUnknown: laneSources.unknown } : {}),
+      // WHAT THE SOURCE PACKAGE WAS, counted at the seam that rendered it: bytes, excerpts shown and
+      // the named refs it could not deliver. 0/0/[] is "this brief carried no block".
+      snippet: snippet.receipt,
       renderer: CONTEXT_ANCHOR_RENDERER,
       // The join key — the SAME function LaneOutcome.briefHash uses over the lane's first logged
       // prompt, so a receipt and the outcome it founded meet exactly. `hash` above keys a different question.
@@ -10700,7 +10734,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
 // claims), size-bounded; a file this seam could not read is `source-unreadable` in the block.
 async function laneSnippetBlock(lanePath: string, head: string,
   headListing: { readonly blobShas: ReadonlyMap<string, string>; readonly blobModes: ReadonlyMap<string, string> },
-  brief: string, rows: readonly Task[]): Promise<string> {
+  brief: string, rows: readonly Task[]): Promise<{ block: string; receipt: SnippetReceipt }> {
   const rev = await gitRead(lanePath, "rev-parse", "--verify", "HEAD^{commit}");
   if (rev.code !== 0 || !/^[0-9a-f]{40,64}$/.test(rev.out)) throw new Error("could not read the lane commit for the source package");
   const commit = rev.out;
@@ -10721,7 +10755,8 @@ async function laneSnippetBlock(lanePath: string, head: string,
     }
     files.push({ path, text, blob });
   }
-  return renderSnippetBlock(buildSnippetPackage(plan, files, { commit, rows: snipRows }));
+  const pkg = buildSnippetPackage(plan, files, { commit, rows: snipRows });
+  return { block: renderSnippetBlock(pkg), receipt: snippetReceipt(pkg) };
 }
 
 type ContextReceiptSelection = {
@@ -23850,10 +23885,10 @@ async function succeedSupervisor(s: Slot, label: string | null, carry: string | 
         // A Supervisor sits ACROSS programs, so its receipt names none: programId:null is the
         // cross-program scope, not a missing attribution.
         taskId: null, originId: null, programId: null, slot: free.id, branch: preflight.value.branch,
-        harness: free.harness, model: free.model, effort: free.effort,
+        harness: free.harness, ...receiptModel(free), effort: free.effort,
         mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
         deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
-        renderer: CONTEXT_ANCHOR_RENDERER,
+        snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
         briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
@@ -23972,10 +24007,10 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
       await appendEvent(CONTEXT_RECEIPT_FILE, {
         id: randomBytes(16).toString("hex"), hash, at, repo, head: preflight.value.head,
         taskId: null, originId: null, programId: null, slot: free.id, branch: preflight.value.branch,
-        harness: free.harness, model: free.model, effort: free.effort,
+        harness: free.harness, ...receiptModel(free), effort: free.effort,
         mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
         deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
-        renderer: CONTEXT_ANCHOR_RENDERER,
+        snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
         briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
@@ -24658,10 +24693,10 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         await appendEventStrict(CONTEXT_RECEIPT_FILE, {
           id: randomBytes(16).toString("hex"), hash, at, repo, head: preflight.value.head,
           taskId: null, originId: null, programId: program.id, slot: free.id, branch: preflight.value.branch,
-          harness: free.harness, model: free.model, effort: free.effort,
+          harness: free.harness, ...receiptModel(free), effort: free.effort,
           mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
           deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
-          renderer: CONTEXT_ANCHOR_RENDERER,
+          snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
           briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
         });
       } catch (e) {
@@ -24914,10 +24949,10 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         await appendEventStrict(CONTEXT_RECEIPT_FILE, {
           id: randomBytes(16).toString("hex"), hash, at, repo, head: preflight.value.head,
           taskId: null, originId: null, programId: program.id, slot: free.id, branch: preflight.value.branch,
-          harness: free.harness, model: free.model, effort: free.effort,
+          harness: free.harness, ...receiptModel(free), effort: free.effort,
           mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
           deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
-          renderer: CONTEXT_ANCHOR_RENDERER,
+          snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
           briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
         });
       } catch (e) {
@@ -27101,21 +27136,32 @@ const ctxFiles = new Map<number, { identity: string; file: string }>();
 //     other way: it is a property of this file at this size/mtime, it cannot change while the key
 //     does not, and re-reading it separately could only pair it with a different record's counter.
 const ctxCache = new Map<number, { key: string; read: number | ContextRead | null }>();
+// Only the default adapter and the two fixed Pi profiles have a model Fleet can name when the slot
+// has no explicit pin: their spawn lines always pass their respective literal model. Every other
+// foreign harness's ambient model is unknown; borrowing either default would invent.
+function harnessDefaultModel(h: Harness): string | null {
+  return h === CLAUDE_HARNESS ? DEFAULT_MODEL
+    : h === PI_ZAI_HARNESS ? "glm-5.3"
+    : h === PI_OX_HARNESS ? "x-preview-f-free"
+    : null;
+}
+// The model a context receipt names, resolved AT WRITE TIME — a later reader cannot know which
+// FLEET_MODEL the server ran with. "spawn": the slot pinned it. "default": the pin was absent and
+// the harness's spawn line passed its own default. "ambient": neither — the harness chose, Fleet
+// cannot name it, and the model field says exactly that rather than null or a borrowed id.
+function receiptModel(s: Slot): { model: string; modelOrigin: "spawn" | "default" | "ambient" } {
+  if (s.model) return { model: s.model, modelOrigin: "spawn" };
+  const fallback = harnessDefaultModel(harnessOf(s.harness));
+  return fallback ? { model: fallback, modelOrigin: "default" } : { model: "ambient", modelOrigin: "ambient" };
+}
 function contextFill(s: Slot): ContextFill | null {
   if (!s.cwd || !s.sessionId) return null;
   const h = harnessOf(s.harness);
   const reader = h.context;
   if (!reader) return null;
-  // Only the default adapter and the two fixed Pi profiles have a model Fleet can name when the
-  // slot has no explicit pin: their spawn lines always pass their respective literal model.
-  // Every other foreign harness's ambient model is unknown; borrowing either default would invent.
   // A reader that carries its own denominator never reaches this: for Codex the window is in the
   // rollout, and contextWindowFor names no Codex model on purpose.
-  const modelWindow = reader.windowFromFile ? null : contextWindowFor(s.model
-    ?? (h === CLAUDE_HARNESS ? DEFAULT_MODEL
-      : h === PI_ZAI_HARNESS ? "glm-5.3"
-      : h === PI_OX_HARNESS ? "x-preview-f-free"
-      : null));
+  const modelWindow = reader.windowFromFile ? null : contextWindowFor(s.model ?? harnessDefaultModel(h));
   // Absence 5 for a model-denominator reader, decided BEFORE any disk work exactly as before — so
   // neither the answer nor the cost of the claude/pi/pi-zai path is touched by this branch.
   if (!reader.windowFromFile && modelWindow === null) return null;

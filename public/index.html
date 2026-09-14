@@ -105,6 +105,17 @@
   /* row 2: view/layout tools, separate from the identity row above */
   #sidetools { display: flex; align-items: center; gap: 3px; padding: 0 10px 8px; }
   #sidetools #queuebtn { margin-left: auto; }
+  /* ⋯ mehr: inline fold under the tool row (no overlay) — it wraps, so a phone drawer never scrolls sideways */
+  #morebtn { flex: none; width: 22px; height: 26px; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--raised); color: var(--dim); font-size: 13px; font-family: inherit; cursor: pointer; padding: 0; }
+  #morebtn:hover { color: var(--text); }
+  #morebtn.active { color: var(--accent); border-color: var(--focus); }
+  #morepanel { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%;
+    margin: 0 10px 8px; padding: 6px 8px 8px; border: 1px solid var(--line); border-radius: 8px; }
+  #morepanel .morehead { flex: 1 0 100%; color: #777; font-size: 10px; letter-spacing: 0.06em;
+    text-transform: uppercase; }
+  #morepanel .bbtn { margin-top: 0; }
+  #morepanel[hidden] { display: none; }
   #collapse { flex: none; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--line);
     background: var(--raised); color: var(--dim); font-size: 13px; font-family: inherit; cursor: pointer;
     display: flex; align-items: center; justify-content: center; line-height: 1; }
@@ -133,7 +144,7 @@
   .rowacts { display: none; }
   /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
   #side.collapsed { width: 50px; }
-  #side.collapsed #sidetitle, #side.collapsed #dot, #side.collapsed #sidetools,
+  #side.collapsed #sidetitle, #side.collapsed #dot, #side.collapsed #sidetools, #side.collapsed #morepanel,
   #side.collapsed #instwrap,
   #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .slotact { display: none; }
   #side.collapsed #sidehead { padding: 10px 0 6px; justify-content: center; }
@@ -1466,6 +1477,8 @@
     /* the phone is the only device this switch is for — give it a finger-sized target
        in the drawer instead of the 26px desktop chip */
     #saverbtn { width: 40px; height: 40px; font-size: 17px; }
+    #morebtn { width: 40px; height: 40px; font-size: 17px; }
+    #morepanel .bbtn { min-height: 40px; }
 
     .panel { max-width: 96vw; max-height: 86vh; padding: 13px; }
     .pkrow { padding: 11px 9px; font-size: 13px; }

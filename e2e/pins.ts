@@ -47,6 +47,7 @@ import {
 } from "../lane-signals";
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
 import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
+import { readEventLog, readLedger } from "../server/persist";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
@@ -2148,6 +2149,58 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     else
       pin(RULE_REACH, stranded.length === 0,
         `${active.length} active pack(s); stranded=[${stranded.join(" ")}]`);
+  }
+}
+
+// server/persist.ts#readLedger is the one read door for every JSONL ledger, and its callers read
+// fields straight off a row (server.ts#stewardRecentSends: `e.event`). A line that PARSES but is not
+// a record — `null`, a primitive, an array — used to be delivered as a row with malformed=0, and the
+// consumer threw a TypeError (Astra finding 3, docs/messungen/2026-09-14-astra-suiten-types-tests-befunde.md
+// R3). The reader is IMPORTED and RUN over scratch fixtures: a source match would stay green the day
+// the check moved below the push.
+{
+  const RULE_LEDGER = "readLedger delivers only records: a parseable non-object line is counted malformed, never a row";
+  const dir = mkdtempSync(`${tmpdir()}/fleet-pins-ledger-`);
+  try {
+    const valid = ['{"event":"a","ts":1}', '{"event":"b","ts":2,"detail":"x:y"}'];
+    for (const [i, form] of ["null", "42", "-1.5", '"text"', "true", "false", "[]", '[{"event":"a"}]'].entries()) {
+      for (const generation of [".1", ""]) {
+        const file = `${dir}/shape-${i}-${generation ? "older" : "current"}.jsonl`;
+        writeFileSync(`${file}${generation}`, `${valid[0]}\n${form}\n${valid[1]}\n`);
+        const got = await readLedger<Record<string, unknown>>(file);
+        pin(`${RULE_LEDGER} — ${form} in the ${generation ? "older" : "current"} generation`,
+          got.total === 2 && got.malformed === 1 && got.rows.length === 2
+            && got.rows.every((r) => r !== null && typeof r === "object" && !Array.isArray(r))
+            && JSON.stringify(got.rows) === `[${valid.join(",")}]`,
+          `total=${got.total} malformed=${got.malformed} rows=${JSON.stringify(got.rows).slice(0, 120)}`);
+      }
+    }
+    // the torn line keeps its count, and both kinds of hole add up rather than one masking the other
+    const mixed = `${dir}/mixed.jsonl`;
+    writeFileSync(mixed, `null\n{"event":"torn"\n${valid[0]}\n`);
+    const holes = await readLedger<Record<string, unknown>>(mixed);
+    pin(`${RULE_LEDGER} — a torn line and a null line are two holes`,
+      holes.total === 1 && holes.malformed === 2, `total=${holes.total} malformed=${holes.malformed}`);
+    // …and today's ledgers read exactly as before: a fixture of valid records across both generations
+    // yields the same rows, in chronological order, byte-identical to a plain parse of each line.
+    const older = ['{"event":"steward_send","ts":1,"slot":3,"detail":"nudge:r1"}', '{"at":2,"covers":[{"branch":"b","mainAfter":"abc"}],"nested":{"k":[1,null,"s"]}}'];
+    const current = ['{"id":"d1","target":"srv","at":3,"empty":{}}', '{"text":"ümlaut \\"quoted\\" \\n","ts":4,"n":null}'];
+    const same = `${dir}/same.jsonl`;
+    writeFileSync(`${same}.1`, `${older.join("\n")}\n`);
+    writeFileSync(same, `${current.join("\n")}\n`);
+    const read = await readLedger<Record<string, unknown>>(same);
+    const plain = [...older, ...current];
+    pin(`${RULE_LEDGER} — valid records across both generations are delivered unchanged and in order`,
+      read.total === plain.length && read.malformed === 0
+        && read.rows.map((r) => JSON.stringify(r)).join("\n") === plain.join("\n"),
+      `total=${read.total} malformed=${read.malformed}`);
+    // readEventLog is the rows-only door on top of it and must inherit the shape guarantee
+    const viaEventLog = await readEventLog(`${dir}/mixed.jsonl`);
+    pin(`${RULE_LEDGER} — readEventLog inherits it`,
+      viaEventLog.total === 1 && viaEventLog.rows.every((r) => r !== null && typeof r === "object"),
+      `total=${viaEventLog.total}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

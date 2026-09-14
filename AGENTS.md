@@ -305,6 +305,23 @@ because that is where the cursor is, and never back into the runner. Shared plum
 shell script, a doc, this file. It reads files and compares them, with no server and no network.
 Write a RULE there, never a snapshot.
 
+## How a check is written
+
+1. **One check, one claim.** A conjunction of unrelated facts splits into one `check()` each; the
+   detail string names the conjunct that died, never a JSON blob of the whole object.
+2. **An exactness invariant carries no tolerance.** If the live path needs one, ONE sentence in the
+   code says which clock it forgives and why; otherwise the check is a smoke test wearing a proof's
+   name. The synthetic path stays exact.
+3. **A synthetic timeline lives as a table** (t | event | exclusive owner) next to its literals, and
+   the assertion's numbers are read off that table — not remembered from a prose comment 30 lines up.
+4. **A policy exception is a NAMED predicate** (`suiteRestartedSrv`), never a suite-shape proxy
+   (`results.length > N`). A comment and the predicate under it say the same thing; when they drift,
+   the predicate is what runs.
+5. **Dual-mode filters get named predicates** (`rowHasPhases`, `phasesWellFormed`) — five more lines,
+   one fewer re-read.
+
+And from `## A red check is yours`: a probe that could not run fails as ITSELF, under its own name.
+
 ## If you are a Codex or Pi lane
 
 Since 2026-08-12 normal agent harnesses run with full local access: you edit, use git and commit,

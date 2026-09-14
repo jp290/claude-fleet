@@ -113,11 +113,12 @@ export const CONTEXT_PACKS = [
     sources: [
       { path: "AGENTS.md", anchor: "## Verify" },
       { path: "docs/verify-tiering.md", anchor: "## 6. Pre-land gate vs post-land audit — what each buys that the other cannot" },
+      { path: "AGENTS.md", anchor: "## How a check is written" },
     ],
     requiredCapabilities: ["tracked-source-read", "pure-validator-run"],
     harnesses: ALL_HARNESSES,
     modes: ["read-only", "mutating"],
-    estimatedBytes: 5200,
+    estimatedBytes: 6313,
     evidence: "tree-anchor",
     owner: "owner",
     status: "active",

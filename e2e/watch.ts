@@ -1938,14 +1938,32 @@ export async function run(): Promise<void> {
     const sameRetry = watchRequest ? await replyClarification(main1Tok, watchRequest.id, "answer to dead pane")
       : new Response(null, { status: 599 });
     const sameRetryBody = await sameRetry.json() as { request?: ClarificationRow };
-    const healedPane = (await tmuxOut("capture-pane", "-t", `s${watched.slot}`, "-p")).out;
+    // POLLED and joined, for the reason the successful-reply row above names: the route answers
+    // when it has SENT, and the freshly healed shell still has to render the paste. Red twice on
+    // the Linux second-host (audits 1789375381366, 1789377403640) with every conjunct the old detail
+    // printed holding — so the detail now names each conjunct on its own.
+    const healedMark = `CLARIFICATION ANSWER [request ${watchRequest?.id}]`;
+    let healedPane = "";
+    for (let i = 0; i < 50; i++) {
+      healedPane = (await tmuxOut("capture-pane", "-t", `s${watched.slot}`, "-p", "-J")).out;
+      if (healedPane.includes(healedMark)) break;
+      await Bun.sleep(100);
+    }
+    const retryRow = readClarification(watchRequest?.id);
+    const retryAwaiting = readAwaiting(watched.slot);
+    const retryOk = {
+      healed: healed === 0,
+      http: sameRetry.ok,
+      bodyAnswered: sameRetryBody.request?.status === "answered",
+      bodyClosed: sameRetryBody.request?.closedAt !== null,
+      paneMark: healedPane.includes(healedMark),
+      fileAnswered: retryRow?.status === "answered",
+      awaitingCleared: retryAwaiting === null,
+    };
     check("clarification identical retry re-attempts the send and only a successful one answers and clears the wait",
-      healed === 0 && sameRetry.ok && sameRetryBody.request?.status === "answered"
-        && sameRetryBody.request.closedAt !== null
-        && healedPane.includes(`CLARIFICATION ANSWER [request ${watchRequest?.id}]`)
-        && readClarification(watchRequest?.id)?.status === "answered"
-        && readAwaiting(watched.slot) === null,
-      `healed=${healed} ${sameRetry.status} ${JSON.stringify(sameRetryBody.request)}`);
+      Object.values(retryOk).every(Boolean),
+      `${JSON.stringify(retryOk)} healed=${healed} ${sameRetry.status} fileStatus=${retryRow?.status} `
+        + `awaiting=${retryAwaiting} paneTail=${JSON.stringify(healedPane.trimEnd().slice(-400))} ${JSON.stringify(sameRetryBody.request)}`);
     const replySource = serverSource.slice(serverSource.indexOf("async function replyClarification("),
       serverSource.indexOf("async function acknowledgeFleetEvent("));
     check("clarification send-error branch returns 409 while answered assignment remains after sendText",

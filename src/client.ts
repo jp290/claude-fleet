@@ -10739,6 +10739,42 @@ async function openActivity(lens: ActLens, at?: { repo: string | null; hash: str
 }
 $("outcomebtn").onclick = () => void openActivity("lands");
 
+// ⋯ mehr — the board-wide fold under the header row: every NEW or secondary board action goes
+// in here first, never into the row above; promoting one to the row is its own owner call.
+let moreOpen = localStorage.getItem("fleet.more") === "1";
+const moreBtn = el("button", "", "⋯") as HTMLButtonElement;
+moreBtn.id = "morebtn";
+const morePanel = el("div", "");
+morePanel.id = "morepanel";
+function applyMore() {
+  moreBtn.classList.toggle("active", moreOpen);
+  moreBtn.title = moreOpen ? "mehr — close the panel of further board actions"
+    : "mehr — open the panel of further board actions";
+  moreBtn.setAttribute("aria-expanded", moreOpen ? "true" : "false");
+  morePanel.hidden = !moreOpen;
+}
+function moreAction(label: string, title: string, run: () => void): HTMLButtonElement {
+  const b = el("button", "bbtn", label) as HTMLButtonElement;
+  b.title = title;
+  b.onclick = run;
+  return b;
+}
+morePanel.append(
+  el("div", "morehead", "⋯ mehr"),
+  moreAction("⎇ Commits", ACT_LENS.find((l) => l.k === "commits")?.title ?? "",
+    () => void openActivity("commits")),
+  moreAction("📂 Akte", ACT_LENS.find((l) => l.k === "akte")?.title ?? "",
+    () => void openActivity("akte")),
+);
+moreBtn.onclick = () => {
+  moreOpen = !moreOpen;
+  localStorage.setItem("fleet.more", moreOpen ? "1" : "0");
+  applyMore();
+};
+$("sidetools").appendChild(moreBtn);
+$("sidetools").after(morePanel);
+applyMore();
+
 function copyLine(label: string, value: string): HTMLElement {
   const row = el("div", "shrline");
   row.appendChild(el("span", "k", label));

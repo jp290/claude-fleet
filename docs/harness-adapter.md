@@ -365,6 +365,10 @@ Netzwerkkosten werden nicht als null behauptet.
   nichts benennen konnte: Pane lebt, nimmt Tasten an, kein Agent dahinter — was ein unauflösbares Modell
   hinterlässt. Cache (git-Tick), also Bericht, nie Gate; jedes Gate behält seine eigene frische Probe. `null`
   = Tick war noch nicht da, das ist KEINE Antwort. Ein Board-Knopf existiert dafür noch nicht.
+  **Genau zwei Leser nehmen für `done-looking` die Faktschicht statt des Gates:** die Self-Land-Tür
+  und die Projektion, die sie nennt (`server.ts#laneSignalView`, `liveness:"fact"`) — Landen treibt
+  den Harness nicht, darum landet eine MAIN auch eine Lane auf `pi-zai` (`automatable:false`).
+  Alle Tick-Konsumenten (Watch, auto-③, Stalled) lesen weiter das Gate.
 - **tmux-Ziele sind seit 2026-09-01 EXAKT (`server.ts#sessTarget` → `=sN`, `server.ts#paneTarget` →
   `=sN:`; `server.ts#existingTmuxTarget` und `server.ts#paneAgentAt` formen intern).** Mechanismus: tmux
   3.6a löst ein nacktes `-t s1` erst exakt, dann als PRÄFIX auf — ist `s1` weg, trifft `has-session -t s1`

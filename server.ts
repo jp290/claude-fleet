@@ -1803,7 +1803,9 @@ function programPhaseInput(t: Task, programId: string, outcome: PhaseOutcomeFact
   const last = lane ? mergeLast.get(lane.id) ?? null : null;
   return {
     task: { id: t.id, kind: t.kind, status: t.status, note: t.note },
-    lane: lane ? laneSignalView(lane, now) : null,
+    // the self-land door's liveness reading, so REVIEWABLE and the door it names agree on a lane
+    // whose harness the automation policy declines (laneSignalView)
+    lane: lane ? laneSignalView(lane, now, "fact") : null,
     merge: {
       inflight: lane !== null && mergeInflight.has(lane.id),
       start: lane !== null && mergeStart.has(lane.id),
@@ -9390,7 +9392,9 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
   // disjoint predicate for an uncommitted tree, and there is nothing there to fast-forward. This is
   // a server predicate over facts, not a claim that the work is good — the MAIN supplies that
   // judgement by calling at all.
-  const signal = laneWatchSignal(laneSignalView(lane, Date.now()), MERGE_IDLE_MS);
+  // `fact` liveness: a harness the automation policy declines is still landable by its MAIN
+  // (laneSignalView states why; measured on a pi-zai lane 2026-09-13).
+  const signal = laneWatchSignal(laneSignalView(lane, Date.now(), "fact"), MERGE_IDLE_MS);
   if (signal !== "done-looking")
     return json({ error: `the lane is not done-looking (${signal ?? "no signal"}) — it must be alive, idle, clean and ahead of its base; let it finish, or commit its work, then call again`, signal }, 409);
   // (13) NOT BUSY, exactly as the owner route asks it, and the reservation is taken BEFORE the
@@ -26709,10 +26713,24 @@ function stewardTaskView(slotId: number): { id: string; status: Task["status"]; 
 // the deterministic inputs the done-looking predicate reads (lane-signals.ts). Built HERE, by the
 // one function both readers go through — the steward view that reports the label and the auto-③
 // tick that acts on it can never be looking at differently-assembled facts.
-function laneSignalView(s: Slot, now: number) {
+//
+// `liveness` picks WHICH of the tick's two liveness maps feeds `alive`, and the default is the gate.
+// "automation" is aliveInfo: the probe folded with harnessAutomatable, so a lane on a harness the
+// automation policy declines never becomes the TARGET of a Watch, auto-③ or the stalled nudge.
+// "fact" is the same probe unreduced (agentInfo), and it belongs to exactly two readers: the
+// self-land door and the projection that names that door. Landing is the bound MAIN's attended act
+// and types nothing into the lane's pane (repair rounds run their own resolver, and the verdict goes
+// through deliverMergeVerdict's fixed-prose waiver), so the work-prompt policy has no business
+// deciding it. Measured 2026-09-13 on slot 7 (pi-zai, automatable:false): `lastOutput` was never
+// missing (/api/sessions carries no `idle` key at all, so a jq `.idle` reads null for every slot),
+// and `alive:false` from the policy fold answered every self-land `not done-looking (no signal)`.
+// For the default adapter both maps are identical by construction (harnessAutomatableFor → true).
+function laneSignalView(s: Slot, now: number, liveness: "automation" | "fact" = "automation") {
+  const agent = agentInfo.get(s.id);
   return {
     git: gitInfo.get(s.id) ?? null,
-    alive: aliveInfo.get(s.id) ?? null,
+    alive: liveness === "automation" ? aliveInfo.get(s.id) ?? null
+      : agent === undefined ? null : agent === "alive" || agent === "unprobed",
     gitOp: gitOpInfo.get(s.id) ?? null,
     idleMs: s.cwd ? Math.max(0, now - s.lastOutput) : null,
     merge: stewardMergeView(s.id),

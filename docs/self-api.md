@@ -2177,7 +2177,13 @@ unterscheidbar, weil sie den Aufrufer an verschiedene Stellen schicken):
     hält", nie „ein Leser hat die Arbeit angenommen".
 11. Lane nicht `done-looking` (`laneWatchSignal`, `MERGE_IDLE_MS`) — lebendig, idle, sauber, ahead.
     Ein Server-Prädikat über Fakten, keine Aussage über die Qualität: die liefert die MAIN, indem
-    sie überhaupt ruft.
+    sie überhaupt ruft. **„Lebendig" heißt hier die FAKTSCHICHT (`agent` alive/unprobed), nicht das
+    Automations-Gate `aliveInfo`** (`server.ts#laneSignalView`, `liveness:"fact"`; dieselbe Lesung
+    speist die Projektion, die diese Tür nennt): Landen tippt nichts in die Lane-Pane, also entscheidet
+    die Work-Prompt-Policy darüber nicht. Gemessen 2026-09-13 an einer pi-zai-Lane (Slot 7,
+    `automatable:false`): ruhig, sauber, ahead, und trotzdem jede Antwort `not done-looking (no
+    signal)`, weil das Gate `alive:false` lieferte, drei Lands liefen darum über das Owner-Token.
+    Watch, auto-③ und Stalled lesen weiter das Gate; eine solche Lane bleibt als Watch-Ziel 409.
 12. Nicht inflight — dieselbe Reservierung (`mergeStart`/`mergeInflight`), die die Owner-Route
     hält, plus `commitInflight`. Zwei Türen, ein Job pro Lane.
 13. Ungeprüfte Konfliktlösungen in der Lane (die ⏸-Sperre) sind unter `green-only` eine

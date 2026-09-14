@@ -10823,6 +10823,79 @@ exit 0
     await programPost(landForeignProgram.id, "complete");
     await programPost(landProgram.id, "complete");
     await programPost(acceptProgram.id, "complete"); // ACP-17's own binding, closed with its siblings
+
+    // --- (9) A LANE ON A HARNESS THE AUTOMATION POLICY DECLINES IS STILL ITS MAIN'S TO LAND.
+    // Measured 2026-09-13 on the live fleet (slot 7, pi-zai): a quiet, clean, ahead lane answered
+    // every self-land `the lane is not done-looking (no signal)`, and three lands went through the
+    // owner token instead. The idle clock was never missing: `alive` reached the predicate folded
+    // with harnessAutomatable (aliveInfo), and pi-zai declines on its own `automatable:false`.
+    // This arm needs a REAL `pi` process behind the pane, so the server is restarted with the
+    // harness PATH that carries e2e-isolated.sh's stand-in — watch.ts's early fake-Pi checks lose it
+    // at their first restartSrv(), and the fixture check below fails as ITSELF (agent !== "alive")
+    // rather than as the door if that ever changes. Own Program, own MAIN, after every other lane of
+    // this block is killed, so the repo cap and REPO2's main are this arm's alone.
+    // Mutation: pass `laneSignalView(lane, Date.now())` (the automation reading) at the door again
+    // and the land check is red with exactly the measured 409.
+    await restartSrv({ PATH: process.env.PATH ?? "" });
+    const pzProgram = await activateNewProgram("Self-land declined-harness lane");
+    const pzBoot = await beginBootstrap(pzProgram.id, { cwd: REPO2, label: "selfland-pizai-main" });
+    const pzMainSlot = (await pzBoot.json() as { slot?: number }).slot ?? null;
+    const pzTok = pzMainSlot === null ? "" : readState().slots?.[String(pzMainSlot)]?.selfToken ?? "";
+    if (pzMainSlot !== null) landFixtureMains.push(pzMainSlot);
+    await setPromotion(pzProgram.id, { v: 1, selfLand: "green-only" });
+    const pzRowId = await makeTask({ text: "self-land pi-zai row", programId: pzProgram.id, repo: REPO2,
+      harness: "pi-zai", model: "glm-5.3", effort: "high" });
+    const pzDispatch = await post(`/api/tasks/${pzRowId}/dispatch`, {});
+    const pzLaneSlot = (await slRow(pzRowId))?.slot ?? null;
+    const pzLaneCwd = pzLaneSlot === null ? "" : (await slSess()).slots.find((x) => x.id === pzLaneSlot)?.cwd ?? "";
+    if (pzLaneCwd) {
+      writeFileSync(`${pzLaneCwd}/selfland-pizai.txt`, "work of a lane whose harness no unattended path may drive\n");
+      spawnSync("git", ["-C", pzLaneCwd, "add", "selfland-pizai.txt"]);
+      spawnSync("git", ["-C", pzLaneCwd, "commit", "-qm", "selfland pi-zai work"]);
+    }
+    const pzReady = pzLaneSlot === null ? false : await waitDoneLooking(pzLaneSlot);
+    type PzSlot = { id: number; harness?: string; agent?: string | null };
+    let pzAgent: PzSlot | undefined;
+    for (let i = 0; i < 80 && pzAgent?.agent !== "alive"; i++) {
+      pzAgent = ((await (await get("/api/sessions")).json()) as { slots: PzSlot[] }).slots.find((x) => x.id === pzLaneSlot);
+      if (pzAgent?.agent !== "alive") await Bun.sleep(250);
+    }
+    check("declined-harness self-land fixture: a bound MAIN owns a pi-zai lane whose stand-in Pi is genuinely live (agent=alive), idle, clean and ahead",
+      pzBoot.ok && /^[0-9a-f]{32}$/.test(pzTok) && pzDispatch.ok && pzLaneSlot !== null && !!pzLaneCwd
+        && pzAgent?.harness === "pi-zai" && pzAgent.agent === "alive" && pzReady,
+      JSON.stringify({ boot: pzBoot.status, dispatch: pzDispatch.status, lane: pzLaneSlot, agent: pzAgent ?? null,
+        ready: pzReady, why: pzReady ? "" : doneLookingWhy }));
+    // THE POLICY IS UNTOUCHED, on the same lane at the same instant: the Watch route still refuses it
+    // as a target. Without this the land below could be a regression that made pi-zai automatable.
+    const pzWatch = pzMainSlot === null || pzLaneSlot === null ? null
+      : await post(`/api/slots/${pzMainSlot}/watch`, { target: pzLaneSlot });
+    const pzWatchText = pzWatch ? await pzWatch.text() : "no fixture";
+    check("declined-harness self-land GEGENPROBE: the same lane is still refused as a Watch target — the automation policy did not widen",
+      pzWatch?.status === 409 && pzWatchText.includes("harness pi-zai is not automatable"),
+      `${pzWatch?.status} ${pzWatchText.slice(0, 200)}`);
+    const pzView = (await selfExecution(pzTok)).view?.programs.find((row) => row.program.id === pzProgram.id)
+      ?.tasks.rows.find((row) => row.id === pzRowId);
+    check("declined-harness self-land projection: the row is REVIEWABLE and names the MAIN's own door — view and door read the same liveness",
+      pzView?.phase === "REVIEWABLE" && pzView.nextAction === `inspect the diff, then land it yourself → POST /api/self/tasks/${pzRowId}/land`,
+      JSON.stringify({ phase: pzView?.phase ?? null, basis: pzView?.phaseBasis ?? null, next: pzView?.nextAction ?? null }));
+    const pzMainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    const pzLand = await selfLand(pzTok, pzRowId);
+    const pzLandText = await pzLand.text();
+    let pzLanded = await slRow(pzRowId);
+    for (let i = 0; pzLand.ok && i < 240 && pzLanded?.status !== "done"; i++) {
+      await Bun.sleep(250);
+      pzLanded = await slRow(pzRowId);
+    }
+    check("declined-harness self-land: the MAIN's own door takes the pi-zai lane and the land completes — main moved, row done",
+      pzLand.ok && pzLandText.includes('"running":true') && pzLanded?.status === "done"
+        && spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim() !== pzMainBefore
+        && spawnSync("git", ["-C", REPO2, "log", "--oneline", "-3"]).stdout.toString().includes("selfland pi-zai work"),
+      JSON.stringify({ land: pzLand.status, body: pzLandText.slice(0, 240), status: pzLanded?.status ?? null }));
+    for (const slot of [pzLaneSlot, pzMainSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
+    await post(`/api/tasks/${pzRowId}/done`, {});
+    await post(`/api/tasks/${pzRowId}/delete`, {});
+    await setPromotion(pzProgram.id, null);
+    await programPost(pzProgram.id, "complete");
     await restartSrv();
   }
 

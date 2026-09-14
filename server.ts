@@ -1464,6 +1464,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   cols: 200,
   rows: 50,
   sessionId: null,
+  sessionIdLearned: null,
   codexPaneSpawnedAt: null,
   codexRecoveryState: null,
   codexDisconnectSeenAt: null,
@@ -1907,7 +1908,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
       - (typeof a.at === "number" ? a.at : 0));
     const occupantEvents = fleetEvents.filter((e) => e.receiverSlot === s.id
       && e.receiverOpenedAt === s.openedAt);
-    const matchingEvents = occupantEvents.filter((e) => e.receiverSessionId === s.sessionId);
+    const matchingEvents = occupantEvents.filter((e) => fleetEventReceiverIs(e, s));
     const sessionMismatch = occupantEvents.length - matchingEvents.length;
     const receiverWatches = watches.filter((w) => w.slot === s.id);
     const legacyWatches = receiverWatches.filter((w) => w.slotOpenedAt === undefined).length;
@@ -2936,7 +2937,7 @@ function stateSnapshot(): string {
   const active: Record<string, { cwd: string; label: string | null; openedAt: number;
     successionRetirement: SuccessionRetirement | null; mission: string | null;
     awaiting: "owner" | "main" | null;
-    sessionId: string | null;
+    sessionId: string | null; sessionIdLearned: { id: string; at: number } | null;
     codexPaneSpawnedAt: number | null; codexRecoveryState: CodexRecoveryState | null;
     codexDisconnectSeenAt: number | null;
     worktree: LaneRef | null; model: string | null;
@@ -2947,7 +2948,7 @@ function stateSnapshot(): string {
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, selfToken: s.selfToken };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   return JSON.stringify({ token: persistedToken, stewardToken, helperToken,
@@ -3630,6 +3631,7 @@ async function tickCodexRecovery(s: Slot): Promise<void> {
     const candidates = await codexCandidates(s, s.codexPaneSpawnedAt - CODEX_BIND_SLACK_MS, now);
     if (candidates.length === 1) {
       s.sessionId = candidates[0].id;
+      noteSessionIdLearned(s, null);
       s.codexRecoveryState = "bound";
       dirty = true;
       audit("codex_bind", s.id, `session=${candidates[0].id}`);
@@ -4906,6 +4908,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
       // record the pin only if the adapter actually PASSED it (pinsSession). A discovered Codex id
       // is preserved across the heal although pinsSession stays false; only openSlot's recycle clears it.
       s.sessionId = h.pinsSession ? candidate : codex && priorSessionId ? priorSessionId : null;
+      noteSessionIdLearned(s, priorSessionId);
       // This is ensureSlot's own identity refinement, not a recycle. Advance the local snapshot so
       // the post-spawn checks accept exactly this new pin and still reject every external change.
       occupant = { ...occupant, sessionId: s.sessionId };
@@ -5079,6 +5082,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.selfToken = treeLease?.targetSelfToken ?? randomBytes(16).toString("hex"); // rotate: a recycled slot must not honor
   // whatever session used to hold it
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
+  s.sessionIdLearned = null; // ...and a new occupation has learned nothing yet
   s.codexPaneSpawnedAt = null;
   s.codexRecoveryState = null;
   s.codexDisconnectSeenAt = null;
@@ -5232,6 +5236,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.cols = 200;
   s.rows = 50;
   s.sessionId = null;
+  s.sessionIdLearned = null;
   s.codexPaneSpawnedAt = null;
   s.codexRecoveryState = null;
   s.codexDisconnectSeenAt = null;
@@ -7011,11 +7016,37 @@ function reconcileClarifications(teardownSlotId?: number): boolean {
   return dirty;
 }
 
+// THE LEARN SITES' ONE STAMP. Called right after a writer set `s.sessionId`, with the value it held
+// before: only a move from null to an id inside the SAME occupation is a learn, and only the first
+// one is recorded — a later id (a fresh conversation after a heal) is a different session, and
+// restamping would hand it the rows of the one before. No audit line of its own: the Codex learns
+// already write codex_bind / codex_owner_bind, and ensureSlot's pin is the spawn itself. Caller saves.
+function noteSessionIdLearned(s: Slot, prior: string | null): void {
+  if (prior !== null || s.sessionId === null || s.sessionIdLearned !== null) return;
+  s.sessionIdLearned = { id: s.sessionId, at: Date.now() };
+}
+
+// IS THIS SLOT THE SESSION THIS ROW WAS MINTED FOR — asked in ONE place by every door that
+// delivers, lists or acknowledges a session-addressed FleetEvent. Slot and openedAt are the
+// occupation and must be exact. The session id must be exact too, with ONE admitted difference:
+// the row was minted while the occupation's id was still unknown (null) and this occupation later
+// learned exactly its current id, AFTER the row existed (measured 2026-09-05, D1: watch_fire, then
+// codex_bind 751 ms later, then an ACK refused as "a replaced session" by the session it was for).
+// Null is not a wildcard: no learn record (a legacy slot), a row minted after the learn, or an id
+// moved on since the learn all stay refused.
+function fleetEventReceiverIs(e: FleetEvent, s: Slot): boolean {
+  if (e.receiverSlot !== s.id || e.receiverOpenedAt !== s.openedAt) return false;
+  if (e.receiverSessionId === s.sessionId) return true;
+  const learned = s.sessionIdLearned;
+  return e.receiverSessionId === null && learned !== null && s.sessionId === learned.id
+    && e.createdAt <= learned.at;
+}
+
 function fleetEventReceiver(e: FleetEvent): Slot | null {
   // an owner row has no session receiver by construction, and never claims to have lost one
   if (e.receiverSlot === null) return null;
   const s = slotFrom(e.receiverSlot);
-  return s?.cwd && s.openedAt === e.receiverOpenedAt && s.sessionId === e.receiverSessionId ? s : null;
+  return s?.cwd && fleetEventReceiverIs(e, s) ? s : null;
 }
 
 function setFleetReportRecovery(event: FleetReportFleetEvent, state: FleetEventRecoveryState,
@@ -7064,11 +7095,14 @@ function recordFleetReportNonAcceptance(event: FleetReportFleetEvent, rollback: 
     "retry delivery to the same live receiver occupant", FLEET_REPORT_RECOVERY_OPEN);
 }
 
+// the occupation must be the one read before the await; the session id may only have been LEARNED
+// in between, which is exactly what fleetEventReceiverIs admits and nothing more
 function receiverStillMatchesFleetEvent(event: FleetEvent, s: Slot,
   expected: { slot: number; openedAt: number; sessionId: string | null }): boolean {
   return !!s.cwd && event.receiverSlot === expected.slot && event.receiverOpenedAt === expected.openedAt
-    && event.receiverSessionId === expected.sessionId && s.id === expected.slot
-    && s.openedAt === expected.openedAt && s.sessionId === expected.sessionId;
+    && s.id === expected.slot && s.openedAt === expected.openedAt
+    && (s.sessionId === expected.sessionId || expected.sessionId === null)
+    && fleetEventReceiverIs(event, s);
 }
 
 function terminalizeFleetReportRecovery(event: FleetReportFleetEvent, reason: string): void {
@@ -7655,8 +7689,7 @@ async function replyClarification(s: Slot, id: string, body: Record<string, unkn
   const request = clarifications.find((c) => c.id === id);
   if (!request) return json({ error: "unknown clarification request" }, 404);
   const event = fleetEvents.find((e) => e.id === request.eventId);
-  if (!event || event.receiverSlot !== s.id || event.receiverOpenedAt !== s.openedAt
-    || event.receiverSessionId !== s.sessionId)
+  if (!event || !fleetEventReceiverIs(event, s))
     return json({ error: "clarification belongs to another or replaced MAIN session" }, 409);
   if (!body || typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
   const answer = body.text.trim();
@@ -7749,7 +7782,7 @@ async function acknowledgeFleetEvent(s: Slot, id: string): Promise<Response> {
   if (event.delivery === "inbox")
     return json({ error: "inbox event — acknowledgement belongs to the owner" }, 409);
   if (event.receiverSlot !== s.id) return json({ error: "event belongs to another slot" }, 409);
-  if (event.receiverOpenedAt !== s.openedAt || event.receiverSessionId !== s.sessionId)
+  if (!fleetEventReceiverIs(event, s))
     return json({ error: "event belongs to a replaced session" }, 409);
   if (event.status === "acknowledged") return json({ ok: true, existing: true, event });
   // Ack is transport receipt for every event kind. For clarification-request it expressly does
@@ -26652,6 +26685,13 @@ if (existsSync(STATE_FILE)) {
         const awaiting = (v as { awaiting?: unknown }).awaiting;
         if (awaiting === "owner" || awaiting === "main") s.awaiting = awaiting;
         if (typeof (v as { sessionId?: unknown }).sessionId === "string") s.sessionId = (v as { sessionId: string }).sessionId;
+        // both fields or none: a half-formed learn record is no provenance, and absent stays absent —
+        // a slot persisted before the field existed is NOT given one, so its null rows stay unknown
+        const psl = (v as { sessionIdLearned?: unknown }).sessionIdLearned;
+        if (typeof psl === "object" && psl !== null && typeof (psl as { id?: unknown }).id === "string"
+          && (psl as { id: string }).id !== "" && typeof (psl as { at?: unknown }).at === "number"
+          && Number.isFinite((psl as { at: number }).at) && (psl as { at: number }).at > 0)
+          s.sessionIdLearned = { id: (psl as { id: string }).id, at: (psl as { at: number }).at };
         if (typeof (v as { selfToken?: unknown }).selfToken === "string") s.selfToken = (v as { selfToken: string }).selfToken;
         const psr = (v as { successionRetirement?: unknown }).successionRetirement;
         if (typeof psr === "object" && psr !== null
@@ -29259,8 +29299,7 @@ Bun.serve<WSData>({
         observed: s.lastOutput > 0,
         autos: autos.filter((a) => a.slot === s.id),
         watches: watches.filter((w) => w.slot === s.id),
-        events: fleetEvents.filter((e) => e.receiverSlot === s.id
-          && e.receiverOpenedAt === s.openedAt && e.receiverSessionId === s.sessionId),
+        events: fleetEvents.filter((e) => fleetEventReceiverIs(e, s)),
       });
     }
 
@@ -30620,7 +30659,9 @@ Bun.serve<WSData>({
         return json({ ok: true, existing: true, state: "bound", sessionId: id });
       if (s.codexRecoveryState === "bound" && s.sessionId !== id)
         return json({ error: `slot already bound to ${s.sessionId}` }, 409);
+      const priorSessionId = s.sessionId;
       s.sessionId = id;
+      noteSessionIdLearned(s, priorSessionId);
       s.codexRecoveryState = "bound";
       backfillProgramMainSessionId(s); // before the save, so one write carries both facts
       saveState();

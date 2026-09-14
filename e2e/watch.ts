@@ -13,7 +13,7 @@
 // first fire cannot happen sooner than that. Every wait here is a POLL with a loud bound, never a
 // fixed sleep.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { auditWatchMessage, laneHostCommitLooking, laneSpentLooking, laneStalled, laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
   SPENT_RULES, STALLED_RULES,
@@ -254,6 +254,199 @@ const auditRows = (): AuditRow[] => [
     return [];
   }
 });
+
+// === A SESSION ID LEARNED LATE (66df05b4) ========================================================
+// Measured 2026-09-05 (D1, acceptance-probe.ts "codex chain"): a Codex receiver's event was minted
+// with receiverSessionId null (watch_fire …297850), the SAME pane then learned its id (codex_bind
+// …298601), the event was delivered (…298906) — and its own receiver's ACK came back 409 "event
+// belongs to a replaced session". Nothing was replaced: slot and openedAt never moved, only the
+// id went from unknown to known inside one occupation.
+//
+// The events are PLANTED with srv down, the file's binding-fixture technique, because what is under
+// test is the identity boundary and not the transport. The learn itself is NEVER planted: it is the
+// server's own codex_bind tick over a synthetic rollout, so the provenance the fix relies on is
+// produced by the writer that produces it live. Every refusal the fix must keep sits beside the
+// positive, each on its own row so a red names exactly one case.
+async function runLearnedSessionAck(): Promise<void> {
+  const codexRoot = process.env.FLEET_CODEX_SESSIONS_DIR ?? "";
+  const codexCwd = REPO ? resolve(REPO) : "";
+  const codexPath = `${ROOT}/codex-bin:${process.env.PATH ?? ""}`;
+  check("learned-id fixture: a scratch Codex sessions root, the stand-in binary and an exact cwd exist",
+    !!codexRoot && !!codexCwd && existsSync(`${ROOT}/codex-bin/codex`), `${codexRoot} / ${codexCwd}`);
+  if (!codexRoot || !codexCwd) return;
+  // the stand-in binary must be on the server's PATH or the pane dies and the heal loop keeps moving
+  // codexPaneSpawnedAt, which is the discovery window the bind below depends on
+  await restartSrv({ PATH: codexPath });
+  const slot = await freeSlot();
+  const opened = slot ? await post(`/api/slots/${slot}/open`, { cwd: codexCwd, harness: "codex" }) : null;
+  const persisted = (): { slots?: Record<string, { openedAt?: number; selfToken?: string;
+    sessionId?: string | null; sessionIdLearned?: unknown }> } =>
+    JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8"));
+  const row = persisted().slots?.[String(slot)];
+  const openedAt = row?.openedAt ?? 0;
+  const tok = row?.selfToken ?? "";
+  // a foreign principal: any other live occupant's credential (fleet.json persists occupied slots only)
+  const foreign = Object.entries(persisted().slots ?? {}).find(([id, r]) => id !== String(slot) && r.selfToken);
+  const foreignTok = foreign?.[1].selfToken ?? "";
+  check("learned-id fixture: a Codex receiver opens with an unknown session id, its own token and a foreign one",
+    !!opened?.ok && openedAt > 0 && tok !== "" && foreignTok !== "" && row?.sessionId === null,
+    JSON.stringify({ slot, status: opened?.status, openedAt, sessionId: row?.sessionId, foreign: !!foreignTok }));
+  if (!opened?.ok || openedAt <= 0 || !tok) return;
+
+  const now = Date.now();
+  const deployRow = (id: string, over: Record<string, unknown>): Record<string, unknown> => ({
+    id, watchId: `${id}w`, receiverSlot: slot, receiverOpenedAt: openedAt, receiverSessionId: null,
+    receiverIdleSec: 0, kind: "deploy-terminal", subjectDeployId: "0c0dec0d",
+    payload: { ok: true, stage: "boot", target: null, bootHead: null, hitTarget: null, bundleStale: null, at: now },
+    createdAt: now - 2000, status: "delivered", attempts: 1, deliveredAt: now - 1500, acknowledgedAt: null,
+    delivery: "pane", ...over,
+  });
+  const ids = {
+    learned: "lsidlearned0000000000001", // null, delivered, minted before the learn: the D1 row
+    second: "lsidlearned0000000000002",  // the same shape, for the foreign token and the restart
+    pending: "lsidlearned0000000000003", // null, minted before the learn, never delivered
+    stranger: "lsidlearned0000000000004", // minted for a DIFFERENT known session id on the same occupation
+    after: "lsidlearned0000000000005",   // null, but minted AFTER the learn — no provenance covers it
+    legacy: "lsidlearned0000000000006",  // null, on a slot whose persisted row carries no provenance
+  };
+  const STRANGER = "20000000-0000-4000-8000-00000000000b";
+  await stopSrv();
+  const plant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { events?: Record<string, unknown>[] };
+  plant.events = [...(plant.events ?? []),
+    deployRow(ids.learned, {}), deployRow(ids.second, {}),
+    // an idle gate of a day holds it pending on a live pane: only an identity verdict can end it
+    deployRow(ids.pending, { status: "pending", attempts: 0, deliveredAt: null, receiverIdleSec: 86_400 }),
+    deployRow(ids.stranger, { receiverSessionId: STRANGER }),
+    deployRow(ids.after, { createdAt: now + 10 * 60_000 })];
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(plant, null, 2), { mode: 0o600 });
+  await restartSrv({ PATH: codexPath });
+  const evRow = async (id: string): Promise<{ id: string; status: string; acknowledgedAt: number | null;
+    receiverSessionId: string | null } | undefined> =>
+    ((await (await get("/api/events")).json()) as { events: { id: string; status: string;
+      acknowledgedAt: number | null; receiverSessionId: string | null }[] }).events.find((e) => e.id === id);
+  // the stranger row is turned receiver-gone by the EXISTING boot reconciliation (a known id that is
+  // not this occupant's) — measured on the unfixed tree; its ACK below is judged on identity alone,
+  // which acknowledgeFleetEvent asks before it asks about status
+  check("learned-id fixture: the planted rows hydrate against the unknown-id occupant (the stranger already receiver-gone)",
+    (await evRow(ids.learned))?.status === "delivered" && (await evRow(ids.pending))?.status === "pending"
+      && (await evRow(ids.stranger))?.status === "receiver-gone" && (await evRow(ids.after))?.status === "delivered",
+    JSON.stringify(await Promise.all(Object.values(ids).map(evRow))));
+
+  // THE LEARN: exactly one user rollout for this cwd inside the pane's discovery window
+  const LEARNED = "20000000-0000-4000-8000-00000000000a";
+  const d = new Date();
+  const dir = `${codexRoot}/${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+  mkdirSync(dir, { recursive: true });
+  const rollout = `${dir}/rollout-${Date.now()}-${LEARNED}.jsonl`;
+  writeFileSync(rollout, `${JSON.stringify({ type: "session_meta", payload: {
+    id: LEARNED, cwd: codexCwd, timestamp: new Date().toISOString(), thread_source: "user", originator: "codex-tui" } })}\n`);
+  let learnedId: string | null | undefined = null;
+  for (let i = 0; i < 100 && learnedId !== LEARNED; i++) {
+    await Bun.sleep(250);
+    learnedId = persisted().slots?.[String(slot)]?.sessionId;
+  }
+  const bindLine = auditRows().filter((a) => a.event === "codex_bind" && a.slot === slot && a.detail === `session=${LEARNED}`);
+  check("learned-id fixture: the server's own codex_bind tick taught the SAME occupation its id",
+    learnedId === LEARNED && persisted().slots?.[String(slot)]?.openedAt === openedAt && bindLine.length === 1,
+    JSON.stringify({ learnedId, openedAt: persisted().slots?.[String(slot)]?.openedAt, binds: bindLine.length }));
+
+  // (1) THE D1 CASE — the receiver acknowledges exactly this event and the ACK is stored
+  const ack = await ackEvent(tok, ids.learned);
+  const ackText = await ack.text();
+  const acked = await evRow(ids.learned);
+  check("learned id: the same occupant acknowledges an event minted before it learned its session id, and the ACK is stored",
+    ack.status === 200 && acked?.status === "acknowledged" && (acked.acknowledgedAt ?? 0) > 0
+      && acked.receiverSessionId === null,
+    `${ack.status} ${ackText} / ${JSON.stringify(acked)}`);
+  // …the stored row keeps the null it was minted with: the fix matches, it does not rewrite history
+  const reAck = await ackEvent(tok, ids.learned);
+  const reAckBody = await reAck.json() as { existing?: boolean };
+  check("learned id: a repeated ACK is idempotent (existing:true) and writes no second receipt",
+    reAck.status === 200 && reAckBody.existing === true
+      && auditRows().filter((a) => a.event === "fleet_event_ack" && (a.detail ?? "").includes(ids.learned)).length === 1,
+    JSON.stringify(reAckBody));
+  // (2) the session's own view shows the rows its occupation was minted, the pending one included
+  const selfView = await (await selfGet(tok)).json() as { events?: { id: string }[] };
+  check("learned id: GET /api/self lists the pre-learn rows to the occupant that learned its id",
+    !!selfView.events?.some((e) => e.id === ids.second) && !!selfView.events?.some((e) => e.id === ids.pending)
+      && !selfView.events?.some((e) => e.id === ids.stranger),
+    JSON.stringify(selfView.events?.map((e) => e.id)));
+  // (3) a not-yet-delivered row stays pending through transport ticks — never receiver-gone for
+  // identity — and is refused as NOT ACKNOWLEDGEABLE, the pending rule, not as a replaced session
+  await Bun.sleep(AUTOS_TICK_MS * 6 + 500);
+  const pendingAck = await ackEvent(tok, ids.pending);
+  const pendingAckText = await pendingAck.text();
+  check("learned id: an undelivered pre-learn row stays pending and is refused only as not acknowledgeable",
+    (await evRow(ids.pending))?.status === "pending" && pendingAck.status === 409
+      && pendingAckText.includes("event is not acknowledgeable")
+      && !auditRows().some((a) => a.event === "fleet_event_receiver_gone" && (a.detail ?? "").startsWith(ids.pending)),
+    `${pendingAck.status} ${pendingAckText} / ${JSON.stringify(await evRow(ids.pending))}`);
+  // (4) a row minted for another KNOWN session id is still a replaced session's row
+  const strangerAck = await ackEvent(tok, ids.stranger);
+  const strangerText = await strangerAck.text();
+  check("learned id: a row minted for a different known session id is still refused as a replaced session",
+    strangerAck.status === 409 && strangerText.includes("event belongs to a replaced session")
+      && (await evRow(ids.stranger))?.acknowledgedAt === null,
+    `${strangerAck.status} ${strangerText}`);
+  // (5) null is not a wildcard: a null row minted after the learn has no provenance behind it
+  const afterAck = await ackEvent(tok, ids.after);
+  const afterText = await afterAck.text();
+  check("learned id: a null row minted AFTER the learn is refused — unknown is never matched by guess",
+    afterAck.status === 409 && afterText.includes("event belongs to a replaced session")
+      && (await evRow(ids.after))?.status === "delivered",
+    `${afterAck.status} ${afterText}`);
+  // (6) a foreign self-token and a missing one never reach the identity question
+  const foreignAck = await ackEvent(foreignTok, ids.second);
+  const foreignText = await foreignAck.text();
+  const noTokAck = await ackEvent(null, ids.second);
+  check("learned id: a foreign slot's token is refused as another slot and no token is 401; the row stays delivered",
+    foreignAck.status === 409 && foreignText.includes("event belongs to another slot") && noTokAck.status === 401
+      && (await evRow(ids.second))?.status === "delivered",
+    `${foreignAck.status} ${foreignText} / ${noTokAck.status}`);
+
+  // (7) THE PROVENANCE IS DURABLE: after a restart the same occupant still acknowledges a pre-learn row
+  await restartSrv({ PATH: codexPath });
+  const durableAck = await ackEvent(tok, ids.second);
+  check("learned id: the learn provenance survives a restart — the pre-learn row is still the occupant's to acknowledge",
+    durableAck.status === 200 && (await evRow(ids.second))?.status === "acknowledged",
+    `${durableAck.status} ${await durableAck.text()}`);
+
+  // (8) LEGACY STATE WITHOUT PROVENANCE: the same slot, its id known, its learn record absent (a row
+  // persisted before the field existed). Unknown provenance is refused, never reconstructed.
+  await stopSrv();
+  const legacy = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+    { slots: Record<string, Record<string, unknown>>; events?: Record<string, unknown>[] };
+  const hadLearn = legacy.slots[String(slot)]?.sessionIdLearned !== undefined;
+  if (legacy.slots[String(slot)]) delete legacy.slots[String(slot)].sessionIdLearned;
+  legacy.events = [...(legacy.events ?? []), deployRow(ids.legacy, {})];
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(legacy, null, 2), { mode: 0o600 });
+  await restartSrv({ PATH: codexPath });
+  const legacyAck = await ackEvent(tok, ids.legacy);
+  const legacyText = await legacyAck.text();
+  check("learned id: a persisted binding WITHOUT learn provenance refuses the null row (unknown, not guessed)",
+    hadLearn && legacyAck.status === 409 && legacyText.includes("event belongs to a replaced session")
+      // the server writes the absent record back as null on its next save — absent and null are one fact
+      && (persisted().slots?.[String(slot)]?.sessionIdLearned ?? null) === null,
+    `hadLearn=${hadLearn} ${legacyAck.status} ${legacyText}`);
+
+  // (9) A REAL REPLACEMENT on the same slot number: the recycle clears the learn, and neither the
+  // new occupant nor its credential reaches the old occupation's rows. The rollout goes FIRST: left
+  // in place it sits inside the new pane's discovery window and the new occupant would learn the
+  // same id (measured on the first run of this block)
+  rmSync(rollout, { force: true });
+  await post(`/api/slots/${slot}/kill`, {});
+  const reopen = await post(`/api/slots/${slot}/open`, { cwd: codexCwd, harness: "codex" });
+  const next = persisted().slots?.[String(slot)];
+  const nextAck = await ackEvent(next?.selfToken ?? "", ids.after);
+  const nextText = await nextAck.text();
+  check("learned id: a recycled occupant (new openedAt, id unknown again) cannot acknowledge the prior occupation's row",
+    reopen.ok && (next?.openedAt ?? 0) > openedAt && next?.sessionId === null && (next.sessionIdLearned ?? null) === null
+      && nextAck.status === 409 && nextText.includes("replaced session"),
+    `${reopen.status} ${JSON.stringify({ openedAt: next?.openedAt, sessionId: next?.sessionId, learned: next?.sessionIdLearned })} ${nextAck.status} ${nextText}`);
+
+  await post(`/api/slots/${slot}/kill`, {});
+  await restartSrv();
+}
 
 export async function run(): Promise<void> {
   // A real process kill cannot reliably land in the sub-millisecond gap between a local tmux
@@ -6458,4 +6651,8 @@ export async function run(): Promise<void> {
       writeFileSync(file, readFileSync(file, "utf8").split("\n").filter((l) => l && !l.includes("fleet/abl-")).map((l) => `${l}\n`).join(""));
     await restartSrv();
   }
+
+  // the receiver-identity family's late-learned-id case, run LAST: it restarts the server four times
+  // and recycles one slot, and the pane fixtures above spend a bounded busy window it must not share
+  await runLearnedSessionAck();
 }

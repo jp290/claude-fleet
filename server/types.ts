@@ -1462,6 +1462,12 @@ interface Slot {
   rows: number;
   sessionId: string | null; // exact conversation identity: usually pinned at pane creation;
   // Codex discovers it lazily. null also covers adopted/pre-pinning transcript sessions.
+  // THE PROVENANCE OF THAT LAZY DISCOVERY: the first id this occupation learned while its recorded
+  // id was null, and when. Stamped once per occupation by the learn sites (server.ts#noteSessionIdLearned),
+  // cleared with the occupant, never restamped. It is the one fact that lets a row minted with
+  // `receiverSessionId: null` BEFORE `at` be matched to the session that learned `id` — without it
+  // (a legacy row, a second id) null stays unknown and is refused, never guessed.
+  sessionIdLearned: { id: string; at: number } | null;
   codexPaneSpawnedAt: number | null; // current Codex pane life's discovery-window anchor
   codexRecoveryState: CodexRecoveryState | null; // null for every non-Codex occupant
   codexDisconnectSeenAt: number | null; // advisory only; a live TUI owns its own retry

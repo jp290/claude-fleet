@@ -6300,10 +6300,13 @@ export async function run(): Promise<void> {
     check("tickMigrate sends exactly one prompt to an above-threshold NON-LANE main session",
       nudges.length === 1, `${nudges.length} prompt(s)`);
     const nudge = nudges[0]?.text ?? "";
-    check("the migration prompt names measured pct+window, says server predicate, then HANDOFF commit before self/succeed",
+    // since e3e5084a the unbound rail hands over a role-lineage record, not a HANDOFF commit
+    check("the migration prompt names measured pct+window, says server predicate, then the line record (intent OR pointer) with self/succeed",
       nudge.includes("50%") && nudge.includes("1000000 Tokens im Fenster")
         && nudge.includes("Server-Prädikat, keine Meldung von dir")
-        && nudge.indexOf("HANDOFF.md schreiben UND committen") < nudge.indexOf("POST /api/self/succeed")
+        && nudge.indexOf("Linien-Record") >= 0 && nudge.indexOf("Linien-Record") < nudge.indexOf("POST /api/self/succeed")
+        && nudge.includes("`intent`") && nudge.includes("`pointer`") && nudge.includes("nie beides")
+        && !nudge.includes("HANDOFF.md schreiben")
         && nudge.includes("x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN"), nudge);
     // THE LANE RAIL, 2026-09-12. Until this cut the check here asserted that a lane received
     // NOTHING — its only exit was to land, which is precisely what a lane too full to work well is
@@ -6326,10 +6329,10 @@ export async function run(): Promise<void> {
       `${laneNudges.length}: ${laneNudge}`);
     check("…and the two texts are not one: a lane is never told to write and commit HANDOFF.md",
       !laneNudge.includes("HANDOFF.md") && !nudge.includes("handoff`"), `${nudge.slice(0, 80)} | ${laneNudge.slice(0, 80)}`);
-    // THE ROLE, read off the binding (2026-09-13). The unbound main above is still told the HANDOFF
-    // commit; the bound Standard Program-MAIN beside it must not be, because handleSelfSucceed
-    // demands no such commit on its rail. BREAKS IF: migrateMessage loses its rail argument (both
-    // mains get the HANDOFF text) or migrateRailOf stops consulting boundProgramForMain.
+    // THE ROLE, read off the binding (2026-09-13). The unbound main above is told the line record
+    // (e3e5084a); the bound Standard Program-MAIN beside it must not be, because its handover is the
+    // Program record. BREAKS IF: migrateMessage loses its rail argument (both mains get the same text)
+    // or migrateRailOf stops consulting boundProgramForMain.
     let boundNudges = await migratePrompts(boundId);
     for (let i = 0; i < 80 && boundNudges.length === 0; i++) {
       await Bun.sleep(100);
@@ -6341,7 +6344,7 @@ export async function run(): Promise<void> {
         && boundNudge.includes("50%") && boundNudge.includes("Server-Prädikat, keine Meldung von dir")
         && boundNudge.indexOf("offene Pflichten") >= 0
         && boundNudge.indexOf("offene Pflichten") < boundNudge.indexOf("POST /api/self/succeed")
-        && boundNudge.includes("carry") && nudge.includes("HANDOFF.md schreiben UND committen"),
+        && boundNudge.includes("carry") && !boundNudge.includes("Linien-Record") && nudge.includes("Linien-Record"),
       `${boundNudges.length}: ${boundNudge}`);
     check("tickMigrate never nudges the ⚙ steward or a ctx:null slot",
       (await migratePrompts(stewardId)).length === 0

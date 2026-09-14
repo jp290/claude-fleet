@@ -1452,6 +1452,10 @@ interface Slot {
   // slot is the only object that still knows the lane spanned more than one session: `sessionMs`
   // measures the LAST one alone, so without this a three-session lane reads as a short one.
   laneSuccessions: number;
+  // THE ROLE LINE this session holds (LineageHandover): minted by the first generic or Supervisor
+  // succession of a line, inherited by every successor, null for every session that never took part
+  // in one — and for a Program-MAIN, whose line is its Program id. Reset by openSlot/killSlot.
+  lineageId: string | null;
   selfToken: string; // scoped credential for POST /api/self/autos — NEVER the owner token.
   // Minted fresh in openSlot every time the slot is (re)activated, so a recycled slot can't
   // be self-scheduled against by a session that was talking to whatever used to live here.
@@ -2422,6 +2426,127 @@ const loadProgramHandover = (value: unknown): ProgramHandoverRead => {
     obligations, dropped: r.dropped as number } };
 };
 
+// --- THE ROLE-LINEAGE HANDOVER (e3e5084a) ------------------------------------------------------
+// The Program record above is a Standard Program-MAIN's handover, addressed by its Program id. Every
+// OTHER role that succeeds through POST /api/self/succeed — an unbound session (Orchestrator,
+// Controller, legacy MAIN) and the Supervisor — had none: its gate was a HANDOFF.md commit and a
+// 500-character prompt sentence nobody persisted. This record is the same idea on a ROLE LINE: a
+// stable `lineageId` the successor inherits (Slot.lineageId), one record per succession, the
+// previous one marked `supersededBy` the moment the line moves again.
+//
+// IDS ONLY, AND THE TYPE IS WHAT ENFORCES IT. An obligation is `kind` + `id` + who owed it + the door
+// that re-registers it, and nothing else: there is no text field and no detail bag, and the loader
+// refuses any key beyond these four. So a watch body, an inbox payload or a report text cannot ride
+// in here by accident or by diligence — the record points at the ledger rows, it never copies them.
+// The ONE prose field is `intent`, capped, and it is mutually exclusive with `pointer` (a committed,
+// dated section): exactly one handover channel, the game-maker checkpoint's rule.
+type LineageRole = "generic" | "supervisor";
+const LINEAGE_ROLES: LineageRole[] = ["generic", "supervisor"];
+type LineageObligationKind = "watch" | "auto" | "inbox" | "report";
+const LINEAGE_OBLIGATION_KINDS: LineageObligationKind[] = ["watch", "auto", "inbox", "report"];
+const LINEAGE_ID_RE = /^[0-9a-f]{24}$/;
+const LINEAGE_INTENT_MAX = 2000;
+const LINEAGE_POINTER_MAX = 300;
+// wider than any one occupant can owe (5 armed watches + 5 autos + the delivery budget + its
+// undecided reports), and a list past it REFUSES the succession rather than being shortened
+const LINEAGE_OBLIGATIONS_MAX = 200;
+// records kept per line, newest first; the oldest SUPERSEDED record is the one pruned
+const LINEAGE_RECORDS_PER_LINE = 5;
+const LINEAGE_RECORDS_MAX = 100;
+interface LineageOccupant { slot: number; openedAt: number }
+interface LineageObligationRef {
+  kind: LineageObligationKind;
+  id: string;
+  owedBy: string;        // `slot N@openedAt` of the occupant that owed it
+  reArm: string | null;  // the door that re-registers it; null where no successor door exists
+}
+interface LineageHandover {
+  v: 1;
+  lineageId: string;
+  role: LineageRole;
+  at: number;
+  from: LineageOccupant;
+  to: LineageOccupant;
+  obligations: LineageObligationRef[];
+  intent: string | null;
+  pointer: string | null;
+  supersededBy: LineageOccupant | null;
+}
+type LineageHandoverRead = { ok: true; handover: LineageHandover }
+  | { ok: false; error: string; lineageId: string | null };
+const LINEAGE_HANDOVER_KEYS = ["v", "lineageId", "role", "at", "from", "to", "obligations", "intent", "pointer", "supersededBy"];
+const LINEAGE_OBLIGATION_KEYS = ["kind", "id", "owedBy", "reArm"];
+const lineageOccupantFrom = (raw: unknown): LineageOccupant | null => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (Object.keys(o).length !== 2 || !Number.isInteger(o.slot) || (o.slot as number) < 1
+    || (o.slot as number) > MAX_SLOTS || typeof o.openedAt !== "number" || !Number.isFinite(o.openedAt)
+    || o.openedAt <= 0) return null;
+  return { slot: o.slot as number, openedAt: o.openedAt };
+};
+// CLOSED, VERSIONED, and a failure keeps the one thing that makes it attributable: the lineage id,
+// when the raw row still carries a well-formed one. A loss is reported to that line's reader as
+// `handoverLost`, never rendered as "nothing was owed".
+const loadLineageHandover = (value: unknown): LineageHandoverRead => {
+  const rawId = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>).lineageId : undefined;
+  const lineageId = typeof rawId === "string" && LINEAGE_ID_RE.test(rawId) ? rawId : null;
+  const fail = (error: string): LineageHandoverRead => ({ ok: false, error, lineageId });
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fail("must be an object");
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !LINEAGE_HANDOVER_KEYS.includes(k)) || Object.keys(r).length !== LINEAGE_HANDOVER_KEYS.length)
+    return fail(`must contain exactly ${LINEAGE_HANDOVER_KEYS.join(", ")}`);
+  if (r.v !== 1) return fail("v must be 1");
+  if (lineageId === null) return fail("lineageId must be 24 hex characters");
+  if (typeof r.role !== "string" || !LINEAGE_ROLES.includes(r.role as LineageRole))
+    return fail(`role must be one of ${LINEAGE_ROLES.join(", ")}`);
+  if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0) return fail("at must be a positive number");
+  const from = lineageOccupantFrom(r.from);
+  const to = lineageOccupantFrom(r.to);
+  if (!from || !to) return fail("from and to must each be exactly {slot, openedAt}");
+  const supersededBy = r.supersededBy === null ? null : lineageOccupantFrom(r.supersededBy);
+  if (r.supersededBy !== null && !supersededBy) return fail("supersededBy must be null or exactly {slot, openedAt}");
+  if (!(r.intent === null || (typeof r.intent === "string" && r.intent !== "" && r.intent.length <= LINEAGE_INTENT_MAX)))
+    return fail(`intent must be null or a non-empty string of at most ${LINEAGE_INTENT_MAX} chars`);
+  if (!(r.pointer === null || (typeof r.pointer === "string" && r.pointer !== "" && r.pointer.length <= LINEAGE_POINTER_MAX)))
+    return fail(`pointer must be null or a non-empty string of at most ${LINEAGE_POINTER_MAX} chars`);
+  if (r.intent !== null && r.pointer !== null) return fail("intent and pointer are one channel — at most one may be set");
+  if (!Array.isArray(r.obligations) || r.obligations.length > LINEAGE_OBLIGATIONS_MAX)
+    return fail(`obligations must be an array of at most ${LINEAGE_OBLIGATIONS_MAX} rows`);
+  const obligations: LineageObligationRef[] = [];
+  const seen = new Set<string>();
+  for (const [index, raw] of r.obligations.entries()) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fail(`obligation ${index} must be an object`);
+    const o = raw as Record<string, unknown>;
+    if (Object.keys(o).some((k) => !LINEAGE_OBLIGATION_KEYS.includes(k)) || Object.keys(o).length !== LINEAGE_OBLIGATION_KEYS.length)
+      return fail(`obligation ${index} must contain exactly ${LINEAGE_OBLIGATION_KEYS.join(", ")} — ids only, never a body`);
+    if (typeof o.kind !== "string" || !LINEAGE_OBLIGATION_KINDS.includes(o.kind as LineageObligationKind))
+      return fail(`obligation ${index} kind must be one of ${LINEAGE_OBLIGATION_KINDS.join(", ")}`);
+    if (typeof o.id !== "string" || !/^[0-9a-zA-Z_-]{1,64}$/.test(o.id)) return fail(`obligation ${index} id must be 1-64 id characters`);
+    if (typeof o.owedBy !== "string" || !/^slot \d+@\d+$/.test(o.owedBy)) return fail(`obligation ${index} owedBy must be "slot N@openedAt"`);
+    if (!(o.reArm === null || (typeof o.reArm === "string" && /^(GET|POST) \/api\/self\/[a-z/-]+$/.test(o.reArm))))
+      return fail(`obligation ${index} reArm must be null or a self route`);
+    const key = `${o.kind}/${o.id}`;
+    if (seen.has(key)) return fail(`obligation ${index} repeats ${key}`);
+    seen.add(key);
+    obligations.push({ kind: o.kind as LineageObligationKind, id: o.id, owedBy: o.owedBy, reArm: o.reArm as string | null });
+  }
+  return { ok: true, handover: { v: 1, lineageId, role: r.role as LineageRole, at: r.at, from, to, obligations,
+    intent: r.intent as string | null, pointer: r.pointer as string | null, supersededBy } };
+};
+// the scar of a record this loader refused — kept, capped, never cleared, in ProgramRecordLoss's shape
+// plus the lineage it belonged to (null = not attributable to any line)
+interface LineageHandoverLoss { v: 1; at: number; lineageId: string | null; error: string }
+const LINEAGE_LOSSES_MAX = 50;
+const loadLineageHandoverLoss = (value: unknown): LineageHandoverLoss | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).length !== 4 || r.v !== 1 || typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0
+    || !(r.lineageId === null || (typeof r.lineageId === "string" && LINEAGE_ID_RE.test(r.lineageId)))
+    || typeof r.error !== "string" || r.error === "" || r.error.length > PROGRAM_RECORD_LOSS_ERROR_MAX) return null;
+  return { v: 1, at: r.at, lineageId: r.lineageId as string | null, error: r.error };
+};
+
 // --- THE RECORD LOSS SCAR -----------------------------------------------------------------------
 // A record of the degradation THIS FILE'S loaders perform, and it exists because that degradation
 // is otherwise INVISIBLE and PERMANENT. loadProgramInbox and loadProgramHandover refuse to repair
@@ -2537,6 +2662,8 @@ export type {
   StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
   StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold,
+  LineageRole, LineageObligationKind, LineageOccupant, LineageObligationRef, LineageHandover,
+  LineageHandoverRead, LineageHandoverLoss,
 };
 export {
   MAX_SLOTS, watchKind, TRANSITION_AWAITING_MAX, TRANSITION_DEADLINE_MIN_SEC,
@@ -2558,6 +2685,9 @@ export {
   MESSAGES_MAX, loadMessageAddress, loadMessagePayload, loadMessageEntry, loadMessages,
   PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, PROGRAM_HANDOVER_KINDS,
   loadProgramHandover, loadProgramRecordLoss,
+  LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LINEAGE_OBLIGATIONS_MAX,
+  LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
+  loadLineageHandover, loadLineageHandoverLoss,
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,

@@ -964,6 +964,15 @@ export async function run(ctx: Ctx): Promise<void> {
   const fleetHeadBefore = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
   const fleetCarry = "Continue the bounded Fleet-control act.";
   const fleetSuccessionLabel = "program-main-fleet-successor";
+  // THE ROLE-LINEAGE CHANNELS DO NOT REACH THIS RAIL (e3e5084a): a Program-MAIN's handover stays its
+  // Program record, byte for byte, so `intent`/`pointer` are refused by name and nothing opens
+  const fleetOccupiedBeforeIntent = (await sessions()).slots.filter((row) => row.cwd).length;
+  const fleetIntentRefusal = await selfSucceed(fleetToken, { label: fleetSuccessionLabel, intent: "a second channel" });
+  const fleetIntentRefusalText = await fleetIntentRefusal.text();
+  check("Program-MAIN succession refuses a role-lineage `intent` 409 by name and opens nothing — the Program record is its handover",
+    fleetIntentRefusal.status === 409 && fleetIntentRefusalText.includes("the Program record is its handover")
+      && (await sessions()).slots.filter((row) => row.cwd).length === fleetOccupiedBeforeIntent,
+    `${fleetIntentRefusal.status} ${fleetIntentRefusalText}`);
   const fleetSuccessionPending = selfSucceed(fleetToken, { label: fleetSuccessionLabel, carry: fleetCarry });
   const fleetSuccessorSlot = await waitForLabel(fleetSuccessionLabel);
   if (fleetSuccessorSlot !== null) {
@@ -1021,6 +1030,23 @@ export async function run(ctx: Ctx): Promise<void> {
       && (fleetSuccessorAttention.requests ?? []).some((a) => a.text === fleetSaveText
         && a.status === "open"),
     JSON.stringify({ handover: fleetRetained, attention: fleetSuccessorAttention.requests ?? [] }));
+  // THE PROGRAM RECORD'S SHAPE IS UNCHANGED BY THE ROLE-LINEAGE CUT (e3e5084a): the same closed key
+  // set at every level, no lineage field on the record, no line id on the successor's slot, and no
+  // role-lineage record written for this succession. BREAKS IF: the Program rail is routed through
+  // the lineage writer, or the lineage fields leak into ProgramHandover.
+  const fleetSuccessorRow = readState().slots?.[String(fleetSuccessionBody.slot ?? 0)] as { lineageId?: string | null; selfToken?: string } | undefined;
+  const fleetSuccessorSelf = await (await fetch(`${BASE}/api/self`, { headers: {
+    "x-fleet-self-token": fleetSuccessorRow?.selfToken ?? "" } })).json() as { lineage?: unknown };
+  const fleetLineRecords = ((readState() as { lineageHandovers?: { from?: { slot?: number; openedAt?: number } }[] }).lineageHandovers ?? [])
+    .filter((r) => r.from?.slot === fleetSlot && r.from.openedAt === fleetAOpenedAt);
+  check("Program-MAIN Fleet succession: the Program record keeps its exact shape and no role-lineage record or line id is written",
+    !!fleetRetained && JSON.stringify(Object.keys(fleetRetained).sort()) === JSON.stringify(["at", "dropped", "from", "obligations", "to", "v"])
+      && JSON.stringify(Object.keys(fleetRetained.from).sort()) === JSON.stringify(["openedAt", "sessionId", "slot"])
+      && JSON.stringify(Object.keys(fleetRetained.to).sort()) === JSON.stringify(["openedAt", "slot"])
+      && fleetRetained.obligations.every((o) => JSON.stringify(Object.keys(o).sort()) === JSON.stringify(["at", "detail", "id", "kind", "text"]))
+      && (fleetSuccessorRow?.lineageId ?? null) === null && fleetSuccessorSelf.lineage === null && fleetLineRecords.length === 0,
+    JSON.stringify({ keys: fleetRetained ? Object.keys(fleetRetained) : null, lineageId: fleetSuccessorRow?.lineageId ?? null,
+      self: fleetSuccessorSelf.lineage, lineRecords: fleetLineRecords.length }));
 
   // --- A → B → C: THE SECOND SUCCESSION MUST NOT ERASE THE FIRST ONE'S OBLIGATIONS. ------------
   // The defect this replaces, found in review of 4810d4ae: captureProgramHandover read only the

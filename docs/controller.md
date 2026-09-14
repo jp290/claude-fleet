@@ -95,14 +95,17 @@ bestätigten Programs im Blick. Er ersetzt weder deren fachliche Program-MAIN no
   verschiebt die Bindung, persistiert Watch-/Auto-Pflichten und historische Attention-Zeilen im
   `handover`; der Brief zeigt nur Vorschauen. Die Nachfolgerin liest Program-/Task-/Report-/Inbox-/
   Handover-Fakten und optional HANDOFF-Rest. Nichts wird neu armiert; Lücken bleiben `unknown`.
-- **Ungebundene Legacy-Session, damit auch ein ungebundener Controller:** `HANDOFF.md` muss existieren,
-  sauber und nach Session-Start committed sein. Der generische Brief liest nur dessen obersten Block;
-  `carry` ist höchstens ein zusätzlicher Satz, kein Ersatz.
+- **Ungebundene Legacy-Session, damit auch ein ungebundener Controller:** kein `HANDOFF.md`-Commit mehr
+  als Gate (seit e3e5084a). Die Nachfolge schreibt einen Linien-Record (`docs/self-api.md` §Linien-Record):
+  Pflichten nur per ID, dazu `intent` (≤ 2000 Zeichen) ODER `pointer` auf einen committeten, datierten
+  Abschnitt. Der Brief nennt den Record; die Nachfolgerin liest ihn in `GET /api/self` → `lineage`.
+  `carry` bleibt ein optionaler Satz und ist neben `intent`/`pointer` verweigert.
 - **Game-Maker-Program-MAIN:** behält den frischen, committed `## Current game checkpoint` mit der
   geschlossenen Sieben-Felder-Form und einer im Repository vorhandenen Build-SHA. Kein `carry`;
   Nachfolge startet mit Launch, realer Eingabe, frischer Wahrnehmung und Build-Vergleich.
-- **Supervisor:** behält den frischen HANDOFF-Commit. Seine Bindung folgt nur über den eigenen
-  Supervisor-Nachfolgepfad; stale/ungebunden darf er sich nicht selbst wieder einsetzen.
+- **Supervisor:** schreibt denselben Linien-Record auf seine eigene Linie, ohne HANDOFF-Commit. Seine
+  Bindung folgt nur über den eigenen Supervisor-Nachfolgepfad; stale/ungebunden darf er sich nicht selbst
+  wieder einsetzen.
 
 `POST /api/self/succeed` vererbt Harness und standardmäßig Modell/Effort, sofern der Body sie nicht
 gültig überschreibt; Lane und Steward werden abgewiesen. Nach jedem externen Await wird die exakte
@@ -116,5 +119,5 @@ Slots der claude-Harness an; codex/pi/pi-zai sind nicht zuständig, nicht 0 %. S
 (`server.ts#migrateMessage`) folgt der Schiene, die `server.ts#migrateRailOf` über dieselbe Bindung
 wie `handleSelfSucceed` bestimmt: gebundene Standard-Program-MAIN → offene Pflichten lesbar machen,
 dann `succeed` mit optionalem `carry`, kein HANDOFF-Commit · Game-Maker → Checkpoint committen,
-`succeed` ohne `carry` · ungebunden, mehrdeutig gebunden, Supervisor → HANDOFF.md schreiben und
-committen. Der Hinweis ist ein Server-Prädikat, nicht das Gate; das Gate bleibt `handleSelfSucceed`.
+`succeed` ohne `carry` · ungebunden, mehrdeutig gebunden, Supervisor → Pflichten stehen lassen (sie gehen
+per ID in den Linien-Record), `succeed` mit optionalem `intent` ODER `pointer`. Der Hinweis ist ein Server-Prädikat, nicht das Gate; das Gate bleibt `handleSelfSucceed`.

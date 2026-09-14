@@ -16,7 +16,7 @@ import {
 
 const SELF_FIELDS = [
   "slot", "label", "cwd", "mission", "awaiting", "lane", "idleMs", "observed",
-  "autos", "watches", "events",
+  "autos", "watches", "events", "lineage",
 ] as const;
 
 const SELF_ADAPTER = {

@@ -6299,8 +6299,12 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && selfSucceedBody.includes("p.main.slot === predecessorIdentity.slot && p.main.openedAt === predecessorIdentity.openedAt")
       && !selfSucceedBody.includes("p.main.slot === s.id")
       && handoffAwaitAt > bindingClassifyAt
-      && selfSucceedBody.includes("const standard = bound.length === 1 && !isGameMaker(bound[0]!);")
-      && selfSucceedBody.includes("const handoffReady = standard ? null : await handoffCommittedAfterOpen(s);")
+      // since e3e5084a the file is asked of the game-maker rail alone; unbound and Supervisor write a
+      // role-lineage record instead, and the pointer's own git read sits before the same recheck
+      && selfSucceedBody.includes("const gameMaker = bound.length === 1 && isGameMaker(bound[0]!);")
+      && selfSucceedBody.includes("const handoffReady = gameMaker ? await handoffCommittedAfterOpen(s) : null;")
+      && selfSucceedBody.indexOf("await lineagePointerCommitted(") > handoffAwaitAt
+      && identityRecheckAt > selfSucceedBody.indexOf("await lineagePointerCommitted(")
       && selfSucceedBody.includes("if (handoffReady === false)")
       && identityRecheckAt > handoffAwaitAt && dispatchAt > identityRecheckAt
       && selfRetireBody.includes("successionInflight.has(s.selfToken)")

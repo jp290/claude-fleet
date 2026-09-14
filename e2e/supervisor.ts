@@ -55,7 +55,9 @@ const BRIEF_BODY = [
 ];
 const FOUNDING_FIRST = "[fleet Supervisor] You are the one owner-side Supervisor session for this fleet.";
 const BIND_FIRST = "[fleet Supervisor bind] The owner has bound THIS already-running session as the one owner-side Supervisor session for this fleet; your working directory, your context and the work you were doing stay yours.";
-const SUCCESSION_FIRST = "[fleet Supervisor succession] You are the CONTINUED owner-side Supervisor session; your predecessor is retiring; everything handed over is in HANDOFF.md.";
+// the succession preamble names the ROLE-LINEAGE RECORD (e3e5084a) — its id is minted per line, so the
+// line is matched up to the id and from the door on
+const SUCCESSION_FIRST = "[fleet Supervisor succession] You are the CONTINUED owner-side Supervisor session; your predecessor is retiring; your handover is the role-lineage record ";
 
 const readState = (): FleetState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as FleetState;
 const ownerRead = async (): Promise<{ programs: ProgramRow[]; supervisor: SupervisorBinding | null }> =>
@@ -103,14 +105,6 @@ const readMessages = async (token: string): Promise<{ response: Response; view: 
 const readMessage = (token: string, id: string): Promise<Response> =>
   fetch(`${BASE}/api/self/messages/${id}/read`, { method: "POST", headers: { "x-fleet-self-token": token } });
 
-// A HANDOFF commit is compared against the session's openedAt in whole seconds on the git side and
-// in milliseconds on the slot side; waiting past the next full second is what makes "newer" true.
-const commitHandoff = async (openedAt: number, body: string): Promise<number> => {
-  await Bun.sleep(Math.max(0, (Math.floor(openedAt / 1000) + 2) * 1000 - Date.now()));
-  writeFileSync(`${ROOT}/HANDOFF.md`, body);
-  spawnSync("git", ["-C", ROOT, "add", "HANDOFF.md"]);
-  return spawnSync("git", ["-C", ROOT, "commit", "-qm", "supervisor succession handoff"]).status ?? 1;
-};
 
 export async function run(): Promise<void> {
   const baseline = await ownerRead();
@@ -218,17 +212,14 @@ export async function run(): Promise<void> {
   check("supervisor succession prerequisite: the bound occupant still carries its own self credential",
     /^[0-9a-f]{32}$/.test(supervisorToken), `${supervisorToken.length} chars`);
 
-  const noHandoff = await succeed(supervisorToken, {});
-  const noHandoffText = await noHandoff.text();
-  check("supervisor succession gate: without a fresh committed HANDOFF.md the transfer is a 409 and nothing moves",
-    noHandoff.status === 409 && noHandoffText.includes("HANDOFF.md")
+  // NO HANDOFF COMMIT is made anywhere in this module since e3e5084a: the transfer below succeeds on
+  // the role-lineage record alone. What still refuses is a second handover channel.
+  const twoChannels = await succeed(supervisorToken, { intent: "read the portfolio", pointer: "docs/handoff-2026-09-14.md#next" });
+  const twoChannelsText = await twoChannels.text();
+  check("supervisor succession gate: intent AND pointer is a 409 with the one-channel sentence and nothing moves",
+    twoChannels.status === 409 && twoChannelsText.includes("exactly one handover channel")
       && sameBinding((await ownerRead()).supervisor, bound),
-    `${noHandoff.status} ${noHandoffText}`);
-
-  const handoffStatus = await commitHandoff(bound?.openedAt ?? Date.now(),
-    `## Supervisor succession\nthe cross-program portfolio continues\n`);
-  check("supervisor succession prerequisite: HANDOFF.md is committed newer than the bound session",
-    handoffStatus === 0, String(handoffStatus));
+    `${twoChannels.status} ${twoChannelsText}`);
 
   // --- ambiguity: one session holding two authorities has no defined transfer order. ---
   await stopSrv();
@@ -315,10 +306,26 @@ export async function run(): Promise<void> {
       && (transferred.boundAt ?? 0) > (bound?.boundAt ?? 0),
     `before=${JSON.stringify(bound)} after=${JSON.stringify(transferred)}`);
 
+  // THE SAME RECORD, on the Supervisor's own line: from the bound occupant to the successor, ids only
+  type LineRow = { lineageId?: string; role?: string; from?: { slot?: number; openedAt?: number };
+    to?: { slot?: number; openedAt?: number }; obligations?: unknown[]; intent?: string | null; supersededBy?: unknown };
+  const supLine = ((readState() as FleetState & { lineageHandovers?: LineRow[] }).lineageHandovers ?? [])
+    .filter((r) => r.to?.slot === successorSlot && r.to.openedAt === successorState?.openedAt);
+  const supSelf = await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": successorState?.selfToken ?? "" } }))
+    .json() as { lineage?: { state?: string; lineageId?: string; record?: LineRow | null } | null };
+  check("supervisor succession writes the role-lineage record on ITS line — from the bound occupant to the successor, read at GET /api/self",
+    supLine.length === 1 && supLine[0]?.role === "supervisor" && supLine[0].from?.slot === bound?.slot
+      && supLine[0].from?.openedAt === bound?.openedAt && Array.isArray(supLine[0].obligations)
+      && supLine[0].intent === null && supLine[0].supersededBy === null
+      && supSelf.lineage?.state === "present" && supSelf.lineage.lineageId === supLine[0].lineageId
+      && (successorState as { lineageId?: string } | undefined)?.lineageId === supLine[0].lineageId,
+    JSON.stringify({ supLine, self: supSelf.lineage ?? null }));
+
   const successionPrompt = await historyOf(successorSlot);
   const successionLines = successionPrompt.split("\n");
-  check("supervisor succession brief: the founding body is delivered under the succession preamble with the carry",
-    successionLines[0] === SUCCESSION_FIRST
+  check("supervisor succession brief: the founding body is delivered under the succession preamble naming the line record, with the carry",
+    (successionLines[0] ?? "").startsWith(SUCCESSION_FIRST) && (successionLines[0] ?? "").includes(`${supLine[0]?.lineageId} at GET /api/self`)
+      && !(successionLines[0] ?? "").includes("HANDOFF.md")
       && JSON.stringify(successionLines.slice(1, 1 + BRIEF_BODY.length)) === JSON.stringify(BRIEF_BODY)
       && successionPrompt.includes(carry) && successionPrompt.includes("ContextPlan v2 anchors"),
     successionPrompt.slice(0, 300));
@@ -1303,17 +1310,16 @@ export async function run(): Promise<void> {
 
   // THE REAL SUCCESSION. The binding MOVES to a new occupant; the role does not.
   const msgSupOpenedAt = readState().slots?.[String(msgSupSlot)]?.openedAt ?? 0;
-  const msgHandoff = await commitHandoff(msgSupOpenedAt, "## Supervisor succession\nthe message rail continues\n");
   const msgSuccession = await succeed(msgSupToken, { label: "message-rail-supervisor-2",
     carry: "Continue the addressed thread the predecessor opened." });
   const msgSuccessionBody = await msgSuccession.json() as { ok?: boolean; slot?: number };
   const msgSupSlot2 = msgSuccessionBody.slot ?? 0;
   const msgSupToken2 = readState().slots?.[String(msgSupSlot2)]?.selfToken ?? "";
   check("message rail role succession setup: a real succession moved the binding to a different occupant",
-    msgHandoff === 0 && msgSuccession.ok && msgSupSlot2 > 0 && msgSupSlot2 !== msgSupSlot
+    msgSupOpenedAt > 0 && msgSuccession.ok && msgSupSlot2 > 0 && msgSupSlot2 !== msgSupSlot
       && (await ownerRead()).supervisor?.slot === msgSupSlot2
       && /^[0-9a-f]{32}$/.test(msgSupToken2) && msgSupToken2 !== msgSupToken,
-    `handoff=${msgHandoff} ${msgSuccession.status} ${msgSupSlot}→${msgSupSlot2}`);
+    `openedAt=${msgSupOpenedAt} ${msgSuccession.status} ${msgSupSlot}→${msgSupSlot2}`);
 
   // THE PROPERTY. The successor resolves to the SAME ROLE, so it reads the same row under the same
   // id — while the receipt still names the PREDECESSOR that actually read it.

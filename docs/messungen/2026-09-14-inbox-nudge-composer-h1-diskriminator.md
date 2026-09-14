@@ -93,6 +93,15 @@ Rest in Fortsetzungszeilen steht. Weil H1 gilt, darf der Fix auf dem gemalten Co
 muss ihn nur ganz lesen: Glyph-Zeile plus alle eingerueckten Fortsetzungszeilen bis zur ersten
 Leerzeile/Regel.
 
+**Umgesetzt (Teil 2):** `composer.ts#composerBuffer`, von `server.ts#readComposer` benutzt — also von
+der Pre-Paste-Belegungspruefung und von `server.ts#awaitComposer`. Auf den Frames dieser Probe:
+long-dollar nach Enter `composerResidue` 129 / `composerBuffer` **193**; nach dem Sentinel 129 / 194;
+current-213 vor Enter 128 / 212 (ein am Umbruch verschluckter Leerschritt — die Zahl ist hoechstens
+um eins je Umbruch zu niedrig, nie zu hoch); alle leeren Composer 0 / 0. Sonde:
+`e2e/watch.ts` „acceptance reader counts the whole buffer" + „acceptance buffer reader: an empty glyph
+row …"; rot, wenn `readComposer` wieder `composerResidue` liest, und rot, wenn `composerBuffer` nur
+die Glyph-Zeile liest (beide Mutationen gefahren).
+
 ## 5 · NICHT GEMESSEN
 
 - **claude:** §6 der Vorgaengernotiz (66 Zeichen Owner-Text, Enter ohne Turn, Leerzeichen raeumt weg)

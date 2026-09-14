@@ -19,7 +19,7 @@ import { auditWatchMessage, laneHostCommitLooking, laneSpentLooking, laneStalled
   SPENT_RULES, STALLED_RULES,
   type AuditWatchEventPayload, type AuditWatchEventView, type ClarificationEventPayload, type LaneSignalView,
   type LaneWatchEventPayload } from "../lane-signals";
-import { composerArrival, composerHoldsExactly, composerResidue, composerRows,
+import { composerArrival, composerBuffer, composerHoldsExactly, composerResidue, composerRows,
   type ComposerArrival } from "../composer";
 import { FLEET_REPORT_STATUSES, type FleetReportEventPayload, type FleetReportStatus } from "../src/protocol";
 import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsPollRow, opsPollVisible, opsSubject, opsSummary,
@@ -326,6 +326,38 @@ export async function run(): Promise<void> {
     check("acceptance reader: a frame without the composer (dialog, stand-in binary) is null, never empty",
       composerResidue(claude, "Do you trust the files in this folder?\n  1. Yes\n  2. No") === null
       && composerResidue(pi, "just text\nno rules") === null, "null expected for both");
+
+    // 1e1dcd50, H1 measured 2026-09-14 (docs/messungen/2026-09-14-inbox-nudge-composer-h1-diskriminator.md):
+    // the painted codex composer IS the input buffer, and the live "composer still holds 129 chars"
+    // was a 193-char buffer whose glyph row wraps at 129. This frame is the measured post-Enter
+    // composer region (codex-cli 0.153.4, 133 columns, `$`-mention overlay open below it). The
+    // acceptance read must count the BUFFER; the glyph-row reader is kept beside it as the witness
+    // of the defect, so reverting readComposer's reader turns the source half red and a
+    // first-row-only composerBuffer turns the frame half red.
+    const incidentPayload = "[fleet inbox] 5 ungelesene Eintraege in der Inbox deines Programs f9dc8e101bcc10c5e90b0eed"
+      + " — GET /api/self/inbox, dann POST /api/self/inbox/<id>/read (x-fleet-self-token aus $FLEET_SELF_TOKEN).";
+    const codexIncident = ["", "", `${E}[1m›${E}[0m ${incidentPayload.slice(0, 129)}`, `  ${incidentPayload.slice(129)}`, "",
+      `  ${E}[2;3mno matches${E}[0m`, "", `  Press ${E}[2menter${E}[0m to insert or ${E}[2mesc${E}[0m to close`].join("\n");
+    const readComposerBody = serverSource.slice(serverSource.indexOf("async function readComposer("),
+      serverSource.indexOf("type ExactComposerRead"));
+    check("acceptance reader counts the whole buffer: the measured 1e1dcd50 codex frame reads 193 chars (the glyph row alone is 129), and readComposer uses that reader",
+      composerResidue(codex, codexIncident)?.length === 129
+        && composerBuffer(codex, codexIncident) === incidentPayload
+        && composerHoldsExactly(composerRows(codex, codexIncident) ?? [], incidentPayload)
+        && readComposerBody.includes("composerBuffer(form, cap.out)") && !readComposerBody.includes("composerResidue("),
+      JSON.stringify({ residue: composerResidue(codex, codexIncident)?.length,
+        buffer: composerBuffer(codex, codexIncident)?.length, usesBuffer: readComposerBody.includes("composerBuffer(") }));
+    // …a buffer whose glyph row is empty is not an empty composer (an owner draft that starts with a
+    // newline), and every single-row frame measured above keeps exactly its old answer.
+    const codexBlankFirst = ["", `${E}[1m›${E}[0m `, "  owner draft on the second row", "", "  gpt-6-astra low · ~/x"].join("\n");
+    const singleRow = [[claude, claudeIdle], [claude, claudeLost], [claude, claudeQueued], [claude, claudeDraft],
+      [codex, codexAfter], [codex, codexHeld], [pi, piFrame("")], [pi, piFrame("owner draft")],
+      [claude, "Do you trust the files in this folder?\n  1. Yes\n  2. No"], [pi, "just text\nno rules"]] as const;
+    const drift = singleRow.filter(([form, frame]) => composerBuffer(form, frame) !== composerResidue(form, frame));
+    check("acceptance buffer reader: an empty glyph row above a draft row is OCCUPIED, and all ten single-row frames read exactly as the glyph-row reader did",
+      composerResidue(codex, codexBlankFirst) === "" && composerBuffer(codex, codexBlankFirst) === "owner draft on the second row"
+        && drift.length === 0,
+      JSON.stringify({ blankFirst: composerBuffer(codex, codexBlankFirst), drift: drift.length }));
 
     // ACP-26: rollback compares the complete freshly rendered region with Fleet's own payload.
     // These are the TWO observed production post-land event shapes, copied without credentials:

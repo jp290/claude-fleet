@@ -53,6 +53,34 @@ export function composerResidue(form: ComposerForm, frame: string): string | nul
   return raw.slice(top + 1, bottom).map(visible).join("\n").trim();
 }
 
+// THE WHOLE INPUT BUFFER, as rendered — composerResidue's question ("what does the composer still
+// hold?") asked of EVERY visual row, not only the glyph row. Measured 2026-09-14 on codex-cli
+// 0.153.4 in throwaway panes (docs/messungen/2026-09-14-inbox-nudge-composer-h1-diskriminator.md):
+// the painted composer IS the input buffer — a repaint with no input keeps it, one appended byte
+// lands behind the full payload — and the live "composer still holds 129 chars" was a 193-char
+// buffer whose glyph row wraps at 129. composerResidue reports the first row only and cannot see a
+// buffer whose first row is empty. This reader is lenient where composerRows is strict: rollback
+// must refuse an unknown frame, a residue read must not turn one into "unobservable". The region is
+// the glyph row plus every following two-space-indented row up to the first blank row or rule;
+// rows are joined without a separator, so where the TUI swallowed one at a wrap the count is low by
+// at most one per row boundary — never high.
+// "" = the composer is on screen and empty · text = its contents · null = no composer on this frame.
+export function composerBuffer(form: ComposerForm, frame: string): string | null {
+  if (form.kind === "rules") return composerResidue(form, frame);
+  const raw = frame.split("\n");
+  const plain = raw.map((l) => l.replace(SGR_RE, ""));
+  let i = plain.length - 1;
+  while (i >= 0 && !form.re.test(plain[i])) i--;
+  if (i < 0) return null;
+  const rows = [visible(raw[i]).replace(form.re, "").trim()];
+  for (let j = i + 1; j < raw.length; j++) {
+    const t = plain[j].trim();
+    if (t === "" || RULE_RE.test(t) || !plain[j].startsWith("  ")) break;
+    rows.push(visible(raw[j]).trim());
+  }
+  return rows.join("").trim();
+}
+
 // The exact-region half of ACP-26. Unlike composerResidue, this reader does NOT trim content:
 // rollback is allowed to compare Fleet's complete payload only, so an owner byte before or after
 // it must remain visible as a difference. Measured on claude 2.1.240 and codex-cli 0.147.0, glyph

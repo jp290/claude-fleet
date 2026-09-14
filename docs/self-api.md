@@ -2372,6 +2372,13 @@ Seit `server.ts#deliverMergeVerdict` den `actor` des Laufs kennt, folgt der Empf
   Fällt eine der vier Fragen, **fällt das Verdikt NICHT auf die Lane zurück** — es ist unzustellbar,
   bleibt auf dem Merge-Status lesbar und wird als `merge_verdict_undeliverable` mit dem Grund
   protokolliert. Ein Lane-Fallback wäre genau der Paste, den der Schnitt abschafft.
+- **Ausnahme Nachfolge** (`server.ts#mergeVerdictSuccessorOf`, gemessen 2026-09-13: ein rotes Verdikt
+  der per `succeed` abgelösten MAIN buchte zweimal `receiver-gone`): nennt die Bindung nicht mehr die
+  fragende Occupation, geht das Verdikt an die LEBENDE gebundene MAIN, wenn die Program-Lineage
+  eine UNGEBROCHENE `succeed`-Kette von der fragenden Holding bis zur aktuellen Bindung trägt.
+  `verdictDelivery.receiver` nennt dann die Nachfolgerin, `merge_verdict_sent` sagt
+  `successor of slot N by succeed`. Owner-Kill (`retire`), Rebind oder ein Kill irgendwo in der
+  Kette ⇒ weiter `receiver-gone`; ein recycelter Slot ist kein Lineage-Eintrag.
 - **Persistiert**, weil der eine gebundene Retry aus `tickWatches` keinen Job-Frame hat, aus dem er
   einen Actor erben könnte: `MergeLast.verdictTo` hält Slot, Program, Task und die Occupation neben
   `verdictDelivery`. Der Loader (`server.ts#withValidVerdictTo`) liest ihn in der Disziplin von

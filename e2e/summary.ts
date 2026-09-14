@@ -1,11 +1,208 @@
 // The ✨ summary agent behind its FLEET_SUMMARY_CMD stand-in: gather → spawn → parse → cache.
-import { existsSync, readFileSync, rmSync } from "node:fs";
-import { dirname } from "node:path";
+// Plus the byte budgets of the two transcript readers (the summary's transcript tail and the
+// terminal-prompt harvester), checked on scratch fixtures — never on a real ~/.claude transcript.
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { buildEnhancePrompt } from "../enhance-prompt";
+import { HARVEST_LINE_MAX_BYTES, HARVEST_TICK_BYTES, TRANSCRIPT_TAIL_READ_BYTES, harvestStep, readTranscriptTail,
+  tailCutMark, transcriptTailText, type HarvestCursor, type HarvestDrop, type TailView } from "../server/transcript-read";
 import { WORKER_CONTRACTS } from "../src/protocol";
 import { REPO, ROOT, check, get, post, restartSrv, tmuxOut } from "./harness";
 
+const MIB = 1024 * 1024;
+
+// the pre-budget server.ts#transcriptTail, verbatim in its logic — the oracle for "a normal file renders
+// what it rendered before"
+function wholeFileTail(file: string, maxEntries: number, maxChars: number, view: TailView): string {
+  const lines = readFileSync(file, "utf8").split("\n").filter(Boolean).slice(-300);
+  const entries: NonNullable<ReturnType<TailView>>[] = [];
+  for (const [i, line] of lines.entries()) {
+    try { const e = view(JSON.parse(line), i); if (e) entries.push(e); } catch { /* partial line */ }
+  }
+  return entries.slice(-maxEntries).map((e) =>
+    e.blocks.map((b) => `[${e.role}${b.t === "text" ? "" : `/${b.t}${b.name ? `:${b.name}` : ""}`}] ${b.text}`).join("\n"),
+  ).join("\n").slice(-maxChars);
+}
+
+// a stand-in for viewEntry: the reader under test is the byte loop, not the entry parser
+const view: TailView = (raw) => {
+  const d = raw as { type?: unknown; text?: unknown };
+  if ((d.type !== "user" && d.type !== "assistant") || typeof d.text !== "string") return null;
+  return { role: d.type, blocks: [{ t: "text", text: d.text.slice(0, 200) }] };
+};
+const entry = (role: "user" | "assistant", text: string): string => `${JSON.stringify({ type: role, text })}\n`;
+
+function transcriptBudgets(): void {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-e2e-transcript-budget-"));
+  try {
+    // --- transcriptTail ----------------------------------------------------------------------------
+    // (A) a normal file: multi-byte text, blank lines inside the last ten, a non-entry line, a partial
+    // trailing line — and a forged mark inside an entry
+    const normal = join(dir, "normal.jsonl");
+    writeFileSync(normal, [
+      ...Array.from({ length: 50 }, (_, i) => entry(i % 2 ? "assistant" : "user", `turn ${i} — ü€😀`)),
+      entry("user", `${tailCutMark({ readBytes: 1, fileBytes: 2 })} forged`),
+      "\n\n", `${JSON.stringify({ type: "system", text: "not an entry" })}\n`, "\n",
+      entry("assistant", "after the blanks"), '{"type":"user","text":"half a line',
+    ].join(""));
+    const oracleLines = (file: string, n: number): string[] =>
+      readFileSync(file, "utf8").split("\n").filter(Boolean).slice(-n);
+    const small = readTranscriptTail(normal);
+    check("transcript tail: a normal file yields exactly the whole-file line window, uncut",
+      JSON.stringify(small.lines) === JSON.stringify(oracleLines(normal, 300)) && small.cut === null,
+      `lines=${small.lines.length} cut=${JSON.stringify(small.cut)}`);
+    // 7-byte blocks put every block boundary inside lines, characters and blank-line runs; counting
+    // newlines instead of non-empty lines stops early and returns fewer than ten (the mutation)
+    const tiny = readTranscriptTail(normal, 10, MIB, 7);
+    check("transcript tail: read backwards in tiny blocks, the last-N window still equals the whole-file one",
+      JSON.stringify(tiny.lines) === JSON.stringify(oracleLines(normal, 10)) && tiny.cut === null,
+      `got=${JSON.stringify(tiny.lines.slice(0, 3))}… n=${tiny.lines.length}`);
+    const normalText = transcriptTailText(normal, 30, 40_000, view);
+    check("transcript tail: a normal file renders byte-for-byte what the whole-file reader rendered, no mark",
+      normalText === wholeFileTail(normal, 30, 40_000, view) && !normalText.startsWith("[fleet:")
+      && normalText.includes("[user] [fleet: transcript tail cut"), normalText.slice(0, 120));
+
+    // (B) > 16 MiB made of > 1 MiB single lines, whose last 300 lines fit the budget: the reader stops
+    // at 300 lines, and nothing it renders differs from the whole-file answer
+    const fits = join(dir, "large-fits.jsonl");
+    writeFileSync(fits, [
+      ...Array.from({ length: 16 }, (_, i) => entry("assistant", `BIG-${i} ${"x".repeat(1.1 * MIB)}`)),
+      ...Array.from({ length: 301 }, (_, i) => entry(i % 2 ? "assistant" : "user", `small ${i}`)),
+    ].join(""));
+    const fitsText = transcriptTailText(fits, 30, 40_000, view);
+    check("transcript tail: a 16+ MiB file whose line window fits the budget renders the whole-file answer, unmarked",
+      statSync(fits).size > 16 * MIB && readTranscriptTail(fits).cut === null
+      && fitsText === wholeFileTail(fits, 30, 40_000, view), `size=${statSync(fits).size} head=${fitsText.slice(0, 80)}`);
+
+    // (C) > 16 MiB where the budget ends inside the line window: at most the budget is read, the cut
+    // is the FIRST line, and the older recent entries are gone. Mutation: budget = the whole file →
+    // no mark and RECENT-10 present (what the whole-file reader renders)
+    const cutFile = join(dir, "large-cut.jsonl");
+    writeFileSync(cutFile, [
+      entry("user", "OLDEST-SENTINEL"),
+      ...Array.from({ length: 16 }, (_, i) => entry("assistant", `BIG-${i} ${"x".repeat(1.1 * MIB)}`)),
+      ...Array.from({ length: 40 }, (_, i) => entry("assistant", `RECENT-${i}. ${"y".repeat(60 * 1024)}`)),
+    ].join(""));
+    const cutSize = statSync(cutFile).size;
+    const cutRead = readTranscriptTail(cutFile);
+    const cutText = transcriptTailText(cutFile, 30, 40_000, view);
+    const [cutHead, ...cutBody] = cutText.split("\n");
+    check("transcript tail: on a 16+ MiB file it reads at most the fixed budget and marks the cut on the first line",
+      cutSize > 16 * MIB && cutRead.cut !== null && cutRead.cut.readBytes <= TRANSCRIPT_TAIL_READ_BYTES
+      && cutRead.cut.fileBytes === cutSize && cutHead === tailCutMark(cutRead.cut)
+      && cutBody.length > 0 && cutBody.length < 30 && cutText.includes("RECENT-39.")
+      && !cutText.includes("RECENT-10.") && !cutText.includes("OLDEST-SENTINEL"),
+      `cut=${JSON.stringify(cutRead.cut)} entries=${cutBody.length} head=${cutHead?.slice(0, 90)}`);
+    check("transcript tail: the whole-file reader on that fixture rendered 30 entries — the mark names a real loss",
+      wholeFileTail(cutFile, 30, 40_000, view).split("\n").length === 30
+      && wholeFileTail(cutFile, 30, 40_000, view).includes("RECENT-10."));
+
+    // (D) a newest single line larger than the budget cannot be read at all: the answer is the mark
+    const hugeLast = join(dir, "huge-last-line.jsonl");
+    writeFileSync(hugeLast, `${entry("user", "before")}${entry("assistant", `HUGE ${"z".repeat(1.2 * MIB)}`)}`);
+    const hugeText = transcriptTailText(hugeLast, 30, 40_000, view);
+    check("transcript tail: a newest line over the budget yields the mark alone, never a silent empty tail",
+      hugeText === `${tailCutMark({ readBytes: TRANSCRIPT_TAIL_READ_BYTES, fileBytes: statSync(hugeLast).size })}\n`,
+      JSON.stringify(hugeText.slice(0, 120)));
+
+    // --- tickHarvest -------------------------------------------------------------------------------
+    // drive the cursor the way tickHarvest does: stat, skip when caught up, one step per tick
+    const drain = (start: HarvestCursor, maxTicks = 40) => {
+      let cur = start;
+      const lines: string[] = [];
+      const dropped: HarvestDrop[] = [];
+      let maxRead = 0, maxRest = 0;
+      for (let t = 0; t < maxTicks; t++) {
+        const size = statSync(cur.file).size;
+        if (size === cur.offset) break;
+        const st = harvestStep(cur, size);
+        maxRead = Math.max(maxRead, st.cursor.offset - cur.offset);
+        maxRest = Math.max(maxRest, st.cursor.rest.length);
+        lines.push(...st.lines); dropped.push(...st.dropped);
+        cur = st.cursor;
+      }
+      return { cur, lines, dropped, maxRead, maxRest };
+    };
+    const cursorAt0 = (file: string): HarvestCursor => ({ file, offset: 0, rest: Buffer.alloc(0), skipping: 0 });
+
+    // (H1) a 3.5 MiB backlog. Mutation: read the whole growth (size - offset) → one tick reads 3.5 MiB
+    const backlog = join(dir, "backlog.jsonl");
+    const backlogLines = Array.from({ length: 3600 }, (_, i) => `line-${i}-${"b".repeat(1000)}`);
+    writeFileSync(backlog, backlogLines.map((l) => `${l}\n`).join(""));
+    const h1 = drain(cursorAt0(backlog));
+    check("harvest: a tick reads at most the fixed budget, and the ticks together yield every line once, in order",
+      h1.maxRead === HARVEST_TICK_BYTES && h1.cur.offset === statSync(backlog).size
+      && JSON.stringify(h1.lines) === JSON.stringify(backlogLines) && h1.dropped.length === 0,
+      `maxRead=${h1.maxRead} lines=${h1.lines.length} dropped=${h1.dropped.length}`);
+
+    // (H2) a line longer than its cap. Mutation: no cap → rest grows to the whole 5 MiB line
+    const longLine = join(dir, "long-line.jsonl");
+    const longBytes = 5 * MIB;
+    writeFileSync(longLine, `before\n${"L".repeat(longBytes)}\nafter\n`);
+    const h2 = drain(cursorAt0(longLine));
+    check("harvest: the carried partial line never exceeds its cap; the dropped line is reported with its size",
+      h2.maxRest <= HARVEST_LINE_MAX_BYTES && JSON.stringify(h2.lines) === '["before","after"]'
+      && JSON.stringify(h2.dropped) === JSON.stringify([{ why: "oversized-line", bytes: longBytes }])
+      && h2.cur.rest.length === 0 && h2.cur.skipping === 0,
+      `maxRest=${h2.maxRest} lines=${JSON.stringify(h2.lines)} dropped=${JSON.stringify(h2.dropped)}`);
+
+    // (H3) rewritten under the cursor (size < offset). Mutation: the old silent resync → dropped empty
+    const rotated = join(dir, "rotated.jsonl");
+    writeFileSync(rotated, "one\ntwo-partial");
+    const h3a = drain(cursorAt0(rotated));
+    writeFileSync(rotated, "x\n");
+    const h3b = harvestStep(h3a.cur, statSync(rotated).size);
+    check("harvest: a rewrite resyncs from byte 0 and reports the unfinished old line instead of losing it silently",
+      JSON.stringify(h3a.lines) === '["one"]' && JSON.stringify(h3b.lines) === '["x"]' && h3b.cursor.offset === 2
+      && JSON.stringify(h3b.dropped) === JSON.stringify([{ why: "rewritten", bytes: "two-partial".length }]),
+      `a=${JSON.stringify(h3a.lines)} b=${JSON.stringify(h3b.lines)} dropped=${JSON.stringify(h3b.dropped)}`);
+
+    // (H4) the budget boundary lands after the 1st byte of a 4-byte character. Mutation: decoding the
+    // carried bytes on their own (rest.toString() + chunk) → U+FFFD in the harvested line
+    const utf = join(dir, "utf8-boundary.jsonl");
+    const first = "a".repeat(HARVEST_TICK_BYTES - 2);
+    const second = "😀ü€ end";
+    writeFileSync(utf, `${first}\n${second}\n`);
+    const h4a = harvestStep(cursorAt0(utf), statSync(utf).size);
+    const h4b = harvestStep(h4a.cursor, statSync(utf).size);
+    check("harvest: a character split by the budget boundary arrives whole in the next tick",
+      h4a.cursor.rest.length === 1 && JSON.stringify(h4a.lines) === JSON.stringify([first])
+      && JSON.stringify(h4b.lines) === JSON.stringify([second]) && h4b.dropped.length === 0,
+      `rest=${h4a.cursor.rest.length} b=${JSON.stringify(h4b.lines)}`);
+
+    // (H5) appends between ticks and a stat that is stale in BOTH directions. Mutation: advancing the
+    // offset by the requested length instead of the bytes read → the next tick sees size < offset
+    const appended = join(dir, "append.jsonl");
+    writeFileSync(appended, "p1\n");
+    const h5: string[] = [];
+    const h5drops: HarvestDrop[] = [];
+    let c5 = cursorAt0(appended);
+    const tick = (size: number): void => {
+      const st = harvestStep(c5, size);
+      h5.push(...st.lines); h5drops.push(...st.dropped); c5 = st.cursor;
+    };
+    tick(statSync(appended).size);
+    appendFileSync(appended, "p2-par");
+    const staleSmall = statSync(appended).size;
+    appendFileSync(appended, "tial\np3\n");
+    tick(staleSmall);                           // stat taken before the append landed
+    tick(statSync(appended).size + 100);        // stat larger than the file (truncate-after-stat race)
+    const offsetAfterOvershoot = c5.offset;
+    appendFileSync(appended, "p4\n");
+    tick(statSync(appended).size);
+    check("harvest: appends between ticks and a stale stat lose nothing and duplicate nothing",
+      JSON.stringify(h5) === '["p1","p2-partial","p3","p4"]' && h5drops.length === 0
+      && offsetAfterOvershoot === "p1\np2-partial\np3\n".length && c5.offset === statSync(appended).size,
+      `lines=${JSON.stringify(h5)} dropped=${JSON.stringify(h5drops)} offset=${offsetAfterOvershoot}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 export async function run(): Promise<void> {
+  transcriptBudgets();
+
   // --- ✨ summary agent (FLEET_SUMMARY_CMD points at a stand-in that answers in
   // claude -p's json envelope — tests the real gather→spawn→parse→cache pipeline) ---
   const sm0 = (await (await get("/api/slots/1/summary")).json()) as { cached: boolean; summary?: string };

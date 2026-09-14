@@ -9061,6 +9061,31 @@ export async function run(ctx: Ctx): Promise<void> {
         headers: { "content-type": "application/json", "x-fleet-self-token": acceptTok },
         body: JSON.stringify({ reason: "read the diff — this is what the row asked for" }) })
         .then(async (r) => ({ ok: r.ok, body: (await r.text()).slice(0, 200) }));
+    // THE REPORT LEDGER, both rows of this one report: the filed text in full at OPEN, the verdict
+    // at DECISION. The live list is a bounded tail (FLEET_REPORT_KEEP); a later reader who asks how
+    // this row was judged has only the ledger once it is pruned.
+    const reportLedger = (): Record<string, unknown>[] => {
+      const file = `${ROOT}/fleet-reports.jsonl`;
+      if (!existsSync(file)) return [];
+      return readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((line) => {
+        try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
+      });
+    };
+    const acceptLedger = reportLedger().filter((row) => acceptReportId !== null && row.id === acceptReportId);
+    const acceptOpenRow = acceptLedger.find((row) => row.kind === "open");
+    const acceptDecisionRow = acceptLedger.find((row) => row.kind === "decision");
+    check("fleet-report ledger: a filed report writes one OPEN row with its full text and provenance, and its verdict one DECISION row",
+      acceptDecided?.ok === true && acceptLedger.length === 2
+      && acceptOpenRow?.text === "ambient-land probe: judged before anyone landed it."
+      && acceptOpenRow.taskId === acceptRowId && acceptOpenRow.slot === acceptLane.slot
+      && acceptOpenRow.branch === acceptLane.branch && acceptOpenRow.status === "complete"
+      && typeof acceptOpenRow.at === "number"
+      && acceptDecisionRow?.disposition === "accepted"
+      && acceptDecisionRow.reason === "read the diff — this is what the row asked for"
+      && (acceptDecisionRow.by as { slot?: unknown } | undefined)?.slot === acceptMainSlot
+      && acceptDecisionRow.mainAfter === null
+      && typeof acceptDecisionRow.at === "number" && acceptDecisionRow.at >= (acceptOpenRow.at as number),
+      JSON.stringify({ decided: acceptDecided, rows: acceptLedger }).slice(0, 600));
     const acceptReady = acceptLane.slot === null ? false : await waitDoneLooking(acceptLane.slot);
     const acceptBefore = main2Of();
     const acceptDrive = await driveLand(acceptLane.slot, acceptBefore,

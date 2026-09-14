@@ -22,6 +22,7 @@ import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanWaitNote, t
 import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
   type InstanceLink } from "../src/protocol";
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
+import { FLEET_DEFAULT_MODEL } from "../src/protocol";
 import type { Ctx } from "./ctx";
 
 // The first bytes of briefAndSend's LANE_EXIT_FOOTER. Deliberately the HEADING and not the whole
@@ -45,6 +46,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // never an unknown renderer
     renderer?: string;
     briefHash?: string | null; briefSource?: string;
+    // absent on a row written before the fields existed — a date, never "no model" or "no block"
+    modelOrigin?: string;
+    snippet?: { bytes: number; hits: number; omitted: { ref: string; why: string }[] };
   }
   // server-side briefHashOf, verbatim: the join key is only worth asserting if the test computes it
   // the same way the OUTCOME ledger does, not the same way the receipt writer does
@@ -1801,6 +1805,16 @@ export async function run(ctx: Ctx): Promise<void> {
       && deliveredReceipt.hash === recomputedHash && deliveredReceipt.truncated === false
       && deliveredReceipt.deliveredBytes === new TextEncoder().encode(deliveredPrompt).byteLength,
       `${recomputedHash} ${JSON.stringify(deliveredReceipt ?? null)}`);
+    // THE RECEIPT RESOLVES THE MODEL AT WRITE TIME. This tick lane pins none and the suite runs with
+    // FLEET_MODEL empty, so the spawn line used the fleet default — and a receipt reading null here
+    // (13/50 live lane rows before 2026-09-14) cannot say which model the brief was measured on. Its
+    // brief names no source, so the snippet account is the written zero, not an absent field.
+    check("the receipt names the model the lane ran (never null) with its origin, and an explicit 0/0/[] snippet account when no source block was delivered",
+      deliveredReceipt?.model === FLEET_DEFAULT_MODEL && deliveredReceipt.modelOrigin === "default"
+      && !deliveredPrompt.includes("\n\nQuellpaket")
+      && JSON.stringify(deliveredReceipt.snippet) === JSON.stringify({ bytes: 0, hits: 0, omitted: [] }),
+      JSON.stringify({ model: deliveredReceipt?.model ?? null, modelOrigin: deliveredReceipt?.modelOrigin ?? null,
+        snippet: deliveredReceipt?.snippet ?? null }));
 
     // (d2) THE TICK INHERITS NOTHING. The row above was consumed by the DISPATCHER, not by a
     // button, so the lane it spawned is the one unattended spawn on this fleet — and it must be the
@@ -2561,6 +2575,20 @@ export async function run(ctx: Ctx): Promise<void> {
       && fPrompt.indexOf("\n\nQuellpaket") < fPrompt.indexOf("\n\nContextPlan v2 anchors"),
       JSON.stringify({ snipMoved, lane: snipLaneSha, head: fHead, receiptHead: fReceipt?.head ?? null,
         label: fLines[snipLabelAt] ?? null, omitted: snipOmitted, shown: snipShown?.slice(0, 160) ?? null }));
+    // THE SOURCE PACKAGE ON THE LEDGER: the block's own bytes (it ends where the anchors begin in
+    // this checkout — no studio block), one excerpt, and the two named refs it could not deliver,
+    // with the reason the block printed. Without the field this reads undefined and the row keeps
+    // no trace of 56 % of a brief.
+    const snipBlockBytes = fPrompt.includes("\n\nQuellpaket")
+      ? new TextEncoder().encode(fPrompt.slice(fPrompt.indexOf("\n\nQuellpaket"), fPrompt.indexOf("\n\nContextPlan v2 anchors"))).byteLength
+      : -1;
+    check("(d3) the receipt counts the source package it delivered: block bytes, excerpts shown, and the named refs it omitted",
+      !!fReceipt?.snippet && snipBlockBytes > 0 && fReceipt.snippet.bytes === snipBlockBytes
+      && fReceipt.snippet.hits === 1
+      && fReceipt.snippet.omitted.some((entry) => entry.ref === `${SNIP_PATH}#snippetProbeAbsent` && entry.why === "symbol-not-found")
+      && fReceipt.snippet.omitted.some((entry) => entry.ref === "snippet-probe/link.ts#snippetProbeTarget" && entry.why === "not-a-regular-file")
+      && fReceipt.snippet.omitted.every((entry) => !entry.ref.startsWith("#")),
+      JSON.stringify({ snippet: fReceipt?.snippet ?? null, blockBytes: snipBlockBytes }));
     check("(d3) the receipt's deliveredBytes is exactly the UTF-8 length of the delivered brief, source package included",
       !!fReceipt && fPrompt.includes("\n\nQuellpaket")
       && fReceipt.deliveredBytes === new TextEncoder().encode(fPrompt).byteLength,

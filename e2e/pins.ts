@@ -2133,6 +2133,26 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && receiptWrites.every((w) => /briefHash: briefHashOf\(deliveredBrief\)/.test(w)
       && /briefSource(: FOUNDING_BRIEF_SOURCE)?,/.test(w)),
     `${receiptWrites.length} writer(s), ${receiptWrites.filter((w) => !/briefHash/.test(w)).length} without briefHash`);
+  // …and the model resolved at write time plus the source-package account (2026-09-14). A writer
+  // that went back to `model: free.model` would write null for every unpinned slot again; one
+  // without `snippet` would read as a row from before the count existed.
+  pin("every context-receipt writer resolves the model through receiptModel and carries a snippet account",
+    receiptWrites.length === 5
+    && receiptWrites.every((w) => /\.\.\.receiptModel\(free\)/.test(w) && !/model: free\.model/.test(w)
+      && /snippet: (snippet\.receipt|NO_SNIPPET_RECEIPT)/.test(w)),
+    `${receiptWrites.filter((w) => !/receiptModel/.test(w)).length} without receiptModel, `
+      + `${receiptWrites.filter((w) => !/snippet:/.test(w)).length} without snippet`);
+  // THE REPORT LEDGER: every place that opens a report or stamps a verdict writes its row. A fourth
+  // decision site without the line would leave that verdict only in the prunable live list.
+  const reportOpens = server.split('audit("fleet_report_open"').length - 1;
+  const decisionStamps = server.split("report.decision = {").length - 1;
+  pin("fleet-reports.jsonl gets an OPEN row at every report filing and a DECISION row at every verdict stamp",
+    /const FLEET_REPORT_LEDGER_FILE = `\$\{import\.meta\.dir\}\/fleet-reports\.jsonl`;/.test(server)
+    && reportOpens === 2 && server.split("const ledgered = ledgerReportOpen(report);").length - 1 === reportOpens
+    && decisionStamps === 3
+    && server.split("const ledgered = ledgerReportDecision(report, report.decision);").length - 1 === decisionStamps
+    && read(".gitignore").split("\n").includes("fleet-reports.jsonl"),
+    `opens=${reportOpens} stamps=${decisionStamps}`);
   // The set is CLOSED at the type, and every literal in it is produced by something: six by the
   // dispatch-seam derivation, the seventh by the founding constant. A value in the union that no
   // writer can emit is a category the ledger promises and never delivers. ("main" joined 2026-09-11

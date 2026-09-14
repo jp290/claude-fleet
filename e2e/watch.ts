@@ -6325,6 +6325,18 @@ export async function run(): Promise<void> {
         && row("green")?.decision?.mainAfter === sha(1)
         && row("green")?.decisionDelivery?.state === "worker-gone",
       JSON.stringify(row("green")));
+    // …and the rule's verdict reaches the report ledger like a door's, with the land it read. A
+    // planted row has no OPEN line (it was never filed through the door), so only the decision is asked.
+    const ablLedger = existsSync(`${ROOT}/fleet-reports.jsonl`)
+      ? readFileSync(`${ROOT}/fleet-reports.jsonl`, "utf8").split("\n").filter(Boolean).flatMap((line) => {
+        try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
+      }) : [];
+    const ablGreenDecisions = ablLedger.filter((r) => r.id === ids.green && r.kind === "decision");
+    check("fleet-report ledger: the accepted-by-land rule writes one DECISION row naming the rule and mainAfter",
+      ablGreenDecisions.length === 1 && ablGreenDecisions[0]?.disposition === "accepted"
+        && JSON.stringify(ablGreenDecisions[0]?.by) === JSON.stringify({ rule: "accepted-by-land" })
+        && ablGreenDecisions[0]?.mainAfter === sha(1),
+      JSON.stringify(ablGreenDecisions));
     check("accepted-by-land: an UNKNOWN audit on the land is accepted too, and the reason says unknown",
       row("unknown")?.decision?.disposition === "accepted" && (row("unknown")?.decision?.reason ?? "").includes("unknown"),
       JSON.stringify(row("unknown")?.decision));

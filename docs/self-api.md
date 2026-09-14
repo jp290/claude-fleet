@@ -2043,6 +2043,47 @@ fremde oder programmlose Lane schließen, einen dirty- oder `ahead>0`-Baum töte
 schreiben, oder vom Dispatch-Tick aus laufen — nichts auf dem Lane-START-Pfad beendet eine Lane. Der
 Worktree bleibt liegen wie nach jedem Kill.
 
+### Die zwei Ledger — `fleet-reports.jsonl` und `context-receipts.jsonl` (seit 2026-09-14)
+
+Beide liegen neben `fleet.json`, sind gitignored, append-only und rotieren wie jedes
+`server/persist.ts#appendEvent`-Ledger in eine `.1`-Generation. Anlass:
+`docs/messungen/2026-09-14-queue-intelligenz-schichten.md` §2–3 (Reports hatten kein Ledger, 14 d:
+138 geöffnet, 126 gepruned; 13 von 50 Lane-Receipts trugen `model: null`).
+
+**`fleet-reports.jsonl`** hält jeden Report ZWEIMAL. Die Live-Liste in `fleet.json` bleibt der
+begrenzte Schwanz (`server.ts#pruneFleetReports`, `FLEET_REPORT_KEEP`), unverändert. Das Ledger
+behält, was der Prune löscht.
+
+```
+{"kind":"open","id","taskId","programId","slot","branch","status","basis","text","at"}
+{"kind":"decision","id","disposition","by","reason","mainAfter","at"}
+```
+
+- `open` wird geschrieben, wenn `POST /api/self/fleet-report` die Zeile anlegt (Program- wie
+  Occupant-/Owner-Inbox-Pfad). `text` ist ungekürzt, `at` ist `reportedAt`.
+- `decision` wird an jedem Stempel geschrieben: Self-Tür, Owner-Tür und die Regel
+  `accepted-by-land`. `by` ist exakt `decision.by` (Occupant-Tripel, `"owner"` oder
+  `{rule}`), `mainAfter` ist nur bei der Regel gesetzt, sonst `null`. Weil die erste Entscheidung
+  gewinnt, gibt es je `id` höchstens eine `decision`-Zeile.
+- Eine Zeile, die vor 2026-09-14 gefilet wurde, hat keine `open`-Zeile. Fehlt eine Zeile, heißt das
+  „vor dem Ledger", nicht „nie gefilet".
+
+**`context-receipts.jsonl`** (lesbar über `GET /api/context-receipts`, Owner) trägt zwei neue
+Felder an allen fünf Schreibern (Lane-Dispatch, zwei Supervisor-, zwei Program-MAIN-Gründungen):
+
+- `model` ist **nie `null`**. Aufgelöst wird beim Schreiben (`server.ts#receiptModel`), mit
+  `modelOrigin`:
+  - `"spawn"`: der Slot hat das Modell selbst gepinnt;
+  - `"default"`: kein Pin, und die Spawn-Zeile des Harness hat ihren eigenen Default übergeben
+    (claude: `FLEET_MODEL` bzw. `FLEET_DEFAULT_MODEL`, pi-zai/pi-ox: ihr festes Modell);
+  - `"ambient"`: kein Pin, und Fleet übergibt kein Modell (codex, pi, container). Dann steht dort
+    `model: "ambient"`, nicht eine geliehene Id.
+- `snippet: {bytes, hits, omitted}` beschreibt das Quellpaket (`context-snippets.ts#snippetReceipt`).
+  `bytes` sind die UTF-8-Bytes des gelieferten Blocks, `hits` die Zahl der gezeigten Ausschnitte,
+  `omitted` die im Brief genannten, aber nicht gelieferten Refs als `{ref, why}` (Prosa-Tokens
+  zählen nicht). `{bytes:0, hits:0, omitted:[]}` heißt „dieser Brief trug keinen Block"; das gilt für
+  jede Gründung und jede Clarify-Lane. Fehlt das Feld, ist die Zeile älter als dieser Stand.
+
 ## harness-block — `POST /api/self/harness-block`
 
 **Wer erfährt, dass eine Lane an einem Dialog hängt, den nur ein Mensch beantworten kann.**

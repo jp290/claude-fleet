@@ -11,7 +11,7 @@
 //     (branch, mainBefore, mainAfter, at, verify{ok,proportional,exitCode,…}).
 //   - main's first-parent history — the land's commits are mainBefore..mainAfter on it (lands
 //     rebase, so the range is exactly the land); every commit in no land's range is a direct commit.
-//   - post-land-audits.jsonl — gitignored, lives only in the main checkout. Joined per land over
+//   - post-land-audits.jsonl (+ its rotated .1, via server/persist.ts#readLedger) — gitignored, lives only in the main checkout. Joined per land over
 //     covers[].mainAfter, and over mainSha for a row that covers nothing. Absent file = "audit ?".
 //
 // LABELS, each a reading of the record and never a guess past it:
@@ -22,6 +22,7 @@
 //   A land whose mainAfter is not on main (history rewritten under it) prints "?" for count/subject.
 
 import { existsSync, realpathSync } from "node:fs";
+import { readLedger } from "./server/persist";
 
 const DAY = 86_400_000;
 const SUBJECT_WIDTH = 60;
@@ -152,14 +153,10 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const auditFile = flag("--audits") ?? `${repo}/post-land-audits.jsonl`;
-  let audits: AuditRow[] | null = null;
-  if (existsSync(auditFile)) {
-    audits = [];
-    for (const l of (await Bun.file(auditFile).text()).split("\n")) {
-      if (!l.trim()) continue;
-      try { audits.push(JSON.parse(l)); } catch { /* a torn row is skipped, never guessed */ }
-    }
-  }
+  // readLedger reads BOTH generations (.1 first) and counts a torn or non-record line instead of
+  // delivering it — a hand-rolled loop here missed the rotated half and would print "laeuft" there.
+  const audits: AuditRow[] | null = existsSync(auditFile) || existsSync(`${auditFile}.1`)
+    ? (await readLedger<AuditRow>(auditFile)).rows : null;
 
   const lines = renderLandLog({ notes, audits, commits, sinceMs, offsetMin: (ms) => -new Date(ms).getTimezoneOffset() });
   console.log(`land-log ${since} · ${repo} · audits: ${audits === null ? `keine (${auditFile} fehlt — audit ?)` : auditFile}`);

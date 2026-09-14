@@ -10162,10 +10162,28 @@ function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()):
 // same wave: the plan says whether it may start, the land wave carries what a lane needs to be told
 // (sharedFiles, savings). Both the tick and the wave door read waves through here — one projection,
 // never a plan over one queue and a hand-over over another.
+//
+// ACROSS REPOS the waves interleave by their oldest row's `created`, while each repo keeps the plan's
+// own order. The projection lists repos by PATH, and walking them repo by repo made the sweep serve
+// every wave of the alphabetically first repo before the oldest row of the next — measured by the
+// (e4) preview on 9b5aaba5: an older REPO3 row was not reached in the tick that started a younger
+// REPO2 row, where oldest-first had always reached it. A merge, not a sort: sorting by `created`
+// inside a repo would undo `after`, which may place a younger row ahead of an older one.
 function startPlanWaves(): { plan: StartPlanWave; land: LandWave }[] {
   const projection = landWaveProjectionNow();
   const plan = startPlanNow(projection);
-  return plan.repos.flatMap((repo, r) => repo.waves.map((wave, w) => ({ plan: wave, land: projection.repos[r].waves[w] })));
+  const createdOf = (ids: readonly string[]): number =>
+    Math.min(...ids.map((id) => tasks.find((t) => t.id === id)?.created ?? Infinity));
+  const queues = plan.repos.map((repo, r) => repo.waves.map((wave, w) =>
+    ({ plan: wave, land: projection.repos[r].waves[w], created: createdOf(wave.ids) })));
+  const out: { plan: StartPlanWave; land: LandWave }[] = [];
+  for (;;) {
+    let pick = -1;
+    queues.forEach((q, i) => { if (q.length && (pick < 0 || q[0].created < queues[pick][0].created)) pick = i; });
+    if (pick < 0) return out;
+    const [head] = queues[pick].splice(0, 1);
+    out.push({ plan: head.plan, land: head.land });
+  }
 }
 // `wave` carries the FOLLOWERS of a land wave — the rows behind the head, already validated by the
 // wave door against the sensor's own projection. Empty for every other dispatch, and every dispatch

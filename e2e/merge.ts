@@ -1844,6 +1844,18 @@ export async function run(lc: LaneCtx): Promise<void> {
     const lnTornTo = await markerLane("verdict-torn-to", "lane work with a VERIFYBAD marker\n");
     const lnGoneTo = await markerLane("verdict-gone-to", "lane work with a VERIFYBAD marker\n");
     const lnRecycledTo = await markerLane("verdict-recycled-to", "lane work with a VERIFYBAD marker\n");
+    // (ix) THE BATON, planted in the same restart (2026-09-14). Measured 2026-09-13 17:2x: a red
+    // verdict pinned to a Program-MAIN that SUCCEEDED while the gate ran booked `receiver-gone` twice,
+    // and the successor learned of it only by re-arming a watch by hand. Three rows name three
+    // predecessors of ONE live successor (`lnHeir`), and only one of them may reach it:
+    //   · SUCCEEDED — its holding ended by `succeed`, straight into the live binding: delivered there;
+    //   · KILLED — its holding ended by `retire` (what an owner kill writes): receiver-gone;
+    //   · BROKEN — it succeeded, but the holding it handed to was killed before the current binding:
+    //     receiver-gone. This is the arm a rule that only reads the asker's own entry would fail.
+    const lnSucceededTo = await markerLane("verdict-succeeded-to", "lane work with a VERIFYBAD marker\n");
+    const lnKilledTo = await markerLane("verdict-killed-to", "lane work with a VERIFYBAD marker\n");
+    const lnBrokenTo = await markerLane("verdict-broken-to", "lane work with a VERIFYBAD marker\n");
+    const lnHeir = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
     // the recycled arm needs a Program that EXISTS and is still bound to the occupant that asked.
     // Minted through the owner route so its content is the real validated shape; only the two
     // fields no route may write — `status` and the `main` binding — are set in the plant below.
@@ -1852,22 +1864,29 @@ export async function run(lc: LaneCtx): Promise<void> {
       successCriterion: "the planted receiver resolves to a slot that is no longer its occupant",
       nonGoals: [], decisions: [], evidence: [], openQuestions: [],
     })).json()) as { program?: { id: string } }).program?.id ?? "";
-    for (const ln of [lnLegacyTo, lnTornTo, lnGoneTo, lnRecycledTo]) {
+    const heirProg = ((await (await post("/api/programs", {
+      title: "verdict successor fixture", intent: "hold a lineage a succeeded receiver can be followed along",
+      successCriterion: "the planted receiver resolves to the live successor only through an unbroken succeed chain",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    })).json()) as { program?: { id: string } }).program?.id ?? "";
+    const plantedTo = [lnLegacyTo, lnTornTo, lnGoneTo, lnRecycledTo, lnSucceededTo, lnKilledTo, lnBrokenTo];
+    for (const ln of plantedTo) {
       await settleForMerge(ln.slot);
       await post(`/api/slots/${ln.slot}/merge`, {});
       await waitMerge(ln.slot);
       await awaitMark(ln.slot, (d) => d.sent);
     }
-    const beforeTo = await Promise.all([lnLegacyTo, lnTornTo, lnGoneTo, lnRecycledTo]
-      .map(async (ln) => (await verdictSends(ln.branch)).length));
-    check("land verdict receiver setup: all four planted lanes were told exactly once before the plant",
-      beforeTo.every((n) => n === 1) && !!recyclProg, JSON.stringify({ sends: beforeTo, program: recyclProg }));
+    const beforeTo = await Promise.all(plantedTo.map(async (ln) => (await verdictSends(ln.branch)).length));
+    check("land verdict receiver setup: all seven planted lanes were told exactly once before the plant",
+      beforeTo.every((n) => n === 1) && !!recyclProg && !!heirProg,
+      JSON.stringify({ sends: beforeTo, program: recyclProg, heir: heirProg }));
     // killing the scratch server before editing its scratch fleet.json makes the plant
     // deterministic — no process can overwrite it (the ACP-03 Q4 fixture's discipline)
     await stopSrv();
     const toState = (await Bun.file(`${ROOT}/fleet.json`).json()) as
       { merges?: Record<string, Record<string, unknown>>;
-        programs?: Record<string, unknown>[] };
+        programs?: Record<string, unknown>[];
+        slots?: Record<string, { openedAt?: number; sessionId?: string | null }> };
     const replant = { at: Date.now(), attempts: 1, sent: false, kind: "review" };
     const rowLegacy = toState.merges?.[String(lnLegacyTo.slot)];
     const rowTorn = toState.merges?.[String(lnTornTo.slot)];
@@ -1900,9 +1919,37 @@ export async function run(lc: LaneCtx): Promise<void> {
       rowGone.verdictTo = { slot: lnGoneTo.slot, program: "0".repeat(24), task: "0".repeat(24),
         occupant: { openedAt: 1, sessionId: null } };
     }
-    check("land verdict receiver setup: the four persisted rows exist, were replanted as owed-a-retry, and the fixture binding is in place",
-      !!rowLegacy && !!rowTorn && !!rowGone && !!rowRecycled && !!recyclRow,
-      JSON.stringify({ merges: Object.keys(toState.merges ?? {}), program: !!recyclRow }));
+    // the baton plant: ONE Program, bound to the live heir, whose lineage holds the three
+    // predecessors in the order their story needs — broken (succeeded into the killed one), killed,
+    // succeeded (rebound after the kill, then handed on by succeed to the heir)
+    const heirOcc = toState.slots?.[String(lnHeir.slot)];
+    const heirOpenedAt = typeof heirOcc?.openedAt === "number" ? heirOcc.openedAt : 0;
+    const heirRow = toState.programs?.find((p) => (p as { id?: string }).id === heirProg);
+    const held = (slot: number, openedAt: number, via: string, endedBy: string | null) =>
+      ({ slot, openedAt, sessionId: null, boundAt: openedAt, via, endedAt: endedBy ? openedAt + 1 : null, endedBy });
+    if (heirRow && heirOpenedAt > 0) {
+      heirRow.status = "active";
+      heirRow.confirmedAt = Date.now();
+      heirRow.activatedAt = Date.now();
+      heirRow.main = { slot: lnHeir.slot, openedAt: heirOpenedAt, sessionId: heirOcc?.sessionId ?? null, boundAt: 4 };
+      heirRow.lineage = { v: 1, dropped: 0, entries: [
+        held(lnBrokenTo.slot, 1, "bootstrap", "succeed"),
+        held(lnKilledTo.slot, 2, "succeed", "retire"),
+        held(lnSucceededTo.slot, 3, "rebound", "succeed"),
+        { ...held(lnHeir.slot, heirOpenedAt, "succeed", null), sessionId: heirOcc?.sessionId ?? null, boundAt: 4 },
+      ] };
+    }
+    const batonRows = [[lnSucceededTo, 3], [lnKilledTo, 2], [lnBrokenTo, 1]] as const;
+    for (const [ln, openedAt] of batonRows) {
+      const row = toState.merges?.[String(ln.slot)];
+      if (!row) continue;
+      row.verdictDelivery = { ...replant };
+      row.verdictTo = { slot: ln.slot, program: heirProg, task: "0".repeat(24), occupant: { openedAt, sessionId: null } };
+    }
+    check("land verdict receiver setup: the seven persisted rows exist, were replanted as owed-a-retry, and both fixture bindings are in place",
+      !!rowLegacy && !!rowTorn && !!rowGone && !!rowRecycled && !!recyclRow && !!heirRow && heirOpenedAt > 0
+        && batonRows.every(([ln]) => !!toState.merges?.[String(ln.slot)]),
+      JSON.stringify({ merges: Object.keys(toState.merges ?? {}), program: !!recyclRow, heir: !!heirRow, heirOpenedAt }));
     await Bun.write(`${ROOT}/fleet.json`, JSON.stringify(toState, null, 2));
     // THE TICK IS SLOWED FOR THIS ONE RESTART, and it is a precondition rather than a convenience:
     // boot stamps every pane's `lastOutput` to boot time (unknown is never permission), so with the
@@ -1961,7 +2008,42 @@ export async function run(lc: LaneCtx): Promise<void> {
         && recyclAudit.length === 1 && (recyclAudit[0]?.detail ?? "").includes("was recycled since the land")
         && !(recyclAudit[0]?.detail ?? "").includes("is gone"),
       JSON.stringify({ sends: recyclSends.length, mark: recyclMark, audit: recyclAudit.slice(-1) }));
-    for (const ln of [lnLegacyTo, lnTornTo, lnGoneTo, lnRecycledTo]) await dropLane(ln);
+    // (ix) the baton. The succeeded row first: its second send lands in the HEIR's pane, never the
+    // lane's, and the marker names the heir occupant as the receiver.
+    const succMark = await awaitMark(lnSucceededTo.slot, (d) => d.sent || d.attempts >= 2);
+    const succRows = (await plogRead()).filter((e) => e.text.includes(`[fleet land verdict — ${lnSucceededTo.branch}]`));
+    type Receiver = { slot?: number; openedAt?: number };
+    const succReceiver = (succMark as (VerdictDelivery & { receiver?: Receiver }) | null)?.receiver ?? null;
+    check("land verdict receiver: a MAIN that SUCCEEDED between the land and the verdict hands it to the live successor — sent, receiver = successor, lane told nothing",
+      succMark?.sent === true && succMark.attempts === 2 && succRows.length === 2
+        && succRows[1]?.slot === lnHeir.slot && succRows[1]?.source === "auto"
+        && succReceiver?.slot === lnHeir.slot && succReceiver.openedAt === heirOpenedAt,
+      JSON.stringify({ mark: succMark, heir: { slot: lnHeir.slot, openedAt: heirOpenedAt },
+        rows: succRows.map((e) => ({ slot: e.slot, source: e.source })) }));
+    const batonAudit = (branch: string): { event?: string; slot?: number; detail?: string }[] =>
+      readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+        .flatMap((line) => { try { return [JSON.parse(line) as { event?: string; slot?: number; detail?: string }]; } catch { return []; } })
+        .filter((r) => r.event?.startsWith("merge_verdict_") && (r.detail ?? "").startsWith(`${branch}:`));
+    check("land verdict receiver: the trail names the successor delivery as one, with both slots",
+      batonAudit(lnSucceededTo.branch).some((r) => r.event === "merge_verdict_sent" && r.slot === lnHeir.slot
+        && (r.detail ?? "").includes(`successor of slot ${lnSucceededTo.slot} by succeed`)),
+      JSON.stringify(batonAudit(lnSucceededTo.branch).slice(-2)));
+    // …and the counter-probes: the same heir, the same Program, the same tick — the only difference
+    // is how the asker's holding (or the one after it) ended.
+    for (const [ln, why] of [[lnKilledTo, "its holding ended by an owner kill (retire)"],
+      [lnBrokenTo, "it succeeded, but the holding it handed to was killed before the current binding"]] as const) {
+      const mark = await awaitMark(ln.slot, (d) => d.sent || d.attempts >= 2);
+      const sends = await verdictSends(ln.branch);
+      const rows = (await plogRead()).filter((e) => e.text.includes(`[fleet land verdict — ${ln.branch}]`));
+      const trail = batonAudit(ln.branch).filter((r) => r.event === "merge_verdict_undeliverable");
+      check(`land verdict receiver: an asker whose ${why} stays receiver-gone — the heir and the lane are told nothing`,
+        mark?.sent === false && mark.gate === "receiver-gone" && mark.attempts === 2 && sends.length === 1
+          && !rows.some((e) => e.slot === lnHeir.slot)
+          && (mark as VerdictDelivery & { receiver?: Receiver }).receiver === undefined
+          && trail.length === 1 && (trail[0]?.detail ?? "").includes("is no longer bound to the occupant that asked"),
+        JSON.stringify({ mark, sends: sends.length, rows: rows.map((e) => e.slot), trail: trail.slice(-1) }));
+    }
+    for (const ln of [...plantedTo, lnHeir]) await dropLane(ln);
     await restartSrv(); // back to the suite's own cadence for everything after this block
   }
 

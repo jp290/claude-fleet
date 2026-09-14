@@ -15361,7 +15361,10 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // run" hold without an id to compare. `sent:false` with `gate` is a refusal that STANDS: the
   // attempt count is capped, so a lane that never goes quiet is told at most twice and the refusal
   // then stays readable here instead of being re-offered on every tick forever.
-  verdictDelivery?: { at: number; attempts: number; sent: boolean; kind: MergeVerdictKind; gate?: string };
+  // `receiver` names the MAIN pane an attempt aimed at — the asker, or the successor it handed the
+  // Program to (mergeVerdictSuccessorOf). Absent on the lane path and on `receiver-gone`.
+  verdictDelivery?: { at: number; attempts: number; sent: boolean; kind: MergeVerdictKind; gate?: string;
+    receiver?: { slot: number; openedAt: number } };
   // WHO ASKED FOR THIS RUN, when the asker was a Program-MAIN rather than the owner's board.
   // Written beside the marker above by the FIRST delivery attempt, and read by the tick's retry —
   // which is the whole reason it is persisted rather than carried in the job frame: a restart
@@ -21859,14 +21862,38 @@ function mainVerdictReceiver(to: MergeVerdictReceiver): { ok: true; slot: Slot }
   if (!program || program.status !== "active")
     return { ok: false, why: `program ${to.program} is ${program ? program.status : "gone"}` };
   const bound = program.main;
-  if (!bound || bound.slot !== to.slot || bound.openedAt !== to.occupant.openedAt)
-    return { ok: false, why: `program ${to.program} is no longer bound to the occupant that asked` };
+  if (!bound || bound.slot !== to.slot || bound.openedAt !== to.occupant.openedAt) {
+    const successor = mergeVerdictSuccessorOf(program, to.slot, to.occupant.openedAt);
+    return successor ? { ok: true, slot: successor }
+      : { ok: false, why: `program ${to.program} is no longer bound to the occupant that asked` };
+  }
   const live = slotFrom(to.slot);
   if (!live?.cwd || live.openedAt !== to.occupant.openedAt)
     return { ok: false, why: `slot ${to.slot} was recycled since the land` };
   if (live.sessionId !== to.occupant.sessionId)
     return { ok: false, why: `slot ${to.slot} holds a different session id than the one that asked` };
   return { ok: true, slot: live };
+}
+
+// THE ASKER HANDED THE PROGRAM ON, so the answer follows the baton. Measured 2026-09-13 17:2x: the
+// red verdict of Hooks-Land 20fb7151 was pinned to the MAIN in slot 4, that MAIN had succeeded to
+// slot 9 while the gate ran, and both attempts booked `receiver-gone` — the new MAIN learned it only
+// because it re-armed the merge watch by hand. Proof is the Program's lineage, as for attention
+// (attentionSuccessorFor), and STRICTER in one place on purpose: attention moves at every succeed
+// cut, while this verdict is resolved lazily, so a chain can have grown in between. Every holding
+// from the asker up to the current binding must have ended by `succeed` — an owner kill or a rebind
+// anywhere on the way breaks the baton, and a recycled slot number is not an entry at all.
+function mergeVerdictSuccessorOf(program: Program, slot: number, openedAt: number): Slot | null {
+  const main = program.main;
+  const entries = program.lineage?.entries ?? [];
+  const from = entries.findLastIndex((e) => e.slot === slot && e.openedAt === openedAt);
+  if (!main || from < 0) return null;
+  const chain = entries.slice(from);
+  const head = chain[chain.length - 1];
+  if (chain.length < 2 || head.slot !== main.slot || head.openedAt !== main.openedAt || head.endedAt !== null
+    || !chain.slice(0, -1).every((e) => e.endedBy === "succeed")) return null;
+  const live = slotFrom(main.slot);
+  return live?.cwd && live.openedAt === main.openedAt ? live : null;
 }
 
 // The three exits that keep a lane AND leave it something to do. Everything else is silent on
@@ -21941,10 +21968,12 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
   // The stamp writes only while the map still holds THIS object. That is the whole dedupe: a run
   // superseded mid-delivery must not mark the successor's verdict as already delivered. The
   // receiver rides along on the same write, so the retry above has it after a restart.
+  let receiver: { slot: number; openedAt: number } | null = null;
   const mark = async (sent: boolean, gate?: string): Promise<void> => {
     if (mergeLast.get(s.id) !== outcome) return;
     mergeLast.set(s.id, { ...outcome, ...(to ? { verdictTo: to } : {}),
-      verdictDelivery: { at: Date.now(), attempts, sent, kind, ...(gate ? { gate } : {}) } });
+      verdictDelivery: { at: Date.now(), attempts, sent, kind, ...(gate ? { gate } : {}),
+        ...(receiver ? { receiver } : {}) } });
     await saveStateNow();
   };
   // WHICH PANE — and on the MAIN side a failed check does NOT fall back to the lane. Falling back
@@ -21960,6 +21989,7 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
       return;
     }
     target = recv.slot;
+    receiver = { slot: target.id, openedAt: target.openedAt };
   } else {
     // the lane must still BE this lane: a slot recycled onto another cwd mid-run, or a lane whose
     // worktree was removed, is not the session that wrote this tree — and is the same identity check
@@ -21967,7 +21997,9 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
     if (!s.cwd || s.cwd !== cwd || s.worktree?.branch !== branch) return;
     target = s;
   }
-  const suffix = to ? ` → main slot=${to.slot} task=${to.task} (lane slot=${s.id})` : "";
+  const suffix = !to ? "" : target.id === to.slot && target.openedAt === to.occupant?.openedAt
+    ? ` → main slot=${to.slot} task=${to.task} (lane slot=${s.id})`
+    : ` → main slot=${target.id} task=${to.task}, successor of slot ${to.slot} by succeed (lane slot=${s.id})`;
   // ⏫ is an owner act and this is its RESULT going back to the session that produced the tree, so
   // the master stop and quiet hours are waived exactly as wakeAuthor waives them — and the foreign-
   // harness WORK-PROMPT policy with them, on the same ground tickWatches states: the text is a

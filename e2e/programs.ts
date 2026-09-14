@@ -10864,13 +10864,15 @@ exit 0
     // that already carries a commit. The first helper run of this arm (job ab31b8bb5af0) committed
     // inside that window: the fixture read `sent` + idle/clean/ahead, the tail then requeued, and
     // both checks below read `task is queued` — a measurement of the fixture, not of the door. So
-    // the commit waits for the brief to be LOGGED (logPrompt runs only after sendText returned),
+    // the commit waits for the brief to be LOGGED in prompts.jsonl (logPrompt runs only after sendText returned),
     // and the fixture prints the row's status and note, so a requeue names its own reason.
     let pzBriefLogged = false;
     for (let i = 0; pzLaneSlot !== null && i < 120 && !pzBriefLogged; i++) {
-      const hist = ((await (await get(`/api/slots/${pzLaneSlot}/history`)).json()) as
-        { history?: { text: string }[] }).history ?? [];
-      pzBriefLogged = hist.some((h) => h.text.includes("self-land pi-zai row"));
+      // prompts.jsonl, NOT /api/slots/:id/history: the founding brief goes through logPrompt only,
+      // and the third helper run (job b5ca925dae90) waited 30 s on the slot history for a brief
+      // that server.log shows delivered (`dispatch: task … → slot 6`).
+      pzBriefLogged = (await plogRead()).some((e) => e.slot === pzLaneSlot && e.source === "auto"
+        && e.text.includes("self-land pi-zai row"));
       if (!pzBriefLogged && (await slRow(pzRowId))?.status !== "sent") break;
       if (!pzBriefLogged) await Bun.sleep(250);
     }

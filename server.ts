@@ -67,10 +67,10 @@ import {
   type LandWave, type LandWaveProjection,
 } from "./task-land-waves";
 import { isTaskCardSize, type TaskCardSize, type TaskWaveInput } from "./task-waves";
-// The START PLAN sensor (read-only): which land wave would start next, and what its rows passed.
-// Only GET /api/start-plan reads it — tickDispatch does not import it (pinned in e2e/pins.ts).
-import { projectStartPlan, startPlanChecks, type StartPlan, type StartPlanLane, type StartPlanRepoCaps,
-  type StartPlanRow } from "./start-plan";
+// The START PLAN: which land wave starts next, and what its rows passed. GET /api/start-plan shows it,
+// tickDispatch starts by it and the wave door resolves its ids in it (pinned in e2e/pins.ts).
+import { projectStartPlan, startPlanChecks, startPlanWaitNote, type StartPlan, type StartPlanLane,
+  type StartPlanRepoCaps, type StartPlanRow, type StartPlanWave } from "./start-plan";
 import { renderWaveBrief, withCardHead } from "./wave-brief";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
@@ -10123,8 +10123,9 @@ function landWaveProjectionNow(): LandWaveProjection {
 // their rows carry (taskView, the same reading the projection makes), and both lane caps as
 // tickDispatch computes them (repoLaneCap, programDispatchCap). A lane's repo is stored canonical,
 // the projection keys by the row's own repo string, so the lane is mapped back through repoCanon.
-function startPlanNow(): StartPlan {
-  const projection = landWaveProjectionNow();
+// The RELEASE policy is `manual` for every program until Schnitt 3: the release is the check, so the
+// plan orders and bundles released rows and never refuses one for its card (start-plan.ts#StartPlanRelease).
+function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()): StartPlan {
   const surfaceOf = (t: Task): { files: string[] | null; ranges: StartPlanRow["ranges"] } => {
     const files = [...(taskView(t).files ?? []), ...(t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])];
     return { files: files.length ? files : null, ranges: t.surface?.ranges ?? null };
@@ -10154,7 +10155,17 @@ function startPlanNow(): StartPlan {
       return [id, programDispatchCap(p ? programDispatchGrant(p) : undefined, cap.max)];
     })) };
   }
-  return projectStartPlan({ projection, rows, statuses, lanes, caps });
+  return projectStartPlan({ projection, release: "manual", rows, statuses, lanes, caps });
+}
+// THE PLAN'S WAVES BESIDE THE LAND WAVES THEY WERE READ FROM, in the plan's order. projectStartPlan
+// maps every projected repo and wave one to one and in order, so the pair at the same index is the
+// same wave: the plan says whether it may start, the land wave carries what a lane needs to be told
+// (sharedFiles, savings). Both the tick and the wave door read waves through here — one projection,
+// never a plan over one queue and a hand-over over another.
+function startPlanWaves(): { plan: StartPlanWave; land: LandWave }[] {
+  const projection = landWaveProjectionNow();
+  const plan = startPlanNow(projection);
+  return plan.repos.flatMap((repo, r) => repo.waves.map((wave, w) => ({ plan: wave, land: projection.repos[r].waves[w] })));
 }
 // `wave` carries the FOLLOWERS of a land wave — the rows behind the head, already validated by the
 // wave door against the sensor's own projection. Empty for every other dispatch, and every dispatch
@@ -11365,14 +11376,35 @@ async function tickDispatch(): Promise<void> {
   if (!dispatchOn && !programs.some(programDispatchGrant)) return;
   dispatchBusy = true;
   try {
-    // Advisory categories are never dispatchable. Filtering here prevents an inert queued row
-    // from blocking an executable one behind it; dispatchTask repeats the lock for every caller.
-    const candidates = tasks.filter((t) => t.kind === "auftrag" && t.status === "queued" && !dispatchingTasks.has(t.id));
+    // THE START PLAN'S ORDER, NOT THE OLDEST ROW (Schnitt 2 of
+    // docs/messungen/2026-09-13-queue-pipeline-system-entwurf.md §5). Until 2026-09-14 this walked
+    // the queued rows by `created` and started the first one past the gates. It now walks the plan's
+    // waves (startPlanWaves): `after` holds a row behind the row it waits on, a known shared file
+    // holds it behind running work and behind an earlier wave still in line, and rows the land fold
+    // bundles start as ONE lane. The plan is the same object GET /api/start-plan shows the owner.
+    // Only the ORDER and the BUNDLING of released rows change — the plan runs under the `manual`
+    // release policy, so no row the owner or a MAIN did not release is ever a candidate to start.
+    // Advisory categories are never dispatchable: the land fold reads `auftrag` rows only, and
+    // dispatchTask repeats the lock for every caller.
+    // A wave is the tick's only if one of its rows is RELEASED: an all-pending wave has no row that
+    // could carry a note, and a pending row's note stays byte-identical. A wave with a row already
+    // being dispatched (the attended doors) is skipped whole.
+    const candidates = startPlanWaves().flatMap(({ plan, land }) => {
+      const rows = plan.ids.map((id) => tasks.find((t) => t.id === id)).filter((t): t is Task => !!t);
+      if (rows.length !== plan.ids.length || !rows.some((t) => t.status === "queued")
+        || rows.some((t) => dispatchingTasks.has(t.id))) return [];
+      return [{ plan, land, rows }];
+    });
     if (!candidates.length) return;
     // TWO SETS were derived here — the running task ids and the open lanes' branch names — for the
     // queue analyst's collision read alone, and they went with it on 2026-09-10. Nothing else in
     // this tick asked what is running by NAME; the caps count lanes, they do not identify them.
-    for (const next of candidates) {
+    for (const { plan, land, rows } of candidates) {
+      // THE HEAD of the wave — the row every per-row gate below reads, exactly as it read the one
+      // candidate before waves. A wave never crosses a program (the land fold's own boundary), so
+      // the master stop, the program cap and the grant are the same question for every row of it,
+      // and one lane runs one agent: the head's, as the attended wave door decides it too.
+      const next = rows[0];
       // THE MASTER STOP, READ PER ROW — and read FIRST, above every `waiting` note below, which is
       // not a stylistic choice: under a stopped fleet this tick used to return before the loop, so
       // no row ever received a note. If this check sat lower, a single program's grant would start
@@ -11385,9 +11417,11 @@ async function tickDispatch(): Promise<void> {
       if (!dispatchOn && !pd) continue;
       // a released task that cannot run RIGHT NOW says why on its own row instead of sitting silent
       // until the owner digs (the stalled-queue finding, 2026-08-04). Written only on change, so the
-      // 8 s tick doesn't churn saveState.
+      // 8 s tick doesn't churn saveState. Onto every RELEASED row of the wave, never a pending one.
       const waiting = (note: string): void => {
-        if (next.note !== note) { next.note = note; saveState(); }
+        const changed = rows.filter((row) => row.status === "queued" && row.note !== note);
+        for (const row of changed) row.note = note;
+        if (changed.length) saveState();
       };
       // WHICH AGENT this row would run: its own persisted, SET-time-validated choice, DEFAULT_SPAWN
       // on absence (taskSpawnOf — the one bridge, pinned). The release doors refuse a stored
@@ -11422,6 +11456,17 @@ async function tickDispatch(): Promise<void> {
       const rowH = harnessOf(rowSpawn.harness);
       if (!harnessAutomatableFor(rowH)) {
         waiting(`waiting: harness ${rowH.id} is not automatable — no unattended path may drive it, hand dispatch only (${harnessAutomationWhy()})`);
+        continue;
+      }
+      // THE PLAN'S VERDICT, in the plan's own precedence: `after` (the row it waits on is not done),
+      // an unreleased partner (a wave with a pending row does not start — a subset is not a wave,
+      // the rule the wave door enforces by exact set match), a collision on a known shared file with
+      // a running lane or an earlier wave. Each SKIPS: it is a property of this wave, and the plan
+      // already let every later wave past it where they do not share its files.
+      // The plan's CAP verdict is not read here: the two caps below count the lanes as they stand at
+      // this instant with the sentences the board knows, and they stay the gate before every start.
+      if (plan.next !== "now" && !("cap" in plan.next)) {
+        waiting(startPlanWaitNote(plan.next));
         continue;
       }
       // count lanes in the task's TARGET repo: the cap bounds unattended fan-out per project —
@@ -11499,7 +11544,8 @@ async function tickDispatch(): Promise<void> {
       // worktree nobody is sitting in front of. The waiver is that pair and nothing looser — an
       // owner-released row in the same program still waits, because an owner act at 3am is exactly
       // the thing the window was set to defer.
-      const quietWaived = !!pd && next.releasedBy === "machine";
+      // For a wave the pair must hold for EVERY row: one owner-released row in it is an owner act.
+      const quietWaived = !!pd && rows.every((row) => row.releasedBy === "machine");
       const pre = await canDeliver(free, { now: Date.now(), alive: false,
         ...(quietWaived ? { quietHours: false } : {}) });
       if (!pre.ok) {
@@ -11514,9 +11560,22 @@ async function tickDispatch(): Promise<void> {
         if (pre.gate === "quiet-hours") continue;
         return; // task stays queued
       }
-      const r = await dispatchTask(next, free, false, false, taskSpawnOf(next));
+      // canDeliver awaited: a row the owner unqueued, started or deleted meanwhile is not the plan's
+      // any more, and a wave is started whole or not at all. The next tick reads a fresh plan.
+      if (rows.some((row) => row.status !== "queued" || !tasks.includes(row) || dispatchingTasks.has(row.id))) return;
+      // A WAVE OF n > 1 hands its followers to the one dispatch core the attended wave door uses —
+      // same edge (`t.slot`), same brief, same one land — with the land fold's own evidence for the
+      // bundle. Every row is `queued` here, so that is the status a failed spawn restores.
+      const followers = rows.slice(1);
+      const handover: WaveDispatch | null = followers.length
+        ? { followers, wasStatus: new Map(followers.map((row) => [row.id, row.status] as const)),
+          sharedFiles: land.sharedFiles, klasse: land.klasse, units: land.units }
+        : null;
+      const r = await dispatchTask(next, free, false, false, taskSpawnOf(next), handover);
+      // the machine's sibling of the owner's task_wave_dispatch, written once per started wave
+      if (r.ok && handover) audit("task_wave_start", r.slot, `${plan.ids.join("+")} ${land.klasse} saves=${land.savingsSec}s by=tick`);
       if (r.ok) await r.tail;
-      return; // serial by design — one lane per tick, whichever row got past every gate
+      return; // serial by design — one lane per tick, whichever wave got past every gate
     }
   } finally {
     dispatchBusy = false;
@@ -31080,9 +31139,12 @@ Bun.serve<WSData>({
     // the ids must form a wave THE SENSOR ITSELF projects at this moment, so the button can never
     // bundle a set the board has already refused to bundle.
     //
-    // NOTHING UNATTENDED REACHES HERE. Automatic wave formation in the tick stands explicitly under
-    // the cut line of §5 and is not built; `ownerAct` is hard-coded true for the same reason the
-    // ▸ start button hard-codes it, and there is no self mirror of this route.
+    // SINCE SCHNITT 2 THIS IS "THIS PLAN WAVE, NOW" (entwurf §4 F6): the tick starts the same waves
+    // unattended when the start plan says `now`, and this door resolves the ids among the plan's
+    // waves (startPlanWaves — the one reading both share) and starts that wave at once, attended:
+    // no cap, no `after`, no collision and no release is asked, exactly like ▸ start, and the plan's
+    // own `next` travels back in the answer so the owner sees what the tick would have said.
+    // `ownerAct` stays hard-coded true, and there is still no self mirror of this route.
     if (url.pathname === "/api/wave/dispatch" && req.method === "POST") {
       const wBody = await readJson(req);
       const wRaw: unknown = wBody?.ids;
@@ -31122,10 +31184,11 @@ Bun.serve<WSData>({
       // a projected three is asking for a bundle the sensor never proposed, and quietly starting the
       // subset would be the button inventing a wave. The refusal names what the sensor says about
       // each row instead, because "no" without the projection is a dead end for the owner.
-      const wProjection = landWaveProjectionNow();
-      const wAll = wProjection.repos.flatMap((r) => r.waves);
+      const wPlanWaves = startPlanWaves();
+      const wAll = wPlanWaves.map((w) => w.land);
       const wWanted = new Set(wIds);
-      const wWave = wAll.find((w) => w.ids.length === wWanted.size && w.ids.every((id) => wWanted.has(id)));
+      const wPair = wPlanWaves.find((w) => w.land.ids.length === wWanted.size && w.land.ids.every((id) => wWanted.has(id)));
+      const wWave = wPair?.land;
       if (!wWave) {
         const wSays = wIds.map((id) => {
           const w = wAll.find((x) => x.ids.includes(id));
@@ -31171,7 +31234,7 @@ Bun.serve<WSData>({
       audit("task_wave_dispatch", wr.slot,
         `${wWave.ids.join("+")} ${wWave.klasse} saves=${wWave.savingsSec}s`
         + (wHarnessId ? ` harness=${wHarnessId}` : ""));
-      return json({ ok: true, slot: wr.slot, branch: wr.branch, wave: wWave });
+      return json({ ok: true, slot: wr.slot, branch: wr.branch, wave: wWave, next: wPair?.plan.next ?? null });
     }
     // the manual "start now" button. Independent of `dispatchOn` and NOT bound by DISPATCH_MAX_LANES —
     // the cap bounds UNATTENDED fan-out, this is an attended click; master stop / quiet hours don't bind

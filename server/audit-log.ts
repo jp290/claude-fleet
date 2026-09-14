@@ -77,6 +77,10 @@ type AuditEvent =
   // every id in the sensor's fixed order, the class the gate will run, and the seconds the avoided
   // lands were priced at, so a later reader of a red post-land audit can see which rows shared it.
   | "task_wave_dispatch"
+  // ...and the tick's sibling of it since Schnitt 2: the dispatcher started a start-plan wave of n > 1
+  // on its own. Same detail shape plus `by=tick`, and its own event, so an owner's bundle and a
+  // machine's bundle never count as each other in the ledger.
+  | "task_wave_start"
   // ...and the lane's own answer to it: k of n kept, n-k handed back to `queued` with the lane's
   // reason. Recorded separately from every abort, because a split is a JUDGEMENT about the surface
   // the wave was bundled on — the one piece of evidence that says the bundling criterion did not

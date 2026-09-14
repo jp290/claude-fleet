@@ -68,7 +68,12 @@ producer of the bytes a lane is founded on — pinned in `e2e/pins.ts`.
 1. **Nothing starts unattended that the owner did not release.** `tickDispatch` selects
    `status === "queued"` only. (Three machine paths write that status — the requeue after a failed
    spawn, the boot reconcile of orphaned `sent` rows, and a bound Program-MAIN's release door — see
-   §4; only the third is a real release, and it stamps `releasedBy: "machine"`.)
+   §4; only the third is a real release, and it stamps `releasedBy: "machine"`.) Since Schnitt 2
+   (2026-09-14) it walks those rows in the order of the start plan (`server.ts#startPlanWaves`,
+   `start-plan.ts`) instead of oldest-first, and starts a land wave of n rows as ONE lane — but only
+   when EVERY row of that wave is `queued`: a wave with a pending partner does not start, and its
+   released row says `waiting: wave partner <id> is not released`. The plan runs under the `manual`
+   release policy, so this ordering never widens the released set.
 2. **What was approved is what runs.** §1.
 3. **An observation is not work.** A `notiz` cannot be released (409) at either door. `adopt` — or
    the `/kind` route — converts it into a `pending` `auftrag`, and that conversion is the OWNER's

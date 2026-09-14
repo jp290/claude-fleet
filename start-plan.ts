@@ -3,9 +3,10 @@
 // Schnitt 1 of docs/messungen/2026-09-13-queue-pipeline-system-entwurf.md §5: the land waves
 // (task-land-waves.ts#projectLandWaves) are read in their own order and each wave is given ONE
 // `next` — the first reason it would not start, or "now". Order, collision and the lane caps are
-// read as one computation (§4 F4) instead of three separate deciders. A SENSOR, not a motor:
-// nothing here dispatches, releases or writes, and tickDispatch does not import it (pinned in
-// e2e/pins.ts) — the owner reads for some days what WOULD have started before anything does.
+// read as one computation (§4 F4) instead of three separate deciders. Nothing here dispatches,
+// releases or writes. Since Schnitt 2 server.ts#tickDispatch walks this plan in its order instead of
+// the oldest queued row, and GET /api/start-plan shows the owner the same object the tick reads —
+// one projection, never a second one for the board (pinned in e2e/pins.ts).
 //
 // Every wave also carries its rows' `checks`, straight off the card and the row's provenance
 // (owner 2026-09-13: "sicherstellen, dass das, was dann startet, geprüft wird oder wurde"). No new
@@ -50,8 +51,8 @@ export function startPlanChecks(row: { text: string; source: string; card?: Star
   };
 }
 
-// An open row the projection may name. `files: null` = no surface known, which collides with
-// everything (below) — never "touches nothing".
+// An open row the projection may name. `files: null` = no surface known — it makes no collision edge
+// (see collision below) and is held by the lane caps alone, never read as "touches nothing".
 export interface StartPlanRow {
   id: string; status: string; programId: string | null;
   files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null;
@@ -69,8 +70,15 @@ export interface StartPlanRepoCaps extends StartPlanCap {
   programs: Readonly<Record<string, number>>;
 }
 
+// WHO DECIDED THAT A ROW MAY START. `manual` is the fleet today: the owner's or a MAIN's release IS
+// the check, and a queued row without a valid card starts as it always did — Schnitt 2 changes the
+// ORDER and the BUNDLING of released rows, never their set. `card-valid` is the Schnitt-3 policy the
+// sensor already shows: only a valid card, and never a scout sketch, may start.
+export type StartPlanRelease = "manual" | "card-valid";
+
 export interface StartPlanInput {
   projection: LandWaveProjection;
+  release: StartPlanRelease;
   rows: readonly StartPlanRow[];
   // EVERY queue row's status, for `after` — a target that is not a row of the queue is not done
   statuses: Readonly<Record<string, string>>;
@@ -96,11 +104,9 @@ export interface StartPlanWave {
   rows: { id: string; status: string; checks: StartPlanChecks | null }[];
 }
 export interface StartPlanRepo { repo: string; lanes: number; cap: StartPlanCap | null; waves: StartPlanWave[] }
-export interface StartPlan { version: 1; budget: number; repos: StartPlanRepo[]; unresolved: LandWaveUnresolved[] }
-
-// A surface nobody knows is written as this file name in a collision: "where" is not known, and
-// not-known never reads as not-colliding (the same rule task-land-waves.ts#collidesOn falls back on).
-export const START_PLAN_UNKNOWN_SURFACE = "*";
+export interface StartPlan {
+  version: 1; budget: number; release: StartPlanRelease; repos: StartPlanRepo[]; unresolved: LandWaveUnresolved[];
+}
 
 interface Surface { files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null }
 
@@ -109,9 +115,17 @@ interface Surface { files: readonly string[] | null; ranges: readonly TaskWaveRa
  * itself — no range on either side = collides — so a change to that fallback moves this plan too.
  * The card-surface guard of collidesOn is deliberately NOT applied: it may only SEPARATE rows for
  * bundling, and separating is the unsafe direction for a start.
+ *
+ * A WHOLE SURFACE NOBODY KNOWS IS NO EDGE (Schnitt 2, 2026-09-14). The edge is a SHARED file
+ * (entwurf §4 F4 step 3, collidesOn's own shape); the unknown-range fallback above lives inside a
+ * shared file. Schnitt 1 had widened it to "no files known = collides with everything", and as a
+ * motor that is a new lane cap nobody decided: one hand-opened lane (it carries no row, so no
+ * surface) held every released row of its repo, and so did any running row without files — on the
+ * live fleet of 2026-09-14, slot 1's row with 0 files would have stopped all of claude-fleet. Rows
+ * whose surface is unknown are bounded by the two lane caps, exactly as before the plan read them.
  */
 function collision(a: Surface, b: Surface): { file: string; symbol?: string } | null {
-  if (!a.files?.length || !b.files?.length) return { file: START_PLAN_UNKNOWN_SURFACE };
+  if (!a.files?.length || !b.files?.length) return null;
   for (const file of a.files) {
     if (!b.files.includes(file)) continue;
     const ra = (a.ranges ?? []).filter((r) => r.file === file);
@@ -152,8 +166,10 @@ export function projectStartPlan(input: StartPlanInput): StartPlan {
         const unreleased = known.filter((row) => row.status !== "queued").map((row) => row.id);
         if (unreleased.length) return { unreleased };
         // 3. Under the card-valid policy only a valid card, and never a scout sketch, may start.
-        const unchecked = known.filter((row) => row.checks.cardValid !== true || row.checks.scout).map((row) => row.id);
-        if (unchecked.length) return { unchecked };
+        if (input.release === "card-valid") {
+          const unchecked = known.filter((row) => row.checks.cardValid !== true || row.checks.scout).map((row) => row.id);
+          if (unchecked.length) return { unchecked };
+        }
         // 4. Collision with running work first, then with an earlier wave that is still in line.
         for (const row of known) for (const lane of repoLanes) {
           const hit = collision(row, lane);
@@ -199,7 +215,24 @@ export function projectStartPlan(input: StartPlanInput): StartPlan {
     });
     return { repo, lanes: repoLanes.length, cap: caps ? { max: caps.max, source: caps.source } : null, waves: out };
   });
-  return { version: 1, budget: input.projection.budget, repos, unresolved: [...input.projection.unresolved] };
+  return { version: 1, budget: input.projection.budget, release: input.release, repos,
+    unresolved: [...input.projection.unresolved] };
+}
+
+/**
+ * The wait-note a queued row carries for its wave's `next` — the normalized sentences of §4 F4
+ * step 5, one per reason. `cap` repeats the plan's own sentence; the tick writes its live cap notes
+ * instead, because the caps it counts right before a start are the ones that hold.
+ */
+export function startPlanWaitNote(next: Exclude<StartPlanNext, "now">): string {
+  if ("after" in next) return `waiting: after ${next.after} not landed`;
+  if ("unreleased" in next) return `waiting: wave partner ${next.unreleased.join(", ")} is not released`;
+  if ("unchecked" in next) return `waiting: ${next.unchecked.join(", ")} not checked — no valid card`;
+  if ("collides" in next) {
+    const { slot, row, file, symbol } = next.collides;
+    return `waiting: collides with ${slot !== undefined ? `lane ${slot}` : `row ${row} ahead in the plan`} on ${file}${symbol ? `#${symbol}` : ""}`;
+  }
+  return `waiting: ${next.cap}`;
 }
 
 // --- CLI: the same projector over a state file. A lane has no fleet.json; the MAIN runs it in the
@@ -297,7 +330,8 @@ async function cli(): Promise<void> {
     caps[repo] = { ...cap, programs: Object.fromEntries(programIds.map((id) => [id, Math.min(grants.get(id) ?? machine, machine)])) };
   }
 
-  process.stdout.write(`${JSON.stringify(projectStartPlan({ projection, rows, statuses, lanes, caps }))}\n`);
+  // the policy the tick runs under (server.ts#startPlanNow): every program is `manual` until Schnitt 3
+  process.stdout.write(`${JSON.stringify(projectStartPlan({ projection, release: "manual", rows, statuses, lanes, caps }))}\n`);
 }
 
 if (import.meta.main) {

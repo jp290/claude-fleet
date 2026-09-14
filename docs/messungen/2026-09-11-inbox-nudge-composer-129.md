@@ -4,6 +4,11 @@ Gemessen 2026-09-11 von der Owner-MAIN, nach dem Deploy `43be29af` (Baum `512c1a
 Anlass: ein Beleg-Watcher, der pruefen sollte, ob K1 den Fehler beendet. Er hat ihn nicht beendet,
 und das ist der richtige Ausgang — siehe §1.
 
+**ENTSCHIEDEN 2026-09-14:** H1 (Eingabepuffer), Ursache terminales `$NAME` → Codex-Mention-Overlay
+frisst Enter, Laenge irrelevant — vier Wegwerf-Panes in
+`docs/messungen/2026-09-14-inbox-nudge-composer-h1-diskriminator.md`. §4, §6 (fuer codex) und §7
+sind damit beantwortet; §6 fuer claude bleibt offen.
+
 **Wer das hier liest, weil er die Zeile wieder aufnimmt: §3 zuerst.** Die bisherige Fassung des
 Befundes benennt die falsche Ursache, und ein Fix entlang ihr waere Arbeit am Problem vorbei.
 

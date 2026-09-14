@@ -1,112 +1,47 @@
-# HANDOFF — Program-MAIN Fleet-Betrieb (f170dc46) Slot 5 → Nachfolgerin, 2026-09-14 ~11:0x (ctx GEMESSEN 31,8 %)
-
-Der Program-Record (GET /api/self/program-execution) ist die Zustandsquelle; hier steht nur, was er nicht traegt.
-
-## 1. Deploy blockiert durch ein doppeltes Rot
-- Live-Server = ba557b75 (Deploy 85bf4d22). Main ist weiter: 24a04501 C4, f8804bb1/07b821f8 Freigabe-Politik, 4a905807 Verdikt-Nachfolge, 58c10f75 Lock-Marker, bb546bf2 Karten-Vertrag, 81a85c08 land-quality, 754c37ed E3, 3a1c952a Astra-Notiz. `.env` FLEET_CARD_MODEL='claude-sonnet-5' wirkt erst mit dem Deploy.
-- Audits bb546bf2 und 754c37ed ROT, je 4491/1, IDENTISCHE Signatur: e2e/watch.ts „clarification identical retry …" (healed=0, 200, answered; gefallen ist Pane-Text ODER awaiting===null, das Detail sagt es nicht). Letztes volles Gruen 4a905807. Beide Lands beruehren Clarifications nicht; beide Rots sind die ersten Second-host-Audits nach dem daemon-update 09:24 (9b8b52b7→96c866e7).
-- Einordnung laeuft als Lane 71ee4882 (queued): Sonde reparieren + watch-Shard lokal auf HEAD / 4a905807 / neuem Baum. Gruen auf dem Mac ⇒ Umgebung ⇒ deployen; Rot ⇒ Commit-Grenze nennen. Urteil ueber die Rots ist die Owner-Route /api/post-land-audits/adjudicate.
-
-## 2. Nach dem Deploy: EINE Attention an den Owner (Scharfschalten ist seins)
-- Fleet-Betrieb auf `card-valid` (POST /api/programs/f170dc46…/release, Owner-Route). Hinweis: seit bb546bf2 sind Karten mit NUR Rollen-Luecken valid.
-- Regelvorschlaege (Promotion): (a) HANDOFF.md nur bei echter Nachfolge committen, sonst Program-Record/Commit-Body (Lane 7363b89f); (b) nie eine PID aus /tmp/fleet-e2e.lock/pid oder /api/self/gate beenden, nur die eigene notierte Suite-PID (Lane 389f415f).
-
-## 3. Freigabe-Reihenfolge vom Orchestrator (Lane-Treiben liegt komplett bei der MAIN)
-queued: de754f94 Core-Unit · c3837cab Phasen je Trail-Zeile · 8dc26d58 Client-Quelle · 71ee4882 (s.o.). laufend: 1a5d3f2d (Slot 3), bc974919 (Slot 1), 3bd9821e (Slot 4, wartet auf Second-host-Lauf abd278c2).
-pending, freigeben wenn NACH gelandet: a2356a5e + 1e74ba8b NACH de754f94 · 35654b07 NACH de754f94+a2356a5e · aa819dd4 NACH 1e74ba8b · d71c7549 und 8056f3fe ohne NACH (freigeben, sobald Lane-Platz frei). f4d81b09 (daemon-update verwaist Audit-Claim) pending, eigene Einschaetzung: freigeben.
-ROLLOUT: a2356a5e aendert watchdog.sh ⇒ nach Land `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` + neue Verify-Zeile ins rulebook-Fragment rendern (bun e2e/pins.ts). 1e74ba8b landet inert ⇒ nach Deploy + Second-host daemon-update FLEET_AUDIT_SHARDS='3' in .env, erstes sharded Audit gegen das letzte serielle vergleichen. Aus c3837cab kommen bis zu drei Kuerzungs-Zeilen — die MAIN filet sie.
-
-## 4. Gelernt heute
-- daemon-update: der Daemon claimt im selben Poll auch ein wartendes Audit und toetet es mit exit 75 → Claim haengt ~45 min (f4d81b09). Vor dem Update den Audit-Queue-Stand pruefen.
-- Direkt-Commits anderer Sessions auf main waehrend eines Lands → ff-lost nach 2 Runden (fcc2f89c, 09:09–09:21). Neu landen reicht.
-- Variantenpaare (E4) entscheidet der Orchestrator; nie beide landen.
-
-# HANDOFF — Orchestrator Slot 8 → Nachfolgerin (Haupt-Checkout, Owner-Token): Queue-Intelligenz E1–E5 gefilet und Welle 1 laeuft, Variantenpaar land-quality.ts (Opus vs codex) in Flug, Rollen-Synthese S1–S4 gefilet (S1/S4 mit Owner), Wissens-System Schritt 1 erledigt, Grok-Antworten: 2 von 3 da; 2026-09-14 09:2x, ctx GEMESSEN 33,7 % (Server-Praedikat)
+# HANDOFF — Orchestrator Slot 7 → Nachfolgerin (Haupt-Checkout, Owner-Token): Variantenpaar entschieden und gelandet, Suite schneller + Pruefapparatur als zehn Zeilen mit Freigabe-Reihenfolge bei der Program-MAIN, Astra-Befunde verarbeitet, Brief-Gegenlese und Owner-Entscheid-Schicht gefilet; 2026-09-14 12:1x, ctx GEMESSEN 35 % (Pane-Fusszeile; der Slot-Datensatz meldet null, er steht noch auf Fable, die Pane lief nach Owner-/model auf Opus 5)
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT
 
-- **Owner-Vorgabe 2026-09-14 (dreimal, dauerhaft, Memory `feedback-owner-out-of-eval-loop`):** „ich will mich selbst soweit wenn moeglich komplett rausnehmen" — Bewertung, Variantenwahl, Findings-Verarbeitung OHNE Owner-Stufe entwerfen; knappe Faelle per Default-Regel + Ledger, nie Rueckfrage. AUSNAHME auf seinen Wunsch: die **Rollen-Synthese** (S1/S4, Regelbuch-Fragmente, Klassenvokabular) will er SELBST mitbauen — Slot „Rollen-Studio" im Haupt-Checkout mit ihm, nicht per Tick.
-- **Der Brief ist `docs/messungen/2026-09-14-queue-intelligenz-schichten.md`** (drei Schichten kartiert, §5 Entscheidungen E1–E5, §6 Reihenfolge). Rolle: filen/schaerfen/freigeben/vergleichen. Program-MAIN Fleet-Betrieb = **Slot 5** (seit 06:03; landet/deployt).
-- **Commit-Regel:** vor jedem Direkt-Commit `merges` in fleet.json lesen; `running`/`interrupted` ohne verify = Land laeuft. Ich habe heute ZWEI docs-Commits unter dem laufenden Land von Slot 4 gesetzt (cfd9fc21, 023102ee/378deae8) — je eine ff-Retry-Runde bezahlt. Nicht wiederholen.
-- **Hintergrund-Waechter sterben mit mir und mit dem RAM** (zweimal vom System gekillt, 31–38 % frei). Rueckweg = `POST /api/self/autos` One-Shot (laeuft auf dem Server); aktiv: Auto `05576f42` auf Slot 8 (stirbt mit dem Slot — neu setzen).
+- **Rollenschnitt (Owner 2026-09-14 10:4x):** Lane-Treiben (done-looking → landen → schliessen, Freigaben nach NACH) gehoert der **Program-MAIN Fleet-Betrieb, heute Slot 8** (um 11:59 von Slot 5 nachgefolgt). Bei der Orchestratorin bleiben Entscheidungspunkte: Variantenpaare (E4), Brief-Abgleich bei Abweichung vom DONE, Filen/Schaerfen. Keine Land-Nachricht je Lane.
+- **Regel an die MAIN gegeben (Owner 12:0x):** dasselbe Fail in zwei aufeinanderfolgenden Audits = echter Befund; Reparatur-Zeile sofort per Hand-Dispatch, auch ueber den Deckel; ein Urteil ist keine Vorbedingung.
+- **Vor jedem `POST /send` den Ziel-Slot unmittelbar vorher aus `GET /api/programs` (main.slot) lesen.** Heute 12:08 traf mein /send an „Slot 5" die dort gerade spawnende Reparatur-Lane und toetete sie (Zeile requeued, nichts verloren; Befund als `bf6fc2ea`).
+- **Kontext/Lane-Zeit sind KEIN Vergleichssignal** (Owner-Korrektur, Memory `feedback-codex-ctx-is-not-succession-pressure`, dritter Vorfall).
+- **Grok-Antwort 1 (Astra-Orchestrierung) fehlt weiter.** Der dritte Paste um 09:3x war wieder byte-identisch mit Antwort 2; die Datei steht auf dem committeten Platzhalter. Erkennung: die richtige Antwort beginnt mit Sub-Agent-Threads vs. Worktree-Sessions, nicht mit „Etablierte Wege 2026".
 
-## 0.1 IN FLUG (gemessen 09:2x)
+## 0.1 IN FLUG (12:1x)
 
-| Zeile | Slot | Was | Danach |
-|---|---|---|---|
-| `fcc2f89c` E1a Karten-Vertrag (creates/after, rolle beratend, Rohantwort ins Ledger, Validator v5) | 4 | **Land laeuft seit 09:28** (ff-Retry wegen meiner Commits) | danach lesen alle ungueltigen Karten neu; dann `bc974919` (Karten-A/B) freigeben |
-| `0e6b7d3d` E2 land-quality.ts **VARIANTE A** (Opus 5 high) | 1 | arbeitet, Branch `fleet/260914071328-d3e2` | **NUR EINE der beiden landet** |
-| `7eb74615` E2 land-quality.ts **VARIANTE B** (codex gpt-5.6-sol high) | 3 | arbeitet, Branch `fleet/260914071334-201a` | Vergleich nach Doc §5 E4: DONE-Teile erfuellt (Skript laeuft, reproduziert Probe Opus 84/20, codex 16/7) > Gate gruen > kleinerer Diff; Gleichstand ⇒ kleinerer Diff. Gewinner-Branch an Slot 5 nennen, Verlierer `shelved` (Branch bleibt). Ergebnis als Mess-Notiz `docs/messungen/2026-09-XX-variantenpaar-1.md`. Beide per Hand-Knopf gestartet (Deckel ignoriert), damit B nicht As Land auf main sieht. |
-| `3bd9821e` E2/E3 fleet-reports.jsonl + Receipt{snippet, model nie null} | — | queued; Startplan hielt sie wegen Schein-Kollision (Doc-Pfad im Text) — Pfad aus allen 7 Briefs entfernt; startet, wenn ein Slot frei wird | |
+| Slot | Zeile | Was |
+|---|---|---|
+| 1 | `bc974919` | E1c Karten-A/B Haiku vs Sonnet (Mess-Notiz) |
+| 3 | `8dc26d58` | Client zeigt source main als owner (Astra-Befund 9) |
+| 4 | `de754f94` | Suite: Core-Unit teilen |
+| 5 | `71ee4882` | Reparatur „clarification identical retry" (3 Audits rot: bb546bf2, 754c37ed, 0c3bd4a0), per Hand-Dispatch ueber Deckel |
+| 8 | — | Program-MAIN Fleet-Betrieb (ctx 19 %) |
 
-Pending (Welle 2/3): `bc974919` Karten-A/B (nach fcc2f89c) · `3c07a604` Quellpaket-Wirkung (jederzeit) · `6067c240` Worktrail Lauf 1 (nach land-quality; **Pflichtteil dazu: Zuordnung/Ausmisten** — 7 Auftraege + 20 Notizen + 3 Richtungen ohne Program, Owner „macht Sinn") · `1ed2f6a0` Variantengruppe clarify-first (nach Paar-Vergleich) · `21ade485` Brief geschaerft (nach 3c07a604) · Rollen: `8b2baf60` S2, `fa07734f` S3-Schatten (mechanisch, nach Welle 1) · `f4c2033d` S1, `b3767fc4` S4 (**nur in der Owner-Session**).
+Queued: `c3837cab` (Phasen je Trail-Zeile, Messung). Pending mit Reihenfolge bei Slot 8 (ging um 11:2x an Slot 5, gleiche Zeilen): `a2356a5e` Gate-Integritaet (NACH de754f94; watchdog.sh ⇒ kickstart + rulebook-Render) · `1e74ba8b` Audit als parallele Shard-Jobs (NACH de754f94; landet inert, Rollout FLEET_AUDIT_SHARDS='3') · `35654b07` Mutex birth + curl-Deadlines (NACH de754f94, a2356a5e) · `d71c7549` Ledger-Reader null · `8056f3fe` zwei schwache Sonden · `aa819dd4` warmer Helper-Baum (NACH 1e74ba8b). Aus `c3837cab` kommen bis zu drei Kuerzungs-Zeilen (Sleeps) — die filet die MAIN.
 
-## 0.2 HEUTE IN MEINER SCHICHT
-
-- Commits: `9e8db642` (Doc + E1–E5) · `82972c6e`, `cfd9fc21`, `023102ee`, `378deae8` (Grok-Ablage) · 12 Commits in FREMDEN Repos: CLAUDE.md mit `@AGENTS.md` (Wissens-System Schritt 1; Claude Code laedt AGENTS.md nicht — Sonde 2026-09-13), private-repo-t auf Branch `gate0`.
-- `.env`: `FLEET_CARD_MODEL='claude-sonnet-5'` (Owner-Wille; wirkt ab naechstem srv-Start; `bc974919` entscheidet mit Zahl, ob es bleibt).
-- Gefilet: 8 Zeilen QUEUE-INTELLIGENZ, 4 Zeilen ROLLEN-SYNTHESE, alle Program Fleet-Betrieb, alle mit ROLLE/GROESSE/FLAECHE/VERIFY/DONE.
-- Grok G2: **Antwort 2 (Game-Dev) vollstaendig** in `docs/messungen/2026-09-14-grok-antworten-spiele-astra.md`; **RAG-Antwort** (zu Notiz 922b37c7) in `2026-09-14-grok-antwort-rag-suche.md`; **Antwort 1 (Orchestrierung) FEHLT** — Owner-Paste kam zweimal als Duplikat von Antwort 2; Platzhalter + Terminal-Fragment stehen in der Datei. Owner fuegt ueber den Board-Editor ein (`/api/file/write`); danach committen und auswerten.
-- Naechste Spiele-Zeile laut Grok selbst: Empfehlung 1 (Stack-Duell 24 h: Canvas2D-Sim vs Pixi/Phaser 4.2.1, 10 k Ticks < 2 ms, Chromium-RSS < 2 GB) als isolierte Lane auf dem SECOND-HOST mit messbarem Abbruch; dann „Teich/Damm/Welle" 3–5 Tage. Noch NICHT gefilet — erst Antwort 1 lesen.
-
-## 0.3 BEFUNDE, DIE STEHEN (Kurzform, Zahlen im Doc)
-
-- 21/41 Karten ungueltig, 12 am Vertrag, max. 4 modellabhaengig · Brief 13 KB, Quellpaket 56 %, Modell/Effort steuern nichts · `Task.criterion` 0/200, Reports auf keinem Ledger, `review: none` 293/294 · Zeilen-Nacharbeit ≤3 d: 24 % Opus, 44 % codex (das erste mechanische Qualitaetssignal) · Notiz-Kanal schliesst 3/69.
-- SYSTEM.md seit 2026-08-20 unveraendert („Act Lead" dort, in AGENTS.md „nicht gebaut"); AGENTS.md lebt (5 Commits 12./13.09.).
-- Startplan liest JEDEN Pfad im Text als Flaeche — ein zitiertes Doc erzeugt Schein-Kollisionen. Beim Filen keine Pfade zitieren, die nicht Aenderungsziel sind (bis fcc2f89c `creates` kann).
-
-## 0.4 OFFEN BEIM OWNER (nur das, was wirklich seins ist)
-
-1. Antwort 1 (Orchestrierung) einfuegen. 2. Rollen-Session terminieren (S1/S4; die fuenf Fragen aus `2026-09-14-rollen-briefe-synthese.md` §4 wollte er selbst beantworten, Terminal-Paste-Bug verhinderte es). 3. Welche Mac-Sessions schliessen (6, 14, 15, 16 bei 85 %, 11, 2) — nicht selbst geoeffnet, kein Kill ohne ihn.
-
-## 0.5 UNGEPRUEFT
-
-- Ob Slot 5 meine `/send`-Nachricht (Paar: nur eine landet) verarbeitet hat — keine Antwort erwartet, aber nicht bestaetigt.
-- Wissens-System Schritt 2 (globale Datei statt `~/.codex/AGENTS.md`-Kopie mit totem Pfad, Home-Memory ins attic) — NICHT begonnen.
-- Alle Shas hier `git merge-base --is-ancestor` nicht erneut geprueft (Direkt-Commits, kein Rebase — sie bleiben).
-
-# HANDOFF — Orchestrator Slot 5 → Nachfolgerin (Opus 5 high, Haupt-Checkout, Owner-Token): Spiele-Spur neu (Spiel komplett neu, Second-host), G1 vorgezogen, Wissens-System/RAG recherchiert (nichts bauen), C4/C6 gefilet; 2026-09-13 ~23:1x, ctx GEMESSEN 29,7 %
-
-## 0. WAS BEIM ANTRITT SOFORT GILT
-
-- **Brief bleibt `docs/plan-fleet-betrieb-2026-09-13.md`** (§2a Reihenfolge, §5b, §5d Spiele-Spur mit Stand 23:0x, §6 Lease-Locks unter der Linie). Rolle: filen/schaerfen/freigeben. **Die Program-MAIN Fleet-Betrieb ist jetzt SLOT 7** (gebunden 23:02, `GET /api/programs` gemessen 23:1x; Slot 9 ist leer) — sie landet/deployt, ihre Pflichten (a)–(g) stehen im Abschnitt darunter; wo Plan/Zeilen „Slot 9" sagen, ist Slot 7 gemeint.
-- **Owner-Prioritaet jetzt, woertlich 22:4x:** „einiges an Last vom MacBook runternehmen und aufs Second-host auslagern und dann wiederum das Biber-Game entwickeln und die iOS-App". Owner 23:0x: **das Spiel komplett neu** (neues Repo auf dem Second-host, Stack offen, private-repo-j hoechstens Steinbruch).
-- **Commit-Regel, heute bezahlt:** vor jedem Direkt-Commit `merges` in fleet.json lesen und bei `running`/`interrupted` NICHT committen — mein `9b8b52b7` landete unter dem Land von Slot 4 (`waitRounds 1`, Gate 56,6 min, davon 54 Warten). Mein `&&`-Sensor hat das Land gezeigt, aber nicht gestoppt.
-- **Hintergrund-Waechter sterben mit mir.** Neu aufsetzen: Statuswechsel von `1aaf7eb8`, `d7b4b47d`, `31df1009`, `a5878da7`, `35bc6afe` (60-s-Takt).
-
-## 0.1 IN FLUG (gemessen ~23:1x, Deckel 3 voll)
-
-| Zeile | Slot | Stand | Danach |
-|---|---|---|---|
-| `1aaf7eb8` C1 Second-host-Scratch | 1 | wartet auf Vorschau/Audit | Slot 9: daemon-update, /tmp waechst nicht; dann C5 denkbar |
-| `d7b4b47d` Sharding-Probe (Fable) | 3 | laeuft | — |
-| `31df1009` graphify 2/2 | 4 | **Land lief 23:04** | — |
-| `a5878da7` **G1** Grok-Prompts Spiele (Astra medium) | — | queued, bewusst VOR `35bc6afe` | Owner fragt Grok (G2) |
-| `35bc6afe` Karte anreichern | — | **pending gehalten**; ein Waechter (stirbt mit mir!) requeued sie, sobald G1 `sent` ist — sonst von Hand `POST /api/tasks/35bc6afe/queue` | danach `6d841a14` allein |
+Neu gefilet, pending, noch NICHT an Slot 8 gemeldet: `bf6fc2ea` /send in spawnenden Slot (klein, Befund oben) · `d02fd2bd` Brief-Gegenlese als Messversuch (Schalter default aus, jede zweite Zeile, Abbruch nach 20 Paaren ohne Effekt) · `8bc86e4b` Denkauftrag Owner-Entscheid-Schicht, Program Astra f9dc8e10, codex/gpt-6-astra/medium.
 
 ## 0.2 HEUTE IN MEINER SCHICHT
 
-- Commits: `ca511009` (Altbestand nachgemessen, C4/C6 im Plan) · `9b8b52b7` (Lease-Locks §6) · `53ebf96b` (Spiele-Spur neu, Headless-Probe).
-- Gefilet pending: `81030f46` C4 Bytebudget Transkript-Leser · `f38d8e15` C6 state.sh-Hygiene (nach `7363b89f`) — beide Karte gueltig. Freigegeben: `d7b4b47d`, `35bc6afe`+`31df1009` (35bc6afe danach zurueckgehalten, s. o.).
-- Notizen: `3ecfd6d3` Lease-Locks (Astra/Solo; ersetzt archiviertes `cd192acd` mit falscher Aussage: eine Kollisionspruefung beim Start gibt es seit 2026-09-10 NICHT) · `17b67cf8` Wissens-System (Grok + Abgleich) · `922b37c7` RAG: nichts bauen.
-- Gemessen: Second-host /tmp 37 % nach Slot-7-Loeschung · Headless-Chromium Second-host: Canvas 2D ok, WebGL2 nur SwiftShader · Lane spawn→land p50 ~1 h, p90 ~5,5 h (Branch-Zeit UTC).
+- **Variantenpaar 1 entschieden:** Opus-Variante von `land-quality.ts` gelandet (db8186f4 + Repo-Map-Fix 81a85c08), codex shelved (Branch `fleet/260914071334-201a` bleibt). Nur die Zahl im DONE trennte; Stufe 2/3 haetten die schwaechere Variante gewaehlt. Notiz `docs/messungen/2026-09-14-variantenpaar-1.md` (71411734, 82c907db).
+- Gelandet ausserdem: E1a Karten-Vertrag (bb546bf2), E2/E3 Report-Ledger + Receipt (3bd9821e), E3 Quellpaket-Wirkung (754c37ed: Quellpaket kauft nichts messbar, Karte korreliert mit 8–9 statt 18–20 Bash-Aufrufen), Astra-Befundnotiz Pruefapparatur (3a1c952a), Security-Suite-Fix 1a5d3f2d (2836fe97).
+- **Audit-Rueckstau gemessen:** Second-host-Audits strikt seriell (~32 min), Land→Urteil 75–100 min; maxParallelSuites 3 begrenzt nur Previews; Second-host 16 Kerne Load ~1, RAM die Grenze (Suite ~330 MB). Server und Daemon kennen keine Shards ⇒ `1e74ba8b`.
+- **Suite-Zeit:** 217 Checks mit 3–10 s Abstand = 1 070 s von 2 122 s; Git-Tick-Hypothese widerlegt (Git-Checks warten nicht laenger). ⇒ erst messen (`c3837cab`).
+- Worktrail-Lauf `6067c240` um Pflichtteil (5) Memory-Durchsicht (portabel/privat/veraltet mit Vorfallszahl) und (6) Zuordnung programloser Zeilen erweitert.
+- Memory: `feedback-codex-ctx-is-not-succession-pressure` um den dritten Vorfall ergaenzt.
 
 ## 0.3 BEFUNDE, DIE STEHEN
 
-- **Claude Code laedt AGENTS.md nicht** (Haiku-Sonde mit Kontrolle in private-repo-j: CLAUDE.md-Fakt gewusst, AGENTS.md-Fakt nicht; private-repo-i NONE). 11 von 13 Verify-Repos haben nur AGENTS.md ⇒ Claude-Sessions dort ohne Projektvertrag, sofern kein Brief ihn nachreicht (ungeprueft).
-- `~/.codex/AGENTS.md` = sed-Kopie der globalen CLAUDE.md mit totem Pfad `~/.Codex/knowledge/`. `~/.claude/knowledge` letzter Commit 2026-08-05. Home-Memory 390 Dateien, ruhend seit 2026-08-03.
-- Second-host-Fleet-Instanz: 4 Slots (Bewerbungskampagne, scrollFix), 0 offene Tasks, `FLEET_LANDS='0'`, Last 0,05; Owner-Entscheid 2026-09-11 (`39857582`): Second-host alles ausser iOS, zwei Listen.
-- Biber-Program `9ce08219`: letzter private-repo-j-Commit 2026-09-04, 17 offene Zeilen (viele an tote Controller). G4 archiviert die alten Biber-Zeilen, Mandat `a33d7300` nur Ideen-Eingang.
+- Zwischen Filen und Ausfuehren prueft niemand den Inhalt: Karte = Form, refine lief auf 0/200 Zeilen, Analyst entfernt. Heutige Belege stehen in `d02fd2bd`.
+- Startplan liest zitierte Pfade im Text als Flaeche (Schein-Kollision) — bis der deployte Karten-Vertrag `creates` traegt, beim Filen nur Aenderungsziele als Pfad nennen.
+- Second-host: vier interaktive claude-Sessions des Owners (~1,4 GB) — Owner kuemmert sich, nicht anfassen.
 
-## 0.4 OFFENE OWNER-FRAGEN
+## 0.4 OFFEN BEIM OWNER
 
-1. **Schritt 1 Wissens-System:** in 12 Repos CLAUDE.md mit `@AGENTS.md` anlegen (empfohlen ja). Schritte 2 (eine globale Datei, toter Pfad weg, Home-Memory ins attic) und 3 (= Synthese-Schnitt 1) darf ich ohne Rueckfrage — noch NICHT begonnen.
-2. **Welche Mac-Sessions schliessen:** 6 (ohne Label), 14 storage, 15 usage, 16 private-repo-aa (85 % ctx), 11 Astra Worktrail, 2 Supervisor — nicht selbst geoeffnet, also kein Kill ohne Owner.
-3. Fuenf Synthese-Fragen (gaten G3) · UI §5c — unveraendert. **Browser-MCP ist KEINE Owner-Frage mehr:** Astras C2 aendert nur die Startzeile neuer Lanes, keine globale Einstellung — gefilet als `b4477db3` (pending, Opus 5 high; ~200 MB je Claude-Lane, ~170 je Codex; nur 3/193 Lanes nutzten Playwright in 14 d). Beruehrt server.ts#agentCmd — nach `6d841a14` oder parallel nur, wenn Flaechen disjunkt bleiben.
+1. Grok-Antwort 1 einfuegen. 2. Rollen-Session S1/S4 (unveraendert). 3. Second-host-Sessions (er macht es).
 
 ## 0.5 UNGEPRUEFT
 
-- Die in Grok-Runde 2 neu genannten Studien (2605.15184 u. a.); geprueft nur 2602.11988 und 2606.09090.
-- Verdikt des Lands von `31df1009`: lief beim Commit dieser Uebergabe (23:2x) noch und wartete hinter einem `e2e-isolated.sh` auf den Mutex. Dieser Commit wurde BEWUSST darunter gesetzt (Wiederholungsrunde ~Gate-Arbeit p50 105 s gegen ~40 min Warten) — `waitRounds` in `git notes --ref=fleet/land show <landSha>` zeigt den Preis.
-- Alle zitierten Shas `git merge-base --is-ancestor … main` geprueft ok; alle genannten Queue-Zeilen und Kartenstaende 23:1x nachgeschlagen.
-
+- Ob Slot 8 die Freigabe-Reihenfolge der zehn Zeilen kennt: sie ging an Slot 5 vor dessen Nachfolge; Slot 8 bekam um 12:1x nur den Verweis auf diesen HANDOFF.
+- Deploy-Stand: Slot 5 wollte nach gruenem Rerun deployen; das Rot kam dreimal — ob deployt wurde, nicht geprueft.

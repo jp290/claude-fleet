@@ -1,3 +1,35 @@
+# HANDOFF — Orchestrator Slot 8 → Nachfolgerin (Haupt-Checkout, Owner-Token): S1 Lane-Regelbuch GEBAUT (36 763 → 19 956 Zeichen, Tuer-Probe 0, pins ALL PASS), Sol-Richtung des Owners gefilt + Verdrahtungs-Messzeile, Audit zu 119c1b3e rot mit NEUEM Einzel-Fail; 2026-09-14 19:5x, ctx GEMESSEN 33,2 % (`./ctl.sh ctx`)
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **Program-MAIN Fleet-Betrieb ist SLOT 1** (ctx 24 %), Politik `card-valid`. Vor jedem `POST /send` `GET /api/programs` main.slot lesen. Rollenschnitt: Lane-Treiben = MAIN; Orchestratorin = Entscheidungspunkte, Filen/Schaerfen, Owner-Session-Arbeit. Nachfolge explizit mit `model: claude-fable-5-1[1m], effort: high` (MODELLPOLITIK: Fable orchestriert; Slot 8 lief so, Datensatz stimmt).
+- **`./ctl.sh` benutzen** (`merges` vor jedem Direkt-Commit, `ctx`, `watch`, `events --ack`, `dispatch`). Eine Orchestratorin kann KEINE Attention stellen (409, nicht gebunden) — Owner-Fragen gehen als Kommentar an die Zeile oder in die Antwort.
+- **Das Lane-Regelbuch ist seit 19:4x der kleine Render** (`rulebook/` untracked, CLAUDE.md dieses Checkouts neu gerendert, Pin §6b gruen). Laufende Lanes sehen `rulebookDrifted: true` — erwartet. Was gestrichen/verschoben wurde und warum: `docs/messungen/2026-09-14-s1-streichliste.md` §6 (Commit `8f295c56`). MAIN-Tueren (release/watch/succeed, Doc-Kollision) stehen jetzt am ENDE von `rulebook/einstieg.md`; die einstieg-Absaetze „Rueckweg" und der verschobene watch-Block ueberlappen — Zusammenziehen ist S4 (`b3767fc4`), nicht offen fuer dich.
+
+## 0.0 ERSTER AUFTRAG: das Audit-Rot zu `119c1b3e` einordnen (NEUER Fail, kein Repeat)
+
+Audit auf Tip `4348df34` (Cover `119c1b3e`, remote second-host, 2 004 s): 4520 ran / **1 failed: „surface: a new brief re-derives it — the stored sha is an INPUT hash, not a write stamp"**. Die beiden Watch-Fails der zwei Audits davor sind WEG — der Fix `119c1b3e` hat gewirkt. Der neue Fail ist zum ersten Mal da: Regel „zweimal gleiches Rot = Reparatur" greift noch NICHT; erst das naechste Audit (Land von Slot 3/5/7, alle im Gate) entscheidet. Faellt er dort wieder, Reparatur-Zeile per Hand-Dispatch ueber den Deckel (Owner-Memory 2026-09-14). Trail: `docs/e2e-trail.md`; die Sonde: `rg -n 'INPUT hash, not a write stamp' e2e/`. Event `2e647ee9` ist quittiert.
+
+## 0.1 IN FLUG (19:5x) — Lanes gehoeren Slot 1
+
+Sent: `7ed73694` (Slot 5, codex/gpt-5.6-sol, Gate-Kette lief 19:0x), `66df05b4`+`e3e5084a` (Slot 7), `8056f3fe` (Slot 3). Queued: `1b47e29a` (braucht Owner-Attention `06574f9d`: Flaeche a/b/c des „mehr"-Knopfs — OFFEN), `bf6fc2ea`, `3cbbe209`, `5421694d` (Kollisionen). Server auf `458724c6`, 5 Commits hinter (nur `119c1b3e` serverseitig); Deploy = Owner-/MAIN-Akt, erst nach gruenem Audit. Hub 4 Commits hinter (schliesst mit dem naechsten Land).
+
+## 0.2 HEUTE IN MEINER SCHICHT (18:3x–19:5x)
+
+- **S1 gebaut** (Streichliste `43b283d2` vor dem Render, Owner „ok ok ok" + „denk selbst nach", Bau `8f295c56`): Lane-Render 19 956, Tuer-Probe 0, Geschichte-Probe 0, pins ALL PASS. Sieben Abweichungen von der Tabelle mit Grund in §6 — die wichtigste: Suite-Offer-Zahlen 180/800 s MUESSEN im Fragment stehen (Pin). Astra-Baustein R3 = Nachfolge-Schiene; `/api/self/notes` existiert (server.ts ~30066), der Baustein behauptete das Gegenteil. Zeile `f4c2033d` archiviert (erledigt ohne Land).
+- **Owner-Richtung Sol** (18:5x, woertlich in `8e21d437`): Worker/Betriebs-MAIN testweise auf Sol, aber erst GEGEN Opus; Verdacht „falsch verdrahtet". Ledger 14 d: Sol killed-empty 5/29 (17 %) vs Opus 5/176 (3 %), vier davon am 05.09. 08:16–08:18 binnen 2 min ohne audit-Spur → Spawn/Zustellung, nicht Modell; Slot 5 heute korrekt (`gpt-5.6-sol high`, `server.ts#CODEX_HARNESS` ok). Messzeile `0d6cb462` (read-only Verdrahtungsprobe, Opus/high) pending im Program — `card-valid` startet sie, wenn die Karte gueltig ist. Der Sol-Test selbst wartet auf „System laeuft richtig".
+- Audit-Watch `fbb8aff8` gefeuert (rot, s. 0.0); Event quittiert.
+
+## 0.3 OFFEN BEIM OWNER
+
+1. Attention `06574f9d` (Flaeche „mehr"-Knopf) — ohne Antwort bleibt `1b47e29a` ungebaut. 2. S4-Rollenkarten-Text (`b3767fc4`). 3. Wann „das System richtig laeuft" fuer den Sol-Test (`8e21d437`).
+
+## 0.4 UNGEPRUEFT
+
+- Ob eine NEU gespawnte Lane den 19 956-Render wirklich bekommt (server.ts liest `rulebook/` zur Spawn-Zeit — am Code gelesen, nicht an einer Pane gemessen).
+- Ursache der vier Sol-killed-empty vom 05.09. (kein Ledger traegt sie) — Zeile `0d6cb462`.
+- 26 `owner_auth_fail` / 85 `self_heal_recreate` in `audit.jsonl` (aus dem Vorgaenger-Handoff, weiter nicht eingeordnet).
+
 # HANDOFF — Orchestrator Slot 4 → Nachfolgerin (Haupt-Checkout, Owner-Token): Backlog 143→90, Engpass server.ts gemessen und gefilet, Freigabe-Politik card-valid gesetzt, Regeln A+B promoviert, S1 mit Owner-Antworten vorbereitet; 2026-09-14 18:0x, ctx GEMESSEN 19,6 % (`./ctl.sh ctx`, vor dem Handoff-Schreiben)
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

@@ -41,7 +41,11 @@ und Arbeit ohne pruefbares DONE. Opus-Lanes bleiben der Default fuer Code (MODEL
 Jede Zeile ist eine normale Queue-Zeile im Karten-Format im Program der Orchestrierung, damit
 `card-valid` sie startet und der Lane-Deckel gilt. Kopf: `ROLLE: codex/gpt-6-astra/<effort>` —
 `medium` ist der Owner-Default (2026-09-07), `high` die Option fuer Urteile. Ein Lese-Auftrag hat eine
-neue Notiz unter `NEU:` und `docs/messungen/INDEX.md` unter `FLAECHE:`; VERIFY ist die kurze Kette.
+neue Notiz unter `NEU:` und ein LEERES `FLAECHE:`; VERIFY ist die kurze Kette. `docs/messungen/INDEX.md`
+gehoert NICHT in die Flaeche: jede Mess-Zeile, die sie nennt, kollidiert dort mit jeder anderen und sie
+laufen nacheinander (gemessen 2026-09-14 21:5x an drei Astra-Zeilen und der Sol-Probe). Der Startplan
+zaehlt `NEU` als Flaeche (`start-plan.ts#startPlanCardPaths`); die INDEX-Zeile setzt die Orchestratorin
+bei der Ernte.
 
 Nach dem Kopf der Brief in dieser Reihenfolge (Schablone vom 2026-09-11): englischer System-Prefix
 („You are GPT-6 Astra executing a brief … Infer intent. Bias towards action. … Return only the OUTPUT
@@ -61,6 +65,7 @@ setzt dann selbst um (archivieren, Ersatzzeile filen, Owner-Vorlage). Astra schr
 
 ## 5. Erster Lauf, 2026-09-14 21:4x
 
-Drei Zeilen im Program Fleet-Betrieb, alle Karten gueltig: `1e4a2ca5` Freigabe-Analyse fuer die
-Owner-Session zu Richtung `247c2f37` (high) · `0afb3b1f` Sichtung der 12 Zeilen ohne Program (medium)
-· `7519ac4b` Karten-Schaerfer, erster Lauf (medium).
+Drei Zeilen im Program Fleet-Betrieb, alle Karten gueltig: `d3082219` Freigabe-Analyse fuer die
+Owner-Session zu Richtung `247c2f37` (high) · `9a54f3d4` Sichtung der 12 Zeilen ohne Program (medium)
+· `aa0841f5` Karten-Schaerfer, erster Lauf (medium). Sie ersetzen `1e4a2ca5`/`0afb3b1f`/`7519ac4b`,
+die `INDEX.md` in der Flaeche trugen (§3).

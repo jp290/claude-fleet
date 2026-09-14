@@ -1,3 +1,36 @@
+# HANDOFF — Orchestrator Slot 3 → Nachfolgerin (Haupt-Checkout, Owner-Token): Shard-Rollout 528aa37c live, Deploy a0433312 verifiziert, 16 Owner-Reports entschieden, Astra-Lauf 1 geerntet, Freigabe-Schnitt B gefilt; Schnitt 56669352 wartet weiter auf EIN sauberes Voll-Audit; 2026-09-14 23:2x, ctx GEMESSEN 32,3 %
+
+## 0. SOFORT BEIM ANTRITT
+
+- **Owner-Auftrag dieser Schicht (woertlich 2026-09-14 ~22:0x):** „ich will im grunde alles was noch offen ist, sauber angehen, überleg selbst was das heißt im zusammenhang, gib dir mühe, own your work" — und danach: „Sag mir ansonsten einfach was ich machen muss wenn es etwas gibt". Also: selbst entscheiden, nur echte Owner-Akte melden, knapp.
+- **Watches erben nichts.** Kein Audit laeuft oder wartet (23:2x). Das naechste VOLL-Audit entsteht erst nach dem naechsten Code-Land (Lane Slot 1 `fleet/260914204509-f68d` laeuft). Nach dessen Land: `./ctl.sh watch audit <mainAfter>`.
+- **Program-MAIN Fleet-Betrieb sitzt jetzt in Slot 7** (war 8). Vor jedem Send `./ctl.sh send --main f170dc46e4b026ee34d9392e <datei>` — das Verb loest die Bindung selbst auf.
+
+## 1. OFFEN — in dieser Reihenfolge
+
+1. **Schnitt fuer die Veroeffentlichung:** Kriterium (HANDOFF ca26435c §2): ein gruenes Voll-Audit, das `56669352` deckt, >4 500 ran, 0 failed. Zweimal knapp verfehlt, beide Male UNGEMESSEN statt Regress, beide `unknowable` beurteilt:
+   - `8b244a1e` (lokal, Second-host quiet): e2e/slots.ts Quiet-Window-Sonde fand ihre Vorbedingung 4/4 nicht, Invariante `detail null`.
+   - `15d5f056` (Second-host, noch ungesharded — Claim vor dem Deploy): `(iv) M5` in e2e/programs.ts, `fired:false`, 409 „not done-looking (no signal)"; Detail in `streams/helper-artifacts/26ea1a205005/1789420869280/suite.log:3455`. Fixture-Zeile `c1410c99` gefilt.
+   Wird das naechste Voll-Audit gruen mit 0 failed: dem Owner den dann gedeckten Tip (nicht mehr 56669352 allein) als Schnitt nennen. Ist eine der beiden Sonden WIEDER rot: Owner-Regel „zweimal gleiches Audit-Rot = sofort reparieren" greift — Reparatur per Hand-Dispatch.
+2. **Shard-Rollout 528aa37c — Done-Kriterium noch nicht beobachtet:** „eine Audit-Ledger-Zeile mit shards[] (3 Eintraege) und result green". Stand: Second-host-Daemon `b744d50e` (Update `ac03728d4f02` reported ok, `device.features: ["audit-shard"]` — NUR ueber `GET /api/helper/jobs?deviceId=secondhostlinux1` sichtbar, der `/api/sessions`-Poll projiziert `features` nicht), `.env:38 FLEET_AUDIT_SHARDS='3'`, `./state.sh` config sensor `live=3`, Deploy `a0433312` ok/hitTarget. Das erste Audit nach dem Deploy lief noch ungesharded (Claim von vorher, so gewollt). Beim naechsten Voll-Audit `shards` auf der Ledger-Zeile pruefen und die Zeile 528aa37c dann auf done setzen.
+3. **Freigabe-Richtung 247c2f37:** umgesetzt als Queue-Folge, Owner nicht mehr gefragt (Astra-Empfehlung B, `docs/messungen/2026-09-15-freigabe-analyse-astra.md` §5): `439283e4` Bug „POST /api/tasks/:id/queue ohne Statuspruefung" (am Code nachgeprueft: releaseTask setzt queued fuer jeden Status) → `c0db46e6` Schnitt B (Sammelfreigabe mit Vorschau/stamp + Zuordnungs-Tuer `POST /api/tasks/:id/program`), NACH 439283e4. Beide card-valid freigegeben, halten an Kollisionen. Entwurf A/C bewusst NICHT gefilt. Die Richtung 247c2f37 selbst bleibt als richtung-Zeile offen, bis B gelandet ist.
+4. **Sol-Test 8e21d437:** bleibt bedingt. Verdrahtungsprobe gelandet (`1ab5fa25`, Urteil „teilweise": CLAUDE.md-Lane-Render nie geladen, drei Sensoren null); die MAIN hat `b4396c14` (AGENTS.md §Codex) und `640a74c9` (Ledger-Sensoren) gefilt. Erst nach deren Land ist der Test sinnvoll.
+
+## 2. IN MEINER SCHICHT (21:5x–23:2x)
+
+- **Deploy-Frage des Owners** („deploy vor 27 Commits — kam einer nicht durch?"): nein. 17:52 war ein Hand-`kill-session` der damaligen MAIN (Session 959671d0), darum ohne Ledger-Zeile. Zeile `de1d8d77`: Boot ohne Marker schreibt `by:"unattributed"`.
+- **Deploy `a0433312`** 22:45:55 auf `cc81e727`, ok:true, behind 0. Client-Build vorher schon 21:5x (bundleStale war true).
+- **16 Owner-Reports** entschieden (13 accept mit Land-Sha, 3 reject als ueberholt) nach Subagent-Sichtung + eigener Stichprobe (merge-base, `/api/file`, reportAwaitsOwner).
+- **Astra-Lauf 1 geerntet**, drei INDEX-Zeilen (`d9b50963`, `da6a9eee`). Karten-Schaerfer: bewusst KEINE Neuanlage (Begruendung in der INDEX-Zeile).
+- **Astra-Doku korrigiert** (`8b244a1e`): leeres FLAECHE befreit nicht — Flaeche aus `server.ts#symbol`-Belegen im Brief abgeleitet; Fix `POST /api/tasks/:id/files` mit der NEU-Datei.
+- **Worktree `fleet-260913221107-a536`** entfernt (killed-empty, ahead 0, sauber). `201a` (shelved, 1 Commit) steht absichtlich.
+- **Eigener Fehler, korrigiert:** beim Antritt meldete ich die drei Astra-Zeilen als programlos — falsches Feld gelesen (`program` statt `programId`). Folgenlos (queue = gleiche Freigabe wie card-valid).
+- Direkt-Commits ohne Land-Ledger: `8b244a1e`, `d9b50963`, `da6a9eee` (docs, pins gruen).
+
+## 3. UNGEPRUEFT
+
+- Ob das erste gesharded Audit auf dem Second-host wirklich 3 Shards claimt und gruen zusammenfuehrt.
+- Ob ein Deploy die Idle-Uhr eines laufenden Idle-Beweises getroffen hat — vor `a0433312` nicht bei den Programs abgefragt (nur die Fleet-Betrieb-MAIN war informiert).
 # HANDOFF — Orchestrator Slot 4 → Nachfolgerin (Haupt-Checkout, Owner-Token): Schnitt-Kandidat 56669352 wartet auf sein Audit, drei Astra-Auftraege gefilt (Kontingent-Sensor + docs/astra-auftraege.md), Freigabe-Richtung 247c2f37 fuer die naechste Owner-Session, Shard-Rollout haengt an einer Owner-Antwort; 2026-09-14 21:5x, ctx GEMESSEN 32,6 % (Server-Prädikat)
 
 ## 0. SOFORT BEIM ANTRITT

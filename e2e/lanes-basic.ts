@@ -130,6 +130,11 @@ export async function run(lc: LaneCtx): Promise<void> {
   const lnWRec = (await outcomeFor(lnW.branch ?? "")) ?? {};
   check("outcome: an unpinned codex lane with no bound rollout records modelResolved null (key present)",
     lnWRec.model === null && "modelResolved" in lnWRec && lnWRec.modelResolved === null, JSON.stringify(lnWRec));
+  // ...and every rollout-read field on the same row is an unknown, not a zero: no rollout, no measurement
+  check("outcome: a codex lane with no bound rollout records sessionMs, toolResultBytes, effortObserved and subagentCount as null (keys present)",
+    lnWRec.sessionMs === null && lnWRec.toolResultBytes === null
+    && "effortObserved" in lnWRec && lnWRec.effortObserved === null
+    && "subagentCount" in lnWRec && lnWRec.subagentCount === null, JSON.stringify(lnWRec));
   // a clone is an ordinary directory, NOT a worktree of REPO — remove it directly and delete the
   // branch it mirrored back into REPO at spawn
   if (lnW.cwd) rmSync(lnW.cwd, { recursive: true, force: true });
@@ -156,15 +161,38 @@ export async function run(lc: LaneCtx): Promise<void> {
     const d = new Date();
     const rDir = `${codexRoot}/${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
     const rFile = `${rDir}/rollout-${Date.now()}-${SID}.jsonl`;
+    // The same rollout carries the other codex outcome sensors: record timestamps 90 s apart (sessionMs),
+    // one output of each payload kind attributed by call_id plus one whose call is not in the file
+    // (toolResultBytes), and an effort that changes between the two turn_contexts (effortObserved). Next
+    // to it, subagent rollouts: two naming SID as spawn parent, one naming a stranger, and one torn first
+    // record that never mentions SID — which must be skipped, not turned into an unknown.
+    const T0 = Date.now() - 120_000;
+    const at = (ms: number): string => new Date(T0 + ms).toISOString();
+    const patchOut = [{ type: "input_text", text: "Success. Updated the following files" }];
+    const SUB = ["30000000-0000-4000-8000-00000000001a", "30000000-0000-4000-8000-00000000001b",
+      "30000000-0000-4000-8000-00000000001c", "30000000-0000-4000-8000-00000000001d"];
+    const subMeta = (id: string, parent: string): string => JSON.stringify({ timestamp: at(30_000), type: "session_meta",
+      payload: { id, cwd: lnBCwd, timestamp: at(30_000), thread_source: "subagent", parent_thread_id: parent,
+        source: { subagent: { thread_spawn: { parent_thread_id: parent, depth: 1, agent_path: "/root/x" } } } } }) + "\n";
+    const subFiles = SUB.map((id) => `${rDir}/rollout-${T0}-${id}.jsonl`);
     if (codexRoot && lnBCwd) {
       mkdirSync(rDir, { recursive: true });
       writeFileSync(rFile, [
-        JSON.stringify({ type: "session_meta", payload: { id: SID, cwd: lnBCwd, timestamp: new Date().toISOString(),
+        JSON.stringify({ timestamp: at(0), type: "session_meta", payload: { id: SID, cwd: lnBCwd, timestamp: new Date().toISOString(),
           thread_source: "user", originator: "codex-tui" } }),
-        JSON.stringify({ type: "turn_context", payload: { cwd: lnBCwd, model: "fixture-model-early", effort: "high" } }),
+        JSON.stringify({ timestamp: at(1_000), type: "turn_context", payload: { cwd: lnBCwd, model: "fixture-model-early", effort: "high" } }),
+        JSON.stringify({ timestamp: at(2_000), type: "response_item", payload: { type: "function_call", call_id: "c1", name: "exec_command", arguments: "{}" } }),
+        JSON.stringify({ timestamp: at(3_000), type: "response_item", payload: { type: "function_call_output", call_id: "c1", output: "0123456789" } }),
         '{"type":"turn_context", torn',
-        JSON.stringify({ type: "turn_context", payload: { cwd: lnBCwd, model: "fixture-model-late", effort: "high" } }),
+        JSON.stringify({ timestamp: at(4_000), type: "response_item", payload: { type: "custom_tool_call", call_id: "c2", name: "apply_patch", input: "x" } }),
+        JSON.stringify({ timestamp: at(5_000), type: "response_item", payload: { type: "custom_tool_call_output", call_id: "c2", output: patchOut } }),
+        JSON.stringify({ timestamp: at(6_000), type: "response_item", payload: { type: "function_call_output", call_id: "gone", output: "üü" } }),
+        JSON.stringify({ timestamp: at(90_000), type: "turn_context", payload: { cwd: lnBCwd, model: "fixture-model-late", effort: "medium" } }),
       ].join("\n") + "\n");
+      writeFileSync(subFiles[0], subMeta(SUB[0], SID));
+      writeFileSync(subFiles[1], subMeta(SUB[1], SID));
+      writeFileSync(subFiles[2], subMeta(SUB[2], "30000000-0000-4000-8000-0000000000ff"));
+      writeFileSync(subFiles[3], '{"type":"session_meta", torn\n');
     }
     const bind = await post(`/api/slots/${lnB.slot}/codex-bind`, { sessionId: SID });
     check("modelResolved fixture: the synthetic rollout binds to the unpinned codex lane",
@@ -173,7 +201,19 @@ export async function run(lc: LaneCtx): Promise<void> {
     const lnBRec = (await outcomeFor(lnB.branch ?? "")) ?? {};
     check("outcome: an unpinned codex lane records modelResolved from its rollout's NEWEST turn_context",
       lnBRec.model === null && lnBRec.modelResolved === "fixture-model-late", JSON.stringify(lnBRec));
+    check("outcome: a codex lane's sessionMs is its rollout's last minus first record timestamp",
+      lnBRec.sessionMs === 90_000, JSON.stringify(lnBRec.sessionMs));
+    const trb = lnBRec.toolResultBytes as { total?: number; byTool?: Record<string, number> } | null | undefined;
+    const patchBytes = Buffer.byteLength(JSON.stringify(patchOut), "utf8");
+    check("outcome: a codex lane's toolResultBytes sums both output kinds, by call name, orphan under \"?\", torn line skipped",
+      trb?.byTool?.exec_command === 10 && trb.byTool.apply_patch === patchBytes && trb.byTool["?"] === 4
+      && trb.total === 14 + patchBytes && Object.keys(trb.byTool).length === 3, JSON.stringify(trb));
+    check("outcome: a codex lane's effortObserved is the NEWEST turn_context effort, not an earlier turn's",
+      lnBRec.effortObserved === "medium", JSON.stringify(lnBRec.effortObserved));
+    check("outcome: a codex lane's subagentCount counts only rollouts naming it as spawn parent (stranger + torn skipped)",
+      lnBRec.subagentCount === 2, JSON.stringify(lnBRec.subagentCount));
     rmSync(rFile, { force: true }); // later codex families count candidates under the same root
+    for (const f of subFiles) rmSync(f, { force: true });
   }
   if (lnB.cwd) spawnSync("git", ["worktree", "remove", "--force", lnB.cwd], { cwd: REPO });
   if (lnB.branch) spawnSync("git", ["branch", "-qD", lnB.branch], { cwd: REPO });
@@ -203,6 +243,11 @@ export async function run(lc: LaneCtx): Promise<void> {
     && !!lnDState?.worktree && !("form" in lnDState.worktree),
     `${lnD.form} / ${JSON.stringify(lnDState?.worktree)}`);
   if (lnD.slot) await post(`/api/slots/${lnD.slot}/kill`, {});
+  // the control for the codex rollout sensors: a default-adapter lane's row gains none of their keys
+  const lnDRec = (await outcomeFor(lnD.branch ?? "")) ?? {};
+  check("outcome: a default-adapter (claude) lane carries no effortObserved / subagentCount / modelResolved key",
+    lnDRec.harness === null && !("effortObserved" in lnDRec) && !("subagentCount" in lnDRec) && !("modelResolved" in lnDRec),
+    JSON.stringify(lnDRec));
   if (lnD.cwd) spawnSync("git", ["worktree", "remove", "--force", lnD.cwd], { cwd: REPO });
   const sessWt = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };
   check("slot 5 tagged as a worktree lane", sessWt.slots[4].worktree?.branch === "e2e-lane", JSON.stringify(sessWt.slots[4].worktree));

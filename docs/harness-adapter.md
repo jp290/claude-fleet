@@ -339,8 +339,25 @@ Netzwerkkosten werden nicht als null behauptet.
     Arbeit. Audit-Event `dispatch_requeued` (`server.ts#briefAndSend`, `requeue`) auf jedem Requeue des
     Dispatch-Tails, Felder `taskId` + `reason`, Detail mit allen zurueckgelegten Zeilen-Ids.
     `LaneOutcome.modelResolved` nur auf Codex-Zeilen mit `model: null`: das Modell des NEUESTEN
-    `turn_context`-Records im gebundenen Rollout (`codexObservedModel`), sonst `null` — nie der Default
+    `turn_context`-Records im gebundenen Rollout (`codexRolloutFacts`), sonst `null` — nie der Default
     aus `~/.codex/config.toml`.
+  - **Rollout-Sensoren einer Codex-Lane** (dieselbe Messnotiz, Vorschlag 2). Quelle ist das Rollout der
+    gebundenen Session (`CODEX_HARNESS.context.file` = `server.ts#codexContextFile`), einmal gelesen am
+    Terminal-Event von `server.ts#codexRolloutFacts`; kaputte JSONL-Zeilen werden uebersprungen.
+    Auf einer Codex-Zeile gilt:
+    `sessionMs` = letzter minus erster Top-Level-`timestamp` im Rollout (endet am letzten Record, nicht am
+    Kill — anders als bei claude, wo es Terminal-Event minus Transkript-Start ist);
+    `toolResultBytes` = utf8-Bytes jedes `function_call_output`/`custom_tool_call_output`-`output`
+    (String direkt, sonst JSON-kodiert), `byTool` nach dem `name` des Calls mit gleicher `call_id`, ohne
+    Call unter `"?"`; `effortObserved` = `effort` des NEUESTEN `turn_context` (`effort` bleibt der
+    Spawn-Pin); `subagentCount` (`server.ts#codexSubagentCount`) = Rollouts, deren erster Record
+    `source.subagent.thread_spawn.parent_thread_id` = Session-Id der Lane traegt — nur DIREKTE Kinder,
+    gesucht in den Tagesverzeichnissen zwischen erstem Rollout-Record und Terminal-Event.
+    Ohne lesbares Rollout (keine gebundene Session, keine Datei, ueber dem Transkript-Deckel) ist jedes
+    der vier Felder `null`, nie 0. `subagentCount` ist zusaetzlich `null`, wenn ein Tagesverzeichnis nicht
+    lesbar ist oder ein Rollout mit unparsebarem ersten Record die Session-Id in seinen ersten 64 KiB
+    nennt — dann ist ein Kind nicht ausgeschlossen. `effortObserved` und `subagentCount` gibt es NUR auf
+    Codex-Zeilen; claude-Zeilen bleiben unveraendert.
   - Modell-Charset ist **nicht** env-konfigurierbar, mit Absicht: eine operator-gelieferte Regex, die `'`
     durchlässt, würde die Single-Quote-Klammer in `slotCmd` öffnen. Fremde Slots validieren gegen
     `HARNESS_MODEL_RE` (`/`, `:`, `*`, `@` erlaubt), claude-Slots weiter gegen `MODEL_RE` — zwei Charsets, nie

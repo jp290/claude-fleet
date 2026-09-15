@@ -821,6 +821,16 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # broken close. e2e-stage.sh exports the same 0 for the other six wrappers.
 CODEX_SESSIONS="$DIR/codex-sessions"
 mkdir -p "$CODEX_SESSIONS"
+# CODEX_HOME: the codex trust prelude (server.ts#CODEX_HARNESS) appends to
+# ${CODEX_HOME:-$HOME/.codex}/config.toml, and every codex slot this suite opens has a per-run temp
+# cwd. Without this export those entries went to the owner's config — 8 502 of its 9 883 trust
+# entries were suite temp paths (docs/messungen/2026-09-14-codex-lane-verdrahtung.md), and one run
+# on 48c09050 added 15. EXPORTED, not put into SRV_ENV, because a pane's env is the tmux server's
+# global env, which is THIS shell's env at the new-session below — a server-local variable never
+# reaches a pane. HOME itself stays: claude and bun keep their caches under it.
+CODEX_HOME="$DIR/codex-home"
+mkdir -p "$CODEX_HOME"
+export CODEX_HOME
 PI_ZAI_AGENT_DIR="$DIR/pi-zai-agent"
 PI_ZAI_KEY_FILE="$DIR/pi-zai-coding-plan.key"
 PI_OX_AGENT_DIR="$DIR/pi-ox-agent"

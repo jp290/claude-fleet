@@ -33309,6 +33309,16 @@ Bun.serve<WSData>({
         // same wording as the dispatch button, because it is the same question.
         if (t.kind !== "auftrag") {
           return json({ error: `a ${t.kind} is advisory, not a work brief — change its kind first` }, 409);
+        } else if (t.status === "queued" && t.hold) {
+          // the hold's counter-act, not a second release — the same exception releaseTaskForMain
+          // makes: the row is released already, so only the stop is lifted and `releasedBy` stays
+          t.hold = undefined;
+        } else if (t.status === "queued") {
+          return json({ ok: true, unchanged: true });
+        } else if (t.status !== "pending") {
+          // Only pending → queued is a release. Without this a `sent` row went back to queued and
+          // tickDispatch could start its lane a second time; a `done` row was reopened the same way.
+          return json({ error: `task is ${t.status} — only a pending row can be released` }, 409);
         } else {
           // RELEASING IS THE DECISION — and until 2026-09-10 it could also be an OVERRIDE: a
           // release over the queue analyst's "needs-you" wrote the verdict into `note` and booked a

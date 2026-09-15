@@ -17,6 +17,7 @@ import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, 
   type LaneAnchor } from "../src/protocol";
 import type { TaskCluster, TaskFilesOrigin, TaskSurface } from "../task-metadata";
 import type { TaskCardBody } from "../card-extract";
+import type { ProgramContextPack } from "../context-plan";
 
 const MAX_SLOTS = 16; // fixed places — the sidebar always shows all of them
 
@@ -1679,6 +1680,14 @@ interface Program {
   // record of this Program was ever unreadable. Written by the loader alone and never cleared: the
   // obligations a lost handover held are not recoverable from anywhere, because it WAS the copy.
   handoverLost?: ProgramRecordLoss;
+  // PROGRAM-SCOPED CONTEXT POINTERS (context-plan.ts#ProgramContextPack): id + purpose line + tracked
+  // path/anchor pairs that every lane of THIS Program receives in its anchor block, and that stop at
+  // `complete`. The Program is the lifetime — no clock, no expiry — and only pointers are stored, never
+  // content. Deliberately not ProgramContent: content is proposed and confirmed, this is working
+  // context its bound MAIN maintains. Written by exactly one route (POST /api/self/program-context-packs,
+  // validated against the MAIN's integration HEAD); absent = every lane brief byte-identical to before.
+  // An unreadable list loads as ABSENT; the Program itself stays.
+  contextPacks?: ProgramContextPack[];
   confirmedAt?: number;
   activatedAt?: number;
   completedAt?: number;

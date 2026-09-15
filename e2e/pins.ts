@@ -2508,7 +2508,9 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     /waiting\(`waiting: harness \$\{rowH\.id\} is not automatable — no unattended path may drive it, hand dispatch only \(\$\{harnessAutomationWhy\(\)\}\)`\)/.test(tBody)
       && whyFn.includes("FLEET_HARNESS_AUTOMATION is set; the adapter declines")
       && whyFn.includes("FLEET_HARNESS_AUTOMATION is off; no named harness is automatable without it")
-      && whyReaders === 2
+      // two readers are the tick's note and canDeliver's gate; the other two are the variant group's
+      // (E4): the filing refusal (taskVariantsFromBody) and the group start's note (startVariantGroup)
+      && whyReaders === 4
       && !/FLEET_HARNESS_AUTOMATION off\)/.test(tBody),
     `note=${tBody.match(/waiting\(`waiting: harness[^`]*`\)/)?.[0] ?? "none"} readers=${whyReaders}`);
   // ...and it still SKIPS. A property of one row may never stop the sweep, and hoisting the gate made
@@ -2662,10 +2664,34 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const releaseCalls = [...server.matchAll(/(?<!function )releaseTask\(([^)]*)\)/g)].map((m) => m[1].trim());
   // The third is the tick's POLICY release (Schnitt 3): a pending row a program's release policy
   // releases passes `queued` through the same helper, so `by` and the lifted hold cannot be forgotten.
-  pin("releaseTask has exactly the three known call sites — the owner's ▸ queue, the Program-MAIN door and the tick's policy release",
-    releaseCalls.length === 3 && releaseCalls.includes('t, "owner"') && releaseCalls.includes('t, "machine"')
+  // The other three are the VARIANT GROUP's (E4) and each is one of the first three over a group's
+  // variants: the owner's ▸ queue and the MAIN door release a group's variants with it (`v`), and the
+  // group start's policy release (`r`, startVariantGroup) is the tick's, for n rows at once.
+  pin("releaseTask has exactly the six known call sites — the owner's ▸ queue, the Program-MAIN door and the tick's policy release, each also over a variant group",
+    releaseCalls.length === 6 && releaseCalls.includes('t, "owner"') && releaseCalls.includes('t, "machine"')
+    && releaseCalls.includes('v, "owner"') && releaseCalls.includes('v, "machine"') && releaseCalls.includes('r, "machine"')
     && /for \(const row of byPolicy\) \{\n        releaseTask\(row, "machine"\);/.test(tBody),
     releaseCalls.join(" | ") || "no releaseTask call");
+  // E4 · A VARIANT LANDS ONLY AS ITS GROUP'S DECIDED WINNER, and the question is asked at every land
+  // door in the one place it is cheap: the owner's ⏫ and the MAIN's self-land ask it BEFORE their gate
+  // spends a run (and before the MAIN's mergeJob starts), and landLane asks it FIRST, before it records
+  // an outcome — so ⏏ and every path that reaches landLane meet it too. A runtime check sees only the
+  // door it drives; a refusal moved below the gate would still be green there and cost a full run.
+  {
+    const landLaneBody = server.match(/async function landLane\([\s\S]*?\n\}\n/)?.[0] ?? "";
+    const ownerAt = server.indexOf("detail: rejectedReportRefusal(refusedWork, REJECTED_LAND_EXIT_OWNER)");
+    const ownerVariantAt = ownerAt < 0 ? -1 : server.indexOf("const variantRefusal = variantLandRefusal(s);", ownerAt);
+    const ownerStatusAt = ownerAt < 0 ? -1 : server.indexOf('const st = await git(cwd, "status", "--porcelain");', ownerAt);
+    const selfAt = server.indexOf("return json({ error: rejectedReportRefusal(refusedWork, REJECTED_LAND_EXIT_MAIN)");
+    const selfVariantAt = selfAt < 0 ? -1 : server.indexOf("const variantRefusal = variantLandRefusal(lane);", selfAt);
+    const selfJobAt = selfAt < 0 ? -1 : server.indexOf("mergeJob(lane, cwd,", selfAt);
+    pin("E4: variantLandRefusal is asked at the owner's ⏫ and the MAIN's self-land before their gate, and first in landLane",
+      /const variantRefusal = variantLandRefusal\(s\);\n  if \(variantRefusal\) return \{ error: variantRefusal, code: 409 \};/.test(landLaneBody)
+      && landLaneBody.indexOf("variantLandRefusal(s)") < landLaneBody.indexOf("buildLaneOutcome(")
+      && ownerVariantAt > ownerAt && ownerAt > 0 && ownerVariantAt < ownerStatusAt
+      && selfVariantAt > selfAt && selfAt > 0 && selfVariantAt < selfJobAt,
+      JSON.stringify({ landLane: landLaneBody.includes("variantLandRefusal(s)"), ownerAt, ownerVariantAt, ownerStatusAt, selfAt, selfVariantAt, selfJobAt }));
+  }
   const queuedWrites = (server.match(/\bstatus = "queued";/g) ?? []).length;
   pin("\"queued\" is written by releaseTask plus exactly the documented non-release restores",
     queuedWrites === 4
@@ -2772,14 +2798,14 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const crBody = crStart < 0 ? "" : server.slice(crStart, server.indexOf("\n}\n", crStart));
   pin("createTaskForMain's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
     crStart > 0 && crBody.length > 500 && crBody.length < 20_000, `${crBody.length} bytes`);
-  pin("the Program-MAIN filing door DERIVES program and repo and reads a CLOSED body — text, kind, the spawn triple and an optional card",
+  pin("the Program-MAIN filing door DERIVES program and repo and reads a CLOSED body — text, kind, the spawn triple, an optional card and optional variants",
     crBody.length > 0
       && /const bound = boundProgramForMain\(s\);/.test(crBody)
       && /programId: program\.id,/.test(crBody)
       && /const mainRepo = await repoKeyOf\(s\);/.test(crBody)
       && /repo: mainRepo,/.test(crBody)
       && /if \(body\.programId !== undefined\)/.test(crBody)
-      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "card"\];/.test(crBody)
+      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "card", "variants"\];/.test(crBody)
       && /Object\.keys\(body\)\.filter\(\(k\) => !SELF_TASK_FIELDS\.includes\(k\)\)/.test(crBody),
     crBody.length > 0 ? "derivation + closed body" : "createTaskForMain missing");
   // THE SPAWN TRIPLE HAS ONE SET-TIME VALIDATOR, and both create doors go through it: the same

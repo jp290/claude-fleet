@@ -271,6 +271,11 @@ interface TaskInfo { id: string; source: ServerTask["source"]; from?: string;
   // Task.review: "advisory" = ③ reviews this row's lane once it looks done and files the verdict
   // (server.ts#fileLaneReview). Absent = not asked for; the server never sends "none".
   review?: "advisory";
+  // E4 · the variant group (server/types.ts#Task.variants): a GROUP row carries the filed choices and,
+  // once decided, which variant lands; a VARIANT row names its group and its 1-based place in it.
+  variants?: { harness: string | null; model: string | null; effort: string | null }[];
+  variantOf?: string; variantIndex?: number;
+  variantDecision?: { winner: string; by: string; at: number; shelved: string[] };
   // Bounded generation/presence only; the brief text remains on GET /api/tasks.
   briefAt?: number;
   // deterministic file/cluster facts from taskDigest. Absence is UNKNOWN, never an empty surface.
@@ -5580,6 +5585,8 @@ async function refresh() {
         t.notes?.n, t.notes?.at, t.verdicts?.n, t.verdicts?.at,
         // the ③ haken is set from another tab or by a MAIN's brief door just as a comment is
         t.review,
+        // E4 · a variant decision arrives on a poll like a comment does, on the group row
+        t.variantDecision?.winner, tasksList.find((x) => x.id === t.variantOf)?.variantDecision?.winner,
         briefCompilerOn,
         // the lane line moves with the SLOTS (state, dirty, a recycled pointer), not with the row
         qLaneKey(new Map([[t.id, qLaneJoinOf(t.id)]])),
@@ -7272,9 +7279,25 @@ function taskSourceLabel(t: Pick<TaskInfo, "source" | "from">): string {
     default: { const unknown: never = t.source; return String(unknown); }
   }
 }
+// E4 · "Variante k/n" on a variant row and "Variantengruppe ×n" on its group, each with the decision
+// once there is one — which variant lands and which were shelved. Read off the poll alone: the group
+// row carries the decision, so a variant finds its verdict through its group in the same list.
+function qVariantLine(t: TaskInfo, list: readonly TaskInfo[]): string {
+  if (t.variants) {
+    const d = t.variantDecision;
+    const winner = d ? list.find((x) => x.id === d.winner) : undefined;
+    return `Variantengruppe ×${t.variants.length}${d ? ` · Gewinner ${winner?.variantIndex ? `Variante ${winner.variantIndex}` : d.winner}` : ""}`;
+  }
+  if (!t.variantOf) return "";
+  const group = list.find((x) => x.id === t.variantOf);
+  const n = group?.variants?.length;
+  const d = group?.variantDecision;
+  return `Variante ${t.variantIndex ?? "?"}/${n ?? "?"}${d ? (d.winner === t.id ? " · Gewinner" : " · shelved") : ""}`;
+}
 function qTaskSummary(t: TaskInfo, text: string, now: number): { title: string; facts: QRowFacts } {
   const source = taskSourceLabel(t);
   const tag = qTag(text);
+  const variant = qVariantLine(t, tasksList);
   return {
     title: qFirstLine(text),
     facts: [
@@ -7285,7 +7308,7 @@ function qTaskSummary(t: TaskInfo, text: string, now: number): { title: string; 
       qTouchedLine(t) || qVerdictLine(t) || "— advisory",
       `${fmtDur(Math.max(0, now - t.created))} ago`,
       t.slot ? `slot ${t.slot}` : "no slot",
-      tag ? `${source} / ${tag}` : source,
+      [tag ? `${source} / ${tag}` : source, variant].filter(Boolean).join(" · "),
     ],
   };
 }
@@ -7405,6 +7428,9 @@ function qLandWaveProjection(): LandWaveProjection {
     tasks: tasksList.map((t) => ({
       id: t.id, repo: t.repo, kind: t.kind, status: t.status, created: t.created,
       files: t.files, filesOrigin: t.filesOrigin, programId: t.programId, size: t.size,
+      // the server's own fold reads both (server.ts#landWaveProjectionNow): a variant is a wave of
+      // one and a group is in no wave, so the board never offers a bundle the door would refuse
+      ...(t.variantOf ? { variantOf: t.variantOf } : {}), ...(t.variants ? { variantGroup: true as const } : {}),
     })),
     dispatchRepo: dispatch.repo,
     ...(dispatch.waveBudget ? { budget: dispatch.waveBudget } : {}),

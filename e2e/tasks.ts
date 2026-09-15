@@ -1990,6 +1990,207 @@ export async function run(ctx: Ctx): Promise<void> {
     await restartSrv();
   }
 
+  // --- (v) E4 · THE VARIANT GROUP (server/types.ts#Task.variants; criterion of row 1ed2f6a0, T1/T2/T5/T6).
+  // One request, n agents, exactly one land. Four facts, none visible to tsc, each on the live server:
+  //   T1 the owner door files a GROUP row plus n variant rows, each carrying its OWN agent choice, and
+  //      refuses a group it could never start (bounds, a harness no unattended path may drive, a
+  //      second row-level answer, an advisory kind);
+  //   T2 the tick starts the group WHOLE OR NOT AT ALL: one lane short of the cap starts nothing and
+  //      says why on the rows; with room, both start at once, from ONE base commit, with byte-identical
+  //      briefs (same briefHash) — and the fields survive the restart that lifts the cap;
+  //   T5 no variant lands before a decision, a decision shelves the loser (outcome `shelved`, slot
+  //      freed, branch kept) and is never rewritten, the shelved branch is refused even re-attached,
+  //      and the winner lands through the ordinary ⏏ door and closes the group;
+  //   T6 the board source renders "Variante k/n" and the decision.
+  {
+    type VRow = { id: string; status: string; note?: string | null; slot?: number | null; variants?: unknown[];
+      variantOf?: string; variantIndex?: number; spawn?: { harness: string | null; model: string | null; effort: string | null };
+      variantDecision?: { winner: string; by: string; shelved: string[] } };
+    type VSlot = { id: number; cwd: string | null; worktree: { repo: string; branch: string } | null };
+    const vSess = async (): Promise<{ slots: VSlot[]; tasks: VRow[]; dispatch: { on: boolean; maxLanes: number } }> =>
+      (await (await get("/api/sessions")).json()) as { slots: VSlot[]; tasks: VRow[]; dispatch: { on: boolean; maxLanes: number } };
+    const vRow = async (id: string): Promise<VRow | undefined> => (await vSess()).tasks.find((t) => t.id === id);
+    const vTill = async <T>(read: () => Promise<T>, ok: (v: T) => boolean, tries = 80): Promise<T> => {
+      let last = await read();
+      for (let i = 0; i < tries && !ok(last); i++) { await Bun.sleep(250); last = await read(); }
+      return last;
+    };
+    const vRepoReal = realpathSync(REPO);
+    const vA = { model: "claude-opus-5[1m]", effort: "high" };
+    const vB = { model: "claude-sonnet-5", effort: "medium" };
+    await post("/api/dispatch", { on: false });
+
+    // T1 · the filing, and its refusals — each refusal must mint nothing
+    const vCount0 = (await vSess()).tasks.length;
+    const vBad = async (body: Record<string, unknown>): Promise<string> => {
+      const r = await post("/api/tasks", { text: "(v) refused variant group", ...body });
+      return `${r.status}:${await r.text()}`;
+    };
+    const vOne = await vBad({ variants: [vA] });
+    const vFive = await vBad({ variants: [vA, vB, vA, vB, vA] });
+    const vPi = await vBad({ variants: [vA, { harness: "pi-zai", model: "glm-5.3", effort: "high" }] });
+    const vBoth = await vBad({ variants: [vA, vB], model: "claude-opus-5[1m]" });
+    const vNotiz = await vBad({ variants: [vA, vB], kind: "notiz" });
+    const vBadModel = await vBad({ variants: [vA, { model: "not a model!" }] });
+    check("(v) T1 refusals: one or five variants, a non-automatable harness, a row-level choice beside variants, an advisory kind and an invalid model are each a 400 in their own words — and mint nothing",
+      vOne.startsWith("400:") && vOne.includes("2 to 4") && vFive.startsWith("400:") && vFive.includes("2 to 4")
+      && vPi.startsWith("400:") && vPi.includes("variant 2") && vPi.includes("not automatable")
+      && vBoth.startsWith("400:") && vBoth.includes("two answers")
+      && vNotiz.startsWith("400:") && vNotiz.includes("advisory")
+      && vBadModel.startsWith("400:") && vBadModel.includes("variant 2")
+      && (await vSess()).tasks.length === vCount0,
+      JSON.stringify({ vOne, vFive, vPi, vBoth, vNotiz, vBadModel }));
+
+    const vFiled = (await (await post("/api/tasks", {
+      text: "(v) variant group probe — two agents, one land", variants: [vA, vB],
+    })).json()) as { task?: VRow; variants?: VRow[] };
+    const vGroupId = vFiled.task?.id ?? "";
+    const vAll1 = (await vSess()).tasks;
+    const vGroup1 = vAll1.find((t) => t.id === vGroupId);
+    const vVars1 = vAll1.filter((t) => t.variantOf === vGroupId).sort((a, b) => (a.variantIndex ?? 0) - (b.variantIndex ?? 0));
+    // the spawn rides GET /api/tasks (the poll carries no spawn), so the choices are read there
+    const vSpawns = ((await (await get("/api/tasks")).json()) as { tasks: VRow[] }).tasks
+      .filter((t) => t.variantOf === vGroupId).map((t) => `${t.variantIndex}:${t.spawn?.model}:${t.spawn?.effort}`).sort().join(",");
+    check("(v) T1: the owner door files ONE group row carrying both choices and TWO variant rows, each with its own spawn, index 1 and 2, pending like the group",
+      !!vGroupId && vGroup1?.variants?.length === 2 && vGroup1.status === "pending" && vGroup1.variantOf === undefined
+      && vVars1.length === 2 && vFiled.variants?.length === 2
+      && vVars1[0]?.variantIndex === 1 && vVars1[1]?.variantIndex === 2
+      && vVars1[0]?.status === "pending" && vVars1[1]?.status === "pending"
+      && vSpawns === "1:claude-opus-5[1m]:high,2:claude-sonnet-5:medium",
+      JSON.stringify({ group: vGroup1, variants: vVars1, vSpawns }));
+    // the group row is never a lane by itself — the ▸ start door on a single variant says so
+    const vSingle = await post(`/api/tasks/${vVars1[0]?.id}/dispatch`, {});
+    const vSingleText = await vSingle.text();
+    check("(v) T1: ▸ start on ONE variant is a 409 naming its group — a variant never starts alone",
+      vSingle.status === 409 && vSingleText.includes(vGroupId), `${vSingle.status}:${vSingleText}`);
+
+    // T2 · clean field: no foreign lane in REPO beside the persistence lane, no foreign released row
+    for (const s of (await vSess()).slots) if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
+    await Bun.sleep(600);
+    for (const t of (await vSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+    const vInRepo = (s: VSlot): boolean => {
+      if (!s.worktree) return false;
+      try { return realpathSync(s.worktree.repo) === vRepoReal; } catch { return false; }
+    };
+    const vHeld = (await vSess()).slots.filter(vInRepo).length;
+    // ONE lane short of the group: the cap leaves room for exactly one more lane in REPO
+    await restartSrv({ FLEET_DISPATCH_MAX_LANES: String(vHeld + 1) });
+    const vShort = await vSess();
+    // a repo's own cap entry beats the env (server.ts#repoLaneCap) — none may stand for REPO here
+    const vCapEntries = ((await (await get("/api/repo-lane-caps")).json()) as { caps?: Record<string, number> }).caps ?? {};
+    check("(v) T2 fixture: the short-cap restart took effect, REPO has no cap entry of its own, and two slots are free",
+      vShort.dispatch.maxLanes === vHeld + 1 && vShort.slots.filter((s) => !s.cwd).length >= 2
+      && vCapEntries[vRepoReal] === undefined && vCapEntries[REPO] === undefined,
+      JSON.stringify({ maxLanes: vShort.dispatch.maxLanes, held: vHeld, free: vShort.slots.filter((s) => !s.cwd).length, vCapEntries }));
+    await post(`/api/tasks/${vGroupId}/queue`, {});
+    const vQueued = (await vSess()).tasks.filter((t) => t.variantOf === vGroupId);
+    check("(v) T2: releasing the GROUP releases both variants with it",
+      vQueued.length === 2 && vQueued.every((t) => t.status === "queued") && (await vRow(vGroupId))?.status === "queued",
+      JSON.stringify(vQueued));
+    await post("/api/dispatch", { on: true });
+    const vWaitNote = await vTill(async () => (await vSess()).tasks.filter((t) => t.variantOf === vGroupId),
+      (rows) => rows.every((t) => /^waiting: variant group needs 2 lanes/.test(t.note ?? "")));
+    check("(v) T2: one lane short of the cap the group starts NOTHING — both variants stay queued without a slot and say the group needs 2 lanes",
+      vWaitNote.length === 2 && vWaitNote.every((t) => t.status === "queued" && t.slot == null
+        && /^waiting: variant group needs 2 lanes/.test(t.note ?? "")),
+      JSON.stringify(vWaitNote));
+
+    // …and with room for both, both start at once. The restart also proves the fields persist.
+    await restartSrv({ FLEET_DISPATCH_MAX_LANES: String(vHeld + 2) });
+    const vReloaded = (await vSess()).tasks;
+    check("(v) T2: the variant fields survive a restart — the group keeps both choices, each variant its group and index",
+      vReloaded.find((t) => t.id === vGroupId)?.variants?.length === 2
+      && vReloaded.filter((t) => t.variantOf === vGroupId).map((t) => t.variantIndex).sort().join(",") === "1,2",
+      JSON.stringify(vReloaded.filter((t) => t.id === vGroupId || t.variantOf === vGroupId)));
+    const vSent = await vTill(async () => (await vSess()).tasks.filter((t) => t.variantOf === vGroupId),
+      (rows) => rows.length === 2 && rows.every((t) => t.status === "sent" && typeof t.slot === "number"));
+    const vSlots = vSent.map((t) => t.slot);
+    check("(v) T2: with room for two, BOTH variants start — two different slots",
+      vSent.length === 2 && vSent.every((t) => t.status === "sent") && new Set(vSlots).size === 2,
+      JSON.stringify(vSent));
+    await post("/api/dispatch", { on: false });
+    const vState = (): { slots?: Record<string, { worktree?: { branch?: string; baseSha?: string } | null }> } =>
+      JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8"));
+    const vReceipts = await vTill(async () => (await contextReceipts()).receipts
+      .filter((r) => vSent.some((t) => t.id === r.taskId)), (rows) => rows.length >= 2);
+    // read off fleet.json AFTER the receipts: the state write is debounced, the delivery is seconds later
+    const vBases = await vTill(async () => vSlots.map((id) => vState().slots?.[String(id)]?.worktree?.baseSha ?? null),
+      (bases) => bases.every((b) => !!b));
+    const vHashes = vReceipts.map((r) => r.briefHash);
+    check("(v) T2: both lanes fork from ONE base commit and receive byte-identical briefs — same briefHash, same head",
+      vBases.length === 2 && /^[0-9a-f]{40}$/.test(vBases[0] ?? "") && vBases[0] === vBases[1]
+      && vReceipts.length === 2 && !!vHashes[0] && vHashes[0] === vHashes[1]
+      && vReceipts[0]?.head === vReceipts[1]?.head,
+      JSON.stringify({ vBases, receipts: vReceipts.map((r) => ({ taskId: r.taskId, briefHash: r.briefHash, head: r.head, bytes: r.deliveredBytes })) }));
+
+    // T5 · no variant lands undecided
+    const [vWin, vLose] = vSent.sort((a, b) => (a.variantIndex ?? 0) - (b.variantIndex ?? 0));
+    const vUndecided = await post(`/api/slots/${vWin?.slot}/land`, {});
+    const vUndecidedText = await vUndecided.text();
+    check("(v) T5: ⏏ land on a variant of an UNDECIDED group is a 409 naming the missing decision",
+      vUndecided.status === 409 && vUndecidedText.includes("undecided") && (await vRow(vWin?.id ?? ""))?.status === "sent",
+      `${vUndecided.status}:${vUndecidedText}`);
+    const vNotRunning = await post(`/api/tasks/${vGroupId}/variant-winner`, { winner: "0000beef" });
+    check("(v) T5: a winner that is not one of the group's variants is refused",
+      vNotRunning.status === 409, `${vNotRunning.status}:${await vNotRunning.text()}`);
+    const vLoseBranch = vState().slots?.[String(vLose?.slot)]?.worktree?.branch ?? "";
+    const vLosePath = (await vSess()).slots.find((s) => s.id === vLose?.slot)?.cwd ?? "";
+    const vDecide = await post(`/api/tasks/${vGroupId}/variant-winner`, { winner: vWin?.id });
+    const vDecideBody = await vDecide.json() as { ok?: boolean; decision?: { winner: string; shelved: string[] } };
+    const vAfter = await vSess();
+    const vLoseRow = vAfter.tasks.find((t) => t.id === vLose?.id);
+    const vLoseSlot = vAfter.slots.find((s) => s.id === vLose?.slot);
+    const vBranchKept = spawnSync("git", ["-C", REPO, "rev-parse", "--verify", "--quiet", `refs/heads/${vLoseBranch}`]).status === 0;
+    const vShelvedOutcome = await vTill(async () => ((await (await get("/api/lane-outcomes?limit=200")).json()) as
+      { outcomes: { branch: string | null; disposition: string }[] }).outcomes
+      .some((o) => o.branch === vLoseBranch && o.disposition === "shelved"), (hit) => hit, 20);
+    check("(v) T5: the decision shelves the loser — row archived, slot freed, outcome `shelved`, branch KEPT — and names the shelved branch",
+      vDecide.status === 200 && vDecideBody.decision?.winner === vWin?.id
+      && JSON.stringify(vDecideBody.decision?.shelved) === JSON.stringify([vLoseBranch]) && !!vLoseBranch
+      && vLoseRow?.status === "archived" && !vLoseSlot?.cwd && vBranchKept && vShelvedOutcome
+      && (await vRow(vWin?.id ?? ""))?.status === "sent",
+      JSON.stringify({ status: vDecide.status, body: vDecideBody, loser: vLoseRow, loserSlot: vLoseSlot, vBranchKept, vShelvedOutcome }));
+    const vRewrite = await post(`/api/tasks/${vGroupId}/variant-winner`, { winner: vLose?.id });
+    const vSame = (await (await post(`/api/tasks/${vGroupId}/variant-winner`, { winner: vWin?.id })).json()) as { unchanged?: boolean };
+    check("(v) T5: a decision is never rewritten — another winner is a 409, the same winner answers unchanged",
+      vRewrite.status === 409 && vSame.unchanged === true, `${vRewrite.status} ${JSON.stringify(vSame)}`);
+    // the shelved branch stays refused even when its worktree is re-attached into a fresh slot
+    const vAttach = (await (await post("/api/lanes", { repo: REPO, attach: vLosePath })).json()) as { slot?: number; error?: string };
+    const vLoserLand = typeof vAttach.slot === "number" ? await post(`/api/slots/${vAttach.slot}/land`, {}) : null;
+    const vLoserLandText = vLoserLand ? await vLoserLand.text() : "";
+    check("(v) T5: the SHELVED branch, re-attached into a slot, is a 409 `variant shelved` at the land door — and its branch still exists",
+      typeof vAttach.slot === "number" && vLoserLand?.status === 409 && vLoserLandText.includes("variant shelved")
+      && spawnSync("git", ["-C", REPO, "rev-parse", "--verify", "--quiet", `refs/heads/${vLoseBranch}`]).status === 0,
+      `attach=${JSON.stringify(vAttach)} land=${vLoserLand?.status}:${vLoserLandText}`);
+    if (typeof vAttach.slot === "number") await post(`/api/slots/${vAttach.slot}/kill`, {});
+    // the winner lands through the ordinary door and closes its group
+    const vWinLand = await post(`/api/slots/${vWin?.slot}/land`, {});
+    const vWinLandText = await vWinLand.text();
+    const vClosed = await vTill(async () => [await vRow(vWin?.id ?? ""), await vRow(vGroupId)] as const,
+      ([w, g]) => w?.status === "done" && g?.status === "done");
+    check("(v) T5: the decided WINNER lands through ⏏ and its land closes the group row",
+      vWinLand.status === 200 && vClosed[0]?.status === "done" && vClosed[1]?.status === "done"
+      && (vClosed[1]?.note ?? "").includes(vWin?.id ?? "-"),
+      `${vWinLand.status}:${vWinLandText} ${JSON.stringify(vClosed)}`);
+
+    // T6 · the board renders both halves from the poll (source contract — the suite has no DOM)
+    check("(v) T6: the board source renders `Variante k/n` on a variant, `Variantengruppe ×n` on a group, and Gewinner/shelved from the group's decision",
+      /function qVariantLine\(/.test(taskClientSource)
+      && taskClientSource.includes("`Variante ${t.variantIndex ?? \"?\"}/${n ?? \"?\"}")
+      && taskClientSource.includes("Variantengruppe ×${t.variants.length}")
+      && taskClientSource.includes("\" · Gewinner\" : \" · shelved\"")
+      && /const variant = qVariantLine\(t, tasksList\);/.test(taskClientSource),
+      "qVariantLine wiring");
+
+    // cleanup — dispatcher already off; the loser branch is a record by design, its worktree goes
+    for (const s of (await vSess()).slots) if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
+    if (vLosePath) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", vLosePath]);
+    if (vLoseBranch) spawnSync("git", ["-C", REPO, "branch", "-D", vLoseBranch]);
+    for (const t of (await vSess()).tasks.filter((x) => x.variantOf === vGroupId)) await post(`/api/tasks/${t.id}/delete`, {});
+    await post(`/api/tasks/${vGroupId}/delete`, {});
+    await restartSrv();
+  }
+
   // --- (e3) THE REPO CAP HOLDS ITS OWN ROW, NOT THE SWEEP (server.ts tickDispatch, the
   // DISPATCH_MAX_LANES branch). Until 2026-08-24 that branch `return`ed, on the reading that a full
   // repo is a condition of the machine. It is not: the cap counts lanes in the ROW'S TARGET repo,
@@ -6715,6 +6916,43 @@ export async function run(ctx: Ctx): Promise<void> {
         [["p", { cap: "1/1 lanes busy in program prog" }]],
         [["n", { cap: "no lane cap known for sp" }]],
       ]), JSON.stringify([spDone, spUnknown, spProgram, spNoCap]));
+    // (v3) E4 · A VARIANT IS NEVER BUNDLED AND NEVER HELD BY ITS OWN GROUP (task-land-waves.ts#classify
+    // `variante`, start-plan.ts step 3 `sameGroup`). Fixture: a group g, its two variants v1/v2 and a
+    // foreign row x of the SAME program, all four on one confirmed file, all klein. Each half carries its
+    // counter-proof on the same rows with the variant pointer removed — the mutation that deletes either
+    // rule turns the counter-proof's answer into the variant answer and the check red.
+    {
+      const vw = (id: string, created: number, o: { variantOf?: string; variantGroup?: true } = {}): TaskWaveInput => ({
+        id, created, kind: "auftrag", status: "queued", repo: spRepo, programId: "pv", size: "klein",
+        filesOrigin: "confirmed", files: ["shared.ts"], ranges: null, ...o });
+      const vTasks = [vw("g", 1, { variantGroup: true }), vw("v1", 2, { variantOf: "g" }), vw("v2", 3, { variantOf: "g" }), vw("x", 4)];
+      const vFold = (tasks: TaskWaveInput[]) => projectLandWaves({ tasks, costs: LAND_WAVE_COSTS_2026_09 })
+        .repos.flatMap((r) => r.waves.map((w) => [w.ids.join("+"), w.reasonAgainst]));
+      const vFolded = vFold(vTasks);
+      const vUnmarked = vFold(vTasks.filter((t) => t.id !== "g").map(({ variantOf: _v, ...t }) => t));
+      check("(v3) land fold: two variants sharing every file are two waves of one `variante`, the group row is in NO wave — without the pointer the same rows fold into one lane",
+        JSON.stringify(vFolded) === JSON.stringify([["v1", "variante"], ["v2", "variante"], ["x", null]])
+        && JSON.stringify(vUnmarked) === JSON.stringify([["v1+v2+x", null]]),
+        JSON.stringify({ vFolded, vUnmarked }));
+      const vPlanRow = (id: string, variantOf?: string): StartPlanRow => ({ id, status: "queued", programId: "pv",
+        files: ["shared.ts"], ranges: null, after: [], checks: startPlanChecks({ text: `row ${id}`, source: "main", card: spValid }),
+        ...(variantOf ? { variantOf } : {}) });
+      const vPlan = (rows: StartPlanRow[], lanes: StartPlanLane[]) => spNexts(projectStartPlan({
+        projection: projectLandWaves({ tasks: vTasks.filter((t) => rows.some((r) => r.id === t.id)), costs: LAND_WAVE_COSTS_2026_09 }),
+        rows, lanes, caps: { [spRepo]: { max: 5, source: "repo", programs: {} } },
+        statuses: Object.fromEntries(rows.map((r) => [r.id, r.status])) }));
+      const vLane = (variantOf?: string): StartPlanLane => ({ slot: 6, repo: spRepo, programId: "pv", files: ["shared.ts"], ranges: null,
+        ...(variantOf ? { variantOf } : {}) });
+      const vQueueOnly = vPlan([vPlanRow("v1", "g"), vPlanRow("v2", "g"), vPlanRow("x")], []);
+      const vBesideLane = vPlan([vPlanRow("v2", "g"), vPlanRow("x")], [vLane("g")]);
+      const vNoPointer = vPlan([vPlanRow("v2"), vPlanRow("x")], [vLane()]);
+      check("(v3) start plan: a variant is not held by its sibling's earlier wave nor by its sibling's running lane, while a foreign row on the same file still collides — without the pointer the variant collides like any row",
+        JSON.stringify([vQueueOnly, vBesideLane, vNoPointer]) === JSON.stringify([
+          [["v1", "now"], ["v2", "now"], ["x", { collides: { row: "v1", file: "shared.ts" } }]],
+          [["v2", "now"], ["x", { collides: { slot: 6, file: "shared.ts" } }]],
+          [["v2", { collides: { slot: 6, file: "shared.ts" } }], ["x", { collides: { slot: 6, file: "shared.ts" } }]],
+        ]), JSON.stringify([vQueueOnly, vBesideLane, vNoPointer]));
+    }
     // A RELEASE IS THE CHECK FOR A QUEUED ROW under every policy (Schnitt 3: released = queued OR the
     // policy): an invalid card, a scout sketch and a row without a card that are RELEASED start exactly
     // as they did before the tick read the plan — under `manual` and under `card-valid` alike. A pending
@@ -7409,6 +7647,37 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(s6) the MAIN filing door refuses a card with an untracked path as a 400 naming it, minting nothing",
       mBadCard.status === 400 && mBadCardText.includes("gibt-es-nicht-main.ts") && (await mAll()).length === mCardBefore,
       `${mBadCard.status}:${mBadCardText}`);
+    // (v) E4 · THE MAIN DOOR FILES A VARIANT GROUP through the owner door's validator — only as an
+    // auftrag (its default kind is notiz, and a group of observations runs nothing), pending like every
+    // filing, program and repo from the binding. And the MAIN's decision door refuses a winner whose
+    // lane holds no work: a variant that never ran cannot be the one that lands.
+    type MVarRow = MRow & { variants?: unknown[]; variantOf?: string; variantIndex?: number };
+    const mVarChoices = [{ model: "claude-opus-5[1m]", effort: "high" }, { model: "claude-sonnet-5", effort: "high" }];
+    const mVarBefore = (await mAll()).length;
+    const mVarNotiz = await mFile(mToken, { text: "e4 main variants without a kind", variants: mVarChoices });
+    const mVarNotizText = await mVarNotiz.text();
+    const mVar = await mFile(mToken, { text: "e4 main variant group", kind: "auftrag", variants: mVarChoices });
+    const mVarBody = await mVar.json() as { task?: MVarRow; variants?: MVarRow[] };
+    const mVarGroupId = mVarBody.task?.id ?? "";
+    const mVarRows = ((await mAll()) as MVarRow[]).filter((t) => t.variantOf === mVarGroupId && !!mVarGroupId);
+    check("(v) T1 MAIN door: variants on a default-kind filing are a 400; as an auftrag the door files the group and two pending variant rows, program and repo from the binding, unreleased",
+      mVarNotiz.status === 400 && mVarNotizText.includes("auftrag")
+        && mVar.status === 200 && mVarBody.task?.variants?.length === 2 && mVarBody.task.status === "pending"
+        && mVarRows.length === 2 && mVarRows.map((r) => r.variantIndex).sort().join(",") === "1,2"
+        && mVarRows.every((r) => r.status === "pending" && r.source === "main" && r.kind === "auftrag"
+          && r.programId === mMainProgram && r.repo === mRepoReal && r.releasedBy === undefined)
+        && (await mAll()).length === mVarBefore + 3,
+      `notiz=${mVarNotiz.status}:${mVarNotizText} group=${mVar.status}:${JSON.stringify(mVarBody)} rows=${JSON.stringify(mVarRows)}`);
+    const mVarDecide = await fetch(`${BASE}/api/self/tasks/${mVarGroupId}/variant-winner`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": mToken },
+      body: JSON.stringify({ winner: mVarRows[0]?.id }) });
+    const mVarDecideText = await mVarDecide.text();
+    check("(v) T5 MAIN door: deciding for a variant that has no running lane is a 409 in its own words, and no decision is stamped",
+      mVarDecide.status === 409 && mVarDecideText.includes("without a running lane")
+        && !((await mAll()) as (MVarRow & { variantDecision?: unknown })[]).find((t) => t.id === mVarGroupId)?.variantDecision,
+      `${mVarDecide.status}:${mVarDecideText}`);
+    for (const r of mVarRows) await post(`/api/tasks/${r.id}/delete`, {});
+    await post(`/api/tasks/${mVarGroupId}/delete`, {});
 
     // (4) THE BODY CANNOT NOMINATE ANYTHING. `programId` answers in its own sentence (naming the
     // program the binding already decided), and the rest of the world's fields are refused as a

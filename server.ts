@@ -123,7 +123,7 @@ import {
   type AttentionKind,
   type LaneSuiteFleetEvent, type HarnessBlockFleetEvent, type LaneReviewFleetEvent, type TaskReviewMode,
   type FleetReportDeliveryState,
-  type AttentionRequest, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type Task, type TaskBrief, type TaskComment,
+  type AttentionRequest, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type Task, type TaskVariantDecision, type TaskBrief, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskCard, type TaskCriterion, type TaskFilesProposal,
@@ -1421,6 +1421,149 @@ function taskSpawnFromBody(body: Record<string, unknown> | null):
     ? undefined : { harness: h.harness, model: m.model, effort: e.effort, ...(b.browser ? { browser: true } : {}) } };
 }
 
+// --- THE VARIANT GROUP (E4, docs/messungen/2026-09-14-queue-intelligenz-schichten.md §5 E4): one
+// request worked by n agents at once, exactly one of which lands (server/types.ts#Task.variants).
+// The bounds: two is the smallest comparison, four the most one repo's lane budget carries without
+// the group holding the whole queue for its duration.
+const TASK_VARIANTS_MIN = 2;
+const TASK_VARIANTS_MAX = 4;
+
+// The SET-time validator for a group's `variants`, one choice at a time through taskSpawnFromBody —
+// the same three adapter validators every other stored choice passes. `undefined` = the body names no
+// group. A group starts UNATTENDED by design (all n at once, from the tick), so a choice no unattended
+// path may drive is refused HERE, loudly, instead of producing a group that waits forever.
+// A row-level spawn triple beside `variants` is refused, not merged: it would be a second answer to
+// "which agent runs this" and the reader could not tell which one the group used.
+function taskVariantsFromBody(body: Record<string, unknown> | null):
+  { ok: true; variants: DispatchSpawn[] | undefined } | { ok: false; error: string } {
+  const raw = body?.variants;
+  if (raw === undefined) return { ok: true, variants: undefined };
+  if (!Array.isArray(raw) || raw.length < TASK_VARIANTS_MIN || raw.length > TASK_VARIANTS_MAX)
+    return { ok: false, error: `variants must be a list of ${TASK_VARIANTS_MIN} to ${TASK_VARIANTS_MAX} agent choices {harness, model, effort}` };
+  if (["harness", "model", "effort", "browser"].some((k) => body?.[k] !== undefined && body?.[k] !== null))
+    return { ok: false, error: "variants and a row-level harness/model/effort are two answers to one question — name every agent inside variants" };
+  const out: DispatchSpawn[] = [];
+  for (const [i, v] of raw.entries()) {
+    if (typeof v !== "object" || v === null || Array.isArray(v))
+      return { ok: false, error: `variant ${i + 1} must be an object {harness, model, effort}` };
+    const choice = taskSpawnFromBody(v as Record<string, unknown>);
+    if (!choice.ok) return { ok: false, error: `variant ${i + 1}: ${choice.error}` };
+    const spawn = choice.spawn ?? DEFAULT_SPAWN;
+    const h = harnessOf(spawn.harness);
+    if (!harnessAutomatableFor(h))
+      return { ok: false, error: `variant ${i + 1}: harness ${h.id} is not automatable — a variant group starts unattended (${harnessAutomationWhy()})` };
+    out.push({ ...spawn });
+  }
+  return { ok: true, variants: out };
+}
+
+// THE n VARIANT ROWS of a freshly minted group. Each is an ordinary auftrag row carrying the group's
+// text and provenance and its OWN agent choice; the brief, the card and the notes are NOT copied —
+// they are read off the group at every use (variantSourceOf), so an edit to the group reaches every
+// variant and no two variants can drift into different work orders. Status and release stamp are the
+// group's: a group filed released is n released variants, a pending one n pending ones.
+function variantRowsFor(group: Task, variants: readonly DispatchSpawn[]): Task[] {
+  return variants.map((v, i): Task => {
+    const chosen = v.harness !== null || v.model !== null || v.effort !== null || v.browser === true;
+    return {
+      id: randomBytes(4).toString("hex"), originId: group.originId ?? group.id, text: group.text,
+      source: group.source, from: group.from, kind: "auftrag", repo: group.repo,
+      ...(group.programId ? { programId: group.programId } : {}),
+      ...(chosen ? { spawn: { ...v } } : {}),
+      ...(group.review ? { review: group.review } : {}),
+      status: group.status, created: group.created, slot: null, note: null,
+      ...(group.releasedBy ? { releasedBy: group.releasedBy } : {}),
+      variantOf: group.id, variantIndex: i + 1,
+    };
+  });
+}
+// the group row a variant belongs to — only a row that really IS a group answers
+const variantGroupOf = (t: Pick<Task, "variantOf">): Task | undefined =>
+  t.variantOf ? tasks.find((x) => x.id === t.variantOf && !!x.variants) : undefined;
+// a group's variant rows, in filing order
+const variantsOfGroup = (group: Task): Task[] =>
+  tasks.filter((x) => x.variantOf === group.id).sort((a, b) => (a.variantIndex ?? 0) - (b.variantIndex ?? 0));
+// THE ROW A VARIANT IS BRIEFED FROM: its group. Every reader of text, brief, card and pinned notes on
+// the dispatch and start-plan paths goes through here, which is what makes n variants receive
+// byte-identical work orders. Any other row is its own source.
+const variantSourceOf = (t: Task): Task => variantGroupOf(t) ?? t;
+
+// MAY THIS LANE LAND, as a variant? null = it is no variant, or it is its group's decided winner.
+// Two refusals, both 409 at every land door (the owner's ⏫, the MAIN's self-land, ⏏ via landLane):
+//   · a SHELVED BRANCH — read over every group's decision, not over the slot's rows, because a shelved
+//     worktree can be re-opened in a fresh slot that carries no row at all;
+//   · an UNDECIDED group — exactly one variant lands, and until one is chosen none of them may.
+function variantLandRefusal(s: Slot): string | null {
+  const branch = s.worktree?.branch;
+  if (branch) for (const g of tasks) {
+    if (g.variantDecision?.shelved.includes(branch))
+      return `variant shelved — group ${g.id} lands variant ${g.variantDecision.winner}; branch ${branch} stays as a record and never lands`;
+  }
+  for (const row of tasks) {
+    if (row.slot !== s.id || row.status !== "sent" || !row.variantOf) continue;
+    const g = variantGroupOf(row);
+    if (!g) continue;
+    if (!g.variantDecision)
+      return `variant group ${g.id} is undecided — exactly one of its ${g.variants?.length ?? 0} variants lands, and none has been chosen yet (POST /api/tasks/${g.id}/variant-winner)`;
+    if (g.variantDecision.winner !== row.id)
+      return `variant shelved — group ${g.id} lands variant ${g.variantDecision.winner}, not ${row.id}`;
+  }
+  return null;
+}
+
+// THE DECISION: which ONE variant of a group lands (T5). Written once and never rewritten — the
+// same propose/promote bias as `criterion`: a decision that could be flipped after a loser's lane
+// was shelved would un-shelve nothing and leave two branches that each believe they won.
+// Today two doors call this, the owner's board and the group's bound Program-MAIN; the automatic
+// comparator (T4, a later row) is meant to be the third caller and needs no other write path.
+// What it does, in this order:
+//   1. every refusal first, before any state moves (not a group, unknown or foreign winner, a
+//      winner with no running lane, already decided);
+//   2. the decision — the winner and the branch of every other RUNNING variant — is stamped on the
+//      group BEFORE the first await, so a land starting on a loser during the kills below already
+//      meets variantLandRefusal;
+//   3. every other variant: a running lane is SHELVED the way the owner's shelve door shelves one —
+//      outcome `shelved` recorded while the lane state still exists, then killSlot, which keeps the
+//      worktree and the branch on disk — and its row is archived; a variant that never ran is
+//      archived. The group row itself stays open until its winner lands (landLane closes it).
+async function decideVariantGroup(group: Task, winnerId: unknown, by: "owner" | "main", slot?: number):
+  Promise<{ status: number; body: Record<string, unknown> }> {
+  if (!group.variants) return { status: 409, body: { error: `task ${group.id} is not a variant group` } };
+  if (typeof winnerId !== "string" || !winnerId) return { status: 400, body: { error: "winner must be the id of one of the group's variant rows" } };
+  const rows = variantsOfGroup(group);
+  if (group.variantDecision) {
+    return group.variantDecision.winner === winnerId
+      ? { status: 200, body: { ok: true, unchanged: true, decision: group.variantDecision } }
+      : { status: 409, body: { error: `group ${group.id} is already decided for variant ${group.variantDecision.winner} — a decision is never rewritten`, decision: group.variantDecision } };
+  }
+  const winner = rows.find((r) => r.id === winnerId);
+  if (!winner) return { status: 409, body: { error: `${winnerId} is not a variant of group ${group.id} (its variants: ${rows.map((r) => r.id).join(", ")})` } };
+  const winnerLane = winner.status === "sent" && winner.slot ? slots.find((s) => s.id === winner.slot && s.cwd && s.worktree) : undefined;
+  if (!winnerLane) return { status: 409, body: { error: `variant ${winner.id} is ${winner.status} without a running lane — only a variant whose lane holds its work can be the one that lands` } };
+  const losers = rows.filter((r) => r.id !== winner.id).map((r) => ({ row: r,
+    lane: r.status === "sent" && r.slot ? slots.find((s) => s.id === r.slot && s.cwd && s.worktree) : undefined }));
+  const decision: TaskVariantDecision = { winner: winner.id, by, ...(slot !== undefined ? { slot } : {}), at: Date.now(),
+    shelved: losers.flatMap((l) => l.lane?.worktree ? [l.lane.worktree.branch] : []) };
+  group.variantDecision = decision;
+  group.note = `variant ${winner.variantIndex}/${rows.length} (${winner.id}) lands — decided by ${by}`;
+  for (const { row, lane } of losers) {
+    const note = `variant shelved — group ${group.id} lands variant ${winner.id}`;
+    if (lane?.cwd && lane.worktree) {
+      shelved[lane.cwd] = { at: Date.now(), note };
+      emitLaneOutcome(await buildLaneOutcome(lane, "shelved")); // record BEFORE killSlot clears lane state
+      // archived BEFORE the kill: detachSlotTasks returns a `sent` row to pending, and a loser must
+      // not reappear as startable work
+      if (row.status !== "done") { row.status = "archived"; row.slot = null; row.note = note; }
+      await killSlot(lane, "shelved"); // keeps the worktree and the branch — the loser stays a record
+    } else if (row.status !== "done") {
+      row.status = "archived"; row.slot = null; row.note = note;
+    }
+  }
+  audit("variant_decide", slot, `${group.id} winner=${winner.id} by=${by} shelved=${decision.shelved.join(",") || "-"}`);
+  await saveStateNow();
+  return { status: 200, body: { ok: true, decision } };
+}
+
 // Task.review at a door. `undefined` = the body did not name it (nothing changes); `null` = clear the
 // field (`"none"` or JSON null); a value = store it. Anything else is the caller's error, named with
 // the allowed values so the fix is in the answer.
@@ -1496,6 +1639,24 @@ const loadTaskSpawn = (value: unknown): DispatchSpawn | undefined => {
   const browser = raw.browser === true && h.browserProfile === "apply";
   return harness === null && model === null && effort === null && !browser ? undefined
     : { harness, model, effort, ...(browser ? { browser: true } : {}) };
+};
+// A GROUP'S `variants` off disk. A present-but-malformed value stays a GROUP (an array, possibly
+// empty) and never degrades to ABSENT: an absent field would turn the bracket into an ordinary
+// auftrag row, and the next tick would run the group itself as one more lane. Each entry passes
+// loadTaskSpawn; one it cannot read is the default choice, as an absent spawn is everywhere else.
+const loadTaskVariants = (value: unknown): DispatchSpawn[] | undefined =>
+  value === undefined || value === null ? undefined
+    : (Array.isArray(value) ? value : []).map((v) => loadTaskSpawn(v) ?? { ...DEFAULT_SPAWN });
+// ...and its decision, with the same bias: a malformed decision loads as one that names NO winner,
+// so every variant stays refused at the land doors and nothing can re-decide it silently.
+const loadTaskVariantDecision = (value: unknown): TaskVariantDecision | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const r = (typeof value === "object" && !Array.isArray(value) ? value : {}) as Record<string, unknown>;
+  return { winner: typeof r.winner === "string" ? r.winner : "",
+    by: r.by === "main" ? "main" : "owner",
+    ...(typeof r.slot === "number" && Number.isInteger(r.slot) ? { slot: r.slot } : {}),
+    at: typeof r.at === "number" && Number.isFinite(r.at) ? r.at : 0,
+    shelved: Array.isArray(r.shelved) ? r.shelved.filter((b): b is string => typeof b === "string") : [] };
 };
 
 const MAX_COMMENTS_PER_TASK = 50;
@@ -2422,7 +2583,8 @@ const MAX_TASK_TEXT = 20_000;
 // blockers and staleness, enough to GROUP and label a row. It is gone with its producer, and so is
 // the per-row git process its staleness arm asked for on every poll.
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
-  & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "programId" | "review" | "files" | "filesOrigin" | "cluster">>
+  & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "programId" | "review" | "files" | "filesOrigin" | "cluster"
+    | "variants" | "variantOf" | "variantIndex" | "variantDecision">>
   // …and the PROPOSED surface beside the confirmed one. Carried WHOLE rather than as a shape
   // digest, unlike `refine` and `comments` beside it: `files` itself already rides this poll, so a
   // proposal reduced to a count would be the one file list on the row a reader could not compare
@@ -2458,6 +2620,12 @@ function taskDigest(t: Task): TaskDigest {
     ...(t.repo ? { repo: t.repo } : {}),
     ...(t.programId ? { programId: t.programId } : {}),
     ...(t.review ? { review: t.review } : {}),
+    // THE VARIANT FIELDS ride the poll whole: at most four short choices and one small decision, and
+    // the board needs all of them to say "Variante k/n" and which one lands without a second fetch
+    ...(t.variants ? { variants: t.variants } : {}),
+    ...(t.variantOf ? { variantOf: t.variantOf } : {}),
+    ...(t.variantIndex ? { variantIndex: t.variantIndex } : {}),
+    ...(t.variantDecision ? { variantDecision: t.variantDecision } : {}),
     ...(view.files ? { files: view.files } : {}),
     ...(view.filesOrigin ? { filesOrigin: view.filesOrigin } : {}),
     ...(view.cluster ? { cluster: view.cluster } : {}),
@@ -3986,7 +4154,10 @@ async function excludeLaneScratch(lanePath: string): Promise<void> {
 // creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
 // HEAD. Worktrees only materialize tracked files, so the two files agents predictably
 // need but repos predictably don't track (.env, CLAUDE.md) are copied in when present.
-async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree"): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
+// `startAt`: a commit to fork from INSTEAD of the integration branch's current tip. Only the variant
+// group passes one (startVariantGroup): its n lanes must stand on ONE base, and main may move between
+// the n spawns. Absent — every other caller — keeps the integration branch as the start point.
+async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree", startAt?: string): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
   const root = await repoRootOf(repoRaw);
   // auto name carries seconds + a random suffix so two lanes spawned in the same minute
   // (e.g. back-to-back dispatcher ticks) can't slug to the same worktree path and collide
@@ -4001,7 +4172,8 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
   // may be parked on a working branch, and a lane must still branch from (and later land onto)
   // the integration branch. Unset config → integrationBranch is the primary's HEAD, so this is
   // the same start point as the bare `worktree add -b` default (no-op today).
-  const start = await integrationBranch(root);
+  const integration = await integrationBranch(root);
+  const start = startAt ?? integration;
   if (form === "clone") {
     // A clone lane's branch is mirrored back into the root under the SAME NAME (syncLaneRefs), and
     // that mirror is FORCED — a rebase rewrites the lane tip, so a fast-forward-only push-back
@@ -4016,9 +4188,9 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
     // optimisation HARDLINKS the object files, so the two repos would share the very bytes this
     // form exists to separate. Measured on this repo: ~98 MB of objects per clone.
     // --no-local implies it; --no-hardlinks is the narrower, explicit statement.
-    const cl = await git(root, "clone", "--no-hardlinks", ...(start ? ["--branch", start] : []), root, path);
+    const cl = await git(root, "clone", "--no-hardlinks", ...(integration ? ["--branch", integration] : []), root, path);
     if (cl.code !== 0) throw new Error(`clone failed: ${(cl.err || cl.out).slice(0, 300)}`);
-    const co = await git(path, "checkout", "-b", branch);
+    const co = await git(path, "checkout", "-b", branch, ...(startAt ? [startAt] : []));
     if (co.code !== 0) throw new Error(`clone checkout failed: ${(co.err || co.out).slice(0, 300)}`);
   } else {
     const add = start
@@ -4367,6 +4539,11 @@ async function applyLandToNotes(repo: string, branch: string,
 async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   beforeTeardown?: () => Promise<void>): Promise<{ error: string; code: number } | { removed: string; branch: string }> {
   if (!s.cwd || !s.worktree) return { error: "not a fleet-created worktree lane", code: 400 };
+  // E4 · the last lock for every land door, ⏏ included: a shelved variant branch, or a variant of a
+  // group nobody has decided yet, never lands (variantLandRefusal). The two merge routes ask the same
+  // question before their gate runs, so on those paths this never fires after main has moved.
+  const variantRefusal = variantLandRefusal(s);
+  if (variantRefusal) return { error: variantRefusal, code: 409 };
   const { repo, branch } = s.worktree;
   const path = s.cwd;
   // assemble the "landed" outcome while the worktree still exists (git reads need the tree);
@@ -4397,6 +4574,12 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
       t.status = "done";
       t.note = `landed (${branch})`;
     }
+  }
+  // E4 · a variant's land closes its GROUP: the one request the n variants worked is done now
+  for (const id of landedTaskIds) {
+    const row = tasks.find((t) => t.id === id);
+    const group = row ? variantGroupOf(row) : undefined;
+    if (group && group.status !== "done") { group.status = "done"; group.note = `landed via variant ${id} (${branch})`; }
   }
   // N2, the note lifecycle (docs/notizen-verarbeitung-2026-09-06.md §3 N2). Two writes, and they
   // are deliberately independent of each other: a land STAMPS every pending note whose surface it
@@ -9452,16 +9635,20 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // ONLY UNDER `manual` (Schnitt 3): under `card-valid`/`all` the released set is the program's queue
   // itself, bounded by PROGRAM_MAX_PENDING and both lane caps — a cap on a count the policy no longer
   // keeps would refuse a hand release the policy could have made on its own.
-  const openReleased = tasks.filter((x) => x.programId === program.id && x.status === "queued").length;
+  // a variant GROUP row is a bracket, not a start: its variants are the rows the tick will start
+  const openReleased = tasks.filter((x) => x.programId === program.id && x.status === "queued" && !x.variants).length;
   if (programReleasePolicy(t) === "manual" && openReleased >= PROGRAM_MAX_RELEASED)
     return json({ error: `program release cap reached (${openReleased}/${PROGRAM_MAX_RELEASED} released rows not yet started) — let the tick start one first` }, 409);
   // (5) THROUGH THE HELPER, never a bare assignment: releaseTask is where `by` cannot be forgotten,
   // and a machine release that recorded nothing would be indistinguishable from the attended lands
   // already on the trail.
   releaseTask(t, "machine");
+  // E4 · releasing a GROUP releases its pending variants with it — the tick starts them only together
+  const releasedVariants = t.variants ? variantsOfGroup(t).filter((v) => v.status === "pending") : [];
+  for (const v of releasedVariants) releaseTask(v, "machine");
   // (6) …and the trail row the helper's field cannot be, for the reason spelled out at the
   // "task_release" AuditEvent: `releasedBy` is overwritten by a later attended ▸ start.
-  audit("task_release", s.id, `${t.id} program=${program.id}`);
+  audit("task_release", s.id, `${t.id} program=${program.id}${releasedVariants.length ? ` variants=${releasedVariants.map((v) => v.id).join(",")}` : ""}`);
   await saveStateNow();
   // sessionIdMatch is REPORTED, never gated — ACP-13's doctrine, and the same shape openAttention
   // and handleSelfSucceed answer with.
@@ -9783,6 +9970,10 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
   if (refusedWork)
     return json({ error: rejectedReportRefusal(refusedWork, REJECTED_LAND_EXIT_MAIN),
       rejectedReport: { id: refusedWork.id, at: refusedWork.at, by: refusedWork.by } }, 409);
+  // (11b) E4 · A VARIANT LANDS ONLY AS ITS GROUP'S DECIDED WINNER — asked here, before the gate spends
+  // a run on a branch that could never land (variantLandRefusal; landLane repeats it as the last lock)
+  const variantRefusal = variantLandRefusal(lane);
+  if (variantRefusal) return json({ error: variantRefusal }, 409);
   // (12) THE LANE MUST LOOK DONE. `done-looking` and nothing weaker: host-commit-looking is the
   // disjoint predicate for an uncommitted tree, and there is nothing there to fast-forward. This is
   // a server predicate over facts, not a claim that the work is good — the MAIN supplies that
@@ -9893,6 +10084,19 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
 // field silently ignored is a field the caller believes was honoured — `status`, `queue`,
 // `source`, `releasedBy` and `ref` all have a meaning at some other door, and a caller that spells
 // one here must be told it did not land, not left to infer it from a row it cannot see.
+// E4 · the bound Program-MAIN decides which variant of ITS program's group lands. The binding answers
+// first in its own words, like at every neighbouring door; the rules are decideVariantGroup's.
+async function decideVariantForMain(s: Slot, id: string, body: Record<string, unknown> | null): Promise<Response> {
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return json({ error: bound.error }, 409);
+  const t = tasks.find((x) => x.id === id);
+  if (!t) return json({ error: "unknown task" }, 404);
+  if (t.programId !== bound.program.id)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN decides only groups of program ${bound.program.id}` }, 409);
+  const decided = await decideVariantGroup(t, body?.winner, "main", s.id);
+  return json({ ...decided.body, sessionIdMatch: bound.sessionIdMatch }, decided.status);
+}
+
 async function createTaskForMain(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
   // The authority bracket answers FIRST and in its own words — "not bound" and "ambiguously bound"
   // stay two different refusals, exactly as at the release door: they send the caller to fix two
@@ -9911,10 +10115,10 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   // words the attended ▸ start button sends, validated below by the same validators. The refusal
   // keeps its historic "text and kind only" opening as a stable prefix — the spawn triple is named
   // separately because it is optional and travels as a unit, not three independent fields.
-  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card"];
+  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card", "variants"];
   const extra = Object.keys(body).filter((k) => !SELF_TASK_FIELDS.includes(k));
   if (extra.length)
-    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort) and an optional card — [${extra.join(", ")}] is not read: repo comes from this session's checkout, and a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
+    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), an optional card and optional variants — [${extra.join(", ")}] is not read: repo comes from this session's checkout, and a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
   if (typeof body.text !== "string" || !body.text.trim())
     return json({ error: "text must be a non-empty string" }, 400);
   // (3) THE KIND, through the SAME four-value validator the owner and steward create routes use —
@@ -9932,6 +10136,12 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   // worse, silently runs the default adapter instead of the one the MAIN named.
   const spawnChoice = taskSpawnFromBody(body);
   if (!spawnChoice.ok) return json({ error: spawnChoice.error }, 400);
+  // (3c) A VARIANT GROUP, through the one validator the owner door uses — and only for a row the MAIN
+  // names an auftrag: the door's default kind is notiz, and a group of observations runs nothing.
+  const variantChoice = taskVariantsFromBody(body);
+  if (!variantChoice.ok) return json({ error: variantChoice.error }, 400);
+  if (variantChoice.variants && kind !== "auftrag")
+    return json({ error: `variants need kind "auftrag" — a ${kind} is advisory and runs in no lane` }, 400);
   // (4) THE REPO COMES FROM THE BINDING'S CHECKOUT, by the same helper as at the release door.
   // Deliberately DERIVED rather than left null, and the reason is that other door: it compares
   // `t.repo ?? DISPATCH_REPO` against the caller's own checkout, so on a fleet whose configured
@@ -9945,8 +10155,9 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   // full advisory bucket never closes the work door; a full work bucket never closes observation.
   // Each refusal names its kind and number — a caller must know which disposition can make room.
   if (kind === "auftrag") {
+    // a group counts ONCE: its variant rows are the same request, not n filings
     const openPending = tasks.filter((x) => x.source === "main" && x.programId === program.id
-      && x.status === "pending" && x.kind === "auftrag").length;
+      && x.status === "pending" && x.kind === "auftrag" && !x.variantOf).length;
     if (openPending >= PROGRAM_MAX_PENDING)
       return json({ error: `program auftrag filing cap reached (${openPending}/${PROGRAM_MAX_PENDING} pending auftrag rows not yet released) — release or drop one first` }, 409);
   } else {
@@ -9969,16 +10180,18 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
     // request. And no `releasedBy` — that field exists so an unreleased row stays distinguishable
     // from one somebody released, and a filing has not been released by anyone.
     status: "pending", created: Date.now(), slot: null, note: null,
+    ...(variantChoice.variants ? { variants: variantChoice.variants } : {}),
   };
-  tasks = capTasks([...tasks, t]);
+  const variantRows = variantChoice.variants ? variantRowsFor(t, variantChoice.variants) : [];
+  tasks = capTasks([...tasks, t, ...variantRows]);
   // saveStateNow, not the debounced saveState the steward's filing uses. This row is the INPUT to
   // an unattended release, and a filing lost inside the debounce window would vanish exactly the
   // way an unlisted `source` vanishes at the next boot: silently, with every check still green.
   await saveStateNow();
-  audit("main_task", s.id, `${t.id} program=${program.id} ${kind}`);
+  audit("main_task", s.id, `${t.id} program=${program.id} ${kind}${variantRows.length ? ` variants=${variantRows.length}` : ""}`);
   // sessionIdMatch is REPORTED, never gated — ACP-13's doctrine, the same shape releaseTaskForMain
   // and openAttention answer with.
-  return json({ ok: true, sessionIdMatch, task: t });
+  return json({ ok: true, sessionIdMatch, task: t, ...(variantRows.length ? { variants: variantRows } : {}) });
 }
 
 const attentionBound = (a: AttentionRequest, s: Slot): boolean =>
@@ -10497,6 +10710,9 @@ function landWaveProjectionNow(): LandWaveProjection {
       return { id: t.id, kind: t.kind, status: t.status, created: t.created,
         ...(t.repo ? { repo: t.repo } : {}),
         ...(t.programId ? { programId: t.programId } : {}),
+        // a variant is a wave of one and a group is in no wave (task-land-waves.ts#classify)
+        ...(t.variantOf ? { variantOf: t.variantOf } : {}),
+        ...(t.variants ? { variantGroup: true as const } : {}),
         ...(size ? { size } : {}),
         ...(files.length ? { files } : {}),
         ...(after.length ? { after } : {}),
@@ -10524,30 +10740,36 @@ function landWaveProjectionNow(): LandWaveProjection {
 // Under a policy other than `manual` the card's backed paths join the row's surface: a row the policy
 // starts with an unresolved symbol has no card lift (liftCardSurface needs a gapless surface), and the
 // plan needs its files for the collision edge. A `manual` row's surface is byte for byte what it was.
+// A VARIANT reads its card off its group (variantSourceOf) — the one reading all n variants share.
 const startPlanSurfaceOf = (t: Task): { files: string[] | null; ranges: StartPlanRow["ranges"] } => {
-  const read = [...(taskView(t).files ?? []), ...(t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])];
-  const files = programReleasePolicy(t) === "manual" ? read : [...new Set([...read, ...startPlanCardPaths(t.card ?? null)])];
+  const card = variantSourceOf(t).card;
+  const read = [...(taskView(t).files ?? []), ...(card?.surfaceValid ? card.surface.creates ?? [] : [])];
+  const files = programReleasePolicy(t) === "manual" ? read : [...new Set([...read, ...startPlanCardPaths(card ?? null)])];
   return { files: files.length ? files : null, ranges: t.surface?.ranges ?? null };
 };
 const startPlanRowOf = (t: Task): StartPlanRow => {
   const policy = programReleasePolicy(t);
+  const src = variantSourceOf(t);
   return { id: t.id, status: t.status, programId: t.programId ?? null, ...startPlanSurfaceOf(t),
-    after: t.card?.after ?? [],
-    checks: startPlanChecks({ text: t.text, source: t.source, card: t.card ?? null, briefAt: t.brief?.at ?? null }),
-    ...(policy !== "manual" ? { release: policy } : {}), ...(t.hold ? { held: true } : {}) };
+    after: src.card?.after ?? [],
+    checks: startPlanChecks({ text: src.text, source: t.source, card: src.card ?? null, briefAt: src.brief?.at ?? null }),
+    ...(policy !== "manual" ? { release: policy } : {}), ...(t.hold ? { held: true } : {}),
+    ...(t.variantOf ? { variantOf: t.variantOf } : {}) };
 };
 function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()): StartPlan {
   const statuses: Record<string, string> = {};
   const rows: StartPlanRow[] = [];
   for (const t of tasks) {
     statuses[t.id] = t.status;
-    if (t.kind !== "auftrag" || (t.status !== "queued" && t.status !== "pending")) continue;
+    if (t.kind !== "auftrag" || (t.status !== "queued" && t.status !== "pending") || t.variants) continue;
     rows.push(startPlanRowOf(t));
   }
   const projectionRepoFor = new Map(projection.repos.map((r) => [repoCanon(r.repo), r.repo]));
   const lanes: StartPlanLane[] = slots.filter((s) => s.cwd && (s.worktree || s.programId)).map((s) => {
-    const own = tasks.filter((t) => t.slot === s.id && t.status === "sent").map(startPlanSurfaceOf);
-    return { slot: s.id, programId: s.programId,
+    const ownRows = tasks.filter((t) => t.slot === s.id && t.status === "sent");
+    const own = ownRows.map(startPlanSurfaceOf);
+    const variantOf = ownRows.find((t) => t.variantOf)?.variantOf;
+    return { slot: s.id, programId: s.programId, ...(variantOf ? { variantOf } : {}),
       repo: s.worktree ? projectionRepoFor.get(s.worktree.repo) ?? s.worktree.repo : null,
       files: own.length && own.every((x) => x.files) ? own.flatMap((x) => x.files ?? []) : null,
       ranges: own.some((x) => x.ranges) ? own.flatMap((x) => x.ranges ?? []) : null };
@@ -10596,13 +10818,20 @@ function startPlanWaves(): { plan: StartPlanWave; land: LandWave }[] {
 // that predates the button therefore produces byte-identical behaviour. The followers ride into the
 // same lane on the same edge the head uses (`t.slot`), which is what makes one land close all n.
 async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify = false,
-  spawn: DispatchSpawn = DEFAULT_SPAWN, wave: WaveDispatch | null = null):
+  spawn: DispatchSpawn = DEFAULT_SPAWN, wave: WaveDispatch | null = null, variantBase: string | null = null):
   Promise<{ ok: true; slot: number; branch: string; tail: Promise<void> } | { ok: false; error: string }> {
   // Last lock, shared by the tick and the attended route: only an auftrag may ever cross from a
   // queue row into a lane. Callers filter too so they can return the right status/reason, but a
   // future caller cannot accidentally turn an advisory category into work by skipping that check.
   if (next.kind !== "auftrag")
     return { ok: false, error: `${next.kind} is advisory — the dispatcher never runs this` };
+  // THE VARIANT LOCKS (E4), for the same "every caller" reason: a GROUP row is a bracket and never a
+  // lane, and a VARIANT starts only as part of its whole group — which is the one caller that hands
+  // this function the shared base commit (startVariantGroup). A variant started alone would be a
+  // comparison with nothing to compare against, from a base its siblings do not share.
+  if (next.variants) return { ok: false, error: "a variant group never runs itself — its variants do, all started together" };
+  if (next.variantOf && !variantBase)
+    return { ok: false, error: "a variant starts only with its whole group, from one base commit — start the group" };
   // THE BOLT, restated where the choice now arrives: a stored foreign choice reaching an unattended
   // call answers to the same two conditions as every other unattended path, in the same order, so
   // the refusal reason is the specific one. The tick's own row gate refuses the same rows BEFORE a
@@ -10631,7 +10860,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // the parent BEFORE materialising the tree, exactly like openLaneInSlot.
     const dispatchRepo = await repoRootOf(next.repo ?? DISPATCH_REPO);
     const anchor = await decideLaneAnchor(dispatchRepo, undefined);
-    const wt = await createWorktree(dispatchRepo, "", dForm.form);
+    const wt = await createWorktree(dispatchRepo, "", dForm.form, variantBase ?? undefined);
     // no `base` here (the dispatcher lane keeps the live re-derivation), but the fork commit is
     // captured — the outcome record needs it after the land moves main. `label` stays null: the
     // line below names the slot.
@@ -10808,6 +11037,12 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // THE ROWS THIS LANE CARRIES, head first — the wave's fixed order, and a one-element list for
   // every other dispatch. One list, so nothing below has to ask twice whether this is a wave.
   const waveRows: Task[] = wave ? [next, ...wave.followers] : [next];
+  // THE ROWS THE BYTES ARE READ FROM. The wave's own rows for every dispatch but a variant, which is
+  // briefed from its GROUP (variantSourceOf): text, brief, card, pinned notes and the source package
+  // all come off the one row n variants share, so their briefs are byte-identical when they fork from
+  // one base. `waveRows` above stays the set whose STATUS this tail owns — the variant's own row.
+  const src = variantSourceOf(next);
+  const sourceRows: Task[] = next.variantOf ? [src] : waveRows;
   // clarify mode ignores the compiled brief: a task that reached this button is precisely one whose
   // done-criterion cannot be settled yet. Deterministic frame + raw request, no model call.
   // A wave is never a clarify lane (the door refuses the combination): settling what done means is
@@ -10826,10 +11061,10 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
         baseUrl: `http://${HOST}:${PORT}` })
       // a VALID card goes in front of the prose as a KARTE head; an absent or invalid one leaves
       // the bytes exactly as they were, which is what keeps briefSourceOf's "card" honest
-      : withCardHead(next.card?.valid ? next.card : null, next.brief?.text ?? next.text);
+      : withCardHead(src.card?.valid ? src.card : null, src.brief?.text ?? src.text);
   // read HERE, at the same moment the bytes are chosen — not at receipt time. The row is mutable
   // and a later reader cannot tell whether an edit came before or after this delivery.
-  const briefSource = briefSourceOf(next, clarify);
+  const briefSource = briefSourceOf(src, clarify);
   // let claude finish booting in the fresh pane before the first prompt lands
   await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
   // A post-spawn hold is TRANSIENT — retry-shaped, so the row goes back to `queued` and the
@@ -10981,9 +11216,9 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     const noteCandidates = tasks.filter((t) => t.kind === "notiz").map(noteJoinRow);
     const laneSources = clarify
       ? { reachable: [] as NoteRow[], shown: [] as NoteRow[], overflow: [] as NoteRow[], unknown: [] as string[] }
-      : laneNoteSources(noteJoinFor(waveRows),
-        waveRows.map((row) => ({ id: row.id, noteIds: (row.notes ?? []).map((pin) => pin.noteId) })),
-        noteCandidates.filter((n) => n.status === "pending" || pinnedIds(waveRows).has(n.id)));
+      : laneNoteSources(noteJoinFor(sourceRows),
+        sourceRows.map((row) => ({ id: row.id, noteIds: (row.notes ?? []).map((pin) => pin.noteId) })),
+        noteCandidates.filter((n) => n.status === "pending" || pinnedIds(sourceRows).has(n.id)));
     const noteRows = laneSources.reachable;
     const notesBlock = renderNotesBlock(laneSources.shown, undefined, laneSources.overflow);
     // THE SOURCE PACKAGE (docs/tailored-context.md §6a): the exact lines of the symbols the brief
@@ -10991,7 +11226,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // moved since the worktree forked. POSITION before the studio block and the anchors, for the
     // anchors' reason: the receipt hashes the anchor block alone. Clarify gets none, like the notes.
     const snippet = clarify ? { block: "", receipt: NO_SNIPPET_RECEIPT }
-      : await laneSnippetBlock(wt.path, head, { blobShas, blobModes }, brief, waveRows);
+      : await laneSnippetBlock(wt.path, head, { blobShas, blobModes }, brief, sourceRows);
     const snippetBlock = snippet.block;
     // Every await since the readiness wait was git or state work, and a kill or re-open in that window
     // must not receive this text — the same re-check the boot sleep gets, at the last moment it helps.
@@ -11286,6 +11521,9 @@ function cardDue(t: Task, now: number): boolean {
   if (!CARD_ON) return false;
   if (t.kind !== "auftrag" || dispatchingTasks.has(t.id)) return false;
   if (t.status !== "pending" && t.status !== "queued") return false;
+  // a VARIANT carries no reading of its own — its group's card is the one every reader takes
+  // (variantSourceOf), so a model call per variant would buy n readings of one text
+  if (t.variantOf) return false;
   const r = cardRetry.get(t.id);
   if (r && (r.attempts >= CARD_MAX_ATTEMPTS || now - r.at < CARD_BACKOFF_MS * 2 ** r.attempts)) return false;
   if (!t.card) return true;
@@ -11826,6 +12064,121 @@ const programMainLive = (programId: string): boolean => {
     && programs.filter((x) => x.status === "active" && x.main?.slot === slot && x.main.openedAt === openedAt).length === 1;
 };
 let dispatchBusy = false;
+
+// ▸ THE VARIANT GROUP START (E4, T2): all n variants of one group in ONE act, or none of them.
+//
+// WHOLE OR NOTHING, because a comparison needs every arm: a group whose second variant waits behind
+// a full cap while the first runs ahead is n lanes on n different mains, and the first finishes
+// before the second has read its brief. So every gate the tick asks of one row is asked of the n
+// rows TOGETHER — harness, release, the start plan's verdict, the repo and program caps counted as
+// n lanes, n free slots — and the first that fails holds the whole group, with its sentence on
+// every variant row the tick owns (tickOwnsRow, the rule the tick's own `waiting` writes by).
+//
+// ONE BASE, because byte-identical briefs need one tree: the source package is cut from the lane's
+// own commit (laneSnippetBlock), and main may move between the n spawns. The integration head is
+// read ONCE and every variant forks from it (createWorktree `startAt`).
+//
+// `ownerAct` is the ▸ start button on the group row: attended, so — exactly like ▸ start on one row —
+// no release, plan, cap or quiet-hours question is asked; the slots and the one base still are.
+// Cut out of tickDispatch rather than inlined for the reason its body pins state (e2e/pins.ts): one
+// dispatch call, one bounded body. The spawn is still each row's own persisted choice (taskSpawnOf).
+type VariantGroupStart =
+  | { started: true; slots: number[]; tails: Promise<void>[]; partial: string | null }
+  | { started: false; why: string; stop?: true };
+async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantGroupStart> {
+  const group = row.variants ? row : variantGroupOf(row);
+  const rows = group ? variantsOfGroup(group) : [row];
+  const hold = (why: string, stop?: true): VariantGroupStart => {
+    if (!ownerAct) {
+      let changed = 0;
+      for (const r of rows) if (tickOwnsRow(r) && r.note !== why) { r.note = why.slice(0, 300); changed++; }
+      if (changed) saveState();
+    }
+    return { started: false, why, ...(stop ? { stop } : {}) };
+  };
+  if (!group) return hold(`waiting: variant ${row.id} lost its group ${row.variantOf} — a variant never starts alone`);
+  const n = group.variants?.length ?? 0;
+  if (n < TASK_VARIANTS_MIN || rows.length !== n)
+    return hold(`waiting: variant group ${group.id} has ${rows.length} variant rows for ${n} filed choices — it cannot start whole`);
+  const moved = rows.filter((r) => r.status !== "pending" && r.status !== "queued");
+  if (moved.length)
+    return hold(`waiting: variant group ${group.id} already moved (${moved.map((r) => `${r.id} ${r.status}`).join(", ")}) — a group starts whole or not at all`);
+  if (rows.some((r) => dispatchingTasks.has(r.id))) return { started: false, why: "a variant of this group is already being dispatched" };
+  const repo = group.repo ?? DISPATCH_REPO;
+  if (!repo) return { started: false, why: "no target repo — set FLEET_DISPATCH_REPO or give the task a repo" };
+  if (!ownerAct) {
+    for (const r of rows) {
+      const h = harnessOf(taskSpawnOf(r).harness);
+      if (!harnessAutomatableFor(h))
+        return hold(`waiting: variant ${r.variantIndex}/${n} runs harness ${h.id}, which is not automatable — no unattended path may drive it (${harnessAutomationWhy()})`);
+    }
+    const released = rows.filter((r) => releaseVerdictNow(r).released).length;
+    if (released < n) return hold(`waiting: variant group ${group.id} starts only with all ${n} variants released — ${released}/${n} are`);
+    const nextOf = new Map(startPlanWaves().flatMap(({ plan }) => plan.ids.map((id) => [id, plan.next] as const)));
+    for (const r of rows) {
+      const next = nextOf.get(r.id);
+      if (!next) return hold(`waiting: variant ${r.id} is in no wave of the start plan`);
+      if (next !== "now" && !("cap" in next)) return hold(startPlanWaitNote(next));
+    }
+    const lanes = slots.filter((s) => inRepo(s, repo)).length;
+    const repoCap = repoLaneCap(repo);
+    if (lanes + n > repoCap.max)
+      return hold(`waiting: variant group needs ${n} lanes — ${lanes}/${repoCap.max} busy in ${basename(repo)} (${repoCap.source === "repo" ? "repo cap" : "machine default"})`);
+    if (group.programId) {
+      const programCap = programDispatchCap(programDispatchOn(rows[0]), repoCap.max);
+      const programLanes = slots.filter((s) => s.cwd && s.programId === group.programId).length;
+      const title = programs.find((p) => p.id === group.programId)?.title ?? group.programId;
+      if (programLanes + n > programCap)
+        return hold(`waiting: variant group needs ${n} lanes — ${programLanes}/${programCap} busy in program "${title}"`);
+      // a policy never starts n lanes nobody could land (tickDispatch's one-lane rule, which n ≥ 2 always exceeds)
+      if (rows.some((r) => { const v = releaseVerdictNow(r); return v.released && v.by === "policy"; }) && !programMainLive(group.programId))
+        return hold("waiting: no bound MAIN to land — a policy never starts a variant group without one");
+    }
+  }
+  const free = slots.filter((s) => !s.cwd && !laneSpawn.has(s.id)).slice(0, n);
+  if (free.length < n) return hold(`waiting: variant group needs ${n} free slots — ${free.length} free`);
+  if (!ownerAct) {
+    const quietWaived = !!programDispatchOn(rows[0]) && rows.every((r) => r.releasedBy === "machine");
+    const pre = await canDeliver(free[0], { now: Date.now(), alive: false, ...(quietWaived ? { quietHours: false } : {}) });
+    if (!pre.ok) return { started: false, why: pre.gate, ...(pre.gate === "quiet-hours" ? {} : { stop: true as const }) };
+  }
+  let base: string | null = null;
+  try { base = await integrationHead(await repoRootOf(repo)); } catch { base = null; }
+  if (!base) return { started: false, why: "could not read the integration head — no base to fork the group from" };
+  // every await above may have moved the group or taken a slot: re-read before the first mutation
+  if (rows.some((r) => !tasks.includes(r) || dispatchingTasks.has(r.id) || (r.status !== "pending" && r.status !== "queued")
+      || (!ownerAct && !releaseVerdictNow(r).released)) || free.some((s) => s.cwd || laneSpawn.has(s.id)))
+    return { started: false, why: "the group moved while its start was being checked" };
+  if (!ownerAct) for (const r of rows) {
+    const v = releaseVerdictNow(r);
+    if (!v.released || v.by !== "policy") continue;
+    releaseTask(r, "machine");
+    audit("task_release", undefined, `${r.id} program=${r.programId} by=policy ${programReleasePolicy(r)}`);
+  }
+  // all n slots reserved before the first spawn awaits, so no other door takes one mid-group
+  for (const s of free) laneSpawn.add(s.id);
+  const started: { slot: number; tail: Promise<void> }[] = [];
+  let partial: string | null = null;
+  try {
+    for (const [i, r] of rows.entries()) {
+      const d = await dispatchTask(r, free[i], ownerAct, false, taskSpawnOf(r), null, base);
+      if (!d.ok) { partial = `variant ${r.variantIndex}/${n} failed to start: ${d.error}`; break; }
+      r.note = `${r.note ?? ""} · variant ${r.variantIndex}/${n} of ${group.id} @${base.slice(0, 8)}`.slice(0, 300);
+      started.push({ slot: d.slot, tail: d.tail });
+    }
+  } finally {
+    for (const s of free) if (!started.some((x) => x.slot === s.id)) laneSpawn.delete(s.id);
+  }
+  if (!started.length) return { started: false, why: partial ?? "no variant started" };
+  group.note = partial
+    ? `variant group started PARTIALLY (${started.length}/${n}) — ${partial}`.slice(0, 300)
+    : `${n} variants running on slots ${started.map((x) => x.slot).join(", ")} @${base.slice(0, 8)}`;
+  audit("variant_group_start", started[0].slot,
+    `${group.id} n=${n} started=${started.length} base=${base.slice(0, 12)} slots=${started.map((x) => x.slot).join(",")} by=${ownerAct ? "owner" : "tick"}`);
+  saveState();
+  return { started: true, slots: started.map((x) => x.slot), tails: started.map((x) => x.tail), partial };
+}
+
 async function tickDispatch(): Promise<void> {
   if (dispatchBusy || !DISPATCH_REPO) return;
   // THE GLOBAL MASTER STOP IS NO LONGER THIS TICK'S OWN GATE — it became a per-ROW gate at the top
@@ -11880,6 +12233,13 @@ async function tickDispatch(): Promise<void> {
       // an oldest-first queue must not hide the program row behind it.
       const pd = programDispatchOn(next);
       if (!dispatchOn && !pd) continue;
+      // E4: a variant starts only with its whole group — startVariantGroup asks every gate below of all n
+      if (next.variantOf) {
+        const g = await startVariantGroup(next, false);
+        if (g.started) await Promise.all(g.tails);
+        if (g.started || g.stop) return;
+        continue;
+      }
       // a released task that cannot run RIGHT NOW says why on its own row instead of sitting silent
       // until the owner digs (the stalled-queue finding, 2026-08-04). Written only on change, so the
       // 8 s tick doesn't churn saveState. Onto every row the tick owns (tickOwnsRow). A row the plan did
@@ -26691,6 +27051,14 @@ if (existsSync(STATE_FILE)) {
           review: loadTaskReview((t as { review?: unknown }).review),
           // a hold that half-survived a hand edit still stops the start (loadTaskHold)
           hold: loadTaskHold((t as { hold?: unknown }).hold),
+          // THE VARIANT FIELDS (E4) — the group biased to STAY a group (loadTaskVariants), the pair
+          // on a variant restored only well-formed: a variant that lost its group pointer is an
+          // ordinary row again, which is what it would be had its group been deleted.
+          variants: loadTaskVariants((t as { variants?: unknown }).variants),
+          variantOf: typeof t.variantOf === "string" && t.variantOf ? t.variantOf : undefined,
+          variantIndex: typeof t.variantIndex === "number" && Number.isInteger(t.variantIndex) && t.variantIndex >= 1
+            ? t.variantIndex : undefined,
+          variantDecision: loadTaskVariantDecision((t as { variantDecision?: unknown }).variantDecision),
           // the file surface degrades to ABSENT, never to []: "[]" reads as "touches nothing" in the
           // collision check. A persisted `derived` value is recomputed, never promoted to "confirmed".
           files: t.filesOrigin === "derived" ? undefined : normFileList(t.files),
@@ -30137,6 +30505,19 @@ Bun.serve<WSData>({
     // Placed ABOVE the release route on purpose, like the filing door: that route's pin holds
     // "the release route reads no body" over the source region between its own opening line and the
     // events-ack line, and this handler reads one.
+    // E4 · Program-MAIN variant decision (decideVariantForMain). Non-lane only for the family's reason —
+    // and here it is sharpest: a lane deciding which variant lands would be a variant judging itself.
+    // Placed ABOVE the release route because it reads a body (that route's "reads no body" pin).
+    const selfVariantWinner = /^\/api\/self\/tasks\/([a-z0-9]+)\/variant-winner$/.exec(url.pathname);
+    if (selfVariantWinner && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not decide a variant group — a lane is one of the variants, and a variant does not judge itself" }, 409);
+      return decideVariantForMain(s, selfVariantWinner[1]!, await readJson(req));
+    }
+
     const selfTaskBrief = /^\/api\/self\/tasks\/([a-z0-9]+)\/brief$/.exec(url.pathname);
     if (selfTaskBrief && req.method === "POST") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
@@ -31808,6 +32189,10 @@ Bun.serve<WSData>({
           audit("land_rejected_report_override", s.id,
             `${refusedWork.id} branch=${branch} via=${ownerActor.via}`);
         }
+        // E4 · a variant lands only as its group's decided winner — refused before the gate spends a
+        // run on it, and with no override: the decision door is where the owner chooses, not here
+        const variantRefusal = variantLandRefusal(s);
+        if (variantRefusal) return json({ error: variantRefusal }, 409);
         const st = await git(cwd, "status", "--porcelain");
         if (st.code !== 0) return json({ error: "git status failed — worktree gone?" }, 400);
         if (st.out) return json({ status: "blocked",
@@ -32301,6 +32686,12 @@ Bun.serve<WSData>({
       // harness first). Absence persists nothing — the row stays legacy-shaped, DEFAULT_SPAWN its meaning.
       const spawnChoice = taskSpawnFromBody(body);
       if (!spawnChoice.ok) return json({ error: spawnChoice.error }, 400);
+      // A VARIANT GROUP instead of one row (taskVariantsFromBody): only an auftrag runs, so only an
+      // auftrag can be worked by n agents.
+      const variantChoice = taskVariantsFromBody(body);
+      if (!variantChoice.ok) return json({ error: variantChoice.error }, 400);
+      if (variantChoice.variants && isTaskKind(body.kind) && body.kind !== "auftrag")
+        return json({ error: `a ${body.kind} is advisory — only an auftrag can be worked by variants` }, 400);
       const reviewChoice = taskReviewFromBody(body);
       if (!reviewChoice.ok) return json({ error: reviewChoice.error }, 400);
       let taskProgramId: string | undefined;
@@ -32342,10 +32733,13 @@ Bun.serve<WSData>({
         // ▸ queue button routes through) — a row that arrives already queued was released by the
         // owner who posted it. A row that arrives `pending` was not released at all: no field.
         ...(body.queue === true ? { releasedBy: "owner" as const } : {}),
+        ...(variantChoice.variants ? { variants: variantChoice.variants } : {}),
       };
-      tasks = capTasks([...tasks, t]);
+      const variantRows = variantChoice.variants ? variantRowsFor(t, variantChoice.variants) : [];
+      tasks = capTasks([...tasks, t, ...variantRows]);
       saveState();
-      return json({ ok: true, task: t });
+      if (variantRows.length) audit("variant_group", undefined, `${t.id} n=${variantRows.length} by=owner`);
+      return json({ ok: true, task: t, ...(variantRows.length ? { variants: variantRows } : {}) });
     }
     // the full prompt texts, kept off the 2 s poll (see TaskDigest). The queue overlay fetches
     // this when it opens; a task's text never changes after creation, so the client caches by id.
@@ -32385,6 +32779,16 @@ Bun.serve<WSData>({
       saveState();
       audit("task_kind", undefined, `${t.id}:${before}->${t.kind}`);
       return json({ ok: true, task: t });
+    }
+    // E4 · THE VARIANT DECISION, the board's door: which ONE variant of a group lands (decideVariantGroup
+    // holds every rule; this door only names the principal).
+    const taskVariantWinner = /^\/api\/tasks\/([a-z0-9]+)\/variant-winner$/.exec(url.pathname);
+    if (req.method === "POST" && taskVariantWinner) {
+      const t = tasks.find((x) => x.id === taskVariantWinner[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      const body = await readJson(req);
+      const decided = await decideVariantGroup(t, body?.winner, "owner");
+      return json(decided.body, decided.status);
     }
     // THE REVIEW OPT-IN (Task.review), the board's own door: the ③ haken on a row. Allowed while the
     // row can still reach a lane or is running in one — a `sent` row is the case that matters most,
@@ -32519,6 +32923,21 @@ Bun.serve<WSData>({
       // a task with its own target repo starts fine without the env default
       if (!DISPATCH_REPO && !t.repo) return json({ error: "no target repo — set FLEET_DISPATCH_REPO or give the task a repo" }, 400);
       if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory — the dispatcher never runs this` }, 409);
+      // E4 · ▸ START ON A VARIANT GROUP starts ALL its variants, attended, from one base
+      // (startVariantGroup). Each variant runs its own filed choice, so a body naming an agent or a
+      // clarify frame is refused rather than applied to n lanes at once. A single variant is never
+      // the button's to start: that would be the comparison with nothing to compare against.
+      if (t.variantOf) return json({ error: `a variant starts only with its whole group — start the group row ${t.variantOf}` }, 409);
+      if (t.variants) {
+        const gBody = await readJson(req);
+        if (gBody && ["harness", "model", "effort", "browser", "clarify"].some((k) => gBody[k] !== undefined && gBody[k] !== null && gBody[k] !== false))
+          return json({ error: "a variant group runs the agents it was filed with — name no harness, model, effort, browser or clarify here" }, 400);
+        const g = await startVariantGroup(t, true);
+        if (!g.started) return json({ error: g.why }, 409);
+        for (const tail of g.tails) tail.catch(() => {});
+        audit("task_dispatch", g.slots[0], `${t.id} variant-group n=${g.slots.length}`);
+        return json({ ok: true, slots: g.slots, ...(g.partial ? { partial: g.partial } : {}) });
+      }
       if (t.status !== "pending" && t.status !== "queued")
         return json({ error: `task is ${t.status} — only a pending or queued task can be started` }, 409);
       if (dispatchingTasks.has(t.id)) return json({ error: "task is already being dispatched" }, 409);
@@ -32826,6 +33245,12 @@ Bun.serve<WSData>({
       // (incident 2026-08-05: server-narrativ-archiv.md#fetch-task-actions).
       if ((taskAct[2] === "archive" || taskAct[2] === "delete") && t.status === "sent")
         return json({ error: "task is running in a lane — land or kill the lane first" }, 409);
+      // E4 · a GROUP is the one source its variants are briefed from: deleting it under an open
+      // variant would leave a row whose brief, card and land decision have nowhere to come from
+      if (taskAct[2] === "delete" && t.variants) {
+        const open = variantsOfGroup(t).filter((x) => x.status === "pending" || x.status === "queued" || x.status === "sent");
+        if (open.length) return json({ error: `this is a variant group with ${open.length} open variant(s) (${open.map((x) => x.id).join(", ")}) — archive or delete them first` }, 409);
+      }
       // N3 · …and the same for a row other rows are working AGAINST. `delete` was the hole the cap
       // could not cover: the retention protects a source from being EVICTED and said nothing about
       // being removed by hand, so one ✕ took the text out from under every assignment naming it.
@@ -32872,9 +33297,16 @@ Bun.serve<WSData>({
           // Narrativ: server-narrativ-archiv.md#fetch-task-actions
           releaseTask(t, "owner");
           t.note = null;
+          // E4 · releasing a GROUP releases its variants — they start only together, so a group whose
+          // bracket reads released while its variants wait would be a release nobody can see holding
+          if (t.variants) for (const v of variantsOfGroup(t))
+            if (v.status === "pending" || v.status === "queued") { releaseTask(v, "owner"); v.note = null; }
         }
       }
-      else if (taskAct[2] === "unqueue") t.status = "pending";
+      else if (taskAct[2] === "unqueue") {
+        t.status = "pending";
+        if (t.variants) for (const v of variantsOfGroup(t)) if (v.status === "queued") v.status = "pending";
+      }
       else if (taskAct[2] === "archive") t.status = "archived";
       else if (taskAct[2] === "unarchive") t.status = "pending"; // back to owner review, never straight to queued
       else t.status = "done";

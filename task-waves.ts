@@ -58,6 +58,13 @@ export interface TaskWaveInput {
   // Read by the LAND fold only: queue ids this row waits on (its card's `after`). The fold never
   // places the row in a wave before theirs; the parallel projection below ignores it.
   after?: readonly string[];
+  // Read by the LAND fold only: the variant GROUP row this row is one variant of (Task.variantOf).
+  // A variant is never bundled — n variants of one group share every file by construction, and
+  // folding them into one lane would run one model where n were asked for.
+  variantOf?: string;
+  // Read by the LAND fold only: this row IS a variant group (Task.variants) — a bracket around its
+  // variant rows that never runs in a lane itself, so it is in no wave at all.
+  variantGroup?: true;
 }
 
 export interface ProjectTaskWavesInput {

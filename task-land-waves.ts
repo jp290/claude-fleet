@@ -23,7 +23,7 @@ export type LandWaveClass = "docs" | "code";
 // Every reason a row is alone in its wave. `null` is the fourth case and means the opposite of a
 // verdict: the row IS bundlable and found no partner (or the budget cut it off) — not "reason unknown".
 export type LandWaveReasonAgainst =
-  "gate-aenderer" | "flaeche-nur-abgeleitet" | "flaeche-ohne-bereich" | "kein-program" | "keine-flaeche";
+  "gate-aenderer" | "flaeche-nur-abgeleitet" | "flaeche-ohne-bereich" | "kein-program" | "keine-flaeche" | "variante";
 
 export interface LandWaveCosts {
   fullGateSec: number; docsGateSec: number; fullAuditSec: number; docsAuditSec: number;
@@ -213,9 +213,14 @@ function classify(task: TaskWaveInput): ClassifiedRow {
   // confirming act, and such a surface bundles on range evidence only (collidesOn). A card row with
   // no range in any of its files can therefore never find an edge — it is named for that, rather
   // than sitting in a component as a bundlable row that silently never bundles.
+  // "variante" (E4, 2026-09-15) outranks every other reason: it is not a statement about the surface
+  // at all. The n variants of one group carry the SAME text and therefore the same files, so the
+  // component rule below would fold them into ONE lane — one model running where n were asked for.
+  // A variant is alone in its wave whatever its surface says.
   const card = task.filesOrigin === "card";
   const reasonAgainst: LandWaveReasonAgainst | null =
-    !files.length ? "keine-flaeche"
+    task.variantOf ? "variante"
+    : !files.length ? "keine-flaeche"
       : !programId ? "kein-program"
         : task.filesOrigin !== "confirmed" && !card ? "flaeche-nur-abgeleitet"
           : card && !(task.ranges ?? []).some((range) => files.includes(range.file)) ? "flaeche-ohne-bereich"
@@ -403,7 +408,8 @@ export function projectLandWaves(input: ProjectLandWavesInput): LandWaveProjecti
   // Both open shapes: `queued` is released work, `pending` is a draft the owner has not released —
   // and today every open auftrag row is pending, so a queued-only sensor would project nothing.
   const candidates = input.tasks
-    .filter((task) => task.kind === "auftrag" && (task.status === "queued" || task.status === "pending"))
+    .filter((task) => task.kind === "auftrag" && (task.status === "queued" || task.status === "pending")
+      && !task.variantGroup)
     .slice()
     .sort(rowOrder);
 
@@ -439,6 +445,7 @@ const argAfter = (name: string): string | null => {
 interface StateTask {
   id?: unknown; kind?: unknown; status?: unknown; created?: unknown; repo?: unknown; programId?: unknown;
   card?: { valid?: unknown; size?: unknown; surfaceValid?: unknown; after?: unknown; surface?: { creates?: unknown } };
+  variantOf?: unknown; variants?: unknown;
 }
 
 async function cli(): Promise<void> {
@@ -484,6 +491,9 @@ async function cli(): Promise<void> {
       ...(files.length ? { files } : {}),
       ...(after.length ? { after } : {}),
       ...(derived?.filesOrigin ? { filesOrigin: derived.filesOrigin } : {}),
+      // the variant pair as server.ts#landWaveProjectionNow passes it
+      ...(typeof task.variantOf === "string" && task.variantOf ? { variantOf: task.variantOf } : {}),
+      ...(Array.isArray(task.variants) ? { variantGroup: true as const } : {}),
       // null when the checkout carries no graphify-out/, which is the honest answer for a lane and
       // the one that sends collidesOn back to the file level.
       ranges: derived?.ranges ?? null,

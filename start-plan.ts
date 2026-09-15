@@ -126,10 +126,14 @@ export interface StartPlanRow {
   after: readonly string[]; checks: StartPlanChecks;
   // the row's PROGRAM policy (absent = manual) and whether its MAIN holds it — releaseVerdict's inputs
   release?: StartPlanRelease; held?: boolean;
+  // the variant GROUP this row is one variant of (server/types.ts#Task.variantOf); absent = no group
+  variantOf?: string;
 }
 export interface StartPlanLane {
   slot: number; repo: string | null; programId: string | null;
   files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null;
+  // the variant group of the row this lane runs, if it runs one — absent otherwise
+  variantOf?: string;
 }
 export interface StartPlanCap { max: number; source: "default" | "repo" }
 export interface StartPlanRepoCaps extends StartPlanCap {
@@ -229,11 +233,18 @@ export function projectStartPlan(input: StartPlanInput): StartPlan {
         const unreleased = known.filter((row) => !releaseVerdict(row).released).map((row) => row.id);
         if (unreleased.length) return { unreleased };
         // 3. Collision with running work first, then with an earlier wave that is still in line.
+        //    A VARIANT never collides with its own group (E4): the n variants of one group share every
+        //    file by construction and are MEANT to run at once — only one of them will ever land. A
+        //    lane or row of any other group, or of none, still holds it exactly as before.
+        const sameGroup = (row: StartPlanRow, other: { variantOf?: string }): boolean =>
+          !!row.variantOf && row.variantOf === other.variantOf;
         for (const row of known) for (const lane of repoLanes) {
+          if (sameGroup(row, lane)) continue;
           const hit = collision(row, lane);
           if (hit) return { collides: { slot: lane.slot, ...hit } };
         }
         for (const row of known) for (const earlier of claimed) {
+          if (sameGroup(row, earlier.row)) continue;
           const hit = collision(row, earlier.row);
           if (hit) return { collides: { row: earlier.row.id, ...hit } };
         }
@@ -305,6 +316,7 @@ const argAfter = (name: string): string | null => {
 interface StateTask {
   id?: unknown; kind?: unknown; text?: unknown; source?: unknown; status?: unknown; slot?: unknown; programId?: unknown;
   card?: (StartPlanCardFacts & { after?: unknown }) | null; brief?: { at?: unknown } | null; hold?: unknown;
+  variantOf?: unknown; variants?: unknown;
 }
 interface StateSlot { worktree?: { repo?: unknown } | null; programId?: unknown }
 
@@ -350,18 +362,24 @@ async function cli(): Promise<void> {
   };
   const statuses: Record<string, string> = {};
   const rows: StartPlanRow[] = [];
+  // A VARIANT reads its card, text and brief off its GROUP row, as server.ts#startPlanRowOf does: the
+  // group is the one source every variant is briefed from, and a variant carries no reading of its own.
+  const sourceOf = (task: StateTask): StateTask =>
+    (typeof task.variantOf === "string" && tasks.find((t) => t.id === task.variantOf)) || task;
   for (const task of tasks) {
     if (typeof task.id !== "string") continue;
     const status = typeof task.status === "string" ? task.status : "";
     statuses[task.id] = status;
-    if (task.kind !== "auftrag" || (status !== "pending" && status !== "queued")) continue;
+    if (task.kind !== "auftrag" || (status !== "pending" && status !== "queued") || Array.isArray(task.variants)) continue;
+    const src = sourceOf(task);
     rows.push({ id: task.id, status, programId: typeof task.programId === "string" && task.programId ? task.programId : null,
-      ...surfaceOf(task), after: strings(task.card?.after),
-      checks: startPlanChecks({ text: typeof task.text === "string" ? task.text : "",
-        source: typeof task.source === "string" ? task.source : "unknown", card: task.card ?? null,
-        briefAt: typeof task.brief?.at === "number" ? task.brief.at : null }),
+      ...surfaceOf(task), after: strings(src.card?.after),
+      checks: startPlanChecks({ text: typeof src.text === "string" ? src.text : "",
+        source: typeof task.source === "string" ? task.source : "unknown", card: src.card ?? null,
+        briefAt: typeof src.brief?.at === "number" ? src.brief.at : null }),
       ...(policyOf(task) !== "manual" ? { release: policyOf(task) } : {}),
-      ...(task.hold ? { held: true } : {}) });
+      ...(task.hold ? { held: true } : {}),
+      ...(typeof task.variantOf === "string" && task.variantOf ? { variantOf: task.variantOf } : {}) });
   }
 
   // a lane's repo is stored canonical; map it back onto the projection's own repo string
@@ -372,12 +390,15 @@ async function cli(): Promise<void> {
     const laneRepo = typeof slot.worktree?.repo === "string" ? slot.worktree.repo : null;
     const programId = typeof slot.programId === "string" && slot.programId ? slot.programId : null;
     if (!laneRepo && !programId) continue;
-    const own = tasks.filter((t) => t.slot === Number(id) && t.status === "sent").map(surfaceOf);
+    const ownRows = tasks.filter((t) => t.slot === Number(id) && t.status === "sent");
+    const own = ownRows.map(surfaceOf);
     const files = own.flatMap((s) => s.files ?? []);
+    const variantOf = ownRows.map((t) => t.variantOf).find((v): v is string => typeof v === "string" && !!v);
     lanes.push({ slot: Number(id), repo: laneRepo ? projectionRepoFor.get(canon(laneRepo)) ?? laneRepo : null, programId,
       // one row without a known surface makes the lane's surface unknown as a whole
       files: own.length && own.every((s) => s.files) ? files : null,
-      ranges: own.some((s) => s.ranges) ? own.flatMap((s) => s.ranges ?? []) : null });
+      ranges: own.some((s) => s.ranges) ? own.flatMap((s) => s.ranges ?? []) : null,
+      ...(variantOf ? { variantOf } : {}) });
   }
   lanes.sort((a, b) => a.slot - b.slot);
 

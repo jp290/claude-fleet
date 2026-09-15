@@ -939,8 +939,12 @@ export async function run(ctx: Ctx): Promise<void> {
       lineDAfterBoot?.state === "present" && JSON.stringify(lineDAfterBoot.record) === JSON.stringify(lineD?.record),
       JSON.stringify(lineDAfterBoot));
     // ONE BOOT PER PLANTED SHAPE on D's record: a refused record is gone from the next save, so every
-    // plant starts from the record as the server wrote it
-    const isRecordD = (r: Record<string, unknown>): boolean => (r.to as { slot?: number } | undefined)?.slot === pj.slot;
+    // plant starts from the record as the server wrote it. Matched on the OCCUPANT: D's slot number is
+    // recycled within this block, so an earlier record on the line can carry the same `to.slot`
+    const isRecordD = (r: Record<string, unknown>): boolean => {
+      const to = r.to as { slot?: number; openedAt?: number } | undefined;
+      return to !== undefined && to.slot === pj.slot && to.openedAt === lineD?.record?.to?.openedAt;
+    };
     let recordD: Record<string, unknown> | undefined;
     const plantD = async (obligations: Record<string, unknown>[]): Promise<LineageView | undefined> => {
       await stopSrv();

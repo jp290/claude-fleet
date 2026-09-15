@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, typeScreen } from "./harness";
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
-import { laneDoneLooking, type LaneSignalView } from "../lane-signals";
+import { DONE_LOOKING_RULES, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
 import { MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
@@ -10205,10 +10205,52 @@ exit 0
           .filter((r) => r.event === "merge_verdict");
       } catch { return []; }
     };
+    // THE DOOR'S OWN PREDICATE, over the door's own facts. `waitDoneLooking` polls /api/sessions and
+    // tests git + idle; the land door (server.ts#selfLandTaskForMain, rung 12) tests
+    // `laneWatchSignal(laneSignalView(lane, now, "fact"), MERGE_IDLE_MS)`, which adds alive, gitOp
+    // and a blocking merge. Measured twice (audits 15d5f056 and 891c7d98, arm (iv)): m1Land fired
+    // into `409 not done-looking (no signal)`, because it called waitDoneLooking and never read the
+    // answer. /api/steward/sessions serves exactly those inputs (stewardSlotsView spreads
+    // laneSignalView); its `alive` is the automation fold, which laneSignalView's own note says is
+    // identical to the door's "fact" reading for the default harness these fixture lanes run.
+    // `clientAtMs`/`doorAtMs` say WHEN each predicate first held and `doorFailing` names the door
+    // clauses still false the moment git + idle alone said ready — the divergence as a number.
+    const M1_DOOR_WAIT_ATTEMPTS = 120;
+    type M1Ready = { clientAtMs: number | null; doorAtMs: number | null; doorFailing: string[] };
+    const m1WaitDoor = async (slot: number): Promise<{ ok: boolean; ready: M1Ready }> => {
+      const t0 = Date.now();
+      const ready: M1Ready = { clientAtMs: null, doorAtMs: null, doorFailing: [] };
+      const stewTok = ((await (await get("/api/steward/token")).json()) as { token?: string }).token ?? "";
+      let last = "no row";
+      for (let i = 0; i < M1_DOOR_WAIT_ATTEMPTS; i++) {
+        const res = await fetch(`${BASE}/api/steward/sessions`, { headers: { authorization: `Bearer ${stewTok}` } });
+        const body = res.ok ? (await res.json()) as { slots: (LaneSignalView & { id: number })[] } : null;
+        const row = body?.slots.find((x) => x.id === slot);
+        if (row) {
+          const failing = DONE_LOOKING_RULES.filter((r) => !r.holds(row, MERGE_IDLE_MS)).map((r) => r.prose);
+          const clientHolds = row.git !== null && row.git.dirty === 0 && row.git.ahead > 0
+            && row.observed && row.idleMs !== null && row.idleMs >= MERGE_IDLE_MS;
+          if (clientHolds && ready.clientAtMs === null) {
+            ready.clientAtMs = Date.now() - t0;
+            ready.doorFailing = failing;
+          }
+          if (laneWatchSignal(row, MERGE_IDLE_MS) === "done-looking") {
+            ready.doorAtMs = Date.now() - t0;
+            return { ok: true, ready };
+          }
+          last = JSON.stringify({ slot, signal: laneWatchSignal(row, MERGE_IDLE_MS), failing,
+            alive: row.alive, gitOp: row.gitOp, merge: row.merge, git: row.git,
+            observed: row.observed, idleMs: row.idleMs });
+        } else last = body ? `slot ${slot} has no row` : `steward view ${res.status}`;
+        await Bun.sleep(250);
+      }
+      doneLookingWhy = last;
+      return { ok: false, ready };
+    };
     // a land WITHOUT the ff latch: the retry chain is never reached (the gate stops the land long
     // before the fast-forward), so arming it would leave this waiting for a `reached` file that
     // cannot appear.
-    const m1Land = async (name: string, file: string): Promise<{ row: string; slot: number | null; fired: boolean; refusal?: string }> => {
+    const m1Land = async (name: string, file: string): Promise<{ row: string; slot: number | null; fired: boolean; refusal?: string; ready?: M1Ready }> => {
       for (const f of [ffrLatch, `${ffrLatch}.reached`, `${ffrLatch}.release`]) try { rmSync(f); } catch { /* absent */ }
       const row = await makeTask({ text: `m1 ${name}`, programId: ffrProgram.id, repo: REPO2 });
       ffrRows.push(row);
@@ -10218,12 +10260,19 @@ exit 0
         spawnSync("git", ["-C", lane.cwd, "add", file]);
         spawnSync("git", ["-C", lane.cwd, "commit", "-qm", `m1 ${name}`]);
       }
-      if (lane.slot !== null) { ffrLanes.push(lane.slot); await waitDoneLooking(lane.slot); }
-      if (ffrTok === "") return { row, slot: lane.slot, fired: false, refusal: "no MAIN token" };
+      if (lane.slot === null) return { row, slot: null, fired: false, refusal: "setup: not done-looking — the dispatch handed back no slot" };
+      ffrLanes.push(lane.slot);
+      // never fire at a door whose own predicate has not been seen to hold: a refusal there would be
+      // this fixture's race, read as the product's verdict
+      const waited = await m1WaitDoor(lane.slot);
+      if (!waited.ok)
+        return { row, slot: lane.slot, fired: false, refusal: `setup: not done-looking — ${doneLookingWhy}`, ready: waited.ready };
+      if (ffrTok === "") return { row, slot: lane.slot, fired: false, refusal: "no MAIN token", ready: waited.ready };
       // the door's own words ride along when it refuses: `fired:false` alone cannot say WHICH rung
       // stopped the land (first seen on second-host job 8f6f445167f9, arm (iv), no text to read)
       const r = await selfLand(ffrTok, row);
-      return { row, slot: lane.slot, fired: r.ok, ...(r.ok ? {} : { refusal: `${r.status} ${(await r.text()).slice(0, 300)}` }) };
+      return { row, slot: lane.slot, fired: r.ok, ready: waited.ready,
+        ...(r.ok ? {} : { refusal: `${r.status} ${(await r.text()).slice(0, 300)}` }) };
     };
     const m1AuditBefore = m1AuditRows().length;
     const m1MainBefore = main2Of();
@@ -10608,31 +10657,45 @@ exit 0
         && existsSync(m5Sentinel),
       JSON.stringify({ occupant: m5Occupant, birth: m5OccBirth, sentinel: existsSync(m5Sentinel) }));
 
+    // THE SETUP LINE OWNS "did the land fire". Audits 15d5f056 and 891c7d98 both read `fired:false`
+    // inside (iv) itself, so the invariant went red over a land that was never asked for. Each arm
+    // now says under its own name whether its land reached the door; the invariant below is emitted
+    // only over a land that did — an unfired arm measured nothing, and a PASS there would claim it had.
+    // `ready` is the sensor for WHY a land might not fire: when git + idle held versus when the
+    // door's own predicate did, and which door clauses were still false in between.
     ffrReset();
     const m5D = await m1Land("m5 docs", "m5-docs.md");
-    const m5DVerdict = await m5Settled(m5D.slot);
+    check("M5 setup: the docs land fired",
+      m5D.fired && m5D.slot !== null,
+      JSON.stringify({ slot: m5D.slot, refusal: m5D.refusal ?? null, ready: m5D.ready ?? null }));
+    const m5DVerdict = m5D.fired ? await m5Settled(m5D.slot) : null;
     await m5Drop(m5D.slot);
-    check("(iv) M5: a DOCS-ONLY land does not take the suite mutex at all — its short chain runs while somebody else holds the machine, says so in the note, and never reports a wait",
-      m5D.fired && m5D.slot !== null && m5DVerdict?.verify?.proportional === true
-        && m5DVerdict.verify?.waitedOut === undefined
-        && (m5DVerdict.verify?.cmd ?? "").includes("bun e2e/pins.ts")
-        && (m5DVerdict.verify?.out ?? "").includes("suite mutex: NOT TAKEN")
-        && m5DVerdict.verify?.waitMs === undefined
-        && m5LockPid() === m5Occupant && ffrAlive(m5Occupant),
-      JSON.stringify({ fired: m5D.fired, refusal: m5D.refusal, slot: m5D.slot, verify: m5DVerdict?.verify,
-        lockPid: m5LockPid(), occupant: m5Occupant }));
+    if (m5D.fired && m5D.slot !== null)
+      check("(iv) M5: a DOCS-ONLY land does not take the suite mutex at all — its short chain runs while somebody else holds the machine, says so in the note, and never reports a wait",
+        m5DVerdict?.verify?.proportional === true
+          && m5DVerdict.verify?.waitedOut === undefined
+          && (m5DVerdict.verify?.cmd ?? "").includes("bun e2e/pins.ts")
+          && (m5DVerdict.verify?.out ?? "").includes("suite mutex: NOT TAKEN")
+          && m5DVerdict.verify?.waitMs === undefined
+          && m5LockPid() === m5Occupant && ffrAlive(m5Occupant),
+        JSON.stringify({ slot: m5D.slot, verify: m5DVerdict?.verify,
+          lockPid: m5LockPid(), occupant: m5Occupant }));
 
     ffrReset();
     const m5C = await m1Land("m5 code", "m5-code.txt");
-    const m5CVerdict = await m5Settled(m5C.slot);
+    check("M5 setup: the code land fired",
+      m5C.fired && m5C.slot !== null,
+      JSON.stringify({ slot: m5C.slot, refusal: m5C.refusal ?? null, ready: m5C.ready ?? null }));
+    const m5CVerdict = m5C.fired ? await m5Settled(m5C.slot) : null;
     await m5Drop(m5C.slot);
-    check("(v) M5 CONTROL: the FULL chain still queues behind that same occupant and is still denied — so (iv) measured the plan, not a lock that had quietly gone free",
-      m5C.fired && m5C.slot !== null && m5CVerdict?.status === "resolved" && m5CVerdict.landed === false
-        && m5CVerdict.verify?.waitedOut === true && m5CVerdict.verify?.proportional === false
-        && ffrLogRuns().length === 0
-        && m5LockPid() === m5Occupant && ffrAlive(m5Occupant),
-      JSON.stringify({ fired: m5C.fired, verify: m5CVerdict?.verify, gateRuns: ffrLogRuns().length,
-        lockPid: m5LockPid(), occupant: m5Occupant }));
+    if (m5C.fired && m5C.slot !== null)
+      check("(v) M5 CONTROL: the FULL chain still queues behind that same occupant and is still denied — so (iv) measured the plan, not a lock that had quietly gone free",
+        m5CVerdict?.status === "resolved" && m5CVerdict.landed === false
+          && m5CVerdict.verify?.waitedOut === true && m5CVerdict.verify?.proportional === false
+          && ffrLogRuns().length === 0
+          && m5LockPid() === m5Occupant && ffrAlive(m5Occupant),
+        JSON.stringify({ verify: m5CVerdict?.verify, gateRuns: ffrLogRuns().length,
+          lockPid: m5LockPid(), occupant: m5Occupant }));
     spawnSync("kill", [m5Occupant]);
     try { rmSync(m5Sentinel); } catch { /* already gone */ }
     rmSync(ffrLock, { recursive: true, force: true });

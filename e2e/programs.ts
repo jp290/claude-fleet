@@ -81,6 +81,9 @@ interface Program extends ProgramContent {
   // Program until the owner grants it, and absent is the byte-for-byte legacy behaviour every
   // assertion outside the section below reads as.
   dispatch?: { v: number; on: boolean; maxLanes: number; confirmedAt: number };
+  // the bound MAIN's pointers for its own lanes (POST /api/self/program-context-packs) — absent
+  // until that MAIN writes a non-empty list
+  contextPacks?: { id: string; useWhen: string; sources: { path: string; anchor: string }[] }[];
   founding?: { v: number; profileKind?: "standard" | "game-maker"; attemptId: string;
     mode: "bootstrap" | "succession"; canonicalRoot?: string; targetRoot?: string;
     target: { slot: number; openedAt: number; selfTokenHash?: string };
@@ -194,7 +197,7 @@ interface ContextReceipt {
   taskId: string | null; originId: string | null; programId: string | null;
   slot: number; branch: string; harness: string | null; model: string | null; effort: string | null;
   mode: string; triggers: string[];
-  selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string }[];
+  selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string; origin?: string }[];
   omitted: { id: string; why: string }[];
   deliveredBytes: number; truncated: boolean;
   // absent on a row written before the renderer was named — that row's block is v1 by date
@@ -6875,6 +6878,134 @@ export async function run(ctx: Ctx): Promise<void> {
       && pdSwitchesAfter.dispatchOn === pdSwitchesBefore.dispatchOn
       && pdSwitchesAfter.autosOn === pdSwitchesBefore.autosOn,
     `rows=${(await spawnRows()).filter((t) => pdTasks.includes(t.id)).length} switches=${JSON.stringify(pdSwitchesAfter)}`);
+
+  // === Program-scoped context pointers · POST /api/self/program-context-packs ===================
+  // THE DOOR AND ITS DELIVERY, server-side. The pure half (validator, planner) is e2e/context-plan.ts;
+  // what only a running server can say is WHO may write, that a refusal stores nothing, that a write
+  // lands in fleet.json, and that a real dispatch of THIS Program's row receipts the pack as
+  // origin:"program" while a lane outside every Program is untouched. Same live binding as above
+  // (successorToken); the board is empty and both master stops are back, so every lane below is one
+  // the attended button started here.
+  const cpTasks: string[] = [];
+  const cpMainCwd = successorSlot === null ? "" : readState().slots?.[String(successorSlot)]?.cwd ?? "";
+  const cpAgents = cpMainCwd ? gitIn(cpMainCwd, "show", "HEAD:AGENTS.md") : { status: null, stdout: "" };
+  const cpHeading = cpAgents.stdout.split("\n")[0] ?? "";
+  const cpPack = { id: "e2e-program-pointer", useWhen: "Before touching this repository's own contract",
+    sources: [{ path: "AGENTS.md", anchor: cpHeading }] };
+  const cpWrite = (token: string, body: unknown): Promise<Response> =>
+    fetch(`${BASE}/api/self/program-context-packs`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
+      body: JSON.stringify(body),
+    });
+  const cpStored = (): string =>
+    JSON.stringify(readState().programs?.find((p) => p.id === mainProgram.id)?.contextPacks ?? null);
+  const cpDispatch = async (fields: Record<string, unknown>, brief: string): Promise<{ status: number; receipt?: ContextReceipt }> => {
+    const created = (await (await post("/api/tasks", { queue: false, ...fields })).json()) as { task: { id: string } };
+    cpTasks.push(created.task.id);
+    await post(`/api/tasks/${created.task.id}/brief`, { text: brief });
+    const started = await post(`/api/tasks/${created.task.id}/dispatch`, {});
+    let receipt: ContextReceipt | undefined;
+    for (let i = 0; i < 40 && started.ok && !receipt; i++) { // the receipt lands after the boot sleep
+      await Bun.sleep(500);
+      receipt = (await contextReceipts()).receipts.find((r) => r.taskId === created.task.id);
+    }
+    return { status: started.status, receipt };
+  };
+  check("program-context-packs fixture: the bound MAIN sits in a repo whose tracked AGENTS.md opens with a heading, and the Program carries no packs yet",
+    /^[0-9a-f]{32}$/.test(successorToken) && cpAgents.status === 0 && /^# \S/.test(cpHeading) && cpStored() === "null",
+    `token=${successorToken.length} cwd=${cpMainCwd} show=${cpAgents.status} heading=${JSON.stringify(cpHeading)} stored=${cpStored()}`);
+
+  // (1b) a session bound to no Program. A fresh plain slot, so the refusal cannot be the binding of
+  // some earlier fixture.
+  const cpUnboundFree = (await sessions()).slots.find((s) => !s.cwd)?.id ?? null;
+  const cpUnboundOpen = cpUnboundFree === null ? null
+    : await post(`/api/slots/${cpUnboundFree}/open`, { cwd: REPO, label: "program-context-packs-unbound" });
+  let cpUnboundToken = "";
+  for (let i = 0; i < 50 && cpUnboundFree !== null && !/^[0-9a-f]{32}$/.test(cpUnboundToken); i++) {
+    cpUnboundToken = readState().slots?.[String(cpUnboundFree)]?.selfToken ?? "";
+    if (!/^[0-9a-f]{32}$/.test(cpUnboundToken)) await Bun.sleep(100);
+  }
+  const cpUnbound = await cpWrite(cpUnboundToken, { packs: [cpPack] });
+  const cpUnboundText = await cpUnbound.text();
+  check("program-context-packs (1b): a session bound to no Program is a 409 naming the binding, and nothing is stored",
+    cpUnboundOpen?.ok === true && /^[0-9a-f]{32}$/.test(cpUnboundToken)
+      && cpUnbound.status === 409 && cpUnboundText.includes("not the current bound MAIN of an active program")
+      && cpStored() === "null",
+    `open=${cpUnboundOpen?.status} token=${cpUnboundToken.length} ${cpUnbound.status} ${cpUnboundText} stored=${cpStored()}`);
+  if (cpUnboundFree !== null) await post(`/api/slots/${cpUnboundFree}/kill`, {});
+
+  // (2) refusals at WRITE: one pack whose anchor is not in the bytes at HEAD, and one pack over the cap
+  const cpMissing = await cpWrite(successorToken, { packs: [{ ...cpPack,
+    sources: [{ path: "AGENTS.md", anchor: "## Never written into this contract" }] }] });
+  const cpMissingBody = (await cpMissing.json()) as { issues?: { code: string; packId: string }[] };
+  check("program-context-packs (2a): a pack whose anchor does not resolve at HEAD is a 400 naming SOURCE_ANCHOR_MISSING, and nothing is stored",
+    cpMissing.status === 400 && cpMissingBody.issues?.some((x) => x.code === "SOURCE_ANCHOR_MISSING" && x.packId === cpPack.id) === true
+      && cpStored() === "null",
+    `${cpMissing.status} ${JSON.stringify(cpMissingBody)} stored=${cpStored()}`);
+  const cpSix = await cpWrite(successorToken, { packs: Array.from({ length: 6 }, (_, i) => ({ ...cpPack, id: `e2e-program-pointer-${i}` })) });
+  const cpSixBody = (await cpSix.json()) as { issues?: { code: string }[] };
+  check("program-context-packs (2b): six packs are a 400 naming PROGRAM_PACKS_TOO_MANY, and nothing is stored",
+    cpSix.status === 400 && cpSixBody.issues?.some((x) => x.code === "PROGRAM_PACKS_TOO_MANY") === true && cpStored() === "null",
+    `${cpSix.status} ${JSON.stringify(cpSixBody)} stored=${cpStored()}`);
+
+  // (3) the valid write
+  const cpValid = await cpWrite(successorToken, { packs: [cpPack] });
+  const cpValidBody = (await cpValid.json()) as { ok?: boolean; contextPacks?: unknown; head?: string };
+  check("program-context-packs (3): the bound MAIN's valid pack is a 200 and fleet.json carries it on programs[].contextPacks",
+    cpValid.status === 200 && cpValidBody.ok === true && JSON.stringify(cpValidBody.contextPacks) === JSON.stringify([cpPack])
+      && cpStored() === JSON.stringify([cpPack]),
+    `${cpValid.status} ${JSON.stringify(cpValidBody)} stored=${cpStored()}`);
+
+  // (4a) a real dispatch of THIS Program's row
+  const cpProgramLane = await cpDispatch({ text: "program-context-packs: a lane of the Program", programId: mainProgram.id },
+    "PROGRAM-CONTEXT-PACKS FIXTURE — a lane of the Program that carries a pack");
+  const cpProgramReceipt = cpProgramLane.receipt;
+  const cpBlob = cpProgramReceipt ? gitIn(cpProgramReceipt.repo, "rev-parse", `${cpProgramReceipt.head}:AGENTS.md`).stdout.trim() : "";
+  const cpExpectedRow = { id: cpPack.id, useWhen: cpPack.useWhen, anchors: cpPack.sources,
+    sourceHash: observedSourceHash(cpPack.sources, new Map([["AGENTS.md", cpBlob]])), origin: "program" };
+  check("program-context-packs (4a): the Program's dispatched lane receipts the pack with origin:\"program\" and its observed source version — and no other row claims that origin",
+    cpProgramLane.status === 200 && !!cpProgramReceipt && cpProgramReceipt.programId === mainProgram.id
+      && JSON.stringify(cpProgramReceipt.selected.filter((row) => row.id === cpPack.id)) === JSON.stringify([cpExpectedRow])
+      && cpProgramReceipt.selected.filter((row) => "origin" in row).length === 1,
+    `${cpProgramLane.status} ${JSON.stringify(cpProgramReceipt ?? null)}`);
+
+  // (1a) the Program's OWN lane may not write its Program's packs — its token is the one credential
+  // that is closest to the MAIN's without being it
+  let cpLaneToken = "";
+  for (let i = 0; i < 50 && cpProgramReceipt && !/^[0-9a-f]{32}$/.test(cpLaneToken); i++) {
+    cpLaneToken = readState().slots?.[String(cpProgramReceipt.slot)]?.selfToken ?? "";
+    if (!/^[0-9a-f]{32}$/.test(cpLaneToken)) await Bun.sleep(100);
+  }
+  const cpLaneIsLane = !!cpProgramReceipt && (await pdLanes()).some((s) => s.id === cpProgramReceipt.slot && !!s.worktree);
+  const cpLaneWrite = await cpWrite(cpLaneToken, { packs: [] });
+  const cpLaneText = await cpLaneWrite.text();
+  check("program-context-packs (1a): a lane token is a 409 in the lane's own words, and the Program's packs stay as written",
+    cpLaneIsLane && /^[0-9a-f]{32}$/.test(cpLaneToken)
+      && cpLaneWrite.status === 409 && cpLaneText.includes("a lane cannot write its Program's context packs")
+      && cpStored() === JSON.stringify([cpPack]),
+    `lane=${cpLaneIsLane} token=${cpLaneToken.length} ${cpLaneWrite.status} ${cpLaneText} stored=${cpStored()}`);
+  await pdKillLanes();
+
+  // (4b) the same board, a row bracketed by no Program — while the pack above is still stored
+  const cpLooseLane = await cpDispatch({ text: "program-context-packs: a lane outside every Program" },
+    "PROGRAM-CONTEXT-PACKS FIXTURE — a lane outside every Program");
+  const cpLooseReceipt = cpLooseLane.receipt;
+  check("program-context-packs (4b): a lane outside every Program gets no Program pack — not selected, not omitted, and no receipt row carries an origin field",
+    cpLooseLane.status === 200 && !!cpLooseReceipt && cpLooseReceipt.programId === null && cpStored() === JSON.stringify([cpPack])
+      && !cpLooseReceipt.selected.some((row) => row.id === cpPack.id)
+      && !cpLooseReceipt.omitted.some((row) => row.id === cpPack.id)
+      && cpLooseReceipt.selected.every((row) => !("origin" in row)),
+    `${cpLooseLane.status} ${JSON.stringify(cpLooseReceipt ?? null)}`);
+
+  // cleanup — lanes and rows gone, and the empty list clears the field instead of storing []
+  await pdKillLanes();
+  for (const id of cpTasks) await post(`/api/tasks/${id}/delete`, {});
+  const cpClear = await cpWrite(successorToken, { packs: [] });
+  check("program-context-packs cleanup: the empty list is a 200 that removes the field, and no probe lane or row is left",
+    cpClear.status === 200 && cpStored() === "null"
+      && (await spawnRows()).every((t) => !cpTasks.includes(t.id))
+      && (await pdLanes()).filter((s) => s.worktree && s.id !== ctx.restartSelfSlot).length === 0,
+    `${cpClear.status} stored=${cpStored()}`);
 
   if (successorSlot !== null) await post(`/api/slots/${successorSlot}/kill`, {});
   const occupiedAfterKill = (await sessions()).slots.filter((s) => s.cwd).length;

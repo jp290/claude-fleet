@@ -499,7 +499,7 @@ bleibt.
 
 ```sh
 curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
-  ${FLEET_SELF_URL:-http://100.64.0.1:8790}/api/self/program-context-packs \
+  http://<fleet-host>:<port>/api/self/program-context-packs \
   -d '{"packs":[{"id":"grok-antwort-1","useWhen":"Bevor du eine Delegations-Zeile baust","sources":[{"path":"docs/messungen/INDEX.md","anchor":"# Index der Messnotizen"}]}]}'
 ```
 

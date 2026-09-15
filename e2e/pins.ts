@@ -1224,6 +1224,24 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       + `no-wholesale=${rejectsWholesale}, stale-full-claim=${staleFullClaim}`);
   }
 
+  // Three host rules lived only in the lane render of CLAUDE.md, which codex loaded in 0/35 rollouts
+  // while 4/35 codex lanes ran `ps -af`/`pgrep -af` (docs/messungen/2026-09-14-codex-lane-verdrahtung.md
+  // §M6). Scoped to the Codex section, and each keyword is held together with its reason: a rule
+  // without its why is the half a lane drops first.
+  const RULE_CODEX_HOST = "AGENTS.md §Codex lane carries the ps, bun server.ts and rg -uu host rules with their reasons";
+  if (agents === null) skip(RULE_CODEX_HOST, "no AGENTS.md in this tree");
+  else {
+    const codex = /\n## If you are a Codex or Pi lane\n([\s\S]*?)(?=\n## |$)/.exec(agents)?.[1] ?? null;
+    const hostRules: readonly (readonly [string, RegExp])[] = [
+      ["ps", /`ps`[^\n]*\n?[^\n]*because[\s\S]{0,120}self-credentials/],
+      ["bun server.ts", /`bun server\.ts`[^\n]*default environment, because[\s\S]{0,80}live tmux/],
+      ["rg -uu", /`rg -uu`[\s\S]{0,40}because plain `rg` honours `\.gitignore`[\s\S]{0,160}empty result/],
+    ];
+    const missing = codex === null ? [] : hostRules.filter(([, re]) => !re.test(codex)).map(([k]) => k);
+    pin(RULE_CODEX_HOST, codex !== null && missing.length === 0,
+      codex === null ? "no '## If you are a Codex or Pi lane' section" : `missing=[${missing}]`);
+  }
+
   // THE SHARP ONE, both directions. A suite the gate runs that AGENTS.md omits sends a Codex lane
   // into the land under-verified; a suite AGENTS.md lists that the gate does not run makes the file
   // claim coverage nobody has. Same for the tsc entry list — the exact drift that left the tier-2

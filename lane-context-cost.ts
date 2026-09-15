@@ -10,6 +10,8 @@
 //   bun lane-context-cost.ts                         # cohorts A/B, markdown tables
 //   bun lane-context-cost.ts --json                  # the same rows as JSON (no brief text, no commands)
 //   bun lane-context-cost.ts --baseline 1789204092324  # the 2026-09-12 baseline: outcomes with ts <= that
+//   bun lane-context-cost.ts --budget --quality <land-quality.jsonl> [--until <iso>] [--days 14]
+//                                                    # peak context vs land quality, pots, waves, baton
 //   flags: --root <checkout> (default: main checkout) · --projects <dir> (default ~/.claude/projects)
 //          --b-from <iso> · --a-from <iso> · --until <iso>
 //
@@ -41,6 +43,8 @@ import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { readLedger } from "./server/persist";
+import { landWaveUnits } from "./task-land-waves";
+import type { TaskCardSize } from "./task-waves";
 import { CARD_HEAD_MARK } from "./wave-brief";
 
 export const DEFAULT_A_FROM = "2026-09-13T01:17:00+02:00";
@@ -67,6 +71,8 @@ export interface TranscriptMetrics {
   delegateBefore: number | null;
   contextAtMarker: number | null;
   endContext: number | null;
+  /** the largest single request — once a lane has handed over, its END is its successor's, its peak is not */
+  peakContext: number | null;
   bashTotal: number;
 }
 
@@ -128,21 +134,28 @@ function cacheOf(usage: unknown): number | null {
   return cc !== null && cr !== null ? cc + cr : null;
 }
 
-/** true when some executable segment of a Bash command runs `git … commit` — heredoc bodies never count */
-export function isGitCommit(command: string): boolean {
+/** a Bash command split into its executable lines and the characters of its heredoc bodies */
+export function splitHeredocs(command: string): { kept: string; bodyChars: number } {
   const kept: string[] = [];
+  let bodyChars = 0;
   let delimiter: string | null = null;
   let stripTabs = false;
   for (const line of command.split("\n")) {
     if (delimiter !== null) {
       if ((stripTabs ? line.replace(/^\t+/, "") : line).trim() === delimiter) delimiter = null;
+      else bodyChars += line.length + 1;
       continue;
     }
     kept.push(line);
     const heredoc = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/.exec(line);
     if (heredoc) { stripTabs = heredoc[1] === "-"; delimiter = heredoc[3] ?? null; }
   }
-  for (const raw of kept.join("\n").split(/\n|&&|\|\||;|\|/)) {
+  return { kept: kept.join("\n"), bodyChars };
+}
+
+/** true when some executable segment of a Bash command runs `git … commit` — heredoc bodies never count */
+export function isGitCommit(command: string): boolean {
+  for (const raw of splitHeredocs(command).kept.split(/\n|&&|\|\||;|\|/)) {
     const segment = raw.trim()
       .replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|\S+)\s+)+/, "")
       .replace(/^(?:command|env|sudo)\s+/, "");
@@ -166,10 +179,11 @@ export function transcriptDir(projects: string, worktree: string): string {
 interface ToolEvent { key: Key; name: string; messageId: string | null; input: unknown }
 interface Request { key: Key; usage: unknown }
 
-export async function measureTranscript(dir: string): Promise<TranscriptMetrics | null> {
+/** `only` names the session ids to read; without it every direct transcript file in the directory counts */
+export async function measureTranscript(dir: string, only?: ReadonlySet<string>): Promise<TranscriptMetrics | null> {
   if (!existsSync(dir)) return null;
   const entries = readdirSync(dir, { withFileTypes: true });
-  const direct = entries.filter((e) => e.isFile() && e.name.endsWith(".jsonl"))
+  const direct = entries.filter((e) => e.isFile() && e.name.endsWith(".jsonl") && (!only || only.has(e.name.slice(0, -6))))
     .map((e) => ({ path: join(dir, e.name), name: e.name, mtime: statSync(join(dir, e.name)).mtimeMs }))
     .sort((a, b) => a.mtime - b.mtime || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   if (direct.length === 0) return null;
@@ -234,6 +248,10 @@ export async function measureTranscript(dir: string): Promise<TranscriptMetrics 
     delegateBefore: before ? before.filter((t) => DELEGATE_TOOLS.has(t.name)).length : null,
     contextAtMarker: markerRequest ? contextOf(markerRequest.usage) : null,
     endContext: byTime.length ? contextOf(byTime[byTime.length - 1]?.usage) : null,
+    peakContext: byTime.reduce<number | null>((max, r) => {
+      const c = contextOf(r.usage);
+      return c === null ? max : Math.max(max ?? c, c);
+    }, null),
     bashTotal: ordered.filter((t) => t.name === "Bash").length,
   };
 }
@@ -385,6 +403,228 @@ export function renderCohorts(rows: LaneRow[]): string {
   return [...summary, "", ...lanes].join("\n");
 }
 
+// ── --budget: is a lane's context a quality budget or only a cost? (docs/messungen/2026-09-14-lange-lanes-kontextbudget.md)
+//
+// One row per CLOSED claude lane in the window, measured on its PEAK session: the one session whose
+// largest request is largest. Only the sessions the fleet itself prompted in that worktree count
+// (prompts.jsonl sessionIds); a probe that happened to run with the worktree as cwd is not the lane.
+//   - pots: first = the first request; ownOutput = Σ output_tokens (thinking included, which the
+//     transcript does not show as text); fed = peak − first − ownOutput (tool results, reminders,
+//     prompts). `retainRatio` checks that output really stays in context: on turns whose tool result
+//     is < 200 chars, (context delta) / (previous output) — ≈ 1 means it does.
+//   - quality: joined by branch to a land-quality.jsonl (bun land-quality.ts --out), never recomputed.
+//   - nudges: prompts whose text opens with the server's migrate head; armed = the first such delivery.
+
+const MIGRATE_HEAD = "[fleet] Dein Kontext ist bei ";
+const WAVE_HEAD = /DIESE LANE TRÄGT EINE WELLE: (\d+) QUEUE-ZEILEN/;
+const CARD_SIZE = /GROESSE: (klein|mittel|gross)\b/g;
+/** server.ts#LANE_MIGRATE_PCT's default; the window of every Opus-5 lane is 1M */
+const LANE_THRESHOLD_PCT = 40;
+const OPUS_WINDOW = 1_000_000;
+const SMALL_RESULT_CHARS = 200;
+const BANDS = [[0, 20], [20, 30], [30, 40], [40, 100]] as const;
+const INSERTED_STRATA = [[0, 150], [151, 500], [501, Infinity]] as const;
+
+export interface SessionAnatomy {
+  id: string; startedAt: number | null; requests: number; bash: number;
+  first: number | null; peak: number | null; ownOutput: number;
+  toolResultChars: number; textChars: number; toolInputChars: number; heredocChars: number;
+  retainRatio: number | null; overThresholdAt: number | null;
+}
+
+export async function sessionAnatomy(file: string, thresholdTokens: number): Promise<SessionAnatomy> {
+  const requests = new Map<string, { at: number; ctx: number | null; out: number }>();
+  const seen = new Set<string>();
+  const turns: [number, number, number][] = []; // [ctx delta, previous output, result chars between]
+  const a: SessionAnatomy = {
+    id: file.slice(file.lastIndexOf("/") + 1, -6), startedAt: null, requests: 0, bash: 0, first: null, peak: null,
+    ownOutput: 0, toolResultChars: 0, textChars: 0, toolInputChars: 0, heredocChars: 0, retainRatio: null, overThresholdAt: null,
+  };
+  let lastId: string | null = null;
+  let between = 0;
+  for (const line of (await Bun.file(file).text()).split("\n")) {
+    if (!line) continue;
+    let row: Row;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (!parsed || typeof parsed !== "object") continue;
+      row = parsed as Row;
+    } catch { continue; }
+    const msg = row.message;
+    if (!msg || typeof msg !== "object") continue;
+    const m = msg as Row;
+    const at = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
+    if (m.role === "assistant" && typeof m.id === "string" && !Number.isNaN(at)) {
+      const usage = m.usage && typeof m.usage === "object" ? m.usage as Row : null;
+      const ctx = contextOf(usage), out = int(usage?.output_tokens) ?? 0;
+      const old = requests.get(m.id);
+      if (!old) {
+        const prev = lastId === null ? undefined : requests.get(lastId);
+        if (prev && prev.ctx !== null && ctx !== null) turns.push([ctx - prev.ctx, prev.out, between]);
+        lastId = m.id;
+        between = 0;
+      }
+      requests.set(m.id, { at: Math.min(old?.at ?? at, at), ctx: ctx ?? old?.ctx ?? null, out: Math.max(out, old?.out ?? 0) });
+    }
+    if (!Array.isArray(m.content)) continue;
+    for (const [blockNo, block] of m.content.entries()) {
+      if (!block || typeof block !== "object") continue;
+      const b = block as Row;
+      const id = str(b.id) ?? str(b.tool_use_id) ?? `${str(row.uuid)}:${blockNo}`;
+      if (seen.has(`${b.type}:${id}`)) continue;
+      seen.add(`${b.type}:${id}`);
+      if (b.type === "tool_result") {
+        const c = b.content;
+        const chars = typeof c === "string" ? c.length
+          : Array.isArray(c) ? c.reduce((n: number, x: unknown) => n + (x && typeof x === "object" && typeof (x as Row).text === "string" ? ((x as Row).text as string).length : 0), 0) : 0;
+        a.toolResultChars += chars;
+        between += chars;
+      } else if (m.role === "assistant" && b.type === "text" && typeof b.text === "string") {
+        a.textChars += b.text.length;
+      } else if (m.role === "assistant" && b.type === "tool_use") {
+        a.toolInputChars += JSON.stringify(b.input ?? {}).length;
+        if (b.name === "Bash") {
+          a.bash++;
+          const command = b.input && typeof b.input === "object" ? str((b.input as Row).command) : null;
+          a.heredocChars += splitHeredocs(command ?? "").bodyChars;
+        }
+      }
+    }
+  }
+  const byTime = [...requests.values()].sort((x, y) => x.at - y.at);
+  const known = byTime.filter((r) => r.ctx !== null) as { at: number; ctx: number; out: number }[];
+  a.requests = byTime.length;
+  a.startedAt = byTime[0]?.at ?? null;
+  a.ownOutput = byTime.reduce((n, r) => n + r.out, 0);
+  a.first = known[0]?.ctx ?? null;
+  a.peak = known.length ? Math.max(...known.map((r) => r.ctx)) : null;
+  a.overThresholdAt = known.find((r) => r.ctx >= thresholdTokens)?.at ?? null;
+  a.retainRatio = median(turns.filter(([, out, chars]) => chars < SMALL_RESULT_CHARS && out > 300).map(([d, out]) => d / out));
+  return a;
+}
+
+export interface BudgetRow {
+  branch: string; briefAt: number | null; disposition: string | null; successions: number | null;
+  waveRows: number; waveUnits: number; filesTouched: number | null; sessions: number; peakSession: SessionAnatomy;
+  nudges: number[]; insertedLines: number | null; rework3d: number | null; fix3d: boolean | null;
+  codeLand: boolean | null; auditRed: boolean | null;
+}
+
+export async function budgetRows(root: string, projects: string, quality: string, from: number, until: number, thresholdTokens: number): Promise<BudgetRow[]> {
+  const outcomes = latestBy((await readJsonl(`${root}/lane-outcomes.jsonl`)).filter((o) => o.repo === root), "branch", "ts");
+  const land = latestBy(await readJsonl(quality), "branch", "landedAt");
+  const byCwd = new Map<string, Row[]>();
+  for (const p of await readJsonl(`${root}/streams/prompts.jsonl`)) {
+    const cwd = str(p.cwd);
+    if (cwd) byCwd.set(cwd, [...(byCwd.get(cwd) ?? []), p]);
+  }
+  const rows: BudgetRow[] = [];
+  for (const [branch, o] of [...outcomes].sort(([x], [y]) => (x < y ? -1 : 1))) {
+    const ts = int(o.ts);
+    const harness = str(o.harness);
+    if (!branch.startsWith("fleet/") || ts === null || ts < from || ts > until || (harness !== null && harness !== "claude")) continue;
+    const cwd = worktreeOf(root, branch), dir = transcriptDir(projects, cwd), prompts = byCwd.get(cwd) ?? [];
+    const ids = new Set(prompts.map((p) => str(p.sessionId)).filter((s): s is string => s !== null));
+    if (!existsSync(dir)) continue;
+    const sessions: SessionAnatomy[] = [];
+    for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl") && ids.has(f.slice(0, -6))))
+      sessions.push(await sessionAnatomy(join(dir, f), thresholdTokens));
+    const peakSession = sessions.filter((s) => s.peak !== null).sort((x, y) => (y.peak ?? 0) - (x.peak ?? 0))[0];
+    if (!peakSession) continue;
+    const metrics = await measureTranscript(dir, ids);
+    if (classify(str(o.model), metrics?.models ?? []).cls !== "opus-5") continue;
+    const brief = str(prompts.find((p) => p.source === "owner" || p.source === "auto")?.text) ?? "";
+    const waveRows = Number(WAVE_HEAD.exec(brief)?.[1] ?? 1);
+    const sizes = [...brief.matchAll(CARD_SIZE)].map((x) => x[1] as TaskCardSize).slice(0, waveRows);
+    const q = land.get(branch);
+    rows.push({
+      branch, briefAt: int(prompts.find((p) => p.source === "owner" || p.source === "auto")?.ts), disposition: str(o.disposition),
+      successions: int(o.successions), waveRows,
+      waveUnits: sizes.reduce((n, s) => n + landWaveUnits(s), 0) + landWaveUnits(null) * (waveRows - sizes.length),
+      filesTouched: Array.isArray(o.filesTouched) ? o.filesTouched.length : null, sessions: sessions.length, peakSession,
+      nudges: prompts.filter((p) => str(p.text)?.startsWith(MIGRATE_HEAD)).map((p) => int(p.ts)).filter((t): t is number => t !== null),
+      insertedLines: int(q?.insertedLines), rework3d: int(q?.reworkLines3d),
+      fix3d: typeof q?.reworkByFixSubject === "boolean" ? q.reworkByFixSubject : null,
+      codeLand: typeof q?.codeLand === "boolean" ? q.codeLand : null, auditRed: typeof q?.auditRed === "boolean" ? q.auditRed : null,
+    });
+  }
+  return rows;
+}
+
+const pctOf = (tokens: number | null): number => (tokens ?? 0) / (OPUS_WINDOW / 100);
+const rateOf = (rows: BudgetRow[], pick: (r: BudgetRow) => boolean | null): string => {
+  const known = rows.map(pick).filter((v): v is boolean => v !== null);
+  const k = known.filter(Boolean).length;
+  return known.length ? `${k}/${known.length} (${Math.round((100 * k) / known.length)} %)` : "—";
+};
+const inBand = (r: BudgetRow, [lo, hi]: readonly [number, number]): boolean => pctOf(r.peakSession.peak) > lo && pctOf(r.peakSession.peak) <= hi;
+const reworkRatio = (r: BudgetRow): number | null => (r.rework3d !== null && r.insertedLines ? r.rework3d / r.insertedLines : null);
+const nums = (rows: BudgetRow[], f: (r: BudgetRow) => number | null): number[] => rows.map(f).filter((v): v is number => v !== null);
+const ratio = (v: number | null): string => (v === null ? "—" : v.toFixed(3));
+
+/** `nudgeTimes`: every migrate delivery in prompts.jsonl, main or lane — the first one dates the arming */
+export function renderBudget(rows: BudgetRow[], nudgeTimes: number[], thresholdPct: number): string {
+  const out: string[] = [];
+  const bandLabel = ([lo, hi]: readonly [number, number]): string => (lo === 0 ? `≤ ${hi} %` : hi === 100 ? `> ${lo} %` : `${lo}–${hi} %`);
+  out.push(`## (a) Peak-Kontext gegen Landqualitaet — ${rows.length} geschlossene Opus-5-Lanes`, "",
+    "| Band | n | landed | rework3d > 0 | rework3d/inserted median | inserted median | fix3d (Code-Lands) | auditRed |",
+    "|---|---:|---:|---:|---:|---:|---:|---:|");
+  for (const band of BANDS) {
+    const g = rows.filter((r) => inBand(r, band));
+    out.push(`| ${bandLabel(band)} | ${g.length} | ${rateOf(g, (r) => r.disposition === "landed")} | ${rateOf(g, (r) => (r.rework3d === null ? null : r.rework3d > 0))} | `
+      + `${ratio(median(nums(g, reworkRatio)))} | ${fmt(median(nums(g, (r) => r.insertedLines)))} | ${rateOf(g, (r) => (r.codeLand ? r.fix3d : null))} | ${rateOf(g, (r) => r.auditRed)} |`);
+  }
+  out.push("", "Gleiche Landgroesse (inserted lines), Band fuer Band: n mit geschlossenem 3-d-Fenster · rework3d/inserted median · fix3d/Code-Lands", "",
+    `| inserted | ${BANDS.map(bandLabel).join(" | ")} |`, `|---|${BANDS.map(() => "---:").join("|")}|`);
+  for (const [lo, hi] of INSERTED_STRATA) {
+    const s = rows.filter((r) => r.rework3d !== null && r.insertedLines !== null && r.insertedLines >= lo && r.insertedLines <= hi);
+    out.push(`| ${hi === Infinity ? `> ${lo - 1}` : `${lo}–${hi}`} | ${BANDS.map((b) => {
+      const g = s.filter((r) => inBand(r, b));
+      const code = g.filter((r) => r.codeLand && r.fix3d !== null);
+      return `${g.length} · ${ratio(median(nums(g, reworkRatio)))} · ${code.filter((r) => r.fix3d).length}/${code.length}`;
+    }).join(" | ")} |`);
+  }
+  const pots = (label: string, g: BudgetRow[]): string => {
+    const p = (f: (s: SessionAnatomy) => number | null): string => fmt(median(nums(g, (r) => f(r.peakSession))));
+    const share = (f: (s: SessionAnatomy) => number): string => {
+      const v = median(nums(g, (r) => (r.peakSession.peak ? f(r.peakSession) / r.peakSession.peak : null)));
+      return v === null ? "—" : `${Math.round(100 * v)} %`;
+    };
+    const fed = (s: SessionAnatomy): number => Math.max(0, (s.peak ?? 0) - (s.first ?? 0) - s.ownOutput);
+    return `| ${label} | ${g.length} | ${p((s) => s.peak)} | ${p((s) => s.first)} (${share((s) => s.first ?? 0)}) | ${p((s) => s.ownOutput)} (${share((s) => s.ownOutput)}) | `
+      + `${p(fed)} (${share(fed)}) | ${p((s) => s.toolResultChars)} | ${p((s) => s.toolInputChars)} / ${p((s) => s.heredocChars)} | ${p((s) => s.textChars)} | ${p((s) => s.bash)} | ${ratio(median(nums(g, (r) => r.peakSession.retainRatio)))} |`;
+  };
+  const potHead = ["| Gruppe | n | Peak | erster Request | eigene Ausgabe | Tool-Ergebnisse + Eingespeistes | Tool-Ergebnis-Zeichen | Tool-Input-Zeichen / davon Heredoc | Text-Zeichen | Bash | Rueckhalte-Test |",
+    "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"];
+  out.push("", "## (b) Zusammensetzung der Peak-Session (Tokens median, Anteil am Peak median)", "", ...potHead, pots("alle", rows),
+    pots(`Peak > ${thresholdPct} %`, rows.filter((r) => pctOf(r.peakSession.peak) > thresholdPct)));
+  const firstWave = Math.min(...nums(rows.filter((r) => r.waveRows > 1), (r) => r.briefAt));
+  const since = rows.filter((r) => r.briefAt !== null && r.briefAt >= firstWave);
+  out.push("", `## (c) Wellen — Lanes mit Brief ab der ersten Wellen-Lane (${Number.isFinite(firstWave) ? new Date(firstWave).toISOString() : "keine"})`, "",
+    `| Gruppe | n | Peak % median | p90 | max | > ${thresholdPct} % | Dateien median | Einheiten median | Peak je Zeile median | auditRed |`, "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+  for (const [label, g] of [["Einzel-Lane", since.filter((r) => r.waveRows === 1)], ["Welle (≥ 2 Zeilen)", since.filter((r) => r.waveRows > 1)]] as const) {
+    const peaks = nums(g, (r) => pctOf(r.peakSession.peak));
+    out.push(`| ${label} | ${g.length} | ${fmt(median(peaks))} | ${fmt(p90(peaks))} | ${peaks.length ? fmt(Math.max(...peaks)) : "—"} | ${peaks.filter((v) => v > thresholdPct).length} | `
+      + `${fmt(median(nums(g, (r) => r.filesTouched)))} | ${fmt(median(g.map((r) => r.waveUnits)))} | ${fmt(median(nums(g, (r) => pctOf(r.peakSession.peak) / r.waveRows)))} | ${rateOf(g, (r) => r.auditRed)} |`);
+  }
+  out.push("", "| Einheiten (Karte, ohne Groesse = mittel) | n | Peak % median | max |", "|---:|---:|---:|---:|");
+  for (const u of [...new Set(since.map((r) => r.waveUnits))].sort((x, y) => x - y)) {
+    const peaks = nums(since.filter((r) => r.waveUnits === u), (r) => pctOf(r.peakSession.peak));
+    out.push(`| ${u} | ${peaks.length} | ${fmt(median(peaks))} | ${fmt(Math.max(...peaks))} |`);
+  }
+  const armed = Math.min(...nudgeTimes);
+  const after = rows.filter((r) => r.briefAt !== null && r.briefAt >= armed);
+  const afterPeaks = nums(after, (r) => pctOf(r.peakSession.peak));
+  out.push("", `## (d) Staffelstab — scharf seit der ersten Zustellung ${Number.isFinite(armed) ? new Date(armed).toISOString() : "nie"}`, "",
+    `Zustellungen gesamt ${nudgeTimes.length}, davon an Lane-Worktrees ${rows.reduce((n, r) => n + r.nudges.length, 0)} (in dieser Grundmenge). `
+    + `Lanes mit Brief danach: ${after.length}, Peak % median ${fmt(median(afterPeaks))} · p90 ${fmt(p90(afterPeaks))} · > ${thresholdPct} %: ${afterPeaks.filter((v) => v > thresholdPct).length}.`, "",
+    "| Branch | Peak % | Schwelle erreicht | Nudges | Sessions | successions | Disposition |", "|---|---:|---|---:|---:|---:|---|");
+  for (const r of rows.filter((r) => r.nudges.length > 0 || (r.peakSession.overThresholdAt !== null && r.peakSession.overThresholdAt >= armed)))
+    out.push(`| ${r.branch} | ${fmt(pctOf(r.peakSession.peak))} | ${r.peakSession.overThresholdAt === null ? "—" : new Date(r.peakSession.overThresholdAt).toISOString()} | `
+      + `${r.nudges.length} | ${r.sessions} | ${fmt(r.successions)} | ${r.disposition ?? "offen"} |`);
+  return out.join("\n");
+}
+
 function mainCheckout(): string {
   const p = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { stderr: "ignore" });
   const common = p.stdout.toString().trim();
@@ -411,6 +651,17 @@ async function main(argv: string[]): Promise<number> {
     if (!Number.isInteger(until)) { console.error("lane-context-cost: --baseline wants an epoch-ms outcome horizon"); return 2; }
     const rows = await baselineRows(root, projects, until);
     console.log(argv.includes("--json") ? JSON.stringify(rows, null, 2) : [...SUMMARY_HEAD, summaryLine("Opus 5 (explizit)", rows)].join("\n"));
+    return 0;
+  }
+  if (argv.includes("--budget")) {
+    const until = time("--until", null), days = Number(flag("--days") ?? 14);
+    if (until === null || !(days > 0)) { console.error("lane-context-cost: --budget wants --days > 0 and an ISO --until"); return 2; }
+    const quality = flag("--quality") ?? `${root}/land-quality.jsonl`;
+    if (!existsSync(quality)) { console.error(`lane-context-cost: ${quality} does not exist — quality is UNKNOWN, not clean`); return 2; }
+    const rows = await budgetRows(root, projects, quality, until - days * 86_400_000, until, LANE_THRESHOLD_PCT * (OPUS_WINDOW / 100));
+    const nudgeTimes = (await readJsonl(`${root}/streams/prompts.jsonl`))
+      .filter((p) => str(p.text)?.startsWith(MIGRATE_HEAD) && (int(p.ts) ?? Infinity) <= until).map((p) => int(p.ts) ?? 0);
+    console.log(argv.includes("--json") ? JSON.stringify(rows, null, 2) : renderBudget(rows, nudgeTimes, LANE_THRESHOLD_PCT));
     return 0;
   }
   const aFrom = time("--a-from", DEFAULT_A_FROM), bFrom = time("--b-from", DEFAULT_B_FROM), until = time("--until", null);

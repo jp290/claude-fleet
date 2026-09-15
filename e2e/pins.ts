@@ -51,7 +51,7 @@ import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../serve
 import { readEventLog, readLedger } from "../server/persist";
 import { readJsonl } from "../briefstats";
 import { readJsonl as landQualityReadJsonl } from "../land-quality";
-import { readJsonl as laneContextCostReadJsonl } from "../lane-context-cost";
+import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
@@ -2336,6 +2336,38 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
         && copies.every((c) => c.endsWith("imports · delegates")),
       `land-quality rows=${viaLandQuality.rows.length} malformed=${viaLandQuality.malformed} · `
         + `lane-context-cost rows=${viaLaneCost.length} · ${copies.join(" · ")}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  // A LANE THAT HANDED OVER KEEPS ITS PEAK. Since the lane baton went live, a worktree's transcript
+  // directory holds the full session AND its successor, and `endContext` (the last request over all
+  // files) read Slot 7's 403 568-token lane as 78 729 — the successor's twelve seconds. A session the
+  // fleet never prompted there (a probe run with the worktree as cwd) is not the lane at all.
+  // docs/messungen/2026-09-14-lange-lanes-kontextbudget.md §d.
+  const dir = mkdtempSync(`${tmpdir()}/lane-peak-`);
+  try {
+    const asst = (at: string, id: string, ctx: number, out: number): string => JSON.stringify({ timestamp: `2026-09-14T17:${at}Z`,
+      message: { role: "assistant", id, model: "claude-opus-5", usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: ctx, output_tokens: out }, content: [{ type: "text", text: "x" }] } });
+    const result = (at: string, tool: string, chars: number): string => JSON.stringify({ timestamp: `2026-09-14T17:${at}Z`,
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: tool, content: "r".repeat(chars) }] } });
+    writeFileSync(`${dir}/full.jsonl`, [asst("00:00", "a1", 100_000, 500), result("00:01", "t1", 2),
+      asst("00:02", "a2", 100_510, 100), result("00:03", "t2", 5_000), asst("00:04", "a3", 400_000, 0)].join("\n") + "\n");
+    writeFileSync(`${dir}/probe.jsonl`, asst("05:00", "p1", 900_000, 0) + "\n");
+    writeFileSync(`${dir}/successor.jsonl`, asst("10:00", "b1", 80_000, 0) + "\n");
+    const lane = await measureTranscript(dir, new Set(["full", "successor"]));
+    const everything = await measureTranscript(dir);
+    const full = await sessionAnatomy(`${dir}/full.jsonl`, 400_000);
+    pin("lane-context-cost: a handed-over lane keeps its peak, and only the sessions the fleet prompted are the lane",
+      lane?.files === 2 && lane.peakContext === 400_000 && lane.endContext === 80_000
+        && everything?.files === 3 && everything.peakContext === 900_000,
+      `lane files=${lane?.files} peak=${lane?.peakContext} end=${lane?.endContext} · unfiltered files=${everything?.files} peak=${everything?.peakContext}`);
+    pin("lane-context-cost: the peak session's pots — output tokens retained (delta/output on a small-result turn), result chars, first threshold crossing",
+      full.first === 100_000 && full.peak === 400_000 && full.ownOutput === 600 && full.toolResultChars === 5_002
+        && full.retainRatio === 1.02 && full.overThresholdAt === Date.parse("2026-09-14T17:00:04Z"),
+      JSON.stringify(full));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

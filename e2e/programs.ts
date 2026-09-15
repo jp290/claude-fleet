@@ -1058,16 +1058,26 @@ export async function run(ctx: Ctx): Promise<void> {
   // B DELIBERATELY DOES NOTHING HERE. It raises no attention, arms no watch, schedules no check-in
   // and never reads the record. That is the whole point: C must still be able to read what A owed.
   const chainLabel = "program-main-fleet-third";
-  const bToken = fleetSuccessionBody.slot === undefined
-    ? "" : readState().slots?.[String(fleetSuccessionBody.slot)]?.selfToken ?? "";
+  // B IS AN OCCUPANT, NOT A SLOT NUMBER. Slot ids recycle inside one instance, and how the shard
+  // mixes the families decides which number B gets: audit 5619800c (2-shard) counted
+  // `attention:5` here — rows that earlier occupants of B's number had raised — where the 3-shard run
+  // read 0. So one snapshot names B by slot AND openedAt, and each row is matched against both.
+  const bState = readState();
+  const bSlot = fleetSuccessionBody.slot === undefined ? undefined : bState.slots?.[String(fleetSuccessionBody.slot)];
+  const bToken = bSlot?.selfToken ?? "";
+  const bOpenedAt = bSlot?.openedAt ?? 0;
   // A's own open decision is REBOUND to B by the succession (server.ts#attentionSuccessorFor, since
   // 2026-09-13), so it names B as requester without B having raised it — only a row with any other
   // text would be something B asked itself.
+  const onBSlot = (bState.attentionRequests ?? []).filter((a) =>
+    (a as { requester?: { slot?: number } }).requester?.slot === fleetSuccessionBody.slot
+    && (a as { text?: string }).text !== fleetSaveText);
   const bFresh = {
-    attention: (readState().attentionRequests ?? []).filter((a) =>
-      (a as { requester?: { slot?: number } }).requester?.slot === fleetSuccessionBody.slot
-      && (a as { text?: string }).text !== fleetSaveText).length,
-    autos: (readState().autos ?? []).filter((a) =>
+    attention: onBSlot.filter((a) => (a as { requester?: { openedAt?: number } }).requester?.openedAt === bOpenedAt).length,
+    // An Auto carries no occupant field. The boundary is server.ts#openSlot, which drops every auto
+    // of the slot number before the new occupant runs — so a match taken while B still holds the
+    // slot (the same snapshot that read bOpenedAt) can only be B's own.
+    autos: (bState.autos ?? []).filter((a) =>
       (a as { slot?: number }).slot === fleetSuccessionBody.slot).length,
   };
   const chainPending = selfSucceed(bToken, { label: chainLabel });
@@ -1080,8 +1090,9 @@ export async function run(ctx: Ctx): Promise<void> {
   const chainBody = await chainRes.json() as { ok?: boolean; slot?: number };
   check("Program-MAIN chain setup: B succeeds to C without having raised or re-created anything of its own",
     chainRes.ok && chainBody.ok === true && chainSlot !== null && chainBody.slot === chainSlot
-      && /^[0-9a-f]{32}$/.test(bToken) && bFresh.attention === 0 && bFresh.autos === 0,
-    `${chainRes.status} slot=${chainSlot} bFresh=${JSON.stringify(bFresh)}`);
+      && /^[0-9a-f]{32}$/.test(bToken) && bOpenedAt > 0 && bFresh.attention === 0 && bFresh.autos === 0,
+    `${chainRes.status} slot=${chainSlot} b=${fleetSuccessionBody.slot}@${bOpenedAt} bFresh=${JSON.stringify(bFresh)}`
+      + ` otherOccupantsOnBSlot=${onBSlot.length - bFresh.attention}`);
   const chainToken = chainSlot === null ? "" : readState().slots?.[String(chainSlot)]?.selfToken ?? "";
   const chainOnDisk = (readState().programs ?? []).find((p) => p.id === fleetProgram.id)?.handover ?? null;
   const chainView = await selfExecution(chainToken);

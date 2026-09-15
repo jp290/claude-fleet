@@ -2,7 +2,7 @@
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildClarifyBrief } from "../clarify-prompt";
@@ -30,6 +30,42 @@ import type { Ctx } from "./ctx";
 // block: this file checks that the ending is delivered and what it names, while the exact wording
 // stays free to improve. e2e/pins.ts holds the must-agree pair (footer ↔ route ↔ docs/self-api.md).
 const LANE_EXIT_MARK = "\n\n--- HOW THIS LANE ENDS";
+
+// claude 2.1.272's rendered frames, measured 2026-09-15 in a throwaway tmux at 200 columns
+// (server.ts#CLAUDE_TRUST_DIALOG): the per-folder trust dialog and an idle composer. Trailing blanks
+// trimmed, rules shortened to 60 columns, the workspace path replaced — the lines the pattern reads
+// are verbatim. The dialog is the LAST thing on its screen; the composer frame is what sits below
+// anything a live session prints.
+const RULE_60 = "─".repeat(60);
+const CLAUDE_TRUST_SCREEN = [
+  RULE_60,
+  " Accessing workspace:",
+  "",
+  " /tmp/never-trusted-repo",
+  "",
+  " Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this",
+  " folder first.",
+  "",
+  " Claude Code'll be able to read, edit, and execute files here.",
+  "",
+  " Security guide",
+  "",
+  " ❯ No, exit",
+  "   Yes, I trust this folder",
+  "",
+  " Enter to confirm · Esc to cancel",
+].join("\n");
+const CLAUDE_COMPOSER_SCREEN = [
+  " ▐▛███▛█   Claude Code v2.1.272",
+  "▝▜██████▀  Haiku 4.5 · Claude Max",
+  "  ▝▝ ▝▝    /tmp/never-trusted-repo",
+  "",
+  RULE_60,
+  "❯ Try \"edit <filepath> to...\"",
+  RULE_60,
+  "  ctx [----------] --%  |  Haiku 4.5",
+  "  ⏵⏵ don't ask on (shift+tab to cycle) · ← 7 agents",
+].join("\n");
 
 export async function run(ctx: Ctx): Promise<void> {
   interface ContextReceipt {
@@ -4124,10 +4160,11 @@ export async function run(ctx: Ctx): Promise<void> {
     // FLEET_READY_WAIT_MS=3000 in this suite's env owns the timeout window, same reason the
     // scheduler ticks are env-owned. ---
     {
-      const screenLane = async (screen: string): Promise<{ id: string; slot: number }> => {
+      const screenLane = async (screen: string, harness: "codex" | "claude" = "codex"): Promise<{ id: string; slot: number }> => {
         const t = (await (await post("/api/tasks", { text: "readiness-probe", queue: false })).json()) as { task: { id: string } };
-        const d = (await (await post(`/api/tasks/${t.task.id}/dispatch`, { harness: "codex" })).json()) as { ok?: boolean; slot?: number };
-        check("readiness probe: codex dispatch accepted (fixture setup)", d.ok === true && typeof d.slot === "number", JSON.stringify(d));
+        // claude is the default adapter, named by ABSENCE — the road every claude lane takes
+        const d = (await (await post(`/api/tasks/${t.task.id}/dispatch`, harness === "codex" ? { harness } : {})).json()) as { ok?: boolean; slot?: number };
+        check(`readiness probe: ${harness} dispatch accepted (fixture setup)`, d.ok === true && typeof d.slot === "number", JSON.stringify(d));
         // inside the boot grace: kill the real codex TUI before it can matter, render the fixture.
         // plantScreen owns both failure forms and files them as ITSELF rather than as the screen
         // verdict this section exists to measure (e2e/harness.ts).
@@ -4218,6 +4255,37 @@ export async function run(ctx: Ctx): Promise<void> {
         `${JSON.stringify(bannerRow)} pane=${bannerCap.out.slice(-160)}`);
       if (banner.slot > 0) await post(`/api/slots/${banner.slot}/kill`, {});
       await post(`/api/tasks/${banner.id}/delete`, {});
+
+      // The SAME seam on a CLAUDE lane (2026-09-15): claude's trust dialog keeps the TUI alive on a
+      // selector whose preselected "No, exit" an Enter answers. The default adapter declares that one
+      // block and no ready marker, so the dialog refuses by name and every other screen delivers as
+      // before. The worker-tier half of the same block is (jt), beside ↻ refine.
+      const cTrust = await screenLane(CLAUDE_TRUST_SCREEN, "claude");
+      const cTrustRow = await rowAfter(cTrust.id, (r) => r?.status === "queued");
+      check("a claude pane on its TRUST DIALOG never receives the brief — requeued with the screen named",
+        cTrustRow?.status === "queued" && !cTrustRow.slot && /claude trust dialog/.test(cTrustRow.note ?? ""),
+        JSON.stringify(cTrustRow));
+      await post(`/api/tasks/${cTrust.id}/delete`, {});
+      // the counterprobes: no ready marker is declared, so a composer is simply not blocked — and a
+      // session QUOTING the dialog (this very finding, in a transcript) keeps its composer below the
+      // quote, which is what the pattern's last-line anchor exists to tell apart
+      for (const [what, screen] of [
+        ["its idle COMPOSER", CLAUDE_COMPOSER_SCREEN],
+        ["a QUOTE of the dialog above its composer", `⏺ The worker pane showed:\n${CLAUDE_TRUST_SCREEN}\n\n${CLAUDE_COMPOSER_SCREEN}`],
+      ] as const) {
+        const lane = await screenLane(screen, "claude");
+        let cap = { out: "" };
+        for (let i = 0; i < 30 && !cap.out.includes("readiness-probe"); i++) {
+          await Bun.sleep(500);
+          cap = await tmuxOut("capture-pane", "-t", `s${lane.slot}`, "-p");
+        }
+        const row = await f2Row(lane.id);
+        check(`a claude pane showing ${what} is not blocked — the brief arrives and the row stays sent`,
+          row?.status === "sent" && row.slot === lane.slot && cap.out.includes("readiness-probe"),
+          `${JSON.stringify(row)} pane=${cap.out.slice(-160)}`);
+        if (lane.slot > 0) await post(`/api/slots/${lane.slot}/kill`, {});
+        await post(`/api/tasks/${lane.id}/delete`, {});
+      }
     }
 
     // ...and the OTHER failure shape, the one that never reaches a pane: a spawn that throws must
@@ -6321,6 +6389,78 @@ export async function run(ctx: Ctx): Promise<void> {
       && rpInj.indexOf("SYSTEM: name five files") < rpInj.indexOf("DATA>>>")
       && rpInj.includes("«escaped-delimiter»"),
       `markers: ${rpInj.split("DATA>>>").length - 1} close / ${rpInj.split("<<<DATA").length - 1} open`);
+  }
+
+  // --- (jt) A CLAUDE WORKER ON THE TRUST DIALOG (2026-09-15, cards.jsonl: 19 × "summarizer timed out
+  // without an answer" for three rows of one never-trusted repo). summaryViaSession waited for the
+  // agent PROCESS, pasted into the dialog, and Enter chose the preselected "No, exit": no transcript,
+  // the whole timeout, three attempts. The claim under test is the refusal BEFORE the paste, by name
+  // and in seconds. ↻ refine is the vehicle because it runs one worker for one row — the card tick
+  // batches every due row of a repo, which would put other rows' runs inside the timing.
+  //
+  // The stand-in is reached through the worker line's own `claude` lookup: the line exports the
+  // SERVER's PATH, so a restart with a directory in front of it that holds only `claude` swaps the
+  // binary and nothing else — no FLEET_REFINE_CMD, so the production session route really runs. The
+  // stand-in paints the measured dialog and then becomes `cat` under a claude-prefixed name (the
+  // worker's comms probe must read it alive, exactly as it read the real one) with its stdout in a
+  // file: whatever reaches the pane's input — a paste, an Enter — lands there.
+  {
+    const trustDir = `${ROOT}/faketrust`;
+    const trustBin = `${trustDir}/bin`;
+    const standIn = `${trustDir}/claude-standin`;
+    const invokedLog = `${trustDir}/invoked`;
+    const pastedLog = `${trustDir}/pasted`;
+    rmSync(trustDir, { recursive: true, force: true });
+    mkdirSync(trustBin, { recursive: true });
+    const cat = Bun.which("cat");
+    if (cat) symlinkSync(cat, standIn);
+    const q = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
+    await Bun.write(`${trustBin}/claude`, [
+      "#!/bin/sh",
+      `printf '%s\\n' "$*" >> ${q(invokedLog)}`,
+      `printf '%s\\n' ${q(CLAUDE_TRUST_SCREEN)}`,
+      `exec ${q(standIn)} >> ${q(pastedLog)}`,
+      "",
+    ].join("\n"));
+    chmodSync(`${trustBin}/claude`, 0o755);
+    const trustPath = `${trustBin}:${process.env.PATH ?? ""}`;
+    // BEFORE the restart: a PATH that resolved `claude` anywhere else would hand this probe the REAL
+    // binary, and no suite may start one
+    const resolved = Bun.which("claude", { PATH: trustPath });
+    check("(jt) setup: the worker's `claude` lookup resolves to the stand-in and nothing else",
+      !!cat && resolved === `${trustBin}/claude`, `cat=${cat} resolved=${resolved}`);
+    if (cat && resolved === `${trustBin}/claude`) {
+      await restartSrv({ FLEET_DISPATCH_REPO: REPO, PATH: trustPath });
+      const jtT = (await (await post("/api/tasks", { text: "trust probe: a worker in a never-trusted repo", queue: false, repo: REPO })).json()) as { task: { id: string; repo?: string } };
+      const jtStart = Date.now();
+      const jtR = await post(`/api/tasks/${jtT.task.id}/refine`, {});
+      check("(jt) setup: the refine worker starts on the session route", jtR.ok, String(jtR.status));
+      let jtNote = "";
+      // ceiling 15 s: past the 10 s claim, far below the 180 s the timeout would take
+      for (let i = 0; i < 60 && !jtNote; i++) {
+        const row = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; note?: string }[] }).tasks.find((t) => t.id === jtT.task.id);
+        jtNote = row?.note ?? "";
+        if (!jtNote) await Bun.sleep(250);
+      }
+      const jtTook = Date.now() - jtStart;
+      const jtInvoked = existsSync(invokedLog) ? readFileSync(invokedLog, "utf8") : "";
+      check("(jt) setup: the worker spawn reached the claude stand-in with the worker line's own flags",
+        jtInvoked.includes("--session-id") && jtInvoked.includes("--model"), JSON.stringify(jtInvoked.slice(0, 200)));
+      // the worker's cwd is the route's own resolution of the ROW's repo, so the expectation is too
+      const jtWant = `refine failed: claude trust dialog in ${resolve(jtT.task.repo ?? REPO)} — the worker never answers it`.slice(0, 200);
+      check("(jt) a claude worker on the TRUST DIALOG fails in under 10 s with the named error, not the timeout",
+        jtNote === jtWant && jtTook < 10_000, `${jtTook}ms ${JSON.stringify(jtNote)}`);
+      // existsSync first: the file is created by the stand-in's own redirect, so an absent one means
+      // the pane never got that far and "empty" would have measured nothing
+      const jtPasted = existsSync(pastedLog) ? readFileSync(pastedLog, "utf8") : null;
+      check("(jt) …and nothing reached the dialog — no paste, no Enter",
+        jtPasted === "", JSON.stringify(jtPasted?.slice(0, 120) ?? "no stand-in output file"));
+      const jtLeft = (await tmuxOut("list-sessions", "-F", "#{session_name}")).out.split("\n").filter((n) => n.startsWith("sum-"));
+      check("(jt) …and the refused worker session is taken down, not left on the dialog",
+        jtLeft.length === 0, jtLeft.join(" "));
+      await post(`/api/tasks/${jtT.task.id}/delete`, {});
+      await restartSrv({ FLEET_DISPATCH_REPO: REPO });
+    }
   }
 
   // --- (j2) THE CARD (S3): one small model turns a row's prose into a fixed shape, and every value

@@ -354,6 +354,9 @@ const DEFAULT_MODEL =
   process.env.FLEET_MODEL && MODEL_RE.test(process.env.FLEET_MODEL) ? process.env.FLEET_MODEL : FLEET_DEFAULT_MODEL;
 
 // --- the harness REGISTRY: which agent a slot runs ------------------------------------------
+// A pane SCREEN on which a pasted prompt is consumed instead of reaching a live agent, and the
+// phrase every refusal names it by (Harness.readiness, Harness.worker).
+interface ScreenBlock { re: RegExp; why: string }
 // The env knobs above answer "what is THIS FLEET's harness" — one answer for the whole server,
 // set by the operator in watchdog.sh. This answers a different question: which harness does THIS
 // SLOT run, chosen per session at spawn time. The two coexist on purpose. A slot that names no
@@ -397,8 +400,11 @@ interface Harness {
   // into a named refusal at the call site. `comms` rides along rather than being read off `comms`
   // above, because the readiness probe must ask about the binary THIS LINE starts — which for the
   // default adapter is literally `claude` regardless of FLEET_CMD (see the worker-tier note at
-  // SLOT_MODEL_RE), i.e. not the same question the slot probe asks.
-  worker(o: { sessionId: string; model: string; tools: ToolProfile }): { cmd: string; comms: string[] } | null;
+  // SLOT_MODEL_RE), i.e. not the same question the slot probe asks. `blocks` rides along for the
+  // same reason: the screens THAT binary can sit on alive while a paste is eaten, which the worker
+  // refuses by name before pasting instead of waiting out its timeout.
+  worker(o: { sessionId: string; model: string; tools: ToolProfile }):
+    { cmd: string; comms: string[]; blocks: readonly ScreenBlock[] } | null;
   // A context reader is deliberately separate from `supports.transcript`: the latter promises a
   // CLAUDE-CODE conversation that viewEntry can parse, while this narrower adapter hook promises
   // only a host-readable usage file and therefore cannot accidentally enable transcript/summary.
@@ -438,8 +444,9 @@ interface Harness {
   // it the same way. Optional because it is a measurement, not a guess: an adapter without rendered
   // frames to cite declares nothing and keeps today's behaviour everywhere. `blocks` are checked
   // before `accept`, and each carries the phrase a refusal reports — the silent eat is the defect,
-  // so the reason must never be generic.
-  readiness?: { accept: RegExp; blocks: readonly { re: RegExp; why: string }[] };
+  // so the reason must never be generic. `accept: null` declares blocks WITHOUT a measured ready
+  // marker (claude): only a matching block refuses, and everything else is today's behaviour.
+  readiness?: { accept: RegExp | null; blocks: readonly ScreenBlock[] };
   // Where this harness RENDERS its composer, so a delivery can observe acceptance instead of
   // echoing the request flag (ACP-25). Measured 2026-08-22 on the installed binaries, rendered
   // frames with `capture-pane -e`: Claude's composer is the LAST `❯` line (its transcript echoes
@@ -537,6 +544,22 @@ interface Harness {
   browserProfile: "apply" | "not-applicable" | "unsupported";
 }
 
+// Claude Code's per-folder TRUST DIALOG. MEASURED 2026-09-15 in rendered frames (claude 2.1.272,
+// throwaway tmux socket, the worker line verbatim, a fresh `git init` under the user temp dir): the
+// TUI is up — paneAgentAt answers `alive` — but the screen is a selector with "No, exit"
+// PRESELECTED, so a paste+Enter exits and no transcript is ever written (the 2026-09-15 card runs
+// in ~/private-repo-aa: 19 × "summarizer timed out without an answer"). It appears for a cwd inside
+// a git repository whose ROOT has no trust entry — inside a repo claude's parent walk stops at the
+// repo root, so a trusted $HOME does not cover ~/some-repo. The pattern is anchored on the short
+// lines that did not wrap at 60 columns (the question sentence did) and on the key-hint footer
+// being the LAST line on screen: a session that merely QUOTES the dialog has its composer below the
+// quote and never matches. Deliberately also the "No, continue without these permissions" variant —
+// what a paste does to a selector is not something an unattended path should find out.
+const CLAUDE_TRUST_DIALOG: ScreenBlock = {
+  re: /^ *Accessing workspace: *$[\s\S]*^ *(?:❯ *)?Yes, I trust this folder *$[\s\S]*^[^\n]* to confirm · [^\n]* to cancel\s*(?![\s\S])/m,
+  why: "claude trust dialog",
+};
+
 // Adapter #1 — the default. `spawnCmd` CALLS slotCmd rather than reimplementing it, so the
 // no-harness path cannot drift from what it was: there is only one implementation of it.
 // `pinsSession` mirrors slotCmd's own `claude` test, because that is the condition under which
@@ -558,6 +581,7 @@ const CLAUDE_HARNESS: Harness = {
   worker: (o) => ({
     cmd: `${PATH_EXPORT}claude --session-id ${o.sessionId} --model '${o.model}' ${o.tools}`,
     comms: ["claude"],
+    blocks: [CLAUDE_TRUST_DIALOG],
   }),
   // The default adapter follows the exact pinned path and parser contextFill used before the hook.
   context: { file: (o) => `${projDir(o.cwd)}/${o.sessionId}.jsonl`, used: readUsedTokens },
@@ -575,6 +599,11 @@ const CLAUDE_HARNESS: Harness = {
   // stand-in named claude (the claude-gate suite's fakes) renders no composer — for those the
   // observation answers "unobservable", which is the truth, and never "observed".
   ...(IS_CLAUDE ? { bootSettleMs: 2500, composer: { kind: "glyph" as const, re: /^❯/ } } : {}),
+  // NOT behind IS_CLAUDE, unlike the two measurements above: those describe what a stand-in cannot
+  // render, this one what nothing but claude renders — so it cannot fire on a stand-in by accident,
+  // and a suite fixture can paint it. `accept: null`: no ready marker is declared for claude, so a
+  // pane without the dialog keeps exactly its pre-readiness behaviour at every gate.
+  readiness: { accept: null, blocks: [CLAUDE_TRUST_DIALOG] },
   // Claude owns its repository metadata; Fleet has not fenced it out of commits.
   hostCommits: false,
   // the default adapter is automatable unconditionally — it is what every automation on this fleet
@@ -6249,8 +6278,9 @@ async function paneAgentAt(target: string, comms: string[]): Promise<AgentState>
 }
 
 // SCREEN readiness, the layer paneAgentAt cannot see: a Codex block screen keeps the node wrapper
-// alive while a paste is silently eaten. null = this harness declares no readiness and keeps today's
-// behaviour (every adapter but codex, the default included — no gate below may fire on it).
+// alive while a paste is silently eaten, and claude's trust dialog does the same. null = no verdict,
+// today's behaviour — no gate below may fire on it: the harness declares no readiness, or declares
+// blocks without a ready marker (claude) and none of them is on screen.
 // "pending" is neither marker on screen and is deliberately NOT a refusal at the delivery gates
 // (fail-open; only the bounded boot wait in briefAndSend treats it as not-yet-ready). A failed
 // capture is "pending" too: the pane gates beside this one own the no-pane answer.
@@ -6258,8 +6288,9 @@ async function paneReadiness(s: Slot): Promise<{ state: "ready" | "blocked" | "p
   const r = harnessOf(s.harness).readiness;
   if (!r) return null;
   const cap = await tmux("capture-pane", "-p", "-t", paneTarget(sess(s.id)));
-  if (cap.code !== 0) return { state: "pending" };
+  if (cap.code !== 0) return r.accept ? { state: "pending" } : null;
   for (const b of r.blocks) if (b.re.test(cap.out)) return { state: "blocked", why: b.why };
+  if (!r.accept) return null;
   return r.accept.test(cap.out) ? { state: "ready" } : { state: "pending" };
 }
 
@@ -10794,7 +10825,7 @@ function inQuietHours(ts: number): boolean {
 // work-prompt path may drive it". Collapsing the two would recreate the silent skip this row was
 // filed about.
 // "blocked-screen" is the screen-level sibling of "not-alive": the agent process is there, but the
-// pane is on a harness-declared blocking screen (codex trust prompt / sign-in) where a paste is
+// pane is on a harness-declared blocking screen (codex trust prompt / sign-in, claude trust dialog) where a paste is
 // silently consumed. `detail` carries the declared why, so every caller reports the concrete
 // screen instead of a generic refusal. Only ever returned for a harness that declares `readiness`.
 type DeliveryGate = "kill-switch" | "harness" | "not-alive" | "blocked-screen" | "quiet-hours" | "busy";
@@ -13534,6 +13565,13 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
       await Bun.sleep(500);
     }
     await Bun.sleep(2500);
+    // ...and the SCREEN, which the process probe cannot see: the adapter's blocks are screens this
+    // binary sits on alive while a paste is eaten (claude's trust dialog answers the Enter with
+    // "No, exit", and the run then waited out its whole timeout for a transcript never written).
+    // Refused by name before anything is pasted — the finally below still takes the session.
+    const screen = await tmux("capture-pane", "-p", "-t", paneTarget(name));
+    const block = screen.code === 0 ? w.blocks.find((b) => b.re.test(screen.out)) : undefined;
+    if (block) throw new Error(`${block.why} in ${cwd} — the worker never answers it`);
     // deliver exactly like sendText: paste-buffer (no key interpretation), then Enter
     const buf = `sumbuf-${name}`;
     const lb = Bun.spawn(["tmux", "-L", SOCK, "load-buffer", "-b", buf, "-"], { stdin: "pipe" });

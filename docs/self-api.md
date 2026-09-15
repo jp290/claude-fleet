@@ -2259,7 +2259,8 @@ es rotiert nicht, weil eine überschriebene `.1`-Generation wieder ein Löschen 
 **Wer erfährt, dass eine Lane an einem Dialog hängt, den nur ein Mensch beantworten kann.**
 Gemessener Anlass (2026-09-13): Lane `2d3c8f44` (Slot 5) stand im Bypass-Modus auf Claude Codes
 „Dangerous rm operation on possibly-empty variable path: $SP/$v … Do you want to proceed? ❯ 1. Yes /
-2. No“. Kein Fleet-Sensor sah es (`server.ts#paneReadiness` kennt Blocks nur für codex/pi), und ein
+2. No“. Kein Fleet-Sensor sah es (`server.ts#paneReadiness` kannte Blocks nur für codex/pi; seit
+2026-09-15 kennt es für claude genau einen, den Trust-Dialog — diesen Dialog weiterhin nicht), und ein
 Server-Paste+Enter hätte die vorausgewählte „1. Yes“ getroffen.
 
 **Zwei Hälften, und nur die zweite ist diese Route.** `.claude/settings.json` (getrackt) registriert

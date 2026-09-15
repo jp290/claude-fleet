@@ -78,9 +78,11 @@ tmux -L "$SOCK" new-session -d -s srv \
 # wait for the server to actually bind (a loaded dev box can take >2s) instead of a fixed sleep —
 # this suite runs in the pre-land gate, where a slow boot would read as a red gate.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).
+# --max-time bounds each attempt: this loop runs under the suite mutex, and a port that accepts and
+# never answers would otherwise hold it until the outer timeout (e2e/verify-queue.ts §2d).
 code=000
 for _ in $(seq 1 60); do
-  code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
+  code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
   [ "$code" != "000" ] && break
   sleep 0.5
 done

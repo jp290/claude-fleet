@@ -497,6 +497,33 @@ export async function run(): Promise<void> {
         && readFileSync(`${PROBE}/pid`, "utf8").trim() !== String(goneHolder),
       JSON.stringify({ gone: goneHolder, dead: holderDead, say: deadHolderSay.slice(0, 400) }));
 
+    // CONTROL C: the variable matches a LIVE recorded pid — but the birth on disk is not that
+    // process's (Astra-Befund 2, 2026-09-15). That is a recycled pid, so the claim grants nothing:
+    // the whole script must take the ordinary path, reap the recycled lock and hold it itself.
+    rmSync(PROBE, { recursive: true, force: true });
+    mkdirSync(PROBE, { recursive: true });
+    writeFileSync(`${PROBE}/pid`, `${process.pid}\n`);
+    writeFileSync(`${PROBE}/birth`, `${differentValidBirth(thisBirth)}\n`);
+    const recycledClaimSay = await stageSay(5000, { FLEET_SUITE_LOCK_HELD_BY: String(process.pid) });
+    check("§2c an inheritance claim over a live pid whose birth CHANGED is no hold: the step reaps the recycled lock and takes it under its own pid",
+      new RegExp(`stale — recorded pid ${process.pid} is alive but its process-birth fingerprint changed`).test(recycledClaimSay)
+        && !recycledClaimSay.includes(`acquired after 0s (pid ${process.pid})`)
+        && / acquired after \d+s \(pid \d+\)$/m.test(recycledClaimSay)
+        && readFileSync(`${PROBE}/pid`, "utf8").trim() !== String(process.pid),
+      JSON.stringify(recycledClaimSay.slice(0, 400)));
+
+    // CONTROL D: same live pid, NO birth on disk. Unproven identity is `unknown` to a waiter and is
+    // kept — so a claim over it grants nothing either: the step waits instead of running inside it.
+    rmSync(PROBE, { recursive: true, force: true });
+    mkdirSync(PROBE, { recursive: true });
+    writeFileSync(`${PROBE}/pid`, `${process.pid}\n`);
+    const unprovenClaimSay = await stageSay(2500, { FLEET_SUITE_LOCK_HELD_BY: String(process.pid) });
+    check("§2c an inheritance claim over a live pid with NO recorded birth grants nothing: the step waits as for any unknown holder and does not reap it",
+      /waiting [01]s for [^\n]* — unknown — recorded pid \d+ is alive, but the lock has no process-birth fingerprint/.test(unprovenClaimSay)
+        && !/ acquired after /.test(unprovenClaimSay)
+        && readFileSync(`${PROBE}/pid`, "utf8").trim() === String(process.pid),
+      JSON.stringify(unprovenClaimSay.slice(0, 400)));
+
     rmSync(PROBE, { recursive: true, force: true });
   }
 
@@ -683,6 +710,51 @@ export async function run(): Promise<void> {
     rmSync(LOCK, { recursive: true, force: true });
     rmSync(QUEUE, { recursive: true, force: true });
     rmSync(ORDER, { force: true });
+  }
+
+  // ===== §2d a wrapper's BOOT PROBE cannot hold the mutex on a port that never answers =====
+  // Every wrapper waits for its server with a curl loop, and it waits WHILE HOLDING the suite
+  // mutex. The loop bounds its attempts (60 × 0.5 s), not the attempt: a curl with no deadline
+  // against a port that accepts and never answers blocks until the gate's OUTER timeout, and every
+  // suite on the box queues behind it (Astra-Befund 6, 2026-09-15). e2e/pins.ts holds the source
+  // rule (every such curl names --max-time); this runs each wrapper's OWN probe line, cut out of the
+  // wrapper, against a local responder that accepts and never writes a byte.
+  {
+    const SRC = ((): string => {
+      try { return dirname(readlinkSync(`${ROOT}/node_modules`)); } catch { return ROOT; }
+    })();
+    const probes = readdirSync(SRC).filter((f) => /^e2e-.*\.sh$/.test(f)).sort().flatMap((f) =>
+      readFileSync(`${SRC}/${f}`, "utf8").split("\n").flatMap((l, i) => {
+        const m = /\$\((curl [^)]*http:\/\/127\.0\.0\.1:\$PORT\/[^)]*)\)/.exec(l);
+        return m ? [{ at: `${f}:${i + 1}`, cmd: m[1]!,
+          deadline: Number(/(?:--max-time|\s-m)\s+([0-9.]+)/.exec(m[1]!)?.[1] ?? NaN) }] : [];
+      }));
+    const accepted: { end(): void }[] = [];
+    const silent = Bun.listen({ hostname: "127.0.0.1", port: 0,
+      socket: { open(s) { accepted.push(s); }, data() { /* never answers */ } } });
+    try {
+      check("§2d fixture: wrapper boot probes found in the source tree",
+        probes.length > 0, `${probes.length} probes under ${SRC}`);
+      const runs = await Promise.all(probes.map(async (p) => {
+        const t0 = Date.now();
+        const sh = Bun.spawn(["sh", "-c", `PORT=${silent.port}; code=$(${p.cmd}); printf '%s' "$code"`],
+          { stdout: "pipe", stderr: "ignore" });
+        // the probe's own deadline is what is under test; this kill only keeps a missing one from
+        // hanging THIS suite — it fires well after any sane deadline and is reported as such
+        const guard = setTimeout(() => { try { sh.kill(9); } catch { /* already gone */ } }, 20_000);
+        const out = await new Response(sh.stdout).text();
+        await sh.exited;
+        clearTimeout(guard);
+        return { ...p, ms: Date.now() - t0, out };
+      }));
+      const bad = runs.filter((r) => !(r.deadline > 0) || r.out !== "000" || r.ms > r.deadline * 1000 + 1500);
+      check("§2d every wrapper boot probe against a port that accepts and never answers ends within its own deadline, reading as not-up (000)",
+        runs.length > 0 && accepted.length > 0 && bad.length === 0,
+        JSON.stringify({ accepted: accepted.length, bad: bad.map((r) => ({ at: r.at, deadline: r.deadline, ms: r.ms, out: r.out })) }));
+    } finally {
+      for (const s of accepted) try { s.end(); } catch { /* gone */ }
+      silent.stop(true);
+    }
   }
   // back to the real lock for everything below — and back to the env every later module expects
   await restartSrv();

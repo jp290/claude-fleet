@@ -204,7 +204,9 @@ Three lines of the design above are deliberately kept, and one is deliberately e
 - **The hold is inheritable, and only downwards.** `FLEET_SUITE_LOCK_HELD_BY=<pid>` is exported into
   the **gate child alone** — never into `process.env`, or the post-land audit would inherit it and
   run its suite beside the next one. `e2e-stage.sh` honours it only when the lock file on disk names
-  that same, still-living process: the variable alone grants nothing, so a stale export cannot make
+  that same, still-living process **and that process's current birth equals the lock's valid recorded
+  birth** (since 2026-09-15, Astra-Befund 2: a pid check alone let a stale export plus a leftover lock
+  plus a recycled pid skip the queue): the variable alone grants nothing, so a stale export cannot make
   a suite run unserialized. An inherited step reports through the existing acquire format
   (`after 0s`), because a second format would be summed twice by `runVerify` and would fall
   `e2e/pins.ts`'s "exactly one acquire" rule.
@@ -220,8 +222,9 @@ and do not survive that:
 - **The hold is inheritable UPWARDS as well** (`server.ts#inheritedSuiteHolder`). A `bun server.ts`
   started from inside a suite wrapper is in the position that wrapper's own staged steps are in:
   the machine is already held on its behalf. It therefore reads `FLEET_SUITE_LOCK_HELD_BY` from the
-  environment it was started with and, **only** when the lock file on disk names that pid and the
-  process is alive — the same three conditions `e2e-stage.sh` applies, in the same order — runs its
+  environment it was started with and, **only** when the lock file on disk names that pid, the
+  process is alive and its birth equals the lock's recorded birth — the same four conditions
+  `e2e-stage.sh` applies, in the same order, run over one fixture on both sides by `e2e/pins.ts` — runs its
   gate inside that hold instead of queueing for it. The variable still grants nothing on its own.
   Without this every clean land inside a suite queues behind its own runner: measured on
   2026-09-06, `./e2e-clean-review.sh` hung at `waitMerge` for its full 60 s the first time the hold

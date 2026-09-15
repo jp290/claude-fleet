@@ -697,6 +697,89 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
       && stage.includes('kill -0 "$_st_held_by" 2>/dev/null')
       && stage.includes('"$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by"'),
     `server=${server.includes("env.FLEET_SUITE_LOCK_HELD_BY = String(heldSuiteLock)")} shellVar=${stage.includes('_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"')} alive=${stage.includes('kill -0 "$_st_held_by" 2>/dev/null')} onDisk=${stage.includes('"$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by"')}`);
+  // …AND THE LIVE PID MUST STILL BE THE PROCESS THAT WROTE THE LOCK (Astra-Befund 2, 2026-09-15,
+  // docs/messungen/2026-09-14-astra-suiten-types-tests-befunde.md R2). Every ordinary waiter proves
+  // a live holder by pid AND birth; the inheritance test used to stop at the pid. A stale export
+  // plus a leftover lock plus a recycled pid therefore handed an unserialized run to whoever got
+  // that pid next. RUN, not grepped: the shell block and server.ts#inheritedSuiteHolder are cut out
+  // of their files and executed against one private lock, over one live pid (this process), in the
+  // three birth states. The two sides must give the same answer in each, because they are the same
+  // rule on two sides of a spawn — a server that inherits where its gate child queues (or the
+  // reverse) is the silent deadlock the hand-down pins above exist for.
+  {
+    const RULE_INHERIT_BIRTH = "an inherited suite-mutex hold is honoured only over a holder whose process birth matches the lock's (shell and server agree)";
+    const lock = mkdtempSync(`${tmpdir()}/fleet-pins-inherit-`);
+    const holder = process.pid;
+    try {
+      const live = spawnSync("ps", ["-o", "lstart=", "-p", String(holder)],
+        { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim().replace(/\s+/g, " ");
+      const other = live === "Mon Jan 1 00:00:00 2001" ? "Tue Jan 2 00:00:00 2001" : "Mon Jan 1 00:00:00 2001";
+      const fnsAt = stage.indexOf("_st_birth_of() {");
+      const fnsEnd = stage.indexOf("# Walk the queue once", fnsAt);
+      const blockAt = stage.indexOf('_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"');
+      const blockEnd = stage.indexOf('if [ "$_st_inherited" = 0 ]; then', blockAt);
+      const shellSrc = fnsAt < 0 || fnsEnd < 0 || blockAt < 0 || blockEnd < 0 ? ""
+        : `${stage.slice(fnsAt, fnsEnd)}\n${stage.slice(blockAt, blockEnd)}\nprintf '%s %s' "$_st_inherited" "$_st_lock_pid"\n`;
+      const shellSays = (): string => spawnSync("sh", ["-c", shellSrc],
+        { encoding: "utf8", timeout: 10_000,
+          env: { ...process.env, FLEET_SUITE_LOCK: lock, FLEET_SUITE_LOCK_HELD_BY: String(holder) } }).stdout.trim();
+      const birthSpan = serverU.span("const PROCESS_BIRTH_RE =", "\nfunction gateLock(");
+      const inheritSpan = serverU.span("function inheritedSuiteHolder(): number | null {", "\n}\n", 3);
+      let serverFn: (() => number | null) | null = null;
+      let serverErr = "";
+      if (birthSpan && inheritSpan && birthSpan.file === inheritSpan.file) {
+        const shim = { env: { ...process.env, FLEET_SUITE_LOCK_HELD_BY: String(holder) },
+          kill: (pid: number, sig: number) => process.kill(pid, sig) };
+        try {
+          serverFn = new Function("SUITE_LOCK", "readFileSync", "process",
+            new Bun.Transpiler({ loader: "ts" }).transformSync(`${birthSpan.text}\n${inheritSpan.text}`)
+              + "\nreturn inheritedSuiteHolder;")(lock, readFileSync, shim) as () => number | null;
+        } catch (e) { serverErr = e instanceof Error ? e.message : String(e); }
+      }
+      pin(`${RULE_INHERIT_BIRTH} — fixture: both sides are extractable and this process has a valid birth`,
+        shellSrc !== "" && serverFn !== null && /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/.test(live),
+        `shell=${shellSrc.length} bytes server=${serverFn !== null}${serverErr ? ` (${serverErr})` : ""} birth=${JSON.stringify(live)}`);
+      const arm = (birth: string | null): { shell: string; server: number | null | string } => {
+        writeFileSync(`${lock}/pid`, `${holder}\n`);
+        rmSync(`${lock}/birth`, { force: true });
+        if (birth !== null) writeFileSync(`${lock}/birth`, `${birth}\n`);
+        let srv: number | null | string;
+        try { srv = serverFn ? serverFn() : "not extracted"; } catch (e) { srv = `threw: ${e instanceof Error ? e.message : String(e)}`; }
+        return { shell: shellSays(), server: srv };
+      };
+      const same = arm(live);
+      pin(`${RULE_INHERIT_BIRTH} — same pid, same birth: both inherit the hold`,
+        same.shell === `1 ${holder}` && same.server === holder, JSON.stringify(same));
+      const differs = arm(other);
+      pin(`${RULE_INHERIT_BIRTH} — same pid, DIFFERENT birth (a recycled pid): neither inherits, the shell stays an ordinary contender`,
+        /^0 \d+$/.test(differs.shell) && differs.shell !== `0 ${holder}` && differs.server === null, JSON.stringify(differs));
+      const missing = arm(null);
+      const malformed = arm("e2e-not-a-birth");
+      pin(`${RULE_INHERIT_BIRTH} — same pid, UNREADABLE birth (missing or malformed): neither inherits, the shell stays an ordinary contender`,
+        [missing, malformed].every((r) => /^0 \d+$/.test(r.shell) && r.shell !== `0 ${holder}` && r.server === null),
+        JSON.stringify({ missing, malformed }));
+    } finally {
+      rmSync(lock, { recursive: true, force: true });
+    }
+  }
+  // A WRAPPER'S BOOT PROBE HOLDS THE MUTEX WHILE IT WAITS (Astra-Befund 6, 2026-09-15). The boot
+  // loops bound their ATTEMPTS (60 × 0.5 s), never the attempt: a curl with no request deadline
+  // against a port that accepts and never answers blocks until the gate's outer timeout, with the
+  // suite mutex held and every other suite on the box queued behind it. A rule over every curl
+  // command substitution in every e2e-*.sh — a boot loop added tomorrow is caught here — plus the
+  // vacuum guard that each wrapper booting a server actually has such a probe. The behaviour
+  // (a never-answering responder ends each probe inside its deadline) is e2e/verify-queue.ts §2d.
+  {
+    const wrappers = readdirSync(ROOT).filter((f) => /^e2e-.*\.sh$/.test(f)).sort();
+    const curls = wrappers.flatMap((f) => read(f).split("\n").flatMap((l, i) =>
+      /\$\(curl /.test(l) ? [{ at: `${f}:${i + 1}`, line: l }] : []));
+    const undeadlined = curls.filter((c) => !/(?:--max-time|\s-m)\s+[0-9.]+/.test(c.line)).map((c) => c.at);
+    const bootless = wrappers.filter((f) => read(f).includes("exec bun server.ts")
+      && !read(f).split("\n").some((l) => /\$\(curl [^)]*http:\/\/127\.0\.0\.1:\$PORT\//.test(l)));
+    pin("every curl in a wrapper boot loop carries --max-time — a port that accepts and never answers cannot hold the suite mutex until the outer timeout",
+      curls.length > 0 && undeadlined.length === 0 && bootless.length === 0,
+      `${curls.length} curls; without deadline: [${undeadlined.join(", ")}]; server-booting wrappers without a probe: [${bootless.join(", ")}]`);
+  }
   // THE HAND-DOWN GOES ONE LEVEL FURTHER UP (M1, 2026-09-06). Since the clean land path takes this
   // mutex IN THE SERVER before it spawns the gate, a test server that does not know it is running
   // inside its own wrapper's hold queues for a lock that wrapper owns for the whole run — every

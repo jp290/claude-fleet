@@ -4101,6 +4101,14 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     check("a lost lane requeues the foreign-harness row and lets go of the slot (unchanged from today)",
       xReq?.status === "queued" && !xReq.slot && /requeued/.test(xReq.note ?? ""), JSON.stringify(xReq));
+    // ...and the requeue leaves a DURABLE trace: the row's note is overwritten by the next attempt,
+    // the audit line is not. Exactly one, naming this task and the reason the row's note carries.
+    const xRequeued = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((l) => { try { return JSON.parse(l) as { event?: string; taskId?: string; reason?: string }; } catch { return {}; } })
+      .filter((a) => a.event === "dispatch_requeued" && a.taskId === xT.task.id);
+    check("a requeue writes exactly one dispatch_requeued audit event with the task id and its reason",
+      xRequeued.length === 1 && !!xRequeued[0].reason && (xReq?.note ?? "").startsWith(xRequeued[0].reason),
+      JSON.stringify({ rows: xRequeued, note: xReq?.note }));
     check("a post-spawn dispatch that never sends writes no context receipt",
       (await contextReceipts()).total === failedReceiptCount);
     await post(`/api/tasks/${xT.task.id}/delete`, {});

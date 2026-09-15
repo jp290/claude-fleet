@@ -25,6 +25,9 @@ type AuditEvent =
   // `archived`, or a land is still running) — the requeue writes nothing, and
   // this row is the only trace that it wanted to (server.ts#briefAndSend, requeue)
   | "dispatch_requeue_skipped"
+  // the same tail DID requeue: every owned row went back to `queued` and the lane was torn down or
+  // kept. Detail names the rows, branch and reason; `taskId` and `reason` ride as fields
+  | "dispatch_requeued"
   // pending → queued through the Program-MAIN door (releaseTaskForMain). Recorded SEPARATELY from
   // the row's own `releasedBy`, because that field is overwritable: server.ts stamps it to "owner"
   // the moment someone later presses ▸ start, since it answers the LANE question ("was the run

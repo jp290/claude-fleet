@@ -8821,7 +8821,14 @@ export async function run(ctx: Ctx): Promise<void> {
     const c0Term = (n: number): Record<string, unknown> =>
       c0Row(`c0term${String(n).padStart(4, "0")}`, n % 2 === 0 ? "done" : "archived");
     const c0Ids = (rows: Record<string, unknown>[]): string[] => rows.map((r) => String(r.id));
+    // THE PLANTED SET, not a prefix. The server mints task ids as 8 hex chars (randomBytes(4)),
+    // so any foreign row has a 1-in-256 chance per id of starting "c0" — the false red the helper
+    // preview of fcc6d5ec died on (row c0d364c6, a w2/3b fixture with a random id). The cleanup
+    // check below may only fall over rows THIS section planted, and every id it mints passes
+    // through c0Plant, so the set is complete by construction.
+    const c0Planted = new Set<string>();
     const c0Plant = async (rows: Record<string, unknown>[]): Promise<string[]> => {
+      for (const r of rows) c0Planted.add(String(r.id));
       await stopSrv();
       const planted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as C0State;
       planted.tasks = rows;
@@ -8964,8 +8971,8 @@ export async function run(ctx: Ctx): Promise<void> {
     await restartSrv();
     const c0Restored = ((await (await get("/api/tasks")).json()) as { tasks: C0Row[] }).tasks;
     check("(c0) cleanup: the pre-fixture queue is back and no planted row survives",
-      !c0Restored.some((t) => t.id.startsWith("c0")),
-      `left=${c0Restored.filter((t) => t.id.startsWith("c0")).length} total=${c0Restored.length}`);
+      !c0Restored.some((t) => c0Planted.has(t.id)),
+      `left=${c0Restored.filter((t) => c0Planted.has(t.id)).length} total=${c0Restored.length}`);
   }
 
   // ——— TA · ARCHIVING DOES NOT DELETE ———

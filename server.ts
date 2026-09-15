@@ -5747,6 +5747,12 @@ const FOUNDING_BOOT_GRACE_MS = 4000;
 // The ACP-21 measurement behind this: server-narrativ-archiv.md#sendtext
 type Acceptance = "observed" | "not-observed" | "unobservable" | "not-applicable";
 class SendRefused extends Error { readonly refused = true; }
+// The owner /send's own refusal (requireAgent): the probe named no live agent after the bounded
+// boot wait, so the text would land in a pane nothing reads yet — a booting TUI's composer, where
+// a founding brief then finds it (2026-09-14 12:08, a spawning lane killed), or a bare shell.
+class SendAgentNotAlive extends SendRefused {
+  constructor(readonly agent: AgentState) { super(`no agent alive in the pane (agent=${agent}) — nothing typed`); }
+}
 // The result of the one conservative ACP-26 action. "cleared" is still an uncertain SUBMIT — it
 // proves only that Fleet's own payload was removed after acceptance was not observed. Every kept
 // result means no erase key was sent. "residue" means the exact-count erase was attempted but a
@@ -5950,7 +5956,7 @@ async function waitForWsInputTestLatch(bound: { occupant: SlotStreamOccupant; pa
 }
 
 async function sendText(s: Slot, text: string, submit: boolean,
-  options: { rollbackOwnPayload?: true } = {}): Promise<{ acceptance: Acceptance }> {
+  options: { rollbackOwnPayload?: true; requireAgent?: true } = {}): Promise<{ acceptance: Acceptance }> {
   const occupant = slotStreamOccupant(s);
   if (!occupant || slotTeardownInflight.has(s.id)) throw new Error("slot unavailable for send");
   const harnessName = s.harness ?? "default";
@@ -5999,11 +6005,18 @@ async function sendText(s: Slot, text: string, submit: boolean,
         if (becameAlive) {
           await Bun.sleep(bound.bootSettleMs);
         } else if (waitedForAlive && !becameAlive) {
-          // No prompt text in the trail: delivery proceeds, the pane never became observably ready.
+          // No prompt text in the trail: the pane never became observably ready. Delivery proceeds,
+          // unless the caller required a live agent (the owner /send) — then nothing is typed.
           audit("send_boot_timeout", s.id,
             `harness=${harnessName} budget=${SEND_BOOT_WAIT_MS}ms`);
+          if (options.requireAgent && state !== "alive") throw new SendAgentNotAlive(state);
         }
       }
+    } else if (options.requireAgent && bound.comms.length > 0) {
+      // an established pane gets one probe, no wait: its agent either lives or is gone for good
+      const state = await paneAgentAt(bound.paneId, bound.comms);
+      if (!sameBoundPane(s, bound)) throw new Error("slot changed during send agent probe");
+      if (state !== "alive") throw new SendAgentNotAlive(state);
     }
     const buf = `fleetbuf${occupant.slot}-${occupant.openedAt}-${randomBytes(8).toString("hex")}`;
     let ownPasteQuiet = false;
@@ -33634,6 +33647,15 @@ Bun.serve<WSData>({
       const s = slotFrom(body.slot);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       if (typeof body.text !== "string" || body.text.length > 100_000) return json({ error: "bad text" }, 400);
+      // THE OCCUPANT PIN (optional). A slot NUMBER is recycled: 2026-09-14 12:08 a MAIN had moved from
+      // slot 5 to 8, dispatch refilled 5 with a spawning lane, and a /send to "5" killed it. A caller
+      // that read the occupant passes its openedAt, and a slot that has been re-occupied since answers
+      // 409 naming who holds it now. No await between this check and sendText's own occupant capture.
+      if (body.openedAt !== undefined && !(typeof body.openedAt === "number" && body.openedAt > 0))
+        return json({ error: "bad openedAt" }, 400);
+      if (body.openedAt !== undefined && body.openedAt !== s.openedAt)
+        return json({ error: `slot ${s.id} is held by a different occupant (openedAt ${s.openedAt}, not ${body.openedAt}) — nothing typed`,
+          occupant: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId, label: s.label, lane: s.worktree?.branch ?? null } }, 409);
       // The owner has spoken to this pane, so an OWNER wait has arrived — it holds automation back, never
       // the person it waits for. A "main" wait is a different debt (Program-MAIN's answer to a
       // clarification) and stays: clearing it would re-open steward nudges (guard in handleStewardSend).
@@ -33646,12 +33668,14 @@ Bun.serve<WSData>({
       const receiver = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
       let acceptance: Acceptance;
       try {
-        ({ acceptance } = await sendText(s, body.text, submit));
+        ({ acceptance } = await sendText(s, body.text, submit, { requireAgent: true }));
       } catch (e) {
-        // Nothing typed: an occupied composer (owner draft) refuses before the paste. Plainly
-        // retryable, so it is neither journaled as a send nor presented as uncertain.
+        // Nothing typed: an occupied composer (owner draft), or no live agent after the bounded boot
+        // wait, refuses before the paste. Plainly retryable, so it is neither journaled as a send nor
+        // presented as uncertain.
         if (e instanceof SendRefused)
-          return json({ error: e.message, receipt: { sendId, at: Date.now(), delivery: "refused", receiver } }, 409);
+          return json({ error: e.message, ...(e instanceof SendAgentNotAlive ? { agent: e.agent } : {}),
+            receipt: { sendId, at: Date.now(), delivery: "refused", receiver } }, 409);
         // tmux may have accepted part of the paste, or the composer was OBSERVED still holding the text
         // after Enter (ACP-25) — so neither "failed" nor "delivered" is an observed fact. The journal write
         // is MANDATORY: an unjournaled uncertain send is the silent loss this receipt exists to remove.

@@ -3864,8 +3864,10 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // Pane output is not readiness: tmux can repaint before the agent prints, and the agent can print
   // before its composer is ready. A separate openedAt guard first answers whether this pane could
   // still be booting; only then may the bounded probe loop run. It retains BOTH outcomes: settle
-  // after the transition, or audited fall-through so an owner can still type into a newly opened
-  // pane whose agent died. An established dead pane never enters this block and stays immediate.
+  // after the transition, or audited fall-through — for every caller but the owner /send, which opts
+  // into `requireAgent` and is REFUSED there instead (2026-09-14 12:08: a send into a spawning lane's
+  // booting pane killed the lane). The ONLY throw between the audit and the paste is that opt-in, and
+  // the established-pane probe that follows it runs for the opt-in alone.
   const sendCode = sendBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   const sendFreshnessGuard = /const mayStillBeBooting = Date\.now\(\) - occupant\.openedAt < SEND_BOOT_FRESH_MS;\s*if \(mayStillBeBooting\) \{\s*if \(bound\.comms\.length > 0\)/.test(sendCode);
   const freshLiteral = /const SEND_BOOT_FRESH_MS = ([\d_]+);/.exec(server)?.[1];
@@ -3875,9 +3877,13 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const independentlySizedFreshness = freshMs >= 10_000 && waitMs > 0 && freshMs > waitMs;
   const sendTimeoutAt = sendCode.indexOf('audit("send_boot_timeout"');
   const sendDeliveryAt = sendCode.indexOf("const buf =", sendTimeoutAt);
+  const establishedProbeAt = sendCode.indexOf("} else if (options.requireAgent && bound.comms.length > 0) {", sendTimeoutAt);
+  const optInThrow = 'if (options.requireAgent && state !== "alive") throw new SendAgentNotAlive(state);';
   const timeoutStillDelivers = sendTimeoutAt >= 0 && sendDeliveryAt > sendTimeoutAt
-    && !/\b(?:return|throw)\b/.test(sendCode.slice(sendTimeoutAt, sendDeliveryAt));
-  pin("sendText boot readiness is freshness-guarded, probe-driven and bounded; timeout still delivers",
+    && establishedProbeAt > sendTimeoutAt && establishedProbeAt < sendDeliveryAt
+    && sendCode.slice(sendTimeoutAt, establishedProbeAt).split(optInThrow).length === 2
+    && !/\b(?:return|throw)\b/.test(sendCode.slice(sendTimeoutAt, establishedProbeAt).replace(optInThrow, ""));
+  pin("sendText boot readiness is freshness-guarded, probe-driven and bounded; timeout still delivers unless the caller requires an agent",
     sendFreshnessGuard
       && independentlySizedFreshness
       && !/\bs\.lastOutput\b/.test(sendCode)

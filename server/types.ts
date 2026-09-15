@@ -23,7 +23,11 @@ const MAX_SLOTS = 16; // fixed places — the sidebar always shows all of them
 
 // `browser`: the lane needs the Playwright MCP (Slot.browser). Absent = a text lane, which is the
 // default; only `true` is ever stored, so every row that predates the field keeps its exact shape.
-type DispatchSpawn = { harness: string | null; model: string | null; effort: string | null; browser?: true };
+// `context`: the pane's context budget (Slot.context) — Codex only, validated at set time (server.ts#contextOf).
+// Absent on every row that names none, the same byte-identity rule as `browser`.
+type SlotContext = { window: number; compactAt: number };
+type DispatchSpawn = { harness: string | null; model: string | null; effort: string | null; browser?: true;
+  context?: SlotContext };
 
 interface SlotStreamOccupant { slot: number; openedAt: number; selfToken: string }
 
@@ -1541,6 +1545,11 @@ interface Slot {
   // with a worktree — a MAIN or plain session keeps its ambient MCPs whatever this says (ensureSlot).
   // Measured cost it removes: docs/messungen/2026-09-14-ram-optimierung-astra.md §F4. Same lifetime
   // as `effort`: chosen at spawn, persisted so a heal/restart/resume keeps the profile, cleared on open/kill.
+  context: SlotContext | null; // the pane's context window and auto-compaction threshold, in tokens, for
+  // an adapter that takes them (Codex: three `-c` overrides on the fresh AND resume line). null = no
+  // flag, today's spawn line byte for byte. Validated 0 < compactAt < window <= the client's catalog
+  // maximum (server.ts#CODEX_CONTEXT_WINDOW_MAX); a stored value that fails it reloads as null. Same
+  // lifetime as `effort`. A budget, not a quality promise: docs/messungen/2026-09-15-codex-kontextfenster-profile.md.
   taskId: string | null; // the queue row that spawned this lane. Carried because the outcome
   // recorder runs at TEARDOWN — by then the slot is the only object that still names the run.
   // null for a hand-opened lane and cleared with the occupant, exactly like releasedBy below.
@@ -2821,7 +2830,7 @@ export type {
   ProgramHandoverRead, ProgramRecordLoss, ProgramRecordLossRead,
   ProgramFoundingMode, ProgramFoundingOccupant, ProgramFoundingV1, ProgramFoundingProfileKind,
   ProgramFoundingIdentity, ProgramFoundingV2, ProgramFounding, ProgramFoundingRead, ProgramContent,
-  ProgramValidation, SupervisorBinding, ProgramDigest, DispatchSpawn, SlotStreamOccupant,
+  ProgramValidation, SupervisorBinding, ProgramDigest, DispatchSpawn, SlotContext, SlotStreamOccupant,
   StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
   StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold,

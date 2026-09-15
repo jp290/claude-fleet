@@ -190,6 +190,10 @@ export async function run(ctx: Ctx): Promise<void> {
   check("codex recovery fixture has a scratch sessions root and exact cwd", !!codexRoot && !!codexCwd,
     `${codexRoot} / ${codexCwd}`);
   const resetCodexRoot = () => { rmSync(codexRoot, { recursive: true, force: true }); mkdirSync(codexRoot, { recursive: true }); };
+  // The Codex context budget (server.ts#contextOf): one pair, and the exact three overrides it must
+  // put on a spawn line (server.ts#CODEX_HARNESS). Spelled here, never derived from the server.
+  const CTX_PROFILE = { window: 700_000, compactAt: 600_000 };
+  const CTX_FLAGS = "-c model_context_window=700000 -c model_auto_compact_token_limit=600000 -c model_auto_compact_token_limit_scope='total'";
   const SUB = "10000000-0000-4000-8000-000000000001";
   const FOREIGN = "10000000-0000-4000-8000-000000000002";
   const AMB_A = "10000000-0000-4000-8000-000000000003";
@@ -237,13 +241,18 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(manyView));
 
   const cp = await post("/api/slots/16/open", {
-    cwd: codexCwd, harness: "codex", model: "gpt-5-codex", effort: "high",
+    cwd: codexCwd, harness: "codex", model: "gpt-5-codex", effort: "high", context: CTX_PROFILE,
   });
   check("attended-bind persistence fixture opens with model and effort", cp.ok, String(cp.status));
   const ownerPending = await waitCodex(16, (r) => r.state === "pending");
   await Bun.sleep(200);
   const liveBefore = await tmuxOut("display-message", "-p", "-t", "s16", "#{pane_pid}|#{pane_start_command}");
   const captureBefore = await tmuxOut("capture-pane", "-p", "-t", "s16");
+  const freshCtxCmd = liveBefore.out.replaceAll("\\", "");
+  check("a FRESH Codex spawn with context {700000, 600000} carries all three -c context overrides and no experiment switch",
+    liveBefore.code === 0 && freshCtxCmd.includes("codex --dangerously-bypass-approvals-and-sandbox")
+      && !freshCtxCmd.includes("codex resume") && freshCtxCmd.includes(CTX_FLAGS)
+      && !freshCtxCmd.includes("context_management"), freshCtxCmd.slice(-360));
   const ownerBind = await post("/api/slots/16/codex-bind", { sessionId: OLD_A });
   const ownerBindBody = (await ownerBind.json()) as { ok?: boolean; existing?: boolean; sessionId?: string };
   const exactBound = await waitCodex(16, (r) => r.state === "bound");
@@ -529,6 +538,9 @@ export async function run(ctx: Ctx): Promise<void> {
   // (server.ts#CODEX_TEXT_LANE_MCP) is a lane property and must never reach a MAIN's respawn
   check("a resumed plain Codex slot carries no text-lane playwright override",
     resumeCmd.includes("codex resume") && !resumeCmd.includes("mcp_servers.playwright"), resumeCmd.slice(-260));
+  check("the RESUME line of the same Codex slot carries the same three -c context overrides",
+    resumeCmd.includes(`codex resume '${OLD_A}'`) && resumeCmd.includes(CTX_FLAGS)
+      && !resumeCmd.includes("context_management"), resumeCmd.slice(-360));
   check("resume preserves the owner-selected pin and disconnect advisory", resumed?.sessionId === OLD_A
     && resumed.disconnectSeenAt === disconnected?.disconnectSeenAt, JSON.stringify(resumed));
   const persistedRow = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, {
@@ -538,6 +550,100 @@ export async function run(ctx: Ctx): Promise<void> {
       disconnectSeenAt: persistedRow.codexDisconnectSeenAt, id: OLD_A };
   check("attended Codex bind, anchor and advisory are ready for server-restart persistence",
     persistedCodex !== null, JSON.stringify(persistedRow));
+
+  // --- the Codex context budget on slot 15: ONE slot opened with the same choice without and then
+  // with the field, so "absent = today's spawn line" is a byte comparison and not a substring hope.
+  // The slot stays open with its budget into the restart below, where (e) breaks it on disk.
+  const paneStartCmd = async (slot: number, marker: string): Promise<string> => {
+    let cmd = "";
+    const until = Date.now() + 7000;
+    do {
+      const r = await tmuxOut("display-message", "-p", "-t", `s${slot}`, "#{pane_start_command}");
+      cmd = r.code === 0 ? r.out.replaceAll("\\", "").trim() : "";
+      if (cmd.includes(marker)) break;
+      await Bun.sleep(100);
+    } while (Date.now() < until);
+    return cmd;
+  };
+  type CtxSlotRow = { id: number; cwd: string | null; openedAt: number; harness?: string; context?: unknown };
+  const ctxSlotRow = async (slot: number): Promise<CtxSlotRow | undefined> =>
+    ((await (await get("/api/sessions")).json()) as { slots: CtxSlotRow[] }).slots.find((s) => s.id === slot);
+  const storedContext = async (slot: number, want: string): Promise<string> => {
+    let seen = "";
+    for (let i = 0; i < 60; i++) {
+      seen = JSON.stringify((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { context?: unknown }> }).slots?.[String(slot)]?.context ?? null);
+      if (seen === want) break;
+      await Bun.sleep(50);
+    }
+    return seen;
+  };
+  const maskSelfToken = (cmd: string): string => cmd.replace(/FLEET_SELF_TOKEN='[^']*'/g, "FLEET_SELF_TOKEN=…");
+  const plainCtxOpen = await post("/api/slots/15/open", { cwd: codexCwd, harness: "codex", model: "gpt-5-codex", effort: "high" });
+  const plainCtxCmd = await paneStartCmd(15, "codex --dangerously-bypass-approvals-and-sandbox");
+  const plainCtxRow = await ctxSlotRow(15);
+  const plainCtxStored = await storedContext(15, "null");
+  const budgetOpen = await post("/api/slots/15/open",
+    { cwd: codexCwd, harness: "codex", model: "gpt-5-codex", effort: "high", context: CTX_PROFILE });
+  const budgetCmd = await paneStartCmd(15, CTX_FLAGS);
+  check("context fixture: slot 15 opened without and then with a budget, both panes on the fresh Codex line",
+    plainCtxOpen.ok && budgetOpen.ok && plainCtxCmd.includes("codex --dangerously-bypass-approvals-and-sandbox")
+      && budgetCmd.includes("codex --dangerously-bypass-approvals-and-sandbox"),
+    `${plainCtxOpen.status}/${budgetOpen.status} / ${plainCtxCmd.slice(-120)} / ${budgetCmd.slice(-120)}`);
+  check("a Codex slot without context names no context override, shows no context and stores none",
+    plainCtxCmd.length > 0 && !plainCtxCmd.includes("model_context_window") && !plainCtxCmd.includes("model_auto_compact")
+      && plainCtxRow !== undefined && !("context" in plainCtxRow) && plainCtxStored === "null",
+    `${plainCtxCmd.slice(-240)} / ${JSON.stringify(plainCtxRow)} / stored=${plainCtxStored}`);
+  check("with and without context the Codex spawn line is byte-identical except for the three overrides",
+    budgetCmd.includes(` ${CTX_FLAGS}`) && maskSelfToken(budgetCmd).replace(` ${CTX_FLAGS}`, "") === maskSelfToken(plainCtxCmd),
+    `with=${maskSelfToken(budgetCmd).slice(-300)} / without=${maskSelfToken(plainCtxCmd).slice(-300)}`);
+  const budgetRow = await ctxSlotRow(15);
+  const budgetStored = await storedContext(15, JSON.stringify(CTX_PROFILE));
+  check("GET /api/sessions shows the slot's context budget and fleet.json persists the same pair",
+    budgetRow?.harness === "codex" && JSON.stringify(budgetRow.context) === JSON.stringify(CTX_PROFILE)
+      && budgetStored === JSON.stringify(CTX_PROFILE),
+    `${JSON.stringify(budgetRow)} / stored=${budgetStored}`);
+  // every refusal goes to the OCCUPIED slot 15, so "nothing stored" is checkable: the occupant, its
+  // budget, its persisted pair and its pane must all be the ones the accepted open above produced
+  const ctxRefusals: [string, unknown][] = [
+    ["the default claude harness", { cwd: codexCwd, context: CTX_PROFILE }],
+    ["an explicit claude harness", { cwd: codexCwd, harness: "claude", context: CTX_PROFILE }],
+    ["window 900000, above the catalog maximum", { cwd: codexCwd, harness: "codex", context: { window: 900_000, compactAt: 600_000 } }],
+    ["compactAt equal to window", { cwd: codexCwd, harness: "codex", context: { window: 700_000, compactAt: 700_000 } }],
+    ["compactAt above window", { cwd: codexCwd, harness: "codex", context: { window: 700_000, compactAt: 800_000 } }],
+    ["compactAt 0", { cwd: codexCwd, harness: "codex", context: { window: 700_000, compactAt: 0 } }],
+    ["window 0", { cwd: codexCwd, harness: "codex", context: { window: 0, compactAt: 0 } }],
+    ["a string window", { cwd: codexCwd, harness: "codex", context: { window: "700000", compactAt: 600_000 } }],
+    ["a fractional compactAt", { cwd: codexCwd, harness: "codex", context: { window: 700_000, compactAt: 600_000.5 } }],
+    ["an extra key", { cwd: codexCwd, harness: "codex", context: { window: 700_000, compactAt: 600_000, scope: "body_after_prefix" } }],
+    ["a bare number", { cwd: codexCwd, harness: "codex", context: 700_000 }],
+  ];
+  for (const [why, body] of ctxRefusals) {
+    const r = await post("/api/slots/15/open", body);
+    const err = ((await r.json().catch(() => ({}))) as { error?: string }).error ?? "";
+    check(`a context budget with ${why} is refused with 400 at open`, r.status === 400 && /context/.test(err), `${r.status} ${err}`);
+  }
+  const afterRefusalRow = await ctxSlotRow(15);
+  const afterRefusalStored = await storedContext(15, JSON.stringify(CTX_PROFILE));
+  const afterRefusalCmd = await paneStartCmd(15, CTX_FLAGS);
+  check("a refused context open stores nothing — same occupant, same budget, same persisted pair, same pane",
+    afterRefusalRow?.openedAt === budgetRow?.openedAt && afterRefusalRow?.harness === "codex"
+      && JSON.stringify(afterRefusalRow?.context) === JSON.stringify(CTX_PROFILE)
+      && afterRefusalStored === JSON.stringify(CTX_PROFILE) && afterRefusalCmd === budgetCmd,
+    `${JSON.stringify(afterRefusalRow)} / stored=${afterRefusalStored}`);
+  // Task.spawn: the queue row carries the same field through the same validator
+  const ctxTaskText = `context budget row ${process.pid} (restart.ts)`;
+  const ctxTask = await post("/api/tasks", { text: ctxTaskText, kind: "notiz", queue: false, harness: "codex", context: CTX_PROFILE });
+  const ctxTaskBody = (await ctxTask.json().catch(() => ({}))) as { task?: { id?: string; spawn?: { harness?: string; context?: unknown } } };
+  const ctxTaskBad = await post("/api/tasks", { text: `${ctxTaskText} claude`, kind: "notiz", queue: false, context: CTX_PROFILE });
+  const ctxTaskRows = ((await (await get("/api/tasks")).json()) as { tasks: { text?: string }[] }).tasks
+    .filter((t) => t.text === `${ctxTaskText} claude`).length;
+  check("Task.spawn persists a Codex context budget, and a claude row naming one is refused at filing with no row",
+    ctxTask.ok && ctxTaskBody.task?.spawn?.harness === "codex"
+      && JSON.stringify(ctxTaskBody.task.spawn.context) === JSON.stringify(CTX_PROFILE)
+      && ctxTaskBad.status === 400 && ctxTaskRows === 0,
+    `${ctxTask.status} ${JSON.stringify(ctxTaskBody.task?.spawn)} / bad=${ctxTaskBad.status} rows=${ctxTaskRows}`);
+  if (ctxTaskBody.task?.id) await post(`/api/tasks/${ctxTaskBody.task.id}/delete`, {});
 
   // --- deploy-gap fact (P-4) setup, consumed in the steward + digest sections below.
   // The dir this suite runs from is a throwaway COPY of the repo (e2e-isolated.sh) and not a git
@@ -652,6 +758,21 @@ export async function run(ctx: Ctx): Promise<void> {
     if (wtRec) delete wtRec.baseSha;
     if (st) writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
   }
+  // server down → break slot 15's persisted context budget (window above the ceiling). The loader must
+  // bring the slot back with the field absent, never drop the slot or keep the out-of-bounds pair.
+  {
+    const stFile = `${ROOT}/fleet.json`;
+    let st: { slots?: Record<string, { harness?: string; context?: unknown }> } | null = null;
+    let stError = "";
+    try { st = JSON.parse(readFileSync(stFile, "utf8")) as { slots?: Record<string, { harness?: string; context?: unknown }> }; }
+    catch (e) { stError = e instanceof Error ? e.message : String(e); }
+    const rec = st?.slots?.["15"];
+    const had = JSON.stringify(rec?.context ?? null);
+    if (rec) rec.context = { window: 900_000, compactAt: 600_000 };
+    if (st) writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
+    check("precondition: slot 15 persisted its Codex context budget and it is broken on disk before the restart",
+      rec?.harness === "codex" && had === JSON.stringify(CTX_PROFILE), `${stError} ${JSON.stringify(rec)} had=${had}`);
+  }
   // --- context-size proxy setup (consumed in the steward section below): the fact is PINNED-slot
   // only, and this suite runs with FLEET_CMD=true, so no slot ever gets a session uuid pinned at
   // pane creation (server.ts: only a claude BASE_CMD pins one). The one legitimate way in is the
@@ -732,7 +853,7 @@ export async function run(ctx: Ctx): Promise<void> {
   await Bun.sleep(3000);
   const api = (await (await get("/api/sessions")).json()) as
     { now: number; slots: { id: number; cwd: string | null; label: string | null; lastOutput: number;
-      harness?: string; codexRecovery?: CodexRecoveryView }[] };
+      harness?: string; codexRecovery?: CodexRecoveryView; context?: unknown }[] };
   check("after restart: slot 2 still active", typeof api.slots[1].cwd === "string", String(api.slots[1].cwd));
   check("after restart: slot 1 still empty", api.slots[0].cwd === null);
   check("after restart: label persisted", api.slots[1].label === "research-agent");
@@ -772,6 +893,15 @@ export async function run(ctx: Ctx): Promise<void> {
       && /--session-id [0-9a-f-]{36}\b/.test(piZaiHealCmd) && piZaiHealCmd.includes("--thinking low"),
     piZaiHealCmd.slice(-280));
   await post(`/api/slots/${PI_ZAI_PERSIST_SLOT}/kill`, {});
+  const ctxRow16After = api.slots.find((s) => s.id === 16);
+  check("after restart: a Codex slot's context budget loads as persisted",
+    ctxRow16After?.harness === "codex" && JSON.stringify(ctxRow16After.context) === JSON.stringify(CTX_PROFILE),
+    JSON.stringify(ctxRow16After));
+  const ctxRow15After = api.slots.find((s) => s.id === 15);
+  check("after restart: a broken persisted context budget loads as absent and the slot stays",
+    typeof ctxRow15After?.cwd === "string" && ctxRow15After.harness === "codex" && !("context" in ctxRow15After),
+    JSON.stringify(ctxRow15After));
+  await post("/api/slots/15/kill", {});
   const codexAfterRestart = api.slots.find((s) => s.id === 16)?.codexRecovery;
   const codexStateAfterRestart = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
     { slots?: Record<string, { codexPaneSpawnedAt?: number }> }).slots?.["16"];

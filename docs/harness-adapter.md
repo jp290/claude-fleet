@@ -389,6 +389,26 @@ Netzwerkkosten werden nicht als null behauptet.
     weder `~/.claude/settings.json` noch `~/.codex/config.toml` (Pin in `e2e/pins.ts`). Gemessen am
     2026-09-14 auf eigenem tmux-Socket, Kinder nach Executable-/Skriptposition gezählt: claude ambient 2 →
     strict 0; codex frisch ambient 2 → Override 0; `codex resume <id>` mit Override 0.
+  - **Kontextbudget je Codex-Slot: `context: {window, compactAt}` (2026-09-15).** Zwei ganze Zahlen in
+    Tokens, Spawn-Option wie `effort`: `POST /api/slots/:n/open`, `…/open-worktree`, `POST /api/lanes`
+    (auch attach), `Task.spawn` (beide Create-Türen), Dispatch- und Wellen-Tür (Body-Feld gewinnt, sonst die
+    Zeile); am Slot persistiert (`Slot.context`), in `GET /api/sessions` am Slot sichtbar (fehlt ohne Budget).
+    Validiert beim Setzen (`server.ts#contextOf`): genau diese zwei Schlüssel, `0 < compactAt < window <=
+    872000` (`server.ts#CODEX_CONTEXT_WINDOW_MAX`, Literal, kein env). Nur **codex** nimmt das Feld, jeder
+    andere Adapter antwortet **400** (`harness <id> takes no context`), ebenso jeder Wert außerhalb der
+    Grenzen. Ein kaputter Wert in `fleet.json` wird als abwesend geladen, der Slot bleibt. Wirkung:
+    `server.ts#CODEX_HARNESS` hängt an frische UND resume-Zeile `-c model_context_window=<window>
+    -c model_auto_compact_token_limit=<compactAt> -c model_auto_compact_token_limit_scope='total'`; ohne
+    Budget bleibt die Zeile byte-gleich. `features.context_management.experimental_mode` setzt Fleet nie,
+    und es schreibt dafür keine Codex-Konfiguration und kein `--profile`. **Kein Qualitätsversprechen:** das
+    Feld wählt ein Budget, es misst weder Recall noch Kosten noch die Wirkung auf lange Aufgaben. Die Grenze
+    872000 ist das `max_context_window` des gebündelten Katalogs von codex-cli 0.153.4 für gpt-6-astra und
+    gpt-5.6-sol; darüber klemmt der Client still, und der effektive Nenner bleibt 95 % des Fensters.
+    Grundlage und Rückfallplan: `docs/messungen/2026-09-15-codex-kontextfenster-profile.md` §2/§4.
+    Bewusst nicht verdrahtet: die Nachfolge-Schienen (`succeedLane`, MAIN-/Program-Nachfolge) tragen das
+    Budget NICHT weiter, der Nachfolger startet ohne; Supervisor-/Program-MAIN-Bootstrap und
+    `POST /api/slots/:n/model` lesen das Feld nicht. `src/protocol.ts#contextWindowFor` bleibt unberührt:
+    Codex liest seinen Nenner aus der Rollout-Datei (`windowFromFile`).
   - **`composer` — Annahme wird BEOBACHTET, nicht geechot (ACP-25, 2026-08-22).** Ein Adapter darf
     deklarieren, wo seine TUI den Composer malt (`{kind:"glyph", re}` = letzte Zeile mit diesem Glyph;
     `{kind:"rules"}` = Region zwischen den letzten zwei Vollbreiten-Linien). `sendText` liest den

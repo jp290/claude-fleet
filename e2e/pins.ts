@@ -2571,10 +2571,11 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // relying on an optional property whose absence could acquire a meaning later. The ONE optional
   // field, `browser?: true` (2026-09-14), is the exception by design: its absence already HAS its
   // meaning — a text lane, the default — so DEFAULT_SPAWN carries none and the tick spawns text lanes.
-  pin("the attended dispatch carries model+harness+effort+browser, while the tick default keeps all three null and no browser",
-    /type DispatchSpawn = \{ harness: string \| null; model: string \| null; effort: string \| null; browser\?: true \};/.test(server)
+  // `context?` (2026-09-15) follows the same rule: absent = no context flag, today's spawn line.
+  pin("the attended dispatch carries model+harness+effort+browser+context, while the tick default keeps all three null and no browser or context",
+    /type DispatchSpawn = \{ harness: string \| null; model: string \| null; effort: string \| null; browser\?: true;\s+context\?: SlotContext \};/.test(server)
     && /const DEFAULT_SPAWN: DispatchSpawn = \{ harness: null, model: null, effort: null \};/.test(server)
-    && /openSlot\(free, wt\.path, dRef, spawn\.model, null, spawn\.harness, spawn\.effort, NO_BOX, null, spawn\.browser === true\)/.test(dBody),
+    && /openSlot\(free, wt\.path, dRef, spawn\.model, null, spawn\.harness, spawn\.effort, NO_BOX, null, spawn\.browser === true,\s+spawn\.context \?\? null\)/.test(dBody),
     dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 180) ?? "no openSlot call");
   const tStart = server.indexOf("async function tickDispatch");
   const tBody = server.slice(tStart, server.indexOf("\n}\n", tStart));
@@ -4085,7 +4086,12 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     cxTernary > 0 && cxAppend > cxTernary && (cxCode.match(/CODEX_TEXT_LANE_MCP/g) ?? []).length === 1,
     `ternary@${cxTernary} append@${cxAppend}`);
   pin("ensureSlot resolves the profile for LANES only — a slot without a worktree keeps its ambient MCPs",
-    /browserMcp: !s\.worktree \|\| occupant\.browser \}\)/.test(server), "browserMcp: !s.worktree || occupant.browser");
+    /browserMcp: !s\.worktree \|\| occupant\.browser, context: occupant\.context \}\)/.test(server), "browserMcp: !s.worktree || occupant.browser");
+  // the context ceiling is the measured catalog maximum as a literal, never an env knob
+  // (docs/messungen/2026-09-15-codex-kontextfenster-profile.md §2)
+  pin("CODEX_CONTEXT_WINDOW_MAX is the literal 872_000 and no env read names it",
+    /\nconst CODEX_CONTEXT_WINDOW_MAX = 872_000;\n/.test(server) && !/process\.env\.[A-Z_]*CONTEXT_WINDOW/.test(server),
+    server.match(/const CODEX_CONTEXT_WINDOW_MAX = [^\n]*/)?.[0] ?? "no constant");
   const applies = [...server.matchAll(/\n  browserProfile: "(apply|not-applicable|unsupported)",/g)].map((m) => m[1]);
   pin("exactly claude and codex apply the browser profile; the other adapter literals dispose it explicitly",
     applies.filter((a) => a === "apply").length === 2 && applies.length === 6, applies.join(",") || "no browserProfile literal");

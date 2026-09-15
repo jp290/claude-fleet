@@ -27,6 +27,8 @@ selbst geschriebenen Pruef-/Reibungs-Dokumente · der Selbstbericht (`ERFAHRUNG.
 | pruefung_4_abschluss | Review R4 | 1,5 min | 269 166 | 84,4 % | 2 483 | 5 | 136 | 2 (30 805) | |
 | **Summe** | | | **16 361 746** | **94,8 %** | **103 910** | **123** | **2 326** | **29 (385 314)** | **+8 Punkte** |
 
+Kontrolle zum Kontingent: `primary.used_percent` ist ein KONTOWEITER, ganzzahliger Zaehler und traegt jede gleichzeitige Codex-Session mit. Geprueft 17:5x: keiner der 14 in den letzten 6 h geschriebenen Rollouts ausserhalb dieses Laufs hat zwischen 13:39:48 und 14:34:12 Z ein `token_usage_record`. Die +8 Punkte gehoeren damit diesem Lauf (±1 durch Rundung). Sol (`gpt-5.6-sol`) zieht am selben Fenster (`limit_id codex`, Rollout 2026-09-14T09-13-37); ob es pro Token billiger ist, ist ungemessen.
+
 Alle acht auf `gpt-6-astra` / `xhigh` (die Kinder erben den Effort; `fork_turns: none`, kein
 Kontext-Fork). Kompaktierungen: 0 in allen acht Rollouts. Root-Kontext am Ende 81 % (Board).
 

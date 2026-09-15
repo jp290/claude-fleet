@@ -3784,7 +3784,9 @@ const repoInfo = new Map<number, string | null>();
 // ONLY to give the steward's READ routes a cheap `alive` field — never call the ps/pgrep
 // spawns inline on the 100ms sessions poll. The delivery/dispatch GATES (claudeAlive at the
 // send/dispatch sites) must keep calling claudeAlive FRESH: a 10s-stale cache could gate a
-interface CodexSessionMeta { id: string; cwd: string; timestamp: number; threadSource: string }
+// parentThreadId: the thread a SUBAGENT rollout was spawned from (source.subagent.thread_spawn), null
+// for every other source — the only attribution codexSubagentCount accepts.
+interface CodexSessionMeta { id: string; cwd: string; timestamp: number; threadSource: string; parentThreadId: string | null }
 const codexMetaCache = new Map<string, CodexSessionMeta | null>();
 
 // Parse exactly the immutable first JSONL record. A rollout can grow to many megabytes while the
@@ -3815,7 +3817,9 @@ function codexSessionMeta(path: string): CodexSessionMeta | null {
       if (rec.type === "session_meta" && p && typeof p.id === "string" && CODEX_UUID_RE.test(p.id)
         && typeof p.cwd === "string" && typeof p.thread_source === "string" && Number.isFinite(timestamp)
         && basename(path).endsWith(`-${p.id}.jsonl`)) {
-        meta = { id: p.id, cwd: p.cwd, timestamp, threadSource: p.thread_source };
+        const spawn = (p.source as { subagent?: { thread_spawn?: { parent_thread_id?: unknown } } } | null)?.subagent?.thread_spawn;
+        const parentThreadId = typeof spawn?.parent_thread_id === "string" ? spawn.parent_thread_id : null;
+        meta = { id: p.id, cwd: p.cwd, timestamp, threadSource: p.thread_source, parentThreadId };
       }
     } finally { closeSync(fd); }
   } catch { /* a partial/malformed first line is not identity evidence */ }
@@ -21296,6 +21300,15 @@ interface LaneOutcome {
   // readable turn_context — never the config default, which Fleet would be guessing. The key is present
   // ONLY on codex rows with model null; everywhere else the question has no subject.
   modelResolved?: string | null;
+  // CODEX ROWS ONLY, both read off the lane's bound rollout (codexRolloutFacts / codexSubagentCount;
+  // docs/messungen/2026-09-14-codex-lane-verdrahtung.md §d, proposal 2). On a codex row `sessionMs` and
+  // `toolResultBytes` above come from the same rollout. `effortObserved` = the NEWEST turn_context's
+  // effort — `effort` above stays the spawn pin, and an in-session change was invisible without this.
+  // `subagentCount` = rollouts naming this session as their direct spawn parent. Both keys are present
+  // on every codex live-lane row and null when unmeasurable (no rollout, or a child not provably ruled
+  // out) — never 0 for that; absent on every other harness, where the question has no rollout to ask.
+  effortObserved?: string | null;
+  subagentCount?: number | null;
 }
 // total + per-tool tool_result bytes. `byTool` keys are the tool NAMES from the matching tool_use
 // entry; a tool_result whose tool_use id is not in the same file lands under "?" rather than being
@@ -21460,27 +21473,106 @@ async function outcomeReview(s: Slot, cwd: string, base: string | null): Promise
     scope: result.scope, notes: result.notes, raw: result.raw, findings: result.findings,
   };
 }
-// the model named by the NEWEST `turn_context` record in a codex rollout — Codex persists one per real
-// user turn (codex-rs protocol TurnContextItem.model), in the same {type,payload} envelope
-// codexSessionMeta reads. Whole-file read under the transcript cap, like laneToolResultBytes: this
-// runs once at a terminal event, and a tail read would lose the last turn_context behind a long turn.
-async function codexObservedModel(cwd: string, sessionId: string | null): Promise<string | null> {
+// What a codex lane's OWN rollout says about the session, read once at a terminal event. `null` = no
+// bound session, no rollout, over the transcript cap, or the read threw — every field then stays null
+// on the row, never 0. Codex persists one `turn_context` per real user turn (codex-rs protocol
+// TurnContextItem) and stamps every record with a top-level `timestamp`, in the same {type,payload}
+// envelope codexSessionMeta reads. Whole-file read under the transcript cap, like laneToolResultBytes:
+// a tail read would lose the last turn_context behind a long turn.
+//   model / effort — the NEWEST turn_context's values (null when no turn_context carries one).
+//   firstTs / lastTs — first and last parseable record timestamp (null when none parses).
+//   toolResultBytes — utf8 bytes of every function_call_output / custom_tool_call_output payload
+//     `output` (a string as-is, anything else JSON-encoded — the rule laneToolResultBytes applies to a
+//     claude tool_result), split by the `name` of the function_call / custom_tool_call with the same
+//     call_id; an output whose call is not in the file lands under "?". Measured 2026-09-15 over 497
+//     rollouts: these two pairs are the only *_call / *_call_output payload types Codex writes.
+interface CodexRolloutFacts { model: string | null; effort: string | null; firstTs: number | null;
+  lastTs: number | null; toolResultBytes: ToolResultBytes }
+async function codexRolloutFacts(cwd: string, sessionId: string | null): Promise<CodexRolloutFacts | null> {
   if (!sessionId) return null;
   const file = codexContextFile({ cwd, sessionId });
   if (!file) return null;
   try {
     if (statSync(file).size > TOOL_RESULT_FILE_MAX_BYTES) return null;
     let model: string | null = null;
+    let effort: string | null = null;
+    let firstTs: number | null = null;
+    let lastTs: number | null = null;
+    const names = new Map<string, string>(); // call_id → tool name
+    const outputs: { callId: unknown; bytes: number }[] = [];
     for (const line of (await Bun.file(file).text()).split("\n")) {
-      if (!line.includes('"turn_context"')) continue;
-      let row: { type?: unknown; payload?: { model?: unknown } };
+      if (!line.startsWith("{")) continue;
+      let row: { timestamp?: unknown; type?: unknown; payload?: { type?: unknown; model?: unknown; effort?: unknown;
+        call_id?: unknown; name?: unknown; output?: unknown } };
       try { row = JSON.parse(line) as typeof row; } catch { continue; } // torn line — keep the rest
-      if (row.type === "turn_context" && typeof row.payload?.model === "string" && row.payload.model) model = row.payload.model;
+      const t = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
+      if (Number.isFinite(t)) { firstTs ??= t; lastTs = t; }
+      const p = row.payload;
+      if (!p) continue;
+      if (row.type === "turn_context") {
+        if (typeof p.model === "string" && p.model) model = p.model;
+        if (typeof p.effort === "string" && p.effort) effort = p.effort;
+        continue;
+      }
+      if (row.type !== "response_item") continue;
+      if (p.type === "function_call" || p.type === "custom_tool_call") {
+        if (typeof p.call_id === "string" && typeof p.name === "string") names.set(p.call_id, p.name);
+      } else if (p.type === "function_call_output" || p.type === "custom_tool_call_output") {
+        const text = typeof p.output === "string" ? p.output : JSON.stringify(p.output ?? "");
+        outputs.push({ callId: p.call_id, bytes: Buffer.byteLength(text, "utf8") });
+      }
     }
-    return model;
+    // attributed after the walk: an output never precedes its call in a rollout, but a name map
+    // filled first cannot depend on that
+    const byTool: Record<string, number> = {};
+    let total = 0;
+    for (const o of outputs) {
+      const tool = (typeof o.callId === "string" ? names.get(o.callId) : undefined) ?? "?";
+      byTool[tool] = (byTool[tool] ?? 0) + o.bytes;
+      total += o.bytes;
+    }
+    return { model, effort, firstTs, lastTs, toolResultBytes: { total, byTool } };
   } catch {
     return null;
   }
+}
+// How many subagent threads a codex lane's session spawned: rollouts whose first record names this
+// session as `source.subagent.thread_spawn.parent_thread_id` (codexSessionMeta). DIRECT children only —
+// a depth-2 subagent names its subagent parent, and counting it would need a chain this row does not
+// walk. The search window is the day directories between the lane's first rollout record and the
+// terminal event (codexDayDirs, local and UTC), since a child cannot be spawned before its parent.
+// `null` = the count cannot be proven: no sessions root, a day directory that exists but cannot be
+// listed, or a rollout whose first record does not parse yet still mentions this session id in its
+// first 64 KiB — that file might be a child, and 0 or a count without it would be a guess.
+async function codexSubagentCount(sessionId: string, from: number, to: number): Promise<number | null> {
+  if (!CODEX_SESSIONS_DIR) return null;
+  let count = 0;
+  for (const dir of codexDayDirs(from, to)) {
+    let names: string[];
+    try { names = (await readdir(dir)).sort(); }
+    catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") continue; // no rollout was written that day
+      return null;
+    }
+    for (const name of names) {
+      if (!name.startsWith("rollout-") || !name.endsWith(".jsonl")) continue;
+      const path = `${dir}/${name}`;
+      const meta = codexSessionMeta(path);
+      if (meta) {
+        if (meta.parentThreadId === sessionId) count++;
+        continue;
+      }
+      try {
+        const fd = openSync(path, "r");
+        try {
+          const buf = Buffer.alloc(65_536);
+          const n = readSync(fd, buf, 0, buf.length, 0);
+          if (buf.toString("utf8", 0, n).includes(sessionId)) return null;
+        } finally { closeSync(fd); }
+      } catch { return null; }
+    }
+  }
+  return count;
 }
 function briefHashOf(text: string | null): string | null {
   return text ? createHash("sha256").update(text).digest("hex").slice(0, 12) : null;
@@ -21518,16 +21610,24 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     : kind;
   const st = await statusLines(cwd);
   const dirtyFiles = st.code === 0 ? st.lines.length : null;
-  const modelResolved = !s.model && harnessOf(s.harness).id === "codex"
-    ? { modelResolved: await codexObservedModel(cwd, s.sessionId) } : {};
+  const isCodex = harnessOf(s.harness).id === "codex";
+  const rollout = isCodex ? await codexRolloutFacts(cwd, s.sessionId) : null;
+  const modelResolved = !s.model && isCodex ? { modelResolved: rollout?.model ?? null } : {};
   const start = sessionStart(s);
   const ts = Date.now();
+  const codexRollout = isCodex ? {
+    effortObserved: rollout?.effort ?? null,
+    subagentCount: rollout && s.sessionId && rollout.firstTs !== null
+      ? await codexSubagentCount(s.sessionId, rollout.firstTs, ts) : null,
+  } : {};
   const { count: ownerPrompts, firstText } = await laneOwnerPrompts(cwd);
   const review = await outcomeReview(s, cwd, base);
   // gated on the SAME fact transcriptFile() gates on, not on a second "is it claude" test: a harness
   // that writes no claude-code transcript has nothing here to read, whatever it writes elsewhere, and
   // walking projDir() for it would hand this lane a co-located claude session's bytes.
-  const toolResultBytes = harnessOf(s.harness).supports.transcript ? await laneToolResultBytes(cwd) : null;
+  // A codex lane answers from its own rollout instead (codexRolloutFacts), never from projDir().
+  const toolResultBytes = isCodex ? rollout?.toolResultBytes ?? null
+    : harnessOf(s.harness).supports.transcript ? await laneToolResultBytes(cwd) : null;
   return {
     ts,
     branch: s.worktree.branch,
@@ -21567,7 +21667,11 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     // to arrive as `verified:false`, i.e. a claim about the lane's WORK, when the only thing
     // measured was the machine's load (verify-tiering.md §0 item 2).
     verified: kind === "landed" ? facts.verified : mergeLast.get(s.id)?.verify?.ok ?? null,
-    sessionMs: start !== null ? ts - start : null,
+    // a codex lane keeps no claude transcript for sessionStart to anchor on: its span is last minus
+    // first rollout record, which ends at the session's last write rather than at this terminal event
+    sessionMs: isCodex
+      ? (rollout?.firstTs != null && rollout.lastTs != null ? rollout.lastTs - rollout.firstTs : null)
+      : start !== null ? ts - start : null,
     ownerPrompts,
     resolvedConflict: facts.resolvedConflict,
     // written only where there WAS a resolution to attribute — see the field's comment. A key that
@@ -21592,6 +21696,7 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     toolResultBytes,
     dirtyFiles,
     ...modelResolved,
+    ...codexRollout,
   };
 }
 // the reverted case has no live slot (the lane landed and was torn down) — assemble from the repo

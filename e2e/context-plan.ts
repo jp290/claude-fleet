@@ -4,7 +4,8 @@ import {
   CONTEXT_PACKS,
   type ContextPackCapability,
 } from "../context-packs";
-import { CONTEXT_PLAN_OMISSION_REASONS, planContext } from "../context-plan";
+import { CONTEXT_PLAN_OMISSION_REASONS, PROGRAM_CONTEXT_PACKS_MAX, planContext, planProgramContext,
+  programContextPacksFrom, validateProgramContextPacks } from "../context-plan";
 import { createHash } from "node:crypto";
 import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, observedSourceHash, planRepoContext,
   readContextManifest, stampObservedSourceHashes } from "../context-manifest";
@@ -98,7 +99,7 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     summary(foreign));
   check("context plan: omission vocabulary is closed and complete",
     CONTEXT_PLAN_OMISSION_REASONS.join(",") ===
-      "manifest-invalid,source-unavailable,status-not-active,harness-unsupported,mode-unsupported,trigger-not-matched,capability-missing");
+      "manifest-invalid,source-unavailable,status-not-active,harness-unsupported,mode-unsupported,trigger-not-matched,capability-missing,program-complete");
 
   // --- the repo-declared carrier. Pure half only: bytes in, plan out, no git and no filesystem.
   const repoFacts = {
@@ -237,6 +238,119 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
   check("context manifest: an unobserved capability snapshot does not condemn a hard repo pack",
     hardPack.selected.length === 1 && hardPack.omitted.length === 0, JSON.stringify(hardPack));
 
+
+  // --- PROGRAM-SCOPED PACKS (Task b28b9d89). Pure half: the write validator, the load reader and the
+  // per-lane planner. The server joins a lane to its Program by `slot.programId` and hands the
+  // planner that Program (or null) plus the tree listing it already made; these checks pin the rest.
+  const progTracked = new Set(["docs/messungen/grok-1.md", "AGENTS.md"]);
+  const progBytes = new Map([["docs/messungen/grok-1.md", "# Grok-Antwort 1\n## §1 Delegation\nprose\n"],
+    ["AGENTS.md", "## Verify\n"]]);
+  const progRepo = { trackedPaths: progTracked, sourceBytes: progBytes };
+  const progPack = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id: "grok-antwort-1", useWhen: "Bevor du eine Delegations-Zeile baust",
+    sources: [{ path: "docs/messungen/grok-1.md", anchor: "## §1 Delegation" }], ...over,
+  });
+  const codesOf = (raw: unknown, repo = progRepo): string => {
+    const verdict = validateProgramContextPacks(raw, repo);
+    return verdict.ok ? "ok" : [...new Set(verdict.issues.map((issue) => issue.code))].sort().join(",");
+  };
+
+  const accepted = validateProgramContextPacks([progPack({ useWhen: "  Bevor du eine Delegations-Zeile baust " })], progRepo);
+  check("program packs: a pointer with a tracked path and a present anchor is accepted, purpose line trimmed",
+    accepted.ok && JSON.stringify(accepted.packs) === JSON.stringify([{ id: "grok-antwort-1",
+      useWhen: "Bevor du eine Delegations-Zeile baust", sources: [{ path: "docs/messungen/grok-1.md", anchor: "## §1 Delegation" }] }]),
+    JSON.stringify(accepted));
+  const cleared = validateProgramContextPacks([], progRepo);
+  check("program packs: the empty list is a valid write (it clears the Program's packs)",
+    cleared.ok && cleared.packs.length === 0, JSON.stringify(cleared));
+  check("program packs: an untracked source path is refused by name at write",
+    codesOf([progPack({ sources: [{ path: "docs/absent.md", anchor: "## §1 Delegation" }] })]) === "SOURCE_PATH_MISSING",
+    codesOf([progPack({ sources: [{ path: "docs/absent.md", anchor: "## §1 Delegation" }] })]));
+  check("program packs: an anchor absent from the bytes at HEAD is refused by name at write",
+    codesOf([progPack({ sources: [{ path: "docs/messungen/grok-1.md", anchor: "## §9 Nirgends" }] })]) === "SOURCE_ANCHOR_MISSING",
+    codesOf([progPack({ sources: [{ path: "docs/messungen/grok-1.md", anchor: "## §9 Nirgends" }] })]));
+  check("program packs: a prose-shaped anchor is refused as SOURCE_ANCHOR_INVALID, even when the words are in the file",
+    codesOf([progPack({ sources: [{ path: "docs/messungen/grok-1.md", anchor: "Delegation prose" }] })]) === "SOURCE_ANCHOR_INVALID",
+    codesOf([progPack({ sources: [{ path: "docs/messungen/grok-1.md", anchor: "Delegation prose" }] })]));
+  const sixPacks = Array.from({ length: PROGRAM_CONTEXT_PACKS_MAX + 1 }, (_, i) => progPack({ id: `pack-${i}` }));
+  check("program packs: a sixth pack refuses the whole list, not just the sixth",
+    PROGRAM_CONTEXT_PACKS_MAX === 5 && codesOf(sixPacks) === "PROGRAM_PACKS_TOO_MANY"
+      && codesOf(sixPacks.slice(0, 5)) === "ok", codesOf(sixPacks));
+  const fiveSources = Array.from({ length: 5 }, () => ({ path: "AGENTS.md", anchor: "## Verify" }));
+  check("program packs: a fifth source in one pack is refused",
+    codesOf([progPack({ sources: fiveSources })]) === "PROGRAM_PACK_SOURCES_TOO_MANY"
+      && codesOf([progPack({ sources: fiveSources.slice(0, 4) })]) === "ok", codesOf([progPack({ sources: fiveSources })]));
+  check("program packs: a Fleet seed id, a malformed id and a duplicate id are each refused by their own code",
+    codesOf([progPack({ id: "portable-core" })]) === "PROGRAM_PACK_SEED_ID"
+      && codesOf([progPack({ id: "Grok_1" })]) === "PROGRAM_PACK_ID_INVALID"
+      && codesOf([progPack({ id: "x".repeat(41) })]) === "PROGRAM_PACK_ID_INVALID"
+      && codesOf([progPack({ id: "1-digit-start" })]) === "ok"
+      && codesOf([progPack(), progPack()]) === "ID_DUPLICATE",
+    `${codesOf([progPack({ id: "portable-core" })])} ${codesOf([progPack({ id: "Grok_1" })])} ${codesOf([progPack(), progPack()])}`);
+  check("program packs: content instead of a pointer is refused, on the pack and on a source",
+    codesOf([progPack({ content: "the whole note" })]) === "PACK_CONTENT_FORBIDDEN"
+      && codesOf([progPack({ sources: [{ path: "AGENTS.md", anchor: "## Verify", text: "copied" }] })]) === "SOURCE_CONTENT_FORBIDDEN"
+      && codesOf([progPack({ expiresAt: 1 })]) === "PACK_UNKNOWN_KEY",
+    codesOf([progPack({ content: "the whole note" })]));
+  check("program packs: the purpose line is mandatory and one bounded line",
+    codesOf([{ id: "no-purpose", sources: [{ path: "AGENTS.md", anchor: "## Verify" }] }]) === "PACK_REQUIRED_FIELD_MISSING"
+      && codesOf([progPack({ useWhen: "a\nb" })]) === "USE_WHEN_INVALID"
+      && codesOf([progPack({ useWhen: "x".repeat(121) })]) === "USE_WHEN_INVALID",
+    codesOf([progPack({ useWhen: "a\nb" })]));
+  check("program packs: a source Fleet could not read is refused — an unchecked anchor is never stored",
+    codesOf([progPack()], { trackedPaths: progTracked, sourceBytes: new Map() }) === "SOURCE_BYTES_UNKNOWN",
+    codesOf([progPack()], { trackedPaths: progTracked, sourceBytes: new Map() }));
+  check("program packs: a body that is not a list is refused, never read as empty",
+    codesOf(undefined) === "PACK_FIELD_INVALID" && codesOf({ packs: [] }) === "PACK_FIELD_INVALID", codesOf(undefined));
+
+  const stored = accepted.ok ? accepted.packs : [];
+  const roundTrip = programContextPacksFrom(JSON.parse(JSON.stringify(stored)));
+  check("program packs: a persisted list loads back byte-identically",
+    roundTrip !== null && JSON.stringify(roundTrip) === JSON.stringify(stored), JSON.stringify(roundTrip));
+  check("program packs: an unreadable persisted list loads as absent (null), for every broken shape",
+    [null, "x", [{ ...stored[0], text: "c" }], [{ ...stored[0], useWhen: "a\nb" }], [{ ...stored[0], sources: [] }],
+      [stored[0], stored[0]], Array.from({ length: 6 }, (_, i) => ({ ...stored[0], id: `p-${i}` })),
+      [{ ...stored[0], sources: [{ path: "AGENTS.md" }] }]]
+      .every((broken) => programContextPacksFrom(broken) === null)
+      && JSON.stringify(programContextPacksFrom([])) === "[]",
+    "each broken shape must read as null");
+
+  const laneFacts = { sourceTree: "fleet" as const, harness: "claude", mode: "mutating" as const,
+    triggers: ["always", "verification"] as const, capabilities: fullCapabilities() };
+  const seedsOnly = planContext(laneFacts);
+  const ownLane = planProgramContext({ program: { status: "active", contextPacks: stored }, trackedPaths: progTracked });
+  check("program packs: a lane of the Program gets its pack selected, marked origin program, pointers intact",
+    ownLane.omitted.length === 0 && JSON.stringify(ownLane.selected) === JSON.stringify([{ id: "grok-antwort-1",
+      useWhen: "Bevor du eine Delegations-Zeile baust", sources: [{ path: "docs/messungen/grok-1.md", anchor: "## §1 Delegation" }],
+      estimatedBytes: 0, origin: "program" }]), JSON.stringify(ownLane));
+  const confirmedLane = planProgramContext({ program: { status: "confirmed", contextPacks: stored }, trackedPaths: progTracked });
+  check("program packs: a confirmed Program delivers like an active one",
+    confirmedLane.selected.length === 1 && confirmedLane.omitted.length === 0, JSON.stringify(confirmedLane));
+  const merged = stampObservedSourceHashes([...seedsOnly.selected, ...ownLane.selected],
+    new Map([["docs/messungen/grok-1.md", "b".repeat(40)]]));
+  check("program packs: stamping keeps origin and versions the Program pack like any other row",
+    merged.at(-1)?.origin === "program" && merged.at(-1)?.sourceHash === observedSourceHash(stored[0].sources,
+      new Map([["docs/messungen/grok-1.md", "b".repeat(40)]])) && merged.slice(0, -1).every((row) => row.origin === undefined),
+    JSON.stringify(merged.at(-1)));
+  const foreignProgramLane = planProgramContext({ program: { status: "active" }, trackedPaths: progTracked });
+  const noProgramLane = planProgramContext({ program: null, trackedPaths: progTracked });
+  check("program packs: a lane of another Program without packs, and a lane of no Program, get NO program rows at all",
+    JSON.stringify(foreignProgramLane) === JSON.stringify({ selected: [], omitted: [] })
+      && JSON.stringify(noProgramLane) === JSON.stringify({ selected: [], omitted: [] }),
+    `${JSON.stringify(foreignProgramLane)} ${JSON.stringify(noProgramLane)}`);
+  const completeLane = planProgramContext({ program: { status: "complete", contextPacks: stored }, trackedPaths: progTracked });
+  check("program packs: after complete the next lane gets no pack, and the receipt says why",
+    completeLane.selected.length === 0
+      && JSON.stringify(completeLane.omitted) === JSON.stringify([{ id: "grok-antwort-1", why: "program-complete" }]),
+    JSON.stringify(completeLane));
+  const vanished = planProgramContext({ program: { status: "active", contextPacks: stored }, trackedPaths: new Set(["AGENTS.md"]) });
+  check("program packs: a source path no longer tracked at the delivered commit is omitted, never delivered",
+    vanished.selected.length === 0
+      && JSON.stringify(vanished.omitted) === JSON.stringify([{ id: "grok-antwort-1", why: "source-unavailable" }]),
+    JSON.stringify(vanished));
+  const withoutProgram = { selected: [...seedsOnly.selected, ...noProgramLane.selected], omitted: [...seedsOnly.omitted, ...noProgramLane.omitted] };
+  check("program packs: with no Program packs the merged plan is byte-identical to the plan before the carrier",
+    JSON.stringify(withoutProgram) === JSON.stringify(seedsOnly), JSON.stringify(withoutProgram));
 
   // --- THE SOURCE PACKAGE (context-snippets.ts). Hermetic by construction: the tree listing and the
   // file bytes are fixtures, because `fleet-e2e.ts` runs from a staged copy that is not a git

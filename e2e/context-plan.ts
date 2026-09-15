@@ -329,8 +329,8 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
   const merged = stampObservedSourceHashes([...seedsOnly.selected, ...ownLane.selected],
     new Map([["docs/messungen/grok-1.md", "b".repeat(40)]]));
   check("program packs: stamping keeps origin and versions the Program pack like any other row",
-    merged.at(-1)?.origin === "program" && merged.at(-1)?.sourceHash === observedSourceHash(stored[0].sources,
-      new Map([["docs/messungen/grok-1.md", "b".repeat(40)]])) && merged.slice(0, -1).every((row) => row.origin === undefined),
+    JSON.stringify(merged.map((row) => "origin" in row ? row.origin : null)) === JSON.stringify([null, null, "program"])
+      && merged.at(-1)?.sourceHash === observedSourceHash(stored[0].sources, new Map([["docs/messungen/grok-1.md", "b".repeat(40)]])),
     JSON.stringify(merged.at(-1)));
   const foreignProgramLane = planProgramContext({ program: { status: "active" }, trackedPaths: progTracked });
   const noProgramLane = planProgramContext({ program: null, trackedPaths: progTracked });

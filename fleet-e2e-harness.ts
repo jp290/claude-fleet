@@ -448,9 +448,11 @@ await dispatchProbe("dispatch-effort-absent", { harness: "pi", model: DISPATCH_M
 await installHarn("never");
 
 // The bounded failure side: this wrapper outlives the 3000 ms budget but NEVER execs a declared
-// agent. It later exits to the shell only so paneEnv can independently prove delivery happened.
-// must still preserve the owner's ability to type into the surviving shell, but it must wait only
-// the short route budget and leave a durable, text-free audit row instead of returning a silent OK.
+// agent. It later exits to the shell only so paneEnv can independently prove the pane is readable.
+// The owner /send waits only the short route budget, leaves a durable, text-free audit row, and then
+// REFUSES (409) instead of typing into a pane no agent reads — the 2026-09-14 12:08 spawning-lane kill.
+// Until then this fixture pinned the opposite (delivery after timeout); the owner still reaches a
+// bare shell through the terminal itself, never through the compose route.
 const timeoutOpenStarted = Date.now();
 const timeoutOpen = await post("/api/slots/10/open", { cwd: "~" });
 check("boot-timeout fixture: the dead foreign harness opened onto its shell",
@@ -479,15 +481,31 @@ const timeoutInWindow = timeoutFresh < SEND_BOOT_FRESH_MS;
 check("boot-timeout fixture precondition: the send falls inside the boot-freshness window",
   timeoutInWindow, `${timeoutFresh}ms of ${SEND_BOOT_FRESH_MS}ms`);
 if (timeoutInWindow && timeoutUnexec) {
-  check("a readiness timeout is bounded and still sends — never 409/refusal",
-    timeoutSend.ok && timeoutElapsed >= 2800 && timeoutElapsed < 6000,
-    `${timeoutSend.status} ${timeoutElapsed}ms`);
+  const timeoutBody = (await timeoutSend.clone().json().catch(() => null)) as
+    { error?: unknown; agent?: unknown; receipt?: { delivery?: unknown } } | null;
+  check("a readiness timeout is bounded and then REFUSED — 409 agent-not-alive, nothing typed",
+    timeoutSend.status === 409 && timeoutElapsed >= 2800 && timeoutElapsed < 6000
+    && timeoutBody?.receipt?.delivery === "refused" && typeof timeoutBody?.agent === "string"
+    && timeoutBody.agent !== "alive" && String(timeoutBody?.error ?? "").includes("no agent alive"),
+    `${timeoutSend.status} ${timeoutElapsed}ms ${JSON.stringify(timeoutBody).slice(0, 200)}`);
+  // Probe verdict first: only a shell that demonstrably reads its tty makes the marker's ABSENCE
+  // mean "never typed" — a typed `printf` would have run there once harn-never's sleep ended.
   const timeoutProbe = await paneEnv("s10", "FLEET_SELF_SLOT");
   check("boot-timeout fixture probe: paneEnv itself ran in the surviving shell",
     timeoutProbe === "10", timeoutProbe ?? "probe did not run");
-  const timeoutCap = await tmuxOut("capture-pane", "-t", "s10", "-p", "-J");
-  check("the owner send is delivered after timeout, preserving the dead-agent pane capability",
-    timeoutCap.out.includes(timeoutMarker), timeoutCap.out.slice(-220));
+  if (timeoutProbe === "10") {
+    const timeoutCap = await tmuxOut("capture-pane", "-t", "s10", "-p", "-J");
+    check("the refused owner send left nothing in the dead-agent pane",
+      !timeoutCap.out.includes(timeoutMarker), timeoutCap.out.slice(-220));
+    // the wrapper has exited to its shell now, so the pane is a bare shell for good: a second send
+    // is refused too (which of sendText's two probe branches answers depends on the pane's age)
+    const deadStarted = Date.now();
+    const deadSend = await post("/send", { slot: 10, text: `printf '${timeoutMarker}-late\\n'` });
+    check("a pane whose agent never came and whose wrapper exited to a shell refuses /send with 409",
+      deadSend.status === 409 && String(((await deadSend.clone().json().catch(() => null)) as
+        { error?: unknown } | null)?.error ?? "").includes("no agent alive"),
+      `${deadSend.status} age=${deadStarted - timeoutOpenStarted}ms of ${SEND_BOOT_FRESH_MS}ms`);
+  }
   let timeoutAudit: { event?: string; slot?: number; detail?: string } | undefined;
   for (let i = 0; i < 30 && !timeoutAudit; i++) {
     const rows = ((await (await get("/api/audit?limit=100")).json()) as

@@ -746,7 +746,8 @@ send)
 # slot with no agent alive. `agent` is the git tick's cached probe, and its `null` ("not probed yet")
 # is refused as UNKNOWN; `unprobed` is accepted because it is the server's own delivery waiver
 # (server.ts#claudeAlive) for a command nobody declared. What remains is a window of milliseconds
-# between the read and the POST; the server-side occupant pin is bf6fc2ea's half, not this verb's.
+# between the read and the POST, and the POST closes it: it carries the bound openedAt, so a slot
+# re-occupied inside that window answers 409 naming its new occupant (server.ts, route POST /send).
 #
 # A bare `send <slot>` is refused on purpose: it is exactly the hand move this verb replaces.
   mode=""; program=""; textfile=""
@@ -799,7 +800,7 @@ const agent = row.agent ?? null;
 if (agent !== "alive" && agent !== "unprobed")
   refuse(`${label}: no agent alive in slot ${main.slot} (agent=${agent ?? "UNKNOWN — not probed yet"})`, { slot: main.slot, agent });
 
-const r = await api("/send", { method: "POST", headers: ownerH(), body: JSON.stringify({ slot: main.slot, text }) });
+const r = await api("/send", { method: "POST", headers: ownerH(), body: JSON.stringify({ slot: main.slot, text, openedAt: main.openedAt }) });
 const receiver = r.body?.receipt?.receiver ?? null;
 // the route pins its receipt to the occupant it actually typed into; one that is not the bound MAIN
 // means the slot moved inside the window above, and saying "sent" would hide exactly that.

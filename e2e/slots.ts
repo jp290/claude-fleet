@@ -1368,6 +1368,32 @@ export async function run(): Promise<void> {
         okRes2.ok && r3?.receiver?.slot === 3 && r3?.receiver?.openedAt === occB.openedAt
         && r3?.receiver?.openedAt !== r1?.receiver?.openedAt && r3?.sendId !== r1?.sendId,
         JSON.stringify({ first: r1?.receiver, second: r3?.receiver }));
+
+      // 5) THE OCCUPANT PIN. A caller that read occupant A and sends to the recycled row with A's
+      // openedAt must be refused BEFORE anything is typed, and told who holds the row now — the
+      // 2026-09-14 12:08 recycled-slot kill. The pinned send to B right after is the positive control
+      // that makes the stale marker's absence from the capture a measurement.
+      // Mutation that breaks it: dropping the openedAt comparison, or comparing after sendText.
+      const staleRes = await post("/send", { slot: 3, text: "pin-probe-stale-occupant", submit: false, openedAt: occA.openedAt });
+      const staleBody = (await staleRes.json()) as { error?: unknown; occupant?: { slot?: unknown; openedAt?: unknown } };
+      check("a /send pinned to a former occupant's openedAt answers 409 naming the CURRENT occupant",
+        staleRes.status === 409 && typeof staleBody.error === "string"
+        && String(staleBody.error).includes("nothing typed")
+        && staleBody.occupant?.slot === 3 && staleBody.occupant?.openedAt === occB.openedAt,
+        `${staleRes.status} ${JSON.stringify(staleBody).slice(0, 240)}`);
+      const pinnedRes = await post("/send", { slot: 3, text: "pin-probe-current-occupant", submit: false, openedAt: occB.openedAt });
+      check("a /send pinned to the current occupant's openedAt is delivered as before",
+        pinnedRes.ok, `${pinnedRes.status} ${(await pinnedRes.text()).slice(0, 200)}`);
+      const badPin = await post("/send", { slot: 3, text: "pin-probe-bad", submit: false, openedAt: "yesterday" });
+      check("a malformed openedAt pin is a 400, never a silent unpinned send", badPin.status === 400, String(badPin.status));
+      let pinCap = "";
+      for (let i = 0; i < 30 && !pinCap.includes("pin-probe-current-occupant"); i++) {
+        pinCap = (await tmuxOut("capture-pane", "-t", "s3", "-p")).out;
+        if (!pinCap.includes("pin-probe-current-occupant")) await Bun.sleep(100);
+      }
+      check("the pane holds the pinned-current text and neither the stale-pin nor the malformed-pin text",
+        pinCap.includes("pin-probe-current-occupant") && !pinCap.includes("pin-probe-stale-occupant")
+        && !pinCap.includes("pin-probe-bad"), pinCap.slice(-200));
       await post("/api/slots/3/kill", {});
     }
     rmSync(scratch, { recursive: true, force: true });

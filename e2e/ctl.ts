@@ -607,7 +607,7 @@ export async function run(): Promise<void> {
       && unknownProgram.err.includes("nothing sent"),
     `exit ${unknownProgram.code} ${unknownProgram.err.slice(0, 200)}`);
 
-  const sendPosts: { body: { slot?: number; text?: string }; auth: string | null }[] = [];
+  const sendPosts: { body: { slot?: number; text?: string; openedAt?: number }; auth: string | null }[] = [];
   const bound = (id: string, slot: number | null, openedAt: number, occupancy: string) =>
     ({ id, title: id, main: slot === null ? null : { slot, openedAt, sessionId: null, boundAt: 1 }, health: { occupancy } });
   const stub = Bun.serve({
@@ -626,7 +626,7 @@ export async function run(): Promise<void> {
         { id: 8, cwd: "/main", openedAt: 5001, worktree: null, agent: "alive" },
       ] });
       if (path === "/send" && req.method === "POST") {
-        const body = (await req.json()) as { slot?: number; text?: string };
+        const body = (await req.json()) as { slot?: number; text?: string; openedAt?: number };
         sendPosts.push({ body, auth: req.headers.get("authorization") });
         return Response.json({ ok: true, receipt: { sendId: "stub", at: 1, submitRequested: true, acceptance: "accepted",
           receiver: { slot: body.slot, openedAt: 1000, sessionId: null } } });
@@ -662,9 +662,10 @@ export async function run(): Promise<void> {
     `exit ${sendBare.code} posts=${sendPosts.length} ${sendBare.err.slice(0, 160)}`);
   // the positive control LAST, so every "no POST" above is a count the stub could have raised
   const sendOk = await ctl(["send", "--main", "p-ok", msgFile, "--json"], stubEnv);
-  check("ctl send --main: a live, non-lane MAIN with an agent gets exactly one POST — its slot, the file's text, the owner bearer",
+  check("ctl send --main: a live, non-lane MAIN with an agent gets exactly one POST — its slot, the bound openedAt pin, the file's text, the owner bearer",
     sendOk.code === 0 && (sendOk.json as { sent?: boolean; slot?: number })?.sent === true && sendPosts.length === 1
-      && sendPosts[0]?.body.slot === 4 && sendPosts[0]?.body.text === "ctl send probe text\n"
+      && sendPosts[0]?.body.slot === 4 && sendPosts[0]?.body.openedAt === 1000
+      && sendPosts[0]?.body.text === "ctl send probe text\n"
       && sendPosts[0]?.auth === `Bearer ${TOKEN}`,
     `exit ${sendOk.code} posts=${JSON.stringify(sendPosts.map((p) => p.body))} ${sendOk.err.slice(0, 160)}`);
   stub.stop(true);

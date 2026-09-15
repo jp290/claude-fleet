@@ -146,6 +146,12 @@ type AuditEvent =
   // rows count as released without a per-row act. Its own event beside program_dispatch: that one
   // opens starting under a stopped fleet, this one widens the set of rows a start may pick.
   | "program_release"
+  // the owner released named pending rows of ONE program through POST /api/programs/:id/release-valid
+  // (server.ts#releaseValidForOwner) — a one-time act over a previewed selection, not a policy. Its
+  // own event beside program_release: that one widens every future tick, this one moved these ids.
+  | "program_release_valid"
+  // the owner attached a pending auftrag without a program to one (POST /api/tasks/:id/program)
+  | "task_program"
   // the studio inventory itself: created, or changed with a rev bump. A studio is a SHARED source
   // several Programs may bind, so a change is dateable in its own right — the binding keeps the rev
   // it was made against, and this row is where the other side of that comparison comes from.

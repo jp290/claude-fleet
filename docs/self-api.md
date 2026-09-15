@@ -677,6 +677,23 @@ unter jeder Politik, `queued` eingeschlossen. Das Urteil steht je Zeile im Start
 - Ein Politik-Start ist eine Freigabe: `releaseTask(…, "machine")` und ein `task_release`-Event
   `<id> program=<pid> by=policy <policy>`. Alle übrigen Gates des Ticks bleiben.
 
+### Sammelfreigabe und Zuordnung — drei Owner-Routen (Freigabe-Schnitt B)
+
+Owner-Token, **keine** Self-Route; Entwurf B aus `docs/messungen/2026-09-15-freigabe-analyse-astra.md` §4/§5.
+
+- `GET /api/programs/:id/release-valid` zeigt je `pending`-Auftrag eines aktiven Programs das
+  `card-valid`-Urteil mit harten Gründen (dazu fremdes Repo, nicht automatisierbarer Harness,
+  Variantengruppe), weichen Hinweisen, Hold und Scout, listet `queued` getrennt und liefert einen
+  `stamp` über IDs, Repo und Brief-/Kartenstand (`server.ts#releaseValidView`).
+- `POST /api/programs/:id/release-valid {"stamp","ids"}` gibt genau die genannten IDs frei, deren
+  frisch berechnetes Urteil noch freigibt (`releaseTask(…, "owner")`, ein `program_release_valid`-Event),
+  antwortet je ID `released | skipped(reason) | conflict` — ein veralteter `stamp` ist 409 mit `conflict`
+  für jede ID — und hebt nie einen Hold auf und startet nie eine Lane (`server.ts#releaseValidForOwner`).
+- `POST /api/tasks/:id/program {"programId"}` gibt einem `pending`-Auftrag ohne Program ein
+  bestätigtes oder aktives Program im Repo dieses Programs (`server.ts#programRepoOf`: Checkout der
+  lebenden MAIN, sonst Dispatch-Repo) und schreibt ein `task_program`-Event; `queued`/`sent`/`done`/`archived`,
+  eine Zeile mit Program (Umhängen), ein fremdes Repo und ein nicht bestätigtes Program sind 409.
+
 ## hold — `POST /api/self/tasks/:id/hold`
 
 Die Gegen-Tür zur Politik: die gebundene Program-MAIN sperrt eine `pending`- oder `queued`-Zeile

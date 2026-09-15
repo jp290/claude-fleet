@@ -40,6 +40,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { readLedger } from "./server/persist";
 import { CARD_HEAD_MARK } from "./wave-brief";
 
 export const DEFAULT_A_FROM = "2026-09-13T01:17:00+02:00";
@@ -242,19 +243,11 @@ function countJsonl(dir: string): number {
     n + (e.isDirectory() ? countJsonl(join(dir, e.name)) : e.name.endsWith(".jsonl") ? 1 : 0), 0);
 }
 
-async function readJsonl(file: string): Promise<Row[]> {
-  const rows: Row[] = [];
-  for (const f of [`${file}.1`, file]) {
-    if (!existsSync(f)) continue;
-    for (const line of (await Bun.file(f).text()).split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const v: unknown = JSON.parse(line);
-        if (v && typeof v === "object") rows.push(v as Row);
-      } catch { /* torn line */ }
-    }
-  }
-  return rows;
+// server/persist.ts#readLedger itself, not a copy (the pattern of briefstats.ts#readJsonl): the hand
+// copy that stood here delivered an array line as a row and dropped torn lines uncounted. The
+// cohort tables have no place for a hole count, so only the rows travel on.
+export async function readJsonl(file: string): Promise<Row[]> {
+  return (await readLedger<Row>(file)).rows;
 }
 
 /** baseline quantiles: the median averages the two middle values; p90 is nearest rank ceil(0.9n) */

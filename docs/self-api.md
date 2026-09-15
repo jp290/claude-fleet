@@ -457,6 +457,52 @@ sich nicht; `briefHash`/`deliveredBytes` beschreiben die ausgelieferten Bytes un
 Block mit — genau das ist ihr Vertrag. Rückweg: die Konstante wieder aus den beiden Buildern
 nehmen.
 
+## program-context-packs — `POST /api/self/program-context-packs`
+
+Kurzlebige Kontext-Zeiger fuer die Lanes EINES Programs (Task b28b9d89, Owner-Richtung 2026-09-14).
+Ein Pack ist `{id, useWhen, sources[{path, anchor}]}` — nur Zeiger auf getrackte Quellen, nie Inhalt.
+Jede Lane, deren Slot die `programId` dieses Programs traegt, bekommt die Packs im selben
+`ContextPlan v2 anchors`-Block wie die Fleet-Seeds und die Repo-Manifest-Packs; sobald das Program
+`complete` ist, bekommt die naechste Lane sie nicht mehr. Die Program-Grenze IST die Lebensdauer:
+keine Uhr, kein Ablaufdatum. Ein Buendel/eine Welle ist kein Datenobjekt (`task-land-waves.ts`
+projiziert nur), darum traegt das Program das Feld (`server/types.ts#Program` → `contextPacks`).
+
+**Wer:** nur die gebundene Program-MAIN eines aktiven Programs (`server.ts#boundProgramForMain`).
+Lane → 409, nicht oder zweideutig gebunden → 409, unbekanntes Token → 401. Keine Owner-Route im
+ersten Schnitt.
+
+**Body:** `{"packs": [...]}` ERSETZT die ganze Liste; `{"packs": []}` leert sie. Antwort
+`{ok:true, contextPacks, head}` — `head` ist der Commit, gegen den geprueft wurde.
+
+**Deckel und Pruefung beim SCHREIBEN** (`context-plan.ts#validateProgramContextPacks`), gegen den
+Integration-HEAD des Repos der MAIN: hoechstens 5 Packs (`PROGRAM_PACKS_TOO_MANY`), hoechstens 4
+Quellen je Pack (`PROGRAM_PACK_SOURCES_TOO_MANY`), `id` passt auf `^[a-z0-9][a-z0-9-]{0,39}$`
+(`PROGRAM_PACK_ID_INVALID`) und ist keine Fleet-Seed-id (`PROGRAM_PACK_SEED_ID`), `useWhen` Pflicht
+und eine Zeile ≤120 Zeichen, nur die drei Schluessel (Inhaltsfelder `PACK_CONTENT_FORBIDDEN`). Die
+Quellen prueft `context-pack-validator.ts#validateContextPacks`: Pfad getrackt
+(`SOURCE_PATH_MISSING`), Anker ist eine Ueberschrift/ein Bezeichner/ein Symbol, keine Prosa
+(`SOURCE_ANCHOR_INVALID`), Anker steht in den Bytes am HEAD (`SOURCE_ANCHOR_MISSING`); eine Quelle,
+die Fleet nicht lesen konnte, ist `SOURCE_BYTES_UNKNOWN` und ebenso abgelehnt. Jeder Befund ist 400
+mit `issues[{code, packId, detail}]`, und nichts wird gespeichert.
+
+**Lieferung** (`context-plan.ts#planProgramContext`, Dispatch-Naht vor
+`server.ts#renderContextAnchorBlock`): Trigger `always`, jeder Harness, jeder Modus. Die Receipt-Zeile
+eines Program-Packs traegt `origin:"program"` (und wie jede Zeile `sourceHash`); ein Receipt ohne
+Program-Pack ist byte-gleich zu vorher. Omission-Zeilen statt stiller Luecke: Program `complete` →
+`program-complete`; ein Quellpfad, der am gelieferten Commit nicht getrackt ist (seit dem Schreiben
+entfernt, oder eine Lane in einem anderen Repo) → `source-unavailable`. Anker werden beim Dispatch
+nicht erneut gelesen — nur der Pfad. Program-MAIN-Gruendungsbriefe bekommen die Packs nicht; die
+MAIN schreibt sie.
+
+**Laden:** ein unlesbares `contextPacks` laedt als abwesend (Meldung im Server-Log), das Program
+bleibt.
+
+```sh
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  ${FLEET_SELF_URL:-http://100.64.0.1:8790}/api/self/program-context-packs \
+  -d '{"packs":[{"id":"grok-antwort-1","useWhen":"Bevor du eine Delegations-Zeile baust","sources":[{"path":"docs/messungen/INDEX.md","anchor":"# Index der Messnotizen"}]}]}'
+```
+
 ## tasks — `POST /api/self/tasks`, `GET /api/self/program-execution`
 
 Zwei Türen desselben Brackets: die eine LEGT eine Zeile an, die andere SIEHT, wo die Zeilen des

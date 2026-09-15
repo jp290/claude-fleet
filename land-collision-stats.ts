@@ -64,6 +64,15 @@ const within = (a: Hunk, b: Hunk, gap: number): boolean => a.start <= b.end + ga
 const asRanges = (file: string, hunks: readonly Hunk[]): TaskWaveRange[] =>
   hunks.map((h) => ({ file, symbol: "hunk", startLine: h.start, endLine: h.end }));
 
+// A RUNNING lane's real change since its fork, for the start plan (start-plan.ts#StartPlanLane.hunks):
+// `git diff <forkSha>` against the WORKTREE, so uncommitted edits count, NEW-side hunks as R4 ranges.
+// A file with `[]` changed without line hunks; a file not in the record is not changed yet.
+export const laneHunkDiffArgs = (forkSha: string): string[] =>
+  ["-c", "core.quotepath=off", "diff", "--no-color", "--no-ext-diff", "--no-renames", "-U0", forkSha];
+export function laneHunkRanges(diff: string): Record<string, TaskWaveRange[]> {
+  return Object.fromEntries([...parseDiffHunks(diff, "new")].map(([file, hunks]) => [file, asRanges(file, hunks)]));
+}
+
 export interface SharedFile { file: string; range: boolean; touch: boolean }
 export interface Judged { shared: SharedFile[]; predicted: { range: boolean; file: boolean }; real: boolean }
 

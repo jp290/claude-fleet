@@ -17,6 +17,7 @@
 import { rangesCollide, LAND_WAVE_BUDGET_DEFAULT, type LandWaveClass, type LandWaveProjection,
   type LandWaveReasonAgainst, type LandWaveUnresolved } from "./task-land-waves";
 import { isTaskCardSize, type TaskCardSize, type TaskWaveRange } from "./task-waves";
+import { laneHunkDiffArgs, laneHunkRanges } from "./land-collision-stats";
 
 export interface StartPlanChecks {
   // null = the row has no card at all — nobody read it, which is not the same fact as a refused card
@@ -134,6 +135,10 @@ export interface StartPlanLane {
   files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null;
   // the variant group of the row this lane runs, if it runs one — absent otherwise
   variantOf?: string;
+  // what the lane REALLY changed since its fork (land-collision-stats.ts#laneHunkRanges): file → its
+  // NEW-side hunks as ranges. A file not in here is not changed yet, `[]` changed without line hunks
+  // (binary, mode); absent = not read (no fork sha, the diff failed). See collision for the order.
+  hunks?: Readonly<Record<string, readonly TaskWaveRange[]>>;
 }
 export interface StartPlanCap { max: number; source: "default" | "repo" }
 export interface StartPlanRepoCaps extends StartPlanCap {
@@ -174,7 +179,15 @@ export interface StartPlan {
   version: 1; budget: number; repos: StartPlanRepo[]; unresolved: LandWaveUnresolved[];
 }
 
-interface Surface { files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null }
+interface Surface { files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null; hunks?: StartPlanLane["hunks"] }
+
+// The ranges a surface holds on one file: its row ranges there; else, for a running lane, the hunks it
+// already wrote there; else none — and none is rangesCollide's whole-file fallback. A named file the
+// lane has not touched yet (or touched without line hunks) is UNKNOWN, never free.
+const rangesOn = (s: Surface, file: string): readonly TaskWaveRange[] => {
+  const own = (s.ranges ?? []).filter((r) => r.file === file);
+  return own.length ? own : s.hunks?.[file] ?? [];
+};
 
 /**
  * Where two surfaces collide, or null. Per shared file the rule is task-land-waves.ts#rangesCollide
@@ -189,13 +202,19 @@ interface Surface { files: readonly string[] | null; ranges: readonly TaskWaveRa
  * surface) held every released row of its repo, and so did any running row without files — on the
  * live fleet of 2026-09-14, slot 1's row with 0 files would have stopped all of claude-fleet. Rows
  * whose surface is unknown are bounded by the two lane caps, exactly as before the plan read them.
+ *
+ * A RUNNING LANE COLLIDES WITH ITS REAL HUNKS (2026-09-15, rangesOn). A lane whose row names
+ * server.ts without a range held every row on server.ts for its whole life; scored on 34 lands with
+ * forkSha, the file fallback was P 0.20 R 1.00 and R4 on real hunks P 0.60 R 1.00. Hunks are in the
+ * lane's coordinates, row ranges in main's — the ±LAND_WAVE_RANGE_GAP of R4 is the only slack, and n
+ * is small, so hunks only replace the fallback on a file the lane already changed.
  */
 function collision(a: Surface, b: Surface): { file: string; symbol?: string } | null {
   if (!a.files?.length || !b.files?.length) return null;
   for (const file of a.files) {
     if (!b.files.includes(file)) continue;
-    const ra = (a.ranges ?? []).filter((r) => r.file === file);
-    const rb = (b.ranges ?? []).filter((r) => r.file === file);
+    const ra = rangesOn(a, file);
+    const rb = rangesOn(b, file);
     if (!rangesCollide(ra, rb)) continue;
     const symbol = ra.find((x) => rb.some((y) => rangesCollide([x], [y])))?.symbol;
     return { file, ...(symbol ? { symbol } : {}) };
@@ -318,7 +337,7 @@ interface StateTask {
   card?: (StartPlanCardFacts & { after?: unknown }) | null; brief?: { at?: unknown } | null; hold?: unknown;
   variantOf?: unknown; variants?: unknown;
 }
-interface StateSlot { worktree?: { repo?: unknown } | null; programId?: unknown }
+interface StateSlot { cwd?: unknown; worktree?: { repo?: unknown; baseSha?: unknown } | null; programId?: unknown }
 
 async function cli(): Promise<void> {
   const statePath = argAfter("--state");
@@ -394,7 +413,13 @@ async function cli(): Promise<void> {
     const own = ownRows.map(surfaceOf);
     const files = own.flatMap((s) => s.files ?? []);
     const variantOf = ownRows.map((t) => t.variantOf).find((v): v is string => typeof v === "string" && !!v);
-    lanes.push({ slot: Number(id), repo: laneRepo ? projectionRepoFor.get(canon(laneRepo)) ?? laneRepo : null, programId,
+    // the lane's real hunks, read here once per lane as server.ts#tickGit reads them per tick
+    const forkSha = typeof slot.worktree?.baseSha === "string" && slot.worktree.baseSha ? slot.worktree.baseSha : null;
+    const diff = forkSha && typeof slot.cwd === "string" && slot.cwd
+      ? Bun.spawnSync(["git", "-C", slot.cwd, ...laneHunkDiffArgs(forkSha)],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } })
+      : null;
+    lanes.push({ ...(diff?.success ? { hunks: laneHunkRanges(diff.stdout.toString()) } : {}), slot: Number(id), repo: laneRepo ? projectionRepoFor.get(canon(laneRepo)) ?? laneRepo : null, programId,
       // one row without a known surface makes the lane's surface unknown as a whole
       files: own.length && own.every((s) => s.files) ? files : null,
       ranges: own.some((s) => s.ranges) ? own.flatMap((s) => s.ranges ?? []) : null,

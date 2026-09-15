@@ -67,7 +67,8 @@ import {
   LAND_WAVE_COSTS_2026_09, LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, projectLandWaves,
   type LandWave, type LandWaveProjection,
 } from "./task-land-waves";
-import { isTaskCardSize, type TaskCardSize, type TaskWaveInput } from "./task-waves";
+import { isTaskCardSize, type TaskCardSize, type TaskWaveInput, type TaskWaveRange } from "./task-waves";
+import { laneHunkDiffArgs, laneHunkRanges } from "./land-collision-stats";
 // The START PLAN: which land wave starts next, and what its rows passed. GET /api/start-plan shows it,
 // tickDispatch starts by it and the wave door resolves its ids in it (pinned in e2e/pins.ts).
 import { projectStartPlan, releaseVerdict, startPlanCardPaths, startPlanChecks, startPlanWaitNote, type StartPlan,
@@ -3915,13 +3916,18 @@ const agentInfo = new Map<number, AgentState>();
 // steward overview needs it fleet-wide (the per-slot brief computes it fresh), and the
 // commit/land guards keep their own fresh gitOpInProgress calls.
 const gitOpInfo = new Map<number, boolean>();
+// a running lane's REAL hunks since its fork (land-collision-stats.ts#laneHunkRanges), same tick and
+// same reads-only contract: the start plan reads them for its collision edge (start-plan.ts#collision)
+// and never runs git itself. No entry = not read — no fork sha, no sent row, or the diff failed —
+// and the plan falls back to the whole file, exactly as without this cache.
+const laneHunkInfo = new Map<number, Record<string, TaskWaveRange[]>>();
 let gitTickBusy = false;
 async function tickGit(): Promise<void> {
   if (gitTickBusy) return;
   gitTickBusy = true;
   try {
     for (const s of slots) {
-      if (!s.cwd) { gitInfo.delete(s.id); repoInfo.delete(s.id); aliveInfo.delete(s.id); agentInfo.delete(s.id); gitOpInfo.delete(s.id); continue; }
+      if (!s.cwd) { gitInfo.delete(s.id); repoInfo.delete(s.id); aliveInfo.delete(s.id); agentInfo.delete(s.id); gitOpInfo.delete(s.id); laneHunkInfo.delete(s.id); continue; }
       await tickCodexRecovery(s);
       // liveness is independent of git state — compute it before the git branching so a
       // non-repo cwd (st.code !== 0 below) still gets an alive reading. ONE probe feeds both maps:
@@ -3959,6 +3965,11 @@ async function tickGit(): Promise<void> {
       // `behind` would read 0 forever. Skipped mid-rebase for the same reason the merge guard above
       // exists: a lane whose git is being rewritten is not a lane to write refs into.
       if (!gitOp) await syncLaneRefs(s.worktree, s.cwd);
+      // only a lane that runs a row has a surface the plan compares, so only it pays the diff
+      const forkSha = s.worktree?.baseSha;
+      const hunks = forkSha && !gitOp && tasks.some((t) => t.slot === s.id && t.status === "sent")
+        ? await gitRead(s.cwd, ...laneHunkDiffArgs(forkSha)) : null;
+      if (hunks?.code === 0) laneHunkInfo.set(s.id, laneHunkRanges(hunks.out)); else laneHunkInfo.delete(s.id);
       const st = await gitRead(s.cwd, "status", "--porcelain=v2", "--branch");
       if (st.code !== 0) { gitInfo.set(s.id, null); continue; }
       let branch = "", ahead = 0, behind = 0, dirty = 0;
@@ -5373,6 +5384,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   mergeInflight.delete(s.id); mergeStart.delete(s.id); // ...nor report the prior lane's merge JOB as running:true and 409 the new lane (the old job's finally self-checks identity, so dropping the entry here is safe)
   aliveInfo.delete(s.id); // ...nor its liveness/wedge readings until the next tick recomputes
   gitOpInfo.delete(s.id);
+  laneHunkInfo.delete(s.id); // ...nor the previous lane's hunks as this lane's collision edge
   // ...nor its GIT facts: killSlot leaves gitInfo for tickGit to reap (≤10 s), and a slot recycled
   // inside that window would serve the PREVIOUS lane's facts — from which `done-looking` is
   // computed (laneSignalView), so auto-③ could review an empty lane. Unknown is never permission
@@ -10769,7 +10781,8 @@ function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()):
     const ownRows = tasks.filter((t) => t.slot === s.id && t.status === "sent");
     const own = ownRows.map(startPlanSurfaceOf);
     const variantOf = ownRows.find((t) => t.variantOf)?.variantOf;
-    return { slot: s.id, programId: s.programId, ...(variantOf ? { variantOf } : {}),
+    const hunks = laneHunkInfo.get(s.id);
+    return { slot: s.id, programId: s.programId, ...(variantOf ? { variantOf } : {}), ...(hunks ? { hunks } : {}),
       repo: s.worktree ? projectionRepoFor.get(s.worktree.repo) ?? s.worktree.repo : null,
       files: own.length && own.every((x) => x.files) ? own.flatMap((x) => x.files ?? []) : null,
       ranges: own.some((x) => x.ranges) ? own.flatMap((x) => x.ranges ?? []) : null };

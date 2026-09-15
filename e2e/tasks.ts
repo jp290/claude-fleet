@@ -19,6 +19,7 @@ import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
   type LandWave, type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
 import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
   type StartPlanLane, type StartPlanRelease, type StartPlanRow } from "../start-plan";
+import { laneHunkDiffArgs, laneHunkRanges } from "../land-collision-stats";
 import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
   type InstanceLink } from "../src/protocol";
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
@@ -6916,6 +6917,64 @@ export async function run(ctx: Ctx): Promise<void> {
         [["p", { cap: "1/1 lanes busy in program prog" }]],
         [["n", { cap: "no lane cap known for sp" }]],
       ]), JSON.stringify([spDone, spUnknown, spProgram, spNoCap]));
+    // (sp-hunk) A RUNNING LANE COLLIDES WITH ITS REAL HUNKS (start-plan.ts#rangesOn): for a lane's file
+    // its row ranges first, else the hunks it already wrote there, else the whole file. Mutations:
+    // hunks ignored → (a) and (f) collide; a named file without a hunk read as free → (c) and (g) start;
+    // hunks before row ranges → (f) collides.
+    const spCaps = { [spRepo]: { max: 5, source: "default" as const, programs: {} } };
+    const hunkAt = (file: string, startLine: number, endLine: number) => [{ file, symbol: "hunk", startLine, endLine }];
+    const spRs = (s: number, e: number) => [{ file: "server.ts", symbol: "rs", startLine: s, endLine: e }];
+    const spHunkLane = (o: Partial<StartPlanLane>): StartPlanLane =>
+      ({ slot: 3, repo: spRepo, programId: null, files: ["server.ts"], ranges: null, ...o });
+    const spHunkNext = (rowRanges: StartPlanRow["ranges"], lane: StartPlanLane) =>
+      projectStartPlan(spInput([spRow("r", 1, ["server.ts"], { ranges: rowRanges })], [lane], spCaps)).repos[0]?.waves[0]?.next;
+    const spHunkGot = {
+      a: spHunkNext(spRs(5000, 5100), spHunkLane({ hunks: { "server.ts": hunkAt("server.ts", 100, 120) } })),
+      b: spHunkNext(spRs(110, 130), spHunkLane({ hunks: { "server.ts": hunkAt("server.ts", 100, 120) } })),
+      c: spHunkNext(spRs(5000, 5100), spHunkLane({ hunks: { "other.ts": hunkAt("other.ts", 1, 3) } })),
+      d: spHunkNext(null, spHunkLane({ hunks: { "server.ts": hunkAt("server.ts", 100, 120) } })),
+      e: spHunkNext(spRs(5000, 5100), spHunkLane({})),
+      f: spHunkNext(spRs(5000, 5100), spHunkLane({ ranges: [{ file: "server.ts", symbol: "ls", startLine: 100, endLine: 120 }],
+        hunks: { "server.ts": hunkAt("server.ts", 4990, 5010) } })),
+      g: spHunkNext(spRs(5000, 5100), spHunkLane({ hunks: { "server.ts": [] } })),
+    };
+    const spHunkNotes = [spHunkGot.b, spHunkGot.c].map((n) => n && n !== "now" ? startPlanWaitNote(n) : String(n));
+    check("(sp-hunk) a running lane collides with its real hunks: (a) hunk 100-120 vs row 5000-5100 starts · (b) row 110-130 collides · (c) a named file the lane has not changed collides · a range-less row, no hunks read, row ranges before hunks, a binary change · the note names the file",
+      JSON.stringify(spHunkGot) === JSON.stringify({
+        a: "now",
+        b: { collides: { slot: 3, file: "server.ts", symbol: "rs" } },
+        c: { collides: { slot: 3, file: "server.ts" } },
+        d: { collides: { slot: 3, file: "server.ts" } },
+        e: { collides: { slot: 3, file: "server.ts" } },
+        f: "now",
+        g: { collides: { slot: 3, file: "server.ts" } },
+      }) && JSON.stringify(spHunkNotes) === JSON.stringify([
+        "waiting: collides with lane 3 on server.ts#rs", "waiting: collides with lane 3 on server.ts"]),
+      JSON.stringify({ spHunkGot, spHunkNotes }));
+    // the reader the git tick and the CLI share (land-collision-stats.ts#laneHunkRanges) over a REAL
+    // repo: an uncommitted edit counts, coordinates are the worktree's NEW side, a binary is `[]`, an
+    // untouched file is absent
+    {
+      const hr = `${ROOT}/sp-hunk-repo-${process.pid}`;
+      rmSync(hr, { recursive: true, force: true });
+      mkdirSync(hr, { recursive: true });
+      const g = (...args: string[]) => spawnSync("git", ["-C", hr, ...args], { encoding: "utf8" });
+      const lines = Array.from({ length: 200 }, (_, i) => `line ${i + 1}`);
+      writeFileSync(`${hr}/server.ts`, `${lines.join("\n")}\n`);
+      writeFileSync(`${hr}/still.ts`, "unchanged\n");
+      writeFileSync(`${hr}/blob.bin`, Buffer.from([0, 1, 2, 0, 3]));
+      g("init", "-q"); g("add", "."); g("-c", "user.name=e2e", "-c", "user.email=e2e@local", "-c", "commit.gpgsign=false", "commit", "-qm", "fork");
+      const fork = g("rev-parse", "HEAD").stdout.trim();
+      writeFileSync(`${hr}/server.ts`, `${lines.map((l, i) => i >= 99 && i <= 119 ? `${l} edited` : l).join("\n")}\n`);
+      writeFileSync(`${hr}/blob.bin`, Buffer.from([0, 9, 9, 0, 3]));
+      const d = g(...laneHunkDiffArgs(fork));
+      const got = laneHunkRanges(d.stdout);
+      rmSync(hr, { recursive: true, force: true });
+      check("(sp-hunk) laneHunkRanges over git diff <forkSha> against the worktree: uncommitted edit on lines 100-120 is one NEW-side hunk, a binary is [], an untouched file is absent",
+        d.status === 0 && fork.length === 40 && JSON.stringify(got) === JSON.stringify({
+          "blob.bin": [], "server.ts": [{ file: "server.ts", symbol: "hunk", startLine: 100, endLine: 120 }] }),
+        `exit=${d.status} ${JSON.stringify(got)} ${d.stderr.slice(0, 200)}`);
+    }
     // (v3) E4 · A VARIANT IS NEVER BUNDLED AND NEVER HELD BY ITS OWN GROUP (task-land-waves.ts#classify
     // `variante`, start-plan.ts step 3 `sameGroup`). Fixture: a group g, its two variants v1/v2 and a
     // foreign row x of the SAME program, all four on one confirmed file, all klein. Each half carries its

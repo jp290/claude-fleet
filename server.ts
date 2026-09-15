@@ -12206,7 +12206,7 @@ async function tickDispatch(): Promise<void> {
     // already being dispatched (the attended doors) is skipped whole.
     // The plan derives every open row's surface; with no row the tick owns there is nothing it could
     // start, so the common idle tick stays the one cheap pass over the queue it always was.
-    if (!tasks.some((t) => t.kind === "auftrag" && tickOwnsRow(t) && !dispatchingTasks.has(t.id))) return;
+    if (!tasks.some((t) => t.kind === "auftrag" && !t.variants && tickOwnsRow(t) && !dispatchingTasks.has(t.id))) return;
     const candidates = startPlanWaves().flatMap(({ plan, land }) => {
       const rows = plan.ids.map((id) => tasks.find((t) => t.id === id)).filter((t): t is Task => !!t);
       if (rows.length !== plan.ids.length || !rows.some(tickOwnsRow)

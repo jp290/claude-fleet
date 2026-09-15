@@ -22526,9 +22526,10 @@ function suiteLockTryTake(owner: symbol | null = null): boolean {
 // land under it dies `waitedOut` having looked at nothing (measured 2026-09-06: e2e-clean-review.sh
 // hung at waitMerge for its full 60 s the first time the hold was pulled forward).
 //
-// THE VARIABLE GRANTS NOTHING, and that is the whole safety of it — the same three conditions
+// THE VARIABLE GRANTS NOTHING, and that is the whole safety of it — the same four conditions
 // e2e-stage.sh applies, in the same order: it must NAME a pid, the lock's own pid file must record
-// that pid, and that process must still be alive. Fail any one and this is an ordinary contender
+// that pid, that process must still be alive, and its birth must equal the lock's valid recorded
+// birth (e2e/pins.ts runs both sides over one fixture). Fail any one and this is an ordinary contender
 // again, so a stale export can never make a land run unserialized. It is read from the environment
 // this process was STARTED with; nothing in this file ever sets it on `process.env` (the gate child
 // gets its own copy, minted per spawn — see verifyChildEnv).
@@ -22541,6 +22542,13 @@ function inheritedSuiteHolder(): number | null {
   try {
     process.kill(Number(named), 0);
   } catch { return null; } // the named holder is gone — its lock is stale, not ours to run inside
+  // …and it must still be the process that WROTE the lock (2026-09-15, Astra-Befund 2): the same
+  // fourth condition e2e-stage.sh applies. A live pid under a missing, malformed, unmeasurable or
+  // different birth is a recycled pid or an unproven holder — ordinary waiters never call that
+  // `held`, so nobody may run inside it either.
+  const stored = readStoredLockBirth(`${SUITE_LOCK}/birth`);
+  if (stored.state !== "matched") return null;
+  if (processBirthFingerprint(Number(named)) !== stored.value) return null;
   return Number(named);
 }
 // --- AND SINCE M5 IT REAPS (owner 2026-09-07) --------------------------------------------------

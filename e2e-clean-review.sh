@@ -112,11 +112,13 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # means it's listening (401 without a token still proves the port is up). A function, not an inline
 # loop: this harness boots srv TWICE (gate phase, then the shadow-phase restart) and the two waits
 # must not be able to drift. `_hc`, not `code` — `code` carries the harness's exit status.
+# --max-time bounds each attempt: this loop runs under the suite mutex, and a port that accepts and
+# never answers would otherwise hold it until the outer timeout (e2e/verify-queue.ts §2d).
 wait_bound() {
   _phase="$1"
   _hc=000
   for _ in $(seq 1 60); do
-    _hc=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
+    _hc=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
     [ "$_hc" != "000" ] && break
     sleep 0.5
   done

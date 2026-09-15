@@ -211,18 +211,27 @@ _st_queue_scan() {
     fi
   done
 }
-# Do we already run inside somebody's hold? THREE conditions, and the two on disk are what make the
-# variable safe to honour: it must name a pid, that pid must be the one the lock file records, and
-# that process must still be alive. Fail any of them and this is an ordinary contender again — which
-# is the whole guard against a stale export handing out an unserialized run.
+# Do we already run inside somebody's hold? FOUR conditions, and the three on disk are what make the
+# variable safe to honour: it must name a pid, that pid must be the one the lock file records, that
+# process must still be alive, and it must still be the process that WROTE the lock — its current
+# birth equal to a valid recorded one. Fail any of them and this is an ordinary contender again —
+# which is the whole guard against a stale export handing out an unserialized run. The birth half
+# (2026-09-15, Astra-Befund 2): a live pid alone is what an ordinary waiter calls `unknown` or
+# `stale`, never `held`, and a stale export plus a leftover lock plus a recycled pid let a suite
+# skip the queue on exactly that. Missing, malformed or unmeasurable identity inherits NOTHING.
 _st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"
 _st_lock_pid=$$
 _st_inherited=0
 if [ -n "$_st_held_by" ] \
   && [ "$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by" ] \
   && kill -0 "$_st_held_by" 2>/dev/null; then
-  _st_inherited=1
-  _st_lock_pid=$_st_held_by
+  _st_held_birth=$(cat "$FLEET_SUITE_LOCK/birth" 2>/dev/null || true)
+  _st_held_birth_now=$(_st_birth_of "$_st_held_by")
+  if [ -n "$_st_held_birth" ] && _st_valid_birth "$_st_held_birth" \
+    && [ -n "$_st_held_birth_now" ] && [ "$_st_held_birth_now" = "$_st_held_birth" ]; then
+    _st_inherited=1
+    _st_lock_pid=$_st_held_by
+  fi
 fi
 if [ "$_st_inherited" = 0 ]; then
 _st_self_birth=$(_st_birth_of "$$")

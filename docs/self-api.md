@@ -1694,6 +1694,14 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report \
   `FleetReport`-Zeile plus einen `fleet-report`-Zeiger in dessen Program-Inbox an; alle anderen
   erfolgreichen Pfade behalten den FleetEvent-Transport unten. Er landet nicht, deployt nicht und
   schließt keine Zeile. Ein Report ist eine NACHRICHT.
+- **`outsideSurface` misst, es urteilt nicht** (`server.ts#laneOutsideSurface`). Beim Filen liest
+  der Server `git diff --name-only <base>...HEAD` der Lane und zieht
+  `card.surface.files ∪ card.surface.creates` der Zeile ab: die committeten Pfade außerhalb der
+  Schreibfläche, sortiert. `[]` heißt gemessen und nichts draußen; `null` heißt NICHT gemessen
+  (keine Zeile, keine `surfaceValid`-Karte, keine Basis, git scheiterte). Die Merge-Base mit dem
+  Integrationszweig statt `worktree.baseSha`, weil ein Self-Rebase sonst main's Zwischendateien der
+  Lane zuschriebe. Kein Gate: der Report wird in jedem Fall angelegt, die Zeile bewegt sich nicht.
+  Die Land-Note trägt das Feld nicht — sie hat keine Diff-Liste, an die es sich hängen ließe.
 
 **Program zuerst.** Trägt die Lane die ID eines aktiven Programs, wird der Report an DAS PROGRAM
 adressiert: `basis:"program"`, `receiver:null`, `eventId:null`, genau ein ungelesener

@@ -11333,6 +11333,8 @@ interface OwnerReportRow {
   decision?: { disposition: "accepted" | "rejected"; at: number;
     by: { slot: number; openedAt: number; sessionId: string | null } | "owner";
     reason: string | null } | null;
+  // server/types.ts#FleetReport.outsideSurface — null/absent = not measured, [] = nothing outside
+  outsideSurface?: string[] | null;
 }
 let reportsAwaitingOwner = 0;
 let ownerReportRows: OwnerReportRow[] = [];
@@ -11469,6 +11471,8 @@ function ownerReportRowEl(r: OwnerReportRow): HTMLElement {
       ? "Filed to you directly — the lane had no coordinating session to report to."
       : `Filed to slot ${r.receiver?.slot}, whose session has since ended. No session can judge it any more.`));
   row.appendChild(el("div", "attntext", r.text));
+  if (r.outsideSurface?.length)
+    row.appendChild(el("div", "shrhint", `Committed outside the card's write surface: ${r.outsideSurface.join(", ")}`));
   const ta = document.createElement("textarea");
   ta.className = "attnta";
   ta.rows = 2;

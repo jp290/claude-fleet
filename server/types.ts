@@ -552,6 +552,13 @@ interface FleetReport {
   // fact — a decision is carried EXACTLY once, and the deliverer refuses a second attempt on the
   // strength of this key rather than on the door's refusal, so the pair cannot drift apart.
   decisionDelivery?: FleetReportDecisionDelivery | null;
+  // THE LANE'S COMMITTED PATHS OUTSIDE ITS CARD'S WRITE SURFACE, measured at filing
+  // (server.ts#laneOutsideSurface): `git diff --name-only <base>...HEAD` minus
+  // `card.surface.files ∪ card.surface.creates`, sorted. A FACT for the reader, never a gate — the
+  // report is filed either way. `null` is "not measured" (no task row, no surface-valid card, no
+  // base, git failed) and is never `[]`, which is the measured "nothing outside". Absent is a
+  // row persisted before the field existed.
+  outsideSurface?: string[] | null;
 }
 
 // THE OWNER-FACING TWIN of ClarificationRequest, with the roles flipped: there a worker asks its
@@ -1052,6 +1059,9 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
       : !(typeof d.reason === "string" && !!d.reason.trim()
         && d.reason.length <= MAX_FLEET_REPORT_DELIVERY_REASON)) return null;
   }
+  if (!(r.outsideSurface === undefined || r.outsideSurface === null
+    || (Array.isArray(r.outsideSurface) && r.outsideSurface.every((p) => typeof p === "string" && p.length > 0))))
+    return null;
   return raw as FleetReport;
 }
 

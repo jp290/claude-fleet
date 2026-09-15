@@ -8035,6 +8035,27 @@ function disarmLaneWatchesForReport(s: Slot,
   }
 }
 
+// The lane's committed paths its card does not name as write surface (FleetReport.outsideSurface).
+// One read at filing, on the report path: the land path's diffs are a different range (the rebased
+// candidate against the main it was rebased onto) and a different moment, and the land note carries
+// no diff list to reuse. THE RANGE IS `<base>...HEAD`, NOT `<forkSha>..HEAD`: `worktree.baseSha` is
+// never moved, so after a lane rebases itself onto main the two-dot range would name every file main
+// changed in between as the lane's own. The merge base with the integration branch is the fork point
+// before a rebase and the rebase point after it — laneLocalProof reads the same range.
+// `creates` counts as surface — a planned NEW file is not a stray one. Only a surface-valid card
+// measures: a card with a surface gap does not state what the surface is, and a comparison against
+// it would name its gaps as the lane's strays. Every unmeasurable case is null.
+async function laneOutsideSurface(s: Slot): Promise<string[] | null> {
+  const card = s.taskId ? tasks.find((t) => t.id === s.taskId)?.card : undefined;
+  if (!card?.surfaceValid || !s.cwd || !s.worktree) return null;
+  const base = await laneBaseRef(s);
+  if (!base) return null;
+  const diff = await gitReadRaw(s.cwd, "diff", "--name-only", "--no-renames", "-z", `${base}...HEAD`, "--");
+  if (diff.code !== 0) return null;
+  const surface = new Set([...card.surface.files, ...(card.surface.creates ?? [])]);
+  return [...new Set(diff.out.split("\0").filter((path) => path && !surface.has(path)))].sort();
+}
+
 async function openFleetReport(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
   if (!body || Object.keys(body).some((key) => key !== "status" && key !== "text"))
     return json({ error: "body must contain only status and text" }, 400);
@@ -8045,6 +8066,9 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   if (!text) return json({ error: "text must not be empty" }, 400);
   if (text.length > MAX_FLEET_REPORT_TEXT)
     return json({ error: `text must be at most ${MAX_FLEET_REPORT_TEXT} chars` }, 400);
+  // measured BEFORE either branch reads program or receiver state, so neither branch opens an await
+  // between its own reads and its writes
+  const outsideSurface = await laneOutsideSurface(s);
 
   const program = s.programId ? programs.find((p) => p.id === s.programId) : undefined;
   if (program?.status === "active") {
@@ -8057,7 +8081,7 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
         cwd: s.cwd!, branch: s.worktree!.branch },
       provenance: { taskId: s.taskId, originId: s.originId, programId: s.programId,
         instance: INSTANCE_NAME },
-      receiver: null, basis: "program", eventId: null,
+      receiver: null, basis: "program", eventId: null, outsideSurface,
     };
     const entry = appendProgramInbox(program, "fleet-report", id);
     fleetReports = [...fleetReports, report];
@@ -8116,7 +8140,7 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
     // identity, so the row keeps saying it after it has been carried to another instance's reader.
     provenance: { taskId: s.taskId, originId: s.originId, programId: s.programId,
       instance: INSTANCE_NAME },
-    receiver: bound?.receiver ?? null, basis: bound?.basis ?? "owner-inbox", eventId,
+    receiver: bound?.receiver ?? null, basis: bound?.basis ?? "owner-inbox", eventId, outsideSurface,
   };
   const event: FleetReportFleetEvent = {
     id: eventId, watchId: null,

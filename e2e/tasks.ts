@@ -7668,6 +7668,135 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const id of [aId, aCtl]) await post(`/api/tasks/${id}/delete`, {});
   }
 
+  // --- OUTSIDE SURFACE (server.ts#laneOutsideSurface): a fleet-report carries the lane's committed
+  // paths its card does not name as write surface, measured at filing. Program-bound rows, so every
+  // report takes the program basis and no delivery budget can refuse one of the fixture's reports.
+  // Three lanes, five reports: (1) card files [code.txt] commits code.txt → [], then a stray → [stray],
+  // then main moves under it and it rebases → still [stray] (a two-dot fork range would add main's
+  // file); (2) the same card plus creates [outside-new.txt] commits all three → [stray] only;
+  // (3) no card → null, never []. Then a restart: the persisted rows hydrate with the field intact.
+  {
+    const oMade = await post("/api/programs", { title: "outside-surface probes",
+      intent: "Report rows name committed paths outside the card surface.", successCriterion: "The field is measured.",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [] });
+    const oProgram = ((await oMade.json()) as { program?: { id: string } }).program?.id ?? "";
+    await post(`/api/programs/${oProgram}/confirm`, {});
+    await post(`/api/programs/${oProgram}/activate`, {});
+    const oStray = "outside-stray.txt";
+    const oNew = "outside-new.txt";
+    const oText = `OUTSIDE-SURFACE-PROBE: code.txt bekommt eine Zeile, ${oNew} wird neu angelegt.`;
+    const oCard = (creates: string[]) => ({ ziel: "code.txt bekommt eine Zeile",
+      surface: { files: ["code.txt"], symbols: [], ...(creates.length ? { creates } : {}) },
+      done: "die Zeile steht in code.txt", verify: "bun e2e/pins.ts", verboten: ["kein Gate"] });
+    const oMk = async (card: ReturnType<typeof oCard> | null): Promise<{ id: string; status: number; body: string }> => {
+      const res = await post("/api/tasks", { text: oText, kind: "auftrag", queue: false, repo: REPO,
+        programId: oProgram, ...(card ? { card } : {}) });
+      const body = await res.text();
+      let id = "";
+      try { id = (JSON.parse(body) as { task?: { id: string } }).task?.id ?? ""; } catch { /* the status carries it */ }
+      return { id, status: res.status, body: body.slice(0, 300) };
+    };
+    const oLane = async (taskId: string): Promise<{ slot: number; cwd: string; token: string }> => {
+      const slot = ((await (await post(`/api/tasks/${taskId}/dispatch`, {})).json()) as { slot?: number }).slot ?? 0;
+      let cwd = "";
+      let token = "";
+      for (let i = 0; i < 150 && slot && (!cwd || !token); i++) {
+        cwd = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd?: string }[] })
+          .slots.find((x) => x.id === slot)?.cwd ?? "";
+        try {
+          token = ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+            { slots?: Record<string, { selfToken?: string }> }).slots?.[String(slot)]?.selfToken) ?? "";
+        } catch { /* state file mid-write — the next round reads it */ }
+        if (!cwd || !token) await Bun.sleep(100);
+      }
+      return { slot, cwd, token };
+    };
+    const oCommit = (cwd: string, files: Record<string, string>): number => {
+      for (const [path, text] of Object.entries(files)) writeFileSync(`${cwd}/${path}`, text);
+      const add = spawnSync("git", ["-C", cwd, "add", "--", ...Object.keys(files)]).status;
+      return add === 0 ? spawnSync("git", ["-C", cwd, "commit", "-qm", `outside-surface probe: ${Object.keys(files).join(" ")}`]).status ?? 1 : 1;
+    };
+    type OReport = { id?: string; basis?: string; outsideSurface?: string[] | null };
+    const oReport = async (token: string, text: string): Promise<{ status: number; report?: OReport }> => {
+      const res = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": token },
+        body: JSON.stringify({ status: "complete", text }) });
+      return { status: res.status, report: ((await res.json()) as { report?: OReport }).report };
+    };
+
+    const oT1 = await oMk(oCard([]));
+    const oT2 = await oMk(oCard([oNew]));
+    const oT3 = await oMk(null);
+    type OCard = { surfaceValid?: boolean; surface?: { files?: string[]; creates?: string[] } };
+    const oRows = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; card?: OCard }[] }).tasks;
+    const oCardOf = (id: string): OCard | undefined => oRows.find((t) => t.id === id)?.card;
+    check("outside-surface setup: an active program and three rows — two with a surface-valid author card (one naming creates), one without any card",
+      !!oProgram && !!oT1.id && !!oT2.id && !!oT3.id
+        && oCardOf(oT1.id)?.surfaceValid === true && oCardOf(oT2.id)?.surface?.creates?.join(" ") === oNew
+        && oCardOf(oT3.id) === undefined,
+      JSON.stringify({ oProgram, t1: [oT1.status, oT1.body], t2: [oT2.status, oT2.body, oCardOf(oT2.id)?.surface ?? null],
+        t3: [oT3.status, oCardOf(oT3.id) ?? null] }));
+    const l1 = await oLane(oT1.id);
+    const l2 = await oLane(oT2.id);
+    const l3 = await oLane(oT3.id);
+    check("outside-surface setup: three program lanes started, each with a worktree and a self token",
+      [l1, l2, l3].every((l) => l.slot > 0 && !!l.cwd && !!l.token),
+      JSON.stringify([l1, l2, l3].map((l) => ({ slot: l.slot, cwd: l.cwd, token: !!l.token }))));
+
+    // (1) only the card's file committed → the measured empty list
+    const c1a = oCommit(l1.cwd, { "code.txt": "root\noutside-surface line\n" });
+    const r1a = await oReport(l1.token, "outside-surface probe: only the surface file");
+    check("outside-surface: a lane that committed ONLY its card's file carries outsideSurface [] (measured, not null)",
+      c1a === 0 && r1a.status === 200 && r1a.report?.basis === "program"
+        && JSON.stringify(r1a.report?.outsideSurface) === "[]",
+      `commit=${c1a} ${r1a.status} ${JSON.stringify(r1a.report ?? null)}`);
+    // (1b) card file + a stray → exactly the stray
+    const c1b = oCommit(l1.cwd, { [oStray]: "not on the card\n" });
+    const r1b = await oReport(l1.token, "outside-surface probe: surface file plus a stray");
+    check("outside-surface: card files [code.txt], lane committed code.txt and a stray → outsideSurface [stray]",
+      c1b === 0 && r1b.status === 200 && JSON.stringify(r1b.report?.outsideSurface) === JSON.stringify([oStray]),
+      `commit=${c1b} ${r1b.status} ${JSON.stringify(r1b.report ?? null)}`);
+    // (1c) main moves under the lane and the lane rebases onto it: main's file is not the lane's
+    const oMainFile = "outside-main-moved.txt";
+    const gitRepo = (...args: string[]) => spawnSync("git", ["-C", REPO, ...args], { encoding: "utf8" });
+    writeFileSync(`${REPO}/${oMainFile}`, "main moved while the lane lived\n");
+    gitRepo("add", oMainFile);
+    const oMoved = gitRepo("commit", "-qm", "outside-surface probe: main moves under the lane").status === 0;
+    const oRebased = spawnSync("git", ["-C", l1.cwd, "rebase", "-q", "main"]).status === 0;
+    const r1c = await oReport(l1.token, "outside-surface probe: after a self-rebase onto a moved main");
+    check("outside-surface: after main moves and the lane rebases, main's own file is NOT named — still [stray]",
+      oMoved && oRebased && r1c.status === 200 && JSON.stringify(r1c.report?.outsideSurface) === JSON.stringify([oStray]),
+      `moved=${oMoved} rebased=${oRebased} ${r1c.status} ${JSON.stringify(r1c.report ?? null)}`);
+    gitRepo("rm", "-q", oMainFile);
+    gitRepo("commit", "-qm", "outside-surface probe: main fixture removed");
+
+    // (2) a planned NEW file is surface, the stray still is not
+    const c2 = oCommit(l2.cwd, { "code.txt": "root\noutside-surface line\n", [oNew]: "planned\n", [oStray]: "not on the card\n" });
+    const r2 = await oReport(l2.token, "outside-surface probe: surface, creates and a stray");
+    check("outside-surface: card files [code.txt] + creates [outside-new.txt], lane committed all three and a stray → [stray] only",
+      c2 === 0 && r2.status === 200 && JSON.stringify(r2.report?.outsideSurface) === JSON.stringify([oStray]),
+      `commit=${c2} ${r2.status} ${JSON.stringify(r2.report ?? null)}`);
+
+    // (3) no card: not measured is null, never the empty list
+    const c3 = oCommit(l3.cwd, { "code.txt": "root\noutside-surface line\n", [oStray]: "no card at all\n" });
+    const r3 = await oReport(l3.token, "outside-surface probe: a row without a card");
+    check("outside-surface: a lane whose row has NO card carries outsideSurface null, not []",
+      c3 === 0 && r3.status === 200 && r3.report !== undefined && r3.report.outsideSurface === null,
+      `commit=${c3} ${r3.status} ${JSON.stringify(r3.report ?? null)}`);
+
+    for (const l of [l1, l2, l3]) if (l.slot) await post(`/api/slots/${l.slot}/kill`, {});
+    await restartSrv();
+    const oAfter = ((await (await get("/api/fleet-report")).json()) as { reports: (OReport & { id: string })[] }).reports;
+    const oBack = (id: string | undefined) => oAfter.find((r) => r.id === id);
+    check("outside-surface: after a restart the persisted rows hydrate with the field intact ([stray], [], null)",
+      JSON.stringify(oBack(r1b.report?.id)?.outsideSurface) === JSON.stringify([oStray])
+        && JSON.stringify(oBack(r1a.report?.id)?.outsideSurface) === "[]"
+        && oBack(r3.report?.id)?.outsideSurface === null,
+      JSON.stringify([r1a, r1b, r3].map((r) => oBack(r.report?.id) ?? null)).slice(0, 600));
+    for (const id of [oT1.id, oT2.id, oT3.id]) await post(`/api/tasks/${id}/delete`, {});
+    await post(`/api/programs/${oProgram}/complete`, {});
+  }
+
   // --- (k) THE RAW START. "▸ start lane" gates on nothing, by design: an attended click outranks
   // every advisory. What that cost was legibility — starting a row that would be delivered as the
   // owner's bare draft looked exactly like starting one somebody had sharpened: same button, one

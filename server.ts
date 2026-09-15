@@ -139,7 +139,7 @@ import {
   type ProgramInboxKind, type ProgramInboxEntry, type ProgramInbox,
   type ProgramFoundingMode, type ProgramFoundingProfileKind, type ProgramFoundingIdentity,
   type ProgramFoundingV2, type ProgramFounding, type ProgramFoundingRead, type ProgramContent,
-  type ProgramValidation, type SupervisorBinding, type ProgramDigest, type DispatchSpawn,
+  type ProgramValidation, type SupervisorBinding, type ProgramDigest, type DispatchSpawn, type SlotContext,
   type SlotStreamOccupant,
 } from "./server/types";
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
@@ -385,8 +385,10 @@ interface Harness {
   //
   // `browserMcp` is the lane's MCP profile, already resolved by ensureSlot: false only for a lane that
   // did not ask for a browser (Slot.browser). An adapter whose `browserProfile` is not "apply" ignores it.
+  // `context` is Slot.context, validated at set time by contextOf — only an adapter that takes it reads it.
   spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null;
-    container: string; containerContext: string; cwd: string; browserMcp: boolean }): string;
+    container: string; containerContext: string; cwd: string; browserMcp: boolean;
+    context: SlotContext | null }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -1197,6 +1199,11 @@ const CODEX_HARNESS: Harness = {
     // that constant is a claude model id and Codex has never heard of it.
     if (o.model) cmd += ` --model '${o.model}'`;
     if (o.effort) cmd += ` -c model_reasoning_effort='${o.effort}'`;
+    // the slot's context budget (Slot.context), fresh AND resume form. Both numbers are integers judged
+    // by contextOf, so no request text reaches this line; absent = no flag, today's line byte for byte.
+    // The scope is `total`, the counting mode docs/messungen/2026-09-15-codex-kontextfenster-profile.md §4
+    // computed its thresholds for; `features.context_management.experimental_mode` is never set here.
+    if (o.context) cmd += ` -c model_context_window=${o.context.window} -c model_auto_compact_token_limit=${o.context.compactAt} -c model_auto_compact_token_limit_scope='total'`;
     // a text lane (Slot.browser), fresh AND resume form — see CODEX_TEXT_LANE_MCP
     if (!o.browserMcp) cmd += ` -c ${CODEX_TEXT_LANE_MCP}`;
     const trust = SPAWN_PATH_RE.test(o.cwd)
@@ -1428,6 +1435,36 @@ function effortOf(body: Record<string, unknown> | null, h: Harness): { ok: true;
 const effortErrFor = (h: Harness) =>
   h.supports.effort ? `bad effort (one of: ${h.effortLevels.join(", ")})` : `harness ${h.id} takes no effort`;
 
+// The pane's context budget (Slot.context): window and auto-compaction threshold in tokens. Only Codex
+// takes one (three `-c` overrides, CODEX_HARNESS.spawnCmd); every other adapter refuses the field for
+// effortOf's reason. The ceiling is the bundled catalog's `max_context_window` for gpt-6-astra and
+// gpt-5.6-sol on codex-cli 0.153.4 (docs/messungen/2026-09-15-codex-kontextfenster-profile.md §2): above
+// it the client clamps silently, so a larger value would be stored as a number no pane ever ran with.
+// A constant and not env on purpose — moving it is a re-measurement, not a knob.
+const CODEX_CONTEXT_WINDOW_MAX = 872_000;
+const takesContext = (h: Harness): boolean => h === CODEX_HARNESS;
+// The one shape the doors AND the loader accept: exactly {window, compactAt}, safe integers,
+// 0 < compactAt < window <= CODEX_CONTEXT_WINDOW_MAX. Anything else is null — a door refuses it, the
+// loader drops it. Extra keys are refused too: this field is two numbers, never a config channel.
+function slotContextFrom(v: unknown): SlotContext | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const keys = Object.keys(v);
+  if (keys.length !== 2 || !keys.includes("window") || !keys.includes("compactAt")) return null;
+  const w = (v as { window: unknown }).window;
+  const c = (v as { compactAt: unknown }).compactAt;
+  if (typeof w !== "number" || typeof c !== "number" || !Number.isSafeInteger(w) || !Number.isSafeInteger(c)) return null;
+  return c > 0 && c < w && w <= CODEX_CONTEXT_WINDOW_MAX ? { window: w, compactAt: c } : null;
+}
+function contextOf(body: Record<string, unknown> | null, h: Harness):
+  { ok: true; context: SlotContext | null } | { ok: false; error: string } {
+  const raw = body?.context;
+  if (raw === undefined || raw === null) return { ok: true, context: null };
+  if (!takesContext(h)) return { ok: false, error: `harness ${h.id} takes no context` };
+  const context = slotContextFrom(raw);
+  return context ? { ok: true, context }
+    : { ok: false, error: `bad context (expected {window, compactAt}: integers, 0 < compactAt < window <= ${CODEX_CONTEXT_WINDOW_MAX})` };
+}
+
 // The lane's browser profile (Slot.browser). Absent/false/null = a text lane, the default; `true` only
 // for an adapter whose profile applies — refused, not dropped, for the others, for the reason effortOf
 // gives. `undefined` in the answer means "the body did not name it", so a door can fall back per field.
@@ -1459,8 +1496,11 @@ function taskSpawnFromBody(body: Record<string, unknown> | null):
   if (!e.ok) return { ok: false, error: effortErrFor(harness) };
   const b = browserOf(body, harness);
   if (!b.ok) return b;
-  return { ok: true, spawn: h.harness === null && m.model === null && e.effort === null && !b.browser
-    ? undefined : { harness: h.harness, model: m.model, effort: e.effort, ...(b.browser ? { browser: true } : {}) } };
+  const c = contextOf(body, harness);
+  if (!c.ok) return c;
+  return { ok: true, spawn: h.harness === null && m.model === null && e.effort === null && !b.browser && !c.context
+    ? undefined : { harness: h.harness, model: m.model, effort: e.effort, ...(b.browser ? { browser: true } : {}),
+      ...(c.context ? { context: c.context } : {}) } };
 }
 
 // --- THE VARIANT GROUP (E4, docs/messungen/2026-09-14-queue-intelligenz-schichten.md §5 E4): one
@@ -1482,7 +1522,7 @@ function taskVariantsFromBody(body: Record<string, unknown> | null):
   if (raw === undefined) return { ok: true, variants: undefined };
   if (!Array.isArray(raw) || raw.length < TASK_VARIANTS_MIN || raw.length > TASK_VARIANTS_MAX)
     return { ok: false, error: `variants must be a list of ${TASK_VARIANTS_MIN} to ${TASK_VARIANTS_MAX} agent choices {harness, model, effort}` };
-  if (["harness", "model", "effort", "browser"].some((k) => body?.[k] !== undefined && body?.[k] !== null))
+  if (["harness", "model", "effort", "browser", "context"].some((k) => body?.[k] !== undefined && body?.[k] !== null))
     return { ok: false, error: "variants and a row-level harness/model/effort are two answers to one question — name every agent inside variants" };
   const out: DispatchSpawn[] = [];
   for (const [i, v] of raw.entries()) {
@@ -1506,7 +1546,7 @@ function taskVariantsFromBody(body: Record<string, unknown> | null):
 // group's: a group filed released is n released variants, a pending one n pending ones.
 function variantRowsFor(group: Task, variants: readonly DispatchSpawn[]): Task[] {
   return variants.map((v, i): Task => {
-    const chosen = v.harness !== null || v.model !== null || v.effort !== null || v.browser === true;
+    const chosen = v.harness !== null || v.model !== null || v.effort !== null || v.browser === true || !!v.context;
     return {
       id: randomBytes(4).toString("hex"), originId: group.originId ?? group.id, text: group.text,
       source: group.source, from: group.from, kind: "auftrag", repo: group.repo,
@@ -1689,7 +1729,7 @@ const taskKindNote = (kind: TaskKind): string | null =>
 // all-null result degrades to ABSENT — the field never reloads as an empty choice.
 const loadTaskSpawn = (value: unknown): DispatchSpawn | undefined => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const raw = value as { harness?: unknown; model?: unknown; effort?: unknown; browser?: unknown };
+  const raw = value as { harness?: unknown; model?: unknown; effort?: unknown; browser?: unknown; context?: unknown };
   const harness = typeof raw.harness === "string"
     && HARNESSES.some((h) => h.id === raw.harness && h !== CLAUDE_HARNESS) ? raw.harness : null;
   const h = harnessOf(harness);
@@ -1698,8 +1738,9 @@ const loadTaskSpawn = (value: unknown): DispatchSpawn | undefined => {
   const effort = typeof raw.effort === "string" && h.supports.effort
     && h.effortLevels.includes(raw.effort) ? raw.effort : null;
   const browser = raw.browser === true && h.browserProfile === "apply";
-  return harness === null && model === null && effort === null && !browser ? undefined
-    : { harness, model, effort, ...(browser ? { browser: true } : {}) };
+  const context = takesContext(h) ? slotContextFrom(raw.context) : null;
+  return harness === null && model === null && effort === null && !browser && !context ? undefined
+    : { harness, model, effort, ...(browser ? { browser: true } : {}), ...(context ? { context } : {}) };
 };
 // A GROUP'S `variants` off disk. A present-but-malformed value stays a GROUP (an array, possibly
 // empty) and never degrades to ABSENT: an absent field would turn the bracket into an ordinary
@@ -1754,6 +1795,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   containerContext: null,
   effort: null,
   browser: false,
+  context: null,
   taskId: null,
   originId: null,
   programId: null,
@@ -3318,11 +3360,11 @@ function stateSnapshot(): string {
     container: string | null; containerContext: string | null;
     taskId: string | null; originId: string | null; programId: string | null;
     releasedBy: "owner" | "machine" | null; laneSuccessions: number; lineageId: string | null; selfToken: string;
-    browser?: true }> = {};
+    browser?: true; context?: SlotContext }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, lineageId: s.lineageId, selfToken: s.selfToken };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, lineageId: s.lineageId, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   return JSON.stringify({ token: persistedToken, stewardToken, helperToken,
@@ -5076,7 +5118,8 @@ const attachBusy = new Set<string>();
 
 async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null,
   harness: string | null = null, effort: string | null = null, form: LaneForm = "worktree",
-  box: BoxPin = NO_BOX, parent: LaneAnchor | undefined = undefined, browser = false): Promise<{ cwd: string; branch: string }> {
+  box: BoxPin = NO_BOX, parent: LaneAnchor | undefined = undefined, browser = false,
+  context: SlotContext | null = null): Promise<{ cwd: string; branch: string }> {
   const h = harnessOf(harness);
   // Refuse before createWorktree: a main-only adapter must not leave an orphan working copy as the
   // side effect of discovering its policy too late.
@@ -5094,7 +5137,7 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   // tick: until the root has the ref, worktreeRisk and drift read a branch that is not there and
   // would report an absence as a fact about the lane.
   await syncLaneRefs(ref, wt.path);
-  await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser);
+  await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context);
   // a manual lane (no branch given → createWorktree auto-named it `fleet/<stamp>-<hex>`)
   // has no task text to derive a label from the way the dispatcher does (~tickDispatch,
   // `⎇ ${next.from} ...`) — so it must NEVER surface that raw uniqueness timestamp as the
@@ -5154,6 +5197,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
   harness: string | null;
   effort: string | null;
   browser: boolean;
+  context: SlotContext | null;
   container: string | null;
   containerContext: string | null;
 }
@@ -5161,7 +5205,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
 const slotSpawnOccupant = (s: Slot): SlotSpawnOccupant | null => s.cwd ? {
   slot: s.id, cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, label: s.label,
   sessionId: s.sessionId, model: s.model, harness: s.harness, effort: s.effort,
-  browser: s.browser, container: s.container, containerContext: s.containerContext,
+  browser: s.browser, context: s.context, container: s.container, containerContext: s.containerContext,
 } : null;
 
 // label is a captured spawn input, not occupant identity: the owner may relabel a live session
@@ -5170,6 +5214,7 @@ const sameSlotSpawnOccupant = (s: Slot, expected: SlotSpawnOccupant): boolean =>
   s.id === expected.slot && s.cwd === expected.cwd && s.openedAt === expected.openedAt
   && s.selfToken === expected.selfToken && s.sessionId === expected.sessionId && s.model === expected.model
   && s.harness === expected.harness && s.effort === expected.effort && s.browser === expected.browser
+  && s.context?.window === expected.context?.window && s.context?.compactAt === expected.context?.compactAt
   && s.container === expected.container && s.containerContext === expected.containerContext;
 
 const SLOT_POST_CAPTURE_LATCH = process.env.FLEET_TEST_SLOT_POST_CAPTURE_LATCH ?? null;
@@ -5294,7 +5339,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
         `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: occupant.model,
           effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant),
           // the MCP profile is a LANE property only: a MAIN or plain session keeps its ambient MCPs
-          browserMcp: !s.worktree || occupant.browser })}`);
+          browserMcp: !s.worktree || occupant.browser, context: occupant.context })}`);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
       // state commit nor blind cleanup, because the named tmux session may already be the successor's.
@@ -5403,7 +5448,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   harness: string | null = null, effort: string | null = null,
   // one parameter for the pair: a container and its daemon are one decision, never chosen apart.
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null,
-  browser = false): Promise<void> {
+  browser = false, context: SlotContext | null = null): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   await waitForSlotTeardown(s.id);
@@ -5477,6 +5522,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.harness = harness; // ...and this one decides WHICH BINARY the pane runs, so inheriting it
   s.effort = effort;   // would silently spawn the previous occupant's agent for a new session
   s.browser = browser; // ...and a text lane must not inherit a browser lane's MCP profile, or back
+  s.context = context; // ...nor a pane the previous occupant's context budget
   s.container = box.container;               // ...and these two decide WHICH MACHINE it runs on,
   s.containerContext = box.containerContext; // which is the same rule one step further out
 
@@ -5632,6 +5678,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.harness = null;
   s.effort = null;
   s.browser = false;
+  s.context = null;
   s.taskId = null;
   s.originId = null;
   s.programId = null;
@@ -11197,7 +11244,8 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // A fresh clone's branch exists only in the clone — mirror it up NOW: until the root has the
     // ref, every root-side reader (drift, risk, the land path) reports an absence. No-op for a worktree.
     await syncLaneRefs(dRef, wt.path);
-    await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort, NO_BOX, null, spawn.browser === true);
+    await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort, NO_BOX, null, spawn.browser === true,
+      spawn.context ?? null);
     free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
     // An attended click IS a release — the only one that never passes through `queued` — stamped
     // OVER whatever the row carried: the lane that actually ran was attended. The tick's path
@@ -28040,6 +28088,9 @@ if (existsSync(STATE_FILE)) {
         if (typeof pe === "string" && hOf.supports.effort && hOf.effortLevels.includes(pe)) s.effort = pe;
         // the lane profile survives a restart (resume keeps it); only `true` on an adapter it applies to
         if ((v as { browser?: unknown }).browser === true && hOf.browserProfile === "apply") s.browser = true;
+        // ...and the context budget, re-judged by the same shape check as the doors: a broken or
+        // hand-edited value loads as absent (today's spawn line), the slot itself stays
+        if (takesContext(hOf)) s.context = slotContextFrom((v as { context?: unknown }).context);
         // Queue provenance survives a server restart with the lane. Old slot rows omit both and
         // therefore retain the initialized nulls; no branch-name or git inference fills them in.
         const pti = (v as { taskId?: unknown }).taskId;
@@ -32002,6 +32053,8 @@ Bun.serve<WSData>({
             ...(s.effort ? { effort: s.effort } : {}),
             // a lane that starts WITH the Playwright MCP; omitted for the default text lane and every non-lane
             ...(s.worktree && s.browser ? { browser: true } : {}),
+            // the pane's context budget (Slot.context); omitted when none was chosen
+            ...(s.context ? { context: s.context } : {}),
             // Codex binds its rollout lazily after the first prompt. This typed advisory is the
             // owner's whole v1 control surface: ambiguity/loss are visible but never automated,
             // and a rendered disconnect while the TUI is alive remains Codex's own retry problem.
@@ -32516,6 +32569,8 @@ Bun.serve<WSData>({
       if (!laneEffort.ok) return json({ error: effortErrFor(laneHarness) }, 400);
       const laneBrowser = browserOf(body, laneHarness);
       if (!laneBrowser.ok) return json({ error: laneBrowser.error }, 400);
+      const laneContext = contextOf(body, laneHarness);
+      if (!laneContext.ok) return json({ error: laneContext.error }, 400);
       const laneBox = boxOf(body, laneHarness);
       if (!laneBox.ok) return json({ error: laneBox.why }, 400);
       const laneForm = laneFormOf(body, laneHarness); // explicit form wins; absent → the adapter's
@@ -32545,14 +32600,14 @@ Bun.serve<WSData>({
           const attachBase = await integrationBranch(top.out);
           await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
             baseSha: await laneForkSha(wt.path, attachBase) }, laneModel.model, null, laneH.harness, laneEffort.effort,
-            NO_BOX, null, laneBrowser.browser === true);
+            NO_BOX, null, laneBrowser.browser === true, laneContext.context);
           free.label = wt.branch.replace(/^fleet\//, "⎇ ");
           delete shelved[wt.path]; // resuming clears the shelve note — the lane is active again
           saveState();
           void tickGit().catch(() => {});
           return json({ ok: true, slot: free.id, cwd: free.cwd, branch: wt.branch });
         }
-        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box, laneParent.parent, laneBrowser.browser === true);
+        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box, laneParent.parent, laneBrowser.browser === true, laneContext.context);
         return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch, form: laneForm.form });
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "lane failed" },
@@ -33542,6 +33597,8 @@ Bun.serve<WSData>({
       if (!wEffort.ok) return json({ error: effortErrFor(wHarness) }, 400);
       const wBrowser = browserOf(wBody?.browser !== undefined ? wBody : { browser: wRowSpawn.browser }, wHarness);
       if (!wBrowser.ok) return json({ error: wBrowser.error }, 400);
+      const wContext = contextOf(wBody?.context !== undefined ? wBody : { context: wRowSpawn.context }, wHarness);
+      if (!wContext.ok) return json({ error: wContext.error }, 400);
       const wFree = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
       if (!wFree) return json({ error: "no free slot" }, 409);
       // captured BEFORE dispatchTask mutates anything, for the reason its own `wasStatus` is: a
@@ -33549,7 +33606,8 @@ Bun.serve<WSData>({
       // `pending` are not the same row to the tick.
       const wWas = new Map(wFollowers.map((t) => [t.id, t.status] as const));
       const wr = await dispatchTask(wHead, wFree, true, false,
-        { harness: wHarnessId, model: wModel.model, effort: wEffort.effort, ...(wBrowser.browser ? { browser: true } : {}) },
+        { harness: wHarnessId, model: wModel.model, effort: wEffort.effort, ...(wBrowser.browser ? { browser: true } : {}),
+          ...(wContext.context ? { context: wContext.context } : {}) },
         { followers: wFollowers, wasStatus: wWas, sharedFiles: wWave.sharedFiles, klasse: wWave.klasse,
           units: wWave.units });
       if (!wr.ok) return json({ error: wr.error }, 500);
@@ -33576,8 +33634,8 @@ Bun.serve<WSData>({
       if (t.variantOf) return json({ error: `a variant starts only with its whole group — start the group row ${t.variantOf}` }, 409);
       if (t.variants) {
         const gBody = await readJson(req);
-        if (gBody && ["harness", "model", "effort", "browser", "clarify"].some((k) => gBody[k] !== undefined && gBody[k] !== null && gBody[k] !== false))
-          return json({ error: "a variant group runs the agents it was filed with — name no harness, model, effort, browser or clarify here" }, 400);
+        if (gBody && ["harness", "model", "effort", "browser", "context", "clarify"].some((k) => gBody[k] !== undefined && gBody[k] !== null && gBody[k] !== false))
+          return json({ error: "a variant group runs the agents it was filed with — name no harness, model, effort, browser, context or clarify here" }, 400);
         const g = await startVariantGroup(t, true);
         if (!g.started) return json({ error: g.why }, 409);
         for (const tail of g.tails) tail.catch(() => {});
@@ -33612,6 +33670,9 @@ Bun.serve<WSData>({
       // the browser profile falls back the same way: a body boolean wins, else the row's own choice
       const dBrowser = browserOf(dBody?.browser !== undefined ? dBody : { browser: dRowSpawn.browser }, dHarness);
       if (!dBrowser.ok) return json({ error: dBrowser.error }, 400);
+      // ...and the context budget the same way, re-judged against the EFFECTIVE harness
+      const dContext = contextOf(dBody?.context !== undefined ? dBody : { context: dRowSpawn.context }, dHarness);
+      if (!dContext.ok) return json({ error: dContext.error }, 400);
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) return json({ error: "no free slot" }, 409);
       // A RAW START is one where the lane receives the owner's DRAFT rather than a brief — the
@@ -33623,7 +33684,8 @@ Bun.serve<WSData>({
       // BYTES the lane gets — rather than left standing as a flag that is now true of every row.
       const rawAck = dBody?.acknowledged === true && !t.brief;
       const r = await dispatchTask(t, free, true, clarify,
-        { harness: dHarnessId, model: dModel.model, effort: dEffort.effort, ...(dBrowser.browser ? { browser: true } : {}) });
+        { harness: dHarnessId, model: dModel.model, effort: dEffort.effort, ...(dBrowser.browser ? { browser: true } : {}),
+          ...(dContext.context ? { context: dContext.context } : {}) });
       if (!r.ok) return json({ error: r.error }, 500);
       r.tail.catch(() => {}); // the tail requeues on every failure itself; nothing to add here
       // the mode and the EFFECTIVE harness ride in the audit detail, never a second event name: one "an
@@ -34171,6 +34233,8 @@ Bun.serve<WSData>({
         if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
         const bo = boxOf(body, hh);
         if (!bo.ok) return json({ error: bo.why }, 400);
+        const co = contextOf(body, hh);
+        if (!co.ok) return json({ error: co.error }, 400);
         // optional label AT SPAWN (same validation as /rename): the pane's env is fixed the
         // moment tmux creates it, so a label-keyed export (FLEET_STEWARD_TOKEN) can only be
         // baked in by naming the slot here — open-then-rename is always too late.
@@ -34178,7 +34242,8 @@ Bun.serve<WSData>({
           return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
         const label = typeof body.label === "string" ? body.label.trim() || null : null;
         try {
-          await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box);
+          await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
+            null, false, co.context);
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed",
             ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}) },
@@ -34204,11 +34269,13 @@ Bun.serve<WSData>({
         if (!bo.ok) return json({ error: bo.why }, 400);
         const wo = browserOf(body, hh);
         if (!wo.ok) return json({ error: wo.error }, 400);
+        const co = contextOf(body, hh);
+        if (!co.ok) return json({ error: co.error }, 400);
         const fo = laneFormOf(body, hh); // explicit form wins; absent → the adapter's
         if (!fo.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
         laneSpawn.add(s.id); // reserve before the first await — see laneSpawn
         try {
-          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent, wo.browser === true);
+          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent, wo.browser === true, co.context);
           return json({ ok: true, cwd: r.cwd, branch: r.branch, form: fo.form });
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "worktree failed",

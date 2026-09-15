@@ -241,6 +241,16 @@ const PRE_AUTH_ROUTES = [
   // reaches no foreign slot: the ONE thing it changes is which bytes a FUTURE lane receives, which
   // the owner sees on the row and can overwrite with one click.
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/brief$/`,
+  // E4 · THE VARIANT DECISION (server.ts#decideVariantForMain → #decideVariantGroup): which ONE
+  // variant of a group lands. Pre-auth for its neighbours' reason — the exact self principal IS the
+  // boundary. What bounds it: non-lane only (409 — a lane is one of the variants and does not judge
+  // itself); the caller must be the current bound MAIN of an ACTIVE program and the group must belong
+  // to THAT program; the body carries `winner` alone, which must name a variant row of the group
+  // whose lane is running; a decision is written once and never rewritten (409). It lands nothing and
+  // starts nothing: it archives the other variants and shelves their lanes the way the owner's
+  // shelve door does — worktree and branch kept — and it makes only the winner landable through the
+  // land door below, which keeps every one of its own bounds.
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/variant-winner$/`,
   // ACP · THE LAND DOOR, and it is by a distance the most consequential entry on this list: it is
   // the only pre-auth route that can move an INTEGRATION BRANCH. It is here for the same structural
   // reason as its neighbours — the exact self principal IS the boundary — but what bounds it is a

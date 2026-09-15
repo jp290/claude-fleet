@@ -4679,8 +4679,10 @@ export async function run(ctx: Ctx): Promise<void> {
     const a1 = await critRows();
     const a1Open = a1.filter((a) => a.status === "open");
     check("(i-attn a) a proposed criterion opens exactly ONE owner decision naming the task, criterion-confirm and the first line",
+      // NOT `existing === false`: the frame carries a live curl to this door, and a shell pane
+      // (FLEET_CMD=true) may run it on paste — helper preview ff99319d5abc raised the row 5.7 s
+      // before p1 did. That is a proposal too; the invariant is ONE open row carrying p1's line.
       a1Open.length === 1 && a1Open[0].kind === "decision" && p1Body.attention?.id === a1Open[0].id
-      && p1Body.attention?.existing === false
       && a1Open[0].text.includes(`POST /api/tasks/${iT.task.id}/criterion-confirm`)
       && a1Open[0].text.includes("done = the scrollback slice"),
       JSON.stringify({ attention: p1Body.attention, rows: a1 }));

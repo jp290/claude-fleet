@@ -32,6 +32,7 @@
 
 import { existsSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
+import { readLedger } from "./server/persist";
 
 const DAY = 86_400_000;
 const CONCURRENCY = 8;
@@ -113,19 +114,10 @@ export function renderSummary(rows: LandRow[], label: string): string {
   ].join("\n");
 }
 
-async function readJsonl(file: string): Promise<{ rows: Record<string, unknown>[]; malformed: number }> {
-  const rows: Record<string, unknown>[] = [];
-  let malformed = 0;
-  for (const f of [`${file}.1`, file]) {
-    if (!existsSync(f)) continue;
-    for (const line of (await Bun.file(f).text()).split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const v = JSON.parse(line);
-        if (v && typeof v === "object") rows.push(v); else malformed++;
-      } catch { malformed++; }
-    }
-  }
+// server/persist.ts#readLedger itself, not a copy (the pattern of briefstats.ts#readJsonl): the hand
+// copy that stood here delivered an array line as a row with malformed=0.
+export async function readJsonl(file: string): Promise<{ rows: Record<string, unknown>[]; malformed: number }> {
+  const { rows, malformed } = await readLedger<Record<string, unknown>>(file);
   return { rows, malformed };
 }
 

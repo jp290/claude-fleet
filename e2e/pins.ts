@@ -50,6 +50,8 @@ import {
 import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
 import { readEventLog, readLedger } from "../server/persist";
 import { readJsonl } from "../briefstats";
+import { readJsonl as landQualityReadJsonl } from "../land-quality";
+import { readJsonl as laneContextCostReadJsonl } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
@@ -2313,6 +2315,27 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     pin(`${RULE_LEDGER} — briefstats.ts#readJsonl inherits it (one record + one null line → rows=1 malformed=1)`,
       viaBrief.rows.length === 1 && viaBrief.malformed === 1 && JSON.stringify(viaBrief.rows) === `[${valid[0]}]`,
       `rows=${JSON.stringify(viaBrief.rows).slice(0, 120)} malformed=${viaBrief.malformed}`);
+    // land-quality.ts and lane-context-cost.ts carried the last two hand copies: `v && typeof v ===
+    // "object"` let an array line through as a row, and lane-context-cost swallowed torn lines uncounted.
+    // Run both over record + array + null + torn, AND hold the source: each CLI imports readLedger and
+    // its readJsonl body carries no JSON.parse of its own.
+    const cli = `${dir}/cli.jsonl`;
+    writeFileSync(cli, `${valid[0]}\n[]\nnull\n{"event":"torn"\n`);
+    const viaLandQuality = await landQualityReadJsonl(cli);
+    const viaLaneCost = await laneContextCostReadJsonl(cli);
+    const copies = ["land-quality.ts", "lane-context-cost.ts"].map((file) => {
+      const src = readFileSync(`${ROOT}/${file}`, "utf8"); // `read` is shadowed by the ledger fixture above
+      const start = src.search(/\n(export )?async function readJsonl\(/);
+      const body = start < 0 ? "" : src.slice(start, src.indexOf("\n}", start));
+      return `${file}: ${/import \{[^}]*\breadLedger\b[^}]*\} from "\.\/server\/persist";/.test(src) ? "imports" : "NO import"}`
+        + ` · ${!body ? "readJsonl missing" : body.includes("readLedger") && !body.includes("JSON.parse") ? "delegates" : "HAND COPY"}`;
+    });
+    pin(`${RULE_LEDGER} — land-quality.ts#readJsonl and lane-context-cost.ts#readJsonl delegate to it, no hand copy`,
+      viaLandQuality.rows.length === 1 && viaLandQuality.malformed === 3
+        && JSON.stringify(viaLandQuality.rows) === `[${valid[0]}]` && JSON.stringify(viaLaneCost) === `[${valid[0]}]`
+        && copies.every((c) => c.endsWith("imports · delegates")),
+      `land-quality rows=${viaLandQuality.rows.length} malformed=${viaLandQuality.malformed} · `
+        + `lane-context-cost rows=${viaLaneCost.length} · ${copies.join(" · ")}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

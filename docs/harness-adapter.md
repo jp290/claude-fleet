@@ -331,6 +331,16 @@ Netzwerkkosten werden nicht als null behauptet.
     2026-08-15: voller attended Kreis auf einem Wegwerf-Slot (Codewort-Recall nach Recycle+Bind+
     Pane-Tod) und die manuell resumte MAIN-Conversation nichtdestruktiv gebunden
     (`docs/codex-recovery.md` §Attended bind)).
+  - **Ledger-Felder aus der Codex-Lane-Messung** (`docs/messungen/2026-09-14-codex-lane-verdrahtung.md`,
+    Vorschlaege 1, 3, 5; harness-frei ausser dem dritten):
+    `LaneOutcome.dirtyFiles` (`server.ts#buildLaneOutcome`) = Zeilen von `git status --porcelain` im
+    Worktree VOR dem Teardown, auf jeder Live-Lane-Zeile; `null` = Status nicht lesbar, nie 0 als Ersatz.
+    `disposition` bleibt commit-basiert — ein `killed-empty` mit `dirtyFiles > 0` hatte uncommittete
+    Arbeit. Audit-Event `dispatch_requeued` (`server.ts#briefAndSend`, `requeue`) auf jedem Requeue des
+    Dispatch-Tails, Felder `taskId` + `reason`, Detail mit allen zurueckgelegten Zeilen-Ids.
+    `LaneOutcome.modelResolved` nur auf Codex-Zeilen mit `model: null`: das Modell des NEUESTEN
+    `turn_context`-Records im gebundenen Rollout (`codexObservedModel`), sonst `null` — nie der Default
+    aus `~/.codex/config.toml`.
   - Modell-Charset ist **nicht** env-konfigurierbar, mit Absicht: eine operator-gelieferte Regex, die `'`
     durchlässt, würde die Single-Quote-Klammer in `slotCmd` öffnen. Fremde Slots validieren gegen
     `HARNESS_MODEL_RE` (`/`, `:`, `*`, `@` erlaubt), claude-Slots weiter gegen `MODEL_RE` — zwei Charsets, nie

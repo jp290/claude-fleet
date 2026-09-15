@@ -11389,6 +11389,11 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       row.note = `${note}${kept}`.slice(0, 200);
     }
     saveState();
+    // the row's note is overwritten by the next dispatch attempt, so without this line a requeue left
+    // no durable trace: 0 in 14 d of audit (docs/messungen/2026-09-14-codex-lane-verdrahtung.md §M5)
+    audit("dispatch_requeued", free.id,
+      `${owned.map((row) => row.id).join(",")} (${wt.branch}): ${note}${kept}`.slice(0, 240),
+      { taskId: next.id, reason: note.slice(0, 200) });
   };
   // the owner may have killed/re-opened this slot during the boot sleep — re-verify it
   // is still OUR lane before injecting external text, or we'd prompt an unrelated session
@@ -21278,6 +21283,19 @@ interface LaneOutcome {
   // this row that can say a lane spanned more than one conversation — `sessionMs` measures the last
   // session alone, so a relay of three reads as short work without this number beside it.
   successions?: number;
+  // UNCOMMITTED work at the terminal event: `git status --porcelain` line count of the worktree, read
+  // BEFORE teardown. It exists because `disposition` is commit-based and stays so — a lane killed with
+  // 14 unstaged patches reads `killed-empty` (measured 2026-09-14, docs/messungen/2026-09-14-codex-lane-
+  // verdrahtung.md §M2), and this is the number that says what that word does not. `null` = the status
+  // read failed; NEVER 0 for that, because 0 is itself a measurement ("the tree was clean"). Written on
+  // every live-lane row; omitted on `reverted` (no worktree to read) and on rows older than the field.
+  dirtyFiles?: number | null;
+  // The model a codex lane with NO pin actually ran, read off its own rollout's newest `turn_context`
+  // record. `model` above stays the requested pin (null); without this the ambient choice from
+  // ~/.codex/config.toml was invisible to the ledger. `null` = no bound session, no rollout, or no
+  // readable turn_context — never the config default, which Fleet would be guessing. The key is present
+  // ONLY on codex rows with model null; everywhere else the question has no subject.
+  modelResolved?: string | null;
 }
 // total + per-tool tool_result bytes. `byTool` keys are the tool NAMES from the matching tool_use
 // entry; a tool_result whose tool_use id is not in the same file lands under "?" rather than being
@@ -21442,6 +21460,28 @@ async function outcomeReview(s: Slot, cwd: string, base: string | null): Promise
     scope: result.scope, notes: result.notes, raw: result.raw, findings: result.findings,
   };
 }
+// the model named by the NEWEST `turn_context` record in a codex rollout — Codex persists one per real
+// user turn (codex-rs protocol TurnContextItem.model), in the same {type,payload} envelope
+// codexSessionMeta reads. Whole-file read under the transcript cap, like laneToolResultBytes: this
+// runs once at a terminal event, and a tail read would lose the last turn_context behind a long turn.
+async function codexObservedModel(cwd: string, sessionId: string | null): Promise<string | null> {
+  if (!sessionId) return null;
+  const file = codexContextFile({ cwd, sessionId });
+  if (!file) return null;
+  try {
+    if (statSync(file).size > TOOL_RESULT_FILE_MAX_BYTES) return null;
+    let model: string | null = null;
+    for (const line of (await Bun.file(file).text()).split("\n")) {
+      if (!line.includes('"turn_context"')) continue;
+      let row: { type?: unknown; payload?: { model?: unknown } };
+      try { row = JSON.parse(line) as typeof row; } catch { continue; } // torn line — keep the rest
+      if (row.type === "turn_context" && typeof row.payload?.model === "string" && row.payload.model) model = row.payload.model;
+    }
+    return model;
+  } catch {
+    return null;
+  }
+}
 function briefHashOf(text: string | null): string | null {
   return text ? createHash("sha256").update(text).digest("hex").slice(0, 12) : null;
 }
@@ -21476,6 +21516,10 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
   const disposition: LaneDisposition = kind === "killed"
     ? (commitCount > 0 ? "killed-dirty" : "killed-empty")
     : kind;
+  const st = await statusLines(cwd);
+  const dirtyFiles = st.code === 0 ? st.lines.length : null;
+  const modelResolved = !s.model && harnessOf(s.harness).id === "codex"
+    ? { modelResolved: await codexObservedModel(cwd, s.sessionId) } : {};
   const start = sessionStart(s);
   const ts = Date.now();
   const { count: ownerPrompts, firstText } = await laneOwnerPrompts(cwd);
@@ -21546,6 +21590,8 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     // written on EVERY live-lane row including the null: here the key's PRESENCE is what separates
     // "measured, and the answer is unknowable" from a row that predates the field and cannot say.
     toolResultBytes,
+    dirtyFiles,
+    ...modelResolved,
   };
 }
 // the reverted case has no live slot (the lane landed and was torn down) — assemble from the repo

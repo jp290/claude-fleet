@@ -33,7 +33,8 @@ export async function run(): Promise<void> {
       repo?: string; mainAfter?: string;
       // optional for the same reason again: rows written before the sensor existed carry no key at
       // all, and `null` (measured, unknowable) is a different answer from that absence
-      toolResultBytes?: { total: number; byTool: Record<string, number> } | null };
+      toolResultBytes?: { total: number; byTool: Record<string, number> } | null;
+      dirtyFiles?: number | null };
     const readOutcomes = async (): Promise<Outcome[]> =>
       ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: Outcome[] }).outcomes;
     // outcomes are newest-first → the first match for a (unique) lane branch is its latest record
@@ -197,12 +198,21 @@ export async function run(): Promise<void> {
     check("outcome: a lane with no transcript dir records toolResultBytes null — the key is PRESENT (measured: unknowable), never 0",
       rec2 !== undefined && "toolResultBytes" in rec2 && rec2.toolResultBytes === null, JSON.stringify(rec2?.toolResultBytes));
 
-    // (3) KILLED-EMPTY — a lane with no commits at all
-    const oc3 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; branch: string };
+    // the CONTROL for dirtyFiles below: this lane's one change is committed, so its tree is clean.
+    // Present-and-0 — a clean tree is a measurement, not an absence.
+    check("outcome: a killed lane whose work is all committed records dirtyFiles 0 (key present)",
+      rec2 !== undefined && rec2.dirtyFiles === 0, JSON.stringify({ dirtyFiles: rec2?.dirtyFiles }));
+
+    // (3) KILLED-EMPTY — a lane with no commits at all, but ONE uncommitted file. The disposition stays
+    // commit-based on purpose; `dirtyFiles` is the separate number that says work was on the tree.
+    const oc3 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${oc3.cwd}/uncommitted.txt`, "never committed\n");
     await post(`/api/slots/${oc3.slot}/kill`, {});
     const rec3 = forBranch(await readOutcomes(), oc3.branch);
     check("outcome: killed lane with NO commits → killed-empty, commitCount 0",
       rec3?.disposition === "killed-empty" && rec3?.commitCount === 0, JSON.stringify(rec3));
+    check("outcome: a killed-empty lane with one uncommitted file records dirtyFiles 1 (disposition unchanged)",
+      rec3?.disposition === "killed-empty" && rec3.dirtyFiles === 1, JSON.stringify({ d: rec3?.disposition, dirtyFiles: rec3?.dirtyFiles }));
 
     // (4) SHELVED — a lane set aside with a note
     const oc4 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };

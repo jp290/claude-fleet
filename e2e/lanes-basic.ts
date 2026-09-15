@@ -1,10 +1,15 @@
 // Worktree lanes, the base layer: create/diff/land, the one-click /api/lanes route, the worktrees
 // map, the land gate against a busy pane, and the integration-branch config.
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { ROOT, REPO, check, get, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { MERGE_IDLE_MS, exists, settleForMerge } from "./lane-helpers";
+
+// newest-first ledger → the first row for a unique lane branch is its terminal record
+const outcomeFor = async (branch: string): Promise<Record<string, unknown> | undefined> =>
+  ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: Record<string, unknown>[] })
+    .outcomes.find((o) => o.branch === branch);
 
 export async function run(lc: LaneCtx): Promise<void> {
   const wtOpen = await post("/api/slots/5/open-worktree", { repo: REPO, branch: "e2e-lane" });
@@ -103,6 +108,11 @@ export async function run(lc: LaneCtx): Promise<void> {
     const lnSess = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };
     const lnBranch = lnSess.slots.find((x) => x.id === lnJson.slot)?.worktree?.branch ?? "";
     await post(`/api/slots/${lnJson.slot}/kill`, {});
+    // modelResolved answers only for an UNPINNED codex lane: this one named its model, so the row has
+    // no such key — `model` already is the answer
+    const lnRec = (await outcomeFor(lnBranch)) ?? {};
+    check("outcome: a codex lane WITH a model pin carries no modelResolved key",
+      lnRec.model === "gpt-5-codex" && !("modelResolved" in lnRec), JSON.stringify(lnRec));
     if (lnCwd) spawnSync("git", ["worktree", "remove", "--force", lnCwd], { cwd: REPO });
     if (lnBranch) spawnSync("git", ["branch", "-qD", lnBranch], { cwd: REPO });
   }
@@ -115,6 +125,11 @@ export async function run(lc: LaneCtx): Promise<void> {
     lnW.form === "clone" && exists(`${lnW.cwd ?? ""}/.git`) && lstatSync(`${lnW.cwd}/.git`).isDirectory(),
     `${lnW.form} @ ${lnW.cwd}`);
   if (lnW.slot) await post(`/api/slots/${lnW.slot}/kill`, {});
+  // an unpinned codex lane that never bound a session has no rollout to read: the key is PRESENT and
+  // null — never ~/.codex/config.toml's default, which Fleet would be guessing
+  const lnWRec = (await outcomeFor(lnW.branch ?? "")) ?? {};
+  check("outcome: an unpinned codex lane with no bound rollout records modelResolved null (key present)",
+    lnWRec.model === null && "modelResolved" in lnWRec && lnWRec.modelResolved === null, JSON.stringify(lnWRec));
   // a clone is an ordinary directory, NOT a worktree of REPO — remove it directly and delete the
   // branch it mirrored back into REPO at spawn
   if (lnW.cwd) rmSync(lnW.cwd, { recursive: true, force: true });
@@ -130,7 +145,35 @@ export async function run(lc: LaneCtx): Promise<void> {
       /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox/.test(lnBFlat), lnBFlat.slice(-160) || "no pane command");
     check("a codex lane with browser:true spawns WITHOUT the playwright override (ambient MCPs kept)",
       !lnBFlat.includes("mcp_servers.playwright"), lnBFlat.slice(-260));
+    // modelResolved, positive half, on this lane because it is UNPINNED and already exists (a second
+    // codex spawn would boot one more host agent). A synthetic rollout under the suite's scratch
+    // FLEET_CODEX_SESSIONS_DIR, bound through the owner route, carrying two turn_context records with
+    // different models and a torn line between them: the NEWEST record's model is the answer.
+    const codexRoot = process.env.FLEET_CODEX_SESSIONS_DIR ?? "";
+    const lnBCwd = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.find((x) => x.id === lnB.slot)?.cwd ?? "";
+    const SID = "30000000-0000-4000-8000-00000000000c";
+    const d = new Date();
+    const rDir = `${codexRoot}/${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+    const rFile = `${rDir}/rollout-${Date.now()}-${SID}.jsonl`;
+    if (codexRoot && lnBCwd) {
+      mkdirSync(rDir, { recursive: true });
+      writeFileSync(rFile, [
+        JSON.stringify({ type: "session_meta", payload: { id: SID, cwd: lnBCwd, timestamp: new Date().toISOString(),
+          thread_source: "user", originator: "codex-tui" } }),
+        JSON.stringify({ type: "turn_context", payload: { cwd: lnBCwd, model: "fixture-model-early", effort: "high" } }),
+        '{"type":"turn_context", torn',
+        JSON.stringify({ type: "turn_context", payload: { cwd: lnBCwd, model: "fixture-model-late", effort: "high" } }),
+      ].join("\n") + "\n");
+    }
+    const bind = await post(`/api/slots/${lnB.slot}/codex-bind`, { sessionId: SID });
+    check("modelResolved fixture: the synthetic rollout binds to the unpinned codex lane",
+      !!codexRoot && bind.ok, `${codexRoot} ${bind.status} ${await bind.text()}`);
     await post(`/api/slots/${lnB.slot}/kill`, {});
+    const lnBRec = (await outcomeFor(lnB.branch ?? "")) ?? {};
+    check("outcome: an unpinned codex lane records modelResolved from its rollout's NEWEST turn_context",
+      lnBRec.model === null && lnBRec.modelResolved === "fixture-model-late", JSON.stringify(lnBRec));
+    rmSync(rFile, { force: true }); // later codex families count candidates under the same root
   }
   if (lnB.cwd) spawnSync("git", ["worktree", "remove", "--force", lnB.cwd], { cwd: REPO });
   if (lnB.branch) spawnSync("git", ["branch", "-qD", lnB.branch], { cwd: REPO });

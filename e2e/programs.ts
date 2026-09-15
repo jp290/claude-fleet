@@ -10153,7 +10153,11 @@ exit 0
       ffRounds?: number; waitRounds?: number; candidateSha?: string;
       verify?: { ok?: boolean | null; mainSha?: string; waitedOut?: true; timedOut?: true;
         serverDown?: true; exitCode?: number | null; out?: string; ms?: number; waitMs?: number } };
+    // A null slot is a land whose dispatch never got a lane, so there is no route to read: preview
+    // aad02b868e0e (2026-09-14, all 16 slots occupied) parsed `/api/slots/null/merge` as JSON and the
+    // RUNNER died. The caller's setup line says the land never fired; this only keeps the probe alive.
     const ffrSettled = async (slot: number | null, ms = 120_000): Promise<FfrVerdict | null> => {
+      if (slot === null) return null;
       const deadline = Date.now() + ms;
       for (;;) {
         const mg = (await (await get(`/api/slots/${slot}/merge`)).json()) as
@@ -10280,13 +10284,18 @@ exit 0
     ffrReset();
     writeFileSync(`${ROOT}/ffretry.red.2`, "red\n");
     const ffrB = await ffrLand("red", "ffretry-red.txt");
-    const ffrBVerdict = await ffrSettled(ffrB.slot);
-    check("(iv) a RED gate in the retry round lands nothing and writes the RED verdict — not ff-lost, not green — and main stays where the intruder left it",
-      ffrB.fired && ffrB.reached && ffrBVerdict?.status === "resolved" && ffrBVerdict.landed === false
-        && ffrBVerdict.verify?.ok === false && ffrBVerdict.errorReason === undefined
-        && ffrBVerdict.ffRounds === 1 && (ffrBVerdict.detail ?? "").includes("verify failed")
-        && main2Of() === ffrB.intruder && !existsSync(ffrLock),
-      JSON.stringify({ verdict: ffrBVerdict, main: main2Of().slice(0, 8), intruder: ffrB.intruder.slice(0, 8) }));
+    // the setup line owns "did the land fire" (4ab4ad8c's M5 shape): an arm whose dispatch got no
+    // slot, or whose door refused, measured nothing, and (iv) below is emitted only over a fired land
+    check("(8e) setup: the red retry-round land fired",
+      ffrB.fired && ffrB.slot !== null, JSON.stringify({ slot: ffrB.slot, fired: ffrB.fired }));
+    const ffrBVerdict = ffrB.fired ? await ffrSettled(ffrB.slot) : null;
+    if (ffrB.fired && ffrB.slot !== null)
+      check("(iv) a RED gate in the retry round lands nothing and writes the RED verdict — not ff-lost, not green — and main stays where the intruder left it",
+        ffrB.reached && ffrBVerdict?.status === "resolved" && ffrBVerdict.landed === false
+          && ffrBVerdict.verify?.ok === false && ffrBVerdict.errorReason === undefined
+          && ffrBVerdict.ffRounds === 1 && (ffrBVerdict.detail ?? "").includes("verify failed")
+          && main2Of() === ffrB.intruder && !existsSync(ffrLock),
+        JSON.stringify({ verdict: ffrBVerdict, main: main2Of().slice(0, 8), intruder: ffrB.intruder.slice(0, 8) }));
 
     // (v) THE HAZARD THE SHELL DOES NOT HAVE. e2e-stage.sh releases IMPLICITLY: the next contender
     // reaps a lock whose recorded pid is dead. A server is never dead — so a hold it loses track of
@@ -10441,7 +10450,13 @@ exit 0
     const m1AuditBefore = m1AuditRows().length;
     const m1MainBefore = main2Of();
     const m1D = await m1Land("denied", "m1-denied.txt");
-    const m1Verdict = await ffrSettled(m1D.slot);
+    // THE SETUP LINE OWNS "did the land fire" (4ab4ad8c's M5 shape). (vi) through (viii-a) all read
+    // this one denial, so an arm that never reached the door emits none of them: each would be red
+    // over a land nobody asked for, or green over one that measured nothing.
+    const m1DFired = m1D.fired && m1D.slot !== null;
+    check("M1 setup: the denied land fired",
+      m1DFired, JSON.stringify({ slot: m1D.slot, refusal: m1D.refusal ?? null, ready: m1D.ready ?? null }));
+    const m1Verdict = m1DFired ? await ffrSettled(m1D.slot) : null;
     const m1Runs = ffrLogRuns();
     const m1LockAfter = ((): string => {
       try { return readFileSync(`${ffrLock}/pid`, "utf8").trim(); } catch { return "(gone)"; }
@@ -10451,8 +10466,8 @@ exit 0
     // suites), so a command that was never spawned is a chain none of whose steps existed. The
     // stand-in appends one line per invocation, so zero lines is a positive measurement of
     // absence, not a missing file.
-    check("(vi) M1: a gate whose mutex is held by somebody else NEVER SPAWNS — the verdict is the machine's, the chain did not run, and main did not move",
-      m1D.fired && m1Verdict?.status === "resolved" && m1Verdict.landed === false
+    if (m1DFired) check("(vi) M1: a gate whose mutex is held by somebody else NEVER SPAWNS — the verdict is the machine's, the chain did not run, and main did not move",
+      m1Verdict?.status === "resolved" && m1Verdict.landed === false
         && m1Verdict.verify?.ok === null && m1Verdict.verify?.waitedOut === true
         && (m1Verdict.verify?.ms ?? 1e9) < 5000
         && (m1Verdict.verify?.waitMs ?? -1) >= 0
@@ -10461,7 +10476,7 @@ exit 0
         && main2Of() === m1MainBefore,
       JSON.stringify({ fired: m1D.fired, verdict: m1Verdict, gateRuns: m1Runs.length,
         mainMoved: main2Of() !== m1MainBefore }));
-    check("(vi) M1: the denial gives nothing back that was not ours — the occupant still holds the lock the server could not take",
+    if (m1DFired) check("(vi) M1: the denial gives nothing back that was not ours — the occupant still holds the lock the server could not take",
       m1LockAfter === m1Held && ffrAlive(m1Held),
       JSON.stringify({ lockPid: m1LockAfter, occupant: m1Held, alive: ffrAlive(m1Held) }));
     // (vi-b) THE WAY BACK OUT OF §8i, measured on the arm that just ran. M2 makes this denial a
@@ -10469,7 +10484,7 @@ exit 0
     // three separate absences rather than one: no round on the verdict, no round in the words it
     // hands a reader, and ONE budget spent rather than two — the last is what a cap that silently
     // defaulted would fail, since it is the only one a wrong default cannot fake.
-    check("(vi-b) M2 counter-proof: at FLEET_LAND_WAIT_ROUNDS=0 the denial is exactly M1's — one budget, no round count on the verdict, no round sentence in its words",
+    if (m1DFired) check("(vi-b) M2 counter-proof: at FLEET_LAND_WAIT_ROUNDS=0 the denial is exactly M1's — one budget, no round count on the verdict, no round sentence in its words",
       m1Verdict?.waitRounds === undefined
         && (m1Verdict?.verify?.ms ?? 1e9) < 2000
         && !(m1Verdict?.detail ?? "").includes("asked for the machine")
@@ -10488,7 +10503,7 @@ exit 0
     }
     const m1New = m1Rows.slice(m1AuditBefore);
     const m1Denial = m1New.filter((r) => r.waitedOut === true);
-    check("(vii) M1: every merge verdict leaves EXACTLY ONE machine-readable ledger row — the denial is one of them, and it names why in fields rather than prose",
+    if (m1DFired) check("(vii) M1: every merge verdict leaves EXACTLY ONE machine-readable ledger row — the denial is one of them, and it names why in fields rather than prose",
       m1New.length === 1 && m1Denial.length === 1
         && m1Denial[0]?.status === "resolved" && m1Denial[0]?.landed === false
         && m1Denial[0]?.actor === "main" && typeof m1Denial[0]?.detail === "string"
@@ -10512,7 +10527,7 @@ exit 0
       && r.ffRounds === 1 && r.actor === "main");
     const m1RedGate = m1Rows.filter((r) => r.status === "resolved" && r.landed === false
       && r.ffRounds === 1 && r.waitedOut === undefined && r.actor === "main");
-    check("(vii) M1: the ledger separates the three forms this section produced — one land (with its round count), one red retry gate, one denial — and never merges them into one row",
+    if (m1DFired) check("(vii) M1: the ledger separates the three forms this section produced — one land (with its round count), one red retry gate, one denial — and never merges them into one row",
       m1Landed.length === 1 && m1RedGate.length === 1 && m1Denial.length === 1
         && m1Landed[0]?.event === "merge_verdict" && m1Landed[0]?.errorReason === undefined,
       JSON.stringify({ landed: m1Landed, red: m1RedGate, denied: m1Denial }));
@@ -10531,16 +10546,16 @@ exit 0
     // the state it is actually in. The lock the denial waited on is released above, so the retry
     // here meets a free machine — which is exactly the situation in which the old refusal was
     // wrong: nothing had changed except that a measurement had become possible.
-    const m1RetryReady = m1D.slot === null ? false : await waitDoneLooking(m1D.slot);
-    const m1Retry = ffrTok === "" ? null : await selfLand(ffrTok, m1D.row);
+    const m1RetryReady = !m1DFired || m1D.slot === null ? false : await waitDoneLooking(m1D.slot);
+    const m1Retry = ffrTok === "" || !m1DFired ? null : await selfLand(ffrTok, m1D.row);
     const m1RetryBody = m1Retry === null ? null : await m1Retry.json() as
       { running?: boolean; candidate?: string; error?: string; gate?: string };
-    const m1RetryDone = await ffrDone(m1D.row);
+    const m1RetryDone = m1DFired && await ffrDone(m1D.row);
     const m1RetryRuns = ffrLogRuns();
     // the SAME bytes: `candidate` is the lane HEAD this call read, and the denial recorded its own
     // in `candidateSha`. Equal is the whole precondition — a retry on a moved tree would have
     // passed the old guard too and would prove nothing about this one.
-    check("(viii-a) a gate that NEVER STARTED does not bind the next call: the identical candidate is admitted, the chain finally runs, and the land the machine had blocked completes",
+    if (m1DFired) check("(viii-a) a gate that NEVER STARTED does not bind the next call: the identical candidate is admitted, the chain finally runs, and the land the machine had blocked completes",
       m1RetryReady && m1Retry?.ok === true && m1RetryBody?.running === true
         && typeof m1Verdict?.candidateSha === "string"
         && m1RetryBody.candidate === m1Verdict.candidateSha
@@ -10556,11 +10571,14 @@ exit 0
     ffrReset();
     writeFileSync(`${ROOT}/ffretry.red.1`, "red\n");
     const m1Red = await m1Land("red", "m1-red.txt");
-    const m1RedVerdict = await ffrSettled(m1Red.slot);
-    const m1RedReady = m1Red.slot === null ? false : await waitDoneLooking(m1Red.slot);
-    const m1RedAgain = ffrTok === "" ? null : await selfLand(ffrTok, m1Red.row);
+    const m1RedFired = m1Red.fired && m1Red.slot !== null;
+    check("M1 setup: the red land fired",
+      m1RedFired, JSON.stringify({ slot: m1Red.slot, refusal: m1Red.refusal ?? null, ready: m1Red.ready ?? null }));
+    const m1RedVerdict = m1RedFired ? await ffrSettled(m1Red.slot) : null;
+    const m1RedReady = !m1RedFired || m1Red.slot === null ? false : await waitDoneLooking(m1Red.slot);
+    const m1RedAgain = ffrTok === "" || !m1RedFired ? null : await selfLand(ffrTok, m1Red.row);
     const m1RedText = m1RedAgain === null ? "" : await m1RedAgain.text();
-    check("(viii-b) a gate that MEASURED and said no still binds the next call — the widening is the killed clock, not `ok !== true`",
+    if (m1RedFired) check("(viii-b) a gate that MEASURED and said no still binds the next call — the widening is the killed clock, not `ok !== true`",
       m1RedVerdict?.verify?.ok === false && m1RedVerdict.landed === false && m1RedReady
         && m1RedAgain?.status === 409
         && m1RedText.includes("no progress since the last verdict — repair or escalate"),
@@ -10579,14 +10597,17 @@ exit 0
     ffrReset();
     writeFileSync(`${ROOT}/ffretry.skip.1`, "skip\n");
     const m1Skip = await m1Land("skip", "m1-skip.txt");
-    const m1SkipVerdict = await ffrSettled(m1Skip.slot);
-    const m1SkipReady = m1Skip.slot === null ? false : await waitDoneLooking(m1Skip.slot);
-    const m1SkipAgain = ffrTok === "" ? null : await selfLand(ffrTok, m1Skip.row);
+    const m1SkipFired = m1Skip.fired && m1Skip.slot !== null;
+    check("M1 setup: the skip land fired",
+      m1SkipFired, JSON.stringify({ slot: m1Skip.slot, refusal: m1Skip.refusal ?? null, ready: m1Skip.ready ?? null }));
+    const m1SkipVerdict = m1SkipFired ? await ffrSettled(m1Skip.slot) : null;
+    const m1SkipReady = !m1SkipFired || m1Skip.slot === null ? false : await waitDoneLooking(m1Skip.slot);
+    const m1SkipAgain = ffrTok === "" || !m1SkipFired ? null : await selfLand(ffrTok, m1Skip.row);
     const m1SkipText = m1SkipAgain === null ? "" : await m1SkipAgain.text();
     const m1SkipBody = ((): { gate?: string; error?: string } => {
       try { return JSON.parse(m1SkipText) as { gate?: string; error?: string }; } catch { return {}; }
     })();
-    check("(viii-c) an unmeasured verdict is refused in ITS OWN words: the gate declined, so the refusal names that and never sends the MAIN to repair or escalate a tree nothing looked at",
+    if (m1SkipFired) check("(viii-c) an unmeasured verdict is refused in ITS OWN words: the gate declined, so the refusal names that and never sends the MAIN to repair or escalate a tree nothing looked at",
       m1SkipVerdict?.verify?.ok === null && m1SkipVerdict.verify?.waitedOut === undefined
         && m1SkipVerdict.verify?.timedOut === undefined && m1SkipReady
         && m1SkipAgain?.status === 409 && m1SkipBody.gate === "skipped"
@@ -10610,9 +10631,12 @@ exit 0
     writeFileSync(`${ROOT}/ffretry.down.2`, "down\n");
     const mdMainBefore = main2Of();
     const mdLand = await m1Land("server-down", "m1-server-down.txt");
-    const mdVerdict = await ffrSettled(mdLand.slot);
-    check("(viii-d1) a chain that says its suite server did not come up records ok:null + serverDown, exit 3, never lands, and says NEVER MEASURED instead of failed",
-      mdLand.fired && mdVerdict?.landed === false && mdVerdict.status === "resolved"
+    const mdLandFired = mdLand.fired && mdLand.slot !== null;
+    check("M1 setup: the server-down land fired",
+      mdLandFired, JSON.stringify({ slot: mdLand.slot, refusal: mdLand.refusal ?? null, ready: mdLand.ready ?? null }));
+    const mdVerdict = mdLandFired ? await ffrSettled(mdLand.slot) : null;
+    if (mdLandFired) check("(viii-d1) a chain that says its suite server did not come up records ok:null + serverDown, exit 3, never lands, and says NEVER MEASURED instead of failed",
+      mdVerdict?.landed === false && mdVerdict.status === "resolved"
         && mdVerdict.verify?.ok === null && mdVerdict.verify?.serverDown === true
         && mdVerdict.verify?.exitCode === 3 && mdVerdict.verify?.timedOut === undefined
         && mdVerdict.verify?.waitedOut === undefined
@@ -10621,24 +10645,24 @@ exit 0
         && (mdVerdict.verify?.out ?? "").includes("server did not come up")
         && main2Of() === mdMainBefore,
       JSON.stringify({ fired: mdLand.fired, refusal: mdLand.refusal, verdict: mdVerdict, mainMoved: main2Of() !== mdMainBefore }));
-    const mdReady = mdLand.slot === null ? false : await waitDoneLooking(mdLand.slot);
-    const mdRetry = ffrTok === "" ? null : await selfLand(ffrTok, mdLand.row);
+    const mdReady = !mdLandFired || mdLand.slot === null ? false : await waitDoneLooking(mdLand.slot);
+    const mdRetry = ffrTok === "" || !mdLandFired ? null : await selfLand(ffrTok, mdLand.row);
     const mdRetryBody = mdRetry === null ? null : await mdRetry.json() as { running?: boolean; candidate?: string; error?: string };
-    const mdVerdict2 = await ffrSettled(mdLand.slot);
+    const mdVerdict2 = mdLandFired ? await ffrSettled(mdLand.slot) : null;
     const mdRuns = ffrLogRuns();
-    check("(viii-d2) the identical candidate is admitted ONCE after a server-down verdict: the chain really runs again on the same bytes, and a second server-down still lands nothing",
+    if (mdLandFired) check("(viii-d2) the identical candidate is admitted ONCE after a server-down verdict: the chain really runs again on the same bytes, and a second server-down still lands nothing",
       mdReady && mdRetry?.ok === true && mdRetryBody?.running === true
         && typeof mdVerdict?.candidateSha === "string" && mdRetryBody.candidate === mdVerdict.candidateSha
         && mdRuns.length === 2 && mdVerdict2?.verify?.serverDown === true && mdVerdict2.landed === false
         && mdVerdict2.at !== mdVerdict?.at && main2Of() === mdMainBefore,
       JSON.stringify({ ready: mdReady, res: mdRetry?.status, body: mdRetryBody, runs: mdRuns, verdict2: mdVerdict2 }));
-    const mdReady3 = mdLand.slot === null ? false : await waitDoneLooking(mdLand.slot);
-    const mdThird = ffrTok === "" ? null : await selfLand(ffrTok, mdLand.row);
+    const mdReady3 = !mdLandFired || mdLand.slot === null ? false : await waitDoneLooking(mdLand.slot);
+    const mdThird = ffrTok === "" || !mdLandFired ? null : await selfLand(ffrTok, mdLand.row);
     const mdThirdText = mdThird === null ? "" : await mdThird.text();
     const mdThirdBody = ((): { gate?: string } => {
       try { return JSON.parse(mdThirdText) as { gate?: string }; } catch { return {}; }
     })();
-    check("(viii-d3) the re-run is spent: a second server-down on the same bytes binds the guard again (409, gate server-down), sending the MAIN to the kept server.log — and no third chain ran",
+    if (mdLandFired) check("(viii-d3) the re-run is spent: a second server-down on the same bytes binds the guard again (409, gate server-down), sending the MAIN to the kept server.log — and no third chain ran",
       mdReady3 && mdThird?.status === 409 && mdThirdBody.gate === "server-down"
         && mdThirdText.includes("server.log") && mdThirdText.includes("no progress since the last verdict")
         && ffrLogRuns().length === 2,
@@ -10654,11 +10678,14 @@ exit 0
       ffrReset();
       writeFileSync(`${ROOT}/ffretry.${file}.1`, `${file}\n`);
       const gpLand = await m1Land(name, `m1-${name}.txt`);
-      const gpVerdict = await ffrSettled(gpLand.slot);
-      const gpReady = gpLand.slot === null ? false : await waitDoneLooking(gpLand.slot);
-      const gpAgain = ffrTok === "" ? null : await selfLand(ffrTok, gpLand.row);
+      const gpLandFired = gpLand.fired && gpLand.slot !== null;
+      check(`M1 setup: the GEGENPROBE ${name} land fired`,
+        gpLandFired, JSON.stringify({ slot: gpLand.slot, refusal: gpLand.refusal ?? null, ready: gpLand.ready ?? null }));
+      const gpVerdict = gpLandFired ? await ffrSettled(gpLand.slot) : null;
+      const gpReady = !gpLandFired || gpLand.slot === null ? false : await waitDoneLooking(gpLand.slot);
+      const gpAgain = ffrTok === "" || !gpLandFired ? null : await selfLand(ffrTok, gpLand.row);
       const gpText = gpAgain === null ? "" : await gpAgain.text();
-      check(`(viii-e) GEGENPROBE ${name}: a measured red stays ok:false without serverDown, and the unchanged candidate is still refused — repair or escalate`,
+      if (gpLandFired) check(`(viii-e) GEGENPROBE ${name}: a measured red stays ok:false without serverDown, and the unchanged candidate is still refused — repair or escalate`,
         gpVerdict?.verify?.ok === false && gpVerdict.verify?.serverDown === undefined
           && gpVerdict.verify?.exitCode === (file === "exit3" ? 3 : 1) && gpVerdict.landed === false
           && gpReady && gpAgain?.status === 409
@@ -11143,22 +11170,25 @@ exit 0
     const m2DeniedBefore = main2Of();
     const m2AuditBefore2 = m1AuditRows().length;
     const m2D = await m1Land("m2 denied", "m2-denied.txt");
-    const m2DVerdict = await ffrSettled(m2D.slot);
-    check("(iii) M2: a machine that never frees up still ends terminal — the M1 verdict, but only after BOTH budgets, with the round on the record and nothing ever spawned",
-      m2D.fired && m2D.slot !== null && m2DVerdict?.status === "resolved" && m2DVerdict.landed === false
+    const m2DFired = m2D.fired && m2D.slot !== null;
+    check("M2 setup: the denied land fired",
+      m2DFired, JSON.stringify({ slot: m2D.slot, refusal: m2D.refusal ?? null, ready: m2D.ready ?? null }));
+    const m2DVerdict = m2DFired ? await ffrSettled(m2D.slot) : null;
+    if (m2DFired) check("(iii) M2: a machine that never frees up still ends terminal — the M1 verdict, but only after BOTH budgets, with the round on the record and nothing ever spawned",
+      m2DVerdict?.status === "resolved" && m2DVerdict.landed === false
         && m2DVerdict.verify?.ok === null && m2DVerdict.verify?.waitedOut === true
         && m2DVerdict.waitRounds === 1 && (m2DVerdict.verify?.ms ?? 0) >= 4000
         && ffrLogRuns().length === 0 && main2Of() === m2DeniedBefore,
       JSON.stringify({ fired: m2D.fired, verdict: m2DVerdict, gateRuns: ffrLogRuns().length,
         mainMoved: main2Of() !== m2DeniedBefore }));
-    check("(iii) M2: the words a reader gets say how often it asked, and the ledger row says it in a field",
+    if (m2DFired) check("(iii) M2: the words a reader gets say how often it asked, and the ledger row says it in a field",
       (m2DVerdict?.detail ?? "").includes("NEVER STARTED")
         && (m2DVerdict?.detail ?? "").includes("asked for the machine 2 times in all")
         && m1AuditRows().slice(m2AuditBefore2)
           .filter((r) => r.waitedOut === true && r.waitRounds === 1).length === 1,
       JSON.stringify({ detail: (m2DVerdict?.detail ?? "").slice(0, 400),
         rows: m1AuditRows().slice(m2AuditBefore2) }));
-    check("(iii) M2: two denied rounds still gave nothing away — the occupant holds the lock it never lost",
+    if (m2DFired) check("(iii) M2: two denied rounds still gave nothing away — the occupant holds the lock it never lost",
       m5LockPid() === m2Occ2 && ffrAlive(m2Occ2),
       JSON.stringify({ lockPid: m5LockPid(), occupant: m2Occ2, alive: ffrAlive(m2Occ2) }));
     spawnSync("kill", [m2Occ2]);

@@ -3216,7 +3216,9 @@ Fensters**, und genau daran erkennt die Sonde, ob ihr Tick drin lag.
 - `probe: slot 3's only burst arrived early and the tick that consumed it ran inside the quiet
   window` — die Vorbedingung, die als SIE SELBST fällt.
 - `a stream burst consumed inside a quiet window still ends the pane's never-observed state` — die
-  Invariante.
+  Invariante. Sie wird NUR über einer Runde emittiert, deren Vorbedingung stand: bei `verdict: null`
+  (Audit zu 56669352, 4/4 Runden `established:false`) war sie vorher mit der Probe-Zeile zusammen
+  rot, obwohl nichts gemessen war.
 
 Der Defekt ist ein Rennen, das die Sonde nicht steuert: ein Tick, der HINTER das Fenster fällt,
 verzehrt denselben Stoß auf dem gewöhnlichen Weg und stempelt — dann ist nichts zu messen. Jede

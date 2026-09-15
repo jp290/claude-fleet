@@ -1476,10 +1476,15 @@ export async function run(): Promise<void> {
       await Bun.sleep(Math.max(0, tOpen + 2600 - Date.now()));
       verdict = { lastOutput: await lastOutputOf3(), bytes, bytesAfter: path ? Bun.file(path).size : -1 };
     }
+    // the invariant is emitted only over a round that established the precondition: with no verdict
+    // (audit of 56669352, 4/4 rounds established:false) it measured nothing, and a red there would
+    // read as the pane staying unobserved when the probe simply never got a window to look into
+    const measured = verdict !== null && verdict.bytesAfter === verdict.bytes;
     check("probe: slot 3's only burst arrived early and the tick that consumed it ran inside the quiet window",
-      !!verdict && verdict.bytesAfter === verdict.bytes, JSON.stringify({ attempts }));
-    check("a stream burst consumed inside a quiet window still ends the pane's never-observed state",
-      !!verdict && verdict.lastOutput > 0, JSON.stringify(verdict));
+      measured, JSON.stringify({ attempts, verdict }));
+    if (measured && verdict)
+      check("a stream burst consumed inside a quiet window still ends the pane's never-observed state",
+        verdict.lastOutput > 0, JSON.stringify(verdict));
     await post("/api/slots/3/kill", {});
   }
 

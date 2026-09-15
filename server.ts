@@ -109,7 +109,7 @@ import {
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
   loadLineageHandover, loadLineageHandoverLoss,
-  type LineageRole, type LineageOccupant, type LineageObligationRef, type LineageHandover,
+  type LineageRole, type LineageOccupant, type LineageWatchTarget, type LineageObligationRef, type LineageHandover,
   type LineageHandoverLoss,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
@@ -6938,11 +6938,21 @@ async function lineagePointerCommitted(cwd: string, pointer: string): Promise<bo
 // WHAT DIES WITH THE PREDECESSOR, by id. Joined on the occupant pair wherever the row carries one
 // (a watch, an event, a report); an Auto carries no openedAt and teardown deletes every Auto of the
 // SLOT, so the slot is exactly what dies with it (captureProgramHandover's same exception).
+// A watch also names its SUBJECT (server/types.ts#LineageWatchTarget): its row dies here too, and the
+// id alone would leave the successor nothing to rebuild the re-arm body from.
+const lineageWatchTarget = (w: Watch): LineageWatchTarget | null => {
+  const kind = watchKind(w);
+  if ((kind === "lane" || kind === "merge") && "target" in w)
+    return { kind, target: w.target, targetCwd: w.targetCwd, targetBranch: w.targetBranch };
+  if (kind === "audit" && "repo" in w) return { kind, repo: w.repo, mainAfter: w.mainAfter };
+  return null;
+};
 function captureLineageObligations(pred: LineageOccupant): LineageObligationRef[] {
   const owedBy = `slot ${pred.slot}@${pred.openedAt}`;
   return [
     ...watches.filter((w) => w.armed && w.slot === pred.slot && w.slotOpenedAt === pred.openedAt)
-      .map((w): LineageObligationRef => ({ kind: "watch", id: w.id, owedBy, reArm: "POST /api/self/watch" })),
+      .map((w): LineageObligationRef => ({ kind: "watch", id: w.id, owedBy, reArm: "POST /api/self/watch",
+        target: lineageWatchTarget(w) })),
     ...autos.filter((a) => a.slot === pred.slot)
       .map((a): LineageObligationRef => ({ kind: "auto", id: a.id, owedBy, reArm: "POST /api/self/autos" })),
     // an unacknowledged event turns receiver-gone with its receiver; no successor door acks it

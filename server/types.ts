@@ -2555,6 +2555,14 @@ const loadProgramHandover = (value: unknown): ProgramHandoverRead => {
 // that re-registers it, and nothing else: there is no text field and no detail bag, and the loader
 // refuses any key beyond these four. So a watch body, an inbox payload or a report text cannot ride
 // in here by accident or by diligence — the record points at the ledger rows, it never copies them.
+// ONE TYPED EXCEPTION, on a watch only: `target`. dropWatchesFor deletes the watch row with its
+// registrant, so a watch id points at nothing the successor can read; on 2026-09-15 two audit
+// watches crossed only because their shas happened to sit in `intent`. `target` is a CLOSED object
+// built from the watch's own identity fields (the ones captureProgramHandover keeps in `detail`),
+// every field shape-checked, so the successor rebuilds the POST /api/self/watch body from it and
+// nothing is re-armed. `null` = a watch kind with no typed target here (deploy, job, transition —
+// the last one's `awaiting` is prose). ABSENT = a record written before the field existed; it stays
+// readable, and absent is never read as null.
 // The ONE prose field is `intent`, capped, and it is mutually exclusive with `pointer` (a committed,
 // dated section): exactly one handover channel, the game-maker checkpoint's rule.
 type LineageRole = "generic" | "supervisor";
@@ -2571,11 +2579,15 @@ const LINEAGE_OBLIGATIONS_MAX = 200;
 const LINEAGE_RECORDS_PER_LINE = 5;
 const LINEAGE_RECORDS_MAX = 100;
 interface LineageOccupant { slot: number; openedAt: number }
+type LineageWatchTarget =
+  | { kind: "lane" | "merge"; target: number; targetCwd: string; targetBranch: string }
+  | { kind: "audit"; repo: string; mainAfter: string };
 interface LineageObligationRef {
   kind: LineageObligationKind;
   id: string;
   owedBy: string;        // `slot N@openedAt` of the occupant that owed it
   reArm: string | null;  // the door that re-registers it; null where no successor door exists
+  target?: LineageWatchTarget | null; // watch only; see the head of this block
 }
 interface LineageHandover {
   v: 1;
@@ -2593,6 +2605,34 @@ type LineageHandoverRead = { ok: true; handover: LineageHandover }
   | { ok: false; error: string; lineageId: string | null };
 const LINEAGE_HANDOVER_KEYS = ["v", "lineageId", "role", "at", "from", "to", "obligations", "intent", "pointer", "supersededBy"];
 const LINEAGE_OBLIGATION_KEYS = ["kind", "id", "owedBy", "reArm"];
+const LINEAGE_TARGET_TEXT_MAX = 4096;
+const lineagePathOk = (v: unknown): v is string => typeof v === "string" && v.startsWith("/")
+  && v.length <= LINEAGE_TARGET_TEXT_MAX && !/[\u0000-\u001f\u007f]/.test(v);
+// git check-ref-format --branch, the rule createWorktree admitted the branch by: no whitespace, no `..`
+const lineageBranchOk = (v: unknown): v is string => typeof v === "string" && v !== "" && v !== "@"
+  && v.length <= LINEAGE_TARGET_TEXT_MAX && !/[\u0000-\u0020\u007f~^:?*[\\]/.test(v)
+  && !/^[-\/.]|\/$|\.$|\.\.|\/\/|\/\.|@\{|\.lock(\/|$)/.test(v);
+const lineageWatchTargetFrom = (raw: unknown, index: number): LineageWatchTarget | null | string => {
+  if (raw === null) return null;
+  const shape = `obligation ${index} target must be null, exactly {kind: lane|merge, target, targetCwd, targetBranch} or exactly {kind: audit, repo, mainAfter}`;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return shape;
+  const t = raw as Record<string, unknown>;
+  const keys = Object.keys(t).sort().join(",");
+  if ((t.kind === "lane" || t.kind === "merge") && keys === "kind,target,targetBranch,targetCwd") {
+    if (!Number.isInteger(t.target) || (t.target as number) < 1 || (t.target as number) > MAX_SLOTS)
+      return `obligation ${index} target.target must be a slot number`;
+    if (!lineagePathOk(t.targetCwd)) return `obligation ${index} target.targetCwd must be an absolute path`;
+    if (!lineageBranchOk(t.targetBranch)) return `obligation ${index} target.targetBranch must be a git branch name`;
+    return { kind: t.kind, target: t.target as number, targetCwd: t.targetCwd, targetBranch: t.targetBranch };
+  }
+  if (t.kind === "audit" && keys === "kind,mainAfter,repo") {
+    if (!lineagePathOk(t.repo)) return `obligation ${index} target.repo must be an absolute path`;
+    if (typeof t.mainAfter !== "string" || !/^[0-9a-f]{40,64}$/.test(t.mainAfter))
+      return `obligation ${index} target.mainAfter must be a full git object id`;
+    return { kind: "audit", repo: t.repo, mainAfter: t.mainAfter };
+  }
+  return shape;
+};
 const lineageOccupantFrom = (raw: unknown): LineageOccupant | null => {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
@@ -2635,10 +2675,15 @@ const loadLineageHandover = (value: unknown): LineageHandoverRead => {
   for (const [index, raw] of r.obligations.entries()) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fail(`obligation ${index} must be an object`);
     const o = raw as Record<string, unknown>;
-    if (Object.keys(o).some((k) => !LINEAGE_OBLIGATION_KEYS.includes(k)) || Object.keys(o).length !== LINEAGE_OBLIGATION_KEYS.length)
-      return fail(`obligation ${index} must contain exactly ${LINEAGE_OBLIGATION_KEYS.join(", ")} — ids only, never a body`);
+    const hasTarget = Object.hasOwn(o, "target");
+    if (Object.keys(o).some((k) => !LINEAGE_OBLIGATION_KEYS.includes(k) && k !== "target")
+      || Object.keys(o).length !== LINEAGE_OBLIGATION_KEYS.length + (hasTarget ? 1 : 0))
+      return fail(`obligation ${index} must contain exactly ${LINEAGE_OBLIGATION_KEYS.join(", ")} (a watch may add target) — ids only, never a body`);
     if (typeof o.kind !== "string" || !LINEAGE_OBLIGATION_KINDS.includes(o.kind as LineageObligationKind))
       return fail(`obligation ${index} kind must be one of ${LINEAGE_OBLIGATION_KINDS.join(", ")}`);
+    if (hasTarget && o.kind !== "watch") return fail(`obligation ${index} carries target, but only a watch names one`);
+    const target = hasTarget ? lineageWatchTargetFrom(o.target, index) : undefined;
+    if (typeof target === "string") return fail(target);
     if (typeof o.id !== "string" || !/^[0-9a-zA-Z_-]{1,64}$/.test(o.id)) return fail(`obligation ${index} id must be 1-64 id characters`);
     if (typeof o.owedBy !== "string" || !/^slot \d+@\d+$/.test(o.owedBy)) return fail(`obligation ${index} owedBy must be "slot N@openedAt"`);
     if (!(o.reArm === null || (typeof o.reArm === "string" && /^(GET|POST) \/api\/self\/[a-z/-]+$/.test(o.reArm))))
@@ -2646,7 +2691,8 @@ const loadLineageHandover = (value: unknown): LineageHandoverRead => {
     const key = `${o.kind}/${o.id}`;
     if (seen.has(key)) return fail(`obligation ${index} repeats ${key}`);
     seen.add(key);
-    obligations.push({ kind: o.kind as LineageObligationKind, id: o.id, owedBy: o.owedBy, reArm: o.reArm as string | null });
+    obligations.push({ kind: o.kind as LineageObligationKind, id: o.id, owedBy: o.owedBy, reArm: o.reArm as string | null,
+      ...(target !== undefined ? { target } : {}) });
   }
   return { ok: true, handover: { v: 1, lineageId, role: r.role as LineageRole, at: r.at, from, to, obligations,
     intent: r.intent as string | null, pointer: r.pointer as string | null, supersededBy } };
@@ -2779,7 +2825,7 @@ export type {
   StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
   StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold,
-  TaskDisposition, LineageRole, LineageObligationKind, LineageOccupant, LineageObligationRef, LineageHandover,
+  TaskDisposition, LineageRole, LineageObligationKind, LineageOccupant, LineageWatchTarget, LineageObligationRef, LineageHandover,
   LineageHandoverRead, LineageHandoverLoss,
 };
 export {

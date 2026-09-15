@@ -29415,9 +29415,13 @@ const DEPLOY_RESTART_DELAY_MS = 250;
 // forever) is what keeps one failed restart from wedging the verb.
 const DEPLOY_INFLIGHT_MAX_MS = 10 * 60_000;
 
-type DeployBy = "owner" | "steward";
+// the two principals the verb admits; a marker can only ever name one of them
+type DeployPrincipal = "owner" | "steward";
+// …and the third value only the boot writes: a restart that no principal announced (see
+// recordUnattributedBoot). Never a verb argument, so no route can claim it.
+type DeployBy = DeployPrincipal | "unattributed";
 interface DeployMarker {
-  id: string; at: number; by: DeployBy;
+  id: string; at: number; by: DeployPrincipal;
   target: string;                 // the HEAD this deploy set out to put in the running process
   bootHeadBefore: string | null;  // what was running when it was pulled — makes a no-op deploy visible
   buildMs: number; buildCmd: string; restartCmd: string;
@@ -29451,6 +29455,7 @@ function validDeployRow(raw: unknown): DeployRow | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const row = raw as Partial<DeployRow>;
   if (typeof row.id !== "string" || !/^[0-9a-f]{8}$/.test(row.id)
+    || !["owner", "steward", "unattributed"].includes(String(row.by))
     || !(row.ok === true || row.ok === false || row.ok === null)
     || !["build", "restart", "boot"].includes(String(row.stage))
     || !(typeof row.target === "string" || row.target === null)
@@ -29530,13 +29535,38 @@ async function judgeDeploy(m: DeployMarker, stage: DeployRow["stage"], extra?: s
 // is a missing record; a duplicated row is a fabricated deploy, and that is the worse of the two.
 async function resolveDeployMarker(): Promise<void> {
   const m = readDeployMarker();
-  if (!m) return;
+  if (!m) return await recordUnattributedBoot();
   clearDeployMarker();
   const row = await judgeDeploy(m, "boot");
   await appendDeployRow(row);
   audit("deploy", undefined, `${m.id} ${row.ok === true ? "verified" : row.ok === false ? "FAILED" : "unverified"}`
     + (row.reason ? `: ${row.reason.slice(0, 160)}` : ""));
   if (row.ok !== true) console.log(`deploy ${m.id}: ${row.ok === false ? "FAILED" : "unverified"} — ${row.reason ?? ""}`);
+}
+
+// A boot WITHOUT a marker is a restart nobody announced: a hand `kill-session`, a crash respawn, a
+// reboot. Until this existed it left no row, and the ledger lied by omission — measured 2026-09-14:
+// deploys.jsonl ended 14:33 on fef3e6e0 while srv had booted 17:52 on 458724c6 (a MAIN restarted it
+// by hand, since POST /api/deploy admits no self token), so the ledger read "nothing deployed since".
+// The row says a different commit is running and that nobody claimed it — never whether it is good:
+// with no target there is nothing to judge, hence ok:null.
+// One row per NEW bootHead, compared against the newest row of ANY kind (every row names the process
+// running when it was written): the same head again is a crash-restart a reader cannot be misled
+// by, and a crash loop must not mint a row per lap. An empty ledger, or a head that could not be
+// read, has nothing to compare and writes nothing — the next measurable boot still compares.
+const UNATTRIBUTED_BOOT_REASON = "srv booted without a deploy marker — restarted outside POST /api/deploy";
+async function recordUnattributedBoot(): Promise<void> {
+  await bootHeadReady;
+  if (BOOT_HEAD === null) return;
+  const { rows } = await readLedger<unknown>(DEPLOY_FILE);
+  let newest: DeployRow | null = null;
+  for (let i = rows.length - 1; i >= 0 && !newest; i--) newest = validDeployRow(rows[i]);
+  if (!newest || newest.bootHead === BOOT_HEAD) return;
+  await appendDeployRow({
+    at: Date.now(), id: randomBytes(4).toString("hex"), by: "unattributed", stage: "boot", ok: null,
+    target: null, bootHead: BOOT_HEAD, head: null, hitTarget: null, bundleStale: null,
+    reason: UNATTRIBUTED_BOOT_REASON,
+  });
 }
 
 // The precondition, checked by the verb and not by its caller. A reserved/running land is an
@@ -29612,7 +29642,7 @@ async function runDeployRestart(m: DeployMarker): Promise<void> {
 let deployRunning = false;
 // The verb itself. Both principals reach it (owner below tokenGate, steward via handleStewardRoute)
 // — the steward is the pulse that SEES the gap, the owner is the hand that has always closed it.
-async function deployVerb(by: DeployBy): Promise<Response> {
+async function deployVerb(by: DeployPrincipal): Promise<Response> {
   if (deployRunning)
     return json({ ok: false, stage: "preflight", reason: "a deploy is already building — one at a time" }, 409);
   deployRunning = true;
@@ -29624,7 +29654,7 @@ async function deployVerb(by: DeployBy): Promise<Response> {
     deployRunning = false;
   }
 }
-async function deployRun(by: DeployBy): Promise<Response> {
+async function deployRun(by: DeployPrincipal): Promise<Response> {
   const blocked = deployBlocker();
   if (blocked) return json({ ok: false, stage: "preflight", reason: blocked }, 409);
   const pending = readDeployMarker();

@@ -9,6 +9,8 @@ stand: 2026-09-15
 
 ## 1 · MECHANIK
 
+**Nachmessung vom selben Tag:** [Karte A: Pi-Zai-Feuerprobe](2026-09-15-pi-zai-automation-feuerprobe.md) endet mit **STOP**: `Update Available` fällt unter die Stopplinie des Auftrags. Der echte Composer-Parser meldet beim sichtbaren Trust-Dialog bereits einen leeren Puffer; allein daraus folgt keine Readiness. Das empfohlene Profil überspringt den Dialog, und beide Profile bestehen Read/Write und Resume. Gemessener Pi-Peak inklusive beobachteter Kinder: **183456 KiB (179,16 MiB)**; kurze Stichprobe, keine Kapazitätsfreigabe. **Karte B bleibt gesperrt.** Die folgenden Bestandsaussagen dokumentieren den Stand vor dieser Kanarie.
+
 **Die vorhandene Harness-Abstraktion soll bleiben:** Sie trennt Prozessbeobachtung, Zustellerlaubnis und Fähigkeiten je Adapter; GLM braucht eine belegte Start- und Zustellzusage innerhalb dieser Naht, keine zweite Queue.
 
 **Empfehlung:** zunächst auf dem bisherigen Fleet-Mac automatisieren. Tragende aktuelle Zahl: `memory_pressure` meldet in der eigenen Stichprobe **40 %** frei/zurückholbar (§2); es gibt hier keinen gemessenen Pi-RAM-Engpass. Das rechtfertigt einen begrenzten Versuch, keine Kapazitätsgarantie. Vor dem Schalter muss die neue Pi-Vertrauensabfrage geklärt sein. Die Veröffentlichungsmaschine jetzt zusätzlich einzubinden vergrößert die Vertrauens- und Betriebsfläche ohne gemessenen Nutzen.

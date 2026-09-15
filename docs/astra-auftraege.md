@@ -9,8 +9,20 @@ liegen bliebe oder Opus-/Fable-Kontext kostet — nicht Volumen.
 
 Das Codex-Abo hat ein Wochenfenster. Jede Codex-Session schreibt den Stand in ihr Rollout-Log:
 
-    F=$(ls -t ~/.codex/sessions/*/*/*/*.jsonl | head -1)
-    grep -o '"rate_limits":{[^}]*}' "$F" | tail -1
+    bun codex-quota.ts
+    bun codex-quota.ts --json
+
+Das Verb liest die neueste Rollout-Datei mit Codex-Kontingent (Datei-mtime, darin letzter
+Stand) und neue Ankuendigungen von `https://codex-resets.com/api/v1/resets`, inklusive
+Folgeseiten mit insgesamt 10 s Netz-Timeout. Text: hoechstens drei Zeilen mit ID, Typ und
+Zeitpunkt; JSON enthaelt zusaetzlich Ankuendigungstext und Quell-Link.
+Exit **0** = nichts Neues, **1** = neue Ankuendigung, **2** = benannter Quellen-/Cachefehler
+(niemals „nichts Neues“). Fehler haben Vorrang; dann wird nichts als gesehen gespeichert.
+`~/.cache/claude-fleet/codex-resets-seen.json` speichert die gesehenen IDs; beim ersten
+Lauf sind alle Eintraege neu. Beide Ausgabeformen aktualisieren diesen Zustand.
+Aufrufe seriell ausfuehren: gleichzeitige Leser koennen dieselbe Ankuendigung melden.
+Der Rollout ist ein gespeicherter Stand, keine Live-Abfrage des Accounts; ein abgelaufenes
+Fenster wird mit 100 % verstrichen angezeigt, nicht als zurueckgesetzter Verbrauch.
 
 `primary.used_percent` ist der Verbrauch, `window_minutes` 10080 die Woche, `resets_at` das Ende.
 Die Regel vergleicht den Verbrauch mit dem verstrichenen Anteil des Fensters:

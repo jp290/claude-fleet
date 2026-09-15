@@ -50,6 +50,7 @@ import {
 import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
 import { readEventLog, readLedger } from "../server/persist";
 import { readJsonl } from "../briefstats";
+import { quotaPosition, newResetEntries } from "../codex-quota";
 import { readJsonl as landQualityReadJsonl } from "../land-quality";
 import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
@@ -2339,6 +2340,30 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+{
+  // docs/astra-auftraege.md §1: exact ±10-point band, milliseconds in / seconds at reset.
+  // t (ms) | event | elapsed: 0 start 0%; 1_800_000 observation 50%; 3_600_000 reset 100%.
+  const limits = (used_percent: number) => ({ primary: { used_percent, window_minutes: 60, resets_at: 3600 } });
+  for (const [used, expected] of [[39, "unter"], [40, "innerhalb"], [50, "innerhalb"], [60, "innerhalb"], [61, "ueber"]] as const) {
+    const value = quotaPosition(limits(used), 1_800_000);
+    pin(`codex-quota: ${used}% at half-window is ${expected}`, value.position === expected && value.elapsed_percent === 50 && value.used_percent === used, JSON.stringify(value));
+  }
+  for (const [now, expected] of [[-1, 0], [3_600_001, 100]] as const) {
+    pin(`codex-quota: elapsed clamps to ${expected}`, quotaPosition(limits(50), now).elapsed_percent === expected);
+  }
+  const errorOf = (fn: () => unknown) => { try { fn(); return "no error"; } catch (e) { return e instanceof Error ? e.message : String(e); } };
+  for (const value of [null, undefined, {}, limits(-1), limits(101), { primary: { used_percent: 0, window_minutes: 0, resets_at: 3600 } }]) {
+    pin("codex-quota: invalid quota is a named rollout error", errorOf(() => quotaPosition(value, 0)) === "rollout: invalid rate_limits.primary");
+  }
+  const entry = (id: string) => ({ id, reset_type: "banked", announced_at: "2026-09-15T00:00:00Z", text: "Reset announced", source: { type: "observed", url: "https://example.com/reset" } });
+  pin("codex-quota: feed returns only the new announcement", JSON.stringify(newResetEntries({ data: [entry("new"), entry("known")] }, new Set(["known"]))) === JSON.stringify([entry("new")]));
+  pin("codex-quota: empty feed has no new announcements", newResetEntries({ data: [] }, new Set()).length === 0);
+  for (const feed of [null, undefined, {}, { data: null }]) {
+    pin("codex-quota: missing data is a named feed error", errorOf(() => newResetEntries(feed, new Set())) === "feed: missing data array");
+  }
+  pin("codex-quota: malformed announcement fails even if known", errorOf(() => newResetEntries({ data: [{ id: "known" }] }, new Set(["known"]))) === "feed: invalid announcement");
 }
 
 {

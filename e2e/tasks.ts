@@ -919,6 +919,10 @@ export async function run(ctx: Ctx): Promise<void> {
         : post(`/api/tasks/${id}/program`, body);
     const auditRows = (): { event?: string; detail?: string }[] =>
       readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { event?: string; detail?: string });
+    // the dispatcher OFF for this block, so the one queued fixture row cannot be started into a lane
+    // mid-assertion (it would then answer `task is sent` and refuse its own cleanup delete)
+    const assignDispatchBefore = ((await (await get("/api/sessions")).json()) as { dispatch: { on: boolean } }).dispatch.on;
+    await post("/api/dispatch", { on: false });
     const plain = await pMake({ text: "assign: pending auftrag without a program" });
     const queuedRow = await pMake({ text: "assign: queued row", queue: true });
     const doneRow = await pMake({ text: "assign: done row" });
@@ -976,6 +980,7 @@ export async function run(ctx: Ctx): Promise<void> {
         && (await Promise.all([queuedRow, doneRow, archivedRow, notizRow, repoRow].map(pRow))).every((r) => r !== undefined && !r.programId),
       bodies.map((r) => r.status).join(","));
     for (const id of pIds) await post(`/api/tasks/${id}/delete`, {});
+    await post("/api/dispatch", { on: assignDispatchBefore });
   }
 
   // --- Task.kind: four values, reversible owner route, legacy load migration, and dispatch bolt. ---

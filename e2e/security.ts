@@ -1225,6 +1225,12 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const pzRejectTaskId = ((await pzRejectTask.json()) as { task?: { id?: string } }).task?.id ?? "";
   check("§6a pi-zai rejection fixture has a pending attended-dispatch task",
     pzRejectTask.ok && !!pzRejectTaskId, `${pzRejectTask.status} id=${pzRejectTaskId || "missing"}`);
+  // Free the slot FIRST: the §6 context probe above leaves slot 10 occupied, and the
+  // open-worktree door refuses an active slot BEFORE it validates the model — so without this
+  // kill that surface answers "slot already active" and the loop below would measure the wrong
+  // 400 (found by the strengthened text assertion in the 2026-09-15 full-suite preview; the old
+  // status-only assertion had been passing for that wrong reason whenever the slot was held).
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
   const pzRejectSurfaces = [
     ["open", (body: Record<string, unknown>) => post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, ...body })],
     ["open-worktree", (body: Record<string, unknown>) => post(`/api/slots/${HARNESS_SLOT}/open-worktree`, { repo: REPO, ...body })],
@@ -1234,11 +1240,13 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   if (pzRejectTaskId) {
     for (const [surface, call] of pzRejectSurfaces) {
       const wrongModel = await call({ harness: "pi-zai", model: "glm-5.2" });
+      const wrongModelText = await wrongModel.text();
       check(`§6a ${surface} rejects a pi-zai model outside glm-5.3/glm-5.3-flash (400)`,
-        wrongModel.status === 400 && (await wrongModel.text()).includes("glm-5.3-flash"), String(wrongModel.status));
+        wrongModel.status === 400 && wrongModelText.includes("glm-5.3-flash"), `${wrongModel.status} ${wrongModelText}`);
       const wrongEffort = await call({ harness: "pi-zai", effort: "medium" });
+      const wrongEffortText = await wrongEffort.text();
       check(`§6a ${surface} rejects pi-zai effort outside low/high/max (400)`,
-        wrongEffort.status === 400, String(wrongEffort.status));
+        wrongEffort.status === 400 && wrongEffortText.includes("effort"), `${wrongEffort.status} ${wrongEffortText}`);
     }
     await post(`/api/tasks/${pzRejectTaskId}/delete`, {});
   }

@@ -503,6 +503,10 @@ interface Harness {
   // (SLOT_MODEL_RE), which is how the default adapter keeps MODEL_RE for an undeclared FLEET_CMD
   // and the declared-harness charset for a declared one — i.e. exactly today's behaviour.
   modelRe: RegExp | null;
+  // The refusal sentence modelErrFor prints when a model failed modelRe, for adapters whose
+  // allowed set is named ids rather than a charset: a regex source answers the shape, not the
+  // names, and the owner picking a model asked for the names. Absent = the regex source.
+  modelErr?: string;
   // The closed set of effort levels this harness accepts. Empty = it has no effort concept, and
   // the routes reject any effort for it. A LITERAL allowlist rather than a regex on purpose: the
   // value reaches a shell line, and membership in a fixed list of lowercase words is a stronger
@@ -774,18 +778,29 @@ const PI_HARNESS: Harness = {
   browserProfile: "not-applicable", // Pi has no MCP layer — inherited by pi-unfenced
 };
 
-// Adapter #2b — Pi pinned to Z.ai's Coding Plan and exactly GLM-5.3. Pi 0.84.0 ships the `zai`
-// provider but not this model in its bundled catalogue, so the adapter supplies that one missing
-// entry through PI_CODING_AGENT_DIR. The directory relocation is the isolation boundary: Pi's
+// Adapter #2b — Pi pinned to Z.ai's Coding Plan and its two models: glm-5.3 (the default when the
+// request pins none) and glm-5.3-flash, both on the same Coding Plan key (flash verified against
+// the API 2026-09-15). Pi 0.84.0 shipped the `zai` provider without glm-5.3 in its bundled
+// catalogue, and no installed version carries glm-5.3-flash under `zai`, so the adapter supplies
+// BOTH entries through PI_CODING_AGENT_DIR. The directory relocation is the isolation boundary: Pi's
 // entire agent state (including sessions and any auth file it may create) stays Fleet-local, while
 // the API key remains an environment value expanded only inside the pane shell.
 const PI_ZAI_HARNESS: Harness = {
   id: "pi-zai",
   spawnCmd: (o) => {
-    let cmd = "pi --provider zai --model 'glm-5.3'";
+    // o.model is one of the two ids modelRe admitted at SET time; absent = the default tier.
+    const model = o.model ?? "glm-5.3";
+    let cmd = `pi --provider zai --model '${model}'`;
     if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
     if (o.effort) cmd += ` --thinking ${o.effort}`;
-    const catalog = '{"providers":{"zai":{"models":[{"id":"glm-5.3","name":"GLM-5.3","contextWindow":1000000,"maxTokens":131072,"reasoning":true,"thinkingLevelMap":{"off":null,"minimal":null,"low":"low","medium":null,"high":"high","xhigh":null,"max":"max"}}]}}}';
+    // Both entries carry the facts pi's own catalogue declares for these ids (read from the
+    // installed 0.84.x dist, not guessed): 1M context, 131072 maxTokens, reasoning, and the same
+    // thinkingLevelMap. Written fresh on every spawn, so the pane's Pi never depends on what the
+    // installed version bundles under `zai`.
+    const zaiEntry = (id: string, name: string): string =>
+      `{"id":"${id}","name":"${name}","contextWindow":1000000,"maxTokens":131072,"reasoning":true,`
+      + `"thinkingLevelMap":{"off":null,"minimal":null,"low":"low","medium":null,"high":"high","xhigh":null,"max":"max"}}`;
+    const catalog = `{"providers":{"zai":{"models":[${zaiEntry("glm-5.3", "GLM-5.3")},${zaiEntry("glm-5.3-flash", "GLM-5.3-Flash")}]}}}`;
     const keyError = `pi-zai: missing or empty Z.ai Coding Plan key file: ${PI_ZAI_KEY_FILE}`;
     const catalogError = `pi-zai: could not prepare process-local agent directory: ${PI_ZAI_AGENT_DIR}`;
     return `${PATH_EXPORT}if [ ! -s '${PI_ZAI_KEY_FILE}' ]; then printf '%s\\n' '${keyError}'; exec ${SHELL}; fi; `
@@ -811,7 +826,8 @@ const PI_ZAI_HARNESS: Harness = {
   allowsLanes: true,
   singleton: false,
   laneForm: null,
-  modelRe: /^glm-5\.3$/,
+  modelRe: /^glm-5\.3(-flash)?$/,
+  modelErr: "one of: glm-5.3, glm-5.3-flash",
   effortLevels: ["low", "high", "max"],
   supports: {
     resume: true,
@@ -821,7 +837,7 @@ const PI_ZAI_HARNESS: Harness = {
     selfSchedule: false,
     container: false,
   },
-  note: "fixed provider zai/glm-5.3 (Coding Plan); key from ~/.config/claude-fleet/secrets/zai-coding-plan.key; full local reach like pi; process-local agent directory leaves ~/.pi untouched",
+  note: "fixed provider zai/glm-5.3 (default) or glm-5.3-flash (Coding Plan); key from ~/.config/claude-fleet/secrets/zai-coding-plan.key; full local reach like pi; process-local agent directory leaves ~/.pi untouched",
   role: "agent",
   browserProfile: "not-applicable", // Pi has no MCP layer
 };
@@ -1421,7 +1437,9 @@ function modelOf(body: Record<string, unknown> | null, h: Harness = CLAUDE_HARNE
   return { ok: false };
 }
 const modelErrFor = (h: Harness) =>
-  h.supports.model ? `bad model (must match ${(h.modelRe ?? SLOT_MODEL_RE).source})` : `harness ${h.id} takes no model`;
+  h.supports.model
+    ? `bad model (${h.modelErr ?? `must match ${(h.modelRe ?? SLOT_MODEL_RE).source}`})`
+    : `harness ${h.id} takes no model`;
 
 // Effort, judged against the harness's closed set. An adapter with no effort concept rejects any
 // value rather than dropping it silently — a flag the owner set and the pane never saw is the

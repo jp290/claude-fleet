@@ -451,6 +451,26 @@ Netzwerkkosten werden nicht als null behauptet.
     `composerRows` + `composerHoldsExactly`; Lebenszyklus-Falsifizierer: `e2e/watch.ts` und der
     Raw-Mode-Stand-in in `e2e-isolated.sh`.
 
+### `pi-zai`: Z.ai-Coding-Plan-Profil in Pi mit genau zwei Modellen
+
+`pi-zai` ist Pi auf Z.ais Coding Plan. Eine Task-Auswahl lautet `{"harness":"pi-zai"}` (Default
+`glm-5.3`) oder `{"harness":"pi-zai","model":"glm-5.3-flash"}`; jeder dritte Modellname ist an
+jedem Request-Rand, der das Paar nimmt (Open/Open-Worktree/Lanes/Dispatch/Filing/
+`POST /api/slots/:id/model`/Nachfolge), ein **400, der beide erlaubten Namen nennt**
+(`bad model (one of: glm-5.3, glm-5.3-flash)`). Der Spawn trägt immer `--provider zai --model
+'<id>'` (single-quoted, zsh-Glob-Regel), schreibt den Zwei-Eintrag-Katalog — glm-5.3 und
+glm-5.3-flash, je 1.000.000 Kontext, 131.072 Max-Tokens, `reasoning`, identisches
+`thinkingLevelMap`; Werte aus Pi 0.84.x eigener Katalogdeklaration, nicht geraten — nach
+`$PI_ZAI_AGENT_DIR/models.json` (bei jedem Spawn frisch) und liest den Key nur per `$(cat ...)` in
+der Pane-Shell. Beide Modelle laufen auf demselben Coding-Plan-Key (glm-5.3-flash gegen die API
+verifiziert 2026-09-15). Default-Basis `~/.config/claude-fleet/pi-zai-agent`;
+`FLEET_PI_ZAI_AGENT_DIR`/`FLEET_PI_ZAI_KEY_FILE` dürfen sie auf sichere absolute Pfade ohne `..`
+legen; `~/.pi` bleibt unberührt. `automatable:false` besteht fort (STOP-Befund der Feuerprobe
+2026-09-15, `docs/messungen/2026-09-15-pi-zai-automation-feuerprobe.md`): kein unattended Pfad
+fährt pi-zai, nur Hand-Dispatch. Kontext-Füllstand: glm-5.3 hat den exakten 1M-Nenner
+(`src/protocol.ts#contextWindowFor`); für glm-5.3-flash steht dort keine Zeile — ein Flash-Slot
+meldet ctx `unknown`, bis eine eigene Messung die Zeile rechtfertigt.
+
 ## Die Faktschicht `agent`
 
 - **`GET /api/sessions` trägt pro Slot `agent`** (`alive|no-agent|no-pane|unprobed|null`) — **und seit

@@ -1205,7 +1205,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     JSON.stringify(measured));
   rmSync(piFile, { force: true });
 
-  // --- §6a PI-ZAI: one provider/model, one process-local Pi home, and no key bytes in tmux. ---
+  // --- §6a PI-ZAI: one provider, two named models, one process-local Pi home, no key bytes in tmux. ---
   check("§6a pi-zai publishes the closed measured capability set",
     piZai?.automatable === false && piZai.allowsLanes === true && piZai.singleton === false
     && piZai.supports.resume === true && piZai.supports.transcript === false
@@ -1213,8 +1213,8 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     && piZai.supports.selfSchedule === false && piZai.supports.container === false
     && JSON.stringify(piZai.effortLevels) === JSON.stringify(["low", "high", "max"]),
     JSON.stringify(piZai));
-  check("§6a pi-zai's picker note names fixed zai/glm-5.3, the default key path, local reach and isolated Pi home",
-    /zai\/glm-5\.3/.test(piZai?.note ?? "")
+  check("§6a pi-zai's picker note names fixed zai/glm-5.3 (default) plus glm-5.3-flash, the default key path, local reach and isolated Pi home",
+    /zai\/glm-5\.3/.test(piZai?.note ?? "") && /glm-5\.3-flash/.test(piZai?.note ?? "")
       && /~\/\.config\/claude-fleet\/secrets\/zai-coding-plan\.key/.test(piZai?.note ?? "")
       && /full local reach/.test(piZai?.note ?? "") && /~\/\.pi untouched/.test(piZai?.note ?? ""),
     piZai?.note ?? "missing");
@@ -1234,8 +1234,8 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   if (pzRejectTaskId) {
     for (const [surface, call] of pzRejectSurfaces) {
       const wrongModel = await call({ harness: "pi-zai", model: "glm-5.2" });
-      check(`§6a ${surface} rejects any pi-zai model except exact glm-5.3 (400)`,
-        wrongModel.status === 400, String(wrongModel.status));
+      check(`§6a ${surface} rejects a pi-zai model outside glm-5.3/glm-5.3-flash (400)`,
+        wrongModel.status === 400 && (await wrongModel.text()).includes("glm-5.3-flash"), String(wrongModel.status));
       const wrongEffort = await call({ harness: "pi-zai", effort: "medium" });
       check(`§6a ${surface} rejects pi-zai effort outside low/high/max (400)`,
         wrongEffort.status === 400, String(wrongEffort.status));
@@ -1246,7 +1246,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const zaiAgentDir = process.env.FLEET_PI_ZAI_AGENT_DIR ?? "";
   const zaiKeyFile = process.env.FLEET_PI_ZAI_KEY_FILE ?? "";
   const zaiStandIn = "fleet-e2e-zai-stand-in-key";
-  const zaiModels = '{"providers":{"zai":{"models":[{"id":"glm-5.3","name":"GLM-5.3","contextWindow":1000000,"maxTokens":131072,"reasoning":true,"thinkingLevelMap":{"off":null,"minimal":null,"low":"low","medium":null,"high":"high","xhigh":null,"max":"max"}}]}}}\n';
+  const zaiModels = '{"providers":{"zai":{"models":[{"id":"glm-5.3","name":"GLM-5.3","contextWindow":1000000,"maxTokens":131072,"reasoning":true,"thinkingLevelMap":{"off":null,"minimal":null,"low":"low","medium":null,"high":"high","xhigh":null,"max":"max"}},{"id":"glm-5.3-flash","name":"GLM-5.3-Flash","contextWindow":1000000,"maxTokens":131072,"reasoning":true,"thinkingLevelMap":{"off":null,"minimal":null,"low":"low","medium":null,"high":"high","xhigh":null,"max":"max"}}]}}}\n';
   const globalPiModels = `${process.env.HOME}/.pi/agent/models.json`;
   check("§6a pi-zai fixture uses scratch overrides for both external paths",
     realpathSync(zaiAgentDir).startsWith(realpathSync(ROOT) + "/")
@@ -1301,7 +1301,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     pzCmd.slice(-320));
   check("§6a the controlled Pi stand-in really started after the key guard",
     (await waitForPi(`s${HARNESS_SLOT}`)).includes("pi"));
-  check("§6a models.json is the exact one-entry GLM-5.3 catalogue in the scratch agent directory",
+  check("§6a models.json is the exact two-entry catalogue (glm-5.3 + glm-5.3-flash) in the scratch agent directory",
     await waitForModels() === zaiModels, `${zaiAgentDir}/models.json`);
   check("§6a creating the pi-zai catalogue does not create global ~/.pi/agent/models.json",
     !existsSync(globalPiModels), globalPiModels);
@@ -1317,7 +1317,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     pzAgain.ok && await waitForModels() === zaiModels, `${pzAgain.status} / ${zaiAgentDir}/models.json`);
 
   // The context hook reads the relocated Pi session and the model-less slot still gets GLM-5.3's
-  // exact denominator because that model is literal in every pi-zai spawn command.
+  // exact denominator because the adapter's no-pin default is the literal glm-5.3.
   const zaiSessionDir = `${zaiAgentDir}/sessions/--${realpathSync(REPO).replace(/^\/+/, "").replaceAll("/", "-")}--`;
   mkdirSync(zaiSessionDir, { recursive: true });
   const zaiSession = JSON.stringify({ type: "session", version: 3, id: pzSid,

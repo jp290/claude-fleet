@@ -54,9 +54,12 @@ mkdir -p "$DIR"
 # to this wrapper — and now neither does a new top-level directory, which used to need one. The
 # other three are not this runner's: e2e/pins.ts is the land gate's own first stage, and
 # e2e/helper-daemon.ts + e2e/helper-portal.ts belong to fleet-e2e-postland-audit.ts.
-# STAGE_EXTRA is ONE file, and it is there for the reason (3) in e2e-stage.sh names: e2e/ctl.ts
-# SPAWNS ctl.sh, and a spawn is invisible to an import scan. It used to reach it through the
-# node_modules pointer home instead, and that answer only exists when the source tree is a git work
+# STAGE_EXTRA is TWO files, both there for the reason (3) in e2e-stage.sh names: e2e/ctl.ts
+# SPAWNS ctl.sh and e2e/tasks.ts §TA spawns register.sh, and a spawn is invisible to an import scan.
+# (register.sh must also run INSIDE the instance: it reads the tasks-archive.jsonl beside it, and
+# from the source tree it would fall back to the main checkout's live ledger.) ctl.sh's history:
+# e2e/ctl.ts used to reach it through the node_modules pointer home instead, and that answer only
+# exists when the source tree is a git work
 # tree — the post-land audit's source is a `git archive` extract with no `.git`, so the probe
 # failed in every LOCALLY run audit (`src=unresolved`) while passing on the helper, whose source is
 # a real clone. Measured 2026-09-08 in the tree:null trail: both local audits since e2e/ctl.ts
@@ -68,7 +71,7 @@ mkdir -p "$DIR"
 # SOURCE — six of them, e2e/outcomes.ts's "precondition: node_modules exposes src/client.ts" among
 # them — resolves it through the node_modules symlink on purpose, because src/client.ts itself is
 # NOT staged.
-STAGE_EXTRA=ctl.sh
+STAGE_EXTRA="ctl.sh register.sh"
 . "$SRC/e2e-stage.sh"
 stage_instance "$SRC" "$DIR" server.ts fleet-e2e.ts || exit 1
 

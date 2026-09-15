@@ -73,6 +73,9 @@ type AuditEvent =
   // greppable on its own. A DETACH IS NOT A DELETE: the note row survives it untouched, and the
   // ledger line is the only record that the assignment ever existed.
   | "task_note_attach" | "task_note_detach"
+  // an `unarchive` of a row capTasks had already retired: its youngest tasks-archive.jsonl line came
+  // back as pending. Detail `<taskId> (was done|archived)` — the only record the row was ever gone.
+  | "task_archive_restore"
   // …and what a land does to an ASSIGNED source: it settles the USAGE, never the source row.
   // note_usage_settled, detail `<noteId> <branch> task=<taskId>`. Its own event and deliberately
   // NOT note_closed_by_land, because it is not a close: the note keeps its row and every other

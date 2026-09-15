@@ -67,6 +67,11 @@ const PRE_AUTH_ROUTES = [
   // confirms, activates, completes, dispatches, or writes a task; those remain owner acts.
   '= /api/self/programs',
   '= /api/self/program-execution', // read-only and slot-bound; non-lanes only, with no mutation or foreign-slot reach
+  // Program-scoped context pointers (2026-09-15, Task b28b9d89). Writes ONE field of ONE Program: the
+  // Program the caller is bound MAIN of (boundProgramForMain), never one a body names; a lane 409s.
+  // It stores tracked path/anchor pointers only, validated against the caller's own integration HEAD,
+  // and starts, dispatches and writes into no pane.
+  '= /api/self/program-context-packs',
   // The Supervisor's two Cut-2 channels, on this list for the same reason as their neighbours (the
   // self principal IS the boundary) and narrower than any of them: both answer 409 to every session
   // but the one the OWNER bound as Supervisor. The view is read-only and mutates nothing (pinned as

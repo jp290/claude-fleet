@@ -5649,6 +5649,16 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // from an assumption into a measurement.
   // Scoped to the SRV_ENV assignment itself, not to the file — the comment above it names the
   // string too, and a pin that its own explanation satisfies measures nothing.
+  // …and the two OWNER-WAIT refusals, held as source because the e2e can only see that the lane
+  // stayed open — the refusal sentence is discarded by the tick and served nowhere. The criterion
+  // clause is the one with teeth (awaiting:"owner" is also refused by spent-looking).
+  pin(`${RULE_RECEIVER} — the auto-close refuses a lane awaiting the owner and one whose criterion is unconfirmed, each by name (D2)`,
+    autoCloseRefusal.includes('if (s.awaiting === "owner") return "the lane is awaiting the owner";')
+      && autoCloseRefusal.includes("tasks.find((t) => t.id === s.taskId)?.criterion")
+      && autoCloseRefusal.includes("if (criterion && criterion.confirmedAt === null)")
+      && autoCloseRefusal.includes("the lane's proposed criterion is unconfirmed — the owner has not confirmed it")
+      && read("e2e/watch.ts").includes("the owner has not confirmed it\\\")"),
+    `awaiting=${autoCloseRefusal.includes('s.awaiting === "owner"')} criterion=${autoCloseRefusal.includes("criterion.confirmedAt === null")}`);
   const isoSrvEnv = /^SRV_ENV="([^\n]*)"$/m.exec(read("e2e-isolated.sh"))?.[1] ?? "";
   pin(`${RULE_RECEIVER} — the suites STATE FLEET_LANE_AUTOCLOSE=0 instead of inheriting it, and measure that they did (D2)`,
     /\bFLEET_LANE_AUTOCLOSE=0\b/.test(isoSrvEnv)

@@ -14232,6 +14232,9 @@ function laneAutoCloseRefusal(s: Slot, now: number): string | null {
   if (verdict && !(typeof verdict.branch === "string" && verdict.branch !== ""
     && verdict.branch !== s.worktree.branch))
     return "a merge verdict is on record — this lane's candidate is somebody's to look at";
+  // spent-looking refuses this too (its `awaiting:null` clause); named here so the reason is the
+  // owner's wait and not an accusation about the pane.
+  if (s.awaiting === "owner") return "the lane is awaiting the owner";
   if (!laneSpentLooking(laneSignalView(s, now), STALLED_IDLE_MS))
     return "the lane is not spent-looking";
   // …and the Program binding, both halves. A hand-opened lane and a lane of another Program are the
@@ -14240,6 +14243,14 @@ function laneAutoCloseRefusal(s: Slot, now: number): string | null {
   if (!s.programId) return "this lane belongs to no Program";
   const program = programs.find((p) => p.id === s.programId);
   if (!program || program.status !== "active") return "this lane's Program is not active";
+  // A CLARIFY LANE WHOSE CRITERION THE OWNER HAS NOT CONFIRMED is waiting on the owner even after
+  // `awaiting` was cleared (an owner /send clears it). A MAIN accepting its needs-main report is
+  // not that confirmation: closing here let card-valid restart the row, and each fresh session
+  // proposed a NEW criterion (task b28b9d89, three proposals on 2026-09-15). The founding row is
+  // read by the lane's own taskId — the row the report provenance above is joined to.
+  const criterion = tasks.find((t) => t.id === s.taskId)?.criterion;
+  if (criterion && criterion.confirmedAt === null)
+    return "the lane's proposed criterion is unconfirmed — the owner has not confirmed it";
   // Absent evidence is not a verdict. It is also what a lane whose rows fell off the retention tail
   // (pruneFleetReports, FLEET_REPORT_KEEP) reads as — and that is the correct outcome for it too:
   // a close nobody can reconstruct the authority for is a close that must not happen.

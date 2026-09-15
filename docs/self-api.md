@@ -2135,8 +2135,10 @@ ihren eigenen Satz):
 | Lane, kein `⚙ steward`, kein Teardown/Restart in Flug | Slot | eine stehende Rolle ist keine verbrauchte Lane |
 | kein Merge-/Commit-/Review-Job | die vier Inflight-Maps | frischer als der ~10-s-`gitOp`-Cache |
 | **kein Merge-Verdikt auf Akte** | `mergeLast` | ein Kandidat, auf den jemand schauen muss — auch bei `ahead 0` |
+| **nicht `awaiting:"owner"`** | Slot | benannt vor `spent-looking`, das denselben Fall über `awaiting:null` ablehnt |
 | `spent-looking` | `lane-signals.ts#laneSpentLooking` | `stalled` + sauberer Baum: alive · beobachtet · idle · kein Git-Op · kein blockierender Merge · `awaiting:null` · `ahead===0` · `dirty===0` |
 | `taskId` + `programId`, Program `active` | Slot + `programs` | geschlossen wird Arbeit, die eine Program-MAIN beurteilt hat |
+| **kein unbestätigtes Kriterium** (`criterion.confirmedAt === null`) | Task-Zeile per `taskId` | eine Clarify-Lane wartet auf den Owner auch nach gelöschtem `awaiting`; ein MAIN-Urteil über ihren Report ist keine Bestätigung — sonst startet `card-valid` die Zeile neu und jede frische Session schlägt ein neues Kriterium vor (Task `b28b9d89`, 2026-09-15) |
 | **JEDER eigene Report beurteilt** | `fleetReports` (Worker-Tripel) | „unbeurteilt" heißt jede Zeile, nicht nur die neueste |
 | `decision.by` hielt bei `decision.at` Autorität | `Program.lineage` bei Program-Zeilen, sonst `receiver` | Succession ändert die heutige Bindung, nicht die persistierte Autoritätsgeschichte |
 | `disposition === "killed-empty"` | `buildLaneOutcome` | frischer `rev-list --count`, nicht der Cache |

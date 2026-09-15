@@ -3760,32 +3760,39 @@ export async function run(): Promise<void> {
     const undecidedLane = await d2NewLane();
     const reportlessLane = await d2NewLane();
     const outsideLineageLane = await d2NewLane();
+    const clarifyLane = await d2NewLane();
     const d2Lanes = [acceptedLane, rejectedLane, dirtyLane, aheadLane, rejectedAheadLane,
-      undecidedLane, reportlessLane, outsideLineageLane];
+      undecidedLane, reportlessLane, outsideLineageLane, clarifyLane];
     const d2Refusers = [dirtyLane, aheadLane, rejectedAheadLane, undecidedLane, reportlessLane,
       outsideLineageLane];
-    check("D2 fixtures: one MAIN occupant and eight distinct lanes exist",
+    check("D2 fixtures: one MAIN occupant and nine distinct lanes exist",
       !!d2MainOpen?.ok && d2Lanes.every((l) => typeof l.slot === "number" && !!l.cwd && !!l.branch)
-        && new Set([d2Main, ...d2Lanes.map((l) => l.slot)]).size === 9,
+        && new Set([d2Main, ...d2Lanes.map((l) => l.slot)]).size === 10,
       JSON.stringify({ d2Main, lanes: d2Lanes.map((l) => l.slot) }));
     const d2MainTok = await paneEnv(`s${d2Main}`, "FLEET_SELF_TOKEN") ?? "";
     const d2Tok = new Map<number, string>();
     for (const l of d2Lanes) d2Tok.set(l.slot, await paneEnv(`s${l.slot}`, "FLEET_SELF_TOKEN") ?? "");
     check("D2 fixtures: every participant carries its own exact scoped credential",
       /^[0-9a-f]{32}$/.test(d2MainTok) && [...d2Tok.values()].every((t) => /^[0-9a-f]{32}$/.test(t))
-        && new Set([d2MainTok, ...d2Tok.values()]).size === 9,
+        && new Set([d2MainTok, ...d2Tok.values()]).size === 10,
       `lengths=${[d2MainTok, ...d2Tok.values()].map((t) => t.length).join("/")}`);
 
     // The Program binding and the per-lane queue identity, planted with srv down — the technique
-    // every binding fixture in this file uses. The task ids are ids and nothing more: the close
-    // JOINS them (lane row ↔ report provenance) and never reads a task row, so planting a row here
-    // would add a fixture nothing under test consults.
+    // every binding fixture in this file uses. The task ids are ids and nothing more for eight
+    // lanes: the close JOINS them (lane row ↔ report provenance) and reads a task row only for its
+    // criterion. The CLARIFY lane is the one that needs a REAL row — sent, on its slot — because
+    // its criterion is proposed through the lane's own /api/self/criterion door, which attaches to
+    // exactly that row.
     const d2Path = `${ROOT}/fleet.json`;
     const d2ProgramId = "b".repeat(24);
     const d2TaskId = (slot: number): string => `d2task${String(slot).padStart(6, "0")}`;
+    const d2ClarifyTask = (await (await post("/api/tasks",
+      { text: "D2 clarify-lane fixture row", queue: false, kind: "notiz" })).json()) as { task?: { id: string } };
+    const d2ClarifyTaskId = d2ClarifyTask.task?.id ?? "";
     await stopSrv();
     const d2Plant = JSON.parse(readFileSync(d2Path, "utf8")) as {
       slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
+      tasks?: Record<string, unknown>[];
     };
     const d2MainRow = d2Plant.slots[String(d2Main)] ?? {};
     d2Plant.programs = [...(d2Plant.programs ?? []), {
@@ -3805,6 +3812,9 @@ export async function run(): Promise<void> {
       d2Plant.slots[String(l.slot)].programId = d2ProgramId;
       d2Plant.slots[String(l.slot)].taskId = d2TaskId(l.slot);
     }
+    d2Plant.slots[String(clarifyLane.slot)].taskId = d2ClarifyTaskId;
+    d2Plant.tasks = (d2Plant.tasks ?? []).map((t) => t.id === d2ClarifyTaskId
+      ? { ...t, status: "sent", slot: clarifyLane.slot } : t);
     writeFileSync(d2Path, JSON.stringify(d2Plant, null, 2), { mode: 0o600 });
     await restartSrv();
 
@@ -3823,8 +3833,16 @@ export async function run(): Promise<void> {
     const d2Report = new Map<number, FleetReportRow>();
     const d2Decide: [{ slot: number }, "accept" | "reject"][] = [
       [acceptedLane, "accept"], [rejectedLane, "reject"], [dirtyLane, "accept"],
-      [aheadLane, "accept"], [rejectedAheadLane, "reject"],
+      [aheadLane, "accept"], [rejectedAheadLane, "reject"], [clarifyLane, "accept"],
     ];
+    // the clarify lane's criterion, proposed by the lane itself BEFORE its report is judged — the
+    // measured order of task b28b9d89 (criterion filed, needs-main report accepted, then closed).
+    // Its slot is NOT awaiting the owner (a /api/lanes lane never is, and an owner /send clears it
+    // on a dispatched one), so the unconfirmed criterion is the ONE fact that tells it apart.
+    const d2Proposed = await fetch(`${BASE}/api/self/criterion`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": d2Tok.get(clarifyLane.slot) ?? "" },
+      body: JSON.stringify({ text: "D2 fixture: the owner has not confirmed this criterion" }) });
+    const d2ProposedBody = await d2Proposed.json() as { ok?: boolean; proposedAt?: number };
     const d2Verdicts: number[] = [];
     for (const [lane, verdict] of d2Decide) {
       const filed = await selfFleetReport(d2Tok.get(lane.slot) ?? "",
@@ -3858,8 +3876,16 @@ export async function run(): Promise<void> {
       const plantedOutside = (await selfFleetReports(d2MainTok)).reports.find((r) => r.id === outsideRow.id);
       if (plantedOutside) d2Report.set(outsideLineageLane.slot, plantedOutside);
     }
-    check("D2 fixtures: five reports carry a verdict by the exact lineage holder, one names a non-holder, one is undecided, and one lane filed nothing",
-      d2Verdicts.length === 5
+    const d2CriterionOf = async (): Promise<{ proposedAt: number; confirmedAt: number | null } | null> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: { id: string; criterion?: { proposedAt: number;
+        confirmedAt: number | null } }[] }).tasks.find((t) => t.id === d2ClarifyTaskId)?.criterion ?? null;
+    const d2CriterionBefore = await d2CriterionOf();
+    check("D2 fixtures: the clarify lane proposed its criterion through its own door, and it is served unconfirmed",
+      d2Proposed.status === 200 && d2ProposedBody.ok === true && d2ClarifyTaskId !== ""
+        && d2CriterionBefore?.proposedAt === d2ProposedBody.proposedAt && d2CriterionBefore?.confirmedAt === null,
+      JSON.stringify({ status: d2Proposed.status, body: d2ProposedBody, task: d2ClarifyTaskId, criterion: d2CriterionBefore }));
+    check("D2 fixtures: six reports carry a verdict by the exact lineage holder, one names a non-holder, one is undecided, and one lane filed nothing",
+      d2Verdicts.length === 6
         && d2Report.get(acceptedLane.slot)?.decision?.disposition === "accepted"
         && d2Report.get(rejectedLane.slot)?.decision?.disposition === "rejected"
         && d2Report.get(rejectedAheadLane.slot)?.decision?.disposition === "rejected"
@@ -3913,6 +3939,7 @@ export async function run(): Promise<void> {
       { slot: undecidedLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
       { slot: reportlessLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
       { slot: outsideLineageLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
+      { slot: clarifyLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
     ];
     const d2Unmet = (snap: D2Sv[]): string[] => d2Want
       .filter((w) => !w.holds(snap.find((x) => x.id === w.slot)))
@@ -4039,6 +4066,20 @@ export async function run(): Promise<void> {
         && decisionOccupant(d2Report.get(outsideLineageLane.slot)?.decision)?.slot === acceptedLane.slot,
       JSON.stringify({ open: stillOpen[5], rows: refusalRows[5]?.length,
         decision: d2Report.get(outsideLineageLane.slot)?.decision ?? null }));
+    // BREAKS IF: the unconfirmed-criterion clause in server.ts#laneAutoCloseRefusal is removed —
+    // everything else about this lane matches the accepted lane that closed above.
+    // a fresh read after a settle window, not d2LiveAfter: the tick walks slots one at a time with
+    // an awaited git read per closing lane, so `closedBoth` can turn true before it reaches this one.
+    await Bun.sleep(Math.max(3000, AUTOS_TICK_MS * 8));
+    const clarifyOpenArmed = ((await liveSlots()).find((x) => x.id === clarifyLane.slot)?.cwd ?? null) !== null;
+    const clarifyRowsArmed = await outcomesOf(clarifyLane.branch);
+    const clarifyCriterionArmed = await d2CriterionOf();
+    check("D2 refusal: a clarify lane whose criterion the owner has not confirmed is never closed, however accepted its report (refused: \"the lane's proposed criterion is unconfirmed — the owner has not confirmed it\")",
+      clarifyOpenArmed && clarifyRowsArmed.length === 0
+        && d2Report.get(clarifyLane.slot)?.decision?.disposition === "accepted"
+        && clarifyCriterionArmed !== null && clarifyCriterionArmed.confirmedAt === null,
+      JSON.stringify({ open: clarifyOpenArmed, rows: clarifyRowsArmed.length, decision: d2Report.get(clarifyLane.slot)?.decision?.disposition ?? null,
+        criterion: clarifyCriterionArmed }));
 
     // --- (d) what the close must never do, measured rather than asserted in prose: it moves no
     // integration branch, it types nothing into any lane, and it takes no slot it was not entitled
@@ -4054,6 +4095,23 @@ export async function run(): Promise<void> {
         && laneWrites === 0 && foreignClosed.length === 0,
       JSON.stringify({ main: [d2MainShaBefore.slice(0, 8), d2MainShaAfter.slice(0, 8)],
         laneWrites, foreignClosed }));
+
+    // --- the COUNTER-PROBE on the same lane: the owner confirms the criterion, and the close that
+    // refused it a moment ago now takes it exactly as it took the accepted lane — same row shape.
+    const d2Confirm = await post(`/api/tasks/${d2ClarifyTaskId}/criterion-confirm`, {});
+    let clarifyClosed = false;
+    for (let i = 0; i < 60 && !clarifyClosed; i++) {
+      clarifyClosed = ((await liveSlots()).find((x) => x.id === clarifyLane.slot)?.cwd ?? null) === null;
+      if (!clarifyClosed) await Bun.sleep(1000);
+    }
+    const clarifyRows = await outcomesOf(clarifyLane.branch);
+    const clarifyRow = clarifyRows[0] as { disposition?: string;
+      autoClose?: { reportId?: string; disposition?: string } } | undefined;
+    check("D2 close: the same clarify lane, once the owner confirmed its criterion, is closed killed-empty on its accepted report",
+      d2Confirm.ok && clarifyClosed && clarifyRows.length === 1
+        && clarifyRow?.disposition === "killed-empty" && clarifyRow.autoClose?.disposition === "accepted"
+        && clarifyRow.autoClose.reportId === d2Report.get(clarifyLane.slot)?.id,
+      JSON.stringify({ confirm: d2Confirm.status, closed: clarifyClosed, rows: clarifyRows.length, row: clarifyRow ?? null }));
 
     // --- and the FLAG rode exactly one restart. Proven rather than trusted to the harness note:
     // the dirty lane's ONE refusing fact is removed, so on an armed server it would now close —
@@ -4075,11 +4133,16 @@ export async function run(): Promise<void> {
         cwd: disarmedLive.find((x) => x.id === dirtyLane.slot)?.cwd ?? null }));
 
     for (const l of d2Refusers) await post(`/api/slots/${l.slot}/kill`, {});
+    if (!clarifyClosed) await post(`/api/slots/${clarifyLane.slot}/kill`, {});
     if (d2Main) await post(`/api/slots/${d2Main}/kill`, {});
     await stopSrv();
     const d2Cleaned = JSON.parse(readFileSync(d2Path, "utf8")) as {
       events?: { kind?: string }[]; fleetReports?: unknown[]; programs?: { id?: string }[];
+      tasks?: { id?: string }[];
     };
+    // the sent row would otherwise sit on a recycled slot, where foundingRowOf's slot fallback hands
+    // it to the next lane that proposes a criterion there
+    d2Cleaned.tasks = (d2Cleaned.tasks ?? []).filter((t) => t.id !== d2ClarifyTaskId);
     d2Cleaned.events = (d2Cleaned.events ?? []).filter((e) => e.kind !== "fleet-report");
     d2Cleaned.fleetReports = [];
     d2Cleaned.programs = (d2Cleaned.programs ?? []).filter((p) => p.id !== d2ProgramId);

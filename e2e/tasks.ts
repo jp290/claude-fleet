@@ -7128,6 +7128,103 @@ export async function run(ctx: Ctx): Promise<void> {
       }) && JSON.stringify(spHunkNotes) === JSON.stringify([
         "waiting: collides with lane 3 on server.ts#rs", "waiting: collides with lane 3 on server.ts"]),
       JSON.stringify({ spHunkGot, spHunkNotes }));
+    // (sp-stau) A WAITING WAVE HOLDS LATER WAVES ONLY ON KNOWN RANGES (start-plan.ts `claims`,
+    // docs/messungen/2026-09-15-start-plan-stau-schnitt.md). The stall of 2026-09-15: a fresh lane with
+    // ranges only on server.ts, two front rows waiting on it, range-less rows on the hub files behind.
+    // Mutations: waiting waves claim with the whole-file fallback again (the stall) → x and p collide,
+    // 0 now; waiting waves claim nothing, i.e. the loosening reaches files WITH known ranges → k2 starts;
+    // a "now" wave claims without the fallback → y starts beside x.
+    {
+      const stLane: StartPlanLane = { slot: 1, repo: spRepo, programId: null, hunks: {},
+        files: ["server.ts", "server/types.ts", "docs/self-api.md"], ranges: [{ file: "server.ts", symbol: "ls", startLine: 10771, endLine: 10781 }] };
+      const stCaps = { [spRepo]: { max: 3, source: "repo" as const, programs: {} } };
+      const stStall = spNexts(projectStartPlan(spInput([
+        spRow("f1", 1, ["server/types.ts", "e2e/tasks.ts"]),
+        spRow("f2", 2, ["docs/self-api.md", "e2e/programs.ts"]),
+        spRow("t", 3, ["server/types.ts"]),
+        spRow("s", 4, ["docs/self-api.md"]),
+        spRow("x", 5, ["e2e/tasks.ts"]),
+        spRow("p", 6, ["e2e/programs.ts"]),
+        spRow("y", 7, ["e2e/tasks.ts"]),
+      ], [stLane], stCaps)));
+      check("(sp-stau) the measured stall: behind a fresh lane and two front rows waiting on it, range-less rows on e2e/tasks.ts and e2e/programs.ts start (x, p) · rows on the lane's own files still collide · a now wave still holds its range-less file (y)",
+        JSON.stringify(stStall) === JSON.stringify([
+          ["f1", { collides: { slot: 1, file: "server/types.ts" } }],
+          ["f2", { collides: { slot: 1, file: "docs/self-api.md" } }],
+          ["t", { collides: { slot: 1, file: "server/types.ts" } }],
+          ["s", { collides: { slot: 1, file: "docs/self-api.md" } }],
+          ["x", "now"],
+          ["p", "now"],
+          ["y", { collides: { row: "x", file: "e2e/tasks.ts" } }],
+        ]), JSON.stringify(stStall));
+      // the ffcfec48/fcff67db shape: a KNOWN overlap behind a waiting row keeps the plan's order
+      const stKnown = spNexts(projectStartPlan(spInput([
+        spRow("k1", 1, ["a.ts", "server.ts"], { ranges: [{ file: "server.ts", symbol: "CODEX_HARNESS", startLine: 1124, endLine: 1309 }] }),
+        spRow("k2", 2, ["server.ts"], { ranges: [{ file: "server.ts", symbol: "CODEX_HARNESS", startLine: 1123, endLine: 1308 }] }),
+        spRow("k3", 3, ["server.ts"]),
+      ], [{ slot: 1, repo: spRepo, programId: null, files: ["a.ts"], ranges: null, hunks: {} }], stCaps)));
+      check("(sp-stau) a waiting row still holds a later row whose known range overlaps its own (k2 behind k1 on server.ts#CODEX_HARNESS) — and only there: a range-less row on the same file starts (k3)",
+        JSON.stringify(stKnown) === JSON.stringify([
+          ["k1", { collides: { slot: 1, file: "a.ts" } }],
+          ["k2", { collides: { row: "k1", file: "server.ts", symbol: "CODEX_HARNESS" } }],
+          ["k3", "now"],
+        ]), JSON.stringify(stKnown));
+      // THE SAFETY INVARIANT over generated plans, with its own reading of the collision rule (row
+      // ranges on the file, else the lane's hunks there, else none = the whole file): no two "now" waves
+      // collide, no "now" wave collides with a running lane. Deterministic LCG, so a red names its seed.
+      let seed = 20260915;
+      const rnd = (n: number): number => { seed = (seed * 1103515245 + 12345) % 2147483648; return Math.floor(seed / 65536) % n; };
+      const stPool = ["s.ts", "t.ts", "u.ts"];
+      const stPick = (): string[] => stPool.filter(() => rnd(2) === 0);
+      const stRangesFor = (files: string[], symbol: string): StartPlanRow["ranges"] => {
+        const r = files.filter(() => rnd(2) === 0).map((file) => ({ file, symbol, startLine: [100, 130, 400][rnd(3)], endLine: 0 }))
+          .map((x) => ({ ...x, endLine: x.startLine + 9 }));
+        return r.length ? r : null;
+      };
+      type StSurface = { files: readonly string[] | null; ranges: StartPlanRow["ranges"]; hunks?: StartPlanLane["hunks"] };
+      const stOn = (s: StSurface, file: string) => {
+        const own = (s.ranges ?? []).filter((r) => r.file === file);
+        return own.length ? own : s.hunks?.[file] ?? [];
+      };
+      const stHit = (a: StSurface, b: StSurface): boolean => !!a.files?.length && !!b.files?.length && a.files.some((file) => {
+        if (!b.files?.includes(file)) return false;
+        const ra = stOn(a, file), rb = stOn(b, file);
+        return !ra.length || !rb.length || ra.some((x) => rb.some((y) =>
+          x.startLine <= y.endLine + LAND_WAVE_RANGE_GAP && y.startLine <= x.endLine + LAND_WAVE_RANGE_GAP));
+      });
+      const stViolations: string[] = [];
+      let stNow = 0, stLoosened = 0;
+      for (let plan = 0; plan < 400; plan++) {
+        const at = seed;
+        const lanes: StartPlanLane[] = Array.from({ length: rnd(3) }, (_, i) => {
+          const files = stPick();
+          const hunkFiles = files.filter(() => rnd(2) === 0);
+          return { slot: i + 1, repo: spRepo, programId: null, files, ranges: stRangesFor(files, `l${i}`),
+            ...(rnd(3) ? { hunks: Object.fromEntries(hunkFiles.map((f) => [f, [{ file: f, symbol: "hunk", startLine: [100, 130, 400][rnd(3)], endLine: 0 }]
+              .map((h) => ({ ...h, endLine: h.startLine + 9 }))])) } : {}) };
+        });
+        const fixture = Array.from({ length: 4 + rnd(4) }, (_, i) => {
+          const files = stPick();
+          return spRow(`r${i}`, i + 1, files.length ? files : null, { ranges: stRangesFor(files, `r${i}`), ...(rnd(5) ? {} : { after: ["z"] }) });
+        });
+        const out = projectStartPlan(spInput(fixture, lanes, { [spRepo]: { max: 2 + rnd(5), source: "repo", programs: {} } }));
+        const rowsOf = (ids: string[]) => fixture.map((f) => f.row).filter((r) => ids.includes(r.id));
+        const waves = out.repos[0]?.waves ?? [];
+        const nowRows = rowsOf(waves.filter((w) => w.next === "now").flatMap((w) => w.ids));
+        stNow += nowRows.length;
+        for (const [i, a] of nowRows.entries()) {
+          for (const lane of lanes) if (stHit(a, lane)) stViolations.push(`seed ${at}: now ${a.id} vs lane ${lane.slot}`);
+          for (const b of nowRows.slice(i + 1)) if (stHit(a, b)) stViolations.push(`seed ${at}: now ${a.id} vs now ${b.id}`);
+          // non-vacuity: a now row that shares a file with an earlier WAITING wave under the old fallback
+          const earlier = waves.slice(0, waves.findIndex((w) => w.ids.includes(a.id)))
+            .filter((w) => w.next !== "now" && !("unreleased" in w.next || "unchecked" in w.next));
+          if (earlier.some((w) => rowsOf(w.ids).some((b) => stHit(a, b)))) stLoosened++;
+        }
+      }
+      check("(sp-stau) invariant over 400 generated plans: no two now waves collide and no now wave collides with a running lane (row ranges, hunks, whole-file fallback) — and the loosening was exercised",
+        stViolations.length === 0 && stNow > 0 && stLoosened > 0,
+        JSON.stringify({ violations: stViolations.slice(0, 5), stNow, stLoosened }));
+    }
     // the reader the git tick and the CLI share (land-collision-stats.ts#laneHunkRanges) over a REAL
     // repo: an uncommitted edit counts, coordinates are the worktree's NEW side, a binary is `[]`, an
     // untouched file is absent

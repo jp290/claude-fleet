@@ -390,7 +390,10 @@ const PRE_AUTH_ROUTES = [
   // `release` joined 2026-09-14 (Schnitt 3) with the release-policy door, for `dispatch`'s reason:
   // it widens WHICH rows start unattended, so it is the owner's alone — written by this route only
   // (pinned in e2e/pins.ts), tokenGate first, and a self token meets the same 401 here.
-  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch|release))?$/`,
+  // `release-valid` joined 2026-09-15 (Freigabe-Schnitt B) with the owner's collective release: it
+  // moves named rows pending→queued, the owner's ▸ queue over a previewed selection, so it is owner
+  // side for `release`'s reason — tokenGate first, a MAIN token 401 (e2e/programs.ts release-valid (2)).
+  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch|release|release-valid))?$/`,
   // The studio inventory itself, beside the Programs regex and for its reasons: a Studio is owner
   // truth about the workflow (stages, gates, brief blocks), several Programs may bind the same one,
   // and the handler sits before the steward interceptor only so a steward credential meets the same

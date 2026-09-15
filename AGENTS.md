@@ -333,6 +333,18 @@ If a command is mechanically refused anyway, that is a real signal, not a waiver
 quote the error verbatim in your report. Never report a step you skipped as if it passed, and never
 soften a claim you did not verify.
 
+Three host rules that otherwise live only in the private lane overlay, which a Codex lane does not load:
+
+- Never print a process command line unfiltered (`ps`, `pgrep -af` and relatives), because every
+  pane's shell string exports its self-credentials, so such a listing copies other slots' tokens
+  into your context — count with `grep -c`, or cut the line (`cut -c1-40`) before it is shown.
+- Never start `bun server.ts` with its default environment, because the defaults are the live tmux
+  socket, the live port and, from the main checkout, the live fleet.json, so a second server adopts
+  and drives real sessions — verify through `./e2e-isolated.sh`, which brings its own socket and port.
+- Search git-ignored files with `rg -uu` or `grep`, because plain `rg` honours `.gitignore` and the
+  operational files (CLAUDE.md, fleet.json, the outcome and audit ledgers, .env) are ignored, so it
+  returns an empty result instead of an error.
+
 Graphify in a lane: `graphify-out/` is git-ignored and exists only in the main checkout, so a
 worktree never has its own graph — a missing graph under that ignored directory is the normal
 state, never a stop. Use graphify for architecture and module/community questions; for symbol

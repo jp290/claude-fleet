@@ -322,8 +322,24 @@ und sie bekommt keinen Linien-Record). Jede Nachfolge schreibt EINEN Record
   Gemessen wird, was mit der Vorgängerin stirbt: armierte Watches und Autos, unquittierte FleetEvents
   (`inbox`), unentschiedene an sie adressierte Reports. Nichts wird neu armiert; `reArm` nennt die Tür
   (`null`, wo keine Nachfolger-Tür existiert). Der Loader ist geschlossen: ein Obligation-Objekt mit einem
-  fünften Feld (etwa einem kopierten Text) macht den ganzen Record unlesbar — ein Body passt strukturell
+  unbekannten Feld (etwa einem kopierten Text) macht den ganzen Record unlesbar — ein Body passt strukturell
   nicht hinein;
+- **eine Watch nennt zusätzlich ihr Ziel** (seit 2026-09-15, `server/types.ts#LineageWatchTarget`), weil
+  `server.ts#dropWatchesFor` die Watch-Zeile mit der Vorgängerin löscht und die ID danach auf nichts
+  zeigt: `target` ist `{kind: lane|merge, target, targetCwd, targetBranch}` oder
+  `{kind: audit, repo, mainAfter}` — dieselben Identitätsfelder, die `server.ts#captureProgramHandover`
+  im `detail` bewahrt. Daraus baut die Nachfolgerin den `POST /api/self/watch`-Body selbst
+  (`{kind, target}` bzw. `{kind, repo, mainAfter}`); `targetCwd`/`targetBranch` sagen ihr, ob Slot
+  `target` noch dieselbe Lane ist. `idleSec` und `delivery` reisen NICHT mit: der neu gebaute Body nimmt
+  die Defaults der Tür. `target: null` = eine Watch-Art ohne typisiertes Ziel hier (`deploy`, `job`,
+  `transition` — deren `awaiting` ist Prosa). Ein Record ohne `target` (vor 2026-09-15 geschrieben)
+  bleibt lesbar und wird so ausgeliefert, wie er steht; fehlend heißt dort NICHT `null`. Der Loader
+  prüft das Ziel feldgenau: genau diese Schlüssel je Art, Slotnummer, absoluter Pfad ohne Steuerzeichen,
+  Branch nach `git check-ref-format`, `mainAfter` als volle Objekt-ID; `target` an einer Nicht-Watch,
+  ein fremdes Feld im Ziel oder ein Wert, der die Form seines Feldes verfehlt (etwa Prosa statt
+  Objekt-ID), macht den Record unlesbar. Geprüft wird die Form, nicht die Bedeutung: ein Pfad darf
+  Leerzeichen tragen. Es ist ein geschlossenes Zielobjekt, kein Freitext — die Regel „nur IDs, kein
+  Body“ gilt weiter;
 - `intent` (höchstens 2000 Zeichen) ODER `pointer` (`pfad.md#anker`, ein getrackter, sauberer, datierter
   Abschnitt, `YYYY-MM-DD` in Pfad oder Anker) — **genau ein Übergabekanal**. Beides = 409, einer davon
   neben `carry` = 409; `intent` über dem Deckel = 400 mit dem Deckel im Text; undatierter/fehlgeformter

@@ -1,7 +1,7 @@
 // The scoped self-scheduling credential: FLEET_SELF_TOKEN / FLEET_SELF_SLOT in EVERY session's
 // spawn env (lane or not, since 2026-08-07), and what the /api/self routes will and will not
 // accept it for — including both opposite scope rules (lane-only questions vs main-only exit).
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, REPO2, REPO3, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, stopSrv } from "./harness";
 import type { Ctx } from "./ctx";
@@ -793,6 +793,29 @@ export async function run(ctx: Ctx): Promise<void> {
     check("the grace deadline retires the predecessor and clears its label even without /retire",
       oldGone, JSON.stringify((await succRows()).find((x) => x.id === free)));
 
+    // --- A WATCH ON THE LINE names its TARGET (2026-09-15: two audit watches reached the successor
+    // only because their shas happened to sit in `intent`). B arms an audit watch here and hands the
+    // line to C below with NO intent. The land is a PARKED queue entry — this instance runs no audit
+    // command — so the watch stays armed: a ledger row would fire it at once, and a spent watch is no
+    // obligation. The queue file is restored where the loader plants stop the server again. ---
+    const auditQueueFile = `${ROOT}/post-land-audit-queue.json`;
+    const auditQueueBefore = existsSync(auditQueueFile) ? readFileSync(auditQueueFile, "utf8") : null;
+    const srCanon = realpathSync(sr);
+    const auditMainAfter = spawnSync("git", ["-C", sr, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+    await stopSrv();
+    writeFileSync(auditQueueFile, JSON.stringify({ ...(auditQueueBefore ? JSON.parse(auditQueueBefore) as object : {}),
+      [srCanon]: { main: "main", covers: [{ branch: "fleet/lineage-target", mainAfter: auditMainAfter, at: Date.now() }] } }),
+      { mode: 0o600 });
+    await restartSrv();
+    const WATCH_BODY = { kind: "audit", repo: srCanon, mainAfter: auditMainAfter };
+    const watched = await fetch(`${BASE}/api/self/watch`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": successorTok }, body: JSON.stringify(WATCH_BODY) });
+    const watchedJ = (await watched.json()) as { watch?: { id?: string; armed?: boolean; slotOpenedAt?: number } };
+    check("lineage target setup: B holds one ARMED audit watch on a parked land",
+      watched.ok && watchedJ.watch?.armed === true && /^[0-9a-f]{8}$/.test(watchedJ.watch.id ?? "")
+        && /^[0-9a-f]{40}$/.test(auditMainAfter),
+      `status=${watched.status} armed=${watchedJ.watch?.armed} id=${watchedJ.watch?.id} mainAfter=${auditMainAfter}`);
+
     // --- the OVERRIDE: a MAIN that moved to another model in its pane (/model) hands the successor
     // the record it actually wants, instead of the spawn-time one it inherited (2026-09-02: four
     // slots on the record's claude-opus-5[1m], Fable in the pane, every successor born on the
@@ -851,11 +874,34 @@ export async function run(ctx: Ctx): Promise<void> {
         && recordToB?.supersededBy?.slot === oj.slot && recordToB?.supersededBy?.openedAt === overrideRow?.openedAt,
       JSON.stringify({ lineC, onDisk }));
 
+    // THE REBUILD READS THE RECORD AND NOTHING ELSE: kind + target fields -> the door's body
+    const watchOb = lineC?.record?.obligations?.find((o) => o.kind === "watch" && o.id === watchedJ.watch?.id);
+    const watchTarget = (watchOb?.target ?? null) as Record<string, unknown> | null;
+    const rebuiltBody = watchTarget?.kind === "audit" ? { kind: watchTarget.kind, repo: watchTarget.repo, mainAfter: watchTarget.mainAfter }
+      : watchTarget?.kind === "lane" || watchTarget?.kind === "merge" ? { kind: watchTarget.kind, target: watchTarget.target } : null;
+    const recordCText = JSON.stringify(lineC?.record ?? null);
+    check("B's armed watch reaches C's record by id, owed by B, with its re-arm door",
+      watchOb?.owedBy === `slot ${sj.slot}@${watchedJ.watch?.slotOpenedAt}` && watchOb.reArm === "POST /api/self/watch",
+      `obligation=${JSON.stringify(watchOb ?? null)}`);
+    check("...and carries a typed target of exactly {kind, repo, mainAfter}",
+      JSON.stringify(Object.keys(watchTarget ?? {}).sort()) === JSON.stringify(["kind", "mainAfter", "repo"]),
+      `target=${JSON.stringify(watchTarget)}`);
+    check("the record is C's only source for the sha: intent is null and the sha occurs once in the record",
+      lineC?.record?.intent === null && recordCText.split(auditMainAfter).length - 1 === 1,
+      `intent=${JSON.stringify(lineC?.record?.intent)} occurrences=${recordCText.split(auditMainAfter).length - 1}`);
+    check("the exact POST /api/self/watch body rebuilds from the record alone and equals the request B sent",
+      JSON.stringify(rebuiltBody) === JSON.stringify(WATCH_BODY),
+      `rebuilt=${JSON.stringify(rebuiltBody)} sent=${JSON.stringify(WATCH_BODY)}`);
+
     const retired = await successionPost("retire", successorTok);
     const retiredRow = (await succRows()).find((x) => x.id === sj.slot);
     check("POST /api/self/retire immediately removes the reporting successor and clears its label",
       retired.ok && retiredRow?.cwd === null && retiredRow.label === null,
       `${retired.status} ${JSON.stringify(retiredRow)}`);
+    const landWatches = ((await (await get("/api/sessions")).json()) as { watches: { slot: number; mainAfter?: string }[] })
+      .watches.filter((w) => w.mainAfter === auditMainAfter);
+    check("nothing was re-armed: once B retires, no watch on that land exists on any slot, C's included",
+      landWatches.length === 0, `watches=${JSON.stringify(landWatches.map((w) => w.slot))}`);
 
     // --- C → D with a POINTER at a committed, dated section ---
     writeFileSync(`${sr}/handoff-2026-09-14.md`, "## next\nthe committed, dated section\n");
@@ -892,18 +938,44 @@ export async function run(ctx: Ctx): Promise<void> {
     check("the line record survives a server restart byte-for-byte on the successor's own reader",
       lineDAfterBoot?.state === "present" && JSON.stringify(lineDAfterBoot.record) === JSON.stringify(lineD?.record),
       JSON.stringify(lineDAfterBoot));
-    await stopSrv();
-    const plant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { lineageHandovers?: Record<string, unknown>[] };
+    // ONE BOOT PER PLANTED SHAPE on D's record: a refused record is gone from the next save, so every
+    // plant starts from the record as the server wrote it
+    const isRecordD = (r: Record<string, unknown>): boolean => (r.to as { slot?: number } | undefined)?.slot === pj.slot;
+    let recordD: Record<string, unknown> | undefined;
+    const plantD = async (obligations: Record<string, unknown>[]): Promise<LineageView | undefined> => {
+      await stopSrv();
+      // the parked land has served its purpose; restored while the server is down, so no save rewrites it
+      if (auditQueueBefore === null) rmSync(auditQueueFile, { force: true });
+      else writeFileSync(auditQueueFile, auditQueueBefore, { mode: 0o600 });
+      const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { lineageHandovers?: Record<string, unknown>[] };
+      recordD ??= (state.lineageHandovers ?? []).find(isRecordD);
+      state.lineageHandovers = [...(state.lineageHandovers ?? []).filter((r) => !isRecordD(r)), { ...recordD, obligations }];
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(state, null, 2), { mode: 0o600 });
+      await restartSrv();
+      return selfLineage(pointerTok);
+    };
+    const legacyWatch = { kind: "watch", id: "deadbeef", owedBy: "slot 1@1", reArm: "POST /api/self/watch" };
+    const lineDLegacy = await plantD([legacyWatch]);
+    check("a record in the old four-field format stays readable: its watch obligation is served as written, with no target key",
+      lineDLegacy?.state === "present" && recordD !== undefined
+        && JSON.stringify(lineDLegacy.record?.obligations) === JSON.stringify([legacyWatch]),
+      `state=${lineDLegacy?.state} planted=${recordD !== undefined} obligations=${JSON.stringify(lineDLegacy?.record?.obligations)}`);
     // a body smuggled into an obligation: the closed loader refuses the whole record
-    plant.lineageHandovers = (plant.lineageHandovers ?? []).map((r) => (r.to as { slot?: number } | undefined)?.slot === pj.slot
-      ? { ...r, obligations: [{ kind: "auto", id: "deadbeef", owedBy: "slot 1@1", reArm: null, text: "a copied body" }] } : r);
-    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(plant, null, 2), { mode: 0o600 });
-    await restartSrv();
-    const lineDLost = await selfLineage(pointerTok);
+    const lineDLost = await plantD([{ kind: "auto", id: "deadbeef", owedBy: "slot 1@1", reArm: null, text: "a copied body" }]);
     check("a record carrying a body is refused by the loader and read as handoverLost — never as a record with nothing owed",
       lineDLost?.state === "lost" && lineDLost.record === null
         && (lineDLost.handoverLost?.error ?? "").includes("ids only, never a body"),
       JSON.stringify(lineDLost));
+    const lineDNote = await plantD([{ ...legacyWatch,
+      target: { kind: "audit", repo: srCanon, mainAfter: auditMainAfter, note: "das Audit zu diesem Land war rot" } }]);
+    check("a target carrying an unknown field is refused as a whole record, never read with the field dropped",
+      lineDNote?.state === "lost" && (lineDNote.handoverLost?.error ?? "").includes("target must be null, exactly"),
+      `state=${lineDNote?.state} error=${lineDNote?.handoverLost?.error}`);
+    const lineDProse = await plantD([{ ...legacyWatch,
+      target: { kind: "audit", repo: srCanon, mainAfter: "das rote Audit von heute Mittag" } }]);
+    check("free text in a typed target field is refused as a whole record",
+      lineDProse?.state === "lost" && (lineDProse.handoverLost?.error ?? "").includes("target.mainAfter must be a full git object id"),
+      `state=${lineDProse?.state} error=${lineDProse?.handoverLost?.error}`);
     await successionPost("retire", pointerTok);
     rmSync(sr, { recursive: true, force: true });
   }

@@ -159,6 +159,11 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   nichts gearmt und die Stille steht als `program_main_land_event_skipped` auf dem Trail. Grund:
   bis 2026-08-29 erfuhr eine MAIN, deren eigene Land-Tür zu war, von einem Owner-Land gar nichts und
   blieb auf veralteter Ausführungswahrheit stehen (Program f99e9354, Task 8e91fdc9).
+- **`by` einer Deploy-Zeile hat drei Werte** (`deploys.jsonl`, `GET /api/deploys`, das Subjekt von
+  `{kind:"deploy", deployId}`): `owner` und `steward` schreibt der Verb, `unattributed` nur der Boot
+  selbst, wenn srv ohne Deploy-Marker auf einem anderen `bootHead` hochkommt als dem der jüngsten
+  Zeile — ein Neustart außerhalb von `POST /api/deploy`, mit `ok:null`, `target:null` und genau
+  einer Zeile je neuem Head (`server.ts#recordUnattributedBoot`).
 
 
 ### job — `{kind:"job", target:"<jobId>"}` (Dual-Host S2, R5)

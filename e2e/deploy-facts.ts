@@ -299,10 +299,10 @@ export async function run(): Promise<void> {
         open, JSON.stringify({ gap: f.deployGap, bundle: f.bundleStale }));
       return open;
     };
-    interface Row { at: number; id: string; stage: string; ok: boolean | null; target: string | null;
+    interface Row { at: number; id: string; by: string; stage: string; ok: boolean | null; target: string | null;
       bootHead: string | null; head: string | null; hitTarget: boolean | null; bundleStale: boolean | null;
       reason?: string; exitCode?: number | null }
-    interface Deploys { deploys: Row[]; inFlight: { id: string } | null; blocked: string | null }
+    interface Deploys { deploys: Row[]; total: number; inFlight: { id: string } | null; blocked: string | null }
     const deploys = async (): Promise<Deploys> => (await (await get("/api/deploys")).json()) as Deploys;
 
     // --- §5a A FAILING BUILD NEVER TOUCHES THE SERVER ------------------------------------------
@@ -442,6 +442,42 @@ export async function run(): Promise<void> {
       check("§5d ...and it says which half failed: the bundle never reached public/",
         row?.bundleStale === true && /bundle is older than src/.test(row.reason ?? ""),
         JSON.stringify(row?.reason));
+    }
+
+    // --- §6 A RESTART NOBODY ANNOUNCED STILL LEAVES A ROW ---------------------------------------
+    // The 2026-09-14 shape: a MAIN restarted srv by hand (`kill-session`, no marker), a different
+    // commit booted, and the ledger said nothing — it read "nothing deployed since 14:33". restartSrv
+    // IS that hand: it kills srv and boots it with no marker. Three boots — on the head the newest row
+    // already names, after a commit, and on that same head again (a crash respawn) — and exactly ONE
+    // row, on the moved head: neither silence nor a row per lap. Counted by the ledger's `total`
+    // across all three, so a row minted by any boot is seen, not only the one this expects.
+    {
+      const headNow = (): string => spawnSync("git", ["-C", FIX, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const before = await deploys();
+      const headA = headNow();
+      check("§6 precondition: no marker, and the newest ledger row already names the head srv runs on",
+        !existsSync(marker) && before.inFlight === null && before.deploys[0]?.bootHead === headA,
+        JSON.stringify({ marker: existsSync(marker), newest: before.deploys[0], headA }).slice(0, 300));
+      await restartSrv({ FLEET_REPO_DIR: FIX });
+      const same = await deploys();
+      check("§6 a markerless boot on the head the ledger already names writes nothing",
+        same.total === before.total, `${before.total} → ${same.total}: ${JSON.stringify(same.deploys[0]).slice(0, 240)}`);
+      commit("server.ts", "// v7 — restarted by hand");
+      const headB = headNow();
+      await restartSrv({ FLEET_REPO_DIR: FIX });
+      const moved = await deploys();
+      const row = moved.deploys[0];
+      check("§6 a markerless boot on a NEW head appends exactly one row — the restart is no longer invisible",
+        headB !== headA && moved.total === before.total + 1, `${before.total} → ${moved.total}, ${headA} → ${headB}`);
+      check("§6 ...and it is the unattributed boot row: fresh id, by, stage, ok:null, no target, the booted head, the reason",
+        row?.by === "unattributed" && row.stage === "boot" && row.ok === null && row.target === null
+          && row.bootHead === headB && /^[0-9a-f]{8}$/.test(row.id) && !before.deploys.some((x) => x.id === row.id)
+          && row.reason === "srv booted without a deploy marker — restarted outside POST /api/deploy",
+        JSON.stringify(row).slice(0, 300));
+      await restartSrv({ FLEET_REPO_DIR: FIX });
+      const respawn = await deploys();
+      check("§6 a respawn on that same head writes nothing more — one row per head, not one per lap",
+        respawn.total === before.total + 1, `${before.total} → ${respawn.total}`);
     }
 
     if (priorRepoDir === undefined) delete process.env.FLEET_REPO_DIR;

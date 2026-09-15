@@ -2,7 +2,7 @@
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildClarifyBrief } from "../clarify-prompt";
@@ -8901,6 +8901,32 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(ta-e) SHOULD-REJECT: unarchive of an id that never existed is 404 and restores nothing",
       taNever.status === 404 && !(await taTasks()).some((t) => t.id === `tanever${taStamp}`),
       `status=${taNever.status}`);
+
+    // (g) A FAILED WRITE KEEPS THE ROW. The queue now holds 201 live rows (the plant plus the restore),
+    // so the terminal budget is 0 and any row archived here is evicted by the next create. With the
+    // ledger read-only that eviction must not happen: a bound that cannot record what it removes
+    // removes nothing. Mode restored in `finally`, whatever the arms below answered.
+    const taVictim = `talive${taStamp}001`;
+    let taWriteRefused = false;
+    let taKeptWhileRefused = false;
+    let taGoneAfter = false;
+    try {
+      chmodSync(taFile, 0o400);
+      try { accessSync(taFile, fsConstants.W_OK); } catch { taWriteRefused = true; }
+      await post(`/api/tasks/${taVictim}/archive`, {});
+      await post("/api/tasks", { text: `ta eviction trigger ${taStamp} a`, queue: false });
+      taKeptWhileRefused = (await taTasks()).some((t) => t.id === taVictim);
+    } finally {
+      chmodSync(taFile, 0o600);
+    }
+    await post("/api/tasks", { text: `ta eviction trigger ${taStamp} b`, queue: false });
+    taGoneAfter = !(await taTasks()).some((t) => t.id === taVictim);
+    check("(ta-g) setup: a read-only ledger really refuses this process a write (a root run would measure nothing)",
+      taWriteRefused, `uid=${process.getuid?.() ?? "?"}`);
+    check("(ta-g) SHOULD-REJECT: while the ledger cannot be written the cap keeps the row; once it can, the row goes and its eviction line is there",
+      taWriteRefused && taKeptWhileRefused && taGoneAfter
+        && taLedger().some((l) => l.event === "evicted" && l.task.id === taVictim && l.task.status === "archived"),
+      `refused=${taWriteRefused} keptWhileRefused=${taKeptWhileRefused} goneAfter=${taGoneAfter}`);
 
     // Leave the queue as this section found it — the plant replaced it wholesale.
     await stopSrv();

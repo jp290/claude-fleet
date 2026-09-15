@@ -42,6 +42,7 @@ import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, rea
   statSync, symlinkSync } from "node:fs";
 import { loadavg } from "node:os";
 import { dirname, join } from "node:path";
+import { retryResult } from "./result-retry";
 
 // --- config ------------------------------------------------------------------------------------
 export interface HelperConfig {
@@ -223,8 +224,13 @@ async function api(cfg: HelperConfig, path: string,
   const headers: Record<string, string> = { "x-fleet-helper-token": cfg.token };
   if (init) headers["content-type"] = "application/json";
   Object.assign(headers, init?.headers ?? {});
-  log(`req ${init?.method ?? "GET"} ${path}`);
-  const res = await fetch(new URL(path, cfg.fleetUrl).toString(), { ...init, headers });
+  const isResult = path === "/api/helper/result" && init?.method === "POST";
+  const request = () => {
+    log(`req ${init?.method ?? "GET"} ${path}`);
+    return fetch(new URL(path, cfg.fleetUrl).toString(), { ...init, headers,
+      ...(isResult ? { signal: AbortSignal.timeout(10_000) } : {}) });
+  };
+  const res = isResult ? await retryResult(request, log) : await request();
   if (res.status === 401) throw new AuthFault(`the fleet refused this machine's helper token (401 on ${path})`);
   return res;
 }
@@ -675,7 +681,7 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
 // "could not be started", is deliberately NOT sent — 126/127 is already read by the server's shared
 // classifier (server.ts#remoteVerdictOf), and one function deciding what an exit code means is
 // worth more than a second opinion travelling beside it.
-async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null, note: string,
+export async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null, note: string,
   logPath?: string, clonedSha?: string, artifacts: ArtifactRow[] = [],
   timedOutMs?: number): Promise<void> {
   const size = logPath && existsSync(logPath) ? statSync(logPath).size : 0;

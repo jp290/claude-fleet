@@ -296,6 +296,8 @@ Same fix-run-fail loop about five times? The problem is structural. Stop and rep
 
 ## Where a test goes
 
+Standalone helper-result probe: `bun e2e/helper-result.ts`; pass the suite's `check` callback instead of importing `e2e/harness.ts`, whose initialization requires a staged fleet.json and isolated socket/port.
+
 `fleet-e2e.ts` is a RUNNER only. It boots the check modules in `e2e/` in order and prints the tail.
 Add a check next to its family in the right `e2e/<family>.ts` — never at the end of a file just
 because that is where the cursor is, and never back into the runner. Shared plumbing lives in

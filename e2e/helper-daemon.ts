@@ -19,6 +19,7 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { BASE, ROOT, check, get, post } from "./harness";
 import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
+import { run as checkResultRetry } from "./helper-result";
 // The import is not only for the four pure checks below: it is the edge that makes e2e-stage.sh
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
@@ -68,6 +69,7 @@ export async function run(h: {
   headOf: (ref?: string) => string;
 }): Promise<void> {
   const { REPO, setAuditMode, killSrv, startSrv, auditRows, headOf } = h;
+  await checkResultRetry(check);
 
   // ===== (HD.1) THE MODE ARITHMETIC, as pure functions ==========================================
   // These are the only checks in this module that need no server, and they are here rather than

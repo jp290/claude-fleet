@@ -4149,6 +4149,57 @@ export async function run(ctx: Ctx): Promise<void> {
       (await contextReceipts()).total === failedReceiptCount);
     await post(`/api/tasks/${xT.task.id}/delete`, {});
 
+    // --- (f2b) pi-zai's SECOND model, on the same road: the dispatch may pin glm-5.3-flash, the
+    // catalogue the pane writes must carry it beside glm-5.3, and a third model stays a 400 that
+    // names both allowed ids. Same pane-command discipline as the codex probe above — never the
+    // route's 200. The wrapper already planted the stand-in key and the scratch agent dir
+    // (e2e-isolated.sh), so the pane's key guard passes and the catalogue really gets written. ---
+    {
+      const zaiAgentDir = process.env.FLEET_PI_ZAI_AGENT_DIR ?? "";
+      const pzT = (await (await post("/api/tasks", { text: "pi-zai flash dispatch probe", queue: false })).json()) as { task: { id: string } };
+      const pzd = await post(`/api/tasks/${pzT.task.id}/dispatch`, { harness: "pi-zai", model: "glm-5.3-flash" });
+      const pzdJ = (await pzd.json()) as { ok?: boolean; slot?: number; error?: string };
+      check("▸ start accepts pi-zai with glm-5.3-flash and spawns its lane (fixture)",
+        pzd.ok && pzdJ.ok === true && typeof pzdJ.slot === "number", `${pzd.status} ${JSON.stringify(pzdJ)}`);
+      // captured IMMEDIATELY, same reason as xCmd: the teardown below takes the pane with it
+      const pzCmd = typeof pzdJ.slot === "number"
+        ? (await tmuxOut("display-message", "-p", "-t", `s${pzdJ.slot}`, "#{pane_start_command}")).out.replaceAll("\\", "") : "";
+      check("a DISPATCHED pi-zai lane with model glm-5.3-flash spawns --model 'glm-5.3-flash'",
+        pzCmd.includes("pi --provider zai --model 'glm-5.3-flash'")
+          && pzCmd.includes(`PI_CODING_AGENT_DIR='${zaiAgentDir}'`),
+        pzCmd.slice(-300));
+      type ZaiCatalog = { providers?: { zai?: { models?: { id: string; contextWindow: number; maxTokens: number; reasoning: boolean }[] } } };
+      let pzCatalog: ZaiCatalog | null = null;
+      for (let i = 0; i < 40 && pzCatalog === null; i++) {
+        try {
+          const parsed = JSON.parse(readFileSync(`${zaiAgentDir}/models.json`, "utf8")) as ZaiCatalog;
+          if (parsed.providers?.zai?.models?.some((m) => m.id === "glm-5.3-flash")) pzCatalog = parsed;
+        } catch { /* not written yet — the poll is the wait */ }
+        if (pzCatalog === null) await Bun.sleep(100);
+      }
+      const pzIds = pzCatalog?.providers?.zai?.models ?? [];
+      const pzFlash = pzIds.find((m) => m.id === "glm-5.3-flash");
+      check("the flash spawn writes the two-entry catalogue: glm-5.3-flash beside glm-5.3, with pi's own window/token/reasoning facts",
+        pzIds.length === 2 && pzIds.some((m) => m.id === "glm-5.3")
+          && pzFlash !== undefined && pzFlash.contextWindow === 1_000_000
+          && pzFlash.maxTokens === 131_072 && pzFlash.reasoning === true,
+        `${zaiAgentDir}/models.json ${JSON.stringify(pzIds.map((m) => m.id))}`);
+      if (typeof pzdJ.slot === "number") await post(`/api/slots/${pzdJ.slot}/kill`, {});
+      await post(`/api/tasks/${pzT.task.id}/delete`, {});
+
+      // the third model is refused at BOTH task doors, and the sentence names the two allowed ids
+      const pz9File = await post("/api/tasks", { text: "pi-zai glm-9 refusal probe", queue: false, harness: "pi-zai", model: "glm-9" });
+      const pz9FileText = await pz9File.text();
+      const pz9T = (await (await post("/api/tasks", { text: "pi-zai glm-9 dispatch refusal probe", queue: false })).json()) as { task: { id: string } };
+      const pz9Dispatch = await post(`/api/tasks/${pz9T.task.id}/dispatch`, { harness: "pi-zai", model: "glm-9" });
+      const pz9DispatchText = await pz9Dispatch.text();
+      check("a third pi-zai model is a 400 at filing and at ▸ dispatch, naming glm-5.3 and glm-5.3-flash",
+        pz9File.status === 400 && pz9FileText.includes("glm-5.3") && pz9FileText.includes("glm-5.3-flash")
+          && pz9Dispatch.status === 400 && pz9DispatchText.includes("glm-5.3") && pz9DispatchText.includes("glm-5.3-flash"),
+        `${pz9File.status} ${pz9FileText} / ${pz9Dispatch.status} ${pz9DispatchText}`);
+      await post(`/api/tasks/${pz9T.task.id}/delete`, {});
+    }
+
     // --- (f3) SCREEN READINESS on the dispatch tail — the counterprobes to the measured
     // 2026-08-12/09-01 findings: codex block screens keep the agent process ALIVE, so the process
     // probe passes and only the rendered pane can refuse. Each probe below dispatches a real codex

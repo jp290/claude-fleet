@@ -706,6 +706,9 @@ export async function run(ctx: Ctx): Promise<void> {
   // proves loadState retained the id, the second proves harnessOf did not fall back to Claude.
   const PI_ZAI_PERSIST_SLOT = 14;
   await post(`/api/slots/${PI_ZAI_PERSIST_SLOT}/kill`, {});
+  // Stale the shared scratch catalogue first, so the check below can only pass if THIS slot's
+  // spawn rewrote it — a leftover two-entry file from an earlier probe must not answer for it.
+  try { writeFileSync(`${process.env.FLEET_PI_ZAI_AGENT_DIR}/models.json`, "{}\n"); } catch { /* dir absent — the spawn creates it */ }
   const piZaiPersistOpen = await post(`/api/slots/${PI_ZAI_PERSIST_SLOT}/open`,
     { cwd: codexCwd, harness: "pi-zai", effort: "low" });
   let piZaiPersistState: { harness?: string; sessionId?: string } | undefined;
@@ -719,6 +722,26 @@ export async function run(ctx: Ctx): Promise<void> {
     piZaiPersistOpen.ok && piZaiPersistState?.harness === "pi-zai"
       && /^[0-9a-f-]{36}$/.test(piZaiPersistState.sessionId ?? ""),
     `${piZaiPersistOpen.status} / ${JSON.stringify(piZaiPersistState)}`);
+  // The fixture opened WITHOUT a model pin, so its pane line is the adapter's default tier — the
+  // one behaviour the second model must not disturb. Captured before the restart below, because
+  // the restart's heal check asserts the same line from the respawned pane.
+  const piZaiDefaultCmd = piZaiPersistOpen.ok
+    ? (await tmuxOut("display-message", "-p", "-t", `s${PI_ZAI_PERSIST_SLOT}`, "#{pane_start_command}")).out.replaceAll("\\", "")
+    : "";
+  let piZaiCatalogIds: string[] = [];
+  for (let i = 0; i < 40; i++) {
+    try {
+      piZaiCatalogIds = (JSON.parse(readFileSync(`${process.env.FLEET_PI_ZAI_AGENT_DIR}/models.json`, "utf8")) as
+        { providers?: { zai?: { models?: { id: string }[] } } }).providers?.zai?.models?.map((m) => m.id) ?? [];
+      if (piZaiCatalogIds.length === 2) break;
+    } catch { /* not rewritten yet — the poll is the wait */ }
+    await Bun.sleep(50);
+  }
+  check("pi-zai without a model pin spawns the default tier --model 'glm-5.3' while the catalogue it writes carries both models",
+    piZaiDefaultCmd.includes("pi --provider zai --model 'glm-5.3'")
+      && !piZaiDefaultCmd.includes("glm-5.3-flash")
+      && JSON.stringify(piZaiCatalogIds) === JSON.stringify(["glm-5.3", "glm-5.3-flash"]),
+    `${piZaiDefaultCmd.slice(-200)} / ${JSON.stringify(piZaiCatalogIds)}`);
 
   const PI_OX_PERSIST_SLOT = 13;
   await post(`/api/slots/${PI_OX_PERSIST_SLOT}/kill`, {});
@@ -893,6 +916,14 @@ export async function run(ctx: Ctx): Promise<void> {
       && /--session-id [0-9a-f-]{36}\b/.test(piZaiHealCmd) && piZaiHealCmd.includes("--thinking low"),
     piZaiHealCmd.slice(-280));
   await post(`/api/slots/${PI_ZAI_PERSIST_SLOT}/kill`, {});
+  // The slot is free again, so the OPEN door answers the model question on this very fixture: a
+  // third model is refused before anything is spawned, and the sentence names both allowed ids.
+  const piZaiBadOpen = await post(`/api/slots/${PI_ZAI_PERSIST_SLOT}/open`,
+    { cwd: codexCwd, harness: "pi-zai", model: "glm-9" });
+  const piZaiBadOpenText = await piZaiBadOpen.text();
+  check("pi-zai refuses a third model at open: 400 naming exactly glm-5.3 and glm-5.3-flash",
+    piZaiBadOpen.status === 400 && piZaiBadOpenText.includes("glm-5.3") && piZaiBadOpenText.includes("glm-5.3-flash"),
+    `${piZaiBadOpen.status} ${piZaiBadOpenText}`);
   const ctxRow16After = api.slots.find((s) => s.id === 16);
   check("after restart: a Codex slot's context budget loads as persisted",
     ctxRow16After?.harness === "codex" && JSON.stringify(ctxRow16After.context) === JSON.stringify(CTX_PROFILE),

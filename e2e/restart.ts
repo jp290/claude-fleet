@@ -729,13 +729,14 @@ export async function run(ctx: Ctx): Promise<void> {
     ? (await tmuxOut("display-message", "-p", "-t", `s${PI_ZAI_PERSIST_SLOT}`, "#{pane_start_command}")).out.replaceAll("\\", "")
     : "";
   let piZaiCatalogIds: string[] = [];
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 80; i++) { // ceiling ~8 s — the write lands within one pane boot, which a
+    // loaded box (the 2026-09-15 helper preview) can stretch past the 2 s this poll used to allow
     try {
       piZaiCatalogIds = (JSON.parse(readFileSync(`${process.env.FLEET_PI_ZAI_AGENT_DIR}/models.json`, "utf8")) as
         { providers?: { zai?: { models?: { id: string }[] } } }).providers?.zai?.models?.map((m) => m.id) ?? [];
       if (piZaiCatalogIds.length === 2) break;
     } catch { /* not rewritten yet — the poll is the wait */ }
-    await Bun.sleep(50);
+    await Bun.sleep(100);
   }
   check("pi-zai without a model pin spawns the default tier --model 'glm-5.3' while the catalogue it writes carries both models",
     piZaiDefaultCmd.includes("pi --provider zai --model 'glm-5.3'")

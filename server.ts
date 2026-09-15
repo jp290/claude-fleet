@@ -33,7 +33,9 @@ import {
   type RulebookFragment,
 } from "./rulebook";
 import { validateRefineProposal, type RefineValidation } from "./refine-validate";
-import { planContext, type ContextPlan, type ContextPlanInput, type ContextPlanSelection } from "./context-plan";
+import { planContext, planProgramContext, programContextPacksFrom, validateProgramContextPacks, PROGRAM_CONTEXT_PACKS_MAX,
+  PROGRAM_CONTEXT_PACK_SOURCES_MAX, type ContextPlan, type ContextPlanInput, type ContextPlanSelection,
+  type ProgramContextPack } from "./context-plan";
 import { buildSnippetPackage, planSnippets, snippetReceipt, renderSnippetBlock, type SnippetFile, type SnippetReceipt } from "./context-snippets";
 import {
   CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest,
@@ -11293,9 +11295,15 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // foreign-only rule would be a second, quieter policy. `repoRootOf` throws → the catch requeues.
     const base = planContext(planFacts);
     const { repoPlan, blobShas, blobModes } = await repoManifestContextPlan(await repoRootOf(wt.repo), head, planFacts);
+    const laneProgram = free.programId ? programs.find((p) => p.id === free.programId) : undefined;
+    // THE PROGRAM'S OWN POINTERS (Program.contextPacks), third and last in the same plan: the lane's
+    // Program is read through the slot's programId, like the studio block below. A lane outside every
+    // Program, or of one without packs, gets the empty plan — its receipt keeps its exact bytes. The
+    // path check runs against the same listing that stamps the versions, so nothing extra is read.
+    const programPlan = planProgramContext({ program: laneProgram ?? null, trackedPaths: new Set(blobShas.keys()) });
     const plan: ContextPlan = {
-      selected: stampObservedSourceHashes([...base.selected, ...repoPlan.selected], blobShas),
-      omitted: [...base.omitted, ...repoPlan.omitted] };
+      selected: stampObservedSourceHashes([...base.selected, ...repoPlan.selected, ...programPlan.selected], blobShas),
+      omitted: [...base.omitted, ...repoPlan.omitted, ...programPlan.omitted] };
     const anchorBlock = renderContextAnchorBlock(plan);
     // THE LANE'S HALF OF THE STUDIO RECORD. The founding brief's half is folded into railBlockFor;
     // a worker lane never passes through that selector, so its half is read here — through the
@@ -11311,7 +11319,6 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // NOWHERE today, which is a gap named rather than papered over: Fleet has exactly one
     // worker-brief builder and no typed lane role to select by (workflow-v2.md §7 F4). Guessing a
     // role from the harness or the task text would be a second, quieter source for an owner choice.
-    const laneProgram = free.programId ? programs.find((p) => p.id === free.programId) : undefined;
     const studioLaneBlock = laneProgram ? studioBlockFor(laneProgram, "lane") : "";
     // N1, "Notizen auf deiner Flaeche" (docs/notizen-verarbeitung-2026-09-06.md §3). Until this
     // seam a `notiz` had exactly one consumer — the owner. No tick reads one, `capTasks` never
@@ -11456,6 +11463,7 @@ type ContextReceiptSelection = {
   useWhen?: string;
   anchors: readonly { path: string; anchor: string }[] | { privateSourceId: string };
   sourceHash?: string;
+  origin?: "program";
 };
 
 // v2 renders PURPOSE beside the pointer: useWhen once per pack, pointers indented beneath it. A
@@ -11482,8 +11490,10 @@ function contextReceiptSelections(selected: readonly ContextPlanSelection[]): Co
     // useWhen is copied from the SELECTION, never re-read from the seed: the row must describe the
     // block that was delivered, and the plan is the only thing the renderer saw.
     const useWhen = selection.useWhen !== undefined ? { useWhen: selection.useWhen } : {};
+    // A Program pack says so on its row; every other row stays byte-identical to before the field.
+    const origin = "origin" in selection && selection.origin === "program" ? { origin: selection.origin } : {};
     if (!("privateSourceId" in selection.sources))
-      return { id: selection.id, ...useWhen, anchors: selection.sources.map((source) => ({ ...source })), ...sourceHash };
+      return { id: selection.id, ...useWhen, anchors: selection.sources.map((source) => ({ ...source })), ...sourceHash, ...origin };
     return {
       id: selection.id,
       ...useWhen,
@@ -27509,6 +27519,15 @@ if (existsSync(STATE_FILE)) {
               error: read.error.slice(0, PROGRAM_RECORD_LOSS_ERROR_MAX) };
           }
         }
+        // Program-scoped context pointers: SHAPE only at load (their anchors were checked when written,
+        // and a boot has no commit to re-check them against). Unreadable loads as ABSENT and is said
+        // out loud; the Program itself stays — a lost pointer list must never cost the bracket.
+        let contextPacks: ProgramContextPack[] | undefined;
+        if (Object.prototype.hasOwnProperty.call(x, "contextPacks")) {
+          const read = programContextPacksFrom(x.contextPacks);
+          if (read) contextPacks = read;
+          else console.error(`Program ${x.id} contextPacks unreadable — loaded as absent`);
+        }
         let founding: ProgramFounding | undefined;
         if (foundingRead?.ok) {
           const markerProfile = foundingProfileKind(foundingRead.founding);
@@ -27543,6 +27562,7 @@ if (existsSync(STATE_FILE)) {
           ...(inboxLost ? { inboxLost } : {}),
           ...(handover ? { handover } : {}),
           ...(handoverLost ? { handoverLost } : {}),
+          ...(contextPacks && contextPacks.length > 0 ? { contextPacks } : {}),
           ...(status !== "proposed" ? { confirmedAt: confirmedAt! } : {}),
           ...(status === "active" || status === "complete" ? { activatedAt: activatedAt! } : {}),
           ...(status === "complete" ? { completedAt: completedAt! } : {}) });
@@ -30312,6 +30332,52 @@ Bun.serve<WSData>({
       if (s.worktree)
         return json({ error: "programs are brackets above lanes; a lane cannot read execution as its own" }, 409);
       return programExecutionView(s);
+    }
+
+    // PROGRAM-SCOPED CONTEXT POINTERS (docs/self-api.md §program-context-packs). One writer: the bound
+    // MAIN of an active Program. The list is validated at WRITE against that MAIN's integration HEAD,
+    // so an unresolvable anchor is a named refusal here and never a surprise at dispatch.
+    if (url.pathname === "/api/self/program-context-packs" && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane cannot write its Program's context packs — its MAIN maintains them" }, 409);
+      const bound = boundProgramForMain(s);
+      if (!bound.ok) return json({ error: bound.error }, 409);
+      const raw = (await readJson(req))?.packs;
+      if (!s.cwd) return json({ error: "this session has no working directory to name a repository" }, 409);
+      let repoRoot: string;
+      try { repoRoot = await repoRootOf(s.cwd); }
+      catch (e) { return json({ error: `cannot name this MAIN's repository: ${e instanceof Error ? e.message : String(e)}` }, 409); }
+      const head = await integrationHead(repoRoot);
+      if (!head) return json({ error: "could not read integration HEAD to check the anchors against" }, 409);
+      const listing = await treeListingAt(repoRoot, head);
+      if (!listing.ok) return json({ error: "could not list the tree at integration HEAD" }, 409);
+      // Read only what a list inside the caps can name (≤5 × ≤4 blobs); the validator refuses the rest.
+      const sourceBytes = new Map<string, string>();
+      if (Array.isArray(raw) && raw.length <= PROGRAM_CONTEXT_PACKS_MAX) {
+        for (const pack of raw) {
+          const sources: unknown = typeof pack === "object" && pack !== null && "sources" in pack ? pack.sources : undefined;
+          if (!Array.isArray(sources) || sources.length > PROGRAM_CONTEXT_PACK_SOURCES_MAX) continue;
+          for (const source of sources) {
+            const path: unknown = typeof source === "object" && source !== null && "path" in source ? source.path : undefined;
+            if (typeof path !== "string" || sourceBytes.has(path) || !listing.trackedPaths.has(path)) continue;
+            const blob = await showAtHead(repoRoot, head, path, CONTEXT_MANIFEST_MAX_SOURCE_BYTES);
+            if (blob.kind === "bytes") sourceBytes.set(path, blob.text);
+          }
+        }
+      }
+      const valid = validateProgramContextPacks(raw, { trackedPaths: listing.trackedPaths, sourceBytes });
+      if (!valid.ok) return json({ error: "context packs refused", issues: valid.issues }, 400);
+      // Every await above was git; the binding is re-read at the write, not trusted from before them.
+      const still = boundProgramForMain(s);
+      if (!still.ok || still.program !== bound.program) return json({ error: "Program-MAIN binding changed while checking — nothing written" }, 409);
+      const program = still.program;
+      if (valid.packs.length > 0) program.contextPacks = valid.packs;
+      else delete program.contextPacks;
+      await saveStateNow();
+      return json({ ok: true, contextPacks: program.contextPacks ?? [], head });
     }
 
     // The Supervisor's two Cut-2 channels: same every-session rail, same flat-cost 401. What separates

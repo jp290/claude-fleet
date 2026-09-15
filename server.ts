@@ -10686,6 +10686,53 @@ function answerAttentionsForCriterion(t: Task): string[] {
   return answered;
 }
 
+// THE OPENING HALF OF THAT JOIN. Task b28b9d89 proposed a criterion 2026-09-15 at 11:46, 12:13 and
+// 13:04; the propose door wrote an audit line and nothing the owner reads, the lane's report went
+// needs-main to a Program-MAIN that may not confirm, and the owner confirmed at 15:21 only after
+// the orchestrator relayed it — the lane held the queue (0 of 53 waves startable) the whole time.
+//
+// ONE open row per task, owned by the lane's slot: a re-proposal rewrites that row's text instead
+// of minting a twin, and the confirm closes it through answerAttentionsForCriterion (its text names
+// criterion-confirm, and its requester sits on the task's slot — both arms hold). Matched by SLOT,
+// not the full occupant triple, and rebound to the current occupant: a lane successor re-proposing
+// on the same task must find the row, not raise a second one.
+//
+// An attention row needs an ACTIVE Program (a non-empty programId, an inbox for the answer), so a
+// task outside one gets no row and the caller says so — never a row bound to a Program it guessed.
+// Like its sibling it does not persist; the caller saves.
+function openCriterionAttention(s: Slot, t: Task): { id: string; existing: boolean } | { id: null; why: string } {
+  const c = t.criterion;
+  if (!c || c.confirmedAt) return { id: null, why: "no unconfirmed criterion on this task" };
+  const program = t.programId ? programs.find((p) => p.id === t.programId) : undefined;
+  if (!program || program.status !== "active")
+    return { id: null, why: t.programId
+      ? `the task's Program ${t.programId} is ${program?.status ?? "missing"} — no attention row without an active Program`
+      : "the task belongs to no Program — no attention row without an active Program" };
+  const firstLine = c.text.split("\n")[0]?.trim() ?? "";
+  const text = (`Done-criterion proposed by lane slot ${s.id}${s.worktree ? ` (${s.worktree.branch})` : ""} `
+    + `on task ${t.id} — the lane waits on it. Confirm or edit: POST /api/tasks/${t.id}/criterion-confirm. `
+    + `First line: ${firstLine}`).slice(0, MAX_ATTENTION_TEXT);
+  const requester = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
+  const existing = attentionRequests.find((a) => a.status === "open" && a.kind === "decision"
+    && a.requester.slot === s.id && a.provenance?.taskId === t.id);
+  if (existing) {
+    existing.text = text;
+    existing.requester = requester;
+    audit("attention_updated", s.id, `${existing.id} kind=decision program=${existing.programId} via=criterion`);
+    return { id: existing.id, existing: true };
+  }
+  const branch = s.worktree && validAttentionBranch(s.worktree.branch) ? s.worktree.branch : null;
+  const request: AttentionRequest = {
+    id: randomBytes(12).toString("hex"), raisedAt: Date.now(), kind: "decision", text, requester,
+    programId: program.id,
+    provenance: { taskId: t.id, originId: t.originId ?? null, programId: program.id, branch, candidateSha: null },
+    status: "open", answer: null, refusedReason: null, closedAt: null,
+  };
+  attentionRequests = [...attentionRequests, request];
+  audit("attention_open", s.id, `${request.id} kind=decision program=${program.id} via=criterion`);
+  return { id: request.id, existing: false };
+}
+
 // Dismissal WITH a reason. The reason is mandatory because the whole point of this row is that the
 // owner's silence is indistinguishable from not having seen it: a refusal is the receipt that says
 // seen-and-declined, and a receipt without a reason would be the silence again, one field deeper.
@@ -31041,9 +31088,11 @@ Bun.serve<WSData>({
       // never a confirmed one: that would let the producer edit the anchor after the promotion
       if (t.criterion?.confirmedAt) return json({ error: "criterion already confirmed by the owner — it is theirs now" }, 409);
       t.criterion = { text, proposedAt: Date.now(), confirmedAt: null };
+      // …and the owner hears of it in the same state cut (openCriterionAttention)
+      const attention = openCriterionAttention(s, t);
       saveState();
       audit("criterion_proposed", s.id, t.id);
-      return json({ ok: true, proposedAt: t.criterion.proposedAt });
+      return json({ ok: true, proposedAt: t.criterion.proposedAt, attention });
     }
 
     // THE OFFER DOOR — a lane hands its OWN preview suite to another machine. Lane-only: the answer is

@@ -1253,6 +1253,20 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   Ein Confirm ohne passende Zeile ändert nichts (`attentionAnswered: []`), und der zweite Confirm
   ist die alte 409 (`criterion already confirmed`) und schreibt darum nichts nach. Der Confirm
   bleibt im Übrigen, was er war: er entlässt zusätzlich ein `awaiting: "owner"` am Slot der Task.
+- **Die öffnende Hälfte: `POST /api/self/criterion`** (Lane-Route, `server.ts#openCriterionAttention`).
+  Ein erfolgreiches Ablegen (neu oder ersetzend) hält im selben State-Cut GENAU EINE offene
+  Owner-Attention je Task: `kind: "decision"`, `provenance.taskId` = die Gründungs-Task, Requester =
+  der Lane-Slot, Text nennt `POST /api/tasks/<id>/criterion-confirm` und die erste Zeile des
+  Kriteriums. Ein erneutes Ablegen schreibt den Text DIESER Zeile neu (gefunden über Slot + taskId,
+  der Requester wird auf den aktuellen Occupant gezogen) statt eine zweite anzulegen; die Antwort
+  trägt `attention: {id, existing}`. Der Confirm schließt sie über den Absatz oben (beide Arme
+  greifen). Ein Ablegen auf ein bestätigtes Kriterium bleibt die 409 und öffnet nichts. **Ohne aktives
+  Program keine Zeile** — eine Attention braucht `programId` und eine Inbox für die Antwort; die
+  Antwort sagt dann `attention: {id: null, why}`. Die Lane selbst darf weiterhin keine Attention
+  heben (409); diese Zeile hebt der Server. **Anlass:** Task `b28b9d89` legte am 2026-09-15 um 11:46,
+  12:13 und 13:04 je ein Kriterium ab, das nur als `criterion_proposed`-Audit existierte; der Report
+  ging needs-main an eine Program-MAIN, die nicht bestätigen darf, der Owner bestätigte erst 15:21
+  nach einer Meldung der Orchestratorin — die Lane hielt so lange die Queue (0 von 53 Wellen startbar).
 - **Antwort POST read:** `{ok: true, existing: false, entry}` beim ersten Mal, `{ok: true,
   existing: true, entry}` bei jedem weiteren. Die Quittung ist **kein Lock**: ein zweites Lesen
   überschreibt `readBy`/`readAt` nie, denn der erste Leser ist die Tatsache.

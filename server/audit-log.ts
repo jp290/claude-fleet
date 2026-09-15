@@ -284,6 +284,8 @@ type AuditEvent =
   | "attention_open" | "attention_answered" | "attention_refused" | "attention_prune"
   // an open row of an active Program handed to the MAIN that succeeded its requester (never an owner kill)
   | "attention_rebound"
+  // the one criterion row of a task rewritten by a re-proposal (server.ts#openCriterionAttention)
+  | "attention_updated"
   | "attention_answer_send_uncertain"
   // a full-window main session spent its bounded three-attempt handoff budget. The detail says
   // "gave up" so exhaustion is visible rather than indistinguishable from a disabled tick.

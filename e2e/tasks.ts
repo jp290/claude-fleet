@@ -4519,7 +4519,10 @@ export async function run(ctx: Ctx): Promise<void> {
   // have — so the assertions below pin the frame's presence AND the compiled brief's absence. ---
   {
     const MARK = "clarify-probe-verbatim-marker";
-    const iT = (await (await post("/api/tasks", { text: `${MARK} — three bundled parts, no done-criterion`, queue: false })).json()) as { task: { id: string } };
+    // Program-attached on purpose: an attention row needs an active Program, and the criterion's
+    // owner attention (server.ts#openCriterionAttention) is pinned below on this very lane.
+    const iT = (await (await post("/api/tasks", { text: `${MARK} — three bundled parts, no done-criterion`, queue: false,
+      programId: provenanceProgramId })).json()) as { task: { id: string; programId?: string } };
     const iRes = await post(`/api/tasks/${iT.task.id}/dispatch`, { clarify: true });
     const iJ = (await iRes.json()) as { ok?: boolean; slot?: number; clarify?: boolean };
     check("(i) clarify start spawns a lane and reports the mode back",
@@ -4661,8 +4664,26 @@ export async function run(ctx: Ctx): Promise<void> {
       body: JSON.stringify({ text }),
     });
     const p1 = await propose("done = the scrollback slice, verified by ./e2e-isolated.sh");
+    const p1Body = (await p1.json()) as { attention?: { id: string | null; existing?: boolean; why?: string } };
     check("(i) the lane can propose a criterion onto its own founding task",
-      p1.ok, `${p1.status} ${JSON.stringify(await p1.json())}`);
+      p1.ok, `${p1.status} ${JSON.stringify(p1Body)}`);
+    // THE OWNER HEARS OF IT (2026-09-15, task b28b9d89: three proposals, an audit line each and no
+    // row the owner reads, confirmed 15:21 only after a relay). Read off the owner's own list.
+    type CritRow = { id: string; kind: string; status: string; text: string;
+      answer: { text: string } | null; provenance?: { taskId: string | null } };
+    const critRows = async (): Promise<CritRow[]> =>
+      (((await (await get("/api/attention")).json()) as { requests?: CritRow[] }).requests ?? [])
+        .filter((a) => a.provenance?.taskId === iT.task.id);
+    check("(i-attn) fixture: the clarify task sits in an active Program",
+      !!provenanceProgramId && iT.task.programId === provenanceProgramId, JSON.stringify(iT.task));
+    const a1 = await critRows();
+    const a1Open = a1.filter((a) => a.status === "open");
+    check("(i-attn a) a proposed criterion opens exactly ONE owner decision naming the task, criterion-confirm and the first line",
+      a1Open.length === 1 && a1Open[0].kind === "decision" && p1Body.attention?.id === a1Open[0].id
+      && p1Body.attention?.existing === false
+      && a1Open[0].text.includes(`POST /api/tasks/${iT.task.id}/criterion-confirm`)
+      && a1Open[0].text.includes("done = the scrollback slice"),
+      JSON.stringify({ attention: p1Body.attention, rows: a1 }));
     const critOf = async (id: string) => ((await (await get("/api/tasks")).json()) as
       { tasks: { id: string; criterion?: { text: string; proposedAt: number; confirmedAt: number | null } }[] })
       .tasks.find((t) => t.id === id)?.criterion;
@@ -4676,14 +4697,35 @@ export async function run(ctx: Ctx): Promise<void> {
       !!digestRow?.criterion && digestRow.criterion.text === undefined
       && digestRow.criterion.confirmedAt === null, JSON.stringify(digestRow?.criterion));
     check("(i) an unknown self token cannot propose a criterion", (await propose("x", "0".repeat(32))).status === 401);
+    // a re-proposal REWRITES the one row — a second open row would be the pile the owner skims past
+    const p2 = await propose("done = the second draft wins\nverified by ./e2e-isolated.sh");
+    const p2Body = (await p2.json()) as { attention?: { id: string | null; existing?: boolean } };
+    const a2 = await critRows();
+    const a2Open = a2.filter((a) => a.status === "open");
+    check("(i-attn b) re-proposing keeps exactly ONE open row, same id, now carrying the new first line",
+      p2.ok && a2.length === 1 && a2Open.length === 1 && a2Open[0].id === a1Open[0]?.id
+      && p2Body.attention?.id === a2Open[0].id && p2Body.attention?.existing === true
+      && a2Open[0].text.includes("done = the second draft wins") && !a2Open[0].text.includes("scrollback slice"),
+      JSON.stringify({ attention: p2Body.attention, rows: a2 }));
     // the owner confirms, editing as they go — what is stored is what THEY agreed to
     const conf = await post(`/api/tasks/${iT.task.id}/criterion-confirm`, { text: "done = scrollback only, owner-edited" });
+    const confBody = (await conf.clone().json()) as { attentionAnswered?: string[] };
     const c2 = await critOf(iT.task.id);
+    const a3 = await critRows();
+    check("(i-attn c) the confirm closes that row through the existing join: 0 open, the row answered",
+      conf.ok && a3.length === 1 && a3.filter((a) => a.status === "open").length === 0
+      && a3[0].id === a1Open[0]?.id && a3[0].status === "answered"
+      && (a3[0].answer?.text ?? "").includes("criterion-confirm")
+      && confBody.attentionAnswered?.includes(a3[0].id) === true,
+      JSON.stringify({ answered: confBody.attentionAnswered, rows: a3 }));
     check("(i) the owner's confirmation stores THEIR text and stamps confirmedAt",
       conf.ok && c2?.text === "done = scrollback only, owner-edited" && typeof c2?.confirmedAt === "number",
       `${conf.status} ${JSON.stringify(c2)}`);
     check("(i) a confirmed criterion is no longer the lane's to rewrite (409)",
       (await propose("sneaking a wider criterion in")).status === 409);
+    const a4 = await critRows();
+    check("(i-attn d) the refused re-proposal opens no new row",
+      a4.length === 1 && a4.filter((a) => a.status === "open").length === 0, JSON.stringify(a4));
     check("(i) confirming twice is refused (409)",
       (await post(`/api/tasks/${iT.task.id}/criterion-confirm`, {})).status === 409);
     // and the confirmation released the wait, so the steward may talk to the lane again —

@@ -267,10 +267,12 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   // literal `includes` above then refused every member but the first — 21 of 38 surface gaps in the
   // live ledger on 2026-09-13, more than any other cause. Still a QUOTE: the chain must stand in the
   // intent text, attached to that file, so nothing masked and nothing unnamed gets through.
+  // Whitespace alone separates members too (`datei#a #b`): the largest single gap of every arm in
+  // the card A/B measurement (docs „Karten-A/B E1c", 57/100/122 per arm) was that spelling.
   const namedInChain = (file: string, symbol: string): boolean => {
     const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const chain = new RegExp(`(?<![A-Za-z0-9_./-])${escaped}#(${IDENT_SRC}(?:\\s*[/,]\\s*#${IDENT_SRC})*)`, "g");
-    for (const hit of intent.matchAll(chain)) if (hit[1].split(/\s*[/,]\s*#/).includes(symbol)) return true;
+    const chain = new RegExp(`(?<![A-Za-z0-9_./-])${escaped}#(${IDENT_SRC}(?:(?:\\s*[/,]\\s*|\\s+)#${IDENT_SRC})*)`, "g");
+    for (const hit of intent.matchAll(chain)) if (hit[1].split(/(?:\s*[/,]\s*|\s+)#/).includes(symbol)) return true;
     return false;
   };
   const files: string[] = [];
@@ -453,17 +455,40 @@ export function parseFormattedCard(text: string): RawCard | null {
   };
 }
 
+/**
+ * One repair pass for an unescaped ASCII `"` inside a string value — the model copies typographic
+ * quotes („x") and closes them with a plain `"` (row 1b47e29a, 7 of 21 answer/run cases in the card
+ * A/B measurement). Inside a string, a `"` ends it only when the next non-blank character is
+ * structural (`,` `:` `}` `]`) or the text ends; any other `"` is escaped.
+ */
+function escapeStrayQuotes(json: string): string {
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < json.length; i++) {
+    const ch = json[i];
+    if (!inString) { if (ch === '"') inString = true; out += ch; continue; }
+    if (ch === "\\") { out += ch + (json[i + 1] ?? ""); i++; continue; }
+    if (ch !== '"') { out += ch; continue; }
+    const next = json.slice(i + 1).trimStart()[0];
+    if (next === undefined || ",:}]".includes(next)) { inString = false; out += ch; }
+    else out += '\\"';
+  }
+  return out;
+}
+
 /** Strict-JSON parse of one worker answer. A shape this cannot read is a gap, never a throw. */
 export function parseCardAnswer(answer: string): RawCard | null {
   const start = answer.indexOf("{");
   const end = answer.lastIndexOf("}");
   if (start < 0 || end <= start) return null;
-  try {
-    const parsed = JSON.parse(answer.slice(start, end + 1)) as Record<string, unknown>;
-    const card = parsed[CARD_KEY];
-    if (card && typeof card === "object" && !Array.isArray(card)) return card as RawCard;
-    return null;
-  } catch { return null; }
+  const slice = answer.slice(start, end + 1);
+  const parse = (json: string): Record<string, unknown> | null => {
+    try { return JSON.parse(json) as Record<string, unknown>; } catch { return null; }
+  };
+  const parsed = parse(slice) ?? parse(escapeStrayQuotes(slice));
+  const card = parsed?.[CARD_KEY];
+  if (card && typeof card === "object" && !Array.isArray(card)) return card as RawCard;
+  return null;
 }
 
 /**

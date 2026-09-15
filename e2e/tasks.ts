@@ -6362,6 +6362,20 @@ export async function run(ctx: Ctx): Promise<void> {
       && chainGap("gibtEsNicht", "does not resolve") && chainGap("qTaskSummary", "not named")
       && chainGap("normTaskCard", "not named") && chainGap("dispatchTask", "not named"),
       JSON.stringify({ symbols: chained.body.surface.symbols, gaps: chained.gaps }));
+    // E1c (card A/B, 648 runs): `datei#a #b` — whitespace alone between chain members — was the
+    // largest single gap of every arm. It names both as work; a symbol it does not list, and a
+    // member that belongs to ANOTHER file's reference, stay gaps.
+    const spaceChain = (sourceText: string, symbols: string[]) =>
+      validateCard({ surface: { symbols } }, { ...cardCtx, sourceText, symbolIndex: null, trackedPaths: new Set(["server.ts", "src/client.ts"]) });
+    const spaced = spaceChain("BAU: server.ts#foo #bar", ["server.ts#foo", "server.ts#bar"]);
+    const spacedUnnamed = spaceChain("BAU: server.ts#foo", ["server.ts#baz"]);
+    const spacedOtherFile = spaceChain("BAU: server.ts#foo src/client.ts#bar", ["server.ts#bar"]);
+    const notNamed = (v: typeof spaced, ref: string): boolean => v.gaps.some((g) => g.includes(`"${ref}"`) && g.includes("not named"));
+    check("(E1c) card: `datei#a #b` names both members as work; an unlisted symbol and another file's member stay \"not named\" gaps",
+      spaced.body.surface.symbols.join(" ") === "server.ts#foo server.ts#bar" && !spaced.gaps.some((g) => g.includes("not named"))
+      && spacedUnnamed.body.surface.symbols.length === 0 && notNamed(spacedUnnamed, "server.ts#baz")
+      && spacedOtherFile.body.surface.symbols.length === 0 && notNamed(spacedOtherFile, "server.ts#bar"),
+      JSON.stringify({ spaced: spaced.gaps, spacedUnnamed: spacedUnnamed.gaps, spacedOtherFile: spacedOtherFile.gaps }));
     const declProbe = {
       fn: declaresSymbol(srvSource, "taskDigest"), asyncFn: declaresSymbol(srvSource, "helperClaim"),
       constTop: declaresSymbol(srvSource, "CARD_BATCH_CAP"), typeTop: declaresSymbol(srvSource, "SymbolIndexCache"),
@@ -6434,6 +6448,18 @@ export async function run(ctx: Ctx): Promise<void> {
       parseCardAnswer("this is not JSON at all") === null
       && parseCardAnswer('{"other": {"ziel": "x"}}') === null
       && (parseCardAnswer('{"card": {"ziel": "x"}}') as { ziel?: unknown })?.ziel === "x", "");
+    // E1c (row 1b47e29a, 7 of 21 answer/run cases): a typographic quote closed with a plain `"` inside
+    // a string value gets ONE repair pass; JSON that is broken in any other way stays null.
+    const strayQuote = parseCardAnswer(`{"${CARD_KEY}": {"ziel": "a „x" b", "verboten": ["c „y" d"]}}`) as { ziel?: unknown; verboten?: unknown } | null;
+    const brokenStays = {
+      missingBrace: parseCardAnswer(`{"${CARD_KEY}": {"ziel": "x"}`),
+      strayAndMissingBrace: parseCardAnswer(`{"${CARD_KEY}": {"ziel": "a „x" b"}`),
+      missingComma: parseCardAnswer(`{"${CARD_KEY}": {"ziel": "x" "done": "y"}}`),
+    };
+    check("(E1c) card: an unescaped `\"` inside a string value is repaired once; a missing brace or comma stays null",
+      strayQuote?.ziel === "a „x\" b" && JSON.stringify(strayQuote?.verboten) === JSON.stringify(["c „y\" d"])
+      && Object.values(brokenStays).every((v) => v === null),
+      JSON.stringify({ strayQuote, brokenStays }));
 
     // --- the PROMPT. It is the half that keeps a queue text — reachable from /intake — from ever
     // being read as an instruction, and the fence must be as undefeatable as the refiner's.

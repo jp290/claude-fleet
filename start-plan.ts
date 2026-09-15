@@ -208,13 +208,18 @@ const rangesOn = (s: Surface, file: string): readonly TaskWaveRange[] => {
  * forkSha, the file fallback was P 0.20 R 1.00 and R4 on real hunks P 0.60 R 1.00. Hunks are in the
  * lane's coordinates, row ranges in main's — the ±LAND_WAVE_RANGE_GAP of R4 is the only slack, and n
  * is small, so hunks only replace the fallback on a file the lane already changed.
+ *
+ * `known` DROPS THE FALLBACK — for the claim of a WAITING wave only (2026-09-15, see `claims` below
+ * and docs/messungen/2026-09-15-start-plan-stau-schnitt.md): a file counts only where both sides
+ * carry ranges there. Never for a lane or a "now" wave: those edges decide what runs AT ONCE.
  */
-function collision(a: Surface, b: Surface): { file: string; symbol?: string } | null {
+function collision(a: Surface, b: Surface, known = false): { file: string; symbol?: string } | null {
   if (!a.files?.length || !b.files?.length) return null;
   for (const file of a.files) {
     if (!b.files.includes(file)) continue;
     const ra = rangesOn(a, file);
     const rb = rangesOn(b, file);
+    if (known && (!ra.length || !rb.length)) continue;
     if (!rangesCollide(ra, rb)) continue;
     const symbol = ra.find((x) => rb.some((y) => rangesCollide([x], [y])))?.symbol;
     return { file, ...(symbol ? { symbol } : {}) };
@@ -235,7 +240,7 @@ export function projectStartPlan(input: StartPlanInput): StartPlan {
     const caps = input.caps[repo] ?? null;
     let nowInRepo = 0;
     // earlier waves that hold their files against later ones (see the `claims` rule below)
-    const claimed: { row: StartPlanRow }[] = [];
+    const claimed: { row: StartPlanRow; starts: boolean }[] = [];
     const out = waves.map((wave): StartPlanWave => {
       const members = wave.ids.map((id) => rowById.get(id));
       const known = members.filter((row): row is StartPlanRow => !!row);
@@ -264,7 +269,7 @@ export function projectStartPlan(input: StartPlanInput): StartPlan {
         }
         for (const row of known) for (const earlier of claimed) {
           if (sameGroup(row, earlier.row)) continue;
-          const hit = collision(row, earlier.row);
+          const hit = collision(row, earlier.row, !earlier.starts);
           if (hit) return { collides: { row: earlier.row.id, ...hit } };
         }
         // 4. The two lane caps, in tickDispatch's order and with its sentences.
@@ -291,8 +296,13 @@ export function projectStartPlan(input: StartPlanInput): StartPlan {
       // program's policy refuses, a hold) or was handed no row: such a wave does not start until someone
       // acts, and letting it hold released rows behind it would be the one-row-holds-the-queue stall
       // tickDispatch's skip-not-return comments describe. Everything else — now, after, collides, cap — is in line.
+      // ONLY A "NOW" WAVE CLAIMS WITH THE WHOLE-FILE FALLBACK (2026-09-15). A waiting wave runs nothing,
+      // so its claim decides ORDER, not concurrency, and it holds a later wave only where both carry
+      // ranges that collide: with the fallback, one row waiting on a lane held every row on its range-less
+      // files — 17 released waves, 0 now, a cap of 3 acting as 1. An overtaken row later meets the
+      // overtaking lane under the full rule. Decision and price: docs/messungen/2026-09-15-start-plan-stau-schnitt.md.
       const claims = typeof next === "string" || !("unreleased" in next || "unchecked" in next);
-      if (claims) for (const row of known) claimed.push({ row });
+      if (claims) for (const row of known) claimed.push({ row, starts: next === "now" });
       return {
         ids: [...wave.ids], klasse: wave.klasse, units: wave.units, reasonAgainst: wave.reasonAgainst, next,
         rows: wave.ids.map((id) => {

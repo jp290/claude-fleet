@@ -73,7 +73,11 @@ producer of the bytes a lane is founded on — pinned in `e2e/pins.ts`.
    `start-plan.ts`) instead of oldest-first, and starts a land wave of n rows as ONE lane — but only
    when EVERY row of that wave is `queued`: a wave with a pending partner does not start, and its
    released row says `waiting: wave partner <id> is not released`. The plan runs under the `manual`
-   release policy, so this ordering never widens the released set.
+   release policy, so this ordering never widens the released set. A shared file without ranges on
+   both sides holds a row behind a running lane and behind a wave that starts in the same pass, never
+   behind a wave that is itself waiting — that one holds a later row only on overlapping known ranges
+   (`start-plan.ts#projectStartPlan` `claims`, 2026-09-15; decision and price in
+   `docs/messungen/2026-09-15-start-plan-stau-schnitt.md`).
 2. **What was approved is what runs.** §1.
 3. **An observation is not work.** A `notiz` cannot be released (409) at either door. `adopt` — or
    the `/kind` route — converts it into a `pending` `auftrag`, and that conversion is the OWNER's

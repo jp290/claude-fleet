@@ -36,6 +36,9 @@ type AuditEvent =
   | "task_hold"
   | "task_kind" // owner changed a task's category; detail records id and both values
   | "task_review" // Task.review set or cleared; detail records id, both values and which door (owner|main)
+  // E4 · the variant group's three acts (server.ts): a group filed with its n variant rows, all n
+  // started together from one base, and the one decision which variant lands (who, winner, shelved)
+  | "variant_group" | "variant_group_start" | "variant_decide"
   // the owner released a task the queue analyst had flagged. Recorded because the analyst is
   // advisory: without a trace, an override is indistinguishable from an ordinary promote, and
   // nothing could ever be calibrated against how often its objections were right

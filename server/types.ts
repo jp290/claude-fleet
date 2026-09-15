@@ -1181,6 +1181,21 @@ interface Task {
   // and never stored as an all-null object. The release door and the tick judge THIS field's
   // harness for automatability, so an invalid or non-automatable stored choice is refused loudly
   // instead of silently falling back to the default adapter.
+  // THE VARIANT GROUP (E4, docs/messungen/2026-09-14-queue-intelligenz-schichten.md §5): one request,
+  // n agents working it at once, exactly one of them landing. Two shapes of row, never both on one:
+  //   GROUP   — `variants` holds the n filed agent choices, in filing order. The group row is the
+  //             one SOURCE its variants are briefed from (text, brief, card, notes) and is itself
+  //             never dispatched: it has no lane, it is in no wave, and it turns `done` when its
+  //             winner lands. Written only by the two create doors (owner and Program-MAIN).
+  //   VARIANT — `variantOf` names the group row, `variantIndex` its 1-based place in `variants`, and
+  //             `spawn` is that variant's choice. An ordinary auftrag row in every other respect, so
+  //             the dispatch/outcome/land path keys on it unchanged; it starts only WITH its whole
+  //             group (server.ts#startVariantGroup) and lands only as the decided winner.
+  // Absent on every row that is neither — the honest shape of every row before the field.
+  variants?: DispatchSpawn[];
+  variantOf?: string;
+  variantIndex?: number;
+  variantDecision?: TaskVariantDecision; // GROUP rows only: which variant lands (see the interface)
   files?: string[]; // the task's file surface. In persisted state this is written ONLY when a ↻
   // refine proposal is confirmed (from RefineChild.files): the refiner verified it against the
   // tree and the owner promoted it. API views may instead PROJECT exact tracked paths named in the
@@ -1324,6 +1339,12 @@ const loadTaskHold = (value: unknown): TaskHold | undefined => {
   return { by: "main", slot: typeof r.slot === "number" && Number.isInteger(r.slot) ? r.slot : 0,
     at: typeof r.at === "number" && Number.isFinite(r.at) ? r.at : 0 };
 };
+// WHICH VARIANT OF A GROUP LANDS — written once, by server.ts#decideVariantGroup, and never
+// rewritten. `winner` is the variant row id; `shelved` holds the BRANCHES of every other variant that
+// had one, because a branch outlives its slot (a shelved worktree can be re-opened) and the land
+// refusal must still recognise it then. `by` is who decided: the owner's board door or the bound
+// MAIN of the group's program — the automatic comparator (T4) joins this list as its own value.
+interface TaskVariantDecision { winner: string; by: "owner" | "main"; slot?: number; at: number; shelved: string[] }
 type BriefAuthor = "owner" | "main";
 interface TaskBrief { text: string; at: number; model: string; edited: boolean; by?: BriefAuthor }
 // One remark, timestamped and individually deletable. `id` exists for the delete: an index would
@@ -2705,7 +2726,7 @@ export type {
   ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReportBasis,
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind,
-  Task, TaskBrief, TaskCard, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskFilesProposal, RefineChild,
+  Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, ProgramProfileKind, ProgramProfile, ProgramLineageVia,

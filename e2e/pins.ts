@@ -3442,6 +3442,57 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     /grep -qxF '\[projects\."\$\{o\.cwd\}"\]'/.test(xCode) && /trust_level = "trusted"/.test(xCode)
     && /SPAWN_PATH_RE\.test\(o\.cwd\)/.test(xCode),
     xCode.match(/const trust = [^\n]*/)?.[0] ?? "no trust prelude");
+  // ...and it writes where codex READS: `${CODEX_HOME:-$HOME/.codex}`. A suite exports CODEX_HOME
+  // into its instance, so its temp cwds stop piling into the owner's config (9 883 entries, 8 502
+  // of them suite temp paths, docs/messungen/2026-09-14-codex-lane-verdrahtung.md). Executed, not
+  // just matched: the prelude as the source spells it runs under each available shell, and without
+  // CODEX_HOME it must leave exactly the bytes the old `$HOME/.codex` prelude left, once.
+  const trustSrc = xBody.match(/\? `(grep -qxF [^`]*)`\n\s*: "";/)?.[1] ?? "";
+  pin("the codex trust prelude reads and appends ${CODEX_HOME:-$HOME/.codex}/config.toml, never a bare $HOME path",
+    (trustSrc.match(/"\\\$\{CODEX_HOME:-\$HOME\/\.codex\}\/config\.toml"/g) ?? []).length === 2
+    && !trustSrc.includes('"$HOME/.codex/config.toml"'), trustSrc.slice(0, 200) || "no trust prelude");
+  {
+    const trustCwd = "/tmp/fleet-pin-trust/repo.worktrees/x-1";
+    const trustRun = trustSrc.replaceAll("${o.cwd}", trustCwd).replaceAll("\\${", "${").replaceAll("\\n", "\n");
+    const want = `\n[projects."${trustCwd}"]\ntrust_level = "trusted"\n`;
+    const shells = ["/bin/sh", "/bin/zsh"].filter((s) => existsSync(s));
+    const seen: string[] = [];
+    let ok = trustSrc !== "" && shells.length > 0;
+    for (const sh of shells) {
+      const home = mkdtempSync(`${tmpdir()}/fleet-pin-trust-`);
+      try {
+        mkdirSync(`${home}/.codex`);
+        mkdirSync(`${home}/codex-home`);
+        const run = (env: Record<string, string>) =>
+          spawnSync(sh, ["-c", trustRun], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, ...env } }).status;
+        const cfg = (p: string) => existsSync(p) ? readFileSync(p, "utf8") : "";
+        const s1 = run({}); const s2 = run({});
+        const bare = cfg(`${home}/.codex/config.toml`);
+        const s3 = run({ CODEX_HOME: `${home}/codex-home` });
+        const scoped = cfg(`${home}/codex-home/config.toml`);
+        const bareAfter = cfg(`${home}/.codex/config.toml`);
+        const shOk = s1 === 0 && s2 === 0 && s3 === 0 && bare === want && scoped === want && bareAfter === want;
+        ok &&= shOk;
+        seen.push(`${sh}:${shOk ? "ok" : JSON.stringify({ s1, s2, s3, bare, scoped, bareAfter })}`);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    }
+    pin("the codex trust prelude, executed: no CODEX_HOME -> exactly the old $HOME/.codex bytes once; CODEX_HOME set -> there, $HOME untouched",
+      ok, seen.join(" ") || "no shell ran");
+  }
+  // The suite half: e2e-isolated.sh opens codex slots on temp cwds, so it must EXPORT an instance
+  // CODEX_HOME before its tmux server exists (a pane's env is that server's global env), and must
+  // not bend HOME, which claude and bun caches live under.
+  {
+    const isoSh = readFileSync(`${ROOT}/e2e-isolated.sh`, "utf8");
+    const exportAt = isoSh.search(/^export CODEX_HOME$/m);
+    const assignOk = /^CODEX_HOME="\$DIR\/codex-home"\nmkdir -p "\$CODEX_HOME"\nexport CODEX_HOME$/m.test(isoSh);
+    const tmuxAt = isoSh.search(/^tmux -L "\$SOCK" new-session/m);
+    pin("e2e-isolated.sh exports an instance CODEX_HOME before its tmux server starts, and never reassigns HOME",
+      assignOk && exportAt > 0 && tmuxAt > exportAt && !/^\s*(export\s+)?HOME=/m.test(isoSh),
+      `assign=${assignOk} export@${exportAt} tmux@${tmuxAt}`);
+  }
   // The PI adapter runs BARE by owner decision 2026-08-12 — full local access is the normal
   // operating mode, and the sandbox-exec fence of 2026-08-08..11 is retired, not conditional. A
   // rule over the source, because the regression is invisible at runtime on a suite fleet: a

@@ -1827,6 +1827,22 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     xcmdFlat.includes("codex --dangerously-bypass-approvals-and-sandbox")
     && !xcmdFlat.includes("--sandbox workspace-write")
     && xcmdFlat.includes('trust_level = "trusted"'), xcmdFlat.slice(-200));
+  // ...and the entry lands under THIS instance's CODEX_HOME (e2e-isolated.sh exports it before its
+  // tmux server starts), never in the owner's ~/.codex/config.toml — which had collected 8 502
+  // suite temp paths before (docs/messungen/2026-09-14-codex-lane-verdrahtung.md). Keyed on the
+  // instance directory's own name, so a /private/var vs /var spelling of the cwd cannot hide it.
+  const codexHome = process.env.CODEX_HOME ?? "";
+  const instanceKey = `/${ROOT.split("/").filter(Boolean).pop() ?? ""}/`;
+  const hasOwn = (p: string): boolean => {
+    try { return readFileSync(p, "utf8").split("\n").some((l) => l.startsWith("[projects.") && l.includes(instanceKey)); }
+    catch { return false; }
+  };
+  let scopedTrust = false;
+  for (let i = 0; i < 40 && codexHome.includes(instanceKey) && !(scopedTrust = hasOwn(`${codexHome}/config.toml`)); i++) await Bun.sleep(125);
+  const leakedTrust = hasOwn(`${process.env.HOME}/.codex/config.toml`);
+  check("§6e the codex trust entry lands in the instance's CODEX_HOME, and none of this instance's paths in ~/.codex/config.toml",
+    codexHome.includes(instanceKey) && scopedTrust && !leakedTrust,
+    `CODEX_HOME=${codexHome || "(unset)"} scoped=${scopedTrust} leaked=${leakedTrust} key=${instanceKey}`);
   // ...and it spawns codex, not the fleet's FLEET_CMD (`true` in this suite)
   check("§6e ...and it spawns codex, not the fleet's FLEET_CMD", /(^|\s|;)codex --dangerously/.test(xcmdFlat), xcmdFlat.slice(-160));
   check("§6e the codex spawn line passes only the fixed update and effort config keys",

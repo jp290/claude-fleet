@@ -1178,8 +1178,12 @@ const CODEX_HARNESS: Harness = {
   // SPAWN_PATH_RE — the path lands inside a single-quoted shell word and a TOML double-quoted key,
   // and the charset admits neither quote nor backslash. A cwd that fails the charset gets no
   // prelude and codex asks its own question in the pane: attended fallback, never a mangled
-  // config line. The adjacent config override disables the startup update check on fresh and
-  // resumed panes: preselected "Update now" must never turn a brief into a global install.
+  // config line. The target is `${CODEX_HOME:-$HOME/.codex}` — the directory codex itself reads —
+  // so a pane without CODEX_HOME writes byte-for-byte where it always did, and a suite that sets it
+  // keeps its per-run temp paths out of the owner's config (measured: 9 883 entries, 8 502 of them
+  // suite temp dirs, docs/messungen/2026-09-14-codex-lane-verdrahtung.md). The adjacent config
+  // override disables the startup update check on fresh and resumed panes: preselected
+  // "Update now" must never turn a brief into a global install.
   spawnCmd: (o) => {
     // SINGLE WRITER: the resume form is reachable only through ensureSlot after that function's
     // has-session miss. A live pane is never resumed beside itself; the owner restart route kills
@@ -1196,7 +1200,7 @@ const CODEX_HARNESS: Harness = {
     // a text lane (Slot.browser), fresh AND resume form — see CODEX_TEXT_LANE_MCP
     if (!o.browserMcp) cmd += ` -c ${CODEX_TEXT_LANE_MCP}`;
     const trust = SPAWN_PATH_RE.test(o.cwd)
-      ? `grep -qxF '[projects."${o.cwd}"]' "$HOME/.codex/config.toml" 2>/dev/null || printf '\n[projects."%s"]\ntrust_level = "trusted"\n' '${o.cwd}' >> "$HOME/.codex/config.toml"; `
+      ? `grep -qxF '[projects."${o.cwd}"]' "\${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null || printf '\n[projects."%s"]\ntrust_level = "trusted"\n' '${o.cwd}' >> "\${CODEX_HOME:-$HOME/.codex}/config.toml"; `
       : "";
     return `${PATH_EXPORT}${trust}${cmd}; exec ${SHELL}`;
   },

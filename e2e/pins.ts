@@ -2791,10 +2791,17 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // The other three are the VARIANT GROUP's (E4) and each is one of the first three over a group's
   // variants: the owner's ▸ queue and the MAIN door release a group's variants with it (`v`), and the
   // group start's policy release (`r`, startVariantGroup) is the tick's, for n rows at once.
-  pin("releaseTask has exactly the six known call sites — the owner's ▸ queue, the Program-MAIN door and the tick's policy release, each also over a variant group",
-    releaseCalls.length === 6 && releaseCalls.includes('t, "owner"') && releaseCalls.includes('t, "machine"')
+  // The seventh is the owner's COLLECTIVE release (Freigabe-Schnitt B, releaseValidForOwner): the owner's
+  // act over named rows, so `owner`, and only on a row its fresh card-valid verdict releases — a held
+  // row never is, which is what keeps the helper's hold-lift from reaching one through this door.
+  const rvStart = server.indexOf("async function releaseValidForOwner(");
+  const rvBody = rvStart < 0 ? "" : server.slice(rvStart, server.indexOf("\n}\n", rvStart));
+  pin("releaseTask has exactly the seven known call sites — the owner's ▸ queue, the Program-MAIN door and the tick's policy release, each also over a variant group, plus the owner's release-valid door",
+    releaseCalls.length === 7 && releaseCalls.filter((c) => c === 't, "owner"').length === 2 && releaseCalls.includes('t, "machine"')
     && releaseCalls.includes('v, "owner"') && releaseCalls.includes('v, "machine"') && releaseCalls.includes('r, "machine"')
-    && /for \(const row of byPolicy\) \{\n        releaseTask\(row, "machine"\);/.test(tBody),
+    && /for \(const row of byPolicy\) \{\n        releaseTask\(row, "machine"\);/.test(tBody)
+    && /: !row\.releasable \? row\.reasons\.join\("; "\) : null;\n    if \(reason !== null \|\| !t\) return \{ id, result: "skipped", reason: reason \?\? "unknown task" \};\n    releaseTask\(t, "owner"\);/.test(rvBody)
+    && !/dispatchTask|\bawait\b[^\n]*\n[^\n]*releaseTask/.test(rvBody),
     releaseCalls.join(" | ") || "no releaseTask call");
   // E4 · A VARIANT LANDS ONLY AS ITS GROUP'S DECIDED WINNER, and the question is asked at every land
   // door in the one place it is cheap: the owner's ⏫ and the MAIN's self-land ask it BEFORE their gate

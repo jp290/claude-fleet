@@ -9715,6 +9715,97 @@ async function holdTaskForMain(s: Slot, id: string): Promise<Response> {
     task: { id: t.id, kind: t.kind, status: t.status, programId: t.programId } });
 }
 
+// THE REPO A PROGRAM'S ROWS ARE HANDLED IN by the two OWNER doors below (release-valid, program
+// assignment): the checkout of its live bound MAIN — the repo releaseTaskForMain derives — and without
+// one the dispatcher's repo, where an unbound row runs. null = underivable, and it refuses as itself.
+async function programRepoOf(program: Program): Promise<string | null> {
+  const occupant = programMainLive(program.id) && program.main ? slotFrom(program.main.slot) : null;
+  if (occupant?.cwd) return repoKeyOf(occupant);
+  return DISPATCH_REPO ? repoCanon(DISPATCH_REPO) : null;
+}
+
+// THE OWNER'S COLLECTIVE RELEASE (Freigabe-Schnitt B, docs/messungen/2026-09-15-freigabe-analyse-astra.md
+// §4/§5): one visible, bounded owner act over the rows of ONE program that `card-valid` would release —
+// never a standing policy (that is POST /api/programs/:id/release) and never a start. The preview is
+// the verdict each pending auftrag gets under `card-valid` (start-plan.ts#releaseVerdict, through the
+// one row builder the tick reads), plus the door's own three refusals: another repo, a harness no
+// unattended path may drive, a variant group (its bracket's ▸ queue releases the n arms together).
+// `stamp` binds the preview: a hash over the program, its repo and every open row's id with the
+// times its brief and card were written. Status and hold are NOT in it on purpose — a row released or
+// held since the preview answers `skipped` with its reason, so a repeat submit reads its own answer;
+// a rewritten brief, a new card, an archived or a newly filed row changes it and answers `conflict`.
+interface ReleaseValidRow { id: string; releasable: boolean; release: StartPlanReleaseVerdict;
+  reasons: string[]; hints: string[]; hold: boolean; scout: boolean }
+interface ReleaseValidView { programId: string; repo: string | null; stamp: string;
+  pending: ReleaseValidRow[]; queued: { id: string; hold: boolean; releasedBy: Task["releasedBy"] | null }[] }
+async function releaseValidView(program: Program): Promise<ReleaseValidView> {
+  const repo = await programRepoOf(program);
+  // everything below is synchronous: the submit writes against exactly this reading
+  const open = tasks.filter((t) => t.programId === program.id && t.kind === "auftrag"
+    && (t.status === "pending" || t.status === "queued"));
+  const stamp = createHash("sha256").update([`${program.id}@${repo ?? "-"}`,
+    ...open.map((t) => `${t.id}:${t.brief?.at ?? "-"}:${t.card?.at ?? "-"}`).sort()].join("\n")).digest("hex");
+  const pending = open.filter((t) => t.status === "pending").map((t): ReleaseValidRow => {
+    const row = startPlanRowOf(t);
+    const release = releaseVerdict({ ...row, release: "card-valid" });
+    const target = t.repo ?? DISPATCH_REPO;
+    const spawnH = harnessOf(taskSpawnOf(t).harness);
+    const reasons = [
+      ...(t.variants || t.variantOf ? ["a variant group — its bracket's ▸ queue releases the variants together, this door does not"] : []),
+      ...(!repo ? ["the program's repo cannot be derived — no live MAIN checkout and no dispatch repo"]
+        : !target ? ["no dispatch repo is configured — a released row would have nowhere to run"]
+          : repoCanon(target) !== repo ? [`targets ${basename(repoCanon(target))} — this program releases in ${basename(repo)}`] : []),
+      ...(harnessAutomatableFor(spawnH) ? [] : [`harness ${spawnH.id} is not automatable — no unattended path may drive it`]),
+      ...(release.released ? [] : [release.why ?? "not released under card-valid"]),
+    ];
+    return { id: t.id, releasable: reasons.length === 0, release, reasons,
+      hints: release.released ? release.hints : [], hold: !!t.hold, scout: row.checks.scout };
+  });
+  const queued = open.filter((t) => t.status === "queued")
+    .map((t) => ({ id: t.id, hold: !!t.hold, releasedBy: t.releasedBy ?? null }));
+  return { programId: program.id, repo, stamp, pending, queued };
+}
+type ReleaseValidResult = { id: string; result: "released" } | { id: string; result: "skipped" | "conflict"; reason: string };
+async function releaseValidForOwner(program: Program, body: unknown): Promise<Response> {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "invalid json" }, 400);
+  const fields = body as Record<string, unknown>;
+  const extra = Object.keys(fields).filter((k) => k !== "stamp" && k !== "ids");
+  if (extra.length) return json({ error: `this door reads stamp and ids only — [${extra.join(", ")}] is not read` }, 400);
+  if (typeof fields.stamp !== "string" || !fields.stamp)
+    return json({ error: "stamp is required — read it from GET /api/programs/:id/release-valid" }, 400);
+  const ids = fields.ids;
+  if (!Array.isArray(ids) || ids.length === 0 || !ids.every((x): x is string => typeof x === "string" && /^[a-z0-9]+$/.test(x)))
+    return json({ error: "ids must be a non-empty list of task ids — this door releases only rows it is named" }, 400);
+  if (new Set(ids).size !== ids.length) return json({ error: "ids names a row twice" }, 400);
+  if (program.status !== "active")
+    return json({ error: `program ${program.id} is ${program.status} — release-valid releases an active program's rows` }, 409);
+  const view = await releaseValidView(program);
+  if (fields.stamp !== view.stamp)
+    return json({ error: "stale stamp — the program's rows changed since the preview; read it again, nothing released",
+      stamp: view.stamp, results: ids.map((id): ReleaseValidResult => ({ id, result: "conflict", reason: "stale stamp" })) }, 409);
+  const byId = new Map(view.pending.map((r) => [r.id, r] as const));
+  const results = ids.map((id): ReleaseValidResult => {
+    const t = tasks.find((x) => x.id === id);
+    const row = byId.get(id);
+    const reason = !t ? "unknown task"
+      : t.programId !== program.id ? `not a row of program ${program.id}`
+        : t.kind !== "auftrag" ? `a ${t.kind} is advisory — the dispatcher never runs this`
+          : t.status === "queued" ? (t.hold ? "already queued and held — this door never lifts a hold" : "already queued")
+            : t.status !== "pending" || !row ? `task is ${t.status} — only a pending row can be released`
+              : !row.releasable ? row.reasons.join("; ") : null;
+    if (reason !== null || !t) return { id, result: "skipped", reason: reason ?? "unknown task" };
+    releaseTask(t, "owner");
+    return { id, result: "released" };
+  });
+  const released = results.filter((r) => r.result === "released").map((r) => r.id);
+  if (released.length) {
+    audit("program_release_valid", undefined, `${program.id} released=${released.join(",")}`,
+      { programId: program.id, ids: released.join(","), n: released.length });
+    await saveStateNow();
+  }
+  return json({ ok: true, stamp: view.stamp, results });
+}
+
 // --- THE GUARDED CONFIRMATION, and the two things that keep it from becoming a loop.
 //
 // WHAT IT IS. Today a conflict resolution ends `status:"resolved", landed:false` and only the
@@ -26632,6 +26723,21 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     await saveStateNow();
     return json({ ok: true, program: publicProgram(program) });
   }
+  // THE COLLECTIVE RELEASE DOOR (Freigabe-Schnitt B) — GET previews what `card-valid` would release in
+  // this program, POST releases exactly the named ids against that preview's stamp. Rules at
+  // releaseValidView / releaseValidForOwner; it never lifts a hold and never starts a lane.
+  const programReleaseValidRoute = /^\/api\/programs\/([^/]+)\/release-valid$/.exec(url.pathname);
+  if (programReleaseValidRoute) {
+    const program = programs.find((p) => p.id === programReleaseValidRoute[1]);
+    if (!program) return json({ error: "unknown program" }, 404);
+    if (req.method === "GET") {
+      if (program.status !== "active")
+        return json({ error: `program ${program.id} is ${program.status} — release-valid reads an active program's rows` }, 409);
+      return json(await releaseValidView(program));
+    }
+    if (req.method !== "POST") return json({ error: "bad request" }, 400);
+    return releaseValidForOwner(program, await readJson(req));
+  }
   const action = /^\/api\/programs\/([^/]+)\/(confirm|activate|complete|discard|bootstrap-main)$/.exec(url.pathname);
   if (!action || req.method !== "POST") return json({ error: "bad request" }, 400);
   const program = programs.find((p) => p.id === action[1]);
@@ -31067,7 +31173,7 @@ Bun.serve<WSData>({
     // Programs are owner truth after proposal. They deliberately take the same tokenGate as the
     // task owner API, but are checked before the steward dispatcher so a steward credential is a
     // plain owner-auth failure (401), never a second authority over confirm/activate/complete.
-    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch|release))?$/.test(url.pathname)) {
+    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch|release|release-valid))?$/.test(url.pathname)) {
       if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
       return handleOwnerProgramRoute(req, url);
     }
@@ -32812,6 +32918,41 @@ Bun.serve<WSData>({
         t.note = taskKindNote(t.kind);
       saveState();
       audit("task_kind", undefined, `${t.id}:${before}->${t.kind}`);
+      return json({ ok: true, task: t });
+    }
+    // THE PROGRAM ASSIGNMENT (Freigabe-Schnitt B): a pending auftrag filed WITHOUT a program is given
+    // one — the door POST /api/tasks has only at birth. Narrow on purpose: re-homing a row that has a
+    // program is not this door, a started or finished row keeps the bracket it ran under, and a
+    // program only takes a row in the repo it works in (programRepoOf — the repo its release doors use).
+    const taskProgram = /^\/api\/tasks\/([a-z0-9]+)\/program$/.exec(url.pathname);
+    if (req.method === "POST" && taskProgram) {
+      const t = tasks.find((x) => x.id === taskProgram[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      const body = await readJson(req);
+      if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "invalid json" }, 400);
+      const extra = Object.keys(body).filter((k) => k !== "programId");
+      if (extra.length) return json({ error: `this door reads programId only — [${extra.join(", ")}] is not read` }, 400);
+      if (typeof body.programId !== "string" || !body.programId) return json({ error: "bad programId" }, 400);
+      if (t.programId === body.programId) return json({ ok: true, unchanged: true, task: t });
+      if (t.programId)
+        return json({ error: `task already belongs to program ${t.programId} — re-homing a row is not this door` }, 409);
+      const program = programs.find((p) => p.id === body.programId);
+      if (!program) return json({ error: `unknown programId: ${body.programId}` }, 409);
+      if (program.status !== "confirmed" && program.status !== "active")
+        return json({ error: `program ${program.id} is ${program.status}` }, 409);
+      if (t.kind !== "auftrag") return json({ error: `a ${t.kind} is advisory — only an auftrag is assigned to a program here` }, 409);
+      if (t.status !== "pending") return json({ error: `task is ${t.status} — only a pending row is assigned to a program` }, 409);
+      if (t.variants || t.variantOf) return json({ error: "a variant group is filed into its program at birth — not this door" }, 409);
+      const repo = await programRepoOf(program);
+      if (!repo) return json({ error: `the repo of program ${program.id} cannot be derived — no live MAIN checkout and no dispatch repo` }, 409);
+      const target = t.repo ?? DISPATCH_REPO;
+      if (!target || repoCanon(target) !== repo)
+        return json({ error: `task targets ${target ? basename(repoCanon(target)) : "no repo"} — program ${program.id} works in ${basename(repo)}` }, 409);
+      // re-read after the await: the row may have moved while the repo was derived
+      if (t.status !== "pending" || t.programId) return json({ error: `task changed while it was being assigned (${t.status}${t.programId ? `, program ${t.programId}` : ""}) — nothing assigned` }, 409);
+      t.programId = program.id;
+      audit("task_program", undefined, `${t.id} program=${program.id}`);
+      await saveStateNow();
       return json({ ok: true, task: t });
     }
     // E4 · THE VARIANT DECISION, the board's door: which ONE variant of a group lands (decideVariantGroup

@@ -6252,6 +6252,159 @@ export async function run(ctx: Ctx): Promise<void> {
   check("S5: the body is a closed set — a programId beside ids is a 400, never read",
     s5Extra.status === 400 && (await s5Extra.text()).includes("[programId]"), String(s5Extra.status));
 
+  // === FREIGABE-SCHNITT B · THE OWNER'S COLLECTIVE RELEASE (release-valid) =======================
+  // Same live binding (MAIN in REPO, the dispatch repo), both master stops still OFF, P under `manual`.
+  // One row per verdict the preview must tell apart, all filed through the owner door (so `filedBy`
+  // is owner and only the card, the hold, the text, the repo and the harness differ):
+  //   rvValid  valid card                        → releasable, with the size hint
+  //   rvHeld   valid card, held by P's MAIN      → hold shown, never released (a release would lift it)
+  //   rvScout  valid card, [idee scout-*] text   → scout shown, never released
+  //   rvGap    no card                           → the hard gap "no card yet"
+  //   rvRepo   no card, targets REPO3            → the door's own repo refusal
+  //   rvCodex  valid card, a stored codex triple → not automatable under FLEET_HARNESS_AUTOMATION=0
+  //   rvStale  valid card; its brief is rewritten after a preview → conflict, then cardStale
+  //   rvQueued valid card, released by ▸ queue   → listed as already queued, not as pending
+  // Mutation quoted: dropping `!row.releasable ? row.reasons.join("; ")` from releaseValidForOwner
+  // releases rvHeld/rvScout/rvGap/rvRepo/rvCodex and turns (4) red; dropping the stamp comparison
+  // turns (6) red, since rvStale is then released over a brief nobody previewed.
+  type RvRow = { id: string; releasable: boolean; release: { released: boolean; why?: string | null; hints?: string[] };
+    reasons: string[]; hints: string[]; hold: boolean; scout: boolean };
+  type RvView = { programId?: string; repo?: string | null; stamp?: string; pending?: RvRow[]; queued?: { id: string; hold: boolean }[]; error?: string };
+  type RvResult = { id: string; result: string; reason?: string };
+  const rvPreview = async (programId: string): Promise<{ status: number; body: RvView }> => {
+    const res = await get(`/api/programs/${programId}/release-valid`);
+    return { status: res.status, body: (await res.json()) as RvView };
+  };
+  const rvSubmit = async (programId: string, body: unknown): Promise<{ status: number; body: { ok?: boolean; stamp?: string; results?: RvResult[]; error?: string } }> => {
+    const res = await post(`/api/programs/${programId}/release-valid`, body);
+    return { status: res.status, body: (await res.json()) as { ok?: boolean; results?: RvResult[]; error?: string } };
+  };
+  const rvCard = cardFor(["code.txt"]);
+  const rvValid = await s5Make({ text: "rv valid row", programId: mainProgram.id, card: rvCard });
+  const rvHeld = await s5Make({ text: "rv held row", programId: mainProgram.id, card: rvCard });
+  const rvScout = await s5Make({ text: "[idee scout-rv] rv scout sketch", programId: mainProgram.id, card: rvCard });
+  const rvGap = await s5Make({ text: "rv row without a card", programId: mainProgram.id });
+  const rvRepo = await s5Make({ text: "rv row in another repo", programId: mainProgram.id, repo: REPO3 });
+  const rvCodex = await s5Make({ text: "rv row on codex", programId: mainProgram.id, card: rvCard,
+    harness: "codex", model: "gpt-5.5", effort: "high" });
+  const rvStale = await s5Make({ text: "rv row whose brief moves", programId: mainProgram.id, card: rvCard });
+  const rvQueued = await s5Make({ text: "rv row already queued", programId: mainProgram.id, card: rvCard });
+  const rvForeign = await s5Make({ text: "rv row of the foreign program", programId: foreignProgram.id, card: rvCard });
+  const rvHoldRes = await selfHold(successorToken, rvHeld);
+  const rvQueueRes = await post(`/api/tasks/${rvQueued}/queue`, {});
+  const rvIds = [rvValid, rvHeld, rvScout, rvGap, rvRepo, rvCodex, rvStale, rvQueued, rvForeign];
+  check("release-valid fixture: nine rows filed, the hold and the ▸ queue both took",
+    rvIds.every(Boolean) && rvHoldRes.status === 200 && rvQueueRes.status === 200
+      && (await holdRow(rvHeld))?.hold?.slot === successorSlot && (await taskRow(rvQueued))?.status === "queued",
+    JSON.stringify({ ids: rvIds, hold: rvHoldRes.status, queue: rvQueueRes.status }));
+
+  // (1) THE PREVIEW: each verdict with its hard reasons and soft hints, hold and scout shown, queued apart
+  const rvRowsBefore = JSON.stringify((await allTasks()).filter((t) => rvIds.includes(t.id)));
+  const rvAuditFrom = auditLines();
+  const pv = await rvPreview(mainProgram.id);
+  const pvRow = (id: string): RvRow | undefined => pv.body.pending?.find((r) => r.id === id);
+  const rvReasons = (id: string): string => (pvRow(id)?.reasons ?? []).join(" | ");
+  check("release-valid (1): the preview gives each pending row its card-valid verdict — hard reasons, soft hints, hold and scout — lists queued rows apart and carries a stamp",
+    pv.status === 200 && pv.body.programId === mainProgram.id && /^[0-9a-f]{64}$/.test(pv.body.stamp ?? "")
+      && (pv.body.repo ?? "").endsWith(REPO.split("/").pop() ?? "\0")
+      && pvRow(rvValid)?.releasable === true && pvRow(rvValid)?.release.released === true
+      && (pvRow(rvValid)?.hints ?? []).includes("no size (weighs mittel)") && pvRow(rvValid)?.reasons.length === 0
+      && pvRow(rvHeld)?.releasable === false && pvRow(rvHeld)?.hold === true && rvReasons(rvHeld).includes("held by its MAIN")
+      && pvRow(rvScout)?.releasable === false && pvRow(rvScout)?.scout === true && rvReasons(rvScout).includes("[idee scout-*]")
+      && pvRow(rvGap)?.releasable === false && rvReasons(rvGap).includes("no card yet")
+      && pvRow(rvRepo)?.releasable === false && rvReasons(rvRepo).includes("this program releases in")
+      && pvRow(rvCodex)?.releasable === false && rvReasons(rvCodex).includes("harness codex is not automatable")
+      && pvRow(rvStale)?.releasable === true
+      && !pvRow(rvQueued) && (pv.body.queued ?? []).some((q) => q.id === rvQueued && q.hold === false)
+      && !pvRow(rvForeign)
+      && JSON.stringify((await allTasks()).filter((t) => rvIds.includes(t.id))) === rvRowsBefore
+      && auditSince(rvAuditFrom).every((r) => r.event !== "program_release_valid" && r.event !== "task_release"),
+    JSON.stringify({ status: pv.status, repo: pv.body.repo, pending: pv.body.pending?.filter((r) => rvIds.includes(r.id)), queued: pv.body.queued }));
+
+  // (2) OWNER-ONLY, and a closed body: a MAIN's own token is 401 on both verbs; every malformed body is
+  // a 400 that writes nothing; an unknown program is 404
+  const rvSelfGet = await fetch(`${BASE}/api/programs/${mainProgram.id}/release-valid`, { headers: { "x-fleet-self-token": successorToken } });
+  const rvSelfPost = await fetch(`${BASE}/api/programs/${mainProgram.id}/release-valid`, { method: "POST",
+    headers: { "content-type": "application/json", "x-fleet-self-token": successorToken },
+    body: JSON.stringify({ stamp: pv.body.stamp, ids: [rvValid] }) });
+  const rvEmpty = await rvSubmit(mainProgram.id, {});
+  const rvNoIds = await rvSubmit(mainProgram.id, { stamp: pv.body.stamp, ids: [] });
+  const rvNoStamp = await rvSubmit(mainProgram.id, { ids: [rvValid] });
+  const rvExtra = await rvSubmit(mainProgram.id, { stamp: pv.body.stamp, ids: [rvValid], policy: "all" });
+  const rvTwice = await rvSubmit(mainProgram.id, { stamp: pv.body.stamp, ids: [rvValid, rvValid] });
+  const rvUnknownProgram = await rvPreview("000000000000000000000000");
+  check("release-valid (2): the door is owner-only (401 for a MAIN token), an empty/stampless/extra-key/duplicate body is 400, an unknown program 404 — nothing moved",
+    rvSelfGet.status === 401 && rvSelfPost.status === 401
+      && rvEmpty.status === 400 && rvNoIds.status === 400 && rvNoStamp.status === 400
+      && rvExtra.status === 400 && (rvExtra.body.error ?? "").includes("[policy]") && rvTwice.status === 400
+      && rvUnknownProgram.status === 404
+      && JSON.stringify((await allTasks()).filter((t) => rvIds.includes(t.id))) === rvRowsBefore,
+    JSON.stringify({ selfGet: rvSelfGet.status, selfPost: rvSelfPost.status, empty: rvEmpty.status, noIds: rvNoIds.status,
+      noStamp: rvNoStamp.status, extra: rvExtra.body, twice: rvTwice.status, unknown: rvUnknownProgram.status }));
+
+  // (3)+(4) THE SUBMIT: exactly the named ids, each answered; only rvValid moves, the hold stands, nothing starts
+  const rvSubmitIds = [rvValid, rvHeld, rvScout, rvGap, rvRepo, rvCodex, rvQueued, rvForeign, "ffffffff"];
+  const sub = await rvSubmit(mainProgram.id, { stamp: pv.body.stamp, ids: rvSubmitIds });
+  const subOf = (id: string): RvResult | undefined => sub.body.results?.find((r) => r.id === id);
+  const rvAfter = await allTasks();
+  const rvAfterRow = (id: string) => rvAfter.find((t) => t.id === id) as HoldRow | undefined;
+  const rvTrail = auditSince(rvAuditFrom);
+  check("release-valid (3): a fresh-stamp submit releases ONLY the releasable row (queued, releasedBy owner) and answers every other id skipped with its reason",
+    sub.status === 200 && sub.body.ok === true && sub.body.results?.length === rvSubmitIds.length
+      && subOf(rvValid)?.result === "released"
+      && rvAfterRow(rvValid)?.status === "queued" && rvAfterRow(rvValid)?.releasedBy === "owner"
+      && subOf(rvHeld)?.result === "skipped" && (subOf(rvHeld)?.reason ?? "").includes("held by its MAIN")
+      && subOf(rvScout)?.result === "skipped" && (subOf(rvScout)?.reason ?? "").includes("scout")
+      && subOf(rvGap)?.result === "skipped" && (subOf(rvGap)?.reason ?? "").includes("no card yet")
+      && subOf(rvRepo)?.result === "skipped" && (subOf(rvRepo)?.reason ?? "").includes("this program releases in")
+      && subOf(rvCodex)?.result === "skipped" && (subOf(rvCodex)?.reason ?? "").includes("not automatable")
+      && subOf(rvQueued)?.result === "skipped" && subOf(rvQueued)?.reason === "already queued"
+      && subOf(rvForeign)?.result === "skipped" && (subOf(rvForeign)?.reason ?? "").includes(`not a row of program ${mainProgram.id}`)
+      && subOf("ffffffff")?.result === "skipped" && subOf("ffffffff")?.reason === "unknown task"
+      && [rvHeld, rvScout, rvGap, rvRepo, rvCodex, rvStale].every((id) => rvAfterRow(id)?.status === "pending")
+      && rvAfterRow(rvForeign)?.status === "pending",
+    JSON.stringify({ status: sub.status, results: sub.body.results }));
+  check("release-valid (4): the hold is never lifted, one program_release_valid audit row names the released id, and releasing starts nothing (no slot, no task_dispatch)",
+    rvAfterRow(rvHeld)?.hold?.slot === successorSlot
+      && rvTrail.filter((r) => r.event === "program_release_valid").length === 1
+      && rvTrail.find((r) => r.event === "program_release_valid")?.detail === `${mainProgram.id} released=${rvValid}`
+      && rvTrail.filter((r) => r.event === "task_dispatch").length === 0
+      && rvAfterRow(rvValid)?.slot == null,
+    JSON.stringify({ held: rvAfterRow(rvHeld)?.hold, trail: rvTrail }));
+
+  // (5) A REPEAT of the same submit reads its own answer: status is not in the stamp, so the stamp still
+  // matches and rvValid now answers "already queued" — no second release, no second audit row
+  const subAgain = await rvSubmit(mainProgram.id, { stamp: pv.body.stamp, ids: [rvValid] });
+  check("release-valid (5): repeating the submit is stable — rvValid is skipped as already queued and no audit row is added",
+    subAgain.status === 200 && subAgain.body.results?.[0]?.result === "skipped" && subAgain.body.results[0].reason === "already queued"
+      && auditSince(rvAuditFrom).filter((r) => r.event === "program_release_valid").length === 1,
+    JSON.stringify(subAgain.body));
+
+  // (6) A STALE STAMP: rvStale's brief is rewritten after a preview — the submit answers conflict for
+  // every id and writes nothing; the next preview has a new stamp and the card is now stale (hard)
+  const pv2 = await rvPreview(mainProgram.id);
+  const rvBriefRes = await post(`/api/tasks/${rvStale}/brief`, { text: "rv row whose brief moves — rewritten after the preview" });
+  const stale = await rvSubmit(mainProgram.id, { stamp: pv2.body.stamp, ids: [rvStale] });
+  const pv3 = await rvPreview(mainProgram.id);
+  const rvStaleRow = pv3.body.pending?.find((r) => r.id === rvStale);
+  check("release-valid (6): a brief rewritten after the preview makes the stamp stale — 409 with rvStale as conflict, still pending; the fresh preview names the stale card as a hard reason",
+    pv2.status === 200 && rvBriefRes.status === 200
+      && stale.status === 409 && stale.body.results?.length === 1 && stale.body.results[0]?.result === "conflict"
+      && (await taskRow(rvStale))?.status === "pending"
+      && pv3.body.stamp !== pv2.body.stamp && rvStaleRow?.releasable === false
+      && (rvStaleRow?.reasons ?? []).join(" | ").includes("the brief changed after the card was read"),
+    JSON.stringify({ brief: rvBriefRes.status, stale: stale.body, pv3Row: rvStaleRow }));
+
+  // (7) ANOTHER PROGRAM'S DOOR cannot reach P's rows: submitting P's pending row against the foreign
+  // program's own fresh stamp is skipped by name
+  const pvForeign = await rvPreview(foreignProgram.id);
+  const crossSub = await rvSubmit(foreignProgram.id, { stamp: pvForeign.body.stamp, ids: [rvStale] });
+  check("release-valid (7): the foreign program's door skips a row of P by name and moves nothing",
+    pvForeign.status === 200 && crossSub.status === 200 && crossSub.body.results?.[0]?.result === "skipped"
+      && (crossSub.body.results[0].reason ?? "").includes(`not a row of program ${foreignProgram.id}`)
+      && (await taskRow(rvStale))?.status === "pending",
+    JSON.stringify({ preview: pvForeign.status, sub: crossSub.body }));
+
   // Leave the queue and the two switches exactly as this section found them: every row it minted is
   // deleted (none of them is `sent`, so none is a running lane's founding row), and the master stops
   // go back to the values the modules after this one inherit.

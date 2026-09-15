@@ -903,6 +903,81 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(persistedProgramTasks.filter((t) => t.programId === provenanceProgramId)));
   for (const id of [confirmedTask.task?.id, activeTask.task?.id]) if (id) await post(`/api/tasks/${id}/delete`, {});
 
+  // --- POST /api/tasks/:id/program (Freigabe-Schnitt B): a pending auftrag filed WITHOUT a program is
+  // given one. provenanceProgramId is ACTIVE here with no live MAIN, so its repo is the dispatch repo
+  // (REPO) — where a row with no repo of its own runs. Mutation quoted: dropping the
+  // `if (t.programId)` refusal turns the re-home check red (the row would move to another bracket, or
+  // answer the discarded program's status instead of the re-home sentence).
+  {
+    type PRow = { id: string; kind: string; status: string; programId?: string };
+    const pRow = async (id: string): Promise<PRow | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: PRow[] }).tasks.find((t) => t.id === id);
+    const pMake = async (fields: Record<string, unknown>): Promise<string> =>
+      ((await (await post("/api/tasks", { queue: false, ...fields })).json()) as { task?: { id: string } }).task?.id ?? "";
+    const assign = (id: string, body: unknown, headers?: Record<string, string>): Promise<Response> =>
+      headers ? fetch(`${BASE}/api/tasks/${id}/program`, { method: "POST", headers, body: JSON.stringify(body) })
+        : post(`/api/tasks/${id}/program`, body);
+    const auditRows = (): { event?: string; detail?: string }[] =>
+      readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { event?: string; detail?: string });
+    const plain = await pMake({ text: "assign: pending auftrag without a program" });
+    const queuedRow = await pMake({ text: "assign: queued row", queue: true });
+    const doneRow = await pMake({ text: "assign: done row" });
+    await post(`/api/tasks/${doneRow}/done`, {});
+    const archivedRow = await pMake({ text: "assign: archived row" });
+    await post(`/api/tasks/${archivedRow}/archive`, {});
+    const notizRow = await pMake({ text: "assign: a notiz", kind: "notiz" });
+    const repoRow = await pMake({ text: "assign: a row in another repo", repo: REPO3 });
+    const pIds = [plain, queuedRow, doneRow, archivedRow, notizRow, repoRow];
+    check("program assignment fixture: six rows filed without a program",
+      pIds.every(Boolean) && (await pRow(doneRow))?.status === "done" && (await pRow(archivedRow))?.status === "archived"
+        && (await pRow(queuedRow))?.status === "queued",
+      JSON.stringify(pIds));
+
+    const auditFrom = auditRows().length;
+    const ok = await assign(plain, { programId: provenanceProgramId });
+    const okBody = (await ok.json()) as { ok?: boolean; task?: PRow };
+    const again = (await (await assign(plain, { programId: provenanceProgramId })).json()) as { ok?: boolean; unchanged?: boolean };
+    const trail = auditRows().slice(auditFrom).filter((r) => r.event === "task_program");
+    check("program assignment: a pending auftrag without a program is assigned to an active program — one task_program audit row; a repeat answers unchanged and writes nothing",
+      ok.status === 200 && okBody.ok === true && okBody.task?.programId === provenanceProgramId
+        && (await pRow(plain))?.programId === provenanceProgramId && (await pRow(plain))?.status === "pending"
+        && again.ok === true && again.unchanged === true
+        && trail.length === 1 && trail[0]?.detail === `${plain} program=${provenanceProgramId}`,
+      JSON.stringify({ status: ok.status, okBody, again, trail }));
+
+    const refused = async (id: string, body: unknown): Promise<string> => {
+      const res = await assign(id, body);
+      return `${res.status} ${await res.text()}`;
+    };
+    const rehome = await refused(plain, { programId: proposedProgramId });
+    const queued = await refused(queuedRow, { programId: provenanceProgramId });
+    const done = await refused(doneRow, { programId: provenanceProgramId });
+    const archived = await refused(archivedRow, { programId: provenanceProgramId });
+    const notiz = await refused(notizRow, { programId: provenanceProgramId });
+    const foreignRepo = await refused(repoRow, { programId: provenanceProgramId });
+    const discarded = await refused(repoRow, { programId: proposedProgramId });
+    const unknown = await refused(repoRow, { programId: "0".repeat(24) });
+    check("program assignment SHOULD-REJECT (409): re-homing a row that has a program, a queued/done/archived row, a notiz, a row in another repo, a discarded or unknown program — each in its own words",
+      rehome.startsWith("409") && rehome.includes(`already belongs to program ${provenanceProgramId}`)
+        && queued.startsWith("409") && queued.includes("task is queued")
+        && done.startsWith("409") && done.includes("task is done")
+        && archived.startsWith("409") && archived.includes("task is archived")
+        && notiz.startsWith("409") && notiz.includes("a notiz is advisory")
+        && foreignRepo.startsWith("409") && foreignRepo.includes(`program ${provenanceProgramId} works in`)
+        && discarded.startsWith("409") && discarded.includes(proposedProgramId)
+        && unknown.startsWith("409") && unknown.includes("unknown programId"),
+      JSON.stringify({ rehome, queued, done, archived, notiz, foreignRepo, discarded, unknown }));
+
+    const bodies = await Promise.all([assign(repoRow, {}), assign(repoRow, { programId: 7 }),
+      assign(repoRow, { programId: provenanceProgramId, repo: REPO }), assign("ffffffff", { programId: provenanceProgramId }),
+      assign(repoRow, { programId: provenanceProgramId }, { "content-type": "application/json" })]);
+    check("program assignment: a missing/non-string programId or an extra key is 400, an unknown task 404, no owner token 401 — and no refused row gained a program",
+      bodies.map((r) => r.status).join(",") === "400,400,400,404,401"
+        && (await Promise.all([queuedRow, doneRow, archivedRow, notizRow, repoRow].map(pRow))).every((r) => r !== undefined && !r.programId),
+      bodies.map((r) => r.status).join(","));
+    for (const id of pIds) await post(`/api/tasks/${id}/delete`, {});
+  }
+
   // --- Task.kind: four values, reversible owner route, legacy load migration, and dispatch bolt. ---
   {
     type KRow = { id: string; kind: string; status: string; note: string | null;

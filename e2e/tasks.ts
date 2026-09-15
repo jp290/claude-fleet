@@ -603,6 +603,66 @@ export async function run(ctx: Ctx): Promise<void> {
   check("unqueue a task", (await post(`/api/tasks/${tJson.task.id}/unqueue`, {})).ok);
   check("delete a task", (await post(`/api/tasks/${tJson.task.id}/delete`, {})).ok);
 
+  // --- ▸ queue IS A RELEASE, and only pending → queued is one (server.ts, the taskAct `queue` arm).
+  // The route called releaseTask for any status, so a `done` row was reopened and a `sent` row went
+  // back to queued for tickDispatch to start twice (the sent half is checked at the capacity-bypass
+  // lane below, the one place in this file a row is reliably `sent`). Two `queued` shapes have their
+  // own answer: a HELD row gets its hold lifted and nothing else, an unheld one is a 200 that writes
+  // nothing. Neither hold nor a machine `releasedBy` can be minted through an owner door, so both are
+  // planted into fleet.json — the note and `releasedBy` are what a re-release would overwrite.
+  {
+    type QRow = { id: string; status: string; note?: string | null; releasedBy?: string; hold?: unknown };
+    const qRows = async (): Promise<QRow[]> => ((await (await get("/api/tasks")).json()) as { tasks: QRow[] }).tasks;
+    const qMake = async (text: string): Promise<string> =>
+      ((await (await post("/api/tasks", { text, queue: false })).json()) as { task: { id: string } }).task.id;
+    const qPending = await qMake("queue guard: pending row");
+    const qDone = await qMake("queue guard: done row");
+    const qHeld = await qMake("queue guard: queued row with a hold");
+    const qFree = await qMake("queue guard: queued row without a hold");
+    await post(`/api/tasks/${qDone}/done`, {});
+    await Bun.sleep(200); // saveState is fire-and-forget; make the file quiescent before srv dies
+    await stopSrv();
+    const qState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: Record<string, unknown>[] };
+    const qPlant = (id: string, over: Record<string, unknown>): void => {
+      const row = qState.tasks?.find((t) => t.id === id);
+      if (row) Object.assign(row, over);
+    };
+    qPlant(qHeld, { status: "queued", releasedBy: "machine", note: "planted held note", hold: { by: "main", slot: 9, at: Date.now() } });
+    qPlant(qFree, { status: "queued", releasedBy: "machine", note: "planted free note" });
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(qState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const qBefore = await qRows();
+    const qOf = (rows: QRow[], id: string): QRow | undefined => rows.find((t) => t.id === id);
+    const qDispatchOn = ((await (await get("/api/sessions")).json()) as { dispatch: { on: boolean } }).dispatch.on;
+    check("queue guard fixture: done, held-queued and unheld-queued rows are planted, and the dispatcher is off",
+      qOf(qBefore, qDone)?.status === "done" && qOf(qBefore, qPending)?.status === "pending"
+        && qOf(qBefore, qHeld)?.status === "queued" && !!qOf(qBefore, qHeld)?.hold
+        && qOf(qBefore, qFree)?.status === "queued" && !qOf(qBefore, qFree)?.hold
+        && qOf(qBefore, qFree)?.releasedBy === "machine" && qDispatchOn === false,
+      JSON.stringify({ rows: [qPending, qDone, qHeld, qFree].map((id) => qOf(qBefore, id)), dispatch: qDispatchOn }));
+    const qDoneRes = await post(`/api/tasks/${qDone}/queue`, {});
+    const qDoneText = await qDoneRes.text();
+    const qPendingRes = await post(`/api/tasks/${qPending}/queue`, {});
+    const qHeldRes = await post(`/api/tasks/${qHeld}/queue`, {});
+    const qFreeRes = await post(`/api/tasks/${qFree}/queue`, {});
+    const qAfter = await qRows();
+    check("queue guard: a DONE row is refused 409 with its status named, and stays done",
+      qDoneRes.status === 409 && qDoneText.includes("task is done") && qOf(qAfter, qDone)?.status === "done",
+      `${qDoneRes.status} ${qDoneText} row=${JSON.stringify(qOf(qAfter, qDone))}`);
+    check("queue guard: a PENDING row is released — queued, by the owner",
+      qPendingRes.status === 200 && qOf(qAfter, qPending)?.status === "queued" && qOf(qAfter, qPending)?.releasedBy === "owner",
+      `${qPendingRes.status} row=${JSON.stringify(qOf(qAfter, qPending))}`);
+    check("queue guard: a HELD queued row gets its hold lifted and nothing else — still queued, releasedBy and note kept",
+      qHeldRes.status === 200 && qOf(qAfter, qHeld)?.status === "queued" && !qOf(qAfter, qHeld)?.hold
+        && qOf(qAfter, qHeld)?.releasedBy === "machine" && qOf(qAfter, qHeld)?.note === "planted held note",
+      `${qHeldRes.status} row=${JSON.stringify(qOf(qAfter, qHeld))}`);
+    check("queue guard: an UNHELD queued row answers 200 and writes nothing — releasedBy and note kept",
+      qFreeRes.status === 200 && qOf(qAfter, qFree)?.status === "queued"
+        && qOf(qAfter, qFree)?.releasedBy === "machine" && qOf(qAfter, qFree)?.note === "planted free note",
+      `${qFreeRes.status} row=${JSON.stringify(qOf(qAfter, qFree))}`);
+    for (const id of [qPending, qDone, qHeld, qFree]) await post(`/api/tasks/${id}/delete`, {});
+  }
+
   // --- TASK SPAWN CHOICE (src/client.ts, the block between "// --- TASK SPAWN CHOICE" and its
   // closing marker). A startable row's two acts, ▸ start lane and ▸ clarify first: what each SENDS,
   // what the row SHOWS before the click (the effective harness/model/effort with where each value
@@ -1858,6 +1918,17 @@ export async function run(ctx: Ctx): Promise<void> {
     const bypRow = (await sessJson()).tasks.find((t) => t.id === cTask.task.id);
     check("manual start bypasses the lane cap (attended click beats the unattended-fan-out bound)",
       byp.ok && bypJ.ok === true && bypRow?.status === "sent", `${byp.status} ${JSON.stringify({ bypJ, bypRow })}`);
+    // ▸ queue on a RUNNING row is refused (the queue-guard block near the task CRUD above has the
+    // other statuses). With the dispatcher on right here, a sent row put back to queued is exactly
+    // the row tickDispatch would start a second time. The precondition is read right before the POST
+    // so a lane that requeued itself fails as the fixture, not as the guard.
+    const sentBefore = await taskStatus(cTask.task.id);
+    const sentQ = await post(`/api/tasks/${cTask.task.id}/queue`, {});
+    const sentQText = await sentQ.text();
+    const sentAfter = await taskStatus(cTask.task.id);
+    check("queue guard: a SENT row is refused 409 with its status named, and stays sent",
+      sentBefore === "sent" && sentQ.status === 409 && sentQText.includes("task is sent") && sentAfter === "sent",
+      `before=${sentBefore} ${sentQ.status} ${sentQText} after=${sentAfter}`);
 
     // cleanup — dispatcher OFF FIRST: killing the bypass lane below can land inside its own
     // brief tail, whose identity re-check then REQUEUES the task; with the tick still on, that

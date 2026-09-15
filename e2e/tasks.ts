@@ -8775,4 +8775,140 @@ export async function run(ctx: Ctx): Promise<void> {
       !c0Restored.some((t) => t.id.startsWith("c0")),
       `left=${c0Restored.filter((t) => t.id.startsWith("c0")).length} total=${c0Restored.length}`);
   }
+
+  // ——— TA · ARCHIVING DOES NOT DELETE ———
+  // capTasks retires terminal rows, and until tasks-archive.jsonl it retired them WITH their text:
+  // an archive past the terminal budget deleted an older done row on the spot, and `unarchive`
+  // reached an archived row only until the bound took it. Now every terminal transition and every
+  // eviction writes the whole row to the ledger (the eviction BEFORE the drop), `unarchive` restores
+  // an evicted row from its youngest line, and `register.sh --archived` finds one by a word.
+  // The eviction is driven the way C0 above drives it — plant, restart, the loader's capTasks —
+  // and every answer is read off the ledger FILE and GET /api/tasks, never off the server's own claim.
+  {
+    type TaDisposition = { grund?: string; beleg?: string; by?: string; at?: number };
+    type TaTask = { id: string; text: string; kind: string; status: string; disposition?: TaDisposition };
+    type TaLine = { ts: number; event: string; task: TaTask };
+    const taFile = `${ROOT}/tasks-archive.jsonl`;
+    const taLedger = (): TaLine[] => existsSync(taFile)
+      ? readFileSync(taFile, "utf8").split("\n").filter(Boolean).flatMap((l) => {
+        try { return [JSON.parse(l) as TaLine]; } catch { return []; }
+      })
+      : [];
+    const taTasks = async (): Promise<TaTask[]> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: TaTask[] }).tasks;
+    const taRegister = (pattern: string): { code: number | null; out: string; err: string } => {
+      const r = spawnSync("sh", [`${ROOT}/register.sh`, "--archived", pattern], { cwd: ROOT, encoding: "utf8" });
+      return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
+    };
+    const taStamp = Date.now().toString(36);
+    await stopSrv();
+    const taSnapshot = readFileSync(`${ROOT}/fleet.json`, "utf8");
+    await restartSrv();
+
+    // (c) THE REASON RIDES THE ROW. A body names it; the server stamps who and when.
+    const taArcText = `ta archived row ${taStamp} carries the probe word zypressenholz`;
+    const taArc = ((await (await post("/api/tasks", { text: taArcText, queue: false })).json()) as { task: { id: string } }).task.id;
+    const taArcRes = await post(`/api/tasks/${taArc}/archive`, { grund: "x", beleg: "y" });
+    const taArcRow = (await taTasks()).find((t) => t.id === taArc);
+    const taArcTerminal = taLedger().filter((l) => l.event === "terminal" && l.task.id === taArc);
+    check("(ta-c) archive with {grund:\"x\",beleg:\"y\"} stores disposition.grund \"x\" on the row, stamped by the server, and the terminal ledger line carries it",
+      taArcRes.status === 200 && taArcRow?.status === "archived"
+        && taArcRow.disposition?.grund === "x" && taArcRow.disposition.beleg === "y"
+        && taArcRow.disposition.by === "owner" && typeof taArcRow.disposition.at === "number"
+        && taArcTerminal.length === 1 && taArcTerminal[0]?.task.disposition?.grund === "x"
+        && taArcTerminal[0]?.task.text === taArcText,
+      `status=${taArcRes.status} row=${JSON.stringify(taArcRow?.disposition)} terminalLines=${taArcTerminal.length}`);
+
+    // …and a body that names no reason mints none, while a malformed one is refused before the row moves
+    const taBare = ((await (await post("/api/tasks", { text: `ta bare archive ${taStamp}`, queue: false })).json()) as { task: { id: string } }).task.id;
+    const taBareRes = await post(`/api/tasks/${taBare}/archive`, {});
+    const taBad = ((await (await post("/api/tasks", { text: `ta malformed reason ${taStamp}`, queue: false })).json()) as { task: { id: string } }).task.id;
+    const taBadRes = await post(`/api/tasks/${taBad}/archive`, { grund: 42 });
+    const taEmptyRes = await post(`/api/tasks/${taBad}/archive`, { grund: "  " });
+    const taAfterBad = await taTasks();
+    const taBareRow = taAfterBad.find((t) => t.id === taBare);
+    const taBadRow = taAfterBad.find((t) => t.id === taBad);
+    check("(ta-c2) SHOULD-REJECT: an archive without a reason stores NO disposition, and a non-string or blank grund is a 400 that leaves the row pending",
+      taBareRes.status === 200 && taBareRow?.status === "archived" && taBareRow.disposition === undefined
+        && taBadRes.status === 400 && taEmptyRes.status === 400
+        && taBadRow?.status === "pending" && taBadRow.disposition === undefined,
+      `bare=${taBareRes.status}/${JSON.stringify(taBareRow?.disposition)} bad=${taBadRes.status} blank=${taEmptyRes.status} badRow=${taBadRow?.status}`);
+
+    // THE PLANT: 200 live rows fill MAX_TASKS alone (terminal budget 0, C0-c), so every terminal row
+    // planted beside them is evicted at boot — the archived row from (c), and four done/archived rows,
+    // one of which carries the word register.sh is asked for. One LIVE row carries a word of its
+    // own: it must stay in the queue and never reach the ledger.
+    await stopSrv();
+    const taState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as Record<string, unknown> & { tasks?: Record<string, unknown>[] };
+    const taArcPlanted = (taState.tasks ?? []).find((t) => t.id === taArc);
+    const taAt = 1_700_000_000_000;
+    const taRow = (id: string, status: string, text: string): Record<string, unknown> => ({
+      id, text, source: "owner", status, kind: "notiz", created: taAt, slot: null, note: null, repo: null,
+    });
+    const taTerm = Array.from({ length: 4 }, (_, i) => taRow(`taterm${taStamp}${i}`, i % 2 === 0 ? "done" : "archived",
+      i === 0 ? `ta evicted done row ${taStamp} names wacholderbeere` : `ta evicted row ${taStamp} ${i}`));
+    const taLive = Array.from({ length: 200 }, (_, i) => taRow(`talive${taStamp}${String(i).padStart(3, "0")}`, "pending",
+      i === 0 ? `ta live row ${taStamp} names lebendigholz` : `ta live row ${taStamp} ${i}`));
+    const taTerminalIds = [taArc, ...taTerm.map((t) => String(t.id))];
+    taState.tasks = [...(taArcPlanted ? [taArcPlanted] : []), ...taTerm, ...taLive];
+    const taPlantAt = Date.now();
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(taState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const taBooted = (await taTasks()).map((t) => t.id);
+    const taEvicted = taLedger().filter((l) => l.event === "evicted" && l.ts >= taPlantAt);
+    const taPlantedText = new Map<string, string>([[taArc, taArcText], ...taTerm.map((t) => [String(t.id), String(t.text)] as [string, string])]);
+    check("(ta-a) setup: the archived row from (c) was in fleet.json to plant, and the queue booted with the live rows only",
+      taArcPlanted !== undefined && taBooted.length === 200 && !taTerminalIds.some((id) => taBooted.includes(id)),
+      `planted=${taArcPlanted !== undefined} booted=${taBooted.length} terminalKept=${taTerminalIds.filter((id) => taBooted.includes(id)).length}`);
+    check("(ta-a) every row the cap evicted stands in the ledger with its full text",
+      taTerminalIds.every((id) => taEvicted.some((l) => l.task.id === id && l.task.text === taPlantedText.get(id))),
+      `evictedLines=${taEvicted.length} missing=${JSON.stringify(taTerminalIds.filter((id) => !taEvicted.some((l) => l.task.id === id && l.task.text === taPlantedText.get(id))))}`);
+    check("(ta-b) GEGENPROBE: no live row is written as evicted — the ledger's eviction lines are exactly the planted terminal rows",
+      !taEvicted.some((l) => l.task.id.startsWith("talive") || !["done", "archived"].includes(l.task.status))
+        && JSON.stringify(taEvicted.map((l) => l.task.id).sort()) === JSON.stringify([...taTerminalIds].sort())
+        && taLive.every((t) => taBooted.includes(String(t.id))),
+      `evicted=${JSON.stringify(taEvicted.map((l) => `${l.task.id}:${l.task.status}`))}`);
+    check("(ta-a) the evicted archived row keeps its reason in the ledger",
+      taEvicted.find((l) => l.task.id === taArc)?.task.disposition?.grund === "x",
+      JSON.stringify(taEvicted.find((l) => l.task.id === taArc)?.task.disposition));
+
+    // (f) register.sh --archived — the staged copy (e2e-isolated.sh STAGE_EXTRA), run in the instance
+    // directory, so it reads THIS instance's ledger and never the live one
+    const taRegPresent = existsSync(`${ROOT}/register.sh`);
+    check("(ta-f) setup: register.sh is staged into the instance", taRegPresent, `${ROOT}/register.sh`);
+    const taHit = taRegister("WACHOLDERBEERE");
+    const taHitLines = taHit.out.split("\n").filter(Boolean);
+    const taArcHit = taRegister("zypressenholz");
+    const taArcHitLine = taArcHit.out.split("\n").filter(Boolean).find((l) => l.startsWith(`${taArc} |`)) ?? "";
+    check("(ta-f) register.sh --archived finds the evicted row by one word of its text, case-insensitively, as id | kind | status | grund | text",
+      taRegPresent && taHit.code === 0 && taHitLines.length === 1
+        && taHitLines[0] === `taterm${taStamp}0 | notiz | done | — | ta evicted done row ${taStamp} names wacholderbeere`
+        && taArcHit.code === 0 && taArcHitLine.startsWith(`${taArc} | ${taArcRow?.kind ?? "?"} | archived | x | ta archived row ${taStamp}`),
+      `code=${taHit.code} out=${JSON.stringify(taHit.out)} arc=${JSON.stringify(taArcHitLine)} err=${JSON.stringify(taHit.err)}`);
+    const taLiveHit = taRegister("lebendigholz");
+    check("(ta-f) GEGENPROBE: a word only a LIVE row carries is not in the archive — register.sh answers no row",
+      taRegPresent && taLiveHit.code === 0 && taLiveHit.out.trim() === "" && / 0 of \d+ archived row/.test(taLiveHit.err),
+      `code=${taLiveHit.code} out=${JSON.stringify(taLiveHit.out)} err=${JSON.stringify(taLiveHit.err)}`);
+
+    // (d) archived, evicted, unarchived: 200, and the row is pending again with its original text
+    const taUn = await post(`/api/tasks/${taArc}/unarchive`, {});
+    const taBack = (await taTasks()).find((t) => t.id === taArc);
+    check("(ta-d) unarchive of an EVICTED row answers 200 and brings it back pending with its original text and no stale reason",
+      taUn.status === 200 && taBack?.status === "pending" && taBack.text === taArcText && taBack.disposition === undefined,
+      `status=${taUn.status} row=${JSON.stringify(taBack && { status: taBack.status, text: taBack.text, disposition: taBack.disposition })}`);
+    // (e) …while an id no ledger line ever carried stays unknown
+    const taNever = await post(`/api/tasks/tanever${taStamp}/unarchive`, {});
+    check("(ta-e) SHOULD-REJECT: unarchive of an id that never existed is 404 and restores nothing",
+      taNever.status === 404 && !(await taTasks()).some((t) => t.id === `tanever${taStamp}`),
+      `status=${taNever.status}`);
+
+    // Leave the queue as this section found it — the plant replaced it wholesale.
+    await stopSrv();
+    writeFileSync(`${ROOT}/fleet.json`, taSnapshot, { mode: 0o600 });
+    await restartSrv();
+    const taRestored = await taTasks();
+    check("(ta) cleanup: the pre-fixture queue is back and no planted row survives",
+      !taRestored.some((t) => t.id.startsWith("talive") || t.id.startsWith("taterm") || [taArc, taBare, taBad].includes(t.id)),
+      `total=${taRestored.length}`);
+  }
 }

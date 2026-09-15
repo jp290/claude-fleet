@@ -114,6 +114,7 @@ import {
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
   PROGRAM_RELEASE_POLICIES, loadProgramRelease, type ProgramReleasePolicy, loadTaskHold,
+  type TaskDisposition, loadTaskDisposition, TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX,
   type Studio, type StudioContent, type ProgramStudioBinding, type StudioStage,
   type StudioBriefAudience,
   type BoxPin, type WSData, type Share, type ShareComment, type Auto, type WatchBase, type MergeWatch,
@@ -184,6 +185,11 @@ const LANE_OUTCOME_FILE = `${import.meta.dir}/lane-outcomes.jsonl`;
 // row when it is judged. Append-only — the live list in fleet.json is a bounded tail
 // (pruneFleetReports, FLEET_REPORT_KEEP) and this is what survives it.
 const FLEET_REPORT_LEDGER_FILE = `${import.meta.dir}/fleet-reports.jsonl`;
+// every queue row that went terminal or was evicted, WHOLE — the bound in capTasks retires terminal
+// rows from fleet.json, and this is what makes that retirement not a delete (see archiveTaskLine).
+// Deliberately NOT through appendEvent: its one-generation rotation overwrites `.1`, which is a
+// delete with extra steps, and eviction must know synchronously whether its line reached disk.
+const TASK_ARCHIVE_FILE = `${import.meta.dir}/tasks-archive.jsonl`;
 // Immutable evidence of the exact ContextPlan pointers delivered with a founding brief. Selection
 // is always freshly derived; only this delivery receipt is historical and append-only.
 const CONTEXT_RECEIPT_FILE = `${import.meta.dir}/context-receipts.jsonl`;
@@ -1567,6 +1573,25 @@ async function decideVariantGroup(group: Task, winnerId: unknown, by: "owner" | 
   return { status: 200, body: { ok: true, decision } };
 }
 
+// Task.disposition at the archive door. A body that names neither field asks for no reason and gets
+// none (`undefined`); once either is named, `grund` must be a non-empty string and `beleg`, if
+// present, one too. `by` and `at` are the server's, never the body's.
+function taskDispositionFromBody(body: Record<string, unknown> | null):
+  { ok: true; disposition: TaskDisposition | undefined } | { ok: false; error: string } {
+  if (!body || (body.grund === undefined && body.beleg === undefined)) return { ok: true, disposition: undefined };
+  const { grund, beleg } = body;
+  if (typeof grund !== "string" || !grund.trim())
+    return { ok: false, error: "grund must be a non-empty string when an archive names a reason" };
+  if (grund.length > TASK_DISPOSITION_GRUND_MAX)
+    return { ok: false, error: `grund is limited to ${TASK_DISPOSITION_GRUND_MAX} characters` };
+  if (beleg !== undefined && (typeof beleg !== "string" || !beleg.trim()))
+    return { ok: false, error: "beleg must be a non-empty string when given" };
+  if (typeof beleg === "string" && beleg.length > TASK_DISPOSITION_BELEG_MAX)
+    return { ok: false, error: `beleg is limited to ${TASK_DISPOSITION_BELEG_MAX} characters` };
+  return { ok: true, disposition: { grund: grund.trim(), ...(typeof beleg === "string" ? { beleg: beleg.trim() } : {}),
+    by: "owner", at: Date.now() } };
+}
+
 // Task.review at a door. `undefined` = the body did not name it (nothing changes); `null` = clear the
 // field (`"none"` or JSON null); a value = store it. Anything else is the caller's error, named with
 // the allowed values so the fix is in the answer.
@@ -2530,6 +2555,62 @@ const sourceHoldersIn = (list: readonly Task[], id: string): string[] =>
   list.filter((t) => (t.notes ?? []).some((p) => p.noteId === id)).map((t) => t.id);
 const sourceHolders = (id: string): string[] => sourceHoldersIn(tasks, id);
 
+// --- THE TASK ARCHIVE: archiving must not delete. Until this ledger capTasks dropped a terminal
+// row with its text, card, brief and comments, and `unarchive` could reach an archived row only until
+// the bound had taken it — at 142 open and 58 terminal rows (2026-09-14) every archive past the 58th
+// deleted an older done row on the spot. Two moments write a line, both carrying the FULL row:
+//   · `terminal` — a row entered done/archived (or its disposition changed while archived);
+//   · `evicted`  — capTasks is about to retire it. Written BEFORE the drop, synchronously, and a
+//                  failed write KEEPS the row: a bound that cannot record what it removes removes
+//                  nothing. The next capTasks tries again.
+// Unbounded on purpose — no rotation and no compaction: either would be the delete this exists to end.
+type TaskArchiveEvent = "terminal" | "evicted";
+function archiveTaskLine(event: TaskArchiveEvent, t: Task): boolean {
+  try {
+    appendFileSync(TASK_ARCHIVE_FILE, `${JSON.stringify({ ts: Date.now(), event, task: t })}\n`, { mode: 0o600 });
+    return true;
+  } catch (e) {
+    logError("tasksArchive", e);
+    return false;
+  }
+}
+// id → the terminal fact the ledger already holds for that row, so a save that changed nothing
+// writes nothing. Seeded at boot from the rows that were ALREADY terminal (they predate this
+// process; an eviction still writes them whole), and asked on every save — the persistence point
+// every status write already passes through, so no terminal transition needs its own call site.
+const archivedTerminal = new Map<string, string>();
+const terminalArchiveKey = (t: Task): string => `${t.status}:${t.disposition?.at ?? ""}`;
+function seedTerminalArchive(): void {
+  archivedTerminal.clear();
+  for (const t of tasks) if (taskTerminal(t)) archivedTerminal.set(t.id, terminalArchiveKey(t));
+}
+function archiveTerminalTransitions(): void {
+  const present = new Set<string>();
+  for (const t of tasks) {
+    if (!taskTerminal(t)) continue;
+    present.add(t.id);
+    const key = terminalArchiveKey(t);
+    if (archivedTerminal.get(t.id) === key) continue;
+    // a failed write stays unrecorded, so the next save retries it
+    if (archiveTaskLine("terminal", t)) archivedTerminal.set(t.id, key);
+  }
+  for (const id of archivedTerminal.keys()) if (!present.has(id)) archivedTerminal.delete(id);
+}
+// the YOUNGEST line for an id — the row as it last stood before it left fleet.json. A line whose
+// `task` is not a row this build could have written is skipped, never repaired.
+async function youngestArchivedTask(id: string): Promise<Task | null> {
+  const { rows } = await readLedger<{ task?: unknown }>(TASK_ARCHIVE_FILE);
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const t = rows[i]?.task;
+    if (typeof t !== "object" || t === null || Array.isArray(t)) continue;
+    const r = t as Task;
+    if (r.id !== id || typeof r.text !== "string"
+      || !["owner", "intake", "steward", "main"].includes(r.source) || !isTaskKind(r.kind)) continue;
+    return r;
+  }
+  return null;
+}
+
 function capTasks(list: Task[]): Task[] {
   if (list.length <= MAX_TASKS) return list;
   const live = new Set(list.filter((t) => !taskTerminal(t)));
@@ -2554,8 +2635,10 @@ function capTasks(list: Task[]): Task[] {
   const survivors = [...live, ...keptDone];
   // …through the SAME predicate the delete, archive and kind doors ask — not a fourth inline copy
   // of "who names this id", which is exactly the shape that let three of the four doors disagree.
+  // A row NOT kept goes only once tasks-archive.jsonl holds it whole; a live row never reaches the
+  // write, because `live.has` answers first.
   return list.filter((t) => live.has(t) || keptDone.has(t)
-    || sourceHoldersIn(survivors, t.id).length > 0);
+    || sourceHoldersIn(survivors, t.id).length > 0 || !archiveTaskLine("evicted", t));
 }
 // pending → queued: the RELEASE. A function, not a bare assignment, for one reason — it is the
 // transition a future UNATTENDED promote will make, and `by` must not be forgettable there. A new
@@ -3278,6 +3361,7 @@ function writeStateFile(body: string): void {
 // after its cleanup failed.
 const queueStateSave = coalescedSaver(stateSnapshot, writeStateFile, (e) => logError("saveState", e));
 function saveState(): void {
+  archiveTerminalTransitions();
   void queueStateSave();
 }
 // saveState, but AWAITABLE — the write is on disk when this resolves. saveState alone queues the
@@ -3287,6 +3371,7 @@ function saveState(): void {
 // the risky step to disk: a `tmux kill-session -t srv` lands ~10×/day (the deploy ritual), and a
 // marker still sitting in a microtask when that arrives is exactly the marker that was needed.
 function saveStateNow(): Promise<void> {
+  archiveTerminalTransitions();
   return queueStateSave();
 }
 
@@ -27236,6 +27321,8 @@ if (existsSync(STATE_FILE)) {
           review: loadTaskReview((t as { review?: unknown }).review),
           // a hold that half-survived a hand edit still stops the start (loadTaskHold)
           hold: loadTaskHold((t as { hold?: unknown }).hold),
+          // the archive reason only while the row IS archived, and whole or absent (loadTaskDisposition)
+          disposition: t.status === "archived" ? loadTaskDisposition((t as { disposition?: unknown }).disposition) : undefined,
           // THE VARIANT FIELDS (E4) — the group biased to STAY a group (loadTaskVariants), the pair
           // on a variant restored only well-formed: a variant that lost its group pointer is an
           // ordinary row again, which is what it would be had its group been deleted.
@@ -27366,6 +27453,7 @@ if (existsSync(STATE_FILE)) {
       if (overCappedVerdicts > 0)
         console.log(`loadState: dropped ${overCappedVerdicts} task verdict(s) past NOTE_VERDICTS_MAX=${NOTE_VERDICTS_MAX} — a store this large cannot come from the write door`);
       tasks = capTasks(tasks);
+      seedTerminalArchive();
     // THE STUDIO INVENTORY, read back with the discipline the Program loader states one comment
     // down: absent stays [], and a row this build cannot parse is SKIPPED WHOLE — never repaired
     // field by field, because half a workflow is a different workflow, not a shorter one. Read
@@ -33515,6 +33603,24 @@ Bun.serve<WSData>({
     const taskAct = /^\/api\/tasks\/([a-z0-9]+)\/(queue|unqueue|done|delete|archive|unarchive|adopt)$/.exec(url.pathname);
     if (req.method === "POST" && taskAct) {
       const t = tasks.find((x) => x.id === taskAct[1]);
+      // RESTORE FROM THE ARCHIVE: a row capTasks retired is still unarchivable. Its youngest ledger
+      // line comes back as pending — owner review, exactly like the in-list unarchive below — with
+      // no lane and no archive reason. An id the ledger never saw stays the 404 it always was.
+      if (!t && taskAct[2] === "unarchive") {
+        const id = taskAct[1];
+        const archived = await youngestArchivedTask(id);
+        if (!archived) return json({ error: "unknown task" }, 404);
+        // the ledger read awaited: a second restore of the same id may have finished meanwhile
+        if (tasks.some((x) => x.id === id))
+          return json({ error: "task was restored while its archive line was read — reload and retry" }, 409);
+        const { disposition: _reason, ...row } = archived;
+        const restored: Task = { ...row, status: "pending", slot: null,
+          note: `restored from tasks-archive.jsonl (was ${archived.status})` };
+        tasks = capTasks([...tasks, restored]);
+        saveState();
+        audit("task_archive_restore", undefined, `${id} (was ${archived.status})`);
+        return json({ ok: true, restored: true });
+      }
       if (!t) return json({ error: "unknown task" }, 404);
       // a running lane's founding task must stay tracked. `delete` shares the guard: deleting a sent row
       // orphaned the lane — /api/self/criterion resolves the founding task by slot+status "sent"
@@ -33536,6 +33642,13 @@ Bun.serve<WSData>({
         const holders = sourceHolders(t.id);
         if (holders.length > 0)
           return json({ error: `this note is an assigned SOURCE of ${holders.join(", ")} — detach it there first (a detach removes the assignment and keeps the note; this would remove the text those rows are worked against)` }, 409);
+      }
+      // the archive's optional reason, refused BEFORE anything below mutates the row
+      let disposition: TaskDisposition | undefined;
+      if (taskAct[2] === "archive") {
+        const parsed = taskDispositionFromBody(await readJson(req));
+        if (!parsed.ok) return json({ error: parsed.error }, 400);
+        disposition = parsed.disposition;
       }
       // B1 (F-C): the owner's promote/dismiss of a STEWARD-origin proposal is a deterministic
       // `propose`-class outcome. Fire ONCE, gated on the pending→ transition ONLY: deleting an already-
@@ -33593,9 +33706,16 @@ Bun.serve<WSData>({
         t.status = "pending";
         if (t.variants) for (const v of variantsOfGroup(t)) if (v.status === "queued") v.status = "pending";
       }
-      else if (taskAct[2] === "archive") t.status = "archived";
+      else if (taskAct[2] === "archive") {
+        t.status = "archived";
+        // a re-archive without a body keeps the reason already given; saveState's archive pass
+        // writes the row again whenever the reason changes
+        if (disposition) t.disposition = disposition;
+      }
       else if (taskAct[2] === "unarchive") t.status = "pending"; // back to owner review, never straight to queued
       else t.status = "done";
+      // a reason belongs to an ARCHIVED row only; the ledger keeps every earlier one
+      if (t.status !== "archived") t.disposition = undefined;
       if (proposeOutcome) {
         // the row is deleted or mutated right above, so the record carries what the ruling was ABOUT: `ref`
         // stays the task id, `slug` the steward's condition ref, plus a 200-char excerpt (a retention

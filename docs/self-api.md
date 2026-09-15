@@ -2207,6 +2207,34 @@ Felder an allen fünf Schreibern (Lane-Dispatch, zwei Supervisor-, zwei Program-
   zählen nicht). `{bytes:0, hits:0, omitted:[]}` heißt „dieser Brief trug keinen Block"; das gilt für
   jede Gründung und jede Clarify-Lane. Fehlt das Feld, ist die Zeile älter als dieser Stand.
 
+### `tasks-archive.jsonl` — archivieren löscht nicht (seit 2026-09-15)
+
+`server.ts#capTasks` verdrängt ab `MAX_TASKS` terminale Zeilen (`done`/`archived`) aus
+`fleet.json`. Vorher gingen Text, Karte, Brief und Kommentare dabei verloren, und `unarchive` erreichte
+eine archivierte Zeile nur, solange sie noch nicht verdrängt war. Das Ledger liegt neben `fleet.json`,
+ist gitignored und append-only. Anders als die zwei Ledger oben läuft es **nicht** über `appendEvent`:
+es rotiert nicht, weil eine überschriebene `.1`-Generation wieder ein Löschen wäre.
+
+```
+{"ts","event":"terminal"|"evicted","task":{…die volle Zeile…}}
+```
+
+- `terminal` schreibt jeder `saveState`, der eine Zeile terminal vorfindet, deren Status oder
+  `disposition` das Ledger noch nicht hat (`server.ts#archiveTerminalTransitions`). Zeilen, die beim
+  Boot schon terminal waren, bekommen keine nachträgliche Zeile; bei ihrer Verdrängung stehen sie ganz drin.
+- `evicted` schreibt `capTasks` **vor** dem Drop und synchron. Scheitert das Schreiben, bleibt die Zeile
+  in `fleet.json`, und der nächste Cap versucht es erneut. Eine live Zeile erreicht diesen Schreiber nie.
+- `POST /api/tasks/:id/archive` nimmt optional `{grund, beleg}` an und legt dann
+  `disposition{grund, beleg?, by:"owner", at}` an die Zeile. Ohne `grund`/`beleg` im Body entsteht keine
+  `disposition`; ein nicht-string oder leerer `grund` gibt 400. Verlässt die Zeile `archived`, fällt
+  `disposition` weg. Das Ledger behält sie.
+- `POST /api/tasks/:id/unarchive` auf eine Id, die nicht mehr in `fleet.json` steht, stellt ihre
+  **jüngste** Ledger-Zeile als `pending` wieder her (ohne Slot, ohne `disposition`, Audit
+  `task_archive_restore`). Kennt das Ledger die Id nicht, bleibt es bei 404.
+- `./register.sh --archived <muster>` sucht mit `grep -i` im Text der jüngsten Zeile je Id und gibt
+  `id | kind | status | disposition.grund | erste 100 Zeichen` aus. `—` heißt dabei „kein Grund
+  angegeben“. Fehlt die Datei, meldet das Skript UNKNOWN mit Exit 1. Das ist etwas anderes als ein leeres Archiv.
+
 ## harness-block — `POST /api/self/harness-block`
 
 **Wer erfährt, dass eine Lane an einem Dialog hängt, den nur ein Mensch beantworten kann.**

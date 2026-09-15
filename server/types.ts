@@ -1244,6 +1244,7 @@ interface Task {
   // not a discard: "a reading was attempted and here is what it could not establish" is worth more
   // than an absent field, which reads as "nobody looked".
   status: "pending" | "queued" | "sent" | "done" | "archived";
+  disposition?: TaskDisposition; // WHY this row was archived — see TaskDisposition
   hold?: TaskHold; // a Program-MAIN's STOP on this row (POST /api/self/tasks/:id/hold) — see TaskHold
   releasedBy?: "owner" | "machine"; // WHO handed this draft to the machine — written at the
   // RELEASE (see releaseTask) and by nothing else. NOT a synonym for the outcome row's
@@ -1343,6 +1344,24 @@ interface TaskCard extends TaskCardBody {
 // (server.ts#releaseTask). Written only by the bound MAIN of the row's own program, never from a
 // body: `slot` and `at` are stamped from the caller's token. Absent = nobody held it. A malformed
 // persisted hold loads as a hold (loadTaskHold): a stop that half-survived a hand edit must not start work.
+// THE OWNER'S REASON FOR AN ARCHIVE — written only by POST /api/tasks/:id/archive when its body names
+// a `grund` (server.ts#taskDispositionFromBody), and cleared when the row leaves `archived`. ABSENT
+// means nobody said why, never an empty reason: an archive without a body mints none. `beleg` is the
+// evidence pointer and is absent unless given. The row itself may later be evicted by capTasks; the
+// reason survives with it in tasks-archive.jsonl, which is where register.sh --archived reads it.
+interface TaskDisposition { grund: string; beleg?: string; by: "owner"; at: number }
+const TASK_DISPOSITION_GRUND_MAX = 500;
+const TASK_DISPOSITION_BELEG_MAX = 2000;
+// read back whole or not at all: a reason without its `grund` is not a shorter reason
+const loadTaskDisposition = (value: unknown): TaskDisposition | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const r = value as Record<string, unknown>;
+  if (typeof r.grund !== "string" || !r.grund.trim() || typeof r.at !== "number" || !Number.isFinite(r.at))
+    return undefined;
+  return { grund: r.grund.slice(0, TASK_DISPOSITION_GRUND_MAX),
+    ...(typeof r.beleg === "string" && r.beleg.trim() ? { beleg: r.beleg.slice(0, TASK_DISPOSITION_BELEG_MAX) } : {}),
+    by: "owner", at: r.at };
+};
 interface TaskHold { by: "main"; slot: number; at: number }
 const loadTaskHold = (value: unknown): TaskHold | undefined => {
   if (value === undefined || value === null || value === false) return undefined;
@@ -2760,7 +2779,7 @@ export type {
   StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
   StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold,
-  LineageRole, LineageObligationKind, LineageOccupant, LineageObligationRef, LineageHandover,
+  TaskDisposition, LineageRole, LineageObligationKind, LineageOccupant, LineageObligationRef, LineageHandover,
   LineageHandoverRead, LineageHandoverLoss,
 };
 export {
@@ -2790,6 +2809,7 @@ export {
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,
   PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold,
+  TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX, loadTaskDisposition,
   HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck,
   HELPER_ARTIFACT_GLOB_MAX, HELPER_ARTIFACT_MAX, HELPER_ARTIFACT_PATH_MAX,
   helperArtifactGlobsFrom, helperArtifactsFrom,

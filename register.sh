@@ -23,6 +23,8 @@
 # must not read as a zero.
 #
 # Usage:  ./register.sh          (from the main checkout or from any lane)
+#         ./register.sh --archived <muster>
+#                                (rows that left the queue: done, archived or evicted by the cap)
 set -u
 cd "$(dirname "$0")" || exit 1
 export GIT_OPTIONAL_LOCKS=0
@@ -36,6 +38,66 @@ if [ -f fleet.json ]; then
   STATE=fleet.json
 else
   [ -n "$MAIN" ] && [ -f "$MAIN/fleet.json" ] && STATE="$MAIN/fleet.json"
+fi
+
+# --archived <muster>: the rows fleet.json no longer holds. server.ts writes every row that went
+# terminal, and every row capTasks evicts, WHOLE into tasks-archive.jsonl beside fleet.json — found
+# the same way as the queue above. Lexical only: `grep -i` over each row's text, one line per id
+# (its youngest ledger line, the one `unarchive` would restore). No ranking, no embedding.
+if [ "${1:-}" = "--archived" ]; then
+  if [ -z "${2:-}" ]; then
+    echo "usage: ./register.sh --archived <muster>" >&2
+    exit 2
+  fi
+  ARCHIVE=""
+  if [ -f tasks-archive.jsonl ]; then
+    ARCHIVE=tasks-archive.jsonl
+  else
+    [ -n "$MAIN" ] && [ -f "$MAIN/tasks-archive.jsonl" ] && ARCHIVE="$MAIN/tasks-archive.jsonl"
+  fi
+  if [ -z "$ARCHIVE" ]; then
+    echo "UNKNOWN: no tasks-archive.jsonl here and none in the main worktree — an absence, not an empty archive." >&2
+    exit 1
+  fi
+  ARCHIVE="$ARCHIVE" PATTERN="$2" python3 - <<'PY'
+import json, os, subprocess, sys
+
+ARCHIVE, PATTERN = os.environ["ARCHIVE"], os.environ["PATTERN"]
+youngest, malformed = {}, 0
+with open(ARCHIVE, encoding="utf8") as f:
+    for line in f:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            task = row["task"]
+            tid = task["id"]
+            if not isinstance(tid, str) or not isinstance(task.get("text"), str):
+                raise ValueError("no id/text")
+        except Exception:
+            malformed += 1  # a torn or foreign line is a hole, and said as one
+            continue
+        youngest.pop(tid, None)  # re-insert so the order is that of each id's youngest line
+        youngest[tid] = task
+
+def flat(s):
+    return " ".join((s or "").split())
+
+rows = list(youngest.values())
+# grep reads one line per row, so the text is flattened first; -n maps a hit back to its row
+hit = subprocess.run(["grep", "-i", "-n", "-e", PATTERN], input="".join(flat(t["text"]) + "\n" for t in rows),
+                     capture_output=True, text=True)
+if hit.returncode > 1:
+    print(f"grep failed on the pattern: {hit.stderr.strip()}", file=sys.stderr)
+    sys.exit(2)
+matched = [rows[int(l.split(":", 1)[0]) - 1] for l in hit.stdout.splitlines() if l]
+for t in matched:
+    grund = (t.get("disposition") or {}).get("grund") if isinstance(t.get("disposition"), dict) else None
+    print(f"{t['id']} | {t.get('kind', '?')} | {t.get('status', '?')} | {flat(grund) if grund else '—'} | {flat(t['text'])[:100]}")
+print(f"# {len(matched)} of {len(rows)} archived row(s) match — source: {ARCHIVE}"
+      + (f", {malformed} malformed line(s) skipped" if malformed else ""), file=sys.stderr)
+PY
+  exit $?
 fi
 
 # Cleaned up on EVERY exit, not just the happy one: nothing on this machine reaps /tmp, so a

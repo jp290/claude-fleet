@@ -162,6 +162,46 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   `required`-Modus (MAIN-Selbstlandung verweigert ohne Verdikt) ist bewusst NICHT gebaut: erst `advisory`
   messen.
 
+## Simulator-Hygiene (Host, nicht Fleet)
+
+- **`FLEET_SIM_REAP` (seit 2026-09-16) — darf diese Fleet einen ungenutzten iOS-Simulator
+  herunterfahren?** Default **AUS** (nicht gesetzt = kein Tick registriert), `1/true/on/yes` armt,
+  `0/off/false/no` schaltet ausdruecklich ab, ein **unerkannter Wert ist AUS und sagt es** in einer
+  Bootzeile (`FLEET_LANE_AUTOCLOSE`s Form). Auf einem Nicht-darwin-Host ist auch ein gesetztes `1`
+  AUS — ein Tick, der nur ablehnen kann, wird nicht registriert. Anlass: gemessen 2026-09-15 lief
+  `Simulator.app` auf dieser Maschine **13 Tage 13 h mit 0 gebooteten Geraeten und 0
+  xcodebuild/simctl-Prozessen** und drueckte die Dev-Performance; `private-repo-p/scripts/review.sh`
+  oeffnet ihn (`open -a Simulator`), und dessen `cleanup()` entfernt nur das Lock, faehrt kein
+  Geraet herunter. Die private-repo-p-Seite ist davon unberuehrt.
+- **Die Entscheidung ist rein und liegt in `simulator-hygiene.ts#decideSimulatorReap`** — drei
+  Ausgaenge (`reap` · `wait` · `none`), jede Ablehnung mit **eigenem** `reason`. `reap` verlangt
+  ALLE: (gebootete Geraete ODER `Simulator.app` laeuft) UND kein gehaltener Lease UND kein
+  `xcodebuild`/`simctl`/`xctest` UND dieser Zustand ununterbrochen `>= FLEET_SIM_IDLE_MS`
+  (Default 1800000) seit der ersten Beobachtung. **Ein UNBEKANNTES reapt nie**: eine fehlgeschlagene
+  Probe und ein Lease-Verzeichnis ohne lesbare pid lehnen beide ab. Ein `none` bricht die Idle-Kette
+  (die Uhr beginnt neu), ein `wait` haelt sie.
+- **Lease** = ein Verzeichnis nach `FLEET_SIM_LEASE_GLOB` (Default `$TMPDIR/*simulator.lock`, also
+  private-repo-ps eigenes `$TMPDIR/private-repo-p-simulator.lock`). Mit `pid`- (oder `owner`-)Datei und
+  LEBENDEM Prozess = gehalten → nie reapen. Mit lesbarer, toter pid = `stale` (Muell eines
+  abgestuerzten Laufs) → haelt nichts. Ohne lesbare pid, oder wenn der Glob etwas anderes als ein
+  Verzeichnis trifft = UNBEKANNT → nie reapen. Der Glob wildcardet nur im letzten Segment und
+  expandiert nur `$TMPDIR`.
+- **Jedes Host-Kommando ist injizierbar**, damit keine Suite je einen echten Simulator anfasst:
+  `FLEET_SIMCTL_CMD` (Default `xcrun simctl`), `FLEET_SIM_QUIT_CMD` (Default
+  `osascript -e 'quit app "Simulator"'`), `FLEET_SIM_PS_CMD` (Default `ps -eo comm=`). Tick-Periode
+  `FLEET_SIM_TICK_MS` (Default 60000, Minimum 1000). Die Prozess-Probe liest **`comm`, nie
+  `command`** (CLAUDE.md §Self-scheduling: `ensureSlot` baeckt Self-Tokens in jede Pane-Zeile, eine
+  Kommandozeile in einem Log ist ein fremdes Token in einem Log) — und sie laeuft **VOR** `simctl`,
+  weil `xcrun simctl list` selbst ein Prozess namens `simctl` ist und die Probe sonst ihr eigenes
+  Kind als „ein Tool laeuft" lesen wuerde.
+- **Die Aktion:** `simctl shutdown all`, dann die App beenden — in dieser Reihenfolge, ein Quit
+  zuerst liesse gebootete Geraete ohne Fenster zurueck —, danach neu proben. Eine `audit.jsonl`-Zeile
+  `simulator_reap` **nur wenn gehandelt wurde**, mit Geraetezahl, App ja/nein, Idle-Dauer, den beiden
+  Exit-Codes und dem Nachher-Stand. Eine Ablehnung schreibt nichts.
+- Beweis: `e2e/host-hygiene.ts` (Serverlauf mit Stand-ins fuer alle drei Kommandos) und die reine
+  Tabelle `e2e/host-hygiene-table.ts`, die ohne Server laeuft — der Mutationsbeweis steht als
+  §MUTATION am Fuss von `e2e/host-hygiene.ts`.
+
 ## Modell-Tiers
 
 - Modell-Tiers: `DEFAULT_MODEL` (`server.ts`, override `FLEET_MODEL`) = Sessions/Lanes ohne eigenen Pin;

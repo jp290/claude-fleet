@@ -243,6 +243,11 @@ type AuditEvent =
   // to "no push"). The detail says whether the frame left the box — never that the machine woke —
   // and carries neither the MAC nor the broadcast address.
   | "helper_wake"
+  // HOST hygiene rather than fleet state: an idle iOS Simulator was shut down because no lease was
+  // held and nothing was building (simulator-hygiene.ts). Written only when the act HAPPENED — a
+  // refusal is a decision the tick keeps to itself, and one row per pass would bury the act. The
+  // fields carry the device count, whether the app was up, and how long the idle run had lasted.
+  | "simulator_reap"
   // the deploy verb (Verb 2): one row when a build fails, one when a restart is launched, one when
   // the NEXT BOOT judges it. The trio is what makes "was the deploy verified?" answerable at all —
   // the verb kills the process that would otherwise report its own result.

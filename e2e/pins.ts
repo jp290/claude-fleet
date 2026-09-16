@@ -1245,6 +1245,39 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       codex === null ? "no '## If you are a Codex or Pi lane' section" : `missing=[${missing}]`);
   }
 
+  // The FOREIGN-REPO half of the filing template. A lane outside claude-fleet gets no Fleet rulebook
+  // at all (createWorktree copies the ignored scaffolding out of ITS repo), so every obligation this
+  // file drops has to stand in the row — and the measured price of dropping them is row 2fd387de
+  // against row 449c4a03 (docs/messungen/2026-09-15-fremdrepo-annahmen-lanes.md §2 Befund 7, §4).
+  // Two halves: the eight obligations must all still be named, and the dependency field the section
+  // teaches must be the one card-extract.ts actually reads — a renamed field would send every
+  // foreign-repo filer's ordering into prose, where nothing holds a row back.
+  const RULE_FOREIGN_REPO = "AGENTS.md §Rows for a repo that is not claude-fleet names all eight obligations";
+  if (agents === null) skip(RULE_FOREIGN_REPO, "no AGENTS.md in this tree");
+  else {
+    const section = /\n### Rows for a repo that is not claude-fleet\n([\s\S]*?)(?=\n### |\n## |$)/
+      .exec(agents)?.[1] ?? null;
+    const duties: readonly (readonly [string, RegExp])[] = [
+      ["rolle", /\*\*ROLLE spelled out\*\* — harness \/ model \/ effort/],
+      ["project-agents", /The project's own `AGENTS\.md`, by path, as the rule frame/],
+      ["verify-verbatim", /The verify command VERBATIM[\s\S]{0,400}overrides that recommendation/],
+      ["reading-list", /The reading list with paths/],
+      ["after", /A dependency only as `card\.after`[\s\S]{0,200}hold the row back/],
+      ["host-facts", /\*\*Host facts\*\*[\s\S]{0,120}tools the host does NOT have/],
+      ["channel", /fleet-report is the only way a result leaves the pane[\s\S]{0,140}`POST \/api\/self\/succeed`/],
+      ["artefact", /holds results, not instructions for the\s+next session[\s\S]{0,160}no Fleet state/],
+    ];
+    const absent = section === null ? [] : duties.filter(([, re]) => !re.test(section)).map(([k]) => k);
+    pin(`${RULE_FOREIGN_REPO} (A)`, section !== null && absent.length === 0,
+      section === null ? "no '### Rows for a repo that is not claude-fleet' section" : `missing=[${absent}]`);
+    const cardExtract = read("card-extract.ts");
+    const readsNach = /after: formatTokens\(field\("NACH"\)\)/.test(cardExtract);
+    const validatesRow = /gaps\.push\(`after: "\$\{id\.slice\(0, 60\)\}" is not a queue row`\)/.test(cardExtract);
+    pin(`${RULE_FOREIGN_REPO} — and \`card.after\`/\`NACH:\` is the field card-extract.ts reads and validates (B)`,
+      section !== null && readsNach && validatesRow,
+      `nach=${readsNach} validated=${validatesRow}`);
+  }
+
   // THE SHARP ONE, both directions. A suite the gate runs that AGENTS.md omits sends a Codex lane
   // into the land under-verified; a suite AGENTS.md lists that the gate does not run makes the file
   // claim coverage nobody has. Same for the tsc entry list — the exact drift that left the tier-2

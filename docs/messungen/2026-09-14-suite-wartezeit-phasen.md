@@ -3,8 +3,8 @@ frage: Wohin geht die Wartezeit der vollen Suite, je Phase (boot/tmux/http/sleep
 urteil: Sleep traegt 1 289 von 2 225 s (58 %), http 698 s, boot 135 s, tmux 14 s, Rest 88 s; im 3–10-s-Band sind es 716 s sleep und 345 s http von 1 124 s. Drei Server-Wartefenster erklaeren zusammen rund 530 s: der 10-s-Git-Tick (199 s), die festen Boot-Grace-Konstanten fuer Gruendung und Zustellung (187 s) und das Merge-Idle-Gate (145 s). Die Hypothese „Git-Tick widerlegt" haelt am direkt gemessenen Aufrufort nicht.
 bereich: [verify, e2e, suite-kontention]
 belege: [e2e/trail-emit.ts#createPhaseClock, e2e/harness.ts#installPhaseProbes, e2e/programs.ts#waitDoneLooking, e2e/lane-helpers.ts#settleForMerge, e2e/programs.ts#beginBootstrap, e2e/security.ts#agentOf, server.ts#tickGit, server.ts#FOUNDING_BOOT_GRACE_MS, server.ts#SEND_BOOT_WAIT_MS, docs/e2e-trail.md]
-nicht-gemessen: synchrone Arbeit bleibt ungeteilt im Rest; Second-host-Trail ging verloren; die Gegenbewegung an waitMerge (+50 s, Nachtrag) ist als git-Index-Streit nur vermutet, nicht gemessen; ob der verschobene Beobachtungsmoment der Backlog-Nudge-Fixture ihre 2 von 9 Rote erklaert, ist NICHT gemessen (zweiter Nachtrag 2026-09-16, docs/verify-tiering.md §11.2z). ERLEDIGT im Nachtrag 2026-09-16: der Umschalt-Lauf, der die drei Wartefenster beweist.
-stand: 2026-09-16 (Nachtrag; Messlauf 2026-09-14)
+nicht-gemessen: synchrone Arbeit bleibt ungeteilt im Rest; Second-host-Trail ging verloren (auch der des gruenen Laufs vom 2026-09-17, daher ist die 87-s-Zahl fuer beginBootstrap bei Grace 2000 ABGELEITET, nicht gemessen); die Gegenbewegung an waitMerge (+50 s, Nachtrag) ist als git-Index-Streit nur vermutet, nicht gemessen; ob der verschobene Beobachtungsmoment der Backlog-Nudge-Fixture ihre 2 von 9 Rote erklaert, ist NICHT gemessen (zweiter Nachtrag 2026-09-16, docs/verify-tiering.md §11.2z). ERLEDIGT im Nachtrag 2026-09-16: der Umschalt-Lauf, der die drei Wartefenster beweist.
+stand: 2026-09-17 (zwei Nachtraege; Messlauf 2026-09-14)
 ---
 
 # Wohin geht die Wartezeit der vollen Suite?
@@ -209,8 +209,10 @@ Die drei Schnitt-Zeilen oben wurden als EINE Lane umgesetzt (`fleet/260916142521
 aendern dieselbe `SRV_ENV`-Zeile und dieselbe Pin-Datei, parallel waeren sie ein Textkonflikt.
 Vier Server-Wartefenster sind jetzt Env-Knoepfe, deren UNGESETZTER Wert das Produktions-Literal
 ist (gepinnt in `e2e/pins.ts`, wo keine Suite-Env hinreicht); `e2e-isolated.sh` setzt sie auf
-`FLEET_MERGE_IDLE_MS=500`, `FLEET_GIT_TICK_MS=2000`, `FLEET_FOUNDING_BOOT_GRACE_MS=750`,
-`FLEET_SEND_BOOT_WAIT_MS=500`. Kein Baseline-Lauf, wie beauftragt: verglichen wird gegen die
+`FLEET_MERGE_IDLE_MS=500`, `FLEET_GIT_TICK_MS=2000`, `FLEET_FOUNDING_BOOT_GRACE_MS=2000`,
+`FLEET_SEND_BOOT_WAIT_MS=500`. Die Grace stand bis zum 2026-09-17 auf 750 und musste hoch: unter dem
+festen 1 500-ms-Quiet-Fenster von `ensureSlot` stempelt der Gruendungs-Brief sein eigenes Echo nicht
+mehr, und jede Fixture, die auf diese Beobachtung wartet, faellt (Nachtrag 2026-09-17). Kein Baseline-Lauf, wie beauftragt: verglichen wird gegen die
 Zahlen dieser Notiz. Methode unveraendert (§Methode).
 
 | `phaseSum` | 2026-09-14 | Lauf 1 | Lauf 3 | Ziel |
@@ -295,3 +297,45 @@ geheftet.**
 Lock-Wartezeit OOM-getoetet und zaehlt nicht. Die S1-Rote fielen auf einer Maschine, die parallel
 Suiten fuhr. Drei Gruene heissen „reproduziert nicht unter 2/8", NICHT „Flake weg". Beendet am
 2026-09-16 per MAIN-Entscheid zugunsten der Registerauswertung.
+
+## Nachtrag 2026-09-17: die Grace hat einen BODEN, und er kostet DONE(b) an einer Stelle
+
+Der Schnitt setzte `FLEET_FOUNDING_BOOT_GRACE_MS=750`. Das ist unter einer Schwelle, die nichts mit
+Booten zu tun hat: `ensureSlot` armt auf jeder frischen Pane ein **1 500-ms-Quiet-Fenster**
+(`s.quietUntil = Date.now() + 1500`, direkt vor dem repaint), und `poll()` stempelt `lastOutput`
+innerhalb dieses Fensters nicht mehr, sobald die Pane ueberhaupt schon einmal beobachtet wurde — die
+Unterdrueckung ist Absicht, sie haelt Fleets eigenes Zucken davon ab, als Arbeit der Session zu
+lesen. `briefAndSend` schlaeft die Grace, NACHDEM die Pane existiert, und pasted dann den Brief. Bei
+750 ms faellt der Paste also INS Fenster: sein Echo stempelt nie.
+
+**Deterministisch, nicht statistisch.** Unter dem Fenster ist JEDE Gruendung betroffen, darueber
+keine. Gemessen am 2026-09-17 auf dem Helfer, beide Laeufe auf Baeumen dieser Lane:
+
+| Baum | Grace | Fixture | Ergebnis |
+| --- | ---: | --- | --- |
+| `db74da85` | 750 | `e2e/programs.ts#awaitFoundingBrief` (main `6988539d`) | **21 rot** — jede land-feuernde Setup-Zeile in M1/M2/M3/M5 |
+| `1443cfb7` | 2000 | dieselbe | **ALL PASS**, 4 828 Checks, 0 Fails |
+
+Die Kontrolle dazu lieferte main selbst: sein Post-Land-Audit auf `6988539d` — dieselbe Fixture,
+aber Produktions-Grace — ist 0 Fails. Und die vorige Helfer-Vorschau dieser Lane (`2f11ee72`,
+Grace 750, ALTE Fixture) war ALL PASS. Rot ist also genau die Kombination, und keine der beiden
+Lanes konnte sie allein sehen.
+
+**Der Boden ist jetzt gepinnt, nicht beschrieben.** `e2e/pins.ts` liest das Literal aus `server.ts`
+und die Suite-Zahl aus der `SRV_ENV`-Zeile und verlangt `grace > quiet`, mit beiden Werten in der
+Fehlermeldung. Gegenprobe gefahren: bei 750 rot (`grace=750 quiet=1500`), bei 2000 gruen.
+
+**Was das DONE(b) kostet, als Ergebnis und nicht als geschoente Schwelle.** Die Grace war der
+groesste Posten an den `beginBootstrap`-Aufrufstellen. Aus den beiden GEMESSENEN Punkten dieser
+Notiz (143,3 s bei 4000, 52,4 s bei 750, je n=43) folgt eine Steigung von 0,028 s je ms Grace, und
+daraus fuer 2000: **rund 87 s, also rund −39 % statt der geforderten −50 %.** Das ist eine
+ABGELEITETE Zahl, keine neue Messung — der gruene Vorschaulauf lief auf dem Helfer, und dessen Trail
+wird mit seinem Klon geloescht. Die Gesamt-Wandzeit verschiebt sich entsprechend um rund +35 s:
+1 650,1 s → **rund 1 685 s** gegen 2 224,7 s Baseline, also −24 % statt −25,8 %.
+
+Die drei anderen (b)-Ziele haengen an anderen Knoepfen und bleiben, wie gemessen, erfuellt:
+`waitDoneLooking` 38,1 s (Ziel 60), `agentOf` 9,0 s (Ziel 12), `settleForMerge` 23,2 s (Ziel 50).
+
+**Zur Tabelle im Nachtrag vom 2026-09-16:** ihr Haken an der `beginBootstrap`-Zeile gilt der
+Konfiguration mit Grace 750 — die ist so nicht gelandet. Gelandet ist 2000, und dafuer gilt die
+Zahl oben.

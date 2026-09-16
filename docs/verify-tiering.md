@@ -4191,3 +4191,84 @@ rekonstruiert werden. Beide Arme besitzen jetzt ihre eigene Zeile (`(ii) M5 setu
 fired`, `(iii) M5 setup: the unproven-holder land fired`) mit `refusal`, `ready` und `dispatch`,
 und ihre Invarianten werden nur noch über einen Land emittiert, der die Tür erreicht hat. Erst
 damit ist die Klasse wirklich zu: vorher waren zwei von fünf Armen noch alt geformt.
+
+### 11.2z Eine siebenundzwanzigste Familie: die `backlog nudge`-Runde in `e2e/tasks.ts` nudged B statt A — und die Sichtungen unter DEMSELBEN Check-Namen sind DREI verschiedene Signaturen (2026-09-16 registriert; Rate über das GANZE Trail-Register gerechnet, Signaturen aus den Detail-Feldern gelesen, Zugehörigkeit am Servercode entschieden; NICHT repariert)
+
+**Fingerprint** (Detail der Kopfzeile, genau EIN Eintrag, und der nennt den falschen Slot):
+
+> `backlog nudge sends exactly one slot in the round, choosing the longest-idle main`
+> `[{"slot":6,"text":"[fleet backlog] Im Register liegen 4 offene Lane-Zeilen.\nDie"}]`
+
+Darunter fünf Folgezeilen, alle aus DERSELBEN Ursache — die Runde hat B statt A genommen, und jede
+spätere Zeile erbt B's `ts`: `… sends the same session the unchanged open set exactly once` (`[6,4]`),
+`… a new row re-arms the marker but cannot bypass the cooldown`, `… after cooldown the new open-set
+key yields one new prompt`, `… obeys FLEET_BACKLOG_NUDGE_MAX per session identity`, `… never targets
+a lane, ⚙ steward, or a plain session awaiting the owner` (`[6,4,4]`). Sechs rote Zeilen, EIN Befund.
+
+**Und hier liegt die Falle dieses Eintrags: der Check-NAME ist nicht die Familie.** Über alle 8 631
+Trail-Läufe haben 545 die Kopfzeile überhaupt gefahren, 6 davon rot = 1,1 %. Liest man ihre Details
+statt nur ihre Namen, sind es drei verschiedene Dinge:
+
+| Signatur | Sichtungen | Bäume |
+| --- | --- | --- |
+| **S1 — EIN Prompt, an B statt A, Setup-Zeilen grün** | 2 | `9b296576` (dirty, 09-16 14:38) · `2f11ee72` (clean, 09-16 18:57) — **beide diese Lane** |
+| **S2 — ZWEI Prompts in einer Runde** (`[{"slot":4,…},{"slot":6,…}]`) | 1 | `037d246349cd`, 2026-08-26, **Ancestor von main** (`git merge-base --is-ancestor` geprüft) |
+| **S3 — Register verschmutzt, Setup-Zeile ROT** (§11.2p) | 3 | `1ba06c2b2638` (09-07) · `519ff13ee95a` (09-08) · `69c98c72ab2e` (09-12), alle `dirty:false` |
+
+S3 ist nicht diese Familie und nicht einmal eine Verletzung: in allen drei Läufen ist
+`backlog nudge setup: the only open row is a pending kind:notiz observation` rot, weil eine fremde
+Zeile im Register lag (`ctl.sh probe row — dispatched by hand`, `ambient-land programless
+counter-proof row`, `criterion fixture: settle what done means …`) — **alles darunter ist UNGEMESSEN**,
+die Kopfzeile eingeschlossen. S2 teilt die WURZEL (die Fixture hatte ihre Prämisse nie hergestellt:
+`git show 037d246349cd:e2e/tasks.ts` sagt an der Stelle noch wörtlich „A is touched first and
+therefore is the longest-idle eligible main"), aber nicht das Symptom.
+
+**Für S1 gibt es damit in 8 631 Läufen keinen Vorgänger.** Auf den Bäumen dieser Lane: 2 von 9 = 22 %;
+auf allen anderen Bäumen zusammen: 0 von 536 für S1 (4 von 536 = 0,7 % für den Check-Namen). Wer den
+Namen zählt statt der Signatur, liest daraus „älter als der Schnitt" — und das hält nicht.
+
+**Beide S1-Sichtungen liefen MIT den verkürzten Fenstern.** Gegen die naheliegende Entlastung („der
+14:38-Lauf war doch vor dem Commit") steht die Spanne, aus dem Trail nach der Methode der Phasen-Notiz
+gerechnet (Summe `msSincePrev`): 1 626,8 s bzw. 1 650,1 s gegen 2 225 s der Baseline. Der Schnitt war
+im dirty-Baum, bevor er committet war.
+
+**Zugehörigkeit, am Servercode entschieden — NICHT am Produkt.** `s.quietUntil` hat in `server.ts`
+sechs Schreiber und drei Breiten: `+1500` nach `pipe-pane` beim Spawn/Attach, `= 0` beim Teardown,
+`+OWN_PASTE_QUIET_MS` und `+OWN_PASTE_QUIET_TAIL_MS` im Sende-Pfad, `+1500` zweimal am Resize.
+**Keiner liest `FLEET_FOUNDING_BOOT_GRACE_MS` oder `FLEET_SEND_BOOT_WAIT_MS`.** `FOUNDING_BOOT_GRACE_MS`
+steht ausschliesslich als `await Bun.sleep(...)` an sieben Gründungs-Aufrufstellen; `SEND_BOOT_WAIT_MS`
+begrenzt allein die Alive-Probe-Schleife in `sendText`, und das Fenster dort wird unmittelbar VOR
+`paste-buffer` scharf gemacht und im `finally` nachgezogen — es hängt am Paste, nicht an der Wartezeit
+davor. Die einzige env-gespeiste Breite, `OWN_PASTE_QUIET_MS = 150 + 3 * ACCEPT_WAIT_MS + 2000`, hängt
+an `FLEET_ACCEPT_WAIT_MS`, und das ist in der `SRV_ENV`-Zeile von `e2e-isolated.sh` unverändert 800.
+Dazu: der Pfad, der das Rot erzeugt, benutzt `sendText` gar nicht — `e2e/harness.ts#paneEnv` fährt
+`tmux send-keys`/`capture-pane` direkt. **Das Produkt-Wartefenster hängt an keinem der vier
+Suite-Werte; `tickBacklogNudge` ist von dieser Lane nicht angefasst.**
+
+**Was die Verkürzung sehr wohl bewegt, und was damit UNGEMESSEN bleibt:** den Beobachtungs-MOMENT der
+Fixture gegen das feste 1 500-ms-Attach-Fenster des Servers. Die Fixture sagt den Mechanismus selbst
+(Kommentar vor der Herstellungs-Schleife in `e2e/tasks.ts`): ein Stempel, der ins Fenster fällt, wird
+geschluckt, und die Ordnung kippt. Die hergestellte Marge ist zweistellig in Millisekunden —
+gemessen `delta=31ms` (rot), `delta=32ms` (grün), `delta=201ms` (grün) — und muss zwischen ihrer
+Herstellung und der Runde einen `POST /api/lanes` samt mehrerer Tick-Wartezeiten überleben. Ein
+einziger späterer Anstrich auf A dreht sie um. **Dass das die 2 von 9 erklärt, ist NICHT gemessen**,
+und dieser Eintrag heftet es an keinen Knopf.
+
+**Instrument steht** (`1ccf84bf`, Branch `fleet/260916142521-8d9d`; die MAIN trägt die Sha nach dem
+Rebase-Land nach): die Fixture liest `lastOutput`, berechnetes Idle und `agent` BEIDER Mains bei jedem
+Poll und hängt die letzten drei Polls plus die Nudge-`ts` ins Detail der Kopfzeile — der Trail behält
+Details nur bei ROT. Ein künftiges S1-Rot benennt die Ordnung im entscheidenden Augenblick, statt sie
+hinterher zu erschliessen.
+
+**Grenze der Stichprobe, wörtlich.** Gefahren wurden Shard-Stichproben `FLEET_E2E_SHARD=2/8` (~520 s,
+Einheit `core` allein) auf ruhiger Maschine: 3 gültige Grüne (ein vierter Lauf wurde nach 924 s
+Lock-Wartezeit OOM-getötet und zählt nicht — eine Sonde, die nicht laufen konnte, ist kein Grün).
+Die S1-Rote fielen auf einer Maschine, die parallel Suiten fuhr und Hintergrund-Tasks tötete. Drei
+Grüne heissen deshalb „reproduziert nicht unter 2/8", NICHT „Flake weg". Die Stichprobe wurde am
+2026-09-16 per MAIN-Entscheid beendet, zugunsten der Registerauswertung oben.
+
+**NICHT repariert, und der nächste Griff ist sondenseitig, nicht am Suite-Wert.** Die Prämisse wird
+Sekunden vor der Runde hergestellt und muss einen Lane-Spawn überleben; sie gehört unmittelbar vor
+die Runde. Das ist der Weg, den `AGENTS.md` §Verify für genau diesen Fall vorsieht — ein Check, der
+ein Fenster braucht, bekommt es LOKAL, statt dass ein Suite-Wert steigt. **Ein S1-Rot vor dieser
+Reparatur ist Rauschen mit bekanntem Mechanismus; ein S1-Rot danach ist wieder ECHT und deins.**

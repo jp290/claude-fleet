@@ -3,7 +3,7 @@ frage: Wohin geht die Wartezeit der vollen Suite, je Phase (boot/tmux/http/sleep
 urteil: Sleep traegt 1 289 von 2 225 s (58 %), http 698 s, boot 135 s, tmux 14 s, Rest 88 s; im 3–10-s-Band sind es 716 s sleep und 345 s http von 1 124 s. Drei Server-Wartefenster erklaeren zusammen rund 530 s: der 10-s-Git-Tick (199 s), die festen Boot-Grace-Konstanten fuer Gruendung und Zustellung (187 s) und das Merge-Idle-Gate (145 s). Die Hypothese „Git-Tick widerlegt" haelt am direkt gemessenen Aufrufort nicht.
 bereich: [verify, e2e, suite-kontention]
 belege: [e2e/trail-emit.ts#createPhaseClock, e2e/harness.ts#installPhaseProbes, e2e/programs.ts#waitDoneLooking, e2e/lane-helpers.ts#settleForMerge, e2e/programs.ts#beginBootstrap, e2e/security.ts#agentOf, server.ts#tickGit, server.ts#FOUNDING_BOOT_GRACE_MS, server.ts#SEND_BOOT_WAIT_MS, docs/e2e-trail.md]
-nicht-gemessen: synchrone Arbeit bleibt ungeteilt im Rest; Second-host-Trail ging verloren; die Gegenbewegung an waitMerge (+50 s, Nachtrag) ist als git-Index-Streit nur vermutet, nicht gemessen. ERLEDIGT im Nachtrag 2026-09-16: der Umschalt-Lauf, der die drei Wartefenster beweist.
+nicht-gemessen: synchrone Arbeit bleibt ungeteilt im Rest; Second-host-Trail ging verloren; die Gegenbewegung an waitMerge (+50 s, Nachtrag) ist als git-Index-Streit nur vermutet, nicht gemessen; ob der verschobene Beobachtungsmoment der Backlog-Nudge-Fixture ihre 2 von 9 Rote erklaert, ist NICHT gemessen (zweiter Nachtrag 2026-09-16, docs/verify-tiering.md §11.2y). ERLEDIGT im Nachtrag 2026-09-16: der Umschalt-Lauf, der die drei Wartefenster beweist.
 stand: 2026-09-16 (Nachtrag; Messlauf 2026-09-14)
 ---
 
@@ -251,3 +251,47 @@ die `e2e/lane-helpers.ts:176` schon benennt. Wer sie messen will, braucht einen 
    Server selbst B als juenger liest) und mit beiden Zahlen behauptet. Und `program-dispatch (6)`
    pflanzte seinen v2-Satz in `fleet.json`, waehrend der Server lief und ihn ueberschreiben konnte;
    jetzt steht der Server dabei.
+
+## Nachtrag 2026-09-16 (zweiter, spaeter am selben Tag): die Ruecknahme zu Punkt 2 und das Register
+
+**Punkt 2 oben ist fuer den Backlog-Nudge-Block ZURUECKGENOMMEN: er ist nicht repariert.** Das
+Etablieren der Reihenfolge (B sondieren, bis der Server B als juenger liest) stellt die Praemisse
+nur fuer den Augenblick ihrer Messung her. Der Lauf, aus dem die DONE(b)-Zahlen dieser Notiz
+stammen — `isolated-20260916T185756Z-92628`, Baum `2f11ee72`, `dirty:false`, Spanne 1 650,1 s —
+hat die Setup-Zeile GRUEN (`delta=31ms`) und die Kopfzeile trotzdem ROT. Zwischen Herstellung und
+Runde liegen ein `POST /api/lanes` und mehrere Tick-Wartezeiten; eine zweistellige
+Millisekunden-Marge ueberlebt das nicht zuverlaessig.
+
+**Registerauswertung, 8 631 Trail-Laeufe** (eigene Abfrage ueber `e2e-trail/` im Haupt-Checkout;
+545 Laeufe haben die Kopfzeile ueberhaupt gefahren, 6 davon rot = 1,1 %). Nach DETAIL statt nach
+Check-Namen getrennt sind das drei Signaturen: **S1** „ein Prompt, an B statt A, Setup gruen" —
+2 Sichtungen, **beide auf Baeumen dieser Lane** (`9b296576` dirty 14:38, `2f11ee72` clean 18:57),
+0 von 536 auf allen anderen Baeumen; **S2** „zwei Prompts in einer Runde" — 1 Sichtung auf
+`037d246349cd` (Ancestor von main, 2026-08-26), auf der Fixture-Fassung, die die Reihenfolge noch
+ANNAHM; **S3** — 3 Sichtungen (`1ba06c2b2638`, `519ff13ee95a`, `69c98c72ab2e`) mit ROTER
+Setup-Zeile, also UNGEMESSEN und §11.2p, nicht diese Familie. Vollstaendig mit Belegen in
+`docs/verify-tiering.md` §11.2y.
+
+**Beide S1-Sichtungen liefen MIT den verkuerzten Fenstern** — auch die um 14:38, vor dem Commit:
+ihre Spanne ist 1 626,8 s gegen 2 224,7 s der Baseline, der Schnitt war also im dirty-Baum. Die
+Entlastung „aelter als der Schnitt" haelt fuer S1 damit nicht.
+
+**Was am Code entschieden ist und keinen Lauf mehr braucht:** die Verkuerzung haengt NICHT an
+`s.quietUntil`. Dessen sechs Schreiber in `server.ts` tragen drei Breiten (`+1500` nach
+`pipe-pane`, `= 0` beim Teardown, `+OWN_PASTE_QUIET_MS`/`+OWN_PASTE_QUIET_TAIL_MS` im Sende-Pfad,
+`+1500` am Resize); keiner liest `FLEET_FOUNDING_BOOT_GRACE_MS` oder `FLEET_SEND_BOOT_WAIT_MS`.
+`FOUNDING_BOOT_GRACE_MS` ist ausschliesslich `Bun.sleep` an sieben Gruendungs-Aufrufstellen;
+`SEND_BOOT_WAIT_MS` begrenzt nur die Alive-Probe in `sendText`, deren Quiet-Fenster unmittelbar vor
+`paste-buffer` scharf wird — es haengt am Paste, nicht an der Wartezeit davor. Die einzige
+env-gespeiste Breite (`OWN_PASTE_QUIET_MS = 150 + 3 * ACCEPT_WAIT_MS + 2000`) haengt an
+`FLEET_ACCEPT_WAIT_MS`, und das ist in der `SRV_ENV`-Zeile unveraendert 800. Der Pfad, der das Rot
+erzeugt, benutzt `sendText` ohnehin nicht: `e2e/harness.ts#paneEnv` fährt tmux direkt.
+**Bewegt hat die Verkuerzung den BEOBACHTUNGSMOMENT der Fixture gegen das feste 1 500-ms-Fenster
+des Servers — dass das die 2 von 9 erklaert, ist NICHT gemessen und wird hier an keinen Knopf
+geheftet.**
+
+**Grenze der Stichprobe, die das nicht klaeren konnte:** `FLEET_E2E_SHARD=2/8` (~520 s, Einheit
+`core` allein) auf ruhiger Maschine, 3 gueltige Gruene; ein vierter Lauf wurde nach 924 s
+Lock-Wartezeit OOM-getoetet und zaehlt nicht. Die S1-Rote fielen auf einer Maschine, die parallel
+Suiten fuhr. Drei Gruene heissen „reproduziert nicht unter 2/8", NICHT „Flake weg". Beendet am
+2026-09-16 per MAIN-Entscheid zugunsten der Registerauswertung.

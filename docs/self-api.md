@@ -2114,7 +2114,9 @@ Signatur. Drei Klassen entscheidet seither eine Regel, jede mit benannter Ablehn
 | Klasse | Entscheider | Regel |
 |---|---|---|
 | Report `complete` + Lane gelandet + grüner/unknown Audit | **niemand** | Land ist die Annahme; Report schließt als `accepted-by-land` mit `mainAfter` |
-| Report `complete` + Lane gelandet + roter Audit | MAIN | die Rot-Adjudikation IST die Entscheidung |
+| Report `complete` + gelandet + rotem Audit, Urteil `flake`/`stale-test`/`unknowable` | **niemand** | jemand HAT hingesehen; die Regel liest das Urteil (seit 2026-09-15) |
+| Report `complete` + gelandet + rotem Audit, danach voller GRÜNER Audit auf einem Nachfahren | **niemand** | der spätere Lauf hat diesen Baum und mehr gemessen (seit 2026-09-15) |
+| Report `complete` + Lane gelandet + unbeurteiltem rotem Audit oder Urteil `real` | MAIN | die Rot-Adjudikation IST die Entscheidung |
 | Report `needs-main` + gelandet | MAIN (Program) / Owner (owner-inbox) | die Frage im Report ist offen, das Land beantwortet sie nicht |
 | Report auf laufender Lane (`sent`) | MAIN | wie heute |
 | Attention `review-ready` | niemand | ein Land mit `mainAfter` nach `raisedAt` beantwortet sie (**nicht gebaut**) |
@@ -2131,8 +2133,29 @@ geschriebenen Audit-Zeile). Schließt einen unentschiedenen Report genau dann, w
 `complete` · seine Task-Zeile nicht `sent` · `lane-outcomes.jsonl` trägt für `worker.branch` eine
 Zeile `landed` mit `ts ≥ reportedAt` (die früheste davon zählt; ein älteres Land hat die berichtete
 Arbeit nicht integriert) und mit `repo` + `mainAfter` · mindestens eine Audit-Zeile deckt dieses
-`mainAfter` und KEINE davon ist rot. Kein Audit ist „pending", nie grün. Das Urteil trägt
-`by:{rule:"accepted-by-land"}`, `mainAfter` und einen `reason` mit der Audit-Farbe; das Event wird
+`mainAfter` und keine davon ist ein rot, das noch BLOCKIERT. Kein Audit ist „pending", nie grün.
+
+**Was ein Rot kostet — und was es seit 2026-09-15 wieder öffnet.** Bis dahin schloss JEDES rote
+Cover den Report für immer: jeder Land-Tip wird genau EINMAL auditiert, eine zweite Lesung dieses
+Tips kam also nie. Gemessen am 2026-09-15 im Program f170dc46: 24 unentschiedene Reports, 22
+gelandet, 12 allein daran offen — bei ~20 % Rot-Rate wächst die Liste mit. Zwei Fakten treffen
+nach einem Rot ein, und die Regel liest jetzt beide:
+· **die Adjudikation** (`server.ts#ADJUDICATION_CLEARS_RED`): `flake`, `stale-test` und
+  `unknowable` sagen „jemand hat hingesehen, das ist kein Regress dieses Lands" — sie blockieren
+  nicht mehr. `real` und ein UNBEURTEILTES Rot blockieren weiter; die Prinzipalie des Urteils
+  (`owner`, `backfill`, Regel `carried-flake`) schränkt nichts ein.
+· **ein späterer voller GRÜNER Audit auf einem Nachfahren** (`server.ts#descendantGreenAudit`):
+  gleiche Repo, `proportional` NICHT gesetzt, `at` neuer als das Rot, und `mainSha` enthält den
+  `mainAfter` (`git merge-base --is-ancestor`, gecacht in `server.ts#auditTipContains`; ein
+  negatives Ergebnis heißt „nicht BEWIESEN enthalten" und wird genauso gecacht). Er zählt auch
+  dort als Deckung, wo noch gar kein Cover existiert, und das Ergebnis trägt dann `audit: green`
+  mit dem `auditAt` DIESER Zeile. Ein `real` überschreibt er nicht. Gefragt wird git nur, wo die
+  Antwort etwas ändern kann (blockierendes Rot oder gar kein Cover) und höchstens
+  `DESCENDANT_GREEN_PROBES` (25) Kandidaten, neueste zuerst.
+
+Das Urteil trägt
+`by:{rule:"accepted-by-land"}`, `mainAfter` und einen `reason` mit der Audit-Farbe — und, wo ein
+Rot überstimmt wurde, WOMIT (das Urteil auf dem Cover oder der Nachfahren-Tip); das Event wird
 wie bei den Türen quittiert, der Worker bekommt die Zustellung über denselben einen Zusteller
 (`decisionDelivery`), und `audit.jsonl` bekommt je Urteil eine Zeile `fleet_report_rule_decision`
 (`via=boot|tick|audit`). Ein Regelurteil öffnet den automatischen Lane-Schluss NICHT (wie ein

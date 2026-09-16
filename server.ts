@@ -8875,15 +8875,71 @@ function fleetReportOwnerView(): (FleetReport & { liveness: ReportReceiverLivene
 //  · the report's task row is not `sent` — a running lane's report is still the MAIN's to read;
 //  · a `landed` outcome for the report's BRANCH at or after the report — a land older than the
 //    report did not integrate what the report describes (a respawn on the same branch);
-//  · a post-land audit covering that land's `mainAfter`, and NONE of them red. No audit yet is
-//    pending, never green; a red is the MAIN's (its adjudication is the decision).
+//  · a post-land audit covering that land's `mainAfter`, and no red among them that still BLOCKS
+//    (below). No audit yet is pending, never green.
 // It moves nothing else, in the doors' own discipline: no Task.status, no land, no teardown.
+//
+// WHAT A RED COSTS, and the half of it this rule got wrong until 2026-09-15: any red on the
+// covering row shut the report FOREVER. Every land tip is audited exactly once, so no second
+// reading of that tip was ever going to arrive — and the audit red rate is ~20 %. Measured in
+// Program f170dc46 on 2026-09-15: 24 undecided reports, 22 of them landed, 12 held open by nothing
+// but this. Program reports are pruned only after a decision, so the list grew with the red rate.
+// Two facts DO arrive after a red, and neither was read:
+//  · THE ADJUDICATION (server.ts#ADJUDICATION_VERDICTS). `flake`, `stale-test` and `unknowable` all
+//    say somebody LOOKED and this is not a regression of this land; that is exactly the question the
+//    rule was waiting on. `real` and an UNJUDGED red still block — the first is a human saying the
+//    land broke something, the second is the ambiguity the adjudication rail exists to resolve.
+//  · A LATER FULL GREEN ON A DESCENDANT TIP (below). It measured this land's tree and more, and
+//    passed. `real` is not superseded by it: a regression that was fixed afterwards is still a
+//    question the MAIN owes an answer to, and the human already said so.
 const ACCEPT_BY_LAND_MS = Math.max(0, Number(process.env.FLEET_ACCEPT_BY_LAND_MS ?? 60_000) | 0);
+const ADJUDICATION_CLEARS_RED: readonly AdjudicationVerdict[] = ["flake", "stale-test", "unknowable"];
+// DOES A LATER AUDIT'S TIP CONTAIN THIS LAND. CACHED, and the cache is not an optimisation: this
+// rule runs on every tick over every undecided report, so an uncached probe would be one `git`
+// spawn per candidate per report per POLL. A pair of commit ids is immutable, so a proven answer
+// can never change and one probe per pair is all there ever is.
+// A NEGATIVE is cached too, and it reads as "not PROVEN to contain it": git said no, or could not
+// resolve the pair at all (a repo that moved, a tip that was gc'd, a synthetic sha). For this rule
+// those are ONE fact — the coverage cannot be shown — and neither may cost a second spawn.
+const AUDIT_CONTAINS_CACHE_MAX = 4000;
+const auditContainsCache = new Map<string, boolean>();
+async function auditTipContains(repo: string, mainAfter: string, tip: string): Promise<boolean> {
+  if (tip === mainAfter) return true; // a re-audit of the same tip, asked of git as a tautology
+  const key = `${repo}\u0000${mainAfter}\u0000${tip}`;
+  const hit = auditContainsCache.get(key);
+  if (hit !== undefined) return hit;
+  const anc = await gitRead(repo, "merge-base", "--is-ancestor", mainAfter, tip);
+  const contains = anc.code === 0;
+  if (auditContainsCache.size >= AUDIT_CONTAINS_CACHE_MAX) {
+    const oldest = auditContainsCache.keys().next().value;
+    if (oldest !== undefined) auditContainsCache.delete(oldest);
+  }
+  auditContainsCache.set(key, contains);
+  return contains;
+}
+// How many candidates one reading may probe, newest first: the newest full green runs of that repo.
+// A green older than these is not a stronger statement than they are, and the window is what keeps
+// the FIRST poll after a boot bounded — every later poll answers from the cache above.
+const DESCENDANT_GREEN_PROBES = 25;
+// NOT proportional: the docs-only short chain is install+pins in seconds and says nothing about the
+// tree (server.ts#PostLandAuditRow.proportional). NOT older than the red it supersedes: a green
+// that ran before the failing run is not a rebuttal of it. `mainSha` empty = the run never resolved
+// a tip, so there is nothing to ask git about.
+async function descendantGreenAudit(repo: string, mainAfter: string, after: number,
+  auditRows: PostLandAuditRow[]): Promise<PostLandAuditRow | null> {
+  const candidates = auditRows
+    .filter((row) => row.result === "green" && row.proportional !== true && row.at > after
+      && typeof row.mainSha === "string" && row.mainSha !== "" && repoCanon(row.repo) === repo)
+    .sort((a, b) => b.at - a.at)
+    .slice(0, DESCENDANT_GREEN_PROBES);
+  for (const row of candidates) if (await auditTipContains(repo, mainAfter, row.mainSha)) return row;
+  return null;
+}
 type AcceptByLandReading =
-  | { accept: true; mainAfter: string; audit: "green" | "unknown"; auditAt: number }
+  | { accept: true; mainAfter: string; audit: "green" | "unknown"; auditAt: number; via?: string }
   | { accept: false; why: string };
-function acceptByLandReading(report: FleetReport, outcomeRows: Record<string, unknown>[],
-  auditRows: PostLandAuditRow[]): AcceptByLandReading {
+async function acceptByLandReading(report: FleetReport, outcomeRows: Record<string, unknown>[],
+  auditRows: PostLandAuditRow[], judged: Map<number, AuditAdjudication>): Promise<AcceptByLandReading> {
   if (report.decision) return { accept: false, why: `already ${report.decision.disposition}` };
   if (report.status !== "complete")
     return { accept: false, why: `status ${report.status} — only a complete report is closed by its land` };
@@ -8901,11 +8957,34 @@ function acceptByLandReading(report: FleetReport, outcomeRows: Record<string, un
   const mainAfter = land.mainAfter;
   const repo = repoCanon(land.repo);
   const covering = auditRows.filter((row) => auditRowMatches(row, repo, mainAfter));
-  const red = covering.find((row) => row.result === "red");
-  if (red) return { accept: false, why: `post-land audit at ${red.at} on ${mainAfter.slice(0, 12)} is RED` };
-  const newest = covering.reduce<PostLandAuditRow | null>((n, row) => !n || row.at > n.at ? row : n, null);
+  const reds = covering.filter((row) => row.result === "red");
+  const real = reds.find((row) => judged.get(row.at)?.verdict === "real");
+  if (real) return { accept: false, why: `post-land audit at ${real.at} on ${mainAfter.slice(0, 12)} is RED, adjudicated real` };
+  const blocking = reds.filter((row) => {
+    const verdict = judged.get(row.at)?.verdict;
+    return verdict === undefined || !ADJUDICATION_CLEARS_RED.includes(verdict);
+  });
+  // the probe runs ONLY where it can change the answer — a land already covered by a non-blocking
+  // audit is decided without asking git anything at all, which is the common case on every poll
+  const needsLater = blocking.length > 0 || covering.length === 0;
+  const later = needsLater
+    ? await descendantGreenAudit(repo, mainAfter, blocking.reduce((a, r) => Math.max(a, r.at), 0), auditRows)
+    : null;
+  if (blocking.length > 0 && !later)
+    return { accept: false, why: `post-land audit at ${blocking[0]!.at} on ${mainAfter.slice(0, 12)} is RED and unjudged` };
+  const newest = later
+    ?? covering.reduce<PostLandAuditRow | null>((n, row) => !n || row.at > n.at ? row : n, null);
   if (!newest) return { accept: false, why: `no post-land audit covers ${mainAfter.slice(0, 12)} yet` };
-  return { accept: true, mainAfter, audit: newest.result === "green" ? "green" : "unknown", auditAt: newest.at };
+  // WHY a report closed behind a red is the one thing a reader of the ledger cannot re-derive, so
+  // the reading carries it and both the verdict's reason and the audit line say it.
+  const cleared = reds.find((row) => judged.has(row.at));
+  const via = later && later.mainSha !== mainAfter
+    ? `later green audit at ${later.at} on ${later.mainSha.slice(0, 12)}, which contains the land`
+    : later ? `the land's tip was re-audited GREEN at ${later.at}`
+      : cleared ? `the covering RED at ${cleared.at} was adjudicated ${judged.get(cleared.at)?.verdict}`
+        : undefined;
+  return { accept: true, mainAfter, audit: newest.result === "green" ? "green" : "unknown", auditAt: newest.at,
+    ...(via ? { via } : {}) };
 }
 
 let acceptByLandBusy = false;
@@ -8913,23 +8992,28 @@ async function tickAcceptByLand(origin: "boot" | "tick" | "audit"): Promise<numb
   if (acceptByLandBusy || !fleetReports.some((r) => !r.decision && r.status === "complete")) return 0;
   acceptByLandBusy = true;
   try {
-    const [outcomes, audited] = await Promise.all([
-      readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE), readLedger<unknown>(POSTLAND_AUDIT_FILE)]);
+    // the adjudication rail is read with the other two ledgers and for the same reason: a red whose
+    // verdict arrived since the last poll is exactly what this tick exists to notice
+    const [outcomes, audited, judged] = await Promise.all([
+      readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE), readLedger<unknown>(POSTLAND_AUDIT_FILE),
+      adjudicationsByAudit()]);
     const auditRows = audited.rows.map(validAuditRow).filter((r): r is PostLandAuditRow => r !== null);
     let closed = 0;
     for (const report of fleetReports) {
       // re-read per row: a door may have judged it while the ledgers were being read
-      const reading = acceptByLandReading(report, outcomes.rows, auditRows);
-      if (!reading.accept) continue;
+      const reading = await acceptByLandReading(report, outcomes.rows, auditRows, judged);
+      if (!reading.accept || report.decision) continue;
       report.decision = { disposition: "accepted", at: Date.now(), by: { rule: "accepted-by-land" },
-        reason: `accepted-by-land: landed as ${reading.mainAfter.slice(0, 12)}, post-land audit ${reading.audit}`,
+        reason: `accepted-by-land: landed as ${reading.mainAfter.slice(0, 12)}, post-land audit ${reading.audit}`
+          + (reading.via ? ` — ${reading.via}` : ""),
         mainAfter: reading.mainAfter };
       const ledgered = ledgerReportDecision(report, report.decision);
       // the transport half exactly as both doors settle it: a decided report must not be re-pasted
       const event = report.eventId === null ? undefined : fleetEvents.find((e) => e.id === report.eventId);
       if (event && !FLEET_EVENT_TERMINAL.includes(event.status)) settleFleetEventAcknowledged(event);
       audit("fleet_report_rule_decision", report.worker.slot,
-        `${report.id} accepted-by-land mainAfter=${reading.mainAfter.slice(0, 12)} audit=${reading.audit}@${reading.auditAt} via=${origin}`);
+        `${report.id} accepted-by-land mainAfter=${reading.mainAfter.slice(0, 12)} audit=${reading.audit}@${reading.auditAt} via=${origin}`
+        + (reading.via ? ` on=${reading.via}` : ""));
       await ledgered;
       await deliverFleetReportDecision(report);
       closed++;

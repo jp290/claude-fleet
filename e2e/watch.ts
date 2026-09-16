@@ -6766,21 +6766,36 @@ export async function run(): Promise<void> {
       decisionDelivery?: { state?: string } | null };
     const ablReports = async (): Promise<AblReport[]> =>
       ((await (await get("/api/fleet-report")).json()) as { reports?: AblReport[] }).reports ?? [];
+    // WAIT FOR THE WHOLE PASS, not for the first row of it. The rule decides report by report and
+    // AWAITS a git ancestry probe in between (server.ts#auditTipContains), so `green` — which needs
+    // no probe — is decided milliseconds in while the rows behind it are still being read. Polling
+    // on `green` alone measured the first tenth of one pass and reported the other twelve rows as
+    // refusals: three checks below were red on a rule that was answering every one of them
+    // correctly (measured on the preview of 8224aaa22704). The predicate is now every row this
+    // block expects the rule to CLOSE; a settle that never happens shows up in the setup check.
+    const ablExpected = ["green", "unknown", "redFlake", "redStaleTest", "redUnknowable", "redDescendant"];
+    const ablSettled = (rs: AblReport[]): boolean =>
+      ablExpected.every((k) => rs.find((r) => r.id === ids[k])?.decision);
     let rows = await ablReports();
-    for (let i = 0; i < 40 && !rows.find((r) => r.id === ids.green)?.decision; i++) {
-      await Bun.sleep(100);
+    const ablWaitStart = Date.now();
+    for (let i = 0; i < 150 && !ablSettled(rows); i++) {
+      await Bun.sleep(200);
       rows = await ablReports();
     }
+    const ablWaitedMs = Date.now() - ablWaitStart;
     const row = (name: string): AblReport | undefined => rows.find((r) => r.id === ids[name]);
     // the probe fails as ITSELF when a plant did not hydrate: every check below would otherwise read
     // an absent row as "undecided" and the refusals would pass on nothing (measured on the first run:
     // emptySlot 0 made fleetReportFrom discard all seven rows)
-    check("accepted-by-land setup: all thirteen planted reports hydrated on a real empty worker slot, and the ancestry repo stands in the relation it claims",
+    check("accepted-by-land setup: all thirteen planted reports hydrated, the rule's pass settled, and the ancestry repo stands in the relation it claims",
       emptySlot > 0 && rows.filter((r) => Object.values(ids).includes(r.id)).length === Object.keys(cases).length
+        && ablSettled(rows)
         && spawnSync("git", ["-C", ablGit, "merge-base", "--is-ancestor", shaA, shaB]).status === 0
         && spawnSync("git", ["-C", ablGit, "merge-base", "--is-ancestor", shaC, shaB]).status !== 0,
       JSON.stringify({ emptySlot, planted: Object.keys(cases).length,
-        seen: rows.filter((r) => Object.values(ids).includes(r.id)).length, shaA, shaB, shaC }));
+        seen: rows.filter((r) => Object.values(ids).includes(r.id)).length, settled: ablSettled(rows),
+        waitedMs: ablWaitedMs, undecided: ablExpected.filter((k) => !rows.find((r) => r.id === ids[k])?.decision),
+        shaA, shaB, shaC }));
     // BREAKS IF: the rule is removed, or it stops stamping the rule principal and the land it read.
     check("accepted-by-land: a complete report whose lane landed behind a GREEN audit is accepted by rule, names mainAfter, and its verdict was carried",
       row("green")?.decision?.disposition === "accepted"

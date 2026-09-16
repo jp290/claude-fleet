@@ -8922,9 +8922,9 @@ async function auditTipContains(repo: string, mainAfter: string, tip: string): P
 // the FIRST poll after a boot bounded — every later poll answers from the cache above.
 const DESCENDANT_GREEN_PROBES = 25;
 // NOT proportional: the docs-only short chain is install+pins in seconds and says nothing about the
-// tree (server.ts#PostLandAuditRow.proportional). NOT older than the red it supersedes: a green
-// that ran before the failing run is not a rebuttal of it. `mainSha` empty = the run never resolved
-// a tip, so there is nothing to ask git about.
+// tree (server.ts#PostLandAuditRow.proportional). NOT below `after`: a run that finished before the
+// land, or before the red it would supersede, is not a statement about either. `mainSha` empty =
+// the run never resolved a tip, so there is nothing to ask git about.
 async function descendantGreenAudit(repo: string, mainAfter: string, after: number,
   auditRows: PostLandAuditRow[]): Promise<PostLandAuditRow | null> {
   const candidates = auditRows
@@ -8967,9 +8967,12 @@ async function acceptByLandReading(report: FleetReport, outcomeRows: Record<stri
   // the probe runs ONLY where it can change the answer — a land already covered by a non-blocking
   // audit is decided without asking git anything at all, which is the common case on every poll
   const needsLater = blocking.length > 0 || covering.length === 0;
-  const later = needsLater
-    ? await descendantGreenAudit(repo, mainAfter, blocking.reduce((a, r) => Math.max(a, r.at), 0), auditRows)
-    : null;
+  // the floor the candidates must clear: the LAND itself (a run that finished before the land was
+  // integrated cannot have measured it) and, when there is one to supersede, the blocking red. The
+  // land floor is what keeps the un-audited-yet case — the normal state of a fresh land — from
+  // probing the whole green history of the repo on every new tip.
+  const floor = blocking.reduce((a, r) => Math.max(a, r.at), typeof land.ts === "number" ? land.ts : 0);
+  const later = needsLater ? await descendantGreenAudit(repo, mainAfter, floor, auditRows) : null;
   if (blocking.length > 0 && !later)
     return { accept: false, why: `post-land audit at ${blocking[0]!.at} on ${mainAfter.slice(0, 12)} is RED and unjudged` };
   const newest = later

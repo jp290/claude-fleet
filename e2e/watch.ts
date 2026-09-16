@@ -2548,6 +2548,16 @@ export async function run(): Promise<void> {
       };
       const reportRow = async (id: string): Promise<FleetReportEventRow | undefined> =>
         (await fleetReportEventRows()).find((e) => e.id === id);
+      // Detail projection for the trail (deckel: TRAIL_DETAIL_MAX=2000, e2e/trail-emit.ts): the
+      // asserted fields only, reason tail-first because "attempt N of M" sits at its end.
+      const rowBrief = (row: { status: FleetEventStatus; attempts: number; deliveredAt: number | null;
+        recovery?: { state: "retryable" | "blocked" | "terminal"; reason: string } } | undefined): unknown => {
+        if (row === undefined) return null;
+        const reason = row.recovery?.reason ?? "";
+        return { status: row.status, attempts: row.attempts, deliveredAt: row.deliveredAt,
+          state: row.recovery?.state ?? null,
+          reason: reason.length > 200 ? `…${reason.slice(-199)}` : reason };
+      };
       const waitReportRow = async (id: string,
         accepts: (row: FleetReportEventRow) => boolean): Promise<FleetReportEventRow | undefined> => {
         let row: FleetReportEventRow | undefined;
@@ -2595,30 +2605,50 @@ export async function run(): Promise<void> {
       // leave the default of 5 in force, read off the reason each attempt records. The first round
       // also drives the FIRST transport attempt (tickWatches, not recovery) through the same
       // recorder; the acknowledged `complete` row rides all three restarts and is never re-counted.
-      const knobRounds: { value: string; attempts: number; row?: FleetReportEventRow }[] = [
+      const knobRounds: { value: string; attempts: number; latchReached?: boolean;
+        row?: FleetReportEventRow }[] = [
         { value: "0", attempts: 2 }, { value: "-2", attempts: 3 }, { value: "abc", attempts: 4 },
       ];
       let firstTransport: FleetReportEventRow | undefined;
       for (const round of knobRounds) {
         await restartWithKnob(round.value);
-        if (!await reachedLatch(recoveryLatch)) break;
+        round.latchReached = await reachedLatch(recoveryLatch);
         if (round.value === "0") firstTransport = await reportRow(rowId);
         writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
-        round.row = await waitReportRow(rowId, (row) => row.attempts === round.attempts
-          && row.recovery !== undefined && row.recovery.reason.includes(`attempt ${round.attempts} of`));
+        // The counter is monotonic and a round's row rests only once its recovery prose names the
+        // observed count, so the wait observes `>=` against that prose — never equality, which two
+        // attempts inside one poll window lose forever (docs/verify-tiering.md §11.2q). The exact
+        // count is the contract check below, not the wait.
+        round.row = await waitReportRow(rowId, (row) => row.attempts >= round.attempts
+          && row.recovery !== undefined && row.recovery.state === "retryable"
+          && row.recovery.reason.includes(`attempt ${row.attempts} of`));
       }
       const completeAfterKnobs = await reportRow(completeReport?.eventId ?? "");
-      check("Q6 fleet-report cap: zero, negative and non-numeric FLEET_REPORT_RECOVERY_MAX_ATTEMPTS fall back to the default of 5 on the transport and recovery paths, and an acknowledged row is never re-counted",
-        rowId !== "" && firstTransport?.status === "send-uncertain" && firstTransport.attempts === 1
+      // One claim per check (§11.2q cut 3): precondition, transport, cap and ack each carry their
+      // own name and observed/expected detail, so a red line names the conjunct that fell.
+      check("Q6 fixture precondition: the recovery latch is reached on every knob round",
+        rowId !== "" && knobRounds.every((round) => round.latchReached === true),
+        JSON.stringify({ rowIdPresent: rowId !== "",
+          rounds: knobRounds.map((r) => [r.value, r.latchReached ?? null]) }));
+      check("Q6 fleet-report transport: the first send rides the transport path, not recovery, and records attempt 1 of the default cap of 5",
+        firstTransport?.status === "send-uncertain" && firstTransport.attempts === 1
           && firstTransport.recovery?.state === "retryable"
           && firstTransport.recovery.reason.startsWith("transport send was not accepted")
-          && firstTransport.recovery.reason.includes("attempt 1 of 5")
-          && knobRounds.every((round) => round.row?.status === "send-uncertain"
-            && round.row.attempts === round.attempts && round.row.recovery?.state === "retryable"
-            && round.row.recovery.reason.includes(`attempt ${round.attempts} of 5`))
-          && completeAfterKnobs?.status === "acknowledged" && completeAfterKnobs.attempts === 2,
-        JSON.stringify({ first: firstTransport, rounds: knobRounds.map((r) => [r.value, r.row?.attempts, r.row?.recovery?.reason]),
-          complete: completeAfterKnobs }));
+          && firstTransport.recovery.reason.includes("attempt 1 of 5"),
+        JSON.stringify({ latch0: knobRounds[0]?.latchReached ?? null, first: rowBrief(firstTransport),
+          expected: { status: "send-uncertain", attempts: 1, state: "retryable",
+            reason: "transport send was not accepted … attempt 1 of 5" } }));
+      check("Q6 fleet-report cap: zero, negative and non-numeric FLEET_REPORT_RECOVERY_MAX_ATTEMPTS fall back to the default of 5 on the recovery path, at the exact attempt count",
+        knobRounds.every((round) => round.row?.status === "send-uncertain"
+          && round.row.attempts === round.attempts && round.row.recovery?.state === "retryable"
+          && round.row.recovery.reason.includes(`attempt ${round.attempts} of 5`)),
+        JSON.stringify({ rounds: knobRounds.map((r) => ({ value: r.value, latch: r.latchReached ?? null,
+          observed: rowBrief(r.row), expected: { status: "send-uncertain", attempts: r.attempts,
+            state: "retryable", reason: `attempt ${r.attempts} of 5` } })) }));
+      check("Q6 fleet-report ack: an acknowledged row is never re-counted across the knob restarts",
+        completeAfterKnobs?.status === "acknowledged" && completeAfterKnobs.attempts === 2,
+        JSON.stringify({ observed: rowBrief(completeAfterKnobs),
+          expected: { status: "acknowledged", attempts: 2 } }));
 
       // Cap 6 from here: attempt 5 is the starvation window, attempt 6 the cap.
       clearLatch(beforePasteLatch);
@@ -2626,9 +2656,12 @@ export async function run(): Promise<void> {
       const capAuditStart = auditRows().length;
       await restartWithKnob("6", { FLEET_TEST_SEND_BEFORE_PASTE_LATCH: beforePasteLatch });
       const parked5 = await reachedLatch(recoveryLatch);
-      check("Q6 fixture: the retryable report row parks its fifth attempt at the recovery latch under cap 6",
-        parked5 && (await reportRow(rowId))?.attempts === 4,
-        JSON.stringify({ parked5, row: await reportRow(rowId) }));
+      const rowAtPark5 = await reportRow(rowId);
+      check("Q6 fixture precondition: the recovery latch is reached with the report's fifth attempt parked under cap 6",
+        parked5, JSON.stringify({ parked5, observed: rowBrief(rowAtPark5) }));
+      check("Q6 fixture: the report row carries four counted attempts while its fifth parks at the recovery latch under cap 6",
+        parked5 && rowAtPark5?.attempts === 4,
+        JSON.stringify({ parked5, observed: rowBrief(rowAtPark5), expected: { attempts: 4 } }));
 
       // While attempt 5 is parked, the same receiver gets a second pending event of another kind
       // with a real idle gate. Minted by the audit watch on the tick that resumes, i.e. AFTER the
@@ -2648,12 +2681,15 @@ export async function run(): Promise<void> {
       const starvedOffered = await reachedLatch(beforePasteLatch);
       const rowAt5 = await reportRow(rowId);
       const starvedHeld = (await eventRows()).find((e) => e.watchId === starvedWatchId);
+      check("Q6 fixture precondition: the before-paste latch holds the report's paste while the other event is offered to the same receiver",
+        starvedOffered, JSON.stringify({ offered: starvedOffered, report: rowBrief(rowAt5) }));
       check("Q6 fleet-report starvation: the other pending event for the same receiver clears its idle gate while the held report is still below the cap",
         starvedWatch.ok && starvedOffered
           && rowAt5?.status === "send-uncertain" && rowAt5.attempts === 5
           && rowAt5.recovery?.state === "retryable" && rowAt5.recovery.reason.includes("attempt 5 of 6")
           && starvedHeld?.status === "send-uncertain" && starvedHeld.attempts === 1 && starvedHeld.deliveredAt === null,
-        JSON.stringify({ watch: starvedWatch.status, offered: starvedOffered, report: rowAt5, other: starvedHeld }));
+        JSON.stringify({ watch: starvedWatch.status, offered: starvedOffered,
+          report: rowBrief(rowAt5), other: rowBrief(starvedHeld) }));
 
       // attempt 6 must park again; the other event is released into an accepting composer
       rmSync(`${recoveryLatch}.reached`, { force: true });
@@ -2663,11 +2699,13 @@ export async function run(): Promise<void> {
       const starvedDelivered = await waitWatchEvent(starvedWatchId, (row) => row.status === "delivered");
       const parked6 = await reachedLatch(recoveryLatch);
       const rowBefore6 = await reportRow(rowId);
+      check("Q6 fixture precondition: the recovery latch is reached again for the report's sixth attempt after the other event is released",
+        parked6, JSON.stringify({ parked6, observed: rowBrief(rowBefore6) }));
       check("Q6 fleet-report starvation: the other event is delivered on its first accepted attempt while the report row still waits below the cap",
         starvedDelivered?.status === "delivered" && starvedDelivered.attempts === 1
           && starvedDelivered.deliveredAt !== null && parked6
           && rowBefore6?.attempts === 5 && rowBefore6.recovery?.state === "retryable",
-        JSON.stringify({ other: starvedDelivered, parked6, report: rowBefore6 }));
+        JSON.stringify({ other: rowBrief(starvedDelivered), parked6, report: rowBrief(rowBefore6) }));
 
       setReportComposerMode("hold");
       writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
@@ -2689,7 +2727,8 @@ export async function run(): Promise<void> {
           && cappedPrompts === 0
           && !auditRows().slice(capAuditStart).some((row) => row.event === "self_land_start"
             || (row.event === "fleet_event_delivered" && (row.detail ?? "").startsWith(rowId))),
-        JSON.stringify({ blocked, pastedAgain, still: blockedStill, prompts: cappedPrompts }));
+        JSON.stringify({ blocked: rowBrief(blocked), pastedAgain, still: rowBrief(blockedStill),
+          prompts: cappedPrompts }));
       const execution = await executionRow(rowId);
       const executionRecovery = (execution.row as { status?: string; recovery?: { state?: string; nextAction?: string } } | null);
       check("Q6 fleet-report cap: the blocked row is visible on GET /api/self/program-execution operations.events with its recovery and counts as an open debt",
@@ -2702,7 +2741,7 @@ export async function run(): Promise<void> {
       check("Q6 fleet-report cap: the existing self ACK alone closes a blocked row, with its attempt count untouched",
         blockedAck.ok && blockedAcked?.status === "acknowledged" && blockedAcked.attempts === 6
           && blockedAcked.acknowledgedAt !== null && blockedAcked.deliveredAt === null,
-        JSON.stringify({ ack: blockedAck.status, row: blockedAcked }));
+        JSON.stringify({ ack: blockedAck.status, row: rowBrief(blockedAcked) }));
       if (starvedDelivered) await ackEvent(mainTok, starvedDelivered.id);
       clearLatch(beforePasteLatch);
       // Later modules own the post-land ledger's zero-row fixtures (same restore as ACP-26 above).

@@ -8920,13 +8920,32 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const windowKnobs: [string, RegExp][] = [
     ["FLEET_MERGE_IDLE_MS=500", /\bFLEET_MERGE_IDLE_MS=500\b/],
     ["FLEET_GIT_TICK_MS=2000", /\bFLEET_GIT_TICK_MS=2000\b/],
-    ["FLEET_FOUNDING_BOOT_GRACE_MS=750", /\bFLEET_FOUNDING_BOOT_GRACE_MS=750\b/],
+    ["FLEET_FOUNDING_BOOT_GRACE_MS=2000", /\bFLEET_FOUNDING_BOOT_GRACE_MS=2000\b/],
     ["FLEET_SEND_BOOT_WAIT_MS=500", /\bFLEET_SEND_BOOT_WAIT_MS=500\b/],
   ];
   const missingWindows = windowKnobs.filter(([, re]) => !re.test(isoWindows)).map(([name]) => name);
   pin(`${RULE_DEFAULTS} — e2e-isolated.sh STATES all four shortened server wait windows in SRV_ENV`,
     isoWindows !== "" && missingWindows.length === 0,
     isoWindows === "" ? "SRV_ENV line not found" : `dropped: ${missingWindows.join("; ")}`);
+  // AND THE ONE RELATION AMONG THEM THAT IS NOT A PREFERENCE — a FLOOR under the founding grace,
+  // pinned against the server's own literal so neither side can drift into it alone. `ensureSlot`
+  // arms a 1 500 ms quiet window on every fresh pane (`s.quietUntil = Date.now() + 1500`, right
+  // before the repaint), and `poll()` refuses to stamp `lastOutput` inside it once the pane has
+  // been observed at all — that suppression is deliberate: it keeps Fleet's own jiggle from reading
+  // as the session working. The founding brief is pasted FOUNDING_BOOT_GRACE_MS after that pane
+  // exists. So a suite grace BELOW the window makes every founding brief's own echo unstampable,
+  // and every fixture that waits for the paste to be OBSERVED — e2e/programs.ts#awaitFoundingBrief,
+  // on which the M1/M2/M3/M5 land setups rest — waits out its 12 s and fails as SETUP. Measured
+  // 2026-09-17 at grace 750: 21 red in one helper preview (every land-firing setup line in the
+  // file), while main's own post-land audit of the same fixture at the production 4 000 was green.
+  // The failure is silent in the other direction too: nothing about it looks like a timing knob.
+  const attachQuietMs = /s\.quietUntil = Date\.now\(\) \+ (\d+);\n\s*await repaint\(/
+    .exec(read("server.ts"))?.[1];
+  const isoGraceMs = /\bFLEET_FOUNDING_BOOT_GRACE_MS=(\d+)\b/.exec(isoWindows)?.[1];
+  pin(`${RULE_DEFAULTS} — the suite's founding grace OUTLASTS ensureSlot's fresh-pane quiet window`,
+    !!attachQuietMs && !!isoGraceMs && Number(isoGraceMs) > Number(attachQuietMs),
+    `grace=${isoGraceMs ?? "unreadable"} quiet=${attachQuietMs ?? "unreadable"}`
+      + " — a founding brief pasted inside the window never stamps lastOutput");
   pin(`${RULE_DEFAULTS} — e2e/security.ts parses FLEET_GIT_TICK_MS exactly as server.ts does`,
     /const GIT_TICK_MS = Math\.max\(1000, Number\(process\.env\.FLEET_GIT_TICK_MS \?\? 10_000\) \| 0\);/.test(read("e2e/security.ts")),
     "the agentOf stale-tick sleep and the server's tick can disagree");

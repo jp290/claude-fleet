@@ -4056,3 +4056,70 @@ armiertem Compiler, und ein Rot dort ist der Befund, nicht das Rauschen. Darum s
 als Flake-Familie: wer sie so läse, winkte den Produktfehler durch. Die Reparatur ist als eigene
 Zeile vorgeschlagen (Bericht dieser Lane, 2026-09-16): `compileBriefs` muss nach dem `await` prüfen,
 ob die Zeile ihren Brief inzwischen bekommen hat, und dann nichts schreiben.
+
+### 11.2y Eine sechsundzwanzigste Familie: die SETUP-Zeilen der M1/M5-Lands in `e2e/programs.ts` — die Sonde wartet auf ein `done-looking`-Fenster, das der Gründungs-Brief gleich wieder schliesst (2026-09-16 registriert; Mechanismus am Code gelesen und auf einer Scratch-Instanz bei 40 ms Abtastung DIREKT GEMESSEN; sondenseitig GESCHLOSSEN, kein Produktfehler)
+
+**Fingerprint** (Detail der Setup-Zeile; der `ready`-Sensor ist das Unterscheidungsmerkmal):
+
+> `FAIL  M5 setup: the docs land fired  ({"slot":13,"refusal":"409 {\"error\":\"the lane is not done-looking (no signal) …\",\"signal\":null}","ready":{"clientAtMs":4060,"doorAtMs":4060,"doorFailing":[]},"dispatch":{"status":200,…}})`
+
+`doorFailing:[]` und `clientAtMs === doorAtMs` heissen: die Tür-Klauseln hielten ALLE, als die
+Sonde feuerte. Das Unterscheidungsmerkmal ist die ZAHL. Im selben Lauf räumten die acht gesunden
+Arme bei **7919–9688 ms**; dieser bei **4060 ms** — vor seinem Brief statt nach ihm.
+
+**Sichtungen, über alle 681 Zeilen von `post-land-audits.jsonl` gezählt (nicht erinnert):**
+
+| Datum | mainSha | Name, unter dem es rot war |
+|---|---|---|
+| 09-14 23:21 | `15d5f056` | `(iv) M5: a DOCS-ONLY land does not take the suite mutex at all …` |
+| 09-15 06:52 | `891c7d98` | dieselbe (iv)-Invariante |
+| 09-15 23:41 | `f806478a` | `M5 setup: the docs land fired` |
+| 09-16 15:03 | `05fc16b0` | derselbe Setup-Name |
+
+Basisrate **4/681 = 0,59 %**. Dazu eine fünfte, nicht im Ledger stehende Sichtung: der
+Helfer-Vorschaulauf `run-6466983c0ac2-1789583910490` (`suite.log` auf dem Second-host), aus dem der
+Fingerprint oben stammt. Dazwischen liegt `93412a52` (09-15 19:45, „a land that never fired … no
+longer read as invariant reds") — das war **nur die Zuschreibung**: sie verschob das Rot von der
+Invariante auf die Setup-Zeile und liess das Rennen unberührt. Die vier gelandeten Commits sind
+inhaltlich UNVERWANDT (ein Lane-Feature ohne Playwright, ein security-allowlist-Fix, eine reine
+`docs/messungen`-Zeile, ein Suite-Teardown-Fix) — der Auslöser lag nie im gelandeten Inhalt.
+
+**Mechanismus, am Code gelesen.** `POST /api/tasks/:id/dispatch` antwortet 200, während
+`server.ts#briefAndSend` der Pane ihren Gründungs-Brief noch SCHULDET: der Tail ist DETACHED,
+schläft `FOUNDING_BOOT_GRACE_MS` (`server.ts:5930`, 4 s) und TIPPT den Brief dann hinein
+(`server.ts:11474` ff.). Dieses Einfügen ist Pane-AUSGABE: es stempelt `lastOutput`
+(`server.ts:12955`), `idleMs` (`server.ts:28995`) fällt auf ~0, und die `idle`-Klausel von
+`DONE_LOOKING_RULES` (`lane-signals.ts:99`) ist für `MERGE_IDLE_MS` falsch. Eine Lane, deren
+Git-Fakten den `tickGit`-Durchlauf VOR diesem Einfügen erreichen, öffnet also ein
+`done-looking`-Fenster bei ~2 s, das bei ~4,2 s WIEDER ZUGEHT. `m1WaitDoor` kehrte beim ersten
+wahren Augenblick zurück, `m1Land` feuerte `selfLand`, und die Tür las dasselbe Prädikat einen
+HTTP-Roundtrip später — inzwischen im Einfügen. **Die Tür hat beide Male recht; das Rennen gehört
+der Sonde.** `server.log` des Vorschaulaufs bestätigt es an der Lücke: für `m5 reap/park/unproven/
+code` steht je eine `dispatch: task … → slot 13`-Zeile und eine `prompts.jsonl`-Zeile, für den
+Docs-Arm KEINE — sein Brief war noch offen, als die Sonde feuerte.
+
+**Direkte Messung** (Scratch-Instanz, eigener Socket/Port, `FLEET_CMD=true`, `FLEET_MERGE_IDLE_MS=2000`,
+Abtastung alle 40 ms, frische Lane je Runde):
+
+- bisherige Wartelogik: **2 von 10** Runden öffneten ein Fenster, das wieder zuging —
+  `round 2 WINDOW CLOSED ready=+1954ms +4195ms missing=[idle] idleMs=1` ·
+  `round 6 WINDOW CLOSED ready=+1953ms +4169ms missing=[idle] idleMs=3`
+- mit der Reparatur: **0 von 20**.
+- **Mutationsprobe** (Reparatur an Ort und Stelle, ein Ausgabe-Stoss in die Lücke erzwungen):
+  **5 von 5** fallen weiterhin, `doorWouldSee=null missing=[idle]` — die Sonde wurde nicht
+  entschärft, ihr wurde nur der EIGENE späte Schreiber genommen.
+
+**Reparatur, sondenseitig** (Lane `fleet/260916191349-89fe`; die Shas trägt die MAIN nach dem
+Rebase-Land nach): `awaitFoundingBrief` in `e2e/programs.ts` wartet auf eine POSITIVE Tatsache über
+diesen Schreiber statt auf einen längeren Schlaf — bis der Gründungs-Brief GELOGGT ist (`logPrompt`
+läuft erst nach `sendText`) und bis die Pane-Ausgabe, die er verursacht hat, BEOBACHTET wurde.
+Danach tippt nichts mehr in die Lane, die Idle-Uhr läuft monoton, und `done-looking` hört auf, eine
+Momentaufnahme zu sein. Schlüssel ist der Worktree-`cwd`, nicht der Brieftext: eine Slot-Nummer wird
+recycelt, ein Worktree-Pfad nicht. Der §8i-`pi-zai`-Arm wartete auf dieselbe Tatsache schon aus dem
+Nachbargrund (ein Commit INNERHALB des Gründungsfensters wird vom Requeue des Tails gefressen) —
+darum wandert der Commit hier ebenfalls hinter die Wartezeit, in BEIDEN Helfern.
+
+**Die Klasse, nicht der eine Name.** `ffrLand` trägt dasselbe Rennen hinter
+`(8e) setup: the red retry-round land fired` und bekommt dieselbe Behandlung. Ein Brief, der nie
+kommt, scheitert jetzt als ER SELBST (`setup: founding brief — …`) statt mit den Worten der Tür im
+Mund. **Ein Rot einer dieser Setup-Zeilen NACH dieser Lane ist wieder ECHT und deins.**

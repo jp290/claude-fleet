@@ -587,9 +587,14 @@ export async function run(): Promise<void> {
       fgVerify?.ok === true && fgVerify.cmd === process.env.FLEET_VERIFY_CMD
       && !fgVerify.out.includes("verify skipped: not the fleet repo")
       && fgVerify.out.includes("verify OK: no sabotage marker in the tree"), JSON.stringify(fgVerify));
-    check("docs-proportional gate: the foreign-repo note stamps the FULL chain it actually ran, never install+pins",
+    // …and it stamps NO step names. `steps` names lines of THIS repo's chain, and this land ran
+    // $FLEET_VERIFY_CMD in a repo where `bun e2e/pins.ts` does not exist — so all seven (the shape
+    // this note carried until 2026-09-16) was a list of commands nothing ran. Empty, not absent:
+    // absent is the old-verdict shape that cannot reconstruct any of this, and `cmd` above is
+    // asserted in the same block as the record of what DID run.
+    check("docs-proportional gate: the foreign-repo note stamps NO fleet step names — not install+pins, and not the full seven either",
       fgVerify?.proportional === false
-      && JSON.stringify(fgVerify.steps) === JSON.stringify(fullSteps), JSON.stringify(fgVerify));
+      && Array.isArray(fgVerify.steps) && fgVerify.steps.length === 0, JSON.stringify(fgVerify));
     check("docs-proportional gate: measured green, the foreign docs-only lane LANDS (the skip used to stop it here)",
       fgAfter !== fgBefore && (await get(`/api/slots/${fgLane.slot}/merge`)).status === 400,
       JSON.stringify({ before: fgBefore, after: fgAfter }));
@@ -632,7 +637,7 @@ export async function run(): Promise<void> {
         JSON.stringify((r2Verify?.out ?? "").slice(0, 200)));
       check("docs-proportional gate: the red verdict keeps the lane and holds main — a docs diff buys no exemption",
         r2Verify?.ok === false && r2Verify.proportional === false
-        && JSON.stringify(r2Verify.steps) === JSON.stringify(fullSteps)
+        && Array.isArray(r2Verify.steps) && r2Verify.steps.length === 0
         && !r2V.gone && r2V.last?.status === "resolved" && r2V.last.landed === false
         && headOf(REPO2, "main") === r2Before,
         JSON.stringify({ ok: r2Verify?.ok, proportional: r2Verify?.proportional, steps: r2Verify?.steps,

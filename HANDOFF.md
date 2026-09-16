@@ -1,3 +1,49 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb (f170dc46) Slot 6 → Nachfolgerin: falsches Audit-Rot aufgeloest und die Land-Tuer wieder geoeffnet, zwei Lanes gelandet (7bcabbfd, eeacda0a), die Ursache des falschen Rots als Auftrag geschaerft, drei fehlende Tueren benannt; 2026-09-16 ~22:2x, ctx GEMESSEN 31,0 % (310 164 von 1 000 000)
+
+## 0. SOFORT BEIM ANTRITT
+
+- **Zustand ableiten:** `./state.sh` · `./register.sh` · `GET /api/self/program-execution` · `GET /api/self/inbox`. Diese Datei traegt nur den Rest.
+- **NICHTS IST ARMIERT, und das ist richtig so:** alle vier Watches dieser Schicht sind gefeuert (`13cd6ed3`, `48c2ad0b`, `24c1653b`, `a69613fd`), `autos` ist leer. Es gibt keine offene Zustellpflicht, die mit mir stirbt — was du armierst, ist deine Entscheidung.
+- **DER ERSTE ZUG:** Slot 2s Antwort abwarten (unten §2). Sie ist das einzige, was diese Schicht offen laesst und was Zeit kostet, wenn es liegen bleibt.
+
+## 1. DIE ENTSCHEIDUNG, DIE DU NICHT AUS DEM ZUSTAND ABLEITEN KANNST: DIE LAND-TUER IST OFFEN
+
+Notiz **`22ba3bed` §1 ist UEBERHOLT** — sie sagt woertlich „ICH HALTE DIE LAND-TUER BEWUSST ZU". Die Freigabe-Bedingung ist eingetreten: Orchestratorin Slot 7 hat `FLEET_E2E_SHARD=1/2` auf dem Second-host gegen `c5296dfb` wiederholt, **2018 PASS / 0 FAIL**, gleiche Checkzahl und gleicher Host wie der rote Audit-Shard k=1 vom 16:47. Kein deterministischer Regress. Korrektur liegt als Notiz **`63251255`** neben ihr, weil eine MAIN eine Notiz nicht schliessen kann (§4).
+
+**Die Ursache, mit ihrer Einschraenkung** — beides steht im neu geschriebenen Brief von **`b85134d3`** (pending, wartet auf einen Lane-Platz): beide Audit-Shards werden zur selben Millisekunde auf EINEM Host geclaimt (`remote.claimedAt 1789568950047`). **ABER** der gruene Audit 18:48 auf `e549974e` lief mit derselben Kollokation und denselben jobIds — **Gleichzeitigkeit ist NICHT hinreichend fuer ein Rot**, nur die Bedingung, unter der die Familie flaken kann. Wer daraus „Nebenlaeufigkeit macht rot" macht, ueberzieht den Befund; der Brief sagt das ausdruecklich und verlangt den Beleg AM CODE, nicht per Lauf.
+
+## 2. LANES IN FLUG — was jede schuldet, woertlich
+
+- **Slot 2 · `5aeaa29d` (Suite schneller) · `needs-main` BEANTWORTET, laeuft.** Der Baum ist auf second-host gruen (4 785/0), auf diesem Mac faellt `e2e/tasks.ts backlog-nudge` zu ~50 %. Mein Entscheid, gesendet 22:1x: **(a)** nicht landen — der Post-Land-Audit IST ein e2e-isolated-Lauf, ein ~50-%-Block produziert planbar ein falsches Rot; **(b)** instrumentieren wie vorgeschlagen, aber als SHARD-Stichprobe (`bun -e 'shardPlan(n)'`, n>=8) bis **zwei** instrumentierte Rote eingefangen sind — ein einzelner 28-min-Lauf hat bei 50 % Basisrate ~50 % Chance, nichts zu sehen; **(c)** Deckel: keine dritte Vermutung, sondern `FLEET_GIT_TICK_MS` in `e2e-isolated.sh` von 2000 auf 5000 zurueck, fuenf DONE(b)-Zahlen neu messen, landen was haelt. **(d)** Der Quiet-Hours-Fix (`quietWaived`, ein Ausdruck + Pin) reist mit, **Bedingung:** der Commit-Body benennt ihn als Aenderung ausserhalb des Brief-Schnitts. **(e)** Die Gegenbewegung `waitMerge` 90,7 → ~145 s steht als EIGENE Zahl in Commit-Body und Messnotiz, Hypothese als UNGEMESSEN markiert — nicht ins Netto schieben.
+  *Vorhersage, vor dem Experiment notiert:* faellt das Instrument auf den git-Tick, ist er wahrscheinlich AUCH die Ursache der waitMerge-Gegenbewegung — eine Ursache, zwei Symptome.
+- **Slot 3 · `30adf3a0` (M5-Familie) · laeuft.** **ACHTUNG, Slot-Recycling:** Slot 3 war bis ~19:1x eine FREMDE pi-zai-Lane; er ist jetzt deiner. Ich habe der Lane um 22:3x zwei frische Vorkommen geschickt: `5c849e55` (21:12:37) und `90824cf3` (22:11:43), beide `M5 setup: the docs land fired`, beide Shard k=1. Damit sind es **sechs** statt vier, und die zwei neuen sind die ersten **zwei in Folge** — Owner-Regel 2026-09-14 (zweimal dasselbe Audit-Rot ⇒ sofort reparieren) ist durch diese laufende Lane bereits erfuellt, ein Hand-Dispatch ueber den Deckel ist NICHT noetig.
+- **Slot 7 ist frei** (eeacda0a gelandet). Ein Lane-Platz ist offen; starten kann ihn nur ein Hand-Dispatch der Orchestratorin, siehe §5.
+
+## 3. WAS DIESE SCHICHT GELANDET HAT
+
+- **`7bcabbfd` → `e549974e`** (start-plan: eine Lane mit offenem Kriterium haelt keine Flaeche). Verify gruen, volle Kette. Post-Land-Audit 18:48 **gruen, 4928/0**.
+- **`eeacda0a` → `90824cf3`** (Simulator-Hygiene, Default AUS, plattform-gated). Verify gruen, volle Kette, hubPush ok. Post-Land-Audit 22:11 **ROT, 4956/1** — der Fail ist `M5 setup: the docs land fired`, also die Familie aus §2, **nicht diese Zeile**: derselbe Fail stand eine Stunde vorher auf `5c849e55`, einem fremden Land. NICHT adjudiziert (Owner-Route, §4).
+- Beide Reports habe ich gegen die ARTEFAKTE geprueft, nicht gegen ihren Text: Trail `isolated-…-19135.jsonl` (tree `e549974e`, 4795/0) bzw. `streams/helper-artifacts/22b926ebb850/…/suite.log` (4818 PASS, 0 FAIL, tree `b7a3010e`). Ein Report ist ein Claim; das Artefakt ist der Beleg.
+
+## 4. DREI TUEREN, DIE ES NICHT GIBT — zwei sind gefilet, eine ist noch deine
+
+1. **Karte einer BESTEHENDEN Zeile:** keine Route. Nur der Sweep (`FLEET_CARD_MS`, aus) oder Neu-Filen mit Autorenkarte. Nullkosten-Pfad `formatCardOf` liest **`t.text` allein** (card-extract.ts:12040 + Kommentar), ist also nur beim ANLEGEN erreichbar — ein formatierter BRIEF hilft nicht.
+2. **Symbolhaelfte einer Karte:** `card-extract.ts:282` reicht jedes `datei#symbol` ungeprueft durch, wenn kein Symbol-Index da ist (jedes Repo ohne `graphify-out/`), und schreibt trotzdem `surfaceValid: true`. Die Konvention existiert zwei Felder weiter schon (`ranges: … : null`, :356). **Gefilet als `56522568`.** Der Autorenpfad ist die exponierte Haelfte, weil `authorCardFrom` die FLAECHE-Zeile anhaengt und damit die Quote-Regel per Konstruktion erfuellt. **Gefunden, weil der Dry-Run der Orchestratorin ein Symbol als „aufgeloest" meldete, das im Baum nie existierte** (`clarificationAnswerMessage`; richtig: `clarificationReplyMessage`) — ein Falsch-PASS des Pruefwerkzeugs, gestellt beim Gegenlesen.
+3. **Eine MAIN kann eine Notiz ihres eigenen Programs NICHT beurteilen:** `POST /api/self/notes/:id/verdict` → **409 „not a lane — a verdict is a lane's report on a note it was shown"**. Sie kann nur eine zweite Notiz danebenlegen (so entstand `63251255`). **NOCH NICHT GEFILET** — sie gehoert in einen `auftrag`, sobald der Eimer aufgeht. Dazu, aus §4 von `22ba3bed` geerbt: **`e2ad10a9`** (shard-empfindliche Sonde `trail: phases is not vacuous`) ist weiterhin nur eine `notiz` und laeuft nie von selbst — inzwischen **zweimal unabhaengig gemessen** (Slot 7 bei `10/16` mit gruener Kontrolle `8/16`).
+
+## 5. WAS BEIM OWNER LIEGT (nicht bei dir) — und der Deploy
+
+Die Orchestratorin (Slot 1, Owner-Token) fuehrt das; ihr Abschnitt oben hat die Details. Kurzfassung fuer dich: **`dispatch` ist aus** (`tickDispatch` kehrt sofort zurueck, seit 2026-09-15 23:22) — **kein Tick startet irgendetwas**, jeder Start ist ihr Hand-Dispatch. **`FLEET_CARD_MS='0'`** soll mit dem naechsten Deploy auf `'60000'` (Modul-Konstante, greift erst beim Boot); die .env-Zeile bekommt den PREIS dazu, nicht nur das Datum: *ein Sonnet-Aufruf je faelliger Zeile, Nullkosten nur bei formatiertem `t.text`*. Beides haengt an der einen Owner-Frage „Kontingent frei?".
+**Deploy:** `codeBehind: true`, `behindCount 7`, bootHead `c5296dfb`, `bundleStale false`. Die Orchestratorin haelt ihn bewusst zurueck, bis Slot 2s Suite-Angebot aufgeloest ist — ein srv-Neustart mitten im Angebot riskiert das Verdikt und nullt jede Pane-Idle-Uhr. **Ich habe dem zugestimmt; `e549974e`/`90824cf3` muessen nicht live sein.**
+
+## 6. ZWEI EIGENE FEHLER, DAMIT DU SIE NICHT ERBST
+
+- Ich habe geschrieben „der Dispatch-Tick kann jetzt eine der queued-Zeilen starten". **Falsch** — Master-Stop, siehe §5. Am Code nachgelesen: `server.ts:12608`.
+- Ich habe mit „sobald ein Freigabeplatz frei wird" geplant. **Falsch fuer dieses Program:** `PROGRAM_MAX_RELEASED` bindet nur unter Politik `manual` (`server.ts:9894`), f170dc46 steht auf `card-valid`. Freigegeben wird hier durch eine GUELTIGE KARTE, nicht durch einen freien Platz.
+- Beide Korrekturen kamen von der Orchestratorin und waren belegt; ich habe sie am Code gegengeprueft, bevor ich sie uebernommen habe. Mach das ebenso — in dieser Schicht waren **beide** Richtungen einmal falsch (auch ihr Dry-Run, §4.2).
+
+---
+
 # HANDOFF — Orchestrator Slot 1 → Nachfolgerin (Haupt-Checkout, Owner-Token): Master-Stop als Kontingent-Pause mit abgelaufener Frist erkannt, vier tote Queue-Zeilen wieder freigebbar gemacht, db756205 gelandet und sein Audit-Rot als fremde Flake-Familie entlastet, RAM-Decke des Hosts gemessen, 25 Scratch-Instanzen + 22 tote Sockets gereapt; 2026-09-16 ~21:2x, ctx GEMESSEN 36,9 %
 
 ## 0. SOFORT BEIM ANTRITT

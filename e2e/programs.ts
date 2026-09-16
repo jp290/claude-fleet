@@ -10327,16 +10327,19 @@ exit 0
       const row = await makeTask({ text: `ff retry ${name}`, programId: ffrProgram.id, repo: REPO2 });
       ffrRows.push(row);
       const lane = await conflictLane(row);
-      // THE FOUNDING TAIL FIRST, then the commit, then the wait (awaitFoundingBrief states why):
-      // until the brief has landed in the pane, `done-looking` is transient, and a commit written
-      // inside that window can be swallowed by the tail's own requeue.
-      if (lane.slot !== null) { ffrLanes.push(lane.slot); await awaitFoundingBrief(lane.slot, lane.cwd); }
+      // Commit first so the slow git tick can publish `ahead>0` THROUGH the brief wait, then wait
+      // for the founding brief (awaitFoundingBrief states the race), then for the door. m1Land
+      // carries the measurement that fixes this order.
       if (lane.cwd) {
         writeFileSync(`${lane.cwd}/${file}`, `work whose first fast-forward is lost — ${name}\n`);
         spawnSync("git", ["-C", lane.cwd, "add", file]);
         spawnSync("git", ["-C", lane.cwd, "commit", "-qm", `ff retry ${name}`]);
       }
-      if (lane.slot !== null) await waitDoneLooking(lane.slot);
+      if (lane.slot !== null) {
+        ffrLanes.push(lane.slot);
+        await awaitFoundingBrief(lane.slot, lane.cwd);
+        await waitDoneLooking(lane.slot);
+      }
       const fired = ffrTok === "" ? false : (await selfLand(ffrTok, row)).ok;
       let reached = false;
       for (let i = 0; i < 400 && !reached; i++) {
@@ -10633,16 +10636,23 @@ exit 0
       if (lane.slot === null) return { row, slot: null, fired: false, dispatch: lane.dispatch,
         refusal: `setup: not done-looking — the dispatch handed back no slot (dispatch ${lane.dispatch.status}, occupied=${lane.dispatch.occupied})` };
       ffrLanes.push(lane.slot);
-      // THE FOUNDING TAIL FIRST (awaitFoundingBrief states the race it closes): while the detached
+      // COMMIT FIRST, and the order is load-bearing in BOTH directions. `ahead>0` is published by
+      // the slow git tick, so the commit has to be in the tree as early as possible: a first cut
+      // put it after the brief wait and thereby spent ~5 s of the tick's head start out of
+      // m1WaitDoor's own 30 s budget — on a machine running other suites that was enough to expire
+      // it, and arm (iii) went red with `fired:false` for the FIRST time in 94 local runs
+      // (trail isolated-20260916T201340Z-86962: msSincePrev 138065, sleep 135849, http 1997 —
+      // polls, not a slow server). Committing here lets the tick work THROUGH the brief wait.
+      writeFileSync(`${lane.cwd}/${file}`, `work whose gate never got the machine — ${name}\n`);
+      spawnSync("git", ["-C", lane.cwd, "add", file]);
+      spawnSync("git", ["-C", lane.cwd, "commit", "-qm", `m1 ${name}`]);
+      // THEN THE FOUNDING TAIL (awaitFoundingBrief states the race it closes): while the detached
       // dispatch tail still owes this pane its brief, `done-looking` is a window that opens and
       // shuts, and the door reads it after the wait did. A brief that never arrives is a setup
       // failure under its OWN name — never `fired:false` with the door's words in its mouth.
       const briefAt = await awaitFoundingBrief(lane.slot, lane.cwd);
       if (briefAt === null) return { row, slot: lane.slot, fired: false, dispatch: lane.dispatch,
         refusal: `setup: founding brief — ${foundingBriefWhy}` };
-      writeFileSync(`${lane.cwd}/${file}`, `work whose gate never got the machine — ${name}\n`);
-      spawnSync("git", ["-C", lane.cwd, "add", file]);
-      spawnSync("git", ["-C", lane.cwd, "commit", "-qm", `m1 ${name}`]);
       // never fire at a door whose own predicate has not been seen to hold: a refusal there would be
       // this fixture's race, read as the product's verdict
       const waited = await m1WaitDoor(lane.slot);
@@ -11011,10 +11021,18 @@ exit 0
     m5Lock(null, null);
     ffrReset();
     const m5P = await m1Land("m5 park", "m5-park.txt");
-    const m5PVerdict = await m5Settled(m5P.slot);
+    // THE SETUP LINE OWNS "did the land fire" here too. (ii) and (iii) folded `fired` into the
+    // invariant, so an arm that never reached the door read as a BROKEN INVARIANT and carried no
+    // refusal to read — the exact confusion 93412a52 removed from (iv)/(v) and left standing here.
+    // It came due on 2026-09-16: (iii) went red as `{"fired":false,…}` with nothing to say why.
+    const m5PFired = m5P.fired && m5P.slot !== null;
+    check("(ii) M5 setup: the park land fired",
+      m5PFired, JSON.stringify({ slot: m5P.slot, refusal: m5P.refusal ?? null, ready: m5P.ready ?? null,
+        dispatch: m5P.dispatch }));
+    const m5PVerdict = m5PFired ? await m5Settled(m5P.slot) : null;
     const m5PRuns = ffrLogRuns().length;
     await m5Drop(m5P.slot);
-    check("(ii) M5 GEGENPROBE: a pid-LESS lock dir is a human's manual park and is NEVER reaped — the land is denied, the chain never spawns, and the park survives untouched",
+    if (m5PFired) check("(ii) M5 GEGENPROBE: a pid-LESS lock dir is a human's manual park and is NEVER reaped — the land is denied, the chain never spawns, and the park survives untouched",
       m5P.fired && m5P.slot !== null && m5PVerdict?.status === "resolved" && m5PVerdict.landed === false
         && m5PVerdict.verify?.waitedOut === true && m5PRuns === 0
         && existsSync(ffrLock) && !existsSync(`${ffrLock}/pid`),
@@ -11029,10 +11047,14 @@ exit 0
     m5Lock(m5Unproven, null);
     ffrReset();
     const m5U = await m1Land("m5 unproven", "m5-unproven.txt");
-    const m5UVerdict = await m5Settled(m5U.slot);
+    const m5UFired = m5U.fired && m5U.slot !== null;
+    check("(iii) M5 setup: the unproven-holder land fired",
+      m5UFired, JSON.stringify({ slot: m5U.slot, refusal: m5U.refusal ?? null, ready: m5U.ready ?? null,
+        dispatch: m5U.dispatch }));
+    const m5UVerdict = m5UFired ? await m5Settled(m5U.slot) : null;
     const m5URuns = ffrLogRuns().length;
     await m5Drop(m5U.slot);
-    check("(iii) M5 GEGENPROBE: a LIVE holder whose identity cannot be proven (pid, no birth) is kept, not reaped — the land is denied and the holder still holds the lock",
+    if (m5UFired) check("(iii) M5 GEGENPROBE: a LIVE holder whose identity cannot be proven (pid, no birth) is kept, not reaped — the land is denied and the holder still holds the lock",
       m5U.fired && m5U.slot !== null && m5UVerdict?.status === "resolved" && m5UVerdict.landed === false
         && m5UVerdict.verify?.waitedOut === true && m5URuns === 0
         && m5LockPid() === m5Unproven && ffrAlive(m5Unproven),

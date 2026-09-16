@@ -724,6 +724,45 @@ chmod +x "$DIR/fakedigest"
 # killed), the scratch dir behind, and the suite child reparented to init still driving the socket.
 # That is the shape of the orphan found in the wild, whose node_modules symlink pointed at a lane
 # worktree that no longer existed.
+# TEARDOWN REAP — kill-server alone is what BUILT the orphan population this file's startup reap
+# only sweeps the sockets of: the server's exit closes the pty, the pane shell dies of HUP, and a
+# work child (codex, node) that does not die with it is reparented to init — measured 2026-09-15
+# as 20 node+codex pairs under $TMPDIR/fleet-e2e-instance-*, ppid 1, up to 12 days old, ~630 MB,
+# growing 4-5 pairs per day. So before every kill-server of a fleettest socket, kill the PROCESS
+# GROUPS of that socket's panes and of all their descendants. Groups, not bare pids, because a
+# job-control pane shell parks children in groups of their own. The pid set comes ONLY from this
+# socket's own pane list walked over ppid links — never a name pattern, never a pid that did not
+# come out of this socket. The hard bound is the pane's process SESSION, not descent beyond it, and
+# it holds only because membership is tested with awk's `in`: a bare index READ (want[pid[j]] in a
+# condition) CREATES the key, the created keys then iterate, and the first draft enumerated and
+# killed ~every process group on the machine — including the live fleet server (measured
+# 2026-09-16, srv 11878 dead at 13:44:15). So: membership via `in` only, and a group is printed
+# only as the pgid of a pid that is itself in the walked set. Residual window, accepted: between
+# the ps snapshot and the kill after `sleep 1`, PID recycling can hand a printed pgid to a foreign
+# new group — the same window any snapshot-guided kill has.
+reap_socket_panes() {
+  _rsp_pids=$(tmux -L "$1" list-panes -a -F '#{pane_pid}' 2>/dev/null | tr '\n' ' ') || return 0
+  [ -n "$_rsp_pids" ] || return 0
+  _rsp_groups=$(ps -eo pid=,ppid=,pgid= | awk -v roots="$_rsp_pids" '
+    { pid[NR] = $1; ppid[$1] = $2; pgid[$1] = $3 }
+    END {
+      n = split(roots, r, " ");
+      for (i = 1; i <= n; i++) want[r[i]] = 1;
+      changed = 1;
+      while (changed) {
+        changed = 0;
+        for (j = 1; j <= NR; j++) {
+          p = pid[j];
+          if (!(p in want) && (ppid[p] in want)) { want[p] = 1; changed = 1 }
+        }
+      }
+      for (k in want) if ((k in pgid) && pgid[k] + 0 > 0) print pgid[k];
+    }' | sort -u)
+  for _rsp_g in $_rsp_groups; do kill -TERM "-$_rsp_g" 2>/dev/null; done
+  sleep 1
+  for _rsp_g in $_rsp_groups; do kill -KILL "-$_rsp_g" 2>/dev/null; done
+}
+
 # So: reap at START, keyed on whether the socket's OWNER PID is still alive. Deliberately NOT the
 # age heuristic ("kill fleettest servers older than N hours") — these wrappers are expressly run
 # concurrently and a live run's owner PID is alive BY DEFINITION, so liveness cannot shoot down a
@@ -737,12 +776,15 @@ for _s in "$TMUX_SOCKDIR"/fleettest*; do
   case "$_own" in ''|*[!0-9]*) continue ;; esac    # only fleettest<pid>, never fleettestlane…
   [ "$_own" = "$$" ] && continue
   kill -0 "$_own" 2>/dev/null && continue          # owner alive → a live run, hands off
+  # reap first, THEN kill-server: bare kill-server would reparent this stale server's pane trees
+  # to init and mint exactly the orphan pairs this block exists to prevent.
+  reap_socket_panes "fleettest$_own"
   tmux -L "fleettest$_own" kill-server 2>/dev/null
 done
 
 # unique-per-run socket: without this trap an interrupted run would leak its tmux
 # server forever (no later run reuses the socket to kill it)
-trap 'tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
+trap 'reap_socket_panes "$SOCK"; tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
 
 tmux -L "$SOCK" kill-server 2>/dev/null
 # FLEET_STEWARD_JOURNAL_PER_HOUR RAISES the hourly journal cap (prod default 6) above what this
@@ -872,6 +914,7 @@ cd "$DIR" || exit 1
 eval "PATH='$DIR:$PATH' FLEET_E2E_SUITE=isolated $SRV_ENV bun fleet-e2e.ts"
 code=$?
 
+reap_socket_panes "$SOCK"
 tmux -L "$SOCK" kill-server 2>/dev/null
 # unique-per-run DIR: clean up on success, keep for post-mortem on failure
 if [ "$code" = 0 ]; then rm -rf "$DIR"; else echo "kept test instance for inspection: $DIR"; fi

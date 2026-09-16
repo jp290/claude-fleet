@@ -1,3 +1,66 @@
+# HANDOFF — Orchestrator Slot 1 → Nachfolgerin (Haupt-Checkout, Owner-Token): Master-Stop als Kontingent-Pause mit abgelaufener Frist erkannt, vier tote Queue-Zeilen wieder freigebbar gemacht, db756205 gelandet und sein Audit-Rot als fremde Flake-Familie entlastet, RAM-Decke des Hosts gemessen, 25 Scratch-Instanzen + 22 tote Sockets gereapt; 2026-09-16 ~21:2x, ctx GEMESSEN 36,9 %
+
+## 0. SOFORT BEIM ANTRITT
+
+- **Zustand ableiten:** `./state.sh`, `./register.sh`, `GET /api/self` → `lineage.record`. Diese Datei trägt nur den Rest.
+- **DIE EINE OFFENE OWNER-FRAGE, die zwei Schalter aufhält:** *Ist das Claude-Kontingent wieder frei?* Ich konnte sie nicht messen — dieses Fleet hat für Claude-Verbrauch keinen Sensor (die Kontingent-Sonde liest `~/.codex/sessions`, also nur Codex). Bei „ja": `dispatch` sofort per Route, `FLEET_CARD_MS='60000'` in `.env` **mit dem Deploy** (Modul-Konstante, greift erst beim Boot).
+
+## 1. DER BEFUND DIESER SCHICHT: DER MASTER-STOP IST EINE KONTINGENT-PAUSE, KEIN POLICY-ENTSCHEID
+
+**Gemessen:** `dispatch_switch off` in `audit.jsonl` am **2026-09-15 23:22:24.131** — die einzige solche Zeile im ganzen Ledger. `.env` mtime: **23:22:40**, also **16 Sekunden später**. Und `.env:35` trägt wörtlich `FLEET_CARD_MS='0'  # 2026-09-15 23:3x Orchestratorin Slot 6: Claude-Nutzung 95 %, Karten-Sweep (Sonnet) aus bis zum Reset 16.09. ~19:00; zurueck: '60000'`.
+
+**Inferiert, nicht gemessen:** dass der Dispatch-Schalter denselben Grund und dieselbe Frist teilt. Die `dispatch_switch`-Zeile trägt nur `detail: "off"` und erwähnt kein Kontingent. Die Frist der `.env`-Notiz ist seit ~19:00 abgelaufen.
+
+**Folge, die niemand sah:** `tickDispatch` kehrt bei `!dispatchOn && !programs.some(programDispatchGrant)` sofort zurück — kein Grant ist gesetzt, also startet seit ~20 h **nichts** von selbst. Jeder Start seitdem war ein Hand-Dispatch (Owner-Tür). Slot 6 plante ausdrücklich um einen Tick herum, der nicht feuern kann, und hat die Korrektur angenommen.
+
+## 2. VIER QUEUE-ZEILEN WAREN DAUERHAFT UNFREIGEBBAR — JETZT NICHT MEHR
+
+Unter der Program-Politik `card-valid` (f170dc46) wird eine Zeile mit harter Kartenlücke nie freigegeben, **und es gibt keine Route, die die Karte einer bestehenden Zeile schreibt** — der einzige Weg ist der Sweep (`FLEET_CARD_MS`, aus) oder Neu-Filen mit Autorenkarte (`authorCardFrom`).
+
+| neu | ersetzt | Zustand |
+|---|---|---|
+| `1e170a25` | `48a91762` (archiviert) | released true by policy |
+| `c05f8b05` | `b5665e17` (archiviert) | released true by policy |
+| `56522568` | — (Befund, neu) | released true by policy |
+| `53daa39c` | — (Befund, neu) | released true by policy |
+
+Alle vier hängen nur noch an **Slot 2s Land** und am **Master-Stop**, an keinem Kartenproblem. Slot 6s Filing-Eimer ist unberührt (alle `source: owner`); sein eigener steht auf 5/5 und **kann sich nicht lösen, solange der Sweep aus ist** — der abgeschaltete Schalter blockiert die Filing-Fähigkeit der MAIN, die ihn zurückdrehen lassen müsste.
+
+## 3. DIE FEHLERKLASSE, DIE DIESE SCHICHT DREIMAL PRODUZIERT HAT — bitte weiterlesen, sie ist nicht erledigt
+
+Ein Werkzeug liefert eine plausible Zahl zur **falschen Frage**:
+
+1. **Falsch-PASS.** Mein Karten-Dry-Run las `graphify-out/graph.json` mit `n.src`/`n.loc`; die echten Schlüssel sind `source_file`/`source_location`. Index leer → als `null` übergeben → `card-extract.ts:282` `if (!ctx.symbolIndex) { symbols.push(ref); continue; }` winkt **jedes** Symbol ungeprüft durch. Gemeldet wurde „beide Symbole aufgelöst" für `lane-signals.ts#clarificationAnswerMessage`, **das es im Baum nicht gibt**. Program-MAIN Slot 6 hat es am Baum gestellt, bevor eine Lane darauf ansetzte. Daraus wurde Zeile `56522568`.
+2. **Falsch-Alarm.** `git diff --name-only main..HEAD` zeigte 10 Dateien für eine Lane, die genau eine änderte — Zwei-Punkt-Diff auf eine 6 Commits zurückliegende Lane. Gegen die merge-base gerechnet: exakt `e2e/watch.ts`.
+3. **Falsche Messung.** `pgrep -f 'bun server.ts' | head -1` griff einen Fremdserver aus einem anderen Repo (27,4 MB statt 208,5 MB, Faktor 7,6). Prozesse über das **Arbeitsverzeichnis** identifizieren, nie über `head -1`.
+
+## 4. RAM-DECKE DES HOSTS — gemessen auf Owner-Frage, noch nicht gefilet
+
+**8,0 GB physisch, 0,1 GB frei, 2,6 GB komprimiert, 613 MB Swap, 7,1 Mio Pageouts** — bei **8** belegten Slots. RSS-Summen: `claude` 1266,7 MB (n=5), `bun` 635,0 MB (n=15), `node` 223,4 MB (n=16), `codex` 132,9 MB (n=4). Einzeln: claude **150–361 MB**, codex **23–64 MB** — Faktor 5–15 je Slot.
+
+Konsequenz: 16 claude-Slots wären ~4 GB Agenten allein; **diese Maschine trägt das nicht**, unabhängig von der Serversprache. Ein Rust-Port von `server.ts` nähme ~200 MB von ~1,4 GB Flotten-Verbrauch — die Harness-Wahl ist der größere Hebel. (RSS zählt geteilte Seiten mehrfach: Obergrenzen, aber der Abstand trägt.)
+
+**Aufgeraeumt (PLATTE, NICHT RAM - das ist der Punkt):** 25 verwaiste e2e-Scratch-Instanzen (567 MB) und 22 tote tmux-Sockets entfernt, TMPDIR 2155 -> 1579 MB. Schnitt war **PID nachweislich tot UND aelter als 24 h** - nicht 'PID tot' allein: Instanzen sind Beweismittel, Slot 3 hat heute `fleet-e2e-instance-45537` (79 min alt) als Hash-Beleg fuer einen Flake-Nachweis zitiert. Die zwei LIVE-Instanzen des laufenden Audits (`90121` = Lock-Halter, `91397` = zweiter Shard) blieben unangetastet, nach dem Reap gegengeprueft. **Die ~24 fremden `node`/`npm`-Prozesse und der stray `bun server.ts` in `private-repo-a/serve-dexter` (~350 MB) sind NICHT angefasst** - geteilte Realitaet, und der Owner hat noch nicht entschieden. Das ist der einzige verbliebene RAM-Hebel.
+
+**Ungefilet, bewusst:** die Zeile „Wie viele Slots trägt dieser Host, und was kostet ein Slot je Harness?" — der Owner hat sie noch nicht bestellt. `FLEET_DISPATCH_MAX_LANES`=1 / Repo-Overlay 3 stammen aus Suite-Last-Überlegungen, **nie aus einer RAM-Messung**.
+
+## 5. WAS LÄUFT, MIT ADRESSE
+
+- **`5c849e55` gelandet** (db756205, Leichtgewicht f9dc8e10, Auftrag der MAIN Slot 10): `verify.ok true`, volle Kette, 159 270 ms, waitMs 0, kein Resolver, nur `e2e/watch.ts`, `hubPush ok`. Die Land-Notiz trägt `actor.suspect: "owner-token-outside-board"` mit `bypassed {program, task, main 10, report accepted}` — korrekt, das Program hat keine Self-Land-Promotion. **Audit-Watch `643d453c` auf `5c849e55` ist armiert; das Verdikt gehört Slot 10, nicht dir.** Noch keine Ledger-Zeile = läuft noch (~25–35 min), nie „verloren".
+- **AUDIT AUF `5c849e55` KAM ROT ZURUECK - und es ist nicht dieses Land.** `ran 4933 / failed 1`, `ms 2 047 335` (34,1 min, also ein echter Lauf), shard k1 rot / k2 gruen. Der eine Fail woertlich: **"M5 setup: the docs land fired"**. Entlastung in drei unabhaengigen Stuecken: (a) SETUP-Zeile -> alles unter M5 ist UNGEMESSEN, nicht verletzt; (b) das Land bewegte exakt `e2e/watch.ts`, die M5-Sektion liegt in `e2e/programs.ts`; (c) die Familie ist vier Auftreten aelter als der Branch - selbst durchgezaehlt ueber 687 Ledger-Zeilen: `15d5f056` 09-14 23:21 - `891c7d98` 09-15 06:52 - `f806478a` 09-15 23:41 - `05fc16b0` 09-16 15:03 - `5c849e55` 09-16 21:12. **Basisrate 5/687 = 0,73 %.** Ich habe das Rot NICHT adjudiziert - es bleibt rot, das Urteil ist nicht meins. Slot 10 ist entlastet und informiert.
+- **Reparatur laeuft: Slot 3, Branch `fleet/260916191349-89fe`** - Zeile `30adf3a0` (Fleet-Betrieb) lag seit 15:0x `queued` und beschreibt genau diese Familie; sie konnte NUR wegen des Master-Stops nicht starten. Per Hand darueber gestartet. Das fuenfte Auftreten steht als Kommentar `dc61af5d` an der Zeile. **Die Familie steht in KEINEM Register** - `grep 'M5 setup' docs/verify-tiering.md` ist leer; das Eintragen ist Teil ihres Auftrags.
+- **Slot 2** (`5aeaa29d`, Suite schneller): verifiziert weiter, Suite-Angebot war offen. **Nicht auf `ahead/clean/idle` landen** — sie sah heute zweimal fertig aus und war es nicht. Ihr `briefAndSend`-Quiet-Hours-Fix ist eine Produktänderung außerhalb des Brief-Schnitts; Slot 6 hat entschieden: reist mit, wenn es ein Ausdruck plus Pin bleibt, und der Commit-Body muss es benennen — **Kriterium ist der Diff, nicht ihre Zusage**.
+- **Slot 7** (`eeacda0a`, Simulator-Lease): von mir hand-dispatcht, verifiziert auf zwei Gleisen. Mein Hintergrund-Watcher auf ihren Terminal-Report **stirbt mit meiner Session** — neu setzen.
+- **Deploy zurückgehalten**, von mir und Slot 6 bestätigt: ein srv-Neustart mitten in Slot 2s Suite-Angebot riskiert das Verdikt und setzt jede Pane-Idle-Uhr auf null. Nach Slot 2s Verdikt deployen — und `FLEET_CARD_MS='60000'` gleich mitnehmen, mit der **Preis-Formulierung** (ein Sonnet-Aufruf je fälliger Zeile; der Nullkosten-Pfad `formatCardOf` liest ausschließlich `t.text` und ist nur beim Anlegen erreichbar).
+
+## 6. KORREKTUREN AN MIR SELBST, die du nicht wiederholen musst
+
+- „Ein formatierter **Brief** kostet kein Kontingent" war **falsch** — `formatCardOf` parst `t.text`, nicht den Brief (Slot 6 hat es gestellt).
+- `VERBOTEN` ist **kein** `FORMAT_KEY` (`card-extract.ts:389`): ein Sweep-Re-Read über den Format-Pfad verliert die Verbote, und ausgelöst wird er allein durch `(t.brief?.at ?? 0) > t.card.at` — also durch das Schärfen der Zeile. Deshalb sind `56522568` und `53daa39c` **unformatiert** gefilet.
+- Reihenfolgen-Falle: **Sweep zuerst, dann Brief.** `cardStale` ist eine harte Lücke, greift aber nur bei Zeilen, die schon eine Karte haben.
+
+---
+
 # HANDOFF — Orchestratorin Slot 7 → Nachfolgerin (Haupt-Checkout, Owner-Token): Audit-Rot auf c5296dfb als `flake` quittiert und Tip deployt (6 Commits, `ok:true`), K4 Private-repo-aa auf Astra gelandet, drei programlose Zeilen mit gemessenen Kosten an Fleet-Betrieb gehaengt; 2026-09-16 ~20:0x, ctx GEMESSEN 35,4 %
 
 ## 0. SOFORT BEIM ANTRITT

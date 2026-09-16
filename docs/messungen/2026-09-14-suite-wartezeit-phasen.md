@@ -3,7 +3,7 @@ frage: Wohin geht die Wartezeit der vollen Suite, je Phase (boot/tmux/http/sleep
 urteil: Sleep traegt 1 289 von 2 225 s (58 %), http 698 s, boot 135 s, tmux 14 s, Rest 88 s; im 3–10-s-Band sind es 716 s sleep und 345 s http von 1 124 s. Drei Server-Wartefenster erklaeren zusammen rund 530 s: der 10-s-Git-Tick (199 s), die festen Boot-Grace-Konstanten fuer Gruendung und Zustellung (187 s) und das Merge-Idle-Gate (145 s). Die Hypothese „Git-Tick widerlegt" haelt am direkt gemessenen Aufrufort nicht.
 bereich: [verify, e2e, suite-kontention]
 belege: [e2e/trail-emit.ts#createPhaseClock, e2e/harness.ts#installPhaseProbes, e2e/programs.ts#waitDoneLooking, e2e/lane-helpers.ts#settleForMerge, e2e/programs.ts#beginBootstrap, e2e/security.ts#agentOf, server.ts#tickGit, server.ts#FOUNDING_BOOT_GRACE_MS, server.ts#SEND_BOOT_WAIT_MS, docs/e2e-trail.md]
-nicht-gemessen: synchrone Arbeit bleibt ungeteilt im Rest; Second-host-Trail ging verloren; die Gegenbewegung an waitMerge (+50 s, Nachtrag) ist als git-Index-Streit nur vermutet, nicht gemessen; ob der verschobene Beobachtungsmoment der Backlog-Nudge-Fixture ihre 2 von 9 Rote erklaert, ist NICHT gemessen (zweiter Nachtrag 2026-09-16, docs/verify-tiering.md §11.2y). ERLEDIGT im Nachtrag 2026-09-16: der Umschalt-Lauf, der die drei Wartefenster beweist.
+nicht-gemessen: synchrone Arbeit bleibt ungeteilt im Rest; Second-host-Trail ging verloren; die Gegenbewegung an waitMerge (+50 s, Nachtrag) ist als git-Index-Streit nur vermutet, nicht gemessen; ob der verschobene Beobachtungsmoment der Backlog-Nudge-Fixture ihre 2 von 9 Rote erklaert, ist NICHT gemessen (zweiter Nachtrag 2026-09-16, docs/verify-tiering.md §11.2z). ERLEDIGT im Nachtrag 2026-09-16: der Umschalt-Lauf, der die drei Wartefenster beweist.
 stand: 2026-09-16 (Nachtrag; Messlauf 2026-09-14)
 ---
 
@@ -270,7 +270,7 @@ Check-Namen getrennt sind das drei Signaturen: **S1** „ein Prompt, an B statt 
 `037d246349cd` (Ancestor von main, 2026-08-26), auf der Fixture-Fassung, die die Reihenfolge noch
 ANNAHM; **S3** — 3 Sichtungen (`1ba06c2b2638`, `519ff13ee95a`, `69c98c72ab2e`) mit ROTER
 Setup-Zeile, also UNGEMESSEN und §11.2p, nicht diese Familie. Vollstaendig mit Belegen in
-`docs/verify-tiering.md` §11.2y.
+`docs/verify-tiering.md` §11.2z.
 
 **Beide S1-Sichtungen liefen MIT den verkuerzten Fenstern** — auch die um 14:38, vor dem Commit:
 ihre Spanne ist 1 626,8 s gegen 2 224,7 s der Baseline, der Schnitt war also im dirty-Baum. Die

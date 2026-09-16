@@ -1295,7 +1295,7 @@ export async function run(ctx: Ctx): Promise<void> {
       // THIS BLOCK NO LONGER ESTABLISHES THE ORDER — it only proves both panes answer at all.
       // Establishing it here is what failed: the premise held at THIS instant and had to survive a
       // `POST /api/lanes`, four task creates and two tick waits before the round read it, on a
-      // margin of tens of milliseconds. It did not (docs/verify-tiering.md §11.2y, signature S1).
+      // margin of tens of milliseconds. It did not (docs/verify-tiering.md §11.2z, signature S1).
       // The order is now established directly in front of the round, inside the quiet-hours window
       // — the one stretch where the policy gate guarantees nothing can be delivered meanwhile.
       const aEnv = await paneEnv(`s${mainA}`, "HOME");

@@ -8403,6 +8403,54 @@ export async function run(ctx: Ctx): Promise<void> {
       return false;
     };
 
+    // THE LANE'S PANE IS STILL BEING WRITTEN TO WHEN `dispatch` ANSWERS 200, and until it stops,
+    // `done-looking` is TRANSIENT — which makes every wait above a snapshot rather than a
+    // precondition. briefAndSend is a DETACHED tail: it sleeps FOUNDING_BOOT_GRACE_MS (server.ts,
+    // 4 s), then types the founding brief into the pane, and that paste is pane OUTPUT — it stamps
+    // `lastOutput` (server.ts#poll) and the `idle` clause goes false for MERGE_IDLE_MS. So a lane
+    // whose git facts reach the tick BEFORE that paste opens a done-looking window at ~2 s that
+    // CLOSES again at ~4.2 s. A wait that returns at the first true instant can land inside it, and
+    // the door — which re-reads the same predicate one HTTP round-trip later — then answers
+    // `409 the lane is not done-looking (no signal)` over a lane the fixture had just watched be
+    // ready. That is the fixture's race, not the door's: the door is right both times.
+    // Measured on a scratch instance 2026-09-16, 40 ms sampling, 10 fresh lanes: 2 of 10 opened
+    // such a window (ready at +1954/+1953 ms, closed at +4195/+4169 ms, `missing=[idle]`,
+    // idleMs 1 and 3). In the suite it costs the SETUP line of an M1/M5 arm ~0.6 % of runs —
+    // audits 15d5f056, 891c7d98 (as arm (iv)), f806478a, 05fc16b0 and helper preview
+    // run-6466983c0ac2-1789583910490, whose `ready` sensor read `{clientAtMs:4060, doorAtMs:4060,
+    // doorFailing:[]}`: the window had opened 140 ms before the paste and the poll caught it.
+    // So the precondition is a POSITIVE FACT about the writer, not a longer sleep: wait until the
+    // founding brief has been LOGGED (logPrompt runs only after sendText returned — the §8i pi-zai
+    // arm below waits on the same fact for the neighbouring reason) and until the pane output it
+    // caused has been OBSERVED. After that nothing types into this lane again, the idle clock runs
+    // monotonically, and the predicate stops being a snapshot. `cwd` is the key rather than the
+    // brief's text: a worktree path belongs to exactly one occupant, while a slot id is recycled.
+    let foundingBriefWhy = "";
+    const awaitFoundingBrief = async (slot: number, cwd: string): Promise<number | null> => {
+      foundingBriefWhy = "";
+      if (!cwd) { foundingBriefWhy = "the dispatch handed back no cwd"; return null; }
+      let ts = 0;
+      for (let i = 0; i < 120 && ts === 0; i++) {
+        ts = (await plogRead()).find((e) => e.cwd === cwd && e.source === "auto")?.ts ?? 0;
+        if (ts === 0) await Bun.sleep(250);
+      }
+      if (ts === 0) {
+        foundingBriefWhy = `no auto prompt was logged for ${cwd} within 30s — the dispatch tail never delivered (a requeue leaves the lane standing)`;
+        return null;
+      }
+      // the paste's own output, seen by the server. Without this the brief can be logged while
+      // `lastOutput` still carries the shell's first paint, and the idle clause would again be
+      // satisfied by a stamp the next poll is about to replace.
+      for (let i = 0; i < 120; i++) {
+        const body = await slSess();
+        const row = body.slots.find((x) => x.id === slot);
+        if (row && row.lastOutput >= ts) return ts;
+        await Bun.sleep(100);
+      }
+      foundingBriefWhy = `the brief was logged at ${ts} but slot ${slot} never observed its pane output within 12s`;
+      return null;
+    };
+
     // --- (0) THE FIXTURE THE GREEN ARM NEEDS, and it fails as ITSELF if it cannot be built.
     // `preflightProgramMain` refuses to found a Program-MAIN in a TARGET repo without a tracked,
     // non-empty root AGENTS.md, and REPO2 is the ONE repo on this fleet with its own
@@ -10272,12 +10320,16 @@ exit 0
       const row = await makeTask({ text: `ff retry ${name}`, programId: ffrProgram.id, repo: REPO2 });
       ffrRows.push(row);
       const lane = await conflictLane(row);
+      // THE FOUNDING TAIL FIRST, then the commit, then the wait (awaitFoundingBrief states why):
+      // until the brief has landed in the pane, `done-looking` is transient, and a commit written
+      // inside that window can be swallowed by the tail's own requeue.
+      if (lane.slot !== null) { ffrLanes.push(lane.slot); await awaitFoundingBrief(lane.slot, lane.cwd); }
       if (lane.cwd) {
         writeFileSync(`${lane.cwd}/${file}`, `work whose first fast-forward is lost — ${name}\n`);
         spawnSync("git", ["-C", lane.cwd, "add", file]);
         spawnSync("git", ["-C", lane.cwd, "commit", "-qm", `ff retry ${name}`]);
       }
-      if (lane.slot !== null) { ffrLanes.push(lane.slot); await waitDoneLooking(lane.slot); }
+      if (lane.slot !== null) await waitDoneLooking(lane.slot);
       const fired = ffrTok === "" ? false : (await selfLand(ffrTok, row)).ok;
       let reached = false;
       for (let i = 0; i < 400 && !reached; i++) {
@@ -10571,14 +10623,19 @@ exit 0
       const row = await makeTask({ text: `m1 ${name}`, programId: ffrProgram.id, repo: REPO2 });
       ffrRows.push(row);
       const lane = await conflictLane(row);
-      if (lane.cwd) {
-        writeFileSync(`${lane.cwd}/${file}`, `work whose gate never got the machine — ${name}\n`);
-        spawnSync("git", ["-C", lane.cwd, "add", file]);
-        spawnSync("git", ["-C", lane.cwd, "commit", "-qm", `m1 ${name}`]);
-      }
       if (lane.slot === null) return { row, slot: null, fired: false, dispatch: lane.dispatch,
         refusal: `setup: not done-looking — the dispatch handed back no slot (dispatch ${lane.dispatch.status}, occupied=${lane.dispatch.occupied})` };
       ffrLanes.push(lane.slot);
+      // THE FOUNDING TAIL FIRST (awaitFoundingBrief states the race it closes): while the detached
+      // dispatch tail still owes this pane its brief, `done-looking` is a window that opens and
+      // shuts, and the door reads it after the wait did. A brief that never arrives is a setup
+      // failure under its OWN name — never `fired:false` with the door's words in its mouth.
+      const briefAt = await awaitFoundingBrief(lane.slot, lane.cwd);
+      if (briefAt === null) return { row, slot: lane.slot, fired: false, dispatch: lane.dispatch,
+        refusal: `setup: founding brief — ${foundingBriefWhy}` };
+      writeFileSync(`${lane.cwd}/${file}`, `work whose gate never got the machine — ${name}\n`);
+      spawnSync("git", ["-C", lane.cwd, "add", file]);
+      spawnSync("git", ["-C", lane.cwd, "commit", "-qm", `m1 ${name}`]);
       // never fire at a door whose own predicate has not been seen to hold: a refusal there would be
       // this fixture's race, read as the product's verdict
       const waited = await m1WaitDoor(lane.slot);

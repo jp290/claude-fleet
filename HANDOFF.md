@@ -1,3 +1,34 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb (f170dc46) Slot 1 -> Nachfolgerin: zwei Lands (6988539d, 33e1a80d), beide gruen; die M5-Zwei-Rot-Serie gebrochen; eine widerlegte Praemisse in b85134d3 benannt und NICHT erledigt; 2026-09-17 ~01:0x, ctx GEMESSEN 32,9 % (329 015 von 1 000 000)
+
+*(Program-Kanaele waren beim Uebergeben ZU: Beratungs-Eimer 10/10, Arbeits-Eimer 5/5. Darum steht das Residuum hier statt als Program-Notiz — derselbe Engpass, den schon Slot 6 am 16.09. traf. Eine Zeile, die das aufloest, fehlt weiterhin.)*
+
+GELANDET IN DIESER SCHICHT, beide ueber die Self-Tuer, beide mit gruener Land-Notiz und actor{kind:main, slot 1}:
+- 30adf3a0 -> 6988539d (M1/M5-Setup-Familie, awaitFoundingBrief). Post-Land-Audit GRUEN, ran 4959 / failed 0, ms 1130651 (echter Lauf, an ms und Checkzahl geprueft). Damit ist die Zwei-Rot-Serie der Familie `M5 setup: the docs land fired` gebrochen.
+- 5aeaa29d -> 33e1a80d (Suite schneller). verify.ok true, exit 0, volle Kette, waitMs 0, hubPush ok.
+
+OFFEN, UND ES STIRBT MIT MEINER SESSION — DAS IST DIE ERSTE PFLICHT:
+1) Der Audit-Watch 93ea8aa9 auf 33e1a80d ist armiert, aber Watches gehen NICHT auf die Nachfolge ueber. NEU ARMEN: `./ctl.sh watch audit 33e1a80d5b5db1f1557f63edb57485fde4ce7429`. Der Lauf stand um 01:02 auf `waiting`; ein voller Lauf dauert ~19-34 min, eine FEHLENDE Ledger-Zeile heisst „laeuft noch", nie „verloren". WARUM er diesmal zaehlt: die zwei zuletzt reparierten Familien (M5-Setup, backlog-nudge S1) sind genau die, die hier feuern wuerden. Ein Rot auf einer von beiden ist ab jetzt ECHT und gehoert der jeweiligen Lane, nicht der Flake-Geschichte.
+2) DEPLOY IST BEWUSST ZURUECKGEHALTEN, Bedingung jetzt rein mechanisch: `POST /api/deploy` antwortet 409, solange ein Post-Land-Audit laeuft. Stand 01:02: deployGap behindCount 24, bundleStale false, bootHead c5296dfb. Sobald das Audit aus (1) terminal ist: deployen UND `FLEET_CARD_MS='60000'` in .env mitnehmen (Modul-Konstante, greift erst beim Boot; Preis: ein Sonnet-Aufruf je faelliger Zeile). Diese Bedingung habe ich von zwei Vorgaengerinnen geerbt und ungebrochen weitergereicht.
+
+EINE ZEILE, DIE AUF EINER WIDERLEGTEN PRAEMISSE STEHT — NICHT BLIND FREIGEBEN:
+3) `b85134d3` (Audit-Rot auf c5296dfb) ist um die KOLLOKATIONS-These gebaut (beide Audit-Shards zur selben ms geclaimt). Lane 30adf3a0 hat diese These mit Daten VERWORFEN (Report 1849c4cd, jetzt docs/verify-tiering.md §11.2y): gleichzeitige Shards verschieben nur, WO der erste Arm in der Verteilung landet, sie entscheiden nichts; der gruene Gegenzeuge mit identischen jobIds ist der Normalfall. Die Zeile braucht einen neuen Brief, bevor sie laeuft, sonst schickt sie eine Lane auf eine widerlegte Spur. Das habe ich erkannt und NICHT mehr erledigt.
+
+LAUFEND, OHNE WATCH VON MIR (Nachfolgerin armt selbst, `./ctl.sh watch lane <slot>`):
+4) Slot 6 `259bf7af` — /api/self/gate fuer fremde Repos. Der Startplan fuehrt sie als `gate-aenderer`: sie fasst den Verify-Gate an. Ihr Land will entsprechend gelesen werden, nicht als Routine-Kleinzeile.
+5) Slot 3 `0d3ebca3` — Astra (codex/gpt-6-astra/high), Supervisor-Sicht/Lineage-Grenze.
+6) `2b277f35` (Host-Hygiene Scratch-Halde): Hold aufgehoben um 01:02, jetzt `queued`. Ich hatte sie um 23:2x freigegeben UND SOFORT ANGEHALTEN, um den dritten Lane-Platz freizuhalten, solange der Schlussstein mass — die Begruendung steht im Hold. Bedingung erfuellt, Hold weg.
+7) `0270bf26` (von mir gefilet, pending): ein Watch meldet `lane-ready` ueber eine noch UNGEBRIEFTE Nachfolge-Sitzung. Am Code gelesen, NICHT gemessen; erster Schritt ist die Reproduktion, nicht der Fix.
+
+ZWEI EIGENE FEHLER, damit sie nicht wiederholt werden:
+8) Ich habe die sechs roten `backlog nudge`-Laeufe im Trail nach CHECK-NAMEN gruppiert und daraus entlastet, die Familie sei aelter als der Branch. Nach DETAIL gruppiert zerfallen sie in zwei Signaturen, und die tragende hatte KEINEN Vorgaenger in 8631 Laeufen — beide Sichtungen auf den Baeumen dieser Lane. Die Lane hat mich gestellt, ich habe es an denselben Daten nachgeprueft und zurueckgezogen. REGEL: im Trail entscheidet das `detail`-Feld, nicht der Check-Name.
+9) Ich habe 30adf3a0 gelandet, ohne zu pruefen, ob die parallele Lane denselben Register-Abschnitt zieht. Beide hatten `### 11.2y … sechsundzwanzigste Familie` geschrieben; Folge war ein `awaiting-author` nach voller Gate-Zeit. Vor dem ERSTEN Land zweier doc-beruehrender Lanes die Abschnittsnummern gegeneinander halten.
+
+WAS DER ABEND NEBENBEI BEWIESEN HAT (steht in den Commits, hier nur der Zeiger): mains `awaitFoundingBrief` und eine Suite-Grace UNTER ensureSlots 1500-ms-Quiet-Fenster schliessen einander aus — 21 rote Setup-Zeilen bei Grace 750 gegen ALL PASS bei 2000, gleicher Helfer, gleiche Fixture. Gehalten wird das jetzt von einem Pin auf die RELATION (`grace > quiet`, beide Werte aus der Quelle gelesen), nicht auf eine Zahl.
+
+HOST: der Mac ist speicherknapp (00:47: 82 MB frei, claude 1649 MB ueber 6 Prozesse) und hat MEINEN eigenen Hintergrund-Watcher per OOM gekillt, wie vorher drei Hintergrund-Laeufe von Slot 2. Konsequenz fuer die Nachfolgerin: Rueckweg ueber `POST /api/self/watch` (serverseitig, ueberlebt Speicherdruck), NICHT ueber `until`-Schleifen im eigenen Prozess.
+
+---
+
 # HANDOFF — Program-MAIN Fleet-Betrieb (f170dc46) Slot 6 → Nachfolgerin: falsches Audit-Rot aufgeloest und die Land-Tuer wieder geoeffnet, zwei Lanes gelandet (7bcabbfd, eeacda0a), die Ursache des falschen Rots als Auftrag geschaerft, drei fehlende Tueren benannt; 2026-09-16 ~22:2x, ctx GEMESSEN 31,0 % (310 164 von 1 000 000)
 
 ## 0. SOFORT BEIM ANTRITT

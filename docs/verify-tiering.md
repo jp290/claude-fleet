@@ -4041,13 +4041,13 @@ mit `FLEET_BRIEF_MS=0` **0 von 20 rot**. Die rote Zeile zeigt den Tausch direkt:
 `brief={"text":"COMPILED-BRIEF::BAU: fleet-e2e.ts …","model":"claude-sonnet-5[1m]","edited":false}`,
 wo eine Sekunde vorher `{"…gitignore…","model":"owner","edited":true,"by":"owner"}` stand.
 
-**Reparatur, sondenseitig** (Branch `fleet/260916124524-58c4`, MAIN trägt die Landing-Sha nach):
+**Reparatur, sondenseitig** (gelandet 2026-09-16 als `6a1a2a9e`, dieser Registereintrag als `e2519fcb`; die Lane schrieb `fleet/260916124524-58c4`, die Shas trägt die MAIN nach dem Rebase-Land nach):
 der Flächen-Block öffnet mit einem `restartSrv({FLEET_DISPATCH_REPO, FLEET_BRIEF_MS:"0"})` — dem
 Muster, das §(h) bei 4592/4603 schon fährt — plus einer Setup-Zeile, die den Aus-Zustand MISST
 (`briefCompiler` auf `GET /api/sessions`). Die Bedingung des Checks ist byte-gleich geblieben; sein
 Detail trägt jetzt zusätzlich seine beiden EINGABEN (Status des Brief-POST, der Brief, der
 tatsächlich auf der Zeile steht), damit ein künftiges Rot benennt, welcher der drei Fälle es ist.
-**Ein Rot dieses Checks NACH dieser Landung ist wieder ECHT und deins.**
+**Ein Rot dieses Checks NACH `6a1a2a9e` ist wieder ECHT und deins.**
 
 **Was NICHT geschlossen ist.** Das Rennen liegt im PRODUKT und lebt weiter: jeder Owner-Brief, der
 einen laufenden Compile trifft, wird verworfen. Die Zeile, die das misst, ist `e2e/tasks.ts` §(h4)

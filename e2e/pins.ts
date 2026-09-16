@@ -5641,13 +5641,30 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // silent auto-verdict if one conjunct goes missing, and every such mutation passes a fixture that
   // happens not to plant that case — so the refusals are held as SOURCE here as well.
   const ablReading = server.match(/function acceptByLandReading\([\s\S]*?\n\}/)?.[0] ?? "";
-  pin(`${RULE_RECEIVER} — accepted-by-land refuses a red audit, a non-complete report, a sent task, a land older than the report and a missing audit (D1d)`,
+  pin(`${RULE_RECEIVER} — accepted-by-land refuses an unjudged or REAL red, a non-complete report, a sent task, a land older than the report and a missing audit (D1d)`,
     ablReading.includes('report.status !== "complete"')
       && ablReading.includes('task?.status === "sent"')
       && ablReading.includes("o.ts < report.reportedAt")
-      && ablReading.includes('covering.find((row) => row.result === "red")')
+      && ablReading.includes('judged.get(row.at)?.verdict === "real"')
+      && ablReading.includes("verdict === undefined || !ADJUDICATION_CLEARS_RED.includes(verdict)")
+      && ablReading.includes("if (blocking.length > 0 && !later)")
       && ablReading.includes("if (!newest) return { accept: false"),
     `fn=${ablReading !== ""}`);
+  // …and the two facts that may REOPEN it, each a silent auto-accept if its conjunct goes missing.
+  // The verdict list is held as SOURCE because widening it by one word (`real`) would turn the rule
+  // into an auto-accept of every red a human called a genuine regression, and no fixture that
+  // plants only flake/stale-test/unknowable would ever say so.
+  const descGreen = server.match(/async function descendantGreenAudit\([\s\S]*?\n\}/)?.[0] ?? "";
+  const tipContains = server.match(/async function auditTipContains\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — only flake/stale-test/unknowable clear a red, and a later green must be FULL, newer and a proven descendant — probed through the cache (D1d)`,
+    /const ADJUDICATION_CLEARS_RED: readonly AdjudicationVerdict\[\] = \["flake", "stale-test", "unknowable"\];/.test(server)
+      && descGreen.includes('row.result === "green" && row.proportional !== true && row.at > after')
+      && descGreen.includes("slice(0, DESCENDANT_GREEN_PROBES)")
+      && descGreen.includes("await auditTipContains(repo, mainAfter, row.mainSha)")
+      && tipContains.includes('gitRead(repo, "merge-base", "--is-ancestor", mainAfter, tip)')
+      && tipContains.includes("if (hit !== undefined) return hit;")
+      && tipContains.includes("auditContainsCache.set(key, contains);"),
+    `desc=${descGreen !== ""} contains=${tipContains !== ""}`);
   const carryReading = server.match(/function carryFlakeReading\([\s\S]*?\n\}/)?.[0] ?? "";
   const carrySinks = server.split('if (row.result === "red") await carryFlakeAdjudications("audit", row.at);').length - 1;
   // THREE sinks since the sharded audit (server.ts#writeShardedAuditRow): local run, remote helper, sharded run

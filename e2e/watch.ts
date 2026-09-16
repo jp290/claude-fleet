@@ -6662,7 +6662,27 @@ export async function run(): Promise<void> {
     const ablStatePath = `${ROOT}/fleet.json`;
     const outcomeFile = `${ROOT}/lane-outcomes.jsonl`;
     const auditFile = `${ROOT}/post-land-audits.jsonl`;
+    const adjudicationFile = `${ROOT}/audit-adjudications.jsonl`;
     await stopSrv();
+    // A REAL git repo for the descendant half (2026-09-15): the coverage probe asks git
+    // `merge-base --is-ancestor`, so the two ancestry cases need commits that actually stand in
+    // the relation — a synthetic sha answers 128 and proves only that git could not look. Built
+    // beside the wrapper's throwaway repos, never inside the instance, and owned by this block.
+    const ablGit = `${dirname(REPO)}/abl-ancestry`;
+    rmSync(ablGit, { recursive: true, force: true });
+    mkdirSync(ablGit, { recursive: true });
+    const ablGitRun = (...args: string[]): string =>
+      (spawnSync("git", ["-C", ablGit, ...args], { encoding: "utf8" }).stdout ?? "").trim();
+    ablGitRun("init", "-q", "-b", "main");
+    for (const cfg of [["user.email", "t@t"], ["user.name", "t"], ["commit.gpgsign", "false"]])
+      ablGitRun("config", cfg[0]!, cfg[1]!);
+    ablGitRun("commit", "-q", "--allow-empty", "-m", "A");
+    const shaA = ablGitRun("rev-parse", "HEAD");     // the land
+    ablGitRun("commit", "-q", "--allow-empty", "-m", "B");
+    const shaB = ablGitRun("rev-parse", "HEAD");     // a later tip that CONTAINS the land
+    ablGitRun("checkout", "-q", "--orphan", "side");  // an orphan root: shaB contains nothing of it
+    ablGitRun("commit", "-q", "--allow-empty", "-m", "C");
+    const shaC = ablGitRun("rev-parse", "HEAD");
     const ablState = JSON.parse(readFileSync(ablStatePath, "utf8")) as {
       slots: Record<string, { openedAt?: number; cwd?: string | null }>; programs?: Record<string, unknown>[];
       fleetReports?: Record<string, unknown>[]; tasks?: Record<string, unknown>[];
@@ -6672,8 +6692,14 @@ export async function run(): Promise<void> {
     const emptySlot = Array.from({ length: 16 }, (_, i) => i + 1).find((id) => !ablState.slots[String(id)]?.cwd) ?? 0;
     const now = Date.now();
     const sha = (n: number): string => n.toString(16).padStart(40, "c");
-    // one report per case: its status, whether its land is newer than the report, its audit colour
-    const cases = {
+    // one report per case: its status, whether its land is newer than the report, its audit colour,
+    // and — since 2026-09-15 — the adjudication on that red and the repo/tip its ancestry is read in
+    interface AblCase {
+      status: string; land: "after" | "before"; audit: "green" | "red" | "unknown" | null;
+      sent?: true; verdict?: "real" | "flake" | "stale-test" | "unknowable";
+      repo?: string; mainAfter?: string;
+    }
+    const cases: Record<string, AblCase> = {
       green: { status: "complete", land: "after", audit: "green" },
       unknown: { status: "complete", land: "after", audit: "unknown" },
       red: { status: "complete", land: "after", audit: "red" },
@@ -6681,15 +6707,23 @@ export async function run(): Promise<void> {
       sent: { status: "complete", land: "after", audit: "green", sent: true },
       staleLand: { status: "complete", land: "before", audit: "green" },
       pending: { status: "complete", land: "after", audit: null },
-    } as const;
+      redFlake: { status: "complete", land: "after", audit: "red", verdict: "flake" },
+      redStaleTest: { status: "complete", land: "after", audit: "red", verdict: "stale-test" },
+      redUnknowable: { status: "complete", land: "after", audit: "red", verdict: "unknowable" },
+      redReal: { status: "complete", land: "after", audit: "red", verdict: "real" },
+      // both ancestry cases carry an UNJUDGED red, so what separates them is the git relation alone
+      redDescendant: { status: "complete", land: "after", audit: "red", repo: ablGit, mainAfter: shaA },
+      redNoDescendant: { status: "complete", land: "after", audit: "red", repo: ablGit, mainAfter: shaC },
+    };
     const ids: Record<string, string> = {};
+    const tips: Record<string, string> = {};
     let n = 0;
     for (const [name, c] of Object.entries(cases)) {
       n++;
       const id = (0xab000 + n).toString(16).padStart(24, "0");
       ids[name] = id;
       const branch = `fleet/abl-${name}`;
-      const sent = "sent" in c && c.sent;
+      const sent = c.sent === true;
       const worker = sent
         ? { slot: ablLane.slot, openedAt: ablState.slots[String(ablLane.slot)]?.openedAt ?? 1, sessionId: null, cwd: ablLane.cwd, branch }
         : { slot: emptySlot, openedAt: 1, sessionId: null, cwd: `/tmp/abl-${name}`, branch };
@@ -6703,12 +6737,24 @@ export async function run(): Promise<void> {
         provenance: { taskId, originId: null, programId: ablProgram, instance: null },
         receiver: null, basis: "program", eventId: null }];
       const ts = c.land === "after" ? now - 30_000 : now - 120_000;
-      appendFileSync(outcomeFile, `${JSON.stringify({ ts, branch, disposition: "landed", repo: REPO,
-        mainAfter: sha(n), programId: ablProgram })}\n`);
-      if (c.audit) appendFileSync(auditFile, `${JSON.stringify({ at: now - 20_000 + n, startedAt: now - 25_000,
-        ms: 1, repo: REPO, main: "main", mainSha: sha(n), result: c.audit, cmd: "abl", exitCode: c.audit === "green" ? 0 : 1,
-        out: "", checks: null, covers: [{ branch, mainAfter: sha(n), at: ts }] })}\n`);
+      const caseRepo = c.repo ?? REPO;
+      const mainAfter = c.mainAfter ?? sha(n);
+      tips[name] = mainAfter;
+      const auditAt = now - 20_000 + n;
+      appendFileSync(outcomeFile, `${JSON.stringify({ ts, branch, disposition: "landed", repo: caseRepo,
+        mainAfter, programId: ablProgram })}\n`);
+      if (c.audit) appendFileSync(auditFile, `${JSON.stringify({ at: auditAt, startedAt: now - 25_000,
+        ms: 1, repo: caseRepo, main: "main", mainSha: mainAfter, result: c.audit, cmd: "abl", exitCode: c.audit === "green" ? 0 : 1,
+        out: "", checks: null, covers: [{ branch, mainAfter, at: ts }] })}\n`);
+      // the side rail, written exactly as the owner door writes it (server.ts#writeAuditAdjudication)
+      if (c.verdict) appendFileSync(adjudicationFile, `${JSON.stringify({ at: now - 10_000, auditAt,
+        verdict: c.verdict, by: "owner", note: "abl fixture" })}\n`);
     }
+    // ONE later FULL green, on a tip that contains shaA and shares nothing with shaC. It covers no
+    // branch at all, so it is never a covering row — only the ancestry probe can find it.
+    appendFileSync(auditFile, `${JSON.stringify({ at: now - 5_000, startedAt: now - 6_000, ms: 1,
+      repo: ablGit, main: "main", mainSha: shaB, result: "green", cmd: "abl-later-green", exitCode: 0,
+      out: "ALL PASS", checks: { ran: 1, failed: 0 }, covers: [] })}\n`);
     ablState.programs = [...(ablState.programs ?? []), {
       id: ablProgram, title: "accepted-by-land fixture", intent: "Close landed reports by rule",
       successCriterion: "Rule closes exactly the landed complete rows", nonGoals: [], decisions: [], evidence: [],
@@ -6729,9 +6775,12 @@ export async function run(): Promise<void> {
     // the probe fails as ITSELF when a plant did not hydrate: every check below would otherwise read
     // an absent row as "undecided" and the refusals would pass on nothing (measured on the first run:
     // emptySlot 0 made fleetReportFrom discard all seven rows)
-    check("accepted-by-land setup: all seven planted reports hydrated on a real empty worker slot",
-      emptySlot > 0 && rows.filter((r) => Object.values(ids).includes(r.id)).length === 7,
-      JSON.stringify({ emptySlot, seen: rows.filter((r) => Object.values(ids).includes(r.id)).length }));
+    check("accepted-by-land setup: all thirteen planted reports hydrated on a real empty worker slot, and the ancestry repo stands in the relation it claims",
+      emptySlot > 0 && rows.filter((r) => Object.values(ids).includes(r.id)).length === Object.keys(cases).length
+        && spawnSync("git", ["-C", ablGit, "merge-base", "--is-ancestor", shaA, shaB]).status === 0
+        && spawnSync("git", ["-C", ablGit, "merge-base", "--is-ancestor", shaC, shaB]).status !== 0,
+      JSON.stringify({ emptySlot, planted: Object.keys(cases).length,
+        seen: rows.filter((r) => Object.values(ids).includes(r.id)).length, shaA, shaB, shaC }));
     // BREAKS IF: the rule is removed, or it stops stamping the rule principal and the land it read.
     check("accepted-by-land: a complete report whose lane landed behind a GREEN audit is accepted by rule, names mainAfter, and its verdict was carried",
       row("green")?.decision?.disposition === "accepted"
@@ -6755,21 +6804,45 @@ export async function run(): Promise<void> {
       row("unknown")?.decision?.disposition === "accepted" && (row("unknown")?.decision?.reason ?? "").includes("unknown"),
       JSON.stringify(row("unknown")?.decision));
     // BREAKS IF: the rule ignores the audit colour (the mutation §D names), the status, the task, or the land's age.
-    check("accepted-by-land refusals: a RED audit, a needs-main report, a still-sent task and a land older than the report all stay undecided",
+    check("accepted-by-land refusals: an UNJUDGED red, a needs-main report, a still-sent task and a land older than the report all stay undecided",
       !!row("red") && !row("red")?.decision && !!row("needsMain") && !row("needsMain")?.decision
         && !!row("sent") && !row("sent")?.decision && !!row("staleLand") && !row("staleLand")?.decision,
       JSON.stringify(Object.keys(cases).map((k) => [k, row(k)?.decision?.disposition ?? null])));
+    // --- the two facts that may arrive AFTER a red (2026-09-15). Until then every red shut the
+    // report forever, and a land tip is audited exactly once, so nothing was ever going to reopen it.
+    // BREAKS IF: the adjudication join is dropped — the mutation the brief names makes this one red.
+    check("accepted-by-land: a covering RED adjudicated flake, stale-test or unknowable no longer blocks, and the reason names the verdict it read",
+      row("redFlake")?.decision?.disposition === "accepted"
+        && row("redStaleTest")?.decision?.disposition === "accepted"
+        && row("redUnknowable")?.decision?.disposition === "accepted"
+        && (row("redUnknowable")?.decision?.reason ?? "").includes("adjudicated unknowable"),
+      JSON.stringify(["redFlake", "redStaleTest", "redUnknowable"].map((k) => row(k)?.decision?.reason ?? null)));
+    // BREAKS IF: `real` joins the cleared list — a human's "this land broke something" would auto-accept.
+    check("accepted-by-land: a RED adjudicated real still blocks, and a later green that does NOT contain the land is not coverage",
+      !!row("redReal") && !row("redReal")?.decision
+        && !!row("redNoDescendant") && !row("redNoDescendant")?.decision,
+      JSON.stringify({ redReal: row("redReal")?.decision ?? null, redNoDescendant: row("redNoDescendant")?.decision ?? null }));
+    // BREAKS IF: the descendant probe is dropped, or it stops asking git and answers from the trail
+    // alone — redNoDescendant above sees the SAME green row and must not be accepted by it.
+    check("accepted-by-land: a later FULL green on a tip that CONTAINS the land supersedes the unjudged red, and the verdict names that tip",
+      row("redDescendant")?.decision?.disposition === "accepted"
+        && row("redDescendant")?.decision?.mainAfter === shaA
+        && (row("redDescendant")?.decision?.reason ?? "").includes("post-land audit green")
+        && (row("redDescendant")?.decision?.reason ?? "").includes(shaB.slice(0, 12)),
+      JSON.stringify(row("redDescendant")?.decision));
     const ruleLines = auditRows().filter((a) => a.event === "fleet_report_rule_decision");
     check("accepted-by-land writes exactly one audit line per rule decision, naming report, land and origin",
       ruleLines.filter((a) => (a.detail ?? "").includes(ids.green!) && a.detail!.includes("via=boot")).length === 1
         && ruleLines.filter((a) => (a.detail ?? "").includes(ids.unknown!)).length === 1
-        && !ruleLines.some((a) => [ids.red, ids.needsMain, ids.sent, ids.staleLand].some((id) => (a.detail ?? "").includes(id!))),
+        && ruleLines.filter((a) => (a.detail ?? "").includes(ids.redDescendant!)).length === 1
+        && !ruleLines.some((a) => [ids.red, ids.needsMain, ids.sent, ids.staleLand, ids.redReal,
+          ids.redNoDescendant].some((id) => (a.detail ?? "").includes(id!))),
       JSON.stringify(ruleLines.map((a) => a.detail)));
     check("accepted-by-land: a land with NO audit yet is pending at boot, never accepted",
       !!row("pending") && !row("pending")?.decision, JSON.stringify(row("pending")));
     appendFileSync(auditFile, `${JSON.stringify({ at: Date.now(), startedAt: Date.now() - 5, ms: 1, repo: REPO,
-      main: "main", mainSha: sha(7), result: "green", cmd: "abl", exitCode: 0, out: "", checks: null,
-      covers: [{ branch: "fleet/abl-pending", mainAfter: sha(7), at: now - 30_000 }] })}\n`);
+      main: "main", mainSha: tips.pending, result: "green", cmd: "abl", exitCode: 0, out: "", checks: null,
+      covers: [{ branch: "fleet/abl-pending", mainAfter: tips.pending, at: now - 30_000 }] })}\n`);
     for (let i = 0; i < 40 && !row("pending")?.decision; i++) {
       await Bun.sleep(150);
       rows = await ablReports();
@@ -6789,8 +6862,16 @@ export async function run(): Promise<void> {
     ablClean.fleetReports = (ablClean.fleetReports ?? []).filter((r) => !Object.values(ids).includes(r.id ?? ""));
     ablClean.tasks = (ablClean.tasks ?? []).filter((t) => !(t.id ?? "").startsWith("abltask"));
     writeFileSync(ablStatePath, JSON.stringify(ablClean, null, 2), { mode: 0o600 });
-    for (const file of [outcomeFile, auditFile])
-      writeFileSync(file, readFileSync(file, "utf8").split("\n").filter((l) => l && !l.includes("fleet/abl-")).map((l) => `${l}\n`).join(""));
+    // …and the three ledgers this block wrote into, each by the marker its own rows carry: the
+    // branch name, the later-green's cmd, and the adjudication note. A row left behind would be read
+    // by every later module as a real land, a real audit or a real owner verdict.
+    for (const file of [outcomeFile, auditFile, adjudicationFile]) {
+      if (!existsSync(file)) continue;
+      writeFileSync(file, readFileSync(file, "utf8").split("\n")
+        .filter((l) => l && !l.includes("fleet/abl-") && !l.includes("abl-later-green") && !l.includes("abl fixture"))
+        .map((l) => `${l}\n`).join(""));
+    }
+    rmSync(ablGit, { recursive: true, force: true });
     await restartSrv();
   }
 

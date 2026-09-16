@@ -201,6 +201,12 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
 - Beweis: `e2e/host-hygiene.ts` (Serverlauf mit Stand-ins fuer alle drei Kommandos) und die reine
   Tabelle `e2e/host-hygiene-table.ts`, die ohne Server laeuft — der Mutationsbeweis steht als
   §MUTATION am Fuss von `e2e/host-hygiene.ts`.
+- **Die Suite laeuft auf ZWEI Hosts, und §c fragt jeden nach der Wahrheit, die er hat.** Lokal
+  (darwin) misst sie die AKTION, auf dem Linux-Helfer die VERWEIGERUNG: armt, mit einem reapbaren
+  Host davor, und kein einziger Stand-in-Aufruf. Gemessen am 2026-09-16: die erste Vorschau dieser
+  Familie kam von `second-host` mit 5 roten §c-Zeilen zurueck (4822 Checks, 5 rot) — die Zeilen
+  behaupteten die Aktion auf einem Host ohne Simulator. Beide Haelften sind widerlegbar: faellt die
+  Plattform-Klausel aus `simReapArming`, wird die Nicht-darwin-Haelfte rot.
 
 ## Modell-Tiers
 

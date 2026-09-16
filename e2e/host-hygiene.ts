@@ -13,6 +13,15 @@
 // one marker file so that "the simulator is down now" is a state the stubs can actually enter.
 // The lease glob points into the same fixture — never at $TMPDIR, where private-repo-p's real lock is.
 //
+// TWO HOSTS, TWO DIFFERENT TRUTHS, and §c asks each host for the one it can answer. The feature is
+// darwin-only (simulator-hygiene.ts#simReapArming refuses on any other platform), and the suite runs
+// on both: locally on this Mac, and on the LINUX helper when a lane offers its preview. A §c that
+// asserted the reap everywhere is exactly what this family's first preview cost — 5 red rows on
+// second-host, 2026-09-16, for a host that has no simulator to shut down. So on darwin §c measures the
+// ACT, and elsewhere it measures the REFUSAL: armed, with a reapable host in front of it, and not one
+// stand-in call. Both halves are falsifiable — drop the platform clause from the arming and the
+// non-darwin half goes red — and neither is a skip.
+//
 // ONE MEASURED PROPERTY OF THIS FAMILY, so the next reader does not adjudicate it twice: it drives
 // tmux ONLY through restartSrv, which books its time under `boot`, never under `tmux`. Run ALONE in
 // a hand-typed fine-grained shard it therefore books zero tmux ms and reds e2e/trail.ts's
@@ -31,6 +40,8 @@ const DOWN = `${FIX}/down`; // the stubs' shared state: once it exists, the simu
 const LEASES = `${FIX}/leases`;
 const LOCK = `${LEASES}/private-repo-p-simulator.lock`; // the name private-repo-p's own lock carries
 const TICK_MS = 1000; // the config floor; every wait below is stated in ticks of this
+// the feature exists on darwin only, so §c splits here and nowhere else (see the header)
+const DARWIN = process.platform === "darwin";
 const SIM_ENV: Record<string, string> = {
   FLEET_SIMCTL_CMD: `${FIX}/simctl`,
   FLEET_SIM_QUIT_CMD: `${FIX}/quit`,
@@ -107,35 +118,47 @@ exit 0
   // The negative control has to prove the tick RAN — otherwise "no shutdown" is satisfied by a
   // server that never registered the timer, which is the vacuum-green shape this suite exists for.
   // The lease's owner pid is this suite's own process: alive by construction, for as long as the
-  // assertion takes.
+  // assertion takes. (On a non-darwin host the lease is never read — the branch below says why.)
   mkdirSync(LOCK, { recursive: true });
   writeFileSync(`${LOCK}/pid`, `${process.pid}\n`);
   await restartSrv({ ...SIM_ENV, FLEET_SIM_REAP: "1" });
-  const probed = await until(() => count("simctl list") >= 3, 20_000);
-  check("host-hygiene §c the armed tick probes the host on its own cadence",
-    probed, `list=${count("simctl list")} ps=${count("ps")}`);
-  await ticks(3);
-  check("host-hygiene §c a HELD lease (live owner pid) survives an armed tick — no shutdown, no quit",
-    count("simctl shutdown") === 0 && count("quit") === 0,
-    `shutdown=${count("simctl shutdown")} quit=${count("quit")} list=${count("simctl list")}`);
 
-  // ===== §c2 THE LEASE GOES AWAY: exactly one shutdown and exactly one quit =====
-  // No restart: the lease is re-probed every pass, so removing it is the whole stimulus.
-  rmSync(LEASES, { recursive: true, force: true });
-  mkdirSync(LEASES, { recursive: true });
-  writeFileSync(CALLS, "");
-  const reaped = await until(() => count("simctl shutdown") >= 1 && count("quit") >= 1, 20_000);
-  check("host-hygiene §c with no lease held, the idle simulator is shut down and the app quit",
-    reaped, `shutdown=${count("simctl shutdown")} quit=${count("quit")} calls=${calls().length}`);
-  check("host-hygiene §c the shutdown comes BEFORE the quit — a quit first would strand booted devices",
-    calls().findIndex((l) => l.startsWith("simctl shutdown")) >= 0
-      && calls().findIndex((l) => l.startsWith("simctl shutdown")) < calls().findIndex((l) => l.startsWith("quit")),
-    calls().filter((l) => !l.startsWith("ps") && !l.startsWith("simctl list")).join(" · "));
-  await ticks(4);
-  check("host-hygiene §c EXACTLY one shutdown and one quit — four further ticks over a down host add none",
-    count("simctl shutdown") === 1 && count("quit") === 1,
-    `shutdown=${count("simctl shutdown")} quit=${count("quit")} after ${count("simctl list")} probes`);
-  {
+  if (!DARWIN) {
+    // THE REFUSAL, measured where it is the truth. Everything a reap needs is in front of this
+    // server — the flag is armed, the stand-ins report a booted device and a running app — and the
+    // only thing standing between it and a shutdown is the platform clause. Zero calls is therefore
+    // a claim about that clause and about nothing else.
+    await ticks(4);
+    check(`host-hygiene §c ARMED on ${process.platform}, not darwin: no tick is registered — not one stand-in call`,
+      calls().length === 0, `calls=${calls().slice(0, 4).join(" · ")}`);
+    check("host-hygiene §c …and the boot line names the platform it declined on",
+      serverLog().includes(`FLEET_SIM_REAP is armed but this host is ${process.platform}, not darwin`),
+      serverLog().split("\n").filter((l) => l.includes("FLEET_SIM_REAP")).slice(-2).join(" · "));
+  } else {
+    const probed = await until(() => count("simctl list") >= 3, 20_000);
+    check("host-hygiene §c the armed tick probes the host on its own cadence",
+      probed, `list=${count("simctl list")} ps=${count("ps")}`);
+    await ticks(3);
+    check("host-hygiene §c a HELD lease (live owner pid) survives an armed tick — no shutdown, no quit",
+      count("simctl shutdown") === 0 && count("quit") === 0,
+      `shutdown=${count("simctl shutdown")} quit=${count("quit")} list=${count("simctl list")}`);
+
+    // ===== §c2 THE LEASE GOES AWAY: exactly one shutdown and exactly one quit =====
+    // No restart: the lease is re-probed every pass, so removing it is the whole stimulus.
+    rmSync(LEASES, { recursive: true, force: true });
+    mkdirSync(LEASES, { recursive: true });
+    writeFileSync(CALLS, "");
+    const reaped = await until(() => count("simctl shutdown") >= 1 && count("quit") >= 1, 20_000);
+    check("host-hygiene §c with no lease held, the idle simulator is shut down and the app quit",
+      reaped, `shutdown=${count("simctl shutdown")} quit=${count("quit")} calls=${calls().length}`);
+    check("host-hygiene §c the shutdown comes BEFORE the quit — a quit first would strand booted devices",
+      calls().findIndex((l) => l.startsWith("simctl shutdown")) >= 0
+        && calls().findIndex((l) => l.startsWith("simctl shutdown")) < calls().findIndex((l) => l.startsWith("quit")),
+      calls().filter((l) => !l.startsWith("ps") && !l.startsWith("simctl list")).join(" · "));
+    await ticks(4);
+    check("host-hygiene §c EXACTLY one shutdown and one quit — four further ticks over a down host add none",
+      count("simctl shutdown") === 1 && count("quit") === 1,
+      `shutdown=${count("simctl shutdown")} quit=${count("quit")} after ${count("simctl list")} probes`);
     const row = lastReapRow();
     check("host-hygiene §c the act leaves ONE audit row carrying device count, app yes/no and duration",
       row !== null && row.devices === 1 && row.app === true && typeof row.idleMs === "number"

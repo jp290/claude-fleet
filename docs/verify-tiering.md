@@ -4162,3 +4162,32 @@ darum wandert der Commit hier ebenfalls hinter die Wartezeit, in BEIDEN Helfern.
 `(8e) setup: the red retry-round land fired` und bekommt dieselbe Behandlung. Ein Brief, der nie
 kommt, scheitert jetzt als ER SELBST (`setup: founding brief — …`) statt mit den Worten der Tür im
 Mund. **Ein Rot einer dieser Setup-Zeilen NACH dieser Lane ist wieder ECHT und deins.**
+
+**WAS DER ERSTE SCHNITT DIESER REPARATUR SELBST KAPUTT MACHTE** — hier notiert, weil es die
+Reihenfolge erklärt, die jetzt im Code steht, und weil eine Reparatur, die ihren eigenen Fehlschlag
+verschweigt, beim nächsten Rot falsch gelesen wird. Der erste Schnitt verschob den Lane-Commit
+HINTER die Brief-Wartezeit (nach dem Muster von §8i). `ahead>0` kommt aber vom LANGSAMEN Git-Tick,
+und `m1WaitDoor` hat 120 × 250 ms = 30 s. Fünf Sekunden Brief-Wartezeit VOR dem Commit nehmen dem
+Tick genau diese Anlaufzeit: auf einer Maschine, die nebenher die `tsc`/`build`-Stufen einer
+fremden Land-Kette trug, lief das Budget ab, und Arm (iii) wurde rot — **die erste Sichtung dieses
+Checks in 94 lokalen Läufen** (e2e-trail). Die Trail-Zeile schliesst einen langsamen Server aus:
+`msSincePrev 138065, phases {http: 1997, sleep: 135849}` — Polls, keine Latenz. Der Commit steht
+darum wieder VORNE, und der Tick arbeitet jetzt DURCH die Brief-Wartezeit; das ist besser als beide
+Vorversionen. Die Wirkung steht in der Verteilung, gleiche Suite, gleicher Shard:
+
+| Lauf | `clientAtMs` aller neun Arme |
+|---|---|
+| vorher (rot) | 4069 · 7410 … 9860 |
+| mit Reparatur, ruhige Maschine | 2773 3582 4117 4382 4431 4498 5606 5857 8740 |
+| mit Reparatur, belastete Maschine | 1984 2453 2501 3560 4096 4414 4421 5776 5871 |
+
+Die Arme warten nicht mehr das Einfügen ab, sondern nur noch den Tick.
+
+**UND (ii)/(iii) HATTEN NIE EINE SETUP-ZEILE.** `93412a52` gab sie (iv)/(v) und liess diese zwei in
+der alten Form: `fired` steckte in der Invariante, ein Arm ohne Tür las sich als GEBROCHENE
+INVARIANTE und trug keine Begründung. Genau das passierte oben — das Rot sagte `fired:false` und
+konnte nicht sagen warum; es musste aus dem aufbewahrten Instanz-Journal und dem Trail
+rekonstruiert werden. Beide Arme besitzen jetzt ihre eigene Zeile (`(ii) M5 setup: the park land
+fired`, `(iii) M5 setup: the unproven-holder land fired`) mit `refusal`, `ready` und `dispatch`,
+und ihre Invarianten werden nur noch über einen Land emittiert, der die Tür erreicht hat. Erst
+damit ist die Klasse wirklich zu: vorher waren zwei von fünf Armen noch alt geformt.

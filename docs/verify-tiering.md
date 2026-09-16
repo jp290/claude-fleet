@@ -4192,7 +4192,7 @@ fired`, `(iii) M5 setup: the unproven-holder land fired`) mit `refusal`, `ready`
 und ihre Invarianten werden nur noch über einen Land emittiert, der die Tür erreicht hat. Erst
 damit ist die Klasse wirklich zu: vorher waren zwei von fünf Armen noch alt geformt.
 
-### 11.2z Eine siebenundzwanzigste Familie: die `backlog nudge`-Runde in `e2e/tasks.ts` nudged B statt A — und die Sichtungen unter DEMSELBEN Check-Namen sind DREI verschiedene Signaturen (2026-09-16 registriert; Rate über das GANZE Trail-Register gerechnet, Signaturen aus den Detail-Feldern gelesen, Zugehörigkeit am Servercode entschieden; NICHT repariert)
+### 11.2z Eine siebenundzwanzigste Familie: die `backlog nudge`-Runde in `e2e/tasks.ts` nudged B statt A — und die Sichtungen unter DEMSELBEN Check-Namen sind DREI verschiedene Signaturen (2026-09-16 registriert; Rate über das GANZE Trail-Register gerechnet, Signaturen aus den Detail-Feldern gelesen, Zugehörigkeit am Servercode entschieden; S1 sondenseitig REPARIERT am 2026-09-16 — siehe „Reparatur von S1" am Ende)
 
 **Fingerprint** (Detail der Kopfzeile, genau EIN Eintrag, und der nennt den falschen Slot):
 
@@ -4267,8 +4267,59 @@ Die S1-Rote fielen auf einer Maschine, die parallel Suiten fuhr und Hintergrund-
 Grüne heissen deshalb „reproduziert nicht unter 2/8", NICHT „Flake weg". Die Stichprobe wurde am
 2026-09-16 per MAIN-Entscheid beendet, zugunsten der Registerauswertung oben.
 
-**NICHT repariert, und der nächste Griff ist sondenseitig, nicht am Suite-Wert.** Die Prämisse wird
-Sekunden vor der Runde hergestellt und muss einen Lane-Spawn überleben; sie gehört unmittelbar vor
-die Runde. Das ist der Weg, den `AGENTS.md` §Verify für genau diesen Fall vorsieht — ein Check, der
-ein Fenster braucht, bekommt es LOKAL, statt dass ein Suite-Wert steigt. **Ein S1-Rot vor dieser
-Reparatur ist Rauschen mit bekanntem Mechanismus; ein S1-Rot danach ist wieder ECHT und deins.**
+
+**Reparatur von S1, sondenseitig und LOKAL** (Branch `fleet/260916142521-8d9d`; die Shas trägt die
+MAIN nach dem Rebase-Land nach). Kein Suite-Wert steigt, keine Gegenprobe wird aufgeweicht,
+`tickBacklogNudge` bleibt unangetastet — der Weg, den `AGENTS.md` §Verify für genau diesen Fall
+vorsieht: ein Check, der ein Fenster braucht, bekommt es lokal.
+
+*Was entfernt wird, ist die DISTANZ.* Die Ordnung wurde bisher gleich nach der Slot-Gründung
+hergestellt und musste danach einen `POST /api/lanes`, vier Task-Creates und zwei Tick-Wartezeiten
+überleben — auf einer Marge von zweistelligen Millisekunden. Jetzt wird sie unmittelbar VOR der
+Runde hergestellt, und zwar in dem einen Abschnitt, in dem die Quiet-Hours-Politik garantiert, dass
+währenddessen nichts zugestellt werden kann. Danach liegt zwischen Herstellung und Runde nur noch
+das Abschalten der Quiet Hours.
+
+*Und was sie ersetzt, ist eine TATSACHE statt einer Marge.* Zwei Schritte, deren Reihenfolge die
+Reparatur ist:
+
+1. **A wird RUHIG.** Dasselbe `lastOutput` zweimal über 1 600 ms — breiter als das feste
+   1 500-ms-Attach-Fenster des Servers und 16 Umläufe seines 100-ms-Stream-Polls
+   (`server.ts`, `poll()`, `setInterval(…, 100)`). Damit sind beide Regime abgedeckt, ohne wissen
+   zu müssen, welches gerade greift: ein Stempel, der noch unterwegs ist, landet in diesem Fenster;
+   einen, den das Quiet-Fenster geschluckt hat, gibt es nie. Danach ist nichts von A mehr unterwegs.
+2. **Erst DANN wird B angefasst.** B's frischer Stempel ist jünger als ein ruhiges A *per
+   Konstruktion*. B wird gelesen, bis er es wirklich ist (bis zu 25 × 100 ms) — `paneEnv` kehrt
+   zurück, wenn die MARKE auf der Pane steht, der Stempel folgt bis zu einem Poll später. A wird
+   danach erneut gelesen: hat es sich doch bewegt, wird der Versuch VERWORFEN, nie weggemittelt.
+
+*Warum das beide A-spezifischen Tore schliesst und nicht nur eines.* `tickBacklogNudge` sortiert
+aufsteigend nach `lastOutput`, prüft dann `canDeliver(s, {idleMs: BACKLOG_IDLE_MS, …})` und darf die
+älteste Kandidatin überspringen, wenn die Prüfung sie verweigert. Verweigert werden kann A gegenüber
+B nur an dem einen Tor, das vom jüngsten Zustand des Slots abhängt: `now - s.lastOutput < idleMs`
+(`server.ts`, canDeliver, gate `busy`). Die Fixture setzt `FLEET_BACKLOG_NUDGE_IDLE_MS=100`. Ein
+ruhiges A hat an der Runde ein Idle von ≥ 1 600 ms — es liegt also VORNE in der Sortierung **und**
+über dem Idle-Tor, und beide Wege, auf denen die Runde bisher bei B landen konnte, sind zu. Genau
+deshalb ist das eine Reparatur und keine Verbreiterung: die Aussage des Checks
+(`first.length === 1 && first[0].slot === mainA`) ist unverändert, ebenso die der Setup-Zeile
+(`aOut < bOut`); dazugekommen ist im Detail nur, WAS hergestellt wurde (`delta`, `settle`,
+`attempts`, und bei Misserfolg der Schritt, der ausgegeben hat).
+
+*Der Preis:* ein Ruhefenster von 1 600 ms, einmal pro Lauf dieser Sektion.
+
+*Das Instrument aus `1ccf84bf` bleibt* — es sagt künftig, ob ein Rot die Rangfolge oder die Prämisse
+ist, und kostet ein `GET` pro Poll.
+
+*Gemessen am reparierten Baum* (`FLEET_E2E_SHARD=2/8`, Lauf `isolated-20260916T211649Z-43387`,
+Einheit `core`, ALL PASS, 0 FAIL): die Setup-Zeile trägt
+`A(s5).lastOutput=… B(s6).lastOutput=… delta=6211ms settle=1600ms attempts=1`, und die Runde nimmt
+`slot 5` = A. **6 211 ms Marge gegen die 31 ms, an denen S1 rot wurde**, im ersten Versuch. Das
+Ruhefenster ist die UNTERGRENZE, nicht die Marge: A's letzter Stempel stammt aus der frühen Sonde,
+alles dazwischen zählt dazu. Dieselbe Kette grün: `e2e-clean-review.sh`, `e2e-security.sh`,
+`e2e-claude-gate.sh` (alle ALL PASS), dazu `bun e2e/pins.ts`, tsc und `bun run build`.
+
+**Was der eine Lauf NICHT ist: ein Rate-Beweis.** Er bestätigt die Determinismus-Aussage an einem
+Lauf, nicht eine Häufigkeit — bei einer Basisrate von 2 von 9 wäre ein einzelnes Grün ohnehin kein
+Beleg. Was ihn trägt, ist der Mechanismus oben, am Code gelesen; der Lauf zeigt, dass die
+hergestellte Marge drei Grössenordnungen über der alten liegt. **Ein S1-Rot NACH dieser Reparatur
+ist wieder ECHT und deins** — und sein Detail nennt dann den Schritt, der ausgegeben hat.

@@ -1,8 +1,8 @@
 import { appendFile } from "node:fs/promises";
-import { existsSync, statSync, chmodSync, renameSync } from "node:fs";
+import { existsSync, statSync, chmodSync, renameSync, readFileSync, appendFileSync } from "node:fs";
 import { logError } from "./errors";
 
-// one rotation generation (audit.jsonl -> audit.jsonl.1, oldest overwritten) — override for tests
+// rotation threshold (x.jsonl -> x.jsonl.1, outgoing .1 appended to x.jsonl.archive) — override for tests
 export const AUDIT_ROTATE_BYTES = Number(process.env.FLEET_AUDIT_ROTATE_BYTES ?? 5_000_000) | 0;
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
 // rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
@@ -12,12 +12,13 @@ export const AUDIT_ROTATE_BYTES = Number(process.env.FLEET_AUDIT_ROTATE_BYTES ??
 // costs nothing yet — split per-file if a second consumer's volume ever makes that a problem.
 let auditChain: Promise<unknown> = Promise.resolve();
 let auditWriteFailed = false; // report a wedged event log once, not on every subsequent event
+let archiveRotateFailed = false; // report an unwritable archive once; rotation stays off afterwards
 function queueEventWrite(file: string, obj: Record<string, unknown>): Promise<void> {
   const line = `${JSON.stringify(obj)}\n`;
   const raw = auditChain
     .then(async () => {
       if (existsSync(file) && statSync(file).size >= AUDIT_ROTATE_BYTES)
-        renameSync(file, `${file}.1`);
+        rotateEventLog(file);
       await appendFile(file, line, { mode: 0o600 });
       chmodSync(file, 0o600); // append doesn't guarantee mode on a pre-existing file
     });
@@ -30,6 +31,27 @@ function queueEventWrite(file: string, obj: Record<string, unknown>): Promise<vo
       logError("eventLog", e);
     });
   return raw;
+}
+// x.jsonl -> x.jsonl.1, with the OUTGOING .1 appended to x.jsonl.archive first: the rename alone
+// overwrote the previous .1 — the only old generation — on every rotation (S1, 2026-09-15). A
+// failed archive append aborts the rotation (losing the .1 is worse than an over-threshold file)
+// and is logged once; events keep appending without rotating until a restart.
+function rotateEventLog(file: string): void {
+  const one = `${file}.1`;
+  if (existsSync(one)) {
+    try {
+      const archive = `${file}.archive`;
+      appendFileSync(archive, readFileSync(one), { mode: 0o600 });
+      chmodSync(archive, 0o600); // append doesn't guarantee mode on a pre-existing file
+    } catch (e) {
+      if (!archiveRotateFailed) {
+        archiveRotateFailed = true;
+        logError("eventLogArchive", e);
+      }
+      return;
+    }
+  }
+  renameSync(file, one);
 }
 export function appendEvent(file: string, obj: Record<string, unknown>): Promise<void> {
   return queueEventWrite(file, obj).catch(() => undefined);

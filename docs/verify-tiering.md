@@ -4117,10 +4117,18 @@ Augenblick, in dem das Tür-Prädikat zum ersten Mal hielt. Über die auf dem He
 
 Die beiden roten Läufe liegen **9 ms auseinander** — auf zwei verschiedenen Bäumen, von zwei
 verschiedenen Autoren, in zwei verschiedenen Slots (13 und 14). Eine Last-Ursache würde diese Zahl
-VERSCHMIEREN; sie tut es nicht. Sie klebt an `FOUNDING_BOOT_GRACE_MS` = 4000 ms. 3812 und 3846 sind
-GRÜN, weil dort auch die Tür noch VOR dem Einfügen las; 6235 ist grün, weil dort beide danach
-lasen. Rot ist genau das Band `[4000 − Roundtrip, 4000 + Einfügedauer]`, ein paar Dutzend
-Millisekunden breit — daher die 0,6 %.
+VERSCHMIEREN; sie tut es nicht.
+
+**Was die Schwelle GENAU ist, damit niemand nach einer 4000 sucht, die dort nicht steht:**
+`clientAtMs` zählt ab `m1WaitDoor`s eigenem `t0` (nach Dispatch, Datei, `git add`, `git commit`),
+nicht ab `openSlot`. Die Schwelle ist daher die ANKUNFT DES EINFÜGENS auf der Uhr der Sonde =
+`FOUNDING_BOOT_GRACE_MS` (4000) + Brief-Assemblierung − Vorlauf der Sonde. Die beiden Summanden
+heben sich hier grösstenteils auf, und die Schwelle liegt gemessen bei **~4,07 s** (Second-host,
+beide roten Läufe) bzw. **~4,18 s** (Mac-Scratch, wo das Fenster bei 1954/1953 ms aufging und bei
+4195/4169 ms zuging). 3812 und 3846 sind GRÜN, weil dort auch die Tür noch VOR dem Einfügen las;
+6235 ist grün, weil dort beide danach lasen. Rot ist das schmale Band um diese Ankunft herum, ein
+paar Dutzend Millisekunden breit — daher die 0,6 %. Nicht die 4000 ist die Konstante, sondern die
+STABILITÄT der Ankunft: 9 ms Streuung über zwei Bäume ist das, was eine Last-Erklärung ausschliesst.
 
 **Die Kollokations-Hypothese ist damit VERWORFEN, nicht offen gelassen.** Dass beide Helfer-Shards
 in derselben Millisekunde geclaimt werden, verschiebt, WO in der Verteilung der erste Arm landet

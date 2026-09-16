@@ -59,6 +59,20 @@ const BIND_FIRST = "[fleet Supervisor bind] The owner has bound THIS already-run
 // line is matched up to the id and from the door on
 const SUCCESSION_FIRST = "[fleet Supervisor succession] You are the CONTINUED owner-side Supervisor session; your predecessor is retiring; your handover is the role-lineage record ";
 
+// the Supervisor view's own line group (server.ts#supervisorLineageView): DERIVED three-valued
+// state, counts and occupant ids — deliberately no `intent`/`pointer` body, which belongs to the
+// occupant's own GET /api/self.
+interface LineageGroup {
+  lineageId: string | null;
+  state: string;
+  role: string | null;
+  record: { at: number; from: { slot: number; openedAt: number }; to: { slot: number; openedAt: number };
+    obligations: number; channel: string | null; supersededBy: unknown } | null;
+  records: number;
+  losses: number;
+  oldestRecordAt: number | null;
+}
+
 const readState = (): FleetState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as FleetState;
 const ownerRead = async (): Promise<{ programs: ProgramRow[]; supervisor: SupervisorBinding | null }> =>
   (await (await get("/api/programs")).json()) as { programs: ProgramRow[]; supervisor: SupervisorBinding | null };
@@ -473,11 +487,12 @@ export async function run(): Promise<void> {
     attention?: { rows: { id: string; kind: string; slot: number; text: string }[]; total: number };
     provenance?: { rows: { id: string | null; at: number; programId: string | null; slot: number; deliveredBytes: number }[];
       total: number; malformed: number };
+    lineage?: LineageGroup;
     unknown?: string[];
   };
-  check("supervisor view: the bound occupant gets all five fact groups plus an explicit unknown list",
+  check("supervisor view: the bound occupant gets all six fact groups plus an explicit unknown list",
     viewRes.ok && !!view.portfolio && !!view.operations && !!view.integration && !!view.attention
-      && !!view.provenance && Array.isArray(view.unknown) && view.unknown.length > 0
+      && !!view.provenance && !!view.lineage && Array.isArray(view.unknown) && view.unknown.length > 0
       && typeof view.at === "number",
     `${viewRes.status} groups=${Object.keys(view).join(",")}`);
   const rowOf = (id: string) => view.portfolio?.find((p) => p.program.id === id);
@@ -551,6 +566,129 @@ export async function run(): Promise<void> {
     JSON.stringify(view.provenance?.rows.slice(0, 3) ?? []));
   check("supervisor view: the read mutated nothing an owner-visible fact is made of",
     mutableFacts() === factsBefore, "state subset unchanged");
+
+  // --- THE LINE THIS VIEW REPORTS: four states and a scar -----------------------------------------
+  // Until 2026-09-16 this view pushed ONE CONSTANT unknown line — "no persisted Supervisor lineage
+  // exists; earlier bound Supervisor sessions are not reconstructible" — and it had been false since
+  // succeedSupervisor began calling writeLineageHandover: THIS session arrived by succession and its
+  // founding brief names the very record the view was denying. Each arm below is driven into its own
+  // state, and every one of them is asserted twice: for the honest sentence it now says, and for the
+  // dead constant it must never say again.
+  const NEVER_AGAIN = "no persisted Supervisor lineage exists";
+  const svSlotKey = String(successorSlot);
+  const lineageArm = async (): Promise<{ status: number; lineage: LineageGroup | null; unknown: string[] }> => {
+    const res = await selfGet("/api/self/supervisor-view", svToken);
+    const body = await res.json() as { lineage?: LineageGroup; unknown?: string[] };
+    return { status: res.status, lineage: body.lineage ?? null, unknown: body.unknown ?? [] };
+  };
+  const said = (lines: string[], needle: string): boolean => lines.some((u) => u.includes(needle));
+  // the fixture rail this file already uses for Programs, narrowed to the two lineage state keys
+  const mutateLineage = async (edit: (st: FleetState & Record<string, unknown>) => void): Promise<void> => {
+    await stopSrv();
+    const st = readState() as FleetState & Record<string, unknown>;
+    edit(st);
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+    await restartSrv();
+  };
+  const realLineId = supLine[0]?.lineageId ?? "";
+  const svOpenedAt = successorState?.openedAt ?? 0;
+
+  // ARM 1 — succeeded into the role: the record EXISTS, and the view says so.
+  const armSucceeded = await lineageArm();
+  check("supervisor lineage: a Supervisor that succeeded reads its own role record, and the flat denial is gone",
+    armSucceeded.lineage?.state === "present" && armSucceeded.lineage.role === "supervisor"
+      && armSucceeded.lineage.lineageId === realLineId && armSucceeded.lineage.records === 1
+      && armSucceeded.lineage.losses === 0 && armSucceeded.lineage.record?.to.slot === successorSlot
+      && armSucceeded.lineage.record.to.openedAt === svOpenedAt
+      && armSucceeded.lineage.record.from.slot === (bound?.slot ?? -1)
+      && armSucceeded.lineage.record.channel === null
+      && armSucceeded.lineage.oldestRecordAt === armSucceeded.lineage.record.at
+      && !said(armSucceeded.unknown, NEVER_AGAIN)
+      && said(armSucceeded.unknown, `Supervisor role line ${realLineId} reaches back only to its oldest surviving record`),
+    JSON.stringify({ lineage: armSucceeded.lineage,
+      gaps: armSucceeded.unknown.filter((u) => u.includes("lineage")) }));
+  // the body stays where its reader is: a cross-program projection is not a second home for prose
+  check("supervisor lineage: the group carries counts and occupant ids, never the handover's own text",
+    !!armSucceeded.lineage && !("intent" in armSucceeded.lineage.record!)
+      && !("pointer" in armSucceeded.lineage.record!)
+      && typeof armSucceeded.lineage.record!.obligations === "number",
+    JSON.stringify(armSucceeded.lineage?.record ?? null));
+
+  // ARM 2 — bootstrapped or bound: no line at all. The gap is real here, and it is the ONLY arm
+  // in which "earlier appointments are not reconstructible" is the whole story.
+  const svSlotRow = (st: FleetState & Record<string, unknown>): Record<string, unknown> =>
+    (st.slots ?? {})[svSlotKey] as unknown as Record<string, unknown>;
+  await mutateLineage((st) => { delete svSlotRow(st).lineageId; });
+  const armNoLine = await lineageArm();
+  check("supervisor lineage: a bootstrapped or bound session reports state none and names that gap for what it is",
+    armNoLine.lineage?.state === "none" && armNoLine.lineage.lineageId === null
+      && armNoLine.lineage.role === null && armNoLine.lineage.record === null
+      && armNoLine.lineage.records === 0 && armNoLine.lineage.oldestRecordAt === null
+      && said(armNoLine.unknown, "holds no role line — it was bootstrapped or bound rather than succeeded into")
+      && !said(armNoLine.unknown, NEVER_AGAIN),
+    JSON.stringify({ lineage: armNoLine.lineage, gaps: armNoLine.unknown.filter((u) => u.includes("lineage")) }));
+
+  // ARM 3 — a line id whose record did not survive. "lost" is SAID, never inferred away into
+  // "nothing was owed" — the rule lineageSelfView follows, now shared by both sights.
+  const orphanLine = "d".repeat(24);
+  await mutateLineage((st) => { svSlotRow(st).lineageId = orphanLine; });
+  const armLost = await lineageArm();
+  check("supervisor lineage: a line id with no surviving record is reported LOST, not as an absent lineage",
+    armLost.lineage?.state === "lost" && armLost.lineage.lineageId === orphanLine
+      && armLost.lineage.record === null && armLost.lineage.records === 0
+      && said(armLost.unknown, `carries role line ${orphanLine}, but no record addressed to this occupant survives`)
+      && !said(armLost.unknown, NEVER_AGAIN),
+    JSON.stringify({ lineage: armLost.lineage, gaps: armLost.unknown.filter((u) => u.includes("lineage")) }));
+
+  // ARM 4 — a GENERIC line carried into the role by a bind. This is the arm the old constant got
+  // accidentally right and for the wrong reason: there is no Supervisor appointment on this line,
+  // and the view must say THAT rather than deny every line there is.
+  await mutateLineage((st) => {
+    svSlotRow(st).lineageId = realLineId;
+    for (const r of (st.lineageHandovers as LineRow[] | undefined) ?? [])
+      if (r.lineageId === realLineId) r.role = "generic";
+  });
+  const armGeneric = await lineageArm();
+  check("supervisor lineage: a generic line under a bound Supervisor is named as one, and claims no Supervisor appointment",
+    armGeneric.lineage?.state === "present" && armGeneric.lineage.role === "generic"
+      && armGeneric.lineage.lineageId === realLineId
+      && said(armGeneric.unknown, `role line ${realLineId} is a generic succession line carried into the Supervisor role`)
+      && !said(armGeneric.unknown, "Supervisor role line")
+      && !said(armGeneric.unknown, NEVER_AGAIN),
+    JSON.stringify({ lineage: armGeneric.lineage, gaps: armGeneric.unknown.filter((u) => u.includes("lineage")) }));
+
+  // ARM 5 — the LOSS TRACE, planted as a record THIS server's own loader refuses, so the scar is
+  // the loader's and not the fixture's. A GET never writes one, which is the second half of the arm.
+  const factsBeforeScar = mutableFacts();
+  await mutateLineage((st) => {
+    for (const r of (st.lineageHandovers as LineRow[] | undefined) ?? [])
+      if (r.lineageId === realLineId) r.role = "supervisor";
+    st.lineageHandovers = [...((st.lineageHandovers as unknown[] | undefined) ?? []),
+      { v: 2, lineageId: realLineId, role: "supervisor", at: 1, from: { slot: 0, openedAt: 1 },
+        to: { slot: 0, openedAt: 1 }, obligations: [], intent: null, pointer: null, supersededBy: null }];
+  });
+  const armScar = await lineageArm();
+  const armScarAgain = await lineageArm();
+  check("supervisor lineage: a loss scar on the line is counted and named, and two reads of it change nothing",
+    armScar.lineage?.state === "present" && armScar.lineage.losses === 1
+      && said(armScar.unknown, "1 lineage handover records on this line were unreadable at load and are kept only as scars")
+      && said(armScar.unknown, "Supervisor role line")
+      && !said(armScar.unknown, NEVER_AGAIN)
+      && JSON.stringify(armScarAgain.lineage) === JSON.stringify(armScar.lineage)
+      && mutableFacts() === factsBeforeScar,
+    JSON.stringify({ lineage: armScar.lineage, gaps: armScar.unknown.filter((u) => u.includes("lineage")) }));
+
+  // the fixture rail is undone: the scar the loader recorded is the only thing these arms may leave,
+  // and it goes with the record that caused it.
+  await mutateLineage((st) => {
+    st.lineageHandovers = ((st.lineageHandovers as LineRow[] | undefined) ?? [])
+      .filter((r) => !(r.lineageId === realLineId && r.to?.slot === 0));
+    st.lineageHandoverLosses = [];
+  });
+  const armRestored = await lineageArm();
+  check("supervisor lineage: the arms are wound back — the line reads exactly as it did before them",
+    JSON.stringify(armRestored.lineage) === JSON.stringify(armSucceeded.lineage),
+    JSON.stringify({ before: armSucceeded.lineage, after: armRestored.lineage }));
 
   const [viewOther, viewAnon] = await Promise.all([
     selfGet("/api/self/supervisor-view", otherToken),

@@ -7073,18 +7073,43 @@ function writeLineageHandover(draft: LineageHandover, successor: Slot, at: numbe
   return record;
 }
 
-// THE READER, served on GET /api/self. `lost` is said, never inferred away: a slot carries a line id
-// only because a succession wrote it a record, so a line id with no record addressed to this
-// occupant is a lost handover — and so is any scar on the line — never "nothing was owed".
-function lineageSelfView(s: Slot): Record<string, unknown> | null {
+// THE ONE DERIVATION OF A LINE, read by both sights of it. `lost` is said, never inferred away: a
+// slot carries a line id only because a succession wrote it a record, so a line id with no record
+// addressed to this occupant is a lost handover — and so is any scar on the line — never "nothing
+// was owed".
+//
+// `role` is part of the derivation and not of either caller, because the two roles are NOT
+// interchangeable on a line: a generic succession line carried into the Supervisor role by a bind
+// records no Supervisor appointment, and a reader that could not tell it from a Supervisor line
+// would report an appointment history nobody ever wrote. Read from the record addressed to this
+// occupant, else from the newest record the line still has, else `null` — there is nothing to say.
+interface LineageState {
+  lineageId: string;
+  state: "present" | "lost";
+  role: LineageRole | null;
+  record: LineageHandover | null;
+  handoverLost: LineageHandoverLoss | null;
+  losses: LineageHandoverLoss[];
+  line: LineageHandover[];
+}
+function lineageStateOf(s: Slot): LineageState | null {
   if (!s.lineageId) return null;
   const line = lineageHandovers.filter((r) => r.lineageId === s.lineageId);
   const record = line.find((r) => r.to.slot === s.id && r.to.openedAt === s.openedAt) ?? null;
   const losses = lineageHandoverLosses.filter((l) => l.lineageId === s.lineageId || l.lineageId === null);
   const handoverLost = record ? null : losses.at(-1)
     ?? { v: 1, at: s.openedAt, lineageId: s.lineageId, error: "no record addressed to this occupant survives on its line" };
-  return { lineageId: s.lineageId, state: record ? "present" : "lost", record, handoverLost,
-    losses: losses.length, records: line.length };
+  return { lineageId: s.lineageId, state: record ? "present" : "lost",
+    role: record?.role ?? line.at(-1)?.role ?? null, record, handoverLost, losses, line };
+}
+
+// THE READER, served on GET /api/self — the session's OWN line, record body included, because this
+// is the one route whose reader is the occupant the record is addressed to.
+function lineageSelfView(s: Slot): Record<string, unknown> | null {
+  const l = lineageStateOf(s);
+  if (!l) return null;
+  return { lineageId: l.lineageId, state: l.state, record: l.record, handoverLost: l.handoverLost,
+    losses: l.losses.length, records: l.line.length };
 }
 
 async function handoffCommittedAfterOpen(s: Slot): Promise<boolean> {
@@ -26038,6 +26063,51 @@ const SUPERVISOR_VIEW_ROWS = 20;
 const SUPERVISOR_VIEW_INTEGRATION_ROWS = 5;
 const SUPERVISOR_VIEW_TEXT = 200;
 
+// WHAT THE SUPERVISOR'S OWN LINE ACTUALLY SAYS — derived from the records that exist, never
+// asserted. Until this cut the view pushed ONE CONSTANT sentence, "no persisted Supervisor lineage
+// exists; earlier bound Supervisor sessions are not reconstructible", and that sentence had been
+// false since succeedSupervisor began calling writeLineageHandover: a Supervisor that arrived BY
+// SUCCESSION read a flat denial of the very record its own founding brief had just named.
+//
+// What is still TRUE is narrower, and is now said branch by branch instead of over all of them:
+// bootstrap and bind write no record at all, so neither reconstructs an earlier appointment; a
+// generic line carried into the role by a bind records no Supervisor appointment either; and even
+// a real Supervisor line reaches back only as far as its oldest surviving record. Every one of
+// those is an `unknown` line, because the honesty rule this view follows is that a gap is NAMED
+// where it exists and claimed nowhere else — the same rule the Program-MAIN lineage gap follows.
+//
+// TEXT-FREE ON PURPOSE, and this session's OWN line only. The record's `intent`/`pointer` body is
+// the occupant's to read at GET /api/self (lineageSelfView), and no other line is projected here at
+// all: a cross-program view must not become a second place a handover's prose lives.
+function supervisorLineageView(s: Slot, unknown: string[]): Record<string, unknown> {
+  const l = lineageStateOf(s);
+  const seat = (o: LineageOccupant): LineageOccupant => ({ slot: o.slot, openedAt: o.openedAt });
+  if (!l) {
+    unknown.push("1 lineage gap: this Supervisor session holds no role line — it was bootstrapped or bound rather than succeeded into, so no record of this fleet names an earlier Supervisor appointment.");
+    return { lineageId: null, state: "none", role: null, record: null, records: 0, losses: 0,
+      oldestRecordAt: null };
+  }
+  const oldest = l.line[0] ?? null;
+  if (l.state === "lost")
+    unknown.push(`1 lineage gap: this Supervisor session carries role line ${l.lineageId}, but no record addressed to this occupant survives — the handover was lost, which is never the same fact as nothing having been owed.`);
+  else if (l.role === "supervisor")
+    unknown.push(`1 lineage gap: Supervisor role line ${l.lineageId} reaches back only to its oldest surviving record at ${oldest?.at ?? l.record?.at ?? 0}; appointments before it, and any appointment made on another line, are not reconstructible.`);
+  else
+    unknown.push(`1 lineage gap: role line ${l.lineageId} is a ${l.role ?? "roleless"} succession line carried into the Supervisor role rather than a Supervisor line — it records no Supervisor appointment, and the bind that brought it here copied none onto it.`);
+  if (l.losses.length > 0)
+    unknown.push(`${l.losses.length} lineage handover records on this line were unreadable at load and are kept only as scars; what they named is not reconstructible.`);
+  return {
+    lineageId: l.lineageId, state: l.state, role: l.role,
+    // the channel is NAMED, never quoted: which of the two a predecessor used is a fact about the
+    // handover, its text is the successor's own to read.
+    record: l.record ? { at: l.record.at, from: seat(l.record.from), to: seat(l.record.to),
+      obligations: l.record.obligations.length,
+      channel: l.record.intent !== null ? "intent" : l.record.pointer !== null ? "pointer" : null,
+      supersededBy: l.record.supersededBy ? seat(l.record.supersededBy) : null } : null,
+    records: l.line.length, losses: l.losses.length, oldestRecordAt: oldest ? oldest.at : null,
+  };
+}
+
 // SupervisorExecutionView v0: a READ-ONLY cross-program projection, never a second lifecycle model
 // and never a pane capture. It joins facts that already exist — the Program brackets, the lane
 // outcome and receipt ledgers, the transport events, the deploy/audit ledgers, the attention
@@ -26214,7 +26284,8 @@ async function supervisorView(s: Slot): Promise<Response> {
   };
   if (receiptLedger.malformed > 0)
     unknown.push(`${receiptLedger.malformed} malformed context receipt rows make the provenance picture incomplete.`);
-  unknown.push("1 lineage gap: no persisted Supervisor lineage exists; earlier bound Supervisor sessions are not reconstructible.");
+  // DERIVED, never constant — supervisorLineageView pushes the gap its branch actually has.
+  const lineage = supervisorLineageView(s, unknown);
 
   // --- transitions (STN-1): the armed questions Controllers have asked this Supervisor to answer.
   // Derived from the SAME watch rows the transport reads, capped and sliced like every group
@@ -26240,7 +26311,7 @@ async function supervisorView(s: Slot): Promise<Response> {
   return json({
     at: Date.now(),
     session: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId },
-    portfolio, operations, integration, attention, provenance, transitions, unknown,
+    portfolio, operations, integration, attention, provenance, lineage, transitions, unknown,
   });
 }
 

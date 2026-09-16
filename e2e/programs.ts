@@ -9015,12 +9015,23 @@ export async function run(ctx: Ctx): Promise<void> {
     // …and it hands back the BRANCH as well as the tree. A land is read on the integration branch
     // and the note the server writes there, and both of those only mean anything against the name
     // of the lane that produced them — see driveLand below.
-    const conflictLane = async (rowId: string): Promise<{ slot: number | null; cwd: string; branch: string }> => {
-      await post(`/api/tasks/${rowId}/dispatch`, {});
-      const row = await slRow(rowId);
-      const slot = row?.slot ?? null;
-      const lane = slot === null ? undefined : (await slSess()).slots.find((x) => x.id === slot);
-      return { slot, cwd: lane?.cwd ?? "", branch: lane?.worktree?.branch ?? "" };
+    // The dispatch POST's own facts, RETURNED instead of dropped: a lane that never arrived used to
+    // hand every setup line a bare `slot:null` — status and error text (slots full? cap? 409?) were
+    // lost and the red was not adjudicable (helper preview 753c91fcb1f1; aad02b868e0e before it,
+    // all 16 slots occupied). `occupied` is the count of busy slots read from the SAME
+    // /api/sessions snapshot that proved slot null — the count at the moment of the failure — and
+    // is null on the green path, so success spends no extra read.
+    type DispatchFacts = { status: number; body: string; occupied: number | null };
+    const conflictLane = async (rowId: string): Promise<{ slot: number | null; cwd: string; branch: string;
+        dispatch: DispatchFacts }> => {
+      const res = await post(`/api/tasks/${rowId}/dispatch`, {});
+      const body = (await res.text()).slice(0, 300);
+      const sess = await slSess();
+      const slot = sess.tasks.find((t) => t.id === rowId)?.slot ?? null;
+      const occupied = slot === null ? sess.slots.filter((s) => s.cwd).length : null;
+      const lane = slot === null ? undefined : sess.slots.find((x) => x.id === slot);
+      return { slot, cwd: lane?.cwd ?? "", branch: lane?.worktree?.branch ?? "",
+        dispatch: { status: res.status, body, occupied } };
     };
     await setMergeMode("do");
 
@@ -10255,7 +10266,7 @@ exit 0
     // own done-looking predicate holds, fire the self-land door, wait for the latch, plant the
     // intruder that steals the fast-forward, release. Returns the pieces each arm asserts on.
     const ffrLand = async (name: string, file: string): Promise<{ row: string; slot: number | null;
-        fired: boolean; reached: boolean; intruder: string }> => {
+        fired: boolean; reached: boolean; intruder: string; dispatch: DispatchFacts }> => {
       for (const f of [`${ffrLatch}.reached`, `${ffrLatch}.release`]) try { rmSync(f); } catch { /* absent */ }
       writeFileSync(ffrLatch, "armed\n", { mode: 0o600 });
       const row = await makeTask({ text: `ff retry ${name}`, programId: ffrProgram.id, repo: REPO2 });
@@ -10278,7 +10289,7 @@ exit 0
       spawnSync("git", ["-C", REPO2, "commit", "-qm", `intruder ${name} landed on main first`]);
       const intruder = main2Of();
       writeFileSync(`${ffrLatch}.release`, "go\n", { mode: 0o600 });
-      return { row, slot: lane.slot, fired, reached, intruder };
+      return { row, slot: lane.slot, fired, reached, intruder, dispatch: lane.dispatch };
     };
     type FfrVerdict = { status?: string; landed?: boolean; errorReason?: string; detail?: string; at?: number;
       ffRounds?: number; waitRounds?: number; candidateSha?: string;
@@ -10418,7 +10429,8 @@ exit 0
     // the setup line owns "did the land fire" (4ab4ad8c's M5 shape): an arm whose dispatch got no
     // slot, or whose door refused, measured nothing, and (iv) below is emitted only over a fired land
     check("(8e) setup: the red retry-round land fired",
-      ffrB.fired && ffrB.slot !== null, JSON.stringify({ slot: ffrB.slot, fired: ffrB.fired }));
+      ffrB.fired && ffrB.slot !== null,
+      JSON.stringify({ slot: ffrB.slot, fired: ffrB.fired, dispatch: ffrB.dispatch }));
     const ffrBVerdict = ffrB.fired ? await ffrSettled(ffrB.slot) : null;
     if (ffrB.fired && ffrB.slot !== null)
       check("(iv) a RED gate in the retry round lands nothing and writes the RED verdict — not ff-lost, not green — and main stays where the intruder left it",
@@ -10554,7 +10566,7 @@ exit 0
     // a land WITHOUT the ff latch: the retry chain is never reached (the gate stops the land long
     // before the fast-forward), so arming it would leave this waiting for a `reached` file that
     // cannot appear.
-    const m1Land = async (name: string, file: string): Promise<{ row: string; slot: number | null; fired: boolean; refusal?: string; ready?: M1Ready }> => {
+    const m1Land = async (name: string, file: string): Promise<{ row: string; slot: number | null; fired: boolean; refusal?: string; ready?: M1Ready; dispatch: DispatchFacts }> => {
       for (const f of [ffrLatch, `${ffrLatch}.reached`, `${ffrLatch}.release`]) try { rmSync(f); } catch { /* absent */ }
       const row = await makeTask({ text: `m1 ${name}`, programId: ffrProgram.id, repo: REPO2 });
       ffrRows.push(row);
@@ -10564,18 +10576,21 @@ exit 0
         spawnSync("git", ["-C", lane.cwd, "add", file]);
         spawnSync("git", ["-C", lane.cwd, "commit", "-qm", `m1 ${name}`]);
       }
-      if (lane.slot === null) return { row, slot: null, fired: false, refusal: "setup: not done-looking — the dispatch handed back no slot" };
+      if (lane.slot === null) return { row, slot: null, fired: false, dispatch: lane.dispatch,
+        refusal: `setup: not done-looking — the dispatch handed back no slot (dispatch ${lane.dispatch.status}, occupied=${lane.dispatch.occupied})` };
       ffrLanes.push(lane.slot);
       // never fire at a door whose own predicate has not been seen to hold: a refusal there would be
       // this fixture's race, read as the product's verdict
       const waited = await m1WaitDoor(lane.slot);
       if (!waited.ok)
-        return { row, slot: lane.slot, fired: false, refusal: `setup: not done-looking — ${doneLookingWhy}`, ready: waited.ready };
-      if (ffrTok === "") return { row, slot: lane.slot, fired: false, refusal: "no MAIN token", ready: waited.ready };
+        return { row, slot: lane.slot, fired: false, dispatch: lane.dispatch,
+          refusal: `setup: not done-looking — ${doneLookingWhy}`, ready: waited.ready };
+      if (ffrTok === "") return { row, slot: lane.slot, fired: false, dispatch: lane.dispatch,
+        refusal: "no MAIN token", ready: waited.ready };
       // the door's own words ride along when it refuses: `fired:false` alone cannot say WHICH rung
       // stopped the land (first seen on second-host job 8f6f445167f9, arm (iv), no text to read)
       const r = await selfLand(ffrTok, row);
-      return { row, slot: lane.slot, fired: r.ok, ready: waited.ready,
+      return { row, slot: lane.slot, fired: r.ok, ready: waited.ready, dispatch: lane.dispatch,
         ...(r.ok ? {} : { refusal: `${r.status} ${(await r.text()).slice(0, 300)}` }) };
     };
     const m1AuditBefore = m1AuditRows().length;
@@ -10586,7 +10601,8 @@ exit 0
     // over a land nobody asked for, or green over one that measured nothing.
     const m1DFired = m1D.fired && m1D.slot !== null;
     check("M1 setup: the denied land fired",
-      m1DFired, JSON.stringify({ slot: m1D.slot, refusal: m1D.refusal ?? null, ready: m1D.ready ?? null }));
+      m1DFired, JSON.stringify({ slot: m1D.slot, refusal: m1D.refusal ?? null, ready: m1D.ready ?? null,
+        dispatch: m1D.dispatch }));
     const m1Verdict = m1DFired ? await ffrSettled(m1D.slot) : null;
     const m1Runs = ffrLogRuns();
     const m1LockAfter = ((): string => {
@@ -10704,7 +10720,8 @@ exit 0
     const m1Red = await m1Land("red", "m1-red.txt");
     const m1RedFired = m1Red.fired && m1Red.slot !== null;
     check("M1 setup: the red land fired",
-      m1RedFired, JSON.stringify({ slot: m1Red.slot, refusal: m1Red.refusal ?? null, ready: m1Red.ready ?? null }));
+      m1RedFired, JSON.stringify({ slot: m1Red.slot, refusal: m1Red.refusal ?? null, ready: m1Red.ready ?? null,
+        dispatch: m1Red.dispatch }));
     const m1RedVerdict = m1RedFired ? await ffrSettled(m1Red.slot) : null;
     const m1RedReady = !m1RedFired || m1Red.slot === null ? false : await waitDoneLooking(m1Red.slot);
     const m1RedAgain = ffrTok === "" || !m1RedFired ? null : await selfLand(ffrTok, m1Red.row);
@@ -10730,7 +10747,8 @@ exit 0
     const m1Skip = await m1Land("skip", "m1-skip.txt");
     const m1SkipFired = m1Skip.fired && m1Skip.slot !== null;
     check("M1 setup: the skip land fired",
-      m1SkipFired, JSON.stringify({ slot: m1Skip.slot, refusal: m1Skip.refusal ?? null, ready: m1Skip.ready ?? null }));
+      m1SkipFired, JSON.stringify({ slot: m1Skip.slot, refusal: m1Skip.refusal ?? null, ready: m1Skip.ready ?? null,
+        dispatch: m1Skip.dispatch }));
     const m1SkipVerdict = m1SkipFired ? await ffrSettled(m1Skip.slot) : null;
     const m1SkipReady = !m1SkipFired || m1Skip.slot === null ? false : await waitDoneLooking(m1Skip.slot);
     const m1SkipAgain = ffrTok === "" || !m1SkipFired ? null : await selfLand(ffrTok, m1Skip.row);
@@ -10764,7 +10782,8 @@ exit 0
     const mdLand = await m1Land("server-down", "m1-server-down.txt");
     const mdLandFired = mdLand.fired && mdLand.slot !== null;
     check("M1 setup: the server-down land fired",
-      mdLandFired, JSON.stringify({ slot: mdLand.slot, refusal: mdLand.refusal ?? null, ready: mdLand.ready ?? null }));
+      mdLandFired, JSON.stringify({ slot: mdLand.slot, refusal: mdLand.refusal ?? null, ready: mdLand.ready ?? null,
+        dispatch: mdLand.dispatch }));
     const mdVerdict = mdLandFired ? await ffrSettled(mdLand.slot) : null;
     if (mdLandFired) check("(viii-d1) a chain that says its suite server did not come up records ok:null + serverDown, exit 3, never lands, and says NEVER MEASURED instead of failed",
       mdVerdict?.landed === false && mdVerdict.status === "resolved"
@@ -10811,7 +10830,8 @@ exit 0
       const gpLand = await m1Land(name, `m1-${name}.txt`);
       const gpLandFired = gpLand.fired && gpLand.slot !== null;
       check(`M1 setup: the GEGENPROBE ${name} land fired`,
-        gpLandFired, JSON.stringify({ slot: gpLand.slot, refusal: gpLand.refusal ?? null, ready: gpLand.ready ?? null }));
+        gpLandFired, JSON.stringify({ slot: gpLand.slot, refusal: gpLand.refusal ?? null, ready: gpLand.ready ?? null,
+          dispatch: gpLand.dispatch }));
       const gpVerdict = gpLandFired ? await ffrSettled(gpLand.slot) : null;
       const gpReady = !gpLandFired || gpLand.slot === null ? false : await waitDoneLooking(gpLand.slot);
       const gpAgain = ffrTok === "" || !gpLandFired ? null : await selfLand(ffrTok, gpLand.row);
@@ -10989,7 +11009,8 @@ exit 0
     const m5D = await m1Land("m5 docs", "m5-docs.md");
     check("M5 setup: the docs land fired",
       m5D.fired && m5D.slot !== null,
-      JSON.stringify({ slot: m5D.slot, refusal: m5D.refusal ?? null, ready: m5D.ready ?? null }));
+      JSON.stringify({ slot: m5D.slot, refusal: m5D.refusal ?? null, ready: m5D.ready ?? null,
+        dispatch: m5D.dispatch }));
     const m5DVerdict = m5D.fired ? await m5Settled(m5D.slot) : null;
     await m5Drop(m5D.slot);
     if (m5D.fired && m5D.slot !== null)
@@ -11007,7 +11028,8 @@ exit 0
     const m5C = await m1Land("m5 code", "m5-code.txt");
     check("M5 setup: the code land fired",
       m5C.fired && m5C.slot !== null,
-      JSON.stringify({ slot: m5C.slot, refusal: m5C.refusal ?? null, ready: m5C.ready ?? null }));
+      JSON.stringify({ slot: m5C.slot, refusal: m5C.refusal ?? null, ready: m5C.ready ?? null,
+        dispatch: m5C.dispatch }));
     const m5CVerdict = m5C.fired ? await m5Settled(m5C.slot) : null;
     await m5Drop(m5C.slot);
     if (m5C.fired && m5C.slot !== null)
@@ -11303,7 +11325,8 @@ exit 0
     const m2D = await m1Land("m2 denied", "m2-denied.txt");
     const m2DFired = m2D.fired && m2D.slot !== null;
     check("M2 setup: the denied land fired",
-      m2DFired, JSON.stringify({ slot: m2D.slot, refusal: m2D.refusal ?? null, ready: m2D.ready ?? null }));
+      m2DFired, JSON.stringify({ slot: m2D.slot, refusal: m2D.refusal ?? null, ready: m2D.ready ?? null,
+        dispatch: m2D.dispatch }));
     const m2DVerdict = m2DFired ? await ffrSettled(m2D.slot) : null;
     if (m2DFired) check("(iii) M2: a machine that never frees up still ends terminal — the M1 verdict, but only after BOTH budgets, with the round on the record and nothing ever spawned",
       m2DVerdict?.status === "resolved" && m2DVerdict.landed === false

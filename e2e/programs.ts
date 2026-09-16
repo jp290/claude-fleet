@@ -8417,12 +8417,14 @@ export async function run(ctx: Ctx): Promise<void> {
     // such a window (ready at +1954/+1953 ms, closed at +4195/+4169 ms, `missing=[idle]`,
     // idleMs 1 and 3). In the suite it costs the SETUP line of an M1/M5 arm ~0.6 % of runs —
     // audits 15d5f056, 891c7d98 (as arm (iv)), f806478a, 05fc16b0, 5c849e55, 90824cf3.
-    // THE DISCRIMINATOR IS THIS CONSTANT, NOT MACHINE LOAD, and the `ready` sensor proves it: the
+    // THE DISCRIMINATOR IS A FIXED TIMING, NOT MACHINE LOAD, and the `ready` sensor proves it: the
     // two red runs read `clientAtMs` 4060 and 4069 — NINE ms apart, on two different trees, from
     // two different authors, in slots 13 and 14 — while green runs of the same shard on the same
     // host read 3812, 3846 (window and door BOTH before the paste) and 6235 (both after), with
-    // every other arm of every run at 7.4–9.9 s. Red is the band [4000 − roundtrip, 4000 + paste],
-    // a few dozen ms wide. See docs/verify-tiering.md §11.2y for the table and the rejected
+    // every other arm of every run at 7.4–9.9 s. The threshold is the PASTE'S ARRIVAL on this
+    // wait's own clock (grace + brief assembly − the wait's own setup, ~4.07 s there, ~4.18 s on a
+    // Mac scratch instance), not the 4000 itself; what rules load out is that it moves by 9 ms
+    // across two trees. See docs/verify-tiering.md §11.2y for the table and the rejected
     // collocation hypothesis.
     // So the precondition is a POSITIVE FACT about the writer, not a longer sleep: wait until the
     // founding brief has been LOGGED (logPrompt runs only after sendText returned — the §8i pi-zai

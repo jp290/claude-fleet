@@ -74,6 +74,11 @@ Zustand nicht an, also brechen sie die Regel „Warten ist ereignisgetrieben" ni
         curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
           -d '{"text":"<Brief>","kind":"auftrag","harness":"claude","model":"claude-opus-5[1m]","effort":"high"}' \
           http://<fleet-host>:<port>/api/self/tasks
+      Zeigt die Zeile auf ein Repo, das NICHT claude-fleet ist, gilt zusaetzlich `AGENTS.md`
+      §Rows for a repo that is not claude-fleet: acht Pflichtinhalte (ROLLE, Projekt-`AGENTS.md`,
+      Verify woertlich, Lektuere mit Pfaden, `card.after` statt Prosa-Reihenfolge, Host-Fakten,
+      Report als einziger Kanal, kein Fleet-Zustand in Repo-Dateien). Eine fremde Lane bekommt kein
+      Fleet-Regelbuch — was nicht in der Zeile steht, hat sie nicht.
       Eine gefilte Zeile ist IMMER `pending` und läuft nie von selbst. Erst
       `POST /api/self/tasks/<id>/release` macht sie `queued`, und auch dann startet sie der Tick,
       nicht du. Deckel je Program: 5 pending `auftrag`, 10 pending beratende (`notiz`/`richtung`/

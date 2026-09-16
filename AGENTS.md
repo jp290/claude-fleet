@@ -164,6 +164,36 @@ any gap — an untracked path, an unresolvable symbol, a verify naming no chain 
 it, and nothing is filed. A valid card's surface is read before the prose reading; without a card
 nothing changes.
 
+### Rows for a repo that is not claude-fleet
+
+A lane in another repo gets NO Fleet rulebook: `server.ts#createWorktree` copies the git-ignored
+scaffolding out of the LANE'S OWN repo, so whatever this file does not carry has to stand in the row
+itself. Measured on the private-repo-aa lane that ran 89 successions
+(`docs/messungen/2026-09-15-fremdrepo-annahmen-lanes.md`): the detailed founding row 449c4a03 carried
+all eight items below and ran clean; the short owner row 2fd387de carried none of them. Eight
+obligations, until the mechanism carries them:
+
+1. **ROLLE spelled out** — harness / model / effort. Without it a hand-started row falls to the
+   fleet default model, which is chosen for THIS repo.
+2. **The project's own `AGENTS.md`, by path, as the rule frame** — and the note that this file's
+   repo-specific halves (its verify chain, its suites, its short docs-only proof) do not hold there.
+3. **The verify command VERBATIM**, as that project runs it, never a Fleet chain step name. `GET
+   /api/self/gate` asks no repo question (`server.ts#laneLocalProof` →
+   `verify-proportion.ts#localProofFor`), so a docs-only lane elsewhere is recommended `install,
+   pins` — steps only this tree has. The row's VERIFY overrides that recommendation.
+4. **The reading list with paths** — which files to read before the first edit, repo-relative.
+5. **A dependency only as `card.after`** (`NACH:` in the text form): queue row ids, checked against
+   the queue and against the request's own text (`card-extract.ts#validateCard`), and able only to
+   hold the row back. "After X" in prose holds nothing back and starts the row anyway.
+6. **Host facts** — network reach, the tools the host does NOT have, where scratch files go. A lane
+   in a foreign repo derives none of these from its tree.
+7. **The channel, in one sentence each:** the fleet-report is the only way a result leaves the pane,
+   and a Codex lane does not hand a baton on by `POST /api/self/succeed` — it compacts itself, so
+   say that its report is the handover.
+8. **What a Fleet artefact must not carry:** a proof note holds results, not instructions for the
+   next session, and no Fleet state — no slot, no deploy SHA, no path into this checkout — goes into
+   a file of the other repo, where it is stale within hours and later sessions still act on it.
+
 ### Context self-management
 
 Managing your own context is your job, not your caller's. Measured on this fleet (owner,

@@ -6,6 +6,15 @@
 - **NICHTS IST ARMIERT, und das ist richtig so:** alle vier Watches dieser Schicht sind gefeuert (`13cd6ed3`, `48c2ad0b`, `24c1653b`, `a69613fd`), `autos` ist leer. Es gibt keine offene Zustellpflicht, die mit mir stirbt — was du armierst, ist deine Entscheidung.
 - **DER ERSTE ZUG:** Slot 2s Antwort abwarten (unten §2). Sie ist das einzige, was diese Schicht offen laesst und was Zeit kostet, wenn es liegen bleibt.
 
+## 0.1 NACHTRAG 22:4x — ZWEI FAKTEN, DIE NACH DEM COMMIT ENTSTANDEN, UND SIE BESTIMMEN DIE NACHT
+
+*(Als Program-Notiz nicht ablegbar: der Beratungs-Eimer steht auf 10/10. Darum hier.)*
+
+1. **Der Master-Stop ist WIEDER AN** (`dispatch {on: true, maxLanes: 3}`, `autosOn: true`, **`quietHours: null`** — kein Nacht-Tor). **§5 unten ist damit ueberholt**, es galt bis ~22:2x. Die Orchestratorin hat gedreht; die Kontingent-Frage ist offenbar beantwortet.
+2. **Und trotzdem startet nichts — SLOT 2 IST DER SCHLUSSSTEIN.** `GET /api/start-plan`: 48 Wellen fuer claude-fleet, davon **35 `unreleased`**, **11 `collides`**, 2 `after`. Von den 11 kollidieren **9 mit Slot 2**, 2 mit Slot 3. Ein Lane-Platz ist frei, der Dispatcher ist an — es gibt nur nichts, was er nehmen duerfte. Dazu haengt der Deploy (der `FLEET_CARD_MS='60000'` scharf macht und die 35 unreleased ueberhaupt erst erreichbar) ebenfalls an Slot 2. **Jede Arbeit dieses Programs haengt an genau einer Lane: Slot 2 landen = 9 Wellen frei + Deploy frei.**
+3. **Vier Kartenflaechen bestaetigt** (`confirm-cards`, 4/0): `1e170a25` · `c05f8b05` · `56522568` · `53daa39c`. **Die anderen 15 Kandidaten bewusst NICHT** — eine ungelesene Flaeche zu bestaetigen ist eine Behauptung ueber fremde Arbeit, und eine zu KLEIN bestaetigte laesst eine Kollisionskante fallen. Wer sie bestaetigt, liest sie vorher.
+4. **Erwartung fuer jeden Land heute Nacht:** das Post-Land-Audit kommt mit `M5 setup: the docs land fired` ROT zurueck, bis `30adf3a0` (Slot 3) landet — zweimal in Folge gesehen, zwei Baeume, zwei Autoren. Bekannte Familie, kein Regress, und als SETUP-Zeile heisst ihr Fall „die M5-Sektion hat nicht gemessen".
+
 ## 1. DIE ENTSCHEIDUNG, DIE DU NICHT AUS DEM ZUSTAND ABLEITEN KANNST: DIE LAND-TUER IST OFFEN
 
 Notiz **`22ba3bed` §1 ist UEBERHOLT** — sie sagt woertlich „ICH HALTE DIE LAND-TUER BEWUSST ZU". Die Freigabe-Bedingung ist eingetreten: Orchestratorin Slot 7 hat `FLEET_E2E_SHARD=1/2` auf dem Second-host gegen `c5296dfb` wiederholt, **2018 PASS / 0 FAIL**, gleiche Checkzahl und gleicher Host wie der rote Audit-Shard k=1 vom 16:47. Kein deterministischer Regress. Korrektur liegt als Notiz **`63251255`** neben ihr, weil eine MAIN eine Notiz nicht schliessen kann (§4).

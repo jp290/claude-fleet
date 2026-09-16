@@ -23,6 +23,7 @@ import {
   phaseOf, phaseOutcomeFor, phaseOutcomeIndex, type Phase, type PhaseInput, type PhaseOutcomeFacts,
   type PhaseOutcomeIndex,
 } from "./program-phase";
+import { makeSimulatorHygiene, simReapArming } from "./simulator-hygiene";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt } from "./refine-prompt";
@@ -28600,6 +28601,20 @@ setInterval(() => {
 // the wake rail, armed only when an address is configured: without one every pass would refuse,
 // and a timer that can only ever do nothing is a timer that should not exist.
 if (HELPER_WAKE_ADDR) setInterval(() => void tickHelperWake().catch((e: unknown) => logError("tickHelperWake", e)), HELPER_WAKE_TICK_MS);
+// HOST HYGIENE, beside the wake rail because it is the same kind of thing: a tick that touches the
+// MACHINE rather than the fleet, and one that is not registered at all unless it was armed. An idle
+// iOS Simulator with no held lease is shut down (simulator-hygiene.ts — the measured case: 13 days
+// 13 h of Simulator.app with zero booted devices). OFF by default, off on a non-darwin host, and an
+// unrecognised value is OFF and says so, in FLEET_LANE_AUTOCLOSE's shape.
+const simArming = simReapArming(process.env.FLEET_SIM_REAP, process.platform);
+console.log(simArming.log);
+if (simArming.on) {
+  const simHygiene = makeSimulatorHygiene({
+    audit: (detail, fields) => audit("simulator_reap", undefined, detail, fields),
+  });
+  setInterval(() => void simHygiene.tick().catch((e: unknown) => logError("simulatorHygiene", e)),
+    simHygiene.config.tickMs);
+}
 // auto-③ on done-looking lanes (advisory; FLEET_AUTO_REVIEW_MS=0 turns the fleet-wide tick off entirely)
 if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview(false).catch((e: unknown) => logError("tickAutoReview", e)), AUTO_REVIEW_MS);
 // …and the per-row door (Task.review) while it is off: the same tick, reading ONLY rows that asked.

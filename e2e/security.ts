@@ -1552,7 +1552,11 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // value) on a slot that had just become default again. So: wait for a first answer, then let one
   // full tick interval pass and take the second. A stale value cannot survive that; a genuinely
   // wrong one is unaffected, which is what keeps the row a real assertion.
-  const GIT_TICK_MS = 10_000; // server.ts: setInterval(tickGit, 10_000)
+  // Read back off the SAME env the server got (FLEET_GIT_TICK_MS, parsed and floored as server.ts
+  // does), so this sleep and the interval it has to out-wait are one number — a harness that sets
+  // no knob keeps the production 10 000. Hard-coded until 2026-09-16, which cost 33,0 s per run
+  // once the suite started shortening the tick.
+  const GIT_TICK_MS = Math.max(1000, Number(process.env.FLEET_GIT_TICK_MS ?? 10_000) | 0);
   const agentOf = async (slot: number): Promise<string | null> => {
     const read = async (): Promise<string | null> => {
       const sx = (await (await get("/api/sessions")).json()) as { slots: { id: number; agent: string | null }[] };

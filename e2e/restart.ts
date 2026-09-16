@@ -856,6 +856,12 @@ export async function run(ctx: Ctx): Promise<void> {
     // so a server restarted here without it would gate at the 3 s production default and refuse
     // every land the helper already calls settled
     "FLEET_MERGE_IDLE_MS",
+    // and the three other server wait windows the wrapper shortens (SRV_ENV in e2e-isolated.sh):
+    // dropped here, the post-restart server reverts to the production 10 s tick and 4 s / 3 s boot
+    // windows while every harness helper keeps sizing its windows from the wrapper's value — the
+    // same two-numbers-for-one-gate failure the line above describes, and on the git tick it would
+    // silently put the ~190 s this cut removes back into everything that runs after this restart.
+    "FLEET_GIT_TICK_MS", "FLEET_FOUNDING_BOOT_GRACE_MS", "FLEET_SEND_BOOT_WAIT_MS",
     // without this the post-restart server reverts to the prod journal cap (6) and the honest
     // filter-then-count cap 429s the later anchor fixtures — the leaky slice-window cap used to
     // let exactly those extra POSTs through, which is how this gap stayed invisible until the fix

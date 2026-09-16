@@ -1275,12 +1275,44 @@ export async function run(ctx: Ctx): Promise<void> {
         loaded.find((s) => s.id === awaitingMain)?.worktree === null && reloadedAwaiting === "owner",
         JSON.stringify({ awaiting: reloadedAwaiting, slot: loaded.find((s) => s.id === awaitingMain) }));
       // Pane activity is measured through the shared deterministic probe, never a hand-rolled
-      // send/capture race. A is touched first and therefore is the longest-idle eligible main.
+      // send/capture race. But probing A first does NOT by itself make A the longest-idle main,
+      // and assuming it did is what this fixture got wrong until 2026-09-16: a pane's activity
+      // stamp is SUPPRESSED while the server holds its post-attach quiet window (server.ts,
+      // `s.quietUntil`), so a probe rendering inside that window leaves `lastOutput` at the boot
+      // stamp. Boot rehydration adopts slot by slot, so B's window opens LATER than A's — and in
+      // the band where A's has expired and B's has not, A takes a fresh stamp while B keeps its
+      // older boot one and the order INVERTS. The round below then nudges B and six checks fail
+      // as if the ranking were broken. Measured on the isolated suite once its server timers were
+      // shortened, green on 30 runs before that: a latent race, not a new rule.
+      // So the order is ESTABLISHED, never assumed — probed until the SERVER'S OWN reading says A
+      // is the older one, and asserted with both numbers in the detail. Whatever suppresses a
+      // stamp, this says whether the premise the ranking check rests on actually holds.
+      // its own read and its own cast: SRow above deliberately carries only the fields this
+      // module already asserts on, and the comment there says why widening it is not free.
+      const lastOut = async (id: number): Promise<number> =>
+        (((await (await get("/api/sessions")).json()) as { slots: { id: number; lastOutput: number }[] })
+          .slots.find((s) => s.id === id)?.lastOutput ?? 0);
+      // A is touched ONCE and then left alone; B is touched until the server agrees B is the newer
+      // of the two. Re-probing BOTH would race the very thing being established — A can leapfrog B
+      // on the next round, which is how the first attempt at this loop still handed the round to B
+      // (isolated-20260916T160000Z, delta=-407ms after 12 rounds). A swallowed stamp is never
+      // retried into existence either: the quiet window is ~1.5 s wide, so B's next probe lands
+      // outside it, and A cannot move while that happens.
       const aEnv = await paneEnv(`s${mainA}`, "HOME");
-      await Bun.sleep(200);
-      const bEnv = await paneEnv(`s${mainB}`, "HOME");
+      let bEnv: string | null = null;
+      let aOut = await lastOut(mainA);
+      let bOut = 0;
+      for (let i = 0; i < 15 && !(aOut > 0 && bOut > aOut); i++) {
+        if (i > 0) await Bun.sleep(300); // let a quiet window that swallowed the last probe expire
+        bEnv = await paneEnv(`s${mainB}`, "HOME");
+        aOut = await lastOut(mainA);
+        bOut = await lastOut(mainB);
+      }
       check("backlog nudge setup: both eligible main panes answer the paneEnv activity probe",
         aEnv !== null && bEnv !== null, `A=${aEnv} B=${bEnv}`);
+      check("backlog nudge setup: the server reads A as the longer-idle main, which is what the ranking check below rests on",
+        aOut > 0 && bOut > 0 && aOut < bOut,
+        `A(s${mainA}).lastOutput=${aOut} B(s${mainB}).lastOutput=${bOut} delta=${bOut - aOut}ms`);
 
       const laneRes = await post("/api/lanes", { repo: REPO });
       const lane = (await laneRes.json()) as { slot?: number };

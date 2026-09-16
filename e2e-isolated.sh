@@ -826,10 +826,31 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # nothing is due, and no analyst exists any more (retired 2026-09-10), so the git read inside
 # tickDispatch is not on this path either. e2e/harness.ts reads both back off process.env and
 # sizes the windows from them — same one-string discipline as FLEET_VERIFY_TIMEOUT_MS above.
-# FLEET_MERGE_IDLE_MS=2000 shortens the land/commit idle gate (production 3000, pinned in e2e/pins.ts).
-# Nearly every land in this suite first out-waits the fresh lane pane's own shell prompt, so the
-# gate's width was paid once per land (~100 lands). 2000 keeps the 1 s margin e2e/lanes-basic.ts's
-# busy probes build in below the gate; e2e/lane-helpers.ts reads the same value back.
+# THE FOUR SERVER WAIT WINDOWS. All four are env knobs whose UNSET value is the production literal
+# (pinned in e2e/pins.ts, where no suite env reaches); the suite shortens them because a wait window
+# is wall clock this suite spends NOT measuring. Sized off the phase measurement of 2026-09-14
+# (docs/messungen/2026-09-14-suite-wartezeit-phasen.md), which booked ~530 s of a 2 225 s run behind
+# exactly these four numbers. Anything that reads them back — e2e/lane-helpers.ts, e2e/security.ts,
+# e2e/programs.ts' unbound-succession fixture — parses the SAME env with the SAME floor, so the
+# harness window and the server gate can never be two numbers.
+# FLEET_MERGE_IDLE_MS=500 shortens the land/commit idle gate (production 3000). Nearly every land in
+# this suite first out-waits the fresh lane pane's own shell prompt, so the gate's width was paid
+# once per land (~100 lands): 145,4 s in `settleForMerge` alone. 500 is the server's own floor.
+# e2e/lanes-basic.ts's busy probes no longer BORROW their window from the gate — at 500 a fixed 1 s
+# margin below it is a window that cannot open — they MAKE one with a bounded output generator and
+# bracket the POST with two busy reads, which is a guard the gate's width cannot weaken.
+# FLEET_GIT_TICK_MS=2000 shortens the git/liveness fact cache (production 10 000). Every check that
+# waits for `git.ahead` or a liveness reading waits for a tick it cannot trigger; 190,7 s of that
+# run sat in `e2e/programs.ts#waitDoneLooking` and 33,0 s in `e2e/security.ts#agentOf`, which sleeps
+# one whole tick on purpose to defeat a stale write and reads the value back off this env.
+# e2e/deploy-facts.ts already set the same 2000 for its own module and still does — it plants and
+# RESTORES the key around its section, so the module-local value survives this one unchanged.
+# FLEET_FOUNDING_BOOT_GRACE_MS=750 and FLEET_SEND_BOOT_WAIT_MS=500 shorten the two boot windows
+# (production 4000 / 3000): 143,3 s of that run sat inside `bootstrap-main` POSTs that answer only
+# after the grace, plus 43,7 s in the dispatch tail. Every pane this suite founds into is a stand-in
+# that is ready the moment it exists, so the grace buys nothing here — but it is NOT zero: 750 ms
+# still covers the tmux respawn e2e/harness.ts#plantScreen does inside it, and the READINESS proof
+# (FLEET_READY_WAIT_MS=3000 above) is what actually decides, at any grace.
 # FLEET_HARNESS_AUTOMATION=0 is STATED, not left to chance: the vars in this string are explicit,
 # but anything NOT named here is inherited from whatever shell started the suite. §6c asserts the
 # foreign-harness policy in its CLOSED state, so an operator who exports the flag in their own shell
@@ -888,7 +909,7 @@ chmod 600 "$PI_ZAI_KEY_FILE"
 # 60 s, 2026-09-06). This is the SAME hand-down e2e-stage.sh already honours for its own steps, in
 # the same direction: the variable grants nothing on its own — server.ts checks that the lock file
 # on disk names this pid and that the process is alive, exactly as the shell does.
-SRV_ENV="FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HELPER_CMD_FLOOR_SHA=$FLOOR_SHA FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_CMD=true FLEET_INSTANCE=e2e-isolated FLEET_HARNESS_AUTOMATION=0 FLEET_LANE_AUTOCLOSE=0 FLEET_E2E_COMPOSER_MODE='$COMPOSER_MODE' FLEET_E2E_COMPOSER_STATE='$COMPOSER_STATE' FLEET_TEST_WATCH_TICK_LATCH='$DIR/watch-tick.latch' FLEET_CODEX_SESSIONS_DIR='$CODEX_SESSIONS' FLEET_PI_ZAI_AGENT_DIR='$PI_ZAI_AGENT_DIR' FLEET_PI_ZAI_KEY_FILE='$PI_ZAI_KEY_FILE' FLEET_PI_OX_AGENT_DIR='$PI_OX_AGENT_DIR' FLEET_READY_WAIT_MS=3000 FLEET_ACCEPT_WAIT_MS=800 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_LANE_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_BRIEF_MS=0 FLEET_CARD_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_DEVICE_ONLINE_MS=20000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_MERGE_IDLE_MS=2000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
+SRV_ENV="FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HELPER_CMD_FLOOR_SHA=$FLOOR_SHA FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_CMD=true FLEET_INSTANCE=e2e-isolated FLEET_HARNESS_AUTOMATION=0 FLEET_LANE_AUTOCLOSE=0 FLEET_E2E_COMPOSER_MODE='$COMPOSER_MODE' FLEET_E2E_COMPOSER_STATE='$COMPOSER_STATE' FLEET_TEST_WATCH_TICK_LATCH='$DIR/watch-tick.latch' FLEET_CODEX_SESSIONS_DIR='$CODEX_SESSIONS' FLEET_PI_ZAI_AGENT_DIR='$PI_ZAI_AGENT_DIR' FLEET_PI_ZAI_KEY_FILE='$PI_ZAI_KEY_FILE' FLEET_PI_OX_AGENT_DIR='$PI_OX_AGENT_DIR' FLEET_READY_WAIT_MS=3000 FLEET_ACCEPT_WAIT_MS=800 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_LANE_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_BRIEF_MS=0 FLEET_CARD_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_DEVICE_ONLINE_MS=20000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_MERGE_IDLE_MS=500 FLEET_GIT_TICK_MS=2000 FLEET_FOUNDING_BOOT_GRACE_MS=750 FLEET_SEND_BOOT_WAIT_MS=500 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && PATH='$DIR:$PATH' FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.

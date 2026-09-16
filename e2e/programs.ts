@@ -8399,17 +8399,35 @@ export async function run(ctx: Ctx): Promise<void> {
     // failure surfaced at the projection instead of here, where the missing fact actually is.
     // `doneLookingWhy` carries the last row a wait gave up on, so the fixture check that consumes
     // this can say WHICH clause was missing instead of only `ready:false`.
+    //
+    // AND IT MUST HOLD, not merely occur. `now - lastOutput >= MERGE_IDLE_MS` is satisfied by a LULL
+    // BETWEEN two paint bursts, and the caller then spends several round trips (a git rev-parse, two
+    // `selfExecution` GETs) on a state that has already lapsed. The width of the gate is what used to
+    // hide that: at 3 000 ms a pane quiet that long was genuinely finished, at the suite's 500 ms
+    // floor it is not. Measured on the helper preview of 9bad46f6 (second-host, 27 of 28 earlier
+    // previews green): THIS line passed and the projection two lines down read
+    // `R13 … lane predicate unmet: idle`. So the predicate is required to survive a FULL threshold
+    // of further polling — a pane still painting cannot satisfy both ends of that window — which
+    // makes the guarantee the caller gets independent of how wide the gate happens to be.
     let doneLookingWhy = "";
     const waitDoneLooking = async (slot: number): Promise<boolean> => {
       let last = "no row";
-      for (let i = 0; i < 120; i++) {
+      let heldSince = 0;
+      for (let i = 0; i < 160; i++) { // 40 s ceiling, MERGE_IDLE_MS of it spent confirming
         const body = await slSess();
         const row = body.slots.find((x) => x.id === slot);
-        if (row?.git && row.git.dirty === 0 && row.git.ahead > 0
-          && row.lastOutput > 0 && body.now - row.lastOutput >= MERGE_IDLE_MS) return true;
-        last = row ? JSON.stringify({ slot, git: row.git,
-          observed: row.lastOutput > 0, idleMs: row.lastOutput > 0 ? body.now - row.lastOutput : null })
-          : `slot ${slot} has no row`;
+        const holds = !!row?.git && row.git.dirty === 0 && row.git.ahead > 0
+          && row.lastOutput > 0 && body.now - row.lastOutput >= MERGE_IDLE_MS;
+        if (holds) {
+          if (heldSince === 0) heldSince = Date.now();
+          if (Date.now() - heldSince >= MERGE_IDLE_MS) return true;
+          last = `held since ${Date.now() - heldSince}ms ago, not yet a full ${MERGE_IDLE_MS}ms`;
+        } else {
+          heldSince = 0;
+          last = row ? JSON.stringify({ slot, git: row.git,
+            observed: row.lastOutput > 0, idleMs: row.lastOutput > 0 ? body.now - row.lastOutput : null })
+            : `slot ${slot} has no row`;
+        }
         await Bun.sleep(250);
       }
       doneLookingWhy = last;

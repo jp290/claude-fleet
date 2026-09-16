@@ -18,8 +18,9 @@
 //   · `origin:"main-direct"` rows share the outcome file and are NOT lanes — validating fields
 //     before scope books each of them as damage (slotstats.ts's measured 468-malformed lesson);
 //   · appendEvent rotates, so a single-file reader answers from a truncated ledger with no error.
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { check, ROOT } from "./harness";
+import { appendEvent, AUDIT_ROTATE_BYTES } from "../server/persist";
 import { briefStats, readJsonl, type BriefStatsSummary, type OutcomeRecord, type ReceiptRecord } from "../briefstats";
 
 const TMP = `${process.env.TMPDIR ?? "/tmp"}/fleet-briefstats-fixtures-${process.pid}`;
@@ -266,6 +267,62 @@ export async function run(): Promise<void> {
   check("briefstats: the rotated-away generation is IN the rates — dropping it would halve the denominator",
     rotated.overall.lanes === 2 && rotated.overall.killedEmpty === 1 && rotated.outOfScope.malformed === 1,
     JSON.stringify(rotated.overall));
+
+  // --- (d2) THE ARCHIVE STEP. Rotation appends the OUTGOING .1 to x.jsonl.archive BEFORE the
+  // rename, so no generation is ever overwritten out of existence (S1, 2026-09-15: audit.jsonl.1
+  // held 2026-07-21..09-07 and the next rotation was ~1.4 days from destroying it). The threshold
+  // here is the module's own AUDIT_ROTATE_BYTES, and EVERY event line carries a threshold-sized
+  // pad, so each append finds the file already over threshold and the check stays valid whatever
+  // env the runner was given. The three rotations below, as a table:
+  //   t | event                           | exclusive owner of the bytes after it
+  //   0 | seed SA (≥ threshold) planted   | x=SA
+  //   1 | E1 appended → size ≥ threshold  | .1=SA            x=E1  (1st rotation: no .1, nothing archived)
+  //   2 | E2 appended → rotate            | archive=SA   .1=E1   x=E2
+  //   3 | E3 appended → rotate            | archive=SA,E1  .1=E2   x=E3
+  const big = (tag: string) => `${tag}${"x".repeat(AUDIT_ROTATE_BYTES)}\n`;
+  // ONE builder for the event shape — the same ev(n) goes into appendEvent and into the expected
+  // bytes, so the expectation cannot drift from what was actually written.
+  const ev = (n: number) => ({ n, p: "x".repeat(AUDIT_ROTATE_BYTES) });
+  const lineOf = (n: number) => `${JSON.stringify(ev(n))}\n`;
+  // a subdirectory of TMP, never TMP itself: the CLI checks at the tail of this module still read
+  // the (d) fixtures, so wiping TMP here would turn those green checks red.
+  const rotDir = `${TMP}/rot`;
+  rmSync(rotDir, { recursive: true, force: true });
+  mkdirSync(rotDir, { recursive: true });
+  const archFile = `${rotDir}/rot-archived.jsonl`;
+  const seedA = big("seedA-");
+  writeFileSync(archFile, seedA);
+  await appendEvent(archFile, ev(1));
+  await appendEvent(archFile, ev(2));
+  await appendEvent(archFile, ev(3));
+  // an ABSENT archive is a FAIL with a name, never a crash: the mutation probe (rotation without
+  // the archive step) must kill exactly these checks, not the rest of the shard's run().
+  const archivePath = `${archFile}.archive`;
+  const gens = (existsSync(archivePath) ? readFileSync(archivePath, "utf8") : "<archive absent>")
+    + readFileSync(`${archFile}.1`, "utf8") + readFileSync(archFile, "utf8");
+  const wantA = seedA + lineOf(1) + lineOf(2) + lineOf(3);
+  check("briefstats: after three rotations archive + .1 + live file hold every written line exactly once, in order",
+    gens === wantA, JSON.stringify({ got: gens.length, want: wantA.length, archiveAbsent: !existsSync(archivePath) }));
+  check("briefstats: the archive is written 0600 like the ledgers it extends",
+    existsSync(archivePath) && (statSync(archivePath).mode & 0o777) === 0o600,
+    `mode=${existsSync(archivePath) ? (statSync(archivePath).mode & 0o777).toString(8) : "absent"}`);
+
+  // The failure half: an archive path that cannot take appends (here: a directory, EISDIR) must
+  // abort the ROTATION, never lose the event — the .1 is the last copy of that generation until
+  // the archive has taken it.
+  const failFile = `${rotDir}/arch-unwritable.jsonl`;
+  const seedB = big("seedB-");
+  const wantB = `${JSON.stringify({ n: 9 })}\n`; // small line: after the aborted rotation no second one is attempted
+  writeFileSync(failFile, seedB);
+  writeFileSync(`${failFile}.1`, "old-generation\n");
+  mkdirSync(`${failFile}.archive`);
+  await appendEvent(failFile, { n: 9 });
+  check("briefstats: an unwritable archive aborts the rotation — the .1 generation is untouched",
+    readFileSync(`${failFile}.1`, "utf8") === "old-generation\n",
+    JSON.stringify({ one: readFileSync(`${failFile}.1`, "utf8").slice(0, 40) }));
+  check("briefstats: with the rotation aborted the event still lands in the live file",
+    readFileSync(failFile, "utf8") === seedB + wantB,
+    JSON.stringify({ live: readFileSync(failFile, "utf8").length, want: (seedB + wantB).length }));
 
   // --- (p) THE PACK × VERSION ROWS: the unit a pack-quality question is asked in. One lane books
   // each delivered pack once; two versions of one pack are two rows; a receipt that names no packs

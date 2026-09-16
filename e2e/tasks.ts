@@ -1292,27 +1292,16 @@ export async function run(ctx: Ctx): Promise<void> {
       const lastOut = async (id: number): Promise<number> =>
         (((await (await get("/api/sessions")).json()) as { slots: { id: number; lastOutput: number }[] })
           .slots.find((s) => s.id === id)?.lastOutput ?? 0);
-      // A is touched ONCE and then left alone; B is touched until the server agrees B is the newer
-      // of the two. Re-probing BOTH would race the very thing being established — A can leapfrog B
-      // on the next round, which is how the first attempt at this loop still handed the round to B
-      // (isolated-20260916T160000Z, delta=-407ms after 12 rounds). A swallowed stamp is never
-      // retried into existence either: the quiet window is ~1.5 s wide, so B's next probe lands
-      // outside it, and A cannot move while that happens.
+      // THIS BLOCK NO LONGER ESTABLISHES THE ORDER — it only proves both panes answer at all.
+      // Establishing it here is what failed: the premise held at THIS instant and had to survive a
+      // `POST /api/lanes`, four task creates and two tick waits before the round read it, on a
+      // margin of tens of milliseconds. It did not (docs/verify-tiering.md §11.2y, signature S1).
+      // The order is now established directly in front of the round, inside the quiet-hours window
+      // — the one stretch where the policy gate guarantees nothing can be delivered meanwhile.
       const aEnv = await paneEnv(`s${mainA}`, "HOME");
-      let bEnv: string | null = null;
-      let aOut = await lastOut(mainA);
-      let bOut = 0;
-      for (let i = 0; i < 15 && !(aOut > 0 && bOut > aOut); i++) {
-        if (i > 0) await Bun.sleep(300); // let a quiet window that swallowed the last probe expire
-        bEnv = await paneEnv(`s${mainB}`, "HOME");
-        aOut = await lastOut(mainA);
-        bOut = await lastOut(mainB);
-      }
+      const bEnv = await paneEnv(`s${mainB}`, "HOME");
       check("backlog nudge setup: both eligible main panes answer the paneEnv activity probe",
         aEnv !== null && bEnv !== null, `A=${aEnv} B=${bEnv}`);
-      check("backlog nudge setup: the server reads A as the longer-idle main, which is what the ranking check below rests on",
-        aOut > 0 && bOut > 0 && aOut < bOut,
-        `A(s${mainA}).lastOutput=${aOut} B(s${mainB}).lastOutput=${bOut} delta=${bOut - aOut}ms`);
 
       const laneRes = await post("/api/lanes", { repo: REPO });
       const lane = (await laneRes.json()) as { slot?: number };
@@ -1355,6 +1344,54 @@ export async function run(ctx: Ctx): Promise<void> {
       // lane row, so a prompt observed below cannot have slipped through during fixture creation.
       await Bun.sleep(afterTick(0, NUDGE_TICK_MS));
       check("backlog nudge honors quiet hours", (await nudges()).length === 0);
+
+      // THE IDLE ORDER, ESTABLISHED IN FRONT OF THE ROUND AND MADE OF A FACT INSTEAD OF A MARGIN.
+      // Two steps, and the ORDER of them is the whole repair:
+      // (1) A SETTLES. The same `lastOutput` twice across a window wider than the server's 1500 ms
+      //     post-attach quiet window AND 16 turns of its 100 ms stream poll (server.ts, `poll()`).
+      //     Both regimes are covered without having to know which one is in play: a stamp still in
+      //     flight lands inside it, a stamp the quiet window swallowed never lands at all. After
+      //     it agrees, nothing of A's is in flight and A cannot move on its own any more — and
+      //     nothing below touches A until the round itself does.
+      // (2) ONLY THEN is B touched. Its fresh stamp is younger than a settled A BY CONSTRUCTION,
+      //     and the margin is the settle window rather than the tens of milliseconds two adjacent
+      //     boot stamps happen to differ by. Measured before this: `delta=31ms` red, `delta=32ms`
+      //     green — a coin, read as a premise.
+      // A is re-read after B's probe: if it moved anyway, the attempt is DISCARDED, never averaged
+      // away. Four attempts, and the detail says which step gave out, so a future red names the
+      // step instead of the outcome.
+      const A_SETTLE_MS = 1600;
+      let aOut = 0;
+      let bOut = 0;
+      let attempts = 0;
+      let settleNote = "";
+      for (attempts = 1; attempts <= 4; attempts++) {
+        const a1 = await lastOut(mainA);
+        await Bun.sleep(A_SETTLE_MS);
+        const a2 = await lastOut(mainA);
+        if (!(a1 > 0 && a1 === a2)) { settleNote = `A still moving (${a1}->${a2})`; continue; }
+        await paneEnv(`s${mainB}`, "HOME");
+        // paneEnv returns when the MARKER is on the pane; the stamp follows up to one turn of the
+        // server's 100 ms stream poll later. So B is READ UNTIL it is actually younger, instead of
+        // once and hoping — otherwise the first attempt fails on the poll lag alone and the
+        // `attempts` in the detail would count the harness, not the fixture.
+        bOut = 0;
+        for (let t = 0; t < 25 && !(bOut > a2); t++) {
+          if (t > 0) await Bun.sleep(100);
+          bOut = await lastOut(mainB);
+        }
+        const a3 = await lastOut(mainA);
+        if (a3 !== a2) { settleNote = `A moved while B was probed (${a2}->${a3})`; bOut = 0; continue; }
+        aOut = a3;
+        if (bOut > aOut) { settleNote = ""; break; }
+        settleNote = `B not younger (A=${aOut} B=${bOut})`; // B's paint was swallowed — probe again
+        bOut = 0;
+      }
+      check("backlog nudge setup: the server reads A as the longer-idle main, which is what the ranking check below rests on",
+        aOut > 0 && bOut > 0 && aOut < bOut,
+        `A(s${mainA}).lastOutput=${aOut} B(s${mainB}).lastOutput=${bOut} delta=${bOut - aOut}ms`
+          + ` settle=${A_SETTLE_MS}ms attempts=${attempts}${settleNote ? ` last=${settleNote}` : ""}`);
+
       await post("/api/autos/quiet", { start: null });
 
       // INSTRUMENT (2026-09-16, MAIN-Entscheid zu 5aeaa29d). WHICH of the two mains this round picks
@@ -1362,9 +1399,10 @@ export async function run(ctx: Ctx): Promise<void> {
       // candidates are sorted by `lastOutput` ascending, and the OLDEST may still be skipped when
       // canDeliver refuses it (the "a rejected oldest candidate does not starve the next" path). The
       // setup line above can therefore be green — A genuinely older at THAT instant — and the round
-      // still land on B, which is exactly what happened (delta=31ms, red anyway). Two models of this
-      // block have now been falsified, so the fixture SAMPLES the deciding facts at the poll that
-      // first sees the prompt instead of inferring them afterwards. The samples ride in the detail
+      // still land on B, which is exactly what happened (delta=31ms, red anyway). That distance is
+      // gone — the setup line now sits directly above this round and rests on a settled A, not on a
+      // margin — so the samples below are no longer the only witness. They stay: they are what says
+      // whether a future red is the ranking or the premise, and they cost one GET per poll. The samples ride in the detail
       // of the ranking check, which the trail keeps only when that check FAILS.
       const samples: string[] = [];
       const sampleRow = (sx: { now: number; slots: { id: number; lastOutput: number; agent: string | null }[] },

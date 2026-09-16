@@ -4876,6 +4876,25 @@ export async function run(ctx: Ctx): Promise<void> {
   // --- Task.files + Task.cluster: one deterministic projector, three surface states. This sits
   // beside refine because refine-confirm is the stronger origin whose precedence it must preserve.
   {
+    // THE BRIEF COMPILER IS TURNED OFF FIRST, and that is a PRECONDITION of this block, not tidiness.
+    // §(h) left this server armed (restartSrv(hEnv): FLEET_BRIEF_MS=1000 plus the enhancer stand-in),
+    // so a brief sweep ticks beside every row created below — and compileBriefs re-checks NOTHING
+    // after its `await runEnhance` (server.ts#compileBriefs): briefDue's "compiled, hands off" was
+    // read one enhancer-runtime earlier. A sweep that picks a row up in the few ms before the owner's
+    // POST /brief therefore overwrites that brief with the machine draft AFTER it, and the draft
+    // repeats the row's own text — which never names `.gitignore`. That is the whole of the
+    // "a new brief re-derives it" flake: 3 of 19 stored helper runs, always the same shape
+    // (files ["fleet-e2e.ts"], origin derived, a moved sha), reproduced deterministically with a
+    // slow stand-in enhancer. The product race is reported on its own line; this block's subject is
+    // the SURFACE, and a surface check must not share its one input with a second writer.
+    const surfaceRepo = ((await (await get("/api/sessions")).json()) as
+      { dispatch: { repo: string } }).dispatch.repo;
+    await restartSrv({ ...(surfaceRepo ? { FLEET_DISPATCH_REPO: surfaceRepo } : {}), FLEET_BRIEF_MS: "0" });
+    const surfaceCompiler = ((await (await get("/api/sessions")).json()) as
+      { briefCompiler?: { on?: boolean } }).briefCompiler;
+    check("surface setup: the brief compiler is OFF for this block — task.brief has one writer",
+      surfaceCompiler?.on !== true, JSON.stringify({ briefCompiler: surfaceCompiler ?? null, repo: surfaceRepo }));
+
     const tracked = new Set([
       "server.ts", "server/persist.ts", "src/client.ts", "src/protocol.ts", "e2e/tasks.ts",
       "docs/guide.md", "watchdog.sh", "attic/worker-deepseek.py", ".gitignore",
@@ -5024,14 +5043,16 @@ export async function run(ctx: Ctx): Promise<void> {
     // ...and the whole thing is PERSISTED now, which `cluster` deliberately still is not. `sha`
     // hashes every input the derivation read, so the second poll reuses the first one's result
     // rather than re-reading a 10 000-node graph per row per 2 s.
-    interface SRow { id: string; surface?: { files: string[]; ranges: unknown; origin: string; sha: string; at: number } }
+    interface SRow { id: string; brief?: { text: string; by?: string; model?: string; edited?: boolean };
+      surface?: { files: string[]; ranges: unknown; origin: string; sha: string; at: number } }
     const surfaceTask = ((await (await post("/api/tasks", {
       text: "BAU: fleet-e2e.ts bekommt eine Zeile.\nVERIFY: `bun e2e/pins.ts` bleibt gruen.",
       queue: false, repo: REPO,
     })).json()) as { task: { id: string } }).task;
-    const surfaceOf = async (): Promise<SRow["surface"]> =>
+    const surfaceRow = async (): Promise<SRow | undefined> =>
       ((await (await get("/api/tasks")).json()) as { tasks: SRow[] })
-        .tasks.find((row) => row.id === surfaceTask.id)?.surface;
+        .tasks.find((row) => row.id === surfaceTask.id);
+    const surfaceOf = async (): Promise<SRow["surface"]> => (await surfaceRow())?.surface;
     const surfaceFirst = await surfaceOf();
     const surfaceSecond = await surfaceOf();
     check("surface: the derived surface is stored on the row, quote-filtered, with ranges null off-graph",
@@ -5044,13 +5065,20 @@ export async function run(ctx: Ctx): Promise<void> {
     // and it is a CACHE: the BRIEF is one of the hashed inputs, so pinning one moves the sha and
     // the surface is re-derived. Without this the stored value would be a stamp, not a hash, and a
     // row could carry a surface older than the text it describes.
-    await post(`/api/tasks/${surfaceTask.id}/brief`, {
+    const surfaceBriefPost = await post(`/api/tasks/${surfaceTask.id}/brief`, {
       text: "BAU: .gitignore bekommt eine Zeile.\nVERIFY: `bun e2e/pins.ts` bleibt gruen.",
     });
-    const surfaceAfterBrief = await surfaceOf();
+    // The detail carries the two INPUTS this check reads, not only its result. Written after the
+    // flake above was measured: a surface of ["fleet-e2e.ts"] here means either that the POST was
+    // refused or that the brief on the row is no longer the one filed one line earlier, and the
+    // old detail — the surface alone — could not tell those apart from a broken derivation.
+    const surfaceAfterRow = await surfaceRow();
+    const surfaceAfterBrief = surfaceAfterRow?.surface;
     check("surface: a new brief re-derives it — the stored sha is an INPUT hash, not a write stamp",
       surfaceAfterBrief?.files.join(" ") === ".gitignore fleet-e2e.ts"
-      && surfaceAfterBrief.sha !== surfaceFirst?.sha, JSON.stringify(surfaceAfterBrief));
+      && surfaceAfterBrief.sha !== surfaceFirst?.sha,
+      JSON.stringify({ surface: surfaceAfterBrief, briefPost: surfaceBriefPost.status,
+        brief: surfaceAfterRow?.brief }));
     // ...and the stored `origin` cannot be forged apart from the row. `sha` is computed from public
     // inputs, so a hand-edited state could carry a hash that checks out over an `origin:"confirmed"`
     // nobody confirmed — and every R3 reader downstream treats that word as the owner's act. Written

@@ -3210,8 +3210,8 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // FOUNDING_BOOT_GRACE_MS without moving the fixture would silently demote that block to a proof
   // of the grace, and lowering it would leave the marker inside the readiness budget by luck.
   // Since 2026-09-16 it is the EXPRESSION that is mirrored, not the number. The grace became an env
-  // knob the isolated suite shortens (FLEET_FOUNDING_BOOT_GRACE_MS=750 there), so a fixture holding
-  // the literal 4000 would plant its "late" marker four seconds into a 750 ms world: past the
+  // knob the isolated suite shortens (FLEET_FOUNDING_BOOT_GRACE_MS=2000 there), so a fixture holding
+  // the literal 4000 would plant its "late" marker four seconds into a 2 000 ms world: past the
   // readiness budget, i.e. proving a timeout instead of a delivery. One parse, one floor, one
   // default, on both sides — the same shape as the MERGE_IDLE_MS pair further down.
   const GRACE_EXPR = "Math.max(250, Number(process.env.FLEET_FOUNDING_BOOT_GRACE_MS ?? 4000) | 0)";

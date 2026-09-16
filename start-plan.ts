@@ -140,6 +140,53 @@ export interface StartPlanLane {
   // (binary, mode); absent = not read (no fork sha, the diff failed). See collision for the order.
   hunks?: Readonly<Record<string, readonly TaskWaveRange[]>>;
 }
+
+/**
+ * WHETHER A LANE CLAIMS ITS SURFACE AT ALL (2026-09-15). False means the caller hands this plan a
+ * lane with `files: null` and `ranges: null` — no collision edge, while the lane keeps counting
+ * against both caps below, because projectStartPlan reads `repoLanes.length` and the program's
+ * lanes and never a surface.
+ *
+ * A LANE PARKED ON THE OWNER WITH A TREE IT HAS NOT WRITTEN TO IS NOT WORKING. It has proposed what
+ * "done" means and stands until the owner confirms, a wait with no bound; held with the full
+ * collision rule it becomes a cap nobody decided — slot 1 stood from 13:04 to 15:21 on 2026-09-15
+ * with an unconfirmed criterion and held nine released rows by itself.
+ *
+ * THE CONDITION IS THE CRITERION, NOT `awaiting` — that field does not carry the state on its own.
+ * server.ts#tickDispatch starts a policy-released row with clarify=false, so a row whose TEXT
+ * demands CLARIFY FIRST runs at awaiting null (three times on row b28b9d89, 2026-09-15), and any
+ * owner /send clears awaiting "owner" while the criterion stays unconfirmed. `awaiting === "owner"`
+ * is kept as the second half: the same wait read from the lifecycle side instead of the row side.
+ * `awaiting === "main"` is NOT this case — a MAIN answers on its own tick, and a lane waiting for
+ * one sits between two acts of its own work.
+ *
+ * AND THE TREE MUST PROVE IT WROTE NOTHING: ahead 0 and dirty 0. That is what makes dropping the
+ * edge a fact rather than a hope — the lane holds no commit and no uncommitted line, so a row
+ * starting on its files overlaps nothing that exists yet. An UNKNOWN reading (`git: null`) holds
+ * exactly as before: unknown is never free, the direction `rangesOn` above reads by.
+ *
+ * THE PRICE, named: once the owner confirms, the lane resumes onto a file another lane now has
+ * open, and the two meet at the merge instead of at the plan. The same trade the waiting-wave
+ * loosening took (docs/messungen/2026-09-15-start-plan-stau-schnitt.md §4), and bounded by the caps.
+ *
+ * ONE RULE, TWO LANE BUILDERS: server.ts#startPlanNow reads the live slot, the CLI below reads a
+ * state file — each brings its OWN reading of the three facts, and neither owns the rule.
+ */
+export interface StartPlanLaneClaim {
+  // the founding row's criterion (server/types.ts#TaskCriterion). A criterion exists only once
+  // PROPOSED — both doors stamp proposedAt and confirmedAt together — so "unconfirmed" is
+  // `confirmedAt === null`, the same reading server.ts#laneAutoCloseRefusal makes of the question.
+  criterion: { proposedAt: number; confirmedAt: number | null } | null;
+  awaiting: "owner" | "main" | null;
+  // ahead/dirty for the lane's own tree; null = not read, which is never read as zero
+  git: { ahead: number; dirty: number } | null;
+}
+export function startPlanLaneClaims(lane: StartPlanLaneClaim): boolean {
+  const parkedOnOwner = (!!lane.criterion && lane.criterion.confirmedAt === null)
+    || lane.awaiting === "owner";
+  if (!parkedOnOwner) return true;
+  return !(lane.git !== null && lane.git.ahead === 0 && lane.git.dirty === 0);
+}
 export interface StartPlanCap { max: number; source: "default" | "repo" }
 export interface StartPlanRepoCaps extends StartPlanCap {
   // the per-program cap this repo computes for each program (server.ts#programDispatchCap); a
@@ -345,9 +392,10 @@ const argAfter = (name: string): string | null => {
 interface StateTask {
   id?: unknown; kind?: unknown; text?: unknown; source?: unknown; status?: unknown; slot?: unknown; programId?: unknown;
   card?: (StartPlanCardFacts & { after?: unknown }) | null; brief?: { at?: unknown } | null; hold?: unknown;
-  variantOf?: unknown; variants?: unknown;
+  variantOf?: unknown; variants?: unknown; criterion?: { proposedAt?: unknown; confirmedAt?: unknown } | null;
 }
-interface StateSlot { cwd?: unknown; worktree?: { repo?: unknown; baseSha?: unknown } | null; programId?: unknown }
+interface StateSlot { cwd?: unknown; worktree?: { repo?: unknown; baseSha?: unknown } | null; programId?: unknown;
+  taskId?: unknown; awaiting?: unknown }
 
 async function cli(): Promise<void> {
   const statePath = argAfter("--state");
@@ -414,6 +462,32 @@ async function cli(): Promise<void> {
   // a lane's repo is stored canonical; map it back onto the projection's own repo string
   const projectionRepoFor = new Map(projection.repos.map((r) => [canon(r.repo), r.repo]));
   const slots = state.slots && typeof state.slots === "object" ? state.slots as Record<string, StateSlot> : {};
+  // The two facts startPlanLaneClaims needs that a state file does not hold, read here once per lane
+  // exactly as server.ts#tickGit caches them per tick: `ahead` as commits of the lane's own (HEAD
+  // beyond its fork sha — zero precisely when the server's count against the base BRANCH is zero,
+  // which is the only value the rule reads), `dirty` as the working tree's own porcelain lines with
+  // untracked included. A spawn that could not run, or a count that does not parse, leaves the
+  // reading UNKNOWN — null, never an invented zero, because zero is what frees the surface.
+  const laneGitOf = (cwd: string, forkSha: string): { ahead: number; dirty: number } | null => {
+    const g = (...args: string[]): { ok: boolean; out: string } => {
+      const r = Bun.spawnSync(["git", "-C", cwd, ...args],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+      return { ok: r.success, out: r.stdout.toString() };
+    };
+    const ahead = g("rev-list", "--count", `${forkSha}..HEAD`);
+    const dirty = g("status", "--porcelain");
+    const n = Number(ahead.out.trim());
+    if (!ahead.ok || !dirty.ok || !Number.isFinite(n)) return null;
+    return { ahead: n, dirty: dirty.out.split("\n").filter((line) => line.trim()).length };
+  };
+  // the FOUNDING row as server.ts#foundingRowOf picks it: the slot's own taskId among the rows it
+  // runs, else the first of them — a hand-opened lane and a slot from before the field both fall back
+  const criterionOf = (task: StateTask | undefined): StartPlanLaneClaim["criterion"] => {
+    const c = task?.criterion;
+    if (!c || typeof c !== "object") return null;
+    return { proposedAt: typeof c.proposedAt === "number" ? c.proposedAt : 0,
+      confirmedAt: typeof c.confirmedAt === "number" ? c.confirmedAt : null };
+  };
   const lanes: StartPlanLane[] = [];
   for (const [id, slot] of Object.entries(slots)) {
     const laneRepo = typeof slot.worktree?.repo === "string" ? slot.worktree.repo : null;
@@ -429,10 +503,17 @@ async function cli(): Promise<void> {
       ? Bun.spawnSync(["git", "-C", slot.cwd, ...laneHunkDiffArgs(forkSha)],
         { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } })
       : null;
+    const laneCwd = typeof slot.cwd === "string" ? slot.cwd : "";
+    const claims = startPlanLaneClaims({
+      criterion: criterionOf((typeof slot.taskId === "string" && ownRows.find((t) => t.id === slot.taskId)) || ownRows[0]),
+      awaiting: slot.awaiting === "owner" || slot.awaiting === "main" ? slot.awaiting : null,
+      git: laneCwd && forkSha ? laneGitOf(laneCwd, forkSha) : null,
+    });
     lanes.push({ ...(diff?.success ? { hunks: laneHunkRanges(diff.stdout.toString()) } : {}), slot: Number(id), repo: laneRepo ? projectionRepoFor.get(canon(laneRepo)) ?? laneRepo : null, programId,
-      // one row without a known surface makes the lane's surface unknown as a whole
-      files: own.length && own.every((s) => s.files) ? files : null,
-      ranges: own.some((s) => s.ranges) ? own.flatMap((s) => s.ranges ?? []) : null,
+      // one row without a known surface makes the lane's surface unknown as a whole, and a lane that
+      // claims nothing (startPlanLaneClaims) drops BOTH halves — a surface half-stated reads as a claim
+      files: claims && own.length && own.every((s) => s.files) ? files : null,
+      ranges: claims && own.some((s) => s.ranges) ? own.flatMap((s) => s.ranges ?? []) : null,
       ...(variantOf ? { variantOf } : {}) });
   }
   lanes.sort((a, b) => a.slot - b.slot);

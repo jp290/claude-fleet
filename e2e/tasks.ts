@@ -1357,19 +1357,43 @@ export async function run(ctx: Ctx): Promise<void> {
       check("backlog nudge honors quiet hours", (await nudges()).length === 0);
       await post("/api/autos/quiet", { start: null });
 
+      // INSTRUMENT (2026-09-16, MAIN-Entscheid zu 5aeaa29d). WHICH of the two mains this round picks
+      // is decided server-side in tickBacklogNudge from facts that move between our reads: the
+      // candidates are sorted by `lastOutput` ascending, and the OLDEST may still be skipped when
+      // canDeliver refuses it (the "a rejected oldest candidate does not starve the next" path). The
+      // setup line above can therefore be green — A genuinely older at THAT instant — and the round
+      // still land on B, which is exactly what happened (delta=31ms, red anyway). Two models of this
+      // block have now been falsified, so the fixture SAMPLES the deciding facts at the poll that
+      // first sees the prompt instead of inferring them afterwards. The samples ride in the detail
+      // of the ranking check, which the trail keeps only when that check FAILS.
+      const samples: string[] = [];
+      const sampleRow = (sx: { now: number; slots: { id: number; lastOutput: number; agent: string | null }[] },
+        id: number): unknown => {
+        const r = sx.slots.find((x) => x.id === id);
+        if (!r) return null;
+        return { out: r.lastOutput, idle: r.lastOutput > 0 ? sx.now - r.lastOutput : null, agent: r.agent };
+      };
       let first: Awaited<ReturnType<typeof nudges>> = [];
       for (let i = 0; i < 40; i++) {
+        const sx = (await (await get("/api/sessions")).json()) as
+          { now: number; slots: { id: number; lastOutput: number; agent: string | null }[] };
+        samples.push(JSON.stringify({ t: sx.now, A: sampleRow(sx, mainA), B: sampleRow(sx, mainB) }));
         first = await nudges();
         if (first.length) break;
         await Bun.sleep(100);
       }
+      // the three polls around the one that saw it — the ordering the round actually sorted on
+      const nudgeWindow = samples.slice(-3).join(" | ");
       // Remove B before another round: this lets the next full tick prove A's same-set marker
       // without legitimately delivering the same backlog to a different session in a later round.
       if (first.length) await post(`/api/slots/${mainB}/kill`, {});
       check("backlog nudge sends exactly one slot in the round, choosing the longest-idle main",
         first.length === 1 && first[0].slot === mainA
         && !first.some((p) => p.slot === mainB || p.slot === stewardMain || p.slot === awaitingMain
-          || p.slot === lane.slot), JSON.stringify(first.map((p) => ({ slot: p.slot, text: p.text.slice(0, 60) }))));
+          || p.slot === lane.slot),
+        `${JSON.stringify(first.map((p) => ({ slot: p.slot, ts: p.ts, text: p.text.slice(0, 40) })))}`
+          + ` A=s${mainA} B=s${mainB} lane=s${lane.slot} steward=s${stewardMain} awaiting=s${awaitingMain}`
+          + ` polls[last3]: ${nudgeWindow}`);
       const firstText = first[0]?.text ?? "";
       check("backlog nudge text counts lane rows and previews exactly the three oldest ids",
         firstText.includes("4 offene Lane-Zeilen") && ids.slice(0, 3).every((id) => firstText.includes(id))

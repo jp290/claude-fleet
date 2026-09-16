@@ -3999,3 +3999,60 @@ entfernt, die Schleife wieder ueber alle Wellenzeilen) mit genau dem Fingerprint
 `"status":"queued","note":"dispatch failed: slot changed before paste; lane kept (git status failed — worktree gone?)"`.
 
 **Ein Rot dieses Checks NACH `f8f3ee90` ist wieder ECHT.**
+
+### 11.2x Eine fünfundzwanzigste Familie: „surface: a new brief re-derives it" in `e2e/tasks.ts` — KEIN Sonden-Flake um eine Rate, sondern ein ZWEITER SCHREIBER auf `task.brief` (2026-09-16 registriert; Mechanismus am Code gelesen, per langsamem Enhancer ERZWUNGEN; sondenseitig GESCHLOSSEN, die Produkt-Wurzel bleibt offen)
+
+**Fingerprint** (Detail der Check-Zeile, vor dieser Lane die Fläche allein):
+
+> `{"files":["fleet-e2e.ts"],"ranges":null,"origin":"derived","at":<20–30 ms nach surfaceFirst>,"sha":<≠ surfaceFirst.sha>}`
+
+Also: `.gitignore` fehlt, alles andere sieht gesund aus — `origin` ist `derived` (kein Karten-Lift,
+kein `card-`-Präfix am sha), der sha hat sich BEWEGT und die Ableitung ist FRISCH gelaufen. Genau
+diese Kombination schliesst die zwei naheliegenden Lesarten aus: weder eine stehengebliebene
+Momentaufnahme noch ein Cache-Treffer.
+
+**Sichtungen, über beide Register gerechnet:** second-host 4 von 19 gespeicherten `suite.log`
+(`streams/helper-artifacts/{887dcf4b23b8/1789492018097, 5e5a6b6450d6/1789509348841,
+c1b93a9770f5/1789513871271}` plus der Post-Land-Audit `mainSha 4348df34`, 1 von 4520, dessen
+`out` im Ledger elidiert ist) — der dritte Artefakt-Lauf IST der Audit `mainSha 5407150c`
+(1 von 4905), also **vier verschiedene Läufe, alle auf dem Helfer**. Mac-Trail: **34 Läufe, die
+den Check enthalten, 0 Fails**. Der Host-Unterschied ist Laufzeit, nicht Plattform (siehe
+Mechanismus): der Helfer fährt bis zu zwei Suiten parallel, und das Fenster ist die Laufzeit eines
+Unterprozesses.
+
+**Mechanismus, am Code gelesen.** `server.ts#compileBriefs` prüft nach seinem
+`await runEnhance(...)` NICHTS mehr nach und schreibt `t.brief = {text, at, model, edited:false}`
+bedingungslos. Die Auswahl, auf die es sich stützt, steht in `server.ts#briefDue`
+(`if (t.brief) return false; // machine-written or owner-edited: both mean "compiled, hands off"`)
+und ist zu diesem Zeitpunkt eine Enhancer-Laufzeit alt. Ein Owner-Brief, der über
+`POST /api/tasks/:id/brief` eintrifft, WÄHREND ein Compile fliegt, wird danach still überschrieben —
+samt seiner Autorenschaftsfelder (`model:"owner"`, `edited:true`, `by:"owner"` → `edited:false`,
+Compiler-Modell, kein `by`).
+
+Warum es ausgerechnet diesen Check trifft: `e2e/tasks.ts` §(h) lässt den Server ARMIERT stehen
+(`restartSrv(hEnv)`: `FLEET_BRIEF_MS=1000` plus den Enhancer-Stand-in), und der nächste Neustart lag
+bis heute erst IM Flächen-Block. Der Entwurf des Sweeps wiederholt den Zeilentext der Zeile — der
+`fleet-e2e.ts` nennt und nie `.gitignore`. Eine Überschreibung leitet die Fläche also exakt auf
+`["fleet-e2e.ts"]` zurück, unter bewegtem sha.
+
+**Mutationsprobe** (Scratch-Instanz, eigener Socket/Port, Enhancer-Stand-in mit 3 s Schlaf, sonst
+derselbe Server, dieselben Routen, dieselbe Zusicherung): mit armiertem Compiler **10 von 10 rot**,
+mit `FLEET_BRIEF_MS=0` **0 von 20 rot**. Die rote Zeile zeigt den Tausch direkt:
+`brief={"text":"COMPILED-BRIEF::BAU: fleet-e2e.ts …","model":"claude-sonnet-5[1m]","edited":false}`,
+wo eine Sekunde vorher `{"…gitignore…","model":"owner","edited":true,"by":"owner"}` stand.
+
+**Reparatur, sondenseitig** (Branch `fleet/260916124524-58c4`, MAIN trägt die Landing-Sha nach):
+der Flächen-Block öffnet mit einem `restartSrv({FLEET_DISPATCH_REPO, FLEET_BRIEF_MS:"0"})` — dem
+Muster, das §(h) bei 4592/4603 schon fährt — plus einer Setup-Zeile, die den Aus-Zustand MISST
+(`briefCompiler` auf `GET /api/sessions`). Die Bedingung des Checks ist byte-gleich geblieben; sein
+Detail trägt jetzt zusätzlich seine beiden EINGABEN (Status des Brief-POST, der Brief, der
+tatsächlich auf der Zeile steht), damit ein künftiges Rot benennt, welcher der drei Fälle es ist.
+**Ein Rot dieses Checks NACH dieser Landung ist wieder ECHT und deins.**
+
+**Was NICHT geschlossen ist.** Das Rennen liegt im PRODUKT und lebt weiter: jeder Owner-Brief, der
+einen laufenden Compile trifft, wird verworfen. Die Zeile, die das misst, ist `e2e/tasks.ts` §(h4)
+(„an owner-edited brief is pinned and nothing recompiles over it") — sie läuft absichtlich MIT
+armiertem Compiler, und ein Rot dort ist der Befund, nicht das Rauschen. Darum steht sie hier NICHT
+als Flake-Familie: wer sie so läse, winkte den Produktfehler durch. Die Reparatur ist als eigene
+Zeile vorgeschlagen (Bericht dieser Lane, 2026-09-16): `compileBriefs` muss nach dem `await` prüfen,
+ob die Zeile ihren Brief inzwischen bekommen hat, und dann nichts schreiben.

@@ -2610,138 +2610,167 @@ export async function run(): Promise<void> {
         { value: "0", attempts: 2 }, { value: "-2", attempts: 3 }, { value: "abc", attempts: 4 },
       ];
       let firstTransport: FleetReportEventRow | undefined;
+      let knobLatchOk = true;
       for (const round of knobRounds) {
         await restartWithKnob(round.value);
         round.latchReached = await reachedLatch(recoveryLatch);
+        // A missed precondition aborts the dependent probe HERE: no release (the parked attempt
+        // stays parked), no further restarts, no downstream verdicts — the named precondition
+        // check below is the only red. The success path measures every contract unchanged.
+        if (!round.latchReached) { knobLatchOk = false; break; }
         if (round.value === "0") firstTransport = await reportRow(rowId);
         writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
-        // The counter is monotonic and a round's row rests only once its recovery prose names the
-        // observed count, so the wait observes `>=` against that prose — never equality, which two
-        // attempts inside one poll window lose forever (docs/verify-tiering.md §11.2q). The exact
-        // count is the contract check below, not the wait.
-        round.row = await waitReportRow(rowId, (row) => row.attempts >= round.attempts
-          && row.recovery !== undefined && row.recovery.state === "retryable"
-          && row.recovery.reason.includes(`attempt ${row.attempts} of`));
+        // The counter is monotonic; the observation ends at the FIRST decisive rest: the round's
+        // count reached at rest (retryable, prose naming the observed count — never equality,
+        // which two attempts inside one poll window lose forever, §11.2q), OR the row leaving
+        // the retryable world entirely (blocked/terminal) — a jump to the cap ends the wait now,
+        // not at its timeout. Exact count/status/prose stay with the contract check below.
+        round.row = await waitReportRow(rowId, (row) => {
+          if (row.recovery !== undefined && row.recovery.state !== "retryable") return true;
+          return row.attempts >= round.attempts && row.recovery !== undefined
+            && row.recovery.reason.includes(`attempt ${row.attempts} of`);
+        });
       }
-      const completeAfterKnobs = await reportRow(completeReport?.eventId ?? "");
-      // One claim per check (§11.2q cut 3): precondition, transport, cap and ack each carry their
-      // own name and observed/expected detail, so a red line names the conjunct that fell.
       check("Q6 fixture precondition: the recovery latch is reached on every knob round",
         rowId !== "" && knobRounds.every((round) => round.latchReached === true),
         JSON.stringify({ rowIdPresent: rowId !== "",
-          rounds: knobRounds.map((r) => [r.value, r.latchReached ?? null]) }));
-      check("Q6 fleet-report transport: the first send rides the transport path, not recovery, and records attempt 1 of the default cap of 5",
-        firstTransport?.status === "send-uncertain" && firstTransport.attempts === 1
-          && firstTransport.recovery?.state === "retryable"
-          && firstTransport.recovery.reason.startsWith("transport send was not accepted")
-          && firstTransport.recovery.reason.includes("attempt 1 of 5"),
-        JSON.stringify({ latch0: knobRounds[0]?.latchReached ?? null, first: rowBrief(firstTransport),
-          expected: { status: "send-uncertain", attempts: 1, state: "retryable",
-            reason: "transport send was not accepted … attempt 1 of 5" } }));
-      check("Q6 fleet-report cap: zero, negative and non-numeric FLEET_REPORT_RECOVERY_MAX_ATTEMPTS fall back to the default of 5 on the recovery path, at the exact attempt count",
-        knobRounds.every((round) => round.row?.status === "send-uncertain"
-          && round.row.attempts === round.attempts && round.row.recovery?.state === "retryable"
-          && round.row.recovery.reason.includes(`attempt ${round.attempts} of 5`)),
-        JSON.stringify({ rounds: knobRounds.map((r) => ({ value: r.value, latch: r.latchReached ?? null,
-          observed: rowBrief(r.row), expected: { status: "send-uncertain", attempts: r.attempts,
-            state: "retryable", reason: `attempt ${r.attempts} of 5` } })) }));
-      check("Q6 fleet-report ack: an acknowledged row is never re-counted across the knob restarts",
-        completeAfterKnobs?.status === "acknowledged" && completeAfterKnobs.attempts === 2,
-        JSON.stringify({ observed: rowBrief(completeAfterKnobs),
-          expected: { status: "acknowledged", attempts: 2 } }));
+          rounds: knobRounds.map((r) => [r.value, r.latchReached ?? null]),
+          onMiss: "no release, no further restarts — dependent transport/cap/ack contracts and the cap-6 ladder stay unclaimed" }));
+      let starvedDelivered: FleetEventRow | undefined;
+      // Everything below CONSUMES the knob precondition: on a miss the probe is aborted
+      // above, this whole chain is skipped, and no contract verdict is claimed at all.
+      if (knobLatchOk) {
+        const completeAfterKnobs = await reportRow(completeReport?.eventId ?? "");
+        // One claim per check (§11.2q cut 3): precondition, transport, cap and ack each carry their
+        // own name and observed/expected detail, so a red line names the conjunct that fell.
+        check("Q6 fleet-report transport: the first send rides the transport path, not recovery, and records attempt 1 of the default cap of 5",
+          firstTransport?.status === "send-uncertain" && firstTransport.attempts === 1
+            && firstTransport.recovery?.state === "retryable"
+            && firstTransport.recovery.reason.startsWith("transport send was not accepted")
+            && firstTransport.recovery.reason.includes("attempt 1 of 5"),
+          JSON.stringify({ latch0: knobRounds[0]?.latchReached ?? null, first: rowBrief(firstTransport),
+            expected: { status: "send-uncertain", attempts: 1, state: "retryable",
+              reason: "transport send was not accepted … attempt 1 of 5" } }));
+        check("Q6 fleet-report cap: zero, negative and non-numeric FLEET_REPORT_RECOVERY_MAX_ATTEMPTS fall back to the default of 5 on the recovery path, at the exact attempt count",
+          knobRounds.every((round) => round.row?.status === "send-uncertain"
+            && round.row.attempts === round.attempts && round.row.recovery?.state === "retryable"
+            && round.row.recovery.reason.includes(`attempt ${round.attempts} of 5`)),
+          JSON.stringify({ rounds: knobRounds.map((r) => ({ value: r.value, latch: r.latchReached ?? null,
+            observed: rowBrief(r.row), expected: { status: "send-uncertain", attempts: r.attempts,
+              state: "retryable", reason: `attempt ${r.attempts} of 5` } })) }));
+        check("Q6 fleet-report ack: an acknowledged row is never re-counted across the knob restarts",
+          completeAfterKnobs?.status === "acknowledged" && completeAfterKnobs.attempts === 2,
+          JSON.stringify({ observed: rowBrief(completeAfterKnobs),
+            expected: { status: "acknowledged", attempts: 2 } }));
 
-      // Cap 6 from here: attempt 5 is the starvation window, attempt 6 the cap.
-      clearLatch(beforePasteLatch);
-      writeFileSync(beforePasteLatch, "post-land audit [event", { mode: 0o600 });
-      const capAuditStart = auditRows().length;
-      await restartWithKnob("6", { FLEET_TEST_SEND_BEFORE_PASTE_LATCH: beforePasteLatch });
-      const parked5 = await reachedLatch(recoveryLatch);
-      const rowAtPark5 = await reportRow(rowId);
-      check("Q6 fixture precondition: the recovery latch is reached with the report's fifth attempt parked under cap 6",
-        parked5, JSON.stringify({ parked5, observed: rowBrief(rowAtPark5) }));
-      check("Q6 fixture: the report row carries four counted attempts while its fifth parks at the recovery latch under cap 6",
-        parked5 && rowAtPark5?.attempts === 4,
-        JSON.stringify({ parked5, observed: rowBrief(rowAtPark5), expected: { attempts: 4 } }));
+        let starvedOfferedOk = false;
+        let parked6Ok = false;
+        // Cap 6 from here: attempt 5 is the starvation window, attempt 6 the cap.
+        clearLatch(beforePasteLatch);
+        writeFileSync(beforePasteLatch, "post-land audit [event", { mode: 0o600 });
+        const capAuditStart = auditRows().length;
+        await restartWithKnob("6", { FLEET_TEST_SEND_BEFORE_PASTE_LATCH: beforePasteLatch });
+        const parked5 = await reachedLatch(recoveryLatch);
+        const rowAtPark5 = await reportRow(rowId);
+        check("Q6 fixture precondition: the recovery latch is reached with the report's fifth attempt parked under cap 6",
+          parked5, JSON.stringify({ parked5, observed: rowBrief(rowAtPark5) }));
+        if (parked5) {
+          check("Q6 fixture: the report row carries four counted attempts while its fifth parks at the recovery latch under cap 6",
+            parked5 && rowAtPark5?.attempts === 4,
+            JSON.stringify({ parked5, observed: rowBrief(rowAtPark5), expected: { attempts: 4 } }));
 
-      // While attempt 5 is parked, the same receiver gets a second pending event of another kind
-      // with a real idle gate. Minted by the audit watch on the tick that resumes, i.e. AFTER the
-      // report's paste and rollback in that same tick — the exact ordering that starved the inbox.
-      const starvedMainAfter = `5a4e0001${"0".repeat(32)}`;
-      const ledgerAt = Date.now();
-      appendFileSync(auditLedger, `${JSON.stringify({ at: ledgerAt, startedAt: ledgerAt - 1, ms: 1, repo: REPO,
-        main: "main", mainSha: starvedMainAfter, result: "green", cmd: "q6-fixture", exitCode: 0, out: "ALL PASS",
-        checks: { ran: 1, failed: 0 }, covers: [{ branch: "fleet/q6-starved", mainAfter: starvedMainAfter, at: ledgerAt - 2 }] })}\n`);
-      const starvedWatch = await post(`/api/slots/${main}/watch`,
-        { kind: "audit", repo: REPO, mainAfter: starvedMainAfter, idleSec: 1 });
-      const starvedWatchId = ((await starvedWatch.json()) as { watch?: { id: string } }).watch?.id ?? "";
-      // the receiver's lastOutput is its boot stamp; let the other event's 1 s idle gate be
-      // satisfiable on its own terms before the report's paste is allowed to happen
-      await Bun.sleep(1200);
-      writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
-      const starvedOffered = await reachedLatch(beforePasteLatch);
-      const rowAt5 = await reportRow(rowId);
-      const starvedHeld = (await eventRows()).find((e) => e.watchId === starvedWatchId);
-      check("Q6 fixture precondition: the before-paste latch holds the report's paste while the other event is offered to the same receiver",
-        starvedOffered, JSON.stringify({ offered: starvedOffered, report: rowBrief(rowAt5) }));
-      check("Q6 fleet-report starvation: the other pending event for the same receiver clears its idle gate while the held report is still below the cap",
-        starvedWatch.ok && starvedOffered
-          && rowAt5?.status === "send-uncertain" && rowAt5.attempts === 5
-          && rowAt5.recovery?.state === "retryable" && rowAt5.recovery.reason.includes("attempt 5 of 6")
-          && starvedHeld?.status === "send-uncertain" && starvedHeld.attempts === 1 && starvedHeld.deliveredAt === null,
-        JSON.stringify({ watch: starvedWatch.status, offered: starvedOffered,
-          report: rowBrief(rowAt5), other: rowBrief(starvedHeld) }));
+          // While attempt 5 is parked, the same receiver gets a second pending event of another kind
+          // with a real idle gate. Minted by the audit watch on the tick that resumes, i.e. AFTER the
+          // report's paste and rollback in that same tick — the exact ordering that starved the inbox.
+          const starvedMainAfter = `5a4e0001${"0".repeat(32)}`;
+          const ledgerAt = Date.now();
+          appendFileSync(auditLedger, `${JSON.stringify({ at: ledgerAt, startedAt: ledgerAt - 1, ms: 1, repo: REPO,
+            main: "main", mainSha: starvedMainAfter, result: "green", cmd: "q6-fixture", exitCode: 0, out: "ALL PASS",
+            checks: { ran: 1, failed: 0 }, covers: [{ branch: "fleet/q6-starved", mainAfter: starvedMainAfter, at: ledgerAt - 2 }] })}\n`);
+          const starvedWatch = await post(`/api/slots/${main}/watch`,
+            { kind: "audit", repo: REPO, mainAfter: starvedMainAfter, idleSec: 1 });
+          const starvedWatchId = ((await starvedWatch.json()) as { watch?: { id: string } }).watch?.id ?? "";
+          // the receiver's lastOutput is its boot stamp; let the other event's 1 s idle gate be
+          // satisfiable on its own terms before the report's paste is allowed to happen
+          await Bun.sleep(1200);
+          writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
+          const starvedOffered = await reachedLatch(beforePasteLatch);
+          const rowAt5 = await reportRow(rowId);
+          const starvedHeld = (await eventRows()).find((e) => e.watchId === starvedWatchId);
+          check("Q6 fixture precondition: the before-paste latch holds the report's paste while the other event is offered to the same receiver",
+            starvedOffered, JSON.stringify({ offered: starvedOffered, report: rowBrief(rowAt5) }));
+          starvedOfferedOk = starvedOffered === true;
+          if (starvedOffered) {
+            check("Q6 fleet-report starvation: the other pending event for the same receiver clears its idle gate while the held report is still below the cap",
+              starvedWatch.ok && starvedOffered
+                && rowAt5?.status === "send-uncertain" && rowAt5.attempts === 5
+                && rowAt5.recovery?.state === "retryable" && rowAt5.recovery.reason.includes("attempt 5 of 6")
+                && starvedHeld?.status === "send-uncertain" && starvedHeld.attempts === 1 && starvedHeld.deliveredAt === null,
+              JSON.stringify({ watch: starvedWatch.status, offered: starvedOffered,
+                report: rowBrief(rowAt5), other: rowBrief(starvedHeld) }));
 
-      // attempt 6 must park again; the other event is released into an accepting composer
-      rmSync(`${recoveryLatch}.reached`, { force: true });
-      rmSync(`${recoveryLatch}.release`, { force: true });
-      setReportComposerMode("normal");
-      writeFileSync(`${beforePasteLatch}.release`, "ok\n", { mode: 0o600 });
-      const starvedDelivered = await waitWatchEvent(starvedWatchId, (row) => row.status === "delivered");
-      const parked6 = await reachedLatch(recoveryLatch);
-      const rowBefore6 = await reportRow(rowId);
-      check("Q6 fixture precondition: the recovery latch is reached again for the report's sixth attempt after the other event is released",
-        parked6, JSON.stringify({ parked6, observed: rowBrief(rowBefore6) }));
-      check("Q6 fleet-report starvation: the other event is delivered on its first accepted attempt while the report row still waits below the cap",
-        starvedDelivered?.status === "delivered" && starvedDelivered.attempts === 1
-          && starvedDelivered.deliveredAt !== null && parked6
-          && rowBefore6?.attempts === 5 && rowBefore6.recovery?.state === "retryable",
-        JSON.stringify({ other: rowBrief(starvedDelivered), parked6, report: rowBrief(rowBefore6) }));
+            // attempt 6 must park again; the other event is released into an accepting composer
+            rmSync(`${recoveryLatch}.reached`, { force: true });
+            rmSync(`${recoveryLatch}.release`, { force: true });
+            setReportComposerMode("normal");
+            writeFileSync(`${beforePasteLatch}.release`, "ok\n", { mode: 0o600 });
+            starvedDelivered = await waitWatchEvent(starvedWatchId, (row) => row.status === "delivered");
+            const parked6 = await reachedLatch(recoveryLatch);
+            const rowBefore6 = await reportRow(rowId);
+            check("Q6 fixture precondition: the recovery latch is reached again for the report's sixth attempt after the other event is released",
+              parked6, JSON.stringify({ parked6, observed: rowBrief(rowBefore6) }));
+            parked6Ok = parked6 === true;
+            if (parked6) {
+              check("Q6 fleet-report starvation: the other event is delivered on its first accepted attempt while the report row still waits below the cap",
+                starvedDelivered?.status === "delivered" && starvedDelivered.attempts === 1
+                  && starvedDelivered.deliveredAt !== null && parked6
+                  && rowBefore6?.attempts === 5 && rowBefore6.recovery?.state === "retryable",
+                JSON.stringify({ other: rowBrief(starvedDelivered), parked6, report: rowBrief(rowBefore6) }));
 
-      setReportComposerMode("hold");
-      writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
-      const blocked = await waitReportRow(rowId, (row) => row.recovery?.state === "blocked");
-      rmSync(`${recoveryLatch}.reached`, { force: true });
-      await Bun.sleep(AUTOS_TICK_MS * 6);
-      const blockedStill = await reportRow(rowId);
-      const pastedAgain = existsSync(`${recoveryLatch}.reached`);
-      const cappedPrompts = (await plogRead()).filter((p) => p.slot === main
-        && p.text.includes(`report ${failedReport?.id}`)).length;
-      check("Q6 fleet-report cap: the sixth rollback-cleared non-acceptance blocks the same row at FLEET_REPORT_RECOVERY_MAX_ATTEMPTS and it is never pasted again",
-        blocked?.id === rowId && blocked?.status === "send-uncertain" && blocked.attempts === 6
-          && blocked.recovery?.state === "blocked"
-          && blocked.recovery.reason.includes("attempt 6 reached the cap of 6")
-          && blocked.recovery.nextAction === "manual receiver acknowledgement if the pane text was read, or MAIN/owner intervention"
-          && blocked.recovery.effect.includes("never pasted again")
-          && blocked.deliveredAt === null && blocked.acknowledgedAt === null
-          && !pastedAgain && blockedStill?.attempts === 6 && blockedStill.recovery?.state === "blocked"
-          && cappedPrompts === 0
-          && !auditRows().slice(capAuditStart).some((row) => row.event === "self_land_start"
-            || (row.event === "fleet_event_delivered" && (row.detail ?? "").startsWith(rowId))),
-        JSON.stringify({ blocked: rowBrief(blocked), pastedAgain, still: rowBrief(blockedStill),
-          prompts: cappedPrompts }));
-      const execution = await executionRow(rowId);
-      const executionRecovery = (execution.row as { status?: string; recovery?: { state?: string; nextAction?: string } } | null);
-      check("Q6 fleet-report cap: the blocked row is visible on GET /api/self/program-execution operations.events with its recovery and counts as an open debt",
-        executionRecovery?.status === "send-uncertain" && executionRecovery.recovery?.state === "blocked"
-          && executionRecovery.recovery.nextAction?.includes("MAIN/owner intervention") === true
-          && (execution.openDebts ?? 0) >= 1,
-        JSON.stringify(execution));
-      const blockedAck = await ackEvent(mainTok, rowId);
-      const blockedAcked = await reportRow(rowId);
-      check("Q6 fleet-report cap: the existing self ACK alone closes a blocked row, with its attempt count untouched",
-        blockedAck.ok && blockedAcked?.status === "acknowledged" && blockedAcked.attempts === 6
-          && blockedAcked.acknowledgedAt !== null && blockedAcked.deliveredAt === null,
-        JSON.stringify({ ack: blockedAck.status, row: rowBrief(blockedAcked) }));
+              setReportComposerMode("hold");
+              writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
+              const blocked = await waitReportRow(rowId, (row) => row.recovery?.state === "blocked");
+              rmSync(`${recoveryLatch}.reached`, { force: true });
+              await Bun.sleep(AUTOS_TICK_MS * 6);
+              const blockedStill = await reportRow(rowId);
+              const pastedAgain = existsSync(`${recoveryLatch}.reached`);
+              const cappedPrompts = (await plogRead()).filter((p) => p.slot === main
+                && p.text.includes(`report ${failedReport?.id}`)).length;
+              check("Q6 fleet-report cap: the sixth rollback-cleared non-acceptance blocks the same row at FLEET_REPORT_RECOVERY_MAX_ATTEMPTS and it is never pasted again",
+                blocked?.id === rowId && blocked?.status === "send-uncertain" && blocked.attempts === 6
+                  && blocked.recovery?.state === "blocked"
+                  && blocked.recovery.reason.includes("attempt 6 reached the cap of 6")
+                  && blocked.recovery.nextAction === "manual receiver acknowledgement if the pane text was read, or MAIN/owner intervention"
+                  && blocked.recovery.effect.includes("never pasted again")
+                  && blocked.deliveredAt === null && blocked.acknowledgedAt === null
+                  && !pastedAgain && blockedStill?.attempts === 6 && blockedStill.recovery?.state === "blocked"
+                  && cappedPrompts === 0
+                  && !auditRows().slice(capAuditStart).some((row) => row.event === "self_land_start"
+                    || (row.event === "fleet_event_delivered" && (row.detail ?? "").startsWith(rowId))),
+                JSON.stringify({ blocked: rowBrief(blocked), pastedAgain, still: rowBrief(blockedStill),
+                  prompts: cappedPrompts }));
+              const execution = await executionRow(rowId);
+              const executionRecovery = (execution.row as { status?: string; recovery?: { state?: string; nextAction?: string } } | null);
+              check("Q6 fleet-report cap: the blocked row is visible on GET /api/self/program-execution operations.events with its recovery and counts as an open debt",
+                executionRecovery?.status === "send-uncertain" && executionRecovery.recovery?.state === "blocked"
+                  && executionRecovery.recovery.nextAction?.includes("MAIN/owner intervention") === true
+                  && (execution.openDebts ?? 0) >= 1,
+                JSON.stringify(execution));
+              const blockedAck = await ackEvent(mainTok, rowId);
+              const blockedAcked = await reportRow(rowId);
+              check("Q6 fleet-report cap: the existing self ACK alone closes a blocked row, with its attempt count untouched",
+                blockedAck.ok && blockedAcked?.status === "acknowledged" && blockedAcked.attempts === 6
+                  && blockedAcked.acknowledgedAt !== null && blockedAcked.deliveredAt === null,
+                JSON.stringify({ ack: blockedAck.status, row: rowBrief(blockedAcked) }));
+            } // parked6
+          } // starvedOffered
+        } // parked5
+        if (!parked5 || !starvedOfferedOk || !parked6Ok) {
+          if (rowId !== "") await ackEvent(mainTok, rowId); // aborted ladder: close the open row; the tail restores composer/latch/ledger
+        }
+      } else {
+        if (rowId !== "") await ackEvent(mainTok, rowId); // aborted probe: close the open row; the tail restores composer/latch/ledger
+      }
       if (starvedDelivered) await ackEvent(mainTok, starvedDelivered.id);
       clearLatch(beforePasteLatch);
       // Later modules own the post-land ledger's zero-row fixtures (same restore as ACP-26 above).

@@ -72,6 +72,14 @@ export const waitMerge = async (slot: number, opts: { requireVerdict?: boolean }
 // Read back off the SAME env the server got (FLEET_MERGE_IDLE_MS, parsed and floored as server.ts
 // does), so the wait and the gate are one number — a harness that sets no knob keeps 3000.
 export const MERGE_IDLE_MS = Math.max(500, Number(process.env.FLEET_MERGE_IDLE_MS ?? 3000) | 0);
+// ...and the OTHER idle threshold, which is a DIFFERENT number and not interchangeable with it.
+// The lane predicates (done-looking, host-commit-looking) that `program-phase.ts` projects over are
+// evaluated against `server.ts#AUTO_REVIEW_IDLE_MS` — `programExecutionView` passes it as
+// `idleThresholdMs` — while MERGE_IDLE_MS above gates the LAND. A fixture that waits on the merge
+// gate and then asserts a PROJECTION is coupled to the wrong one; it merely looked right while the
+// merge gate (3 000/2 000) happened to be the wider of the two, and stopped the moment the suite
+// took it to its 500 ms floor. Same parse, same default as the server, for the same reason.
+export const AUTO_REVIEW_IDLE_MS = Number(process.env.FLEET_AUTO_REVIEW_IDLE_MS ?? 60_000) | 0;
 export const settleForMerge = async (slot: number): Promise<void> => {
   for (let i = 0; i < 80; i++) {
     const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };

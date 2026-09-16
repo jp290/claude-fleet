@@ -4148,8 +4148,10 @@ Abtastung alle 40 ms, frische Lane je Runde):
   **5 von 5** fallen weiterhin, `doorWouldSee=null missing=[idle]` — die Sonde wurde nicht
   entschärft, ihr wurde nur der EIGENE späte Schreiber genommen.
 
-**Reparatur, sondenseitig** (Lane `fleet/260916191349-89fe`; die Shas trägt die MAIN nach dem
-Rebase-Land nach): `awaitFoundingBrief` in `e2e/programs.ts` wartet auf eine POSITIVE Tatsache über
+**Reparatur, sondenseitig** (Lane `fleet/260916191349-89fe`; gelandet 2026-09-16 im Code als
+`f8d370ad` · `e2d78c26` · `6ada9242`, der Registereintrag als `1bcfdff6` · `96170615` · `6988539d`
+— alle sechs mit `git merge-base --is-ancestor <sha> main` gegen den Integrationsstand geprüft, nicht
+aus dem Lane-Log abgeschrieben): `awaitFoundingBrief` in `e2e/programs.ts` wartet auf eine POSITIVE Tatsache über
 diesen Schreiber statt auf einen längeren Schlaf — bis der Gründungs-Brief GELOGGT ist (`logPrompt`
 läuft erst nach `sendText`) und bis die Pane-Ausgabe, die er verursacht hat, BEOBACHTET wurde.
 Danach tippt nichts mehr in die Lane, die Idle-Uhr läuft monoton, und `done-looking` hört auf, eine

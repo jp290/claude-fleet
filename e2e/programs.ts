@@ -3557,7 +3557,8 @@ export async function run(ctx: Ctx): Promise<void> {
   // bounded readiness budget after it. Anchored on the pane (above), not on `openedAt`, and given a
   // margin that covers the tail of ensureSlot between the pane spawn and openSlot's return rather
   // than the 300 ms that used to have to cover the spawn itself.
-  const UNBOUND_GRACE_MS = 4000; // mirrors server.ts FOUNDING_BOOT_GRACE_MS — pinned in e2e/pins.ts
+  // mirrors server.ts FOUNDING_BOOT_GRACE_MS — the SAME env, parse and floor, pinned in e2e/pins.ts
+  const UNBOUND_GRACE_MS = Math.max(250, Number(process.env.FLEET_FOUNDING_BOOT_GRACE_MS ?? 4000) | 0);
   const UNBOUND_MARKER_MARGIN_MS = 1200;
   await Bun.sleep(Math.max(0,
     (unboundPaneAt || unboundSuccOpenedAt) + UNBOUND_GRACE_MS + UNBOUND_MARKER_MARGIN_MS - Date.now()));
@@ -6837,10 +6838,22 @@ export async function run(ctx: Ctx): Promise<void> {
   // v1 meaning" would hand a future schema today's permission. Proved twice, because the display
   // half and the behaviour half fail differently: the route stops sending the key, and the tick
   // refuses the granted program's machine-released row exactly as in (1).
+  // PLANTED WITH THE SERVER STOPPED, because a running server OWNS fleet.json: any saveState()
+  // between the read and the restart overwrites the plant with the in-memory record, and the check
+  // then measures the PREVIOUS grant instead of the unreadable one — it reads `absent` as a real
+  // v1 grant and the row it expects to stay queued legitimately starts. Not hypothetical: since
+  // (5) above began leaving a LIVE lane for pdKillLanes() to tear down, that teardown's save landed
+  // after the write (isolated-20260916T170721Z-5403, record back as (5)'s v1 grant, row `sent`).
+  // Stopping first removes the writer instead of racing it — the same discipline every other plant
+  // in this suite already follows — and the read-back below says whether the plant survived at all.
+  await stopSrv();
   const pdPlantState = readState();
   pdPlantState.programs = (pdPlantState.programs ?? []).map((x) => x.id === mainProgram.id
     ? { ...x, dispatch: { v: 2, on: true, maxLanes: 2, confirmedAt: Date.now() } } : x);
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(pdPlantState, null, 2), { mode: 0o600 });
+  const pdPlanted = (readState().programs ?? []).find((x) => x.id === mainProgram.id)?.dispatch;
+  check("program-dispatch (6) setup: the v2 record is on disk before the server is started on it",
+    (pdPlanted as { v?: number } | undefined)?.v === 2, JSON.stringify(pdPlanted ?? null));
   await restartSrv();
   await post("/api/dispatch", { on: false }); // a restart reloads the persisted switches
   await post("/api/autos/switch", { on: true });

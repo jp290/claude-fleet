@@ -3209,12 +3209,16 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // grace expires. The mirror is a source-level pair with no compiler between its halves: raising
   // FOUNDING_BOOT_GRACE_MS without moving the fixture would silently demote that block to a proof
   // of the grace, and lowering it would leave the marker inside the readiness budget by luck.
-  const serverGraceMs = /const FOUNDING_BOOT_GRACE_MS = (\d+);/.exec(server)?.[1] ?? "";
-  const fixtureGraceMs = /const UNBOUND_GRACE_MS = (\d+); \/\/ mirrors server\.ts FOUNDING_BOOT_GRACE_MS/
-    .exec(read("e2e/programs.ts"))?.[1] ?? "";
-  pin("the unbound-succession fixture mirrors the server's founding boot grace, so its late marker stays late",
-    serverGraceMs !== "" && serverGraceMs === fixtureGraceMs,
-    `server=${serverGraceMs || "missing"} fixture=${fixtureGraceMs || "missing"}`);
+  // Since 2026-09-16 it is the EXPRESSION that is mirrored, not the number. The grace became an env
+  // knob the isolated suite shortens (FLEET_FOUNDING_BOOT_GRACE_MS=750 there), so a fixture holding
+  // the literal 4000 would plant its "late" marker four seconds into a 750 ms world: past the
+  // readiness budget, i.e. proving a timeout instead of a delivery. One parse, one floor, one
+  // default, on both sides — the same shape as the MERGE_IDLE_MS pair further down.
+  const GRACE_EXPR = "Math.max(250, Number(process.env.FLEET_FOUNDING_BOOT_GRACE_MS ?? 4000) | 0)";
+  const serverGrace = server.includes(`const FOUNDING_BOOT_GRACE_MS = ${GRACE_EXPR};`);
+  const fixtureGrace = read("e2e/programs.ts").includes(`const UNBOUND_GRACE_MS = ${GRACE_EXPR};`);
+  pin("the unbound-succession fixture mirrors the server's founding boot grace EXPRESSION, so its late marker stays late at every grace",
+    serverGrace && fixtureGrace, `server=${serverGrace} fixture=${fixtureGrace}`);
   const executionStart = server.indexOf("async function programExecutionView(");
   const executionBody = executionStart < 0 ? ""
     : server.slice(executionStart, server.indexOf("\n}\n", executionStart));
@@ -3898,11 +3902,22 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // row the MACHINE released. Widening it to "any row of a granted program" would hand an owner's
   // 3am ▸ queue click an unattended lane, which is precisely what the window defers. For a wave the
   // pair holds for EVERY row (Schnitt 2): one owner-released row makes the whole lane an owner act.
+  // ...and it is asked at TWO gates, not one: the tick decides whether to spawn, and briefAndSend's
+  // post-spawn gate decides whether the brief may land in the pane it just opened. The second one
+  // carried no waiver until 2026-09-16 and requeued every row the first had waived — invisible
+  // because the row reads `sent` for the whole founding grace before the requeue. So both readers
+  // are pinned against each other: same predicate, same spread, and the waiver may not exist at the
+  // tick alone. (briefAndSend's copy names `next`/`waveRows` because it has no `pd`/`rows`.)
+  const bsBody = serverU.span("async function briefAndSend(", "\n}\n")?.text ?? "";
   pin("quiet hours are waived for exactly one pair — an active program grant and a machine-released row",
     /const quietWaived = !!pd && rows\.every\(\(row\) => row\.releasedBy === "machine"\);/.test(tBody)
     && /\.\.\.\(quietWaived \? \{ quietHours: false \} : \{\}\)/.test(tBody)
     && /if \(pre\.gate === "quiet-hours"\) continue;/.test(tBody),
     tBody.match(/const quietWaived[^\n]*/)?.[0] ?? "no waiver");
+  pin("...and the POST-SPAWN gate asks it with the same waiver — the tick's decision is not re-taken without it",
+    /const quietWaived = !!programDispatchOn\(next\) && waveRows\.every\(\(row\) => row\.releasedBy === "machine"\);/.test(bsBody)
+    && /: \{ idleMs: 0, \.\.\.\(quietWaived \? \{ quietHours: false \} : \{\}\) \};/.test(bsBody),
+    bsBody.match(/const quietWaived[^\n]*/)?.[0] ?? "briefAndSend has no waiver");
   // ...and the loader degrades a malformed dispatch record to ABSENT rather than repairing it
   // field-wise — loadPromotion's structural half, one record over, and here absence is the byte-for-
   // byte legacy behaviour under the global switch.
@@ -3987,7 +4002,9 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const sendCode = sendBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   const sendFreshnessGuard = /const mayStillBeBooting = Date\.now\(\) - occupant\.openedAt < SEND_BOOT_FRESH_MS;\s*if \(mayStillBeBooting\) \{\s*if \(bound\.comms\.length > 0\)/.test(sendCode);
   const freshLiteral = /const SEND_BOOT_FRESH_MS = ([\d_]+);/.exec(server)?.[1];
-  const waitLiteral = /const SEND_BOOT_WAIT_MS = ([\d_]+);/.exec(server)?.[1];
+  // `waitMs` is the knob's PRODUCTION DEFAULT (the isolated suite shortens the wait itself); what
+  // this pin holds is the relation between the two windows, which is a property of the defaults.
+  const waitLiteral = /const SEND_BOOT_WAIT_MS = Math\.max\(250, Number\(process\.env\.FLEET_SEND_BOOT_WAIT_MS \?\? ([\d_]+)\) \| 0\);/.exec(server)?.[1];
   const freshMs = Number(freshLiteral?.replaceAll("_", ""));
   const waitMs = Number(waitLiteral?.replaceAll("_", ""));
   const independentlySizedFreshness = freshMs >= 10_000 && waitMs > 0 && freshMs > waitMs;
@@ -8862,7 +8879,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     ["acceptance window 3 s", /Number\(process\.env\.FLEET_ACCEPT_WAIT_MS \?\? 3000\)/],
     ["device-online window 90 s", /Number\(process\.env\.FLEET_DEVICE_ONLINE_MS \?\? 90_000\)/],
     ["server suite-lock poll 5 s", /^const SUITE_LOCK_POLL_MS = 5_000;$/m],
-    ["founding boot grace 4 s", /^const FOUNDING_BOOT_GRACE_MS = 4000;$/m],
+    ["founding boot grace 4 s", /const FOUNDING_BOOT_GRACE_MS = Math\.max\(250, Number\(process\.env\.FLEET_FOUNDING_BOOT_GRACE_MS \?\? 4000\) \| 0\);/],
+    ["send boot wait 3 s", /const SEND_BOOT_WAIT_MS = Math\.max\(250, Number\(process\.env\.FLEET_SEND_BOOT_WAIT_MS \?\? 3000\) \| 0\);/],
   ];
   const moved = defaults.filter(([, re]) => !re.test(server)).map(([name]) => name);
   pin(`${RULE_DEFAULTS} — server.ts`, moved.length === 0,
@@ -8875,6 +8893,35 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_DEFAULTS} — e2e/lane-helpers.ts parses FLEET_MERGE_IDLE_MS exactly as server.ts does`,
     /export const MERGE_IDLE_MS = Math\.max\(500, Number\(process\.env\.FLEET_MERGE_IDLE_MS \?\? 3000\) \| 0\);/.test(helpers),
     "the harness idle wait and the server idle gate can disagree");
+  // ...and the SUITE side of the four SERVER WAIT WINDOWS (2026-09-16). The defaults above say the
+  // live fleet did not move; these say the suite is actually buying the cut it paid for in fixture
+  // work — a knob silently dropped from SRV_ENV would give every one of them back at full price
+  // and nothing would be red, only slow. e2e/security.ts is named here rather than in a family of
+  // its own because it is the one harness-side reader of the git tick: it sleeps a WHOLE tick on
+  // purpose (to defeat a stale paneAgentAt write), so a hard-coded 10 000 there would out-wait the
+  // shortened tick five times over and hand the saving straight back.
+  const isoWindows = /^SRV_ENV="([^\n]*)"$/m.exec(read("e2e-isolated.sh"))?.[1] ?? "";
+  const windowKnobs: [string, RegExp][] = [
+    ["FLEET_MERGE_IDLE_MS=500", /\bFLEET_MERGE_IDLE_MS=500\b/],
+    ["FLEET_GIT_TICK_MS=2000", /\bFLEET_GIT_TICK_MS=2000\b/],
+    ["FLEET_FOUNDING_BOOT_GRACE_MS=750", /\bFLEET_FOUNDING_BOOT_GRACE_MS=750\b/],
+    ["FLEET_SEND_BOOT_WAIT_MS=500", /\bFLEET_SEND_BOOT_WAIT_MS=500\b/],
+  ];
+  const missingWindows = windowKnobs.filter(([, re]) => !re.test(isoWindows)).map(([name]) => name);
+  pin(`${RULE_DEFAULTS} — e2e-isolated.sh STATES all four shortened server wait windows in SRV_ENV`,
+    isoWindows !== "" && missingWindows.length === 0,
+    isoWindows === "" ? "SRV_ENV line not found" : `dropped: ${missingWindows.join("; ")}`);
+  pin(`${RULE_DEFAULTS} — e2e/security.ts parses FLEET_GIT_TICK_MS exactly as server.ts does`,
+    /const GIT_TICK_MS = Math\.max\(1000, Number\(process\.env\.FLEET_GIT_TICK_MS \?\? 10_000\) \| 0\);/.test(read("e2e/security.ts")),
+    "the agentOf stale-tick sleep and the server's tick can disagree");
+  // …and the RESTART list, which is hand-kept: harness.restartSrv() forwards every FLEET_*, but
+  // e2e/restart.ts builds its own spawn line and a knob missing there restores the PRODUCTION
+  // window for every module that runs after that restart, silently.
+  const restartEnv = read("e2e/restart.ts");
+  const restartMissing = ["FLEET_MERGE_IDLE_MS", "FLEET_GIT_TICK_MS", "FLEET_FOUNDING_BOOT_GRACE_MS",
+    "FLEET_SEND_BOOT_WAIT_MS"].filter((k) => !restartEnv.includes(`"${k}"`));
+  pin(`${RULE_DEFAULTS} — e2e/restart.ts carries all four across its own srv respawn`,
+    restartMissing.length === 0, `dropped: ${restartMissing.join("; ")}`);
 }
 
 // ================================================================================================

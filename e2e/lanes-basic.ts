@@ -342,6 +342,63 @@ export async function run(lc: LaneCtx): Promise<void> {
   check("worktrees map lists the lane with its holding slot",
     wm.worktrees.some((w) => w.slot === lnSlot && w.branch === ln1.branch), JSON.stringify(wm.worktrees));
 
+  // --- THE SHARED BUSY FIXTURE for the two idle gates below, and it is not decoration. The gate's
+  // width is a suite knob (FLEET_MERGE_IDLE_MS: 500 ms here, 3000 unset), so the old guard — one
+  // `echo` and a fixed `< MERGE_IDLE_MS - 1000` margin — stopped being a guard the moment the
+  // suite shortened the gate: at 500 the condition reads `< -500`, a window that cannot open, and
+  // the whole block would have failed as a broken gate while the gate was fine. So the window is
+  // MADE, never borrowed from the gate: the pane is put on a bounded output generator, which holds
+  // `now - lastOutput` at well under the gate for the whole POST round-trip regardless of how wide
+  // the gate is. The non-tautology guard is then a BRACKET rather than a margin — busy read
+  // before the POST and again after it — which says the request window sat inside the gate without
+  // depending on how wide the gate is, at 500 ms or at 3000. ---
+  // 40 rounds of `echo; sleep 0.05`. The SLEEP is not the interval: forking /bin/sleep costs about
+  // as much again, so a round was measured at ~160 ms on this machine and the generator lives
+  // ~6 s — but what the bracket needs is only that the interval stays well under the gate, and at
+  // both ends of that range (50-160 ms vs 500 ms) it does.
+  const BUSY_TICKS = 40;
+  const holdBusy = async (tag: string): Promise<void> => {
+    await tmuxOut("send-keys", "-t", `s${lnSlot}`,
+      `i=0; while [ $i -lt ${BUSY_TICKS} ]; do echo ${tag}-$i; sleep 0.05; i=$((i+1)); done`, "Enter");
+  };
+  // ms since the server last OBSERVED output on the lane pane — the very number canDeliver gates
+  // on — or null when the slot has no row at all.
+  const busyMs = async (): Promise<number | null> => {
+    const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
+    const sl = sx.slots.find((x) => x.id === lnSlot);
+    return sl ? sx.now - sl.lastOutput : null;
+  };
+  // Fire `act` while the pane is genuinely inside the gate and return both bracket reads as the
+  // check's detail. `BRACKET-OPEN` is what the setup checks read: present whenever either side of
+  // the POST was NOT inside the gate, i.e. whenever a "blocked" answer would prove nothing.
+  //
+  // Each attempt SETTLES first and then sends its own generator, rather than reusing one that may
+  // already be running: a send into a shell that is still looping is queued, not run, so a reused
+  // generator has an unknown remaining life and could expire between the POST and the read after
+  // it — a bracket that reports open while the gate is fine, which is the failure this helper
+  // exists to rule out. Settling costs one generator's life and buys a full-life one. The whole
+  // attempt is retried (never just the read), because the three acts here are all refusals or a
+  // no-op commit: repeating one changes nothing on the tree.
+  const whileBusy = async (tag: string, act: () => Promise<void>): Promise<string> => {
+    let last = "the pane never registered output";
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await settleForMerge(lnSlot); // no generator of ours is still looping in the pane's shell
+      await holdBusy(`${tag}-${attempt}`);
+      let before: number | null = null;
+      for (let i = 0; i < 40; i++) { // ≤2 s for the generator's first line to reach the server
+        const m = await busyMs();
+        if (m !== null && m < MERGE_IDLE_MS) { before = m; break; }
+        await Bun.sleep(50);
+      }
+      if (before === null) continue; // never registered → the send-keys was dropped, pane still idle
+      await act();
+      const after = await busyMs();
+      last = `before=${before}ms after=${after}ms gate=${MERGE_IDLE_MS}ms`;
+      if (after !== null && after < MERGE_IDLE_MS) return last;
+    }
+    return `${last}; 5 attempts, gate=${MERGE_IDLE_MS}ms BRACKET-OPEN`;
+  };
+
   // --- landGate busy block (server.ts merge route, canDeliver idleMs: MERGE_IDLE_MS): a
   // non-confirm land is refused while the pane is ACTIVELY producing output, so an owner never
   // lands mid-work on top of the agent's own trailing changes. Every OTHER merge test calls
@@ -349,27 +406,12 @@ export async function run(lc: LaneCtx): Promise<void> {
   // fires the merge WHILE busy. lnSlot is a fresh, clean one-click lane (nothing committed yet →
   // no uncommitted-changes / git-op refusal fires first; the idle gate is what we reach). ---
   {
-    // Fire the land WHILE the pane is producing output. Robust against a freshly-spawned lane
-    // whose shell isn't yet ready to accept send-keys (the probe would be dropped and the pane
-    // read idle): retry send-keys until the server's own clock reports the pane busy well inside
-    // MERGE_IDLE_MS, then POST immediately — the eval is one round-trip later, still < the gate.
-    const isBusy = async (): Promise<boolean> => {
-      const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
-      const sl = sx.slots.find((x) => x.id === lnSlot);
-      return !!sl && sx.now - sl.lastOutput < MERGE_IDLE_MS - 1000; // ≥1s margin before the gate
-    };
-    let busyConfirmed = false;
     let busyMerge: { status?: string; detail?: string; running?: boolean; landed?: boolean } = {};
-    for (let attempt = 0; attempt < 15 && !busyConfirmed; attempt++) {
-      await tmuxOut("send-keys", "-t", `s${lnSlot}`, `echo landgate-busy-probe-${attempt}`, "Enter");
-      for (let i = 0; i < 12; i++) { // ≤600ms for this probe's output to register (poll runs every 100ms)
-        if (await isBusy()) { busyConfirmed = true; break; }
-        await Bun.sleep(50);
-      }
-      if (busyConfirmed)
-        busyMerge = (await (await post(`/api/slots/${lnSlot}/merge`, {})).json()) as typeof busyMerge;
-    }
-    check("landgate setup: the lane pane reads BUSY before the land (non-tautology guard)", busyConfirmed);
+    const landBracket = await whileBusy("landgate-busy-probe", async () => {
+      busyMerge = (await (await post(`/api/slots/${lnSlot}/merge`, {})).json()) as typeof busyMerge;
+    });
+    check("landgate setup: the lane pane reads BUSY on BOTH sides of the land POST (non-tautology guard)",
+      !landBracket.includes("BRACKET-OPEN"), landBracket);
     check("land is BLOCKED while the pane is actively working (idle gate), never starting a job",
       busyMerge.status === "blocked" && (busyMerge.detail ?? "").includes("actively working"), JSON.stringify(busyMerge));
     // it must have been the gate, not a spawned job — confirm no merge job is running afterward
@@ -384,46 +426,30 @@ export async function run(lc: LaneCtx): Promise<void> {
   // gate does NOT pass this block: a clean lane without the gate answers 200 "nothing to commit",
   // which is exactly what the confirm case below asserts, so the two checks pin both directions. ---
   {
-    const isBusy = async (): Promise<boolean> => {
-      const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
-      const sl = sx.slots.find((x) => x.id === lnSlot);
-      return !!sl && sx.now - sl.lastOutput < MERGE_IDLE_MS - 1000; // ≥1s margin before the gate
-    };
-    let busyConfirmed = false;
     let blocked: { committed?: boolean; reason?: string; error?: string } = {};
     let status = 0;
-    for (let attempt = 0; attempt < 15 && !busyConfirmed; attempt++) {
-      await tmuxOut("send-keys", "-t", `s${lnSlot}`, `echo commitgate-busy-probe-${attempt}`, "Enter");
-      for (let i = 0; i < 12; i++) { // ≤600ms for the probe's output to register (100ms poll)
-        if (await isBusy()) { busyConfirmed = true; break; }
-        await Bun.sleep(50);
-      }
-      if (busyConfirmed) {
-        const r = await post(`/api/slots/${lnSlot}/commit`, { mode: "quick" }); // gate-proof: unconfirmed on purpose
-        status = r.status;
-        blocked = (await r.json()) as typeof blocked;
-      }
-    }
-    check("commitgate setup: the lane pane reads BUSY before the commit (non-tautology guard)", busyConfirmed);
+    const commitBracket = await whileBusy("commitgate-busy-probe", async () => {
+      const r = await post(`/api/slots/${lnSlot}/commit`, { mode: "quick" }); // gate-proof: unconfirmed on purpose
+      status = r.status;
+      blocked = (await r.json()) as typeof blocked;
+    });
+    check("commitgate setup: the lane pane reads BUSY on BOTH sides of the commit POST (non-tautology guard)",
+      !commitBracket.includes("BRACKET-OPEN"), commitBracket);
     check("commit is BLOCKED server-side while the pane is actively working (not client-only)",
       status === 409 && (blocked.reason ?? "").includes("actively working"), `${status} ${JSON.stringify(blocked)}`);
     // and the confirm the client sends once its dialog was acknowledged waives the gate — else a
     // confirmed mid-run save (the whole point of "commit anyway") would bounce off the new gate.
     let confirmedStatus = 0;
     let confirmed: { committed?: boolean; reason?: string } = {};
-    for (let attempt = 0; attempt < 15; attempt++) {
-      await tmuxOut("send-keys", "-t", `s${lnSlot}`, `echo commitgate-confirm-probe-${attempt}`, "Enter");
-      let busy = false;
-      for (let i = 0; i < 12; i++) { if (await isBusy()) { busy = true; break; } await Bun.sleep(50); }
-      if (!busy) continue;
+    const confirmBracket = await whileBusy("commitgate-confirm-probe", async () => {
       const r = await post(`/api/slots/${lnSlot}/commit`, { mode: "quick", confirm: true });
       confirmedStatus = r.status;
       confirmed = (await r.json()) as typeof confirmed;
-      break;
-    }
+    });
     check("a confirmed commit waives the idle gate (reaches the tree, reports on it instead)",
-      confirmedStatus === 200 && confirmed.committed === false && !(confirmed.reason ?? "").includes("actively working"),
-      `${confirmedStatus} ${JSON.stringify(confirmed)}`);
+      confirmedStatus === 200 && confirmed.committed === false && !(confirmed.reason ?? "").includes("actively working")
+        && !confirmBracket.includes("BRACKET-OPEN"),
+      `${confirmedStatus} ${JSON.stringify(confirmed)} ${confirmBracket}`);
 
     // ROT GUARD for the exception above. This gate fires on machine LOAD, not on the tree: any
     // OTHER commit probe that omits `confirm` becomes a flake whose failing check moves from run
@@ -446,6 +472,9 @@ export async function run(lc: LaneCtx): Promise<void> {
       sourceError === "", sourceError);
     check("every other commit probe in the suite sends confirm (an unconfirmed one is a load-dependent flake)",
       sourceError === "" && offenders.length === 0, offenders.join(", "));
+    // hand lnSlot on IDLE. The busy generator outlives this block by up to ~3 s and lnSlot travels
+    // into e2e/merge.ts, where the first land would otherwise meet the very gate proved above.
+    await settleForMerge(lnSlot);
   }
 
   // --- ✎ message: the agent half of the SAVE may fail, and the fallback to a wip message is

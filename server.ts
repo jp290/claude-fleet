@@ -5917,7 +5917,11 @@ async function recoverInterruptedProgramFoundings(bootTmux: TmuxSlotObservations
 // through to delivery on purpose — typing into a dead pane is an owner capability, not an alive
 // gate. Narrativ: server-narrativ-archiv.md#sendtext
 const SEND_BOOT_FRESH_MS = 15_000;
-const SEND_BOOT_WAIT_MS = 3000;
+// Unset is the old 3000 literal; the isolated suite shortens it, because every pane it sends into
+// is a stand-in that is ready the moment it exists and the 3 s is pure wall clock there (measured
+// 2026-09-14: 43,7 s of one run behind this constant and the grace below). Floor 250 ms, same
+// Math.max shape as MERGE_IDLE_MS, so a stray value can never turn the bounded wait into a no-op.
+const SEND_BOOT_WAIT_MS = Math.max(250, Number(process.env.FLEET_SEND_BOOT_WAIT_MS ?? 3000) | 0);
 // Unknown adapters get one short redraw beat, not Claude's measured 2500 ms by accident.
 const DEFAULT_BOOT_SETTLE_MS = 250;
 // The dispatch tail's budget for a readiness-declaring harness to show its accept marker; 20 s is
@@ -5928,7 +5932,11 @@ const READY_WAIT_MS = Math.max(1000, Number(process.env.FLEET_READY_WAIT_MS ?? 2
 // bounded wait above is the proof, and for a harness that declares no ready marker this sleep is
 // all there is. One constant because the six founding deliveries are one decision: the four live
 // 2026-09-03 succession failures happened on the one rail that had neither.
-const FOUNDING_BOOT_GRACE_MS = 4000;
+// Unset is the old 4000 literal; the isolated suite shortens it for the same reason (143,3 s of
+// one run sat in `bootstrap-main` POSTs that answer only after this sleep). Floor 250 ms: the
+// grace is never the readiness PROOF, but for a harness that declares no ready marker it is all
+// there is, so a 0 must not be reachable through the env.
+const FOUNDING_BOOT_GRACE_MS = Math.max(250, Number(process.env.FLEET_FOUNDING_BOOT_GRACE_MS ?? 4000) | 0);
 
 // --- ACP-25: acceptance is OBSERVED, never echoed -------------------------------------------------
 // Process-alive, header readiness and lastOutput-idle prove nothing about prompt acceptance; the
@@ -11534,7 +11542,20 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // policy answers "may something UNATTENDED drive this slot", and a click that named the harness is
   // not that. The ALIVE gate is not waived and is the one that matters: a pane whose agent failed to
   // boot is a bare shell, and the brief would run there.
-  const gateOpts = ownerAct ? { idleMs: 0, killSwitch: false, quietHours: false, harness: false } : { idleMs: 0 };
+  // ...and the UNATTENDED path carries the SAME quiet-hours waiver the tick applied to get here,
+  // which until 2026-09-16 it did not. tickDispatch waives quiet hours for exactly one pair — an
+  // active program grant and a row the MACHINE released — and this gate then re-asked the question
+  // WITHOUT it, held the row with `dispatch held (quiet-hours) — requeued` and tore its lane down
+  // again. Not an edge: it is every such row for the whole window, one worktree created and removed
+  // per retry, which is the exact stall the grant exists to end. It stayed invisible because the row
+  // reads `sent` for the length of the founding grace before the requeue lands, so a probe reading
+  // inside that window saw a start — shortening the grace for the isolated suite is what made the
+  // window narrow enough to catch it (e2e/programs.ts "program-dispatch (5)", red on
+  // isolated-20260916T154811Z-5500). The pair is unchanged and nothing looser; e2e/pins.ts holds
+  // both readers against each other so they cannot drift apart again.
+  const quietWaived = !!programDispatchOn(next) && waveRows.every((row) => row.releasedBy === "machine");
+  const gateOpts = ownerAct ? { idleMs: 0, killSwitch: false, quietHours: false, harness: false }
+    : { idleMs: 0, ...(quietWaived ? { quietHours: false } : {}) };
   // fresh claude-alive gate; requeue on any failure — the lane exists, the prompt waits.
   if (identityLost()) { await requeue("slot changed during spawn — requeued"); return; }
   const boot = await canDeliver(free, { now: Date.now(), ...gateOpts });

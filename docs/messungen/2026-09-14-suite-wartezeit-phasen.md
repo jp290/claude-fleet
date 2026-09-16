@@ -3,8 +3,8 @@ frage: Wohin geht die Wartezeit der vollen Suite, je Phase (boot/tmux/http/sleep
 urteil: Sleep traegt 1 289 von 2 225 s (58 %), http 698 s, boot 135 s, tmux 14 s, Rest 88 s; im 3–10-s-Band sind es 716 s sleep und 345 s http von 1 124 s. Drei Server-Wartefenster erklaeren zusammen rund 530 s: der 10-s-Git-Tick (199 s), die festen Boot-Grace-Konstanten fuer Gruendung und Zustellung (187 s) und das Merge-Idle-Gate (145 s). Die Hypothese „Git-Tick widerlegt" haelt am direkt gemessenen Aufrufort nicht.
 bereich: [verify, e2e, suite-kontention]
 belege: [e2e/trail-emit.ts#createPhaseClock, e2e/harness.ts#installPhaseProbes, e2e/programs.ts#waitDoneLooking, e2e/lane-helpers.ts#settleForMerge, e2e/programs.ts#beginBootstrap, e2e/security.ts#agentOf, server.ts#tickGit, server.ts#FOUNDING_BOOT_GRACE_MS, server.ts#SEND_BOOT_WAIT_MS, docs/e2e-trail.md]
-nicht-gemessen: Kein Lauf mit gekuerzten Wartezeiten (Auftrag); die Zuordnung der drei Wartefenster zu Server-Konstanten ist aus Wartedauer plus Code abgeleitet, nicht durch Umschalten bewiesen; synchrone Arbeit bleibt ungeteilt im Rest; Second-host-Trail ging verloren.
-stand: 2026-09-14
+nicht-gemessen: synchrone Arbeit bleibt ungeteilt im Rest; Second-host-Trail ging verloren; die Gegenbewegung an waitMerge (+50 s, Nachtrag) ist als git-Index-Streit nur vermutet, nicht gemessen. ERLEDIGT im Nachtrag 2026-09-16: der Umschalt-Lauf, der die drei Wartefenster beweist.
+stand: 2026-09-16 (Nachtrag; Messlauf 2026-09-14)
 ---
 
 # Wohin geht die Wartezeit der vollen Suite?
@@ -200,3 +200,54 @@ Drei Schnitt-Zeilen, gerankt nach gemessenen Sekunden. Die MAIN filet sie.
 - FLAECHE: `e2e-isolated.sh` (`FLEET_MERGE_IDLE_MS`), `e2e/pins.ts` (Suite-Wert), Checks, die das Idle-Gate selbst verweigern lassen (`e2e/lane-helpers.ts#settleForMerge`-Aufrufer in `e2e/merge.ts`)
 - VERIFY: install, pins, tsc, build; `./e2e-isolated.sh` und `./e2e-clean-review.sh` (Merge-Pfad) mit `FLEET_MERGE_IDLE_MS=500`, beide mit `phases`
 - DONE: ALL PASS in beiden Suiten; `phaseSum` sleep an `e2e/lane-helpers.ts#settleForMerge` sinkt von 145,4 s auf ≤ 50 s; die Idle-Gate-Verweigerungs-Checks bleiben rot bei Pane-Output innerhalb des Fensters (Gegenprobe im Lauf nachgewiesen).
+
+---
+
+## Nachtrag 2026-09-16: die drei Schnitte, gemessen
+
+Die drei Schnitt-Zeilen oben wurden als EINE Lane umgesetzt (`fleet/260916142521-8d9d`) — sie
+aendern dieselbe `SRV_ENV`-Zeile und dieselbe Pin-Datei, parallel waeren sie ein Textkonflikt.
+Vier Server-Wartefenster sind jetzt Env-Knoepfe, deren UNGESETZTER Wert das Produktions-Literal
+ist (gepinnt in `e2e/pins.ts`, wo keine Suite-Env hinreicht); `e2e-isolated.sh` setzt sie auf
+`FLEET_MERGE_IDLE_MS=500`, `FLEET_GIT_TICK_MS=2000`, `FLEET_FOUNDING_BOOT_GRACE_MS=750`,
+`FLEET_SEND_BOOT_WAIT_MS=500`. Kein Baseline-Lauf, wie beauftragt: verglichen wird gegen die
+Zahlen dieser Notiz. Methode unveraendert (§Methode).
+
+| `phaseSum` | 2026-09-14 | Lauf 1 | Lauf 3 | Ziel |
+| --- | ---: | ---: | ---: | --- |
+| sleep `e2e/programs.ts#waitDoneLooking` | 190,7 s | 20,9 s | 24,5 s | ≤ 60 s ✔ |
+| sleep `e2e/security.ts#agentOf` | 33,0 s | 9,0 s | 9,0 s | ≤ 12 s ✔ |
+| sleep `e2e/lane-helpers.ts#settleForMerge` | 145,4 s | 24,1 s | 22,7 s | ≤ 50 s ✔ |
+| http an den `beginBootstrap`-Aufrufstellen | 143,3 s (n=43) | 52,1 s (n=43) | 52,6 s (n=44) | −50 % ✔ (−63 %) |
+| sleep `#dispatchAndRead` + `#rowAfter` | 43,7 s | 15,0 s | 15,7 s | −40 % ✔ (−65 %) |
+| **sleep `e2e/lane-helpers.ts#waitMerge`** | **90,7 s** | **140,7 s** | **148,8 s** | GEGENBEWEGUNG |
+| Spanne (erster bis letzter Check) | 2 224,7 s | 1 626,8 s | 1 682,6 s | −25 bis −27 % |
+
+**Die Git-Tick-Zuordnung haelt.** Sie war in dieser Notiz abgeleitet, nicht bewiesen. Mit 2 s
+Tick faellt `waitDoneLooking` um 87 % und `agentOf` exakt auf das Dreifache des Tick-Sleeps
+(3 × 3 s statt 3 × 11 s) — das ist die Konstante, die dort wartet, und sie liest die Env jetzt.
+
+**Die Gegenbewegung ist echt und reproduziert.** `waitMerge` wartet auf Server-Arbeit, nicht auf
+ein Fenster, und steigt in beiden Laeufen um 50–58 s. Hypothese, NICHT gemessen: der fuenfmal
+haeufigere `tickGit` streitet sich mit den Merges um den git-Index der Lane-Worktrees — die Naht,
+die `e2e/lane-helpers.ts:176` schon benennt. Wer sie messen will, braucht einen Lauf mit
+`FLEET_GIT_TICK_MS=2000` nur fuer `deploy-facts` und 10 000 sonst. Netto bleiben −540 bis −600 s.
+
+**Was die Verkuerzung sichtbar gemacht hat — zwei Befunde, kein Nebenprodukt.**
+
+1. **`server.ts#briefAndSend` liess die Quiet-Hours-WAIVER am Post-Spawn-Gate fallen** (behoben in
+   dieser Lane). `tickDispatch` waivt Quiet Hours fuer genau ein Paar — aktiver Program-Grant und
+   MASCHINEN-freigegebene Zeile —, spawnt die Lane, und das Gate danach fragte dieselbe Frage OHNE
+   den Waiver, hielt die Zeile mit `dispatch held (quiet-hours) — requeued` und riss ihre Lane
+   wieder ab. In Produktion ist das JEDE solche Zeile ueber das ganze Fenster, ein Worktree pro
+   Versuch angelegt und entfernt — genau der Stau, den der Grant beenden soll. Unsichtbar war es,
+   weil die Zeile fuer die Dauer der Boot-Grace `sent` liest: bei 4 000 ms las jede Sonde einen
+   Start, bei 750 ms nicht mehr. `e2e/pins.ts` haelt jetzt beide Leser gegeneinander.
+2. **Zwei Fixtures ruhten auf einem Fenster statt auf einer Tatsache** (beide repariert, keine
+   Gegenprobe aufgeweicht): der Backlog-Nudge-Block nahm an, „A sondieren, 200 ms warten, B
+   sondieren" mache A zum laengst-idlen Main — der Aktivitaets-Stempel wird aber innerhalb des
+   Post-Attach-Quiet-Fensters unterdrueckt (`server.ts`, `s.quietUntil`), und da die Boot-Adoption
+   Slot fuer Slot laeuft, kippt die Reihenfolge. Jetzt wird sie ETABLIERT (B wird sondiert, bis der
+   Server selbst B als juenger liest) und mit beiden Zahlen behauptet. Und `program-dispatch (6)`
+   pflanzte seinen v2-Satz in `fleet.json`, waehrend der Server lief und ihn ueberschreiben konnte;
+   jetzt steht der Server dabei.

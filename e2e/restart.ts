@@ -740,7 +740,10 @@ export async function run(ctx: Ctx): Promise<void> {
   }
   check("pi-zai without a model pin spawns the default tier --model 'glm-5.3' while the catalogue it writes carries both models",
     piZaiDefaultCmd.includes("pi --provider zai --model 'glm-5.3'")
-      && !piZaiDefaultCmd.includes("glm-5.3-flash")
+      // the negative is FLAG-scoped, not line-scoped: the spawn line embeds the whole catalogue
+      // (printf ... > models.json), so "glm-5.3-flash" legitimately appears in it on every spawn —
+      // only the --model flag's own quoted value says which tier this pane runs
+      && !piZaiDefaultCmd.includes("--model 'glm-5.3-flash'")
       && JSON.stringify(piZaiCatalogIds) === JSON.stringify(["glm-5.3", "glm-5.3-flash"]),
     `${piZaiDefaultCmd.slice(-200)} / ${JSON.stringify(piZaiCatalogIds)}`);
 

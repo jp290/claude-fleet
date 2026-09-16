@@ -4075,14 +4075,18 @@ Arme bei **7919–9688 ms**; dieser bei **4060 ms** — vor seinem Brief statt n
 | 09-15 06:52 | `891c7d98` | dieselbe (iv)-Invariante |
 | 09-15 23:41 | `f806478a` | `M5 setup: the docs land fired` |
 | 09-16 15:03 | `05fc16b0` | derselbe Setup-Name |
+| 09-16 21:12 | `5c849e55` | derselbe Setup-Name (4933 ran / 1 failed, Shard k=1) |
+| 09-16 22:11 | `90824cf3` | derselbe Setup-Name (4956 ran / 1 failed, Shard k=1) |
 
-Basisrate **4/681 = 0,59 %**. Dazu eine fünfte, nicht im Ledger stehende Sichtung: der
-Helfer-Vorschaulauf `run-6466983c0ac2-1789583910490` (`suite.log` auf dem Second-host), aus dem der
-Fingerprint oben stammt. Dazwischen liegt `93412a52` (09-15 19:45, „a land that never fired … no
-longer read as invariant reds") — das war **nur die Zuschreibung**: sie verschob das Rot von der
-Invariante auf die Setup-Zeile und liess das Rennen unberührt. Die vier gelandeten Commits sind
-inhaltlich UNVERWANDT (ein Lane-Feature ohne Playwright, ein security-allowlist-Fix, eine reine
-`docs/messungen`-Zeile, ein Suite-Teardown-Fix) — der Auslöser lag nie im gelandeten Inhalt.
+**Sechs Sichtungen**, und die letzten zwei sind die ersten ZWEI IN FOLGE — das ist der
+Owner-Auslöser vom 2026-09-14 (gleicher Fail in zwei Audits hintereinander → Reparatur ohne
+vorheriges Urteil). Basisrate über die ersten vier: **4/681 = 0,59 %**. Dazwischen liegt
+`93412a52` (09-15 19:45, „a land that never fired … no longer read as invariant reds") — das war
+**nur die Zuschreibung**: sie verschob das Rot von der Invariante auf die Setup-Zeile und liess das
+Rennen unberührt. Die sechs gelandeten Commits sind inhaltlich UNVERWANDT (ein Lane-Feature ohne
+Playwright, ein security-allowlist-Fix, eine reine `docs/messungen`-Zeile, ein Suite-Teardown-Fix,
+fremde Q6-Fixes, Simulator-Hygiene) und stammen von verschiedenen Autoren — der Auslöser lag nie im
+gelandeten Inhalt.
 
 **Mechanismus, am Code gelesen.** `POST /api/tasks/:id/dispatch` antwortet 200, während
 `server.ts#briefAndSend` der Pane ihren Gründungs-Brief noch SCHULDET: der Tail ist DETACHED,
@@ -4097,6 +4101,33 @@ HTTP-Roundtrip später — inzwischen im Einfügen. **Die Tür hat beide Male re
 der Sonde.** `server.log` des Vorschaulaufs bestätigt es an der Lücke: für `m5 reap/park/unproven/
 code` steht je eine `dispatch: task … → slot 13`-Zeile und eine `prompts.jsonl`-Zeile, für den
 Docs-Arm KEINE — sein Brief war noch offen, als die Sonde feuerte.
+
+**DER DISKRIMINATOR IST EINE KONSTANTE, NICHT DIE LAST** — und das ist der Punkt, an dem diese
+Familie adjudizierbar wird, ohne einen Lauf zu wiederholen. Der `ready`-Sensor schreibt je Arm den
+Augenblick, in dem das Tür-Prädikat zum ersten Mal hielt. Über die auf dem Helfer aufbewahrten
+`suite.log` (je neun Arme pro Lauf), erste Zahl = der Arm, um den es geht:
+
+| Lauf | erster Arm | Rest des Laufs | Ergebnis |
+|---|---|---|---|
+| `run-6466983c0ac2-1789583910490` (`5c849e55`) | **4060** | 7919 … 9688 | **ROT** |
+| `run-6466983c0ac2-1789588374633` (`90824cf3`) | **4069** | 7410 … 9860 | **ROT** |
+| `run-22b926ebb850-1789585714854` | 3812 | 7720 … 9890 | grün |
+| `run-326809a64ec4-1789581399336` | 3846 | 7934 … 9699 | grün |
+| `run-046db625ef2b-1789582737806` | 6235 | 7088 … 9777 | grün |
+
+Die beiden roten Läufe liegen **9 ms auseinander** — auf zwei verschiedenen Bäumen, von zwei
+verschiedenen Autoren, in zwei verschiedenen Slots (13 und 14). Eine Last-Ursache würde diese Zahl
+VERSCHMIEREN; sie tut es nicht. Sie klebt an `FOUNDING_BOOT_GRACE_MS` = 4000 ms. 3812 und 3846 sind
+GRÜN, weil dort auch die Tür noch VOR dem Einfügen las; 6235 ist grün, weil dort beide danach
+lasen. Rot ist genau das Band `[4000 − Roundtrip, 4000 + Einfügedauer]`, ein paar Dutzend
+Millisekunden breit — daher die 0,6 %.
+
+**Die Kollokations-Hypothese ist damit VERWORFEN, nicht offen gelassen.** Dass beide Helfer-Shards
+in derselben Millisekunde geclaimt werden, verschiebt, WO in der Verteilung der erste Arm landet
+(vergleiche Läufe mit 508–2033 ms gegen solche mit 7,4–9,9 s), und moduliert damit die
+WAHRSCHEINLICHKEIT, in das Band zu treffen. Sie entscheidet aber nichts: der grüne Gegenzeuge mit
+identischer Kollokation und identischen jobIds ist kein Widerspruch, sondern der Normalfall, und
+die Reparatur nimmt das Band ganz weg — mit Last wie ohne.
 
 **Direkte Messung** (Scratch-Instanz, eigener Socket/Port, `FLEET_CMD=true`, `FLEET_MERGE_IDLE_MS=2000`,
 Abtastung alle 40 ms, frische Lane je Runde):

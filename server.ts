@@ -54,7 +54,7 @@ import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
 import {
   clusterForFiles, deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp, readSymbolIndexSnapshot,
-  symbolGraphStamp, surfaceSha,
+  resolveSurfaceRanges, symbolGraphStamp, surfaceSha,
   type TaskFilesOrigin, type TrackedSnapshot, type SymbolIndex, type SymbolIndexSnapshot,
   type SymbolRange, type TaskSurface,
 } from "./task-metadata";
@@ -2997,7 +2997,11 @@ function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
     const liftSha = `lift-${surfaceSha({ text: t.text, brief: t.brief?.text ?? null, confirmedFiles: t.files,
       indexStamp: snapshot?.indexStamp ?? null, graphStamp: index?.stamp ?? null })}-${t.card.at}`;
     if (t.surface && t.surface.sha === liftSha) return t.surface;
-    t.surface = { files: [...t.files], ranges: t.card.surface.ranges, origin: "card", at: Date.now(), sha: liftSha };
+    // The ranges are re-resolved from the card's OWN stored symbols against the index of now:
+    // filing time stored one index snapshot, and a row filed before the index could locate a
+    // symbol must not keep projecting that absence forever (resolveSurfaceRanges; the sha above
+    // carries SURFACE_RESOLVER, so the bump recomputes every stored lift exactly once).
+    t.surface = { files: [...t.files], ranges: resolveSurfaceRanges(t.card.surface, index?.index ?? null), origin: "card", at: Date.now(), sha: liftSha };
     return t.surface;
   }
   // A VALID CARD'S SURFACE COMES BEFORE THE REGEX (S6, queue row 08ec67c0). The card's paths already
@@ -3008,7 +3012,7 @@ function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
   if (!confirmedFiles?.length && t.card?.valid && t.card.surface.files.length) {
     const cardSha = `card-${sha}-${t.card.at}`;
     if (t.surface && t.surface.sha === cardSha) return t.surface;
-    t.surface = { files: [...t.card.surface.files], ranges: t.card.surface.ranges, origin: "derived",
+    t.surface = { files: [...t.card.surface.files], ranges: resolveSurfaceRanges(t.card.surface, index?.index ?? null), origin: "derived",
       at: Date.now(), sha: cardSha };
     return t.surface;
   }

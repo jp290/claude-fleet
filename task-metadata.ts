@@ -194,6 +194,58 @@ export interface SymbolIndexSnapshot { index: SymbolIndex; path: string; stamp: 
 /** `deriveTaskMetadata()` → `deriveTaskMetadata`, `.spawnCmd()` → `spawnCmd`. */
 const symbolKey = (label: string): string => label.replace(/\(\)$/, "").replace(/^\.+/, "");
 
+/** `server.ts#taskView` → ["server.ts", "taskView"]; anything else → null. */
+export function splitSymbolRef(ref: string): [string, string] | null {
+  const at = ref.indexOf("#");
+  if (at <= 0 || at === ref.length - 1) return null;
+  return [ref.slice(0, at), ref.slice(at + 1)];
+}
+
+export const IDENT_SRC = "[A-Za-z_$][A-Za-z0-9_$]*";
+const IDENTIFIER = new RegExp(`^${IDENT_SRC}$`);
+
+/**
+ * A TOP-LEVEL declaration of `symbol` in a TypeScript source: `function`/`async function`, `const`,
+ * `let`, `var`, `class`, `type`, `interface`, `enum`, each optionally `export`ed (`export default`
+ * too). Anchored at column 0 on purpose — a nested local (`  const card = …`) is not a symbol a
+ * request can name as work, and a word in a comment is not a declaration. Deterministic, no model.
+ * Lives HERE, not in card-extract.ts (which re-exports it): the declaration scan below is the range
+ * half of the very same fact, and one pattern cannot drift from itself.
+ */
+export function declaresSymbol(source: string, symbol: string): boolean {
+  if (!IDENTIFIER.test(symbol)) return false;
+  const name = symbol.replace(/\$/g, "\\$");
+  return new RegExp(
+    `^(?:export\\s+(?:default\\s+)?)?(?:declare\\s+)?(?:(?:async\\s+)?function\\*?|const|let|var|(?:abstract\\s+)?class|type|interface|(?:const\\s+)?enum)\\s+${name}(?![A-Za-z0-9_$])`,
+    "m").test(source);
+}
+
+export interface TopLevelDeclaration { symbol: string; line: number }
+
+/**
+ * One pass over a source: every column-0 top-level declaration the `known` set does not already
+ * carry, with its 1-based line. This is the RANGE half of `declaresSymbol` — the graph records a
+ * start line per symbol it saw, and what it did not see is still declared in the tree (measured
+ * live 2026-09-16: server.ts#taskDigest, #acceptByLandReading, #RAIL_TAIL, #LANE_EXIT_FOOTER were
+ * absent from a graph built at HEAD). The scan never OVERRIDES the graph: a symbol the graph knows
+ * is `known`, whatever the text says, so the two sources cannot disagree — the graph wins by
+ * construction and the scan only fills gaps.
+ */
+export function topLevelDeclarations(source: string, known: ReadonlySet<string>): TopLevelDeclaration[] {
+  const out: TopLevelDeclaration[] = [];
+  const re = new RegExp(
+    `^(?:export\\s+(?:default\\s+)?)?(?:declare\\s+)?(?:(?:async\\s+)?function\\*?|const|let|var|(?:abstract\\s+)?class|type|interface|(?:const\\s+)?enum)\\s+(${IDENT_SRC})`, "gm");
+  let line = 1;
+  let scanned = 0;
+  for (const m of source.matchAll(re)) {
+    const at = m.index ?? 0;
+    for (let i = scanned; i < at; i++) if (source.charCodeAt(i) === 10) line++;
+    scanned = at;
+    if (!known.has(m[1])) out.push({ symbol: m[1], line });
+  }
+  return out;
+}
+
 export function buildSymbolIndex(
   nodes: readonly { label?: unknown; file_type?: unknown; source_file?: unknown; source_location?: unknown }[],
   lineCountOf: (file: string) => number | null,
@@ -359,11 +411,59 @@ export interface SurfaceInputs {
   indexStamp?: string | null;
   graphStamp?: string | null;
 }
+// The resolver CODE is an input of every stored surface, exactly like the two tree stamps are: a
+// change in what the same tree resolves to must move every stored sha once, or a row would keep
+// projecting a surface its own resolver no longer produces. Bump on any resolution change.
+export const SURFACE_RESOLVER = "ranges-2";
+
 export function surfaceSha(inputs: SurfaceInputs): string {
   const h = createHash("sha256");
-  for (const part of [inputs.text ?? "", inputs.brief ?? "", (inputs.confirmedFiles ?? []).join("\u0000"),
+  for (const part of [SURFACE_RESOLVER, inputs.text ?? "", inputs.brief ?? "", (inputs.confirmedFiles ?? []).join("\u0000"),
     inputs.indexStamp ?? "", inputs.graphStamp ?? ""]) h.update(`${part}\u0001`);
   return h.digest("hex").slice(0, 32);
+}
+
+/**
+ * The CURRENT reading of a stored card surface's ranges. Filing time stored one snapshot of the
+ * index; the index moves with the tree, so the lift re-resolves the card's OWN symbol refs against
+ * the index of now — never prose (server.ts#taskSurfaceOf). No graph here means the stored list
+ * stands as filed: a lane without graphify-out keeps exactly what it stored.
+ *
+ * The per-file all-or-nothing of card-extract.ts travels with it: a file whose claimed symbols do
+ * not ALL resolve carries NO ranges for that file. A partial list would tell
+ * task-land-waves.ts#collidesOn "collides only near the resolved symbol", and two rows meeting at
+ * the unlocated one would be separated — the same argument the filing-time filter makes, honored
+ * at every read instead of only at filing.
+ */
+export function resolveSurfaceRanges(
+  surface: { symbols?: unknown; ranges?: unknown } | null | undefined, index: SymbolIndex | null,
+): SymbolRange[] | null {
+  const s = surface;
+  const stored = s && Array.isArray(s.ranges) ? s.ranges as SymbolRange[] : null;
+  if (!index) return stored;
+  const refs = s && Array.isArray(s.symbols)
+    ? s.symbols.filter((v): v is string => typeof v === "string") : [];
+  if (!refs.length) return stored;
+  const byFile = new Map<string, string[]>();
+  for (const ref of refs) {
+    const split = splitSymbolRef(ref);
+    if (!split) continue;
+    const list = byFile.get(split[0]) ?? [];
+    list.push(split[1]);
+    byFile.set(split[0], list);
+  }
+  const out: SymbolRange[] = [];
+  for (const [file, symbols] of byFile) {
+    const hits: SymbolRange[] = [];
+    let complete = true;
+    for (const symbol of symbols) {
+      const hit = index.get(file)?.find((e) => e.symbol === symbol);
+      if (!hit) { complete = false; break; }
+      hits.push(hit);
+    }
+    if (complete) out.push(...hits);
+  }
+  return out;
 }
 
 export function projectLabel(repo: string): string {
@@ -419,15 +519,39 @@ export function readSymbolIndexSnapshot(repoRoot: string): SymbolIndexSnapshot |
   if (!Array.isArray(nodes)) return null;
   // One read per FILE the graph mentions, not one per symbol — and a file that has since been
   // deleted reports null, which buildSymbolIndex reads as "the last symbol stops at its own line".
-  const lines = new Map<string, number | null>();
-  const lineCountOf = (file: string): number | null => {
-    if (!lines.has(file)) {
-      try { lines.set(file, readFileSync(resolve(repoRoot, file), "utf8").split("\n").length); }
-      catch { lines.set(file, null); }
+  // The CONTENT is kept because the declaration scan below needs the very same read.
+  const contents = new Map<string, string | null>();
+  const contentOf = (file: string): string | null => {
+    if (!contents.has(file)) {
+      try { contents.set(file, readFileSync(resolve(repoRoot, file), "utf8")); }
+      catch { contents.set(file, null); }
     }
-    return lines.get(file) ?? null;
+    return contents.get(file) ?? null;
   };
-  return { index: buildSymbolIndex(nodes as Parameters<typeof buildSymbolIndex>[0], lineCountOf), path, stamp };
+  const lineCountOf = (file: string): number | null => contentOf(file)?.split("\n").length ?? null;
+  // THE DECLARATION SCAN (2026-09-16, docs/messungen/2026-09-16-serialisierung-ranges.md): what the
+  // graph does not carry but the tree declares at column 0 enters the index as a synthetic node, so
+  // buildSymbolIndex derives its end exactly like every graph symbol's. Only files the graph
+  // mentions are scanned, and a symbol the graph knows is never scanned twice — the graph wins, the
+  // scan fills gaps. A file whose content cannot be read contributes nothing.
+  const typed = nodes as Parameters<typeof buildSymbolIndex>[0];
+  const known = new Map<string, Set<string>>();
+  for (const node of typed) {
+    if (node.file_type !== "code" || typeof node.source_file !== "string") continue;
+    const label = typeof node.label === "string" ? node.label : "";
+    if (!label) continue;
+    const set = known.get(node.source_file) ?? new Set<string>();
+    set.add(symbolKey(label));
+    known.set(node.source_file, set);
+  }
+  const scanned: { label?: unknown; file_type?: unknown; source_file?: unknown; source_location?: unknown }[] = [];
+  for (const [file, names] of known) {
+    const source = contentOf(file);
+    if (source === null) continue;
+    for (const d of topLevelDeclarations(source, names))
+      scanned.push({ label: d.symbol, file_type: "code", source_file: file, source_location: `L${d.line}` });
+  }
+  return { index: buildSymbolIndex([...typed, ...scanned], lineCountOf), path, stamp };
 }
 
 export function symbolGraphStamp(repoRoot: string): string | null {
@@ -444,7 +568,7 @@ interface StateTask {
   files?: unknown;
   filesOrigin?: unknown;
   brief?: { text?: unknown } | null;
-  card?: { gaps?: unknown; surface?: { ranges?: unknown } } | null;
+  card?: { gaps?: unknown; surface?: { ranges?: unknown; symbols?: unknown } } | null;
 }
 
 const argAfter = (name: string): string | null => {
@@ -487,16 +611,17 @@ function cli(): void {
     // Derived metadata is never meant to be persisted. If a hand-edited state does so anyway,
     // re-derive it instead of promoting the weaker source to confirmed on reload.
     // A card lift is not confirmed either, and it is never promoted here. It is reported as what the
-    // server projects (server.ts#taskSurfaceOf): the lifted files with the card's own ranges — but
+    // server projects (server.ts#taskSurfaceOf): the lifted files with the card's ranges
+    // re-resolved against the index of now (resolveSurfaceRanges, like the lift) — but
     // only while the card beside it still has no surface gap (card-extract.ts#cardSurfaceValid, the
     // predicate the loader derives, spelled out because that module imports this one).
     const cardGaps = Array.isArray(task.card?.gaps) ? task.card.gaps : null;
     if (task.filesOrigin === "card" && rawFiles.length && cardGaps
       && !cardGaps.some((g) => typeof g === "string" && g.startsWith("surface."))) {
-      const cardRanges = task.card?.surface?.ranges;
       const cluster = clusterForFiles(rawFiles, snapshot?.project ?? (repoRaw ? projectLabel(repoRaw) : null));
       output[task.id] = { files: rawFiles, filesOrigin: "card", ...(cluster ? { cluster } : {}),
-        ranges: Array.isArray(cardRanges) ? cardRanges as SymbolRange[] : null };
+        ranges: resolveSurfaceRanges(task.card?.surface ?? null,
+          (repoRaw ? indexes.get(resolve(repoRaw)) : null)?.index ?? null) };
       continue;
     }
     const confirmedFiles = task.filesOrigin === "derived" || task.filesOrigin === "card" ? [] : rawFiles;

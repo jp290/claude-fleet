@@ -24,7 +24,7 @@
 // it could not establish.
 import { defuseDelimiters } from "./src/protocol";
 import { LOCAL_PROOF_STEPS } from "./verify-proportion";
-import { intentText } from "./task-metadata";
+import { intentText, declaresSymbol, splitSymbolRef, IDENT_SRC } from "./task-metadata";
 import { isTaskCardSize, type TaskCardSize } from "./task-waves";
 import type { SymbolIndex, SymbolRange } from "./task-metadata";
 
@@ -133,21 +133,10 @@ const MODEL_ALIASES: Readonly<Record<string, string>> = {
   "astra": "gpt-6-astra", "gpt-6 astra": "gpt-6-astra",
 };
 
-const IDENT_SRC = "[A-Za-z_$][A-Za-z0-9_$]*";
-const IDENTIFIER = new RegExp(`^${IDENT_SRC}$`);
-/**
- * A TOP-LEVEL declaration of `symbol` in a TypeScript source: `function`/`async function`, `const`,
- * `let`, `var`, `class`, `type`, `interface`, `enum`, each optionally `export`ed (`export default`
- * too). Anchored at column 0 on purpose — a nested local (`  const card = …`) is not a symbol a
- * request can name as work, and a word in a comment is not a declaration. Deterministic, no model.
- */
-export function declaresSymbol(source: string, symbol: string): boolean {
-  if (!IDENTIFIER.test(symbol)) return false;
-  const name = symbol.replace(/\$/g, "\\$");
-  return new RegExp(
-    `^(?:export\\s+(?:default\\s+)?)?(?:declare\\s+)?(?:(?:async\\s+)?function\\*?|const|let|var|(?:abstract\\s+)?class|type|interface|(?:const\\s+)?enum)\\s+${name}(?![A-Za-z0-9_$])`,
-    "m").test(source);
-}
+// `declaresSymbol` and `splitSymbolRef` live in task-metadata.ts beside the declaration scan that
+// shares their pattern (one fact, one definition) and are re-exported from here: server.ts and the
+// suites import them from THIS module, and the import surface does not move with the definition.
+export { declaresSymbol, splitSymbolRef };
 
 const MAX_SENTENCE = 400;
 const MAX_LIST = 20;
@@ -189,13 +178,6 @@ function verifyAliased(verify: string): { verify: string; aliased: boolean } {
   const steps = [...(full ? LOCAL_PROOF_STEPS : []), ...(isolated ? [ISOLATED_STEP] : [])].join(", ");
   const rest = verify.replace(FULL_CHAIN_ALIAS, "").replace(ISOLATED_ALIAS, "");
   return { verify: namesChainStep(rest) ? `${steps} — ${verify}` : steps, aliased: true };
-}
-
-/** `server.ts#taskView` → ["server.ts", "taskView"]; anything else → null. */
-export function splitSymbolRef(ref: string): [string, string] | null {
-  const at = ref.indexOf("#");
-  if (at <= 0 || at === ref.length - 1) return null;
-  return [ref.slice(0, at), ref.slice(at + 1)];
 }
 
 /**

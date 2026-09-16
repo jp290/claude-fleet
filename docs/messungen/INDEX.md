@@ -1,5 +1,7 @@
 # Index der Messnotizen
 
+- Topf B ist geschlossen, ohne den all-or-nothing-Filter anzufassen: der Deklarationsscan lokalisiert die vier Graph-Lücken-Symbole im Baum selbst, die vier Zeilen tragen 1–4 server.ts-Ranges über den Produktionspfad, und die Kollisions-Semantik ist in e2e/tasks.ts gepinnt; Topf A (11 Autoren-Zeilen ohne Symbol) und Topf C (FLEET_CARD_MS=0) sind benannt und nicht gebaut — docs/messungen/2026-09-16-serialisierung-ranges.md · bereich: queue,land-waves,start-plan,ranges,card-surface,graphify · stand: 2026-09-16
+
 - S2D ist angenommen, regulaer gelandet und gruen auditiert; das Gesamt-Review bleibt wegen offener GLM-Korrektur, Server-/Gate-Abdeckung und unvollstaendigem Briefnachweis offen. — docs/messungen/2026-09-review-aussen-nach-innen.md · bereich: review,datenlayer,rollen,kontext,gates · stand: 2026-09-08
 - Bestehende Rueckwege, Rollen-/Kontextuebergaben und gemeinsame Evidenzprojektionen schliessen; C0-C5 sind abgegrenzte Umsetzungsvorschlaege, keine erledigten oder automatisch freigegebenen Arbeiten. — docs/messungen/2026-09-07-datenvertraege-umsetzungsplan.md · bereich: datenlayer,kontext,briefs,workflow,hub · stand: 2026-09-07
 

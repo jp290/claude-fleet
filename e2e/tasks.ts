@@ -2,15 +2,17 @@
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
 import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
 import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardAnswerForLedger, CARD_MARK, CARD_KEY, CARD_VALIDATOR_VERSION } from "../card-extract";
 import { renderWaveBrief, renderCardHead, CARD_HEAD_MAX_BYTES } from "../wave-brief";
 import { LOCAL_PROOF_STEPS } from "../verify-proportion";
-import { deriveTaskMetadata, type SymbolIndex, type TaskCluster } from "../task-metadata";
+import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, topLevelDeclarations,
+  type SymbolIndex, type TaskCluster } from "../task-metadata";
 import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict,
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
@@ -5013,6 +5015,64 @@ export async function run(ctx: Ctx): Promise<void> {
     check("surface: the same two paths named as WORK, not as proof, remain a surface",
       namedAsWork.files?.join(" ") === "e2e-isolated.sh e2e/pins.ts", JSON.stringify(namedAsWork));
 
+    // --- THE DECLARATION SCAN (2026-09-16, docs/messungen/2026-09-16-serialisierung-ranges.md):
+    // graphify misses top-level declarations the tree really carries — measured live, the four
+    // symbols server.ts#taskDigest, #acceptByLandReading, #RAIL_TAIL and #LANE_EXIT_FOOTER were
+    // absent from a graph built at HEAD. The scan turns the tree's second fact into RANGES: only
+    // gaps are filled (a symbol the graph knows is never scanned twice), and ends derive in
+    // buildSymbolIndex exactly like graph symbols' ends.
+    {
+      const scanSource = [
+        "export const alpha = 1;",            // L1: the graph knows alpha → the scan skips it
+        "",                                   // L2
+        "  const nested = 2;",                // L3: indented → never a symbol
+        "// const commented = 3;",            // L4: a comment → never a declaration
+        "function beta() { return nested; }", // L5: graph-missed → the scan finds it
+        "",                                   // L6
+        "export default class Gamma {}",      // L7: graph-missed → the scan finds it
+      ].join("\n");
+      const scanned = topLevelDeclarations(scanSource, new Set(["alpha"]));
+      check("task metadata: the declaration scan fills only graph gaps — indentation and comments are not declarations, and declaresSymbol reads the same grammar",
+        JSON.stringify(scanned) === JSON.stringify([{ symbol: "beta", line: 5 }, { symbol: "Gamma", line: 7 }])
+        && declaresSymbol(scanSource, "beta") && declaresSymbol(scanSource, "Gamma")
+        && !declaresSymbol(scanSource, "nested") && !declaresSymbol(scanSource, "commented"),
+        JSON.stringify({ scanned }));
+
+      // Through the production reader: a temp checkout whose graph.json knows only `alpha` (and its
+      // file node), while the file itself declares beta and Gamma too. The synthetic nodes must
+      // interleave: alpha ends at beta's start minus one, beta at Gamma's start minus one.
+      const dir = mkdtempSync(join(tmpdir(), "fleet-symscan-"));
+      try {
+        mkdirSync(join(dir, "graphify-out"), { recursive: true });
+        mkdirSync(join(dir, "src"), { recursive: true });
+        writeFileSync(join(dir, "graphify-out", "graph.json"), JSON.stringify({ nodes: [
+          { label: "alpha", file_type: "code", source_file: "src/scan.ts", source_location: "L1" },
+          { label: "src/scan.ts", file_type: "code", source_file: "src/scan.ts", source_location: "L1" },
+        ] }));
+        writeFileSync(join(dir, "src", "scan.ts"), scanSource);
+        const rows = readSymbolIndexSnapshot(dir)?.index.get("src/scan.ts") ?? [];
+        check("task metadata: readSymbolIndexSnapshot carries graph-missed declarations as ranges, interleaved with the graph's own",
+          JSON.stringify(rows.map((r) => [r.symbol, r.startLine, r.endLine]))
+          === JSON.stringify([["alpha", 1, 4], ["beta", 5, 6], ["Gamma", 7, 7]]), JSON.stringify(rows));
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+
+      // And the lift's re-resolution (server.ts#taskSurfaceOf): the card's OWN symbols against the
+      // index of now, with the filing-time all-or-nothing intact — a file whose claimed symbols do
+      // not ALL resolve keeps NO ranges for that file, so collidesOn is never told "only near the
+      // resolved one"; without a graph the stored list stands as filed.
+      const resIndex: SymbolIndex = new Map(["server.ts", "src/client.ts"].map((file) => [file, [
+        { file, symbol: file === "server.ts" ? "taskDigest" : "qTaskSummary", startLine: 100, endLine: 140 }]]));
+      const partial = resolveSurfaceRanges({ symbols: ["server.ts#taskDigest", "server.ts#gibtEsNicht",
+        "src/client.ts#qTaskSummary"], ranges: [] }, resIndex);
+      check("task metadata: resolveSurfaceRanges — a file with one unlocatable symbol keeps NO ranges, a fully resolved file stands",
+        JSON.stringify(partial) === JSON.stringify([{ file: "src/client.ts", symbol: "qTaskSummary", startLine: 100, endLine: 140 }]),
+        JSON.stringify(partial));
+      const stored = [{ file: "src/client.ts", symbol: "qTaskSummary", startLine: 10, endLine: 20 }];
+      check("task metadata: resolveSurfaceRanges without a graph returns the stored list, never a re-derivation",
+        JSON.stringify(resolveSurfaceRanges({ symbols: ["server.ts#taskDigest"], ranges: stored }, null))
+        === JSON.stringify(stored), JSON.stringify(stored));
+    }
+
     // `datei#symbol`: the FILE half already resolved before this change (neither `#` nor `:` is in
     // the path token's character class). What is new is the RANGE, and its absence is a first-class
     // answer — a lane has no graphify-out/, and an empty list there would read as "measured, points
@@ -7269,6 +7329,26 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(lift) a coarse card (no range in any of its files, graph absent or empty) is a wave of one `flaeche-ohne-bereich`; no program stays `kein-program`, derived stays derived",
       JSON.stringify(coarse) === JSON.stringify([[["ca"], "flaeche-ohne-bereich", []], [["cb"], "flaeche-ohne-bereich", []],
         [["cc"], "kein-program", []], [["cd"], "flaeche-nur-abgeleitet", []]]), JSON.stringify(coarse));
+    // --- (lift) POT B (2026-09-16): the collision semantics the range fix RESTS ON, pinned on the
+    // file the fix is about (docs/messungen/2026-09-16-serialisierung-ranges.md). Disjoint server.ts
+    // symbol ranges stay separate; the SAME symbol is one range overlapping itself and joins; and a
+    // row without any range in the file still reads as whole-file — the fallback the fix must never
+    // weaken. Mutations that turn these red: overlap narrowed to always-false (first two), the
+    // `!ra.length || !rb.length` fallback removed (third).
+    const potbRow = (id: string, created: number, ranges: TaskWaveInput["ranges"], origin: TaskWaveInput["filesOrigin"] = "card") =>
+      cardRow(id, created, ["server.ts"], ranges, { filesOrigin: origin });
+    const digestRange = { file: "server.ts", symbol: "taskDigest", startLine: 2792, endLine: 2830 };
+    const potbDisjoint = liftWaves([potbRow("pa", 1, [digestRange]),
+      potbRow("pb", 2, [{ file: "server.ts", symbol: "railBlockFor", startLine: 25312, endLine: 25360 }])]);
+    check("(lift) potb: two card rows on DISJOINT server.ts symbols do not collide — two waves, no reason against",
+      JSON.stringify(potbDisjoint) === JSON.stringify([[["pa"], null, []], [["pb"], null, []]]), JSON.stringify(potbDisjoint));
+    const potbSame = liftWaves([potbRow("pa", 1, [digestRange]),
+      potbRow("pc", 2, [{ file: "server.ts", symbol: "taskDigest", startLine: 2800, endLine: 2840 }])]);
+    check("(lift) potb: two card rows on the SAME server.ts symbol collide — one shared wave",
+      JSON.stringify(potbSame) === JSON.stringify([[["pa", "pc"], null, ["server.ts"]]]), JSON.stringify(potbSame));
+    const potbFallback = liftWaves([potbRow("pa", 1, [digestRange], "confirmed"), potbRow("pb", 2, [], "confirmed")]);
+    check("(lift) potb: a row WITHOUT ranges in the file falls back to whole-file and collides with a ranged row",
+      JSON.stringify(potbFallback) === JSON.stringify([[["pa", "pb"], null, ["server.ts"]]]), JSON.stringify(potbFallback));
   }
 
   // --- (sp) THE START PLAN, pure (start-plan.ts#projectStartPlan, Schnitt 1). Every wave gets ONE

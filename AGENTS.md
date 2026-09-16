@@ -217,6 +217,11 @@ below (`install`, `pins`, `tsc`, `build`, `clean-review`, `security`, `claude-ga
 route is unreachable, run the full chain below. Every selected step must pass; stop at the first
 failure.
 
+An EMPTY `localProof.steps` is not `null` and never means "nothing to prove": it is served only in
+a repo that does not run this chain at all, and it always carries `localProof.note`, which names
+that repo's own verify command instead. Run THAT, not the chain below — the step names below are
+lines of this repo's chain and do not exist elsewhere.
+
 The server-side land gate remains authoritative: it runs its full configured chain except that,
 since 2026-08-25, a docs-only land in THIS repo runs the short `install` + `pins` proof; since
 2026-09-04 a docs-only land gets that same short chain in the post-land audit as well, and there
@@ -226,7 +231,8 @@ remote helper and never waits for one. Local proof and the land gate use the sam
 source.
 The short proof is this repo's own chain — `bun e2e/pins.ts` is a file only this tree has — so
 since 2026-08-26 it is only ever chosen here: a land in another repo runs that repo's configured
-chain unchanged, docs-only or not, and its note stamps that full chain rather than the two steps.
+chain unchanged, docs-only or not. Its note stamps no step names at all: the step names are lines
+of this chain, and the note's `cmd` is the only honest record of what a foreign chain ran.
 The guard inside the short proof stays as a second line: a tree it does not recognise makes it
 decline out loud — verdict SKIPPED, never a red gate over a tree nothing looked at.
 

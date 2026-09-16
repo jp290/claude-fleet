@@ -19,6 +19,15 @@ export interface LocalProof {
   steps: LocalProofStep[];
   isolatedPreview: IsolatedPreview;
   classifiedAs: Record<string, string>;
+  // WHY THE LIST ABOVE IS EMPTY, and the only case in which it may be. Every name in
+  // LOCAL_PROOF_STEPS is a line of THIS repo's chain (`bun e2e/pins.ts`, `bun run build`,
+  // `./e2e-security.sh`), so in a repo that does not run that chain the honest recommendation is
+  // no steps at all plus the command that repo's own gate will run. Neither function in this file
+  // ever sets it — the classifier is repo-blind by design and answers about PATHS; the repo lock
+  // lives at the gate seam (server.ts#laneLocalProof, the same `repoRunsShortChain` the gate's own
+  // command selection asks). Absent therefore means "these steps are this repo's own", never
+  // "no note was computed".
+  note?: string;
 }
 
 export interface VerificationProportion extends LocalProof {

@@ -477,7 +477,14 @@ export async function run(ctx: Ctx): Promise<void> {
   spawnSync("git", ["-C", brokenRepo, "config", "user.email", "e2e@example.invalid"]);
   spawnSync("git", ["-C", brokenRepo, "config", "user.name", "Fleet E2E"]);
   writeFileSync(`${brokenRepo}/seed.txt`, "seed\n");
-  spawnSync("git", ["-C", brokenRepo, "add", "seed.txt"]);
+  // The sentinel is what keeps this fixture ABOUT the unanswerable diff. Since 2026-09-16 the repo
+  // lock is asked FIRST (laneLocalProof), so without `fleet-e2e.ts` this lane would take the
+  // foreign-repo branch and answer `steps: []` + note — never reaching the git read whose failure
+  // is the thing under test. A fleet-shaped repo with a broken base is the only shape that proves
+  // null is still null, and the two answers must stay distinguishable: `[]` says "this chain does
+  // not run here", `null` says "it does, and Fleet could not work out how much of it you need".
+  writeFileSync(`${brokenRepo}/fleet-e2e.ts`, "// fleet-shaped: the unanswerable-diff fixture is about the DIFF, not the repo\n");
+  spawnSync("git", ["-C", brokenRepo, "add", "seed.txt", "fleet-e2e.ts"]);
   spawnSync("git", ["-C", brokenRepo, "commit", "-qm", "seed"]);
   const orphan = spawnSync("git", ["-C", brokenRepo, "worktree", "add", "--orphan", "-b", "proof-orphan", brokenTree]);
   check("localProof null fixture: an orphan worktree with no merge-base is created",
@@ -495,7 +502,7 @@ export async function run(ctx: Ctx): Promise<void> {
     renamed.status === 0, renamed.stderr.toString().slice(0, 300));
   const brokenGateRes = await selfGate(brokenToken ?? "");
   const brokenGate = (await brokenGateRes.json()) as Gate;
-  check("GET /api/self/gate: an unanswerable git diff returns 200 with localProof:null and the other gate fields",
+  check("GET /api/self/gate: an unanswerable git diff returns 200 with localProof:null (not steps:[]) and the other gate fields",
     brokenGateRes.ok && brokenGate.localProof === null && "verify" in brokenGate
       && typeof brokenGate.postlandAudit === "boolean" && "suiteLock" in brokenGate,
     `${brokenGateRes.status} ${JSON.stringify(brokenGate)}`);
@@ -520,16 +527,19 @@ export async function run(ctx: Ctx): Promise<void> {
   const vwTrees: [string, string][] = [];
   // One lane at a time, torn down before the next arm opens: three simultaneous probe lanes would
   // race the suite's free-slot budget and report "no free slot" as if it were a resolution answer.
-  const vwCmdFor = async (repo: string): Promise<{ cmd: string | null; err: string }> => {
+  // `proof` rides along because it is the SAME question asked one field down: these fixture repos
+  // are the only ones on this server that carry no `fleet-e2e.ts`, and re-spawning a lane in them
+  // for the localProof arms would race the suite's free-slot budget for an answer already in hand.
+  const vwCmdFor = async (repo: string): Promise<{ cmd: string | null; proof: Gate["localProof"]; err: string }> => {
     const res = await post("/api/lanes", { repo });
     const lane = (await res.json()) as { ok?: boolean; slot?: number; error?: string };
-    if (lane.ok !== true || typeof lane.slot !== "number") return { cmd: null, err: `lane: ${JSON.stringify(lane)}` };
+    if (lane.ok !== true || typeof lane.slot !== "number") return { cmd: null, proof: null, err: `lane: ${JSON.stringify(lane)}` };
     try {
       const tok = await paneEnv(`s${lane.slot}`, "FLEET_SELF_TOKEN");
-      if (!/^[0-9a-f]{32}$/.test(tok ?? "")) return { cmd: null, err: "the probe lane's pane never answered with a token" };
+      if (!/^[0-9a-f]{32}$/.test(tok ?? "")) return { cmd: null, proof: null, err: "the probe lane's pane never answered with a token" };
       const gRes = await selfGate(tok ?? "");
       const g = (await gRes.json()) as Gate;
-      return { cmd: g.verify?.cmd ?? null, err: `${gRes.status} ${JSON.stringify(g.verify)}` };
+      return { cmd: g.verify?.cmd ?? null, proof: g.localProof, err: `${gRes.status} ${JSON.stringify({ verify: g.verify, localProof: g.localProof })}` };
     } finally { await post(`/api/slots/${lane.slot}/kill`, {}); }
   };
   // The worktrees are built HERE rather than in the wrapper so this slice stays inside its own
@@ -546,9 +556,9 @@ export async function run(ctx: Ctx): Promise<void> {
   const vwErr3 = REPO3 ? mkWorktree(REPO3, vwTree3, "verify-key-probe3") : "REPO3 unset";
   check("verify-key fixture: a linked worktree of the configured repo and one of the unconfigured repo both exist",
     vwErr2 === "" && vwErr3 === "", JSON.stringify({ REPO2, REPO3, vwErr2, vwErr3 }));
-  const vwPrimary = vwErr2 === "" ? await vwCmdFor(REPO2) : { cmd: null, err: vwErr2 };
-  const vwLinked = vwErr2 === "" ? await vwCmdFor(vwTree2) : { cmd: null, err: vwErr2 };
-  const vwForeign = vwErr3 === "" ? await vwCmdFor(vwTree3) : { cmd: null, err: vwErr3 };
+  const vwPrimary = vwErr2 === "" ? await vwCmdFor(REPO2) : { cmd: null, proof: null, err: vwErr2 };
+  const vwLinked = vwErr2 === "" ? await vwCmdFor(vwTree2) : { cmd: null, proof: null, err: vwErr2 };
+  const vwForeign = vwErr3 === "" ? await vwCmdFor(vwTree3) : { cmd: null, proof: null, err: vwErr3 };
   check("gate: a lane in a LINKED WORKTREE of a configured repo is told that repo's own verify entry, not the global",
     vwPrimary.cmd !== null && vwPrimary.cmd.endsWith("/fakeverify2")
       && vwLinked.cmd === vwPrimary.cmd,
@@ -557,6 +567,39 @@ export async function run(ctx: Ctx): Promise<void> {
     vwForeign.cmd !== null && vwForeign.cmd.endsWith("/fakeverify")
       && !vwForeign.cmd.endsWith("/fakeverify2") && vwForeign.cmd !== vwPrimary.cmd,
     JSON.stringify({ foreign: vwForeign, primary: vwPrimary.cmd }));
+
+  // --- …AND THE SAME REPO LOCK ON THE ADVISORY HALF (localProof) --------------------------------
+  // `repoRunsShortChain` already decided which COMMAND the gate runs (verifyPlanFor, 2026-08-26).
+  // The recommendation two fields down was still repo-blind: testrepo2/testrepo3 carry no
+  // `fleet-e2e.ts`, and a lane in either was handed `install, pins, tsc, build, …` — the lines of
+  // THIS repo's chain, named at a tree where `bun e2e/pins.ts` does not exist and `bun run build`
+  // has no script. Empty steps is the only honest answer there, and it must carry the note, or a
+  // lane reads "no steps" as "nothing to prove". Mutation guard: drop the `repoRunsShortChain`
+  // branch from laneLocalProof and `steps` fills with all seven while `note` disappears.
+  // BOTH arms, because the note must name the command THIS lane will meet and the two differ:
+  // testrepo2 has its own FLEET_VERIFY_CMD_REPOS entry (fakeverify2), testrepo3's worktree falls
+  // back to the global (fakeverify) — a note built from the global would pass the second and be
+  // wrong on the first.
+  for (const [label, arm] of [["configured (fakeverify2)", vwPrimary], ["unconfigured, global (fakeverify)", vwForeign]] as const) {
+    check(`gate: a lane in a repo with no fleet-e2e.ts gets localProof.steps [] — ${label}`,
+      arm.proof !== null && Array.isArray(arm.proof.steps) && arm.proof.steps.length === 0
+        && arm.proof.isolatedPreview === false
+        && JSON.stringify(arm.proof.classifiedAs) === "{}",
+      JSON.stringify(arm.proof));
+    check(`gate: …and the note names THAT repo's verify command, the one its own gate will run — ${label}`,
+      typeof arm.proof?.note === "string" && arm.cmd !== null
+        && arm.proof.note.includes("no fleet-e2e.ts")
+        && arm.proof.note.includes(`verify = ${arm.cmd}`),
+      JSON.stringify({ note: arm.proof?.note, cmd: arm.cmd }));
+  }
+  // The counter-probe in the same breath: the fleet lane opened at the top of this module is in
+  // REPO, which HAS the sentinel, and nothing above may have changed what it is told.
+  const gFleet = (await (await selfGate(selfTok)).json()) as Gate;
+  check("gate: a lane in a repo that DOES run this chain is unchanged — real steps, no note",
+    gFleet.localProof !== null && gFleet.localProof.steps.length > 0
+      && gFleet.localProof.steps.every((step) => (LOCAL_PROOF_STEPS as readonly string[]).includes(step))
+      && gFleet.localProof.note === undefined,
+    JSON.stringify(gFleet.localProof));
   for (const [repo, dir] of vwTrees) {
     spawnSync("git", ["-C", repo, "worktree", "remove", "--force", dir]);
     rmSync(dir, { recursive: true, force: true });

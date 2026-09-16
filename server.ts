@@ -3650,9 +3650,36 @@ async function laneBaseRef(s: Slot): Promise<string | null> {
 
 // The smallest LOCAL proof for this lane's committed footprint. Failure is null rather than an
 // empty list: no base or no diff means Fleet cannot classify the work, so the caller must use the
-// full chain. The authoritative land gate does not call this helper.
+// full chain. An EMPTY list is the opposite statement and is reached only through the repo lock
+// below — "there is nothing of this chain to run here" — and it always carries the `note` that
+// says so. The authoritative land gate does not call this helper.
 async function laneLocalProof(s: Slot): Promise<LocalProof | null> {
   if (!s.cwd || !s.worktree) return null;
+  // THE REPO IS ASKED BEFORE THE DIFF, because the answer does not depend on the diff. Every name
+  // in LOCAL_PROOF_STEPS is a line of THIS repo's chain — `bun e2e/pins.ts` is a file only this
+  // tree has — so a lane in a repo without the sentinel was being handed install/pins/tsc/build as
+  // its "smallest proof": advice it cannot follow, over a chain it does not have. Deliberately the
+  // SAME lock the gate's own command selection asks (repoRunsShortChain in verifyPlanFor), so the
+  // advisory half and the authoritative half cannot disagree about which trees the fleet chain is
+  // for. Null is NOT the answer here and the order is why: null means "fall back to the full local
+  // chain", which is the very chain this repo does not run — so a foreign repo with an
+  // unresolvable base would be sent to it by the fallback instead of being told the truth.
+  if (!repoRunsShortChain(s.worktree.repo)) {
+    // The one command this lane will actually meet, resolved through the same entry-then-global
+    // lookup the `verify` field of this route is resolved through (P-7c): a lane must not read one
+    // command in `verify.cmd` and a different recommendation two fields down.
+    const cmd = await verifyCmdFor(s.worktree.repo);
+    return {
+      steps: [], isolatedPreview: false, classifiedAs: {},
+      // The step names are deliberately NOT enumerated here. This sentence exists to stop a lane
+      // running them, and a list of them is the one thing a reader in a hurry would carry away.
+      note: "this repo does not run the claude-fleet chain (no fleet-e2e.ts), so there are no local "
+        + "steps to recommend — "
+        + (cmd
+          ? `verify = ${cmd} (the command this lane's land gate will run)`
+          : "verify = nothing is configured for this repo (`verify` is null above): name the proof you ran in your report"),
+    };
+  }
   const base = s.worktree.baseSha ?? await laneBaseRef(s);
   if (!base) return null;
   const changed = await gitRead(s.cwd, "diff", "--no-renames", "--name-only", `${base}...HEAD`);
@@ -16318,10 +16345,20 @@ async function verifyPlanFor(cwd: string, repo: string, mainSha: string): Promis
   // auto-land, and nothing measured, in a repo that has a real gate configured for it (two live
   // private-repo-j lands, 5ddfcea and 6d9a1cd: `proportional:true, steps:["install","pins"],
   // exitCode:42`). The server knows no short form for a foreign repo, so there is none to offer.
-  const proportional = changed.code === 0 && proportion.proportional && repoRunsShortChain(repo);
-  // Both stamps follow that same boolean, so a foreign repo's note reports the full chain it
-  // actually ran rather than the two steps it did not.
-  const steps: LocalProofStep[] = proportional ? [...proportion.steps] : [...LOCAL_PROOF_STEPS];
+  const shortChainRepo = repoRunsShortChain(repo);
+  const proportional = changed.code === 0 && proportion.proportional && shortChainRepo;
+  // THREE outcomes, not two, and the third is why this is not one ternary. `steps` names the lines
+  // of THIS repo's chain, so it can only describe a run of THIS repo's chain: a foreign repo ran
+  // its own configured command, whose lines Fleet does not know and must not invent. Until
+  // 2026-09-16 the else-branch stamped all seven onto every foreign land — a note that read
+  // `steps:["install","pins","tsc","build","clean-review","security","claude-gate"]` over a repo
+  // where `bun e2e/pins.ts` does not exist and `$FLEET_VERIFY_CMD` is what actually ran. The empty
+  // list is the honest form of that: `cmd` beside it says what did run, and a reader who wants the
+  // steps of a foreign chain has to read that command, which is the only place they exist.
+  // ABSENT still means an old verdict that cannot reconstruct any of this (see MergeLast.verify);
+  // empty means "asked, and this chain has no fleet step names".
+  const steps: LocalProofStep[] = proportional ? [...proportion.steps]
+    : shortChainRepo ? [...LOCAL_PROOF_STEPS] : [];
   const cmd = proportional ? VERIFY_PROPORTIONAL_CMD : configuredCmd;
   return { cmd, proportional, steps };
 }

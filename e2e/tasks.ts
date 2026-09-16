@@ -19,8 +19,8 @@ import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
   LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits,
   type LandWave, type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
-import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
-  type StartPlanLane, type StartPlanRelease, type StartPlanRow } from "../start-plan";
+import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanLaneClaims, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
+  type StartPlanLane, type StartPlanLaneClaim, type StartPlanRelease, type StartPlanRow } from "../start-plan";
 import { laneHunkDiffArgs, laneHunkRanges } from "../land-collision-stats";
 import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
   type InstanceLink } from "../src/protocol";
@@ -7479,6 +7479,70 @@ export async function run(ctx: Ctx): Promise<void> {
       }) && JSON.stringify(spHunkNotes) === JSON.stringify([
         "waiting: collides with lane 3 on server.ts#rs", "waiting: collides with lane 3 on server.ts"]),
       JSON.stringify({ spHunkGot, spHunkNotes }));
+    // (sp-criterion) A LANE PARKED ON THE OWNER WITH AN UNWRITTEN TREE HOLDS NO SURFACE
+    // (start-plan.ts#startPlanLaneClaims). One rule, two lane builders — server.ts#startPlanNow off
+    // the live slot, the CLI off a state file — so the rule is exercised directly here and the two
+    // WIRINGS are read out of their own sources, which is the half tsc cannot see. The fixture is a
+    // lane on server.ts 100-120 and one queued row on server.ts 110-130, a certain collision under
+    // the full rule, so a case reads "now" exactly when the lane stopped claiming. Mutations this
+    // catches: the criterion branch removed → (a) red; the awaiting branch removed → (b) red; the
+    // ahead/dirty guard removed → (d1), (d2) and (e) red; `awaiting: "main"` folded in → (m) red;
+    // the lane freed of the caps too → the cap check red; either builder dropping the rule, reading
+    // another row than its founding one, or nulling only one half → the two source checks.
+    {
+      const spOpen: StartPlanLaneClaim["criterion"] = { proposedAt: 1, confirmedAt: null };
+      const spCritNext = (c: StartPlanLaneClaim) => {
+        const claims = startPlanLaneClaims(c);
+        const lane: StartPlanLane = { slot: 3, repo: spRepo, programId: null,
+          files: claims ? ["server.ts"] : null, ranges: claims ? spRs(100, 120) : null };
+        return projectStartPlan(spInput([spRow("r", 1, ["server.ts"], { ranges: spRs(110, 130) })],
+          [lane], spCaps)).repos[0]?.waves[0]?.next;
+      };
+      const spCritGot = {
+        a: spCritNext({ criterion: spOpen, awaiting: null, git: { ahead: 0, dirty: 0 } }),
+        b: spCritNext({ criterion: null, awaiting: "owner", git: { ahead: 0, dirty: 0 } }),
+        c: spCritNext({ criterion: { proposedAt: 1, confirmedAt: 2 }, awaiting: null, git: { ahead: 0, dirty: 0 } }),
+        d1: spCritNext({ criterion: spOpen, awaiting: null, git: { ahead: 1, dirty: 0 } }),
+        d2: spCritNext({ criterion: spOpen, awaiting: null, git: { ahead: 0, dirty: 1 } }),
+        e: spCritNext({ criterion: spOpen, awaiting: null, git: null }),
+        m: spCritNext({ criterion: null, awaiting: "main", git: { ahead: 0, dirty: 0 } }),
+        n: spCritNext({ criterion: null, awaiting: null, git: { ahead: 0, dirty: 0 } }),
+      };
+      const spCol = { collides: { slot: 3, file: "server.ts", symbol: "rs" } };
+      check("(sp-criterion) an unconfirmed criterion (a) and awaiting \"owner\" (b) free the row on a tree at ahead 0 / dirty 0 · a CONFIRMED criterion (c), one commit (d1), one dirty file (d2), an unread git (e), awaiting \"main\" (m) and a plain running lane (n) all still collide",
+        JSON.stringify(spCritGot) === JSON.stringify({ a: "now", b: "now", c: spCol, d1: spCol, d2: spCol,
+          e: spCol, m: spCol, n: spCol }), JSON.stringify(spCritGot));
+      // …and it is a SURFACE that falls away, never a lane: both caps keep counting the parked lane.
+      const spCritCap = projectStartPlan(spInput([spRow("r", 1, ["server.ts"], { programId: "prog" })],
+        [{ slot: 3, repo: spRepo, programId: "prog", files: null, ranges: null }],
+        { [spRepo]: { max: 1, source: "repo" as const, programs: {} } })).repos[0]?.waves[0]?.next;
+      check("(sp-criterion) a lane without a surface still counts against the repo cap",
+        JSON.stringify(spCritCap) === JSON.stringify({ cap: "1/1 lanes busy in sp (repo cap)" }),
+        JSON.stringify(spCritCap));
+      const spSrv = (() => { try { return readFileSync(`${ROOT}/server.ts`, "utf8"); } catch { return ""; } })();
+      const spCliSrc = (() => { try { return readFileSync(`${ROOT}/start-plan.ts`, "utf8"); } catch { return ""; } })();
+      check("(sp-criterion) PROBE: both lane builders are readable",
+        spSrv.length > 1000 && spCliSrc.length > 1000, `server=${spSrv.length} cli=${spCliSrc.length}`);
+      const spPlanFn = spSrv.match(/function startPlanNow\([\s\S]*?\n\}\n/)?.[0] ?? "";
+      check("(sp-criterion) startPlanNow reads the rule off the live slot — the founding row's criterion, the slot's own awaiting, the git tick's cached reading — and drops files AND ranges together",
+        /const claims = startPlanLaneClaims\(\{/.test(spPlanFn)
+        && /criterion: foundingRowOf\(s\)\?\.criterion \?\? null,/.test(spPlanFn)
+        && /awaiting: s\.awaiting,/.test(spPlanFn)
+        && /git: gitInfo\.get\(s\.id\) \?\? null,/.test(spPlanFn)
+        && /files: claims && own\.length/.test(spPlanFn)
+        && /ranges: claims && own\.some/.test(spPlanFn),
+        spPlanFn.match(/const claims = startPlanLaneClaims[\s\S]{0,260}/)?.[0]?.replace(/\s+/g, " ") ?? "no claims call in startPlanNow");
+      const spCliLoop = spCliSrc.slice(spCliSrc.indexOf("const lanes: StartPlanLane[] = [];"));
+      check("(sp-criterion) the CLI lane builder reads the SAME rule off the state file — the slot's taskId row, its awaiting, and a git reading of its own that stays null when it cannot be taken",
+        /const claims = startPlanLaneClaims\(\{/.test(spCliLoop)
+        && /criterion: criterionOf\(\(typeof slot\.taskId === "string" && ownRows\.find\(\(t\) => t\.id === slot\.taskId\)\) \|\| ownRows\[0\]\),/.test(spCliLoop)
+        && /awaiting: slot\.awaiting === "owner" \|\| slot\.awaiting === "main" \? slot\.awaiting : null,/.test(spCliLoop)
+        && /git: laneCwd && forkSha \? laneGitOf\(laneCwd, forkSha\) : null,/.test(spCliLoop)
+        && /files: claims && own\.length/.test(spCliLoop)
+        && /ranges: claims && own\.some/.test(spCliLoop)
+        && /if \(!ahead\.ok \|\| !dirty\.ok \|\| !Number\.isFinite\(n\)\) return null;/.test(spCliSrc),
+        spCliLoop.match(/const claims = startPlanLaneClaims[\s\S]{0,320}/)?.[0]?.replace(/\s+/g, " ") ?? "no claims call in the CLI builder");
+    }
     // (sp-stau) A WAITING WAVE HOLDS LATER WAVES ONLY ON KNOWN RANGES (start-plan.ts `claims`,
     // docs/messungen/2026-09-15-start-plan-stau-schnitt.md). The stall of 2026-09-15: a fresh lane with
     // ranges only on server.ts, two front rows waiting on it, range-less rows on the hub files behind.

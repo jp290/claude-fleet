@@ -103,7 +103,7 @@ der Unterschied ist im Wesentlichen das eingebettete Programm-JSON.
 Read-only, occupancy-gated (`isBoundSupervisor`, sonst **409** `NOT_SUPERVISOR` — nicht 401, die
 Session hat ja ein gültiges Token), **nie auf dem 2-s-Poll** (Kommentar über
 `server.ts#supervisorView`: `/api/sessions` ist die größte Nutzlast des Servers und hat Bytes an
-Headroom). Fünf Faktgruppen aus
+Headroom). Sechs Faktgruppen aus
 Quellen, die ohnehin existieren:
 
 | Gruppe | Quelle | Deckel |
@@ -113,6 +113,7 @@ Quellen, die ohnehin existieren:
 | `integration` | `deploys.jsonl`, `post-land-audits.jsonl` + Adjudikationen, `deployFacts` (derselbe Git-Tick-Cache wie das Board) | 5 Zeilen je Liste |
 | `attention` | offene/`send-uncertain` `attentionRequests` | 20 Zeilen, Text auf 200 Zeichen |
 | `provenance` | `context-receipts.jsonl` | 20 Zeilen |
+| `lineage` | die EIGENE Rollen-Linie: `lineageHandovers` + `lineageHandoverLosses`, abgeleitet in `server.ts#lineageStateOf` | ein Objekt; nur diese Linie, nur Zählungen und Occupant-Ids, **kein** Record-Text |
 
 Die `portfolio`-Zeile trägt mehr als ihre Kurzform: **jedes Feld unter ihr ist eine reine
 Projektion, die der Owner-GET `GET /api/programs` aus DEMSELBEN Helfer bekommt** — zwei Sichten
@@ -133,8 +134,24 @@ läufst (V1b)*.
 
 Dazu `unknown: string[]` — jede Lücke wird als Satz benannt statt weggelassen: nicht projizierte
 Programme, unattribuierbare Outcome-Zeilen, malformed-Zähler je Ledger, ein
-`deployGap: null` ausdrücklich als *"not measured yet, which is not an all-clear"* — und eine
-konstante Zeile: *"1 lineage gap: no persisted Supervisor lineage exists"* (§5.1).
+`deployGap: null` ausdrücklich als *"not measured yet, which is not an all-clear"* — und genau eine
+Lineage-Zeile, **abgeleitet statt konstant** (`server.ts#supervisorLineageView`, §5.1).
+
+`state` ist dreiwertig (`none` · `present` · `lost`); zusammen mit `role` sind es vier
+unterscheidbare Fälle, und keiner von ihnen sagt, was ein anderer sagt:
+
+| `state` | Wann | Was die `unknown`-Zeile dazu sagt |
+|---|---|---|
+| `none` | die Session trägt keine `lineageId` — Bootstrap (`server.ts#bootstrapSupervisor`) oder Bind (`server.ts#bindSupervisor`) schreiben keinen Record | *„holds no role line — it was bootstrapped or bound rather than succeeded into"*: hier und nur hier ist „keine frühere Ernennung rekonstruierbar" die ganze Geschichte |
+| `present`, `role: "supervisor"` | eine echte Supervisor-Nachfolge (`server.ts#succeedSupervisor` → `writeLineageHandover`) hat einen an DIESEN Occupant adressierten Record geschrieben | *„reaches back only to its oldest surviving record at …"*: die Nachfolge wird nicht verneint, die Reichweite der Linie wird benannt |
+| `present`, `role: "generic"` | eine generische Nachfolgelinie wurde per Bind in die Rolle getragen | *„is a generic succession line carried into the Supervisor role"*: der Bind kopiert keine Supervisor-Historie auf sie |
+| `lost` | `lineageId` vorhanden, kein an diesen Occupant adressierter Record überlebt | *„no record addressed to this occupant survives"* — verloren, nie „es war nichts geschuldet" (dieselbe Regel, die `server.ts#lineageSelfView` befolgt) |
+
+Dazu je eine Zeile für **Verlustspuren**: was der Loader beim Boot nicht lesen konnte, steht als
+Narbe in `lineageHandoverLosses` und wird gezählt gemeldet. Beide Sichten der Linie — diese und
+`GET /api/self` — lesen `server.ts#lineageStateOf`, damit sie über dieselbe Linie nichts
+Verschiedenes sagen können; der Record-**Körper** (`intent`/`pointer`) bleibt bei `GET /api/self`,
+weil dessen Leser der adressierte Occupant ist.
 
 ### 1.5 Die eine Stimme (`POST /api/self/nudge`, `server.ts#supervisorNudge`)
 
@@ -403,12 +420,35 @@ Supervisor ist, bekommt dort 409** (§5.2). Bis das ein Cut schließt gilt:
 
 ## 5. Bekannte Lücken — ehrlich, mit ihren Kosten
 
-### 5.1 Keine Supervisor-Lineage (der Stale-Clear-Weg ist geschlossen)
+### 5.1 Die Lineage-Grenze — wo sie heute wirklich verläuft
 
-Die Bindung ist ein **Singleton**, kein Verlauf: `supervisor = {…}` wird bei Bootstrap
-(`server.ts#bootstrapSupervisor`) und Nachfolge (`server.ts#succeedSupervisor`) **überschrieben**.
-Frühere Occupants sind nicht rekonstruierbar; die `supervisor-view` sagt es über sich selbst
-(`unknown`-Zeile *„1 lineage gap"*, `server.ts#supervisorView`). Der einzige forensische Rest sind die
+**Die BINDUNG ist ein Singleton, die NACHFOLGE ist es nicht mehr.** `supervisor = {…}` wird bei
+Bootstrap (`server.ts#bootstrapSupervisor`), Bind (`server.ts#bindSupervisor`) und Nachfolge
+(`server.ts#succeedSupervisor`) **überschrieben** — der Record trägt genau einen Occupant. Aber die
+Nachfolge schreibt seit der Linien-Naht zusätzlich einen Rollen-Record
+(`server.ts#writeLineageHandover`, `role: "supervisor"`), und den liest die Nachfolgerin an
+`GET /api/self` — ihr Gründungsbrief nennt ihn namentlich (§4.2).
+
+Was dadurch **falsch** wurde: die konstante `unknown`-Zeile *„no persisted Supervisor lineage
+exists"*, die `server.ts#supervisorView` bis zum 2026-09-16 bei JEDEM Lesen einfügte. Eine
+Supervisor-Trägerin, die per Nachfolge angekommen war, las dort eine Verneinung genau des Records,
+auf den ihr eigener Brief sie verwiesen hatte. Ersetzt durch `server.ts#supervisorLineageView`: die
+Zeile wird pro Zweig abgeleitet (§1.4), aus den Records, die es gibt.
+
+Was **wahr bleibt**, jetzt eng genug, um zu tragen:
+
+- **Bootstrap und Bind legen keine Linie an.** Eine so ernannte Supervisor-Session hat `state: "none"`;
+  frühere Ernennungen sind nicht rekonstruierbar, und die Sicht sagt genau das — sie erfindet keine.
+- **Ein Bind kopiert keine Supervisor-Historie** auf die Linie, die die gebundene Session mitbringt.
+  Eine generische Nachfolgelinie bleibt generisch (`role: "generic"`) und wird als solche gemeldet.
+- **Eine Linie reicht nur bis zu ihrem ältesten überlebenden Record.** `writeLineageHandover` kappt
+  bei `LINEAGE_RECORDS_PER_LINE` (die ältesten SUPERSEDED zuerst), und was vor dem ältesten Record
+  liegt, ist unknown.
+- **Der Verlauf über Linien hinweg fehlt weiterhin**: die Bindung selbst ist kein Register, und ein
+  Rebind ersetzt lautstark (`replaced` + Trail-Zeile), ohne eine Linie anzulegen — anders als
+  `Program.lineage` auf der Program-MAIN-Schiene.
+
+Der einzige forensische Rest über Linien hinweg sind weiterhin die
 `context-receipts.jsonl`-Zeilen mit `programId:null` **und** `taskId:null` — das ist die Signatur, an
 der ich §1.3 gemessen habe, aber sie ist ein Nebenprodukt, kein Register.
 
@@ -426,10 +466,11 @@ schreibt eine Log-Zeile plus die Trail-Zeile `supervisor_binding_stale`. **Der R
 gelöscht** — „nie ernannt" (`supervisor: null`) und „der Ernannte ist weg" (stale) sind zwei
 verschiedene Zustände des Fleets, und nur der zweite sagt, dass eine Ernennung ohne Nachfolge endete.
 
-**Was als Kosten bleibt:** der Verlauf. Die Bindung ist ein Singleton, frühere Occupants sind nicht
-rekonstruierbar, und ein Rebind ersetzt lautstark, ohne eine Lineage anzulegen — anders als
-`Program.lineage` auf der Program-MAIN-Schiene. Geerbt vom Program-MAIN-Modell und in beiden
-Cut-Reviews benannt.
+**Was als Kosten bleibt:** der Verlauf ÜBER Ernennungen hinweg. Die Nachfolge-Kette hat seit der
+Linien-Naht einen Record, und die Sicht meldet ihn; was keinen Record hat, ist alles, was NICHT
+Nachfolge war — Bootstrap, Bind, Rebind. Geerbt vom Program-MAIN-Modell und in beiden
+Cut-Reviews benannt; die Messnotiz `docs/messungen/2026-09-15-rollen-controller-supervisor-abloese.md`
+§3 hat die veraltete Fassung dieses Absatzes gestellt.
 
 ### 5.2 Der Attention-Kanal stirbt mit dem Programm-Abschluss
 

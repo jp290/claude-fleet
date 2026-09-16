@@ -8,7 +8,7 @@ import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check,
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { DONE_LOOKING_RULES, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
-import { MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
+import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09 } from "../task-land-waves";
 
@@ -8400,34 +8400,29 @@ export async function run(ctx: Ctx): Promise<void> {
     // `doneLookingWhy` carries the last row a wait gave up on, so the fixture check that consumes
     // this can say WHICH clause was missing instead of only `ready:false`.
     //
-    // AND IT MUST HOLD, not merely occur. `now - lastOutput >= MERGE_IDLE_MS` is satisfied by a LULL
-    // BETWEEN two paint bursts, and the caller then spends several round trips (a git rev-parse, two
-    // `selfExecution` GETs) on a state that has already lapsed. The width of the gate is what used to
-    // hide that: at 3 000 ms a pane quiet that long was genuinely finished, at the suite's 500 ms
-    // floor it is not. Measured on the helper preview of 9bad46f6 (second-host, 27 of 28 earlier
-    // previews green): THIS line passed and the projection two lines down read
-    // `R13 … lane predicate unmet: idle`. So the predicate is required to survive a FULL threshold
-    // of further polling — a pane still painting cannot satisfy both ends of that window — which
-    // makes the guarantee the caller gets independent of how wide the gate happens to be.
+    // AND IT WAITS ON THE THRESHOLD THE PROJECTION USES, which is NOT the merge gate. What the
+    // callers below assert is a PROJECTED phase, and `program-phase.ts` evaluates its lane
+    // predicates against `idleThresholdMs` — `server.ts#programExecutionView` passes
+    // AUTO_REVIEW_IDLE_MS (suite: 1 500 ms), never MERGE_IDLE_MS. Waiting on the merge gate was
+    // therefore coupled to the wrong number all along and only LOOKED right while that gate was the
+    // wider of the two (3 000 in production, 2 000 in the suite). At the suite's 500 ms floor it
+    // became structurally unsatisfiable: the wait returns at 500 ms of idle and the projection wants
+    // 1 500, so the row reads R13 `lane predicate unmet: idle` every time the round trips in between
+    // are quick enough — red on second-host twice (9bad46f6, 71621981), green on this Mac, because
+    // there the extra latency pushed idle past 1 500 by luck. The land still runs through the merge
+    // gate, so BOTH thresholds have to hold and the wait takes the larger.
+    const DONE_LOOKING_IDLE_MS = Math.max(MERGE_IDLE_MS, AUTO_REVIEW_IDLE_MS);
     let doneLookingWhy = "";
     const waitDoneLooking = async (slot: number): Promise<boolean> => {
       let last = "no row";
-      let heldSince = 0;
-      for (let i = 0; i < 160; i++) { // 40 s ceiling, MERGE_IDLE_MS of it spent confirming
+      for (let i = 0; i < 160; i++) { // 40 s ceiling — the threshold below is the bigger of the two
         const body = await slSess();
         const row = body.slots.find((x) => x.id === slot);
-        const holds = !!row?.git && row.git.dirty === 0 && row.git.ahead > 0
-          && row.lastOutput > 0 && body.now - row.lastOutput >= MERGE_IDLE_MS;
-        if (holds) {
-          if (heldSince === 0) heldSince = Date.now();
-          if (Date.now() - heldSince >= MERGE_IDLE_MS) return true;
-          last = `held since ${Date.now() - heldSince}ms ago, not yet a full ${MERGE_IDLE_MS}ms`;
-        } else {
-          heldSince = 0;
-          last = row ? JSON.stringify({ slot, git: row.git,
-            observed: row.lastOutput > 0, idleMs: row.lastOutput > 0 ? body.now - row.lastOutput : null })
-            : `slot ${slot} has no row`;
-        }
+        if (row?.git && row.git.dirty === 0 && row.git.ahead > 0
+          && row.lastOutput > 0 && body.now - row.lastOutput >= DONE_LOOKING_IDLE_MS) return true;
+        last = row ? JSON.stringify({ slot, git: row.git, need: DONE_LOOKING_IDLE_MS,
+          observed: row.lastOutput > 0, idleMs: row.lastOutput > 0 ? body.now - row.lastOutput : null })
+          : `slot ${slot} has no row`;
         await Bun.sleep(250);
       }
       doneLookingWhy = last;

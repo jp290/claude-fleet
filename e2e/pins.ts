@@ -8893,6 +8893,22 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_DEFAULTS} — e2e/lane-helpers.ts parses FLEET_MERGE_IDLE_MS exactly as server.ts does`,
     /export const MERGE_IDLE_MS = Math\.max\(500, Number\(process\.env\.FLEET_MERGE_IDLE_MS \?\? 3000\) \| 0\);/.test(helpers),
     "the harness idle wait and the server idle gate can disagree");
+  // ...and the SECOND idle threshold beside it, which is a different number for a different
+  // question: MERGE_IDLE_MS gates the LAND, AUTO_REVIEW_IDLE_MS is what programExecutionView hands
+  // program-phase.ts as `idleThresholdMs`, so it is the one every PROJECTED lane predicate is read
+  // against. A fixture that waits on the merge gate and then asserts a projection is coupled to the
+  // wrong number — it only looked right while the merge gate was the wider of the two, and went
+  // structurally unsatisfiable the moment the suite took that gate to its 500 ms floor (red twice on
+  // second-host, 2026-09-16). Pinned as a PAIR with its server-side reader, because the bug was never
+  // a wrong value: it was two numbers that had to be told apart and were not.
+  pin(`${RULE_DEFAULTS} — e2e/lane-helpers.ts parses FLEET_AUTO_REVIEW_IDLE_MS exactly as server.ts does`,
+    /export const AUTO_REVIEW_IDLE_MS = Number\(process\.env\.FLEET_AUTO_REVIEW_IDLE_MS \?\? 60_000\) \| 0;/.test(helpers)
+      && /const AUTO_REVIEW_IDLE_MS = Number\(process\.env\.FLEET_AUTO_REVIEW_IDLE_MS \?\? 60_000\) \| 0;/.test(server),
+    "the harness projection wait and the server's projection threshold can disagree");
+  pin(`${RULE_DEFAULTS} — the projection's idle threshold IS AUTO_REVIEW_IDLE_MS, and the done-looking wait takes the larger of the two`,
+    /^\s*idleThresholdMs: AUTO_REVIEW_IDLE_MS,$/m.test(server)
+      && /const DONE_LOOKING_IDLE_MS = Math\.max\(MERGE_IDLE_MS, AUTO_REVIEW_IDLE_MS\);/.test(read("e2e/programs.ts")),
+    "waitDoneLooking is coupled to the merge gate again");
   // ...and the SUITE side of the four SERVER WAIT WINDOWS (2026-09-16). The defaults above say the
   // live fleet did not move; these say the suite is actually buying the cut it paid for in fixture
   // work — a knob silently dropped from SRV_ENV would give every one of them back at full price

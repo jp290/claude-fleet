@@ -373,6 +373,42 @@ echo "  production socket claudefleet: not probed, never counted"
 echo "  e2e tmux sockets: $hy_live live · $hy_dead dead · $hy_unknown unknown"
 printf '%s' "$hy_lines"
 [ "$hy_dead" -gt 0 ] && echo "    dead     socket file, no server, no process RAM:$(printf '%s' "$hy_dead_names" | cut -c1-120)"
+# The glob above sees only *fleet* names, and the 2026-09-15 RAM census (Slot 14) measured what that
+# blindness cost: 17 dead probe sockets (mcpprobe*, seamprobe*, wraprepro*, race*) and ~20 orphaned
+# codex processes (ppid 1, cwd in a fleet-e2e-instance dir, ~630 MB with their node pairs) that no
+# line here counted. Both sensors below, READ-ONLY, NUMBERS ONLY — no PIDs, no command lines (pane
+# argv carries credentials). Same live/dead rule as above: rc 0 = alive, "no server running" or
+# "Connection refused" = dead, anything else (2 s timeout included) = unknown, never guessed.
+hy_other_live=0; hy_other_dead=0; hy_other_unknown=0
+for hy_sock in "$hy_sockdir"/*; do
+  [ -S "$hy_sock" ] || continue
+  hy_name=${hy_sock##*/}
+  case $hy_name in claudefleet|fleettest*) continue ;; esac
+  hy_err=$(perl -e 'alarm 2; exec @ARGV' tmux -S "$hy_sock" list-sessions 2>&1 >/dev/null) && hy_rc=0 || hy_rc=$?
+  if [ "$hy_rc" -eq 0 ]; then
+    hy_other_live=$((hy_other_live + 1))
+  elif printf '%s' "$hy_err" | grep -Eq 'no server running|Connection refused'; then
+    hy_other_dead=$((hy_other_dead + 1))
+  else
+    hy_other_unknown=$((hy_other_unknown + 1))
+  fi
+done
+echo "  other tmux sockets (not production, not fleettest*): $hy_other_live live · $hy_other_dead dead · $hy_other_unknown unknown"
+# Orphaned codex: reparented to init (parent pane died), still cwd'd in an e2e instance dir, and
+# that instance's own fleettest<pid> socket no longer serves — the exact population a teardown
+# kill-server leaves behind. The live-socket exclusion is the one case where the wrapper could
+# still come back and reap; a dead or missing socket means nobody ever will.
+hy_orphan_codex=0
+for hy_opid in $(ps -eo pid=,ppid=,comm= | awk '$3 ~ /codex$/ && $2 == 1 { print $1 }'); do
+  hy_ocwd=$(lsof -a -d cwd -p "$hy_opid" -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+  case $hy_ocwd in */fleet-e2e-instance-*) ;; *) continue ;; esac
+  hy_inst=${hy_ocwd##*/fleet-e2e-instance-}
+  case $hy_inst in ''|*[!0-9]*) continue ;; esac
+  hy_sock="$hy_sockdir/fleettest$hy_inst"
+  perl -e 'alarm 2; exec @ARGV' tmux -S "$hy_sock" list-sessions >/dev/null 2>&1 && continue
+  hy_orphan_codex=$((hy_orphan_codex + 1))
+done
+echo "  orphaned codex in e2e instances (ppid 1, no live fleettest socket): $hy_orphan_codex"
 # Scratch is DISK: allocated (du -sk) and logical (du -Ak) differ ~2x here, and neither is resident RAM.
 # Both walks run side by side — each costs seconds over a few hundred thousand files.
 set -- "${TMPDIR:-/tmp}"/fleet-e2e-instance-*

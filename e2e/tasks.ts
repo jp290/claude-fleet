@@ -7133,6 +7133,7 @@ export async function run(ctx: Ctx): Promise<void> {
     spawnSync("chmod", ["+x", FAKECARD]);
 
     interface CRow { id: string; card?: { ziel: string; model: string; ms: number; valid: boolean;
+      at: number; verboten: string[];
       gaps: string[]; surface: { files: string[]; ranges: unknown }; rolle: { effort: string | null } } }
     const cardOf = async (id: string): Promise<CRow["card"]> =>
       ((await (await get("/api/tasks")).json()) as { tasks: CRow[] }).tasks.find((t) => t.id === id)?.card;
@@ -7290,6 +7291,60 @@ export async function run(ctx: Ctx): Promise<void> {
       nachUnknown.valid === false && nachUnknown.surfaceValid === true && nachUnknown.body.after === undefined
       && JSON.stringify(nachUnknown.gaps) === JSON.stringify(['after: "deadbeef" is not a queue row']),
       JSON.stringify(nachUnknown.gaps));
+    // --- THE RE-READ MUST NOT MAKE THE ROW POORER (measured 2026-09-16). `tickCardSweep` writes the
+    // new card over the stored one WHOLE, and the only trigger on a valid card is `t.brief.at >
+    // t.card.at` — the act of SHARPENING the row. Before this fix, VERBOTEN was no FORMAT_KEY and a
+    // goal was the first prose LINE, so sharpening a row silently dropped the half of its card that
+    // says what a lane may NOT do. Two probes: the parser alone, then the live tick through a brief.
+    const vbText = [
+      "[FLEET-BETRIEB · VERBOTEN-PROBE]",
+      "ROLLE: claude/claude-opus-5[1m]/high",
+      "GROESSE: klein",
+      "FLAECHE: fleet-e2e.ts",
+      "VERIFY: bun e2e/pins.ts",
+      "DONE: die Zeile steht in fleet-e2e.ts",
+      "VERBOTEN: nichts an code.txt \u00b7 kein Auto-Dispatch",
+      "",
+      "Ein Re-Read darf kein Feld still verlieren.",
+      "Der zweite Satz des Ziels steht in einer zweiten Zeile.",
+      "",
+      "Begruendung, die nicht mehr zum Ziel gehoert.",
+    ].join("\n");
+    const vbRaw = parseFormattedCard(vbText);
+    const vbZiel = "Ein Re-Read darf kein Feld still verlieren. Der zweite Satz des Ziels steht in einer zweiten Zeile.";
+    check("(fmt) VERBOTEN is a header the parser reads (\u00b7 separates, a lone dash is none) and the goal is the first PARAGRAPH",
+      JSON.stringify(vbRaw?.verboten) === JSON.stringify(["nichts an code.txt", "kein Auto-Dispatch"])
+      && vbRaw?.ziel === vbZiel,
+      JSON.stringify({ verboten: vbRaw?.verboten ?? null, ziel: vbRaw?.ziel ?? null }));
+    const vbNone = parseFormattedCard(vbText.replace(/^VERBOTEN: .*$/m, "VERBOTEN: \u2014"));
+    const vbAbsent = parseFormattedCard(vbText.replace(/^VERBOTEN: .*$/m, ""));
+    check("(fmt) an empty VERBOTEN (the \u2014 renderCardHead writes) and an absent one both read as NO constraint, not an invented one",
+      JSON.stringify(vbNone?.verboten) === "[]" && JSON.stringify(vbAbsent?.verboten) === "[]",
+      JSON.stringify({ none: vbNone?.verboten ?? null, absent: vbAbsent?.verboten ?? null }));
+
+    // the LIVE half: file that row, let the tick read it through the format path (no model runs),
+    // then move its brief and watch the re-read land on the SAME two fields.
+    const vbRow = ((await (await post("/api/tasks", { text: vbText, queue: false, repo: REPO })).json()) as { task: { id: string } }).task;
+    let vbCard: CRow["card"];
+    for (let i = 0; i < 40 && !vbCard; i++) { vbCard = await cardOf(vbRow.id); if (!vbCard) await Bun.sleep(250); }
+    check("(fmt) the tick reads the formatted row without a model and stores both fields",
+      vbCard?.model === "format" && vbCard.valid === true && vbCard.ziel === vbZiel
+      && JSON.stringify(vbCard.verboten) === JSON.stringify(["nichts an code.txt", "kein Auto-Dispatch"]),
+      JSON.stringify(vbCard ?? null));
+    const vbFirstAt = vbCard?.at ?? 0;
+    const vbBrief = await post(`/api/tasks/${vbRow.id}/brief`, { text: "Der geschaerfte Brief, der den Re-Read ausloest." });
+    let vbAgain: CRow["card"];
+    for (let i = 0; i < 40; i++) {
+      vbAgain = await cardOf(vbRow.id);
+      if (vbAgain && vbAgain.at > vbFirstAt) break;
+      await Bun.sleep(250);
+    }
+    // THE POINT OF THE WHOLE LINE: the re-read really ran (a newer `at`), and it took nothing away.
+    check("(fmt) sharpening the row re-reads its card — and the re-read keeps verboten and the two-line goal",
+      vbBrief.ok && !!vbAgain && vbAgain.at > vbFirstAt && vbAgain.ziel === vbZiel
+      && JSON.stringify(vbAgain.verboten) === JSON.stringify(["nichts an code.txt", "kein Auto-Dispatch"]),
+      `${vbBrief.status} first=${vbFirstAt} ${JSON.stringify(vbAgain ?? null)}`);
+
     // (4) EVERY run is a ledger line, valid or not.
     const cardLedger = `${ROOT}/cards.jsonl`;
     const cardLines = existsSync(cardLedger)

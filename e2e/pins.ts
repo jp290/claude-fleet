@@ -9289,6 +9289,12 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     && /declares: \(file, symbol\) => !!snapshot\?\.paths\.has\(file\) && declaresSymbol\(sourceOf\(file\), symbol\),/.test(srv);
   pin(`${RULE_CARD_V2} — a symbol the graph lacks is looked up as a declaration in the tracked file, through the ONE shared context`,
     declFallback, `declFallback=${declFallback}`);
+  // v6 (2026-09-17): the re-read may not make the row poorer. A field the filing format cannot
+  // spell is DROPPED by the sweep's unconditional overwrite the moment a brief moves the row.
+  const formatVerboten = /const FORMAT_KEYS = \["ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "VERIFY", "DONE", "VERBOTEN"\] as const;/.test(cx)
+    && /verboten: formatPhrases\(field\("VERBOTEN"\)\),/.test(cx) && !/verboten: \[\],\n/.test(cx.split("parseFormattedCard")[1] ?? "");
+  pin(`${RULE_CARD_V2} — VERBOTEN is a FORMAT_KEY, so a re-read through the format path cannot drop the card's forbidding half`,
+    formatVerboten, `formatVerboten=${formatVerboten}`);
   const reread = /if \(!t\.card\.valid && \(t\.card\.validatorVersion \?\? 1\) < CARD_VALIDATOR_VERSION\) return true;/.test(srv);
   pin(`${RULE_CARD_V2} — cardDue re-reads only an INVALID card from an older validator`,
     reread, `reread=${reread}`);

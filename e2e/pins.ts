@@ -1868,9 +1868,12 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   // server, 2026-09-10 — a source rule that cannot see a spread needs a driven twin.)
   const normStart = server.indexOf("// kind migration as load normalisation");
   const normBody = normStart < 0 ? "" : server.slice(normStart, server.indexOf("criterion: t.criterion &&", normStart));
-  pin("the task normalizer STRIPS a persisted analysis rather than leaving it to the spread",
+  // TWO FIELDS ARE STRIPPED HERE, and both are named: the retired analyst verdict and `from`, the
+  // intake sender label retired after it turned out to be untrusted prose from the public door
+  // rendered as provenance. One rule, one destructure, one line — a third retirement joins it here.
+  pin("the task normalizer STRIPS a persisted analysis and a persisted from rather than leaving them to the spread",
     normBody !== ""
-      && /\.map\(\(\{ analysis: _retiredAnalysis, \.\.\.t \}[^)]*\) => \(\{ \.\.\.t,/.test(normBody)
+      && /\.map\(\(\{ analysis: _retiredAnalysis, from: _retiredFrom, \.\.\.t \}[^)]*\) => \(\{ \.\.\.t,/.test(normBody)
       && normBody.includes("brief: t.brief"),
     normBody === "" ? "the normalizer slice was not found" : `${normBody.split("\n").length} lines`);
 

@@ -1568,7 +1568,7 @@ function variantRowsFor(group: Task, variants: readonly DispatchSpawn[]): Task[]
     const chosen = v.harness !== null || v.model !== null || v.effort !== null || v.browser === true || !!v.context;
     return {
       id: randomBytes(4).toString("hex"), originId: group.originId ?? group.id, text: group.text,
-      source: group.source, from: group.from, kind: "auftrag", repo: group.repo,
+      source: group.source, kind: "auftrag", repo: group.repo,
       ...(group.programId ? { programId: group.programId } : {}),
       ...(chosen ? { spawn: { ...v } } : {}),
       ...(group.review ? { review: group.review } : {}),
@@ -2773,7 +2773,7 @@ const MAX_TASK_TEXT = 20_000;
 // blockers and staleness, enough to GROUP and label a row. It is gone with its producer, and so is
 // the per-row git process its staleness arm asked for on every poll.
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
-  & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "programId" | "review" | "files" | "filesOrigin" | "cluster"
+  & Partial<Pick<Task, "slot" | "note" | "repo" | "programId" | "review" | "files" | "filesOrigin" | "cluster"
     | "variants" | "variantOf" | "variantIndex" | "variantDecision">>
   // …and the PROPOSED surface beside the confirmed one. Carried WHOLE rather than as a shape
   // digest, unlike `refine` and `comments` beside it: `files` itself already rides this poll, so a
@@ -2804,7 +2804,6 @@ function taskDigest(t: Task): TaskDigest {
   const view = taskView(t);
   return {
     id: t.id, source: t.source, kind: t.kind, status: t.status, created: t.created,
-    ...(t.from ? { from: t.from } : {}),
     ...(t.slot ? { slot: t.slot } : {}),
     ...(t.note ? { note: t.note } : {}),
     ...(t.repo ? { repo: t.repo } : {}),
@@ -5244,7 +5243,7 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context);
   // a manual lane (no branch given → createWorktree auto-named it `fleet/<stamp>-<hex>`)
   // has no task text to derive a label from the way the dispatcher does (~tickDispatch,
-  // `⎇ ${next.from} ...`) — so it must NEVER surface that raw uniqueness timestamp as the
+  // `⎇ task ...`) — so it must NEVER surface that raw uniqueness timestamp as the
   // label. Fall back to a short repo-based slug instead: "⎇ <repo> <hex>".
   s.label = branch.trim()
     ? wt.branch.replace(/^fleet\//, "⎇ ")
@@ -10843,7 +10842,7 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   const id = randomBytes(4).toString("hex");
   const t: Task = {
     id, originId: id, text: mainText,
-    source: "main", from: null, kind, repo: mainRepo, programId: program.id,
+    source: "main", kind, repo: mainRepo, programId: program.id,
     ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
     ...(authorCard?.ok ? { card: authorCard.card } : {}),
     // THE STATUS THIS ROUTE CANNOT BE TALKED OUT OF: a literal, not anything derived from the
@@ -11604,7 +11603,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     await syncLaneRefs(dRef, wt.path);
     await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort, NO_BOX, null, spawn.browser === true,
       spawn.context ?? null);
-    free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
+    free.label = `⎇ task ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
     // An attended click IS a release — the only one that never passes through `queued` — stamped
     // OVER whatever the row carried: the lane that actually ran was attended. The tick's path
     // (ownerAct false) writes nothing: it only picks rows already released, and inventing a value
@@ -28102,15 +28101,19 @@ async function handleIntake(req: Request): Promise<Response> {
   const text = body.text.slice(0, MAX_TASK_TEXT).trim();
   if (!text) return json({ error: "empty text" }, 400);
   intakeStrikes.push(now);
-  const from = typeof body.from === "string" ? body.from.slice(0, 120) : null;
   const id = randomBytes(4).toString("hex");
+  // `body.from` is ACCEPTED AND DROPPED. It was a sender label persisted for display only, never
+  // trusted and never read by anything that decides — so what it actually did was carry attacker
+  // prose from the one public write door onto the queue board. The door is unchanged otherwise
+  // (secret, rate limit, `pending`, `source: "intake"`); a caller may keep sending the field and
+  // gets the same 200, it simply does not survive the request.
   const t: Task = {
-    id, originId: id, text, source: "intake", from,
+    id, originId: id, text, source: "intake",
     kind: "auftrag", repo: null, status: "pending", created: now, slot: null, note: null,
   };
   tasks = capTasks([...tasks, t]);
   saveState();
-  console.log(`intake: task from ${from ?? "unknown"} (${text.length} chars)`);
+  console.log(`intake: task (${text.length} chars)`);
   return json({ ok: true });
 }
 
@@ -28360,7 +28363,12 @@ if (existsSync(STATE_FILE)) {
         // (2026-09-10): dropping the `analysis:` line from the field list left a persisted one
         // passing straight into memory, onto GET /api/tasks, and back out to disk on the next save.
         // Caught by e2e/tasks.ts §(h6), which writes one into fleet.json by hand and reloads.
-        .map(({ analysis: _retiredAnalysis, ...t }: Task & { analysis?: unknown }) => ({ ...t,
+        // `from` is destructured out for the same reason and ON THE SAME LINE: the retired intake
+        // sender label. Leaving it unlisted would let a persisted one ride the spread straight back
+        // onto GET /api/tasks and out to disk — the exact hole the analyst's verdict left
+        // (2026-09-10). Both bindings and both annotations stay on this one line because the pin
+        // that guards the strip reads it as one (e2e/pins.ts, the analysis-retirement section).
+        .map(({ analysis: _retiredAnalysis, from: _retiredFrom, ...t }: Task & { analysis?: unknown; from?: unknown }) => ({ ...t,
           kind: loadTaskKind((t as { kind?: unknown }).kind, t.source),
           repo: typeof t.repo === "string" ? t.repo : null,
           // the persisted agent choice comes back through loadTaskSpawn: registered harness only,
@@ -31368,7 +31376,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     const id = randomBytes(4).toString("hex");
     const t: Task = {
       id, originId: id, text: body.text.slice(0, MAX_TASK_TEXT).trim(),
-      source: "steward", from: null, kind: isTaskKind(body.kind) ? body.kind : "notiz",
+      source: "steward", kind: isTaskKind(body.kind) ? body.kind : "notiz",
       repo: null, // never body.repo — a steward text must not choose where a lane spawns
       status: "pending", created: Date.now(), slot: null, note: null,
       ...(ref ? { ref } : {}),
@@ -34263,7 +34271,7 @@ Bun.serve<WSData>({
       const id = randomBytes(4).toString("hex");
       const t: Task = {
         id, originId: id, text: ownerText,
-        source: "owner", from: null, kind: isTaskKind(body.kind) ? body.kind : "auftrag", repo: taskRepo,
+        source: "owner", kind: isTaskKind(body.kind) ? body.kind : "auftrag", repo: taskRepo,
         ...(taskProgramId ? { programId: taskProgramId } : {}),
         ...(authorCard?.ok ? { card: authorCard.card } : {}),
         ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
@@ -34638,7 +34646,7 @@ Bun.serve<WSData>({
           // source "owner": the owner is confirming this text. NO `brief` — a child is a NEW
           // draft and must reach the compiler as one. `repo` rides along, or the split would silently retarget
           // the dispatcher default. Children land `pending`, never `queued`: releasing stays a separate owner act.
-          source: "owner", from: null, kind: "auftrag", repo: t.repo,
+          source: "owner", kind: "auftrag", repo: t.repo,
           // the paths the refiner verified against the tree, as the row's confirmed surface (the card
           // above holds them too, as a READING). Not a model judgement ABOUT this row the way `brief` is.
           ...(c.files.length ? {

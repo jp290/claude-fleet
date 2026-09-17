@@ -27,7 +27,12 @@ curl -X POST http://<host>:<port>/api/slots/<id>/open -H 'authorization: Bearer 
 procedural: an UNOCCUPIED seat makes every steward-only fact unreadable, not merely unwatched.**
 `stewardSlotsView` computes `doneLooking`, `doneLookingSince`, `hostCommitLooking`, `observed`,
 `alive`, `gitOp`, `merge`, `mission`, `task` and `transcriptFact`, and `/api/steward/sessions` is
-their only carrier. Counted on the live state file that day: 0 of 11 active slots wore the label,
+their only carrier. One of those fields says something different since 2026-09-17, and the change is
+about a fact the view was mis-stating rather than about the seat: `merge` reads **`running`** while a
+merge job is reserved or in flight (`server.ts#stewardMergeView`) instead of the durable intent row's
+`interrupted`, which the digest used to render as the attention "slot N merge status is interrupted"
+on every land.
+Counted on the live state file that day: 0 of 11 active slots wore the label,
 while 3 lanes and 5 MAIN/orchestrator sessions polled `/api/sessions`. `stalled` was in that list
 too and was lifted onto the owner poll for exactly this reason — the decision, the measured cost and
 the shape it took are written once, in `docs/self-api.md` §stalled, not restated here. The rest of

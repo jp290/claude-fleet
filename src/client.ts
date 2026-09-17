@@ -9945,6 +9945,10 @@ interface OutcomeReviewRow { state?: string; at?: number; model?: string; head?:
   scope?: string; notes?: string; raw?: boolean; findings?: ReviewFinding[] }
 interface OutcomeRow { ts: number; branch?: string | null; base?: string | null; headSha?: string | null;
   disposition?: string; model?: string | null; briefHash?: string | null; shortstat?: string;
+  // HOW the row reached that model (server.ts#resolvedModel, rows since 2026-09-17): "spawn" the
+  // lane pinned it · "default" it did not and the harness's spawn line passed its own · "ambient"
+  // neither, so `model` is null. Absent on every older row, where a null model says only "no pin".
+  modelOrigin?: string;
   commitCount?: number; filesTouched?: string[]; e2eTouched?: boolean; verified?: boolean | null;
   sessionMs?: number | null; ownerPrompts?: number; resolvedConflict?: boolean; repairRounds?: number;
   confirmedByHuman?: boolean; review?: OutcomeReviewRow;
@@ -10277,7 +10281,22 @@ function renderOutcomeDetail(o: OutcomeRow) {
       : chip("owner prompts not recorded", "dim",
           "no ownerPrompts value on this row — \"nobody prompted this lane\" and \"nobody counted\" are"
           + " different facts, and a row without the field states only the second."));
-    facts.appendChild(o.model ? chip(o.model, "dim") : chip("model not pinned", "dim"));
+    // The model is shown WITH its origin, because since 2026-09-17 a present model no longer means
+    // the lane pinned one: a lane founded without a pin records the model its spawn line passed, and
+    // rendering that as a bare id would read as a decision nobody made. The two null cases stay
+    // apart for the same reason — a row that says "the harness chose" measured something, a row from
+    // before the field says only that nothing was pinned.
+    facts.appendChild(o.model
+      ? o.modelOrigin === "default"
+        ? chip(`${o.model} (fleet default)`, "dim",
+            "this lane pinned NO model — the harness's spawn line passed the fleet default, resolved"
+            + " into the ledger at write time. It is what ran, not what anybody chose for this lane.")
+        : chip(o.model, "dim", o.modelOrigin === "spawn" ? "this lane was founded on this model" : "")
+      : o.modelOrigin === "ambient"
+        ? chip("model chosen by the harness", "dim",
+            "this lane pinned no model and its harness names no default Fleet can read, so the id is"
+            + " not recoverable — the row says so rather than borrowing one.")
+        : chip("model not pinned", "dim"));
     // model and briefHash are an ENTANGLED pair (server.ts, the LaneOutcome header): a strong brief
     // lets a weak model succeed, so the model is never the whole story. And the null case is a trap:
     // 14 rows on the live ledger carry `briefHash: null` (a dispatcher- or terminal-briefed lane logs

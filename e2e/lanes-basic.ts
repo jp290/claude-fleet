@@ -126,10 +126,14 @@ export async function run(lc: LaneCtx): Promise<void> {
     `${lnW.form} @ ${lnW.cwd}`);
   if (lnW.slot) await post(`/api/slots/${lnW.slot}/kill`, {});
   // an unpinned codex lane that never bound a session has no rollout to read: the key is PRESENT and
-  // null — never ~/.codex/config.toml's default, which Fleet would be guessing
+  // null — never ~/.codex/config.toml's default, which Fleet would be guessing. `model` is null for
+  // the SAME reason one level up (server.ts#resolvedModel): codex names no spawn-line default, so
+  // the origin is "ambient" — the harness chose and Fleet cannot say what. That is the third of the
+  // three origins, and the only one that still writes a null model since 2026-09-17.
   const lnWRec = (await outcomeFor(lnW.branch ?? "")) ?? {};
-  check("outcome: an unpinned codex lane with no bound rollout records modelResolved null (key present)",
-    lnWRec.model === null && "modelResolved" in lnWRec && lnWRec.modelResolved === null, JSON.stringify(lnWRec));
+  check("outcome: an unpinned codex lane with no bound rollout records model null / modelOrigin \"ambient\" and modelResolved null (keys present)",
+    lnWRec.model === null && lnWRec.modelOrigin === "ambient"
+    && "modelResolved" in lnWRec && lnWRec.modelResolved === null, JSON.stringify(lnWRec));
   // ...and every rollout-read field on the same row is an unknown, not a zero: no rollout, no measurement
   check("outcome: a codex lane with no bound rollout records sessionMs, toolResultBytes, effortObserved and subagentCount as null (keys present)",
     lnWRec.sessionMs === null && lnWRec.toolResultBytes === null

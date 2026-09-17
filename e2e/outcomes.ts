@@ -6,6 +6,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, real
 import { BASE, REPO, ROOT, check, get, post, restartSrv } from "./harness";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 import { postLandAlarm } from "../src/plaudit";
+import { FLEET_DEFAULT_MODEL } from "../src/protocol";
 
 export async function run(): Promise<void> {
   // --- per-lane attributed-outcome RECORDER: drive a lane through each terminal event and
@@ -14,6 +15,9 @@ export async function run(): Promise<void> {
   {
     type Outcome = { ts: number; branch: string | null; base: string | null; forkSha?: string; headSha: string | null;
       disposition: string; model: string | null; briefHash: string | null; shortstat: string;
+      // optional at the reader because every row written before 2026-09-17 carries no origin at
+      // all, and that absence is a different answer from any of the three values
+      modelOrigin?: string;
       // optional at the reader because legacy ledger rows predate all four fields. Fresh lane rows
       // always carry harness/effort (null means default adapter/level); only task lanes carry ids.
       harness?: string | null; effort?: string | null; taskId?: string; originId?: string; programId?: string;
@@ -499,11 +503,12 @@ export async function run(): Promise<void> {
     await restartSrv();
     if (typeof pinLane.slot === "number") await post(`/api/slots/${pinLane.slot}/kill`, {});
     const pinOutcome = forBranch(await readOutcomes(), pinLane.branch ?? "");
-    check("outcome: after save/load + killed-empty teardown, task/origin/program and explicit spawn pins remain exact",
+    check("outcome: after save/load + killed-empty teardown, task/origin/program and explicit spawn pins remain exact — the pinned model is the row's model, stamped \"spawn\"",
       pinOutcome?.disposition === "killed-empty"
       && pinOutcome.taskId === pinTask.task.id && pinOutcome.originId === pinTask.task.originId
       && pinOutcome.programId === outcomeProgramId
-      && pinOutcome.harness === "codex" && pinOutcome.model === pinModel && pinOutcome.effort === "high",
+      && pinOutcome.harness === "codex" && pinOutcome.model === pinModel && pinOutcome.effort === "high"
+      && pinOutcome.modelOrigin === "spawn",
       JSON.stringify(pinOutcome));
     await post(`/api/tasks/${pinTask.task.id}/delete`, {});
 
@@ -518,11 +523,17 @@ export async function run(): Promise<void> {
     if (typeof defaultLane.slot === "number")
       await post(`/api/slots/${defaultLane.slot}/shelve`, { note: "default adapter provenance probe" });
     const defaultOutcome = forBranch(await readOutcomes(), defaultLane.branch ?? "");
-    check("outcome: a body-less dispatch records task/origin but harness:null and effort:null honestly",
+    // harness/effort stay the REQUESTED pin and are null here; `model` stopped being that on
+    // 2026-09-17 and is the model the spawn line actually passed, with `modelOrigin:"default"`
+    // saying so. The three fields are asserted in ONE check on purpose: the whole finding was that
+    // a null model reads like the null beside it, and splitting them would let that re-form. The
+    // suite runs with FLEET_MODEL= (e2e-isolated.sh), so the resolved value is FLEET_DEFAULT_MODEL.
+    check("outcome: a body-less dispatch records task/origin, harness:null/effort:null as the requested pins, and the RESOLVED default model stamped \"default\"",
       defaultOutcome?.disposition === "shelved"
       && defaultOutcome.taskId === defaultTask.task.id && defaultOutcome.originId === defaultTask.task.originId
       && !("programId" in defaultOutcome)
-      && defaultOutcome.harness === null && defaultOutcome.effort === null,
+      && defaultOutcome.harness === null && defaultOutcome.effort === null
+      && defaultOutcome.model === FLEET_DEFAULT_MODEL && defaultOutcome.modelOrigin === "default",
       JSON.stringify(defaultOutcome));
     await post(`/api/tasks/${defaultTask.task.id}/delete`, {});
 
@@ -923,6 +934,15 @@ export async function run(): Promise<void> {
       /text === p\.text\.trim\(\) \? "accepted" : "edited"/.test(cliSrc)
       && /ta\.value\.trim\(\) === ""[\s\S]{0,200}?labelDisposition\("enhance", p\.draftId, "ignored"\)/.test(cliSrc),
       "doSend + the ta input listener (src/client.ts)");
+    // Third, the same method over the model chip: since 2026-09-17 a present model no longer means
+    // the lane pinned one, so the pane must SAY which it was. The regression this catches is the
+    // silent one — dropping the origin and rendering a resolved default as a bare id, i.e. the
+    // ledger fix arriving at the reader as a decision nobody made.
+    check("client: the outcome model chip names its origin — a resolved default is marked, and \"harness chose\" stays apart from \"not pinned\"",
+      /o\.modelOrigin === "default"/.test(cliSrc) && /\(fleet default\)/.test(cliSrc)
+      && /o\.modelOrigin === "ambient"/.test(cliSrc) && /model chosen by the harness/.test(cliSrc)
+      && /chip\("model not pinned", "dim"\)/.test(cliSrc),
+      "the model chip in renderOutcomes (src/client.ts)");
     check("client: a ✨ result dropped as stale arms no disposition watch (nothing was shown to rule on)",
       /pendingEnhance = j\.draftId \? \{ draftId: j\.draftId, text: j\.prompt \} : null/.test(cliSrc)
       && cliSrc.indexOf("pendingEnhance = j.draftId") > cliSrc.indexOf("if (ta.value.trim() === text &&"),

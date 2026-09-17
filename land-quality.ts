@@ -40,6 +40,11 @@ const SUMMARY_GROUPS = 5; // state.sh's model line; the full table has them all
 
 export interface LandRow {
   branch: string; taskId: string | null; model: string | null; harness: string | null;
+  // how the ledger reached that model (server.ts#resolvedModel): "spawn" = the lane pinned it,
+  // "default" = it did not and the harness's spawn line passed its own, "ambient" = the harness
+  // chose and Fleet cannot name it (model is null then). `null` = the outcome row predates the
+  // field (before 2026-09-17) or is a `reverted` row — UNKNOWN, never "ambient".
+  modelOrigin: string | null;
   effort: string | null; size: string | null; landedAt: number; mainAfter: string; codeLand: boolean | null;
   insertedLines: number | null; reworkLines3d: number | null; reworkLines7d: number | null;
   reworkByFixSubject: boolean | null; auditRed: boolean | null; auditVerdict: string | null;
@@ -54,9 +59,19 @@ export function parseSince(s: string): number | null {
   return m ? Number(m[1]) * (m[2] === "d" ? DAY : DAY / 24) : null;
 }
 
-/** harness/model with the claude- prefix and [1m] suffix dropped — a label, not a judgement */
-export function modelKey(r: Pick<LandRow, "model" | "harness">): string {
-  const m = r.model ? r.model.replace(/^claude-/, "").replace(/\[1m\]$/, "") : "?";
+/**
+ * harness/model with the claude- prefix and [1m] suffix dropped — a label, not a judgement.
+ * modelOrigin rides in the label rather than being dropped, because the three cases are three
+ * different populations: a pinned model, the same model reached by the harness default (`~default`
+ * — it was never pinned, and a reader deciding what to pin needs to see which), and a model nobody
+ * can name. The last splits in two on purpose: `ambient` is a MEASURED unknown (the harness chose),
+ * `?` means the row cannot say at all — the pre-2026-09-17 rows, whose null used to be the only
+ * answer there was and which made this group the second largest with nobody to address.
+ */
+export function modelKey(r: Pick<LandRow, "model" | "harness" | "modelOrigin">): string {
+  const short = r.model ? r.model.replace(/^claude-/, "").replace(/\[1m\]$/, "") : null;
+  const m = short === null ? (r.modelOrigin === "ambient" ? "ambient" : "?")
+    : r.modelOrigin === "default" ? `${short}~default` : short;
   return `${r.harness ?? "claude"}/${m}`;
 }
 
@@ -251,7 +266,7 @@ async function main(argv: string[]): Promise<number> {
     lands.push({
       base, commits: null, files: new Set(), r3: 0, r7: 0, fix: false, blameFailed: false,
       row: {
-        branch, taskId, model: str(o.model), harness: str(o.harness), effort: str(o.effort),
+        branch, taskId, model: str(o.model), modelOrigin: str(o.modelOrigin), harness: str(o.harness), effort: str(o.effort),
         size: (taskId ? sizeOf.get(taskId) : undefined) ?? (originId ? sizeOf.get(originId) : undefined) ?? null,
         landedAt, mainAfter, codeLand: null, insertedLines: null, reworkLines3d: null, reworkLines7d: null,
         reworkByFixSubject: null, auditRed: null, auditVerdict: null,

@@ -10,12 +10,16 @@ import { ROOT, check, results } from "./harness";
 import {
   PHASES_ON,
   PHASE_PRIORITY,
+  actorFields,
   callSiteOf,
   createPhaseClock,
   phaseClock,
   withPhases,
+  TRAIL_BRANCH,
   TRAIL_DETAIL_MAX,
   TRAIL_DIRTY,
+  TRAIL_OFFERED,
+  TRAIL_SLOT,
   TRAIL_RUN,
   TRAIL_SCHEMA,
   TRAIL_POINTER,
@@ -178,6 +182,38 @@ export async function run(): Promise<void> {
 
   check(SENTINEL, true);
   const s = readRows().find((r) => r.check === SENTINEL);
+  // THE ACTOR — who started this run, on which branch, and whether it was offered first
+  // (docs/e2e-trail.md §2a). Each field is present exactly when its source was there and absent
+  // when it was not, which is why this is asserted in BOTH directions against the emit's own
+  // constants: a run under the land gate or the post-land audit has no lane credentials and must
+  // write none of the three, and a row from before 2026-09-17 has none either — the reader here
+  // requires nothing, it requires AGREEMENT.
+  const actorDied = died([
+    [`slot=${JSON.stringify(s?.slot)} TRAIL_SLOT=${JSON.stringify(TRAIL_SLOT)}`, s?.slot === (TRAIL_SLOT ?? undefined)],
+    [`branch=${JSON.stringify(s?.branch)} TRAIL_BRANCH=${JSON.stringify(TRAIL_BRANCH)}`, s?.branch === (TRAIL_BRANCH ?? undefined)],
+    [`offered=${JSON.stringify(s?.offered)} TRAIL_OFFERED=${JSON.stringify(TRAIL_OFFERED)}`, s?.offered === (TRAIL_OFFERED ?? undefined)],
+  ]);
+  check("trail: a row names its actor — slot, branch and offered, each present exactly when its source was",
+    !!s && actorDied === "", actorDied || `row=${JSON.stringify({ slot: s?.slot, branch: s?.branch, offered: s?.offered })}`);
+
+  // …and the omit rule on ALL its branches, not only the one this run happens to be in. The two
+  // asymmetries are the point: an empty string is an ABSENT source (an exported-but-empty
+  // FLEET_E2E_SLOT would otherwise write `slot:""`, a run by nobody rather than a run whose actor
+  // is unknown), while `offered:false` is an ANSWER — the lane asked the door and it had never
+  // offered — and only null omits it.
+  const allSet = actorFields("7", "fleet/abc", false);
+  const noneSet = actorFields(null, null, null);
+  const emptySrc = actorFields("", "", null);
+  const actorPureDied = died([
+    [`allSet=${JSON.stringify(allSet)}`, JSON.stringify(allSet) === JSON.stringify({ slot: "7", branch: "fleet/abc", offered: false })],
+    [`noneSet=${JSON.stringify(noneSet)}`, Object.keys(noneSet).length === 0],
+    [`emptySrc=${JSON.stringify(emptySrc)}`, Object.keys(emptySrc).length === 0],
+    [`offeredTrue=${JSON.stringify(actorFields(null, null, true))}`,
+      JSON.stringify(actorFields(null, null, true)) === JSON.stringify({ offered: true })],
+  ]);
+  check("trail: an absent actor source omits its field — and `offered:false` is an answer, not an absence",
+    actorPureDied === "", actorPureDied);
+
   check("trail: a known check's row carries the full shape (v/run/suite/tree/check/ok/msSincePrev/ts)",
     !!s && s.v === TRAIL_SCHEMA && s.run === TRAIL_RUN && s.suite === TRAIL_SUITE && s.tree === TRAIL_TREE
       && s.dirty === (TRAIL_DIRTY ?? undefined) && s.treeWhy === (TRAIL_TREE_WHY ?? undefined)

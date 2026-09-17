@@ -31,6 +31,9 @@ One JSON object per line, one line per `check()` call. `e2e/trail-emit.ts` owns 
 | `tree` | git sha of the tree under test, or `null` when none was resolvable |
 | `dirty` | whether that tree had uncommitted changes; omitted when `tree` is `null` |
 | `treeWhy` | **only** when `tree` is `null`: why no tree could be named, capped at 300 chars |
+| `slot` | since 2026-09-17: the fleet slot that started the run; **omitted** when none was readable (§2a) |
+| `branch` | since 2026-09-17: the branch of the tree under test; **omitted** on a detached HEAD or when no tree resolved (§2a) |
+| `offered` | since 2026-09-17: whether a suite offer preceded this run; **omitted** when the offer door could not be asked (§2a) |
 | `check` | the check name, verbatim — the join key with the printed tail |
 | `ok` | pass/fail |
 | `msSincePrev` | wall-clock ms since the **previous** check returned (see §4) |
@@ -64,6 +67,50 @@ different repairs and only the first is not a defect:
 Measured 2026-09-08 on a stand-in built exactly as `server.ts#snapshotIntegrationTree` builds the
 full chain's source: the pointer home reads fine (`pointer=symlink`), and it is
 `git rev-parse --is-inside-work-tree` on the extract — exit 128, no `.git` — that says no.
+
+### 2a. The actor — `slot`, `branch`, `offered`
+
+The header said *what* was measured and nothing about *who* started it. That made one operational
+question unanswerable except by guessing across two ledgers that do not join: the trail counts the
+local isolated runs (14.9 a day, 47 of 156 on a dirty tree), `audit.jsonl` counts 2–3 withdrawn and
+1–4 abandoned suite offers a day, and nothing said whether those runs were the *same* runs. Whether
+most previews are ever offered to a helper at all decides whether the lever is the offer mechanism
+or a routing line (Staffel 2026-09-17, Rang 2).
+
+| field | source |
+| --- | --- |
+| `slot` | `FLEET_E2E_SLOT`, handed down by `e2e-stage.sh` from the pane's `FLEET_SELF_SLOT` |
+| `branch` | `git rev-parse --abbrev-ref HEAD` in the same source tree the sha comes from |
+| `offered` | `e2e-stage.sh` asks `GET /api/self/suite-offer` with the pane's self-token, once, at arrival |
+
+**An absent source omits its field — it is never written as `""` or `false`.** This is the common
+case, not the edge: the land gate and the post-land audit run with no lane credentials at all
+(`server.ts#auditChildEnv` drops every `FLEET_*`), so their rows carry none of the three, and so do
+all rows written before 2026-09-17. `slot:""` would read as *a run by nobody* rather than *a run
+whose actor is unknown*; `offered:false` from a probe that never asked would be a wrong answer
+rather than a missing one. `offered:false` is therefore an **answer** — the lane asked the door and
+had made no offer — and only a probe that could not run omits the field. `e2e/trail-emit.ts#actorFields`
+is that rule as a pure function, and `e2e/trail.ts` asserts all of its branches.
+
+**Why the values travel under `FLEET_E2E_*` names rather than being read from `FLEET_SELF_*`
+directly.** Three wrappers — `e2e-isolated.sh`, `e2e-security.sh`, `acceptance-probe.sh` — `unset`
+the pane's lane credentials before staging, for a hermetic reason that has nothing to do with the
+trail (an inherited self-token would be baked into every pane of the throwaway tmux server and
+would make `e2e/self-token.ts` read the *outer* lane's credential as the test server's own). By the
+time `e2e/trail-emit.ts` loads inside the instance there is nothing left to read. Those three
+wrappers therefore carry the credentials past their own `unset` in **plain, unexported** shell
+variables (`_st_actor_*`) — an exported copy would put a self-token back into every pane and into
+`ps`. `e2e-stage.sh` consumes them, exports only the two results, and clears the token. The token
+reaches `curl` on **stdin** (`-H @-`), never in argv.
+
+The offer door answers a lane about its *last* offer, settled ones included, which is what makes
+this readable at all: a lane that offers and then withdraws — the withdraw being what gives it
+permission to run the suite locally — still gets its offer back on the GET. The probe uses only the
+pane's own `FLEET_SELF_URL`; no address is written into the tracked file (the leak pin in
+`e2e/pins.ts`), so a pane without it leaves `offered` absent.
+
+`TRAIL_SCHEMA` stays at `1`: the three fields are additive and optional, and every row written
+before them is still a complete row under the same version.
 
 ## 3. Where it lives, and why not next to the run
 

@@ -465,6 +465,22 @@ Block, byte-identisch in allen vier Varianten, angehängt zwischen Program-JSON 
   `POST /api/self/tasks/:id/land`; ohne Promotion nennt sie das Board, und dann landet der Owner) →
   das zurückgegebene `watch:{kind:"merge",…}` abonnieren, bei `landed=YES` danach
   `{kind:"audit",repo,mainAfter:<candidate>}`.
+- **Was ankommt, kann eine FRAGE sein** (seit 2026-09-17): ein blockierter Worker fragt seine MAIN,
+  nie den Owner. `GET /api/self/clarifications` listet die an dich adressierten Zeilen,
+  `POST /api/self/clarifications/:id/reply` mit `{"text":…}` beantwortet genau eine. Eine
+  unbeantwortete Frage ist eine stehende Lane. Vertrag: §clarifications oben.
+- **`GET /api/self/inbox` ist der dauerhafte Rückkanal des Programs** (seit 2026-09-17 auch im
+  Brief): die Einträge gehören dem Program, überleben also die Pane und die Nachfolge, und wer beim
+  Lesen die gebundene MAIN ist, liest sie. `POST /api/self/inbox/:id/read` quittiert einen. Was die
+  Retention verdrängt hat, bleibt `unknown` — nie „da war nichts". Vertrag: §inbox oben.
+- **Was DU entscheidest und was der OWNER entscheidet** (seit 2026-09-17, Schnitt S4 aus
+  `docs/messungen/2026-09-14-rollen-briefe-synthese.md` §2b). Deins: Reihenfolge der Akte,
+  Zerlegung, welcher Worker je Akt, gewöhnliche Reparatur und Integration, das Lesen eines
+  zurückgegebenen Diffs und die kleinen reversiblen Änderungen im bestätigten Scope, die der
+  Rollenabsatz ohnehin in der Pane lässt. Ein knapper Fall bleibt deiner: entscheiden, handeln und
+  im Report sagen, wie und warum. Dem Owner gehören **genau** die Grenzen aus „Wo es endet" und
+  nichts darüber hinaus. In der eigenen Hälfte wird nicht um Erlaubnis gefragt, in seiner nicht
+  entschieden.
 - **Wo es endet:** weiter bis PLAYABLE-Evidenz — ein Artefakt, das ein Mensch ausführen kann und das
   die MAIN laufen gesehen hat — oder bis zu einem konkreten Blocker bzw. einer Owner-Grenze
   (Scope-Wachstum, irreversible Richtung, externe Wirkung/Kosten, Deploy/Release, deklariertes
@@ -1333,6 +1349,42 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   Anlass: 150 Inbox-Nudges scheiterten auf einer codex-MAIN („composer still holds 129 chars",
   `docs/messungen/2026-09-14-inbox-nudge-composer-h1-diskriminator.md`), während jede beantwortete
   Zeile nur `answered` las. Beweis: `e2e/attention.ts` §12 (a)–(d).
+
+
+
+## clarifications — `GET /api/self/clarifications`, `POST /api/self/clarifications/:id/reply`
+
+Die **Frage eines blockierten Workers an SEINE MAIN** und deren Antwort. Sie ist die Gegenrichtung
+zu `attention` (MAIN → Owner) und folgt derselben Regel „eine Kante je Rolle": eine Lane fragt nie
+den Owner, eine MAIN fragt nie eine fremde Lane. Transport ist der bestehende `FleetEvent`-Rail,
+kein eigener Kanal.
+
+```
+curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" http://<fleet-host>:<port>/api/self/clarifications
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"text":"<deine Antwort>"}' \
+  http://<fleet-host>:<port>/api/self/clarifications/<id>/reply
+```
+
+- **Scope.** `GET` ist doppelt gebunden: es zeigt die Zeilen des exakten Worker-Occupants UND die
+  des exakten Empfänger-Occupants (`clarificationsFor`). `POST .../reply` ist **Nicht-Lane**
+  (Ausnahme `⚙ steward`): `a lane may not reply — lane-waits-on-lane is a coupling only MAIN may
+  close`. Der Empfänger wird serverseitig aus dem Event abgeleitet; kein Body-Feld benennt ihn.
+- **Body:** ausschließlich `text` (nicht leer, höchstens `MAX_CLARIFICATION_ANSWER` Zeichen).
+- **Was die Antwort NICHT ist: ein Statuswechsel.** `replyClarification` persistiert zuerst
+  `send-uncertain` mit dem Antworttext und tippt erst danach in die Worker-Pane; `answered` wird
+  ausschließlich nach einem erfolgreichen `sendText` gestempelt (gepinnt in `e2e/pins.ts`). Eine
+  Wiederholung mit **identischem** Text ist erlaubt, mit abweichendem Text ist sie 409 — der
+  ausstehende Text kann schon in der Pane stehen, und zwei verschiedene Antworten wären die zweite
+  Hälfte eines Widerspruchs, den niemand sieht.
+- **Refusals, die kein Fehler deiner Seite sind:** 404 `unknown clarification request` · 409
+  `clarification belongs to another or replaced MAIN session` (recycelter Occupant) · 409
+  `worker occupant ended or was replaced` (die Zeile wird dabei refused) · 409
+  `worker reply delivery blocked by <gate>`.
+- **Warum die Tür im Gründungsbrief steht (seit 2026-09-17).** `server.ts#RAIL_TAIL` nannte sie
+  nicht, also lernte eine frisch gegründete MAIN nie, dass eine ankommende Zeile eine FRAGE sein
+  kann statt eines Reports — und eine unbeantwortete Frage ist eine stehende Lane. Schnitt S4 aus
+  `docs/messungen/2026-09-14-rollen-briefe-synthese.md` §2b.
 
 
 ## messages — `GET /api/self/messages`, `POST /api/self/messages`, `POST /api/self/messages/:id/read`

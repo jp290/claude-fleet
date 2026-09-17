@@ -3587,6 +3587,109 @@ export async function run(ctx: Ctx): Promise<void> {
   await post(`/api/slots/${unboundFreeSlot}/kill`, {});
   rmSync(unboundRepo, { recursive: true, force: true });
 
+  // --- THE ORCHESTRATOR ROLE CARD — spawn and succession, both receipted. ---------------------
+  // THE GAP THIS CLOSES, read off the live ledger on 2026-09-17: `context-receipts.jsonl` carried a
+  // founding row for every Program-MAIN and for the Supervisor, and NONE for the session that holds
+  // the portfolio. It was opened as an ordinary labelled slot and told nothing, so every rule it
+  // worked by lived in the owner's chat or in its predecessor's head — which is what the owner asked
+  // to end ("ein eigenes Profil fuer die Orchestrierungs-Session, mit succession und all dem",
+  // 2026-09-14, in conversation with the Orchestrator in slot 4).
+  //
+  // TWO PROPERTIES, and they are not the same one: that the card is DELIVERED at both doors — the
+  // owner's `POST /api/slots/:id/open` and the role's own `POST /api/self/succeed` — and that each
+  // delivery leaves a RECEIPT. `programId: null` on that receipt is the SCOPE (an Orchestrator sits
+  // across the programs), never a missing attribution, so it is asserted rather than tolerated.
+  const CARD_BLOCKS = ["--- ROLLE ---", "--- DU ENTSCHEIDEST ---", "--- DER OWNER ENTSCHEIDET ---",
+    "--- DEINE TUEREN ---", "--- DER LOOP ---", "--- UEBERGABE ---"] as const;
+  const orchCard = (prompt: string): string[] => CARD_BLOCKS.filter((b) => !prompt.includes(b));
+  const orchLabel = "🎛 Orchestrator (e2e)";
+  const orchSlot = (await sessions()).slots.find((s) => !s.cwd)?.id ?? 0;
+  // The door is `slots/<id>/open`, so the SLOT is known before the pane is — waitForLabel, which
+  // every other founding fixture here uses, would be answering a question this one already has.
+  // What still has to be waited for is the same thing: a pane to plant the ready screen in, because
+  // the card is withheld until the harness's marker is on it.
+  const orchPending = post(`/api/slots/${orchSlot}/open`,
+    { cwd: REPO, label: orchLabel, harness: "codex", model: "gpt-5.5", effort: "high" });
+  let orchPaneUp = false;
+  for (let i = 0; i < 200 && orchSlot > 0 && !orchPaneUp; i++) {
+    if ((await tmuxOut("has-session", "-t", `=s${orchSlot}`)).code === 0) orchPaneUp = true;
+    else await Bun.sleep(50);
+  }
+  if (orchPaneUp) await Bun.sleep(250); // let openSlot's ensureSlot finish its pipe-pane first
+  const orchScreen = orchPaneUp
+    && await plantScreen(orchSlot, ">_ OpenAI Codex (v0.147.0)", "orchestrator role card");
+  const orchRes = await orchPending;
+  const orchBody = await orchRes.json() as { ok?: boolean; label?: string | null;
+    roleCard?: { delivered?: boolean; receipt?: boolean; reason?: string; contextPlan?: string } };
+  const orchPrompt = orchSlot > 0
+    ? ((await (await get(`/api/slots/${orchSlot}/history`)).json()) as { history: { text: string }[] })
+      .history.at(-1)?.text ?? ""
+    : "";
+  const orchReceipt = (await contextReceipts()).receipts.filter((row) => row.slot === orchSlot).at(-1);
+  check("Orchestrator role card: the spawn door delivers all six owner blocks and reports the delivery",
+    orchRes.ok && orchBody.ok === true && orchBody.label === orchLabel
+      && orchBody.roleCard?.delivered === true && orchBody.roleCard.receipt === true
+      && orchPrompt.startsWith("[fleet Orchestrator] ") && orchCard(orchPrompt).length === 0,
+    `screen=${orchScreen} ${orchRes.status} roleCard=${JSON.stringify(orchBody.roleCard ?? null)} `
+      + `missing=[${orchCard(orchPrompt).join(", ")}] head=${orchPrompt.slice(0, 120)}`);
+  check("…and the spawn is RECEIPTED like every other founding: founding source, the bytes sent, and no program named",
+    !!orchReceipt && orchReceipt.briefSource === "founding" && orchReceipt.programId === null
+      && orchReceipt.taskId === null && orchReceipt.repo === resolve(REPO)
+      && orchReceipt.harness === "codex"
+      && orchReceipt.briefHash === briefHashOf(orchPrompt)
+      && orchReceipt.deliveredBytes === new TextEncoder().encode(orchPrompt).byteLength,
+    JSON.stringify(orchReceipt ?? null));
+
+  // THE SUCCESSION HALF. The successor inherits the label verbatim, so it inherits the ROLE — and
+  // the card arrives beside the line record, which stays the one handover channel: `intent` is the
+  // record's own field, and nothing here offers a second one.
+  let orchToken = "";
+  for (let i = 0; i < 50 && !/^[0-9a-f]{32}$/.test(orchToken); i++) {
+    orchToken = readState().slots?.[String(orchSlot)]?.selfToken ?? "";
+    if (!/^[0-9a-f]{32}$/.test(orchToken)) await Bun.sleep(100);
+  }
+  const orchIntent = "zuerst die zwei roten Audit-Zeilen, dann das Klassen-Register";
+  const orchSuccPending = selfSucceed(orchToken, { intent: orchIntent });
+  let orchSuccSlot: number | null = null;
+  for (let i = 0; i < 100 && orchSuccSlot === null; i++) {
+    const found = (await sessions()).slots.find((s) => s.cwd && s.label === orchLabel && s.id !== orchSlot);
+    if (found && (await tmuxOut("has-session", "-t", `=s${found.id}`)).code === 0) orchSuccSlot = found.id;
+    else await Bun.sleep(50);
+  }
+  if (orchSuccSlot !== null) await Bun.sleep(250);
+  const orchSuccScreen = orchSuccSlot !== null
+    && await plantScreen(orchSuccSlot, ">_ OpenAI Codex (v0.147.0)", "orchestrator succession");
+  const orchSuccRes = await orchSuccPending;
+  const orchSuccBody = await orchSuccRes.json() as { ok?: boolean; slot?: number;
+    lineage?: { lineageId?: string; obligations?: number };
+    roleCard?: { delivered?: boolean; receipt?: boolean } };
+  const orchSuccPrompt = orchSuccSlot === null ? ""
+    : ((await (await get(`/api/slots/${orchSuccSlot}/history`)).json()) as { history: { text: string }[] })
+      .history.at(-1)?.text ?? "";
+  const orchSuccReceipt = (await contextReceipts()).receipts
+    .filter((row) => row.slot === orchSuccSlot).at(-1);
+  check("Orchestrator role card: the succession door delivers the SAME six blocks, over the line record it names",
+    orchSuccRes.ok && orchSuccBody.ok === true && orchSuccBody.slot === orchSuccSlot
+      && orchSuccBody.roleCard?.delivered === true && orchSuccBody.roleCard.receipt === true
+      && orchSuccPrompt.startsWith("[fleet Orchestrator succession] ")
+      && orchCard(orchSuccPrompt).length === 0
+      && !!orchSuccBody.lineage?.lineageId
+      && orchSuccPrompt.includes(orchSuccBody.lineage.lineageId)
+      // the record is the ONE channel: the brief points at it and copies neither the intent nor a
+      // single obligation into the prompt
+      && !orchSuccPrompt.includes(orchIntent),
+    `screen=${orchSuccScreen} ${orchSuccRes.status} slot=${orchSuccSlot} `
+      + `roleCard=${JSON.stringify(orchSuccBody.roleCard ?? null)} lineage=${JSON.stringify(orchSuccBody.lineage ?? null)} `
+      + `missing=[${orchCard(orchSuccPrompt).join(", ")}] head=${orchSuccPrompt.slice(0, 120)}`);
+  check("…and that succession is receipted too — the role's founding is auditable from the ledger, not from pane scrollback",
+    !!orchSuccReceipt && orchSuccReceipt.briefSource === "founding" && orchSuccReceipt.programId === null
+      && orchSuccReceipt.briefHash === briefHashOf(orchSuccPrompt)
+      && orchSuccReceipt.deliveredBytes === new TextEncoder().encode(orchSuccPrompt).byteLength
+      && orchSuccReceipt.id !== orchReceipt?.id,
+    JSON.stringify(orchSuccReceipt ?? null));
+  if (orchSuccSlot !== null) await post(`/api/slots/${orchSuccSlot}/kill`, {});
+  if (orchSlot > 0) await post(`/api/slots/${orchSlot}/kill`, {});
+
   // --- THE PROGRAM-MAIN EXECUTION RAIL: one block, four founding shapes, byte for byte. ---
   // Every prompt this section reads was already delivered above, and together they are EVERY
   // variant the server can build: Fleet frame and target-repo frame, bootstrap and succession.
@@ -3627,7 +3730,12 @@ export async function run(ctx: Ctx): Promise<void> {
   // HOST/PORT — this instance was booted with exactly those, so BASE is the same string.
   const railDoors = ["GET /api/self/program-execution", "POST /api/self/tasks with",
     "POST /api/self/tasks/<taskId>/release", "POST /api/self/tasks/<taskId>/land",
-    "POST /api/self/watch", "POST /api/self/attention"];
+    "POST /api/self/watch", "POST /api/self/attention",
+    // …and since 2026-09-17 the two the block was missing: the question a blocked worker asks its
+    // MAIN, and the Program's own durable back-channel (cut S4, docs/messungen/
+    // 2026-09-14-rollen-briefe-synthese.md §2b). Both doors are older than these sentences — what
+    // was new is that a freshly founded MAIN could learn they exist at all.
+    "POST /api/self/clarifications/<id>/reply", "GET /api/self/inbox"];
   check("Program-MAIN rail: it names Fleet's own address, the self-token header, and every door of the loop",
     rail.includes(`answers this pane at ${BASE} `)
       && rail.includes('"x-fleet-self-token: $FLEET_SELF_TOKEN"')
@@ -3636,6 +3744,19 @@ export async function run(ctx: Ctx): Promise<void> {
       && rail.includes('watch {"kind":"merge","target":<laneSlot>}')
       && rail.includes('{"kind":"audit","repo":"<this checkout\'s git toplevel>","mainAfter":"<that candidate sha>"}'),
     `base=${rail.includes(`answers this pane at ${BASE} `)} missing=[${railDoors.filter((d) => !rail.includes(d)).join(", ")}]`);
+  // THE AUTHORITY SPLIT, in the delivered text (cut S4 §2b, "Du entscheidest / der Owner
+  // entscheidet"). The falsifier it closes is a session that either stalls on a decision it owns or
+  // commits one it does not: until 2026-09-17 the block named only where the work ENDS, so what was
+  // the MAIN's own half had to be inferred from the absence of a rule. The owner's half is a
+  // POINTER at the boundary list rather than a second copy of it — two lists of owner boundaries in
+  // one brief are two lists that drift.
+  const railSplit = ["WHAT YOU DECIDE, AND WHAT THE OWNER DECIDES", "\nYOURS:", "\nTHE OWNER'S:",
+    "exactly the boundaries named in WHERE THIS ENDS"];
+  check("Program-MAIN rail: it separates what the session decides from what the owner decides, and names the owner's half once",
+    railSplit.every((line) => rail.includes(line))
+      && rail.indexOf("WHAT YOU DECIDE, AND WHAT THE OWNER DECIDES") < rail.indexOf("\nWHERE THIS ENDS.")
+      && rail.split("scope growth").length === 2,
+    `missing=[${railSplit.filter((l) => !rail.includes(l)).join(" | ")}] ownerLists=${rail.split("scope growth").length - 1}`);
   // A founding brief reaches a session that holds ONLY a self token. Naming an owner route or an
   // owner credential there would teach it to reach for one it does not have — and printing the
   // owner token into a prompt would BE the leak. Checked as absence over the delivered bytes.

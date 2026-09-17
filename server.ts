@@ -7571,8 +7571,20 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
         return json({ error: `successor ${readiness.reason}` }, 500);
       }
 
-      const brief = await buildSuccessionBrief(predecessor.cwd, carry, { lineageId: draft.lineageId,
-        obligations: draft.obligations.length, intent: draft.intent !== null, pointer: draft.pointer });
+      const lineageFacts: LineageBriefFacts = { lineageId: draft.lineageId,
+        obligations: draft.obligations.length, intent: draft.intent !== null, pointer: draft.pointer };
+      // THE ORCHESTRATOR TWIN of this founding: same rail, same gate, same record — one extra text
+      // and one receipt. Decided on the SUCCESSOR'S label, never the predecessor's: `label` above is
+      // verbatim inheritance unless the body renamed the role, and an owner who renames it at
+      // succeed time has renamed it. The record stays the ONE handover channel (the card's own
+      // UEBERGABE block says so), so nothing here is a second one.
+      const orchestrator = isOrchestratorLabel(free.label);
+      const orchCtx = orchestrator
+        ? await orchestratorFoundingContext(predecessor.cwd, free.harness) : null;
+      const brief = orchestrator
+        ? buildOrchestratorSuccessionBrief(await successionInitSteps(predecessor.cwd), carry,
+          lineageFacts, orchCtx?.ok ? orchCtx.value.anchorBlock : "")
+        : await buildSuccessionBrief(predecessor.cwd, carry, lineageFacts);
       if (!stillCurrent()) {
         await cleanup();
         return json({ error: "successor slot changed before founding delivery" }, 500);
@@ -7587,6 +7599,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       free.history = [...free.history, { text: brief, ts: now }].slice(-MAX_HISTORY);
       saveHistory(free);
       logPrompt(free, brief, "auto", now);
+      if (orchCtx?.ok) await appendOrchestratorReceipt(free, orchCtx.value, brief, now);
       // after the send and inside the same save as the retirement: a death before this line leaves the
       // predecessor standing with no record, which is the recoverable state
       const record = writeLineageHandover(draft, free, now);
@@ -7597,7 +7610,10 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       s.successionRetirement = retirement;
       successionStarted.set(s.id, identity);
       const response = json({ ok: true, slot: free.id, label: free.label,
-        lineage: { lineageId: record.lineageId, obligations: record.obligations.length } });
+        lineage: { lineageId: record.lineageId, obligations: record.obligations.length },
+        ...(orchestrator ? { roleCard: orchCtx?.ok
+          ? { delivered: true, receipt: true }
+          : { delivered: true, receipt: false, contextPlan: `unknown: ${orchCtx?.error ?? "not planned"}` } } : {}) });
       await saveStateNow();
       scheduleSuccessionRetirement(s, retirement);
       return response;
@@ -25399,6 +25415,10 @@ THE LOOP, once per bounded act:
     into this pane by the server on their own. Do not poll a pane, do not read a terminal
     buffer, do not loop on the projection waiting for movement: the arriving report or event IS
     the notification.
+  * What arrives may be a QUESTION instead of a report: a blocked worker asks its MAIN, never the
+    owner. GET /api/self/clarifications lists the ones addressed to you and
+    POST /api/self/clarifications/<id>/reply with {"text":"<your answer>"} answers exactly one.
+    An unanswered question is a lane standing still, and it is yours to close.
   * Treat an arriving report as a CLAIM, not as proof. Read the lane's actual diff and the exact
     verification output it quotes. A worker stating that a check passed is not a check passing.
   * Land only when the projection grants it: that row's nextAction names
@@ -25410,7 +25430,21 @@ THE LOOP, once per bounded act:
     landed=YES|NO and the verify verdict. On landed=YES subscribe once more with
     {"kind":"audit","repo":"<this checkout's git toplevel>","mainAfter":"<that candidate sha>"} and
     read the post-land audit result there. Both arrive here by themselves.
+  * GET /api/self/inbox is this Program's DURABLE back-channel, and the one thing here that
+    outlives the pane: entries belong to the Program, so a succession keeps them and whoever is the
+    bound MAIN at read time is the reader. POST /api/self/inbox/<id>/read receipts one. Read it at
+    your founding and whenever something may have been delivered while this pane was not listening;
+    what retention dropped reads as unknown, never as "nothing was there".
   * Then choose the next bounded act.
+
+WHAT YOU DECIDE, AND WHAT THE OWNER DECIDES. The two halves are not the same kind of question, and
+conflating them is how a session either stalls on one it owns or commits one it does not.
+YOURS: the order of the acts, the decomposition, which worker each act gets, ordinary repair and
+integration, the reading of a returned diff - and the small reversible changes inside the confirmed
+scope that the role paragraph above already leaves in this pane. A close call is still yours: decide
+it, act, and say in your report which way you went and why.
+THE OWNER'S: exactly the boundaries named in WHERE THIS ENDS below, and nothing beyond them.
+Inside your own half you do not ask for permission; inside theirs you do not decide.
 
 WHERE THIS ENDS. Continue the loop until the Program has PLAYABLE evidence - an artefact a person
 can actually run, which you verified running - or until you reach a concrete blocker or a boundary
@@ -25817,6 +25851,159 @@ function buildSupervisorBindBrief(): string {
     "[fleet Supervisor bind] The owner has bound THIS already-running session as the one owner-side Supervisor session for this fleet; your working directory, your context and the work you were doing stay yours.",
     ...supervisorBriefBody(),
   ].join("\n");
+}
+
+// --- THE ORCHESTRATOR ROLE CARD ------------------------------------------------------------------
+// THE MEASURED GAP. A Program-MAIN has had a founding text since 2026-08-24 (RAIL_HEAD/TAIL above)
+// and the Supervisor has had one since its own cut. The session that holds the PORTFOLIO — the one
+// the owner talks to, the one that files and sharpens the rows every MAIN then executes — has had
+// none: it was opened as an ordinary slot with a label, and every rule it worked by lived in the
+// owner's chat or in the predecessor's head. Slot 4's own request on 2026-09-14 is the anchor:
+// "ein eigenes Profil fuer die Orchestrierungs-Session, mit succession und all dem", so the handover
+// carries more than prose. What follows is the owner's text (docs/messungen/
+// 2026-09-14-rollen-briefe-synthese.md §2b, sharpened by the Orchestrator that asked for it),
+// delivered VERBATIM: a brief that paraphrased it would be a second source for the same rule.
+//
+// IT IS A ROLE CARD, NOT A BINDING. `docs/controller.md` states the rule this obeys — Controller and
+// Orchestrator are a SCOPE, not a server-held appointment — so there is no registry row, no
+// occupancy, no displacement and no rebind door here. The label IS the appointment, exactly as
+// STEWARD_LABEL is, and the only thing the server does with it is decide whether this founding
+// carries the card. Nothing downstream reads `isOrchestratorLabel` as authority: an Orchestrator's
+// self-token opens precisely the doors every other non-lane session's does.
+//
+// TWO DOORS, ONE BODY — the shape buildSupervisorBindBrief and its two siblings already have. The
+// preamble differs because how a session ARRIVED in the role is the one thing it cannot derive; the
+// card must not be able to differ between the door that spawns the role and the door that continues
+// it, which is what a second copy would eventually do.
+const ORCHESTRATOR_ROLE_CARD = `--- ROLLE --- Orchestratorin: haelt das Portfolio, uebersetzt Owner-Absicht in Program-Vorschlaege und Zeilen im Karten-Format, schaerft Karten bis sie gueltig sind; fuehrt keine Program-Lane, landet nicht (Lane-Treiben = Program-MAIN).
+--- DU ENTSCHEIDEST --- Reihenfolge, Zerlegung, Klasse und Worker je Zeile; knappe Faelle per Default-Regel + Ledger (Owner 2026-09-14); kleine reversible Akte selbst (Archiv, Ersatzzeile, Attention-Antwort mit Begruendung).
+--- DER OWNER ENTSCHEIDET --- Scope-Wachstum, Irreversibles, Deploy, Kosten und Aussenwirkung, erklaerter Geschmack. Genau EINE Frage je Grenze, als Kommentar an der Zeile oder in der Antwort — eine Orchestratorin stellt keine Attention (409, ungebunden).
+--- DEINE TUEREN --- programs (lesen, vorschlagen) · tasks (POST im Karten-Format, archive, comment) · self · watch lane|merge|audit (idleSec 0, Events quittieren) · ctl.sh (merges vor jedem Direkt-Commit, ctx gemessen, dispatch nur mit konkreter Owner-Delegation).
+--- DER LOOP --- state.sh → register.sh → Board; kleinster Akt → Zeile im Format → Karte gueltig? → warten ohne Beobachten (Rueckweg als Mechanismus) → Report ist ein CLAIM: Diff und Verify-Tail lesen → naechster Akt.
+--- UEBERGABE --- Record auf der Rollen-Linie: offene Pflichten per ID, intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit (Fable orchestriert); HANDOFF.md nur bei echter Nachfolge (Regel A); Uebergabe-ENTSCHEIDUNG bei 25 % gemessen, keine neue Tiefenarbeit ab 30 %.`;
+
+// WHICH LABEL IS THE ROLE. The owner names the role in the pane label and always has — the live
+// fleet carries "Orchestrator (Opus)", so an exact-equality test the way STEWARD_LABEL uses one
+// would recognise nothing. A leading word boundary is the whole rule: "Orchestrator (Opus)",
+// "🎛 Orchestrator" and "Orchestratorin" are the role, and a label that merely CONTAINS the letters
+// inside another word is not. A lane is never asked — the two seams below are non-lane only.
+const ORCHESTRATOR_LABEL_RE = /(^|[^\p{L}])orchestrator/iu;
+const isOrchestratorLabel = (label: string | null | undefined): boolean =>
+  !!label && (label.includes("🎛") || ORCHESTRATOR_LABEL_RE.test(label));
+
+function buildOrchestratorSpawnBrief(anchorBlock: string): string {
+  return [
+    "[fleet Orchestrator] Diese Session ist die Orchestratorin dieses Fleets. Was folgt, ist deine Rollenkarte — Owner-Text, keine Empfehlung; die Langfassung steht in docs/controller.md.",
+    ORCHESTRATOR_ROLE_CARD,
+    "Beginne exakt in dieser Reihenfolge:",
+    "1. Führe ./state.sh aus.",
+    "2. Führe ./register.sh aus.",
+    "3. Lies das Board und entscheide aus den Fakten den nächsten begrenzten Portfolio-Akt.",
+  ].join("\n") + anchorBlock;
+}
+
+// The succession twin. `carry` keeps its exact meaning on this rail; the RECORD is the handover and
+// is named as such, because the card's own UEBERGABE block points at the same one channel and a
+// brief that offered a second would be the disagreement e3e5084a exists to prevent.
+function buildOrchestratorSuccessionBrief(steps: readonly string[], carry: string | null,
+  lineage: LineageBriefFacts, anchorBlock: string): string {
+  const next = carry ? [``, `Das Erste, was die Vorgängerin als Nächstes täte (max. ${MAX_SUCCESSION_CARRY} Zeichen):`, carry] : [];
+  return [
+    `[fleet Orchestrator succession] Du bist die FORTGESETZTE Orchestratorin dieses Fleets; die Vorgängerin zieht sich gerade zurück; die Übergabe ist der Linien-Record ${lineage.lineageId} (GET /api/self, Feld \`lineage\`): ${lineageBriefContent(lineage)}`,
+    "Was folgt, ist deine Rollenkarte — Owner-Text, keine Empfehlung; die Langfassung steht in docs/controller.md.",
+    ORCHESTRATOR_ROLE_CARD,
+    "Beginne exakt in dieser Reihenfolge:",
+    ...steps,
+    ...next,
+  ].join("\n") + anchorBlock;
+}
+
+// THE CONTEXT PLAN FOR AN ORCHESTRATOR FOUNDING, read exactly the way the Supervisor's two founding
+// doors read theirs: the repository's own declared packs at the commit the receipt will name. It is
+// allowed to FAIL — an Orchestrator may be opened in a directory that is not a git repository at
+// all, and the answer then is a named unknown, never an invented head. The caller still delivers
+// the card; what it loses is the anchor block and the receipt, and it says so.
+type OrchestratorFoundingContext = {
+  readonly anchorBlock: string;
+  readonly preflight: ProgramMainPreflight;
+  readonly facts: ReturnType<typeof programMainContextFacts>;
+  readonly selected: ReturnType<typeof contextReceiptSelections>;
+  readonly omitted: ContextPlan["omitted"];
+};
+async function orchestratorFoundingContext(cwd: string, harness: string | null): Promise<
+  { readonly ok: true; readonly value: OrchestratorFoundingContext }
+  | { readonly ok: false; readonly error: string }
+> {
+  const preflight = await preflightProgramMain(cwd);
+  if (!preflight.ok) return { ok: false, error: preflight.error };
+  const facts = programMainContextFacts(preflight.value.frame, harness);
+  const plan = await programMainContextPlan(preflight.value, facts);
+  return { ok: true, value: { anchorBlock: renderContextAnchorBlock(plan), preflight: preflight.value,
+    facts, selected: contextReceiptSelections(plan.selected), omitted: plan.omitted.map((entry) => ({ ...entry })) } };
+}
+
+// …and the receipt over the bytes actually sent. Same row shape and same `hash` chain as the
+// Supervisor's founding receipt, and `programId: null` means the same thing there as here: an
+// Orchestrator sits ACROSS programs, so naming one would be a false attribution, not a missing one.
+async function appendOrchestratorReceipt(s: Slot, ctx: OrchestratorFoundingContext,
+  deliveredBrief: string, at: number): Promise<void> {
+  const hash = createHash("sha256").update(JSON.stringify({
+    anchorBlock: ctx.anchorBlock,
+    planFacts: { harness: s.harness, mode: ctx.facts.mode, triggers: ctx.facts.triggers,
+      selected: ctx.selected, omitted: ctx.omitted },
+  })).digest("hex");
+  await appendEvent(CONTEXT_RECEIPT_FILE, {
+    id: randomBytes(16).toString("hex"), hash, at, repo: s.cwd!, head: ctx.preflight.head,
+    taskId: null, originId: null, programId: null, slot: s.id, branch: ctx.preflight.branch,
+    harness: s.harness, ...receiptModel(s), effort: s.effort,
+    mode: ctx.facts.mode, triggers: ctx.facts.triggers, selected: ctx.selected, omitted: ctx.omitted,
+    deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+    snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
+    briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
+  });
+}
+
+// THE SPAWN SEAM. `POST /api/slots/:id/open` opens a session and has never delivered a word into
+// it; that stays true for every label but this one. Three properties are deliberate:
+//  * THE OPEN IS NOT AT RISK. The owner asked for a session and gets one whatever happens here. A
+//    card that cannot be delivered is REPORTED in the response and never healed by killing the
+//    pane — the opposite of the Supervisor's founding doors, whose whole product is the appointment
+//    and which therefore clean up after a failed delivery.
+//  * THE SAME THREE FOUNDING STEPS as every other founding paste (boot grace, delivery gate,
+//    bounded readiness). The four live failures of 2026-09-03 were all a founding text typed into a
+//    pane whose agent was not drawn yet; a card pasted straight after openSlot would join them.
+//  * IT COSTS THE CALLER THE FOUNDING BUDGET, in wall clock, and only for this label.
+async function deliverOrchestratorSpawnCard(s: Slot): Promise<Record<string, unknown>> {
+  const openedAt = s.openedAt;
+  const stillCurrent = (): boolean => !!s.cwd && s.openedAt === openedAt;
+  await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
+  if (!stillCurrent()) return { delivered: false, reason: "the slot changed during boot" };
+  const gate = await canDeliver(s, { now: Date.now(), idleMs: 0,
+    killSwitch: false, quietHours: false, harness: false });
+  if (!gate.ok)
+    return { delivered: false, reason: `delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` };
+  const readiness = await waitForFoundingReadiness(s, stillCurrent);
+  if (!readiness.ok) return { delivered: false, reason: readiness.reason };
+  const ctx = await orchestratorFoundingContext(s.cwd!, s.harness);
+  const brief = buildOrchestratorSpawnBrief(ctx.ok ? ctx.value.anchorBlock : "");
+  if (!stillCurrent()) return { delivered: false, reason: "the slot changed before the card was sent" };
+  try {
+    await sendText(s, brief, true);
+  } catch (e) {
+    // Neither delivered nor failed is an OBSERVED fact once tmux has thrown — bindSupervisor's rule,
+    // and the journal line is mandatory for exactly the same reason.
+    logPrompt(s, brief, "auto", Date.now(), undefined, "uncertain");
+    return { delivered: false, reason: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` };
+  }
+  const at = Date.now();
+  s.history = [...s.history, { text: brief, ts: at }].slice(-MAX_HISTORY);
+  saveHistory(s);
+  logPrompt(s, brief, "auto", at);
+  if (ctx.ok) await appendOrchestratorReceipt(s, ctx.value, brief, at);
+  await saveStateNow();
+  return ctx.ok
+    ? { delivered: true, receipt: true }
+    : { delivered: true, receipt: false, contextPlan: `unknown: ${ctx.error}` };
 }
 
 async function succeedSupervisor(s: Slot, label: string | null, carry: string | null,
@@ -34514,7 +34701,10 @@ Bun.serve<WSData>({
           e instanceof TmuxNewSessionUnavailable ? 503 : e instanceof GameMakerTreeConflict ? 409 : 400);
         }
         void tickGit().catch(() => {}); // refresh the badge now, not on the next 10s tick
-        return json({ ok: true, cwd: s.cwd, label: s.label });
+        // …and for exactly one label, the role card (deliverOrchestratorSpawnCard). Every other
+        // open returns the same bytes it always did.
+        const roleCard = isOrchestratorLabel(s.label) ? await deliverOrchestratorSpawnCard(s) : null;
+        return json({ ok: true, cwd: s.cwd, label: s.label, ...(roleCard ? { roleCard } : {}) });
       }
       if (slotMatch[2] === "open-worktree") {
         const body = await readJson(req);

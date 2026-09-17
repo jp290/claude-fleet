@@ -192,9 +192,18 @@ export async function run(): Promise<void> {
     await restartSrv(); // the deploy ritual, mid-run
 
     const afterA = (await (await get(`/api/slots/${la.slot}/merge`)).json()) as
-      { running?: boolean; last: { status?: string; conflicted?: string[]; detail?: string } | null };
+      { running?: boolean; lastIs?: string; last: { status?: string; conflicted?: string[]; detail?: string } | null };
     check("an interrupted merge run leaves a verdict on record, not silence",
       afterA.last?.status === "interrupted", JSON.stringify(afterA.last));
+    // …AND THAT THE ROW IS REPORTED AS A CORPSE, which is the half of `lastIs` only this fixture can
+    // prove. The status alone cannot say it: mergeJob writes exactly this row about ITSELF before it
+    // starts, so `interrupted` is on record for the whole life of every HEALTHY land too, and on
+    // 2026-09-08 a neighbouring session read one of those as a server crash that had not happened.
+    // The field splits the two by the row the running job owns; here no job owns anything, because
+    // the server that owed this verdict was killed above. The RUNNING half of the same pair is held
+    // in e2e/ctl.ts, over a land that is still in flight — neither probe proves the field alone.
+    check("the interrupted row is named as the genuine mid-run death, not as a run in flight",
+      afterA.lastIs === "interrupted", `lastIs=${afterA.lastIs} running=${afterA.running}`);
     check("the interrupted verdict names the conflicts the agent was resolving",
       (afterA.last?.conflicted ?? []).includes("code.txt"), JSON.stringify(afterA.last?.conflicted));
     let interruptedEvents: { watchId: string; kind: string; status: string;

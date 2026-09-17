@@ -18587,15 +18587,37 @@ function helperFailNames(raw: unknown): string[] | undefined {
 // Deliberately NOT asked: whether that device already holds another claim. It may finish and take
 // this one next, and the grace is short — refusing on that would make the common case (one helper,
 // two lands) fall straight back to today's behaviour.
+// …and the first two questions WITHOUT the clock, which is what lets the drain ask the same thing
+// against a second window (helperCandidateAgeMs below) instead of hand-copying the two mode reads.
+const helperModeCandidate = (d: HelperDevice): boolean =>
+  (d.desiredMode ?? DEVICE_MODE_DEFAULT) === "active" && (!d.mode || d.mode === "active");
 const isHelperClaimCandidate = (d: HelperDevice, now: number): boolean =>
-  (d.desiredMode ?? DEVICE_MODE_DEFAULT) === "active" && (!d.mode || d.mode === "active")
-  && now - d.lastSeen <= HELPER_FRESH_MS;
+  helperModeCandidate(d) && now - d.lastSeen <= HELPER_FRESH_MS;
 // `feature` narrows the candidates to devices that declared it — the sharded audit's grace must not
 // hold an entry for a machine whose daemon would never be offered its shards.
 function helperClaimCandidateExists(now = Date.now(), feature?: string): boolean {
   for (const d of helperDevices.values())
     if (isHelperClaimCandidate(d, now) && (!feature || !!d.features?.includes(feature))) return true;
   return false;
+}
+// HOW LONG AGO DID THE FRESHEST such machine last speak? — `null` when there is none at all, and
+// the reading the drain's grace hangs on since 2026-09-17. The boolean above answers one window
+// (HELPER_FRESH_MS = 45 s by default); the drain needs the AGE, because the two windows this system
+// already has are different numbers and the gap between them was throwing away the grace:
+// a heartbeat is fresh for 45 s and the register (and every board that draws it) calls the machine
+// online for DEVICE_ONLINE_MS = 90 s. A drain that fell into the gap between two beats read "no
+// claim-capable helper is beating", took a ~30-minute audit onto this box's ONE suite mutex, and
+// that decision is made once — `auditRunningRepo` stands for the whole run.
+// Same mode reads as the strict candidate, same `feature` narrowing, only the clock is the
+// caller's: a machine the owner wished off, or one that says `quiet`, is no candidate at any age.
+function helperCandidateAgeMs(now = Date.now(), feature?: string): number | null {
+  let best: number | null = null;
+  for (const d of helperDevices.values()) {
+    if (!helperModeCandidate(d) || (feature && !d.features?.includes(feature))) continue;
+    const age = Math.max(0, now - d.lastSeen);
+    if (best === null || age < best) best = age;
+  }
+  return best;
 }
 // …AND IS EVERY SUCH MACHINE FULL, AND UNTIL WHEN? The second question both waits in front of the
 // portal ask — a lane's unclaimed preview offer and the drain's grace — and the one they could not
@@ -19163,14 +19185,36 @@ async function drainPostLandAudits(): Promise<void> {
       // Re-read every iteration rather than hoisted: the loop awaits a whole suite between passes,
       // and both the clock and the device register move while it runs.
       // Under FLEET_AUDIT_SHARDS the candidate must also be a machine its shards are offered to.
-      const graceOn = AUDIT_HELPER_GRACE_MS > 0
-        && helperClaimCandidateExists(Date.now(), AUDIT_SHARDS > 1 ? AUDIT_SHARD_FEATURE : undefined);
+      // ONE READING, TWO WINDOWS. `candidateAge` is how long ago the freshest machine that could
+      // actually claim last spoke (helperCandidateAgeMs — owner's wish, the device's own mode, and
+      // the shard feature all already asked), `null` when there is no such machine at all.
+      //   · graceOn — it is BEATING (≤ HELPER_FRESH_MS). Byte for byte the old
+      //     `helperClaimCandidateExists` reading: the minimum age is inside the window iff some
+      //     device is. This is the only arm that may stretch for saturation.
+      //   · graceLingering — it is STALE BUT ONLINE (past HELPER_FRESH_MS, inside
+      //     DEVICE_ONLINE_MS): the same 90 s the register and every board call "that machine is
+      //     there". Before 2026-09-17 this fell to `if (!graceOn) return true` and the drain took a
+      //     ~30-minute audit onto this box's ONE suite mutex because it happened to look between
+      //     two heartbeats — once, irrevocably (`auditRunningRepo` stands for the whole run). The
+      //     failure direction is unchanged and deliberate: waiting costs at most the grace, and the
+      //     entry falls back here when it runs out, but a beat that lands inside the grace hands a
+      //     half-hour suite to the machine that is idle.
+      // Nothing widens without a grace configured: with AUDIT_HELPER_GRACE_MS at 0 both are false
+      // and no line below is reached, which is today's default byte for byte.
+      const now = Date.now();
+      const candidateAge = AUDIT_HELPER_GRACE_MS > 0
+        ? helperCandidateAgeMs(now, AUDIT_SHARDS > 1 ? AUDIT_SHARD_FEATURE : undefined)
+        : null;
+      const graceOn = candidateAge !== null && candidateAge <= HELPER_FRESH_MS;
+      const graceLingering = candidateAge !== null && !graceOn && candidateAge < DEVICE_ONLINE_MS;
       // …and whether every such machine is FULL right now (helperSaturation). Only asked under a
       // grace: without one the owner has not given the portal first refusal at all, and a saturated
       // helper is no reason to invent it.
       const saturation = graceOn ? helperSaturation() : null;
       // the earliest moment a grace-skipped entry becomes drainable, 0 = nothing was skipped for it
       let graceUntil = 0;
+      // …and WHICH entries were left lying, for the one line that says so below
+      const graceSkipped: string[] = [];
       const entry = [...auditQueue.entries()].find(([r, q]) => {
         if (helperClaimOf(r)) return false;
         // …and a SHARDED run is held until its row is written, not until each claim's clock: a run
@@ -19192,7 +19236,7 @@ async function drainPostLandAudits(): Promise<void> {
         const bar = helperClaimBar(r, q.covers);
         if (bar === "unconfigured") return false;
         if (bar) return true;
-        if (!graceOn) return true;
+        if (!graceOn && !graceLingering) return true;
         // the YOUNGEST cover: a coalesced entry keeps growing while it waits, and the grace is a
         // promise about the newest land in it, not about the oldest. An entry with no covers is
         // not fresh in any sense — it is nothing to audit — and falls through unchanged.
@@ -19213,13 +19257,27 @@ async function drainPostLandAudits(): Promise<void> {
           : since + AUDIT_HELPER_GRACE_MS;
         if (readyAt <= Date.now()) return true;
         graceUntil = graceUntil ? Math.min(graceUntil, readyAt) : readyAt;
+        graceSkipped.push(basename(r));
         return false;
       });
       if (!entry) {
         // NOTHING ELSE WOULD EVER WAKE THIS. The land that queued the entry has already kicked the
         // drain, and the only other kicks are a claim lapsing and a helper reporting — neither of
         // which happens when the helper simply never shows up. So a grace skip arms its own return.
-        if (graceUntil) armAuditGraceKick(graceUntil);
+        if (graceUntil) {
+          // THE WAIT LINE, and its reason in words — the counterpart of `post-land audit LOCAL:`
+          // below. Without it the stale-but-online arm is invisible from the outside: an entry that
+          // waits and one that was never examined look the same in `server.log`, and the question
+          // this line answers ("why is nothing running while a tree is queued?") would have to be
+          // joined against the device register by hand.
+          console.log(`post-land audit WAITING: ${graceSkipped.join(", ")} until ${
+            new Date(graceUntil).toISOString()} — ${
+            graceOn ? `a claim-capable helper beat ${Math.round((candidateAge ?? 0) / 1000)}s ago`
+            : `a claim-capable helper beat ${Math.round((candidateAge ?? 0) / 1000)}s ago — stale past the ${
+              Math.round(HELPER_FRESH_MS / 1000)}s freshness window, still inside the ${
+              Math.round(DEVICE_ONLINE_MS / 1000)}s online window`}`);
+          armAuditGraceKick(graceUntil);
+        }
         break;
       }
       const [repo, q] = entry;
@@ -19230,7 +19288,13 @@ async function drainPostLandAudits(): Promise<void> {
       console.log(`post-land audit LOCAL: ${basename(repo)} ${q.main} (${q.covers.length} land(s)) — ${
         localBar ? `not offerable to a helper (${localBar})`
         : AUDIT_HELPER_GRACE_MS <= 0 ? "no helper grace configured"
-        : !graceOn ? "no claim-capable helper is beating"
+        : candidateAge === null ? "no claim-capable helper is beating"
+        : !graceOn && !graceLingering
+          ? `the last claim-capable helper beat ${Math.round(candidateAge / 1000)}s ago, past the ${
+            Math.round(DEVICE_ONLINE_MS / 1000)}s online window`
+        : !graceOn
+          ? `the helper grace ran out and nobody claimed it — its last beat was ${
+            Math.round(candidateAge / 1000)}s ago, stale past the ${Math.round(HELPER_FRESH_MS / 1000)}s freshness window`
         : saturation && saturation.until + HELPER_SATURATION_SLACK_MS > Date.now()
           ? `the helper is saturated until ${new Date(saturation.until).toISOString()}, past the ${Math.round(VERIFY_WAIT_MS / 60_000)} min wait cap`
         : "the helper grace ran out and nobody claimed it"}`);

@@ -3236,3 +3236,61 @@ unbekannter Key, falsche Version, unbekannter Wert, fehlender oder absurder Stem
 
 **Trail:** jede Erteilung und jeder echte Widerruf schreibt `program_promotion`. Ein Widerruf auf
 einen ohnehin abwesenden Record ist `ok:true` ohne Zeile — es gibt nichts zu datieren.
+
+## stalled — `GET /api/sessions` (OWNER-Route, nicht `/api/self/*`)
+
+Sie steht hier, weil sie die eine Stelle ist, an der die Flotte sagt **„diese Lane arbeitet nicht
+mehr"** — und weil dieser Fakt bis zum 2026-09-17 nur auf einer Route lag, die in der heutigen
+Aufstellung niemand las.
+
+**Die Regeln stehen NICHT hier.** Sie stehen in `lane-signals.ts#STALLED_RULES`, und `STALLED_PROSE`
+komponiert die Prosa-Zeile des Digest-Workers aus derselben Liste. Eine zweite Fassung in dieser
+Datei wäre genau der Fehler, den die Komposition dort verhindert; wer die Klauseln braucht, liest
+`rg -n 'STALLED_RULES' lane-signals.ts`. Die Schwelle ist `FLEET_STALLED_IDLE_MS`
+(`server.ts#STALLED_IDLE_MS`, Default 30 min; auf dieser Maschine 20 min in der gitignorierten
+`.env`) — ablesen, nie erinnern.
+
+**Der Befund, der den Träger verschob** (gemessen 2026-09-16/17, nicht übernommen): `stalled` und
+`stalledSince` wurden AUSSCHLIESSLICH in `server.ts#stewardSlotsView` gesetzt, also nur auf
+`GET /api/steward/sessions`. Diese Route verlangt `FLEET_STEWARD_TOKEN`, und `ensureSlot` backt das
+Token nur in eine Pane, deren Label `⚙ steward` ist (`docs/steward.md`, Korrektur 2026-07-25). Am
+2026-09-17 trug **0 von 11 aktiven Slots** dieses Label, während 3 Lanes und 5 MAIN-/Orchestrator-
+Sessions `/api/sessions` pollten. Ein Fakt, dessen einziger Zweck das Gesehenwerden ist — der
+Kommentar im Code sagt es selbst: *„it exists so a stopped lane can be SEEN, and counted, at all"* —
+lag auf der einen Route, die niemand lesen konnte. Das ist ein **Erreichbarkeitsdefekt**, nicht die
+bewusst offene Frage, was auf `stalled` hin geschehen soll. Belegte Kosten: Lane `c3d4b7df` stand am
+2026-09-16 2 h 07 min eingefroren und hielt einen von drei Lane-Plätzen.
+
+**Die Korrektur ist die, die `deployGap`/`bundleStale` schon bekommen haben** (ihr Kommentar in
+`server.ts` nennt den Anlass: 23 min auf altem Code, für den Owner unsichtbar): den Fakt dort
+servieren, wo die Prinzipale, die handeln können, ohnehin hinsehen — durch **dieselbe Funktion**,
+nie durch eine zweite Kopie. Diese Funktion ist `server.ts#stalledFacts`; `stewardSlotsView` und die
+Slot-Zeile von `GET /api/sessions` spreizen beide ihr Ergebnis. `e2e/pins.ts` hält die Regel
+mechanisch: `laneStalled`/`laneStalledSince` werden im Server-Universum an GENAU zwei Stellen
+gerufen, beide innerhalb von `stalledFacts`.
+
+**Die Form auf dem Poll:**
+
+- `stalled: true` — nur auf einer Zeile, für die das Prädikat hält. **Bei `false` fehlt der Key**,
+  wie bei `harness`/`effort` (`docs/data-saver.md` §1). Das ist hier nicht bloß billig, sondern
+  ehrlich: `laneStalled` faltet jeden UNBEKANNTEN Fakt ohnehin auf `false`, abwesend und `false`
+  sagen also denselben Satz („nicht als festgefahren bekannt"). Unbedingt getragen kostete das Paar
+  rund 590 B der ~1 300 B, die das gemessene 14-KiB-Budget frei hat (`e2e/tasks.ts`).
+- `stalledSince: <epoch ms>` — die Zeitstempel-Stufe, ebenfalls weggelassen, wenn `null`. Sie geht
+  non-null, LANGE bevor der Boolean kippt (Muster von `doneLookingSince`): „die Fakten liegen vor,
+  nur die Uhr läuft noch". Gegen `now` derselben Antwort rechnen — der Server stempelt beide aus
+  einem Takt.
+- **Kein Aktuator.** Kein Tick liest das Feld, es gibt keinen Auto-Kill und kein Nudge. Die
+  Doktrin-Stufe bleibt `record → display`; die Beweisschwelle des Briefs (10 owner-adjudizierte
+  Instanzen vor jeder Handlung, `briefs/lane-stalled-fact.md`) war genau das, was unerreichbar
+  blieb, solange niemand zählen konnte.
+- **Nicht auf dem Board gerendert.** Der Fakt reitet auf dem Poll, den der Client ohnehin liest; die
+  UI-Entscheidung (wo, welches Glyph, ob sie alarmiert) ist bewusst nicht mitgetroffen worden.
+
+**Was auf der Steward-Route BLEIBT** — und damit die andere Hälfte der Antwort: `doneLooking`,
+`doneLookingSince`, `hostCommitLooking`, `observed`, `alive`, `gitOp`, `merge`, `mission`, `task`
+und `transcriptFact` werden weiterhin nur von `stewardSlotsView` serviert. **Der besetzte
+Steward-Sitz ist die Voraussetzung, sie zu lesen** — ein Slot mit dem Label `⚙ steward`, gesetzt
+BEIM `open` (`docs/steward.md`, „How to actually create one"), sonst bekommt die Pane das Token
+nie. Ohne diesen Sitz sind diese Felder berechnet und unadressiert, genau wie `stalled` es war; wer
+einen davon braucht, hebt ihn nach demselben Muster oder besetzt den Sitz.

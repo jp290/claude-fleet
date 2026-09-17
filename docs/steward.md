@@ -23,6 +23,16 @@ curl -X POST http://<host>:<port>/api/slots/<id>/open -H 'authorization: Bearer 
   -d '{"cwd":"<repo>.worktrees/steward","label":"⚙ steward"}'
 ```
 
+**Consequence 2026-09-17, and it is the reason this paragraph is load-bearing rather than
+procedural: an UNOCCUPIED seat makes every steward-only fact unreadable, not merely unwatched.**
+`stewardSlotsView` computes `doneLooking`, `doneLookingSince`, `hostCommitLooking`, `observed`,
+`alive`, `gitOp`, `merge`, `mission`, `task` and `transcriptFact`, and `/api/steward/sessions` is
+their only carrier. Counted on the live state file that day: 0 of 11 active slots wore the label,
+while 3 lanes and 5 MAIN/orchestrator sessions polled `/api/sessions`. `stalled` was in that list
+too and was lifted onto the owner poll for exactly this reason — the decision, the measured cost and
+the shape it took are written once, in `docs/self-api.md` §stalled, not restated here. The rest of
+the list is still where `stalled` was: computed, and addressed to nobody.
+
 That is a single reproducible call, and it is destructive by design: an active slot's pane is torn
 down and respawned (see `docs/attic/state-reality-divergence.md` D2). The **board's** picker still sends only
 `{cwd}` and is reachable only for empty slots, so the label path is API-only for now. Renaming a

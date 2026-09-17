@@ -1296,6 +1296,53 @@ export async function run(): Promise<void> {
         && j1.source === "owner" && j1.text === "receipt-probe-one" && "label" in j1,
         JSON.stringify(j1));
 
+      // 2b) THE SEND LEDGER (B3). The measured hole: POST /send — the most expensive channel on
+      // this fleet — wrote no ledger row at all, so the only surface that knew what Fleet had typed
+      // into a session was the provider's own /usage page
+      // (docs/messungen/denksession-zusammenarbeit-2026-09-02.md §2.4 point 2). The row is written
+      // by sendText itself, so this probe holds it for EVERY channel at once; what it proves here
+      // is the owner one end to end: exactly one row, the payload's UTF-8 BYTE length (the probe
+      // text is deliberately multi-byte, so a mutation to `text.length` fails it), the channel name
+      // and the observed acceptance — and the per-slot day counter the board reads.
+      type SendRow = { event?: unknown; slot?: unknown; bytes?: unknown; path?: unknown; acceptance?: unknown };
+      const auditLines = (): string[] =>
+        readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean);
+      const sendRowsSince = (from: number): SendRow[] => auditLines().slice(from)
+        .map((l) => { try { return JSON.parse(l) as SendRow; } catch { return {}; } })
+        .filter((r) => r.event === "send" && r.slot === 3);
+      type Inbound = { sends: number; bytes: number } | null;
+      const inboundOfThree = async (): Promise<Inbound> => {
+        const body = (await (await get("/api/sessions")).json()) as
+          { slots: { id: number; inbound?: { sends: number; bytes: number } }[] };
+        return body.slots.find((x) => x.id === 3)?.inbound ?? null;
+      };
+      const ledgerPayload = "send-ledger-probe-üüü";
+      const ledgerBytes = Buffer.byteLength(ledgerPayload, "utf8");
+      const auditBefore = auditLines().length;
+      const inbBefore = await inboundOfThree();
+      const ledgerRes = await post("/send", { slot: 3, text: ledgerPayload, submit: false });
+      // the audit write is fire-and-forget through appendEvent's chain, so poll for the line —
+      // asserting immediately would race the append and read as "the send wrote nothing"
+      // …and only the OWNER channel's rows are counted: a tick nudge that happened to reach this
+      // slot in the same window is a different path, and would otherwise turn "exactly one row per
+      // POST /send" into a race against the fleet's own traffic.
+      let sendRows: SendRow[] = [];
+      for (let i = 0; i < 80 && sendRows.length === 0; i++) {
+        sendRows = sendRowsSince(auditBefore).filter((r) => r.path === "owner");
+        if (sendRows.length === 0) await Bun.sleep(100);
+      }
+      check("a POST /send writes EXACTLY ONE send row, carrying the payload's UTF-8 byte length, its channel and the observed acceptance",
+        ledgerRes.ok && sendRows.length === 1 && ledgerBytes !== ledgerPayload.length
+        && sendRows[0]?.bytes === ledgerBytes && sendRows[0]?.path === "owner"
+        && sendRows[0]?.acceptance === "not-applicable",
+        JSON.stringify({ status: ledgerRes.status, bytes: ledgerBytes, chars: ledgerPayload.length, rows: sendRows }).slice(0, 300));
+      // the counter is bumped synchronously inside the send, so it is already true when /send answers
+      const inbAfter = await inboundOfThree();
+      check("/api/sessions carries inbound{sends,bytes} for the slot, advanced by exactly this one send's bytes",
+        !!inbAfter && inbAfter.sends === (inbBefore?.sends ?? 0) + 1
+        && inbAfter.bytes === (inbBefore?.bytes ?? 0) + ledgerBytes,
+        JSON.stringify({ before: inbBefore, after: inbAfter, payloadBytes: ledgerBytes }));
+
       // 3) UNCERTAIN. The transport must fail while the OCCUPANT stays the same row — and the
       // 2s self-heal loop must be structurally unable to interfere, not merely outrun.
       //
@@ -1351,6 +1398,28 @@ export async function run(): Promise<void> {
         { history: unknown[] }).history.length;
       check("an uncertain send does NOT enter slot history — recall must not replay a guess as fact",
         histAfter === histBefore, `${histBefore} -> ${histAfter}`);
+
+      // 3b) …and the ledger's other half: a send that THREW is not a missing row. It books its
+      // channel and the throw's own word, with the bytes that actually reached the pane — zero
+      // here, because the paste itself is what failed — and it must NOT move the cost counter,
+      // which prices delivery and not attempts. Mutation that breaks it: writing the row only on
+      // the success path (no row at all), or booking the payload length regardless of the paste.
+      const failing = (): SendRow[] => sendRowsSince(auditBefore)
+        .filter((r) => r.path === "owner" && r.acceptance !== "not-applicable");
+      let failRows: SendRow[] = [];
+      for (let i = 0; i < 80 && failRows.length === 0; i++) {
+        failRows = failing();
+        if (failRows.length === 0) await Bun.sleep(100);
+      }
+      const inbAfterFail = await inboundOfThree();
+      check("a send whose transport threw books ONE row with 0 delivered bytes and the throw's own word",
+        failRows.length === 1 && failRows[0]?.bytes === 0 && failRows[0]?.path === "owner"
+        && failRows[0]?.acceptance === "send-failed",
+        JSON.stringify(failRows).slice(0, 300));
+      check("a refused send leaves the inbound cost counter where it was — it prices delivery, not attempts",
+        !!inbAfterFail && !!inbAfter && inbAfterFail.sends === inbAfter.sends
+        && inbAfterFail.bytes === inbAfter.bytes,
+        JSON.stringify({ afterDelivered: inbAfter, afterFailed: inbAfterFail }));
 
       // 4) RECYCLING COUNTER-PROBE — the reason attribution exists at all. Same slot NUMBER, new
       // occupant: a receipt that still carried the old openedAt would make the journal ambiguous

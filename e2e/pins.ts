@@ -548,7 +548,7 @@ const server = serverU.text;
   // recreate the original bug: an API success/terminal row while the worker never got the text.
   const reply = server.slice(server.indexOf("async function replyClarification("),
     server.indexOf("async function acknowledgeFleetEvent("));
-  const send = reply.indexOf("await sendText(worker, text, true);");
+  const send = reply.indexOf("await sendText(worker, text, true,");
   const answered = reply.indexOf('request.status = "answered";');
   pin("clarification reply cannot set answered before successful sendText",
     send >= 0 && answered > send && !reply.slice(0, send).includes('request.status = "answered";'),
@@ -3221,7 +3221,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // live `composer still holds N chars` failures happened. A count is the only shape of this pin
   // that a seventh rail cannot walk past: adding a founding delivery without its grace and its
   // bounded wait moves one of these three numbers off the others.
-  const foundingSends = (server.match(/await sendText\(free, [A-Za-z]+, true\);/g) ?? []).length;
+  const foundingSends = (server.match(/await sendText\(free, [A-Za-z]+, true, \{ path: "[a-z-]+" \}\);/g) ?? []).length;
   const foundingWaits = (server.match(/await waitForFoundingReadiness\(free, /g) ?? []).length;
   const foundingGraces = (server.match(/await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/g) ?? []).length;
   // …and the SEVENTH rail (2026-09-12, the lane baton: server.ts#succeedLane) founds into the slot
@@ -3235,7 +3235,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     : server.slice(laneRailStart, server.indexOf("async function handleSelfSucceed", laneRailStart));
   const laneRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(laneRailBody)
     && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(laneRailBody)
-    && /await sendText\(s, brief, true\);/.test(laneRailBody);
+    && /await sendText\(s, brief, true, \{ path: "[a-z-]+" \}\);/.test(laneRailBody);
   // …and the EIGHTH (2026-09-17, the Orchestrator role card at spawn) is the second rail of that
   // same shape: `POST /api/slots/:id/open` has already opened the pane, so the card founds into the
   // slot the caller is holding and its three lines name `s` too. Asserted in its own body for the
@@ -3246,7 +3246,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     : server.slice(orchRailStart, server.indexOf("async function succeedSupervisor", orchRailStart));
   const orchRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(orchRailBody)
     && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(orchRailBody)
-    && /await sendText\(s, brief, true\);/.test(orchRailBody);
+    && /await sendText\(s, brief, true, \{ path: "[a-z-]+" \}\);/.test(orchRailBody);
   pin("all EIGHT founding deliveries are gated — same count of sends, bounded waits and shared boot graces, and no naked 4 s sleep left",
     foundingSends === 6 && foundingWaits === 6 && foundingGraces === 8 && laneRailGated && orchRailGated
       && !/await Bun\.sleep\(4000\);/.test(server),
@@ -3292,7 +3292,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const svSuccessionAt = server.indexOf("async function succeedSupervisor(");
   const svSuccessionBody = svSuccessionAt < 0 ? ""
     : server.slice(svSuccessionAt, server.indexOf("async function bootstrapSupervisor(", svSuccessionAt));
-  const svSendAt = svSuccessionBody.indexOf("await sendText(free, deliveredBrief, true);");
+  const svSendAt = svSuccessionBody.indexOf("await sendText(free, deliveredBrief, true,");
   const svBindAt = svSuccessionBody.indexOf("supervisor = {");
   pin("Supervisor succession rewrites the binding only AFTER a successful send — loss before it keeps the predecessor",
     svSendAt > 0 && svBindAt > svSendAt
@@ -3468,7 +3468,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const svBindRouteBody = svBindRouteAt < 0 ? "" : server.slice(svBindRouteAt, svBindRouteAt + 600);
   const svBindAtFn = server.indexOf("async function bindSupervisor(");
   const svBindBody = svBindAtFn < 0 ? "" : server.slice(svBindAtFn, server.indexOf("\n}\n", svBindAtFn));
-  const svBindSendAt = svBindBody.indexOf("await sendText(target, delivered, true);");
+  const svBindSendAt = svBindBody.indexOf("await sendText(target, delivered, true,");
   const svBindWriteAt = svBindBody.indexOf("supervisor = {");
   pin("the Supervisor bind is minted on the OWNER rail only, names its slot explicitly, and writes the binding only AFTER a successful send",
     svBindRouteAt > 0 && selfRailAt > 0 && svBindRouteAt > selfRailAt
@@ -4782,7 +4782,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     server.indexOf("function fleetEventReceiver(e: FleetEvent)"));
   const recoveryLatch = recoveryBody.indexOf("await waitForFleetReportRecoveryTestLatch(event, expected);");
   const recoveryGuard = recoveryBody.indexOf("receiverStillMatchesFleetEvent(event, receiver, expected)");
-  const recoverySend = recoveryBody.indexOf("await sendText(receiver, text, true, { rollbackOwnPayload: true })");
+  const recoverySend = recoveryBody.indexOf("await sendText(receiver, text, true, {");
   const nonAcceptanceBody = server.slice(server.indexOf("function recordFleetReportNonAcceptance("),
     server.indexOf("function receiverStillMatchesFleetEvent("));
   pin("fleet-report recovery is bounded to rollback-cleared rows and rechecks exact receiver identity before resend",
@@ -4831,7 +4831,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // of them carried a delivery state, so a paste that never landed was indistinguishable from a
   // delivered one in the only file that records what Fleet typed.
   const senderGaps = senderBodies.filter((s) => s.body.length >= 200
-    && !(/await sendText\([^)]*\{ rollbackOwnPayload: true \}\)/.test(s.body)
+    && !(/await sendText\([^)]*rollbackOwnPayload: true \}\)/.test(s.body)
       && s.body.includes("sendFailureDelivery(e)")
       && /logPrompt\([^;]*undefined, acceptance\)/.test(s.body)));
   pin("every unattended sendText caller passes rollbackOwnPayload and journals its delivery — the acceptance value when it lands, the failure class when it does not",
@@ -6741,7 +6741,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && server.includes("program.main.openedAt === founding.predecessor.openedAt"),
     "the durable marker does not encode the promised bootstrap/succession fallback");
   const bootstrapCandidateAt = bootstrapBody.indexOf("const candidateIdentity: SuccessionPredecessorIdentity");
-  const bootstrapSendAt = bootstrapBody.indexOf("await sendText(free, deliveredBrief, true)", bootstrapCandidateAt);
+  const bootstrapSendAt = bootstrapBody.indexOf("await sendText(free, deliveredBrief, true,", bootstrapCandidateAt);
   const bootstrapAfterSendAt = bootstrapBody.indexOf("if (!stillCurrent())", bootstrapSendAt);
   const bootstrapReceiptAt = bootstrapBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE", bootstrapAfterSendAt);
   const bootstrapPreBindAt = bootstrapBody.indexOf("if (!stillCurrent())", bootstrapReceiptAt);
@@ -6839,7 +6839,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const transferCurrentAt = succeedBody.indexOf("const transferCurrent =");
   const afterOpenLatchAt = succeedBody.indexOf("SUCCESSION_AFTER_OPEN_LATCH");
   const afterOpenRecheckAt = succeedBody.indexOf("if (!transferCurrent())", afterOpenLatchAt);
-  const sendAt = succeedBody.indexOf("await sendText(free, deliveredBrief, true)");
+  const sendAt = succeedBody.indexOf("await sendText(free, deliveredBrief, true,");
   const afterSendRecheckAt = succeedBody.indexOf("if (!transferCurrent())", sendAt);
   const receiptAt = succeedBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE");
   const afterReceiptLatchAt = succeedBody.indexOf("SUCCESSION_AFTER_RECEIPT_LATCH", receiptAt);
@@ -9259,6 +9259,90 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     labels.join(",") === "skipped,skipped,skipped,failed,proportional,ok", labels.join(","));
   pin("land-log.ts#VERIFY_SKIP_EXIT is server.ts#VERIFY_SKIP_EXIT",
     new RegExp(`^const VERIFY_SKIP_EXIT = ${LAND_LOG_SKIP_EXIT};`, "m").test(server), `land-log says ${LAND_LOG_SKIP_EXIT}`);
+}
+
+// ================================================================================================
+// B3 · The send ledger — one row per send, written where it cannot be forgotten
+// ================================================================================================
+// The hole this closes was not a missing row in one caller: it was that no caller wrote one at all,
+// and the most expensive channel on the fleet (POST /send) was the loudest silence
+// (docs/messungen/denksession-zusammenarbeit-2026-09-02.md §2.4 point 2). A rule of the shape
+// "every sendText caller also writes an audit row" would be a rule the NEXT caller has to be told
+// about — 23 exist today and the set only grows — so the row is written by sendText itself and the
+// only thing a caller owes is its channel name. These rows hold exactly that arrangement: the
+// writer stays inside sendText, every call names a path, and the declared vocabulary and the used
+// one agree in BOTH directions (tsc catches a path outside the union; nothing but this catches a
+// union member no channel uses any more).
+{
+  const RULE_SEND_LEDGER = "the send ledger is written by sendText and every channel names itself";
+  // the call's own argument text, paren-matched — a rule that read to the end of the LINE would be
+  // defeated by the first caller that wraps its options object onto a second one
+  const callArgs = (text: string, from: number): string => {
+    const open = text.indexOf("(", from);
+    if (open < 0) return "";
+    let depth = 0;
+    for (let i = open; i < text.length; i++) {
+      if (text[i] === "(") depth++;
+      else if (text[i] === ")" && --depth === 0) return text.slice(open, i + 1);
+    }
+    return "";
+  };
+  const body = serverU.span("async function sendText(", "// --- scheduled prompts ---");
+  if (!body) {
+    pin(`${RULE_SEND_LEDGER} — sendText's body is findable`, false, "anchor not found");
+  } else {
+    // ONE writer, and it sits in the transport. A second `audit("send"` anywhere means a caller
+    // has started writing its own row — the arrangement this pin exists to keep.
+    const writers = serverU.text.split('audit("send"').length - 1;
+    const auditSendDecl = serverU.text.split("function auditSend(").length - 1;
+    const auditSendUses = serverU.text.split("auditSend(").length - 1 - auditSendDecl;
+    const inBody = body.text.split("auditSend(").length - 1;
+    pin(`${RULE_SEND_LEDGER} — exactly one writer of the row, and every call to it is inside sendText`,
+      writers === 1 && auditSendDecl === 1 && auditSendUses > 0 && auditSendUses === inBody,
+      `audit("send")=${writers} decl=${auditSendDecl} calls=${auditSendUses} inside sendText=${inBody}`);
+    // …on BOTH outcomes. A row written only on the success path would make a refused channel
+    // indistinguishable from a silent one, which is the state before this cut.
+    const iTry = body.text.indexOf("try {\n    const result = await task;");
+    const iOk = body.text.indexOf("auditSend(", iTry);
+    const iCatch = body.text.indexOf("} catch (e) {", iOk);
+    const iFail = body.text.indexOf("auditSend(", iCatch);
+    const iThrow = body.text.indexOf("throw e;", iFail);
+    pin(`${RULE_SEND_LEDGER} — the row is written on the resolved AND the thrown outcome`,
+      inBody === 2 && iTry >= 0 && iOk > iTry && iCatch > iOk && iFail > iCatch && iThrow > iFail,
+      `try=${iTry} ok=${iOk} catch=${iCatch} fail=${iFail} throw=${iThrow} rows=${inBody}`);
+  }
+  // EVERY CALL NAMES ITS CHANNEL. tsc already refuses a call with no `path`, but only as long as the
+  // option stays required — this row is what notices if it is ever made optional again.
+  const calls: { args: string; head: string }[] = [];
+  for (const m of serverU.text.matchAll(/\bsendText\(/g)) {
+    const at = m.index ?? 0;
+    if (serverU.text.slice(Math.max(0, at - 20), at).includes("function ")) continue; // the declaration
+    calls.push({ args: callArgs(serverU.text, at), head: serverU.text.slice(at, at + 40) });
+  }
+  const nameless = calls.filter((c) => !/path: "[a-z-]+"/.test(c.args));
+  pin(`${RULE_SEND_LEDGER} — every sendText call passes a path`,
+    calls.length > 0 && nameless.length === 0,
+    `${calls.length} call(s), nameless: ${nameless.map((c) => c.head).join(" | ") || "none"}`);
+  // BOTH DIRECTIONS between the vocabulary and its use. Comments are cut first: the union's own
+  // explanations quote pane text, and a rule that read those would pin prose.
+  const unionText = /type SendPath =([\s\S]*?);\n/.exec(serverU.text)?.[1] ?? "";
+  const declared = new Set([...unionText.split("\n").map((l) => l.replace(/\/\/.*$/, ""))
+    .join("\n").matchAll(/"([a-z-]+)"/g)].map((m) => m[1]!));
+  const used = new Set(calls.map((c) => /path: "([a-z-]+)"/.exec(c.args)?.[1] ?? "").filter(Boolean));
+  const unusedPath = [...declared].filter((d) => !used.has(d));
+  const undeclared = [...used].filter((u) => !declared.has(u));
+  pin(`${RULE_SEND_LEDGER} — every declared path is used and every used path is declared`,
+    declared.size > 0 && unusedPath.length === 0 && undeclared.length === 0,
+    `declared=${declared.size} used=${used.size} unused=[${unusedPath}] undeclared=[${undeclared}]`);
+  // …and the projection the board reads. The /api/sessions payload is read through a CAST in the
+  // client (its own comment says so), so tsc holds nothing here: the server's counter shape and the
+  // field the client declares are two spellings of one fact, and only this compares them.
+  const serverShape = /function inboundToday\([^)]*\): \{([^}]*)\}/.exec(serverU.text)?.[1] ?? "";
+  const clientShape = /inbound\?: \{([^}]*)\}/.exec(clientU.text)?.[1] ?? "";
+  const keys = (s: string): string => [...s.matchAll(/(\w+):/g)].map((m) => m[1]).sort().join(",");
+  pin(`${RULE_SEND_LEDGER} — the inbound counter the server serves is the one the client declares`,
+    !!serverShape && keys(serverShape) === keys(clientShape) && keys(serverShape) === "bytes,sends",
+    `server=[${keys(serverShape)}] client=[${keys(clientShape)}]`);
 }
 
 console.log(rows.join("\n"));

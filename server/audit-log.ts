@@ -405,7 +405,16 @@ type AuditEvent =
   // and a land note exists only for a land — so the 14 `error` and 6 `waited` deaths of 2026-09-02
   // …-06 could be counted but never explained (docs/messungen/2026-09-06-merge-prozess-robust.md
   // §1.3). Machine-readable fields, no free prose, nothing about the tree's content.
-  | "merge_verdict";
+  | "merge_verdict"
+  // B3 · THE SEND LEDGER. One row per sendText call, whatever the channel — the owner /send, a
+  // founding brief, a tick's nudge, a watch event, the steward. Written by sendText ITSELF, so a
+  // new caller cannot forget it; what a caller supplies is the `path` field naming its channel.
+  // Fields: `path` (the channel), `bytes` (UTF-8 bytes actually PASTED into the pane — 0 when the
+  // send was refused before the paste), `acceptance` (the observed verdict, or the throw's own
+  // word: SendRefused / SendNotAccepted / send-failed), and `ctxPct` ONLY when Fleet can measure
+  // the receiver's context fill — an absent key is "not measurable", never 0.
+  // This obeys the no-prompt-text rule above exactly as logPrompt does: a LENGTH, never the text.
+  | "send";
 // `fields` — machine-readable columns for the rows that need them, beside (not instead of) the
 // prose `detail` every other event uses. The four identity keys are RESERVED: a caller cannot
 // overwrite what row this is, which is why they are filtered rather than merely documented.

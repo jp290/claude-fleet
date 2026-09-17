@@ -6061,6 +6061,91 @@ function sendFailureDelivery(e: unknown): "SendRefused" | "SendNotAccepted" | "s
   if (e instanceof SendNotAccepted) return "SendNotAccepted";
   return "send-failed";
 }
+// --- B3 · THE SEND LEDGER ------------------------------------------------------------------------
+// Every byte Fleet types into a pane is spent from the RECEIVER's context, and until this row
+// existed the most expensive channel of all — the owner /send — wrote nothing anywhere: the Fable
+// limit was readable on /usage and on no surface this fleet owns
+// (docs/messungen/denksession-zusammenarbeit-2026-09-02.md §2.4 point 2).
+//
+// WHO WRITES THE ROW. sendText itself, once per call, not its callers. A per-caller rule is a rule
+// the NEXT caller has to be told about, and the caller set is exactly the surface that grows —
+// 23 today. What a caller still owes is the one thing it alone knows: its own channel name. `path`
+// is therefore a REQUIRED option, so a nameless new channel is a type error and not a review miss.
+//
+// WHAT THE ROW MEANS. `bytes` is what was PASTED, so a send refused before the paste (an occupied
+// composer, no live agent) books 0 and still leaves its row — a refusal is a fact about the channel,
+// it is just not a cost. `acceptance` is the observed verdict, or, when the send threw, that throw's
+// own word through sendFailureDelivery — one vocabulary for both, never a second one here.
+// `ctxPct` is the receiver's fill as measured BEFORE the payload landed (the transcript cannot yet
+// contain it), and it is OMITTED when contextFill returns null: "Fleet cannot measure this pane" is
+// not 0 %.
+type SendPath =
+  | "owner"             // POST /send — the owner typing into a pane
+  | "brief"             // a task's founding brief into a fresh lane (briefAndSend)
+  | "founding"          // a Program-MAIN / Supervisor / orchestrator founding or bind brief
+  | "succession"        // the successor's founding brief on POST /api/self/succeed
+  | "auto"              // a scheduled check-in firing (tickAutos)
+  | "steward"           // the steward's own send door
+  | "fleet-event"       // a watch event or a fleet-report recovery reaching its receiver
+  | "clarification-reply" // a MAIN answering a worker's clarification
+  | "report-decision"   // an owner/MAIN decision on a fleet-report reaching the worker
+  | "merge-author"      // the conflict author prompt into the lane that owns the branch
+  | "merge-verdict"     // the terminal merge verdict typed back into that lane
+  | "supervisor-nudge"  // the Supervisor nudging a bound Program-MAIN
+  | "audit-ping"        // a post-land audit red offered to an eligible main session
+  | "inbox-nudge"       // "your program's inbox has unread entries"
+  | "backlog-nudge"     // the open-backlog reminder
+  | "migrate-nudge";    // the context-band / succession reminder (tickMigrate)
+// The per-slot, per-DAY counter /api/sessions serves. Kept in memory and SEEDED from the ledger at
+// boot — the opposite choice from stewardRecentSends one region up, and for the reason that
+// separates them: that counter is read once per send (capped at 6/h), this one rides the 2 s owner
+// poll, where a two-generation ledger read per response is not affordable. Seeding is what keeps a
+// restart from answering 0 for a day that already had sends, which would be the same number as
+// "nothing was typed" and the wrong one.
+interface InboundDay { day: string; sends: number; bytes: number }
+const inboundBySlot = new Map<number, InboundDay>();
+// LOCAL day, not UTC: the owner reads this beside a wall clock, and a bucket that rolls at 02:00
+// local would split their evening in half.
+function sendDay(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+// Only DELIVERED bytes are counted: a refused send has its audit row but cost the receiver nothing,
+// and a counter that booked it would price refusals as context. The bucket is per slot NUMBER, so a
+// recycled slot's day total spans its occupants — the same reading `audit()`'s own `slot` field has.
+function bumpInbound(slot: number, ts: number, bytes: number): void {
+  if (bytes <= 0) return;
+  const day = sendDay(ts);
+  const row = inboundBySlot.get(slot);
+  inboundBySlot.set(slot, row && row.day === day
+    ? { day, sends: row.sends + 1, bytes: row.bytes + bytes }
+    : { day, sends: 1, bytes });
+}
+function inboundToday(slot: number, now: number): { sends: number; bytes: number } | null {
+  const row = inboundBySlot.get(slot);
+  return row && row.day === sendDay(now) ? { sends: row.sends, bytes: row.bytes } : null;
+}
+// Both guards are load-bearing. The `ts` cut makes a send that arrives WHILE this reads the ledger
+// impossible to count twice (its row is younger than the cut, its bump already happened); the day
+// filter keeps an older generation's rows from overwriting today's bucket as they stream past.
+async function seedInbound(): Promise<void> {
+  const cutoff = Date.now();
+  const today = sendDay(cutoff);
+  for (const e of (await readEventLog(AUDIT_FILE)).rows) {
+    if (e.event !== "send" || typeof e.ts !== "number" || typeof e.slot !== "number"
+      || typeof e.bytes !== "number" || e.ts >= cutoff || sendDay(e.ts) !== today) continue;
+    bumpInbound(e.slot, e.ts, e.bytes);
+  }
+}
+function auditSend(s: Slot, path: SendPath, bytes: number,
+  acceptance: Acceptance | ReturnType<typeof sendFailureDelivery>): void {
+  const fill = contextFill(s);
+  audit("send", s.id, `${path} ${bytes}B ${acceptance}`,
+    { path, bytes, acceptance, ...(fill ? { ctxPct: fill.pct } : {}) });
+  bumpInbound(s.id, Date.now(), bytes);
+}
+
 // Env-tunable for the suites only (same reason as READY_WAIT_MS): a stand-in that renders no composer
 // must not pay the full window on every send. Floor 200 ms — below one redraw the answer is noise.
 const ACCEPT_WAIT_MS = Math.max(200, Number(process.env.FLEET_ACCEPT_WAIT_MS ?? 3000) | 0);
@@ -6239,7 +6324,7 @@ async function waitForWsInputTestLatch(bound: { occupant: SlotStreamOccupant; pa
 }
 
 async function sendText(s: Slot, text: string, submit: boolean,
-  options: { rollbackOwnPayload?: true; requireAgent?: true } = {}): Promise<{ acceptance: Acceptance }> {
+  options: { path: SendPath; rollbackOwnPayload?: true; requireAgent?: true }): Promise<{ acceptance: Acceptance }> {
   const occupant = slotStreamOccupant(s);
   if (!occupant || slotTeardownInflight.has(s.id)) throw new Error("slot unavailable for send");
   const harnessName = s.harness ?? "default";
@@ -6247,6 +6332,11 @@ async function sendText(s: Slot, text: string, submit: boolean,
   const composer = form.composer ?? null;
   const comms = commsFor(s);
   const bootSettleMs = form.bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS;
+  // THE LEDGER'S TWO NUMBERS, taken here and set below rather than at the call sites: `payloadBytes`
+  // is what this send would cost, `pasted` is what it did cost — they differ exactly when the send
+  // was refused before the paste, which is the case a caller-written row would have had to guess at.
+  const payloadBytes = Buffer.byteLength(text, "utf8");
+  let pasted = 0;
   // route through inputChain like raw keystrokes do — otherwise a compose-box send racing
   // concurrent WS keystrokes can interleave with them and reorder pty input
   const task = s.inputChain.then(async () => {
@@ -6317,6 +6407,7 @@ async function sendText(s: Slot, text: string, submit: boolean,
       }
       const pb = await tmux("paste-buffer", "-p", "-b", buf, "-t", bound.paneId);
       if (pb.code !== 0) throw new Error("tmux paste-buffer failed — session gone?");
+      pasted = payloadBytes; // the bytes are in the pane from here on, whatever the submit half does
       await waitForSendTestLatch(SEND_AFTER_PASTE_TEST_LATCH, "after-paste", bound, text);
       if (!sameBoundPane(s, bound)) throw new Error("slot changed after paste");
       if (!submit) return { acceptance: "not-applicable" as const };
@@ -6359,7 +6450,18 @@ async function sendText(s: Slot, text: string, submit: boolean,
     }
   });
   s.inputChain = task.catch(() => {});
-  return await task;
+  // EXACTLY ONE ROW PER CALL, on both outcomes — the whole point of writing it here. A throw is not
+  // a missing row: it is the row that says the channel refused, with the bytes that reached the pane
+  // before it did (0 for a pre-paste refusal). The audit write is fire-and-forget like its
+  // neighbours, so it can neither delay nor fail the send it records.
+  try {
+    const result = await task;
+    auditSend(s, options.path, pasted, result.acceptance);
+    return result;
+  } catch (e) {
+    auditSend(s, options.path, pasted, sendFailureDelivery(e));
+    throw e;
+  }
 }
 
 // --- scheduled prompts ---
@@ -7429,7 +7531,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
     if (!readiness.ok) return failed(readiness.reason);
     if (!stillCurrent()) return failed("successor slot changed before founding delivery");
     try {
-      await sendText(s, brief, true);
+      await sendText(s, brief, true, { path: "succession" });
     } catch (e) {
       return failed(e instanceof Error ? e.message : String(e));
     }
@@ -7644,7 +7746,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
         return json({ error: "successor slot changed before founding delivery" }, 500);
       }
       try {
-        await sendText(free, brief, true);
+        await sendText(free, brief, true, { path: "succession" });
       } catch (e) {
         await cleanup();
         return json({ error: `successor brief failed: ${e instanceof Error ? e.message : e}` }, 500);
@@ -8560,7 +8662,7 @@ async function replyClarification(s: Slot, id: string, body: Record<string, unkn
     await saveStateNow();
   }
   try {
-    await sendText(worker, text, true);
+    await sendText(worker, text, true, { path: "clarification-reply" });
   } catch (e) {
     // tmux may have accepted some or all of the paste before reporting failure. Neither "failed"
     // nor "answered" is an observed fact, so the pre-send marker is preserved exactly and the
@@ -8750,7 +8852,7 @@ async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
   stamp("send-uncertain", "persisted before the paste; the send did not resolve");
   await saveStateNow();
   try {
-    await sendText(worker, text, true);
+    await sendText(worker, text, true, { path: "report-decision" });
   } catch (e) {
     audit("fleet_report_decision_send_uncertain", worker.id,
       `${report.id} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
@@ -11234,7 +11336,7 @@ async function tickAutos(): Promise<void> {
       }
       dirty = true;
       try {
-        await sendText(s, a.text, true);
+        await sendText(s, a.text, true, { path: "auto" });
       } catch (e) {
         // sendText now surfaces tmux failures — record the truth instead of "sent"
         a.lastResult = `failed: ${e instanceof Error ? e.message : e}`.slice(0, 120);
@@ -11880,7 +11982,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
-    await sendText(free, deliveredBrief, true);
+    await sendText(free, deliveredBrief, true, { path: "brief" });
     const at = Date.now();
     // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
     // facts. A later reader reconstructs every byte from the row and the renderer the row NAMES
@@ -15178,7 +15280,7 @@ async function tickAuditPing(): Promise<void> {
       const text = auditPingMessage(row, addressed);
       let acceptance: Acceptance;
       try {
-        ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));
+        ({ acceptance } = await sendText(s, text, true, { path: "audit-ping", rollbackOwnPayload: true }));
       } catch (e) {
         // pending stays pending: nothing typed (occupied composer) or not observed accepted. The
         // rollback is what makes that sentence true — an unaccepted payload LEFT in the composer
@@ -15268,7 +15370,7 @@ async function tickInboxNudge(): Promise<void> {
         + "GET /api/self/inbox, dann POST /api/self/inbox/<id>/read.";
       let acceptance: Acceptance;
       try {
-        ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));
+        ({ acceptance } = await sendText(s, text, true, { path: "inbox-nudge", rollbackOwnPayload: true }));
       } catch (e) {
         logError("inboxNudgeSend", e);
         logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
@@ -15337,7 +15439,7 @@ async function tickBacklogNudge(): Promise<void> {
       const text = backlogNudgeMessage(open);
       let acceptance: Acceptance;
       try {
-        ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));
+        ({ acceptance } = await sendText(s, text, true, { path: "backlog-nudge", rollbackOwnPayload: true }));
       } catch (e) {
         logError("backlogNudgeSend", e); // not counted as tried: nothing observed accepted
         logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
@@ -15465,7 +15567,7 @@ async function tickMigrate(): Promise<void> {
       const text = lane ? laneMigrateMessage(fill) : migrateMessage(fill, migrateRailOf(s));
       let acceptance: Acceptance;
       try {
-        ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));
+        ({ acceptance } = await sendText(s, text, true, { path: "migrate-nudge", rollbackOwnPayload: true }));
       } catch (e) {
         logError("migrationSend", e);
         logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
@@ -15640,7 +15742,7 @@ async function recoverFleetReportDelivery(event: FleetReportFleetEvent): Promise
   event.attempts++;
   await saveStateNow();
   try {
-    await sendText(receiver, text, true, { rollbackOwnPayload: true });
+    await sendText(receiver, text, true, { path: "fleet-event", rollbackOwnPayload: true });
   } catch (e) {
     if (e instanceof SendRefused) {
       event.attempts = attemptsBefore;
@@ -15889,7 +15991,7 @@ async function tickWatches(): Promise<void> {
         : laneWatchMessage(event.subjectSlot, event.subjectBranch, event, laneSelfWord(event));
       let acceptance: Acceptance;
       try {
-        ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));
+        ({ acceptance } = await sendText(s, text, true, { path: "fleet-event", rollbackOwnPayload: true }));
       } catch (e) {
         if (e instanceof SendRefused) {
           // nothing was typed (an occupied composer, i.e. an owner draft): the event stays pending and
@@ -22977,7 +23079,7 @@ async function wakeAuthor(s: Slot, cwd: string, branch: string, main: string,
   const prompt = buildAuthorPrompt({ branch, main, mergeBase, conflicted, laneTask,
     laneLog: lg.code === 0 ? lg.out : "", mainLog: mlg.code === 0 ? mlg.out : "" });
   try {
-    await sendText(s, prompt, true);
+    await sendText(s, prompt, true, { path: "merge-author" });
   } catch {
     // sendText throws when the pane died between the probe above and the paste. Recording "sent"
     // for a brief that never arrived would leave a lane waiting on an author that never heard —
@@ -24310,7 +24412,7 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
   const text = mergeVerdictMessage(kind, outcome, main);
   let acceptance: Acceptance;
   try {
-    ({ acceptance } = await sendText(target, text, true, { rollbackOwnPayload: true }));
+    ({ acceptance } = await sendText(target, text, true, { path: "merge-verdict", rollbackOwnPayload: true }));
   } catch (e) {
     // SendRefused typed nothing at all (an owner draft in the composer); anything else may have
     // typed part of it. Neither is retried beyond the shared cap, and both are named in the marker.
@@ -26188,7 +26290,7 @@ async function deliverOrchestratorSpawnCard(s: Slot): Promise<Record<string, unk
   const brief = buildOrchestratorSpawnBrief(ctx.ok ? ctx.value.anchorBlock : "");
   if (!stillCurrent()) return { delivered: false, reason: "the slot changed before the card was sent" };
   try {
-    await sendText(s, brief, true);
+    await sendText(s, brief, true, { path: "founding" });
   } catch (e) {
     // Neither delivered nor failed is an OBSERVED fact once tmux has thrown — bindSupervisor's rule,
     // and the journal line is mandatory for exactly the same reason.
@@ -26269,7 +26371,7 @@ async function succeedSupervisor(s: Slot, label: string | null, carry: string | 
       // saveStateNow reloads that same old binding while the delivered successor remains an
       // ordinary unbound session; the owner decides what to do.
       try {
-        await sendText(free, deliveredBrief, true);
+        await sendText(free, deliveredBrief, true, { path: "founding" });
       } catch (e) {
         await cleanup();
         return json({ error: `Supervisor successor founding brief failed: ${e instanceof Error ? e.message : e}` }, 500);
@@ -26389,7 +26491,7 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
       const repo = free.cwd!;
       if (!stillCurrent()) return json({ error: "Supervisor slot changed before founding delivery" }, 500);
       try {
-        await sendText(free, deliveredBrief, true);
+        await sendText(free, deliveredBrief, true, { path: "founding" });
       } catch (e) {
         await cleanup();
         return json({ error: `Supervisor founding brief failed: ${e instanceof Error ? e.message : e}` }, 500);
@@ -26486,7 +26588,7 @@ async function bindSupervisor(body: Record<string, unknown> | null): Promise<Res
     const stillCurrent = (): boolean => !!target.cwd && target.openedAt === openedAt;
     const delivered = buildSupervisorBindBrief();
     try {
-      await sendText(target, delivered, true);
+      await sendText(target, delivered, true, { path: "founding" });
     } catch (e) {
       if (e instanceof SendRefused) return json({ error: e.message }, 409);
       // Neither delivered nor failed is an OBSERVED fact once tmux has thrown — the truth rule the
@@ -26881,7 +26983,7 @@ async function supervisorNudge(s: Slot, body: Record<string, unknown> | null): P
   ].join("\n");
   let acceptance: Acceptance;
   try {
-    ({ acceptance } = await sendText(live, delivered, true));
+    ({ acceptance } = await sendText(live, delivered, true, { path: "supervisor-nudge" }));
   } catch (e) {
     if (e instanceof SendRefused)
       return json({ error: e.message, receipt: { sendId: nudgeId, at: Date.now(), delivery: "refused", receiver } }, 409);
@@ -27121,7 +27223,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       // A restart rolls that exact candidate back even if send already happened; a receipt may be
       // orphan evidence, but neither it nor delivered prompt text can auto-bind a successor.
       try {
-        await sendText(free, deliveredBrief, true);
+        await sendText(free, deliveredBrief, true, { path: "founding" });
       } catch (e) {
         await cleanup();
         return json({ error: `Program-MAIN successor founding brief failed: ${e instanceof Error ? e.message : e}` }, 500);
@@ -27377,7 +27479,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         return json({ error: "Program-MAIN slot changed before founding delivery" }, 500);
       }
       try {
-        await sendText(free, deliveredBrief, true);
+        await sendText(free, deliveredBrief, true, { path: "founding" });
       } catch (e) {
         const changed = !stillCurrent();
         await cleanup();
@@ -28948,6 +29050,11 @@ if (startupStateRefusal !== null) {
   console.log(`REFUSING TO START: ${startupStateRefusal}. The safety marker was left on disk for owner inspection.`);
   throw new Error(startupStateRefusal);
 }
+// B3 · today's send counters come back from the ledger, ONCE, before the first poll can be served:
+// a restart that answered 0 for a day that already had sends would say "nothing was typed" in the
+// same number, and this counter exists to be believed. One two-generation read at boot, never on
+// the 2 s poll that serves it (see seedInbound).
+await seedInbound();
 // a deploy that killed srv between "main moved" and "the land is recorded" owes note, undo record
 // and tier-2 audit. Settle that before anything else can move main again.
 await finishLandsInFlight();
@@ -29474,7 +29581,7 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
     return json({ error: "target slot not idle" }, 409);
   }
   try {
-    await sendText(s, rendered.text, true);
+    await sendText(s, rendered.text, true, { path: "steward" });
   } catch (e) {
     release();
     return json({ error: e instanceof Error ? e.message : "send failed" }, 502);
@@ -32733,6 +32840,11 @@ Bun.serve<WSData>({
           // It is on THIS route because this is the one every MAIN and the board already poll; the
           // steward route kept it where only a `⚙ steward` pane could reach it, and there was none.
           const st = stalledFacts(s, laneSignalView(s, pollNow), pollNow);
+          // B3 · what Fleet has TYPED into this pane today (the send ledger's own counter). Only
+          // for an OCCUPIED row: the counter is keyed by slot number and outlives the occupant that
+          // earned it, and a free row has no pane for the sentence to be about — nor does the board
+          // paint one there, so it would be bytes on the 2 s poll for nothing.
+          const inb = s.cwd ? inboundToday(s.id, pollNow) : null;
           return {
             id: s.id, cwd: s.cwd, label: s.label, openedAt: s.openedAt,
             // Canonical checkout identity, separate from cwd: a main session may live in a
@@ -32797,6 +32909,15 @@ Bun.serve<WSData>({
             // 14 KiB budget leaves (e2e/tasks.ts), on the few rows that are lanes.
             ...(LANE_AUTOCLOSE_ON && s.cwd && s.worktree
               ? { autoCloseRefusal: laneAutoCloseView(s, pollNow) } : {}),
+            // B3 · THE COST OF TALKING TO THIS SESSION, today: how many sends Fleet delivered into
+            // this pane and how many bytes they carried, from the send ledger's own counter.
+            // OMITTED when nothing was delivered today — the 2 s poll's data-saver rule
+            // (docs/data-saver.md §1), and honest here rather than merely cheap: absent and
+            // `{sends:0,bytes:0}` are the same sentence, and on most rows most of the time it is
+            // the true one. ~34 B on a row that HAS traffic, against the ~1 300 B the 14 KiB budget
+            // leaves (e2e/tasks.ts). It counts DELIVERED bytes only: a refused send has a ledger
+            // row and no cost. Per slot NUMBER, so a recycled slot's day spans its occupants.
+            ...(inb ? { inbound: inb } : {}),
           };
         }),
       });
@@ -35095,7 +35216,7 @@ Bun.serve<WSData>({
       const receiver = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
       let acceptance: Acceptance;
       try {
-        ({ acceptance } = await sendText(s, body.text, submit, { requireAgent: true }));
+        ({ acceptance } = await sendText(s, body.text, submit, { path: "owner", requireAgent: true }));
       } catch (e) {
         // Nothing typed: an occupied composer (owner draft), or no live agent after the bounded boot
         // wait, refuses before the paste. Plainly retryable, so it is neither journaled as a send nor

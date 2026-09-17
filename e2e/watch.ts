@@ -448,6 +448,111 @@ async function runLearnedSessionAck(): Promise<void> {
   await restartSrv();
 }
 
+
+// === THE FOUNDING WORD (2026-09-17): a successor is not a result until it has been told what it
+// is for ==========================================================================================
+// POST /api/self/succeed opens the heir on the SAME worktree the predecessor just committed on, so
+// the tree is clean and ahead BEFORE the founding brief exists. killSlot zeroes `lastOutput`, the
+// attach paint restamps it, and from the next tickGit the whole done-looking predicate holds on a
+// session that has not been told what it is for. A watch subscribed inside that window used to be
+// answered "slot N … now LOOKS done" about an unbriefed pane.
+//
+// WHICH DOOR THIS IS, because the other one is already shut and a probe that confuses them proves
+// nothing: a watch armed BEFORE the handover is disarmed by killSlot's dropWatchesFor ("target
+// session ended — no notification will come"), measured 2026-09-17 and unchanged here. The open
+// door was the SUBSCRIPTION taken while the successor stands, and that is the one below.
+//
+// Timings are the suite's own (grace 2000, FLEET_AUTO_REVIEW_IDLE_MS 1500) — nothing is widened for
+// this probe, and the margin does not need it. Measured on a scratch instance at those values,
+// 5 rounds each: unrepaired the watch fires 506–834 ms BEFORE the brief; repaired it fires
+// 1583–1628 ms AFTER it, and it fires in 5 of 5. The SIGN is the assertion, and the two clouds are
+// ~2.2 s apart with no overlap. The mutation run (guard disabled in place, FLEET_E2E_SHARD=4/8)
+// dropped exactly this line at -928 ms and nothing else in the shard.
+async function runFoundingWordWatch(): Promise<void> {
+  const fwState = (): { slots?: Record<string, { openedAt?: number; cwd?: string | null; selfToken?: string }>;
+    watches?: WatchRow[] } => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8"));
+  const fwSlot = (id: number) => fwState().slots?.[String(id)];
+  const fwWatch = (recv: number): WatchRow | undefined => (fwState().watches ?? []).find((w) => w.slot === recv);
+
+  const recv = await freeSlot();
+  const recvOpen = recv ? await post(`/api/slots/${recv}/open`, { cwd: REPO }) : null;
+  const lane = recvOpen?.ok
+    ? (await (await post("/api/lanes", { repo: REPO })).json()) as { slot?: number; cwd?: string; branch?: string }
+    : null;
+  check("founding-word setup: a receiver and a lane to hand over exist",
+    !!recvOpen?.ok && !!lane?.slot && !!lane.cwd && existsSync(lane.cwd ?? ""),
+    JSON.stringify({ recv, open: recvOpen?.status, lane: lane?.slot, branch: lane?.branch }));
+  if (!recvOpen?.ok || !lane?.slot || !lane.cwd) return;
+
+  // committed lane work: the heir inherits this tree, which is exactly why it looks finished
+  writeFileSync(`${lane.cwd}/founding-word.txt`, "the predecessor's committed cut\n");
+  spawnSync("git", ["-C", lane.cwd, "add", "founding-word.txt"]);
+  spawnSync("git", ["-C", lane.cwd, "commit", "-qm", "founding-word: the predecessor's cut"]);
+  let fwGit: { ahead?: number; dirty?: number } | null = null;
+  for (let i = 0; i < 90; i++) {
+    fwGit = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; git: { ahead?: number; dirty?: number } | null }[] })
+      .slots.find((x) => x.id === lane.slot)?.git ?? null;
+    if (fwGit?.ahead === 1 && fwGit.dirty === 0) break;
+    await Bun.sleep(500);
+  }
+  const fwTok = fwSlot(lane.slot)?.selfToken ?? "";
+  const fwBefore = fwSlot(lane.slot)?.openedAt ?? 0;
+  const fwPlogBefore = (await plogRead()).filter((e) => e.slot === lane.slot).length;
+  check("founding-word setup: the lane is clean and ahead, and its own credential is readable",
+    fwGit?.ahead === 1 && fwGit.dirty === 0 && /^[0-9a-f]{32}$/.test(fwTok) && fwBefore > 0,
+    JSON.stringify({ git: fwGit, tok: fwTok.length, openedAt: fwBefore }));
+  if (fwGit?.ahead !== 1 || fwGit.dirty !== 0 || !fwTok) return;
+
+  // NOT awaited: succeedLane returns only after it has typed the brief, and the whole question is
+  // what a subscriber is told in between.
+  const fwSucceed = fetch(`${BASE}/api/self/succeed`, { method: "POST",
+    headers: { "content-type": "application/json", "x-fleet-self-token": fwTok }, body: "{}" });
+  let fwSubRes: Response | null = null;
+  for (let i = 0; i < 1500; i++) {
+    const row = fwSlot(lane.slot);
+    if (row?.openedAt !== undefined && row.openedAt !== fwBefore && row.cwd) {
+      fwSubRes = await post(`/api/slots/${recv}/watch`, { target: lane.slot, idleSec: 0 });
+      break;
+    }
+    await Bun.sleep(20);
+  }
+  const fwSubBody = fwSubRes ? (await fwSubRes.json()) as { ok?: boolean; watch?: { id: string; armed: boolean } } : null;
+  const fwDone = (await (await fwSucceed).json()) as { ok?: boolean; delivered?: boolean; successions?: number };
+  const fwAfter = fwSlot(lane.slot)?.openedAt ?? 0;
+  check("founding-word setup: the heir stands, a watch subscribes to it, and the baton completes",
+    fwSubBody?.ok === true && fwSubBody.watch?.armed === true
+      && fwDone.delivered === true && fwDone.successions === 1 && fwAfter !== fwBefore,
+    JSON.stringify({ sub: fwSubRes?.status, armed: fwSubBody?.watch?.armed, succeed: fwDone, openedAt: fwAfter }));
+  if (fwSubBody?.watch?.armed !== true || fwDone.delivered !== true) return;
+
+  const fwBrief = (await plogRead()).filter((e) => e.slot === lane.slot).slice(fwPlogBefore)
+    .find((e) => e.text.includes("[fleet staffelstab]"));
+  check("founding-word setup: the founding brief reached the heir's pane and is in the prompt log",
+    !!fwBrief, JSON.stringify({ found: !!fwBrief, after: fwPlogBefore }));
+  if (!fwBrief) return;
+
+  let fwFired: number | null = null;
+  for (let i = 0; i < 600; i++) {
+    const w = fwWatch(recv);
+    if (w?.firedAt) { fwFired = w.firedAt; break; }
+    await Bun.sleep(100);
+  }
+  // THE GUARD DEFERS, IT DOES NOT SILENCE. A watch that were simply dropped here would be the same
+  // loss with better manners: the subscriber waits forever for news that was withheld.
+  check("a watch subscribed during a lane succession is still answered — the founding word defers it, it does not swallow it",
+    fwFired !== null && fwWatch(recv)?.armed === false,
+    JSON.stringify({ firedAt: fwFired, armed: fwWatch(recv)?.armed, lastResult: fwWatch(recv)?.lastResult }));
+  check("…and it is never answered BEFORE the heir's founding brief: the notification follows the word, by sign",
+    fwFired !== null && fwFired > fwBrief.ts,
+    JSON.stringify({ firedMinusBriefMs: fwFired === null ? null : fwFired - fwBrief.ts,
+      firedAt: fwFired, briefAt: fwBrief.ts, branch: lane.branch }));
+
+  await post(`/api/slots/${lane.slot}/kill`, {});
+  await post(`/api/slots/${recv}/kill`, {});
+  spawnSync("git", ["-C", REPO, "worktree", "prune"]);
+}
+
 export async function run(): Promise<void> {
   // A real process kill cannot reliably land in the sub-millisecond gap between a local tmux
   // call and its return. Pin the ordering that creates that observable crash state, then exercise
@@ -6985,6 +7090,8 @@ export async function run(): Promise<void> {
     rmSync(ablGit, { recursive: true, force: true });
     await restartSrv();
   }
+
+  await runFoundingWordWatch();
 
   // the receiver-identity family's late-learned-id case, run LAST: it restarts the server four times
   // and recycles one slot, and the pane fixtures above spend a bounded busy window it must not share

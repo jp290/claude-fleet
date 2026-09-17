@@ -4216,6 +4216,78 @@ fired`, `(iii) M5 setup: the unproven-holder land fired`) mit `refusal`, `ready`
 und ihre Invarianten werden nur noch über einen Land emittiert, der die Tür erreicht hat. Erst
 damit ist die Klasse wirklich zu: vorher waren zwei von fünf Armen noch alt geformt.
 
+**NACHTRAG 2026-09-17: die Kollokation steht jetzt IN der Audit-Zeile — und was sie damit immer noch
+nicht entscheidet.** Der Absatz oben verwirft die Hypothese am Diskriminator (eine Konstante, 9 ms
+Streuung über zwei Bäume). Was fehlte, war die andere Hälfte: **niemand konnte einer Audit-Zeile
+ANSEHEN, ob sie unter Kollokation entstanden ist.** Die Zeile trug je Shard nur dessen DAUER
+(`shards[].ms`) und daneben die äussere Spanne des Laufs (`ms`, erste Claim bis letztes Result) — die
+paarweise Frage war daraus nicht beantwortbar, nur erratbar. Praktisch hiess das: drei Ledger-Zeilen
+und zwei Helfer-Logs nebeneinanderlegen, per Hand, jedes Mal.
+
+**Was jetzt in der Zeile steht** (`server.ts#shardCoResidence`; Sonde `(K11b/c/d)` in
+`e2e/helper-portal.ts`, gefahren von `./e2e-postland-audit.sh`): je Shard
+`coResident: { with, ms, unknownWindows }` — welche GESCHWISTER-Shards desselben Audits ein zeitlich
+überlappendes Fenster auf DEMSELBEN Host hielten, wie lange (Vereinigung der Überlappungen, damit drei
+Geschwister eine Millisekunde nicht dreimal buchen), und wie viele Geschwister ihr eigenes Fenster
+nicht kennen. **Kein neuer Sensor:** das Fenster ist `[claimedAt, reportedAt]` eines gemeldeten und
+`[claimedAt, closedAt]` eines gelapsten Shards, und beides lag längst im Lauf. **Drei Zustände, und
+der dritte trägt** (A4, unknown ist keine Null): Schlüssel FEHLT = dieser Shard hatte gar kein Fenster
+(nie geclaimt), also nichts zu berechnen · `with: []` = Fenster vorhanden und nachweislich niemand
+daneben · `with: [k, …]` = diese Geschwister. Berührende Fenster (`[a,b]` und `[b,c]`) gelten als
+DISJUNKT — genau das erzeugt ein seriell geclaimter Lauf, und nur mit dieser Strenge ist die disjunkte
+Richtung überhaupt beweisbar (die Sonde erzwingt sie in beide Richtungen).
+
+**Die Kollokation ist damit BELEGT und gleichzeitig als Erklärung entwertet.** Alles am 2026-09-17
+gezählt, nicht erinnert:
+
+| Frage | Zahl | Zählweg |
+|---|---|---|
+| sharded rows im Ledger | 46 von 699 Zeilen | `post-land-audits.jsonl` |
+| davon nachweislich ÜBERLAPPEND | **41 von 43** auswertbaren | `sum(shards[].ms) > ms` — die einzige Lesart, die die Zeile VORHER zuliess |
+| davon seriell | 2 (`bf7e06e8`, `db02cc40`) | Spanne 35,4 / 35,5 min, praktisch gleich der Summe |
+| nicht auswertbar | 3 (ein Shard ohne `ms`) | UNGEMESSEN, nicht „nein" |
+| zwei Claims in DERSELBEN Millisekunde | **32** Zeitstempel | `audit.jsonl`, 99 `helper_claim`-Shard-Ereignisse, ein Host (`second-host`) |
+
+**Kollokation ist hier der NORMALFALL (41/43 ≈ 95 %); die Familie feuert bei 0,6 %.** Eine Bedingung,
+die 95 % der Läufe erfüllen, erklärt 0,6 % Rot nicht. Der grüne Gegenzeuge steht unmittelbar daneben,
+gleiche Form, anderes Ergebnis: `e549974e` (09-16 16:48) **grün**, Spanne 1 123 933 ms, Summe der
+Shard-Dauern 2 148 291 — gegen `c5296dfb` (09-16 14:47) **rot**, Spanne 1 115 453, Summe 2 139 695.
+
+**Und die identischen jobIds sind KEIN Zeuge, sondern eine Konstante.** `auditShardJobId` ist
+`sha256("<repo> shard:k/n")`, auf zwölf Hexstellen gekürzt — für jedes Audit desselben Repos bei
+gleichem `n` dasselbe Paar. Wer „identische jobIds" als Beleg für Kollokation liest, liest eine
+Hashfunktion. Die Aussage tragen die Zeitstempel, nichts sonst.
+
+**Der Mac-Zähler, mit seinem Nenner UND seinem Konfundierungsproblem.** Alle sechs Sichtungen der
+Familie sind REMOTE und sharded; lokal ist die Zahl **0**. Genauer: 0 von **47** lokalen
+`isolated`-Läufen seit 2026-09-14, die überhaupt eine der M1/M5-Setup-/Invarianten-Zeilen ausgeführt
+haben (0 von 40, wenn erst ab der ersten Sichtung 09-14 23:21 gezählt wird; Zählweg: `e2e-trail/*.jsonl`
+nach dem Check-Namen durchsucht, Fehlzeilen über `ok:false`). Das SIEHT nach Kollokation aus, denn der
+lokale Drain shardet nie — dort läuft nie ein zweiter Shard daneben. **Es ist aber ein konfundierter
+Vergleich:** anderer Host, andere Last, andere Taktung. Und bei einer Basisrate von 0,6 % liegen
+47 Läufe ohnehin unter der Nachweisgrenze (Erwartung ~0,3 Sichtungen). Der Zähler belegt nichts und
+schliesst nichts aus; der Diskriminator oben tut beides.
+
+*Eine einzige lokale Fehlzeile liegt in diesen 47 Läufen, und sie gehört NICHT zu dieser Familie:
+`isolated-20260917T041605Z-30118.jsonl`, Baum `dc2cc522`, 04:36:37Z —
+`setup: founding brief — the brief was logged at … but slot 14 never observed its pane output within 12s`.
+Das ist die REPARIERTE Sonde, die als SIE SELBST scheitert: neue Signatur, kein `ready`-Block, Wartebudget
+statt Rennen. Nach der Regel oben wäre ein Rot nach dieser Lane echt. Hier nur notiert, nicht adjudiziert.*
+
+**Der operative Satz, und er ist die ganze Ausbeute dieser Markierung:** eine ROTE Audit-Zeile mit
+überlappenden Shards gehört WIEDERHOLT, bevor sie jemandem zugeschrieben wird — dem Baum, dem Autor
+oder der Last. Die Markierung sagt „hier lief eine zweite Suite auf derselben Maschine", nie „daran
+lag es". Umgekehrt nimmt `with: []` auf einer roten Zeile der Last-Erklärung die Grundlage, und ein
+ganz ABWESENDES `coResident` heisst UNGEMESSEN — keine der beiden Richtungen.
+
+**VORSCHLAG, nicht Entscheidung (`.env` unberührt): `FLEET_AUDIT_SHARDS=1`,** falls Kollokation je als
+Störgrösse ausgeschlossen werden soll. Der Preis, aus demselben Ledger gerechnet: überlappende sharded
+Läufe **Median 18,6 min** Wandzeit (n=41, 13,1–34,1), unsharded REMOTE-Läufe **Median 34,4 min**
+(n=138, 9,9–41,5), die zwei seriellen sharded Läufe 35,4/35,5 min. Also **~19 → ~35 min pro Audit**,
+und weil der Audit die Kette Land→Verdikt trägt, ~16 min länger, bis ein `undo-land` überhaupt noch
+adressierbar ist. Genau darum wurde hier nur die MESSBARKEIT gebaut und nicht die Serialisierung: die
+Familie, die den Verdacht auslöste, ist am Band repariert (oben), nicht an der Last.
+
 ### 11.2z Eine siebenundzwanzigste Familie: die `backlog nudge`-Runde in `e2e/tasks.ts` nudged B statt A — und die Sichtungen unter DEMSELBEN Check-Namen sind DREI verschiedene Signaturen (2026-09-16 registriert; Rate über das GANZE Trail-Register gerechnet, Signaturen aus den Detail-Feldern gelesen, Zugehörigkeit am Servercode entschieden; S1 sondenseitig REPARIERT am 2026-09-16 — siehe „Reparatur von S1" am Ende)
 
 **Fingerprint** (Detail der Kopfzeile, genau EIN Eintrag, und der nennt den falschen Slot):

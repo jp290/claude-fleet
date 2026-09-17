@@ -17703,10 +17703,37 @@ const HELPER_CLAIM_BAR_REASON: Record<HelperClaimBar, string> = {
 // timed out, could not be started, or declined to run is `unknown` — never green, and never red
 // either (a failed measurement is not evidence of a defect).
 interface PostLandAuditChecks { ran: number; failed: number; ranIsLowerBound?: true }
+// the shape of PostLandAuditShard.coResident, where the whole argument for it is written down
+interface ShardCoResidence { with: number[]; ms: number; unknownWindows: number }
 interface PostLandAuditShard {
   k: number; jobId: string; result: "green" | "red" | "unknown";
   ms: number | null; ran: number | null; failed: number | null; exitCode: number | null;
   name?: string; trail?: string;
+  // CO-RESIDENCE — which SIBLING shards of this same audit held an overlapping window on the SAME
+  // host. Derived, never sensed: the claim and report instants are already on the run, and the row
+  // keeps each shard's DURATION (`ms`) plus the run's outer span, from which the PAIRWISE question
+  // cannot be answered. Until this field existed, reading it took three ledger lines and two
+  // helper logs laid side by side (2026-09-17).
+  // WHAT IT IS FOR, said plainly because it is easy to over-read: it makes a LOAD SUSPICION
+  // machine-readable so the NEXT flake family is not mis-attributed. It explains nothing on its
+  // own — the M1/M5 band (docs/verify-tiering.md 11.2y) fired under co-residence AND without it,
+  // and co-residence is the NORM on this fleet (41 of 43 measurable sharded rows, measured
+  // 2026-09-17). So a mark on a red row is a reason to REPEAT the run, never a verdict.
+  // THREE STATES, and the third carries the weight (A4: unknown is not zero):
+  //   * absent         - this shard has no window at all (never claimed), so nothing is derivable
+  //   * `with: []`     - a window exists and NO sibling on the same host overlapped it
+  //   * `with: [k, .]` - those siblings did. `ms` is how much of THIS shard's window was covered by
+  //                      at least one of them - a UNION, so three overlapping siblings cannot
+  //                      double-count the same millisecond.
+  // `unknownWindows` counts the siblings whose own window is unknown, so `with: []` beside a
+  // non-zero count reads "none that could be measured" and never "none".
+  // SAME HOST is the `deviceId` where both shards have one (a reported shard does), and the helper
+  // NAME where one of them is a lapse (a closed slot keeps only the name). Two distinct machines
+  // that chose one name would read as one host: that is the register's identity question, not this
+  // row's, and it is stated here rather than smoothed over.
+  // WINDOWS THAT TOUCH DO NOT OVERLAP: `[a,b]` and `[b,c]` are disjoint. That is exactly what a
+  // serially claimed run produces, and it is what makes the disjoint direction provable at all.
+  coResident?: ShardCoResidence;
 }
 interface PostLandAuditRow {
   at: number;          // when the run finished (row time)
@@ -20773,9 +20800,63 @@ function settleAuditShardRuns(now: number): boolean {
   }
   return changed;
 }
+// CO-RESIDENCE, derived from the two instants each terminal shard already carries (the contract and
+// what it is worth: PostLandAuditShard.coResident). Pure over the slots, like the merge below.
+// A shard's window is [claimedAt, reportedAt] when it REPORTED and [claimedAt, closedAt] when it
+// LAPSED — a shard nobody ever claimed has no window, and that is the absent state, never a zero.
+interface ShardWindow { k: number; deviceId?: string; name?: string; from: number; to: number }
+function shardWindowOf(s: AuditShardSlot): ShardWindow | null {
+  if (s.result)
+    return { k: s.k, deviceId: s.result.deviceId, name: s.result.name, from: s.result.claimedAt, to: s.result.reportedAt };
+  if (s.closed?.claimedAt !== undefined)
+    return { k: s.k, ...(s.closed.name ? { name: s.closed.name } : {}), from: s.closed.claimedAt, to: s.closed.at };
+  return null;
+}
+// TRI-STATE on purpose: `null` is "these two cannot be compared", which is booked as unknown rather
+// than guessed either way. A lapse carries a name and no deviceId, so the name arm is the one that
+// joins a reported shard to a lapsed sibling on the same machine.
+function sameShardHost(a: ShardWindow, b: ShardWindow): boolean | null {
+  if (a.deviceId !== undefined && b.deviceId !== undefined) return a.deviceId === b.deviceId;
+  if (a.name !== undefined && b.name !== undefined) return a.name === b.name;
+  return null;
+}
+// the UNION of the overlaps, so three siblings over one millisecond cannot book it three times
+function unionMs(spans: [number, number][]): number {
+  let total = 0, end = -Infinity;
+  for (const [from, to] of [...spans].sort((x, y) => x[0] - y[0])) {
+    if (to <= end) continue;
+    total += to - Math.max(from, end);
+    end = to;
+  }
+  return total;
+}
+function shardCoResidence(slots: AuditShardSlot[]): Map<number, ShardCoResidence> {
+  const wins = slots.map(shardWindowOf);
+  const out = new Map<number, ShardCoResidence>();
+  for (const [i, w] of wins.entries()) {
+    if (!w) continue;
+    const siblings: number[] = [];
+    const spans: [number, number][] = [];
+    let unknownWindows = 0;
+    for (const [j, o] of wins.entries()) {
+      if (i === j) continue;
+      if (!o) { unknownWindows++; continue; }
+      const same = sameShardHost(w, o);
+      if (same === null) { unknownWindows++; continue; }
+      if (!same) continue;
+      const from = Math.max(w.from, o.from), to = Math.min(w.to, o.to);
+      if (from >= to) continue; // touching is not overlapping
+      siblings.push(o.k);
+      spans.push([from, to]);
+    }
+    out.set(w.k, { with: siblings, ms: unionMs(spans), unknownWindows });
+  }
+  return out;
+}
 // THE MERGE (the rules and why: AuditShardRun). Pure over the run.
 function shardedAuditRowOf(run: AuditShardRun, now: number, jobId: string | undefined): PostLandAuditRow {
   const n = run.n;
+  const coResident = shardCoResidence(run.shards);
   const reported = run.shards.flatMap((s) => (s.result ? [{ s, r: s.result }] : []));
   const reds = reported.filter((x) => x.r.result === "red");
   const allGreen = reported.length === n && reported.every((x) => x.r.result === "green");
@@ -20827,6 +20908,9 @@ function shardedAuditRowOf(run: AuditShardRun, now: number, jobId: string | unde
       exitCode: s.result?.exitCode ?? null,
       ...(s.result?.name ?? s.closed?.name ? { name: s.result?.name ?? s.closed?.name } : {}),
       ...(s.result?.trail ? { trail: s.result.trail } : {}),
+      // spread, not `?? undefined`: a shard with no window must leave the key OUT, and an EMPTY
+      // `with` must stay on the row (it is the measured "disjoint", not a missing measurement)
+      ...(coResident.has(s.k) ? { coResident: coResident.get(s.k)! } : {}),
     })),
     remote: { name: nameList, claimedAt: start, reportedAt: end, ...(trail ? { trail } : {}),
       ...(clonedSha ? { clonedSha } : {}), ...noMeasure, ...(jobId ? { jobId } : {}) },

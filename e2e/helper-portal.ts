@@ -107,8 +107,12 @@ interface Row {
     // that stopped writing one take this module down with a TypeError instead of failing a check.
     jobId?: string; artifact?: { bytes: number; sha256: string; url: string } };
   // the sharded audit's per-shard account (K11). Optional for the reason every remote field is.
+  // `coResident` is the one field whose ABSENCE is a third answer rather than an old server
+  // (server.ts#shardCoResidence): a shard that never held a window carries no key at all, and this
+  // type has to allow that or (K11d) could not tell it apart from a measured `with: []`.
   shards?: { k: number; jobId: string; result: string; ms: number | null; ran: number | null;
-    failed: number | null; exitCode: number | null; name?: string; trail?: string }[];
+    failed: number | null; exitCode: number | null; name?: string; trail?: string;
+    coResident?: { with: number[]; ms: number; unknownWindows: number } }[];
   fails?: string[];
 }
 interface LiveView {
@@ -1829,6 +1833,96 @@ export async function run(h: {
         lateLapsed.status === 409 && afterLapse.lapsed.some((l) => l.id === ids[2] && l.name === SHARD_NAME)
           && (await newRepoRows()).filter((r) => r.mainSha === lapseSha).length === 1 && (await liveRepo()) === null,
         `${lateLapsed.status} lapsed=${JSON.stringify(afterLapse.lapsed.map((l) => l.id))} rows=${(await newRepoRows()).filter((r) => r.mainSha === lapseSha).length}`);
+
+      // (K11b/c/d) CO-RESIDENCE — did a SIBLING shard of this same audit hold an overlapping window on
+      // the SAME machine (server.ts#shardCoResidence)? Derived from the two instants the run already
+      // has; the row could never answer it, because it keeps each shard's DURATION and the run's outer
+      // span and nothing pairwise.
+      // WHY IT IS ON THE ROW AT ALL: co-residence is the NORM on this fleet — 41 of 43 measurable
+      // sharded rows in `post-land-audits.jsonl` must have overlapped (2026-09-17, inferred as
+      // `sum(shard.ms) > row.ms`, which was the only reading the row allowed) — so a red row cannot be
+      // ATTRIBUTED to load without this mark, and must not be attributed TO it either. The contract for
+      // reading it is docs/verify-tiering.md §11.2y.
+      // THE 40 ms SLEEPS ARE LOAD-BEARING, not politeness: a claim and a report inside ONE millisecond
+      // is a ZERO-LENGTH window, and a zero-length window overlaps nothing — by the same strictness
+      // that makes (K11c) provable (`[a,b]` and `[b,c]` are disjoint). Forcing the window open is what
+      // makes both directions deterministic instead of dependent on how fast this machine answers.
+      const BOX2 = "e2eshardbox02";
+      const BOX2_NAME = "second shard box (e2e)";
+      await hpost("/api/helper/device", { deviceId: BOX2, name: BOX2_NAME, mode: "active", load: 0.1,
+        running: 0, maxParallelSuites: 3, features: ["audit-shard"] });
+      const coLine = (r: Row | undefined): string => (r?.shards ?? [])
+        .map((x) => `${x.k}:${x.coResident ? `[${x.coResident.with}]/${x.coResident.unknownWindows}` : "ABSENT"}`).join(",");
+      const claimAs = (id: string, deviceId: string): Promise<Response> =>
+        hpost("/api/helper/claim", { jobId: id, deviceId });
+
+      // (K11b) OVERLAPPING, and the HOST half is what keeps the mark from being a bare clock comparison:
+      // shards 1+2 run on one box, shard 3 on ANOTHER at the very same time. MUTATION: drop the
+      // sameShardHost test ⇒ shard 3 is listed as a co-resident of 1 and 2 ⇒ red.
+      const rowsBeforeCo = (await newRepoRows()).length;
+      const co = await openLane(REPO, "shardcores");
+      await driveMerge(co, co.branch);
+      const coSha = headOf();
+      await Bun.sleep(1500);
+      const coClaims = await Promise.all([claimAs(ids[0]!, SHARDBOX), claimAs(ids[1]!, SHARDBOX), claimAs(ids[2]!, BOX2)]);
+      await Bun.sleep(40);
+      for (const id of ids) await report(id, { exitCode: 0, fails: [], tail: "PASS  co-resident\nALL PASS" });
+      const coRows = await waitNewRepoRows(rowsBeforeCo + 1, 20_000);
+      const coRow = coRows.find((r) => r.mainSha === coSha);
+      const coS = (k: number): { with: number[]; ms: number; unknownWindows: number } | undefined =>
+        coRow?.shards?.[k - 1]?.coResident;
+      check("(K11b) CO-RESIDENCE: two shards on ONE host with overlapping windows name each other, and the third — another host, same moment — names nobody",
+        coClaims.every((r) => r.status === 200) && coRow?.result === "green"
+          && coLine(coRow) === "1:[2]/0,2:[1]/0,3:[]/0"
+          && (coS(1)?.ms ?? 0) >= 40 && coS(3)?.ms === 0 && (coS(1)?.ms ?? 0) === (coS(2)?.ms ?? -1),
+        `${coClaims.map((r) => r.status)} ${coLine(coRow)} ms=${coS(1)?.ms}/${coS(2)?.ms}/${coS(3)?.ms}`);
+
+      // (K11c) THE OTHER DIRECTION, same host, same three jobs: claimed and reported STRICTLY ONE AFTER
+      // ANOTHER. An empty `with` STAYS on the row — that is the measured "disjoint", and losing it is how
+      // "unknown" starts reading as "no". MUTATION: collapse the empty `with` into an absent key
+      // (`...(list.length ? { coResident } : {})`) ⇒ three ABSENTs here ⇒ red.
+      const rowsBeforeSer = (await newRepoRows()).length;
+      const ser = await openLane(REPO, "shardserial");
+      await driveMerge(ser, ser.branch);
+      const serSha = headOf();
+      await Bun.sleep(1500);
+      const serStatuses: number[] = [];
+      for (const id of ids) {
+        serStatuses.push((await claimAs(id, SHARDBOX)).status);
+        await Bun.sleep(40);
+        await report(id, { exitCode: 0, fails: [], tail: "PASS  serial\nALL PASS" });
+      }
+      const serRows = await waitNewRepoRows(rowsBeforeSer + 1, 20_000);
+      const serRow = serRows.find((r) => r.mainSha === serSha);
+      check("(K11c) …and the SAME host claimed SERIALLY is marked DISJOINT: an empty `with`, zero overlap, on every shard",
+        serStatuses.every((st) => st === 200) && serRow?.result === "green"
+          && coLine(serRow) === "1:[]/0,2:[]/0,3:[]/0"
+          && (serRow.shards ?? []).length === 3 && (serRow.shards ?? []).every((x) => x.coResident?.ms === 0),
+        `${serStatuses} ${coLine(serRow)}`);
+
+      // (K11d) THE THIRD STATE, and the reason the two above are not enough on their own: a shard that
+      // NEVER HELD A WINDOW carries NO KEY. Shard 3 is sibling-closed by the red on shard 2 without ever
+      // being claimed, so there is nothing to derive about it — and its two siblings say so, each
+      // counting it as one unknown window beside their own measured overlap. MUTATION: give an unclaimed
+      // shard `{ with: [], ms: 0, unknownWindows: 0 }` ⇒ "3:[]/0" and "1:[2]/0" here ⇒ red.
+      const rowsBeforeUnk = (await newRepoRows()).length;
+      const unk = await openLane(REPO, "shardnowindow");
+      await driveMerge(unk, unk.branch);
+      const unkSha = headOf();
+      await Bun.sleep(1500);
+      const unkStatuses = (await Promise.all([claimAs(ids[0]!, SHARDBOX), claimAs(ids[1]!, SHARDBOX)])).map((r) => r.status);
+      await Bun.sleep(40);
+      await report(ids[0]!, { exitCode: 0, fails: [], tail: "PASS  one ok\nALL PASS" });
+      await report(ids[1]!, { exitCode: 1, fails: ["gamma check"], tail: "FAIL  gamma check\n1 FAILURES" });
+      const unkRows = await waitNewRepoRows(rowsBeforeUnk + 1, 20_000);
+      const unkRow = unkRows.find((r) => r.mainSha === unkSha);
+      check("(K11d) AN UNCLAIMED SHARD HAS NO WINDOW: no `coResident` key at all, while its two siblings carry their overlap AND count it as one unknown window",
+        unkStatuses.every((st) => st === 200) && unkRow?.result === "red"
+          && coLine(unkRow) === "1:[2]/1,2:[1]/1,3:ABSENT"
+          && (unkRow.shards?.[0]?.coResident?.ms ?? 0) >= 40 && unkRow.shards?.[2]?.ms === null,
+        `${unkStatuses} ${coLine(unkRow)} result=${unkRow?.result}`);
+      // leave the register as (6) needs it: the second box must be no candidate for the drain's grace
+      await post(`/api/helper/devices/${BOX2}/mode`, { mode: "off" });
 
       // (6) NO SHARD-CAPABLE HELPER ⇒ LOCAL, UNSHARDED, AT ONCE. DEVICE keeps beating active without the
       // feature. MUTATION: drop the feature from the drain's grace candidate ⇒ the entry is held the whole

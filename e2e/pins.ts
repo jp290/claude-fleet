@@ -8799,6 +8799,33 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     `module=${exists("e2e/ctl.ts")} imported=${runner.includes('import * as ctl from "./e2e/ctl"')} called=${runner.includes("await ctl.run();")}`);
 }
 
+// …and the OTHER half of the same door (2026-09-17): the block in state.sh that says these routes
+// exist at all. `ctl get` opens every /api/ route with the right credential, and a session that
+// does not know a route is there still reads the ledger file raw — which is what 1 480 raw reads
+// against 131 route reads in fourteen days measured
+// (docs/messungen/2026-09-17-worktrail-bash-datenschichten-strategisch.md §4.2). Two things are
+// held, and the CAP is the load-bearing one: a pointer block that grows into a route reference is
+// a block nobody reads, and then the measurement repeats with one more file in it.
+{
+  const RULE_TUEREN = "state.sh prints a Tueren block: at most twelve lines, naming ctl get and the routes nobody was reading";
+  const state = read("state.sh");
+  const at = state.indexOf('echo "=== Tueren');
+  // the printed lines are the consecutive `echo "…"` lines at column 0; the bare `echo` that
+  // closes the section ends the count and is not one of them
+  const printed: string[] = [];
+  if (at >= 0) for (const l of state.slice(at).split("\n")) { if (!l.startsWith('echo "')) break; printed.push(l); }
+  pin(`${RULE_TUEREN} — the block exists and is at most twelve lines`,
+    at >= 0 && printed.length > 0 && printed.length <= 12,
+    at < 0 ? "no `echo \"=== Tueren` line in state.sh" : `${printed.length} printed lines`);
+  // …and it still names them. A cap with no content rule is satisfied by an empty heading.
+  const NAMED = ["ctl.sh get", "/api/audit", "/api/lane-outcomes", "/api/post-land-audits",
+    "/api/context-receipts", "/api/lane?branch=", "/api/post-land-audits/artifact?at="];
+  const body = printed.join("\n");
+  pin(`${RULE_TUEREN} — it names ctl get, the four ledger read routes, the dossier and the artefact route`,
+    printed.length > 0 && NAMED.every((n) => body.includes(n)),
+    `missing=[${NAMED.filter((n) => !body.includes(n)).join(", ")}]`);
+}
+
 // --- THE SHARD TABLE NAMES EVERY MODULE THE RUNNER BOOTS, ONCE (2026-09-14) ---------------------
 // A must-agree pair with no compiler between its halves: fleet-e2e.ts imports the check modules and
 // tags each step with a UNIT; e2e/ctx.ts#SHARD_UNITS lists which modules form which unit. A module

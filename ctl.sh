@@ -24,12 +24,15 @@
 # CLI's space — `wait-merge` is typed `./ctl.sh wait merge 5`.
 set -u
 
-CTL_VERBS="merges lock ctx report watch events land dispatch wait-merge wait-change send commit-main"
+CTL_VERBS="get merges lock ctx report watch events land dispatch wait-merge wait-change send commit-main"
 
 usage() {
   cat <<'USAGE'
 ctl.sh — the controller's mechanical moves. One decision per call, made by you, not by this script.
 
+  get <path> [--keys] [--json]     GET any route under /api/ with the credential that route wants
+                                   (owner; the self token for /api/self) — --keys prints the shape,
+                                   not the body. GET only, /api/ only, both refusals by name.
   merges [--json]                  which lands are persisted/unfinished; exit 1 while one is in flight
   lock [--reap] [--json]           suite-mutex health; --reap removes a lock whose holder is dead
   ctx [slot] [--json]              measured context fill of a slot (default: your own)
@@ -173,6 +176,149 @@ CTL_JSON=0
 export CTL_JSON
 
 case "$verb" in
+
+# ================================================================================================
+get)
+# ------------------------------------------------------------------------------------------------
+# THE CREDENTIALED READ, and why it is ONE verb instead of one verb per route. Every other verb here
+# turns a route into a rendering; this one turns the CREDENTIAL into a door and renders nothing. Measured
+# over nine sessions of three roles (docs/messungen/2026-09-17-worktrail-bash-datenschichten-
+# strategisch.md §5 P1): 61 bash calls went looking for a header name, a token source, a route or a
+# field shape that all already exist, and 79 more rebuilt the token lookup by hand — because
+# `owner_token`/`need_self` at the top of this file were reachable only through a fixed verb list. Five ledgers
+# with a read route were read RAW 1 480 times against 131 route reads in fourteen days.
+#
+# WHAT IT DOES NOT ADD. No route, no permission, no method. It is GET-only and /api/-only, and both
+# refusals are NAMED rather than silent, because the mistake this exists to end is a session that
+# cannot tell "I typed the wrong thing" from "the fleet said no". A write still goes through the
+# verb that owns it — a passthrough POST would hand every route in the server a caller with no
+# field-shape check and no refusal of its own, which is the opposite of this file's purpose.
+#
+# THE CREDENTIAL FOLLOWS THE PATH, and the split is the server's, not a preference: everything under
+# /api/self is scoped to the pane's OWN slot and is opened with the self token; everything else is
+# owner-gated. `/api/selfish` is not `/api/self` — the pattern ends at a slash, a `?` or the string,
+# so a route that merely starts with those letters gets the owner credential it actually wants.
+#
+# TOKEN HYGIENE (the file header, and CLAUDE.md §Self-scheduling). The token travels in the
+# environment into the embedded program and from there into a request header. It is never an
+# argument, never part of the URL, and never printed: a 401 names the SOURCE it was resolved from
+# ("FLEET_CTL_TOKEN", "<home>/fleet.json") and never the value, which is the answer the 79 hand-built
+# lookups were actually after.
+  path=""; keys=0
+  for a in "$@"; do
+    case "$a" in
+      --json) CTL_JSON=1 ;;
+      --keys) keys=1 ;;
+      # a method or a body, however it is spelled: refused BY NAME rather than quietly downgraded to
+      # a GET, which would answer a question the caller did not ask and look like it worked
+      -X|-X*|--method|--method=*|--request|--request=*|-d|-d*|--data|--data=*|--data-raw*|--data-binary*|--form|-F|-I|--head)
+        printf 'ctl.sh get: "%s" names a method or a body — get does GET and nothing else. There is no write passthrough here: a write goes through the verb that owns it, or through the route'"'"'s own curl.\n' "$a" >&2
+        exit 2 ;;
+      -*) printf 'ctl.sh get: unknown flag %s — flags are --keys and --json\n' "$a" >&2; exit 2 ;;
+      GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)
+        printf 'ctl.sh get: "%s" is a method, not a path — get does GET and nothing else. Say: ./ctl.sh get /api/<route>\n' "$a" >&2
+        exit 2 ;;
+      *)
+        [ -z "$path" ] || { printf 'ctl.sh get: two paths given ("%s" and "%s") — one route per call\n' "$path" "$a" >&2; exit 2; }
+        path=$a ;;
+    esac
+  done
+  [ -n "$path" ] || { printf 'ctl.sh get: give a path under /api/ — e.g. ./ctl.sh get /api/post-land-audits --keys\n' >&2; exit 2; }
+  case "$path" in
+    http://*|https://*)
+      printf 'ctl.sh get: "%s" is a whole URL — give the PATH only. The base is %s (FLEET_CTL_URL, else FLEET_HOST/FLEET_PORT in %s/.env).\n' "$path" "$CTL_URL" "$HOME_DIR" >&2
+      exit 2 ;;
+    api/*) path="/$path" ;;
+  esac
+  case "$path" in
+    /api/*) ;;
+    *) printf 'ctl.sh get: "%s" is not under /api/ — get reads this fleet'"'"'s API and is not a general curl.\n' "$path" >&2
+       exit 2 ;;
+  esac
+  case "$path" in
+    /api/self|/api/self/*|/api/self\?*)
+      need_self get
+      CTL_CRED=self
+      CTL_CRED_SRC="FLEET_SELF_TOKEN, exported into this pane${FLEET_SELF_SLOT:+ (slot $FLEET_SELF_SLOT)}" ;;
+    *)
+      need_owner get
+      CTL_CRED=owner
+      if [ -n "${FLEET_CTL_TOKEN:-}" ]; then CTL_CRED_SRC="FLEET_CTL_TOKEN"
+      elif [ -n "${FLEET_TOKEN:-}" ]; then CTL_CRED_SRC="FLEET_TOKEN"
+      else CTL_CRED_SRC="$HOME_DIR/fleet.json"; fi ;;
+  esac
+  export CTL_PATH="$path" CTL_CRED CTL_CRED_SRC CTL_KEYS=$keys
+  js_head
+  cat >> "$CTL_TMP" <<'EOF'
+const path = process.env.CTL_PATH, cred = process.env.CTL_CRED, credSrc = process.env.CTL_CRED_SRC;
+// NOT the `api()` helper above: it truncates a non-JSON body at 400 characters, and the artefact
+// route (/api/post-land-audits/artifact) serves a whole suite.log as text/plain. A reader that
+// silently cut it would be the same defect in a new place.
+const res = await fetch(URL_ + path, { headers: cred === "self" ? selfH() : ownerH() });
+const ctype = res.headers.get("content-type") ?? "";
+const text = await res.text();
+let body = null, isJson = false;
+try { body = JSON.parse(text); isJson = true; } catch { /* text/plain, and said so below */ }
+if (!res.ok) {
+  // the credential is named by its SOURCE, never by its value — that IS the question the hand-built
+  // token lookups were asking, and printing the token would answer it by leaking it
+  const why = res.status === 401 || res.status === 403
+    ? ` — the ${cred} credential was refused (resolved from ${credSrc}; this verb prints where a token came from, never the token)`
+    : "";
+  const snip = text.trim().slice(0, 300);
+  console.error(`ctl.sh get: ${path} -> ${res.status}${why}${snip ? `\n  ${snip}` : ""}`);
+  process.exit(1);
+}
+if (process.env.CTL_KEYS !== "1") {
+  if (isJson) console.log(JSON.stringify(body, null, 2));
+  else if (JSONOUT) console.log(JSON.stringify({ path, status: res.status, contentType: ctype, text }, null, 2));
+  else process.stdout.write(text.endsWith("\n") ? text : text + "\n");
+  process.exit(0);
+}
+// --- --keys: the SHAPE instead of the body -----------------------------------------------------
+// Two levels and no more. One level answers nothing (`{audits, total, malformed}` is not a field
+// shape), and the whole tree is the body again — the thing the caller asked not to be handed. The
+// second level of an array is read off element 0 and SAYS SO, because an empty array has no shape
+// to read and must not be reported as one.
+if (!isJson) {
+  const lines = [`${path}  ${res.status}  ${ctype || "no content-type"} — not JSON, so it has no keys`,
+    `  ${text.length} bytes, ${text.split("\n").length} lines — read it without --keys`];
+  out({ path, status: res.status, contentType: ctype, json: false, bytes: text.length }, lines);
+  process.exit(0);
+}
+const scalar = (v) => {
+  if (v === null) return "null";
+  if (typeof v === "string") return JSON.stringify(v.length > 60 ? v.slice(0, 60) + "…" : v);
+  return String(v);
+};
+const shapeOf = (v) => Array.isArray(v) ? `array[${v.length}]`
+  : v === null ? "null" : typeof v === "object" ? `object{${Object.keys(v).length}}` : typeof v;
+// the second level of ONE value, as the one sentence that value can honestly support
+const inner = (v) => {
+  if (Array.isArray(v)) {
+    if (v.length === 0) return "(empty — no element to read a shape from)";
+    const e = v[0];
+    return e !== null && typeof e === "object" && !Array.isArray(e)
+      ? `[0] = ${Object.keys(e).join(", ")}` : `[0] = ${shapeOf(e)}`;
+  }
+  if (v !== null && typeof v === "object") {
+    const k = Object.keys(v);
+    return k.length === 0 ? "(no keys)" : k.join(", ");
+  }
+  return scalar(v);
+};
+const rootShape = shapeOf(body);
+const entries = Array.isArray(body) ? body.slice(0, 1).map((v, i) => [`[${i}]`, v])
+  : body !== null && typeof body === "object" ? Object.entries(body) : [];
+const width = Math.max(0, ...entries.map(([k]) => k.length));
+const lines = [`${path}  ${res.status}  ${rootShape}`,
+  ...entries.map(([k, v]) => `  ${k.padEnd(width)}  ${shapeOf(v).padEnd(12)}  ${inner(v)}`)];
+if (entries.length === 0) lines.push(`  (${rootShape} — no keys at the top level)`);
+out({ path, status: res.status, shape: rootShape,
+  keys: entries.map(([k, v]) => ({ key: k, shape: shapeOf(v), inner: inner(v) })) }, lines);
+EOF
+  js_run
+  ;;
 
 # ================================================================================================
 merges)

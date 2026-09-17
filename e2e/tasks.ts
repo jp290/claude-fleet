@@ -8965,7 +8965,11 @@ export async function run(ctx: Ctx): Promise<void> {
       filesProposal?: { files: string[]; at: number; by: string; unknownPaths?: string[] } };
     const mSurfRow = async (id: string): Promise<MSurfRow | undefined> =>
       ((await (await get("/api/tasks")).json()) as { tasks: MSurfRow[] }).tasks.find((t) => t.id === id);
-    const M_TRACKED = "server.ts";
+    // TRACKED IN THE ROW'S REPO, which under the suite is the synthetic testrepo and NOT this
+    // repository — `AGENTS.md` is what the w2 block one section up uses for the same reason. A path
+    // tracked HERE says nothing about what the MAIN's own checkout tracks, and `untrackedAmong`
+    // reads that checkout.
+    const M_TRACKED = "AGENTS.md";
     const M_GHOST = "gibt-es-nicht-main.ts";
     const mSurfBefore = (await mAll()).length;
     const mSurfAuditBefore = mAuditRows().length;

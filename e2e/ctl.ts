@@ -302,12 +302,26 @@ export async function run(): Promise<void> {
     `lines=${shapeLines.length} keys=${shapeKeys.length} shape=${shapeText.out.length} B body=${gotOwner.out.length} B`);
   // …and the case that has no shape to read: an empty array is said as such rather than answered
   // with the shape of an element that does not exist.
-  const emptyShape = await ctl(["get", "/api/lane-outcomes", "--keys", "--json"]);
-  const outcomesKey = ((emptyShape.json as { keys?: { key: string; inner: string }[] })?.keys ?? [])
-    .find((k) => k.key === "outcomes");
-  check("ctl get --keys: an empty array says it has no element to read a shape from",
-    emptyShape.code === 0 && outcomesKey?.inner === "(empty — no element to read a shape from)",
-    `outcomes=${JSON.stringify(outcomesKey)}`);
+  //
+  // THIS CHECK FIRST ASKED /api/lane-outcomes AND ASSUMED IT WAS EMPTY, and the preview run caught
+  // it: modules before this one land lanes into this instance, so the ledger has rows by the time
+  // ctl runs. That is the same mistake as the byte ratio above — measuring the INSTANCE instead of
+  // the verb — and it is why the subject here is the receiver's own row, whose arrays this module
+  // opened seconds ago. Both branches are asserted over whatever /api/self actually holds, and an
+  // instance that offers no empty array at all fails as a NON-MEASUREMENT rather than passing on
+  // an `every()` over nothing.
+  const emptyShape = await ctl(["get", "/api/self", "--keys", "--json"]);
+  const selfKeys = (emptyShape.json as { keys?: { key: string; shape: string; inner: string }[] })?.keys ?? [];
+  const arrays = selfKeys.filter((k) => k.shape.startsWith("array["));
+  const empties = arrays.filter((k) => k.shape === "array[0]");
+  const filled = arrays.filter((k) => k.shape !== "array[0]");
+  check("ctl get --keys: an empty array says it has no element to read a shape from, a filled one reads element 0",
+    emptyShape.code === 0 && empties.length > 0
+      && empties.every((k) => k.inner === "(empty — no element to read a shape from)")
+      && filled.every((k) => k.inner.startsWith("[0] = ")),
+    empties.length === 0
+      ? `NOT MEASURED — /api/self offered no empty array: ${arrays.map((k) => `${k.key}=${k.shape}`).join(", ")}`
+      : `empty=[${empties.map((k) => k.key).join(", ")}] filled=[${filled.map((k) => k.key).join(", ")}]`);
 
   // TOKEN HYGIENE, over every run above at once — success, refusal and 401 alike. ctl.sh carries
   // the credential in the environment into a request header; if any of it ever reached stdout or

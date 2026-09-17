@@ -415,8 +415,9 @@ getrackte Notiz ist:
 - Diese Lane ist der Fall: `kind: auftrag`, ROLLE `claude/claude-fable-5-1[1m]/high`, `NEU:` eine
   Messnotiz, VERIFY `install, pins`, kein Code. Die Schwesterzeile `f5110feb` ebenso; sie steht auf
   `done`, ihr Ergebnis ist als `343cae6b` auf main [gemessen: `fleet.json`, `git log`].
-- Das Gate kennt die Form: eine reine Docs-Aenderung schuldet die Kurzkette [geprueft: `AGENTS.md`
-  §Verify laut Auftrag, `verify-proportion.ts` nicht gelesen].
+- Das Gate kennt die Form: fuer den Commit dieser Lane antwortet `GET /api/self/gate` mit
+  `localProof.steps: [install, pins]`, `isolatedPreview: false` und `classifiedAs: docs-or-prose` fuer
+  beide Dateien [gemessen].
 - Der Rueckweg existiert: der `fleet-report` geht an die filende MAIN; ohne Program faellt er in die
   Owner-Inbox [geprueft nur an der Abschnittsliste von `docs/self-api.md` §fleet-report B4].
 - Die Verbindung Frage → Antwort existiert: `POST /api/self/tasks/:id/notes` haengt eine `notiz` als

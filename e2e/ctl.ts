@@ -204,14 +204,106 @@ export async function run(): Promise<void> {
   // The verb list is what e2e/pins.ts holds against docs/controller.md, so the usage block has to
   // actually carry it — a pin over a list nothing prints would guard a doc against nothing.
   const usage = await ctl([]);
-  const VERBS = ["merges", "lock", "ctx", "report", "watch", "events", "land", "dispatch",
+  const VERBS = ["get", "merges", "lock", "ctx", "report", "watch", "events", "land", "dispatch",
     "wait merge", "wait change", "send", "commit main"];
   const missing = VERBS.filter((v) => !usage.out.includes(`  ${v}`));
-  check("ctl usage: a bare ./ctl.sh prints all twelve verbs and exits 0",
+  check("ctl usage: a bare ./ctl.sh prints all thirteen verbs and exits 0",
     usage.code === 0 && missing.length === 0, `exit ${usage.code} missing=[${missing.join(", ")}]`);
   const bogus = await ctl(["nosuchverb"]);
   check("ctl usage: an unknown verb exits 2 and names itself",
     bogus.code === 2 && bogus.err.includes('unknown verb "nosuchverb"'), `exit ${bogus.code}`);
+
+  // === get ======================================================================================
+  // The one verb that renders nothing: it turns the CREDENTIAL into a door. So what is asserted is
+  // the credential split (both directions), the two named refusals, and that no output of any run
+  // carries a token — the last one being the whole reason a passthrough is allowed to exist here at
+  // all (ctl.sh's header, CLAUDE.md §Self-scheduling).
+  const apiSessions = (await (await get("/api/sessions")).json()) as { slots: { id: number }[] };
+  const gotOwner = await ctl(["get", "/api/sessions", "--json"]);
+  const gotSlots = (gotOwner.json as { slots?: { id: number }[] })?.slots ?? [];
+  check("ctl get: an owner route answers with exactly the body that route serves",
+    gotOwner.code === 0
+      && gotSlots.map((s) => s.id).join() === apiSessions.slots.map((s) => s.id).join()
+      && gotSlots.length > 0,
+    `exit ${gotOwner.code} ctl=${gotSlots.length} api=${apiSessions.slots.length}`);
+
+  // THE SPLIT IS THE PATH, not a flag — and it is proven from both sides, because a verb that
+  // simply sent BOTH headers would pass a one-sided check while quietly widening what a caller
+  // with one credential can reach.
+  const selfOnly = await ctl(["get", "/api/self", "--json"], { FLEET_CTL_TOKEN: "not-the-owner-token" });
+  check("ctl get: /api/self is opened with the SELF token — a wrong owner token does not reach it",
+    selfOnly.code === 0 && (selfOnly.json as { slot?: number })?.slot === free,
+    `exit ${selfOnly.code} slot=${JSON.stringify((selfOnly.json as { slot?: number })?.slot)} want ${free}`);
+  const ownerOnly = await ctl(["get", "/api/sessions", "--json"], { FLEET_SELF_TOKEN: "0".repeat(32) });
+  check("ctl get: an owner route is opened with the OWNER token — a wrong self token does not reach it",
+    ownerOnly.code === 0 && ((ownerOnly.json as { slots?: unknown[] })?.slots ?? []).length > 0,
+    `exit ${ownerOnly.code}`);
+
+  // 401, and the shape of the sentence: the source a token was resolved FROM is the answer the 79
+  // hand-built token lookups were after; the token itself is never part of it.
+  const un401 = await ctl(["get", "/api/sessions"], { FLEET_CTL_TOKEN: "not-the-owner-token" });
+  check("ctl get: a refused owner credential exits 1 and names the 401 plus the source it resolved from",
+    un401.code === 1 && un401.err.includes("401") && un401.err.includes("FLEET_CTL_TOKEN") && un401.out === "",
+    `exit ${un401.code} err=${JSON.stringify(un401.err.slice(0, 160))}`);
+  const unSelf401 = await ctl(["get", "/api/self"], { FLEET_SELF_TOKEN: "0".repeat(32) });
+  check("ctl get: a refused self credential exits 1 and names the 401 plus FLEET_SELF_TOKEN",
+    unSelf401.code === 1 && unSelf401.err.includes("401") && unSelf401.err.includes("FLEET_SELF_TOKEN")
+      && unSelf401.out === "",
+    `exit ${unSelf401.code} err=${JSON.stringify(unSelf401.err.slice(0, 160))}`);
+
+  // REFUSAL 1 — a method or a body. Refused BY NAME and with nothing on stdout: a silent downgrade
+  // to a GET would answer a question the caller did not ask and look like it worked.
+  const methFlag = await ctl(["get", "-X", "POST", "/api/sessions"]);
+  const methWord = await ctl(["get", "POST", "/api/sessions"]);
+  const methBody = await ctl(["get", "--data", "{}", "/api/sessions"]);
+  check("ctl get: a method or a body is refused by name, exit 2, and never downgraded to a GET",
+    methFlag.code === 2 && methFlag.err.includes('"-X"') && methFlag.out === ""
+      && methWord.code === 2 && methWord.err.includes('"POST"') && methWord.out === ""
+      && methBody.code === 2 && methBody.err.includes('"--data"') && methBody.out === "",
+    `-X=${methFlag.code} POST=${methWord.code} --data=${methBody.code}`);
+
+  // REFUSAL 2 — a path that is not a route of this fleet. The whole-URL case is its own sentence
+  // because the repair is different: the caller has the right route and the wrong shape.
+  const outside = await ctl(["get", "/etc/passwd"]);
+  const wholeUrl = await ctl(["get", `${BASE}/api/sessions`]);
+  check("ctl get: a path outside /api/ is refused by name, and a whole URL is told where the base comes from",
+    outside.code === 2 && outside.err.includes("/etc/passwd") && outside.err.includes("/api/") && outside.out === ""
+      && wholeUrl.code === 2 && wholeUrl.err.includes("whole URL") && wholeUrl.out === "",
+    `outside=${outside.code} url=${wholeUrl.code} err=${JSON.stringify(outside.err.slice(0, 120))}`);
+
+  // --keys: the SHAPE of the top two levels instead of the body. The second level of an array is
+  // read off element 0 and must SAY so — and the output has to be dramatically smaller than the
+  // body, or the flag bought nothing (the artefact route serves a 700 KB suite.log through here).
+  const shape = await ctl(["get", "/api/sessions", "--keys", "--json"]);
+  const shapeKeys = (shape.json as { keys?: { key: string; shape: string; inner: string }[] })?.keys ?? [];
+  const slotsKey = shapeKeys.find((k) => k.key === "slots");
+  check("ctl get --keys: two levels — top-level keys with their shapes, the second read off element 0",
+    shape.code === 0 && shapeKeys.length > 0 && !!slotsKey
+      && slotsKey.shape.startsWith("array[") && slotsKey.inner.startsWith("[0] = ")
+      && slotsKey.inner.includes("id"),
+    `keys=${shapeKeys.length} slots=${JSON.stringify(slotsKey)}`);
+  const shapeText = await ctl(["get", "/api/sessions", "--keys"]);
+  check("ctl get --keys: it prints the shape INSTEAD of the body — an order of magnitude less text",
+    shapeText.code === 0 && shapeText.out.length * 10 < gotOwner.out.length,
+    `keys=${shapeText.out.length} B body=${gotOwner.out.length} B`);
+  // …and the case that has no shape to read: an empty array is said as such rather than answered
+  // with the shape of an element that does not exist.
+  const emptyShape = await ctl(["get", "/api/lane-outcomes", "--keys", "--json"]);
+  const outcomesKey = ((emptyShape.json as { keys?: { key: string; inner: string }[] })?.keys ?? [])
+    .find((k) => k.key === "outcomes");
+  check("ctl get --keys: an empty array says it has no element to read a shape from",
+    emptyShape.code === 0 && outcomesKey?.inner === "(empty — no element to read a shape from)",
+    `outcomes=${JSON.stringify(outcomesKey)}`);
+
+  // TOKEN HYGIENE, over every run above at once — success, refusal and 401 alike. ctl.sh carries
+  // the credential in the environment into a request header; if any of it ever reached stdout or
+  // stderr, this is the line that says so.
+  const getRuns = [gotOwner, selfOnly, ownerOnly, un401, unSelf401, methFlag, methWord, methBody,
+    outside, wholeUrl, shape, shapeText, emptyShape];
+  const leaked = getRuns.filter((r) => r.out.includes(TOKEN) || r.err.includes(TOKEN)
+    || r.out.includes(selfTok) || r.err.includes(selfTok));
+  check("ctl get: no output of any of those runs contains the owner token or the self token",
+    leaked.length === 0, `${getRuns.length} runs, ${leaked.length} carrying a token`);
 
   // === merges (before any land of ours) =========================================================
   const mergesBefore = await ctl(["merges", "--json"]);

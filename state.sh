@@ -133,6 +133,25 @@ else:
     print(f"  check-trail runs (main checkout) {len(sorted(glob.glob(os.path.join(td, '*.jsonl'))))}" + tail)
 PY
 echo
+# TUEREN — der Block steht HIER, an der Naht, an der die Gewohnheit entsteht: direkt ueber den
+# Zaehlern, die eine Lane als UNKNOWN sieht, weil die Ledger nur im Haupt-Checkout liegen. Ueber
+# die Route sieht sie dieselben Zeilen trotzdem. Gemessen (docs/messungen/2026-09-17-worktrail-
+# bash-datenschichten-strategisch.md §4.2): fuenf Ledger mit Leseroute wurden in 14 Tagen 1.480-mal
+# roh gelesen und 131-mal ueber ihre Route; vier Aggregate hatte in dem Fenster KEIN Agent gelesen.
+# Hoechstens zwoelf Zeilen, und der Deckel ist der Punkt: eine Tuerenliste, die zur Routenreferenz
+# waechst, wird wieder nicht gelesen. Fuer die Vollstaendigkeit gilt der Code (`rg -n '"/api/' server.ts`).
+echo "=== Tueren (eine Schicht ueber ihre Route lesen, nicht roh — ctl.sh get loest das Credential auf) ==="
+echo "  ./ctl.sh get <pfad> [--keys]    GET unter /api/ mit dem Token, das die Route will (fuer /api/self das Self-Token);"
+echo "                                  --keys druckt die Feldform der obersten zwei Ebenen statt des Koerpers"
+echo "  /api/audit?limit=N              audit.jsonl, neueste zuerst   (als Slot-Gesundheit: /api/slot-stats)"
+echo "  /api/lane-outcomes?limit=N      lane-outcomes.jsonl, neueste zuerst"
+echo "  /api/post-land-audits?limit=N   post-land-audits.jsonl, mit Adjudikation und Artefakt gejoint"
+echo "  /api/context-receipts           context-receipts.jsonl, alle Zeilen ungefiltert"
+echo "  /api/lane?branch=<branch>       Lane-Dossier: sechs Quellen zu EINER Lane plus die fleet/land-Notiz"
+echo "  /api/lane                       ohne branch der Index: jede Ledger-Lane und die offenen zuerst"
+echo "  /api/post-land-audits/artifact?at=<at>   das suite.log einer Audit-Zeile (text/plain; 410 = Zeile da, Bytes geprunt)"
+echo "  (in 14 Tagen 1.480 Rohlesungen gegen 131 Routenlesungen — deshalb steht diese Liste hier)"
+echo
 echo "=== land health (derived; the ledgers already carried all of this, nobody read it) ==="
 python3 - <<'PY'
 import json, os, subprocess

@@ -445,7 +445,13 @@ export async function run(): Promise<void> {
       const missing = spawnSync(process.execPath, [`${sourceRoot}/land-collision-stats.ts`, "--ledger", `${cRepo}/absent.jsonl`], { encoding: "utf8" });
       check("collision-stats rejects: an absent ledger exits 2 saying UNKNOWN, never prints a zero score",
         missing.status === 2 && missing.stdout === "" && missing.stderr.includes("UNKNOWN"), `${missing.status} ${missing.stdout}${missing.stderr}`);
-      for (const f of ["state.sh", "land-collision-stats.ts", "task-land-waves.ts", "task-waves.ts", "verify-proportion.ts"])
+      // The list is the IMPORT CLOSURE of what `state.sh` spawns (`bun land-collision-stats.ts` →
+      // task-land-waves.ts → verify-proportion.ts → suite-modules.ts), and it is hand-kept, so it
+      // goes stale the moment one of those files gains an import: on 2026-09-17 verify-proportion.ts
+      // gained suite-modules.ts and this check went red with `R4 score UNKNOWN … exited 1` — 27
+      // minutes into a full run, for a missing file. e2e/pins.ts now closes the list in stage 1.
+      for (const f of ["state.sh", "land-collision-stats.ts", "task-land-waves.ts", "task-waves.ts",
+        "verify-proportion.ts", "suite-modules.ts"])
         copyFileSync(`${sourceRoot}/${f}`, `${cRepo}/${f}`);
       await Bun.write(`${cRepo}/server.ts`, "// fixture\n");
       const cState = spawnSync("sh", ["state.sh"], { cwd: cRepo, encoding: "utf8",

@@ -4803,3 +4803,29 @@ was JEDES Modul misst, und nimmt darum die ganze Suite mit. Abwesend heißt „k
 „keine Module beteiligt" — eine leere LISTE wird deshalb nie geliefert. Der Runner rechnet den
 Schluss aus derselben Tabelle noch einmal und druckt ihn, sodass die Empfehlung und der Lauf nicht
 auseinanderlaufen können.
+
+### 16d. Die erste Messung (2026-09-17) — und was die Vorschau NICHT finden konnte
+
+| Lauf | Baum | Checks | Failures | Arbeitszeit | Wartezeit am Suite-Mutex |
+| --- | --- | --- | --- | --- | --- |
+| ungefiltert, Helfer `second-host` (Job `870c42400336`) | `b7c79318` | 4 912 | **1** | 1 600 s | — (andere Maschine) |
+| `FLEET_E2E_MODULES=slots,tasks`, lokal | `9f96a63b` | 1 278 | 0 (ALL PASS) | **382 s** (Trail-Span 375 s) | 2 560 s |
+| ungefiltert, Helfer `second-host` (Job `94fd55b8c03e`) | `9f96a63b` | 4 912 | 0 (ALL PASS) | 1 607 s | — |
+
+Die Vorschau fährt also 26 % der Checks (1 278 von 4 912) in 24 % der Arbeitszeit — unter dem
+Acht-Minuten-Ziel, und zwar OHNE die Latenz-Arbeit aus Suite-Schnitt A (`until(pred,…)`, Task `531bab26`), die zum
+Zeitpunkt dieser Messung nicht freigegeben war. **Die 2 560 s Warteschlange sind keine Arbeitszeit**:
+der Lauf hat den Mutex erst um 16:51:52 bekommen, vorher 42 Minuten in der Schlange gestanden und
+den Baum nie angesehen (`[suite-lock] … acquired after 2560s`). Der Baum wird NACH dem Mutex
+gestaged, nicht beim Start des Wrappers — darum trägt der Trail dieses Laufs `9f96a63b` und nicht
+den Baum von 16:09.
+
+**Und die Grenze, gemessen am eigenen Fall:** das eine Rot des ersten Laufs war
+`state.sh: one forkSha line …` in `e2e/outcomes.ts` — echt und in derselben Kette entstanden
+(`state.sh` spawnt `bun land-collision-stats.ts` → `task-land-waves.ts` → `verify-proportion.ts` →
+`suite-modules.ts`, und die handgepflegte Kopierliste des Fixture-Repos nannte die neue Datei nicht).
+`outcomes` liegt NICHT im Schluss von `slots,tasks` — eine `slots,tasks`-Vorschau hätte diesen
+Regress also strukturell nicht finden können, egal wie grün sie endet. Das ist Grenze 3 aus §16a an
+einem echten Befund statt an einer Warnung. Seit diesem Vorfall schließt `e2e/pins.ts` die
+Kopierliste in Stufe 1 (jeder relative Import einer gelisteten `.ts` muss selbst gelistet sein) —
+derselbe Defekt kostet dort Millisekunden statt 27 Minuten auf einer zweiten Maschine.

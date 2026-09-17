@@ -279,13 +279,20 @@ export async function run(): Promise<void> {
   const slotsKey = shapeKeys.find((k) => k.key === "slots");
   check("ctl get --keys: two levels — top-level keys with their shapes, the second read off element 0",
     shape.code === 0 && shapeKeys.length > 0 && !!slotsKey
-      && slotsKey.shape.startsWith("array[") && slotsKey.inner.startsWith("[0] = ")
-      && slotsKey.inner.includes("id"),
+      && slotsKey.shape.startsWith("array[")
+      && slotsKey.inner.replace("[0] = ", "").split(", ").includes("id"),
     `keys=${shapeKeys.length} slots=${JSON.stringify(slotsKey)}`);
+  // …and that it is the shape INSTEAD of the body, asserted EXACTLY rather than as a byte ratio: a
+  // ratio reads as a strong check and is a flake, because this instance's sixteen empty slots make
+  // the body a fraction of the live fleet's (154 KB there against a 14 KiB budget here, e2e/tasks.ts).
+  // One line per top-level key plus the header is the actual contract, and it cannot drift quietly.
   const shapeText = await ctl(["get", "/api/sessions", "--keys"]);
-  check("ctl get --keys: it prints the shape INSTEAD of the body — an order of magnitude less text",
-    shapeText.code === 0 && shapeText.out.length * 10 < gotOwner.out.length,
-    `keys=${shapeText.out.length} B body=${gotOwner.out.length} B`);
+  const shapeLines = shapeText.out.trimEnd().split("\n");
+  check("ctl get --keys: it prints the shape INSTEAD of the body — a header and one line per top-level key",
+    shapeText.code === 0 && shapeKeys.length > 0 && shapeLines.length === shapeKeys.length + 1
+      && shapeLines[0]!.startsWith("/api/sessions  200  object{")
+      && shapeText.out.length < gotOwner.out.length,
+    `lines=${shapeLines.length} keys=${shapeKeys.length} shape=${shapeText.out.length} B body=${gotOwner.out.length} B`);
   // …and the case that has no shape to read: an empty array is said as such rather than answered
   // with the shape of an element that does not exist.
   const emptyShape = await ctl(["get", "/api/lane-outcomes", "--keys", "--json"]);

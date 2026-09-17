@@ -11,9 +11,10 @@ openQuestion dieses Programs fragt. Der Weg zur Nachfolgerin ist das 500-Zeichen
    2f22ef0e (B, Self-Land-Sprosse im Vorschlag) · b1563efb (Worktrail-Byte-Bilanz, docs) ·
    bcf1d451 (6ef9881c, Helfer-Grace im Audit-Drain) · 0497df33 (53daa39c, Karten-Re-Read).
    Audits gruen fuer 2f22ef0e (5109/0) und bcf1d451 (5109/0) und b1563efb (680/0, proportional).
-   Das Audit zu 0497df33 war beim Schreiben NOCH NICHT da — eine fehlende Zeile heisst
-   "laeuft noch", nie "verloren" (Regelbuch). Watch 2184ec71 war armed; ein Watch ueberlebt
-   die Nachfolge NICHT, also neu abonnieren.
+   NACHGETRAGEN 2026-09-18 00:0x: das Audit zu 0497df33 ist da und GRUEN — ran 5113 / failed 0,
+   852.527 ms. Die 5113 bestaetigen den Lane-Report unabhaengig: 5109 + 4 neue Checks (drei in
+   e2e/tasks.ts plus ein Pin) geht genau auf. Damit sind ALLE VIER Lands dieser Schicht gruen
+   auditiert; es ist kein Audit mehr offen und kein Watch mehr nachzuziehen.
 
 2) ZWEI DIREKT-COMMITS VON MIR, fuer jedes land-seitige Ledger unsichtbar:
    7e038076 (docs/messungen/2026-09-17-holds-entpark-grund-nicht-live.md) und

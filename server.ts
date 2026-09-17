@@ -14868,6 +14868,33 @@ async function tickLaneAutoClose(): Promise<void> {
   }
 }
 
+// WHAT THE ACTUATOR DECIDED, READABLE WITHOUT ENTERING THE PROCESS. Every refusal above already
+// carries its own sentence — and until 2026-09-17 the tick computed each one and dropped it on the
+// floor at its two `continue`s, so an unattended close that declined a lane declined it SILENTLY.
+// The cost is measured: lane `fleet/260916113100-6888` stood spent-looking for 47 min on
+// 2026-09-16 (14:28 → hand kill 15:15) holding one of three lane places, while an orchestrator
+// re-derived the clauses she could reach from poll fields and could not reach the rest — autosOn,
+// the four inflight maps, the Program row, the criterion, the per-report authority exist ONLY in
+// this process's memory, so no amount of re-derivation from outside arrives at them. It was read
+// as the ceiling below; the ledger says otherwise (that row carries no `autoClose` field and the
+// log carries no line for it, and the ceiling cannot be spent without both). This is the
+// stalled/deployGap correction one more time, and their note states the rule: serve the fact where
+// the principals who can act already look, through the SAME function, never a second copy.
+//
+// THE CEILING IS THE FIRST ARM because it is the first thing the tick reads, and it is the one
+// state with no clause in the list — `autoCloseTried` is a ceiling and not a permission, so it
+// lives outside the permission. It is reachable in exactly one shape: a teardown threw and left
+// the lane standing under the same occupant. That lane will never be attempted again, and this is
+// the only place that says so.
+//
+// NAMING IS NOT ARMING. Nothing here closes, retries or widens anything: ONE ATTEMPT PER OCCUPANT
+// is unchanged, and this function only reads what the tick would read on its next pass.
+function laneAutoCloseView(s: Slot, now: number): string | null {
+  if (autoCloseTried.get(s.id) === s.openedAt)
+    return "this occupant's one auto-close attempt is spent";
+  return laneAutoCloseRefusal(s, now);
+}
+
 interface BacklogNudgeMarker {
   session: string; openKey: string; lastAt: number; count: number;
 }
@@ -32465,6 +32492,14 @@ Bun.serve<WSData>({
         // same to the board, and the board's whole job here is to stop offering a gesture that
         // cannot work. 13 B against the ~1 300 B of headroom the 14 KiB budget measures (e2e/tasks.ts).
         lands: LANDS_ENABLED,
+        // …and whether the unattended lane close is ARMED on this fleet. Beside `lands` and for its
+        // reason: a boot-time constant of the process, so a per-slot copy would pay 16× for a fact
+        // that cannot vary within one response. It is also what makes the per-lane
+        // `autoCloseRefusal` below readable at all — an absent refusal on an ARMED fleet means "no
+        // refusal, the next tick closes this lane", and on a disarmed one means "no tick is
+        // registered". Always sent, never omitted at `false`: a pre-field server and a disarmed one
+        // must not read the same to anyone diagnosing a lane that will not close.
+        laneAutoclose: LANE_AUTOCLOSE_ON,
         // …and which OTHER fleets this board may offer a link to. OMITTED WHEN EMPTY, unlike `lands`
         // above, and the asymmetry is not an oversight: `lands` had to distinguish a pre-flag server
         // (which lands) from a locked one, so absence there would have been a wrong answer. Here an
@@ -32612,6 +32647,17 @@ Bun.serve<WSData>({
             // fleet pays nothing and the one stopped lane is the only row that grows.
             ...(st.stalled ? { stalled: true } : {}),
             ...(st.stalledSince !== null ? { stalledSince: st.stalledSince } : {}),
+            // WHY THIS LANE IS STILL STANDING, in the actuator's own words — the sentence the
+            // tick's next pass will decide on, through the one function it decides with
+            // (laneAutoCloseView). Served ONLY while armed, because `laneAutoclose` above answers
+            // the disarmed case once per response; and only for a LANE, because that is the row
+            // where the question exists — for anything else the permission's own answer is "not a
+            // fleet-created worktree lane", which is noise on 13 of 16 rows. Present-with-`null`
+            // is an ANSWER and is why this key is not omitted on a lane row: nothing refuses this
+            // lane, and the next tick closes it. ~60–95 B per lane row against the ~1 300 B the
+            // 14 KiB budget leaves (e2e/tasks.ts), on the few rows that are lanes.
+            ...(LANE_AUTOCLOSE_ON && s.cwd && s.worktree
+              ? { autoCloseRefusal: laneAutoCloseView(s, pollNow) } : {}),
           };
         }),
       });

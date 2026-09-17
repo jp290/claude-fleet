@@ -2271,6 +2271,36 @@ dieses Feldes: das Vokabular `SlotEnding` liegt in `slotstats.ts`, deshalb zähl
 einen automatischen Schluss unter demselben `owner` wie einen Knopfdruck; wer die beiden trennen
 will, joint das Outcome-Ledger, nie eine Pane.
 
+**Und WARUM eine Lane noch steht, steht seit 2026-09-17 auf `GET /api/sessions`.** Jede Ablehnung
+oben trägt ihren eigenen Satz — der Tick hat ihn bis dahin berechnet und an seinen beiden
+`continue` fallen lassen, der Aktuator lehnte also STUMM ab. Zwei Felder, EINE Ableitung
+(`server.ts#laneAutoCloseView`, dieselbe Funktion, auf die der Tick entscheidet — nie eine zweite
+Kopie, aus demselben Grund, aus dem `stalled` eine ist):
+
+| Feld | Ort | Bedeutung |
+| --- | --- | --- |
+| `laneAutoclose` | einmal pro Antwort, neben `lands` | ob der Schalter auf DIESER Fleet scharf ist |
+| `autoCloseRefusal` | je LANE-Zeile, nur wenn scharf | der Satz, auf den der nächste Tick entscheidet; `null` = nichts lehnt ab, der nächste Tick schließt sie |
+
+Auf einer Nicht-Lane fehlt der Schlüssel ganz (die Antwort der Liste wäre „not a fleet-created
+worktree lane" — Rauschen auf 13 von 16 Zeilen); auf einer unscharfen Fleet fehlt er auch, weil
+`laneAutoclose` diesen Fall EINMAL beantwortet statt 16×.
+
+**Der eine Zustand, der keine Klausel hat, ist die Obergrenze selbst.** `autoCloseTried` ist ein
+Deckel und keine Erlaubnis, liegt darum außerhalb der Ablehnungsliste — und heißt hier
+`"this occupant's one auto-close attempt is spent"`. Erreichbar ist er in genau EINER Form: ein
+geworfener Teardown hat die Lane stehen lassen. Diese Lane wird nie wieder versucht, und das ist
+die einzige Stelle, die es sagt. **Sichtbarmachen ist kein Schärfen** — ONE ATTEMPT PER OCCUPANT
+ist unverändert, der Sensor liest nur.
+
+Gemessene Kosten der Stille: Lane `fleet/260916113100-6888` stand am 2026-09-16 47 min
+spent-looking auf einem von drei Lane-Plätzen (14:28 → Hand-Kill 15:15) und nannte keinen Grund.
+Die Erklärung war **nicht** der Deckel: seine Outcome-Zeile trägt kein `autoClose`-Feld und die
+`server.log` keine Zeile dazu — ohne beides kann er nicht verbraucht worden sein (er wird genau
+eine Zeile vor `emitLaneOutcome` gesetzt). Übrig blieb der weggeworfene Ablehnungssatz, und die
+Hälfte seiner Eingaben (`autosOn`, die vier Inflight-Maps, die Program-Zeile, das Kriterium, die
+Autorität je Report) existiert nur im Prozess — von außen also strukturell unerreichbar.
+
 **Was der Tick nie tut:** landen, `main` bewegen, eine Lane mit unbeurteiltem Report schließen, eine
 fremde oder programmlose Lane schließen, einen dirty- oder `ahead>0`-Baum töten, Text in eine Pane
 schreiben, oder vom Dispatch-Tick aus laufen — nichts auf dem Lane-START-Pfad beendet eine Lane. Der

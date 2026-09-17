@@ -177,10 +177,11 @@ obligations, until the mechanism carries them:
    fleet default model, which is chosen for THIS repo.
 2. **The project's own `AGENTS.md`, by path, as the rule frame** — and the note that this file's
    repo-specific halves (its verify chain, its suites, its short docs-only proof) do not hold there.
-3. **The verify command VERBATIM**, as that project runs it, never a Fleet chain step name. `GET
-   /api/self/gate` asks no repo question (`server.ts#laneLocalProof` →
-   `verify-proportion.ts#localProofFor`), so a docs-only lane elsewhere is recommended `install,
-   pins` — steps only this tree has. The row's VERIFY overrides that recommendation.
+3. **The verify command VERBATIM**, as that project runs it, never a Fleet chain step name. Since
+   `07d261e2` the gate no longer guesses for a foreign repo: `GET /api/self/gate` asks the repo lock
+   first and serves `localProof.steps: []` with a `note` naming that repo's own verify command
+   (`server.ts#laneLocalProof`). Empty is not `null` — it is the answer, and the row's VERIFY is what
+   says whether that command is the whole proof the work owes.
 4. **The reading list with paths** — which files to read before the first edit, repo-relative.
 5. **A dependency only as `card.after`** (`NACH:` in the text form): queue row ids, checked against
    the queue and against the request's own text (`card-extract.ts#validateCard`), and able only to

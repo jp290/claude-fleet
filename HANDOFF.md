@@ -58,7 +58,24 @@ Ein Werkzeug liefert eine plausible Zahl zur **falschen Frage**. Neu dazugekomme
 5. „fremde" node/npm (siehe §6) — die Fehlzuschreibung steckte in einem WORT, nicht in einer Zahl.
 **Gegenmittel, das jedes Mal funktioniert hat:** dieselbe Zahl ein zweites Mal ANDERS herleiten. Nicht nachrechnen — anders messen.
 
-## 8. OFFEN
+## 8. OWNER-KORREKTUR 2026-09-17, FRISCH — ASTRA WIRD ZU VIEL BENUTZT
+
+Woertlich: „benutzen wir die astra lanes im uebrigen auch zuviel aktuell, sowas haette genauso gut
+eine fable5.1 oder GLM5.3 Lane uebernehmen koennen." Anlass war **meine** Zeile `e0a5dee0`, die ich
+per Hand auf Astra dispatcht hatte — **fertig in 6 min 19 s**, Ergebnis eine Messnotiz plus INDEX,
+ein Commit. Der Owner hat recht, und die Zahl belegt es.
+
+**Was daran neu ist:** die bestehende Regel verbot nur Routine und nannte als Ausweichziel „Opus
+lanes or wait". Jetzt sind zwei KONKRETE Alternativen benannt — **fable 5.1** und **GLM 5.3**.
+Ohne benanntes Ausweichziel landet im Zweifel alles bei Astra, weil es das faehigste Modell ist.
+
+**Anzuwenden:** vor jedem Astra-Dispatch die Gegenprobe „was kostet das wirklich?". Eine Analyse,
+die eine Notiz produziert und in Minuten fertig ist, geht an fable 5.1 oder eine GLM-5.3-Lane.
+**Ein Denkauftrag ist nicht automatisch anspruchsvoll — die FRAGE entscheidet, nicht das Etikett.**
+GLM braucht dafuer weiterhin Owner-Dispatch, solange `pi-zai` `automatable: false` traegt (§5).
+Memory aktualisiert: `feedback-astra-spend-through-banked-reset`.
+
+## 9. OFFEN
 
 - `b85134d3`s Land (Slot 2) bringt die Ueberlappungs-Markierung; danach ist ein rotes Audit unter Kollokation zum ersten Mal von aussen lesbar.
 - Die sol|terra-Gruppe braucht weitere Laeufe, sonst bleibt sie n=1.

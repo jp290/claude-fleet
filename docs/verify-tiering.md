@@ -4711,11 +4711,13 @@ Drei Grenzen, alle drei gehören in jeden Bericht, der sich auf einen gefilterte
 2. **Eine Fixture ist etwas, das ein Modul HERSTELLT. Die Abwesenheit von Zustand ist nicht
    modelliert.** `e2e/restart.ts` tötet Slot 1–3; ein Check, der einen Slot als WEG braucht, kann in
    einer gefilterten Runde einen offenen sehen.
-3. **Ein gefiltertes Grün sagt nur, dass die gelaufenen Checks grün waren.** Das ist die Tatsache.
-   Der naheliegende Umgang damit — ein ROT in einem gefilterten Lauf ungefiltert nachfahren, bevor es
-   adjudiziert wird — ist ein **VORSCHLAG dieser Lane, keine Regel**: verbindlich wird er nur durch
-   Owner-Promotion, und bis dahin bindet er niemanden (`CLAUDE.md` §Loader-Vertrag, propose/promote).
-   Was ohne Promotion gilt, ist die Tatsache im ersten Satz.
+3. **Ein gefiltertes Grün sagt nur, dass die gelaufenen Checks grün waren — und ein gefiltertes ROT
+   allein unterscheidet einen Produktfehler nicht von fehlendem Setup.** Eine Fixture, die ein
+   übersprungenes Modul gepflanzt hätte, sieht von innen genauso aus wie ein kaputtes Produkt. Das
+   ist die BEWEISGRENZE, und sie ist alles, was hier gilt. Der naheliegende Umgang damit — ein Rot
+   ungefiltert nachfahren, bevor es adjudiziert wird — ist ein **unverbindlicher Vorschlag, keine
+   Pflicht**: verbindlich würde er nur durch Owner-Promotion (`CLAUDE.md` §Loader-Vertrag,
+   propose/promote). Code und Runner-Ausgabe nennen darum nur die Grenze, nie eine Pflicht.
 
 Darum sind Land-Gate und Post-Land-Audit von diesem Filter strukturell nicht erreichbar, und
 `e2e/pins.ts` hält sie an drei Stellen daran fest: (i) die Variable liest AUSSCHLIESSLICH

@@ -20,8 +20,11 @@
 //      proved unit-level independence, never module-level independence INSIDE a unit.
 //   2. A fixture is something a module PRODUCES. The absence of state is not modelled — a check
 //      that needs a slot to be GONE (restart.ts kills slots 1-3) can see one that is still open.
-//   3. A filtered green says only that the checks that RAN passed. A red in a filtered run is
-//      re-run unfiltered before it is adjudicated (docs/verify-tiering.md §16).
+//   3. A filtered green says only that the checks that RAN passed — and a filtered RED alone does
+//      not distinguish a product failure from missing setup, because a fixture a skipped module
+//      would have planted is indistinguishable, from inside the run, from a broken product. That is
+//      the evidence limit. What anyone is OBLIGED to do about it is not this file's to set: no rule
+//      here, only the limit (docs/verify-tiering.md §16a).
 // The land gate and the post-land audit therefore never set FLEET_E2E_MODULES, and e2e/pins.ts
 // holds them to it.
 //

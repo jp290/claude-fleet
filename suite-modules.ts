@@ -188,7 +188,7 @@ const writersOf = (fixture: string): string[] =>
   MODULE_FIXTURES.filter((m) => (m.writes ?? []).includes(fixture)).map((m) => m.module);
 
 /** The module a changed file belongs to, or null when the path is not a runner check module. */
-export const moduleForPath = (path: string): string | null => {
+const moduleForPath = (path: string): string | null => {
   const m = /^e2e\/([\w-]+)\.ts$/.exec(path);
   return m && byModule.has(m[1]!) ? m[1]! : null;
 };
@@ -291,7 +291,7 @@ export const modulePlanFor = (named: readonly string[]): ModulePlan => {
  * for an UNSET variable means "no filter" and for a value like `,,` means a filter that selects
  * nothing, and those two must not be confused: `selectModules` below separates them.
  */
-export const parseModules = (raw: string | undefined): string[] | null => {
+const parseModules = (raw: string | undefined): string[] | null => {
   const names = (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   return names.length ? [...new Set(names)] : null;
 };

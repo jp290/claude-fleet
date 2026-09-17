@@ -4709,7 +4709,7 @@ Drei Grenzen, alle drei gehören in jeden Bericht, der sich auf einen gefilterte
    der Shard-Sonde (K1–K5). Die Sonde hat aber Unabhängigkeit ZWISCHEN Units belegt, nie zwischen
    Modulen INNERHALB einer Unit — genau dort schneidet dieser Filter.
 2. **Eine Fixture ist etwas, das ein Modul HERSTELLT. Die Abwesenheit von Zustand ist nicht
-   modelliert.** `restart.ts` tötet Slot 1–3; ein Check, der einen Slot als WEG braucht, kann in
+   modelliert.** `e2e/restart.ts` tötet Slot 1–3; ein Check, der einen Slot als WEG braucht, kann in
    einer gefilterten Runde einen offenen sehen.
 3. **Ein gefiltertes Grün sagt nur, dass die gelaufenen Checks grün waren.** Ein ROT in einem
    gefilterten Lauf wird ungefiltert nachgefahren, BEVOR es adjudiziert wird — sonst adjudiziert man
@@ -4786,12 +4786,12 @@ Die vier Server-Zustands-Fixtures, die kein Feld trägt, mit ihrem Beleg:
 
 | Fixture | Schreiber | vom Runner selbst pflanzbar? | Beleg |
 | --- | --- | --- | --- |
-| `server:slots-1-2-open` | `slots` | **ja** — dieselben zwei Aufrufe wie `slots.ts`, vor dem ersten Schritt | K2 (`shelve rejects a non-worktree slot` ohne sie) und K4 (supervisor braucht irgendeinen Slot mit Self-Credential) |
+| `server:slots-1-2-open` | `slots` | **ja** — dieselben zwei Aufrufe wie `e2e/slots.ts`, vor dem ersten Schritt | K2 (`shelve rejects a non-worktree slot` ohne sie) und K4 (supervisor braucht irgendeinen Slot mit Self-Credential) |
 | `server:slots-1-2-driven` | `slots` | nein | Prompt-Log, Transcript, Brief, Summary-Cache, angehängte Pane — sechs Leser, und niemand hat gemessen, dass Öffnen allein reicht; bewusst konservativ |
-| `server:program-confirmed` | `outcomes` | nein | K1: 3 FAIL + TypeError in `tasks.ts` im ersten `--shard`-Lauf |
+| `server:program-confirmed` | `outcomes` | nein | K1: 3 FAIL + TypeError in `e2e/tasks.ts` im ersten `--shard`-Lauf |
 | `server:srv-env-after-restart` | `restart` | nein | K5: 5 FAIL in `steward-core`, Wurzel `target slot not idle` — `FLEET_STEWARD_MIN_IDLE_MS` fehlte |
 
-`ctx.cmdEnv` und `ctx.gapEnv` schreibt `restart.ts` und liest niemand sonst; sie stehen in der
+`ctx.cmdEnv` und `ctx.gapEnv` schreibt `e2e/restart.ts` und liest niemand sonst; sie stehen in der
 Karte, weil die Ableitung sie sieht, und erzeugen keine Kante.
 
 ### 16c. Was `GET /api/self/gate` davon liefert

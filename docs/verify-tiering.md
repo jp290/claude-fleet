@@ -4684,3 +4684,122 @@ Versuch zu verwerfen — nur eine numerische ANTWORT zählt**, weil ein gescheit
 Müll trotzdem auf stdout legt. Und: **eine Sonde, die still in die sichere Richtung fällt, macht
 einen Plattformfehler als „leere Halde" unsichtbar** — darum sagt `_mtime` jetzt laut Bescheid,
 wenn es eine mtime nicht lesen kann.
+
+## 16. `FLEET_E2E_MODULES` — welche Modul-Auswahl eine Lane allein als Vorschau fahren kann (2026-09-17)
+
+`--shard k/n` schneidet die Suite an den Fixture-Nähten, aber nur auf UNIT-Ebene, und die schwerste
+Unit ist `core`: sechzehn Module, 626 s von 2 120 s (§Messung in
+`docs/messungen/2026-09-14-suite-sharding-probe.md` §5). Eine Lane, die `e2e/tasks.ts` angefasst
+hat, konnte ihre eigene Familie also nicht antworten sehen, ohne die anderen fünfzehn mitzubezahlen.
+
+`FLEET_E2E_MODULES=a,b` (oder `bun fleet-e2e.ts --modules a,b`) fährt diese Module **plus den
+transitiven Fixture-Schluss** — die kleinste Menge, die die Welt noch herstellt, gegen die die
+gewählten Module geschrieben wurden. Die Karte dafür ist `suite-modules.ts#MODULE_FIXTURES`; der
+Runner druckt den Plan vollständig und für JEDES ausgelassene Modul eine eigene `SKIP`-Zeile mit
+Grund. Ein Name, der kein Modul ist, wird VERWEIGERT (nie „dann eben kleiner"), und `--shard`
+zusammen mit `--modules` ebenfalls — diese Kombination hat niemand gemessen.
+
+### 16a. Warum eine gefilterte Runde eine VORSCHAU ist und kein Gate
+
+Drei Grenzen, alle drei gehören in jeden Bericht, der sich auf einen gefilterten Lauf beruft:
+
+1. **Die Kanten sind ABGELEITET, nicht gemessen.** Die Ctx-/LaneCtx-/StewardCtx-Hälfte leitet
+   `e2e/pins.ts` mechanisch aus den Quellen der Module selbst her und scheitert bei Drift (Stufe 1,
+   Millisekunden); die Server-Zustands-Hälfte ist handdeklariert, jede Zeile mit ihrer Messung aus
+   der Shard-Sonde (K1–K5). Die Sonde hat aber Unabhängigkeit ZWISCHEN Units belegt, nie zwischen
+   Modulen INNERHALB einer Unit — genau dort schneidet dieser Filter.
+2. **Eine Fixture ist etwas, das ein Modul HERSTELLT. Die Abwesenheit von Zustand ist nicht
+   modelliert.** `restart.ts` tötet Slot 1–3; ein Check, der einen Slot als WEG braucht, kann in
+   einer gefilterten Runde einen offenen sehen.
+3. **Ein gefiltertes Grün sagt nur, dass die gelaufenen Checks grün waren.** Ein ROT in einem
+   gefilterten Lauf wird ungefiltert nachgefahren, BEVOR es adjudiziert wird — sonst adjudiziert man
+   eine Auslassung als Befund.
+
+Darum sind Land-Gate und Post-Land-Audit von diesem Filter strukturell nicht erreichbar, und
+`e2e/pins.ts` hält sie an drei Stellen daran fest: (i) die Variable liest AUSSCHLIESSLICH
+`fleet-e2e.ts` — die Kette des Land-Gates fährt die vier Einzeldatei-Harnesses, nie diesen Runner;
+(ii) kein Wrapper und keine `watchdog.sh`-Zeile SETZT sie; (iii) sie kann auch nicht geerbt werden,
+weil `server.ts#auditChildEnv` jede `FLEET_*`-Variable aus der Kind-Umgebung des Audits entfernt —
+der Prefix im Namen IST dieser Schutz, und ein Rename ohne ihn würde ein Audit filterbar machen.
+
+**Die `SKIP`-Zeilen sind bewusst KEINE Trail-Zeilen.** Sie stehen im Lauf-Output (vor den
+Ergebnissen, damit der Schwanz bleibt, wonach gelesen wird) und tragen weder `PASS `- noch
+`FAIL `-Prefix, weil `server.ts#postLandAuditChecks` genau diese Prefixe zählt. In die dauerhafte
+`*.jsonl` gehen sie auch nicht: `trailstats.ts` zählt eine Zeile ohne `check`/`ok` als SCHADEN, und
+die Nenner eines gefilterten Laufs bleiben gerade deshalb korrekt, weil nur die Checks, die
+wirklich LIEFEN, eine Zeile geschrieben haben.
+
+### 16b. Das Register: Fixture-Leser und -Schreiber aller Runner-Module
+
+Reihenfolge = Laufreihenfolge des Runners (gepinnt). `·L` = Modul des Worktree-Lane-Blocks, braucht
+`FLEET_E2E_REPO`; eine Auswahl, die eines davon zieht, wird ohne dieses Env verweigert statt still
+übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 27 der 43 Module sind allein
+vorschaubar, die längste Kette ist acht (`steward-outcomes`).
+
+| Modul | liest | schreibt | Schluss allein |
+| --- | --- | --- | --- |
+| `context-packs` | — | — | allein |
+| `context-plan` | — | — | allein |
+| `prompts` | — | — | allein |
+| `briefstats` | — | — | allein |
+| `auth` | — | — | allein |
+| `dirs-pins` | — | — | allein |
+| `slots` | — | `server:slots-1-2-open` `server:slots-1-2-driven` | allein |
+| `history` | `server:slots-1-2-driven` | — | 2: slots history |
+| `summary` | `server:slots-1-2-driven` | — | 2: slots summary |
+| `transport` | `server:slots-1-2-driven` | — | 2: slots transport |
+| `autos` | `server:slots-1-2-driven` | `ctx.aPersistId` `ctx.aPerpPersistId` | 2: slots autos |
+| `share` | `server:slots-1-2-driven` | `ctx.shViewId` `ctx.shCookie` `ctx.shIntId` `ctx.shICookie` | 2: slots share |
+| `lanes-basic` ·L | `server:slots-1-2-open` | `lc.lnSlot` `lc.lnPath` | allein |
+| `review` ·L | `ctx.shIntId` `ctx.shICookie` | — | 3: slots share review |
+| `watch` ·L | — | — | allein |
+| `attention` ·L | — | — | allein |
+| `lanes-lifecycle` ·L | `lc.lnSlot` `lc.lnPath` `server:slots-1-2-open` | — | 2: lanes-basic lanes-lifecycle |
+| `merge` ·L | `lc.lnSlot` `lc.lnPath` `server:slots-1-2-open` | — | 2: lanes-basic merge |
+| `lane-risk` ·L | `server:slots-1-2-open` | — | allein |
+| `explorer` ·L | — | — | allein |
+| `drops` ·L | — | — | allein |
+| `land-provenance` ·L | — | — | allein |
+| `ctl` ·L | — | — | allein |
+| `concurrency` ·L | — | — | allein |
+| `self-token` ·L | `server:slots-1-2-open` | `ctx.restartSelfTok` `ctx.restartSelfSlot` | allein |
+| `lane-suite` ·L | — | — | allein |
+| `programs` ·L | `ctx.restartSelfTok` `ctx.restartSelfSlot` | — | 2: self-token programs |
+| `supervisor` ·L | `server:slots-1-2-open` | — | allein |
+| `trailstats` ·L | `ctx.restartSelfTok` | — | 2: self-token trailstats |
+| `ref-advance` ·L | — | — | allein |
+| `outcomes` ·L | — | `server:program-confirmed` | allein |
+| `land-durability` ·L | — | — | allein |
+| `tasks` | `ctx.restartSelfTok` `ctx.restartSelfSlot` `server:program-confirmed` | — | 3: self-token outcomes tasks |
+| `intake` | `ctx.shViewId` `ctx.shCookie` `server:slots-1-2-driven` | `ctx.shPersistId` | 3: slots share intake |
+| `sweep` | — | — | allein |
+| `restart` | `ctx.shIntId` `ctx.shICookie` `ctx.shPersistId` `ctx.aPersistId` `ctx.aPerpPersistId` `ctx.restartSelfTok` `ctx.restartSelfSlot` `server:slots-1-2-driven` | `ctx.cmdEnv` `ctx.gapEnv` `ctx.gapRepo` `ctx.auditPath` `ctx.plantedTranscript` `ctx.plantedTranscriptBytes` `ctx.plantedModel` `server:srv-env-after-restart` | 6: slots autos share self-token intake restart |
+| `verify-queue` | — | — | allein |
+| `deploy-facts` | — | — | allein |
+| `errors` | — | — | allein |
+| `host-hygiene` | — | — | allein |
+| `steward-core` | `ctx.gapRepo` `ctx.auditPath` `ctx.plantedTranscript` `ctx.plantedTranscriptBytes` `ctx.plantedModel` `server:srv-env-after-restart` | `sc.token` `sc.stewGet` `sc.stewPost` `sc.slot` `sc.cwd` `sc.settleForSteward` | 7: slots autos share self-token intake restart steward-core |
+| `steward-outcomes` | `sc.stewGet` `sc.stewPost` `sc.slot` `sc.settleForSteward` | — | 8: slots autos share self-token intake restart steward-core steward-outcomes |
+| `security` | `ctx.shICookie` `ctx.auditPath` `sc.token` `sc.stewGet` | — | 8: slots autos share self-token intake restart steward-core security |
+
+Die vier Server-Zustands-Fixtures, die kein Feld trägt, mit ihrem Beleg:
+
+| Fixture | Schreiber | vom Runner selbst pflanzbar? | Beleg |
+| --- | --- | --- | --- |
+| `server:slots-1-2-open` | `slots` | **ja** — dieselben zwei Aufrufe wie `slots.ts`, vor dem ersten Schritt | K2 (`shelve rejects a non-worktree slot` ohne sie) und K4 (supervisor braucht irgendeinen Slot mit Self-Credential) |
+| `server:slots-1-2-driven` | `slots` | nein | Prompt-Log, Transcript, Brief, Summary-Cache, angehängte Pane — sechs Leser, und niemand hat gemessen, dass Öffnen allein reicht; bewusst konservativ |
+| `server:program-confirmed` | `outcomes` | nein | K1: 3 FAIL + TypeError in `tasks.ts` im ersten `--shard`-Lauf |
+| `server:srv-env-after-restart` | `restart` | nein | K5: 5 FAIL in `steward-core`, Wurzel `target slot not idle` — `FLEET_STEWARD_MIN_IDLE_MS` fehlte |
+
+`ctx.cmdEnv` und `ctx.gapEnv` schreibt `restart.ts` und liest niemand sonst; sie stehen in der
+Karte, weil die Ableitung sie sieht, und erzeugen keine Kante.
+
+### 16c. Was `GET /api/self/gate` davon liefert
+
+`localProof.modules` nennt die Module, um die der COMMITTETE Fußabdruck dieser Lane geht — und ist
+ABWESEND, sobald der Abdruck nicht vollständig aus Check-Modulen besteht: eine Datei, die die Karte
+nicht platzieren kann (`server.ts`, ein Wrapper, `e2e/harness.ts`, der Runner selbst) kann ändern,
+was JEDES Modul misst, und nimmt darum die ganze Suite mit. Abwesend heißt „keine Verengung", nie
+„keine Module beteiligt" — eine leere LISTE wird deshalb nie geliefert. Der Runner rechnet den
+Schluss aus derselben Tabelle noch einmal und druckt ihn, sodass die Empfehlung und der Lauf nicht
+auseinanderlaufen können.

@@ -37,7 +37,11 @@ import {
 import { collectRepoMap, firstCommentLine, renderRepoMap } from "../repo-map";
 import { HANDOFF_WARN_KB, splitHandoff } from "../handoff-rotate";
 import { VERIFY_SKIP_EXIT as LAND_LOG_SKIP_EXIT, renderLandLog, verifyLabel, type MainCommit } from "../land-log";
-import { SHARD_UNITS } from "./ctx";
+import { SHARD_UNITS, shardPlan } from "./ctx";
+// the module filter's map is IMPORTED and RUN, never re-spelled: a pin holding a second copy of
+// the edges would pin the copy. What cannot be imported is the modules' own sources — those are
+// re-derived below and compared against the map.
+import { FIXTURES, MODULE_FIXTURES, modulePlanFor, modulesForPaths, selectModules } from "../suite-modules";
 // the pane-hint builders are IMPORTED and CALLED by the sigil rule at the end of this file: only a
 // rendered hint shows the tail `${eventAck(id)}` actually contributes, which a source scan cannot.
 import {
@@ -8936,6 +8940,247 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // a unit with no weight silently rides along wherever the tie-break puts it
   pin(`${RULE_SHARD} — every unit carries a non-negative measured weight and a non-empty module list`,
     SHARD_UNITS.every((u) => Number.isFinite(u.seconds) && u.seconds >= 0 && u.modules.length > 0));
+}
+
+
+// ================================================================================================
+// FLEET_E2E_MODULES — the fixture map, re-derived from the modules themselves
+// ================================================================================================
+// A must-agree pair with no compiler between its halves, one level finer than the shard block
+// above: suite-modules.ts#MODULE_FIXTURES says which module reads which fixture, and the modules'
+// own sources are where those reads actually are. The failure it guards is the one that makes a
+// filtered preview LIE: a module gains a `ctx.x` read, the map does not, and the closure stops
+// pulling the module that writes it — so the selection runs against a world nobody built and the
+// checks fail (or, worse, pass for the wrong reason). The Ctx/LaneCtx/StewardCtx halves are
+// derivable, so they are DERIVED here; the server-state half cannot be (no field carries it), so
+// it is hand-declared in the map with its measurement and only its SHAPE is held here.
+{
+  const RULE_MODULES = "a module is previewable alone only where the map still says what its fixtures need";
+  const runner = read("fleet-e2e.ts").split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+  const imports = [...runner.matchAll(/^import \* as (\w+) from "\.\/e2e\/([\w-]+)";$/gm)];
+  const moduleOf = new Map(imports.map((m) => [m[1]!, m[2]!]));
+  // the order the runner RUNS them in — which is the order the printed plan claims, so a map in a
+  // different order would describe a different run than the one that happened
+  const ran = [...runner.matchAll(/await (\w+)\.run\(/g)]
+    .map((m) => moduleOf.get(m[1]!))
+    .filter((m): m is string => m !== undefined && m !== "trail");
+  const listed = MODULE_FIXTURES.map((m) => m.module);
+  pin(`${RULE_MODULES} — the map holds every module the runner runs, once each, in the runner's own order`,
+    ran.length > 30 && JSON.stringify(listed) === JSON.stringify(ran),
+    `ran=${ran.length} listed=${listed.length} firstDiff=${listed.findIndex((m, i) => m !== ran[i])}`
+      + ` missing=[${ran.filter((m) => !listed.includes(m))}] phantom=[${listed.filter((m) => !ran.includes(m))}]`);
+  // …and the two tables agree about the population. SHARD_UNITS is the older list of the same
+  // modules; a module in one and not the other is a module whose two cuts disagree about it.
+  const shardListed = [...new Set(SHARD_UNITS.flatMap((u) => u.modules))].sort();
+  pin(`${RULE_MODULES} — the fixture map and e2e/ctx.ts#SHARD_UNITS cover the same modules`,
+    JSON.stringify([...listed].sort()) === JSON.stringify(shardListed),
+    `onlyInMap=[${listed.filter((m) => !shardListed.includes(m))}] onlyInUnits=[${shardListed.filter((m) => !listed.includes(m))}]`);
+
+  // THE LANE FLAG, from the runner's own steps: a module the runner only runs inside the
+  // worktree-lane block but the map calls unconditional would be selected without FLEET_E2E_REPO
+  // and then skipped silently by the step loop — a selection reporting green over a module that
+  // never ran. Field order in a step is unit, alsoIn?, lane?, module.
+  const stepLane = new Map<string, boolean>();
+  for (const st of runner.matchAll(/\{ unit: "[\w-]+"(?:, alsoIn: \[[^\]]*\])?(, lane: true)?, module: "([\w-]+)"/g))
+    stepLane.set(st[2]!, st[1] !== undefined);
+  const laneWrong = listed.filter((m) => ((MODULE_FIXTURES.find((x) => x.module === m)!.lane ?? false) !== (stepLane.get(m) ?? false)));
+  pin(`${RULE_MODULES} — the map's lane flag is the runner's own \`lane: true\` on that module's step`,
+    stepLane.size === listed.length && laneWrong.length === 0,
+    `steps=${stepLane.size} listed=${listed.length} wrong=[${laneWrong.map((m) => `${m}:map=${MODULE_FIXTURES.find((x) => x.module === m)!.lane ?? false}≠runner=${stepLane.get(m) ?? false}`)}]`);
+
+  // --- THE EDGES, RE-DERIVED. For each module: its run() signature says which carry-over object it
+  // is handed and under which name, and only the fields of THAT interface count as an edge — a
+  // local variable called `lc` (e2e/restart.ts has one) or `ctx` is not one, and the two guards
+  // together are what makes the derivation sound.
+  const ctxSrc = read("e2e/ctx.ts");
+  const fieldsOf = (iface: string): string[] => {
+    const m = new RegExp(`export interface ${iface} \\{([^]*?)\\n\\}`).exec(ctxSrc);
+    return m ? [...m[1]!.matchAll(/^ {2}(\w+)\??:/gm)].map((x) => x[1]!) : [];
+  };
+  const IFACE: [string, string, string[]][] = [
+    ["Ctx", "ctx", fieldsOf("Ctx")],
+    ["LaneCtx", "lc", fieldsOf("LaneCtx")],
+    ["StewardCtx", "sc", fieldsOf("StewardCtx")],
+  ];
+  pin(`${RULE_MODULES} — PROBE: the three carry-over interfaces were read from e2e/ctx.ts`,
+    IFACE.every(([, , f]) => f.length > 0) && fieldsOf("Ctx").length > 10,
+    IFACE.map(([n, , f]) => `${n}=${f.length}`).join(" "));
+  // the StewardCtx has no assignment anywhere: the RUNNER is what produces it, so the runner's own
+  // line is the only place its writer can be read off
+  const scWriter = /(\w+) = await (\w+)\.run\(/.exec(runner);
+  const derived = new Map<string, { reads: string[]; writes: string[] }>();
+  for (const mod of listed) {
+    const src = read(`e2e/${mod}.ts`).split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+    const sig = /export async function run\(([^)]*)\)/.exec(src);
+    const reads = new Set<string>();
+    const writes = new Set<string>();
+    for (const raw of (sig?.[1] ?? "").split(",")) {
+      const param = /^\s*(\w+)\??:\s*(\w+)/.exec(raw);
+      const iface = param ? IFACE.find(([name]) => name === param[2]) : undefined;
+      if (!param || !iface) continue;
+      for (const use of src.matchAll(new RegExp(`\\b${param[1]!}\\.(\\w+)\\s*(=[^=])?`, "g"))) {
+        if (!iface[2].includes(use[1]!)) continue;
+        (use[2] !== undefined ? writes : reads).add(`${iface[1]}.${use[1]}`);
+      }
+    }
+    if (scWriter && moduleOf.get(scWriter[2]!) === mod)
+      for (const f of fieldsOf("StewardCtx")) writes.add(`sc.${f}`);
+    derived.set(mod, { reads: [...reads].filter((r) => !writes.has(r)).sort(), writes: [...writes].sort() });
+  }
+  // the map's own ctx/lc/sc halves, side by side with that. `server:` names are excluded here and
+  // held by their own rows below — they are the part no source can answer.
+  const carried = (xs: readonly string[] | undefined): string[] =>
+    [...(xs ?? [])].filter((x) => !x.startsWith("server:")).sort();
+  const edgeWrong = MODULE_FIXTURES.filter((m) => {
+    const d = derived.get(m.module);
+    return !d || JSON.stringify(carried(m.reads)) !== JSON.stringify(d.reads)
+      || JSON.stringify(carried(m.writes)) !== JSON.stringify(d.writes);
+  }).map((m) => `${m.module}: map r[${carried(m.reads)}] w[${carried(m.writes)}]`
+    + ` ≠ src r[${derived.get(m.module)?.reads}] w[${derived.get(m.module)?.writes}]`);
+  pin(`${RULE_MODULES} — every Ctx/LaneCtx/StewardCtx edge in the map is a read or write in that module's own source`,
+    derived.size === listed.length && edgeWrong.length === 0, edgeWrong.join(" · ").slice(0, 900));
+
+  // --- THE NAMES ARE A CLOSED LIST, and every read is satisfiable. A typo in a `reads` entry would
+  // pull nothing and skip the module that writes the real fixture: the exact shape of a silent
+  // omission. A read with neither a writer nor a synthesis is the same defect one step earlier.
+  const known = new Set(FIXTURES.map((f) => f.name));
+  const used = new Set(MODULE_FIXTURES.flatMap((m) => [...(m.reads ?? []), ...(m.writes ?? [])]));
+  const strayNames = [...used].filter((f) => !known.has(f));
+  const deadNames = [...known].filter((f) => !used.has(f));
+  pin(`${RULE_MODULES} — every fixture named by a module is declared, and every declared fixture is used`,
+    strayNames.length === 0 && deadNames.length === 0 && known.size > 20,
+    `stray=[${strayNames}] dead=[${deadNames}]`);
+  const unsatisfiable = MODULE_FIXTURES.flatMap((m) => (m.reads ?? [])
+    .filter((f) => !MODULE_FIXTURES.some((w) => (w.writes ?? []).includes(f))
+      && FIXTURES.find((x) => x.name === f)?.synthesized === undefined)
+    .map((f) => `${m.module} reads ${f}`));
+  pin(`${RULE_MODULES} — every read has a writing module or a synthesis the runner can plant`,
+    unsatisfiable.length === 0, unsatisfiable.join(", "));
+  // a server-state fixture is a MEASUREMENT somebody made, so it must say what it is and be written
+  // by a module — an undocumented one would be an edge nobody can check against anything
+  const serverState = FIXTURES.filter((f) => f.origin === "server-state");
+  const thinState = serverState.filter((f) => f.what.length < 40
+    || (f.synthesized === undefined && !MODULE_FIXTURES.some((m) => (m.writes ?? []).includes(f.name))));
+  pin(`${RULE_MODULES} — every server-state fixture says what it is and has a writer or a synthesis`,
+    serverState.length >= 4 && thinState.length === 0, `n=${serverState.length} thin=[${thinState.map((f) => f.name)}]`);
+
+  // --- THE CLOSURE ITSELF, on the selection the docs and the brief both name. A pin on a computed
+  // ANSWER rather than on the table: it is what a reader is promised `FLEET_E2E_MODULES=slots,tasks`
+  // means, and it changes the moment any edge into tasks changes.
+  const plan = modulePlanFor(["slots", "tasks"]);
+  pin(`${RULE_MODULES} — FLEET_E2E_MODULES=slots,tasks closes over exactly slots, self-token, outcomes, tasks`,
+    JSON.stringify(plan.run) === JSON.stringify(["slots", "self-token", "outcomes", "tasks"])
+      && plan.skipped.length === listed.length - 4 && plan.unknown.length === 0 && plan.unresolved.length === 0,
+    JSON.stringify({ run: plan.run, skipped: plan.skipped.length, pulled: plan.pulled.map((p) => p.module) }));
+  // every module names a reason for every module it leaves out — "silently dropped" is the thing
+  // this whole mechanism must never do, and an empty reason string would be exactly that
+  const reasonless = listed.flatMap((m) => modulePlanFor([m]).skipped.filter((s) => s.why.trim().length < 20)
+    .map((s) => `${m}→${s.module}`));
+  pin(`${RULE_MODULES} — every single-module plan names a reason for every module it skips`,
+    reasonless.length === 0, `${reasonless.length} reasonless: ${reasonless.slice(0, 5)}`);
+  // a selection of everything is the full suite, and one of nothing is refused rather than green
+  const all = modulePlanFor(listed);
+  pin(`${RULE_MODULES} — selecting every module runs every module, and an unknown name is refused, not narrowed`,
+    JSON.stringify(all.run) === JSON.stringify(listed) && all.skipped.length === 0
+      && modulePlanFor(["nope"]).unknown.length === 1,
+    `run=${all.run.length} skipped=${all.skipped.length}`);
+
+  // --- THE REFUSALS, all five, as the pure decision the runner throws. They are the whole reason
+  // this mechanism cannot omit silently, and each of them is a case where a SMALLER run would wear a
+  // green tail over work nobody did — so none of them may fall back to "then run everything" either.
+  const sel = (raw: string | undefined, o: { shardGiven?: boolean; repoSet?: boolean } = {}) =>
+    selectModules({ raw, shardGiven: o.shardGiven ?? false, repoSet: o.repoSet ?? true });
+  const refusals: [string, boolean][] = [
+    ["unset is no filter at all", sel(undefined).plan === null && sel(undefined).refusal === null],
+    ["a value naming nothing is refused", (sel(",, ").refusal ?? "").includes("comma-separated")],
+    ["both cuts at once is refused", (sel("tasks", { shardGiven: true }).refusal ?? "").includes("nobody has measured")],
+    ["an unknown module is refused, and the message names the known ones",
+      (sel("nope").refusal ?? "").includes("no check module") && (sel("nope").refusal ?? "").includes("tasks")],
+    ["a lane-block selection without FLEET_E2E_REPO is refused BY NAME",
+      (sel("tasks", { repoSet: false }).refusal ?? "").includes("self-token")],
+    ["…and a selection that needs no lane module is fine without it",
+      sel("auth", { repoSet: false }).refusal === null],
+    ["a good selection returns a plan and no refusal",
+      sel("slots,tasks").refusal === null && sel("slots,tasks").plan?.run.length === 4],
+  ];
+  pin(`${RULE_MODULES} — every refusal refuses: a bad selection never becomes a smaller run`,
+    refusals.every(([, ok]) => ok), refusals.filter(([, ok]) => !ok).map(([n]) => n).join(" · "));
+
+  // --- THE BASE FIXTURE'S CONDITION DID NOT CHANGE MEANING. It used to read
+  // `!myUnits.has("core")` and now reads "slots.ts is not among the modules that will run", so that
+  // one line can serve both cuts. Those two are the same sentence only because slots.ts belongs to
+  // `core` and to no other unit — pinned over every shard of every n a plan is computed for, since
+  // a table edit moving slots.ts into a second unit would silently make a shard skip its own world.
+  const slotsUnits = SHARD_UNITS.filter((u) => u.modules.includes("slots")).map((u) => u.unit);
+  const shardMismatch: string[] = [];
+  for (let n = 1; n <= 6; n++) {
+    const plan2 = shardPlan(n);
+    for (let k = 1; k <= n; k++) {
+      const units = new Set([...plan2].filter(([, sh]) => sh === k).map(([u]) => u));
+      const mods = new Set(SHARD_UNITS.filter((u) => units.has(u.unit)).flatMap((u) => u.modules));
+      if (mods.has("slots") !== units.has("core")) shardMismatch.push(`${k}/${n}`);
+    }
+  }
+  pin(`${RULE_MODULES} — "slots.ts runs" and "this shard holds core" are the same fact, so the base fixture's one condition serves both cuts`,
+    JSON.stringify(slotsUnits) === JSON.stringify(["core"]) && shardMismatch.length === 0,
+    `slotsIn=[${slotsUnits}] mismatched=[${shardMismatch}]`);
+
+  // --- THE GATE AND THE AUDIT ARE NOT FILTERABLE, held at all three places it could happen.
+  // 1. Only the isolated runner reads the variable at all: the land gate's chain runs the four
+  //    single-file harnesses (fleet-e2e-clean-review/security/claude-gate), and a filter it cannot
+  //    read is a filter that cannot narrow it.
+  // the READ is `process.env.FLEET_E2E_MODULES`; naming the variable in prose is not reading it,
+  // which is why the scan is for the access and not for the string
+  const readers = [...readdirSync(ROOT).filter((f) => f.endsWith(".ts")),
+    ...readdirSync(`${ROOT}/e2e`).filter((f) => f.endsWith(".ts")).map((f) => `e2e/${f}`)]
+    .filter((f) => f !== "e2e/pins.ts") // the scan pattern lives in THIS file; it runs no suite
+    .filter((f) => /process\.env\.FLEET_E2E_MODULES/.test(read(f)));
+  pin(`${RULE_MODULES} — the only module that reads FLEET_E2E_MODULES is the isolated runner`,
+    JSON.stringify(readers.sort()) === JSON.stringify(["fleet-e2e.ts"]),
+    `readers=[${readers}]`);
+  // 2. No wrapper and no watchdog line SETS it — the audit command is `./e2e-isolated.sh`, so a
+  //    wrapper that exported a selection would narrow tier 2 for every land on this machine.
+  const setters = ["watchdog.sh", ...readdirSync(ROOT).filter((f) => /^e2e-.*\.sh$/.test(f))]
+    .filter((f) => /FLEET_E2E_MODULES=/.test(read(f)));
+  pin(`${RULE_MODULES} — no suite wrapper and no watchdog line assigns FLEET_E2E_MODULES`,
+    setters.length === 0, `setters=[${setters}]`);
+  // 3. …and it cannot be INHERITED into the post-land audit either, which is a property of the
+  //    NAME: auditChildEnv drops every FLEET_* variable from the child's environment. The variable
+  //    is called FLEET_E2E_MODULES so that this existing rule covers it — rename it without the
+  //    prefix and a server started with it set would filter its own audits.
+  const srv = read("server.ts");
+  pin(`${RULE_MODULES} — the audit child's env drops every FLEET_* name, which is why the filter carries that prefix`,
+    /function auditChildEnv\(\)[^]*?!k\.startsWith\("FLEET_"\)/.test(srv),
+    `rule=${/!k\.startsWith\("FLEET_"\)/.test(srv)}`);
+
+  // --- THE GATE'S ADVICE AND THE RUNNER'S FILTER ARE ONE TABLE. modulesForPaths is what
+  // localProof.modules is computed from; it may only ever name modules this runner boots, and it
+  // must stay silent about a footprint it cannot place entirely.
+  pin(`${RULE_MODULES} — localProof.modules names only runner modules, and nothing for a footprint it cannot place`,
+    JSON.stringify(modulesForPaths(["e2e/tasks.ts", "e2e/slots.ts"])) === JSON.stringify(["slots", "tasks"])
+      && modulesForPaths(["e2e/tasks.ts", "server.ts"]) === null
+      && modulesForPaths(["e2e/harness.ts"]) === null
+      && modulesForPaths(["e2e/pins.ts"]) === null
+      && modulesForPaths([]) === null,
+    JSON.stringify({ two: modulesForPaths(["e2e/tasks.ts", "e2e/slots.ts"]), mixed: modulesForPaths(["e2e/tasks.ts", "server.ts"]),
+      plumbing: modulesForPaths(["e2e/harness.ts"]) }));
+
+  // --- THE DOC SEAM. docs/verify-tiering.md §16 is where the record of reader/writer lives, and a
+  // record missing a module is the one a lane would trust while planning a narrower run.
+  const tiering = read("docs/verify-tiering.md");
+  const at = tiering.indexOf("\n## 16.");
+  const sec16 = at < 0 ? "" : tiering.slice(at, tiering.indexOf("\n## ", at + 5) < 0 ? undefined : tiering.indexOf("\n## ", at + 5));
+  const undocumented = listed.filter((m) => !new RegExp(`\\b${m}\\b`).test(sec16));
+  pin(`${RULE_MODULES} — docs/verify-tiering.md §16 exists and names every module the map holds`,
+    sec16.length > 800 && undocumented.length === 0 && sec16.includes("FLEET_E2E_MODULES"),
+    at < 0 ? "no `## 16.` section in docs/verify-tiering.md" : `len=${sec16.length} undocumented=[${undocumented}]`);
+  // …and the one COUNT the prose states is the count the table computes. A sentence like "26 of the
+  // 43 are previewable alone" is exactly the kind of number that is written once by eye and then
+  // read as a fact for months (it WAS wrong by one when §16 was first written).
+  const alone = listed.filter((m) => modulePlanFor([m]).run.length === 1).length;
+  pin(`${RULE_MODULES} — §16's "previewable alone" count is the count the map computes`,
+    sec16.includes(`${alone} der ${listed.length} Module sind allein`),
+    `computed=${alone}/${listed.length}`);
 }
 
 // --- THE CARD STAMPS THE MODEL THAT RAN (S3, 2026-09-12) -----------------------------------------

@@ -3,6 +3,8 @@
 // recommendation is advisory; the authoritative server gate uses this same classification for
 // its docs-only short chain and otherwise runs its full configured chain.
 
+import { modulesForPaths } from "./suite-modules";
+
 export const LOCAL_PROOF_STEPS = [
   "install",
   "pins",
@@ -28,6 +30,15 @@ export interface LocalProof {
   // command selection asks). Absent therefore means "these steps are this repo's own", never
   // "no note was computed".
   note?: string;
+  // WHICH CHECK MODULES this footprint is about, for a lane that wants the isolated preview NARROWED
+  // (`FLEET_E2E_MODULES=<these>`; the runner adds the transitive fixture closure and prints it).
+  // Advisory, and present only where narrowing is honest: absent means "no narrowing", which is the
+  // answer for every footprint that is not entirely check modules — one file the map cannot place
+  // (server.ts, a wrapper, e2e/harness.ts) can change what any module measures.
+  // It never narrows the authoritative gate: the land gate's chain does not run that runner at all,
+  // and the post-land audit's child environment drops every FLEET_* variable (e2e/pins.ts holds
+  // both). A filtered run is a PREVIEW — docs/verify-tiering.md §16.
+  modules?: string[];
 }
 
 export interface VerificationProportion extends LocalProof {
@@ -90,10 +101,14 @@ export function verificationProportionFor(files: string[]): VerificationProporti
       isolatedPreview = "self-assess";
   }
 
+  // omitted rather than empty when there is nothing to narrow: an empty LIST would read as "no
+  // modules are involved", and the absent field is the only honest form of "the whole suite"
+  const modules = modulesForPaths(files);
   return {
     steps: LOCAL_PROOF_STEPS.filter((step) => selected.has(step)),
     isolatedPreview,
     classifiedAs: Object.fromEntries(classifications),
+    ...(modules ? { modules } : {}),
     proportional,
   };
 }

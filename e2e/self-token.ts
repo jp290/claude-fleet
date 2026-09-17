@@ -6,6 +6,8 @@ import { spawnSync } from "node:child_process";
 import { BASE, REPO, REPO2, REPO3, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, stopSrv } from "./harness";
 import type { Ctx } from "./ctx";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor } from "../verify-proportion";
+// the same table the runner reads, so this family measures the advice AND the closure it implies
+import { modulePlanFor } from "../suite-modules";
 import {
   FRAGMENTS_FOR, FRAGMENT_TITLES, RULEBOOK_BACKREF_HEADING, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
   fragmentFileName, renderRulebook, rulebookBody, type RulebookFragment,
@@ -402,6 +404,26 @@ export async function run(ctx: Ctx): Promise<void> {
       && serverModuleProof.isolatedPreview === "self-assess"
       && JSON.stringify(serverModuleProof.steps) === JSON.stringify(LOCAL_PROOF_STEPS),
     JSON.stringify(serverModuleProof));
+  // WHICH MODULES the footprint is about — the narrowing a lane may give FLEET_E2E_MODULES. Three
+  // arms in one call each, because the rule is a CONJUNCTION and the interesting half is the
+  // silence: a footprint the map cannot place entirely narrows to nothing, and the field is then
+  // ABSENT rather than an empty list (an empty list reads as "no modules are involved").
+  const modProof = localProofFor(["e2e/tasks.ts", "e2e/slots.ts"]);
+  const mixedProof = localProofFor(["e2e/tasks.ts", "server.ts"]);
+  const plumbingProof = localProofFor(["e2e/harness.ts"]);
+  check("local proof: an all-check-module footprint names its modules, and one unplaceable file names none",
+    JSON.stringify(modProof.modules) === JSON.stringify(["slots", "tasks"])
+      && mixedProof.modules === undefined && plumbingProof.modules === undefined
+      && localProofFor(["docs/guide.md"]).modules === undefined,
+    JSON.stringify({ e2eOnly: modProof.modules, mixed: mixedProof.modules, plumbing: plumbingProof.modules }));
+  // …and the closure the RUNNER will take from that advice, from the same table the runner reads:
+  // a lane handed ["tasks"] runs four modules, not one, and is told which and why.
+  const tasksPlan = modulePlanFor(["tasks"]);
+  check("local proof: the module advice closes over its fixtures — tasks pulls self-token and outcomes, with a reason each",
+    JSON.stringify(tasksPlan.run) === JSON.stringify(["self-token", "outcomes", "tasks"])
+      && tasksPlan.pulled.length === 2 && tasksPlan.pulled.every((p) => p.why.includes("reads"))
+      && tasksPlan.skipped.every((sk) => sk.why.length > 20) && tasksPlan.unresolved.length === 0,
+    JSON.stringify({ run: tasksPlan.run, pulled: tasksPlan.pulled }));
   const conservativeProof = localProofFor(["docs/guide.md", "new-top-level.unknown"]);
   check("local proof: one unknown file flips an otherwise docs-only diff to the conservative full default",
     JSON.stringify(conservativeProof.steps) === JSON.stringify(LOCAL_PROOF_STEPS)
@@ -427,6 +449,13 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify(Object.keys(g0.localProof.classifiedAs).sort()) === JSON.stringify(proofFiles)
       && proofFiles.every((file) => typeof g0.localProof?.classifiedAs[file] === "string"),
     JSON.stringify({ files: proofFiles, localProof: g0.localProof }));
+  // …and the SERVED module advice is the same function's answer over the same footprint. Asserted as
+  // agreement rather than as a literal: this lane's footprint is the fixture repo's own files, so
+  // the honest answer here is the absent field — and a route that invented one would fail this.
+  check("GET /api/self/gate: the served localProof.modules is what the classifier answers for that same footprint",
+    g0Res.ok && g0.localProof !== null
+      && JSON.stringify(g0.localProof.modules) === JSON.stringify(localProofFor(proofFiles).modules),
+    JSON.stringify({ served: g0.localProof?.modules, pure: localProofFor(proofFiles).modules, files: proofFiles }));
   // --- suiteLock, the machine-busy fact (autonomy verbs, Verb 1): the one wait a lane's verify
   // actually hangs on, now named by the route that names the judge. Pinned against DISK truth
   // rather than an assumed harness shape: under a wrapper run the stage mutex is held by our own

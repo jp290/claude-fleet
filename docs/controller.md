@@ -109,6 +109,14 @@ abgeleitet aus `docs/messungen/2026-09-14-rollen-briefe-synthese.md` §2b) und w
 - **Owner-`POST /send {slot, text, submit?, openedAt?}` — zwei Ablehnungen, beide ohne getippten Byte** (Anlass: 2026-09-14 12:08, ein `/send` an eine recycelte Slot-Nummer toetete eine gerade spawnende Lane):
   (1) **Occupant-Pin.** Wer den Occupant gelesen hat, gibt dessen `openedAt` mit; ist der Slot seither neu besetzt, antwortet die Route **409** mit `occupant: {slot, openedAt, sessionId, label, lane}` des aktuellen Occupants. Ein nicht-positives oder nicht-numerisches `openedAt` ist **400**. Ohne das Feld bleibt die Route unverpinnt wie bisher.
   (2) **Kein lebender Agent.** Deklariert der Harness Comms, prueft `sendText` den Agent-Prozess der Pane (`requireAgent`, nur diese Route): eine frische Pane (< `SEND_BOOT_FRESH_MS`) bekommt das begrenzte Boot-Warten (`SEND_BOOT_WAIT_MS`, Audit-Zeile `send_boot_timeout`), eine etablierte genau eine Probe. Ist danach kein Agent `alive`, antwortet die Route **409** mit `agent` (`no-agent`/`no-pane`) und `receipt.delivery:"refused"`, nichts im Journal. Ein Harness ohne deklarierte Comms (`unprobed`, z. B. `FLEET_CMD=true`) bleibt zustellbar. In eine Pane ohne Agent tippt der Owner ueber das Terminal selbst, nicht ueber die Compose-Route.
+- **Jeder Send hinterlaesst eine Ledger-Zeile** (`audit.jsonl`, Event `send`) — geschrieben von
+  `sendText` selbst und darum fuer JEDEN Kanal, nicht nur fuer diese Route: `path` (hier `owner`),
+  `bytes` (tatsaechlich in die Pane gepastete UTF-8-Bytes; `0`, wenn eine der beiden Ablehnungen
+  oben vor dem Paste greift — „nichts im Journal" heisst also nicht „keine Spur"), `acceptance`
+  (das beobachtete Urteil oder das Wort des Wurfs) und `ctxPct` nur dann, wenn der Fuellstand der
+  Empfaengerin messbar ist; ein fehlendes Feld ist „nicht messbar", nie 0 %. Daraus je Slot und
+  LOKALEM Tag `inbound: {sends, bytes}` auf `/api/sessions` — nur ZUGESTELLTE Bytes, weggelassen,
+  wenn heute nichts ankam.
 - **`ctl.sh commit main`** (auch `commit-main` geschrieben) wartet begrenzt (`--budget`, Sekunden) auf `merges` exit 0 und committet dann den bereits gestagten Index im Haupt-Checkout mit `-m <msgfile>`; sonst benannte Absage „a land is running (slot N) — nothing committed". Eine ungefragte Live-Hälfte (kein Owner-Token) ist `unknown` und sagt ebenfalls ab; das Verb staget nichts und umgeht keinen Hook.
 
 ## Arbeitsweise ohne Dauerpolling

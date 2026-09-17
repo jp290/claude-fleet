@@ -223,6 +223,10 @@ interface SlotInfo {
   // tell for this slot (no pinned transcript, no usage line yet, a harness that writes none, or a
   // model whose window it cannot name) — and must never be painted as an empty/fresh context.
   ctx?: { usedTokens: number; windowTokens: number; pct: number } | null;
+  // B3 · what Fleet TYPED into this pane today (server.ts, the send ledger's own counter). ABSENT
+  // means nothing was delivered today — the server omits the key on the 2 s poll — and absent is
+  // therefore an answer, not a gap: a session nobody has written to since midnight.
+  inbound?: { sends: number; bytes: number };
   // Codex rollout discovery is lazy and can terminally refuse ambiguity/loss. This is a typed
   // claim about the server poll, not inferred from harness/session recency in the client.
   codexRecovery?: { state: "pending" | "bound" | "ambiguous" | "lost";
@@ -5152,6 +5156,11 @@ function stackChips(g: Stack, open: boolean): HTMLElement[] {
 
 // One occupied slot. `stack` is set only when this row is the anchor of a fold — it carries the
 // arrow, the ⎇N chip, the quick-lane chip and, while folded, the badges of the lanes it hides.
+// B3 · the inbound chip's PAINTED text, in one place because two readers need exactly it: the row
+// that draws the chip and the sidebar's render key, which must be keyed on what is painted and not
+// on the raw byte count (the rule `behind` and the ctx chip above both document).
+const inboundChipLabel = (inb: { sends: number; bytes: number }): string =>
+  `in ${inb.bytes < 1024 ? `${inb.bytes} B` : `${Math.round(inb.bytes / 1024)} KB`}`;
 function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<number, string>): HTMLElement {
   const open = stack ? stackOpen.has(stack.foldKey) : false;
   const visible = panes.some((p) => p.slot === s.id);
@@ -5257,6 +5266,20 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
           : "context fill unknown — this slot has no pinned claude transcript with a usage record yet"
             + " (or runs a harness/model Fleet cannot measure). Not an empty context.";
         row.appendChild(cx);
+      }
+      // B3 · the cost of talking to this session today. A SENSOR beside the context fill and read
+      // the same way: no threshold, no colour, no action. It is only drawn when the server sent the
+      // key, because the key's absence IS the answer ("nothing typed into this pane today") — and
+      // an unconditional "in 0" would read as a claim about a session Fleet may never have written
+      // to at all.
+      if (s.inbound) {
+        const { sends, bytes } = s.inbound;
+        const inb = el("span", "ctxfill", inboundChipLabel(s.inbound));
+        inb.title = `Fleet typed ${bytes.toLocaleString()} bytes into this pane today,`
+          + ` in ${sends} send${sends === 1 ? "" : "s"} (local day).`
+          + "\nDelivered bytes only — a refused send costs the session nothing."
+          + "\nCounted per slot number, so a slot recycled today carries both occupants' sends.";
+        row.appendChild(inb);
       }
       // green = live in a pane, or a background session that just produced output. A FOLDED anchor
       // also lights up for its hidden lanes: a lane that just produced output is exactly the kind of
@@ -5543,7 +5566,11 @@ async function refresh() {
         // moves on nearly every poll; keying on it would rebuild the sidebar continuously, and
         // leaving it out entirely would freeze the chip until some other field moved — the exact
         // bug `behind` above documents.
-        s.ctx ? Math.round(s.ctx.pct) : null])]);
+        s.ctx ? Math.round(s.ctx.pct) : null,
+        // …and the inbound chip, through the SAME function that paints it — keying on the raw byte
+        // count would rebuild the sidebar for a change the chip does not show, and leaving it out
+        // would freeze the chip until another field moved (the `behind` bug this list documents).
+        s.inbound ? inboundChipLabel(s.inbound) : null])]);
     if (key !== lastRender) {
       lastRender = key;
       renderSlots();

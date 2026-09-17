@@ -379,21 +379,38 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
 //   NACH: 7ed73694                                   (optional: queue ids the row waits on)
 //   VERIFY: volle Kette
 //   DONE: one checkable sentence
-//   <prose — its first line is the goal>
+//   VERBOTEN: nichts an server.ts · kein Auto-Dispatch  (optional: `·` separates the entries)
+//   <prose — its first PARAGRAPH is the goal>
 //
 // An optional `[TITEL]` line may stand above the headers. The five without "optional" must ALL be
 // present, each once, or the text is not the format and the extractor reads it as prose: a half
 // header is a sign of prose that happens to start with "DONE:", and a deterministic reading of it
 // would take the model's fallback away from a row that needs it. Nothing here decides validity —
 // the result goes through validateCard like every other card, against the same row text.
-const FORMAT_KEYS = ["ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "VERIFY", "DONE"] as const;
+//
+// WHY VERBOTEN IS A KEY AND WHY THE GOAL IS A PARAGRAPH: this parser is not only a filing door, it
+// is a RE-READER. `server.ts#cardDue` sends a row back through it whenever the row's brief moves,
+// and `server.ts#tickCardSweep` writes the result over the stored card whole. A field this format
+// cannot spell is therefore not merely unfilable — it is DROPPED from a card that already carried
+// it, by the very act of sharpening the row. Measured 2026-09-16: the same text filed as an author
+// card carried verboten=2 and came back from a re-read with verboten=0, and a two-line goal came
+// back as its first sentence. `verboten` is the half of a card that says what a lane may NOT do
+// (wave-brief.ts#renderCardHead renders it into every lane brief), so losing it silently is the
+// dangerous direction. Both readings are written to round-trip the head that renderCardHead emits:
+// `·` between entries, an em dash alone meaning none.
+const FORMAT_KEYS = ["ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "VERIFY", "DONE", "VERBOTEN"] as const;
 type FormatKey = typeof FORMAT_KEYS[number];
 const FORMAT_REQUIRED: readonly FormatKey[] = ["ROLLE", "GROESSE", "FLAECHE", "VERIFY", "DONE"];
-const FORMAT_LINE = /^\s*(ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|VERIFY|DONE)\s*:[ \t]*(.*)$/i;
+const FORMAT_LINE = /^\s*(ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|VERIFY|DONE|VERBOTEN)\s*:[ \t]*(.*)$/i;
 const formatKey = (word: string): FormatKey =>
   word.toUpperCase().replace("Ö", "OE").replace("Ä", "AE") as FormatKey;
+const FORMAT_DASH = /^[-\u2013\u2014]+$/;
 const formatTokens = (value: string): string[] => value.split(/[\s,;]+/)
-  .map((token) => token.replace(/^`+|`+$/g, "")).filter((token) => token && !/^[-\u2013\u2014]+$/.test(token));
+  .map((token) => token.replace(/^`+|`+$/g, "")).filter((token) => token && !FORMAT_DASH.test(token));
+// VERBOTEN entries are phrases, not tokens: only `·` separates them, and a lone dash is the
+// "none" that renderCardHead writes — reading it back as a constraint would invent one.
+const formatPhrases = (value: string): string[] => value.split("\u00b7")
+  .map((part) => part.trim()).filter((part) => part && !FORMAT_DASH.test(part));
 
 /** The row text as a card, when it opens with the filing headers; `null` = prose, for the extractor. */
 export function parseFormattedCard(text: string): RawCard | null {
@@ -426,12 +443,17 @@ export function parseFormattedCard(text: string): RawCard | null {
     symbols.push(ref, ...more.map((symbol) => `${lastFile}#${symbol}`));
   }
   const size = field("GROESSE").toLowerCase().replace("groß", "gross");
-  const prose = lines.slice(at).find((line) => line.trim()) ?? title;
+  // the first PARAGRAPH, not the first line: a goal written over two lines is one goal, and
+  // `text1` collapses the join to the single sentence every other card path stores.
+  const rest = lines.slice(at);
+  const from = rest.findIndex((line) => line.trim());
+  const blank = from < 0 ? -1 : rest.findIndex((line, i) => i > from && !line.trim());
+  const prose = from < 0 ? title : rest.slice(from, blank < 0 ? rest.length : blank).join(" ");
   return {
     ziel: prose.trim(),
     rolle: { harness: role[0] ?? "", model: role.length > 2 ? role.slice(1, -1).join("/") : role[1] ?? "", effort: role.length > 2 ? role[role.length - 1] : "" },
     surface: { files, symbols, creates: formatTokens(field("NEU")) },
-    done: field("DONE"), verify: field("VERIFY"), verboten: [],
+    done: field("DONE"), verify: field("VERIFY"), verboten: formatPhrases(field("VERBOTEN")),
     ...(size ? { size } : {}),
     after: formatTokens(field("NACH")),
   };

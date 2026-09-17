@@ -6016,6 +6016,23 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && (server.split("tickLaneAutoClose(").length - 2) === 1,
     `emit@${emitAt} kill@${killAt} forbidden=[${autoCloseForbidden.join(",")}]`
       + ` callSites=${server.split("tickLaneAutoClose(").length - 2}`);
+  // …and the DECISION IS READABLE FROM OUTSIDE, through the same function the tick decides on. Every
+  // refusal already carried a sentence and the tick dropped all of them at its two `continue`s, so
+  // the actuator refused silently — 47 min on one of three lane places, 2026-09-16, lane
+  // fleet/260916113100-6888. The ceiling is the FIRST arm because the tick reads it first and it is
+  // the one state the permission list cannot name (it is a ceiling, not a permission). A poll that
+  // re-derived any of this would be the second copy this pin exists to refuse.
+  const autoCloseView = server.match(/function laneAutoCloseView\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — the auto-close refusal the tick acts on is the one the sessions poll serves, ceiling first (D2)`,
+    autoCloseView !== ""
+      && autoCloseView.includes("autoCloseTried.get(s.id) === s.openedAt")
+      && autoCloseView.includes('return "this occupant\'s one auto-close attempt is spent";')
+      && autoCloseView.indexOf("autoCloseTried") < autoCloseView.indexOf("laneAutoCloseRefusal(s, now)")
+      && server.includes("{ autoCloseRefusal: laneAutoCloseView(s, pollNow) }")
+      && server.includes("laneAutoclose: LANE_AUTOCLOSE_ON,")
+      && (server.split("laneAutoCloseRefusal(").length - 2) === 3,
+    `view=${autoCloseView !== ""} poll=${server.includes("{ autoCloseRefusal: laneAutoCloseView(s, pollNow) }")}`
+      + ` refusalCallSites=${server.split("laneAutoCloseRefusal(").length - 2}`);
   // …and the permission list is default-DENY: every clause returns a sentence, the only `null` is
   // the last line, and the two facts that cannot be re-derived elsewhere (the exact receiver
   // occupant, the Program binding) are tested here rather than inherited from the door that wrote

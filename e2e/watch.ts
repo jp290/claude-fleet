@@ -4059,7 +4059,12 @@ export async function run(): Promise<void> {
     const d2MainShaBefore = spawnSync("git", ["-C", REPO, "rev-parse", "main"], { encoding: "utf8" }).stdout.trim();
     const d2OpenBefore = (await liveSlots()).filter((x) => x.cwd !== null).map((x) => x.id);
     const d2PlogBefore = (await plogRead()).length;
-    await restartSrv({ FLEET_LANE_AUTOCLOSE: "1" });
+    // the latch PATH rides the same restart the flag does, but the latch FILE does not exist yet:
+    // waitForSlotTeardownTestLatch returns immediately while it is absent, so every close above
+    // runs untouched and only the ceiling probe below (e) arms the hold.
+    const d2Latch = `${ROOT}/d2-autoclose-teardown-latch`;
+    for (const f of [d2Latch, `${d2Latch}.reached`, `${d2Latch}.release`]) rmSync(f, { force: true });
+    await restartSrv({ FLEET_LANE_AUTOCLOSE: "1", FLEET_TEST_SLOT_TEARDOWN_LATCH: d2Latch });
     let closedBoth = false;
     for (let i = 0; i < 120 && !closedBoth; i++) {
       const live = await liveSlots();
@@ -4149,6 +4154,46 @@ export async function run(): Promise<void> {
       JSON.stringify({ open: clarifyOpenArmed, rows: clarifyRowsArmed.length, decision: d2Report.get(clarifyLane.slot)?.decision?.disposition ?? null,
         criterion: clarifyCriterionArmed }));
 
+    // --- (a2) EVERY REFUSAL, UNDER ITS OWN NAME, ON THE ROUTE THE PRINCIPALS ALREADY POLL. Until
+    // 2026-09-17 the tick computed each of these sentences and dropped it at its `continue`: the
+    // seven lanes above stood for exactly the reasons this list names and NONE of them said so
+    // anywhere a reader outside the process could reach. Measured cost of that silence: lane
+    // `fleet/260916113100-6888` held one of three lane places for 47 min on 2026-09-16 while an
+    // orchestrator re-derived what she could from poll fields — autosOn, the four inflight maps,
+    // the Program row, the criterion and the per-report authority are in-memory only, so the rest
+    // was unreachable by construction. BREAKS IF: the poll re-derives instead of calling
+    // laneAutoCloseView · a clause is renamed in server.ts without its reader moving with it.
+    type D2Row = { id: number; cwd: string | null; openedAt: number; autoCloseRefusal?: string | null };
+    const d2Poll = async (): Promise<{ laneAutoclose?: boolean; slots: D2Row[] }> =>
+      (await (await get("/api/sessions")).json()) as { laneAutoclose?: boolean; slots: D2Row[] };
+    const d2Named: [string, number, string][] = [
+      ["dirty tree", dirtyLane.slot, "the lane is not spent-looking"],
+      ["ahead>0", aheadLane.slot, "the lane is not spent-looking"],
+      ["rejected + ahead>0", rejectedAheadLane.slot, "the lane is not spent-looking"],
+      ["undecided report", undecidedLane.slot, "a report of this lane is undecided"],
+      ["no report at all", reportlessLane.slot, "this lane filed no terminal report"],
+      ["verdict outside the lineage", outsideLineageLane.slot,
+        "a report's verdict does not name a MAIN this Program's lineage records as holding authority at decision time"],
+      ["unconfirmed criterion", clarifyLane.slot,
+        "the lane's proposed criterion is unconfirmed — the owner has not confirmed it"],
+    ];
+    const d2Armed = await d2Poll();
+    const d2Wrong = d2Named.filter(([, slot, want]) =>
+      d2Armed.slots.find((x) => x.id === slot)?.autoCloseRefusal !== want);
+    check("D2 sensor: the armed fleet says so once, and every refusing lane carries the actuator's OWN sentence on the sessions poll",
+      d2Armed.laneAutoclose === true && d2Wrong.length === 0,
+      JSON.stringify({ laneAutoclose: d2Armed.laneAutoclose ?? null,
+        wrong: d2Wrong.map(([name, slot, want]) =>
+          ({ name, slot, want, got: d2Armed.slots.find((x) => x.id === slot)?.autoCloseRefusal ?? null })) }));
+    // …and the field is a LANE fact, not a slot fact: the MAIN on this same server is no lane and
+    // the permission's answer for it ("not a fleet-created worktree lane") is noise on 13 of 16
+    // rows, so the key is absent there — while a lane that nothing refuses carries an explicit
+    // `null`, which is the answer "the next tick closes this one".
+    const d2MainPollRow = d2Armed.slots.find((x) => x.id === d2Main);
+    check("D2 sensor: the refusal rides LANE rows only — a non-lane slot carries no key at all",
+      !!d2MainPollRow && !("autoCloseRefusal" in d2MainPollRow),
+      JSON.stringify({ main: d2Main, row: d2MainPollRow ?? null }));
+
     // --- (d) what the close must never do, measured rather than asserted in prose: it moves no
     // integration branch, it types nothing into any lane, and it takes no slot it was not entitled
     // to — including every lane other modules left open on this server.
@@ -4180,6 +4225,57 @@ export async function run(): Promise<void> {
         && clarifyRow?.disposition === "killed-empty" && clarifyRow.autoClose?.disposition === "accepted"
         && clarifyRow.autoClose.reportId === d2Report.get(clarifyLane.slot)?.id,
       JSON.stringify({ confirm: d2Confirm.status, closed: clarifyClosed, rows: clarifyRows.length, row: clarifyRow ?? null }));
+
+    // --- (e) THE CEILING, UNDER ITS OWN NAME — the one state the permission list cannot describe.
+    // `autoCloseTried` is a ceiling and not a permission, so it lives OUTSIDE laneAutoCloseRefusal
+    // and had no sentence at all: a lane whose single attempt was spent was skipped in silence on
+    // every tick forever. It is reachable in exactly one shape — the teardown threw and left the
+    // lane standing under the same occupant — and that shape is what this builds, with the
+    // server's own teardown latch: the latch is never RELEASED, so it throws on its 10 s timeout,
+    // the tick catches it, and the lane stands with its attempt gone.
+    //
+    // THIS PROBE MUST NOT READ AS A POLICY CHANGE: what it measures is that the lane stays shut
+    // out (one row, one attempt, never retried) AND that the shutting-out now has a name.
+    // BREAKS IF: the ceiling arm is dropped from laneAutoCloseView (the lane falls back to a
+    // teardown-inflight or a plain refusal and then goes silent once that clears) · the ceiling is
+    // turned into a retry (a second outcome row appears for one close).
+    const ceilSlot = undecidedLane.slot;
+    const ceilOpenedAt = (await d2Poll()).slots.find((x) => x.id === ceilSlot)?.openedAt ?? 0;
+    writeFileSync(d2Latch, `${ceilSlot}\n`, { mode: 0o600 });
+    // the ONE refusing fact of this lane, removed: its report is now judged by the same MAIN that
+    // authorised the two lanes that closed, so it qualifies exactly as they did.
+    const ceilDecided = await decideReport(d2MainTok, undecidedRow?.id ?? "", "accept",
+      { reason: "D2: ceiling probe" });
+    let ceilReached = false;
+    for (let i = 0; i < 600 && !ceilReached; i++) {
+      ceilReached = existsSync(`${d2Latch}.reached`);
+      if (!ceilReached) await Bun.sleep(50);
+    }
+    // the latch's own 10 s timeout is the throw; then a settle so the tick has walked this slot
+    // again and provably declined it a SECOND time.
+    await Bun.sleep(11_000 + Math.max(3000, AUTOS_TICK_MS * 8));
+    const ceilPoll = await d2Poll();
+    const ceilRow = ceilPoll.slots.find((x) => x.id === ceilSlot);
+    const ceilRows = await outcomesOf(undecidedLane.branch);
+    const ceilOutcome = ceilRows[0] as { disposition?: string;
+      autoClose?: { disposition?: string; reportId?: string } } | undefined;
+    check("D2 ceiling: a lane whose auto-close attempt was spent by a THROWN teardown still stands, and the poll names the ceiling instead of going silent",
+      ceilDecided.ok && ceilReached && ceilOpenedAt > 0
+        && (ceilRow?.cwd ?? null) !== null && ceilRow?.openedAt === ceilOpenedAt
+        && ceilRow.autoCloseRefusal === "this occupant's one auto-close attempt is spent"
+        && ceilRows.length === 1 && ceilOutcome?.disposition === "killed-empty"
+        && ceilOutcome.autoClose?.disposition === "accepted",
+      JSON.stringify({ decided: ceilDecided.status, reached: ceilReached, openedAt: ceilOpenedAt,
+        row: ceilRow ?? null, rows: ceilRows.length, outcome: ceilOutcome ?? null }));
+    // ONE ATTEMPT PER OCCUPANT is unchanged by the naming: two further tick windows, still one row.
+    await Bun.sleep(Math.max(4000, AUTOS_TICK_MS * 16));
+    const ceilRowsLater = await outcomesOf(undecidedLane.branch);
+    const ceilLater = (await d2Poll()).slots.find((x) => x.id === ceilSlot);
+    check("D2 ceiling: naming the spent attempt does not retry it — the lane keeps standing on exactly one outcome row",
+      ceilRowsLater.length === 1 && (ceilLater?.cwd ?? null) !== null
+        && ceilLater?.autoCloseRefusal === "this occupant's one auto-close attempt is spent",
+      JSON.stringify({ rows: ceilRowsLater.length, row: ceilLater ?? null }));
+    for (const f of [d2Latch, `${d2Latch}.reached`, `${d2Latch}.release`]) rmSync(f, { force: true });
 
     // --- and the FLAG rode exactly one restart. Proven rather than trusted to the harness note:
     // the dirty lane's ONE refusing fact is removed, so on an armed server it would now close —

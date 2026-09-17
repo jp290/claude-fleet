@@ -564,7 +564,10 @@ export async function run(): Promise<void> {
     serverSource.indexOf("// The one-line receiver text", tickStart));
   const uncertainAt = tickSource.indexOf('event.status = "send-uncertain";');
   const persistedAt = tickSource.indexOf("await saveStateNow();", uncertainAt);
-  const sendAt = tickSource.indexOf("await sendText(s, text, true, { rollbackOwnPayload: true })", persistedAt);
+  // the ANCHOR is the call, not its option object: the options grew a `path` when the send ledger
+  // landed (2026-09-17) and a literal that spelled them out made this ordering rule red for a
+  // reason that has nothing to do with the order it holds.
+  const sendAt = tickSource.indexOf("await sendText(s, text, true,", persistedAt);
   check("watch transport persists send-uncertain before sendText and retries pending only",
     tickSource.includes('if (event.status !== "pending") continue;')
     && uncertainAt >= 0 && persistedAt > uncertainAt && sendAt > persistedAt,
@@ -794,7 +797,7 @@ export async function run(): Promise<void> {
     }
     // the transport rail, pinned at source: `delivered` is written only after the acceptance
     // read, and an unobservable send keeps the persisted send-uncertain marker.
-    const acceptAt = tickSource.indexOf("({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }))");
+    const acceptAt = tickSource.indexOf("({ acceptance } = await sendText(s, text, true,");
     const unobsAt = tickSource.indexOf('acceptance === "unobservable"', acceptAt);
     const deliveredAt = tickSource.indexOf('event.status = "delivered";', unobsAt);
     check("watch transport: FleetEvent turns delivered only after the acceptance read, and unobservable stays send-uncertain",
@@ -2264,9 +2267,16 @@ export async function run(): Promise<void> {
         + `awaiting=${retryAwaiting} paneTail=${JSON.stringify(healedPane.trimEnd().slice(-400))} ${JSON.stringify(sameRetryBody.request)}`);
     const replySource = serverSource.slice(serverSource.indexOf("async function replyClarification("),
       serverSource.indexOf("async function acknowledgeFleetEvent("));
+    // BOTH indices are asserted to EXIST before they are compared. Without the first guard an
+    // anchor that stops matching (the send ledger renamed nothing, it only added an argument —
+    // 2026-09-17) makes `indexOf` return -1, and "answered comes after -1" is true for every tree:
+    // the check would go on printing PASS while measuring nothing at all.
+    const replyAnsweredAt = replySource.indexOf('request.status = "answered";');
+    const replySendAt = replySource.indexOf("await sendText(worker, text, true,");
     check("clarification send-error branch returns 409 while answered assignment remains after sendText",
       replySource.includes("worker reply send failed")
-        && replySource.indexOf('request.status = "answered";') > replySource.indexOf("await sendText(worker, text, true);"));
+        && replyAnsweredAt >= 0 && replySendAt >= 0 && replyAnsweredAt > replySendAt,
+      `answered=${replyAnsweredAt} send=${replySendAt}`);
 
     // Worker replacement is terminal and must never address its numeric successor.
     const agreeSlot = agreed.slot;

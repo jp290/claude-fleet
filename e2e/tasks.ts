@@ -8955,6 +8955,114 @@ export async function run(ctx: Ctx): Promise<void> {
       `open=${mUnboundOpen?.status} ${mUnboundRes?.status}:${mUnboundText}`);
     if (mUnboundSlot >= 0) await post(`/api/slots/${mUnboundSlot}/kill`, {});
 
+    // (6b) THE FILE SURFACE AT FILING TIME — the same propose/promote pair W2 built for an EXISTING
+    // row, now reachable at the moment the row is minted. A MAIN that had read the repository to
+    // write the row down had to file it blind and come back through a second door to say which
+    // files it stands on; this is that second call folded into the first. What must NOT have folded
+    // with it is the CONFIRM half: the producer still does not promote its own declaration, and
+    // these checks read `files`/`filesOrigin` on every one of them to say so.
+    type MSurfRow = MRow & { files?: string[]; filesOrigin?: string;
+      filesProposal?: { files: string[]; at: number; by: string; unknownPaths?: string[] } };
+    const mSurfRow = async (id: string): Promise<MSurfRow | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: MSurfRow[] }).tasks.find((t) => t.id === id);
+    const M_TRACKED = "server.ts";
+    const M_GHOST = "gibt-es-nicht-main.ts";
+    const mSurfBefore = (await mAll()).length;
+    const mSurfAuditBefore = mAuditRows().length;
+    // The text names no path-shaped token on purpose: the API view PROJECTS a derived surface out of
+    // exact path tokens in the prose, and a probe whose own text seeded that projection could not
+    // tell "the door wrote nothing into files" from "the projector filled it in".
+    const mPropRes = await mFile(mToken,
+      { text: "acp23 surface proposal at filing", kind: "auftrag", files: [M_TRACKED, M_GHOST] });
+    const mPropBody = await mPropRes.json() as { ok?: boolean; task?: MSurfRow };
+    const mPropId = mPropBody.task?.id ?? "";
+    const mPropRow = await mSurfRow(mPropId);
+    const mPropTrail = mAuditRows().slice(mSurfAuditBefore).filter((r) => r.event === "task_files_propose");
+    // `by` is the thing a reader chases, and the whole point is that the CALLER could not write it:
+    // it is derived from the slot (a non-lane session is named by its label), and a body trying to
+    // dictate it dies on the closed-field set two checks down.
+    check("(f1) the MAIN filing door parks a declared surface as a PROPOSAL — server-derived `by`, the untracked path REPORTED, and files/filesOrigin untouched",
+      mPropRes.status === 200 && mPropBody.ok === true
+        && mPropRow?.filesProposal?.files.join(" ") === `${M_TRACKED} ${M_GHOST}`
+        && mPropRow.filesProposal.by === `slot ${mSlot} \u00b7 acp23-main`
+        && typeof mPropRow.filesProposal.at === "number" && mPropRow.filesProposal.at > 0
+        && JSON.stringify(mPropRow.filesProposal.unknownPaths) === JSON.stringify([M_GHOST])
+        && mPropRow.files === undefined && mPropRow.filesOrigin === undefined
+        && mPropRow.status === "pending"
+        && mPropTrail.length === 1 && mPropTrail[0]?.slot === mSlot
+        && mPropTrail[0]?.detail === `${mPropId} 2 path(s) at filing (untracked: ${M_GHOST})`,
+      `${mPropRes.status} row=${JSON.stringify(mPropRow)} trail=${JSON.stringify(mPropTrail)}`);
+    // …and the same row ON DISK, because that is where the two fields could collapse unnoticed: the
+    // API view can PROJECT a derived `files`, the state file cannot.
+    const mPropDisk = ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { tasks?: MSurfRow[] }).tasks ?? []).find((r) => r.id === mPropId);
+    check("(f1b) on disk the filed row carries the proposal and NO surface — the presence of the row itself is checked, so a lost row cannot read as a pass",
+      !!mPropDisk && mPropDisk.filesProposal?.files.join(" ") === `${M_TRACKED} ${M_GHOST}`
+        && mPropDisk.files === undefined && mPropDisk.filesOrigin === undefined,
+      JSON.stringify(mPropDisk ?? null));
+
+    // (f2) THE REFUSALS, and each one must mint NOTHING. A list that normalises away is a malformed
+    // request and not a silent filing without the surface the caller believed it sent; an advisory
+    // row carries no surface at all because nothing downstream can consume one; and `by` is not a
+    // field this door reads, so an attempt to dictate the provenance dies on the closed set.
+    const mSurfAfterOk = (await mAll()).length;
+    const mBadType = await mFile(mToken, { text: "acp23 files as a string", kind: "auftrag", files: M_TRACKED });
+    const mBadTypeText = await mBadType.text();
+    const mBadEmpty = await mFile(mToken, { text: "acp23 files empty", kind: "auftrag", files: [] });
+    const mBadEmptyText = await mBadEmpty.text();
+    const mBadBlank = await mFile(mToken, { text: "acp23 files blank", kind: "auftrag", files: ["   ", ""] });
+    const mBadBlankText = await mBadBlank.text();
+    check("(f2) a files list that normalises to nothing is a 400 in its own words — string, [] and blanks alike, and none of the three minted a row",
+      mBadType.status === 400 && mBadTypeText.includes("files must be a non-empty list of repo-relative paths")
+        && mBadEmpty.status === 400 && mBadEmptyText.includes("files must be a non-empty list of repo-relative paths")
+        && mBadBlank.status === 400 && mBadBlankText.includes("files must be a non-empty list of repo-relative paths")
+        && (await mAll()).length === mSurfAfterOk,
+      `string=${mBadType.status}:${mBadTypeText} empty=${mBadEmpty.status}:${mBadEmptyText} blank=${mBadBlank.status}:${mBadBlankText}`);
+    const mAdvisorySurf = await mFile(mToken, { text: "acp23 surface on a notiz", kind: "notiz", files: [M_TRACKED] });
+    const mAdvisorySurfText = await mAdvisorySurf.text();
+    const mDictated = await mFile(mToken,
+      { text: "acp23 dictated provenance", kind: "auftrag", files: [M_TRACKED], by: "somebody else" });
+    const mDictatedText = await mDictated.text();
+    check("(f2b) an ADVISORY row with files is a 400 in the surface doors' own words, and `by` is not a field this door reads — neither minted a row",
+      mAdvisorySurf.status === 400 && mAdvisorySurfText.includes("notiz is advisory")
+        && mAdvisorySurfText.includes("work surface to bundle by")
+        && mDictated.status === 400 && mDictatedText.includes("[by]")
+        && (await mAll()).length === mSurfAfterOk,
+      `advisory=${mAdvisorySurf.status}:${mAdvisorySurfText} dictated=${mDictated.status}:${mDictatedText}`);
+
+    // (f3) RELEASING IS NOT CONFIRMING. The second act the owner's promotion made the condition of
+    // the first moves the row `pending → queued` — and it must move NOTHING about the surface: the
+    // proposal is still a proposal, and `filesOrigin` is still unwritten. A door that treated the
+    // release as the missing promotion would christen a producer's own declaration a fact, which is
+    // the one thing the whole propose/promote boundary exists to prevent.
+    // The master dispatch switch is OFF across this probe, e2e/programs.ts's precedent at its own
+    // release door and for its reason: the tick legitimately starts a queued row, and a lane spawned
+    // mid-section would make both the status read here and the cleanup below unreadable. The prior
+    // value is READ and restored, never assumed.
+    const mDispatchWas = ((await (await get("/api/sessions")).json()) as
+      { dispatch: { on: boolean } }).dispatch.on;
+    await post("/api/dispatch", { on: false });
+    const mRelId = ((await (await mFile(mToken,
+      { text: "acp23 surface then release", kind: "auftrag", files: [M_TRACKED] })).json()) as
+      { task?: MSurfRow }).task?.id ?? "";
+    const mRelRes = await fetch(`${BASE}/api/self/tasks/${mRelId}/release`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": mToken },
+      body: JSON.stringify({}) });
+    const mRelResText = await mRelRes.text();
+    const mRelRow = await mSurfRow(mRelId);
+    check("(f3) a RELEASE moves the row pending → queued and confirms nothing — the proposal is still parked, filesOrigin still unwritten",
+      mRelRes.status === 200 && !!mRelId && mRelRow?.status === "queued"
+        && mRelRow.releasedBy === "machine"
+        && mRelRow.filesProposal?.files.join(" ") === M_TRACKED
+        && JSON.stringify(mRelRow.filesProposal.unknownPaths) === JSON.stringify([])
+        && mRelRow.filesOrigin === undefined && mRelRow.files === undefined,
+      `release=${mRelRes.status}:${mRelResText} row=${JSON.stringify(mRelRow)}`);
+    await post(`/api/tasks/${mRelId}/delete`, {});
+    await post("/api/dispatch", { on: mDispatchWas });
+    check("(f3b) the surface probes leave exactly the rows they filed — two, and every refusal above minted none",
+      (await mAll()).length === mSurfBefore + 1,
+      `before=${mSurfBefore} now=${(await mAll()).length}`);
+
     // (7) THE RELOAD, and this is the probe the whole act needed. loadState filters the persisted
     // task list through a LITERAL allowlist of `source` values; a producer missing from it writes
     // rows that pass every runtime check of their own route and then VANISH at the next boot,
@@ -8972,6 +9080,39 @@ export async function run(ctx: Ctx): Promise<void> {
         && !!mAuftragReloaded && mAuftragReloaded.source === "main"
         && mAuftragReloaded.kind === "auftrag" && mAuftragReloaded.status === "pending",
       `notiz=${JSON.stringify(mOkReloaded)} auftrag=${JSON.stringify(mAuftragReloaded)}`);
+    // …and the SAME reload over the parked surface, which is the half a runtime probe cannot reach:
+    // `normFilesProposal` re-reads the field off disk and degrades it to ABSENT whole if it cannot,
+    // so a proposal that came back smaller — or came back as a `files` list — would sit one owner
+    // click from `filesOrigin:"confirmed"` over something nobody proposed. All three states of
+    // `unknownPaths` are load-bearing here: the list must survive as a LIST, never as [] or absent.
+    const mPropReloaded = await mSurfRow(mPropId);
+    check("(f4) a proposal filed at mint SURVIVES the reload as a PROPOSAL — files, server-derived by and the untracked reading intact, and still no confirmed surface",
+      !!mPropReloaded && mPropReloaded.filesProposal?.files.join(" ") === `${M_TRACKED} ${M_GHOST}`
+        && mPropReloaded.filesProposal.by === `slot ${mSlot} \u00b7 acp23-main`
+        && JSON.stringify(mPropReloaded.filesProposal.unknownPaths) === JSON.stringify([M_GHOST])
+        && mPropReloaded.files === undefined && mPropReloaded.filesOrigin === undefined
+        && mPropReloaded.status === "pending",
+      JSON.stringify(mPropReloaded ?? null));
+
+    // (f5) AND THE PROMOTE HALF IS STILL THE OWNER'S, unchanged: his EXISTING door, with an EMPTY
+    // body, consumes the proposal this door parked — no new route, no self mirror, no auto-confirm.
+    // The audit line names the proposal it came from, and the untracked finding rides along in it,
+    // because that is where "he could see it when he confirmed" is recorded. Afterwards the field is
+    // gone: a consumed proposal is not a second standing one.
+    const mConfirmAuditBefore = mAuditRows().length;
+    const mConfirmRes = await post(`/api/tasks/${mPropId}/files`, {});
+    const mConfirmBody = await mConfirmRes.json() as { files?: string[]; filesOrigin?: string; unknownPaths?: string[] };
+    const mConfirmRow = await mSurfRow(mPropId);
+    const mConfirmTrail = mAuditRows().slice(mConfirmAuditBefore).filter((r) => r.event === "task_files_confirm");
+    check("(f5) the owner's EXISTING files door consumes the filed proposal on an empty body — surface confirmed, proposal cleared, trail naming the proposer and the untracked path",
+      mConfirmRes.status === 200 && mConfirmBody.filesOrigin === "confirmed"
+        && mConfirmBody.files?.join(" ") === `${M_TRACKED} ${M_GHOST}`
+        && mConfirmRow?.filesOrigin === "confirmed"
+        && mConfirmRow.files?.join(" ") === `${M_TRACKED} ${M_GHOST}`
+        && mConfirmRow.filesProposal === undefined
+        && mConfirmTrail.length === 1
+        && mConfirmTrail[0]?.detail === `${mPropId} 2 path(s) via proposal by slot ${mSlot} \u00b7 acp23-main (untracked: ${M_GHOST})`,
+      `${mConfirmRes.status} ${JSON.stringify(mConfirmBody)} row=${JSON.stringify(mConfirmRow)} trail=${JSON.stringify(mConfirmTrail)}`);
 
     // (8) THE TWO CAPS, per Program, over rows this door filed that still stand pending. Work and
     // advisory rows must not spend each other's budget: only an `auftrag` can leave through the

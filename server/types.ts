@@ -1222,9 +1222,11 @@ interface Task {
   // dispatch/model consumers prefer the confirmed surface, and derived metadata is recomputed from
   // the current tracked tree.
   filesProposal?: TaskFilesProposal; // a PROPOSED surface for this row, parked BESIDE `files` and
-  // never merged into it. Written by a lane or another self-principal through
-  // POST /api/self/tasks/:id/files-proposal; only the owner's POST /api/tasks/:id/files turns one
-  // into the confirmed surface. The same propose/promote boundary as `criterion` and `refine`, and
+  // never merged into it. TWO writers, both self-principals and both DECLARING, never deriving: a
+  // lane or another session through POST /api/self/tasks/:id/files-proposal (an EXISTING row), and
+  // a bound Program-MAIN through the optional `files` of POST /api/self/tasks (at the MINT of an
+  // auftrag row, so a MAIN that already knows the surface need not knock twice). Only the owner's
+  // POST /api/tasks/:id/files turns one into the confirmed surface. The same propose/promote boundary as `criterion` and `refine`, and
   // for the same reason: the producer must not confirm the surface its own work is later bundled
   // by. Absent means nobody has proposed one — never an empty proposal.
   cluster?: TaskCluster; // read-only projection from the known file surface. Not persisted: its

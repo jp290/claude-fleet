@@ -560,6 +560,50 @@ als `Task.card{model:"author", valid:true}`; Oberfläche, Wellen-Projektion und 
 (`surface [karte]`) lesen `card.surface.files` vor der Prosa-Ableitung. Ohne `card` unverändert.
 Vorlage: `AGENTS.md` §Filing a queue row.
 
+**Optionale Flächen-VORSCHLAG-Liste `files`:** der Body darf zusätzlich eine explizite
+`files: ["pfad", …]` tragen. Sie wird AUSSCHLIESSLICH nach `Task.filesProposal` geschrieben — nie
+nach `files`, nie nach `filesOrigin`. Das ist dieselbe propose/promote-Grenze wie bei `criterion`
+und `refine`, und aus demselben Grund: die MAIN, die die Zeile anlegt, ist die Produzentin, und die
+Produzentin bestätigt nicht die Fläche, nach der ihre eigene Arbeit später gebündelt wird.
+Bestätigen kann weiterhin nur der Owner an seiner BESTEHENDEN Tür `POST /api/tasks/:id/files` —
+mit leerem Body konsumiert sie genau diesen geparkten Vorschlag. Keine neue Route, kein
+Auto-Bestätigen, und die Self-Route `POST /api/self/tasks/:id/files-proposal` bleibt unverändert
+daneben stehen (sie ist der Weg für eine BESTEHENDE Zeile, dies der für eine neue).
+
+- **Nur DEKLARIERT, nie abgeleitet.** Nichts liest die Prosa der Zeile nach pfadförmigen Tokens;
+  abwesendes `files` heißt KEIN VORSCHLAG. Eine automatisch abgeleitete Liste als geparkten
+  Vorschlag zu schreiben hieße, eine Vermutung dorthin zu legen, wo der Owner sie mit einem Klick
+  zur Tatsache tauft — genau die Fehlhebung, die §files-proposal für den 2026-09-12 misst.
+- **`by` kommt vom Server** (`server.ts#filesProposalBy`, dieselbe Herkunftsform wie an der
+  Self-Route): eine Lane nach ihrer Branch, jede andere Session nach ihrem Label. `by` im Body ist
+  kein gelesenes Feld und fällt am geschlossenen Feld-Set als 400 `[by]`.
+- **`unknownPaths` MELDET, es gated nicht** — dieselben drei Zustände wie überall
+  (`server.ts#untrackedAmong`): fehlend = getrackter Baum nicht lesbar, `[]` = geprüft und alles
+  getrackt, eine Liste = genau diese Pfade trackt der Repo der Zeile nicht. Ein Pfad, den die
+  Arbeit erst ANLEGT, ist der normale Fall; die Zeile wird trotzdem gefilt.
+- **Ablehnungen, jeweils ohne eine Zeile zu minten:** eine `files`-Angabe, die zu nichts
+  normalisiert (kein Array, `[]`, nur Leerstrings) ist 400 `files must be a non-empty list of
+  repo-relative paths (at most 20)` — „der Body nannte files" und „der Body nannte keine" bleiben
+  zwei verschiedene Anfragen. `files` auf einer ADVISORY Zeile ist 400 `<kind> is advisory — only
+  an auftrag row carries a work surface to bundle by`.
+- **Ein `release` bestätigt nichts.** `pending → queued` lässt den Vorschlag geparkt und
+  `filesOrigin` ungeschrieben.
+- **Mit `variants`** parkt der Vorschlag auf der GRUPPEN-Zeile — der Zeile, die diese Tür mintet und
+  aus der ihre Varianten gebrieft werden. `variantRowsFor` kopiert keine Fläche, also trägt keine
+  Varianten-Zeile einen Vorschlag.
+- **Trail:** eine zweite Zeile neben `main_task`, unter dem Event, das das Ledger dafür schon
+  reserviert (`task_files_propose`, mit dem vorschlagenden Slot) — Detail
+  `<id> N path(s) at filing` plus der untracked-Befund. Zwei Zeilen und nicht eine, aus
+  `main_brief`s Grund: eine Zeile anlegen und die Fläche deklarieren, auf der sie steht, sind zwei
+  Akte, die ein Leser auseinanderhalten können muss.
+
+**Die MAIN-Bindung wird nach dem einzigen externen `await` NEU GELESEN.** `repoKeyOf` spawnt `git`,
+und alles, was Zustand mutiert, liegt dahinter; innerhalb dieses Fensters kann der Owner das
+Program stilllegen oder die MAIN neu binden. Eine verschobene Bindung ist 409 (`this session's MAIN
+binding moved from program <alt> to <neu> … nothing filed`), nie ein stilles Umhängen der Anfrage
+auf das Program, an das die Session jetzt gebunden ist. Gepinnt in `e2e/pins.ts` (Reihenfolge
+`await` → Neulesung → Mutation).
+
 ### Der abgeleitete Program-Status (`GET /api/self/program-execution`)
 
 Jede Program-Zeile trägt `status`: eine pro Request berechnete Sicht, die nichts speichert und
@@ -973,6 +1017,14 @@ existiert nicht.
   geprüft und alles getrackt, eine Liste = genau diese Pfade trackt das Repo nicht. Ein Pfad, den
   die Arbeit erst ANLEGT, ist der normale Fall dafür — deshalb lehnt die Route nicht ab.
 - Antwort bei Erfolg: `{ok:true, proposal:{files,at,by,unknownPaths?}, unknownPaths}`.
+- **Zweite Quelle desselben Feldes (2026-09-17):** `Task.filesProposal` wird nicht mehr nur hier
+  geschrieben. `POST /api/self/tasks` nimmt beim MINT einer `auftrag`-Zeile eine optionale
+  `files`-Liste und parkt sie über dieselben Bausteine (`normFileList`, `untrackedAmong`,
+  `filesProposalBy`) als Vorschlag — für den Fall, dass die MAIN die Fläche schon kennt, während
+  sie die Zeile schreibt, und sonst zweimal anklopfen müsste. Diese Route bleibt der Weg für eine
+  BESTEHENDE Zeile. Beide schreiben ausschließlich `filesProposal`, beide buchen
+  `task_files_propose`, und die Promote-Hälfte bleibt in beiden Fällen allein die Owner-Tür unten.
+  Vertrag der Mint-Quelle: §tasks.
 - Ablehnungen:
   - **unbekannter Self-Token** (401, mit der flachen 400-ms-Verzögerung wie überall).
   - **unbekannte Zeile** (404): `unknown task`.

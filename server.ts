@@ -10772,7 +10772,7 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   // different things.
   const bound = boundProgramForMain(s);
   if (!bound.ok) return json({ error: bound.error }, 409);
-  const { program, sessionIdMatch } = bound;
+  const { program } = bound;
   if (!body) return json({ error: "invalid json" }, 400);
   // (1) THE PROGRAM COMES FROM THE BINDING. A body naming one is refused rather than compared or
   // overwritten: a comparison would make the field look consultable, and an overwrite would let a
@@ -10784,10 +10784,10 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   // words the attended ▸ start button sends, validated below by the same validators. The refusal
   // keeps its historic "text and kind only" opening as a stable prefix — the spawn triple is named
   // separately because it is optional and travels as a unit, not three independent fields.
-  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card", "variants"];
+  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card", "variants", "files"];
   const extra = Object.keys(body).filter((k) => !SELF_TASK_FIELDS.includes(k));
   if (extra.length)
-    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), an optional card and optional variants — [${extra.join(", ")}] is not read: repo comes from this session's checkout, and a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
+    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), an optional card, optional variants and an optional files PROPOSAL — [${extra.join(", ")}] is not read: repo comes from this session's checkout, and a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
   if (typeof body.text !== "string" || !body.text.trim())
     return json({ error: "text must be a non-empty string" }, 400);
   // (3) THE KIND, through the SAME four-value validator the owner and steward create routes use —
@@ -10811,6 +10811,30 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   if (!variantChoice.ok) return json({ error: variantChoice.error }, 400);
   if (variantChoice.variants && kind !== "auftrag")
     return json({ error: `variants need kind "auftrag" — a ${kind} is advisory and runs in no lane` }, 400);
+  // (3d) THE FILE SURFACE, and it arrives as a PROPOSAL — the one thing this door may write about
+  // it. `files`/`filesOrigin` stay untouched: the MAIN that files the row is the producer, and the
+  // producer does not confirm the surface its own work is later bundled by. That boundary is the
+  // whole reason `filesProposal` is a separate field (server/types.ts#Task), and the only promoter
+  // remains the owner's POST /api/tasks/:id/files — which reads a parked proposal with an empty
+  // body, so a row filed here arrives one owner click from a confirmed surface instead of a retype.
+  //
+  // It is also DECLARED and never derived. Nothing here reads the row's prose for path-shaped
+  // tokens: a derivation promoted to a parked proposal would be a guess sitting where a reading
+  // belongs, and the owner's click would taste it as a fact (the mis-lift docs/self-api.md
+  // §files-proposal measured on 2026-09-12 — 17 of 42 surfaces named `e2e-isolated.sh` because the
+  // brief quoted the verify line). Absent `files` therefore means NO PROPOSAL, exactly as before.
+  //
+  // "The body named files" and "the body was empty" stay different requests, the same split the
+  // owner door makes: an explicit list that normalises to nothing is a malformed request, never a
+  // silent filing without the surface the caller believed it sent.
+  const proposedFiles = body.files === undefined ? undefined : normFileList(body.files);
+  if (body.files !== undefined && !proposedFiles?.length)
+    return json({ error: `files must be a non-empty list of repo-relative paths (at most ${MAX_REFINE_FILES})` }, 400);
+  // …and only an auftrag carries one, in the same words the two existing surface doors refuse with.
+  // An advisory row runs in no lane and is bundled into no wave, so a surface on it would be a
+  // declaration nothing can ever consume.
+  if (proposedFiles && kind !== "auftrag")
+    return json({ error: `${kind} is advisory — only an auftrag row carries a work surface to bundle by` }, 400);
   // (4) THE REPO COMES FROM THE BINDING'S CHECKOUT, by the same helper as at the release door.
   // Deliberately DERIVED rather than left null, and the reason is that other door: it compares
   // `t.repo ?? DISPATCH_REPO` against the caller's own checkout, so on a fleet whose configured
@@ -10819,6 +10843,20 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   const mainRepo = await repoKeyOf(s);
   if (!mainRepo)
     return json({ error: "this session's checkout is not a git repository — the row's target repo cannot be derived" }, 409);
+  // (4b) THE BINDING IS RE-READ, because the line above is the one EXTERNAL await on this path and
+  // everything that mutates state comes after it. `bound` was taken before `repoKeyOf` spawned git;
+  // inside that window the owner can retire the Program or rebind its MAIN, and a filing that used
+  // the identity from before the await would mint a row into a Program this session is no longer
+  // MAIN of — with `programId` stamped from a binding that no longer exists and nothing at runtime
+  // saying so. Re-read, and require the SAME Program: a moved binding is a refusal naming both
+  // ids, never a silent re-target of the caller's request onto whatever it is bound to now.
+  const stillBound = boundProgramForMain(s);
+  if (!stillBound.ok) return json({ error: stillBound.error }, 409);
+  if (stillBound.program.id !== program.id)
+    return json({ error: `this session's MAIN binding moved from program ${program.id} to ${stillBound.program.id} while the row was being prepared — nothing filed` }, 409);
+  // …and the reported match comes from the RE-READ, for the same reason: it is a fact about the
+  // binding this row was actually filed under.
+  const { sessionIdMatch } = stillBound;
   // (5) TWO CAPS, per Program, because only `auftrag` is releaseable. Both count only rows this
   // door filed (`source: "main"`) for this Program, so owner drafts cannot lock its MAIN out. A
   // full advisory bucket never closes the work door; a full work bucket never closes observation.
@@ -10839,12 +10877,28 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   // (5b) THE AUTHOR'S CARD, validated against the row's own repo before anything is minted
   const authorCard = body.card === undefined ? null : authorCardFrom(body.card, mainText, mainRepo, program.id);
   if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
+  // (5c) THE PROPOSAL'S READING OF THE TRACKED TREE, taken through the same helper both surface
+  // doors use so all three answer it identically — and REPORTED, never gating: a path the work will
+  // CREATE is the ordinary case, which is precisely why neither door refuses one. The three states
+  // must not collapse: `null` (tree unreadable) drops the field rather than storing `[]`, because
+  // "not measured" reading as "all tracked" is the one direction this repo never lets a check fall.
+  const proposalUnknown = proposedFiles ? untrackedAmong(proposedFiles, mainRepo) : null;
+  // WHO proposed is derived from the caller's own slot, never from the body — the same rule and the
+  // same helper as the standing propose route, so a reader chases one provenance format, not two.
+  const filedProposal: TaskFilesProposal | undefined = proposedFiles
+    ? { files: proposedFiles, at: Date.now(), by: filesProposalBy(s),
+      ...(proposalUnknown ? { unknownPaths: proposalUnknown } : {}) }
+    : undefined;
   const id = randomBytes(4).toString("hex");
   const t: Task = {
     id, originId: id, text: mainText,
     source: "main", kind, repo: mainRepo, programId: program.id,
     ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
     ...(authorCard?.ok ? { card: authorCard.card } : {}),
+    // BESIDE the surface and never in it — no `files`, no `filesOrigin` on any row this door mints.
+    // With `variants` it parks on the GROUP row, which is the row this door mints and the one source
+    // its variants are briefed from; variantRowsFor copies no surface, so no variant row carries one.
+    ...(filedProposal ? { filesProposal: filedProposal } : {}),
     // THE STATUS THIS ROUTE CANNOT BE TALKED OUT OF: a literal, not anything derived from the
     // request. And no `releasedBy` — that field exists so an unreleased row stays distinguishable
     // from one somebody released, and a filing has not been released by anyone.
@@ -10858,6 +10912,17 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   // way an unlisted `source` vanishes at the next boot: silently, with every check still green.
   await saveStateNow();
   audit("main_task", s.id, `${t.id} program=${program.id} ${kind}${variantRows.length ? ` variants=${variantRows.length}` : ""}`);
+  // A PARKED PROPOSAL IS ITS OWN ACT, booked under the event the ledger already reserves for it
+  // (server/audit-log.ts: "a lane or MAIN parks a proposal … with the proposing slot"). Two lines,
+  // not one, for main_brief's reason: filing a row and declaring the surface it stands on are two
+  // things a reader must be able to tell apart — and a reader asking "who proposed the surface on
+  // this row" then finds ONE event type, whichever door parked it. The untracked finding rides
+  // along in the same words as the other two surface doors, because it never gates: the ledger is
+  // where "it was on the screen when he confirmed" is recorded.
+  if (filedProposal)
+    audit("task_files_propose", s.id, `${t.id} ${filedProposal.files.length} path(s) at filing`
+      + (proposalUnknown === null ? " (tracked tree unreadable)"
+        : proposalUnknown.length ? ` (untracked: ${proposalUnknown.join(",")})` : ""));
   // sessionIdMatch is REPORTED, never gated — ACP-13's doctrine, the same shape releaseTaskForMain
   // and openAttention answer with.
   return json({ ok: true, sessionIdMatch, task: t, ...(variantRows.length ? { variants: variantRows } : {}) });

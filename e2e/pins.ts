@@ -3062,18 +3062,46 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // the caller believed was honoured.
   const crStart = server.indexOf("async function createTaskForMain(");
   const crBody = crStart < 0 ? "" : server.slice(crStart, server.indexOf("\n}\n", crStart));
+  // The same body with every comment line dropped. Three of the pins below are ABSENCE rules —
+  // "this handler writes no X" — and the paragraphs around the handler name every X they are there
+  // to forbid, so a rule read over the prose would fail on the explanation of itself.
+  const crCode = crBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   pin("createTaskForMain's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
     crStart > 0 && crBody.length > 500 && crBody.length < 20_000, `${crBody.length} bytes`);
-  pin("the Program-MAIN filing door DERIVES program and repo and reads a CLOSED body — text, kind, the spawn triple, an optional card and optional variants",
+  pin("the Program-MAIN filing door DERIVES program and repo and reads a CLOSED body — text, kind, the spawn triple, an optional card, optional variants and an optional files proposal",
     crBody.length > 0
       && /const bound = boundProgramForMain\(s\);/.test(crBody)
       && /programId: program\.id,/.test(crBody)
       && /const mainRepo = await repoKeyOf\(s\);/.test(crBody)
       && /repo: mainRepo,/.test(crBody)
       && /if \(body\.programId !== undefined\)/.test(crBody)
-      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "card", "variants"\];/.test(crBody)
+      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "card", "variants", "files"\];/.test(crBody)
       && /Object\.keys\(body\)\.filter\(\(k\) => !SELF_TASK_FIELDS\.includes\(k\)\)/.test(crBody),
     crBody.length > 0 ? "derivation + closed body" : "createTaskForMain missing");
+  // …and the `files` the set above admits is a PROPOSAL, held over the source because nothing at
+  // runtime on a green fleet distinguishes the two writes. A door that put the list on `files` —
+  // or stamped `filesOrigin` beside it — would hand the producer the promote half of the pair the
+  // field exists to keep apart, and every downstream R3 reader treats `confirmed` as the owner's
+  // own act. Both spellings are absent from the CODE; the paragraphs above name them while saying
+  // why neither is written, which is why this reads `crCode` and not `crBody`.
+  pin("the filing door writes the declared surface ONLY as filesProposal — it stamps no files and no filesOrigin",
+    crCode.length > 0
+      && /\.\.\.\(filedProposal \? \{ filesProposal: filedProposal \} : \{\}\),/.test(crCode)
+      && /by: filesProposalBy\(s\)/.test(crCode)
+      && !/\bfilesOrigin\b/.test(crCode)
+      && !/\n\s*files: proposedFiles,/.test(crCode),
+    crCode.match(/\.\.\.\(filedProposal[^\n]*/)?.[0]?.trim() ?? "no filesProposal line");
+  // THE ONE EXTERNAL AWAIT ON THIS PATH IS `repoKeyOf`, and every mutation sits after it. The
+  // binding read before it is therefore a STALE identity by the time the row is minted, and the
+  // re-read is the only thing that keeps `programId: program.id` an assertion rather than a hope.
+  // Held over the source for the usual reason: on a green fleet the window never opens.
+  pin("createTaskForMain re-reads its MAIN binding after the await and refuses a moved one before mutating",
+    crCode.length > 0
+      && /const stillBound = boundProgramForMain\(s\);/.test(crCode)
+      && /if \(stillBound\.program\.id !== program\.id\)/.test(crCode)
+      && crCode.indexOf("const mainRepo = await repoKeyOf(s);") < crCode.indexOf("const stillBound = boundProgramForMain(s);")
+      && crCode.indexOf("const stillBound = boundProgramForMain(s);") < crCode.indexOf("tasks = capTasks("),
+    crCode.includes("const stillBound = boundProgramForMain(s);") ? "re-read between await and mutation" : "no re-read");
   // THE SPAWN TRIPLE HAS ONE SET-TIME VALIDATOR, and both create doors go through it: the same
   // three adapter validators the attended route runs, harness first. A door that stored the three
   // fields raw — or its own re-derivation — would mint a choice no adapter ever judged, and on a
@@ -3089,7 +3117,6 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // deliberate second act the owner's promotion made the condition of the first.
   // Read over the CODE only: the two absences are rules about what this handler DOES, and the
   // paragraphs above it name both spellings while explaining why neither is written.
-  const crCode = crBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   pin("a filed row arrives pending as a LITERAL — the filing door writes no other status and stamps no releasedBy",
     crCode.length > 0
       && /\n    status: "pending", created: Date\.now\(\), slot: null, note: null,\n/.test(crCode)

@@ -17,6 +17,14 @@ set -u
 # persisted token", and an inherited credential would be a wrong value, not a missing one.
 # FLEET_SELF_URL / FLEET_SELF_LANE (2026-09-13) for the same reason: an inherited LANE flag would make a
 # plain test pane read as a lane, and e2e/self-token.ts asserts the plain pane shows none.
+# The trail's ACTOR fields (docs/e2e-trail.md §2a) are read out of the pane's lane credentials —
+# which the `unset` below is about to remove for the hermetic reason it states. Carried over in
+# PLAIN shell variables, never exported: an exported copy would be baked into every pane of the
+# throwaway tmux server and would put a self-token into `ps`, which is exactly what the token
+# hygiene rule forbids. e2e-stage.sh reads them and exports only the two harmless results.
+_st_actor_slot="${FLEET_SELF_SLOT:-}"
+_st_actor_token="${FLEET_SELF_TOKEN:-}"
+_st_actor_url="${FLEET_SELF_URL:-}"
 unset FLEET_SELF_TOKEN FLEET_SELF_SLOT FLEET_SELF_URL FLEET_SELF_LANE FLEET_STEWARD_TOKEN
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # SOCK/PORT/DIR are derived from $$ so concurrent runs (e.g. two worktree lanes)

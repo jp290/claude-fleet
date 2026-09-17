@@ -51,6 +51,50 @@
 # exactly one restart through e2e/harness.ts#restartSrv's `extra`, which wins over this value.
 export FLEET_LANE_AUTOCLOSE=0
 
+# --- THE ACTOR OF THIS RUN (docs/e2e-trail.md §2a) ---------------------------------------------
+# The trail header named the run, the suite and the tree, and nobody. So "were the ~15 local
+# isolated runs a day ever offered to a helper first?" could only be GUESSED from two ledgers
+# that do not join (Staffel 2026-09-17, Rang 2). Resolved HERE, once, for all seven wrappers,
+# because this is the one file every one of them sources.
+#
+# TWO INPUTS, TWO OUTPUTS. The inputs are the pane's lane credentials — either still in the
+# environment (the four wrappers that keep them) or handed down in `_st_actor_*` by a wrapper that
+# strips them before staging (e2e-isolated.sh, e2e-security.sh, acceptance-probe.sh). The outputs
+# are FLEET_E2E_SLOT and FLEET_E2E_OFFERED, and NOTHING ELSE LEAVES: the token is used for one
+# request and cleared. It travels to curl on STDIN, never in argv — a `-H "x-fleet-self-token: …"`
+# would print the credential in `ps` for the life of the request.
+#
+# EACH OUTPUT IS SET OR UNSET, never empty. A run with no lane credentials (the land gate, the
+# post-land audit) leaves both unset, and e2e/trail-emit.ts omits the fields — an empty slot would
+# read as a run by nobody, and `offered=false` from a probe that never asked would be a wrong
+# answer rather than a missing one. Both are also honoured when already set, so a caller can say
+# what this run is without being overruled.
+_st_actor_slot="${_st_actor_slot:-${FLEET_SELF_SLOT:-}}"
+_st_actor_token="${_st_actor_token:-${FLEET_SELF_TOKEN:-}}"
+_st_actor_url="${_st_actor_url:-${FLEET_SELF_URL:-}}"
+if [ -z "${FLEET_E2E_SLOT:-}" ] && [ -n "$_st_actor_slot" ]; then FLEET_E2E_SLOT="$_st_actor_slot"; fi
+# The offer door answers a lane about its own LAST offer, settled ones included (server.ts, the
+# GET half of /api/self/suite-offer) — which is what makes "was this run preceded by an offer"
+# readable at all AFTER the withdraw that gave the lane permission to run locally. A lane that
+# never offered gets `"offer":null`; anything else (409 not-a-lane, 401, a server that does not
+# answer within the timeout) matches neither shape and leaves the verdict unset.
+#
+# The ADDRESS is only ever the pane's own FLEET_SELF_URL — no default is written here. A tracked
+# file must carry no deploy identity (e2e/pins.ts, the leak pin), and a wrong guessed address would
+# buy a five-second timeout per suite run in exchange for an answer nobody could trust anyway.
+if [ -z "${FLEET_E2E_OFFERED:-}" ] && [ -n "$_st_actor_token" ] && [ -n "$_st_actor_url" ]; then
+  _st_offer=$(printf 'x-fleet-self-token: %s\n' "$_st_actor_token" \
+    | curl -s --max-time 5 -H @- "$_st_actor_url/api/self/suite-offer" 2>/dev/null) || _st_offer=""
+  case "$_st_offer" in
+    *'"offer":null'*) FLEET_E2E_OFFERED=false ;;
+    *'"offer":{'*)    FLEET_E2E_OFFERED=true ;;
+  esac
+  _st_offer=""
+fi
+_st_actor_token=""
+if [ -n "${FLEET_E2E_SLOT:-}" ]; then export FLEET_E2E_SLOT; else unset FLEET_E2E_SLOT; fi
+if [ -n "${FLEET_E2E_OFFERED:-}" ]; then export FLEET_E2E_OFFERED; else unset FLEET_E2E_OFFERED; fi
+
 # --- machine-wide suite mutex (owner decision 2026-07-28). Suites are serial on this box: two
 # concurrent instances reliably poison each other's runs (docs/suite-contention.md; measured again
 # 2026-07-28 — three owner interventions in one afternoon because the serialization lived only in

@@ -129,6 +129,43 @@ export const TRAIL_TREE = SRC ? git(SRC, "rev-parse", "HEAD") : null;
 // tree was resolvable at all (then `tree` is null too and the row claims nothing).
 export const TRAIL_DIRTY = SRC && TRAIL_TREE ? (git(SRC, "status", "--porcelain") ?? "") !== "" : null;
 
+// --- WHO STARTED THIS RUN, AND WAS IT EVER OFFERED --------------------------------------------
+// The header said WHAT was measured (run, suite, tree, dirty) and nothing about the ACTOR. So
+// "were these 14.9 local isolated runs a day ever offered to the helper first?" was answerable
+// only by GUESSING across two ledgers: the trail counts the runs, audit.jsonl counts 2–3
+// withdrawn and 1–4 abandoned offers a day, and nothing joins them (Staffel 2026-09-17, Rang 2).
+// These three fields are that join, written where the run is.
+//
+// ABSENCE IS A VALUE HERE, and it is the common case: the post-land audit and the land gate run
+// with no lane credentials at all, and a field whose source is missing is OMITTED rather than
+// written as "" or false — an empty slot would read as a run by nobody, and `offered:false` on a
+// run that could not be asked would be a wrong answer, not a missing one.
+//
+// WHY NOT FLEET_SELF_SLOT DIRECTLY: three wrappers (e2e-isolated.sh, e2e-security.sh,
+// acceptance-probe.sh) `unset` the pane's lane credentials before staging, for hermetic reasons
+// that have nothing to do with the trail — so by the time this module loads inside the instance
+// there is nothing left to read. e2e-stage.sh hands the two facts down under harness-only names
+// (FLEET_E2E_SLOT / FLEET_E2E_OFFERED); FLEET_SELF_SLOT is still read as the fallback for a
+// wrapper that never stripped it.
+export const TRAIL_SLOT: string | null =
+  process.env.FLEET_E2E_SLOT || process.env.FLEET_SELF_SLOT || null;
+
+// The branch of the tree under test, from the same SRC the sha comes from — a detached HEAD names
+// no branch (`rev-parse --abbrev-ref` answers the literal "HEAD" there), and that is an absent
+// source, not a branch called HEAD.
+const branchOf = (src: string): string | null => {
+  const b = git(src, "rev-parse", "--abbrev-ref", "HEAD");
+  return b && b !== "HEAD" ? b : null;
+};
+export const TRAIL_BRANCH: string | null = SRC ? branchOf(SRC) : null;
+
+// true/false only when e2e-stage.sh could actually ASK the offer door; anything else (no lane
+// token, a server that did not answer, a body neither shape matched) leaves the variable unset
+// and the field absent. The string is the whole contract between the two files.
+export const TRAIL_OFFERED: boolean | null =
+  process.env.FLEET_E2E_OFFERED === "true" ? true
+    : process.env.FLEET_E2E_OFFERED === "false" ? false : null;
+
 // WHY A ROW CLAIMS NOTHING — the other half of `tree:null`, and the reason this module now keeps a
 // probe instead of a boolean. `tree:null` is LEGITIMATE (a post-land audit measures a tree that is
 // not a repository, docs/e2e-trail.md §7) and must never be red; but a reader of an anonymous trail
@@ -299,6 +336,12 @@ export interface TrailRow {
   // nothing now says why it claims nothing, in the row itself — a trail file is read long after
   // the tail that produced it is gone.
   treeWhy?: string;
+  // THE ACTOR, all three omitted when their source was missing (see the block above): `slot` is
+  // the fleet slot that started the run, `branch` the branch of the tree under test, and `offered`
+  // whether this run was preceded by a suite offer. Absent in files written before 2026-09-17.
+  slot?: string;
+  branch?: string;
+  offered?: boolean;
   check: string;
   ok: boolean;
   // NOT the check's own runtime: check() is handed an already-computed boolean, so the only
@@ -323,6 +366,21 @@ export const withPhases = (row: TrailRow, cut: PhaseCut): TrailRow => ({
   ...(Object.keys(cut.top).length > 0 ? { phaseTop: cut.top, phaseSum: cut.sum } : {}),
 });
 
+// The actor fields, as a pure function of their three sources — so the omit-when-absent rule is
+// testable on ALL its branches and not only on the one the current run happens to be in. An empty
+// string is an ABSENT source and never a value: an exported-but-empty FLEET_E2E_SLOT would
+// otherwise put `slot:""` in the row, which reads as a run by nobody rather than as a run whose
+// actor is unknown. `offered` is the one field where `false` is an ANSWER, so only null omits it.
+export const actorFields = (
+  slot: string | null,
+  branch: string | null,
+  offered: boolean | null,
+): Pick<TrailRow, "slot" | "branch" | "offered"> => ({
+  ...(slot ? { slot } : {}),
+  ...(branch ? { branch } : {}),
+  ...(offered === null ? {} : { offered }),
+});
+
 export const trailRow = (check: string, ok: boolean, detail: string, msSincePrev: number, ts: number): TrailRow => ({
   v: TRAIL_SCHEMA,
   run: TRAIL_RUN,
@@ -330,6 +388,7 @@ export const trailRow = (check: string, ok: boolean, detail: string, msSincePrev
   tree: TRAIL_TREE,
   ...(TRAIL_DIRTY === null ? {} : { dirty: TRAIL_DIRTY }),
   ...(TRAIL_TREE_WHY === null ? {} : { treeWhy: TRAIL_TREE_WHY }),
+  ...actorFields(TRAIL_SLOT, TRAIL_BRANCH, TRAIL_OFFERED),
   check,
   ok,
   msSincePrev,

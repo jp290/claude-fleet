@@ -4,12 +4,12 @@
 import { DONE_LOOKING_PROSE, STALLED_PROSE } from "../lane-signals";
 import { WORKER_CONTRACTS } from "../src/protocol";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { CONTINUITY_REGIME_START, CONTINUITY_SOURCES, CONTINUITY_WINDOW_MS, type ContinuitySummary } from "../continuity";
-import { BASE, REPO, ROOT, check, get, paneEnv, plogRead, post, readText, restartSrv, tmuxOut } from "./harness";
+import { BASE, REPO, ROOT, check, get, paneEnv, plogRead, post, readText, restartSrv, stopSrv, tmuxOut } from "./harness";
 import type { Ctx, StewardCtx } from "./ctx";
-import { settleForMerge } from "./lane-helpers";
+import { settleForMerge, waitMerge } from "./lane-helpers";
 import { newPlantedSid } from "./restart";
 
 export type DigJ = {
@@ -921,6 +921,94 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
     (await stewGet("/api/post-land-audits")).status === 403);
   check("steward token on the lane-outcome trail is still out of scope (403)",
     (await stewGet("/api/lane-outcomes")).status === 403);
+
+  // --- A LIVE MERGE JOB READS "running", NEVER "interrupted" (server.ts#stewardMergeView) ------
+  //     mergeJob's FIRST act, before its first await, is a durable-intent row that says
+  //     "interrupted … the server was interrupted mid-run" — it exists so a restart inside the run
+  //     leaves a record instead of a hole. Until 2026-09-17 this view read that row while the job
+  //     was still running: on 2026-09-02 the digest carried "land gate running" in gate.reports and
+  //     the attention "slot 8 merge status is interrupted" about the SAME slot. Both halves are
+  //     measured here, against one lane: the planted intent with no job (still interrupted), and a
+  //     job that is genuinely in flight (running). The gate is driven by a verify stand-in that
+  //     sleeps and then FAILS, so the job is observable for seconds and nothing lands. ---
+  {
+    const SLOW_V = `${ROOT}/slowverify-steward`;
+    writeFileSync(SLOW_V, "#!/bin/sh\nsleep 2\necho 'slowverify FAIL'\nexit 1\n", { mode: 0o755 });
+    chmodSync(SLOW_V, 0o755);
+    // an executable fixture has to establish that it EXECUTES, and with WHICH verdict — a
+    // stand-in that exited green would land the lane and measure a different section's fact
+    check("fixture: the sleeping verify stand-in runs and exits RED (nothing this section does can land)",
+      spawnSync("/bin/sh", ["-c", `'${SLOW_V}'`]).status === 1, SLOW_V);
+
+    const lm = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    const lmBranch = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] })
+      .slots.find((x) => x.id === lm.slot)?.worktree?.branch ?? "";
+    writeFileSync(`${lm.cwd}/merge-view-probe.txt`, "a lane with something to land\n");
+    laneGit(lm.cwd, "add", "merge-view-probe.txt");
+    laneGit(lm.cwd, "commit", "-qm", "merge-view probe");
+    check("fixture: the merge-view lane exists, names a branch and has a commit to land",
+      lmBranch !== "" && laneGit(lm.cwd, "rev-list", "--count", `${primaryBranch}..HEAD`) === "1",
+      `${lmBranch} ahead=${laneGit(lm.cwd, "rev-list", "--count", `${primaryBranch}..HEAD`)}`);
+
+    // THE INTERRUPTED HALF, planted through the one door the server itself uses — the state file,
+    // exactly as e2e/restart.ts plants a session uuid. `conflicted` is deliberately absent: the ⏸
+    // guard holds only a verdict that carries an agent's resolution (server.ts#carriedFromPendingVerdict),
+    // so this row is re-runnable and the same lane can serve the running half below.
+    await stopSrv();
+    const stPath = `${ROOT}/fleet.json`;
+    const stJ = JSON.parse(readFileSync(stPath, "utf8")) as { merges?: Record<string, unknown> };
+    stJ.merges = { ...(stJ.merges ?? {}), [String(lm.slot)]: { status: "interrupted", landed: false,
+      branch: lmBranch, at: Date.now(),
+      detail: "a merge run started here and never produced a verdict — the server was interrupted mid-run." } };
+    writeFileSync(stPath, JSON.stringify(stJ, null, 2), { mode: 0o600 });
+    await restartSrv({ FLEET_VERIFY_CMD: SLOW_V });
+
+    type MergeRow = { status: string; detail: string; conflicted: string[]; at: number } | null;
+    const stewRow = async (slot: number): Promise<{ merge: MergeRow } | undefined> =>
+      ((await (await stewGet("/api/steward/sessions")).json()) as { slots: ({ id: number } & { merge: MergeRow })[] })
+        .slots.find((x) => x.id === slot);
+    const planted = (await stewRow(lm.slot))?.merge;
+    check("merge view: a PERSISTED interrupted intent with no living job still reads 'interrupted'",
+      planted?.status === "interrupted" && planted.detail.includes("never produced a verdict"),
+      JSON.stringify(planted));
+
+    // …and the same row while a job IS alive. The POST is deliberately not awaited first: the
+    // reservation (mergeStart) is synchronous at the route's door, so the running window opens
+    // before the response and this section must be able to read it there too.
+    await settleForMerge(lm.slot);
+    const mgP = post(`/api/slots/${lm.slot}/merge`, {});
+    let running: MergeRow = null;
+    let sawRunning = false;
+    for (let i = 0; i < 400 && !sawRunning; i++) {
+      const own = (await (await get(`/api/slots/${lm.slot}/merge`)).json()) as { running?: boolean };
+      if (own.running) { sawRunning = true; running = (await stewRow(lm.slot))?.merge ?? null; break; }
+      await Bun.sleep(50);
+    }
+    const mgJ = await mgP.then(async (r) => `${r.status} ${(await r.text()).slice(0, 160)}`);
+    // the precondition as ITSELF: no live job means this section measured nothing, which is a
+    // different sentence from "the view was wrong" and must never wear its words
+    check("fixture: the merge job was observed in flight (the owner route's own `running`)",
+      sawRunning, `merge POST → ${mgJ}`);
+    check("merge view: while the job is in flight the steward view reads 'running', not the durable intent",
+      running?.status === "running" && running.detail.includes("merge job is running"),
+      JSON.stringify(running));
+    // the digest reasons from THIS payload (server.ts#runStewardDigest passes stewardSlotsView) —
+    // so the attention "slot N merge status is interrupted" is unreachable while a land runs,
+    // because the word is not in the input any more
+    check("merge view: the digest's own input carries no 'interrupted' for a slot that is landing",
+      !JSON.stringify(running ?? {}).includes("interrupted"), JSON.stringify(running));
+
+    const settled = await waitMerge(lm.slot);
+    const after = (await stewRow(lm.slot))?.merge;
+    check("merge view: once the job is gone the view is the persisted verdict again (the override is scoped to a LIVE job)",
+      !!settled.last && settled.last.landed === false && after?.status === settled.last.status
+        && after?.status !== "running",
+      `${JSON.stringify(after)} vs ${JSON.stringify(settled.last).slice(0, 200)}`);
+
+    await post(`/api/slots/${lm.slot}/kill`, {}); // leave the slot inventory as this module found it
+    rmSync(SLOW_V, { force: true });
+    await restartSrv(); // …and the suite's own verify command back on the server
+  }
 
   // Digest is steward-scoped, so its bounded Codex migration probe lives here rather than in
   // summary.ts. The controlled binary is the same fixture and every restart is restored before

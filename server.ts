@@ -29795,6 +29795,22 @@ async function readStewardJournal(tail: number, kind?: string, ref?: string): Pr
 function stewardMergeView(slotId: number): { status: string; detail: string; conflicted: string[];
   at: number; errorReason?: MergeErrorReason } | null {
   const m = mergeLast.get(slotId);
+  // A LIVING JOB OUTRANKS THE ROW IT WROTE. mergeJob's first act, before its first await, is a
+  // DURABLE INTENT row — status "interrupted", "the server was interrupted mid-run" — so a restart
+  // inside the run leaves a record rather than a hole. Read while that job is still RUNNING the row
+  // says the opposite of the truth, and THIS view is where the steward reads it: measured 2026-09-02
+  // 03:20 and 06:18, /api/steward/sessions answered "interrupted" for the slot whose land gate the
+  // SAME digest reported as "land gate running" in `gate.reports`, and the digest rendered the
+  // attention "slot 8 merge status is interrupted" — a false alarm on every land.
+  // The predicate is the one the owner poll and needsMergeReview already read (a reserved OR
+  // in-flight job), not a second copy of the question, so "interrupted" goes back to meaning what
+  // it says: a persisted intent with no living job behind it. The digest inherits this for free —
+  // runStewardDigest reasons from stewardSlotsView, which is this fact.
+  if (mergeInflight.has(slotId) || mergeStart.has(slotId))
+    return { status: "running", detail: "a merge job is running here",
+      // the intent row's own `at` IS the job's start. The only window where it is absent is between
+      // the route's synchronous reservation and that write, and there "now" is the start too.
+      conflicted: m?.conflicted ?? [], at: m?.at ?? Date.now() };
   return m ? { status: m.status, detail: m.detail, conflicted: m.conflicted ?? [], at: m.at,
     ...(m.errorReason ? { errorReason: m.errorReason } : {}) } : null;
 }

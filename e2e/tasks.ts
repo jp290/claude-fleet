@@ -9183,6 +9183,89 @@ export async function run(ctx: Ctx): Promise<void> {
       `fill=${mAdvisoryStatuses.join(",")} overflow=${mAdvisoryOverflow.status}:${mAdvisoryOverflowText}`
         + ` work=${mWorkBesideAdvisory.status}:${mWorkBesideAdvisoryText}`);
 
+    // (f6/f7) THE AWAIT WINDOW, MEASURED. Between the body read and the mint, `createTaskForMain`
+    // holds a reference to the LIVE slot object, and a recycle mutates that object in place —
+    // ensureSlot rewrites `openedAt` and rotates `selfToken` on the same reference. So every fact
+    // the handler re-reads from `s` after an await is a fact about whoever holds the slot NOW, and
+    // an authenticated request could mint a row on behalf of a session that never sent it.
+    //
+    // A SOURCE PIN CANNOT MEASURE THIS. It can show the re-proof lines are present; it can never
+    // show they fire, and a race that only exists between two awaits is invisible to every probe
+    // that does not interleave. So the server carries a test-only latch at exactly the guarded
+    // point (`FLEET_TEST_MAIN_FILE_LATCH`, inert without the env var, one-shot per process) and
+    // these two probes park a REAL request in it. Recipe and latch shape: e2e/slots.ts's
+    // post-capture race. Both run AFTER the cap section on purpose — (f7) recycles the planted MAIN
+    // slot, and every check above it reads that slot's token.
+    const mLatch = `${ROOT}/main-file-latch`;
+    const mReachedPath = `${mLatch}.reached`;
+    const mReleasePath = `${mLatch}.release`;
+    const mClearLatch = (): void => {
+      for (const path of [mLatch, mReachedPath, mReleasePath]) rmSync(path, { force: true });
+    };
+    const mWaitFile = async (path: string, timeoutMs = 8000): Promise<boolean> => {
+      const until = Date.now() + timeoutMs;
+      while (Date.now() < until) {
+        if (existsSync(path)) return true;
+        await Bun.sleep(25);
+      }
+      return false;
+    };
+
+    // (f6) THE CONTROL, and it runs FIRST because a guard that refuses everything would make (f7)
+    // pass for the wrong reason. Same window, same latch, nothing recycled underneath: the row must
+    // still file, with its proposal, exactly as an unlatched filing does.
+    mClearLatch();
+    await restartSrv({ FLEET_TEST_MAIN_FILE_LATCH: mLatch });
+    const mCtlToken = mState().slots?.[String(mSlot)]?.selfToken ?? "";
+    const mCtlPost = mFile(mCtlToken, { text: "acp23 latched control", kind: "auftrag", files: [M_TRACKED] });
+    const mCtlReached = await mWaitFile(mReachedPath);
+    writeFileSync(mReleasePath, "release\n", { mode: 0o600 });
+    const mCtlRes = await mCtlPost;
+    const mCtlId = ((await mCtlRes.json()) as { task?: MSurfRow }).task?.id ?? "";
+    const mCtlRow = mCtlId ? await mSurfRow(mCtlId) : undefined;
+    check("(f6) an UNCHANGED occupant parked in the re-proof window still files — the guard is not a blanket refusal, and the latch really is reached",
+      mCtlReached && mCtlRes.status === 200 && mCtlRow?.status === "pending"
+        && mCtlRow.source === "main" && mCtlRow.programId === mMainProgram
+        && mCtlRow.filesProposal?.files.join(" ") === M_TRACKED,
+      `reached=${mCtlReached} ${mCtlRes.status} row=${JSON.stringify(mCtlRow ?? null)}`);
+
+    // (f7) THE NEGATIVE PROBE. Same window — then the slot is RECYCLED under the parked request
+    // (kill + open: same slot id, new openedAt, rotated selfToken, and the `s` object the handler
+    // still points at is the one both writes landed on). The refusal must be the OCCUPANT's own
+    // sentence: the binding re-read one screen below has a different one, so this assertion says
+    // WHICH guard fired and not merely that something did. And nothing may be left behind — no row,
+    // and therefore no parked proposal, because the proposal only ever travels on a minted row.
+    mClearLatch();
+    await restartSrv({ FLEET_TEST_MAIN_FILE_LATCH: mLatch });
+    const mRaceToken = mState().slots?.[String(mSlot)]?.selfToken ?? "";
+    const mIdsBefore = (await mAll()).map((t) => t.id).sort().join(",");
+    const mOpenedBefore = mState().slots?.[String(mSlot)]?.openedAt ?? 0;
+    const mRacePost = mFile(mRaceToken, { text: "acp23 recycled under the request", kind: "auftrag", files: [M_TRACKED] });
+    const mRaceReached = await mWaitFile(mReachedPath);
+    const mRaceKill = await post(`/api/slots/${mSlot}/kill`, {});
+    const mRaceOpen = await post(`/api/slots/${mSlot}/open`, { cwd: REPO, label: "acp23-main-recycled" });
+    const mOpenedAfter = mState().slots?.[String(mSlot)]?.openedAt ?? 0;
+    const mTokenAfter = mState().slots?.[String(mSlot)]?.selfToken ?? "";
+    writeFileSync(mReleasePath, "release\n", { mode: 0o600 });
+    const mRaceRes = await mRacePost;
+    const mRaceText = await mRaceRes.text();
+    const mIdsAfter = (await mAll()).map((t) => t.id).sort().join(",");
+    const mRaceRows = (await mAll()).filter((t) => t.text === "acp23 recycled under the request");
+    // The probe carries its own precondition: if the recycle did not actually rotate the identity,
+    // a 409 would prove nothing at all.
+    check("(f7) a request parked in the window is REFUSED once its slot is recycled — the occupant's own sentence, no row minted, nothing parked",
+      mRaceReached && mRaceKill.ok && mRaceOpen.ok
+        && mOpenedAfter !== mOpenedBefore && mTokenAfter !== mRaceToken && mRaceToken.length === 32
+        && mRaceRes.status === 409
+        && mRaceText.includes(`slot ${mSlot} was recycled while this row was being prepared`)
+        && !mRaceText.includes("MAIN binding moved")
+        && mIdsAfter === mIdsBefore && mRaceRows.length === 0,
+      `reached=${mRaceReached} kill=${mRaceKill.status} open=${mRaceOpen.status}`
+        + ` openedAt=${mOpenedBefore}->${mOpenedAfter} tokenRotated=${mTokenAfter !== mRaceToken}`
+        + ` ${mRaceRes.status}:${mRaceText} rows=${mRaceRows.length}`);
+    mClearLatch();
+    await restartSrv();
+
     // Leave the queue and the board as this section found them: every row it filed is deleted (none
     // of them is `sent`, so none is a running lane's founding row), the planted MAIN's slot is
     // closed, and the Program it was bound to is completed rather than left active for the modules

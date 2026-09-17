@@ -98,7 +98,7 @@ import {
   MAX_FLEET_REPORT_DELIVERY_REASON,
   MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT, ATTENTION_CANDIDATE_SHA_RE,
   validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind, TASK_REVIEW_MODES,
-  PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, PROGRAM_PROFILE_KINDS, loadProgramProfile,
+  PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, loadPromotionRequest, PROGRAM_PROFILE_KINDS, loadProgramProfile,
   PROGRAM_LINEAGE_MAX, loadProgramLineage, foundingOccupantFrom, foundingIdentityFrom,
   PROGRAM_INBOX_MAX, loadProgramInbox, type ProgramRecordLoss, loadProgramRecordLoss,
   MESSAGES_MAX, loadMessages, MESSAGE_IDEMPOTENCY_KEY_MAX,
@@ -135,7 +135,7 @@ import {
   type RefineChild, type RefineProposal,
   type TaskRefine, type LaneForm, type LaneRef, type SuccessionRetirement, type CodexRecoveryState,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
-  type PromotionSelfLand, type PromotionPolicy, type ProgramProfileKind, type ProgramProfile,
+  type PromotionSelfLand, type PromotionPolicy, type PromotionRequest, type ProgramProfileKind, type ProgramProfile,
   type ProgramLineageVia, type ProgramLineageEndedBy, type ProgramLineageEntry, type ProgramLineage,
   type ProgramInboxKind, type ProgramInboxEntry, type ProgramInbox,
   type ProgramFoundingMode, type ProgramFoundingProfileKind, type ProgramFoundingIdentity,
@@ -2056,14 +2056,36 @@ function validateProgramContent(raw: unknown): ProgramValidation {
   const decisions = array("decisions", 500); if (!Array.isArray(decisions)) return decisions;
   const evidence = array("evidence", 300); if (!Array.isArray(evidence)) return evidence;
   const openQuestions = array("openQuestions", 500); if (!Array.isArray(openQuestions)) return openQuestions;
-  return { ok: true, content: { title, intent, successCriterion, nonGoals, decisions, evidence, openQuestions } };
+  // THE WISH IS NOT VALIDATED, IT IS READ — and the difference is the whole safety property. Every
+  // field above refuses the request when it is wrong, because a title nobody can store is a
+  // proposal that failed. A malformed WISH must not fail the proposal: it is optional, it grants
+  // nothing by itself, and its only degradation direction that is safe is ABSENT. So it goes
+  // through the loader (loadPromotionRequest), not through a validator, and the SAME reading
+  // applies on the wire and on a restart — one rule, not two that can drift apart.
+  const promotionRequest = loadPromotionRequest(body.promotionRequest);
+  // …and it is placed LAST and only when present, because `sameProgramContent` compares these
+  // objects through JSON.stringify: a key order that differed between this builder and
+  // `programContent` would make two identical proposals read as two different ones.
+  return { ok: true, content: { title, intent, successCriterion, nonGoals, decisions, evidence, openQuestions,
+    ...(promotionRequest ? { promotionRequest } : {}) } };
 }
 
 const programContent = (p: Program): ProgramContent => ({ title: p.title, intent: p.intent,
   successCriterion: p.successCriterion, nonGoals: p.nonGoals, decisions: p.decisions,
-  evidence: p.evidence, openQuestions: p.openQuestions });
+  evidence: p.evidence, openQuestions: p.openQuestions,
+  ...(p.promotionRequest ? { promotionRequest: p.promotionRequest } : {}) });
 const sameProgramContent = (a: ProgramContent, b: ProgramContent): boolean =>
   JSON.stringify(a) === JSON.stringify(b);
+// …and the same comparison WITHOUT the wish, for the one caller that must not see it: a repeated
+// confirm. The first confirm SPENDS the wish (it becomes `promotion` and is deleted), so a second
+// confirm carrying the identical body would compare a proposal that still asks against a program
+// that no longer does, and answer `conflicting confirm` to a doubled click. The seven content
+// fields still decide that question; re-granting is not what a retry means, and the promotion door
+// is where a rung is changed after the fact.
+const contentWithoutWish = (c: ProgramContent): Omit<ProgramContent, "promotionRequest"> => {
+  const { promotionRequest: _wish, ...rest } = c;
+  return rest;
+};
 const sameProgramSession = (p: Program, s: Slot): boolean => p.proposedBy.kind === "session"
   && p.proposedBy.slot === s.id && p.proposedBy.openedAt === s.openedAt
   && p.proposedBy.sessionId === s.sessionId;
@@ -25602,7 +25624,7 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
 }
 
 const PROGRAM_CONTENT_KEYS: (keyof ProgramContent)[] = ["title", "intent", "successCriterion",
-  "nonGoals", "decisions", "evidence", "openQuestions"];
+  "nonGoals", "decisions", "evidence", "openQuestions", "promotionRequest"];
 
 const BOOTSTRAP_CONTEXT_MODE: ContextPackMode = "mutating"; // Program-MAIN is founded to act on the owner's confirmed Program.
 const BOOTSTRAP_CONTEXT_TRIGGERS: readonly ContextPackTrigger[] = ["always", "verification"]; // The founding contract promises grounding + proof, not a land/deploy act.
@@ -28205,11 +28227,36 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     const valid = validateProgramContent(merged);
     if (!valid.ok) return json({ error: valid.error }, 400);
     if (program.status === "confirmed") {
-      if (!sameProgramContent(programContent(program), valid.content))
+      // WITHOUT THE WISH — see contentWithoutWish: the first confirm already spent it, and a retry
+      // is a retry, not a second grant.
+      if (!sameProgramContent(contentWithoutWish(programContent(program)), contentWithoutWish(valid.content)))
         return json({ error: "conflicting confirm" }, 409);
       return json({ ok: true, existing: true, program });
     }
-    Object.assign(program, valid.content);
+    // THE SECOND — AND ONLY OTHER — WRITER OF `program.promotion`, and it is an owner act in
+    // exactly the sense the promotion door is: this route is behind the owner gate, the body is
+    // the owner's, and the transition it performs is the moment the owner decides about this
+    // program at all. What it does NOT do is invent a grant: it spends a wish the proposal
+    // carried, or the owner's correction of that wish, and a confirm with no wish anywhere grants
+    // nothing and leaves the program owner-only exactly as before.
+    //
+    // THE WISH NEVER SURVIVES THE TRANSITION, in either direction. It is stripped from what is
+    // stored and deleted from the row, so `promotionRequest` and an ACTIVE program can never
+    // coexist — which is why nothing downstream needs a rule about ignoring it. Stripping is what
+    // makes the owner's correction authoritative too: a confirm body carrying
+    // `"promotionRequest": null` (or any shape the loader refuses) reads as ABSENT and therefore
+    // REMOVES the proposal's wish, rather than silently leaving it standing under a body that
+    // meant to take it back.
+    const wish: PromotionRequest | undefined = valid.content.promotionRequest;
+    Object.assign(program, contentWithoutWish(valid.content));
+    delete program.promotionRequest;
+    if (wish) {
+      // `confirmedAt` is stamped HERE, server-side, for the promotion door's reason: a wire value
+      // would let the caller date the owner's decision. `off` is stored like any other rung — it
+      // grants nothing landable, and it says so as a dated decision rather than as silence.
+      program.promotion = { v: 1, selfLand: wish.selfLand, confirmedAt: Date.now() };
+      audit("program_promotion", undefined, `${program.id} selfLand=${wish.selfLand} via confirm`);
+    }
     program.status = "confirmed";
     program.confirmedAt = Date.now();
     await saveStateNow();

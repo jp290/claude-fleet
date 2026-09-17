@@ -21,6 +21,11 @@ interface ProgramContent {
   decisions: string[];
   evidence: string[];
   openQuestions: string[];
+  // THE PROPOSAL'S WISH for the self-land rung (server/types.ts#PromotionRequest) — the one record
+  // on a Program a SESSION may write, and the only reason that is safe is that it grants nothing:
+  // the confirm transition spends it into `promotion` (server-stamped) or drops it, so it never
+  // coexists with a program a MAIN could be bound into. Absent on every legacy proposal.
+  promotionRequest?: { v: number; selfLand: string };
 }
 // the persisted authority lineage (server.ts#ProgramLineage): one entry per holding of a Program's
 // MAIN authority, written in the same save as `main`; only the newest entry may be open
@@ -7449,6 +7454,179 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const id of shapeCarriers) await programPost(id, "complete");
   }
 
+  // === THE WISH ON A PROPOSAL, AND THE CONFIRM THAT SPENDS IT ==================================
+  // The door one section up grants AFTER the fact, and that is where the permission went missing in
+  // practice: measured 2026-09-17, 40 of 71 programs carried a promotion but only two of the four
+  // ACTIVE ones did, and a finished, verified, docs-only lane sat waiting because the program it
+  // belonged to had never been promoted. So a proposal may now CARRY the wish, and the owner's
+  // confirm — the act where they are already deciding — spends it.
+  //
+  // WHAT IS PROBED HERE IS THE SEAM, not the rungs (those are proved above): a wish grants NOTHING
+  // while it is a wish, the confirm grants it with a SERVER stamp, the owner's correction beats the
+  // proposal, and every shape the loader refuses grants nothing rather than the nearest rung.
+  {
+    const wishProposal = async (title: string, promotionRequest: unknown, door: "owner" | "self" = "owner"): Promise<Program> => {
+      const body = { ...content, title, promotionRequest };
+      const made = door === "owner" ? await post("/api/programs", body) : await selfPropose(plainToken, body);
+      return ((await made.json()) as { program: Program }).program;
+    };
+    const rowOf = async (id: string): Promise<OwnerProgramRow | undefined> =>
+      (await ownerPrograms()).find((p) => p.id === id);
+
+    // (1) A WISH IS NOT A PERMISSION. Both proposal doors — the owner's and a session's — store it,
+    // and NEITHER produces a `promotion`. The session door is the one that matters: this is the
+    // only record on a Program a session may write, and it is safe only because it grants nothing.
+    const wishOwner = await wishProposal("Wish via the owner proposal", { v: 1, selfLand: "green-only" });
+    const wishSelf = await wishProposal("Wish via a session proposal", { v: 1, selfLand: "guarded" }, "self");
+    const wishOwnerRow = await rowOf(wishOwner.id);
+    const wishSelfRow = await rowOf(wishSelf.id);
+    check("promotion wish: a proposal carries the wish and grants NOTHING — neither door writes a promotion",
+      wishOwnerRow?.promotionRequest?.selfLand === "green-only" && wishOwnerRow?.promotion === undefined
+        && wishSelfRow?.promotionRequest?.selfLand === "guarded" && wishSelfRow?.promotion === undefined
+        && wishOwnerRow?.status === "proposed" && wishSelfRow?.status === "proposed",
+      JSON.stringify({ owner: [wishOwnerRow?.promotionRequest ?? null, wishOwnerRow?.promotion ?? null],
+        self: [wishSelfRow?.promotionRequest ?? null, wishSelfRow?.promotion ?? null] }));
+
+    // (2) THE CONFIRM IS THE GRANT — with the SERVER's stamp, and the wish is CONSUMED. A wish that
+    // survived its own transition would be a second, undated copy of a permission that now exists.
+    const before = Date.now();
+    const confirmGrant = await programPost(wishOwner.id, "confirm");
+    const granted = await rowOf(wishOwner.id);
+    check("promotion wish: the owner's confirm grants the wished rung in the same act, server-stamped, and consumes the wish",
+      confirmGrant.ok && granted?.status === "confirmed"
+        && granted?.promotion?.selfLand === "green-only"
+        && typeof granted?.promotion?.confirmedAt === "number" && granted.promotion.confirmedAt >= before
+        && granted?.promotionRequest === undefined && !("promotionRequest" in (granted ?? {})),
+      JSON.stringify({ status: confirmGrant.status, promotion: granted?.promotion ?? null,
+        wish: granted?.promotionRequest ?? null }));
+
+    // (3) THE OWNER'S CORRECTION BEATS THE PROPOSAL, through the SAME merge path every other
+    // content field uses — that is the whole reason the wish is ProgramContent and not a record
+    // beside it. A session asks for `guarded`, the owner confirms `green-only`, and green-only is
+    // what is stored: the proposal was read, not obeyed.
+    const wishCorrected = await wishProposal("Wish the owner narrows at confirm", { v: 1, selfLand: "guarded" });
+    await programPost(wishCorrected.id, "confirm", { promotionRequest: { v: 1, selfLand: "green-only" } });
+    const correctedRow = await rowOf(wishCorrected.id);
+    check("promotion wish: a rung corrected in the confirm body is the rung that is granted — the proposal asks, the owner decides",
+      correctedRow?.promotion?.selfLand === "green-only" && correctedRow?.promotionRequest === undefined,
+      JSON.stringify(correctedRow?.promotion ?? null));
+
+    // (4) …AND THE OWNER CAN SAY NO IN BOTH AVAILABLE SPELLINGS, which must mean two DIFFERENT
+    // things and both of them "nothing is landable":
+    //   `off`  — a dated decision, stored, readable, distinguishable from silence (the ladder's
+    //            whole point, kept apart in the schema since the record existed);
+    //   `null` — the wish is REMOVED and no record is written at all. This is the direction a merge
+    //            silently drops: `null` reads as absent, and if the transition merely "kept what
+    //            was stored" the proposal's `guarded` would have been granted by a body that meant
+    //            to take it back. So the confirm strips the wish FIRST and lets the merged content
+    //            be authoritative.
+    const wishOff = await wishProposal("Wish the owner answers with a dated no", { v: 1, selfLand: "guarded" });
+    await programPost(wishOff.id, "confirm", { promotionRequest: { v: 1, selfLand: "off" } });
+    const offRow = await rowOf(wishOff.id);
+    const wishWithdrawn = await wishProposal("Wish the owner takes off the table", { v: 1, selfLand: "guarded" });
+    await programPost(wishWithdrawn.id, "confirm", { promotionRequest: null });
+    const withdrawnRow = await rowOf(wishWithdrawn.id);
+    check("promotion wish: 'off' at confirm stores a dated NO, and a null in the same body removes the wish and stores nothing at all",
+      offRow?.promotion?.selfLand === "off" && offRow?.promotionRequest === undefined
+        && withdrawnRow?.status === "confirmed"
+        && withdrawnRow?.promotion === undefined && withdrawnRow?.promotionRequest === undefined,
+      JSON.stringify({ off: offRow?.promotion ?? null, withdrawn: withdrawnRow?.promotion ?? null }));
+
+    // (5) EVERY SHAPE THE LOADER REFUSES GRANTS NOTHING — and it is accepted-but-absent, never a
+    // 400: the wish is optional and grants nothing, so a malformed one must not fail a proposal
+    // whose seven content fields are perfectly good. No field-wise repair: a `selfLand` outside the
+    // set does NOT become the nearest known rung, and a wire-dictated `confirmedAt` is an unknown
+    // key — a caller that could send one would be dating the owner's decision before the decision.
+    const badWishes: [string, unknown][] = [
+      ["a version this server does not know", { v: 2, selfLand: "green-only" }],
+      ["a rung outside the closed set", { v: 1, selfLand: "always" }],
+      ["confirmedAt dictated from the wire", { v: 1, selfLand: "guarded", confirmedAt: 1 }],
+      ["an unknown key beside a good rung", { v: 1, selfLand: "guarded", why: "please" }],
+      ["a wish that is not an object", "guarded"],
+      ["an array where a record belongs", [{ v: 1, selfLand: "guarded" }]],
+      ["no version at all", { selfLand: "guarded" }],
+    ];
+    const badRows: { name: string; accepted: boolean; wish: unknown; promotion: unknown }[] = [];
+    for (const [name, shape] of badWishes) {
+      const prog = await wishProposal(`Malformed wish — ${name}`, shape);
+      const proposedRow = await rowOf(prog.id);
+      await programPost(prog.id, "confirm");
+      const afterRow = await rowOf(prog.id);
+      badRows.push({ name, accepted: afterRow?.status === "confirmed",
+        wish: proposedRow?.promotionRequest ?? null, promotion: afterRow?.promotion ?? null });
+    }
+    check("promotion wish: every shape the loader refuses is accepted-but-absent and grants NOTHING at confirm — no field-wise repair",
+      badRows.length === badWishes.length
+        && badRows.every((r) => r.accepted && r.wish === null && r.promotion === null),
+      JSON.stringify(badRows));
+
+    // (6) A CONFIRM WITHOUT A WISH IS EXACTLY TODAY'S CONFIRM. This is the regression half: the
+    // program stays owner-only, which is the shape every program had before this seam existed.
+    const noWish = await wishProposal("A proposal that asks for nothing", undefined);
+    const noWishProposed = await rowOf(noWish.id);
+    await programPost(noWish.id, "confirm");
+    const noWishRow = await rowOf(noWish.id);
+    check("promotion wish: a proposal with no wish confirms exactly as before — no record, owner-only",
+      noWishProposed?.promotionRequest === undefined && noWishRow?.status === "confirmed"
+        && noWishRow?.promotion === undefined,
+      JSON.stringify({ promotion: noWishRow?.promotion ?? null }));
+
+    // (7) A REPEATED CONFIRM IS A RETRY, NOT A SECOND GRANT. The board sends the confirm body it
+    // has; the first one SPENT the wish, so comparing the wish too would answer `conflicting
+    // confirm` to a doubled click on an unchanged proposal. The seven content fields still decide
+    // that question, and the re-sent wish neither re-grants nor re-stamps.
+    const grantedStamp = granted?.promotion?.confirmedAt ?? 0;
+    const retry = await programPost(wishOwner.id, "confirm", { promotionRequest: { v: 1, selfLand: "green-only" } });
+    const retryBody = (await retry.json()) as { existing?: boolean; error?: string };
+    const retryDiffer = await programPost(wishOwner.id, "confirm", { title: "a different title entirely" });
+    const afterRetry = await rowOf(wishOwner.id);
+    check("promotion wish: re-sending the confirmed proposal is an idempotent retry, not a regrant — and a real content change is still 409",
+      retry.ok && retryBody.existing === true && retryDiffer.status === 409
+        && afterRetry?.promotion?.selfLand === "green-only"
+        && afterRetry?.promotion?.confirmedAt === grantedStamp,
+      JSON.stringify({ retry: retry.status, existing: retryBody.existing ?? null,
+        differ: retryDiffer.status, stampMoved: afterRetry?.promotion?.confirmedAt !== grantedStamp }));
+
+    // (8) THE WISH SURVIVES A RESTART AS A WISH, and a malformed one does not survive at all —
+    // the same reader on disk as on the wire, which is why there is one rule and not two that
+    // drift. The control row beside it is what keeps "everything vanished" from passing this.
+    const diskGood = await wishProposal("Wish that must survive a boot", { v: 1, selfLand: "guarded" });
+    const diskBad = await wishProposal("Wish that must not survive a boot", { v: 1, selfLand: "green-only" });
+    await stopSrv();
+    const wishState = readState();
+    const diskBadRow = (wishState.programs ?? []).find((x) => x.id === diskBad.id);
+    if (diskBadRow) (diskBadRow as unknown as Record<string, unknown>).promotionRequest =
+      { v: 1, selfLand: "green-only", confirmedAt: Date.now() };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(wishState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const diskGoodRow = await rowOf(diskGood.id);
+    const diskBadAfter = await rowOf(diskBad.id);
+    await programPost(diskGood.id, "confirm");
+    await programPost(diskBad.id, "confirm");
+    check("promotion wish: a well-formed wish survives a boot and still grants only at confirm; a planted malformed one loads ABSENT and grants nothing",
+      !!diskBadRow && diskGoodRow?.promotionRequest?.selfLand === "guarded"
+        && diskGoodRow?.promotion === undefined && diskBadAfter?.promotionRequest === undefined
+        && (await rowOf(diskGood.id))?.promotion?.selfLand === "guarded"
+        && (await rowOf(diskBad.id))?.promotion === undefined,
+      JSON.stringify({ good: diskGoodRow?.promotionRequest ?? null, bad: diskBadAfter?.promotionRequest ?? null }));
+
+    // (9) THE STRUCTURAL REASON NOTHING DOWNSTREAM NEEDS A RULE ABOUT THE WISH: it cannot coexist
+    // with a program a MAIN could ever be bound into. The confirm spends or drops it, so a row
+    // carrying one is necessarily still `proposed` — no MAIN, no land, and the land route (which
+    // e2e/pins.ts proves never reads the field) has nothing to be confused by.
+    const allRows = await ownerPrograms();
+    const wishCarriers = allRows.filter((p) => p.promotionRequest !== undefined);
+    check("promotion wish: no program past 'proposed' carries a wish — the transition always spends or drops it",
+      wishCarriers.every((p) => p.status === "proposed"),
+      JSON.stringify(wishCarriers.map((p) => [p.id, p.status, p.promotionRequest ?? null])));
+
+    for (const p of allRows.filter((x) => x.title.toLowerCase().includes("wish")
+      || x.title.startsWith("Malformed wish") || x.title === "a different title entirely")) {
+      if (p.status === "proposed") await programPost(p.id, "discard");
+      else { await programPost(p.id, "activate"); await programPost(p.id, "complete"); }
+    }
+  }
+
   // === THE EXECUTION-PROFILE RECORD: the owner's choice of environment, not of content ==========
   // Same shape and same reasons as the promotion record one section up, and deliberately separate
   // from BOTH: `promotion` is a permission a MAIN spends, `profile` is the environment a MAIN is
@@ -7548,7 +7726,10 @@ export async function run(ctx: Ctx): Promise<void> {
 
     // THE ENVIRONMENT CANNOT BE PROPOSED, ONLY GRANTED — and the adversary here is a session, not
     // a typo. Program CONTENT is the one thing a session may write into a Program, and it reaches
-    // storage through validateProgramContent, which builds a CLOSED object from seven named fields.
+    // storage through validateProgramContent, which builds a CLOSED object from seven named fields
+    // plus the optional self-land WISH — and the wish is the proof of the boundary, not a hole in
+    // it: it grants nothing until the owner's own confirm spends it, while a `profile` would choose
+    // the environment outright.
     // So a `profile` riding on a self proposal, on an owner-direct proposal, or on the owner's own
     // confirm corrections must never land: it is accepted-but-absent, which is the boundary this
     // repo already draws for `id`, `status` and `proposedBy` on the same door. If it ever landed,
@@ -7891,7 +8072,8 @@ export async function run(ctx: Ctx): Promise<void> {
 
     // THE WORKFLOW CANNOT BE PROPOSED, ONLY GRANTED — the same boundary the profile record draws,
     // and the same adversary: content reaches storage through validateProgramContent, a CLOSED
-    // object of seven named fields, so a `studio` riding on a proposal is accepted-but-absent.
+    // object of seven named fields plus the optional self-land wish, so a `studio` riding on a
+    // proposal is accepted-but-absent.
     const smuggleStudio = await selfPropose(plainToken, {
       ...content, title: "Smuggle a studio through a session proposal", studio: { id: "private-repo-p" } });
     const smuggleStudioRow = (await smuggleStudio.json()) as { program?: Program };
@@ -8299,6 +8481,69 @@ export async function run(ctx: Ctx): Promise<void> {
           && absent.stamped === null && nulled.stamped === null,
         JSON.stringify({ off: off.stamped, green: green.stamped, guarded: guarded.stamped,
           other: other.stamped, absent: absent.stamped }));
+    }
+
+    // === THE WISH AS THE OWNER SEES IT AT THE CONFIRM DOOR ====================================
+    // Same method, second helper, and a sharper reason than the one above: promotionState describes
+    // a permission that is already in force, this one describes one the owner is ABOUT TO GRANT by
+    // pressing a button. A permission that is invisible at the moment it is handed over is a
+    // permission handed over by accident — which is exactly the failure this seam would otherwise
+    // introduce, since the confirm body the board sends is EMPTY and carries the wish along unseen.
+    const rqAt = cliSrc.indexOf("\nfunction promotionRequestState(p: ProgramInfo)");
+    const rqHeadAt = cliSrc.indexOf("type PromotionRequestStateName");
+    const rqSrc = rqAt < 0 || rqHeadAt < 0 || rqHeadAt > rqAt ? ""
+      : cliSrc.slice(rqHeadAt, cliSrc.indexOf("\n}\n", rqAt) + 3);
+    check("promotion wish UI precondition: promotionRequestState is extractable and carries no DOM and no clock",
+      rqSrc.includes("function promotionRequestState")
+        && !/document|\bel\(|chip\(|Date\.now\(|new Date\(|fmtTs/.test(rqSrc),
+      rqSrc === "" ? `not found (head=${rqHeadAt} fn=${rqAt})` : `${rqSrc.length} bytes`);
+    if (rqSrc !== "") {
+      type RqView = { state: string; label: string; tone: string; sentence: string };
+      // PROMOTION_RUNGS lives with promotionState, so the cut is fed the same constant the real
+      // module gives it — a private copy here would be a second closed set that can drift.
+      const promotionRequestState = new Function(
+        new Bun.Transpiler({ loader: "ts" }).transformSync('const PROMOTION_RUNGS = ["off", "green-only", "guarded"];\n' + rqSrc)
+        + "\nreturn promotionRequestState;")() as (p: { promotionRequest?: unknown }) => RqView;
+      const rq = (promotionRequest: unknown): RqView => promotionRequestState({ promotionRequest });
+      const rqAbsent = promotionRequestState({});
+      const rqNull = rq(null);
+      const rqOff = rq({ v: 1, selfLand: "off" });
+      const rqGreen = rq({ v: 1, selfLand: "green-only" });
+      const rqGuarded = rq({ v: 1, selfLand: "guarded" });
+      // (a) THE FOUR READABLE STATES, exact label and exact tone: a `guarded` wish painted `dim`
+      // would read as "nothing to see here" on the click that grants the highest rung.
+      check("promotion wish UI: the four readable states carry their own exact label and tone",
+        rqAbsent.state === "absent" && rqAbsent.label === "asks for no self-land rung" && rqAbsent.tone === "dim"
+          && rqOff.state === "off" && rqOff.label === "asks for self-land: off" && rqOff.tone === "dim"
+          && rqGreen.state === "green-only" && rqGreen.label === "asks for self-land: green-only" && rqGreen.tone === "ok"
+          && rqGuarded.state === "guarded" && rqGuarded.label === "asks for self-land: guarded" && rqGuarded.tone === "ok"
+          && JSON.stringify(rqNull) === JSON.stringify(rqAbsent),
+        JSON.stringify([rqAbsent, rqOff, rqGreen, rqGuarded].map((v) => [v.state, v.label, v.tone])));
+      // (b) THE TWO GRANTS SAY THAT CONFIRMING GRANTS. This is the one sentence the owner needs
+      // before the click, and asking-for-nothing must not be able to produce it.
+      check("promotion wish UI: a wished grant says the confirm GRANTS it; asking for nothing says nothing is granted",
+        /GRANTS/.test(rqGreen.sentence) && /GRANTS/.test(rqGuarded.sentence)
+          && rqGreen.sentence !== rqGuarded.sentence
+          && !/GRANTS/.test(rqAbsent.sentence) && !/GRANTS/.test(rqOff.sentence)
+          && /NOTHING|nothing/.test(rqAbsent.sentence),
+        JSON.stringify({ green: rqGreen.sentence.slice(0, 70), absent: rqAbsent.sentence.slice(0, 70) }));
+      // (c) EVERY SHAPE THE SERVER'S LOADER REFUSES IS ITS OWN STATE, never "asks for nothing" and
+      // never a rung: the server DROPS such a wish at confirm, so a pane that showed a rung would
+      // promise a grant the transition will not make, and one that showed absence would hide that
+      // something is stored at all. The shapes are the loader's own rejection branches.
+      const rqBad: [string, unknown][] = [
+        ["a version this build does not know", { v: 2, selfLand: "green-only" }],
+        ["a rung outside the closed set", { v: 1, selfLand: "always" }],
+        ["no version at all", { selfLand: "guarded" }],
+        ["a wish that is not an object", "guarded"],
+        ["an array where a record belongs", [{ v: 1, selfLand: "guarded" }]],
+      ];
+      const rqBadViews = rqBad.map(([name, shape]) => ({ name, view: rq(shape) }));
+      check("promotion wish UI: every wish this build cannot read renders as 'unreadable' — never as a rung and never as asks-for-nothing",
+        rqBadViews.every((b) => b.view.state === "unreadable" && b.view.tone === "warn"
+          && b.view.label === "asks for an unreadable rung"
+          && b.view.sentence !== rqAbsent.sentence && b.view.label !== rqAbsent.label),
+        JSON.stringify(rqBadViews.map((b) => [b.name, b.view.state, b.view.tone])));
     }
 
     // === THE EXECUTION-PROFILE CHIP, run rather than described ================================

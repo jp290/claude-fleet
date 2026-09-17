@@ -3946,19 +3946,44 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   pin("every advanceIntegration call site refreshes the lane mirror first (a clone lands from the mirror, not from the tree)",
     advCalls.length > 0 && advUnsynced.length === 0,
     `${advCalls.length} call sites, ${advUnsynced.length} without a syncLaneRefs earlier in the same function`);
-  // --- THE PROMOTION RECORD HAS EXACTLY ONE WRITER, and it is the OWNER route. A self route that
-  // could write it would be a permission granting itself — the one shape this whole record exists
-  // to prevent. It is a rule over the source because on a fleet with no promotion record, which is
-  // every fleet by default, no runtime probe can see a second writer that simply never fired.
-  // Assignment AND deletion are both counted: a revocation written from a second place is the same
-  // defect pointing the other way.
-  const promoWrites = [...serverExec.matchAll(/(?:\w+)\.promotion = |delete (?:\w+)\.promotion/g)];
+  // --- THE PROMOTION RECORD HAS EXACTLY TWO WRITERS, and BOTH are owner acts on the owner route.
+  // A self route that could write it would be a permission granting itself — the one shape this
+  // whole record exists to prevent. It is a rule over the source because on a fleet with no
+  // promotion record, which is every fleet by default, no runtime probe can see a third writer
+  // that simply never fired. Assignment AND deletion are both counted: a revocation written from
+  // a place that may not grant is the same defect pointing the other way.
+  //
+  // WHY TWO SINCE 2026-09-17: the promotion DOOR grants and revokes after the fact; the CONFIRM
+  // transition spends the wish a proposal carried (`promotionRequest`), so the owner grants the
+  // rung in the one act where they are already deciding about the program. Both are the owner's;
+  // the second one cannot invent a grant, only spend a wish, but it IS a writer and the pin says
+  // so rather than letting the count drift.
+  //
+  // THE WORD BOUNDARY IS LOAD-BEARING: without it `delete program.promotionRequest` — a wish being
+  // dropped, which grants nothing — counts as a promotion write and this pin reds on the wrong
+  // fact. Measured 2026-09-17, first run after the field existed.
+  const promoWrites = [...serverExec.matchAll(/(?:\w+)\.promotion = |delete (?:\w+)\.promotion\b(?!\w)/g)];
   const promoRouteStart = serverExec.indexOf("const promotionRoute = /^");
   const promoRouteEnd = serverExec.indexOf("const action = /^", promoRouteStart);
-  pin("program.promotion is written by exactly one route — the owner promotion door, and nothing else",
-    promoWrites.length === 2 && promoRouteStart > 0 && promoRouteEnd > promoRouteStart
-    && promoWrites.every((m) => m.index > promoRouteStart && m.index < promoRouteEnd),
+  const confirmStart = serverExec.indexOf('if (action[2] === "confirm") {', promoRouteEnd);
+  const confirmEnd = serverExec.indexOf('if (action[2] === "activate") {', confirmStart);
+  const inDoor = (at: number): boolean => at > promoRouteStart && at < promoRouteEnd;
+  const inConfirm = (at: number): boolean => at > confirmStart && at < confirmEnd;
+  pin("program.promotion is written by exactly two owner acts — the promotion door and the confirm transition, and nothing else",
+    promoWrites.length === 3 && promoRouteStart > 0 && promoRouteEnd > promoRouteStart
+    && confirmStart > 0 && confirmEnd > confirmStart
+    && promoWrites.filter((m) => inDoor(m.index)).length === 2
+    && promoWrites.filter((m) => inConfirm(m.index)).length === 1
+    && promoWrites.every((m) => inDoor(m.index) || inConfirm(m.index)),
     `${promoWrites.length} write(s): ${promoWrites.map((m) => m[0]).join(" | ")}`);
+  // --- …AND THE WISH IS NOT THE PERMISSION. `promotionRequest` is the one record on a Program a
+  // SESSION may write, and the only thing that makes that safe is that nothing in the land path
+  // reads it: the land route derives its answer from `promotion` alone. A read of the wish there
+  // would be a session granting itself the right to land, through the one door that spends it.
+  const landFn = serverU.span("async function selfLandTaskForMain", "\n}\n")?.text ?? "";
+  pin("the self-land route reads the PERMISSION and never the wish — `promotionRequest` appears nowhere in it",
+    landFn.length > 2000 && landFn.includes("program.promotion") && !landFn.includes("promotionRequest"),
+    `${landFn.length} bytes, wish read: ${landFn.includes("promotionRequest")}`);
   // --- EVERY OWNER PROGRAM SUB-ROUTE IS ADMITTED BY THE ROUTER'S OWN ALLOWLIST. The programs
   // handler matches its sub-routes with regexes of its own, but nothing reaches it unless the
   // router's path test lets the URL through first — and that test is a hand-written alternation of

@@ -51,7 +51,7 @@ import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../serve
 import { readEventLog, readLedger } from "../server/persist";
 import { readJsonl } from "../briefstats";
 import { quotaPosition, newResetEntries } from "../codex-quota";
-import { readJsonl as landQualityReadJsonl } from "../land-quality";
+import { readJsonl as landQualityReadJsonl, modelKey } from "../land-quality";
 import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
@@ -2465,6 +2465,43 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && /snippet: (snippet\.receipt|NO_SNIPPET_RECEIPT)/.test(w)),
     `${receiptWrites.filter((w) => !/receiptModel/.test(w)).length} without receiptModel, `
       + `${receiptWrites.filter((w) => !/snippet:/.test(w)).length} without snippet`);
+  // …and the LANE-OUTCOME LEDGER resolves it through the SAME function (2026-09-17). The two stamps
+  // ask one question of one slot, and while the ledger answered it itself with `s.model ?? null`,
+  // 48 of the 304 lands in 2026-09-03..2026-09-17 landed as land-quality.ts's `claude/?`. Neither
+  // stamp can be repaired afterwards — which FLEET_MODEL the server ran with is not recoverable —
+  // so what is pinned is that they cannot come apart: ONE resolution, no writer reaching past it to
+  // the raw pin, and the three origins produced nowhere else.
+  const laneOutcomeBody = (() => {
+    const at = server.indexOf("async function buildLaneOutcome(");
+    return at < 0 ? "" : server.slice(at, server.indexOf("\n}\n", at));
+  })();
+  const receiptModelFn = /function receiptModel\(s: Slot\)[\s\S]*?\n\}\n/.exec(server)?.[0] ?? "";
+  const originLiterals = (server.match(/modelOrigin: "(?:spawn|default|ambient)"/g) ?? []).length;
+  const resolvedModelFn = /function resolvedModel\(s: Slot\)[\s\S]*?\n\}\n/.exec(server)?.[0] ?? "";
+  pin("buildLaneOutcome and receiptModel stamp the model through the ONE resolvedModel, never off s.model",
+    resolvedModelFn.length > 0 && (server.match(/function resolvedModel\(/g) ?? []).length === 1
+    && /\.\.\.resolvedModel\(s\),/.test(laneOutcomeBody) && !/model: s\.model/.test(laneOutcomeBody)
+    && /resolvedModel\(s\)/.test(receiptModelFn) && !/harnessDefaultModel\(/.test(receiptModelFn)
+    && originLiterals === 3 && (resolvedModelFn.match(/modelOrigin: "/g) ?? []).length === 3,
+    `ledger=${/\.\.\.resolvedModel\(s\),/.test(laneOutcomeBody)} receipt=${/resolvedModel\(s\)/.test(receiptModelFn)} `
+      + `origin literals=${originLiterals} (${(resolvedModelFn.match(/modelOrigin: "/g) ?? []).length} in resolvedModel)`);
+  // the READER half, run rather than read: land-quality.ts's model groups must keep the three
+  // origins apart, and an old row's null must stay the one that says nothing. Without this a
+  // `default` land silently joins the pinned population and the 16 % becomes invisible instead of
+  // addressable — the same loss the ledger fix undoes, one file further on.
+  {
+    const mk = (model: string | null, modelOrigin: string | null): string =>
+      modelKey({ model, harness: null, modelOrigin });
+    const labels = {
+      spawn: mk("claude-opus-5[1m]", "spawn"), dflt: mk("claude-opus-5[1m]", "default"),
+      ambient: mk(null, "ambient"), unknown: mk(null, null), foreign: mk("glm-5.3", "spawn"),
+    };
+    pin("land-quality's model group names the origin: pinned, ~default, ambient and the row that cannot say are five distinct labels",
+      labels.spawn === "claude/opus-5" && labels.dflt === "claude/opus-5~default"
+      && labels.ambient === "claude/ambient" && labels.unknown === "claude/?"
+      && labels.foreign === "claude/glm-5.3" && new Set(Object.values(labels)).size === 5,
+      JSON.stringify(labels));
+  }
   // THE REPORT LEDGER: every place that opens a report or stamps a verdict writes its row. A fourth
   // decision site without the line would leave that verdict only in the prunable live list.
   const reportOpens = server.split('audit("fleet_report_open"').length - 1;

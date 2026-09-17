@@ -21815,11 +21815,23 @@ interface LaneOutcome {
   forkSha?: string;
   headSha: string | null;
   disposition: LaneDisposition;
-  model: string | null;  // s.model, or null when unpinned — recorded honestly, NEVER guessed
-  harness: string | null; // s.harness, or null for the default adapter (FLEET_CMD), exactly the
-  // same requested-pin semantics as model. Never resolved through harnessOf() after the fact.
+  // THE MODEL THAT RAN, resolved at write time by resolvedModel() — the same resolution the context
+  // receipt stamps, with `modelOrigin` beside it naming which way it was reached. It is NOT the
+  // requested pin: a lane founded without one used to land here as null, which is why 48 of the 304
+  // lands in the fortnight before 2026-09-17 had no model to attribute. Those rows stay null; the
+  // resolution cannot be redone later (see resolvedModel).
+  model: string | null;
+  // "spawn" = the slot pinned this model · "default" = no pin, the harness's spawn line passed its
+  // own default and `model` is that · "ambient" = neither, the harness chose and Fleet cannot name
+  // it, so `model` is null. NEVER defaulted: absent on a `reverted` row (no slot to resolve) and on
+  // every row written before 2026-09-17, where absence says "this row cannot say" — which is a
+  // different statement from "the harness chose", and a stamped "ambient" would erase the difference.
+  modelOrigin?: ModelOrigin;
+  harness: string | null; // s.harness, or null for the default adapter (FLEET_CMD) — a REQUESTED
+  // pin, never resolved through harnessOf() after the fact, and since 2026-09-17 that is the
+  // difference between this field and `model` above.
   effort: string | null; // s.effort, or null when the default adapter/level was requested, with
-  // the same honest null semantics as model and harness.
+  // the same honest requested-pin null semantics as harness.
   taskId?: string; // optional because only a queue-bound lane can name the task that spawned it;
   // manual lanes and outcome rows written before this field omit it rather than manufacturing a join.
   originId?: string; // optional for the same reason: only a task row can state its stable request
@@ -22264,7 +22276,9 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     ...(s.worktree.baseSha ? { forkSha: s.worktree.baseSha } : {}),
     headSha,
     disposition,
-    model: s.model ?? null,
+    // model + modelOrigin from the SAME resolution the context receipt stamps (resolvedModel) —
+    // never `s.model` raw: an unpinned lane would land as a null the reader cannot address.
+    ...resolvedModel(s),
     harness: s.harness ?? null,
     effort: s.effort ?? null,
     ...(s.taskId ? { taskId: s.taskId } : {}),
@@ -22329,7 +22343,9 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
 // the reverted case has no live slot (the lane landed and was torn down) — assemble from the repo
 // and the undo record. The landed work is exactly mainBefore..mainAfter on the integration branch.
 // model/harness/effort/briefHash/session proxies are unknowable server-side here → recorded
-// honestly as null/0. taskId/originId/programId are omitted: the branch join is the only surviving route.
+// honestly as null/0, and `modelOrigin` is OMITTED rather than called "ambient": there is no slot
+// left to resolve, which is "this row cannot say", not "the harness chose".
+// taskId/originId/programId are omitted: the branch join is the only surviving route.
 // `releasedBy` is omitted for the same reason AND a second one: this lane already produced a
 // `landed` row carrying it, so stamping it again would double-count the release in any population
 // counted off this trail. Recover it the way the land-shape facts are recovered — join by branch.
@@ -29804,6 +29820,11 @@ const ctxFiles = new Map<number, { identity: string; file: string }>();
 //     other way: it is a property of this file at this size/mtime, it cannot change while the key
 //     does not, and re-reading it separately could only pair it with a different record's counter.
 const ctxCache = new Map<number, { key: string; read: number | ContextRead | null }>();
+// HOW a record's model was reached, stamped beside every model this server writes (the lane-outcome
+// row, the context receipt). Three values, not a boolean: "no pin" splits into a model Fleet can
+// name off the spawn line and one only the harness knows, and collapsing those two is what made the
+// ledger's null unreadable.
+type ModelOrigin = "spawn" | "default" | "ambient";
 // Only the default adapter and the two fixed Pi profiles have a model Fleet can name when the slot
 // has no explicit pin: their spawn lines always pass their respective literal model. Every other
 // foreign harness's ambient model is unknown; borrowing either default would invent.
@@ -29813,14 +29834,29 @@ function harnessDefaultModel(h: Harness): string | null {
     : h === PI_OX_HARNESS ? "x-preview-f-free"
     : null;
 }
-// The model a context receipt names, resolved AT WRITE TIME — a later reader cannot know which
+// The model a slot's records name, resolved AT WRITE TIME — a later reader cannot know which
 // FLEET_MODEL the server ran with. "spawn": the slot pinned it. "default": the pin was absent and
 // the harness's spawn line passed its own default. "ambient": neither — the harness chose, Fleet
-// cannot name it, and the model field says exactly that rather than null or a borrowed id.
-function receiptModel(s: Slot): { model: string; modelOrigin: "spawn" | "default" | "ambient" } {
+// cannot name it, and the model is null rather than a borrowed id.
+//
+// ONE resolution for BOTH stamps — the context receipt and the lane-outcome ledger — because they
+// ask the same question of the same slot, and a second copy drifts: the ledger wrote `s.model ??
+// null` until 2026-09-17 and put 48 of the 304 lands in 2026-09-03..2026-09-17 (16 %, 39 of them
+// code lands) into land-quality.ts's `claude/?` group, a rework rate with no addressee. Those rows
+// are not repairable afterwards, for exactly the reason in the first line above. e2e/pins.ts holds
+// the two call sites on this one function so they cannot come apart again.
+function resolvedModel(s: Slot): { model: string | null; modelOrigin: ModelOrigin } {
   if (s.model) return { model: s.model, modelOrigin: "spawn" };
   const fallback = harnessDefaultModel(harnessOf(s.harness));
-  return fallback ? { model: fallback, modelOrigin: "default" } : { model: "ambient", modelOrigin: "ambient" };
+  return fallback ? { model: fallback, modelOrigin: "default" } : { model: null, modelOrigin: "ambient" };
+}
+// the receipt's own shape, unchanged to the byte: its `model` is a STRING on every row, so the
+// ambient case says the word rather than handing the reader a null to interpret. The ledger keeps
+// the null, because a row there is counted in populations and a magic string would be counted as
+// a model. Same resolution, two presentations — the difference is deliberate.
+function receiptModel(s: Slot): { model: string; modelOrigin: ModelOrigin } {
+  const r = resolvedModel(s);
+  return { model: r.model ?? "ambient", modelOrigin: r.modelOrigin };
 }
 function contextFill(s: Slot): ContextFill | null {
   if (!s.cwd || !s.sessionId) return null;

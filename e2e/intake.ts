@@ -31,14 +31,26 @@ export async function run(ctx: Ctx): Promise<void> {
       failAudit.events.some((e) => e.event === "intake_auth_fail")
       && !JSON.stringify(failAudit.events).includes("nope"),
       JSON.stringify(failAudit.events.filter((e) => e.event.startsWith("intake_")).slice(0, 3)));
-    const ok = await fetch(BASE + "/intake", { method: "POST", headers: { "content-type": "application/json", "x-intake-secret": INTAKE }, body: JSON.stringify({ text: "CEO wants dark mode", from: "ceo@acme.co" }) });
+    // THE SENDER LABEL IS ACCEPTED AND DROPPED. `from` was persisted for display only and read by
+    // nothing that decides, which made it a channel for attacker prose from the one public write
+    // door onto the owner's queue board. The door still takes the field (an unchanged Email Worker
+    // must not start failing), so the assertion is that it does not SURVIVE: not on the row, not on
+    // the poll digest, not anywhere in either payload — while provenance and status are untouched.
+    const SENDER = "ceo-sender-label@acme.co";
+    const ok = await fetch(BASE + "/intake", { method: "POST", headers: { "content-type": "application/json", "x-intake-secret": INTAKE }, body: JSON.stringify({ text: "CEO wants dark mode", from: SENDER }) });
     check("intake with secret accepts", ok.ok);
     const sessI = (await (await get("/api/sessions")).json()) as { tasks: { id: string; source: string; from?: string; status: string }[]; intake: boolean };
     // the poll carries digests only (server.ts TaskDigest) — join the text back over the id
-    const itId = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; text: string }[] })
-      .tasks.find((t) => t.text === "CEO wants dark mode")?.id;
-    const it = sessI.tasks.find((t) => t.id === itId);
-    check("intake task lands as pending from intake source", !!it && it.status === "pending" && it.source === "intake" && it.from === "ceo@acme.co", JSON.stringify(it));
+    const tasksBody = (await (await get("/api/tasks")).json()) as { tasks: { id: string; text: string; from?: string }[] };
+    const itFull = tasksBody.tasks.find((t) => t.text === "CEO wants dark mode");
+    const it = sessI.tasks.find((t) => t.id === itFull?.id);
+    check("intake task lands as pending from intake source", !!it && it.status === "pending" && it.source === "intake", JSON.stringify(it));
+    check("intake: the unknown sender label is not mirrored back on the row",
+      !!itFull && itFull.from === undefined && !JSON.stringify(itFull).includes(SENDER),
+      JSON.stringify(itFull));
+    check("intake: nor on the 2 s poll digest, which is what the board renders",
+      !!it && it.from === undefined && !JSON.stringify(sessI.tasks).includes(SENDER),
+      JSON.stringify(it));
     check("sessions reports intake enabled", sessI.intake === true);
     check("intake rejects empty text", (await fetch(BASE + "/intake", { method: "POST", headers: { "content-type": "application/json", "x-intake-secret": INTAKE }, body: JSON.stringify({ text: "   " }) })).status === 400);
   }

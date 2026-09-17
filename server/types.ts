@@ -1180,7 +1180,6 @@ interface Task {
   // asked "is this steward" keeps its answer. The load allowlist in loadState carries the same
   // four values: a source it does not list is dropped on the next boot, silently and greenly.
   source: "owner" | "intake" | "steward" | "main";
-  from: string | null; // intake sender label (freeform, for display only — never trusted)
   kind: TaskKind; // auftrag is the one executable category. richtung, notiz and betrieb are
   // advisory categories without their own motor (owner decision 2026-08-10); promoting one is
   // still a valid propose-outcome signal, but every dispatch path skips it and leaves that fact

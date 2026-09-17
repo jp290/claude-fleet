@@ -31,6 +31,13 @@ feature ideas to, which show up in your dashboard queue.
     in `saveState`'s body, so the window resets to zero on every server restart —
     unlike the steward's send caps, which are deliberately re-derived from
     `audit.jsonl` (`stewardRecentSends`) precisely to avoid a restart-fragile counter.
+- **The body's only persisted field is `text`.** The row is created with the
+  server's own provenance (`source: "intake"`, `status: "pending"`) and nothing
+  else a caller can dictate. A `from` sender label used to be stored and shown on
+  the queue chip; it was display-only, trusted by nothing, and therefore just
+  untrusted prose from the public door rendered as provenance — it is now read
+  off the body and dropped. Senders may keep sending it (the request still
+  answers `{"ok":true}`); it does not survive.
 - **Reachable on the share host** (exact path `/intake` only) — it does not
   widen the share-host allowlist to anything else.
 
@@ -47,7 +54,7 @@ Restart the server (`tmux -L claudefleet kill-session -t srv`). Verify:
 curl -sS -X POST https://cowork.example.com/intake \
   -H "X-Intake-Secret: <the secret>" \
   -H "content-type: application/json" \
-  -d '{"text":"add dark-mode toggle","from":"jane@acme.co"}'
+  -d '{"text":"add dark-mode toggle"}'
 # → {"ok":true}
 ```
 
@@ -82,7 +89,10 @@ export default {
         "X-Intake-Secret": env.INTAKE_SECRET,   // set as a Worker secret
         "content-type": "application/json",
       },
-      body: JSON.stringify({ text: body, from: message.from }),
+      // `text` is the whole payload the server keeps. If you want the sender
+      // visible, put it in the TEXT — where you read it as the untrusted prose
+      // it is — rather than expecting a field beside it.
+      body: JSON.stringify({ text: body }),
     });
     if (!res.ok) message.setReject(`intake rejected: ${res.status}`);
   },
@@ -91,8 +101,8 @@ export default {
 
 Set the Worker secret: `wrangler secret put INTAKE_SECRET` (same value as
 `FLEET_INTAKE_SECRET` on the server). Now anything emailed to that address
-appears in your queue as a pending task from that sender — you review, then
-queue or discard.
+appears in your queue as a pending task, chipped `✉ intake` — the queue names
+the DOOR, not the sender — you review, then queue or discard.
 
 **Note:** a raw MIME body will include headers/encoding; the snippet above is
 deliberately minimal. For clean plain-text extraction use a MIME parser

@@ -265,7 +265,7 @@ const agentHarnesses = (): HarnessInfo[] => harnesses.filter((h) => (h.role ?? "
 // `source` is the SERVER's own union, imported rather than mirrored: the mirror said
 // owner|intake|steward after ACP-23 added "main", and the `as` cast in refresh hid it, so every
 // MAIN-filed row rendered as "owner". A new producer now fails tsc in taskSourceLabel's switch.
-interface TaskInfo { id: string; source: ServerTask["source"]; from?: string;
+interface TaskInfo { id: string; source: ServerTask["source"];
   // MIRRORS server.ts's TASK_KINDS — and it is a claim about a foreign surface, not a type the
   // server hands us. It said `"lane" | "note"` for the whole life of the four-kind rename
   // (dd0c9a8): every `kind === "note"` below still compiled and was simply false forever, so the
@@ -7297,12 +7297,15 @@ const qTouchedLine = (t: TaskInfo): string => {
 // the producer chip of a queue row, shared by the row and its detail. Exhaustive on purpose: the
 // `never` arm is what turns a new server-side source into a compile error here instead of a label
 // that silently falls through to "owner".
-function taskSourceLabel(t: Pick<TaskInfo, "source" | "from">): string {
+// The chip names the PRODUCER and nothing else. It used to append `Task.from`, an intake sender
+// label the server took from the public dropbox body — untrusted prose rendered as if it were
+// provenance. The field is gone (server/types.ts#Task); the producer is the whole fact.
+function taskSourceLabel(t: Pick<TaskInfo, "source">): string {
   switch (t.source) {
     case "owner": return "owner";
-    case "intake": return `✉ ${t.from ?? "intake"}`;
+    case "intake": return "✉ intake";
     case "steward": return "⚙ steward";
-    case "main": return t.from ? `▣ main ${t.from}` : "▣ main";
+    case "main": return "▣ main";
     default: { const unknown: never = t.source; return String(unknown); }
   }
 }

@@ -1877,12 +1877,12 @@ export async function run(ctx: Ctx): Promise<void> {
   }
   executionState.tasks = [...(executionState.tasks ?? []), {
     id: matchingTaskId, originId: executionOrigin, programId: mainProgram.id,
-    text: `program-attributed ${"x".repeat(240)}`, source: "owner", from: null, kind: "auftrag",
+    text: `program-attributed ${"x".repeat(240)}`, source: "owner", kind: "auftrag",
     repo: REPO, status: "sent", releasedBy: "owner", created: fixtureNow,
     slot: executionLaneBody.slot ?? null, note: null,
   }, {
     id: unattributedTaskId, originId: executionOrigin,
-    text: `same branch ${executionLaneBody.branch} and same time`, source: "owner", from: null,
+    text: `same branch ${executionLaneBody.branch} and same time`, source: "owner",
     kind: "auftrag", repo: REPO, status: "sent", releasedBy: "owner", created: fixtureNow,
     slot: executionLaneBody.slot ?? null, note: null,
   }, {
@@ -1895,7 +1895,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // repair is the reason the simpler shape cannot be persisted at all, and a fixture that fought
     // it would be testing the test.
     id: orphanTaskId, originId: executionOrigin, programId: completeProgramId,
-    text: "sent row whose recorded slot belongs to another task's lane", source: "owner", from: null,
+    text: "sent row whose recorded slot belongs to another task's lane", source: "owner",
     kind: "auftrag", repo: REPO, status: "sent", releasedBy: "owner", created: fixtureNow,
     slot: executionLaneBody.slot ?? null, note: null,
   }];
@@ -3139,7 +3139,7 @@ export async function run(ctx: Ctx): Promise<void> {
   d1TaskState.tasks = [...(d1TaskState.tasks ?? []), {
     id: d1TaskId, originId: null, programId: mainProgram.id,
     text: "D1 report-join fixture: the row a terminal worker report was filed against",
-    source: "owner", from: null, kind: "auftrag", repo: REPO, status: "done",
+    source: "owner", kind: "auftrag", repo: REPO, status: "done",
     releasedBy: "owner", created: Date.now() - 60_000, slot: null, note: null,
   }];
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(d1TaskState, null, 2), { mode: 0o600 });

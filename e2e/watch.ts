@@ -6940,7 +6940,7 @@ export async function run(): Promise<void> {
         : { slot: emptySlot, openedAt: 1, sessionId: null, cwd: `/tmp/abl-${name}`, branch };
       const taskId = `abltask${name}`;
       ablState.tasks = [...(ablState.tasks ?? []), { id: taskId, originId: null, programId: ablProgram,
-        text: `accepted-by-land fixture ${name}`, source: "owner", from: null, kind: "auftrag", repo: REPO,
+        text: `accepted-by-land fixture ${name}`, source: "owner", kind: "auftrag", repo: REPO,
         status: sent ? "sent" : "done", releasedBy: "owner", created: now - 90_000,
         slot: sent ? ablLane.slot : null, note: null }];
       ablState.fleetReports = [...(ablState.fleetReports ?? []), { id, reportedAt: now - 60_000,

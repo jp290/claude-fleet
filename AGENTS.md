@@ -300,15 +300,6 @@ when the run proves a repair to the suites themselves), in the foreground with a
 a `sleep` loop over a log. Suites take a shared mutex, so a run may wait a long time before it
 starts — that is normal, not a hang.
 
-A preview may be NARROWED, and only a preview. `localProof.modules` names the check modules this
-lane's footprint is about — present only when the whole footprint is check modules, absent (never an
-empty list) otherwise, because one file the map cannot place can change what any module measures.
-`FLEET_E2E_MODULES=<those>` then runs them plus the transitive fixture closure the runner computes,
-prints one reasoned `SKIP` line per module left out, and refuses an unknown name instead of running
-a smaller set. It stays a PREVIEW: a filtered green says only that the checks that ran passed, the
-authoritative gate and the post-land audit cannot be narrowed by it, and a red in a filtered run is
-re-run unfiltered before it is adjudicated. Register and limits: `docs/verify-tiering.md` §16.
-
 Never kill a suite run by name pattern. The server runs the same script for its post-land audit, and
 a pattern kill takes that down too, which records a red audit that measured nothing. Kill your own
 run by the PID you noted, or not at all.

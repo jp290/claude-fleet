@@ -4711,9 +4711,11 @@ Drei Grenzen, alle drei gehören in jeden Bericht, der sich auf einen gefilterte
 2. **Eine Fixture ist etwas, das ein Modul HERSTELLT. Die Abwesenheit von Zustand ist nicht
    modelliert.** `e2e/restart.ts` tötet Slot 1–3; ein Check, der einen Slot als WEG braucht, kann in
    einer gefilterten Runde einen offenen sehen.
-3. **Ein gefiltertes Grün sagt nur, dass die gelaufenen Checks grün waren.** Ein ROT in einem
-   gefilterten Lauf wird ungefiltert nachgefahren, BEVOR es adjudiziert wird — sonst adjudiziert man
-   eine Auslassung als Befund.
+3. **Ein gefiltertes Grün sagt nur, dass die gelaufenen Checks grün waren.** Das ist die Tatsache.
+   Der naheliegende Umgang damit — ein ROT in einem gefilterten Lauf ungefiltert nachfahren, bevor es
+   adjudiziert wird — ist ein **VORSCHLAG dieser Lane, keine Regel**: verbindlich wird er nur durch
+   Owner-Promotion, und bis dahin bindet er niemanden (`CLAUDE.md` §Loader-Vertrag, propose/promote).
+   Was ohne Promotion gilt, ist die Tatsache im ersten Satz.
 
 Darum sind Land-Gate und Post-Land-Audit von diesem Filter strukturell nicht erreichbar, und
 `e2e/pins.ts` hält sie an drei Stellen daran fest: (i) die Variable liest AUSSCHLIESSLICH
@@ -4733,8 +4735,13 @@ wirklich LIEFEN, eine Zeile geschrieben haben.
 
 Reihenfolge = Laufreihenfolge des Runners (gepinnt). `·L` = Modul des Worktree-Lane-Blocks, braucht
 `FLEET_E2E_REPO`; eine Auswahl, die eines davon zieht, wird ohne dieses Env verweigert statt still
-übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 27 der 43 Module sind allein
-vorschaubar, die längste Kette ist acht (`steward-outcomes`).
+übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 27 der 43 Module sind nach
+DIESER KARTE allein vorschaubar, die längste Kette ist acht (`steward-outcomes`).
+
+**Spalte 4 ist eine Ableitung, kein Laufbeweis.** Gefahren wurde EINE Auswahl (`slots,tasks`, §16d).
+Für die anderen 26 „allein"-Zeilen steht kein Lauf dahinter, sondern nur die Abwesenheit einer Kante
+in dieser Tabelle — und die Tabelle modelliert, was ein Modul HERSTELLT, nicht was es voraussetzt,
+ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist ihr erster Messpunkt.
 
 | Modul | liest | schreibt | Schluss allein |
 | --- | --- | --- | --- |
@@ -4812,13 +4819,20 @@ auseinanderlaufen können.
 | `FLEET_E2E_MODULES=slots,tasks`, lokal | `9f96a63b` | 1 278 | 0 (ALL PASS) | **382 s** (Trail-Span 375 s) | 2 560 s |
 | ungefiltert, Helfer `second-host` (Job `94fd55b8c03e`) | `9f96a63b` | 4 912 | 0 (ALL PASS) | 1 607 s | — |
 
-Die Vorschau fährt also 26 % der Checks (1 278 von 4 912) in 24 % der Arbeitszeit — unter dem
-Acht-Minuten-Ziel, und zwar OHNE die Latenz-Arbeit aus Suite-Schnitt A (`until(pred,…)`, Task `531bab26`), die zum
-Zeitpunkt dieser Messung nicht freigegeben war. **Die 2 560 s Warteschlange sind keine Arbeitszeit**:
+Die Vorschau fährt **26 % der Checks (1 278 von 4 912)** und braucht dafür 382 s auf diesem Host —
+unter dem Acht-Minuten-Ziel, und zwar OHNE die Latenz-Arbeit aus Suite-Schnitt A (`until(pred,…)`,
+Task `531bab26`), die zum Zeitpunkt dieser Messung nicht freigegeben war. **Die 2 560 s Warteschlange sind keine Arbeitszeit**:
 der Lauf hat den Mutex erst um 16:51:52 bekommen, vorher 42 Minuten in der Schlange gestanden und
 den Baum nie angesehen (`[suite-lock] … acquired after 2560s`). Der Baum wird NACH dem Mutex
 gestaged, nicht beim Start des Wrappers — darum trägt der Trail dieses Laufs `9f96a63b` und nicht
 den Baum von 16:09.
+
+**Eine Beschleunigungszahl steht hier ausdrücklich NICHT.** 382 s fielen lokal auf dieser Maschine
+an, 1 607 s auf `second-host` — zwei verschiedene Hosts, und der Helfer ist an derselben Suite
+gemessen rund 13 % schneller als dieser Rechner (1 839 s gegen 2 113 s, §5 der Shard-Sonde). Aus
+382/1 607 folgt daher KEIN Faktor, in keine Richtung. Was gemessen ist: 1 278 von 4 912 Checks und
+382 s Arbeitszeit auf diesem Host. Der hostgleiche Vergleich fehlt — dafür müsste ein UNGEFILTERTER
+Lauf lokal auf demselben Baum stehen, und der wurde nicht gefahren.
 
 **Und die Grenze, gemessen am eigenen Fall:** das eine Rot des ersten Laufs war
 `state.sh: one forkSha line …` in `e2e/outcomes.ts` — echt und in derselben Kette entstanden
@@ -4829,3 +4843,50 @@ Regress also strukturell nicht finden können, egal wie grün sie endet. Das ist
 einem echten Befund statt an einer Warnung. Seit diesem Vorfall schließt `e2e/pins.ts` die
 Kopierliste in Stufe 1 (jeder relative Import einer gelisteten `.ts` muss selbst gelistet sein) —
 derselbe Defekt kostet dort Millisekunden statt 27 Minuten auf einer zweiten Maschine.
+
+### 16e. Die unmodellierte Abwesenheit: WELCHE Auswahl es trifft, und der konservative Umgang
+
+§16a Grenze 2 sagt, dass die Karte nur modelliert, was ein Modul HERSTELLT. Hier steht, wen das
+konkret trifft — das ist die offene Review-Frage der MAIN zu diesem Schnitt, nicht eine Randnotiz.
+
+**Der einzige Abwesenheits-Erzeuger im Baum, den ich benennen kann,** ist `e2e/restart.ts` §kill
+semantics: es tötet Slot 1 (`/api/slots/1/kill`, `e2e/restart.ts:162`) und tötet Slot 2 extern —
+Slot 2 kommt per Selbstheilung zurück (`externally-killed slot self-heals`), Slot 1 nicht. Die Welt
+NACH `restart` ist also: **Slot 1 tot, Slot 2 offen**. Der Runner pflanzt in einer gefilterten Runde
+ohne `slots` aber BEIDE (§Basisfixture). Genau das ist die Divergenz.
+
+**Betroffen ist eine Auswahl, die (a) `slots` nicht enthält und (b) ein Modul enthält, das nach
+`restart` läuft, ohne `restart` zu ziehen.** Nach `restart` laufen sieben Module; vier davon sind
+betroffen, drei nicht:
+
+| Modul nach `restart` | zieht `restart`? | Weg |
+| --- | --- | --- |
+| `verify-queue` · `deploy-facts` · `errors` · `host-hygiene` | **nein** | keine Kante — Schluss ist jeweils das Modul allein |
+| `steward-core` | ja | liest `ctx.gapRepo`/`ctx.auditPath`/`ctx.planted*`, die nur `restart` schreibt |
+| `steward-outcomes` | ja | über `sc.*` → `steward-core` → `restart` |
+| `security` | ja | liest `ctx.auditPath` → `restart` |
+
+**Wie schwer das wiegt, gemessen statt vermutet:** keines der vier Module referenziert Slot 1 oder
+Slot 2 überhaupt (`grep -c '/api/slots/[12]/' e2e/{verify-queue,deploy-facts,errors,host-hygiene}.ts`
+→ 0 · 0 · 0 · 0). Ein direkter Bruch ist damit nicht bekannt. Eine INDIREKTE Abhängigkeit (eine
+Zählung über alle Sessions, ein Sweep) ist damit **nicht ausgeschlossen** — sie ist ungemessen, und
+genau so ist dieser Absatz zu lesen: kein Freifahrtschein, sondern eine benannte Lücke.
+
+**Drei Umgangsformen, mit ihren Kosten — die Wahl gehört der MAIN, nicht dieser Lane:**
+
+1. *Dokumentierte Einschränkung (heute in Kraft, kein Code):* eine Vorschau dieser vier Module läuft
+   mit offenem Slot 1, wo die volle Suite ihn tot hat. Ein Rot in einem der vier wird mit `restart`
+   in der Auswahl nachgeprüft, bevor es adjudiziert wird.
+2. *Kante deklarieren (konservativ, teuer):* eine Fixture `server:slot-1-killed`, geschrieben von
+   `restart`, gelesen von den vier. Dann zieht ihr Schluss `restart` und damit dessen eigene Kette
+   (`slots autos share self-token intake restart`) — die Welt wird treu, und die vier billigsten
+   Vorschauen des Registers kosten ab dann sechs Module statt eines.
+3. *Pflanzen nur für Leser:* die Basisfixture nur setzen, wenn ein laufendes Modul
+   `server:slots-1-2-open` liest. Billig, aber **falsch als Pauschalregel**: für ein Modul VOR
+   `restart`, das die Slots nicht liest (`watch`), entspricht das Pflanzen der vollen Suite, und
+   Nicht-Pflanzen wäre dort die Divergenz. Dieselbe Uneindeutigkeit trifft eine Auswahl, die
+   `restart` ÜBERSPANNT: für sie ist keine einzelne Welt richtig, solange `restart` nicht mitläuft.
+
+Empfehlung dieser Lane: 1 sofort (steht oben), 2 als promotionsreife Option, 3 verworfen mit dem
+`watch`-Gegenbeispiel. Keine dieser drei ist gebaut; der Runner pflanzt heute unverändert wie ein
+Shard ohne `core`.

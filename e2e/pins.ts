@@ -1260,7 +1260,7 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     const duties: readonly (readonly [string, RegExp])[] = [
       ["rolle", /\*\*ROLLE spelled out\*\* — harness \/ model \/ effort/],
       ["project-agents", /The project's own `AGENTS\.md`, by path, as the rule frame/],
-      ["verify-verbatim", /The verify command VERBATIM[\s\S]{0,400}overrides that recommendation/],
+      ["verify-verbatim", /The verify command VERBATIM[\s\S]{0,400}`localProof\.steps: \[\]`[\s\S]{0,240}row's VERIFY/],
       ["reading-list", /The reading list with paths/],
       ["after", /A dependency only as `card\.after`[\s\S]{0,200}hold the row back/],
       ["host-facts", /\*\*Host facts\*\*[\s\S]{0,120}tools the host does NOT have/],

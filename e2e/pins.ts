@@ -9201,8 +9201,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // 43 are previewable alone" is exactly the kind of number that is written once by eye and then
   // read as a fact for months (it WAS wrong by one when §16 was first written).
   const alone = listed.filter((m) => modulePlanFor([m]).run.length === 1).length;
+  // the NUMBERS, not the sentence around them: the wording moved once already (the count was
+  // demoted from a claim to a derivation on 2026-09-17) and the pin should survive that
   pin(`${RULE_MODULES} — §16's "previewable alone" count is the count the map computes`,
-    sec16.includes(`${alone} der ${listed.length} Module sind allein`),
+    sec16.includes(`${alone} der ${listed.length} Module`),
     `computed=${alone}/${listed.length}`);
 }
 

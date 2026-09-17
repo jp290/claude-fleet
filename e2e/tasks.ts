@@ -8259,6 +8259,155 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const id of [rP, rM]) if (id) await post(`/api/programs/${id}/complete`, {});
   }
 
+  // --- (vs) A VARIANT'S SURFACE IS READ OFF ITS GROUP (server.ts#taskSurfaceOf, 2026-09-17). A
+  // variant carries neither card nor brief by construction: the card sweep refuses it one (cardDue
+  // returns false for a row with variantOf — n model calls for one text), and the brief door writes
+  // to the group. Read off the ROW, both are simply absent, so every variant fell through to the
+  // prose reading and kept a FILE surface with an EMPTY range list — which is start-plan.ts's
+  // whole-file fallback (P 0.20). Measured that morning on group 5e5588c5: its two variants stood on
+  // "collides with lane 1 on server.ts" while the group carried three resolved ranges and the lane
+  // held the file 34 000 lines away.
+  // Four facts on one live instance in REPO2, cards PLANTED with the server stopped (no door writes a
+  // card with ranges; the (sp-tick) pattern), the fixture preconditions failing as themselves:
+  //   (a) both variants of a group carry the GROUP's card files and ranges, byte for byte — and the
+  //       one hand-given a card of its own still reads the group's, never its own;
+  //   (b) against ONE lane holding both probe files, the group whose ranges lie OUTSIDE the lane's
+  //       does not collide on that file, while the group whose ranges OVERLAP still does;
+  //   (c) a row without variantOf reads its own card unchanged;
+  //   (d) the group's BRIEF reaches the variants' prose derivation — the second reading of the pair.
+  {
+    type VsRange = { file: string; symbol: string; startLine: number; endLine: number };
+    interface VsRow { id: string; status: string; note?: string | null; slot?: number | null;
+      files?: string[]; filesOrigin?: string; variantOf?: string; variantIndex?: number;
+      surface?: { files: string[]; ranges: VsRange[] | null; origin: string } }
+    const vsAll = async (): Promise<VsRow[]> => ((await (await get("/api/tasks")).json()) as { tasks: VsRow[] }).tasks;
+    const vsOf = (rows: VsRow[], id: string): VsRow | undefined => rows.find((t) => t.id === id);
+    const vsVars = (rows: VsRow[], group: string): VsRow[] =>
+      rows.filter((t) => t.variantOf === group).sort((a, b) => (a.variantIndex ?? 0) - (b.variantIndex ?? 0));
+    const vsUntil = async (done: (rows: VsRow[]) => boolean, tries = 160): Promise<VsRow[]> => {
+      let rows = await vsAll();
+      for (let i = 0; i < tries && !done(rows); i++) { await Bun.sleep(250); rows = await vsAll(); }
+      return rows;
+    };
+    // the row's OWN stored surface, which is what start-plan.ts reads its ranges from
+    const vsSurface = (row: VsRow | undefined): string =>
+      JSON.stringify({ files: row?.surface?.files ?? null, ranges: row?.surface?.ranges ?? null });
+    const vsRange = (file: string, startLine: number, symbol: string): VsRange =>
+      ({ file, symbol, startLine, endLine: startLine + 40 });
+    const vsWant = (file: string, startLine: number, symbol: string): string =>
+      JSON.stringify({ files: [file], ranges: [vsRange(file, startLine, symbol)] });
+    // distinct `created` per row: the plan orders by (created, id)
+    const vsRowOf = async (text: string): Promise<string> => {
+      await Bun.sleep(15);
+      return ((await (await post("/api/tasks", { text, queue: false, repo: REPO2 })).json()) as
+        { task?: { id: string } }).task?.id ?? "";
+    };
+    const vsGroupOf = async (text: string): Promise<{ group: string; variants: string[] }> => {
+      await Bun.sleep(15);
+      const filed = (await (await post("/api/tasks", { text, queue: false, repo: REPO2,
+        variants: [{ model: "claude-opus-5[1m]", effort: "high" }, { model: "claude-sonnet-5", effort: "medium" }] })).json()) as
+        { task?: { id: string }; variants?: { id: string }[] };
+      return { group: filed.task?.id ?? "", variants: (filed.variants ?? []).map((v) => v.id) };
+    };
+    const vsCard = (files: string[], ranges: VsRange[]): Record<string, unknown> => ({
+      ziel: `${files.join(" ")} bekommt eine Zeile`, rolle: { harness: null, model: null, effort: null },
+      surface: { files, symbols: ranges.map((r) => `${r.file}#${r.symbol}`), ranges },
+      done: "die Zeile steht", verify: "bun e2e/pins.ts", verboten: [],
+      model: "planted-vs", at: Date.now() - 60_000, ms: 0, gaps: [],
+    });
+
+    await post("/api/dispatch", { on: false });
+    for (const t of await vsAll()) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+    // a clean field in REPO2: the ONE lane below must be the only one the plan can name
+    for (const x of ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { repo: string } | null }[] }).slots)
+      if (x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2)) await post(`/api/slots/${x.id}/kill`, {});
+    await Bun.sleep(600);
+    const vsLane = await vsRowOf("VS-LANE holds vs-in.ts and vs-out.ts");
+    const vsOut = await vsGroupOf("VS-OUT variant group — zwei Agenten, ein Land");
+    const vsIn = await vsGroupOf("VS-IN variant group — zwei Agenten, ein Land");
+    const vsOwn = await vsRowOf("VS-OWN plain row with a card of its own");
+    const vsBrief = await vsGroupOf("VS-BRIEF variant group — zwei Agenten, ein Land");
+    // the brief door writes to the GROUP — the door the finding names, and the one this change reads through
+    const vsBriefDoor = await post(`/api/tasks/${vsBrief.group}/brief`, { text: "BAU: code.txt bekommt eine Zeile." });
+    await stopSrv();
+    const vsState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { tasks?: { id: string; card?: Record<string, unknown> }[] };
+    const vsPlant: Record<string, Record<string, unknown>> = {
+      [vsLane]: vsCard(["vs-in.ts", "vs-out.ts"], [vsRange("vs-in.ts", 100, "laneIn"), vsRange("vs-out.ts", 100, "laneOut")]),
+      [vsOut.group]: vsCard(["vs-out.ts"], [vsRange("vs-out.ts", 9000, "weitWeg")]),
+      [vsIn.group]: vsCard(["vs-in.ts"], [vsRange("vs-in.ts", 120, "mittenDrin")]),
+      // a card ON a variant: the hand-edit that must LOSE to the group's reading
+      [vsIn.variants[0] ?? "no-variant"]: vsCard(["vs-decoy.ts"], [vsRange("vs-decoy.ts", 1, "decoy")]),
+      [vsOwn]: vsCard(["vs-own.ts"], [vsRange("vs-own.ts", 9000, "eigen")]),
+    };
+    let vsPlanted = 0;
+    for (const t of vsState.tasks ?? []) {
+      const card = vsPlant[t.id];
+      if (!card) continue;
+      t.card = card;
+      vsPlanted++;
+    }
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(vsState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const vsFree = ((await (await get("/api/sessions")).json()) as { slots: { cwd: string | null }[] }).slots.filter((s) => !s.cwd).length;
+    // ▸ START, attended: it takes a slot without the tick, the switch or a cap having a say
+    const vsDispatch = await post(`/api/tasks/${vsLane}/dispatch`, {});
+    const vsLive = await vsUntil((rows) => vsOf(rows, vsLane)?.status === "sent" && typeof vsOf(rows, vsLane)?.slot === "number");
+    const vsLaneRow = vsOf(vsLive, vsLane);
+    const vsLaneSlot = typeof vsLaneRow?.slot === "number" ? vsLaneRow.slot : -1;
+    check("(vs) fixture: five planted cards, a brief on the VS-BRIEF group, and the lane row runs in REPO2 with vs-in.ts and vs-out.ts at its own ranges",
+      vsPlanted === 5 && vsBriefDoor.ok && vsFree >= 1 && vsDispatch.ok && vsLaneSlot >= 0
+      && vsSurface(vsLaneRow) === JSON.stringify({ files: ["vs-in.ts", "vs-out.ts"],
+        ranges: [vsRange("vs-in.ts", 100, "laneIn"), vsRange("vs-out.ts", 100, "laneOut")] }),
+      JSON.stringify({ planted: vsPlanted, brief: vsBriefDoor.status, free: vsFree,
+        dispatch: vsDispatch.status, slot: vsLaneSlot, lane: vsLaneRow ?? null }));
+
+    const vsOutVars = vsVars(vsLive, vsOut.group);
+    const vsInVars = vsVars(vsLive, vsIn.group);
+    check("(vs)(a) both variants carry their GROUP's card surface — same files, same ranges — and the variant hand-given a card of its own still reads the group's, never that one",
+      vsOutVars.length === 2 && vsInVars.length === 2
+      && vsOutVars.every((v) => vsSurface(v) === vsWant("vs-out.ts", 9000, "weitWeg"))
+      && vsInVars.every((v) => vsSurface(v) === vsWant("vs-in.ts", 120, "mittenDrin"))
+      && [...vsOutVars, ...vsInVars].every((v) => v.filesOrigin === "derived"),
+      JSON.stringify({ out: vsOutVars.map(vsSurface), in: vsInVars.map(vsSurface),
+        decoy: vsSurface(vsOf(vsLive, vsIn.variants[0] ?? "")) }));
+    check("(vs)(c) a row WITHOUT variantOf reads its own card unchanged — the group reading is the variant's exception, not a new rule",
+      vsSurface(vsOf(vsLive, vsOwn)) === vsWant("vs-own.ts", 9000, "eigen"),
+      vsSurface(vsOf(vsLive, vsOwn)));
+    const vsBriefVars = vsVars(vsLive, vsBrief.group);
+    check("(vs)(d) the GROUP's BRIEF reaches its variants' prose derivation — a tracked file named only in that brief is their surface",
+      vsBriefVars.length === 2 && vsBriefVars.every((v) => (v.files ?? []).join(" ") === "code.txt" && v.filesOrigin === "derived"),
+      JSON.stringify(vsBriefVars.map((v) => [v.id, v.files ?? null, v.filesOrigin ?? null])));
+
+    // (b) THE CONSEQUENCE, in the plan. Releasing the GROUP releases its variants with it.
+    await post(`/api/tasks/${vsOut.group}/queue`, {});
+    await post(`/api/tasks/${vsIn.group}/queue`, {});
+    const vsPlan = (await (await get("/api/start-plan")).json()) as StartPlan;
+    const vsNote = (id: string): string => {
+      const next = vsPlan.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(id))?.next;
+      return next === undefined ? "no wave in the plan" : next === "now" ? "now" : startPlanWaitNote(next);
+    };
+    const vsReleased = vsVars(await vsAll(), vsOut.group).concat(vsVars(await vsAll(), vsIn.group));
+    check("(vs)(b) with the lane holding both files, the variants whose group ranges lie OUTSIDE the lane's no longer collide on that file — and the ones INSIDE still do, by lane and symbol",
+      vsReleased.length === 4 && vsReleased.every((v) => v.status === "queued")
+      && vsOutVars.every((v) => !vsNote(v.id).includes("collides"))
+      && vsInVars.every((v) => vsNote(v.id) === `waiting: collides with lane ${vsLaneSlot} on vs-in.ts#mittenDrin`),
+      JSON.stringify({ out: vsOutVars.map((v) => vsNote(v.id)), in: vsInVars.map((v) => vsNote(v.id)) }));
+
+    for (const id of [vsOut.group, vsIn.group]) await post(`/api/tasks/${id}/unqueue`, {});
+    // the lane row is closed the way the owner closes one (done + kill), so no `sent` row of this
+    // fixture is left in REPO2 for the sections after it
+    await post(`/api/tasks/${vsLane}/done`, {});
+    if (vsLaneSlot >= 0) await post(`/api/slots/${vsLaneSlot}/kill`, {});
+    await Bun.sleep(600);
+    for (const id of [...vsOut.variants, ...vsIn.variants, ...vsBrief.variants,
+      vsOut.group, vsIn.group, vsBrief.group, vsOwn, vsLane]) {
+      const row = vsOf(await vsAll(), id);
+      if (row?.status === "queued") await post(`/api/tasks/${id}/unqueue`, {});
+      if (row && row.status !== "sent") await post(`/api/tasks/${id}/delete`, {});
+    }
+  }
+
   // --- S4 (a672b626) THE WAVE BRIEF quotes each row's card as a head before that row's prose, and
   // the head holds its byte cap even when every field arrives at its validator maximum. Pure: the
   // renderer has no clock, no git and no state, so the whole string is asserted without a server.

@@ -2997,22 +2997,32 @@ function symbolIndexFor(repoRaw: string): SymbolIndexSnapshot | null {
 // `at` is the stamp of the DERIVATION, not of a write.
 function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
   index: SymbolIndexSnapshot | null, project: string | null, repoRoot: string | null): TaskSurface | null {
+  // THE TWO READINGS COME OFF THE GROUP FOR A VARIANT (E4, variantSourceOf) — the same exception
+  // cardDue already makes one door earlier, drawn here because this is the second reader of them.
+  // A variant carries neither by construction: the card sweep writes it none, and the brief door
+  // writes to the group. Read off the ROW they are simply absent, so every variant fell through to
+  // the prose reading below and kept a FILE surface with no ranges — while its group carried
+  // resolved ones. Measured 2026-09-17 on group 5e5588c5: its two variants stood on "collides with
+  // lane 1 on server.ts" while that lane held three ranges 34 000 lines away, because an empty
+  // range list is start-plan.ts's whole-file fallback (P 0.20). The SURFACE stays the row's own and
+  // is stored on the row; only the two readings it is derived from are the group's.
+  const src = variantSourceOf(t);
   const confirmedFiles = t.filesOrigin === "derived" || t.filesOrigin === "card" ? undefined : t.files;
-  const sha = surfaceSha({ text: t.text, brief: t.brief?.text ?? null, confirmedFiles,
+  const sha = surfaceSha({ text: t.text, brief: src.brief?.text ?? null, confirmedFiles,
     indexStamp: snapshot?.indexStamp ?? null, graphStamp: index?.stamp ?? null });
   // A CARD LIFT (liftCardSurface) is read as one only while the switch is on and the card beside it
   // still has no surface gap — so FLEET_CARD_AUTOLIFT=0 takes effect at the first read after a
   // restart, not at the next tick. The ranges are the card's own: the lift names the card's files,
   // and the prose reading below would resolve symbols the card never claimed.
-  if (t.filesOrigin === "card" && t.files?.length && t.card?.surfaceValid && CARD_AUTOLIFT_ON) {
-    const liftSha = `lift-${surfaceSha({ text: t.text, brief: t.brief?.text ?? null, confirmedFiles: t.files,
-      indexStamp: snapshot?.indexStamp ?? null, graphStamp: index?.stamp ?? null })}-${t.card.at}`;
+  if (t.filesOrigin === "card" && t.files?.length && src.card?.surfaceValid && CARD_AUTOLIFT_ON) {
+    const liftSha = `lift-${surfaceSha({ text: t.text, brief: src.brief?.text ?? null, confirmedFiles: t.files,
+      indexStamp: snapshot?.indexStamp ?? null, graphStamp: index?.stamp ?? null })}-${src.card.at}`;
     if (t.surface && t.surface.sha === liftSha) return t.surface;
     // The ranges are re-resolved from the card's OWN stored symbols against the index of now:
     // filing time stored one index snapshot, and a row filed before the index could locate a
     // symbol must not keep projecting that absence forever (resolveSurfaceRanges; the sha above
     // carries SURFACE_RESOLVER, so the bump recomputes every stored lift exactly once).
-    t.surface = { files: [...t.files], ranges: resolveSurfaceRanges(t.card.surface, index?.index ?? null), origin: "card", at: Date.now(), sha: liftSha };
+    t.surface = { files: [...t.files], ranges: resolveSurfaceRanges(src.card.surface, index?.index ?? null), origin: "card", at: Date.now(), sha: liftSha };
     return t.surface;
   }
   // A VALID CARD'S SURFACE COMES BEFORE THE REGEX (S6, queue row 08ec67c0). The card's paths already
@@ -3020,17 +3030,17 @@ function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
   // for rows without one — never a second opinion over it. A confirmed list still outranks both:
   // the card is a reading, and `origin` stays "derived" because confirming is a separate act. The
   // card's own `at` joins the sha, so a replaced card is never answered from the cached surface.
-  if (!confirmedFiles?.length && t.card?.valid && t.card.surface.files.length) {
-    const cardSha = `card-${sha}-${t.card.at}`;
+  if (!confirmedFiles?.length && src.card?.valid && src.card.surface.files.length) {
+    const cardSha = `card-${sha}-${src.card.at}`;
     if (t.surface && t.surface.sha === cardSha) return t.surface;
-    t.surface = { files: [...t.card.surface.files], ranges: resolveSurfaceRanges(t.card.surface, index?.index ?? null), origin: "derived",
+    t.surface = { files: [...src.card.surface.files], ranges: resolveSurfaceRanges(src.card.surface, index?.index ?? null), origin: "derived",
       at: Date.now(), sha: cardSha };
     return t.surface;
   }
   // read directly rather than through a predicate: tsc narrows `t.surface` here and cannot narrow
   // through a helper, and a `!` to paper over that is exactly the assertion this repo does not take.
   if (t.surface && t.surface.sha === sha) return t.surface;
-  const metadata = deriveTaskMetadata({ text: t.text, brief: t.brief?.text ?? null, confirmedFiles },
+  const metadata = deriveTaskMetadata({ text: t.text, brief: src.brief?.text ?? null, confirmedFiles },
     { trackedPaths: snapshot?.paths ?? new Set<string>(), project, repoRoot,
       symbolIndex: index?.index ?? null });
   if (!metadata.files?.length || !metadata.filesOrigin) { t.surface = undefined; return null; }

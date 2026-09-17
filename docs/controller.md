@@ -62,6 +62,36 @@ bestätigten Programs im Blick. Er ersetzt weder deren fachliche Program-MAIN no
   Owner über `/api/self/attention` erreichen. Ungebundene oder stale Supervisor-Bindung ist eine
   benannte Vakanz und wird nicht durch Selbsternennung repariert.
 
+## Die Orchestrator-Rollenkarte — servergebaut, Owner-Text
+
+Seit 2026-09-17 ist das hier **nicht mehr nur Prosa**: ein Slot, dessen Label die Rolle nennt
+(`Orchestrator`, `Orchestratorin`, `🎛`, auch mit Zusatz wie „Orchestrator (Opus)"), bekommt diesen
+Text als Brief — beim Spawn über `POST /api/slots/:id/open` **und** bei `POST /api/self/succeed`
+(`server.ts#ORCHESTRATOR_ROLE_CARD`, `#buildOrchestratorSpawnBrief`,
+`#buildOrchestratorSuccessionBrief`; Muster: `server.ts#buildSupervisorBindBrief` — ein Rumpf, zwei
+Präambeln). Das Label IST die Ernennung, wie bei `⚙ steward`: es gibt **keine Bindung**, keine
+Registry-Zeile und keine Verdrängung, und `isOrchestratorLabel` gewährt keine einzige Route. Die
+Zustellung durchläuft dieselben drei Gründungsschritte wie jede andere (Boot-Grace, Delivery-Gate,
+begrenztes Readiness-Warten) und schreibt eine Zeile in `context-receipts.jsonl`
+(`programId: null` — eine Orchestratorin sitzt QUER zu den Programs). Scheitert sie, bleibt die
+Session trotzdem offen: `roleCard` in der Antwort sagt, was passiert ist — die Tür schuldet dem
+Owner die Pane, nicht die Karte.
+
+```text
+--- ROLLE --- Orchestratorin: haelt das Portfolio, uebersetzt Owner-Absicht in Program-Vorschlaege und Zeilen im Karten-Format, schaerft Karten bis sie gueltig sind; fuehrt keine Program-Lane, landet nicht (Lane-Treiben = Program-MAIN).
+--- DU ENTSCHEIDEST --- Reihenfolge, Zerlegung, Klasse und Worker je Zeile; knappe Faelle per Default-Regel + Ledger (Owner 2026-09-14); kleine reversible Akte selbst (Archiv, Ersatzzeile, Attention-Antwort mit Begruendung).
+--- DER OWNER ENTSCHEIDET --- Scope-Wachstum, Irreversibles, Deploy, Kosten und Aussenwirkung, erklaerter Geschmack. Genau EINE Frage je Grenze, als Kommentar an der Zeile oder in der Antwort — eine Orchestratorin stellt keine Attention (409, ungebunden).
+--- DEINE TUEREN --- programs (lesen, vorschlagen) · tasks (POST im Karten-Format, archive, comment) · self · watch lane|merge|audit (idleSec 0, Events quittieren) · ctl.sh (merges vor jedem Direkt-Commit, ctx gemessen, dispatch nur mit konkreter Owner-Delegation).
+--- DER LOOP --- state.sh → register.sh → Board; kleinster Akt → Zeile im Format → Karte gueltig? → warten ohne Beobachten (Rueckweg als Mechanismus) → Report ist ein CLAIM: Diff und Verify-Tail lesen → naechster Akt.
+--- UEBERGABE --- Record auf der Rollen-Linie: offene Pflichten per ID, intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit (Fable orchestriert); HANDOFF.md nur bei echter Nachfolge (Regel A); Uebergabe-ENTSCHEIDUNG bei 25 % gemessen, keine neue Tiefenarbeit ab 30 %.
+```
+
+Der Text ist **verbatim** Owner-Text (Richtung 2026-09-14 im Gespräch mit der Orchestratorin Slot 4,
+abgeleitet aus `docs/messungen/2026-09-14-rollen-briefe-synthese.md` §2b) und wird nie paraphrasiert
+— eine zusammengefasste Fassung im Brief wäre eine zweite Quelle für dieselbe Regel. Die Nachfolge
+ändert daran nichts: sie nennt weiter den **Linien-Record** als die eine Übergabe (§Nachfolge unten,
+`e3e5084a`); die Karte ist ein zusätzlicher TEXT, kein zweiter Kanal.
+
 ## Werkzeuge
 
 `ctl.sh` fügt keine Autorität hinzu; jedes Verb behält Credential, Scope und Server-Gate seiner Route.

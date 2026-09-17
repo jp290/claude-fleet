@@ -2440,15 +2440,19 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && /readLedger<Record<string, unknown>>\(CONTEXT_RECEIPT_FILE\)/.test(routeBody),
     routeBody ? `${routeBody.length} route bytes` : "reader route missing");
 
-  // EVERY writer carries the brief pair, and the count is asserted so a sixth delivery seam cannot
+  // EVERY writer carries the brief pair, and the count is asserted so a seventh delivery seam cannot
   // be added silently without it. Absent on a row means "written before the field existed" — a
   // date — so one writer omitting it would forever read as an old row instead of a gap. The two
   // values are a PAIR by construction: briefHash without briefSource cannot say by which route the
   // bytes were authored, and briefSource without briefHash joins nothing.
+  // The SIXTH writer (2026-09-17, the Orchestrator role card) founds into the slot it already holds
+  // or into the successor slot, so it names its slot `s` rather than `free` — the same shape shift
+  // the lane baton made on the founding-gate pin below, and the reason the two slot names are both
+  // accepted here instead of the regex being widened to any identifier.
   const receiptWrites = [...server.matchAll(/appendEvent(?:Strict)?\(CONTEXT_RECEIPT_FILE, \{[\s\S]*?\n\s*\}\);/g)]
     .map((m) => m[0]);
   pin("every context-receipt writer carries briefHash AND briefSource — the ledger has one row shape, not two",
-    receiptWrites.length === 5
+    receiptWrites.length === 6
     && receiptWrites.every((w) => /briefHash: briefHashOf\(deliveredBrief\)/.test(w)
       && /briefSource(: FOUNDING_BRIEF_SOURCE)?,/.test(w)),
     `${receiptWrites.length} writer(s), ${receiptWrites.filter((w) => !/briefHash/.test(w)).length} without briefHash`);
@@ -2456,8 +2460,8 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // that went back to `model: free.model` would write null for every unpinned slot again; one
   // without `snippet` would read as a row from before the count existed.
   pin("every context-receipt writer resolves the model through receiptModel and carries a snippet account",
-    receiptWrites.length === 5
-    && receiptWrites.every((w) => /\.\.\.receiptModel\(free\)/.test(w) && !/model: free\.model/.test(w)
+    receiptWrites.length === 6
+    && receiptWrites.every((w) => /\.\.\.receiptModel\((?:free|s)\)/.test(w) && !/model: (?:free|s)\.model/.test(w)
       && /snippet: (snippet\.receipt|NO_SNIPPET_RECEIPT)/.test(w)),
     `${receiptWrites.filter((w) => !/receiptModel/.test(w)).length} without receiptModel, `
       + `${receiptWrites.filter((w) => !/snippet:/.test(w)).length} without snippet`);
@@ -3232,10 +3236,21 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const laneRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(laneRailBody)
     && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(laneRailBody)
     && /await sendText\(s, brief, true\);/.test(laneRailBody);
-  pin("all SEVEN founding deliveries are gated — same count of sends, bounded waits and shared boot graces, and no naked 4 s sleep left",
-    foundingSends === 6 && foundingWaits === 6 && foundingGraces === 7 && laneRailGated
+  // …and the EIGHTH (2026-09-17, the Orchestrator role card at spawn) is the second rail of that
+  // same shape: `POST /api/slots/:id/open` has already opened the pane, so the card founds into the
+  // slot the caller is holding and its three lines name `s` too. Asserted in its own body for the
+  // lane baton's reason — and its GRACE still lands in the shared count above, because that line
+  // names no slot at all.
+  const orchRailStart = server.indexOf("async function deliverOrchestratorSpawnCard(");
+  const orchRailBody = orchRailStart < 0 ? ""
+    : server.slice(orchRailStart, server.indexOf("async function succeedSupervisor", orchRailStart));
+  const orchRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(orchRailBody)
+    && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(orchRailBody)
+    && /await sendText\(s, brief, true\);/.test(orchRailBody);
+  pin("all EIGHT founding deliveries are gated — same count of sends, bounded waits and shared boot graces, and no naked 4 s sleep left",
+    foundingSends === 6 && foundingWaits === 6 && foundingGraces === 8 && laneRailGated && orchRailGated
       && !/await Bun\.sleep\(4000\);/.test(server),
-    `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces} laneRail=${laneRailGated}`);
+    `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces} laneRail=${laneRailGated} orchRail=${orchRailGated}`);
   // ...and the ONE fixture that has to place a marker on the far side of that grace mirrors its
   // value. `unbound succession` proves the generic rail withholds a founding brief until the ready
   // marker appears, which only holds as a statement about READINESS if the marker lands after the
@@ -6135,6 +6150,12 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     ["POST /api/self/tasks/<taskId>/land", "POST /api/self/tasks/:id/land"],
     ["POST /api/self/watch", "POST /api/self/watch"],
     ["POST /api/self/attention", "POST /api/self/attention"],
+    // The two the rail was missing until 2026-09-17 (docs/messungen/
+    // 2026-09-14-rollen-briefe-synthese.md §2b, cut S4): the question a blocked worker asks its
+    // MAIN, and the Program's own durable back-channel. Both doors are older than the sentences
+    // that name them — what was new is that a founding MAIN could now learn they exist.
+    ["POST /api/self/clarifications/<id>/reply", "POST /api/self/clarifications/:id/reply"],
+    ["GET /api/self/inbox", "GET /api/self/inbox"],
   ];
   const missingRail = doors.filter(([inRail]) => !rail.includes(inRail)).map(([d]) => d);
   const missingDoc = doors.filter(([, inDoc]) => !selfApiDoc.includes(inDoc)).map(([, d]) => d);
@@ -6293,7 +6314,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // needs: the standard rail's bytes are pinned to a baseline, so editing it is a deliberate act
   // that updates this constant, never a side effect of touching the profile beside it. Rewrite the
   // baseline ONLY when the text was meant to change, and say so in the commit body.
-  const RAIL_STANDARD_SHA256 = "bfba216cd986eb70d47046c244c321a9bfed8468b9caa9e7e0c72ea50e860065";
+  const RAIL_STANDARD_SHA256 = "5650ea0474ecb5acb98c140fb2aa5a0bbb4c569f62de12452082b96382791888";
   const railBody = (part: string): string =>
     part === "" ? "" : part.slice(part.indexOf("`") + 1, part.lastIndexOf("`"));
   const standardBytes = rail === ""

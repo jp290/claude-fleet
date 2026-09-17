@@ -32,7 +32,7 @@ Scope and sources, so the omissions are not silent:
 - `server/` — The server's own modules, cut out of `server.ts` by the Generalsanierung (P4): `types.ts` holds the persisted domain model and its `*From`/`load*` parsers, `errors.ts` the in-memory error channel (`logError`/`errorsView`), `persist.ts` the append-only JSONL event log and its rotation-aware ledger readers, `tmux.ts` the tmux socket and process wrappers, `transport.ts` the gzip/byte-ledger wrappers and the static-asset table (anchored on `PUB`, one level up from this directory), `dir-explorer.ts` the folder picker's caps, its slow-folder memory and the file readability and write-deny rules, `audit-log.ts` the security event trail — the `AuditEvent` vocabulary, `audit()` and `AUDIT_FILE` (anchored on `PUB` like `transport.ts`, so the ledger stays at the repo root), `http.ts` the leaf every other module may import — the `json()` response helper plus `HOST`/`PORT`, binding nothing from the core, `auth.ts` the token and share-credential surface (`tokenFrom`, `secretEq`, the share cookie gates, `ALLOWED_HOSTS` and the `guard` that answers the DNS-rebinding and cross-origin checks); `server.ts` stays the entry and keeps the state holders — including `transportReport` and `listDirs`/`findDirs`/`dirInfo`, which read core state the modules may not import.
 - `src/` — Modules shared across the server, the browser bundle and the suites — protocol types, the client, share rendering, shell quoting, markdown, backoff.
 
-## Top-level `.ts` and `.sh` files (62)
+## Top-level `.ts` and `.sh` files (63)
 
 - `acceptance-probe.sh` — ACP-25 REAL-TUI ACCEPTANCE PROBE — not a gate. It boots an isolated Fleet instance on its own
 - `acceptance-probe.ts` — ACP-25 real-TUI acceptance probe (driver: acceptance-probe.sh). Every check below is against the
@@ -83,6 +83,7 @@ Scope and sources, so the omissions are not silent:
 - `repo-map.ts` — repo-map.ts — the executable map of this repo's top level: every directory, every entry file.
 - `review-sweep.ts` — review-sweep.ts — the deterministic half of the review layer (docs/attic/plan-review-layer-2026-08-16.md
 - `rulebook.ts` — HOW TO CHANGE A RULE, now that CLAUDE.md is a GENERAT: edit the FRAGMENT, then re-render. A hand
+- `scratch-reap.sh` — scratch-reap.sh — the owner of the e2e-isolated scratch heap.
 - `server.ts` — **no sentence** — this file opens with no header comment; add one as its first line so this row stops reading as empty.
 - `simulator-hygiene.ts` — simulator-hygiene.ts — may an idle iOS Simulator be shut down? The pure decision, and the probe it reads.
 - `slotstats.ts` — The slot fact — whether a slot is the thing it claims to be.

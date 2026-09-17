@@ -37,6 +37,17 @@ answer it, and all it does is switch a box on so it can start pulling.
   `active` and beating recently. Unset or `0` is the old behaviour exactly. It never starves
   anything: the moment the grace lapses the local drain takes the job, which is the same fallback
   the expiry rail above provides, one step earlier.
+  **"BEATING RECENTLY" IS THE ONLINE WINDOW, NOT THE FRESHNESS ONE** (2026-09-17, `server.ts`, grep
+  `helperCandidateAgeMs`). A heartbeat counts as FRESH for `HELPER_FRESH_MS` (3 × the sweep, 45 s by
+  default) while the register — and every board that draws it — calls the machine ONLINE for
+  `FLEET_DEVICE_ONLINE_MS` (90 s). The drain used to ask only the first, so a drain that fell into
+  the gap between two beats read "no claim-capable helper is beating" and took a ~30-minute audit
+  onto the Fleet host's one suite mutex, irrevocably for that whole run. Now a device that is stale
+  but still inside the online window keeps its grace: the entry waits at most
+  `FLEET_AUDIT_HELPER_GRACE_MS` from its youngest cover and then runs locally as before, and a beat
+  arriving inside that grace makes the job claimable again. Seen past the online window is unchanged
+  — the entry runs here at once. The Fleet's `server.log` names it either way
+  (`post-land audit WAITING: …` while it holds, `post-land audit LOCAL: …` when it runs).
   **AND IT ONLY EVER HOLDS A JOB THIS DAEMON COULD ACTUALLY TAKE** (2026-09-08, `server.ts`, grep
   `helperClaimBar`). Four kinds of audit entry are never offered — a repo whose audit is its own
   repo-worker executable, an entry whose every land passed the docs-only gate (the Fleet audits that

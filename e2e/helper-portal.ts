@@ -1053,6 +1053,127 @@ export async function run(h: {
     await waitNoLocalRun(120_000) && (await jobs()).jobs.length === 0,
     JSON.stringify((await jobs()).jobs));
 
+  // ===== (K7e) A HELPER BETWEEN TWO HEARTBEATS IS STILL THERE ===================================
+  // THE GAP BETWEEN TWO WINDOWS, and it was throwing the grace away. A heartbeat counts as FRESH
+  // for HELPER_FRESH_MS (3 × the sweep, 45 s on this box's default) and the register — and every
+  // board that draws it, and /api/self/gate's `helper.online` — calls the machine ONLINE for
+  // DEVICE_ONLINE_MS (90 s). The drain asked only the first: `graceOn` false meant `return true`,
+  // and a drain that happened to look between two beats of a machine that was plainly there took a
+  // ~30-minute audit onto this box's ONE suite mutex. That decision is made once and for the whole
+  // run (`auditRunningRepo`), so the next beat, 3 s later, changes nothing.
+  //
+  // THE CLOCK IS SET, not waited out: the sweep is turned down so the freshness window is 3 s while
+  // the online window stays a minute, which is the same shape as production (fresh ≪ online) at a
+  // size a suite can observe. Three checks, one per arm, and each changes ONE variable against the
+  // others: the beat is stale-but-online (1), it is stale-but-online and NOBODY comes back (2), and
+  // there is no beat inside the online window at all (3) — the arm that must still run at once.
+  const K7E_GRACE_MS = 8000;
+  const K7E_SWEEP_MS = 1000;
+  const K7E_FRESH_MS = 3 * K7E_SWEEP_MS;   // server.ts: HELPER_FRESH_MS = 3 × HELPER_SWEEP_MS
+  const K7E_ONLINE_MS = 60_000;
+  const k7eEnv = (onlineMs: number): Record<string, string> => ({
+    FLEET_AUDIT_HELPER_GRACE_MS: String(K7E_GRACE_MS), FLEET_HELPER_SWEEP_MS: String(K7E_SWEEP_MS),
+    FLEET_DEVICE_ONLINE_MS: String(onlineMs), FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000",
+  });
+  // the youngest cover of a row — the very number the grace is computed from (`readyAt = max(
+  // youngest cover, claimable-since) + GRACE`), so the measurements below carry no harness stopwatch
+  const youngestCover = (r: Row | undefined): number => r?.covers.reduce((m, c) => Math.max(m, c.at), 0) ?? 0;
+  await killSrv();
+  check("(K7e) setup: the server restarts with a 3 s freshness window inside a 60 s online window",
+    await startSrv({ audit: true, extra: k7eEnv(K7E_ONLINE_MS) }));
+  await Bun.sleep(750);
+  await setAuditMode("green");
+  await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
+  const k7eBeat = async (): Promise<Response> => hpost("/api/helper/device",
+    { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.2 });
+  const k7eSeen = async (): Promise<number> => (await jobs()).device?.lastSeen ?? 0;
+  const k7eFirst = await k7eBeat();
+  check("(K7e) setup: the helper beats once, the queue is empty and nothing is running here",
+    k7eFirst.ok && (await jobs()).device?.mode === "active"
+      && await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0,
+    `${k7eFirst.status} device=${JSON.stringify((await jobs()).device)} jobs=${JSON.stringify((await jobs()).jobs)}`);
+
+  // (1) STALE BUT ONLINE — and then the helper comes back and really takes the tree. Without the
+  // second half "nothing ran here" would equally describe a parked or dropped entry.
+  const staleSeen = await k7eSeen();
+  await Bun.sleep(K7E_FRESH_MS + 800);     // the beat ages OUT of the freshness window and no further
+  const staleBefore = (await newRepoRows()).length;
+  const staleLane = await openLane(REPO, "stalebeat");
+  const staleLanded = await driveMerge(staleLane, staleLane.branch);
+  const staleSha = headOf();
+  await Bun.sleep(2500);                   // a (wrong) local run has had 2.5 s of an 8 s grace to appear
+  const staleJob = await jobFor(REPO);
+  const staleAge = Date.now() - staleSeen;
+  check("(K7e) A BEAT THAT WENT STALE BUT IS STILL ONLINE HOLDS THE JOB — the drain does not pounce between two heartbeats",
+    staleLanded.gone && !!staleJob && staleJob.claim === null && staleJob.localRunning === false
+      && (await liveRepo()) === null && (await newRepoRows()).length === staleBefore
+      // …and the probe fails as ITSELF: the beat really was past the freshness window and really
+      // was inside the online one at the moment the drain decided. A device that stayed fresh, or
+      // one that aged out of both, would make this check pass for a reason it does not name.
+      && staleAge > K7E_FRESH_MS && staleAge < K7E_ONLINE_MS,
+    `${JSON.stringify(staleJob)} beatAge=${staleAge}ms fresh=${K7E_FRESH_MS} online=${K7E_ONLINE_MS}`
+    + ` live=${await liveRepo()} rows=${(await newRepoRows()).length}/${staleBefore}`);
+  const staleBack = await k7eBeat();
+  const staleClaim = staleJob ? await hpost("/api/helper/claim", { jobId: staleJob.id, deviceId: DEVICE }) : null;
+  const staleBody = (await staleClaim?.json()) as { job?: { mainSha: string } } | undefined;
+  check("(K7e) …and the helper that beats again inside that grace takes exactly the tree that landed",
+    staleBack.ok && staleClaim?.ok === true && staleBody?.job?.mainSha === staleSha,
+    `beat=${staleBack.status} claim=${staleClaim?.status} ${JSON.stringify(staleBody)} want=${staleSha}`);
+  const staleReport = await hpost("/api/helper/result",
+    { jobId: staleJob?.id ?? "", exitCode: 0, tail: "PASS  remote after a stale beat\nALL PASS" });
+  const staleRows = await waitNewRepoRows(staleBefore + 1);
+  check("(K7e) …and it closes REMOTE, with no local twin for that tree",
+    staleReport.ok && staleRows.filter((r) => r.mainSha === staleSha).length === 1
+      && staleRows.find((r) => r.mainSha === staleSha)?.remote?.name === DEVICE_NAME,
+    `${staleReport.status} ${JSON.stringify(staleRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
+
+  // (2) THE SAME ARM, AND NOBODY COMES BACK. The widened grace must not invent a wait that never
+  // ends: the entry falls back to this box when the grace runs out, and the measurement is the one
+  // the row carries itself — `startedAt − youngest cover` against the promise.
+  check("(K7e) setup: idle again before the arm nobody returns to", await waitNoLocalRun(60_000));
+  const outSeen0 = await k7eBeat();
+  const outSeen = await k7eSeen();
+  await Bun.sleep(K7E_FRESH_MS + 800);
+  const outBefore = (await newRepoRows()).length;
+  const outLane = await openLane(REPO, "graceout");
+  const outLanded = await driveMerge(outLane, outLane.branch);
+  const outRows = await waitNewRepoRows(outBefore + 1, 90_000);
+  const outRow = outRows.find((r) => r.covers.some((c) => c.branch === outLane.branch));
+  const outWaited = outRow ? outRow.startedAt - youngestCover(outRow) : -1;
+  check("(K7e) THE LINGERING GRACE NEVER STARVES: nobody claimed, and the drain took it AFTER the grace rather than at once",
+    outSeen0.ok && outLanded.gone && !!outRow && !outRow.remote && outRow.result === "green"
+      && outWaited >= K7E_GRACE_MS - 250          // the armed timer's own moment, ±the setTimeout floor
+      && outRow.startedAt - outSeen > K7E_FRESH_MS && outRow.startedAt - outSeen < K7E_ONLINE_MS,
+    `waited=${outWaited}ms grace=${K7E_GRACE_MS} beatAge=${outRow ? outRow.startedAt - outSeen : "no row"}ms`
+    + ` remote=${!!outRow?.remote} result=${outRow?.result}`);
+
+  // (3) NO BEAT INSIDE THE ONLINE WINDOW AT ALL — the arm that must keep today's behaviour byte for
+  // byte. One variable against (2): the online window is now shorter than the silence this device
+  // is already in, so there is no machine to hold anything for and the drain takes the tree at once.
+  check("(K7e) setup: idle again, with an empty queue", await waitNoLocalRun(90_000));
+  await killSrv();
+  const K7E_TIGHT_MS = 4000;
+  check("(K7e) setup: the server restarts with an online window shorter than the silence already running",
+    await startSrv({ audit: true, extra: k7eEnv(K7E_TIGHT_MS) }));
+  await Bun.sleep(750);
+  await setAuditMode("green");
+  const goneSeen = await k7eSeen();         // the register came back from disk — no beat is sent here
+  while (Date.now() - goneSeen <= K7E_TIGHT_MS + 500) await Bun.sleep(200);
+  const goneBefore = (await newRepoRows()).length;
+  const goneLane = await openLane(REPO, "helpergone");
+  const goneLanded = await driveMerge(goneLane, goneLane.branch);
+  const goneRows = await waitNewRepoRows(goneBefore + 1, 90_000);
+  const goneRow = goneRows.find((r) => r.covers.some((c) => c.branch === goneLane.branch));
+  const goneWaited = goneRow ? goneRow.startedAt - youngestCover(goneRow) : -1;
+  check("(K7e) WITH NO BEAT INSIDE THE ONLINE WINDOW THE DRAIN STILL TAKES THE TREE AT ONCE",
+    goneLanded.gone && !!goneRow && !goneRow.remote && goneWaited >= 0 && goneWaited < K7E_GRACE_MS
+      && goneRow.startedAt - goneSeen > K7E_TIGHT_MS,   // …and the silence really was past the window
+    `waited=${goneWaited}ms grace=${K7E_GRACE_MS} beatAge=${goneRow ? goneRow.startedAt - goneSeen : "no row"}ms`
+    + ` online=${K7E_TIGHT_MS} remote=${!!goneRow?.remote}`);
+  check("(K7e) …and the machine is left idle with an empty queue for what follows",
+    await waitNoLocalRun(120_000) && (await jobs()).jobs.length === 0,
+    JSON.stringify((await jobs()).jobs));
+
   // ===== (W) WAKE-ON-LAN — THE ONE NAMED EXCEPTION TO "NO PUSH" ===================================
   // Everything else in this portal is a pull: the Fleet answers, the other machine asks. A magic
   // packet is the single case where this box emits something towards a helper, and the reason it is

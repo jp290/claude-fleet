@@ -4961,6 +4961,40 @@ async function resetIntegration(repo: string, main: string, mainAfter: string, m
 // must reserve its slot SYNCHRONOUSLY before the first await or two concurrent requests
 // pick the same slot and one worktree ends up orphaned with a lying { ok } response
 const laneSpawn = new Set<number>();
+// A SESSION IS NOT A RESULT UNTIL IT HAS BEEN TOLD WHAT IT IS FOR, and `done-looking` cannot tell
+// the difference. On the lane-succession rail (succeedLane) the successor opens on the SAME
+// worktree the predecessor just committed on: clean and ahead before its first word exists. killSlot
+// zeroes `lastOutput`, the pane's attach paint restamps it, and from the next tickGit the whole
+// predicate holds — on a session whose founding brief is still being typed. Measured 2026-09-17 on
+// a scratch instance (own socket/port, FLEET_CMD=true, 40 ms sampling, grace widened only to make
+// the window readable): `doneLooking` true for 6.7 s before the brief, and a watch subscribed inside
+// that window was delivered "slot N … now LOOKS done" 5.7 s BEFORE the brief was logged.
+//
+// The predicate is right; the DELIVERY was early. The positive fact it waits for is the spawn
+// reservation every rail that types its brief INLINE already holds: succeedLane, the two lane
+// routes and the Program rails take laneSpawn before openSlot and release it in a finally that runs
+// after logPrompt. So "the brief has been logged" is exactly "laneSpawn no longer holds this slot",
+// and it is a fact about the rail, never a time threshold.
+//
+// THE SECOND HALF OF THAT FACT — the brief's pane output OBSERVED — needs no second test here, and
+// deliberately does not get one. sendText only returns after its acceptance probe has read the
+// composer, so output has happened before logPrompt, before the reservation drops. A `lastOutput >
+// lastPrompt.ts` clause would add nothing on this rail and would WEDGE on the one case it looks
+// like it covers: a paste that lands inside a quiet window never stamps lastOutput at all
+// (server.ts:13193; e2e/pins.ts pins the suite's grace against ensureSlot's 1500 ms window for
+// exactly this reason), and the notification would then be withheld forever rather than late.
+// Residual, stated because it is real: when that suppression happens the idle clock keeps running
+// from BEFORE the brief, so the lane reads idle sooner than it is. That is the quiet window's own
+// known cost, not something this guard can pay.
+//
+// A lane nobody ever briefs is untouched by construction: POST /api/lanes opens one, types nothing,
+// and holds the reservation only across its own open. This withholds a notification about an
+// UNSPOKEN word, never about a silent lane.
+//
+// NOT covered, and measured to be a different door: the DISPATCHER's tail is detached
+// (dispatchTask returns `tail: briefAndSend(...)` and releases laneSpawn in its finally), so its
+// founding window is open with no reservation held. That window is §11.2y's own family.
+const foundingWordOwed = (t: Slot): boolean => laneSpawn.has(t.id);
 // A singleton adapter is reserved synchronously before openSlot's first await. Active-slot state
 // alone has a gap: two owner tabs can both pass it while the first is still tearing down its slot.
 const singletonSpawn = new Set<string>();
@@ -15715,6 +15749,7 @@ async function tickWatches(): Promise<void> {
       const sig = laneSignalView(t, now);
       const watchSignal = laneWatchSignal(sig, AUTO_REVIEW_IDLE_MS);
       if (!watchSignal) continue; // neither completion predicate yet — stay armed, ask again
+      if (foundingWordOwed(t)) continue; // ...nor about a session still owed its own first word
       let event = fleetEvents.find((e): e is LaneFleetEvent => e.watchId === w.id
         && (e.kind === "lane-ready" || e.kind === "host-commit-ready"));
       if (!event) {

@@ -1648,6 +1648,12 @@ interface Program {
   // (POST /api/programs/:id/promotion), revoked by the same one with {"policy": null}, never
   // backfilled at load and never written by a self route.
   promotion?: PromotionPolicy;
+  // THE PROPOSAL'S WISH for the record above (see PromotionRequest), and unlike every other record
+  // on this row it IS ProgramContent: a session may propose it, the owner may correct it in the
+  // same body that corrects the rest of the proposal, and the confirm transition either spends it
+  // or drops it. Absent = the proposal asked for nothing, which is every legacy proposal and every
+  // program the owner proposed without naming a rung. It NEVER grants anything by existing.
+  promotionRequest?: PromotionRequest;
   // THE OWNER'S CHOICE OF EXECUTION ENVIRONMENT for this Program's MAIN, and it is deliberately
   // neither ProgramContent nor part of `promotion`. Content is what a session may PROPOSE;
   // `promotion` is a permission a MAIN SPENDS; this is the environment a MAIN is FOUNDED into and
@@ -1756,6 +1762,33 @@ const loadPromotion = (value: unknown): PromotionPolicy | undefined => {
   if (typeof r.selfLand !== "string" || !PROMOTION_SELF_LAND.includes(r.selfLand as PromotionSelfLand)) return undefined;
   if (typeof r.confirmedAt !== "number" || !Number.isFinite(r.confirmedAt) || r.confirmedAt <= 0) return undefined;
   return { v: 1, selfLand: r.selfLand as PromotionSelfLand, confirmedAt: r.confirmedAt };
+};
+
+// THE WISH THAT A PROPOSAL MAY CARRY, and it is deliberately NOT a `PromotionPolicy`: it has no
+// `confirmedAt`, because nothing here is dated — a wish is not an act, and a stamp on it would be
+// a permission wearing the shape of one. It is the one record in this file a SESSION may write,
+// and it is safe to let one write it for exactly one reason: NOTHING reads it but the confirm
+// transition. The land route reads `promotion` and only `promotion`, so a program carrying a wish
+// and no policy is byte-for-byte an unpromoted program.
+//
+// Its lifetime is one transition. `POST /api/programs/:id/confirm` consumes it — grants the rung
+// as `promotion` with a SERVER stamp, then deletes the wish — so a wish never coexists with the
+// program state (`active`) in which a MAIN could spend anything. That is why there is no rule
+// anywhere else refusing to read it: there is no row where reading it could mean something.
+interface PromotionRequest { v: 1; selfLand: PromotionSelfLand }
+// loadPromotion's discipline, one record over, and for a sharper version of its reason: this one
+// arrives FROM A SESSION. Anything that is not exactly `{v:1, selfLand}` with a known rung loads
+// as ABSENT — no field-wise repair, no nearest-known-value — so a wish nobody can parse asks for
+// nothing rather than for the rung a repair would have guessed. `confirmedAt` is refused here as
+// an unknown key on purpose: a caller that could send one would be dating the owner's decision
+// before the owner has made it.
+const loadPromotionRequest = (value: unknown): PromotionRequest | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["v", "selfLand"].includes(k))) return undefined;
+  if (r.v !== 1) return undefined;
+  if (typeof r.selfLand !== "string" || !PROMOTION_SELF_LAND.includes(r.selfLand as PromotionSelfLand)) return undefined;
+  return { v: 1, selfLand: r.selfLand as PromotionSelfLand };
 };
 
 // CLOSED, VERSIONED, DEFAULT-ABSENT — the same three properties `PromotionPolicy` has, for the same
@@ -2792,8 +2825,11 @@ const foundingIdentityFrom = (value: unknown): ProgramFoundingIdentity | null =>
   return { ...occupant, selfTokenHash: r.selfTokenHash };
 };
 
+// The seven proposable fields PLUS the wish — and the wish is in here rather than beside it so the
+// ONE correction path the owner already has (confirm merges its body over the stored proposal)
+// carries it too. A second merge path for one optional field is a second place to forget it.
 type ProgramContent = Pick<Program, "title" | "intent" | "successCriterion" | "nonGoals"
-  | "decisions" | "evidence" | "openQuestions">;
+  | "decisions" | "evidence" | "openQuestions" | "promotionRequest">;
 type ProgramValidation = { ok: true; content: ProgramContent } | { ok: false; error: string };
 
 // The cross-program Supervisor is a SINGLETON above every Program bracket, so its binding lives
@@ -2823,7 +2859,7 @@ export type {
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
-  PromotionSelfLand, PromotionPolicy, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
+  PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
   ProgramInboxKind, ProgramInboxEntry, ProgramInbox, ProgramInboxRead,
   MessageRole, MessageAddress, MessagePayload, Message, Messages, MessagesRead,
@@ -2848,7 +2884,7 @@ export {
   MAX_ATTENTION_TEXT, MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT,
   ATTENTION_CANDIDATE_SHA_RE, ATTENTION_BRANCH_RE, validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT,
   TASK_KINDS, isTaskKind, loadTaskKind, TASK_REVIEW_MODES, TASK_VERDICTS, isTaskVerdict, TASK_TOUCHED_MAX,
-  TASK_NOTES_MAX, NOTE_VERDICTS_MAX, PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion,
+  TASK_NOTES_MAX, NOTE_VERDICTS_MAX, PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, loadPromotionRequest,
   PROGRAM_PROFILE_KINDS, loadProgramProfile, PROGRAM_LINEAGE_MAX, PROGRAM_LINEAGE_VIA,
   PROGRAM_LINEAGE_ENDED_BY, PROGRAM_LINEAGE_ENTRY_KEYS, loadProgramLineageEntry, loadProgramLineage,
   PROGRAM_INBOX_MAX, PROGRAM_INBOX_KINDS, PROGRAM_INBOX_ENTRY_KEYS, PROGRAM_INBOX_REF_MAX,

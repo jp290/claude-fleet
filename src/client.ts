@@ -6565,6 +6565,13 @@ interface ProgramInfo extends ProgramDigest {
   // shape here that this build cannot read. So the type admits that, and `promotionState` below
   // turns "present but unreadable" into its own displayed state rather than into "absent".
   promotion?: { v?: number; selfLand?: string; confirmedAt?: number } | null;
+  // THE PROPOSAL'S WISH for that permission, as it comes off the wire, optional for the reason
+  // `promotion` above is: an ASSERTION about a foreign surface, not a proof about one. It is only
+  // ever present on a PROPOSED program — the confirm spends it and deletes it — and it grants
+  // nothing by existing. `promotionRequestState` below turns "present but unreadable" into its own
+  // displayed state, because a wish this build cannot read is one the server will drop on confirm,
+  // and the owner must not press confirm believing a rung rides along.
+  promotionRequest?: { v?: number; selfLand?: string } | null;
   // THE DURABLE FOUNDING MARKER, in the redacted public shape returned by GET /api/programs. V1 and
   // V2 use different root/profile fields, but both expose only the affected occupant pair. Runtime
   // decoding below is deliberately closed: a present shape this build cannot read locks founding
@@ -6838,6 +6845,48 @@ function promotionState(p: ProgramInfo): {
     sentence: "Everything green-only permits, PLUS one rung: a lane sitting on an agent-resolved"
       + " conflict may be confirmed by that MAIN, and the server re-runs the authoritative"
       + " verification FRESH on the resolved candidate, landing only on a green." };
+}
+
+// --- THE PROPOSAL'S WISH, read for display AT THE CONFIRM DOOR ---
+// It is a SEPARATE function from promotionState and not a parameter on it, because the two answer
+// different questions on different rows: that one says what is IN FORCE, this one says what the
+// owner is ABOUT TO GRANT by pressing confirm. A permission that is invisible at the moment it is
+// handed over is a permission handed over by accident, and that is the whole reason this exists.
+//
+// FIVE states, the same five, and `unreadable` for promotionState's exact reason with one extra
+// edge: a wish the server's own loader refuses is DROPPED on confirm, so a pane that painted it as
+// a rung would promise a grant the transition will not make.
+//
+// PURE AND TOP-LEVEL ON PURPOSE, like promotionState: no globals, no DOM, no clock — it is cut out
+// of this source, transpiled and RUN by e2e/programs.ts. There is no `stamped` here at all: a wish
+// is not an act, and the only date on this record's life is the one the SERVER writes at confirm.
+type PromotionRequestStateName = "absent" | "off" | "green-only" | "guarded" | "unreadable";
+function promotionRequestState(p: ProgramInfo): {
+  state: PromotionRequestStateName; label: string; tone: "ok" | "dim" | "warn"; sentence: string;
+} {
+  const rec = p.promotionRequest;
+  if (rec === undefined || rec === null)
+    return { state: "absent", label: "asks for no self-land rung", tone: "dim",
+      sentence: "This proposal carries no wish, so confirming it grants NOTHING and the program"
+        + " stays owner-only — the shape every program has had until now. You can still grant a"
+        + " rung afterwards through the promotion door on this pane." };
+  if (typeof rec !== "object" || Array.isArray(rec) || rec.v !== 1
+    || typeof rec.selfLand !== "string" || !PROMOTION_RUNGS.includes(rec.selfLand))
+    return { state: "unreadable", label: "asks for an unreadable rung", tone: "warn",
+      sentence: "A wish IS stored on this proposal, but it is not a shape this build can read as a"
+        + " v1 request. The server's own loader refuses the same shape, so confirming DROPS it and"
+        + " grants nothing — this is not the asks-for-nothing case, and it is not a grant either." };
+  if (rec.selfLand === "off")
+    return { state: "off", label: "asks for self-land: off", tone: "dim",
+      sentence: "Confirming stores an explicit, dated NO. Nothing becomes landable — the difference"
+        + " from asking for nothing is that the decision exists and can be read back." };
+  if (rec.selfLand === "green-only")
+    return { state: "green-only", label: "asks for self-land: green-only", tone: "ok",
+      sentence: "Confirming GRANTS it in the same act: the bound MAIN may then land its own clean,"
+        + " freshly-green rows. An unreviewed conflict resolution stays refused." };
+  return { state: "guarded", label: "asks for self-land: guarded", tone: "ok",
+    sentence: "Confirming GRANTS the HIGHER rung in the same act: everything green-only permits,"
+      + " plus a MAIN-confirmed agent-resolved conflict, which the server re-verifies fresh." };
 }
 
 // --- THE OWNER'S PROGRAM-SCOPED DISPATCH PERMISSION, read for display ---
@@ -8127,6 +8176,19 @@ function renderProgramDetail(shell: Shell, id: string): void {
       : `POST /api/programs/${p.id}/activate — this program is already confirmed, so only the second`
         + " transition is left. It is also the repair door after a confirm that landed while its"
         + " activate did not: the confirmed half stands, and only what failed is retried."));
+    // WHAT THIS CLICK HANDS OVER, shown where the click is. A proposal may carry a WISH for the
+    // self-land rung, and the confirm transition spends it: press the button below and the rung is
+    // granted in the same act, with the server's own stamp. A permission that is invisible at the
+    // moment it is granted is a permission granted by accident — so it is stated here, on the
+    // PROPOSED row, rather than only afterwards in the promotion section where it would already be
+    // in force. On a CONFIRMED row it is gone: the transition consumed it.
+    if (p.status === "proposed") {
+      const rq = promotionRequestState(p);
+      const rqFacts = el("div", "ocfacts");
+      rqFacts.appendChild(chip(rq.label, rq.tone, rq.sentence));
+      pr.appendChild(rqFacts);
+      pr.appendChild(el("div", rq.state === "unreadable" ? "pkdwarn" : "shellhint", rq.sentence));
+    }
     if (qPlErr) pr.appendChild(el("div", "pkdwarn", qPlErr));
     const pacts = el("div", "pkdacts");
     pacts.style.marginTop = "10px";

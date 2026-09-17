@@ -3336,6 +3336,70 @@ unbekannter Key, falsche Version, unbekannter Wert, fehlender oder absurder Stem
 **Trail:** jede Erteilung und jeder echte Widerruf schreibt `program_promotion`. Ein Widerruf auf
 einen ohnehin abwesenden Record ist `ok:true` ohne Zeile — es gibt nichts zu datieren.
 
+### Zwei Tueren, ein Verhaeltnis: der Vorschlag BITTET, der Confirm VERGIBT (seit 2026-09-17)
+
+Die Tuer oben erteilt NACHTRAEGLICH — und genau dort ging die Erlaubnis in der Praxis verloren:
+gemessen am 2026-09-17 trugen 40 von 71 Programs eine `promotion`, aber nur ZWEI der VIER aktiven.
+Der Mechanismus fehlte nie, es fehlte EIN DATENSATZ, und es faellt erst auf, wenn eine fertige,
+verifizierte Lane wartet. Seitdem kann ein VORSCHLAG die gewuenschte Sprosse mittragen, und der
+Owner vergibt sie in dem Akt, in dem er ohnehin entscheidet.
+
+```
+# ein Vorschlag mit Wunsch (Owner-Tuer ODER POST /api/self/programs — eine Session darf BITTEN)
+curl -X POST http://<fleet-host>:<port>/api/programs \
+  -H "content-type: application/json" -H "authorization: Bearer $FLEET_TOKEN" \
+  -d '{"title":"…","intent":"…","successCriterion":"…","nonGoals":[],"decisions":[],
+       "evidence":[],"openQuestions":[],"promotionRequest":{"v":1,"selfLand":"green-only"}}'
+
+# der Owner-Akt: bestaetigen — und in DEMSELBEN Akt die Sprosse vergeben
+curl -X POST http://<fleet-host>:<port>/api/programs/<program>/confirm \
+  -H "content-type: application/json" -H "authorization: Bearer $FLEET_TOKEN" -d '{}'
+
+# …oder die Sprosse dabei korrigieren bzw. den Wunsch abraeumen
+  -d '{"promotionRequest":{"v":1,"selfLand":"off"}}'   # datiertes NEIN, nichts Landbares
+  -d '{"promotionRequest":null}'                        # Wunsch entfernt, gar kein Record
+```
+
+**`promotionRequest` ist ein WUNSCH, nie eine Berechtigung.** Er ist `{v:1, selfLand}` — **ohne
+`confirmedAt`**, denn ein Wunsch ist kein Akt, und ein Stempel darauf waere eine Erlaubnis in der
+Form einer Bitte. Er ist der einzige Record auf einem Program, den eine SESSION schreiben darf, und
+das ist aus genau einem Grund ungefaehrlich: **die Land-Route liest `promotion` und nur
+`promotion`** (`e2e/pins.ts` pinnt, dass `promotionRequest` in `selfLandTaskForMain` nirgends
+vorkommt). Ein Program mit Wunsch und ohne Policy ist Byte fuer Byte ein unpromotetes Program.
+
+**Der Confirm verbraucht ihn — in beide Richtungen.** `proposed -> confirmed` schreibt aus einem
+vorhandenen Wunsch `promotion = {v:1, selfLand, confirmedAt}` (Stempel **serverseitig**, wie an der
+Tuer oben) und loescht den Wunsch. Er ueberlebt seinen eigenen Uebergang nie, also koennen `active`
+und ein Wunsch nicht koexistieren — deshalb braucht keine Route weiter unten eine Regel, den Wunsch
+zu ignorieren. Ein Confirm **ohne** Wunsch vergibt weiterhin NICHTS.
+
+**Der Wunsch ist ProgramContent** (`PROGRAM_CONTENT_KEYS`), damit der EINE Korrekturpfad, den der
+Owner schon hat, ihn mittraegt: der Confirm-Body legt sich ueber den gespeicherten Vorschlag. Der
+Uebergang raeumt den Wunsch dabei ZUERST ab und laesst den gemergten Inhalt entscheiden — sonst
+wuerde ein `"promotionRequest": null`, das ihn zuruecknehmen soll, den alten Wunsch still stehen
+lassen und die Sprosse doch vergeben.
+
+**Der Loader degradiert zur ABWESENHEIT — auf der Leitung wie auf der Platte, mit demselben
+Reader** (`loadPromotionRequest`, in `loadPromotion`s Disziplin). Ein unbekannter Key, eine falsche
+Version, eine unbekannte Sprosse, ein von der Leitung diktiertes `confirmedAt`: laedt als „kein
+Wunsch". Ein kaputter Wunsch ist aber **kein 400** — er ist optional und vergibt nichts, also darf
+er einen sonst tadellosen Vorschlag nicht scheitern lassen: angenommen-aber-abwesend.
+
+**Ein wiederholter Confirm ist ein Retry, keine zweite Vergabe.** Die Idempotenz vergleicht die
+sieben Inhaltsfelder OHNE den Wunsch (der erste Confirm hat ihn verbraucht); ein erneuter Klick mit
+demselben Body ist `existing:true` und stempelt nicht neu. Nachtraeglich Gewaehren und Widerrufen
+bleibt die Tuer oben.
+
+**Trail:** die Vergabe im Confirm schreibt dieselbe Zeile wie die Tuer, mit Herkunft:
+`program_promotion  <id> selfLand=<rung> via confirm`.
+
+**Die Oberflaeche zeigt den Wunsch DORT, wo bestaetigt wird** (`src/client.ts#promotionRequestState`,
+Abschnitt „Promote" der Program-Detailflaeche, nur auf einer `proposed`-Zeile). Der Confirm-Button
+des Boards sendet einen LEEREN Body und traegt den Wunsch also unsichtbar mit — eine Berechtigung,
+die im Augenblick der Vergabe unsichtbar ist, wird versehentlich vergeben. Fuenf Zustaende wie bei
+`promotionState`, und `unreadable` ist einer davon: ein Wunsch, den der Build nicht lesen kann,
+wird beim Confirm FALLEN GELASSEN, also waere „Sprosse" ein Versprechen und „nichts" eine Luege.
+
 ## stalled — `GET /api/sessions` (OWNER-Route, nicht `/api/self/*`)
 
 Sie steht hier, weil sie die eine Stelle ist, an der die Flotte sagt **„diese Lane arbeitet nicht

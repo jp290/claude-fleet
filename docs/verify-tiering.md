@@ -4000,7 +4000,7 @@ entfernt, die Schleife wieder ueber alle Wellenzeilen) mit genau dem Fingerprint
 
 **Ein Rot dieses Checks NACH `f8f3ee90` ist wieder ECHT.**
 
-### 11.2x Eine fünfundzwanzigste Familie: „surface: a new brief re-derives it" in `e2e/tasks.ts` — KEIN Sonden-Flake um eine Rate, sondern ein ZWEITER SCHREIBER auf `task.brief` (2026-09-16 registriert; Mechanismus am Code gelesen, per langsamem Enhancer ERZWUNGEN; sondenseitig GESCHLOSSEN, die Produkt-Wurzel bleibt offen)
+### 11.2x Eine fünfundzwanzigste Familie: „surface: a new brief re-derives it" in `e2e/tasks.ts` — KEIN Sonden-Flake um eine Rate, sondern ein ZWEITER SCHREIBER auf `task.brief` (2026-09-16 registriert; Mechanismus am Code gelesen, per langsamem Enhancer ERZWUNGEN; sondenseitig GESCHLOSSEN 2026-09-16, die PRODUKT-WURZEL geschlossen 2026-09-17)
 
 **Fingerprint** (Detail der Check-Zeile, vor dieser Lane die Fläche allein):
 
@@ -4049,13 +4049,31 @@ Detail trägt jetzt zusätzlich seine beiden EINGABEN (Status des Brief-POST, de
 tatsächlich auf der Zeile steht), damit ein künftiges Rot benennt, welcher der drei Fälle es ist.
 **Ein Rot dieses Checks NACH `6a1a2a9e` ist wieder ECHT und deins.**
 
-**Was NICHT geschlossen ist.** Das Rennen liegt im PRODUKT und lebt weiter: jeder Owner-Brief, der
-einen laufenden Compile trifft, wird verworfen. Die Zeile, die das misst, ist `e2e/tasks.ts` §(h4)
-(„an owner-edited brief is pinned and nothing recompiles over it") — sie läuft absichtlich MIT
-armiertem Compiler, und ein Rot dort ist der Befund, nicht das Rauschen. Darum steht sie hier NICHT
-als Flake-Familie: wer sie so läse, winkte den Produktfehler durch. Die Reparatur ist als eigene
-Zeile vorgeschlagen (Bericht dieser Lane, 2026-09-16): `compileBriefs` muss nach dem `await` prüfen,
-ob die Zeile ihren Brief inzwischen bekommen hat, und dann nichts schreiben.
+**Reparatur, produktseitig** (2026-09-17, Branch `fleet/260917013459-2b1a`; die Shas trägt die MAIN
+nach dem Rebase-Land nach). `compileBriefs` liest nach seinem `await runEnhance(...)` ERNEUT —
+`server.ts#briefRaceReason`, dieselben vier Fakten, auf die `briefDue` selektiert (Zeile existiert
+noch, trägt inzwischen einen Brief, wird gerade dispatcht, Status noch `pending`/`queued`), nur
+gelesen im Moment des SCHREIBENS statt im Moment der Entscheidung. Trifft eine davon, wird NICHTS
+geschrieben und der verworfene Compile bekommt eine Audit-Zeile
+(`brief_compile_discarded`, Felder `taskId`/`reason`/`kept`/`discarded` — nie Brieftext). Der
+Owner-Brief gewinnt IMMER: `runEnhance` hat `t.text` VOR dem `await` gelesen, der fertige Compile
+ist also eine Ableitung genau des Entwurfs, den der Owner soeben ersetzt hat — er ist nur der
+spätere Schreiber, nie der frischere Fakt.
+
+**Mutationsprobe der Reparatur** (zwei getrennte Scratch-Bäume, eigene Ports/Sockets/State, Enhancer-
+Stand-in mit 3 s Schlaf, `FLEET_CARD_MS=0`, identischer Treiber; der armierte Baum ist derselbe
+Baum mit HERAUSGESCHNITTENEM Guard): **ohne den Guard 10 von 10 rot, mit ihm 0 von 20 rot**, und
+im grünen Arm 20 `brief_compile_discarded`-Zeilen — der Compile lief also jedes Mal wirklich und
+wurde jedes Mal verworfen statt nie zu starten. Die rote Zeile zeigt den Tausch:
+`brief={"text":"COMPILED-BRIEF::RACEPROBE 1 …","model":"claude-opus-5[1m]","edited":false}`.
+
+**Die Sonde.** `e2e/tasks.ts` §(h4-race) („an owner brief filed DURING a compile survives it — text
+AND authorship") steht neben §(h4) und misst die andere Hälfte: §(h4) fährt die AUSWAHL
+(`briefDue` überspringt eine Zeile mit Brief), §(h4-race) den SCHREIBVORGANG. Sie ist NICHT durch
+eine Wartezeit getaktet, sondern durch den Stand-in selbst — er meldet Start und Ende über zwei
+Markerdateien, damit „der Compile lief, als der Brief kam" eine gefahrene Tatsache ist. §(h4)
+bleibt unverändert und läuft weiter MIT armiertem Compiler; ein Rot an beiden ist weiterhin der
+Befund, nie das Rauschen.
 
 ### 11.2y Eine sechsundzwanzigste Familie: die SETUP-Zeilen der M1/M5-Lands in `e2e/programs.ts` — die Sonde wartet auf ein `done-looking`-Fenster, das der Gründungs-Brief gleich wieder schliesst (2026-09-16 registriert; Mechanismus am Code gelesen und auf einer Scratch-Instanz bei 40 ms Abtastung DIREKT GEMESSEN; sondenseitig GESCHLOSSEN, kein Produktfehler)
 

@@ -128,7 +128,7 @@ import {
   type AttentionKind,
   type LaneSuiteFleetEvent, type HarnessBlockFleetEvent, type LaneReviewFleetEvent, type TaskReviewMode,
   type FleetReportDeliveryState,
-  type AttentionRequest, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type Task, type TaskVariantDecision, type TaskBrief, type TaskComment,
+  type AttentionRequest, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type Task, type TaskVariantDecision, type TaskBrief, type BriefAuthor, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskCard, type TaskCriterion, type TaskFilesProposal,
@@ -12002,6 +12002,24 @@ const taskRepoOf = (t: Task): string | null => {
 // the analyst went; it stays because it is what makes "no row is handed to two enhancers at once"
 // structural rather than a property of there happening to be one caller.
 let sweepBusy = false;
+// WHOSE BYTES A BRIEF ON THE ROW IS — the brief arm of briefSourceOf without its card branch,
+// because that branch answers a different question: a KARTE head in front of a brief changes the
+// first bytes a lane reads and changes no author.
+const briefAuthorOf = (b: TaskBrief): BriefAuthor | "compiled" =>
+  b.by ?? (b.edited || b.model === "owner" ? "owner" : "compiled");
+// THE SECOND READ, and the reason compileBriefs needs one: `briefDue` picked these rows ONE
+// ENHANCER RUNTIME ago, and nothing in this process waits for that worker — the owner's brief
+// door, the MAIN's, a delete and the dispatcher all move a row while a compile is in flight. So
+// the same four facts briefDue selects on are read again at the moment of the WRITE rather than at
+// the moment of the decision. Returns why this compile must be thrown away, or null when the row
+// is still the one it was started for.
+function briefRaceReason(t: Task): string | null {
+  if (!tasks.includes(t)) return "row-gone";
+  if (t.brief) return `brief-present:${briefAuthorOf(t.brief)}`;
+  if (dispatchingTasks.has(t.id)) return "dispatching";
+  if (t.status !== "pending" && t.status !== "queued") return `status:${t.status}`;
+  return null;
+}
 // THE ONE PLACE THE MACHINE WRITES A Task.brief, so a compiled brief has a single shape and a
 // single failure mode. Returns the ids whose compile FAILED, which the caller backs off on —
 // nothing else would. `consequence` names what happens NEXT, so one server.log line stays true.
@@ -12012,6 +12030,22 @@ async function compileBriefs(rows: Task[], repo: string, laneBase: string | null
     await Promise.all(rows.slice(i, i + BRIEF_ENHANCE_LIMIT).map(async (t) => {
       try {
         const text = await runEnhance(t.text, repo, freshLaneFacts(laneBase));
+        // A COMPILE THAT FINISHED BEHIND ITS OWN ROW IS DROPPED, never written over what moved in
+        // the meantime. The owner brief that arrived mid-compile is the NEWER decision and this
+        // text is a derivation of the very draft it replaced (runEnhance read `t.text` before the
+        // await), so there is no sense in which the compile is the fresher fact — it is only the
+        // later write. Dropping it is not silent: nothing else in the fleet could name a compile
+        // that ran, cost a worker, and produced bytes nobody will ever read. Ids and authors only
+        // on that line — the audit ledger never carries prompt text (server/audit-log.ts).
+        const raced = briefRaceReason(t);
+        if (raced) {
+          const kept = t.brief ? briefAuthorOf(t.brief) : "none";
+          audit("brief_compile_discarded", undefined,
+            `${t.id} kept=${kept} discarded=${SUMMARY_MODEL} reason=${raced}`,
+            { taskId: t.id, reason: raced, kept, discarded: SUMMARY_MODEL });
+          console.log(`brief compiler: compile for ${t.id} discarded (${raced}) — the row's own brief stands`);
+          return;
+        }
         t.brief = { text, at: Date.now(), model: SUMMARY_MODEL, edited: false };
       } catch (e) {
         // no brief is a legitimate state — the lane gets the raw draft. Both records, because they

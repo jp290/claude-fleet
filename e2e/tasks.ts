@@ -7943,16 +7943,35 @@ export async function run(ctx: Ctx): Promise<void> {
         JSON.stringify(relPlan) === JSON.stringify([["p1", "now"], ["p2", { unreleased: ["p2"] }], ["p3", { unreleased: ["p3"] }]]),
         JSON.stringify(relPlan));
     }
+    // (sp-missing) AN `after` TARGET THAT IS NOT A ROW OF THE QUEUE AT ALL (2026-09-17). `statuses`
+    // carries EVERY row, so an ABSENT key is a different fact from a row that has not landed: a
+    // pending target ends its own wait by landing, a target nothing carries ends nothing ever, and
+    // before this the plan printed the same `{after}` for both. Unknown is still never permission —
+    // the wave waits either way — so the two arms below differ ONLY in the flag. Mutations that turn
+    // this red: dropping the `id in input.statuses` arm (m loses `missing`), or reading the absent
+    // key as done (m starts, which is the failure the whole check exists against).
+    const spCaps5 = { [spRepo]: { max: 5, source: "default" as const, programs: {} } };
+    const spMissing = spNexts(projectStartPlan(spInput([spRow("m", 1, ["m.ts"], { after: ["gone"] })], [], spCaps5)));
+    // `z` is in every fixture's statuses as "sent" — a real row that simply has not landed
+    const spPending = spNexts(projectStartPlan(spInput([spRow("w", 1, ["w.ts"], { after: ["z"] })], [], spCaps5)));
+    check("(sp) an after target the queue has NO ROW for waits as `missing`; a known, not-done target stays ordinary waiting",
+      JSON.stringify([spMissing, spPending]) === JSON.stringify([
+        [["m", { after: "gone", missing: true }]],
+        [["w", { after: "z" }]],
+      ]), JSON.stringify([spMissing, spPending]));
     // THE NOTES THE TICK WRITES, one sentence per reason (entwurf §4 F4 step 5)
     const spNotes = [
       startPlanWaitNote({ after: "2f8897ab" }),
+      startPlanWaitNote({ after: "1ed2f6a0", missing: true }),
       startPlanWaitNote({ unreleased: ["aa11", "bb22"] }),
       startPlanWaitNote({ collides: { slot: 3, file: "server.ts", symbol: "taskView" } }),
       startPlanWaitNote({ collides: { row: "cc33", file: "server.ts" } }),
     ];
-    check("(sp) the wait-notes name the reason: after <id> · wave partner <ids> not released · lane or earlier row + file#symbol",
+    check("(sp) the wait-notes name the reason: after <id> · a MISSING after target as a decision, not a wait · wave partner <ids> not released · lane or earlier row + file#symbol",
       JSON.stringify(spNotes) === JSON.stringify([
         "waiting: after 2f8897ab not landed",
+        // deliberately NOT prefixed `waiting:` — no tick can end this one, so it must not read as a wait
+        "after 1ed2f6a0 ist keine Queue-Zeile mehr — MAIN oder Owner entscheidet",
         "waiting: wave partner aa11, bb22 is not released",
         "waiting: collides with lane 3 on server.ts#taskView",
         "waiting: collides with row cc33 ahead in the plan on server.ts",
@@ -9346,6 +9365,35 @@ export async function run(ctx: Ctx): Promise<void> {
         && c0N3Got.includes("c0holder") && c0Ordered(c0Ids(c0N3), c0N3Got),
       `total=${c0N3Got.length} named=${c0N3Got.includes(c0Named)} twin=${c0N3Got.includes(c0Twin)}`
         + ` foreign=${JSON.stringify(c0Foreign(c0N3Got))}`);
+
+    // (c0-g) N3b · AN `after` TARGET A LIVE ROW STILL WAITS ON SURVIVES THE ZERO BUDGET (2026-09-17).
+    // The order rule reads the target's STATUS out of the queue (start-plan.ts#projectStartPlan), so
+    // evicting the target does not release the waiting row — it deletes the only fact that could ever
+    // release it. Measured on the live fleet 2026-09-17: four of the five `after` targets the 200 rows
+    // named were gone, each evicted `done`, and a1610fd7 had been QUEUED behind 1ed2f6a0 since
+    // 2026-09-16T18:26Z. Three arms, because the retention has to shrink as well as hold:
+    //   · named by a LIVE row  → kept on top of the budget (the 201st row, the stated overhang)
+    //   · named by nobody      → still evicted (the counter-proof; without it a pass is vacuous)
+    //   · named by a TERMINAL row → still evicted, WITH the terminal namer: a done row waits on
+    //     nothing, so it holds nothing, or the retention would never shrink again.
+    // Mutation that turns the first arm red: drop `afterHeld.has(t.id)` from the capTasks filter.
+    const c0AfterNamed = "c0after0001", c0AfterTwin = "c0after0002", c0AfterGone = "c0after0003";
+    // `model` is required or normTaskCard drops the whole card on the way in — with it the plant
+    // would prove nothing, so the card below is the loader's minimum plus the one field under test.
+    const c0Card = (after: string[]): Record<string, unknown> => ({ model: "e2e", after });
+    const c0AfterHolder = c0Row("c0afterholder", "pending", { kind: "auftrag", card: c0Card([c0AfterNamed]) });
+    const c0DeadHolder = c0Row("c0afterdead", "done", { kind: "auftrag", card: c0Card([c0AfterGone]) });
+    const c0After = [c0AfterHolder, ...Array.from({ length: 199 }, (_, i) => c0Live(i)),
+      c0Row(c0AfterNamed, "done"), c0Row(c0AfterTwin, "done"), c0Row(c0AfterGone, "done"), c0DeadHolder];
+    const c0AfterGot = await c0Plant(c0After);
+    check("(c0-g) a terminal row a LIVE row names in card.after survives the zero budget — its unnamed twin goes, and a target only a TERMINAL row names goes with its namer",
+      c0AfterGot.length === MAX + 1 && c0AfterGot.includes("c0afterholder")
+        && c0AfterGot.includes(c0AfterNamed) && !c0AfterGot.includes(c0AfterTwin)
+        && !c0AfterGot.includes(c0AfterGone) && !c0AfterGot.includes("c0afterdead")
+        && c0Ordered(c0Ids(c0After), c0AfterGot),
+      `total=${c0AfterGot.length} named=${c0AfterGot.includes(c0AfterNamed)} twin=${c0AfterGot.includes(c0AfterTwin)}`
+        + ` deadTarget=${c0AfterGot.includes(c0AfterGone)} deadHolder=${c0AfterGot.includes("c0afterdead")}`
+        + ` foreign=${JSON.stringify(c0Foreign(c0AfterGot))}`);
 
     // Leave the queue as this section found it — the planted lists replaced it wholesale.
     await stopSrv();

@@ -207,7 +207,11 @@ export interface StartPlanInput {
 
 export type StartPlanNext =
   | "now"
-  | { after: string }
+  // `missing` marks a target that is NOT A ROW OF THE QUEUE AT ALL (2026-09-17). Unknown is never
+  // permission — the wave still waits — but it is not the same fact as "the target has not landed
+  // yet", and it can never resolve on its own: nothing will ever set a status for an id no row
+  // carries. The flag is what lets the wait-note say so instead of looking like ordinary waiting.
+  | { after: string; missing?: true }
   | { unreleased: string[] }
   | { unchecked: string[] }
   | { collides: { slot?: number; row?: string; file: string; symbol?: string } }
@@ -297,8 +301,17 @@ export function projectStartPlan(input: StartPlanInput): StartPlan {
         if (known.length !== members.length)
           return { unchecked: wave.ids.filter((id) => !rowById.has(id)) };
         // 1. AFTER is hard: the target must be done. An id inside the same wave is ordered by the lane.
-        for (const row of known) for (const id of row.after)
-          if (!wave.ids.includes(id) && input.statuses[id] !== "done") return { after: id };
+        // A target the queue has NO STATUS FOR is refused too — `statuses` carries EVERY row, so an
+        // absent key means the target is not a row any more (capTasks retired it, a delete took it).
+        // It is reported as `missing`, because the two waits differ in who can end them: a pending
+        // target ends its own wait by landing, a target that is gone ends nothing, ever. Measured on
+        // the live fleet 2026-09-17: row a1610fd7 (queued) had waited on 1ed2f6a0 since that row was
+        // evicted `done` on 2026-09-16, and the plan said only "not landed" the whole time.
+        for (const row of known) for (const id of row.after) {
+          if (wave.ids.includes(id)) continue;
+          if (!(id in input.statuses)) return { after: id, missing: true };
+          if (input.statuses[id] !== "done") return { after: id };
+        }
         // 2. A release decides — the owner's, a MAIN's, or the program's policy (releaseVerdict);
         //    a partner that is not released holds the whole wave.
         const unreleased = known.filter((row) => !releaseVerdict(row).released).map((row) => row.id);
@@ -370,7 +383,11 @@ export function projectStartPlan(input: StartPlanInput): StartPlan {
  * instead, because the caps it counts right before a start are the ones that hold.
  */
 export function startPlanWaitNote(next: Exclude<StartPlanNext, "now">): string {
-  if ("after" in next) return `waiting: after ${next.after} not landed`;
+  // NOT prefixed `waiting:` — that prefix is the vocabulary of a wait something will end. This one
+  // names a decision instead, because no tick can resolve it.
+  if ("after" in next) return next.missing
+    ? `after ${next.after} ist keine Queue-Zeile mehr — MAIN oder Owner entscheidet`
+    : `waiting: after ${next.after} not landed`;
   if ("unreleased" in next) return `waiting: wave partner ${next.unreleased.join(", ")} is not released`;
   if ("unchecked" in next) return `waiting: ${next.unchecked.join(", ")} not checked — the plan was handed no row for it`;
   if ("collides" in next) {

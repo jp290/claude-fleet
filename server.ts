@@ -2727,11 +2727,21 @@ function capTasks(list: Task[]): Task[] {
   // source the owner chose as `unknown`. Detach is the only act that releases one; a retention
   // bound is not a second one. Live rows can therefore exceed the cap, as they already can alone.
   const survivors = [...live, ...keptDone];
+  // N3b · AN `after` TARGET A LIVE ROW STILL WAITS ON IS NOT SPARE CAPACITY EITHER (2026-09-17).
+  // The order rule reads the target's STATUS out of the queue (start-plan.ts#projectStartPlan), so
+  // retiring the target does not release the waiting row — it removes the only fact that could ever
+  // have released it, and the row waits for good. Measured on the live fleet 2026-09-17: four of the
+  // five `after` targets the 200 rows named were gone, each one evicted `done` (b4477db3, de754f94,
+  // 1ed2f6a0, a2356a5e, all in tasks-archive.jsonl), and a1610fd7 was still QUEUED behind 1ed2f6a0.
+  // Read off the LIVE rows only, and through variantSourceOf — exactly the rows and exactly the
+  // reading the gate makes (startPlanRowOf). A terminal row's `after` is history: it waits on
+  // nothing, so it holds nothing, and the retention shrinks with the queue instead of never.
+  const afterHeld = new Set([...live].flatMap((t) => variantSourceOf(t).card?.after ?? []));
   // …through the SAME predicate the delete, archive and kind doors ask — not a fourth inline copy
   // of "who names this id", which is exactly the shape that let three of the four doors disagree.
   // A row NOT kept goes only once tasks-archive.jsonl holds it whole; a live row never reaches the
   // write, because `live.has` answers first.
-  return list.filter((t) => live.has(t) || keptDone.has(t)
+  return list.filter((t) => live.has(t) || keptDone.has(t) || afterHeld.has(t.id)
     || sourceHoldersIn(survivors, t.id).length > 0 || !archiveTaskLine("evicted", t));
 }
 // pending → queued: the RELEASE. A function, not a bare assignment, for one reason — it is the

@@ -21,9 +21,9 @@
 // runs those modules plus the TRANSITIVE CLOSURE of what their fixtures need
 // (suite-modules.ts#modulePlanFor), in this same order, and prints one reasoned SKIP line for every
 // module it leaves out. It is a LANE PREVIEW: a filtered green says only that the checks that ran
-// passed, so the land gate and the post-land audit never set it (pinned), and a red in a filtered
-// run is re-run unfiltered before it is adjudicated. Both filters at once is refused — nobody has
-// measured that. Contract and the fixture record: docs/verify-tiering.md §16.
+// passed, so the land gate and the post-land audit never set it (pinned), and a filtered RED alone
+// does not distinguish a product failure from missing setup. Both filters at once is refused —
+// nobody has measured that. Contract and the fixture record: docs/verify-tiering.md §16.
 import { REPO, SOCK, check, failures, post, results } from "./e2e/harness";
 import { newCtx, parseShard, shardPlan, SHARD_UNITS, type LaneCtx, type StewardCtx } from "./e2e/ctx";
 import { FIXTURES, MODULE_FIXTURES, selectModules } from "./suite-modules";
@@ -421,7 +421,7 @@ completed = true;
 if (plan)
   console.log(`modules: ${plan.run.length} of ${MODULE_FIXTURES.length} modules ran, ${plan.skipped.length} skipped`
     + " — a FILTERED run is a PREVIEW: it says only that the checks below passed, it is never a gate,"
-    + " and a red one is re-run unfiltered before it is adjudicated");
+    + " and a red one alone does not distinguish a product failure from missing setup");
 
 // the shard's own measurement, BEFORE the results so the tail stays what every reader judges by
 if (shard) {

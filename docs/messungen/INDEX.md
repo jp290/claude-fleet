@@ -1,5 +1,7 @@
 # Index der Messnotizen
 
+- Zwei Wartezustaende entstehen in der Freigabe-Hand, nicht im Code: eine `queued` Zeile wartete auf ein Kollisionsziel, das `pending` und damit fuer `tickDispatch` unsichtbar war; und der naheliegende Rat, eine blockierte Karten-Zeile per Brief zu schaerfen, ist selbst der Ausloeser des Karten-Re-Reads, der `VERBOTEN` verliert — die Reihenfolge `53daa39c` vor `c2904891` ist damit erzwungen, nicht bevorzugt. — docs/messungen/2026-09-17-freigabe-wartezustaende.md · bereich: queue,release,karten,briefs,start-plan,kollision · stand: 2026-09-17
+
 - Topf B ist geschlossen, ohne den all-or-nothing-Filter anzufassen: der Deklarationsscan lokalisiert die vier Graph-Lücken-Symbole im Baum selbst, die vier Zeilen tragen 1–4 server.ts-Ranges über den Produktionspfad, und die Kollisions-Semantik ist in e2e/tasks.ts gepinnt; Topf A (11 Autoren-Zeilen ohne Symbol) und Topf C (FLEET_CARD_MS=0) sind benannt und nicht gebaut — docs/messungen/2026-09-16-serialisierung-ranges.md · bereich: queue,land-waves,start-plan,ranges,card-surface,graphify · stand: 2026-09-16
 
 - S2D ist angenommen, regulaer gelandet und gruen auditiert; das Gesamt-Review bleibt wegen offener GLM-Korrektur, Server-/Gate-Abdeckung und unvollstaendigem Briefnachweis offen. — docs/messungen/2026-09-review-aussen-nach-innen.md · bereich: review,datenlayer,rollen,kontext,gates · stand: 2026-09-08

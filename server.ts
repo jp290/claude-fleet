@@ -12949,6 +12949,112 @@ const programMainLive = (programId: string): boolean => {
 };
 let dispatchBusy = false;
 
+// ▸ A VARIANT GROUP HELD ONLY BY CAPACITY KEEPS THE NEXT FREEING LANE (2026-09-17).
+//
+// THE FAILURE THIS ENDS. Lanes free ONE at a time. A group of n ≥ 2 held purely on capacity was
+// therefore never able to assemble: the freed place went, within one tick, to the next single row
+// the wave order offered, and the group's rows went straight back to
+// `waiting: variant group needs 2 lanes — 3/3 busy`. Measured five times on the same group
+// (5e5588c5, variants 4cee1359/c929ba64, 2026-09-17 16:0x): each time a lane landed green and a
+// card-valid single row of ANOTHER program took it inside one tick. The stand-in was hand work
+// across program boundaries — both MAINs holding their unheld rows until the group ran — which
+// costs two MAIN contexts every time it is needed.
+//
+// WHAT RESERVES AND WHAT DOES NOT. Only the three CAPACITY holds of startVariantGroup park a claim
+// here: the repo lane cap, the per-program lane cap, and the free-slot count. They are the refusals
+// a landing lane repairs by itself. Every OTHER refusal of that function names a property of the
+// ROWS — not released, a harness no unattended path may drive, no bound MAIN to land a policy
+// start, the start plan's wave gate — and no number of landing lanes changes any of them, so
+// reserving against one would be a deadlock wearing a fairness property's clothes. Those holds
+// reserve nothing and the queue runs past the group exactly as it does today.
+//
+// TWO STARVATION BOLTS, and each is a check in `e2e/tasks.ts` §(v-res), not a promise:
+//   (a) UNREACHABLE NEVER RESERVES. A group whose n exceeds the very cap it is held by — repo cap,
+//       program cap, or the number of slots on the board — can never start however many lanes land.
+//       It parks nothing, and the single rows behind it keep starting.
+//   (b) THE CLAIM EXPIRES AND THEN THE GROUP WAITS ITS TURN. After FLEET_VARIANT_RESERVE_MS the
+//       place goes back to the queue, and the SAME group may not re-reserve for another such span
+//       (variantReserveYield). So a permanently blocked group takes at most half the freeing lanes
+//       and never brings the queue to a stop — the outcome this whole reservation exists to avoid,
+//       arrived at from the other side.
+// And one claim stands at a time, first-come: two groups reserving at once would hold two places
+// out of a fixed board for two arrivals that may never both come.
+//
+// PROCESS-LOCAL, like laneSpawn and for the same reason: it is a statement about this process's
+// next few ticks, not a fact about the fleet. A restart drops it and the next tick re-parks it.
+const VARIANT_RESERVE_MS = Math.max(0, Number(process.env.FLEET_VARIANT_RESERVE_MS ?? 45 * 60_000) | 0);
+// WHOSE freeing lane would end the hold — so a claim never holds a row it could not be waiting for.
+// A full program's claim must not stop a foreign row in the same repo; a full repo's must not stop
+// a row targeting another repo; only the free-slot count is genuinely fleet-wide, and that one is
+// the same gate the tick already treats as the machine's own.
+type VariantReserveScope =
+  | { kind: "repo"; repo: string }
+  | { kind: "program"; programId: string }
+  | { kind: "fleet" };
+type VariantReserveClaim = { n: number; scope: VariantReserveScope };
+type VariantReservation = { groupId: string; n: number; why: string; scope: VariantReserveScope; since: number };
+let variantReservation: VariantReservation | null = null;
+const variantReserveYield = new Map<string, number>();
+
+// the wait-note of a row the claim holds back. It quotes the group's OWN sentence verbatim and
+// names the group, because "a lane is reserved" alone reads like a bug: the owner has to see WHICH
+// group waits and on WHAT to decide between raising a cap and dropping the group.
+// The group's sentence is quoted minus the `waiting: ` both notes share — it already names the n
+// and the number that held, so nothing is restated here and nothing is paraphrased away.
+const variantReserveNote = (r: VariantReservation): string =>
+  `waiting: the next lane is reserved for variant group ${r.groupId} — ${r.why.replace(/^waiting: /, "")}`;
+const variantReserveRelease = (groupId: string): void => {
+  if (variantReservation?.groupId === groupId) variantReservation = null;
+  variantReserveYield.delete(groupId);
+};
+// the tick's single writer: one call per evaluated variant row, carrying that evaluation's verdict.
+// A start or a NON-capacity hold clears whatever this group held — the claim never outlives the
+// reason it was parked for.
+function variantReserveSet(groupId: string, g: VariantGroupStart): void {
+  if (g.started) { variantReserveRelease(groupId); return; }
+  const claim = g.claim;
+  if (!claim || VARIANT_RESERVE_MS <= 0) {
+    if (variantReservation?.groupId === groupId) variantReservation = null;
+    return;
+  }
+  const now = Date.now();
+  const held = variantReservation?.groupId === groupId ? variantReservation : null;
+  if (held) {
+    if (now - held.since < VARIANT_RESERVE_MS) {
+      held.why = g.why; held.n = claim.n; held.scope = claim.scope;
+      return;
+    }
+    // bolt (b): the span ran out with the group still short of its n — the place goes back
+    variantReservation = null;
+    variantReserveYield.set(groupId, now + VARIANT_RESERVE_MS);
+    audit("variant_reserve", undefined, `${groupId} yield after=${VARIANT_RESERVE_MS}ms n=${claim.n} — lane returned to the queue`);
+    return;
+  }
+  const until = variantReserveYield.get(groupId);
+  if (until !== undefined && now < until) return;
+  variantReserveYield.delete(groupId);
+  if (variantReservation && now - variantReservation.since < VARIANT_RESERVE_MS) return;
+  variantReservation = { groupId, n: claim.n, why: g.why, scope: claim.scope, since: now };
+  audit("variant_reserve", undefined, `${groupId} hold n=${claim.n} scope=${claim.scope.kind} for=${VARIANT_RESERVE_MS}ms`);
+}
+// …and the tick's single reader: does the standing claim hold THIS single row back? Three ways it
+// does not, checked here rather than trusted: the span ran out, the group moved (it started through
+// any door, was decided, deleted or held — whoever moved it, the claim dies with it), or the row
+// is outside the claim's scope.
+function variantReserveHolds(row: Task, repo: string): VariantReservation | null {
+  const r = variantReservation;
+  if (!r) return null;
+  if (Date.now() - r.since >= VARIANT_RESERVE_MS) return null;
+  const group = tasks.find((t) => t.id === r.groupId);
+  if (!group || variantsOfGroup(group).some((v) => v.status !== "pending" && v.status !== "queued")) {
+    variantReserveRelease(r.groupId);
+    return null;
+  }
+  if (r.scope.kind === "repo" && repoCanon(repo) !== r.scope.repo) return null;
+  if (r.scope.kind === "program" && row.programId !== r.scope.programId) return null;
+  return r;
+}
+
 // ▸ THE VARIANT GROUP START (E4, T2): all n variants of one group in ONE act, or none of them.
 //
 // WHOLE OR NOTHING, because a comparison needs every arm: a group whose second variant waits behind
@@ -12966,19 +13072,23 @@ let dispatchBusy = false;
 // no release, plan, cap or quiet-hours question is asked; the slots and the one base still are.
 // Cut out of tickDispatch rather than inlined for the reason its body pins state (e2e/pins.ts): one
 // dispatch call, one bounded body. The spawn is still each row's own persisted choice (taskSpawnOf).
+// `claim` rides on the REFUSAL and says the one thing the caller cannot re-derive: this hold is a
+// CAPACITY hold, and a landing lane of the named scope would end it (variantReserveSet). It is
+// carried rather than recomputed because only this function knows WHICH of its gates declined —
+// from the outside, "needs 2 lanes" and "not released" are both just a sentence.
 type VariantGroupStart =
   | { started: true; slots: number[]; tails: Promise<void>[]; partial: string | null }
-  | { started: false; why: string; stop?: true };
+  | { started: false; why: string; stop?: true; claim?: VariantReserveClaim };
 async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantGroupStart> {
   const group = row.variants ? row : variantGroupOf(row);
   const rows = group ? variantsOfGroup(group) : [row];
-  const hold = (why: string, stop?: true): VariantGroupStart => {
+  const hold = (why: string, claim?: VariantReserveClaim | null): VariantGroupStart => {
     if (!ownerAct) {
       let changed = 0;
       for (const r of rows) if (tickOwnsRow(r) && r.note !== why) { r.note = why.slice(0, 300); changed++; }
       if (changed) saveState();
     }
-    return { started: false, why, ...(stop ? { stop } : {}) };
+    return { started: false, why, ...(claim ? { claim } : {}) };
   };
   if (!group) return hold(`waiting: variant ${row.id} lost its group ${row.variantOf} — a variant never starts alone`);
   const n = group.variants?.length ?? 0;
@@ -13006,21 +13116,32 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
     }
     const lanes = slots.filter((s) => inRepo(s, repo)).length;
     const repoCap = repoLaneCap(repo);
+    // …and this is a CAPACITY hold: a lane landing in this repo would move it. Unless n itself
+    // exceeds the cap — bolt (a): no landing lane ever makes room for a group the cap cannot hold,
+    // so such a group reserves nothing and the rows behind it keep starting.
     if (lanes + n > repoCap.max)
-      return hold(`waiting: variant group needs ${n} lanes — ${lanes}/${repoCap.max} busy in ${basename(repo)} (${repoCap.source === "repo" ? "repo cap" : "machine default"})`);
+      return hold(`waiting: variant group needs ${n} lanes — ${lanes}/${repoCap.max} busy in ${basename(repo)} (${repoCap.source === "repo" ? "repo cap" : "machine default"})`,
+        n <= repoCap.max ? { n, scope: { kind: "repo", repo: repoCanon(repo) } } : null);
     if (group.programId) {
       const programCap = programDispatchCap(programDispatchOn(rows[0]), repoCap.max);
       const programLanes = slots.filter((s) => s.cwd && s.programId === group.programId).length;
       const title = programs.find((p) => p.id === group.programId)?.title ?? group.programId;
+      // the claim's scope is the PROGRAM, not the repo: a lane landing in a foreign program frees
+      // nothing this group is waiting for, so a foreign row must not be held behind it.
       if (programLanes + n > programCap)
-        return hold(`waiting: variant group needs ${n} lanes — ${programLanes}/${programCap} busy in program "${title}"`);
+        return hold(`waiting: variant group needs ${n} lanes — ${programLanes}/${programCap} busy in program "${title}"`,
+          n <= programCap ? { n, scope: { kind: "program", programId: group.programId } } : null);
       // a policy never starts n lanes nobody could land (tickDispatch's one-lane rule, which n ≥ 2 always exceeds)
       if (rows.some((r) => { const v = releaseVerdictNow(r); return v.released && v.by === "policy"; }) && !programMainLive(group.programId))
         return hold("waiting: no bound MAIN to land — a policy never starts a variant group without one");
     }
   }
   const free = slots.filter((s) => !s.cwd && !laneSpawn.has(s.id)).slice(0, n);
-  if (free.length < n) return hold(`waiting: variant group needs ${n} free slots — ${free.length} free`);
+  // the third capacity hold, and the only FLEET-wide one — free slots are the one resource no
+  // repo or program boundary partitions. Bolt (a) reads the board itself here: a group needing
+  // more slots than the machine has could never start.
+  if (free.length < n) return hold(`waiting: variant group needs ${n} free slots — ${free.length} free`,
+    n <= slots.length ? { n, scope: { kind: "fleet" } } : null);
   if (!ownerAct) {
     const quietWaived = !!programDispatchOn(rows[0]) && rows.every((r) => r.releasedBy === "machine");
     const pre = await canDeliver(free[0], { now: Date.now(), alive: false, ...(quietWaived ? { quietHours: false } : {}) });
@@ -13120,6 +13241,8 @@ async function tickDispatch(): Promise<void> {
       // E4: a variant starts only with its whole group — startVariantGroup asks every gate below of all n
       if (next.variantOf) {
         const g = await startVariantGroup(next, false);
+        variantReserveSet(next.variantOf, g); // a CAPACITY hold parks the next lane, nothing else does
+
         if (g.started) await Promise.all(g.tails);
         if (g.started || g.stop) return;
         continue;
@@ -13240,6 +13363,12 @@ async function tickDispatch(): Promise<void> {
           continue;
         }
       }
+      // A capacity-held variant group has the next lane of its scope (variantReserveHolds, where
+      // the rule and its two starvation bolts are written out). BELOW both caps — a row a cap
+      // already stopped reports the cap — and above the slot grab, which is what it withholds. It
+      // SKIPS like every per-row hold above, so each held row carries the reason on itself.
+      const reserved = variantReserveHolds(next, repo);
+      if (reserved) { waiting(variantReserveNote(reserved)); continue; }
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) { waiting("waiting: no free slot"); return; }
       // THE UNATTENDED INVARIANT STOOD HERE, and it is gone with the reader that satisfied it.

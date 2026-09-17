@@ -42,6 +42,12 @@ type AuditEvent =
   // E4 · the variant group's three acts (server.ts): a group filed with its n variant rows, all n
   // started together from one base, and the one decision which variant lands (who, winner, shelved)
   | "variant_group" | "variant_group_start" | "variant_decide"
+  // …and the fourth act nobody watching a group can otherwise see: the tick parked the next freeing
+  // lane of a scope for a group held ONLY by capacity (`hold`), or gave that place back to the
+  // queue after FLEET_VARIANT_RESERVE_MS without the group assembling (`yield`). Without the pair
+  // in the ledger, a queue that paused for one tick and a group that starved for an hour read the
+  // same from outside (server.ts#variantReserveSet)
+  | "variant_reserve"
   // the owner released a task the queue analyst had flagged. Recorded because the analyst is
   // advisory: without a trace, an override is indistinguishable from an ordinary promote, and
   // nothing could ever be calibrated against how often its objections were right

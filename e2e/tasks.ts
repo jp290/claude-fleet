@@ -2475,6 +2475,148 @@ export async function run(ctx: Ctx): Promise<void> {
     await restartSrv();
   }
 
+  // --- (v-res) E4 · A VARIANT GROUP HELD ONLY BY CAPACITY KEEPS THE NEXT FREEING LANE
+  // (server.ts#variantReserveHolds). Lanes free ONE at a time, so before 2026-09-17 a group of
+  // n ≥ 2 held on a lane cap could never assemble: the freed place went, inside one tick, to the
+  // next single row the wave order offered, and the group's rows went straight back to
+  // `waiting: variant group needs 2 lanes`. Measured five times on one live group (5e5588c5); the
+  // stand-in was two MAINs hand-holding their own unheld rows across program boundaries.
+  // Three facts, none of them visible to tsc, and the second and third are the STARVATION bolts —
+  // without them this fix trades one stall for a worse one:
+  //   (1) a group waiting on the repo cap gets the next freeing lane, and the single row that would
+  //       have taken it stays queued carrying the group's own sentence, quoted, with the group's id;
+  //   (2) a group held for a NON-capacity reason (here: one variant not released) reserves NOTHING —
+  //       no landing lane repairs that hold, so the queue must keep running past it;
+  //   (3) the claim EXPIRES after FLEET_VARIANT_RESERVE_MS and the single row gets the lane after
+  //       all — a permanently blocked group never brings the queue to a stop.
+  // The field is REPO2: a scratch repo with no lane of its own, so every lane counted here is one
+  // this block opened. The persistence lane lives in a third repo and is never touched. ---
+  {
+    type RRow = { id: string; status: string; note?: string | null; slot?: number | null; variantOf?: string };
+    type RSlot = { id: number; cwd: string | null; worktree: { repo: string } | null };
+    const rSess = async (): Promise<{ slots: RSlot[]; tasks: RRow[]; dispatch: { maxLanes: number } }> =>
+      (await (await get("/api/sessions")).json()) as { slots: RSlot[]; tasks: RRow[]; dispatch: { maxLanes: number } };
+    const rRow = async (id: string): Promise<RRow | undefined> => (await rSess()).tasks.find((t) => t.id === id);
+    const rVars = async (groupId: string): Promise<RRow[]> => (await rSess()).tasks.filter((t) => t.variantOf === groupId);
+    // realpath on both sides for the reason (e3) gives: TMPDIR is under a symlinked /var and the
+    // server stores the resolved toplevel, so a string compare counts zero lanes in a repo with one.
+    const rLanes = async (): Promise<number> => {
+      const want = realpathSync(REPO2);
+      return (await rSess()).slots.filter((x) => !!x.worktree && realpathSync(x.worktree.repo) === want).length;
+    };
+    const rTill = async <T>(read: () => Promise<T>, ok: (v: T) => boolean, tries = 80): Promise<T> => {
+      let last = await read();
+      for (let i = 0; i < tries && !ok(last); i++) { await Bun.sleep(250); last = await read(); }
+      return last;
+    };
+    const rVariantChoices = [{ model: "claude-opus-5[1m]", effort: "high" }, { model: "claude-sonnet-5", effort: "medium" }];
+    const rFileGroup = async (text: string): Promise<string> => {
+      const j = (await (await post("/api/tasks", { text, repo: REPO2, variants: rVariantChoices })).json()) as { task?: { id: string } };
+      return j.task?.id ?? "";
+    };
+    const rFileRow = async (text: string): Promise<string> => {
+      const j = (await (await post("/api/tasks", { text, repo: REPO2, queue: true })).json()) as { task?: { id: string } };
+      return j.task?.id ?? "";
+    };
+    const rDrop = async (id: string): Promise<void> => {
+      for (const v of await rVars(id)) await post(`/api/tasks/${v.id}/delete`, {});
+      await post(`/api/tasks/${id}/delete`, {});
+    };
+    // a clean field: dispatcher off, no lane anywhere but the restart section's own, no foreign
+    // released row that could win a tick ahead of the probes
+    const rClean = async (): Promise<void> => {
+      await post("/api/dispatch", { on: false });
+      for (const x of (await rSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+      await Bun.sleep(600);
+      for (const t of (await rSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+    };
+
+    // (1) · THE RESERVATION. Cap 2 in REPO2, one hand-opened lane eating one of the two: the group
+    // of two is one lane short (capacity hold, n <= cap, so it may reserve) while the single row
+    // behind it is NOT — 1/2 lanes busy, it would start on the next tick, and used to.
+    await rClean();
+    await restartSrv({ FLEET_DISPATCH_MAX_LANES: "2" });
+    const rCfg = await rSess();
+    check("(v-res) fixture: the cap restart took effect, REPO2 carries no lane, and three slots are free",
+      rCfg.dispatch.maxLanes === 2 && (await rLanes()) === 0 && rCfg.slots.filter((x) => !x.cwd).length >= 3,
+      JSON.stringify({ maxLanes: rCfg.dispatch.maxLanes, inRepo2: await rLanes(), free: rCfg.slots.filter((x) => !x.cwd).length }));
+    const rFill = (await (await post("/api/lanes", { repo: REPO2 })).json()) as { slot?: number };
+    const rGroup1 = await rFileGroup("(v-res) group of two — it must get the next freeing lane");
+    await post(`/api/tasks/${rGroup1}/queue`, {});
+    // filed AFTER the group on purpose: `tasks` keeps insertion order, so the tick reaches the group
+    // first and its hold is the one that has to park the claim. A fixture that filed this row first
+    // could not tell the fix from the bug — the single row would start before the group was asked.
+    const rSingle1 = await rFileRow("(v-res) single row behind the group — it must not take the reserved lane");
+    const rGroupSentence = `variant group needs 2 lanes — 1/2 busy in ${basename(REPO2)} (machine default)`;
+    const rNote = `waiting: the next lane is reserved for variant group ${rGroup1} — ${rGroupSentence}`;
+    await post("/api/dispatch", { on: true });
+    const rHeld = await rTill(() => rRow(rSingle1), (t) => (t?.note ?? "").startsWith("waiting: the next lane is reserved"));
+    check("(v-res)(1a) one lane free and a group of two on the cap: the single row does NOT start — its note names the group and quotes the group's own sentence verbatim",
+      rHeld?.status === "queued" && rHeld?.slot == null && rHeld?.note === rNote && (await rLanes()) === 1,
+      JSON.stringify({ status: rHeld?.status, slot: rHeld?.slot, note: rHeld?.note, want: rNote, inRepo2: await rLanes() }));
+    // …and now the lane frees. THE decisive half: the place goes to the group, not to the row that
+    // was one tick away from it — hand-opened, so no requeue of its own can compete for the slot.
+    if (typeof rFill.slot === "number") await post(`/api/slots/${rFill.slot}/kill`, {});
+    const rStarted = await rTill(() => rVars(rGroup1), (rows) => rows.length === 2 && rows.every((t) => t.status === "sent"));
+    check("(v-res)(1b) the freeing lane goes to the GROUP: both variants start on two slots, and the single row is still queued",
+      rStarted.length === 2 && rStarted.every((t) => t.status === "sent" && typeof t.slot === "number")
+      && new Set(rStarted.map((t) => t.slot)).size === 2 && (await rRow(rSingle1))?.status === "queued",
+      JSON.stringify({ variants: rStarted, single: await rRow(rSingle1) }));
+
+    // (2) · A NON-CAPACITY HOLD RESERVES NOTHING. Same field, same shape, one difference: the group
+    // waits because one of its two variants is not released — a hold no landing lane repairs. The
+    // queue must run past it, or every such group would stall the fleet until the claim timed out.
+    await rClean();
+    await rDrop(rGroup1);
+    await post(`/api/tasks/${rSingle1}/delete`, {});
+    const rGroup2 = await rFileGroup("(v-res) group held for a NON-capacity reason — it must reserve nothing");
+    await post(`/api/tasks/${rGroup2}/queue`, {});
+    const rV2 = (await rVars(rGroup2)).sort((a, b) => a.id.localeCompare(b.id));
+    await post(`/api/tasks/${rV2[1]?.id}/unqueue`, {});
+    const rSingle2 = await rFileRow("(v-res) single row behind a non-capacity hold — it must start");
+    check("(v-res)(2) fixture: the group is queued with exactly one of its two variants released, and REPO2 has no lane",
+      (await rVars(rGroup2)).filter((t) => t.status === "queued").length === 1 && (await rLanes()) === 0,
+      JSON.stringify(await rVars(rGroup2)));
+    await post("/api/dispatch", { on: true });
+    const rRan = await rTill(() => rRow(rSingle2), (t) => t?.status === "sent");
+    const rV2Held = (await rVars(rGroup2)).find((t) => t.status === "queued");
+    check("(v-res)(2) a group held for a NON-capacity reason reserves nothing — the single row behind it starts, while the group still says why it waits",
+      rRan?.status === "sent" && typeof rRan?.slot === "number"
+      && (rV2Held?.note ?? "").includes("starts only with all 2 variants released"),
+      JSON.stringify({ single: rRan, groupRow: rV2Held }));
+
+    // (3) · THE CLAIM EXPIRES. Same field as (1) — one lane free, a group of two on the cap — but
+    // the lane never frees. After FLEET_VARIANT_RESERVE_MS the place goes back to the queue and the
+    // single row starts: a group that cannot assemble holds at most one window, never the fleet.
+    await rClean();
+    await rDrop(rGroup2);
+    await post(`/api/tasks/${rSingle2}/delete`, {});
+    await restartSrv({ FLEET_DISPATCH_MAX_LANES: "2", FLEET_VARIANT_RESERVE_MS: "4000" });
+    const rFill3 = (await (await post("/api/lanes", { repo: REPO2 })).json()) as { slot?: number };
+    const rGroup3 = await rFileGroup("(v-res) group that never assembles — its claim must time out");
+    await post(`/api/tasks/${rGroup3}/queue`, {});
+    const rSingle3 = await rFileRow("(v-res) single row behind an expiring claim — it must get the lane in the end");
+    await post("/api/dispatch", { on: true });
+    const rHeld3 = await rTill(() => rRow(rSingle3), (t) => (t?.note ?? "").startsWith("waiting: the next lane is reserved"));
+    check("(v-res)(3) fixture: the claim really stood first — without this the row starting below would prove nothing",
+      rHeld3?.status === "queued" && (rHeld3?.note ?? "").includes(rGroup3),
+      JSON.stringify({ status: rHeld3?.status, note: rHeld3?.note }));
+    const rFreed = await rTill(() => rRow(rSingle3), (t) => t?.status === "sent", 160);
+    check("(v-res)(3) the claim expires after FLEET_VARIANT_RESERVE_MS and the single row gets the lane — a group that never assembles never stops the queue",
+      rFreed?.status === "sent" && typeof rFreed?.slot === "number"
+      && (await rVars(rGroup3)).every((t) => t.status === "queued"),
+      JSON.stringify({ single: rFreed, variants: await rVars(rGroup3) }));
+
+    // cleanup — dispatcher off first, then the lanes and the rows this block minted
+    await post("/api/dispatch", { on: false });
+    for (const x of (await rSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+    if (typeof rFill3.slot === "number") await post(`/api/slots/${rFill3.slot}/kill`, {});
+    await Bun.sleep(600);
+    await rDrop(rGroup3);
+    await post(`/api/tasks/${rSingle3}/delete`, {});
+    await restartSrv();
+  }
+
   // --- (e3) THE REPO CAP HOLDS ITS OWN ROW, NOT THE SWEEP (server.ts tickDispatch, the
   // DISPATCH_MAX_LANES branch). Until 2026-08-24 that branch `return`ed, on the reading that a full
   // repo is a condition of the machine. It is not: the cap counts lanes in the ROW'S TARGET repo,

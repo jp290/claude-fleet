@@ -118,6 +118,41 @@ producer of the bytes a lane is founded on — pinned in `e2e/pins.ts`.
      Env-Änderung, die nichts ändert. Übrig bleibt für eine solche Zeile genau ein Weg, und die
      Notiz sagt ihn: *hand dispatch only* (`POST /api/tasks/:id/dispatch`).
 
+7. **Eine Variantengruppe, die NUR an Kapazität hängt, bekommt das nächste frei werdende Lane —
+   und nur dann.** Lanes werden EINZELN frei. Eine Gruppe mit n ≥ 2, die an einem Lane-Deckel hing,
+   konnte sich deshalb strukturell nie zusammensetzen: der frei gewordene Platz ging binnen eines
+   Ticks an die nächste Einzelzeile der Wellenordnung, und die Gruppe stand wieder auf
+   `waiting: variant group needs 2 lanes`. Fünfmal an derselben Gruppe gemessen (`5e5588c5`,
+   2026-09-17 16:0x); der Ersatz war Handarbeit über Programmgrenzen — beide MAINs hielten ihre
+   ungehaltenen card-valid Zeilen, bis die Gruppe lief, was zwei MAIN-Kontexte kostet.
+   Seit 2026-09-17 parkt **genau eine** Sorte Ablehnung von `server.ts#startVariantGroup` einen
+   Anspruch: die drei KAPAZITÄTS-Halte (Repo-Deckel, Programm-Deckel, freie Slots). Das sind die
+   Ablehnungen, die ein landendes Lane von selbst repariert. Jede ANDERE — nicht freigegeben, ein
+   Harness, den kein unbeaufsichtigter Pfad fahren darf, keine gebundene MAIN für einen
+   Policy-Start, das Wellen-Gate des Startplans — nennt eine Eigenschaft der ZEILEN, die kein
+   landendes Lane ändert; sie reserviert nichts, und die Queue läuft an der Gruppe vorbei wie zuvor.
+   Der Anspruch hat einen SCOPE (`server.ts#VariantReserveScope`), damit er nie eine Zeile hält, auf
+   die er gar nicht wartet: Repo-Deckel → Zeilen desselben Repos, Programm-Deckel → Zeilen desselben
+   Programs, freie Slots → die ganze Fleet. Die Wartenotiz der zurückgehaltenen Zeile nennt die
+   Gruppe und zitiert deren eigenen Satz wörtlich (`server.ts#variantReserveNote`) — „ein Lane ist
+   reserviert" allein liest sich wie ein Bug, der Owner muss sehen, WELCHE Gruppe worauf wartet, um
+   zwischen Deckel-Erhöhen und Gruppe-Fallenlassen zu entscheiden.
+   Zwei VERHUNGERUNGS-Riegel gehören dazu, und beide sind Checks (`e2e/tasks.ts` §(v-res)), keine
+   Zusagen — ohne sie tauscht der Fix einen Stau gegen einen schlimmeren:
+   - **Unerreichbar reserviert nie.** Übersteigt `n` den Deckel, an dem die Gruppe hängt (Repo,
+     Programm, oder die Zahl der Slots auf dem Brett), kann kein landendes Lane je Platz schaffen —
+     die Gruppe parkt nichts, und die Zeilen hinter ihr starten weiter.
+   - **Der Anspruch VERFÄLLT, und danach wartet die Gruppe ihrerseits.** Nach
+     `FLEET_VARIANT_RESERVE_MS` geht der Platz an die Queue zurück, und dieselbe Gruppe darf für
+     eine weitere solche Spanne nicht neu reservieren (`variantReserveYield`). Eine dauerhaft
+     blockierte Gruppe nimmt damit höchstens die Hälfte der frei werdenden Lanes und hält die Queue
+     nie an. Ein Anspruch steht zur Zeit, first-come: zwei Gruppen gleichzeitig hielten zwei Plätze
+     eines festen Bretts für zwei Ankünfte frei, die beide nie kommen müssen.
+   Der Anspruch ist PROZESS-LOKAL wie `laneSpawn` — eine Aussage über die nächsten Ticks dieses
+   Prozesses, keine Fleet-Tatsache. Ein Neustart wirft ihn weg, der nächste Tick parkt ihn erneut.
+   Beide Akte stehen im Ledger (`variant_reserve`, `hold`/`yield`): ohne sie liest sich eine Queue,
+   die einen Tick pausierte, von außen wie eine, die eine Stunde verhungerte.
+
 An invariant that RETIRED with the analyst, named so nobody looks for it: *"nothing starts
 unattended against a tree it was not read on."* There is no reading, so there is no staleness, and a
 guard nobody can clear is a deadlock wearing a safety property's clothes — which is why that guard
@@ -129,6 +164,7 @@ was already written as `if (ANALYSIS_ON) { … }` and had been inert for a month
 |---|---|---|
 | `FLEET_BRIEF_MS` | 0 | the brief compiler's tick; **0 = compiler off**, the default and the live deployment |
 | `FLEET_ENHANCE_CMD` | — | subprocess stand-in for harnesses |
+| `FLEET_VARIANT_RESERVE_MS` | 2 700 000 (45 min) | wie lange eine nur kapazitäts-gehaltene Variantengruppe das nächste frei werdende Lane ihres Scopes behält (Invariante 7) — und, nach Ablauf, wie lange dieselbe Gruppe nicht neu reservieren darf. `0` schaltet die Reservierung ganz ab: die Queue verhält sich dann wie vor 2026-09-17, Gruppen inklusive Verhungern |
 
 Batch cap 6, max 3 attempts, backoff `60s × 2^attempts`, 3 compiles at a time. A harness without a
 stand-in **must** leave `FLEET_BRIEF_MS` at 0 or the suite spawns a real agent — the same rule

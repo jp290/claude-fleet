@@ -2741,16 +2741,20 @@ Die Regel steht in `CLAUDE.md` §Deploy; hier der Befund im Original:
   nachvollzogen). Die
   Slot-Objekte des Owner-Polls haben elf Schlüssel (`agent ctx cwd git id label lastOutput mergePending
   model share worktree`); `awaiting` ist keiner davon — es lebt auf `laneSignalView` (`server.ts#laneSignalView`),
-  also der STEWARD-Sicht. `undefined === "owner"` ist immer falsch, der Check kann nie grün werden, und
+  also der STEWARD-Sicht. **Die Schlüssel-Aufzählung ist der Stand vom 2026-08-09 und nur als solcher
+  zu lesen** — der Poll trägt heute mehr (u. a. `repo openedAt agent ctx`), und seit dem 2026-09-17
+  auch `stalled`/`stalledSince`, die bis dahin ebenfalls nur auf der Steward-Sicht lagen
+  (Träger-Entscheid und Form: `docs/self-api.md` §stalled). `awaiting` ist davon UNBERÜHRT und bleibt
+  steward-only; die Regel dieses Abschnitts gilt unverändert. `undefined === "owner"` ist immer falsch, der Check kann nie grün werden, und
   **`tsc` sieht es nie**, weil beide Male ein `as`-Cast auf dem `fetch`-Helfer das Feld behauptet hat.
   Beide Male war das Produkt in Ordnung und die Fixture schrieb die Flagge korrekt nach `fleet.json`.
   Die Regel, verallgemeinert und weit über `awaiting` hinaus: **ein Cast auf eine Netz-Antwort ist eine
   BEHAUPTUNG über eine fremde Fläche, kein Typ** — er macht den Feldzugriff übersetzbar und die Antwort
   für immer `undefined`. Wo eine Sonde ein Feld braucht, das der Poll nicht führt, ist die Quelle die
   Zustandsdatei, die der Server geladen hat (Muster: `8e2b3e5`), und die Voraussetzung bekommt einen
-  EIGENEN `check()`. **Noch nicht gepinnt** — der Pin, der die Klasse schließt, gehört nach dem nächsten
-  Land in `e2e/pins.ts` (Fläche: kein e2e-Cast auf `/api/sessions` darf ein Feld nennen, das die
-  Payload nicht emittiert).
+  EIGENEN `check()`. **Inzwischen gepinnt** (nachgeprüft 2026-09-17): `e2e/pins.ts` leitet die erlaubten Namen aus
+  dem Zeilen-Literal des Polls ab und prüft jeden e2e-Cast dagegen — Regel *„no e2e cast over the
+  `/api/sessions` poll names a field the payload cannot emit"*.
 
 ## 13. Ein grünes Audit kann bedeuten, dass nichts gemessen wurde (aus `CLAUDE.md` umgezogen 2026-08-18)
 

@@ -323,6 +323,12 @@ export async function run(ctx: Ctx): Promise<void> {
         { headers: { authorization: `Bearer ${svTok}` } })).json()) as { slots: SvSlot[] }).slots;
     const svSlot = async (slot: number): Promise<SvSlot | undefined> =>
       (await svAll()).find((x) => x.id === slot);
+    // …and the OWNER poll, the route this fact was lifted onto on 2026-09-17. Both keys are OPTIONAL
+    // on purpose: they are omitted when there is nothing to say (server.ts#stalledFacts and the row
+    // literal), so `undefined` here is the served answer "not known to be stalled", not a gap.
+    type PollSlot = { id: number; stalled?: boolean; stalledSince?: number };
+    const pollSlot = async (slot: number): Promise<PollSlot | undefined> =>
+      ((await (await get("/api/sessions")).json()) as { slots: PollSlot[] }).slots.find((x) => x.id === slot);
 
     // (a) the subject: a lane that never commits anything and simply goes quiet
     const sl = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
@@ -394,6 +400,18 @@ export async function run(ctx: Ctx): Promise<void> {
     check("stalled-since is served next to it as a past timestamp, not a boolean's shadow",
       typeof slView?.stalledSince === "number" && (slView.stalledSince as number) <= Date.now(),
       JSON.stringify(slView?.stalledSince));
+    // THE CARRIER (2026-09-17). A fact whose only stated purpose is being SEEN had exactly one
+    // route, and that route needs FLEET_STEWARD_TOKEN, which a pane gets only while it is labelled
+    // `⚙ steward` — there was none, so nobody could look. It now also rides the owner poll, which
+    // every MAIN and the board already read. Read here, immediately after the steward view above and
+    // on a pane that is not moving: ONE derivation (server.ts#stalledFacts) served on two routes
+    // must never be able to answer differently about the same lane in the same state.
+    const pollStalled = await pollSlot(sl.slot);
+    check("the stalled lane is visible as `stalled` on the OWNER poll, not only on the steward route",
+      pollStalled?.stalled === true, JSON.stringify(pollStalled));
+    check("the owner poll carries the timestamp tier beside it, as a past timestamp",
+      typeof pollStalled?.stalledSince === "number" && (pollStalled.stalledSince as number) <= Date.now(),
+      JSON.stringify(pollStalled));
     // the two exclusions, read at the same instant as the positive case above
     const ssView = await svSlot(ss.slot);
     const plainView = freeStalled ? await svSlot(freeStalled.id) : undefined;
@@ -401,6 +419,15 @@ export async function run(ctx: Ctx): Promise<void> {
       ssView?.stalled === false && ssView?.stalledSince === null
       && plainView?.stalled === false && plainView?.stalledSince === null,
       JSON.stringify({ steward: ssView, plain: plainView }));
+    // the same two exclusions on the poll, where "false" is spelled as ABSENCE — the data-saver rule
+    // `harness`/`effort` follow. Both rows must still BE in the payload: a missing key is the answer,
+    // a missing row would mean this check measured nothing.
+    const pollSteward = await pollSlot(ss.slot);
+    const pollPlain = freeStalled ? await pollSlot(freeStalled.id) : undefined;
+    check("the owner poll claims stalled about neither ⚙ steward nor a non-lane slot — the key is absent, which reads as false",
+      !!pollSteward && pollSteward.stalled === undefined && pollSteward.stalledSince === undefined
+      && !!pollPlain && pollPlain.stalled === undefined && pollPlain.stalledSince === undefined,
+      JSON.stringify({ steward: pollSteward, plain: pollPlain }));
 
     // (d) THE FACT IS LEVEL-TRIGGERED, NOT LATCHED: the moment the lane has something to show, it is
     // done-looking's business again and this fact must go quiet by itself. A `stalled` that stuck
@@ -415,6 +442,13 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     check("stalled clears itself once the lane has committed something (level-triggered, never latched)",
       after?.stalled === false && after?.stalledSince === null, JSON.stringify(after));
+    // the SECOND half of the carrier proof, and the one that keeps the first from being a payload
+    // that simply always says `stalled`: the same lane one commit later violates the `git.ahead===0`
+    // clause, and the poll must drop BOTH keys for it while the row itself stays.
+    const pollAfter = await pollSlot(sl.slot);
+    check("a lane that violates a stalled clause (ahead>0) carries neither key on the owner poll",
+      !!pollAfter && pollAfter.stalled === undefined && pollAfter.stalledSince === undefined,
+      JSON.stringify(pollAfter));
 
     await post(`/api/slots/${sl.slot}/kill`, {});
     await post(`/api/slots/${ss.slot}/kill`, {});

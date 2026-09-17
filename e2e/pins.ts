@@ -4234,6 +4234,43 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
 }
 
 {
+  // ONE DERIVATION FOR `stalled`, NOW THAT IT HAS TWO READERS. Until 2026-09-17 the fact had exactly
+  // one carrier — the steward view — and reaching that route needs FLEET_STEWARD_TOKEN, which
+  // ensureSlot hands only to a pane labelled `⚙ steward`. There was none, so a fact whose whole
+  // stated purpose is being seen sat on the one route nobody read. It now also rides the owner poll,
+  // and the danger a second reader brings is the one this repo has paid for elsewhere: a second COPY
+  // of the predicate, and two surfaces that can disagree about one lane. tsc cannot see that — two
+  // independent `laneStalled(sig, STALLED_IDLE_MS)` calls type-check perfectly — so the rule is held
+  // here, on the SOURCE: the imported predicates are called from exactly one function in the server
+  // universe, and both views reach them through it.
+  const RULE_STALLED = "`stalled` has ONE derivation in the server universe and both views read it through stalledFacts";
+  const factsBody = serverU.span("function stalledFacts(", "\n}\n");
+  const body = factsBody?.text ?? "";
+  const calls = (serverU.text.match(/laneStalled(?:Since)?\(/g) ?? []).length;
+  const inBody = (body.match(/laneStalled(?:Since)?\(/g) ?? []).length;
+  pin(`${RULE_STALLED} — the predicates are called nowhere else`,
+    body !== "" && calls === 2 && inBody === 2,
+    body === "" ? "stalledFacts was not found in the server universe"
+      : `${calls} call site(s) in the universe, ${inBody} of them inside stalledFacts`);
+  const stewardBody = serverU.span("function stewardSlotsView(now: number) {", "\n}\n")?.text ?? "";
+  // the poll's slot row, derived the same way the cast pin above derives it
+  const pollRow = /slots: slots\.map\(\(s\) => \{[\s\S]*?\n(\s*)\}\),/.exec(serverU.module("server.ts"))?.[0] ?? "";
+  pin(`${RULE_STALLED} — the steward view and the /api/sessions row both SPREAD it; neither restates the lanes-only guard`,
+    stewardBody !== "" && pollRow !== ""
+      && stewardBody.includes("...stalledFacts(s, sig, now),")
+      && !stewardBody.includes("STALLED_IDLE_MS")
+      && pollRow.includes("stalledFacts(s, laneSignalView(s, pollNow), pollNow)")
+      && !pollRow.includes("STALLED_IDLE_MS")
+      // omitted when there is nothing to say — the data-saver rule `harness`/`effort` follow, and
+      // honest because laneStalled collapses every unknown to false (absent === false === "not known
+      // to be stalled"). An unconditional pair costs ~590 B of the ~1 300 B this payload has spare.
+      && pollRow.includes("st.stalled ? { stalled: true } : {}")
+      && pollRow.includes("st.stalledSince !== null ? { stalledSince: st.stalledSince } : {}"),
+    stewardBody === "" ? "stewardSlotsView was not found" : pollRow === "" ? "the poll's slot row literal was not found"
+      : `steward=${stewardBody.includes("...stalledFacts(")} poll=${pollRow.includes("stalledFacts(")}`);
+}
+
+{
   // 5c. NO docs/ PATH CITED FROM LIVE CODE IS DEAD — the third success measure of the
   // Generalsanierung, held as a class instead of counted by hand.
   //

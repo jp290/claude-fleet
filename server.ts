@@ -29832,6 +29832,39 @@ function readCodexContext(file: string, size: number): ContextRead | null {
   return null;
 }
 
+// --- `stalled`: ONE derivation, because it now has TWO readers ---------------------------------
+// The fleet's word for "this lane stopped working" (lane-signals.ts, STALLED_RULES). NOTHING acts
+// on it: no tick reads it, there is no auto-kill and no nudge — it exists so a stopped lane can be
+// SEEN, and counted, at all. That sentence is exactly why it moved here. Until 2026-09-17 the only
+// carrier was the steward view, and reaching that route needs FLEET_STEWARD_TOKEN, which ensureSlot
+// bakes into a pane ONLY when its label is `⚙ steward`. Counted that day on the live state file:
+// 0 of 11 active slots wore the label, while 3 lanes and 5 MAIN/orchestrator sessions polled
+// /api/sessions. A fact whose whole purpose is being seen sat on the one route nobody read — a
+// REACHABILITY defect, not an open question about what to do with it. Cost on record: lane
+// c3d4b7df stood frozen 2 h 07 min on 2026-09-16 holding one of three lane slots, far past
+// STALLED_IDLE_MS, with no principal able to see the flag it had earned.
+//
+// So it takes the correction deployGap/bundleStale already took (their note, further down): serve
+// the fact where the principals who can act already look, through the SAME function, never a second
+// copy. That is what this helper is — `stalled` and `stalledSince` are one derivation, so the
+// steward view and the owner poll can never drift into two answers about one lane. The lanes-only
+// guard lives here too, and `awaiting` stays subtracted inside the predicate rather than here, so
+// no future caller can forget it (the 2026-08-05 miss the field's own comment names).
+//
+// LIFTING IS NOT ARMING. The doctrine step is unchanged — record → display, nothing further — and
+// the evidence threshold the fact was built under (10 owner-adjudicated instances before any action,
+// briefs/lane-stalled-fact.md) is precisely what stayed unreachable while nobody could count them.
+function stalledFacts(s: Slot, sig: ReturnType<typeof laneSignalView>, now: number):
+  { stalled: boolean; stalledSince: number | null } {
+  const lane = !!s.cwd && !!s.worktree && s.label !== STEWARD_LABEL;
+  return {
+    stalled: lane && laneStalled(sig, STALLED_IDLE_MS),
+    // the timestamp tier, exactly as doneLookingSince is for done-looking: the moment the pane went
+    // quiet with every non-clock clause already holding — non-null well before the boolean flips.
+    stalledSince: lane ? laneStalledSince(sig, now) : null,
+  };
+}
+
 function stewardSlotsView(now: number) {
   return slots.map((s) => {
     const sig = laneSignalView(s, now);
@@ -29870,17 +29903,10 @@ function stewardSlotsView(now: number) {
       // poller can tell "just went quiet" from "quiet for minutes" without lowering the trigger.
       doneLookingSince: !!s.cwd && !!s.worktree && s.label !== STEWARD_LABEL
         ? laneQuietSince(sig, now) : null,
-      // the fleet's word for "this lane stopped working" (lane-signals.ts, STALLED_RULES). Same
-      // shape and the same lanes-only scope as the two above, and like them it is a FACT served
-      // next to the facts it is computed from. NOTHING acts on it: no tick reads it, there is no
-      // auto-kill and no nudge — it exists so a stopped lane can be SEEN, and counted, at all.
-      // `awaiting` is subtracted inside the predicate, not here, so no future caller can forget it.
-      stalled: !!s.cwd && !!s.worktree && s.label !== STEWARD_LABEL
-        && laneStalled(sig, STALLED_IDLE_MS),
-      // its timestamp tier, exactly as doneLookingSince is for done-looking: when the pane went
-      // quiet with every non-clock clause holding — non-null well before `stalled` flips.
-      stalledSince: !!s.cwd && !!s.worktree && s.label !== STEWARD_LABEL
-        ? laneStalledSince(sig, now) : null,
+      // `stalled` and `stalledSince` — ONE derivation, shared with the owner poll (stalledFacts
+      // above). Served here as a FACT next to the facts it is computed from, like the two predicates
+      // before it; nothing on this route acts on it either.
+      ...stalledFacts(s, sig, now),
       // context-size proxy — {bytes, mtime} of this session's transcript, null when unknowable
       transcriptFact: transcriptFact(s),
     };
@@ -32416,8 +32442,12 @@ Bun.serve<WSData>({
       return new Response("upgrade failed", { status: 400 });
     }
     if (url.pathname === "/api/sessions") {
+      // ONE clock for the whole response: the slot rows below carry an age-derived fact
+      // (`stalledSince`), and a row stamped against a later `Date.now()` than the `now` the reader
+      // subtracts it from would hand back a negative age.
+      const pollNow = Date.now();
       return json({
-        now: Date.now(),
+        now: pollNow,
         chips: CHIPS,
         shareBase: SHARE_URL,
         // WHICH FLEET ANSWERED — ONCE per response, never per slot. The board renders 16 slot rows
@@ -32525,6 +32555,10 @@ Bun.serve<WSData>({
         bundleStale: deployFacts?.bundle ?? null,
         slots: slots.map((s) => {
           const sh = shares.find((x) => x.slot === s.id);
+          // the stopped-lane fact, same single derivation the steward view serves (stalledFacts).
+          // It is on THIS route because this is the one every MAIN and the board already poll; the
+          // steward route kept it where only a `⚙ steward` pane could reach it, and there was none.
+          const st = stalledFacts(s, laneSignalView(s, pollNow), pollNow);
           return {
             id: s.id, cwd: s.cwd, label: s.label, openedAt: s.openedAt,
             // Canonical checkout identity, separate from cwd: a main session may live in a
@@ -32569,6 +32603,15 @@ Bun.serve<WSData>({
             // a conflict resolution waiting for the owner to review + land — cheap in-memory
             // lookup (no git), so the tile can flag it without the board being open
             mergePending: needsMergeReview(s.id),
+            // OMITTED WHEN THERE IS NOTHING TO SAY, the rule `harness`/`effort` follow on this
+            // 2 s poll (docs/data-saver.md §1) — and honest here, not merely cheap: `laneStalled`
+            // already collapses every unknown to `false`, so absent and `false` are the same
+            // sentence ("not known to be stalled"), and a null `stalledSince` is the same as no
+            // key. Unconditional they would cost ~590 B of the ~1 300 B the 14 KiB budget leaves
+            // (e2e/tasks.ts) for a fact that is false on almost every row; this way an untroubled
+            // fleet pays nothing and the one stopped lane is the only row that grows.
+            ...(st.stalled ? { stalled: true } : {}),
+            ...(st.stalledSince !== null ? { stalledSince: st.stalledSince } : {}),
           };
         }),
       });

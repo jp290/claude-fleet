@@ -296,7 +296,7 @@ export async function run(sc: StewardCtx): Promise<void> {
       && puLines[0] === "[steward-pulse] DATA:"
       && puLines[1].startsWith("- branch/commits: ")
       && puLines[2].startsWith("- letzte sichtbare Ausgabe: ")
-      && /^- idle: (\d+s|unbekannt) · Kontext-Indiz: /.test(puLines[3] ?? "")
+      && /^- idle: (\d+s|unbekannt) · Kontext: /.test(puLines[3] ?? "")
       && puLines[4] === `FRAGE: ${PU_Q}`
       && puLines[5] === "Prüfe kritisch, ob diese Frage dir gerade hilft. Antworte mir in EINER Zeile:"
       && puLines[6] === "[pulse-reply] hilfreich | unnötig | falsch — <halber Satz warum>. Dann arbeite weiter.",
@@ -312,9 +312,11 @@ export async function run(sc: StewardCtx): Promise<void> {
       `${puLines[1]} | brief=${JSON.stringify({ b: puBrief.branch, a: puBrief.ahead, be: puBrief.behind, c: puBrief.commits.length })}`);
     // an unpinned FLEET_CMD=true pane has no transcript → both transcript-derived facts read
     // "unbekannt", never a fake 0. Same for idle when no output was ever observed on this pane
-    // (lastOutput 0 must not render as "idle since the epoch").
+    // (lastOutput 0 must not render as "idle since the epoch"). For the context line that is the
+    // THIRD arm: neither the measured pct nor the KB proxy can be had here, so it says only the
+    // word — the two arms that CAN speak are measured in e2e/steward-core.ts against pinned slots.
     check("pulse: unknown facts read 'unbekannt', never a fabricated value",
-      puLines[2] === "- letzte sichtbare Ausgabe: unbekannt" && puLines[3].endsWith("Kontext-Indiz: unbekannt")
+      puLines[2] === "- letzte sichtbare Ausgabe: unbekannt" && puLines[3].endsWith("Kontext: unbekannt")
       && !/idle: 17\d{8}s/.test(puLines[3] ?? ""),
       `${puLines[2]} | ${puLines[3]}`);
     // the load-bearing half of that line: a newer FOREIGN transcript in the same project dir must

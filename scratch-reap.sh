@@ -53,9 +53,27 @@ SOCKDIR="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
 NOW="$(date +%s)"
 
 # BSD and GNU stat disagree and this suite runs on BOTH — locally on the Mac and on the Linux
-# helper when a lane offers its preview. A mtime that silently reads empty would make `age`
-# enormous and reap everything, so a dir whose mtime cannot be read is SKIPPED, not swept.
-_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+# helper when a lane offers its preview. MEASURED on both hosts 2026-09-17, because the obvious
+# `bsd || gnu` one-liner is WRONG and cost this file a red preview:
+#
+#   macOS  stat -c %Y → rc=1, stdout EMPTY          stat -f %m → rc=0, the mtime
+#   Linux  stat -c %Y → rc=0, the mtime             stat -f %m → rc=1, and it still PRINTS the
+#                                                   whole filesystem block to STDOUT
+#
+# So `stat -f %m "$1" || stat -c %Y "$1"` inside $( ) concatenates Linux's filesystem block with
+# the real mtime, the numeric guard below rejects the pair, and every dir is silently kept — a
+# reaper that reaps nothing and says nothing. A non-zero exit is therefore NOT enough to discard
+# an attempt; only a numeric ANSWER counts. GNU is tried first so neither host reaches the
+# polluting call at all.
+#
+# A dir whose mtime cannot be read is SKIPPED, not swept — but it says so, because that silence
+# is exactly what made the bug above look like an empty heap.
+_mtime() {
+  _mt="$(stat -c %Y "$1" 2>/dev/null)"
+  case "$_mt" in ''|*[!0-9]*) _mt="$(stat -f %m "$1" 2>/dev/null)" ;; esac
+  case "$_mt" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$_mt"
+}
 
 reaped=0; kept=0; held=0
 for _d in "$ROOT"/fleet-e2e-instance-*; do
@@ -74,8 +92,10 @@ for _d in "$ROOT"/fleet-e2e-instance-*; do
   if [ ! -f "$_d/server.log" ]; then
     _why="never booted (no server.log)"
   else
-    _m="$(_mtime "$_d")"
-    case "$_m" in ''|*[!0-9]*) kept=$((kept+1)); continue ;; esac   # unreadable mtime → skip
+    if ! _m="$(_mtime "$_d")"; then
+      echo "[scratch-reap] cannot read mtime of $_d — skipped" >&2
+      kept=$((kept+1)); continue
+    fi
     _age_h=$(( (NOW - _m) / 3600 ))
     if [ "$_age_h" -ge "$RETENTION_H" ]; then
       _why="${_age_h}h old, past the ${RETENTION_H}h evidence window"

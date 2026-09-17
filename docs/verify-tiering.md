@@ -4444,3 +4444,26 @@ dieselbe harte Regel, unter der die Simulator-Hälfte derselben Familie schon le
 keinen Server. Belegt sind beide Tor-Hälften und beide Seiten der Frist; die Mutationsprobe
 (§MUTATION am Fuss von `e2e/host-hygiene.ts`) zeigt, dass jede Zeile genau ihren eigenen Check
 rot macht und keinen anderen.
+
+**Und sie hat sofort etwas gefangen — auf dem Host, den die lokale Kette nie sieht.** Die erste
+Vorschau auf `second-host` (Angebot `456bbc87b35f`, 4848 Checks, 26 min) kam ROT zurück, mit genau
+zwei eigenen Zeilen: §e4 und die Tally-Zeile. Ursache, auf BEIDEN Hosts nachgemessen statt
+erschlossen:
+
+| | `stat -c %Y` (GNU) | `stat -f %m` (BSD) |
+|---|---|---|
+| macOS | rc=1, stdout **leer** | rc=0, die mtime |
+| Linux (coreutils 9.7) | rc=0, die mtime | rc=1, **druckt trotzdem den ganzen Dateisystem-Block nach STDOUT** |
+
+Die naheliegende Zeile `stat -f %m "$1" || stat -c %Y "$1"` hängt unter Linux in `$( )` also den
+Dateisystem-Block VOR die echte mtime; die numerische Wache verwarf das Paar, und **jedes Dir wurde
+still behalten** — ein Reaper, der nichts räumt und nichts sagt. Auf macOS war er grün. Gegenprobe
+seriell gefahren: die alte Fassung auf Linux liefert `1 reaped · 2 within · 2 held` mit
+überlebendem `redOld` — das sind exakt die zwei roten Zeilen der Vorschau. Die reparierte Fassung
+liefert auf BEIDEN Hosts `2 reaped · 1 within · 2 held`, ALL PASS.
+
+Zwei Sätze, die über diesen einen Fall hinausgehen: **ein Exit-Code allein reicht nicht, um einen
+Versuch zu verwerfen — nur eine numerische ANTWORT zählt**, weil ein gescheitertes `stat` seinen
+Müll trotzdem auf stdout legt. Und: **eine Sonde, die still in die sichere Richtung fällt, macht
+einen Plattformfehler als „leere Halde" unsichtbar** — darum sagt `_mtime` jetzt laut Bescheid,
+wenn es eine mtime nicht lesen kann.

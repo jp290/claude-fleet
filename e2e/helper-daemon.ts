@@ -13,9 +13,9 @@
 // here first asserts its own precondition — that the counter was moving, that the daemon was alive
 // and had read the wish — so a probe that could not measure fails as ITSELF rather than as the
 // property it was aiming at.
-import { chmodSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
+import { chmodSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
   statSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { BASE, ROOT, check, get, post } from "./harness";
 import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
@@ -239,7 +239,16 @@ export async function run(h: {
   const UPD = `${ROOT}/daemonupdaterepo`;
   rmSync(UPD, { recursive: true, force: true });
   mkdirSync(`${UPD}/helper-daemon`, { recursive: true });
-  copyFileSync(DAEMON, `${UPD}/helper-daemon/daemon.ts`);
+  // THE WHOLE STAGED DIRECTORY, not `daemon.ts` alone — derived, like everything else this suite
+  // clones. The single-file copy this replaced was a hand-written list of one, and it broke the
+  // moment daemon.ts grew a sibling: `8fbd46a9` (2026-09-15) added `helper-daemon/result-retry.ts`
+  // and the import of it, so the clone could no longer RESOLVE, `bun build --target=bun` exited 1,
+  // and (HD.8) read that as "a tree that does not parse". The daemon then never swapped its symlink
+  // and stayed dead for the rest of the module — one root, TWENTY red lines, through (HD.9b) and all
+  // of (HD.10). No gate runs this suite (docs/verify-tiering.md §6.1), so it sat red from 09-15 until
+  // the next run of it, 2026-09-17. What is copied here is exactly what e2e-stage.sh derived into
+  // this instance, which is the same rule the check below asserts.
+  cpSync(dirname(DAEMON), `${UPD}/helper-daemon`, { recursive: true });
   for (const args of [["init", "-q", "-b", "main"], ["add", "-A"],
     ["-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "commit", "-qm", "the daemon, as shipped"]])
     spawnSync("git", ["-C", UPD, ...args]);

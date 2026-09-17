@@ -418,6 +418,19 @@ if [ -e "$1" ]; then
   hy_sizes=$( { du -skc "$@" 2>/dev/null | tail -1 | awk '{ printf "a %d\n", $1 }' & du -Akc "$@" 2>/dev/null | tail -1 | awk '{ printf "l %d\n", $1 }'; wait; } )
   hy_mib() { printf '%s\n' "$hy_sizes" | awk -v k="$1" '$1 == k { printf "%.0f MiB", $2 / 1024; f = 1 } END { if (!f) printf "UNKNOWN" }'; }
   echo "  TMPDIR e2e scratch: $# dirs · $(hy_mib a) allocated (du -sk) · $(hy_mib l) logical (du -Ak) · filesystem ${hy_fs:-UNKNOWN} — disk, not RAM"
+  # WHAT THAT LINE DOES NOT COUNT, so nobody reads it as the whole heap: `fleet-e2e-instance-*` is
+  # e2e-isolated.sh's family ALONE. The six other wrappers carry their own infix and were invisible
+  # here until 2026-09-17 (measured that day: 21 dirs, 58 MiB, against 47/1775 for the isolated
+  # family). Only the isolated family has an owner — scratch-reap.sh, called from that wrapper's
+  # start; everything on the second line is still unowned. docs/verify-tiering.md §15.
+  hy_other=0
+  for hy_p in gate harness unprobed cleanreview postland security; do
+    set -- "${TMPDIR:-/tmp}"/fleet-e2e-$hy_p-instance-*
+    [ -e "$1" ] && hy_other=$((hy_other + $#))
+  done
+  set -- "${TMPDIR:-/tmp}"/fleet-e2e-standin-*; [ -e "$1" ] && hy_standin=$# || hy_standin=0
+  set -- "${TMPDIR:-/tmp}"/fleet-e2e-stagelock-*; [ -e "$1" ] && hy_tickets=$# || hy_tickets=0
+  echo "    unowned beside it: $hy_other dirs in the six other wrapper families · $hy_standin standin · $hy_tickets stagelock tickets"
 else
   echo "  TMPDIR e2e scratch: 0 dirs"
 fi

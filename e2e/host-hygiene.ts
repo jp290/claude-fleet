@@ -29,7 +29,8 @@
 // (deploy-facts alone, also restart-driven but tmux-touching) green as the control. Not reachable
 // from the server: AUDIT_SHARDS_MAX caps a sharded run at 8, and at every n in 1..8 this unit
 // shares its shard with units that drive tmux directly.
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { check, restartSrv, ROOT } from "./harness";
 import { decisionChecks } from "./host-hygiene-table";
 
@@ -88,8 +89,76 @@ const serverLog = (): string => {
   try { return readFileSync(`${ROOT}/server.log`, "utf8"); } catch { return ""; }
 };
 
+// ===== §e THE SCRATCH REAP: what scratch-reap.sh removes, and what it must never remove =====
+//
+// Needs no server, so it runs first and costs nothing. It drives THE REAL SCRIPT — the same file
+// e2e-isolated.sh calls at startup — against a FIXTURE root, never $TMPDIR. That is the hard rule
+// this family already lives by: a probe that swept the operator's real scratch would delete the
+// post-mortem of whatever red run somebody is adjudicating, which is the exact loss the script's
+// evidence window exists to prevent.
+//
+// Both halves of the gate and both sides of the window are asserted, so neither can pass by
+// accident: drop the liveness test and §e1 goes red, drop the socket test and §e2, drop the
+// window comparison and §e3, drop the no-server.log clause and §e5 — see §MUTATION at the foot.
+function scratchReapChecks(): void {
+  const FIXROOT = `${TMP}/fleet-e2e-reapfix-${process.pid}`;
+  const SOCKS = `${FIXROOT}/tmux-${process.getuid?.() ?? 0}`;
+  const DEAD = 999_999; // the same unreachable-pid idiom the lease table uses
+  const HOURS = 3_600_000;
+  const reaper = `${ROOT}/scratch-reap.sh`;
+
+  // a probe that could not run must fail AS ITSELF, never as a green row about the subject
+  if (!existsSync(reaper)) {
+    check("host-hygiene §e scratch-reap.sh is staged into the instance", false,
+      `absent at ${reaper} — add it to STAGE_EXTRA in e2e-isolated.sh`);
+    return;
+  }
+
+  rmSync(FIXROOT, { recursive: true, force: true });
+  mkdirSync(SOCKS, { recursive: true });
+  interface Fixture { pid: number; hasLog: boolean; ageH: number; dir: string }
+  const mk = (pid: number, hasLog: boolean, ageH: number): Fixture =>
+    ({ pid, hasLog, ageH, dir: `${FIXROOT}/fleet-e2e-instance-${pid}` });
+  const live = mk(process.pid, true, 72);  // §e1 pid alive — a RUNNING suite's instance
+  const socketed = mk(DEAD, true, 72);     // §e2 pid dead but its fleettest socket is still there
+  const redFresh = mk(DEAD + 1, true, 1);  // §e3 a red run's evidence, inside the window
+  const redOld = mk(DEAD + 2, true, 72);   // §e4 the same, aged out
+  const nolog = mk(DEAD + 3, false, 0);    // §e5 never booted: no server.log, no verdict, no doubt
+  for (const f of [live, socketed, redFresh, redOld, nolog]) {
+    mkdirSync(f.dir, { recursive: true });
+    writeFileSync(`${f.dir}/fixture`, String(f.pid));
+    if (f.hasLog) writeFileSync(`${f.dir}/server.log`, "listening\n");
+    const t = new Date(Date.now() - f.ageH * HOURS);
+    utimesSync(f.dir, t, t);
+  }
+  writeFileSync(`${SOCKS}/fleettest${DEAD}`, ""); // stands in for the live run's socket
+
+  const r = spawnSync(reaper, [FIXROOT], {
+    encoding: "utf8",
+    env: { ...process.env, TMUX_TMPDIR: FIXROOT, FLEET_E2E_SCRATCH_RETENTION_H: "48" },
+  });
+  const out = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-1)[0] ?? "";
+
+  check("host-hygiene §e1 a dir whose pid is ALIVE survives, however old — a running suite is not litter",
+    existsSync(live.dir), `${live.dir} · ${out}`);
+  check("host-hygiene §e2 a dead pid whose fleettest socket still exists survives — both gate halves count",
+    existsSync(socketed.dir), `${socketed.dir} · ${out}`);
+  check("host-hygiene §e3 a red run's instance INSIDE the 48h window survives — the evidence the seam kept",
+    existsSync(redFresh.dir), `${redFresh.dir} · ${out}`);
+  check("host-hygiene §e4 …and the same instance past the window is reaped, so the window is a window",
+    !existsSync(redOld.dir), `${redOld.dir} · ${out}`);
+  check("host-hygiene §e5 an instance with no server.log is reaped at once — it booted nothing and holds no verdict",
+    !existsSync(nolog.dir), `${nolog.dir} · ${out}`);
+  check("host-hygiene §e the sweep reports what it did and exits clean",
+    r.status === 0 && /2 reaped · 1 within the 48h window · 2 held by a live run/.test(out),
+    `status=${r.status} tail=${out}`);
+
+  rmSync(FIXROOT, { recursive: true, force: true });
+}
+
 export async function run(): Promise<void> {
   decisionChecks(check);
+  scratchReapChecks();
 
   rmSync(FIX, { recursive: true, force: true });
   mkdirSync(LEASES, { recursive: true });
@@ -206,3 +275,15 @@ exit 0
 //      no-two-refusals-share-a-reason row — five rows, because a simulator somebody is holding
 //      would now be shut down under them.
 //   4. restore.
+//
+// §MUTATION for §e — four edits to scratch-reap.sh, each of which must turn exactly ONE row red
+// and no other. Run against a fixture root, so none of it needs the suite or the mutex; the four
+// were measured on 2026-09-17 and each behaved as stated.
+//
+//   1. delete the `kill -0` gate          → §e1 alone (the live run's instance is swept)
+//   2. delete the `fleettest<pid>` gate   → §e2 alone
+//   3. make the window test `if true`     → §e3 alone (a red run inside the window is swept)
+//   4. make the no-server.log test `if false` → §e5 alone (litter survives)
+//
+// Each also moves §e's tally row, which is the point of asserting the tally: a mutation that
+// changed the counts without changing a survivor would otherwise pass unnoticed.

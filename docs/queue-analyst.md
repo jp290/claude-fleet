@@ -50,7 +50,8 @@ depends on the draft, not on the tree, so nothing about it improves after a land
 - **Machine-compiled** — `tickBriefSweep` → `compileBriefs` → `runEnhance`, stored as
   `Task.brief` with `edited: false`. Readable AND editable before the start.
 - **Owner-written** — `POST /api/tasks/:id/brief` pins it (`edited: true`, model `"owner"`), and
-  nothing recompiles over it.
+  nothing recompiles over it — including a compile that was ALREADY RUNNING when it was filed
+  (§ below, "Selection is `briefDue`").
 - **Raw** — no brief on the row: the draft text itself is delivered.
 - **Clarify** — `buildClarifyBrief`'s deterministic frame around the verbatim request; no model
   call at all.
@@ -142,6 +143,17 @@ Turning the compiler on is an owner act on `watchdog.sh` plus `launchctl kicksta
 
 Selection is `briefDue`: a dispatchable `auftrag` with no brief yet. A row it touched is a row whose
 bytes are settled — nothing in this fleet claims to have READ one.
+
+And that selection is read TWICE. It is made before `runEnhance`, so by the time a compile returns
+it is one enhancer runtime old, and nothing in the process waits for that worker: the owner's brief
+door, the MAIN's, a delete and the dispatcher all move rows meanwhile. `compileBriefs` therefore
+asks `briefRaceReason` again at the moment of the WRITE — row gone, brief now present, dispatch
+started, status left `pending`/`queued` — and on any of them writes NOTHING and books one
+`brief_compile_discarded` audit line (`taskId`, `reason`, `kept`, `discarded`; never brief text).
+The hand-written brief always wins: `runEnhance` read `t.text` before the `await`, so the finished
+compile is a derivation of the very draft that was just replaced — the later write, never the
+fresher fact. Until 2026-09-17 this write was unconditional and silent; the probe is
+`e2e/tasks.ts` §(h4-race), the measurement `docs/verify-tiering.md` §11.2x.
 
 ## 3b. Die KARTE — was eine Zeile über sich selbst sagt (S3, 2026-09-12)
 

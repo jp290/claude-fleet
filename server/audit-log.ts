@@ -128,6 +128,13 @@ type AuditEvent =
   // that used to be unrecordable — before 2026-09-11 this act went through the owner door and left
   // a row that said the owner wrote it.
   | "main_brief"
+  // the brief compiler threw a finished compile away because the row moved under it while the
+  // enhancer ran (server.ts#briefRaceReason). Its own event, and load-bearing rather than
+  // decorative: the write it replaces used to be SILENT, so an owner brief filed mid-compile was
+  // swapped for a machine draft with no record anywhere that a second writer had been there. The
+  // line carries the row, which author KEPT the brief, the model whose bytes were dropped and the
+  // reason — never the text of either brief.
+  | "brief_compile_discarded"
   // the owner granted or revoked a Program's self-land permission (POST /api/programs/:id/promotion).
   // On the trail because it is the one act that widens WHO may move an integration branch, and the
   // record it writes is otherwise only visible by reading the Program row.

@@ -4561,8 +4561,11 @@ export async function run(ctx: Ctx): Promise<void> {
       (await (await get("/api/sessions")).json()) as { tasks: HRow[]; slots: { id: number; cwd: string | null }[];
         dispatch: { repo: string; on: boolean }; analysis?: unknown;
         briefCompiler?: { on?: boolean } };
-    const hFull = async (id: string): Promise<{ analysis?: unknown; brief?: { text: string; edited: boolean; at: number } } | undefined> =>
-      ((await (await get("/api/tasks")).json()) as { tasks: { id: string; analysis?: unknown; brief?: { text: string; edited: boolean; at: number } }[] })
+    // `model`/`by` ride along because (h4-race) asserts AUTHORSHIP, not just text: the clobber this
+    // section pins replaced the owner's three fields as surely as it replaced their bytes.
+    interface HBrief { text: string; edited: boolean; at: number; model?: string; by?: string }
+    const hFull = async (id: string): Promise<{ analysis?: unknown; brief?: HBrief } | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: { id: string; analysis?: unknown; brief?: HBrief }[] })
         .tasks.find((t) => t.id === id);
     const hRow = async (id: string): Promise<HRow | undefined> => (await hSess()).tasks.find((t) => t.id === id);
     // poll until a predicate holds, so the assertions below are about the SERVER's behaviour and
@@ -4664,6 +4667,68 @@ export async function run(ctx: Ctx): Promise<void> {
       && stillEdited?.brief?.text === "hand-written brief, mine"
       && stillEdited.brief.at === edited.brief.at,
       JSON.stringify({ edited: edited?.brief, later: stillEdited?.brief }));
+
+    // (h4-race) …AND A COMPILE ALREADY RUNNING WHEN THE OWNER FILES DOES NOT WIN BY FINISHING LAST.
+    // (h4) above drives the SELECTION half: `briefDue` skips a row that carries a brief. This one
+    // drives the WRITE half, which is a different moment — the compiler chose its rows one enhancer
+    // runtime earlier, so the interesting owner brief is the one filed WHILE a compile is in
+    // flight. Product race read at server.ts#compileBriefs, forced 10/10 by lane 69707f16 and
+    // registered as flake family 25 (docs/verify-tiering.md §11.2x), where it is explicitly NOT
+    // given a flake licence: here a red is the finding.
+    //
+    // Timed by the STAND-IN, never by a sleep: it announces its own start and finish through two
+    // marker files, so "the compile was running when the brief was filed" is a driven fact and not
+    // a hope about scheduling. Only the raced draft is slowed (the stand-in keys on its marker) —
+    // every other row in this instance still compiles at full speed.
+    const RACEMARK = "race-probe-owner-brief-mid-compile";
+    const SLOWENH = `${ROOT}/slowenhance`;
+    const RSTART = `${ROOT}/race-compile-started`;
+    const REND = `${ROOT}/race-compile-finished`;
+    await Bun.write(SLOWENH, [
+      "#!/bin/sh",
+      "input=$(cat)",
+      "case \"$input\" in",
+      `  *${RACEMARK}*) : > "${RSTART}" ; sleep 3 ; : > "${REND}" ;;`,
+      "esac",
+      "printf '%s' \"$input\" | bun -e '",
+      "const input = await new Response(Bun.stdin.stream()).text();",
+      "const draft = input.split(\"## Entwurf\").pop().trim();",
+      `console.log(JSON.stringify({ prompt: ${JSON.stringify(BRIEFMARK)} + draft }));`,
+      "'",
+      "",
+    ].join("\n"));
+    spawnSync("chmod", ["+x", SLOWENH]);
+    for (const f of [RSTART, REND]) rmSync(f, { force: true });
+    await restartSrv({ ...hEnv, FLEET_ENHANCE_CMD: SLOWENH, FLEET_BRIEF_MS: "300" });
+    const raceId = await mkTask(`${RACEMARK} — an owner brief filed mid-compile must survive the compile`);
+    const raceStarted = await till(async () => existsSync(RSTART), (v) => v, 60);
+    const raceOwner = "owner brief, filed while the compiler was still running";
+    const rb = await post(`/api/tasks/${raceId}/brief`, { text: raceOwner });
+    const raceFinished = await till(async () => existsSync(REND), (v) => v, 60);
+    // the clobber is the statement right after the stand-in's last byte, so this only has to
+    // out-wait the server reading that byte — not the compile
+    await Bun.sleep(1500);
+    check("(h4-race) fixture: the compile really was in flight when the owner filed, and finished after",
+      raceStarted && rb.ok && raceFinished,
+      JSON.stringify({ started: raceStarted, brief: rb.status, finished: raceFinished }));
+    const raced = await hFull(raceId);
+    check("(h4-race) an owner brief filed DURING a compile survives it — text AND authorship",
+      raced?.brief?.text === raceOwner && raced.brief.edited === true
+      && raced.brief.model === "owner" && raced.brief.by === "owner",
+      JSON.stringify(raced?.brief ?? null));
+    // …and the compile that was thrown away is NAMEABLE. A silent discard is the same defect one
+    // layer down: nobody could later say a worker ran, produced bytes and lost.
+    const raceAudit = ((await (await get("/api/audit?limit=100")).json()) as
+      { events: { event?: string; detail?: string; taskId?: string; reason?: string; kept?: string }[] })
+      .events.find((e) => e.event === "brief_compile_discarded" && e.taskId === raceId);
+    check("(h4-race) …and the discarded compile is on the trail, with the kept author and the reason",
+      raceAudit?.kept === "owner" && raceAudit.reason === "brief-present:owner"
+      && (raceAudit.detail ?? "").startsWith(`${raceId} kept=owner`)
+      && !(raceAudit.detail ?? "").includes(raceOwner) && !(raceAudit.detail ?? "").includes(BRIEFMARK),
+      JSON.stringify(raceAudit ?? null));
+    await post(`/api/tasks/${raceId}/delete`, {});
+    for (const f of [SLOWENH, RSTART, REND]) rmSync(f, { force: true });
+    await restartSrv(hEnv); // (h5)/(h6) get back the server this section has always handed them
 
     // (h5) THE ROUTE IS RETIRED, not refusing. `POST /api/tasks/:id/reanalyse` answered 200 with a
     // reader and 409 without one for the analyst's whole life; a retired verb must answer neither,

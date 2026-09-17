@@ -17154,6 +17154,29 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // exactly the paste this field exists to end. ABSENT IS THE LANE, always: an owner land, an
   // unattributable one, and every row written before this field existed all read the same way.
   verdictTo?: MergeVerdictReceiver }
+// WHICH ROW A RUNNING JOB WROTE ABOUT ITSELF — the `at` of the durable-intent marker mergeJob puts
+// down at its top, so a reader can tell "in flight" from "really interrupted" (Befund A,
+// 2026-09-08). The marker is written while the run is HEALTHY, so for the whole life of every land
+// there is an `interrupted` row on record that describes nothing wrong at all; a neighbouring
+// session read one of them as a server crash that had not happened.
+// `mergeInflight` alone cannot settle it: `guardedConfirmJob` is an in-flight job too, and it runs
+// OVER a previous run's reviewable verdict — which may ITSELF be an `interrupted` row with
+// conflicts. Matching the ROW rather than the slot says `intent` about the row this job wrote and
+// about no other.
+// In memory like `mergeWaiting`, and for the same reason: a restart takes the job and this map with
+// it, and the row it described is then the orphan it has become — which is precisely what the boot
+// restore must go on finding, unchanged.
+const mergeIntent = new Map<number, number>();
+// …and the same fact in PROSE, because `detail` is what reaches a reader who has ONLY the row:
+// fleet.json, the `merges` map on /api/sessions, a git note — none of them carry `running`. The old
+// text asserted the cause ("the server was interrupted mid-run") unconditionally and was therefore
+// false for the entire life of every healthy run. This one states the condition under which that
+// cause is the true one, and names the one read that answers it. Written once, used at both intent
+// sites, so the two cannot drift apart.
+const intentDetail = (slotId: number, opening: string): string =>
+  `${opening} and has not produced a verdict yet — while a job is running this is that run's own`
+  + ` intent marker, and it means the server was interrupted mid-run only once nothing is running`
+  + ` (GET /api/slots/${slotId}/merge answers both in one read: \`running\` and \`lastIs\`).`;
 const mergeInflight = new Map<number, Promise<void>>();
 // slots whose merge POST is still in its pre-flight guards: the `has(inflight)` check and
 // the `set` are separated by several awaits, so without this SYNCHRONOUS reservation two
@@ -24710,6 +24733,10 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   // so no exit path — a land, a stop, a thrown worker — can drop it.
   const resolverRuns: ResolverRun[] = [...carriedRuns];
   const record = async (r: MergeLast): Promise<void> => {
+    // this run's intent marker is superseded by whatever `r` is, so the map entry goes with it —
+    // OUTSIDE the slot guard below, because a slot recycled mid-run skips the write and must not be
+    // left holding this run's `at` for whoever has the slot now.
+    mergeIntent.delete(s.id);
     if (!s.cwd || s.cwd === cwd) {
       // written HERE and not at each `res =` site, because there are eleven of them and the one
       // that would be forgotten is the failure path — the exact verdict a reader opens to ask
@@ -24760,9 +24787,17 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   // path (the branch is already rebased, `tryScriptRebase` exits 0) and auto-lands whatever the
   // dead run left behind. `conflicted` is filled in below the moment we know an agent will make
   // semantic choices; that field is what boot reads to decide whether a re-run may proceed.
-  mergeLast.set(s.id, { status: "interrupted", landed: false, branch, at: Date.now(),
-    detail: "a merge run started here and never produced a verdict — the server was interrupted mid-run." });
-  await saveStateNow();
+  const intentAt = Date.now();
+  mergeIntent.set(s.id, intentAt);
+  mergeLast.set(s.id, { status: "interrupted", landed: false, branch, at: intentAt,
+    detail: intentDetail(s.id, "a merge run started here") });
+  // …and if the INTENT ITSELF cannot be persisted, this job never starts, so the claim it just made
+  // on that row must not outlive it. `record` is the only other place that drops the claim, and a
+  // rejection HERE is thrown before the try below and therefore never reaches it. Left alone, the
+  // row would stay on record as the corpse it is (right) while the claim stayed with it (wrong) —
+  // and the next job on this slot, which for a row like this is the owner's ⏸ confirm-land over it,
+  // would be reported as that row's own author. The throw itself is unchanged.
+  try { await saveStateNow(); } catch (e) { mergeIntent.delete(s.id); throw e; }
   try {
     // --- THE MACHINE IS TAKEN BEFORE THE REBASE, NOT AFTER IT (owner brief, 2026-09-12) --------
     // M1 pulled the hold forward to the first gate. It was still ~200 lines and an unbounded number
@@ -24851,10 +24886,12 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       // the field boot and the ⏸ guard read to refuse a blind re-run, so it must be set on BOTH
       // paths: a carried lane whose re-rebase is clean spawns no agent at all and used to leave a
       // marker claiming there was no agent judgment in the tree.
-      mergeLast.set(s.id, { status: "interrupted", landed: false, branch, at: Date.now(), conflicted: unreviewed,
-        detail: pre.clean
-          ? `a merge run started re-rebasing ${unreviewed.length} unreviewed conflict resolution${unreviewed.length === 1 ? "" : "s"} here and never produced a verdict — the server was interrupted mid-run.`
-          : `a merge run started resolving ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"} here and never produced a verdict — the server was interrupted mid-run.` });
+      const conflictIntentAt = Date.now();
+      mergeIntent.set(s.id, conflictIntentAt);
+      mergeLast.set(s.id, { status: "interrupted", landed: false, branch, at: conflictIntentAt, conflicted: unreviewed,
+        detail: intentDetail(s.id, pre.clean
+          ? `a merge run started re-rebasing ${unreviewed.length} unreviewed conflict resolution${unreviewed.length === 1 ? "" : "s"} here`
+          : `a merge run started resolving ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"} here`) });
       await saveStateNow();
     }
     // --- AN AGENT IS NOT A SUITE, SO IT DOES NOT GET THE MACHINE (owner brief, 2026-09-12) ----
@@ -33843,7 +33880,31 @@ Bun.serve<WSData>({
         // `retryAt` is when the round now being spent ASKED — the budget it will spend is
         // `waitMs` on /api/self/gate, which is where every other land clock is already read.
         const waiting = mergeWaiting.get(s.id);
-        return json({ running: mergeInflight.has(s.id) || mergeStart.has(s.id), last: mergeLast.get(s.id) ?? null,
+        const lastRow = mergeLast.get(s.id) ?? null;
+        // WHAT `last` IS RIGHT NOW, derived HERE so that no reader has to re-derive it and one of
+        // them can get it wrong (Befund A: a session read a healthy run's intent marker as a server
+        // crash, 2026-09-08). `interrupted` is the only status that is not a settled outcome — it is
+        // the marker a run writes ABOUT ITSELF before it starts — so it is the only one this has to
+        // split, and `mergeIntent` splits it by the row rather than by the slot:
+        //   "verdict"     — a settled outcome, whatever else is going on
+        //   "intent"      — THIS row is the durable intent of the job now in flight: nothing is wrong
+        //   "interrupted" — an intent marker no running job owns: the genuine mid-run death, and
+        //                   the one thing the boot restore is entitled to claim
+        //   null          — no row at all
+        // `running` stays exactly what it was and is still the field a poller keys on; this only
+        // stops the pair from having to be reasoned about.
+        const lastIs: "verdict" | "intent" | "interrupted" | null = !lastRow ? null
+          : lastRow.status !== "interrupted" ? "verdict"
+          : mergeInflight.has(s.id) && mergeIntent.get(s.id) === lastRow.at ? "intent"
+          : "interrupted";
+        // …and WHO this answer is about. A slot is a reusable seat: a land frees it and the tick can
+        // fill it with a different lane inside one poll period, after which every field above is
+        // about a lane the caller never asked for — `running:false`, `last:null`, and nothing to say
+        // so. That is the whole of Befund B (`ctl.sh land --wait` polled 3600 s for a verdict that
+        // belonged to a torn-down lane, 2026-09-08 02:22). The route knows the answer; it just never
+        // said it. Always present on a 200: this handler already 400s a slot without a worktree.
+        return json({ running: mergeInflight.has(s.id) || mergeStart.has(s.id), last: lastRow, lastIs,
+          lane: { repo: s.worktree.repo, branch: s.worktree.branch },
           ...(waiting ? { waitRound: waiting.round, retryAt: waiting.retryAt } : {}),
           undoable: undoableFor(s.worktree.repo) });
       }

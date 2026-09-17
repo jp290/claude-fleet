@@ -659,6 +659,9 @@ land)
 # is queueing behind the suite mutex, and they are not interchangeable (a land can spend 94 % of its
 # wall clock in the queue). On landed=YES it then arms the audit watch for exactly that land, so the
 # tier-2 answer comes back on its own instead of being polled for.
+# THREE ways the wait ends, and each says which it was: the verdict; the slot torn down (the land
+# took the lane); or the seat RECYCLED onto another lane, where the answer is read out of
+# lane-outcomes.jsonl by branch. The fourth — silence to the budget — is what this stopped being.
   slot=""; wait=0
   for a in "$@"; do case "$a" in --json) CTL_JSON=1 ;; --wait) wait=1 ;; --*) printf 'land: unknown flag %s\n' "$a" >&2; exit 2 ;; *) slot=$a ;; esac; done
   [ -n "$slot" ] || { printf 'land: give a slot number\n' >&2; exit 2; }
@@ -690,7 +693,7 @@ if (!startedOk || process.env.CTL_WAIT !== "1") {
 // is already terminal — `blocked` (the tree, the pane or a collision refused it), `already merged`,
 // or a parked ⏸ verdict handed straight back — and polling after one of those would read the
 // PREVIOUS land's persisted verdict and report it as this call's outcome.
-let last = null, gone = false, waitedOut = false;
+let last = null, gone = false, waitedOut = false, recycled = null;
 if (started.body?.running !== true) {
   last = started.body?.last ?? (started.body?.status ? started.body : null);
   lines.push("  no job was started — the answer above is the whole answer");
@@ -701,6 +704,15 @@ if (started.body?.running !== true) {
   for (;;) {
     const g = await api(`/api/slots/${slot}/merge`, { headers: ownerH() });
     if (g.status === 400) { gone = true; break; }           // slot torn down = the land took it
+    // …AND THE OTHER WAY A LANE LEAVES A SLOT, which is the normal one the moment the fleet is busy:
+    // the land frees the seat and the tick puts a NEW lane in it before this loop looks again. The
+    // route then answers 200 for a lane nobody here asked about — `running:false`, `last:null` —
+    // and neither exit above fires. Measured 2026-09-08 02:22 at the land of 7539985d: no verdict,
+    // no armed audit watch, and a process that sat on the poll for the full hour of
+    // FLEET_CTL_WAIT_MAX_SEC. `lane` is the route's own answer to "who am I speaking for", so this
+    // compares against the endpoint's fact rather than against a guess about ticks.
+    const seat = g.body?.lane ?? null;
+    if (lane && seat && (seat.branch !== lane.branch || seat.repo !== lane.repo)) { recycled = seat; break; }
     if (!g.body?.running && g.body?.last) { last = g.body.last; break; }
     if (Date.now() >= deadline) { waitedOut = true; break; }
     await new Promise((r) => setTimeout(r, pollMs));
@@ -713,15 +725,25 @@ if (started.body?.running !== true) {
 }
 // mainAfter: the outcome ledger is the authority (it is what the audit itself joins on); a git
 // rev-parse is the fallback and is NAMED as one, because it can only be read after the fact.
-let mainAfter = null, mainAfterFrom = null;
-if (lane && (gone || last?.landed)) {
+let mainAfter = null, mainAfterFrom = null, ledgerSaid = null;
+if (lane && (gone || recycled || last?.landed)) {
   try {
-    const rows = fs.readFileSync(HOME + "/lane-outcomes.jsonl", "utf8").split("\n")
+    const mine = fs.readFileSync(HOME + "/lane-outcomes.jsonl", "utf8").split("\n")
       .filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } })
-      .filter((x) => x && x.branch === lane.branch && typeof x.mainAfter === "string");
-    if (rows.length) { mainAfter = rows[rows.length - 1].mainAfter; mainAfterFrom = "lane-outcomes.jsonl"; }
+      .filter((x) => x && x.branch === lane.branch);
+    // HOW THAT LANE ENDED, which is the only place left to ask once the seat belongs to someone
+    // else: the ledger is keyed by BRANCH and outlives the slot. Read as two separate facts — a row
+    // may exist while carrying no `mainAfter` (a killed or shelved lane), and reading its absence as
+    // "not landed" would be a verdict nobody reached.
+    if (mine.length) ledgerSaid = mine[mine.length - 1].disposition ?? null;
+    const advanced = mine.filter((x) => typeof x.mainAfter === "string");
+    if (advanced.length) { mainAfter = advanced[advanced.length - 1].mainAfter; mainAfterFrom = "lane-outcomes.jsonl"; }
   } catch { /* the ledger lives only where the server runs */ }
-  if (!mainAfter) {
+  // The git fallback stands only where the LAND itself is the established fact — the slot was torn
+  // down under us, or the verdict says landed. On the recycled path it is not: all that is known
+  // there is that this seat now holds someone else, and reading main's current tip as "what my land
+  // moved it to" would attribute whatever else landed meanwhile — and then arm an audit watch on it.
+  if (!mainAfter && (gone || last?.landed)) {
     const { spawnSync } = require("child_process");
     const main = (spawnSync("git", ["-C", lane.repo, "symbolic-ref", "--short", "HEAD"], { encoding: "utf8" }).stdout ?? "").trim() || "main";
     const sha = (spawnSync("git", ["-C", lane.repo, "rev-parse", main], { encoding: "utf8" }).stdout ?? "").trim();
@@ -730,7 +752,13 @@ if (lane && (gone || last?.landed)) {
 }
 const v = last?.verify ?? null;
 lines.push(gone ? `  slot ${slot} is gone — the land took the lane down`
+  : recycled ? `  slot ${slot} was RECYCLED onto ${recycled.branch} — this endpoint can no longer answer for ${lane.branch}`
   : last ? `  status ${last.status}  landed=${last.landed ? "YES" : "NO"}` : "  no verdict was recorded");
+// …and then the one line the criterion is: the verdict of the land that was waited on, or a
+// NAMED non-answer. Never the silence that a 3600 s poll amounted to.
+if (recycled) lines.push(ledgerSaid === null
+  ? `  ${lane.branch}: no row in lane-outcomes.jsonl — a named NON-ANSWER, not a verdict`
+  : `  ${lane.branch}: lane-outcomes.jsonl says disposition=${ledgerSaid} — the ledger's verdict, read where the slot could no longer be asked`);
 if (last) lines.push(`  detail ${String(last.detail ?? "").slice(0, 200)}`);
 if (v) lines.push(`  verify ${verifyWord(v)}  ms=${v.ms ?? "?"} waitMs=${v.waitMs ?? "?"}${v.waitPartial ? " (lower bound)" : ""}`
   + `  proportional=${v.proportional === true}  steps=[${(v.steps ?? []).join(", ")}]`);
@@ -748,8 +776,10 @@ if (mainAfter && lane) {
       : `  audit watch REFUSED: ${w.status} ${w.body?.error ?? ""}`);
   }
 }
-out({ started: started.body, gone, last, waitedOut: false, mainAfter, mainAfterFrom, lane, auditWatch }, lines);
-process.exit(gone || last?.landed ? 0 : 1);
+out({ started: started.body, gone, recycled, ledgerSaid, last, waitedOut: false, mainAfter, mainAfterFrom, lane, auditWatch }, lines);
+// exit 0 means "it landed", as it always has. On the recycled path the LEDGER is what says so —
+// a seat that changed hands proves only that the lane left, and a lane can leave by being killed.
+process.exit(gone || last?.landed || (recycled && ledgerSaid === "landed") ? 0 : 1);
 EOF
   js_run
   ;;
@@ -802,6 +832,8 @@ wait-merge)
 # One long wait on one lane's merge, instead of a poll cadence in the pane. Intended to be started
 # detached (`run_in_background`) — the lane brief rule "a background suite is ONE long wait, not a
 # poll rhythm" is the same rule read from the controller's side.
+# It binds to the LANE it first sees on that slot, not to the slot: a seat that changes hands ends
+# the wait with a named non-answer (exit 3) instead of polling on about a lane that is not there.
   slot=""
   for a in "$@"; do case "$a" in --json) CTL_JSON=1 ;; --*) printf 'wait merge: unknown flag %s\n' "$a" >&2; exit 2 ;; *) slot=$a ;; esac; done
   [ -n "$slot" ] || { printf 'wait merge: give a slot number\n' >&2; exit 2; }
@@ -812,19 +844,35 @@ wait-merge)
 const slot = Number(process.env.CTL_SLOT);
 const pollMs = Math.max(1, Number(process.env.CTL_POLL_SEC || 15)) * 1000;
 const deadline = Date.now() + Math.max(1, Number(process.env.CTL_WAIT_MAX_SEC || 3600)) * 1000;
+// WHICH LANE THIS WAIT IS ABOUT, learned from the endpoint's first answer rather than assumed from
+// the slot number. `land --wait` reads its lane before it posts; this verb has no such moment, so
+// the first poll is it. Without this the loop below cannot tell "my lane has not finished" from
+// "my lane is gone and a new one is sitting in its seat" — and the second one polls to the budget.
+let watched = null;
 for (;;) {
   const g = await api(`/api/slots/${slot}/merge`, { headers: ownerH() });
-  if (g.status === 400) { out({ gone: true, last: null }, [`slot ${slot} is gone — the land took the lane down`]); process.exit(0); }
+  if (g.status === 400) { out({ gone: true, watched, last: null }, [`slot ${slot} is gone — the land took the lane down`]); process.exit(0); }
+  const seat = g.body?.lane ?? null;
+  if (!watched && seat) watched = seat;
+  // A NAMED NON-ANSWER, and the same exit code the spent budget gets, because it is the same kind
+  // of statement: nothing about the lane this wait was started for was ever measured. It is said
+  // here in one poll period instead of in an hour of silence.
+  if (watched && seat && (seat.branch !== watched.branch || seat.repo !== watched.repo)) {
+    out({ gone: false, recycled: seat, watched, last: null, waitedOut: false },
+      [`slot ${slot} was RECYCLED onto ${seat.branch} — this wait was about ${watched.branch}, and this endpoint`,
+        `  can no longer answer for it: a NON-ANSWER, not a verdict. Its outcome is in lane-outcomes.jsonl, keyed by branch.`]);
+    process.exit(3);
+  }
   if (!g.body?.running && g.body?.last) {
     const l = g.body.last;
-    out({ gone: false, last: l }, [`slot ${slot}: ${l.status}  landed=${l.landed ? "YES" : "NO"}  verify=${verifyWord(l.verify)}`,
+    out({ gone: false, watched, last: l }, [`slot ${slot}: ${l.status}  landed=${l.landed ? "YES" : "NO"}  verify=${verifyWord(l.verify)}`,
       `  ${String(l.detail ?? "").slice(0, 300)}`]);
     process.exit(0);
   }
   // the same bounded non-answer `land --wait` gives, with the same exit code: a wait that ran out
   // has measured nothing, and saying "not landed" here would be a verdict nobody reached.
   if (Date.now() >= deadline) {
-    out({ gone: false, last: null, waitedOut: true },
+    out({ gone: false, watched, last: null, waitedOut: true },
       [`slot ${slot}: STILL RUNNING after ${process.env.CTL_WAIT_MAX_SEC || 3600}s — a non-answer, not a verdict`]);
     process.exit(3);
   }

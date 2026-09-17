@@ -31,7 +31,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { BASE, REPO, ROOT, TOKEN, check, get, post, results } from "./harness";
-import { openLane, setMergeMode, settleForMerge } from "./lane-helpers";
+import { openLane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 import { gitWorkTreeVerdict, probeSourceTree, type SourceTreeProbe } from "./trail-emit";
 
 interface CtlRun { code: number; out: string; err: string; json: unknown }
@@ -198,6 +198,25 @@ export async function run(): Promise<void> {
     let json: unknown = null;
     if (args.includes("--json")) { try { json = JSON.parse(out); } catch { json = null; } }
     return { code, out, err, json };
+  };
+
+  // …and the same invocation left RUNNING. The two wait verbs answer only when they stop, so the
+  // state they are supposed to notice has to be produced while they are still inside the poll loop.
+  // Pipes are read to completion before `exited` is awaited, so a verb that prints before it exits
+  // cannot deadlock this.
+  const ctlBg = (args: string[], extra: Record<string, string> = {}): Promise<CtlRun> => {
+    const p = Bun.spawn([CTL, ...args], {
+      cwd: dirname(CTL), stdout: "pipe", stderr: "pipe",
+      env: { ...process.env, ...env, ...extra } as Record<string, string>,
+    });
+    return (async (): Promise<CtlRun> => {
+      const out = await new Response(p.stdout).text();
+      const err = await new Response(p.stderr).text();
+      const code = await p.exited;
+      let json: unknown = null;
+      if (args.includes("--json")) { try { json = JSON.parse(out); } catch { json = null; } }
+      return { code, out, err, json };
+    })();
   };
 
   // === usage ====================================================================================
@@ -505,6 +524,155 @@ export async function run(): Promise<void> {
   check("ctl wait merge: it returns only on the terminal fact, and names it",
     waited.code === 0 && (waitJson?.gone === true || typeof waitJson?.last?.landed === "boolean"),
     `exit ${waited.code} ${JSON.stringify(waitJson).slice(0, 200)}`);
+
+  // === the merge surface a poller has, and the seat that changes hands under it =================
+  // TWO FINDINGS, ONE OBJECT (controller brief, 2026-09-08). `GET /api/slots/:id/merge` is the only
+  // place where "a land is in flight" and "a land died mid-run" are both answerable, and it used to
+  // answer neither on its own:
+  //   · the durable-intent row mergeJob writes about itself says `interrupted` for the whole life of
+  //     a HEALTHY run, and a neighbouring session read one of them that night as a server crash that
+  //     had not happened;
+  //   · the answer never said WHICH lane it was about, so a poller whose slot had been re-filled by
+  //     the tick — the normal case the moment a seat frees up — polled on to FLEET_CTL_WAIT_MAX_SEC
+  //     (3600 s in production) instead of ending. Measured 2026-09-08 02:22 at the land of 7539985d:
+  //     no verdict, no armed audit watch, one process blocked for an hour.
+  // The fixture is `hang`: fakemerge sleeps, so the land stays in flight for as long as the probe
+  // needs and the recycle below happens UNDER a running land — the shape the incident had.
+  // THE OTHER HALF OF `lastIs` IS NOT HERE. `interrupted` can only be asserted against a real
+  // corpse, and the only fixture that makes one is the srv kill in e2e/land-durability.ts §A, where
+  // that check lives. Neither probe proves the field on its own.
+  let modeBeforeRecycle: string | null = null;
+  try { modeBeforeRecycle = readFileSync(modeFile, "utf8"); } catch { modeBeforeRecycle = null; }
+  await setMergeMode("hang");
+  const lr = await openLane(REPO, "ctlrecycle");
+  // ORDER IS THE FIXTURE, as in the conflict section above: the lane branches first, main adds the
+  // same path afterwards, and only then is the rebase a conflict that reaches the (hanging) agent.
+  await Bun.write(`${REPO}/ctlrecycle.txt`, "main side\n");
+  spawnSync("git", ["-C", REPO, "add", "ctlrecycle.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "ctl recycle seed on main"]);
+  // The land is started HERE rather than by the background ctl below, and only the idle gate is
+  // retried: a refused first attempt on a freshly-spawned pane is a fixture fact, and a background
+  // process cannot be retried. ctl's own POST then meets a job already in flight, answers
+  // `{running:true}`, and goes straight to the poll — which is the part under test.
+  let inflightStart: { running?: boolean; status?: string } | null = null;
+  for (let i = 0; i < 8; i++) {
+    await settleForMerge(lr.slot);
+    inflightStart = (await (await post(`/api/slots/${lr.slot}/merge`, {})).json()) as { running?: boolean; status?: string };
+    if (inflightStart.running === true) break;
+    await Bun.sleep(600);
+  }
+  check("(setup) a land is in flight on the lane the recycle probe will pull out from under it",
+    inflightStart?.running === true, JSON.stringify(inflightStart));
+  const inflight = (await (await get(`/api/slots/${lr.slot}/merge`)).json()) as
+    { running?: boolean; lastIs?: string; lane?: { repo: string; branch: string };
+      last?: { status?: string; detail?: string } | null };
+  check("merge GET: a healthy run's durable-intent row is on record as status `interrupted`",
+    inflight.last?.status === "interrupted", `status=${inflight.last?.status} running=${inflight.running}`);
+  check("merge GET: …and the SAME read names it `intent` — a run in flight, not a server that died",
+    inflight.running === true && inflight.lastIs === "intent",
+    `running=${inflight.running} lastIs=${inflight.lastIs}`);
+  check("merge GET: the row's own prose carries the condition, instead of asserting the crash flat",
+    /has not produced a verdict yet/.test(inflight.last?.detail ?? "")
+      && /only once nothing is running/.test(inflight.last?.detail ?? ""),
+    (inflight.last?.detail ?? "").slice(0, 240));
+  // …compared against /api/sessions' own answer for this slot, NOT against the harness's `REPO`
+  // string: the server stores the realpath, and on macOS `/var` is a symlink to `/private/var`, so
+  // the two spellings of one directory differ as strings while naming the same tree. Asserting the
+  // route against the API is what this module does everywhere else, and it is immune to that.
+  const laneRow = ((await (await get("/api/sessions")).json()) as
+    { slots: { id: number; worktree?: { repo: string; branch: string } | null }[] })
+    .slots.find((x) => x.id === lr.slot)?.worktree ?? null;
+  check("merge GET: one read also says WHICH lane it is answering for",
+    !!laneRow && inflight.lane?.branch === laneRow.branch && inflight.lane?.repo === laneRow.repo,
+    `merge=${JSON.stringify(inflight.lane)} sessions=${JSON.stringify(laneRow)}`);
+
+  // …and now the seat changes hands under a poller that is inside its loop.
+  // POLL PERIOD 15 s (the production default), and it is load-bearing in BOTH directions. Freeing a
+  // seat and re-filling it are two requests, and BETWEEN them the route answers 400 — which is the
+  // `gone` exit, not the recycled one. At this module's ordinary FLEET_CTL_POLL_SEC=1 a poll would
+  // sooner or later land in that gap and the probe would measure the wrong branch; at 15 s the kill
+  // and the re-fill both fit inside one gap, and the first poll (t≈0) still binds to the lane the
+  // wait was started for. The budget stays this module's 120 s, so the old behaviour — silence to
+  // the budget — remains a clearly separated ~115 s away from what is asserted below.
+  const bgLand = ctlBg(["land", String(lr.slot), "--wait", "--json"], { FLEET_CTL_POLL_SEC: "15" });
+  // …and this is the deterministic wait for "it has already seen the lane it was started for",
+  // without which the recycle below is not a recycle at all.
+  await Bun.sleep(2500);
+  await post(`/api/slots/${lr.slot}/kill`, {});
+  const refill = await post(`/api/slots/${lr.slot}/open-worktree`, { repo: REPO, branch: "e2e-ctl-recycled" });
+  check("(setup) the freed seat is re-filled with a DIFFERENT lane, as the tick would fill it",
+    refill.ok, `${refill.status} ${(await refill.text()).slice(0, 200)}`);
+  const sinceRefill = Date.now();
+  const landOut = await bgLand;
+  const landWaitMs = Date.now() - sinceRefill;
+  const lrj = landOut.json as { recycled?: { branch: string; repo: string } | null; ledgerSaid?: string | null;
+    waitedOut?: boolean; mainAfter?: string | null; auditWatch?: unknown } | null;
+  check("ctl land --wait: a seat that changed hands ENDS the wait — it does not poll to the budget",
+    landWaitMs < 30_000 && lrj?.waitedOut === false,
+    `${landWaitMs}ms after the re-fill (poll 15s), waitedOut=${lrj?.waitedOut}, budget=${env.FLEET_CTL_WAIT_MAX_SEC}s`);
+  check("ctl land --wait: it names the lane that took the seat",
+    lrj?.recycled?.branch === "e2e-ctl-recycled", `recycled=${JSON.stringify(lrj?.recycled)}`);
+  // …and the answer itself comes from the branch-keyed ledger, which is the only thing that
+  // outlives the slot. The lane here was KILLED, so what a correct read finds is a killed
+  // disposition — a "landed" one would be the wrong answer, not a better one.
+  check("ctl land --wait: the recycled path answers out of the branch-keyed ledger, which outlives the slot",
+    typeof lrj?.ledgerSaid === "string" && lrj.ledgerSaid.startsWith("killed"),
+    `ledgerSaid=${JSON.stringify(lrj?.ledgerSaid)} (the lane was killed out from under the wait)`);
+  // the lane was KILLED, not landed — so no land exists to audit, and the git fallback that would
+  // have handed main's current tip over as "what my land moved it to" is fenced off on this path.
+  check("ctl land --wait: a recycled seat invents no mainAfter and arms no audit watch",
+    (lrj?.mainAfter ?? null) === null && (lrj?.auditWatch ?? null) === null,
+    `mainAfter=${JSON.stringify(lrj?.mainAfter)} auditWatch=${JSON.stringify(lrj?.auditWatch)}`);
+  check("ctl land --wait: a lane that merely LEFT is not a land — exit is non-zero, and not the spent budget",
+    landOut.code === 1 && lrj?.waitedOut === false, `exit ${landOut.code} waitedOut=${lrj?.waitedOut}`);
+  await post(`/api/slots/${lr.slot}/kill`, {});
+
+  // === the incident's own shape: a SUCCESSFUL land, then the seat re-filled =====================
+  // Driven on `wait merge` rather than on `land --wait` because this verb can be started
+  // independently of the land it waits for — which is what makes the ordering deterministic instead
+  // of a race against how long a land happens to take. The poll period is raised to the production
+  // default (15 s) for the same reason: the tear-down AND the re-fill both happen inside ONE gap, so
+  // the waiter never sees the 400 in between. That gap is exactly the window the incident fell into.
+  await setMergeMode("blocked"); // a conflict-free lane never consults the agent; this proves it did not
+  const lw = await openLane(REPO, "ctlrefill");
+  await settleForMerge(lw.slot);
+  const bgWait = ctlBg(["wait", "merge", String(lw.slot)], { FLEET_CTL_POLL_SEC: "15" });
+  await Bun.sleep(2500); // its first poll binds to lw, a whole poll period before anything moves
+  let refillLand: { running?: boolean; status?: string } | null = null;
+  for (let i = 0; i < 4; i++) {
+    refillLand = (await (await post(`/api/slots/${lw.slot}/merge`, {})).json()) as { running?: boolean; status?: string };
+    if (refillLand.running === true || refillLand.status === "merged") break;
+    await settleForMerge(lw.slot);
+  }
+  // waitMerge is LOUD by design (it throws rather than return a null verdict as if it were one).
+  // Caught here because this module accounts for every check it does not reach: a fixture that could
+  // not be built must fail as ITSELF and let the verbs below still run.
+  let landedAway: { gone: boolean } | null = null;
+  let settleThrew = "";
+  try { landedAway = await waitMerge(lw.slot); } catch (e) { settleThrew = ` threw: ${String(e).slice(0, 160)}`; }
+  check("(setup) the watched lane really landed and gave its seat up",
+    landedAway?.gone === true,
+    `${JSON.stringify(landedAway)} start=${JSON.stringify(refillLand)}${settleThrew}`);
+  const refill2 = await post(`/api/slots/${lw.slot}/open-worktree`, { repo: REPO, branch: "e2e-ctl-refilled" });
+  check("(setup) a new lane takes the freed seat before the waiter looks again",
+    refill2.ok, `${refill2.status} ${(await refill2.text()).slice(0, 200)}`);
+  const sinceRefill2 = Date.now();
+  const waitOut = await bgWait;
+  const waitMs = Date.now() - sinceRefill2;
+  // …and the two exit-3 shapes are told apart by the LINE, not by the code: a spent budget says
+  // "STILL RUNNING after", a recycled seat names both lanes. Asserting the code alone would pass on
+  // the very outcome this change exists to stop.
+  check("ctl wait merge: a re-filled seat ends the wait within one poll period, not at the budget",
+    waitMs < 30_000 && !waitOut.out.includes("STILL RUNNING"),
+    `${waitMs}ms after the re-fill (poll 15s, budget ${env.FLEET_CTL_WAIT_MAX_SEC}s) out=${waitOut.out.slice(0, 160)}`);
+  check("ctl wait merge: the line it prints names both lanes — the one it was watching and the one holding the seat",
+    waitOut.out.includes("RECYCLED onto e2e-ctl-refilled") && waitOut.out.includes(lw.branch),
+    `out=${waitOut.out.slice(0, 300)} watched=${lw.branch}`);
+  check("ctl wait merge: the recycled answer is a NAMED non-answer with its own exit code, never a verdict",
+    waitOut.code === 3 && waitOut.out.includes("a NON-ANSWER, not a verdict"),
+    `exit ${waitOut.code} out=${waitOut.out.slice(0, 300)}`);
+  await post(`/api/slots/${lw.slot}/kill`, {});
+  if (modeBeforeRecycle !== null) await Bun.write(modeFile, modeBeforeRecycle);
 
   // === watch audit — both refusals ==============================================================
   const badSha = await ctl(["watch", "audit", "deadbeefdeadbeef", "--repo", REPO, "--json"]);

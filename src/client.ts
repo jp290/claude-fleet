@@ -1014,6 +1014,14 @@ interface MergeState { running: boolean;
   // review yet — the author is still working, and the next ⏫ is what brings the resolution back.
   last: { status: "merged" | "blocked" | "error" | "resolved" | "interrupted" | "awaiting-author"; detail: string; landed: boolean;
     branch: string; at: number; conflicted?: string[]; verify?: VerifyVerdict; resolvedBy?: "agent" | "author" } | null;
+  // WHAT `last` IS, said by the route instead of inferred from the pair (server.ts, the ⏫ GET arm):
+  // "verdict" settled · "intent" the running job's own marker, nothing wrong · "interrupted" a
+  // marker no running job owns, i.e. the real mid-run death · null no row. Optional here because an
+  // older server answers this route without it, and absent must not read as any of the four.
+  lastIs?: "verdict" | "intent" | "interrupted" | null;
+  // …and WHO the answer is about. A slot is a reusable seat, so the lane that was asked about and
+  // the lane the answer describes are not the same question. Optional for the same reason.
+  lane?: { repo: string; branch: string };
   // the repo's most recent still-undoable land (null if none) — drives the ↩ undo button
   undoable?: { branch: string; at: number } | null }
 // slots with a merge job the client kicked off or observed — when such a slot goes

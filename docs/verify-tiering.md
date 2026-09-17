@@ -3601,6 +3601,40 @@ Freifahrtschein. Sie sagt nur: am 2026-09-07 fiel dieser Check einmal, ohne auff
 auf einem Baum, der ihn nicht beruehrt. Faellt er dir erneut, ist die Detailzeile aus dem Trail
 das Erste, was du sicherst — und dann ist es ein Befund, kein Eintrag mehr.
 
+**DIE ZWEITE SICHTUNG, 2026-09-17 — und damit ist es ein Befund** (Program-MAIN Fleet-Betrieb
+Slot 6; Vorschau-Job `ea94e89c2b07`, Artefakt `at=1789676849495`, Baum `fd056104`, Lauf
+`4966 gelaufen / 2 rot`).
+
+Der Abschnitt oben hat genau darum gebeten, und die Detailzeile war diesmal da:
+
+    FAIL  a dead explicitly-bound slot heals through exactly one exact-id Codex resume
+      (… codex resume '10000000-0000-4000-8000-000000000003'
+       --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false;
+       exec /bin/bash" / heals 7->7)
+
+**Die Konjunktion ist damit AUFGELOEST, und zwar gegen die naheliegende Vermutung.** Konjunkt (a)
+HAELT: die geheilte Pane traegt `codex resume '<id>'` mit der exakten Id im
+`pane_start_command`. Konjunkt (b) FIEL: `heals 7->7` — im Messfenster kam KEIN neues
+`self_heal_recreate` dazu. Das ist nicht „falsch geheilt", sondern „im Fenster gar nicht
+geheilt", und es ist der Arm, den die Bauart-Hypothese oben vorhersagt (7 000-ms-Warteschleife
+davor, `Bun.sleep(2500)` danach = zwei Zeitmargen unter Maschinenlast).
+
+**Die Rate nach zwei Sichtungen:** lokales Trail-Register `ran 497 / failed 0` — beide Sichtungen
+stammen von Laeufen, die nicht in diesem Register liegen (2026-09-07 Post-Land-Audit, 2026-09-17
+Helfer-Vorschau auf dem second-host). Die Zeile faellt also bisher AUSSCHLIESSLICH ausserhalb dieses
+Mac-Trails. Ob das der Host ist (wie §11.2s ihn gemessen hat) oder die Last, ist NICHT gemessen und
+ist die naechste Frage, nicht die Antwort.
+
+**Zugehoerigkeit, wie beim ersten Mal geprueft und wieder negativ:** `fd056104` aendert
+`server.ts` (Drain/`helperCandidateAgeMs`), `e2e/helper-portal.ts` und eine README; ein Zaehlen am
+Diff ergab 0 Treffer fuer `tickCodexRecovery`, `self_heal_recreate`, `sendText`, `composer`,
+`backspace`. Es gibt weiterhin keinen Pfad vom Diff zum Check.
+
+**Fuer den Leser einer DRITTEN Sichtung:** die offene Frage ist jetzt schmal und benannt — sichere
+`healsBefore->healsAfter` UND den Host. Ist es wieder `n->n` auf einem Nicht-Mac, dann ist die
+Klasse eine Zeitmarge und gehoert repariert (auf den terminalen Zustand warten statt auf eine
+feste Spanne); ist es `n->n+2` oder faellt Konjunkt (a), ist es ein anderer Befund als dieser.
+
 ### 11.2s Eine einundzwanzigste Familie — und die ERSTE mit einem gemessenen HOST-Unterschied: die D2-Vorbedingung in `e2e/watch.ts` las den Git-Anzeigecache, bevor er die Fixture-Writes tragen konnte (2026-09-06 — Wurzel aus elf hochgeladenen Helfer-`suite.log` gelesen, REPARIERT auf `fleet/260906075319-2fb8`, auf BEIDEN Hosts gruen bewiesen)
 
 `D2 setup: both closing lanes reached the spent shape, and every refusing lane differs from them in
@@ -4560,6 +4594,69 @@ eine PRODUKT-Frage — ob ein Idle-Gate, das über einen 100-ms-Poll gegen ein 5
 entscheidet, auf einer geladenen Maschine überhaupt entscheidbar ist. Fällt sie mit ROTER neuer
 Setup-Zeile, liegt es an der Fixture und die vierzehn Zeilen sind gar nicht erst gelaufen. Vorher
 wird am Produktpfad (`server.ts#wakeAuthor`, `server.ts#mergeJob`, die Alive-Probe) nichts geändert.
+
+### 11.2ab Eine neunundzwanzigste Familie: „an unattended send … rolls its own payload back out of the composer" in `e2e/watch.ts` — die Sonde liest den Zustand MITTEN im Backspace-Burst (2026-09-17 registriert von der Program-MAIN Fleet-Betrieb Slot 6; Rate ueber das GANZE Trail-Register gerechnet, Signatur aus den `detail`-Feldern gelesen, Mechanismus an der Sonde UND am Stand-in gelesen; NICHT repariert)
+
+**Anlass.** Die Vorschau zu `fd056104` (Job `ea94e89c2b07`, Baum `fd056104`) kam ROT mit
+`4966 gelaufen / 2 rot`. Diese Zeile war die eine der beiden, die in KEINEM Register stand — die
+andere ist §11.2t. Beide gehoerten dem Diff nicht; die Adjudikation stand, aber sie musste fuer
+diese Zeile jedes Mal neu gefuehrt werden. Genau das schliesst dieser Abschnitt.
+
+**Die Rate, ueber das ganze Trail-Register:** `ran 100 / failed 6` = **6 %**
+(`e2e-trail/*.jsonl` plus `$TMPDIR/fleet-e2e-trail`, alle Laeufe, in denen der Check lief). Das ist
+KEINE 1–3-%-Zeile: ein gruener Rerun beweist hier nichts, und er hat es auch noch nie getan.
+
+**EINE Signatur, sechs Sichtungen, sechs VERSCHIEDENE Baeume** (`be53c5f6`, `c0f476e6`, `96cbbeed`,
+`c5af0baf`, `2c608242`, `d8ece3a0`) — alle `isolated`, alle `{"lines":1,"phase":"backspace:none"}`,
+und die `residue` ist jedes Mal ein PRAEFIX derselben Zeichenkette, nur verschieden weit
+abgeschnitten:
+
+    "[fl"                                                        (3)
+    "[fleet inb"                                                 (10)
+    "[fleet inbox] 1 ungelesene Eintraege in der Inbox deines"    (58)
+    "… Programs c0ffeec0ffeec0ffeec0ffee (audit-red nicht mitgezae" (90)
+    "… (audit-red nicht mitgezaehlt:"                             (2x, je 97)
+
+**Die naheliegende Lesart ist FALSCH, und sie kostet sonst jede Adjudikation Zeit:** das sieht aus
+wie eine FREMDE Benachrichtigung, die in den Composer der Sonde faellt. Sie ist es nicht. Die
+Fixture pflanzt selbst ein Program `c0ffeec0ffeec0ffeec0ffee` mit zwei ungelesenen Inbox-Zeilen
+(`e2e/watch.ts`, Block `unattended-send fixture`), und `[fleet inbox] …` IST die Nutzlast, deren
+Rueckrollung der Check misst. Die `residue` ist also der REST DER EIGENEN Nutzlast.
+
+**Der Mechanismus, an beiden Seiten gelesen (nicht gemessen — siehe unten).**
+
+- `server.ts:6238` rollt mit EINEM Aufruf zurueck: `tmux send-keys -N <N> BSpace`,
+  N = Codepoints der Nutzlast. Fuer den Server ist das ein Akt.
+- Der Composer-Stand-in (`e2e-isolated.sh`, `fake-pi.c`) sieht daraus N EINZELNE Tastenanschlaege
+  und ruft bei JEDEM `save_state("backspace")`. Die Zustandsdatei durchlaeuft also N
+  Zwischenstaende, von „voll" bis „leer".
+- Die Sonde liest sie GENAU EINMAL. Ihre Warteschleife haengt an der Prompt-Journal-Zeile
+  (`holdPrompts()`), und die schreibt der Server, wenn der SEND verbucht ist — nicht, wenn die
+  Rueckrollung fertig ist. Der Proxy ist damit falsch: „Journalzeile da" ≠ „Backspaces durch".
+
+Die Laengen belegen das direkt: 3 / 10 / 58 / 90 / 97 Zeichen Rest einer Nutzlast von ~150 sind
+nicht „nicht zurueckgerollt", sondern „mitten im Zurueckrollen abgelesen" — bei einem echten
+Ausbleiben der Rueckrollung waere der Rest JEDES MAL die volle Nutzlast. Und `phase` ist
+`backspace:none`, nicht `entered`: die letzte verarbeitete Taste WAR ein Backspace. Der fallende
+Konjunkt ist ausschliesslich `holdComposerBuf === ""`; `holdPhase.startsWith("backspace:")` haelt.
+
+**Was NICHT gemessen ist, und es ist der Rest der Arbeit:** dass der Burst unter Last laenger
+dauert als das Fenster zwischen Journalzeile und Lesung, ist aus der Bauart GELESEN, nicht an einer
+Instanz beobachtet. Eine direkte Messung (Abtastung der Zustandsdatei waehrend eines erzwungenen
+Bursts, wie §11.2y sie fuehrt) wuerde die Klasse schliessen statt sie nur zu benennen. Solange die
+fehlt, ist dies eine FAMILIE mit gelesener Ursache, kein bewiesener Sonden-Flake.
+
+**Reparatur-Richtung, wenn jemand sie nimmt:** nicht den Burst verlangsamen und keine Schlafzeit
+addieren — auf den TERMINALEN Zustand warten, so wie der Block eine Zeile hoeher schon auf die
+Journalzeile wartet: `holdComposerBuf === ""` in einer beschraenkten Schleife abfragen und erst
+danach urteilen. Das macht den Check strenger, nicht lockerer: ein Composer, der NIE leer wird,
+faellt dann immer noch — und faellt dann als er selbst.
+
+**Fuer den Leser eines roten Laufs:** eine Zeile mit `phase:"backspace:none"` UND einer `residue`,
+die ein echtes Praefix von `[fleet inbox] 1 ungelesene Eintraege …` ist, ist diese Familie. Eine
+Zeile mit `phase:"entered"`, mit voller Nutzlast als `residue`, oder mit einer ANDEREN Zeichenkette
+ist es NICHT — dann ist die Rueckrollung wirklich ausgeblieben, und das ist ein Produktbefund an
+`server.ts:6221-6238`, der dem gehoert, der ihn sieht.
 
 ## 15. Die Scratch-Halde unter `$TMPDIR` — drei Klassen, gemessen, und wer sie ab jetzt besitzt (2026-09-17)
 

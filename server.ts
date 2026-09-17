@@ -6138,6 +6138,11 @@ async function seedInbound(): Promise<void> {
     bumpInbound(e.slot, e.ts, e.bytes);
   }
 }
+// ORDERING, because this reaches far down the file: contextFill reads module-level Maps declared
+// near it, ~23 k lines below, so this function is only callable after module evaluation. Every send
+// is — they all hang off a request or a tick. A future BOOT-time sender would be the first
+// exception and would fail loudly in their temporal dead zone (the hazard commsFor documents one
+// region above); no boot path reaches sendText today, checked at both of the boot awaits.
 function auditSend(s: Slot, path: SendPath, bytes: number,
   acceptance: Acceptance | ReturnType<typeof sendFailureDelivery>): void {
   const fill = contextFill(s);

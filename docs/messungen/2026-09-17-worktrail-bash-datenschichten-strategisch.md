@@ -1,9 +1,9 @@
 ---
 frage: Welche Datenschichten des Fleets sind aggregiert, wer liest die Aggregate, und an welcher Stelle greifen Orchestrator, Program-MAIN und Lane zu Bash, weil die passende Schicht unbekannt ist, nicht passt oder fehlt?
-urteil: Dem Fleet fehlen kaum Schichten, es fehlen Türen zu ihnen. Von 283 symptomatischen Bash-Aufrufen in neun Sessions dreier Rollen treffen 241 (85 %) einen Fall, für den eine Aggregation schon existiert (95 unbekannt, 146 falsch geschnitten), nur 42 brauchen einen Neubau. Fünf Ledger mit Leseroute werden zu 91,9 % roh gelesen (1.480 zu 131 in 14 Tagen), das Lane-Dossier hat null Agenten-Leser, und die drei Verb-Vorschläge vom 15.09. liegen ungefilet als Notiz 9d610a68, während ihr Auth-Befund in drei von vier Haupt-Checkout-Sessions wiederkehrt.
+urteil: Dem Fleet fehlen kaum Schichten, es fehlen Türen zu ihnen. Von 283 symptomatischen Bash-Aufrufen in neun Sessions dreier Rollen treffen 241 (85 %) einen Fall, für den eine Aggregation schon existiert (95 unbekannt, 146 falsch geschnitten), nur 42 brauchen einen Neubau. Fünf Ledger mit Leseroute werden zu 91,9 % roh gelesen (1.480 zu 131 in 14 Tagen), das Lane-Dossier hat null Agenten-Leser, und die drei Verb-Vorschläge vom 15.09. liegen ungefilet als Notiz 9d610a68, während ihr Auth-Befund in drei von vier Haupt-Checkout-Sessions wiederkehrt. Nachtrag 2026-09-17: neben den Lesungen steht eine zweite Kostenklasse, die Antwortkörper von Mutationen — in den neun Sessions zu 96 % von Hand geschützt und mit 1.191 B unter jedem Posten des Schnitts, ungeschützt aber der größte (die 21 Program-Callsites geben im Mittel 18.511 B zurück, bis 41.587 B, davon rund die Hälfte inbox).
 bereich: [datenlayer, worktrail, bash, cli]
-belege: [docs/messungen/2026-09-15-worktrail-orchestrator-bash-datenschichten.md, server.ts#laneDossier, server.ts#ledgersView, server.ts#programExecutionView, ctl.sh, state.sh, register.sh, land-quality.ts]
-nicht-gemessen: Codex- und Pi-Sessions (Astra, GLM), Browser-Leser der Routen, tatsächliche Ersparnis der drei Auftragszeilen, was Agenten aus einer Pane-Lesung brauchen, Modellkosten je Aufruf.
+belege: [docs/messungen/2026-09-15-worktrail-orchestrator-bash-datenschichten.md, server.ts#laneDossier, server.ts#ledgersView, server.ts#programExecutionView, server.ts#publicProgram, server.ts#openFleetReport, server.ts#readProgramInboxEntry, server/http.ts#json, ctl.sh, state.sh, register.sh, land-quality.ts]
+nicht-gemessen: Codex- und Pi-Sessions (Astra, GLM), Browser-Leser der Routen, tatsächliche Ersparnis der drei Auftragszeilen, was Agenten aus einer Pane-Lesung brauchen, Modellkosten je Aufruf, Körper geschützter Mutations-Antworten (nur über den Mittelwert ihrer Route geschätzt), Grund der Schutzquote.
 stand: 2026-09-17
 ---
 
@@ -39,6 +39,13 @@ Lauf 1 §2 (Aufruf, Bytes, Join über `tool_use_id`) und fragt eine Ebene höher
    symptomatischen Aufrufe (65 %) und 195.897 von 368.517 Bytes (53 %). Alle drei sind (a)- oder
    (b)-Arbeit; kein Neubau einer Schicht steht über der Linie.
 4. **Kennzahl.** Roh-Anteil der Ledger-Lesungen, heute **91,9 %** (§6).
+5. **Zweite Kostenklasse (Nachtrag 2026-09-17, §5b).** Neben den Lesungen stehen die Antwortkörper
+   von Mutationen. In den neun Sessions sind 150 POST-Statements 96 % von Hand geschützt
+   (`-o /dev/null` oder eine Pipe); die 1.191 B, die dennoch im Kontext landen, stellen die Klasse
+   unter jeden Posten von §5. Ungeschützt wäre sie der größte: die 21 Program-Callsites geben im
+   Mittel 18.511 B je Aufruf zurück (aktive Programme: Median 22.798 B, max 41.587 B, davon rund
+   die Hälfte `inbox`), 314.703 B auf 17 Aufrufe in 14 Tagen — mehr als P2. Der Rang der Klasse
+   hängt an der Schutzquote, nicht an der Byte-Summe.
 
 Dass A/B/C aus Lauf 1 §6 bis heute nicht gefilet sind, ist gemessen: im lebenden `fleet.json` nennt
 sie genau eine Zeile, `9d610a68`, Status `pending`, Art `notiz`; `CTL_VERBS` in `ctl.sh` ist auf
@@ -229,6 +236,7 @@ Lauf 1 §5.1 unverändert.
 | u1 | Pane-Blick (`capture-pane`) | c | 29 / 102.956 B | Lauf 1 E: weiter 0 zugesagt |
 | u2 | Deploy-Status | a/b/c | 10 / 8.092 B | **C zurückgestellt** |
 | u3 | Quota-Sensor | c | 9 / 8.996 B | gehört `docs/messungen/2026-09-17-sub-routing-regelbarkeit.md` |
+| u4 | Schreib-Quittungen (Antwortkörper von POSTs) | b | 5 / 1.191 B; 96 % der Mutationen sind von Hand geschützt | **Nachtrag §5b**, 2026-09-17 |
 
 **Warum A ersetzt wird.** A wollte eine Sessions-Projektion (`ctl sessions`). Die Messung über drei
 Rollen zeigt: der Schaden ist nicht das Board (BOARD 13 Aufrufe / 10.366 B), sondern dass der
@@ -305,6 +313,159 @@ Reihenfolge: P1 zuerst, weil P3 auf demselben Resolver-Pfad liegt und P1 die Ver
 berühren beide `ctl.sh`, `e2e/ctl.ts` und `docs/controller.md` — nacheinander landen, nicht
 parallel. P2 ist davon bis auf `ctl.sh` unabhängig.
 
+## 5b. Die zweite Kostenklasse: Schreib-Quittungen (Nachtrag 2026-09-17, Lane `fleet/260917193537-2b97`)
+
+Jede Familie in §4.2 ist eine **Lese**-Familie. Das ist kein Zufall der Auswahl, sondern eine
+Eigenschaft des Instruments: die Tag-Regeln in §9.1 klassifizieren einen Aufruf danach, **welche
+Frage** er an eine Datenschicht stellt, und ein `POST` stellt keine. Die Antwort auf eine Mutation
+kommt trotzdem als Werkzeugausgabe in den Kontext zurück — ungefragt und in voller Länge. Diese
+Klasse hat in der Tabelle oben keine Zeile, und dieser Nachtrag misst sie mit **derselben
+Rechenregel**: Kostenbereich = beobachtete Aufrufe und Bytes im selben Korpus, Obergrenze einer
+Ersparnis, keine Zusage.
+
+Eine Größe kommt dazu, die keine Lese-Familie hat: die **Disziplin des Aufrufers**. Jedes
+`curl`-Statement mit `-X POST` fällt in genau eine von drei Klassen — `discarded` (`-o /dev/null`,
+`>/dev/null`), `filtered` (eine Pipe nach `jq`, `head`, `python3`, …) oder `unguarded`. Nur ein
+`unguarded` Statement lässt seine Quittung in den Kontext. Die Klassifikation ist quote-bewusst
+(§9.3): ein mehrzeiliges `curl` trägt seine URL hinter der `-d`-Nutzlast und seine Pipe auf der
+Folgezeile, und ein naiver Zeilen-Split zählt beide falsch — er hat in der ersten Fassung dieser
+Messung die ungeschützten Statements überschätzt: 1.422 statt 802 in 14 Tagen (Faktor 1,8) und 20
+statt 6 in den neun Sessions (Faktor 3,3). Die Zahlen unten sind die der quote-bewussten Fassung.
+
+### 5b.1 In der Einheit der §5-Tabelle: neun Sessions
+
+| | Statements | davon `filtered` | `discarded` | `unguarded` | Quittungs-Bytes im Kontext |
+|---|---:|---:|---:|---:|---:|
+| POST in den neun Sessions aus §2 | 150 | 104 | 40 | **6** | **1.191 B** auf 5 Aufrufe |
+
+Die sechs ungeschützten Statements verteilen sich auf fünf Aufrufe: zwei Event-Acks in einem Aufruf
+(1.133 B zusammen), zwei `post-land-audits/adjudicate`-Fehler (je 37 B) und ein
+`/api/dispatch` (21 B). **96 % aller Mutationen in diesem Korpus sind von Hand geschützt.**
+
+Damit liegt die Klasse in der Einheit dieser Tabelle **unter jedem Posten von §5**, auch unter dem
+kleinsten zurückgestellten (u2 Deploy-Status, 8.092 B) — um den Faktor 6,8. Sie steht unter der
+Linie, und das ist das Ergebnis, nicht ein Zwischenstand.
+
+### 5b.2 Flottenweit, 14 Tage: wo die Klasse ihr Gewicht hat
+
+Dieselbe Sonde über alle Claude-Transkripte im Fenster von §6 (03.09.–17.09. 07:28Z, 411 Sessions
+mit Bash):
+
+| | Statements | `filtered` | `discarded` | `unguarded` | Quittungs-Bytes |
+|---|---:|---:|---:|---:|---:|
+| POST, 14 Tage | 5.457 | 4.227 | 428 | **802** (14,7 %) | **522.372 B** auf 776 Aufrufe |
+
+Das sind 1.271 B je Session mit Bash; auf neun Sessions skaliert **11.439 B** — zwischen u3
+(8.996 B) und P1 (43.872 B), also Rang 5 von dann sieben Posten. Die neun gemessenen Sessions liegen
+unter diesem Schnitt, weil fünf davon Lanes sind und eine Lane fast nur liest (§4.4).
+
+Die Quittungen sind stark ungleich verteilt. Die Stichprobenspalte zählt die Aufrufe, deren Quittung
+sich eindeutig einem Statement zuordnen ließ; Mittel und max beziehen sich auf sie:
+
+| Route | Aufrufe 14 d | Stichprobe | Summe B | Mittel | max |
+|---|---:|---:|---:|---:|---:|
+| `POST /api/self/fleet-report` | 606 | 315 | **381.461** | 1.210 | 4.725 |
+| `POST /api/self/events/:id/ack` | 1.028 | 46 | 39.004 | 847 | 4.593 |
+| `POST /api/self/tasks` | 149 | 7 | 12.690 | 1.812 | 4.521 |
+| `POST /api/self/watch` | 818 | 40 | 12.553 | 313 | 2.423 |
+| `POST /api/self/notes/…` | 55 | 8 | 10.252 | 1.281 | 2.009 |
+| `POST /api/self/tasks/:id/land` | 303 | 63 | 6.156 | 97 | 308 |
+| `POST /api/self/notes/:id/verdict` | 42 | 8 | 4.730 | 591 | 978 |
+
+`POST /api/self/fleet-report` trägt allein 73 % der gemessenen Quittungs-Bytes. Der Grund steht in
+`server.ts#openFleetReport`: die letzte Zeile gibt `{ ok: true, report, inbox: entry.id }` zurück,
+und `report.text` ist derselbe bis zu 4.000 Zeichen lange Text, den die Lane gerade selbst
+geschrieben hat. Das ist der reinste Fall der Klasse — eine Quittung, deren gesamter Inhalt aus dem
+Request-Body des Aufrufers stammt. Er ist bereits gefilet (`c05f8b05`, „Echo-Diaet", Status
+`pending`), und dieser Nachtrag ist seine Bezifferung, kein zweiter Auftrag.
+
+Das Gegenbeispiel steht eine Tür weiter: `server.ts#readProgramInboxEntry` quittiert mit
+`{ ok, existing, entry }` — nur dem Objekt, auf das der Schreibakt gewirkt hat, nicht dem Program,
+das es enthält. 145 Aufrufe in 14 Tagen, Mittel 263 B. Der Schnitt, den die Program-Türen nicht
+haben, existiert also im selben Modul schon.
+
+### 5b.3 Die Program-Callsites: größter Einzeltreffer, kleinste Häufigkeit
+
+**Inventur-Korrektur zuerst.** Der Auftrag nennt 18 Program-Callsites („14x `publicProgram(program)`
+plus `server.ts:27733, :28087, :28096, :28111`"). Am Baum dieser Lane (`b3a67618`) lösen diese vier
+Zeilennummern auf eine schließende Klammer und drei Kommentarzeilen auf — die übliche Rotte eines
+Zeilenverweises in Gegenwarts-Prosa. Mechanisch gezählt sind es **21 Mutations-Callsites**, die
+einen vollen Program-Record zurückgeben: 13 über `publicProgram(program)` und 8 über das rohe
+`program`/`existing` im Aktions-Router (`confirm`, `activate`, `complete`) und in
+`POST /api/programs` / `POST /api/self/programs`. Nicht dazu zählen `publicProgramListRow` (die
+Owner-Liste, dort schon 2026-09-05 um 47,3 % geschnitten), `programDigest` (vier Felder) und
+`POST /api/programs/:id/release-valid`, das `{ok, stamp, results}` liefert und keinen Record.
+
+**Körpergröße.** `server/http.ts#json` serialisiert mit `JSON.stringify` ohne Trenner-Whitespace,
+`publicProgram` ist `{...program}` plus normalisiertes `founding` — die Antwort ist damit exakt aus
+dem lebenden Zustand nachrechenbar. Über die 71 Programme im lebenden `fleet.json` (Messzeit
+2026-09-17 21:36 Ortszeit), Antwortkörper `{"ok":true,"program":…}`:
+
+| | n | Median | Mittel | max |
+|---|---:|---:|---:|---:|
+| alle Programme | 71 | 3.754 B | 4.833 B | 41.587 B |
+| **Status `active`** | 4 | **22.798 B** | **23.877 B** | **41.587 B** |
+
+Die aktiven Programme — genau die, die eine Mutation anfasst — sind die schwersten. Beim größten
+(`f170dc46`, 41.587 B ≈ 10.400 Token) sind 22.591 B (54 %) `inbox`, beim vom Auftrag genannten
+`f9dc8e10` 8.463 B von 17.446 B (48,5 %); der Auftrag nennt 17.493 B, die Differenz von 47 B ist
+der Datensatz, der sich seit seiner Messung bewegt hat. Mit einer Promotion hat die `inbox` nichts
+zu tun.
+
+**Häufigkeit und Produkt.** 18 POST-Statements auf diese Türen in 14 Tagen, in denselben
+Transkripten gezählt wie §6 — 17 davon `filtered`, genau eines `unguarded`:
+
+| | Aufrufe 14 d | Körper aus dem lebenden Zustand |
+|---|---:|---:|
+| Produkt, wären alle ungeschützt | 17 auflösbar | **314.703 B** (Mittel 18.511 B/Aufruf) |
+| tatsächlich im Kontext gelandet | 1 | **4.233 B** |
+
+Die Körperspalte liest den lebenden Zustand, und der bewegt sich: ein zweiter Lauf desselben
+Skripts 20 Minuten später ergab 41.496 statt 41.587 B für `f170dc46` und in der Summe 314.248 statt
+314.703 B (−0,14 %). Die Zahlen oben gehören zur Lesung um 21:36; eine Wiederholung reproduziert die
+Größenordnung und die Rangaussage, nicht die letzte Stelle.
+
+Das ist der ganze Befund dieser Klasse in zwei Zeilen. **Ungeschützt wäre sie mit 314.703 B Rang 1
+der §5-Tabelle, über P2 (104.361 B); geschützt ist sie mit 4.233 B letzter Platz.** Der Unterschied
+ist kein Serververhalten, sondern siebzehnmal ein von Hand getipptes `| jq`. Die Größe, an der die
+Klasse hängt, ist die Schutzquote, nicht die Byte-Summe.
+
+### 5b.4 Wo die Klasse steht
+
+| Rang in §5 nach Bytes | Posten | 9-Session-Bytes |
+|---|---|---:|
+| 1 | P2 Auftrags-Dossier | 104.361 |
+| 2 | u1 Pane-Blick | 102.956 |
+| 3 | P3 `ctl audits` | 47.664 |
+| 4 | P1 Türen | 43.872 |
+| — | *Linie von §5* | |
+| 5 | u3 Quota-Sensor | 8.996 |
+| 6 | u2 Deploy-Status | 8.092 |
+| **7** | **u4 Schreib-Quittungen (dieser Nachtrag)** | **1.191** |
+
+**u4 steht unter der Linie, und §5 bleibt unverändert.** Drei Sätze dazu, damit die Zahl nicht
+falsch gelesen wird:
+
+1. **Sie ist klein, weil sie schon bezahlt wird.** 96 % der Mutationen in den neun Sessions und
+   85 % in 14 Tagen tragen einen handgeschriebenen Schutz. Was die Tabelle misst, ist der Rest nach
+   dieser Abwehr — nicht, was die Türen senden. Schätzt man die Türen ohne jeden Schutz über den
+   beobachteten Mittelwert je Route, liegt die Klasse bei rund 3,4 MB in 14 Tagen (4.766 der 5.457
+   Aufrufe liegen auf einer Route mit Größenstichprobe) gegen 522 KB tatsächlich; die Schätzung
+   trägt die Annahme, dass geschützte und ungeschützte Aufrufe derselben Route gleich große
+   Antworten bekommen, und ist darum kein Rangargument.
+2. **Sie hat einen Schwanz, den der Korpus nicht enthält.** In den neun Sessions steht keine
+   einzige Program-Mutation. Ein einziger ungeschützter Griff an eine aktive Program-Tür kostet im
+   Mittel 18.511 B — mehr als P1 und u3 zusammen in neun Sessions. Der Owner-Anlass vom 17.09.
+   („von einer Welle an Text erschlagen") ist genau dieser Fall und keine Ausnahme im Kleinen.
+3. **Sie ist billig zu beheben und trotzdem kein Auftrag aus dieser Messung.** Der Schnitt liegt an
+   einer Stelle (`c05f8b05`), und der Rang rechtfertigt keine zweite Zeile daneben. Eine Rangliste
+   ohne diese Kostenart war unvollständig; mit ihr bleibt der Schnitt von §5 derselbe.
+
+Nicht gemessen: welche der geschützten Aufrufe ihre Filterung nur deshalb tragen, weil ein früherer
+Aufrufer einmal erschlagen wurde (die Quittungs-Disziplin steht in keinem Regelbuch dieses Repos);
+die Modellkosten je Token; POSTs aus Codex-/Pi-Sessions und aus dem Browser; und der Körper
+geschützter Antworten, der nur über den Mittelwert seiner Route geschätzt ist.
+
 ## 6. Stehende Kennzahl (Frage 4)
 
 **Roh-Anteil der Ledger-Lesungen** = Roh-Lesungen / (Roh-Lesungen + Routen-Lesungen), über die fünf
@@ -361,6 +522,12 @@ Analysen berühren sich an drei Stellen, und an keiner habe ich ihre Arbeit gema
   Haupt-Checkouts, also auch die frühere Controller-Linie.
 - **`prompts.jsonl`.** Die 52 Rohlesungen treffen zum Teil die gleichnamige Datei einer E2E-Instanz.
 - Modellkosten, interne Schleifenrunden eines Aufrufs und HTTP-Bytes: wie Lauf 1 §2, unbekannt.
+- **Nachtrag §5b — Körper geschützter Antworten.** Was ein `| jq` abgefangen hat, ist im Transkript
+  nicht mehr da. Für die Program-Türen ist der Körper aus dem lebenden `fleet.json` nachgerechnet
+  (Stand 2026-09-17 21:36, nicht der Stand zur Aufrufzeit — Program-Records wachsen, die Zahl ist
+  damit für ältere Aufrufe eher zu hoch); für alle anderen Routen nur über den Mittelwert ihrer
+  ungeschützten Stichprobe geschätzt. Ebenfalls offen: warum ein Aufrufer schützt (keine Regel in
+  `AGENTS.md` oder `CLAUDE.md` verlangt es) und ob die vier `inbox`-tragenden Programme typisch sind.
 - Nicht geöffnet: `.env`, Token-Werte, fremde Prozess-Kommandozeilen. `fleet.json` wurde nur für
   Task-Texte und -Status gelesen. In allen ausgegebenen Kommandos sind Hex-Ketten ≥ 32 Zeichen,
   `TOKEN=`- und `Bearer`-Werte vor der Anzeige ersetzt.
@@ -582,6 +749,169 @@ for k in PROBES:
     else: print(f"{k:34} n=0")
 ```
 
+### 9.3 `receipts.py` — Schreib-Quittungen, Schutzquote, Program-Körper (Nachtrag §5b)
+
+Liest Transkripte und das lebende `fleet.json` (nur `programs`), schreibt nach stdout, führt
+kein Transkript-Kommando aus und ruft keine Route auf — eine Mutation zu messen, indem man sie
+auslöst, wäre ein Schreibakt auf dem lebenden Fleet. Aufruf: `python3 receipts.py`.
+Die Assertions prüfen, dass jede der neun Sessions genau ein Transkript hat und Bash-Aufrufe
+trägt. Gegenprobe der Bytedefinition: dasselbe Leseverfahren reproduziert die Tabelle in §2
+zeilengenau (1.204 Aufrufe, 1.942.334 B).
+
+```python
+# Schreib-Quittungen: was eine MUTATION dem Aufrufer zurueckgibt, den er nicht angefordert hat.
+# Einheit und Fenster wie measure.py (§9.1): Aufruf = Bash-tool_use, Bytes = utf-8-Laenge des
+# tool_result, Sidechain aus, Transkripte eingefroren auf CUTOFF.
+import collections, glob, json, os, re, statistics, time
+ROOT = os.path.expanduser('~/.claude/projects')
+CUTOFF = '2026-09-17T07:28:47.000Z'; SINCE = '2026-09-03T00:00:00.000Z'
+SAMPLE = [('O1','c21e730a'),('O2','6ba575c0'),('M1','2127fa4b'),('M2','f91abc28'),
+          ('L1','7f7b1788'),('L2','32751363'),('L3','85053419'),('L4','796ad3b0'),('L5','1e2eb50c')]
+CURL = re.compile(r"curl\b"); POSTV = re.compile(r"-X\s*(POST|PUT|DELETE|PATCH)")
+DISC = re.compile(r"-o\s*/dev/null|>\s*/dev/null")
+PIPE = re.compile(r"\|\s*(jq|head|python3|cut|grep|wc|tail|sed|tr)")
+ROUTE = re.compile(r"/api/[A-Za-z0-9/_\-]+"); HEX = re.compile(r"^[0-9a-f]{8,}$|^\d+$|^\$")
+START = re.compile(r'\{"(ok|error)"'); dec = json.JSONDecoder()
+
+def segments(cmd):
+    """Kommando in Statements zerlegen — quote-bewusst. Ein Trenner (; && || Zeilenumbruch) zaehlt
+    nur AUSSERHALB von Anfuehrungszeichen, und ein Zeilenumbruch nach \\ ist eine Fortsetzung.
+    Ohne das schneidet ein mehrzeiliges curl seine eigene URL ab (die -d-Nutzlast steht dazwischen)
+    und eine Pipe auf der Folgezeile wird uebersehen — beides faelscht die Messung nach unten."""
+    out = []; buf = ''; q = None; i = 0
+    while i < len(cmd):
+        c = cmd[i]
+        if q:
+            buf += c
+            if c == q and cmd[i-1] != '\\': q = None
+            i += 1; continue
+        if c in '"\'': q = c; buf += c; i += 1; continue
+        if c == '\\' and i + 1 < len(cmd) and cmd[i+1] == '\n': buf += ' '; i += 2; continue
+        if c == '\n' or c == ';': out.append(buf); buf = ''; i += 1; continue
+        if cmd[i:i+2] in ('&&', '||'): out.append(buf); buf = ''; i += 2; continue
+        buf += c; i += 1
+    out.append(buf)
+    return [s for s in out if CURL.search(s)]
+def stmts(cmd): return segments(cmd)
+def guard_of(s):                      # die drei Disziplinen, mit denen ein Aufrufer sich wehrt
+    return 'discarded' if DISC.search(s) else ('filtered' if PIPE.search(s) else 'unguarded')
+def norm(p): return '/'.join(':id' if HEX.match(x) else x for x in p.split('/'))
+def receipt_bytes(t):
+    """Bytes jedes Quittungsblocks im Ergebnis. Eine im Transkript ABGESCHNITTENE Quittung zaehlt
+    bis zum Ende des Textes — genau so viel ist im Kontext gelandet."""
+    tot = 0; i = 0
+    while True:
+        m = START.search(t, i)
+        if not m: break
+        j = m.start()
+        try: _, e = dec.raw_decode(t, j); tot += len(t[j:e].encode()); i = e
+        except Exception: tot += len(t[j:].encode()); break
+    return tot
+def read(f):
+    calls = {}; res = {}
+    for line in open(f, encoding='utf-8', errors='replace'):
+        try: r = json.loads(line)
+        except Exception: continue
+        if r.get('isSidechain'): continue
+        ts = r.get('timestamp') or ''
+        for x in (r.get('message') or {}).get('content') or []:
+            if not isinstance(x, dict): continue
+            if x.get('type') == 'tool_use' and x.get('name') == 'Bash' and SINCE <= ts <= CUTOFF:
+                calls[x['id']] = x['input'].get('command', '')
+            if x.get('type') == 'tool_result':
+                c = x.get('content')
+                if isinstance(c, list): c = ''.join(y.get('text','') for y in c if isinstance(y, dict))
+                res[x['tool_use_id']] = c if isinstance(c, str) else json.dumps(c)
+    return calls, res
+
+# --- A: die neun Sessions aus §2, Einheit der §5-Tabelle -----------------------------------------
+g9 = collections.Counter(); n9 = 0; b9 = 0; rows9 = []
+for key, sid in SAMPLE:
+    fs = glob.glob(ROOT + '/*claude-fleet*/' + sid + '*.jsonl'); assert len(fs) == 1, (sid, fs)
+    calls, res = read(fs[0])
+    assert calls, sid
+    for i, cmd in calls.items():
+        un = []
+        for s in stmts(cmd):
+            if not POSTV.search(s): continue
+            g = guard_of(s); g9[g] += 1
+            if g == 'unguarded': un.append(s)
+        if not un: continue
+        b = receipt_bytes(res.get(i, '')); n9 += 1; b9 += b
+        m = ROUTE.search(un[0]) or ROUTE.search(cmd)
+        rows9.append((key, norm(m.group(0)) if m else '?', b))
+print('A · neun Sessions §2:', dict(g9), '| POST-Statements', sum(g9.values()))
+print(f'A · Aufrufe mit ungeschuetzter Quittung: {n9} / Quittungs-Bytes: {b9}')
+for r in sorted(rows9, key=lambda r: -r[2]):
+    if r[2]: print(f'    {r[0]} {r[1]:38} {r[2]:6}')
+
+# --- B: flottenweit, 14 Tage ---------------------------------------------------------------------
+g14 = collections.Counter(); byroute = collections.Counter(); per = collections.defaultdict(list)
+nb = 0; bb = 0; sess = set(); t0 = time.mktime(time.strptime(SINCE[:10], '%Y-%m-%d'))
+for d in os.listdir(ROOT):
+    if 'claude-fleet' not in d: continue
+    for f in glob.glob(os.path.join(ROOT, d, '*.jsonl')):
+        if os.stat(f).st_mtime < t0: continue
+        calls, res = read(f)
+        if calls: sess.add(f)
+        for i, cmd in calls.items():
+            un = []
+            for s in stmts(cmd):
+                if not POSTV.search(s): continue
+                g = guard_of(s); g14[g] += 1
+                m = ROUTE.search(s); byroute[norm(m.group(0)) if m else '?'] += 1
+                if g == 'unguarded': un.append(s)
+            if not un: continue
+            b = receipt_bytes(res.get(i, '')); nb += 1; bb += b
+            if len(un) == 1:
+                m = ROUTE.search(un[0])
+                if m: per[norm(m.group(0))].append(b)
+print(f'\nB · 14 Tage, {len(sess)} Sessions mit Bash: POST-Statements {sum(g14.values())}', dict(g14))
+print(f'B · Aufrufe mit ungeschuetzter Quittung: {nb} / Quittungs-Bytes: {bb}'
+      f' = {bb/len(sess):.0f} B je Session')
+print(f"{'route':44} {'Aufrufe':>7} {'Stichpr.':>8} {'Summe B':>8} {'Mittel':>7} {'max':>7}")
+for rt, v in sorted(per.items(), key=lambda kv: -sum(kv[1]))[:14]:
+    if not sum(v): continue
+    print(f'{rt:44} {byroute[rt]:7} {len(v):8} {sum(v):8} {sum(v)//len(v):7} {max(v):7}')
+
+# --- C: die Program-Callsites — Koerpergroesse aus dem lebenden Zustand ---------------------------
+live = json.load(open(os.path.expanduser('~/claude-fleet/fleet.json')))
+size = {p['id']: len(json.dumps({'ok': True, 'program': p}, separators=(',', ':'),
+                                ensure_ascii=False).encode()) for p in live['programs']}
+xs = sorted(size.values()); act = sorted(size[p['id']] for p in live['programs'] if p['status'] == 'active')
+print(f'\nC · {len(xs)} Programme im lebenden fleet.json: Median {statistics.median(xs):.0f} B,'
+      f' Mittel {sum(xs)//len(xs)} B, max {xs[-1]} B')
+print(f'C · davon {len(act)} aktive: Median {statistics.median(act):.0f} B, Mittel {sum(act)//len(act)} B,'
+      f' max {act[-1]} B')
+PID = re.compile(r"/api/programs/([0-9a-f]{8,})")
+hits = []
+for d in os.listdir(ROOT):
+    if 'claude-fleet' not in d: continue
+    for f in glob.glob(os.path.join(ROOT, d, '*.jsonl')):
+        if os.stat(f).st_mtime < t0: continue
+        for line in open(f, encoding='utf-8', errors='replace'):
+            if '"name":"Bash"' not in line: continue
+            try: r = json.loads(line)
+            except Exception: continue
+            if r.get('isSidechain'): continue
+            ts = r.get('timestamp') or ''
+            if not (SINCE <= ts <= CUTOFF): continue
+            for x in (r.get('message') or {}).get('content') or []:
+                if not (isinstance(x, dict) and x.get('type') == 'tool_use' and x.get('name') == 'Bash'): continue
+                for s in stmts(x['input'].get('command', '')):
+                    if not POSTV.search(s) or 'release-valid' in s: continue   # release-valid gibt {ok,stamp,results}
+                    m = PID.search(s)
+                    if m: hits.append((norm(ROUTE.search(s).group(0)), m.group(1), guard_of(s), size.get(m.group(1))))
+known = [h for h in hits if h[3]]
+print(f'C · Program-Mutationen 14 d: {len(hits)} Statements,'
+      f' {collections.Counter(h[2] for h in hits)}')
+for h in sorted(hits, key=lambda h: -(h[3] or 0)):
+    print(f"    {h[0]:40} {h[1][:8]} {h[2]:10} {h[3] if h[3] else 'n/a'}")
+print(f'C · Summe waeren alle ungeschuetzt: {sum(h[3] for h in known)} B auf {len(known)} aufloesbare Aufrufe'
+      f' (Mittel {sum(h[3] for h in known)//len(known)} B)')
+print(f'C · tatsaechlich gelandet: {sum(h[3] for h in known if h[2] == "unguarded")} B')
+```
+
 ## 10. Entscheidungs-Trail
 
 ```
@@ -594,6 +924,11 @@ ts	phase	entscheidung	warum	beleg	ergebnis
 2026-09-17T07:41Z	kennzahl	Roh-Anteil statt Trefferquote als stehende Zahl	Trefferquote hängt an 156 Handkorrekturen	§6	91,9 %
 2026-09-17T07:42Z	vorarbeit	A/B/C im lebenden fleet.json und im Archiv gesucht	Auftrag nennt „nicht gefilet" als Befund, nicht als Annahme	Zeile 9d610a68, notiz, pending	bestätigt
 2026-09-17T07:45Z	schnitt	Linie nach drei Posten; Pane-Blick darunter	einzige c-Familie mit Volumen, aber Bedarf ungemessen	§5	3 valide Karten
+2026-09-17T19:5xZ	nachtrag	Schreib-Quittungen als eigene Klasse gemessen, nicht in eine §4.2-Familie gelegt	die Tag-Regeln klassifizieren die FRAGE eines Aufrufs; ein POST stellt keine	§5b	u4, 5 Aufrufe / 1.191 B
+2026-09-17T20:0xZ	nachtrag	Statement-Split quote-bewusst statt zeilenweise	ein mehrzeiliges curl trägt URL und Pipe hinter der -d-Nutzlast	§9.3 segments()	802 statt 1.422 ungeschützt in 14 d
+2026-09-17T20:1xZ	nachtrag	Program-Körper aus dem lebenden fleet.json nachgerechnet, Route NICHT aufgerufen	eine Mutation zu messen, indem man sie auslöst, ist ein Schreibakt	§5b.3	314.703 B auf 17 Aufrufe
+2026-09-17T20:2xZ	nachtrag	Callsite-Zahl korrigiert: 21 statt der im Auftrag genannten 18	die vier genannten Zeilennummern lösen am Baum auf Klammer und Kommentar auf	§5b.3	13 publicProgram + 8 roh
+2026-09-17T20:3xZ	nachtrag	u4 unter der Linie gelassen, §5 nicht neu bewertet	1.191 B sind Faktor 6,8 unter u2; der Schnitt von c05f8b05 deckt den Treffer	§5b.4	§5 unverändert
 ```
 
 ## 11. Unveränderte Skriptausgabe und Register

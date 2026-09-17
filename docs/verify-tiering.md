@@ -4343,3 +4343,104 @@ Lauf, nicht eine Häufigkeit — bei einer Basisrate von 2 von 9 wäre ein einze
 Beleg. Was ihn trägt, ist der Mechanismus oben, am Code gelesen; der Lauf zeigt, dass die
 hergestellte Marge drei Grössenordnungen über der alten liegt. **Ein S1-Rot NACH dieser Reparatur
 ist wieder ECHT und deins** — und sein Detail nennt dann den Schritt, der ausgegeben hat.
+
+## 15. Die Scratch-Halde unter `$TMPDIR` — drei Klassen, gemessen, und wer sie ab jetzt besitzt (2026-09-17)
+
+`e2e-isolated.sh` hat genau EINE Aufbewahrungsnaht, und sie ist eine Zeile:
+
+    if [ "$code" = 0 ]; then rm -rf "$DIR"; else echo "kept test instance for inspection: $DIR"; fi
+
+Das Behalten ist ABSICHT — der Inhalt ist das Post-mortem eines roten Laufs. Darum räumte hier nie
+etwas, und die Halde hatte seit `05fc16b0` einen Sensor (`state.sh`), aber keinen Besitzer. Stand
+2026-09-17 02:5x: **47 Dirs · 1775 MiB** unter `fleet-e2e-instance-*`, ältestes 28 h.
+
+### 15a. Was die Halde wirklich enthält — jedes Dir an seinen Trail-Lauf gejoint
+
+Methode, damit sie nachvollziehbar ist: der Dir-Name trägt das `$$` des WRAPPERS, der Trail-Name
+(`TRAIL_RUN` in `e2e/trail-emit.ts`) die `process.pid` des RUNNERS. Das sind zwei Prozesse — der
+Runner ist das Kind des Wrappers, gemessen am lebenden Paar (`pid=58291 ppid=33195`). Auf Platte
+verbindet sie NICHTS: der Trail-Row kennt `run`/`suite`/`tree`, nie den Wrapper. Der einzige Join,
+der existiert, ist indirekt — `server.log` nennt Geschwister-Scratchpfade (`fleet-e2e-transcript-<runnerpid>`),
+daraus der Runner-pid, daraus die Trail-Datei. **Dieser Join scheiterte an 22 von 40 nicht-leeren
+Dirs.** Er trägt darum eine Messung, aber keine Löschung.
+
+| Klasse | mechanisches Signal | Dirs | MiB | Urteil |
+|---|---|---|---|---|
+| (A) nie gebootet | `server.log` fehlt ganz | 16 | 0 | **räumbar**, sobald das Tor passt — kein Server, kein Check, kein Verdikt, nichts zu inspizieren |
+| (B) mitten im Lauf getötet | `server.log` da, Trail-Lauf ABGESCHNITTEN (1072–4149 Rows gegen ~4800) oder gar nicht auffindbar | 22 | ~1000 | räumbar erst nach Frist — der Wrapper kam nie an seiner eigenen Naht an, das Dir wurde nie absichtlich behalten |
+| (C) vollständig und ROT | Trail-Lauf komplett (4717–4836 Rows), 1–6 `"ok":false` | 9 | 777 | **die Evidenz, die die Naht meint** — räumbar erst nach Frist |
+| (D) vollständig GRÜN, `rm -rf` verfehlt | — | **0** | 0 | **kommt nicht vor** |
+
+**(D) ist der Befund, der die Auftragszeile korrigiert.** Sie setzte „Dir eines gruenen Laufs, das
+rm -rf verfehlt hat" als Klasse an. Jedes überlebende Dir mit grünem Trail ist in Wahrheit
+ABGESCHNITTEN — 1072, 1620, 1669, 3193, 4149 Rows gegen ~4800 eines vollen Laufs. `rm -rf` hat nie
+„verfehlt"; es wurde nie erreicht. Ein überlebendes Dir beweist damit immer: der Lauf war nicht
+vollständig grün.
+
+### 15b. Warum die Regel ALTER ist und nicht Klasse
+
+(B) von (C) zu trennen, bräuchte genau den Join aus §15a — und der scheitert an mehr als der
+Hälfte. Ein Dir bekommt darum den Zweifel zugesprochen und gilt als Evidenz, bis es aus der Frist
+fällt. Die eine Ausnahme ist (A): ohne `server.log` gab es keinen Server, keinen Check und kein
+Verdikt, also auch keinen Zweifel.
+
+**Was es mechanisch machen WÜRDE** (Vorschlag, hier NICHT gebaut, weil er den Kontrakt der Naht
+ändert): die Naht schreibt beim Behalten eine Marke ins Dir (Exit-Code + Zeit). Dann ist „das
+Verdikt wurde gefällt und das Dir absichtlich behalten" ein Dateitest, (B) und (C) trennen sich
+ohne Trail, und (B) könnte eine viel kürzere Frist bekommen als (C).
+
+### 15c. Der Mechanismus: `scratch-reap.sh`, gerufen vom Start von `e2e-isolated.sh`
+
+Das Tor vor JEDER Löschung, beide Hälften:
+
+- der pid im Dir-Namen lebt nicht (`kill -0`), UND
+- unter `${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)` liegt kein Eintrag `fleettest<pid>`.
+
+Das ist nicht neu erfunden, sondern die Begründung des Socket-Reaps im selben File: diese Wrapper
+laufen ERKLÄRT nebenläufig, ein lebender Lauf hat per Definition einen lebenden pid, und Lebendigkeit
+kann darum nie einen Nachbarn abschiessen, wie ein Altersschnitt es könnte. Der Restfehler zeigt in
+die SICHERE Richtung — und er ist hier nicht theoretisch: `fleet-e2e-instance-573` wurde beim ersten
+Trockenlauf als „gehalten" geführt, weil pid 573 inzwischen `/usr/libexec/mlhostd` ist. Das Dir
+überlebt. Müll behalten kostet Platte; das Instanz-Dir eines lebenden Laufs löschen kostet den Lauf.
+
+Dann erst die Klasse: kein `server.log` → sofort; sonst `mtime` älter als
+`FLEET_E2E_SCRATCH_RETENTION_H` (Default **48**) → räumen; sonst behalten.
+
+**Der Geltungsbereich ist ein Glob, absichtlich.** `fleet-e2e-instance-*` ist allein die Familie von
+`e2e-isolated.sh`. Die sechs anderen Wrapper-Familien tragen einen eigenen Infix (`gate-`,
+`harness-`, `unprobed-`, `cleanreview-`, `postland-`, `security-instance`) und sind disjunkt dazu —
+ein Post-Land-Audit, das nebenher läuft, kann seine Instanz hier nicht verlieren. Das Skript tötet
+keinen Prozess.
+
+### 15d. Was der Schnitt am 2026-09-17 tatsächlich freigibt — und was er nicht tut
+
+Der Trockenlauf gegen die echte Halde: `16 reaped · 29 within the 48h window · 2 held by a live run`
+— also **16 Dirs, 0 MiB**. Bei 48 h fällt heute kein einziges (B)- oder (C)-Dir, weil die ganze
+Halde 28 h jung ist.
+
+**Der Gewinn ist die SCHRANKE, nicht die Bytes von heute.** Vorher räumte nichts, die Halde wuchs
+unbegrenzt; nachher ist sie „die gescheiterten Läufe der letzten 48 h". Wer die Schranke enger
+will, dreht an `FLEET_E2E_SCRATCH_RETENTION_H` — die Dichte zum Rechnen steht oben: 47 Dirs /
+1775 MiB in 28 h, also grob 63 MiB pro Stunde roter und abgebrochener Läufe an einem sehr roten Tag.
+
+**Nicht angefasst, nur gezählt** (andere Familien, ausserhalb der Auftragsfläche): 105
+`fleet-e2e-standin-*` (zusammen 0 MiB, reine Inode-Streu), ~150 `fleet-e2e-stagelock-*.q`
+(Ticket-Dirs der Mutex-Schlange aus `e2e-stage.sh`), sowie 21 Dirs der sechs anderen
+Wrapper-Familien (58 MiB). Gesamt unter `$TMPDIR/fleet-e2e-*`: **1849 MiB**.
+
+### 15e. Klasse (3) der Auftragszeile — tote Nicht-`fleettest`-Sockets: Population 0
+
+Die Zeile nannte „22 tote Nicht-fleettest-Sockets" (gemessen 2026-09-16), `state.sh` §hy nennt als
+Blindheitskosten 17 Probe-Sockets (`mcpprobe*`, `seamprobe*`, `wraprepro*`, `race*`). Am 2026-09-17
+02:5x steht in `/tmp/tmux-501` **nur noch `claudefleet` (live) und `fleettest33195` (live)** — kein
+einziger toter Socket, egal welcher Familie. Die Klasse ist leer; es wurde nichts dafür gebaut. Wer
+sie wiedersieht, hat eine neue Sichtung, keine offene Zeile — der Socket-Reap in `e2e-isolated.sh`
+fasst `fleettest<pid>` an und Probe-Sockets per `case` ausdrücklich NICHT.
+
+### 15f. Die Sonde
+
+`e2e/host-hygiene.ts` §e1–§e5 fährt DAS ECHTE Skript gegen eine Fixture-Wurzel — nie `$TMPDIR`,
+dieselbe harte Regel, unter der die Simulator-Hälfte derselben Familie schon lebt. Sie braucht
+keinen Server. Belegt sind beide Tor-Hälften und beide Seiten der Frist; die Mutationsprobe
+(§MUTATION am Fuss von `e2e/host-hygiene.ts`) zeigt, dass jede Zeile genau ihren eigenen Check
+rot macht und keinen anderen.

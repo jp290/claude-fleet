@@ -54,7 +54,7 @@ mkdir -p "$DIR"
 # to this wrapper — and now neither does a new top-level directory, which used to need one. The
 # other three are not this runner's: e2e/pins.ts is the land gate's own first stage, and
 # e2e/helper-daemon.ts + e2e/helper-portal.ts belong to fleet-e2e-postland-audit.ts.
-# STAGE_EXTRA is TWO files, both there for the reason (3) in e2e-stage.sh names: e2e/ctl.ts
+# STAGE_EXTRA is THREE files, all there for the reason (3) in e2e-stage.sh names: e2e/ctl.ts
 # SPAWNS ctl.sh and e2e/tasks.ts §TA spawns register.sh, and a spawn is invisible to an import scan.
 # (register.sh must also run INSIDE the instance: it reads the tasks-archive.jsonl beside it, and
 # from the source tree it would fall back to the main checkout's live ledger.) ctl.sh's history:
@@ -71,7 +71,9 @@ mkdir -p "$DIR"
 # SOURCE — six of them, e2e/outcomes.ts's "precondition: node_modules exposes src/client.ts" among
 # them — resolves it through the node_modules symlink on purpose, because src/client.ts itself is
 # NOT staged.
-STAGE_EXTRA="ctl.sh register.sh"
+# scratch-reap.sh joins them for the same reason: e2e/host-hygiene.ts §e SPAWNS it (against a
+# fixture root, never $TMPDIR), and a spawn is invisible to an import scan.
+STAGE_EXTRA="ctl.sh register.sh scratch-reap.sh"
 . "$SRC/e2e-stage.sh"
 stage_instance "$SRC" "$DIR" server.ts fleet-e2e.ts || exit 1
 
@@ -781,6 +783,15 @@ for _s in "$TMUX_SOCKDIR"/fleettest*; do
   reap_socket_panes "fleettest$_own"
   tmux -L "fleettest$_own" kill-server 2>/dev/null
 done
+
+# The SCRATCH half of the same reap, and it runs AFTER the socket loop on purpose: that loop is
+# what retires a dead run's `fleettest<pid>`, and the dir sweep treats a surviving socket as a
+# live run. Run first, it would hold back every dir the loop is about to free.
+# Its rule, its measured classes and why the window is age and not class: scratch-reap.sh's
+# header and docs/verify-tiering.md §15b. It removes DIRS ONLY, never a process, and its glob
+# `fleet-e2e-instance-*` is disjoint from the six other wrapper families — a post-land audit
+# running beside this one cannot lose its instance to it.
+[ -x "$SRC/scratch-reap.sh" ] && "$SRC/scratch-reap.sh" "${TMPDIR:-/tmp}"
 
 # unique-per-run socket: without this trap an interrupted run would leak its tmux
 # server forever (no later run reuses the socket to kill it)

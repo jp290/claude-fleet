@@ -239,6 +239,20 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
       // is exactly why this has to be asserted rather than eyeballed.
       check("context fill: pct divides by the SLOT's model window (200k → 75.2%, not the default 1M's 15%)",
         filled?.windowTokens === 200_000 && filled?.pct === 75.2, JSON.stringify(filled));
+      // (d) …and the STEWARD sees the same number. Until 2026-09-17 /api/steward/sessions carried
+      //     transcriptFact and no `ctx` at all, so the one principal whose whole job is watching
+      //     sessions could see how big a transcript was and never how full a context is (notiz
+      //     76862eb3). Asserted as EQUALITY against the owner poll, not as "a number is present":
+      //     a second derivation on this route is exactly the drift this repo has paid for elsewhere.
+      const stewFills = ((await (await stewGet("/api/steward/sessions")).json()) as
+        { slots: { id: number; cwd: string | null; ctx: Fill }[] }).slots;
+      const stewFilled = stewFills.find((x) => x.id === 2)?.ctx;
+      check("context fill: the steward view serves the SAME ctx as the owner poll, field for field",
+        JSON.stringify(stewFilled) === JSON.stringify(filled) && stewFilled?.pct === 75.2,
+        `steward=${JSON.stringify(stewFilled)} poll=${JSON.stringify(filled)}`);
+      check("context fill: the steward view carries ctx on EVERY slot and answers null for an empty one",
+        stewFills.every((x) => "ctx" in x) && stewFills.filter((x) => !x.cwd).every((x) => x.ctx === null),
+        JSON.stringify(stewFills.map((x) => [x.id, x.ctx?.pct ?? null])));
     }
   }
   if (ctx.plantedTranscript) (await import("node:fs")).rmSync(ctx.plantedTranscript, { force: true });
@@ -1008,6 +1022,130 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
     await post(`/api/slots/${lm.slot}/kill`, {}); // leave the slot inventory as this module found it
     rmSync(SLOW_V, { force: true });
     await restartSrv(); // …and the suite's own verify command back on the server
+  }
+
+  // --- THE PULSE CARRIES THE MEASURED FILL, AND THE BAND (server.ts#renderStewardMessage) -------
+  //     The DATA block said "Kontext-Indiz: N KB Transkript" — phase B's stand-in from before
+  //     contextFill existed, and by its own rule not a percentage. A controller therefore had no
+  //     way to hear its own 25/30 band from Fleet at all (notiz 76862eb3, slot 12, 2026-09-02).
+  //     Three slots, three arms of the same line, one send each: measured and inside the band,
+  //     measured and below it, and unmeasurable (the named KB fallback). The uuids go in through
+  //     the state file — the same door e2e/restart.ts uses, and under FLEET_CMD=true the only one:
+  //     a pane the server did not start as `claude` never pins a session id. ---
+  {
+    const pulseStPath = `${ROOT}/fleet.json`;
+    const mkPulseLane = async (): Promise<{ slot: number; cwd: string }> =>
+      (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    const pIn = await mkPulseLane();    // inside the band
+    const pUnder = await mkPulseLane(); // measured, below it
+    const pUnk = await mkPulseLane();   // pinned, but nothing to measure
+    const pulseSid = new Map<number, string>();
+    await stopSrv();
+    const pulseSt = JSON.parse(readFileSync(pulseStPath, "utf8")) as
+      { slots?: Record<string, { sessionId?: string; model?: string }> };
+    for (const l of [pIn, pUnder, pUnk]) {
+      const sid = newPlantedSid();
+      pulseSid.set(l.slot, sid);
+      const rec = pulseSt.slots?.[String(l.slot)];
+      // the SAME non-default 200k model the fill section pins, so every pct below is a hand-checked
+      // number rather than one that only works against whatever FLEET_MODEL the wrapper passed
+      if (rec) { rec.sessionId = sid; rec.model = ctx.plantedModel; }
+    }
+    writeFileSync(pulseStPath, JSON.stringify(pulseSt, null, 2), { mode: 0o600 });
+    // the hourly send cap is FLEET-WIDE (10 by default) and this section spends three of it; raised
+    // for its own restart only, so the cap's own checks above keep measuring the default. The
+    // restart at the foot of this block takes it back off.
+    await restartSrv({ FLEET_STEWARD_SENDS_PER_HOUR: "30" });
+
+    // 30 % of the 200k window — inside the band and DELIBERATELY below the suite's migrate
+    // thresholds (FLEET_MIGRATE_PCT / FLEET_LANE_MIGRATE_PCT = 44): a migrate nudge would paste
+    // into the very pane this section is about to settle and measure.
+    const usageLine = (used: number): string => JSON.stringify({ type: "assistant",
+      timestamp: "2026-01-01T00:00:00Z", message: { usage: { input_tokens: used, output_tokens: 9_000_000 } } });
+    const plantTranscript = (l: { slot: number; cwd: string }, body: string): string => {
+      const dir = `${process.env.HOME}/.claude/projects/${l.cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+      mkdirSync(dir, { recursive: true });
+      const file = `${dir}/${pulseSid.get(l.slot) ?? ""}.jsonl`;
+      writeFileSync(file, body);
+      return file;
+    };
+    const trIn = plantTranscript(pIn, `${usageLine(60_000)}\n`);      // 30.0 %
+    const trUnder = plantTranscript(pUnder, `${usageLine(20_000)}\n`); // 10.0 %
+    // 4 KiB of filler and NO usage record: pinned, so transcriptFact answers — and contextFill
+    // cannot, which is the only state in which the KB line is allowed to speak.
+    const trUnk = plantTranscript(pUnk, `${"x".repeat(4095)}\n`);
+
+    type PFill = { pct: number } | null;
+    const pollFill = async (slot: number, want: (f: PFill) => boolean): Promise<PFill> => {
+      let f: PFill = null;
+      for (let i = 0; i < 40; i++) {
+        f = ((await (await get("/api/sessions")).json()) as { slots: { id: number; ctx: PFill }[] })
+          .slots.find((x) => x.id === slot)?.ctx ?? null;
+        if (want(f)) return f;
+        await Bun.sleep(150);
+      }
+      return f;
+    };
+    const fIn = await pollFill(pIn.slot, (f) => f !== null);
+    const fUnder = await pollFill(pUnder.slot, (f) => f !== null);
+    const fUnk = await pollFill(pUnk.slot, () => true);
+    check("fixture: the three pulse slots measure 30 % / 10 % / unmeasurable against one 200k window",
+      fIn?.pct === 30 && fUnder?.pct === 10 && fUnk === null,
+      `${JSON.stringify(fIn)} ${JSON.stringify(fUnder)} ${JSON.stringify(fUnk)}`);
+
+    const PULSE_Q = "Traegt der Kontext den naechsten Schnitt noch?";
+    const pulseLines = async (slot: number): Promise<{ lines: string[]; raw: string }> => {
+      await settleForSteward(slot);
+      const r = await stewPost("/api/steward/send", { slot, kind: "pulse", question: PULSE_Q });
+      const j = (await r.json()) as { ok?: boolean; text?: string; error?: string };
+      return { lines: (j.text ?? "").split("\n"), raw: `${r.status} ${JSON.stringify(j).slice(0, 200)}` };
+    };
+
+    const puIn = await pulseLines(pIn.slot);
+    check("pulse: the DATA line carries the MEASURED fill, not the transcript-size stand-in",
+      puIn.lines[3]?.endsWith(`· Kontext: ${fIn?.pct} %`) === true && fIn?.pct === 30, `${puIn.lines[3]} | ${puIn.raw}`);
+    check("pulse: at the band the pulse says so — one fact line, and the lane's own handover rail",
+      puIn.lines.length === 8 && puIn.lines[4] === "- Band: 25 % erreicht — Übergabe vorbereiten (fleet-report `handoff`, dann POST /api/self/succeed)"
+      && puIn.lines[5] === `FRAGE: ${PULSE_Q}`, `${JSON.stringify(puIn.lines.slice(3, 6))} | ${puIn.raw}`);
+
+    const puUnder = await pulseLines(pUnder.slot);
+    check("pulse: below the band the number is still named and the band line is ABSENT",
+      puUnder.lines.length === 7 && puUnder.lines[3]?.endsWith("· Kontext: 10 %") === true
+      && puUnder.lines[4] === `FRAGE: ${PULSE_Q}` && !puUnder.lines.some((l) => l.startsWith("- Band:")),
+      `${JSON.stringify(puUnder.lines.slice(3, 5))} | ${puUnder.raw}`);
+
+    const puUnk = await pulseLines(pUnk.slot);
+    check("pulse: an unmeasurable context falls back to the KB proxy BY NAME, never to an estimate",
+      puUnk.lines.length === 7 && puUnk.lines[3]?.endsWith("· Kontext: unbekannt (4 KB Transkript)") === true
+      && !puUnk.lines.some((l) => l.startsWith("- Band:")), `${puUnk.lines[3]} | ${puUnk.raw}`);
+
+    for (const f of [trIn, trUnder, trUnk]) rmSync(f, { force: true });
+    for (const l of [pIn, pUnder, pUnk]) await post(`/api/slots/${l.slot}/kill`, {});
+
+    // …AND THE SECTION TAKES ITS OWN SENDS BACK OUT. Both caps are keyed by kind×SLOT NUMBER, and
+    // slot numbers RECYCLE: killed above, these three become the next lanes the suite opens, and the
+    // episode cap would refuse their new occupant's first pulse for ten minutes. Measured the first
+    // time this section ran — e2e/steward-outcomes.ts's own pulse came back 429 "cap: 1 per kind×slot
+    // per episode" on a slot number this block had used. So the rows go, exactly as the cap section
+    // above drops its forged ones (same file, same reason), and the restart drops the in-memory half
+    // of both caps with the process — a later module must meet the send budget this block found.
+    const pulseSlots = new Set([pIn.slot, pUnder.slot, pUnk.slot]);
+    for (const f of [ctx.auditPath, `${ctx.auditPath}.1`]) {
+      if (!existsSync(f)) continue;
+      const kept = readFileSync(f, "utf8").split("\n").filter((l) => {
+        if (!l) return false;
+        try {
+          const r = JSON.parse(l) as { event?: string; slot?: number };
+          return !(String(r.event).startsWith("steward_send") && pulseSlots.has(r.slot ?? -1));
+        } catch { return true; } // a torn line is not this section's to drop
+      });
+      writeFileSync(f, kept.length ? `${kept.join("\n")}\n` : "");
+    }
+    await restartSrv();
+    const leftovers = (await auditRead())
+      .filter((r) => r.event.startsWith("steward_send") && pulseSlots.has(r.slot ?? -1)).length;
+    check("pulse fixture: the section leaves no steward_send rows on the slot numbers it borrowed",
+      leftovers === 0, `${leftovers} row(s) for slots ${[...pulseSlots].join(",")}`);
   }
 
   // Digest is steward-scoped, so its bounded Codex migration probe lives here rather than in

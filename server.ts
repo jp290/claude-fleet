@@ -29503,6 +29503,13 @@ const STEWARD_VERIFY_SUFFIX = " Verifiziere dein Ergebnis, bevor du fertig melde
 //      STEWARD_VERIFY_SUFFIX: it is a question, not a work order.
 const PULSE_QUESTION_MAX = 240;
 const PULSE_QUOTE_MAX = 200;
+// THE HANDOVER BAND, as a pulse FACT — not a second migrate rail. tickMigrate NUDGES at its own
+// thresholds (MIGRATE_PCT / LANE_MIGRATE_PCT) and is armed per fleet; this number is the owner's
+// rule about context QUALITY ("Übergabe nie unter 25 %, 30–35 % ist das Fenster", 2026-09-06),
+// and all the pulse does with it is say that the band is reached, in the same DATA block that
+// carries the measurement. A controller had no way to hear it at all: notiz 76862eb3 (slot 12,
+// 2026-09-02) missed the band because no pulse and no steward view named its ctx.
+const PULSE_BAND_PCT = 25;
 const PULSE_TAIL_BYTES = 128 * 1024;
 // the "letzte sichtbare Ausgabe" fact: the session's own last assistant text, read from the
 // transcript JSONL — the same ground truth the prompt harvester reads, never a pane capture
@@ -29556,6 +29563,14 @@ async function renderStewardMessage(kind: StewardKind, ref: string, s: Slot, que
     const p = await briefPayload(s);
     if (!p) return { error: "no deterministic git facts for this slot — a pulse never ships an unfactual DATA block" };
     const tf = transcriptFact(s);
+    // THE MEASUREMENT, not the stand-in. "Kontext-Indiz: N KB Transkript" was phase B's proxy from
+    // before contextFill existed, and its own note says what it cannot be ("bytes are a PROXY, not
+    // a token count … it can never be turned into a percentage"). contextFill answers the same
+    // question with the number the owner poll has carried since 2026-08-07 — one reader, one cache,
+    // no second reading of the file. The KB line stays as the NAMED fallback for every slot the
+    // number cannot be had for (unpinned, no usage record, no denominator): "unbekannt (N KB
+    // Transkript)" says both that Fleet cannot tell and what it can still see. No estimate, ever.
+    const fill = contextFill(s);
     // commit subjects are session-authored text echoed back into the session's own prompt —
     // the same forgery surface as the quoted last output (pulseLastOutput above), so the
     // [pulse-reply] marker is defused the same way before it can fake a reply line
@@ -29568,8 +29583,18 @@ async function renderStewardMessage(kind: StewardKind, ref: string, s: Slot, que
       // lastOutput 0 = this pane's output was never observed (nothing has streamed since the slot
       // opened). That is "cannot tell", not "idle since the epoch" — the same honesty rule the
       // deploy-gap/transcript facts follow: an unknown renders unbekannt, never a fabricated number.
-      `- idle: ${s.lastOutput ? `${Math.round(Math.max(0, Date.now() - s.lastOutput) / 1000)}s` : "unbekannt"} · Kontext-Indiz: ${
-        tf ? `${Math.round(tf.bytes / 1024)} KB Transkript` : "unbekannt"}`,
+      `- idle: ${s.lastOutput ? `${Math.round(Math.max(0, Date.now() - s.lastOutput) / 1000)}s` : "unbekannt"} · Kontext: ${
+        fill ? `${fill.pct} %`
+        : tf ? `unbekannt (${Math.round(tf.bytes / 1024)} KB Transkript)` : "unbekannt"}`,
+      // CLAUDE ONLY, the same sentence tickMigrate states at its own gate: contextFill answers for
+      // codex/pi/pi-zai too, but Codex compacts its own window and a Pi/GLM session at 80 % is
+      // operating state, not succession pressure (owner, 2026-09-06). And the pointer is the rail's
+      // own exit — a lane has no HANDOFF.md to write (laneMigrateMessage says why), so naming that
+      // file at a lane would name a medium it must not use.
+      ...(fill && fill.pct >= PULSE_BAND_PCT && harnessOf(s.harness) === CLAUDE_HARNESS
+        ? [`- Band: ${PULSE_BAND_PCT} % erreicht — ${s.worktree
+          ? "Übergabe vorbereiten (fleet-report `handoff`, dann POST /api/self/succeed)"
+          : "HANDOFF.md vorbereiten"}`] : []),
       `FRAGE: ${question}`,
       "Prüfe kritisch, ob diese Frage dir gerade hilft. Antworte mir in EINER Zeile:",
       "[pulse-reply] hilfreich | unnötig | falsch — <halber Satz warum>. Dann arbeite weiter.",
@@ -30342,6 +30367,13 @@ function stewardSlotsView(now: number) {
       ...stalledFacts(s, sig, now),
       // context-size proxy — {bytes, mtime} of this session's transcript, null when unknowable
       transcriptFact: transcriptFact(s),
+      // …and the same question answered with the NUMBER, in the owner poll's own field and shape
+      // (`ctx: contextFill(s)`): one function, one cache, and a `null` that means "Fleet cannot
+      // measure this pane", never "empty". It rides HERE rather than in laneSignalView because that
+      // view is the pure predicate input (lane-signals.ts: "no git calls, no clock, no I/O") and is
+      // rebuilt per slot on the 2 s owner poll — a file read in it would be paid by every tick that
+      // asks a predicate a question about liveness. This route is on demand.
+      ctx: contextFill(s),
     };
   });
 }

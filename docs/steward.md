@@ -31,7 +31,10 @@ their only carrier. One of those fields says something different since 2026-09-1
 about a fact the view was mis-stating rather than about the seat: `merge` reads **`running`** while a
 merge job is reserved or in flight (`server.ts#stewardMergeView`) instead of the durable intent row's
 `interrupted`, which the digest used to render as the attention "slot N merge status is interrupted"
-on every land.
+on every land. The view also carries **`ctx`** now — the measured context fill, in the owner poll's
+own field and shape (`null` = Fleet cannot measure this pane, never "empty") — beside the older
+`transcriptFact` byte proxy; a `kind:"pulse"` send renders that number in its DATA block and, from
+25 %, one line saying the handover band is reached.
 Counted on the live state file that day: 0 of 11 active slots wore the label,
 while 3 lanes and 5 MAIN/orchestrator sessions polled `/api/sessions`. `stalled` was in that list
 too and was lifted onto the owner poll for exactly this reason — the decision, the measured cost and

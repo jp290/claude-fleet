@@ -3091,17 +3091,42 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && !/\bfilesOrigin\b/.test(crCode)
       && !/\n\s*files: proposedFiles,/.test(crCode),
     crCode.match(/\.\.\.\(filedProposal[^\n]*/)?.[0]?.trim() ?? "no filesProposal line");
-  // THE ONE EXTERNAL AWAIT ON THIS PATH IS `repoKeyOf`, and every mutation sits after it. The
-  // binding read before it is therefore a STALE identity by the time the row is minted, and the
-  // re-read is the only thing that keeps `programId: program.id` an assertion rather than a hope.
-  // Held over the source for the usual reason: on a green fleet the window never opens.
-  pin("createTaskForMain re-reads its MAIN binding after the await and refuses a moved one before mutating",
+  // THE AWAIT WINDOW. `s` is the live slot object and a recycle MUTATES it in place (ensureSlot
+  // rewrites openedAt and rotates selfToken on the same reference), so everything read from `s`
+  // after an await describes whoever holds the slot NOW. Two rules, and they are NOT the same rule
+  // twice: the OCCUPANT re-proof answers "is this still the principal that sent the request", the
+  // BINDING re-read answers "is that principal still MAIN of this Program" — a recycle followed by
+  // a rebind of the SAME Program satisfies the second and violates the first, which is why the
+  // narrower one runs FIRST and why `programId: program.id` is an assertion rather than a hope.
+  // This pin holds STRUCTURE only; the race itself is measured at runtime in e2e/tasks.ts (f6/f7),
+  // because a source pin can prove the lines are present and never that they fire.
+  pin("createTaskForMain re-proves the exact occupant and THEN the binding, both after the await and before any mutation",
     crCode.length > 0
+      && /if \(!sameSlotStreamOccupant\(s, occupant\)\)/.test(crCode)
       && /const stillBound = boundProgramForMain\(s\);/.test(crCode)
       && /if \(stillBound\.program\.id !== program\.id\)/.test(crCode)
-      && crCode.indexOf("const mainRepo = await repoKeyOf(s);") < crCode.indexOf("const stillBound = boundProgramForMain(s);")
-      && crCode.indexOf("const stillBound = boundProgramForMain(s);") < crCode.indexOf("tasks = capTasks("),
-    crCode.includes("const stillBound = boundProgramForMain(s);") ? "re-read between await and mutation" : "no re-read");
+      && crCode.indexOf("const mainRepo = await repoKeyOf(s);") < crCode.indexOf("if (!sameSlotStreamOccupant(s, occupant))")
+      && crCode.indexOf("if (!sameSlotStreamOccupant(s, occupant))") < crCode.indexOf("const stillBound = boundProgramForMain(s);")
+      && crCode.indexOf("const stillBound = boundProgramForMain(s);") < crCode.indexOf("tasks = capTasks(")
+      // …and NO await may reopen the window between the last re-proof and the mutation
+      && !/await /.test(crCode.slice(crCode.indexOf("const stillBound = boundProgramForMain(s);"),
+        crCode.indexOf("tasks = capTasks("))),
+    crCode.includes("if (!sameSlotStreamOccupant(s, occupant))") ? "occupant then binding, no await after" : "no occupant re-proof");
+  // …and the SNAPSHOT the re-proof compares against is taken by the CALLER, before the body read.
+  // That read is the first await on the path, so a snapshot taken inside the handler would already
+  // describe the slot as it stands after the body arrived — the bug one layer up from the one the
+  // rule above closes, and invisible to every probe that does not interleave a recycle.
+  // Comment lines are dropped for the absence half's sake: the paragraph beside the snapshot says
+  // why an await there would reopen the window, and a rule read over the prose would fail on the
+  // explanation of itself — the same reason `crCode` exists above.
+  const selfTasksRoute = server.slice(server.indexOf('if (url.pathname === "/api/self/tasks" && req.method === "POST") {'),
+    server.indexOf("createTaskForMain(s, occupant, await readJson(req));"))
+    .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("the /api/self/tasks door snapshots its occupant BEFORE the body read it hands to the filing door",
+    selfTasksRoute.length > 0 && selfTasksRoute.length < 2000
+      && /const occupant = slotStreamOccupant\(s\);/.test(selfTasksRoute)
+      && !/await /.test(selfTasksRoute.slice(selfTasksRoute.indexOf("const occupant = slotStreamOccupant(s);"))),
+    selfTasksRoute.includes("const occupant = slotStreamOccupant(s);") ? "snapshot before the first await" : "no snapshot");
   // THE SPAWN TRIPLE HAS ONE SET-TIME VALIDATOR, and both create doors go through it: the same
   // three adapter validators the attended route runs, harness first. A door that stored the three
   // fields raw — or its own re-derivation — would mint a choice no adapter ever judged, and on a

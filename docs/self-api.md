@@ -597,12 +597,29 @@ daneben stehen (sie ist der Weg für eine BESTEHENDE Zeile, dies der für eine n
   `main_brief`s Grund: eine Zeile anlegen und die Fläche deklarieren, auf der sie steht, sind zwei
   Akte, die ein Leser auseinanderhalten können muss.
 
-**Die MAIN-Bindung wird nach dem einzigen externen `await` NEU GELESEN.** `repoKeyOf` spawnt `git`,
-und alles, was Zustand mutiert, liegt dahinter; innerhalb dieses Fensters kann der Owner das
-Program stilllegen oder die MAIN neu binden. Eine verschobene Bindung ist 409 (`this session's MAIN
-binding moved from program <alt> to <neu> … nothing filed`), nie ein stilles Umhängen der Anfrage
-auf das Program, an das die Session jetzt gebunden ist. Gepinnt in `e2e/pins.ts` (Reihenfolge
-`await` → Neulesung → Mutation).
+**Nach den awaits wird ZWEIMAL nachgewiesen, und es sind zwei verschiedene Fragen.** Der Grund ist
+eine Eigenschaft des Speichers, keine Vorsicht: `s` ist das LEBENDE Slot-Objekt, und ein Recycle
+mutiert es IN PLACE (`server.ts#ensureSlot` schreibt `openedAt` neu und rotiert `selfToken` auf
+derselben Referenz). Alles, was ein Handler nach einem `await` aus `s` liest, ist damit eine Aussage
+über den, der den Slot JETZT hält — nicht über die Session, deren Token die Anfrage authentifiziert
+hat.
+
+- **Der Occupant, exakt und ZUERST** (`sameSlotStreamOccupant` gegen einen Snapshot aus
+  `slotStreamOccupant`): Slot, `openedAt` UND `selfToken`. Der Snapshot wird an der ROUTE genommen,
+  **vor `await readJson(req)`** — das ist der erste await des Pfades, ein Snapshot im Handler wäre
+  schon zu spät. Recycelter Slot → 409 `slot <n> was recycled while this row was being prepared …
+  nothing filed`.
+- **Danach die Program-Bindung** (`boundProgramForMain`, gleiche Program-ID verlangt): der Owner
+  kann das Program stilllegen oder die MAIN neu binden, ohne den Slot anzufassen. Verschoben → 409
+  `this session's MAIN binding moved from program <alt> to <neu> … nothing filed`.
+
+Die Reihenfolge ist Inhalt: ein Recycle mit anschließender Neubindung DESSELBEN Programs erfüllt die
+zweite Prüfung und verletzt die erste, darum läuft die engere zuerst. Zwischen dem letzten Nachweis
+und der ersten Mutation liegt kein `await` (Pin). Gemessen wird das Fenster zur LAUFZEIT, nicht als
+Quell-Pin: der Server trägt am bewachten Punkt einen Test-Latch (`FLEET_TEST_MAIN_FILE_LATCH`, ohne
+die Env-Variable inert), und `e2e/tasks.ts` (f6)/(f7) parkt eine echte Anfrage darin — (f6) ohne
+Recycle muss weiter filen, (f7) mit Recycle wird mit dem Satz des Occupants abgelehnt und hinterlässt
+weder Zeile noch Vorschlag.
 
 ### Der abgeleitete Program-Status (`GET /api/self/program-execution`)
 

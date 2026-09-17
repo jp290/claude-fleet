@@ -10766,7 +10766,27 @@ async function decideVariantForMain(s: Slot, id: string, body: Record<string, un
   return json({ ...decided.body, sessionIdMatch: bound.sessionIdMatch }, decided.status);
 }
 
-async function createTaskForMain(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
+// A TEST-ONLY window at EXACTLY the point the two re-proofs guard: after the last await, before
+// the first mutation. It exists because the defect those re-proofs close is a RACE — a source pin
+// would prove the lines are present, never that they fire — so e2e/tasks.ts parks a real request
+// here and recycles the slot underneath it. One-shot per process and inert without the env var;
+// shape copied from waitForSlotPostCaptureTestLatch.
+const MAIN_FILE_LATCH = process.env.FLEET_TEST_MAIN_FILE_LATCH ?? null;
+let mainFileLatchUsed = false;
+async function waitForMainFileTestLatch(occupant: SlotStreamOccupant): Promise<void> {
+  if (!MAIN_FILE_LATCH || mainFileLatchUsed) return;
+  mainFileLatchUsed = true;
+  writeFileSync(`${MAIN_FILE_LATCH}.reached`,
+    JSON.stringify({ slot: occupant.slot, openedAt: occupant.openedAt }), { mode: 0o600 });
+  while (!existsSync(`${MAIN_FILE_LATCH}.release`)) await Bun.sleep(20);
+}
+// `occupant` is the authenticated principal, SNAPSHOT BY THE CALLER before the first await on this
+// path — and the caller's own `await readJson(req)` is that first await, which is why the snapshot
+// cannot be taken in here. `s` is the LIVE slot object and a recycle MUTATES it in place
+// (ensureSlot rewrites openedAt, selfToken and sessionId on the same reference), so after any await
+// `s` describes whoever holds the slot NOW, not the session whose token authenticated this request.
+async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
+  body: Record<string, unknown> | null): Promise<Response> {
   // The authority bracket answers FIRST and in its own words — "not bound" and "ambiguously bound"
   // stay two different refusals, exactly as at the release door: they send the caller to fix two
   // different things.
@@ -10843,13 +10863,23 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   const mainRepo = await repoKeyOf(s);
   if (!mainRepo)
     return json({ error: "this session's checkout is not a git repository — the row's target repo cannot be derived" }, 409);
-  // (4b) THE BINDING IS RE-READ, because the line above is the one EXTERNAL await on this path and
-  // everything that mutates state comes after it. `bound` was taken before `repoKeyOf` spawned git;
-  // inside that window the owner can retire the Program or rebind its MAIN, and a filing that used
-  // the identity from before the await would mint a row into a Program this session is no longer
-  // MAIN of — with `programId` stamped from a binding that no longer exists and nothing at runtime
-  // saying so. Re-read, and require the SAME Program: a moved binding is a refusal naming both
-  // ids, never a silent re-target of the caller's request onto whatever it is bound to now.
+  // (4b) THE TWO RE-PROOFS, and they are the last thing between the awaits above and the first
+  // mutation below (there is no await from here to `tasks = capTasks`). The succession door states
+  // the rule this implements: "no await can admit a revoked caller".
+  await waitForMainFileTestLatch(occupant);
+  // (i) THE AUTHENTICATED OCCUPANT, re-proven EXACTLY and FIRST, through the pair this file already
+  // uses everywhere it re-checks a slot across an await. Exactly, because the parts are not
+  // interchangeable: a recycle rewrites `openedAt` AND rotates `selfToken` on the SAME object, so a
+  // check that asked only "is some session bound here" would be answered by the NEW occupant with
+  // the OLD request's body. And FIRST, because it is the narrower question — the principal that
+  // sent this request, not merely a principal that would be allowed to send one.
+  if (!sameSlotStreamOccupant(s, occupant))
+    return json({ error: `slot ${occupant.slot} was recycled while this row was being prepared — the occupation that sent the request no longer holds it; nothing filed` }, 409);
+  // (ii) …and THEN the Program binding, re-read for its own reason: the owner can retire the
+  // Program or rebind its MAIN without touching this slot at all, and a filing that used the
+  // binding from before the await would stamp `programId` from a binding that no longer exists.
+  // Requiring the SAME Program keeps a moved binding a refusal naming both ids, never a silent
+  // re-target of the caller's request onto whatever it is bound to now.
   const stillBound = boundProgramForMain(s);
   if (!stillBound.ok) return json({ error: stillBound.error }, 409);
   if (stillBound.program.id !== program.id)
@@ -32034,7 +32064,16 @@ Bun.serve<WSData>({
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not file a queue row — a lane executes the row it was founded on, it does not fill the queue its own MAIN releases from" }, 409);
-      return createTaskForMain(s, await readJson(req));
+      // THE OCCUPANT IS SNAPSHOT HERE, before the body read on the next line — because that read is
+      // the FIRST await on this path, and `s` is a live object a recycle mutates in place. A
+      // snapshot taken inside the handler would already be describing whoever holds the slot after
+      // the body arrived. `slotStreamOccupant` answers null only for an UNOCCUPIED slot, which the
+      // token lookup above already excluded (`x.cwd &&`); the guard below is that narrowing.
+      const occupant = slotStreamOccupant(s);
+      // No anti-timing delay on this one: the token already matched, so this is a narrowing and not
+      // a credential probe — and an await here would reopen the very window the snapshot closes.
+      if (!occupant) return json({ error: "unauthorized" }, 401);
+      return createTaskForMain(s, occupant, await readJson(req));
     }
 
     // N3 · Program-MAIN assignment. Non-lane only for its neighbours' reason — a lane EXECUTES the

@@ -9085,6 +9085,29 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && modulePlanFor(["nope"]).unknown.length === 1,
     `run=${all.run.length} skipped=${all.skipped.length}`);
 
+  // --- THE FIXTURE REPO THAT RUNS state.sh NEEDS THE WHOLE IMPORT CLOSURE, and its list is kept by
+  // hand. This is the pin that pays for itself: on 2026-09-17 verify-proportion.ts gained one import
+  // (suite-modules.ts), the list did not, and `state.sh: one forkSha line …` went red with
+  // `R4 score UNKNOWN — land-collision-stats.ts exited 1` — 27 minutes into a full unfiltered run,
+  // on another machine, for a file that was simply not copied. The rule is closure: every relative
+  // import of every .ts file on the list is itself on the list.
+  {
+    const outcomesSrc = read("e2e/outcomes.ts");
+    const listed = /for \(const f of \[([^\]]*)\]\)\s*\n?\s*copyFileSync/.exec(outcomesSrc)?.[1] ?? "";
+    const copied = [...listed.matchAll(/"([\w.-]+)"/g)].map((m) => m[1]!);
+    const missing: string[] = [];
+    for (const f of copied.filter((f) => f.endsWith(".ts"))) {
+      const src = read(f).split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+      for (const imp of src.matchAll(/from "\.\/([\w./-]+)"/g)) {
+        const dep = `${imp[1]!}${imp[1]!.endsWith(".ts") ? "" : ".ts"}`;
+        if (!copied.includes(dep) && !missing.includes(dep)) missing.push(dep);
+      }
+    }
+    pin(`${RULE_MODULES} — e2e/outcomes.ts copies state.sh's whole import closure into its fixture repo`,
+      copied.length >= 6 && copied.includes("state.sh") && missing.length === 0,
+      `copied=[${copied}] missingFromList=[${missing}]`);
+  }
+
   // --- THE REFUSALS, all five, as the pure decision the runner throws. They are the whole reason
   // this mechanism cannot omit silently, and each of them is a case where a SMALLER run would wear a
   // green tail over work nobody did — so none of them may fall back to "then run everything" either.

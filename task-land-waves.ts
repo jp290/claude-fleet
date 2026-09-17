@@ -112,7 +112,9 @@ export function landWaveUnits(size: TaskCardSize | null | undefined): number {
 // chain, while `merge-prompt.ts` sits in the merge/land path and is type-checked by the gate itself.
 export const GATE_MACHINERY_FILES: readonly string[] = [
   "e2e/harness.ts", "e2e/ctx.ts", "e2e/pins.ts",
-  "merge-prompt.ts", "verify-proportion.ts", "watchdog.sh",
+  // suite-modules.ts for the same reason as e2e/ctx.ts: it is the table the isolated runner cuts
+  // itself by and the one the gate's own module advice is computed from — apparatus, not passenger.
+  "merge-prompt.ts", "verify-proportion.ts", "suite-modules.ts", "watchdog.sh",
 ];
 
 /** R2's own predicate: does this path change the apparatus that would verify the wave? */

@@ -4348,6 +4348,147 @@ Beleg. Was ihn trägt, ist der Mechanismus oben, am Code gelesen; der Lauf zeigt
 hergestellte Marge drei Grössenordnungen über der alten liegt. **Ein S1-Rot NACH dieser Reparatur
 ist wieder ECHT und deins** — und sein Detail nennt dann den Schritt, der ausgegeben hat.
 
+### 11.2aa Eine achtundzwanzigste Familie: die ②-Sektion in `e2e/merge.ts` stellt nur EINE der ZWEI Vorbedingungen her, die `wakeAuthor` prüft — und die verlorene ist nicht die, die alle vermuten (2026-09-17 registriert; das refusierende Gate AM `server.log` DER AUFBEWAHRTEN INSTANZ gelesen: `busy`, NICHT `no-claude`; Sonde gebaut, Produktpfad NICHT angefasst)
+
+**Fingerprint** (Kopfzeile; identisch über alle Sichtungen ist das PAAR `status`/`detail`, nicht die
+ganze Zeile — `branch`, `at` und, seit es sie gibt, `resolverRuns` unterscheiden sich naturgemäss):
+
+> `FAIL  ② a conflict is handed to the lane's OWN session, not to the throwaway resolver`
+> `({"status":"blocked","detail":"fake conflict",…,"resolverRuns":[{"worker":"merge","status":"blocked","ms":5,"conflictedFiles":1}]})`
+
+**Die Setup-Zeile darüber ist GRÜN.** Das ist der Unterschied zu §11.2p (und zu S3 in §11.2z), wo eine rote Setup-Zeile
+alles darunter UNGEMESSEN macht: hier hat die Fixture ihre Prämisse messbar hergestellt —
+`② setup: the author lane's pane satisfies the server's STRICT claude-alive probe` PASS — und die
+Sektion fällt trotzdem. Darunter dreizehn Folgezeilen aus DERSELBEN Entscheidung: `… records WHO was
+asked (resolvedBy:'author')` · `merge event: awaiting-author is delivered as waiting/unlanded` ·
+`… the throwaway resolver was never consulted` · `… the brief was actually delivered into the
+author's pane` · `… the brief is journalled as an injected prompt` · `… the hand-off is audited
+(merge_wake_author)` · `… the re-run STOPS for review` · `… the attribution survives the re-run` ·
+`… was git-verified, and verify ran against the rebased tree` · `… carries NO waitMs at all` ·
+`… has NOT reached main before the owner confirms` · `… the owner can confirm-land` ·
+`… the outcome row attributes the land to the AUTHOR`. **Vierzehn rote Zeilen, EIN Befund.**
+
+**Und die Kaskade produziert nicht nur Rot, sondern auch ein GRÜN, das nichts bedeutet.**
+`② the owner can confirm-land the author's reviewed resolution` fällt mit
+`{"error":"not a fleet-created worktree lane"}` — die Lane war da schon weg —, und die NÄCHSTE Zeile,
+`② after the confirm the author's resolution IS on main, with both intents kept`, steht auf PASS mit
+`"root\nauthor-main\nauthor-lane\n"`. Sie hat recht und misst nichts: die Auflösung stand auf main,
+weil das zweite ⏫ ohne `carried` sauber durchgelandet ist, nicht weil ein Confirm sie gelandet hätte.
+Wer eine Kaskade nur an ihren roten Zeilen zählt, übersieht die grüne, die sie mitnimmt.
+
+**Rate, über das GANZE lokale Trail-Register gerechnet** (8 744 Lauf-Dateien, `e2e-trail/`):
+die Kopfzeile lief in **715** Läufen, davon **2 rot = 0,28 %**. Liest man die Details statt der Namen,
+ist eine der beiden nicht diese Familie:
+
+| Signatur | Lauf / Baum | Setup-Zeile |
+| --- | --- | --- |
+| **nicht die Familie** — Setup ROT, die Pane wurde nie zum fake claude | `isolated-20260804T234920Z-58362`, `d4c71b355d7fd036058ac99b271dc23128bbbe38`, dirty | **FAIL** (`slot 4`) |
+| **die Familie** | `isolated-20260807T150058Z-38571`, `62b948268ce484534ae5464aa246daa7d2a809bf`, dirty | PASS |
+| **die Familie** | Helfer-Audit `run-c1b93a9770f5-1789606848839` auf `5b409990`, shard 2/2, 2026-09-17 03:13 | PASS |
+
+Also: **1 von 714 lokal gemessenen Läufen = 0,14 %.** Ein grüner Rerun beweist bei dieser Rate nichts.
+
+**Eine Lücke im Register, die hier zum ersten Mal zählt: Helfer-Läufe hinterlassen KEINE Trail-Zeilen.**
+Der Extrakt auf der second-host ist kein Git-Baum, also greift Regel 2 aus `docs/e2e-trail.md` §3 nicht;
+ein `fleet-e2e-trail`-Verzeichnis existiert dort nicht (`find / -maxdepth 5 -name fleet-e2e-trail`
+leer). Was bleibt, ist je Lauf eine `suite.log`. Über die **12** noch vorhandenen Helfer-Logs (alle aus
+der Nacht des 2026-09-17) haben **8** die ②-Sektion überhaupt gefahren, **1 davon rot**. Die dritte
+Sichtung steht damit in KEINEM Register, das man über Monate zählen kann — sie ist im obigen Nenner
+nicht enthalten und darf es nicht sein.
+
+**DAS GATE, gelesen und nicht vermutet.** Die aufbewahrte Instanz des roten Audits hält die einzige
+Zeile, die die Frage entscheidet —
+`…/tmp/fleet-e2e-instance-2268214/server.log`, Zeile 288, unmittelbar NACH der Pane-Erzeugung der
+②-Lane (287, `fleet-260917010531-98d5`) und unmittelbar VOR der Zustellung genau des
+`merge-terminal`-Events, das im Fail-Detail steht (289, `66e762ea4fb9e7eb95d915de`):
+
+> `slot 4: conflict resolution fell back to the throwaway resolver — busy`
+
+**`busy`, nicht `no-claude`.** `paneAgentAt` hat also `alive` geantwortet, die Alive-Hälfte der
+Fixture hat gehalten, und refusiert hat die ZWEITE Vorbedingung, die `wakeAuthor` stellt und die
+Fixture nie zurückliest: `canDeliver`s Idle-Gate (`server.ts#wakeAuthor` → `canDeliver`,
+`idleMs: MERGE_IDLE_MS`; in der Suite 500 ms). Die naheliegende Lesart „der Server hat die
+Author-Pane verloren" ist damit für diese Sichtung WIDERLEGT.
+
+**Warum das nirgends sonst stand.** `mergeJob` berechnet `fellBack` (`(author unavailable: <gate>) `)
+und hängt es an GENAU EINEN Verdict-Zweig — den `status:"resolved"`. Der Zweig, der hier fällt, ist
+`status:"blocked"`, und der trägt nur die Antwort des Wegwerf-Resolvers ("fake conflict"). Der Grund
+existiert also ausschliesslich auf stdout des Servers. Ein Gate, das nur im Log steht, ist auf einem
+Helfer-Lauf faktisch nicht vorhanden, wenn die Instanz grün geräumt wird.
+
+**Zwei Kandidaten, die AM CODE ausgeschlossen sind — damit der nächste Leser sie nicht neu herleitet:**
+`ensureSlot` (das `wakeAuthor` als erstes ruft) fasst eine gesunde Pane NICHT an: bei offener Pipe und
+vorhandener Stream-Datei kehrt es vor dem Re-Seed zurück (`if (pipeOpen && existsSync(finalPath)) return;`),
+also kein neues Capture, kein `repaint`, kein neu scharfes `quietUntil`. Und mitten im Lauf ist
+`poll()` der EINZIGE Schreiber von `s.lastOutput` — die beiden anderen Zuweisungen sind die
+Struktur-Initialisierung und die Boot-Rehydrierung. Der Stempel kam also von ECHTER Pane-Ausgabe.
+
+**Was NICHT gemessen ist, und als Vermutung markiert bleibt:** welche Ausgabe. Der führende Kandidat
+ist das Echo der Fixture selbst — `fakeClaudeInPane` tippt `exec '<fakeclaude>'` per `send-keys`,
+`pipe-pane` schreibt das Echo über ein `cat >> file`, und `settleForMerge` fragt nur, ob der zuletzt
+BEOBACHTETE Stempel 500 ms alt ist. Eine Beobachtung, die dem eigenen letzten Schreiben in die Pane
+VORAUSGEHT, erfüllt diese Frage sofort; der Stempel fällt dann zwischen das Settle und `canDeliver`.
+Dazu passt, dass `settleForMerge` nach 80 Runden schweigend zurückkehrt — auf dieselbe Art wie bei
+Erfolg. Bewiesen ist das nicht.
+
+**Die Sonde (2026-09-17, diese Lane).** Die Sektion trägt jetzt eine ZWEITE Setup-Zeile, gestellt eine
+Anfrage vor dem `POST /api/slots/:id/merge`, und sie prüft BEIDE Gates, die `wakeAuthor` prüft:
+
+> `② setup: BOTH gates wakeAuthor asks still hold one request before the merge POST (alive AND idle)`
+
+`lane-helpers.ts#probeAuthorGates` liest die Alive-Hälfte mit dem Mechanismus von `paneAgentAt`
+(Pane-PID → `ps -o comm=`, Basename gegen `claude`) statt den Server zu fragen — dessen eigene
+Per-Slot-Lesung (`agentInfo`) entsteht mit `commsFor()`, und das ist bei `FLEET_CMD=true` für JEDE
+Pane `unprobed`, kann die strikte Frage also gar nicht beantworten. Die Idle-Hälfte rechnet mit der
+UHR DES SERVERS (`now` und `lastOutput` aus derselben `/api/sessions`-Antwort), weil genau diese
+Subtraktion `canDeliver` ausführt. `settleForAuthorMerge` stellt beide Gates in bis zu vier Runden
+her; gelingt das nicht, fällt die neue Zeile — und die vierzehn Zeilen darunter laufen NICHT, weil
+eine nicht hergestellte Prämisse keine vierzehn verletzten Invarianten sind. Zusätzlich liest
+`authorFallbackGates` bei einem Fallback die Log-Zeile des Servers in das Detail der Kopfzeile: eine
+künftige Sichtung nennt ihr Gate selbst, statt einen ssh-Zugriff auf eine aufbewahrte Instanz zu
+verlangen.
+
+**Die erste Zahl, die die Sonde liefert, und sie ist klein.** Kontrolllauf auf ruhiger Maschine
+(`FLEET_E2E_SHARD=3/8 ./e2e-isolated.sh`, Einheit `lanes` allein, Baum `2bdbd708e202`, ALL PASS):
+
+> `PASS  ② setup: BOTH gates wakeAuthor asks still hold one request before the merge POST (alive AND idle)`
+> `({"alive":true,"idle":true,…,"idleMs":567,"gateMs":500,…})`
+
+**567 ms gegen ein 500-ms-Gate — 67 ms Marge**, eine Anfrage vor dem POST, ohne Nebenlast. Das ist
+EINE Beobachtung und keine Verteilung; sie sagt aber, in welcher Grössenordnung diese Sektion das
+Gate passiert, und dass eine Maschine, die zwei Suiten parallel fährt, dafür nicht viel verschieben
+muss. Die Sonde schreibt diese Zahl ab jetzt bei jedem Lauf in ihre Zeile — bei GRÜN hält der Trail
+nur den Namen, im `suite.log` steht sie vollständig.
+
+**Die Sonde ist gegen einen künstlich getöteten Marker geprüft, nicht nur gegen sich selbst.**
+Mutationslauf: dieselbe Shard-Stichprobe, mit einer `tmux respawn-pane -k` ZWISCHEN der Alive-Setup-Zeile
+und dem POST — die exec'te fake-claude-Pane wird durch eine nackte Shell ersetzt, also genau der
+Zustand, den `paneAgentAt` verweigert. Ergebnis, beide Läufe auf `2bdbd708e202`:
+
+| Lauf | PASS | FAIL | Tail |
+| --- | --- | --- | --- |
+| Kontrolle | 459 | 0 | `ALL PASS` |
+| Mutation (Pane geleert) | 439 | **1** | `1 FAILURES` |
+
+Die eine rote Zeile ist die neue, und sie nennt sich selbst samt Grund:
+
+> `FAIL  ② setup: BOTH gates wakeAuthor asks still hold one request before the merge POST (alive AND idle)`
+> `({"alive":false,"idle":true,"comm":"/bin/zsh","panePid":44323,"idleMs":630,"gateMs":500,"tail":"owner@… fleet-260917032523-6529 %"} — the 14 ② checks below are NOT MEASURED, not violated)`
+
+459 − 440 = **19 Zeilen sind gar nicht erst gelaufen** — die vierzehn, die im Audit rot waren, plus
+die fünf, die dort aus eigenen Gründen grün standen, die grüne Confirm-Folgezeile eingeschlossen.
+Vor diesem Schnitt hätte derselbe verlorene Marker vierzehn fremde Invarianten angeklagt; jetzt
+fällt die Prämisse als SIE SELBST, und `comm:"/bin/zsh"` sagt in derselben Zeile, was an ihre Stelle
+getreten ist.
+
+**Die offene Frage und der Sensor, der sie entscheidet** — mehr behauptet dieser Eintrag nicht:
+fällt die Sektion noch einmal mit GRÜNER neuer Setup-Zeile und `busy` im Detail, dann ist der Stempel
+INNERHALB der Merge-Anfrage gefallen (zwischen Route-Eintritt und `canDeliver`), und die Frage wird
+eine PRODUKT-Frage — ob ein Idle-Gate, das über einen 100-ms-Poll gegen ein 500-ms-Fenster
+entscheidet, auf einer geladenen Maschine überhaupt entscheidbar ist. Fällt sie mit ROTER neuer
+Setup-Zeile, liegt es an der Fixture und die vierzehn Zeilen sind gar nicht erst gelaufen. Vorher
+wird am Produktpfad (`server.ts#wakeAuthor`, `server.ts#mergeJob`, die Alive-Probe) nichts geändert.
+
 ## 15. Die Scratch-Halde unter `$TMPDIR` — drei Klassen, gemessen, und wer sie ab jetzt besitzt (2026-09-17)
 
 `e2e-isolated.sh` hat genau EINE Aufbewahrungsnaht, und sie ist eine Zeile:

@@ -1,7 +1,7 @@
 // Helpers shared by every worktree-lane check module: the fake merge agent's mode file, the
 // two deterministic waits (async merge job settled / pane idle past the land gate), and the
 // verdict shape they return.
-import { chmodSync, copyFileSync, existsSync, mkdirSync, statSync, symlinkSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { check, get, post, tmuxOut, REPO, ROOT } from "./harness";
@@ -146,6 +146,76 @@ export const fakeClaudeInPane = async (slot: number, timeoutMs = 20_000): Promis
     }
   }
   return false;
+};
+
+// --- ② THE PRECONDITION THE FIXTURE ASSUMED AND NEVER READ BACK -------------------------------
+// `wakeAuthor` asks TWO questions before it hands a conflict to the author, and the fixture above
+// establishes exactly one of them: fakeClaudeInPane satisfies the STRICT alive probe, and
+// settleForMerge is supposed to satisfy the IDLE gate (canDeliver, idleMs: MERGE_IDLE_MS). Either
+// answer turns into the same fallback, and the fallback's verdict ("blocked", the throwaway
+// resolver's own answer) names NEITHER — which is why one lost gate used to arrive as fourteen
+// unrelated red lines.
+//
+// This reads both back, at the one instant that decides: immediately before the merge POST. The
+// alive half replicates paneAgentAt's mechanism rather than asking the server, because the server's
+// own per-slot reading (agentInfo) is computed with commsFor(), and this suite's FLEET_CMD=true
+// makes that "unprobed" for every pane — it cannot answer the strict question wakeAuthor asks.
+// The idle half reads the server's OWN clock — `now` and `lastOutput` out of the SAME
+// /api/sessions answer — because that is literally the subtraction canDeliver performs, and taking
+// both from one response keeps this request's own latency out of the result.
+//
+// Reading it back is the whole point: `settleForMerge` gives up silently after its 80 rounds and
+// returns exactly as it returns on success, so a fixture that only CALLS it cannot tell "idle" from
+// "I stopped asking" — and neither can the fourteen checks that then run on its word.
+export interface AuthorGates { alive: boolean; idle: boolean; comm: string; panePid: number;
+  idleMs: number | null; gateMs: number; tail: string }
+export const probeAuthorGates = async (slot: number): Promise<AuthorGates> => {
+  const target = `s${slot}`;
+  const p = await tmuxOut("display-message", "-p", "-t", target, "#{pane_pid}");
+  const panePid = Number(p.out.trim());
+  let comm = "";
+  if (panePid) {
+    const ps = Bun.spawn(["ps", "-o", "comm=", "-p", String(panePid)], { stdout: "pipe", stderr: "pipe" });
+    comm = (await new Response(ps.stdout).text()).trim();
+    await ps.exited;
+  }
+  const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
+  const sl = sx.slots.find((x) => x.id === slot);
+  const idleMs = sl ? sx.now - sl.lastOutput : null;
+  // the last two painted lines, so a pane that lost its agent SHOWS what it lost it to
+  const cap = (await tmuxOut("capture-pane", "-t", target, "-p")).out.trimEnd().split("\n");
+  return { alive: (comm.split("/").pop() ?? "").startsWith("claude"), idle: idleMs !== null && idleMs >= MERGE_IDLE_MS,
+    comm, panePid, idleMs, gateMs: MERGE_IDLE_MS, tail: cap.slice(-2).join(" ⏎ ").slice(-200) };
+};
+
+// Establish BOTH gates, or say which one could not be established. Bounded and deterministic: each
+// round re-runs the wait and re-reads the answer, and the caller POSTs with nothing in between —
+// the residual window is one request, which is as small as a test outside the server can make it.
+export const settleForAuthorMerge = async (slot: number, rounds = 4): Promise<AuthorGates> => {
+  let g = await probeAuthorGates(slot);
+  for (let i = 0; i < rounds && !(g.alive && g.idle); i++) {
+    await settleForMerge(slot);
+    g = await probeAuthorGates(slot);
+  }
+  return g;
+};
+
+// The server's OWN testimony about which gate refused. mergeJob logs it (server.ts, "conflict
+// resolution fell back to the throwaway resolver — <gate>") and then drops it: the "blocked"
+// verdict carries no `fellBack` prefix, only the "resolved" one does. So the one datum that decides
+// this family lives in the instance's server.log and nowhere in any API answer. Read from the TAIL
+// and filtered to the slot, because every other merge check in this suite legitimately falls back
+// (FLEET_CMD=true panes hold no claude) and writes the same sentence.
+// The mark is a DECODED length, never statSync().size: this log is full of em dashes — these very
+// lines carry one — and slicing a decoded string by a BYTE offset drops characters off the front of
+// the window (the same skew e2e/programs.ts §3867 names).
+export const serverLogMark = (): number => { try { return readFileSync(`${ROOT}/server.log`, "utf8").length; } catch { return 0; } };
+export const authorFallbackGates = (slot: number, since: number): string[] => {
+  try {
+    const log = readFileSync(`${ROOT}/server.log`, "utf8").slice(since);
+    return [...log.matchAll(/^slot (\d+): conflict resolution fell back to the throwaway resolver — (.+)$/gm)]
+      .filter((m) => Number(m[1]) === slot).map((m) => m[2]!);
+  } catch { return []; }
 };
 
 // --- seeding and driving a lane, for the harnesses that bring their OWN repo -------------------

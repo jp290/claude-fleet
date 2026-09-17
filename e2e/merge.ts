@@ -5,7 +5,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
-import { exists, fakeClaudeInPane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
+import { authorFallbackGates, exists, fakeClaudeInPane, serverLogMark, setMergeMode, settleForAuthorMerge,
+  settleForMerge, waitMerge } from "./lane-helpers";
 import { projectPromotionPolicyFacts } from "../land-candidate";
 
 type MergeEventRow = {
@@ -1441,7 +1442,11 @@ export async function run(lc: LaneCtx): Promise<void> {
   // that probe (fakeClaudeInPane), which is the only difference, and the whole round trip is
   // asserted: hand-off → the author's own resolution → the stop for review → the confirm-land →
   // the attribution surviving all the way onto the outcome row.
-  {
+  //
+  // LABELLED, and the label is load-bearing: when the fixture cannot hold its own precondition one
+  // request before the POST, the rest of this block is unmeasured and must not run at all. A bare
+  // `return` here would take the whole module's remaining sections with it.
+  authorPath: {
     const lnA = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
     await Bun.write(`${lnA.cwd}/code.txt`, "root\nauthor-lane\n");
     spawnSync("git", ["-C", lnA.cwd, "commit", "-aqm", "author lane work"]);
@@ -1453,11 +1458,37 @@ export async function run(lc: LaneCtx): Promise<void> {
     const ready = await fakeClaudeInPane(lnA.slot);
     check("② setup: the author lane's pane satisfies the server's STRICT claude-alive probe",
       ready, `slot ${lnA.slot}`);
-    await settleForMerge(lnA.slot);
+    // THE SECOND SETUP LINE, and the one this section spent a year without. `wakeAuthor` asks TWO
+    // questions — strict alive AND canDeliver's idle gate — and the line above establishes only the
+    // first. Both are re-read HERE, one request before the POST, because a gate lost between the
+    // setup and the merge is not a finding about the author path: it is a fixture that did not hold
+    // its own premise. On 2026-09-17 that difference cost fourteen red lines whose details named the
+    // throwaway resolver's answer ("fake conflict") and never the gate that summoned it — the gate
+    // was `busy`, and it was legible only in the instance's server.log (docs/verify-tiering.md
+    // §11.2aa). When this line falls, the fourteen checks below are NOT MEASURED and do not run:
+    // an unmeasured premise may not be reported as fourteen violated invariants.
+    const gatesA = await settleForAuthorMerge(lnA.slot);
+    const preOk = gatesA.alive && gatesA.idle;
+    check("② setup: BOTH gates wakeAuthor asks still hold one request before the merge POST (alive AND idle)",
+      preOk, `${JSON.stringify(gatesA)}${preOk ? "" : " — the 14 ② checks below are NOT MEASURED, not violated"}`);
+    if (!preOk) {
+      // leave nothing behind for the sections after this one: the lane is killed and its worktree
+      // discarded exactly as the V1 block above discards its own fixture lane.
+      await post(`/api/slots/${lnA.slot}/kill`, {});
+      await post("/api/worktrees/discard", { repo: REPO, path: lnA.cwd, branch: lnA.branch });
+      break authorPath;
+    }
+    const logMark = serverLogMark();
     await post(`/api/slots/${lnA.slot}/merge`, {});
     const vA1 = await waitMerge(lnA.slot);
+    // The gates held one request ago, so a fallback here happened INSIDE that one request — and the
+    // only record of which gate refused is the server's own log line, which the "blocked" verdict
+    // drops (only the "resolved" one carries the `fellBack` prefix). Read it into the detail: a
+    // future sighting of this family should arrive already naming its gate.
+    const fellBackTo = vA1.last?.status === "awaiting-author" ? [] : authorFallbackGates(lnA.slot, logMark);
     check("② a conflict is handed to the lane's OWN session, not to the throwaway resolver",
-      !vA1.gone && vA1.last?.status === "awaiting-author", JSON.stringify(vA1.last));
+      !vA1.gone && vA1.last?.status === "awaiting-author",
+      `${JSON.stringify(vA1.last)}${fellBackTo.length ? ` — server.log: author gate refused with ${fellBackTo.join(", ")}; probe one request earlier: ${JSON.stringify(gatesA)}` : ""}`);
     check("② the hand-off records WHO was asked (resolvedBy:'author') and WHICH files",
       (vA1.last as { resolvedBy?: string } | null)?.resolvedBy === "author"
       && (vA1.last?.conflicted ?? []).includes("code.txt"), JSON.stringify(vA1.last));

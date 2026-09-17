@@ -1,3 +1,68 @@
+# HANDOFF — Orchestrator Slot 8 → Nachfolgerin (Haupt-Checkout, Owner-Token): M5-Serie gebrochen und gruen bestaetigt, Master-Stop zurueckgedreht, Deploy nachgezogen, sol|terra als Varianten-Gruppe und das Sub-Routing gefilet; 2026-09-17 ~08:1x, ctx GEMESSEN 36,2 %
+
+## 0. SOFORT BEIM ANTRITT
+
+- **Zustand ableiten:** `./state.sh`, `./register.sh`, `GET /api/self` → `lineage.record`. Diese Datei traegt nur den Rest.
+- **Drei Lanes in Flug, alle drei mit armiertem Lane-Watch** (ccb7f5f4/e7d7f718/2ba7421a). Alle drei haben heute morgen „done-looking" gemeldet und waren es NICHT — Pane lesen, nie auf das Praedikat landen.
+
+## 1. WAS DIESE SCHICHT GESCHLOSSEN HAT
+
+- **Die M5-Familie ist tot und der Beweis ist gefahren.** Sie hat jedes Land der Nacht rot auditiert (vier Rots in Folge unter dem aktuellen Check-Namen, sechs Sichtungen insgesamt — zwei davon unter dem AELTEREN Namen `(iv) M5: a DOCS-ONLY land …`, weshalb die geerbte Zahl „5/687" zwei Familien vermischte). Ursache war ein Fixture-Rennen, kein Produktfehler: `dispatch` antwortet 200, waehrend der Gruendungs-Brief noch geschuldet ist; sein Paste stempelt `lastOutput` und schliesst das `done-looking`-Fenster, auf das die Sonde wartete. Diskriminator ist eine KONSTANTE (`FOUNDING_BOOT_GRACE_MS = 4000`), die zwei Rots liegen 9 ms auseinander. Seither **sechs gruene Audits am Stueck**, zuletzt 5002/0.
+- **Master-Stop zurueckgedreht**, mit Wirkung: die Pause war eine Kontingent-Pause mit eigener, abgelaufener Frist („Reset 16.09. ~19:00"), gesetzt von einer Session, nicht vom Owner. Belegt durch Ergebnis, nicht durch Argument: `0d3ebca3` und `259bf7af` lagen `pending` und liefen danach als Lanes.
+- **Deploy nachgezogen**, zweimal (`77dc2ffc`, `c37f92e5`, beide `ok:true` vom naechsten Boot). `FLEET_CARD_MS='60000'` ist wieder live — und hat sofort getragen: nach dem Neuschnitt von `b85134d3` zog der Sweep die Karte in 42 s nach, die vier Verbote ueberlebten den Re-Read (geprueft, das Regelbuch nennt dort eine Falle).
+- **`§11.2y` traegt jetzt echte Shas** (`82ca0fa0`): Code `f8d370ad`/`e2d78c26`/`6ada9242`, Register `1bcfdff6`/`96170615`/`6988539d`, jede per `git merge-base --is-ancestor` geprueft.
+
+## 2. WAS LAEUFT, MIT ADRESSE
+
+- **Slot 1** (`fleet/260917030337-7f67`): faehrt einen HEAD-Vergleichslauf, um zu klaeren, ob `e2e/programs.ts`-Setup-Timeouts seine Aenderung oder die Maschine sind. Richtige Disziplin, nicht stoeren.
+- **Slot 2** (`fleet/260917052329-fffa`, Task `b85134d3`, von mir neu geschnitten): hat erkannt, dass `e2e/helper-portal.ts` NICHT vom Haupt-Runner importiert wird, und faehrt deshalb `./e2e-postland-audit.sh` — den Wrapper, den kein Gate faehrt. Genau das verlangte der neue Brief.
+- **Slot 3** (`fleet/260917061346-332a`, Task `e0a5dee0`, Astra/medium, von Hand ueber den Deckel dispatcht): der Sub-Routing-Denkauftrag des Owners.
+
+## 3. DIE ZWEI NEUEN ZEILEN DES OWNERS — und wie sie zu ernten sind
+
+- **`5e5588c5` — Varianten-Gruppe sol|terra**, `queued`, Varianten `4cee1359` (gpt-5.6-sol) und `c929ba64` (gpt-5.6-terra). Sacharbeit ist die pi-Readiness-Frage, die GLM ohnehin braucht; der Vergleich ist die Nebenwirkung.
+  - **Geurteilt wird mit `bun land-quality.ts`** — `landed`, `commits`, `rework3d`, `fix3d(code)`, `auditRed`. **NIE ueber Lane-Zeit oder ctx-%** (stehende Owner-Korrektur).
+  - **Notiz `00279c52` haengt an der Zeile** und nennt zwei Einschraenkungen, die nicht verloren gehen duerfen: der Start ist GESTAFFELT (Deckel 3 war voll; den Deckel zu heben waere auf 8 GB mit 69 MB frei falsch gewesen), und **n=1 je Modell ist ein Datenpunkt, kein Urteil**. terra hat in diesem Fleet NIE gelandet — genau zwei Ausgaenge, beide 2026-08-08, `killed-dirty` und `killed-empty`; sol hat 51 Code-Lands. Damit der Vergleich etwas wert wird, muessen weitere kleine Zeilen als sol|terra-Gruppen rausgehen.
+- **`e0a5dee0` — Sub-Routing**, laeuft auf Astra. Die Messlage steht IM Brief, damit sie nicht neu erhoben wird.
+
+## 4. DER TEUERSTE FEHLENDE SENSOR — zweimal in 24 h dieselbe Luecke
+
+Ein Router, der „Fokus runter, wenn das Abo fast leer ist" soll, braucht je Sub einen Fuellstand. Geprobt, mechanisch:
+
+| Sub | Zaehler | Nenner | Reset |
+|---|---|---|---|
+| Codex | ja | ja (`used_percent`, gemessen 42,0) | ja (`resets_at`, 22.09. 20:20) |
+| Claude | ja (`usage` je Transkriptzeile) | **nein** | **nein** |
+| Z.ai/GLM | **nein** | **nein** | **nein** |
+
+Geprueft und NICHT gefunden: `usage`/`quota`/`limit`/`status`-Verb der claude-CLI (volle Verbliste), `rate_limit`/`reset`-Felder in den Transkripten, jede Datei unter `~/.claude` mit solchem Namen; `stats-cache.json` zaehlt Nachrichten und ist vom 2026-08-25. Fuer pi: kein Verbrauchsfeld in `~/.config/claude-fleet/pi-zai-agent`, kein CLI-Verb.
+**Dieselbe Luecke hat in 24 h ZWEI Entscheidungen geraten statt gemessen:** die Rueckdrehung des Master-Stops und jetzt das Routing. Ein RELATIVER Claude-Sensor (Token/Stunde ueber alle Slots, Trend statt Prozent) ist aus den Transkripten baubar und haette beide getragen. Er ist NICHT beauftragt — der Owner hat ihn nicht bestellt, und `e0a5dee0` soll ihn erst bewerten.
+**Und der eine Sensor, den wir haben, ist passiv:** `used_percent` schreiben laufende Codex-Sessions. Laeuft keine, altert die Zahl. Sortiere die Rollouts nach **mtime, nie nach Dateiname** — der frischeste Wert stand in einer Datei mit Namensdatum 09-08, geschrieben am 09-16.
+
+## 5. GLM-5.3-FLASH: die Anbindung existiert, der Tick lehnt sie ab
+
+`pi-zai/glm-5.3-flash` hat am 2026-09-16 acht Lanes gefahren, sechs gelandet. Der Blocker ist **`automatable: false`** am Adapter, und `FLEET_HARNESS_AUTOMATION` steht bereits auf `1` — der Code warnt an Ort und Stelle, dass eine `.env`-Aenderung hier NICHTS bewirkt. codex bekam das Flag nur zusammen mit einer Readiness-Naht (ein Paste in einen Trust-Screen frisst den Brief spurlos). **`~/.config/claude-fleet/pi-zai-agent/trust.json` existiert** — ein Hinweis, dass pi ein Trust-Konzept hat; ungeprueft, ob es einen Screen zeigt. Das Umlegen des Flags ist ausdruecklich VERBOTEN in der Zeile und bleibt Owner-Entscheid.
+
+## 6. WAS ICH ZURUECKGEZOGEN HABE, OBWOHL DER OWNER ZUGESTIMMT HATTE
+
+Ich hatte empfohlen, „~240 MB fremde node/npm" zu beenden, und der Owner hat zugestimmt. **Nicht ausgefuehrt:** nach Arbeitsverzeichnis gemessen sind 91 MB `private-repo-aa` (das AKTIVE Program Private-repo-aa) und 47 MB `claude-fleet` selbst. Die Vokabel „fremd" stammte aus der Uebergabe und war falsch; ein Kill haette laufende Arbeit getroffen. Echte Fremdprozesse: ~33 MB, kein Hebel. Auch die geerbte Zahl „stray bun ~350 MB" stimmt nicht — gemessen 25 MB.
+**Der reale RAM-Hebel ist die Harness-Mischung:** claude ~227 MB je Slot gegen codex ~13,5 MB, Faktor 17, auf 8 GB mit zeitweise 69 MB frei.
+
+## 7. DIE FEHLERKLASSE DIESER SCHICHT — sieben Instanzen, sie ist nicht erledigt
+
+Ein Werkzeug liefert eine plausible Zahl zur **falschen Frage**. Neu dazugekommen, alle selbst gestellt:
+1. `ps -eo command | grep -c 'bun fleet-e2e'` meldete 3 laufende Suiten — es traf meinen EIGENEN Kommandotext im Prozess-Listing. `pgrep` sagte 0. Haette fast einen Lock-Reap als unsicher verworfen.
+2. `git diff --stat main..HEAD` zeigte 789 geloeschte Zeilen in Slot 3s Branch — Zwei-Punkt-Diff gegen einen aelteren Fork. Gegen die merge-base: zwei Dateien, nichts geloescht.
+3. `awk '$2 ~ /\/(node|npm)$/'` fand 14 MB statt 240 MB — das Muster verlangte einen Schraegstrich und traf nur Prozesse mit Pfadangabe.
+4. Rollout nach Dateiname statt mtime sortiert (siehe §4).
+5. „fremde" node/npm (siehe §6) — die Fehlzuschreibung steckte in einem WORT, nicht in einer Zahl.
+**Gegenmittel, das jedes Mal funktioniert hat:** dieselbe Zahl ein zweites Mal ANDERS herleiten. Nicht nachrechnen — anders messen.
+
+## 8. OFFEN
+
+- `b85134d3`s Land (Slot 2) bringt die Ueberlappungs-Markierung; danach ist ein rotes Audit unter Kollokation zum ersten Mal von aussen lesbar.
+- Die sol|terra-Gruppe braucht weitere Laeufe, sonst bleibt sie n=1.
+- Der relative Claude-Sensor ist benannt, nicht beauftragt.
 # HANDOFF — Program-MAIN Fleet-Betrieb (f170dc46) Slot 1 -> Nachfolgerin: zwei Lands (6988539d, 33e1a80d), beide gruen; die M5-Zwei-Rot-Serie gebrochen; eine widerlegte Praemisse in b85134d3 benannt und NICHT erledigt; 2026-09-17 ~01:0x, ctx GEMESSEN 32,9 % (329 015 von 1 000 000)
 
 *(Program-Kanaele waren beim Uebergeben ZU: Beratungs-Eimer 10/10, Arbeits-Eimer 5/5. Darum steht das Residuum hier statt als Program-Notiz — derselbe Engpass, den schon Slot 6 am 16.09. traf. Eine Zeile, die das aufloest, fehlt weiterhin.)*

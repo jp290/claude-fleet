@@ -269,23 +269,31 @@ if (!res.ok) {
   console.error(`ctl.sh get: ${path} -> ${res.status}${why}${snip ? `\n  ${snip}` : ""}`);
   process.exit(1);
 }
+// NO `process.exit()` PAST THIS POINT, and it is not a style preference. Measured on this machine
+// while writing it: `process.stdout.write(<745 KB suite.log>)` followed by `process.exit(0)` handed
+// a PIPE exactly 65 536 bytes — one buffer — three times out of three, and said nothing. A reader
+// that silently truncates a suite log is the defect this whole verb exists to remove, in a new
+// place. Letting the program END instead keeps the handle alive until the write drains.
 if (process.env.CTL_KEYS !== "1") {
   if (isJson) console.log(JSON.stringify(body, null, 2));
   else if (JSONOUT) console.log(JSON.stringify({ path, status: res.status, contentType: ctype, text }, null, 2));
   else process.stdout.write(text.endsWith("\n") ? text : text + "\n");
-  process.exit(0);
-}
+} else if (!isJson) {
+  // --keys on a body that has no keys: said as itself, with the two numbers that decide whether
+  // reading it without --keys is a good idea at all
+  // BYTES, not string length: a suite log with one non-ASCII character makes those two numbers
+  // differ (745 847 against 748 038 on the log this was measured with), and the number a reader
+  // decides with is the one `wc -c` will also print
+  const bytes = Buffer.byteLength(text, "utf8");
+  const lines = [`${path}  ${res.status}  ${ctype || "no content-type"} — not JSON, so it has no keys`,
+    `  ${bytes} bytes, ${text.split("\n").length} lines — read it without --keys`];
+  out({ path, status: res.status, contentType: ctype, json: false, bytes }, lines);
+} else {
 // --- --keys: the SHAPE instead of the body -----------------------------------------------------
 // Two levels and no more. One level answers nothing (`{audits, total, malformed}` is not a field
 // shape), and the whole tree is the body again — the thing the caller asked not to be handed. The
 // second level of an array is read off element 0 and SAYS SO, because an empty array has no shape
 // to read and must not be reported as one.
-if (!isJson) {
-  const lines = [`${path}  ${res.status}  ${ctype || "no content-type"} — not JSON, so it has no keys`,
-    `  ${text.length} bytes, ${text.split("\n").length} lines — read it without --keys`];
-  out({ path, status: res.status, contentType: ctype, json: false, bytes: text.length }, lines);
-  process.exit(0);
-}
 const scalar = (v) => {
   if (v === null) return "null";
   if (typeof v === "string") return JSON.stringify(v.length > 60 ? v.slice(0, 60) + "…" : v);
@@ -316,6 +324,7 @@ const lines = [`${path}  ${res.status}  ${rootShape}`,
 if (entries.length === 0) lines.push(`  (${rootShape} — no keys at the top level)`);
 out({ path, status: res.status, shape: rootShape,
   keys: entries.map(([k, v]) => ({ key: k, shape: shapeOf(v), inner: inner(v) })) }, lines);
+}
 EOF
   js_run
   ;;

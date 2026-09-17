@@ -221,11 +221,18 @@ export async function run(): Promise<void> {
   const apiSessions = (await (await get("/api/sessions")).json()) as { slots: { id: number }[] };
   const gotOwner = await ctl(["get", "/api/sessions", "--json"]);
   const gotSlots = (gotOwner.json as { slots?: { id: number }[] })?.slots ?? [];
-  check("ctl get: an owner route answers with exactly the body that route serves",
-    gotOwner.code === 0
+  // `json !== null` is load-bearing and not decoration: ctl() only reaches it by PARSING what the
+  // script printed, so a body cut short on its way to the pipe cannot satisfy this line. That is
+  // the check for a real defect this verb had while being written — `process.stdout.write` of a
+  // 745 KB suite.log followed by `process.exit(0)` handed a pipe exactly 65 536 bytes, silently
+  // (ctl.sh, the comment above the output branch). This instance serves no body that large, so
+  // what is held here is completeness, and the 64 KB case was measured by hand against the live
+  // artefact route.
+  check("ctl get: an owner route answers with the complete body that route serves",
+    gotOwner.code === 0 && gotOwner.json !== null
       && gotSlots.map((s) => s.id).join() === apiSessions.slots.map((s) => s.id).join()
       && gotSlots.length > 0,
-    `exit ${gotOwner.code} ctl=${gotSlots.length} api=${apiSessions.slots.length}`);
+    `exit ${gotOwner.code} parsed=${gotOwner.json !== null} ctl=${gotSlots.length} api=${apiSessions.slots.length}`);
 
   // THE SPLIT IS THE PATH, not a flag — and it is proven from both sides, because a verb that
   // simply sent BOTH headers would pass a one-sided check while quietly widening what a caller

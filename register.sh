@@ -23,11 +23,47 @@
 # must not read as a zero.
 #
 # Usage:  ./register.sh          (from the main checkout or from any lane)
+#         ./register.sh --brief       (max 40 lines: the queue numbers plus a map of the full output)
 #         ./register.sh --archived <muster>
 #                                (rows that left the queue: done, archived or evicted by the cap)
 set -u
 cd "$(dirname "$0")" || exit 1
 export GIT_OPTIONAL_LOCKS=0
+
+# --brief: the same digest contract as state.sh's — at most 40 lines, line 1 names the full output's
+# line and byte count plus the command. Exact self-replay with no arguments: the full path below is
+# untouched, --archived stays byte-for-byte what it was, and an unknown flag is exit 2, named.
+REGISTER_KEYRE='^  (source: |[0-9]+ open of |no open rows|no file is named|UNBEKANNT vs everything|BUSY |[0-9]+ line\(s\)\.|[0-9]+ pointer\(s\)|broken pointers:|not in the index:)|^  [0-9]+× |^  [0-9a-f]{8}  |^        surface '
+case "${1:-}" in
+"" | --archived) ;;
+--brief)
+  brief_tmp=$(mktemp "${TMPDIR:-/tmp}/register-full.XXXXXX") || exit 1
+  trap 'rm -f "$brief_tmp"' EXIT HUP INT TERM
+  "$0" > "$brief_tmp"
+  brief_rc=$?
+  if [ "$brief_rc" -ne 0 ]; then
+    echo "register.sh --brief: the full render exited $brief_rc — shown unabridged, not digested:" >&2
+    cat "$brief_tmp"
+    exit "$brief_rc"
+  fi
+  brief_map=$(grep -E '^=== ' "$brief_tmp" | sed 's/^/  /')
+  brief_keys=$(grep -E "$REGISTER_KEYRE" "$brief_tmp")
+  brief_n=$(wc -l < "$brief_tmp" | tr -d ' ')
+  brief_m=$(wc -c < "$brief_tmp" | tr -d ' ')
+  brief_cap=$((36 - $(printf '%s\n' "$brief_map" | grep -c .)))
+  echo "KURZFORM der Vollausgabe: $brief_n Zeilen · $brief_m Bytes — $0"
+  sed -n '1p' "$brief_tmp"
+  echo "  (Auswahl: Kopfzeile, Sektionskarten, Queue-Zeilen, Kollisionen, jedes UNKNOWN — der Rest: $0)"
+  printf '%s\n' "$brief_map"
+  printf '%s\n' "$brief_keys" | awk -v cap="$brief_cap" 'NF && NR <= cap'
+  brief_gesamt=$(printf '%s\n' "$brief_keys" | grep -c .)
+  if [ "$brief_gesamt" -gt "$brief_cap" ]; then
+    echo "  (… weitere $((brief_gesamt - brief_cap)) Zeilen: $0)"
+  fi
+  exit 0 ;;
+*) echo "register.sh: unbekanntes Flag '$1' — gueltig: (kein Flag) | --archived <muster> | --brief" >&2
+   exit 2 ;;
+esac
 
 # The queue lives in fleet.json, which is untracked and belongs to the DIRECTORY the server runs in
 # (server.ts: STATE_FILE = import.meta.dir/fleet.json). A lane worktree therefore has none of its

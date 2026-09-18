@@ -18,9 +18,10 @@ Scope and sources, so the omissions are not silent:
   `fleet-sync.timer`, `LICENSE`.
 - A row with no sentence available says so in the row. It is never dropped.
 
-## Directories (11)
+## Directories (12)
 
 - `.claude/` — Session-scoped Claude Code commands (`⚙ steward`'s five pulses) and the repo-local skills — `graphify`, `kriterium-grill`, `mess-notiz`, `unslop`.
+- `.codex/` — Repo-local Codex agent roles only (`agents/`, e.g. `erdung.toml`), loaded when the project is trusted; the machine-local `hooks.json` beside them stays gitignored.
 - `.fleet/` — This repo's own context manifest (`context-packs.json`) — the pointers a target repo publishes about itself, validated by e2e/pins.ts before every land.
 - `attic/` — Retired material kept tracked rather than deleted: briefs whose lane is long gone, the working-circle atlas, the learning bench, the studio kit, the portable prompt-compiler commands, and the scripts nothing runs any more (`attic/atlas.sh`, `attic/steward-arena.sh`, `attic/worker-deepseek.py`, `attic/find-conv.py`).
 - `briefs/` — Founding and task briefs handed to lanes, kept as tracked prose so a dispatched instruction stays readable after its pane is gone.

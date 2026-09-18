@@ -28,6 +28,7 @@ export type RepoMapProbe = { readonly ok: true; readonly facts: RepoMapFacts } |
 // to be able to say so. Keys are directory names without the trailing slash.
 export const DIRECTORY_NOTES: Readonly<Record<string, string>> = {
   ".claude": "Session-scoped Claude Code commands (`⚙ steward`'s five pulses) and the repo-local skills — `graphify`, `kriterium-grill`, `mess-notiz`, `unslop`.",
+  ".codex": "Repo-local Codex agent roles only (`agents/`, e.g. `erdung.toml`), loaded when the project is trusted; the machine-local `hooks.json` beside them stays gitignored.",
   ".fleet": "This repo's own context manifest (`context-packs.json`) — the pointers a target repo publishes about itself, validated by e2e/pins.ts before every land.",
   "attic": "Retired material kept tracked rather than deleted: briefs whose lane is long gone, the working-circle atlas, the learning bench, the studio kit, the portable prompt-compiler commands, and the scripts nothing runs any more (`attic/atlas.sh`, `attic/steward-arena.sh`, `attic/worker-deepseek.py`, `attic/find-conv.py`).",
   "briefs": "Founding and task briefs handed to lanes, kept as tracked prose so a dispatched instruction stays readable after its pane is gone.",

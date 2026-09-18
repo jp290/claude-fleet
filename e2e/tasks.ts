@@ -9145,11 +9145,22 @@ export async function run(ctx: Ctx): Promise<void> {
     const mMainProgram = await mProgram("ACP-23 filing bracket");
     const mSlot = (await mSess()).find((x) => !x.cwd)?.id ?? -1;
     const mOpen = mSlot < 0 ? null : await post(`/api/slots/${mSlot}/open`, { cwd: REPO, label: "acp23-main" });
+    // (rc3)'s two rows are filed HERE, through the owner door with an author card, so their `after` can
+    // ride on the one planting stop below: a release right after a second stop/restart of its own was
+    // answered 401 in four previews in a row — the MAIN's self door found no slot for its token.
+    const rcEarlyCard = { ziel: "acp23 rc probe", surface: { files: ["AGENTS.md"], symbols: [] },
+      done: "die Zeile ist freigegeben", verify: "bun e2e/pins.ts", verboten: [] };
+    const rcEarly = async (text: string): Promise<string> => ((await (await post("/api/tasks",
+      { text, queue: false, programId: mMainProgram, repo: REPO, card: rcEarlyCard })).json()) as { task?: { id: string } }).task?.id ?? "";
+    const rcPred = await rcEarly("acp23 rc predecessor");
+    const rcAfter = await rcEarly(`acp23 rc ordered with a card, NACH ${rcPred}`);
     // The binding is PLANTED through the state file, the same way e2e/programs.ts plants its stale
     // and complete-bound fixtures: the bootstrap route spawns a fresh session and waits for a
     // harness screen, and none of that founding path is what this section measures.
     await stopSrv();
     const mPlanted = mState();
+    const rcRow = ((mPlanted as { tasks?: { id: string; card?: Record<string, unknown> }[] }).tasks ?? []).find((t) => t.id === rcAfter);
+    if (rcRow?.card) rcRow.card = { ...rcRow.card, after: [rcPred] };
     const mSlotRow = mPlanted.slots?.[String(mSlot)];
     const mProgramRow = mPlanted.programs?.find((p) => p.id === mMainProgram);
     if (mProgramRow && mSlotRow?.openedAt)
@@ -9450,20 +9461,18 @@ export async function run(ctx: Ctx): Promise<void> {
     // rows of THIS MAIN's program: no card → 409 naming it; an author card (which has no `after`
     // field) under a text with `NACH <id>` → 409 naming the id; a card that carries the id → 200, and
     // the start plan holds the row behind its predecessor, the wait register naming whose move it is.
-    // The third card is PLANTED with the server stopped (no door writes an `after`; (sp-tick) pattern).
+    // The third row and its predecessor are filed before the section's binding stop, which plants the
+    // card's `after` (no door writes one; the (sp-tick) pattern) — see rcEarly at the fixture.
     // Mutation that turns (rc2) red: dropping the NACH comparison (the row releases, 200).
     await post("/api/dispatch", { on: false });
     const rcCard = { ziel: "acp23 rc probe", surface: { files: [M_TRACKED], symbols: [] },
       done: "die Zeile ist freigegeben", verify: "bun e2e/pins.ts", verboten: [] };
     const rcFile = async (body: Record<string, unknown>): Promise<string> =>
       ((await (await mFile(mToken, { kind: "auftrag", ...body })).json()) as { task?: { id: string } }).task?.id ?? "";
-    const rcToken = (): string => mState().slots?.[String(mSlot)]?.selfToken ?? "";
     const rcRelease = (id: string): Promise<Response> => fetch(`${BASE}/api/self/tasks/${id}/release`,
-      { method: "POST", headers: { "x-fleet-self-token": rcToken() } });
-    const rcPred = await rcFile({ text: "acp23 rc predecessor", card: rcCard });
+      { method: "POST", headers: { "x-fleet-self-token": mToken } });
     const rcBare = await rcFile({ text: "acp23 rc no card" });
     const rcNach = await rcFile({ text: `acp23 rc ordered, NACH ${rcPred}`, card: rcCard });
-    const rcAfter = await rcFile({ text: `acp23 rc ordered with a card, NACH ${rcPred}`, card: rcCard });
     const rcBareRes = await rcRelease(rcBare);
     const rcBareText = await rcBareRes.text();
     const rcNachRes = await rcRelease(rcNach);
@@ -9476,37 +9485,17 @@ export async function run(ctx: Ctx): Promise<void> {
       !!rcNach && !!rcPred && rcNachRes.status === 409 && rcNachText.includes(`orders it after ${rcPred}`)
         && rcNachText.includes("card.after carries nothing") && (await mRow(rcNach))?.status === "pending",
       `${rcNachRes.status}:${rcNachText}`);
-    await stopSrv();
-    const rcState = mState() as MState & { tasks?: { id: string; card?: Record<string, unknown> }[] };
-    const rcRow = (rcState.tasks ?? []).find((t) => t.id === rcAfter);
-    if (rcRow?.card) rcRow.card = { ...rcRow.card, after: [rcPred] };
-    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rcState, null, 2), { mode: 0o600 });
-    await restartSrv();
-    await post("/api/dispatch", { on: false });
-    // the first preview answered 401 here: right after a boot the MAIN's slot is not adopted yet, and
-    // the self door finds no occupied slot for the token — wait for the slot, not for a clock
-    let rcLive = false;
-    for (let i = 0; i < 80 && !rcLive; i++) {
-      rcLive = (await mSess()).some((x) => x.id === mSlot && !!x.cwd);
-      if (!rcLive) await Bun.sleep(250);
-    }
-    // …and even with the slot listed live, previews 3 and 4 answered this release 401 with the state
-    // file's token unchanged: for a moment after the boot no in-memory slot held it. That boot window is
-    // not this check's subject — it is retried for up to ~10 s and the attempts are printed, so a
-    // window that grows stays visible in the detail instead of turning into a different red
-    let rcAttempts = 0;
-    let rcAfterRes = await rcRelease(rcAfter);
-    while (rcAfterRes.status === 401 && ++rcAttempts < 40) { await Bun.sleep(250); rcAfterRes = await rcRelease(rcAfter); }
+    const rcAfterRes = await rcRelease(rcAfter);
     interface RcWait { id: string; grund: string; adressat: string; kette: string[] }
     const rcPlan = (await (await get("/api/start-plan")).json()) as StartPlan & { waits?: RcWait[] };
     const rcWave = rcPlan.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(rcAfter));
     const rcWait = rcPlan.waits?.find((w) => w.id === rcAfter);
     check("(rc3) a valid card that carries the NACH id releases (200) — the plan holds the row behind its predecessor, and its wait names the program's MAIN, whose pending row it is",
-      !!rcRow?.card && rcLive && rcAfterRes.status === 200 && (await mRow(rcAfter))?.status === "queued"
+      !!rcRow?.card && rcAfterRes.status === 200 && (await mRow(rcAfter))?.status === "queued"
         && JSON.stringify(rcWave?.next) === JSON.stringify({ after: rcPred })
         && rcWait?.grund === `wartet auf ${rcPred} (after, nicht gelandet)` && rcWait.adressat === `main:${mMainProgram}`
         && JSON.stringify(rcWait.kette) === JSON.stringify([`row ${rcPred} (after)`]),
-      JSON.stringify({ live: rcLive, tokenSame: rcToken() === mToken, attempts401: rcAttempts, release: rcAfterRes.status, releaseText: rcAfterRes.status === 200 ? "" : await rcAfterRes.text(), next: rcWave?.next ?? null, wait: rcWait ?? null }));
+      JSON.stringify({ release: rcAfterRes.status, releaseText: rcAfterRes.status === 200 ? "" : await rcAfterRes.text(), next: rcWave?.next ?? null, wait: rcWait ?? null }));
     for (const id of [rcPred, rcBare, rcNach, rcAfter]) await post(`/api/tasks/${id}/delete`, {});
 
     // --- (stau) THE STALL SENSOR (server.ts#tickStallSensor, queue rows 80f61ed8 → 84888f35). On one

@@ -8,7 +8,7 @@ import { basename, join, resolve } from "node:path";
 import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
-import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardAnswerForLedger, CARD_MARK, CARD_KEY, CARD_VALIDATOR_VERSION } from "../card-extract";
+import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY, CARD_VALIDATOR_VERSION } from "../card-extract";
 import { renderWaveBrief, renderCardHead, CARD_HEAD_MAX_BYTES } from "../wave-brief";
 import { LOCAL_PROOF_STEPS } from "../verify-proportion";
 import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, topLevelDeclarations,
@@ -6951,6 +6951,38 @@ export async function run(ctx: Ctx): Promise<void> {
       noGraph.body.surface.symbols.join(" ") === "server.ts#taskView"
       && noGraph.body.surface.files.join(" ") === "server.ts" && noGraph.body.surface.ranges === null,
       JSON.stringify(noGraph.body.surface));
+    // THE SYMBOL HALF WITH AND WITHOUT AN INDEX (queue row 56522568). The author path appends the
+    // author's own FLAECHE line to the source (server.ts#authorCardFrom), so the quote rule passes
+    // by construction and the index is the ONLY symbol check left. The invented name is the one
+    // measured on 2026-09-16 (the real function is clarificationReplyMessage); the source is the
+    // REAL lane-signals.ts, so "declares no such symbol" is a fact about the tree.
+    const lsSource = readFileSync(`${ROOT}/lane-signals.ts`, "utf8");
+    const authorRef = "lane-signals.ts#clarificationAnswerMessage";
+    const authorCtx = { ...cardCtx, trackedPaths: new Set(["lane-signals.ts"]),
+      sourceText: `Eine Zeile ohne Symbolnamen im Text.\nFLAECHE: ${authorRef}`,
+      declares: (file: string, symbol: string) => file === "lane-signals.ts" && declaresSymbol(lsSource, symbol),
+      symbolIndex: new Map([["lane-signals.ts", [
+        { file: "lane-signals.ts", symbol: "clarificationReplyMessage", startLine: 589, endLine: 600 },
+      ]]]) as SymbolIndex };
+    const withIndex = validateCard({ surface: { symbols: [authorRef] } }, authorCtx);
+    const noIndex = validateCard({ surface: { symbols: [authorRef] } }, { ...authorCtx, symbolIndex: null });
+    check("(j2) card fixture: lane-signals.ts declares clarificationReplyMessage and NOT the invented clarificationAnswerMessage",
+      declaresSymbol(lsSource, "clarificationReplyMessage") && !declaresSymbol(lsSource, "clarificationAnswerMessage"), "");
+    check("(j2) card: the same invented symbol on the author path — WITH an index a surface gap, WITHOUT one kept but marked unchecked",
+      withIndex.surfaceValid === false && withIndex.body.surface.symbols.length === 0
+      && withIndex.gaps.some((g) => g.includes(authorRef) && g.includes("does not resolve"))
+      && withIndex.body.surface.unchecked === undefined
+      && noIndex.surfaceValid === true && !noIndex.gaps.some((g) => g.startsWith("surface."))
+      && noIndex.body.surface.symbols.join(" ") === authorRef && noIndex.body.surface.files.join(" ") === "lane-signals.ts"
+      && noIndex.body.surface.ranges === null && JSON.stringify(noIndex.body.surface.unchecked) === JSON.stringify([authorRef]),
+      JSON.stringify({ withIndex: { surface: withIndex.body.surface, gaps: withIndex.gaps }, noIndex: noIndex.body.surface }));
+    const realRef = "lane-signals.ts#clarificationReplyMessage";
+    const realIndexed = validateCard({ surface: { symbols: [realRef] } }, { ...authorCtx, sourceText: `x\nFLAECHE: ${realRef}` });
+    check("(j2) card: a symbol the index DID check carries no unchecked mark — the mark is the absence of the index, not of a gap",
+      realIndexed.surfaceValid === true && realIndexed.body.surface.symbols.join(" ") === realRef
+      && realIndexed.body.surface.unchecked === undefined && cardUncheckedSymbols(realIndexed.body.surface).length === 0
+      && JSON.stringify(cardUncheckedSymbols(noIndex.body.surface)) === JSON.stringify([authorRef]),
+      JSON.stringify(realIndexed.body.surface));
     // DEFEKT 1 (2026-09-13): the graph is a SNAPSHOT of the tree, not the tree. Measured live: 16 of
     // 18 invalid cards carried a surface.symbols gap, and `server.ts#taskDigest` was one of them —
     // declared in server.ts, absent from graph.json. A symbol the graph does not know is therefore
@@ -7464,6 +7496,10 @@ export async function run(ctx: Ctx): Promise<void> {
     const rGood = await plantRow("REREAD-PROBE old valid: fleet-e2e.ts bekommt eine Zeile.");
     const rLie = await plantRow("REREAD-PROBE lying surfaceValid: fleet-e2e.ts bekommt eine Zeile.");
     const rRole = await plantRow("REREAD-PROBE role only: fleet-e2e.ts bekommt eine Zeile.");
+    // queue row 56522568: `surface.unchecked` is DERIVED on load from `ranges: null`, never read —
+    // rNoIdx is a card stored before the field existed, rFakeMark a hand-edit claiming it over a real index
+    const rNoIdx = await plantRow("REREAD-PROBE unchecked derived: fleet-e2e.ts bekommt eine Zeile.");
+    const rFakeMark = await plantRow("REREAD-PROBE unchecked planted: fleet-e2e.ts bekommt eine Zeile.");
     await stopSrv();
     interface PState { tasks?: { id: string; card?: Record<string, unknown> }[] }
     const pState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PState;
@@ -7478,6 +7514,16 @@ export async function run(ctx: Ctx): Promise<void> {
       if (t.id === rOld) { t.card = oldCard({ valid: false, gaps: ["done: no checkable done sentence"] }); planted++; }
       if (t.id === rRole) { t.card = oldCard({ valid: false, gaps: ['rolle.harness: "Codex" is not a registered harness'] }); planted++; }
       if (t.id === rGood) { t.card = oldCard({ valid: true, gaps: [] }); planted++; }
+      if (t.id === rNoIdx) {
+        t.card = oldCard({ valid: true, gaps: [], model: "planted-no-index", validatorVersion: CARD_VALIDATOR_VERSION,
+          surface: { files: ["fleet-e2e.ts"], symbols: ["fleet-e2e.ts#erfunden"], ranges: null } });
+        planted++;
+      }
+      if (t.id === rFakeMark) {
+        t.card = oldCard({ valid: true, gaps: [], model: "planted-mark", validatorVersion: CARD_VALIDATOR_VERSION,
+          surface: { files: ["fleet-e2e.ts"], symbols: ["fleet-e2e.ts#erfunden"], ranges: [], unchecked: ["fleet-e2e.ts#erfunden"] } });
+        planted++;
+      }
       if (t.id === rLie) {
         t.card = oldCard({ valid: true, surfaceValid: true, validatorVersion: CARD_VALIDATOR_VERSION,
           model: "planted-lie", gaps: ['surface.files: "gone.ts" is not tracked in this repository'] });
@@ -7490,9 +7536,9 @@ export async function run(ctx: Ctx): Promise<void> {
     const ledgerBefore = { old: ledgerLinesFor(rOld), good: ledgerLinesFor(rGood), lie: ledgerLinesFor(rLie), role: ledgerLinesFor(rRole) };
     // FIXTURE PRECONDITION, failing as itself: three rows planted, none of them ever read before.
     check("(j2) reread fixture: four rows planted with hand-written cards and no ledger line yet",
-      !!rOld && !!rGood && !!rLie && !!rRole && planted === 4
+      !!rOld && !!rGood && !!rLie && !!rRole && !!rNoIdx && !!rFakeMark && planted === 6
       && ledgerBefore.old === 0 && ledgerBefore.good === 0 && ledgerBefore.lie === 0 && ledgerBefore.role === 0,
-      JSON.stringify({ rOld, rGood, rLie, rRole, planted, ledgerBefore }));
+      JSON.stringify({ rOld, rGood, rLie, rRole, rNoIdx, rFakeMark, planted, ledgerBefore }));
     // FAKECARD still answers badAnswer (an untracked path), so the re-read card is valid:false AGAIN
     // — which is exactly the shape that must NOT loop: the second invalid reading carries the current
     // version, and "the same row not a second time" is only provable on a card that stays invalid.
@@ -7504,6 +7550,15 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(j2) a hand-edited card claiming surfaceValid:true beside a surface.* gap LOADS as surfaceValid:false (derived, never read)",
       lie?.model === "planted-lie" && lie.surfaceValid === false && lie.valid === false,
       JSON.stringify(lie ?? null));
+    type USurface = { surface?: { symbols?: string[]; ranges?: unknown; unchecked?: string[] } };
+    const noIdxLoaded = (await vCard(rNoIdx)) as (VCard & USurface) | undefined;
+    const fakeMarkLoaded = (await vCard(rFakeMark)) as (VCard & USurface) | undefined;
+    check("(j2) a stored card with ranges:null and no unchecked field LOADS with its symbols unchecked; a planted mark over ranges:[] is dropped (derived, never read)",
+      noIdxLoaded?.model === "planted-no-index" && noIdxLoaded.surface?.ranges === null
+      && JSON.stringify(noIdxLoaded.surface.unchecked) === JSON.stringify(["fleet-e2e.ts#erfunden"])
+      && fakeMarkLoaded?.model === "planted-mark" && JSON.stringify(fakeMarkLoaded.surface?.ranges) === "[]"
+      && fakeMarkLoaded.surface?.unchecked === undefined,
+      JSON.stringify({ noIdx: noIdxLoaded?.surface ?? null, fakeMark: fakeMarkLoaded?.surface ?? null }));
     const goodLoaded = await vCard(rGood);
     check("(j2) a planted gapless card loads surfaceValid:true — the derivation is not a blanket false",
       goodLoaded?.surfaceValid === true && goodLoaded.valid === true, JSON.stringify(goodLoaded ?? null));
@@ -7564,7 +7619,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && !fCalls.includes("FORMAT-PROBE") && fLedger.some((l) => l.taskId === fRow && l.source === "format" && l.valid === true),
       JSON.stringify({ fCard: fCard ?? null, probeInCalls: fCalls.includes("FORMAT-PROBE") }));
     for (const id of [fRow, fProse]) await post(`/api/tasks/${id}/delete`, {});
-    for (const id of [rOld, rGood, rLie, rRole]) await post(`/api/tasks/${id}/delete`, {});
+    for (const id of [rOld, rGood, rLie, rRole, rNoIdx, rFakeMark]) await post(`/api/tasks/${id}/delete`, {});
 
     // --- (lift) THE AUTO-LIFT `filesOrigin:"card"` ON THE TICK (docs/queue-wellen-2026-09-06.md §7.1.3,
     // Nachtrag 2026-09-13). Formatted rows, so no model is involved and the card is decided by the
@@ -8682,6 +8737,13 @@ export async function run(ctx: Ctx): Promise<void> {
       aRes.ok && aRow?.card?.model === "author" && aRow.card.valid === true
       && JSON.stringify(aRow.card.gaps) === "[]" && aRow.card.surface.files.join(" ") === "ctx-mod.txt",
       `${aRes.status} ${JSON.stringify(aRow ?? null)}`);
+    // queue row 56522568: an author card naming an INVENTED symbol in a repo with no graph (testrepo
+    // has no graphify-out/) is still filed — no card is lost for a missing graph — but the stored
+    // record says the symbol was never checked. The pure half with and without an index is (j2).
+    const aSymRef = "ctx-mod.txt#clarificationAnswerMessage";
+    const aSymRes = await post("/api/tasks", { text: "AUTHOR-CARD-UNCHECKED: ctx-mod.txt bekommt eine Zeile.", queue: false, repo: REPO,
+      card: { ...aCard, surface: { files: ["ctx-mod.txt"], symbols: [aSymRef] } } });
+    const aSymId = ((await aSymRes.json()) as { task?: { id: string } }).task?.id ?? "";
     const aView = await aDigest(aId);
     const aCtlView = await aDigest(aCtl);
     check("(s6) the wave projection's surface is card.surface.files, not the regex reading of the same text",
@@ -8718,7 +8780,19 @@ export async function run(ctx: Ctx): Promise<void> {
       aAt >= 0 && (aLines[aAt + 1] ?? "").trim() === "surface [karte]: ctx-mod.txt"
       && aCtlAt >= 0 && (aLines[aCtlAt + 1] ?? "").trim() === "surface [abgeleitet]: code.txt",
       JSON.stringify({ card: aLines.slice(aAt, aAt + 2), twin: aLines.slice(aCtlAt, aCtlAt + 2), head: aOut.slice(0, 200) }));
-    for (const id of [aId, aCtl]) await post(`/api/tasks/${id}/delete`, {});
+    // read AFTER the debounce above: fleet.json is the stored record the loader reads back
+    interface AStored { id: string; card?: { model?: string; valid?: boolean; surfaceValid?: boolean;
+      surface?: { symbols?: string[]; ranges?: unknown; unchecked?: string[] } } }
+    const aStored = (id: string): AStored | undefined =>
+      (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: AStored[] }).tasks?.find((t) => t.id === id);
+    const aSym = aStored(aSymId), aPlain = aStored(aId);
+    check("(s6) an author card with a symbol in a repo WITHOUT a graph is filed, and fleet.json records the symbol as unchecked (ranges null)",
+      !existsSync(`${REPO}/graphify-out/graph.json`) && aSymRes.ok && aSym?.card?.model === "author" && aSym.card.valid === true
+      && aSym.card.surface?.symbols?.join(" ") === aSymRef && aSym.card.surface.ranges === null
+      && JSON.stringify(aSym.card.surface.unchecked) === JSON.stringify([aSymRef])
+      && aPlain?.card?.model === "author" && aPlain.card.surface?.unchecked === undefined,
+      `${aSymRes.status} ${JSON.stringify({ aSym: aSym?.card ?? null, aPlain: aPlain?.card?.surface ?? null })}`);
+    for (const id of [aId, aCtl, aSymId]) await post(`/api/tasks/${id}/delete`, {});
   }
 
   // --- OUTSIDE SURFACE (server.ts#laneOutsideSurface): a fleet-report carries the lane's committed

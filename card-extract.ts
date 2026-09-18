@@ -11,7 +11,8 @@
 // returns is then checked against a FACT this process can establish on its own —
 //   files   → `git ls-files` (task-metadata.ts's tracked snapshot)
 //   symbols → graphify-out/graph.json (task-metadata.ts's symbol index), then a top-level
-//             declaration in the tracked file; with no graph at all, file existence
+//             declaration in the tracked file; with no graph at all, file existence ONLY — and the
+//             card then says so itself (`surface.unchecked`, cardUncheckedSymbols)
 //   verify  → the known chain steps (verify-proportion.ts#LOCAL_PROOF_STEPS), or a clarify row's
 //             close (verify-proportion.ts#CLARIFY_CLOSE_ROUTE)
 //   rolle   → the registered harness/model/effort validators, passed in by the caller — ADVISORY:
@@ -56,7 +57,8 @@ export const CARD_VALIDATOR_VERSION = 6;
 export interface TaskCardRole { harness: string | null; model: string | null; effort: string | null }
 // `creates` are files the row will ADD. They cannot pass `files`' tracked-tree check by definition,
 // so they are their own field with their own rule; absent = the row names none.
-export interface TaskCardSurface { files: string[]; symbols: string[]; ranges: SymbolRange[] | null; creates?: string[] }
+// `unchecked` are the entries of `symbols` that NO index checked — see cardUncheckedSymbols.
+export interface TaskCardSurface { files: string[]; symbols: string[]; ranges: SymbolRange[] | null; creates?: string[]; unchecked?: string[] }
 export interface TaskCardBody {
   ziel: string;
   rolle: TaskCardRole;
@@ -88,7 +90,8 @@ export interface CardValidationContext {
   sourceText: string;
   trackedPaths: ReadonlySet<string>;
   // null = this checkout carries no graph. A symbol is then checked against FILE EXISTENCE only,
-  // and `ranges` stays null — the same three-valued reading Task.surface.ranges uses.
+  // `ranges` stays null — the same three-valued reading Task.surface.ranges uses — and every
+  // symbol kept is listed in `surface.unchecked`.
   symbolIndex: SymbolIndex | null;
   // the caller's own registered-adapter validators, so this module never learns the harness table
   harnessKnown: (value: string) => boolean;
@@ -105,6 +108,9 @@ export interface CardValidationContext {
 
 // `valid` answers "may this card head a dispatch"; `surfaceValid` answers the narrower "may its
 // files be bundled by": a role, size or verify gap says nothing about which files a row touches.
+// It vouches for `surface.symbols` only as far as `surface.unchecked` does not name them: an
+// unchecked symbol is not a gap (the file IS established, and a repo without a graph must not lose
+// its cards), but it is not a checked fact either, and the stored card says which it is.
 export interface CardValidation { body: TaskCardBody; valid: boolean; surfaceValid: boolean; gaps: string[] }
 export const cardSurfaceValid = (gaps: readonly string[]): boolean => !gaps.some((g) => g.startsWith("surface."));
 // A `rolle.*` gap is ADVISORY: nothing spawns from `card.rolle` (the spawn comes from `Task.spawn`),
@@ -113,6 +119,15 @@ export const cardSurfaceValid = (gaps: readonly string[]): boolean => !gaps.some
 // reading is still honest about what it could not establish. The loader derives `valid` from here too.
 export const cardAdvisoryGap = (gap: string): boolean => gap.startsWith("rolle.");
 export const cardValid = (gaps: readonly string[]): boolean => gaps.every(cardAdvisoryGap);
+// THE SYMBOLS NO INDEX CHECKED. With no symbol index, validateCard keeps a named `datei#symbol` on
+// file existence alone — on the author path (server.ts#authorCardFrom appends the author's own
+// FLAECHE line to the source text, so the quote rule holds by construction) that is NO symbol check
+// at all: measured 2026-09-16, the invented `lane-signals.ts#clarificationAnswerMessage` was refused
+// with an index and kept, gapless, without one. `ranges: null` is set exactly when no index was
+// there, so this reads the answer off a stored card too — the loader DERIVES it (server.ts#
+// normTaskCard) rather than reading the field, which also covers every card stored before it existed.
+export const cardUncheckedSymbols = (surface: { symbols: readonly string[]; ranges: readonly SymbolRange[] | null }): string[] =>
+  surface.ranges === null ? [...surface.symbols] : [];
 
 // The raw model answer rides along in cards.jsonl, so a later validator can be checked against what
 // the model already said instead of asking it again. Clipped by UTF-8 bytes; `answerBytes` is the
@@ -287,7 +302,8 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
     }
     if (!ctx.symbolIndex) {
       // No graph here. The FILE is established, the range is not — and saying "not measured" is
-      // the whole reason `ranges` may be null rather than an empty list.
+      // the whole reason `ranges` may be null rather than an empty list. Neither is the SYMBOL:
+      // it is kept (no card is lost for a missing graph) and listed as unchecked below.
       symbols.push(ref);
       continue;
     }
@@ -354,13 +370,14 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
     if (sizeNamedIn(ctx.sourceText, rawSize)) size = rawSize;
     else gaps.push(`size: "${rawSize}" is not stated in the request`);
   }
+  const unchecked = ctx.symbolIndex ? [] : cardUncheckedSymbols({ symbols, ranges: null });
   const body: TaskCardBody = {
     ziel, rolle, done, verify,
     // A file with a declaration-only symbol keeps NO ranges: a partial list would tell
     // task-land-waves.ts#collidesOn "only near the resolved symbol", and two rows meeting at the
     // unresolved one would be separated. No range in a file already reads as "where is unknown".
     surface: { files, symbols, ranges: ctx.symbolIndex ? ranges.filter((r) => !rangeless.has(r.file)) : null,
-      ...(creates.length ? { creates } : {}) },
+      ...(creates.length ? { creates } : {}), ...(unchecked.length ? { unchecked } : {}) },
     verboten: list(raw.verboten),
     ...(program ? { program } : {}),
     ...(size ? { size } : {}),

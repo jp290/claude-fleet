@@ -2012,7 +2012,7 @@ function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
 // A slim tube pinned under the board head (public/index.html, #boardsuites), outside the scrolling
 // body and drawn whether or not a session is focused. Each suite is a white ball riding the line
 // through the tube, gathered at the station its run is at (src/suitemeter.ts says which rows land
-// where); the lanes are NAMED under their station, and a name opens its lane. The station labels
+// where); below the tube each ball is NAMED on a line of its own, and a name opens its lane. The station labels
 // fold out the full gate reading (lock, running audit, reports) — the rows the meter summarises.
 //
 // The DOM is built once and updated in place, balls keyed by run: a ball that changes station keeps
@@ -2028,9 +2028,10 @@ const METER_TITLE: Record<MeterStation, string> = {
   helper: "running on a helper device — a lane's preview or an audit taken off this box",
   done: "finished in the last few minutes — green, red, or nothing measured",
 };
-const METER_NAMES_MAX = 3;
+const METER_ROWS_MAX = 6;
 const meterTube = el("div", "smtube");
 const meterCols = el("div", "smcols");
+const meterRows = el("div", "smrows");
 const meterHead = el("div", "smhead");
 const meterDetail = el("div", "smdetail");
 {
@@ -2040,7 +2041,7 @@ const meterDetail = el("div", "smdetail");
     t.style.left = meterX(i, 0);
     meterTube.appendChild(t);
   });
-  meterEl.append(meterHead, meterTube, meterCols, meterDetail);
+  meterEl.append(meterHead, meterTube, meterCols, meterRows, meterDetail);
 }
 // the bulb is 14px; the four stations sit at the middles of four equal columns of the rest, the
 // same grid .smcols lays the names out on — so a name stands under its own ball
@@ -2101,25 +2102,29 @@ function renderSuiteMeter() {
   });
   for (const [key, ball] of meterBalls) if (!seen.has(key)) { ball.remove(); meterBalls.delete(key); }
 
-  // names: under their station, a name opens its lane
+  // stations: the four labels, each under its tick, with a count
   meterCols.replaceChildren(el("div", "smcol0"), ...METER_STATIONS.map((st) => {
-    const here = m.balls.filter((b) => b.station === st).sort((a, b) => a.at - b.at);
-    const col = el("div", "smcol");
-    const lab = el("button", "smst", here.length ? `${METER_WORD[st]} ${here.length}` : METER_WORD[st]) as HTMLButtonElement;
+    const n = m.balls.filter((b) => b.station === st).length;
+    const lab = el("button", `smst${n ? " on" : ""}`, n ? `${METER_WORD[st]} ${n}` : METER_WORD[st]) as HTMLButtonElement;
     lab.title = METER_TITLE[st];
     lab.onclick = () => tog.click();
-    col.appendChild(lab);
-    for (const b of here.slice(0, METER_NAMES_MAX)) {
-      const n = el("button", `smname tone-${b.tone}${b.slot !== null && b.slot === focusSlot ? " mine" : ""}`, b.name) as HTMLButtonElement;
-      n.title = `${b.name} — ${b.what}${b.slot !== null ? " · click to open the lane" : ""}`;
-      const slot = b.slot;
-      if (slot !== null && fleet[slot - 1]?.cwd) n.onclick = () => showSlot(slot);
-      else n.disabled = true;
-      col.appendChild(n);
-    }
-    if (here.length > METER_NAMES_MAX) col.appendChild(el("div", "smmore", `+${here.length - METER_NAMES_MAX}`));
-    return col;
+    return lab;
   }));
+  // names: one full line per ball, in station order — a lane is NAMED, never cut to three letters
+  // by a column a quarter of the board wide. A name opens its lane.
+  const order = [...m.balls].sort((a, b) =>
+    METER_STATIONS.indexOf(a.station) - METER_STATIONS.indexOf(b.station) || a.at - b.at);
+  meterRows.replaceChildren(...order.slice(0, METER_ROWS_MAX).map((b) => {
+    const mine = b.slot !== null && b.slot === focusSlot;
+    const row = el("button", `smrow tone-${b.tone}${mine ? " mine" : ""}`) as HTMLButtonElement;
+    row.append(el("span", "smdot"), el("span", "smname", b.name), el("span", "smwhat", b.what),
+      el("span", "smwhere", METER_WORD[b.station]));
+    row.title = `${b.name} — ${b.what}${b.slot !== null ? " · click to open the lane" : ""}`;
+    const slot = b.slot;
+    if (slot !== null && fleet[slot - 1]?.cwd) row.onclick = () => showSlot(slot);
+    else row.disabled = true;
+    return row;
+  }), ...(order.length > METER_ROWS_MAX ? [el("div", "smmore", `+${order.length - METER_ROWS_MAX} more — ▸ for all`)] : []));
 
   const g = meterOpen ? gateSection() : null;
   meterDetail.replaceChildren(...(g ? [g] : meterOpen ? [el("div", "bempty", "nothing on the gate")] : []));

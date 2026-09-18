@@ -64,7 +64,8 @@ export function suiteMeter(inp: MeterInput): Meter {
   };
 
   // who holds the audit: a helper claim of kind "audit" puts the running audit on that helper
-  const auditHelper = inp.devices.find((d) => (d.claims ?? []).some((c) => c.kind === "audit")) ?? null;
+  const auditHeld = inp.devices.flatMap((d) => (d.claims ?? []).filter((c) => c.kind === "audit")
+    .map((claim) => ({ device: d.name, claim })))[0] ?? null;
   const auditRuns = inp.audit?.running ?? null;
 
   for (const r of inp.gate?.reports ?? []) {
@@ -90,13 +91,12 @@ export function suiteMeter(inp: MeterInput): Meter {
   if (auditRuns) {
     const sha = (auditRuns.mainSha ?? "").slice(0, 8);
     const tree = `${auditRuns.main ?? "main"}${sha ? `@${sha}` : ""}`;
-    balls.push({ key: "audit:run", station: auditHelper ? "helper" : "run", slot: null, name: "post-land audit",
-      what: auditHelper ? `${tree} · ${auditHelper.name}` : auditRuns.phase === "starting" ? "starting" : tree,
+    balls.push({ key: "audit:run", station: auditHeld ? "helper" : "run", slot: null, name: "post-land audit",
+      what: auditHeld ? `${tree} · ${auditHeld.device}` : auditRuns.phase === "starting" ? "starting" : tree,
       tone: "plain", at: auditRuns.startedAt ?? 0 });
-  } else if (auditHelper) {
-    const c = (auditHelper.claims ?? []).find((x) => x.kind === "audit")!;
+  } else if (auditHeld) {
     balls.push({ key: "audit:run", station: "helper", slot: null, name: "post-land audit",
-      what: `${c.ref} · ${auditHelper.name}`, tone: "plain", at: 0 });
+      what: `${auditHeld.claim.ref} · ${auditHeld.device}`, tone: "plain", at: 0 });
   }
   for (const w of inp.audit?.waiting ?? []) {
     balls.push({ key: `audit:wait:${w.branch}`, station: "wait", slot: null, name: "post-land audit",

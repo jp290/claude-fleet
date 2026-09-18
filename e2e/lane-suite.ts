@@ -21,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, check, get, post, restartSrv } from "./harness";
 import { laneSuiteWatchMessage } from "../lane-signals";
 import { openLane, type Lane } from "./lane-helpers";
+import { suiteMeter, laneTail, type MeterInput } from "../src/suitemeter";
 
 interface HelperJob {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
@@ -132,6 +133,72 @@ async function selfTokenOf(slot: number): Promise<string> {
 }
 
 export async function run(): Promise<void> {
+  // ===== (LS.meter) THE SUITE METER'S STATION MODEL, RUN — no server, no DOM ====================
+  // src/suitemeter.ts decides which station every suite row sits at on the board's thermometer and
+  // how its lane is named. The rules are the owner's reading of the meter: one ball per wire row,
+  // at the station its run is AT, the lane named so two lanes never read alike.
+  {
+    const base: MeterInput = { gate: null, audit: null, offers: [], devices: [], slots: [] };
+    const at = (m: ReturnType<typeof suiteMeter>) => m.balls.map((b) => `${b.station}:${b.name}:${b.tone}`).sort().join(" ");
+    const none = suiteMeter(base);
+    check("(LS.meter) a server that sends no gate yields NO balls and an UNKNOWN lock (null), never 'free'",
+      none.balls.length === 0 && none.lock === null, JSON.stringify(none));
+    const free = suiteMeter({ ...base, gate: { lock: null, reports: [] } });
+    check("(LS.meter) a served gate with no lock dir is 'free' and draws nothing",
+      free.balls.length === 0 && free.lock === "free", JSON.stringify(free));
+    const rep = (slot: number, phase: string, exitCode: number | null = null) =>
+      ({ slot, label: `L${slot}`, phase, suite: "e2e-isolated", exitCode, at: slot, origin: "lane", branch: null });
+    const phases = suiteMeter({ ...base, gate: { lock: null,
+      reports: [rep(1, "waiting"), rep(2, "running"), rep(3, "done", 0), rep(4, "failed", 1)] } });
+    check("(LS.meter) a lane's own phases sit at wait / run / done, green and red told apart",
+      at(phases) === "done:3 · L3:ok done:4 · L4:red run:2 · L2:plain wait:1 · L1:plain", at(phases));
+    check("(LS.meter) a failed run says its exit code beside the suite",
+      phases.balls.find((b) => b.slot === 4)?.what === "e2e-isolated · exit 1",
+      JSON.stringify(phases.balls.find((b) => b.slot === 4)));
+    const running = suiteMeter({ ...base, gate: { lock: null, reports: [rep(2, "running")] } });
+    const done = suiteMeter({ ...base, gate: { lock: null, reports: [rep(2, "done", 0)] } });
+    check("(LS.meter) one run keeps ONE key from running to done — the ball moves, it is not replaced",
+      running.balls[0]?.key === done.balls[0]?.key && running.balls[0].station !== done.balls[0].station,
+      `${running.balls[0]?.key} → ${done.balls[0]?.key}`);
+    const offers = suiteMeter({ ...base,
+      slots: [{ id: 5, label: null, branch: "fleet/260918203940-4198" }, { id: 6, label: "Queue", branch: "fleet/x-aaaa" }],
+      offers: [
+        { slot: 5, branch: "fleet/260918203940-4198", state: "open", device: null, at: 1, result: null },
+        { slot: 6, branch: "fleet/x-aaaa", state: "claimed", device: "second-host", at: 2, result: null },
+        { slot: 7, branch: "fleet/y-bbbb", state: "reported", device: "second-host", at: 3, result: "red" },
+      ] });
+    check("(LS.meter) offers: open waits, claimed runs on the helper, a red report lands red in done",
+      at(offers) === "done:7 · bbbb:red helper:6 · Queue:plain wait:5 · 4198:plain", at(offers));
+    check("(LS.meter) an unlabelled lane is named by its branch's four hex, the part lanes do NOT share",
+      laneTail("fleet/260918203940-4198") === "4198" && laneTail("feature/login") === "feature/login",
+      `${laneTail("fleet/260918203940-4198")} ${laneTail("feature/login")}`);
+    const holder = suiteMeter({ ...base, gate: { lock: { pid: 4242, alive: true, state: "overdue" }, reports: [] } });
+    check("(LS.meter) a HELD mutex nobody named still puts a ball in 'run' — an empty run station would say 'nothing runs'",
+      holder.lock === "overdue" && at(holder) === "run:unnamed holder:warn"
+        && holder.balls[0].what === "pid 4242", JSON.stringify(holder));
+    const named = suiteMeter({ ...base, gate: { lock: { pid: 4242, alive: true }, reports: [rep(2, "running")] } });
+    check("(LS.meter) …but not beside a run that IS named — no phantom second holder",
+      named.lock === "held" && at(named) === "run:2 · L2:plain", at(named));
+    const stale = suiteMeter({ ...base, gate: { lock: { pid: 4242, alive: false }, reports: [] } });
+    check("(LS.meter) should NOT draw a holder for a STALE lock — a finished suite's leftover dir is an idle machine",
+      stale.lock === "stale" && stale.balls.length === 0, JSON.stringify(stale));
+    const live = { running: { phase: "running" as const, repo: "claude-fleet", main: "main", mainSha: "abcdef0123456789",
+      startedAt: 10, covers: ["fleet/a-1111"] }, waiting: [{ repo: "r", main: "main", branch: "fleet/b-2222", mainAfter: "f00", at: 11 }],
+      stats: null };
+    const serverAuditRow = { slot: null, label: "claude-fleet", phase: "running", suite: "e2e-isolated", exitCode: null,
+      at: 9, origin: "server", branch: null };
+    const audit = suiteMeter({ ...base, audit: live, gate: { lock: { pid: 1, alive: true }, reports: [serverAuditRow] } });
+    check("(LS.meter) the post-land audit is ONE ball in 'run' (its slotless lock row steps aside), its folded land waits",
+      at(audit) === "run:post-land audit:plain wait:post-land audit:plain"
+        && audit.balls.find((b) => b.station === "run")?.what === "main@abcdef01"
+        && audit.balls.find((b) => b.station === "wait")?.what === "after 2222", JSON.stringify(audit.balls));
+    const onHelper = suiteMeter({ ...base, audit: live,
+      devices: [{ name: "second-host", claims: [{ kind: "audit", repo: "claude-fleet", ref: "main", expiresAt: 0 }] }] });
+    check("(LS.meter) an audit a helper holds sits at 'helper' and names the device",
+      onHelper.balls.find((b) => b.key === "audit:run")?.station === "helper"
+        && /second-host$/.test(onHelper.balls.find((b) => b.key === "audit:run")?.what ?? ""), JSON.stringify(onHelper.balls));
+  }
+
   if (!REPO) return; // the runner only calls this inside its REPO block, but say so rather than throw
 
   // the portal's own credential, read once through the OWNER route — the only place it is handed out
@@ -262,6 +329,14 @@ export async function run(): Promise<void> {
       && offer1.offer.branch === ln.branch && offer1.existing === false,
     `${offer1Res.status} ${JSON.stringify(offer1.offer)}`);
   const jobId = offer1.offer?.id ?? "";
+  // (LS.m) THE BOARD'S SUITE METER reads offers off the owner poll (server.ts#suiteOffersView): an
+  // offer that never reached /api/sessions is a suite the owner cannot see waiting for a helper.
+  const meterRow = async () => ((await (await get("/api/sessions")).json()) as
+    { suiteOffers?: { slot: number; branch: string; state: string; device: string | null; result: string | null }[] })
+    .suiteOffers?.find((r) => r.slot === ln.slot && r.branch === ln.branch);
+  const mOpen = await meterRow();
+  check("(LS.m) the owner poll carries the OPEN offer — no device, no result",
+    mOpen?.state === "open" && mOpen.device === null && mOpen.result === null, JSON.stringify(mOpen));
   const offer2 = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", laneTok));
   check("(LS) a second offer returns the SAME job rather than minting a rival",
     offer2.existing === true && offer2.offer?.id === jobId, JSON.stringify(offer2).slice(0, 200));
@@ -299,6 +374,9 @@ export async function run(): Promise<void> {
       && /^[0-9a-f]{40}$/.test(claim.job.treeSha ?? "") && claim.job.branch === `fleet-suite/${jobId}`
       && claim.job.untracked === 1 && claim.job.name === DEVICE_NAME,
     `${claimRes.status} ${JSON.stringify(claim).slice(0, 300)}`);
+  const mClaimed = await meterRow();
+  check("(LS.m) …then CLAIMED, naming the helper that runs it",
+    mClaimed?.state === "claimed" && mClaimed.device === DEVICE_NAME, JSON.stringify(mClaimed));
   check("(LS) claiming an already-claimed preview is a 409 — even for the device that holds it",
     (await hpost("/api/helper/claim", { jobId, deviceId: DEVICE })).status === 409);
   const stashAfter = git(ln.cwd, "stash", "list").split("\n").filter(Boolean).length;
@@ -354,6 +432,9 @@ export async function run(): Promise<void> {
     `${resultRes.status} ${JSON.stringify(resultBody)}`);
   check("(LS) THE AUDIT LEDGER DID NOT MOVE — a preview is not a post-land audit row",
     auditLines() === ledgerBefore, `before=${ledgerBefore} after=${auditLines()}`);
+  const mDone = await meterRow();
+  check("(LS.m) …then REPORTED green, still naming the helper after the claim is released",
+    mDone?.state === "reported" && mDone.result === "green" && mDone.device === DEVICE_NAME, JSON.stringify(mDone));
   check("(LS) reporting released the job from the portal's list",
     !(await jobs()).some((j) => j.id === jobId), JSON.stringify((await jobs()).map((j) => `${j.kind}:${j.id}`)));
 

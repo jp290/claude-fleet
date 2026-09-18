@@ -235,6 +235,31 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(workGroups) === JSON.stringify(["backlog", "released", "running", "needs"])
         && new Set(workGroups).size === 4
         && closed.every((task) => modelFns.qGroupOf(task) === null), JSON.stringify(workGroups));
+    // Owner, 2026-09-18: advisory rows leave the pipeline for their own folded group, whatever
+    // their status — a released note is still not work, and never "runs next".
+    const advisoryGroups = (["notiz", "richtung", "betrieb"] as const).flatMap((kind) =>
+      (["pending", "queued"] as const).map((status) =>
+        modelFns.qGroupOf({ id: `adv-${kind}-${status}`, status, source: "owner", created: 1, kind })));
+    check("task workbench: every open advisory row lands in Notes & direction, never Backlog or Released",
+      advisoryGroups.every((g) => g === "notes"), JSON.stringify(advisoryGroups));
+    // THE BUNDLE TRAIL is read back from the bundle's own text: the header names every source,
+    // a second line the released ones, and a nested bundle among the sources must not be read
+    // as this bundle's header (the first match is the header, by construction line 2).
+    const bundleAt = taskClientSource.indexOf("const Q_BUNDLE_LINE");
+    const bundleEnd = taskClientSource.indexOf("function qBundleRefusal", bundleAt);
+    const bundleFns = bundleAt > 0 && bundleEnd > bundleAt ? new Function(new Bun.Transpiler({ loader: "ts" })
+      .transformSync(taskClientSource.slice(bundleAt, bundleEnd)) + "\nreturn { qBundleSources, qBundleReleased };")() as {
+        qBundleSources: (text: string) => string[]; qBundleReleased: (text: string) => string[] } : null;
+    const nested = "[BÜNDEL · a + b]\n⧉ gebündelt aus: aa11, bb22\n⧉ freigegeben waren: bb22\nEin Auftrag\n\n── aa11 ──\n"
+      + "[BÜNDEL · x + y]\n⧉ gebündelt aus: xx, yy\n⧉ freigegeben waren: xx, yy";
+    check("bundle trail: sources and released sources are read from the header, not from a nested bundle",
+      !!bundleFns && JSON.stringify(bundleFns.qBundleSources(nested)) === JSON.stringify(["aa11", "bb22"])
+        && JSON.stringify(bundleFns.qBundleReleased(nested)) === JSON.stringify(["bb22"]),
+      bundleFns ? JSON.stringify([bundleFns.qBundleSources(nested), bundleFns.qBundleReleased(nested)]) : "block missing");
+    check("bundle trail NEGATIVE: a row that is not a bundle has no sources, and a header inside prose is not one",
+      !!bundleFns && bundleFns.qBundleSources("just a task\nsee ⧉ gebündelt aus: aa11").length === 0
+        && bundleFns.qBundleSources("").length === 0,
+      bundleFns ? JSON.stringify(bundleFns.qBundleSources("just a task\nsee ⧉ gebündelt aus: aa11")) : "block missing");
 
     // --- N3 · THE ASSIGNMENT AS THE DETAIL PANE RENDERS IT (qNoteSourceRows / qNoteVerdictRows).
     // The suite has no browser DOM, so the two models are cut out of the REAL client source and
@@ -540,17 +565,19 @@ export async function run(ctx: Ctx): Promise<void> {
         && detailSource.includes('dangerActs.appendChild(mk("✕ delete", "delete", "shrbtn danger"))')
         && !detailSource.includes('acts.appendChild(mk("✕ delete"'), "Danger zone wiring");
     const sectionAt = (title: string) => detailSource.indexOf(`qDetailSection(shell.detail, "${title}`);
-    check("task detail: Actions come before the discussion and the request; Evidence and Danger zone stay reachable below",
-      sectionAt("Actions") > 0 && sectionAt("Actions") < sectionAt("Overview & discussion")
-        && sectionAt("Overview & discussion") < sectionAt("Request")
-        && sectionAt("Request") < sectionAt("Evidence") && sectionAt("Evidence") < sectionAt("Danger zone"),
-      JSON.stringify(["Actions", "Overview & discussion", "Refinement", "Request", "Evidence", "Danger zone"]
-        .map((s) => `${s}@${sectionAt(s)}`)));
+    // Owner, 2026-09-18: most important first — title, head, the card, the acts — then what hangs
+    // off the row (notes, comments), then the texts, then evidence and provenance, folded.
+    const sectionOrder = ["Card", "Actions", "Notes & comments", "Request", "Evidence", "Details", "Danger zone"];
+    check("task detail: title → head → Card → Actions → Notes & comments → Request → Evidence → Details → Danger zone",
+      detailSource.indexOf('shell.detail.appendChild(titleBox)') > 0
+        && detailSource.indexOf('shell.detail.appendChild(titleBox)') < paintStart
+        && sectionOrder.every((s, i) => sectionAt(s) > 0 && (i === 0 || sectionAt(s) > sectionAt(sectionOrder[i - 1]))),
+      JSON.stringify(sectionOrder.map((s) => `${s}@${sectionAt(s)}`)));
     check("task detail: the lane facts and the absent verify facts are said under Evidence, and absence is not green",
       /const evidence = qDetailSection[\s\S]{0,900}?verify and land facts are not on this poll — unknown here, not green/.test(detailSource)
         && /evidence\.appendChild\(laneLine\)/.test(detailSource), "Evidence section wiring");
     check("task detail: a section that holds a refresh-safe draft is never a fold — a repaint would close it over a started comment",
-      detailSource.includes('qDetailSection(shell.detail, "Overview & discussion")')
+      detailSource.includes('qDetailSection(shell.detail, "Notes & comments")')
         && detailSource.includes('qDetailSection(shell.detail, "Refinement")')
         && detailSource.includes('const mainBox = el("div", "qdmain")'), "draft-bearing sections");
     // the acts the head hosts are the EXISTING handlers, byte for byte — the head is a placement,
@@ -614,6 +641,11 @@ export async function run(ctx: Ctx): Promise<void> {
     const btnPad = cssNum(/\.shrbtn \{ padding: (\d+)px/, ".shrbtn padding");
     const whyLh = cssNum(/\.qdmain-why \{[^}]*?line-height: (\d+)px/, ".qdmain-why line-height");
     const whyMt = cssNum(/\.qdmain-why \{[^}]*?margin: (\d+)px/, ".qdmain-why margin");
+    const titleLh = cssNum(/\.qdtitle-t \{[^}]*?line-height: (\d+)px/, ".qdtitle-t line-height");
+    const titlePb = cssNum(/\.qdtitle \{[^}]*?padding-bottom: (\d+)px/, ".qdtitle padding-bottom");
+    const titleMb = cssNum(/\.qdtitle \{[^}]*?margin-bottom: (\d+)px/, ".qdtitle margin-bottom");
+    const titleChipsMt = cssNum(/\.qdtitle \.qchips \{[^}]*?margin-top: (\d+)px/, ".qdtitle .qchips margin-top");
+    const qchipLh = cssNum(/\.qchip \{[^}]*?line-height: (\d+)px/, ".qchip line-height");
     check("task detail head geometry: every box the fold budget reads is declared in public/index.html",
       missing.length === 0, missing.join(" · ") || "all present");
     if (missing.length === 0) {
@@ -622,18 +654,21 @@ export async function run(ctx: Ctx): Promise<void> {
       // three contents are not fixed in CSS, so they take a DELIBERATELY GENEROUS allowance —
       // a two-line title, three wrapped tool rows and a four-line footer, all at once.
       const winH = Math.min(shellH, Math.round(0.92 * 900));
-      const chrome = (2 * headPad + 40 + 1) + (2 * toolsPad + 120 + 1) + (2 * footPad + 68 + 1);
+      // tools: project tabs, program tabs (wrapped to two rows), view switch + search, dispatch line
+      const chrome = (2 * headPad + 40 + 1) + (2 * toolsPad + 180 + 1) + (2 * footPad + 68 + 1);
       const viewport = winH - chrome - 2 * detailPad;
       // the head's own plan, each node at its worst case: the chips wrapped to two rows, the rail
       // wrapped to two rows, and the one-line WHY wrapped to three.
       const chipH = chipLh + 2 * chipPad + BORDER;
       const stationH = stationLh + BORDER;
-      const headH = statusLh
+      // the title block above the head: two title lines, chips wrapped to two rows, its rule
+      const titleH = 2 * titleLh + titleChipsMt + 2 * (qchipLh + BORDER) + titlePb + titleMb + 1;
+      const headH = titleH + statusLh
         + factsMt + 2 * chipH + lifeGap
         + lifeMt + 2 * stationH + lifeGap
         + mainMt + (btnLh + 2 * btnPad + BORDER)
         + whyMt + 3 * whyLh;
-      check(`task detail head geometry: head + main action is ${headH}px inside a ${viewport}px detail viewport at 1440x900 — above the fold, computed from the CSS`,
+      check(`task detail head geometry: title + head + main action is ${headH}px inside a ${viewport}px detail viewport at 1440x900 — above the fold, computed from the CSS`,
         headH > 0 && viewport > 0 && headH <= viewport,
         `head=${headH} viewport=${viewport} window=${winH} chrome=${chrome}`);
     }

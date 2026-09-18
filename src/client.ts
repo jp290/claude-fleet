@@ -7099,6 +7099,12 @@ const qSpawnPick = new Map<string, QSpawnPick>();
 // the row's own persisted choice (Task.spawn), from GET /api/tasks like every other full field —
 // the poll's digest does not carry it. Absent = the row never stored one (DEFAULT_SPAWN).
 const taskSpawnFull = new Map<string, NonNullable<QSpawnRow>>();
+// THE CARD (card-extract.ts#TaskCard) as this client reads it off GET /api/tasks. Every field
+// optional: it is a claim about a foreign surface, and an absent field is shown as absent.
+interface QCardView { ziel?: string; done?: string; verify?: string; verboten?: string[]; after?: string[];
+  rolle?: { harness?: string | null; model?: string | null; effort?: string | null };
+  valid?: boolean; gaps?: string[]; model?: string; at?: number }
+const taskCardFull = new Map<string, QCardView>();
 // one kept node per task id, so a poll repaint re-syncs the pickers IN PLACE: an open dropdown or
 // a half-typed model keeps its focus and caret (restoreFocus needs the focused node to survive).
 let qSpawnUi: { for: string; box: HTMLElement; sync: () => void } | null = null;
@@ -7211,7 +7217,7 @@ async function loadTaskTexts() {
     if (res.ok) {
       const data = (await res.json()) as { tasks: { id: string; text: string;
         brief?: FullBrief; criterion?: NonNullable<TaskInfo["criterion"]>;
-        refine?: TaskRefineFull; comments?: TaskCommentView[]; spawn?: NonNullable<QSpawnRow>;
+        refine?: TaskRefineFull; comments?: TaskCommentView[]; spawn?: NonNullable<QSpawnRow>; card?: QCardView;
         notes?: TaskNotePinView[]; verdicts?: TaskNoteVerdictView[] }[] };
       // A brief save can complete while this GET (started before it) is in flight. Never publish
       // that older response under the post-save generation; the retry below fetches the new truth.
@@ -7224,7 +7230,9 @@ async function loadTaskTexts() {
         taskNotesFull.clear();
         taskVerdictsFull.clear();
         taskSpawnFull.clear();
+        taskCardFull.clear();
         for (const t of data.tasks) {
+          if (t.card) taskCardFull.set(t.id, t.card);
           taskText.set(t.id, t.text);
           if (t.spawn) taskSpawnFull.set(t.id, t.spawn);
           if (t.brief) taskBriefFull.set(t.id, t.brief);
@@ -8141,6 +8149,13 @@ function qTaskSummary(t: TaskInfo, text: string, now: number,
     chips.push({ text: p ? qProgramShort(p.title) : t.programId.slice(0, 8), cls: "prog", title: p?.title ?? t.programId });
   }
   if (t.size) chips.push({ text: t.size, cls: `size size-${t.size}`, title: "card size" });
+  // NACH: the rows this one waits for, from its card. Only the OPEN ones — a dependency that has
+  // landed is no longer a wait — and the land fold never waves it ahead of them.
+  const waits = (taskCardFull.get(t.id)?.after ?? []).filter((id) => {
+    const dep = tasksList.find((x) => x.id === id);
+    return !!dep && !qClosed(dep);
+  });
+  if (waits.length) chips.push({ text: `⤴ after ${waits.length}`, cls: "need", title: `waits for ${waits.join(", ")}` });
   if (qAdvisory(t)) chips.push({ text: t.kind ?? "advisory", cls: "kind" });
   else chips.push(t.briefAt ? { text: "brief", cls: "brief", title: "a compiled brief is what the lane receives" }
     : { text: "raw", cls: "raw", title: "no compiled brief — the lane receives the raw request" });
@@ -9371,6 +9386,20 @@ function renderQueueDetail() {
   const brief = taskBriefFull.get(t.id);
   const crit = taskCriterionFull.get(t.id) ?? t.criterion;
   const ref = taskRefineFull.get(t.id);
+  // THE TITLE FIRST (owner, 2026-09-18: "wichtigstes zuerst"): what this row IS, in its own words,
+  // with the same chips its list row carries — minus program, which the head's facts name below.
+  const summary = qTaskSummary(t, qTaskText(t.id), Date.now(), programsList);
+  const titleBox = el("div", "qdtitle");
+  titleBox.appendChild(el("div", "qdtitle-t", summary.title));
+  const titleChips = el("div", "qchips");
+  for (const c of [...summary.chips.filter((c) => c.cls !== "prog"), summary.age]) {
+    const span = el("span", `qchip qc-${c.cls.split(" ").join(" qc-")}`, c.text);
+    if (c.title) span.title = c.title;
+    titleChips.appendChild(span);
+  }
+  titleChips.appendChild(el("span", "qdtitle-id", t.id));
+  titleBox.appendChild(titleChips);
+  shell.detail.appendChild(titleBox);
   // --- DETAIL HEAD (paint): the plan from qHeadPlan, painted ABOVE every section — status,
   // program, target repo, the lifecycle rail, and the ONE main action with the single line that
   // says what it does. Nothing else may be appended between here and the first section: the whole
@@ -9410,6 +9439,44 @@ function renderQueueDetail() {
   const mainBox = el("div", "qdmain");
   shell.detail.appendChild(mainBox);
   shell.detail.appendChild(el("div", "qdmain-why", head.main.why));
+  // THE CARD, right under the one action: what the row wants done and how that is checked — the
+  // part of a long text the owner decides on. Drawn only when the extractor wrote one.
+  const card = taskCardFull.get(t.id);
+  if (card) {
+    const sec = qDetailSection(shell.detail, card.valid === false ? "Card · has gaps" : "Card");
+    const field = (label: string, value: string | undefined) => {
+      if (!value) return;
+      const row = el("div", "qcardrow");
+      row.append(el("span", "qcardk", label), el("span", "qcardv", value));
+      sec.appendChild(row);
+    };
+    field("goal", card.ziel);
+    field("done", card.done);
+    field("verify", card.verify);
+    const role = card.rolle ? [card.rolle.harness, card.rolle.model, card.rolle.effort].filter(Boolean).join(" · ") : "";
+    field("role", role || undefined);
+    if (card.after?.length) {
+      const row = el("div", "qcardrow");
+      row.appendChild(el("span", "qcardk", "after"));
+      const v = el("span", "qcardv");
+      for (const id of card.after) {
+        const dep = tasksList.find((x) => x.id === id);
+        const a = el("span", "qbundleid go", `${id}${dep ? ` (${dep.status})` : ""}`);
+        if (dep) a.onclick = () => qSelect(id);
+        v.appendChild(a);
+      }
+      row.appendChild(v);
+      sec.appendChild(row);
+    }
+    if (card.verboten?.length) {
+      const d = document.createElement("details");
+      d.className = "qcardmore";
+      d.appendChild(el("summary", "", `${card.verboten.length} forbidden`));
+      for (const v of card.verboten) d.appendChild(el("div", "qcardv", `– ${v}`));
+      sec.appendChild(d);
+    }
+    if (card.gaps?.length) sec.appendChild(el("div", "qdfind unk", `gaps: ${card.gaps.join(" · ")}`));
+  }
   // ACTIONS FIRST, discussion after: the request text and the comment thread used to sit between
   // the head and the acts, which is exactly how the decision ended up below the fold.
   const actionSection = qDetailSection(shell.detail, "Actions");
@@ -9468,7 +9535,9 @@ function renderQueueDetail() {
       sec.appendChild(pickRow);
     } else if (!holders.length) sec.appendChild(el("div", "shellhint", "no open task in this repo to attach it to"));
   }
-  const overview = qDetailSection(shell.detail, "Overview & discussion");
+  // WHAT HANGS OFF THE ROW, right under what can be done with it: assigned notes, verdicts, and
+  // the comment thread. Never a fold — the comment box is a draft a repaint must not close.
+  const discussion = qDetailSection(shell.detail, "Notes & comments");
   const hasRefinement = (!qAdvisory(t) && (t.status === "pending" || t.status === "queued"))
     || brief !== undefined || crit !== undefined || ref !== undefined;
   const refinement = hasRefinement ? qDetailSection(shell.detail, "Refinement") : null;
@@ -9490,6 +9559,9 @@ function renderQueueDetail() {
     "verify and land facts are not on this poll — unknown here, not green"));
   // DANGER ZONE: the one irreversible act on this pane, folded and last, so it is never a
   // neighbour of the main action above.
+  // the row's provenance and its file surface: evidence for bundling and waves, folded, because
+  // it answers "why is it grouped like that", not "what do I do next"
+  const overview = qDetailSection(shell.detail, "Details — surface, cluster, provenance", true, false);
   const danger = qDetailSection(shell.detail, "Danger zone", true, false);
   const meta = el("div", "ocfacts");
   meta.appendChild(chip(taskSourceLabel(t)));
@@ -9615,11 +9687,11 @@ function renderQueueDetail() {
   if (t.kind === "auftrag" || (t.notes?.n ?? 0) > 0) {
     const pins = taskNotesFull.get(t.id) ?? [];
     const rows = qNoteSourceRows(pins, tasksList, taskText);
-    overview.appendChild(el("div", "rvhead", rows.length ? `Quellen · ${rows.length}` : "Quellen"));
-    if (rows.length === 0) overview.appendChild(el("div", "shellhint",
+    discussion.appendChild(el("div", "rvhead", rows.length ? `Quellen · ${rows.length}` : "Quellen"));
+    if (rows.length === 0) discussion.appendChild(el("div", "shellhint",
       "keine — diese Zeile bekommt Notizen nur ueber die Datei-Flaeche, als Hinweis, nicht als Auftrag"));
     for (const row of rows) {
-      overview.appendChild(el("div", "qdtext", `${row.noteId} — ${row.text}`));
+      discussion.appendChild(el("div", "qdtext", `${row.noteId} — ${row.text}`));
       const line = el("div", "pkdacts");
       // "unknown" is rendered as itself. A pinned id the queue no longer answers is not an empty
       // assignment: the lane's own brief will report it the same way, and hiding it here would
@@ -9631,7 +9703,7 @@ function renderQueueDetail() {
       rx.title = "detach this source — the note keeps its row, its text and every verdict already given under this task";
       rx.onclick = () => void qAct(t.id, "notes", { note: row.noteId, attach: false });
       line.appendChild(rx);
-      overview.appendChild(line);
+      discussion.appendChild(line);
     }
     if (t.status === "pending" || t.status === "queued") {
       const abox = el("input", "qdcrit") as HTMLInputElement;
@@ -9646,22 +9718,22 @@ function renderQueueDetail() {
         void qAct(t.id, "notes", { note: id, attach: true }).then((ok) => { if (ok) abox.value = ""; });
       };
       aacts.appendChild(ab);
-      overview.appendChild(abox);
-      overview.appendChild(aacts);
-    } else overview.appendChild(el("div", "shellhint",
+      discussion.appendChild(abox);
+      discussion.appendChild(aacts);
+    } else discussion.appendChild(el("div", "shellhint",
       `die Zuordnung ist eingefroren: ein Land-Brief ist aus ihr gebaut worden (${t.status})`));
   }
   if (t.kind === "notiz") {
     const vs = qNoteVerdictRows(taskVerdictsFull.get(t.id) ?? [], tasksList);
-    overview.appendChild(el("div", "rvhead", vs.length ? `Urteile je Aufgabe · ${vs.length}` : "Urteile je Aufgabe"));
-    if (vs.length === 0) overview.appendChild(el("div", "shellhint",
+    discussion.appendChild(el("div", "rvhead", vs.length ? `Urteile je Aufgabe · ${vs.length}` : "Urteile je Aufgabe"));
+    if (vs.length === 0) discussion.appendChild(el("div", "shellhint",
       "keins — diese Notiz wurde noch unter keiner Aufgabe beurteilt"));
     for (const v of vs) {
-      overview.appendChild(el("div", "qdtext", v.text));
+      discussion.appendChild(el("div", "qdtext", v.text));
       // WHICH ROW'S LAND makes it wirksam, named in full: a task-scoped `erledigt` closes this note
       // at the land of THAT row and of no other, which is exactly the sentence a reader needs in
       // order not to read it as the old global claim.
-      overview.appendChild(el("div", "pkdacts", `${v.verdict} · ${v.branch} · zu ${v.taskId}`
+      discussion.appendChild(el("div", "pkdacts", `${v.verdict} · ${v.branch} · zu ${v.taskId}`
         + (v.taskKnown ? "" : " (Zeile nicht mehr auf der Queue)")
         + (v.verdict === "erledigt"
           ? v.settled
@@ -9676,9 +9748,9 @@ function renderQueueDetail() {
   // present, even empty: "there was nowhere to leave a remark" is the defect this closes, and a
   // box that appears only once a thread exists has the same problem one click deeper.
   const cms = taskCommentsFull.get(t.id) ?? [];
-  overview.appendChild(el("div", "rvhead", cms.length ? `comments · ${cms.length}` : "comments"));
+  discussion.appendChild(el("div", "rvhead", cms.length ? `comments · ${cms.length}` : "comments"));
   for (const c of cms) {
-    overview.appendChild(el("div", "qdtext", c.text));
+    discussion.appendChild(el("div", "qdtext", c.text));
     const cline = el("div", "pkdacts");
     // WHO said it and WHAT they claimed, beside the timestamp. Only `erledigt` ever moves this row,
     // and only when the branch that wrote it lands — said here rather than left to be inferred,
@@ -9690,7 +9762,7 @@ function renderQueueDetail() {
     cx.title = "delete this comment";
     cx.onclick = () => void qAct(t.id, "comment-delete", { comment: c.id });
     cline.appendChild(cx);
-    overview.appendChild(cline);
+    discussion.appendChild(cline);
   }
   // the box itself is kept across rebuilds (see qCmBox): the 2 s poll repaints this pane whenever
   // a verdict or a comment lands, and a locally-created textarea would lose a half-typed remark
@@ -9701,7 +9773,7 @@ function renderQueueDetail() {
     qCmFor = t.id;
   }
   const cbox = qCmBox;
-  overview.appendChild(cbox);
+  discussion.appendChild(cbox);
   const cmacts = el("div", "pkdacts");
   const cmb = el("button", "shrbtn", "💬 comment") as HTMLButtonElement;
   cmb.title = "a remark for whoever picks this up — read, never executed:"
@@ -9712,7 +9784,7 @@ function renderQueueDetail() {
     void qAct(t.id, "comment", { text: cbox.value }).then((ok) => { if (ok) cbox.value = ""; });
   };
   cmacts.appendChild(cmb);
-  overview.appendChild(cmacts);
+  discussion.appendChild(cmacts);
   // THE BRIEF — the exact bytes a lane receives, editable while the task has not been sent.
   // It exists in the UI at all because it used to be compiled at spawn time and fired straight
   // into the pane: unreadable before the fact, and a different string from the one that had been

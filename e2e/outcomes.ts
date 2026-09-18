@@ -838,7 +838,8 @@ export async function run(): Promise<void> {
         && tPend.body.resolved.row?.status === "pending" && tPend.body.resolved.row?.release?.released === false
         && !("branch" in tPend.body),
         JSON.stringify(tPend.body).slice(0, 400));
-      await post(`/api/tasks/${pend.task.id}/delete`, {});
+      const delPend = await post(`/api/tasks/${pend.task.id}/delete`, {});
+      check("task dossier cleanup: the pending probe row is deleted", delPend.ok, String(delPend.status));
 
       const tGhost = await byTask("zz00notarow");
       check("task dossier: an id no source knows is a 404 unknown-task naming the three sources searched",
@@ -848,9 +849,26 @@ export async function run(): Promise<void> {
       const tBad = await get("/api/lane?task=..%2Fx");
       check("task dossier: a malformed id is a 400, never a lookup", tBad.status === 400, String(tBad.status));
 
+      // CLEANUP IS ASSERTED, not assumed: a probe row left open here outlives this family and is one
+      // non-terminal row too many for e2e/tasks.ts (n3-i), which measures the retention cap at exactly
+      // MAX_TASKS (measured: held=201 on the first preview of this block). SETTLE on the founding
+      // brief first, as (7a)/(7b) do — a kill inside briefAndSend's window requeues the row after
+      // the delete — then wait for the row to leave `sent` before deleting it.
       for (const f of fillers) await post(`/api/slots/${f}/kill`, {});
+      for (let i = 0; i < 24; i++) {
+        const ps = ((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts;
+        if (ps.some((p) => p.source === "auto" && (p.text ?? "").includes(liveMark))) break;
+        await Bun.sleep(500);
+      }
       if (typeof liveJ.slot === "number") await post(`/api/slots/${liveJ.slot}/kill`, {});
-      await post(`/api/tasks/${liveTask.task.id}/delete`, {});
+      const rowStatus = async (): Promise<string | null> =>
+        ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string }[] })
+          .tasks.find((t) => t.id === liveTask.task.id)?.status ?? null;
+      for (let i = 0; i < 20 && (await rowStatus()) === "sent"; i++) await Bun.sleep(250);
+      const delLive = await post(`/api/tasks/${liveTask.task.id}/delete`, {});
+      await Bun.sleep(1000); // a late requeue from briefAndSend would re-surface the row here
+      check("task dossier cleanup: the live probe row is deleted and stays gone (no open row leaks into later families)",
+        delLive.ok && (await rowStatus()) === null, `delete=${delLive.status} status=${await rowStatus()}`);
       await post(`/api/slots/${openLane.slot}/kill`, {});
     }
 

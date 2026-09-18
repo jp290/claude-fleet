@@ -6899,6 +6899,8 @@ let qNotesOpen = false;           // the loose-notes group of Work begins folded
 let qRepo: string | null = null;
 let qProg: string | null = null;  // a program id, or Q_NO_PROGRAM for the rows that name none
 let qScopeBar: HTMLElement | null = null;
+const qSel = new Set<string>();   // rows ticked for a bundle; cleared on open, on scope change and after an act
+let qBundleBusy = false;
 let qKey = "";                    // the data key the list was last built from
 let qDetailKey = "";              // the data key the DETAIL pane was last built from (see refresh)
 let qCompose: HTMLTextAreaElement | null = null; // created ONCE per open — never re-created by a poll
@@ -8341,6 +8343,106 @@ async function qStartWave(wave: LandWave): Promise<void> {
   await refresh();
 }
 
+// --- BÜNDEL (owner, 2026-09-18): aggregate rows by click, with a trail and a way back.
+// A bundle is an ordinary auftrag whose text carries its sources WHOLE, and whose second line
+// names them. Each source is archived with the reason "gebündelt in <id>". The trail therefore
+// lives in two places that do not depend on each other: the bundle's own immutable text, and the
+// sources' dispositions. ⧉ auflösen restores every source (unarchive, which also reaches rows
+// the cap already evicted to tasks-archive.jsonl) and archives the bundle.
+const Q_BUNDLE_LINE = /^⧉ gebündelt aus: ([a-z0-9]+(?:, [a-z0-9]+)*)$/m;
+const Q_BUNDLE_TITLE_MAX = 60;
+const Q_BUNDLE_RELEASED = /^⧉ freigegeben waren: ([a-z0-9]+(?:, [a-z0-9]+)*)$/m;
+const qBundleSources = (text: string): string[] => Q_BUNDLE_LINE.exec(text)?.[1].split(", ") ?? [];
+// the sources that were RELEASED when bundled: auflösen re-releases exactly these, because
+// unarchive restores every row as pending and a release must never be lost silently
+const qBundleReleased = (text: string): string[] => Q_BUNDLE_RELEASED.exec(text)?.[1].split(", ") ?? [];
+// why a row cannot enter a bundle, or null when it can
+function qBundleRefusal(t: TaskInfo): string | null {
+  if (qAdvisory(t)) return "only an auftrag can be bundled — assign a note to a task instead";
+  if (t.status !== "pending" && t.status !== "queued") return `a ${t.status} row cannot be bundled`;
+  if (t.hold) return "held by its MAIN — a bundle would start it around that stop";
+  if (t.variants || t.variantOf) return "variant rows are decided as a group, not bundled";
+  return null;
+}
+function qBundleDraft(ids: readonly string[]):
+  { text: string; repo: string | null; programId: string | null; queue: boolean } | string {
+  const rows = ids.map((id) => tasksList.find((t) => t.id === id));
+  if (rows.some((t) => !t)) return "a ticked row is gone — reload";
+  const ts = rows as TaskInfo[];
+  for (const t of ts) { const why = qBundleRefusal(t); if (why) return `${t.id}: ${why}`; }
+  const repos = new Set(ts.map(qTaskRepo));
+  if (repos.size > 1) return "the rows target different repos — a lane works in one";
+  const progs = new Set(ts.map((t) => t.programId ?? null));
+  if (progs.size > 1) return "the rows belong to different programs — move them into one first";
+  if (ts.some((t) => !taskText.has(t.id))) return "task texts are still loading — try again in a moment";
+  const progTitle = programsList.find((p) => p.id === [...progs][0])?.title;
+  const titles = ts.map((t) => qRowTitle(qTaskText(t.id), progTitle).replace(/[[\]]/g, "").slice(0, Q_BUNDLE_TITLE_MAX));
+  const released = ts.filter((t) => t.status === "queued").map((t) => t.id);
+  const text = [
+    `[BÜNDEL · ${titles.slice(0, 2).join(" + ")}${ts.length > 2 ? ` (+${ts.length - 2})` : ""}]`,
+    `⧉ gebündelt aus: ${ts.map((t) => t.id).join(", ")}`,
+    ...(released.length ? [`⧉ freigegeben waren: ${released.join(", ")}`] : []),
+    "Ein Auftrag aus mehreren Zeilen: jede Quelle unten ist ein Teil davon, jeder Teil braucht sein eigenes DONE.",
+    ...ts.map((t) => `\n── ${t.id} ──\n${qTaskText(t.id)}`),
+  ].join("\n");
+  if (text.length > Q_TASK_TEXT_MAX) return `the bundle would be ${text.length} characters — the server keeps ${Q_TASK_TEXT_MAX}`;
+  // released only when EVERY source was: a bundle must not release a row the owner had not
+  return { text, repo: [...repos][0] ?? null, programId: [...progs][0] ?? null, queue: released.length === ts.length };
+}
+const Q_TASK_TEXT_MAX = 20_000; // mirrors server.ts#MAX_TASK_TEXT, which would silently cut the tail
+async function qMakeBundle(ids: readonly string[]): Promise<void> {
+  if (qBundleBusy) return;
+  const draft = qBundleDraft(ids);
+  if (typeof draft === "string") { toast(draft); return; }
+  qBundleBusy = true;
+  try {
+    const r = await post("/api/tasks", { text: draft.text, ...(draft.repo ? { repo: draft.repo } : {}),
+      ...(draft.programId ? { programId: draft.programId } : {}), ...(draft.queue ? { queue: true } : {}) });
+    const j = (await r.json().catch(() => null)) as { task?: { id: string }; error?: string } | null;
+    if (!r.ok || !j?.task) { toast(j?.error ?? "couldn't create the bundle"); return; }
+    const id = j.task.id;
+    const failed: string[] = [];
+    for (const src of ids) {
+      const a = await post(`/api/tasks/${src}/archive`, { grund: `gebündelt in ${id}`, beleg: id });
+      if (!a.ok) failed.push(src);
+    }
+    if (failed.length) toast(`bundle ${id} made, but ${failed.join(", ")} stayed open — archive by hand or ⧉ auflösen`);
+    qSel.clear();
+    qPick = id;
+    taskTextKey = "";
+  } finally {
+    qBundleBusy = false;
+  }
+  await refresh();
+  qKey = ""; qDetailKey = "";
+  renderQueue(); renderQueueDetail();
+}
+async function qDissolveBundle(t: TaskInfo): Promise<void> {
+  if (qBundleBusy) return;
+  const sources = qBundleSources(qTaskText(t.id));
+  if (!sources.length || t.status === "sent") return;
+  qBundleBusy = true;
+  const failed: string[] = [];
+  try {
+    const released = new Set(qBundleReleased(qTaskText(t.id)));
+    const unreleased: string[] = [];
+    for (const src of sources) {
+      const r = await post(`/api/tasks/${src}/unarchive`, {});
+      if (!r.ok) { failed.push(src); continue; }
+      if (released.has(src) && !(await post(`/api/tasks/${src}/queue`, {})).ok) unreleased.push(src);
+    }
+    if (unreleased.length) toast(`${unreleased.join(", ")} restored but not re-released — release by hand`);
+    if (failed.length) toast(`${failed.join(", ")} could not be restored — the bundle stays`);
+    else await post(`/api/tasks/${t.id}/archive`, { grund: "Bündel aufgelöst", beleg: sources.join(", ") });
+    taskTextKey = "";
+  } finally {
+    qBundleBusy = false;
+  }
+  await refresh();
+  qKey = ""; qDetailKey = "";
+  renderQueue(); renderQueueDetail();
+}
+
 function qWaveProjectionKey(): string {
   return JSON.stringify([
     dispatch.repo, dispatch.maxLanes,
@@ -9311,6 +9413,61 @@ function renderQueueDetail() {
   // ACTIONS FIRST, discussion after: the request text and the comment thread used to sit between
   // the head and the acts, which is exactly how the decision ended up below the fold.
   const actionSection = qDetailSection(shell.detail, "Actions");
+  // THE BUNDLE TRAIL: which rows this one was made from, each one click away (they are in
+  // History, archived as "gebündelt in <this id>"), and the way back while the bundle has not run.
+  const bundleSources = qBundleSources(qTaskText(t.id));
+  if (bundleSources.length) {
+    const sec = qDetailSection(shell.detail, `Bundle · ${bundleSources.length} sources`);
+    for (const src of bundleSources) {
+      const row = tasksList.find((x) => x.id === src);
+      const line = el("div", "qbundlesrc");
+      line.appendChild(el("span", "qbundleid", src));
+      line.appendChild(el("span", "", row ? `${row.status} · ${qFirstLine(qTaskText(src)).slice(0, 90)}`
+        : "evicted from the state file — ⧉ auflösen restores it from tasks-archive.jsonl"));
+      if (row) { line.classList.add("go"); line.onclick = () => qSelect(src); }
+      sec.appendChild(line);
+    }
+    if (t.status === "pending" || t.status === "queued") {
+      const undo = el("button", "shrbtn", "⧉ auflösen") as HTMLButtonElement;
+      undo.title = "restore every source as pending and archive this bundle — the texts were never changed";
+      undo.disabled = qBundleBusy;
+      undo.onclick = () => void qDissolveBundle(t);
+      sec.appendChild(undo);
+    } else sec.appendChild(el("div", "shellhint", t.status === "archived"
+      ? "this bundle is archived — dissolved, or set aside; its sources are listed above"
+      : `this bundle is ${t.status} — past the point where it can be split back`));
+  }
+  // A NOTE GOES TO ITS TASK from the note's own pane: the owner is looking at the note when he
+  // knows where it belongs. Same door as the auftrag side (POST /api/tasks/:id/notes).
+  if (t.kind === "notiz" && !qClosed(t)) {
+    const holders = tasksList.filter((x) => !qClosed(x) && !qAdvisory(x)
+      && (taskNotesFull.get(x.id) ?? []).some((pin) => pin.noteId === t.id));
+    const sec = qDetailSection(shell.detail, "Attached to");
+    for (const h of holders) {
+      const line = el("div", "qbundlesrc go");
+      line.append(el("span", "qbundleid", h.id), el("span", "", qFirstLine(qTaskText(h.id)).slice(0, 90)));
+      line.onclick = () => qSelect(h.id);
+      sec.appendChild(line);
+    }
+    const repo = qTaskRepo(t);
+    const targets = tasksList.filter((x) => !qClosed(x) && !qAdvisory(x) && x.status !== "sent"
+      && qTaskRepo(x) === repo && !holders.includes(x))
+      .sort((a, b) => Number(b.programId === t.programId) - Number(a.programId === t.programId) || b.created - a.created);
+    if (targets.length) {
+      const pickRow = el("div", "qattach");
+      const sel = el("select", "qkind-select") as HTMLSelectElement;
+      for (const x of targets) {
+        const o = el("option", "", `${x.programId === t.programId && x.programId ? "● " : ""}${qFirstLine(qTaskText(x.id)).slice(0, 70)}`) as HTMLOptionElement;
+        o.value = x.id;
+        sel.appendChild(o);
+      }
+      const go = el("button", "shrbtn", "📎 attach") as HTMLButtonElement;
+      go.title = "the note rides under that task in the list and is handed to its lane as a source";
+      go.onclick = () => void qAct(sel.value, "notes", { note: t.id, attach: true });
+      pickRow.append(sel, go);
+      sec.appendChild(pickRow);
+    } else if (!holders.length) sec.appendChild(el("div", "shellhint", "no open task in this repo to attach it to"));
+  }
   const overview = qDetailSection(shell.detail, "Overview & discussion");
   const hasRefinement = (!qAdvisory(t) && (t.status === "pending" || t.status === "queued"))
     || brief !== undefined || crit !== undefined || ref !== undefined;
@@ -9924,7 +10081,7 @@ function paintQueueScope() {
     return b;
   };
   const choose = (repo: string | null, prog: string | null) => {
-    qRepo = repo; qProg = prog; qKey = ""; renderQueue();
+    qRepo = repo; qProg = prog; qSel.clear(); qKey = ""; renderQueue();
   };
   const repoRow = el("div", "qscoperow qrepos");
   repoRow.appendChild(el("span", "qscopelabel", "Project"));
@@ -9981,7 +10138,7 @@ function renderQueue() {
     [...model.work, ...model.history].map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.briefAt,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
       t.refine?.at, t.refining, t.comments?.n, t.notes?.at, t.hold?.at, t.size, t.programId]),
-    qNotesOpen, taskTextKey, qRepo, qProg]);
+    qNotesOpen, taskTextKey, qRepo, qProg, [...qSel], qBundleBusy]);
   if (key === qKey) return;
   qKey = key;
   paintQueueScope();
@@ -10013,9 +10170,23 @@ function renderQueue() {
   let selIdx = -1;
   qRowId = new Map();
   const add = (o: { name: string; chips?: QChip[]; age?: QChip; cls?: string; id: string | null;
-    sub?: HTMLElement | null }) => {
+    sub?: HTMLElement | null; pick?: string | null }) => {
     const r = el("div", `shellrow${o.cls ? ` ${o.cls}` : ""}`);
     qRowId.set(r, o.id);
+    if (o.pick !== undefined && o.id) {
+      const id = o.id;
+      const box = el("input", "qpick") as HTMLInputElement;
+      box.type = "checkbox";
+      box.checked = qSel.has(id);
+      box.disabled = o.pick !== null;
+      box.title = o.pick ?? "tick to bundle this row with others";
+      box.onclick = (ev) => {
+        ev.stopPropagation();
+        if (box.checked) qSel.add(id); else qSel.delete(id);
+        qKey = ""; renderQueue();
+      };
+      r.appendChild(box);
+    }
     const m = el("div", "shrmain");
     const name = el("div", "qrowhead");
     name.appendChild(el("div", "shrname", o.name));
@@ -10056,8 +10227,12 @@ function renderQueue() {
   const assigned = new Set([...pinnedUnder.values()].flat().map((n) => n.id));
   const addTask = (t: TaskInfo) => {
     const summary = qTaskSummary(t, qTaskText(t.id), now, programsList);
+    const sources = qBundleSources(qTaskText(t.id));
+    if (sources.length) summary.chips.unshift({ text: `⧉ ${sources.length}`, cls: "bundle",
+      title: `bundle of ${sources.join(", ")}` });
     add({
       name: summary.title, chips: summary.chips, age: summary.age, id: t.id,
+      pick: qClosed(t) || t.status === "sent" || qAdvisory(t) ? undefined : qBundleRefusal(t),
       sub: qLaneLine(laneJoins.get(t.id) ?? { kind: "none" }),
       cls: [`q-${t.status}`, qAdvisory(t) ? "q-obs" : "", t.hold ? "q-held" : ""].filter(Boolean).join(" "),
     });
@@ -10137,8 +10312,45 @@ function renderQueue() {
     } else shell.list.appendChild(el("div", "pknone",
       qQuery ? "no historical tasks match this search" : "History is empty — no done or archived tasks"));
   } else if (qView === "work") {
+    for (const id of [...qSel]) if (!model.work.some((t) => t.id === id)) qSel.delete(id);
+    if (qSel.size) {
+      const bar = el("div", "qselbar");
+      bar.appendChild(el("span", "", `${qSel.size} ticked`));
+      const draft = qSel.size > 1 ? qBundleDraft([...qSel]) : "tick at least two rows";
+      const make = el("button", "shrbtn", qBundleBusy ? "bundling…" : "⧉ bundle") as HTMLButtonElement;
+      make.disabled = typeof draft === "string" || qBundleBusy;
+      make.title = typeof draft === "string" ? draft
+        : "one new row carrying every ticked text; the ticked rows are archived as \"gebündelt in <id>\" — ⧉ auflösen brings them back";
+      make.onclick = () => void qMakeBundle([...qSel]);
+      const clear = el("button", "shrbtn", "clear") as HTMLButtonElement;
+      clear.onclick = () => { qSel.clear(); qKey = ""; renderQueue(); };
+      bar.append(make, clear);
+      if (typeof draft === "string" && qSel.size > 1) bar.appendChild(el("span", "qselwhy", draft));
+      shell.list.appendChild(bar);
+    }
     if (!qQuery) add({ name: "＋ New task", cls: "qnew", id: null });
+    // BUNDLE SUGGESTIONS, from the land-wave sensor (task-land-waves.ts): rows in one program on a
+    // shared confirmed surface. Drawn above Backlog because that is where their rows are, and
+    // offered as a TICK, never an act — whether they belong together is the owner's judgment.
+    const suggest = qLandWaveProjection().repos.flatMap((repo) => repo.waves)
+      .filter((w) => w.ids.length > 1 && w.ids.every((id) => model.work.some((t) => t.id === id)))
+      .filter((w) => w.ids.every((id) => { const t = tasksList.find((x) => x.id === id); return !!t && !qBundleRefusal(t); }));
     for (const g of Q_GROUPS) {
+      if (g.k === "backlog" && suggest.length && !qQuery) {
+        addSection("Could bundle", suggest.length, "rows of one program on a shared confirmed file surface —"
+          + " one lane and one land instead of several. Structural only: nothing checked that they share a cause.");
+        for (const w of suggest) {
+          const line = el("div", "qsuggest");
+          line.appendChild(el("div", "qsuggestt", w.ids.map((id) => qFirstLine(qTaskText(id)).slice(0, 48)).join("  +  ")));
+          line.appendChild(el("div", "qsuggestf", [`${w.ids.length} rows`, w.klasse,
+            `~${Math.round(w.savingsSec / 60)} min saved`, w.sharedFiles.length ? `shared: ${w.sharedFiles.slice(0, 3).join(", ")}` : ""]
+            .filter(Boolean).join(" · ")));
+          const tick = el("button", "shrbtn", "tick these") as HTMLButtonElement;
+          tick.onclick = () => { qSel.clear(); for (const id of w.ids) qSel.add(id); qKey = ""; renderQueue(); };
+          line.appendChild(tick);
+          shell.list.appendChild(line);
+        }
+      }
       const group = model.work.filter((t) => qGroupOf(t) === g.k && !assigned.has(t.id));
       if (!group.length) continue;
       const head = addSection(g.head, group.length, g.hint);
@@ -10254,6 +10466,7 @@ function openQueue() {
   qNotesOpen = false;
   qRepo = null;
   qProg = null;
+  qSel.clear();
   qKey = "";
   qCompose = null;
   qRepoIn = null;

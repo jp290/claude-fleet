@@ -218,6 +218,7 @@ static char hold[16384];
 static size_t hold_len = 0;
 static long long release_at = 0;
 static char display_mode[32] = "normal";
+static int zai_footer = 0;
 static char turn_id[25] = "none";
 static const char *mode_path(void) { return getenv("FLEET_E2E_COMPOSER_MODE"); }
 static const char *state_path(void) { return getenv("FLEET_E2E_COMPOSER_STATE"); }
@@ -259,6 +260,8 @@ static void composer(void) {
   int j;
   if (!strcmp(display_mode, "unobservable")) {
     fputs("\033[?1049h\033[2J\033[HDo you trust the files in this folder?\n  1. Yes\n  2. No\n", stdout);
+    /* unobservable is a COMPOSER the probe cannot read, not a boot screen: pi-zai's ready marker stays */
+    if (zai_footer) fputs("0.0%/1.0M (auto)  glm-5.3 \xe2\x80\xa2 high\n", stdout);
     fflush(stdout);
     return;
   }
@@ -270,6 +273,9 @@ static void composer(void) {
   fputs("\n", stdout);
   for (j = 0; j < 40; j++) fputs("\xe2\x94\x80", stdout);
   fputs("\n", stdout);
+  /* pi-zai's measured ready marker (server.ts#PI_ZAI_HARNESS readiness.accept): the context gauge in
+     the footer under the composer, redrawn with it so it never scrolls off the stand-in's pane. */
+  if (zai_footer) fputs("0.0%/1.0M (auto)  glm-5.3 \xe2\x80\xa2 high\n", stdout);
   fflush(stdout);
 }
 static int has_arg(int argc, char **argv, const char *needle) {
@@ -295,6 +301,7 @@ int main(int argc, char **argv) {
   struct termios t;
   int c;
   int ox = has_arg(argc, argv, "opencode") && has_arg(argc, argv, "x-preview-f-free");
+  zai_footer = has_arg(argc, argv, "zai");
   /* This remains a falsifiable strict-profile stand-in for the pi-ox readiness/security probes. */
   if (ox && !has_arg(argc, argv, "--no-approve")) {
     fputs("Trust project folder?\n", stdout);

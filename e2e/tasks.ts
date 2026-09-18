@@ -3031,8 +3031,9 @@ export async function run(ctx: Ctx): Promise<void> {
   //
   // FLEET_HARNESS_AUTOMATION=1 IS PART OF THE FIXTURE, deliberately. The wrapper runs with it at 0,
   // where EVERY named harness is non-automatable because of the FLAG — a green there would be
-  // measuring the flag instead of the row. With it set, `pi-zai` declines on its own
-  // `automatable: false`, which is the case the live row was. ---
+  // measuring the flag instead of the row. With it set, `container` declines on its own
+  // `automatable: false`. The live row was pi-zai, which has been automatable since 2026-09-18;
+  // container is the one lane-capable adapter still declining on its own claim. ---
   {
     type HRow = { id: string; status: string; note?: string | null; slot?: number | null };
     type HSlot = { id: number; cwd: string | null; worktree: { repo: string } | null };
@@ -3045,7 +3046,7 @@ export async function run(ctx: Ctx): Promise<void> {
       for (let i = 0; i < 80 && !ok(last); i++) { await Bun.sleep(250); last = await hRow(id); }
       return last;
     };
-    const HARNESS_NOTE = "waiting: harness pi-zai is not automatable — no unattended path may drive it,"
+    const HARNESS_NOTE = "waiting: harness container is not automatable — no unattended path may drive it,"
       + " hand dispatch only (FLEET_HARNESS_AUTOMATION is set; the adapter declines)";
     const CAP_NOTE = `waiting: 1/1 lanes busy in ${basename(REPO2)} (machine default) — land or close one`;
 
@@ -3055,7 +3056,7 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const t of (await hSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
 
     // PRECONDITION AS ITSELF, and only for what is READABLE: the cap really is 1 (or no row is ever
-    // cap-held and (a) measures nothing), and pi-zai still declines on its OWN claim — `automatable`
+    // cap-held and (a) measures nothing), and container still declines on its OWN claim — `automatable`
     // is published, the operator's flag deliberately is not (see the route's comment). The flag half
     // is therefore proven by (a) instead, which asserts the sentence INCLUDING which of the two
     // conditions declined: if FLEET_HARNESS_AUTOMATION had not reached this server, the note would
@@ -3063,10 +3064,10 @@ export async function run(ctx: Ctx): Promise<void> {
     const hCfg = await hSess();
     const hCatalog = ((await (await get("/api/harnesses")).json()) as
       { harnesses?: { id: string; automatable?: boolean }[] }).harnesses ?? [];
-    const hPiZai = hCatalog.find((x) => x.id === "pi-zai");
-    check("(e6) fixture: the cap is 1 and pi-zai declines on its OWN claim, so the flag is not what this block measures",
-      hCfg.dispatch.maxLanes === 1 && hPiZai !== undefined && hPiZai.automatable === false,
-      JSON.stringify({ maxLanes: hCfg.dispatch.maxLanes, piZai: hPiZai ?? null }));
+    const hDecl = hCatalog.find((x) => x.id === "container");
+    check("(e6) fixture: the cap is 1 and container declines on its OWN claim, so the flag is not what this block measures",
+      hCfg.dispatch.maxLanes === 1 && hDecl !== undefined && hDecl.automatable === false,
+      JSON.stringify({ maxLanes: hCfg.dispatch.maxLanes, container: hDecl ?? null }));
 
     // one attended lane fills the repo cap, so BOTH rows below are cap-held at the same instant —
     // which is what makes (a) and (b) a controlled pair rather than two separate windows
@@ -3074,14 +3075,14 @@ export async function run(ctx: Ctx): Promise<void> {
     await post("/api/dispatch", { on: true });
     const hHarnessRow = (await (await post("/api/tasks", {
       text: "(e6) row whose spawn no unattended path may drive — the note must name the HARNESS",
-      queue: true, repo: REPO2, harness: "pi-zai", model: "glm-5.3", effort: "high",
+      queue: true, repo: REPO2, harness: "container",
     })).json()) as { task: { id: string; spawn?: { harness?: string } } };
     const hCapRow = (await (await post("/api/tasks", {
       text: "(e6) counter-proof row with the default spawn — the note must name the CAP",
       queue: true, repo: REPO2,
     })).json()) as { task: { id: string } };
     check("(e6) fixture: the non-automatable spawn is STORED on the row, and one attended lane holds the repo cap",
-      hHarnessRow.task.spawn?.harness === "pi-zai" && typeof hLane.slot === "number",
+      hHarnessRow.task.spawn?.harness === "container" && typeof hLane.slot === "number",
       JSON.stringify({ spawn: hHarnessRow.task.spawn ?? null, lane: hLane.slot ?? null }));
 
     const hHeldHarness = await hTill(hHarnessRow.task.id, (r) => (r?.note ?? "") === HARNESS_NOTE);

@@ -96,6 +96,11 @@ In diesem Baum nachgemessen, nicht zitiert:
 | `pi-unfenced` | `false` | keine | `server.ts:773` / `:786` |
 | `codex` | `true` | `/>_ OpenAI Codex \(v/` | `server.ts:975` / `:1061` / `:1086` |
 
+**Nachtrag 2026-09-18:** `pi-zai` ist seitdem `automatable:true` mit eigener Readiness-Naht
+(Block: Pis `Trust project folder?`-Dialog, Accept: Footer-Anzeige `…%/1.0M`,
+`server.ts#PI_ZAI_HARNESS`). Die Zeile oben und E2 beschreiben den Stand ihrer Messung; mit
+`FLEET_HARNESS_AUTOMATION=1` gibt es heute einen automatisierbaren Weg zu GLM.
+
 **E2 — eine Rolle auf einem nicht-automatisierbaren Modell kann NIE im automatischen Takt stehen.**
 `POST /api/self/tasks/:id/release` weist sie woertlich ab: `harness <id> is not automatable — no
 unattended path may drive it` (`server.ts:6714`, Praedikat `harnessAutomatableFor`) — am laufenden

@@ -798,8 +798,9 @@ Harness choice is part of the experiment, not an identity claim about a model:
 | Small aggregation | Spark workers already routed for summary/digest/commit-message/enhance | Useful for bounded compression and bookkeeping, never taste or promotion. |
 
 Pi should enter through the already built `pi-zai` adapter, not through a new provider wrapper. Its
-GLM-5.3 coding/tool/session path and architecture reasoning are measured, but `automatable:false`,
-no Fleet transcript worker channel, and no image canary are current facts. The first Pi act is
+GLM-5.3 coding/tool/session path and architecture reasoning are measured; since 2026-09-18 the
+adapter is `automatable:true` behind its trust-prompt readiness seam (`server.ts#PI_ZAI_HARNESS`),
+but no Fleet transcript worker channel and no image canary are current facts. The first Pi act is
 therefore an attended, read-only **vision H0**:
 
 1. Feed two randomly named, near-identical PNGs with one known visual difference.

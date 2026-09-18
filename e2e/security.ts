@@ -1206,8 +1206,9 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   rmSync(piFile, { force: true });
 
   // --- §6a PI-ZAI: one provider, two named models, one process-local Pi home, no key bytes in tmux. ---
+  // automatable flipped 2026-09-18 together with its readiness seam (e2e/pins.ts couples the two)
   check("§6a pi-zai publishes the closed measured capability set",
-    piZai?.automatable === false && piZai.allowsLanes === true && piZai.singleton === false
+    piZai?.automatable === true && piZai.allowsLanes === true && piZai.singleton === false
     && piZai.supports.resume === true && piZai.supports.transcript === false
     && piZai.supports.model === true && piZai.supports.effort === true
     && piZai.supports.selfSchedule === false && piZai.supports.container === false

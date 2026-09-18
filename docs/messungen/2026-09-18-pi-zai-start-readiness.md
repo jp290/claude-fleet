@@ -57,3 +57,16 @@ für unbeaufsichtigte Z.ai-Arbeit getroffen ist. Falls sie später auf `true` we
 zuerst eine frische Probe derselben Pi-Version nötig, einschließlich eines kontrollierten Projekts
 mit lokalen `.pi`-Ressourcen. Erst ein dort belegter Eingabe-Dialog rechtfertigt eine
 `readiness`-Naht samt Pin; ohne ihn wäre die Naht eine falsche Sperre.
+
+## Nachtrag 2026-09-18 — die verlangte Probe mit lokalen `.pi`-Ressourcen
+
+Gefahren mit derselben Pi-Version (0.85.0), der Bestands-Startzeile von `PI_ZAI_HARNESS`, frischem
+Agent-Home und einem Projekt mit `.pi/settings.json` (`{"quietStartup":true}`), 140×44, eigener
+tmux-Socket. Ergebnis: `Trust project folder?` ab dem dritten Boot-Frame, nie ein Composer davor;
+der unbeaufsichtigte Paste war **nicht** auf dem Schirm, und das folgende Enter wählte das
+vorausgewählte `→ Trust` — der Sentinel erreichte das Session-Log nicht (0 Dateien), und das
+Agent-Home trug danach `trust.json` mit dem Projektpfad. Gegenarm ohne `.pi`: Sentinel sichtbar
+im Composer und genau einmal im Session-Log. Damit ist der Eingabe-Dialog belegt, den §Vorschlag
+als Voraussetzung einer `readiness`-Naht nannte; sie steht jetzt in `server.ts#PI_ZAI_HARNESS`
+(Block: der Dialog am Bildschirmende, Accept: die Footer-Anzeige `…%/1.0M`), und `automatable` ist
+mit ihr gekoppelt `true` (`docs/harness-adapter.md`, pi-zai-Absatz).

@@ -113,8 +113,8 @@ producer of the bytes a lane is founded on — pinned in `e2e/pins.ts`.
      ansieht, behält ihre Notiz byte-genau — sonst begänne der Zuschlag EINES Programs, Sätze auf
      jede fremde `queued`-Zeile der Fleet zu malen.
    - **Die Notiz nennt, WELCHE der zwei Bedingungen ablehnte** (`server.ts#harnessAutomationWhy`,
-     eine Fassung, zwei Leser): bei GESETZTEM `FLEET_HARNESS_AUTOMATION` lehnt `pi-zai` mit seinem
-     eigenen `automatable: false` ab, und ein Hinweis auf den Flag schickte den Leser zu einer
+     eine Fassung, zwei Leser): bei GESETZTEM `FLEET_HARNESS_AUTOMATION` lehnt ein Adapter mit seinem
+     eigenen `automatable: false` ab (heute `container`; `pi-zai` bis 2026-09-18), und ein Hinweis auf den Flag schickte den Leser zu einer
      Env-Änderung, die nichts ändert. Übrig bleibt für eine solche Zeile genau ein Weg, und die
      Notiz sagt ihn: *hand dispatch only* (`POST /api/tasks/:id/dispatch`).
 

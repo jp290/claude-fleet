@@ -511,9 +511,21 @@ glm-5.3-flash, je 1.000.000 Kontext, 131.072 Max-Tokens, `reasoning`, identische
 der Pane-Shell. Beide Modelle laufen auf demselben Coding-Plan-Key (glm-5.3-flash gegen die API
 verifiziert 2026-09-15). Default-Basis `~/.config/claude-fleet/pi-zai-agent`;
 `FLEET_PI_ZAI_AGENT_DIR`/`FLEET_PI_ZAI_KEY_FILE` dürfen sie auf sichere absolute Pfade ohne `..`
-legen; `~/.pi` bleibt unberührt. `automatable:false` besteht fort (STOP-Befund der Feuerprobe
-2026-09-15, `docs/messungen/2026-09-15-pi-zai-automation-feuerprobe.md`): kein unattended Pfad
-fährt pi-zai, nur Hand-Dispatch. Kontext-Füllstand: glm-5.3 hat den exakten 1M-Nenner
+legen; `~/.pi` bleibt unberührt. **Seit 2026-09-18 `automatable:true` — nur gemeinsam mit seiner
+Readiness-Naht** (Owner-Entscheid „alle worker … auf GLM5.3-flash umstellen"; wie bei codex ein
+Entschluss, zwei Felder, gekoppelt in `e2e/pins.ts`). Die frische Probe (Pi 0.85.0, genau diese
+Startzeile, Projekt mit `.pi/settings.json`): `Trust project folder?` erscheint vor jedem Composer,
+ein unbeaufsichtigter Paste ist weg, und das folgende Enter wählt das vorausgewählte `→ Trust` —
+Brief verloren UND der Ordner in `trust.json` dauerhaft vertraut. `server.ts#PI_ZAI_HARNESS`
+deklariert darum `readiness`: Block = der Dialog, verankert an seiner Form am Bildschirmende (ein
+Transcript, das ihn nur zitiert, sperrt nichts); Accept = die Kontext-Anzeige im Footer
+(`0.0%/1.0M`, `1.0M` aus dem eigenen Katalog), in 116 Boot-Frames nie gleichzeitig mit dem Dialog.
+`server.ts#canDeliver` weist einen Pane auf dem Dialog ab (`blocked-screen`), die Gründung wartet
+(`server.ts#waitForFoundingReadiness`) auf die Anzeige. Der nicht-modale `Update Available`-Banner ist
+weder Block noch Marker. Mit `FLEET_HARNESS_AUTOMATION=1` startet damit der Tick pi-zai-Zeilen
+selbst, und eine pi-zai-Lane ist Watch-Ziel (`e2e/watch.ts`, pi-zai-Watch-Block). Frühere Lage:
+STOP-Befund der Feuerprobe 2026-09-15 (`docs/messungen/2026-09-15-pi-zai-automation-feuerprobe.md`)
+und die Negativprobe ohne `.pi` (`docs/messungen/2026-09-18-pi-zai-start-readiness.md`). Kontext-Füllstand: glm-5.3 hat den exakten 1M-Nenner
 (`src/protocol.ts#contextWindowFor`); für glm-5.3-flash steht dort keine Zeile — ein Flash-Slot
 meldet ctx `unknown`, bis eine eigene Messung die Zeile rechtfertigt.
 
@@ -529,7 +541,8 @@ meldet ctx `unknown`, bis eine eigene Messung die Zeile rechtfertigt.
   = Tick war noch nicht da, das ist KEINE Antwort. Ein Board-Knopf existiert dafür noch nicht.
   **Genau zwei Leser nehmen für `done-looking` die Faktschicht statt des Gates:** die Self-Land-Tür
   und die Projektion, die sie nennt (`server.ts#laneSignalView`, `liveness:"fact"`) — Landen treibt
-  den Harness nicht, darum landet eine MAIN auch eine Lane auf `pi-zai` (`automatable:false`).
+  den Harness nicht, darum landet eine MAIN auch eine Lane auf einem ablehnenden Harness (gemessen
+  2026-09-13 an `pi-zai`, damals `automatable:false`; heute lehnt dort `container` ab).
   Alle Tick-Konsumenten (Watch, auto-③, Stalled) lesen weiter das Gate.
 - **tmux-Ziele sind seit 2026-09-01 EXAKT (`server.ts#sessTarget` → `=sN`, `server.ts#paneTarget` →
   `=sN:`; `server.ts#existingTmuxTarget` und `server.ts#paneAgentAt` formen intern).** Mechanismus: tmux

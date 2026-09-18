@@ -6082,8 +6082,17 @@ export async function run(ctx: Ctx): Promise<void> {
   const taskRow = async (id: string): Promise<TaskRow | undefined> =>
     (await allTasks()).find((t) => t.id === id);
   const madeTasks: string[] = [];
+  // SINCE 2026-09-18 THE RELEASE DOOR RELEASES ONLY A ROW WITH A VALID CARD (4ae22c7a,
+  // server.ts#releaseCardRefusal). Every auftrag this section files in REPO without saying otherwise
+  // carries an author card on a file testrepo tracks, so each probe below still measures the ONE
+  // refusal it is about; the card gate itself is measured in e2e/tasks.ts (rc).
+  const RELEASE_CARD = { ziel: "acp16 probe row", surface: { files: ["code.txt"], symbols: [] },
+    done: "die Zeile ist freigegeben", verify: "bun e2e/pins.ts", verboten: [] };
+  const withReleaseCard = (fields: Record<string, unknown>): Record<string, unknown> =>
+    fields.card !== undefined || fields.repo !== undefined || (fields.kind !== undefined && fields.kind !== "auftrag")
+      ? fields : { ...fields, card: RELEASE_CARD };
   const makeTask = async (fields: Record<string, unknown>): Promise<string> => {
-    const created = (await (await post("/api/tasks", { queue: false, ...fields })).json()) as { task: TaskRow };
+    const created = (await (await post("/api/tasks", { queue: false, ...withReleaseCard(fields) })).json()) as { task: TaskRow };
     madeTasks.push(created.task.id);
     return created.task.id;
   };
@@ -6247,9 +6256,11 @@ export async function run(ctx: Ctx): Promise<void> {
   // and idempotent; a foreign program's row is refused; a release on a held QUEUED row lifts the hold
   // and nothing else; and PROGRAM_MAX_RELEASED binds only under `manual` — the same held pending row
   // the full cap refuses (hold kept) is released once the owner sets `card-valid`, which lifts its hold.
-  const selfHold = (token: string, id: string): Promise<Response> =>
-    fetch(`${BASE}/api/self/tasks/${id}/hold`, { method: "POST", headers: { "x-fleet-self-token": token } });
-  type HoldRow = TaskRow & { hold?: { by: string; slot: number; at: number } };
+  const selfHold = (token: string, id: string, body?: unknown): Promise<Response> =>
+    fetch(`${BASE}/api/self/tasks/${id}/hold`, { method: "POST", headers: { "x-fleet-self-token": token,
+      ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  type HoldRow = TaskRow & { hold?: { by: string; slot: number; at: number; grund: string | null } };
   const holdRow = async (id: string): Promise<HoldRow | undefined> => (await allTasks()).find((t) => t.id === id) as HoldRow | undefined;
   const holdPending = await makeTask({ text: "schnitt3 hold probe", programId: mainProgram.id });
   const holdAuditFrom = auditLines();
@@ -6263,14 +6274,39 @@ export async function run(ctx: Ctx): Promise<void> {
     hold1.status === 200 && hold1Body.ok === true && hold1Body.hold?.slot === successorSlot
       && hold2.ok === true && hold2.hold?.at === hold1Body.hold?.at
       && (await holdRow(holdPending))?.hold?.slot === successorSlot && (await holdRow(holdPending))?.status === "pending"
-      && holdTrail.length === 1 && holdTrail[0]?.detail === `${holdPending} program=${mainProgram.id} held`
+      && holdTrail.length === 1 && holdTrail[0]?.detail === `${holdPending} program=${mainProgram.id} held grund=null`
       && holdForeign.status === 409 && holdForeignText.includes(`holds only rows of program ${mainProgram.id}`)
       && !(await holdRow(foreignId))?.hold,
     JSON.stringify({ hold1: hold1.status, hold1Body, hold2, trail: holdTrail, foreign: `${holdForeign.status} ${holdForeignText}` }));
+  // THE HOLD CARRIES ITS REASON (2026-09-18, docs/messungen/2026-09-18-queue-durchsatz.md §e Posten 4):
+  // 42 holds in 50 minutes carried none. A hold WITHOUT one is accepted and stored as grund:null — the
+  // `held grund=null` line above — a hold with one stores it on the row and in the trail, a second
+  // hold may name it after the fact, a body with any other key is a 400 that holds nothing, and the
+  // release that lifts it names the lifted reason in its own trail line.
   const heldQueued = capIds[0]!;
-  const holdQ = await selfHold(successorToken, heldQueued);
+  const grundAuditFrom = auditLines();
+  const holdQ = await selfHold(successorToken, heldQueued, { grund: "wartet auf das Land von acp16 cap filler 1" });
+  const holdQRow = await holdRow(heldQueued);
+  const holdBadKey = await selfHold(successorToken, capIds[1]!, { grund: "x", programId: foreignProgram.id });
+  const holdBadKeyText = await holdBadKey.text();
+  const holdBadBlank = await selfHold(successorToken, capIds[1]!, { grund: "   " });
+  const regrund = await selfHold(successorToken, holdPending, { grund: "nachgetragen: Karte wird geschaerft" });
+  const regrundRow = await holdRow(holdPending);
   const liftQ = await selfRelease(successorToken, heldQueued);
   const liftQBody = (await liftQ.json()) as { ok?: boolean; lifted?: string };
+  const grundTrail = auditSince(grundAuditFrom).filter((r) => r.event === "task_hold").map((r) => r.detail);
+  check("hold-grund: a hold stores its grund on the row and in task_hold, names one after the fact, refuses a foreign key or a blank grund (400, nothing held), and the lift's trail line carries the lifted grund",
+    holdQ.status === 200 && holdQRow?.hold?.grund === "wartet auf das Land von acp16 cap filler 1"
+      && holdBadKey.status === 400 && holdBadKeyText.includes("[programId]") && holdBadBlank.status === 400
+      && !(await holdRow(capIds[1]!))?.hold
+      && regrund.status === 200 && regrundRow?.hold?.grund === "nachgetragen: Karte wird geschaerft"
+      && regrundRow.hold.at === hold1Body.hold?.at
+      && JSON.stringify(grundTrail) === JSON.stringify([
+        `${heldQueued} program=${mainProgram.id} held grund="wartet auf das Land von acp16 cap filler 1"`,
+        `${holdPending} program=${mainProgram.id} regrund grund="nachgetragen: Karte wird geschaerft"`,
+        `${heldQueued} program=${mainProgram.id} lifted grund="wartet auf das Land von acp16 cap filler 1"`]),
+    JSON.stringify({ holdQ: holdQ.status, row: holdQRow?.hold, badKey: `${holdBadKey.status} ${holdBadKeyText}`,
+      blank: holdBadBlank.status, regrund: regrundRow?.hold, trail: grundTrail }));
   check("Schnitt 3 hold: a release on a held QUEUED row lifts the hold and nothing else — still queued, the cap count unchanged",
     holdQ.status === 200 && liftQ.status === 200 && liftQBody.lifted === "hold"
       && (await holdRow(heldQueued))?.status === "queued" && !(await holdRow(heldQueued))?.hold
@@ -6640,7 +6676,7 @@ export async function run(ctx: Ctx): Promise<void> {
 
   // (1c) absence is ABSENCE: a filing naming no spawn field persists no `spawn` member at all —
   // the legacy row shape, never an all-null object pretending a choice was made.
-  const spawnPlainRes = await spawnFile({ text: "task-spawn absent choice", kind: "auftrag" });
+  const spawnPlainRes = await spawnFile({ text: "task-spawn absent choice", kind: "auftrag", card: RELEASE_CARD });
   const spawnPlainBody = await spawnPlainRes.json() as { task?: SpawnRow };
   if (spawnPlainBody.task?.id) spawnTasks.push(spawnPlainBody.task.id);
   const spawnPlainRow = spawnPlainBody.task?.id ? await spawnRowOf(spawnPlainBody.task.id) : undefined;
@@ -6813,7 +6849,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const pdSwitchesBefore = await fleetSwitches();
   const pdTasks: string[] = [];
   const pdMake = async (fields: Record<string, unknown>): Promise<string> => {
-    const created = (await (await post("/api/tasks", { queue: false, ...fields })).json()) as { task: TaskRow };
+    const created = (await (await post("/api/tasks", { queue: false, ...withReleaseCard(fields) })).json()) as { task: TaskRow };
     pdTasks.push(created.task.id);
     return created.task.id;
   };

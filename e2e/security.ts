@@ -193,9 +193,10 @@ const PRE_AUTH_ROUTES = [
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/release$/`,
   // Schnitt 3 (2026-09-14) · THE HOLD, the counter-act to a program's release policy. REVIEWED: same
   // principal and same derivation as the release door beside it — non-lane only (409), the program
-  // from the exact MAIN binding, the repo from the caller's checkout, no body read (pinned in
-  // e2e/pins.ts). It only ever STOPS a start (a flag on a pending/queued row of its own program); it
-  // starts nothing, writes into no pane and reaches no foreign slot.
+  // from the exact MAIN binding, the repo from the caller's checkout, and of the body ONE field, the
+  // MAIN's `grund` (a closed body, any other key 400 — pinned in e2e/pins.ts). It only ever STOPS a
+  // start (a flag on a pending/queued row of its own program); it starts nothing, writes into no pane
+  // and reaches no foreign slot.
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/hold$/`,
   // S5, 2026-09-13 · THE CARD-SURFACE CONFIRMATION — a bound Program-MAIN (or the bound ⚙ steward)
   // turns the file surface its OWN rows' VALID cards already name into `filesOrigin:"confirmed"`,

@@ -753,8 +753,22 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
   Der Deckel bindet QUEUE-TIEFE und sonst nichts — und **nur unter der Freigabe-Politik `manual`**
   (Abschnitt unten): unter `card-valid`/`all` ist die freigegebene Menge die Queue des Programs selbst.
 - **Auf einer GEHALTENEN `queued`-Zeile** hebt die Route den Hold auf und schreibt sonst nichts:
-  `{ok:true, sessionIdMatch, lifted:"hold", task:{…}}`, ein `task_hold`-Audit-Event (`… lifted`).
-  Auf einer gehaltenen `pending`-Zeile ist es die normale Freigabe — `releaseTask` hebt jeden Hold mit auf.
+  `{ok:true, sessionIdMatch, lifted:"hold", task:{…}}`, ein `task_hold`-Audit-Event
+  (`… lifted grund=<der aufgehobene Grund, JSON, oder null>`). Auf einer gehaltenen `pending`-Zeile
+  ist es die normale Freigabe — `releaseTask` hebt jeden Hold mit auf, und das `task_release`-Event
+  endet dann auf ` hold-lifted grund=…`.
+- **Nur mit gültiger Karte (seit 2026-09-18, Zeile 4ae22c7a, `server.ts#releaseCardRefusal`).** Der
+  Startplan liest die Reihenfolge einer Zeile AUSSCHLIESSLICH aus `card.after`; K3 (1da3b56c) wurde
+  ohne Karte freigegeben und startete 13 min nach dem Filen, sein `NACH a8bbd1af` stand nur in der
+  Prosa. Die Tür gibt deshalb nur eine Zeile frei, deren Karte (1) existiert, (2) gültig ist (keine
+  Lücke außer `rolle.*`), (3) nicht älter ist als der Brief, und (4) jede Queue-Zeile in `after`
+  trägt, die Text oder Brief als Reihenfolge nennen — eine `NACH:`-Kopfzeile ganz, inline
+  `nach|after|wartet auf <8-hex>` (`waits.ts#namedAfterIds`; eine Sha in der Prosa, die keine
+  Queue-Zeile ist, zählt nicht). Sonst 409 `a release needs a valid card — <welcher der vier>`.
+  Die Autoren-Karte (`card{…}` beim Filen) kennt kein `after`; eine Zeile mit Reihenfolge wird mit
+  der `NACH:`-Kopfzeile des Filing-Formats gefilet, die der Karten-Sweep ohne Modell liest. Geprüft
+  NACH Harness-Gate und VOR dem Deckel; ein gehaltenes `queued` wird ohne Kartenprüfung entsperrt
+  (es ist schon freigegeben).
 - Ablehnungen — jede sagt in ihren eigenen Worten, was der Aufrufer zu reparieren hat:
   - **als LANE 409** (an der Route, vor dem Handler):
     `a lane may not release a queue row — releasing is the bracket above lanes`. Eine Lane FÜHRT
@@ -841,20 +855,29 @@ Owner-Token, **keine** Self-Route; Entwurf B aus `docs/messungen/2026-09-15-frei
 ## hold — `POST /api/self/tasks/:id/hold`
 
 Die Gegen-Tür zur Politik: die gebundene Program-MAIN sperrt eine `pending`- oder `queued`-Zeile
-ihres EIGENEN Programs gegen jeden Start des Ticks. Kein Body; Program aus der Bindung, Repo aus dem
-Checkout, `slot`/`at` aus dem Token. Idempotent (zweiter Aufruf: `ok`, nichts geschrieben). Aufheben:
+ihres EIGENEN Programs gegen jeden Start des Ticks. Body leer oder `{"grund":"…"}` (≤ 500 Zeichen) —
+jedes andere Feld ist 400, nichts gehalten (`server.ts#holdGrundFrom`); Program aus der Bindung, Repo
+aus dem Checkout, `slot`/`at` aus dem Token. **Ein Hold ohne Grund wird angenommen und trägt
+`grund:null` sichtbar** (an der Zeile, im Audit, im Warte-Register von `GET /api/start-plan`): am
+2026-09-17 setzten zwei MAIN-Slots 42 Holds in 50 min ohne Grund, und einen Tag später konnte
+niemand sagen, was sie aufhebt (`docs/messungen/2026-09-18-queue-durchsatz.md` §b). Idempotent: ein
+zweiter Aufruf schreibt nur einen NEUEN Grund (Nachtrag, `at` bleibt), sonst nichts. Aufheben:
 `POST /api/self/tasks/:id/release` (oder der `▸ queue` des Owners). Nicht-Lane-only wie `release`.
 
 ```
 curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/hold \
-  -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"grund":"wartet auf das Land von <id>, danach frei"}'
 ```
 
-Antwort: `{ok:true, sessionIdMatch, hold:{by:"main",slot,at}, task:{id,kind,status,programId}}`,
-beim ersten Setzen ein `task_hold`-Event (`… held`). Ablehnungen: Lane (409 `a lane may not hold a
-queue row …`) · keine/mehrdeutige Bindung (409, `boundProgramForMain`) · unbekannt (404) · fremdes
-Program (409 `… holds only rows of program <id>`) · `kind != auftrag` (409) · Status weder
-`pending` noch `queued` (409) · kein git-Checkout oder anderes Repo (409).
+Antwort: `{ok:true, sessionIdMatch, hold:{by:"main",slot,at,grund}, task:{id,kind,status,programId}}`,
+beim ersten Setzen ein `task_hold`-Event (`… held grund="…"` bzw. `grund=null`), beim Nachtrag
+`… regrund grund="…"`; das Aufheben durch die MAIN schreibt `… lifted grund=…`, durch den
+`▸ queue` des Owners `… lifted by=owner grund=…`. Ablehnungen: Lane (409 `a lane may not hold a
+queue row …`) · Body mit fremdem Feld oder leerem Grund (400) · keine/mehrdeutige Bindung (409,
+`boundProgramForMain`) · unbekannt (404) · fremdes Program (409 `… holds only rows of program <id>`)
+· `kind != auftrag` (409) · Status weder `pending` noch `queued` (409) · kein git-Checkout oder
+anderes Repo (409).
 
 
 ## confirm-cards — `POST /api/self/tasks/confirm-cards`

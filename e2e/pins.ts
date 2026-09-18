@@ -4105,7 +4105,9 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // runtime probe on a fleet without a policy (every fleet by default) can see a second writer that
   // never fired: (1) `program.release` is written — set AND cleared — only inside the owner route;
   // (2) the one reader of the record is programReleasePolicy, and it reads the PROGRAM, never a
-  // request; (3) the hold route, the one self door of this cut, reads no body at all.
+  // request; (3) the hold route, the one self door of this cut, reads ONE field of its body — the
+  // MAIN's `grund` (2026-09-18, holdGrundFrom: a closed body, any other key a 400) — and hands the
+  // handler nothing else, so no body can reach a program, a repo or a policy.
   const relWrites = [...serverExec.matchAll(/(?:\w+)\.release = |delete (?:\w+)\.release\b/g)];
   const relRouteStart = serverExec.indexOf("const programReleaseRoute = /^");
   const relRouteEnd = serverExec.indexOf("const action = /^", relRouteStart);
@@ -4117,13 +4119,16 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const holdRoute = holdRouteAt < 0 ? "" : server.slice(holdRouteAt, server.indexOf("const selfTaskLand", holdRouteAt));
   const holdFnAt = server.indexOf("async function holdTaskForMain(");
   const holdFn = holdFnAt < 0 ? "" : server.slice(holdFnAt, server.indexOf("\n}\n", holdFnAt));
-  pin("program.release is written only by the owner release door, read only through programReleasePolicy off the Program record, and the self hold door reads no body",
+  const holdGrundFn = server.match(/function holdGrundFrom\([\s\S]*?\n\}\n/)?.[0] ?? "";
+  pin("program.release is written only by the owner release door, read only through programReleasePolicy off the Program record, and the self hold door reads its closed {grund} body only",
     relWrites.length === 2 && relRouteStart > 0 && relRouteEnd > relRouteStart
     && relWrites.every((m) => m.index > relRouteStart && m.index < relRouteEnd)
     && /return p\?\.status === "active" && p\.release \? p\.release\.policy : "manual";/.test(relPolicyFn)
     && relReaders.length >= 2
     && relReaders.every((m) => inside(m.index, relPolicyAt, relPolicyAt + relPolicyFn.length) || inside(m.index, relRouteStart, relRouteEnd))
-    && holdRoute.length > 0 && /return holdTaskForMain\(s, selfTaskHold\[1\]\);/.test(holdRoute) && !/readJson/.test(holdRoute)
+    && holdRoute.length > 0 && /const grund = holdGrundFrom\(await req\.text\(\)\);/.test(holdRoute)
+    && /return holdTaskForMain\(s, selfTaskHold\[1\], grund\);/.test(holdRoute) && !/readJson/.test(holdRoute)
+    && /const extra = Object\.keys\(parsed\)\.filter\(\(k\) => k !== "grund"\);/.test(holdGrundFn) && !/release|policy/.test(holdGrundFn)
     && holdFn.length > 0 && !/\bbody\b|\breq\b|readJson/.test(holdFn),
     JSON.stringify({ writes: relWrites.map((m) => m[0]), readers: relReaders.length, holdRoute: holdRoute.length, holdFn: holdFn.length }));
   // ...and it is READ through exactly one predicate in the tick. The record's whole meaning is

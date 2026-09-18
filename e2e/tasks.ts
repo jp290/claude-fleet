@@ -22,6 +22,7 @@ import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
 import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanLaneClaims, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
   type StartPlanLane, type StartPlanLaneClaim, type StartPlanRelease, type StartPlanRow } from "../start-plan";
 import { laneHunkDiffArgs, laneHunkRanges } from "../land-collision-stats";
+import { deriveWaits, namedAfterIds, stallReadings, type WaitFacts } from "../waits";
 import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
   type InstanceLink } from "../src/protocol";
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
@@ -8246,6 +8247,55 @@ export async function run(ctx: Ctx): Promise<void> {
         "waiting: collides with lane 3 on server.ts#taskView",
         "waiting: collides with row cc33 ahead in the plan on server.ts",
       ]), JSON.stringify(spNotes));
+
+    // (waits) THE WAIT REGISTER, pure (waits.ts, queue row 84888f35): every row the plan does not start
+    // gets its own reason and the addressee at the HEAD of its chain. Five rows, one per shape:
+    //   wb collides with lane 7 (working)          → slot:7
+    //   wc after wb, wb behind lane 7              → slot:7, the chain names both links
+    //   wh held without a grund, its program bound → main:p-wh, "ohne Grund", seit = hold.at
+    //   wm after a row the queue no longer has     → owner (no MAIN bound), nothing ends it by itself
+    //   wp collides with lane 8, parked on owner   → owner, seit = the lane's criterion
+    // Mutations that turn this red: dropping the lane park (wp says slot:8), following no chain (wc
+    // says its own edge), reading a hold as a release (wh loses its reason).
+    const wLanes: StartPlanLane[] = [
+      { slot: 7, repo: spRepo, programId: null, files: ["lane.ts"], ranges: null },
+      { slot: 8, repo: spRepo, programId: null, files: ["park.ts"], ranges: null },
+    ];
+    const wFixture = [
+      spRow("wb", 1, ["lane.ts"]), spRow("wc", 2, ["wc.ts"], { after: ["wb"] }), spRow("wh", 3, ["wh.ts"], { held: true }),
+      spRow("wm", 4, ["wm.ts"], { after: ["gone"] }), spRow("wp", 5, ["park.ts"]),
+    ];
+    const wPlan = projectStartPlan(spInput(wFixture, wLanes, { [spRepo]: { max: 5, source: "repo", programs: {} } }));
+    const wFacts: WaitFacts = { plan: wPlan,
+      rows: Object.fromEntries(wFixture.map((f) => [f.row.id, { status: f.row.status, programId: f.row.programId, slot: null,
+        hold: f.row.id === "wh" ? { slot: 9, grund: null, at: 1000 } : null }])),
+      lanes: { 7: { programId: null, parked: null, since: null }, 8: { programId: null, parked: "owner", since: 500 } },
+      mains: { "p-wh": 4 } };
+    const wGot = Object.fromEntries(deriveWaits(wFacts).map((w) => [w.id, [w.adressat, w.kette, w.grund, w.seit, w.freigegeben]]));
+    check("(waits) each waiting row carries its reason and the addressee at the head of its chain — lane, chain, hold without grund, missing after, a lane parked on the owner",
+      JSON.stringify(wGot) === JSON.stringify({
+        wb: ["slot:7", ["lane 7 auf lane.ts"], "kollidiert mit lane 7 auf lane.ts", null, true],
+        wc: ["slot:7", ["row wb (after)", "lane 7 auf lane.ts"], "wartet auf wb (after, nicht gelandet)", null, true],
+        wh: ["main:p-wh", [], "gehalten von der MAIN (Slot 9) ohne Grund", 1000, false],
+        wm: ["owner", [], "after gone ist keine Queue-Zeile mehr", null, true],
+        wp: ["owner", ["lane 8 auf park.ts"], "kollidiert mit lane 8 auf park.ts", 500, true],
+      }), JSON.stringify(wGot));
+    // THE STALL READING: the same waits are a stall while a lane is free, and NOT one once the lanes
+    // fill the cap (a cap wait is capacity, not a stall); a lone cap wait is the tick's, never a stall.
+    const wFree = stallReadings(wPlan, deriveWaits(wFacts));
+    const wFullPlan = projectStartPlan(spInput(wFixture, wLanes, { [spRepo]: { max: 2, source: "repo", programs: {} } }));
+    const wFull = stallReadings(wFullPlan, deriveWaits({ ...wFacts, plan: wFullPlan }));
+    const wCapPlan = projectStartPlan(spInput([spRow("wq", 1, ["wq.ts"])], wLanes.slice(0, 1), { [spRepo]: { max: 1, source: "repo", programs: {} } }));
+    const wCapWaits = deriveWaits({ ...wFacts, plan: wCapPlan });
+    check("(waits) stall reading: stuck with a free lane (released rows only, the held one is not stuck work), not stuck at lanes == cap, and a cap wait is addressed to the tick",
+      wFree[0]?.stuck === true && wFree[0].waits.map((w) => w.id).join(" ") === "wb wc wm wp"
+      && wFull[0]?.stuck === false && wFull[0].lanes === 2 && wFull[0].cap === 2
+      && wCapWaits.length === 1 && wCapWaits[0]?.adressat === "tick" && stallReadings(wCapPlan, wCapWaits)[0]?.stuck === false,
+      JSON.stringify({ free: wFree.map((r) => [r.stuck, r.waits.map((w) => w.id)]), full: wFull.map((r) => [r.stuck, r.lanes, r.cap]), cap: wCapWaits }));
+    check("(waits) namedAfterIds reads a NACH: header line whole and an inline nach/after <id> — a bare sha in prose is no order",
+      JSON.stringify(namedAfterIds("NACH: 1a2b3c4d, 5e6f7a8b\nText nach 9c0d1e2f und after `abcdef12`; seit 3d9a73e4 gebaut"))
+        === JSON.stringify(["1a2b3c4d", "5e6f7a8b", "9c0d1e2f", "abcdef12"]),
+      JSON.stringify(namedAfterIds("NACH: 1a2b3c4d, 5e6f7a8b\nText nach 9c0d1e2f und after `abcdef12`; seit 3d9a73e4 gebaut")));
   }
 
   // --- (sp) THE START PLAN, live: GET /api/start-plan is owner-only, a read, and prints the SAME
@@ -8268,7 +8318,12 @@ export async function run(ctx: Ctx): Promise<void> {
       return false;
     };
     const spSaved = spIds.length === 2 && await spOnDisk();
-    const spGet = async (): Promise<string> => JSON.stringify(await (await get("/api/start-plan")).json());
+    // the route carries the wait register and the stall counters BESIDE the plan (server.ts#startPlanNow,
+    // waits.ts) — the CLI has neither, so the comparison is the plan half, in the plan's own key order
+    const spGet = async (): Promise<string> => {
+      const { waits: _waits, stau: _stau, ...plan } = (await (await get("/api/start-plan")).json()) as Record<string, unknown>;
+      return JSON.stringify(plan);
+    };
     const spRoute1 = await spGet();
     const spCli = spawnSync("bun", [`${ROOT}/start-plan.ts`, "--state", `${ROOT}/fleet.json`, "--default-repo", REPO],
       { encoding: "utf8", env: { ...process.env, FLEET_DISPATCH_REPO: REPO } });
@@ -9362,8 +9417,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const mDispatchWas = ((await (await get("/api/sessions")).json()) as
       { dispatch: { on: boolean } }).dispatch.on;
     await post("/api/dispatch", { on: false });
+    // the author card is what the release door asks for since 2026-09-18 (server.ts#releaseCardRefusal);
+    // it names the same file and writes no surface of its own, so the reading below is unchanged
     const mRelId = ((await (await mFile(mToken,
-      { text: "acp23 surface then release", kind: "auftrag", files: [M_TRACKED] })).json()) as
+      { text: "acp23 surface then release", kind: "auftrag", files: [M_TRACKED],
+        card: { ziel: "acp23 release probe", surface: { files: [M_TRACKED], symbols: [] },
+          done: "die Zeile ist freigegeben", verify: "bun e2e/pins.ts", verboten: [] } })).json()) as
       { task?: MSurfRow }).task?.id ?? "";
     const mRelRes = await fetch(`${BASE}/api/self/tasks/${mRelId}/release`, {
       method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": mToken },
@@ -9382,6 +9441,183 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(f3b) the surface probes leave exactly the rows they filed — two, and every refusal above minted none",
       (await mAll()).length === mSurfBefore + 1,
       `before=${mSurfBefore} now=${(await mAll()).length}`);
+
+    // --- (rc) NO RELEASE WITHOUT A VALID CARD (4ae22c7a, server.ts#releaseCardRefusal). The plan reads a
+    // row's order from `card.after` only, so a MAIN release of a row whose card is missing, or whose
+    // text orders it after a row the card does not carry, is a release the plan cannot keep. Three
+    // rows of THIS MAIN's program: no card → 409 naming it; an author card (which has no `after`
+    // field) under a text with `NACH <id>` → 409 naming the id; a card that carries the id → 200, and
+    // the start plan holds the row behind its predecessor, the wait register naming whose move it is.
+    // The third card is PLANTED with the server stopped (no door writes an `after`; (sp-tick) pattern).
+    // Mutation that turns (rc2) red: dropping the NACH comparison (the row releases, 200).
+    await post("/api/dispatch", { on: false });
+    const rcCard = { ziel: "acp23 rc probe", surface: { files: [M_TRACKED], symbols: [] },
+      done: "die Zeile ist freigegeben", verify: "bun e2e/pins.ts", verboten: [] };
+    const rcFile = async (body: Record<string, unknown>): Promise<string> =>
+      ((await (await mFile(mToken, { kind: "auftrag", ...body })).json()) as { task?: { id: string } }).task?.id ?? "";
+    const rcRelease = (id: string): Promise<Response> => fetch(`${BASE}/api/self/tasks/${id}/release`,
+      { method: "POST", headers: { "x-fleet-self-token": mToken } });
+    const rcPred = await rcFile({ text: "acp23 rc predecessor", card: rcCard });
+    const rcBare = await rcFile({ text: "acp23 rc no card" });
+    const rcNach = await rcFile({ text: `acp23 rc ordered, NACH ${rcPred}`, card: rcCard });
+    const rcAfter = await rcFile({ text: `acp23 rc ordered with a card, NACH ${rcPred}`, card: rcCard });
+    const rcBareRes = await rcRelease(rcBare);
+    const rcBareText = await rcBareRes.text();
+    const rcNachRes = await rcRelease(rcNach);
+    const rcNachText = await rcNachRes.text();
+    check("(rc1) a MAIN release of a row WITHOUT a card is 409 naming it, and the row stays pending",
+      !!rcBare && rcBareRes.status === 409 && rcBareText.includes("a release needs a valid card — the row has no card yet")
+        && (await mRow(rcBare))?.status === "pending",
+      `${rcBareRes.status}:${rcBareText}`);
+    check("(rc2) a card without `after` under a text ordering the row NACH another row is 409 naming that row, and the row stays pending",
+      !!rcNach && !!rcPred && rcNachRes.status === 409 && rcNachText.includes(`orders it after ${rcPred}`)
+        && rcNachText.includes("card.after carries nothing") && (await mRow(rcNach))?.status === "pending",
+      `${rcNachRes.status}:${rcNachText}`);
+    await stopSrv();
+    const rcState = mState() as MState & { tasks?: { id: string; card?: Record<string, unknown> }[] };
+    const rcRow = (rcState.tasks ?? []).find((t) => t.id === rcAfter);
+    if (rcRow?.card) rcRow.card = { ...rcRow.card, after: [rcPred] };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rcState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    await post("/api/dispatch", { on: false });
+    const rcAfterRes = await rcRelease(rcAfter);
+    interface RcWait { id: string; grund: string; adressat: string; kette: string[] }
+    const rcPlan = (await (await get("/api/start-plan")).json()) as StartPlan & { waits?: RcWait[] };
+    const rcWave = rcPlan.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(rcAfter));
+    const rcWait = rcPlan.waits?.find((w) => w.id === rcAfter);
+    check("(rc3) a valid card that carries the NACH id releases (200) — the plan holds the row behind its predecessor, and its wait names the program's MAIN, whose pending row it is",
+      !!rcRow?.card && rcAfterRes.status === 200 && (await mRow(rcAfter))?.status === "queued"
+        && JSON.stringify(rcWave?.next) === JSON.stringify({ after: rcPred })
+        && rcWait?.grund === `wartet auf ${rcPred} (after, nicht gelandet)` && rcWait.adressat === `main:${mMainProgram}`
+        && JSON.stringify(rcWait.kette) === JSON.stringify([`row ${rcPred} (after)`]),
+      JSON.stringify({ release: rcAfterRes.status, next: rcWave?.next ?? null, wait: rcWait ?? null }));
+    for (const id of [rcPred, rcBare, rcNach, rcAfter]) await post(`/api/tasks/${id}/delete`, {});
+
+    // --- (stau) THE STALL SENSOR (server.ts#tickStallSensor, queue rows 80f61ed8 → 84888f35). On one
+    // live instance in REPO2, rows of THIS MAIN's program (an attention needs a live bound MAIN):
+    //   A starts and holds f-stau.ts; B (same file, released) collides with A's lane; C waits `after` B.
+    // The 15-minute clock is PERSISTED (StallSensorState), so it is stood on the stall by planting
+    // `since` with the server stopped — no env, no product switch. Facts, in order:
+    //   (row) B's wait is {kollidiert mit lane N, slot:N}, released; the clock starts, no attention (< STALL_MS)
+    //   (d)   an old clock with lanes == cap raises nothing and is dropped — a cap wait is no stall
+    //   (a/f) an old clock with a free lane raises EXACTLY ONE `blocked` attention naming slot, lane and
+    //         file; C's chain row → row → lane ends at the lane's slot
+    //   (b)   further ticks keep it at one
+    //   (c)   A lands, B starts: the attention is answered and none of the program's stays open
+    const stAll = async (): Promise<{ id: string; status: string; note?: string | null; slot?: number | null }[]> =>
+      ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; note?: string | null; slot?: number | null }[] }).tasks;
+    const stOf = async (id: string) => (await stAll()).find((t) => t.id === id);
+    const stUntil = async (ok: () => Promise<boolean>, tries = 160): Promise<boolean> => {
+      for (let i = 0; i < tries; i++) { if (await ok()) return true; await Bun.sleep(250); }
+      return false;
+    };
+    interface StAtt { id: string; kind: string; status: string; programId: string; text: string; answer: { text: string } | null }
+    const stBlocked = async (): Promise<StAtt[]> => ((await (await get("/api/attention")).json()) as { requests: StAtt[] })
+      .requests.filter((a) => a.kind === "blocked" && a.programId === mMainProgram);
+    interface StView { waits?: { id: string; repo: string; grund: string; adressat: string; kette: string[]; freigegeben: boolean }[];
+      stau?: { stallMs: number; detected: number; open: { repo: string; since: number; stalled: boolean; attentionId: string | null }[] };
+      repos: { repo: string; lanes: number; cap: { max: number } | null }[] }
+    const stPlan = async (): Promise<StView> => (await (await get("/api/start-plan")).json()) as StView;
+    const stSessions = async () => ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null; worktree: { repo: string } | null }[]; dispatch: { on: boolean }; autosOn: boolean });
+    const stWas = await stSessions();
+    await post("/api/dispatch", { on: false });
+    for (const t of await stAll()) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+    for (const x of stWas.slots) if (x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2)) await post(`/api/slots/${x.id}/kill`, {});
+    // A belongs to NO program: two rows of one program sharing a file are one land wave and would
+    // start together (sp-tick (1)), and the collision is the fact this fixture needs
+    const stTask = async (text: string, files: string[], inProgram = true): Promise<string> => {
+      await Bun.sleep(15);
+      const id = ((await (await post("/api/tasks", { text, queue: false, repo: REPO2,
+        ...(inProgram ? { programId: mMainProgram } : {}) })).json()) as { task?: { id: string } }).task?.id ?? "";
+      return id && (await post(`/api/tasks/${id}/files`, { files })).ok ? id : "";
+    };
+    const stA = await stTask("STAU row A on f-stau.ts", ["f-stau.ts"], false);
+    const stB = await stTask("STAU row B on f-stau.ts", ["f-stau.ts"]);
+    const stC = await stTask("STAU row C after B", ["f-stau-c.ts"]);
+    await Bun.sleep(600);
+    await post(`/api/tasks/${stA}/queue`, {});
+    await post("/api/autos/switch", { on: true });
+    await post("/api/dispatch", { on: true });
+    await stUntil(async () => (await stOf(stA))?.status === "sent");
+    const stSlot = (await stOf(stA))?.slot ?? -1;
+    await post(`/api/tasks/${stB}/queue`, {});
+    await stUntil(async () => ((await stOf(stB))?.note ?? "").startsWith("waiting: collides"));
+    await stUntil(async () => ((await stPlan()).stau?.open ?? []).length > 0, 40);
+    const st1 = await stPlan();
+    const stWaitB = st1.waits?.find((w) => w.id === stB);
+    const stKey = stWaitB?.repo ?? "";
+    const stClock1 = st1.stau?.open.find((o) => o.repo === stKey);
+    check("(stau) fixture + row: A runs on lane N, B waits on it — its wait is {kollidiert mit lane N auf f-stau.ts, slot:N}, released; the clock starts and no attention is raised under STALL_MS",
+      !!stA && !!stB && !!stC && stSlot > 0 && (await stOf(stB))?.status === "queued"
+        && stWaitB?.grund === `kollidiert mit lane ${stSlot} auf f-stau.ts` && stWaitB.adressat === `slot:${stSlot}`
+        && stWaitB.freigegeben === true && st1.stau?.stallMs === 15 * 60_000
+        && !!stClock1 && stClock1.stalled === false && stClock1.attentionId === null
+        && (await stBlocked()).filter((a) => a.status === "open").length === 0,
+      JSON.stringify({ slot: stSlot, wait: stWaitB ?? null, stau: st1.stau ?? null }));
+    const stPlant = async (extra: Record<string, string>, then?: (st: Record<string, unknown>) => void): Promise<void> => {
+      await stopSrv();
+      const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as Record<string, unknown>;
+      st.stallSensor = { detected: 0, msTotal: 0, repos: { [stKey]: { since: Date.now() - 16 * 60_000, attentionId: null, counted: false } } };
+      then?.(st);
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+      await restartSrv(extra);
+    };
+    // (d) lanes == cap: the planted old clock must be DROPPED, nothing raised
+    await stPlant({ FLEET_DISPATCH_MAX_LANES: "1" });
+    await stUntil(async () => !((await stPlan()).stau?.open ?? []).some((o) => o.repo === stKey), 40);
+    await Bun.sleep(4 * DISPATCH_TICK_MS);
+    const stD = await stPlan();
+    const stDRepo = stD.repos.find((r) => r.repo === stKey);
+    check("(stau)(d) lanes == cap is no stall: an old planted clock is dropped and no attention is raised",
+      stDRepo?.lanes === 1 && stDRepo.cap?.max === 1
+        && !(stD.stau?.open ?? []).some((o) => o.repo === stKey) && (await stBlocked()).length === 0,
+      JSON.stringify({ repo: stDRepo ?? null, stau: stD.stau ?? null }));
+    // (a/f) a free lane and an old clock; C gets its planted after-card and is released after the boot
+    await stPlant({}, (st) => {
+      const c = ((st.tasks ?? []) as { id: string; card?: Record<string, unknown> }[]).find((t) => t.id === stC);
+      if (c) c.card = { ziel: "f-stau-c.ts bekommt eine Zeile", rolle: { harness: null, model: null, effort: null },
+        surface: { files: ["f-stau-c.ts"], symbols: [], ranges: null }, done: "the line stands", verify: "bun e2e/pins.ts",
+        verboten: [], after: [stB], model: "planted-stau", at: Date.now(), ms: 0, gaps: [] };
+    });
+    await post(`/api/tasks/${stC}/queue`, {});
+    await stUntil(async () => (await stBlocked()).some((a) => a.status === "open" && a.text.includes(stC)), 60);
+    const stOpen = (await stBlocked()).filter((a) => a.status === "open");
+    const stA1 = await stPlan();
+    const stWaitC = stA1.waits?.find((w) => w.id === stC);
+    const stClockA = stA1.stau?.open.find((o) => o.repo === stKey);
+    check("(stau)(a) a stall held past STALL_MS with a free lane raises EXACTLY ONE blocked attention on the program — it names the lane's slot, the lane, the file and the waiting rows; the counter reads it",
+      stOpen.length === 1 && stOpen[0]!.text.includes(`slot:${stSlot}`) && stOpen[0]!.text.includes(`lane ${stSlot}`)
+        && stOpen[0]!.text.includes("f-stau.ts") && stOpen[0]!.text.includes(stB) && stOpen[0]!.text.includes(stC)
+        && stClockA?.stalled === true && stClockA.attentionId === stOpen[0]!.id && (stA1.stau?.detected ?? 0) >= 1,
+      JSON.stringify({ open: stOpen, stau: stA1.stau ?? null }));
+    check("(stau)(f) the chain row → row → lane ends at the lane: C (after B, B behind lane N) is addressed to slot:N and names both links",
+      stWaitC?.adressat === `slot:${stSlot}` && stWaitC.freigegeben === true
+        && JSON.stringify(stWaitC.kette) === JSON.stringify([`row ${stB} (after)`, `lane ${stSlot} auf f-stau.ts`]),
+      JSON.stringify(stWaitC ?? null));
+    await Bun.sleep(6 * DISPATCH_TICK_MS);
+    const stB2 = (await stBlocked()).filter((a) => a.status === "open");
+    check("(stau)(b) further ticks keep it at ONE open attention — the same row",
+      stB2.length === 1 && stB2[0]?.id === stOpen[0]?.id, JSON.stringify(stB2.map((a) => a.id)));
+    // (c) the blocker goes: A "lands" (done + kill, the (sp-tick) emulation), B starts
+    await post(`/api/tasks/${stA}/done`, {});
+    if (stSlot > 0) await post(`/api/slots/${stSlot}/kill`, {});
+    await stUntil(async () => (await stBlocked()).every((a) => a.status !== "open"), 80);
+    const stC3 = await stBlocked();
+    check("(stau)(c) the blocker gone, a wave starts — the attention is answered by the sensor and none of the program's stays open",
+      (await stOf(stB))?.status === "sent" && stC3.length === 1 && stC3[0]?.status === "answered"
+        && (stC3[0]?.answer?.text ?? "").startsWith("Stau-Sensor: aufgeloest"),
+      JSON.stringify({ b: await stOf(stB), att: stC3 }));
+    await post("/api/dispatch", { on: false });
+    for (const id of [stB, stC]) { const slot = (await stOf(id))?.slot; if (typeof slot === "number") await post(`/api/slots/${slot}/kill`, {}); }
+    await Bun.sleep(600);
+    for (const id of [stA, stB, stC]) {
+      const row = await stOf(id);
+      if (row?.status === "queued") await post(`/api/tasks/${id}/unqueue`, {});
+      if (row && row.status !== "sent") await post(`/api/tasks/${id}/delete`, {});
+    }
+    await post("/api/autos/switch", { on: stWas.autosOn });
+    await post("/api/dispatch", { on: mDispatchWas });
 
     // (7) THE RELOAD, and this is the probe the whole act needed. loadState filters the persisted
     // task list through a LITERAL allowlist of `source` values; a producer missing from it writes

@@ -2853,7 +2853,7 @@ const MAX_TASK_TEXT = 20_000;
 // the per-row git process its staleness arm asked for on every poll.
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   & Partial<Pick<Task, "slot" | "note" | "repo" | "programId" | "review" | "files" | "filesOrigin" | "cluster"
-    | "variants" | "variantOf" | "variantIndex" | "variantDecision">>
+    | "variants" | "variantOf" | "variantIndex" | "variantDecision" | "variantCompareArmedAt" | "variantCompare">>
   // …and the PROPOSED surface beside the confirmed one. Carried WHOLE rather than as a shape
   // digest, unlike `refine` and `comments` beside it: `files` itself already rides this poll, so a
   // proposal reduced to a count would be the one file list on the row a reader could not compare
@@ -2894,6 +2894,11 @@ function taskDigest(t: Task): TaskDigest {
     ...(t.variantOf ? { variantOf: t.variantOf } : {}),
     ...(t.variantIndex ? { variantIndex: t.variantIndex } : {}),
     ...(t.variantDecision ? { variantDecision: t.variantDecision } : {}),
+    // T4: the comparator's clock and its exactly-once fact ride the poll beside the decision — a
+    // board reading an undecided group must be able to see that a comparison ran and what it
+    // recommended, and a probe must be able to read the wait clock without fetching the whole row
+    ...(t.variantCompareArmedAt ? { variantCompareArmedAt: t.variantCompareArmedAt } : {}),
+    ...(t.variantCompare ? { variantCompare: t.variantCompare } : {}),
     ...(view.files ? { files: view.files } : {}),
     ...(view.filesOrigin ? { filesOrigin: view.filesOrigin } : {}),
     ...(view.cluster ? { cluster: view.cluster } : {}),
@@ -10433,9 +10438,14 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // release with itself are not in the count either — they are still `pending`. Counting them
   // BEFORE the release is what keeps the deckel honest for exactly the row whose release
   // multiplies: waving a group of 2 through one free place starts two lanes the cap never counted.
+  // THE COMPARISON IS >= , NOT >: the cap bounds the released-but-unstarted count AT
+  // PROGRAM_MAX_RELEASED, so the release that would push the count PAST n is refused while the
+  // count stands at n−1 — and a group's n variants sum into the same comparison (4 singles + a
+  // group of 2 refuse 6/5). Measured 2026-09-18: a `>` here let the 6th release of a 5-cap
+  // through (ACP-16, 200 instead of 409) — part 1's rewrite of this line lost the boundary.
   const groupVariants = t.variants ? variantsOfGroup(t).filter((v) => v.status === "pending").length : 0;
   const openReleased = tasks.filter((x) => x.programId === program.id && x.status === "queued" && !x.variants).length;
-  if (programReleasePolicy(t) === "manual" && openReleased + groupVariants > PROGRAM_MAX_RELEASED)
+  if (programReleasePolicy(t) === "manual" && openReleased + groupVariants >= PROGRAM_MAX_RELEASED)
     return json({ error: `program release cap reached (${openReleased + groupVariants}/${PROGRAM_MAX_RELEASED}${groupVariants ? ` — ${groupVariants} of them are the pending variants of group ${t.id}` : ""}) — let the tick start one first` }, 409);
   // (5) THROUGH THE HELPER, never a bare assignment: releaseTask is where `by` cannot be forgotten,
   // and a machine release that recorded nothing would be indistinguishable from the attended lands

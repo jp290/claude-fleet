@@ -2646,13 +2646,18 @@ export async function run(ctx: Ctx): Promise<void> {
       evidence: ["docs/queue-analyst.md"],
       openQuestions: [],
     })).json()) as { program?: { id: string } }).program?.id ?? "";
+    // a program is born pending — bootstrap-main refuses anything but `active` (the 409 the first
+    // isolated run of this block died on), so the fixture walks the owner's own two transitions
+    const rConfirm = await post(`/api/programs/${rProg}/confirm`, {});
+    const rActivate = await post(`/api/programs/${rProg}/activate`, {});
     const rSlotsBefore = new Set((await rSess()).slots.map((s) => s.id));
     const rBoot = await post(`/api/programs/${rProg}/bootstrap-main`, { cwd: REPO2 });
     const rMainSlot = (await rSess()).slots.find((s) => !rSlotsBefore.has(s.id) && s.cwd)?.id;
     const rMainTok = rMainSlot !== undefined ? await selfTokenOf(rMainSlot) : "";
     check("(v-res)(4) fixture: the probe program is active with a bound MAIN in REPO2 holding a self token",
-      rBoot.status === 200 && typeof rMainSlot === "number" && /^[0-9a-f]{32}$/.test(rMainTok),
-      JSON.stringify({ boot: rBoot.status, mainSlot: rMainSlot ?? null, tok: rMainTok.length }));
+      rBoot.status === 200 && rConfirm.status === 200 && rActivate.status === 200
+      && typeof rMainSlot === "number" && /^[0-9a-f]{32}$/.test(rMainTok),
+      JSON.stringify({ boot: rBoot.status, confirm: rConfirm.status, activate: rActivate.status, mainSlot: rMainSlot ?? null, tok: rMainTok.length }));
     const rSelfPost = async (path: string, body: unknown): Promise<{ status: number; body: Record<string, unknown> }> => {
       const res = await fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": rMainTok }, body: JSON.stringify(body) });
       let parsed: Record<string, unknown> = {};
@@ -2846,6 +2851,10 @@ export async function run(ctx: Ctx): Promise<void> {
       }
       return { ids: rows.map((r) => r.id), wts, toks, branches };
     };
+    const cFixture = async (label: string, start: { ids: string[]; wts: string[] }): Promise<void> =>
+      check(`${label} fixture: both variant lanes run on real worktrees — the probe below cannot read its own defect without this`,
+        start.ids.length === 2 && start.wts.length === 2 && start.wts.every((w) => !!w && existsSync(w)),
+        JSON.stringify({ ids: start.ids, wts: start.wts }));
     const cShelved = async (branch: string): Promise<boolean> =>
       ((await (await get("/api/lane-outcomes?limit=200")).json()) as
         { outcomes: { branch: string | null; disposition: string }[] }).outcomes
@@ -2924,6 +2933,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const cGroup = await cFile("(v-cmp)(2) the report-claim group — B claims in prose what its check failed");
     const cStart2 = await cStart(cGroup);
     await cTrack(cGroup);
+    await cFixture("(v-cmp)(2)", cStart2);
     const cPart1 = "C: the worktree holds cx.txt";
     const cPart2 = "C: no fleet token in the check env";
     const cPart3 = "C: the check env is recorded";
@@ -2957,9 +2967,16 @@ export async function run(ctx: Ctx): Promise<void> {
       && cEntry(cVarA as CmpVariant, cPart1, "check")?.result === "met",
       JSON.stringify({ winner: cLine?.winner, decidedAt: cLine?.decidedAt, a: cVarA?.done, b: cVarB?.done }));
     const cA2Env = await Bun.file(`${cStart2.wts[0] ?? "/"}/c-a2env.txt`).text().catch(() => "");
-    check("(v-cmp)(3) A2 env: the check's environment carries NO FLEET_* line at all — no owner token, no self token, nothing from the namespace",
-      cA2Env.length > 10 && cA2Env.split("\n").every((l) => !l.startsWith("FLEET_")),
-      JSON.stringify({ bytes: cA2Env.length, fleetLines: cA2Env.split("\n").filter((l) => l.startsWith("FLEET_")).map((l) => l.slice(0, 40)) }));
+    // THE EXACT verifyChildEnv CONTRACT, not a weaker reading: the child env carries NO FLEET_*
+    // line at all EXCEPT the two names VERIFY_CHILD_KEEPS deliberately holds (suite-lock
+    // coordination) — and NEVER a *TOKEN one, which is the boundary the criterion draws. The
+    // allowlist form is red on revert in any environment (FLEET_PORT & co. always ride), and the
+    // token clause is its strongest sentence.
+    const a2Kept = (l: string): boolean => l.startsWith("FLEET_SUITE_LOCK") || l.startsWith("FLEET_SUITE_POLL_SEC");
+    const a2Bad = cA2Env.split("\n").filter((l) => l.startsWith("FLEET_") && !a2Kept(l));
+    check("(v-cmp)(3) A2 env: the check's env carries no FLEET_* beyond the two kept lock names — no FLEET_*TOKEN ever",
+      cA2Env.length > 10 && a2Bad.length === 0,
+      JSON.stringify({ bytes: cA2Env.length, badLines: a2Bad.map((l) => l.slice(0, 40)) }));
     check("(v-cmp)(3) A2 env: the token-grep part is met for BOTH variants — no FLEET_*TOKEN reaches a criterion check",
       cEntry(cVarA as CmpVariant, cPart2, "check")?.result === "met"
       && cEntry(cVarB as CmpVariant, cPart2, "check")?.result === "met",
@@ -2986,6 +3003,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const d1Group = await cFile("(v-cmp)(4) the gate-decides group — red loses the tie to green");
     const d1Start = await cStart(d1Group);
     await cTrack(d1Group);
+    await cFixture("(v-cmp)(4)", d1Start);
     const d1Part = "D1: the worktree holds d1.txt";
     await cPropose(d1Start.toks[0] ?? "", d1Group,
       [{ text: d1Part, check: { cmd: "test -f d1.txt", expectExit: 0 } }], "(v-cmp)(4) both variants fulfill this");
@@ -3011,6 +3029,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const d2Group = await cFile("(v-cmp)(5) the diff-decides group — the smaller diff wins the full tie");
     const d2Start = await cStart(d2Group);
     await cTrack(d2Group);
+    await cFixture("(v-cmp)(5)", d2Start);
     const d2Part = "D2: the worktree holds d2.txt";
     await cPropose(d2Start.toks[0] ?? "", d2Group,
       [{ text: d2Part, check: { cmd: "test -f d2.txt", expectExit: 0 } }], "(v-cmp)(5) both variants fulfill this");
@@ -3035,6 +3054,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const wGroup = await cFile("(v-cmp)(6) the wait-out group — a straggler must not hold the decision hostage");
     const wStart = await cStart(wGroup);
     await cTrack(wGroup);
+    await cFixture("(v-cmp)(6)", wStart);
     const wPart = "W: the worktree holds wx.txt";
     await cPropose(wStart.toks[0] ?? "", wGroup,
       [{ text: wPart, check: { cmd: "test -f wx.txt", expectExit: 0 } }], "(v-cmp)(6) only A will ever fulfill this");
@@ -3063,6 +3083,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const hGroup = await cFile("(v-cmp)(7) the hanging-check group — a hung check is unmeasured, never a server hang");
     const hStart = await cStart(hGroup);
     await cTrack(hGroup);
+    await cFixture("(v-cmp)(7)", hStart);
     const hHang = "H: the hang part";
     const hProse = "H: a prose part without a check";
     const hReal = "H: the worktree holds hx.txt";

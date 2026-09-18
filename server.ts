@@ -90,7 +90,7 @@ import {
   FLEET_REPORT_STATUSES, normalizeLaneAnchor, instanceNameFrom, instanceLinksFrom,
   type GitInfo, type InstanceIdentity, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
   type DispositionWorker, type DispositionVerdict,
-  type FleetReportStatus,
+  type FleetReportStatus, type SuiteOfferRow,
 } from "./src/protocol";
 import { opsPollRow, opsPollVisible } from "./src/opsevents";
 // the persisted domain model and its parsers — P4 Slice 1 moved them out whole; see server/types.ts
@@ -25876,6 +25876,25 @@ function gateView(): GateView | null {
   // answer "which session" stay where a reader already looks for them.
   return { lock, reports: reports.sort((a, b) => (a.slot ?? Number.MAX_SAFE_INTEGER) - (b.slot ?? Number.MAX_SAFE_INTEGER)) };
 }
+// The board's suite meter reads the lanes' helper offers beside the gate: an offer is a suite that is
+// WAITING for a helper or RUNNING on one, and neither shows up in the lock or in the lane's own
+// verify-intent. Bound to slot + openedAt like every other offer read — a recycled slot must not
+// inherit the last occupant's offer. A reported offer stays for VERIFY_TERMINAL_MS, the same
+// window a lane's own done/failed report lingers in gateView.
+function suiteOffersView(now: number): SuiteOfferRow[] {
+  const rows: SuiteOfferRow[] = [];
+  for (const j of laneSuiteJobs.values()) {
+    const s = slots.find((x) => x.id === j.slot);
+    if (!s?.cwd || s.openedAt !== j.slotOpenedAt) continue;
+    if (j.state === "open" || j.state === "claimed")
+      rows.push({ slot: j.slot, branch: j.branch, state: j.state, device: j.claim?.name ?? null,
+        at: j.claim?.claimedAt ?? j.offeredAt, result: null });
+    else if (j.state === "reported" && j.result && now - j.result.remote.reportedAt <= VERIFY_TERMINAL_MS)
+      rows.push({ slot: j.slot, branch: j.branch, state: "reported", device: j.result.remote.name,
+        at: j.result.remote.reportedAt, result: j.result.result });
+  }
+  return rows.sort((a, b) => a.slot - b.slot);
+}
 function recordVerifyIntent(s: Slot, body: Record<string, unknown> | null): Response {
   const phase = body?.phase;
   if (typeof phase !== "string" || !VERIFY_PHASES.includes(phase as VerifyPhase))
@@ -35121,6 +35140,7 @@ Bun.serve<WSData>({
         // the suite mutex and the lanes' own verify reports — null when neither has anything to
         // say. Sight, not control: see the verify GATE region for why nothing here reaps or runs.
         gate: gateView(),
+        suiteOffers: suiteOffersView(pollNow),
         // the helper device register — the owner's ONLY view of the machines that take work off this box.
         // OMITTED WHEN EMPTY, for the same budget reason as attentionOpen; rides this poll because the panel
         // is drawn beside the gate line. Row sizes MEASURED, ceiling HELPER_DEVICE_KEEP: server-narrativ-archiv.md#fetch-get-apisessions

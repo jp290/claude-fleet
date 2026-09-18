@@ -232,6 +232,18 @@ export interface PostLandAuditLiveInfo {
   stats: { n: number; p50: number; p90: number } | null;
 }
 
+// --- a lane's suite offer, as the board's suite meter reads it ---------------------------------
+// The owner-side projection of server.ts#laneSuiteJobs: an offer that is still OPEN (no helper has
+// taken it), CLAIMED (a helper runs it) or REPORTED within the last few minutes. Withdrawn, lapsed,
+// abandoned and reaped offers are not here — they measured nothing. `result` is set on `reported`
+// only; `device` is the helper's own name on `claimed` and `reported`.
+export interface SuiteOfferRow {
+  slot: number; branch: string;
+  state: "open" | "claimed" | "reported";
+  device: string | null; at: number;
+  result: "green" | "red" | "unknown" | null;
+}
+
 // --- the fleet's default interactive model ------------------------------------------------------
 // Baked into every pane command that does not pin its own model. It lives here because
 // fleet-e2e-claude-gate.ts asserts the exact quoted form `--model 'claude-opus-5[1m]'` reaches the

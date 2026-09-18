@@ -2736,6 +2736,380 @@ export async function run(ctx: Ctx): Promise<void> {
     await restartSrv();
   }
 
+  // --- (v-cmp) E4/T4 · THE VARIANT COMPARISON (68a45516, owner-confirmed criterion) ---
+  // The comparator (server.ts#tickVariantCompare → #compareVariantGroup, rule + row shape in
+  // variant-compare.ts) decides which ONE variant of a group lands. Six fixtures, one claim each,
+  // all red on revert:
+  //   (1a) an UNCONFIRMED criterion executes NOTHING (no marker file appears, no entries named);
+  //   (1b) its group is still compared — stage 1 ties 0:0, the stage-2 gate runs (fakeverify2:
+  //        green both) and the smaller diff decides;
+  //   (1c) a variant lane's criterion PROPOSAL lands on the GROUP row (variantSourceOf seam) and a
+  //        re-propose replaces the draft; a confirm without body.parts keeps the proposed parts;
+  //   (2)  the REPORT CLAIM is noted, never counted: B's report claims the part B's check failed —
+  //        B stays unmet, A wins at stage 1 ("done"), and the comparator's T5 decision carries
+  //        by:"comparator" and shelves the loser;
+  //   (3)  the A2 ENV: the check's env dump carries NO FLEET_* line at all (verifyChildEnv strips
+  //        the namespace — stronger than the token rule, and red on revert whatever a future env
+  //        carries), and the token-grep part is met for both variants;
+  //   (4)  stage 2 DECIDES: both met, A's tree carries the fakeverify2 sabotage marker (red) vs B
+  //        green — B wins "gate" although A's diff is the smaller one;
+  //   (5)  stage 3 DECIDES: both met, both green, B's diff is the smaller — B wins "diff";
+  //   (6)  THE WAIT (A5): a straggler that never goes terminal does not hold the decision hostage —
+  //        FLEET_VARIANT_WAIT_MS (2 s here) after the first done-looking variant the group is
+  //        compared anyway and the straggler is shelved by the decision;
+  //   (7)  a HANGING check ends at the timeout as unmeasured (source check), a check-less part as
+  //        unmeasured (source report), and the server answers after — never a hung tick.
+  //   Plus the exactly-once fact: one ledger line per group, in the binding field shape.
+  // REPO2 is the field (its fakeverify2 IS the stage-2 gate here); lanes are stub panes, so a
+  // variant is made done-looking the deterministic way: commit in its worktree (ahead > 0, clean),
+  // then wait for the comparator's own ledger line — never a sleep-then-look. ---
+  {
+    type CRow = { id: string; status: string; note?: string | null; slot?: number | null;
+      variantOf?: string; variantIndex?: number; criterion?: { confirmedAt: number | null };
+      variantDecision?: { winner: string; by: string }; variantCompare?: { at: number; winner: string; stage: string };
+      variantCompareArmedAt?: number };
+    type CSlot = { id: number; cwd: string | null; worktree: { repo: string; branch: string; baseSha?: string } | null };
+    const cSess = async (): Promise<{ slots: CSlot[]; tasks: CRow[] }> =>
+      (await (await get("/api/sessions")).json()) as { slots: CSlot[]; tasks: CRow[] };
+    const cRow = async (id: string): Promise<CRow | undefined> => (await cSess()).tasks.find((t) => t.id === id);
+    const cVars = async (gid: string): Promise<CRow[]> =>
+      (await cSess()).tasks.filter((t) => t.variantOf === gid).sort((a, b) => (a.variantIndex ?? 0) - (b.variantIndex ?? 0));
+    const cTill = async <T>(read: () => Promise<T>, ok: (v: T) => boolean, tries = 120): Promise<T> => {
+      let last = await read();
+      for (let i = 0; i < tries && !ok(last); i++) { await Bun.sleep(250); last = await read(); }
+      return last;
+    };
+    const cChoices = [{ model: "claude-opus-5[1m]", effort: "high" }, { model: "claude-sonnet-5", effort: "medium" }];
+    const cFile = async (text: string): Promise<string> => {
+      const j = (await (await post("/api/tasks", { text, repo: REPO2, variants: cChoices })).json()) as { task?: { id: string } };
+      return j.task?.id ?? "";
+    };
+    const cSelfToken = async (slot: number): Promise<string> => {
+      let seen = "";
+      for (let i = 0; i < 60 && !/^[0-9a-f]{32}$/.test(seen); i++) {
+        try {
+          seen = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, { selfToken?: string }> })
+            .slots?.[String(slot)]?.selfToken ?? "";
+        } catch { /* mid-write */ }
+        if (!/^[0-9a-f]{32}$/.test(seen)) await Bun.sleep(50);
+      }
+      return seen;
+    };
+    const cSelfPost = async (tok: string, path: string, body: unknown): Promise<{ status: number; body: Record<string, unknown> }> => {
+      const res = await fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify(body) });
+      let parsed: Record<string, unknown> = {};
+      try { parsed = (await res.json()) as Record<string, unknown>; } catch { /* non-json */ }
+      return { status: res.status, body: parsed };
+    };
+    const cCommit = async (wt: string, file: string | null, content: string, msg: string): Promise<void> => {
+      if (file) {
+        await Bun.write(`${wt}/${file}`, content);
+        await Bun.$`git -C ${wt} add ${file}`.nothrow().quiet();
+      }
+      await Bun.$`git -C ${wt} -c user.name=e2e -c user.email=e2e@localhost commit --allow-empty -m ${msg}`.nothrow().quiet();
+    };
+    interface CmpDone { part: string; result: string; source: string }
+    interface CmpVariant { taskId: string; branch: string; harness: string | null; model: string | null;
+      effort: string | null; klasse: null; done: CmpDone[]; gate: string; diff: { lines: number; files: number } }
+    interface CmpLine { group: string; variants: CmpVariant[]; winner: string; decidedAt: string; judge: null }
+    const cLedger = async (): Promise<CmpLine[]> => {
+      try {
+        return readFileSync(`${ROOT}/variant-compare.jsonl`, "utf8").trim().split("\n").filter(Boolean)
+          .map((l) => JSON.parse(l) as CmpLine);
+      } catch { return []; }
+    };
+    const cWaitLine = async (gid: string): Promise<CmpLine[]> =>
+      cTill(async () => (await cLedger()).filter((l) => l.group === gid), (ls) => ls.length >= 1);
+    const cEntry = (v: CmpVariant | undefined, part: string, source: string): CmpDone | undefined =>
+      v?.done.find((e) => e.part === part && e.source === source);
+    // the fixture's field: no lane anywhere but the restart section's own, nothing queued
+    const cClean = async (): Promise<void> => {
+      await post("/api/dispatch", { on: false });
+      for (const x of (await cSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+      await Bun.sleep(600);
+      for (const t of (await cSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+    };
+    const cPropose = async (tok: string, gid: string, parts: unknown, text: string): Promise<{ status: number; body: Record<string, unknown> }> =>
+      cSelfPost(tok, "/api/self/criterion", { text, parts });
+    const cStart = async (gid: string): Promise<{ ids: string[]; wts: string[]; toks: string[]; branches: string[] }> => {
+      await post(`/api/tasks/${gid}/queue`, {});
+      await post("/api/dispatch", { on: true });
+      const rows = await cTill(() => cVars(gid),
+        (rs) => rs.length === 2 && rs.every((r) => r.status === "sent" && typeof r.slot === "number"));
+      const sess = await cSess();
+      const wts = rows.map((r) => sess.slots.find((s) => s.id === r.slot)?.cwd ?? "");
+      const toks: string[] = [];
+      const branches: string[] = [];
+      for (const r of rows) {
+        toks.push(await cSelfToken(r.slot ?? -1));
+        branches.push(sess.slots.find((s) => s.id === r.slot)?.worktree?.branch ?? "");
+      }
+      return { ids: rows.map((r) => r.id), wts, toks, branches };
+    };
+    const cShelved = async (branch: string): Promise<boolean> =>
+      ((await (await get("/api/lane-outcomes?limit=200")).json()) as
+        { outcomes: { branch: string | null; disposition: string }[] }).outcomes
+        .some((o) => o.branch === branch && o.disposition === "shelved");
+    // rows and branches out of the tree: the losers keep both as a record, the winner's lane dies
+    // in cleanup — every worktree path and branch name this block mints leaves REPO2 again
+    const cWorktrees: { path: string; branch: string }[] = [];
+    const cDrop = async (gid: string): Promise<void> => {
+      await post("/api/dispatch", { on: false });
+      for (const x of (await cSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+      await Bun.sleep(600);
+      for (const t of (await cVars(gid))) await post(`/api/tasks/${t.id}/delete`, {});
+      await post(`/api/tasks/${gid}/delete`, {});
+    };
+    const cGitCleanup = (): void => {
+      for (const { path, branch } of cWorktrees) {
+        spawnSync("git", ["-C", REPO2, "worktree", "remove", "--force", path]);
+        spawnSync("git", ["-C", REPO2, "branch", "-D", branch]);
+      }
+      cWorktrees.length = 0;
+    };
+    const cTrack = async (gid: string): Promise<void> => {
+      const sess = await cSess();
+      for (const r of (await cVars(gid))) {
+        const path = sess.slots.find((s) => s.id === r.slot)?.cwd ?? "";
+        const branch = sess.slots.find((s) => s.id === r.slot)?.worktree?.branch ?? "";
+        if (path && branch) cWorktrees.push({ path, branch });
+      }
+    };
+
+    await restartSrv({ FLEET_DISPATCH_MAX_LANES: "8", FLEET_VARIANT_WAIT_MS: "2000",
+      FLEET_VARIANT_CHECK_TIMEOUT_MS: "1200" });
+    await cClean();
+
+    // (1) · THE UNCONFIRMED CRITERION EXECUTES NOTHING — and the group is compared anyway. The
+    // proposal carries a check that would leave EVIDENCE if it ran (u-marker.txt); the ledger must
+    // name no entry for it, the file must not exist in either worktree, and the stages must still
+    // produce a decision (tie 0:0 → gate green/green → smaller diff).
+    const uGroup = await cFile("(v-cmp)(1) the unconfirmed-criterion group — its proposed parts must never run");
+    const uStart = await cStart(uGroup);
+    await cTrack(uGroup);
+    const uTokA = uStart.toks[0] ?? "";
+    const uParts = [{ text: "U: the marker file exists", check: { cmd: "touch u-marker.txt", expectExit: 0 } }];
+    const uPropose1 = await cPropose(uTokA, uGroup, uParts, "(v-cmp)(1) criterion proposed, never confirmed");
+    check("(v-cmp)(1c) a variant lane's criterion PROPOSAL lands on the GROUP row, not the variant row",
+      uPropose1.status === 200 && typeof (uPropose1.body as { proposedAt?: number }).proposedAt === "number"
+      && (await cRow(uGroup))?.criterion?.confirmedAt === null
+      && (await cVars(uGroup)).every((v) => v.criterion === undefined),
+      JSON.stringify({ propose: uPropose1, group: await cRow(uGroup), vars: await cVars(uGroup) }));
+    const uPropose2 = await cPropose(uTokA, uGroup,
+      [{ text: "U: the replaced draft", check: { cmd: "touch u-marker.txt", expectExit: 0 } }], "(v-cmp)(1) replaced draft");
+    check("(v-cmp)(1c) a re-propose replaces the unconfirmed draft (proposedAt moves, still unconfirmed)",
+      uPropose2.status === 200 && ((uPropose2.body as { proposedAt?: number }).proposedAt ?? 0)
+        > ((uPropose1.body as { proposedAt?: number }).proposedAt ?? 0)
+      && (await cRow(uGroup))?.criterion?.confirmedAt === null,
+      JSON.stringify({ p1: uPropose1.body, p2: uPropose2.body }));
+    await cCommit(uStart.wts[0] ?? "", "u-big.txt", Array.from({ length: 20 }, (_, i) => `line ${i}\n`).join(""), "u: variant A commits twenty lines");
+    await cCommit(uStart.wts[1] ?? "", null, "", "u: variant B commits nothing but is done-looking");
+    const uLines = await cWaitLine(uGroup);
+    const uLine = uLines[0];
+    check("(v-cmp)(1a) the unconfirmed criterion ran NOTHING: no u-marker.txt in either worktree, no entry named",
+      !!uLine && uLine.variants.every((v) => v.done.length === 0)
+      && !existsSync(`${uStart.wts[0] ?? "/"}/u-marker.txt`) && !existsSync(`${uStart.wts[1] ?? "/"}/u-marker.txt`)
+      && (await cRow(uGroup))?.criterion?.confirmedAt === null,
+      JSON.stringify({ line: uLine, markers: [existsSync(`${uStart.wts[0] ?? "/"}/u-marker.txt`), existsSync(`${uStart.wts[1] ?? "/"}/u-marker.txt`)] }));
+    check("(v-cmp)(1b) the unconfirmed group is compared anyway: stage 2 gates run green, the smaller diff decides",
+      !!uLine && uLine.winner === uStart.ids[1] && uLine.decidedAt === "diff"
+      && uLine.variants.every((v) => v.gate === "green"),
+      JSON.stringify({ winner: uLine?.winner, decidedAt: uLine?.decidedAt, gates: uLine?.variants.map((v) => v.gate), ids: uStart.ids }));
+    check("(v-cmp)(1) EXACTLY ONE ledger line for the group", uLines.length === 1, JSON.stringify({ lines: uLines.length }));
+    await cDrop(uGroup);
+    cGitCleanup();
+
+    // (2) · THE REPORT CLAIM IS NOTED, NEVER COUNTED (criterion: "Report von B behauptet erfuellt
+    // -> B bleibt unmet") — and the comparator's T5 decision is the THIRD caller, by "comparator".
+    const cGroup = await cFile("(v-cmp)(2) the report-claim group — B claims in prose what its check failed");
+    const cStart2 = await cStart(cGroup);
+    await cTrack(cGroup);
+    const cPart1 = "C: the worktree holds cx.txt";
+    const cPart2 = "C: no fleet token in the check env";
+    const cPart3 = "C: the check env is recorded";
+    const cTokA = cStart2.toks[0] ?? "";
+    await cPropose(cTokA, cGroup, [
+      { text: cPart1, check: { cmd: "test -f cx.txt", expectExit: 0 } },
+      { text: cPart2, check: { cmd: "env | grep -Eq 'FLEET_[A-Za-z_]*TOKEN' && exit 1 || exit 0", expectExit: 0 } },
+      { text: cPart3, check: { cmd: "env > c-a2env.txt", expectExit: 0 } },
+    ], "(v-cmp)(2) the confirmed criterion of this group");
+    // the owner confirms WITHOUT body.parts — the proposal's parts are kept
+    const cConfirm = await post(`/api/tasks/${cGroup}/criterion-confirm`, {});
+    const cConfirmed = (await cSess()).tasks.find((t) => t.id === cGroup)?.criterion?.confirmedAt;
+    check("(v-cmp)(2) fixture: the owner confirmed the criterion on the GROUP row — the proposed parts are kept",
+      cConfirm.status === 200 && typeof cConfirmed === "number",
+      JSON.stringify({ confirm: cConfirm.status, confirmedAt: cConfirmed ?? null }));
+    await cCommit(cStart2.wts[0] ?? "", "cx.txt", "x\n", "c: variant A fulfills the check");
+    await cCommit(cStart2.wts[1] ?? "", null, "", "c: variant B does not fulfill it");
+    // B claims in prose what its check will fail: the claim rides the report, never the count
+    const cClaim = await cSelfPost(cStart2.toks[1] ?? "", "/api/self/fleet-report",
+      { status: "complete", text: `done — ${cPart1}; everything the criterion asked for is in place.` });
+    check("(v-cmp)(2) fixture: B's report is filed and carries the part's text verbatim",
+      cClaim.status === 200, JSON.stringify({ claim: cClaim.status, body: cClaim.body }));
+    const cLines = await cWaitLine(cGroup);
+    const cLine = cLines[0];
+    const cVarA = cLine?.variants.find((v) => v.taskId === cStart2.ids[0]);
+    const cVarB = cLine?.variants.find((v) => v.taskId === cStart2.ids[1]);
+    check("(v-cmp)(2) the claim is NOT counted: B's check stays unmet while its report entry says met, and A wins stage 1",
+      !!cLine && cLine.winner === cStart2.ids[0] && cLine.decidedAt === "done"
+      && cEntry(cVarB as CmpVariant, cPart1, "check")?.result === "unmet"
+      && cEntry(cVarB as CmpVariant, cPart1, "report")?.result === "met"
+      && cEntry(cVarA as CmpVariant, cPart1, "check")?.result === "met",
+      JSON.stringify({ winner: cLine?.winner, decidedAt: cLine?.decidedAt, a: cVarA?.done, b: cVarB?.done }));
+    const cA2Env = await Bun.file(`${cStart2.wts[0] ?? "/"}/c-a2env.txt`).text().catch(() => "");
+    check("(v-cmp)(3) A2 env: the check's environment carries NO FLEET_* line at all — no owner token, no self token, nothing from the namespace",
+      cA2Env.length > 10 && cA2Env.split("\n").every((l) => !l.startsWith("FLEET_")),
+      JSON.stringify({ bytes: cA2Env.length, fleetLines: cA2Env.split("\n").filter((l) => l.startsWith("FLEET_")).map((l) => l.slice(0, 40)) }));
+    check("(v-cmp)(3) A2 env: the token-grep part is met for BOTH variants — no FLEET_*TOKEN reaches a criterion check",
+      cEntry(cVarA as CmpVariant, cPart2, "check")?.result === "met"
+      && cEntry(cVarB as CmpVariant, cPart2, "check")?.result === "met",
+      JSON.stringify({ a: cEntry(cVarA as CmpVariant, cPart2, "check"), b: cEntry(cVarB as CmpVariant, cPart2, "check") }));
+    const cLoserBranch = cStart2.branches[1] ?? "";
+    const cDecided = await cTill(async () => [await cRow(cGroup), await cRow(cStart2.ids[1] ?? "")] as const,
+      ([g, loser]) => g?.variantDecision?.by === "comparator" && g.variantDecision.winner === cStart2.ids[0]
+        && loser?.status === "archived");
+    check("(v-cmp)(2) the comparator DECIDES as its third caller (by=comparator) and shelves the loser like an owner decision",
+      !!cDecided && cDecided[0]?.variantDecision?.winner === cStart2.ids[0]
+      && cDecided[0]?.variantDecision?.by === "comparator" && cDecided[1]?.status === "archived"
+      && typeof (await cRow(cGroup))?.variantCompare?.at === "number",
+      JSON.stringify({ decision: cDecided[0]?.variantDecision, loser: cDecided[1]?.status, marker: (await cRow(cGroup))?.variantCompare }));
+    check("(v-cmp)(2) the shelved loser keeps its branch as a record and the outcome ledger says shelved",
+      !!cLoserBranch && spawnSync("git", ["-C", REPO2, "rev-parse", "--verify", "--quiet", `refs/heads/${cLoserBranch}`]).status === 0
+      && await cShelved(cLoserBranch),
+      JSON.stringify({ branch: cLoserBranch }));
+    await cDrop(cGroup);
+    cGitCleanup();
+
+    // (4) · STAGE 2 DECIDES: both variants meet the check, but A's tree carries the fakeverify2
+    // sabotage marker (gate red) while B is green — B wins "gate" although A's diff is SMALLER, so
+    // this check cannot be satisfied by the diff stage falling through.
+    const d1Group = await cFile("(v-cmp)(4) the gate-decides group — red loses the tie to green");
+    const d1Start = await cStart(d1Group);
+    await cTrack(d1Group);
+    const d1Part = "D1: the worktree holds d1.txt";
+    await cPropose(d1Start.toks[0] ?? "", d1Group,
+      [{ text: d1Part, check: { cmd: "test -f d1.txt", expectExit: 0 } }], "(v-cmp)(4) both variants fulfill this");
+    await post(`/api/tasks/${d1Group}/criterion-confirm`, {});
+    await cCommit(d1Start.wts[0] ?? "", "d1.txt", "ok\n", "d1: A meets the check AND fails the gate");
+    await Bun.write(`${d1Start.wts[0] ?? "/"}/VERIFY2BAD.sabotage`, "VERIFY2BAD\n");
+    await Bun.$`git -C ${d1Start.wts[0]} add VERIFY2BAD.sabotage`.nothrow().quiet();
+    await Bun.$`git -C ${d1Start.wts[0]} -c user.name=e2e -c user.email=e2e@localhost commit --allow-empty -m d1-sabotage`.nothrow().quiet();
+    await cCommit(d1Start.wts[1] ?? "", "d1.txt", Array.from({ length: 30 }, (_, i) => `line ${i}\n`).join(""), "d1: B meets the check with the bigger diff");
+    const d1Lines = await cWaitLine(d1Group);
+    const d1Line = d1Lines[0];
+    check("(v-cmp)(4) stage 2 decides the tie: red loses to green even against a smaller diff",
+      !!d1Line && d1Line.winner === d1Start.ids[1] && d1Line.decidedAt === "gate"
+      && d1Line.variants.find((v) => v.taskId === d1Start.ids[0])?.gate === "red"
+      && d1Line.variants.find((v) => v.taskId === d1Start.ids[1])?.gate === "green",
+      JSON.stringify({ winner: d1Line?.winner, decidedAt: d1Line?.decidedAt,
+        gates: d1Line?.variants.map((v) => [v.taskId, v.gate]), ids: d1Start.ids }));
+    await cDrop(d1Group);
+    cGitCleanup();
+
+    // (5) · STAGE 3 DECIDES: both meet, both green, B's diff is the smaller — "beide erfuellt ->
+    // Diff entscheidet", the criterion's own second fixture sentence.
+    const d2Group = await cFile("(v-cmp)(5) the diff-decides group — the smaller diff wins the full tie");
+    const d2Start = await cStart(d2Group);
+    await cTrack(d2Group);
+    const d2Part = "D2: the worktree holds d2.txt";
+    await cPropose(d2Start.toks[0] ?? "", d2Group,
+      [{ text: d2Part, check: { cmd: "test -f d2.txt", expectExit: 0 } }], "(v-cmp)(5) both variants fulfill this");
+    await post(`/api/tasks/${d2Group}/criterion-confirm`, {});
+    await cCommit(d2Start.wts[0] ?? "", "d2.txt", Array.from({ length: 30 }, (_, i) => `line ${i}\n`).join(""), "d2: A meets with thirty lines");
+    await cCommit(d2Start.wts[1] ?? "", "d2.txt", "ok\n", "d2: B meets with one");
+    const d2Lines = await cWaitLine(d2Group);
+    const d2Line = d2Lines[0];
+    check("(v-cmp)(5) stage 3 decides the full tie: both met, both green — the smaller diff wins",
+      !!d2Line && d2Line.winner === d2Start.ids[1] && d2Line.decidedAt === "diff"
+      && d2Line.variants.every((v) => v.gate === "green")
+      && d2Line.variants.find((v) => v.taskId === d2Start.ids[0])?.diff.files === 1
+      && d2Line.variants.find((v) => v.taskId === d2Start.ids[0])?.diff.lines === 30
+      && d2Line.variants.find((v) => v.taskId === d2Start.ids[1])?.diff.lines === 1,
+      JSON.stringify({ winner: d2Line?.winner, decidedAt: d2Line?.decidedAt, variants: d2Line?.variants }));
+    await cDrop(d2Group);
+    cGitCleanup();
+
+    // (6) · THE WAIT (A5): B never goes terminal (an uncommitted file pins dirty > 0), A is
+    // done-looking — the comparator arms on the group and compares at FLEET_VARIANT_WAIT_MS anyway.
+    // Without the wait the ledger line never appears, which is exactly what goes red on revert.
+    const wGroup = await cFile("(v-cmp)(6) the wait-out group — a straggler must not hold the decision hostage");
+    const wStart = await cStart(wGroup);
+    await cTrack(wGroup);
+    const wPart = "W: the worktree holds wx.txt";
+    await cPropose(wStart.toks[0] ?? "", wGroup,
+      [{ text: wPart, check: { cmd: "test -f wx.txt", expectExit: 0 } }], "(v-cmp)(6) only A will ever fulfill this");
+    await post(`/api/tasks/${wGroup}/criterion-confirm`, {});
+    await cCommit(wStart.wts[0] ?? "", "wx.txt", "x\n", "w: A commits and goes done-looking");
+    await Bun.write(`${wStart.wts[1] ?? "/"}/b-straggler.txt`, "uncommitted\n");
+    const wLines = await cWaitLine(wGroup);
+    const wLine = wLines[0];
+    check("(v-cmp)(6) the wait fires: the group is compared while B is still running, and A wins",
+      !!wLine && wLine.winner === wStart.ids[0] && wLine.decidedAt === "done"
+      && typeof (await cRow(wGroup))?.variantCompareArmedAt === "number",
+      JSON.stringify({ winner: wLine?.winner, decidedAt: wLine?.decidedAt, armedAt: (await cRow(wGroup))?.variantCompareArmedAt }));
+    const wLoserBranch = wStart.branches[1] ?? "";
+    const wShelved = await cTill(async () => [await cRow(wStart.ids[1] ?? ""), await cShelved(wLoserBranch)] as const,
+      ([loser, shelved]) => loser?.status === "archived" && shelved);
+    check("(v-cmp)(6) the decision shelves the STILL-RUNNING straggler",
+      !!wShelved && wShelved[0]?.status === "archived" && wShelved[1] === true,
+      JSON.stringify({ loser: wShelved?.[0]?.status, shelved: wShelved?.[1], branch: wLoserBranch }));
+    await cDrop(wGroup);
+    cGitCleanup();
+
+    // (7) · THE HANGING CHECK: `sleep 30` against a 1200 ms timeout — the entry lands as unmeasured
+    // (source check), the check-less part as unmeasured (source report), the real check still
+    // decides, and the server answers afterwards. Without the timeout the line arrives far past
+    // this probe's window, which is what goes red on revert.
+    const hGroup = await cFile("(v-cmp)(7) the hanging-check group — a hung check is unmeasured, never a server hang");
+    const hStart = await cStart(hGroup);
+    await cTrack(hGroup);
+    const hHang = "H: the hang part";
+    const hProse = "H: a prose part without a check";
+    const hReal = "H: the worktree holds hx.txt";
+    await cPropose(hStart.toks[0] ?? "", hGroup, [
+      { text: hHang, check: { cmd: "sleep 30", expectExit: 0 } },
+      { text: hProse },
+      { text: hReal, check: { cmd: "test -f hx.txt", expectExit: 0 } },
+    ], "(v-cmp)(7) the criterion with a hanging check");
+    await post(`/api/tasks/${hGroup}/criterion-confirm`, {});
+    await cCommit(hStart.wts[0] ?? "", "hx.txt", "x\n", "h: A fulfills the real check");
+    await cCommit(hStart.wts[1] ?? "", null, "", "h: B does not");
+    const hLines = await cWaitLine(hGroup);
+    const hLine = hLines[0];
+    const hVarA = hLine?.variants.find((v) => v.taskId === hStart.ids[0]);
+    const hVarB = hLine?.variants.find((v) => v.taskId === hStart.ids[1]);
+    check("(v-cmp)(7) the hanging check ends at the timeout as unmeasured (source check), for BOTH variants",
+      !!hLine && cEntry(hVarA as CmpVariant, hHang, "check")?.result === "unmeasured"
+      && cEntry(hVarB as CmpVariant, hHang, "check")?.result === "unmeasured",
+      JSON.stringify({ a: cEntry(hVarA as CmpVariant, hHang, "check"), b: cEntry(hVarB as CmpVariant, hHang, "check") }));
+    check("(v-cmp)(7) the check-less part stands as unmeasured (source report), and the real check still decides stage 1",
+      !!hLine && cEntry(hVarA as CmpVariant, hProse, "report")?.result === "unmeasured"
+      && cEntry(hVarA as CmpVariant, hReal, "check")?.result === "met"
+      && cEntry(hVarB as CmpVariant, hReal, "check")?.result === "unmet"
+      && hLine.winner === hStart.ids[0] && hLine.decidedAt === "done",
+      JSON.stringify({ winner: hLine?.winner, decidedAt: hLine?.decidedAt, a: hVarA?.done, b: hVarB?.done }));
+    await cDrop(hGroup);
+    cGitCleanup();
+
+    // THE SHAPE: one line per group, in the binding field form (variant-compare.ts is the type).
+    const allLines = await cLedger();
+    const cGroupIds = [uGroup, cGroup, d1Group, d2Group, wGroup, hGroup];
+    const shapeOk = allLines
+      .filter((l) => cGroupIds.includes(l.group))
+      .every((l) => JSON.stringify(Object.keys(l).sort()) === JSON.stringify(["decidedAt", "group", "judge", "variants", "winner"])
+        && l.judge === null && l.variants.length === 2
+        && l.variants.every((v) => JSON.stringify(Object.keys(v).sort())
+          === JSON.stringify(["branch", "diff", "done", "effort", "gate", "harness", "klasse", "model", "taskId"])
+          && v.klasse === null && typeof v.diff.lines === "number" && typeof v.diff.files === "number"));
+    check("(v-cmp) shape: every group wrote EXACTLY ONE line in the binding field form (judge:null, klasse:null)",
+      shapeOk && cGroupIds.every((gid) => allLines.filter((l) => l.group === gid).length === 1),
+      JSON.stringify({ lines: allLines.filter((l) => cGroupIds.includes(l.group)).map((l) => [l.group, Object.keys(l).sort()]) }));
+
+    // cleanup — the restart section's persistence lane is never touched
+    await cClean();
+    await restartSrv();
+  }
+
   // --- (e3) THE REPO CAP HOLDS ITS OWN ROW, NOT THE SWEEP (server.ts tickDispatch, the
   // DISPATCH_MAX_LANES branch). Until 2026-08-24 that branch `return`ed, on the reading that a full
   // repo is a condition of the machine. It is not: the cap counts lanes in the ROW'S TARGET repo,

@@ -153,6 +153,36 @@ producer of the bytes a lane is founded on — pinned in `e2e/pins.ts`.
    Beide Akte stehen im Ledger (`variant_reserve`, `hold`/`yield`): ohne sie liest sich eine Queue,
    die einen Tick pausierte, von außen wie eine, die eine Stunde verhungerte.
 
+8. **Eine vollständige Variante-Gruppe wird VERGLICHEN — genau einmal, nach einer festen Regel,
+   und das Ergebnis ist eine Empfehlung, kein Land.** Sobald JEDE Variante der Gruppe terminal ist
+   (done-looking nach `lane-signals.ts`, Report `failed`/`needs-main`, gekillt) — oder
+   `FLEET_VARIANT_WAIT_MS` nach der ERSTEN done-looking Variante verstrich und Trödler noch laufen —
+   schreibt `server.ts#tickVariantCompare` → `#compareVariantGroup` GENAU EINE Zeile nach
+   `variant-compare.jsonl` (`variant-compare.ts` trägt Zeilenform und Stufenregel, rein und
+   exportiert; der Marker `Task.variantCompare` macht jeden weiteren Tick für die Gruppe zum
+   No-Op). Die Stufen, wörtlich aus dem owner-bestätigten Kriterium:
+   - **Stufe 1 — mehr `met`, aber nur `source:"check"`.** Die DONE-Teile des owner-bestätigten
+     Kriteriums mit `check:{cmd,expectExit}` führt der Server SELBST aus (A2, s. u.) — eine
+     Report-Behauptung wird als eigener Ledger-Eintrag notiert und nie gezählt.
+   - **Stufe 2 — das Land-Gate OHNE Merge, nur für die nach Stufe 1 Gleichstehenden**, im
+     Variant-Worktree (`runVerify` mit demselben `verifyPlanFor`, das auch die Landetür fragt);
+     `unknown`/`waitedOut`/rot/`not-run` gewinnt nie.
+   - **Stufe 3 — der kleinere messbare Diff** gegen den gemeinsamen Gruppen-Basis-Commit;
+     unmessbar ({-1,-1}) gewinnt nie.
+   - **Stufe 4 — der Variantenindex:** eine Vergleich, die in vollem Gleichstand endet, endet in
+     `order`, nicht in Niemand.
+   Der Gewinner speist den T5-Pfad (`decideVariantGroup`, dritter Caller, `by:"comparator"`):
+   entschieden wird, gelandet wird NICHT (A6) — die Verlierer-Lanes werden geshelvt wie bei einer
+   Owner-Entscheidung, der Winner landet durch die gewöhnliche Tür. Refusiert die Entscheidung
+   (der Gewinner-Lane ist schon weg), bleibt die Gruppe unentschieden für den Owner, die
+   Ledger-Zeile steht als Empfehlung (`variant_compare_decide_refused` im Audit). A3: kein
+   Modell-Richter, `judge:null`. A4: keine Klassen-Auflösung, `klasse:null`.
+   **A2-Grenzen (Owner-Entscheid 2026-09-15):** Checks laufen NUR aus einem owner-bestätigten
+   Kriterium (ein unbestätigter Entwurf führt nichts aus und nennt nichts), NUR im Worktree der
+   eigenen Variante, mit Timeout (`FLEET_VARIANT_CHECK_TIMEOUT_MS`, hängen endet als `unmeasured`,
+   nie als Server-Hänger), und mit einer Umgebung, die KEIN `FLEET_*` trägt (`verifyChildEnv(null)
+   — weder Owner- noch irgendein Self-Token erreicht einen Kriterien-Check).
+
 An invariant that RETIRED with the analyst, named so nobody looks for it: *"nothing starts
 unattended against a tree it was not read on."* There is no reading, so there is no staleness, and a
 guard nobody can clear is a deadlock wearing a safety property's clothes — which is why that guard
@@ -165,6 +195,8 @@ was already written as `if (ANALYSIS_ON) { … }` and had been inert for a month
 | `FLEET_BRIEF_MS` | 0 | the brief compiler's tick; **0 = compiler off**, the default and the live deployment |
 | `FLEET_ENHANCE_CMD` | — | subprocess stand-in for harnesses |
 | `FLEET_VARIANT_RESERVE_MS` | 2 700 000 (45 min) | wie lange eine nur kapazitäts-gehaltene Variantengruppe das nächste frei werdende Lane ihres Scopes behält (Invariante 7) — und, nach Ablauf, wie lange dieselbe Gruppe nicht neu reservieren darf. `0` schaltet die Reservierung ganz ab: die Queue verhält sich dann wie vor 2026-09-17, Gruppen inklusive Verhungern |
+| `FLEET_VARIANT_WAIT_MS` | 7 200 000 (2 h) | wie lange der Vergleich (Invariante 8) nach der ERSTEN done-looking Variante auf die übrigen wartet, bevor er die Gruppe trotzdem vergleicht (A5). `0` vergleicht beim ersten done-looking sofort |
+| `FLEET_VARIANT_CHECK_TIMEOUT_MS` | 60 000 | wie lange EIN A2-Check (`check:{cmd,expectExit}` aus dem bestätigten Kriterium) laufen darf, bevor er gekillt und als `unmeasured` gebucht wird — nie als Server-Hänger (Invariante 8) |
 
 Batch cap 6, max 3 attempts, backoff `60s × 2^attempts`, 3 compiles at a time. A harness without a
 stand-in **must** leave `FLEET_BRIEF_MS` at 0 or the suite spawns a real agent — the same rule

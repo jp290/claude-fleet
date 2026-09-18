@@ -1429,6 +1429,34 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   12:13 und 13:04 je ein Kriterium ab, das nur als `criterion_proposed`-Audit existierte; der Report
   ging needs-main an eine Program-MAIN, die nicht bestätigen darf, der Owner bestätigte erst 15:21
   nach einer Meldung der Orchestratorin — die Lane hielt so lange die Queue (0 von 53 Wellen startbar).
+- **Die DONE-Teile `parts` (A2, T4):** Beide Türen nehmen optional `parts: [{text, check?:
+  {cmd, expectExit}}]` an (server.ts#criterionPartsFromBody — je Teil ein Text, optional ein
+  Check mit POSIX-Exit-Code 0..255; Deckel 12 Teile, cmd 2000 Zeichen). Der Confirm SCHREIBT sie
+  wie den Text: ein Confirm MIT `parts` ersetzt den Entwurf, ein Confirm OHNE behält die
+  vorgeschlagenen. Nur die Teile eines BESTÄTIGTEN Kriteriums werden je ausgeführt — der
+  Vergleicher (unten) fragt `confirmedAt`, bevor er irgendetwas spawned; ein unbestätigter
+  Entwurf führt nichts aus und nennt nichts im Ledger.
+- **Eine Variante schlägt auf ihre GRUPPE vor** (E4-Naht, `server.ts#variantSourceOf`): die
+  Gründungs-Task einer Varianten-Lane ist ihre Varianten-Zeile, aber das Kriterium landet auf der
+  GRUPPEN-Zeile — die n Varianten teilen einen Arbeitsauftrag, also teilen sie ein Done-Kriterium,
+  und der Owner bestätigt EINE Zeile. Für jede andere Lane ist `variantSourceOf` die Identität.
+  Die Attention (öffnende Hälfte oben) nammt die Zeile, auf der das Kriterium liegt — ihr
+  Confirm-Link nennt die Gruppe.
+- **Der Vergleichs-Ledger `variant-compare.jsonl` (T4, 68a45516):** sobald jede Variante einer
+  Gruppe terminal ist (done-looking nach `lane-signals.ts`, Report `failed`/`needs-main`, gekillt)
+  oder `FLEET_VARIANT_WAIT_MS` (A5, Default 2 h) nach der ersten done-looking verstrich, schreibt
+  der Server GENAU EINE Zeile — {group, variants[{taskId, branch, harness, model, effort,
+  klasse:null, done:[{part, result: met|unmet|unmeasured, source: check|report}], gate:
+  green|red|unknown|not-run, diff:{lines,files}}], winner, decidedAt: "done"|"gate"|"diff"|"order",
+  judge:null}. Stufe 1 zählt nur `source:"check"` (eine Report-Behauptung steht als eigener
+  Eintrag, wird nie gezählt), dann Land-Gate ohne Merge nur für Gleichstand (`unknown` gewinnt
+  nie), dann kleinerer Diff, dann Variantenindex; Zeilenform und Stufenregel liegen rein in
+  `variant-compare.ts`. Der Gewinner geht als `by:"comparator"` an `decideVariantGroup` (dritter
+  Caller neben Owner-Brett und gebundener MAIN) — entschieden wird, NICHT gelandet (A6); ein
+  Gewinner ohne lebendes Lane lässt die Gruppe unentschieden für den Owner, die Ledger-Zeile
+  steht als Empfehlung. A2-Grenzen: Checks nur aus dem owner-bestätigten Kriterium der Gruppe,
+  cwd = Variant-Worktree, Timeout (`FLEET_VARIANT_CHECK_TIMEOUT_MS`), und ein Env ohne JEDES
+  `FLEET_*` — kein Owner-Token, kein Self-Token erreicht einen Kriterien-Check.
 - **Antwort POST read:** `{ok: true, existing: false, entry}` beim ersten Mal, `{ok: true,
   existing: true, entry}` bei jedem weiteren. Die Quittung ist **kein Lock**: ein zweites Lesen
   überschreibt `readBy`/`readAt` nie, denn der erste Leser ist die Tatsache.

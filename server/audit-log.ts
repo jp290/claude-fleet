@@ -48,6 +48,12 @@ type AuditEvent =
   // in the ledger, a queue that paused for one tick and a group that starved for an hour read the
   // same from outside (server.ts#variantReserveSet)
   | "variant_reserve"
+  // T4 (68a45516): the comparator measured a group and appended its ONE line to
+  // variant-compare.jsonl (detail: group, n, winner, deciding stage); the companion row records a
+  // 409 from the T5 decision that follows — a winner whose lane no longer holds its work leaves
+  // the group undecided for the owner, and without this row the refusal would be invisible
+  // (server.ts#compareVariantGroup)
+  | "variant_compare" | "variant_compare_decide_refused"
   // the owner released a task the queue analyst had flagged. Recorded because the analyst is
   // advisory: without a trace, an override is indistinguishable from an ordinary promote, and
   // nothing could ever be calibrated against how often its objections were right

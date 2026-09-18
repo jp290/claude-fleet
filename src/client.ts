@@ -332,7 +332,8 @@ interface TaskInfo { id: string; source: ServerTask["source"];
   // N2: the lands that moved a file this row's surface names, newest first, capped at five by the
   // server. Advisory — it changes no action and no status. ABSENT is "nothing recorded", never
   // "untouched": the two owner ⏏ paths land already-integrated work and measure nothing.
-  touched?: { sha: string; branch: string; at: number }[] }
+  touched?: { sha: string; branch: string; at: number }[];
+  hold?: { by: "main"; slot: number; at: number; grund: string | null } }
 // the proposal itself, as GET /api/tasks serves it (server.ts TaskRefine)
 interface RefineChildView { text: string; doneCriterion?: string; verify?: string; files?: string[] }
 interface TaskRefineFull { at: number; model: string;
@@ -6892,6 +6893,7 @@ let qQuery = "";
 type QView = "work" | "programs" | "history" | "waves";
 let qView: QView = "work";        // the operational list is primary; polls never reset the view
 let qProgDone = false;            // show `complete` programs in the Programs section (default off)
+let qNotesOpen = false;           // the loose-notes group of Work begins folded; a search overrides it
 let qKey = "";                    // the data key the list was last built from
 let qDetailKey = "";              // the data key the DETAIL pane was last built from (see refresh)
 let qCompose: HTMLTextAreaElement | null = null; // created ONCE per open — never re-created by a poll
@@ -7927,12 +7929,16 @@ let qProgSel: HTMLSelectElement | null = null;
 // "what needs me", "what did I release", "what is running", and everything else is backlog. So the
 // group is DERIVED from status + criterion + kind, in that priority order, and each group is a
 // standing answer. Nothing here is persisted: change the rule and every row re-sorts itself.
-type QGroup = "needs" | "released" | "running" | "backlog";
+type QGroup = "needs" | "released" | "running" | "backlog" | "notes";
+// THE PIPELINE READS BOTTOM-UP (owner, 2026-09-18): a row enters at Backlog, climbs through
+// Needs you and Released, and runs at the top. Advisory rows are not on that path at all, so they
+// sit below it, folded, and a note ASSIGNED to a task leaves this group and rides under its task.
 const Q_GROUPS: { k: QGroup; head: string; hint: string }[] = [
-  { k: "needs", head: "Needs you", hint: "waiting on a decision only you can make" },
-  { k: "released", head: "Released — runs next", hint: "you promoted these; the dispatcher takes them in this order" },
   { k: "running", head: "Running", hint: "live in a lane" },
-  { k: "backlog", head: "Backlog — about to start", hint: "unreleased work and advisory rows; change an advisory Kind to auftrag before dispatch" },
+  { k: "released", head: "Released — runs next", hint: "you promoted these; the dispatcher takes them in this order, top first" },
+  { k: "needs", head: "Needs you", hint: "waiting on a decision only you can make" },
+  { k: "backlog", head: "Backlog", hint: "unreleased work orders — release one to move it up" },
+  { k: "notes", head: "Notes & direction", hint: "advisory rows no task has assigned yet. Assign one to a task and it rides under that task; change its Kind to auftrag to make it work" },
 ];
 // ADVISORY = every kind the dispatcher refuses, i.e. everything that is not an `auftrag`. Phrased
 // as the negative on purpose: a kind added to the server later is advisory here until someone
@@ -7946,8 +7952,8 @@ function qGroupOf(t: TaskInfo): QGroup | null {
   // an observation is an observation whatever its status says. The check sits ABOVE `queued` on
   // purpose: releasing a note is refused today, but rows promoted before that refusal existed are
   // still in the state file, and showing one under "runs next" would be a promise nothing keeps.
-  // It remains visible workbench input, but Backlog is the only honest one of the four work groups.
-  if (qAdvisory(t)) return "backlog";
+  // It remains visible workbench input, in its own group below the pipeline.
+  if (qAdvisory(t)) return "notes";
   if (t.status === "queued") return "released";
   // an unconfirmed criterion is a lane parked on YOUR answer
   if (t.criterion && t.criterion.confirmedAt === null) return "needs";
@@ -8014,7 +8020,6 @@ function qTaskListModel(tasks: TaskInfo[], texts: ReadonlyMap<string, string>,
 // The row contract is deliberately a tuple, not another free-form middot chain: title plus four
 // facts, in the owner-confirmed order. Keeping placement DOM-free makes both completeness and
 // order directly testable without opening the dashboard.
-type QRowFacts = readonly [verdict: string, age: string, slot: string, sourceTag: string];
 // N3 · THE TWO ENDS OF AN ASSIGNMENT, as pure functions — DOM-free for the reason qTaskSummary and
 // qTaskListModel are: e2e/tasks.ts executes them against the same rows the server would send, so
 // completeness and ordering are checkable without opening a browser.
@@ -8090,22 +8095,57 @@ function qVariantLine(t: TaskInfo, list: readonly TaskInfo[]): string {
   const d = group?.variantDecision;
   return `Variante ${t.variantIndex ?? "?"}/${n ?? "?"}${d ? (d.winner === t.id ? " · Gewinner" : " · shelved") : ""}`;
 }
-function qTaskSummary(t: TaskInfo, text: string, now: number): { title: string; facts: QRowFacts } {
-  const source = taskSourceLabel(t);
+// A ROW CHIP names one fact the owner scans for; the full sentence rides its title. Order is
+// fixed so the eye finds the same fact in the same place on every row: state first (running /
+// stopped / waiting), then what the row IS (program, size, kind), then what hangs off it.
+interface QChip { text: string; cls: string; title?: string }
+const Q_PROGRAM_CHIP_MAX = 26;
+function qProgramShort(title: string): string {
+  const head = title.split(/\s+[—–-]\s+/)[0] ?? title;
+  return head.length > Q_PROGRAM_CHIP_MAX ? `${head.slice(0, Q_PROGRAM_CHIP_MAX - 1)}…` : head;
+}
+// A CARD-SHAPED FIRST LINE ("[FLEET-BETRIEB · MITTEL · SUITE-ZEIT: …]") is the row's own title, but
+// its program and size segments are exactly what the chips beside it already say. Drop those
+// two, keep every other segment, and fall back to the sentence rule when the line is not one.
+const Q_SIZE_WORD = /^(klein|mittel|gro(ss|ß))$/i;
+function qRowTitle(text: string, programTitle: string | undefined): string {
+  const line = text.split("\n")[0] ?? "";
+  const m = /^\[([^\]\n]{41,})\]/.exec(line);
+  if (!m) return qFirstLine(text);
+  const prog = programTitle ? qProgramShort(programTitle).toLowerCase() : null;
+  const kept = m[1].split(/\s+·\s+/).filter((seg) => !Q_SIZE_WORD.test(seg.trim())
+    && !(prog && seg.trim().length >= 4 && prog.startsWith(seg.trim().toLowerCase()))
+    && !/^gefilet\b/i.test(seg.trim()));
+  return kept.join(" · ") || qFirstLine(text);
+}
+function qTaskSummary(t: TaskInfo, text: string, now: number,
+  programs: readonly Pick<ProgramInfo, "id" | "title">[] = []): { title: string; chips: QChip[]; age: QChip } {
   const tag = qTag(text);
+  const source = taskSourceLabel(t);
   const variant = qVariantLine(t, tasksList);
+  const chips: QChip[] = [];
+  if (t.status === "sent" && t.slot) chips.push({ text: `▶ slot ${t.slot}`, cls: "run" });
+  if (t.hold) chips.push({ text: "⏸ held", cls: "hold",
+    title: `stopped by the MAIN in slot ${t.hold.slot}: ${t.hold.grund ?? "(no reason given)"}` });
+  if (t.criterion && t.criterion.confirmedAt === null)
+    chips.push({ text: "? criterion", cls: "need", title: "a clarify lane proposed a done-criterion — confirm it" });
+  const p = t.programId ? programs.find((x) => x.id === t.programId) : undefined;
+  if (t.programId) {
+    chips.push({ text: p ? qProgramShort(p.title) : t.programId.slice(0, 8), cls: "prog", title: p?.title ?? t.programId });
+  }
+  if (t.size) chips.push({ text: t.size, cls: `size size-${t.size}`, title: "card size" });
+  if (qAdvisory(t)) chips.push({ text: t.kind ?? "advisory", cls: "kind" });
+  else chips.push(t.briefAt ? { text: "brief", cls: "brief", title: "a compiled brief is what the lane receives" }
+    : { text: "raw", cls: "raw", title: "no compiled brief — the lane receives the raw request" });
+  if (variant) chips.push({ text: variant, cls: "var" });
+  const touched = qTouchedLine(t);
+  if (touched) chips.push({ text: `↯ ${t.touched?.length ?? 0}`, cls: "touch", title: touched });
+  if (t.notes?.n) chips.push({ text: `📎 ${t.notes.n}`, cls: "att", title: `${t.notes.n} assigned note${t.notes.n === 1 ? "" : "s"}` });
+  if (t.comments?.n) chips.push({ text: `💬 ${t.comments.n}`, cls: "att", title: `${t.comments.n} comment${t.comments.n === 1 ? "" : "s"}` });
   return {
-    title: qFirstLine(text),
-    facts: [
-      // A NOTE'S FIRST FACT IS ITS LIFECYCLE. `qVerdictLine` is empty
-      // for every advisory row by construction, so "— advisory" was the whole column — and after
-      // N2 there is something to say there: whether any land has moved the ground this observation
-      // stands on. Absence keeps the old word, because "nothing recorded" is not "untouched".
-      qTouchedLine(t) || qVerdictLine(t) || "— advisory",
-      `${fmtDur(Math.max(0, now - t.created))} ago`,
-      t.slot ? `slot ${t.slot}` : "no slot",
-      [tag ? `${source} / ${tag}` : source, variant].filter(Boolean).join(" · "),
-    ],
+    title: qRowTitle(text, p?.title),
+    chips,
+    age: { text: fmtDur(Math.max(0, now - t.created)), cls: "age", title: `filed by ${tag ? `${source} / ${tag}` : source}` },
   };
 }
 
@@ -9861,7 +9901,8 @@ function renderQueue() {
     programsList.map((p) => [p.id, p.status, p.title, programMark(p).mark]),
     [...model.work, ...model.history].map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.briefAt,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
-      t.refine?.at, t.refining, t.comments?.n])]);
+      t.refine?.at, t.refining, t.comments?.n, t.notes?.at, t.hold?.at, t.size, t.programId]),
+    qNotesOpen, taskTextKey]);
   if (key === qKey) return;
   qKey = key;
 
@@ -9870,8 +9911,10 @@ function renderQueue() {
   const projection = qView === "waves" ? qWaveProjection() : null;
   if (qView === "work") {
     const n = (g: QGroup) => tasksList.filter((t) => qGroupOf(t) === g).length;
-    shell.setSubtitle([`${n("needs")} need you`, `${n("released")} released`, `${n("running")} running`,
-      `${n("backlog")} backlog`, intakeOn ? "✉ intake on" : ""].filter(Boolean).join(" · "));
+    const held = tasksList.filter((t) => !qClosed(t) && t.hold).length;
+    shell.setSubtitle([`${n("running")} running`, `${n("released")} released`, `${n("needs")} need you`,
+      `${n("backlog")} backlog`, `${n("notes")} notes`, held ? `⏸ ${held} held` : "",
+      intakeOn ? "✉ intake on" : ""].filter(Boolean).join(" · "));
   } else if (qView === "programs") {
     shell.setSubtitle(programsRead === "fail" ? "Programs unavailable — the last read failed"
       : `${programsList.length} program${programsList.length === 1 ? "" : "s"}`
@@ -9889,21 +9932,27 @@ function renderQueue() {
   const rows: ShellRow[] = [];
   let selIdx = -1;
   qRowId = new Map();
-  const add = (o: { name: string; facts?: QRowFacts; cls?: string; id: string | null; sub?: HTMLElement | null }) => {
+  const add = (o: { name: string; chips?: QChip[]; age?: QChip; cls?: string; id: string | null;
+    sub?: HTMLElement | null }) => {
     const r = el("div", `shellrow${o.cls ? ` ${o.cls}` : ""}`);
     qRowId.set(r, o.id);
     const m = el("div", "shrmain");
-    m.appendChild(el("div", "shrname", o.name));
-    if (o.facts) {
-      const facts = el("div", "qfacts");
-      const classes = ["verdict", "age", "slot", "source"] as const;
-      // an EMPTY fact draws nothing: a program with no binding has no slot to name, and an empty
-      // span is a blank column that reads like a missing value. The index still fixes the class,
-      // so the remaining facts keep their own colour (task rows never produce an empty fact).
-      o.facts.forEach((fact, i) => {
-        if (fact) facts.appendChild(el("span", `qfact qfact-${classes[i]}`, fact));
-      });
-      m.appendChild(facts);
+    const name = el("div", "qrowhead");
+    name.appendChild(el("div", "shrname", o.name));
+    if (o.age) {
+      const age = el("span", "qage", o.age.text);
+      if (o.age.title) age.title = o.age.title;
+      name.appendChild(age);
+    }
+    m.appendChild(name);
+    if (o.chips?.length) {
+      const chips = el("div", "qchips");
+      for (const c of o.chips) {
+        const chip = el("span", `qchip qc-${c.cls.split(" ").join(" qc-")}`, c.text);
+        if (c.title) chip.title = c.title;
+        chips.appendChild(chip);
+      }
+      m.appendChild(chips);
     }
     if (o.sub) m.appendChild(o.sub);
     r.appendChild(m);
@@ -9914,13 +9963,28 @@ function renderQueue() {
     rows.push({ el: r, open: act });
   };
 
+  // a note ASSIGNED to an open task is drawn under that task, never also loose in Notes: one row,
+  // one place. The pins ride GET /api/tasks, so until that read lands every note stays loose.
+  const byId = new Map(tasksList.map((t) => [t.id, t]));
+  const pinnedUnder = new Map<string, TaskInfo[]>();
+  for (const t of model.work) {
+    if (qAdvisory(t)) continue;
+    const notes = (taskNotesFull.get(t.id) ?? []).map((pin) => byId.get(pin.noteId))
+      .filter((n): n is TaskInfo => !!n && !qClosed(n));
+    if (notes.length) pinnedUnder.set(t.id, notes);
+  }
+  const assigned = new Set([...pinnedUnder.values()].flat().map((n) => n.id));
   const addTask = (t: TaskInfo) => {
-    const summary = qTaskSummary(t, qTaskText(t.id), now);
+    const summary = qTaskSummary(t, qTaskText(t.id), now, programsList);
     add({
-      name: summary.title, facts: summary.facts, id: t.id,
+      name: summary.title, chips: summary.chips, age: summary.age, id: t.id,
       sub: qLaneLine(laneJoins.get(t.id) ?? { kind: "none" }),
-      cls: [`q-${t.status}`, qAdvisory(t) ? "q-obs" : ""].filter(Boolean).join(" "),
+      cls: [`q-${t.status}`, qAdvisory(t) ? "q-obs" : "", t.hold ? "q-held" : ""].filter(Boolean).join(" "),
     });
+    for (const n of pinnedUnder.get(t.id) ?? []) {
+      add({ name: `↳ ${qFirstLine(qTaskText(n.id))}`, id: n.id, cls: "qchild q-obs",
+        chips: [{ text: n.kind ?? "notiz", cls: "kind" }] });
+    }
   };
   const addSection = (name: string, count: number, hint: string, visibleHint = false) => {
     const head = el("div", "shellsec");
@@ -9967,8 +10031,8 @@ function renderQueue() {
         add({
           name: p.title, id: `prog:${p.id}`,
           cls: mark === "stale" || mark === "unknown" ? "q-flag" : "",
-          facts: [`MAIN ${mark}`, p.status,
-            p.main && typeof p.main.slot === "number" ? `slot ${p.main.slot}` : "", "program"],
+          chips: [{ text: `MAIN ${mark}`, cls: mark === "live" ? "run" : "need" }, { text: p.status, cls: "kind" },
+            ...(p.main && typeof p.main.slot === "number" ? [{ text: `slot ${p.main.slot}`, cls: "prog" }] : [])],
         });
         visibleRows++;
       }
@@ -9994,9 +10058,16 @@ function renderQueue() {
   } else if (qView === "work") {
     if (!qQuery) add({ name: "＋ New task", cls: "qnew", id: null });
     for (const g of Q_GROUPS) {
-      const group = model.work.filter((t) => qGroupOf(t) === g.k);
+      const group = model.work.filter((t) => qGroupOf(t) === g.k && !assigned.has(t.id));
       if (!group.length) continue;
-      addSection(g.head, group.length, g.hint);
+      const head = addSection(g.head, group.length, g.hint);
+      if (g.k === "notes" && !qQuery) {
+        // folded by default: advisory rows are input to the pipeline, not a stage of it
+        head.classList.add("qfoldhead");
+        head.insertBefore(el("span", "qfoldmark", qNotesOpen ? "▾" : "▸"), head.firstChild);
+        head.onclick = () => { qNotesOpen = !qNotesOpen; renderQueue(); };
+        if (!qNotesOpen) { visibleRows += group.length; continue; }
+      }
       // "Released" is the ONE group with a real order — it is the dispatcher's own pick order
       // (tasks.find over creation order), so showing it newest-first would be a lie about what runs
       // next. Everywhere else newest-first is what you want.
@@ -10099,6 +10170,7 @@ function openQueue() {
   qQuery = "";
   qView = "work";
   qProgDone = false;
+  qNotesOpen = false;
   qKey = "";
   qCompose = null;
   qRepoIn = null;

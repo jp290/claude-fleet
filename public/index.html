@@ -708,14 +708,34 @@
   .shellrow.q-flag { border-left: 3px solid var(--amber); }
   .shellrow.q-obs { border-left: 3px dotted #9d7cd8; }
   .shellrow.q-obs .shrname { color: #c0caf5; }
-  /* The queue row's complete second line: exactly verdict, age, slot, source/tag. Each fact is a
-     child so the contract cannot drift back into an untestable nine-piece prose chain. */
-  .shellrow .qfacts { display: grid; grid-template-columns: minmax(0, 1.35fr) max-content max-content minmax(0, 1fr);
-    gap: 0 6px; margin-top: 2px; font-size: 10.5px; color: var(--faint); }
-  .shellrow .qfact { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .shellrow .qfact:not(:first-child)::before { content: "·"; color: var(--faint); margin-right: 6px; }
-  .shellrow .qfact-verdict { color: var(--amber); }
-  .shellrow.sel .qfacts { color: #9aa7c7; }
+  /* The queue row: title with its age at the right edge, then one line of chips. A chip is one
+     fact; its colour says which KIND of fact, so the eye can scan a column of rows for one colour. */
+  .shellrow .qrowhead { display: flex; align-items: baseline; gap: 8px; }
+  .shellrow .qrowhead .shrname { flex: 1; min-width: 0; }
+  .shellrow .qage { flex: none; font-size: 10px; color: var(--faint); }
+  .shellrow .qchips { display: flex; flex-wrap: wrap; gap: 3px 4px; margin-top: 3px; }
+  .qchip { font-size: 10px; line-height: 15px; padding: 0 6px; border-radius: 4px; white-space: nowrap;
+    color: #9aa0a6; background: #242424; border: 1px solid #2e2e2e; max-width: 100%; overflow: hidden;
+    text-overflow: ellipsis; }
+  .qchip.qc-run { color: #cdeaa8; background: #1e2a17; border-color: #34502a; }
+  .qchip.qc-hold { color: #ffd9a0; background: #33260f; border-color: #5a4318; }
+  .qchip.qc-need { color: #ffd9a0; background: #2c2414; border-color: #4a3b1c; }
+  .qchip.qc-prog { color: #b4c6f5; background: #1c2335; border-color: #2c3a5e; }
+  .qchip.qc-size { color: #c8c8c8; }
+  .qchip.qc-size-gross { color: #f5b4c0; border-color: #4a2a33; }
+  .qchip.qc-kind { color: #cbb8f0; background: #231d33; border-color: #3a2f55; }
+  .qchip.qc-raw { color: var(--faint); background: transparent; border-style: dashed; }
+  .qchip.qc-brief { color: #9aa0a6; background: transparent; }
+  .qchip.qc-att { color: #d0d0d0; background: #2a2a2a; }
+  .shellrow.sel .qchip { border-color: #3b4b70; }
+  .shellrow.q-held { border-left: 3px solid var(--amber); }
+  .shellrow.q-held .shrname { color: #a8a8a8; }
+  /* an assigned note rides under its task: indented, quieter, joined by the ↳ in its name */
+  .shellrow.qchild { margin-left: 18px; padding-top: 3px; padding-bottom: 3px; }
+  .shellrow.qchild .shrname { font-size: 11.5px; color: #a9b1d6; }
+  .shellsec.qfoldhead { cursor: pointer; }
+  .shellsec.qfoldhead:hover .shellsect { color: #9aa0a6; }
+  .qfoldmark { font-size: 10px; color: var(--faint); width: 8px; }
   .shrbtn.danger { border-color: #5e2c3a; color: var(--del); }
   /* shared risk-preview panel (showRiskPreview) — real file names/commit subjects before
      a destructive click, not only after a refusal. Built dynamically, styled off .overlay/.panel */
@@ -867,8 +887,6 @@
     .shell.detailmode .shellback { display: block; flex: none; width: 34px; height: 30px;
       border-radius: 8px; border: 1px solid var(--line); background: var(--raised); color: var(--text);
       font-size: 16px; font-family: inherit; cursor: pointer; }
-    .shellrow .qfacts { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2px 12px; }
-    .shellrow .qfact:not(:first-child)::before { content: none; }
     .qkind { align-items: stretch; flex-direction: column; gap: 5px; }
     /* the head must be usable after a row selection without any horizontal scrolling: the one
        action takes the full width at a touch height, and the rail wraps instead of overflowing. */

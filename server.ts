@@ -2942,7 +2942,8 @@ const MAX_TASK_TEXT = 20_000;
 // the per-row git process its staleness arm asked for on every poll.
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   & Partial<Pick<Task, "slot" | "note" | "repo" | "programId" | "review" | "files" | "filesOrigin" | "cluster"
-    | "variants" | "variantOf" | "variantIndex" | "variantDecision" | "variantCompareArmedAt" | "variantCompare">>
+    | "variants" | "variantOf" | "variantIndex" | "variantDecision" | "variantCompareArmedAt"
+    | "variantCompare" | "hold">>
   // …and the PROPOSED surface beside the confirmed one. Carried WHOLE rather than as a shape
   // digest, unlike `refine` and `comments` beside it: `files` itself already rides this poll, so a
   // proposal reduced to a count would be the one file list on the row a reader could not compare
@@ -2978,6 +2979,8 @@ function taskDigest(t: Task): TaskDigest {
     ...(t.repo ? { repo: t.repo } : {}),
     ...(t.programId ? { programId: t.programId } : {}),
     ...(t.review ? { review: t.review } : {}),
+    // a MAIN's stop, whole: four short fields, and a board that cannot see it shows a held row as runnable
+    ...(t.hold ? { hold: t.hold } : {}),
     // THE VARIANT FIELDS ride the poll whole: at most four short choices and one small decision, and
     // the board needs all of them to say "Variante k/n" and which one lands without a second fetch
     ...(t.variants ? { variants: t.variants } : {}),

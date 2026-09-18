@@ -4,6 +4,7 @@
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname } from "node:path";
+import { createHash } from "node:crypto";
 import { BASE, IP, PORT, REPO, ROOT, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
 import { exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
@@ -1343,6 +1344,7 @@ export async function run(): Promise<void> {
         && inbAfter.bytes === (inbBefore?.bytes ?? 0) + ledgerBytes,
         JSON.stringify({ before: inbBefore, after: inbAfter, payloadBytes: ledgerBytes }));
 
+
       // 3) UNCERTAIN. The transport must fail while the OCCUPANT stays the same row — and the
       // 2s self-heal loop must be structurally unable to interfere, not merely outrun.
       //
@@ -1463,6 +1465,49 @@ export async function run(): Promise<void> {
       check("the pane holds the pinned-current text and neither the stale-pin nor the malformed-pin text",
         pinCap.includes("pin-probe-current-occupant") && !pinCap.includes("pin-probe-stale-occupant")
         && !pinCap.includes("pin-probe-bad"), pinCap.slice(-200));
+
+      // 6) A TEXT OVER THE PASTE CEILING IS NEVER PASTED (1e170a25: a long owner paste arrived as its
+      // tail only). 200 KB with a distinct head and tail, so a truncation at either end is visible:
+      // the pane gets ONE pointer line, the ledger counts that line's bytes, and the stored file hashes
+      // to the original. Mutation caught: sendText pasting `given` again — the send row then carries
+      // ~200 KB and no `pane_inbox_stored` row exists.
+      {
+        const head = "LONGTEXT-HEAD-7f3a ";
+        const tail = " LONGTEXT-TAIL-9c1e";
+        const body = "ü".repeat(10) + "0123456789abcdef\n".repeat(Math.ceil(200_000 / 17));
+        const longText = `${head}${body}${tail}`;
+        const longBytes = Buffer.byteLength(longText, "utf8");
+        const longSha = createHash("sha256").update(longText, "utf8").digest("hex");
+        type StoredRow = SendRow & { sha256?: unknown; file?: unknown; sendPath?: unknown };
+        const rowsFrom = (from: number): StoredRow[] => auditLines().slice(from)
+          .map((l) => { try { return JSON.parse(l) as StoredRow; } catch { return {}; } })
+          .filter((r) => r.slot === 3);
+        const longFrom = auditLines().length;
+        const longRes = await post("/send", { slot: 3, text: longText, submit: false });
+        let stored: StoredRow[] = [];
+        let longSends: StoredRow[] = [];
+        for (let i = 0; i < 80 && (stored.length === 0 || longSends.length === 0); i++) {
+          stored = rowsFrom(longFrom).filter((r) => r.event === "pane_inbox_stored");
+          longSends = rowsFrom(longFrom).filter((r) => r.event === "send" && r.path === "owner");
+          if (stored.length === 0 || longSends.length === 0) await Bun.sleep(100);
+        }
+        const file = typeof stored[0]?.file === "string" ? stored[0].file : "";
+        const onDisk = file && exists(file) ? readFileSync(file) : null;
+        const diskSha = onDisk ? createHash("sha256").update(onDisk).digest("hex") : "";
+        check("a 200-KB /send is stored whole instead of pasted: the stored file's sha256 and byte length equal the original's",
+          longRes.ok && longBytes > 200_000 && stored.length === 1 && stored[0]?.sha256 === longSha
+            && stored[0]?.bytes === longBytes && stored[0]?.sendPath === "owner"
+            && onDisk !== null && onDisk.length === longBytes && diskSha === longSha,
+          JSON.stringify({ status: longRes.status, longBytes, stored: stored.map((r) => ({ ...r, file: undefined })),
+            file, diskBytes: onDisk?.length ?? null, hashMatch: diskSha === longSha }).slice(0, 400));
+        const cap = (await tmuxOut("capture-pane", "-p", "-J", "-t", "s3")).out;
+        check("…and the pane got exactly ONE short pointer line naming the file — never the head or the tail of the text",
+          longSends.length === 1 && typeof longSends[0]?.bytes === "number" && longSends[0].bytes < 1024
+            && cap.includes(`[fleet] message ${longSha.slice(0, 16)}`) && cap.includes(file)
+            && !cap.includes(head.trim()) && !cap.includes(tail.trim()),
+          JSON.stringify({ sends: longSends, paneTail: cap.slice(-300) }));
+        await tmuxOut("send-keys", "-t", "s3", "C-u");
+      }
       await post("/api/slots/3/kill", {});
     }
     rmSync(scratch, { recursive: true, force: true });

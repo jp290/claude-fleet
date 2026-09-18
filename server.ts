@@ -3218,6 +3218,10 @@ const GIT_TICK_MS = Math.max(1000, Number(process.env.FLEET_GIT_TICK_MS ?? 10_00
 // the isolated suite shortens it (every land there first out-waits the pane's own shell prompt),
 // floor 500 ms so a stray value can never turn the gate into a no-op.
 const MERGE_IDLE_MS = Math.max(500, Number(process.env.FLEET_MERGE_IDLE_MS ?? 3000) | 0);
+// the same "not producing output" window for the other act that must not type into a lane mid-turn:
+// a MAIN's verdict on that lane's report (server.ts#deliverFleetReportDecision). Its own knob, the
+// merge guard's value and floor — a working claude pane repaints its spinner well inside 3 s.
+const REPORT_DECISION_IDLE_MS = Math.max(500, Number(process.env.FLEET_REPORT_DECISION_IDLE_MS ?? 3000) | 0);
 let persistedToken: string | null = null;
 // --- steward principal: a scoped token bound to whichever slot currently carries the
 // recognized steward label (docs/steward.md, "⚙ steward"), not to a fixed slot id — the
@@ -6407,8 +6411,39 @@ async function waitForWsInputTestLatch(bound: { occupant: SlotStreamOccupant; pa
   throw new Error("owner WebSocket input E2E latch timed out before release");
 }
 
-async function sendText(s: Slot, text: string, submit: boolean,
+// THE PASTE CEILING, and it is a route switch, not a cap: nothing is refused above it. A text longer
+// than this is never pasted — it is stored whole beside the stream logs and the pane gets ONE line
+// that names the file, its byte count and its sha256 (1e170a25: a long owner paste arrived as its
+// tail only, the head lost mid-sentence, no error). The value is the send ledger's own measurement:
+// the largest send ever observed accepted was a 17,359-byte brief (audit.jsonl `send` rows through
+// 2026-09-18, all 272 of them), so 32 KiB leaves every measured send on the paste path it has
+// always taken, and everything above it on the path that cannot lose a head.
+const PASTE_MAX_BYTES = 32 * 1024;
+const PANE_INBOX_DIR = `${STREAM_DIR}/pane-inbox`;
+
+// Stores `text` for this slot's CURRENT occupant and returns the one line that replaces the paste.
+// Content-addressed inside the occupant's folder, so a retried send of the same text writes the
+// same file rather than a second one. Throws when there is no occupant — the send would anyway.
+function storePaneInboxText(s: Slot, text: string, path: SendPath): string {
+  const occupant = slotStreamOccupant(s);
+  if (!occupant) throw new Error("slot unavailable for send");
+  const bytes = Buffer.byteLength(text, "utf8");
+  const sha = createHash("sha256").update(text, "utf8").digest("hex");
+  const dir = `${PANE_INBOX_DIR}/slot${occupant.slot}-${occupant.openedAt}`;
+  const file = `${dir}/${sha.slice(0, 16)}.txt`;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(file, text, { mode: 0o600 });
+  audit("pane_inbox_stored", s.id, `${sha.slice(0, 16)} ${bytes}B path=${path}`,
+    { bytes, sha256: sha, file, sendPath: path });
+  return `[fleet] message ${sha.slice(0, 16)}: ${bytes} bytes (sha256 ${sha}) is too long to paste `
+    + `into a terminal, so it was stored whole. Read the complete text from ${file} before acting on it.`;
+}
+
+async function sendText(s: Slot, given: string, submit: boolean,
   options: { path: SendPath; rollbackOwnPayload?: true; requireAgent?: true }): Promise<{ acceptance: Acceptance }> {
+  // from here on `text` is what is TYPED: the caller's text, or the one line that stands for it
+  const text = Buffer.byteLength(given, "utf8") > PASTE_MAX_BYTES
+    ? storePaneInboxText(s, given, options.path) : given;
   const occupant = slotStreamOccupant(s);
   if (!occupant || slotTeardownInflight.has(s.id)) throw new Error("slot unavailable for send");
   const harnessName = s.harness ?? "default";
@@ -8487,6 +8522,8 @@ function ledgerReportDecision(report: FleetReport, decision: FleetReportDecision
 
 function pruneFleetReports(): void {
   const terminal = fleetReports.filter((report) => {
+    // a verdict still waiting for its lane's next idle is an open carry, and the row is its only home
+    if (report.decisionDelivery?.state === "pending") return false;
     if (report.basis === "program") return !!report.decision;
     // …EXCEPT a row the owner still owes a verdict. The predicate below is "transport is finished
     // with this row", which for every other row means nothing more will happen to it — but an
@@ -8791,15 +8828,17 @@ async function replyClarification(s: Slot, id: string, body: Record<string, unkn
 async function acknowledgeFleetEvent(s: Slot, id: string): Promise<Response> {
   const event = fleetEvents.find((e) => e.id === id);
   if (!event) return json({ error: "unknown event" }, 404);
-  // VISIBILITY AND CONSUMPTION ARE SEPARATE FACTS. An inbox event was never offered to this
-  // session — it exists precisely because typing it into an owner-attended pane is the failure
-  // being removed — so a self-ack on it would record model consumption that never happened. It is
-  // refused for every status, including acknowledged: only the owner's own twin route closes it.
+  // AN OWNER ROW (receiver null) HAS NO SESSION TO CONSUME IT: only the owner's twin route closes it.
+  // FIRST, ahead of the occupant checks, because such a row has no receiver occupant: matching it
+  // against this session would answer "belongs to another slot", which names the wrong reason and
+  // would send a lane looking for the slot that supposedly holds its own report.
   //
-  // FIRST, ahead of the occupant checks, because an owner row has no receiver occupant: matching
-  // it against this session would answer "belongs to another slot", which names the wrong reason
-  // and would send a lane looking for the slot that supposedly holds its own report.
-  if (event.delivery === "inbox")
+  // A RECEIVER-BOUND inbox row is different since c14fcd75: it was never TYPED into its pane (the
+  // 3ed20749 reason stays — nothing here pastes it), but it is this session's own event, readable
+  // from GET /api/self and GET /api/self/events/:id, and it holds this session's delivery budget
+  // until someone closes it. Refusing its reader the receipt left the owner as the only way to free
+  // a Controller's own budget. Either principal may now close it; the audit word tells them apart.
+  if (event.delivery === "inbox" && event.receiverSlot === null)
     return json({ error: "inbox event — acknowledgement belongs to the owner" }, 409);
   if (event.receiverSlot !== s.id) return json({ error: "event belongs to another slot" }, 409);
   if (!fleetEventReceiverIs(event, s))
@@ -8809,7 +8848,8 @@ async function acknowledgeFleetEvent(s: Slot, id: string): Promise<Response> {
   // NOT answer or close the ClarificationRequest; only a successful reply send does that.
   // send-uncertain is intentionally acknowledgeable: the only principal that could have seen the
   // possibly-sent pane text can resolve the crash boundary. Pending was definitely never offered.
-  if (event.status !== "delivered" && event.status !== "send-uncertain")
+  // "inbox" is the receiver-bound inbox row above: offered by pull, never by paste.
+  if (event.status !== "delivered" && event.status !== "send-uncertain" && event.status !== "inbox")
     return json({ error: "event is not acknowledgeable", status: event.status }, 409);
   settleFleetEventAcknowledged(event);
   await saveStateNow();
@@ -8898,7 +8938,9 @@ function settleFleetEventAcknowledged(event: FleetEvent): void {
 async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
   const decision = report.decision;
   if (!decision) return;
-  if (report.decisionDelivery !== undefined && report.decisionDelivery !== null) return;
+  // "pending" is the one record that is not an outcome: the watch tick calls back in for it.
+  if (report.decisionDelivery !== undefined && report.decisionDelivery !== null
+    && report.decisionDelivery.state !== "pending") return;
   const stamp = (state: FleetReportDeliveryState, reason: string | null): void => {
     report.decisionDelivery = { state, at: Date.now(),
       reason: reason === null ? null : reason.slice(0, MAX_FLEET_REPORT_DELIVERY_REASON) };
@@ -8931,8 +8973,30 @@ async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
   // so the verdict is the answer to the lane's own act — replyClarification's waiver, for
   // replyClarification's reason, and the same one line of it: the unattended WORK-PROMPT policy is
   // waived, the kill-switch, the fresh liveness probe, the blocking-screen read and quiet hours are
-  // not. `idleMs: 0` because a lane that has just filed and gone quiet is the normal receiver here.
-  const deliverable = await canDeliver(worker, { now: Date.now(), harness: false, idleMs: 0 });
+  // not. AND THE BUSY GATE IS KEPT: a verdict typed into a lane mid-turn lands in the middle of work
+  // in progress (2630483e), so a busy pane gets the open record "pending" and the watch tick
+  // (server.ts#tickWatches) carries it at this same occupation's next quiet window.
+  const deliverable = await canDeliver(worker,
+    { now: Date.now(), harness: false, idleMs: REPORT_DECISION_IDLE_MS });
+  // an open carry also outwaits the two gates that END on their own (the owner's pause, quiet hours):
+  // turning a queued verdict into a terminal "blocked" because automation was paused would lose it
+  if (!deliverable.ok && report.decisionDelivery?.state === "pending"
+    && (deliverable.gate === "kill-switch" || deliverable.gate === "quiet-hours")) return;
+  if (!deliverable.ok && deliverable.gate === "busy") {
+    if (report.decisionDelivery?.state === "pending") return; // still busy: one record, one trail line
+    stamp("pending", `the worker pane was busy — carried at its next ${REPORT_DECISION_IDLE_MS} ms of quiet, to this occupation only`);
+    audit("fleet_report_decision_undelivered", worker.id,
+      `${report.id} ${decision.disposition} gate=busy pending`);
+    return;
+  }
+  // …and the occupation is read AGAIN after the await: canDeliver shells out, and a recycle inside it
+  // would otherwise hand this verdict to whoever holds the slot number now.
+  if (!worker.cwd || worker.openedAt !== report.worker.openedAt) {
+    stamp("worker-gone", `slot ${report.worker.slot} was emptied or RECYCLED during the delivery probe`);
+    audit("fleet_report_decision_undelivered", report.worker.slot,
+      `${report.id} ${decision.disposition} recycled during the delivery probe`);
+    return;
+  }
   if (!deliverable.ok) {
     stamp("blocked", `delivery refused by ${deliverable.gate}${deliverable.detail ? `: ${deliverable.detail}` : ""}`);
     audit("fleet_report_decision_undelivered", worker.id,
@@ -16316,6 +16380,102 @@ async function recoverFleetReportDelivery(event: FleetReportFleetEvent): Promise
   return true;
 }
 
+// THE BUNDLED WAKE-UP: one line of constant shape for N events, naming every id and kind and the door
+// where each full text still is. It carries no event's content — that stays on the row (c14fcd75).
+function fleetEventBundleMessage(events: FleetEvent[]): string {
+  return `[fleet] ${events.length} events for this session: `
+    + `${events.map((e) => `${e.id} (${e.kind})`).join(", ")}. `
+    + "Each full text stays on its event: read it with GET /api/self/events/<id>, then acknowledge it with "
+    + "POST /api/self/events/<id>/ack, both with x-fleet-self-token from the FLEET_SELF_TOKEN environment variable.";
+}
+
+// FACT 2's transport for a receiver with MORE THAN ONE ready event, and deliberately the single-event
+// path's twin rule for rule, only over a set: every marker goes down and is persisted BEFORE tmux is
+// touched (the crash-marker order the single path pins), a pre-paste refusal rolls every row and its
+// count back, a non-acceptance leaves every row send-uncertain (fleet-report rows get their bounded
+// recovery record, which later replays each alone with its full text), and only an observed
+// acceptance delivers — all of them, with one history row for the one line that was typed.
+async function deliverFleetEventBundle(s: Slot, events: FleetEvent[]): Promise<void> {
+  const attemptsBefore = events.map((e) => e.attempts);
+  for (const event of events) {
+    event.status = "send-uncertain";
+    event.attempts++;
+  }
+  await saveStateNow();
+  const ids = events.map((e) => e.id).join(",");
+  const text = fleetEventBundleMessage(events);
+  let acceptance: Acceptance;
+  try {
+    ({ acceptance } = await sendText(s, text, true, { path: "fleet-event", rollbackOwnPayload: true }));
+  } catch (e) {
+    if (e instanceof SendRefused) {
+      events.forEach((event, i) => {
+        event.status = "pending";
+        event.attempts = attemptsBefore[i] ?? event.attempts;
+      });
+      await saveStateNow();
+      for (const event of events) noteComposerHold(event, s, e.message);
+      return;
+    }
+    for (const event of events) clearComposerHold(event.id, event.receiverSlot, HOLD_ENDED_TYPED);
+    const rollback = e instanceof SendNotAccepted && e.rollback ? ` rollback=${e.rollback}` : "";
+    let reports = false;
+    for (const event of events) {
+      if (event.kind !== "fleet-report") continue;
+      recordFleetReportNonAcceptance(event, e instanceof SendNotAccepted ? e.rollback : null, "transport");
+      reports = true;
+    }
+    if (reports) await saveStateNow();
+    audit("fleet_event_send_uncertain", s.id,
+      `bundle=${ids}${rollback} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
+    return;
+  }
+  for (const event of events) clearComposerHold(event.id, event.receiverSlot, HOLD_ENDED_TYPED);
+  if (acceptance === "unobservable") {
+    audit("fleet_event_send_uncertain", s.id, `bundle=${ids} acceptance unobservable`);
+    return;
+  }
+  const deliveredAt = Date.now();
+  s.history = [...s.history, { text, ts: deliveredAt }].slice(-MAX_HISTORY);
+  saveHistory(s);
+  logPrompt(s, text, "auto", deliveredAt);
+  for (const event of events) {
+    event.status = "delivered";
+    event.deliveredAt = deliveredAt;
+    const watch = watches.find((w) => w.id === event.watchId);
+    if (watch) watch.lastResult = "sent";
+    audit("fleet_event_delivered", s.id, `${event.id} bundle=${events.length}`);
+  }
+  await saveStateNow();
+}
+
+// THE PANE TEXT OF ONE EVENT, rendered from its row at the moment it is needed — by the transport
+// below and by GET /api/self/events/:id, where a receiver reads what a bundled wake-up only named.
+function fleetEventMessage(event: FleetEvent): string {
+  const text = event.kind === "clarification-request"
+    ? clarificationWatchMessage(event.subjectSlot, event.subjectBranch, event)
+    : event.kind === "fleet-report"
+    ? fleetReportMessage(event)
+    : event.kind === "merge-terminal"
+    ? mergeWatchMessage(event.subjectSlot, event.subjectCwd, event)
+    : event.kind === "post-land-audit"
+    ? auditWatchMessage(event.subjectRepo, event.subjectMainAfter, event)
+    : event.kind === "deploy-terminal"
+    ? deployWatchMessage(event.subjectDeployId, event)
+    : event.kind === "command-job"
+    ? commandJobWatchMessage(event.subjectJobId, event)
+    : event.kind === "lane-suite"
+    ? laneSuiteWatchMessage(event.subjectJobId, event)
+    : event.kind === "supervisor-transition"
+    ? supervisorTransitionMessage(event)
+    : event.kind === "harness-block"
+    ? harnessBlockMessage(event.subjectSlot, event.subjectBranch, event)
+    : event.kind === "lane-review"
+    ? laneReviewMessage(event.subjectSlot, event.subjectBranch, event)
+    : laneWatchMessage(event.subjectSlot, event.subjectBranch, event, laneSelfWord(event));
+  return text;
+}
+
 async function tickWatches(): Promise<void> {
   const verdictsDue = verdictRetryDue();
   // …and an outstanding hold entry is work too: without it the round that ends a hold could be the
@@ -16323,7 +16483,8 @@ async function tickWatches(): Promise<void> {
   if (!verdictsDue.length && !composerHolds.size && !watches.some((w) => w.armed)
     && !fleetEvents.some((e) => e.status === "pending"
       || (e.kind === "fleet-report" && e.status === "send-uncertain"
-        && e.recovery?.state === "retryable"))) return;
+        && e.recovery?.state === "retryable"))
+    && !fleetReports.some((r) => r.decisionDelivery?.state === "pending")) return;
   if (watchTickBusy) return; // canDeliver shells out (ps/pgrep); a slow round must not overlap
   watchTickBusy = true;
   try {
@@ -16440,6 +16601,7 @@ async function tickWatches(): Promise<void> {
     // FACT 2: pane delivery is only a transport attempt for a pre-existing event. Pending is the
     // sole retryable state. `send-uncertain` is persisted BEFORE tmux is touched; a process death
     // anywhere after that point is visible after restart and is never blindly replayed.
+    const offered = new Map<number, { s: Slot; events: FleetEvent[] }>();
     for (const event of fleetEvents) {
       if (event.status !== "pending") continue;
       const s = fleetEventReceiver(event);
@@ -16497,6 +16659,31 @@ async function tickWatches(): Promise<void> {
         dirty = true;
         continue;
       }
+      const group = offered.get(s.id);
+      if (group) group.events.push(event);
+      else offered.set(s.id, { s, events: [event] });
+    }
+
+    // ONE WAKE-UP PER RECEIVER AND TICK (c14fcd75). Every event above passed its own gates; what is
+    // left is transport, and a pane that three watches fired on in one round is told ONCE, with all
+    // three ids — the full text of each stays on its event (GET /api/self/events/:id). A receiver
+    // with one event keeps its full message, exactly as before. The facts the first loop read are
+    // read AGAIN here, synchronously and right before the marker, because the loop above awaited
+    // other receivers' probes in between (the §11.2j reason, one loop further down).
+    for (const { s, events: group } of offered.values()) {
+      const live = group.filter((e) => e.status === "pending" && fleetEventReceiver(e) === s);
+      if (live.some((e) => laneEventSubject(e) === "gone")) {
+        markFleetEventsSubjectGone();
+        dirty = true;
+      }
+      const ready = live.filter((e) => e.status === "pending");
+      if (ready.length > 1) {
+        await deliverFleetEventBundle(s, ready);
+        dirty = true;
+        continue;
+      }
+      const event = ready[0];
+      if (!event) continue;
       // THE CRASH MARKER GOES DOWN FIRST and stays that way: persisted before tmux is touched, so
       // a death anywhere after this line is visible after restart instead of leaving a paste that
       // may or may not have landed. `attempts` is raised with it and rolled back ONLY by the one
@@ -16505,30 +16692,10 @@ async function tickWatches(): Promise<void> {
       event.status = "send-uncertain";
       event.attempts++;
       await saveStateNow();
-      const text = event.kind === "clarification-request"
-        ? clarificationWatchMessage(event.subjectSlot, event.subjectBranch, event)
-        : event.kind === "fleet-report"
-        ? fleetReportMessage(event)
-        : event.kind === "merge-terminal"
-        ? mergeWatchMessage(event.subjectSlot, event.subjectCwd, event)
-        : event.kind === "post-land-audit"
-        ? auditWatchMessage(event.subjectRepo, event.subjectMainAfter, event)
-        : event.kind === "deploy-terminal"
-        ? deployWatchMessage(event.subjectDeployId, event)
-        : event.kind === "command-job"
-        ? commandJobWatchMessage(event.subjectJobId, event)
-        : event.kind === "lane-suite"
-        ? laneSuiteWatchMessage(event.subjectJobId, event)
-        : event.kind === "supervisor-transition"
-        ? supervisorTransitionMessage(event)
-        : event.kind === "harness-block"
-        ? harnessBlockMessage(event.subjectSlot, event.subjectBranch, event)
-        : event.kind === "lane-review"
-        ? laneReviewMessage(event.subjectSlot, event.subjectBranch, event)
-        : laneWatchMessage(event.subjectSlot, event.subjectBranch, event, laneSelfWord(event));
+      const message = fleetEventMessage(event);
       let acceptance: Acceptance;
       try {
-        ({ acceptance } = await sendText(s, text, true, { path: "fleet-event", rollbackOwnPayload: true }));
+        ({ acceptance } = await sendText(s, message, true, { path: "fleet-event", rollbackOwnPayload: true }));
       } catch (e) {
         if (e instanceof SendRefused) {
           // nothing was typed (an occupied composer, i.e. an owner draft): the event stays pending and
@@ -16564,11 +16731,11 @@ async function tickWatches(): Promise<void> {
         continue;
       }
       const deliveredAt = Date.now();
-      s.history = [...s.history, { text, ts: deliveredAt }].slice(-MAX_HISTORY);
+      s.history = [...s.history, { text: message, ts: deliveredAt }].slice(-MAX_HISTORY);
       saveHistory(s);
       // source "auto", not a sixth vocabulary word: the prompt log's "auto" already means "the machine
       // typed this, unattended"; the audit trail below is where a watch is told apart.
-      logPrompt(s, text, "auto", deliveredAt);
+      logPrompt(s, message, "auto", deliveredAt);
       event.status = "delivered";
       event.deliveredAt = deliveredAt;
       const watch = watches.find((w) => w.id === event.watchId);
@@ -16585,6 +16752,17 @@ async function tickWatches(): Promise<void> {
     // to inherit one from, so it reads `verdictTo` off the row — which survives a restart, where an
     // in-memory frame would not.
     for (const s of verdictRetryDue()) await deliverMergeVerdict(s, s.cwd!, s.worktree!.branch);
+
+    // FACT 4: a MAIN's verdict that met its lane mid-turn. The deliverer re-reads the occupation and
+    // the busy gate itself, so this loop only hands the open records back to it: still busy stays
+    // "pending" without a new trail line, quiet is the one paste, recycled or emptied is
+    // "worker-gone". Exactly once, because every outcome but "pending" closes the deliverer's guard.
+    for (const report of fleetReports) {
+      if (report.decisionDelivery?.state !== "pending") continue;
+      const before = report.decisionDelivery;
+      await deliverFleetReportDecision(report);
+      if (report.decisionDelivery !== before) dirty = true;
+    }
 
     if (dirty) saveState();
   } finally {
@@ -32891,6 +33069,18 @@ Bun.serve<WSData>({
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return acknowledgeFleetEvent(s, selfEventAck[1]);
     }
+    // the READ twin of the ack above, and the door a bundled wake-up points at: the row plus its full
+    // pane text, rendered now from the row. Same binding as the ack — this occupant's events only.
+    const selfEventRead = /^\/api\/self\/events\/([a-z0-9]+)$/.exec(url.pathname);
+    if (selfEventRead && req.method === "GET") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const event = fleetEvents.find((e) => e.id === selfEventRead[1]);
+      if (!event) return json({ error: "unknown event" }, 404);
+      if (!fleetEventReceiverIs(event, s)) return json({ error: "event belongs to another slot or a replaced session" }, 409);
+      return json({ event, text: fleetEventMessage(event) });
+    }
 
     // Main-session succession is the other non-lane-only self capability. The token identifies
     // the predecessor; the body may carry only a bounded label/carry, never a target slot or cwd.
@@ -36084,7 +36274,10 @@ Bun.serve<WSData>({
       if (!body) return json({ error: "expected application/json" }, 400);
       const s = slotFrom(body.slot);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
-      if (typeof body.text !== "string" || body.text.length > 100_000) return json({ error: "bad text" }, 400);
+      // the bound dates from when every accepted text was PASTED; above server.ts#PASTE_MAX_BYTES a
+      // text is now stored whole and announced in one line (1e170a25 asks for 200 KB), so it is sized
+      // for a request body, not for a composer
+      if (typeof body.text !== "string" || body.text.length > 1_000_000) return json({ error: "bad text" }, 400);
       // THE OCCUPANT PIN (optional). A slot NUMBER is recycled: 2026-09-14 12:08 a MAIN had moved from
       // slot 5 to 8, dispatch refilled 5 with a spawning lane, and a /send to "5" killed it. A caller
       // that read the occupant passes its openedAt, and a slot that has been re-occupied since answers

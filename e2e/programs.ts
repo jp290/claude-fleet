@@ -9387,8 +9387,49 @@ export async function run(ctx: Ctx): Promise<void> {
       `${slLandRefused.status} ${slLandRefusedText.slice(0, 320)} audit=${slRefusalAudit.length}`);
 
     const slSecondReport = await fileLaneReport("self-land acceptance fixture: repaired, filed again.");
+    // --- b5dc4dc2 · THE VERDICT MEETS A LANE MID-TURN. The accept below is given while the lane's
+    // pane is producing output, which the keeper makes true rather than hopes for (the watch.ts
+    // busy-receiver pattern): the verdict must NOT be typed then, must stay as an open record on the
+    // row, and must arrive exactly once when the same occupation goes quiet — carried by the watch
+    // tick, not by a second decision. Mutations caught: `idleMs: 0` back in the deliverer (the paste
+    // happens at once, the first check falls); the FACT 4 loop in tickWatches removed (the row stays
+    // "pending" forever, the second check falls as exactly one line).
+    const auditLinesNow = (): string[] =>
+      readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean);
+    let verdictKeeperOn = greenLaneSlot !== null;
+    const verdictKeeper = (async (): Promise<void> => {
+      while (verdictKeeperOn) {
+        try { await tmuxOut("send-keys", "-t", `s${greenLaneSlot}`, "echo verdict-lane-busy", "Enter"); } catch { /* asserted below */ }
+        await Bun.sleep(250);
+      }
+    })();
+    await Bun.sleep(1500); // the pane has printed for longer than a poll, so its lastOutput is fresh
+    const busyAuditFrom = auditLinesNow().length;
     const slAcceptRes = slSecondReport.id === null ? null
       : await mainDecides(slSecondReport.id, "accept", "the repair holds — taking the work");
+    const busyRow = slSecondReport.id === null ? undefined : await reportRow(slSecondReport.id);
+    const busyPastes = slSecondReport.id === null ? -1 : await pasteCountOf(slSecondReport.id);
+    const busyAudit = auditLinesNow().slice(busyAuditFrom)
+      .filter((l) => slSecondReport.id !== null && l.includes(slSecondReport.id));
+    check("fleet-report carry: a verdict given while the lane's pane is BUSY is not typed — the row holds it as an open 'pending' delivery and the trail says undelivered",
+      busyRow?.decision?.disposition === "accepted" && busyRow?.decisionDelivery?.state === "pending"
+        && (busyRow?.decisionDelivery?.reason ?? "").includes("busy") && busyPastes === 0
+        && busyAudit.some((l) => l.includes("fleet_report_decision_undelivered") && l.includes("gate=busy pending")),
+      JSON.stringify({ delivery: busyRow?.decisionDelivery ?? null, pastes: busyPastes, audit: busyAudit }));
+    verdictKeeperOn = false;
+    await verdictKeeper;
+    const idlePaste = slSecondReport.id === null ? "" : await waitVerdictPaste(slSecondReport.id);
+    await Bun.sleep(600); // a window for a duplicate paste to appear, so "exactly one" is a waited answer
+    const idleRow = slSecondReport.id === null ? undefined : await reportRow(slSecondReport.id);
+    const idlePastes = slSecondReport.id === null ? -1 : await pasteCountOf(slSecondReport.id);
+    const idleAudit = auditLinesNow().slice(busyAuditFrom)
+      .filter((l) => slSecondReport.id !== null && l.includes(slSecondReport.id));
+    check("fleet-report carry: once the SAME occupation goes quiet the verdict arrives exactly once, disposition and reason verbatim, and the row says delivered",
+      idlePaste.includes("YOUR REPORT WAS ACCEPTED") && idlePaste.includes("the repair holds — taking the work")
+        && idlePastes === 1 && idleRow?.decisionDelivery?.state === "delivered"
+        && idleAudit.filter((l) => l.includes("fleet_report_decision_delivered")).length === 1,
+      JSON.stringify({ paste: idlePaste.slice(0, 160), pastes: idlePastes, delivery: idleRow?.decisionDelivery ?? null,
+        audit: idleAudit.map((l) => l.slice(0, 160)) }));
     check("self-land acceptance fixture: the lane files AGAIN and the MAIN accepts that row — the exit the refusal names, before the land below uses it",
       slSecondReport.ok && slSecondReport.id !== null && slSecondReport.id !== slFirstReport.id
         && slAcceptRes?.ok === true,

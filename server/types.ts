@@ -508,8 +508,12 @@ interface FleetReportDecision {
 //  · "blocked"        — a live, matching occupant that canDeliver refused (kill-switch, dead pane,
 //    blocking screen, quiet hours). `reason` carries the gate, so "we did not try" is legible as
 //    itself rather than as "the lane was gone".
+//  · "pending"        — the ONE open state: a live, matching occupant whose pane was busy when the
+//    verdict was recorded. Nothing was typed; the watch tick carries it at that SAME occupation's
+//    next idle and moves it to one of the four above (server.ts#tickWatches). A recycled or emptied
+//    slot turns it into "worker-gone" there, never into a paste. `reason` says what it waits for.
 // `reason` is null exactly on "delivered": there is nothing to explain about an act that worked.
-const FLEET_REPORT_DELIVERY_STATES = ["delivered", "send-uncertain", "worker-gone", "blocked"] as const;
+const FLEET_REPORT_DELIVERY_STATES = ["delivered", "send-uncertain", "worker-gone", "blocked", "pending"] as const;
 type FleetReportDeliveryState = typeof FLEET_REPORT_DELIVERY_STATES[number];
 interface FleetReportDecisionDelivery {
   state: FleetReportDeliveryState;

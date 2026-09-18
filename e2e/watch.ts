@@ -593,7 +593,9 @@ export async function run(): Promise<void> {
   // the ANCHOR is the call, not its option object: the options grew a `path` when the send ledger
   // landed (2026-09-17) and a literal that spelled them out made this ordering rule red for a
   // reason that has nothing to do with the order it holds.
-  const sendAt = tickSource.indexOf("await sendText(s, text, true,", persistedAt);
+  // the single-event send types `message` since the per-kind chain moved into fleetEventMessage
+  // (the same text GET /api/self/events/:id serves); the bundle keeps the same order in its own fn
+  const sendAt = tickSource.indexOf("await sendText(s, message, true,", persistedAt);
   check("watch transport persists send-uncertain before sendText and retries pending only",
     tickSource.includes('if (event.status !== "pending") continue;')
     && uncertainAt >= 0 && persistedAt > uncertainAt && sendAt > persistedAt,
@@ -823,7 +825,7 @@ export async function run(): Promise<void> {
     }
     // the transport rail, pinned at source: `delivered` is written only after the acceptance
     // read, and an unobservable send keeps the persisted send-uncertain marker.
-    const acceptAt = tickSource.indexOf("({ acceptance } = await sendText(s, text, true,");
+    const acceptAt = tickSource.indexOf("({ acceptance } = await sendText(s, message, true,");
     const unobsAt = tickSource.indexOf('acceptance === "unobservable"', acceptAt);
     const deliveredAt = tickSource.indexOf('event.status = "delivered";', unobsAt);
     check("watch transport: FleetEvent turns delivered only after the acceptance read, and unobservable stays send-uncertain",
@@ -2124,8 +2126,12 @@ export async function run(): Promise<void> {
       await Bun.sleep(250);
       deliveredProgram = (await clarificationEventRows()).find((e) => e.id === progRequest?.eventId);
     }
+    // main1 holds FOUR pending clarification events across this restart, so since c14fcd75 they may
+    // reach it as ONE bundled wake-up that names the event id instead of typing each full question —
+    // either way exactly one prompt carries it, and the full text is read off the event itself
     const clarificationPrompts = (await plogRead()).filter((p) => p.slot === main1
-      && p.text.includes(`request ${progRequest?.id}`));
+      && (p.text.includes(`request ${progRequest?.id}`)
+        || (!!deliveredProgram && p.text.includes(deliveredProgram.id))));
     check("clarification restart: request/event/bindings survive and deliver exactly once after MAIN becomes deliverable",
       restoredRequests.some((c) => c.id === progRequest?.id && c.receiver.openedAt === progRequest.receiver.openedAt)
         && deliveredProgram?.status === "delivered" && deliveredProgram.attempts === 1
@@ -2133,7 +2139,10 @@ export async function run(): Promise<void> {
         && !(JSON.parse(readFileSync(clarificationStatePath, "utf8")) as { clarifications?: { id?: string }[] })
           .clarifications?.some((c) => c.id === "malformed"),
       JSON.stringify({ restored: restoredRequests, event: deliveredProgram, prompts: clarificationPrompts.length }));
-    const clarificationText = clarificationPrompts[0]?.text ?? "";
+    const clarificationText = deliveredProgram
+      ? ((await (await fetch(`${BASE}/api/self/events/${deliveredProgram.id}`,
+        { headers: { "x-fleet-self-token": main1Tok } })).json().catch(() => ({}))) as { text?: string }).text ?? ""
+      : "";
     check("clarification request text marks a question, forbids blind execution, names exact reply command and Ack distinction",
       clarificationText.includes("worker question, NOT an instruction to execute blindly")
         && clarificationText.includes(`POST /api/self/clarifications/${progRequest?.id}/reply`)
@@ -3795,10 +3804,17 @@ export async function run(): Promise<void> {
     const laneStillOpen = ((await (await get("/api/sessions")).json()) as
       { slots: { id: number; cwd: string | null }[] }).slots
       .filter((x) => [acceptLane.slot, rejectLane.slot, terminalLane.slot].includes(x.id) && x.cwd).length;
-    const plogAfterDecision = await plogRead();
+    // since b5dc4dc2 a carry waits for its lane's quiet window (a lane that just opened is still
+    // printing), so the answer is WAITED for, bounded, and then asserted as before: one each, no more
     const decidedLanes = [acceptLane.slot, rejectLane.slot, terminalLane.slot];
-    const laneWrites = plogAfterDecision.slice(plogBeforeDecision)
-      .filter((entry) => decidedLanes.includes(entry.slot));
+    let laneWrites: Awaited<ReturnType<typeof plogRead>> = [];
+    for (let i = 0; i < 120; i++) {
+      laneWrites = (await plogRead()).slice(plogBeforeDecision).filter((entry) => decidedLanes.includes(entry.slot));
+      if (decidedLanes.every((slot) => laneWrites.some((e) => e.slot === slot))) break;
+      await Bun.sleep(250);
+    }
+    await Bun.sleep(600); // a window for a duplicate carry to appear, so "exactly one" is a waited answer
+    laneWrites = (await plogRead()).slice(plogBeforeDecision).filter((entry) => decidedLanes.includes(entry.slot));
     const carriesPerLane = decidedLanes.map((slot) => laneWrites.filter((e) => e.slot === slot).length);
     check("D1 the decision actuates nothing BUT the carry: Task.status, the lanes and report retention are untouched, and each decided lane gets exactly ONE verdict line",
       d1TaskId !== "" && d1TaskAfter?.status === d1TaskStatusBefore
@@ -5562,6 +5578,71 @@ export async function run(): Promise<void> {
     JSON.stringify(inflightEvent));
   if (inflightEvent) await ackEvent(aTok, inflightEvent.id);
 
+  // --- ONE WAKE-UP PER RECEIVER AND TICK (c14fcd75). Three watches of ONE receiver fire in the same
+  // round: the pane gets exactly one send naming all three ids, and each full text stays readable on
+  // its event. The same round is MADE, not raced for: the kill-switch holds every minted event
+  // `pending` (canDeliver's first gate), so all three are waiting when the owner releases it, and the
+  // next tick sees them together. On a receiver of its OWN, opened here and closed below: three more
+  // terminal events on `aId` evicted rows the per-receiver retention checks further down still read.
+  // Mutation caught: FACT 2 without the per-receiver grouping types
+  // three full messages — three plog rows with `[event <id>]`, three `send` rows. ---
+  {
+    const rId = await freeSlot();
+    const openR = rId ? await post(`/api/slots/${rId}/open`, { cwd: REPO }) : null;
+    const rTok = openR?.ok ? await paneEnv(`s${rId}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    check("bundle fixture: a plain receiver slot of its own is open and its pane carries FLEET_SELF_TOKEN",
+      !!openR?.ok && /^[0-9a-f]{32}$/.test(rTok), `${rId} ${openR?.status} [${rTok}]`);
+    const bundleIds = ["d0000011", "d0000012", "d0000013"];
+    const sendRowsOfA = (): number => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((l) => { try { return JSON.parse(l) as { event?: string; slot?: number; path?: string }; } catch { return {}; } })
+      .filter((r) => r.event === "send" && r.slot === rId && r.path === "fleet-event").length;
+    const paused = await post("/api/autos/switch", { on: false });
+    const plogBefore = (await plogRead()).length;
+    const sendsBefore = sendRowsOfA();
+    const subs: (DeployWatchRow | undefined)[] = [];
+    for (const id of bundleIds) {
+      appendDeploy(deployRow(id, true, "boot", { hitTarget: true, bundleStale: false }));
+      subs.push((await (await selfWatch(rTok, { kind: "deploy", deployId: id, idleSec: 0 })).json() as
+        { watch?: DeployWatchRow }).watch);
+    }
+    const heldRows = (await deployEventRows()).filter((e) => subs.some((w) => w?.id === e.watchId));
+    check("bundle fixture: automation paused, and all three watches minted an event that is held pending",
+      paused.ok && subs.every((w) => !!w) && heldRows.length === 3 && heldRows.every((e) => e.status === "pending"),
+      JSON.stringify({ paused: paused.status, subs: subs.map((w) => w?.id ?? null),
+        rows: heldRows.map((e) => `${e.id}:${e.status}`) }));
+    const released = await post("/api/autos/switch", { on: true });
+    let rows: DeployEventRow[] = [];
+    for (let i = 0; i < 120; i++) {
+      rows = (await deployEventRows()).filter((e) => subs.some((w) => w?.id === e.watchId));
+      if (rows.length === 3 && rows.every((e) => e.status === "delivered")) break;
+      await Bun.sleep(100);
+    }
+    const typed = (await plogRead()).slice(plogBefore).filter((p) => p.slot === rId);
+    const naming = typed.filter((p) => rows.every((e) => p.text.includes(e.id)));
+    const single = typed.filter((p) => rows.some((e) => p.text.includes(`[event ${e.id}]`)));
+    check("three watches of one receiver firing in one round reach its pane as EXACTLY ONE send that names all three event ids",
+      released.ok && rows.length === 3 && rows.every((e) => e.status === "delivered")
+        && typed.length === 1 && naming.length === 1 && single.length === 0
+        && sendRowsOfA() - sendsBefore === 1,
+      JSON.stringify({ rows: rows.map((e) => `${e.id}:${e.status}`), sends: sendRowsOfA() - sendsBefore,
+        typed: typed.map((p) => p.text.slice(0, 160)) }));
+    const reads = await Promise.all(rows.map(async (e) => {
+      const r = await fetch(`${BASE}/api/self/events/${e.id}`, { headers: { "x-fleet-self-token": rTok } });
+      return { id: e.id, status: r.status, body: await r.json().catch(() => ({})) as { text?: string } };
+    }));
+    check("each bundled event keeps its FULL text on the row: GET /api/self/events/:id renders the message the bundle only named",
+      reads.every((r) => r.status === 200 && (r.body.text ?? "").includes(`[event ${r.id}]`)
+        && (r.body.text ?? "").includes("ok=YES")),
+      JSON.stringify(reads.map((r) => `${r.id}:${r.status}:${(r.body.text ?? "").slice(0, 60)}`)));
+    const foreignRead = rows[0]
+      ? await fetch(`${BASE}/api/self/events/${rows[0].id}`, { headers: { "x-fleet-self-token": bTok } })
+      : new Response(null, { status: 599 });
+    check("the event read is bound to the receiver: another session gets 409, never the text",
+      foreignRead.status === 409, `${foreignRead.status}`);
+    for (const e of rows) await ackEvent(rTok, e.id);
+    if (rId) await post(`/api/slots/${rId}/kill`, {});
+  }
+
   const laneDeployToken = await paneEnv(`s${tgt.slot}`, "FLEET_SELF_TOKEN") ?? "";
   const laneDeployWatch = await selfWatch(laneDeployToken, { kind: "deploy", deployId: successId });
   check("deploy watch: a lane remains refused 409 on the existing self-watch route",
@@ -5948,9 +6029,9 @@ export async function run(): Promise<void> {
   // by the subscriber and validated at CREATE time. An inbox event is minted straight to the status
   // word "inbox", which the transport loop never selects — so what is proven below is not "no
   // message arrived this time" but "no transport step exists": no pane bytes, no history row, no
-  // prompt-journal row, deliveredAt null forever. Visibility and consumption stay separate facts —
-  // the receiver session may SEE such a row and may never acknowledge it, and the owner may close
-  // only those. Every pane-delivery check above is the untouched baseline for the legacy path.
+  // prompt-journal row, deliveredAt null forever. The receiver session reads such a row by PULL and
+  // may close it (since c14fcd75); the owner may close only these rows, never a pane-delivered one.
+  // Every pane-delivery check above is the untouched baseline for the legacy path.
   //
   // It runs HERE, LAST, on purpose: the pane fixtures above depend on a receiver pane
   // staying busy for a bounded window and on their own retained rows, and work inserted earlier
@@ -6009,11 +6090,29 @@ export async function run(): Promise<void> {
   // around this family own theirs; the event is durable independently of it, which the checks
   // further down assert in their own right.
   if (inboxSub.watch) await post(`/api/watches/${inboxSub.watch.id}/delete`, {});
-  const inboxSelfAck = inboxEvent ? await ackEvent(replacementATok, inboxEvent.id) : new Response(null, { status: 599 });
-  const inboxSelfAckText = await inboxSelfAck.text();
-  check("inbox: the bound receiver session cannot self-acknowledge — it was never offered the row",
-    inboxSelfAck.status === 409 && inboxSelfAckText.includes("acknowledgement belongs to the owner"),
-    `${inboxSelfAck.status} ${inboxSelfAckText}`);
+  // …and its RECEIVER may close it (c14fcd75): the row is this session's own, readable by pull, and it
+  // holds this session's delivery budget. On a row of its own, so `inboxEvent` stays open for the
+  // restart below. Still never typed: the self-ack is a receipt, not a delivery (deliveredAt null).
+  // Mutation caught: the old unconditional `delivery === "inbox"` refusal (409 "belongs to the owner").
+  const selfAckInboxId = "d0000008";
+  appendDeploy(deployRow(selfAckInboxId, true, "boot", { hitTarget: true, bundleStale: false }));
+  const selfAckInboxSub = await (await selfWatch(replacementATok,
+    { kind: "deploy", deployId: selfAckInboxId, idleSec: 0, delivery: "inbox" })).json() as { watch?: DeployWatchRow };
+  const selfAckInboxEvent = (await deployEventRows()).find((e) => e.watchId === selfAckInboxSub.watch?.id);
+  if (selfAckInboxSub.watch) await post(`/api/watches/${selfAckInboxSub.watch.id}/delete`, {});
+  const inboxSelfAck = selfAckInboxEvent ? await ackEvent(replacementATok, selfAckInboxEvent.id)
+    : new Response(null, { status: 599 });
+  const inboxSelfAckJ = await inboxSelfAck.json().catch(() => ({})) as
+    { existing?: boolean; event?: { status?: string; deliveredAt?: number | null } };
+  const inboxSelfAck2 = selfAckInboxEvent ? await ackEvent(replacementATok, selfAckInboxEvent.id)
+    : new Response(null, { status: 599 });
+  const inboxSelfAck2J = await inboxSelfAck2.json().catch(() => ({})) as { existing?: boolean };
+  check("inbox: the bound receiver session self-acknowledges a delivery:'inbox' event (200, not 409), once and idempotently, and it stays never-delivered",
+    selfAckInboxEvent?.status === "inbox" && inboxSelfAck.status === 200 && inboxSelfAckJ.existing === false
+      && inboxSelfAckJ.event?.status === "acknowledged" && inboxSelfAckJ.event.deliveredAt === null
+      && inboxSelfAck2.ok && inboxSelfAck2J.existing === true,
+    JSON.stringify({ event: selfAckInboxEvent?.status ?? null, first: inboxSelfAck.status, j: inboxSelfAckJ,
+      second: inboxSelfAck2.status }));
 
   // a SECOND row for the happy path, so the first one stays open across the restart below — an
   // already-acknowledged row would prove nothing about loading the new status word.
@@ -6286,9 +6385,13 @@ export async function run(): Promise<void> {
     // the transport honesty for this kind is the SAME code path, pinned at source: the new
     // message branch sits between the persisted send-uncertain marker and the sendText call of
     // the one FACT 2 loop, so every ACP-25 rule proved above for lane events binds it too.
-    const transitionBranchAt = tickSource.indexOf('event.kind === "supervisor-transition"');
+    // the per-kind chain lives in fleetEventMessage, and FACT 2 composes through it in that window
+    const composeAt = tickSource.indexOf("const message = fleetEventMessage(event);");
+    const composerFn = /function fleetEventMessage\([\s\S]*?\n\}/.exec(serverSource)?.[0] ?? "";
+    const transitionBranchAt = composerFn.indexOf('event.kind === "supervisor-transition"');
     check("stn1 transport: the supervisor-transition message is composed inside FACT 2 after send-uncertain is persisted and before sendText",
-      transitionBranchAt > persistedAt && transitionBranchAt < sendAt, `${persistedAt}:${transitionBranchAt}:${sendAt}`);
+      transitionBranchAt >= 0 && composeAt > persistedAt && composeAt < sendAt,
+      `${persistedAt}:${composeAt}:${sendAt} branch=${transitionBranchAt}`);
 
     await bindSupervisor(null);
     check("stn1 cleanup: the fixture binding is gone again and the Supervisor module's null baseline holds",

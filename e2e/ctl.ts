@@ -223,10 +223,10 @@ export async function run(): Promise<void> {
   // The verb list is what e2e/pins.ts holds against docs/controller.md, so the usage block has to
   // actually carry it — a pin over a list nothing prints would guard a doc against nothing.
   const usage = await ctl([]);
-  const VERBS = ["get", "merges", "lock", "ctx", "report", "watch", "events", "land", "dispatch",
+  const VERBS = ["get", "merges", "lock", "ctx", "report", "audits", "watch", "events", "land", "dispatch",
     "wait merge", "wait change", "send", "commit main"];
   const missing = VERBS.filter((v) => !usage.out.includes(`  ${v}`));
-  check("ctl usage: a bare ./ctl.sh prints all thirteen verbs and exits 0",
+  check("ctl usage: a bare ./ctl.sh prints all fourteen verbs and exits 0",
     usage.code === 0 && missing.length === 0, `exit ${usage.code} missing=[${missing.join(", ")}]`);
   const bogus = await ctl(["nosuchverb"]);
   check("ctl usage: an unknown verb exits 2 and names itself",
@@ -395,6 +395,102 @@ export async function run(): Promise<void> {
   const ctxGone = await ctl(["ctx", "999", "--json"]);
   check("ctl ctx: a slot this fleet does not have is refused, not answered",
     ctxGone.code === 1 && ctxGone.err.includes("no slot 999"), `exit ${ctxGone.code}`);
+
+  // === audits ===================================================================================
+  // The verb reads the ROUTE, so the fixture is planted where the route reads: the instance's own
+  // post-land-audits.jsonl and audit-adjudications.jsonl (server.ts#POSTLAND_AUDIT_FILE, read fresh
+  // on every GET). Other modules write those files too, so whatever is there is moved aside and put
+  // back — `.1` included, because readLedger reads the older generation first. The `at` values sit
+  // in 2001, where no real row and no other module's fixture can collide with them.
+  const ledgers = ["post-land-audits.jsonl", "audit-adjudications.jsonl"]
+    .flatMap((f) => [`${ROOT}/${f}`, `${ROOT}/${f}.1`]);
+  const stash = ledgers.filter(existsSync).map((p) => { renameSync(p, `${p}.ctlstash`); return p; });
+  try {
+    const T = 1_000_000_000_000;
+    const hex = (h: string): string => h.repeat(20);
+    const row = (at: number, result: string, sha: string, branch: string, extra: Record<string, unknown>) => ({
+      at, startedAt: at - 1000, ms: 1000, repo: REPO, main: "main", mainSha: hex(sha), result, cmd: "fixture",
+      exitCode: result === "unknown" ? null : result === "green" ? 0 : 1, out: "",
+      covers: [{ branch, mainAfter: hex(sha === "a1" ? "b2" : sha), at: at - 2000 }], checks: null, ...extra,
+    });
+    const fixture = [
+      row(T + 1, "red", "d4", "fleet/ctl-fix-c", { checks: { ran: 90, failed: 1 }, fails: ["ctlfixture alpha"] }),
+      row(T + 3, "red", "a1", "fleet/ctl-fix-a", { checks: { ran: 100, failed: 2 }, fails: ["ctlfixture alpha", "ctlfixture beta"] }),
+      row(T, "unknown", "e5", "fleet/ctl-fix-d", { reason: "fixture: never measured" }),
+      row(T + 2, "green", "c3", "fleet/ctl-fix-b", { checks: { ran: 100, failed: 0 }, fails: [] }),
+    ];
+    writeFileSync(`${ROOT}/post-land-audits.jsonl`, fixture.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    writeFileSync(`${ROOT}/audit-adjudications.jsonl`,
+      JSON.stringify({ at: T + 10, auditAt: T + 3, verdict: "flake", by: "owner", note: "ctl fixture" }) + "\n");
+
+    type AuditsJson = {
+      live: unknown; total: number; delivered: number;
+      fail: { text: string; count: number; of: number; withFails: number } | null;
+      sha: { query: string; matched: number; of: number } | null;
+      audits: { at: number; result: string; mainSha: string; covers: string[]; checks: unknown;
+        fails: string[] | null; adjudication: { verdict: string } | null; reason?: string }[];
+    };
+    const liveApi = ((await (await get("/api/sessions")).json()) as { postLandAuditLive?: unknown }).postLandAuditLive;
+
+    // (1) the rows: newest first, every field the brief names, the adjudication JOINED on the row it judges
+    const plain = await ctl(["audits"]);
+    const js = await ctl(["audits", "--json"]);
+    const a = js.json as AuditsJson | null;
+    const order = a?.audits.map((r) => r.at).join(",");
+    check("ctl audits: the live line comes FIRST and says what /api/sessions says — null is idle, never unknown",
+      liveApi === null
+        ? plain.out.split("\n")[0] === "live: idle — no audit running, none waiting"
+        : plain.out.startsWith("live: ") && !plain.out.startsWith("live: idle") && !plain.out.startsWith("live: UNKNOWN"),
+      `api=${JSON.stringify(liveApi)} first=${JSON.stringify(plain.out.split("\n")[0])}`);
+    check("ctl audits: the rows are the route's, newest first, with result/mainSha/covers/checks/fails as the ledger holds them",
+      js.code === 0 && a?.total === 4 && order === [T + 3, T + 2, T + 1, T].join(",")
+        && a.audits[0]!.mainSha === hex("a1") && a.audits[0]!.covers.join() === "fleet/ctl-fix-a"
+        && JSON.stringify(a.audits[0]!.checks) === JSON.stringify({ ran: 100, failed: 2 })
+        && a.audits[0]!.fails?.join("|") === "ctlfixture alpha|ctlfixture beta"
+        && a.audits[1]!.fails?.length === 0 && a.audits[3]!.fails === null && a.audits[3]!.checks === null
+        && a.audits[3]!.reason === "fixture: never measured",
+      `exit ${js.code} total=${a?.total} order=${order} first=${JSON.stringify(a?.audits[0])}`);
+    const plainRows = plain.out.split("\n").filter((l) => l.startsWith("2001-"));
+    check("ctl audits: the adjudication is the rail's — a judged red reads `adj flake`, an unjudged one `adj none`",
+      a?.audits[0]!.adjudication?.verdict === "flake" && a?.audits[2]!.adjudication === null
+        && plainRows.length === 4 && plainRows[0]!.includes("adj flake (owner)") && plainRows[2]!.includes("adj none")
+        && plainRows[0]!.includes("checks 100 ran/2 failed") && plainRows[3]!.includes("checks unmeasured"),
+      `rows=${JSON.stringify(plainRows)}`);
+
+    // (2) --fail counts over EVERY delivered row and names the denominator
+    const failRun = await ctl(["audits", "--fail", "ctlfixture alpha", "--json"]);
+    const f = failRun.json as AuditsJson | null;
+    const failPlain = await ctl(["audits", "--fail", "ctlfixture alpha"]);
+    check("ctl audits --fail: it counts over all delivered rows, names the denominator and how many carried a fails list",
+      failRun.code === 0 && f?.fail?.count === 2 && f.fail.of === 4 && f.fail.withFails === 3
+        && f.audits.map((r) => r.at).join(",") === [T + 3, T + 1].join(",")
+        && failPlain.out.includes(`fail "ctlfixture alpha": in 2 of 4 row(s) delivered`),
+      `exit ${failRun.code} fail=${JSON.stringify(f?.fail)} out=${failPlain.out.split("\n").slice(0, 3).join(" / ")}`);
+
+    // (3) --sha: a tip or a covered land's mainAfter is found; a sha the trail does not know is a NAMED exit 1
+    const shaHit = await ctl(["audits", "--sha", "b2b2b2b2", "--json"]);
+    const unknownSha = await ctl(["audits", "--sha", "0123abcd"]);
+    const badSha = await ctl(["audits", "--sha", "not-a-sha"]);
+    check("ctl audits --sha: a covered land's mainAfter finds the row that answered for it",
+      shaHit.code === 0 && (shaHit.json as AuditsJson | null)?.audits.map((r) => r.at).join(",") === String(T + 3),
+      `exit ${shaHit.code} ${JSON.stringify((shaHit.json as AuditsJson | null)?.sha)}`);
+    check("ctl audits --sha: an unknown sha exits 1 and says UNKNOWN with the denominator; a malformed one exits 2",
+      unknownSha.code === 1 && unknownSha.out.includes("sha 0123abcd: UNKNOWN to the trail")
+        && unknownSha.out.includes("among 4 delivered") && badSha.code === 2 && badSha.err.includes("--sha wants"),
+      `unknown exit ${unknownSha.code} out=${JSON.stringify(unknownSha.out.slice(0, 300))} bad exit ${badSha.code}`);
+
+    // (4) an EMPTY ledger is its own sentence, not a blank screen and not an error
+    for (const p of ledgers) rmSync(p, { force: true });
+    const empty = await ctl(["audits"]);
+    const emptyJs = await ctl(["audits", "--json"]);
+    check("ctl audits: an empty ledger is a named result — exit 0, `ledger empty`, total 0",
+      empty.code === 0 && empty.out.split("\n")[1]?.startsWith("ledger empty — no post-land audit row is recorded")
+        && (emptyJs.json as AuditsJson | null)?.total === 0,
+      `exit ${empty.code} out=${JSON.stringify(empty.out.slice(0, 300))}`);
+  } finally {
+    for (const p of ledgers) rmSync(p, { force: true });
+    for (const p of stash) renameSync(`${p}.ctlstash`, p);
+  }
 
   // === land --wait ==============================================================================
   // A clean lane (its own file) never consults the merge agent, so this is the ordinary green land.

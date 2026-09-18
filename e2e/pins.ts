@@ -55,7 +55,10 @@ import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../serve
 import { readEventLog, readLedger } from "../server/persist";
 import { readJsonl } from "../briefstats";
 import { quotaPosition, newResetEntries } from "../codex-quota";
-import { readJsonl as landQualityReadJsonl, modelKey, renderFull, renderSummary, sizeIndexOf, type LandRow } from "../land-quality";
+import {
+  readJsonl as landQualityReadJsonl, modelKey, renderFull, renderSummary, sizeIndexOf, sizeStampOrJoin,
+  type LandRow,
+} from "../land-quality";
 import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
@@ -2560,6 +2563,27 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && !m.has("t4") && m.size === 3,
       `t1=${m.get("t1")} (fleet over archive) t2=${m.get("t2")} (archive only) `
         + `t3=${m.get("t3")} (newest archive line) t4 absent n=${m.size}`);
+  }
+  // …and the STAMP both halves agree on (2026-09-18, S2 of the queue-fields note): the writer
+  // reads the card size off the task row at land time through ONE lookup (live first, then the
+  // archive — the resolvedModel pattern), and the reader prefers that stamp in BOTH forms; only a
+  // pre-stamp row falls back to the join. A null stamp that silently joined again would re-derive
+  // exactly the answer the writer already read, off a row the eviction may have emptied.
+  {
+    const helper = /async function taskCardSize\(s: Slot\)[\s\S]*?\n\}\n/.exec(server)?.[0] ?? "";
+    const stampWrites = (server.match(/taskCardSize\(/g) ?? []).length;
+    pin("buildLaneOutcome stamps size through ONE taskCardSize lookup (live task first, then archive)",
+      stampWrites === 2 && helper.includes("tasks.find(") && helper.includes("youngestArchivedTask(")
+      && /size: await taskCardSize\(s\),/.test(laneOutcomeBody),
+      `writes=${stampWrites} (def+call) helper=${helper.length}b ` +
+        `stamped=${/size: await taskCardSize\(s\),/.test(laneOutcomeBody)}`);
+    const j = new Map(["t9"].map((id) => [id, "klein"] as const));
+    pin("land-quality prefers the row's size stamp — value AND explicit none — over the join; only pre-stamp rows join",
+      sizeStampOrJoin({ size: "gross" }, j, "t9", null) === "gross"
+      && sizeStampOrJoin({ size: null }, j, "t9", null) === null
+      && sizeStampOrJoin({}, j, "t9", null) === "klein"
+      && sizeStampOrJoin({}, j, null, null) === null,
+      "stamp=value kept · stamp=null stays none · absent joins · join miss stays null");
   }
   // THE BRIEF FORMS exist where the doc names them (2026-09-18): both scripts parse --brief and
   // reject an unknown flag, and docs/controller.md's loop section names both. A doc naming a flag

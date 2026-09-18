@@ -16,7 +16,7 @@ import { pollPlan } from "./pollplan";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
-import { METER_STATIONS, suiteMeter, type MeterStation } from "./suitemeter";
+import { METER_STATIONS, laneTail, suiteMeter, type MeterBall, type MeterStation } from "./suitemeter";
 import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsSubject, opsSummary, type OpsPollRow } from "./opsevents";
 import {
   projectTaskWaves,
@@ -226,6 +226,8 @@ interface SlotInfo {
   // which agent this session runs. ABSENT means the default harness — the server omits the field
   // when it is null (it is the 2 s poll), so absent and "claude" are the same state here too.
   harness?: string; effort?: string;
+  // what the session is for (server.ts, the /api/sessions slot row) — absent means none set
+  mission?: string; awaiting?: "owner" | "main"; taskId?: string; taskHead?: string; programId?: string;
   // WHICH BOX and WHICH DAEMON this session's agent runs in. Present — RESOLVED, never null —
   // exactly when the slot's harness has a container concept, absent otherwise; that is the one
   // question the fleet-wide env could not answer per session.
@@ -1244,12 +1246,41 @@ const repoOfSlot = (s: SlotInfo | undefined, brief: BriefInfo): string | null =>
 const boardBody = $("boardbody");
 let boardOpen = localStorage.getItem("fleet.board") === "1";
 let boardBusy = false;
-// the AGENTS group sits behind a "more ▸" disclosure, folded away by default (owner call
-// 2026-08-06): the advisory summary/review are the least-used part of the board and were
-// pushing the git story down. Deliberately NOT persisted — "folded by default" means every
-// page load starts folded — but it IS module state, so the board's 3s re-render cannot
-// snap it shut while you are reading a finding.
-let agentsOpen = false;
+// THE BOARD'S FOLDS: files, lanes, agents and prompts each sit behind a disclosure. Module state,
+// so the 3s re-render cannot snap one shut while you read in it; remembered per browser — except
+// AGENTS, which starts folded on every page load (owner call 2026-08-06: the advisory summary and
+// review are the least-used part of the board and must not push the git story down unasked).
+const FOLD_KEY = "fleet.board.folds";
+const FOLD_SESSION_ONLY = new Set(["agents"]);
+const boardFolds: Set<string> = (() => {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(FOLD_KEY) ?? "[]");
+    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !FOLD_SESSION_ONLY.has(x)) : []);
+  } catch { return new Set(); } // a hand-edited or foreign value is "nothing open", not a crash
+})();
+function boardFold(key: string, title: string, count: string | null, fill: (body: HTMLElement) => void): HTMLElement {
+  const open = boardFolds.has(key);
+  const box = el("div", `bfold${open ? " open" : ""}`);
+  const hd = el("button", "bfoldhd") as HTMLButtonElement;
+  hd.setAttribute("aria-expanded", String(open));
+  hd.append(el("span", "bchev"), el("span", "bfoldt", title), ...(count !== null ? [el("span", "bfoldn", count)] : []));
+  hd.onclick = () => {
+    if (boardFolds.has(key)) boardFolds.delete(key); else boardFolds.add(key);
+    try { localStorage.setItem(FOLD_KEY, JSON.stringify([...boardFolds].filter((k) => !FOLD_SESSION_ONLY.has(k)))); }
+    catch { /* storage refused — the fold still works for this page */ }
+    void renderBoard();
+  };
+  box.appendChild(hd);
+  // a folded group builds nothing: its body is only filled (and its data only fetched) when open
+  if (open) {
+    const body = el("div", "bfoldbody");
+    fill(body);
+    box.appendChild(body);
+  }
+  return box;
+}
+// the head's ⋯ session menu — module state for the same reason: the 3s repaint must not shut it
+let boardMenuOpen = false;
 // per-slot outline cursor, incremental like pollChat: full fetch once, then only new entries
 const outline = new Map<number, { total: number; source: string | null; prompts: string[] }>();
 // ✨ agent summary (BACKLOG #14 Phase 2): result of the server's short-lived
@@ -2021,7 +2052,16 @@ const meterEl = $("boardsuites");
 const meterBalls = new Map<string, HTMLElement>();
 let meterSuites: SuiteOfferRow[] = [];
 let meterOpen = localStorage.getItem("fleet.meter.open") === "1";
-const METER_WORD: Record<MeterStation, string> = { wait: "wartet", run: "läuft", helper: "helfer", done: "fertig" };
+const METER_WORD: Record<MeterStation, string> = { wait: "waiting", run: "running", helper: "on helper", done: "done" };
+// a finished ball says HOW it finished — the station alone would call a red run "done"
+const meterState = (b: MeterBall): string =>
+  b.station !== "done" ? METER_WORD[b.station] : b.tone === "red" ? "failed" : b.tone === "unknown" ? "no result" : "passed";
+function meterModel() {
+  return suiteMeter({
+    gate: gateInfo, audit: postLandLive, offers: meterSuites, devices: helperDevicesInfo,
+    slots: fleet.filter((s) => s.cwd).map((s) => ({ id: s.id, label: s.label, branch: s.worktree?.branch ?? null })),
+  });
+}
 const METER_TITLE: Record<MeterStation, string> = {
   wait: "asked for, not started — a lane waiting on the suite mutex, an offer no helper took yet, a land whose post-land audit is folded into the next run",
   run: "running on this box — whatever holds the machine-wide suite mutex",
@@ -2051,34 +2091,40 @@ function meterX(i: number, offsetPx: number): string {
 function helperSummary(): string | null {
   if (!helperDevicesInfo.length || deviceOnlineMs === null) return null;
   const online = helperDevicesInfo.filter((d) => Date.now() - d.lastSeen < deviceOnlineMs!);
-  if (!online.length) return "💻 offline";
+  if (!online.length) return "helpers offline";
   const free = online.reduce((n, d) => n + Math.max(0, (d.maxParallelSuites ?? 0) - (d.running ?? 0)), 0);
   const known = online.every((d) => d.maxParallelSuites !== undefined);
-  return known ? `💻 ${free} frei` : `💻 ${online.length} online`;
+  return known ? `${free} helper slot${free === 1 ? "" : "s"} free` : `${online.length} helper${online.length === 1 ? "" : "s"} online`;
 }
 function renderSuiteMeter() {
   if (!boardOpen || isMobile()) return;
-  const m = suiteMeter({
-    gate: gateInfo, audit: postLandLive, offers: meterSuites, devices: helperDevicesInfo,
-    slots: fleet.filter((s) => s.cwd).map((s) => ({ id: s.id, label: s.label, branch: s.worktree?.branch ?? null })),
-  });
+  const m = meterModel();
   const focusSlot = panes[focused]?.slot ?? null;
-  const red = m.balls.some((b) => b.tone === "red");
-  meterEl.className = `lock-${m.lock ?? "none"}${red ? " has-red" : ""}`;
+  meterEl.className = `lock-${m.lock ?? "none"}`;
 
-  // head: one line — what the mutex is doing, and what the helpers could still take
-  const lockWord = m.lock === null ? "gate not served" : m.lock === "free" || m.lock === "stale" ? "frei"
-    : m.lock === "overdue" ? "⚠ überfällig" : m.lock === "parked" ? "⏸ geparkt" : m.lock === "unknown" ? "? unbekannt" : "belegt";
+  // head: one line — the title opens the full gate reading; then what the mutex is doing and for
+  // how long; then what the helpers could still take
+  const lk = gateInfo?.lock ?? null;
+  const held = lk ? ` ${gateAge(lk.ageMs ?? lk.heldMs)}` : "";
+  const lockWord = m.lock === null ? "not reported" : m.lock === "free" || m.lock === "stale" ? "idle"
+    : m.lock === "overdue" ? `stuck${held}` : m.lock === "parked" ? `parked${held}` : m.lock === "unknown" ? `unknown holder${held}` : `busy${held}`;
   const lockEl = el("span", "smlock", lockWord);
   lockEl.title = m.lock === null ? "This server sends no gate reading — nothing here has measured the mutex."
-    : "The machine-wide suite mutex (e2e-stage.sh). Click the stations for the full reading.";
+    : m.lock === "overdue" ? "The suite mutex has been held longer than any suite here takes — its holder is probably wedged. Open the reading for the pid."
+    : "The machine-wide suite mutex (e2e-stage.sh) — one suite at a time on this box.";
   const hs = helperSummary();
   const devEl = hs ? el("button", "smdev", hs) as HTMLButtonElement : null;
   if (devEl) { devEl.title = "helper devices — open the register"; devEl.onclick = () => devbtn.click(); }
-  const tog = el("button", "smtog", meterOpen ? "▾" : "▸") as HTMLButtonElement;
-  tog.title = meterOpen ? "hide the gate reading" : "show the gate reading — lock, running audit, every report";
-  tog.onclick = () => { meterOpen = !meterOpen; localStorage.setItem("fleet.meter.open", meterOpen ? "1" : "0"); renderSuiteMeter(); };
-  meterHead.replaceChildren(el("span", "smtitle", "Suiten"), lockEl, ...(devEl ? [devEl] : []), tog);
+  const tog = el("button", `smtog${meterOpen ? " open" : ""}`) as HTMLButtonElement;
+  tog.append(el("span", "bchev"), el("span", "smtitle", "Suites"));
+  tog.setAttribute("aria-expanded", String(meterOpen));
+  tog.title = meterOpen ? "hide the gate reading" : "show the gate reading — lock holder, running audit, every report";
+  tog.onclick = () => {
+    meterOpen = !meterOpen;
+    try { localStorage.setItem("fleet.meter.open", meterOpen ? "1" : "0"); } catch { /* the toggle still works for this page */ }
+    renderSuiteMeter();
+  };
+  meterHead.replaceChildren(tog, lockEl, ...(devEl ? [devEl] : []));
 
   // balls: keyed, so one run keeps its element while it moves from station to station
   const seen = new Set<string>();
@@ -2095,8 +2141,9 @@ function renderSuiteMeter() {
         requestAnimationFrame(() => born.classList.remove("entering"));
       }
       // a crowd gathers: balls stack a few pixels apart, centred on the station
-      ball.style.left = meterX(i, (j - (here.length - 1) / 2) * 5);
-      ball.className = `smball tone-${b.tone}${b.slot !== null && b.slot === focusSlot ? " mine" : ""}`;
+      ball.style.left = meterX(i, (j - (here.length - 1) / 2) * 9);
+      // only the leading ball of a crowd trails a streak — the rest would draw theirs across it
+      ball.className = `smball tone-${b.tone}${b.slot !== null && b.slot === focusSlot ? " mine" : ""}${j > 0 ? " tail" : ""}`;
       ball.title = `${b.name} — ${b.what}`;
     });
   });
@@ -2105,7 +2152,8 @@ function renderSuiteMeter() {
   // stations: the four labels, each under its tick, with a count
   meterCols.replaceChildren(el("div", "smcol0"), ...METER_STATIONS.map((st) => {
     const n = m.balls.filter((b) => b.station === st).length;
-    const lab = el("button", `smst${n ? " on" : ""}`, n ? `${METER_WORD[st]} ${n}` : METER_WORD[st]) as HTMLButtonElement;
+    const lab = el("button", `smst${n ? " on" : ""}`, METER_WORD[st]) as HTMLButtonElement;
+    if (n) lab.appendChild(el("span", "smstn", String(n)));
     lab.title = METER_TITLE[st];
     lab.onclick = () => tog.click();
     return lab;
@@ -2118,7 +2166,7 @@ function renderSuiteMeter() {
     const mine = b.slot !== null && b.slot === focusSlot;
     const row = el("button", `smrow tone-${b.tone}${mine ? " mine" : ""}`) as HTMLButtonElement;
     row.append(el("span", "smdot"), el("span", "smname", b.name), el("span", "smwhat", b.what),
-      el("span", "smwhere", METER_WORD[b.station]));
+      el("span", "smwhere", meterState(b)));
     row.title = `${b.name} — ${b.what}${b.slot !== null ? " · click to open the lane" : ""}`;
     const slot = b.slot;
     if (slot !== null && fleet[slot - 1]?.cwd) row.onclick = () => showSlot(slot);
@@ -2416,7 +2464,7 @@ function deploySection(): HTMLElement | null {
   const codeDue = deployGapInfo?.codeBehind === true;
   const bundleDue = bundleStaleInfo?.stale === true;
   if (!codeDue && !bundleDue) return null;
-  const sec = el("div", "bsec");
+  const sec = el("div", "bsec balert");
   if (codeDue) {
     const n = deployGapInfo?.behindCount ?? null;
     const row = el("div", "bstate",
@@ -2455,7 +2503,7 @@ let errorsOpen = false;
 function errorsSection(): HTMLElement | null {
   const e = errorsInfo;
   if (!e) return null;
-  const sec = el("div", "bsec");
+  const sec = el("div", "bsec balert");
   const many = e.total !== e.distinct;
   const head = el("div", "bstate",
     `⚠ ${e.total} server error${e.total === 1 ? "" : "s"}${many ? ` · ${e.distinct} distinct` : ""}`
@@ -2508,7 +2556,7 @@ function errorsSection(): HTMLElement | null {
 //   · it is fetched ONCE per working directory, never from the repaint loop. /api/sessions at 2s
 //     is what data-saver.md had to shrink; a subprocess per board render would put it back.
 //   · what the reader has OPENED is module state, not DOM state, so a repaint cannot fold the
-//     tree shut under their hands. Same reason `agentsOpen` and the picker's `pkdOpen` are.
+//     tree shut under their hands. Same reason the board's folds and the picker's `pkdOpen` are.
 //
 // Everything the reader has DONE to this card is keyed BY CWD, and that is the third rule. The
 // open-folder set used to be one global Set of `"a/b"` prefixes: two repos that both have a `src/`
@@ -2674,14 +2722,13 @@ function fxSearchInput(cwd: string, onInput: () => void, wide: boolean): HTMLInp
 function fileTreeSection(slot: number, cwd: string): HTMLElement {
   const sec = el("div", "bsec");
   const hd = el("div", "bwthead");
-  hd.appendChild(el("h3", "", "files in this repo"));
   const t = fxTree.get(cwd);
   if (t && !("error" in t)) {
-    const big = el("button", "bwtact", "⤢");
+    const big = el("button", "bbtn quiet", "Open explorer");
     big.title = "open the file explorer in a window — the place to actually read one";
     big.onclick = () => openExplorer(slot, cwd);
     hd.appendChild(big);
-    const again = el("button", "bwtact", "⟳");
+    const again = el("button", "bbtn quiet", "Re-read");
     again.title = "re-read the tree (a new file only appears after this)";
     again.onclick = () => { fxTree.delete(cwd); void loadTree(slot, cwd); };
     hd.appendChild(again);
@@ -2700,8 +2747,7 @@ function fileTreeSection(slot: number, cwd: string): HTMLElement {
       "this repository tracks no files yet — `git ls-files` is empty, so there is nothing to list"));
     return sec;
   }
-  sec.appendChild(el("div", "bstate", `${t.total} tracked file${t.total === 1 ? "" : "s"}`
-    + (t.capped ? ` · showing the first ${t.files.length}` : "")));
+  if (t.capped) sec.appendChild(el("div", "bstate", `showing the first ${t.files.length} of ${t.total}`));
   const box = el("div", "fxtree");
   // the box this pass REPLACES — the only place the caret and the focus still exist
   const prev = fxInputEl.get(cwd);
@@ -2811,7 +2857,7 @@ async function renderBoard() {
       // not about the empty pane.
       const dv = devicesSection();
       boardBody.replaceChildren(...(dp ? [dp] : []), ...(er ? [er] : []),
-        ...(dv ? [dv] : []), el("div", "bempty", "no session in the focused pane"));
+        ...(dv ? [dv] : []), el("div", "bempty bnone", "Focus a pane with a session to see its brief."));
       return;
     }
     const [briefRes, prompts, wtRes, mgRes] = await Promise.all([
@@ -2824,102 +2870,117 @@ async function renderBoard() {
     const mg = mgRes?.ok ? ((await mgRes.json()) as MergeState) : null;
     if (mg?.running) mergeWatch.add(slot);
     const nodes: HTMLElement[] = [];
-    // the right board tells ONE story, in the owner's order (§F4, 2026-08-06): IDENTITY →
-    // TO LAND → COMMITS → FILES → EXPLORER → LANES → AGENTS → OUTLINE. It runs from "what is
-    // pending" through "what is already done" to "what else exists" — so the freshest thing
-    // is always at the top and the advisory agents, folded, are at the bottom. Every function
-    // of the old flat list is kept, only regrouped.
+    const tools: HTMLElement[] = [];
+    // the right board tells ONE story, top to bottom (owner, 2026-09-18/19): the MACHINE zone (the
+    // suite meter above this body, then only alarms that are due) → the HEAD (who this session is,
+    // what it is for, whom it waits on) → CHANGES (the one place with buttons) → CHECKS (this lane's
+    // suites) → HISTORY → folded TOOLS. Every function of the old flat list is kept, only regrouped;
+    // the context fill left because the sidebar row already carries it.
 
-    // 0 — MACHINE: the gate moved out of this body into the always-on suite meter above it
-    // (renderSuiteMeter). What stays here is only drawn when due: "is what you are looking at even
-    // the code that is running" first, absent entirely unless something is due.
+    // 0 — MACHINE: drawn only when due — "is what you are looking at even the code that is running",
+    // then "has that code been throwing". The gate lives in the meter; the helper register behind the
+    // meter's device count and the 💻 dialog.
     const dsec0 = deploySection();
     if (dsec0) nodes.push(dsec0);
-    // between the two on purpose: "is the running code the code you think" comes first, then
-    // "has that code been throwing", and only then "can anything verify right now".
     const esec0 = errorsSection();
     if (esec0) nodes.push(esec0);
-    // last of the machine-level group: "is the running code the code you think" → "has it been
-    // throwing" → "and who else could verify it for you".
-    const dsec1 = devicesSection();
-    if (dsec1) nodes.push(dsec1);
 
-    // 1 — IDENTITY: which lane this is, how to reach it, session-level actions
-    const idsec = el("div", "bsec");
-    idsec.appendChild(el("h3", "", "identity"));
-    idsec.appendChild(el("div", "bidhead", `slot ${slot} · ${s.label ?? baseName(s.cwd)}`));
-    if (brief?.branch) {
-      const b = el("div", "bstate");
-      b.appendChild(el("span", "bbranch", brief.branch));
-      // the commit the tree actually sits on. A branch name says WHICH lane, not WHERE it is —
-      // and this is the one number you paste into a terminal to check anything by hand.
-      if (brief.head) {
-        b.appendChild(document.createTextNode(" · "));
-        const h = el("span", "bhead", brief.head);
-        h.title = "git HEAD — click to copy";
-        const sha = brief.head;
-        h.onclick = () => { copyText(sha); h.textContent = "copied"; setTimeout(() => { h.textContent = sha; }, 1200); };
-        b.appendChild(h);
-      }
-      b.appendChild(document.createTextNode(brief.worktree ? " · fleet lane" : " · repo session"));
-      // live working/idle state — the same signal as the sidebar dot, so you can see BEFORE
-      // reaching for commit whether the session is mid-run (re-rendered every 3s)
-      const working = sessionActive(slot);
-      b.appendChild(el("span", "bwork" + (working ? " on" : ""), working ? " · ● working" : " · ○ idle"));
-      idsec.appendChild(b);
-      if (brief.sessionStart) idsec.appendChild(el("div", "bidmeta",
-        `session since ${new Date(brief.sessionStart).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`));
-      // one-click copy of the worktree path — the one thing you need when you do reach for
-      // a terminal in a lane, and it's long and buried otherwise
-      if (brief.worktree && s.cwd) {
-        const cwd = s.cwd;
-        const cp = el("button", "bbtn subtle", "⧉ copy worktree path") as HTMLButtonElement;
-        cp.onclick = () => { copyText(cwd); cp.textContent = "✓ copied"; setTimeout(() => { cp.textContent = "⧉ copy worktree path"; }, 1200); };
-        idsec.appendChild(cp);
-      }
-    }
-    // session-level actions — labeled controls (were hover-only glyphs unreachable on touch)
+    // 1 — HEAD: the session's name, its state, what it is for, and its identifiers as chips. The
+    // session-level actions (share, export, rename, bring back) sit behind ⋯ — they are rare, and
+    // four bordered buttons in the head outweighed everything the head is for.
+    const idsec = el("div", "bsec bhead");
+    const top = el("div", "bheadtop");
+    top.appendChild(el("div", "bheadname", s.label ?? baseName(s.cwd)));
+    const mbtn = el("button", `bheadmenu${boardMenuOpen ? " on" : ""}`, "⋯") as HTMLButtonElement;
+    mbtn.title = "session actions — share, export, rename, bring the session back";
+    mbtn.setAttribute("aria-expanded", String(boardMenuOpen));
+    mbtn.onclick = () => { boardMenuOpen = !boardMenuOpen; void renderBoard(); };
+    top.appendChild(mbtn);
+    idsec.appendChild(top);
     {
-      const arow = el("div", "bbtnrow");
-      const shrb = el("button", "bbtn" + (s.share ? " on" : ""),
-        s.share ? "⤴ shared — view only" : "⤴ share") as HTMLButtonElement;
-      shrb.onclick = () => openShareDlg(slot);
-      const expb = el("button", "bbtn", "⇩ export") as HTMLButtonElement;
-      expb.title = "export session — print / save as PDF";
-      expb.onclick = () => window.open(`/api/slots/${slot}/export`, "_blank");
-      const renb = el("button", "bbtn", "✎ rename") as HTMLButtonElement;
-      renb.onclick = () => {
+      const working = sessionActive(slot);
+      const meta = el("div", "bheadmeta");
+      meta.appendChild(el("span", `bdot${working ? " on" : ""}`));
+      meta.appendChild(document.createTextNode(`${working ? "Working" : "Idle"} · ${brief?.worktree ? "lane" : "repo session"} in slot ${slot}`));
+      if (brief?.sessionStart) meta.title = `session since ${new Date(brief.sessionStart).toLocaleString()}`;
+      idsec.appendChild(meta);
+    }
+    if (s.awaiting) {
+      const w = el("div", `bwait ${s.awaiting}`, s.awaiting === "owner" ? "Waiting on you" : "Waiting on its MAIN");
+      w.title = s.awaiting === "owner"
+        ? "This session has stopped until the owner answers — its latest message or an open attention says what it needs."
+        : "This session has stopped until the MAIN that runs it answers.";
+      idsec.appendChild(w);
+    }
+    if (s.mission) {
+      const mi = el("div", "bmission", s.mission);
+      mi.title = s.mission;
+      idsec.appendChild(mi);
+    }
+    // identifiers: machine strings in mono, each a chip — hover says what it is, a click does the one
+    // thing it is for (copy a sha or a branch; open the queue on a task or a program)
+    const chips = el("div", "bchips");
+    const copyChip = (label: string, value: string, what: string) => {
+      const c = el("button", "bchip", label) as HTMLButtonElement;
+      c.title = `${what} — click to copy`;
+      c.onclick = () => { copyText(value); c.textContent = "copied"; setTimeout(() => { c.textContent = label; }, 1100); };
+      return c;
+    };
+    if (brief?.branch) chips.appendChild(copyChip(brief.branch, brief.branch, "branch"));
+    if (brief?.head) chips.appendChild(copyChip(brief.head, brief.head, "HEAD commit"));
+    if (s.taskId) {
+      const c = el("button", "bchip link", `task ${s.taskId}`) as HTMLButtonElement;
+      c.title = `${s.taskHead || "the order this session was started from"} — click to open the queue`;
+      c.onclick = () => openQueue();
+      chips.appendChild(c);
+    }
+    if (s.programId) {
+      const p = programsPoll.find((x) => x.id === s.programId);
+      const c = el("button", "bchip link", `program ${p?.title ? p.title.slice(0, 28) : s.programId.slice(0, 8)}`) as HTMLButtonElement;
+      c.title = `${p?.title ?? s.programId} — click to open the queue`;
+      c.onclick = () => openQueue();
+      chips.appendChild(c);
+    }
+    if (chips.childElementCount) idsec.appendChild(chips);
+    if (boardMenuOpen) {
+      const menu = el("div", "bmenu");
+      const item = (label: string, title: string, run: (b: HTMLButtonElement) => void) => {
+        const b = el("button", "bmenuitem", label) as HTMLButtonElement;
+        b.title = title;
+        b.onclick = () => run(b);
+        menu.appendChild(b);
+      };
+      if (brief?.worktree && s.cwd) {
+        const cwd = s.cwd;
+        item("Copy worktree path", cwd, (b) => { copyText(cwd); b.textContent = "Copied"; });
+      }
+      item(s.share ? "Shared — view only…" : "Share…", "share this session read-only", () => openShareDlg(slot));
+      item("Export", "export the session — print or save as PDF", () => window.open(`/api/slots/${slot}/export`, "_blank"));
+      item("Rename", "rename this session", () => {
         const row = slotsEl.querySelector(`[data-slot="${slot}"]`);
         if (row instanceof HTMLElement) startRename(row, s);
-      };
-      // ↻ bring session back — the repair for a pane that switched conversations on you.
-      // Claude Code can change session IN-PROCESS: the pane keeps the argv it was spawned with,
-      // so nothing on the outside can tell, and Escape does not undo it. A respawn does, because
-      // the slot still holds the pinned sessionId and the server restarts the pane with --resume.
-      // Always shown on an active slot: there is no deterministic signal for "this pane wandered
-      // off" (the one candidate, "the pinned transcript is not growing", fires on any long tool
-      // call), so the owner decides, not a detector.
-      const rsb = el("button", "bbtn", "↻ bring session back") as HTMLButtonElement;
-      rsb.title = "restart this pane and resume the pinned conversation — the slot keeps its lane, "
-        + "label, model, shares and scheduled prompts. Whatever the session is doing RIGHT NOW is lost.";
-      rsb.onclick = async () => {
+      });
+      // bring session back — the repair for a pane that switched conversations on you. Claude Code
+      // can change session IN-PROCESS: the pane keeps the argv it was spawned with, so nothing on
+      // the outside can tell, and Escape does not undo it. A respawn does, because the slot still
+      // holds the pinned sessionId and the server restarts the pane with --resume. There is no
+      // deterministic signal for "this pane wandered off", so the owner decides, not a detector.
+      item("Bring session back", "restart this pane and resume the pinned conversation — the slot keeps its lane, "
+        + "label, model, shares and scheduled prompts. Whatever the session is doing RIGHT NOW is lost.", async (b) => {
         if (!confirm(`Restart slot ${slot}'s pane and resume the pinned conversation?\n\n`
           + "Nothing about the slot is thrown away. But claude is killed, so anything it is doing "
           + "right now — a running tool call, unsent output — is lost.")) return;
-        rsb.disabled = true;
-        rsb.textContent = "… restarting";
+        b.disabled = true;
+        b.textContent = "Restarting…";
         const r = await post(`/api/slots/${slot}/restart`, {});
         const j = await r.json().catch(() => null) as { resumed?: boolean; error?: string } | null;
-        if (!r.ok) { alert(j?.error ?? "restart failed"); rsb.disabled = false; rsb.textContent = "↻ bring session back"; return; }
-        // say which of the two happened rather than a uniform tick: "restarted fresh" means the
-        // pinned conversation could NOT be resumed (no pin, or its transcript is gone), and that
-        // is the one outcome the owner must not mistake for success
-        rsb.textContent = j?.resumed ? "✓ session back" : "⚠ restarted fresh";
-        setTimeout(() => { rsb.disabled = false; rsb.textContent = "↻ bring session back"; }, 2500);
+        if (!r.ok) { alert(j?.error ?? "restart failed"); b.disabled = false; b.textContent = "Bring session back"; return; }
+        // "restarted fresh" means the pinned conversation could NOT be resumed (no pin, or its
+        // transcript is gone) — the one outcome the owner must not mistake for success
+        b.textContent = j?.resumed ? "Session back" : "Restarted fresh — the conversation could not be resumed";
         await refresh();
-      };
-      arow.append(shrb, expb, renb, rsb);
-      idsec.appendChild(arow);
+      });
+      idsec.appendChild(menu);
     }
     nodes.push(idsec);
 
@@ -2934,7 +2995,7 @@ async function renderBoard() {
       // owner's order (§F4, briefs/ui-next-level-2026-08-06.md): what is still PENDING comes
       // before the history of what is already done, and commits/files below are that history.
       const work = el("div", "bsec");
-      work.appendChild(el("h3", "", brief.worktree ? "to land" : "work"));
+      work.appendChild(el("h3", "", "Changes"));
       // an interrupted rebase/merge (e.g. a deploy that killed the server mid-land) wedges
       // commit + land here — surface it as an explicit, fixable state, not a silent refusal
       if (brief.gitOp) {
@@ -2946,6 +3007,7 @@ async function renderBoard() {
         const wl = el("div", "bstate");
         wl.appendChild(el("span", "editing",
           `${brief.uncommitted} uncommitted file${brief.uncommitted === 1 ? "" : "s"}`));
+        if (ahead) wl.appendChild(document.createTextNode(` · ${ahead} commit${ahead === 1 ? "" : "s"} ready`));
         work.appendChild(wl);
         // the concrete uncommitted work — exactly what git status shows, with its codes
         if (brief.uncommittedFiles.length) {
@@ -2953,7 +3015,7 @@ async function renderBoard() {
           for (const f of brief.uncommittedFiles.slice(0, 40)) {
             // porcelain XY: X = staged (index) column, Y = worktree (unstaged) column
             const x = f[0] ?? " ", y = f[1] ?? " ";
-            const row = el("div", "buncf");
+            const row = el("button", "buncf");
             // untracked → new; anything staged (X set, not '?') → staged; else unstaged-only → mod
             const cls = f.startsWith("??") ? "new" : x !== " " ? "staged" : "mod";
             const badge = el("span", `buncst ${cls}`, f.startsWith("??") ? "?" : f.slice(0, 2).trim() || "M");
@@ -2988,7 +3050,7 @@ async function renderBoard() {
           // work (saved locally, never pushed/landed, reversible with git reset). The
           // agent-written-message path moved to land time — ⏏ land now commits-if-dirty
           // with an agent message — so there's no separate "✎ message" affordance on a lane.
-          const q = el("button", "bbtn amber", busy === "quick" ? "… saving" : "commit") as HTMLButtonElement;
+          const q = el("button", "bbtn", busy === "quick" ? "Committing…" : "Commit") as HTMLButtonElement;
           q.disabled = !!busy; // also disabled mid-land, while doLand's commit-if-dirty runs (busy === "agent")
           q.title = "commit all uncommitted work now so a kill can't lose it — saved locally, never pushed or landed (undo with git reset)";
           q.onclick = () => void doCommit(slot, "quick");
@@ -3004,11 +3066,11 @@ async function renderBoard() {
           // same one-action-plus-refinement as a lane. On a MAIN checkout the preview shows
           // that only tracked changes (git add -u) are staged — untracked files are left
           // alone. No separate diff button here: the file rows above are already click-to-diff.
-          const q = el("button", "bbtn amber", busy === "quick" ? "… saving" : "commit") as HTMLButtonElement;
+          const q = el("button", "bbtn", busy === "quick" ? "Committing…" : "Commit") as HTMLButtonElement;
           q.disabled = !!busy;
           q.title = "stage & commit tracked changes only (git add -u); untracked files left alone — undo with git reset. Shows a preview first.";
           q.onclick = () => void doCommitMain(slot, "quick", files);
-          const a = el("button", "bbtn amber ghost", busy === "agent" ? "… writing message" : "✎ message") as HTMLButtonElement;
+          const a = el("button", "bbtn quiet", busy === "agent" ? "Writing message…" : "Commit with written message") as HTMLButtonElement;
           a.disabled = !!busy;
           a.title = "same commit, but a short-lived agent writes a conventional-commit message from the staged diff first";
           a.onclick = () => void doCommitMain(slot, "agent", files);
@@ -3017,17 +3079,17 @@ async function renderBoard() {
         }
       } else if (ahead) {
         work.appendChild(el("div", "bnote ready",
-          `${ahead} commit${ahead === 1 ? "" : "s"} ready to ${brief.worktree ? "land ↓" : "push"}`));
+          `${ahead} commit${ahead === 1 ? "" : "s"} ready to ${brief.worktree ? "land" : "push"}`));
       } else {
-        work.appendChild(el("div", "bnote", "working tree clean — nothing to save"));
+        work.appendChild(el("div", "bnote", "Nothing uncommitted, nothing ahead."));
         if (!brief.worktree) {
-          const db = el("button", "bbtn", "± view diff") as HTMLButtonElement;
+          const db = el("button", "bbtn quiet", "View diff") as HTMLButtonElement;
           db.onclick = () => void openDiff(slot);
           work.appendChild(db);
         }
       }
       if (behind && brief.laneScoped)
-        work.appendChild(el("div", "bnote", `↓${behind} behind ${brief.laneBase ?? "main"}`));
+        work.appendChild(el("div", "bnote", `${behind} commit${behind === 1 ? "" : "s"} behind ${brief.laneBase ?? "main"}`));
       // the lane's endgame, in the same section because it is the same subject: ONE land action
       // whose label carries the auto-vs-review-needed distinction as text. doLand tries the direct
       // /land path, then falls back to the /merge agent — the UI is collapsed to one control.
@@ -3053,8 +3115,8 @@ async function renderBoard() {
         // the exit that remains when landing is somebody else's host. Visibility only: the server's
         // 409 is the guarantee, this is the board declining to offer a gesture it knows is refused.
         if (landsEnabled) {
-          const lb = el("button", "bbtn" + (ahead && !mg?.running && !awaitingReview ? " green" : ""),
-            mg?.running ? "… landing" : awaitingReview ? "↻ re-run merge" : "⏏ land lane") as HTMLButtonElement;
+          const lb = el("button", "bbtn" + (ahead && !mg?.running && !awaitingReview ? " primary" : ""),
+            mg?.running ? "Landing…" : awaitingReview ? "Re-run merge" : "Land lane") as HTMLButtonElement;
           lb.disabled = !!mg?.running;
           lb.title = awaitingReview
             ? "re-run the merge from scratch — only needed if main moved since these conflicts were resolved"
@@ -3068,7 +3130,7 @@ async function renderBoard() {
             "this fleet follows a canonical main and does not land — land this branch on the canonical host"));
         }
         // ⇲ shelve — the safe third exit beside land: set aside WITH a note, keep the worktree.
-        const shb = el("button", "bbtn", "⇲ shelve") as HTMLButtonElement;
+        const shb = el("button", "bbtn quiet", "Shelve") as HTMLButtonElement;
         shb.disabled = !!mg?.running;
         shb.title = "set this lane aside with a note (what's left) — kills the slot, keeps the worktree to resume later; nothing lost, nothing destroyed";
         shb.onclick = () => void doShelve(slot);
@@ -3076,7 +3138,7 @@ async function renderBoard() {
         // ↩ undo last land — only when the server still holds an undoable land for THIS repo
         // (main not moved since, not pushed). Reverses the one action that mutates main.
         if (mg?.undoable && brief.worktree.repo) {
-          const ub = el("button", "bbtn", `↩ undo last land (${mg.undoable.branch.replace(/^fleet\//, "")})`) as HTMLButtonElement;
+          const ub = el("button", "bbtn quiet", `Undo last land (${laneTail(mg.undoable.branch)})`) as HTMLButtonElement;
           ub.disabled = !!mg?.running;
           ub.title = "reset main back to before the last land in this repo — refuses if main moved since or the commit was pushed; the landed branch is kept, so the work is recoverable either way";
           const repo = brief.worktree.repo;
@@ -3097,12 +3159,12 @@ async function renderBoard() {
           if (l.conflicted?.length) note.appendChild(el("div", "bmergefiles", l.conflicted.join(", ")));
           note.appendChild(el("div", "bmergedetail", l.detail));
           const acts = el("div", "bmergeacts");
-          const rev = el("button", "bmergereview", "± review diff") as HTMLButtonElement;
+          const rev = el("button", "bmergereview", "Review diff") as HTMLButtonElement;
           rev.onclick = () => void openMergeDiff(slot);
           acts.append(rev);
           // reviewing a carried-over verdict stays available on a follower; confirming it does not.
           if (landsEnabled) {
-            const landb = el("button", "bmergeland", "⏏ land") as HTMLButtonElement;
+            const landb = el("button", "bmergeland", "Land") as HTMLButtonElement;
             landb.onclick = () => void doMergeLand(slot);
             acts.append(landb);
           }
@@ -3124,6 +3186,24 @@ async function renderBoard() {
         work.appendChild(land);
       }
       nodes.push(work);
+
+      // CHECKS: this session's own suites, read off the same model the meter draws — every ball whose
+      // slot is this one. The land's own verify verdict stays with the land above, where it decides.
+      {
+        const mine = meterModel().balls.filter((b) => b.slot === slot);
+        const ck = el("div", "bsec");
+        ck.appendChild(el("h3", "", "Checks"));
+        if (!mine.length) ck.appendChild(el("div", "bempty",
+          "No suite reported in the last few minutes."));
+        for (const b of mine) {
+          const row = el("div", `bcheck tone-${b.tone}`);
+          row.append(el("span", "smdot"), el("span", "bcheckwhat", b.what), el("span", "bcheckstate", meterState(b)));
+          if (b.at > 0) row.appendChild(el("span", "bcheckage", gateAge(Date.now() - b.at)));
+          row.title = `${b.what} — ${meterState(b)}`;
+          ck.appendChild(row);
+        }
+        nodes.push(ck);
+      }
 
       // 3 — COMMITS: the history, and deliberately TWO lists ("vllt beides", owner §F4) — what
       // this lane/session added, and what the project got around it. The second list is empty
@@ -3155,28 +3235,25 @@ async function renderBoard() {
           : () => void openActivity("commits", { repo: repoOfSlot(s, brief), hash: cm.hash });
         return row;
       };
+      // HISTORY is one section: the commits this lane/session added, then the files they touched.
+      // The project's own commits around it are folded — context, not this session's story.
       const csec = el("div", "bsec");
-      csec.appendChild(el("h3", "", "commits"));
-      csec.appendChild(el("div", "bsubhead", brief.laneScoped ? `on this lane (vs ${brief.laneBase ?? "main"})`
-        : brief.sessionStart ? "this session" : "recent"));
-      if (!brief.commits.length) csec.appendChild(el("div", "bempty",
-        brief.laneScoped ? `no commits yet — even with ${brief.laneBase ?? "main"}` : "no commits this session yet"));
+      csec.appendChild(el("h3", "", "History"));
+      const base = brief.laneBase ?? "main";
+      if (brief.commits.length) csec.appendChild(el("div", "bsubhead", brief.laneScoped ? `Commits on this lane`
+        : brief.sessionStart ? "Commits this session" : "Recent commits"));
+      else csec.appendChild(el("div", "bempty",
+        brief.laneScoped ? `No commits on this lane yet.` : "No commits this session yet."));
       for (const cm of brief.commits) csec.appendChild(commitRow(cm, "session"));
-      if (brief.repoCommits.length) {
-        csec.appendChild(el("div", "bsubhead", brief.laneScoped
-          ? `already in ${brief.laneBase ?? "main"}` : "earlier in this repo"));
-        for (const cm of brief.repoCommits) csec.appendChild(commitRow(cm, "repo"));
-      }
-      nodes.push(csec);
 
       // 4 — FILES: the committed footprint — what this lane/session changes vs its base.
       if (brief.files.length) {
-        const fsec = el("div", "bsec");
-        fsec.appendChild(el("h3", "", brief.laneScoped ? `files changed vs ${brief.laneBase ?? "main"}`
-          : brief.sessionStart ? "files changed this session" : "changed files"));
-        if (brief.shortstat) fsec.appendChild(el("div", "bstate", brief.shortstat));
+        const fsec = csec;
+        const fh = el("div", "bsubhead", brief.laneScoped ? `Changed vs ${base}` : "Changed files");
+        if (brief.shortstat) fh.appendChild(el("span", "bsubstat", brief.shortstat.replace(/ changed|\(|\)/g, "")));
+        fsec.appendChild(fh);
         for (const f of brief.files.slice(0, 30)) {
-          const row = el("div", "bfile");
+          const row = el("button", "bfile");
           row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
           row.appendChild(document.createTextNode(f.slice(3)));
           // every row here used to open the WHOLE working diff, whichever row you clicked — the
@@ -3188,9 +3265,12 @@ async function renderBoard() {
           row.onclick = () => void openReview(slot, "working", { k: "file", path });
           fsec.appendChild(row);
         }
-        if (brief.files.length > 30) fsec.appendChild(el("div", "bempty", `… ${brief.files.length - 30} more`));
-        nodes.push(fsec);
+        if (brief.files.length > 30) fsec.appendChild(el("div", "bempty", `and ${brief.files.length - 30} more`));
       }
+      if (brief.repoCommits.length)
+        csec.appendChild(boardFold("repoCommits", brief.laneScoped ? `Already in ${base}` : "Earlier in this repo",
+          String(brief.repoCommits.length), (box) => { for (const cm of brief.repoCommits) box.appendChild(commitRow(cm, "repo")); }));
+      nodes.push(csec);
 
       // 5 — EXPLORER: the repo's whole file tree, not just what changed. The card above answers
       // "what did this session touch"; this one answers "what is in here", which is the question
@@ -3200,17 +3280,18 @@ async function renderBoard() {
       // plain directory would get a card whose only content is "not a git repo" on every repaint.
       // A detached HEAD loses the card too — the honest cost of reading git-ness off the one field
       // the brief already carries, rather than adding a probe to the 3s render for an edge case.
-      if (brief.branch) nodes.push(fileTreeSection(slot, s.cwd));
+      if (brief.branch) {
+        const known = fxTree.get(s.cwd);
+        const cwd = s.cwd;
+        tools.push(boardFold("files", "Files in this repo", known && !("error" in known) ? String(known.total) : null,
+          (box) => { box.append(...fileTreeSection(slot, cwd).childNodes); }));
+      }
 
       // 6 — LANES: the repo's lane map — every open worktree, who holds it, its state, and
       // the orphans (killed slot, worktree still on disk) with reattach/remove/discard +
       // ＋ new lane.
-      if (wts) {
-        const sec = el("div", "bsec");
-        const hd = el("div", "bwthead");
-        hd.appendChild(el("h3", "", `lanes — ${baseName(wts.repo)} · main: ${wts.main}`));
-        sec.appendChild(hd);
-        if (!wts.worktrees.length) sec.appendChild(el("div", "bempty", "no open lanes in this repo"));
+      if (wts) tools.push(boardFold("lanes", `Lanes in ${baseName(wts.repo)}`, String(wts.worktrees.length), (sec) => {
+        if (!wts.worktrees.length) sec.appendChild(el("div", "bempty", "No open lanes."));
         for (const w of wts.worktrees) {
           const row = el("div", "bwt");
           row.appendChild(el("span", "lanechip", "⎇"));
@@ -3353,12 +3434,11 @@ async function renderBoard() {
             sec.appendChild(box);
           }
         }
-        const nb = el("button", "bbtn accent", "＋ ⎇ new lane") as HTMLButtonElement;
+        const nb = el("button", "bbtn quiet", "New lane") as HTMLButtonElement;
         nb.title = `fresh worktree lane off ${wts.main}, session opens in the first free slot — one click`;
         nb.onclick = () => { nb.disabled = true; void newLane(wts.repo); };
         sec.appendChild(nb);
-        nodes.push(sec);
-      }
+      }));
     }
     if (brief) {
       // 8 — AGENTS: advisory, read-only. ✨ summarize + 🔍 review. Last of the lane story and
@@ -3366,13 +3446,7 @@ async function renderBoard() {
       // what the board is for, and these two were sitting in the middle of it. NOTHING is
       // removed — the ③ auto-review keeps writing the outcome ledger either way; this decides
       // only what the board shows unasked.
-      const asec = el("div", "bsec");
-      const more = el("button", "bmore",
-        `${agentsOpen ? "▾" : "▸"} more — agents (summary · review)`) as HTMLButtonElement;
-      more.title = "two advisory, read-only agents over this session: a summary and a code review";
-      more.onclick = () => { agentsOpen = !agentsOpen; void renderBoard(); };
-      asec.appendChild(more);
-      if (agentsOpen) {
+      tools.push(boardFold("agents", "Agents", null, (asec) => {
         // both cache reads happen on OPEN, not on render: a folded group must not spend two
         // requests per slot on results nobody is looking at (GET never spawns the agent)
         if (!sumCache.has(slot)) {
@@ -3411,8 +3485,8 @@ async function renderBoard() {
         if (!canSum)
           asec.appendChild(el("div", "bstale",
             "📋 summary needs a conversation transcript — this session's harness writes none"));
-        const sbtn = el("button", "bbtn accent",
-          sumBusy.has(slot) ? "… summarizing" : sum?.summary ? "📋 re-summarize" : "📋 summarize") as HTMLButtonElement;
+        const sbtn = el("button", "bbtn quiet",
+          sumBusy.has(slot) ? "Summarizing…" : sum?.summary ? "Summarize again" : "Summarize") as HTMLButtonElement;
         sbtn.disabled = sumBusy.has(slot) || !canSum;
         sbtn.title = canSum
           ? "run a short-lived read-only agent (background claude session in this checkout, uses the subscription) — one model call"
@@ -3421,7 +3495,7 @@ async function renderBoard() {
           if (sumBusy.has(slot)) return;
           sumBusy.add(slot);
           sbtn.disabled = true;
-          sbtn.textContent = "… summarizing";
+          sbtn.textContent = "Summarizing…";
           try {
             const r = await post(`/api/slots/${slot}/summary`, {});
             const j = (await r.json().catch(() => ({}))) as SummaryInfo;
@@ -3452,15 +3526,15 @@ async function renderBoard() {
         // 🔍 review — a SECOND agent beside the summarizer, over this slot's code changes.
         // Advisory only: it never gates or alters a land, a merge or a file.
         const rev = revCache.get(slot);
-        const rbtn = el("button", "bbtn accent",
-          revBusy.has(slot) ? "… reviewing" : rev?.findings ? "🔍 re-review" : "🔍 review") as HTMLButtonElement;
+        const rbtn = el("button", "bbtn quiet",
+          revBusy.has(slot) ? "Reviewing…" : rev?.findings ? "Review again" : "Review changes") as HTMLButtonElement;
         rbtn.disabled = revBusy.has(slot);
         rbtn.title = "run a short-lived read-only agent over this session's own code changes — one model call, advisory only";
         rbtn.onclick = async () => {
           if (revBusy.has(slot)) return;
           revBusy.add(slot);
           rbtn.disabled = true;
-          rbtn.textContent = "… reviewing";
+          rbtn.textContent = "Reviewing…";
           try {
             const r = await post(`/api/slots/${slot}/review`, {});
             const j = (await r.json().catch(() => ({}))) as ReviewInfo;
@@ -3520,16 +3594,14 @@ async function renderBoard() {
         } else if (rev?.error) {
           asec.appendChild(el("div", "bsumerr", rev.error));
         }
-      }
-      nodes.push(asec);
+      }));
     }
 
     // 9 — OUTLINE: prompt-jump navigation, kept at the bottom (lowest priority)
-    const psec = el("div", "bsec");
-    psec.appendChild(el("h3", "", `your prompts (${prompts.length})`));
-    if (!prompts.length) psec.appendChild(el("div", "bempty", "no prompts in the transcript yet"));
+    tools.push(boardFold("prompts", "Your prompts", String(prompts.length), (psec) => {
+    if (!prompts.length) psec.appendChild(el("div", "bempty", "None in the transcript yet."));
     prompts.forEach((p, i) => {
-      const row = el("div", "bprompt");
+      const row = el("button", "bprompt");
       row.appendChild(el("span", "bn", String(i + 1)));
       const t = el("span", "bt", p);
       t.title = p;
@@ -3537,7 +3609,13 @@ async function renderBoard() {
       row.onclick = () => panes[focused]?.showPromptAt(i);
       psec.appendChild(row);
     });
-    nodes.push(psec);
+    }));
+    // TOOLS: everything you reach for rather than read — folded, each fold remembered
+    if (tools.length) {
+      const tsec = el("div", "bsec btools");
+      tsec.append(...tools);
+      nodes.push(tsec);
+    }
     // the focus moved to another pane while we were fetching — this render describes
     // the wrong slot; drop it (the re-run below paints the right one)
     if (panes[focused]?.slot !== slot) { boardAgain = true; return; }

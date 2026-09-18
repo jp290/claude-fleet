@@ -35183,6 +35183,12 @@ Bun.serve<WSData>({
             // wherever a transcript names a model would hide a push's read-back — right after a push
             // the file still names the old request, and modelPushedAt is exactly how its landing is seen.
             git: gitInfo.get(s.id) ?? null, worktree: s.worktree, model: s.model,
+            // what the session is FOR — the board's head reads these; they were on the slot and in
+            // /api/self all along, and the owner poll was the one reader that never got them
+            ...(s.mission ? { mission: s.mission } : {}),
+            ...(s.awaiting ? { awaiting: s.awaiting } : {}),
+            ...(s.cwd ? (() => { const t = foundingRowOf(s); return t ? { taskId: t.id, taskHead: t.text.split("\n")[0].slice(0, 160) } : {}; })() : {}),
+            ...(s.programId ? { programId: s.programId } : {}),
             // OMITTED when null (the common case) — this is the 2s poll (data-saver); absent reads as "the
             // default harness". What each harness SUPPORTS is static and rides GET /api/harnesses once.
             ...(s.harness ? { harness: s.harness } : {}),

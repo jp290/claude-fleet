@@ -1982,62 +1982,190 @@
     display: flex; align-items: center; justify-content: center; line-height: 1; }
   #boardclose:hover { color: var(--text); }
   #boardbody { flex: 1; overflow-y: auto; padding: 4px 10px 14px; font-size: 11.5px; }
-  /* suite meter: a slim thermometer pinned under the board head. White balls ride the line through
-     the glass and gather at four stations; the lanes are named under their station. The balls are
-     keyed DOM (renderSuiteMeter), so a change of station is a glide along the tube, not a jump. */
-  #boardsuites { flex: none; padding: 2px 10px 8px; border-bottom: 1px solid var(--line-soft); font-size: 10.5px; }
-  .smhead { display: flex; align-items: center; gap: 7px; height: 18px; color: var(--dim); }
-  .smtitle { font-weight: 700; color: #e8e8e8; letter-spacing: .02em; }
-  .smlock { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #boardsuites.lock-held .smlock { color: var(--text); }
+  /* --- the session brief, 2026-09 redesign. Everything below is scoped to #board so it outranks the
+     shared .bsec/.bbtn rules without touching the other surfaces that reuse them.
+     System: pure black; three inks; colour only as a signal (blue = go somewhere, green/red/amber =
+     a state). A sans for what a person reads, mono only for what a machine reads — branch, sha,
+     path, suite — which is also what you would paste into a terminal. Sections are separated by
+     space and a sentence-case heading, never by boxes. The one loud thing is the suite meter. */
+  #board { --b-ink: #e8e8e8; --b-ink2: #9c9c9c; --b-ink3: #626262; --b-rule: #1c1c1c; --b-hover: #101010;
+    --b-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
+    --b-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    width: 300px; background: #000; border-left: 1px solid var(--b-rule);
+    font-family: var(--b-sans); color: var(--b-ink); -webkit-font-smoothing: antialiased; }
+  #board button { font-family: inherit; }
+  #board :focus-visible { outline: 1.5px solid var(--accent); outline-offset: 1px; border-radius: 5px; }
+  #board #boardhead { padding: 14px 16px 6px; font-size: 12px; font-weight: 600; color: var(--b-ink2); letter-spacing: .01em; }
+  #board #boardclose { border: 0; background: none; color: var(--b-ink3); width: 24px; height: 24px; }
+  #board #boardclose:hover { color: var(--b-ink); background: var(--b-hover); }
+  #board #boardbody { padding: 0 16px 28px; font-size: 12.5px; line-height: 1.45; }
+
+  /* sections */
+  #board .bsec { padding: 22px 0 0; border: 0; }
+  #board .bsec:first-child { padding-top: 16px; }
+  #board .bsec h3 { margin: 0 0 8px; font-size: 12.5px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--b-ink); }
+  #board .bsec > h3 + .bsubhead { margin-top: 0; }
+  #board .bsubhead { margin: 12px 0 4px; font-size: 11.5px; letter-spacing: 0; text-transform: none; color: var(--b-ink3); }
+  #board .bsubstat { margin-left: 8px; font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3); }
+  #board .bstate, #board .bnote { color: var(--b-ink2); line-height: 1.45; }
+  #board .bnote.ready { color: var(--add); }
+  #board .bstate .editing { color: var(--amber); }
+  #board .bempty { padding: 2px 0; color: var(--b-ink3); }
+  #board .bstale { color: var(--amber); font-size: 11.5px; margin-top: 6px; }
+
+  /* machine alarms — only drawn when something is due */
+  #board .balert { margin-top: 14px; padding: 9px 11px; border-radius: 8px; background: rgba(224,175,104,.07); }
+  #board .balert .bstate { color: var(--amber); font-size: 11.5px; }
+  #board .balert + .bsec.bhead { padding-top: 18px; }
+
+  /* head */
+  #board .bhead { padding-top: 16px; }
+  #board .bheadtop { display: flex; align-items: flex-start; gap: 8px; }
+  #board .bheadname { flex: 1; min-width: 0; font-size: 16px; font-weight: 650; letter-spacing: -.012em; line-height: 1.25;
+    color: #f4f4f4; overflow-wrap: anywhere; }
+  #board .bheadmenu { flex: none; width: 26px; height: 24px; margin: -2px -6px 0 0; border: 0; border-radius: 6px;
+    background: none; color: var(--b-ink3); font-size: 15px; line-height: 1; cursor: pointer; }
+  #board .bheadmenu:hover, #board .bheadmenu.on { color: var(--b-ink); background: var(--b-hover); }
+  #board .bheadmeta { display: flex; align-items: center; gap: 7px; margin-top: 5px; font-size: 11.5px; color: var(--b-ink3); }
+  #board .bdot { width: 6px; height: 6px; border-radius: 50%; background: #3a3a3a; }
+  #board .bdot.on { background: var(--add); box-shadow: 0 0 6px rgba(158,206,106,.6); }
+  #board .bwait { display: inline-block; margin-top: 10px; padding: 3px 8px; border-radius: 5px; font-size: 11.5px; font-weight: 600; }
+  #board .bwait.owner { color: var(--amber); background: rgba(224,175,104,.1); }
+  #board .bwait.main { color: var(--accent); background: rgba(122,162,247,.1); }
+  #board .bmission { margin-top: 10px; color: #c9c9c9; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  #board .bchips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 12px; }
+  #board .bchip { max-width: 100%; padding: 2px 6px; border: 1px solid #202020; border-radius: 4px; background: #0a0a0a;
+    font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink2); cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #board .bchip:hover { color: var(--b-ink); border-color: #333; }
+  #board .bchip.link { color: var(--accent); }
+  #board .bmenu { margin-top: 10px; padding: 4px; border: 1px solid #222; border-radius: 8px; background: #080808; }
+  #board .bmenuitem { display: block; width: 100%; padding: 6px 8px; border: 0; border-radius: 5px; background: none;
+    color: var(--b-ink); font-size: 12px; text-align: left; cursor: pointer; }
+  #board .bmenuitem:hover:not(:disabled) { background: #161616; }
+
+  /* buttons: bordered = an action, quiet = a lesser one, primary = THE action (one at a time) */
+  #board .bbtnrow, #board .blandacts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+  #board .bbtn { margin-top: 0; padding: 5px 11px; border: 1px solid #2b2b2b; border-radius: 6px; background: none;
+    color: var(--b-ink); font-size: 12px; font-weight: 500; }
+  #board .bbtn:hover:not(:disabled) { border-color: #454545; background: var(--b-hover); color: #fff; }
+  #board .bbtn.primary { border-color: #ededed; background: #ededed; color: #000; font-weight: 600; }
+  #board .bbtn.primary:hover:not(:disabled) { background: #fff; color: #000; }
+  #board .bbtn.quiet { border-color: transparent; color: var(--b-ink2); padding: 5px 7px; }
+  #board .bbtn.quiet:hover:not(:disabled) { color: var(--b-ink); background: var(--b-hover); border-color: transparent; }
+  #board .bmergedetail { color: var(--b-ink3); font-size: 11.5px; }
+
+  /* rows: every clickable line is a real button, full width, one hover */
+  #board .brow, #board .bfile, #board .buncf, #board .bprompt {
+    display: flex; align-items: baseline; gap: 8px; width: calc(100% + 12px); margin: 0 -6px; padding: 3px 6px;
+    border: 0; border-radius: 5px; background: none; color: #c9c9c9; font-size: 12px; text-align: left; cursor: pointer; }
+  #board .brow:hover, #board .bfile:hover, #board .buncf:hover, #board .bprompt:hover { background: var(--b-hover); color: #fff; }
+  #board .brow .bhash { flex: none; font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3); }
+  #board .brow:hover .bhash { color: var(--accent); }
+  #board .bfile, #board .buncf { font-family: var(--b-mono); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+  #board .bfile .bfst { display: inline-block; width: 14px; margin-right: 4px; color: var(--amber); }
+  #board .buncf .buncst { display: inline-block; width: 14px; margin-right: 4px; background: none; }
+  #board .bunc { margin-top: 6px; }
+  #board .bprompt .bn { flex: none; min-width: 16px; font-family: var(--b-mono); font-size: 10.5px; font-weight: 400; color: var(--b-ink3); text-align: right; }
+
+  /* checks — this session's suites */
+  #board .bcheck { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  #board .bcheckwhat { flex: 1; min-width: 0; font-family: var(--b-mono); font-size: 11px; color: #c9c9c9;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #board .bcheckstate { font-size: 11.5px; color: var(--b-ink2); }
+  #board .bcheckage { font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3); }
+  #board .bcheck.tone-ok .bcheckstate { color: var(--add); }
+  #board .bcheck.tone-red .bcheckstate { color: var(--del); }
+  #board .bcheck.tone-unknown .bcheckstate, #board .bcheck.tone-warn .bcheckstate { color: var(--amber); }
+
+  /* folds — the tools you reach for rather than read */
+  #board .btools { margin-top: 18px; padding-top: 6px; border-top: 1px solid var(--b-rule); }
+  #board .bfold + .bfold { border-top: 1px solid #111; }
+  #board .bfoldhd { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 0; border: 0; background: none;
+    color: #c9c9c9; font-size: 12.5px; text-align: left; cursor: pointer; }
+  #board .bfoldhd:hover { color: #fff; }
+  #board .bfoldn { margin-left: auto; font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3); }
+  #board .bfoldbody { padding: 0 0 12px 15px; }
+  #board .bfoldbody > .bwthead { display: flex; gap: 2px; margin: 0 0 6px -7px; }
+  #board .bchev { flex: none; width: 5px; height: 5px; margin: 0 1px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+    transform: rotate(-45deg); opacity: .55; transition: transform .15s ease; }
+  #board .bfold.open > .bfoldhd .bchev, #board .smtog.open .bchev { transform: rotate(45deg); }
+  #board .bwt { font-size: 11.5px; }
+  #board .bwt .bwtbr { font-family: var(--b-mono); font-size: 11px; color: #c9c9c9; }
+  #board .bwtact { border: 0; background: none; color: var(--b-ink2); font-size: 11px; padding: 1px 4px; }
+  #board .bwtact:hover:not(:disabled) { color: var(--b-ink); background: var(--b-hover); }
+  #board .bwtact:disabled { color: var(--b-ink3); }
+  #board .bagenthint { color: var(--b-ink3); font-size: 11px; margin-bottom: 6px; }
+
+  /* --- the suite meter: a glass thermometer pinned under the board head. White balls ride the line
+     through the tube and gather at four stations — waiting, running, on a helper, done — and every
+     ball is named on a line below. The balls are keyed DOM (renderSuiteMeter), so a change of
+     station is a glide along the glass, not a jump. The bulb holds the mercury: it fills while the
+     suite mutex is held, turns amber when the hold is overdue. */
+  #boardsuites { flex: none; padding: 6px 16px 14px; border-bottom: 1px solid var(--b-rule); font-size: 11.5px; }
+  .smhead { display: flex; align-items: center; gap: 10px; height: 22px; }
+  .smtog { display: flex; align-items: center; gap: 8px; padding: 0; border: 0; background: none; color: var(--b-ink2); cursor: pointer; }
+  .smtitle { font-size: 12.5px; font-weight: 600; color: var(--b-ink); }
+  .smtog:hover .smtitle { color: #fff; }
+  .smlock { flex: 1; min-width: 0; color: var(--b-ink3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  #boardsuites.lock-held .smlock { color: var(--b-ink2); }
   #boardsuites.lock-overdue .smlock, #boardsuites.lock-unknown .smlock { color: var(--amber); }
-  .smdev, .smtog { border: 0; background: none; padding: 0 2px; font: inherit; color: var(--dim); cursor: pointer; }
-  .smdev:hover, .smtog:hover { color: var(--text); }
-  .smtube { position: relative; height: 16px; margin: 3px 0 2px; }
-  .smbulb { position: absolute; left: 0; top: 1px; width: 14px; height: 14px; border-radius: 50%;
-    border: 1px solid #444; background: #202020; box-sizing: border-box; transition: background .4s, border-color .4s, box-shadow .4s; }
-  #boardsuites.lock-held .smbulb { background: #e8e8e8; border-color: #e8e8e8; box-shadow: 0 0 6px rgba(255,255,255,.35); }
-  #boardsuites.lock-overdue .smbulb, #boardsuites.lock-unknown .smbulb { background: var(--amber); border-color: var(--amber); }
-  #boardsuites.lock-parked .smbulb { border-color: var(--dim); background: #333; }
-  #boardsuites.has-red .smbulb { box-shadow: 0 0 0 2px rgba(247,118,142,.55); }
-  .smglass { position: absolute; left: 11px; right: 0; top: 4px; height: 8px; border-radius: 0 5px 5px 0;
-    border: 1px solid #3a3a3a; border-left: 0; background: linear-gradient(#1f1f1f, #171717); box-sizing: border-box; }
-  .smline { position: absolute; left: 12px; right: 3px; top: 7.5px; height: 1px; background: rgba(255,255,255,.28); }
-  .smtick { position: absolute; top: 3px; width: 1px; height: 10px; margin-left: -.5px; background: #3c3c3c; }
-  .smball { position: absolute; top: 4px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%;
-    background: #fff; box-shadow: 0 0 4px rgba(255,255,255,.45);
+  .smdev { flex: none; padding: 0; border: 0; background: none; color: var(--b-ink3); font-size: 11px; cursor: pointer; }
+  .smdev:hover { color: var(--b-ink); }
+  .smtube { position: relative; height: 18px; margin: 12px 0 5px; }
+  .smbulb { position: absolute; left: 0; top: 2px; width: 14px; height: 14px; border-radius: 50%; box-sizing: border-box;
+    border: 1px solid #2e2e2e; background: radial-gradient(circle at 35% 30%, #262626, #050505 70%);
+    transition: background .5s, border-color .5s, box-shadow .5s; }
+  #boardsuites.lock-held .smbulb { border-color: #d0d0d0; background: radial-gradient(circle at 35% 30%, #fff, #a9a9a9 75%);
+    box-shadow: 0 0 10px rgba(255,255,255,.22); }
+  #boardsuites.lock-overdue .smbulb, #boardsuites.lock-unknown .smbulb { border-color: var(--amber);
+    background: radial-gradient(circle at 35% 30%, #f6d9a8, #b98537 75%); box-shadow: 0 0 10px rgba(224,175,104,.3); }
+  #boardsuites.lock-parked .smbulb { border-color: #555; }
+  .smglass { position: absolute; left: 11px; right: 0; top: 5px; height: 8px; box-sizing: border-box; border-radius: 0 5px 5px 0;
+    border: 1px solid #262626; border-left: 0; background: linear-gradient(to bottom, rgba(255,255,255,.06), rgba(255,255,255,0) 55%); }
+  .smline { position: absolute; left: 13px; right: 4px; top: 8.5px; height: 1px;
+    background: linear-gradient(to right, rgba(255,255,255,.55), rgba(255,255,255,.12)); }
+  #boardsuites.lock-free .smline, #boardsuites.lock-stale .smline { background: linear-gradient(to right, rgba(255,255,255,.22), rgba(255,255,255,.06)); }
+  .smtick { position: absolute; top: 3px; width: 1px; height: 12px; margin-left: -.5px; background: #222; }
+  .smball { position: absolute; top: 5.5px; width: 7px; height: 7px; margin-left: -3.5px; border-radius: 50%;
+    background: #fff; box-shadow: 0 0 6px rgba(255,255,255,.55);
     transition: left .9s cubic-bezier(.45,0,.2,1), opacity .4s, transform .4s; }
-  /* the streak: a short fading line trailing each ball along the tube */
-  .smball::before { content: ""; position: absolute; right: 6px; top: 3.5px; width: 12px; height: 1px;
-    background: linear-gradient(to right, transparent, rgba(255,255,255,.8)); }
+  /* the streak: each ball trails a short fading line along the glass */
+  .smball::before { content: ""; position: absolute; right: 5px; top: 3px; width: 16px; height: 1px;
+    background: linear-gradient(to right, rgba(255,255,255,0), rgba(255,255,255,.9)); }
+  .smball.tail::before { display: none; }
   .smball.entering { opacity: 0; transform: scale(.3); }
-  .smball.mine { transform: scale(1.3); box-shadow: 0 0 0 1.5px var(--accent), 0 0 6px rgba(122,162,247,.6); }
-  .smball.tone-ok { box-shadow: 0 0 0 1.5px var(--add); }
-  .smball.tone-red { box-shadow: 0 0 0 1.5px var(--del), 0 0 6px rgba(247,118,142,.7); }
-  .smball.tone-unknown, .smball.tone-warn { box-shadow: 0 0 0 1.5px var(--amber); }
-  .smcols { display: grid; grid-template-columns: 14px repeat(4, minmax(0, 1fr)); }
-  .smst { min-width: 0; border: 0; background: none; padding: 0; font: inherit; font-size: 9px; color: var(--faint);
-    text-transform: uppercase; letter-spacing: .05em; cursor: pointer; white-space: nowrap; }
-  .smst.on { color: var(--dim); }
-  .smst:hover { color: var(--text); }
-  .smrows:not(:empty) { margin-top: 4px; display: flex; flex-direction: column; gap: 1px; }
-  .smrow { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; border: 0; border-radius: 4px;
-    background: none; padding: 1px 3px; font: inherit; color: var(--text); text-align: left; cursor: pointer; }
-  .smrow:not(:disabled):hover { background: var(--raised); }
+  .smball.tone-ok { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--add); }
+  .smball.tone-red { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--del), 0 0 8px rgba(247,118,142,.6); }
+  .smball.tone-unknown, .smball.tone-warn { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--amber); }
+  .smball.mine { transform: scale(1.35); }
+  .smcols { display: grid; grid-template-columns: 11px repeat(4, minmax(0, 1fr)); }
+  .smst { min-width: 0; padding: 0; border: 0; background: none; font-size: 10.5px; color: #474747; cursor: pointer; white-space: nowrap; }
+  .smst.on { color: var(--b-ink2); }
+  .smst:hover { color: var(--b-ink); }
+  .smstn { margin-left: 4px; font-family: var(--b-mono); font-size: 10px; color: var(--b-ink); }
+  .smrows:not(:empty) { margin-top: 10px; }
+  .smrow { display: flex; align-items: center; gap: 8px; width: calc(100% + 12px); margin: 0 -6px; padding: 3px 6px;
+    border: 0; border-radius: 5px; background: none; color: var(--b-ink); font-size: 12px; text-align: left; cursor: pointer; }
+  .smrow:not(:disabled):hover { background: var(--b-hover); }
   .smrow:disabled { cursor: default; }
   .smdot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #fff; }
-  .smrow.tone-ok .smdot { box-shadow: 0 0 0 1.5px var(--add); }
-  .smrow.tone-red .smdot { box-shadow: 0 0 0 1.5px var(--del); }
-  .smrow.tone-unknown .smdot, .smrow.tone-warn .smdot { box-shadow: 0 0 0 1.5px var(--amber); }
-  .smname { flex: none; max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .smrow.mine .smname { color: var(--accent); font-weight: 700; }
-  .smwhat { flex: 1; min-width: 0; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .smwhere { flex: none; color: var(--dim); font-size: 9px; text-transform: uppercase; letter-spacing: .05em; }
+  .tone-ok > .smdot { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--add); }
+  .tone-red > .smdot { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--del); }
+  .tone-unknown > .smdot, .tone-warn > .smdot { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--amber); }
+  .smname { flex: none; max-width: 52%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .smrow.mine .smname { color: var(--accent); font-weight: 600; }
+  .smwhat { flex: 1; min-width: 0; font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .smwhere { flex: none; font-size: 11px; color: var(--b-ink3); }
   .smrow.tone-ok .smwhere { color: var(--add); }
   .smrow.tone-red .smwhere { color: var(--del); }
   .smrow.tone-unknown .smwhere, .smrow.tone-warn .smwhere { color: var(--amber); }
-  .smmore { color: var(--faint); padding-left: 15px; }
-  .smdetail:not(:empty) { margin-top: 6px; }
+  .smmore { padding-left: 14px; color: var(--b-ink3); font-size: 11px; }
+  .smdetail:not(:empty) { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: #0a0a0a; font-size: 11px; }
+  #board .smdetail .bsec { padding: 0; }
+  .smdetail .bstate, .smdetail .bidmeta { color: var(--b-ink2); font-family: var(--b-mono); font-size: 10.5px; line-height: 1.5; }
+  @media (prefers-reduced-motion: reduce) { .smball, .smbulb, #board .bchev { transition: none; } }
   /* per-pane board toggle, sits left of the 💬 viewtoggle (top edge is taken, so
      "beside" not "above"); same visual language as the viewtoggle */
   .boardtoggle { position: absolute; top: 8px; right: 46px; z-index: 6; width: 30px; height: 26px;

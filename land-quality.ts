@@ -45,6 +45,9 @@ export interface LandRow {
   // chose and Fleet cannot name it (model is null then). `null` = the outcome row predates the
   // field (before 2026-09-17) or is a `reverted` row — UNKNOWN, never "ambient".
   modelOrigin: string | null;
+  // the outcome row's own stamp where one exists — the string the card named, or null = "the
+  // writer read the task row and none was named"; the join (sizeIndexOf) fills only rows written
+  // before the stamp (sizeStampOrJoin).
   effort: string | null; size: string | null; landedAt: number; mainAfter: string; codeLand: boolean | null;
   insertedLines: number | null; reworkLines3d: number | null; reworkLines7d: number | null;
   reworkByFixSubject: boolean | null; auditRed: boolean | null; auditVerdict: string | null;
@@ -98,6 +101,20 @@ export function sizeIndexOf(state: unknown, archiveRows: Record<string, unknown>
 }
 
 interface Ratio { k: number; d: number }
+
+// THE ROW'S SIZE, the stamp first (S2 of the 2026-09-17 queue-fields note): a stamped row carries
+// `size` in one of two FORMS, and both are authoritative — the string the card named, or null for
+// "the writer read the task row and none was named"; neither may be second-guessed by the join.
+// Only `undefined` — rows from before the field, and reverted rows — falls back to the sizeOf join
+// (taskId, then the request bracket originId), the lookup rows needed when the size lived only on
+// the queue row.
+export function sizeStampOrJoin(
+  o: { size?: unknown }, sizeOf: Map<string, string>, taskId: string | null, originId: string | null,
+): string | null {
+  if (typeof o.size === "string") return o.size;
+  if (o.size === null) return null;
+  return (taskId ? sizeOf.get(taskId) : undefined) ?? (originId ? sizeOf.get(originId) : undefined) ?? null;
+}
 export interface Group {
   key: string; n: number; code: number; rework3d: Ratio; fix3dCode: Ratio; auditRed: Ratio;
   // the summary's leading numbers: rework and inserted lines summed over the rows whose 3-d window
@@ -324,7 +341,7 @@ async function main(argv: string[]): Promise<number> {
       base, commits: null, files: new Set(), r3: 0, r7: 0, fix: false, blameFailed: false,
       row: {
         branch, taskId, model: str(o.model), modelOrigin: str(o.modelOrigin), harness: str(o.harness), effort: str(o.effort),
-        size: (taskId ? sizeOf.get(taskId) : undefined) ?? (originId ? sizeOf.get(originId) : undefined) ?? null,
+        size: sizeStampOrJoin(o, sizeOf, taskId, originId),
         landedAt, mainAfter, codeLand: null, insertedLines: null, reworkLines3d: null, reworkLines7d: null,
         reworkByFixSubject: null, auditRed: null, auditVerdict: null,
         ownerPrompts: typeof o.ownerPrompts === "number" ? o.ownerPrompts : null, disposition: "landed", asOf, asOfAt: horizonMs,

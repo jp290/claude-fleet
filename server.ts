@@ -22446,6 +22446,15 @@ interface LaneOutcome {
   // every row written before 2026-09-17, where absence says "this row cannot say" — which is a
   // different statement from "the harness chose", and a stamped "ambient" would erase the difference.
   modelOrigin?: ModelOrigin;
+  // THE SIZE THE TASK'S CARD NAMED, read off the queue row at write time (taskCardSize — live
+  // fleet.json first, then the tasks-archive.jsonl row capTasks displaced it to). A size that
+  // lived only on the row used to die with the eviction, and the reader's archive join is only a
+  // best-effort second chance (63 of the 255 size-null lands in the 14 d window of
+  // docs/messungen/2026-09-17-queue-felder-und-ihre-leser.md). `null` is the explicit "the card
+  // named no size" — a manual lane and a cardless task both land here — never a default a reader
+  // may re-derive. Absent on every row written before the field and on `reverted` rows (no slot
+  // to read): absence says "this row cannot say; join its landed record by branch".
+  size?: string | null;
   harness: string | null; // s.harness, or null for the default adapter (FLEET_CMD) — a REQUESTED
   // pin, never resolved through harnessOf() after the fact, and since 2026-09-17 that is the
   // difference between this field and `model` above.
@@ -22835,6 +22844,18 @@ async function codexSubagentCount(sessionId: string, from: number, to: number): 
 function briefHashOf(text: string | null): string | null {
   return text ? createHash("sha256").update(text).digest("hex").slice(0, 12) : null;
 }
+// THE SIZE THE TASK'S CARD NAMED — the ONE lookup behind the `size` stamp, read while the queue
+// row is still reachable: live fleet.json first, then the archive it was displaced to. Null is an
+// ANSWER ("the slot holds no queue row, or the card named none"), never a default: the point of
+// the stamp is that the row carries the size at land time, because the row it lived on is evicted
+// and a reader re-deriving it later loses exactly the lands whose task left both shelves
+// (docs/messungen/2026-09-17-queue-felder-und-ihre-leser.md §2.2, S2).
+async function taskCardSize(s: Slot): Promise<string | null> {
+  const id = s.taskId ?? s.originId;
+  if (!id) return null;
+  const t = tasks.find((x) => x.id === id) ?? await youngestArchivedTask(id);
+  return typeof t?.card?.size === "string" ? t.card.size : null;
+}
 // assemble a lane's outcome from git + slot state, at a live-lane terminal event. `kind` "killed"
 // resolves to killed-dirty (HAD commits — real work abandoned) vs killed-empty (no commits) from
 // the commit count itself. Must be called while s.cwd/s.worktree are still set AND, for a land,
@@ -22898,6 +22919,9 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     // model + modelOrigin from the SAME resolution the context receipt stamps (resolvedModel) —
     // never `s.model` raw: an unpinned lane would land as a null the reader cannot address.
     ...resolvedModel(s),
+    // the card size, stamped at write time by the ONE lookup (taskCardSize) — a reader joins only
+    // rows that predate the stamp, never one carrying it
+    size: await taskCardSize(s),
     harness: s.harness ?? null,
     effort: s.effort ?? null,
     ...(s.taskId ? { taskId: s.taskId } : {}),

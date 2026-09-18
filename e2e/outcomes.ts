@@ -21,6 +21,9 @@ export async function run(): Promise<void> {
       // optional at the reader because legacy ledger rows predate all four fields. Fresh lane rows
       // always carry harness/effort (null means default adapter/level); only task lanes carry ids.
       harness?: string | null; effort?: string | null; taskId?: string; originId?: string; programId?: string;
+      // optional because rows written before the stamp (and reverted rows) carry no key; null on a
+      // stamped row is the explicit "the card named none", never a gap
+      size?: string | null;
       commitCount: number; filesTouched: string[]; e2eTouched: boolean; verified: boolean | null;
       sessionMs: number | null; ownerPrompts: number;
       resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean;
@@ -636,6 +639,55 @@ export async function run(): Promise<void> {
     check("outcome: a hand-opened lane carries no taskId/originId/programId, while default adapter pins stay explicit null",
       !!rec1 && !("taskId" in rec1) && !("originId" in rec1) && !("programId" in rec1)
       && rec1.harness === null && rec1.effort === null, JSON.stringify(rec1));
+
+    // (7b2) THE SIZE THE CARD NAMED, stamped at write time (S2 of docs/messungen/
+    // 2026-09-17-queue-felder-und-ihre-leser.md §3): a task whose card names a size lands that
+    // size on its outcome row, and a row whose task named none carries the EXPLICIT null — the key
+    // present with null, which is "the writer looked and found none", never the ABSENCE that means
+    // "this row predates the field". The null half rides recRel (7b's cardless task): one land,
+    // not two.
+    const szMark = "size-stamp probe — a card that names seed.txt with a size";
+    const szFiled = await (await post("/api/tasks", {
+      text: szMark, repo: oRepo, queue: true,
+      card: { ziel: "the size-stamp probe touches only its own marker file",
+        surface: { files: ["seed.txt"] }, done: "the size lands on the outcome row of this lane",
+        verify: "bun install", size: "klein" },
+    })).json() as { task?: { id: string }; error?: string };
+    check("size-stamp setup: the card with a size files clean", !!szFiled.task?.id && !szFiled.error,
+      JSON.stringify(szFiled).slice(0, 300));
+    const szD = await post(`/api/tasks/${szFiled.task?.id ?? "missing"}/dispatch`, {});
+    const szJ = await szD.json() as { slot?: number; branch?: string; error?: string };
+    check("size-stamp setup: the sized task starts a lane in the outcomes repo",
+      szD.ok && typeof szJ.slot === "number" && typeof szJ.branch === "string", JSON.stringify(szJ));
+    const szSlot = szJ.slot ?? 0, szBranch = szJ.branch ?? "";
+    const szCwd = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.find((s) => s.id === szSlot)?.cwd ?? "";
+    // SETTLE, not an assertion — same reason as (7b): tearing the lane down inside the founding-brief
+    // window makes briefAndSend requeue the row, which is noise this check has no business generating.
+    for (let i = 0; i < 24; i++) {
+      const ps = ((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts;
+      if (ps.some((p) => p.source === "auto" && (p.text ?? "").includes(szMark))) break;
+      await Bun.sleep(500);
+    }
+    check("size-stamp setup: the dispatched lane has a worktree to commit in", !!szCwd, JSON.stringify({ szSlot, szCwd }));
+    await Bun.write(`${szCwd}/sized.e2e.ts`, "// size-stamp lane test file\n");
+    spawnSync("git", ["-C", szCwd, "add", "sized.e2e.ts"]);
+    spawnSync("git", ["-C", szCwd, "commit", "-qm", "size-stamp lane work"]);
+    await Bun.write(`${oRepo}/sized-main.txt`, "main side, sized\n"); // different file → clean rebase, no agent
+    spawnSync("git", ["-C", oRepo, "add", "sized-main.txt"]);
+    spawnSync("git", ["-C", oRepo, "commit", "-qm", "size-pin main work"]);
+    await settleForMerge(szSlot);
+    await post(`/api/slots/${szSlot}/merge`, {});
+    const vSz = await waitMerge(szSlot);
+    check("size-stamp setup: the sized lane lands UNATTENDED via the clean path (slot torn down)",
+      vSz.gone, JSON.stringify(vSz));
+    const recSz = forBranch(await readOutcomes(), szBranch);
+    check("outcome: a landed row stamps size from its task's card — value when named, explicit null when not",
+      !!recSz && recSz.disposition === "landed" && recSz.size === "klein" && "size" in recSz
+      && !!recRel && recRel.disposition === "landed" && recRel.size === null && "size" in recRel,
+      JSON.stringify({ sized: recSz?.size, sizedHasKey: recSz ? "size" in recSz : null,
+        cardless: recRel?.size ?? null, cardlessHasKey: recRel ? "size" in recRel : null }));
+    await post(`/api/tasks/${szFiled.task?.id ?? "missing"}/delete`, {});
 
     // (7c) THE DOSSIER — the same lanes read as ONE story instead of six ledgers. Every lane above
     // is already a fixture for it: oc1 landed WITHOUT moving main (so it has no note, and that is a

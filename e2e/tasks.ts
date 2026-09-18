@@ -2652,8 +2652,18 @@ export async function run(ctx: Ctx): Promise<void> {
     const rActivate = await post(`/api/programs/${rProg}/activate`, {});
     const rSlotsBefore = new Set((await rSess()).slots.map((s) => s.id));
     const rBoot = await post(`/api/programs/${rProg}/bootstrap-main`, { cwd: REPO2 });
-    const rMainSlot = (await rSess()).slots.find((s) => !rSlotsBefore.has(s.id) && s.cwd)?.id;
-    const rMainTok = rMainSlot !== undefined ? await selfTokenOf(rMainSlot) : "";
+    // the bind is ASYNC and the opened slot REUSES a free slot NUMBER already on the board — an
+    // id-delta against rSlotsBefore excludes it forever (measured: mainSlot null with the binding
+    // standing in fleet.json). The sound read is the program's own main.slot, persisted at bind
+    // time; programs.ts waits the same way (waitForLabel) instead of diffing the board.
+    const rMainSlot = await rTill(async () => {
+      try {
+        const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { programs?: { id?: string; main?: { slot?: number } }[] };
+        const mine = (st.programs ?? []).find((p) => p.id === rProg);
+        return typeof mine?.main?.slot === "number" ? mine.main.slot : null;
+      } catch { return null; }
+    }, (id) => id !== null) ?? null;
+    const rMainTok = rMainSlot !== null ? await selfTokenOf(rMainSlot) : "";
     check("(v-res)(4) fixture: the probe program is active with a bound MAIN in REPO2 holding a self token",
       rBoot.status === 200 && rConfirm.status === 200 && rActivate.status === 200
       && typeof rMainSlot === "number" && /^[0-9a-f]{32}$/.test(rMainTok),

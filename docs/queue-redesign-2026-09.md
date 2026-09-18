@@ -6,6 +6,28 @@ oberer Leiste, und dafür ist diese Notiz die Übergabe. Owner, 2026-09-19: „d
 im zweiten Teil nochmal neu entwerfen. Genauso die obere Leiste“. Zu Teil 1 sagte er: „so ist das ja
 wie vorher“. Das Detail-Panel ist bisher nur umsortiert, nicht neu gedacht.
 
+## 0 · Stand Teil 2 (2026-09-19, Session 2 der Lane)
+
+Der Owner hat aus drei Skizzen je Fläche gewählt: „eigentlich gefällt mir D2 echt gut, und auch L2 mit
+einer option für L3“. Beides ist gebaut, je ein Commit auf dem Branch (Bodies nennen Mechanik, Proben,
+Mutationen). Die vier offenen Entscheide aus §3 blieben beim Ist-Zustand, weil sie nur mit „alles klar“
+beantwortet wurden: Waves bleibt Tab, kein Jev, Program↔Repo aus den Tasks abgeleitet, Bündel als
+Text-Konvention.
+
+- **D2, Detail** (`src/client.ts#renderQueueDetail`): Der Titel steht oben. Links darunter die
+  Lesespalte: Card, Bündel-Trail, Notes & comments, Refinement (offen, weil sie Entwürfe hält), dann
+  eingeklappt Request, Evidence und Details. Rechts die Schiene, 260 px und sticky: Status,
+  Lifecycle, die eine Hauptaktion mit ihrem Warum, clarify/refine/hold, More options, „place“
+  (Program, Repo) und zuletzt eingeklappt „⋯ done · archive · delete“. Auf dem Handy stapelt die
+  Ansicht Titel, Schiene und Spalte untereinander.
+- **L2 + L3, Scope** (`#paintQueueScope`): Links neben der Liste steht ein Baum: Alle, dann die Repos,
+  darunter im Work-Tab die Programs des gewählten Repos. „⇤ line“ klappt den Baum zu einer Auswahl
+  „repo / program“ in der Leiste zusammen. Die Wahl gilt pro Gerät (`fleet.queue.scope`), ein Handy
+  bekommt immer die Zeile. Leiste: Scope, Suche, Views, ⧉ Bundle, Umschalter. Ein „⋯“ gibt es oben
+  nicht, weil nichts hineingehört.
+
+§3 unten ist die Entwurfsrichtung vor der Wahl und bleibt als Begründung stehen.
+
 ## 1 · Was der Owner will (seine Worte, 2026-09-18/19)
 
 - „Die aktuell laufenden Tasks sollten über den releasten stehen, sodass sie von unten nach oben

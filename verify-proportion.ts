@@ -16,6 +16,10 @@ export const LOCAL_PROOF_STEPS = [
 ] as const;
 
 export type LocalProofStep = (typeof LOCAL_PROOF_STEPS)[number];
+// A CLARIFY lane builds nothing: its brief ends in filing the criterion through this route, then
+// STOP (CLAUDE.md, Lane discipline). Its honest verify is therefore this route, not a chain step —
+// named beside the chain, never inside it, because the gate runs LOCAL_PROOF_STEPS and not this.
+export const CLARIFY_CLOSE_ROUTE = "POST /api/self/criterion";
 export type IsolatedPreview = true | false | "self-assess";
 export interface LocalProof {
   steps: LocalProofStep[];

@@ -12,7 +12,8 @@
 //   files   → `git ls-files` (task-metadata.ts's tracked snapshot)
 //   symbols → graphify-out/graph.json (task-metadata.ts's symbol index), then a top-level
 //             declaration in the tracked file; with no graph at all, file existence
-//   verify  → the known chain steps (verify-proportion.ts#LOCAL_PROOF_STEPS)
+//   verify  → the known chain steps (verify-proportion.ts#LOCAL_PROOF_STEPS), or a clarify row's
+//             close (verify-proportion.ts#CLARIFY_CLOSE_ROUTE)
 //   rolle   → the registered harness/model/effort validators, passed in by the caller — ADVISORY:
 //             normalised first, and an unresolvable value is a gap that leaves `valid` alone
 // What survives is `card`. What does not is a line in `gaps`, in the model's own words, and is
@@ -23,7 +24,7 @@
 // `valid: false` is still stored — it is the honest record that a reading was attempted and what
 // it could not establish.
 import { defuseDelimiters } from "./src/protocol";
-import { LOCAL_PROOF_STEPS } from "./verify-proportion";
+import { LOCAL_PROOF_STEPS, CLARIFY_CLOSE_ROUTE } from "./verify-proportion";
 import { intentText, declaresSymbol, splitSymbolRef, IDENT_SRC } from "./task-metadata";
 import { isTaskCardSize, type TaskCardSize } from "./task-waves";
 import type { SymbolIndex, SymbolRange } from "./task-metadata";
@@ -48,8 +49,9 @@ export const CARD_KEY = "card";
 //   5 (2026-09-14) — `rolle` normalised (harness case-insensitive, model aliases, a role name before
 //                    the triple cut) and ADVISORY: a `rolle.*` gap no longer makes a card invalid;
 //                    the prompt asks for `surface.creates` and `after`
+//   6 (2026-09-18) — verify `POST /api/self/criterion` (CLARIFY_CLOSE_ROUTE) is a clarify row's proof
 // Bump it whenever a change here can turn a refusal into an acceptance.
-export const CARD_VALIDATOR_VERSION = 5;
+export const CARD_VALIDATOR_VERSION = 6;
 
 export interface TaskCardRole { harness: string | null; model: string | null; effort: string | null }
 // `creates` are files the row will ADD. They cannot pass `files`' tracked-tree check by definition,
@@ -159,6 +161,10 @@ export const sizeNamedIn = (text: string, size: TaskCardSize): boolean => SIZE_N
 // not one. The two alternatives are therefore anchored differently ON PURPOSE.
 const namesChainStep = (verify: string): boolean =>
   LOCAL_PROOF_STEPS.some((step) => verify.includes(step)) || /(?:\bbunx?\b|\.\/e2e-)/.test(verify);
+// The clarify close is matched as the literal route and nothing near it: a GET, another /api/self/
+// path or a longer segment ("criterion-x") stays the same gap as any invented step.
+const CLARIFY_CLOSE = new RegExp(`(?<![\\w/-])${CLARIFY_CLOSE_ROUTE}(?![\\w/-])`);
+const namesClarifyClose = (verify: string): boolean => CLARIFY_CLOSE.test(verify);
 
 // THE TWO NAMED ALIASES of a verify value, and nothing beyond them. The filing format itself writes
 // "VERIFY: volle Kette" (the comment above FORMAT_KEYS), and "e2e-isolated" without `./` slipped
@@ -194,7 +200,7 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   // The verify field is checked against the chain this repo actually runs, not against being
   // non-empty: "run the tests" is the shape of an answer, not one.
   if (!verify) gaps.push("verify: no command named");
-  else if (!aliased && !namesChainStep(verify))
+  else if (!aliased && !namesChainStep(verify) && !namesClarifyClose(verify))
     gaps.push(`verify: "${verify}" names no known chain step (${LOCAL_PROOF_STEPS.join(", ")})`);
 
   const rawRole = (raw.rolle && typeof raw.rolle === "object" ? raw.rolle : {}) as Record<string, unknown>;

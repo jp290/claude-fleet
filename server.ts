@@ -59,7 +59,7 @@ import {
   type TaskFilesOrigin, type TrackedSnapshot, type SymbolIndex, type SymbolIndexSnapshot,
   type SymbolRange, type TaskSurface,
 } from "./task-metadata";
-import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardSurfaceValid, cardValid, cardAnswerForLedger, CARD_MARK, CARD_KEY,
+import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardSurfaceValid, cardValid, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY,
   CARD_VALIDATOR_VERSION, type TaskCardBody, type CardValidationContext } from "./card-extract";
 import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NOTE_HUB_FILES,
   type NoteInput, type NoteRow, type KeyedUpsert } from "./task-notes";
@@ -12722,13 +12722,18 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
   const gaps = strs(raw.gaps);
   const tokens = Number(raw.tokens);
   const validatorVersion = Number(raw.validatorVersion);
+  const symbols = strs(surface.symbols);
+  // null survives as null: "no symbol index was available" is not an empty range list.
+  const ranges = normSurfaceRanges(surface.ranges);
+  // DERIVED like `valid`, never read: a hand-edit cannot erase it, and a card stored before the
+  // field existed says it too (card-extract.ts#cardUncheckedSymbols)
+  const unchecked = cardUncheckedSymbols({ symbols, ranges });
   return {
     ziel: str(raw.ziel), done: str(raw.done), verify: str(raw.verify), verboten: strs(raw.verboten),
     rolle: { harness: field(role.harness), model: field(role.model), effort: field(role.effort) },
-    surface: { files: strs(surface.files), symbols: strs(surface.symbols),
-      // null survives as null: "no symbol index was available" is not an empty range list.
-      ranges: normSurfaceRanges(surface.ranges),
-      ...(strs(surface.creates).length ? { creates: strs(surface.creates) } : {}) },
+    surface: { files: strs(surface.files), symbols, ranges,
+      ...(strs(surface.creates).length ? { creates: strs(surface.creates) } : {}),
+      ...(unchecked.length ? { unchecked } : {}) },
     ...(field(raw.program) ? { program: field(raw.program)! } : {}),
     ...(strs(raw.after).length ? { after: strs(raw.after) } : {}),
     ...(isTaskCardSize(raw.size) ? { size: raw.size } : {}),

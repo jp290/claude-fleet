@@ -2687,20 +2687,26 @@ export async function run(ctx: Ctx): Promise<void> {
     for (let i = 0; i < 4; i++)
       rSingles.push(await rCardRow(`(v-res)(4) deckel filler ${i + 1} of 4 — released by the MAIN before the group arrives.`));
     const rGroup4 = await rCardRow("(v-res)(4) the group of two — its release must cost 2 against the deckel.", rVariantChoices);
+    // no dispatch during (4) — the card's own nonGoal: released fillers must stay released-but-
+    // unstarted, or the deckel count below measures lanes the tick already ran
+    await post("/api/dispatch", { on: false });
+    // THE CONTROL FIRST, as its own sentence says (0..3 against 5): the four singles go out one by
+    // one, all 200 — a single row costs one. The first isolated run of this probe never released
+    // them at all, so the group release below read 0+2 and answered 200 — it measured nothing.
+    const rSingleReleases: number[] = [];
+    for (const id of rSingles) rSingleReleases.push((await rSelfPost(`/api/self/tasks/${id}/release`, {})).status);
+    check("(v-res)(4) control: the same door releases each single row — the deckel counts them one by one (0..3 against 5)",
+      rSingleReleases.every((s) => s === 200),
+      JSON.stringify({ statuses: rSingleReleases }));
     const rGroupReleaseTry = rSingles.every((x) => /^[0-9a-f]{6,}$/.test(x)) && /^[0-9a-f]{6,}$/.test(rGroup4)
       ? await rSelfPost(`/api/self/tasks/${rGroup4}/release`, {}) : { status: -1, body: {} as Record<string, unknown> };
     check("(v-res)(4) the group release is a 409 that names the counted sum: 4 released + 2 variants = 6/5",
       rGroupReleaseTry.status === 409 && String(rGroupReleaseTry.body.error ?? "").includes("6/5"),
       JSON.stringify({ status: rGroupReleaseTry.status, error: rGroupReleaseTry.body.error ?? null }));
     const rAfter4 = await rSess();
-    check("(v-res)(4) the refusal moved nothing: the four fillers are still pending, the group and both variants are still pending",
-      rAfter4.tasks.filter((t) => t.programId === rProg).every((t) => t.status === "pending"),
+    check("(v-res)(4) the refusal moved nothing: the four fillers are still queued-unstarted, the group and both variants still pending",
+      rAfter4.tasks.filter((t) => t.programId === rProg).every((t) => rSingles.includes(t.id) ? t.status === "queued" : t.status === "pending"),
       JSON.stringify({ rows: rAfter4.tasks.filter((t) => t.programId === rProg).map((t) => `${t.id}:${t.status}`) }));
-    const rSingleReleases: number[] = [];
-    for (const id of rSingles) rSingleReleases.push((await rSelfPost(`/api/self/tasks/${id}/release`, {})).status);
-    check("(v-res)(4) control: the same door releases each single row — the deckel counts them one by one (0..3 against 5)",
-      rSingleReleases.every((s) => s === 200),
-      JSON.stringify({ statuses: rSingleReleases }));
 
     // (5) · f733e80d · A HELD GROUP'S CLAIM FALLS (server.ts#variantReserveHolds). The park from (1)
     // must not survive a hold on the GROUP row: a hold moves a row without touching its status, and

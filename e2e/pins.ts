@@ -55,7 +55,7 @@ import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../serve
 import { readEventLog, readLedger } from "../server/persist";
 import { readJsonl } from "../briefstats";
 import { quotaPosition, newResetEntries } from "../codex-quota";
-import { readJsonl as landQualityReadJsonl, modelKey, renderFull, renderSummary, type LandRow } from "../land-quality";
+import { readJsonl as landQualityReadJsonl, modelKey, renderFull, renderSummary, sizeIndexOf, type LandRow } from "../land-quality";
 import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
@@ -2539,6 +2539,27 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       legend.map((s) => `${sum.includes(s) ? "sum" : "MISSING"}/${full.includes(s) ? "full" : "MISSING"}`).join(" · "));
     pin("land-quality's summary on no rows says 0 lands and never a zero share",
       empty.includes(": 0 lands") && !/nacharbeit 0/.test(empty), empty.split("\n")[0] ?? "");
+  }
+  // THE SIZE JOIN reads the archive (2026-09-18, S1 of the queue-fields note
+  // docs/messungen/2026-09-17-queue-felder-und-ihre-leser.md): capTasks evicts rows into
+  // tasks-archive.jsonl and a size that lived only on the row died there — 63 of the 255
+  // size-null lands in the 14 d window. Run rather than read, on the ONE exported builder
+  // main() feeds: an archive line with card.size counts, the NEWEST archive line per id wins
+  // (an older size must not survive a newer sizeless row), fleet.json wins the double, and a
+  // task on neither shelf stays absent rather than guessed.
+  {
+    const arch = [
+      { task: { id: "t3", card: { size: "mittel" } } },
+      { task: { id: "t3", card: { size: "klein" } } },
+      { task: { id: "t2", card: { size: "mittel" } } },
+      { task: "garbage" }, { nope: 1 },
+    ];
+    const m = sizeIndexOf({ tasks: [{ id: "t1", card: { size: "klein" } }, { id: "t4" }] }, arch);
+    pin("land-quality's size index joins tasks-archive.jsonl (newest line per id) and fleet.json wins the double",
+      m.get("t1") === "klein" && m.get("t2") === "mittel" && m.get("t3") === "klein"
+      && !m.has("t4") && m.size === 3,
+      `t1=${m.get("t1")} (fleet over archive) t2=${m.get("t2")} (archive only) `
+        + `t3=${m.get("t3")} (newest archive line) t4 absent n=${m.size}`);
   }
   // THE BRIEF FORMS exist where the doc names them (2026-09-18): both scripts parse --brief and
   // reject an unknown flag, and docs/controller.md's loop section names both. A doc naming a flag

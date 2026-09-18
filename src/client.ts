@@ -9419,6 +9419,14 @@ function renderQueueDetail() {
   // THE TITLE FIRST (owner, 2026-09-18: "wichtigstes zuerst"): what this row IS, in its own words,
   // with the same chips its list row carries — minus program, which the head's facts name below.
   const summary = qTaskSummary(t, qTaskText(t.id), Date.now(), programsList);
+  // D2 (owner, 2026-09-19): a READING column and a RAIL beside it. What is read — title, card,
+  // discussion, texts — runs down the left; status, the one action, the few options and where the
+  // row lives sit in the rail, which keeps its place while the column scrolls.
+  const d2 = el("div", "qd2");
+  const read = el("div", "qdread");
+  const rail = el("div", "qdrail");
+  d2.append(read, rail);
+  shell.detail.appendChild(d2);
   const titleBox = el("div", "qdtitle");
   titleBox.appendChild(el("div", "qdtitle-t", summary.title));
   const titleChips = el("div", "qchips");
@@ -9429,17 +9437,19 @@ function renderQueueDetail() {
   }
   titleChips.appendChild(el("span", "qdtitle-id", t.id));
   titleBox.appendChild(titleChips);
-  shell.detail.appendChild(titleBox);
-  // --- DETAIL HEAD (paint): the plan from qHeadPlan, painted ABOVE every section — status,
-  // program, target repo, the lifecycle rail, and the ONE main action with the single line that
-  // says what it does. Nothing else may be appended between here and the first section: the whole
-  // point is that the next decision is readable without scrolling at 1440×900.
+  read.appendChild(titleBox);
+  // --- DETAIL HEAD (paint): the plan from qHeadPlan, painted at the TOP OF THE RAIL — status,
+  // the lifecycle rail, and the ONE main action with the single line that says what it does.
+  // Program and target repo are built here and shown under "place", below the acts. Nothing else
+  // may be appended between here and the first section: the next decision is readable at 1440×900
+  // without scrolling, and the rail keeps it there while the reading column scrolls.
   const laneJoin = qLaneJoinOf(t.id);
   const head = qHeadPlan({
     status: t.status, kind: t.kind, slot: t.slot, repo: t.repo, programId: t.programId,
   }, programsList.find((x) => x.id === t.programId)?.title ?? null,
   laneJoin.kind === "lane" ? { kind: "lane", slot: laneJoin.lane.slot } : { kind: laneJoin.kind });
-  shell.detail.appendChild(el("div", "rvhead qdhead-status", head.status));
+  rail.appendChild(el("div", "qdrail-h", "status"));
+  rail.appendChild(el("div", "rvhead qdhead-status", head.status));
   const headFacts = el("div", "ocfacts qdhead-facts");
   headFacts.appendChild(chip(head.program, "dim", t.programId
     ? `this row is bound to program ${t.programId}`
@@ -9447,7 +9457,6 @@ function renderQueueDetail() {
   headFacts.appendChild(chip(head.repo, "dim", t.repo
     ? `target repo: ${t.repo} — this task's lane spawns there`
     : "this row names no target repo — a dispatch would fall back to the server's default"));
-  shell.detail.appendChild(headFacts);
   // THE LIFECYCLE RAIL. Four stations plus, when the row is off them, the end it is in. Only
   // facts from this poll: a station is `on`, an earlier one `past`, everything else plain — and an
   // archived row marks NO station, because the poll does not carry the walk it once made.
@@ -9463,17 +9472,17 @@ function renderQueueDetail() {
   if (head.life.current === "archived" || head.life.current === "advisory"
     || head.life.current === "unknown")
     life.appendChild(el("span", "qlife-st end on", head.life.current));
-  shell.detail.appendChild(life);
+  rail.appendChild(life);
   // the one action's own row. Filled from the act placement below (`place`), so the button that
   // lands here is the very same node, with the very same handler, that Actions would have held.
   const mainBox = el("div", "qdmain");
-  shell.detail.appendChild(mainBox);
-  shell.detail.appendChild(el("div", "qdmain-why", head.main.why));
+  rail.appendChild(mainBox);
+  rail.appendChild(el("div", "qdmain-why", head.main.why));
   // THE CARD, right under the one action: what the row wants done and how that is checked — the
   // part of a long text the owner decides on. Drawn only when the extractor wrote one.
   const card = taskCardFull.get(t.id);
   if (card) {
-    const sec = qDetailSection(shell.detail, "Card" + (card.valid === false ? " · has gaps" : ""));
+    const sec = qDetailSection(read, "Card" + (card.valid === false ? " · has gaps" : ""));
     const field = (label: string, value: string | undefined) => {
       if (!value) return;
       const row = el("div", "qcardrow");
@@ -9507,14 +9516,11 @@ function renderQueueDetail() {
     }
     if (card.gaps?.length) sec.appendChild(el("div", "qdfind unk", `gaps: ${card.gaps.join(" · ")}`));
   }
-  // ACTIONS FIRST, discussion after: the request text and the comment thread used to sit between
-  // the head and the acts, which is exactly how the decision ended up below the fold.
-  const actionSection = qDetailSection(shell.detail, "Actions");
   // THE BUNDLE TRAIL: which rows this one was made from, each one click away (they are in
   // History, archived as "gebündelt in <this id>"), and the way back while the bundle has not run.
   const bundleSources = qBundleSources(qTaskText(t.id));
   if (bundleSources.length) {
-    const sec = qDetailSection(shell.detail, `Bundle · ${bundleSources.length} sources`);
+    const sec = qDetailSection(read, `Bundle · ${bundleSources.length} sources`);
     for (const src of bundleSources) {
       const row = tasksList.find((x) => x.id === src);
       const line = el("div", "qbundlesrc");
@@ -9539,7 +9545,7 @@ function renderQueueDetail() {
   if (t.kind === "notiz" && !qClosed(t)) {
     const holders = tasksList.filter((x) => !qClosed(x) && !qAdvisory(x)
       && (taskNotesFull.get(x.id) ?? []).some((pin) => pin.noteId === t.id));
-    const sec = qDetailSection(shell.detail, "Attached to");
+    const sec = qDetailSection(read, "Attached to");
     for (const h of holders) {
       const line = el("div", "qbundlesrc go");
       line.append(el("span", "qbundleid", h.id), el("span", "", qFirstLine(qTaskText(h.id)).slice(0, 90)));
@@ -9567,17 +9573,17 @@ function renderQueueDetail() {
   }
   // WHAT HANGS OFF THE ROW, right under what can be done with it: assigned notes, verdicts, and
   // the comment thread. Never a fold — the comment box is a draft a repaint must not close.
-  const discussion = qDetailSection(shell.detail, "Notes & comments");
+  const discussion = qDetailSection(read, "Notes & comments");
   const hasRefinement = (!qAdvisory(t) && (t.status === "pending" || t.status === "queued"))
     || brief !== undefined || crit !== undefined || ref !== undefined;
-  const refinement = hasRefinement ? qDetailSection(shell.detail, "Refinement") : null;
+  const refinement = hasRefinement ? qDetailSection(read, "Refinement") : null;
   // Once a compiled brief exists, the original request is supporting evidence rather than the
   // primary working text. Keep it one click away; raw tasks stay open because it is all they have.
-  const request = qDetailSection(shell.detail, "Request", true, brief === undefined);
+  const request = qDetailSection(read, "Request", true, brief === undefined);
   // EVIDENCE: the lane this row is running in, or why none attaches (a `sent` row with nothing
   // attached is the state the owner must be able to read). Verify facts are NOT on the owner
   // poll, and the section says that rather than leaving the absence to be read as a green run.
-  const evidence = qDetailSection(shell.detail, "Evidence — lane & verify facts");
+  const evidence = qDetailSection(read, "Evidence — lane & verify facts", true, false);
   const laneLine = qLaneLine(laneJoin);
   if (laneLine) {
     evidence.appendChild(laneLine);
@@ -9587,12 +9593,9 @@ function renderQueueDetail() {
   }
   evidence.appendChild(el("div", "shellhint",
     "verify and land facts are not on this poll — unknown here, not green"));
-  // DANGER ZONE: the one irreversible act on this pane, folded and last, so it is never a
-  // neighbour of the main action above.
   // the row's provenance and its file surface: evidence for bundling and waves, folded, because
   // it answers "why is it grouped like that", not "what do I do next"
-  const overview = qDetailSection(shell.detail, "Details — surface, cluster, provenance", true, false);
-  const danger = qDetailSection(shell.detail, "Danger zone", true, false);
+  const overview = qDetailSection(read, "Details — surface, cluster, provenance", true, false);
   const meta = el("div", "ocfacts");
   meta.appendChild(chip(taskSourceLabel(t)));
   if (qAdvisory(t)) meta.appendChild(chip(`${t.kind} — not work`, "dim",
@@ -10117,11 +10120,15 @@ function renderQueueDetail() {
       + (t.programId ? "its Program-MAIN (your 📥 inbox if none is live)" : "your 📥 inbox") + " and gates nothing"));
     more.appendChild(g);
   }
-  if (t.status === "archived") acts.appendChild(mk("restore", "unarchive"));
-  if (t.status !== "done" && t.status !== "archived") acts.appendChild(mk("done", "done"));
-  if (t.status !== "sent" && t.status !== "archived") acts.appendChild(mk("🗄 archive", "archive"));
-  actionSection.appendChild(acts);
-  actionSection.appendChild(more);
+  // the ends of a row — restore, done, archive — leave the rail's first screen for its ⋯ fold
+  const ends = el("div", "pkdacts");
+  if (t.status === "archived") ends.appendChild(mk("restore", "unarchive"));
+  if (t.status !== "done" && t.status !== "archived") ends.appendChild(mk("done", "done"));
+  if (t.status !== "sent" && t.status !== "archived") ends.appendChild(mk("🗄 archive", "archive"));
+  rail.appendChild(acts);
+  rail.appendChild(more);
+  rail.appendChild(el("div", "qdrail-h", "place"));
+  rail.appendChild(headFacts);
   // ▸ OPEN LANE is the only main action that is not a queue act: it makes no request at all, it
   // focuses the pane this row is already running in. Built here, beside the acts it replaces in
   // the head, so the head keeps exactly one action node whatever the status.
@@ -10132,10 +10139,15 @@ function renderQueueDetail() {
     ob.onclick = () => { qShell?.close(); showSlot(slot); };
     mainBox.appendChild(ob);
   }
+  // ⋯ THE ENDS AND THE DANGER ZONE: folded and last in the rail, so ✕ delete, the one irreversible
+  // act on this pane, is never a neighbour of the main action — the hint line sits between it and
+  // the reversible ends.
+  const danger = qDetailSection(rail, "⋯ done · archive · delete", true, false);
+  if (ends.childElementCount) danger.appendChild(ends);
   const dangerActs = el("div", "pkdacts");
   dangerActs.appendChild(mk("✕ delete", "delete", "shrbtn danger"));
   danger.appendChild(el("div", "shellhint",
-    "deleting drops the row and its thread for good — there is no restore. 🗄 archive above keeps it."));
+    "deleting drops the row and its thread for good — there is no restore. 🗄 archive keeps it."));
   danger.appendChild(dangerActs);
   restoreFocus();
 }

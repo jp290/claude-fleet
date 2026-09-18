@@ -706,6 +706,19 @@
   .qdmain:empty { display: none; }
   .qdmain .shrbtn { line-height: 18px; }
   .qdmain-why { font-size: 11.5px; line-height: 17px; color: var(--faint); margin: 7px 0 2px; }
+  /* D2: the reading column and the rail. The rail is sticky inside the scrolling .shelldetail, so
+     status, the one action and the options stay beside whatever part of the row is being read. */
+  .qd2 { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 20px; align-items: start; }
+  .qdrail { position: sticky; top: 0; min-width: 0; border-left: 1px solid var(--line-soft); padding-left: 14px; }
+  .qdrail-h { color: var(--dim); font-size: 10.5px; line-height: 14px; font-weight: 700; letter-spacing: .07em;
+    text-transform: uppercase; margin: 16px 0 6px; }
+  .qdrail-h:first-child { margin: 2px 0 6px; }
+  .qdrail .qdmain { flex-direction: column; align-items: stretch; }
+  .qdrail .qrelease { flex-direction: column; align-items: stretch; }
+  .qdrail .qreleasenote { flex: none; }
+  .qdrail > .pkdacts { margin: 10px 0 0; gap: 6px; }
+  .qdrail .qmore { margin-top: 8px; }
+  .qdrail .qdsection { margin-top: 12px; }
   .qkind { display: flex; align-items: center; gap: 9px; margin: 1px 0 12px; }
   .qkind-label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
   .qkind-select { color: var(--text); background: var(--raised); border: 1px solid var(--line);
@@ -940,6 +953,9 @@
        action takes the full width at a touch height, and the rail wraps instead of overflowing. */
     .qdmain { flex-direction: column; align-items: stretch; }
     .qdmain .shrbtn { min-height: 44px; width: 100%; }
+    .qd2 { display: flex; flex-direction: column; gap: 0; }
+    .qdrail { order: -1; position: static; border-left: 0; padding-left: 0; padding-bottom: 10px;
+      border-bottom: 1px solid var(--line-soft); margin-bottom: 8px; }
     .qlife-st { font-size: 11px; line-height: 22px; }
     .qkind-select { min-height: 44px; font-size: 16px; }
     #shell-queue .qview { flex: 1 0 100%; flex-basis: 100%; }

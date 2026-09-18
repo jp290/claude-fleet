@@ -537,21 +537,37 @@ export async function run(ctx: Ctx): Promise<void> {
     const detailSource = detailStart >= 0 && detailEnd > detailStart
       ? taskClientSource.slice(detailStart, detailEnd) : "";
     const paintStart = detailSource.indexOf("// --- DETAIL HEAD (paint)");
-    const firstSection = detailSource.indexOf("qDetailSection(shell.detail,", paintStart);
+    const firstSection = detailSource.indexOf("qDetailSection(read,", paintStart);
     const headPaint = paintStart >= 0 && firstSection > paintStart
       ? detailSource.slice(paintStart, firstSection) : "";
-    // the five nodes of the head, each one actually APPENDED into the detail pane and in this
-    // order — status, facts, the lifecycle rail, the one action, the line that says what it does.
-    // Building a node and never appending it is the mutation this catches: it leaves every other
-    // marker in place while the rail silently stops reaching the screen.
-    const painted = ['el("div", "rvhead qdhead-status", head.status)', "headFacts",
+    // D2 (owner, 2026-09-19): the head is the TOP OF THE RAIL. Its four nodes, each one actually
+    // APPENDED into the rail and in this order — status, the lifecycle rail, the one action, the
+    // line that says what it does. Building a node and never appending it is the mutation this
+    // catches: it leaves every other marker in place while the rail silently stops reaching the
+    // screen. The program/repo facts are built in the head and shown under "place", below.
+    const painted = ['el("div", "rvhead qdhead-status", head.status)',
       "life", "mainBox", 'el("div", "qdmain-why", head.main.why)']
-      .map((node) => headPaint.indexOf(`shell.detail.appendChild(${node}`));
-    check("task detail head render: status, program/repo facts, the lifecycle rail and the one action are painted in that order, before any section",
+      .map((node) => headPaint.indexOf(`rail.appendChild(${node}`));
+    check("task detail head render: status, the lifecycle rail and the one action are painted at the top of the rail in that order, before any section",
       headPaint.includes("qHeadPlan(") && headPaint.includes('"ocfacts qdhead-facts"')
         && headPaint.includes("head.life.stations.forEach") && headPaint.includes('el("div", "qlife")')
+        && !headPaint.includes("shell.detail.appendChild(")
         && painted.every((at, i) => at >= 0 && (i === 0 || at > painted[i - 1])),
       JSON.stringify(painted));
+    // the rail below the head: the acts, the options, where the row lives, and the ⋯ fold last.
+    // Mutations caught: the acts pushed under the facts, the facts dropped (built, never appended),
+    // the ⋯ fold moved above the acts.
+    const railAt = (needle: string) => detailSource.indexOf(needle);
+    const railOrder = ["rail.appendChild(mainBox)", "rail.appendChild(acts)", "rail.appendChild(more)",
+      "rail.appendChild(headFacts)", 'qDetailSection(rail, "⋯ done · archive · delete"'];
+    check("task detail rail: head → acts → More options → place (program/repo) → ⋯ fold, in that order",
+      railOrder.every((n, i) => railAt(n) > 0 && (i === 0 || railAt(n) > railAt(railOrder[i - 1]))),
+      JSON.stringify(railOrder.map((n) => `${n}@${railAt(n)}`)));
+    check("task detail rail NEGATIVE: no section of the reading column is built into the rail, and the rail is one node beside it",
+      (detailSource.match(/qDetailSection\(rail,/g) ?? []).length === 1
+        && detailSource.includes("d2.append(read, rail)")
+        && (detailSource.match(/shell\.detail\.appendChild\(d2\)/g) ?? []).length === 1,
+      String((detailSource.match(/qDetailSection\(rail,/g) ?? []).length));
     check("task detail head render: the head opens no door of its own — no request, no task act inside it",
       !/\bqAct\(/.test(headPaint) && !/\bpost\(/.test(headPaint) && !/"delete"/.test(headPaint),
       headPaint.slice(0, 120));
@@ -560,25 +576,29 @@ export async function run(ctx: Ctx): Promise<void> {
         && detailSource.includes("(isMain(act) ? mainBox : acts).appendChild(node)")
         && /head\.main\.act === "open-lane"[\s\S]{0,400}?mainBox\.appendChild\(ob\)/.test(detailSource),
         String((detailSource.match(/mainBox\.appendChild\(/g) ?? []).length));
-    check("task detail: ✕ delete sits in a folded Danger zone of its own, never in the action row or the head",
-      detailSource.includes('const danger = qDetailSection(shell.detail, "Danger zone", true, false)')
+    check("task detail: ✕ delete sits in the folded ⋯ fold at the rail's end, never in the action row, the ends row or the head",
+      detailSource.includes('const danger = qDetailSection(rail, "⋯ done · archive · delete", true, false)')
         && detailSource.includes('dangerActs.appendChild(mk("✕ delete", "delete", "shrbtn danger"))')
-        && !detailSource.includes('acts.appendChild(mk("✕ delete"'), "Danger zone wiring");
-    const sectionAt = (title: string) => detailSource.indexOf(`qDetailSection(shell.detail, "${title}`);
-    // Owner, 2026-09-18: most important first — title, head, the card, the acts — then what hangs
-    // off the row (notes, comments), then the texts, then evidence and provenance, folded.
-    const sectionOrder = ["Card", "Actions", "Notes & comments", "Request", "Evidence", "Details", "Danger zone"];
-    check("task detail: title → head → Card → Actions → Notes & comments → Request → Evidence → Details → Danger zone",
-      detailSource.indexOf('shell.detail.appendChild(titleBox)') > 0
-        && detailSource.indexOf('shell.detail.appendChild(titleBox)') < paintStart
-        && sectionOrder.every((s, i) => sectionAt(s) > 0 && (i === 0 || sectionAt(s) > sectionAt(sectionOrder[i - 1]))),
+        && !detailSource.includes('acts.appendChild(mk("✕ delete"')
+        && !detailSource.includes('ends.appendChild(mk("✕ delete"')
+        && !detailSource.includes('acts.appendChild(mk("done"'), "⋯ fold wiring");
+    const sectionAt = (title: string) => detailSource.indexOf(`qDetailSection(read, "${title}`);
+    // Owner, 2026-09-18: most important first, then a few options, then comments. D2 (2026-09-19)
+    // puts the options in the rail, so the READING column runs title → Card → Notes & comments →
+    // Request → Evidence → Details; the acts no longer have a section of their own.
+    const sectionOrder = ["Card", "Notes & comments", "Request", "Evidence", "Details"];
+    check("task detail: reading column runs title → Card → Notes & comments → Request → Evidence → Details",
+      detailSource.indexOf('read.appendChild(titleBox)') > 0
+        && detailSource.indexOf('read.appendChild(titleBox)') < paintStart
+        && sectionOrder.every((s, i) => sectionAt(s) > 0 && (i === 0 || sectionAt(s) > sectionAt(sectionOrder[i - 1])))
+        && !detailSource.includes('qDetailSection(read, "Actions"'),
       JSON.stringify(sectionOrder.map((s) => `${s}@${sectionAt(s)}`)));
     check("task detail: the lane facts and the absent verify facts are said under Evidence, and absence is not green",
       /const evidence = qDetailSection[\s\S]{0,900}?verify and land facts are not on this poll — unknown here, not green/.test(detailSource)
         && /evidence\.appendChild\(laneLine\)/.test(detailSource), "Evidence section wiring");
     check("task detail: a section that holds a refresh-safe draft is never a fold — a repaint would close it over a started comment",
-      detailSource.includes('qDetailSection(shell.detail, "Notes & comments")')
-        && detailSource.includes('qDetailSection(shell.detail, "Refinement")')
+      detailSource.includes('qDetailSection(read, "Notes & comments")')
+        && detailSource.includes('qDetailSection(read, "Refinement")')
         && detailSource.includes('const mainBox = el("div", "qdmain")'), "draft-bearing sections");
     // the acts the head hosts are the EXISTING handlers, byte for byte — the head is a placement,
     // never a second door. A new API call or a new body field here fails this line.
@@ -630,9 +650,6 @@ export async function run(ctx: Ctx): Promise<void> {
     const footPad = cssNum(/\.shellfoot \{[^}]*?padding: (\d+)px/, ".shellfoot padding");
     const detailPad = cssNum(/\.shelldetail \{[^}]*?padding: (\d+)px/, ".shelldetail padding");
     const statusLh = cssNum(/\.qdhead-status \{ line-height: (\d+)px/, ".qdhead-status line-height");
-    const factsMt = cssNum(/\.qdhead-facts \{ margin-top: (\d+)px/, ".qdhead-facts margin-top");
-    const chipLh = cssNum(/\.qdhead-facts \.occhip \{ line-height: (\d+)px/, ".qdhead-facts .occhip line-height");
-    const chipPad = cssNum(/\.occhip \{[^}]*?padding: (\d+)px/, ".occhip padding");
     const lifeMt = cssNum(/\.qlife \{[^}]*?margin-top: (\d+)px/, ".qlife margin-top");
     const lifeGap = cssNum(/\.qlife \{[^}]*?gap: (\d+)px/, ".qlife gap");
     const stationLh = cssNum(/\.qlife-st \{[^}]*?line-height: (\d+)px/, ".qlife-st line-height");
@@ -641,11 +658,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const btnPad = cssNum(/\.shrbtn \{ padding: (\d+)px/, ".shrbtn padding");
     const whyLh = cssNum(/\.qdmain-why \{[^}]*?line-height: (\d+)px/, ".qdmain-why line-height");
     const whyMt = cssNum(/\.qdmain-why \{[^}]*?margin: (\d+)px/, ".qdmain-why margin");
-    const titleLh = cssNum(/\.qdtitle-t \{[^}]*?line-height: (\d+)px/, ".qdtitle-t line-height");
-    const titlePb = cssNum(/\.qdtitle \{[^}]*?padding-bottom: (\d+)px/, ".qdtitle padding-bottom");
-    const titleMb = cssNum(/\.qdtitle \{[^}]*?margin-bottom: (\d+)px/, ".qdtitle margin-bottom");
-    const titleChipsMt = cssNum(/\.qdtitle \.qchips \{[^}]*?margin-top: (\d+)px/, ".qdtitle .qchips margin-top");
-    const qchipLh = cssNum(/\.qchip \{[^}]*?line-height: (\d+)px/, ".qchip line-height");
+    // D2: the head is the top of the RAIL, beside the title rather than under it — so the title
+    // block and the program/repo facts (shown under "place", further down) leave this budget, and
+    // the rail's own header enters it
+    const railHLh = cssNum(/\.qdrail-h \{[^}]*?line-height: (\d+)px/, ".qdrail-h line-height");
+    const railHMb = cssNum(/\.qdrail-h:first-child \{[^}]*?margin: (\d+)px 0 (?:\d+)px/, ".qdrail-h:first-child margin-top");
+    const railHMb2 = cssNum(/\.qdrail-h:first-child \{[^}]*?margin: \d+px 0 (\d+)px/, ".qdrail-h:first-child margin-bottom");
     check("task detail head geometry: every box the fold budget reads is declared in public/index.html",
       missing.length === 0, missing.join(" · ") || "all present");
     if (missing.length === 0) {
@@ -657,18 +675,14 @@ export async function run(ctx: Ctx): Promise<void> {
       // tools: project tabs, program tabs (wrapped to two rows), view switch + search, dispatch line
       const chrome = (2 * headPad + 40 + 1) + (2 * toolsPad + 180 + 1) + (2 * footPad + 68 + 1);
       const viewport = winH - chrome - 2 * detailPad;
-      // the head's own plan, each node at its worst case: the chips wrapped to two rows, the rail
-      // wrapped to two rows, and the one-line WHY wrapped to three.
-      const chipH = chipLh + 2 * chipPad + BORDER;
+      // the head's own plan, each node at its worst case in a 260px rail: the stations wrapped to
+      // two rows, and the one-line WHY wrapped to five.
       const stationH = stationLh + BORDER;
-      // the title block above the head: two title lines, chips wrapped to two rows, its rule
-      const titleH = 2 * titleLh + titleChipsMt + 2 * (qchipLh + BORDER) + titlePb + titleMb + 1;
-      const headH = titleH + statusLh
-        + factsMt + 2 * chipH + lifeGap
+      const headH = railHMb + railHLh + railHMb2 + statusLh
         + lifeMt + 2 * stationH + lifeGap
         + mainMt + (btnLh + 2 * btnPad + BORDER)
-        + whyMt + 3 * whyLh;
-      check(`task detail head geometry: title + head + main action is ${headH}px inside a ${viewport}px detail viewport at 1440x900 — above the fold, computed from the CSS`,
+        + whyMt + 5 * whyLh;
+      check(`task detail head geometry: the rail's status + lifecycle + main action is ${headH}px inside a ${viewport}px detail viewport at 1440x900 — above the fold, computed from the CSS`,
         headH > 0 && viewport > 0 && headH <= viewport,
         `head=${headH} viewport=${viewport} window=${winH} chrome=${chrome}`);
     }

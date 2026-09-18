@@ -70,8 +70,10 @@ drops/
 .env.bak*
 
 # codex hook config: carries a machine-local absolute path (account name), exactly like
-# .claude/settings.json above. The hook stays local-only.
-.codex/
+# .claude/settings.json above. The hook stays local-only. Exception: `.codex/agents/` holds
+# repo-local agent roles (no paths), which codex loads from a trusted project's layer.
+.codex/*
+!.codex/agents/
 
 # publish transfer artifacts and ad-hoc root screenshots. A bundle's tip is by construction
 # already in the history that produced it. And a root PNG is single-session UI evidence:

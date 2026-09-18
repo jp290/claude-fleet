@@ -41,6 +41,7 @@ curl -X POST http://<fleet-host>:<port>/api/programs \
 # → { ok: true, program: { id: "<programId>", status: "proposed", … } }
 curl -X POST http://<fleet-host>:<port>/api/programs/<programId>/confirm  -H "authorization: Bearer $FLEET_TOKEN" -d '{}'
 curl -X POST http://<fleet-host>:<port>/api/programs/<programId>/activate -H "authorization: Bearer $FLEET_TOKEN" -d '{}'
+# → { ok: true, id: "<programId>", status: "active" } — die Übergänge quittieren nur den Status
 ```
 
 Alle sieben Inhaltsfelder sind Pflicht, auch die leeren Listen — `server.ts#validateProgramContent`

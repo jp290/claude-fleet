@@ -52,9 +52,9 @@ if p.get('status')!='proposed':
     print(f"status ist {p.get('status')} — nur 'proposed' kann bestaetigt werden"); sys.exit(1)
 content={f:p.get(f) for f in FIELDS}
 r,e=call(f"/api/programs/{p['id']}/confirm", content)
-print("confirm :", e or f"ok status={r.get('program',{}).get('status')}")
+print("confirm :", e or f"ok status={r.get('status')}")
 if e: sys.exit(1)
 r,e=call(f"/api/programs/{p['id']}/activate", {})
-print("activate:", e or f"ok status={r.get('program',{}).get('status')}")
+print("activate:", e or f"ok status={r.get('status')}")
 if not e: print("\nAKTIV. Sag mir Bescheid, dann bootstrappe ich die MAIN.")
 PY

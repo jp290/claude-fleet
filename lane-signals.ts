@@ -503,6 +503,17 @@ export function commandJobWatchMessage(jobId: string, event: CommandJobWatchEven
 
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 
+// A QUOTED-BACK SUBJECT is a pointer, not a copy: the receiver wrote it (a MAIN's question, a
+// MAIN's attention text) and holds it on its own read route. Rendering it whole cost a 2 000-char
+// attention a 2 000-char paste for a 20-char answer. The cut names itself with "…" and the
+// original length, so nobody reads a clipped subject as the whole of it.
+export const QUOTED_SUBJECT_MAX = 160;
+const quotedSubject = (text: string): string => {
+  const line = oneLine(text);
+  return line.length <= QUOTED_SUBJECT_MAX ? line
+    : `${line.slice(0, QUOTED_SUBJECT_MAX).trimEnd()}… (${line.length} chars)`;
+};
+
 // THE PREVIEW HINT. Two sentences the lane needs and a pointer, and the LAST of them names where
 // the full text is — the whole point of the one-line tail is that the pane never carries the run.
 // It says `landed`/`gated` nowhere on purpose: a preview gates nothing and never has.
@@ -576,7 +587,7 @@ export function clarificationWatchMessage(
 }
 
 export function clarificationReplyMessage(requestId: string, question: string, answer: string): string {
-  return `[fleet] CLARIFICATION ANSWER [request ${requestId}] to question: ${oneLine(question)}\n${answer}`;
+  return `[fleet] CLARIFICATION ANSWER [request ${requestId}] to question: ${quotedSubject(question)}\n${answer}`;
 }
 
 // THE VERDICT ON A LANE'S OWN FILED REPORT, carried back into the lane's pane. Same shape and same
@@ -584,7 +595,7 @@ export function clarificationReplyMessage(requestId: string, question: string, a
 // one, so the id is named and the verdict is the first thing on the line — a lane that reads only
 // the head of the paste must still learn which way it went.
 //
-// THE REJECT REASON IS NOT COLLAPSED TO ONE LINE, unlike a clarification's question: that `oneLine`
+// THE REJECT REASON IS NOT COLLAPSED TO ONE LINE, unlike a clarification's question: that `quotedSubject`
 // exists to keep a QUOTED-BACK subject short, while this text IS the payload — it is the repair
 // instruction, and folding its structure away is how a lane re-files the same work twice. It is
 // already bounded at the door (MAX_FLEET_REPORT_DECISION_REASON).
@@ -615,7 +626,7 @@ export function attentionAnswerMessage(
   raised: string,
   answer: string,
 ): string {
-  return `[fleet] OWNER ANSWER [attention ${requestId}] to your ${kind}: ${oneLine(raised)}\n${answer}`;
+  return `[fleet] OWNER ANSWER [attention ${requestId}] to your ${kind}: ${quotedSubject(raised)}\n${answer}`;
 }
 
 // --- the second tier, ADDITIVE: when did this lane go quiet with every non-clock clause already

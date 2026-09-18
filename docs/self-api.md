@@ -1896,6 +1896,14 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report \
   `FleetReport`-Zeile plus einen `fleet-report`-Zeiger in dessen Program-Inbox an; alle anderen
   erfolgreichen Pfade behalten den FleetEvent-Transport unten. Er landet nicht, deployt nicht und
   schließt keine Zeile. Ein Report ist eine NACHRICHT.
+- **Die Antwort ist eine Quittung, kein Echo** (seit 2026-09-18, `server.ts#fleetReportReceipt`):
+  `{ok, id, report, inbox?}`, wobei `report` die Zeile OHNE `text` ist — alles, was der Server
+  abgeleitet hat (`receiver`, `basis`, `provenance`, `outsideSurface`, `eventId`), bleibt drin, der
+  Text, den die Lane gerade selbst geschrieben hat, nicht. Die Antwort wächst also nicht mehr mit
+  der Textlänge (gemessen in b1563efb: 606 Aufrufe / 381 461 B, 73 % der Echo-Klasse). Die volle
+  Zeile liest `GET /api/self/fleet-report`. Dasselbe gilt für `POST /api/self/attention` und die
+  Owner-Antwort `POST /api/attention/:id/answer`: `{ok, existing, id, request}` mit `request` ohne
+  den gestellten `text` (`server.ts#attentionReceipt`).
 - **`outsideSurface` misst, es urteilt nicht** (`server.ts#laneOutsideSurface`). Beim Filen liest
   der Server `git diff --name-only <base>...HEAD` der Lane und zieht
   `card.surface.files ∪ card.surface.creates` der Zeile ab: die committeten Pfade außerhalb der
@@ -3313,6 +3321,14 @@ curl -X POST http://<fleet-host>:<port>/api/programs/<program>/promotion \
   -H "content-type: application/json" -H "authorization: Bearer $FLEET_TOKEN" \
   -d '{"policy":null}'                              # widerrufen (idempotent)
 ```
+
+**Die Antwort nennt den geänderten Fakt, nicht den Record** (seit 2026-09-18):
+`{ok, id, promotion}`, `promotion: null` nach einem Widerruf. Dasselbe Muster gilt für alle
+Owner-Feldtüren am Program — `profile`, `studio`, `dispatch`, `release` antworten `{ok, id, <feld>}`
+— und für die Übergänge `confirm` · `activate` · `complete`: `{ok, existing?, id, status}`, bei
+`confirm` zusätzlich `promotion`, weil der Confirm sie vergeben kann. Den ganzen Record liest
+`GET /api/programs`. Anlass: eine Vergabe EINES Enum-Werts antwortete mit ~4 373 Tokens, die Hälfte
+davon Inbox (aktive Records: Median 22 798 B, max 41 587 B, b1563efb).
 
 **Der Record ist geschlossen und versioniert:** `{v:1, selfLand:"off"|"green-only"|"guarded"}`.
 `confirmedAt` stempelt der Server — ein Wert von der Leitung würde den Owner-Akt datieren lassen.

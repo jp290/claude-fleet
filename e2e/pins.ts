@@ -7238,7 +7238,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const noOpReturn = noOpAt < 0 ? "" : serverProfile.slice(noOpAt, inflightAt);
   pin(`${RULE_PROFILE_ACTOR} — identical grants and clears return before inflight/LIVE/complete without audit, timestamp or save`,
     noOpAt >= 0 && inflightAt > noOpAt && completeAt > inflightAt && liveAt > completeAt
-      && noOpReturn.includes("return json({ ok: true, program: publicProgram(program) })")
+      && noOpReturn.includes("return json({ ok: true, id: program.id, profile: program.profile ?? null })")
       && !/confirmedAt: Date\.now|\baudit\(|saveState/.test(noOpReturn),
     `noOp=${noOpAt} inflight=${inflightAt} complete=${completeAt} live=${liveAt}`);
 }

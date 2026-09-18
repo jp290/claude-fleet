@@ -6894,6 +6894,11 @@ type QView = "work" | "programs" | "history" | "waves";
 let qView: QView = "work";        // the operational list is primary; polls never reset the view
 let qProgDone = false;            // show `complete` programs in the Programs section (default off)
 let qNotesOpen = false;           // the loose-notes group of Work begins folded; a search overrides it
+// THE SCOPE (owner, 2026-09-18): repo → program → task. A program has no repo field, so it
+// belongs to the repos its own tasks target; `null` = every repo / every program.
+let qRepo: string | null = null;
+let qProg: string | null = null;  // a program id, or Q_NO_PROGRAM for the rows that name none
+let qScopeBar: HTMLElement | null = null;
 let qKey = "";                    // the data key the list was last built from
 let qDetailKey = "";              // the data key the DETAIL pane was last built from (see refresh)
 let qCompose: HTMLTextAreaElement | null = null; // created ONCE per open — never re-created by a poll
@@ -9876,12 +9881,86 @@ function qSelect(id: string | null) {
   qShell?.showDetail(true);
 }
 
+const Q_NO_PROGRAM = "-";
+// a lane worktree (`<repo>.worktrees/<name>`) is its repo, not a project of its own
+const qRepoRoot = (path: string): string => path.replace(/\/+$/, "").replace(/\.worktrees\/[^/]+$/, "");
+const qTaskRepo = (t: TaskInfo): string | null => {
+  const r = t.repo ?? (dispatch.repo || null);
+  return r ? qRepoRoot(r) : null;
+};
+function qProgramRepos(): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const t of tasksList) {
+    const r = qTaskRepo(t);
+    if (!t.programId || !r) continue;
+    out.set(t.programId, (out.get(t.programId) ?? new Set()).add(r));
+  }
+  return out;
+}
+const Q_NO_REPO = "-";
+const qInRepo = (t: TaskInfo): boolean => !qRepo || (qTaskRepo(t) ?? Q_NO_REPO) === qRepo;
+const qInScope = (t: TaskInfo): boolean => qInRepo(t)
+  && (!qProg || (qProg === Q_NO_PROGRAM ? !t.programId : t.programId === qProg));
+
+// The scope bar: one row of repo tabs, and — in Work — one row of the programs with open rows
+// in the chosen repo. Counts are OPEN rows, so a tab says how much is on that project's desk.
+function paintQueueScope() {
+  const bar = qScopeBar;
+  if (!bar) return;
+  bar.replaceChildren();
+  const open = tasksList.filter((t) => !qClosed(t));
+  const repos = new Map<string, number>();
+  for (const t of open) {
+    const r = qTaskRepo(t) ?? Q_NO_REPO;
+    repos.set(r, (repos.get(r) ?? 0) + 1);
+  }
+  const tab = (label: string, n: number, on: boolean, act: () => void, title?: string) => {
+    const b = el("button", `qtab${on ? " on" : ""}`) as HTMLButtonElement;
+    b.type = "button";
+    b.append(el("span", "", label), el("span", "qtabn", String(n)));
+    if (title) b.title = title;
+    b.setAttribute("aria-pressed", String(on));
+    b.onclick = act;
+    return b;
+  };
+  const choose = (repo: string | null, prog: string | null) => {
+    qRepo = repo; qProg = prog; qKey = ""; renderQueue();
+  };
+  const repoRow = el("div", "qscoperow qrepos");
+  repoRow.appendChild(el("span", "qscopelabel", "Project"));
+  repoRow.appendChild(tab("All", open.length, qRepo === null, () => choose(null, null), "every repository"));
+  for (const [r, n] of [...repos].sort((a, b) => b[1] - a[1]))
+    repoRow.appendChild(r === Q_NO_REPO
+      ? tab("no repo", n, qRepo === r, () => choose(r, null),
+        "rows naming no target repo while the dispatcher has none either — where they would run is unknown")
+      : tab(baseName(r), n, qRepo === r, () => choose(r, null), r));
+  bar.appendChild(repoRow);
+  if (qView !== "work") return;
+  const inRepo = open.filter(qInRepo);
+  const progs = new Map<string, number>();
+  for (const t of inRepo) {
+    const k = t.programId ?? Q_NO_PROGRAM;
+    progs.set(k, (progs.get(k) ?? 0) + 1);
+  }
+  if (progs.size < 2 && !qProg) return;
+  const progRow = el("div", "qscoperow qprogs");
+  progRow.appendChild(el("span", "qscopelabel", "Program"));
+  progRow.appendChild(tab("All", inRepo.length, qProg === null, () => choose(qRepo, null)));
+  for (const [k, n] of [...progs].sort((a, b) => b[1] - a[1])) {
+    const p = programsList.find((x) => x.id === k);
+    const label = k === Q_NO_PROGRAM ? "no program" : p ? qProgramShort(p.title) : k.slice(0, 8);
+    progRow.appendChild(tab(label, n, qProg === k, () => choose(qRepo, qProg === k ? null : k), p?.title));
+  }
+  bar.appendChild(progRow);
+}
+
 function renderQueue() {
   const shell = qShell;
   if (!shell || !shell.isOpen()) return;
   void loadTaskTexts(); // no-op unless the visible task set changed
   void loadPrograms();  // no-op unless the poll's digest moved or the floor elapsed
-  const model = qTaskListModel(tasksList, taskText, programsList, qQuery);
+  const scoped = tasksList.filter(qInScope);
+  const model = qTaskListModel(scoped, taskText, programsList, qQuery);
   const shown = model.work;
   const laneJoins = qLaneJoins(tasksList, fleet, dispatch.repo, serverNow);
   // REBUILD ONLY ON CHANGE. Without this the 2 s poll would rebuild the list under the cursor and
@@ -9902,16 +9981,17 @@ function renderQueue() {
     [...model.work, ...model.history].map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.briefAt,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
       t.refine?.at, t.refining, t.comments?.n, t.notes?.at, t.hold?.at, t.size, t.programId]),
-    qNotesOpen, taskTextKey]);
+    qNotesOpen, taskTextKey, qRepo, qProg]);
   if (key === qKey) return;
   qKey = key;
+  paintQueueScope();
 
   // Each primary view names only its own domain. Waves keeps its weaker advisory claim and counts
   // everything deliberately kept outside; Work's counts stay global while a search narrows rows.
   const projection = qView === "waves" ? qWaveProjection() : null;
   if (qView === "work") {
-    const n = (g: QGroup) => tasksList.filter((t) => qGroupOf(t) === g).length;
-    const held = tasksList.filter((t) => !qClosed(t) && t.hold).length;
+    const n = (g: QGroup) => scoped.filter((t) => qGroupOf(t) === g).length;
+    const held = scoped.filter((t) => !qClosed(t) && t.hold).length;
     shell.setSubtitle([`${n("running")} running`, `${n("released")} released`, `${n("needs")} need you`,
       `${n("backlog")} backlog`, `${n("notes")} notes`, held ? `⏸ ${held} held` : "",
       intakeOn ? "✉ intake on" : ""].filter(Boolean).join(" · "));
@@ -9920,7 +10000,7 @@ function renderQueue() {
       : `${programsList.length} program${programsList.length === 1 ? "" : "s"}`
         + (programsStale > 0 ? ` · ${programsStale} stale active` : ""));
   } else if (qView === "history") {
-    const count = tasksList.filter(qClosed).length;
+    const count = scoped.filter(qClosed).length;
     shell.setSubtitle(`${count} done or archived task${count === 1 ? "" : "s"}`);
   } else if (projection) {
     const placed = projection.repos.reduce((n, repo) =>
@@ -9998,7 +10078,8 @@ function renderQueue() {
 
   let visibleRows = 0;
   if (qView === "programs") {
-    const progMatch = programsList.filter((p) => !qQuery
+    const progRepos = qProgramRepos();
+    const progMatch = programsList.filter((p) => !qRepo || progRepos.get(p.id)?.has(qRepo)).filter((p) => !qQuery
       || p.id.toLowerCase().includes(qQuery) || p.title.toLowerCase().includes(qQuery) || p.status.includes(qQuery)
       || programMark(p).mark.includes(qQuery));
     // Complete programs stay in their own Program catalogue but begin folded; task History is a
@@ -10171,6 +10252,8 @@ function openQueue() {
   qView = "work";
   qProgDone = false;
   qNotesOpen = false;
+  qRepo = null;
+  qProg = null;
   qKey = "";
   qCompose = null;
   qRepoIn = null;
@@ -10201,6 +10284,7 @@ function openQueue() {
     listWidth: 380,
     onSelect: (row) => { if (qRowId.has(row.el)) qSelect(qRowId.get(row.el) ?? null); },
     onClose: () => {
+      qScopeBar = null;
       qShell = null; qCompose = null; qRepoIn = null; qProgSel = null; qCmBox = null; qCmFor = null;
       qBriefDraft = null; qCriterionDraft = null; qRawAck = null; qWaveAck = null; qRowId = new Map();
       qSpawnPick.clear(); qSpawnUi = null;
@@ -10241,6 +10325,8 @@ function openQueue() {
   for (const item of views) item.button.onclick = () => chooseView(item.id);
   view.append(...views.map((item) => item.button));
   paintView();
+  qScopeBar = el("div", "qscope");
+  shell.tools.appendChild(qScopeBar);
   shell.tools.appendChild(view);
 
   const search = el("input", "pkfilterin") as HTMLInputElement;

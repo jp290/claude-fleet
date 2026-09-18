@@ -622,6 +622,20 @@
   .slot .diff { flex: none; font-size: 12px; color: var(--faint); cursor: pointer; }
   .slot .diff:hover { color: #7dcfff; }
   /* queue window: the dispatcher strip, the compose box, and the full task text in the detail */
+  /* the queue's scope: repo tabs, then (Work) the programs inside the chosen repo */
+  .qscope { flex-basis: 100%; display: flex; flex-direction: column; gap: 6px; }
+  .qscope:empty { display: none; }
+  .qscoperow { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+  .qscopelabel { width: 58px; flex: none; font-size: 10px; color: var(--faint); text-transform: uppercase;
+    letter-spacing: .07em; }
+  .qtab { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 7px;
+    border: 1px solid var(--line); background: transparent; color: var(--dim); font: inherit; font-size: 12px;
+    cursor: pointer; }
+  .qtab:hover { color: var(--text); background: var(--raised); }
+  .qtab.on { color: #dbe6ff; background: var(--sel); border-color: #3b4b70; }
+  .qtab .qtabn { font-size: 10px; color: var(--faint); background: #232323; border-radius: 20px; padding: 0 6px; }
+  .qtab.on .qtabn { color: #b4c6f5; background: #22304f; }
+  .qprogs .qtab { height: 22px; font-size: 11px; padding: 0 8px; }
   .qdisp { flex-basis: 100%; font-size: 11.5px; color: var(--dim); display: flex; align-items: center; gap: 8px; }
   .qview { flex: none; display: flex; padding: 2px; border: 1px solid var(--line); border-radius: 8px;
     background: #181818; }

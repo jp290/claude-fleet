@@ -4340,6 +4340,15 @@ schliesst.
   Urteil in die Lane-Pane und loggt es. `awaitFoundingBrief` wartet deshalb in der zweiten Haelfte,
   bis die Pane-Ausgabe der juengsten `prompts.jsonl`-Zeile fuer diesen Worktree beobachtet ist; beim
   ersten Warten ist das der Brief selbst.
+- **Die zweite Haelfte von `awaitFoundingBrief` war selbst verfehlbar — gemessen am Basislauf dieser
+  Lane** (`isolated-20260918T102722Z-2824`, Baum `17f47c3f`, 1 FAIL in 5 017:
+  `M1 setup: the skip land fired … the brief was logged at … but slot 15 never observed its pane output
+  within 12s`; dieselbe Signatur wie die Fussnote oben vom 09-17). `logPrompt` stempelt `at` NACH
+  `sendText`, und `sendText` kehrt erst zurueck, wenn der Composer leer gelesen wurde — die Shell hat
+  dann schon geantwortet. Hat der 100-ms-Stream-Poll (`server.ts`, `setInterval(poll, 100)`) alles
+  davor gelesen, wird `lastOutput >= at` nie wahr. Die Bedingung ist jetzt: `lastOutput >= at` ODER
+  die SERVER-Uhr (`now` aus `/api/sessions`) steht `PANE_SETTLE_MS` = 1 000 ms (zehn Poll-Perioden)
+  darueber — dann ist alles, was der Paste vor `at` schrieb, gelesen und gestempelt.
 - **`settleBrief` (ambient-land-Arme) wartet nicht mehr ein 7-s-Fenster ab**, sondern auf dieselbe
   Tatsache: `logPrompt` ist der letzte Akt von `server.ts#briefAndSend`, jedes `requeue` liegt davor
   oder im `catch`.

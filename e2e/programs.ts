@@ -8910,21 +8910,35 @@ export async function run(ctx: Ctx): Promise<void> {
         foundingBriefWhy = `no auto prompt was logged for ${cwd} within 30s — the dispatch tail never delivered (a requeue leaves the lane standing)`;
         return null;
       }
-      // the paste's own output, seen by the server. Without this the brief can be logged while
-      // `lastOutput` still carries the shell's first paint, and the idle clause would again be
+      // the paste's own output, SEEN BY THE SERVER. Without this the brief can be logged while the
+      // stream poll has not yet read what the paste wrote, and the idle clause would again be
       // satisfied by a stamp the next poll is about to replace.
+      // TWO WAYS THE FACT HOLDS, and the second is the correction of a measured probe error
+      // (2026-09-18, baseline run isolated-20260918T102722Z-2824 on 17f47c3f, `M1 setup: the skip
+      // land fired … never observed its pane output within 12s`): `logPrompt` stamps `at` AFTER
+      // sendText returned, and sendText returns only once the composer read empty — i.e. after the
+      // shell already answered. When the 100 ms stream poll (server.ts `setInterval(poll, 100)`)
+      // read ALL of that output before `at`, `lastOutput >= at` never comes true and the old wait
+      // spent its 12 s on a stamp that had already happened. So: EITHER the server stamped output at
+      // or after the paste, OR its own clock stands PANE_SETTLE_MS past it — ten poll periods in
+      // which anything the paste wrote before `at` has been read and stamped. Both are read off the
+      // server's own `/api/sessions` answer (`lastOutput`, `now`), never off this process's clock.
+      const PANE_SETTLE_MS = 1000;
       let newest = ts;
+      let seen = "";
       try {
         await until(async () => {
           newest = Math.max(ts, ...(await plogRead()).filter((e) => e.cwd === cwd).map((e) => e.ts));
-          const row = (await slSess()).slots.find((x) => x.id === slot);
-          return !!row && row.lastOutput >= newest;
+          const body = await slSess();
+          const row = body.slots.find((x) => x.id === slot);
+          seen = row ? `lastOutput=${row.lastOutput} now=${body.now}` : "no row";
+          return !!row && (row.lastOutput >= newest || body.now - newest >= PANE_SETTLE_MS);
         }, { timeoutMs: 12_000, stepMs: 100, what: `slot ${slot} observed its newest logged paste` });
       } catch (e) {
         if (!(e instanceof UntilTimeout)) throw e;
         foundingBriefWhy = newest === ts
-          ? `the brief was logged at ${ts} but slot ${slot} never observed its pane output within 12s`
-          : `the newest paste into ${cwd} was logged at ${newest} (brief ${ts}) but slot ${slot} never observed its pane output within 12s`;
+          ? `the brief was logged at ${ts} but slot ${slot} never observed its pane output within 12s (${seen})`
+          : `the newest paste into ${cwd} was logged at ${newest} (brief ${ts}) but slot ${slot} never observed its pane output within 12s (${seen})`;
         return null;
       }
       return ts;

@@ -98,8 +98,18 @@ gueltig.
 
 ### 7 · Posten, archivieren
 
-- `POST /api/tasks {text, kind: "auftrag", programId, queue: true}` in Kettenreihenfolge, damit
-  jede `NACH`-Id beim Posten schon existiert. `queue: true` ist eine Freigabe durch den Poster.
+- `POST /api/tasks {text, kind: "auftrag", programId, queue: true, harness, model, effort}` in
+  Kettenreihenfolge, damit jede `NACH`-Id beim Posten schon existiert. `queue: true` ist eine
+  Freigabe durch den Poster.
+- **Den Worker in den Body schreiben, nicht nur in die Karte.** Der Tick startet mit `Task.spawn`,
+  und das setzt nur `server.ts#taskSpawnFromBody` aus diesen drei Feldern. Ohne sie gilt
+  `server.ts#DEFAULT_SPAWN`: claude, Default-Modell, **keine** Effort-Stufe. Die `ROLLE` der Karte
+  wird dafuer nicht gelesen. Eine Route, die `spawn` nachtraeglich setzt, gibt es nicht; eine
+  falsch gepostete Zeile wird archiviert und neu gepostet (2026-09-18 zweimal noetig).
+  - Opus: `{"harness":"claude","model":"claude-opus-5[1m]","effort":"high"}`. `harness` wird als
+    `null` gespeichert.
+  - Flash: `{"harness":"pi-zai","model":"glm-5.3-flash","effort":"high"}`.
+- Nach dem Posten `task.spawn` lesen, nicht nur `task.card`.
 - Danach die Server-Karte lesen: `task.card` wird asynchron vom Karten-Tick geschrieben (Takt
   `FLEET_CARD_MS`). Pruefen: `valid`, `gaps`, `after`, `rolle`.
 - `POST /api/tasks/:id/archive {grund, beleg}` je Quellzeile. `grund` nennt die Sammelzeile und den

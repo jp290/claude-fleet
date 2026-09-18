@@ -152,15 +152,19 @@ G einen Owner-Handstart.
 
 ## 5 · Was ausgefuehrt wurde (Orchestratorin, 2026-09-18 ~10:10–10:20Z)
 
-| Thema | neue Zeile | archiviert, Grund „aufgefangen in Sammelzeile …" |
+| Thema | Sammelzeile (gueltige Fassung) | archiviert, Grund „aufgefangen in Sammelzeile …" |
 |---|---|---|
-| D | `1a373ca6` | `84888f35`, `4ae22c7a` |
-| A | `43e7dab2` (NACH D) | `c14fcd75`, `1e170a25`, `b5dc4dc2` |
-| E | `9780234b` (NACH A) | `17d80823`, `68a45516` |
-| B | `5abfda7c` (NACH E) | `803c1869`, `9940ec64`, `e66d9bfc` |
-| C | `6adec096` (NACH B) | `b5a03766`, `bc1d7866` |
+| D | `7404df11` | `84888f35`, `4ae22c7a` |
+| A | `40235c0c` (NACH D) | `c14fcd75`, `1e170a25`, `b5dc4dc2` |
+| E | `85f45012` (NACH A) | `17d80823`, `68a45516` |
+| B | `6a58c0f5` (NACH E) | `803c1869`, `9940ec64`, `e66d9bfc` |
+| C | `07a0ce56` (NACH B) | `b5a03766`, `bc1d7866` |
 | F | `85fa31bc` | `a43caeae`, `2e99a34e`, `531bab26` |
-| G | `a1e2826f` | `10e2f7c0`, `3d339443` |
+| G | `713881a5` | `10e2f7c0`, `3d339443` |
+
+Die Quellzeilen nennen im Archivgrund die Id der ERSTEN Fassung (`1a373ca6` `43e7dab2` `9780234b`
+`5abfda7c` `6adec096` `a1e2826f`). Diese Fassungen wurden archiviert und ohne `Task.spawn` neu
+gepostet (Umstellung §Falle 2). Die Tabelle oben fuehrt von der alten Id zur gueltigen.
 
 - **Ueberholt, archiviert mit Beleg:** `32fed872`, `ad3b3960`, `e41ccec1`, `d518d09d`.
 - **Erledigt:** `f68d27d7` → Status `done`, nicht archiviert. Grund: `d61133e3` (K5) traegt eine
@@ -169,8 +173,8 @@ G einen Owner-Handstart.
   dagegen gibt es nicht (§4, vorletzter Punkt).
 - **Abweichung 2:** `7d70eaeb` sollte in die Sammel-Messzeile M. Die Program-Politik `card-valid` hat
   die Zeile nach dem Deploy wieder freigegeben, und der Tick hat sie einzeln gestartet (Umstellung
-  §Falle). Die Messzeile M besteht damit nur noch aus `b0279bc6` (H1) und `76e08dd3` und ist nicht
-  angelegt.
+  §Falle 1). Sie ist inzwischen gelandet (`6f70ab7a`). Die Messzeile M besteht damit nur noch aus
+  `b0279bc6` (H1) und `76e08dd3` und ist nicht angelegt.
 - **Ueberholt durch den Deploy:** der Satz in §2 „bis dahin brauchen C, E, F, G einen
   Owner-Handstart". Seit Deploy `9cf31f46` (`b2d92216`) startet der Tick `pi-zai`-Zeilen selbst.
 - **Vorher archiviert:** `f3ca2e05` (Second-host-Lanes), ueberholt durch `710fbf40` und `39857582`.

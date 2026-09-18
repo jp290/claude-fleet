@@ -1,9 +1,9 @@
 ---
 frage: Wie wurde die Queue am 2026-09-18 von 40 Einzelauftraegen auf sieben Sammelzeilen umgestellt, und welche Pruefung traegt jeden Schritt?
-urteil: 40 offene Auftraege sind jetzt 7 Sammelzeilen mit NACH-Kette D-A-E-B-C plus F und G, 21 Quellzeilen archiviert, 1 erledigt, Deploy auf b2d92216 ok, Deckel 3, der Tick startet; ein unqueue haelt unter der Politik card-valid nichts, anhalten kann nur ein Hold
+urteil: 40 offene Auftraege sind jetzt 7 Sammelzeilen mit NACH-Kette D-A-E-B-C plus F und G, 21 Quellzeilen archiviert, 1 erledigt, Deploy auf b2d92216 ok, Deckel 3, der Tick startet; zwei Fallen: unqueue haelt unter card-valid nichts, und den Worker bestimmt Task.spawn aus dem POST, nicht die ROLLE der Karte
 bereich: [queue, sammelzeilen, betrieb]
 belege: [card-extract.ts#parseFormattedCard, card-extract.ts#validateCard, task-metadata.ts#declaresSymbol, start-plan.ts, server.ts#deployBlocker, server.ts#releaseTaskForMain, docs/messungen/2026-09-18-queue-sichtung-40-auftraege.md, docs/queue-sammelzeilen-verfahren.md, b2d92216]
-nicht-gemessen: ob die Sammelzeilen schneller landen als die Einzelzeilen (erst nach den Lands messbar); der erste Tick-Start einer pi-zai-Lane stand beim Schreiben noch aus
+nicht-gemessen: ob die Sammelzeilen schneller landen als die Einzelzeilen (erst nach den Lands messbar); ein Tick-Start einer pi-zai-Lane stand beim Schreiben noch aus
 stand: 2026-09-18
 ---
 
@@ -59,13 +59,17 @@ Die sieben Zeilen, in der Reihenfolge, in der der Start-Plan sie fuehrt:
 
 | Thema | Id | Titel | Worker | wartet auf |
 |---|---|---|---|---|
-| D | `1a373ca6` | Jedes Warten hat einen Grund und einen Adressaten | claude/opus-5/high | — |
-| A | `43e7dab2` | Zustellung, die ankommt | claude/opus-5/high | `NACH` D |
-| E | `9780234b` | Varianten zu Ende gebaut | pi-zai/glm-5.3-flash/high | `NACH` A |
-| B | `5abfda7c` | Die Land-Tuer sagt nur „lande", wenn es stimmt | claude/opus-5/high | `NACH` E |
-| C | `6adec096` | MAIN-Tueren und Lane-Nachfolge | pi-zai/glm-5.3-flash/high | `NACH` B |
-| F | `85fa31bc` | Die Pruefapparatur hoert auf, falsch rot zu sein | pi-zai/glm-5.3-flash/high | Kollision |
-| G | `a1e2826f` | Erdung kurz, Kennzahlen ehrlich | pi-zai/glm-5.3-flash/high | Kollision |
+| D | `7404df11` | Jedes Warten hat einen Grund und einen Adressaten | claude/opus-5/high | — |
+| A | `40235c0c` | Zustellung, die ankommt | claude/opus-5/high | `NACH` D |
+| E | `85f45012` | Varianten zu Ende gebaut | pi-zai/glm-5.3-flash/high | `NACH` A |
+| B | `6a58c0f5` | Die Land-Tuer sagt nur „lande", wenn es stimmt | claude/opus-5/high | `NACH` E |
+| C | `07a0ce56` | MAIN-Tueren und Lane-Nachfolge | pi-zai/glm-5.3-flash/high | `NACH` B |
+| F | `85fa31bc` | Die Pruefapparatur hoert auf, falsch rot zu sein | lief auf claude/opus-5 (siehe Falle 2) | laeuft, Slot 1 |
+| G | `713881a5` | Erdung kurz, Kennzahlen ehrlich | pi-zai/glm-5.3-flash/high | Kollision |
+
+Die Ids sind die der **dritten** Fassung. Die erste (`1a373ca6` `43e7dab2` `9780234b` `5abfda7c`
+`6adec096` `a1e2826f`) und die zweite (`291847fc` `579a765f` `28885f20`) sind archiviert, Grund
+„neu gepostet mit Task.spawn" (Falle 2).
 
 Warum die Kette: D, A, E, B und C fassen alle `server.ts` an. `NACH` wartet auf den Status `done`
 des Vorgaengers (`start-plan.ts`, Zweig `after`: `statuses[id] !== "done"`), also auf dessen Land.
@@ -83,12 +87,12 @@ Start-Plan unmittelbar nach dem Deckel-Wechsel:
 
 | Zeile | naechstes Hindernis |
 |---|---|
-| D `1a373ca6` | `collides` mit Slot 3 auf `server/types.ts` |
+| D (erste Fassung) | `collides` mit Slot 3 auf `server/types.ts` |
 | F `85fa31bc` | `collides` mit Slot 1 auf `server.ts` |
-| G `a1e2826f` | `collides` mit Slot 1 auf `docs/controller.md` |
+| G (erste Fassung) | `collides` mit Slot 1 auf `docs/controller.md` |
 | A, E, B, C | `after` des jeweiligen Vorgaengers |
 
-## Die Falle: unqueue haelt unter `card-valid` nichts
+## Falle 1: unqueue haelt unter `card-valid` nichts
 
 Vor dem Posten wurden alle 13 `queued`-Zeilen per `POST /api/tasks/:id/unqueue` auf `pending`
 gesetzt, damit der Tick keine alte Einzelzeile startet. Das hielt nicht. Program `f170dc46` laeuft
@@ -108,7 +112,38 @@ Welche Zeilen dieselbe Politik noch treffen kann, zeigt die Lesung danach: `pend
 setzt nur die MAIN (`POST /api/self/tasks/:id/hold`), eine Owner-Route dafuer gibt es nicht. Die
 MAIN wurde darum gebeten (Receipt `10f567e3…`, acceptance observed).
 
-Folgerung, auch im Verfahren: **anhalten = Hold, nicht unqueue.**
+Folgerung, auch im Verfahren: **anhalten = Hold, nicht unqueue.** Die MAIN hat den Hold auf
+`ee47b0f8` gesetzt (`hold` am Task gelesen, ~10:25Z).
+
+## Falle 2: den Worker bestimmt `Task.spawn`, nicht die `ROLLE` der Karte
+
+Der Tick startete F (`85fa31bc`) ~10:25Z in Slot 1, nachdem 2cf40772 gelandet war. Die Karte sagt
+`ROLLE: pi-zai/glm-5.3-flash/high`, der Pane-Footer der Lane sagte „Opus 5 (1M context)". Der Grund
+steht im Code:
+- Der Dispatch nimmt `choice.spawn ?? DEFAULT_SPAWN`.
+- `Task.spawn` setzt nur `server.ts#taskSpawnFromBody`, aus den Feldern `harness`, `model` und
+  `effort` des POST-Bodys.
+- `server.ts#DEFAULT_SPAWN` ist `{harness: null, model: null, effort: null}`: claude, das
+  Default-Modell, **keine** Effort-Stufe.
+- Die Karten-`rolle` wird gespeichert, aber nicht zum Starten gelesen.
+
+Gepostet war ohne die drei Felder. Damit waere jede Sammelzeile auf Opus ohne Effort-Stufe
+gestartet, auch die fuenf, die laut Owner-Politik Flash sein sollen.
+
+Eine Route, die `spawn` nachtraeglich setzt, gibt es nicht. Korrektur in zwei Schritten:
+1. E, B, C und G neu gepostet, mit dem Flash-Spawn fuer E, C und G. Dabei fiel auf, dass auch D, A
+   und B ohne Effort-Stufe starten wuerden.
+2. Die ganze Kette D→A→E→B→C ein zweites Mal gepostet, jede Zeile mit explizitem Spawn
+   (`claude-opus-5[1m]/high` bzw. `pi-zai/glm-5.3-flash/high`).
+
+Jedes Mal wurde zuerst archiviert und dann gepostet, damit der Tick keine alte Fassung greift. Die
+Server-Lesung danach: alle sechs `queued`, `valid true`, `gaps []`, `after` wie gepostet, `spawn`
+wie gewollt (`harness: null` ist die gespeicherte Schreibweise fuer claude).
+
+F lief zu diesem Zeitpunkt schon und laeuft auf Opus zu Ende. Ein Abbruch haette nur Arbeit
+weggeworfen.
+
+Folgerung, auch im Verfahren §7: **den Worker in den POST-Body schreiben, nicht nur in die Karte.**
 
 ## Methode
 
@@ -152,7 +187,8 @@ Queue-Zeile mehr — MAIN oder Owner entscheidet". Treffer:
 - `ad3b3960` → `32fed872`. Beide wurden archiviert, also unkritisch.
 
 **5. Posten in Kettenreihenfolge.** `POST /api/tasks` mit `{text, kind:"auftrag", programId, queue:
-true}`. `queue: true` ist eine Freigabe durch den Poster (`releasedBy: "owner"`). D wurde zuerst
+true}`. In der ersten Fassung fehlten `harness`, `model` und `effort` (Falle 2); die gueltige Fassung
+traegt sie. `queue: true` ist eine Freigabe durch den Poster (`releasedBy: "owner"`). D wurde zuerst
 gepostet, jede folgende Karte bekam `NACH: <id des Vorgaengers>` unter der `GROESSE`-Zeile. Das
 Format ist in `card-extract.ts#FORMAT_KEYS` festgelegt:
 - Kopfschluessel sind nur `ROLLE GROESSE FLAECHE NEU NACH VERIFY DONE VERBOTEN`.
@@ -190,6 +226,8 @@ false`.
 - Ob `ee47b0f8` bis dahin einen Hold traegt. Die Bitte an die MAIN ist zugestellt, ihre Ausfuehrung
   ist nicht geprueft.
 - Die Sammel-Messzeile aus `b0279bc6` (nur H1) und `76e08dd3` ist nicht angelegt.
+- Ob der Tick eine Zeile mit `pi-zai`-Spawn wirklich als pi-zai-Lane startet: bis zum Schreiben
+  hatte er keine gestartet.
 - Die Sichtungs-Urteile, die nicht unter Methode §2 stehen, sind Urteile des Subagenten, nicht von
   der Orchestratorin nachgeprueft (Register §4).
 
@@ -211,4 +249,7 @@ ts	phase	entscheidung	warum	beleg	ergebnis
 2026-09-18T10:18Z	deckel	repo-lane-cap 1 -> 3	pi-zai live, Queue sauber	audit repo_lane_cap	3
 2026-09-18T10:18Z	falle	7d70eaeb durch Politik card-valid freigegeben und gestartet	unqueue haelt unter card-valid nicht	audit task_release by=policy	laeuft einzeln
 2026-09-18T10:19Z	abhilfe	MAIN um Hold auf ee47b0f8 gebeten	einzige Zeile ohne Hold mit gueltiger Karte	Receipt 10f567e3	zugestellt
+2026-09-18T10:2xZ	doku	drei Dokumente committet	Owner: sorgfaeltige Dokumentation	2c6f5121	ok
+2026-09-18T10:2xZ	falle	F startete auf Opus trotz ROLLE pi-zai	Dispatch liest Task.spawn, POST trug keinen	server.ts#taskSpawnFromBody	F laeuft zu Ende
+2026-09-18T10:3xZ	korrektur	E/B/C/G neu mit spawn, dann ganze Kette D-A-E-B-C mit explizitem spawn	DEFAULT_SPAWN hat effort null	server.ts#DEFAULT_SPAWN	6 Zeilen valid, spawn korrekt
 ```

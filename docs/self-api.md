@@ -69,6 +69,35 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   drei Watches armiert waren — also die zugestellten Events auch ACKEN
   (`POST /api/self/events/:id/ack`). `ctl.sh watch` setzt `idleSec` deshalb von sich aus auf 0 und
   `ctl.sh events --ack` räumt den Deckel (`docs/controller.md` §Werkzeuge).
+- **Ein Weckruf je Tick, nicht je Event (seit c14fcd75, `server.ts#deliverFleetEventBundle`).**
+  Feuern in derselben Tick-Runde mehrere zustellbare Events für DICH, bekommt deine Pane genau
+  EINE Zeile: `[fleet] 3 events for this session: <id> (<kind>), … Each full text stays on its
+  event …`. Der Volltext bleibt am Event: `GET /api/self/events/<id>` liefert `{event, text}` —
+  `text` ist exakt die Nachricht, die ein einzelnes Event getippt hätte, gerendert aus der Zeile.
+  Quittiert wird weiter JE Event (`POST /api/self/events/<id>/ack`). Ein einzelnes Event behält
+  seine volle Nachricht wie bisher. Der Crash-Marker gilt für alle Zeilen des Bündels gemeinsam:
+  alle stehen `send-uncertain` und sind gespeichert, BEVOR tmux angefasst wird; eine
+  Vor-Paste-Verweigerung (belegter Composer) setzt alle samt `attempts` zurück auf `pending`.
+  Die Lese-Tür ist an deine Occupation gebunden (fremd oder ersetzt: 409, unbekannt: 404).
+- **`delivery: "pane" | "inbox"`** ist ein Abo-Fakt (fehlt = `pane`). Ein `inbox`-Event wird nie
+  getippt — keine Zeile, kein Bündel, kein Paste (3ed20749: eine owner-besetzte Pane bekäme
+  sonst Maschinentext in den Composer) — und steht mit `status: "inbox"` in `GET /api/self` und
+  unter `GET /api/self/events/<id>`. **Seit c14fcd75 darfst du es selbst quittieren**
+  (`POST /api/self/events/<id>/ack`, 200 statt früher 409): es ist dein eigenes Event und hält
+  dein Zustellbudget, bis jemand es schließt. Der Owner kann es weiterhin über
+  `POST /api/events/<id>/ack` schließen; die Audit-Wörter trennen die beiden (`fleet_event_ack`
+  vs. `fleet_event_owner_ack`). Eine Owner-Zeile OHNE Empfänger (`receiverSlot: null`, z. B. ein
+  Owner-Inbox-Report) bleibt für jede Session 409 `inbox event — acknowledgement belongs to the owner`.
+- **Texte über 32 KiB werden nie gepastet (seit 1e170a25, `server.ts#PASTE_MAX_BYTES`).** Das gilt
+  für JEDEN Sendeweg (`server.ts#sendText`: Owner-`/send`, Briefe, Events, Entscheide): der Text wird
+  ganz unter `streams/pane-inbox/slot<N>-<openedAt>/<sha16>.txt` abgelegt, und die Pane bekommt EINE
+  Zeile `[fleet] message <sha16>: <N> bytes (sha256 <hex>) … Read the complete text from <pfad>`.
+  Lies die Datei, bevor du handelst; der sha256 in der Zeile prüft sie. Die Schwelle ist die
+  Messung, kein Vorsichtswert: der größte je angenommene Send war ein 17.359-Byte-Brief (alle 272
+  `send`-Zeilen in `audit.jsonl` bis 2026-09-18), und der Kopfverlust von 1e170a25 traf einen
+  langen Owner-Paste. Trail: je abgelegtem Text eine Zeile `pane_inbox_stored` (Bytes, sha256,
+  Pfad — nie der Text); die `send`-Zeile daneben zählt die Bytes der einen Zeile. Die Datei wird
+  nicht aufgeräumt.
 - Ein `slot`-/`from`-Feld im Body wird ignoriert — die Route bindet hart an deinen Token-Slot, genau wie
   `/api/self/autos`. Sie kann strukturell in keine fremde Pane tippen.
 - Deckel: **5 armed pro Slot** (`WATCH_MAX_PER_SLOT`, geteilt mit dem Owner-Pfad). Ein zweites noch
@@ -2155,11 +2184,35 @@ bereits beurteilten Report erneut pasten. Ein BEREITS terminales Event bleibt ex
 /api/self/events/:id/ack` behält seine Bedeutung und jede seiner Ablehnungen unverändert.
 
 **Was die Tür NICHT tut** — jedes davon ist ein eigener Check, keine Prosa: sie bewegt nie
-`Task.status`, landet nicht, tötet oder schließt keine Lane, schickt nichts in die Worker-Pane und
-ändert die Retention nicht (eine beurteilte Zeile hält `pruneFleetReports` genau wie jede andere
-terminale Zeile). Kein Tick ruft sie — sie hat genau eine Aufrufstelle, und die ist die Route.
-Eine Ablehnung schickt der Lane KEINE Nachricht; ob das ein Transport braucht, ist offen und
-bewusst nicht gebaut.
+`Task.status`, landet nicht, tötet oder schließt keine Lane und ändert die Retention nicht (eine
+beurteilte Zeile hält `pruneFleetReports` genau wie jede andere terminale Zeile — außer solange
+ihre Zustellung `pending` ist, s. u.). Kein Tick ruft sie — sie hat genau eine Aufrufstelle, und
+die ist die Route.
+
+**Die Entscheidung IST der Antwortweg eines `needs-main`-Reports.** Seit 2026-09-12 trägt
+`server.ts#deliverFleetReportDecision` jedes Urteil (beide Türen und die Land-Regel) in die Pane
+der Lane, die den Report gefilet hat: `[fleet] YOUR REPORT WAS ACCEPTED|REJECTED [fleet-report <id>]`
+plus deine `reason` wörtlich. Wer auf einen `needs-main`-Report antwortet, schreibt die Antwort
+also in `reason` (≤ 500 Zeichen) — eine zweite Nachrichtenklasse gibt es nicht, und die
+Clarification-Tür bleibt für Fragen VOR dem terminalen Bericht. Das Ergebnis steht als
+`decisionDelivery: {state, at, reason}` an der Report-Zeile:
+
+- `delivered` — getippt, tmux hat angenommen.
+- **`pending` — die Pane der Lane war beim Urteil BESCHÄFTIGT (seit b5dc4dc2).** Nichts wurde
+  getippt; die Zeile hält die offene Zustellung, `audit.jsonl` sagt
+  `fleet_report_decision_undelivered … gate=busy pending`. Der Watch-Tick (`server.ts#tickWatches`,
+  FACT 4) stellt sie GENAU EINMAL zu, sobald dieselbe Occupation (Slot + `openedAt`) `FLEET_REPORT_DECISION_IDLE_MS`
+  (Default 3000 ms, der Wert des Merge-Idle-Guards) still ist — danach `delivered` und
+  `fleet_report_decision_delivered`. Ist der Slot bis dahin leer oder recycelt, wird daraus
+  `worker-gone` mit dem Grund; eine andere Occupation bekommt nie etwas. Eine offene Zustellung
+  wartet auch Kill-Switch und Ruhezeiten ab (beide enden von selbst); nur eine tote Pane oder ein
+  Blocking-Screen machen sie `blocked`.
+- `worker-gone` — die filende Occupation ist weg (leerer oder RECYCELTER Slot, der Grund nennt
+  beide `openedAt`). Eine Succession zählt dazu: die Nachfolgerin ist eine neue Occupation.
+  Gemessen 2026-09-18 über 14 Tage `audit.jsonl`: alle 204 unzugestellten Urteile waren dieser Fall
+  (129 recycelt, 75 leer), keines scheiterte an einem Gate (53 zugestellt).
+- `blocked` — Kill-Switch, tote Pane, Blocking-Screen oder Ruhezeiten; terminal, der Grund nennt das Gate.
+- `send-uncertain` — der Marker vor dem Paste, nie aufgelöst; nichts spielt ihn erneut ab.
 
 ### Die OWNER-Tür — `POST /api/fleet-report/:id/accept` · `/reject`
 

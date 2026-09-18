@@ -4997,8 +4997,10 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const ownerFrom = server.indexOf("async function ownerAcknowledgeFleetEvent");
   const selfAck = selfFrom > 0 && ownerFrom > selfFrom ? server.slice(selfFrom, ownerFrom) : "";
   const ownerAck = ownerFrom > 0 ? server.slice(ownerFrom, ownerFrom + 2000) : "";
-  pin("the ack split holds in both directions — self refuses an inbox row, owner refuses a pane row",
-    selfAck.includes('event.delivery === "inbox"') && selfAck.includes("belongs to the owner")
+  // since c14fcd75 the self half refuses the OWNER's rows (receiver null) — a receiver-bound inbox
+  // row is its receiver's to close too, and the owner half still refuses every pane row
+  pin("the ack split holds in both directions — self refuses an owner inbox row, owner refuses a pane row",
+    selfAck.includes('event.delivery === "inbox" && event.receiverSlot === null') && selfAck.includes("belongs to the owner")
       && ownerAck.includes('event.delivery !== "inbox"') && ownerAck.includes("belongs to the receiver session"),
     `self=${selfAck !== ""} owner=${ownerAck !== ""}`);
 
@@ -6031,11 +6033,16 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // …and the RULE (accepted-by-land, 2026-09-13) is the third caller: a verdict nobody typed reaches
   // the lane through the same deliverer, never a second one.
   const ruleTick = server.match(/async function tickAcceptByLand\([\s\S]*?\n\}/)?.[0] ?? "";
-  pin(`${RULE_RECEIVER} — ONE deliverer carries a verdict to the lane, and BOTH doors and the land rule call it (D1c)`,
-    carryFn !== "" && carrySites === 3
+  // …and the WATCH TICK is the fourth (b5dc4dc2): it hands a verdict that met a busy pane back to the
+  // same deliverer at that lane's next quiet window, and it hands back ONLY the open "pending" record.
+  const watchTick = server.match(/async function tickWatches\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — ONE deliverer carries a verdict to the lane, and BOTH doors, the land rule and the watch tick call it (D1c)`,
+    carryFn !== "" && carrySites === 4
       && decisionDoor.includes("await deliverFleetReportDecision(report);")
       && ownerDoor.includes("await deliverFleetReportDecision(report);")
-      && ruleTick.includes("await deliverFleetReportDecision(report);"),
+      && ruleTick.includes("await deliverFleetReportDecision(report);")
+      && watchTick.includes("await deliverFleetReportDecision(report);")
+      && watchTick.includes('if (report.decisionDelivery?.state !== "pending") continue;'),
     `fn=${carryFn !== ""} sites=${carrySites} self=${decisionDoor.includes("deliverFleetReportDecision")}`
       + ` owner=${ownerDoor.includes("deliverFleetReportDecision")}`);
   // THE ORDER, in both doors and for the same two reasons: the verdict must be RECORDED before it is
@@ -6055,7 +6062,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // EXACTLY ONCE, keyed on the stored fact rather than on the callers' manners — and the guard is
   // the FIRST branch, so no later edit can put work above it.
   pin(`${RULE_RECEIVER} — the deliverer refuses a second carry on the stored delivery record itself (D1c)`,
-    carryFn.includes("if (report.decisionDelivery !== undefined && report.decisionDelivery !== null) return;")
+    carryFn.includes("if (report.decisionDelivery !== undefined && report.decisionDelivery !== null\n    && report.decisionDelivery.state !== \"pending\") return;")
       && carryFn.indexOf("report.decisionDelivery !== undefined") < carryFn.indexOf("slotFrom("),
     carryFn.match(/if \(report\.decisionDelivery[^\n]*/)?.[0] ?? "no guard");
   // THE OCCUPATION, and that a failure is NAMED rather than dropped: slot AND openedAt, because a
@@ -6083,10 +6090,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     .split(",").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
   const stampedStates = [...carryFn.matchAll(/stamp\("([a-z-]+)"/g)].map((m) => m[1]!);
   pin(`${RULE_RECEIVER} — the delivery states are one closed list, and the deliverer writes exactly them (D1c)`,
-    JSON.stringify(deliveryStates) === JSON.stringify(["delivered", "send-uncertain", "worker-gone", "blocked"])
-      && stampedStates.length === 4
+    JSON.stringify(deliveryStates) === JSON.stringify(["delivered", "send-uncertain", "worker-gone", "blocked", "pending"])
       && stampedStates.every((w) => deliveryStates.includes(w))
-      && new Set(stampedStates).size === 4
+      && new Set(stampedStates).size === deliveryStates.length
       && reportRowParser.includes("FLEET_REPORT_DELIVERY_STATES.includes(d.state as FleetReportDeliveryState)")
       // a carry can only exist for a row that was judged, and only "delivered" explains nothing
       && reportRowParser.includes("if (decision === undefined || decision === null) return null;")
@@ -6102,7 +6108,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && carryFn.indexOf("await saveStateNow();") > carryFn.indexOf('stamp("send-uncertain"')
       // the only pane-touching caller in this family, and the waiver it takes is the ONE
       // replyClarification takes: the work-prompt policy, never the kill-switch or the liveness probe
-      && carryFn.includes("canDeliver(worker, { now: Date.now(), harness: false, idleMs: 0 })")
+      // …and the busy gate is HONOURED (b5dc4dc2): a verdict never lands in a lane mid-turn
+      && carryFn.includes("{ now: Date.now(), harness: false, idleMs: REPORT_DECISION_IDLE_MS });")
       && !/killSwitch|alive: false|quietHours: false/.test(carryFn),
     `marker=${carryFn.indexOf('stamp("send-uncertain"')} send=${carryFn.indexOf("await sendText(")}`);
 

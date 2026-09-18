@@ -2016,19 +2016,27 @@
   .smball.tone-red { box-shadow: 0 0 0 1.5px var(--del), 0 0 6px rgba(247,118,142,.7); }
   .smball.tone-unknown, .smball.tone-warn { box-shadow: 0 0 0 1.5px var(--amber); }
   .smcols { display: grid; grid-template-columns: 14px repeat(4, minmax(0, 1fr)); }
-  .smcol { min-width: 0; display: flex; flex-direction: column; align-items: center; }
-  .smst { border: 0; background: none; padding: 0; font: inherit; font-size: 9.5px; color: var(--faint);
-    text-transform: uppercase; letter-spacing: .05em; cursor: pointer; }
-  .smst:hover { color: var(--dim); }
-  .smname { max-width: 100%; border: 0; background: none; padding: 0 2px; font: inherit; color: var(--text);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
-  .smname:disabled { cursor: default; color: var(--dim); }
-  .smname:not(:disabled):hover { color: #fff; text-decoration: underline; }
-  .smname.mine { color: var(--accent); font-weight: 700; }
-  .smname.tone-ok::after { content: " ✓"; color: var(--add); }
-  .smname.tone-red::after { content: " ✗"; color: var(--del); }
-  .smname.tone-unknown::after, .smname.tone-warn::after { content: " ?"; color: var(--amber); }
-  .smmore { color: var(--faint); }
+  .smst { min-width: 0; border: 0; background: none; padding: 0; font: inherit; font-size: 9px; color: var(--faint);
+    text-transform: uppercase; letter-spacing: .05em; cursor: pointer; white-space: nowrap; }
+  .smst.on { color: var(--dim); }
+  .smst:hover { color: var(--text); }
+  .smrows:not(:empty) { margin-top: 4px; display: flex; flex-direction: column; gap: 1px; }
+  .smrow { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; border: 0; border-radius: 4px;
+    background: none; padding: 1px 3px; font: inherit; color: var(--text); text-align: left; cursor: pointer; }
+  .smrow:not(:disabled):hover { background: var(--raised); }
+  .smrow:disabled { cursor: default; }
+  .smdot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #fff; }
+  .smrow.tone-ok .smdot { box-shadow: 0 0 0 1.5px var(--add); }
+  .smrow.tone-red .smdot { box-shadow: 0 0 0 1.5px var(--del); }
+  .smrow.tone-unknown .smdot, .smrow.tone-warn .smdot { box-shadow: 0 0 0 1.5px var(--amber); }
+  .smname { flex: none; max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .smrow.mine .smname { color: var(--accent); font-weight: 700; }
+  .smwhat { flex: 1; min-width: 0; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .smwhere { flex: none; color: var(--dim); font-size: 9px; text-transform: uppercase; letter-spacing: .05em; }
+  .smrow.tone-ok .smwhere { color: var(--add); }
+  .smrow.tone-red .smwhere { color: var(--del); }
+  .smrow.tone-unknown .smwhere, .smrow.tone-warn .smwhere { color: var(--amber); }
+  .smmore { color: var(--faint); padding-left: 15px; }
   .smdetail:not(:empty) { margin-top: 6px; }
   /* per-pane board toggle, sits left of the 💬 viewtoggle (top edge is taken, so
      "beside" not "above"); same visual language as the viewtoggle */

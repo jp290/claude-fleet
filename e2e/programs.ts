@@ -226,6 +226,11 @@ const content: ProgramContent = {
   openQuestions: ["Which future tasks belong inside the bracket?"],
 };
 const readState = (): FleetState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as FleetState;
+// The persisted record, as the owner mutation doors USED to echo it. Since the echo diet (2026-09-18)
+// a transition answers {ok, id, status} and a field door {ok, id, <field>}; every door awaits its
+// save before answering, so the state file holds the record the answer describes.
+const storedProgram = (id: string): Program | undefined =>
+  (readState().programs ?? []).find((p) => p.id === id) as Program | undefined;
 const canonical = (value: unknown): unknown => Array.isArray(value)
   ? value.map(canonical)
   : value && typeof value === "object"
@@ -321,8 +326,8 @@ const activateNewProgram = async (title: string): Promise<Program> => {
   const made = await post("/api/programs", { ...content, title });
   const program = ((await made.json()) as { program: Program }).program;
   await programPost(program.id, "confirm");
-  const active = await programPost(program.id, "activate");
-  return ((await active.json()) as { program: Program }).program;
+  await programPost(program.id, "activate");
+  return storedProgram(program.id)!;
 };
 const beginBootstrap = (id: string, body: Record<string, unknown>): Promise<Response> =>
   programPost(id, "bootstrap-main", body);
@@ -421,10 +426,11 @@ export async function run(ctx: Ctx): Promise<void> {
 
   const correctedIntent = "Owner-corrected intention, stored as the confirmed truth.";
   const confirmRes = await programPost(proposed.id, "confirm", { intent: ` ${correctedIntent} `, ignored: true });
-  const confirmBody = await confirmRes.json() as { ok?: boolean; program?: Program };
-  const confirmed = confirmBody.program!;
+  const confirmBody = await confirmRes.json() as { ok?: boolean; id?: string; status?: string };
+  const confirmed = storedProgram(proposed.id)!;
   check("programs confirm: owner corrections replace proposal content while provenance stays unchanged",
-    confirmRes.ok && confirmed?.status === "confirmed" && confirmed?.intent === correctedIntent
+    confirmRes.ok && confirmBody.status === "confirmed" && confirmBody.id === proposed.id
+      && confirmed?.status === "confirmed" && confirmed?.intent === correctedIntent
       && typeof confirmed?.confirmedAt === "number"
       && JSON.stringify(confirmed?.proposedBy) === JSON.stringify(proposed.proposedBy),
     `${confirmRes.status} ${JSON.stringify(confirmBody)}`);
@@ -464,9 +470,11 @@ export async function run(ctx: Ctx): Promise<void> {
     { ...content, title: "Board promote: the empty-body two-step" })).json()) as { program: Program }).program;
   const proposalBytes = promoteContent(twoStep);
   const stepConfirm = await programPost(twoStep.id, "confirm", {});
-  const stepConfirmed = (await stepConfirm.json() as { program?: Program }).program;
+  const stepConfirmBody = await stepConfirm.json() as { status?: string };
+  const stepConfirmed = stepConfirmBody.status === "confirmed" ? storedProgram(twoStep.id) : undefined;
   const stepActivate = await programPost(twoStep.id, "activate", {});
-  const stepActivated = (await stepActivate.json() as { program?: Program }).program;
+  const stepActivateBody = await stepActivate.json() as { status?: string };
+  const stepActivated = stepActivateBody.status === "active" ? storedProgram(twoStep.id) : undefined;
   check("promote button: the empty-body two-step confirms without rewriting the proposal, then activates",
     stepConfirm.status === 200 && stepConfirmed?.status === "confirmed"
       && promoteContent(stepConfirmed) === proposalBytes
@@ -482,12 +490,13 @@ export async function run(ctx: Ctx): Promise<void> {
     { ...content, title: "Board promote: recovery after a failed activate" })).json()) as { program: Program }).program;
   const landedConfirm = await programPost(partial.id, "confirm", {});
   const retryConfirm = await programPost(partial.id, "confirm", {});
-  const retryBody = await retryConfirm.json() as { ok?: boolean; existing?: boolean; program?: Program };
+  const retryBody = await retryConfirm.json() as { ok?: boolean; existing?: boolean; status?: string };
   const repairActivate = await programPost(partial.id, "activate", {});
-  const repaired = (await repairActivate.json() as { program?: Program }).program;
+  const repaired = (await repairActivate.json() as { status?: string }).status === "active"
+    ? storedProgram(partial.id) : undefined;
   check("promote button recovery: a confirm that landed stays confirmed, a retried confirm is existing:true, and activate still reaches active",
     landedConfirm.status === 200 && retryConfirm.status === 200 && retryBody.existing === true
-      && retryBody.program?.status === "confirmed" && repairActivate.status === 200
+      && retryBody.status === "confirmed" && repairActivate.status === 200
       && repaired?.status === "active" && promoteContent(repaired) === promoteContent(partial),
     `confirm=${landedConfirm.status} retry=${retryConfirm.status}:${JSON.stringify(retryBody.existing)}`
       + ` activate=${repairActivate.status}:${repaired?.status}`);
@@ -495,11 +504,11 @@ export async function run(ctx: Ctx): Promise<void> {
   // What the busy flag DEGRADES to. The client disables its button while the pair is in flight, but
   // a double click that got through must not be an error the owner has to read as a failure.
   const doubleActivate = await programPost(partial.id, "activate", {});
-  const doubleBody = await doubleActivate.json() as { ok?: boolean; existing?: boolean; program?: Program };
+  const doubleBody = await doubleActivate.json() as { ok?: boolean; existing?: boolean; status?: string };
   check("promote button duplicate click: a second activate on an active program is ok/existing:true 200, never an error",
     doubleActivate.status === 200 && doubleBody.ok === true && doubleBody.existing === true
-      && doubleBody.program?.status === "active",
-    `${doubleActivate.status} ${JSON.stringify(doubleBody.existing)} ${doubleBody.program?.status}`);
+      && doubleBody.status === "active",
+    `${doubleActivate.status} ${JSON.stringify(doubleBody.existing)} ${doubleBody.status}`);
   // AND WHAT NO ROW HERE CAN WITNESS. A request that never reaches the server — offline, a dropped
   // link, the server restarting under the click — is a CLIENT-side condition: the fetch rejects, so
   // this suite's server sees no request at all and there is nothing on this side to measure. The
@@ -7379,6 +7388,24 @@ export async function run(ctx: Ctx): Promise<void> {
       rungs.every((r) => r.ok && r.stored === r.rung && r.stamped)
         && revoked.ok && revokedRow?.promotion === undefined && revokeAgain.ok,
       JSON.stringify({ rungs, revoked: revokedRow?.promotion ?? null, again: revokeAgain.status }));
+    // THE RECEIPT IS THE CHANGED FACT (echo diet, 2026-09-18): a one-enum grant answered with the
+    // whole record once cost the owner ~4 373 tokens. The grant must answer < 200 B AND carry the
+    // field it set. The precondition is measured on the same record: the stored program must itself
+    // be over 200 B, or a small answer would only say this fixture was small.
+    const grantRes = await setPromotion(promoProgram.id, { v: 1, selfLand: "green-only" });
+    const grantRaw = await grantRes.text();
+    const grantBody = JSON.parse(grantRaw) as { ok?: boolean; id?: string; promotion?: { selfLand?: string; confirmedAt?: number } | null };
+    const storedBytes = Buffer.byteLength(JSON.stringify(readState().programs?.find((x) => x.id === promoProgram.id) ?? null));
+    const revokeRes = await setPromotion(promoProgram.id, null);
+    const revokeRaw = await revokeRes.text();
+    check("promotion door receipt precondition: the stored program record the old answer echoed is over 200 B",
+      storedBytes > 200, `stored=${storedBytes}B`);
+    check("promotion door receipt: a grant answers under 200 B with {ok, id, promotion} naming the value it set, and a revoke answers promotion:null",
+      grantRes.ok && Buffer.byteLength(grantRaw) < 200 && grantBody.ok === true && grantBody.id === promoProgram.id
+        && grantBody.promotion?.selfLand === "green-only" && typeof grantBody.promotion.confirmedAt === "number"
+        && !("program" in grantBody)
+        && revokeRes.ok && (JSON.parse(revokeRaw) as { promotion?: unknown }).promotion === null,
+      `grant=${grantRes.status} ${Buffer.byteLength(grantRaw)}B ${grantRaw} revoke=${revokeRaw}`);
     // the credential boundary, and it is the whole reason this record lives on the OWNER side of
     // the auth line: a session that could write it would be granting itself the permission.
     const selfAsOwner = await fetch(`${BASE}/api/programs/${promoProgram.id}/promotion`, {
@@ -7745,7 +7772,9 @@ export async function run(ctx: Ctx): Promise<void> {
     const smuggleConfirm = smuggleOwnerRow.program
       ? await programPost(smuggleOwnerRow.program.id, "confirm", { profile: smuggleProfile })
       : null;
-    const smuggleConfirmRow = smuggleConfirm ? (await smuggleConfirm.json()) as { program?: Program } : null;
+    // the confirm receipt is {ok, id, status, promotion}; the record it wrote is read from the state
+    // list below (smuggleStored), which is where a smuggled profile would have to show up.
+    const smuggleConfirmRow = smuggleConfirm ? (await smuggleConfirm.json()) as Record<string, unknown> : null;
     const smuggleIds = [smuggleSelfRow.program?.id, smuggleOwnerRow.program?.id]
       .filter((id): id is string => typeof id === "string");
     const smuggleStored = (await ownerPrograms()).filter((p) => smuggleIds.includes(p.id));
@@ -7755,8 +7784,7 @@ export async function run(ctx: Ctx): Promise<void> {
         && smuggleSelfRow.program?.profile === undefined
         && smuggleOwnerRow.program?.profile === undefined
         && smuggleConfirm?.status === 200
-        && smuggleConfirmRow?.program?.profile === undefined
-        && !("profile" in (smuggleConfirmRow?.program ?? {})),
+        && smuggleConfirmRow?.status === "confirmed" && !("profile" in (smuggleConfirmRow ?? {})),
       JSON.stringify({ self: smuggleSelfRow.program?.profile ?? null,
         owner: smuggleOwnerRow.program?.profile ?? null, confirm: smuggleConfirm?.status,
         stored: smuggleStored.map((p) => p.profile ?? null) }));

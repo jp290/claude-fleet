@@ -8403,11 +8403,11 @@ export async function run(ctx: Ctx): Promise<void> {
       if (x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2)) await post(`/api/slots/${x.id}/kill`, {});
     await Bun.sleep(600);
     const rSet = await post(`/api/programs/${rP}/release`, { release: { v: 1, policy: "card-valid" } });
-    const rSetBody = (await rSet.json()) as { program?: { release?: { v: number; policy: string; confirmedAt: number } } };
+    const rSetBody = (await rSet.json()) as { id?: string; release?: { v: number; policy: string; confirmedAt: number } | null };
     const rPlan = (await (await get("/api/start-plan")).json()) as StartPlan;
     const rVerdict = (id: string) => rPlan.repos.flatMap((r) => r.waves).flatMap((w) => w.rows).find((r) => r.id === id)?.release;
     check("(rel-tick) fixture: two active programs, eight planted pending rows, the policy set through the owner door, and the plan releases exactly rA and rB by policy",
-      rIds.every(Boolean) && !!rP && !!rM && rPlanted === 8 && rSet.ok && rSetBody.program?.release?.policy === "card-valid"
+      rIds.every(Boolean) && !!rP && !!rM && rPlanted === 8 && rSet.ok && rSetBody.id === rP && rSetBody.release?.policy === "card-valid"
       && rIds.filter((id) => rVerdict(id)?.released).sort().join(" ") === [rA, rB].sort().join(" ")
       && JSON.stringify(rVerdict(rManual)) === JSON.stringify({ released: false, why: null }),
       JSON.stringify({ ids: rIds, planted: rPlanted, set: rSet.status, verdicts: rIds.map((id) => [id, rVerdict(id)]) }));
@@ -8819,6 +8819,33 @@ export async function run(ctx: Ctx): Promise<void> {
     check("outside-surface: a lane whose row has NO card carries outsideSurface null, not []",
       c3 === 0 && r3.status === 200 && r3.report !== undefined && r3.report.outsideSurface === null,
       `commit=${c3} ${r3.status} ${JSON.stringify(r3.report ?? null)}`);
+
+    // THE RECEIPT DOES NOT GROW WITH THE TEXT (echo diet, 2026-09-18; b1563efb measured this door as
+    // 73 % of the echo class, the lane's own text coming straight back). Two reports from the same
+    // lane, 200 and 3 900 chars: the answers differ by < 100 B, neither carries the text, and both
+    // carry an id. The precondition — both were ACCEPTED and the stored rows hold the full texts —
+    // is read back, so a pair of 409s (equal and tiny) cannot pass as a diet.
+    const eShort = "E".repeat(200);
+    const eLong = "L".repeat(3900);
+    const eFile = async (text: string): Promise<{ status: number; bytes: number; raw: string; id?: string }> => {
+      const res = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": l3.token },
+        body: JSON.stringify({ status: "complete", text }) });
+      const raw = await res.text();
+      let id: string | undefined;
+      try { id = (JSON.parse(raw) as { id?: string }).id; } catch { /* the status carries it */ }
+      return { status: res.status, bytes: Buffer.byteLength(raw), raw, id };
+    };
+    const eA = await eFile(eShort);
+    const eB = await eFile(eLong);
+    const eStored = ((await (await get("/api/fleet-report")).json()) as { reports: { id: string; text?: string }[] }).reports;
+    check("fleet-report receipt precondition: both reports were accepted and their stored rows carry the full 200- and 3 900-char texts",
+      eA.status === 200 && eB.status === 200 && !!eA.id && !!eB.id
+        && eStored.find((r) => r.id === eA.id)?.text === eShort && eStored.find((r) => r.id === eB.id)?.text === eLong,
+      JSON.stringify({ a: eA.status, b: eB.status, ids: [eA.id, eB.id] }));
+    check("fleet-report receipt: the answer to a 3 900-char report is within 100 B of the answer to a 200-char one and echoes neither text",
+      Math.abs(eB.bytes - eA.bytes) < 100 && !eA.raw.includes(eShort) && !eB.raw.includes("L".repeat(200)),
+      JSON.stringify({ short: eA.bytes, long: eB.bytes, head: eB.raw.slice(0, 200) }));
 
     for (const l of [l1, l2, l3]) if (l.slot) await post(`/api/slots/${l.slot}/kill`, {});
     await restartSrv();

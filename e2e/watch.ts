@@ -15,7 +15,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { auditWatchMessage, laneHostCommitLooking, laneSpentLooking, laneStalled, laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
+import { attentionAnswerMessage, auditWatchMessage, clarificationReplyMessage, laneHostCommitLooking, laneSpentLooking, laneStalled, laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
   SPENT_RULES, STALLED_RULES,
   type AuditWatchEventPayload, type AuditWatchEventView, type ClarificationEventPayload, type LaneSignalView,
   type LaneWatchEventPayload } from "../lane-signals";
@@ -554,6 +554,32 @@ async function runFoundingWordWatch(): Promise<void> {
 }
 
 export async function run(): Promise<void> {
+  // THE ECHO DIET ON THE TWO ANSWER MESSAGES (2026-09-18). The subject quoted back is the receiver's
+  // own text; the answer is the payload. A 2 000-char attention with a 20-char answer must arrive
+  // under 400 B, and the answer must arrive WHOLE. The precondition is measured, not assumed: the
+  // subject is really 2 000 chars and, rendered unclipped, would really exceed the bound — otherwise
+  // a green here would only say the fixture was small.
+  {
+    const raised = `${"owner decision needed on the promotion boundary ".repeat(45)}`.slice(0, 2000);
+    const answer = "green-only, go ahead";
+    const attention = attentionAnswerMessage("a".repeat(24), "decision", raised, answer);
+    const clarification = clarificationReplyMessage("b".repeat(24), raised, answer);
+    const bytes = (t: string): number => Buffer.byteLength(t, "utf8");
+    const unclipped = bytes(`[fleet] OWNER ANSWER [attention ${"a".repeat(24)}] to your decision: ${raised}\n${answer}`);
+    check("echo diet precondition: the fixture subject is 2 000 chars and the answer 20, so an unclipped render exceeds 400 B",
+      raised.length === 2000 && answer.length === 20 && unclipped > 400,
+      JSON.stringify({ raised: raised.length, answer: answer.length, unclipped }));
+    check("echo diet: an owner answer to a 2 000-char attention is delivered under 400 B, answer whole, and the cut names itself",
+      bytes(attention) < 400 && attention.endsWith(`\n${answer}`) && attention.includes("(2000 chars)")
+        && attention.includes("[attention aaaaaaaaaaaaaaaaaaaaaaaa]"),
+      JSON.stringify({ bytes: bytes(attention), head: attention.slice(0, 120) }));
+    check("echo diet: a clarification answer quotes a 2 000-char question clipped under 400 B, answer whole",
+      bytes(clarification) < 400 && clarification.endsWith(`\n${answer}`) && clarification.includes("(2000 chars)"),
+      JSON.stringify({ bytes: bytes(clarification), head: clarification.slice(0, 120) }));
+    const short = attentionAnswerMessage("a".repeat(24), "decision", "a short  question", answer);
+    check("echo diet: a subject under the bound is quoted whole, with no cut marker",
+      short.includes("to your decision: a short question\n") && !short.includes("chars)"), short);
+  }
   // A real process kill cannot reliably land in the sub-millisecond gap between a local tmux
   // call and its return. Pin the ordering that creates that observable crash state, then exercise
   // its persisted image below: marker -> awaited state write -> send, and pending is the sole

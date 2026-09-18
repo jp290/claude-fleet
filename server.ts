@@ -8520,6 +8520,17 @@ async function laneOutsideSurface(s: Slot): Promise<string[] | null> {
   return [...new Set(diff.out.split("\0").filter((path) => path && !surface.has(path)))].sort();
 }
 
+// THE RECEIPT, NOT THE ECHO (2026-09-18). Measured in b1563efb (docs/messungen/2026-09-17-worktrail-
+// bash-datenschichten-strategisch.md §5b): this door answered 606 times with 381 461 B, and the bulk
+// was `report.text` — the <=4 000 chars the lane had just written itself. The receipt keeps every
+// field the server DERIVED (receiver, basis, provenance, outsideSurface, eventId) and drops the one
+// the caller already holds, so its size no longer grows with the text. The full row stays readable
+// on GET /api/self/fleet-report; nothing about what a field means has changed, only who sends it.
+function fleetReportReceipt(report: FleetReport): Omit<FleetReport, "text"> {
+  const { text: _text, ...receipt } = report;
+  return receipt;
+}
+
 async function openFleetReport(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
   if (!body || Object.keys(body).some((key) => key !== "status" && key !== "text"))
     return json({ error: "body must contain only status and text" }, 400);
@@ -8558,7 +8569,7 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
       programOccupancy(program) === "live" ? program.main! : null, id);
     await ledgered;
     await saveStateNow();
-    return json({ ok: true, report, inbox: entry.id });
+    return json({ ok: true, id, report: fleetReportReceipt(report), inbox: entry.id });
   }
 
   // THE OWNER-INBOX FALLBACK, and it is the narrowest one that closes the hole it was cut for.
@@ -8633,7 +8644,7 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   disarmLaneWatchesForReport(s, bound?.receiver ?? null, id);
   await ledgered;
   await saveStateNow();
-  return json({ ok: true, report });
+  return json({ ok: true, id, report: fleetReportReceipt(report) });
 }
 
 async function replyClarification(s: Slot, id: string, body: Record<string, unknown> | null): Promise<Response> {
@@ -10984,6 +10995,14 @@ const attentionBound = (a: AttentionRequest, s: Slot): boolean =>
   a.requester.slot === s.id && a.requester.openedAt === s.openedAt
   && a.requester.sessionId === s.sessionId;
 
+// The attention twin of fleetReportReceipt: the raised `text` (up to MAX_ATTENTION_TEXT) is what
+// the requester just wrote, and the owner's answer door echoed it back to the owner as well. Both
+// acks drop it; GET /api/self/attention and GET /api/attention still carry the whole row.
+function attentionReceipt(a: AttentionRequest): Omit<AttentionRequest, "text"> {
+  const { text: _text, ...receipt } = a;
+  return receipt;
+}
+
 async function openAttention(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
   if (!body || typeof body.kind !== "string" || !ATTENTION_KINDS.includes(body.kind as AttentionKind))
     return json({ error: `kind must be one of: ${ATTENTION_KINDS.join(", ")}` }, 400);
@@ -11021,7 +11040,7 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
   const open = attentionRequests.filter((a) => (a.status === "open" || a.status === "send-uncertain")
     && attentionBound(a, s));
   const existing = open.find((a) => a.kind === kind && a.text === text);
-  if (existing) return json({ ok: true, existing: true, request: existing, sessionIdMatch });
+  if (existing) return json({ ok: true, existing: true, id: existing.id, request: attentionReceipt(existing), sessionIdMatch });
   if (open.length >= ATTENTION_MAX_OPEN_PER_REQUESTER)
     return json({ error: `max ${ATTENTION_MAX_OPEN_PER_REQUESTER} open attention requests per session — an unanswered pile is an attention failure, not a queue` }, 409);
 
@@ -11035,7 +11054,7 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
   attentionRequests = [...attentionRequests, request];
   audit("attention_open", s.id, `${request.id} kind=${kind} program=${program.id}`);
   await saveStateNow();
-  return json({ ok: true, existing: false, request, sessionIdMatch });
+  return json({ ok: true, existing: false, id: request.id, request: attentionReceipt(request), sessionIdMatch });
 }
 
 // A live binding sees its Program's rows across succession; an unbound or foreign occupant sees
@@ -11167,7 +11186,7 @@ async function answerAttention(id: string, body: Record<string, unknown> | null)
   if (answer.length > MAX_ATTENTION_ANSWER)
     return json({ error: `text must be at most ${MAX_ATTENTION_ANSWER} chars` }, 400);
   if (request.status === "answered") {
-    if (request.answer?.text === answer) return json({ ok: true, existing: true, request });
+    if (request.answer?.text === answer) return json({ ok: true, existing: true, id: request.id, request: attentionReceipt(request) });
     return json({ error: "attention request was already answered with different text" }, 409);
   }
   if (request.status === "refused")
@@ -11192,7 +11211,7 @@ async function answerAttention(id: string, body: Record<string, unknown> | null)
     `${request.id} kind=${request.kind} inbox=${entry.id}`);
   pruneAttention();
   await saveStateNow();
-  return json({ ok: true, existing: false, request, inbox: entry.id });
+  return json({ ok: true, existing: false, id: request.id, request: attentionReceipt(request), inbox: entry.id });
 }
 
 // THE JOIN THE TWO DOORS DID NOT HAVE. Attention 1050d69f (kind decision, raised 2026-09-11 21:23)
@@ -27947,6 +27966,12 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     await saveStateNow();
     return json({ ok: true, program });
   }
+  // EVERY OWNER MUTATION BELOW ANSWERS WITH THE FACT IT CHANGED, never the record (2026-09-18). An
+  // owner granting one enum value on the promotion door got ~4 373 tokens back, half of it the inbox;
+  // an ACTIVE record — the only kind anyone mutates — measured median 22 798 B, max 41 587 B
+  // (b1563efb). So a field door answers {ok, id, <field>} (null = cleared) and a lifecycle step
+  // answers {ok, id, status}; the whole record is where it always was, on GET /api/programs. Create,
+  // the proposal doors and bootstrap-main keep the record: there the record IS the new fact.
   // THE PROFILE DOOR — the only writer of `program.profile`, and its own route for the same reason
   // the promotion door is: it reads a BODY carrying an owner decision, which no verb on the action
   // router below does. Two acts, one door, exactly as promotion has: `{"profile":{...}}` grants,
@@ -28000,7 +28025,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     // row and performs no save. Only a REAL change reaches the locks below.
     const current = program.profile;
     if (desired === null ? current === undefined : current?.kind === desired.kind && current.v === 1)
-      return json({ ok: true, program: publicProgram(program) });
+      return json({ ok: true, id: program.id, profile: program.profile ?? null });
     // THE RACE, CLOSED AT THE ONE WRITER. A founding reads this record twice — once at the machine
     // preflight and once when the brief is built — and between those two reads it awaits a slot
     // open, a boot grace and a readiness wait, several seconds in which a profile write would land.
@@ -28025,7 +28050,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
       audit("program_profile", undefined, `${program.id} kind=${program.profile.kind}`);
     }
     await saveStateNow();
-    return json({ ok: true, program: publicProgram(program) });
+    return json({ ok: true, id: program.id, profile: program.profile ?? null });
   }
   // THE PROMOTION DOOR — the only writer of `program.promotion`, and its own route rather than a
   // fifth verb on the action router because it is the only one of them that reads a BODY carrying a
@@ -28058,7 +28083,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
       delete program.promotion;
       if (had) audit("program_promotion", undefined, `${program.id} revoked`);
       await saveStateNow();
-      return json({ ok: true, program: publicProgram(program) });
+      return json({ ok: true, id: program.id, promotion: program.promotion ?? null });
     }
     const raw = body.policy;
     if (!raw || typeof raw !== "object" || Array.isArray(raw))
@@ -28073,7 +28098,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     program.promotion = { v: 1, selfLand: fields.selfLand as PromotionSelfLand, confirmedAt: Date.now() };
     audit("program_promotion", undefined, `${program.id} selfLand=${program.promotion.selfLand}`);
     await saveStateNow();
-    return json({ ok: true, program: publicProgram(program) });
+    return json({ ok: true, id: program.id, promotion: program.promotion ?? null });
   }
   // THE STUDIO BINDING DOOR — the only writer of `program.studio`, and its own route for the same
   // reason the profile door is: it reads a BODY carrying an owner decision. Two acts, one door:
@@ -28131,7 +28156,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     // and the way to make one is to release and bind again.
     const currentBinding = program.studio;
     if (desired === null ? currentBinding === undefined : currentBinding?.id === desired.id)
-      return json({ ok: true, program: publicProgram(program) });
+      return json({ ok: true, id: program.id, studio: program.studio ?? null });
     if (programBootstrapInflight.has(program.id) || program.founding)
       return json({ error: "a Program-MAIN founding for this program is in flight — its brief reads this binding, so it cannot change underneath it. Retry once the founding has answered" }, 409);
     if (program.status === "complete")
@@ -28149,7 +28174,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
       audit("program_studio", undefined, `${program.id} studio=${desired.id} rev=${desired.rev}`);
     }
     await saveStateNow();
-    return json({ ok: true, program: publicProgram(program) });
+    return json({ ok: true, id: program.id, studio: program.studio ?? null });
   }
   // THE PROGRAM-SCOPED DISPATCH DOOR — the only writer of `program.dispatch`, and its own route for
   // the reason the three doors above it are: it reads a BODY carrying an owner decision. Two acts,
@@ -28193,7 +28218,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
       delete program.dispatch;
       if (had) audit("program_dispatch", undefined, `${program.id} revoked`);
       await saveStateNow();
-      return json({ ok: true, program: publicProgram(program) });
+      return json({ ok: true, id: program.id, dispatch: program.dispatch ?? null });
     }
     const raw = body.dispatch;
     if (!raw || typeof raw !== "object" || Array.isArray(raw))
@@ -28213,7 +28238,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     program.dispatch = { v: 1, on: fields.on, maxLanes: fields.maxLanes, confirmedAt: Date.now() };
     audit("program_dispatch", undefined, `${program.id} on=${program.dispatch.on} maxLanes=${program.dispatch.maxLanes}`);
     await saveStateNow();
-    return json({ ok: true, program: publicProgram(program) });
+    return json({ ok: true, id: program.id, dispatch: program.dispatch ?? null });
   }
   // THE RELEASE POLICY DOOR (Schnitt 3) — the only writer of `program.release`, its own route for the
   // dispatch door's reason: it reads a BODY carrying an owner decision. `{"release": {"v":1,"policy":
@@ -28240,7 +28265,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
       delete program.release;
       if (had) audit("program_release", undefined, `${program.id} cleared`);
       await saveStateNow();
-      return json({ ok: true, program: publicProgram(program) });
+      return json({ ok: true, id: program.id, release: program.release ?? null });
     }
     const raw = body.release;
     if (!raw || typeof raw !== "object" || Array.isArray(raw))
@@ -28255,7 +28280,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     program.release = { v: 1, policy: fields.policy as ProgramReleasePolicy, confirmedAt: Date.now() };
     audit("program_release", undefined, `${program.id} policy=${program.release.policy}`);
     await saveStateNow();
-    return json({ ok: true, program: publicProgram(program) });
+    return json({ ok: true, id: program.id, release: program.release ?? null });
   }
   // THE COLLECTIVE RELEASE DOOR (Freigabe-Schnitt B) — GET previews what `card-valid` would release in
   // this program, POST releases exactly the named ids against that preview's stamp. Rules at
@@ -28295,7 +28320,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
       // is a retry, not a second grant.
       if (!sameProgramContent(contentWithoutWish(programContent(program)), contentWithoutWish(valid.content)))
         return json({ error: "conflicting confirm" }, 409);
-      return json({ ok: true, existing: true, program });
+      return json({ ok: true, existing: true, id: program.id, status: program.status });
     }
     // THE SECOND — AND ONLY OTHER — WRITER OF `program.promotion`, and it is an owner act in
     // exactly the sense the promotion door is: this route is behind the owner gate, the body is
@@ -28324,19 +28349,19 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     program.status = "confirmed";
     program.confirmedAt = Date.now();
     await saveStateNow();
-    return json({ ok: true, program });
+    return json({ ok: true, id: program.id, status: program.status, promotion: program.promotion ?? null });
   }
   if (action[2] === "activate") {
-    if (program.status === "active") return json({ ok: true, existing: true, program: publicProgram(program) });
+    if (program.status === "active") return json({ ok: true, existing: true, id: program.id, status: program.status });
     if (program.status !== "confirmed")
       return json({ error: `illegal transition: cannot activate a ${program.status} program` }, 409);
     program.status = "active";
     program.activatedAt = Date.now();
     await saveStateNow();
-    return json({ ok: true, program });
+    return json({ ok: true, id: program.id, status: program.status });
   }
   if (action[2] === "complete") {
-    if (program.status === "complete") return json({ ok: true, existing: true, program });
+    if (program.status === "complete") return json({ ok: true, existing: true, id: program.id, status: program.status });
     if (program.status !== "active")
       return json({ error: `illegal transition: cannot complete a ${program.status} program` }, 409);
     const mainOccupant = program.main ? slotFrom(program.main.slot) : null;
@@ -28348,7 +28373,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     program.status = "complete";
     program.completedAt = Date.now();
     await saveStateNow();
-    return json({ ok: true, program });
+    return json({ ok: true, id: program.id, status: program.status });
   }
   if (program.status !== "proposed")
     return json({ error: `illegal transition: cannot discard a ${program.status} program` }, 409);

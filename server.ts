@@ -5725,6 +5725,30 @@ function detachSlotTasks(slotId: number, note: string): void {
   }
 }
 
+// What a lane closed WITHOUT a land can truthfully say about its work. The absence of a
+// recordLand is no statement about the branch: a host with FLEET_LANDS='0' closes EVERY lane this
+// way, and on 2026-09-11 three rows there read "requeue if still wanted" while
+// `git rev-list --count main..<branch>` was 0 for each (docs/messungen/2026-09-11-host-aufteilung-entscheid.md
+// §7). `git cherry` answers per commit, so a hand merge (ancestry) and a hand rebase/cherry-pick
+// (patch-id) both read as present on base. A probe that cannot run says UNKNOWN — never the
+// invitation to requeue. Short on purpose: it is a queue note.
+const LANE_CLOSED_UNKNOWN = "lane closed without a land record — whether its work reached base is UNKNOWN; check before requeuing";
+async function laneClosedNote(wt: LaneRef, base: string | null): Promise<string> {
+  if (!base) return LANE_CLOSED_UNKNOWN;
+  const cherry = await gitRead(wt.repo, "cherry", base, wt.branch);
+  if (cherry.code !== 0) return LANE_CLOSED_UNKNOWN;
+  const missing = cherry.out.split("\n").filter((l) => l.startsWith("+")).length;
+  if (missing > 0) return `lane closed before landing — ${missing} commit(s) of ${wt.branch} not on ${base}; review and requeue if still wanted`;
+  // nothing is missing — which is also true of a lane that never committed. Only the fork sha
+  // tells the two apart; without it the note says both, not a guess.
+  if (!wt.baseSha) return `lane closed without a land record — nothing on ${wt.branch} is missing from ${base} (landed outside Fleet, or never committed); check before requeuing`;
+  const own = await gitRead(wt.repo, "rev-list", "--count", `${wt.baseSha}..${wt.branch}`);
+  if (own.code !== 0 || !/^\d+$/.test(own.out)) return LANE_CLOSED_UNKNOWN;
+  return own.out === "0"
+    ? "lane closed before landing with no commits — review and requeue if still wanted"
+    : `lane closed without a land record, but all its commits are on ${base} — landed outside Fleet; review and mark done`;
+}
+
 // THE N:1 LANE→ROW EDGE, and it is `t.slot` — the field landLane and detachSlotTasks above have
 // keyed off since long before the wave button, promoted from an incidental pointer to the contract
 // by it (docs/queue-wellen-2026-09-06.md §5 S3). That is why one land already marks every row of a
@@ -5775,6 +5799,12 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
     throw new Error(`slot ${streamOccupant.slot} occupant changed before teardown publication`);
   if (absence.presence !== "absent")
     throw new Error(`could not prove tmux session ${sess(streamOccupant.slot)} absent: ${observed.detail}`);
+  // probed while s.worktree still names the branch, and only when a row will carry the answer
+  const closedNote = s.worktree && tasks.some((t) => t.slot === s.id && t.status === "sent")
+    ? await laneClosedNote(s.worktree, await laneBaseRef(s))
+    : LANE_CLOSED_UNKNOWN;
+  if (!sameSlotStreamOccupant(s, streamOccupant))
+    throw new Error(`slot ${streamOccupant.slot} occupant changed during the closed-lane probe`);
 
   rmSync(occupantStreamPath(streamOccupant), { force: true });
   rmSync(occupantStreamStagePath(streamOccupant), { force: true });
@@ -5808,7 +5838,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.originId = null;
   s.programId = null;
   s.releasedBy = null;
-  detachSlotTasks(s.id, "lane closed before landing — review and requeue if still wanted");
+  detachSlotTasks(s.id, closedNote);
   for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
   shares = shares.filter((x) => x.slot !== s.id);
   autos = autos.filter((x) => x.slot !== s.id);

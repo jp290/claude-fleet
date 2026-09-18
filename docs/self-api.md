@@ -1208,7 +1208,11 @@ falsch). Für beide ist Abbrechen die falsche Antwort und Mitmachen auch.
 - **`queued`, nicht `pending`, und anders als bei einem ABBRUCH.** Diese Zeilen WAREN freigegeben;
   die Lane behauptet nur, dass sie hier nicht hingehören, nicht dass sie neu zu beurteilen wären.
   Ein Lane-Abbruch (`detachSlotTasks`) behält seine eigene Antwort — `pending`, zurück zum Owner —
-  weil dort niemand für die Zeilen spricht.
+  weil dort niemand für die Zeilen spricht. Die Notiz dieser Rückgabe misst den Branch
+  (`server.ts#laneClosedNote`, `git cherry <base> <branch>`), statt aus einem fehlenden
+  `recordLand` auf „requeue if still wanted" zu schließen: liegen alle Commits schon auf der Basis
+  (Hand-Merge, Folger mit `FLEET_LANDS='0'`), sagt sie das; kann die Probe nicht laufen, sagt sie
+  UNBEKANNT.
 - **`reason` ist Pflicht** (max. 200 Zeichen, die Länge der Queue-note, in die er wandert). Eine
   Zeile, die ohne Grund zurückkommt, ist von einer nicht zu unterscheiden, zu der die Lane nicht
   gekommen ist — und würde auf derselben Fläche neu gebündelt, die gerade nicht gereicht hat.

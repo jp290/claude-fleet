@@ -10396,9 +10396,15 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // the text orders it after — each refusal names which of the three it hit and the way out.
   const cardRefusal = releaseCardRefusal(t);
   if (cardRefusal) return json({ error: `a release needs a valid card — ${cardRefusal}` }, 409);
+  // E4 · A GROUP RELEASE COSTS ITS n VARIANTS, not one row (4b02bd09). The bracket itself is
+  // excluded from the count on purpose (it is not a start), and the pending variants it would
+  // release with itself are not in the count either — they are still `pending`. Counting them
+  // BEFORE the release is what keeps the deckel honest for exactly the row whose release
+  // multiplies: waving a group of 2 through one free place starts two lanes the cap never counted.
+  const groupVariants = t.variants ? variantsOfGroup(t).filter((v) => v.status === "pending").length : 0;
   const openReleased = tasks.filter((x) => x.programId === program.id && x.status === "queued" && !x.variants).length;
-  if (programReleasePolicy(t) === "manual" && openReleased >= PROGRAM_MAX_RELEASED)
-    return json({ error: `program release cap reached (${openReleased}/${PROGRAM_MAX_RELEASED} released rows not yet started) — let the tick start one first` }, 409);
+  if (programReleasePolicy(t) === "manual" && openReleased + groupVariants > PROGRAM_MAX_RELEASED)
+    return json({ error: `program release cap reached (${openReleased + groupVariants}/${PROGRAM_MAX_RELEASED}${groupVariants ? ` — ${groupVariants} of them are the pending variants of group ${t.id}` : ""}) — let the tick start one first` }, 409);
   // (5) THROUGH THE HELPER, never a bare assignment: releaseTask is where `by` cannot be forgotten,
   // and a machine release that recorded nothing would be indistinguishable from the attended lands
   // already on the trail.
@@ -13418,7 +13424,11 @@ function variantReserveHolds(row: Task, repo: string): VariantReservation | null
   if (!r) return null;
   if (Date.now() - r.since >= VARIANT_RESERVE_MS) return null;
   const group = tasks.find((t) => t.id === r.groupId);
-  if (!group || variantsOfGroup(group).some((v) => v.status !== "pending" && v.status !== "queued")) {
+  // A HOLD moves a row without touching its status — a held row stays `queued` — so the status read
+  // below is not enough: the claim dies with a hold on the group row or on any variant too. The
+  // comment above promised "decided, deleted or held"; comment and code say the same thing now
+  // (f733e80d), and the wave order never re-reaches a held group to let the writer clear it.
+  if (!group || group.hold || variantsOfGroup(group).some((v) => v.hold || (v.status !== "pending" && v.status !== "queued"))) {
     variantReserveRelease(r.groupId);
     return null;
   }
@@ -13451,6 +13461,10 @@ function variantReserveHolds(row: Task, repo: string): VariantReservation | null
 type VariantGroupStart =
   | { started: true; slots: number[]; tails: Promise<void>[]; partial: string | null }
   | { started: false; why: string; stop?: true; claim?: VariantReserveClaim };
+// TEST LATCH, the FLEET_TEST_ convention: names the 1-based variantIndex whose dispatch this start
+// forces to fail, so an e2e fixture can drive a PARTIAL group start (and through it the rollback)
+// without a real harness failure. Read once at boot like every latch.
+const VARIANT_SPAWN_FAIL_LATCH = process.env.FLEET_TEST_VARIANT_SPAWN_FAIL_LATCH ?? null;
 async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantGroupStart> {
   const group = row.variants ? row : variantGroupOf(row);
   const rows = group ? variantsOfGroup(group) : [row];
@@ -13534,26 +13548,55 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
   }
   // all n slots reserved before the first spawn awaits, so no other door takes one mid-group
   for (const s of free) laneSpawn.add(s.id);
-  const started: { slot: number; tail: Promise<void> }[] = [];
+  const started: { row: Task; slot: number; tail: Promise<void> }[] = [];
   let partial: string | null = null;
+  // the pre-dispatch status of every row, so a rollback can put each started variant back EXACTLY
+  // where it was: a tick start comes out of `queued`, an attended ▸ start may come out of `pending`
+  // — only the caller's own act knows which.
+  const was = new Map(rows.map((r) => [r.id, r.status] as const));
   try {
     for (const [i, r] of rows.entries()) {
-      const d = await dispatchTask(r, free[i], ownerAct, false, taskSpawnOf(r), null, base);
+      const d = VARIANT_SPAWN_FAIL_LATCH === String(r.variantIndex)
+        ? { ok: false as const, error: `forced spawn failure (FLEET_TEST_VARIANT_SPAWN_FAIL_LATCH=${VARIANT_SPAWN_FAIL_LATCH})` }
+        : await dispatchTask(r, free[i], ownerAct, false, taskSpawnOf(r), null, base);
       if (!d.ok) { partial = `variant ${r.variantIndex}/${n} failed to start: ${d.error}`; break; }
       r.note = `${r.note ?? ""} · variant ${r.variantIndex}/${n} of ${group.id} @${base.slice(0, 8)}`.slice(0, 300);
-      started.push({ slot: d.slot, tail: d.tail });
+      started.push({ row: r, slot: d.slot, tail: d.tail });
     }
   } finally {
     for (const s of free) if (!started.some((x) => x.slot === s.id)) laneSpawn.delete(s.id);
   }
   if (!started.length) return { started: false, why: partial ?? "no variant started" };
-  group.note = partial
-    ? `variant group started PARTIALLY (${started.length}/${n}) — ${partial}`.slice(0, 300)
-    : `${n} variants running on slots ${started.map((x) => x.slot).join(", ")} @${base.slice(0, 8)}`;
+  if (partial) {
+    // GANZ ODER GAR NICHT, the second half (4b02bd09): a group whose k-th variant failed to spawn
+    // takes the variants that DID start back — killSlot keeps the tree by design, so the worktree
+    // and branch each started variant forked are removed too, and the rows return to the status
+    // they were filed in. The group reports started:false with the reason: afterwards 0 variants
+    // run and the group is startable again, because a PARTIAL group is not a comparison — it is
+    // n−1 lanes burning on a decision nobody will ever be asked to make.
+    void Promise.all(started.map((x) => x.tail)).catch(() => {}); // briefs into dying panes
+    for (const { row, slot } of started) {
+      const s = slotFrom(slot);
+      if (!s) continue;
+      const ref = s.worktree;
+      await killSlot(s, "owner");
+      if (ref) await removeWorktreeSafe(ref.repo, s.cwd ?? "", ref.branch, ref.form ?? "worktree");
+      laneSpawn.delete(slot);
+      row.status = was.get(row.id) ?? "queued";
+      row.slot = null;
+      row.note = `variant start rolled back — ${partial}`.slice(0, 300);
+    }
+    group.note = `variant group start rolled back (${started.length}/${n} had started) — ${partial}`.slice(0, 300);
+    audit("variant_group_start", undefined,
+      `${group.id} n=${n} started=0 rollback=${started.length} why=${partial} by=${ownerAct ? "owner" : "tick"}`);
+    saveState();
+    return { started: false, why: partial };
+  }
+  group.note = `${n} variants running on slots ${started.map((x) => x.slot).join(", ")} @${base.slice(0, 8)}`;
   audit("variant_group_start", started[0].slot,
     `${group.id} n=${n} started=${started.length} base=${base.slice(0, 12)} slots=${started.map((x) => x.slot).join(",")} by=${ownerAct ? "owner" : "tick"}`);
   saveState();
-  return { started: true, slots: started.map((x) => x.slot), tails: started.map((x) => x.tail), partial };
+  return { started: true, slots: started.map((x) => x.slot), tails: started.map((x) => x.tail), partial: null };
 }
 
 async function tickDispatch(): Promise<void> {

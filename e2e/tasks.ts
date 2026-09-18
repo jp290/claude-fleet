@@ -2493,7 +2493,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // The field is REPO2: a scratch repo with no lane of its own, so every lane counted here is one
   // this block opened. The persistence lane lives in a third repo and is never touched. ---
   {
-    type RRow = { id: string; status: string; note?: string | null; slot?: number | null; variantOf?: string };
+    type RRow = { id: string; status: string; note?: string | null; slot?: number | null; variantOf?: string; programId?: string | null };
     type RSlot = { id: number; cwd: string | null; worktree: { repo: string } | null };
     const rSess = async (): Promise<{ slots: RSlot[]; tasks: RRow[]; dispatch: { maxLanes: number } }> =>
       (await (await get("/api/sessions")).json()) as { slots: RSlot[]; tasks: RRow[]; dispatch: { maxLanes: number } };
@@ -2607,6 +2607,124 @@ export async function run(ctx: Ctx): Promise<void> {
       rFreed?.status === "sent" && typeof rFreed?.slot === "number"
       && (await rVars(rGroup3)).every((t) => t.status === "queued"),
       JSON.stringify({ single: rFreed, variants: await rVars(rGroup3) }));
+
+    // (4) · E4 4b02bd09 · THE RELEASE DECKEL COUNTS A GROUP'S n VARIANTS (server.ts#releaseTaskForMain).
+    // A bound MAIN releases rows of its OWN program; under `manual` — every program without an
+    // explicit release policy — the deckel applies. Deckel 5 (the default), four single rows
+    // released, then the group of 2: the release must 409 naming 6/5, and NOTHING may move — the
+    // group row and both variants stay pending. Before the fix the count excluded group brackets
+    // AND their still-pending variants, so the same release answered ok and the tick started two
+    // lanes the deckel never counted. The dispatcher stays OFF through (4): a released row is tick
+    // work, and these rows must sit queued, not run.
+    // The bound MAIN both probes answer to: one active program, one bootstrap-main into REPO2 —
+    // whose preflight needs a tracked root AGENTS.md, committed here if the scratch repo has none.
+    // The bootstrap slot COUNTS as a REPO2 lane, which is why (5)'s cap arithmetic counts it.
+    await restartSrv({ FLEET_DISPATCH_MAX_LANES: "3" });
+    await rClean();
+    if (!existsSync(`${REPO2}/AGENTS.md`)) {
+      writeFileSync(`${REPO2}/AGENTS.md`, "# repo2\n\nscratch dispatch target for the e2e variant probes.\n");
+      await Bun.$`git -C ${REPO2} add AGENTS.md`.nothrow().quiet();
+      await Bun.$`git -C ${REPO2} -c user.name=e2e -c user.email=e2e@localhost commit -m AGENTS.md`.nothrow().quiet();
+    }
+    const selfTokenOf = async (slot: number): Promise<string> => {
+      let seen = "";
+      for (let i = 0; i < 60 && !/^[0-9a-f]{32}$/.test(seen); i++) {
+        try {
+          seen = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, { selfToken?: string }> })
+            .slots?.[String(slot)]?.selfToken ?? "";
+        } catch { /* mid-write */ }
+        if (!/^[0-9a-f]{32}$/.test(seen)) await Bun.sleep(50);
+      }
+      return seen;
+    };
+    const rProg = ((await (await post("/api/programs", {
+      title: "v-res deckel probe",
+      intent: "Probe: the release deckel counts a variant group's n variants against PROGRAM_MAX_RELEASED.",
+      successCriterion: "Releasing a group of 2 with 4 rows already released is a 409 naming 6/5.",
+      nonGoals: ["No dispatch during (4)", "No lanes beyond the bound MAIN and one filler"],
+      decisions: ["The program carries no release policy, so the manual deckel applies"],
+      evidence: ["docs/queue-analyst.md"],
+      openQuestions: [],
+    })).json()) as { program?: { id: string } }).program?.id ?? "";
+    const rSlotsBefore = new Set((await rSess()).slots.map((s) => s.id));
+    const rBoot = await post(`/api/programs/${rProg}/bootstrap-main`, { cwd: REPO2 });
+    const rMainSlot = (await rSess()).slots.find((s) => !rSlotsBefore.has(s.id) && s.cwd)?.id;
+    const rMainTok = rMainSlot !== undefined ? await selfTokenOf(rMainSlot) : "";
+    check("(v-res)(4) fixture: the probe program is active with a bound MAIN in REPO2 holding a self token",
+      rBoot.status === 200 && typeof rMainSlot === "number" && /^[0-9a-f]{32}$/.test(rMainTok),
+      JSON.stringify({ boot: rBoot.status, mainSlot: rMainSlot ?? null, tok: rMainTok.length }));
+    const rSelfPost = async (path: string, body: unknown): Promise<{ status: number; body: Record<string, unknown> }> => {
+      const res = await fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": rMainTok }, body: JSON.stringify(body) });
+      let parsed: Record<string, unknown> = {};
+      try { parsed = (await res.json()) as Record<string, unknown>; } catch { /* non-json */ }
+      return { status: res.status, body: parsed };
+    };
+    const rCardRow = async (text: string, variants?: unknown): Promise<string> => {
+      const j = (await (await post("/api/tasks", {
+        text: `${text} The row's surface is AGENTS.md.`, repo: REPO2, programId: rProg, variants,
+        card: { ziel: "probe row — its deckel cost is the point, nothing else",
+          surface: { files: ["AGENTS.md"], symbols: [] },
+          done: "AGENTS.md is the tracked file this row's card names", verify: "bun test", verboten: ["nothing"] } },
+      )).json()) as { task?: { id: string } };
+      return j.task?.id ?? "";
+    };
+    const rSingles: string[] = [];
+    for (let i = 0; i < 4; i++)
+      rSingles.push(await rCardRow(`(v-res)(4) deckel filler ${i + 1} of 4 — released by the MAIN before the group arrives.`));
+    const rGroup4 = await rCardRow("(v-res)(4) the group of two — its release must cost 2 against the deckel.", rVariantChoices);
+    const rGroupReleaseTry = rSingles.every((x) => /^[0-9a-f]{6,}$/.test(x)) && /^[0-9a-f]{6,}$/.test(rGroup4)
+      ? await rSelfPost(`/api/self/tasks/${rGroup4}/release`, {}) : { status: -1, body: {} as Record<string, unknown> };
+    check("(v-res)(4) the group release is a 409 that names the counted sum: 4 released + 2 variants = 6/5",
+      rGroupReleaseTry.status === 409 && String(rGroupReleaseTry.body.error ?? "").includes("6/5"),
+      JSON.stringify({ status: rGroupReleaseTry.status, error: rGroupReleaseTry.body.error ?? null }));
+    const rAfter4 = await rSess();
+    check("(v-res)(4) the refusal moved nothing: the four fillers are still pending, the group and both variants are still pending",
+      rAfter4.tasks.filter((t) => t.programId === rProg).every((t) => t.status === "pending"),
+      JSON.stringify({ rows: rAfter4.tasks.filter((t) => t.programId === rProg).map((t) => `${t.id}:${t.status}`) }));
+    const rSingleReleases: number[] = [];
+    for (const id of rSingles) rSingleReleases.push((await rSelfPost(`/api/self/tasks/${id}/release`, {})).status);
+    check("(v-res)(4) control: the same door releases each single row — the deckel counts them one by one (0..3 against 5)",
+      rSingleReleases.every((s) => s === 200),
+      JSON.stringify({ statuses: rSingleReleases }));
+
+    // (5) · f733e80d · A HELD GROUP'S CLAIM FALLS (server.ts#variantReserveHolds). The park from (1)
+    // must not survive a hold on the GROUP row: a hold moves a row without touching its status, and
+    // the wave order never re-reaches a held group through a released variant, so the writer
+    // (variantReserveSet) cannot be counted on to clear it — the claim then holds the next lane for
+    // a group that structurally cannot start. The reader kills it: the single row behind the held
+    // group starts IMMEDIATELY. FLEET_VARIANT_RESERVE_MS stays at its 60 s default so an expiry
+    // success could never pass for a hold success — this sub-block runs in well under one span.
+    for (const id of rSingles) await post(`/api/tasks/${id}/unqueue`, {});
+    const rGroupRelease5 = await rSelfPost(`/api/self/tasks/${rGroup4}/release`, {});
+    const rFill5 = (await (await post("/api/lanes", { repo: REPO2 })).json()) as { slot?: number };
+    const rSingle5 = await rFileRow("(v-res)(5) single row behind a HELD group — the held claim must not stop it");
+    check("(v-res)(5) fixture: the group released clean (0+2 against 5), one filler lane in REPO2, the single row filed",
+      rGroupRelease5.status === 200 && typeof rFill5.slot === "number" && /^[0-9a-f]{6,}$/.test(rSingle5)
+      && (await rLanes()) === 2,
+      JSON.stringify({ release: rGroupRelease5.status, filler: rFill5.slot ?? null, single: rSingle5, lanes: await rLanes() }));
+    await post("/api/dispatch", { on: true });
+    const rHeld5 = await rTill(() => rRow(rSingle5), (t) => (t?.note ?? "").startsWith("waiting: the next lane is reserved"));
+    check("(v-res)(5) fixture: the claim really stands — the single row carries the group's reserve sentence",
+      rHeld5?.status === "queued" && (rHeld5?.note ?? "").includes(rGroup4),
+      JSON.stringify({ status: rHeld5?.status, note: rHeld5?.note }));
+    const rHold5 = await rSelfPost(`/api/self/tasks/${rGroup4}/hold`, { grund: "probe: the claim must fall with its group" });
+    const rFreed5 = await rTill(() => rRow(rSingle5), (t) => t?.status === "sent", 40);
+    check("(v-res)(5) the held group's claim falls: the single row behind it starts immediately, not after the reserve span",
+      rHold5.status === 200 && rFreed5?.status === "sent" && typeof rFreed5?.slot === "number",
+      JSON.stringify({ hold: rHold5.status, body: rHold5.body, single: rFreed5 }));
+    check("(v-res)(5) the group itself never started: both variants are still queued under the hold",
+      (await rVars(rGroup4)).every((t) => t.status === "queued"),
+      JSON.stringify({ variants: (await rVars(rGroup4)).map((t) => t.status) }));
+
+    // cleanup — the MAIN and the filler die by id (a bootstrap MAIN carries no worktree, so the
+    // shared worktree sweep below would miss it), the rows leave the queue, the group and its
+    // variants and the fillers are deleted
+    await post("/api/dispatch", { on: false });
+    if (typeof rMainSlot === "number") await post(`/api/slots/${rMainSlot}/kill`, {});
+    if (typeof rFill5.slot === "number") await post(`/api/slots/${rFill5.slot}/kill`, {});
+    await Bun.sleep(600);
+    for (const id of rSingles) await post(`/api/tasks/${id}/delete`, {});
+    await rDrop(rGroup4);
 
     // cleanup — dispatcher off first, then the lanes and the rows this block minted
     await post("/api/dispatch", { on: false });

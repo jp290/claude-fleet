@@ -687,6 +687,11 @@
      fold budget in e2e/tasks.ts is READ OUT of this file instead of estimated: at 1440x900 the
      shell is min(880px, 92vh) = 828px high and the head has to fit the detail pane's first
      screen. Change a number here and that check recomputes; delete one and it fails as itself. */
+  /* the detail's title block: the row's own words first, its chips, its id */
+  .qdtitle { padding-bottom: 10px; margin-bottom: 8px; border-bottom: 1px solid var(--line-soft); }
+  .qdtitle-t { font-size: 15px; line-height: 21px; color: #e6e6e6; font-weight: 600; }
+  .qdtitle .qchips { display: flex; flex-wrap: wrap; gap: 3px 4px; margin-top: 6px; align-items: center; }
+  .qdtitle-id { font-size: 10px; color: var(--faint); margin-left: 4px; }
   .qdhead-status { line-height: 18px; }
   .qdhead-facts { margin-top: 6px; }
   .qdhead-facts .occhip { line-height: 15px; }
@@ -764,6 +769,12 @@
   .qbundlesrc.go { cursor: pointer; }
   .qbundlesrc.go:hover { color: var(--text); }
   .qbundleid { flex: none; color: var(--accent); }
+  .qbundleid.go { cursor: pointer; margin-right: 10px; }
+  .qcardrow { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; padding: 3px 0; font-size: 12px; }
+  .qcardk { color: var(--faint); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; padding-top: 1px; }
+  .qcardv { color: #d4d4d4; line-height: 17px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .qcardmore { margin-top: 4px; font-size: 11.5px; color: var(--dim); }
+  .qcardmore summary { cursor: pointer; }
   .qattach { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
   .qattach select { flex: 1; min-width: 0; }
   .shellsec.qfoldhead:hover .shellsect { color: #9aa0a6; }

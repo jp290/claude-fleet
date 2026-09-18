@@ -6899,6 +6899,12 @@ let qNotesOpen = false;           // the loose-notes group of Work begins folded
 let qRepo: string | null = null;
 let qProg: string | null = null;  // a program id, or Q_NO_PROGRAM for the rows that name none
 let qScopeBar: HTMLElement | null = null;
+// L2 + L3 (owner, 2026-09-19: "L2 mit einer Option für L3"): the scope is a TREE column left of
+// the list — all, then each repo, then the programs of the chosen one — or, switched, ONE picker
+// "repo / program" in the toolbar line. Per-device pref; a phone always gets the line.
+let qTree: HTMLElement | null = null;
+let qTreeOn = localStorage.getItem("fleet.queue.scope") !== "line";
+let qLayoutBtn: HTMLButtonElement | null = null;
 const qSel = new Set<string>();   // rows ticked for a bundle; cleared on open, on scope change and after an act
 let qBundleBusy = false;
 // BUNDLE MODE (owner, 2026-09-18: "should mark the element", "by a button"): one toolbar button
@@ -9419,13 +9425,13 @@ function renderQueueDetail() {
   // THE TITLE FIRST (owner, 2026-09-18: "wichtigstes zuerst"): what this row IS, in its own words,
   // with the same chips its list row carries — minus program, which the head's facts name below.
   const summary = qTaskSummary(t, qTaskText(t.id), Date.now(), programsList);
-  // D2 (owner, 2026-09-19): a READING column and a RAIL beside it. What is read — title, card,
-  // discussion, texts — runs down the left; status, the one action, the few options and where the
-  // row lives sit in the rail, which keeps its place while the column scrolls.
+  // D2 (owner, 2026-09-19): a READING column and a RAIL beside it. What is read — card,
+  // discussion, texts — runs down the left under the title; status, the one action, the few options
+  // and where the row lives sit in the rail, which keeps its place while the column scrolls. The
+  // title is a node of its own so a phone can stack title → rail → column.
   const d2 = el("div", "qd2");
   const read = el("div", "qdread");
   const rail = el("div", "qdrail");
-  d2.append(read, rail);
   shell.detail.appendChild(d2);
   const titleBox = el("div", "qdtitle");
   titleBox.appendChild(el("div", "qdtitle-t", summary.title));
@@ -9437,7 +9443,7 @@ function renderQueueDetail() {
   }
   titleChips.appendChild(el("span", "qdtitle-id", t.id));
   titleBox.appendChild(titleChips);
-  read.appendChild(titleBox);
+  d2.append(titleBox, read, rail);
   // --- DETAIL HEAD (paint): the plan from qHeadPlan, painted at the TOP OF THE RAIL — status,
   // the lifecycle rail, and the ONE main action with the single line that says what it does.
   // Program and target repo are built here and shown under "place", below the acts. Nothing else
@@ -10184,60 +10190,97 @@ const qInRepo = (t: TaskInfo): boolean => !qRepo || (qTaskRepo(t) ?? Q_NO_REPO) 
 const qInScope = (t: TaskInfo): boolean => qInRepo(t)
   && (!qProg || (qProg === Q_NO_PROGRAM ? !t.programId : t.programId === qProg));
 
-// The scope: a segmented project switch, and — in Work — a program picker. Counts are OPEN rows,
-// so a project says how much is on its desk. Both live in the toolbar line, not rows of their own.
+// The scope, in one of two shapes over the same two variables (qRepo, qProg). Counts are OPEN rows,
+// so a project says how much is on its desk. Programs are offered in Work only, and — in the tree —
+// under the chosen repo only, because a program belongs to the repos its own tasks target.
 function paintQueueScope() {
   const bar = qScopeBar;
-  if (!bar) return;
+  const tree = qTree;
+  if (!bar || !tree) return;
   bar.replaceChildren();
+  tree.replaceChildren();
+  const asTree = qTreeOn && !MOBILE_MQ.matches;
+  tree.hidden = !asTree;
+  if (qLayoutBtn) {
+    qLayoutBtn.textContent = asTree ? "⇤ line" : "⇥ tree";
+    qLayoutBtn.title = asTree ? "fold the project tree into one picker in this line"
+      : "show projects and their programs as a tree beside the list";
+  }
   const open = tasksList.filter((t) => !qClosed(t));
   const repos = new Map<string, number>();
   for (const t of open) {
     const r = qTaskRepo(t) ?? Q_NO_REPO;
     repos.set(r, (repos.get(r) ?? 0) + 1);
   }
+  const repoList = [...repos].sort((a, b) => b[1] - a[1]);
+  const repoLabel = (r: string) => r === Q_NO_REPO ? "no repo" : baseName(r);
+  const repoTitle = (r: string) => r === Q_NO_REPO
+    ? "rows naming no target repo while the dispatcher has none either — where they would run is unknown" : r;
+  const progsOf = (repo: string): [string, number][] => {
+    const progs = new Map<string, number>();
+    for (const t of open) {
+      if ((qTaskRepo(t) ?? Q_NO_REPO) !== repo) continue;
+      const k = t.programId ?? Q_NO_PROGRAM;
+      progs.set(k, (progs.get(k) ?? 0) + 1);
+    }
+    return [...progs].sort((a, b) => b[1] - a[1]);
+  };
+  const progLabel = (k: string) => {
+    const p = programsList.find((x) => x.id === k);
+    return k === Q_NO_PROGRAM ? "no program" : p ? qProgramShort(p.title) : k.slice(0, 8);
+  };
   const choose = (repo: string | null, prog: string | null) => {
     qRepo = repo; qProg = prog; qSel.clear(); qKey = ""; renderQueue();
   };
-  const seg = el("div", "qview qprojects");
-  seg.setAttribute("role", "group");
-  seg.setAttribute("aria-label", "Project");
-  const tab = (label: string, n: number, on: boolean, act: () => void, title: string) => {
-    const b = el("button", on ? "on" : "") as HTMLButtonElement;
-    b.type = "button";
-    b.append(el("span", "", label), el("span", "qtabn", String(n)));
-    b.title = title;
-    b.setAttribute("aria-pressed", String(on));
-    b.onclick = act;
-    seg.appendChild(b);
-  };
-  tab("All", open.length, qRepo === null, () => choose(null, null), "every project");
-  for (const [r, n] of [...repos].sort((a, b) => b[1] - a[1]))
-    tab(r === Q_NO_REPO ? "no repo" : baseName(r), n, qRepo === r, () => choose(r, null), r === Q_NO_REPO
-      ? "rows naming no target repo while the dispatcher has none either — where they would run is unknown" : r);
-  bar.appendChild(seg);
-  if (qView !== "work") return;
-  const inRepo = open.filter(qInRepo);
-  const progs = new Map<string, number>();
-  for (const t of inRepo) {
-    const k = t.programId ?? Q_NO_PROGRAM;
-    progs.set(k, (progs.get(k) ?? 0) + 1);
+  if (asTree) {
+    tree.setAttribute("aria-label", "Project and program");
+    const node = (label: string, n: number, on: boolean, cls: string, act: () => void, title: string) => {
+      const b = el("button", `qtreen ${cls}${on ? " on" : ""}`) as HTMLButtonElement;
+      b.type = "button";
+      b.append(el("span", "qtreel", label), el("span", "qtabn", String(n)));
+      b.title = title;
+      b.setAttribute("aria-pressed", String(on));
+      b.onclick = act;
+      tree.appendChild(b);
+    };
+    node("All", open.length, qRepo === null, "all", () => choose(null, null), "every project");
+    for (const [r, n] of repoList) {
+      const chosen = qRepo === r;
+      node(`${chosen ? "▾" : "▸"} ${repoLabel(r)}`, n, chosen && !qProg, "repo", () => choose(r, null), repoTitle(r));
+      if (!chosen || qView !== "work") continue;
+      const progs = progsOf(r);
+      if (progs.length < 2 && !qProg) continue;
+      for (const [k, pn] of progs)
+        node(progLabel(k), pn, qProg === k, "prog", () => choose(r, k),
+          k === Q_NO_PROGRAM ? "rows of this repo bound to no program" : `program ${k}`);
+    }
+    return;
   }
-  if (progs.size < 2 && !qProg) return;
-  const sel = el("select", "qprogsel") as HTMLSelectElement;
-  sel.setAttribute("aria-label", "Program");
-  const opt = (value: string, label: string) => {
+  // THE LINE: one picker, "repo / program". The value carries both halves, split on the first "\n".
+  const sel = el("select", "qprogsel qscopesel") as HTMLSelectElement;
+  sel.setAttribute("aria-label", "Project and program");
+  const opt = (parent: HTMLElement, repo: string, prog: string, label: string) => {
     const o = el("option", "", label) as HTMLOptionElement;
-    o.value = value;
-    sel.appendChild(o);
+    o.value = `${repo}\n${prog}`;
+    parent.appendChild(o);
   };
-  opt("", `all programs · ${inRepo.length}`);
-  for (const [k, n] of [...progs].sort((a, b) => b[1] - a[1])) {
-    const p = programsList.find((x) => x.id === k);
-    opt(k, `${k === Q_NO_PROGRAM ? "no program" : p ? qProgramShort(p.title) : k.slice(0, 8)} · ${n}`);
+  opt(sel, "", "", `all projects · ${open.length}`);
+  for (const [r, n] of repoList) {
+    const group = el("optgroup", "") as HTMLOptGroupElement;
+    group.label = repoLabel(r);
+    opt(group, r, "", `${repoLabel(r)} · ${n}`);
+    if (qView === "work") {
+      const progs = progsOf(r);
+      if (progs.length > 1 || (qRepo === r && qProg)) for (const [k, pn] of progs)
+        opt(group, r, k, `${repoLabel(r)} / ${progLabel(k)} · ${pn}`);
+    }
+    sel.appendChild(group);
   }
-  sel.value = qProg ?? "";
-  sel.onchange = () => choose(qRepo, sel.value || null);
+  sel.value = `${qRepo ?? ""}\n${qProg ?? ""}`;
+  sel.onchange = () => {
+    const [r, k] = sel.value.split("\n");
+    choose(r || null, k || null);
+  };
   bar.appendChild(sel);
 }
 
@@ -10641,10 +10684,10 @@ function openQueue() {
   const shell = openShell({
     id: "queue",
     title: "Task queue",
-    listWidth: 380,
+    listWidth: 330,
     onSelect: (row) => { if (qRowId.has(row.el)) qSelect(qRowId.get(row.el) ?? null); },
     onClose: () => {
-      qScopeBar = null; qBundleBtn = null; qBundleMode = false;
+      qScopeBar = null; qTree = null; qLayoutBtn = null; qBundleBtn = null; qBundleMode = false;
       qShell = null; qCompose = null; qRepoIn = null; qProgSel = null; qCmBox = null; qCmFor = null;
       qBriefDraft = null; qCriterionDraft = null; qRawAck = null; qWaveAck = null; qRowId = new Map();
       qSpawnPick.clear(); qSpawnUi = null;
@@ -10686,9 +10729,19 @@ function openQueue() {
   for (const item of views) item.button.onclick = () => chooseView(item.id);
   view.append(...views.map((item) => item.button));
   paintView();
-  shell.tools.appendChild(view);
+  // the line reads scope → search → views → bundle → layout; in the tree layout the scope is empty
   qScopeBar = el("div", "qscope");
   shell.tools.appendChild(qScopeBar);
+  qTree = el("nav", "qtree");
+  shell.list.before(qTree);
+  const layoutBtn = el("button", "shrbtn qlayoutbtn") as HTMLButtonElement;
+  layoutBtn.type = "button";
+  layoutBtn.onclick = () => {
+    qTreeOn = !qTreeOn;
+    localStorage.setItem("fleet.queue.scope", qTreeOn ? "tree" : "line");
+    qKey = ""; renderQueue();
+  };
+  qLayoutBtn = layoutBtn;
 
   const search = el("input", "pkfilterin") as HTMLInputElement;
   search.type = "text";
@@ -10697,6 +10750,7 @@ function openQueue() {
   search.setAttribute("aria-label", "Search tasks by text, ID, status, repository or program");
   search.addEventListener("input", () => { qQuery = search.value.trim().toLowerCase(); qKey = ""; renderQueue(); });
   shell.tools.appendChild(search);
+  shell.tools.appendChild(view);
   const bundleBtn = el("button", "shrbtn qbundlebtn", "⧉ Bundle") as HTMLButtonElement;
   bundleBtn.type = "button";
   bundleBtn.onclick = () => {
@@ -10707,6 +10761,7 @@ function openQueue() {
   };
   qBundleBtn = bundleBtn;
   shell.tools.appendChild(bundleBtn);
+  shell.tools.appendChild(layoutBtn);
 
   const drow = el("div", "qdisp");
   if (dispatch.available) {

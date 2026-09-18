@@ -416,6 +416,25 @@ export async function run(ctx: Ctx): Promise<void> {
     /@media \(max-width: 700px\)[\s\S]*?#shell-queue \.qview\s*\{[^}]*flex-basis:\s*100%/.test(taskPageSource)
       && /#shell-queue \.pkfilterin\s*\{[^}]*max-width:\s*none/.test(taskPageSource),
     "queue mobile CSS in public/index.html");
+  // L2 + L3 (owner, 2026-09-19: "L2 mit einer Option für L3"): the scope is a tree column left of
+  // the list, or — switched, and always on a phone — one "repo / program" picker in the line. Both
+  // shapes write the same two variables through one `choose`. Source probes, not a rendered screen.
+  const scopeSource = taskClientSource.slice(taskClientSource.indexOf("function paintQueueScope()"),
+    taskClientSource.indexOf("function renderQueue()"));
+  check("queue scope: a tree column beside the list, or one picker in the line — a per-device pref, a phone always gets the line",
+    /qTree = el\("nav", "qtree"\);\s*shell\.list\.before\(qTree\)/.test(openQueueSource)
+      && /localStorage\.setItem\("fleet\.queue\.scope", qTreeOn \? "tree" : "line"\)/.test(openQueueSource)
+      && scopeSource.includes("const asTree = qTreeOn && !MOBILE_MQ.matches;")
+      && scopeSource.includes("tree.hidden = !asTree;")
+      && /@media \(max-width: 700px\)[\s\S]*?#shell-queue \.qtree, #shell-queue \.qlayoutbtn \{ display: none; \}/.test(taskPageSource),
+    scopeSource.slice(0, 160) || "paintQueueScope missing");
+  check("queue scope NEGATIVE: the tree offers programs only under the CHOSEN repo and only in Work; the line's value carries repo and program together",
+    /if \(!chosen \|\| qView !== "work"\) continue;/.test(scopeSource)
+      && /if \(qView === "work"\) \{\s*const progs = progsOf\(r\);/.test(scopeSource)
+      && (scopeSource.match(/qRepo = /g) ?? []).length === 1
+      && scopeSource.includes('o.value = `${repo}\\n${prog}`;')
+      && scopeSource.includes('const [r, k] = sel.value.split("\\n");'),
+    "paintQueueScope shapes");
 
   // --- TASK DETAIL HEAD (src/client.ts, between "// --- TASK DETAIL HEAD" and its closing
   // marker) — the pane's first screen. What is proven here: the lifecycle station a status maps
@@ -565,7 +584,7 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(railOrder.map((n) => `${n}@${railAt(n)}`)));
     check("task detail rail NEGATIVE: no section of the reading column is built into the rail, and the rail is one node beside it",
       (detailSource.match(/qDetailSection\(rail,/g) ?? []).length === 1
-        && detailSource.includes("d2.append(read, rail)")
+        && detailSource.includes("d2.append(titleBox, read, rail)")
         && (detailSource.match(/shell\.detail\.appendChild\(d2\)/g) ?? []).length === 1,
       String((detailSource.match(/qDetailSection\(rail,/g) ?? []).length));
     check("task detail head render: the head opens no door of its own — no request, no task act inside it",
@@ -588,8 +607,8 @@ export async function run(ctx: Ctx): Promise<void> {
     // Request → Evidence → Details; the acts no longer have a section of their own.
     const sectionOrder = ["Card", "Notes & comments", "Request", "Evidence", "Details"];
     check("task detail: reading column runs title → Card → Notes & comments → Request → Evidence → Details",
-      detailSource.indexOf('read.appendChild(titleBox)') > 0
-        && detailSource.indexOf('read.appendChild(titleBox)') < paintStart
+      detailSource.indexOf('d2.append(titleBox, read, rail)') > 0
+        && detailSource.indexOf('d2.append(titleBox, read, rail)') < paintStart
         && sectionOrder.every((s, i) => sectionAt(s) > 0 && (i === 0 || sectionAt(s) > sectionAt(sectionOrder[i - 1])))
         && !detailSource.includes('qDetailSection(read, "Actions"'),
       JSON.stringify(sectionOrder.map((s) => `${s}@${sectionAt(s)}`)));

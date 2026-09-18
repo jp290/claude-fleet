@@ -9490,7 +9490,13 @@ export async function run(ctx: Ctx): Promise<void> {
       rcLive = (await mSess()).some((x) => x.id === mSlot && !!x.cwd);
       if (!rcLive) await Bun.sleep(250);
     }
-    const rcAfterRes = await rcRelease(rcAfter);
+    // …and even with the slot listed live, previews 3 and 4 answered this release 401 with the state
+    // file's token unchanged: for a moment after the boot no in-memory slot held it. That boot window is
+    // not this check's subject — it is retried for up to ~10 s and the attempts are printed, so a
+    // window that grows stays visible in the detail instead of turning into a different red
+    let rcAttempts = 0;
+    let rcAfterRes = await rcRelease(rcAfter);
+    while (rcAfterRes.status === 401 && ++rcAttempts < 40) { await Bun.sleep(250); rcAfterRes = await rcRelease(rcAfter); }
     interface RcWait { id: string; grund: string; adressat: string; kette: string[] }
     const rcPlan = (await (await get("/api/start-plan")).json()) as StartPlan & { waits?: RcWait[] };
     const rcWave = rcPlan.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(rcAfter));
@@ -9500,7 +9506,7 @@ export async function run(ctx: Ctx): Promise<void> {
         && JSON.stringify(rcWave?.next) === JSON.stringify({ after: rcPred })
         && rcWait?.grund === `wartet auf ${rcPred} (after, nicht gelandet)` && rcWait.adressat === `main:${mMainProgram}`
         && JSON.stringify(rcWait.kette) === JSON.stringify([`row ${rcPred} (after)`]),
-      JSON.stringify({ live: rcLive, tokenSame: rcToken() === mToken, release: rcAfterRes.status, releaseText: rcAfterRes.status === 200 ? "" : await rcAfterRes.text(), next: rcWave?.next ?? null, wait: rcWait ?? null }));
+      JSON.stringify({ live: rcLive, tokenSame: rcToken() === mToken, attempts401: rcAttempts, release: rcAfterRes.status, releaseText: rcAfterRes.status === 200 ? "" : await rcAfterRes.text(), next: rcWave?.next ?? null, wait: rcWait ?? null }));
     for (const id of [rcPred, rcBare, rcNach, rcAfter]) await post(`/api/tasks/${id}/delete`, {});
 
     // --- (stau) THE STALL SENSOR (server.ts#tickStallSensor, queue rows 80f61ed8 → 84888f35). On one

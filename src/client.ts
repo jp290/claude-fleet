@@ -2941,6 +2941,13 @@ async function renderBoard() {
       c.onclick = () => openQueue();
       chips.appendChild(c);
     }
+    if (brief?.worktree) {
+      const branch = brief.worktree.branch;
+      const c = el("button", "bchip link", "Akte") as HTMLButtonElement;
+      c.title = "this lane end to end — its order, its prompts, its commits, its land";
+      c.onclick = () => void openAkte(branch);
+      chips.appendChild(c);
+    }
     if (chips.childElementCount) idsec.appendChild(chips);
     if (boardMenuOpen) {
       const menu = el("div", "bmenu");
@@ -12783,6 +12790,16 @@ async function openActivity(lens: ActLens, at?: { repo: string | null; hash: str
   });
   ocShell = shell;
   await switchLens(lens);
+}
+// the board's head opens the Akte ON its own lane: the lens, then the dossier of that branch —
+// the same two steps a click on the lane's row in the lens takes
+async function openAkte(branch: string) {
+  await openActivity("akte");
+  aktePick = branch;
+  akteBusy = true;
+  renderActivity();
+  void loadAkteDoc(branch);
+  ocShell?.showDetail(true);
 }
 $("outcomebtn").onclick = () => void openActivity("lands");
 

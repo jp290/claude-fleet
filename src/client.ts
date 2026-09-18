@@ -9968,7 +9968,14 @@ function renderQueueDetail() {
     });
   };
   kindRow.appendChild(kindSelect);
-  actionSection.appendChild(kindRow);
+  // MORE OPTIONS (owner, 2026-09-18: "a few sensible options"): the buttons stay in view; the
+  // settings that shape HOW a row runs — kind, agent, review — fold under one summary. It opens by
+  // itself when the agent pick blocks a start, so a disabled button never hides its reason.
+  const more = document.createElement("details");
+  more.className = "qmore";
+  more.appendChild(el("summary", "", "More options — kind, agent, review"));
+  more.appendChild(kindRow);
+  if (qAdvisory(t)) more.open = true; // for a note, its Kind IS the next decision
 
   // AN ADVISORY ROW stays non-dispatchable, but it is no longer a cul-de-sac: the four-kind
   // selector above can turn richtung, notiz or betrieb into an auftrag. The successful refresh
@@ -9997,7 +10004,10 @@ function renderQueueDetail() {
     // effective triple with its origins, and the server's refusal if the combination cannot run.
     // Both acts read the same pick (qSpawnPick) at click time and stay disabled while it is blocked.
     const spawnProblem = startable ? qSpawnStateOf(t.id).problem : null;
-    if (startable) acts.appendChild(qSpawnRow(t.id));
+    if (startable) {
+      more.appendChild(qSpawnRow(t.id));
+      if (spawnProblem) more.open = true;
+    }
     if (startable) {
       const raw = !brief;
       // the same state twice, in the two places it has to be legible: on the button as a label, and
@@ -10105,12 +10115,13 @@ function renderQueueDetail() {
     g.appendChild(box);
     g.appendChild(el("span", "", "③ review this lane's code when it looks done — advisory: the verdict goes to "
       + (t.programId ? "its Program-MAIN (your 📥 inbox if none is live)" : "your 📥 inbox") + " and gates nothing"));
-    acts.appendChild(g);
+    more.appendChild(g);
   }
   if (t.status === "archived") acts.appendChild(mk("restore", "unarchive"));
   if (t.status !== "done" && t.status !== "archived") acts.appendChild(mk("done", "done"));
   if (t.status !== "sent" && t.status !== "archived") acts.appendChild(mk("🗄 archive", "archive"));
   actionSection.appendChild(acts);
+  actionSection.appendChild(more);
   // ▸ OPEN LANE is the only main action that is not a queue act: it makes no request at all, it
   // focuses the pane this row is already running in. Built here, beside the acts it replaces in
   // the head, so the head keeps exactly one action node whatever the status.

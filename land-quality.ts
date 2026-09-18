@@ -11,7 +11,7 @@
 //   bun land-quality.ts --summary [--since 14d]   # three lines off the written ledger, no git (state.sh)
 //
 // It is a READER of lane-outcomes.jsonl, post-land-audits.jsonl, audit-adjudications.jsonl,
-// fleet.json and git (read-only, GIT_OPTIONAL_LOCKS=0). Its one write is land-quality.jsonl, a
+// fleet.json, tasks-archive.jsonl and git (read-only, GIT_OPTIONAL_LOCKS=0). Its one write is land-quality.jsonl, a
 // DERIVED view rewritten whole on every run: one row per landed lane in the window. No judgement,
 // no gate, no alarm.
 //
@@ -73,6 +73,28 @@ export function modelKey(r: Pick<LandRow, "model" | "harness" | "modelOrigin">):
   const m = short === null ? (r.modelOrigin === "ambient" ? "ambient" : "?")
     : r.modelOrigin === "default" ? `${short}~default` : short;
   return `${r.harness ?? "claude"}/${m}`;
+}
+
+// THE CARD SIZE each task row carried, fleet.json over the archive (S1 of docs/messungen/
+// 2026-09-17-queue-felder-und-ihre-leser.md): capTasks evicts rows into tasks-archive.jsonl and a
+// size that lived only on the row used to die with the eviction — 63 of the 255 size-null lands in
+// the 14 d window. Newest ARCHIVE line per id wins (the row as it last stood, even when the newest
+// line itself names no size); fleet.json is applied after and wins the double.
+export function sizeIndexOf(state: unknown, archiveRows: Record<string, unknown>[]): Map<string, string> {
+  const last = new Map<string, { card?: { size?: unknown } }>();
+  for (const a of archiveRows) {
+    const t = a.task;
+    if (typeof t !== "object" || t === null || Array.isArray(t)) continue;
+    const r = t as { id?: unknown; card?: { size?: unknown } };
+    if (typeof r.id === "string") last.set(r.id, r);
+  }
+  const sizeOf = new Map<string, string>();
+  for (const [id, r] of last)
+    if (typeof r.card?.size === "string") sizeOf.set(id, r.card.size);
+  const s = state as { tasks?: unknown };
+  for (const t of Array.isArray(s.tasks) ? s.tasks : [])
+    if (typeof t?.id === "string" && typeof t.card?.size === "string") sizeOf.set(t.id, t.card.size);
+  return sizeOf;
 }
 
 interface Ratio { k: number; d: number }
@@ -273,9 +295,8 @@ async function main(argv: string[]): Promise<number> {
   const audits = (await readJsonl(`${root}/post-land-audits.jsonl`)).rows;
   const adjudications = (await readJsonl(`${root}/audit-adjudications.jsonl`)).rows;
   const state = existsSync(`${root}/fleet.json`) ? await Bun.file(`${root}/fleet.json`).json() : {};
-  const sizeOf = new Map<string, string>();
-  for (const t of Array.isArray(state.tasks) ? state.tasks : [])
-    if (typeof t?.id === "string" && typeof t.card?.size === "string") sizeOf.set(t.id, t.card.size);
+  const archFile = `${root}/tasks-archive.jsonl`;
+  const sizeOf = sizeIndexOf(state, existsSync(archFile) ? (await readJsonl(archFile)).rows : []);
 
   // main's history as of the horizon, with commit times: the ancestry test and the land clock at once
   const hist = await git(root, ["log", "--format=%H %ct", asOf,

@@ -9434,7 +9434,9 @@ export async function run(ctx: Ctx): Promise<void> {
         && mRelRow.releasedBy === "machine"
         && mRelRow.filesProposal?.files.join(" ") === M_TRACKED
         && JSON.stringify(mRelRow.filesProposal.unknownPaths) === JSON.stringify([])
-        && mRelRow.filesOrigin === undefined && mRelRow.files === undefined,
+        // the author card's files are DERIVED into the row's view (origin "derived"); what the release
+        // must not write is a CONFIRMED surface
+        && (mRelRow.filesOrigin === undefined || mRelRow.filesOrigin === "derived"),
       `release=${mRelRes.status}:${mRelResText} row=${JSON.stringify(mRelRow)}`);
     await post(`/api/tasks/${mRelId}/delete`, {});
     await post("/api/dispatch", { on: mDispatchWas });
@@ -9480,17 +9482,24 @@ export async function run(ctx: Ctx): Promise<void> {
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rcState, null, 2), { mode: 0o600 });
     await restartSrv();
     await post("/api/dispatch", { on: false });
+    // the first preview answered 401 here: right after a boot the MAIN's slot is not adopted yet, and
+    // the self door finds no occupied slot for the token — wait for the slot, not for a clock
+    let rcLive = false;
+    for (let i = 0; i < 80 && !rcLive; i++) {
+      rcLive = (await mSess()).some((x) => x.id === mSlot && !!x.cwd);
+      if (!rcLive) await Bun.sleep(250);
+    }
     const rcAfterRes = await rcRelease(rcAfter);
     interface RcWait { id: string; grund: string; adressat: string; kette: string[] }
     const rcPlan = (await (await get("/api/start-plan")).json()) as StartPlan & { waits?: RcWait[] };
     const rcWave = rcPlan.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(rcAfter));
     const rcWait = rcPlan.waits?.find((w) => w.id === rcAfter);
     check("(rc3) a valid card that carries the NACH id releases (200) — the plan holds the row behind its predecessor, and its wait names the program's MAIN, whose pending row it is",
-      !!rcRow?.card && rcAfterRes.status === 200 && (await mRow(rcAfter))?.status === "queued"
+      !!rcRow?.card && rcLive && rcAfterRes.status === 200 && (await mRow(rcAfter))?.status === "queued"
         && JSON.stringify(rcWave?.next) === JSON.stringify({ after: rcPred })
         && rcWait?.grund === `wartet auf ${rcPred} (after, nicht gelandet)` && rcWait.adressat === `main:${mMainProgram}`
         && JSON.stringify(rcWait.kette) === JSON.stringify([`row ${rcPred} (after)`]),
-      JSON.stringify({ release: rcAfterRes.status, next: rcWave?.next ?? null, wait: rcWait ?? null }));
+      JSON.stringify({ live: rcLive, release: rcAfterRes.status, releaseText: rcAfterRes.status === 200 ? "" : await rcAfterRes.text(), next: rcWave?.next ?? null, wait: rcWait ?? null }));
     for (const id of [rcPred, rcBare, rcNach, rcAfter]) await post(`/api/tasks/${id}/delete`, {});
 
     // --- (stau) THE STALL SENSOR (server.ts#tickStallSensor, queue rows 80f61ed8 → 84888f35). On one
@@ -9602,14 +9611,18 @@ export async function run(ctx: Ctx): Promise<void> {
     // (c) the blocker goes: A "lands" (done + kill, the (sp-tick) emulation), B starts
     await post(`/api/tasks/${stA}/done`, {});
     if (stSlot > 0) await post(`/api/slots/${stSlot}/kill`, {});
-    await stUntil(async () => (await stBlocked()).every((a) => a.status !== "open"), 80);
+    await stUntil(async () => (await stBlocked()).every((a) => a.status !== "open")
+      && (await stOf(stB))?.status === "sent", 80);
     const stC3 = await stBlocked();
     check("(stau)(c) the blocker gone, a wave starts — the attention is answered by the sensor and none of the program's stays open",
       (await stOf(stB))?.status === "sent" && stC3.length === 1 && stC3[0]?.status === "answered"
         && (stC3[0]?.answer?.text ?? "").startsWith("Stau-Sensor: aufgeloest"),
       JSON.stringify({ b: await stOf(stB), att: stC3 }));
+    // no lane of this block may outlive it: after the stop, every REPO2 lane goes, whichever row it runs
     await post("/api/dispatch", { on: false });
-    for (const id of [stB, stC]) { const slot = (await stOf(id))?.slot; if (typeof slot === "number") await post(`/api/slots/${slot}/kill`, {}); }
+    await Bun.sleep(2 * DISPATCH_TICK_MS);
+    for (const x of (await stSessions()).slots)
+      if (x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2)) await post(`/api/slots/${x.id}/kill`, {});
     await Bun.sleep(600);
     for (const id of [stA, stB, stC]) {
       const row = await stOf(id);

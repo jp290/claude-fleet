@@ -6854,9 +6854,11 @@ export async function run(ctx: Ctx): Promise<void> {
   // is about. The owner-released rows carry none, exactly as before.
   const pdCard = (file: string): Record<string, unknown> => ({ ...RELEASE_CARD, surface: { files: [file], symbols: [] } });
   const pdMake = async (fields: Record<string, unknown>): Promise<string> => {
-    const created = (await (await post("/api/tasks", { queue: false, ...fields })).json()) as { task: TaskRow };
-    pdTasks.push(created.task.id);
-    return created.task.id;
+    // a refused create (a card the validator rejects is a 400 without `task`) fails the check that
+    // reads the row, never the module
+    const created = (await (await post("/api/tasks", { queue: false, ...fields })).json()) as { task?: TaskRow };
+    if (created.task) pdTasks.push(created.task.id);
+    return created.task?.id ?? "";
   };
   // the OWNER's release door, deliberately in two steps rather than `{queue:true}`: the create-and-
   // release shorthand stamps a kind note on the row, and half of what this section proves is that an
@@ -7009,7 +7011,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const pdQuietStart = new Date().getHours();
   await post("/api/autos/quiet", { start: pdQuietStart, end: (pdQuietStart + 2) % 24 });
   const pdQuietOwnerId = await pdMake({ text: "program-dispatch: granted program, OWNER-released in quiet hours", programId: mainProgram.id });
-  const pdQuietMachineId = await pdMake({ text: "program-dispatch: granted program, MACHINE-released in quiet hours", programId: mainProgram.id, card: pdCard("cursor-probe.txt") });
+  const pdQuietMachineId = await pdMake({ text: "program-dispatch: granted program, MACHINE-released in quiet hours", programId: mainProgram.id, card: pdCard("fleet-e2e.ts") });
   const pdQuietOwnerRelease = await pdOwnerRelease(pdQuietOwnerId);
   const pdQuietMachineRelease = await selfRelease(successorToken, pdQuietMachineId);
   const pdQuietState = (await (await get("/api/sessions")).json()) as { quietHours: { start: number; end: number } | null };
@@ -7052,7 +7054,7 @@ export async function run(ctx: Ctx): Promise<void> {
   await post("/api/dispatch", { on: false }); // a restart reloads the persisted switches
   await post("/api/autos/switch", { on: true });
   const pdUnreadableRecord = await pdProgramRecord(mainProgram.id);
-  const pdUnreadableId = await pdMake({ text: "program-dispatch: row under an unreadable grant", programId: mainProgram.id, card: pdCard("divergent.txt") });
+  const pdUnreadableId = await pdMake({ text: "program-dispatch: row under an unreadable grant", programId: mainProgram.id, card: pdCard("AGENTS.md") });
   const pdUnreadableRelease = await selfRelease(successorToken, pdUnreadableId);
   await pdSettle();
   const pdUnreadableRow = await spawnRowOf(pdUnreadableId);

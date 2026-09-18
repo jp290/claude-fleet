@@ -38,31 +38,45 @@
   .col { flex: 0 0 100%; min-width: 0; }
   .band.haspast .col { flex-basis: calc(100% - var(--peek) - 4px); }
 
-  .box { position: relative; padding: 6px 8px 8px 9px; border-radius: 8px; background: #202020;
-    border: 1px solid transparent; cursor: pointer; overflow: hidden; white-space: nowrap;
-    border-left: 3px solid hsl(var(--h, 0) var(--proj-s) var(--proj-l) / .75);
-    transition: filter .45s, opacity .45s, background .2s; }
-  .box:hover { background: #262626; }
-  .box.sel { background: #26314f; border-color: var(--focus); border-left-color: hsl(var(--h, 0) var(--proj-s) var(--proj-l)); }
-  .box.bad { box-shadow: inset 0 0 0 1px #f8514966; }
+  /* Metall: Grundton aus der Repo-Farbe (derselbe Hue wie tintProject), darueber ein Glanz oben,
+     eine feine Buerstung und ein dunkler Fuss. Hell und Schatten kommen nur aus Weiss/Schwarz-Alpha,
+     damit jede Repo-Farbe dasselbe Material bekommt. */
+  .box, .lane {
+    --c1: hsl(var(--h, 220) 48% 38%); --c2: hsl(var(--h, 220) 52% 19%);
+    background:
+      linear-gradient(180deg, #ffffff2e 0%, #ffffff0d 38%, #ffffff00 52%, #0000002e 100%),
+      repeating-linear-gradient(90deg, #ffffff04 0 1px, #0000 1px 3px),
+      linear-gradient(125deg, var(--c1) 0%, var(--c2) 100%);
+    border: 1px solid hsl(var(--h, 220) 40% 48% / .55);
+    box-shadow: inset 0 1px 0 #ffffff38, inset 0 -1px 0 #00000059, 0 1px 3px #0000008c; }
+  .box { position: relative; padding: 6px 8px 8px 9px; border-radius: 9px; cursor: pointer; overflow: hidden;
+    white-space: nowrap; transition: filter .45s, opacity .45s, box-shadow .2s; }
+  /* ein Lichtstreif zieht beim Zeigen einmal ueber das Metall */
+  .box::after, .lane::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(105deg, #0000 35%, #ffffff24 50%, #0000 65%); transform: translateX(-120%); }
+  .box:hover::after, .lane:hover::after { transform: translateX(120%); transition: transform .7s var(--ease); }
+  .box:hover, .lane:hover { filter: brightness(1.1); }
+  .box.sel, .lane.sel { border-color: hsl(var(--h, 220) 80% 80%);
+    box-shadow: inset 0 1px 0 #ffffff4d, inset 0 -1px 0 #00000059, 0 0 0 1px hsl(var(--h, 220) 80% 80% / .5), 0 0 14px hsl(var(--h, 220) 80% 65% / .35); }
+  .box.bad, .lane:has(.st.bad) { border-color: #ff6b61; box-shadow: inset 0 1px 0 #ffffff38, 0 0 0 1px #f8514999, 0 0 12px #f8514959; }
   /* der ausgegraute Vorgaenger bleibt ein ganzer Kasten */
-  .col.past .box, .box.greying { filter: grayscale(1); opacity: .5; background: #333; }
-  .col.past .box:hover { opacity: .8; }
+  .col.past .box, .box.greying { filter: grayscale(1) brightness(.72); opacity: .7; }
+  .col.past .box:hover { opacity: .95; filter: grayscale(1) brightness(.85); }
   #side:not(.wide) .band:not(.peeking) .col.past .box > * { visibility: hidden; }
   .r1 { display: flex; align-items: center; gap: 7px; }
-  .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #e2e2e2; }
-  .role { flex: none; font-size: 9px; color: var(--faint); letter-spacing: .04em; }
-  .pct { flex: none; font-size: 10px; color: #8b93a7; font-variant-numeric: tabular-nums; }
-  .pct.warn { color: var(--amber); }
-  .r2 { display: flex; gap: 8px; margin-top: 2px; padding-left: 16px; font-size: 10px; color: var(--faint); }
-  .r2 .repo { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: hsl(var(--h, 0) 30% 62%); }
-  .r2 .idle { color: var(--dim); }
-  .fill { position: absolute; left: 0; bottom: 0; height: 2px; background: #4a5068; } .fill.warn { background: var(--amber); }
+  .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #f6f6f6; text-shadow: 0 1px 0 #00000073; }
+  .role { flex: none; font-size: 9px; color: #ffffff85; letter-spacing: .04em; }
+  .pct { flex: none; font-size: 10px; color: #ffffffb3; font-variant-numeric: tabular-nums; }
+  .pct.warn { color: #ffd08a; }
+  .r2 { display: flex; gap: 8px; margin-top: 2px; padding-left: 16px; font-size: 10px; color: #ffffff80; }
+  .r2 .repo { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: hsl(var(--h, 0) 70% 86%); }
+  .r2 .idle { color: #ffffff99; }
+  .fill { position: absolute; left: 0; bottom: 0; height: 2px; background: #ffffff66; box-shadow: 0 0 4px #ffffff40; } .fill.warn { background: var(--amber); box-shadow: 0 0 5px #e0af6899; }
 
   /* Zustand: eine Form und eine Farbe */
-  .st { flex: none; width: 9px; height: 9px; display: inline-block; }
+  .st { flex: none; width: 9px; height: 9px; display: inline-block; filter: drop-shadow(0 0 1.5px #000000b3); }
   .st.work { border-radius: 50%; background: var(--work); animation: pulse 1.6s ease-in-out infinite; }
-  .st.rest { border-radius: 50%; border: 1.5px solid #4a4a4a; }
+  .st.rest { border-radius: 50%; border: 1.5px solid #ffffff73; }
   .st.need { background: var(--amber); transform: rotate(45deg) scale(.82); }
   .st.done { border-radius: 2px; background: var(--accent); }
   .st.bad  { background: var(--danger); clip-path: polygon(20% 0, 50% 30%, 80% 0, 100% 20%, 70% 50%, 100% 80%, 80% 100%, 50% 70%, 20% 100%, 0 80%, 30% 50%, 0 20%); }
@@ -71,14 +85,14 @@
   /* Lanes: eigene, kleinere Kaesten am selben Band, unter dem lebenden Kasten */
   .lanes { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; padding-left: 10px; }
   .lane { position: relative; flex: 1 1 calc(50% - 2px); min-width: 0; display: flex; align-items: center; gap: 5px; height: 24px;
-    padding: 0 6px; border-radius: 6px; background: #1d1d1d; border: 1px solid #292929; cursor: pointer; font-size: 11px;
+    padding: 0 7px; border-radius: 6px; cursor: pointer; font-size: 11px; --c1: hsl(var(--h, 220) 34% 30%); --c2: hsl(var(--h, 220) 40% 17%);
     overflow: hidden; white-space: nowrap; transition: filter .4s, opacity .4s, flex-basis .4s var(--ease), padding .4s; }
   .lg { flex: 1 1 100%; min-width: 0; /* ein Name wie 16A plus Label braucht die ganze Breite */ display: flex; gap: 3px; } .lg .lane { flex: 1 1 0; }
-  .lane:hover { background: #242424; } .lane.sel { background: #222a40; border-color: var(--focus); }
-  .lane .st { width: 7px; height: 7px; } .lane .ref { flex: none; color: #a9c1f5; font-weight: 700; }
+
+  .lane .st { width: 7px; height: 7px; } .lane .ref { flex: none; color: hsl(var(--h, 220) 85% 88%); font-weight: 700; text-shadow: 0 1px 0 #00000073; }
   .lane .fill { height: 1.5px; }
   /* auch eine Lane uebergibt: kleiner Kasten ergraut, der neue erscheint rechts davon */
-  .lg .lane.past { flex: 0 0 16px; padding: 0 4px; filter: grayscale(1); opacity: .4; }
+  .lg .lane.past { flex: 0 0 16px; padding: 0 4px; filter: grayscale(1) brightness(.7); opacity: .7; }
   .lane.past > :not(.st) { display: none; }
   .lane.arrive { animation: arrive .5s var(--ease), spark 1s ease-out; transform-origin: left center; }
   .lane.gone { animation: gone .35s var(--ease) forwards; }
@@ -107,8 +121,8 @@
   #side.collapsed .role, #side.collapsed .pct, #side.collapsed .fill, #side.collapsed .lane > :not(.st), #side.collapsed .free span { display: none; }
   #side.collapsed #sidehead { justify-content: center; padding: 10px 0 8px; } #side.collapsed #bands { padding: 2px 4px; }
   #side.collapsed .band, #side.collapsed .free { grid-template-columns: 15px minmax(0, 1fr); column-gap: 2px; }
-  #side.collapsed .col { flex-basis: 100% !important; } #side.collapsed .box { padding: 8px 0; display: flex; justify-content: center; border-left-width: 2px; }
-  #side.collapsed .lanes { gap: 3px; padding-left: 3px; } #side.collapsed .lg { flex: none; } #side.collapsed .lane.past { display: none; } #side.collapsed .lane { flex: none; height: auto; padding: 2px; border: 0; background: none; }
+  #side.collapsed .col { flex-basis: 100% !important; } #side.collapsed .box { padding: 8px 0; display: flex; justify-content: center; }
+  #side.collapsed .lanes { gap: 3px; padding-left: 3px; } #side.collapsed .lg { flex: none; } #side.collapsed .lane.past { display: none; } #side.collapsed .lane { flex: none; height: auto; padding: 2px; border: 0; background: none; box-shadow: none; }
 
   /* Buehne rechts: Erklaerung und Schalter, nicht Teil des Entwurfs */
   #stage { flex: 1; min-width: 0; padding: 22px 26px; overflow-y: auto; }
@@ -119,6 +133,7 @@
   .ctl button { padding: 6px 10px; border-radius: 7px; background: var(--raised); color: var(--text); } .ctl button:hover { background: #303030; }
   #legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px 16px; color: var(--dim); }
   #legend div { display: flex; align-items: center; gap: 8px; }
+  #legend .st { filter: none; }
   #tip { position: fixed; z-index: 9; max-width: 270px; padding: 7px 9px; border-radius: 7px; background: #0d0d0d; border: 1px solid var(--line);
     font-size: 11px; pointer-events: none; opacity: 0; transition: opacity .1s; white-space: pre-line; }
 
@@ -186,7 +201,11 @@ const MAX = 16;
 let bands, sel;
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
-const hue = (k) => { let h = 0; for (const c of k) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+// Farbe je Repo = der echte src/client.ts#projectHue (FNV-1a ueber den vollen Pfad, PROJECT_HUES) des
+// Live-Stands, vorab berechnet, damit kein geschwaerzter Pfad im Quelltext steht. ~ und claude-fleet
+// fallen live auf denselben Ton, das Mockup zeigt das so.
+const HUES = { "claude-fleet": 45, "private-repo-aa": 315, "privat-1": 175, "~": 45, "private-repo-r": 135 };
+const hue = (k) => HUES[k] ?? 205;
 const warn = (x) => !!x.claude && x.pct != null && x.pct >= 25; // Owner-Band 25 %: nur claude, codex kompaktiert selbst
 const live = (B) => B.cols[B.cols.length - 1];
 const ref = (n, j) => n + String.fromCharCode(65 + j); // 3A, 16B: der Name IST die Adresse der Lane
@@ -213,7 +232,7 @@ function box(n, B, s, isLive) {
 }
 function laneBox(n, B, l, j) {
   const x = el("div", "lane" + (sel.n === n && sel.lane === j ? " sel" : "") + (l.born ? " arrive" : "")); delete l.born; x.tabIndex = 0;
-  x.append(el("i", "st " + l.st), el("span", "ref", ref(n, j)), el("span", "lbl", l.label));
+  x.style.setProperty("--h", hue(B.repo)); x.append(el("i", "st " + l.st), el("span", "ref", ref(n, j)), el("span", "lbl", l.label));
   if (l.pct != null) { const f = el("div", "fill" + (warn(l) ? " warn" : "")); f.style.width = l.pct + "%"; x.append(f); }
   x.onclick = (e) => { e.stopPropagation(); sel = { n, lane: j }; render(); };
   hint(x, `Lane ${ref(n, j)}  ${l.label}${l.bg ? "  (Hintergrund, vom Tick gestartet)" : ""}\n${l.model}  ${l.git || "sauber"}${l.pct != null ? "  " + Math.round(l.pct) + " %" : ""}\n${l.st === "done" ? "fertig, landbar\n" : ""}belegt keine Bandnummer`);
@@ -233,7 +252,7 @@ function render() {
       col.append(b);
       if (isLive && B.lanes.length) { const ls = el("div", "lanes");
         B.lanes.forEach((l, j) => { const grp = el("div", "lg");
-          for (let p = 0; p < Math.min(l.past ?? 0, 2); p++) { const g = el("div", "lane past"); g.append(el("i", "st rest")); hint(g, `Vorgänger von Lane ${ref(n, j)}\nselber Platz, selber Worktree, selber Branch`); grp.append(g); }
+          for (let p = 0; p < Math.min(l.past ?? 0, 2); p++) { const g = el("div", "lane past"); g.style.setProperty("--h", hue(B.repo)); g.append(el("i", "st rest")); hint(g, `Vorgänger von Lane ${ref(n, j)}\nselber Platz, selber Worktree, selber Branch`); grp.append(g); }
           grp.append(laneBox(n, B, l, j)); ls.append(grp); });
         col.append(ls); }
       strip.append(col);

@@ -880,9 +880,13 @@ export async function run(ctx: Ctx): Promise<void> {
           && /cb\.onclick = \(\) => void qAct\(t\.id, "dispatch",\s*qDispatchBody\("clarify", qSpawnPick\.get\(t\.id\) \?\? Q_SPAWN_EMPTY, false\)\)/.test(actsSrc)
           && !/mk\("▸ clarify first"/.test(actsSrc) && !/mk\(raw \? `▸ start lane/.test(actsSrc),
         actsSrc.slice(0, 200) || "action block missing");
-      check("task spawn choice source: both acts are disabled while the block stands, and the row is painted above them",
+      // Since 2026-09-18 the pick rides "More options" (owner: a few sensible options in view). The
+      // invariant it keeps is the old one's reason: a block is never hidden — the fold opens itself
+      // whenever the pick is what disables the two acts.
+      check("task spawn choice source: both acts are disabled while the block stands, and a block opens the fold that holds the pick",
         /if \(spawnProblem\) sb\.disabled = true;/.test(actsSrc) && /cb\.disabled = spawnProblem !== null;/.test(actsSrc)
-          && /if \(startable\) acts\.appendChild\(qSpawnRow\(t\.id\)\);/.test(actsSrc));
+          && /more\.appendChild\(qSpawnRow\(t\.id\)\);\s*if \(spawnProblem\) more\.open = true;/.test(actsSrc)
+          && /actionSection\.appendChild\(acts\);\s*actionSection\.appendChild\(more\);/.test(taskClientSource));
       check("task spawn choice source: the pick is keyed by task id, re-synced in place across repaints, dropped on close and on start",
         /const qSpawnPick = new Map<string, QSpawnPick>\(\);/.test(taskClientSource)
           && /if \(!qSpawnUi \|\| qSpawnUi\.for !== id\) \{/.test(taskClientSource)

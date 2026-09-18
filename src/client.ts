@@ -9473,7 +9473,7 @@ function renderQueueDetail() {
   // part of a long text the owner decides on. Drawn only when the extractor wrote one.
   const card = taskCardFull.get(t.id);
   if (card) {
-    const sec = qDetailSection(shell.detail, card.valid === false ? "Card · has gaps" : "Card");
+    const sec = qDetailSection(shell.detail, "Card" + (card.valid === false ? " · has gaps" : ""));
     const field = (label: string, value: string | undefined) => {
       if (!value) return;
       const row = el("div", "qcardrow");

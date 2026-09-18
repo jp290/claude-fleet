@@ -21,8 +21,10 @@ Ausgaenge trainiert (RLCD) [Doc].
 - Preis 0,042 $ je Million Input-Tokens, Output frei. Limits 250 000 Tokens/s und 1 200 Requests/min —
   laut Anbieter „adjusting dynamically", also kein Festwert. 64k Tokens je Request, 32k fuer `state`
   plus die laengste Frage [Doc].
-- Dieselben Gewichte fuer jeden Account, kein Fine-Tuning auf Kundendaten [Doc]. **Eine Seite zu
-  Datenhaltung oder Aufbewahrung fuehrt der Doc-Index nicht** — fuer uns offen, siehe §6.
+- Dieselben Gewichte fuer jeden Account, kein Fine-Tuning auf Kundendaten [Doc]. `/legal.md` verlinkt
+  Data Processing Agreement und Privacy Policy und nennt Zero Data Retention fuer Enterprise-Kunden
+  [Doc]. Die Vertragstexte selbst sind hier nicht gelesen — siehe §6. (Erste Fassung dieser Datei
+  behauptete, eine solche Seite fehle; widerlegt von der Astra-Vorlage, G11.)
 - Docs: `https://docs.typesafe.ai/llms.txt` (Index), `/api.md`, `/models.md`, `/confidence.md`,
   `/model-jaggedness/jev-1.13.md`. Lokal installiert ist der Skill `typesafe-ai` des Plugins
   `typesafe@typesafe-ai`.
@@ -56,8 +58,9 @@ serialisierten Antwort, kein Mass fuer Generation [Essay]. Ueber einem Limit ant
    irrelevante fuenfte Option aenderte die Odds zweier bestehender in 10 von 10 Bloecken [Essay].
    Eine Noul hat diese Effekte nicht. Eine Schwelle gilt nur fuer genau die Optionsmenge, an der sie
    gemessen wurde.
-4. **`confidence` ist Arithmetik ueber `probabilities`:** fuer eine Choice `(k·p_max − 1)/(k − 1)`, an
-   770 echten Antworten mit maximalem Fehler 0,0175 nachgerechnet [Agent]. Es ist kein zweites Urteil
+4. **`confidence` ist Arithmetik ueber `probabilities`:** fuer eine Choice ungefaehr `(k·p_max − 1)/(k − 1)`
+   — an 770 echten Antworten mittlerer Fehler 0,0037, maximal 0,0175, nur 356 exakt; die genaue interne
+   Formel und Rundung sind unbekannt [Agent]. Es ist kein zweites Urteil
    darueber, ob die Antwort stimmt; eine spitze Verteilung kann falsch sein.
 5. **Nicht deterministisch**, auch nicht bei Duplikaten im selben Request; Wahrscheinlichkeiten kommen
    auf zwei Nachkommastellen [Essay].
@@ -68,7 +71,9 @@ serialisierten Antwort, kein Mass fuer Generation [Essay]. Ueber einem Limit ant
 7. **Dokumentierte Schwaechen** [Doc, Jaggedness-Seite]: liest woertlich · zaehlt, rechnet und
    vergleicht Daten schlecht · scheitert an Indirektion · verliert Genauigkeit bei grossem State voller
    Ballast · anfaellig fuer Text im State, der das Urteil lenken will · keine Generation · und
-   **Nicht-Englisch „currently have lower accuracy"**. Fuer Deutsch gibt es nirgends eine Messung; das
+   **Nicht-Englisch hat laut `models.md` geringere Genauigkeit**; eine Noul und eine Choice auf dieselbe
+   Aussage koennen weit auseinanderliegen, und Aussage plus Negation summieren nicht auf 1 (Jaggedness-
+   Seite: 0,72 + 0,47). Fuer Deutsch gibt es nirgends eine Messung; das
    naechstbeste sind 799 japanische Datensaetze mit nur zwei Positiven [Agent].
 8. **Optionsgrenzen lassen sich durch Text nicht faelschen** (105 Versuche, sieben Trennformate)
    [Essay]. Das schuetzt die Form der Antwort, nicht ihren Inhalt.
@@ -97,7 +102,7 @@ liefert eine FORM, geprueft wird gegen eine Tatsache.
 - **Fehler faellt auf `null`:** ein hartes Timeout, keine Retries im heissen Pfad, die ganze Antwort
   validieren, bevor ein Urteil gelesen wird (Antwort-IDs = Frage-IDs). Ein zu grosser State fuehrt zur
   Enthaltung, nicht zum Abschneiden.
-- **Geloggt wird die Verteilung**, nie `confidence`; dazu Frage-Set-Version, Modell angefragt und
+- **Geloggt wird die Verteilung**; `confidence` hoechstens zusaetzlich zur Reproduzierbarkeit, nie als eigene Evidenz; dazu Frage-Set-Version, Modell angefragt und
   geantwortet, ein HASH des States statt des States. Die Schwelle gehoert nicht in den Hash, damit
   gespeicherte Urteile neu schwellbar bleiben.
 - **Fragen:** Aussageform, State-Felder beim Namen genannt, ein Ausschluss fuer den Beinahe-Fall in
@@ -113,7 +118,7 @@ liefert eine FORM, geprueft wird gegen eine Tatsache.
 
 - Ob dieser Host `api.typesafe.ai` erreicht (die Docs ja, die API ist ungeprobt).
 - Guete auf DEUTSCHEM Fleet-Material — die erste eigene Messung vor jedem Bau.
-- Was der Anbieter mit gesendeten Daten tut. Bis das geklaert ist, geht nur Material hinaus, das
-  ohnehin schon an einen Modell-Anbieter geht (Queue-Text, FAIL-Zeilen); Pane-Text nur redigiert.
+- Ob DPA und Privacy Policy des Anbieters das Senden von Fleet-Daten tragen: die Seiten existieren, die
+  Vertragstexte sind nicht gelesen, eine Freigabe gibt es nicht. Bis dahin kein API-Aufruf mit Fleet-Daten.
 - Bestand der Schnittstelle: drei Tage oeffentlich, ein Anbieter, geschlossene Gewichte, Limits in
   Bewegung. Deshalb steht Jev nie auf einem kritischen Pfad.

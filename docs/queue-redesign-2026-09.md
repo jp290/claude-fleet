@@ -62,8 +62,12 @@ Belege. Kurz:
 - Pins, tsc über die volle Gate-Liste und Build sind grün.
 - Der volle `./e2e-isolated.sh` über den vorletzten Stand war rot, mit genau zwei Checks der Lane. Beide
   sind im letzten Commit korrigiert.
-- Der Nachlauf `FLEET_E2E_MODULES=tasks` stand bei Abfassung dieser Notiz noch am Mutex. Sein Ergebnis
-  steht im Lane-Report, nicht hier.
+- Der Nachlauf `FLEET_E2E_MODULES=tasks ./e2e-isolated.sh` über den Stand mit dieser Notiz meldete
+  `ALL PASS` (1132 PASS, exit 0), darunter die zwei vorher roten Checks. `drift`: `wouldConflict:false`,
+  `behind:0`. Teil 1 ist damit landbar; landen tun MAIN oder Owner.
+- Einen Lane-Report gibt es nicht. Diese Lane wurde von Hand gegründet und trägt kein `taskId`, und
+  `POST /api/self/fleet-report` antwortet ihr deshalb absichtlich mit 409 (`docs/self-api.md` §B4,
+  Zeile „Lane ohne `taskId`“). Diese Notiz ist die Übergabe.
 
 ## 3 · Teil 2: Entwurfsrichtung (Vorschläge, noch nicht vom Owner bestätigt)
 

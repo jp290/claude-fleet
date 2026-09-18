@@ -10446,7 +10446,7 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   const groupVariants = t.variants ? variantsOfGroup(t).filter((v) => v.status === "pending").length : 0;
   const openReleased = tasks.filter((x) => x.programId === program.id && x.status === "queued" && !x.variants).length;
   if (programReleasePolicy(t) === "manual" && openReleased + groupVariants >= PROGRAM_MAX_RELEASED)
-    return json({ error: `program release cap reached (${openReleased + groupVariants}/${PROGRAM_MAX_RELEASED}${groupVariants ? ` — ${groupVariants} of them are the pending variants of group ${t.id}` : ""}) — let the tick start one first` }, 409);
+    return json({ error: `program release cap reached (${openReleased + groupVariants}/${PROGRAM_MAX_RELEASED} released rows not yet started${groupVariants ? ` — ${groupVariants} of them are the pending variants of group ${t.id}` : ""}) — let the tick start one first` }, 409);
   // (5) THROUGH THE HELPER, never a bare assignment: releaseTask is where `by` cannot be forgotten,
   // and a machine release that recorded nothing would be indistinguishable from the attended lands
   // already on the trail.

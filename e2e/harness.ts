@@ -153,6 +153,37 @@ async function restartSrvUntimed(extra: Record<string, string>): Promise<void> {
   throw new Error("srv never came back after restartSrv — the rest of this run would be meaningless");
 }
 
+// WAIT ON A FACT, NOT ON A CLOCK. `until` polls `pred` until it returns something truthy and hands
+// that value back; a fixed `Bun.sleep(N)` in front of a tick, an event or a file either pays N in
+// full while the fact arrives in a fraction of it, or — on a loaded machine — reads before the fact
+// is there and turns the machine's timing into a red check. The ceiling is a BUDGET, not a guess at
+// the fact's arrival, so it can be generous without costing a green run anything.
+//
+// Running out of budget THROWS `UntilTimeout`, its own class, and never returns a falsy value: a
+// timeout that came back as `false` or `null` is indistinguishable from a predicate that answered
+// "no", and that ambiguity is exactly how a missing fact gets read as a verdict (waitMerge's loud
+// timeout, lane-helpers.ts, is the same doctrine). A caller whose check reports the miss catches
+// the class and prints `.what` plus `.last` — the last observation `pred` left behind.
+// A negative proof ("N ticks pass and nothing happens") is NOT this shape: it has no fact to wait
+// for, and is left as the window it is (`afterTick` above).
+export class UntilTimeout extends Error {
+  constructor(readonly what: string, readonly timeoutMs: number, readonly last: string) {
+    super(`until: ${what} did not hold within ${timeoutMs} ms${last ? ` — last: ${last}` : ""}`);
+    this.name = "UntilTimeout";
+  }
+}
+export async function until<T>(pred: () => T | Promise<T>,
+  opts: { timeoutMs: number; stepMs?: number; what: string; last?: () => string }): Promise<NonNullable<T>> {
+  const step = Math.max(10, opts.stepMs ?? 100);
+  const deadline = Date.now() + opts.timeoutMs;
+  for (;;) {
+    const v = await pred();
+    if (v) return v as NonNullable<T>;
+    if (Date.now() >= deadline) throw new UntilTimeout(opts.what, opts.timeoutMs, opts.last?.() ?? "");
+    await Bun.sleep(Math.min(step, Math.max(0, deadline - Date.now())));
+  }
+}
+
 export const wsUrl = (slot: number): string => `ws://${IP}:${PORT}/ws/${slot}?token=${TOKEN}`;
 // Bun's WebSocket client accepts { headers } as a second arg — the DOM lib types don't
 export const wsWithHeaders = (url: string, headers: Record<string, string>): WebSocket =>

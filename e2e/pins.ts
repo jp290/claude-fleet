@@ -9802,6 +9802,92 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     `server=[${keys(serverShape)}] client=[${keys(clientShape)}]`);
 }
 
+// ================================================================================================
+// NO NUL BYTE IN A TRACKED SOURCE — grep and the context packer both read such a file as BINARY
+// ================================================================================================
+// Four files carried one raw NUL each (context-snippets.ts, e2e/attention.ts, e2e/helper-portal.ts,
+// server.ts; removed 2026-09-18). The cost was silent: `grep` prints "Binary file … matches" or,
+// with `-a` absent in a pipeline, NOTHING — a search over server.ts read as "no hit" — and
+// context-snippets.ts#buildSourcePack omitted all four as `binary-source`, so no brief could quote
+// them. The escape (`\u0000`) compiles to the same string; the raw byte buys nothing.
+{
+  const ls = spawnSync("git", ["-C", ROOT, "ls-files", "-z", "--", "*.ts"],
+    { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
+  const files = ls.status === 0 ? ls.stdout.split("\u0000").filter(Boolean) : [];
+  // an empty set would pass every file — the derivation fails as ITSELF
+  pin("no tracked .ts file carries a NUL byte — the file set is derived from git, and the derivation ran",
+    ls.status === 0 && files.length > 0,
+    ls.status === 0 ? `${files.length} tracked .ts file(s)`
+      : (ls.error?.message || ls.stderr || `git ls-files exited ${String(ls.status)}`).trim().slice(0, 160));
+  const withNul = files.filter((f) => existsSync(`${ROOT}/${f}`) && readFileSync(`${ROOT}/${f}`).includes(0));
+  pin("no tracked .ts file carries a NUL byte (write `\\u0000`, never the raw byte)",
+    files.length > 0 && withNul.length === 0, withNul.length ? withNul.join(", ") : `${files.length} clean`);
+}
+
+// ================================================================================================
+// §11.2y — EVERY done-looking wait in e2e/programs.ts waits for the lane's writer first
+// ================================================================================================
+// docs/verify-tiering.md §11.2y: dispatch answers 200 while the detached tail still owes the pane
+// its founding brief, so `done-looking` opens and SHUTS again; a wait that returns at the first
+// true instant lands inside that window and the door then refuses the lane the fixture just saw
+// ready. The repair (awaitFoundingBrief) reached 2 of 32 sites and the family kept firing at
+// 20,8 % after it (docs/messungen/2026-09-18-pruefapparatur-determinismus.md §a). The class is
+// closed only when NO site is left, so this is a count held at zero, over a DERIVED set:
+//   · a done-looking waiter is any `const X = async` helper whose body reads the done-looking
+//     predicate (DONE_LOOKING_IDLE_MS or DONE_LOOKING_RULES) — never a list of names;
+//   · a call is PROTECTED when the waiter itself runs awaitFoundingBrief first AND the call hands
+//     it the lane's cwd (the key the brief is found by), or when awaitFoundingBrief runs earlier in
+//     the helper that makes the call.
+{
+  const file = "e2e/programs.ts";
+  const text = exists(file) ? read(file) : "";
+  const topArgs = (t: string, from: number): number => {
+    const open = t.indexOf("(", from);
+    let depth = 0; let n = 1; let empty = true;
+    for (let i = open; i < t.length; i++) {
+      const c = t[i];
+      if (c === "(" || c === "[" || c === "{") depth++;
+      else if (c === ")" || c === "]" || c === "}") { if (--depth === 0) return empty ? 0 : n; }
+      else if (c === "," && depth === 1) n++;
+      else if (depth === 1 && !/\s/.test(c ?? "")) empty = false;
+    }
+    return -1;
+  };
+  type Waiter = { name: string; at: number; end: number; selfGuarded: boolean };
+  const waiters: Waiter[] = [];
+  for (const m of text.matchAll(/^( *)const (\w+) = async \(/gm)) {
+    const at = m.index ?? 0;
+    // block-bodied helpers only: an expression body (`=> (await get(…)).json()`) holds no wait,
+    // and its "end" would be the next `};` of some OTHER helper
+    const arrow = text.indexOf("=>", at);
+    if (arrow < 0 || !/^\s*\{/.test(text.slice(arrow + 2, arrow + 8))) continue;
+    const end = text.indexOf(`\n${m[1]}};`, at);
+    if (end < 0) continue;
+    const body = text.slice(at, end);
+    if (!/DONE_LOOKING_IDLE_MS|DONE_LOOKING_RULES/.test(body)) continue;
+    const brief = body.indexOf("awaitFoundingBrief(");
+    const wait = body.search(/\buntil\(|Bun\.sleep\(/);
+    waiters.push({ name: m[2]!, at, end, selfGuarded: brief >= 0 && (wait < 0 || brief < wait) });
+  }
+  pin("§11.2y — the done-looking waiters in e2e/programs.ts are derivable (non-tautology guard)",
+    waiters.some((w) => w.name === "waitDoneLooking") && waiters.every((w) => w.end > w.at),
+    waiters.map((w) => `${w.name}${w.selfGuarded ? "(guards itself)" : ""}`).join(", ") || "none found");
+  const unguarded: string[] = []; let calls = 0;
+  for (const w of waiters)
+    for (const m of text.matchAll(new RegExp(`\\b${w.name}\\(`, "g"))) {
+      const at = m.index ?? 0;
+      if (at >= w.at && at < w.end) continue; // its own body
+      calls++;
+      const line = text.slice(0, at).split("\n").length;
+      const helperStart = text.lastIndexOf("= async (", at);
+      const guardedBefore = helperStart >= 0 && text.slice(helperStart, at).includes("awaitFoundingBrief(");
+      if (!(w.selfGuarded && topArgs(text, at) >= 2) && !guardedBefore) unguarded.push(`${w.name}@${line}`);
+    }
+  pin("§11.2y — no done-looking wait in e2e/programs.ts returns before the lane's founding brief was seen (unguarded sites: 0)",
+    calls > 0 && unguarded.length === 0,
+    `${calls} call site(s), unguarded: ${unguarded.join(", ") || "none"}`);
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

@@ -259,7 +259,7 @@ export async function run(): Promise<void> {
   const pollRaw = await (await get("/api/sessions")).text();
   check("/api/sessions carries attentionOpen and it counts exactly the open + send-uncertain rows",
     openBefore === 9 && openBefore === readRows().filter((a) => a.status === "open").length
-      && !pollRaw.includes(decision?.text ?? " ") && !pollRaw.includes("requester"),
+      && !pollRaw.includes(decision?.text ?? "\u0000") && !pollRaw.includes("requester"),
     `${openBefore} ${pollRaw.length} B`);
 
   // --- 4. the owner answer becomes a Program pointer, never a pane paste -------------------------

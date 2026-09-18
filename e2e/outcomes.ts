@@ -765,6 +765,92 @@ export async function run(): Promise<void> {
         dOpen.liveSlot === openLane.slot && dOpen.slot === openLane.slot
         && dOpen.outcomes.state === "read" && dOpen.outcomes.value.rows.length === 0
         && dOpen.repo === realpathSync(oRepo), JSON.stringify({ live: dOpen.liveSlot, o: dOpen.outcomes, r: dOpen.repo }));
+
+      // (7d) THE SAME DOSSIER, KEYED BY THE TASK ID (server.ts#resolveTaskLane). Four rows, four
+      // answers: a LIVE sent row resolves through its slot; a DONE row whose slot number another
+      // lane now holds must still resolve to ITS OWN branch (the recycled-slot trap — its `slot`
+      // field names a seat, not a lane); the same row after it left fleet.json is answered from
+      // tasks-archive.jsonl; a pending row has no lane and says so; an id nobody knows is a 404.
+      type Resolved = { result: string; task: string; via?: string; branch?: string; branches?: string[];
+        why?: string; searched?: string[];
+        row?: { id: string; from: string; status: string; release: { released: boolean } | null } | null };
+      const byTask = async (id: string): Promise<{ status: number; body: Dossier & { resolved?: Resolved; error?: string } }> => {
+        const r = await get(`/api/lane?task=${encodeURIComponent(id)}`);
+        return { status: r.status, body: (await r.json()) as Dossier & { resolved?: Resolved; error?: string } };
+      };
+      const sessionSlots = async (): Promise<{ id: number; cwd: string | null; worktree?: { branch: string } | null }[]> =>
+        ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; worktree?: { branch: string } | null }[] }).slots;
+
+      const liveMark = "task-dossier probe — a live dispatched row";
+      const liveTask = (await (await post("/api/tasks", { text: liveMark, repo: oRepo })).json()) as { task: { id: string } };
+      const liveJ = (await (await post(`/api/tasks/${liveTask.task.id}/dispatch`, {})).json()) as { slot?: number; branch?: string };
+      check("task dossier setup: a row is dispatched into a live lane",
+        typeof liveJ.slot === "number" && !!liveJ.branch, JSON.stringify(liveJ));
+      // RECYCLE the released-pin row's seat: open hand lanes until slot relSlot is held by a lane
+      // that is not relBranch (the lowest free slot is taken first, so this terminates quickly)
+      const fillers: number[] = [];
+      for (let i = 0; i < 8; i++) {
+        const holder = (await sessionSlots()).find((s) => s.id === relSlot);
+        if (holder?.cwd && holder.worktree?.branch && holder.worktree.branch !== relBranch) break;
+        const f = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot?: number };
+        if (typeof f.slot !== "number") break;
+        fillers.push(f.slot);
+      }
+      const recycler = (await sessionSlots()).find((s) => s.id === relSlot);
+      check("task dossier setup: the released-pin row's slot number is now held by a DIFFERENT lane",
+        !!recycler?.cwd && !!recycler.worktree?.branch && recycler.worktree.branch !== relBranch,
+        JSON.stringify({ relSlot, relBranch, holder: recycler?.worktree ?? null, fillers }));
+
+      const tLive = await byTask(liveTask.task.id);
+      check("task dossier: a LIVE sent row resolves through its slot to the same dossier ?branch= serves",
+        tLive.status === 200 && tLive.body.resolved?.result === "lane" && tLive.body.resolved.via === "live-slot"
+        && tLive.body.resolved.branch === liveJ.branch && tLive.body.branch === liveJ.branch
+        && tLive.body.liveSlot === liveJ.slot && tLive.body.resolved.row?.from === "live"
+        && tLive.body.resolved.row?.status === "sent",
+        JSON.stringify({ status: tLive.status, resolved: tLive.body.resolved, branch: tLive.body.branch, live: tLive.body.liveSlot }));
+
+      const tRel = await byTask(relTask.task.id);
+      const { resolved: _r, ...tRelDossier } = tRel.body;
+      const dRelNow = await dossier(relBranch);
+      check("task dossier: a DONE row whose slot number another lane now holds resolves to ITS OWN branch via the outcome taskId — never the recycler's",
+        tRel.status === 200 && tRel.body.resolved?.result === "lane" && tRel.body.resolved.via === "outcome-task-id"
+        && tRel.body.resolved.branch === relBranch && tRel.body.branch === relBranch
+        && tRel.body.branch !== recycler?.worktree?.branch && tRel.body.liveSlot === null
+        && tRel.body.resolved.row?.status === "done" && tRel.body.resolved.row?.from === "live",
+        JSON.stringify({ resolved: tRel.body.resolved, branch: tRel.body.branch, live: tRel.body.liveSlot, recycler: recycler?.worktree }));
+      check("task dossier: ?task= carries the SAME dossier as ?branch= for that lane, plus `resolved`",
+        JSON.stringify(tRelDossier) === JSON.stringify(dRelNow),
+        `task=${JSON.stringify(tRelDossier).slice(0, 300)} branch=${JSON.stringify(dRelNow).slice(0, 300)}`);
+
+      // …and once the row has LEFT fleet.json, only tasks-archive.jsonl still knows it
+      const delRel = await post(`/api/tasks/${relTask.task.id}/delete`, {});
+      const tArch = await byTask(relTask.task.id);
+      check("task dossier: a row that left fleet.json is answered from tasks-archive.jsonl, still on its own branch",
+        delRel.ok && tArch.status === 200 && tArch.body.resolved?.result === "lane"
+        && tArch.body.resolved.branch === relBranch && tArch.body.resolved.row?.from === "archive"
+        && tArch.body.resolved.row?.status === "done",
+        JSON.stringify({ del: delRel.status, resolved: tArch.body.resolved }));
+
+      const pend = (await (await post("/api/tasks", { text: "task-dossier probe — never started", repo: oRepo })).json()) as { task: { id: string } };
+      const tPend = await byTask(pend.task.id);
+      check("task dossier: a row with no lane is a NAMED answer (200, no-lane, why, its row and release verdict) — not a dossier, not a 404",
+        tPend.status === 200 && tPend.body.resolved?.result === "no-lane" && !!tPend.body.resolved.why
+        && tPend.body.resolved.row?.status === "pending" && tPend.body.resolved.row?.release?.released === false
+        && !("branch" in tPend.body),
+        JSON.stringify(tPend.body).slice(0, 400));
+      await post(`/api/tasks/${pend.task.id}/delete`, {});
+
+      const tGhost = await byTask("zz00notarow");
+      check("task dossier: an id no source knows is a 404 unknown-task naming the three sources searched",
+        tGhost.status === 404 && tGhost.body.resolved?.result === "unknown-task"
+        && JSON.stringify(tGhost.body.resolved.searched) === JSON.stringify(["fleet.json tasks", "lane-outcomes.jsonl taskId", "tasks-archive.jsonl"]),
+        JSON.stringify(tGhost.body));
+      const tBad = await get("/api/lane?task=..%2Fx");
+      check("task dossier: a malformed id is a 400, never a lookup", tBad.status === 400, String(tBad.status));
+
+      for (const f of fillers) await post(`/api/slots/${f}/kill`, {});
+      if (typeof liveJ.slot === "number") await post(`/api/slots/${liveJ.slot}/kill`, {});
+      await post(`/api/tasks/${liveTask.task.id}/delete`, {});
       await post(`/api/slots/${openLane.slot}/kill`, {});
     }
 

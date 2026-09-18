@@ -24,7 +24,7 @@
 # CLI's space — `wait-merge` is typed `./ctl.sh wait merge 5`.
 set -u
 
-CTL_VERBS="get merges lock ctx report audits watch events land dispatch wait-merge wait-change send commit-main"
+CTL_VERBS="get merges lock ctx report task audits watch events land dispatch wait-merge wait-change send commit-main"
 
 usage() {
   cat <<'USAGE'
@@ -37,6 +37,8 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
   lock [--reap] [--json]           suite-mutex health; --reap removes a lock whose holder is dead
   ctx [slot] [--json]              measured context fill of a slot (default: your own)
   report <taskId> [--full] [--json]   the newest fleet-report filed for that task
+  task <taskId> [--full] [--json]  one queue row and its lane off GET /api/lane?task=: status, card, start
+                                   plan, newest report, outcome, audit — one line each, source named
   audits [--last N] [--fail <text>] [--sha <sha>] [--json]
                                    post-land audit rows off the route, adjudication joined; the first
                                    line says whether an audit is running or waiting right now
@@ -548,6 +550,78 @@ const lines = [
 ];
 if (shown.length < text.length) lines.push(`… [${text.split("\n").length - 20} more lines — --full]`);
 out({ report: rep, total: all.length }, lines);
+EOF
+  js_run
+  ;;
+
+# ================================================================================================
+task)
+# ------------------------------------------------------------------------------------------------
+# ONE ROW AND ITS LANE, off GET /api/lane?task=<id> — the server resolves the id to its branch
+# (server.ts#resolveTaskLane: live `sent` row → its slot, else the outcome rows' taskId, else
+# tasks-archive.jsonl for a row that left fleet.json) and returns the SAME dossier ?branch= does.
+# Measured 2026-09-17 (docs/messungen/2026-09-17-worktrail-bash-datenschichten-strategisch.md §5
+# P2): 68 hand joins over fleet.json, /api/sessions and the raw ledgers in 14 days, zero dossier
+# calls. The join is the route's; this verb only PRINTS it, one line per source, the source named.
+# It judges nothing — a report's head is quoted, never weighed. Exit 1 = the id is unknown to all
+# three sources; a known row with no lane is an answer (exit 0), not an error.
+  task=""; full=0
+  for a in "$@"; do case "$a" in --json) CTL_JSON=1 ;; --full) full=1 ;; --*) printf 'task: unknown flag %s\n' "$a" >&2; exit 2 ;; *) task=$a ;; esac; done
+  [ -n "$task" ] || { printf 'task: give a task id\n' >&2; exit 2; }
+  printf '%s' "$task" | grep -Eq '^[a-z0-9]{1,64}$' || { printf 'task: %s is not a queue row id ([a-z0-9]{1,64})\n' "$task" >&2; exit 2; }
+  need_owner task
+  export CTL_TASK="$task" CTL_FULL="$full"
+  js_head
+  cat >> "$CTL_TMP" <<'EOF'
+const want = process.env.CTL_TASK, FULL = process.env.CTL_FULL === "1";
+const r = await api("/api/lane?task=" + encodeURIComponent(want), { headers: ownerH() });
+const res = r.body?.resolved ?? null;
+if (r.status === 404 && res?.result === "unknown-task") {
+  out({ resolved: res }, [`task ${want}: UNKNOWN — searched ${res.searched.join(", ")}; no row and no lane carry this id`]);
+  process.exit(1);
+}
+if (!r.ok || !res) { console.error(`task: GET /api/lane?task= ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); process.exit(2); }
+const iso = (t) => (typeof t === "number" && t > 0 ? new Date(t).toISOString() : "?");
+const short = (s) => String(s ?? "").slice(0, 12);
+const row = res.row;
+const lines = [];
+lines.push(res.result === "lane"
+  ? `task ${want}: lane ${res.branch} (via ${res.via}${res.branches.length > 1 ? `; ${res.branches.length - 1} earlier lane(s): ${res.branches.slice(1).join(", ")}` : ""})`
+  : `task ${want}: NO LANE — ${res.why}`);
+const rowSrc = row ? (row.from === "live" ? "fleet.json" : "tasks-archive.jsonl") : "";
+lines.push(row ? `  status    ${row.status} (${row.kind})${row.note ? ` — note: ${String(row.note).slice(0, 160)}` : ""}   [${rowSrc}]`
+  : "  status    UNKNOWN — the row is in neither fleet.json nor tasks-archive.jsonl; only the outcome ledger names it   [-]");
+lines.push(!row ? "  card      UNKNOWN — no row to read a card from   [-]"
+  : row.card === null ? `  card      none — no card was ever read for this row   [${rowSrc} card]`
+  : `  card      ${row.card.valid ? "valid" : "INVALID"}${row.card.gaps.length ? ` — ${row.card.gaps.length} gap(s): ${row.card.gaps.slice(0, 2).join("; ").slice(0, 200)}` : ""}   [${rowSrc} card]`);
+const rel = row?.release ?? null;
+lines.push(!row || (row.status !== "pending" && row.status !== "queued")
+  ? `  startplan — not waiting (${row ? row.status : "no row"})   [start-plan.ts#releaseVerdict]`
+  : `  startplan ${rel?.released ? `released by ${rel.by}${rel.hints?.length ? ` (hints: ${rel.hints.join("; ").slice(0, 160)})` : ""}` : `not released${rel?.why ? ` — ${rel.why}` : " — waits for a release"}`}`
+    + `${row.note && /^waiting|^after /.test(row.note) ? `; tick: ${String(row.note).slice(0, 200)}` : ""}   [start-plan.ts#releaseVerdict + row note]`);
+const rep = row?.report ?? null;
+lines.push(rep ? `  report    ${rep.id} ${rep.status} ${iso(rep.reportedAt)} ${rep.decided ? "decided" : "UNDECIDED"}: ${rep.head}   [fleet-reports]`
+  : "  report    none retained for this task   [fleet-reports]");
+const m = (x) => x && x.state === "read";
+if (res.result === "lane") {
+  const d = r.body;
+  const o = m(d.outcomes) ? d.outcomes.value.rows[0] : null;
+  lines.push(!m(d.outcomes) ? `  outcome   UNKNOWN — ${d.outcomes?.why ?? "not in the dossier"}   [lane-outcomes.jsonl]`
+    : !o ? `  outcome   none — the lane has not ended${d.liveSlot !== null ? ` (live in slot ${d.liveSlot})` : ""}   [lane-outcomes.jsonl]`
+    : `  outcome   ${o.disposition ?? "?"} ${iso(o.ts)}${o.mainAfter ? ` mainAfter ${short(o.mainAfter)}` : ""} verified ${o.verified === true ? "yes" : o.verified === false ? "NO" : "null"}   [lane-outcomes.jsonl]`);
+  const a = m(d.audits) ? d.audits.value.rows[0] : null;
+  lines.push(!m(d.audits) ? `  audit     UNKNOWN — ${d.audits?.why ?? "not in the dossier"}   [post-land-audits.jsonl]`
+    : !a ? "  audit     none covers this branch   [post-land-audits.jsonl]"
+    : `  audit     ${a.result} ${iso(a.at)} on ${short(a.mainSha)}${a.fails?.length ? ` fails [${a.fails.slice(0, 3).join(", ")}]` : ""} adj ${a.adjudication ? a.adjudication.verdict : "none"}   [post-land-audits.jsonl]`);
+} else {
+  lines.push("  outcome   none — no lane on record   [lane-outcomes.jsonl]");
+  lines.push("  audit     none — no lane on record   [post-land-audits.jsonl]");
+}
+if (FULL) {
+  if (row) lines.push("", "--- row text", String(row.text ?? ""));
+  if (rep) lines.push("", `--- report ${rep.id}`, String(rep.text ?? ""));
+}
+out(r.body, lines);
 EOF
   js_run
   ;;

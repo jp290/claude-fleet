@@ -24,7 +24,7 @@
 # CLI's space — `wait-merge` is typed `./ctl.sh wait merge 5`.
 set -u
 
-CTL_VERBS="get merges lock ctx report watch events land dispatch wait-merge wait-change send commit-main"
+CTL_VERBS="get merges lock ctx report audits watch events land dispatch wait-merge wait-change send commit-main"
 
 usage() {
   cat <<'USAGE'
@@ -37,6 +37,9 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
   lock [--reap] [--json]           suite-mutex health; --reap removes a lock whose holder is dead
   ctx [slot] [--json]              measured context fill of a slot (default: your own)
   report <taskId> [--full] [--json]   the newest fleet-report filed for that task
+  audits [--last N] [--fail <text>] [--sha <sha>] [--json]
+                                   post-land audit rows off the route, adjudication joined; the first
+                                   line says whether an audit is running or waiting right now
   watch lane|merge <slot> | audit <sha> [--repo <path>] [--idle <sec>] [--json]
                                    arm one self-watch; idleSec defaults to 0
   events [--ack] [--json]          your own FleetEvents; --ack closes the delivered ones
@@ -545,6 +548,132 @@ const lines = [
 ];
 if (shown.length < text.length) lines.push(`… [${text.split("\n").length - 20} more lines — --full]`);
 out({ report: rep, total: all.length }, lines);
+EOF
+  js_run
+  ;;
+
+# ================================================================================================
+audits)
+# ------------------------------------------------------------------------------------------------
+# The tier-2 trail, read off GET /api/post-land-audits instead of out of the raw ledger. Measured
+# 2026-09-17 (docs/messungen/2026-09-17-worktrail-bash-datenschichten-strategisch.md §5 P3): 804 raw
+# reads of post-land-audits.jsonl in 14 days against 25 calls of its route — a MAIN tailing the last
+# row after every audit event, the queue file read on top, a fail name counted with grep over every
+# line. The route already serves all of it, newest first, WITH the adjudication joined onto the row
+# it judges, and /api/sessions already carries the live half (postLandAuditLive).
+# READ ONLY, and it judges nothing: the adjudication shown is the rail's, verbatim, and a red row
+# without one is printed as `adj none` — never as a flake this verb decided it looks like.
+  last=""; fail=""; sha=""; want=""
+  for a in "$@"; do
+    if [ -n "$want" ]; then
+      case "$want" in last) last=$a ;; fail) fail=$a ;; sha) sha=$a ;; esac
+      want=""; continue
+    fi
+    case "$a" in
+      --json) CTL_JSON=1 ;;
+      --last) want=last ;; --fail) want=fail ;; --sha) want=sha ;;
+      *) printf 'audits: unknown argument %s\n' "$a" >&2; exit 2 ;;
+    esac
+  done
+  [ -z "$want" ] || { printf 'audits: --%s needs a value\n' "$want" >&2; exit 2; }
+  case "$last" in ''|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]|1000) ;;
+    *) printf 'audits: --last wants a whole number 1..1000 (the route caps at 1000), got %s\n' "$last" >&2; exit 2 ;; esac
+  if [ -n "$sha" ] && ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{4,40}$'; then
+    printf 'audits: --sha wants 4..40 lowercase hex characters, got %s\n' "$sha" >&2; exit 2
+  fi
+  need_owner audits
+  export CTL_LAST="$last" CTL_FAIL="$fail" CTL_SHA="$sha"
+  js_head
+  cat >> "$CTL_TMP" <<'EOF'
+const failQ = process.env.CTL_FAIL || null, shaQ = process.env.CTL_SHA || null;
+// a filter reads the WHOLE trail the route will serve unless the caller narrowed it; a plain look
+// reads the newest ten. The denominator is always printed, so a narrowed count cannot pass for all.
+const limit = process.env.CTL_LAST ? Number(process.env.CTL_LAST) : (failQ || shaQ ? 1000 : 10);
+const [ses, r] = await Promise.all([
+  api("/api/sessions", { headers: ownerH() }),
+  api("/api/post-land-audits?limit=" + limit, { headers: ownerH() }),
+]);
+if (!r.ok) { console.error(`audits: GET /api/post-land-audits ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); process.exit(2); }
+
+// --- line one: the live half. null is IDLE (server.ts#postLandAuditLiveView); an absent field or a
+// refused read is UNKNOWN, and the two are never printed as each other.
+const liveKnown = ses.ok && ses.body && Object.prototype.hasOwnProperty.call(ses.body, "postLandAuditLive");
+const live = liveKnown ? ses.body.postLandAuditLive : undefined;
+const sec = (t) => Math.round((Date.now() - t) / 1000) + "s";
+const short = (s) => String(s ?? "").slice(0, 12);
+let liveLine;
+if (!liveKnown) liveLine = ses.ok ? "live: UNKNOWN — /api/sessions carried no postLandAuditLive"
+  : `live: UNKNOWN — GET /api/sessions ${ses.status}`;
+else if (live === null) liveLine = "live: idle — no audit running, none waiting";
+else {
+  const run = live.running, wait = live.waiting ?? [];
+  const parts = [];
+  if (run?.phase === "running") {
+    const st = live.stats ? ` (p50 ${ms(live.stats.p50)} p90 ${ms(live.stats.p90)} over ${live.stats.n})` : "";
+    parts.push(`RUNNING ${run.repo} ${run.main}@${short(run.mainSha)} for ${sec(run.startedAt)} covers ${run.covers.join(", ") || "-"}${st}`);
+  } else if (run?.phase === "starting") parts.push("STARTING — the drain holds its lock, the run's identity is not known yet");
+  if (wait.length) parts.push(`WAITING ${wait.length}: ${wait.map((w) => `${w.branch}@${String(w.mainAfter).slice(0, 8)}`).join(", ")}`);
+  liveLine = "live: " + parts.join("; ");
+}
+
+// --- the rows
+const all = r.body.audits ?? [];
+const total = r.body.total ?? all.length;
+const coverList = (row) => (Array.isArray(row.covers) ? row.covers : []);
+let rows = all;
+let shaInfo = null;
+if (shaQ) {
+  // a sha is either the tip the audit RAN on or a land it answered for (a cover's mainAfter) — a
+  // coalesced run covers lands whose own tip it never checked out, and that is still their audit
+  rows = all.filter((x) => String(x.mainSha ?? "").startsWith(shaQ) || coverList(x).some((c) => String(c?.mainAfter ?? "").startsWith(shaQ)));
+  shaInfo = { query: shaQ, matched: rows.length, of: all.length };
+}
+let failInfo = null;
+if (failQ) {
+  const withFails = rows.filter((x) => Array.isArray(x.fails));
+  const hit = rows.filter((x) => Array.isArray(x.fails) && x.fails.some((f) => String(f).includes(failQ)));
+  failInfo = { text: failQ, count: hit.length, of: rows.length, withFails: withFails.length };
+  rows = hit;
+}
+const project = (x) => ({
+  at: x.at, time: typeof x.at === "number" ? new Date(x.at).toISOString() : null,
+  result: x.result, mainSha: x.mainSha ?? null,
+  covers: coverList(x).map((c) => c?.branch ?? String(c)),
+  checks: x.checks ?? null,
+  fails: Array.isArray(x.fails) ? x.fails : null,
+  adjudication: x.adjudication ?? null,
+  ...(x.reason ? { reason: x.reason } : {}),
+  ...(x.proportional ? { proportional: true } : {}),
+});
+const shown = rows.map(project);
+const rowLine = (p) => {
+  const c = p.checks === null ? "checks unmeasured"
+    : `checks ${p.checks.ranIsLowerBound ? "≥" : ""}${p.checks.ran} ran/${p.checks.failed} failed`;
+  const f = p.fails === null ? "fails -" : p.fails.length ? `fails [${p.fails.join(", ")}]` : "fails none";
+  const a = p.adjudication
+    ? `adj ${p.adjudication.verdict} (${typeof p.adjudication.by === "string" ? p.adjudication.by : JSON.stringify(p.adjudication.by)})${p.adjudication.note ? ` "${String(p.adjudication.note).slice(0, 80)}"` : ""}`
+    : "adj none";
+  return `${p.time ?? "?"}  ${String(p.result).padEnd(7)}  ${short(p.mainSha) || "-"}  covers ${p.covers.join(", ") || "-"}`
+    + `${p.proportional ? "  proportional" : ""}  ${c}  ${f}  ${a}${p.reason ? `  reason: ${String(p.reason).slice(0, 120)}` : ""}`;
+};
+
+const lines = [liveLine];
+const more = total > all.length ? `; ${total - all.length} older row(s) not delivered — raise --last` : "";
+if (total === 0 && all.length === 0) {
+  lines.push(`ledger empty — no post-land audit row is recorded (tier 2 configured: ${r.body.configured === true ? "yes" : r.body.configured === false ? "no" : "unknown"})`);
+} else {
+  lines.push(`${all.length} of ${total} row(s) delivered, newest first${r.body.malformed ? `, ${r.body.malformed} malformed line(s) skipped` : ""}${more}`);
+}
+if (shaInfo && shaInfo.matched === 0)
+  lines.push(`sha ${shaQ}: UNKNOWN to the trail — no row ran on it or covers it among ${all.length} delivered${more}`);
+else if (shaInfo) lines.push(`sha ${shaQ}: ${shaInfo.matched} row(s) ran on it or cover it`);
+if (failInfo)
+  lines.push(`fail "${failQ}": in ${failInfo.count} of ${failInfo.of} row(s)${shaQ ? " matching the sha" : " delivered"}`
+    + ` — ${failInfo.withFails} of them carry a fails list; ${failInfo.of - failInfo.withFails} carry none (an unknown row, or one older than the field) and sit in the denominator unmeasured`);
+for (const p of shown) lines.push(rowLine(p));
+out({ live: liveKnown ? live : "unknown", total, delivered: all.length, limit, malformed: r.body.malformed ?? 0,
+  configured: r.body.configured ?? null, sha: shaInfo, fail: failInfo, audits: shown }, lines);
+process.exit(shaInfo && shaInfo.matched === 0 ? 1 : 0);
 EOF
   js_run
   ;;

@@ -275,6 +275,44 @@ Ein anderer Wert ist 400 `review must be one of: none, advisory`. Jede Änderung
 `task_review`-Zeile (`<id>:<vorher>-><nachher> by=owner|main`). Ein Load normalisiert einen
 unbekannten Wert auf ABWESEND; die Poll-Digest (`taskDigest`) trägt das Feld. Mechanik und Empfängerwahl: `docs/harness-adapter.md` §auto-③.
 
+## 3d. Das Warte-Register und der Stau-Sensor (2026-09-18, Zeilen 84888f35 / 80f61ed8)
+
+**Befund.** Am 2026-09-15 stand claude-fleet ~3,5 h mit 17 freigegebenen Wellen, 0 startbereit,
+Deckel 3 und 1–2 Lanes; am Vorabend dasselbe. Kein Mechanismus meldete es. Jede Blockade war ein
+Warten ohne Adressat: ein unbestätigtes Kriterium, ein `after` auf eine verschwundene Zeile,
+Kollisionen hinter einer Lane, die selbst wartete.
+
+**Das Register (`waits.ts#deriveWaits`, rein, ohne Zustand).** `GET /api/start-plan` trägt neben dem
+Plan `waits`: je Zeile, die nicht `now` startet, `{repo, id, grund, adressat, kette, wurzel, seit,
+freigegeben}`. `grund` ist der eigene Satz der Zeile; `adressat` ist, wer das Warten beendet —
+`owner` · `main:<programId>` · `slot:<n>` · `tick` — und zwar der Adressat am KOPF der Kette:
+`collides {row}`, `after` und ein nicht freigegebener Wellenpartner werden bis zu ihrem Kopf verfolgt,
+`kette` nennt jedes Glied. Eine Lane, deren Gründungszeile ein unbestätigtes Kriterium trägt oder die
+`awaiting: "owner"` steht, ist der Zug des Owners; `awaiting: "main"` der ihrer MAIN. Ein Hold ist
+der Zug der gebundenen MAIN (sonst des Owners) und nennt seinen `grund` oder „ohne Grund". `seit`
+kommt nur aus einem gespeicherten Fakt (`hold.at`, `criterion.proposedAt`), nie aus der Uhr. Die
+Tabelle wird bei jedem GET neu abgeleitet und nie persistiert; die Plan-Hälfte des Objekts ist
+weiter byte-gleich mit `bun start-plan.ts --state fleet.json`.
+
+**Der Sensor (`server.ts#tickStallSensor`, erste Zeile von `tickDispatch`).** Je Repo ist ein Stau
+`waits.ts#stallReadings`: freigegebene Arbeit wartet, keine Welle ist `now`, die Lanes liegen UNTER
+dem Repo-Deckel, und mindestens eine freigegebene Zeile wartet auf jemanden statt auf den Tick (ein
+Deckel-Warten ist Kapazität, kein Stau). Hält das ununterbrochen `STALL_MS` (Konstante 15 min, kein
+env), entsteht GENAU EINE offene Attention `kind:"blocked"` je Repo; ihr Text nennt die Köpfe —
+Adressat, Wurzel, seit wann, die Zeilen dahinter. Sobald eine Welle startet, keine freigegebene
+Arbeit mehr wartet oder der Dispatcher gestoppt wird, wird sie beantwortet (`Stau-Sensor:
+aufgeloest — …`). Eine Attention braucht ein aktives Program mit LEBENDER gebundener MAIN (Requester
+und Inbox der Antwort): gewählt wird das Program der ersten wartenden Zeile, das eine hat; ohne eine
+bleibt `stau.open[].attentionId` null und der Stau steht nur im Zähler. Die Uhr ist persistiert
+(`fleet.json` → `stallSensor`, erst nach dem ersten Stau), damit ein Neustart 15 Minuten nicht auf
+null setzt — und damit eine Suite sie ohne Produkt-Schalter stellen kann (`e2e/tasks.ts` (stau)).
+Zähler über `GET /api/start-plan` → `stau {stallMs, detected, msTotal, open[]}`.
+
+**Was der Sensor NICHT tut:** er startet, ordnet, gibt frei, hält und schließt nichts, und er liest
+Deckel und Verteilungspolitik unverändert (Gegenliste der Durchsatz-Notiz 2026-09-18 §e). Er läuft
+nur bei eingeschaltetem globalem Dispatcher — ein Program mit Grant unter gestopptem Fleet wird
+nicht erfasst.
+
 ## 4. What this deliberately is not
 
 It is **not a safety gate**, and since 2026-09-10 there is no worker here that could be mistaken for

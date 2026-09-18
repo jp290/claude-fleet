@@ -59,7 +59,7 @@ import {
   type TaskFilesOrigin, type TrackedSnapshot, type SymbolIndex, type SymbolIndexSnapshot,
   type SymbolRange, type TaskSurface,
 } from "./task-metadata";
-import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardSurfaceValid, cardValid, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY,
+import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardSurfaceValid, cardValid, cardAdvisoryGap, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY,
   CARD_VALIDATOR_VERSION, type TaskCardBody, type CardValidationContext } from "./card-extract";
 import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NOTE_HUB_FILES,
   type NoteInput, type NoteRow, type KeyedUpsert } from "./task-notes";
@@ -77,6 +77,10 @@ import { laneHunkDiffArgs, laneHunkRanges } from "./land-collision-stats";
 import { projectStartPlan, releaseVerdict, startPlanCardPaths, startPlanChecks, startPlanLaneClaims, startPlanWaitNote, type StartPlan,
   type StartPlanLane, type StartPlanReleaseVerdict, type StartPlanRepoCaps, type StartPlanRow, type StartPlanWave } from "./start-plan";
 import { renderWaveBrief, withCardHead } from "./wave-brief";
+// THE WAIT REGISTER: which row waits on what and whose move it is — derived from the plan on every
+// read (waits.ts), the stall sensor below reads its heads.
+import { deriveWaits, stallReadings, stallHeads, namedAfterIds, type WaitRow, type WaitRowFacts, type WaitLaneFacts,
+  type StallReading } from "./waits";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
 import {
@@ -114,7 +118,8 @@ import {
   type LineageHandoverLoss,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
-  PROGRAM_RELEASE_POLICIES, loadProgramRelease, type ProgramReleasePolicy, loadTaskHold,
+  PROGRAM_RELEASE_POLICIES, loadProgramRelease, type ProgramReleasePolicy, loadTaskHold, TASK_HOLD_GRUND_MAX,
+  loadStallSensor, type StallSensorState,
   type TaskDisposition, loadTaskDisposition, TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX,
   type Studio, type StudioContent, type ProgramStudioBinding, type StudioStage,
   type StudioBriefAudience,
@@ -2562,6 +2567,7 @@ let fleetEvents: FleetEvent[] = [];
 let clarifications: ClarificationRequest[] = [];
 let fleetReports: FleetReport[] = [];
 let attentionRequests: AttentionRequest[] = [];
+let stallSensor: StallSensorState = { detected: 0, msTotal: 0, repos: {} };
 // THE ADDRESSED MESSAGE RAIL (see Message). Fleet-level rather than a Program field: a message has
 // two ends that are not the same principal. `messagesLost` is its SCAR, in ProgramRecordLoss's
 // shape and for its reason — an unreadable record degrades to an EMPTY one, which is byte-identical
@@ -3471,6 +3477,9 @@ function stateSnapshot(): string {
     mergeParked: Object.fromEntries(mergeParked),
     repoBases, repoWorkers, repoLaneCaps, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
     landPending: Object.fromEntries(landPending), mainDirectPreflights,
+    // the stall sensor's clock (tickStallSensor) — only once it ever ran, so a state file of a
+    // fleet that never stood stuck carries no new key
+    ...(stallSensor.detected || Object.keys(stallSensor.repos).length ? { stallSensor } : {}),
   }, null, 2);
 }
 // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
@@ -10229,6 +10238,25 @@ async function confirmCardsForMain(s: Slot, body: Record<string, unknown> | null
   return json({ ok: true, sessionIdMatch, confirmed, skipped });
 }
 
+// WHY A ROW'S CARD CANNOT CARRY A RELEASE, or null. Read off the row alone — never the start plan
+// (a release is a decision, not a projection; pinned). The NACH ids that count are QUEUE ROWS other
+// than the row itself: a commit sha in prose is no order, and the validator refuses an `after` that
+// is not a row anyway (card-extract.ts#validateCard), so a card could never carry one.
+function releaseCardRefusal(t: Task): string | null {
+  const card = t.card;
+  if (!card) return "the row has no card yet (the card sweep reads a row that opens with the filing headers, or file it with an author card)";
+  if (!card.valid)
+    return `its card is not valid: ${card.gaps.filter((g) => !cardAdvisoryGap(g)).join("; ").slice(0, 300)}`;
+  if (t.brief && t.brief.at > card.at) return "the brief changed after the card was read — wait for the card sweep to re-read it";
+  const named = namedAfterIds([t.text, t.brief?.text ?? ""].join("\n"))
+    .filter((id) => id !== t.id && tasks.some((x) => x.id === id));
+  const missing = named.filter((id) => !(card.after ?? []).includes(id));
+  if (missing.length)
+    return `the text orders it after ${missing.join(", ")} but card.after carries ${(card.after ?? []).join(", ") || "nothing"} — `
+      + "the plan reads the order from the card alone; put the ids on a NACH: header line so the card sweep reads them";
+  return null;
+}
+
 async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // The authority bracket answers first and IN ITS OWN WORDS — "not bound" and "ambiguously bound"
   // stay two different refusals, because they tell the caller to go fix two different things.
@@ -10252,8 +10280,9 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // ONE EXCEPTION, and it is the hold's counter-act rather than a second release: a HELD queued row is
   // released already, so this door lifts the hold and writes nothing else (TaskHold).
   if (t.status === "queued" && t.hold) {
+    const lifted = t.hold.grund;
     t.hold = undefined;
-    audit("task_hold", s.id, `${t.id} program=${program.id} lifted`);
+    audit("task_hold", s.id, `${t.id} program=${program.id} lifted grund=${JSON.stringify(lifted)}`);
     await saveStateNow();
     return json({ ok: true, sessionIdMatch, lifted: "hold",
       task: { id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy, programId: t.programId } });
@@ -10296,24 +10325,49 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // itself, bounded by PROGRAM_MAX_PENDING and both lane caps — a cap on a count the policy no longer
   // keeps would refuse a hand release the policy could have made on its own.
   // a variant GROUP row is a bracket, not a start: its variants are the rows the tick will start
+  // (9) NO RELEASE WITHOUT A VALID CARD (4ae22c7a, 2026-09-18). The plan reads a row's order from
+  // `card.after` ONLY; K3 (1da3b56c) was released card-less and started 13 min after filing, its
+  // `NACH a8bbd1af` standing in the prose alone, and three holds made up for it by hand. So this door
+  // releases a row whose card is valid, speaks for the current brief, and carries every queue row
+  // the text orders it after — each refusal names which of the three it hit and the way out.
+  const cardRefusal = releaseCardRefusal(t);
+  if (cardRefusal) return json({ error: `a release needs a valid card — ${cardRefusal}` }, 409);
   const openReleased = tasks.filter((x) => x.programId === program.id && x.status === "queued" && !x.variants).length;
   if (programReleasePolicy(t) === "manual" && openReleased >= PROGRAM_MAX_RELEASED)
     return json({ error: `program release cap reached (${openReleased}/${PROGRAM_MAX_RELEASED} released rows not yet started) — let the tick start one first` }, 409);
   // (5) THROUGH THE HELPER, never a bare assignment: releaseTask is where `by` cannot be forgotten,
   // and a machine release that recorded nothing would be indistinguishable from the attended lands
   // already on the trail.
+  const liftedHold = t.hold ? ` hold-lifted grund=${JSON.stringify(t.hold.grund)}` : "";
   releaseTask(t, "machine");
   // E4 · releasing a GROUP releases its pending variants with it — the tick starts them only together
   const releasedVariants = t.variants ? variantsOfGroup(t).filter((v) => v.status === "pending") : [];
   for (const v of releasedVariants) releaseTask(v, "machine");
   // (6) …and the trail row the helper's field cannot be, for the reason spelled out at the
   // "task_release" AuditEvent: `releasedBy` is overwritten by a later attended ▸ start.
-  audit("task_release", s.id, `${t.id} program=${program.id}${releasedVariants.length ? ` variants=${releasedVariants.map((v) => v.id).join(",")}` : ""}`);
+  audit("task_release", s.id, `${t.id} program=${program.id}${releasedVariants.length ? ` variants=${releasedVariants.map((v) => v.id).join(",")}` : ""}${liftedHold}`);
   await saveStateNow();
   // sessionIdMatch is REPORTED, never gated — ACP-13's doctrine, and the same shape openAttention
   // and handleSelfSucceed answer with.
   return json({ ok: true, sessionIdMatch,
     task: { id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy, programId: t.programId } });
+}
+
+// THE HOLD ROUTE'S ONE FIELD. The body is closed: `{grund}` or nothing — an empty body is a hold
+// without a reason, exactly the pre-2026-09-18 call. Any other key is a 400, so a body can never
+// nominate a program, a repo or a policy (the release policy is never read from a self body).
+function holdGrundFrom(raw: string): string | null | { error: string } {
+  if (!raw.trim()) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return { error: "body must be JSON {\"grund\": \"…\"} or empty" }; }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { error: "body must be an object {grund}" };
+  const extra = Object.keys(parsed).filter((k) => k !== "grund");
+  if (extra.length) return { error: `the hold reads grund only — [${extra.join(", ")}] is not read` };
+  const g = (parsed as { grund?: unknown }).grund;
+  if (g === undefined || g === null) return null;
+  if (typeof g !== "string" || !g.trim()) return { error: "grund must be a non-empty string or null" };
+  if (g.trim().length > TASK_HOLD_GRUND_MAX) return { error: `grund must be at most ${TASK_HOLD_GRUND_MAX} chars` };
+  return g.trim();
 }
 
 // THE HOLD (Schnitt 3) — a bound Program-MAIN's stop on one row of its OWN program, over its
@@ -10323,7 +10377,12 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
 // binding, the repo from the caller's checkout, nothing from a body. Idempotent — a second hold on
 // a held row answers ok and writes nothing. A running or terminal row is not held: a hold stops a
 // START, and those rows have started or ended.
-async function holdTaskForMain(s: Slot, id: string): Promise<Response> {
+// `grund` is the MAIN's sentence why (TaskHold.grund), parsed by the route (holdGrundFrom) and never
+// anything else: the program still comes from the binding and the repo from the checkout. A hold
+// without one is ACCEPTED and stored as grund:null — visible on the row, in the audit line and in the
+// wait register — because refusing it would strand every MAIN that holds a row the old way. A second
+// hold on a held row writes only a NEW reason (the way to name one after the fact), else nothing.
+async function holdTaskForMain(s: Slot, id: string, grund: string | null): Promise<Response> {
   const bound = boundProgramForMain(s);
   if (!bound.ok) return json({ error: bound.error }, 409);
   const { program, sessionIdMatch } = bound;
@@ -10342,8 +10401,12 @@ async function holdTaskForMain(s: Slot, id: string): Promise<Response> {
   if (!target || repoCanon(target) !== mainRepo)
     return json({ error: `task does not target ${basename(mainRepo)}, where this MAIN is bound — a hold never reaches across repositories` }, 409);
   if (!t.hold) {
-    t.hold = { by: "main", slot: s.id, at: Date.now() };
-    audit("task_hold", s.id, `${t.id} program=${program.id} held`);
+    t.hold = { by: "main", slot: s.id, at: Date.now(), grund };
+    audit("task_hold", s.id, `${t.id} program=${program.id} held grund=${JSON.stringify(grund)}`);
+    await saveStateNow();
+  } else if (grund !== null && grund !== t.hold.grund) {
+    t.hold = { ...t.hold, grund };
+    audit("task_hold", s.id, `${t.id} program=${program.id} regrund grund=${JSON.stringify(grund)}`);
     await saveStateNow();
   }
   return json({ ok: true, sessionIdMatch, hold: t.hold,
@@ -11657,7 +11720,11 @@ const startPlanRowOf = (t: Task): StartPlanRow => {
     ...(policy !== "manual" ? { release: policy } : {}), ...(t.hold ? { held: true } : {}),
     ...(t.variantOf ? { variantOf: t.variantOf } : {}) };
 };
-function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()): StartPlan {
+// GET /api/start-plan's object: the plan, the wait register over it and the stall sensor's counters.
+// `projectStartPlan`'s own fields come first and unchanged, so the plan half is still byte for byte
+// what `bun start-plan.ts --state fleet.json` prints.
+type StartPlanView = StartPlan & { waits: WaitRow[]; stau: ReturnType<typeof stallView> };
+function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()): StartPlanView {
   const statuses: Record<string, string> = {};
   const rows: StartPlanRow[] = [];
   for (const t of tasks) {
@@ -11696,7 +11763,29 @@ function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()):
       return [id, programDispatchCap(p ? programDispatchGrant(p) : undefined, cap.max)];
     })) };
   }
-  return projectStartPlan({ projection, rows, statuses, lanes, caps });
+  const plan = projectStartPlan({ projection, rows, statuses, lanes, caps });
+  return { ...plan, waits: waitsOf(plan), stau: stallView() };
+}
+// THE FACTS the wait register reads (waits.ts#deriveWaits), taken off the live state in one pass:
+// every row (an `after` target that left the plan is still a fact), every occupied slot's park —
+// an unconfirmed criterion of its founding row or `awaiting` owner is the owner's move, awaiting
+// main its MAIN's — and each program's LIVE bound MAIN (programMainLive, the tick's own reading).
+function waitsOf(plan: StartPlan): WaitRow[] {
+  const rowFacts: Record<string, WaitRowFacts> = {};
+  for (const t of tasks) rowFacts[t.id] = { status: t.status, programId: t.programId ?? null, slot: t.slot ?? null,
+    hold: t.hold ? { slot: t.hold.slot, grund: t.hold.grund, at: t.hold.at } : null };
+  const laneFacts: Record<number, WaitLaneFacts> = {};
+  for (const s of slots) {
+    if (!s.cwd) continue;
+    const c = foundingRowOf(s)?.criterion ?? null;
+    const unconfirmed = !!c && c.confirmedAt === null;
+    laneFacts[s.id] = { programId: s.programId ?? null,
+      parked: unconfirmed || s.awaiting === "owner" ? "owner" : s.awaiting === "main" ? "main" : null,
+      since: unconfirmed && c ? c.proposedAt : null };
+  }
+  const mains: Record<string, number | null> = {};
+  for (const p of programs) if (p.main && programMainLive(p.id)) mains[p.id] = p.main.slot;
+  return deriveWaits({ plan, rows: rowFacts, lanes: laneFacts, mains });
 }
 // THE PLAN'S WAVES BESIDE THE LAND WAVES THEY WERE READ FROM, in the plan's order. projectStartPlan
 // maps every projected repo and wave one to one and in order, so the pair at the same index is the
@@ -13044,6 +13133,110 @@ const programMainLive = (programId: string): boolean => {
 };
 let dispatchBusy = false;
 
+// ▸ THE STALL SENSOR (queue rows 80f61ed8 → 84888f35). On 2026-09-15 claude-fleet stood ~3.5 h with
+// 17 released waves, 0 startable, a cap of 3 and 1–2 lanes, and nothing said so — an orchestrator
+// found it by looking; the evening before, the same. Per repo, a stall is waits.ts#stallReadings
+// (released work waits, nothing starts now, a lane is free, and some released row's wait is
+// somebody's move rather than the tick's) holding WITHOUT A BREAK for STALL_MS. Then exactly ONE
+// `blocked` attention per repo names the heads of the wait chains — who, what, since when — and it
+// is answered the moment the reading ends. The sensor states and decides nothing: it starts,
+// reorders, releases and closes nothing, and the caps are not read differently because of it.
+// The clock is persisted (StallSensorState): a restart would otherwise reset 15 minutes to zero,
+// and it is how a suite stands a clock on a stall without a product switch. No env: the number is
+// the owner's order ("Konstante 15 min"), not a tuning knob.
+const STALL_MS = 15 * 60_000;
+function stallView(): { stallMs: number; detected: number; msTotal: number;
+  open: { repo: string; since: number; stalled: boolean; attentionId: string | null }[] } {
+  return { stallMs: STALL_MS, detected: stallSensor.detected, msTotal: stallSensor.msTotal,
+    open: Object.entries(stallSensor.repos).map(([repo, c]) =>
+      ({ repo, since: c.since, stalled: c.counted, attentionId: c.attentionId })) };
+}
+// The attention's text: the heads first, so an owner reading the first line knows whose move it is.
+// Stable while the heads stand still (no running minute count), so an unchanged stall rewrites nothing.
+function stallText(r: StallReading, since: number): string {
+  const heads = stallHeads(r.waits);
+  const lines = heads.map((h) => `· ${h.adressat} — ${h.wurzel}${h.seit ? ` (seit ${new Date(h.seit).toISOString()})` : ""} ← ${h.ids.join(", ")}`);
+  const head = `Stau in ${basename(r.repo)} seit ${new Date(since).toISOString()}: freigegebene Arbeit wartet, keine Welle startbereit, `
+    + `${r.lanes}/${r.cap ?? "?"} Lanes belegt. Wurzel-Blocker:`;
+  const tail = "Der Sensor stellt fest und entscheidet nichts — Tabelle: GET /api/start-plan → waits.";
+  const render = (n: number): string => [head, ...lines.slice(0, n),
+    ...(n < lines.length ? [`… ${lines.length - n} weitere`] : []), tail].join("\n");
+  let shown = lines.length;
+  while (shown > 1 && render(shown).length > MAX_ATTENTION_TEXT) shown--;
+  return render(shown).slice(0, MAX_ATTENTION_TEXT);
+}
+// An attention row needs an ACTIVE program with a LIVE bound MAIN (the requester, and the inbox the
+// answer goes to — openCriterionAttention's rule): the first stuck row's program that has one. None
+// = no row, and GET /api/start-plan → stau.open still shows the stall with attentionId null.
+function raiseStallAttention(r: StallReading, clock: StallSensorState["repos"][string]): boolean {
+  const text = stallText(r, clock.since);
+  const open = clock.attentionId ? attentionRequests.find((a) => a.id === clock.attentionId) : undefined;
+  if (open) {
+    // the owner answered or refused it, or its MAIN went: one row per stall, never a second
+    if (open.status !== "open" || open.text === text) return false;
+    open.text = text;
+    audit("attention_updated", open.requester.slot, `${open.id} kind=blocked program=${open.programId} via=stall-sensor`);
+    return true;
+  }
+  const programId = r.waits.map((w) => tasks.find((t) => t.id === w.id)?.programId).find((p): p is string => !!p && programMainLive(p));
+  const program = programId ? programs.find((p) => p.id === programId) : undefined;
+  const occupant = program?.main ? slotFrom(program.main.slot) : undefined;
+  if (!program || !occupant) return false;
+  const request: AttentionRequest = {
+    id: randomBytes(12).toString("hex"), raisedAt: Date.now(), kind: "blocked", text,
+    requester: { slot: occupant.id, openedAt: occupant.openedAt, sessionId: occupant.sessionId },
+    programId: program.id,
+    provenance: { taskId: r.waits[0]?.id ?? null, originId: null, programId: program.id, branch: null, candidateSha: null },
+    status: "open", answer: null, refusedReason: null, closedAt: null,
+  };
+  attentionRequests = [...attentionRequests, request];
+  clock.attentionId = request.id;
+  audit("attention_open", occupant.id, `${request.id} kind=blocked program=${program.id} via=stall-sensor repo=${basename(r.repo)}`);
+  return true;
+}
+// answerAttentionsForCriterion's close, for the same reason: the answer is COMPOSED — `by` is the
+// only literal the type has, and the text says the sensor wrote it.
+function closeStallAttention(id: string | null, why: string): void {
+  const a = id ? attentionRequests.find((x) => x.id === id) : undefined;
+  if (!a || a.status !== "open") return;
+  const program = programs.find((p) => p.id === a.programId);
+  if (!program || program.status !== "active") { refuseAttention(a, `stall sensor: ${why}`); return; }
+  const at = Date.now();
+  const entry = appendProgramInbox(program, "attention-answer", a.id);
+  a.status = "answered";
+  a.answer = { text: `Stau-Sensor: aufgeloest — ${why}`, at, by: "owner" };
+  a.refusedReason = null;
+  a.closedAt = at;
+  audit("attention_answered", a.requester.slot, `${a.id} kind=blocked inbox=${entry.id} via=stall-sensor`);
+}
+function tickStallSensor(on: boolean): void {
+  const released = on && tasks.some((t) => t.kind === "auftrag" && !t.variants && tickOwnsRow(t));
+  if (!released && !Object.keys(stallSensor.repos).length) return;
+  const view = released ? startPlanNow() : null;
+  const readings = view ? stallReadings(view, view.waits) : [];
+  const now = Date.now();
+  let dirty = false;
+  for (const r of readings) {
+    if (!r.stuck) continue;
+    const clock = stallSensor.repos[r.repo];
+    if (!clock) { stallSensor.repos[r.repo] = { since: now, attentionId: null, counted: false }; dirty = true; continue; }
+    if (now - clock.since < STALL_MS) continue;
+    if (!clock.counted) { clock.counted = true; stallSensor.detected++; dirty = true; }
+    if (raiseStallAttention(r, clock)) dirty = true;
+  }
+  for (const [repo, clock] of Object.entries(stallSensor.repos)) {
+    if (readings.some((r) => r.repo === repo && r.stuck)) continue;
+    const why = !on ? "der Dispatcher ist gestoppt" : readings.some((r) => r.repo === repo)
+      ? "eine Welle startet oder keine freigegebene Arbeit wartet mehr auf jemanden" : "keine freigegebene Arbeit mehr in diesem Repo";
+    closeStallAttention(clock.attentionId, why);
+    if (clock.counted) stallSensor.msTotal += now - clock.since;
+    const { [repo]: _gone, ...rest } = stallSensor.repos;
+    stallSensor = { ...stallSensor, repos: rest };
+    dirty = true;
+  }
+  if (dirty) { pruneAttention(); saveState(); }
+}
+
 // ▸ A VARIANT GROUP HELD ONLY BY CAPACITY KEEPS THE NEXT FREEING LANE (2026-09-17).
 //
 // THE FAILURE THIS ENDS. Lanes free ONE at a time. A group of n ≥ 2 held purely on capacity was
@@ -13281,6 +13474,7 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
 
 async function tickDispatch(): Promise<void> {
   if (dispatchBusy || !DISPATCH_REPO) return;
+  tickStallSensor(dispatchOn);
   // THE GLOBAL MASTER STOP IS NO LONGER THIS TICK'S OWN GATE — it became a per-ROW gate at the top
   // of the loop below, because the owner may now grant ONE program the right to have its released
   // rows started while the fleet queue is stopped. This line keeps the cheap early return for the
@@ -28796,6 +28990,7 @@ if (existsSync(STATE_FILE)) {
     if (Array.isArray((persisted as { attentionRequests?: unknown }).attentionRequests))
       attentionRequests = ((persisted as { attentionRequests: unknown[] }).attentionRequests)
         .map(attentionFrom).filter((a): a is AttentionRequest => a !== null);
+    stallSensor = loadStallSensor((persisted as { stallSensor?: unknown }).stallSensor);
     // ACP-18 · the addressed message rail, and it does NOT follow the drop-malformed-rows rule of
     // its four neighbours above. Those are arrays of independent rows; this is a CAPPED record whose
     // `dropped` counter is only true while one writer maintains it, so a partial load would leave
@@ -32623,7 +32818,9 @@ Bun.serve<WSData>({
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not hold a queue row — holding is the bracket above lanes, like releasing" }, 409);
-      return holdTaskForMain(s, selfTaskHold[1]);
+      const grund = holdGrundFrom(await req.text());
+      if (typeof grund === "object" && grund !== null) return json({ error: grund.error }, 400);
+      return holdTaskForMain(s, selfTaskHold[1], grund);
     }
 
     // ACP · Program-MAIN land. Non-lane only for the same "one edge per role" reason as its three
@@ -35504,7 +35701,9 @@ Bun.serve<WSData>({
           return json({ error: `a ${t.kind} is advisory, not a work brief — change its kind first` }, 409);
         } else if (t.status === "queued" && t.hold) {
           // the hold's counter-act, not a second release — the same exception releaseTaskForMain
-          // makes: the row is released already, so only the stop is lifted and `releasedBy` stays
+          // makes: the row is released already, so only the stop is lifted and `releasedBy` stays.
+          // The trail names it like the MAIN door does: until 2026-09-18 the owner's lift was silent.
+          audit("task_hold", undefined, `${t.id} program=${t.programId ?? "none"} lifted by=owner grund=${JSON.stringify(t.hold.grund)}`);
           t.hold = undefined;
         } else if (t.status === "queued") {
           return json({ ok: true, unchanged: true });

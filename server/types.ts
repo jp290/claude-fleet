@@ -1349,6 +1349,10 @@ interface TaskCard extends TaskCardBody {
 // (server.ts#releaseTask). Written only by the bound MAIN of the row's own program, never from a
 // body: `slot` and `at` are stamped from the caller's token. Absent = nobody held it. A malformed
 // persisted hold loads as a hold (loadTaskHold): a stop that half-survived a hand edit must not start work.
+// `grund` is the MAIN's own sentence why (the one field the hold route reads from its body, since
+// 2026-09-18): 42 holds in 50 minutes on 2026-09-17 carried none, and 32 rows still stood on them a
+// day later with nobody able to say what would lift them (docs/messungen/2026-09-18-queue-durchsatz.md
+// §b). `null` = held without one, and it stays VISIBLE as null — never read as an empty reason.
 // THE OWNER'S REASON FOR AN ARCHIVE — written only by POST /api/tasks/:id/archive when its body names
 // a `grund` (server.ts#taskDispositionFromBody), and cleared when the row leaves `archived`. ABSENT
 // means nobody said why, never an empty reason: an archive without a body mints none. `beleg` is the
@@ -1367,12 +1371,32 @@ const loadTaskDisposition = (value: unknown): TaskDisposition | undefined => {
     ...(typeof r.beleg === "string" && r.beleg.trim() ? { beleg: r.beleg.slice(0, TASK_DISPOSITION_BELEG_MAX) } : {}),
     by: "owner", at: r.at };
 };
-interface TaskHold { by: "main"; slot: number; at: number }
+interface TaskHold { by: "main"; slot: number; at: number; grund: string | null }
+const TASK_HOLD_GRUND_MAX = 500;
 const loadTaskHold = (value: unknown): TaskHold | undefined => {
   if (value === undefined || value === null || value === false) return undefined;
   const r = (typeof value === "object" && !Array.isArray(value) ? value : {}) as Record<string, unknown>;
   return { by: "main", slot: typeof r.slot === "number" && Number.isInteger(r.slot) ? r.slot : 0,
-    at: typeof r.at === "number" && Number.isFinite(r.at) ? r.at : 0 };
+    at: typeof r.at === "number" && Number.isFinite(r.at) ? r.at : 0,
+    grund: typeof r.grund === "string" && r.grund.trim() ? r.grund.trim().slice(0, TASK_HOLD_GRUND_MAX) : null };
+};
+// THE STALL SENSOR'S CLOCK (server.ts#tickStallSensor) — the one piece of the wait register that is
+// state: since when a repo has stood stuck (waits.ts#stallReadings), and the one attention it raised.
+// Persisted so a restart does not reset a 15-minute clock to zero; the wait TABLE itself is never
+// stored (waits.ts derives it on every read). `detected`/`msTotal` count finished and running stalls.
+interface StallRepoClock { since: number; attentionId: string | null; counted: boolean }
+interface StallSensorState { detected: number; msTotal: number; repos: Record<string, StallRepoClock> }
+const loadStallSensor = (value: unknown): StallSensorState => {
+  const r = (value && typeof value === "object" && !Array.isArray(value) ? value : {}) as Record<string, unknown>;
+  const count = (v: unknown): number => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+  const repos: Record<string, StallRepoClock> = {};
+  const raw = (r.repos && typeof r.repos === "object" && !Array.isArray(r.repos) ? r.repos : {}) as Record<string, unknown>;
+  for (const [repo, c] of Object.entries(raw)) {
+    const x = (c && typeof c === "object" ? c : {}) as Record<string, unknown>;
+    if (typeof x.since !== "number" || !Number.isFinite(x.since) || x.since <= 0) continue;
+    repos[repo] = { since: x.since, attentionId: typeof x.attentionId === "string" ? x.attentionId : null, counted: x.counted === true };
+  }
+  return { detected: count(r.detected), msTotal: count(r.msTotal), repos };
 };
 // WHICH VARIANT OF A GROUP LANDS — written once, by server.ts#decideVariantGroup, and never
 // rewritten. `winner` is the variant row id; `shelved` holds the BRANCHES of every other variant that
@@ -2870,7 +2894,7 @@ export type {
   ProgramValidation, SupervisorBinding, ProgramDigest, DispatchSpawn, SlotContext, SlotStreamOccupant,
   StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
-  StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold,
+  StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold, StallRepoClock, StallSensorState,
   TaskDisposition, LineageRole, LineageObligationKind, LineageOccupant, LineageWatchTarget, LineageObligationRef, LineageHandover,
   LineageHandoverRead, LineageHandoverLoss,
 };
@@ -2900,7 +2924,7 @@ export {
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,
-  PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold,
+  PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold, TASK_HOLD_GRUND_MAX, loadStallSensor,
   TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX, loadTaskDisposition,
   HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck,
   HELPER_ARTIFACT_GLOB_MAX, HELPER_ARTIFACT_MAX, HELPER_ARTIFACT_PATH_MAX,

@@ -205,7 +205,7 @@ wird danach gegen eine Tatsache geprüft, die dieser Prozess selbst feststellen 
 | Feld | geprüft gegen |
 |---|---|
 | `surface.files` | `git ls-files` (der Tracked-Snapshot aus `task-metadata.ts`) **und** den INTENT-Text der Zeile |
-| `surface.symbols` | denselben Intent-Text **und** `graphify-out/graph.json`, danach eine Top-Level-Deklaration in der getrackten Datei (`card-extract.ts#declaresSymbol` — der Graph ist ein Schnappschuss; eine Datei mit so aufgelöstem Symbol trägt keine `ranges`); ohne Graph nur die Existenz der Datei, `ranges` bleibt `null` |
+| `surface.symbols` | denselben Intent-Text **und** `graphify-out/graph.json`, danach eine Top-Level-Deklaration in der getrackten Datei (`card-extract.ts#declaresSymbol` — der Graph ist ein Schnappschuss; eine Datei mit so aufgelöstem Symbol trägt keine `ranges`); ohne Graph nur die Existenz der Datei, `ranges` bleibt `null` — und die Karte SAGT es: jedes so behaltene Symbol steht in `surface.unchecked` (`card-extract.ts#cardUncheckedSymbols`; beim Laden aus `ranges: null` abgeleitet, nie gelesen). Auf dem Autorenpfad ist der Index die einzige Symbolprüfung (`server.ts#authorCardFrom` hängt die FLAECHE-Zeile an, die Zitatregel hält per Konstruktion); `surfaceValid` bürgt für die Symbole nur ohne diesen Vermerk |
 | `verify` | die bekannten Kettenschritte (`verify-proportion.ts#LOCAL_PROOF_STEPS`) |
 | `surface.creates` | NICHT getrackt, im Intent-Text genannt, Verzeichnis getrackt (`docs/messungen/` frei) — eine geplante NEUE Datei |
 | `after` | eine Queue-Zeile, im Text genannt |

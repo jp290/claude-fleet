@@ -6848,8 +6848,13 @@ export async function run(ctx: Ctx): Promise<void> {
   // an ungranted row the moment the global switch opens.
   const pdSwitchesBefore = await fleetSwitches();
   const pdTasks: string[] = [];
+  // the rows this section releases through the MAIN door carry a card (the door asks for one since
+  // 2026-09-18) — each on its OWN tracked file: a card's files join the row's derived surface, and a
+  // shared file would make these rows wait on each other's collision instead of on the gate a check
+  // is about. The owner-released rows carry none, exactly as before.
+  const pdCard = (file: string): Record<string, unknown> => ({ ...RELEASE_CARD, surface: { files: [file], symbols: [] } });
   const pdMake = async (fields: Record<string, unknown>): Promise<string> => {
-    const created = (await (await post("/api/tasks", { queue: false, ...withReleaseCard(fields) })).json()) as { task: TaskRow };
+    const created = (await (await post("/api/tasks", { queue: false, ...fields })).json()) as { task: TaskRow };
     pdTasks.push(created.task.id);
     return created.task.id;
   };
@@ -6921,7 +6926,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // loop started reasoning about rows the owner's grant says nothing about.
   const pdForeignId = await pdMake({ text: "program-dispatch: control-program row", programId: pdControl.id });
   const pdLooseId = await pdMake({ text: "program-dispatch: unbracketed row" });
-  const pdMachine1 = await pdMake({ text: "program-dispatch: granted program, machine-released #1", programId: mainProgram.id });
+  const pdMachine1 = await pdMake({ text: "program-dispatch: granted program, machine-released #1", programId: mainProgram.id, card: pdCard("ctx-big.txt") });
   const pdForeignRelease = await pdOwnerRelease(pdForeignId);
   const pdLooseRelease = await pdOwnerRelease(pdLooseId);
   const pdMachine1Release = await selfRelease(successorToken, pdMachine1);
@@ -6946,7 +6951,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // master stop returned instead of skipping, nothing below could ever start.
   const pdGrant = await pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: true, maxLanes: 1 } });
   const pdGrantRecord = await pdProgramRecord(mainProgram.id);
-  const pdMachine2 = await pdMake({ text: "program-dispatch: granted program, machine-released #2", programId: mainProgram.id });
+  const pdMachine2 = await pdMake({ text: "program-dispatch: granted program, machine-released #2", programId: mainProgram.id, card: pdCard("ctx-linked.txt") });
   const pdMachine2Release = await selfRelease(successorToken, pdMachine2);
   await pdUntil(async () => (await spawnRowOf(pdMachine1))?.status === "sent" && !!(await spawnRowOf(pdMachine2))?.note);
   const [pdForeignB, pdLooseB, pdMachine1B, pdMachine2B] = await Promise.all([
@@ -7004,7 +7009,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const pdQuietStart = new Date().getHours();
   await post("/api/autos/quiet", { start: pdQuietStart, end: (pdQuietStart + 2) % 24 });
   const pdQuietOwnerId = await pdMake({ text: "program-dispatch: granted program, OWNER-released in quiet hours", programId: mainProgram.id });
-  const pdQuietMachineId = await pdMake({ text: "program-dispatch: granted program, MACHINE-released in quiet hours", programId: mainProgram.id });
+  const pdQuietMachineId = await pdMake({ text: "program-dispatch: granted program, MACHINE-released in quiet hours", programId: mainProgram.id, card: pdCard("cursor-probe.txt") });
   const pdQuietOwnerRelease = await pdOwnerRelease(pdQuietOwnerId);
   const pdQuietMachineRelease = await selfRelease(successorToken, pdQuietMachineId);
   const pdQuietState = (await (await get("/api/sessions")).json()) as { quietHours: { start: number; end: number } | null };
@@ -7047,7 +7052,7 @@ export async function run(ctx: Ctx): Promise<void> {
   await post("/api/dispatch", { on: false }); // a restart reloads the persisted switches
   await post("/api/autos/switch", { on: true });
   const pdUnreadableRecord = await pdProgramRecord(mainProgram.id);
-  const pdUnreadableId = await pdMake({ text: "program-dispatch: row under an unreadable grant", programId: mainProgram.id });
+  const pdUnreadableId = await pdMake({ text: "program-dispatch: row under an unreadable grant", programId: mainProgram.id, card: pdCard("divergent.txt") });
   const pdUnreadableRelease = await selfRelease(successorToken, pdUnreadableId);
   await pdSettle();
   const pdUnreadableRow = await spawnRowOf(pdUnreadableId);

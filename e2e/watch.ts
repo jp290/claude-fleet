@@ -6888,6 +6888,53 @@ export async function run(): Promise<void> {
     await restartSrv(); // back to the wrapper's FLEET_HARNESS_AUTOMATION=0 and the default gates
   }
 
+  // === PI-ZAI IS A WATCH TARGET ONCE THE OPERATOR CONSENTS (2026-09-18) ========================
+  // server.ts#PI_ZAI_HARNESS flipped `automatable` together with its readiness seam. The two halves
+  // of harnessAutomatableFor are measured on ONE live pi-zai lane: with the wrapper's flag at 0 the
+  // lane Watch is refused by the FLAG (the adapter no longer declines), and after a restart with
+  // FLEET_HARNESS_AUTOMATION=1 the same lane reads agent=alive on /api/sessions and a plain
+  // session's own Self token arms a Watch on it. Before the flip the second half was a 409 naming
+  // "the adapter declines" — the refusal this block exists to prove gone.
+  {
+    const pzLane = (await (await post("/api/lanes", { repo: REPO, harness: "pi-zai" })).json()) as
+      { slot?: number; branch?: string };
+    const pzSubId = await freeSlot();
+    const pzSubOpen = pzSubId ? await post(`/api/slots/${pzSubId}/open`, { cwd: REPO, label: "pizai-watch-sub" }) : null;
+    const pzTok = pzSubOpen?.ok ? await paneEnv(`s${pzSubId}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    check("pi-zai watch fixture: a pi-zai lane and a plain subscriber with its own pane-exported Self token",
+      typeof pzLane.slot === "number" && !!pzSubOpen?.ok && /^[0-9a-f]{32}$/.test(pzTok),
+      JSON.stringify({ lane: pzLane.slot ?? null, sub: pzSubId, subStatus: pzSubOpen?.status ?? null, tok: pzTok.length }));
+    const pzOff = await selfWatch(pzTok, { target: pzLane.slot, idleSec: 3600 });
+    const pzOffText = await pzOff.text();
+    check("pi-zai lane Watch with FLEET_HARNESS_AUTOMATION=0: 409 from the FLAG half — the adapter no longer declines",
+      pzOff.status === 409 && pzOffText.includes("harness pi-zai is not automatable")
+        && pzOffText.includes("FLEET_HARNESS_AUTOMATION is off"),
+      `${pzOff.status} ${pzOffText.slice(0, 240)}`);
+
+    await restartSrv({ FLEET_HARNESS_AUTOMATION: "1" });
+    let pzAgent: string | null = null;
+    for (let i = 0; i < 80 && pzAgent !== "alive"; i++) {
+      pzAgent = ((await (await get("/api/sessions")).json()) as { slots: { id: number; agent: string | null }[] })
+        .slots.find((x) => x.id === pzLane.slot)?.agent ?? null;
+      if (pzAgent !== "alive") await Bun.sleep(250);
+    }
+    const pzCat = (((await (await get("/api/harnesses")).json()) as
+      { harnesses?: { id: string; automatable?: boolean }[] }).harnesses ?? []).find((h) => h.id === "pi-zai");
+    check("pi-zai lane with FLEET_HARNESS_AUTOMATION=1: /api/sessions reads agent=alive and the catalogue publishes automatable:true",
+      pzAgent === "alive" && pzCat?.automatable === true,
+      JSON.stringify({ agent: pzAgent, catalog: pzCat ?? null }));
+    const pzOn = await selfWatch(pzTok, { target: pzLane.slot, idleSec: 3600 });
+    const pzOnJ = (await pzOn.json()) as { ok?: boolean; watch?: WatchRow; error?: string };
+    check("POST /api/self/watch on the pi-zai lane is ACCEPTED under operator consent — no 409, an armed Watch on that lane",
+      pzOn.status === 200 && pzOnJ.watch?.armed === true && pzOnJ.watch.target === pzLane.slot
+        && pzOnJ.watch.slot === pzSubId,
+      `${pzOn.status} ${JSON.stringify(pzOnJ).slice(0, 240)}`);
+
+    if (pzOnJ.watch?.id) await post(`/api/watches/${pzOnJ.watch.id}/delete`, {});
+    for (const id of [pzLane.slot, pzSubId]) if (id) await post(`/api/slots/${id}/kill`, {});
+    await restartSrv(); // back to the wrapper's FLEET_HARNESS_AUTOMATION=0
+  }
+
   // === ACCEPTED-BY-LAND (server.ts#acceptByLandReading) ========================================
   // Owner 2026-09-13, §D of docs/messungen/2026-09-13-task-aggregation-a-e-fable.md: 29 of 38
   // undecided reports were `complete` behind a land with a green or unknown audit. Planted with srv

@@ -2766,7 +2766,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       progGuardIdx: tBody.indexOf("if (next.programId) {"), freeIdx: tBody.indexOf("if (!free) {") }));
   // ...and the note says the two things a reader needs and NEITHER of them falsely: the harness, that
   // the only remaining path is a hand dispatch, and WHICH of the two conditions declined. The last one
-  // is why the sentence is derived rather than written twice — with the flag SET, `pi-zai` still
+  // is why the sentence is derived rather than written twice — with the flag SET, `container` still
   // declines on its own `automatable: false`, and a note that said "FLEET_HARNESS_AUTOMATION off"
   // there would send the owner after an env change that changes nothing.
   const whyFn = server.match(/const harnessAutomationWhy = [\s\S]*?;\n/)?.[0] ?? "";
@@ -3674,6 +3674,39 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && (pzCode.match(/ZAI_API_KEY=/g) ?? []).length === 1
     && !/(?:readFileSync|Bun\.file|readText)\(PI_ZAI_KEY_FILE/.test(pzCode),
     pzCode.match(/ZAI_API_KEY=[^\n]+/)?.[0]?.slice(0, 180) ?? "no ZAI_API_KEY assignment");
+  // automation-eligibility FLIPPED 2026-09-18, coupled to its readiness seam the way codex's is:
+  // the Trust prompt keeps `pi` alive, so only the rendered pane can refuse it, and on a suite
+  // fleet (FLEET_HARNESS_AUTOMATION=0) a flip without the seam is invisible at runtime. The seam is
+  // not only present but RUN here against the measured Pi 0.85.0 frames (140×44, 2026-09-18): the
+  // trust tail must block, the ready footer must accept and not block, and the same dialog QUOTED
+  // above a live footer — a transcript, not a screen — must not block.
+  const pzRe = (field: string): RegExp | null => {
+    const m = pzCode.match(new RegExp(`${field}: \\/(.+)\\/([a-z]*),\\n`));
+    try { return m ? new RegExp(m[1]!, m[2]) : null; } catch { return null; }
+  };
+  const pzAccept = pzRe("accept");
+  const pzBlock = pzRe("re");
+  const pzRule = "─".repeat(140);
+  const pzTrustFrame = ["Warning: No project session found with id 'x'; creating a new session with that id.", pzRule, "",
+    " Trust project folder?", " /tmp/pz-withpi/work", "",
+    " This allows pi to load .pi settings and resources, install missing project packages, and execute project extensions.", "",
+    " → Trust", "   Trust parent folder", " (/tmp/pz-withpi)", "   Trust (this session only)", "   Do not trust",
+    "   Do not trust (this session only)", "", " ↑↓ navigate  enter select  escape/ctrl+c cancel", "", pzRule,
+    ...Array(24).fill("")].join("\n");
+  const pzFooter = `/tmp/pz-nopi/work\n0.0%/1.0M (auto)${" ".repeat(104)}glm-5.3-flash • high`;
+  const pzReadyFrame = [" Update Available", " New version 0.85.1 is available. Run pi update", pzRule, "", pzRule, pzFooter].join("\n");
+  const pzQuotedFrame = [pzTrustFrame.split("\n").slice(3, 18).join("\n"), pzRule, "", pzRule, pzFooter].join("\n");
+  pin("pi-zai is automation-eligible ONLY alongside its declared readiness seam (one decision, two fields)",
+    /\n  automatable: true,/.test(pzBody) && /\n  readiness: \{/.test(pzBody)
+      && /why: "pi project trust prompt"/.test(pzCode) && !!pzAccept && !!pzBlock,
+    pzBody.match(/automatable: \w+/)?.[0] ?? "no automatable field");
+  pin("pi-zai's readiness seam separates the measured frames: trust tail blocks, footer accepts, a quoted dialog does not block",
+    !!pzAccept && !!pzBlock
+      && pzBlock.test(pzTrustFrame) && !pzAccept.test(pzTrustFrame)
+      && pzAccept.test(pzReadyFrame) && !pzBlock.test(pzReadyFrame)
+      && !pzBlock.test(pzQuotedFrame),
+    JSON.stringify({ accept: pzAccept?.source ?? null, block: !!pzBlock,
+      trust: pzBlock?.test(pzTrustFrame), ready: pzAccept?.test(pzReadyFrame), quoted: pzBlock?.test(pzQuotedFrame) }));
   pin("pi-zai is registered in the stable harness order beside the two Pi adapters",
     server.includes("const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_ZAI_HARNESS, PI_OX_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];"),
     server.match(/const HARNESSES: readonly Harness\[\] = \[[^\n]+/)?.[0] ?? "registry absent");

@@ -818,12 +818,31 @@ const PI_ZAI_HARNESS: Harness = {
   // The process is Pi itself; depth-one liveness has the same measured basis as PI_HARNESS.
   comms: ["pi"],
   composer: PI_COMPOSER,
-  // Pi has no known input-eating rendered boot screens, so readiness is not applicable and is
-  // deliberately absent. No bootSettleMs is claimed because none was measured for this path.
+  // MEASURED 2026-09-18 (Pi 0.85.0, this exact spawn line, fresh agent home, 140×44 pane): in a
+  // project with local `.pi` resources Pi opens `Trust project folder?` before any composer. An
+  // unattended paste there vanished (sentinel not on screen), and the Enter that follows it
+  // selected the preselected `→ Trust` — the brief was gone AND trust.json recorded the folder,
+  // so the next start would load that project's extensions. The same probe without `.pi` showed
+  // the footer gauge `0.0%/1.0M (auto) … glm-5.3-flash • high` from the first frame on; across
+  // 116 boot frames the dialog and the gauge never shared a frame. `1.0M` is the contextWindow
+  // this adapter's own catalogue writes, so the marker cannot drift with Pi's bundled one. The
+  // block is anchored to the dialog's shape AT THE SCREEN TAIL (its nav line, one rule, blank
+  // rows), so a transcript that merely quotes the dialog — a lane reading this comment — never
+  // refuses a live pane. The non-modal `Update Available` banner is neither: it ate nothing.
+  readiness: {
+    accept: /\d%\/1\.0M\b/,
+    blocks: [{
+      re: /^ *Trust project folder\? *$[\s\S]*^ *Do not trust \(this session only\) *$[\s\S]*^ *↑↓ navigate +enter select +escape\/ctrl\+c cancel *\n\s*─+\s*(?![\s\S])/m,
+      why: "pi project trust prompt",
+    }],
+  },
   hostCommits: false,
-  // Attended dispatch already waives the harness policy gate. Until a separate fire probe exists,
-  // this adapter makes no claim that unattended prompts are safe.
-  automatable: false,
+  // TRUE since 2026-09-18 (owner decision: GLM-5.3-Flash workers start without a hand), and only
+  // alongside `readiness` above — the two are one decision, exactly as for codex. The trust prompt
+  // keeps the pi process alive, so no process probe can refuse it; canDeliver refuses the declared
+  // block ("blocked-screen") and the founding wait holds the brief until the gauge is on screen.
+  // Remove `readiness` and this field must go back to false with it.
+  automatable: true,
   allowsLanes: true,
   singleton: false,
   laneForm: null,
@@ -6554,7 +6573,7 @@ function harnessAutomatableFor(h: Harness): boolean {
 // WHICH OF THE TWO CONDITIONS declined, in one sentence, beside the predicate that reads them. There
 // are exactly two ("the operator's flag" AND "the adapter's own claim"), and a message that named
 // only the flag was wrong in half the cases it was written for: with FLEET_HARNESS_AUTOMATION SET,
-// `pi-zai` still declines on its own `automatable: false`, and a reader told "the flag is off" goes
+// `container` still declines on its own `automatable: false`, and a reader told "the flag is off" goes
 // looking for an env change that would change nothing. createWatchForSlot already said it correctly
 // and this is its wording, lifted so the queue's wait-note cannot say the other thing.
 const harnessAutomationWhy = (): string => HARNESS_AUTOMATION

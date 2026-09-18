@@ -11896,7 +11896,9 @@ exit 0
     // Measured 2026-09-13 on the live fleet (slot 7, pi-zai): a quiet, clean, ahead lane answered
     // every self-land `the lane is not done-looking (no signal)`, and three lands went through the
     // owner token instead. The idle clock was never missing: `alive` reached the predicate folded
-    // with harnessAutomatable (aliveInfo), and pi-zai declines on its own `automatable:false`.
+    // with harnessAutomatable (aliveInfo), and pi-zai then declined on its own `automatable:false`.
+    // Since 2026-09-18 pi-zai is automatable and declines here through the FLAG half alone (this
+    // wrapper runs FLEET_HARNESS_AUTOMATION=0) — the same aliveInfo fold, so the door is unchanged.
     // This arm needs a REAL `pi` process behind the pane, so the server is restarted with the
     // harness PATH that carries e2e-isolated.sh's stand-in — watch.ts's early fake-Pi checks lose it
     // at their first restartSrv(), and the fixture check below fails as ITSELF (agent !== "alive")
@@ -11966,7 +11968,7 @@ exit 0
         row: { status: pzRowAtFixture?.status ?? null, slot: pzRowAtFixture?.slot ?? null, note: pzRowAtFixture?.note ?? null },
         agent: pzAgent?.agent ?? null, harness: pzAgent?.harness ?? null, ready: pzReady, why: pzReady ? "" : doneLookingWhy }));
     // THE POLICY IS UNTOUCHED, on the same lane at the same instant: the Watch route still refuses it
-    // as a target. Without this the land below could be a regression that made pi-zai automatable.
+    // as a target. Without this the land below could be a regression that widened the policy.
     const pzWatch = pzMainSlot === null || pzLaneSlot === null ? null
       : await post(`/api/slots/${pzMainSlot}/watch`, { target: pzLaneSlot });
     const pzWatchText = pzWatch ? await pzWatch.text() : "no fixture";

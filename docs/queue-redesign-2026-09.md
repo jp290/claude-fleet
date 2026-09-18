@@ -142,6 +142,12 @@ per Suite-Offer (`AGENTS.md` §Verify).
 
 ## 5 · Vorschau-Instanz (Rezept, das Skript lebte im Scratchpad)
 
+Platzhalter: `<tailscale-ip>` ist die Adresse, auf der der Live-Server lauscht (`FLEET_HOST` im
+Live-Env). `<magicdns-name>` liefert `/Applications/Tailscale.app/Contents/MacOS/Tailscale status --self
+--json | jq -r .Self.DNSName` (ohne den Punkt am Ende), `<kurzname>` ist dessen erstes Label. Die echten
+Werte stehen absichtlich nicht hier: `e2e/pins.ts` („leak-pin“) hält Deploy-Identitäten aus getrackten
+Dateien heraus.
+
 Scratch-Kopie mit eigenem Socket und Port. Daten: nur `tasks`, `programs` und `comments` aus dem
 Live-`fleet.json`. Keine Slots, kein Dispatcher, alle Worker-Kommandos auf `true`/`false`.
 
@@ -152,14 +158,14 @@ Live-`fleet.json`. Keine Slots, kein Dispatcher, alle Worker-Kommandos auf `true
   - `jq '{tasks: [.tasks[] | .repo //= "/Users/owner/claude-fleet"], programs, comments}' /Users/owner/claude-fleet/fleet.json > <dir>/fleet.json`
   - `repo //=`: Zeilen ohne Repo zielen live auf das Dispatch-Default. Die Vorschau hat keins.
 - **Start:** in `<dir>`:
-  `FLEET_HOST=100.64.0.1 FLEET_PORT=8871 FLEET_SOCK=fleetlane71 FLEET_CMD=true FLEET_TOKEN=<test>
-  FLEET_INSTANCE=queue-preview FLEET_ALLOWED_HOSTS=oldmac.tail766faf.ts.net:8871,oldmac:8871
+  `FLEET_HOST=<tailscale-ip> FLEET_PORT=8871 FLEET_SOCK=fleetlane71 FLEET_CMD=true FLEET_TOKEN=<test>
+  FLEET_INSTANCE=queue-preview FLEET_ALLOWED_HOSTS=<magicdns-name>:8871,<kurzname>:8871
   FLEET_HARNESS_AUTOMATION=0 FLEET_LANE_AUTOCLOSE=0 FLEET_BRIEF_MS=0 FLEET_CARD_MS=0
   FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=0 FLEET_INBOX_NUDGE_MS=0` plus alle `FLEET_*_CMD` auf
   `/usr/bin/true` bzw. `/usr/bin/false`, dann `nohup bun server.ts >> server.log 2>&1 &` und die PID
   notieren.
-- **Öffnen:** Der Owner öffnet **`http://oldmac.tail766faf.ts.net:8871/?token=<test>`**, nie die IP. Der
-  Auth-Cookie `fleet` gilt pro Host und nicht pro Port. Auf `100.64.0.1` würde der Vorschau-Login das
+- **Öffnen:** Der Owner öffnet **`http://<magicdns-name>:8871/?token=<test>`**, nie die IP. Der
+  Auth-Cookie `fleet` gilt pro Host und nicht pro Port. Auf `<tailscale-ip>` würde der Vorschau-Login das
   Live-Dashboard ausloggen.
 - **Nach Client-Änderungen:** `src/` und `public/index.html` in die Kopie syncen, `bun run build`, im
   Browser neu laden (`app.js` kommt mit `no-store`).

@@ -281,6 +281,7 @@ const PRE_AUTH_ROUTES = [
   // route calls — there is no second merge implementation.
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/land$/`,
   '~ /^\\/api\\/self\\/events\\/([a-z0-9]+)\\/ack$/', // same slot+session credential; idempotent receipt only
+  '~ /^\\/api\\/self\\/events\\/([a-z0-9]+)$/', // same credential, READ only: the receiver's own event + its rendered text (c14fcd75); another occupant 409
   '= /api/self/succeed',  // one successor for the caller's own session, never a named target. For a
   // MAIN: a free slot in the same cwd, caller retires on grace; the committed HANDOFF gate still
   // holds the unbound, Supervisor and game-maker rails, while a Standard Program-MAIN hands over the

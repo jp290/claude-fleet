@@ -13145,6 +13145,13 @@ let dispatchBusy = false;
 // and it is how a suite stands a clock on a stall without a product switch. No env: the number is
 // the owner's order ("Konstante 15 min"), not a tuning knob.
 const STALL_MS = 15 * 60_000;
+// The sensor reads the plan on every FOURTH dispatch tick, not every one: the tick itself already
+// projects the plan (startPlanWaves), and a second projection per 8 s tick doubled the plan's cost
+// (~0.3 s at the live queue's size, bun task-land-waves.ts + task-metadata.ts on a state copy,
+// 2026-09-18) for a clock whose threshold is fifteen minutes. Derived from the tick, so a suite's
+// short tick keeps the sensor as quick as its own windows.
+const STALL_READ_MS = 4 * DISPATCH_TICK_MS;
+let stallReadAt = 0;
 function stallView(): { stallMs: number; detected: number; msTotal: number;
   open: { repo: string; since: number; stalled: boolean; attentionId: string | null }[] } {
   return { stallMs: STALL_MS, detected: stallSensor.detected, msTotal: stallSensor.msTotal,
@@ -13212,9 +13219,11 @@ function closeStallAttention(id: string | null, why: string): void {
 function tickStallSensor(on: boolean): void {
   const released = on && tasks.some((t) => t.kind === "auftrag" && !t.variants && tickOwnsRow(t));
   if (!released && !Object.keys(stallSensor.repos).length) return;
+  const now = Date.now();
+  if (now - stallReadAt < STALL_READ_MS) return;
+  stallReadAt = now;
   const view = released ? startPlanNow() : null;
   const readings = view ? stallReadings(view, view.waits) : [];
-  const now = Date.now();
   let dirty = false;
   for (const r of readings) {
     if (!r.stuck) continue;

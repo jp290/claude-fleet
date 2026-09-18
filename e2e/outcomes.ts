@@ -543,6 +543,42 @@ export async function run(): Promise<void> {
       JSON.stringify(defaultOutcome));
     await post(`/api/tasks/${defaultTask.task.id}/delete`, {});
 
+    // (7a) A LANE CLOSED WITHOUT A LAND WHOSE WORK IS ON MAIN. A host with FLEET_LANDS='0' never
+    // runs recordLand, and its teardown used to write "review and requeue if still wanted" on the
+    // row regardless — three such rows were measured on 2026-09-11 with every commit on main
+    // (docs/messungen/2026-09-11-host-aufteilung-entscheid.md §7). The work reaches main here by
+    // hand (ff-only: pure ancestry, the measured shape), then the lane is killed like any abort.
+    // Mutation caught: restoring the constant note at server.ts#teardownSlotOccupant.
+    const offMark = "closed-off-fleet probe — work on main without a land";
+    const offTask = (await (await post("/api/tasks", { text: offMark, repo: oRepo })).json()) as { task: { id: string } };
+    const offD = await post(`/api/tasks/${offTask.task.id}/dispatch`, {});
+    const offJ = (await offD.json()) as { slot?: number; branch?: string };
+    const offCwd = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.find((s) => s.id === offJ.slot)?.cwd ?? "";
+    // SETTLE on the founding brief for the same reason as (7b) below: a teardown inside that
+    // window requeues the row with briefAndSend's note, which is not the note under test
+    for (let i = 0; i < 24; i++) {
+      const ps = ((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts;
+      if (ps.some((p) => p.source === "auto" && (p.text ?? "").includes(offMark))) break;
+      await Bun.sleep(500);
+    }
+    if (offCwd) {
+      await Bun.write(`${offCwd}/off-fleet.txt`, "landed by hand\n");
+      spawnSync("git", ["-C", offCwd, "add", "off-fleet.txt"]);
+      spawnSync("git", ["-C", offCwd, "commit", "-qm", "work that reaches main outside a land"]);
+    }
+    const offFf = spawnSync("git", ["-C", oRepo, "merge", "-q", "--ff-only", offJ.branch ?? "no-branch"], { encoding: "utf8" });
+    const offOnMain = spawnSync("git", ["-C", oRepo, "rev-list", "--count", `main..${offJ.branch ?? "no-branch"}`], { encoding: "utf8" }).stdout.trim();
+    check("closed-off-fleet setup: a task lane committed, and its branch is fully on main by hand (main..branch == 0)",
+      offD.ok && !!offCwd && offFf.status === 0 && offOnMain === "0", JSON.stringify({ offJ, offCwd, ff: offFf.stderr, offOnMain }));
+    if (typeof offJ.slot === "number") await post(`/api/slots/${offJ.slot}/kill`, {});
+    const offRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; note?: string | null }[] })
+      .tasks.find((t) => t.id === offTask.task.id);
+    check("a lane closed without recordLand whose commits are all on main does NOT say \"requeue if still wanted\" — its note says the work is on main",
+      offRow?.status === "pending" && !(offRow.note ?? "").includes("requeue if still wanted")
+      && (offRow.note ?? "").includes("all its commits are on main"), JSON.stringify(offRow));
+    await post(`/api/tasks/${offTask.task.id}/delete`, {});
+
     // (7b) WHO RELEASED IT, which is NOT who landed it. `confirmedByHuman` answers the land art —
     // did the owner press ⏫, or did it auto-land clean+green — and on the live trail 77 of the 89
     // landed rows carry `false` on it although a human released every single one. So an unattended

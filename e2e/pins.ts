@@ -55,7 +55,7 @@ import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../serve
 import { readEventLog, readLedger } from "../server/persist";
 import { readJsonl } from "../briefstats";
 import { quotaPosition, newResetEntries } from "../codex-quota";
-import { readJsonl as landQualityReadJsonl, modelKey } from "../land-quality";
+import { readJsonl as landQualityReadJsonl, modelKey, renderFull, renderSummary, type LandRow } from "../land-quality";
 import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
@@ -2508,6 +2508,50 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && labels.ambient === "claude/ambient" && labels.unknown === "claude/?"
       && labels.foreign === "claude/glm-5.3" && new Set(Object.values(labels)).size === 5,
       JSON.stringify(labels));
+  }
+  // THE SUMMARY'S HONEST NUMBERS (2026-09-18): state.sh prints renderSummary's output as its one
+  // land-quality line, so the summary leads with the LINE-WEIGHTED rework share — a land that
+  // rewrote 1 of 400 lines must not read like one that rewrote 300 — plus red and the reds
+  // adjudicated real, while rework3d % drops to a secondary column (a measurement, never a control
+  // variable). The definitions travel from ONE legend that the full render shares: a re-typed
+  // sentence is how two renders of the same number drift apart.
+  {
+    const row: LandRow = {
+      branch: "b", taskId: null, model: "m", harness: "h", modelOrigin: "spawn", effort: null,
+      size: "klein", landedAt: 0, mainAfter: "a", codeLand: true, insertedLines: 100,
+      reworkLines3d: 10, reworkLines7d: null, reworkByFixSubject: false, auditRed: true,
+      auditVerdict: "real", ownerPrompts: null, disposition: "landed", asOf: "20260918", asOfAt: 0,
+    };
+    const sum = renderSummary([row], "14d");
+    const empty = renderSummary([], "x");
+    pin("land-quality's summary leads with the line-weighted rework share and red+real; rework3d % is a secondary column",
+      (sum.split("\n")[0] ?? "").startsWith("  land-quality 14d @20260918: nacharbeit 10% (10/100 lines) · red 1/1 100% · real 1/1")
+      && sum.includes("Nebenspalten: n/code 1/1c · rw 1/1 100%"),
+      sum.split("\n").slice(0, 2).join(" ⏎ "));
+    const full = renderFull([row], "head", {});
+    const legend = [
+      "rework3d = inserted lines rewritten by ANY later main commit ≤3 d (over closed windows)",
+      "fix3d(code) = a `fix…` commit rewrote inserted CODE lines ≤3 d, over code lands",
+      "auditRed over audits that measured",
+    ];
+    pin("land-quality's summary carries the full render's legend sentences verbatim — one definition per number",
+      legend.every((s) => sum.includes(s) && full.includes(s)),
+      legend.map((s) => `${sum.includes(s) ? "sum" : "MISSING"}/${full.includes(s) ? "full" : "MISSING"}`).join(" · "));
+    pin("land-quality's summary on no rows says 0 lands and never a zero share",
+      empty.includes(": 0 lands") && !/nacharbeit 0/.test(empty), empty.split("\n")[0] ?? "");
+  }
+  // THE BRIEF FORMS exist where the doc names them (2026-09-18): both scripts parse --brief and
+  // reject an unknown flag, and docs/controller.md's loop section names both. A doc naming a flag
+  // no script parses is the P-4 failure mode ("client rendering still open" beside 5× deployGap).
+  {
+    const state = read("state.sh"), register = read("register.sh"), ctl = read("docs/controller.md");
+    const dispatch = (src: string) => /--brief\)/.test(src);
+    const rejects = (src: string) => /unbekanntes Flag/.test(src);
+    pin("state.sh and register.sh dispatch --brief and reject an unknown flag; docs/controller.md names both brief forms",
+      dispatch(state) && rejects(state) && dispatch(register) && rejects(register)
+      && /state\.sh --brief/.test(ctl) && /register\.sh --brief/.test(ctl),
+      `state=${dispatch(state)}/${rejects(state)} register=${dispatch(register)}/${rejects(register)} `
+        + `doc=${/state\.sh --brief/.test(ctl)}/${/register\.sh --brief/.test(ctl)}`);
   }
   // THE REPORT LEDGER: every place that opens a report or stamps a verdict writes its row. A fourth
   // decision site without the line would leave that verdict only in the prunable live list.

@@ -76,18 +76,29 @@ export function modelKey(r: Pick<LandRow, "model" | "harness" | "modelOrigin">):
 }
 
 interface Ratio { k: number; d: number }
-export interface Group { key: string; n: number; code: number; rework3d: Ratio; fix3dCode: Ratio; auditRed: Ratio }
+export interface Group {
+  key: string; n: number; code: number; rework3d: Ratio; fix3dCode: Ratio; auditRed: Ratio;
+  // the summary's leading numbers: rework and inserted lines summed over the rows whose 3-d window
+  // is closed (null = no closed window in the group — unknown, never 0), and the reds whose newest
+  // adjudication says `real` (over the same denominator as auditRed).
+  reworkLines: number | null; inserted: number | null; auditRedReal: number;
+}
 
 export function aggregate(rows: LandRow[], keyOf: (r: LandRow) => string): Group[] {
   const by = new Map<string, Group>();
   for (const r of rows) {
     const key = keyOf(r);
-    const g = by.get(key) ?? { key, n: 0, code: 0, rework3d: { k: 0, d: 0 }, fix3dCode: { k: 0, d: 0 }, auditRed: { k: 0, d: 0 } };
+    const g = by.get(key) ?? { key, n: 0, code: 0, rework3d: { k: 0, d: 0 }, fix3dCode: { k: 0, d: 0 },
+      auditRed: { k: 0, d: 0 }, reworkLines: null, inserted: null, auditRedReal: 0 };
     g.n++;
     if (r.codeLand) g.code++;
     if (r.reworkLines3d !== null) { g.rework3d.d++; if (r.reworkLines3d > 0) g.rework3d.k++; }
     if (r.codeLand && r.reworkByFixSubject !== null) { g.fix3dCode.d++; if (r.reworkByFixSubject) g.fix3dCode.k++; }
-    if (r.auditRed !== null) { g.auditRed.d++; if (r.auditRed) g.auditRed.k++; }
+    if (r.auditRed !== null) { g.auditRed.d++; if (r.auditRed) { g.auditRed.k++; if (r.auditVerdict === "real") g.auditRedReal++; } }
+    if (r.reworkLines3d !== null && typeof r.insertedLines === "number") {
+      g.reworkLines = (g.reworkLines ?? 0) + r.reworkLines3d;
+      g.inserted = (g.inserted ?? 0) + r.insertedLines;
+    }
     by.set(key, g);
   }
   return [...by.values()].sort((a, b) => b.n - a.n || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
@@ -103,9 +114,18 @@ function table(title: string, groups: Group[]): string[] {
   return out;
 }
 
+// The Sammelzeile's definition sentences, in ONE place: the full render's legend and the summary's
+// definition line both carry them verbatim, so two renders of the same number cannot grow two
+// definitions (the drift the readJsonl hand-copies died of).
+export const LEGEND = {
+  rework3d: "rework3d = inserted lines rewritten by ANY later main commit ≤3 d (over closed windows)",
+  fix3dCode: "fix3d(code) = a `fix…` commit rewrote inserted CODE lines ≤3 d, over code lands",
+  auditRed: "auditRed over audits that measured",
+} as const;
+
 export function renderFull(rows: LandRow[], head: string, excluded: Record<string, number>): string {
   const out = [head,
-    "rework3d = inserted lines rewritten by ANY later main commit ≤3 d (over closed windows) · fix3d(code) = a `fix…` commit rewrote inserted CODE lines ≤3 d, over code lands · auditRed over audits that measured"];
+    `${LEGEND.rework3d} · ${LEGEND.fix3dCode} · ${LEGEND.auditRed}`];
   out.push(...table("ALL", aggregate(rows, () => "all")));
   out.push(...table("harness/model", aggregate(rows, modelKey)));
   out.push(...table("harness", aggregate(rows, (r) => r.harness ?? "claude")));
@@ -117,12 +137,28 @@ export function renderFull(rows: LandRow[], head: string, excluded: Record<strin
 const brief = (g: Group): string =>
   `${g.key} ${g.n}/${g.code}c rw ${pct(g.rework3d)} fix ${pct(g.fix3dCode)} red ${pct(g.auditRed)}`;
 
+// The summary's LEADING numbers are the honest ones: the line-weighted rework share — a land that
+// rewrote 1 of 400 lines must not read like one that rewrote 300 — and auditRed next to the reds
+// adjudicated real. rework3d %, fix and the per-group lines stay as secondary columns; rework3d
+// remains a measurement, never a control variable (2026-09-18).
+const anteil = (g: Group): string =>
+  g.reworkLines === null || !g.inserted ? "—"
+    : `${Math.round((100 * g.reworkLines) / g.inserted)}% (${g.reworkLines}/${g.inserted} lines)`;
+
 export function renderSummary(rows: LandRow[], label: string): string {
   const asOf = rows[0]?.asOf.slice(0, 8) ?? "?";
   const all = aggregate(rows, () => "all")[0];
   const models = aggregate(rows, modelKey);
+  const lead = !all ? "0 lands"
+    : `nacharbeit ${anteil(all)} · red ${pct(all.auditRed)}`
+      + (all.auditRed.d ? ` · real ${all.auditRedReal}/${all.auditRed.d}` : "");
+  const neben = all
+    ? ` · Nebenspalten: n/code ${all.n}/${all.code}c · rw ${pct(all.rework3d)} · fix ${pct(all.fix3dCode)}`
+    : "";
   return [
-    `  land-quality ${label} @${asOf}: ${all ? brief(all) : "0 lands"}  (n/code · rework3d · fix3d code · auditRed)`,
+    `  land-quality ${label} @${asOf}: ${lead}${neben}`,
+    `    ${LEGEND.rework3d} — nacharbeit is that line count over ALL inserted lines; rw is the LAND share`
+      + ` · ${LEGEND.auditRed}, real = the reds whose newest adjudication says real · ${LEGEND.fix3dCode}`,
     `    model: ${models.slice(0, SUMMARY_GROUPS).map(brief).join(" · ") || "—"}`
       + (models.length > SUMMARY_GROUPS ? ` · +${models.length - SUMMARY_GROUPS} more (bun land-quality.ts)` : ""),
     `    size:  ${aggregate(rows, (r) => r.size ?? "null").map(brief).join(" · ") || "—"}`,

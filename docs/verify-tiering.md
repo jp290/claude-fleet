@@ -4359,6 +4359,13 @@ schliesst.
   Aufruf ohne `cwd`, ein Warter ohne eigenen Brief-Wait, `m1Land` ohne `awaitFoundingBrief` —
   alle drei rot.
 
+**Zeit, gemessen und nicht geschaetzt** (seriell, lokal, Mac, 2026-09-18): Basis `17f47c3f`
+(`isolated-20260918T102722Z-2824`) 5 017 Checks, Trail-Summe 2 029 s, 1 FAIL (oben) · Lauf auf dieser
+Lane (`isolated-20260918T110304Z-8767`) 5 018 Checks (die +1 ist `(viii-c)`, das der Basislauf hinter
+seiner roten Setup-Zeile nicht emittierte), 2 014 s, ALL PASS. **−0,8 %**; die `programs.ts`-Checks
+481 → 473 s. Die Einsparung ist klein, weil die Wartezeit dieser Stellen am Server-Tick haengt, nicht
+am Schlaf der Sonde — der Gewinn ist Determinismus, nicht Minuten.
+
 **Ein Rot einer dieser Setup-Zeilen NACH dieser Lane (Branch `fleet/260918102513-c394`, Land-Sha setzt
 die MAIN ein) ist wieder ECHT und deins.**
 

@@ -1,6 +1,6 @@
 ---
 frage: Wie wird die linke Leiste neu gebaut und wie weit muss dafür das Slot-System weichen?
-urteil: Die Slot-Nummer bleibt die eine Nummernwelt und wird zur Bandnummer: eine Session behält sie über jede Übergabe, Lanes belegen keine sichtbare Nummer mehr und hängen als kleine Kästen am Band ihrer Herkunft. Fünf Stufen S0 bis S4; S0 (der Lane-Anker folgt der Nachfolge) repariert einen heute live gemessenen Defekt, die neue Leiste (S2) kommt vor dem riskanten Serverteil (S3, nummernstabile Übergabe).
+urteil: Die Slot-Nummer bleibt die eine Nummernwelt und wird zur Bandnummer: eine Session behält sie über jede Übergabe, Lanes heißen nach ihrem Band (3A, 16B), belegen keine Nummer mehr und hängen als kleine Kästen am Band ihrer Herkunft. Sechs Stufen S0 bis S5; S0 (der Lane-Anker folgt der Nachfolge) repariert einen heute live gemessenen Defekt, die neue Leiste (S2) kommt vor den zwei riskanten Serverteilen (S3 Lane-Name als Adresse, S4 nummernstabile Übergabe).
 bereich: [leiste, slot-system, succession]
 belege: [src/client.ts#renderSlots, src/client.ts#stacksOf, server.ts#decideLaneAnchor, server.ts#handleSelfSucceed, server.ts#succeedLane, server.ts#openSlot, server/types.ts#MAX_SLOTS, docs/design/sidebar/index.html]
 nicht-gemessen: kein Produktcode, keine Suite gefahren; Rollback-Verhalten von saveState mit einem neuen Feld nur aus dem Lademuster erschlossen; Zustände wartet/fertig im Mockup aus idle+git erschlossen, nicht aus einem Server-Feld.
@@ -99,11 +99,13 @@ Namensraum, was für „Slots intern behalten" spricht).
 - **Kasten**: eine Session. Übergibt sie, ergraut ihr Kasten und bleibt als Kasten stehen, der neue
   erscheint rechts davon. Die Daten dafür sind die Linie (`lineageId`, `Program.lineage`).
 - **Lane-Kasten**: kleiner Kasten am Band der Session, von der die Lane ausging (der bestehende
-  `worktree.anchor`). Er heißt `3a`, `3b` und belegt keine Bandnummer. Sein Prozess läuft weiter auf
-  einem internen Platz, der von OBEN vergeben wird und nur im Tooltip steht (`s12`); das bleibt seine
-  Routen-Adresse. `3a` enthält immer einen Buchstaben und ist darum nie mit einem Platz verwechselbar.
-  Hintergrund-Lanes des Ticks hängen am Band der MAIN ihres Programs; Lanes ohne Herkunft an einem
-  Sammelband am Ende.
+  `worktree.anchor`). Er heißt nach seinem Band: `3A`, `3B`, an Band 16 `16A` (Owner 2026-09-19:
+  „slot1A 1B und 1C"). Das ist sein EINZIGER Name: Leiste, Gespräch, `state.sh`, tmux-Session `s3A`,
+  Route `/api/slots/3A/…`, `FLEET_SELF_SLOT=3A`. Eine Lane belegt damit keinen der nummerierten
+  Plätze mehr; der RAM-Deckel wird eine Zählung (Sessions + Lanes ≤ 16). Ein frei gewordener
+  Buchstabe wird wieder vergeben, geschützt durch den vorhandenen `openedAt`-Pin. Hintergrund-Lanes
+  des Ticks hängen am Band der MAIN ihres Programs. Offen: Lanes ohne Band (Vorschlag: Sammelband
+  `0`, also `0A`).
 - **Repo**: kein Strukturelement. Farbton am Kastenrand (der bestehende `tintProject`) plus Name in
   Zeile zwei. Die Leiste wächst mit der Zahl der Sessions, nie mit der Zahl der Repos.
 
@@ -113,7 +115,7 @@ Namensraum, was für „Slots intern behalten" spricht).
 |---|---|
 | „auf einer Art Band laufen … ausgrauen und erscheinen eines neuen session-kastens rechts davon" | Jedes Band ist ein waagrechter Streifen. In der 228-px-Leiste steht er so, dass der lebende Kasten ganz zu sehen ist und der ausgegraute Vorgänger links 20 px hervorschaut; ein Klick darauf fährt das Band zurück. Schalter „breit" (660 px) zeigt die ganzen Bänder mit bis zu drei Vorgängern als Kästen |
 | „animationen und effekte" | Übergabe: der lebende Kasten ergraut an Ort und Stelle, der neue fährt in 0,55 s von rechts aufs Band, ein Lichtrand klingt 1,1 s aus; die Lane-Kästen ziehen mit |
-| Lanes „eigene kleinere kästen", Hintergrund-Lanes, „auch lanes [können] successions machen" | Kleine Kästen unter dem lebenden Kasten, zwei je Reihe, mit Zustand, Buchstabe, Label, Füllstand-Haarlinie. Eine Lane-Übergabe zeichnet dieselbe Grammatik klein: grauer Mini-Kasten, neuer rechts davon. Der Server kennt dafür heute nur die Anzahl (`laneSuccessions`) |
+| Lanes „eigene kleinere kästen", Hintergrund-Lanes, „auch lanes [können] successions machen" | Kleine, eingerückte Kästen unter dem lebenden Kasten (halbe Höhe), mit Zustand, Name (`3A`), Label, Füllstand-Haarlinie. Eine Lane-Übergabe zeichnet dieselbe Grammatik klein: grauer Mini-Kasten, neuer rechts davon. Der Server kennt dafür heute nur die Anzahl (`laneSuccessions`) |
 | „irgendwo hinklicken … session starten", „selber … nach oben oder unten packen" | Freie Plätze bleiben als nummerierte, stille Zeilen stehen (bis zum höchsten belegten plus eins); Klick startet dort. Die Wahl der Nummer IST das Ordnen, wie heute (`emptyRow → openPicker`) |
 | „alles genauso weiter …, aber wesentlich übersichtlicher und vollständiger" | Zeile eins: Zustand (Form UND Farbe: arbeitet, wartet auf dich, fertig, rot, ruht), Label, Rolle, Kontext-%. Zeile zwei: Repo, Modell, zuletzt aktiv. Bodenlinie: Füllstand, amber ab 25 % nur für claude-Sessions. Effort und git im Tooltip |
 | „Ram … nicht anzeigen", „absolut minimalistisch" | Kein RAM, kein Kopfsatz, keine Gruppenüberschriften, keine gezeichneten Bänder |
@@ -139,23 +141,25 @@ das Mockup zeigt 11 Sessions plus 5 Lanes.
 Jede Stufe ist eine eigene Karte, einzeln landbar und rückrollbar. Für alle gilt: `bun e2e/pins.ts`,
 tsc und build als Gate; `./e2e-isolated.sh` als Vorschau (Suite-Offer an den Helfer), weil jede
 Stufe eine Aussage berührt, über die Checks in `e2e/slots.ts` stehen. Der Wert kommt vor dem Risiko:
-die Leiste (S2) braucht die nummernstabile Übergabe (S3) nicht, sie zeichnet bis dahin das Band an
-der Nummer der Nachfolgerin.
+die Leiste (S2) braucht S3 und S4 nicht: bis dahin zeichnet sie das Band an der Nummer der
+Nachfolgerin und zeigt `3A` als abgeleiteten Namen einer Lane, die intern noch einen Platz belegt.
 
 | Stufe | Inhalt | Beweis | neue Sonde | Scratch-Live-Test vor dem Land | Rückfalltür |
 |---|---|---|---|---|---|
 | **S0** Anker folgt der Nachfolge | Bei MAIN-, Supervisor- und generischer Nachfolge hängen alle Lanes mit `anchor == Vorgänger-Occupant` auf die Nachfolgerin um | `e2e/slots.ts` (44 anchor-Treffer), `e2e/programs.ts`, `e2e/supervisor.ts`, `./e2e-claude-gate.sh` | Lane öffnen, MAIN übergibt, Anker zeigt auf die Nachfolgerin; fremde Lane bleibt unberührt | Instanz `FLEET_CMD=true`, eigener Socket: Lane, succeed, `GET /api/sessions` | Revert, Anker bleiben gültige Occupants |
-| **S1** Linie im Payload, ein Verteiler | `lineageId` schon in `openSlot`; `lineage {id, past[]}` im Slot-Teil von `/api/sessions` (Label, Zeitpunkt, Füllstand je Vorgänger, auch für Lanes); EIN Platz-Verteiler statt zehn Stellen: Lanes von oben, Sessions am gewählten Platz oder von unten | `e2e/slots.ts`, `e2e/restart.ts`, `e2e/self-token.ts` (24 lineage-Treffer), Pin auf den Verteiler | srv-Neustart mitten in einer Übergabe: die Vorgänger-Liste überlebt; bei 15 belegten Plätzen nimmt eine Lane nie den Platz unter einer Session weg | Neustart der Scratch-Instanz mit drei Sessions, eine übergeben; danach alter Build gegen dieselbe `fleet.json` | Felder sind additiv; Revert lässt sie ungelesen |
+| **S1** Linie im Payload | `lineageId` schon in `openSlot`; `lineage {id, past[]}` im Slot-Teil von `/api/sessions` (Label, Zeitpunkt, Füllstand je Vorgänger, auch für Lanes) | `e2e/slots.ts`, `e2e/restart.ts`, `e2e/self-token.ts` (24 lineage-Treffer) | srv-Neustart mitten in einer Übergabe: die Vorgänger-Liste überlebt | Neustart der Scratch-Instanz mit drei Sessions, eine übergeben; danach alter Build gegen dieselbe `fleet.json` | Felder sind additiv; Revert lässt sie ungelesen |
 | **S2** neue Leiste hinter Schalter | zweite Zeichenroutine neben `renderSlots`, Schalter in `localStorage` (Muster `STACK_LS`), alte Leiste bleibt Default | tsc, build, Leistenchecks in `e2e/slots.ts` gegen BEIDE Schalterstellungen | Headless-Bild je Zustand (Aufruf siehe Methode) | 16 Plätze, Übergabe, Lane-Übergabe, Landen, Rot; Handy am echten Gerät | Schalter aus |
-| **S3** nummernstabile Übergabe | Die Nachfolgerin wird mit der Nummer des Bands geboren; der Vorgänger zieht beim Übergeben in einen nummernlosen Abgangsplatz (tmux `rename-session`, Slot-Objekt umhängen), bis `retireSucceededSession` ihn beendet | `e2e/programs.ts` (84 lineage-Treffer), `e2e/supervisor.ts`, `e2e/restart.ts`, `./e2e-claude-gate.sh`, `./e2e-clean-review.sh` | Übergabe: Nummer bleibt, Self-Token des Vorgängers gilt bis zu seinem Ende, ein `/send` an die Nummer trifft nie den Sterbenden; srv-Neustart WÄHREND der Übergabe verliert keine der zwei Panes | Scratch mit echtem `claude`-Harness, Neustart im Übergabefenster, tmux-Namen vorher/nachher | eigenes Flag; aus = heutiges Verhalten |
-| **S4** Werkzeuge | `state.sh`/`ctl.sh` drucken Lanes als `3a (s12)`; alte Zeichenroutine abbauen, Schalter-Default umlegen | `e2e/ctl.ts`, Pins auf die Ausgabeform | `ctl.sh` verweigert `3a` als Slot-Argument mit Namen | `FLEET_CTL_HOME` auf Scratch | Ausgabeform zurück |
+| **S3** Lane-Name als Adresse | `Slot.id` wird `number \| string`; `server.ts#slotFrom` (96 Aufrufer, heute `Number(raw)` + `slots[id - 1]`, dazu 7 direkte Index-Zugriffe) löst `3A` auf Band 3, Lane A; Lanes leben als Kinder ihres Bands statt im 16er-Array; tmux `s3A`, Env `FLEET_SELF_SLOT=3A`; von zehn Vergabestellen bleiben die für Sessions | `e2e/slots.ts`, `e2e/lanes-basic.ts`, `e2e/lanes-lifecycle.ts`, `e2e/merge.ts`, `e2e/restart.ts`, `./e2e-clean-review.sh` (der Land-Pfad adressiert Lanes) | `/api/slots/3A/…` trifft die Lane, `/api/slots/3` nie; srv-Neustart adoptiert `s3A`; 16 + 0 und 1 + 15 halten beide den Deckel; recycelter Buchstabe mit altem `openedAt` = 409 | Scratch: Lane starten, landen, Buchstabe neu vergeben, Neustart dazwischen | Flag; aus = Lanes nehmen wieder Plätze |
+| **S4** nummernstabile Übergabe | Die Nachfolgerin wird mit der Nummer des Bands geboren; der Vorgänger zieht beim Übergeben in einen nummernlosen Abgangsplatz (tmux `rename-session`, Slot-Objekt umhängen), bis `retireSucceededSession` ihn beendet | `e2e/programs.ts` (84 lineage-Treffer), `e2e/supervisor.ts`, `e2e/restart.ts`, `./e2e-claude-gate.sh`, `./e2e-clean-review.sh` | Übergabe: Nummer bleibt, Self-Token des Vorgängers gilt bis zu seinem Ende, ein `/send` an die Nummer trifft nie den Sterbenden; srv-Neustart WÄHREND der Übergabe verliert keine der zwei Panes | Scratch mit echtem `claude`-Harness, Neustart im Übergabefenster, tmux-Namen vorher/nachher | eigenes Flag; aus = heutiges Verhalten |
+| **S5** Werkzeuge | `state.sh`/`ctl.sh` drucken und nehmen `3A`; alte Zeichenroutine abbauen, Schalter-Default umlegen | `e2e/ctl.ts`, Pins auf die Ausgabeform | `ctl.sh send` an `3A` trifft die Lane; an einen freien Buchstaben scheitert es mit Namen | `FLEET_CTL_HOME` auf Scratch | Ausgabeform zurück |
 
 Reihenfolge-Zwang: S2 erst, wenn die drei Client-Lanes (Queue-Ansicht, Info-Leiste, Chat) gelandet
-sind; S0, S1 und S3 berühren `src/client.ts` nicht. Deploy: S0 und S1 ändern nur, was beim NÄCHSTEN
+sind; S0, S1 und S4 berühren `src/client.ts` nicht. Deploy: S0 und S1 ändern nur, was beim NÄCHSTEN
 Öffnen oder Übergeben geschrieben wird; laufende Sessions ohne `lineageId` bekommen sie beim Laden
-nachgetragen (Muster `backfillProgramMainSessionId`), tmux-Name und Env bleiben unberührt. S3 ist
-die einzige Stufe, die eine laufende Pane anfasst, darum steht sie hinter einem Flag und zuletzt.
-S3 ist **erschlossen, nicht erprobt**: dass `slots[n - 1]`-Zugriffe und die Pane-Env
+nachgetragen (Muster `backfillProgramMainSessionId`), tmux-Name und Env bleiben unberührt. S3 gilt
+nur für NEU gestartete Lanes, laufende behalten ihren Platz bis zum Land. S4 ist die einzige Stufe,
+die eine laufende Pane anfasst, darum steht sie hinter einem Flag und zuletzt. S3 und S4 sind
+**erschlossen, nicht erprobt**; für S4 gilt: dass `slots[n - 1]`-Zugriffe und die Pane-Env
 (`FLEET_SELF_SLOT` des Vorgängers wird unwahr, er stirbt aber und wird per Token adressiert) das
 tragen, muss die Karte zuerst vermessen.
 

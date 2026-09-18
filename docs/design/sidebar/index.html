@@ -69,11 +69,11 @@
   @keyframes pulse { 50% { opacity: .35; } }
 
   /* Lanes: eigene, kleinere Kaesten am selben Band, unter dem lebenden Kasten */
-  .lanes { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
+  .lanes { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; padding-left: 10px; }
   .lane { position: relative; flex: 1 1 calc(50% - 2px); min-width: 0; display: flex; align-items: center; gap: 5px; height: 24px;
     padding: 0 6px; border-radius: 6px; background: #1d1d1d; border: 1px solid #292929; cursor: pointer; font-size: 11px;
     overflow: hidden; white-space: nowrap; transition: filter .4s, opacity .4s, flex-basis .4s var(--ease), padding .4s; }
-  .lg { flex: 1 1 calc(50% - 2px); min-width: 0; display: flex; gap: 3px; } .lg .lane { flex: 1 1 0; }
+  .lg { flex: 1 1 100%; min-width: 0; /* ein Name wie 16A plus Label braucht die ganze Breite */ display: flex; gap: 3px; } .lg .lane { flex: 1 1 0; }
   .lane:hover { background: #242424; } .lane.sel { background: #222a40; border-color: var(--focus); }
   .lane .st { width: 7px; height: 7px; } .lane .ref { flex: none; color: #a9c1f5; font-weight: 700; }
   .lane .fill { height: 1.5px; }
@@ -165,17 +165,17 @@
 // Live-Stand 2026-09-18 (GET /api/sessions), geschwaerzt. Die Bandnummer ist die heutige Slot-Nummer der
 // Session. Unterschied zu heute: Lanes belegen keine Nummer (live sassen sie auf 1, 6, 7, 12), und die
 // Orchestratorin ist nach zwei Uebergaben immer noch Band 3 (live sprang sie auf 13).
-// `place` ist der interne Prozessplatz einer Lane. Zustaende `need`/`done` sind aus idle+git erschlossen.
+// Eine Lane heisst nach ihrem Band (3A, 16B) und hat keine zweite Nummer. Zustaende `need`/`done` sind aus idle+git erschlossen.
 const LIVE = () => ({
   2: { repo: "privat-1", cols: [{ label: "Privat", model: "", pct: 14.1, claude: true, idle: "84 min", git: "main ↑51 ●2", st: "rest" }], lanes: [] },
   3: { repo: "claude-fleet", cols: [
       { label: "Orchestrator", model: "opus-5", pct: 31, until: "18.09. 00:38" }, { label: "Orchestrator", model: "opus-5", pct: 33, until: "18.09. 23:37" },
       { label: "Orchestrator", model: "opus-5", effort: "high", pct: 11.2, claude: true, idle: "25 min", git: "main", st: "rest" }],
-    lanes: [{ place: 6, label: "Queue-Ansicht", model: "opus-5", pct: 31.9, claude: true, git: "↑7", st: "need", past: 1 },
-      { place: 7, label: "Info-Leiste", model: "opus-5", pct: 13.4, claude: true, git: "", st: "need" },
-      { place: 12, label: "Linke Leiste", model: "opus-5", pct: 8.4, claude: true, git: "", st: "work" }] },
+    lanes: [{ label: "Queue-Ansicht", model: "opus-5", pct: 31.9, claude: true, git: "↑7", st: "need", past: 1 },
+      { label: "Info-Leiste", model: "opus-5", pct: 13.4, claude: true, git: "", st: "need" },
+      { label: "Linke Leiste", model: "opus-5", pct: 8.4, claude: true, git: "", st: "work" }] },
   4: { repo: "claude-fleet", cols: [{ label: "Fleet-Betrieb", role: "main", model: "opus-5", effort: "high", pct: 27.3, claude: true, idle: "66 min", git: "main", st: "rest" }],
-    lanes: [{ place: 1, label: "task 8ff7", model: "glm-5.3-flash", pct: null, git: "↑3 ●2", st: "work", bg: true }] },
+    lanes: [{ label: "task 8ff7", model: "glm-5.3-flash", pct: null, git: "↑3 ●2", st: "work", bg: true }] },
   5: { repo: "private-repo-aa", cols: [{ label: "Private-repo-aa", role: "main", model: "astra", effort: "medium", pct: 58.4, idle: "4 h", git: "main", st: "rest" }], lanes: [] },
   8: { repo: "claude-fleet", cols: [{ label: "memory", model: "", pct: 13.7, claude: true, idle: "4 h", git: "main", st: "rest" }], lanes: [] },
   10: { repo: "claude-fleet", cols: [{ label: "Leichtgewicht", role: "main", model: "astra", effort: "medium", pct: 72.8, idle: "12 h", git: "main", st: "rest" }], lanes: [] },
@@ -189,7 +189,7 @@ const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) 
 const hue = (k) => { let h = 0; for (const c of k) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
 const warn = (x) => !!x.claude && x.pct != null && x.pct >= 25; // Owner-Band 25 %: nur claude, codex kompaktiert selbst
 const live = (B) => B.cols[B.cols.length - 1];
-const ref = (n, j) => n + String.fromCharCode(97 + j);
+const ref = (n, j) => n + String.fromCharCode(65 + j); // 3A, 16B: der Name IST die Adresse der Lane
 const tip = $("tip");
 function hint(node, text) {
   node.onmouseenter = () => { tip.textContent = text; tip.style.opacity = 1; const r = node.getBoundingClientRect();
@@ -213,10 +213,10 @@ function box(n, B, s, isLive) {
 }
 function laneBox(n, B, l, j) {
   const x = el("div", "lane" + (sel.n === n && sel.lane === j ? " sel" : "") + (l.born ? " arrive" : "")); delete l.born; x.tabIndex = 0;
-  x.append(el("i", "st " + l.st), el("span", "ref", ref(n, j).slice(String(n).length)), el("span", "lbl", l.label)); // am Band genuegt der Buchstabe, die Nummer steht links
+  x.append(el("i", "st " + l.st), el("span", "ref", ref(n, j)), el("span", "lbl", l.label));
   if (l.pct != null) { const f = el("div", "fill" + (warn(l) ? " warn" : "")); f.style.width = l.pct + "%"; x.append(f); }
   x.onclick = (e) => { e.stopPropagation(); sel = { n, lane: j }; render(); };
-  hint(x, `Lane ${ref(n, j)}  ${l.label}${l.bg ? "  (Hintergrund, vom Tick gestartet)" : ""}\n${l.model}  ${l.git || "sauber"}${l.pct != null ? "  " + Math.round(l.pct) + " %" : ""}\n${l.st === "done" ? "fertig, landbar\n" : ""}interner Platz s${l.place}, belegt keine Bandnummer`);
+  hint(x, `Lane ${ref(n, j)}  ${l.label}${l.bg ? "  (Hintergrund, vom Tick gestartet)" : ""}\n${l.model}  ${l.git || "sauber"}${l.pct != null ? "  " + Math.round(l.pct) + " %" : ""}\n${l.st === "done" ? "fertig, landbar\n" : ""}belegt keine Bandnummer`);
   return x;
 }
 function render() {
@@ -252,7 +252,7 @@ function startAt(n) {
 function paintPane() {
   const B = bands[sel.n], l = sel.lane != null ? B.lanes[sel.lane] : null, name = l ? ref(sel.n, sel.lane) : String(sel.n);
   $("pane").innerHTML = `<h1>${name}  ${(l ?? live(B)).label}</h1>` + (l
-    ? `<p>Lane <code>${name}</code> gehört zu Band ${sel.n} und belegt keine eigene Nummer. Ihr Prozess läuft auf dem internen Platz <code>s${l.place}</code>; der steht nur hier und im Tooltip. Übergibt die Session auf Band ${sel.n}, bleibt die Lane am Band hängen.</p>`
+    ? `<p>Lane <code>${name}</code> gehört zu Band ${sel.n} und belegt keine Bandnummer. <code>${name}</code> ist ihr einziger Name: in der Leiste, im Gespräch, in <code>state.sh</code> und als Adresse <code>/api/slots/${name}/…</code>. Übergibt die Session auf Band ${sel.n}, bleibt die Lane am Band hängen.</p>`
     : `<p>Band <code>${sel.n}</code> bleibt <code>${sel.n}</code>, auch nach jeder Übergabe: „schau auf ${sel.n}" meint immer die Session, die gerade dort lebt. Der ausgegraute Vorgänger bleibt als Kasten links davon auf dem Band stehen.</p>`);
 }
 // Uebergabe: der lebende Kasten ergraut, rechts davon faehrt der neue aufs Band, die Lanes ziehen mit
@@ -275,7 +275,7 @@ function succeedLane() {
   l.pct = 3; l.st = "work"; l.born = true; const neu = laneBox(n, bands[n], l, j); old.after(neu);
   setTimeout(() => { l.past = (l.past ?? 0) + 1; render(); }, 1000);
 }
-function addLane() { const B = bands[sel.n]; B.lanes.push({ place: 14, label: "neue Lane", model: "glm-5.3-flash", pct: 0, git: "", st: "work", born: true }); sel = { n: sel.n }; render(); }
+function addLane() { const B = bands[sel.n]; B.lanes.push({ label: "neue Lane", model: "glm-5.3-flash", pct: 0, git: "", st: "work", born: true }); sel = { n: sel.n }; render(); }
 function land() {
   const n = Object.keys(bands).find((k) => bands[k].lanes.length); if (!n) return; const B = bands[n], l = B.lanes[0];
   if (l.st !== "done") { l.st = "done"; l.git = "↑7"; sel = { n: +n, lane: 0 }; render(); return; }
@@ -286,8 +286,8 @@ function full() {
   bands = LIVE(); const names = ["Land-Pipeline", "Audit", "Studio"];
   [1, 6, 7].forEach((n, k) => { bands[n] = { repo: k % 2 ? "private-repo-r" : "claude-fleet", cols: [{ label: names[k], model: "opus-5", pct: 30, until: "gestern 21:10" },
     { label: names[k], role: "main", model: "opus-5", effort: "high", pct: 18, claude: true, idle: "9 min", git: "main", st: "rest" }], lanes: [] }; });
-  bands[10].lanes.push({ place: 9, label: "task c779", model: "glm-5.3-flash", pct: null, git: "↑2", st: "done", bg: true });
-  sel = { n: 3 }; render(); // 11 Sessions + 5 Lanes = 16 Prozessplaetze, mehr gibt MAX_SLOTS nicht her
+  bands[10].lanes.push({ label: "task c779", model: "glm-5.3-flash", pct: null, git: "↑2", st: "done", bg: true });
+  sel = { n: 3 }; render(); // 11 Sessions + 5 Lanes = 16 laufende Prozesse, mehr gibt der Deckel (heute MAX_SLOTS) nicht her
 }
 const DO = { succeed, lane: addLane, land, full, reset,
   red: () => { const B = bands[4]; (B.lanes[0] ?? live(B)).st = "bad"; sel = { n: 4, lane: B.lanes.length ? 0 : undefined }; render(); },

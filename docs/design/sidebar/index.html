@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fleet · linke Leiste · Mockup</title>
+<!-- Statisches Mockup zu docs/messungen/2026-09-18-slot-system-und-linke-leiste.md.
+     Daten: GET /api/sessions vom 2026-09-18, geschwaerzt (Pfade auf Basename, ein privates Label ersetzt).
+     Tokens und Masse aus public/index.html (:root, #side 228px / 50px, Monospace). Kein Produktcode. -->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  :root {
+    --text: #ccc; --dim: #888; --faint: #666;
+    --raised: #262626; --line: #333; --line-soft: #2a2a2a;
+    --accent: #7aa2f7; --sel: #2c3a5e; --focus: #3a4a7a;
+    --amber: #e0af68; --add: #9ece6a; --del: #f7768e; --danger: #f85149;
+    --work: #3fb950; --proj-s: 58%; --proj-l: 72%;
+    --ease: cubic-bezier(.2, .7, .2, 1);
+  }
+  html, body { height: 100%; background: #141414; color: var(--text);
+    font: 12px/1.35 ui-monospace, Menlo, Consolas, monospace; overflow: hidden; }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  #app { display: flex; height: 100dvh; }
+
+  /* ---------- die Leiste ---------- */
+  #side { width: 228px; flex: none; display: flex; flex-direction: column; background: #1a1a1a;
+    border-right: 1px solid var(--line-soft); transition: width .18s var(--ease); }
+  #sidehead { display: flex; align-items: center; gap: 8px; padding: 10px 10px 4px; font-weight: 700; color: #e8e8e8; }
+  #collapse { width: 22px; height: 22px; border-radius: 6px; background: var(--raised); color: var(--dim); }
+  #collapse:hover { color: var(--text); }
+  #sidetitle { flex: 1; }
+  /* der eine Satz, der sagt, ob du gebraucht wirst */
+  #need { padding: 0 10px 8px 40px; font-size: 11px; color: var(--faint); min-height: 22px; }
+  #need button { color: var(--amber); } #need button.red { color: var(--danger); }
+  #need button:hover { text-decoration: underline; }
+  #lines { flex: 1; overflow-y: auto; padding: 2px 7px 10px; }
+
+  /* eine Linie: Etikett im Rand, rechts davon die Kaesten. Das Band selbst wird nie gezeichnet. */
+  .line { display: grid; grid-template-columns: 18px minmax(0, 1fr); column-gap: 4px; margin-bottom: 6px; border-radius: 9px; }
+  .line.dragover { box-shadow: 0 -2px 0 var(--accent); }
+  .tag { grid-row: 1 / span 9; padding-top: 9px; text-align: center; font-weight: 700; color: var(--accent);
+    cursor: grab; user-select: none; }
+  .track { display: flex; gap: 3px; min-width: 0; }
+
+  /* Vorgaenger: ein schmaler grauer Strich links vom lebenden Kasten */
+  .past { flex: none; width: 4px; border-radius: 2px; background: #3a3a3a; cursor: help; transition: background .15s; }
+  .past:hover { background: #6a6a6a; }
+
+  .box { position: relative; flex: 1 1 0; min-width: 0; padding: 6px 8px 8px 9px; border-radius: 8px;
+    background: #202020; border: 1px solid transparent; cursor: pointer; overflow: hidden;
+    border-left: 3px solid hsl(var(--h, 0) var(--proj-s) var(--proj-l) / .75); }
+  .box:hover { background: #262626; }
+  .box.sel { background: #26314f; border-color: var(--focus); border-left-color: hsl(var(--h, 0) var(--proj-s) var(--proj-l)); }
+  .box.need { box-shadow: inset 0 0 0 1px #e0af6855; }
+  .box.bad { box-shadow: inset 0 0 0 1px #f8514966; }
+  .r1 { display: flex; align-items: center; gap: 7px; }
+  .lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e2e2e2; }
+  .role { flex: none; font-size: 9px; color: var(--faint); letter-spacing: .04em; }
+  .pct { flex: none; font-size: 10px; color: #8b93a7; font-variant-numeric: tabular-nums; }
+  .pct.warn { color: var(--amber); }
+  .r2 { display: flex; gap: 8px; margin-top: 2px; padding-left: 16px; font-size: 10px; color: var(--faint); white-space: nowrap; }
+  .r2 .repo { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: hsl(var(--h, 0) 30% 62%); }
+  .r2 .git { color: var(--dim); }
+  /* Kontextfuellstand als Haarlinie am Boden des Kastens */
+  .fill { position: absolute; left: 0; bottom: 0; height: 2px; background: #4a5068; }
+  .fill.warn { background: var(--amber); }
+
+  /* Zustand: eine Form und eine Farbe, damit er auch eingeklappt und ohne Farbsehen lesbar bleibt */
+  .st { flex: none; width: 9px; height: 9px; display: inline-block; }
+  .st.work { border-radius: 50%; background: var(--work); animation: pulse 1.6s ease-in-out infinite; }
+  .st.rest { border-radius: 50%; border: 1.5px solid #4a4a4a; }
+  .st.need { background: var(--amber); transform: rotate(45deg) scale(.82); }
+  .st.done { border-radius: 2px; background: var(--accent); }
+  .st.bad  { background: var(--danger); clip-path: polygon(20% 0, 50% 30%, 80% 0, 100% 20%, 70% 50%, 100% 80%, 80% 100%, 50% 70%, 20% 100%, 0 80%, 30% 50%, 0 20%); }
+  @keyframes pulse { 50% { opacity: .35; } }
+
+  /* Lanes: eigene, kleinere Kaesten an derselben Linie */
+  .lanes { display: flex; flex-direction: column; gap: 2px; margin-top: 3px; padding-left: 10px; }
+  .lane { display: flex; align-items: center; gap: 6px; height: 23px; padding: 0 8px 0 7px; border-radius: 6px;
+    background: #1d1d1d; border: 1px solid #262626; cursor: pointer; font-size: 11px; overflow: hidden;
+    transition: height .3s var(--ease), opacity .3s, margin .3s; }
+  .ltrack { display: flex; gap: 2px; min-width: 0; }
+  .ltrack .past { width: 3px; }
+  .lane { flex: 1 1 0; min-width: 0; }
+  .lane.retire { flex-grow: .0001; min-width: 3px; padding: 0; border-width: 0; background: #3a3a3a;
+    transition: flex-grow .5s var(--ease), padding .5s var(--ease), background .3s; }
+  .lane.retire > * { opacity: 0; }
+  .lane.enter { flex-grow: .0001; opacity: 0; }
+  .lane.enter.go { flex-grow: 1; opacity: 1; transition: flex-grow .5s var(--ease), opacity .4s .12s; }
+  .lane:hover { background: #242424; } .lane.sel { background: #222a40; border-color: var(--focus); }
+  .lane .ref { flex: none; color: #a9c1f5; font-weight: 700; }
+  .lane .st { width: 7px; height: 7px; }
+  .lane.gone { height: 0; opacity: 0; margin-top: -2px; border-width: 0; }
+  .lane.born { animation: born .35s var(--ease); }
+  @keyframes born { from { height: 0; opacity: 0; } }
+
+  /* Aktionen ersetzen den rechten Rand des Kastens, nie die Fakten daneben */
+  .acts { position: absolute; right: 4px; top: 4px; display: none; gap: 1px; background: inherit; padding-left: 6px; }
+  .box:hover .acts { display: flex; }
+  .acts button { color: var(--faint); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .acts button:hover { color: var(--text); background: #333; }
+
+  /* Uebergabe: der alte Kasten ergraut und schrumpft zum Strich, der neue waechst von rechts herein */
+  .box.retire { flex-grow: .0001; min-width: 4px; padding-left: 0; padding-right: 0; border-left-width: 0;
+    background: #3a3a3a; filter: grayscale(1); transition: flex-grow .55s var(--ease), padding .55s var(--ease), background .3s; }
+  .box.retire > * { opacity: 0; transition: opacity .15s; }
+  .box.enter { flex-grow: .0001; opacity: 0; }
+  .box.enter.go { flex-grow: 1; opacity: 1; transition: flex-grow .55s var(--ease), opacity .4s .15s; }
+
+  /* freie Plaetze: eine Haarlinie, die sich beim Zeigen oeffnet */
+  .gap { height: 7px; margin: -2px 0 4px 22px; border-radius: 6px; overflow: hidden; color: var(--faint);
+    display: flex; align-items: center; gap: 8px; padding: 0 9px; font-size: 11px; cursor: pointer;
+    transition: height .16s var(--ease), background .16s; }
+  .gap span { opacity: 0; transition: opacity .12s; }
+  .gap:hover, .gap:focus-visible { height: 26px; background: #202020; } .gap:hover span, .gap:focus-visible span { opacity: 1; }
+  #start { margin: 4px 0 0 22px; padding: 7px 9px; border-radius: 8px; border: 1px dashed #333; color: var(--dim);
+    width: calc(100% - 22px); text-align: left; }
+  #start:hover { color: var(--text); border-color: #555; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  /* eingeklappt, 50px: Etikett, Zustand, darunter ein Punkt je Lane */
+  #side.collapsed { width: 50px; }
+  #side.collapsed #sidetitle, #side.collapsed #need, #side.collapsed .r2, #side.collapsed .lbl, #side.collapsed .role, #side.collapsed .pct,
+  #side.collapsed .acts, #side.collapsed .past, #side.collapsed .ltrack .past, #side.collapsed .gap, #side.collapsed #start, #side.collapsed .lane > :not(.st) { display: none; }
+  #side.collapsed #sidehead { justify-content: center; padding: 10px 0 8px; }
+  #side.collapsed #lines { padding: 2px 4px; }
+  #side.collapsed .line { grid-template-columns: 14px minmax(0, 1fr); column-gap: 2px; }
+  #side.collapsed .box { padding: 8px 0; display: flex; justify-content: center; border-left-width: 2px; }
+  #side.collapsed .lanes { flex-direction: row; flex-wrap: wrap; gap: 3px; padding: 3px 0 0 4px; }
+  #side.collapsed .lane { height: auto; padding: 2px; border: 0; background: none; }
+
+  /* ---------- Buehne rechts: nur Erklaerung und Schalter, nicht Teil des Entwurfs ---------- */
+  #stage { flex: 1; min-width: 0; padding: 22px 26px; overflow-y: auto; }
+  #pane { border: 1px solid var(--line-soft); border-radius: 10px; padding: 14px 16px; background: #181818; max-width: 640px; }
+  #pane h1 { font-size: 13px; color: #e8e8e8; font-weight: 700; } #pane p { margin-top: 6px; color: var(--dim); max-width: 68ch; }
+  #pane code { color: #a9c1f5; }
+  .ctl { margin-top: 18px; max-width: 640px; } .ctl h2 { font-size: 11px; color: var(--faint); font-weight: 400; margin-bottom: 6px; }
+  .ctl .row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .ctl button { padding: 6px 10px; border-radius: 7px; background: var(--raised); color: var(--text); }
+  .ctl button:hover { background: #303030; } .ctl button.on { background: var(--sel); color: #fff; }
+  #legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 16px; color: var(--dim); }
+  #legend div { display: flex; align-items: center; gap: 8px; }
+  #tip { position: fixed; z-index: 9; max-width: 260px; padding: 7px 9px; border-radius: 7px; background: #0d0d0d;
+    border: 1px solid var(--line); color: var(--text); font-size: 11px; pointer-events: none; opacity: 0; transition: opacity .1s; white-space: pre-line; }
+
+  /* Handy: die Leiste ist das ganze Blatt, Zeilen in Daumenhoehe */
+  body.phone #app { width: 390px; height: min(844px, 100dvh); margin: 0 auto; border: 1px solid var(--line); border-radius: 22px; overflow: hidden; }
+  body.phone #side { width: 100%; border: 0; } body.phone #stage { display: none; }
+  body.phone .box { padding: 10px 10px 12px 11px; font-size: 13px; } body.phone .lane { height: 34px; font-size: 12px; }
+  body.phone .gap { height: 12px; } body.phone .acts { display: none !important; }
+  #back { display: none; position: fixed; right: 14px; bottom: 14px; padding: 8px 12px; border-radius: 8px; background: var(--sel); color: #fff; }
+  body.phone #back { display: block; }
+  @media (max-width: 700px) { #stage { display: none; } #side { width: 100%; } }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side" aria-label="Sessions">
+    <div id="sidehead"><button id="collapse" title="ein- und ausklappen">‹</button><span id="sidetitle">Fleet</span></div>
+    <div id="need"></div>
+    <div id="lines"></div>
+  </aside>
+  <main id="stage">
+    <div id="pane"></div>
+    <div class="ctl">
+      <h2>Was passiert, wenn …</h2>
+      <div class="row">
+        <button data-do="succeed">die gewählte Session oder Lane übergibt</button>
+        <button data-do="lane">eine Lane an der gewählten Linie startet</button>
+        <button data-do="land">eine Lane landet</button>
+        <button data-do="red">etwas rot wird</button>
+        <button data-do="full">alle 16 Plätze belegt sind</button>
+        <button data-do="reset">zurück zum Live-Stand</button>
+      </div>
+      <h2>Ansicht</h2>
+      <div class="row">
+        <button data-do="tags" id="btags">Etikett: Buchstaben</button>
+        <button data-do="collapse">eingeklappt</button>
+        <button data-do="phone">Handy</button>
+      </div>
+      <h2>Zustände</h2>
+      <div id="legend">
+        <div><i class="st work"></i>arbeitet</div><div><i class="st need"></i>wartet auf dich</div>
+        <div><i class="st done"></i>fertig, landbar</div><div><i class="st bad"></i>rot</div>
+        <div><i class="st rest"></i>ruht</div><div><i class="past" style="height:12px"></i>Vorgänger der Linie</div>
+      </div>
+    </div>
+  </main>
+</div>
+<button id="back" data-do="phone">Desktop</button>
+<div id="tip"></div>
+<script>
+// Live-Stand 2026-09-18 (GET /api/sessions), geschwaerzt. `slot` ist der interne Platz: er erscheint
+// nur im Tooltip und im Pane-Kopf, nie als Etikett. Zustaende `done`/`need` sind aus idle+git erschlossen.
+const LIVE = () => [
+  { repo: "claude-fleet", past: [{ label: "Orchestrator", until: "18.09. 00:38", pct: 31, slot: 3 }, { label: "Orchestrator", until: "18.09. 23:37", pct: 33, slot: 3 }],
+    s: { slot: 13, label: "Orchestrator", model: "opus-5", effort: "high", pct: 11.2, claude: true, idle: "25 min", git: "main", st: "rest" },
+    lanes: [
+      { slot: 6, label: "Queue-Ansicht", model: "opus-5", pct: 31.9, git: "↑7", st: "need", claude: true, past: 1 },
+      { slot: 7, label: "Info-Leiste rechts", model: "opus-5", pct: 13.4, git: "", st: "need", claude: true },
+      { slot: 12, label: "Linke Leiste", model: "opus-5", pct: 8.4, git: "", st: "work", claude: true }] },
+  { repo: "claude-fleet", past: [],
+    s: { slot: 4, label: "Fleet-Betrieb", role: "MAIN", model: "opus-5", effort: "high", pct: 27.3, claude: true, idle: "66 min", git: "main", st: "rest" },
+    lanes: [{ slot: 1, label: "task 8ff7", model: "glm-5.3-flash", pct: null, git: "↑3 ●2", st: "work" }] },
+  { repo: "claude-fleet", past: [], s: { slot: 10, label: "Leichtgewicht", role: "MAIN", model: "astra", effort: "medium", pct: 72.8, idle: "12 h", git: "main", st: "rest" }, lanes: [] },
+  { repo: "claude-fleet", past: [], s: { slot: 11, label: "Worktrail-Analyse", model: "astra", effort: "medium", pct: 54.7, idle: "12 h", git: "main", st: "rest" }, lanes: [] },
+  { repo: "private-repo-aa", past: [], s: { slot: 5, label: "Private-repo-aa", role: "MAIN", model: "astra", effort: "medium", pct: 58.4, idle: "4 h", git: "main", st: "rest" }, lanes: [] },
+  { repo: "claude-fleet", past: [], s: { slot: 8, label: "memory", model: "", effort: "", pct: 13.7, claude: true, idle: "4 h", git: "main", st: "rest" }, lanes: [] },
+  { repo: "privat-1", past: [], s: { slot: 2, label: "Privat", model: "", effort: "", pct: 14.1, claude: true, idle: "84 min", git: "main ↑51 ●2", st: "rest" }, lanes: [] },
+  { repo: "~", past: [], s: { slot: 16, label: "Shell", model: "", effort: "", pct: 6, claude: true, idle: "jetzt", git: "", st: "work" }, lanes: [] },
+];
+let lines, sel, letters = true, freeAfter = 3; // freeAfter: wo im Live-Stand ein freier Platz in der Reihenfolge sitzt
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
+const hue = (k) => { let h = 0; for (const c of k) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+const tagOf = (i) => letters ? String.fromCharCode(65 + i) : String(i + 1);
+// Owner-Band 25 %: nur fuer claude-Sessions ein Signal, codex kompaktiert selbst
+const warn = (x) => !!x.claude && x.pct != null && x.pct >= 25;
+const tip = $("tip");
+function hint(node, text) {
+  node.onmouseenter = () => { tip.textContent = text; tip.style.opacity = 1; const r = node.getBoundingClientRect();
+    tip.style.left = Math.min(r.right + 8, innerWidth - 270) + "px"; tip.style.top = Math.max(8, r.top - 4) + "px"; };
+  node.onmouseleave = () => { tip.style.opacity = 0; };
+}
+function reset() { lines = LIVE(); sel = { line: 0, lane: 2 }; render(); }
+
+function box(L, i) {
+  const s = L.s, b = el("div", "box" + (s.st === "need" ? " need" : s.st === "bad" ? " bad" : "") + (sel.line === i && sel.lane == null ? " sel" : ""));
+  b.style.setProperty("--h", hue(L.repo)); b.tabIndex = 0;
+  const r1 = el("div", "r1"); r1.append(el("i", "st " + s.st), el("span", "lbl", s.label));
+  if (s.role) r1.append(el("span", "role", s.role.toLowerCase()));
+  if (s.pct != null) r1.append(el("span", "pct" + (warn(s) ? " warn" : ""), Math.round(s.pct) + "%"));
+  const r2 = el("div", "r2"); r2.append(el("span", "repo", L.repo), el("span", "", s.model), el("span", "git", s.idle));
+  const acts = el("div", "acts");
+  for (const [g, t, f] of [["⎇+", "Lane an dieser Linie starten", () => addLane(i)], ["⇢", "übergeben", () => succeed(i)], ["×", "schließen", () => {}]]) {
+    const a = el("button", "", g); a.title = t; a.onclick = (e) => { e.stopPropagation(); f(); }; acts.append(a); }
+  b.append(r1, r2, acts);
+  if (s.pct != null) { const f = el("div", "fill" + (warn(s) ? " warn" : "")); f.style.width = s.pct + "%"; b.append(f); }
+  b.onclick = () => { sel = { line: i }; render(); };
+  hint(b, `${s.label}${s.role ? "  " + s.role : ""}\n${L.repo}  ${s.git}\n${[s.model, s.effort].filter(Boolean).join(" ")}\nzuletzt aktiv: ${s.idle}\ninterner Platz s${s.slot} (keine Adresse im Gespräch)`);
+  return b;
+}
+function laneBox(L, i, l, j) {
+  const n = el("div", "lane" + (sel.line === i && sel.lane === j ? " sel" : "") + (l.born ? " born" : "")); delete l.born; n.tabIndex = 0;
+  n.append(el("i", "st " + l.st), el("span", "ref", tagOf(i) + (j + 1)), el("span", "lbl", l.label));
+  n.append(el("span", "pct" + (warn(l) ? " warn" : ""), l.st === "done" ? "landbar" : l.pct != null ? Math.round(l.pct) + "%" : ""));
+  n.onclick = () => { sel = { line: i, lane: j }; render(); };
+  hint(n, `Lane ${tagOf(i)}${j + 1}  ${l.label}\n${l.model}  ${l.git || "sauber"}\ninterner Platz s${l.slot} (bleibt bei einer Lane-Übergabe gleich)`);
+  // eine Lane uebergibt im SELBEN Platz (succeedLane); der Server kennt heute nur die Anzahl (laneSuccessions)
+  const tr = el("div", "ltrack"), ticks = Math.min(l.past ?? 0, 2);
+  tr.style.marginLeft = -5 * ticks + "px"; // die Striche ragen in den Einzug, die Lane-Kaesten bleiben buendig
+  for (let k = 0; k < ticks; k++) { const bar = el("i", "past"); hint(bar, `${l.past} ${l.past === 1 ? "Übergabe" : "Übergaben"} dieser Lane\nselber Platz, selber Worktree, selber Branch`); tr.append(bar); }
+  tr.append(n);
+  return tr;
+}
+function render() {
+  const host = $("lines"); host.replaceChildren();
+  lines.forEach((L, i) => {
+    const row = el("div", "line"); row.draggable = true; row.dataset.i = i;
+    const tag = el("div", "tag", tagOf(i)); tag.title = "ziehen, um die Linie zu verschieben";
+    const track = el("div", "track");
+    for (const p of L.past.slice(-3)) { /* hoechstens drei Striche, aeltere leben nur im Verlauf */ const bar = el("i", "past"); hint(bar, `Vorgänger: ${p.label}\nübergeben ${p.until} bei ${p.pct} %\ninterner Platz s${p.slot}`); track.append(bar); }
+    track.append(box(L, i)); row.append(tag, track);
+    if (L.lanes.length) { const ls = el("div", "lanes"); L.lanes.forEach((l, j) => ls.append(laneBox(L, i, l, j))); row.append(ls); }
+    row.ondragstart = (e) => e.dataTransfer.setData("text/plain", i);
+    row.ondragover = (e) => { e.preventDefault(); row.classList.add("dragover"); };
+    row.ondragleave = () => row.classList.remove("dragover");
+    row.ondrop = (e) => { e.preventDefault(); const from = +e.dataTransfer.getData("text/plain"); const [m] = lines.splice(from, 1); lines.splice(i, 0, m); sel = { line: i }; render(); };
+    host.append(row);
+    if (i === freeAfter && lines.length < 12) host.append(gap(i + 1));
+  });
+  const start = el("button", "", "+  Session starten"); start.id = "start"; start.onclick = () => startAt(lines.length); host.append(start);
+  // der eine Satz oben
+  const need = [], bad = [];
+  lines.forEach((L, i) => { [[L.s, null], ...L.lanes.map((l, j) => [l, j])].forEach(([x, j]) => { if (x.st === "need") need.push({ line: i, lane: j ?? undefined }); if (x.st === "bad") bad.push({ line: i, lane: j ?? undefined }); }); });
+  const nd = $("need"); nd.replaceChildren();
+  const jump = (list, txt, cls) => { const b = el("button", cls, txt); let k = 0; b.onclick = () => { sel = list[k++ % list.length]; render(); }; return b; };
+  if (bad.length) nd.append(jump(bad, `${bad.length} rot`, "red"), document.createTextNode(need.length ? "   " : ""));
+  if (need.length) nd.append(jump(need, `${need.length} ${need.length === 1 ? "wartet" : "warten"} auf dich`, ""));
+  if (!bad.length && !need.length) nd.textContent = "nichts wartet auf dich";
+  paintPane();
+}
+function gap(at) { const g = el("div", "gap"); g.tabIndex = 0; g.append(el("span", "", "+"), el("span", "", "hier eine Session starten")); g.onclick = () => startAt(at); return g; }
+function startAt(at) {
+  lines.splice(at, 0, { repo: "claude-fleet", past: [], s: { slot: 9, label: "neue Session", model: "opus-5", effort: "high", pct: 0, claude: true, idle: "jetzt", git: "main", st: "work" }, lanes: [] });
+  freeAfter = -1; sel = { line: at }; render();
+}
+function paintPane() {
+  const L = lines[sel.line], x = sel.lane != null ? L.lanes[sel.lane] : L.s, name = tagOf(sel.line) + (sel.lane != null ? sel.lane + 1 : "");
+  $("pane").innerHTML = `<h1>${name}  ${x.label}</h1><p>Im Gespräch heißt diese Session <code>${name}</code>, auch nach der nächsten Übergabe. `
+    + `Der interne Platz ist gerade <code>s${x.slot}</code>. Er steht nur hier und im Tooltip, und nur er ist eine Adresse für <code>/api/slots/…</code>. `
+    + `Das Etikett nimmt keine Route an, damit es nie mit einer Platznummer verwechselt werden kann.</p>`;
+}
+// Uebergabe: alter Kasten wird zum Strich, neuer waechst von rechts herein; die Lanes bleiben haengen
+function succeed(i = sel.line) {
+  if (sel.line === i && sel.lane != null) return succeedLane(i, sel.lane);
+  const L = lines[i], row = $("lines").querySelectorAll(".line")[i], old = row.querySelector(".box");
+  const prev = L.s; L.past.push({ label: prev.label, until: "gerade eben", pct: Math.round(prev.pct ?? 0), slot: prev.slot });
+  L.s = { ...prev, slot: prev.slot === 9 ? 14 : 9, pct: 3, idle: "jetzt", st: "work" };
+  const neu = box(L, i); neu.classList.add("enter"); old.after(neu); old.classList.add("retire");
+  requestAnimationFrame(() => requestAnimationFrame(() => neu.classList.add("go")));
+  setTimeout(() => { sel = { line: i }; render(); }, 620);
+}
+function succeedLane(i, j) {
+  const l = lines[i].lanes[j], tr = $("lines").querySelectorAll(".line")[i].querySelectorAll(".ltrack")[j], old = tr.querySelector(".lane");
+  l.past = (l.past ?? 0) + 1; l.pct = 3; l.st = "work";
+  const neu = laneBox(lines[i], i, l, j).querySelector(".lane"); neu.classList.add("enter"); old.after(neu); old.classList.add("retire");
+  requestAnimationFrame(() => requestAnimationFrame(() => neu.classList.add("go")));
+  setTimeout(() => { sel = { line: i, lane: j }; render(); }, 580);
+}
+function addLane(i = sel.line) { lines[i].lanes.push({ slot: 15, label: "neue Lane", model: "glm-5.3-flash", pct: 0, git: "", st: "work", born: true }); sel = { line: i }; render(); }
+function land() {
+  const i = lines.findIndex((L) => L.lanes.length); if (i < 0) return; const L = lines[i], j = 0;
+  if (L.lanes[j].st !== "done") { L.lanes[j].st = "done"; L.lanes[j].git = "↑7"; sel = { line: i, lane: j }; render(); return; }
+  const n = $("lines").querySelectorAll(".line")[i].querySelectorAll(".ltrack")[j]; n.querySelector(".lane").classList.add("gone");
+  setTimeout(() => { L.lanes.splice(j, 1); sel = { line: i }; render(); }, 320);
+}
+function full() {
+  const names = ["Land-Pipeline", "Audit", "Studio", "Private-repo-r"]; let slot = 20;
+  while (lines.reduce((a, L) => a + 1 + L.lanes.length, 0) < 16) {
+    const L = lines[Math.floor(lines.length * 0.4) % lines.length];
+    if (lines.length < 9) lines.push({ repo: ["private-repo-r", "claude-fleet"][lines.length % 2], past: [{ label: "x", until: "gestern", pct: 30, slot: 2 }], s: { slot: slot++, label: names[lines.length % 4], role: "MAIN", model: "opus-5", effort: "high", pct: 18, claude: true, idle: "9 min", git: "main", st: "rest" }, lanes: [] });
+    else L.lanes.push({ slot: slot++, label: "task " + (slot * 7919 % 65536).toString(16), model: "glm-5.3-flash", pct: null, git: "↑2", st: slot % 3 ? "work" : "done" });
+  }
+  freeAfter = -1; render();
+}
+const DO = {
+  succeed: () => succeed(), lane: () => addLane(), land, full, reset: () => { freeAfter = 3; reset(); },
+  red: () => { const L = lines[1]; (L.lanes[0] ?? L.s).st = "bad"; sel = { line: 1, lane: L.lanes.length ? 0 : undefined }; render(); },
+  tags: () => { letters = !letters; $("btags").textContent = "Etikett: " + (letters ? "Buchstaben" : "Zahlen"); render(); },
+  collapse: () => $("side").classList.toggle("collapsed"), phone: () => document.body.classList.toggle("phone"),
+};
+document.addEventListener("click", (e) => { const d = e.target.closest?.("[data-do]"); if (d) DO[d.dataset.do](); });
+$("collapse").onclick = DO.collapse;
+reset();
+// #do=full,collapse spielt Schalter beim Laden ab, damit ein Zustand verlinkbar ist
+location.hash.replace(/^#do=/, "").split(",").filter((k) => DO[k]).forEach((k, n) => setTimeout(DO[k], 50 + n * 700));
+</script>
+</body>
+</html>

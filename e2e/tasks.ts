@@ -9457,8 +9457,9 @@ export async function run(ctx: Ctx): Promise<void> {
       done: "die Zeile ist freigegeben", verify: "bun e2e/pins.ts", verboten: [] };
     const rcFile = async (body: Record<string, unknown>): Promise<string> =>
       ((await (await mFile(mToken, { kind: "auftrag", ...body })).json()) as { task?: { id: string } }).task?.id ?? "";
+    const rcToken = (): string => mState().slots?.[String(mSlot)]?.selfToken ?? "";
     const rcRelease = (id: string): Promise<Response> => fetch(`${BASE}/api/self/tasks/${id}/release`,
-      { method: "POST", headers: { "x-fleet-self-token": mToken } });
+      { method: "POST", headers: { "x-fleet-self-token": rcToken() } });
     const rcPred = await rcFile({ text: "acp23 rc predecessor", card: rcCard });
     const rcBare = await rcFile({ text: "acp23 rc no card" });
     const rcNach = await rcFile({ text: `acp23 rc ordered, NACH ${rcPred}`, card: rcCard });
@@ -9499,7 +9500,7 @@ export async function run(ctx: Ctx): Promise<void> {
         && JSON.stringify(rcWave?.next) === JSON.stringify({ after: rcPred })
         && rcWait?.grund === `wartet auf ${rcPred} (after, nicht gelandet)` && rcWait.adressat === `main:${mMainProgram}`
         && JSON.stringify(rcWait.kette) === JSON.stringify([`row ${rcPred} (after)`]),
-      JSON.stringify({ live: rcLive, release: rcAfterRes.status, releaseText: rcAfterRes.status === 200 ? "" : await rcAfterRes.text(), next: rcWave?.next ?? null, wait: rcWait ?? null }));
+      JSON.stringify({ live: rcLive, tokenSame: rcToken() === mToken, release: rcAfterRes.status, releaseText: rcAfterRes.status === 200 ? "" : await rcAfterRes.text(), next: rcWave?.next ?? null, wait: rcWait ?? null }));
     for (const id of [rcPred, rcBare, rcNach, rcAfter]) await post(`/api/tasks/${id}/delete`, {});
 
     // --- (stau) THE STALL SENSOR (server.ts#tickStallSensor, queue rows 80f61ed8 → 84888f35). On one

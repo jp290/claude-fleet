@@ -13152,6 +13152,12 @@ const STALL_MS = 15 * 60_000;
 // short tick keeps the sensor as quick as its own windows.
 const STALL_READ_MS = 4 * DISPATCH_TICK_MS;
 let stallReadAt = 0;
+// …and because a read is not every tick, a wave can go `now` and start BETWEEN two reads — the
+// preview of 2026-09-18 saw exactly that: B started, C then waited on B's new lane, and the sensor
+// read one unbroken stall and kept the attention open. A row that became `sent` since the last
+// read IS a start in its repo, and breaks that repo's stall like a `now` wave does. The first read
+// after a boot only learns the running set: a lane that was running before is no start.
+let stallSentSeen: Set<string> | null = null;
 function stallView(): { stallMs: number; detected: number; msTotal: number;
   open: { repo: string; since: number; stalled: boolean; attentionId: string | null }[] } {
   return { stallMs: STALL_MS, detected: stallSensor.detected, msTotal: stallSensor.msTotal,
@@ -13222,8 +13228,13 @@ function tickStallSensor(on: boolean): void {
   const now = Date.now();
   if (now - stallReadAt < STALL_READ_MS) return;
   stallReadAt = now;
+  const sent = tasks.filter((t) => t.status === "sent");
+  const startedIn = new Set(stallSentSeen === null ? [] : sent.filter((t) => !stallSentSeen?.has(t.id))
+    .map((t) => taskRepoOf(t)).filter((repo): repo is string => !!repo).map(repoCanon));
+  stallSentSeen = new Set(sent.map((t) => t.id));
   const view = released ? startPlanNow() : null;
-  const readings = view ? stallReadings(view, view.waits) : [];
+  const readings = (view ? stallReadings(view, view.waits) : [])
+    .map((r) => startedIn.has(repoCanon(r.repo)) ? { ...r, stuck: false } : r);
   let dirty = false;
   for (const r of readings) {
     if (!r.stuck) continue;

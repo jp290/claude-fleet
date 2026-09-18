@@ -280,6 +280,8 @@ interface TaskInfo { id: string; source: ServerTask["source"];
   variants?: { harness: string | null; model: string | null; effort: string | null }[];
   variantOf?: string; variantIndex?: number;
   variantDecision?: { winner: string; by: string; at: number; shelved: string[] };
+  variantCompareArmedAt?: number;
+  variantCompare?: { at: number; winner: string; stage: string };
   // Bounded generation/presence only; the brief text remains on GET /api/tasks.
   briefAt?: number;
   // deterministic file/cluster facts from taskDigest. Absence is UNKNOWN, never an empty surface.

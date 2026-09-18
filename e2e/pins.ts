@@ -9271,9 +9271,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // family proves on behaviour; these pin that the mechanism is the one the docs name.
   const RULE_CARD_V2 = "a card is refused by the tree, not by a stale graph or a foreign field";
   const cx = read("card-extract.ts");
-  // v5 (2026-09-14): rolle normalised and advisory; the prompt asks for creates and after.
-  const versionConst = /^export const CARD_VALIDATOR_VERSION = 5;$/m.test(cx);
-  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 5 (bump it when a rule change can turn a refusal into an acceptance)`,
+  // v6 (2026-09-18): POST /api/self/criterion is a clarify row's verify.
+  const versionConst = /^export const CARD_VALIDATOR_VERSION = 6;$/m.test(cx);
+  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 6 (bump it when a rule change can turn a refusal into an acceptance)`,
     versionConst, `const=${versionConst}`);
   // v3 (2026-09-13): the filing format. A formatted row is read by the PARSER before the extractor
   // is ever started, and the ledger says which of the two produced each card.

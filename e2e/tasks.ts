@@ -7212,6 +7212,23 @@ export async function run(ctx: Ctx): Promise<void> {
       && aliasRefused.tests.verify === "run the tests" && aliasRefused.testsDe.verify === "Tests laufen lassen"
       && CARD_VALIDATOR_VERSION >= 4,
       JSON.stringify({ aliasAccepted, aliasRefused, CARD_VALIDATOR_VERSION }));
+    // CLARIFY CLOSE (validator 6, queue row f3ca2e05's refusal): a clarify lane builds nothing, its
+    // brief ends in POST /api/self/criterion — that route is its proof. An invented step, and every
+    // near-miss of the route, keeps the one verify gap line an unknown step has always had.
+    const verifyGapOf = (value: string) => validateCard({ verify: value }, cardCtx).gaps.filter((g) => g.startsWith("verify"));
+    const unknownStepGap = (value: string) => `verify: "${value}" names no known chain step (${fullSteps})`;
+    const clarifyAccepted = ["POST /api/self/criterion", "Kriterium per POST /api/self/criterion ablegen, dann STOPP"]
+      .map((v) => ({ v, gaps: verifyGapOf(v) }));
+    const clarifyRefused = ["make check-all", "GET /api/self/criterion", "POST /api/self/criterion-draft", "POST /api/self/criteria"]
+      .map((v) => ({ v, gaps: verifyGapOf(v) }));
+    check("(v6) card verify: \"POST /api/self/criterion\" is a clarify row's proof, the card is valid on it",
+      clarifyAccepted.every((a) => a.gaps.length === 0)
+      && validateCard({ ziel: "z", done: "d", verify: "POST /api/self/criterion" }, cardCtx).valid === true,
+      JSON.stringify(clarifyAccepted));
+    check("(v6) card verify: an invented step and every near-miss of the route keep the same unknown-step gap line",
+      clarifyRefused.every((r) => r.gaps.length === 1 && r.gaps[0] === unknownStepGap(r.v))
+      && validateCard({ ziel: "z", done: "d", verify: "make check-all" }, cardCtx).valid === false,
+      JSON.stringify(clarifyRefused));
     // S7: the SIZE is quote-checked like a path. The filing header states it; an ordinary "kleiner"
     // in prose does not, and a value outside the three classes is a gap rather than a nearest guess.
     const sizeCtx = (sourceText: string) => ({ ...cardCtx, sourceText });
@@ -7368,8 +7385,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && longAnswer.answerBytes === 6001
       && JSON.stringify(cardAnswerForLedger("{}")) === JSON.stringify({ answer: "{}", answerBytes: 2 }),
       JSON.stringify({ answer: cardRow?.answer ?? null, answerBytes: cardRow?.answerBytes ?? null, long: longAnswer.answerBytes }));
-    check("(v5) CARD_VALIDATOR_VERSION is 5, so every card refused by the v4 role rule is read once more",
-      CARD_VALIDATOR_VERSION === 5, String(CARD_VALIDATOR_VERSION));
+    check("(v6) CARD_VALIDATOR_VERSION is 6, so every card refused before the clarify close (and by the v4 role rule) is read once more",
+      CARD_VALIDATOR_VERSION === 6, String(CARD_VALIDATOR_VERSION));
 
     // --- S4 (queue row a672b626): THE CARD REACHES THE LANE FIRST. A valid card puts a KARTE head
     // in front of the prose, and the receipt says so; an invalid card changes nothing — neither the

@@ -1982,6 +1982,54 @@
     display: flex; align-items: center; justify-content: center; line-height: 1; }
   #boardclose:hover { color: var(--text); }
   #boardbody { flex: 1; overflow-y: auto; padding: 4px 10px 14px; font-size: 11.5px; }
+  /* suite meter: a slim thermometer pinned under the board head. White balls ride the line through
+     the glass and gather at four stations; the lanes are named under their station. The balls are
+     keyed DOM (renderSuiteMeter), so a change of station is a glide along the tube, not a jump. */
+  #boardsuites { flex: none; padding: 2px 10px 8px; border-bottom: 1px solid var(--line-soft); font-size: 10.5px; }
+  .smhead { display: flex; align-items: center; gap: 7px; height: 18px; color: var(--dim); }
+  .smtitle { font-weight: 700; color: #e8e8e8; letter-spacing: .02em; }
+  .smlock { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #boardsuites.lock-held .smlock { color: var(--text); }
+  #boardsuites.lock-overdue .smlock, #boardsuites.lock-unknown .smlock { color: var(--amber); }
+  .smdev, .smtog { border: 0; background: none; padding: 0 2px; font: inherit; color: var(--dim); cursor: pointer; }
+  .smdev:hover, .smtog:hover { color: var(--text); }
+  .smtube { position: relative; height: 16px; margin: 3px 0 2px; }
+  .smbulb { position: absolute; left: 0; top: 1px; width: 14px; height: 14px; border-radius: 50%;
+    border: 1px solid #444; background: #202020; box-sizing: border-box; transition: background .4s, border-color .4s, box-shadow .4s; }
+  #boardsuites.lock-held .smbulb { background: #e8e8e8; border-color: #e8e8e8; box-shadow: 0 0 6px rgba(255,255,255,.35); }
+  #boardsuites.lock-overdue .smbulb, #boardsuites.lock-unknown .smbulb { background: var(--amber); border-color: var(--amber); }
+  #boardsuites.lock-parked .smbulb { border-color: var(--dim); background: #333; }
+  #boardsuites.has-red .smbulb { box-shadow: 0 0 0 2px rgba(247,118,142,.55); }
+  .smglass { position: absolute; left: 11px; right: 0; top: 4px; height: 8px; border-radius: 0 5px 5px 0;
+    border: 1px solid #3a3a3a; border-left: 0; background: linear-gradient(#1f1f1f, #171717); box-sizing: border-box; }
+  .smline { position: absolute; left: 12px; right: 3px; top: 7.5px; height: 1px; background: rgba(255,255,255,.28); }
+  .smtick { position: absolute; top: 3px; width: 1px; height: 10px; margin-left: -.5px; background: #3c3c3c; }
+  .smball { position: absolute; top: 4px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%;
+    background: #fff; box-shadow: 0 0 4px rgba(255,255,255,.45);
+    transition: left .9s cubic-bezier(.45,0,.2,1), opacity .4s, transform .4s; }
+  /* the streak: a short fading line trailing each ball along the tube */
+  .smball::before { content: ""; position: absolute; right: 6px; top: 3.5px; width: 12px; height: 1px;
+    background: linear-gradient(to right, transparent, rgba(255,255,255,.8)); }
+  .smball.entering { opacity: 0; transform: scale(.3); }
+  .smball.mine { transform: scale(1.3); box-shadow: 0 0 0 1.5px var(--accent), 0 0 6px rgba(122,162,247,.6); }
+  .smball.tone-ok { box-shadow: 0 0 0 1.5px var(--add); }
+  .smball.tone-red { box-shadow: 0 0 0 1.5px var(--del), 0 0 6px rgba(247,118,142,.7); }
+  .smball.tone-unknown, .smball.tone-warn { box-shadow: 0 0 0 1.5px var(--amber); }
+  .smcols { display: grid; grid-template-columns: 14px repeat(4, minmax(0, 1fr)); }
+  .smcol { min-width: 0; display: flex; flex-direction: column; align-items: center; }
+  .smst { border: 0; background: none; padding: 0; font: inherit; font-size: 9.5px; color: var(--faint);
+    text-transform: uppercase; letter-spacing: .05em; cursor: pointer; }
+  .smst:hover { color: var(--dim); }
+  .smname { max-width: 100%; border: 0; background: none; padding: 0 2px; font: inherit; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+  .smname:disabled { cursor: default; color: var(--dim); }
+  .smname:not(:disabled):hover { color: #fff; text-decoration: underline; }
+  .smname.mine { color: var(--accent); font-weight: 700; }
+  .smname.tone-ok::after { content: " ✓"; color: var(--add); }
+  .smname.tone-red::after { content: " ✗"; color: var(--del); }
+  .smname.tone-unknown::after, .smname.tone-warn::after { content: " ?"; color: var(--amber); }
+  .smmore { color: var(--faint); }
+  .smdetail:not(:empty) { margin-top: 6px; }
   /* per-pane board toggle, sits left of the 💬 viewtoggle (top edge is taken, so
      "beside" not "above"); same visual language as the viewtoggle */
   .boardtoggle { position: absolute; top: 8px; right: 46px; z-index: 6; width: 30px; height: 26px;
@@ -2393,6 +2441,7 @@
   <div id="board">
     <div id="boardhead"><span id="boardtitle">Session brief</span>
       <button id="boardclose" title="close brief">›</button></div>
+    <div id="boardsuites"></div>
     <div id="boardbody"></div>
   </div>
 </div>

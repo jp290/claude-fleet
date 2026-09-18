@@ -16,6 +16,7 @@ import { pollPlan } from "./pollplan";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
+import { METER_STATIONS, suiteMeter, type MeterStation } from "./suitemeter";
 import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsSubject, opsSummary, type OpsPollRow } from "./opsevents";
 import {
   projectTaskWaves,
@@ -32,7 +33,7 @@ import type { Task as ServerTask } from "../server/types";
 import {
   WS_INPUT_MAX_BYTES, DISPOSITION_VERDICTS, INSTANCE_NAME_RE, INSTANCE_URL_RE, normalizeLaneAnchor,
   type GitInfo, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo,
-  type DispositionWorker, type DispositionVerdict,
+  type DispositionWorker, type DispositionVerdict, type SuiteOfferRow,
 } from "./protocol";
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
@@ -1818,7 +1819,7 @@ function setBoard(on: boolean) {
   applyBoard();
   // the board's width changed → terminals must refit (same rule as the sidebar collapse)
   requestAnimationFrame(() => { for (const p of panes) p.refit(); });
-  if (on) void renderBoard();
+  if (on) { void renderBoard(); renderSuiteMeter(); }
 }
 
 async function pollOutline(slot: number): Promise<string[]> {
@@ -2005,6 +2006,123 @@ function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
     : state === "overdue" ? "This holder is still alive but has held far longer than any suite on this machine takes — check whether it is wedged."
     : "The machine-wide suite mutex, read off disk. Fleet only reads it — reaping a dead holder belongs to the wrappers.";
   return head;
+}
+
+// --- the suite meter: the board's always-on thermometer over every suite in flight ---------------
+// A slim tube pinned under the board head (public/index.html, #boardsuites), outside the scrolling
+// body and drawn whether or not a session is focused. Each suite is a white ball riding the line
+// through the tube, gathered at the station its run is at (src/suitemeter.ts says which rows land
+// where); the lanes are NAMED under their station, and a name opens its lane. The station labels
+// fold out the full gate reading (lock, running audit, reports) — the rows the meter summarises.
+//
+// The DOM is built once and updated in place, balls keyed by run: a ball that changes station keeps
+// its element, so the CSS transition carries it along the tube instead of it blinking across.
+const meterEl = $("boardsuites");
+const meterBalls = new Map<string, HTMLElement>();
+let meterSuites: SuiteOfferRow[] = [];
+let meterOpen = localStorage.getItem("fleet.meter.open") === "1";
+const METER_WORD: Record<MeterStation, string> = { wait: "wartet", run: "läuft", helper: "helfer", done: "fertig" };
+const METER_TITLE: Record<MeterStation, string> = {
+  wait: "asked for, not started — a lane waiting on the suite mutex, an offer no helper took yet, a land whose post-land audit is folded into the next run",
+  run: "running on this box — whatever holds the machine-wide suite mutex",
+  helper: "running on a helper device — a lane's preview or an audit taken off this box",
+  done: "finished in the last few minutes — green, red, or nothing measured",
+};
+const METER_NAMES_MAX = 3;
+const meterTube = el("div", "smtube");
+const meterCols = el("div", "smcols");
+const meterHead = el("div", "smhead");
+const meterDetail = el("div", "smdetail");
+{
+  meterTube.append(el("div", "smbulb"), el("div", "smglass"), el("div", "smline"));
+  METER_STATIONS.forEach((_, i) => {
+    const t = el("div", "smtick");
+    t.style.left = meterX(i, 0);
+    meterTube.appendChild(t);
+  });
+  meterEl.append(meterHead, meterTube, meterCols, meterDetail);
+}
+// the bulb is 14px; the four stations sit at the middles of four equal columns of the rest, the
+// same grid .smcols lays the names out on — so a name stands under its own ball
+function meterX(i: number, offsetPx: number): string {
+  return `calc(14px + (100% - 14px) * ${(i + 0.5) / METER_STATIONS.length} + ${offsetPx}px)`;
+}
+function helperSummary(): string | null {
+  if (!helperDevicesInfo.length || deviceOnlineMs === null) return null;
+  const online = helperDevicesInfo.filter((d) => Date.now() - d.lastSeen < deviceOnlineMs!);
+  if (!online.length) return "💻 offline";
+  const free = online.reduce((n, d) => n + Math.max(0, (d.maxParallelSuites ?? 0) - (d.running ?? 0)), 0);
+  const known = online.every((d) => d.maxParallelSuites !== undefined);
+  return known ? `💻 ${free} frei` : `💻 ${online.length} online`;
+}
+function renderSuiteMeter() {
+  if (!boardOpen || isMobile()) return;
+  const m = suiteMeter({
+    gate: gateInfo, audit: postLandLive, offers: meterSuites, devices: helperDevicesInfo,
+    slots: fleet.filter((s) => s.cwd).map((s) => ({ id: s.id, label: s.label, branch: s.worktree?.branch ?? null })),
+  });
+  const focusSlot = panes[focused]?.slot ?? null;
+  const red = m.balls.some((b) => b.tone === "red");
+  meterEl.className = `lock-${m.lock ?? "none"}${red ? " has-red" : ""}`;
+
+  // head: one line — what the mutex is doing, and what the helpers could still take
+  const lockWord = m.lock === null ? "gate not served" : m.lock === "free" || m.lock === "stale" ? "frei"
+    : m.lock === "overdue" ? "⚠ überfällig" : m.lock === "parked" ? "⏸ geparkt" : m.lock === "unknown" ? "? unbekannt" : "belegt";
+  const lockEl = el("span", "smlock", lockWord);
+  lockEl.title = m.lock === null ? "This server sends no gate reading — nothing here has measured the mutex."
+    : "The machine-wide suite mutex (e2e-stage.sh). Click the stations for the full reading.";
+  const hs = helperSummary();
+  const devEl = hs ? el("button", "smdev", hs) as HTMLButtonElement : null;
+  if (devEl) { devEl.title = "helper devices — open the register"; devEl.onclick = () => devbtn.click(); }
+  const tog = el("button", "smtog", meterOpen ? "▾" : "▸") as HTMLButtonElement;
+  tog.title = meterOpen ? "hide the gate reading" : "show the gate reading — lock, running audit, every report";
+  tog.onclick = () => { meterOpen = !meterOpen; localStorage.setItem("fleet.meter.open", meterOpen ? "1" : "0"); renderSuiteMeter(); };
+  meterHead.replaceChildren(el("span", "smtitle", "Suiten"), lockEl, ...(devEl ? [devEl] : []), tog);
+
+  // balls: keyed, so one run keeps its element while it moves from station to station
+  const seen = new Set<string>();
+  METER_STATIONS.forEach((st, i) => {
+    const here = m.balls.filter((b) => b.station === st).sort((a, b) => a.at - b.at);
+    here.forEach((b, j) => {
+      seen.add(b.key);
+      let ball = meterBalls.get(b.key);
+      if (!ball) {
+        ball = el("div", "smball entering");
+        meterBalls.set(b.key, ball);
+        meterTube.appendChild(ball);
+        const born = ball;
+        requestAnimationFrame(() => born.classList.remove("entering"));
+      }
+      // a crowd gathers: balls stack a few pixels apart, centred on the station
+      ball.style.left = meterX(i, (j - (here.length - 1) / 2) * 5);
+      ball.className = `smball tone-${b.tone}${b.slot !== null && b.slot === focusSlot ? " mine" : ""}`;
+      ball.title = `${b.name} — ${b.what}`;
+    });
+  });
+  for (const [key, ball] of meterBalls) if (!seen.has(key)) { ball.remove(); meterBalls.delete(key); }
+
+  // names: under their station, a name opens its lane
+  meterCols.replaceChildren(el("div", "smcol0"), ...METER_STATIONS.map((st) => {
+    const here = m.balls.filter((b) => b.station === st).sort((a, b) => a.at - b.at);
+    const col = el("div", "smcol");
+    const lab = el("button", "smst", here.length ? `${METER_WORD[st]} ${here.length}` : METER_WORD[st]) as HTMLButtonElement;
+    lab.title = METER_TITLE[st];
+    lab.onclick = () => tog.click();
+    col.appendChild(lab);
+    for (const b of here.slice(0, METER_NAMES_MAX)) {
+      const n = el("button", `smname tone-${b.tone}${b.slot !== null && b.slot === focusSlot ? " mine" : ""}`, b.name) as HTMLButtonElement;
+      n.title = `${b.name} — ${b.what}${b.slot !== null ? " · click to open the lane" : ""}`;
+      const slot = b.slot;
+      if (slot !== null && fleet[slot - 1]?.cwd) n.onclick = () => showSlot(slot);
+      else n.disabled = true;
+      col.appendChild(n);
+    }
+    if (here.length > METER_NAMES_MAX) col.appendChild(el("div", "smmore", `+${here.length - METER_NAMES_MAX}`));
+    return col;
+  }));
+
+  const g = meterOpen ? gateSection() : null;
+  meterDetail.replaceChildren(...(g ? [g] : meterOpen ? [el("div", "bempty", "nothing on the gate")] : []));
 }
 
 // --- WHICH MACHINES TAKE WORK OFF THIS BOX: the helper device register --------------------------
@@ -2680,15 +2798,14 @@ async function renderBoard() {
     const slot = panes[focused]?.slot;
     const s = slot ? fleet[slot - 1] : undefined;
     if (!slot || !s?.cwd) {
-      // the gate line is about the MACHINE, not the focused lane — it must not disappear just
-      // because the pane under the cursor is empty.
-      const gt = gateSection();
+      // the deploy and error lines are about the MACHINE, not the focused lane — they must not
+      // disappear just because the pane under the cursor is empty (the gate lives in the meter).
       const dp = deploySection();
       const er = errorsSection();
       // ...and so is the device register: which machines can take work is a fact about the room,
       // not about the empty pane.
       const dv = devicesSection();
-      boardBody.replaceChildren(...(dp ? [dp] : []), ...(er ? [er] : []), ...(gt ? [gt] : []),
+      boardBody.replaceChildren(...(dp ? [dp] : []), ...(er ? [er] : []),
         ...(dv ? [dv] : []), el("div", "bempty", "no session in the focused pane"));
       return;
     }
@@ -2708,23 +2825,17 @@ async function renderBoard() {
     // is always at the top and the advisory agents, folded, are at the bottom. Every function
     // of the old flat list is kept, only regrouped.
 
-    // 0 — GATE: machine-level, above the lane story on the owner's call (2026-08-04) because it
-    // answers "can anything verify right now" before any question about THIS lane is worth asking.
-    // Absent entirely when no suite holds the mutex and no lane has reported — no chrome for the
-    // quiet case, same rule the post-land alarm follows.
-    // above even the gate line: "can anything verify right now" matters less than "is what you are
-    // looking at even the code that is running". Absent entirely unless something is due.
+    // 0 — MACHINE: the gate moved out of this body into the always-on suite meter above it
+    // (renderSuiteMeter). What stays here is only drawn when due: "is what you are looking at even
+    // the code that is running" first, absent entirely unless something is due.
     const dsec0 = deploySection();
     if (dsec0) nodes.push(dsec0);
     // between the two on purpose: "is the running code the code you think" comes first, then
     // "has that code been throwing", and only then "can anything verify right now".
     const esec0 = errorsSection();
     if (esec0) nodes.push(esec0);
-    const gsec0 = gateSection();
-    if (gsec0) nodes.push(gsec0);
-    // last of the machine-level group and below the gate line, in the same order those three read:
-    // "is the running code the code you think" → "has it been throwing" → "can anything verify
-    // right now" → "and who else could verify it for you".
+    // last of the machine-level group: "is the running code the code you think" → "has it been
+    // throwing" → "and who else could verify it for you".
     const dsec1 = devicesSection();
     if (dsec1) nodes.push(dsec1);
 
@@ -3953,6 +4064,7 @@ function focusPane(index: number) {
     renderSlots();
     saveView();
     void renderBoard(); // the board describes the FOCUSED session — follow the focus
+    renderSuiteMeter(); // …and the meter marks that session's balls
   }
 }
 
@@ -6250,7 +6362,7 @@ async function refresh() {
       // digest only (id/status/title/createdAt) — the binding lives on GET /api/programs
       programs?: ProgramDigest[];
       postLandAudit?: PostLandAuditInfo | null; postLandAuditLive?: PostLandAuditLiveInfo | null;
-      gate?: GateInfo | null; errors?: ErrorsInfo | null;
+      gate?: GateInfo | null; suiteOffers?: SuiteOfferRow[]; errors?: ErrorsInfo | null;
       // omitted by the server when the register is empty — absent means "no device has ever
       // registered", never "the server does not know about devices"
       helperDevices?: HelperDeviceInfo[];
@@ -6309,6 +6421,9 @@ async function refresh() {
     // the window travels WITH the rows (server.ts, the /api/sessions projection). Absent rows means
     // absent window, and the reset to null is the honest state — not the last window we happened to see.
     deviceOnlineMs = data.helperOnlineMs ?? null;
+    meterSuites = data.suiteOffers ?? [];
+    // the meter is the one gate surface that is always on screen, so it paints from the poll itself
+    renderSuiteMeter();
     renderDevBtn();
     if (devIsOpen()) renderDevDlg();
     // the attention inbox's whole share of the 2s poll: one number. It paints the badge, and while

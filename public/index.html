@@ -622,21 +622,18 @@
   .slot .diff { flex: none; font-size: 12px; color: var(--faint); cursor: pointer; }
   .slot .diff:hover { color: #7dcfff; }
   /* queue window: the dispatcher strip, the compose box, and the full task text in the detail */
-  /* the queue's scope: repo tabs, then (Work) the programs inside the chosen repo */
-  .qscope { flex-basis: 100%; display: flex; flex-direction: column; gap: 6px; }
+  /* the queue's scope, inline in the toolbar line: project switch + program picker */
+  .qscope { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .qscope:empty { display: none; }
-  .qscoperow { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-  .qscopelabel { width: 58px; flex: none; font-size: 10px; color: var(--faint); text-transform: uppercase;
-    letter-spacing: .07em; }
-  .qtab { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 7px;
-    border: 1px solid var(--line); background: transparent; color: var(--dim); font: inherit; font-size: 12px;
-    cursor: pointer; }
-  .qtab:hover { color: var(--text); background: var(--raised); }
-  .qtab.on { color: #dbe6ff; background: var(--sel); border-color: #3b4b70; }
-  .qtab .qtabn { font-size: 10px; color: var(--faint); background: #232323; border-radius: 20px; padding: 0 6px; }
-  .qtab.on .qtabn { color: #b4c6f5; background: #22304f; }
-  .qprogs .qtab { height: 22px; font-size: 11px; padding: 0 8px; }
-  .qdisp { flex-basis: 100%; font-size: 11.5px; color: var(--dim); display: flex; align-items: center; gap: 8px; }
+  .qview button .qtabn { margin-left: 6px; font-size: 10px; color: var(--faint); }
+  .qview button.on .qtabn { color: #b4c6f5; }
+  .qprogsel { height: 32px; max-width: 220px; color: var(--text); background: var(--raised); border: 1px solid var(--line);
+    border-radius: 8px; padding: 0 8px; font: 12px ui-monospace, Menlo, Consolas, monospace; }
+  .qprogsel:focus { outline: none; border-color: var(--focus); }
+  .qbundlebtn { margin-left: auto; }
+  .qbundlebtn.on { color: #e6d3ff; background: #2d2140; border-color: #4b3670; }
+  .qempty { font-size: 11.5px; color: var(--faint); padding: 4px 10px 8px; }
+  .qdisp { flex: 1; font-size: 11.5px; color: var(--dim); display: flex; align-items: center; gap: 8px; }
   .qview { flex: none; display: flex; padding: 2px; border: 1px solid var(--line); border-radius: 8px;
     background: #181818; }
   .qview button { min-height: 26px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent;
@@ -754,11 +751,15 @@
   .shellrow.qchild .shrname { font-size: 11.5px; color: #a9b1d6; }
   .shellsec.qfoldhead { cursor: pointer; }
   /* bundles: the tick box, the bar that acts on the ticked rows, the sensor's suggestions */
-  .shellrow .qpick { flex: none; margin: 0; accent-color: var(--accent); cursor: pointer; }
-  .shellrow .qpick:disabled { opacity: .25; cursor: not-allowed; }
-  .qselbar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 7px 9px; margin-bottom: 6px; border-radius: 8px; background: #1c2335; border: 1px solid #2c3a5e;
-    font-size: 12px; color: #dbe6ff; }
+  .shellrow.q-markable { cursor: copy; }
+  .shellrow.q-marked { background: #2d2140; box-shadow: inset 0 0 0 1px #6b4fa0; }
+  .shellrow.q-marked:hover { background: #352650; }
+  .shellrow.q-unmarkable { opacity: .45; cursor: not-allowed; }
+  .qselbar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 10px; margin-top: 8px; border-radius: 8px; background: #231b33; border: 1px solid #4b3670;
+    font-size: 12px; color: #e6d3ff; box-shadow: 0 -6px 14px rgba(0, 0, 0, .35); }
+  .qselbar .qseln { flex: 1; }
+  .qselbar .qselgo:not(:disabled) { color: #fff; background: #5b3f8f; border-color: #7a5bb5; }
   .qselbar .qselwhy { flex-basis: 100%; font-size: 11px; color: var(--amber); }
   .qsuggest { margin: 2px 0 6px; padding: 7px 9px; border-radius: 7px; border: 1px dashed #3a2f55;
     display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
@@ -938,6 +939,9 @@
     .qlife-st { font-size: 11px; line-height: 22px; }
     .qkind-select { min-height: 44px; font-size: 16px; }
     #shell-queue .qview { flex: 1 0 100%; flex-basis: 100%; }
+    #shell-queue .qscope { flex: 1 0 100%; flex-wrap: wrap; }
+    #shell-queue .qprogsel { flex: 1 1 auto; max-width: none; min-height: 40px; }
+    #shell-queue .qbundlebtn { margin-left: 0; min-height: 40px; }
     .qview button { flex: 1; min-height: 40px; }
     #shell-queue .pkfilterin { flex: 1 0 100%; max-width: none; min-height: 40px; }
     .qwavehint { font-size: 11px; padding-bottom: 8px; }

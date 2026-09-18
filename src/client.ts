@@ -6901,6 +6901,11 @@ let qProg: string | null = null;  // a program id, or Q_NO_PROGRAM for the rows 
 let qScopeBar: HTMLElement | null = null;
 const qSel = new Set<string>();   // rows ticked for a bundle; cleared on open, on scope change and after an act
 let qBundleBusy = false;
+// BUNDLE MODE (owner, 2026-09-18: "should mark the element", "by a button"): one toolbar button
+// switches the list from inspect to mark. While on, a click marks a row instead of opening it,
+// the sensor's suggestions show with a one-click bundle, and the act bar sits at the list's foot.
+let qBundleMode = false;
+let qBundleBtn: HTMLButtonElement | null = null;
 let qKey = "";                    // the data key the list was last built from
 let qDetailKey = "";              // the data key the DETAIL pane was last built from (see refresh)
 let qCompose: HTMLTextAreaElement | null = null; // created ONCE per open — never re-created by a poll
@@ -8423,6 +8428,7 @@ async function qMakeBundle(ids: readonly string[]): Promise<void> {
     }
     if (failed.length) toast(`bundle ${id} made, but ${failed.join(", ")} stayed open — archive by hand or ⧉ auflösen`);
     qSel.clear();
+    qBundleMode = false; // done: the new bundle opens in the pane, clicks open rows again
     qPick = id;
     taskTextKey = "";
   } finally {
@@ -9273,6 +9279,30 @@ function renderQueueDetail() {
     }
   };
   shell.detail.replaceChildren();
+  // BUNDLE MODE owns the pane: what the marked rows would become, before the one click makes it
+  if (qBundleMode) {
+    shell.detail.appendChild(el("div", "qdtitle-t", "Bundle"));
+    shell.detail.appendChild(el("div", "shellhint", "Click rows on the left to mark them. The bundle is one new"
+      + " row carrying every marked text whole; the marked rows are archived as \"gebündelt in <id>\", and"
+      + " ⧉ auflösen on the bundle restores them — released ones released again."));
+    const ids = [...qSel];
+    for (const id of ids) {
+      const line = el("div", "qbundlesrc");
+      line.append(el("span", "qbundleid", id), el("span", "", qRowTitle(qTaskText(id),
+        programsList.find((p) => p.id === tasksList.find((x) => x.id === id)?.programId)?.title)));
+      shell.detail.appendChild(line);
+    }
+    if (ids.length > 1) {
+      const draft = qBundleDraft(ids);
+      shell.detail.appendChild(typeof draft === "string"
+        ? el("div", "qdfind unk", draft)
+        : el("div", "shellhint", `→ one ${draft.queue ? "released" : "pending"} row`
+          + `${draft.programId ? ` in ${programsList.find((p) => p.id === draft.programId)?.title ?? draft.programId}` : ""}`
+          + `, ${draft.text.length} characters`));
+    }
+    restoreFocus();
+    return;
+  }
   if (qPick === null) {
     if (qView !== "work") {
       const emptyDetail = qView === "programs"
@@ -10131,8 +10161,8 @@ const qInRepo = (t: TaskInfo): boolean => !qRepo || (qTaskRepo(t) ?? Q_NO_REPO) 
 const qInScope = (t: TaskInfo): boolean => qInRepo(t)
   && (!qProg || (qProg === Q_NO_PROGRAM ? !t.programId : t.programId === qProg));
 
-// The scope bar: one row of repo tabs, and — in Work — one row of the programs with open rows
-// in the chosen repo. Counts are OPEN rows, so a tab says how much is on that project's desk.
+// The scope: a segmented project switch, and — in Work — a program picker. Counts are OPEN rows,
+// so a project says how much is on its desk. Both live in the toolbar line, not rows of their own.
 function paintQueueScope() {
   const bar = qScopeBar;
   if (!bar) return;
@@ -10143,27 +10173,26 @@ function paintQueueScope() {
     const r = qTaskRepo(t) ?? Q_NO_REPO;
     repos.set(r, (repos.get(r) ?? 0) + 1);
   }
-  const tab = (label: string, n: number, on: boolean, act: () => void, title?: string) => {
-    const b = el("button", `qtab${on ? " on" : ""}`) as HTMLButtonElement;
-    b.type = "button";
-    b.append(el("span", "", label), el("span", "qtabn", String(n)));
-    if (title) b.title = title;
-    b.setAttribute("aria-pressed", String(on));
-    b.onclick = act;
-    return b;
-  };
   const choose = (repo: string | null, prog: string | null) => {
     qRepo = repo; qProg = prog; qSel.clear(); qKey = ""; renderQueue();
   };
-  const repoRow = el("div", "qscoperow qrepos");
-  repoRow.appendChild(el("span", "qscopelabel", "Project"));
-  repoRow.appendChild(tab("All", open.length, qRepo === null, () => choose(null, null), "every repository"));
+  const seg = el("div", "qview qprojects");
+  seg.setAttribute("role", "group");
+  seg.setAttribute("aria-label", "Project");
+  const tab = (label: string, n: number, on: boolean, act: () => void, title: string) => {
+    const b = el("button", on ? "on" : "") as HTMLButtonElement;
+    b.type = "button";
+    b.append(el("span", "", label), el("span", "qtabn", String(n)));
+    b.title = title;
+    b.setAttribute("aria-pressed", String(on));
+    b.onclick = act;
+    seg.appendChild(b);
+  };
+  tab("All", open.length, qRepo === null, () => choose(null, null), "every project");
   for (const [r, n] of [...repos].sort((a, b) => b[1] - a[1]))
-    repoRow.appendChild(r === Q_NO_REPO
-      ? tab("no repo", n, qRepo === r, () => choose(r, null),
-        "rows naming no target repo while the dispatcher has none either — where they would run is unknown")
-      : tab(baseName(r), n, qRepo === r, () => choose(r, null), r));
-  bar.appendChild(repoRow);
+    tab(r === Q_NO_REPO ? "no repo" : baseName(r), n, qRepo === r, () => choose(r, null), r === Q_NO_REPO
+      ? "rows naming no target repo while the dispatcher has none either — where they would run is unknown" : r);
+  bar.appendChild(seg);
   if (qView !== "work") return;
   const inRepo = open.filter(qInRepo);
   const progs = new Map<string, number>();
@@ -10172,15 +10201,21 @@ function paintQueueScope() {
     progs.set(k, (progs.get(k) ?? 0) + 1);
   }
   if (progs.size < 2 && !qProg) return;
-  const progRow = el("div", "qscoperow qprogs");
-  progRow.appendChild(el("span", "qscopelabel", "Program"));
-  progRow.appendChild(tab("All", inRepo.length, qProg === null, () => choose(qRepo, null)));
+  const sel = el("select", "qprogsel") as HTMLSelectElement;
+  sel.setAttribute("aria-label", "Program");
+  const opt = (value: string, label: string) => {
+    const o = el("option", "", label) as HTMLOptionElement;
+    o.value = value;
+    sel.appendChild(o);
+  };
+  opt("", `all programs · ${inRepo.length}`);
   for (const [k, n] of [...progs].sort((a, b) => b[1] - a[1])) {
     const p = programsList.find((x) => x.id === k);
-    const label = k === Q_NO_PROGRAM ? "no program" : p ? qProgramShort(p.title) : k.slice(0, 8);
-    progRow.appendChild(tab(label, n, qProg === k, () => choose(qRepo, qProg === k ? null : k), p?.title));
+    opt(k, `${k === Q_NO_PROGRAM ? "no program" : p ? qProgramShort(p.title) : k.slice(0, 8)} · ${n}`);
   }
-  bar.appendChild(progRow);
+  sel.value = qProg ?? "";
+  sel.onchange = () => choose(qRepo, sel.value || null);
+  bar.appendChild(sel);
 }
 
 function renderQueue() {
@@ -10210,7 +10245,7 @@ function renderQueue() {
     [...model.work, ...model.history].map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.briefAt,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
       t.refine?.at, t.refining, t.comments?.n, t.notes?.at, t.hold?.at, t.size, t.programId]),
-    qNotesOpen, taskTextKey, qRepo, qProg, [...qSel], qBundleBusy]);
+    qNotesOpen, taskTextKey, qRepo, qProg, [...qSel], qBundleBusy, qBundleMode]);
   if (key === qKey) return;
   qKey = key;
   paintQueueScope();
@@ -10245,20 +10280,13 @@ function renderQueue() {
     sub?: HTMLElement | null; pick?: string | null }) => {
     const r = el("div", `shellrow${o.cls ? ` ${o.cls}` : ""}`);
     qRowId.set(r, o.id);
-    if (o.pick !== undefined && o.id) {
-      const id = o.id;
-      const box = el("input", "qpick") as HTMLInputElement;
-      box.type = "checkbox";
-      box.checked = qSel.has(id);
-      box.disabled = o.pick !== null;
-      box.title = o.pick ?? "tick to bundle this row with others";
-      box.onclick = (ev) => {
-        ev.stopPropagation();
-        if (box.checked) qSel.add(id); else qSel.delete(id);
-        qKey = ""; renderQueue();
-      };
-      r.appendChild(box);
-    }
+    // in bundle mode a click MARKS a bundlable row; a row that cannot join says why and stays inert
+    const markId = qBundleMode && o.pick !== undefined && o.id ? o.id : null;
+    if (markId) {
+      r.classList.add(o.pick === null ? "q-markable" : "q-unmarkable");
+      if (qSel.has(markId)) r.classList.add("q-marked");
+      r.title = o.pick ?? (qSel.has(markId) ? "marked — click to unmark" : "click to mark for the bundle");
+    } else if (qBundleMode) r.classList.add("q-unmarkable");
     const m = el("div", "shrmain");
     const name = el("div", "qrowhead");
     name.appendChild(el("div", "shrname", o.name));
@@ -10279,7 +10307,13 @@ function renderQueue() {
     }
     if (o.sub) m.appendChild(o.sub);
     r.appendChild(m);
-    const act = () => qSelect(o.id);
+    const act = markId
+      ? () => {
+        if (o.pick !== null) return;
+        if (qSel.has(markId)) qSel.delete(markId); else qSel.add(markId);
+        qKey = ""; renderQueue(); renderQueueDetail();
+      }
+      : () => { if (!qBundleMode) qSelect(o.id); };
     r.onclick = act;
     shell.list.appendChild(r);
     if (o.id === qPick) { r.classList.add("sel"); selIdx = rows.length; }
@@ -10385,31 +10419,22 @@ function renderQueue() {
       qQuery ? "no historical tasks match this search" : "History is empty — no done or archived tasks"));
   } else if (qView === "work") {
     for (const id of [...qSel]) if (!model.work.some((t) => t.id === id)) qSel.delete(id);
-    if (qSel.size) {
-      const bar = el("div", "qselbar");
-      bar.appendChild(el("span", "", `${qSel.size} ticked`));
-      const draft = qSel.size > 1 ? qBundleDraft([...qSel]) : "tick at least two rows";
-      const make = el("button", "shrbtn", qBundleBusy ? "bundling…" : "⧉ bundle") as HTMLButtonElement;
-      make.disabled = typeof draft === "string" || qBundleBusy;
-      make.title = typeof draft === "string" ? draft
-        : "one new row carrying every ticked text; the ticked rows are archived as \"gebündelt in <id>\" — ⧉ auflösen brings them back";
-      make.onclick = () => void qMakeBundle([...qSel]);
-      const clear = el("button", "shrbtn", "clear") as HTMLButtonElement;
-      clear.onclick = () => { qSel.clear(); qKey = ""; renderQueue(); };
-      bar.append(make, clear);
-      if (typeof draft === "string" && qSel.size > 1) bar.appendChild(el("span", "qselwhy", draft));
-      shell.list.appendChild(bar);
-    }
-    if (!qQuery) add({ name: "＋ New task", cls: "qnew", id: null });
+    if (!qQuery && !qBundleMode) add({ name: "＋ New task", cls: "qnew", id: null });
     // BUNDLE SUGGESTIONS, from the land-wave sensor (task-land-waves.ts): rows in one program on a
     // shared confirmed surface. Drawn above Backlog because that is where their rows are, and
     // offered as a TICK, never an act — whether they belong together is the owner's judgment.
     const suggest = qLandWaveProjection().repos.flatMap((repo) => repo.waves)
       .filter((w) => w.ids.length > 1 && w.ids.every((id) => model.work.some((t) => t.id === id)))
       .filter((w) => w.ids.every((id) => { const t = tasksList.find((x) => x.id === id); return !!t && !qBundleRefusal(t); }));
+    if (qBundleBtn) {
+      qBundleBtn.textContent = qBundleMode ? "✓ done bundling" : `⧉ Bundle${suggest.length ? ` · ${suggest.length}` : ""}`;
+      qBundleBtn.classList.toggle("on", qBundleMode);
+      qBundleBtn.title = qBundleMode ? "leave bundle mode — clicks open rows again"
+        : `mark rows to bundle into one${suggest.length ? `; ${suggest.length} suggested by the land-wave sensor` : ""}`;
+    }
     for (const g of Q_GROUPS) {
-      if (g.k === "backlog" && suggest.length && !qQuery) {
-        addSection("Could bundle", suggest.length, "rows of one program on a shared confirmed file surface —"
+      if (g.k === "backlog" && suggest.length && !qQuery && qBundleMode) {
+        addSection("Suggested bundles", suggest.length, "rows of one program on a shared confirmed file surface —"
           + " one lane and one land instead of several. Structural only: nothing checked that they share a cause.");
         for (const w of suggest) {
           const line = el("div", "qsuggest");
@@ -10417,13 +10442,21 @@ function renderQueue() {
           line.appendChild(el("div", "qsuggestf", [`${w.ids.length} rows`, w.klasse,
             `~${Math.round(w.savingsSec / 60)} min saved`, w.sharedFiles.length ? `shared: ${w.sharedFiles.slice(0, 3).join(", ")}` : ""]
             .filter(Boolean).join(" · ")));
-          const tick = el("button", "shrbtn", "tick these") as HTMLButtonElement;
-          tick.onclick = () => { qSel.clear(); for (const id of w.ids) qSel.add(id); qKey = ""; renderQueue(); };
-          line.appendChild(tick);
+          const go = el("button", "shrbtn", "⧉ bundle these") as HTMLButtonElement;
+          go.disabled = qBundleBusy;
+          go.title = "one row from these; ⧉ auflösen on the bundle brings them back";
+          go.onclick = () => void qMakeBundle(w.ids);
+          line.appendChild(go);
           shell.list.appendChild(line);
         }
       }
       const group = model.work.filter((t) => qGroupOf(t) === g.k && !assigned.has(t.id));
+      // Running is the top of the pipeline and always drawn: an empty top is a fact, not a gap
+      if (g.k === "running" && !group.length && !qQuery) {
+        addSection(g.head, 0, g.hint);
+        shell.list.appendChild(el("div", "qempty", "nothing running"));
+        continue;
+      }
       if (!group.length) continue;
       const head = addSection(g.head, group.length, g.hint);
       if (g.k === "notes" && !qQuery) {
@@ -10449,6 +10482,24 @@ function renderQueue() {
         addTask(task);
         visibleRows++;
       }
+    }
+    if (qBundleMode) {
+      const bar = el("div", "qselbar");
+      bar.appendChild(el("span", "qseln", qSel.size ? `${qSel.size} marked` : "click rows to mark them"));
+      const draft = qSel.size > 1 ? qBundleDraft([...qSel]) : "mark at least two rows";
+      const make = el("button", "shrbtn qselgo", qBundleBusy ? "bundling…" : "⧉ bundle") as HTMLButtonElement;
+      make.disabled = typeof draft === "string" || qBundleBusy;
+      make.title = typeof draft === "string" ? draft
+        : "one new row carrying every marked text; the marked rows are archived as \"gebündelt in <id>\" — ⧉ auflösen brings them back";
+      make.onclick = () => void qMakeBundle([...qSel]);
+      bar.appendChild(make);
+      if (qSel.size) {
+        const clear = el("button", "shrbtn", "clear") as HTMLButtonElement;
+        clear.onclick = () => { qSel.clear(); qKey = ""; renderQueue(); renderQueueDetail(); };
+        bar.appendChild(clear);
+      }
+      if (typeof draft === "string" && qSel.size > 1) bar.appendChild(el("span", "qselwhy", draft));
+      shell.list.appendChild(bar);
     }
     if (!visibleRows) shell.list.appendChild(el("div", "pknone", qQuery
       ? "no tasks match this search"
@@ -10539,6 +10590,7 @@ function openQueue() {
   qRepo = null;
   qProg = null;
   qSel.clear();
+  qBundleMode = false;
   qKey = "";
   qCompose = null;
   qRepoIn = null;
@@ -10569,7 +10621,7 @@ function openQueue() {
     listWidth: 380,
     onSelect: (row) => { if (qRowId.has(row.el)) qSelect(qRowId.get(row.el) ?? null); },
     onClose: () => {
-      qScopeBar = null;
+      qScopeBar = null; qBundleBtn = null; qBundleMode = false;
       qShell = null; qCompose = null; qRepoIn = null; qProgSel = null; qCmBox = null; qCmFor = null;
       qBriefDraft = null; qCriterionDraft = null; qRawAck = null; qWaveAck = null; qRowId = new Map();
       qSpawnPick.clear(); qSpawnUi = null;
@@ -10599,6 +10651,7 @@ function openQueue() {
     if (qView === next) return;
     if (qPick !== null) qBsSeq++;
     qView = next;
+    if (next !== "work") { qBundleMode = false; qSel.clear(); }
     qPick = null;
     qRawAck = null;
     qKey = "";
@@ -10610,9 +10663,9 @@ function openQueue() {
   for (const item of views) item.button.onclick = () => chooseView(item.id);
   view.append(...views.map((item) => item.button));
   paintView();
+  shell.tools.appendChild(view);
   qScopeBar = el("div", "qscope");
   shell.tools.appendChild(qScopeBar);
-  shell.tools.appendChild(view);
 
   const search = el("input", "pkfilterin") as HTMLInputElement;
   search.type = "text";
@@ -10621,6 +10674,16 @@ function openQueue() {
   search.setAttribute("aria-label", "Search tasks by text, ID, status, repository or program");
   search.addEventListener("input", () => { qQuery = search.value.trim().toLowerCase(); qKey = ""; renderQueue(); });
   shell.tools.appendChild(search);
+  const bundleBtn = el("button", "shrbtn qbundlebtn", "⧉ Bundle") as HTMLButtonElement;
+  bundleBtn.type = "button";
+  bundleBtn.onclick = () => {
+    qBundleMode = !qBundleMode;
+    qSel.clear();
+    if (qBundleMode && qView !== "work") chooseView("work");
+    qKey = ""; renderQueue(); renderQueueDetail();
+  };
+  qBundleBtn = bundleBtn;
+  shell.tools.appendChild(bundleBtn);
 
   const drow = el("div", "qdisp");
   if (dispatch.available) {
@@ -10651,11 +10714,9 @@ function openQueue() {
     drow.textContent = "Dispatcher unavailable (set FLEET_DISPATCH_REPO to auto-run queued tasks)."
       + " Tasks are still tracked; send them by hand.";
   }
-  shell.tools.appendChild(drow);
-
-  shell.foot.textContent = "backlog → its brief is compiled → you release ▸"
-    + " → a ⎇ lane runs it → ± review → ⏏ land.  Releasing is yours."
-    + "  Sidebar badge: •N uncommitted · ↑N to push · amber = editing · green = ready to land";
+  // the dispatcher's state is a fact about the whole machine, not a filter on this list: it rides
+  // the window's foot, out of the toolbar the owner scans for scope
+  shell.foot.replaceChildren(drow);
 
   renderQueue();
   renderQueueDetail();

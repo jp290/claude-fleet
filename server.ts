@@ -18509,7 +18509,7 @@ const auditShardRuns = new Map<string, AuditShardRun>(); // repo toplevel -> its
 // tick, and without this each would build its own bundle and two would be told "try again"
 const auditShardOpening = new Map<string, Promise<{ run: AuditShardRun } | { error: string; status: number }>>();
 const auditShardJobId = (repo: string, k: number, n: number): string =>
-  createHash("sha256").update(`${repo} shard:${k}/${n}`).digest("hex").slice(0, 12);
+  createHash("sha256").update(`${repo}\u0000shard:${k}/${n}`).digest("hex").slice(0, 12);
 const shardTerminal = (s: AuditShardSlot): boolean => !!s.result || !!s.closed;
 // A lapse is a FACT about this fleet, not a note in a log: it says a job was promised to a machine
 // that never answered. Kept bounded and served on the portal so the owner can see a helper that

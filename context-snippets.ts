@@ -387,7 +387,7 @@ export function buildSnippetPackage(
       const file = byPath.get(path);
       if (!file) continue;                       // not read: a bare surface path phase 2 skipped
       if (file.text === null) { unreadable = true; continue; }
-      if (file.text.includes(" ")) { pushOmission(omitted, path, "binary-source"); continue; }
+      if (file.text.includes("\u0000")) { pushOmission(omitted, path, "binary-source"); continue; }
       const lines = fileLines(path);
       let index = indexCache.get(path);
       if (!index) { index = definitionIndex(lines); indexCache.set(path, index); }

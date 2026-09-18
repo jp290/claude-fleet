@@ -4322,6 +4322,37 @@ und weil der Audit die Kette Land→Verdikt trägt, ~16 min länger, bis ein `un
 adressierbar ist. Genau darum wurde hier nur die MESSBARKEIT gebaut und nicht die Serialisierung: die
 Familie, die den Verdacht auslöste, ist am Band repariert (oben), nicht an der Last.
 
+**NACHTRAG 2026-09-18: die Reparatur auf die GANZE Klasse ausgerollt — und warum ein Rot nach dem Fix
+wieder feuerte.** Die Pruefapparatur-Notiz (`docs/messungen/2026-09-18-pruefapparatur-determinismus.md`
+§a) zaehlt die Familie NACH `6988539d` bei **5/24 = 20,8 %** auf vier verschiedenen sauberen Baeumen.
+Nach der Regel oben ist das echt, und der Grund steht im Code: `awaitFoundingBrief` sass vor **2 von
+32** Wartestellen (`m1Land`, `ffrLand`), die anderen **30** Aufrufe von `waitDoneLooking` in
+`e2e/programs.ts` konnten weiter im Fenster zurueckkehren, das der Gruendungs-Brief gleich wieder
+schliesst.
+
+- **Der Schutz sitzt jetzt IN `e2e/programs.ts#waitDoneLooking`**, nicht davor: die Signatur ist
+  `(slot, cwd)`, und bevor der Warter auf `done-looking` pollt, laeuft `awaitFoundingBrief(slot, cwd)`.
+  Jede Lane dieser Sektion ist DISPATCHT und schuldet ihrer Pane einen Brief; kein Aufrufer kann den
+  Schutz vergessen. Ein Brief, der nie kommt, faellt als `setup: founding brief — …` in
+  `doneLookingWhy`, nicht als fehlende `idle`-Klausel.
+- **Der NEUESTE geloggte Schreiber, nicht nur der erste.** Die Re-Waits (nach Accept, nach einem
+  Merge-Job) folgen genau solchen Einfuegungen — `server.ts#deliverFleetReportDecision` tippt das
+  Urteil in die Lane-Pane und loggt es. `awaitFoundingBrief` wartet deshalb in der zweiten Haelfte,
+  bis die Pane-Ausgabe der juengsten `prompts.jsonl`-Zeile fuer diesen Worktree beobachtet ist; beim
+  ersten Warten ist das der Brief selbst.
+- **`settleBrief` (ambient-land-Arme) wartet nicht mehr ein 7-s-Fenster ab**, sondern auf dieselbe
+  Tatsache: `logPrompt` ist der letzte Akt von `server.ts#briefAndSend`, jedes `requeue` liegt davor
+  oder im `catch`.
+- **Pin:** `e2e/pins.ts`, „§11.2y — no done-looking wait in e2e/programs.ts returns before the lane's
+  founding brief was seen (unguarded sites: 0)". Die Warter-Menge ist ABGELEITET (jeder
+  `const X = async`-Helfer mit Blockkoerper, der `DONE_LOOKING_IDLE_MS` oder `DONE_LOOKING_RULES`
+  liest — heute `waitDoneLooking` und `m1WaitDoor`), nie eine Namensliste. Mutationsproben: ein
+  Aufruf ohne `cwd`, ein Warter ohne eigenen Brief-Wait, `m1Land` ohne `awaitFoundingBrief` —
+  alle drei rot.
+
+**Ein Rot einer dieser Setup-Zeilen NACH dieser Lane (Branch `fleet/260918102513-c394`, Land-Sha setzt
+die MAIN ein) ist wieder ECHT und deins.**
+
 ### 11.2z Eine siebenundzwanzigste Familie: die `backlog nudge`-Runde in `e2e/tasks.ts` nudged B statt A — und die Sichtungen unter DEMSELBEN Check-Namen sind DREI verschiedene Signaturen (2026-09-16 registriert; Rate über das GANZE Trail-Register gerechnet, Signaturen aus den Detail-Feldern gelesen, Zugehörigkeit am Servercode entschieden; S1 sondenseitig REPARIERT am 2026-09-16 — siehe „Reparatur von S1" am Ende)
 
 **Fingerprint** (Detail der Kopfzeile, genau EIN Eintrag, und der nennt den falschen Slot):

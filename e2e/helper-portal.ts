@@ -1796,7 +1796,7 @@ export async function run(h: {
     const sha12 = (s: string): string => createHash("sha256").update(s).digest("hex").slice(0, 12);
     const wholeIdOf = (dir: string): string => sha12(realpathSync(dir));
     const shardIdsOf = (dir: string, n: number): string[] =>
-      Array.from({ length: n }, (_, i) => sha12(`${realpathSync(dir)} shard:${i + 1}/${n}`));
+      Array.from({ length: n }, (_, i) => sha12(`${realpathSync(dir)}\u0000shard:${i + 1}/${n}`));
     let beatBox = true;
     const beat = async (): Promise<void> => {
       if (beatBox) await hpost("/api/helper/device", { deviceId: SHARDBOX, name: SHARD_NAME, mode: "active", load: 0.1,

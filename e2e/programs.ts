@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rena
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
-import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, typeScreen } from "./harness";
+import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, typeScreen, until, UntilTimeout } from "./harness";
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { DONE_LOOKING_RULES, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
@@ -12,6 +12,21 @@ import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, setMergeMode, settleForMerge } from
 import type { Ctx } from "./ctx";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09 } from "../task-land-waves";
 
+// A KILLED SLOT READS EMPTY — the fact the fixed `Bun.sleep(600)` after a round of kills stood in
+// for (2026-09-18). The kill route awaits the teardown, so this usually holds on the first read;
+// the budget is the old sleep's reason stated as a ceiling. A slot that stays occupied does not end
+// the run here: the fixture's own precondition check right after reads the same board and says so.
+const slotsEmptied = async (ids: number[], timeoutMs = 10_000): Promise<void> => {
+  try {
+    await until(async () => {
+      const slots = ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; cwd: string | null; worktree: unknown | null }[] }).slots;
+      return ids.every((id) => { const x = slots.find((y) => y.id === id); return !x || (!x.cwd && !x.worktree); });
+    }, { timeoutMs, what: `slots [${ids.join(",")}] read empty` });
+  } catch (e) {
+    if (!(e instanceof UntilTimeout)) throw e;
+  }
+};
 type ProgramStatus = "proposed" | "confirmed" | "active" | "complete";
 interface ProgramContent {
   title: string;
@@ -6711,9 +6726,10 @@ export async function run(ctx: Ctx): Promise<void> {
   // ever falls back to the default adapter on its behalf.
   const spawnSessions = async (): Promise<{ id: number; cwd: string | null; worktree: unknown | null }[]> =>
     ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; worktree: unknown | null }[] }).slots;
+  const spawnKilled: number[] = [];
   for (const s of await spawnSessions())
-    if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
-  await Bun.sleep(600);
+    if (s.worktree && s.id !== ctx.restartSelfSlot) { await post(`/api/slots/${s.id}/kill`, {}); spawnKilled.push(s.id); }
+  await slotsEmptied(spawnKilled);
   const spawnBoard = await spawnSessions();
   check("task-spawn tick fixture: two free slots and room under the lane cap (non-tautology guard)",
     spawnBoard.filter((s) => !s.cwd).length >= 2 && spawnBoard.filter((s) => s.worktree).length <= 1
@@ -6814,8 +6830,10 @@ export async function run(ctx: Ctx): Promise<void> {
   const pdLanes = async (): Promise<{ id: number; cwd: string | null; worktree: unknown | null }[]> =>
     ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; worktree: unknown | null }[] }).slots;
   const pdKillLanes = async (): Promise<void> => {
-    for (const s of await pdLanes()) if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
-    await Bun.sleep(600);
+    const killed: number[] = [];
+    for (const s of await pdLanes())
+      if (s.worktree && s.id !== ctx.restartSelfSlot) { await post(`/api/slots/${s.id}/kill`, {}); killed.push(s.id); }
+    await slotsEmptied(killed);
   };
   // > FLEET_DISPATCH_TICK_MS (250 ms here) by a wide margin, and long enough for several ticks: a
   // negative that waited less than one tick would prove the clock, not the gate.
@@ -7053,9 +7071,11 @@ export async function run(ctx: Ctx): Promise<void> {
     await post(`/api/tasks/${created.task.id}/brief`, { text: brief });
     const started = await post(`/api/tasks/${created.task.id}/dispatch`, {});
     let receipt: ContextReceipt | undefined;
-    for (let i = 0; i < 40 && started.ok && !receipt; i++) { // the receipt lands after the boot sleep
-      await Bun.sleep(500);
-      receipt = (await contextReceipts()).receipts.find((r) => r.taskId === created.task.id);
+    if (started.ok) { // the receipt lands after the boot sleep; `undefined` after the 20 s ceiling is quoted by the check
+      try {
+        receipt = await until(async () => (await contextReceipts()).receipts.find((r) => r.taskId === created.task.id),
+          { timeoutMs: 20_000, what: `context receipt for ${created.task.id}` });
+      } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     }
     return { status: started.status, receipt };
   };
@@ -8317,9 +8337,10 @@ export async function run(ctx: Ctx): Promise<void> {
       kind: "auftrag", programId: laneStudioProgram.id })).json()) as { task: { id: string } };
     const laneFreeRow = (await (await post("/api/tasks", { queue: false, text: laneProbeText,
       kind: "auftrag" })).json()) as { task: { id: string } };
+    const laneKilled: number[] = [];
     for (const s of await spawnSessions())
-      if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
-    await Bun.sleep(600);
+      if (s.worktree && s.id !== ctx.restartSelfSlot) { await post(`/api/slots/${s.id}/kill`, {}); laneKilled.push(s.id); }
+    await slotsEmptied(laneKilled);
     const laneRoom = await spawnSessions();
     // the fixture fails AS ITSELF when the board cannot hold a lane — a missing free slot must not
     // read as a brief that lost its studio block. One standing lane is tolerated for the reason the
@@ -8345,8 +8366,10 @@ export async function run(ctx: Ctx): Promise<void> {
         if (hit) { text = hit.text ?? ""; break; }
         await Bun.sleep(250);
       }
-      if (typeof body.slot === "number") await post(`/api/slots/${body.slot}/kill`, {});
-      await Bun.sleep(400);
+      if (typeof body.slot === "number") {
+        await post(`/api/slots/${body.slot}/kill`, {});
+        await slotsEmptied([body.slot]);
+      }
       // the dispatch's own answer rides into the detail: a refused start must never read as a brief
       // that lost its block
       return { text, detail: `${res.status}${body.error ? `:${body.error}` : ""} slot=${body.slot ?? "none"}` };
@@ -8807,20 +8830,35 @@ export async function run(ctx: Ctx): Promise<void> {
     // gate, so BOTH thresholds have to hold and the wait takes the larger.
     const DONE_LOOKING_IDLE_MS = Math.max(MERGE_IDLE_MS, AUTO_REVIEW_IDLE_MS);
     let doneLookingWhy = "";
-    const waitDoneLooking = async (slot: number): Promise<boolean> => {
-      let last = "no row";
-      for (let i = 0; i < 160; i++) { // 40 s ceiling — the threshold below is the bigger of the two
-        const body = await slSess();
-        const row = body.slots.find((x) => x.id === slot);
-        if (row?.git && row.git.dirty === 0 && row.git.ahead > 0
-          && row.lastOutput > 0 && body.now - row.lastOutput >= DONE_LOOKING_IDLE_MS) return true;
-        last = row ? JSON.stringify({ slot, git: row.git, need: DONE_LOOKING_IDLE_MS,
-          observed: row.lastOutput > 0, idleMs: row.lastOutput > 0 ? body.now - row.lastOutput : null })
-          : `slot ${slot} has no row`;
-        await Bun.sleep(250);
+    // THE §11.2y PRECONDITION IS INSIDE, so no caller can forget it (2026-09-18): before 2026-09-18
+    // two of 32 call sites waited for the founding brief first (m1Land, ffrLand) and the other 30
+    // could still return inside the window awaitFoundingBrief describes below. Every lane this
+    // section waits on is DISPATCHED, so every one of them owes its pane a founding brief — the
+    // `cwd` is what finds it, and e2e/pins.ts holds the number of calls without one at 0.
+    // A brief that never arrives fails the wait as ITSELF (`setup: founding brief — …`), never as
+    // `idle` missing on a pane nobody finished writing to.
+    const waitDoneLooking = async (slot: number, cwd: string): Promise<boolean> => {
+      if (await awaitFoundingBrief(slot, cwd) === null) {
+        doneLookingWhy = `setup: founding brief — ${foundingBriefWhy}`;
+        return false;
       }
-      doneLookingWhy = last;
-      return false;
+      let last = "no row";
+      try {
+        return await until(async () => {
+          const body = await slSess();
+          const row = body.slots.find((x) => x.id === slot);
+          if (row?.git && row.git.dirty === 0 && row.git.ahead > 0
+            && row.lastOutput > 0 && body.now - row.lastOutput >= DONE_LOOKING_IDLE_MS) return true;
+          last = row ? JSON.stringify({ slot, git: row.git, need: DONE_LOOKING_IDLE_MS,
+            observed: row.lastOutput > 0, idleMs: row.lastOutput > 0 ? body.now - row.lastOutput : null })
+            : `slot ${slot} has no row`;
+          return false;
+        }, { timeoutMs: 40_000, stepMs: 100, what: `slot ${slot} done-looking`, last: () => last });
+      } catch (e) {
+        if (!(e instanceof UntilTimeout)) throw e;
+        doneLookingWhy = last;
+        return false;
+      }
     };
 
     // THE LANE'S PANE IS STILL BEING WRITTEN TO WHEN `dispatch` ANSWERS 200, and until it stops,
@@ -8852,30 +8890,44 @@ export async function run(ctx: Ctx): Promise<void> {
     // caused has been OBSERVED. After that nothing types into this lane again, the idle clock runs
     // monotonically, and the predicate stops being a snapshot. `cwd` is the key rather than the
     // brief's text: a worktree path belongs to exactly one occupant, while a slot id is recycled.
+    // THE LATEST LOGGED WRITER, not only the first (2026-09-18): once the founding brief is in, the
+    // same race recurs for every later paste the server types into this lane and logs — a fleet-
+    // report decision carried into the pane (server.ts#deliverFleetReportDecision) is the measured
+    // one, and the re-waits below follow exactly such pastes. So the second half waits until the
+    // pane output of the NEWEST prompt logged for this worktree has been observed. On a first wait
+    // that is the brief itself; on a re-wait it is whatever was typed last, and if nothing was, the
+    // brief's own stamp holds at once.
     let foundingBriefWhy = "";
     const awaitFoundingBrief = async (slot: number, cwd: string): Promise<number | null> => {
       foundingBriefWhy = "";
       if (!cwd) { foundingBriefWhy = "the dispatch handed back no cwd"; return null; }
       let ts = 0;
-      for (let i = 0; i < 120 && ts === 0; i++) {
-        ts = (await plogRead()).find((e) => e.cwd === cwd && e.source === "auto")?.ts ?? 0;
-        if (ts === 0) await Bun.sleep(250);
-      }
-      if (ts === 0) {
+      try {
+        ts = await until(async () => (await plogRead()).find((e) => e.cwd === cwd && e.source === "auto")?.ts ?? 0,
+          { timeoutMs: 30_000, stepMs: 100, what: `founding brief for ${cwd}` });
+      } catch (e) {
+        if (!(e instanceof UntilTimeout)) throw e;
         foundingBriefWhy = `no auto prompt was logged for ${cwd} within 30s — the dispatch tail never delivered (a requeue leaves the lane standing)`;
         return null;
       }
       // the paste's own output, seen by the server. Without this the brief can be logged while
       // `lastOutput` still carries the shell's first paint, and the idle clause would again be
       // satisfied by a stamp the next poll is about to replace.
-      for (let i = 0; i < 120; i++) {
-        const body = await slSess();
-        const row = body.slots.find((x) => x.id === slot);
-        if (row && row.lastOutput >= ts) return ts;
-        await Bun.sleep(100);
+      let newest = ts;
+      try {
+        await until(async () => {
+          newest = Math.max(ts, ...(await plogRead()).filter((e) => e.cwd === cwd).map((e) => e.ts));
+          const row = (await slSess()).slots.find((x) => x.id === slot);
+          return !!row && row.lastOutput >= newest;
+        }, { timeoutMs: 12_000, stepMs: 100, what: `slot ${slot} observed its newest logged paste` });
+      } catch (e) {
+        if (!(e instanceof UntilTimeout)) throw e;
+        foundingBriefWhy = newest === ts
+          ? `the brief was logged at ${ts} but slot ${slot} never observed its pane output within 12s`
+          : `the newest paste into ${cwd} was logged at ${newest} (brief ${ts}) but slot ${slot} never observed its pane output within 12s`;
+        return null;
       }
-      foundingBriefWhy = `the brief was logged at ${ts} but slot ${slot} never observed its pane output within 12s`;
-      return null;
+      return ts;
     };
 
     // --- (0) THE FIXTURE THE GREEN ARM NEEDS, and it fails as ITSELF if it cannot be built.
@@ -9028,7 +9080,7 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", greenLaneCwd, "add", "selfland-green.txt"]);
       spawnSync("git", ["-C", greenLaneCwd, "commit", "-qm", "selfland green work"]);
     }
-    const greenReady = greenLaneSlot === null ? false : await waitDoneLooking(greenLaneSlot);
+    const greenReady = greenLaneSlot === null ? false : await waitDoneLooking(greenLaneSlot, greenLaneCwd);
     const greenMainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
     check("self-land green fixture: the row is running on a live lane that is idle, clean and ahead",
       greenDispatch.ok && greenRow?.status === "sent" && greenLaneSlot !== null && !!greenLaneCwd && greenReady,
@@ -9209,8 +9261,10 @@ export async function run(ctx: Ctx): Promise<void> {
         openedAt: recycleOpenedAt, filed: recycleFiledRaw.slice(0, 200) }));
     // …and now the SAME slot number is handed to a different session. `openedAt` must actually move,
     // or this block would be asserting the triple against a triple that never changed.
-    if (recycleSlot !== null) await post(`/api/slots/${recycleSlot}/kill`, {});
-    await Bun.sleep(400);
+    if (recycleSlot !== null) {
+      await post(`/api/slots/${recycleSlot}/kill`, {});
+      await slotsEmptied([recycleSlot]);
+    }
     const recycleReopen = recycleSlot === null ? null
       : await post(`/api/slots/${recycleSlot}/open`, { cwd: REPO2 });
     const recycleNewOpenedAt = recycleSlot === null ? null
@@ -9292,7 +9346,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // together on that one 409. The cost is real and belongs in the open: telling a lane its verdict
     // delays its own land by one idle threshold, and a MAIN that lands straight after accepting must
     // retry or subscribe. Waiting here measures the door's contract instead of the race.
-    const landReady = greenLaneSlot === null ? false : await waitDoneLooking(greenLaneSlot);
+    const landReady = greenLaneSlot === null ? false : await waitDoneLooking(greenLaneSlot, greenLaneCwd);
     check("self-land acceptance fixture: the lane settles again after the accept was carried into its pane",
       landReady, landReady ? "done-looking" : doneLookingWhy);
     const landRes = await selfLand(landTok, greenRowId);
@@ -9369,7 +9423,7 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", redLaneCwd, "add", "selfland-red.txt"]);
       spawnSync("git", ["-C", redLaneCwd, "commit", "-qm", "selfland red work"]);
     }
-    const redReady = redLaneSlot === null ? false : await waitDoneLooking(redLaneSlot);
+    const redReady = redLaneSlot === null ? false : await waitDoneLooking(redLaneSlot, redLaneCwd);
     // The verdict of this land is delivered to the MAIN pane through the same idle gate every
     // injected prompt passes (MERGE_IDLE_MS). A MAIN that was typed into moments ago would refuse
     // it for a reason that has nothing to do with WHO the receiver is, so the fixture settles the
@@ -9443,7 +9497,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // the merge job rebased this lane onto the main the green land moved, so its git facts are
     // freshly stale; done-looking gates ABOVE the progress guard and the probe would otherwise
     // measure the tick rather than the guard.
-    const redRetryReady = redLaneSlot === null ? false : await waitDoneLooking(redLaneSlot);
+    const redRetryReady = redLaneSlot === null ? false : await waitDoneLooking(redLaneSlot, redLaneCwd);
     const redRetry = await selfLand(landTok, redRowId);
     const redRetryText = await redRetry.text();
     check("self-land progress guard: the LITERALLY unchanged retry is refused as no-progress — and the words are repair-or-escalate, not a counter",
@@ -9458,7 +9512,7 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", redLaneCwd, "add", "selfland-red.txt"]);
       spawnSync("git", ["-C", redLaneCwd, "commit", "-qm", "selfland red repaired"]);
     }
-    const repairedReady = redLaneSlot === null ? false : await waitDoneLooking(redLaneSlot);
+    const repairedReady = redLaneSlot === null ? false : await waitDoneLooking(redLaneSlot, redLaneCwd);
     const repaired = await selfLand(landTok, redRowId);
     const repairedBody = await repaired.json() as { running?: boolean; candidate?: string; error?: string };
     let repairedRow = await slRow(redRowId);
@@ -9520,7 +9574,7 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     writeFileSync(`${REPO2}/code.txt`, "main side of the conflict\n");
     spawnSync("git", ["-C", REPO2, "commit", "-qam", "selfland conflict main side"]);
-    const cfReady = cfLane.slot === null ? false : await waitDoneLooking(cfLane.slot);
+    const cfReady = cfLane.slot === null ? false : await waitDoneLooking(cfLane.slot, cfLane.cwd);
     const cfFirst = await selfLand(landTok, cfRowId);
     type CfVerdict = { status?: string; landed?: boolean; conflicted?: string[]; resolvedBy?: string;
       candidateSha?: string; verify?: { ok?: boolean | null; at?: number }; detail?: string };
@@ -9542,7 +9596,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // rewrote this lane (the resolver rebased it). Without re-waiting for the server's own git
     // facts to catch up, this call would come back with the not-done-looking sentence and the
     // probe would read "the ⏸ hold is gone" — a probe measuring the tick's timing, not the rung.
-    const cfReady2 = cfLane.slot === null ? false : await waitDoneLooking(cfLane.slot);
+    const cfReady2 = cfLane.slot === null ? false : await waitDoneLooking(cfLane.slot, cfLane.cwd);
     const cfGreenOnly = await selfLand(landTok, cfRowId);
     // read the PARSED error, not the raw body: the sentence quotes the rung name, and in the wire
     // bytes those quotes are JSON-escaped (`\"green-only\"`). Matching the phrase against the raw
@@ -9556,7 +9610,7 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ ready: cfReady2, status: cfGreenOnly.status, error: cfGreenOnlyErr.slice(0, 240) }));
     await setPromotion(landProgram.id, { v: 1, selfLand: "guarded" });
     const cfMainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
-    const cfReady3 = cfLane.slot === null ? false : await waitDoneLooking(cfLane.slot);
+    const cfReady3 = cfLane.slot === null ? false : await waitDoneLooking(cfLane.slot, cfLane.cwd);
     const cfConfirm = await selfLand(landTok, cfRowId);
     const cfConfirmBody = await cfConfirm.json() as { running?: boolean; confirm?: string; candidate?: string;
       resolution?: { conflicted?: string[]; resolvedBy?: string | null; repairRounds?: number }; error?: string };
@@ -9617,7 +9671,7 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     writeFileSync(`${REPO2}/code.txt`, "main side of the second conflict\n");
     spawnSync("git", ["-C", REPO2, "commit", "-qam", "selfland conflict 2 main side"]);
-    const cf2Ready = cf2Lane.slot === null ? false : await waitDoneLooking(cf2Lane.slot);
+    const cf2Ready = cf2Lane.slot === null ? false : await waitDoneLooking(cf2Lane.slot, cf2Lane.cwd);
     await selfLand(landTok, cf2RowId);
     let cf2Verdict: CfVerdict | null = null;
     for (let i = 0; i < 240; i++) {
@@ -9628,7 +9682,7 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     // the candidate is NOT touched here — see the note above. The lane is only re-settled, because
     // the merge job rewrote it and done-looking gates above the guarded branch.
-    const cf2Ready2 = cf2Lane.slot === null ? false : await waitDoneLooking(cf2Lane.slot);
+    const cf2Ready2 = cf2Lane.slot === null ? false : await waitDoneLooking(cf2Lane.slot, cf2Lane.cwd);
     const attnBefore = ((await (await get("/api/attention")).json()) as { requests: unknown[] }).requests.length;
     const cf2MainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
     const cf2Confirm = await selfLand(landTok, cf2RowId);
@@ -9657,7 +9711,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // second full suite run, it falls into the ordinary no-progress guard.
     // …and the same re-wait, for the same reason: the no-progress guard sits BELOW done-looking, so
     // a lane whose git facts have not been re-read yet would answer with the wrong sentence.
-    const cf2Ready3 = cf2Lane.slot === null ? false : await waitDoneLooking(cf2Lane.slot);
+    const cf2Ready3 = cf2Lane.slot === null ? false : await waitDoneLooking(cf2Lane.slot, cf2Lane.cwd);
     const cf2Again = await selfLand(landTok, cf2RowId);
     const cf2AgainText = await cf2Again.text();
     check("guarded rung: the confirmation is spent per candidate — the identical next call is no-progress, not a second suite run",
@@ -9770,11 +9824,14 @@ export async function run(ctx: Ctx): Promise<void> {
     // any failure in that window (`server.ts#briefAndSend`, and the block comment above says so).
     // A lane that lands faster than that window leaves its row `queued` — which is an OPEN register
     // row, and the `backlog nudge` section a thousand checks later asserts the register holds
-    // exactly one. That is how three probe failures became seventeen. Waiting the window out is
-    // the cheap half; deleting the row afterwards is the half that holds even if the wait is wrong.
-    const settleBrief = async (dispatchedAt: number): Promise<void> => {
-      const until = dispatchedAt + 7000;
-      while (Date.now() < until) await Bun.sleep(200);
+    // exactly one. That is how three probe failures became seventeen. Waiting for the tail to END
+    // is the cheap half; deleting the row afterwards is the half that holds even if the wait is wrong.
+    // THE END IS A LOGGED FACT, not a 7 s window (2026-09-18): `logPrompt` is the tail's last act
+    // (server.ts#briefAndSend — every `requeue` sits before it or in its catch), so once the brief
+    // is in prompts.jsonl nothing can requeue this row. A tail that never gets there shows up in the
+    // lane's own `waitDoneLooking`, which runs the same wait and names it.
+    const settleBrief = async (lane: { slot: number | null; cwd: string }): Promise<void> => {
+      if (lane.slot !== null) await awaitFoundingBrief(lane.slot, lane.cwd);
     };
     const suspectRowId = await makeTask({ text: "self-land suspect probe row", programId: landProgram.id, repo: REPO2 });
     const suspectLane = await conflictLane(suspectRowId);
@@ -9795,7 +9852,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const suspectReportOk = suspectReport.ok;
     const suspectReportId = suspectReportOk
       ? ((await suspectReport.json()) as { report?: { id?: string } }).report?.id ?? null : null;
-    const suspectReady = suspectLane.slot === null ? false : await waitDoneLooking(suspectLane.slot);
+    const suspectReady = suspectLane.slot === null ? false : await waitDoneLooking(suspectLane.slot, suspectLane.cwd);
     const ambientBefore = ambientCount();
     const suspectBefore = main2Of();
     // the harness `post` helper sends the owner token as `Authorization: Bearer` — exactly the
@@ -9890,9 +9947,8 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ boot: acceptBoot.status, slot: acceptMainSlot,
         err: acceptBoot.ok ? "" : JSON.stringify(acceptBootBody) }));
     const acceptRowId = await makeTask({ text: "ambient-land accepted-report row", programId: acceptProgram.id, repo: REPO2 });
-    const acceptDispatchedAt = Date.now();
     const acceptLane = await conflictLane(acceptRowId);
-    await settleBrief(acceptDispatchedAt);
+    await settleBrief(acceptLane);
     if (acceptLane.cwd) {
       writeFileSync(`${acceptLane.cwd}/accepted.txt`, "an owner-token land on work the MAIN had blessed\n");
       spawnSync("git", ["-C", acceptLane.cwd, "add", "accepted.txt"]);
@@ -9938,7 +9994,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && acceptDecisionRow.mainAfter === null
       && typeof acceptDecisionRow.at === "number" && acceptDecisionRow.at >= (acceptOpenRow.at as number),
       JSON.stringify({ decided: acceptDecided, rows: acceptLedger }).slice(0, 600));
-    const acceptReady = acceptLane.slot === null ? false : await waitDoneLooking(acceptLane.slot);
+    const acceptReady = acceptLane.slot === null ? false : await waitDoneLooking(acceptLane.slot, acceptLane.cwd);
     const acceptBefore = main2Of();
     const acceptDrive = await driveLand(acceptLane.slot, acceptBefore,
       () => post(`/api/slots/${acceptLane.slot}/merge`, {}));
@@ -9973,15 +10029,14 @@ export async function run(ctx: Ctx): Promise<void> {
     // no bypassed binding, and NOT ONE entry added to any program's inbox. A writer keyed on the
     // channel alone (bearer) instead of on the binding would fail exactly here.
     const plainRowId = await makeTask({ text: "ambient-land programless counter-proof row", repo: REPO2 });
-    const plainDispatchedAt = Date.now();
     const plainLane = await conflictLane(plainRowId);
-    await settleBrief(plainDispatchedAt);
+    await settleBrief(plainLane);
     if (plainLane.cwd) {
       writeFileSync(`${plainLane.cwd}/plain.txt`, "a bearer land on a lane with no program at all\n");
       spawnSync("git", ["-C", plainLane.cwd, "add", "plain.txt"]);
       spawnSync("git", ["-C", plainLane.cwd, "commit", "-qm", "programless work"]);
     }
-    const plainReady = plainLane.slot === null ? false : await waitDoneLooking(plainLane.slot);
+    const plainReady = plainLane.slot === null ? false : await waitDoneLooking(plainLane.slot, plainLane.cwd);
     // BOTH program inboxes, because there are now two live bindings on this fleet and a writer
     // keyed on the channel rather than on the binding would land its entry in either one.
     const plainInboxBefore = (await selfInbox(landTok)).view?.entries.length ?? -1;
@@ -10033,7 +10088,7 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", cookieLane.cwd, "add", "cookie.txt"]);
       spawnSync("git", ["-C", cookieLane.cwd, "commit", "-qm", "selfland cookie work"]);
     }
-    const cookieReady = cookieLane.slot === null ? false : await waitDoneLooking(cookieLane.slot);
+    const cookieReady = cookieLane.slot === null ? false : await waitDoneLooking(cookieLane.slot, cookieLane.cwd);
     const ambientBefore2 = ambientCount();
     const cookieBefore = main2Of();
     // the same drive on the OTHER channel — the board's cookie, sent by hand because the harness
@@ -10234,7 +10289,7 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", pmLane.cwd, "add", "landevent.txt"]);
       spawnSync("git", ["-C", pmLane.cwd, "commit", "-qm", "land event owner work"]);
     }
-    const pmReady = pmLane.slot === null ? false : await waitDoneLooking(pmLane.slot);
+    const pmReady = pmLane.slot === null ? false : await waitDoneLooking(pmLane.slot, pmLane.cwd);
     const pmBefore = main2Of();
     const pmDrive = await driveLand(pmLane.slot, pmBefore, () => post(`/api/slots/${pmLane.slot}/merge`, {}));
     const pmLanded = pmReady && pmLane.branch !== "" && pmDrive.main !== pmBefore;
@@ -10306,7 +10361,7 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", pmDup.cwd, "add", "landevent-dup.txt"]);
       spawnSync("git", ["-C", pmDup.cwd, "commit", "-qm", "land event pre-armed work"]);
     }
-    const pmDupReady = pmDup.slot === null ? false : await waitDoneLooking(pmDup.slot);
+    const pmDupReady = pmDup.slot === null ? false : await waitDoneLooking(pmDup.slot, pmDup.cwd);
     const pmDupBefore = main2Of();
     const pmDupStart = await post(`/api/slots/${pmDup.slot}/merge`, {});
     let pmDupAdvanced = false;
@@ -10453,7 +10508,7 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", ffLane.cwd, "add", "selfland-fflost.txt"]);
       spawnSync("git", ["-C", ffLane.cwd, "commit", "-qm", "selfland lost-ff work"]);
     }
-    const ffReady = ffLane.slot === null ? false : await waitDoneLooking(ffLane.slot);
+    const ffReady = ffLane.slot === null ? false : await waitDoneLooking(ffLane.slot, ffLane.cwd);
     // REPO2's own tree must be clean before this starts, and the probe says so under its OWN name:
     // `git merge --ff-only` runs in the checkout that HOLDS main, and a dirty tree there would make
     // both the lost ff and the re-land fail for a reason that has nothing to do with the rule.
@@ -10547,7 +10602,7 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const control of ffControls) {
       const planted = await ffPlantPersisted(control.overrides);
       const hydrated = await ffMergeNow();
-      const ready = ffLane.slot === null ? false : await waitDoneLooking(ffLane.slot);
+      const ready = ffLane.slot === null ? false : await waitDoneLooking(ffLane.slot, ffLane.cwd);
       const door = await ffDoorText();
       ffControlResults.push({ name: control.name, planted, status: hydrated?.status,
         reason: hydrated?.errorReason, ready, door: door.status, text: door.text.slice(0, 160) });
@@ -10564,7 +10619,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // the SAME lane with the SAME bytes eligible for the SAME existing re-land path.
     const ffRestoredPlanted = await ffPlantPersisted({});
     const ffHydrated = await ffMergeNow();
-    const ffRestoredReady = ffLane.slot === null ? false : await waitDoneLooking(ffLane.slot);
+    const ffRestoredReady = ffLane.slot === null ? false : await waitDoneLooking(ffLane.slot, ffLane.cwd);
     // the lane-ready watch: armed by the MAIN itself, on its own lane, and it can only fire if the
     // server's predicate holds — the watch tick reads laneWatchSignal and nothing else
     const ffWatchRes = await fetch(`${BASE}/api/self/watch`, {
@@ -10748,8 +10803,8 @@ exit 0
       ffrRows.push(row);
       const lane = await conflictLane(row);
       // Commit first so the slow git tick can publish `ahead>0` THROUGH the brief wait, then wait
-      // for the founding brief (awaitFoundingBrief states the race), then for the door. m1Land
-      // carries the measurement that fixes this order.
+      // for the founding brief (awaitFoundingBrief states the race; waitDoneLooking runs it first),
+      // then for the door. m1Land carries the measurement that fixes this order.
       if (lane.cwd) {
         writeFileSync(`${lane.cwd}/${file}`, `work whose first fast-forward is lost — ${name}\n`);
         spawnSync("git", ["-C", lane.cwd, "add", file]);
@@ -10757,8 +10812,7 @@ exit 0
       }
       if (lane.slot !== null) {
         ffrLanes.push(lane.slot);
-        await awaitFoundingBrief(lane.slot, lane.cwd);
-        await waitDoneLooking(lane.slot);
+        await waitDoneLooking(lane.slot, lane.cwd);
       }
       const fired = ffrTok === "" ? false : (await selfLand(ffrTok, row)).ok;
       let reached = false;
@@ -11048,12 +11102,12 @@ exit 0
     // a land WITHOUT the ff latch: the retry chain is never reached (the gate stops the land long
     // before the fast-forward), so arming it would leave this waiting for a `reached` file that
     // cannot appear.
-    const m1Land = async (name: string, file: string): Promise<{ row: string; slot: number | null; fired: boolean; refusal?: string; ready?: M1Ready; dispatch: DispatchFacts }> => {
+    const m1Land = async (name: string, file: string): Promise<{ row: string; slot: number | null; cwd: string; fired: boolean; refusal?: string; ready?: M1Ready; dispatch: DispatchFacts }> => {
       for (const f of [ffrLatch, `${ffrLatch}.reached`, `${ffrLatch}.release`]) try { rmSync(f); } catch { /* absent */ }
       const row = await makeTask({ text: `m1 ${name}`, programId: ffrProgram.id, repo: REPO2 });
       ffrRows.push(row);
       const lane = await conflictLane(row);
-      if (lane.slot === null) return { row, slot: null, fired: false, dispatch: lane.dispatch,
+      if (lane.slot === null) return { row, slot: null, cwd: lane.cwd, fired: false, dispatch: lane.dispatch,
         refusal: `setup: not done-looking — the dispatch handed back no slot (dispatch ${lane.dispatch.status}, occupied=${lane.dispatch.occupied})` };
       ffrLanes.push(lane.slot);
       // COMMIT FIRST, and the order is load-bearing in BOTH directions. `ahead>0` is published by
@@ -11071,20 +11125,20 @@ exit 0
       // shuts, and the door reads it after the wait did. A brief that never arrives is a setup
       // failure under its OWN name — never `fired:false` with the door's words in its mouth.
       const briefAt = await awaitFoundingBrief(lane.slot, lane.cwd);
-      if (briefAt === null) return { row, slot: lane.slot, fired: false, dispatch: lane.dispatch,
+      if (briefAt === null) return { row, slot: lane.slot, cwd: lane.cwd, fired: false, dispatch: lane.dispatch,
         refusal: `setup: founding brief — ${foundingBriefWhy}` };
       // never fire at a door whose own predicate has not been seen to hold: a refusal there would be
       // this fixture's race, read as the product's verdict
       const waited = await m1WaitDoor(lane.slot);
       if (!waited.ok)
-        return { row, slot: lane.slot, fired: false, dispatch: lane.dispatch,
+        return { row, slot: lane.slot, cwd: lane.cwd, fired: false, dispatch: lane.dispatch,
           refusal: `setup: not done-looking — ${doneLookingWhy}`, ready: waited.ready };
-      if (ffrTok === "") return { row, slot: lane.slot, fired: false, dispatch: lane.dispatch,
+      if (ffrTok === "") return { row, slot: lane.slot, cwd: lane.cwd, fired: false, dispatch: lane.dispatch,
         refusal: "no MAIN token", ready: waited.ready };
       // the door's own words ride along when it refuses: `fired:false` alone cannot say WHICH rung
       // stopped the land (first seen on second-host job 8f6f445167f9, arm (iv), no text to read)
       const r = await selfLand(ffrTok, row);
-      return { row, slot: lane.slot, fired: r.ok, ready: waited.ready, dispatch: lane.dispatch,
+      return { row, slot: lane.slot, cwd: lane.cwd, fired: r.ok, ready: waited.ready, dispatch: lane.dispatch,
         ...(r.ok ? {} : { refusal: `${r.status} ${(await r.text()).slice(0, 300)}` }) };
     };
     const m1AuditBefore = m1AuditRows().length;
@@ -11187,7 +11241,7 @@ exit 0
     // the state it is actually in. The lock the denial waited on is released above, so the retry
     // here meets a free machine — which is exactly the situation in which the old refusal was
     // wrong: nothing had changed except that a measurement had become possible.
-    const m1RetryReady = !m1DFired || m1D.slot === null ? false : await waitDoneLooking(m1D.slot);
+    const m1RetryReady = !m1DFired || m1D.slot === null ? false : await waitDoneLooking(m1D.slot, m1D.cwd);
     const m1Retry = ffrTok === "" || !m1DFired ? null : await selfLand(ffrTok, m1D.row);
     const m1RetryBody = m1Retry === null ? null : await m1Retry.json() as
       { running?: boolean; candidate?: string; error?: string; gate?: string };
@@ -11217,7 +11271,7 @@ exit 0
       m1RedFired, JSON.stringify({ slot: m1Red.slot, refusal: m1Red.refusal ?? null, ready: m1Red.ready ?? null,
         dispatch: m1Red.dispatch }));
     const m1RedVerdict = m1RedFired ? await ffrSettled(m1Red.slot) : null;
-    const m1RedReady = !m1RedFired || m1Red.slot === null ? false : await waitDoneLooking(m1Red.slot);
+    const m1RedReady = !m1RedFired || m1Red.slot === null ? false : await waitDoneLooking(m1Red.slot, m1Red.cwd);
     const m1RedAgain = ffrTok === "" || !m1RedFired ? null : await selfLand(ffrTok, m1Red.row);
     const m1RedText = m1RedAgain === null ? "" : await m1RedAgain.text();
     if (m1RedFired) check("(viii-b) a gate that MEASURED and said no still binds the next call — the widening is the killed clock, not `ok !== true`",
@@ -11244,7 +11298,7 @@ exit 0
       m1SkipFired, JSON.stringify({ slot: m1Skip.slot, refusal: m1Skip.refusal ?? null, ready: m1Skip.ready ?? null,
         dispatch: m1Skip.dispatch }));
     const m1SkipVerdict = m1SkipFired ? await ffrSettled(m1Skip.slot) : null;
-    const m1SkipReady = !m1SkipFired || m1Skip.slot === null ? false : await waitDoneLooking(m1Skip.slot);
+    const m1SkipReady = !m1SkipFired || m1Skip.slot === null ? false : await waitDoneLooking(m1Skip.slot, m1Skip.cwd);
     const m1SkipAgain = ffrTok === "" || !m1SkipFired ? null : await selfLand(ffrTok, m1Skip.row);
     const m1SkipText = m1SkipAgain === null ? "" : await m1SkipAgain.text();
     const m1SkipBody = ((): { gate?: string; error?: string } => {
@@ -11289,7 +11343,7 @@ exit 0
         && (mdVerdict.verify?.out ?? "").includes("server did not come up")
         && main2Of() === mdMainBefore,
       JSON.stringify({ fired: mdLand.fired, refusal: mdLand.refusal, verdict: mdVerdict, mainMoved: main2Of() !== mdMainBefore }));
-    const mdReady = !mdLandFired || mdLand.slot === null ? false : await waitDoneLooking(mdLand.slot);
+    const mdReady = !mdLandFired || mdLand.slot === null ? false : await waitDoneLooking(mdLand.slot, mdLand.cwd);
     const mdRetry = ffrTok === "" || !mdLandFired ? null : await selfLand(ffrTok, mdLand.row);
     const mdRetryBody = mdRetry === null ? null : await mdRetry.json() as { running?: boolean; candidate?: string; error?: string };
     const mdVerdict2 = mdLandFired ? await ffrSettled(mdLand.slot) : null;
@@ -11300,7 +11354,7 @@ exit 0
         && mdRuns.length === 2 && mdVerdict2?.verify?.serverDown === true && mdVerdict2.landed === false
         && mdVerdict2.at !== mdVerdict?.at && main2Of() === mdMainBefore,
       JSON.stringify({ ready: mdReady, res: mdRetry?.status, body: mdRetryBody, runs: mdRuns, verdict2: mdVerdict2 }));
-    const mdReady3 = !mdLandFired || mdLand.slot === null ? false : await waitDoneLooking(mdLand.slot);
+    const mdReady3 = !mdLandFired || mdLand.slot === null ? false : await waitDoneLooking(mdLand.slot, mdLand.cwd);
     const mdThird = ffrTok === "" || !mdLandFired ? null : await selfLand(ffrTok, mdLand.row);
     const mdThirdText = mdThird === null ? "" : await mdThird.text();
     const mdThirdBody = ((): { gate?: string } => {
@@ -11327,7 +11381,7 @@ exit 0
         gpLandFired, JSON.stringify({ slot: gpLand.slot, refusal: gpLand.refusal ?? null, ready: gpLand.ready ?? null,
           dispatch: gpLand.dispatch }));
       const gpVerdict = gpLandFired ? await ffrSettled(gpLand.slot) : null;
-      const gpReady = !gpLandFired || gpLand.slot === null ? false : await waitDoneLooking(gpLand.slot);
+      const gpReady = !gpLandFired || gpLand.slot === null ? false : await waitDoneLooking(gpLand.slot, gpLand.cwd);
       const gpAgain = ffrTok === "" || !gpLandFired ? null : await selfLand(ffrTok, gpLand.row);
       const gpText = gpAgain === null ? "" : await gpAgain.text();
       if (gpLandFired) check(`(viii-e) GEGENPROBE ${name}: a measured red stays ok:false without serverDown, and the unchanged candidate is still refused — repair or escalate`,
@@ -11594,7 +11648,7 @@ exit 0
         spawnSync("git", ["-C", lane.cwd, "add", file]);
         spawnSync("git", ["-C", lane.cwd, "commit", "-qm", `m3 ${name}`]);
       }
-      if (lane.slot !== null) { ffrLanes.push(lane.slot); await waitDoneLooking(lane.slot); }
+      if (lane.slot !== null) { ffrLanes.push(lane.slot); await waitDoneLooking(lane.slot, lane.cwd); }
       return { row, slot: lane.slot, cwd: lane.cwd };
     };
     const m3Fire = async (row: string): Promise<{ fired: boolean; at: number }> => {
@@ -11663,7 +11717,7 @@ exit 0
     // done-looking by design (lane-signals.ts). Firing the door into that window cost this arm a
     // red check on its first run: a 409 that looked like the exemption failing and was the probe
     // asking before the machine had an answer. (8b) waits the same way after its own restart.
-    const m3Ready = m3H.slot === null ? false : await waitDoneLooking(m3H.slot);
+    const m3Ready = m3H.slot === null ? false : await waitDoneLooking(m3H.slot, m3H.cwd);
     const m3Reland = ffrTok === "" ? null : await selfLand(ffrTok, m3H.row);
     // the REFUSAL TEXT, not just its number: rung 10 (no progress) and rung 11 (not done-looking)
     // are the same 409, and only one of them would mean the exemption did not hold. A red check
@@ -11952,7 +12006,7 @@ exit 0
       spawnSync("git", ["-C", pzLaneCwd, "add", "selfland-pizai.txt"]);
       spawnSync("git", ["-C", pzLaneCwd, "commit", "-qm", "selfland pi-zai work"]);
     }
-    const pzReady = pzLaneSlot === null || !pzBriefLogged ? false : await waitDoneLooking(pzLaneSlot);
+    const pzReady = pzLaneSlot === null || !pzBriefLogged ? false : await waitDoneLooking(pzLaneSlot, pzLaneCwd);
     const pzRowAtFixture = await slRow(pzRowId);
     type PzSlot = { id: number; harness?: string; agent?: string | null };
     let pzAgent: PzSlot | undefined;

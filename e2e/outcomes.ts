@@ -769,7 +769,7 @@ export async function run(): Promise<void> {
       // (7d) THE SAME DOSSIER, KEYED BY THE TASK ID (server.ts#resolveTaskLane). Four rows, four
       // answers: a LIVE sent row resolves through its slot; a DONE row whose slot number another
       // lane now holds must still resolve to ITS OWN branch (the recycled-slot trap — its `slot`
-      // field names a seat, not a lane); the same row after it left fleet.json is answered from
+      // field names a seat, not a lane); a row that left fleet.json is answered from
       // tasks-archive.jsonl; a pending row has no lane and says so; an id nobody knows is a 404.
       type Resolved = { result: string; task: string; via?: string; branch?: string; branches?: string[];
         why?: string; searched?: string[];
@@ -822,15 +822,6 @@ export async function run(): Promise<void> {
         JSON.stringify(tRelDossier) === JSON.stringify(dRelNow),
         `task=${JSON.stringify(tRelDossier).slice(0, 300)} branch=${JSON.stringify(dRelNow).slice(0, 300)}`);
 
-      // …and once the row has LEFT fleet.json, only tasks-archive.jsonl still knows it
-      const delRel = await post(`/api/tasks/${relTask.task.id}/delete`, {});
-      const tArch = await byTask(relTask.task.id);
-      check("task dossier: a row that left fleet.json is answered from tasks-archive.jsonl, still on its own branch",
-        delRel.ok && tArch.status === 200 && tArch.body.resolved?.result === "lane"
-        && tArch.body.resolved.branch === relBranch && tArch.body.resolved.row?.from === "archive"
-        && tArch.body.resolved.row?.status === "done",
-        JSON.stringify({ del: delRel.status, resolved: tArch.body.resolved }));
-
       const pend = (await (await post("/api/tasks", { text: "task-dossier probe — never started", repo: oRepo })).json()) as { task: { id: string } };
       const tPend = await byTask(pend.task.id);
       check("task dossier: a row with no lane is a NAMED answer (200, no-lane, why, its row and release verdict) — not a dossier, not a 404",
@@ -849,11 +840,13 @@ export async function run(): Promise<void> {
       const tBad = await get("/api/lane?task=..%2Fx");
       check("task dossier: a malformed id is a 400, never a lookup", tBad.status === 400, String(tBad.status));
 
-      // CLEANUP IS ASSERTED, not assumed: a probe row left open here outlives this family and is one
-      // non-terminal row too many for e2e/tasks.ts (n3-i), which measures the retention cap at exactly
-      // MAX_TASKS (measured: held=201 on the first preview of this block). SETTLE on the founding
-      // brief first, as (7a)/(7b) do — a kill inside briefAndSend's window requeues the row after
-      // the delete — then wait for the row to leave `sent` before deleting it.
+      // …and once a row has LEFT fleet.json, only tasks-archive.jsonl still knows it. Run on THIS
+      // block's own live row, never on relTask: deleting a pre-existing terminal row shifts which row
+      // capTasks evicts first, and e2e/tasks.ts (n3-i) counts on an older terminal row being there to
+      // evict (measured: held=201 on the preview that deleted relTask here). The kill writes the
+      // outcome row carrying this task's id; `done` writes its terminal archive line; the delete
+      // takes it out of fleet.json. SETTLE on the founding brief first, as (7a)/(7b) do — a kill
+      // inside briefAndSend's window requeues the row.
       for (const f of fillers) await post(`/api/slots/${f}/kill`, {});
       for (let i = 0; i < 24; i++) {
         const ps = ((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts;
@@ -865,10 +858,18 @@ export async function run(): Promise<void> {
         ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string }[] })
           .tasks.find((t) => t.id === liveTask.task.id)?.status ?? null;
       for (let i = 0; i < 20 && (await rowStatus()) === "sent"; i++) await Bun.sleep(250);
+      const doneLive = await post(`/api/tasks/${liveTask.task.id}/done`, {});
       const delLive = await post(`/api/tasks/${liveTask.task.id}/delete`, {});
       await Bun.sleep(1000); // a late requeue from briefAndSend would re-surface the row here
-      check("task dossier cleanup: the live probe row is deleted and stays gone (no open row leaks into later families)",
-        delLive.ok && (await rowStatus()) === null, `delete=${delLive.status} status=${await rowStatus()}`);
+      check("task dossier setup: the live probe row is closed, deleted, and stays gone from fleet.json",
+        doneLive.ok && delLive.ok && (await rowStatus()) === null,
+        `done=${doneLive.status} delete=${delLive.status} status=${await rowStatus()}`);
+      const tArch = await byTask(liveTask.task.id);
+      check("task dossier: a row that left fleet.json is answered from tasks-archive.jsonl, still on its own branch",
+        tArch.status === 200 && tArch.body.resolved?.result === "lane" && tArch.body.resolved.via === "outcome-task-id"
+        && tArch.body.resolved.branch === liveJ.branch && tArch.body.branch === liveJ.branch
+        && tArch.body.resolved.row?.from === "archive" && tArch.body.resolved.row?.status === "done",
+        JSON.stringify({ resolved: tArch.body.resolved }));
       await post(`/api/slots/${openLane.slot}/kill`, {});
     }
 

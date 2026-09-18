@@ -851,6 +851,46 @@ export async function run(): Promise<void> {
           repMissing.code === 1 && repMissing.err.includes("report(s) in total"),
           `exit ${repMissing.code} ${repMissing.err.slice(0, 160)}`);
 
+        // === task — the dossier by task id, rendered ===========================================
+        // A LIVE dispatched row: the route resolves it through its slot, and the verb prints one
+        // line per source with the source named. Mutation caught: dropping any of the six lines,
+        // or rendering the report's text instead of its head without --full.
+        const branchNow = ((await (await get("/api/sessions")).json()) as
+          { slots: { id: number; worktree?: { branch: string } | null }[] }).slots.find((s) => s.id === laneSlot)?.worktree?.branch ?? "";
+        const tk = await ctl(["task", taskId]);
+        const tkLines = tk.out.split("\n");
+        const lineOf = (label: string): string => tkLines.find((l) => l.trimStart().startsWith(label)) ?? "";
+        check("ctl task: a live row resolves to its lane via the slot, and each of the six facts is ONE line naming its source",
+          tk.code === 0 && !!branchNow && tkLines[0] === `task ${taskId}: lane ${branchNow} (via live-slot)`
+            && lineOf("status").includes("sent") && lineOf("status").endsWith("[fleet.json]")
+            && lineOf("card").endsWith("[fleet.json card]")
+            && lineOf("startplan").includes("not waiting (sent)")
+            && lineOf("report").includes(fj.report.id) && lineOf("report").includes("UNDECIDED: ctl.sh probe report")
+            && lineOf("report").endsWith("[fleet-reports]")
+            && lineOf("outcome").includes("none — the lane has not ended") && lineOf("outcome").endsWith("[lane-outcomes.jsonl]")
+            && lineOf("audit").endsWith("[post-land-audits.jsonl]")
+            && !tk.out.includes("line two"),
+          tk.out.slice(0, 900));
+        const tkFull = await ctl(["task", taskId, "--full"]);
+        check("ctl task --full: the row text and the report's full text are appended, and only then",
+          tkFull.code === 0 && tkFull.out.includes("--- row text") && tkFull.out.includes("ctl.sh probe row — dispatched by hand")
+            && tkFull.out.includes(`--- report ${fj.report.id}`) && tkFull.out.includes("line two"),
+          tkFull.out.slice(-400));
+        // a row that never started: no lane is an ANSWER (exit 0) with the start-plan reason on its line
+        const tkPending = await ctl(["task", capRow]);
+        check("ctl task: a pending row with no lane exits 0, says NO LANE, and prints its start-plan verdict instead of 'not waiting'",
+          tkPending.code === 0 && tkPending.out.startsWith(`task ${capRow}: NO LANE — `)
+            && /startplan (not released|released by)/.test(tkPending.out) && !tkPending.out.includes("not waiting")
+            && tkPending.out.includes("none — no lane on record   [lane-outcomes.jsonl]"),
+          tkPending.out.slice(0, 600));
+        const tkGhost = await ctl(["task", "zz00notarow"]);
+        check("ctl task: an id no source knows exits 1 and names the three sources it searched",
+          tkGhost.code === 1 && tkGhost.out.includes("UNKNOWN") && tkGhost.out.includes("tasks-archive.jsonl"),
+          `exit ${tkGhost.code} ${tkGhost.out.slice(0, 200)} ${tkGhost.err.slice(0, 200)}`);
+        const tkBad = await ctl(["task", "../etc"]);
+        check("ctl task: a malformed id is refused before any request (exit 2)",
+          tkBad.code === 2 && tkBad.err.includes("not a queue row id"), `exit ${tkBad.code} ${tkBad.err.slice(0, 160)}`);
+
         // === events ============================================================================
         const ev = await ctl(["events", "--json"]);
         const evJson = ev.json as { events?: { id: string; kind: string; status: string }[] } | null;

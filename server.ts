@@ -23147,6 +23147,63 @@ async function laneDossier(branch: string, repoHint: string | null): Promise<Lan
   };
 }
 
+// THE SAME DOSSIER, KEYED BY THE TASK ID a session actually holds (docs/messungen/2026-09-17-
+// worktrail-bash-datenschichten-strategisch.md §5 P2: 68 hand joins over fleet.json, /api/sessions
+// and the raw ledgers in 14 days, zero calls of the dossier). Resolution, strongest first:
+//   · a LIVE row that is `sent` → its slot's branch. Only `sent` is read this way: that is the
+//     N:1 edge (waveRowsOf), and a done row's `slot` is the number it ONCE ran in — by now it may be
+//     another lane's, which is exactly the recycled-slot answer this must never give.
+//   · the outcome rows whose taskId names it, newest first — the immutable provenance the teardown
+//     captured. A wave FOLLOWER is not found here: the outcome row names its head only.
+//   · tasks-archive.jsonl, for a row that has left fleet.json. It knows the ROW, never the branch,
+//     so it turns "unknown id" into "known row, no lane on record" — it does not invent a lane.
+type TaskLaneVia = "live-slot" | "outcome-task-id";
+interface TaskRowView {
+  id: string; from: "live" | "archive"; status: Task["status"]; kind: Task["kind"]; note: string | null;
+  text: string;
+  card: { valid: boolean; gaps: string[] } | null;          // null = no card was ever read
+  release: StartPlanReleaseVerdict | null;                   // live pending/queued rows only
+  report: { id: string; status: string; reportedAt: number; head: string; text: string; decided: boolean } | null;
+}
+type TaskResolution =
+  | { result: "lane"; task: string; via: TaskLaneVia; branch: string; branches: string[]; row: TaskRowView | null }
+  | { result: "no-lane"; task: string; why: string; row: TaskRowView }
+  | { result: "unknown-task"; task: string; searched: string[] };
+async function resolveTaskLane(id: string): Promise<TaskResolution> {
+  const live = tasks.find((t) => t.id === id) ?? null;
+  const archived = live ? null : await youngestArchivedTask(id);
+  const t = live ?? archived;
+  const { rows: outcomeRows } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
+  const branches = [...new Set(outcomeRows
+    .filter((o) => o.taskId === id && typeof o.branch === "string" && o.branch)
+    .sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0))
+    .map((o) => o.branch as string))];
+  // the report is the newest one filed under this task id; `head` is its first line, never a verdict on it
+  const rep = fleetReports.filter((r) => r.provenance.taskId === id)
+    .sort((a, b) => b.reportedAt - a.reportedAt)[0];
+  const row: TaskRowView | null = t ? {
+    id: t.id, from: live ? "live" : "archive", status: t.status, kind: t.kind, note: t.note ?? null,
+    text: t.text,
+    card: ((c) => (c ? { valid: c.valid, gaps: c.gaps } : null))(live ? variantSourceOf(live).card : t.card),
+    release: live && (live.status === "pending" || live.status === "queued") ? releaseVerdictNow(live) : null,
+    report: rep ? { id: rep.id, status: rep.status, reportedAt: rep.reportedAt,
+      head: rep.text.split("\n").find((l) => l.trim())?.slice(0, 300) ?? "", text: rep.text, decided: !!rep.decision } : null,
+  } : null;
+  if (live?.status === "sent" && live.slot !== null) {
+    const branch = slots.find((s) => s.id === live.slot && s.cwd)?.worktree?.branch;
+    if (branch) return { result: "lane", task: id, via: "live-slot", branch,
+      branches: [branch, ...branches.filter((b) => b !== branch)], row };
+  }
+  if (branches.length) return { result: "lane", task: id, via: "outcome-task-id", branch: branches[0], branches, row };
+  if (row) return { result: "no-lane", task: id, row,
+    why: row.status === "sent"
+      ? `the row is sent to slot ${t?.slot ?? "?"}, which holds no worktree lane, and no outcome row names it`
+      : `no live lane holds it and no outcome row names it — a ${row.status} row that never ended a lane `
+        + "(or a wave follower, whose lane is recorded under its head's id)" };
+  return { result: "unknown-task", task: id,
+    searched: ["fleet.json tasks", "lane-outcomes.jsonl taskId", "tasks-archive.jsonl"] };
+}
+
 
 // --- DISPOSITION rail: the owner's label channel for advisory output (docs/attic/graduation-criteria.md
 // needs owner labels as ground truth, and Fleet's throwaway workers had none). One append-only
@@ -33705,6 +33762,15 @@ Bun.serve<WSData>({
       const branch = (url.searchParams.get("branch") ?? "").trim();
       const repoHint = (url.searchParams.get("repo") ?? "").trim() || null;
       if (branch) return json(await laneDossier(branch, repoHint));
+      // ?task=<id>: the same dossier, resolved from the id (resolveTaskLane) — `resolved` says how
+      const taskQ = (url.searchParams.get("task") ?? "").trim();
+      if (taskQ) {
+        if (!/^[a-z0-9]{1,64}$/.test(taskQ)) return json({ error: "task must be a queue row id ([a-z0-9]{1,64})" }, 400);
+        const resolved = await resolveTaskLane(taskQ);
+        if (resolved.result === "unknown-task") return json({ error: "unknown task", resolved }, 404);
+        if (resolved.result === "no-lane") return json({ resolved });
+        return json({ ...(await laneDossier(resolved.branch, repoHint)), resolved });
+      }
       const { rows } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
       const byBranch = new Map<string, { branch: string; repo: string | null; ts: number;
         disposition: string | null; live: number | null }>();

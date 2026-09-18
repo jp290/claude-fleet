@@ -1028,28 +1028,39 @@ export async function run(): Promise<void> {
     /localStorage\.setItem\("fleet\.datasaver"/.test(cliSrc)
     && /localStorage\.getItem\("fleet\.datasaver"\) === "1"/.test(cliSrc), "setSaver / dataSaver in src/client.ts");
 
-  // --- the board's SECTION ORDER (§F4, briefs/ui-next-level-2026-08-06.md). The owner named
-  // this order explicitly; nothing else in the suite would notice a re-sort undoing it. Asserted
-  // as a RELATIVE order over renderBoard's own pushes, so a later section inserted between two
-  // of them (F5's file explorer) does not trip it — only a reordering does. This suite has no
-  // DOM, so the source is the evidence; the rendered result was checked by hand (see the commit).
+  // --- the board's SECTION ORDER. The owner set it twice: §F4 (briefs/ui-next-level-2026-08-06.md)
+  // and the redesign of 2026-09-18/19 — machine alarms → head → changes → checks → history → the
+  // folded tools (files, lanes, agents, prompts). Nothing else in the suite would notice a re-sort
+  // undoing it. Asserted as a RELATIVE order over renderBoard's own pushes (and, for the tools, its
+  // fold calls), so a section inserted between two of them does not trip it — only a reordering
+  // does. This suite has no DOM, so the source is the evidence; the rendered result was checked by
+  // screenshot (see the commit).
   const boardSrc = cliSrc.slice(cliSrc.indexOf("async function renderBoard()"), cliSrc.indexOf("$(\"boardclose\")"));
   const pushOrder = [...boardSrc.matchAll(/nodes\.push\((\w+)\)/g)].map((m) => m[1]);
   const at = (name: string) => pushOrder.indexOf(name);
-  // `gsec` (the guest-console panel) left this chain with the console itself, 2026-08-08 —
-  // the order it belonged to is otherwise unchanged, and its absence is asserted rather than
-  // merely dropped, so a re-added machine-level section has to state where it goes.
-  check("client: the board renders in the owner's order — identity → to-land → commits → files → lanes → agents → outline",
-    at("idsec") >= 0 && at("idsec") < at("work") && at("work") < at("csec") && at("csec") < at("fsec")
-    && at("fsec") < at("sec") && at("sec") < at("asec") && at("asec") < at("psec")
-    && at("gsec") === -1,
+  const foldOrder = [...boardSrc.matchAll(/boardFold\("(\w+)"/g)].map((m) => m[1]);
+  // `gsec` (the guest-console panel) left with the console itself, 2026-08-08, and `dsec1` (the
+  // helper register) left for the meter's device count, 2026-09-19 — both absences are asserted,
+  // so a re-added machine-level section has to state where it goes.
+  check("client: the board renders in the owner's order — alarms → head → changes → checks → history → tools",
+    at("dsec0") >= 0 && at("dsec0") < at("esec0") && at("esec0") < at("idsec")
+    && at("idsec") < at("work") && at("work") < at("ck") && at("ck") < at("csec") && at("csec") < at("tsec")
+    && at("gsec") === -1 && at("dsec1") === -1,
     JSON.stringify(pushOrder));
+  check("client: the folded tools come in the owner's order — files → lanes → agents → prompts",
+    ["files", "lanes", "agents", "prompts"].every((k, i, all) => i === 0 || foldOrder.indexOf(all[i - 1]) < foldOrder.indexOf(k))
+    && foldOrder.indexOf("files") >= 0,
+    JSON.stringify(foldOrder));
+  // owner call 2026-08-06, kept through the redesign: the advisory agents start folded on EVERY
+  // load — the fold is session-only, excluded both when the folds are written and when they are read
   check("client: the advisory agents group is folded on every load, and the fold is not persisted",
-    /^let agentsOpen = false;$/m.test(cliSrc) && /agentsOpen = !agentsOpen/.test(cliSrc)
-    && !/fleet\.agents/.test(cliSrc), "agentsOpen in src/client.ts");
+    /const FOLD_SESSION_ONLY = new Set\(\["agents"\]\);/.test(cliSrc)
+    && /setItem\(FOLD_KEY, JSON\.stringify\(\[\.\.\.boardFolds\]\.filter\(\(k\) => !FOLD_SESSION_ONLY\.has\(k\)\)\)\)/.test(cliSrc)
+    && /typeof x === "string" && !FOLD_SESSION_ONLY\.has\(x\)/.test(cliSrc)
+    && !/fleet\.agents/.test(cliSrc), "FOLD_SESSION_ONLY / boardFolds in src/client.ts");
   // folding must not silently retire the ③ reviewer — the button and its POST stay reachable
   check("client: folding agents away keeps both agent actions — nothing was deleted",
-    /"🔍 review"/.test(boardSrc) && /"📋 summarize"/.test(boardSrc)
+    /"Review changes"/.test(boardSrc) && /"Summarize"/.test(boardSrc)
     && /post\(`\/api\/slots\/\$\{slot\}\/review`/.test(boardSrc), "the agents group in renderBoard");
 
   // --- stable lane anchor creation. Slots 3/4 are deliberately real same-repo mains: the first

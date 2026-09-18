@@ -631,6 +631,20 @@
     border-radius: 8px; padding: 0 8px; font: 12px ui-monospace, Menlo, Consolas, monospace; }
   .qprogsel:focus { outline: none; border-color: var(--focus); }
   .qbundlebtn { margin-left: auto; }
+  /* L2: the scope tree, a column of its own left of the list */
+  .qtree { flex: none; width: 210px; overflow-y: auto; padding: 8px 6px; border-right: 1px solid var(--line-soft);
+    display: flex; flex-direction: column; gap: 1px; }
+  .qtree[hidden] { display: none; }
+  .qtreen { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 28px; padding: 0 8px;
+    border: 0; border-radius: 6px; background: transparent; color: var(--dim); font: inherit; font-size: 12px;
+    text-align: left; cursor: pointer; }
+  .qtreen:hover { color: var(--text); background: #1c1c1c; }
+  .qtreen.on { color: #dbe6ff; background: var(--sel); box-shadow: inset 0 0 0 1px #3b4b70; }
+  .qtreen.repo { margin-top: 4px; color: var(--text); }
+  .qtreen.prog { padding-left: 22px; font-size: 11.5px; }
+  .qtreel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qtreen:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+  .qscopesel { max-width: 300px; }
   .qbundlebtn.on { color: #e6d3ff; background: #2d2140; border-color: #4b3670; }
   .qempty { font-size: 11.5px; color: var(--faint); padding: 4px 10px 8px; }
   .qdisp { flex: 1; font-size: 11.5px; color: var(--dim); display: flex; align-items: center; gap: 8px; }
@@ -708,8 +722,11 @@
   .qdmain-why { font-size: 11.5px; line-height: 17px; color: var(--faint); margin: 7px 0 2px; }
   /* D2: the reading column and the rail. The rail is sticky inside the scrolling .shelldetail, so
      status, the one action and the options stay beside whatever part of the row is being read. */
-  .qd2 { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 20px; align-items: start; }
-  .qdrail { position: sticky; top: 0; min-width: 0; border-left: 1px solid var(--line-soft); padding-left: 14px; }
+  .qd2 { display: grid; grid-template-columns: minmax(0, 1fr) 260px; grid-template-rows: auto 1fr;
+    grid-template-areas: "title rail" "read rail"; column-gap: 20px; align-items: start; }
+  .qd2 > .qdtitle { grid-area: title; }
+  .qdread { grid-area: read; min-width: 0; }
+  .qdrail { grid-area: rail; position: sticky; top: 0; min-width: 0; border-left: 1px solid var(--line-soft); padding-left: 14px; }
   .qdrail-h { color: var(--dim); font-size: 10.5px; line-height: 14px; font-weight: 700; letter-spacing: .07em;
     text-transform: uppercase; margin: 16px 0 6px; }
   .qdrail-h:first-child { margin: 2px 0 6px; }
@@ -954,7 +971,8 @@
     .qdmain { flex-direction: column; align-items: stretch; }
     .qdmain .shrbtn { min-height: 44px; width: 100%; }
     .qd2 { display: flex; flex-direction: column; gap: 0; }
-    .qdrail { order: -1; position: static; border-left: 0; padding-left: 0; padding-bottom: 10px;
+    .qdread { order: 2; }
+    .qdrail { order: 1; position: static; border-left: 0; padding-left: 0; padding-bottom: 10px;
       border-bottom: 1px solid var(--line-soft); margin-bottom: 8px; }
     .qlife-st { font-size: 11px; line-height: 22px; }
     .qkind-select { min-height: 44px; font-size: 16px; }
@@ -962,6 +980,7 @@
     #shell-queue .qscope { flex: 1 0 100%; flex-wrap: wrap; }
     #shell-queue .qprogsel { flex: 1 1 auto; max-width: none; min-height: 40px; }
     #shell-queue .qbundlebtn { margin-left: 0; min-height: 40px; }
+    #shell-queue .qtree, #shell-queue .qlayoutbtn { display: none; }
     .qview button { flex: 1; min-height: 40px; }
     #shell-queue .pkfilterin { flex: 1 0 100%; max-width: none; min-height: 40px; }
     .qwavehint { font-size: 11px; padding-bottom: 8px; }

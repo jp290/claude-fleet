@@ -146,10 +146,13 @@ import {
   type ProgramFoundingMode, type ProgramFoundingProfileKind, type ProgramFoundingIdentity,
   type ProgramFoundingV2, type ProgramFounding, type ProgramFoundingRead, type ProgramContent,
   type ProgramValidation, type SupervisorBinding, type ProgramDigest, type DispatchSpawn, type SlotContext,
-  type SlotStreamOccupant,
+  type SlotStreamOccupant, type TaskCriterionPart,
 } from "./server/types";
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
 import { appendEvent, appendEventStrict, coalescedSaver, readLedger, readEventLog } from "./server/persist";
+import { buildVariantCompareRow, countCheckedMet, decideVariantCompare, doneEntriesFor, stageOneTied,
+  UNMEASURED_DIFF, type VariantCompareVariant, type VariantDecidedAt, type VariantDiffStat,
+  type VariantDoneEntry, type VariantDoneResult, type VariantGate, type VariantStageCandidate } from "./variant-compare";
 import { audit, AUDIT_FILE } from "./server/audit-log";
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
@@ -1639,8 +1642,10 @@ function variantLandRefusal(s: Slot): string | null {
 // THE DECISION: which ONE variant of a group lands (T5). Written once and never rewritten — the
 // same propose/promote bias as `criterion`: a decision that could be flipped after a loser's lane
 // was shelved would un-shelve nothing and leave two branches that each believe they won.
-// Today two doors call this, the owner's board and the group's bound Program-MAIN; the automatic
-// comparator (T4, a later row) is meant to be the third caller and needs no other write path.
+// Three callers share this one write path: the owner's board, the group's bound Program-MAIN, and
+// — since the T4 comparator (68a45516, by "comparator") — server.ts#compareVariantGroup. The
+// comparator needed no second write path and got none; its refusal case (a winner whose lane is
+// already gone) leaves the group undecided for the owner.
 // What it does, in this order:
 //   1. every refusal first, before any state moves (not a group, unknown or foreign winner, a
 //      winner with no running lane, already decided);
@@ -1651,8 +1656,8 @@ function variantLandRefusal(s: Slot): string | null {
 //      outcome `shelved` recorded while the lane state still exists, then killSlot, which keeps the
 //      worktree and the branch on disk — and its row is archived; a variant that never ran is
 //      archived. The group row itself stays open until its winner lands (landLane closes it).
-async function decideVariantGroup(group: Task, winnerId: unknown, by: "owner" | "main", slot?: number):
-  Promise<{ status: number; body: Record<string, unknown> }> {
+async function decideVariantGroup(group: Task, winnerId: unknown,
+  by: "owner" | "main" | "comparator", slot?: number): Promise<{ status: number; body: Record<string, unknown> }> {
   if (!group.variants) return { status: 409, body: { error: `task ${group.id} is not a variant group` } };
   if (typeof winnerId !== "string" || !winnerId) return { status: 400, body: { error: "winner must be the id of one of the group's variant rows" } };
   const rows = variantsOfGroup(group);
@@ -1806,6 +1811,33 @@ const loadTaskVariantDecision = (value: unknown): TaskVariantDecision | undefine
 
 const MAX_COMMENTS_PER_TASK = 50;
 const MAX_CRITERION = 4000; // a done-criterion is a short contract, not a design document
+// A2 — the DONE parts of a criterion ({text, check?{cmd, expectExit}}). Caps keep a criterion from
+// becoming a test suite in disguise: the comparator runs these server-side, so the count and the
+// command length are resource bounds, not style. expectExit is a POSIX exit code, 0..255.
+const MAX_CRITERION_PARTS = 12;
+const MAX_CHECK_CMD = 2000;
+function criterionPartsFromBody(v: unknown): { ok: true; parts: TaskCriterionPart[]; provided: boolean }
+  | { ok: false; error: string } {
+  if (v === undefined || v === null) return { ok: true, parts: [], provided: false };
+  if (!Array.isArray(v)) return { ok: false, error: "parts must be an array of {text, check?}" };
+  if (v.length > MAX_CRITERION_PARTS) return { ok: false, error: `parts must hold at most ${MAX_CRITERION_PARTS} entries` };
+  const parts: TaskCriterionPart[] = [];
+  for (const p of v as unknown[]) {
+    const text = typeof (p as { text?: unknown })?.text === "string" ? ((p as { text: string }).text).trim() : "";
+    if (!text) return { ok: false, error: "every part needs a text" };
+    if (text.length > MAX_CRITERION) return { ok: false, error: `a part text must be at most ${MAX_CRITERION} chars` };
+    const check = (p as { check?: unknown }).check;
+    if (check === undefined || check === null) { parts.push({ text }); continue; }
+    const cmd = typeof (check as { cmd?: unknown })?.cmd === "string" ? ((check as { cmd: string }).cmd).trim() : "";
+    const expectExit = (check as { expectExit?: unknown }).expectExit;
+    if (!cmd) return { ok: false, error: "a part check needs a cmd" };
+    if (cmd.length > MAX_CHECK_CMD) return { ok: false, error: `a part check cmd must be at most ${MAX_CHECK_CMD} chars` };
+    if (typeof expectExit !== "number" || !Number.isSafeInteger(expectExit) || expectExit < 0 || expectExit > 255)
+      return { ok: false, error: "a part check needs an expectExit in 0..255" };
+    parts.push({ text, check: { cmd, expectExit } });
+  }
+  return { ok: true, parts, provided: true };
+}
 // W3 · the reason a wave lane gives for handing a row back. Sized to the queue note it becomes
 // (every note in this file is sliced to 200) rather than to a paragraph: the returned row carries
 // this sentence into the next dispatcher's reading, and a longer one would be truncated there
@@ -13361,6 +13393,15 @@ function tickStallSensor(on: boolean): void {
 // PROCESS-LOCAL, like laneSpawn and for the same reason: it is a statement about this process's
 // next few ticks, not a fact about the fleet. A restart drops it and the next tick re-parks it.
 const VARIANT_RESERVE_MS = Math.max(0, Number(process.env.FLEET_VARIANT_RESERVE_MS ?? 45 * 60_000) | 0);
+
+// T4 · THE VARIANT COMPARISON (criterion owner-confirmed, queue row 68a45516): the knobs, the
+// ledger file and the tick constants. The wait is A5 verbatim — 2 h after the FIRST done-looking
+// variant, a still-running group is compared anyway. The check timeout bounds ONE A2 check (the
+// criterion demands a timeout; a hanging check ends as unmeasured, never as a server hang). Both
+// read at boot like every other knob, so a suite can size them and production keeps the defaults.
+const VARIANT_WAIT_MS = Math.max(0, Number(process.env.FLEET_VARIANT_WAIT_MS ?? 2 * 60 * 60_000) | 0);
+const VARIANT_CHECK_TIMEOUT_MS = Math.max(250, Number(process.env.FLEET_VARIANT_CHECK_TIMEOUT_MS ?? 60_000) | 0);
+const VARIANT_COMPARE_FILE = `${import.meta.dir}/variant-compare.jsonl`;
 // WHOSE freeing lane would end the hold — so a claim never holds a row it could not be waiting for.
 // A full program's claim must not stop a foreign row in the same repo; a full repo's must not stop
 // a row targeting another repo; only the free-slot count is genuinely fleet-wide, and that one is
@@ -13597,6 +13638,205 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
     `${group.id} n=${n} started=${started.length} base=${base.slice(0, 12)} slots=${started.map((x) => x.slot).join(",")} by=${ownerAct ? "owner" : "tick"}`);
   saveState();
   return { started: true, slots: started.map((x) => x.slot), tails: started.map((x) => x.tail), partial: null };
+}
+
+// === T4 · THE VARIANT COMPARISON (criterion owner-confirmed, queue row 68a45516) ===
+// The rule and the row shape live in variant-compare.ts (pure); this is the measurer and the
+// actuator. A group whose n variants have ALL gone terminal is compared; so is a group where the
+// FIRST done-looking variant was FLEET_VARIANT_WAIT_MS ago and stragglers are still running. A
+// variant is terminal exactly as the criterion names the three ways:
+//   · done-looking, by lane-signals.ts' own predicate (laneDoneLooking, at the fleet's automation
+//     idle AUTO_REVIEW_IDLE_MS — the same threshold program-phase reads);
+//   · its lane's newest fleet-report is failed or needs-main (a handoff is a baton, not an end);
+//   · it is killed — the row left "sent", or its slot no longer holds a live worktree.
+// A group that never started (no variant ever sent) is the dispatcher's business, never a
+// comparison. EXACTLY ONE ledger line per group: Task.variantCompare is stamped when the line is
+// written and makes every later tick a no-op for that group.
+// The A2 boundaries, each load-bearing: the checks run ONLY from an owner-confirmed criterion
+// (an unconfirmed proposal executes nothing), ONLY in the variant's own worktree, under
+// VARIANT_CHECK_TIMEOUT_MS, and with verifyChildEnv(null) — the server's env MINUS every FLEET_*
+// (VERIFY_CHILD_KEEPS carries two lock-coordination names and no token), so no owner token and no
+// lane's self token can reach a criterion check. A6: the comparator DECIDES (decideVariantGroup,
+// its third caller, by "comparator") and shelves losers — it never lands anything. A3/A4:
+// judge stays null, klasse stays null. No NACH-row is written back anywhere.
+
+// the lane's newest report, joined on the occupant (slot + openedAt + branch) — the same join
+// laneSelfWord makes; a previous lane's report on this slot number is not this lane's report.
+function latestVariantReport(s: Slot): FleetReport | null {
+  const mine = fleetReports.filter((r) => r.worker.slot === s.id && r.worker.openedAt === s.openedAt
+    && (!s.worktree || r.worker.branch === s.worktree.branch));
+  return mine.sort((a, b) => b.reportedAt - a.reportedAt)[0] ?? null;
+}
+
+// ONE A2 check. Result, not output: the ledger carries met/unmet/unmeasured, and a variant that
+// wants its check's output recorded writes a file of its own (that is what the e2e proof does).
+// The env re-check mirrors criterionPartsFromBody: a hand-edited state file cannot smuggle a
+// token-leaking spawn past the two facts this function actually acts on.
+async function runVariantCheck(cwd: string, check: TaskCriterionPart["check"]): Promise<VariantDoneResult> {
+  if (!check || typeof check.cmd !== "string" || !check.cmd.trim()
+    || typeof check.expectExit !== "number" || !Number.isSafeInteger(check.expectExit)
+    || check.expectExit < 0 || check.expectExit > 255) return "unmeasured";
+  const p = Bun.spawn(["sh", "-c", check.cmd], { cwd, stdout: "pipe", stderr: "pipe", env: verifyChildEnv(null) });
+  let killed = false;
+  const timer = setTimeout(() => { killed = true; try { p.kill(9); } catch { /* already gone */ } },
+    VARIANT_CHECK_TIMEOUT_MS);
+  try {
+    // drained concurrently with the exit so a chatty check cannot deadlock on a full pipe
+    const out = new Response(p.stdout).text();
+    const err = new Response(p.stderr).text();
+    const code = await p.exited;
+    await Promise.all([out, err]);
+    if (killed) return "unmeasured"; // the timeout spoke; nothing was measured, and the tick moves on
+    return code === check.expectExit ? "met" : "unmet";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// the {lines, files} of a variant's whole diff against the group's shared base — read from the
+// worktree when it lives, from the repo otherwise (a shelved branch's ref is repo-level). Null =
+// not measurable, which stage 3 treats as "never the smallest" (variant-compare.ts).
+async function variantDiffStat(repo: string, cwd: string | null, baseSha: string,
+  branch: string): Promise<VariantDiffStat | null> {
+  if (!branch || !baseSha) return null;
+  const r = await gitRead(cwd || repo, "diff", `${baseSha}...${branch}`, "--shortstat", "--no-color");
+  if (r.code !== 0) return null;
+  if (!r.out.trim()) return { lines: 0, files: 0 }; // an empty diff is measured, and it is the smallest
+  const m = /(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/.exec(r.out);
+  return m ? { files: Number(m[1]), lines: Number(m[2] ?? 0) + Number(m[3] ?? 0) } : null;
+}
+
+let variantCompareBusy = false;
+
+async function compareVariantGroup(group: Task, now: number): Promise<void> {
+  const rows = variantsOfGroup(group);
+  const n = group.variants?.length ?? 0;
+  if (!n || rows.length !== n || group.variantDecision || group.variantCompare) return;
+  // A2, first boundary: only an owner-confirmed criterion contributes parts — and therefore
+  // entries. An unconfirmed proposal runs nothing and names nothing; a confirmed criterion whose
+  // parts carry no checks stands as unmeasured (doneEntriesFor), which is the criterion's own
+  // sentence for a group without check parts.
+  const criterion = variantSourceOf(group).criterion; // the group is its own source — the seam is named
+  const parts = criterion?.confirmedAt ? criterion.parts ?? [] : [];
+  interface Measured { row: Task; entries: VariantDoneEntry[]; branch: string; repo: string | null;
+    cwd: string | null; baseSha: string | null; gate: VariantGate; diff: VariantDiffStat | null }
+  const ms: Measured[] = [];
+  for (const row of rows) {
+    const slot = row.status === "sent" && row.slot !== null ? slotFrom(row.slot) : undefined;
+    const wt = slot?.worktree ?? null;
+    const cwd = slot?.cwd ?? null;
+    const checks = new Map<string, VariantDoneResult>();
+    if (parts.length && cwd) {
+      for (const p of parts) {
+        if (!p.check) continue; // a part without a check is never executed, only reported on
+        checks.set(p.text, await runVariantCheck(cwd, p.check));
+      }
+    }
+    const report = slot ? latestVariantReport(slot) : null;
+    const reportTerminal = report?.status === "failed" || report?.status === "needs-main";
+    const claims = new Set<string>();
+    if (report && parts.length && (report.status === "complete" || reportTerminal))
+      for (const p of parts)
+        if (report.text.toLowerCase().includes(p.text.toLowerCase())) claims.add(p.text);
+    ms.push({ row, entries: doneEntriesFor(parts, checks, claims),
+      branch: wt?.branch ?? "", repo: wt?.repo ?? group.repo ?? null, cwd, baseSha: wt?.baseSha ?? null,
+      gate: "not-run", diff: null });
+  }
+  for (const m of ms)
+    m.diff = m.repo && m.baseSha ? await variantDiffStat(m.repo, m.cwd, m.baseSha, m.branch) : null;
+  const cands: VariantStageCandidate[] = ms.map((m) => ({
+    taskId: m.row.id, index: m.row.variantIndex ?? 0, met: countCheckedMet(m.entries),
+    gate: m.gate, diff: m.diff }));
+  // stage 2 — the land gate WITHOUT merge, run ONLY for the stage-1 tie, in the variant's own
+  // worktree. The plan is the same verifyPlanFor the land door asks (a repo with no verify cmd is
+  // "not-run", never green); ok:true green, ok:false red, everything that measured nothing —
+  // skip, timeout, waited-out — is "unknown", and unknown is no win.
+  const tied = stageOneTied(cands);
+  if (tied.length > 1) {
+    for (const c of tied) {
+      const m = ms.find((x) => x.row.id === c.taskId);
+      if (!m) continue;
+      let gate: VariantGate = "not-run";
+      if (m.cwd && m.baseSha && m.repo) {
+        const plan = await verifyPlanFor(m.cwd, m.repo, m.baseSha);
+        if (plan) {
+          const v = await runVerify(m.cwd, m.baseSha, plan);
+          gate = v?.ok === true ? "green" : v?.ok === false ? "red" : "unknown";
+        }
+      }
+      m.gate = gate;
+      c.gate = gate;
+    }
+  }
+  const outcome = decideVariantCompare(cands);
+  if (!outcome) return; // unreachable with n >= 1, but the stages answer null honestly
+  const variantsOut: VariantCompareVariant[] = ms.map((m) => {
+    const spawn = taskSpawnOf(m.row);
+    return { taskId: m.row.id, branch: m.branch, harness: spawn.harness, model: spawn.model,
+      effort: spawn.effort, klasse: null, done: m.entries, gate: m.gate,
+      diff: m.diff ?? UNMEASURED_DIFF };
+  });
+  await appendEvent(VARIANT_COMPARE_FILE, buildVariantCompareRow(group.id, variantsOut, outcome.winner,
+    outcome.stage) as unknown as Record<string, unknown>);
+  const stage: VariantDecidedAt = outcome.stage;
+  group.variantCompare = { at: Date.now(), winner: outcome.winner, stage };
+  group.note = `variant comparison wrote its one line — winner ${outcome.winner} by ${stage}`.slice(0, 300);
+  audit("variant_compare", undefined, `${group.id} n=${n} winner=${outcome.winner} stage=${stage}`);
+  saveState();
+  // THE T5 SEAM — the comparator is decideVariantGroup's THIRD caller (owner's board, bound MAIN,
+  // and now this), by "comparator". A6: this decides and shelves the losers; nothing lands here.
+  // The T5 precondition stands unchanged: only a variant whose lane still holds its work can be
+  // the winner, so an all-terminal group whose winner lane is already gone refuses (409) and the
+  // group stays undecided for the owner — the ledger line standing as the recommendation.
+  const decided = await decideVariantGroup(group, outcome.winner, "comparator");
+  if (decided.status !== 200)
+    audit("variant_compare_decide_refused", undefined,
+      `${group.id} status=${decided.status} error=${String((decided.body as { error?: unknown }).error ?? "")}`);
+}
+
+async function tickVariantCompare(): Promise<void> {
+  if (variantCompareBusy) return;
+  const groups = tasks.filter((t) => !!t.variants && !t.variantDecision && !t.variantCompare);
+  if (!groups.length) return;
+  variantCompareBusy = true;
+  try {
+    const now = Date.now();
+    for (const group of groups) {
+      if (group.variantDecision || group.variantCompare) continue; // a parallel act may have moved it
+      const rows = variantsOfGroup(group);
+      const n = group.variants?.length ?? 0;
+      if (!n || rows.length !== n) continue;
+      if (!rows.some((r) => r.status === "sent")) continue; // never started — the dispatcher owns it
+      const states: { terminal: boolean; doneLooking: boolean }[] = [];
+      for (const row of rows) {
+        if (row.status !== "sent") { states.push({ terminal: true, doneLooking: false }); continue; }
+        const slot = row.slot !== null ? slotFrom(row.slot) : undefined;
+        if (!slot?.cwd) { states.push({ terminal: true, doneLooking: false }); continue; } // killed
+        const sig = laneSignalView(slot, now);
+        const report = latestVariantReport(slot);
+        const reportTerminal = report?.status === "failed" || report?.status === "needs-main";
+        const doneLooking = laneDoneLooking(sig, AUTO_REVIEW_IDLE_MS);
+        states.push({ terminal: reportTerminal || doneLooking, doneLooking });
+      }
+      if (states.every((s) => s.terminal)) {
+        await compareVariantGroup(group, now);
+        continue;
+      }
+      // THE WAIT (A5): FLEET_VARIANT_WAIT_MS after the FIRST done-looking variant, the group is
+      // compared anyway — one straggler must not hold the decision hostage forever. Armed once,
+      // on the group, so a restart does not silently reset the clock.
+      if (states.some((s) => s.doneLooking)) {
+        if (!group.variantCompareArmedAt) {
+          group.variantCompareArmedAt = now;
+          saveState();
+        } else if (now - group.variantCompareArmedAt >= VARIANT_WAIT_MS) {
+          await compareVariantGroup(group, now);
+        }
+      }
+    }
+  } finally {
+    variantCompareBusy = false;
+  }
 }
 
 async function tickDispatch(): Promise<void> {
@@ -30297,7 +30537,10 @@ if (BRIEF_ON) setInterval(() => void tickBriefSweep().catch((e: unknown) => logE
 // mistake — believing it armed when it is not — is the one that costs a week of silence.
 if (CARD_ON) setInterval(() => void tickCardSweep().catch((e: unknown) => logError("tickCardSweep", e)), CARD_TICK_MS);
 console.log(`[fleet] card extractor ${CARD_ON ? `armed: FLEET_CARD_MS=${CARD_TICK_MS} model=${CARD_MODEL}` : "off (FLEET_CARD_MS unset or 0) — no tick registered"}`);
-setInterval(() => void tickHarvest().catch((e: unknown) => logError("tickHarvest", e)), 5000);
+setInterval(() => {
+  void tickHarvest().catch((e: unknown) => logError("tickHarvest", e));
+  void tickVariantCompare().catch((e: unknown) => logError("tickVariantCompare", e));
+}, 5000);
 // the helper-claim lapse sweep, not on the 100 ms poll: liveness is decided by the clock
 // (helperClaimOf); this tick only books the lapse, so seconds of lateness cost nothing.
 setInterval(() => {
@@ -33240,15 +33483,25 @@ Bun.serve<WSData>({
       // was founded on, never to an arbitrary one of its siblings.
       const t = foundingRowOf(s);
       if (!t) return json({ error: "no founding task on this slot to attach a criterion to" }, 409);
+      const partsParsed = criterionPartsFromBody(body?.parts);
+      if (!partsParsed.ok) return json({ error: partsParsed.error }, 400);
+      // E4 · a VARIANT lane proposes onto its GROUP (variantSourceOf — the same seam the dispatch
+      // and start-plan readers go through): the n variants share one work order, so they share one
+      // done-criterion, and the owner confirms ONE row. The founding row of a variant lane is its
+      // variant row; for any other lane this is the identity.
+      const src = variantSourceOf(t);
+      const proposedAt = Date.now();
       // re-proposing REPLACES an unconfirmed draft (the lane may refine it mid-conversation) but
       // never a confirmed one: that would let the producer edit the anchor after the promotion
-      if (t.criterion?.confirmedAt) return json({ error: "criterion already confirmed by the owner — it is theirs now" }, 409);
-      t.criterion = { text, proposedAt: Date.now(), confirmedAt: null };
-      // …and the owner hears of it in the same state cut (openCriterionAttention)
-      const attention = openCriterionAttention(s, t);
+      if (src.criterion?.confirmedAt) return json({ error: "criterion already confirmed by the owner — it is theirs now" }, 409);
+      src.criterion = { text, proposedAt, confirmedAt: null,
+        ...(partsParsed.parts.length ? { parts: partsParsed.parts } : {}) };
+      // …and the owner hears of it in the same state cut (openCriterionAttention) — about the row
+      // the criterion landed on, so the confirm link names the group for a variant lane
+      const attention = openCriterionAttention(s, src);
       saveState();
       audit("criterion_proposed", s.id, t.id);
-      return json({ ok: true, proposedAt: t.criterion.proposedAt, attention });
+      return json({ ok: true, proposedAt, attention });
     }
 
     // THE OFFER DOOR — a lane hands its OWN preview suite to another machine. Lane-only: the answer is
@@ -35887,7 +36140,14 @@ Bun.serve<WSData>({
       const body = await readJson(req);
       const edited = typeof body?.text === "string" ? body.text.trim() : "";
       if (edited.length > MAX_CRITERION) return json({ error: `text must be at most ${MAX_CRITERION} chars` }, 400);
-      t.criterion = { text: edited || t.criterion.text, proposedAt: t.criterion.proposedAt, confirmedAt: Date.now() };
+      // the parts ride the same owner edit: an owner confirming WITH parts replaces the proposal's,
+      // an owner confirming without them keeps what the lane proposed — the criterion is theirs
+      // either way, and only a CONFIRMED criterion's parts are ever executed (compareVariantGroup)
+      const partsParsed = criterionPartsFromBody(body?.parts);
+      if (!partsParsed.ok) return json({ error: partsParsed.error }, 400);
+      const parts = partsParsed.provided ? partsParsed.parts : t.criterion.parts ?? [];
+      t.criterion = { text: edited || t.criterion.text, proposedAt: t.criterion.proposedAt, confirmedAt: Date.now(),
+        ...(parts.length ? { parts } : {}) };
       const bound = t.slot === null ? null : slotFrom(t.slot);
       if (bound?.awaiting === "owner") bound.awaiting = null;
       // …and the attention rows that asked for exactly THIS act are answered by it, in the same

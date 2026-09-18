@@ -1214,6 +1214,15 @@ interface Task {
   variantOf?: string;
   variantIndex?: number;
   variantDecision?: TaskVariantDecision; // GROUP rows only: which variant lands (see the interface)
+  variantCompareArmedAt?: number; // GROUP rows only: when the comparator FIRST saw a done-looking
+  // variant of this group — the clock FLEET_VARIANT_WAIT_MS (A5, default 2 h) runs against, so a
+  // straggler cannot hold the decision hostage forever. Set once, never reset; absent = armed no.
+  variantCompare?: { at: number; winner: string; stage: "done" | "gate" | "diff" | "order" }; // GROUP rows only:
+  // the comparator wrote its ONE line into variant-compare.jsonl (variant-compare.ts). The marker
+  // is the exactly-once fact: without it the 8 s tick would measure and append again on every pass.
+  // It records the RECOMMENDATION, not the act — the act is variantDecision above, which the
+  // comparator attempts in the same breath and which may legitimately refuse (a winner whose lane
+  // is already gone leaves the group undecided for the owner, ledger line standing).
   files?: string[]; // the task's file surface. In persisted state this is written ONLY when a ↻
   // refine proposal is confirmed (from RefineChild.files): the refiner verified it against the
   // tree and the owner promoted it. API views may instead PROJECT exact tracked paths named in the
@@ -1407,7 +1416,10 @@ const loadStallSensor = (value: unknown): StallSensorState => {
 // had one, because a branch outlives its slot (a shelved worktree can be re-opened) and the land
 // refusal must still recognise it then. `by` is who decided: the owner's board door or the bound
 // MAIN of the group's program — the automatic comparator (T4) joins this list as its own value.
-interface TaskVariantDecision { winner: string; by: "owner" | "main"; slot?: number; at: number; shelved: string[] }
+// `by` is the caller seam, not a display choice: the owner's board, the group's bound Program-MAIN,
+// and — since the T4 comparator (68a45516) — server.ts#compareVariantGroup as "comparator". A
+// comparator decision is the same write with the same permanence; nothing about it lands by itself.
+interface TaskVariantDecision { winner: string; by: "owner" | "main" | "comparator"; slot?: number; at: number; shelved: string[] }
 type BriefAuthor = "owner" | "main";
 interface TaskBrief { text: string; at: number; model: string; edited: boolean; by?: BriefAuthor }
 // One remark, timestamped and individually deletable. `id` exists for the delete: an index would
@@ -1480,7 +1492,16 @@ interface TaskNoteVerdict {
 // rather than with the note.
 interface TaskTouch { sha: string; branch: string; at: number }
 
-interface TaskCriterion { text: string; proposedAt: number; confirmedAt: number | null }
+interface TaskCriterion { text: string; proposedAt: number; confirmedAt: number | null;
+  // The DONE parts (A2 of the variant-comparison criterion, 68a45516): the criterion split into
+  // checkable statements, each optionally carrying a machine check the comparator may run
+  // server-side in a variant's worktree — and ONLY for an owner-confirmed criterion, ONLY there.
+  // Absent means the criterion is prose only: nothing is ever executed for it, and the ledger
+  // names nothing. Validated at both doors (propose and confirm); a hand-edited state file can
+  // carry what it likes, but runVariantCheck re-asks the two facts it acts on before spawning.
+  parts?: TaskCriterionPart[] }
+
+interface TaskCriterionPart { text: string; check?: { cmd: string; expectExit: number } }
 
 // One standing proposal per row — a second one overwrites it, exactly as a second ↻ refine run
 // overwrites the proposal it parked. `by` is a DISPLAY label the server derives from the proposing
@@ -2884,7 +2905,7 @@ export type {
   ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReportBasis,
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind,
-  Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskFilesProposal, RefineChild,
+  Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,

@@ -92,6 +92,12 @@ abgeleitet aus `docs/messungen/2026-09-14-rollen-briefe-synthese.md` §2b) und w
 ändert daran nichts: sie nennt weiter den **Linien-Record** als die eine Übergabe (§Nachfolge unten,
 `e3e5084a`); die Karte ist ein zusätzlicher TEXT, kein zweiter Kanal.
 
+Die beiden Sensoren des Loop haben Kurzformen: `./state.sh --brief` und `./register.sh --brief`
+geben je höchstens 40 Zeilen, und ihre erste Zeile nennt Zeilen- und Byte-Zahl der Vollausgabe samt
+dem Kommando, das sie druckt; die Vollausgabe selbst bleibt byteidentisch und beginnt mit derselben
+Kopfzeile. Ein unbekanntes Flag ist exit 2 mit benanntem Ergebnis. Für die Erdung im Kontext — die
+Kennzahlen und der Wegweiser in die Volldaten, nicht die 68 KB Render.
+
 ## Werkzeuge
 
 `ctl.sh` fügt keine Autorität hinzu; jedes Verb behält Credential, Scope und Server-Gate seiner Route.

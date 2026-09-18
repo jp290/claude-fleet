@@ -8,9 +8,46 @@
 # order and its reasoning — i.e. the things git genuinely cannot carry.
 #
 # Usage:  ./state.sh            (run it at the start of a session, before believing anything)
+#         ./state.sh --brief         (max 40 lines: the key numbers plus a map of the full output)
 #         ./state.sh --since <ref>   (default: the last handoff commit)
 set -u
 cd "$(dirname "$0")" || exit 1
+
+# --brief: at most 40 lines, and line 1 names the full output's line and byte count plus the command
+# that prints it. The full render is produced by exact self-replay with no arguments — the full path
+# below stays untouched, so the two modes cannot drift: what the digest announces, the digest itself
+# just rendered. An unknown flag is exit 2 with the flag named, never a silent full run.
+BRIEF_KEYRE='^  (outcomes |main-direct |post-land audits |newest audit: |check-trail runs |land-quality |land notes |merge verdicts |audit\.jsonl: |hub |lanes [0-9]|a worktree with no slot|e2e tmux sockets: |other tmux sockets|orphaned codex|TMPDIR e2e scratch|suites running now: |HANDOFF\.md |UNKNOWN: )|^  /.+\[|^    (model: |size: |gate |landed [0-9]|conflict resolver |resolver|unowned beside)'
+case "${1:-}" in
+"" | --since) ;;
+--brief)
+  brief_tmp=$(mktemp "${TMPDIR:-/tmp}/state-full.XXXXXX") || exit 1
+  trap 'rm -f "$brief_tmp"' EXIT HUP INT TERM
+  "$0" > "$brief_tmp"
+  brief_rc=$?
+  if [ "$brief_rc" -ne 0 ]; then
+    echo "state.sh --brief: the full render exited $brief_rc — shown unabridged, not digested:" >&2
+    cat "$brief_tmp"
+    exit "$brief_rc"
+  fi
+  brief_map=$(grep -E '^=== ' "$brief_tmp" | sed 's/^/  /')
+  brief_keys=$(grep -E "$BRIEF_KEYRE" "$brief_tmp")
+  brief_n=$(wc -l < "$brief_tmp" | tr -d ' ')
+  brief_m=$(wc -c < "$brief_tmp" | tr -d ' ')
+  brief_cap=$((36 - $(printf '%s\n' "$brief_map" | grep -c .)))
+  echo "KURZFORM der Vollausgabe: $brief_n Zeilen · $brief_m Bytes — $0"
+  sed -n '1p' "$brief_tmp"
+  echo "  (Auswahl: Kopfzeile, Sektionskarten, Kennzahlen, jedes UNKNOWN — der Rest: $0)"
+  printf '%s\n' "$brief_map"
+  printf '%s\n' "$brief_keys" | awk -v cap="$brief_cap" 'NF && NR <= cap'
+  brief_gesamt=$(printf '%s\n' "$brief_keys" | grep -c .)
+  if [ "$brief_gesamt" -gt "$brief_cap" ]; then
+    echo "  (… weitere $((brief_gesamt - brief_cap)) Kennzahl-Zeilen: $0)"
+  fi
+  exit 0 ;;
+*) echo "state.sh: unbekanntes Flag '$1' — gueltig: (kein Flag) | --since <ref> | --brief" >&2
+   exit 2 ;;
+esac
 
 # CLAUDE.md tells every LANE to run this script, but the things it senses — the running server, the
 # gitignored ledgers — live in the MAIN checkout, and from a lane $PWD is the worktree. So anchor

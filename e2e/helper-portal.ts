@@ -2193,7 +2193,10 @@ export async function run(h: {
     const relayTaskId = ((await (await post("/api/tasks", { text: relayTaskText, queue: false })).json()) as
       { task?: { id?: string } }).task?.id ?? "";
     await killSrv();
-    const relayProgramId = "k12re1a".padEnd(24, "0");
+    // the id is 24 HEX on purpose: loadState drops any Program row whose id is not /^[0-9a-f]{24}$/
+    // (server.ts#loadState), so a readable-but-not-hex id would plant a slot binding to a Program
+    // the server never loads — the exact silent loss the probe in the succeed check names.
+    const relayProgramId = "bed12a".padEnd(24, "0");
     const plant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
       { slots?: Record<string, { taskId?: string | null; programId?: string | null }>;
         tasks?: { id: string; status: string; slot: number | null; programId?: string | null }[];

@@ -607,6 +607,8 @@ class Pane {
   // the model the conversation's newest request ran on, as its file names it (transcript payload
   // `model`); null until the chat view has read one
   observedModel: string | null = null;
+  // ...and the effort it ran at (payload `effort`); null = the file names none → "default"
+  observedEffort: string | null = null;
   private chatSource: string | null = null;
   private chatTimer: ReturnType<typeof setTimeout> | undefined;
   private chatBusy = false;
@@ -824,6 +826,7 @@ class Pane {
     this.lastTurnAt = 0;
     this.cacheTtl = CACHE_TTL_MS;
     this.observedModel = null;
+    this.observedEffort = null;
     this.chatSource = null;
     this.toolGroup = null;
     this.notifGroup = null;
@@ -964,7 +967,8 @@ class Pane {
       if (this.slot !== slot) return; // reassigned during the fetch — this response is stale
       if (!res.ok) return;
       const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null;
-        cache?: { at: number; provider: string } | null; model?: string | null };
+        cache?: { at: number; provider: string } | null; model?: string | null;
+        effort?: string | null };
       if (this.slot !== slot) return; // reassigned during json() — still stale
       // the slot's active transcript changed (fresh claude after a self-heal, or a better
       // pinned file appeared) — start over from the top of the new file
@@ -1008,6 +1012,10 @@ class Pane {
       }
       if (data.model !== undefined && data.model !== this.observedModel) {
         this.observedModel = data.model;
+        if (focused === this.index) renderComposerOpts(false);
+      }
+      if (data.effort !== undefined && data.effort !== this.observedEffort) {
+        this.observedEffort = data.effort;
         if (focused === this.index) renderComposerOpts(false);
       }
       this.chatTotal = data.total;
@@ -3597,7 +3605,7 @@ function renderComposerOpts(force: boolean): void {
   const slot = pane?.slot && (pane.isChat || (sup && !canChatOn(sup))) ? pane.slot : 0;
   const h = slot ? harnessEntry(slot) : null;
   const s = fleet.find((x) => x.id === slot);
-  const key = [slot, h?.id ?? "", s?.model ?? "", s?.effort ?? "", defaultModel ?? "", pane?.observedModel ?? ""].join("|");
+  const key = [slot, h?.id ?? "", s?.model ?? "", s?.effort ?? "", defaultModel ?? "", pane?.observedModel ?? "", pane?.observedEffort ?? ""].join("|");
   if (!force && key === optsKey) return;
   optsKey = key;
   // a pick staged for one session must never be applied to the next one the focus lands on
@@ -3662,11 +3670,15 @@ function renderComposerOpts(force: boolean): void {
   }
   if (h.supports.effort && h.effortLevels.length) {
     const current = s?.effort ?? "";
-    compOpts.appendChild(optSwitch("effort", slot, current, current || "default", [], (stage) => {
+    // the slot record names an effort only when one was picked; otherwise the level the session's
+    // own file shows it running at (eighteenth cut: "default" said nothing), and only when no file
+    // names one does "default" stand — never a level guessed from a config
+    const running = current || pane?.observedEffort || "";
+    compOpts.appendChild(optSwitch("effort", slot, current, running || "default", [], (stage) => {
       const levels = el("div", "cmdlevels");
       for (const lv of h.effortLevels) {
         const b = el("button", "cmdlevel", lv) as HTMLButtonElement;
-        b.classList.toggle("cur", lv === current);
+        b.classList.toggle("cur", lv === running);
         b.classList.toggle("staged", lv === optStaged.effort && lv !== current);
         b.onclick = () => {
           stage(lv);

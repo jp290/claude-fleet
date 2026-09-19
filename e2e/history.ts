@@ -164,6 +164,18 @@ export async function run(): Promise<void> {
           && JSON.stringify(tr3j.entries.map((e) => [e.n, e.role, e.blocks.map((b) => b.text).join("")]))
             === JSON.stringify([[tr1j.total + 1, "user", "a follow-up question"], [tr1j.total + 2, "assistant", "a follow-up answer"]]),
         `total=${tr3j.total} vs ${tr1j.total}+2 entries=${JSON.stringify(tr3j.entries).slice(0, 300)}`);
+      // the composer's effort switch reads the level the newest request ran at from the same line
+      // as its model (Claude Code writes `effort` beside message.model); a model that takes no
+      // effort (Haiku 4.5 writes none) must come back null — "default", never a guessed level
+      const trModelLine = (model: string, effort?: string) => `${JSON.stringify({ type: "assistant", cwd: trCwd,
+        timestamp: new Date(0).toISOString(), ...(effort ? { effort } : {}), message: { model, content: [{ type: "text", text: "x" }] } })}\n`;
+      appendFileSync(`${trProj}/own.jsonl`, trModelLine("claude-opus-5", "xhigh"));
+      const tr4j = (await (await get(`/api/slots/${trFree}/transcript?after=${tr3j.total}`)).json()) as { model?: string | null; effort?: string | null };
+      appendFileSync(`${trProj}/own.jsonl`, trModelLine("claude-haiku-4-5-20251001"));
+      const tr5j = (await (await get(`/api/slots/${trFree}/transcript?after=${tr3j.total}`)).json()) as { model?: string | null; effort?: string | null };
+      check("transcript payload: model and effort come from the newest assistant line; a line without effort gives null, not the previous level",
+        tr4j.model === "claude-opus-5" && tr4j.effort === "xhigh" && tr5j.model === "claude-haiku-4-5-20251001" && tr5j.effort === null,
+        JSON.stringify([tr4j.model, tr4j.effort, tr5j.model, tr5j.effort]));
       await post(`/api/slots/${trFree}/kill`, {});
     }
     rmSync(trProj, { recursive: true, force: true }); // it lives outside the repo — do not leave it
@@ -279,7 +291,8 @@ export async function run(): Promise<void> {
 // small fixture per format, each with its counter-probe: a FOREIGN session in the same cwd, written
 // newer, is not what the slot shows.
 interface ConvPayload { entries: { n: number; role: string; blocks: { t: string; text: string }[] }[];
-  total: number; source: string | null; cache?: { at: number; provider: string } | null; model?: string | null }
+  total: number; source: string | null; cache?: { at: number; provider: string } | null; model?: string | null;
+  effort?: string | null }
 const persistedSlot = (slot: number): { sessionId?: string | null } | undefined =>
   (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
     { slots?: Record<string, { sessionId?: string | null }> }).slots?.[String(slot)];
@@ -316,13 +329,19 @@ async function runForeignConversations(): Promise<void> {
     const msg = (id: string, parentId: string | null, role: string, content: unknown[], extra: Record<string, unknown> = {}) =>
       `${JSON.stringify({ type: "message", id, parentId, timestamp: new Date(T0).toISOString(),
         message: { role, content, timestamp: T0, ...extra } })}\n`;
+    // pi's thinking level is a tree entry too: "low" at the root is on the path, "max" sits on the
+    // abandoned branch and must count only once the leaf moves there
+    const lvl = (id: string, parentId: string | null, thinkingLevel: string) =>
+      `${JSON.stringify({ type: "thinking_level_change", id, parentId, timestamp: new Date(T0).toISOString(), thinkingLevel })}\n`;
     const own = `${dir}/2026-09-19T10-00-00-000Z_${sid}.jsonl`;
     writeFileSync(own, `${JSON.stringify({ type: "session", version: 3, id: sid, timestamp: new Date(T0).toISOString(), cwd: real })}\n`
-      + msg("a", null, "user", [{ type: "text", text: "question A" }])
+      + lvl("t0", null, "low")
+      + msg("a", "t0", "user", [{ type: "text", text: "question A" }])
       + msg("b", "a", "assistant", [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "x" } }], { provider: "zai", timestamp: T0 + 1000 })
       + msg("r", "b", "toolResult", [{ type: "text", text: "file body" }])
       + msg("c", "r", "user", [{ type: "text", text: "ABANDONED branch" }])
-      + msg("d", "c", "assistant", [{ type: "text", text: "ABANDONED answer" }], { provider: "zai", timestamp: T0 + 2000 })
+      + lvl("tx", "c", "max")
+      + msg("d", "tx", "assistant", [{ type: "text", text: "ABANDONED answer" }], { provider: "zai", timestamp: T0 + 2000 })
       + msg("e", "r", "user", [{ type: "text", text: "question E" }])
       + msg("f", "e", "assistant", [{ type: "thinking", thinking: "hmm" }, { type: "text", text: "answer F" }], { provider: "zai", model: "glm-5.3-flash", timestamp: T0 + 3000 }));
     // the counter-probe: a newer foreign session, same cwd, same directory, another id
@@ -339,6 +358,8 @@ async function runForeignConversations(): Promise<void> {
       (p1.source ?? "").startsWith(`2026-09-19T10-00-00-000Z_${sid}.jsonl`) && !JSON.stringify(p1).includes("FOREIGN"), `source=${p1.source}`);
     check("pi conversation: the cache reference is the newest path assistant's request start, provider zai, and its model",
       p1.cache?.at === T0 + 3000 && p1.cache?.provider === "zai" && p1.model === "glm-5.3-flash", JSON.stringify([p1.cache, p1.model]));
+    check("pi conversation: the effort is the newest thinking_level_change ON the path — the abandoned branch's level is not",
+      p1.effort === "low", `effort=${p1.effort}`);
     const p2 = (await (await get(`/api/slots/${piSlot}/transcript?after=${p1.total}`)).json()) as ConvPayload;
     check("pi conversation: an incremental fetch with nothing appended is empty and keeps the source",
       p2.entries.length === 0 && p2.total === p1.total && p2.source === p1.source, JSON.stringify(p2).slice(0, 200));
@@ -349,6 +370,8 @@ async function runForeignConversations(): Promise<void> {
       p3.source !== p1.source && flat(p3).map((e) => e[1]).join("|")
         === "text:question A|tool:{\"path\":\"x\"}|tool_result:file body|text:ABANDONED branch|text:ABANDONED answer|text:back on branch D",
       `${p3.source} ${JSON.stringify(flat(p3))}`);
+    check("pi conversation: after the branch switch the effort is the level set on the new path",
+      p3.effort === "max", `effort=${p3.effort}`);
     await post(`/api/slots/${piSlot}/kill`, {});
     rmSync(dir, { recursive: true, force: true });
   }
@@ -381,7 +404,7 @@ async function runForeignConversations(): Promise<void> {
     const item = (payload: Record<string, unknown>) => `${JSON.stringify({ timestamp: "2026-09-19T12:00:00.000Z", type: "response_item", payload })}\n`;
     writeFileSync(rollout, `${JSON.stringify({ type: "session_meta", payload: {
       id: ID, cwd: codexCwd, timestamp: new Date().toISOString(), thread_source: "user", originator: "codex-tui" } })}\n`
-      + `${JSON.stringify({ timestamp: "2026-09-19T12:00:00.000Z", type: "turn_context", payload: { model: "gpt-5.5" } })}\n`
+      + `${JSON.stringify({ timestamp: "2026-09-19T12:00:00.000Z", type: "turn_context", payload: { model: "gpt-5.5", effort: "xhigh" } })}\n`
       + item({ type: "message", role: "developer", content: [{ type: "input_text", text: "<permissions>DEVELOPER</permissions>" }] })
       + item({ type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions\nINJECTED" }] })
       + item({ type: "message", role: "user", content: [{ type: "input_text", text: "hello codex" }] })
@@ -409,6 +432,7 @@ async function runForeignConversations(): Promise<void> {
         c1.source === rollout.split("/").pop() && !JSON.stringify(c1).includes("FOREIGN"), `source=${c1.source}`);
       check("codex conversation: the cache reference is the newest token_usage_record, provider openai; model from turn_context",
         c1.cache?.at === Date.parse(TU) && c1.cache?.provider === "openai" && c1.model === "gpt-5.5", JSON.stringify([c1.cache, c1.model]));
+      check("codex conversation: the effort is the turn_context's own", c1.effort === "xhigh", `effort=${c1.effort}`);
       rmSync(foreign, { force: true });
     }
     await post(`/api/slots/${cxSlot}/kill`, {});

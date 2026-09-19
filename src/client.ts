@@ -544,9 +544,6 @@ class Pane {
   // conversation view: renders the claude transcript as structured messages —
   // reflows at any width, which the fixed-width pty stream can't
   private readonly chatEl: HTMLElement;
-  // where the ONE composer is moved to while this pane shows the conversation (mountComposer).
-  // A dock rather than an input of its own: the board has exactly one input component.
-  readonly chatDock: HTMLElement;
   private readonly flakes = new Flakes();
   private readonly sizeBtn: HTMLButtonElement;
   private readonly viewBtn: HTMLButtonElement;
@@ -573,9 +570,6 @@ class Pane {
       e.clipboardData.setData("text/plain", md);
       e.preventDefault();
     });
-    // the conversation view's INPUT is the board's one composer, moved in here while this pane
-    // is the focused chat (mountComposer). The dock is an empty landing place, nothing more.
-    this.chatDock = el("div", "chatdock");
     this.sizeBtn = el("button", "chatsizebtn", "Aa") as HTMLButtonElement;
     this.sizeBtn.title = "Schriftgröße — Text, Code, Oberfläche (Strg/⌘ + / − / 0)";
     this.sizeBtn.onclick = (e) => {
@@ -618,7 +612,7 @@ class Pane {
     const navDn = el("button", "promptnav dn", "↓") as HTMLButtonElement;
     navDn.title = "next prompt of yours";
     navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
-    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.chatDock, this.hint, this.jump, this.sizeBtn,
+    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.hint, this.jump, this.sizeBtn,
       this.viewBtn, this.boardBtn, this.reloadBtn, navUp, navDn);
     this.term = new Terminal({
       // 10k, not the 50k this carried from the first commit (f43e3fb1) without ever being
@@ -740,7 +734,7 @@ class Pane {
     this.flakes.setActive(v === "chat");
     if (v !== "chat") sizePanel().classList.remove("open");
     this.syncHarnessAffordances();
-    mountComposer(); // the one composer follows the focused pane into (and out of) the chat view
+    mountComposer(); // the one composer takes the size of the focused pane's view
     clearTimeout(this.chatTimer);
     if (v === "chat") void this.pollChat();
     else this.term.focus();
@@ -1115,9 +1109,6 @@ class Pane {
     // clearing them makes that guard fire and end the loop on a disposed instance
     this.slot = 0;
     this.view = "term";
-    // the one composer may be docked in THIS pane; a dispose that took it out of the document
-    // with the pane would leave the board with no input at all
-    if (this.chatDock.contains(compEl)) barEl.appendChild(compEl);
     this.flakes.dispose();
     this.term.dispose();
     this.root.remove();
@@ -3353,11 +3344,12 @@ applyBoard();
 
 // --- THE ONE COMPOSER ------------------------------------------------------------------------
 // Owner 2026-09-19: the conversation view's input REPLACES the box under the terminal — there is
-// one input component on this board, in two sizes. `bar` is the low strip under a terminal pane;
-// `tall` is the rounded surface of the reference shot, with the model/effort switches above it and
-// the slim tray below. Moving one node is deliberately the whole mechanism: every behaviour hung
-// on #input/#send (history, ↑-recall, chips, ✨ rework, paste-to-upload, Enter-sends) keeps
-// working because it is the same element, wherever it currently hangs.
+// one input component on this board, in two sizes. `bar` is the low form under a terminal pane;
+// `tall` is the rounded surface of the reference shot, with the model/effort switch in its bottom
+// row. Fifth cut (owner: "nur eine Art von EingabeFeld … nach oben hin ausklappend-höher"): the
+// composer has ONE place — #bar, centred at the transcript's column width — in both views. A view
+// switch only toggles the size class; #bar is the last item of the main column, so the extra
+// height pushes the panes up and the bottom edge stays where it is.
 const compEl = $("comp"), compOpts = $("compopts"), compTray = $("comptray"), compFiles = $("compfiles");
 const barEl = $("bar");
 
@@ -3373,17 +3365,11 @@ function growComposer(): void {
   ta.style.height = `${Math.min(compEl.classList.contains("tall") ? 220 : 140, ta.scrollHeight)}px`;
 }
 
-// The composer lives under the terminal until the FOCUSED pane shows a conversation; then it moves
-// into that pane's dock. Only the focused pane can hold it, which is the same rule the composer
-// always had — it has only ever addressed the focused session.
+// The composer follows the FOCUSED pane's view — the pane it has always addressed. It never moves;
+// only its size changes, and #bar goes black with a conversation above it.
 function mountComposer(): void {
   const pane = panes[focused];
-  const host = pane?.isChat ? pane.chatDock : barEl;
-  if (compEl.parentElement !== host) {
-    const active = document.activeElement === ta;
-    host.appendChild(compEl);
-    if (active) ta.focus();
-  }
+  barEl.classList.toggle("chat", !!pane?.isChat);
   setComposerSize(pane?.isChat ? "tall" : "bar");
   renderComposerOpts(false);
 }
@@ -3524,7 +3510,7 @@ function focusPane(index: number) {
   const hint = isMobile() ? "" : " (Enter sends)";
   ta.placeholder = slot ? `Prompt for slot ${slot}…${hint}` : "Prompt… (no session in focused pane)";
   updateTitle();
-  mountComposer(); // the composer addresses the focused pane, so it travels with the focus
+  mountComposer(); // the composer addresses the focused pane, so its size follows the focus
   // a no-op focus must not rebuild the sidebar: the first click of a double-click on a
   // slot label lands here, and rebuilding would replace the element mid-double-click
   if (changed) {

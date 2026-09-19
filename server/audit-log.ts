@@ -64,7 +64,7 @@ type AuditEvent =
   // ↻ refine, the same propose/promote pair one level up: the compiler was asked (task_refine),
   // and the owner either promoted the proposal into new rows or discarded it. The confirm's detail
   // carries the children's ids — the archived original is otherwise the only place they are named
-  | "task_refine" | "task_refine_confirm" | "task_refine_dismiss"
+  | "task_refine" | "task_refine_confirm" | "task_refine_dismiss" | "task_brief_review"
   // W2 · the FILE SURFACE of an existing row, the same propose/promote pair once more: a lane or
   // MAIN parks a proposal (task_files_propose, with the proposing slot), and the owner either
   // confirms a surface onto the row (task_files_confirm) or drops the proposal

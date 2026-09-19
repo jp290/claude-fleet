@@ -26,14 +26,15 @@ import {
 import { makeSimulatorHygiene, simReapArming } from "./simulator-hygiene";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildClarifyBrief } from "./clarify-prompt";
-import { buildRefinePrompt } from "./refine-prompt";
+import { buildRefinePrompt, buildBriefReviewPrompt } from "./refine-prompt";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor,
   type LocalProof, type LocalProofStep } from "./verify-proportion";
 import {
   RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, rulebookBody,
   type RulebookFragment,
 } from "./rulebook";
-import { validateRefineProposal, type RefineValidation } from "./refine-validate";
+import { validateRefineProposal, briefReviewArm, briefReviewEligible, isBriefReviewKind,
+  type RefineValidation } from "./refine-validate";
 import { planContext, planProgramContext, programContextPacksFrom, validateProgramContextPacks, PROGRAM_CONTEXT_PACKS_MAX,
   PROGRAM_CONTEXT_PACK_SOURCES_MAX, type ContextPlan, type ContextPlanInput, type ContextPlanSelection,
   type ProgramContextPack } from "./context-plan";
@@ -138,7 +139,7 @@ import {
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskCard, type TaskCriterion, type TaskFilesProposal,
   type RefineChild, type RefineProposal,
-  type TaskRefine, type LaneForm, type LaneRef, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep,
+  type TaskRefine, type TaskBriefReview, type BriefReviewFinding, type LaneForm, type LaneRef, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
   type PromotionSelfLand, type PromotionPolicy, type PromotionRequest, type ProgramProfileKind, type ProgramProfile,
   type ProgramLineageVia, type ProgramLineageEndedBy, type ProgramLineageEntry, type ProgramLineage,
@@ -2931,6 +2932,7 @@ type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   // `refining` is derived from the in-flight map, never persisted: it is a fact about this
   // process, and a restart mid-run must not leave a row claiming a worker that no longer exists.
   & { refine?: { at: number; unchanged: boolean; count: number }; refining?: true }
+  & { briefReview?: { arm: TaskBriefReview["arm"]; at: number; state?: TaskBriefReview["state"]; findings?: number } }
   // …and for comments: how many and how recent. That is everything the row chip needs and
   // everything the overlay needs to notice a new one; the texts ride GET /api/tasks.
   & { comments?: { n: number; at: number } }
@@ -2973,6 +2975,11 @@ function taskDigest(t: Task): TaskDigest {
     ...(t.refine ? { refine: { at: t.refine.at, unchanged: t.refine.proposal.unchanged,
       count: t.refine.proposal.unchanged ? 0 : t.refine.proposal.tasks.length } } : {}),
     ...(refineInflight.has(t.id) ? { refining: true as const } : {}),
+    // the counter-read's ARM rides the poll (it is the row's place in a trial the board must show),
+    // with its state; findings and the proposed brief ride GET /api/tasks like refine's texts
+    ...(t.briefReview ? { briefReview: { arm: t.briefReview.arm, at: t.briefReview.at,
+      ...(t.briefReview.state ? { state: t.briefReview.state } : {}),
+      ...(t.briefReview.findings ? { findings: t.briefReview.findings.length } : {}) } } : {}),
     ...(t.comments?.length
       ? { comments: { n: t.comments.length, at: t.comments[t.comments.length - 1].ts } } : {}),
     // N3, the two-tier rule again: the poll carries only HOW MANY sources this row names and how
@@ -13566,6 +13573,138 @@ async function runRefineJob(t: Task, repo: string): Promise<void> {
   saveState();
 }
 
+// --- THE COUNTER-READ (Gegenlese) as a measurement trial (docs/brief-gegenlese.md; owner filing
+// 2026-09-14). ↻ refine extended the other way round: a strong model reads a mittel|gross row's
+// brief back against the code before the tick spends a lane on it. The bounds are the analyst's
+// grave (docs/queue-analyst.md §0), each held structurally here rather than by the prompt alone:
+//   · OFF BY DEFAULT — FLEET_BRIEF_REVIEW=1 and nothing else arms it; off, no row grows a field,
+//     no note is written and no start waits (the three reads below all return first).
+//   · NEVER A GATE — the start waits at most BRIEF_REVIEW_WAIT_MS from the review's own start and
+//     then goes ahead WITHOUT it; a failed review holds nothing at all. Nothing reads the findings.
+//   · NEVER AN OVERWRITE — the proposal lives in `briefReview`; `brief` and `text` are not written
+//     here, whoever authored them. Adopting it is the MAIN's act, by the rule in the doc.
+//   · HALF IS CONTROL — every eligible row gets an arm (refine-validate.ts#briefReviewArm), and the
+//     control half is recorded as such, so the evaluation compares two populations of the same
+//     sizes in the same weeks instead of a before and an after.
+// The model is REFINE_MODEL: the register's `urteil` class does not exist yet, and a knob of its own
+// here would be a second place to keep in step once it does.
+const BRIEF_REVIEW_ON = process.env.FLEET_BRIEF_REVIEW === "1";
+const BRIEF_REVIEW_CMD = process.env.FLEET_BRIEF_REVIEW_CMD ?? null; // tests: subprocess stand-in
+// THE NAMED BUDGET: how long a start may wait for its row's review, counted from the review's start.
+// Default 10 min — about what one read of the repository takes the refiner — so that most reviews
+// land before the start and a hung worker costs one row ten minutes, never the queue.
+const BRIEF_REVIEW_WAIT_MS = Math.max(0, Number(process.env.FLEET_BRIEF_REVIEW_WAIT_MS ?? 10 * 60_000) | 0);
+const MAX_BRIEF_REVIEW_FINDINGS = 12;
+// running reviews, by task id — process-local like refineInflight: a restart drops the worker, and
+// normBriefReview turns a persisted `running` into `failed` so no row waits on a worker that is gone
+const briefReviewInflight = new Map<string, Promise<void>>();
+
+// Allocate once and, on the reviewed arm, start the worker. Called by the tick for every row of a
+// wave the plan says could start now; a no-op for everything that already has an arm, is not
+// eligible, or runs with the switch off.
+function briefReviewKick(t: Task): void {
+  if (!BRIEF_REVIEW_ON || t.briefReview || t.kind !== "auftrag") return;
+  const size = taskSizeOf(t);
+  if (!briefReviewEligible(size)) return;
+  const arm = briefReviewArm(t.id);
+  const repo = resolve(expandCwd(t.repo ?? DISPATCH_REPO));
+  t.briefReview = { arm, at: Date.now(), size,
+    ...(arm === "reviewed" ? { state: "running" as const, model: REFINE_MODEL } : {}) };
+  audit("task_brief_review", undefined, `${t.id} arm=${arm} size=${size}`);
+  saveState();
+  if (arm !== "reviewed") return;
+  const job: Promise<void> = runBriefReviewJob(t, repo)
+    .finally(() => { if (briefReviewInflight.get(t.id) === job) briefReviewInflight.delete(t.id); });
+  briefReviewInflight.set(t.id, job);
+}
+
+// How much longer the start of these rows may wait for a review still running — 0 = not at all.
+function briefReviewWaitLeft(rows: Task[], now: number): number {
+  if (!BRIEF_REVIEW_ON) return 0;
+  let left = 0;
+  for (const r of rows) {
+    const b = r.briefReview;
+    if (b?.arm === "reviewed" && b.state === "running") left = Math.max(left, b.at + BRIEF_REVIEW_WAIT_MS - now);
+  }
+  return left;
+}
+
+// The wait sits in tickDispatch directly before the free-slot grab — the kick sits higher, right
+// after the plan's own verdict, so the review runs while the caps still hold the wave and the budget
+// is spent on waiting that happens anyway. The wait SKIPS like every per-row hold there: one row
+// under review must not hold the queue behind it.
+const briefReviewWaitNote = (leftMs: number): string =>
+  `waiting: brief review running — starts without it in ≤ ${Math.ceil(leftMs / 1000)} s (FLEET_BRIEF_REVIEW_WAIT_MS)`;
+
+// The counter-read's one fact about the START, stamped when the tick has handed the wave to a lane:
+// whether the review had landed. "Reviewed" and "reviewed, but the budget ran out first" are
+// different populations for the evaluation. Returns how many rows it stamped.
+function briefReviewStampStart(rows: Task[]): number {
+  let n = 0;
+  for (const row of rows) {
+    const b = row.briefReview;
+    if (b?.arm === "reviewed" && b.state && !b.atStart) { row.briefReview = { ...b, atStart: b.state }; n++; }
+  }
+  return n;
+}
+
+// the answer, parsed or thrown — the same fail-closed direction as parseRefineAnswer
+function parseBriefReviewAnswer(out: string): { findings: BriefReviewFinding[]; brief: string } {
+  const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+  let j: { findings?: unknown; brief?: unknown };
+  try {
+    j = JSON.parse(body) as typeof j;
+  } catch {
+    const obj = extractJsonObject(out);
+    if (!obj) throw new Error("reviewer returned no JSON");
+    j = JSON.parse(obj) as typeof j;
+  }
+  if (!Array.isArray(j.findings)) throw new Error("reviewer returned no findings array");
+  return { findings: normBriefReviewFindings(j.findings), brief: clampStr(j.brief, MAX_TASK_TEXT) };
+}
+// an unknown kind is DROPPED, never mapped onto a known one: the evaluation counts findings per kind
+function normBriefReviewFindings(raw: unknown[]): BriefReviewFinding[] {
+  return (raw as { kind?: unknown; text?: unknown; evidence?: unknown }[])
+    .filter((f) => isBriefReviewKind(f?.kind) && clampStr(f?.text, MAX_REFINE_FIELD))
+    .map((f) => ({ kind: f.kind as BriefReviewFinding["kind"], text: clampStr(f.text, MAX_REFINE_FIELD),
+      evidence: clampStr(f.evidence, MAX_REFINE_FIELD) }))
+    .slice(0, MAX_BRIEF_REVIEW_FINDINGS);
+}
+
+// The review reads the bytes the lane would receive (the compiled/owner brief, else the text) and
+// writes ONLY its own record — on success and on failure alike.
+async function runBriefReviewJob(t: Task, repo: string): Promise<void> {
+  try {
+    const out = await runWorker({ worker: "refine", cmd: BRIEF_REVIEW_CMD, tools: REVIEW_TOOLS, model: REFINE_MODEL },
+      buildBriefReviewPrompt(repo, t.brief?.text ?? t.text), repo);
+    const answer = parseBriefReviewAnswer(out);
+    if (t.briefReview) t.briefReview = { ...t.briefReview, state: "done", doneAt: Date.now(), ...answer };
+  } catch (e) {
+    if (t.briefReview) t.briefReview = { ...t.briefReview, state: "failed", doneAt: Date.now(),
+      error: `${e instanceof Error ? e.message : e}`.slice(0, 200) };
+  }
+  saveState();
+}
+
+// off disk: a malformed record degrades to ABSENT (the row then simply never had an arm), and a
+// `running` one to `failed` — its worker died with the process that started it
+function normBriefReview(r: TaskBriefReview | undefined): TaskBriefReview | undefined {
+  if (!r || (r.arm !== "reviewed" && r.arm !== "control") || (r.size !== "mittel" && r.size !== "gross")) return undefined;
+  const at = Number(r.at) || 0;
+  if (r.arm === "control") return { arm: "control", at, size: r.size,
+    ...(r.atStart ? { atStart: r.atStart } : {}) };
+  const state = r.state === "done" ? "done" : "failed";
+  const states = ["running", "done", "failed"] as const;
+  return { arm: "reviewed", at, size: r.size, state,
+    model: typeof r.model === "string" ? r.model : "",
+    ...(Number(r.doneAt) ? { doneAt: Number(r.doneAt) } : {}),
+    ...(r.state === "running" ? { error: "server restarted while the review ran" }
+      : typeof r.error === "string" && r.error ? { error: r.error.slice(0, 200) } : {}),
+    ...(state === "done" ? { findings: normBriefReviewFindings(Array.isArray(r.findings) ? r.findings : []),
+      brief: clampStr(r.brief, MAX_TASK_TEXT) } : {}),
+    ...(states.includes(r.atStart as typeof states[number]) ? { atStart: r.atStart } : {}) };
+}
+
 // idle-lane dispatcher: when ON and a lane budget is free, pull the oldest task the OWNER released,
 // spawn a fresh worktree lane from DISPATCH_REPO, and send its brief once claude is actually up.
 // Serial by design — one lane per tick — so a burst of releases can never fan out into a machine
@@ -14397,6 +14536,7 @@ async function tickDispatch(): Promise<void> {
         waiting(startPlanWaitNote(plan.next));
         continue;
       }
+      for (const row of rows) briefReviewKick(row); // the counter-read starts here (briefReviewKick)
       // count lanes in the task's TARGET repo: the cap bounds unattended fan-out per project —
       // a hand-driven lane in an unrelated repo used to eat the budget and stall the queue
       // with no signal.
@@ -14458,6 +14598,8 @@ async function tickDispatch(): Promise<void> {
       // SKIPS like every per-row hold above, so each held row carries the reason on itself.
       const reserved = variantReserveHolds(next, repo);
       if (reserved) { waiting(variantReserveNote(reserved)); continue; }
+      const reviewLeft = briefReviewWaitLeft(rows, Date.now()); // …and is waited for here, bounded
+      if (reviewLeft > 0) { waiting(briefReviewWaitNote(reviewLeft)); continue; }
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) { waiting("waiting: no free slot"); return; }
       // THE UNATTENDED INVARIANT STOOD HERE, and it is gone with the reader that satisfied it.
@@ -14531,7 +14673,8 @@ async function tickDispatch(): Promise<void> {
         const hints = v?.released ? v.hints : [];
         row.note = `${row.note ?? ""} · started by policy ${programReleasePolicy(row)}${hints.length ? ` — hint: ${hints.join("; ")}` : ""}`.slice(0, 500);
       }
-      if (r.ok && byPolicy.length) saveState();
+      const stamped = r.ok ? briefReviewStampStart(rows) : 0;
+      if (r.ok && (byPolicy.length || stamped)) saveState();
       if (r.ok) await r.tail;
       return; // serial by design — one lane per tick, whichever wave got past every gate
     }
@@ -30146,6 +30289,7 @@ if (existsSync(STATE_FILE)) {
           ref: typeof t.ref === "string" && STEWARD_REF_RE.test(t.ref) ? t.ref : undefined,
           // a malformed proposal degrades to "none proposed": confirming one mints new task rows
           refine: normRefine(t.refine),
+          briefReview: normBriefReview(t.briefReview),
           // comments carry no authority, so a malformed entry is dropped. Capped on the way back
           // IN: a hand-edit must not widen a field past what the route would have accepted.
           comments: Array.isArray(t.comments)

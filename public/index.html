@@ -644,7 +644,7 @@
   .qprogsel:focus { outline: none; border-color: var(--focus); }
   .qbundlebtn { margin-left: auto; }
   /* L2: the scope tree, a column of its own left of the list */
-  .qtree { flex: none; width: 210px; overflow-y: auto; padding: 8px 6px; border-right: 1px solid var(--line-soft);
+  .qtree { flex: none; width: 210px; overflow-y: auto; padding: 8px 4px; border-right: 1px solid var(--line-soft);
     display: flex; flex-direction: column; gap: 1px; }
   .qtree[hidden] { display: none; }
   .qtreen { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 28px; padding: 0 8px;
@@ -698,7 +698,7 @@
   .qdfind { font-size: 12px; line-height: 1.5; margin: -4px 0 10px; padding: 0 2px; white-space: pre-wrap;
     word-break: break-word; }
   .qdfind.err { color: var(--del); } .qdfind.unk { color: var(--amber); }
-  .qdsection { display: block; border-top: 1px solid var(--line-soft); padding: 13px 0 2px; }
+  .qdsection { display: block; border-top: 1px solid var(--line-soft); padding: 12px 0 4px; }
   .qdsection-title { color: var(--dim); font-size: 10.5px; font-weight: 700; letter-spacing: .07em;
     text-transform: uppercase; margin-bottom: 8px; }
   details.qdsection > summary.qdsection-title { cursor: pointer; user-select: none; }
@@ -711,7 +711,7 @@
      shell is min(880px, 92vh) = 828px high and the head has to fit the detail pane's first
      screen. Change a number here and that check recomputes; delete one and it fails as itself. */
   /* the detail's title block: the row's own words first, its chips, its id */
-  .qdtitle { padding-bottom: 10px; margin-bottom: 8px; border-bottom: 1px solid var(--line-soft); }
+  .qdtitle { padding-bottom: 12px; margin-bottom: 8px; border-bottom: 1px solid var(--line-soft); }
   .qdtitle-t { font-size: 15px; line-height: 21px; color: #e6e6e6; font-weight: 600; }
   .qdtitle .qchips { display: flex; flex-wrap: wrap; gap: 3px 4px; margin-top: 6px; align-items: center; }
   .qdtitle-id { font-size: 10px; color: var(--faint); margin-left: 4px; }
@@ -720,7 +720,7 @@
   .qdhead-facts .occhip { line-height: 15px; }
   /* pending → queued → sent → landed/done. `past` is walked, `on` is where the row stands, and
      `end` is a state that is not on the rail at all (archived, advisory, unknown). */
-  .qlife { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+  .qlife { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
   .qlife-st { flex: none; font-size: 10.5px; line-height: 18px; padding: 0 8px; border-radius: 20px;
     background: #1c1c1c; border: 1px solid #2e2e2e; color: #6a6a6a; }
   .qlife-st.past { color: #9aa7c7; }
@@ -728,20 +728,20 @@
   .qlife-st.end { color: var(--amber); border-color: #3a3020; background: #241f18; }
   /* the one action, and the one line that says what it does. Empty when the row has nothing to
      decide — a closed row and a `sent` row with no attachable lane both say so in .qdmain-why. */
-  .qdmain { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 11px; }
+  .qdmain { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   .qdmain:empty { display: none; }
   .qdmain .shrbtn { line-height: 18px; }
-  .qdmain-why { font-size: 11.5px; line-height: 17px; color: var(--faint); margin: 7px 0 2px; }
+  .qdmain-why { font-size: 11.5px; line-height: 16px; color: var(--faint); margin: 8px 0 4px; }
   /* D2: the reading column and the rail. The rail is sticky inside the scrolling .shelldetail, so
      status, the one action and the options stay beside whatever part of the row is being read. */
   .qd2 { display: grid; grid-template-columns: minmax(0, 1fr) 260px; grid-template-rows: auto 1fr;
-    grid-template-areas: "title rail" "read rail"; column-gap: 20px; align-items: start; }
+    grid-template-areas: "title rail" "read rail"; column-gap: 16px; align-items: start; }
   .qd2 > .qdtitle { grid-area: title; }
   .qdread { grid-area: read; min-width: 0; }
-  .qdrail { grid-area: rail; position: sticky; top: 0; min-width: 0; border-left: 1px solid var(--line-soft); padding-left: 14px; }
+  .qdrail { grid-area: rail; position: sticky; top: 0; min-width: 0; border-left: 1px solid var(--line-soft); padding-left: 16px; }
   .qdrail-h { color: var(--dim); font-size: 10.5px; line-height: 14px; font-weight: 700; letter-spacing: .07em;
-    text-transform: uppercase; margin: 16px 0 6px; }
-  .qdrail-h:first-child { margin: 2px 0 6px; }
+    text-transform: uppercase; margin: 16px 0 8px; }
+  .qdrail-h:first-child { margin: 4px 0 8px; }
   .qdrail .qdmain { flex-direction: column; align-items: stretch; }
   .qdrail .qrelease { flex-direction: column; align-items: stretch; }
   .qdrail .qreleasenote { flex: none; }
@@ -772,7 +772,7 @@
   .shellrow .qrowhead .shrname { flex: 1; min-width: 0; }
   .shellrow .qage { flex: none; font-size: 10px; color: var(--faint); }
   .shellrow .qchips { display: flex; flex-wrap: wrap; gap: 3px 4px; margin-top: 3px; }
-  .qchip { font-size: 10px; line-height: 15px; padding: 0 6px; border-radius: 4px; white-space: nowrap;
+  .qchip { font-size: 10px; line-height: 16px; padding: 0 8px; border-radius: var(--r1); white-space: nowrap;
     color: #9aa0a6; background: #242424; border: 1px solid #2e2e2e; max-width: 100%; overflow: hidden;
     text-overflow: ellipsis; }
   .qchip.qc-run { color: #cdeaa8; background: #1e2a17; border-color: #34502a; }
@@ -991,17 +991,15 @@
   #shell-queue .shellrow.sel .shrname { color: var(--chat-ink); }
   #shell-queue .shellrow .shrsub, #shell-queue .shellrow.sel .shrsub,
   #shell-queue .shellrow .qage { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
-  #shell-queue .shellrow.q-pending { border-left-color: var(--chat-edge); }
-  #shell-queue .shellrow.q-queued { border-left-color: var(--chat-mute); }
-  #shell-queue .shellrow.q-sent, #shell-queue .shellrow.q-running { border-left-color: var(--chat-ink); }
-  #shell-queue .shellrow.q-done { border-left-color: var(--chat-edge-soft); }
-  #shell-queue .shellrow.q-held { border-left-color: var(--chat-faint); }
-  #shell-queue .shellrow.q-held .shrname { color: var(--chat-mute); }
-  #shell-queue .shellrow.q-obs { border-left: 3px dotted var(--chat-faint); }
-  #shell-queue .shellrow.q-obs .shrname { color: var(--chat-mute); }
+  /* THE BRACKETS ARE GONE (owner, 2026-09-19: "ich hoffe die klammern links an den kästen werden
+     auch noch ersetzt"). The 3px stripe said pending/queued/sent/held/flag in five hues — and the
+     SECTION above the row already says all five. What the row itself still owes the eye is its
+     own state: held and advisory read dimmer, a flagged row is the one that is broken. */
+  #shell-queue .shellrow { border-left: 0; }
+  #shell-queue .shellrow.q-done { opacity: 0.55; }
+  #shell-queue .shellrow.q-held .shrname, #shell-queue .shellrow.q-obs .shrname { color: var(--chat-mute); }
   #shell-queue .shellrow.qchild .shrname { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
-  /* a FLAG is the one state that is broken rather than merely early — the single hue left in the list */
-  #shell-queue .shellrow.q-flag { border-left-color: var(--danger); }
+  #shell-queue .shellrow.q-flag .shrname { color: var(--danger); }
   #shell-queue .shellrow.q-marked { background: var(--c-hover); box-shadow: inset 0 0 0 1px var(--c-edge-hi); }
   #shell-queue .shellrow.q-marked:hover { background: var(--chat-raised); }
   #shell-queue .shellsect { color: var(--chat-faint); font-size: var(--chat-ui-fs); font-weight: 500; }
@@ -1080,6 +1078,21 @@
   #shell-queue .qsuggest, #shell-queue .qselbar, #shell-queue .qwavehint { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
   #shell-queue .qrawack { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
   #shell-queue .qrawack input { accent-color: var(--chat-mute); }
+  /* THE 4/8/12/16 GRID on the shared chrome, scoped so the other three shells keep their rhythm.
+     The fold budget in e2e/tasks.ts reads THESE rules, not the base ones — a probe that measured
+     the window it is not looking at would be worse than no budget. */
+  #shell-queue .shellhead { padding: 12px 16px; gap: 8px; }
+  #shell-queue .shelltools { padding: 8px 16px; gap: 8px; }
+  #shell-queue .shellfoot { padding: 8px 16px; }
+  #shell-queue .shelldetail { padding: 12px 16px; }
+  #shell-queue .shellrow { padding: 8px 12px; gap: 8px; }
+  #shell-queue .shellsec { padding: 12px 8px 4px; gap: 8px; }
+  #shell-queue .shrbtn { padding: 8px 12px; }
+  #shell-queue .pkdacts { gap: 8px; margin-bottom: 12px; }
+  #shell-queue .shellclose { border-radius: var(--r1); background: var(--chat-raised);
+    border-color: var(--chat-edge); color: var(--chat-mute); }
+  #shell-queue .shellclose:hover { color: var(--chat-ink); }
+  #shell-queue .qdsection-body > .rvhead:not(:first-child) { margin-top: 16px; }
   /* BUNDLE MODE was the loudest colour on the surface — a violet bar, a violet button and violet
      rows. Marking is a state, not an alarm: the bar is the raised surface, the act reads in ink. */
   #shell-queue .qselbar { background: var(--chat-raised); border-color: var(--chat-edge); font-size: var(--chat-ui-fs); }

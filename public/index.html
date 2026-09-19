@@ -516,6 +516,21 @@
   /* a staged value shows on the switch itself, underlined until it is applied or discarded */
   .optswrap.staged .optval { color: var(--chat-ink); text-decoration: underline dotted; text-underline-offset: 3px; }
   .optmark { flex: none; display: grid; margin-right: 4px; color: var(--chat-mute); }
+  /* time since the session's last message (src/client.ts#tickCacheAge): quiet mute under 5 min,
+     faint + dashed underline once the prompt cache is probably cold — the tooltip says why */
+  .optage { flex: none; margin-right: 4px; padding: 0 4px; font: 400 12px var(--chat-sans);
+    font-variant-numeric: tabular-nums; color: var(--chat-mute); cursor: default;
+    transition: color var(--t); }
+  .optage.cold { color: var(--chat-faint); text-decoration: underline dashed; text-underline-offset: 3px; }
+  /* the model switch's question, in the popover's own material (twelfth cut) */
+  .optconfirm { display: grid; gap: 8px; width: 300px; font: 400 13px/1.45 var(--chat-sans); color: var(--chat-prose); }
+  .cfage { font-size: 12px; color: var(--chat-mute); }
+  .cfacts { display: flex; align-items: center; gap: 4px; }
+  .cfskip { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--chat-mute); cursor: pointer; }
+  .cfskip input { margin: 0; accent-color: var(--chat-ink); }
+  .cmdcancel { height: 28px; padding: 0 12px; border: 0; border-radius: var(--r2); background: transparent;
+    color: var(--chat-mute); font: 500 12px var(--chat-sans); cursor: pointer; transition: color var(--t), background-color var(--t); }
+  .cmdcancel:hover { color: var(--chat-ink); background: var(--c-hover); }
   /* the harness marks are the CLIs' own signs (src/icons.ts#harnessMark), each in its own colour */
   .optmark .mark.clawd { display: block; width: auto; height: 12px; }
   .optmark .mark.codexmark, .optmark .mark.pimark { font: 700 12px/1 var(--chat-mono); }

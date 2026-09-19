@@ -6,15 +6,22 @@ import { contextWindowFor } from "./protocol";
 // be worse than the id.
 //
 // Eleventh cut (owner: the window behind EVERY model): the number is the window of THIS id, never
-// of its family. First protocol.ts#contextWindowFor — the table the server divides the ctx chip by,
-// so the label and the chip cannot disagree; it gives a bare claude-opus-5 its 200K, because
-// Claude Code grants 1M only to the [1m] spelling ("append [1m] to the model name for 1M", a string
-// in the installed 2.1.278 binary). Then the rows below, for ids that table does not name, each with
-// its ground. GPT ids never take contextWindowFor's 258,400 — that is the USABLE share of the window
-// (95 %) and matches every gpt-* by shape; a label shows the model's nominal window, and only for a
-// slug Codex's own catalogue lists. No row, no number.
+// of its family, and only where a source names it. Twelfth cut: the claude rows come from Claude
+// Code's OWN model registry in the installed 2.1.278 binary, which carries per model
+//   claude-opus-5 · claude-sonnet-5 · claude-fable-5-1   context:{window:1e6,native_1m:!0,…}
+//   claude-haiku-4-5-20251001                            context:{window:200000,…}
+// and its resolver (EF) returns 1e6 for a native_1m model on the first-party API WITHOUT any [1m]
+// suffix. It falls back to 200000 only when the account's longContext1mCreditsBlocked latch is set
+// or CLAUDE_CODE_DISABLE_1M_CONTEXT is — neither is anything this board can see, so the label
+// names the model's window, not a session's runtime state. (The eleventh cut showed 200K for the
+// bare ids, read off protocol.ts#contextWindowFor; that row is contradicted by this registry.)
+// Then protocol.ts#contextWindowFor for everything else it names. GPT ids never take its 258,400 —
+// that is the USABLE share (95 %) and matches every gpt-* by shape; a label shows the nominal
+// window, and only for a slug Codex's own catalogue lists. No row, no number.
 const DISPLAY_WINDOWS: Readonly<Record<string, number>> = {
-  // claude-api skill model table (cached 2026-06-24): Haiku 4.5 = 200K, and it has no 1M variant
+  "claude-opus-5": 1_000_000,
+  "claude-sonnet-5": 1_000_000,
+  "claude-fable-5-1": 1_000_000,
   "claude-haiku-4-5-20251001": 200_000,
   // server.ts#PI_ZAI_HARNESS injects contextWindow 1000000 for it; pi-ai's zai.json says the same
   "glm-5.3-flash": 1_000_000,

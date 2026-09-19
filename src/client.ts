@@ -6,6 +6,7 @@ import qrcode from "qrcode-generator";
 import { mdInto, type MdEntityKind } from "./md";
 import { selectionMarkdown } from "./mdcopy";
 import { Flakes } from "./flakes";
+import { icon, type IconName } from "./icons";
 import { attachEntityCards, type EntFacts } from "./entcard";
 import { loadChatSizes, sizePanel, stepChatSizes } from "./chatsize";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
@@ -3444,7 +3445,7 @@ function optSwitch(values: [string, string][], fill: (pop: HTMLElement, say: (m:
   const btn = el("button", "optsw") as HTMLButtonElement;
   btn.title = "model and effort for this session";
   for (const [cls, v] of values) btn.appendChild(el("span", cls, v));
-  btn.appendChild(el("span", "optchev", "⌄"));
+  btn.appendChild(el("span", "optchev")).appendChild(icon("chevron"));
   const pop = el("div", "optpop");
   const status = el("div", "cmdstatus", optsMsg);
   const say = (m: string) => { optsMsg = m; status.textContent = m; };
@@ -3481,25 +3482,29 @@ compOpts.addEventListener("keydown", (e) => {
 
 // --- the tray under the surface. ENTRIES ARE DATA: a later one is a row here, not a rebuild.
 // Every entry is an existing function of this board that used to own an icon button of its own.
-const TRAY: { id: string; label: string; icon: string; btn?: HTMLButtonElement; run?: () => void }[] = [
-  { id: "files", label: "Files", icon: "🗂", run: () => dropFile.click() },
-  { id: "histbtn", label: "History", icon: "🕘" },
-  { id: "autobtn", label: "Schedule", icon: "⏱" },
-  { id: "enhbtn", label: "Rework", icon: "✨" },
-  { id: "live", label: "Live", icon: "⌨" },
+const TRAY: { id: string; label: string; icon: IconName; run?: () => void }[] = [
+  { id: "files", label: "Files", icon: "folder", run: () => dropFile.click() },
+  { id: "histbtn", label: "History", icon: "history" },
+  { id: "autobtn", label: "Schedule", icon: "clock" },
+  { id: "enhbtn", label: "Rework", icon: "spark" },
+  { id: "live", label: "Live", icon: "keys" },
 ];
 function buildTray(): void {
   for (const entry of TRAY) {
     if (entry.run) {
       const b = el("button", "") as HTMLButtonElement;
       b.title = "attach files to this session";
-      b.append(el("span", "tricon", entry.icon), el("span", "trlabel", entry.label));
+      b.append(el("span", "tricon"), el("span", "trlabel", entry.label));
       b.onclick = entry.run;
       compTray.appendChild(b);
-      continue;
+    } else {
+      compTray.appendChild($(entry.id)); // the element keeps its id, its title and its wiring
     }
-    compTray.appendChild($(entry.id)); // the element keeps its id, its title and its wiring
+    // one icon language: the emoji the markup carries are replaced by the board's SVG grammar
+    compTray.lastElementChild?.querySelector(".tricon")?.replaceChildren(icon(entry.icon));
   }
+  dropBtn.querySelector(".tricon")?.replaceChildren(icon("plus"));
+  send.replaceChildren(icon("send"));
 }
 
 function focusPane(index: number) {
@@ -12168,9 +12173,10 @@ function toast(msg: string) {
 }
 
 // --- compose box: Enter sends (bracketed paste + Enter server-side), Shift+Enter = newline ---
+// the refused/failed state belongs to the whole surface, not one colour on one button
 function flashSendError() {
-  send.style.background = "var(--danger)";
-  setTimeout(() => { send.style.background = ""; }, 1200);
+  compEl.classList.add("err");
+  setTimeout(() => { compEl.classList.remove("err"); }, 1200);
 }
 // ONE delivery path for every composer on this board (the terminal's box below the pane, and the
 // conversation view's own bar): same POST /send, same 409 reading, same failure sentence. The
@@ -12299,7 +12305,9 @@ enhBtn.onclick = async () => {
   if (!text || enhBtn.disabled) return;
   const slot = panes[focused]?.slot ?? 0;
   enhBtn.disabled = true;
-  enhBtn.textContent = "…";
+  // only the LABEL changes — replacing the button's text would take the tray icon with it
+  const enhLabel = enhBtn.querySelector(".trlabel");
+  if (enhLabel) enhLabel.textContent = "Reworking…";
   const slowNotice = setTimeout(() => {
     enhBtn.title = "✨ still working — this can take up to 3 min, not stuck";
   }, 20_000);
@@ -12320,12 +12328,12 @@ enhBtn.onclick = async () => {
       ta.focus();
     }
   } catch {
-    enhBtn.style.borderColor = "var(--danger)";
-    setTimeout(() => { enhBtn.style.borderColor = ""; }, 1500);
+    enhBtn.classList.add("err");
+    setTimeout(() => { enhBtn.classList.remove("err"); }, 1500);
   } finally {
     clearTimeout(slowNotice);
     enhBtn.disabled = false;
-    enhBtn.textContent = "✨";
+    if (enhLabel) enhLabel.textContent = "Rework";
     enhBtn.title = enhTitle;
   }
 };
@@ -12341,8 +12349,6 @@ enhBtn.onclick = async () => {
 // prompt around it. The wording of that line comes from the SERVER (dropMention), so the mention
 // format is decided in one place rather than re-guessed here.
 const dropBtn = $("dropbtn") as HTMLButtonElement;
-// the + keeps its own icon span so a busy state can replace the glyph without eating the button
-const dropIcon = dropBtn.querySelector<HTMLElement>(".tricon") ?? dropBtn;
 const dropFile = $("dropfile") as HTMLInputElement;
 const dropLay = $("droplay");
 const mainEl = $("main");
@@ -12357,9 +12363,10 @@ function renderAttachments(): void {
   compFiles.replaceChildren(...attached.map((a, i) => {
     const box = el("div", "att");
     box.title = a.mention;
-    box.appendChild(el("span", "attico", /\.(png|jpe?g|gif|webp|svg|heic|avif)$/i.test(a.name) ? "🖼" : "📄"));
+    box.appendChild(el("span", "attico")).appendChild(icon(/\.(png|jpe?g|gif|webp|svg|heic|avif)$/i.test(a.name) ? "image" : "file"));
     box.appendChild(el("span", "attname", a.name));
-    const x = el("button", "attx", "✕") as HTMLButtonElement;
+    const x = el("button", "attx") as HTMLButtonElement;
+    x.appendChild(icon("x"));
     x.title = `remove ${a.name} from this prompt`;
     x.onclick = () => { attached.splice(i, 1); renderAttachments(); ta.focus(); };
     box.appendChild(x);
@@ -12373,8 +12380,7 @@ async function uploadDrops(files: File[]): Promise<void> {
   if (!files.length) return;
   const slot = panes[focused]?.slot;
   if (!slot) { toast("no session focused — pick one first"); return; }
-  dropBtn.disabled = true;
-  dropIcon.textContent = "…";
+  dropBtn.disabled = true; // the busy state is the disabled style — the icon stays
   try {
     // sequential, not Promise.all: the mentions are appended to a shared box in the order the
     // owner picked the files, and the cap is per file — a parallel burst would only make a
@@ -12396,7 +12402,6 @@ async function uploadDrops(files: File[]): Promise<void> {
     ta.focus();
   } finally {
     dropBtn.disabled = false;
-    dropIcon.textContent = "+";
   }
 }
 

@@ -12561,17 +12561,20 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
           card: row.card?.valid ? row.card : null,
           // S3: the owner's words on the row reach the lane — as wave-brief.ts's own capped block
           // BEHIND the row's brief, never folded into the released brief bytes
-          comments: row.comments })),
+          comments: row.comments, review: briefReviewForLane(row) })),
         sharedFiles: wave.sharedFiles, klasse: wave.klasse, units: wave.units, budget: LAND_WAVE_BUDGET,
         baseUrl: `http://${HOST}:${PORT}` })
       // a VALID card goes in front of the prose as a KARTE head; an absent or invalid one leaves
       // the bytes exactly as they were, which is what keeps briefSourceOf's "card" honest. The
       // row's comments ride BEHIND that prose as their own capped block (S3, wave-brief.ts) —
       // absent entirely when the row has none, so a commentless delivery stays byte-identical.
-      : withCardHead(src.card?.valid ? src.card : null, src.brief?.text ?? src.text, src.comments);
+      : withCardHead(src.card?.valid ? src.card : null, src.brief?.text ?? src.text, src.comments, briefReviewForLane(src));
   // read HERE, at the same moment the bytes are chosen — not at receipt time. The row is mutable
   // and a later reader cannot tell whether an edit came before or after this delivery.
   const briefSource = briefSourceOf(src, clarify);
+  // …and the counter-read's `atStart` is stamped at this same moment, so it says exactly whether the
+  // findings block above was in the bytes (briefReviewForLane reads the same state)
+  if (!clarify && briefReviewStampStart(sourceRows)) saveState();
   // let claude finish booting in the fresh pane before the first prompt lands
   await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
   // A post-spawn hold is TRANSIENT — retry-shaped, so the row goes back to `queued` and the
@@ -13636,8 +13639,9 @@ function briefReviewWaitLeft(rows: Task[], now: number): number {
 const briefReviewWaitNote = (leftMs: number): string =>
   `waiting: brief review running — starts without it in ≤ ${Math.ceil(leftMs / 1000)} s (FLEET_BRIEF_REVIEW_WAIT_MS)`;
 
-// The counter-read's one fact about the START, stamped when the tick has handed the wave to a lane:
-// whether the review had landed. "Reviewed" and "reviewed, but the budget ran out first" are
+// The counter-read's one fact about the START, stamped in briefAndSend when the founding bytes are
+// chosen (any door — tick or attended): whether the review had landed, i.e. whether its findings
+// block rode along. "Reviewed" and "reviewed, but the budget ran out first" are
 // different populations for the evaluation. Returns how many rows it stamped.
 function briefReviewStampStart(rows: Task[]): number {
   let n = 0;
@@ -13684,6 +13688,15 @@ async function runBriefReviewJob(t: Task, repo: string): Promise<void> {
       error: `${e instanceof Error ? e.message : e}`.slice(0, 200) };
   }
   saveState();
+}
+
+// WHAT THE LANE GETS of the counter-read (MAIN decision (b), 2026-09-19): the findings of a review
+// that LANDED on the reviewed arm, rendered by wave-brief.ts#renderBriefReviewBlock behind the
+// byte-identical brief. Undefined for control, for a review still running or failed, and with the
+// switch off — the renderer then emits nothing and the founding bytes are the old bytes.
+function briefReviewForLane(t: Task): BriefReviewFinding[] | undefined {
+  const b = t.briefReview;
+  return b?.arm === "reviewed" && b.state === "done" && b.findings?.length ? b.findings : undefined;
 }
 
 // off disk: a malformed record degrades to ABSENT (the row then simply never had an arm), and a
@@ -14673,8 +14686,7 @@ async function tickDispatch(): Promise<void> {
         const hints = v?.released ? v.hints : [];
         row.note = `${row.note ?? ""} · started by policy ${programReleasePolicy(row)}${hints.length ? ` — hint: ${hints.join("; ")}` : ""}`.slice(0, 500);
       }
-      const stamped = r.ok ? briefReviewStampStart(rows) : 0;
-      if (r.ok && (byPolicy.length || stamped)) saveState();
+      if (r.ok && byPolicy.length) saveState();
       if (r.ok) await r.tail;
       return; // serial by design — one lane per tick, whichever wave got past every gate
     }

@@ -10,7 +10,7 @@ import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt, buildBriefReviewPrompt } from "../refine-prompt";
 import { briefReviewArm } from "../refine-validate";
 import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY, CARD_VALIDATOR_VERSION } from "../card-extract";
-import { renderWaveBrief, renderCardHead, renderRowComments, CARD_HEAD_MAX_BYTES, ROW_COMMENTS_MAX_BYTES } from "../wave-brief";
+import { renderWaveBrief, renderCardHead, renderRowComments, CARD_HEAD_MAX_BYTES, ROW_COMMENTS_MAX_BYTES, BRIEF_REVIEW_MARK } from "../wave-brief";
 import { LOCAL_PROOF_STEPS } from "../verify-proportion";
 import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, topLevelDeclarations,
   type SymbolIndex, type TaskCluster } from "../task-metadata";
@@ -7615,6 +7615,19 @@ export async function run(ctx: Ctx): Promise<void> {
       return { row, at: Date.now(), notes };
     };
     const bAll: string[] = [];
+    // THE FOUNDING BYTES the lane actually received, read off the prompt log by a needle only that
+    // row's brief carries. `atStart` is stamped at the same moment those bytes are chosen, so every
+    // read of it below waits for this first — reading it at `sent` would race the boot grace.
+    const bFounding = async (needle: string): Promise<string> => {
+      for (let i = 0; i < 80; i++) {
+        const ps = ((await (await get(`/api/prompts?limit=20&q=${encodeURIComponent(needle)}`)).json()) as
+          { prompts: { source?: string; text?: string }[] }).prompts;
+        const hit = ps.find((p) => p.source === "auto" && (p.text ?? "").includes(needle));
+        if (hit?.text) return hit.text;
+        await Bun.sleep(250);
+      }
+      return "";
+    };
 
     // the pure allocation first: same id → same arm, and both arms occur over a spread of ids
     const bIds = Array.from({ length: 32 }, (_, i) => `probe${i.toString(16)}x${(i * 7919).toString(36)}`);
@@ -7636,12 +7649,14 @@ export async function run(ctx: Ctx): Promise<void> {
     await post("/api/dispatch", { on: true });
     await post(`/api/tasks/${bOff}/queue`, {});
     const bOffRun = await bSent(bOff);
+    const bOffBytes = await bFounding("(br)(a) switch off");
     const bOffFull = await bFull(bOff);
     const bOffAudit = ((await (await get("/api/audit?limit=200")).json()) as { events: { event?: string; detail?: string }[] })
       .events.filter((e) => e.event === "task_brief_review" && (e.detail ?? "").startsWith(bOff));
     check("(br)(a) switch off: a reviewed-arm mittel row starts with no briefReview field, no review note and no audit line",
       bOffRun.row?.status === "sent" && bOffRun.row.briefReview === undefined && bOffFull !== undefined
-      && !("briefReview" in bOffFull) && bOffRun.notes.every((n) => !n.includes("brief review")) && bOffAudit.length === 0,
+      && !("briefReview" in bOffFull) && bOffRun.notes.every((n) => !n.includes("brief review")) && bOffAudit.length === 0
+      && bOffBytes.length > 0 && !bOffBytes.includes(BRIEF_REVIEW_MARK),
       JSON.stringify({ row: bOffRun.row, notes: bOffRun.notes, audit: bOffAudit.length }));
     await bClear();
 
@@ -7673,8 +7688,16 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const id of [bSlow, bCtl, bBroken, bSmall]) await post(`/api/tasks/${id}/queue`, {});
     const [bCtlRun, bBrokenRun, bSmallRun] = await Promise.all([bSent(bCtl), bSent(bBroken), bSent(bSmall)]);
     const bSlowRun = await bSent(bSlow, B_WAIT + 40_000);
+    const [bCtlBytes, bSlowBytes, bBrokenBytes] = await Promise.all([
+      bFounding("(br)(b) the control arm"), bFounding("SLOW-PROBE"), bFounding("BROKEN-PROBE")]);
     const bSlowFull = await bFull(bSlow);
     const bBrokenFull = await bFull(bBroken);
+    // BLOCK-WEG: no findings to deliver ⇒ no block — control by construction, the slow row because
+    // its review had not landed, the broken row because it failed. Each read off the real bytes.
+    check("(br)(b) no findings block where nothing landed: control, a review still running, a failed review",
+      [bCtlBytes, bSlowBytes, bBrokenBytes].every((b) => b.length > 0 && !b.includes(BRIEF_REVIEW_MARK)),
+      JSON.stringify({ ctl: bCtlBytes.length, slow: bSlowBytes.length, broken: bBrokenBytes.length,
+        marked: [bCtlBytes, bSlowBytes, bBrokenBytes].map((b) => b.includes(BRIEF_REVIEW_MARK)) }));
     check("(br)(b) the arm is on the row, in the poll, and it is the id's own (briefReviewArm)",
       bSlowRun.row?.briefReview?.arm === "reviewed" && bCtlRun.row?.briefReview?.arm === "control"
       && bBrokenRun.row?.briefReview?.arm === "reviewed"
@@ -7717,6 +7740,7 @@ export async function run(ctx: Ctx): Promise<void> {
     await post("/api/dispatch", { on: true });
     await post(`/api/tasks/${bOwn}/queue`, {});
     const bOwnRun = await bSent(bOwn);
+    const bOwnBytes = await bFounding("OWNER-BRIEF (br)(c)");
     const bOwnFull = await bFull(bOwn);
     check("(br)(c) the owner brief is byte-identical and still by:owner after the review",
       bBriefSet.ok && bOwnFull?.brief?.text === B_OWNER_BRIEF && bOwnFull.brief.by === "owner"
@@ -7728,6 +7752,15 @@ export async function run(ctx: Ctx): Promise<void> {
       && (bOwnFull.briefReview.findings?.[0]?.evidence ?? "").includes("rg -n")
       && (bOwnFull.briefReview.brief ?? "").startsWith("PROPOSED-BRIEF"),
       JSON.stringify({ status: bOwnRun.row?.status, review: bOwnFull?.briefReview }));
+
+    // BLOCK-DA: the landed review's findings ride BEHIND the owner's byte-identical brief, in their
+    // own block — the known finding with its evidence, the dropped kind absent, the rewrite NOT sent
+    const bOwnAt = bOwnBytes.indexOf(B_OWNER_BRIEF), bMarkAt = bOwnBytes.indexOf(`--- ${BRIEF_REVIEW_MARK} ---`);
+    check("(br)(c) the lane receives the owner brief unchanged and the findings as their own block behind it",
+      bOwnAt >= 0 && bMarkAt > bOwnAt
+      && bOwnBytes.includes("[done-impossible] DONE asks for a tsc entry the DO NOT forbids — Beleg: rg -n tsc e2e/pins.ts")
+      && !bOwnBytes.includes("made-up-kind") && !bOwnBytes.includes("PROPOSED-BRIEF"),
+      JSON.stringify({ ownerAt: bOwnAt, markAt: bMarkAt, tail: bOwnBytes.slice(Math.max(0, bMarkAt), bMarkAt + 400) }));
 
     await bClear();
     for (const id of bAll) if (!id.startsWith("unfiled:")) { await post(`/api/tasks/${id}/done`, {}); await post(`/api/tasks/${id}/delete`, {}); }

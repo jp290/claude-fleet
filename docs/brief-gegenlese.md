@@ -34,25 +34,24 @@ der Tick eine Lane dafuer ausgibt — und ob das etwas bringt, wird gemessen, ni
 - **Grenzen aus dem Beerdigten**: kein Urteil ready/needs-you, kein Gate, nichts liest die Befunde
   maschinell. Ein Neustart waehrend der Lese macht aus `running` ein `failed` (normBriefReview).
 
-## Uebernahme-Regel der MAIN (fest)
+## Was die Lane bekommt (MAIN-Entscheid 2026-09-19, Variante b)
 
-Die Gegenlese ueberschreibt nichts; die gebundene MAIN uebernimmt nach dieser Regel, und nur fuer
-eine Zeile, die noch nicht gestartet ist:
+Die BEFUNDE einer Gegenlese, die vor der Wahl der Gruendungsbytes GELANDET ist (`state: done`,
+mindestens ein Befund), reisen als eigener gekappter Block `--- GEGENLESE DIESER ZEILE ---` HINTER dem
+bytegleichen Brief und hinter dem Kommentar-Block (`wave-brief.ts#renderBriefReviewBlock`, Leser
+`server.ts#briefReviewForLane`; je Befund `[kind] Satz — Beleg: …`, 450 B, Budget 1500 B, Auslassungen
+gezaehlt). Der Block sagt der Lane, dass es Befunde sind, kein Auftrag. Der umgeschriebene Brief reist
+NICHT mit — er bleibt Vorschlag auf der Zeile. Kein Warten auf die MAIN.
 
-1. Brief `by:owner` → NIE uebernehmen; die MAIN nennt die Befunde dem Owner in ihrem Report.
-2. Sonst: vorgeschlagener Brief nicht leer → uebernehmen (`POST /api/self/tasks/:id/brief`);
-   leer → nichts tun.
+Kein Block — also die alten Bytes — fuer: control, jede nie zugeteilte Zeile, eine Lese, die beim Start
+noch lief oder scheiterte, eine Lese ohne Befund. Pin: `e2e/pins.ts` „Gegenlese: without findings …";
+e2e: `(br)(b)` Block-weg (control/running/failed), `(br)(c)` Block-da hinter dem Owner-Brief.
+`atStart` wird im selben Moment gestempelt, in dem die Bytes gewaehlt werden (`briefAndSend`), und
+sagt damit genau, ob der Block mitging (`done`) oder nicht (`running`/`failed`) — fuer jede Tuer, nicht
+nur den Tick.
 
-Ohne Uebernahme erreicht die Gegenlese die Lane nicht — das ist Absicht (Vorschlag, kein
-Ueberschreiben) und genau deshalb Spalte `uebernommen` in der Auswertung.
-
-**Offene Naht (Stand dieser Fassung):** eine FERTIGE Gegenlese beendet das Warten; der naechste Tick
-(`DISPATCH_TICK_MS`) startet die Zeile. Fuer die Uebernahme bleibt der MAIN damit praktisch kein
-Fenster, und nichts benachrichtigt sie. Solange das so ist, misst der Versuch fuer Tick-Starts die
-Gegenlese OHNE Wirkung auf die Lane — die Spalte `uebernommen` zeigt es. Zwei Auswege, beide eine
-Owner-Entscheidung: (a) das Warten nach `done` bis zum selben Budget verlaengern, bis der Brief sich
-aendert (plus Zustellung an die MAIN), oder (b) die Befunde als eigenen Block HINTER dem bytegleichen
-Brief an die Lane geben (Muster `wave-brief.ts#renderRowComments`).
+Uebernimmt die MAIN den vorgeschlagenen Brief VOR dem Start (`POST /api/self/tasks/:id/brief`), ist
+das ihr Akt und nie fuer einen `by:owner`-Brief; die Auswertung fuehrt das als Spalte `uebernommen`.
 
 ## Wie viele Zeilen das trifft (gemessen 2026-09-19, live `fleet.json`, nur lesend)
 
@@ -70,7 +69,7 @@ Anlegen als `docs/messungen/<datum>-brief-gegenlese-auswertung.md`. Population: 
 | Spalte | Quelle |
 |---|---|
 | taskId, arm, size | Audit `task_brief_review` |
-| atStart, findings je kind, uebernommen (Brief == Vorschlag?) | `briefReview` der Zeile (Regal oder Archiv) |
+| atStart (= Block mitgegangen?), findings je kind, uebernommen (Brief == Vorschlag?) | `briefReview` der Zeile (Regal oder Archiv) |
 | Nacharbeit | `land-quality.jsonl` `reworkLines3d` (+ `reworkByFixSubject`) |
 | auditRed | `land-quality.jsonl` `auditRed` |
 | Abweichung Report↔DONE | fleet-report der Lane gegen den DONE-Satz der Karte, von Hand: ja/nein/teilweise |
@@ -78,7 +77,7 @@ Anlegen als `docs/messungen/<datum>-brief-gegenlese-auswertung.md`. Population: 
 | disposition | `land-quality.jsonl` `disposition` (landed/killed…) |
 
 Vergleich je Arm: Median + Mittel `reworkLines3d`, Anteil `auditRed`, Anteil Abweichung, Summe
-`ownerPrompts`; `reviewed` zusaetzlich getrennt nach `atStart=done` vs. sonst und nach `uebernommen`.
+`ownerPrompts`; `reviewed` zusaetzlich getrennt nach `atStart=done` (Block ging mit) vs. sonst und nach `uebernommen`.
 
 **Abbruchregel:** nach 20 Paaren (20 reviewed + 20 control, gestartet) zeigt KEINE der vier Groessen
 einen Effekt zugunsten `reviewed` ⇒ Schalter aus (`FLEET_BRIEF_REVIEW` entfernen) und die

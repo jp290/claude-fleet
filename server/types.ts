@@ -1292,7 +1292,7 @@ interface Task {
   // what mints the children. Propose/promote like `criterion`, for the same reason: the producer
   // must not be the one who rewrites the work order it was measured against.
   briefReview?: TaskBriefReview; // the COUNTER-READ trial (docs/brief-gegenlese.md): which arm this
-  // row fell into and, on the reviewed arm, the model's PROPOSAL. Written only by the dispatch tick
+  // row fell into and, on the reviewed arm, the model's PROPOSAL. Allocated only by the dispatch tick
   // under FLEET_BRIEF_REVIEW, never by a door; it never touches `brief` or `text`. Absent = the
   // switch was off, or the row was never eligible (no valid mittel|gross card) when it was started.
   brief?: TaskBrief;       // the compiled work brief — the EXACT bytes a lane will receive.
@@ -1518,8 +1518,8 @@ interface TaskFilesProposal { files: string[]; at: number; by: string; unknownPa
 // The counter-read's record on a row. `arm` and `at` are written together, once, at the first tick
 // that sees the row eligible, and never change: the trial's allocation is a fact, not a state.
 // `state` exists on the reviewed arm only — the control arm has nothing running and nothing to say.
-// `atStart` is what the review's state WAS when the tick handed the row to a lane: the one fact the
-// evaluation needs to tell "reviewed and read" from "reviewed, but the budget ran out first".
+// `atStart` is what the review's state WAS when the lane's founding bytes were chosen (briefAndSend):
+// `done` = its findings block rode along, anything else = the lane got the old bytes.
 // `findings` + `brief` are the PROPOSAL; `brief` never replaces Task.brief (least of all by:owner),
 // and an empty string means the reviewer found nothing to rewrite.
 interface BriefReviewFinding { kind: BriefReviewKind; text: string; evidence: string }

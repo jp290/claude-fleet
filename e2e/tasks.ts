@@ -492,6 +492,21 @@ export async function run(ctx: Ctx): Promise<void> {
         && !/qlife-st[^{]*\{[^}]*var\(--q-(live|wait)\)/.test(block)
         && /#shell-queue \.qlife-st\.on \{ color: var\(--chat-ink\)/.test(block),
       "pair placement");
+    // THE TEXT BLOCK (cut 4): every read-only text of the pane is offered with a label and a copy,
+    // in the shape of the chat view's code block. What this catches is a text that goes back to
+    // being an unnamed box nobody can take with them, and a confirmation painted in a raw green.
+    check("queue style: the pane's read-only texts are labelled blocks with a copy, and the receipt uses the copied token",
+      /function qTextBlock\(parent: HTMLElement, label: string, text: string\)/.test(taskClientSource)
+        && ["qTextBlock(discussion, row.noteId, row.text)", 'qTextBlock(discussion, c.from ?? "comment", c.text)',
+          'qTextBlock(refinement!, "brief", brief.text)', 'qTextBlock(refinement!, "done-criterion", crit.text ?? "")',
+          'qTextBlock(request, brief ? "your draft" : "request", body)'].every((call) => taskClientSource.includes(call))
+        && /copy\.classList\.add\("ok"\)/.test(taskClientSource)
+        && block.includes("#shell-queue .qdblockc.ok { color: var(--chat-copied); }"),
+      "text block wiring");
+    check("queue style NEGATIVE: the receipt clears itself, so a stale \"copied\" cannot outlive the click",
+      /copy\.textContent = "copy"; copy\.classList\.remove\("ok"\);/.test(taskClientSource)
+        && /setTimeout\(\(\) => \{ copy\.textContent = "copy"/.test(taskClientSource),
+      "copy receipt reset");
     check("queue style: every rule that carried the blue accent into the queue has an override in the block",
       overridden.every((sel) => block.includes(sel)),
       JSON.stringify(overridden.filter((sel) => !block.includes(sel))));

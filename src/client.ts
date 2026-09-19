@@ -8536,6 +8536,32 @@ async function qAct(id: string, action: string, body: Record<string, unknown> = 
   return true;
 }
 
+// A BLOCK OF TEXT THE OWNER MAY WANT TO TAKE WITH HIM (Stilvorgabe 2026-09-19, the chat view's
+// code block): a header that NAMES the text and offers to copy it, then the text itself. The
+// confirmation is the one green the Vorgabe allows, and it says "copied" rather than turning into
+// an icon — the label is the receipt. Nothing here is markdown: the queue's texts are briefs and
+// requests, and mdcopy.ts (which would copy them AS markdown) lives on the unlanded chat lane.
+function qTextBlock(parent: HTMLElement, label: string, text: string): HTMLElement {
+  const box = el("div", "qdblock");
+  const head = el("div", "qdblockh");
+  head.appendChild(el("span", "qdblockl", label));
+  const copy = el("button", "qdblockc", "copy") as HTMLButtonElement;
+  copy.type = "button";
+  copy.title = `copy ${label} to the clipboard`;
+  copy.onclick = () => {
+    copyText(text);
+    copy.textContent = "copied";
+    copy.classList.add("ok");
+    // the receipt is short-lived on purpose: a button that stays "copied" stops saying whether
+    // THIS click landed. 1.2 s is the chat view's own confirmation window.
+    setTimeout(() => { copy.textContent = "copy"; copy.classList.remove("ok"); }, 1200);
+  };
+  head.appendChild(copy);
+  box.append(head, el("div", "qdtext", text));
+  parent.appendChild(box);
+  return box;
+}
+
 function qDetailSection(parent: HTMLElement, title: string, disclosure = false, open = true): HTMLElement {
   const section = document.createElement(disclosure ? "details" : "section");
   section.className = "qdsection";
@@ -9730,7 +9756,7 @@ function renderQueueDetail() {
     if (rows.length === 0) discussion.appendChild(el("div", "shellhint",
       "keine — diese Zeile bekommt Notizen nur ueber die Datei-Flaeche, als Hinweis, nicht als Auftrag"));
     for (const row of rows) {
-      discussion.appendChild(el("div", "qdtext", `${row.noteId} — ${row.text}`));
+      qTextBlock(discussion, row.noteId, row.text);
       const line = el("div", "pkdacts");
       // "unknown" is rendered as itself. A pinned id the queue no longer answers is not an empty
       // assignment: the lane's own brief will report it the same way, and hiding it here would
@@ -9789,7 +9815,7 @@ function renderQueueDetail() {
   const cms = taskCommentsFull.get(t.id) ?? [];
   discussion.appendChild(el("div", "rvhead", cms.length ? `comments · ${cms.length}` : "comments"));
   for (const c of cms) {
-    discussion.appendChild(el("div", "qdtext", c.text));
+    qTextBlock(discussion, c.from ?? "comment", c.text);
     const cline = el("div", "pkdacts");
     // WHO said it and WHAT they claimed, beside the timestamp. Only `erledigt` ever moves this row,
     // and only when the branch that wrote it lands — said here rather than left to be inferred,
@@ -9850,7 +9876,7 @@ function renderQueueDetail() {
     refinement!.appendChild(bacts);
   } else if (brief) {
     refinement!.appendChild(el("div", "rvhead", "the brief this lane received"));
-    refinement!.appendChild(el("div", "qdtext", brief.text));
+    qTextBlock(refinement!, "brief", brief.text);
   }
   // the done-criterion: a clarify lane's proposal until you confirm it. Editable in place —
   // confirming stores what YOU agreed to, which is what makes it your anchor and not its own
@@ -9862,7 +9888,7 @@ function renderQueueDetail() {
     refinement!.appendChild(el("div", "rvhead",
       confirmedAt !== null ? `done-criterion · confirmed ${fmtTs(confirmedAt)}` : "done-criterion · PROPOSED — yours to confirm"));
     if (confirmed) {
-      refinement!.appendChild(el("div", "qdtext", crit.text ?? ""));
+      qTextBlock(refinement!, "done-criterion", crit.text ?? "");
     } else {
       qCriterionDraft = qTextDraft(qCriterionDraft, t.id, crit.text ?? "", 6);
       const box = qCriterionDraft.box;
@@ -9885,8 +9911,8 @@ function renderQueueDetail() {
   // defect this panel was built to end.
   const body = qTaskText(t.id);
   if (brief) request.appendChild(el("div", "rvhead", "your draft, as filed"));
-  request.appendChild(el("div", body ? "qdtext" : "shellhint",
-    body || "loading the prompt text…"));
+  if (body) qTextBlock(request, brief ? "your draft" : "request", body);
+  else request.appendChild(el("div", "shellhint", "loading the prompt text…"));
   // ↻ the refine proposal. Rendered BELOW the original text on purpose: the two are meant to be
   // read against each other, and what the owner promotes is the compiled version — so the thing
   // being replaced stays visible right above it until they decide.

@@ -9538,7 +9538,10 @@ function renderQueueDetail() {
   const read = el("div", "qdread");
   const rail = el("div", "qdrail");
   shell.detail.appendChild(d2);
-  const titleBox = el("div", "qdtitle");
+  // the lifecycle stripe of the list row, beside the title too (held reads as waiting; a note and a
+  // closed row carry none)
+  const stage = qAdvisory(t) || qClosed(t) ? "" : t.hold ? "held" : t.status;
+  const titleBox = el("div", `qdtitle${stage ? ` q-st-${stage}` : ""}`);
   titleBox.appendChild(el("div", "qdtitle-t", summary.title));
   const titleChips = el("div", "qchips");
   for (const c of summary.chips.filter((c) => c.cls !== "prog")) {

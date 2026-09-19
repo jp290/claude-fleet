@@ -477,6 +477,21 @@ export async function run(ctx: Ctx): Promise<void> {
     check("queue style: the queue's chrome sits on the 4/8/12/16 grid, in the rules the fold budget reads",
       grid.every((re) => re.test(block)),
       JSON.stringify(grid.map((re) => re.source).filter((src) => !new RegExp(src).test(block))));
+    // THE COMPLEMENTARY PAIR (owner, 2026-09-19). Two hues, two meanings, and the discipline is
+    // that they sit on STATES only: a chip, the lane line, the release note. A button wearing one
+    // of them would make "this is what runs" and "this is what you press" the same signal, which
+    // is the defect the Vorgabe's ink-only accent was written against.
+    const pair = block.slice(block.indexOf("THE PAIR ON THE SURFACE"), block.indexOf("BUNDLE MODE was"));
+    check("queue style: the complementary pair means live vs waiting, and is declared once in :root",
+      /--q-live: #[0-9a-f]{6}; --q-live-dim: #[0-9a-f]{6};/.test(taskPageSource)
+        && /--q-wait: #[0-9a-f]{6}; --q-wait-dim: #[0-9a-f]{6};/.test(taskPageSource)
+        && pair.includes("var(--q-live)") && pair.includes("var(--q-wait)"),
+      pair.slice(0, 120) || "pair block missing");
+    check("queue style NEGATIVE: no button and no lifecycle station wears the pair — they carry states, not actions",
+      !/shrbtn[^{]*\{[^}]*var\(--q-(live|wait)\)/.test(block)
+        && !/qlife-st[^{]*\{[^}]*var\(--q-(live|wait)\)/.test(block)
+        && /#shell-queue \.qlife-st\.on \{ color: var\(--chat-ink\)/.test(block),
+      "pair placement");
     check("queue style: every rule that carried the blue accent into the queue has an override in the block",
       overridden.every((sel) => block.includes(sel)),
       JSON.stringify(overridden.filter((sel) => !block.includes(sel))));

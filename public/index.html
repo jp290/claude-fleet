@@ -477,15 +477,22 @@
      (a terminal strip stays a strip) */
   #compopts { display: none; }
   #comp.tall #compopts:not(:empty) { display: flex; align-items: center; min-width: 0; }
-  /* the strip carries them only for a harness without a conversation view (pi, codex): between
-     the text and send, one row, the surface's height unchanged (the switches are 32px like send) */
-  #comp.bar #compopts:not(:empty) { display: flex; align-items: center; min-width: 0; order: 1; }
+  /* the strip carries them only for a harness without a conversation view (pi-ox, the container):
+     on their own line ABOVE the text, right aligned, on every width — beside it they took 244 of
+     the strip's 780px and left the field 450 (sixteenth cut, measured at slot 6, 1200×612) */
+  #comp.bar #compopts:not(:empty) { display: flex; align-items: center; min-width: 0; order: -3;
+    flex-basis: 100%; justify-content: flex-end; }
   .optswrap { position: relative; min-width: 0; }
-  .optsw { display: flex; align-items: center; gap: 4px; min-width: 0; height: 32px; padding: 0 8px 0 12px;
+  /* the effort word is short and must stay whole — the model name is the one that gives way */
+  .optswrap.effort { flex: none; }
+  /* max-width: the wrapper shrinks in a narrow row, and the button must shrink WITH it so the
+     model name ellipsizes instead of running under the effort switch and send (sixteenth cut,
+     390px: "GLM-5.3 Flash · 1M" wanted 180 of its wrapper's 134px) */
+  .optsw { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; height: 32px; padding: 0 8px 0 12px;
     border: 0; border-radius: var(--r2); background: transparent; color: var(--chat-ink);
     font: 500 13px var(--chat-sans); cursor: pointer; transition: background-color var(--t); }
   .optsw:hover, .optsw.on { background: var(--c-hover); }
-  .optval { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .optval { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .optval.dim { flex: none; color: var(--chat-mute); font-weight: 400; }
   .optchev { flex: none; display: grid; color: var(--chat-faint); transition: transform var(--t); }
   .optchev .ico { width: 14px; height: 14px; }
@@ -1716,9 +1723,6 @@
     #comp.bar #input, #comp.tall #input { font-size: 16px; }
     #comp.bar #input { min-height: 26px; max-height: 110px; }
     #comp.bar #send, #comp.bar #dropbtn, #comp.tall #send, #comp.tall #dropbtn { width: 40px; height: 40px; }
-    /* pi/codex switches in the strip: on a phone they take their own line above the text, right
-       aligned — beside it they squeezed the field to one word per line (measured at 390px) */
-    #comp.bar #compopts:not(:empty) { order: -3; flex-basis: 100%; justify-content: flex-end; }
     /* the tray entries carry labels now: finger height, natural width, scroll instead of overlap */
     #comptray { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
     #comp #comptray button { flex: none; width: auto; min-height: 40px; font-size: 13px; }

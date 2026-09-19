@@ -268,6 +268,21 @@ Die Adapter-Liste ist `HARNESSES` in `server.ts` (aktuell claude, pi, pi-zai, pi
 container, codex; `pi-unfenced` ist serverseitig `automatable:false`, `allowsLanes:false`,
 `singleton:true` — genau EINE Main-Session, warnt im Picker vor unbeschränkten Rechten).
 
+**Konversationsansicht (💬) ≠ `supports.transcript` (seit 2026-09-19).** `supports.transcript` heißt
+weiter „Claude-Code-Transcript unter `projDir()`" und trägt Worker-Antwort, ✨-Evidenz, Prompt-Harvester
+und die Resume-Probe der Heilung; es bleibt für pi/pi-zai/codex `false`. Die Ansicht liest stattdessen
+den adaptereigenen Leser `Harness.conversation` (`server/conversation-read.ts`): codex die Rollout-JSONL
+(`response_item` message user/assistant, Tool-Aufrufe `function_call`/`custom_tool_call` + `*_output`;
+injizierte AGENTS.md-/`<…>`-Nutzerzeilen und `developer` fallen weg), pi/pi-zai die Session-JSONL als
+Baum (Pfad vom neuesten Eintrag zur Wurzel; ein Astwechsel ändert `source`, der Client lädt neu). Die
+Datei wird wie beim Kontextfüllstand per IDENTITÄT gefunden (`server.ts#codexContextFile`,
+`#piContextFile`, `#piZaiContextFile`), nie newest-by-mtime; ohne gebundene Session-ID bleibt die
+Ansicht leer. `/api/harnesses` veröffentlicht `supports.chat = transcript || conversation` — daran hängt
+der 💬-Knopf. pi-ox, pi-unfenced und container haben keinen Leser. Die Payload trägt für diese Leser
+`cache: {at, provider}` (codex: neueste `token_usage_record`, pi: `message.timestamp` der neuesten
+Assistant-Zeile); der Client misst gegen gemessene Schwellen (`src/client.ts#cacheTtlFor`: z.ai 15 min,
+codex 1 h, Claude unverändert 5 min; unbekannter Provider → kein Zähler).
+
 ### `pi-ox`: festes, derzeit anonym erreichbares Ox-Alpha-Profil in Pi
 
 `pi-ox` ist bewusst **kein** nativer OpenCode-Harness. Pi besitzt TUI, Session-ID, Resume,

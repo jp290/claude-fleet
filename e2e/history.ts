@@ -1,8 +1,9 @@
 // Prompt history per slot, the global append-only prompt log and the /api/prompts directory
 // served from it, plus the transcript and session-brief reads.
-import { appendFileSync, statSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, statSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { check, get, post, plogPath, plogRead, ROOT } from "./harness";
+import { resolve } from "node:path";
+import { check, get, post, plogPath, plogRead, ROOT, REPO, restartSrv, until, UntilTimeout } from "./harness";
 import { WORKER_CONTRACTS } from "../src/protocol";
 
 // Runs under the claude-gate harness, not run() below: the main history suite deliberately uses
@@ -269,4 +270,149 @@ export async function run(): Promise<void> {
   check("brief caps commit list at 15", bf1j.commits.length <= 15);
   check("brief files is an array", Array.isArray(bf1j.files));
   check("brief rejects inactive slot", (await get("/api/slots/4/brief")).status === 400);
+
+  await runForeignConversations();
+}
+
+// --- the conversation view for pi-zai and codex (sixteenth cut): each reads its OWN file format
+// through Harness.conversation, found by the slot's session identity — never newest-by-mtime. One
+// small fixture per format, each with its counter-probe: a FOREIGN session in the same cwd, written
+// newer, is not what the slot shows.
+interface ConvPayload { entries: { n: number; role: string; blocks: { t: string; text: string }[] }[];
+  total: number; source: string | null; cache?: { at: number; provider: string } | null }
+const persistedSlot = (slot: number): { sessionId?: string | null } | undefined =>
+  (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+    { slots?: Record<string, { sessionId?: string | null }> }).slots?.[String(slot)];
+const freeSlotId = async (): Promise<number | undefined> =>
+  ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+    .slots.filter((s) => s.cwd === null).map((s) => s.id).pop();
+const flat = (p: ConvPayload): string[][] => p.entries.map((e) => [e.role, ...e.blocks.map((b) => `${b.t}:${b.text}`)]);
+
+async function runForeignConversations(): Promise<void> {
+  // the catalogue publishes the view per harness: pi-zai and codex have a reader, pi-ox has none
+  const hs = ((await (await get("/api/harnesses")).json()) as { harnesses: { id: string; supports: { transcript: boolean; chat?: boolean } }[] }).harnesses;
+  const sup = (id: string) => hs.find((h) => h.id === id)?.supports;
+  check("harness catalogue: supports.chat is true for claude, pi, pi-zai and codex, false for pi-ox and the container",
+    sup("claude")?.chat === true && sup("pi")?.chat === true && sup("pi-zai")?.chat === true && sup("codex")?.chat === true
+      && sup("pi-ox")?.chat === false && sup("container")?.chat === false,
+    JSON.stringify(hs.map((h) => [h.id, h.supports.chat])));
+  check("harness catalogue: supports.transcript stays false for pi, pi-zai and codex (the chat view does not widen it)",
+    sup("pi")?.transcript === false && sup("pi-zai")?.transcript === false && sup("codex")?.transcript === false);
+
+  // --- pi-zai: a session TREE. Path A → B → E → F is the conversation; C → D is an abandoned branch.
+  const zaiRoot = process.env.FLEET_PI_ZAI_AGENT_DIR ?? "";
+  const piCwd = `${tmpdir()}/fleet-e2e-piconv-${process.pid}`;
+  mkdirSync(piCwd, { recursive: true });
+  const piSlot = await freeSlotId();
+  const piOpen = zaiRoot && piSlot !== undefined ? await post(`/api/slots/${piSlot}/open`, { cwd: piCwd, harness: "pi-zai" }) : null;
+  const sid = piSlot !== undefined ? persistedSlot(piSlot)?.sessionId ?? "" : "";
+  check("pi conversation fixture: a pi-zai slot opens with a pinned session id",
+    !!piOpen?.ok && /^[0-9a-f-]{36}$/.test(sid), JSON.stringify({ zaiRoot, piSlot, status: piOpen?.status, sid }));
+  if (piOpen?.ok && sid && piSlot !== undefined) {
+    const real = realpathSync(piCwd);
+    const dir = `${zaiRoot}/sessions/--${real.replace(/^\/+/, "").replaceAll("/", "-")}--`;
+    mkdirSync(dir, { recursive: true });
+    const T0 = Date.parse("2026-09-19T10:00:00.000Z");
+    const msg = (id: string, parentId: string | null, role: string, content: unknown[], extra: Record<string, unknown> = {}) =>
+      `${JSON.stringify({ type: "message", id, parentId, timestamp: new Date(T0).toISOString(),
+        message: { role, content, timestamp: T0, ...extra } })}\n`;
+    const own = `${dir}/2026-09-19T10-00-00-000Z_${sid}.jsonl`;
+    writeFileSync(own, `${JSON.stringify({ type: "session", version: 3, id: sid, timestamp: new Date(T0).toISOString(), cwd: real })}\n`
+      + msg("a", null, "user", [{ type: "text", text: "question A" }])
+      + msg("b", "a", "assistant", [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "x" } }], { provider: "zai", timestamp: T0 + 1000 })
+      + msg("r", "b", "toolResult", [{ type: "text", text: "file body" }])
+      + msg("c", "r", "user", [{ type: "text", text: "ABANDONED branch" }])
+      + msg("d", "c", "assistant", [{ type: "text", text: "ABANDONED answer" }], { provider: "zai", timestamp: T0 + 2000 })
+      + msg("e", "r", "user", [{ type: "text", text: "question E" }])
+      + msg("f", "e", "assistant", [{ type: "thinking", thinking: "hmm" }, { type: "text", text: "answer F" }], { provider: "zai", timestamp: T0 + 3000 }));
+    // the counter-probe: a newer foreign session, same cwd, same directory, another id
+    const foreignSid = "30000000-0000-4000-8000-00000000000f";
+    writeFileSync(`${dir}/2026-09-19T11-00-00-000Z_${foreignSid}.jsonl`,
+      `${JSON.stringify({ type: "session", version: 3, id: foreignSid, timestamp: new Date(T0).toISOString(), cwd: real })}\n`
+      + msg("z", null, "user", [{ type: "text", text: "FOREIGN pi session" }]));
+    const p1 = (await (await get(`/api/slots/${piSlot}/transcript`)).json()) as ConvPayload;
+    check("pi conversation: the view shows the path from the newest leaf to the root, abandoned branch left out",
+      JSON.stringify(flat(p1)) === JSON.stringify([["user", "text:question A"], ["assistant", `tool:{"path":"x"}`],
+        ["assistant", "tool_result:file body"], ["user", "text:question E"], ["assistant", "thinking:hmm", "text:answer F"]]),
+      JSON.stringify(flat(p1)));
+    check("pi conversation: the slot's OWN file is served — the newer foreign session in the same cwd is not",
+      (p1.source ?? "").startsWith(`2026-09-19T10-00-00-000Z_${sid}.jsonl`) && !JSON.stringify(p1).includes("FOREIGN"), `source=${p1.source}`);
+    check("pi conversation: the cache reference is the newest path assistant's request start, provider zai",
+      p1.cache?.at === T0 + 3000 && p1.cache?.provider === "zai", JSON.stringify(p1.cache));
+    const p2 = (await (await get(`/api/slots/${piSlot}/transcript?after=${p1.total}`)).json()) as ConvPayload;
+    check("pi conversation: an incremental fetch with nothing appended is empty and keeps the source",
+      p2.entries.length === 0 && p2.total === p1.total && p2.source === p1.source, JSON.stringify(p2).slice(0, 200));
+    // back onto the abandoned branch: the served lines stop being the conversation, and source says so
+    appendFileSync(own, msg("g", "d", "user", [{ type: "text", text: "back on branch D" }]));
+    const p3 = (await (await get(`/api/slots/${piSlot}/transcript`)).json()) as ConvPayload;
+    check("pi conversation: a branch switch changes the source, and the new path is served",
+      p3.source !== p1.source && flat(p3).map((e) => e[1]).join("|")
+        === "text:question A|tool:{\"path\":\"x\"}|tool_result:file body|text:ABANDONED branch|text:ABANDONED answer|text:back on branch D",
+      `${p3.source} ${JSON.stringify(flat(p3))}`);
+    await post(`/api/slots/${piSlot}/kill`, {});
+    rmSync(dir, { recursive: true, force: true });
+  }
+  rmSync(piCwd, { recursive: true, force: true });
+
+  // --- codex: the rollout bound to the slot by the server's own codex_bind tick (e2e/watch.ts
+  // runLearnedSessionAck, the same technique: stand-in binary on PATH, one user rollout in the window)
+  const codexRoot = process.env.FLEET_CODEX_SESSIONS_DIR ?? "";
+  const codexCwd = REPO ? resolve(REPO) : "";
+  const codexPath = `${ROOT}/codex-bin:${process.env.PATH ?? ""}`;
+  check("codex conversation fixture: a scratch sessions root, the stand-in binary and a cwd exist",
+    !!codexRoot && !!codexCwd && existsSync(`${ROOT}/codex-bin/codex`), `${codexRoot} / ${codexCwd}`);
+  if (!codexRoot || !codexCwd) return;
+  await restartSrv({ PATH: codexPath });
+  try {
+    const cxSlot = await freeSlotId();
+    const cxOpen = cxSlot !== undefined ? await post(`/api/slots/${cxSlot}/open`, { cwd: codexCwd, harness: "codex" }) : null;
+    check("codex conversation fixture: a codex slot opens with no session id yet", !!cxOpen?.ok
+      && cxSlot !== undefined && persistedSlot(cxSlot)?.sessionId === null, `slot=${cxSlot} status=${cxOpen?.status}`);
+    if (!cxOpen?.ok || cxSlot === undefined) return;
+    const unbound = (await (await get(`/api/slots/${cxSlot}/transcript`)).json()) as ConvPayload;
+    check("codex conversation: an unbound slot shows nothing (no id → no file, never the newest rollout)",
+      unbound.source === null && unbound.entries.length === 0, JSON.stringify(unbound));
+    const ID = "30000000-0000-4000-8000-00000000000c";
+    const d = new Date();
+    const dayDir = `${codexRoot}/${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+    mkdirSync(dayDir, { recursive: true });
+    const rollout = `${dayDir}/rollout-${Date.now()}-${ID}.jsonl`;
+    const TU = "2026-09-19T12:00:05.000Z";
+    const item = (payload: Record<string, unknown>) => `${JSON.stringify({ timestamp: "2026-09-19T12:00:00.000Z", type: "response_item", payload })}\n`;
+    writeFileSync(rollout, `${JSON.stringify({ type: "session_meta", payload: {
+      id: ID, cwd: codexCwd, timestamp: new Date().toISOString(), thread_source: "user", originator: "codex-tui" } })}\n`
+      + item({ type: "message", role: "developer", content: [{ type: "input_text", text: "<permissions>DEVELOPER</permissions>" }] })
+      + item({ type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions\nINJECTED" }] })
+      + item({ type: "message", role: "user", content: [{ type: "input_text", text: "hello codex" }] })
+      + item({ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi there" }], phase: "commentary" })
+      + item({ type: "function_call", name: "exec_command", arguments: "{\"cmd\":\"ls\"}", call_id: "k1" })
+      + item({ type: "function_call_output", call_id: "k1", output: "a.txt" })
+      + `${JSON.stringify({ timestamp: TU, type: "token_usage_record", payload: { usage: { input_tokens: 10, cached_input_tokens: 8 } } })}\n`);
+    let bound: string | null | undefined = null;
+    try {
+      bound = await until(() => (persistedSlot(cxSlot)?.sessionId === ID ? ID : null),
+        { timeoutMs: 25_000, stepMs: 250, what: `slot ${cxSlot} to bind codex session ${ID}` });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+    check("codex conversation fixture: the server's codex_bind tick binds the slot to the planted rollout", bound === ID, `bound=${bound}`);
+    if (bound === ID) {
+      // the counter-probe: a newer rollout of ANOTHER session in the same cwd, written after the bind
+      const foreign = `${dayDir}/rollout-${Date.now() + 1}-30000000-0000-4000-8000-0000000000ff.jsonl`;
+      writeFileSync(foreign, `${JSON.stringify({ type: "session_meta", payload: { id: "30000000-0000-4000-8000-0000000000ff",
+        cwd: codexCwd, timestamp: new Date().toISOString(), thread_source: "user", originator: "codex-tui" } })}\n`
+        + item({ type: "message", role: "user", content: [{ type: "input_text", text: "FOREIGN codex session" }] }));
+      const c1 = (await (await get(`/api/slots/${cxSlot}/transcript`)).json()) as ConvPayload;
+      check("codex conversation: user/assistant messages and tool calls, developer rows and injected AGENTS.md dropped",
+        JSON.stringify(flat(c1)) === JSON.stringify([["user", "text:hello codex"], ["assistant", "text:hi there"],
+          ["assistant", `tool:{"cmd":"ls"}`], ["assistant", "tool_result:a.txt"]]), JSON.stringify(flat(c1)));
+      check("codex conversation: the bound rollout is served — the newer foreign one in the same cwd is not",
+        c1.source === rollout.split("/").pop() && !JSON.stringify(c1).includes("FOREIGN"), `source=${c1.source}`);
+      check("codex conversation: the cache reference is the newest token_usage_record, provider openai",
+        c1.cache?.at === Date.parse(TU) && c1.cache?.provider === "openai", JSON.stringify(c1.cache));
+      rmSync(foreign, { force: true });
+    }
+    await post(`/api/slots/${cxSlot}/kill`, {});
+    rmSync(rollout, { force: true });
+  } finally {
+    await restartSrv(); // normal PATH back for the modules after this one
+  }
 }

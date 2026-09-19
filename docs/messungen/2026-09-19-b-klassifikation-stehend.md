@@ -1,6 +1,6 @@
 ---
 frage: Laesst sich die ertragreichste Kennzahl der Bash-Datenschichten-Analyse — der Roh-Anteil der Ledger-Lesungen, heute 91,9 % — ohne Worktrail-Lauf als stehender Sensor fahren, und lohnt der Klassifikator, der die a/b/c-Handkorrekturen in measure.py ersetzen und die Stichprobe von 1.204 auf 47.877 Aufrufe heben soll, seinen Bau?
-urteil: Der H1-Sensor ist gebaut und fuhr ohne Worktrail-Lauf: fuenf Ledger mit Leseroute, rollierende 14 Tage, je Ledger roh gegen Route, heute 93,8 % roh (1.339 zu 88 in 43.403 Aufriufen) gegen 91,9 % im eingefrorenen Baseline-Fenster — rein deterministisch, ohne Modell, ohne Stichprobe, das Kommando steht in §5. Der Klassifikator (H2) ist geschnitten, nicht gebaut: er muesste 14.226 Kandidaten je 14 Tage sehen (32,8 % der Population, Kosten im Rauschen von 0,08 bis rund 10 $ je Durchgang), aber die deterministische Sonde traegt nur 42,2 % seiner Labels ganz (0 und c, 176 von 417); die uebrigen 57,8 % (a/b) traege sie nur in der Existenzhaelfte, und genau die Intent-Haelfte ist der Grund, warum die Jev-Entscheidungsvorlage die Bash-Vollerhebung (K9) als einzigen Korpus verworfen hat. Die Ader H1+H2 ist damit abgebaut: H1 ist kein neuer Schnitt, sondern das Messinstrument dafuer, dass die Tueren P1/P3 wirken; H2 findet keinen Posten, den P1/P2/P3 und die u-Posten nicht schon benannt haetten.
+urteil: Der H1-Sensor ist gebaut und fuhr ohne Worktrail-Lauf: fuenf Ledger mit Leseroute, rollierende 14 Tage, je Ledger roh gegen Route, heute 93,8 % roh (1.339 zu 88 in 43.403 Aufrufen) gegen 91,9 % im eingefrorenen Baseline-Fenster — rein deterministisch, ohne Modell, ohne Stichprobe, das Kommando steht in §5. Der Klassifikator (H2) ist geschnitten, nicht gebaut: er muesste 14.226 Kandidaten je 14 Tage sehen (32,8 % der Population, Kosten im Rauschen von 0,08 bis rund 10 $ je Durchgang), aber die deterministische Sonde traegt nur 42,2 % seiner Labels ganz (0 und c, 176 von 417); die uebrigen 57,8 % (a/b) traege sie nur in der Existenzhaelfte, und genau die Intent-Haelfte ist der Grund, warum die Jev-Entscheidungsvorlage die Bash-Vollerhebung (K9) als einzigen Korpus verworfen hat. Die Ader H1+H2 ist damit abgebaut: H1 ist kein neuer Schnitt, sondern das Messinstrument dafuer, dass die Tueren P1/P3 wirken; H2 findet keinen Posten, den P1/P2/P3 und die u-Posten nicht schon benannt haetten.
 bereich: [datenlayer, worktrail, klassifikator, sensoren, bash]
 belege: [docs/messungen/2026-09-17-worktrail-bash-datenschichten-strategisch.md §6 §9, docs/messungen/2026-09-18-jev-entscheidungsvorlage-astra.md §1 K9 §5, docs/messungen/2026-09-18-jev-fuer-den-fleet-auswertung.md V:159, docs/messungen/2026-09-14-karten-modell-ab.md, server.ts#CARD_MODEL, docs/queue-analyst.md, card-extract.ts#validateCard]
 nicht-gemessen: Rueckrufquote des mechanischen Vorfilters (ein als N getaggter Datenaufruf erreicht den Klassifikator nie — in der Stichprobe ungezaehlt, hier U); sonnet-5-Einheitspreise je Mio Token (im Repo nur der end-to-end gemessene Kartenlauf 0,0235 $); Codex- und Pi-Transkripte; Browser-Leser der Routen; ob die Intent-Taxonomie a/b in einer Doppelblindprobe haelt (K9-Kippmessung, nicht gefahren); Wirkung der Tueren P1/P3 auf die Quote (beide noch nicht gelandet).
@@ -65,7 +65,7 @@ ist ein env-Knopf in der Bauart von `FLEET_CARD_MODEL` (`server.ts#CARD_MODEL`, 
 `claude-sonnet-5`).
 
 **Wie viele Aufrufe muss er sehen?** Gemessen mit den Tag-Regeln aus B17 §9.1 (wortlich, ohne
-Korrekturen) ueber die volle rollierende Population: **14.226 von 43.403 Aufriufen = 32,8 %**.
+Korrekturen) ueber die volle rollierende Population: **14.226 von 43.403 Aufrufen = 32,8 %**.
 Der Rest ist mechanisch N (SRC 13.002, ACT 8.733, BUILD 3.248, GIT 2.459, HOST 1.735). Das sind
 1.016 Kandidaten je Tag, 34,1 je Bash-Session. In der Stichprobe waren 463 von 1.204 (38,5 %)
 Kandidaten — der Unterschied ist rollengewichtet: die Stichprobe uebersieht Orchestrator/MAIN
@@ -132,7 +132,7 @@ an einem stehenden Sensor.
    fällt nicht, wenn sie nur landen"). Ohne ihn waere die Tuer-Wirkung ungemessen — damit ist die
    Luecke geschlossen, aber es ist Messarbeit, kein neuer Auftrag.
 2. **H2 findet keinen adressierbaren Posten, den die Stichprobe nicht schon benannt haette.**
-   Alle Symptom-Familien von B17 §4.2 sind adressiert (P1/P2/P3, 184 von 283 Aufriufen), gefilet
+   Alle Symptom-Familien von B17 §4.2 sind adressiert (P1/P2/P3, 184 von 283 Aufrufen), gefilet
    (u4 Schreib-Quittungen, c05f8b05), delegiert (u3 Quota, eigene Notiz) oder unter der Linie mit
    definierter Wiedereinreise-Regel (u1 Pane-Blick, u2 Deploy). Die seltene-teure Klasse (Echo
    einer Program-Mutation, bis 41.587 B) hat dieselbe Stichprobe ohne Klassifikator gefunden und

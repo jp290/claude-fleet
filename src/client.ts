@@ -3469,6 +3469,17 @@ document.addEventListener("pointerdown", (e) => {
   for (const pop of compOpts.querySelectorAll(".optpop.open")) pop.classList.remove("open");
   for (const b of compOpts.querySelectorAll(".optsw.on")) b.classList.remove("on");
 });
+// Escape closes an open switch popover and hands focus back to its switch — the keyboard's way out
+compOpts.addEventListener("keydown", (e) => {
+  const open = compOpts.querySelector(".optpop.open");
+  if (e.key !== "Escape" || !open) return;
+  e.preventDefault();
+  e.stopPropagation();
+  open.classList.remove("open");
+  const btn = open.parentElement?.querySelector(".optsw");
+  btn?.classList.remove("on");
+  if (btn instanceof HTMLElement) btn.focus();
+});
 
 // --- the tray under the surface. ENTRIES ARE DATA: a later one is a row here, not a rebuild.
 // Every entry is an existing function of this board that used to own an icon button of its own.

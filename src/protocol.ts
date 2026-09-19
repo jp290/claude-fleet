@@ -170,16 +170,18 @@ export function normalizeLaneAnchor(value: unknown): LaneAnchor | null {
 // --- disposition rail ---------------------------------------------------------------------------
 // Which advisory worker an owner verdict is about, and the verdict vocabulary. The server validates
 // POST /api/dispositions against these lists; the client renders the same four words and sends the
-// same four worker names. Typing the client's call sites against `DispositionWorker` is what makes
+// same worker names. Typing the client's call sites against `DispositionWorker` is what makes
 // a mistyped "review-3" a compile error instead of a 400 nobody sees.
 // A fourth worker — `analysis`, the queue analyst's verdict on ONE task row, ref = the taskId —
 // stood here until 2026-09-10. The analyst is retired, so nothing produces a reading to have an
 // opinion about and the write door closes with it. The rail is append-only and the READER validates
 // no worker name, so the labels already filed under it stay readable: closing the door retires a
-// producer, it does not rewrite what an owner once said.
-export type DispositionWorker = "land" | "review3" | "enhance";
+// producer, it does not rewrite what an owner once said. `enhance` — the ✨ compose-box rework,
+// ref = the draftId POST /api/enhance stamped — followed on 2026-09-19 for the same reason: the
+// route is gone, so no draft exists to label, and its filed rows stay readable the same way.
+export type DispositionWorker = "land" | "review3";
 export type DispositionVerdict = "accepted" | "edited" | "ignored" | "wrong";
-export const DISPOSITION_WORKERS: DispositionWorker[] = ["land", "review3", "enhance"];
+export const DISPOSITION_WORKERS: DispositionWorker[] = ["land", "review3"];
 export const DISPOSITION_VERDICTS: DispositionVerdict[] = ["accepted", "edited", "ignored", "wrong"];
 
 // --- post-land audit projection -----------------------------------------------------------------

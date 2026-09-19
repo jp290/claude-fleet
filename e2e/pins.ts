@@ -1905,13 +1905,13 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       && !/t\.analysis/.test(executableClient) && !executableClient.includes("classifyAnalystOffWarning"), "");
 
   // 6. THE DISPOSITION RAIL'S WRITE DOOR IS CLOSED — and only the write door. The reader validates
-  // no worker name, so labels already filed under `analysis` stay readable: retiring a producer
-  // must not rewrite what an owner once said.
+  // no worker name, so labels already filed under `analysis` (and, since 2026-09-19, `enhance`) stay
+  // readable: retiring a producer must not rewrite what an owner once said.
   const protocol = read("src/protocol.ts");
   const readerBody = server.slice(server.indexOf("async function readDispositions"),
     server.indexOf("function writeDisposition"));
-  pin("the disposition worker set no longer admits `analysis`, while the reader still validates none",
-    /export const DISPOSITION_WORKERS: DispositionWorker\[\] = \["land", "review3", "enhance"\];/.test(protocol)
+  pin("the disposition worker set no longer admits `analysis` or `enhance`, while the reader still validates none",
+    /export const DISPOSITION_WORKERS: DispositionWorker\[\] = \["land", "review3"\];/.test(protocol)
       && readerBody !== "" && !readerBody.includes("DISPOSITION_WORKERS"), "");
 
   // 7. THE WAVE PROJECTION IS DETERMINISTIC OR IT IS NOTHING. Model edges and the running-work block

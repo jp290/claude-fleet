@@ -1127,8 +1127,8 @@ export async function run(): Promise<void> {
       && /cur \? `your label: \$\{DISPO_WORD_UI\[cur\]\}` : "unlabeled"/.test(cliSrc),
       "the land label strip in renderOutcomes (src/client.ts)");
     // Second: ✨ Rework is retired (owner, thirteenth cut) — the client carries no entry point and
-    // writes no `enhance` label any more. The server route and the `enhance` worker stay (the brief
-    // compiler uses the same prompt module); this pins that the CLIENT half did not half-survive.
+    // writes no `enhance` label any more. The server route followed on 2026-09-19 (e2e/auth.ts); the
+    // `enhance` worker stays (the brief compiler runs it); this pins that the CLIENT half did not half-survive.
     check("client: ✨ Rework is retired — no #enhbtn, no /api/enhance call, no enhance label written",
       !/enhbtn|pendingEnhance|"\/api\/enhance"|labelDisposition\("enhance"/.test(cliSrc),
       "src/client.ts still carries a piece of the ✨ flow");

@@ -37,6 +37,7 @@ import {
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
 import { openShell, type Shell, type ShellRow } from "./shell";
+import { runningEffort, runningModel } from "./running";
 
 const $ = (id: string) => document.getElementById(id)!;
 const slotsEl = $("slots"), dot = $("dot"),
@@ -3617,12 +3618,12 @@ function renderComposerOpts(force: boolean): void {
     ageEl.hidden = true;
     compOpts.appendChild(ageEl);
     tickCacheAge();
-    const current = s?.model ?? "";
-    // an unpinned slot runs the fleet default only where the server bakes it in (the default
-    // harness, server.ts#DEFAULT_MODEL); elsewhere the harness picks, and the client cannot know
-    // ...and where the record names none, the model the transcript's newest turn actually ran on
-    // comes before that guess (Pane.observedModel — a hand-started or adopted session)
-    const shown = current || pane?.observedModel || (h.default && defaultModel ? defaultModel : "—");
+    // the model the transcript's newest turn actually ran on wins over the record
+    // (src/running.ts#runningModel — a /model typed in the pane never reaches the record); an
+    // unpinned slot with no file yet runs the fleet default only where the server bakes it in (the
+    // default harness, server.ts#DEFAULT_MODEL); elsewhere the harness picks, and the client cannot know
+    const current = runningModel(s?.model, pane?.observedModel);
+    const shown = current || (h.default && defaultModel ? defaultModel : "—");
     const mark = harnessMark(h.id);
     compOpts.appendChild(optSwitch("model", slot, current, shown, mark ? [el("span", "optmark")] : [], (stage) => {
       const input = document.createElement("input");
@@ -3669,20 +3670,20 @@ function renderComposerOpts(force: boolean): void {
     }, mark, (v) => (isMobile() ? modelLabel(v).split(" · ")[0] : modelLabel(v))));
   }
   if (h.supports.effort && h.effortLevels.length) {
-    const current = s?.effort ?? "";
-    // the slot record names an effort only when one was picked; otherwise the level the session's
-    // own file shows it running at (eighteenth cut: "default" said nothing), and only when no file
-    // names one does "default" stand — never a level guessed from a config
-    const running = current || pane?.observedEffort || "";
-    compOpts.appendChild(optSwitch("effort", slot, current, running || "default", [], (stage) => {
+    // the level the session's own file shows it running at, the record only as the fallback
+    // (src/running.ts#runningEffort, eighteenth cut); only when neither names one does "default"
+    // stand — never a level guessed from a config. Apply compares against THIS value, so picking
+    // the level a stale record already names still types it into the pane.
+    const running = runningEffort(s?.effort, pane?.observedEffort);
+    compOpts.appendChild(optSwitch("effort", slot, running, running || "default", [], (stage) => {
       const levels = el("div", "cmdlevels");
       for (const lv of h.effortLevels) {
         const b = el("button", "cmdlevel", lv) as HTMLButtonElement;
         b.classList.toggle("cur", lv === running);
-        b.classList.toggle("staged", lv === optStaged.effort && lv !== current);
+        b.classList.toggle("staged", lv === optStaged.effort && lv !== running);
         b.onclick = () => {
           stage(lv);
-          for (const o of levels.children) o.classList.toggle("staged", o === b && lv !== current);
+          for (const o of levels.children) o.classList.toggle("staged", o === b && lv !== running);
         };
         levels.appendChild(b);
       }

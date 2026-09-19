@@ -62,6 +62,7 @@ import {
 import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 import { DraftBook } from "../src/drafts";
+import { runningEffort, runningModel } from "../src/running";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
 // the deploy-gap's path classifier is IMPORTED and RUN over this very tree: the whole finding it
@@ -10139,6 +10140,28 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin("drafts: focusPane swaps the draft before it writes the placeholder, and doSend refuses a draft of another slot",
     /switchDraft\(slot \?\? 0\);[\s\S]*ta\.placeholder =/.test(focusBody) && /if \(slot !== draftSlot\)/.test(sendBody),
     `focus=${focusBody.includes("switchDraft(")} send=${sendBody.includes("draftSlot")}`);
+}
+
+// --- the switches name what the session RUNS, not what its record says (eighteenth cut) ----------
+// Measured on preview 8873: slot 1's record said effort "max", its transcript said "high", and the
+// switch showed "max". The file's value wins; the record is the fallback; neither → "" ("default").
+{
+  pin("running: effort — stored max, file high → the switch shows high",
+    runningEffort("max", "high") === "high", runningEffort("max", "high"));
+  pin("running: effort — a file naming no level falls back to the record, and neither gives \"\" (never a guess)",
+    runningEffort("max", null) === "max" && runningEffort(null, null) === "" && runningEffort(undefined, "low") === "low",
+    JSON.stringify([runningEffort("max", null), runningEffort(null, null), runningEffort(undefined, "low")]));
+  pin("running: model — a file naming ANOTHER model wins; the record's [1m] id stays when the file names the same model without it",
+    runningModel("claude-opus-5", "claude-haiku-4-5-20251001") === "claude-haiku-4-5-20251001"
+      && runningModel("claude-opus-5[1m]", "claude-opus-5") === "claude-opus-5[1m]"
+      && runningModel(null, "gpt-5.5") === "gpt-5.5" && runningModel("glm-5.3", null) === "glm-5.3" && runningModel(null, null) === "",
+    JSON.stringify([runningModel("claude-opus-5", "claude-haiku-4-5-20251001"), runningModel("claude-opus-5[1m]", "claude-opus-5")]));
+  const client = clientU.text;
+  const effortBody = client.slice(client.indexOf("if (h.supports.effort && h.effortLevels.length)"), client.indexOf("function closeOpts("));
+  pin("running: the effort switch is wired through runningEffort and compares Apply and \"cur\" against it, not the record",
+    effortBody.includes("runningEffort(s?.effort, pane?.observedEffort)") && effortBody.includes('optSwitch("effort", slot, running,')
+      && effortBody.includes('toggle("cur", lv === running)') && !/lv === current|lv !== current/.test(effortBody),
+    effortBody.slice(0, 160));
 }
 
 console.log(rows.join("\n"));

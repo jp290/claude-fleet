@@ -2219,8 +2219,11 @@ export async function run(h: {
 
     // --- (b) THE DEADLINE: the stand-in runner dies without reporting ---------------------
     await killSrv();
-    check("(K12) setup: the server restarts with a 4 s claim budget and a 1 s sweep — the named deadline the claim itself carries",
-      await startSrv({ audit: true, extra: { FLEET_HELPER_CLAIM_TIMEOUT_MS: "4000",
+    // 6000 ms, nicht weniger: HELPER_CLAIM_TIMEOUT_MS hat ein 5-s-Minimum (Math.max am Const),
+    // und der Check unten liest die Frist ab, die der Claim WIRKLICH trägt — eine Umgebung, die
+    // still auf 5000 hebt, müsste hier rot lesen, nicht grün.
+    check("(K12) setup: the server restarts with a 6 s claim budget and a 1 s sweep — the named deadline the claim itself carries",
+      await startSrv({ audit: true, extra: { FLEET_HELPER_CLAIM_TIMEOUT_MS: "6000",
         FLEET_HELPER_SWEEP_MS: "1000" } }));
     await Bun.sleep(750);
     await beatRelay();
@@ -2231,7 +2234,7 @@ export async function run(h: {
       { job?: { expiresAt?: number; claimedAt?: number } };
     const muteBudget = (muteClaimBody.job?.expiresAt ?? 0) - (muteClaimBody.job?.claimedAt ?? 0);
     check("(K12) (b) setup: the stand-in runner claims and then DIES — no report will ever come, and the claim named its own deadline",
-      /^[0-9a-f]{12}$/.test(muteJob) && muteBudget === 4000,
+      /^[0-9a-f]{12}$/.test(muteJob) && muteBudget === 6000,
       `job=${muteJob} budget=${muteBudget}ms`);
     // the runner is dead from here on: nothing will report. Wait out deadline + sweep + mint.
     const muteWaitDeadline = Date.now() + 20_000;
@@ -2244,7 +2247,7 @@ export async function run(h: {
     check("(K12) (b) A RUNNER THAT DIES PAST ITS NAMED DEADLINE SETTLES TERMINAL: `lapsed` WITH a verdict — unknown, no exit code, the helper named, the budget named, never green",
       muteView?.state === "lapsed" && muteView.result?.result === "unknown"
         && muteView.result.exitCode === null && muteView.result.remote?.reason === "timeout"
-        && muteView.result.remote?.name === RELAY_NAME && (muteView.result.remote?.timeoutMs ?? 0) === 4000
+        && muteView.result.remote?.name === RELAY_NAME && (muteView.result.remote?.timeoutMs ?? 0) === 6000
         && muteView.claim === null,
       JSON.stringify(muteView));
     const muteRows = await waitForEvent(muteJob);

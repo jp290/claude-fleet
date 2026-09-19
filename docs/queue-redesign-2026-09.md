@@ -69,6 +69,10 @@ kopiert, bis jene Lane landet.
   - Der Tab **Notes** gruppiert die offenen Notizen nach Program. Die Übersicht zeigt Zählkacheln,
     einen gestapelten Balken je Program und ein Alters-Histogramm. Owner: „notizen einbauen,
     aggregieren und … visuell darstellen".
+- **Schnitt 11**: Jede Zeile hat einen Lebenszyklus-Streifen. Backlog ist mute, released ist
+  Tinte mit Tönung, running ist `--q-live` mit Tönung und Puls, held ist `--q-wait`. Denselben Strich
+  hat der Detail-Titel. Die Kontrastwerte sind gemessen und stehen im Body von `b42d5b1e`. Owner:
+  „farbmarkierungen … was backlog was release und wann running ist".
 
 **ZIEL-ÄSTHETIK, Referenzbilder** (Screenshot-Server, aus der Chat-Lane):
 `c14-counter-after-send.png` und der Prosa-Screenshot vom 2026-09-19 15:34. Was daran das Ziel ist:

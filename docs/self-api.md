@@ -1089,6 +1089,21 @@ Die OWNER-Tür daneben bleibt **unverändert**: `POST /api/tasks/:id/brief`, jet
 `by:"owner"` gestempelt, damit die Aussage positiv im Datensatz steht und nicht aus einer Abwesenheit
 erschlossen werden muss.
 
+**Kommentare auf der Zeile erreichen die Lane (S3, seit 2026-09-19).** Der 409-Satz oben empfiehlt
+seit langem, eine Anmerkung statt als Brief-Umschrieb als Kommentar auf die Zeile zu stellen
+(`POST /api/tasks/:id/comment`) — aber keine Lane hat je einen gesehen (Messung
+`docs/messungen/2026-09-17-queue-felder-und-ihre-leser.md` §3: 55 Kommentare auf 32 Zeilen, 7
+davon `pending`). Jetzt trägt der Gründungsprompt sie als **eigenen, gekappten Block HINTER dem
+Brief** (`wave-brief.ts#renderRowComments`): hinter, nicht in ihm, weil der Brief freigegebene
+Bytes ist und als solche genehmigt wurde — dieselbe Trennung, die `Task.comments` in
+`server/types.ts` begründet. Der Block heißt `--- KOMMENTARE AUF DIESER ZEILE ---`, listet die
+Anmerkungen in ihrer Reihenfolge (je max. 500 Bytes, gesamt 1200 BytesBudget) und NENNT die Zahl
+der ausgelassenen Kommentare, wenn die Kappung greift — ein stiller Stutz wäre eine Behauptung
+darüber, was der Owner noch geschrieben hat. Kein Autor-Feld in diesem Schnitt (unter der
+Schnittlinie der Messung, Nachsatz erst wenn ein Leser dafür existiert). **Ohne Kommentar ist der
+Gründungsprompt byte-gleich zur Zustellung davor** — das ist Pin, nicht Absicht
+(`e2e/pins.ts`, S3-Regeln). Eine Welle trägt die Kommentare je Zeile in deren ZEILE-Abschnitt;
+dieselbe Renderer, derselbe Deckel.
 
 
 ## files-proposal — `POST /api/self/tasks/:id/files-proposal`

@@ -40,6 +40,43 @@ const clipBytes = (value: string, max: number): string => {
   return `${out}…`;
 };
 
+// S3 (docs/messungen/2026-09-17-queue-felder-und-ihre-leser.md §3): the OWNER'S OWN WORDS ON A ROW
+// (Task.comments, addressed "to whoever picks it up") reached nobody — 55 comments on 32 rows, and
+// not one ever reached a lane. They ride BEHIND the brief as their own byte-capped block: behind,
+// not inside, because the brief is released bytes approved as such (the same separation the
+// Task.comments field comment states), and ABSENT entirely when the row carries none, which is what
+// keeps a commentless founding prompt byte-identical to the delivery it replaces (pinned in
+// e2e/pins.ts). The renderer takes TEXTS ONLY — no id, no timestamp, no author: the author field is
+// an explicit later cut (Messung §3 Schnittlinie), and a renderer that cannot see a field cannot
+// leak it. Capped because the block exists to add the owner's correction, not a second brief; when
+// remarks are left out, the COUNT is named in the block — a silent cap would read as "that is all
+// the owner wrote".
+export interface RowCommentInput {
+  readonly text: string;
+}
+export const ROW_COMMENTS_MARK = "KOMMENTARE AUF DIESER ZEILE";
+const ROW_COMMENT_MAX_BYTES = 500; // one remark, clipped with the renderer's own "…"
+export const ROW_COMMENTS_MAX_BYTES = 1200; // the remarks' shared budget, header and count line excluded
+
+/** The exact bytes of a row's comment block, "" for a row without comments (never a header alone). */
+export function renderRowComments(comments?: readonly RowCommentInput[]): string {
+  if (!comments?.length) return "";
+  const remarks: string[] = [];
+  let used = 0;
+  for (const c of comments) {
+    const remark = clipBytes(c.text.trim(), ROW_COMMENT_MAX_BYTES);
+    const size = utf8.encode(remark).byteLength + 2; // the blank line between remarks
+    if (used + size > ROW_COMMENTS_MAX_BYTES) break;
+    remarks.push(remark);
+    used += size;
+  }
+  const omitted = comments.length - remarks.length;
+  // a clip at 500 B cannot fill 1200 B without fitting one remark, so `remarks` is never empty here
+  return `\n\n--- ${ROW_COMMENTS_MARK} ---\n\n${remarks.join("\n\n")}${omitted > 0
+    ? `\n\n(+${omitted} von ${comments.length} Kommentaren ausgelassen — der Platz war alle; deine MAIN kann den Rest nachreichen)`
+    : ""}`;
+}
+
 /** The exact head bytes for one valid card: first line starts with KARTE, whole head ≤ 1.5 KB. */
 export function renderCardHead(card: TaskCardBody): string {
   const surface = [card.surface.files.join(", "),
@@ -60,9 +97,11 @@ export function renderCardHead(card: TaskCardBody): string {
   return clipBytes(head, CARD_HEAD_MAX_BYTES);
 }
 
-/** A row's lane-facing body: the card head before the prose when a valid card exists, else the prose. */
-export function withCardHead(card: TaskCardBody | null, prose: string): string {
-  return card ? `${renderCardHead(card)}\n\n${prose}` : prose;
+/** A row's lane-facing body: the card head before the prose when a valid card exists, else the
+ *  prose — and the row's comment block behind it, absent (not empty) when the row has none. */
+export function withCardHead(card: TaskCardBody | null, prose: string,
+  comments?: readonly RowCommentInput[]): string {
+  return `${card ? `${renderCardHead(card)}\n\n` : ""}${prose}${renderRowComments(comments)}`;
 }
 
 export interface WaveBriefRow {
@@ -74,6 +113,8 @@ export interface WaveBriefRow {
   criterion: string | null;
   /** the row's card when it is VALID — rendered as a KARTE head before `brief ?? text`; null otherwise */
   card: TaskCardBody | null;
+  /** the row's comments (Task.comments) — their own capped block BEHIND `brief ?? text`, never in it */
+  comments?: readonly RowCommentInput[];
 }
 
 export interface WaveBriefInput {
@@ -89,7 +130,7 @@ export interface WaveBriefInput {
 }
 
 const numbered = (row: WaveBriefRow, at: number, total: number): string => {
-  const body = withCardHead(row.card, (row.brief ?? row.text).trim());
+  const body = withCardHead(row.card, (row.brief ?? row.text).trim(), row.comments);
   const criterion = row.criterion?.trim();
   return `--- ZEILE ${at + 1} VON ${total} · ${row.id} ---
 

@@ -12395,12 +12395,17 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
           // the CONFIRMED criterion only: an unconfirmed proposal is the producer's own draft, and
           // a wave brief that quoted one would hand the lane an anchor nobody promoted
           criterion: row.criterion?.confirmedAt ? row.criterion.text : null,
-          card: row.card?.valid ? row.card : null })),
+          card: row.card?.valid ? row.card : null,
+          // S3: the owner's words on the row reach the lane — as wave-brief.ts's own capped block
+          // BEHIND the row's brief, never folded into the released brief bytes
+          comments: row.comments })),
         sharedFiles: wave.sharedFiles, klasse: wave.klasse, units: wave.units, budget: LAND_WAVE_BUDGET,
         baseUrl: `http://${HOST}:${PORT}` })
       // a VALID card goes in front of the prose as a KARTE head; an absent or invalid one leaves
-      // the bytes exactly as they were, which is what keeps briefSourceOf's "card" honest
-      : withCardHead(src.card?.valid ? src.card : null, src.brief?.text ?? src.text);
+      // the bytes exactly as they were, which is what keeps briefSourceOf's "card" honest. The
+      // row's comments ride BEHIND that prose as their own capped block (S3, wave-brief.ts) —
+      // absent entirely when the row has none, so a commentless delivery stays byte-identical.
+      : withCardHead(src.card?.valid ? src.card : null, src.brief?.text ?? src.text, src.comments);
   // read HERE, at the same moment the bytes are chosen — not at receipt time. The row is mutable
   // and a later reader cannot tell whether an edit came before or after this delivery.
   const briefSource = briefSourceOf(src, clarify);

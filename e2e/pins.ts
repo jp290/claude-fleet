@@ -68,6 +68,9 @@ import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 // the same defect one layer up.
 import { buildRepoGraph, roleOf, type PathRole } from "../server/deploy-classify";
 import { GATE_MACHINERY_FILES, isGateMachinery } from "../task-land-waves";
+// S3's byte-equality rule is DRIVEN, not scanned: the renderer is pure (no clock, no git, no
+// state — wave-brief.ts's own header says so), so the pin runs it over the no-comment shapes.
+import { withCardHead, renderRowComments, renderCardHead, ROW_COMMENTS_MARK, ROW_COMMENTS_MAX_BYTES } from "../wave-brief";
 import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
 import { readContextManifest } from "../context-manifest";
 import { validUseWhen, validateContextPacks } from "../context-pack-validator";
@@ -3078,6 +3081,47 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       quoted.length > 0 && unregistered.length === 0,
       quoted.length === 0 ? "the brief quotes no self route — the split door went missing from it"
         : `${quoted.length} quoted: ${quoted.join(", ")}${unregistered.length ? ` · UNREGISTERED: ${unregistered.join(", ")}` : ""}`);
+  }
+  // (1b) S3 · A COMMENTLESS ROW'S FOUNDING BYTES ARE THE OLD BYTES (docs/messungen/
+  // 2026-09-17-queue-felder-und-ihre-leser.md §3). The comments block is bytes a lane executes, so
+  // the rule is imported and run over every no-comment shape a row can present (absent, empty) on
+  // BOTH brief paths — the card-headed one and the bare prose one. A pin of the shape "the seam
+  // still passes three arguments" would survive a renderer that appends anyway; this one cannot.
+  const waveBriefSrc = waveBrief; // the same file the route pin above read; null only off-tree
+  if (waveBriefSrc === null) {
+    skip("S3: a commentless row renders byte-identically on both brief paths", "wave-brief.ts is not in this tree");
+  } else {
+    const s3Card = { ziel: "t", rolle: { harness: null, model: null, effort: null },
+      surface: { files: ["a.ts"], symbols: [], ranges: null }, done: "d", verify: "v", verboten: [] };
+    const s3Prose = "DIE PROSA, FREIGEGEBEN";
+    const headAlone = `${renderCardHead(s3Card)}\n\n${s3Prose}`;
+    const noCommentBytes = renderRowComments(undefined) === "" && renderRowComments([]) === ""
+      && withCardHead(s3Card, s3Prose) === headAlone
+      && withCardHead(s3Card, s3Prose, []) === headAlone
+      && withCardHead(null, s3Prose) === s3Prose
+      && withCardHead(null, s3Prose, undefined) === s3Prose
+      && !headAlone.includes(ROW_COMMENTS_MARK);
+    // the block itself: texts in, count named when the budget cuts, author never — the fixture
+    // carries a `from` the renderer must not even be able to see (RowCommentInput has no such field)
+    const s3Authored: { text: string; from?: string }[] = [
+      { text: "erste Anmerkung", from: "branch-geheim-9f2" }, { text: "zweite Anmerkung" }];
+    const s3Block = renderRowComments(s3Authored);
+    const s3Many = Array.from({ length: 8 }, (_, i) => ({ text: `Anmerkung ${i} ${"x".repeat(400)}` }));
+    const s3Capped = renderRowComments(s3Many);
+    pin("S3: a commentless row renders byte-identically on both brief paths — the block is empty exactly when the row has none",
+      noCommentBytes,
+      JSON.stringify({ noComments: noCommentBytes, head: withCardHead(null, s3Prose) }));
+    pin("S3: the block delivers the texts, names the count it left out, stays inside its budget, and never shows an author",
+      s3Block.includes(ROW_COMMENTS_MARK) && s3Block.includes("erste Anmerkung") && s3Block.includes("zweite Anmerkung")
+      && s3Capped.includes("von 8 Kommentaren ausgelassen")
+      && new TextEncoder().encode(s3Capped).byteLength <= ROW_COMMENTS_MAX_BYTES + 256
+      && !s3Block.includes("branch-geheim-9f2") && !s3Block.includes("from:"),
+      `${JSON.stringify(s3Block).slice(0, 200)} · capped=${new TextEncoder().encode(s3Capped).byteLength}B`);
+    // ONE RENDERER: the marker lives in wave-brief.ts and nowhere in the server — a second copy
+    // would deliver two byte-laws for the same block.
+    pin("S3: the comments block has one renderer — server.ts carries no copy of the block's marker",
+      !server.includes(ROW_COMMENTS_MARK),
+      server.includes(ROW_COMMENTS_MARK) ? "server.ts re-spells the marker" : "absent");
   }
   // (2) THE WAVE BUDGET (S7, 5ac5565d) HAS ONE DEFINITION, A PINNED DEFAULT, AND IS NOT THE UNDO
   // DEPTH. The door bounds on IDENTIFIERS — the live budget (env over the default) and the row

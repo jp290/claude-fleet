@@ -3,7 +3,7 @@
 // buildEnhancePrompt as a pure function.
 import { buildEnhancePrompt } from "../enhance-prompt";
 import { createHash } from "node:crypto";
-import { BASE, H, TOKEN, check, get, post } from "./harness";
+import { BASE, H, PORT, TOKEN, check, get, post } from "./harness";
 
 export async function run(): Promise<void> {
   // --- auth & request guards ---
@@ -106,7 +106,35 @@ export async function run(): Promise<void> {
   });
   check("reject non-JSON content-type", plainpost.status === 400);
   const login = await fetch(BASE + `/?token=${TOKEN}`, { redirect: "manual" });
-  check("login URL sets cookie + redirects", login.status === 302 && (login.headers.get("set-cookie") ?? "").includes("SameSite=Strict"));
+  // The name must carry the RUNNING server's port — read from the same env this suite handed
+  // the server (harness PORT), not retyped — and the attributes survive unchanged.
+  const setc = login.headers.get("set-cookie") ?? "";
+  check("login URL sets cookie + redirects", login.status === 302 && setc.startsWith(`fleet_${PORT}=${TOKEN}; `),
+    `status=${login.status} cookie=${setc.slice(0, 40)}`);
+  check("login cookie keeps its name, attributes and Max-Age",
+    setc === `fleet_${PORT}=${TOKEN}; Path=/; SameSite=Strict; HttpOnly; Max-Age=31536000`, setc);
+  // THE ORIGINAL FAILURE, replayed at the level the browser actually behaves: cookies ignore
+  // ports, so two instances on one host (preview 8873 next to board 8790) share ONE jar and
+  // every request to either carries BOTH names. `otherPort` must never equal this suite's port
+  // (the isolated band is 8800–10799, so 8873 alone is not safe — hence the conditional).
+  const otherPort = PORT === 8873 ? 8874 : 8873;
+  const both = await fetch(BASE + "/api/sessions", {
+    headers: { cookie: `fleet_${PORT}=${TOKEN}; fleet_${otherPort}=not-this-instance` },
+  });
+  check("mixed jar (own + another instance's name) authenticates with the OWN value — the second login no longer kicks this board out",
+    both.status === 200, String(both.status));
+  // …and the name is really PORT-DERIVED, not a fleet_* wildcard: a jar holding only the OTHER
+  // instance's cookie must not open this instance. This 401 is the old bug read backwards.
+  const foreign = await fetch(BASE + "/api/sessions", {
+    headers: { cookie: `fleet_${otherPort}=not-this-instance` },
+  });
+  check("another instance's cookie alone is NOT accepted here (name is port-derived)",
+    foreign.status === 401, String(foreign.status));
+  // REDEPLOY SURVIVAL: a session logged in before this change carries the bare legacy name and
+  // must keep working until its next login replaces it with the new one.
+  const legacy = await fetch(BASE + "/api/sessions", { headers: { cookie: `fleet=${TOKEN}` } });
+  check("legacy bare-name cookie still authenticates (open session survives the deploy)",
+    legacy.status === 200, String(legacy.status));
   const staticOk = await fetch(BASE + "/");
   check("static HTML served without auth", staticOk.status === 200);
 }

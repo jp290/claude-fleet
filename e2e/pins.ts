@@ -5487,6 +5487,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // (bearer → cookie → query); if the two ever disagree the suspect flag would be stamped on the
   // wrong requests and nothing at runtime would notice. Asserted as "both read the same three
   // sources in the same order" rather than by comparing bodies, which would break on a reformat.
+  // The cookie half is ONE shared helper (server/auth.ts#cookieToken, port-scoped name + legacy
+  // fallback), so neither side re-derives it — the mirror check is that both still reach it in
+  // the same position between bearer and query.
   const chanBody = server.slice(server.indexOf("function tokenChannel("),
     server.indexOf("\n}", server.indexOf("function tokenChannel(")));
   // tokenFrom moved to server/auth.ts in the P4 auth slice, so its body is cut with span() —
@@ -5494,7 +5497,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const fromSpan = serverU.span("function tokenFrom(", "\n}");
   const fromBody = fromSpan?.text ?? "";
   const tokenOrder = (b: string): string[] =>
-    [...b.matchAll(/authorization|fleet=|searchParams\.get\("token"\)/g)].map((m) => m[0]);
+    [...b.matchAll(/authorization|cookieToken|searchParams\.get\("token"\)/g)].map((m) => m[0]);
   pin(`${RULE_LAND} — tokenChannel reads the SAME three token sources in the SAME order tokenFrom accepts them`,
     fromSpan !== null && tokenOrder(chanBody).length === 3
     && JSON.stringify(tokenOrder(chanBody)) === JSON.stringify(tokenOrder(fromBody)),

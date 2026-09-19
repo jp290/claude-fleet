@@ -167,6 +167,12 @@ const PRE_AUTH_ROUTES = [
   // triple. The answer side — the half that does type into a pane — is owner-gated and lives on
   // /api/attention, deliberately not here.
   '= /api/self/attention',
+  // Its withdrawal twin (2026-09-18): non-lane-only like the raise door above, and it closes ONE
+  // row — the id comes from the path, the row must carry the CALLER'S OWN occupant triple
+  // (attentionBound, compared inside the handler), it must still be open, and the required
+  // `reason` travels onto the row as `refusedReason` prose. No new state value, no pane write, no
+  // foreign slot, no status change: the row ends `refused`, which the owner's list already renders.
+  String.raw`~ /^\/api\/self\/attention\/([0-9a-f]{24})\/withdraw$/`,
   // ACP-16, and it is the entry on this list that comes closest to the queue: a bound Program-MAIN
   // releases a PENDING row of its own Program, `pending → queued` and nothing else. It is on the
   // pre-auth surface for the same reason as its neighbours — the exact self principal IS the

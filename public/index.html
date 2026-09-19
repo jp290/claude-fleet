@@ -598,7 +598,19 @@
     --raised: #262626; --line: #333; --line-soft: #2a2a2a;
     --accent: #7aa2f7; --sel: #2c3a5e; --focus: #3a4a7a;
     --amber: #e0af68; --add: #9ece6a; --del: #f7768e; --danger: #f85149;
-    --proj-s: 58%; --proj-l: 72%; }
+    --proj-s: 58%; --proj-l: 72%;
+    /* THE CHAT LANGUAGE (Stilvorgabe 2026-09-19, owner-abgenommen in 14 Schnitten). Kopiert aus
+       fleet/260919003602-4ba5:public/index.html — solange jene Lane nicht gelandet ist, stehen die
+       Tokens zweimal; beim Land gewinnt eine Definition, die Werte sind byte-gleich. */
+    --chat-fs: 14px; --chat-code-fs: 12.5px; --chat-ui-fs: 11px;
+    --chat-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    --chat-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --chat-ink: #e7e7ea; --chat-prose: #d4d4d8; --chat-mute: #8b8b94; --chat-faint: #5c5c66;
+    --chat-surface: #111113; --chat-raised: #17171a; --chat-edge: #26262b; --chat-edge-soft: #1b1b1f;
+    --c-hover: #202024; --c-edge-hi: #4a4a52;
+    --r1: 6px; --r2: 10px; --r3: 18px;
+    --t: 160ms cubic-bezier(0.2, 0.7, 0.2, 1); }
+  @media (prefers-reduced-motion: reduce) { :root { --t: 0ms; } }
   .slot.proj { border-left: 3px solid hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l) / 0.8); padding-left: 8px; }
   .slot.proj.current, .slot.proj:hover { border-left-color: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l)); }
   /* the pane carries no project stripe (owner, fifteenth cut: a 3px bar clipped by the pane's 8px
@@ -952,6 +964,143 @@
   .shellrow.ctx { background: #232a3a; }
   .shelldetail .difftxt { max-height: none; border: none; background: none; padding: 0; overflow: visible; }
   .diffstat.err { color: var(--del); }
+
+  /* === THE QUEUE IN THE CHAT LANGUAGE (Stilvorgabe 2026-09-19) ==========================
+     Scoped to #shell-queue on purpose: .shellwin/.shellrow/.shrbtn are the chrome of FOUR
+     surfaces (review, picker, queue, outcomes), and only this one was redesigned. Colour is
+     ink → prose → mute → faint; the only hues left are --danger for a broken state and the
+     copy confirmation. Radii are --r1/--r2/--r3, motion is --t. Spacing stays as it is in
+     this cut — the 4/8/12/16 grid moves in the next one, together with the fold budget that
+     reads these boxes in e2e/tasks.ts. */
+  #shell-queue { font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
+  #shell-queue .shellwin { background: var(--chat-surface); border: 1px solid var(--chat-edge);
+    border-radius: var(--r3); }
+  #shell-queue .shellhead, #shell-queue .shelltools { border-bottom-color: var(--chat-edge-soft); }
+  #shell-queue .shellfoot { border-top-color: var(--chat-edge-soft); }
+  #shell-queue .shelllist, #shell-queue .qtree { border-right-color: var(--chat-edge-soft); }
+  #shell-queue h2 { font-size: var(--chat-fs); font-weight: 500; color: var(--chat-ink); }
+  #shell-queue .shellsub, #shell-queue .shellhint, #shell-queue .qempty,
+  #shell-queue .qdmain-why, #shell-queue .qreleasenote { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-queue .qreleasenote { background: var(--chat-raised); border-color: var(--chat-edge); }
+  /* the LIST: the row's own words in ink, everything about it in mute/faint, and the stripe
+     that used to carry five hues now carries the three steps of the ink scale */
+  #shell-queue .shellrow { border-radius: var(--r1); transition: background var(--t), color var(--t); }
+  #shell-queue .shellrow:hover { background: var(--c-hover); }
+  #shell-queue .shellrow.sel { background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  #shell-queue .shellrow .shrname { font-size: var(--chat-fs); color: var(--chat-prose); }
+  #shell-queue .shellrow.sel .shrname { color: var(--chat-ink); }
+  #shell-queue .shellrow .shrsub, #shell-queue .shellrow.sel .shrsub,
+  #shell-queue .shellrow .qage { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-queue .shellrow.q-pending { border-left-color: var(--chat-edge); }
+  #shell-queue .shellrow.q-queued { border-left-color: var(--chat-mute); }
+  #shell-queue .shellrow.q-sent, #shell-queue .shellrow.q-running { border-left-color: var(--chat-ink); }
+  #shell-queue .shellrow.q-done { border-left-color: var(--chat-edge-soft); }
+  #shell-queue .shellrow.q-held { border-left-color: var(--chat-faint); }
+  #shell-queue .shellrow.q-held .shrname { color: var(--chat-mute); }
+  #shell-queue .shellrow.q-obs { border-left: 3px dotted var(--chat-faint); }
+  #shell-queue .shellrow.q-obs .shrname { color: var(--chat-mute); }
+  #shell-queue .shellrow.qchild .shrname { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  /* a FLAG is the one state that is broken rather than merely early — the single hue left in the list */
+  #shell-queue .shellrow.q-flag { border-left-color: var(--danger); }
+  #shell-queue .shellrow.q-marked { background: var(--c-hover); box-shadow: inset 0 0 0 1px var(--c-edge-hi); }
+  #shell-queue .shellrow.q-marked:hover { background: var(--chat-raised); }
+  #shell-queue .shellsect { color: var(--chat-faint); font-size: var(--chat-ui-fs); font-weight: 500; }
+  #shell-queue .shellsecn { color: var(--chat-faint); font-size: var(--chat-ui-fs); background: var(--chat-raised); }
+  #shell-queue .shellsecn.reveal { color: var(--chat-mute); }
+  #shell-queue .shellsecn.reveal:hover { color: var(--chat-ink); background: var(--c-hover); }
+  /* CHIPS: one shape, one edge, three weights. What a chip SAYS is its text; what it means is
+     its weight, not a colour — the palette here carried six hues and none of them was a rule. */
+  #shell-queue .qchip { font-size: var(--chat-ui-fs); border-radius: var(--r1);
+    color: var(--chat-mute); background: transparent; border-color: var(--chat-edge-soft); }
+  #shell-queue .qchip.qc-run, #shell-queue .qchip.qc-prog, #shell-queue .qchip.qc-bundle,
+  #shell-queue .qchip.qc-att { color: var(--chat-ink); background: var(--chat-raised); border-color: var(--chat-edge); }
+  #shell-queue .qchip.qc-hold, #shell-queue .qchip.qc-need, #shell-queue .qchip.qc-kind,
+  #shell-queue .qchip.qc-size, #shell-queue .qchip.qc-size-gross, #shell-queue .qchip.qc-brief {
+    color: var(--chat-mute); background: transparent; border-color: var(--chat-edge-soft); }
+  #shell-queue .qchip.qc-raw { color: var(--chat-faint); border-style: dashed; border-color: var(--chat-edge); }
+  #shell-queue .shellrow.sel .qchip { border-color: var(--chat-edge); }
+  /* the DETAIL: title in ink, its id in the mono face, sections labelled in faint */
+  #shell-queue .qdtitle-t { font-size: calc(var(--chat-fs) + 2px); font-weight: 500; color: var(--chat-ink); }
+  #shell-queue .qdtitle { border-bottom-color: var(--chat-edge-soft); }
+  #shell-queue .qdtitle-id, #shell-queue .qbundleid, #shell-queue .ent {
+    font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-queue .qdsection { border-top-color: var(--chat-edge-soft); }
+  #shell-queue .qdsection-title, #shell-queue .qdrail-h, #shell-queue .qkind-label {
+    color: var(--chat-faint); font-size: var(--chat-ui-fs); font-weight: 500; }
+  #shell-queue .rvhead { font-size: var(--chat-fs); font-weight: 500; color: var(--chat-ink); }
+  #shell-queue .qdrail { border-left-color: var(--chat-edge-soft); }
+  #shell-queue .qdhead-status { color: var(--chat-ink); }
+  #shell-queue .qcardk { color: var(--chat-faint); font-size: var(--chat-ui-fs); }
+  #shell-queue .qcardv, #shell-queue .qdtext { color: var(--chat-prose); font-size: var(--chat-code-fs); }
+  #shell-queue .qdtext { font-family: var(--chat-mono); background: var(--chat-surface);
+    border: 1px solid var(--chat-edge-soft); border-radius: var(--r2); }
+  /* the LIFECYCLE rail: walked in mute, standing in ink, ahead in faint — the same three steps */
+  #shell-queue .qlife-st { font-size: var(--chat-ui-fs); border-radius: var(--r1);
+    background: transparent; border-color: var(--chat-edge-soft); color: var(--chat-faint); }
+  #shell-queue .qlife-st.past { color: var(--chat-mute); }
+  #shell-queue .qlife-st.on { color: var(--chat-ink); background: var(--chat-raised);
+    border-color: var(--chat-edge); font-weight: 500; }
+  #shell-queue .qlife-st.end { color: var(--danger); border-color: var(--chat-edge); background: transparent; }
+  /* BUTTONS: the accent is the ink. A primary button is the one that reads brightest, not the
+     one that is blue; ✕ delete keeps --danger, which is now the only red on the surface. */
+  #shell-queue .shrbtn { font-family: var(--chat-sans); font-size: var(--chat-ui-fs);
+    border-radius: var(--r2); background: var(--chat-raised); border-color: var(--chat-edge);
+    color: var(--chat-mute); transition: color var(--t), background var(--t), border-color var(--t); }
+  #shell-queue .shrbtn:hover { color: var(--chat-ink); background: var(--c-hover); border-color: var(--c-edge-hi); }
+  #shell-queue .shrbtn.primary { background: var(--c-hover); border-color: var(--c-edge-hi);
+    color: var(--chat-ink); font-weight: 500; }
+  #shell-queue .shrbtn.qraw { color: var(--chat-mute); background: var(--chat-raised); border-style: dashed;
+    border-color: var(--c-edge-hi); }
+  #shell-queue .shrbtn.danger, #shell-queue .shrbtn.danger:hover { color: var(--danger); border-color: var(--chat-edge); }
+  #shell-queue .qview, #shell-queue .qprogsel, #shell-queue .pkfilterin, #shell-queue .qkind-select,
+  #shell-queue .qdcrit, #shell-queue .qaddin { font-family: var(--chat-sans); font-size: var(--chat-ui-fs);
+    border-radius: var(--r2); background: var(--chat-raised); border-color: var(--chat-edge); color: var(--chat-prose); }
+  #shell-queue .qdcrit, #shell-queue .qaddin { font-family: var(--chat-mono); font-size: var(--chat-code-fs); }
+  #shell-queue .qview { padding: 2px; background: var(--chat-surface); }
+  #shell-queue .qview button { border-radius: var(--r1); color: var(--chat-mute); font-size: var(--chat-ui-fs);
+    transition: color var(--t), background var(--t); }
+  #shell-queue .qview button:hover { color: var(--chat-ink); }
+  #shell-queue .qview button.on { color: var(--chat-ink); background: var(--c-hover); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  #shell-queue .qview button .qtabn, #shell-queue .qtreen .qtabn { color: var(--chat-faint); font-variant-numeric: tabular-nums; }
+  #shell-queue .qview button.on .qtabn { color: var(--chat-mute); }
+  #shell-queue .qtreen { font-size: var(--chat-ui-fs); border-radius: var(--r1); color: var(--chat-mute);
+    transition: color var(--t), background var(--t); }
+  #shell-queue .qtreen:hover { color: var(--chat-ink); background: var(--c-hover); }
+  #shell-queue .qtreen.on { color: var(--chat-ink); background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  #shell-queue .qtreen.repo { color: var(--chat-prose); }
+  #shell-queue .qage, #shell-queue .qtabn, #shell-queue .shellsecn { font-variant-numeric: tabular-nums; }
+  #shell-queue .qbundlebtn.on { color: var(--chat-ink); background: var(--c-hover); border-color: var(--c-edge-hi); }
+  #shell-queue .qdisp { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-queue .qmore > summary, #shell-queue .qfold, #shell-queue .qcardmore > summary {
+    font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-queue .qmore > summary:hover, #shell-queue .qfold:hover { color: var(--chat-ink); }
+  #shell-queue .qdfind.err { color: var(--danger); }
+  #shell-queue .qdfind.unk { color: var(--chat-mute); }
+  #shell-queue .shellrow.qnew .shrname { color: var(--chat-ink); font-weight: 500; }
+  #shell-queue .qsuggest, #shell-queue .qselbar, #shell-queue .qwavehint { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-queue .qrawack { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-queue .qrawack input { accent-color: var(--chat-mute); }
+  /* BUNDLE MODE was the loudest colour on the surface — a violet bar, a violet button and violet
+     rows. Marking is a state, not an alarm: the bar is the raised surface, the act reads in ink. */
+  #shell-queue .qselbar { background: var(--chat-raised); border-color: var(--chat-edge); font-size: var(--chat-ui-fs); }
+  #shell-queue .qselbar .qselgo:not(:disabled) { color: var(--chat-ink); background: var(--c-hover);
+    border-color: var(--c-edge-hi); }
+  #shell-queue .qselbar .qselwhy, #shell-queue .qspawnblock { color: var(--chat-mute); }
+  #shell-queue .qspawnblock { background: var(--chat-raised); border-color: var(--chat-edge); font-size: var(--chat-ui-fs); }
+  #shell-queue .qsuggest { border: 1px dashed var(--chat-edge); background: var(--chat-raised); border-radius: var(--r1); }
+  #shell-queue .qsuggestt { font-size: var(--chat-ui-fs); color: var(--chat-prose); }
+  #shell-queue .qsuggestf { color: var(--chat-faint); }
+  #shell-queue .qbundleid { color: var(--chat-mute); }
+  #shell-queue .qbundleid.go:hover, #shell-queue .qbundlesrc.go:hover { color: var(--chat-ink); }
+  #shell-queue .qwaveev { border-left-color: var(--chat-edge); }
+  #shell-queue .qwaveevf { color: var(--chat-faint); }
+  /* the LANE LINE under a row: one state is "not attached", which is a fact, not a warning */
+  #shell-queue .qlane-off, #shell-queue .qlane-done-looking { color: var(--chat-mute); }
+  #shell-queue .qlane { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-queue .qcardv { color: var(--chat-prose); }
+  #shell-queue .qdcrit { color: var(--chat-prose); }
+  #shell-queue .shellsec.qfoldhead:hover .shellsect { color: var(--chat-ink); }
+  /* === end THE QUEUE IN THE CHAT LANGUAGE === */
 
   /* condition MUST match MOBILE_MQ in src/client.ts and src/shell.ts */
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {

@@ -435,6 +435,36 @@ export async function run(ctx: Ctx): Promise<void> {
       && scopeSource.includes('o.value = `${repo}\\n${prog}`;')
       && scopeSource.includes('const [r, k] = sel.value.split("\\n");'),
     "paintQueueScope shapes");
+  // THE CHAT LANGUAGE ON THE QUEUE (Stilvorgabe 2026-09-19, angewandt 2026-09-19). What is proven
+  // here is what the Vorgabe forbids rather than what it recommends: inside the queue's own block
+  // every colour comes from the chat tokens or --danger, so a raw hex or the old blue accent fails
+  // this line. It does NOT claim the rendered pixel — there is no DOM in this suite — and it does
+  // not speak for the other three shells, which the block deliberately leaves alone.
+  {
+    const open = taskPageSource.indexOf("=== THE QUEUE IN THE CHAT LANGUAGE");
+    const end = taskPageSource.indexOf("=== end THE QUEUE IN THE CHAT LANGUAGE", open);
+    const block = open >= 0 && end > open ? taskPageSource.slice(open, end) : "";
+    check("queue style: the queue block exists, is scoped to #shell-queue and sets type and surface from the chat tokens",
+      block.includes("#shell-queue { font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }")
+        && /#shell-queue \.shellwin \{[^}]*background: var\(--chat-surface\)/.test(block)
+        && /--chat-ink: #e7e7ea/.test(taskPageSource) && /--r3: 18px/.test(taskPageSource)
+        && (block.match(/#shell-queue /g) ?? []).length > 40,
+      `${block.length} chars, ${(block.match(/#shell-queue /g) ?? []).length} scoped rules`);
+    // every colour in the block is a token; the two hues that survive are --danger (a broken state)
+    // and the ink scale. A hex value or the blue accent inside this block is the mutation caught.
+    const hexes = block.match(/#[0-9a-fA-F]{3,8}\b/g) ?? [];
+    const banned = ["var(--accent)", "var(--sel)", "var(--amber)", "var(--add)", "var(--del)"];
+    check("queue style NEGATIVE: no raw hex and no pre-redesign accent inside the queue block — --danger is the only hue left",
+      hexes.length === 0 && banned.every((b) => !block.includes(b)) && block.includes("var(--danger)"),
+      `hex=${JSON.stringify(hexes.slice(0, 4))} banned=${JSON.stringify(banned.filter((b) => block.includes(b)))}`);
+    // the five places the blue used to reach the queue, each one answered in the block. A base rule
+    // that starts painting the queue blue again is only invisible here if its selector is listed.
+    const overridden = ["#shell-queue .shellrow.sel {", "#shell-queue .shrbtn.primary {",
+      "#shell-queue .qview button.on {", "#shell-queue .shellrow.qnew .shrname {", "#shell-queue .qchip.qc-prog"];
+    check("queue style: every rule that carried the blue accent into the queue has an override in the block",
+      overridden.every((sel) => block.includes(sel)),
+      JSON.stringify(overridden.filter((sel) => !block.includes(sel))));
+  }
 
   // --- TASK DETAIL HEAD (src/client.ts, between "// --- TASK DETAIL HEAD" and its closing
   // marker) — the pane's first screen. What is proven here: the lifecycle station a status maps

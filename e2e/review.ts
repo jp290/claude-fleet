@@ -1,7 +1,7 @@
 // The 🔍 review agent (owner click) and auto-③ (the server running it itself on a done-looking
 // lane) — every guard rail asserted as a fact via the stand-in's per-cwd spawn log.
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, check, get, post, paneEnv, reviewRunsFor, lastReviewPromptFor, restartSrv } from "./harness";
+import { BASE, REPO, check, get, post, paneEnv, reviewRunsFor, lastReviewPromptFor, restartSrv, until, UntilTimeout } from "./harness";
 import { settleForMerge, waitMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 
@@ -152,10 +152,11 @@ export async function run(ctx: Ctx): Promise<void> {
 
     // the git fact cache refreshes on the 10s tickGit, so the first auto-③ can only land after it
     let arCached = false;
-    for (let i = 0; i < 40 && !arCached; i++) {
-      await Bun.sleep(1000);
-      arCached = ((await (await get(`/api/slots/${ar.slot}/review`)).json()) as { cached: boolean }).cached === true;
-    }
+    try {
+      arCached = await until(async () =>
+        ((await (await get(`/api/slots/${ar.slot}/review`)).json()) as { cached: boolean }).cached === true,
+      { timeoutMs: 40_000, stepMs: 1000, what: `auto-③ cache to hold for ${ar.cwd}` });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     check("auto-③ reviewed the done-looking lane with no owner click at all", arCached,
       `runs=${reviewRunsFor(ar.cwd)}`);
     check("auto-③ spawned the reviewer exactly once for that git state", reviewRunsFor(ar.cwd) === 1,
@@ -213,7 +214,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const idlFirst = post(`/api/slots/${idl.slot}/review`, {}).then(
       async (r) => ({ status: r.status, body: (await r.json().catch(() => null)) as { findings?: unknown } | null }),
       (e: unknown) => ({ status: 0, body: { error: e instanceof Error ? e.message : String(e) } as { findings?: unknown } }));
-    await Bun.sleep(1500);
+    // the reviewer RUNNING is the fact the fixed 1.5 s paced: the kill below must land while the
+    // job is in flight, and the stand-in appends its cwd at spawn (reviewdelay=6 s keeps it there)
+    try {
+      await until(() => reviewRunsFor(idl.cwd) > 0,
+        { timeoutMs: 15_000, stepMs: 100, what: `the reviewer for ${idl.cwd} to spawn` });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     await post(`/api/slots/${idl.slot}/kill`, {}); // recycle the slot out from under the running review
     const idlRec = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
       { outcomes: { branch: string | null; review?: { state: string } }[] })
@@ -382,10 +388,10 @@ export async function run(ctx: Ctx): Promise<void> {
 
     // the git facts ride the 10s tickGit, and the idle clock is the shrunk threshold on top
     let slView: SvSlot | undefined;
-    for (let i = 0; i < 40 && !slView?.stalled; i++) {
-      await Bun.sleep(1000);
-      slView = await svSlot(sl.slot);
-    }
+    try {
+      await until(async () => { slView = await svSlot(sl.slot); return slView?.stalled === true; },
+        { timeoutMs: 40_000, stepMs: 1000, what: `slot s${sl.slot} to serve stalled:true` });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     // non-tautology guard first: name the precondition, so a silent pane fails as a SETUP problem
     // rather than looking like the predicate is broken
     check("stalled setup: the lane's output was observed, so idle means idle and not 'never spoke'",
@@ -436,10 +442,10 @@ export async function run(ctx: Ctx): Promise<void> {
     spawnSync("git", ["-C", sl.cwd, "add", "unstalled.txt"]);
     spawnSync("git", ["-C", sl.cwd, "commit", "-qm", "the stalled lane produces work"]);
     let after: SvSlot | undefined;
-    for (let i = 0; i < 40 && after?.stalled !== false; i++) {
-      await Bun.sleep(1000);
-      after = await svSlot(sl.slot);
-    }
+    try {
+      await until(async () => { after = await svSlot(sl.slot); return after?.stalled === false; },
+        { timeoutMs: 40_000, stepMs: 1000, what: `slot s${sl.slot} to clear stalled` });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     check("stalled clears itself once the lane has committed something (level-triggered, never latched)",
       after?.stalled === false && after?.stalledSince === null, JSON.stringify(after));
     // the SECOND half of the carrier proof, and the one that keeps the first from being a payload
@@ -593,9 +599,11 @@ export async function run(ctx: Ctx): Promise<void> {
       !!oA && !!oB, `opted=${JSON.stringify(oA)} control=${JSON.stringify(oB)}`);
     let oEvents: OEvent[] = [];
     // the git fact cache refreshes on the 10s tickGit, so done-looking can only hold after it
-    for (let i = 0; i < 45 && oA && oEvents.length === 0; i++) {
-      await Bun.sleep(1000);
-      oEvents = await oReviews(oOpted!.id);
+    if (oA) {
+      try {
+        await until(async () => { oEvents = await oReviews(oOpted!.id); return oEvents.length > 0; },
+          { timeoutMs: 45_000, stepMs: 1000, what: `lane-review event for ${oOpted?.id}` });
+      } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     }
     await Bun.sleep(4000); // several more opt-in ticks, on both lanes
     check("review opt-in (1): with FLEET_AUTO_REVIEW_MS=0 the opted row's lane got EXACTLY ONE reviewer, the control row's lane none",

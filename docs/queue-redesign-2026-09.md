@@ -54,6 +54,21 @@ kopiert, bis jene Lane landet.
   (13/12 statt 14/12.5), Knöpfe haben 4px 12px. Das Fenster ist der Viewport minus 16px je Seite,
   die Breite geht an die Liste (360) und nicht an den Baum (184). Screenshots `q10-before-*` und
   `q13-after-*` auf :8874.
+- **Schnitte 6–10** (Session 4, nach seiner zweiten Runde):
+  - Jede Nebenaktion in der Schiene hat eine Zeile, die sagt, was sie tut. Owner: „die ganzen
+    funktionen rechts sind … unklar".
+  - „＋ New task" ist ein Knopf in der Leiste, dahinter ein richtiges Formular: Repo und Program
+    beschriftet, „Create task", ⌘↵.
+  - Eine Zeile „arrived as" oben in der Lesespalte zeigt original → brief → refine → criterion. Jeder
+    Schritt öffnet seinen Abschnitt, das Original bleibt über Repaints offen. Owner: „refinement ist
+    ja nicht das original oder?"
+  - Textblöcke werden als Markdown gerendert, der copy-Knopf nimmt weiter die Rohbytes.
+  - Beim Hover über eine bekannte Task-Id erscheint eine Karte. `src/entcard.ts` ist byte-gleich zu
+    `fleet/260919003602-4ba5`. `entityKnown`/`describeEntity` stehen hier ein zweites Mal, und
+    wer von beiden Lanes als zweite landet, führt sie zusammen.
+  - Der Tab **Notes** gruppiert die offenen Notizen nach Program. Die Übersicht zeigt Zählkacheln,
+    einen gestapelten Balken je Program und ein Alters-Histogramm. Owner: „notizen einbauen,
+    aggregieren und … visuell darstellen".
 
 **ZIEL-ÄSTHETIK, Referenzbilder** (Screenshot-Server, aus der Chat-Lane):
 `c14-counter-after-send.png` und der Prosa-Screenshot vom 2026-09-19 15:34. Was daran das Ziel ist:

@@ -990,6 +990,22 @@
   .shelldetail .difftxt { max-height: none; border: none; background: none; padding: 0; overflow: visible; }
   .diffstat.err { color: var(--del); }
 
+  /* ids the board knows — the card is src/entcard.ts. These rules are fleet/260919003602-4ba5's,
+     byte for byte, until that lane lands and the copy goes. */
+  /* ids the board knows (src/md.ts marks them, src/entcard.ts explains them on hover) */
+  .ent { font-family: var(--chat-mono); font-size: 0.92em; border-bottom: 1px dotted var(--chat-mute);
+    border-radius: 3px; cursor: help; transition: background 0.12s, color 0.12s; }
+  .ent:hover { background: #1b2233; color: #fff; border-bottom-color: var(--accent); }
+  .mdcode.ent { border-bottom: 1px dotted var(--chat-mute); }
+  .entcard { position: fixed; z-index: 60; display: none; width: 320px; max-width: calc(100vw - 16px);
+    padding: 11px 14px 12px; background: rgba(12, 12, 14, 0.97); border: 1px solid var(--chat-edge);
+    border-radius: 12px; box-shadow: 0 16px 48px #000d; color: var(--chat-prose);
+    font-family: var(--chat-sans); font-size: calc(var(--chat-ui-fs) + 1px); line-height: 1.45;
+    opacity: 0; transform: scale(0.98); transition: opacity 0.12s ease-out, transform 0.12s ease-out; }
+  .entcard.open { opacity: 1; transform: scale(1); }
+  .entmeta { font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  .enttitle { color: var(--chat-ink); font-weight: 600; font-size: 1.08em; margin: 4px 0 7px; overflow-wrap: anywhere; }
+
   /* === THE QUEUE IN THE CHAT LANGUAGE (Stilvorgabe 2026-09-19) ==========================
      Scoped to #shell-queue on purpose: .shellwin/.shellrow/.shrbtn are the chrome of FOUR
      surfaces (review, picker, queue, outcomes), and only this one was redesigned. Colour is
@@ -1162,6 +1178,11 @@
   #shell-queue .qorigin-st { color: var(--chat-prose); border-color: var(--chat-edge-soft); transition: background var(--t); }
   #shell-queue .qorigin-st:hover { background: var(--c-hover); border-color: var(--chat-edge); }
   #shell-queue .qorigin-arrow { color: var(--chat-faint); font-size: 11px; }
+  /* in the queue a known id reads as the pane's inline code chip with a dotted underline; the
+     chat's blue hover gives way to the ink, like every other accent here */
+  #shell-queue .ent { font-size: var(--chat-ui-fs); color: var(--chat-ink); border-bottom-color: var(--chat-faint); }
+  #shell-queue .ent:hover, #shell-queue .ent:focus-visible { background: var(--c-hover); color: var(--chat-ink);
+    border-bottom-color: var(--chat-ink); outline: none; }
   /* the larger window goes to the LIST (listWidth in openQueue), which wrapped its chips at
      330px, and not to the scope tree */
   #shell-queue .qtree { width: 184px; }

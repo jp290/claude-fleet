@@ -693,6 +693,17 @@ export async function run(ctx: Ctx): Promise<void> {
       /const body = el\("div", "qdtext qdmd"\);\s*mdInto\(body, text\);/.test(taskClientSource)
         && /copy\.onclick = \(\) => \{\s*copyText\(text\);/.test(taskClientSource),
       "text block rendering");
+    // HOVERABLE IDS (owner, 2026-09-19: "die selbe funktion … über alle 40235c0c usw. hovern zu
+    // können"). One card on the detail pane, attached once; every paint ends in restoreFocus, which
+    // marks the known ids of the pane's TEXT. Mutations caught: the card never attached, the marking
+    // pass dropped from the paint, drafts in a textarea no longer excluded, unknown hex marked too.
+    check("queue ids: known task ids in the detail pane are marked on every paint and explained by one attached card",
+      /attachEntityCards\(shell\.detail, describeEntity\);/.test(openQueueSource)
+        && /const restoreFocus = \(\) => \{[\s\S]{0,160}qMarkIds\(shell\.detail\);/.test(detailSource)
+        && /p\.closest\("\.ent, \.qdtitle-id, textarea, button"\)/.test(taskClientSource)
+        && /if \(!entityKnown\("task", m\[0\]\)\) continue;/.test(taskClientSource)
+        && /import \{ attachEntityCards, type EntFacts \} from "\.\/entcard";/.test(taskClientSource),
+      "hover wiring");
     // the rail below the head: the acts, the options, where the row lives, and the ⋯ fold last.
     // Mutations caught: the acts pushed under the facts, the facts dropped (built, never appended),
     // the ⋯ fold moved above the acts.

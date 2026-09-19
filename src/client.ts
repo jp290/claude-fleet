@@ -8548,6 +8548,47 @@ function qActDesc(node: HTMLElement, desc: string): HTMLElement {
   return node;
 }
 
+// HOVERABLE IDS in the queue (owner, 2026-09-19: "die selbe funktion … über alle 40235c0c usw.
+// hovern zu können um zu erfahren worum es sich handelt"): the chat view's card (src/entcard.ts)
+// and its entityKnown/describeEntity, one copy for both surfaces.
+
+// wrap every 8-hex task id the board knows, inside `root`'s TEXT, in the span entcard reads. Only
+// text nodes: a draft in a textarea is never touched, and a span already marked is skipped. The
+// title's own id is left alone — hovering the row you are reading tells you nothing.
+const Q_ID_RE = /\b[0-9a-f]{8}\b/g;
+function qMarkIds(root: HTMLElement): void {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => {
+      const p = n.parentElement;
+      if (!p || p.closest(".ent, .qdtitle-id, textarea, button")) return NodeFilter.FILTER_REJECT;
+      return /[0-9a-f]{8}/.test(n.nodeValue ?? "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const hits: Text[] = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) hits.push(n as Text);
+  for (const node of hits) {
+    const text = node.nodeValue ?? "";
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let marked = false;
+    for (const m of text.matchAll(Q_ID_RE)) {
+      if (!entityKnown("task", m[0])) continue;
+      const at = m.index ?? 0;
+      frag.append(text.slice(last, at));
+      const span = el("span", "ent ent-task", m[0]);
+      span.dataset.ent = "task";
+      span.dataset.id = m[0];
+      span.tabIndex = 0;
+      frag.appendChild(span);
+      last = at + m[0].length;
+      marked = true;
+    }
+    if (!marked) continue;
+    frag.append(text.slice(last));
+    node.replaceWith(frag);
+  }
+}
+
 // the row whose original request the owner opened from the "arrived as" strip
 let qShowOriginal: string | null = null;
 
@@ -9314,6 +9355,8 @@ function renderQueueDetail() {
     ? { start: focused.selectionStart, end: focused.selectionEnd, direction: focused.selectionDirection }
     : null;
   const restoreFocus = () => {
+    // every paint ends here, so this is where the pane's task ids become hoverable
+    qMarkIds(shell.detail);
     // a <select> has no text caret, but it does have focus worth keeping: the composer's program
     // picker is a kept node, so a repaint under an open keyboard interaction must not drop it
     if (!(focused instanceof HTMLTextAreaElement || focused instanceof HTMLInputElement
@@ -10863,6 +10906,8 @@ function openQueue() {
     qKey = ""; renderQueue(); renderQueueDetail();
   };
   qBundleBtn = bundleBtn;
+  // one card for the whole detail pane — the pane node survives every repaint, its children do not
+  attachEntityCards(shell.detail, describeEntity);
   // ＋ NEW TASK as a button of its own (owner, 2026-09-19: "es gibt auch keinen knopf 'new task'"):
   // the list's first row stays, but it scrolls away and is hidden while a search runs
   const newBtn = el("button", "shrbtn primary qnewbtn", "＋ New task") as HTMLButtonElement;

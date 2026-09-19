@@ -8,6 +8,7 @@ import { selectionMarkdown } from "./mdcopy";
 import { Flakes } from "./flakes";
 import { harnessMark, icon, type IconName } from "./icons";
 import { modelLabel } from "./modelname";
+import { DraftBook } from "./drafts";
 import { attachEntityCards, type EntFacts } from "./entcard";
 import { loadChatSizes, sizePanel, stepChatSizes } from "./chatsize";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
@@ -785,6 +786,7 @@ class Pane {
     this.viewBtn.title = v === "chat" ? "back to terminal" : "toggle conversation view";
     this.flakes.setActive(v === "chat");
     if (v !== "chat") sizePanel().classList.remove("open");
+    saveView();
     this.syncHarnessAffordances();
     mountComposer(); // the one composer takes the size of the focused pane's view
     clearTimeout(this.chatTimer);
@@ -3537,6 +3539,13 @@ function cacheTtlFor(provider: string): number | null {
   if (provider === "openai" || provider === "openai-codex") return CODEX_CACHE_TTL_MS;
   return null;
 }
+// WORKING vs IDLE (seventeenth cut). While the agent works, every tool result starts a new request,
+// so a counter "since the last request" fell back to 0:00 several times a turn (owner, slot 5:
+// 0:10 → 0:01) — read as broken. The counter now shows only while the session is IDLE. Idle is the
+// pane's own paint: every harness repaints its spinner while it works — measured at slot 5 over a
+// three-tool turn, lastOutput was never older than 0.4 s until "done", then aged 1 s per second
+// (idle panes 5/6/7: 56–590 s without a byte). 4 s leaves room for the 2 s poll that carries it.
+const CACHE_BUSY_MS = 4000;
 const fmtTtl = (ms: number): string => (ms >= 3_600_000 ? `${ms / 3_600_000} h` : `${ms / 60_000} min`);
 let ageEl: HTMLElement | null = null;
 const fmtAge = (ms: number): string => {
@@ -3550,6 +3559,10 @@ function cacheAge(): number | null {
   const p = panes[focused];
   // no conversation this board reads, or a provider with no measured TTL: no reference, no counter
   if (!p?.slot || !canChatOn(harnessEntry(p.slot)?.supports) || p.cacheTtl === null) return null;
+  // a request that just started counts as work too: the pane's first spinner frame reaches this
+  // board one poll later, and in that gap the counter showed 0:00, 0:01 and then vanished
+  const lastOutput = fleet.find((x) => x.id === p.slot)?.lastOutput ?? 0;
+  if (serverClock() - Math.max(lastOutput, p.lastTurnAt) < CACHE_BUSY_MS) return null; // working
   const at = p.lastTurnAt;
   return at ? Math.max(0, serverClock() - at) : null;
 }
@@ -3816,6 +3829,7 @@ function focusPane(index: number) {
   focused = index;
   for (const p of panes) p.root.classList.toggle("focused", p.index === focused);
   const slot = panes[focused]?.slot;
+  switchDraft(slot ?? 0);
   const hint = isMobile() ? "" : " (Enter sends)";
   ta.placeholder = slot ? `Prompt for slot ${slot}…${hint}` : "Prompt… (no session in focused pane)";
   updateTitle();
@@ -3975,7 +3989,10 @@ for (const b of document.querySelectorAll<HTMLButtonElement>("#layouts button"))
   };
 
 function saveView() {
-  localStorage.setItem("fleet.view", JSON.stringify({ layout, panes: panes.map((p) => p.slot), focused }));
+  // `chats`: which panes show the conversation view — a reload used to land every pane back on the
+  // terminal, and with it the composer's switches and cache counter were gone (seventeenth cut)
+  localStorage.setItem("fleet.view", JSON.stringify({ layout, panes: panes.map((p) => p.slot), focused,
+    chats: panes.map((p) => p.isChat) }));
 }
 
 // --- directory picker ---
@@ -12506,6 +12523,9 @@ async function doSend() {
   const outgoing = [text, attachedText()].filter(Boolean).join("\n");
   const slot = pane?.slot;
   if (!outgoing || !slot || send.disabled) return;
+  // the box's content was written for draftSlot; switchDraft keeps the two equal, and a send
+  // that finds them apart refuses rather than guess (the seventeenth cut's misdelivery)
+  if (slot !== draftSlot) { toast(`not sent — this draft belongs to slot ${draftSlot}`); return; }
   send.disabled = true;
   try {
     if (!await deliver(slot, outgoing)) return;
@@ -12589,7 +12609,27 @@ const mainEl = $("main");
 // image shows its own bytes as a thumbnail — an object URL over the File the browser already
 // holds, no request — and every entry carries its size. The URL is revoked wherever the entry
 // leaves the list (✕, send), otherwise every dropped screenshot stays in memory for the tab's life.
-const attached: { name: string; mention: string; size: number; thumb?: string }[] = [];
+type Attachment = { name: string; mention: string; size: number; thumb?: string };
+const attached: Attachment[] = [];
+
+// ONE DRAFT PER SLOT (seventeenth cut) — why and how: src/drafts.ts. Reproduced in the preview,
+// split 7|6: typed with 7 focused, mousedown on 6, Enter → POST /send {slot:6}.
+const drafts = new DraftBook<Attachment>();
+let draftSlot = 0;
+function switchDraft(slot: number): void {
+  if (slot === draftSlot) return;
+  const next = drafts.swap(draftSlot, fleet[draftSlot - 1]?.openedAt, { text: ta.value, attached },
+    slot, fleet[slot - 1]?.openedAt);
+  for (const a of next.dropped) if (a.thumb) URL.revokeObjectURL(a.thumb);
+  draftSlot = slot;
+  ta.value = next.text;
+  attached.length = 0; // no revoke: the parked entries still own their thumbnails
+  attached.push(...next.attached);
+  cyc = null;
+  renderAttachments();
+  growComposer();
+  updateChips();
+}
 
 // the owner's ":1M" — bytes in the short form a file list uses: 512B, 820K, 1.4M, 12M
 function fmtSize(n: number): string {
@@ -12704,8 +12744,12 @@ async function uploadDrops(files: File[]): Promise<void> {
       // repo that does not ignore the drop directory) applies to the whole batch, and a toast per
       // file would bury it.
       if (!res.ok || !j.mention) { toast(j.error ?? `upload failed (${res.status})`); return; }
-      attached.push({ name: f.name, mention: j.mention, size: f.size,
-        ...(f.type.startsWith("image/") ? { thumb: URL.createObjectURL(f) } : {}) });
+      const entry: Attachment = { name: f.name, mention: j.mention, size: f.size,
+        ...(f.type.startsWith("image/") ? { thumb: URL.createObjectURL(f) } : {}) };
+      // the focus may have moved during the upload: the file lives in `slot`'s drops directory,
+      // so it joins that slot's draft, never the one now in the box
+      if (slot === draftSlot) attached.push(entry);
+      else drafts.attach(slot, fleet[slot - 1]?.openedAt, entry);
     }
     renderAttachments();
     updateChips();
@@ -12759,7 +12803,7 @@ buildTray(); // the tray's entries are the functions that used to own an icon bu
 void (async () => {
   await refresh();
   void loadDispositions(); // so an already-labeled ③ review renders its label, not "unbewertet"
-  let view: { layout?: number; panes?: number[]; focused?: number } = {};
+  let view: { layout?: number; panes?: number[]; focused?: number; chats?: boolean[] } = {};
   try {
     view = JSON.parse(localStorage.getItem("fleet.view") ?? "{}") as typeof view;
   } catch {
@@ -12773,6 +12817,9 @@ void (async () => {
     if (first) assignments[0] = first;
   }
   setLayout(n, assignments);
+  // back into the conversation view only where the SAME slot sits in the same pane again
+  // (syncHarnessAffordances sends a slot without one back to the terminal on its own)
+  panes.forEach((p, i) => { if (view.chats?.[i] && p.slot && p.slot === view.panes?.[i]) p.setView("chat"); });
   focusPane(Math.min(view.focused ?? 0, n - 1));
   setCollapsed(localStorage.getItem("fleet.sidecollapsed") === "1");
 })();

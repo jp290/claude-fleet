@@ -919,7 +919,9 @@ export async function run(ctx: Ctx): Promise<void> {
       check("task spawn choice source: both acts are disabled while the block stands, and a block opens the fold that holds the pick",
         /if \(spawnProblem\) sb\.disabled = true;/.test(actsSrc) && /cb\.disabled = spawnProblem !== null;/.test(actsSrc)
           && /more\.appendChild\(qSpawnRow\(t\.id\)\);\s*if \(spawnProblem\) more\.open = true;/.test(actsSrc)
-          && /actionSection\.appendChild\(acts\);\s*actionSection\.appendChild\(more\);/.test(taskClientSource));
+          // D2: the acts and the fold that holds the pick are neighbours in the RAIL, so an opened
+          // block sits right under the two disabled buttons it explains
+          && /rail\.appendChild\(acts\);\s*rail\.appendChild\(more\);/.test(taskClientSource));
       check("task spawn choice source: the pick is keyed by task id, re-synced in place across repaints, dropped on close and on start",
         /const qSpawnPick = new Map<string, QSpawnPick>\(\);/.test(taskClientSource)
           && /if \(!qSpawnUi \|\| qSpawnUi\.for !== id\) \{/.test(taskClientSource)

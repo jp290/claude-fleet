@@ -28,6 +28,36 @@ Text-Konvention.
 
 §3 unten ist die Entwurfsrichtung vor der Wahl und bleibt als Begründung stehen.
 
+### Stilvorgabe der Chat-Ansicht, angewandt (2026-09-19)
+
+Der Owner hat über die Orchestratorin die Stilvorgabe der Chat-Ansicht geschickt (14 von ihm
+abgenommene Schnitte) und verlangt, sie auf die Queue anzuwenden. Quelle: `design-prompt.md` auf dem
+Screenshot-Server; die Tokens liegen auf Branch `fleet/260919003602-4ba5` und sind hier in `:root`
+kopiert, bis jene Lane landet.
+
+- **Schnitt 1** `87c584ab`: Tokens, eine Sans, Tinte-Skala, Auswahl ohne Blau, `--danger` als einzige
+  Restfarbe, alles in einem Block `=== THE QUEUE IN THE CHAT LANGUAGE ===`, auf `#shell-queue`
+  begrenzt, weil `.shellwin`/`.shellrow`/`.shrbtn` vier Flächen tragen.
+- **Schnitt 2** `4882a6a5`: die Klammern links an den Zeilen sind weg (Owner-Wunsch; die Sektion über
+  der Zeile sagt dasselbe), Chrome auf dem 4/8/12/16-Raster, Fold-Budget liest jetzt die
+  `#shell-queue`-Regeln.
+- **Schnitt 3**: das komplementäre Paar `--q-live` / `--q-wait` (Owner: „komplementäre farbgebung
+  wichtiger elemente und bereiche"). Eine Farbe heißt „läuft von selbst", die andere „wartet auf
+  dich"; sie sitzen auf Chips, Lane-Zeile und Freigabe-Hinweis, nie auf Knöpfen oder Stationen.
+  Variante A (Grün/Bernstein) wurde gewählt, weil die Referenz denselben Kontrast schon zeigt.
+
+**ZIEL-ÄSTHETIK, Referenzbilder** (Screenshot-Server, aus der Chat-Lane):
+`c14-counter-after-send.png` und der Prosa-Screenshot vom 2026-09-19 15:34. Was daran das Ziel ist:
+reines Schwarz mit Flakes; Blasen rechts in `--chat-raised` mit r3 r3 r1 r3; Agenten-Prosa links ohne
+Kasten; Inline-Code-Chips für IDs und Symbole; Codeblöcke mit Kopfzeile (Sprache links, wrap/copy
+rechts); Tabellen mit Mute-Kopf und Haarlinien; Zitatzeilen mit linker Haarlinie; kleine quadratische
+Knöpfe; Zahlen tabellarisch; Farbe nur auf CLI-Marke und Live-Punkt.
+
+**Offen (Schnitt 4 und danach):** Inline-Code-Chips für Task-Ids und Flächen, `.qdtext` als Codeblock
+mit Kopf und Kopieren, die Karte als Tabelle. Hoverbare Ids (`src/entcard.ts`), Flakes
+(`src/flakes.ts`) und der „Aa"-Regler (`src/chatsize.ts`) brauchen die Chat-Lane; Emoji in den
+Beschriftungen (🗄 📎 💬) will die Vorgabe durch CLI-Marken und einstrichige SVG-Icons ersetzt sehen.
+
 ## 1 · Was der Owner will (seine Worte, 2026-09-18/19)
 
 - „Die aktuell laufenden Tasks sollten über den releasten stehen, sodass sie von unten nach oben

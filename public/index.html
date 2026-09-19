@@ -609,6 +609,13 @@
     --chat-surface: #111113; --chat-raised: #17171a; --chat-edge: #26262b; --chat-edge-soft: #1b1b1f;
     --c-hover: #202024; --c-edge-hi: #4a4a52;
     --r1: 6px; --r2: 10px; --r3: 18px;
+    /* THE COMPLEMENTARY PAIR (owner, 2026-09-19: "komplementäre farbgebung wichtiger elemente und
+       bereiche"). Two hues on opposite sides of the wheel, and each one means exactly one thing:
+       --q-live = the machine is moving on its own (running lane, dispatcher on, a live MAIN);
+       --q-wait = it is waiting for YOU (needs-you, held, a raw start). Everything else stays ink.
+       The reference is the chat view's own two dots: the green live dot and the warm CLI mark. */
+    --q-live: #3fb950; --q-live-dim: #1b2a1e;
+    --q-wait: #e0873f; --q-wait-dim: #2a1f14;
     --t: 160ms cubic-bezier(0.2, 0.7, 0.2, 1); }
   @media (prefers-reduced-motion: reduce) { :root { --t: 0ms; } }
   .slot.proj { border-left: 3px solid hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l) / 0.8); padding-left: 8px; }
@@ -1093,6 +1100,19 @@
     border-color: var(--chat-edge); color: var(--chat-mute); }
   #shell-queue .shellclose:hover { color: var(--chat-ink); }
   #shell-queue .qdsection-body > .rvhead:not(:first-child) { margin-top: 16px; }
+  /* THE PAIR ON THE SURFACE — used on STATES, never on decoration: the group head of what runs and
+     of what waits, the row's own mark, the chips that carry those two states, the lane line and the
+     dispatcher switch. A button never wears them; the accent of an ACTION stays the ink. */
+  #shell-queue .qchip.qc-run { color: var(--q-live); background: var(--q-live-dim); border-color: var(--q-live); }
+  #shell-queue .qchip.qc-hold, #shell-queue .qchip.qc-need { color: var(--q-wait); background: var(--q-wait-dim);
+    border-color: var(--q-wait); }
+  #shell-queue .qlane-on, #shell-queue .qlane-done-looking, #shell-queue .qchip.qc-prog.live { color: var(--q-live); }
+  #shell-queue .qlane-off { color: var(--q-wait); }
+  #shell-queue .qrawack input { accent-color: var(--q-wait); }
+  #shell-queue .qreleasenote { color: var(--q-wait); border-color: var(--q-wait-dim); }
+  #shell-queue .qdfind.unk { color: var(--q-wait); }
+  /* the STATION a row stands on is not by itself live or waiting — `pending` is a wait, `sent` is
+     a run, and the same pill cannot mean both. It stays ink; the two hues speak through the chips. */
   /* BUNDLE MODE was the loudest colour on the surface — a violet bar, a violet button and violet
      rows. Marking is a state, not an alarm: the bar is the raised surface, the act reads in ink. */
   #shell-queue .qselbar { background: var(--chat-raised); border-color: var(--chat-edge); font-size: var(--chat-ui-fs); }

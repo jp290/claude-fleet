@@ -45,6 +45,15 @@ kopiert, bis jene Lane landet.
   wichtiger elemente und bereiche"). Eine Farbe heißt „läuft von selbst", die andere „wartet auf
   dich"; sie sitzen auf Chips, Lane-Zeile und Freigabe-Hinweis, nie auf Knöpfen oder Stationen.
   Variante A (Grün/Bernstein) wurde gewählt, weil die Referenz denselben Kontrast schon zeigt.
+- **Schnitt 5** (Session 4): Owner: „die Status Leiste rechts sieht doch noch ziemlich cluttered
+  aus … die formattierungen überhaupt etwas kleiner … das dashboard insgesamt etwas größer.
+  Irgendeine visualisierung vom status des tasks". Die Schiene hat keine Überschriften mehr
+  (STATUS, PLACE). Program und Repo stehen als zwei beschriftete Zeilen da, das Alter steht in der
+  Statuszeile statt bei den Titel-Chips. Der Lebenszyklus ist ein Stepper: Punkte auf einer Spur, der
+  gegangene Teil gefüllt, eine Zeile. Die Typo-Tokens sind nur in `#shell-queue` eine Stufe kleiner
+  (13/12 statt 14/12.5), Knöpfe haben 4px 12px. Das Fenster ist der Viewport minus 16px je Seite,
+  die Breite geht an die Liste (360) und nicht an den Baum (184). Screenshots `q10-before-*` und
+  `q13-after-*` auf :8874.
 
 **ZIEL-ÄSTHETIK, Referenzbilder** (Screenshot-Server, aus der Chat-Lane):
 `c14-counter-after-send.png` und der Prosa-Screenshot vom 2026-09-19 15:34. Was daran das Ziel ist:

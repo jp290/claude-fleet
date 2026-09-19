@@ -501,14 +501,30 @@ export async function run(ctx: Ctx): Promise<void> {
     // that starts painting the queue blue again is only invisible here if its selector is listed.
     const overridden = ["#shell-queue .shellrow.sel {", "#shell-queue .shrbtn.primary {",
       "#shell-queue .qview button.on {", "#shell-queue .shellrow.qnew .shrname {", "#shell-queue .qchip.qc-prog"];
-    // the 3px status stripe is GONE (owner, 2026-09-19). The section head above a row says the
-    // same thing, so its removal costs no fact; what the row keeps is dim for held/advisory and
-    // --danger for a flagged one. A stripe re-appearing inside the queue fails this line.
-    check("queue style: the left status brackets are gone from the queue's rows, and only a flagged row keeps a hue",
+    // THE STRIPE, TWICE. Session 2 removed the five-hue 3px border (owner: "die klammern links …
+    // werden auch noch ersetzt"); the evening of the same day he asked for a lifecycle mark back
+    // ("eine schmale vertikale linie links"). What came back is not the old border: ONE 2px mark per
+    // stage from named tokens — backlog mute, released ink, running the live hue with a pulse,
+    // held the wait hue — and none on notes or closed rows. Mutations caught: the old border
+    // returning, a stage losing its mark, a raw colour in place of a token, the pulse without its
+    // reduced-motion off switch, the trough dropped below the measured 3:1 (0.6), the age read in
+    // the faint ink that measured 2.85:1.
+    check("queue style: one lifecycle stripe per stage from named tokens — never the old five-hue border",
       block.includes("#shell-queue .shellrow { border-left: 0; }")
         && block.includes("#shell-queue .shellrow.q-flag .shrname { color: var(--danger); }")
-        && !/#shell-queue [^{]*\.shellrow[^{]*\{[^}]*border-left: 3px/.test(block),
+        && !/#shell-queue [^{]*\.shellrow[^{]*\{[^}]*border-left: 3px/.test(block)
+        && block.includes("#shell-queue .shellrow.q-pending::before { background: var(--q-lane-back); }")
+        && block.includes("#shell-queue .shellrow.q-queued::before { background: var(--q-lane-next); }")
+        && /#shell-queue \.shellrow\.q-sent::before \{ background: var\(--q-lane-run\); animation: qlanepulse/.test(block)
+        && block.includes("#shell-queue .shellrow.q-held::before { background: var(--q-wait); }")
+        && /#shell-queue \.shellrow\.q-obs::before, #shell-queue \.shellrow\.q-done::before, #shell-queue \.shellrow\.q-archived::before \{\s*background: transparent; \}/.test(block)
+        && /--q-lane-back: var\(--chat-mute\); --q-lane-next: var\(--chat-ink\); --q-lane-run: var\(--q-live\);/.test(taskPageSource),
       "stripe wiring");
+    check("queue style: the stripe's measured floors hold — pulse trough 0.6, off under reduced motion, the row age in mute",
+      /@keyframes qlanepulse \{ 0%, 100% \{ opacity: 1; \} 50% \{ opacity: 0\.6; \} \}/.test(block)
+        && /@media \(prefers-reduced-motion: reduce\) \{ #shell-queue \.shellrow\.q-sent::before \{ animation: none; \} \}/.test(block)
+        && block.includes("#shell-queue .shellrow .qage { color: var(--chat-mute); }"),
+      "stripe floors");
     // the grid: the queue's own chrome numbers are 4/8/12/16, and they are the ones the fold
     // budget above reads
     const grid = [/#shell-queue \.shellhead \{ padding: 12px 16px/, /#shell-queue \.shelltools \{ padding: 8px 16px/,

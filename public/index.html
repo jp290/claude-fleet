@@ -616,6 +616,11 @@
        The reference is the chat view's own two dots: the green live dot and the warm CLI mark. */
     --q-live: #3fb950; --q-live-dim: #1b2a1e;
     --q-wait: #cc9a6b; --q-wait-dim: #241b13;
+    /* the queue's LIFECYCLE STRIPE, one mark per stage: backlog faint, released ink, running the
+       live hue — and a tint only where something is on deck or moving */
+    --q-lane-back: var(--chat-mute); --q-lane-next: var(--chat-ink); --q-lane-run: var(--q-live);
+    --q-tint-next: color-mix(in srgb, var(--chat-ink) 3%, transparent);
+    --q-tint-run: color-mix(in srgb, var(--q-live) 7%, transparent);
     --chat-copied: #86efac;
     --t: 160ms cubic-bezier(0.2, 0.7, 0.2, 1); }
   @media (prefers-reduced-motion: reduce) { :root { --t: 0ms; } }
@@ -1039,11 +1044,45 @@
   #shell-queue .shellrow.sel .shrname { color: var(--chat-ink); }
   #shell-queue .shellrow .shrsub, #shell-queue .shellrow.sel .shrsub,
   #shell-queue .shellrow .qage { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  /* measured 2026-09-19: --chat-faint on the row is 2.85:1 (2.7:1 on a tinted row), under AA for
+     text — the age is information, so it reads in mute (≥ 4.5:1 on every tint) */
+  #shell-queue .shellrow .qage { color: var(--chat-mute); }
   /* THE BRACKETS ARE GONE (owner, 2026-09-19: "ich hoffe die klammern links an den kästen werden
      auch noch ersetzt"). The 3px stripe said pending/queued/sent/held/flag in five hues — and the
      SECTION above the row already says all five. What the row itself still owes the eye is its
      own state: held and advisory read dimmer, a flagged row is the one that is broken. */
   #shell-queue .shellrow { border-left: 0; }
+  /* THE LIFECYCLE STRIPE (owner, 2026-09-19 evening: "ein paar farbmarkierungen … die … stylisch
+     anzeigen was backlog was release und wann running ist … eine schmale vertikale linie links").
+     Not the old five-hue border: ONE 2px mark per stage, inset from the row's ends, and the only
+     hue in it is the live one on a running row. Held rows wear the wait hue their chip already
+     carries; notes and closed rows carry none. The section head above still names the stage in
+     words — the stripe is a second channel, never the only one. */
+  #shell-queue .shellrow { position: relative; }
+  #shell-queue .shellrow::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px;
+    border-radius: 1px; background: transparent; }
+  #shell-queue .shellrow.q-pending::before { background: var(--q-lane-back); }
+  #shell-queue .shellrow.q-queued::before { background: var(--q-lane-next); }
+  #shell-queue .shellrow.q-sent::before { background: var(--q-lane-run); animation: qlanepulse 2.4s ease-in-out infinite; }
+  #shell-queue .shellrow.q-held::before { background: var(--q-wait); }
+  #shell-queue .shellrow.q-obs::before, #shell-queue .shellrow.q-done::before, #shell-queue .shellrow.q-archived::before {
+    background: transparent; }
+  #shell-queue .shellrow.q-queued { background: var(--q-tint-next); }
+  #shell-queue .shellrow.q-sent { background: var(--q-tint-run); }
+  #shell-queue .shellrow.q-queued:hover, #shell-queue .shellrow.q-sent:hover { background: var(--c-hover); }
+  #shell-queue .shellrow.q-queued.sel, #shell-queue .shellrow.q-sent.sel { background: var(--chat-raised); }
+  /* the trough stays at 0.6: measured, the live stripe is 3.27:1 on its tinted row there (1.94:1 at
+     0.35), so even mid-pulse it clears the 3:1 a meaningful graphic needs */
+  @keyframes qlanepulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+  @media (prefers-reduced-motion: reduce) { #shell-queue .shellrow.q-sent::before { animation: none; } }
+  /* the same mark beside the detail's title, so the pane says the stage the row is in */
+  #shell-queue .qdtitle { position: relative; }
+  #shell-queue .qdtitle::before { content: ""; position: absolute; left: -10px; top: 2px; bottom: 14px; width: 2px;
+    border-radius: 1px; background: transparent; }
+  #shell-queue .qdtitle.q-st-pending::before { background: var(--q-lane-back); }
+  #shell-queue .qdtitle.q-st-queued::before { background: var(--q-lane-next); }
+  #shell-queue .qdtitle.q-st-sent::before { background: var(--q-lane-run); }
+  #shell-queue .qdtitle.q-st-held::before { background: var(--q-wait); }
   #shell-queue .shellrow.q-done { opacity: 0.55; }
   #shell-queue .shellrow.q-held .shrname, #shell-queue .shellrow.q-obs .shrname { color: var(--chat-mute); }
   #shell-queue .shellrow.qchild .shrname { font-size: var(--chat-ui-fs); color: var(--chat-mute); }

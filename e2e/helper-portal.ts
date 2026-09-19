@@ -2257,6 +2257,7 @@ export async function run(h: {
       JSON.stringify(relayView));
     const relayReport = await hpost("/api/helper/result",
       { jobId: relayJob, exitCode: 0, tail: "PASS  relay\nALL PASS" });
+    const relayReportBody = (await relayReport.json()) as { error?: string };
     const relayRows = await waitForEvent(relayJob);
     const relayViewAfter = await offerGet(relayAfter?.selfToken ?? "");
     check("(K12) (a) …AND THE VERDICT REACHES THE SUCCESSOR: the report is accepted, one pane row names the successor occupation, and its own GET carries the green",
@@ -2264,7 +2265,8 @@ export async function run(h: {
         && relayRows[0]?.receiverSlot === relay.slot && relayRows[0]?.receiverOpenedAt === relayAfter?.openedAt
         && relayRows[0]?.payload?.result === "green"
         && relayViewAfter?.state === "reported" && relayViewAfter?.result?.result === "green",
-      `report=${relayReport.status} rows=${JSON.stringify(relayRows)}`
+      `report=${relayReport.status} ${JSON.stringify(relayReportBody).slice(0, 200)}`
+      + ` rows=${JSON.stringify(relayRows)}`
       + ` view=${JSON.stringify({ state: relayViewAfter?.state, r: relayViewAfter?.result?.result })}`);
 
     // --- (b) THE DEADLINE: the stand-in runner dies without reporting ---------------------

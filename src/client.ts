@@ -556,6 +556,10 @@ class Pane {
   private readonly reloadBtn: HTMLButtonElement;
   private view: "term" | "chat" = "term";
   private chatTotal = 0;
+  // when the newest transcript entry this pane has loaded was written (its `ts`, any role — a tool
+  // result or a harness-injected turn is an API round trip too), 0 until one with a time arrived.
+  // The composer's cache counter reads it; nothing else does.
+  lastTurnAt = 0;
   private chatSource: string | null = null;
   private chatTimer: ReturnType<typeof setTimeout> | undefined;
   private chatBusy = false;
@@ -769,6 +773,7 @@ class Pane {
     clearTimeout(this.chatTimer);
     this.chatEl.replaceChildren();
     this.chatTotal = 0;
+    this.lastTurnAt = 0;
     this.chatSource = null;
     this.toolGroup = null;
     this.notifGroup = null;
@@ -926,7 +931,12 @@ class Pane {
         if (empty) empty.remove();
         // keep the view pinned to the newest message unless the user scrolled up to read
         const pinned = this.chatEl.scrollTop + this.chatEl.clientHeight >= this.chatEl.scrollHeight - 120;
-        for (const e of data.entries) this.appendEntry(e);
+        for (const e of data.entries) {
+          this.appendEntry(e);
+          const at = e.ts ? Date.parse(e.ts) : NaN;
+          if (at > this.lastTurnAt) this.lastTurnAt = at;
+        }
+        tickCacheAge();
         if (pinned) this.chatEl.scrollTop = this.chatEl.scrollHeight;
       }
       this.chatTotal = data.total;
@@ -3430,6 +3440,47 @@ let optOpen: OptField | null = null;
 let optStaged: Partial<Record<OptField, string>> = {};
 let optMsg: Partial<Record<OptField, string>> = {};
 let optsSlot = 0;
+// Twelfth cut: Apply on the MODEL switch first asks (owner: a model switch costs the session its
+// prompt cache). The ask is state, not DOM, for the reason optOpen is — the poll repaints the row.
+let optConfirm = false;
+const WARN_KEY = "fleet.modelSwitchWarn";
+function modelWarnOff(): boolean {
+  try { return localStorage.getItem(WARN_KEY) === "off"; } catch { return false; }
+}
+function setModelWarnOff(): void {
+  try { localStorage.setItem(WARN_KEY, "off"); } catch { /* private window: it simply asks again */ }
+}
+
+// THE CACHE COUNTER (owner, twelfth cut: "seit der letzten Nachricht … ob der Cache noch warm sein
+// dürfte", threshold 5 min). Reference = the newest transcript entry's own timestamp (Pane.lastTurnAt,
+// from the transcript poll the conversation view already runs) — not lastOutput, which moves with
+// any byte the pane paints. What the TTL of a given session IS stays unmeasured: Claude Code's own
+// rule (2.1.278) is 1 h for the main conversation on a subscription within its limits and 5 min on
+// an API key or in overage, and nothing on this board says which applies — hence "probably".
+const CACHE_WARM_MS = 5 * 60_000;
+let ageEl: HTMLElement | null = null;
+const fmtAge = (ms: number): string => {
+  const s = Math.floor(ms / 1000);
+  if (s >= 3600) return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+function cacheAge(): number | null {
+  const at = panes[focused]?.lastTurnAt ?? 0;
+  return at ? Math.max(0, Date.now() - at) : null;
+}
+function tickCacheAge(): void {
+  if (!ageEl?.isConnected) return;
+  const ms = cacheAge();
+  ageEl.hidden = ms === null;
+  if (ms === null) return;
+  const cold = ms >= CACHE_WARM_MS;
+  ageEl.textContent = fmtAge(ms);
+  ageEl.classList.toggle("cold", cold);
+  ageEl.title = cold
+    ? `last message ${fmtAge(ms)} ago — past 5 min the prompt cache is probably cold (5 min TTL on an API key or in overage; a subscription within its limits keeps 1 h — which one applies here is not measured)`
+    : `last message ${fmtAge(ms)} ago — under 5 min the prompt cache is probably still warm`;
+}
+setInterval(() => { if (!document.hidden) tickCacheAge(); }, 1000);
 
 function renderComposerOpts(force: boolean): void {
   const pane = panes[focused];
@@ -3440,10 +3491,14 @@ function renderComposerOpts(force: boolean): void {
   if (!force && key === optsKey) return;
   optsKey = key;
   // a pick staged for one session must never be applied to the next one the focus lands on
-  if (slot !== optsSlot) { optsSlot = slot; optOpen = null; optStaged = {}; optMsg = {}; }
+  if (slot !== optsSlot) { optsSlot = slot; optOpen = null; optStaged = {}; optMsg = {}; optConfirm = false; }
   compOpts.replaceChildren();
   if (!h || !slot) return;
   if (h.supports.model) {
+    ageEl = el("span", "optage");
+    ageEl.hidden = true;
+    compOpts.appendChild(ageEl);
+    tickCacheAge();
     const current = s?.model ?? "";
     const shown = current || (h.default && defaultModel ? defaultModel : "default");
     const mark = harnessMark(h.id);
@@ -3460,7 +3515,16 @@ function renderComposerOpts(force: boolean): void {
       const markStaged = (v: string) => {
         for (const o of list.children) o.classList.toggle("staged", (o as HTMLElement).dataset.id === v && v !== current);
       };
+      // one entry per NAME: claude-opus-5 and claude-opus-5[1m] read the same ("Opus 5 · 1M") and
+      // resolve the same in Claude Code 2.1.278 (both native_1m), so two identical rows would only
+      // ask the owner to pick between twins. The kept id is the slot's own if it is one of them,
+      // else the adapter's first; the other stays reachable through the free-text field.
+      const byName = new Map<string, string>();
       for (const m of h.models ?? []) {
+        const name = modelLabel(m);
+        if (!byName.has(name) || m === current) byName.set(name, m);
+      }
+      for (const m of byName.values()) {
         const b = el("button", "cmdmodel", modelLabel(m)) as HTMLButtonElement;
         b.dataset.id = m;
         b.title = m;
@@ -3503,6 +3567,7 @@ function closeOpts(focusField?: OptField): void {
   optOpen = null;
   optStaged = {};
   optMsg = {};
+  optConfirm = false;
   renderComposerOpts(true);
   if (focusField) compOpts.querySelector<HTMLElement>(`.optswrap.${focusField} .optsw`)?.focus();
 }
@@ -3534,7 +3599,7 @@ function optSwitch(field: OptField, slot: number, current: string, shown: string
     btn.title = tip(pending && v ? v : shown); // the raw id lives here, the name on the button
   };
   const stage = (v: string) => { optStaged = { ...optStaged, [field]: v }; sync(); };
-  apply.onclick = async () => {
+  const run = async () => {
     const v = optStaged[field];
     if (!v || v === current) return;
     apply.disabled = true;
@@ -3544,11 +3609,46 @@ function optSwitch(field: OptField, slot: number, current: string, shown: string
     optMsg = { ...optMsg, [field]: verdict };
     renderComposerOpts(true); // the popover stays open (optOpen) and shows the verdict
   };
-  const row = el("div", "cmdrow");
-  const parts = body(stage);
-  row.append(...parts.row, apply);
-  if (parts.list) pop.appendChild(parts.list);
-  pop.append(row, status);
+  apply.onclick = () => {
+    if (field === "model" && !modelWarnOff()) {
+      optConfirm = true;
+      renderComposerOpts(true);
+      compOpts.querySelector<HTMLElement>(".optconfirm .cmdcancel")?.focus();
+      return;
+    }
+    void run();
+  };
+  if (field === "model" && optConfirm && optOpen === field) {
+    // the popover's body gives way to the question; the staged pick stays staged behind it
+    const box = el("div", "optconfirm");
+    box.setAttribute("role", "alertdialog");
+    const ms = cacheAge();
+    box.appendChild(el("div", "cfmsg",
+      "Switching the model drops this session's prompt cache — the next turn re-reads the full context."));
+    if (ms !== null) box.appendChild(el("div", "cfage", `Last message ${fmtAge(ms)} ago${ms >= CACHE_WARM_MS ? " — the cache is probably cold already" : ""}.`));
+    const opt = el("label", "cfskip");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    opt.append(cb, document.createTextNode("Don't show again"));
+    const cancel = el("button", "cmdcancel", "Cancel") as HTMLButtonElement;
+    cancel.onclick = () => cancelConfirm();
+    const go = el("button", "cmdapply", "Switch") as HTMLButtonElement;
+    go.onclick = () => {
+      if (cb.checked) setModelWarnOff();
+      optConfirm = false;
+      void run();
+    };
+    const acts = el("div", "cfacts");
+    acts.append(opt, cancel, go);
+    box.appendChild(acts);
+    pop.append(box);
+  } else {
+    const row = el("div", "cmdrow");
+    const parts = body(stage);
+    row.append(...parts.row, apply);
+    if (parts.list) pop.appendChild(parts.list);
+    pop.append(row, status);
+  }
   sync();
   if (optOpen === field) { pop.classList.add("open"); btn.classList.add("on"); }
   btn.onclick = (e) => {
@@ -3556,6 +3656,7 @@ function optSwitch(field: OptField, slot: number, current: string, shown: string
     const opening = optOpen !== field;
     optStaged = {};
     optMsg = {};
+    optConfirm = false;
     optOpen = opening ? field : null;
     renderComposerOpts(true);
     const again = compOpts.querySelector<HTMLElement>(`.optswrap.${field}`);
@@ -3570,12 +3671,20 @@ document.addEventListener("pointerdown", (e) => {
   if (!optOpen || (t instanceof Element && t.closest(".optswrap"))) return;
   closeOpts();
 });
-// Escape closes an open switch popover (discarding) and hands focus back to its switch
+// Cancel on the model-switch question: back to the list, the pick still staged, nothing sent
+function cancelConfirm(): void {
+  optConfirm = false;
+  renderComposerOpts(true);
+  compOpts.querySelector<HTMLElement>(".optswrap.model .cmdapply")?.focus();
+}
+// Escape cancels the question if one is open, otherwise closes the switch popover (discarding) and
+// hands focus back to its switch
 compOpts.addEventListener("keydown", (e) => {
   if (e.key !== "Escape" || !optOpen) return;
   e.preventDefault();
   e.stopPropagation();
-  closeOpts(optOpen);
+  if (optConfirm) cancelConfirm();
+  else closeOpts(optOpen);
 });
 
 // --- the tray under the surface. ENTRIES ARE DATA: a later one is a row here, not a rebuild.

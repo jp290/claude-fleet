@@ -253,7 +253,11 @@ interface CodexCandidatesView {
 // never a second copy maintained here: a feature this client hides must be hidden because the
 // registry says the harness cannot do it, not because someone wrote the same list twice.
 interface HarnessInfo { id: string; supports: { resume: boolean; transcript: boolean; model: boolean;
-  effort: boolean; selfSchedule: boolean; container: boolean }; effortLevels: string[]; note: string | null; default: boolean;
+  effort: boolean; selfSchedule: boolean; container: boolean;
+  // the conversation view has something to read: a Claude transcript OR the adapter's own reader
+  // (codex rollout, pi session — server.ts#Harness.conversation). Optional for an older server,
+  // which then answers with `transcript` alone.
+  chat?: boolean }; effortLevels: string[]; note: string | null; default: boolean;
   // the adapter's pick list for the composer's model switch (server.ts#Harness.models) — a menu,
   // not a gate; optional for an older server, which then gets the free-text field alone
   models?: string[];
@@ -376,6 +380,7 @@ function supportsOf(h: string | undefined): HarnessInfo["supports"] {
   // control on a harness that has none — inventing a capability instead of degrading to today's UI.
   return found?.supports ?? { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false };
 }
+const canChatOn = (sup: HarnessInfo["supports"] | undefined): boolean => !!(sup?.chat ?? sup?.transcript);
 // THE SLOT'S OWN ADAPTER ENTRY, for the surfaces that must show a control only where the harness
 // carries it. Deliberately stricter than supportsOf(): that one answers "assume today's behaviour"
 // for an unloaded catalogue, which is right for hiding a feature and wrong for OFFERING one — an
@@ -394,12 +399,23 @@ function harnessEntry(slot: number): HarnessInfo | null {
 // always a pair, record first — and if the record refuses the value (the adapter's modelRe), the
 // pane is deliberately NOT typed into: a rejected value must not reach the agent by the back door.
 //
-// Only Claude Code takes `/model <id>` and `/effort <level>` as commands. Measured in the fifteenth
+// Claude Code takes `/model <id>` and `/effort <level>` as commands. Measured in the fifteenth
 // cut against real panes: codex has no such command, so the typed line went to the model as a
-// PROMPT; pi opens its own picker on it ("No matching models") and waits. For every other harness
-// the pane half is therefore a RESTART (POST /api/slots/:id/restart), which respawns the pane from
-// the record and resumes the pinned conversation. The owner is asked first (it stops running work).
-const switchesInPane = (h: HarnessInfo | null): boolean => h?.id === "claude";
+// PROMPT; pi opens its own picker on a bare id ("No matching models") and waits. pi-zai does take
+// `/model zai/<id>` and `/thinking <level>` — WITH the provider prefix — in-session and without the
+// picker: measured in the sixteenth cut at slot 6 (pi 0.85.0), pasted as /send pastes (bracketed)
+// plus one Enter, footer `glm-5.3 • low` after, `model_change` / `thinking_level_change` in the
+// session file. Typed key by key the first Enter only closes pi's slash autocomplete — the paste is
+// what makes one Enter enough. Plain pi stays on the restart: its model names are free provider/id
+// patterns, and none was measured. For every other harness the pane half is therefore a RESTART
+// (POST /api/slots/:id/restart), which respawns the pane from the record and resumes the pinned
+// conversation. The owner is asked first (it stops running work).
+function paneCommand(h: HarnessInfo | null, field: "model" | "effort", value: string): string | null {
+  if (h?.id === "claude") return `/${field} ${value}`;
+  if (h?.id === "pi-zai") return field === "model" ? `/model zai/${value}` : `/thinking ${value}`;
+  return null;
+}
+const switchesInPane = (h: HarnessInfo | null): boolean => paneCommand(h, "model", "") !== null;
 async function setSlotSetting(slot: number, field: "model" | "effort", value: string): Promise<string> {
   const rec = await post(`/api/slots/${slot}/model`, { [field]: value });
   if (!rec.ok) {
@@ -412,8 +428,9 @@ async function setSlotSetting(slot: number, field: "model" | "effort", value: st
     if (!r.ok) return `record ✓ · restart ✗ ${j?.error ?? `HTTP ${r.status}`} — the pane still runs the old ${field}`;
     return `${field} ${value} — record ✓ · pane restarted${j?.resumed ? ", conversation resumed" : " FRESH (the conversation could not be resumed)"}`;
   }
-  const paneOk = await deliver(slot, `/${field} ${value}`);
-  return paneOk ? `${field} ${value} — record ✓ · pane ✓` : `record ✓ · pane ✗ — type /${field} ${value} yourself`;
+  const cmd = paneCommand(harnessEntry(slot), field, value)!;
+  const paneOk = await deliver(slot, cmd);
+  return paneOk ? `${field} ${value} — record ✓ · pane ✓` : `record ✓ · pane ✗ — type ${cmd} yourself`;
 }
 
 let autosList: AutoInfo[] = [];
@@ -583,6 +600,9 @@ class Pane {
   // result or a harness-injected turn is an API round trip too), 0 until one with a time arrived.
   // The composer's cache counter reads it; nothing else does.
   lastTurnAt = 0;
+  // the TTL the counter measures against, named by the conversation source: Claude's 5 min, or
+  // the provider a codex/pi file names (cacheTtlFor). null = a provider nobody measured → no counter.
+  cacheTtl: number | null = CACHE_TTL_MS;
   private chatSource: string | null = null;
   private chatTimer: ReturnType<typeof setTimeout> | undefined;
   private chatBusy = false;
@@ -784,7 +804,7 @@ class Pane {
     // …and the guard is `harnessesLoaded`, not the fetch's own early return: re-syncing after an
     // already-resolved load would schedule the next sync from inside the last one, forever.
     if (this.slot && !harnessesLoaded) void loadHarnesses().then(() => this.syncHarnessAffordances());
-    const canChat = !this.slot || supportsOf(fleet.find((x) => x.id === this.slot)?.harness).transcript;
+    const canChat = !this.slot || canChatOn(supportsOf(fleet.find((x) => x.id === this.slot)?.harness));
     this.viewBtn.style.display = this.slot && canChat ? "block" : "none";
     if (focused === this.index) renderComposerOpts(false);
     // a pane already sitting in the chat view must not be stranded there when its slot turns out
@@ -797,6 +817,7 @@ class Pane {
     this.chatEl.replaceChildren();
     this.chatTotal = 0;
     this.lastTurnAt = 0;
+    this.cacheTtl = CACHE_TTL_MS;
     this.chatSource = null;
     this.toolGroup = null;
     this.notifGroup = null;
@@ -936,7 +957,8 @@ class Pane {
       const res = await api(`/api/slots/${slot}/transcript?after=${this.chatTotal}`);
       if (this.slot !== slot) return; // reassigned during the fetch — this response is stale
       if (!res.ok) return;
-      const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null };
+      const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null;
+        cache?: { at: number; provider: string } | null };
       if (this.slot !== slot) return; // reassigned during json() — still stale
       // the slot's active transcript changed (fresh claude after a self-heal, or a better
       // pinned file appeared) — start over from the top of the new file
@@ -961,12 +983,22 @@ class Pane {
           // after a prompt (a user entry) or a tool result — the agent's own text and tool calls
           // are the response to it, not a new read of the cache (fifteenth cut, measured: counting
           // every entry reset the counter up to 3× per tool turn)
+          // (codex/pi name their reference themselves, below — `cache` in the payload)
+          if (data.cache !== undefined) continue;
           const startsRequest = e.role === "user" || e.blocks.some((b) => b.t === "tool_result");
           const at = startsRequest && e.ts ? Date.parse(e.ts) : NaN;
           if (at > this.lastTurnAt) this.lastTurnAt = at;
         }
         tickCacheAge();
         if (pinned) this.chatEl.scrollTop = this.chatEl.scrollHeight;
+      }
+      // codex / pi: the file's own newest request record (server/conversation-read.ts) — codex its
+      // newest token_usage_record, pi its newest assistant message's request start — and the
+      // provider that sets the TTL. Read on every poll, not only when new entries arrived.
+      if (data.cache !== undefined) {
+        if (data.cache && data.cache.at > this.lastTurnAt) this.lastTurnAt = data.cache.at;
+        this.cacheTtl = data.cache ? cacheTtlFor(data.cache.provider) : this.cacheTtl;
+        tickCacheAge();
       }
       this.chatTotal = data.total;
     } catch {
@@ -3491,7 +3523,21 @@ function setModelWarnOff(): void {
 // owner runs on the 5 min TTL (thirteenth cut) and wants the turn to cold 20 s BEFORE it, so the
 // expiry never arrives as a surprise.
 const CACHE_TTL_MS = 5 * 60_000;
-const CACHE_COLD_AT_MS = CACHE_TTL_MS - 20_000;
+// The same 20 s lead before every TTL, so the turn to cold never arrives as a surprise.
+const CACHE_COLD_LEAD_MS = 20_000;
+// codex and pi (sixteenth cut): MEASURED, not documented — docs/messungen/2026-09-19-codex-pi-
+// composer-anbindung.md §Cache-Treffer. z.ai: ≥ 76 % hits up to 15 min pause, 60 % at 15–30, 20 % at
+// 30–60 → 15 min. codex (ChatGPT backend): 84–85 % up to 60 min, 73 % at 1–2 h, 20 % beyond → 1 h.
+// No provider documentation was read for either; hence "probably" in the title, as for Claude.
+const ZAI_CACHE_TTL_MS = 15 * 60_000;
+const CODEX_CACHE_TTL_MS = 60 * 60_000;
+// a provider this board has no measurement for gets no counter — a guessed TTL would be a claim
+function cacheTtlFor(provider: string): number | null {
+  if (provider === "zai") return ZAI_CACHE_TTL_MS;
+  if (provider === "openai" || provider === "openai-codex") return CODEX_CACHE_TTL_MS;
+  return null;
+}
+const fmtTtl = (ms: number): string => (ms >= 3_600_000 ? `${ms / 3_600_000} h` : `${ms / 60_000} min`);
 let ageEl: HTMLElement | null = null;
 const fmtAge = (ms: number): string => {
   const s = Math.floor(ms / 1000);
@@ -3502,8 +3548,8 @@ const fmtAge = (ms: number): string => {
 const serverClock = (): number => Date.now() + serverClockSkew;
 function cacheAge(): number | null {
   const p = panes[focused];
-  // codex and pi write no transcript this board reads: there is no reference point, so no counter
-  if (!p?.slot || !harnessEntry(p.slot)?.supports.transcript) return null;
+  // no conversation this board reads, or a provider with no measured TTL: no reference, no counter
+  if (!p?.slot || !canChatOn(harnessEntry(p.slot)?.supports) || p.cacheTtl === null) return null;
   const at = p.lastTurnAt;
   return at ? Math.max(0, serverClock() - at) : null;
 }
@@ -3512,20 +3558,22 @@ function tickCacheAge(): void {
   const ms = cacheAge();
   ageEl.hidden = ms === null;
   if (ms === null) return;
-  const cold = ms >= CACHE_COLD_AT_MS;
+  const ttl = panes[focused]?.cacheTtl ?? CACHE_TTL_MS;
+  const cold = ms >= ttl - CACHE_COLD_LEAD_MS;
   ageEl.textContent = fmtAge(ms);
   ageEl.classList.toggle("cold", cold);
   ageEl.title = cold
-    ? `last message ${fmtAge(ms)} ago — ${ms >= CACHE_TTL_MS ? "the prompt cache is probably cold" : "the prompt cache expires shortly"} (5 min TTL)`
-    : `last message ${fmtAge(ms)} ago — the prompt cache is probably still warm (5 min TTL)`;
+    ? `last request ${fmtAge(ms)} ago — ${ms >= ttl ? "the prompt cache is probably cold" : "the prompt cache expires shortly"} (${fmtTtl(ttl)} TTL)`
+    : `last request ${fmtAge(ms)} ago — the prompt cache is probably still warm (${fmtTtl(ttl)} TTL)`;
 }
 setInterval(() => { if (!document.hidden) tickCacheAge(); }, 1000);
 
 function renderComposerOpts(force: boolean): void {
   const pane = panes[focused];
-  // the switches live in the conversation view — or, for a harness that HAS none (no transcript:
-  // pi, codex), in the terminal view, its only one (fifteenth cut: pi had no switch anywhere)
-  const slot = pane?.slot && (pane.isChat || harnessEntry(pane.slot)?.supports.transcript === false) ? pane.slot : 0;
+  // the switches live in the conversation view — or, for a harness that HAS none (pi-ox, the
+  // container; since the sixteenth cut pi and codex have one), in the terminal view, its only one
+  const sup = pane?.slot ? harnessEntry(pane.slot)?.supports : undefined;
+  const slot = pane?.slot && (pane.isChat || (sup && !canChatOn(sup))) ? pane.slot : 0;
   const h = slot ? harnessEntry(slot) : null;
   const s = fleet.find((x) => x.id === slot);
   const key = [slot, h?.id ?? "", s?.model ?? "", s?.effort ?? "", defaultModel ?? ""].join("|");
@@ -3624,7 +3672,7 @@ function optSwitch(field: OptField, slot: number, current: string, shown: string
   const btn = el("button", "optsw") as HTMLButtonElement;
   const inPane = switchesInPane(harnessEntry(slot));
   const what = inPane
-    ? `sets the slot record AND types /${field} into the pane — only when you press Apply`
+    ? `sets the slot record AND types ${paneCommand(harnessEntry(slot), field, "")!.trim()} into the pane — only when you press Apply`
     : `sets the slot record and RESTARTS the pane with it (this harness has no in-session /${field}) — only when you press Apply`;
   const tip = (v: string) => `${mark ? `${harnessEntry(slot)?.id ?? ""} · ` : ""}${field} ${v} — ${what}`;
   if (mark) lead[0]?.appendChild(mark);
@@ -3673,7 +3721,8 @@ function optSwitch(field: OptField, slot: number, current: string, shown: string
     box.appendChild(el("div", "cfmsg", inPane
       ? "Switching the model drops this session's prompt cache — the next turn re-reads the full context."
       : `${harnessEntry(slot)?.id ?? "This harness"} has no in-session /${field}: Switch restarts the pane with the new ${field} and resumes the conversation. Whatever it is doing right now stops.`));
-    if (ms !== null) box.appendChild(el("div", "cfage", `Last message ${fmtAge(ms)} ago${ms >= CACHE_TTL_MS ? " — the cache is probably cold already" : ms >= CACHE_COLD_AT_MS ? " — the cache expires shortly" : ""}.`));
+    const ttl = panes[focused]?.cacheTtl ?? CACHE_TTL_MS;
+    if (ms !== null) box.appendChild(el("div", "cfage", `Last request ${fmtAge(ms)} ago${ms >= ttl ? " — the cache is probably cold already" : ms >= ttl - CACHE_COLD_LEAD_MS ? " — the cache expires shortly" : ""}.`));
     const opt = el("label", "cfskip");
     const cb = document.createElement("input");
     cb.type = "checkbox";

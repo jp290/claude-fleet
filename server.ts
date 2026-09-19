@@ -166,6 +166,7 @@ import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./ser
 import { tokenFrom, cookieToken, cookieName, secretEq, commentStrike, authFails, failStrike,
   shareGate, closeShareClients, guard } from "./server/auth";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
+import { readCodexRollout, readPiSession, type ConversationRead, type TBlock, type TEntry } from "./server/conversation-read";
 
 // lines of scrollback every WS connect is seeded with, from a fresh capture-pane. Capture
 // output is line-aligned and already reflowed to the pane's width, so it can neither begin
@@ -433,6 +434,14 @@ interface Harness {
     // consulted for it — inventing a Codex model's window is the guess this whole seam refuses.
     windowFromFile?: true;
   } | null;
+  // The conversation view (💬) for a harness that writes no Claude Code transcript — the third
+  // narrow seam beside `context`, and separate from `supports.transcript` for the same reason: that
+  // flag also means "a worker can read its answer", "the ✨ summary has evidence", "the harvester
+  // may log prompts" and "a heal may resume when projDir holds the file", none of which a codex
+  // rollout or a pi session file provides. `file` must resolve by IDENTITY (the slot's pinned or
+  // bound session id) — the same resolvers as `context.file`, never newest-by-mtime — and absent
+  // means the view stays off. Published to the client as `supports.chat` (/api/harnesses).
+  conversation?: { file(o: { cwd: string; sessionId: string }): string | null; read(lines: string[]): ConversationRead };
   // Does this harness take a session id at FRESH spawn? Most pins come from that act. Codex is the
   // one explicit exception: fresh spawn cannot take an id, so its tick-time discovery seam may
   // populate s.sessionId later while this remains false.
@@ -737,6 +746,9 @@ const PI_HARNESS: Harness = {
   worker: () => null,
   // Pi's session file is not a Fleet transcript, but it does carry host-readable usage counters.
   context: { file: piContextFile, used: readPiUsedTokens },
+  // ...and the same file, resolved the same way (cwd slug + pinned UUID + session header), is the
+  // conversation view's source: server/conversation-read.ts#readPiSession walks its id/parentId tree.
+  conversation: { file: piContextFile, read: readPiSession },
   pinsSession: true,
   // Depth 1 is enough, and that is a MEASUREMENT, not an assumption: briefs/pi-messungen-2026-08-07.md
   // (d) found `pi` itself on depth 1, while the bridge's Claude-Agent-SDK child sits on depth 2 and
@@ -772,12 +784,13 @@ const PI_HARNESS: Harness = {
     // The report says `true` and means "a session file exists and is findable by glob" — which is
     // true, and is not the question this flag answers. What Fleet calls a transcript is a
     // CLAUDE-CODE .jsonl under projDir() (~/.claude/projects/<cwd-slug>/<uuid>.jsonl), parsed by
-    // viewEntry into the conversation view and the ✨ summary's evidence. Pi writes a different
-    // format at a different path (~/.pi/agent/sessions/--<cwd>--/<ts>_<uuid>.jsonl), and the
-    // report concedes the adapter for it "bleibt Arbeit". Until that work exists the honest answer
-    // is false — and it is load-bearing rather than cosmetic: transcriptFile()'s newest-by-mtime
-    // FALLBACK would otherwise hand a Pi slot some OTHER session's claude conversation from the
-    // same cwd and label it this one's. Failing visibly beats answering with a stranger's chat.
+    // viewEntry for the ✨ summary's evidence, the prompt harvester, the worker's answer and the
+    // heal's resume check. Pi writes a different format at a different path
+    // (~/.pi/agent/sessions/--<cwd>--/<ts>_<uuid>.jsonl), so the honest answer stays false — and it
+    // is load-bearing rather than cosmetic: transcriptFile()'s newest-by-mtime FALLBACK would
+    // otherwise hand a Pi slot some OTHER session's claude conversation from the same cwd and label
+    // it this one's. The conversation VIEW no longer depends on this flag: since 2026-09-19 it reads
+    // Pi's own file through `conversation` above, resolved by identity (published as supports.chat).
     transcript: false,
     model: true,        // measured — 8 bridge models, `--model` takes effect
     effort: true,       // `--thinking <level>` exists in the real installation's --help. NOT measured
@@ -833,6 +846,7 @@ const PI_ZAI_HARNESS: Harness = {
   worker: () => null,
   // Same Pi JSONL format and usage parser, but rooted in this adapter's process-local agent home.
   context: { file: piZaiContextFile, used: readPiUsedTokens },
+  conversation: { file: piZaiContextFile, read: readPiSession },
   pinsSession: true,
   // The process is Pi itself; depth-one liveness has the same measured basis as PI_HARNESS.
   comms: ["pi"],
@@ -1281,6 +1295,9 @@ const CODEX_HARNESS: Harness = {
   // a model name Fleet could look up — there is deliberately no contextWindowFor entry for any
   // Codex model, and adding one would be exactly the guess the null above refused.
   context: { file: codexContextFile, used: readCodexContext, windowFromFile: true },
+  // The conversation view reads the SAME rollout (identity = the filename's bound UUID suffix; an
+  // unbound slot has no id and therefore no view yet): server/conversation-read.ts#readCodexRollout.
+  conversation: { file: codexContextFile, read: readCodexRollout },
   // Codex still has no FRESH-spawn `--session-id`, so this remains false. The complementary lazy
   // discovery seam binds the id from Codex's rollout after the first prompt; only then may the
   // resume form above receive it. `--last` is never used: recency is not slot identity.
@@ -1366,11 +1383,12 @@ const CODEX_HARNESS: Harness = {
     resume: true,
     // FALSE for the same reason as pi's, and it is load-bearing rather than cosmetic: what Fleet
     // calls a transcript is a CLAUDE-CODE .jsonl under projDir(), parsed by viewEntry for the
-    // conversation view and the ✨ summary's evidence. Codex writes its own rollout files under
-    // $CODEX_HOME (~/.codex), a different format at a different path. A hopeful `true` would send
-    // transcriptFile()'s newest-by-mtime FALLBACK looking in ~/.claude/projects/<cwd-slug>/ and
-    // hand this slot some OTHER session's claude conversation from the same cwd, labelled as its
-    // own. Failing visibly beats answering with a stranger's chat.
+    // ✨ summary's evidence, the harvester, the worker's answer and the heal's resume check. Codex
+    // writes its own rollout files under $CODEX_HOME (~/.codex), a different format at a different
+    // path. A hopeful `true` would send transcriptFile()'s newest-by-mtime FALLBACK looking in
+    // ~/.claude/projects/<cwd-slug>/ and hand this slot some OTHER session's claude conversation
+    // from the same cwd, labelled as its own. The conversation VIEW reads the rollout itself since
+    // 2026-09-19, through `conversation` above (published as supports.chat), never through this flag.
     transcript: false,
     model: true,   // `-m, --model <MODEL>`, read from `codex --help` on the real installation
     effort: true,  // `-c model_reasoning_effort=<level>` — fixed values only; see effortLevels
@@ -15135,11 +15153,10 @@ function transcriptFile(s: Slot): string | null {
   }
 }
 
-interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string }
+// TBlock/TEntry live in server/conversation-read.ts, shared with the codex and pi readers.
 // meta: a harness-injected user turn (e.g. a <task-notification> — a background task
 // reported back). Real content, but not something the user typed, so the conversation
 // view folds it away instead of rendering a fake "you" bubble.
-interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[]; meta?: boolean }
 
 const trim = (t: string, max: number) => (t.length > max ? t.slice(0, max) + ` … [+${t.length - max} chars]` : t);
 
@@ -15199,7 +15216,9 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
 // reader — `after` = line count the client has already consumed, so entry numbering
 // must be absolute line numbers
 async function transcriptPayload(s: Slot, afterRaw: number):
-  Promise<{ entries: TEntry[]; total: number; source: string | null }> {
+  Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"] }> {
+  const conv = harnessOf(s.harness).conversation;
+  if (conv) return conversationPayload(s, conv, afterRaw);
   const file = transcriptFile(s);
   if (!file) return { entries: [], total: 0, source: null };
   const lines = (await Bun.file(file).text()).split("\n").filter((l) => l.trim() !== "");
@@ -15217,6 +15236,32 @@ async function transcriptPayload(s: Slot, afterRaw: number):
     }
   }
   return { entries, total: lines.length, source: file.split("/").pop() ?? null };
+}
+
+// codex / pi: the whole file is parsed (pi's tree needs every parentId), so an unchanged file is
+// answered from the last read — the chat view polls every few seconds and a rollout grows to tens
+// of MB. Keyed by path + size + mtime; bounded by clearing it whole past 32 files (a handful of
+// conversations are open at once, and a miss costs one read).
+const conversationCache = new Map<string, { size: number; mtime: number; read: ConversationRead }>();
+async function conversationPayload(s: Slot, conv: NonNullable<Harness["conversation"]>, afterRaw: number):
+  Promise<{ entries: TEntry[]; total: number; source: string | null; cache: ConversationRead["cache"] }> {
+  const file = s.cwd && s.sessionId ? conv.file({ cwd: s.cwd, sessionId: s.sessionId }) : null;
+  if (!file) return { entries: [], total: 0, source: null, cache: null };
+  let st: { size: number; mtimeMs: number };
+  try { st = statSync(file); } catch { return { entries: [], total: 0, source: null, cache: null }; }
+  let hit = conversationCache.get(file);
+  if (!hit || hit.size !== st.size || hit.mtime !== st.mtimeMs) {
+    const lines = (await Bun.file(file).text()).split("\n").filter((l) => l.trim() !== "");
+    hit = { size: st.size, mtime: st.mtimeMs, read: conv.read(lines) };
+    if (conversationCache.size >= 32) conversationCache.clear();
+    conversationCache.set(file, hit);
+  }
+  const after = Math.max(0, afterRaw | 0);
+  const { read } = hit;
+  // the branch rides in `source`: when pi's leaf moves to another branch the client's consumed
+  // lines are no longer the conversation, and a changed source is how it learns to start over
+  const source = (file.split("/").pop() ?? "") + (read.branch ? `#${read.branch}` : "");
+  return { entries: read.entries.filter((e) => e.n > after), total: read.total, source, cache: read.cache };
 }
 
 // --- terminal-prompt harvester: prompts typed DIRECTLY into the pty never pass /send,
@@ -35963,7 +36008,10 @@ Bun.serve<WSData>({
     if (url.pathname === "/api/harnesses" && req.method === "GET") {
       return json({
         harnesses: HARNESSES.map((h) => ({
-          id: h.id, supports: h.supports, models: h.models, effortLevels: h.effortLevels, note: h.note,
+          // `chat`: whether the conversation view (💬) has something to read — a Claude Code
+          // transcript, or an adapter's own conversation reader (codex, pi). Derived, so it can
+          // never disagree with the two facts it is made of.
+          id: h.id, supports: { ...h.supports, chat: h.supports.transcript || !!h.conversation }, models: h.models, effortLevels: h.effortLevels, note: h.note,
           // apply | not-applicable | unsupported — whether a lane on it may name `browser: true`
           browserProfile: h.browserProfile,
           // whether an UNATTENDED path may ever drive this harness. The adapter's claim, not the

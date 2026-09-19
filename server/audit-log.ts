@@ -227,6 +227,13 @@ type AuditEvent =
   // resumes by construction whenever a transcript exists, so booking it as a heal would inflate
   // exactly the rate it is not evidence for. Same detail vocabulary, different question.
   | "slot_restart"
+  // the owner put a session to sleep (server.ts#sleepSlot): its pane is gone ON PURPOSE, occupant and
+  // session id kept. Detail names the session id — the conversation a later wake must bring back.
+  | "slot_sleep"
+  // that pane was rebuilt by a wake (owner door or a delivery). Its own event for the slot_restart
+  // reason: a deliberate rebuild is no heal, and slotstats must not count it as one. Detail uses the
+  // heal vocabulary (resumed / created:…) so a wake that could NOT resume says so.
+  | "slot_wake"
   // the owner rewrote a LIVE slot's model/effort in the record (POST /api/slots/:id/model). No
   // pane is touched; the row is what the next heal, ↻ restart or succession spawns from. Detail
   // carries the resulting pair so the trail says what the next spawn line will say.

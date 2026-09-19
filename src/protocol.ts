@@ -276,11 +276,21 @@ export const CONTEXT_WINDOW_GLM_5_3 = 1_000_000;
 // The named set the no-suffix door reads. Every row is a measured or structurally forced claim, not
 // a family guess; adding a model is one line plus the ground it stands on.
 const CLAUDE_CONTEXT_WINDOWS: Readonly<Record<string, number | undefined>> = {
-  // 200k base, and the proof is in this repo rather than in a vendor page: the fleet asks for the
-  // 1M variant of both of these by spelling the `[1m]` suffix (FLEET_DEFAULT_MODEL above,
-  // SUMMARY_MODEL in server.ts). A window you have to ask for is not the one the bare id gives you.
-  "claude-opus-5": CONTEXT_WINDOW_BASE,
-  "claude-sonnet-5": CONTEXT_WINDOW_BASE,
+  // 1M WITHOUT a suffix, read 2026-09-19 out of the installed Claude Code 2.1.278 binary
+  // (~/.local/share/claude/versions/2.1.278), whose model table carries for these two ids verbatim
+  //   "claude-opus-5",…,context:{window:1e6,native_1m:!0,supports_1m_beta:!0,supports_1m_suffix:!0}
+  //   "claude-sonnet-5",…,context:{window:1e6,native_1m:!0,native_1m_3p:{bedrock:!0,vertex:!0,foundry:!0},supports_1m_beta:!0}
+  // (Befund Chat-Lane db81f382, Report 4aef7415). REFUTED, the old ground of these rows: "the fleet
+  // asks for the 1M variant by spelling `[1m]` (FLEET_DEFAULT_MODEL, SUMMARY_MODEL), so the bare
+  // id is 200k" — a suffix the fleet writes proves nothing about what the bare id gives; it
+  // published a bare-id session's fill ~5x too high.
+  // Where Claude Code still falls back to 200k: CLAUDE_CODE_DISABLE_1M_CONTEXT set (the binary's
+  // `if(eO())return!1` gate on native_1m: "1M context is turned off here (CLAUDE_CODE_DISABLE_1M_CONTEXT
+  // is set)"), and an account whose long-context credits are off (429 long_context_credits_required,
+  // "Usage credits required for 1M context"). Neither is visible from a model id, so this row is a
+  // claim about THIS host, where the variable is unset (2026-09-19: `env | grep -c` → 0).
+  "claude-opus-5": CONTEXT_WINDOW_1M,
+  "claude-sonnet-5": CONTEXT_WINDOW_1M,
   // 200k as a ceiling rather than a tier — there is no 1M variant of this one to ask for.
   "claude-haiku-4-5": CONTEXT_WINDOW_BASE,
   // the DATED release id slot records carry when spawned with the full name — same 200k ceiling, no 1M variant of it to ask for either.
@@ -303,8 +313,8 @@ const CLAUDE_CONTEXT_WINDOWS: Readonly<Record<string, number | undefined>> = {
   // Pi's `claude-bridge` provider, measured 2026-08-21: a live slot spawned as
   // `--model 'claude-bridge/claude-opus-5'` published ctx: null while its own pi footer read
   // `13.0%/1.0M`. The prefix is part of the id and must never be stripped to reach this table —
-  // bare `claude-opus-5` is the 200k row at the top, so a strip would republish that 13.0% as 65%,
-  // the same factor-five error the fable row exists to end.
+  // a stripped id is a claim about a different runtime (bare `claude-opus-5` has been 1M too since
+  // 2026-09-19, but by Claude Code's own table, not by the bridge's mapping).
   // What makes this a row rather than a guess is not the footer but the bridge's own mapping: it
   // REWRITES the id it hands to Claude Code. pi-claude-bridge 0.6.3, src/models.ts,
   // `resolveClaudeCodeRuntimeModel` maps `claude-opus-5` to cliModelId `claude-opus-5[1m]`,

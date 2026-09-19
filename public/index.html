@@ -615,7 +615,8 @@
        --q-wait = it is waiting for YOU (needs-you, held, a raw start). Everything else stays ink.
        The reference is the chat view's own two dots: the green live dot and the warm CLI mark. */
     --q-live: #3fb950; --q-live-dim: #1b2a1e;
-    --q-wait: #e0873f; --q-wait-dim: #2a1f14;
+    --q-wait: #cc9a6b; --q-wait-dim: #241b13;
+    --chat-copied: #86efac;
     --t: 160ms cubic-bezier(0.2, 0.7, 0.2, 1); }
   @media (prefers-reduced-motion: reduce) { :root { --t: 0ms; } }
   .slot.proj { border-left: 3px solid hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l) / 0.8); padding-left: 8px; }
@@ -1100,6 +1101,25 @@
     border-color: var(--chat-edge); color: var(--chat-mute); }
   #shell-queue .shellclose:hover { color: var(--chat-ink); }
   #shell-queue .qdsection-body > .rvhead:not(:first-child) { margin-top: 16px; }
+  /* A TEXT BLOCK, in the shape of the chat view's code block: the label on the left, "copy" on the
+     right, the text below in the mono face. IDs and symbols read as inline code chips, which is how
+     the reference page carries them in prose. */
+  #shell-queue .qdblock { margin: 0 0 12px; border: 1px solid var(--chat-edge-soft); border-radius: var(--r2);
+    background: var(--chat-surface); overflow: hidden; }
+  #shell-queue .qdblockh { display: flex; align-items: center; gap: 8px; padding: 4px 12px;
+    border-bottom: 1px solid var(--chat-edge-soft); }
+  #shell-queue .qdblockl { flex: 1; min-width: 0; font-family: var(--chat-mono); font-size: var(--chat-ui-fs);
+    color: var(--chat-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #shell-queue .qdblockc { flex: none; font: inherit; font-size: var(--chat-ui-fs); color: var(--chat-mute);
+    background: transparent; border: 0; padding: 0 4px; cursor: pointer; transition: color var(--t); }
+  #shell-queue .qdblockc:hover { color: var(--chat-ink); }
+  #shell-queue .qdblockc.ok { color: var(--chat-copied); }
+  #shell-queue .qdblock .qdtext { margin: 0; border: 0; border-radius: 0; background: transparent;
+    padding: 8px 12px; }
+  /* an ID is a chip in the prose, not a word: the same shape the chat view gives inline code */
+  #shell-queue .qdtitle-id, #shell-queue .qbundleid { background: var(--chat-raised);
+    border: 1px solid var(--chat-edge); border-radius: 5px; padding: 0 4px; }
+  #shell-queue .qbundleid.go { cursor: pointer; }
   /* THE PAIR ON THE SURFACE — used on STATES, never on decoration: the group head of what runs and
      of what waits, the row's own mark, the chips that carry those two states, the lane line and the
      dispatcher switch. A button never wears them; the accent of an ACTION stays the ink. */

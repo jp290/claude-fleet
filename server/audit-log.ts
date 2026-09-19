@@ -238,6 +238,8 @@ type AuditEvent =
   // pane is touched; the row is what the next heal, ↻ restart or succession spawns from. Detail
   // carries the resulting pair so the trail says what the next spawn line will say.
   | "slot_model"
+  // the opt-in half of the same route successfully typed `/model <id>` into the live pane.
+  | "slot_model_push"
   // the owner chose which executable a repo's throwaway worker runs as. On the trail because the
   // value decides where that repo's DIFF is sent — the one setting here whose blast radius is
   // another party's servers rather than this machine. Detail names the repo, worker and path.

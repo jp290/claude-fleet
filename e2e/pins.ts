@@ -10053,6 +10053,41 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     `${calls} call site(s), unguarded: ${unguarded.join(", ") || "none"}`);
 }
 
+// ================================================================================================
+// B-A6 · paneModel is a bounded read-back; model push stays an explicit owner opt-in
+// ================================================================================================
+{
+  const RULE_PANE_MODEL = "paneModel is a read-back and model push is opt-in";
+  const harness = serverU.span("interface Harness {", "// Claude Code's per-folder TRUST DIALOG");
+  const claude = serverU.span("const CLAUDE_HARNESS: Harness = {", "// --- Full local access");
+  pin(`${RULE_PANE_MODEL} — only an adapter declaration can enable a model-footer read`,
+    !!harness && !!claude && harness.text.includes("modelFooter?: RegExp;")
+      && claude.text.includes("modelFooter: /^ {2}"),
+    `harness=${!!harness} claude=${!!claude}`);
+
+  const tick = serverU.span("async function tickGit(): Promise<void> {", "// the two deploy facts ride this tick");
+  pin(`${RULE_PANE_MODEL} — tickGit rate-limits the pane capture to one read per slot per 30 seconds`,
+    !!tick && serverU.text.includes("const MODEL_FOOTER_READ_MS = 30_000;")
+      && tick.text.includes("modelReadAt - previousPaneModel.at >= MODEL_FOOTER_READ_MS")
+      && tick.text.includes('tmux("capture-pane", "-p", "-t", paneTarget(sess(s.id)))')
+      && tick.text.includes("paneModelInfo.set(s.id"),
+    tick ? "tickGit + 30s guard + capture + cache" : "tickGit not found in server.ts");
+
+  pin(`${RULE_PANE_MODEL} — /api/sessions omits a null paneModel and carries a successful push stamp`,
+    serverU.text.includes("...(paneModel?.model ? { paneModel: paneModel.model } : {})")
+      && serverU.text.includes("...(paneModel?.modelPushedAt ? { modelPushedAt: paneModel.modelPushedAt } : {})"),
+    "conditional paneModel + modelPushedAt spreads");
+
+  const route = serverU.span('if (slotMatch[2] === "model") {', 'if (slotMatch[2] === "mission") {');
+  const pushBranch = route?.text.indexOf("if (body.push === true)") ?? -1;
+  const send = route?.text.indexOf("sendText(") ?? -1;
+  pin(`${RULE_PANE_MODEL} — the route reads push only as a Boolean and the default path contains no sendText`,
+    !!route && route.text.includes('body?.push !== undefined && typeof body.push !== "boolean"')
+      && pushBranch >= 0 && send > pushBranch
+      && !route.text.slice(0, pushBranch).includes("sendText("),
+    `route=${!!route} pushBranch=${pushBranch} send=${send}`);
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

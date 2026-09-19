@@ -5,7 +5,7 @@ import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, realpa
 import { tmpdir } from "node:os";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
-import { BASE, IP, PORT, REPO, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
+import { BASE, IP, PORT, REPO, ROOT, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
@@ -420,7 +420,8 @@ export async function run(): Promise<void> {
   // half (a restart spawns with the new pair) is proven in ./e2e-claude-gate.sh, the only suite
   // whose FLEET_CMD makes the flags appear; here: the record, both views, the audit trail, and
   // the three ways in that must NOT reach it. ---
-  type ModelRow = { id: number; model: string | null; effort?: string; harness?: string };
+  type ModelRow = { id: number; label?: string | null; model: string | null; effort?: string; harness?: string;
+    agent?: string | null; paneModel?: string; modelPushedAt?: number };
   const modelRowOf = async (id: number): Promise<ModelRow | undefined> =>
     ((await (await get("/api/sessions")).json()) as { slots: ModelRow[] }).slots.find((x) => x.id === id);
   const stewModelRowOf = async (id: number): Promise<ModelRow | undefined> =>
@@ -491,6 +492,91 @@ export async function run(): Promise<void> {
     mdClear.ok && mdCleared?.model === null && mdCleared.effort === undefined, `${mdClear.status} ${JSON.stringify(mdCleared)}`);
   if (modelBefore?.model || modelBefore?.effort)
     await post("/api/slots/2/model", { model: modelBefore.model, effort: modelBefore.effort ?? null });
+
+  const footerModel = "Opus 5 (1M context)";
+  const plainReady = await plantScreen(1, "model sensor fixture without a footer", "paneModel no-match");
+  const footerReady = await plantScreen(2,
+    `model sensor fixture\n  main  |  ctx [##--------] 25%  |  ${footerModel}   /rc`, "paneModel sensor");
+  await restartSrv();
+  let footerRow: ModelRow | undefined;
+  let plainRow: ModelRow | undefined;
+  for (let i = 0; i < 160; i++) {
+    footerRow = await modelRowOf(2);
+    plainRow = await modelRowOf(1);
+    if (footerRow?.paneModel === footerModel) break;
+    await Bun.sleep(50);
+  }
+  // BREAKS IF: the footer capture group changes, or a no-match is serialized as paneModel:null.
+  check("paneModel sensor: a planted Claude footer yields its model and a screen without the pattern omits the field",
+    footerReady && plainReady && footerRow?.paneModel === footerModel && !!plainRow && !("paneModel" in plainRow),
+    JSON.stringify({ footer: footerRow?.paneModel ?? null, plainHasKey: plainRow ? "paneModel" in plainRow : null }));
+
+  const paneBeforeDefault = (await tmuxOut("capture-pane", "-p", "-t", "s1")).out;
+  const noPush = await post("/api/slots/1/model", { model: "claude-sonnet-5" });
+  const paneAfterDefault = (await tmuxOut("capture-pane", "-p", "-t", "s1")).out;
+  // BREAKS IF: the absent push field enters the sendText branch.
+  check("model push default: a model rewrite without push leaves the pane byte-for-byte untouched",
+    noPush.ok && paneAfterDefault === paneBeforeDefault,
+    JSON.stringify({ status: noPush.status, before: paneBeforeDefault.length, after: paneAfterDefault.length }));
+
+  const pushed = await post("/api/slots/1/model", { model: "claude-opus-5", push: true });
+  const pushedBody = await pushed.json() as { ok?: boolean; modelPushedAt?: number; error?: string };
+  let pushedPane = "";
+  let pushedRow: ModelRow | undefined;
+  let pushedAudit: { event?: string; slot?: number; detail?: string } | null | undefined;
+  for (let i = 0; i < 80; i++) {
+    pushedPane = (await tmuxOut("capture-pane", "-p", "-t", "s1")).out;
+    pushedRow = await modelRowOf(1);
+    pushedAudit = (await Bun.file(`${ROOT}/audit.jsonl`).text()).split("\n").filter(Boolean)
+      .map((l) => { try { return JSON.parse(l) as { event?: string; slot?: number; detail?: string }; } catch { return null; } })
+      .filter((r) => r?.event === "slot_model_push" && r.slot === 1).at(-1);
+    if (pushedPane.split("\n").filter((l) => l.trim() === "/model claude-opus-5").length === 1
+      && pushedRow?.modelPushedAt === pushedBody.modelPushedAt && pushedAudit) break;
+    await Bun.sleep(50);
+  }
+  // BREAKS IF: push:true types zero/two model lines, stamps before/after a different instant, or omits its audit.
+  check("model push: push:true types exactly one /model line and stamps modelPushedAt with slot_model_push",
+    pushed.ok && typeof pushedBody.modelPushedAt === "number"
+      && pushedPane.split("\n").filter((l) => l.trim() === "/model claude-opus-5").length === 1
+      && pushedRow?.modelPushedAt === pushedBody.modelPushedAt
+      && pushedAudit?.detail === "model=claude-opus-5",
+    JSON.stringify({ status: pushed.status, body: pushedBody, row: pushedRow, audit: pushedAudit ?? null }));
+
+  const composerMode = process.env.FLEET_E2E_COMPOSER_MODE ?? "";
+  if (composerMode) writeFileSync(composerMode, "normal\n");
+  const heldOpen = await post("/api/slots/3/open", { cwd: "~", harness: "pi", model: "claude-bridge/claude-haiku-4-5" });
+  let heldAgent: string | null | undefined;
+  for (let i = 0; i < 80 && heldAgent !== "alive"; i++) {
+    heldAgent = (await modelRowOf(3))?.agent;
+    if (heldAgent !== "alive") await Bun.sleep(50);
+  }
+  const draft = "owner-draft-model-push";
+  const draftTyped = await tmuxOut("send-keys", "-l", "-t", "s3", draft);
+  let draftPane = "";
+  for (let i = 0; i < 80 && !draftPane.includes(draft); i++) {
+    draftPane = (await tmuxOut("capture-pane", "-p", "-t", "s3")).out;
+    if (!draftPane.includes(draft)) await Bun.sleep(50);
+  }
+  const pushAuditsBefore = (await Bun.file(`${ROOT}/audit.jsonl`).text()).split("\n")
+    .filter((l) => l.includes('"event":"slot_model_push"') && l.includes('"slot":3')).length;
+  const heldPush = await post("/api/slots/3/model", { model: "claude-bridge/claude-haiku-4-5", push: true });
+  const heldBody = await heldPush.json() as { error?: string };
+  const heldRow = await modelRowOf(3);
+  const heldPane = (await tmuxOut("capture-pane", "-p", "-t", "s3")).out;
+  const pushAuditsAfter = (await Bun.file(`${ROOT}/audit.jsonl`).text()).split("\n")
+    .filter((l) => l.includes('"event":"slot_model_push"') && l.includes('"slot":3')).length;
+  // BREAKS IF: an occupied composer is bypassed, modelPushedAt is stamped before delivery, or a held push is audited as sent.
+  check("model push held: an occupied composer is 409 by name and stamps or types nothing",
+    composerMode !== "" && heldOpen.ok && heldAgent === "alive" && draftTyped.code === 0 && draftPane.includes(draft)
+      && heldPush.status === 409 && heldBody.error?.includes("model push held (composer occupied") === true
+      && heldRow?.modelPushedAt === undefined && !heldPane.includes("/model ") && pushAuditsAfter === pushAuditsBefore,
+    JSON.stringify({ mode: composerMode !== "", open: heldOpen.status, agent: heldAgent, draft: draftPane.includes(draft),
+      status: heldPush.status, error: heldBody.error, stamp: heldRow?.modelPushedAt, audits: [pushAuditsBefore, pushAuditsAfter] }));
+  await post("/api/slots/3/kill", {});
+  await post("/api/slots/1/open", { cwd: "~/claude-fleet" });
+  await post("/api/slots/2/open", { cwd: "~" });
+  if (modelBefore) await post("/api/slots/2/rename", { label: modelBefore.label ?? "" });
+
   // per-session, not per-slot: slot 3 is free here (killed above, re-opened later by the export
   // fixture), so this recycle is blast-radius-free
   const msOpen = await post("/api/slots/3/open", { cwd: "~" });

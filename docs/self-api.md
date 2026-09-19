@@ -3245,20 +3245,28 @@ curl -X POST http://<fleet-host>:<port>/api/slots/<id>/model \
   -d '{"model":"claude-fable-5-1[1m]","effort":"high"}'
 ```
 
-- Body `{model?, effort?}`; mindestens ein Feld, sonst 400. Abwesendes Feld = unverändert; `null`/`""`
+- Body `{model?, effort?, push?}`; mindestens `model` oder `effort`, sonst 400. Abwesendes Feld = unverändert; `null`/`""`
   löscht (Modell → Fleet-Default `DEFAULT_MODEL`, Effort → kein Flag).
+- `push` ist optional und muss, wenn vorhanden, Boolean sein. Nur `push:true` versucht nach dem
+  Datensatz-Update genau eine Zeile ``/model <model>`` in die lebende Pane zu senden. Der Pfad läuft
+  durch das gemeinsame Delivery-Gate und verweigert eine belegte Composer-Zeile mit 409
+  `model push held (…)`; ohne `push` wird die Pane nicht berührt.
 - Validierung byte-gleich mit `open`/`dispatch`, beurteilt nach der Harness des Slots (`modelOf`/`effortOf`
   in `server.ts`): claude → `MODEL_RE`, deklarierte Fremd-Harness → `HARNESS_MODEL_RE`, Effort nur aus
   `effortLevels` des Adapters (codex etwa `low…ultra`, Adapter ohne Effort-Begriff lehnen jeden Wert ab).
   Ungültig = 400, Datensatz unverändert. Das `[1m]`-Suffix bleibt in der Spawn-Zeile single-quoted
   (`agentCmd`), die Route weitet nichts auf.
-- Antwort `{ok, model, effort}`; persistiert (`saveState`), Trail-Zeile `slot_model` mit dem
+- Antwort `{ok, model, effort, modelPushedAt?}`; persistiert (`saveState`), Trail-Zeile `slot_model` mit dem
   resultierenden Paar. `GET /api/sessions` (Effort weggelassen, wenn null) und `GET /api/steward/sessions`
-  (seit 2026-09-02 mit `effort`) zeigen den neuen Stand sofort.
+  (seit 2026-09-02 mit `effort`) zeigen den neuen Stand sofort. Ein erfolgreicher Push stempelt
+  `modelPushedAt` nur prozesslokal auf der Slot-Zeile und schreibt `slot_model_push`; ein gehaltener
+  oder ungewisser Push stempelt nichts.
 - Owner-only: Steward-Token 403 (out of scope), Self-Token 401. Kein Board-Knopf, API-only wie `open`+`label`.
-- **Kein Sensor für das Laufzeit-Modell der Pane** — was `/model` dort eingestellt hat, weiß der Server
-  nicht; die Route macht den Datensatz zur Wahrheit für den NÄCHSTEN Spawn, nicht die Pane zur Wahrheit für
-  den Datensatz. Beweis der Pane-Hälfte: `./e2e-claude-gate.sh` (Rewrite, dann `↻ restart`, Spawn-Zeile trägt
+- `GET /api/sessions` trägt zusätzlich `paneModel`, wenn der Harness ein gemessenes Footer-Muster
+  deklariert und die letzte höchstens alle 30 s laufende Pane-Lesung ein Modell erkannt hat. Heute
+  deklariert nur der Claude-Adapter dieses Muster. Kein Treffer wird als weggelassenes Feld gelesen,
+  nie als `null`; der Sensor ist prozesslokal und ändert den gespeicherten Datensatz nicht. Beweis der
+  Spawn-Hälfte bleibt `./e2e-claude-gate.sh` (Rewrite, dann `↻ restart`, Spawn-Zeile trägt
   `--model '<neu>'` und `--effort '<neu>'`, gleicher `--resume`-Pin).
 
 ## dispatch — `POST /api/tasks/:id/dispatch` (OWNER-Route, nicht `/api/self/*`)

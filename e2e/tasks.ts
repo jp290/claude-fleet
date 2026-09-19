@@ -813,7 +813,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // tokens for ITSELF — the chat view keeps its 14px — and its window is the viewport less 16px
     // on each side, which the phone rule takes back to the full screen.
     check("queue size: the type tokens are a step smaller inside #shell-queue only, and the window is the viewport less 16px a side",
-      /#shell-queue \{ --chat-fs: 13px; --chat-code-fs: 12px;/.test(taskPageSource)
+      /#shell-queue \{ --chat-fs: 13px; --chat-code-fs: 12px; \}/.test(taskPageSource)
         && /:root \{[\s\S]*?--chat-fs: 14px; --chat-code-fs: 12\.5px;/.test(taskPageSource)
         && /#shell-queue \.shellwin \{ width: calc\(100vw - 32px\); height: calc\(100vh - 32px\); \}/.test(desktopCss)
         && /@media \(max-width: 700px\)[\s\S]*?#shell-queue \.shellwin \{ width: 100vw; height: 100dvh;/.test(taskPageSource),

@@ -400,10 +400,25 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   (untracked eingeschlossen), sonst 409 mit den ersten 20 Statuszeilen im Feld `status`. Der Nachfolger
   erbt den BRANCH — alles Uncommittete ist schlicht verloren, ein Staffelstab ohne Commit ist kein
   Staffelstab. Ein laufender Merge auf diesem Slot ist ebenfalls 409.
+- **Zwei Türen sind seit 2026-09-18 vorher zu passieren (bc1d7866, MAIN-Urteil 2026-09-18), beide
+  ein 409 mit benanntem Grund:** (a) der neueste Fleet-Report DIESES Occupants muss `status:
+  handoff` tragen — der direkte Schnitt gegen die 89er-Schleife, in der jede Nachfolgerin einem
+  `complete` folgte; die Regelbuch-Reihenfolge (commit, handoff-Report, succeed) bleibt intakt.
+  (b) der Deckel `FLEET_LANE_SUCCEED_MAX` (Default 5, 0 = aus): so viele Successionen JE Zeile
+  (originId), dann 409 mit Hinweis auf `needs-main` und GENAU EINE Owner-Attention (auf die offene
+  Zeile dedupliziert; eine Program-lose Lane bekommt nur den 409). Der Zähler liegt außerhalb der
+  Zeile in `fleet.json` (`laneSucceedCounts`) — ein Requeue setzt ihn nicht zurück, eine
+  archivierte Zeile nimmt ihn nicht mit.
 - **Der erste Prompt der Nachfolgerin** ist servergebaut und trägt: den Auftrag im Wortlaut (`brief ?? text`
   je Zeile, bei einer Welle alle Zeilen in der Sensor-Reihenfolge), `git log --oneline <base>..HEAD`, den
-  Beleg, dass der Baum sauber ist, den Text des letzten `handoff`-Reports DIESES Occupants — und dieselbe
-  `LANE_EXIT_FOOTER`, die jede Lane bekommt, aus derselben Konstante.
+  Beleg, dass der Baum sauber ist, den Text des letzten `handoff`-Reports DIESES Occupants, den
+  WAHREN Grund der Übergabe (Kontext-Schwelle, wenn der Server diese Session selbst gemahnt hat;
+  sonst der Verweis auf den handoff-Report, der zwischen MAIN-Auftrag und Lane-Entscheid
+  unterscheidet) und die letzte Entscheidung der MAIN zu dieser Zeile (neuestes `decision` auf
+  einem Fleet-Report der Zeile: Disposition + Grund wörtlich; ohne Entscheidung deren benannte
+  Absenz statt der alten Festsätze „Kontext voll“ und „Auftrag unverändert“) — und denselben
+  Footer wie die Gründung (`server.ts#laneExitFooter`), dessen Übergabe-Satz an der Harness hängt:
+  eine Codex-Lane kompaktiert sich selbst und bekommt keinen succeed-Hinweis.
 - **`carry` ist auf dieser Schiene 409**, nicht ignoriert: der `handoff`-Report IST der eine Übergabekanal
   (§fleet-report). Zwei Kanäle könnten einander widersprechen, ohne dass jemand sagen kann, welchem die
   Nachfolgerin gefolgt ist.
@@ -522,6 +537,27 @@ Zustand. Der Context-Receipt-`hash` bleibt die Kette über `anchorBlock` + `plan
 sich nicht; `briefHash`/`deliveredBytes` beschreiben die ausgelieferten Bytes und wandern mit dem
 Block mit — genau das ist ihr Vertrag. Rückweg: die Konstante wieder aus den beiden Buildern
 nehmen.
+
+## attention withdraw — `POST /api/self/attention/:id/withdraw`
+
+Die ZwillingsTür zu `POST /api/self/attention`: eine gebundene MAIN zieht eine eigene noch offene
+Frage zurück (seit 2026-09-18). Der Grund ist Pflicht — eine Frage, die ohne genanntes Warum
+verschwindet, ist genau die stille Entscheidung, die diese Fläche unmöglich machen soll.
+
+```
+curl -s -X POST http://<fleet-host>:<port>/api/self/attention/<id>/withdraw \
+  -H "content-type: application/json" -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  -d '{"reason":"warum ziehst du die Frage zurück (Pflicht, bis 4000 Zeichen)"}'
+```
+
+- **Die Zeile endet `refused`, nicht in einem neuen Zustand** — `refusedReason` trägt
+  `withdrawn by requester: <Grund>` wörtlich, `closedAt` den Zeitpunkt. Der Owner sieht also nicht
+  nur, dass die Frage weg ist, sondern warum; die offene Zeile zählt nicht mehr gegen den
+  Open-Deckel des Erhebers.
+- **Scope ist der ErhebungsTür identisch:** nicht-Lane (eine Lane hat keine Attention
+  zurückzuziehen, 409), und die Zeile muss DIESEM Occupant gehören — eine fremde oder bereits
+  geschlossene Zeile ist ein 409, nie ein stilles Nichts. 401 ohne gültiges Self-Token, 404 für
+  eine unbekannte Id.
 
 ## program-context-packs — `POST /api/self/program-context-packs`
 

@@ -3569,6 +3569,7 @@ function stateSnapshot(): string {
     events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks, programs, studios,
     messages, ...(messagesLost ? { messagesLost } : {}),
     supervisor, lineageHandovers, lineageHandoverLosses,
+    ...(laneSucceedCounts.size ? { laneSucceedCounts: Object.fromEntries(laneSucceedCounts) } : {}),
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
     repoBases, repoWorkers, repoLaneCaps, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
@@ -7617,6 +7618,47 @@ function laneHandoffReportFor(s: Slot): FleetReport | null {
   return mine.length ? mine[mine.length - 1]! : null;
 }
 
+// THE SUCCESSION DECKEL, PER ROW (bc1d7866's MAIN verdict, 2026-09-18): past FLEET_LANE_SUCCEED_MAX
+// successions a row's baton cannot pass again — the private-repo-aa lane took 89 of them, each
+// following a `complete`, which is the measured cost of a rail without a lid. The count is keyed
+// by originId (a wave's rows share it) and lives OUTSIDE the task row on purpose: a requeue
+// rewrites the row's status/slot/note and must not reset the budget, and an archived row must not
+// take the counter with it. 0 = off, like every other FLEET_ threshold.
+const FLEET_LANE_SUCCEED_MAX = Math.max(0, Number(process.env.FLEET_LANE_SUCCEED_MAX ?? 5) | 0);
+const laneSucceedCounts = new Map<string, number>();
+
+// WHY THE PREDECESSOR HANDED OVER, named only from what the server itself observed. The one
+// handover cause the server can KNOW is its own nudge — tickMigrate's delivered-nudge record is
+// memory-only, so a restart demotes the fact honestly: the brief then points at the handoff
+// report below instead of guessing between a MAIN's order and the lane's own call.
+function successionReasonFor(s: Slot): string {
+  const attempt = migrateTried.get(s.id);
+  if (attempt && attempt.sessionId === s.sessionId && attempt.nudges > 0)
+    return `Kontext-Schwelle — der Server hat diese Session ${attempt.nudges}× selbst zur Übergabe gemahnt`;
+  return "Grund laut handoff-Report — der Server hat keinen Übergabe-Nudge aufgezeichnet; "
+    + "ob MAIN-Auftrag oder Lane-Entscheid, sagt der Wortlaut der Übergabe unten";
+}
+
+// THE LAST WORD THE MAIN SAID ABOUT THIS ROW: the newest decision (accepted/rejected + reason) on
+// a fleet report whose provenance names one of the rows this lane holds. Disposition and reason
+// travel VERBATIM into the brief — the 89-succession K1 loop lived in exactly the gap this closes,
+// every successor reading the rejected order as valid and re-declaring the work done.
+function latestRowDecisionLine(rows: readonly Task[]): string | null {
+  const ids = new Set(rows.flatMap((t) => t.originId ? [t.id, t.originId] : [t.id]));
+  let best: FleetReport | null = null;
+  for (const r of fleetReports) {
+    if (!r.decision) continue;
+    const p = r.provenance;
+    if (!(p?.taskId && ids.has(p.taskId)) && !(p?.originId && ids.has(p.originId))) continue;
+    if (!best || r.decision.at >= best.decision!.at) best = r;
+  }
+  if (!best?.decision) return null;
+  const by = best.decision.by;
+  const who = typeof by === "string" ? by : "rule" in by ? by.rule : `slot ${by.slot}`;
+  return `fleet-report ${best.id}: ${best.decision.disposition}`
+    + ` — ${best.decision.reason ?? "(ohne genannten Grund)"} (${who}, ${new Date(best.decision.at).toISOString()})`;
+}
+
 function laneSuccessionRowLines(rows: readonly Task[]): string {
   if (!rows.length)
     return "(diese Lane hält keine Queue-Zeile — sie wurde von Hand geöffnet; der Auftrag steht in der Pane-Historie deiner Vorgängerin, die du NICHT mehr lesen kannst. Frage nach, statt zu raten.)";
@@ -7629,14 +7671,18 @@ function laneSuccessionRowLines(rows: readonly Task[]): string {
 }
 
 function buildLaneSuccessionBrief(facts: { branch: string; base: string; session: number;
-  rows: readonly Task[]; log: string; handoff: FleetReport | null }): string {
+  rows: readonly Task[]; log: string; handoff: FleetReport | null; reason: string;
+  decision: string | null; footer: string }): string {
   const handoff = facts.handoff
     ? `fleet-report ${facts.handoff.id}:\n${facts.handoff.text}`
     : "(kein handoff-Report — deine Vorgängerin hat keinen gefiled. Was offen ist, steht nur im Baum: lies die Commits oben und den Auftrag.)";
   return [
     `[fleet staffelstab] Du bist Session ${facts.session} DIESER Lane — gleicher Worktree, gleicher Branch (${facts.branch}), gleicher Slot, gleiche Queue-Zeile(n).`,
-    "Deine Vorgängerin hat übergeben, weil ihr Kontext voll lief; ihre Arbeit ist committet und steht unter dir.",
-    "Der Auftrag ist unverändert. Lies zuerst den Auftrag, dann was schon drin ist, dann die Übergabe.",
+    `Deine Vorgängerin hat übergeben — ${facts.reason}. Ihre Arbeit ist committet und steht unter dir.`,
+    facts.decision
+      ? `Die letzte Entscheidung zu dieser Zeile: ${facts.decision}.`
+      : "Zu dieser Zeile liegt keine Entscheidung vor; der Auftrag unten gilt im Wortlaut.",
+    "Lies zuerst den Auftrag, dann was schon drin ist, dann die Übergabe.",
     "",
     "--- DER AUFTRAG (unverändert, im Wortlaut)",
     laneSuccessionRowLines(facts.rows),
@@ -7649,13 +7695,40 @@ function buildLaneSuccessionBrief(facts: { branch: string; base: string; session
     "",
     "--- DIE ÜBERGABE DEINER VORGÄNGERIN",
     handoff,
-  ].join("\n") + LANE_EXIT_FOOTER;
+  ].join("\n") + facts.footer;
 }
 
 // the queue rows this lane holds, captured before openSlot's detachSlotTasks answers them, and
 // restored after it. Everything here is what the row said WHILE the lane held it: a succession is
 // not an abort, so the rows must come out of it exactly as they went in.
 interface LaneRowHold { task: Task; note: string | null }
+
+// EXACTLY ONE owner attention per cap event (bc1d7866 verdict, 2026-09-18): minted by the SERVER,
+// not by the lane — a lane may not raise attention, but this row is the rail's own blocked fact
+// about the lane, carrying the same numbers the 409 names. Deduped on the open row with the same
+// text, so retries mint nothing; a programless lane has no inbox to file against, and its 409 is
+// the whole signal there.
+async function raiseSuccessionCapAttention(s: Slot, taken: number): Promise<void> {
+  if (!s.programId) return;
+  const text = `lane succession cap reached on ${s.worktree?.branch ?? "the lane branch"}: `
+    + `origin ${s.originId} took ${taken} of ${FLEET_LANE_SUCCEED_MAX} successions — the row needs `
+    + "a decision (its lane was told to file needs-main), not another session";
+  const bound = (a: AttentionRequest): boolean => a.requester.slot === s.id
+    && a.requester.openedAt === s.openedAt && a.requester.sessionId === s.sessionId;
+  if (attentionRequests.some((a) => (a.status === "open" || a.status === "send-uncertain")
+    && a.kind === "blocked" && a.text === text && bound(a))) return;
+  const request: AttentionRequest = {
+    id: randomBytes(12).toString("hex"), raisedAt: Date.now(), kind: "blocked", text,
+    requester: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId },
+    programId: s.programId,
+    provenance: { taskId: s.taskId, originId: s.originId, programId: s.programId,
+      branch: s.worktree?.branch ?? null, candidateSha: null },
+    status: "open", answer: null, refusedReason: null, closedAt: null,
+  };
+  attentionRequests = [...attentionRequests, request];
+  audit("attention_open", s.id, `${request.id} kind=blocked program=${s.programId} (succession cap)`);
+  await saveStateNow();
+}
 
 async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn,
   expected: SuccessionPredecessorIdentity): Promise<Response> {
@@ -7672,6 +7745,30 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
     return json({ error: "the worktree is not clean — commit your work (and leave no untracked files) before handing the baton over; a successor inherits the BRANCH, so anything uncommitted is simply lost",
       status: status.lines.slice(0, LANE_SUCCESSION_STATUS_SHOWN) }, 409);
 
+  // THE DECKEL, PER ROW (originId): past the cap the baton cannot pass again on this row, and the
+  // refusal names the needs-main way out. Ahead of the ticket gate below on purpose: a row at its
+  // cap is a structural stop, not one more session's paperwork problem.
+  if (FLEET_LANE_SUCCEED_MAX > 0 && s.originId) {
+    const taken = laneSucceedCounts.get(s.originId) ?? 0;
+    if (taken >= FLEET_LANE_SUCCEED_MAX) {
+      await raiseSuccessionCapAttention(s, taken);
+      return json({ error: `this row (origin ${s.originId}) has taken ${taken} successions `
+        + `(FLEET_LANE_SUCCEED_MAX=${FLEET_LANE_SUCCEED_MAX}) — the baton cannot pass again on it; `
+        + "file a needs-main report so a decision can move the work instead" }, 409);
+    }
+  }
+  // THE HANDOFF REPORT IS THE TICKET: the newest report THIS occupant filed must be the handoff.
+  // The direct cut against the 89-loop, where every successor followed a `complete` — a session
+  // that still owes a verdict has not said what is open, and the successor would inherit a tree
+  // nobody described (MAIN verdict 2026-09-18 on bc1d7866). The rulebook order stays intact:
+  // commit (above), then the handoff report, then the baton.
+  const mine = fleetReports.filter((r) => r.worker.slot === s.id && r.worker.openedAt === s.openedAt);
+  const newest = mine[mine.length - 1];
+  if (!newest || newest.status !== "handoff")
+    return json({ error: newest
+      ? `the newest report of this session is status ${newest.status}, not handoff — file the handoff report (done / open / next step / open numbers) before handing the baton over`
+      : "this session has filed no fleet report yet — file the handoff report (done / open / next step / open numbers) before handing the baton over" }, 409);
+
   // read the successor's facts from the tree BEFORE the pane is recycled
   const base = ref.base ?? await integrationBranch(ref.repo) ?? "main";
   const logRead = await gitRead(cwd, "log", "--oneline", `${base}..HEAD`);
@@ -7680,7 +7777,9 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   const hold: LaneRowHold[] = waveRowsOf(s.id).map((task) => ({ task, note: task.note }));
   const session = s.laneSuccessions + 2; // the founding session was 1; this is the n-th successor
   const brief = buildLaneSuccessionBrief({ branch: ref.branch, base, session,
-    rows: hold.map((h) => h.task), log, handoff: laneHandoffReportFor(s) });
+    rows: hold.map((h) => h.task), log, handoff: laneHandoffReportFor(s),
+    reason: successionReasonFor(s), decision: latestRowDecisionLine(hold.map((h) => h.task)),
+    footer: laneExitFooter(s.harness) });
   // git and the report read are awaits; the owner may have killed or recycled this slot inside them.
   if (!sameSuccessionOccupant(s, expected))
     return json({ error: "predecessor session changed during succession preflight — retry from the current occupant" }, 409);
@@ -7711,6 +7810,8 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
     s.programId = provenance.programId;
     s.releasedBy = provenance.releasedBy;
     s.laneSuccessions = successions;
+    // the deckel counts PASSED successions only — a failed open above left the row where it was
+    if (s.originId) laneSucceedCounts.set(s.originId, (laneSucceedCounts.get(s.originId) ?? 0) + 1);
     // ...and the rows come back exactly as they were. detachSlotTasks reads a recycle as an ABORT
     // and answers `pending` + "slot recycled before landing"; here the lane did not end, so the
     // abort's answer is the wrong one and is reversed on the same rows it was written to.
@@ -11345,6 +11446,29 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
   return json({ ok: true, existing: false, id: request.id, request: attentionReceipt(request), sessionIdMatch });
 }
 
+// THE WITHDRAWAL TWIN of openAttention: a bound MAIN takes its own still-open question back. The
+// row ends `refused` — the vocabulary gains no fifth state here — with `refusedReason` naming the
+// withdrawal and the required reason verbatim, so the owner's list says WHY the question vanished
+// instead of only that it is gone. Scope is the raise door's own: the row must be THIS occupant's
+// (a foreign or already-closed row is a 409, never a silent no-op), and a lane has no attention
+// to take back at all.
+async function withdrawAttention(s: Slot, id: string, body: Record<string, unknown> | null): Promise<Response> {
+  const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
+  if (!reason)
+    return json({ error: "reason is required — a question withdrawn without a stated why is how a decision disappears" }, 400);
+  if (reason.length > MAX_ATTENTION_ANSWER)
+    return json({ error: `reason must be at most ${MAX_ATTENTION_ANSWER} chars` }, 400);
+  const a = attentionRequests.find((x) => x.id === id);
+  if (!a) return json({ error: "unknown attention request" }, 404);
+  if (!attentionBound(a, s))
+    return json({ error: "this attention was raised by another session — a MAIN withdraws its own questions only" }, 409);
+  if (a.status === "answered" || a.status === "refused")
+    return json({ error: `attention is already ${a.status} — there is no open question left to withdraw` }, 409);
+  refuseAttention(a, `withdrawn by requester: ${reason}`);
+  await saveStateNow();
+  return json({ ok: true, request: attentionReceipt(a) });
+}
+
 // A live binding sees its Program's rows across succession; an unbound or foreign occupant sees
 // only rows addressed to its own exact requester triple. The open cap and dedupe stay requester-
 // scoped in openAttention — and since 2026-09-13 a succession REBINDS the open rows to the successor
@@ -12176,7 +12300,17 @@ const FOUNDING_BRIEF_SOURCE: BriefSource = "founding";
 // assembly seam below so a brief cannot be delivered without them. A clarify lane is exempt by
 // construction: it must STOP and let the owner answer. The status list is read from the route's
 // own constant — a footer naming a status the route rejects would teach the lane a 400.
-const LANE_EXIT_FOOTER = `
+// ONE BODY, TWO EXITS (Fremdrepo-Befund 4, docs/messungen/2026-09-15-fremdrepo-annahmen-lanes.md):
+// the footer taught every harness `handoff` → POST /api/self/succeed, but a codex session compacts
+// its own window — the baton door is not its exit, and the hint was the lie. The one sentence is
+// all that differs; everything else stays a single text so the two cannot drift.
+const LANE_EXIT_HANDOFF_EXIT = "file it, then POST /api/self/succeed";
+const LANE_EXIT_HANDOFF_EXIT_CODEX = "your report IS the handover — a codex session compacts itself, and no baton door follows it";
+function laneExitFooter(harness: string | null): string {
+  const handoffExit = harnessOf(harness ?? "").id === CODEX_HARNESS.id
+    ? LANE_EXIT_HANDOFF_EXIT_CODEX
+    : LANE_EXIT_HANDOFF_EXIT;
+  return `
 
 --- HOW THIS LANE ENDS (three acts, in this order — they are the deliverable, not paperwork)
 
@@ -12194,7 +12328,7 @@ const LANE_EXIT_FOOTER = `
    verified, needs-main = you finished what you could and a decision is owed, failed = it did not
    work and you are saying so, handoff = your context is filling and you are laying the baton down
    (done / open / next step / open numbers) for a fresh session that continues on THIS worktree —
-   file it, then POST /api/self/succeed. \`text\` is prose for a human reader, at most
+   ${handoffExit}. \`text\` is prose for a human reader, at most
    ${MAX_FLEET_REPORT_TEXT} characters (write it to your scratchpad, check \`wc -c\`, then POST once):
    what you did, the quoted verification result, and one line for anything left unresolved. The
    body takes ONLY those two fields. A report is a MESSAGE, never a state change — it does not move
@@ -12210,6 +12344,7 @@ const LANE_EXIT_FOOTER = `
    observer error, not a hang). A \`waitedOut\` verdict never looked at your tree; it is not red.
 
 `;
+}
 
 async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
   ownerAct: boolean, clarify = false, wave: WaveDispatch | null = null): Promise<void> {
@@ -12433,7 +12568,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // Every await since the readiness wait was git or state work, and a kill or re-open in that window
     // must not receive this text — the same re-check the boot sleep gets, at the last moment it helps.
     if (identityLost()) { await requeue("slot changed during brief assembly — requeued"); return; }
-    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`;
+    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness)}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     await sendText(free, deliveredBrief, true, { path: "brief" });
@@ -30119,6 +30254,17 @@ if (existsSync(STATE_FILE)) {
     if (Array.isArray(pll))
       lineageHandoverLosses = [...pll.flatMap((x) => { const l = loadLineageHandoverLoss(x); return l ? [l] : []; }),
         ...lineageHandoverLosses].slice(-LINEAGE_LOSSES_MAX);
+    // THE SUCCESSION DECKEL'S COUNTER, per originId. Absent loads as empty; a malformed entry is
+    // dropped rather than repaired — an under-count only re-opens the gate, never locks a row.
+    const plsc = (persisted as { laneSucceedCounts?: unknown }).laneSucceedCounts;
+    if (plsc !== undefined && plsc !== null) {
+      if (plsc && typeof plsc === "object" && !Array.isArray(plsc)) {
+        for (const [k, v] of Object.entries(plsc as Record<string, unknown>))
+          if (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 1e6) laneSucceedCounts.set(k, v);
+      } else {
+        console.error(`laneSucceedCounts must be an object — loaded as empty`);
+      }
+    }
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
       const s = slotFrom(k);
       if (s && typeof v?.cwd === "string") {
@@ -33223,6 +33369,18 @@ Bun.serve<WSData>({
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not raise attention — a lane asks its MAIN via clarification" }, 409);
       return openAttention(s, await readJson(req));
+    }
+
+    // The withdrawal twin, the raise door's own scope rule: non-lane only, and the row must be the
+    // caller's own open question. 401 for no token, 409 for a lane, never a silent no.
+    const selfAttentionWithdraw = /^\/api\/self\/attention\/([0-9a-f]{24})\/withdraw$/.exec(url.pathname);
+    if (selfAttentionWithdraw && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not withdraw attention — a lane raises no attention to take back" }, 409);
+      return withdrawAttention(s, selfAttentionWithdraw[1], await readJson(req));
     }
 
     // W2 · the PROPOSE half of the file-surface pair. Deliberately open to a LANE as well as to a

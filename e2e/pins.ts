@@ -5743,7 +5743,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // B3, doc ↔ route ↔ footer. The footer is the only text most lanes ever read about how to end,
   // so a route renamed without it becomes a curl that 404s in every founding brief from then on.
   const selfApi = read("docs/self-api.md");
-  const footer = server.match(/const LANE_EXIT_FOOTER = `[\s\S]*?\n`;/)?.[0] ?? "";
+  const footer = server.match(/function laneExitFooter\([\s\S]*?\n\}/)?.[0] ?? "";
   // The list is quoted here rather than imported so a widening has to be a DELIBERATE edit in two
   // places: `handoff` (2026-09-12, the lane baton) had to be added to the route's vocabulary and to
   // this pin, and that is the point — it is the one status that is not a verdict, and a fourth
@@ -6439,17 +6439,17 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       `tasksCapAt=${tasksCapAt} programsCapAt=${programsCapAt}`);
   }
 
-  // THREE mentions since 2026-09-12, not two: the declaration, the dispatch seam, and the LANE
-  // SUCCESSION brief (server.ts#buildLaneSuccessionBrief). The count is still pinned because the
-  // rule it enforces is unchanged — a lane's ending must be appended at a seam, never retyped —
-  // and the successor is a lane that ends exactly like the founding one, so it gets the identical
-  // bytes from the identical constant. A FOURTH mention is a new hand-written copy until proven
-  // otherwise, and that is what should fail here.
+  // THREE call sites since the codex-exit cut (2026-09-18), still one construction: the
+  // declaration, the dispatch seam, and the LANE SUCCESSION brief (server.ts#buildLaneSuccessionBrief).
+  // The count is still pinned because the rule it enforces is unchanged — a lane's ending is
+  // appended at a seam, never retyped. Since the same cut the footer is a FUNCTION of the harness:
+  // a codex lane compacts its own window, so its copy of act 2 must not teach the baton door
+  // (Fremdrepo-Befund 4) — but both exits must come from this one body, or the two drift.
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
-    /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : LANE_EXIT_FOOTER\}`;/.test(server)
-      && /\]\.join\("\\n"\) \+ LANE_EXIT_FOOTER;/.test(server)
-      && (server.split("LANE_EXIT_FOOTER").length - 1) === 3,
-    `LANE_EXIT_FOOTER mentions=${server.split("LANE_EXIT_FOOTER").length - 1}`);
+    /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness\)\}`;/.test(server)
+      && /\]\.join\("\\n"\) \+ facts\.footer;/.test(server)
+      && (server.split("laneExitFooter(").length - 1) === 3,
+    `laneExitFooter call sites=${server.split("laneExitFooter(").length - 1}`);
 }
 
 // --- THE PROGRAM-MAIN EXECUTION RAIL ↔ THE TWO PROSE CONTRACTS. The block is the only text a

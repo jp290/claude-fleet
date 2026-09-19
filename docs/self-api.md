@@ -1820,11 +1820,12 @@ Dateien reisen NICHT mit**; ihre Zahl steht als `untracked` im Job, damit ein gr
 - `offer` — `null`, wenn diese Lane noch nie eines gemacht hat, sonst:
   `id` · `state` (`open|claimed|reported|withdrawn|abandoned|lapsed|reaped`) · `branch` ·
   `offeredAt` · `commitSha` · `treeSha` · `untracked` · `claim{name,claimedAt,expiresAt}` ·
-  `result`. Ein abgelaufener Claim liest sich sofort als `lapsed`, ohne auf den Sweep zu warten.
-- `result` (bei `state:"reported"`) — `exitCode` · `result` (`green|red|unknown`) · `reason` (nur
-  bei `unknown`) · `tail` (4096 B gedeckelt) · `trail` · `checks{ran,failed}` (`null` = nicht
-  zählbar, nie eine erfundene Null) · **`fails[]`** · **`remote{name,claimedAt,reportedAt}`** ·
-  `treeSha` · `ms`.
+  `result`. Ein abgelaufener Claim liest sich sofort als `lapsed`, ohne auf den Sweep zu warten;
+  hat der Sweep ihn schon gebucht, trägt das `lapsed`-Angebot auch schon sein Verdikt (s.u.).
+- `result` (bei `state:"reported"`, und seit dem 2026-09-19 auch bei `state:"lapsed"`) —
+  `exitCode` · `result` (`green|red|unknown`) · `reason` (nur bei `unknown`) · `tail` (4096 B gedeckelt) ·
+  `trail` · `checks{ran,failed}` (`null` = nicht zählbar, nie eine erfundene Null) · **`fails[]`** ·
+  **`remote{name,claimedAt,reportedAt}`** · `treeSha` · `ms`.
   `remote` trägt zusätzlich `reason`/`timeoutMs`, wenn die andere Maschine sagen konnte, WARUM sie
   nichts gemessen hat: geschlossene Menge `timeout|could-not-start` (`server.ts#helperNoMeasureOf`).
   Nicht zu verwechseln mit dem `reason` eine Ebene darüber — das ist die Klassifikation DIESES
@@ -1937,11 +1938,38 @@ gemessen erkauft:
   Ein Rot wird nur von anderen ungelesenen ROTS verdrängt, und die Trail-Zeile benennt diesen
   einen Fall.
 
-**Zugestellt wird nur an DIESELBE Belegung** (`slot` + `openedAt` des Angebots). Trägt der Slot
-inzwischen eine andere Session, verfällt die Zustellung mit einer benannten Trail-Zeile — ein
-Verdikt über einen Baum, den diese Session nie übergeben hat, wäre schlimmer als keines. In der
-Praxis kommt es dazu nicht: `expireHelperClaims` reapt ein Angebot, dessen Lane weg ist, schon
-bevor ein Verdikt angenommen werden kann (dann **409** `no live claim for this preview`).
+**Zugestellt wird nur an DIESELBE Belegung** (`slot` + `openedAt` des Angebots) — mit EINER
+Ausnahme, die dieselbe Lane ist: **ein Staffelstab trägt das Angebot mit.** Läuft auf dem Angebot
+noch ein Claim (oder es ist offen) und die Lane übergibt per `POST /api/self/succeed`, schreibt
+`server.ts#succeedLane` die `openedAt` des offenen/geclaimten Angebots auf die Nachfolgerin um —
+dieselbe Lane, derselbe Branch, dieselbe Arbeit. Die Nachfolgerin sieht es auf ihrem eigenen
+`GET /api/self/suite-offer` und bekommt das Verdikt in ihre Pane; der Sweep reapt es nicht mehr
+weg, und der Helfer liest den Job weiter auf seiner Liste (gemessen am 2026-09-18, Job
+`f5f181f6433f`: ohne den Umzug reapt der Sweep den laufenden Job bei der Nachfolge, der Daemon
+zog sich drei Minuten hinein still zurück — "ended by withdrawal after 168s — nothing reported"
+—, die Nachfolgerin las `offer: null`, und NIEMAND bekam je ein Verdikt; die Lane wartete 1 h 38
+min). Abgelaufene (settled) Angebote reisen NICHT mit: ihr Verdikt gehört der Belegung, die es
+gelesen hat, und der Handoff-Report ist da, wo dieses Wissen reist. Für eine FREMDE Session gilt
+die alte Regel unverändert: trägt der Slot eine andere Belegung ohne Staffelstab, verfällt die
+Zustellung mit einer benannten Trail-Zeile — ein Verdikt über einen Baum, den diese Session nie
+übergeben hat, wäre schlimmer als keines. Und ein Angebot, dessen Lane wirklich weg ist (gelandet,
+getötet, ohne Nachfolge), reapt `expireHelperClaims` schon bevor ein Verdikt angenommen werden
+kann (dann **409** `no live claim for this preview`).
+
+**STIRBT DER RUNNER, ENDET DAS WARTEN — TERMINAL, NIE GRÜN, NIE STILL.** Überschreitet ein Claim
+seine benannte Frist (`claim.expiresAt`, abgeleitet aus dem bestehenden Arbeitsbudget
+`FLEET_HELPER_CLAIM_TIMEOUT_MS` — keine neue Zahl), ohne dass ein Ergebnis kam, Buchung im Sweep
+(`expireHelperClaims`): das Angebot wird `lapsed` UND trägt jetzt ein Verdikt — `result:
+"unknown"`, `exitCode: null`, `remote.reason: "timeout"`, `remote.timeoutMs` = die Frist selbst,
+`remote.name` = der Helfer, der es hielt. Dieselbe Mint-Stelle wie bei grün/rot legt die Pane-Zeile
+an die anbietende Lane (`receiverIdleSec: 0`, eine Tick-Latenz durch die Queue), und der
+Pane-Hinweis sagt `NO VERDICT — nothing was measured; the offer no longer binds this tree` — nie
+`no failures`, das würde in genau der Pane grün lesen, die jetzt entscheiden muss. Es läuft nichts
+von selbst neu: kein Auto-Rerun, keine Owner-Zeile (die gibt es nur für Rot), das Angebot ist
+terminal und bindet den Baum nicht mehr — die Lane entscheidet (lokal fahren, neu anbieten oder
+liegen lassen). Ein später eintreffendes Verdikt des verlorenen Runners wird mit **409**
+`no live claim for this preview` abgelehnt; das gesettlte `unknown` bleibt die eine Wahrheit über
+diesen Baum. Beweis: `e2e/helper-portal.ts` (K12) in `./e2e-postland-audit.sh`.
 
 **UND EIN ROTES VERDIKT BEKOMMT EINEN ZWEITEN EMPFÄNGER: den Owner.** Dieselbe Mint-Stelle legt
 für `result: "red"` zusätzlich eine Zeile in den **Owner-Posteingang** (`receiverSlot: null`,

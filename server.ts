@@ -7792,6 +7792,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   const box: BoxPin = { container: s.container, containerContext: s.containerContext };
   const browser = s.browser; // the successor runs the same MCP profile as the lane it continues
   const successions = s.laneSuccessions + 1;
+  const priorOpenedAt = s.openedAt; // the predecessor occupation, read before openSlot rotates it
   // the slot briefly has no cwd inside openSlot's teardown; without this reservation the dispatch
   // tick could read it as free and found a different lane into it mid-handover.
   laneSpawn.add(s.id);
@@ -7810,6 +7811,21 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
     s.programId = provenance.programId;
     s.releasedBy = provenance.releasedBy;
     s.laneSuccessions = successions;
+    // A RUNNING PREVIEW RIDES THE BATON. The successor is the same lane on the same branch, so an
+    // open or claimed offer keeps its identity (slot + openedAt) under the successor's occupation.
+    // Without this the sweep reaps the job mid-run at its next tick — measured 2026-09-18, job
+    // f5f181f6433f: the helper withdrew silently three minutes in (the job list is the only thing
+    // it reads, helper-daemon/daemon.ts#withdrawnRuns), the successor read `offer: null`, and
+    // nobody ever got a verdict. With it, GET /api/self/suite-offer answers on the successor and
+    // the verdict's mint finds the successor's occupation. Settled offers are NOT carried: their
+    // verdict belongs to the occupation that read it, and the handoff report is where that
+    // knowledge travels.
+    for (const j of laneSuiteJobs.values())
+      if (j.slot === s.id && j.slotOpenedAt === priorOpenedAt && (j.state === "open" || j.state === "claimed")) {
+        j.slotOpenedAt = s.openedAt;
+        audit("lane_succession", s.id,
+          `preview suite job ${j.id} (${j.state}) rides the baton — the successor on ${ref.branch} waits for it now`);
+      }
     // the deckel counts PASSED successions only — a failed open above left the row where it was
     if (s.originId) laneSucceedCounts.set(s.originId, (laneSucceedCounts.get(s.originId) ?? 0) + 1);
     // ...and the rows come back exactly as they were. detachSlotTasks reads a recycle as an ABORT
@@ -19849,6 +19865,21 @@ function commandJobLapseResult(j: CommandJob, claim: CommandJob["claim"], now: n
     treeSha: j.treeSha ?? "", ms: now - (claim?.claimedAt ?? j.offeredAt),
   };
 }
+// The verdict a PREVIEW gets when its runner ends without a result — which, from this server's
+// side, is visible at exactly one moment: the named deadline `claim.expiresAt` (derived from the
+// existing work budget HELPER_CLAIM_TIMEOUT_MS, never a new guessed number) passes with no report.
+// `unknown` and never a red — the same rule commandJobLapseResult states for its kind — and the
+// `remote` half names whoever held it: a receipt without a name on it is the one sentence this
+// rail may not write. `reason: "timeout"` is the wire's word for "killed at its deadline or
+// silent past it"; the sentence travels beside it.
+function laneSuiteLapseResult(j: LaneSuiteJob, claim: LaneSuiteJob["claim"], now: number, reason: string): LaneSuiteResult {
+  return {
+    exitCode: null, result: "unknown", reason, tail: "", fails: [], checks: null,
+    remote: { name: claim?.name ?? "(nobody claimed it)", claimedAt: claim?.claimedAt ?? j.offeredAt,
+      reportedAt: now, reason: "timeout", timeoutMs: claim ? claim.expiresAt - claim.claimedAt : undefined },
+    treeSha: j.treeSha ?? "", ms: now - (claim?.claimedAt ?? j.offeredAt),
+  };
+}
 function commandJobClaimOf(j: CommandJob): CommandJob["claim"] {
   return j.claim && Date.now() < j.claim.expiresAt ? j.claim : null;
 }
@@ -19975,6 +20006,21 @@ async function mintLaneSuiteEvents(j: LaneSuiteJob): Promise<void> {
     audit("lane_suite_event", e.receiverSlot ?? undefined,
       `${e.id} job=${j.id} ${r.result} → ${e.receiverSlot === null ? "owner inbox" : `slot ${e.receiverSlot}`}`);
   await saveStateNow();
+}
+// THE SWEEP'S HAND-OFF TO THE RAIL ABOVE. `expireHelperClaims` is synchronous by construction
+// (every claim path and door calls it inline) and `mintLaneSuiteEvents` is not — it awaits its
+// save. The queue is the joint: a sweep-booked preview termination (the runner died or went
+// silent past its deadline) lands here, and the HELPER_SWEEP_MS tick drains it after its own
+// state save. One tick of latency; `reportLaneSuite` keeps minting directly and is never queued,
+// so this drain is the queue's only reader and nothing can double-mint. The verdict itself is
+// already persisted before anything is queued, so a crash between booking and minting loses the
+// NOTIFICATION, never the fact — the lane re-reads GET /api/self/suite-offer when it next looks.
+const laneSuiteMintQueue: LaneSuiteJob[] = [];
+async function drainLaneSuiteMints(): Promise<void> {
+  while (laneSuiteMintQueue.length) {
+    const j = laneSuiteMintQueue.shift()!;
+    await mintLaneSuiteEvents(j);
+  }
 }
 
 // THE OPEN RED PREVIEWS, readable WITHOUT the lane that produced them. The authority is the owner
@@ -20876,12 +20922,21 @@ function expireHelperClaims(): boolean {
       try { rmSync(c.bundle, { force: true }); } catch { /* already gone */ }
       j.claim = null;
       j.state = "lapsed";
+      // THE VERDICT THE RUNNER NEVER SENT. Booking the lapse alone closed the job silently while
+      // the offering lane went on waiting for a pane event that nothing would ever fire (measured
+      // 2026-09-18, job f5f181f6433f: the lane waited 1 h 38 min for a verdict that no longer had
+      // a runner). The command kind below settles the same moment with a verdict; the preview now
+      // does too, and the queue below hands it to the rail that tells the lane.
+      j.result = laneSuiteLapseResult(j, c, now,
+        `${c.name} held this preview past its claim deadline and reported nothing — nothing was measured`);
       helperLapses = [{ id, repo: j.repo, name: c.name, deviceId: c.deviceId,
         claimedAt: c.claimedAt, expiredAt: now, covers: 0 },
         ...helperLapses].slice(0, HELPER_LAPSE_KEEP);
       audit("helper_claim_expired", j.slot,
         `${c.name} held the preview suite of ${basename(j.repo)} ${j.branch} for `
-        + `${Math.round((now - c.claimedAt) / 1000)}s without a result — no drain takes it over`);
+        + `${Math.round((now - c.claimedAt) / 1000)}s without a result — no drain takes it over; `
+        + `the offering lane is told`);
+      laneSuiteMintQueue.push(j);
       changed = true;
       continue;
     }
@@ -30808,9 +30863,15 @@ setInterval(() => {
 // the helper-claim lapse sweep, not on the 100 ms poll: liveness is decided by the clock
 // (helperClaimOf); this tick only books the lapse, so seconds of lateness cost nothing.
 setInterval(() => {
-  if (!expireHelperClaims()) return;
-  void saveStateNow().catch((e: unknown) => logError("helperClaimSweep", e));
-  kickAuditDrain();
+  if (expireHelperClaims()) {
+    void saveStateNow().catch((e: unknown) => logError("helperClaimSweep", e));
+    kickAuditDrain();
+  }
+  // …and a sweep-booked preview termination owes its lane a pane event. Drained HERE, not inside
+  // the sweep's `if`, so a lapse booked by an inline door call is still minted on this tick
+  // instead of waiting for the next lapse to happen.
+  if (laneSuiteMintQueue.length)
+    void drainLaneSuiteMints().catch((e: unknown) => logError("laneSuiteMint", e));
 }, HELPER_SWEEP_MS);
 // the wake rail, armed only when an address is configured: without one every pass would refuse,
 // and a timer that can only ever do nothing is a timer that should not exist.

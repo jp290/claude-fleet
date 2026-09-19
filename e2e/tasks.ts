@@ -2822,6 +2822,12 @@ export async function run(ctx: Ctx): Promise<void> {
   //        compared anyway and the straggler is shelved by the decision;
   //   (7)  a HANGING check ends at the timeout as unmeasured (source check), a check-less part as
   //        unmeasured (source report), and the server answers after — never a hung tick.
+  //   (8)  a check that LEAVES A LONG-LIVED CHILD behind (`sleep 999 &` beside the timed-out
+  //        foreground sleep) still ends as unmeasured — the timeout kills the WHOLE process group
+  //        — and a second group filed after is still compared: the comparer lives. This is the
+  //        platform-independent form of (7)'s hang: a background child holds stdout/stderr open
+  //        under ANY shell, so killing the sh alone pins variantCompareBusy for every later group
+  //        (measured 2026-09-19, post-land audit of 65039505: exactly this, red on Linux).
   //   Plus the exactly-once fact: one ledger line per group, in the binding field shape.
   // REPO2 is the field (its fakeverify2 IS the stage-2 gate here); lanes are stub panes, so a
   // variant is made done-looking the deterministic way: commit in its worktree (ahead > 0, clean),
@@ -3172,9 +3178,65 @@ export async function run(ctx: Ctx): Promise<void> {
     await cDrop(hGroup);
     cGitCleanup();
 
+    // (8) · THE SURVIVING CHILD: a check that LEAVES A LONG-LIVED CHILD BEHIND — `sleep 999 &` in
+    // the background while the foreground `sleep 30` eats the timeout. This is the
+    // platform-independent form of (7)'s hang: a background child holds stdout/stderr open under
+    // ANY shell, so killing the sh alone leaves the pipes open and runVariantCheck's drain never
+    // returns — one such check and variantCompareBusy answers every later tick with nothing
+    // (measured 2026-09-19, post-land audit of 65039505: exactly this, red on the Linux shard).
+    // The group must still produce its line, and a SECOND group filed after must still be compared
+    // — the comparer lives. Red on revert on any platform: the line arrives only when the timeout
+    // kills the whole process group, because only that closes the pipes the child holds.
+    const sGroup = await cFile("(v-cmp)(8) the surviving-child group — a check's leftover child must not kill the comparer");
+    const sStart = await cStart(sGroup);
+    await cTrack(sGroup);
+    await cFixture("(v-cmp)(8)", sStart);
+    const sChild = "S: the child-leaving check";
+    const sReal = "S: the worktree holds sx.txt";
+    await cPropose(sStart.toks[0] ?? "", sGroup, [
+      { text: sChild, check: { cmd: "sleep 999 & sleep 30", expectExit: 0 } },
+      { text: sReal, check: { cmd: "test -f sx.txt", expectExit: 0 } },
+    ], "(v-cmp)(8) the criterion whose check leaves a child behind");
+    await post(`/api/tasks/${sGroup}/criterion-confirm`, {});
+    await cCommit(sStart.wts[0] ?? "", "sx.txt", "x\n", "s: A fulfills the real check");
+    await cCommit(sStart.wts[1] ?? "", null, "", "s: B does not");
+    const sLines = await cWaitLine(sGroup);
+    const sLine = sLines[0];
+    const sVarA = sLine?.variants.find((v) => v.taskId === sStart.ids[0]);
+    const sVarB = sLine?.variants.find((v) => v.taskId === sStart.ids[1]);
+    check("(v-cmp)(8) the child-leaving check ends as unmeasured for BOTH variants (source check)",
+      !!sLine && cEntry(sVarA as CmpVariant, sChild, "check")?.result === "unmeasured"
+      && cEntry(sVarB as CmpVariant, sChild, "check")?.result === "unmeasured",
+      JSON.stringify({ a: cEntry(sVarA as CmpVariant, sChild, "check"), b: cEntry(sVarB as CmpVariant, sChild, "check") }));
+    await cDrop(sGroup);
+    cGitCleanup();
+
+    // …and THE COMPARER LIVES: a second group, filed and compared AFTER the surviving-child group,
+    // gets its own line with a check that still runs — under the child-only kill the first
+    // check's leftover child held the pipes forever and no later group was ever compared again.
+    const s2Group = await cFile("(v-cmp)(8) the after-group — the comparer took another group after the child-leaving one");
+    const s2Start = await cStart(s2Group);
+    await cTrack(s2Group);
+    await cFixture("(v-cmp)(8) after", s2Start);
+    const s2Part = "S2: the worktree holds sx2.txt";
+    await cPropose(s2Start.toks[0] ?? "", s2Group,
+      [{ text: s2Part, check: { cmd: "test -f sx2.txt", expectExit: 0 } }], "(v-cmp)(8) the after-group's criterion");
+    await post(`/api/tasks/${s2Group}/criterion-confirm`, {});
+    await cCommit(s2Start.wts[0] ?? "", "sx2.txt", "x\n", "s2: A fulfills the check");
+    await cCommit(s2Start.wts[1] ?? "", null, "", "s2: B does not");
+    const s2Lines = await cWaitLine(s2Group);
+    const s2Line = s2Lines[0];
+    check("(v-cmp)(8) the comparer lives: the after-group is compared and its check still decides",
+      !!s2Line && s2Line.winner === s2Start.ids[0] && s2Line.decidedAt === "done"
+      && cEntry(s2Line.variants.find((v) => v.taskId === s2Start.ids[0]) as CmpVariant, s2Part, "check")?.result === "met"
+      && cEntry(s2Line.variants.find((v) => v.taskId === s2Start.ids[1]) as CmpVariant, s2Part, "check")?.result === "unmet",
+      JSON.stringify({ winner: s2Line?.winner, decidedAt: s2Line?.decidedAt, variants: s2Line?.variants }));
+    await cDrop(s2Group);
+    cGitCleanup();
+
     // THE SHAPE: one line per group, in the binding field form (variant-compare.ts is the type).
     const allLines = await cLedger();
-    const cGroupIds = [uGroup, cGroup, d1Group, d2Group, wGroup, hGroup];
+    const cGroupIds = [uGroup, cGroup, d1Group, d2Group, wGroup, hGroup, sGroup, s2Group];
     const shapeOk = allLines
       .filter((l) => cGroupIds.includes(l.group))
       .every((l) => JSON.stringify(Object.keys(l).sort()) === JSON.stringify(["decidedAt", "group", "judge", "variants", "winner"])

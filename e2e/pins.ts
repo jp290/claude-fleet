@@ -61,6 +61,7 @@ import {
 } from "../land-quality";
 import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
+import { DraftBook } from "../src/drafts";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
 // the deploy-gap's path classifier is IMPORTED and RUN over this very tree: the whole finding it
@@ -10109,6 +10110,35 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && pushBranch >= 0 && send > pushBranch
       && !route.text.slice(0, pushBranch).includes("sendText("),
     `route=${!!route} pushBranch=${pushBranch} send=${send}`);
+}
+
+// --- the composer sends to the slot its text was written for (seventeenth cut) -----------------
+// The misdelivery, replayed: split 7|6, text typed with 7 focused, one click into pane 6, Enter →
+// the box addressed slot 6 (POST /send {slot:6}, preview measurement). src/drafts.ts is the fix;
+// the replay holds its behaviour, the source rows hold that the client is wired through it.
+{
+  const book = new DraftBook<string>();
+  const empty = { text: "", attached: [] as string[] };
+  const on6 = book.swap(7, 100, { text: "for codex", attached: ["drop-7.png"] }, 6, 200);
+  pin("drafts: text typed for slot 7 does NOT follow the focus to slot 6 (the box shows 6's own, empty, draft)",
+    on6.text === "" && on6.attached.length === 0, JSON.stringify(on6));
+  const back7 = book.swap(6, 200, empty, 7, 100);
+  pin("drafts: back on slot 7 the parked text and its attachment return",
+    back7.text === "for codex" && back7.attached.join() === "drop-7.png", JSON.stringify(back7));
+  book.swap(7, 100, { text: "stale", attached: ["old.png"] }, 6, 200);
+  const recycled = book.swap(6, 200, empty, 7, 101);
+  pin("drafts: a recycled slot number (new openedAt) starts empty and releases the old attachments",
+    recycled.text === "" && recycled.dropped.join() === "old.png", JSON.stringify(recycled));
+  book.attach(6, 200, "late-6.png");
+  const late = book.swap(7, 101, empty, 6, 200);
+  pin("drafts: an upload that finishes after the focus moved joins ITS slot's draft, not the box",
+    late.attached.join() === "late-6.png", JSON.stringify(late));
+  const client = clientU.text;
+  const focusBody = client.slice(client.indexOf("function focusPane("), client.indexOf("function focusPane(") + 600);
+  const sendBody = client.slice(client.indexOf("async function doSend("), client.indexOf("async function doSend(") + 900);
+  pin("drafts: focusPane swaps the draft before it writes the placeholder, and doSend refuses a draft of another slot",
+    /switchDraft\(slot \?\? 0\);[\s\S]*ta\.placeholder =/.test(focusBody) && /if \(slot !== draftSlot\)/.test(sendBody),
+    `focus=${focusBody.includes("switchDraft(")} send=${sendBody.includes("draftSlot")}`);
 }
 
 console.log(rows.join("\n"));

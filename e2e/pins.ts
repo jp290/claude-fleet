@@ -10165,6 +10165,28 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     effortBody.slice(0, 160));
 }
 
+// --- ONE precedence rule for "which model is running" (chat-lane finding, 2026-09-19) -------------
+// The footer read-back (2a73889a) and the session-file reader (eighteenth cut) grew up as two
+// unreconciled answers to the same question. The rule lives in ONE place, src/running.ts:
+// session file (per request) > pane footer (30-s tick, push read-back) > slot record.
+{
+  pin("running: model — the file beats the footer, and the footer beats the record (a footer-first mutation reads \"glm-5.3-air\" here)",
+    runningModel("glm-5.3", "glm-5.3-flash", "glm-5.3-air") === "glm-5.3-flash"
+      && runningModel("glm-5.3", null, "glm-5.3-air") === "glm-5.3-air"
+      && runningModel("glm-5.3", null, null) === "glm-5.3"
+      && runningModel(null, null, "x-preview-f-free") === "x-preview-f-free",
+    JSON.stringify([runningModel("glm-5.3", "glm-5.3-flash", "glm-5.3-air"), runningModel("glm-5.3", null, "glm-5.3-air")]));
+  pin("running: model — the footer obeys the record's [suffix] rule like the file, and a footer-less call keeps the eighteenth-cut semantics",
+    runningModel("claude-opus-5[1m]", null, "claude-opus-5") === "claude-opus-5[1m]"
+      && runningModel("glm-5.3", "glm-5.3-flash") === "glm-5.3-flash"
+      && runningModel("claude-opus-5[1m]", "claude-opus-5") === "claude-opus-5[1m]",
+    JSON.stringify([runningModel("claude-opus-5[1m]", null, "claude-opus-5"), runningModel("glm-5.3", "glm-5.3-flash")]));
+  const ruleDoc = read("docs/harness-adapter.md");
+  const precedence = ruleDoc.slice(ruleDoc.indexOf("## Welches Modell läuft"), ruleDoc.indexOf("## Die Faktschicht"));
+  pin("the model precedence rule is described in docs/harness-adapter.md as file before footer before record, named at src/running.ts",
+    precedence.includes("Session-Datei vor Footer vor Slot-Datensatz") && precedence.includes("src/running.ts#runningModel"));
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

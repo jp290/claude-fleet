@@ -396,10 +396,50 @@ export async function run(ctx: Ctx): Promise<void> {
   const openQueueSource = taskClientSource.slice(taskClientSource.indexOf("function openQueue"),
     taskClientSource.indexOf("// --- audit trail overlay", taskClientSource.indexOf("function openQueue")));
   check("task workbench source: Work is default and Programs + History are explicit selections",
-    /type QView = "work" \| "programs" \| "history" \| "waves"/.test(taskClientSource)
+    /type QView = "work" \| "notes" \| "programs" \| "history" \| "waves"/.test(taskClientSource)
       && /let qView: QView = "work"/.test(taskClientSource)
-      && ["Work", "Programs", "History", "Waves"].every((label) => openQueueSource.includes(`"${label}"`)),
+      && ["Work", "Notes", "Programs", "History", "Waves"].every((label) => openQueueSource.includes(`"${label}"`)),
     openQueueSource.slice(0, 180));
+  // THE NOTES, AGGREGATED (owner, 2026-09-19: "die zumindest aktuell in der queue stehenden
+  // notizen einbauen, aggregieren und das insbesondere visuell darstellen"). The aggregator is
+  // EXECUTED on fixtures, not grepped: kind, MAIN source, attachment, program and age bin are each
+  // counted once per note, the biggest program first — and an empty queue is all zeros, not NaN.
+  {
+    const aggStart = taskClientSource.indexOf("const Q_NOTE_AGES");
+    const aggEnd = taskClientSource.indexOf("// the notes some open auftrag names as a source", aggStart);
+    const aggSource = aggStart >= 0 && aggEnd > aggStart ? taskClientSource.slice(aggStart, aggEnd) : "";
+    type AggNote = { id: string; kind?: string; source: string; programId?: string; created: number };
+    type Agg = { total: number; notiz: number; richtung: number; other: number; fromMain: number; attached: number;
+      programs: { id: string; title: string; total: number; notiz: number; richtung: number }[];
+      ages: { label: string; total: number }[] };
+    const aggregate = aggSource ? new Function(`const Q_NO_PROGRAM = "-";\n${new Bun.Transpiler({ loader: "ts" })
+      .transformSync(aggSource)}\nreturn qNotesAggregate;`)() as
+      (notes: AggNote[], programs: { id: string; title: string }[], attached: Set<string>, now: number) => Agg : null;
+    const NOW = 1_800_000_000_000, H = 3_600_000;
+    const got = aggregate?.([
+      { id: "n2", kind: "richtung", source: "owner", created: NOW - 5 * 24 * H },
+      { id: "n1", kind: "notiz", source: "main", programId: "pA", created: NOW - 2 * H },
+      { id: "n3", kind: "notiz", source: "owner", programId: "pA", created: NOW - 30 * 24 * H },
+      { id: "n4", kind: "betrieb", source: "owner", programId: "pGone", created: NOW + H },
+    ], [{ id: "pA", title: "Program A" }], new Set(["n3", "not-a-note"]), NOW);
+    check("notes aggregate: kind, MAIN source, attachment, program and age are each counted once per note, biggest program first",
+      !!got && got.total === 4 && got.notiz === 2 && got.richtung === 1 && got.other === 1 && got.fromMain === 1
+        && got.attached === 1
+        && got.programs.map((p) => `${p.title}:${p.total}`).join(",") === "Program A:2,no program:1,pGone:1"
+        && got.ages.map((a) => a.total).join(",") === "2,0,1,0,1",
+      JSON.stringify(got));
+    const none = aggregate?.([], [], new Set(), NOW);
+    check("notes aggregate NEGATIVE: an empty queue is zeros and no program — never NaN or a phantom row",
+      !!none && none.total === 0 && none.programs.length === 0 && none.ages.every((a) => a.total === 0)
+        && none.ages.length === 5, JSON.stringify(none));
+    check("notes view: its own tab, the list grouped by program, the overview when nothing is picked, and a pointer from Work",
+      /else if \(qView === "notes"\) \{\s*const notes = model\.work\.filter\(\(t\) => qGroupOf\(t\) === "notes"\);/.test(taskClientSource)
+        && /head\.dataset\.prog = pid;/.test(taskClientSource)
+        && /if \(qView === "notes"\) \{[\s\S]{0,200}qPaintNotesOverview\(shell\.detail, qNotesAggregate\(/.test(taskClientSource)
+        && /go\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); qChooseView\?\.\("notes"\); \};/.test(taskClientSource)
+        && /qChooseView = chooseView;/.test(openQueueSource),
+      "notes view wiring");
+  }
   check("task workbench source: zero open tasks has a named Work empty state, never a Closed work group",
     taskClientSource.includes("Work is clear — no open tasks")
       && !/Q_GROUPS[\s\S]{0,700}?head: "Closed"/.test(taskClientSource), "renderQueue/Q_GROUPS");

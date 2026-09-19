@@ -6890,9 +6890,12 @@ let taskTextEpoch = 0;
 let qShell: Shell | null = null;
 let qPick: string | null = null;  // selected task id; null = the compose row
 let qQuery = "";
-type QView = "work" | "programs" | "history" | "waves";
+type QView = "work" | "notes" | "programs" | "history" | "waves";
 let qView: QView = "work";        // the operational list is primary; polls never reset the view
 let qProgDone = false;            // show `complete` programs in the Programs section (default off)
+// renderQueue lives outside openQueue, where the view switch is built; the Work list's Notes
+// pointer reaches the switch through this
+let qChooseView: ((next: QView) => void) | null = null;
 let qNotesOpen = false;           // the loose-notes group of Work begins folded; a search overrides it
 // THE SCOPE (owner, 2026-09-18): repo → program → task. A program has no repo field, so it
 // belongs to the repos its own tasks target; `null` = every repo / every program.
@@ -9394,6 +9397,15 @@ function renderQueueDetail() {
     return;
   }
   if (qPick === null) {
+    if (qView === "notes") {
+      const notes = tasksList.filter(qInScope).filter((t) => qGroupOf(t) === "notes");
+      qPaintNotesOverview(shell.detail, qNotesAggregate(notes, programsList, qAttachedNoteIds(), Date.now()), (pid) => {
+        shell.list.querySelector<HTMLElement>(`.shellsec[data-prog="${CSS.escape(pid)}"]`)
+          ?.scrollIntoView({ block: "start", behavior: "smooth" });
+      });
+      restoreFocus();
+      return;
+    }
     if (qView !== "work") {
       const emptyDetail = qView === "programs"
         ? ["Programs", "Select a Program to inspect its binding, lifecycle and owner controls."]
@@ -10430,6 +10442,117 @@ function paintQueueScope() {
   bar.appendChild(sel);
 }
 
+// THE NOTES, AGGREGATED (owner, 2026-09-19: "die zumindest aktuell in der queue stehenden notizen
+// einbauen, aggregieren und das insbesondere visuell darstellen"). Open advisory rows only, counted
+// by the fields the poll carries — kind, source, program, age, and whether a task has taken the
+// note as a source. Nothing is inferred from the prose: a theme this cannot read is not drawn.
+const Q_NOTE_AGES: { label: string; maxMs: number }[] = [
+  { label: "< 1 d", maxMs: 864e5 }, { label: "1–3 d", maxMs: 3 * 864e5 }, { label: "3–7 d", maxMs: 7 * 864e5 },
+  { label: "1–2 w", maxMs: 14 * 864e5 }, { label: "older", maxMs: Infinity },
+];
+interface QNotesAgg {
+  total: number; notiz: number; richtung: number; other: number; fromMain: number; attached: number;
+  programs: { id: string; title: string; notiz: number; richtung: number; other: number; total: number }[];
+  ages: { label: string; notiz: number; richtung: number; other: number; total: number }[];
+}
+function qNotesAggregate(notes: readonly TaskInfo[], programs: readonly ProgramInfo[], attached: ReadonlySet<string>,
+  now: number): QNotesAgg {
+  const kindOf = (t: TaskInfo): "notiz" | "richtung" | "other" =>
+    t.kind === "notiz" ? "notiz" : t.kind === "richtung" ? "richtung" : "other";
+  const progs = new Map<string, QNotesAgg["programs"][number]>();
+  const ages = Q_NOTE_AGES.map((a) => ({ label: a.label, notiz: 0, richtung: 0, other: 0, total: 0 }));
+  const agg: QNotesAgg = { total: 0, notiz: 0, richtung: 0, other: 0, fromMain: 0, attached: 0, programs: [], ages };
+  for (const t of notes) {
+    const k = kindOf(t);
+    agg.total++; agg[k]++;
+    if (t.source === "main") agg.fromMain++;
+    if (attached.has(t.id)) agg.attached++;
+    const pid = t.programId ?? Q_NO_PROGRAM;
+    const p = progs.get(pid) ?? { id: pid, title: pid === Q_NO_PROGRAM ? "no program"
+      : programs.find((x) => x.id === pid)?.title ?? pid, notiz: 0, richtung: 0, other: 0, total: 0 };
+    p[k]++; p.total++;
+    progs.set(pid, p);
+    const age = Math.max(0, now - t.created);
+    const bin = ages[Q_NOTE_AGES.findIndex((a) => age < a.maxMs)];
+    bin[k]++; bin.total++;
+  }
+  agg.programs = [...progs.values()].sort((a, b) => b.total - a.total || a.title.localeCompare(b.title));
+  return agg;
+}
+// the notes some open auftrag names as a source (its pins ride GET /api/tasks; before that read
+// lands, none are known and every note counts as loose)
+function qAttachedNoteIds(): Set<string> {
+  const out = new Set<string>();
+  for (const t of tasksList) if (!qAdvisory(t) && !qClosed(t))
+    for (const pin of taskNotesFull.get(t.id) ?? []) out.add(pin.noteId);
+  return out;
+}
+// the overview in the detail pane: counts, a stacked bar per program, and the age histogram. Two
+// inks for the two kinds; a bar is as long as its share of the largest group, and every number is
+// written beside what it measures, so the picture never has to be read without its figures.
+function qPaintNotesOverview(parent: HTMLElement, agg: QNotesAgg, jump: (programId: string) => void): void {
+  parent.appendChild(el("div", "qdtitle-t", `Notes · ${agg.total} open`));
+  parent.appendChild(el("div", "qnsub", "Observations and direction no task has turned into work yet."
+    + " A note joins a task as a source; changing its Kind to auftrag makes it work of its own."));
+  const kpis = el("div", "qnkpis");
+  const kpi = (n: number, label: string, cls = "") => {
+    const b = el("div", `qnkpi${cls ? ` ${cls}` : ""}`);
+    b.append(el("div", "qnkpin", String(n)), el("div", "qnkpil", label));
+    kpis.appendChild(b);
+  };
+  kpi(agg.notiz, "notiz", "k-notiz");
+  kpi(agg.richtung, "richtung", "k-richtung");
+  if (agg.other) kpi(agg.other, "other advisory", "k-other");
+  kpi(agg.fromMain, "from MAINs");
+  kpi(agg.attached, "attached to a task");
+  parent.appendChild(kpis);
+  if (!agg.total) return;
+  const legend = el("div", "qnlegend");
+  for (const [k, label] of [["notiz", "notiz"], ["richtung", "richtung"], ...(agg.other ? [["other", "other"]] : [])])
+    legend.append(el("span", `qnsw k-${k}`), el("span", "", label));
+  parent.appendChild(el("div", "qnhead", "by program"));
+  parent.appendChild(legend);
+  const max = Math.max(...agg.programs.map((p) => p.total));
+  const bars = el("div", "qnbars");
+  for (const p of agg.programs) {
+    const row = el("button", "qnbar") as HTMLButtonElement;
+    row.type = "button";
+    row.title = `${p.title}: ${p.notiz} notiz · ${p.richtung} richtung${p.other ? ` · ${p.other} other` : ""} — show them in the list`;
+    row.onclick = () => jump(p.id);
+    const track = el("span", "qnbartrack");
+    const fill = el("span", "qnbarfill");
+    fill.style.width = `${Math.round((p.total / max) * 100)}%`;
+    for (const k of ["notiz", "richtung", "other"] as const) if (p[k]) {
+      const seg = el("span", `qnseg k-${k}`);
+      seg.style.flexGrow = String(p[k]);
+      fill.appendChild(seg);
+    }
+    track.appendChild(fill);
+    row.append(el("span", "qnbarl", p.title), track, el("span", "qnbarn", String(p.total)));
+    bars.appendChild(row);
+  }
+  parent.appendChild(bars);
+  parent.appendChild(el("div", "qnhead", "by age"));
+  const hmax = Math.max(...agg.ages.map((a) => a.total), 1);
+  const hist = el("div", "qnhist");
+  for (const a of agg.ages) {
+    const col = el("div", "qnhcol");
+    col.title = `${a.label}: ${a.total} (${a.notiz} notiz · ${a.richtung} richtung${a.other ? ` · ${a.other} other` : ""})`;
+    const stack = el("div", "qnhstack");
+    stack.style.height = `${Math.round((a.total / hmax) * 100)}%`;
+    for (const k of ["other", "richtung", "notiz"] as const) if (a[k]) {
+      const seg = el("span", `qnseg k-${k}`);
+      seg.style.flexGrow = String(a[k]);
+      stack.appendChild(seg);
+    }
+    const plot = el("div", "qnhplot");
+    plot.appendChild(stack);
+    col.append(el("div", "qnhn", String(a.total)), plot, el("div", "qnhl", a.label));
+    hist.appendChild(col);
+  }
+  parent.appendChild(hist);
+}
+
 function renderQueue() {
   const shell = qShell;
   if (!shell || !shell.isOpen()) return;
@@ -10471,6 +10594,11 @@ function renderQueue() {
     shell.setSubtitle([`${n("running")} running`, `${n("released")} released`, `${n("needs")} need you`,
       `${n("backlog")} backlog`, `${n("notes")} notes`, held ? `⏸ ${held} held` : "",
       intakeOn ? "✉ intake on" : ""].filter(Boolean).join(" · "));
+  } else if (qView === "notes") {
+    const notes = scoped.filter((t) => qGroupOf(t) === "notes");
+    const richtung = notes.filter((t) => t.kind === "richtung").length;
+    shell.setSubtitle(`${notes.length} open note${notes.length === 1 ? "" : "s"} · ${richtung} richtung`
+      + ` · ${notes.filter((t) => t.source === "main").length} from MAINs`);
   } else if (qView === "programs") {
     shell.setSubtitle(programsRead === "fail" ? "Programs unavailable — the last read failed"
       : `${programsList.length} program${programsList.length === 1 ? "" : "s"}`
@@ -10620,6 +10748,22 @@ function renderQueue() {
     }
     if (!visibleRows && !progDone.length && programsRead !== "fail") shell.list.appendChild(el("div", "pknone",
       qQuery ? "no programs match this search" : "no programs yet"));
+  } else if (qView === "notes") {
+    const notes = model.work.filter((t) => qGroupOf(t) === "notes");
+    const byProg = new Map<string, TaskInfo[]>();
+    for (const t of notes) {
+      const pid = t.programId ?? Q_NO_PROGRAM;
+      byProg.set(pid, [...(byProg.get(pid) ?? []), t]);
+    }
+    const order = [...byProg.entries()].sort((a, b) => b[1].length - a[1].length);
+    for (const [pid, rowsOf] of order) {
+      const title = pid === Q_NO_PROGRAM ? "no program" : programsList.find((x) => x.id === pid)?.title ?? pid;
+      const head = addSection(title, rowsOf.length, "open notes of this program, newest first");
+      head.dataset.prog = pid;
+      for (const t of [...rowsOf].sort((a, b) => b.created - a.created)) { addTask(t); visibleRows++; }
+    }
+    if (!visibleRows) shell.list.appendChild(el("div", "pknone",
+      qQuery ? "no notes match this search" : "no open notes — nothing is waiting to be read"));
   } else if (qView === "history") {
     if (model.history.length) {
       addSection("History", model.history.length, "done and archived tasks, newest first");
@@ -10674,8 +10818,15 @@ function renderQueue() {
       if (g.k === "notes" && !qQuery) {
         // folded by default: advisory rows are input to the pipeline, not a stage of it
         head.classList.add("qfoldhead");
+        // the notes have a view of their own now (Notes); this head points there, the fold stays
+        // for a quick look
         head.insertBefore(el("span", "qfoldmark", qNotesOpen ? "▾" : "▸"), head.firstChild);
         head.onclick = () => { qNotesOpen = !qNotesOpen; renderQueue(); };
+        const go = el("button", "qnotesgo", "open Notes →") as HTMLButtonElement;
+        go.type = "button";
+        go.title = "the notes aggregated by program and age, with every open note listed";
+        go.onclick = (ev) => { ev.stopPropagation(); qChooseView?.("notes"); };
+        head.appendChild(go);
         if (!qNotesOpen) { visibleRows += group.length; continue; }
       }
       // "Released" is the ONE group with a real order — it is the dispatcher's own pick order
@@ -10846,7 +10997,7 @@ function openQueue() {
   view.setAttribute("role", "group");
   view.setAttribute("aria-label", "Task queue views");
   const views = ([
-    ["work", "Work"], ["programs", "Programs"], ["history", "History"], ["waves", "Waves"],
+    ["work", "Work"], ["notes", "Notes"], ["programs", "Programs"], ["history", "History"], ["waves", "Waves"],
   ] as const).map(([id, label]) => {
     const button = el("button", "", label) as HTMLButtonElement;
     button.type = "button";
@@ -10873,6 +11024,7 @@ function openQueue() {
     renderQueueDetail();
   };
   for (const item of views) item.button.onclick = () => chooseView(item.id);
+  qChooseView = chooseView;
   view.append(...views.map((item) => item.button));
   paintView();
   // the line reads scope → search → views → bundle → layout; in the tree layout the scope is empty

@@ -9462,7 +9462,7 @@ function renderQueueDetail() {
   const titleBox = el("div", "qdtitle");
   titleBox.appendChild(el("div", "qdtitle-t", summary.title));
   const titleChips = el("div", "qchips");
-  for (const c of [...summary.chips.filter((c) => c.cls !== "prog"), summary.age]) {
+  for (const c of summary.chips.filter((c) => c.cls !== "prog")) {
     const span = el("span", `qchip qc-${c.cls.split(" ").join(" qc-")}`, c.text);
     if (c.title) span.title = c.title;
     titleChips.appendChild(span);
@@ -9480,16 +9480,30 @@ function renderQueueDetail() {
     status: t.status, kind: t.kind, slot: t.slot, repo: t.repo, programId: t.programId,
   }, programsList.find((x) => x.id === t.programId)?.title ?? null,
   laneJoin.kind === "lane" ? { kind: "lane", slot: laneJoin.lane.slot } : { kind: laneJoin.kind });
-  rail.appendChild(el("div", "qdrail-h", "status"));
-  rail.appendChild(el("div", "rvhead qdhead-status", head.status));
+  // the status line: the state in ink, how long the row has existed beside it. No "status" label
+  // above it — the stepper right under it says what kind of fact this is.
+  const statusLine = el("div", "rvhead qdhead-status");
+  const age = el("span", "qdhead-age", summary.age.text);
+  if (summary.age.title) age.title = summary.age.title;
+  statusLine.append(el("span", "", head.status), age);
+  rail.appendChild(statusLine);
+  // where the row lives, as two key/value lines under the options (owner, 2026-09-19: the rail
+  // was "ziemlich cluttered" — two chips and a PLACE header said less than two labelled lines)
   const headFacts = el("div", "ocfacts qdhead-facts");
-  headFacts.appendChild(chip(head.program, "dim", t.programId
+  const fact = (k: string, v: string, title: string) => {
+    const row = el("div", "qdfact");
+    row.title = title;
+    row.append(el("span", "qdfact-k", k), el("span", "qdfact-v", v));
+    headFacts.appendChild(row);
+  };
+  fact("program", head.program, t.programId
     ? `this row is bound to program ${t.programId}`
-    : "this row belongs to no program — it is loose queue work"));
-  headFacts.appendChild(chip(head.repo, "dim", t.repo
+    : "this row belongs to no program — it is loose queue work");
+  fact("repo", head.repo, t.repo
     ? `target repo: ${t.repo} — this task's lane spawns there`
-    : "this row names no target repo — a dispatch would fall back to the server's default"));
-  // THE LIFECYCLE RAIL. Four stations plus, when the row is off them, the end it is in. Only
+    : "this row names no target repo — a dispatch would fall back to the server's default");
+  // THE LIFECYCLE RAIL, drawn as a stepper (owner, 2026-09-19: "irgendeine visualisierung vom
+  // status des tasks"): a dot per station on one track, the walked part of the track filled. Only
   // facts from this poll: a station is `on`, an earlier one `past`, everything else plain — and an
   // archived row marks NO station, because the poll does not carry the walk it once made.
   const life = el("div", "qlife");
@@ -9498,8 +9512,9 @@ function renderQueueDetail() {
   head.life.stations.forEach((station, i) => {
     const on = head.life.current === station;
     const past = head.life.reached > i && !on;
-    life.appendChild(el("span", `qlife-st${on ? " on" : past ? " past" : ""}`,
-      station === "done" ? "landed/done" : station));
+    const st = el("span", `qlife-st${on ? " on" : past ? " past" : ""}`, station);
+    if (station === "done") st.title = "landed or done";
+    life.appendChild(st);
   });
   if (head.life.current === "archived" || head.life.current === "advisory"
     || head.life.current === "unknown")
@@ -10159,7 +10174,6 @@ function renderQueueDetail() {
   if (t.status !== "sent" && t.status !== "archived") ends.appendChild(mk("🗄 archive", "archive"));
   rail.appendChild(acts);
   rail.appendChild(more);
-  rail.appendChild(el("div", "qdrail-h", "place"));
   rail.appendChild(headFacts);
   // ▸ OPEN LANE is the only main action that is not a queue act: it makes no request at all, it
   // focuses the pane this row is already running in. Built here, beside the acts it replaces in
@@ -10710,7 +10724,7 @@ function openQueue() {
   const shell = openShell({
     id: "queue",
     title: "Task queue",
-    listWidth: 330,
+    listWidth: 360,
     onSelect: (row) => { if (qRowId.has(row.el)) qSelect(qRowId.get(row.el) ?? null); },
     onClose: () => {
       qScopeBar = null; qTree = null; qLayoutBtn = null; qBundleBtn = null; qBundleMode = false;

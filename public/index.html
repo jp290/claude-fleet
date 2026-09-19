@@ -723,17 +723,28 @@
   .qdtitle-t { font-size: 15px; line-height: 21px; color: #e6e6e6; font-weight: 600; }
   .qdtitle .qchips { display: flex; flex-wrap: wrap; gap: 3px 4px; margin-top: 6px; align-items: center; }
   .qdtitle-id { font-size: 10px; color: var(--faint); margin-left: 4px; }
-  .qdhead-status { line-height: 18px; }
+  .qdhead-status { line-height: 18px; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .qdhead-age { font-size: 11px; color: var(--faint); font-weight: 400; font-variant-numeric: tabular-nums; }
   .qdhead-facts { margin-top: 6px; }
   .qdhead-facts .occhip { line-height: 15px; }
-  /* pending → queued → sent → landed/done. `past` is walked, `on` is where the row stands, and
-     `end` is a state that is not on the rail at all (archived, advisory, unknown). */
-  .qlife { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-  .qlife-st { flex: none; font-size: 10.5px; line-height: 18px; padding: 0 8px; border-radius: 20px;
-    background: #1c1c1c; border: 1px solid #2e2e2e; color: #6a6a6a; }
+  /* pending → queued → sent → done, as a STEPPER: one column per station, a dot on a shared
+     track, the label under it. `past` is walked (dot and the track after it filled), `on` is where
+     the row stands, and `end` is a state that is not on the rail at all (archived, advisory,
+     unknown) — it takes a column of its own with a hollow dot. One row, never wrapped. */
+  .qlife { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); margin-top: 12px; }
+  .qlife-st { position: relative; padding-top: 16px; font-size: 10.5px; line-height: 16px; text-align: center;
+    white-space: nowrap; color: #6a6a6a; }
+  .qlife-st::before { content: ""; position: absolute; z-index: 1; top: 2px; left: calc(50% - 4px);
+    width: 6px; height: 6px; border-radius: 50%; border: 1px solid #3a3a3a; background: #1d1d1d; }
+  .qlife-st::after { content: ""; position: absolute; top: 5px; left: calc(50% + 8px); right: calc(-50% + 8px);
+    height: 1px; background: #2e2e2e; }
+  .qlife-st:last-child::after { display: none; }
   .qlife-st.past { color: #9aa7c7; }
-  .qlife-st.on { color: #dbe6ff; background: var(--sel); border-color: #3b4b70; font-weight: 700; }
-  .qlife-st.end { color: var(--amber); border-color: #3a3020; background: #241f18; }
+  .qlife-st.past::before, .qlife-st.past::after { background: #9aa7c7; border-color: #9aa7c7; }
+  .qlife-st.on { color: #dbe6ff; font-weight: 600; }
+  .qlife-st.on::before { background: #dbe6ff; border-color: #dbe6ff; box-shadow: 0 0 0 3px rgba(219, 230, 255, .14); }
+  .qlife-st.end { color: var(--amber); }
+  .qlife-st.end::before { background: transparent; border-color: var(--amber); }
   /* the one action, and the one line that says what it does. Empty when the row has nothing to
      decide — a closed row and a `sent` row with no attachable lane both say so in .qdmain-why. */
   .qdmain { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
@@ -742,7 +753,7 @@
   .qdmain-why { font-size: 11.5px; line-height: 16px; color: var(--faint); margin: 8px 0 4px; }
   /* D2: the reading column and the rail. The rail is sticky inside the scrolling .shelldetail, so
      status, the one action and the options stay beside whatever part of the row is being read. */
-  .qd2 { display: grid; grid-template-columns: minmax(0, 1fr) 260px; grid-template-rows: auto 1fr;
+  .qd2 { display: grid; grid-template-columns: minmax(0, 1fr) 272px; grid-template-rows: auto 1fr;
     grid-template-areas: "title rail" "read rail"; column-gap: 16px; align-items: start; }
   .qd2 > .qdtitle { grid-area: title; }
   .qdread { grid-area: read; min-width: 0; }
@@ -753,9 +764,15 @@
   .qdrail .qdmain { flex-direction: column; align-items: stretch; }
   .qdrail .qrelease { flex-direction: column; align-items: stretch; }
   .qdrail .qreleasenote { flex: none; }
-  .qdrail > .pkdacts { margin: 10px 0 0; gap: 6px; }
+  .qdrail > .pkdacts { margin: 8px 0 0; gap: 4px; }
+  .qdrail > .pkdacts > .shrbtn { flex: 1 1 auto; }
   .qdrail .qmore { margin-top: 8px; }
   .qdrail .qdsection { margin-top: 12px; }
+  /* where the row lives: two labelled lines, not two chips under a header */
+  .qdrail .qdhead-facts { display: block; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+  .qdfact { display: flex; gap: 8px; min-width: 0; font-size: 11.5px; line-height: 20px; }
+  .qdfact-k { flex: none; width: 52px; color: var(--faint); }
+  .qdfact-v { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .qkind { display: flex; align-items: center; gap: 9px; margin: 1px 0 12px; }
   .qkind-label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
   .qkind-select { color: var(--text); background: var(--raised); border: 1px solid var(--line);
@@ -980,7 +997,14 @@
      copy confirmation. Radii are --r1/--r2/--r3, motion is --t. Spacing stays as it is in
      this cut — the 4/8/12/16 grid moves in the next one, together with the fold budget that
      reads these boxes in e2e/tasks.ts. */
-  #shell-queue { font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
+  /* ONE STEP SMALLER (owner, 2026-09-19: "die formattierungen überhaupt etwas kleiner"): the
+     queue redefines the chat's type tokens for itself, so every rule below follows and the chat
+     view keeps its own sizes. --chat-ui-fs stays: 11px is the floor for a label. */
+  #shell-queue { --chat-fs: 13px; --chat-code-fs: 12px;
+    font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
+  /* …and the window a size larger ("das dashboard insgesamt etwas größer"): 16px from every edge
+     instead of min(1400px, 95vw) × min(880px, 92vh). The phone rule below takes the screen back. */
+  #shell-queue .shellwin { width: calc(100vw - 32px); height: calc(100vh - 32px); }
   #shell-queue .shellwin { background: var(--chat-surface); border: 1px solid var(--chat-edge);
     border-radius: var(--r3); }
   #shell-queue .shellhead, #shell-queue .shelltools { border-bottom-color: var(--chat-edge-soft); }
@@ -1040,13 +1064,36 @@
   #shell-queue .qcardv, #shell-queue .qdtext { color: var(--chat-prose); font-size: var(--chat-code-fs); }
   #shell-queue .qdtext { font-family: var(--chat-mono); background: var(--chat-surface);
     border: 1px solid var(--chat-edge-soft); border-radius: var(--r2); }
-  /* the LIFECYCLE rail: walked in mute, standing in ink, ahead in faint — the same three steps */
-  #shell-queue .qlife-st { font-size: var(--chat-ui-fs); border-radius: var(--r1);
-    background: transparent; border-color: var(--chat-edge-soft); color: var(--chat-faint); }
+  /* the LIFECYCLE stepper: walked in mute, standing in ink, ahead in faint — the same three steps */
+  #shell-queue .qlife-st { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-queue .qlife-st::before { background: var(--chat-surface); border-color: var(--chat-edge); }
+  #shell-queue .qlife-st::after { background: var(--chat-edge); }
   #shell-queue .qlife-st.past { color: var(--chat-mute); }
-  #shell-queue .qlife-st.on { color: var(--chat-ink); background: var(--chat-raised);
-    border-color: var(--chat-edge); font-weight: 500; }
-  #shell-queue .qlife-st.end { color: var(--danger); border-color: var(--chat-edge); background: transparent; }
+  #shell-queue .qlife-st.past::before, #shell-queue .qlife-st.past::after { background: var(--chat-mute);
+    border-color: var(--chat-mute); }
+  #shell-queue .qlife-st.on { color: var(--chat-ink); font-weight: 500; }
+  #shell-queue .qlife-st.on::before { background: var(--chat-ink); border-color: var(--chat-ink);
+    box-shadow: 0 0 0 3px var(--c-edge-hi); }
+  #shell-queue .qlife-st.end { color: var(--danger); }
+  #shell-queue .qlife-st.end::before { background: transparent; border-color: var(--danger); }
+  /* THE RAIL, TIDIED (owner, 2026-09-19: "die Status Leiste rechts sieht doch noch ziemlich
+     cluttered aus"): no uppercase headers inside it, the fold at its end reads as a quiet line,
+     where-it-lives is two labelled lines, and the age sits on the status line. */
+  #shell-queue .qdhead-age { color: var(--chat-faint); font-size: var(--chat-ui-fs); }
+  #shell-queue .qdrail .qdhead-facts { border-top-color: var(--chat-edge-soft); }
+  #shell-queue .qdfact { font-size: var(--chat-ui-fs); }
+  #shell-queue .qdfact-k { color: var(--chat-faint); }
+  #shell-queue .qdfact-v { color: var(--chat-prose); }
+  #shell-queue .qdrail .qdsection { border-top-color: var(--chat-edge-soft); padding-top: 8px; }
+  #shell-queue .qdrail .qdsection-title { text-transform: none; letter-spacing: 0; font-weight: 400;
+    color: var(--chat-faint); }
+  #shell-queue .qdrail .qdsection-title:hover { color: var(--chat-ink); }
+  #shell-queue .qrawack input { width: 12px; height: 12px; }
+  /* the larger window goes to the LIST (listWidth in openQueue), which wrapped its chips at
+     330px, and not to the scope tree */
+  #shell-queue .qtree { width: 184px; }
+  #shell-queue .qaddin, #shell-queue input.qdcrit { min-height: 32px; padding: 4px 8px; }
+  #shell-queue textarea.qdcrit { padding: 8px 12px; margin: 8px 0; }
   /* BUTTONS: the accent is the ink. A primary button is the one that reads brightest, not the
      one that is blue; ✕ delete keeps --danger, which is now the only red on the surface. */
   #shell-queue .shrbtn { font-family: var(--chat-sans); font-size: var(--chat-ui-fs);
@@ -1095,7 +1142,7 @@
   #shell-queue .shelldetail { padding: 12px 16px; }
   #shell-queue .shellrow { padding: 8px 12px; gap: 8px; }
   #shell-queue .shellsec { padding: 12px 8px 4px; gap: 8px; }
-  #shell-queue .shrbtn { padding: 8px 12px; }
+  #shell-queue .shrbtn { padding: 4px 12px; }
   #shell-queue .pkdacts { gap: 8px; margin-bottom: 12px; }
   #shell-queue .shellclose { border-radius: var(--r1); background: var(--chat-raised);
     border-color: var(--chat-edge); color: var(--chat-mute); }
@@ -1176,8 +1223,10 @@
     .qdread { order: 2; }
     .qdrail { order: 1; position: static; border-left: 0; padding-left: 0; padding-bottom: 10px;
       border-bottom: 1px solid var(--line-soft); margin-bottom: 8px; }
-    .qlife-st { font-size: 11px; line-height: 22px; }
+    .qlife-st { font-size: 11px; line-height: 20px; }
     .qkind-select { min-height: 44px; font-size: 16px; }
+    #shell-queue .shellwin { width: 100vw; height: 100dvh; height: var(--vvh, 100dvh); border-radius: 0; }
+    #shell-queue .qdrail > .pkdacts .shrbtn { min-height: 40px; }
     #shell-queue .qview { flex: 1 0 100%; flex-basis: 100%; }
     #shell-queue .qscope { flex: 1 0 100%; flex-wrap: wrap; }
     #shell-queue .qprogsel { flex: 1 1 auto; max-width: none; min-height: 40px; }

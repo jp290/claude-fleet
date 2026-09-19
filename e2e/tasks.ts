@@ -473,7 +473,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // budget above reads
     const grid = [/#shell-queue \.shellhead \{ padding: 12px 16px/, /#shell-queue \.shelltools \{ padding: 8px 16px/,
       /#shell-queue \.shellfoot \{ padding: 8px 16px/, /#shell-queue \.shelldetail \{ padding: 12px 16px/,
-      /#shell-queue \.shellrow \{ padding: 8px 12px/, /#shell-queue \.shrbtn \{ padding: 8px 12px/];
+      /#shell-queue \.shellrow \{ padding: 8px 12px/, /#shell-queue \.shrbtn \{ padding: 4px 12px/];
     check("queue style: the queue's chrome sits on the 4/8/12/16 grid, in the rules the fold budget reads",
       grid.every((re) => re.test(block)),
       JSON.stringify(grid.map((re) => re.source).filter((src) => !new RegExp(src).test(block))));
@@ -640,15 +640,27 @@ export async function run(ctx: Ctx): Promise<void> {
     // line that says what it does. Building a node and never appending it is the mutation this
     // catches: it leaves every other marker in place while the rail silently stops reaching the
     // screen. The program/repo facts are built in the head and shown under "place", below.
-    const painted = ['el("div", "rvhead qdhead-status", head.status)',
-      "life", "mainBox", 'el("div", "qdmain-why", head.main.why)']
+    const painted = ["statusLine", "life", "mainBox", 'el("div", "qdmain-why", head.main.why)']
       .map((node) => headPaint.indexOf(`rail.appendChild(${node}`));
     check("task detail head render: status, the lifecycle rail and the one action are painted at the top of the rail in that order, before any section",
       headPaint.includes("qHeadPlan(") && headPaint.includes('"ocfacts qdhead-facts"')
         && headPaint.includes("head.life.stations.forEach") && headPaint.includes('el("div", "qlife")')
         && !headPaint.includes("shell.detail.appendChild(")
-        && painted.every((at, i) => at >= 0 && (i === 0 || at > painted[i - 1])),
+        && painted.every((at, i) => at >= 0 && (i === 0 || at > painted[i - 1]))
+        && headPaint.includes('const statusLine = el("div", "rvhead qdhead-status")')
+        && headPaint.includes("el(\"span\", \"\", head.status)"),
       JSON.stringify(painted));
+    // THE RAIL, TIDIED (owner, 2026-09-19: "die Status Leiste rechts sieht doch noch ziemlich
+    // cluttered aus"). The two uppercase headers left the rail, and program/repo became two
+    // labelled lines instead of two chips. Mutations caught: a header put back, a fact dropped
+    // back to a chip, the age left on the title as well as on the status line.
+    check("task detail rail: no header inside the rail, where-it-lives as two labelled lines, the age on the status line only",
+      !detailSource.includes('"qdrail-h"')
+        && detailSource.includes('fact("program", head.program,') && detailSource.includes('fact("repo", head.repo,')
+        && !/headFacts\.appendChild\(chip\(/.test(detailSource)
+        && headPaint.includes('el("span", "qdhead-age", summary.age.text)')
+        && !detailSource.includes("summary.age]"),
+      "rail tidy wiring");
     // the rail below the head: the acts, the options, where the row lives, and the ⋯ fold last.
     // Mutations caught: the acts pushed under the facts, the facts dropped (built, never appended),
     // the ⋯ fold moved above the acts.
@@ -739,7 +751,9 @@ export async function run(ctx: Ctx): Promise<void> {
       if (!m) { missing.push(what); return NaN; }
       return Number(m[1]);
     };
-    const shellH = cssNum(/\.shellwin \{[^}]*?height: min\((\d+)px, 92vh\)/, ".shellwin height");
+    // the queue window is the viewport less a margin (owner, 2026-09-19: "das dashboard insgesamt
+    // etwas größer"), not the shared min(880px, 92vh)
+    const shellInset = cssNum(/#shell-queue \.shellwin \{[^}]*?height: calc\(100vh - (\d+)px\)/, "#shell-queue .shellwin height");
     // the QUEUE's own chrome rules (the #shell-queue block), not the base ones the other three
     // shells still use — since 2026-09-19 they are different numbers, and reading the base rule
     // would budget a window nobody is looking at
@@ -749,7 +763,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const detailPad = cssNum(/#shell-queue \.shelldetail \{[^}]*?padding: (\d+)px/, "#shell-queue .shelldetail padding");
     const statusLh = cssNum(/\.qdhead-status \{ line-height: (\d+)px/, ".qdhead-status line-height");
     const lifeMt = cssNum(/\.qlife \{[^}]*?margin-top: (\d+)px/, ".qlife margin-top");
-    const lifeGap = cssNum(/\.qlife \{[^}]*?gap: (\d+)px/, ".qlife gap");
+    const stationPad = cssNum(/\.qlife-st \{[^}]*?padding-top: (\d+)px/, ".qlife-st padding-top");
     const stationLh = cssNum(/\.qlife-st \{[^}]*?line-height: (\d+)px/, ".qlife-st line-height");
     const mainMt = cssNum(/\.qdmain \{[^}]*?margin-top: (\d+)px/, ".qdmain margin-top");
     const btnLh = cssNum(/\.qdmain \.shrbtn \{ line-height: (\d+)px/, ".qdmain .shrbtn line-height");
@@ -757,11 +771,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const whyLh = cssNum(/\.qdmain-why \{[^}]*?line-height: (\d+)px/, ".qdmain-why line-height");
     const whyMt = cssNum(/\.qdmain-why \{[^}]*?margin: (\d+)px/, ".qdmain-why margin");
     // D2: the head is the top of the RAIL, beside the title rather than under it — so the title
-    // block and the program/repo facts (shown under "place", further down) leave this budget, and
-    // the rail's own header enters it
-    const railHLh = cssNum(/\.qdrail-h \{[^}]*?line-height: (\d+)px/, ".qdrail-h line-height");
-    const railHMb = cssNum(/\.qdrail-h:first-child \{[^}]*?margin: (\d+)px 0 (?:\d+)px/, ".qdrail-h:first-child margin-top");
-    const railHMb2 = cssNum(/\.qdrail-h:first-child \{[^}]*?margin: \d+px 0 (\d+)px/, ".qdrail-h:first-child margin-bottom");
+    // block and the program/repo facts (further down the rail) leave this budget. The rail has no
+    // header of its own since 2026-09-19; the status line is its first box.
     check("task detail head geometry: every box the fold budget reads is declared in public/index.html",
       missing.length === 0, missing.join(" · ") || "all present");
     if (missing.length === 0) {
@@ -769,25 +780,44 @@ export async function run(ctx: Ctx): Promise<void> {
       // the window at 1440x900: 92vh = 828px, and the head/tools/foot chrome eats into it. Those
       // three contents are not fixed in CSS, so they take a DELIBERATELY GENEROUS allowance —
       // a two-line title, three wrapped tool rows and a four-line footer, all at once.
-      const winH = Math.min(shellH, Math.round(0.92 * 900));
+      const winH = 900 - shellInset;
       // tools: project tabs, program tabs (wrapped to two rows), view switch + search, dispatch line
       const chrome = (2 * headPad + 40 + 1) + (2 * toolsPad + 180 + 1) + (2 * footPad + 68 + 1);
       const viewport = winH - chrome - 2 * detailPad;
-      // the head's own plan, each node at its worst case in a 260px rail: the stations wrapped to
-      // two rows, and the one-line WHY wrapped to five.
-      const stationH = stationLh + BORDER;
-      const headH = railHMb + railHLh + railHMb2 + statusLh
-        + lifeMt + 2 * stationH + lifeGap
+      // the head's own plan, each node at its worst case in the rail: the stepper is ONE grid
+      // row (dot above, label under — it never wraps), and the one-line WHY wrapped to five.
+      const headH = statusLh
+        + lifeMt + stationPad + stationLh
         + mainMt + (btnLh + 2 * btnPad + BORDER)
         + whyMt + 5 * whyLh;
       check(`task detail head geometry: the rail's status + lifecycle + main action is ${headH}px inside a ${viewport}px detail viewport at 1440x900 — above the fold, computed from the CSS`,
         headH > 0 && viewport > 0 && headH <= viewport,
         `head=${headH} viewport=${viewport} window=${winH} chrome=${chrome}`);
     }
-    check("task detail head: 390x844 gets the one action full-width at a touch height, and a rail that wraps",
+    check("task detail head: 390x844 gets the one action full-width at a touch height, and a stepper of equal columns",
       /@media \(max-width: 700px\)[\s\S]*?\.qdmain \.shrbtn \{[^}]*min-height: 44px[^}]*width: 100%/.test(taskPageSource)
-        && /\.qlife \{[^}]*flex-wrap: wrap/.test(taskPageSource)
+        && /\.qlife \{[^}]*grid-auto-columns: minmax\(0, 1fr\)/.test(taskPageSource)
         && /\.qdmain \{[^}]*flex-wrap: wrap/.test(taskPageSource), "queue head mobile CSS");
+    // THE STATUS, DRAWN (owner, 2026-09-19: "irgendeine visualisierung vom status des tasks"): each
+    // station is a dot on one track with its label under it; the walked part of the track is
+    // filled. Mutations caught: the track or the dot dropped (the stepper falls back to bare
+    // words), the walked segment left unfilled, the last station drawing a track into nothing.
+    check("task detail head: the lifecycle is a stepper — a dot per station, a track between them, the walked part filled",
+      /\.qlife-st::before \{ content: ""[^}]*border-radius: 50%/.test(desktopCss)
+        && /\.qlife-st::after \{ content: ""[^}]*height: 1px/.test(desktopCss)
+        && /\.qlife-st:last-child::after \{ display: none; \}/.test(desktopCss)
+        && /\.qlife-st\.past::before, \.qlife-st\.past::after \{ background:/.test(desktopCss)
+        && /#shell-queue \.qlife-st\.on::before \{ background: var\(--chat-ink\)/.test(desktopCss),
+      "stepper CSS");
+    // ONE STEP SMALLER, A SIZE LARGER (owner, 2026-09-19): the queue redefines the chat's type
+    // tokens for ITSELF — the chat view keeps its 14px — and its window is the viewport less 16px
+    // on each side, which the phone rule takes back to the full screen.
+    check("queue size: the type tokens are a step smaller inside #shell-queue only, and the window is the viewport less 16px a side",
+      /#shell-queue \{ --chat-fs: 13px; --chat-code-fs: 12px;/.test(taskPageSource)
+        && /:root \{[\s\S]*?--chat-fs: 14px; --chat-code-fs: 12\.5px;/.test(taskPageSource)
+        && /#shell-queue \.shellwin \{ width: calc\(100vw - 32px\); height: calc\(100vh - 32px\); \}/.test(desktopCss)
+        && /@media \(max-width: 700px\)[\s\S]*?#shell-queue \.shellwin \{ width: 100vw; height: 100dvh;/.test(taskPageSource),
+      "queue size CSS");
   }
 
   // --- task queue (Phase D). Owner CRUD + dispatch availability ---

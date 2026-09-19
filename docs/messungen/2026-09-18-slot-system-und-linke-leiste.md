@@ -146,6 +146,29 @@ hochqualitative moderne UI auszusehen", Messlatte „AA Indie studio level UI". 
 Offen für S2: die Schriftwahl gilt hier nur für die Leiste, der Rest der App ist Monospace; und die
 Abstufung ruhend/aktiv über die Helligkeit ist mein Vorschlag, kein Owner-Satz.
 
+### 3.2b Fassung 4: gebürsteter Edelstahl (`docs/design/sidebar/v4.html`)
+
+Owner 2026-09-19 zu Fassung 3: „insgesamt besser", aber „eher leicht eloxiertes und gebürstetes
+edelstahl mit verlauf, textur und vllt auch shader", ein „professionellen AA Indie Industrial
+Designer look". Fassung 4 = Fassung 3 mit anderem Material; Struktur und Modell unverändert.
+
+- **Stahl statt Farbe:** Grundton OKLCH L .60 / Buntheit .03 (Fassung 3: .50 / .105); die Repo-Farbe
+  ist nur noch ein Hauch Eloxal. Ruhende Sessions L .52, Vorgänger blanker, stumpfer Stahl (grau, .62).
+- **Bürstung aus einem Shader:** ein WebGL-Fragment-Shader rechnet beim Laden einmal eine
+  1024×256-Textur (je Zeile eigene lang gezogene Schwankungen, Zeilenrauschen, feines Korn, Grau um
+  .5) und legt sie als `--brush` per `overlay` über den Grundton; jede Platte bekommt einen eigenen
+  Ausschnitt. Rückfall ohne WebGL: gestreckte SVG-Turbulenz (`baseFrequency 0.004 0.9`).
+- **Licht:** eine Lampe für alle Platten (`background-attachment: fixed`), die dem Zeiger folgt; der
+  Glanz ist ein senkrechter Streif, weil gebürsteter Stahl quer zur Bürstrichtung streut. Dazu ein
+  senkrechter Lichtabfall und eine gefräste Fase.
+- **Gravur und LED:** die Adresse (`3`, `3A`) ist eingraviert (dunkel mit heller Unterkante); der
+  Zustand ist eine versenkte LED in dunkler Fassung, ruhend = aus. Form und Farbe je Zustand bleiben.
+
+Geprüft: Headless-Chrome meldet `data-brush="shader"`, der Shader läuft also dort; Bilder bei 2x und
+4x (Detail), volle Belegung, Übergabe breit, eingeklappt, Handy. Nicht geprüft: das Zeigerlicht in
+Bewegung, Safari auf iOS (dort ignoriert Safari `background-attachment: fixed`; das Licht steht dann
+still, die Platte bleibt korrekt).
+
 ### 3.3 Erschlossen, nicht gemessen
 
 - „wartet auf dich" und „fertig" haben heute kein eigenes Feld im Slot-Teil von `/api/sessions`

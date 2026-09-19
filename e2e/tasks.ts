@@ -461,6 +461,22 @@ export async function run(ctx: Ctx): Promise<void> {
     // that starts painting the queue blue again is only invisible here if its selector is listed.
     const overridden = ["#shell-queue .shellrow.sel {", "#shell-queue .shrbtn.primary {",
       "#shell-queue .qview button.on {", "#shell-queue .shellrow.qnew .shrname {", "#shell-queue .qchip.qc-prog"];
+    // the 3px status stripe is GONE (owner, 2026-09-19). The section head above a row says the
+    // same thing, so its removal costs no fact; what the row keeps is dim for held/advisory and
+    // --danger for a flagged one. A stripe re-appearing inside the queue fails this line.
+    check("queue style: the left status brackets are gone from the queue's rows, and only a flagged row keeps a hue",
+      block.includes("#shell-queue .shellrow { border-left: 0; }")
+        && block.includes("#shell-queue .shellrow.q-flag .shrname { color: var(--danger); }")
+        && !/#shell-queue [^{]*\.shellrow[^{]*\{[^}]*border-left: 3px/.test(block),
+      "stripe wiring");
+    // the grid: the queue's own chrome numbers are 4/8/12/16, and they are the ones the fold
+    // budget above reads
+    const grid = [/#shell-queue \.shellhead \{ padding: 12px 16px/, /#shell-queue \.shelltools \{ padding: 8px 16px/,
+      /#shell-queue \.shellfoot \{ padding: 8px 16px/, /#shell-queue \.shelldetail \{ padding: 12px 16px/,
+      /#shell-queue \.shellrow \{ padding: 8px 12px/, /#shell-queue \.shrbtn \{ padding: 8px 12px/];
+    check("queue style: the queue's chrome sits on the 4/8/12/16 grid, in the rules the fold budget reads",
+      grid.every((re) => re.test(block)),
+      JSON.stringify(grid.map((re) => re.source).filter((src) => !new RegExp(src).test(block))));
     check("queue style: every rule that carried the blue accent into the queue has an override in the block",
       overridden.every((sel) => block.includes(sel)),
       JSON.stringify(overridden.filter((sel) => !block.includes(sel))));
@@ -694,17 +710,20 @@ export async function run(ctx: Ctx): Promise<void> {
       return Number(m[1]);
     };
     const shellH = cssNum(/\.shellwin \{[^}]*?height: min\((\d+)px, 92vh\)/, ".shellwin height");
-    const headPad = cssNum(/\.shellhead \{[^}]*?padding: (\d+)px/, ".shellhead padding");
-    const toolsPad = cssNum(/\.shelltools \{[^}]*?padding: (\d+)px/, ".shelltools padding");
-    const footPad = cssNum(/\.shellfoot \{[^}]*?padding: (\d+)px/, ".shellfoot padding");
-    const detailPad = cssNum(/\.shelldetail \{[^}]*?padding: (\d+)px/, ".shelldetail padding");
+    // the QUEUE's own chrome rules (the #shell-queue block), not the base ones the other three
+    // shells still use — since 2026-09-19 they are different numbers, and reading the base rule
+    // would budget a window nobody is looking at
+    const headPad = cssNum(/#shell-queue \.shellhead \{[^}]*?padding: (\d+)px/, "#shell-queue .shellhead padding");
+    const toolsPad = cssNum(/#shell-queue \.shelltools \{[^}]*?padding: (\d+)px/, "#shell-queue .shelltools padding");
+    const footPad = cssNum(/#shell-queue \.shellfoot \{[^}]*?padding: (\d+)px/, "#shell-queue .shellfoot padding");
+    const detailPad = cssNum(/#shell-queue \.shelldetail \{[^}]*?padding: (\d+)px/, "#shell-queue .shelldetail padding");
     const statusLh = cssNum(/\.qdhead-status \{ line-height: (\d+)px/, ".qdhead-status line-height");
     const lifeMt = cssNum(/\.qlife \{[^}]*?margin-top: (\d+)px/, ".qlife margin-top");
     const lifeGap = cssNum(/\.qlife \{[^}]*?gap: (\d+)px/, ".qlife gap");
     const stationLh = cssNum(/\.qlife-st \{[^}]*?line-height: (\d+)px/, ".qlife-st line-height");
     const mainMt = cssNum(/\.qdmain \{[^}]*?margin-top: (\d+)px/, ".qdmain margin-top");
     const btnLh = cssNum(/\.qdmain \.shrbtn \{ line-height: (\d+)px/, ".qdmain .shrbtn line-height");
-    const btnPad = cssNum(/\.shrbtn \{ padding: (\d+)px/, ".shrbtn padding");
+    const btnPad = cssNum(/#shell-queue \.shrbtn \{ padding: (\d+)px/, "#shell-queue .shrbtn padding");
     const whyLh = cssNum(/\.qdmain-why \{[^}]*?line-height: (\d+)px/, ".qdmain-why line-height");
     const whyMt = cssNum(/\.qdmain-why \{[^}]*?margin: (\d+)px/, ".qdmain-why margin");
     // D2: the head is the top of the RAIL, beside the title rather than under it — so the title

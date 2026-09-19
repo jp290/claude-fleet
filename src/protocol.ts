@@ -306,7 +306,9 @@ const CLAUDE_CONTEXT_WINDOWS: Readonly<Record<string, number | undefined>> = {
   // model family and every Fable released so far is 1M — "fable is 1M" survives the next Fable
   // where "fable is claude-fable-5" would not. Note what does NOT get the same treatment: bare
   // `opus`, `sonnet` and `haiku` stay null, because those families genuinely hold both windows
-  // (`claude-opus-5` vs `claude-opus-5[1m]`) and the alias says nothing about which one you got.
+  // across versions (a family alias outlives the version it points at, and the table above only
+  // measured the current ids — bare `claude-opus-5` is 1M since 2026-09-19) and the alias says
+  // nothing about which one you got.
   // If `fable` is ever repointed out of the Fable family this row is wrong and must be re-measured;
   // dating the measurement is what makes that checkable instead of invisible.
   "fable": CONTEXT_WINDOW_1M,

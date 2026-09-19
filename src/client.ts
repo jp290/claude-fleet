@@ -253,6 +253,9 @@ interface CodexCandidatesView {
 // registry says the harness cannot do it, not because someone wrote the same list twice.
 interface HarnessInfo { id: string; supports: { resume: boolean; transcript: boolean; model: boolean;
   effort: boolean; selfSchedule: boolean; container: boolean }; effortLevels: string[]; note: string | null; default: boolean;
+  // the adapter's pick list for the composer's model switch (server.ts#Harness.models) — a menu,
+  // not a gate; optional for an older server, which then gets the free-text field alone
+  models?: string[];
   // Optional for an older server. False is a hard server policy too; this copy only prevents a
   // picker gesture whose answer is already known. Singleton is shown through the adapter note.
   allowsLanes?: boolean; singleton?: boolean;
@@ -3355,15 +3358,54 @@ const compEl = $("comp"), compOpts = $("compopts"), compTray = $("comptray"), co
 const barEl = $("bar");
 
 function setComposerSize(size: "bar" | "tall"): void {
-  compEl.classList.toggle("tall", size === "tall");
-  compEl.classList.toggle("bar", size === "bar");
-  ta.rows = 1;
-  growComposer();
+  reshapeSurface(() => {
+    compEl.classList.toggle("tall", size === "tall");
+    compEl.classList.toggle("bar", size === "bar");
+    ta.rows = 1;
+    fitTextarea();
+  });
 }
 
-function growComposer(): void {
+function fitTextarea(): void {
   ta.style.height = "auto";
   ta.style.height = `${Math.min(compEl.classList.contains("tall") ? 220 : 140, ta.scrollHeight)}px`;
+}
+function growComposer(): void {
+  reshapeSurface(fitTextarea);
+}
+
+// Owner (eighth cut): the surface's growth is ANIMATED — the jump between two heights (a line more
+// or less, an attachment in or out, the size switch), never each keystroke: a change that leaves
+// the height alone returns here without touching anything. Measure, apply, measure, then run from
+// the old height to the new one with the composer's one duration (--t in index.html, 160 ms);
+// clipping is on only during that run, because the model/effort popovers live inside the surface.
+// A change arriving mid-run starts from the height on screen, so nothing snaps back.
+const compSurface = $("compsurface");
+const SURFACE_MS = 160; // = --t in index.html
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+let surfaceTimer: ReturnType<typeof setTimeout> | undefined;
+function reshapeSurface(change: () => void): void {
+  const from = compSurface.getBoundingClientRect().height;
+  compSurface.style.height = "";
+  change();
+  const to = compSurface.getBoundingClientRect().height;
+  if (Math.abs(to - from) < 1) {
+    if (compSurface.classList.contains("reshaping")) compSurface.style.height = `${to}px`;
+    return;
+  }
+  const settle = () => {
+    compSurface.style.height = "";
+    compSurface.classList.remove("reshaping");
+    // the panes above gave up (or got back) the height — the terminal refits once, at the end
+    requestAnimationFrame(() => { for (const p of panes) p.refit(); });
+  };
+  clearTimeout(surfaceTimer);
+  if (reduceMotion.matches) { settle(); return; }
+  compSurface.style.height = `${from}px`;
+  compSurface.classList.add("reshaping");
+  void compSurface.offsetHeight; // commit the start height before the transition target
+  compSurface.style.height = `${to}px`;
+  surfaceTimer = setTimeout(settle, SURFACE_MS + 40);
 }
 
 // The composer follows the FOCUSED pane's view — the pane it has always addressed. It never moves;
@@ -3412,14 +3454,27 @@ function renderComposerOpts(force: boolean): void {
       input.value = optStaged.model ?? current;
       input.placeholder = shown;
       input.spellcheck = false;
-      input.addEventListener("input", () => stage(input.value.trim()));
+      // the adapter's list, clickable; a click STAGES like typing does — Apply stays the only send.
+      // Free text stays beside it because modelRe admits more than any list names.
+      const list = el("div", "cmdlist");
+      const markStaged = (v: string) => {
+        for (const o of list.children) o.classList.toggle("staged", o.textContent === v && v !== current);
+      };
+      for (const m of h.models ?? []) {
+        const b = el("button", "cmdmodel", m) as HTMLButtonElement;
+        b.classList.toggle("cur", m === current);
+        b.classList.toggle("staged", m === optStaged.model && m !== current);
+        b.onclick = () => { input.value = m; stage(m); markStaged(m); };
+        list.appendChild(b);
+      }
+      input.addEventListener("input", () => { stage(input.value.trim()); markStaged(input.value.trim()); });
       // Enter moves to Apply rather than applying: the explicit press stays the only way out
       input.addEventListener("keydown", (e) => {
         if (e.key !== "Enter") return;
         e.preventDefault();
         input.closest(".optpop")?.querySelector<HTMLButtonElement>(".cmdapply")?.focus();
       });
-      return [input];
+      return { list: list.childElementCount ? list : undefined, row: [input] };
     }, mark));
   }
   if (h.supports.effort && h.effortLevels.length) {
@@ -3436,7 +3491,7 @@ function renderComposerOpts(force: boolean): void {
         };
         levels.appendChild(b);
       }
-      return [levels];
+      return { row: [levels] };
     }, null));
   }
 }
@@ -3453,7 +3508,7 @@ function closeOpts(focusField?: OptField): void {
 // one switch = its (staged or current) value with a chevron, and a small popover: the field's own
 // control(s), then Apply. The verdict line appears only after an Apply, never as an empty row.
 function optSwitch(field: OptField, slot: number, current: string, shown: string, lead: HTMLElement[],
-  body: (stage: (v: string) => void) => HTMLElement[], mark: IconName | null): HTMLElement {
+  body: (stage: (v: string) => void) => { list?: HTMLElement; row: HTMLElement[] }, mark: IconName | null): HTMLElement {
   const wrap = el("div", `optswrap ${field}`);
   const btn = el("button", "optsw") as HTMLButtonElement;
   const what = `sets the slot record AND types /${field} into the pane — only when you press Apply`;
@@ -3486,7 +3541,9 @@ function optSwitch(field: OptField, slot: number, current: string, shown: string
     renderComposerOpts(true); // the popover stays open (optOpen) and shows the verdict
   };
   const row = el("div", "cmdrow");
-  row.append(...body(stage), apply);
+  const parts = body(stage);
+  row.append(...parts.row, apply);
+  if (parts.list) pop.appendChild(parts.list);
   pop.append(row, status);
   sync();
   if (optOpen === field) { pop.classList.add("open"); btn.classList.add("on"); }
@@ -3498,7 +3555,7 @@ function optSwitch(field: OptField, slot: number, current: string, shown: string
     optOpen = opening ? field : null;
     renderComposerOpts(true);
     const again = compOpts.querySelector<HTMLElement>(`.optswrap.${field}`);
-    if (opening) again?.querySelector<HTMLElement>(".cmdinput, .cmdlevel.cur, .cmdlevel")?.focus();
+    if (opening) again?.querySelector<HTMLElement>(".cmdmodel.cur, .cmdmodel, .cmdinput, .cmdlevel.cur, .cmdlevel")?.focus();
     else again?.querySelector<HTMLElement>(".optsw")?.focus();
   };
   wrap.append(btn, pop);
@@ -12397,7 +12454,7 @@ const mainEl = $("main");
 const attached: { name: string; mention: string }[] = [];
 
 function renderAttachments(): void {
-  compFiles.replaceChildren(...attached.map((a, i) => {
+  reshapeSurface(() => compFiles.replaceChildren(...attached.map((a, i) => {
     const box = el("div", "att");
     box.title = a.mention;
     box.appendChild(el("span", "attico")).appendChild(icon(/\.(png|jpe?g|gif|webp|svg|heic|avif)$/i.test(a.name) ? "image" : "file"));
@@ -12408,7 +12465,7 @@ function renderAttachments(): void {
     x.onclick = () => { attached.splice(i, 1); renderAttachments(); ta.focus(); };
     box.appendChild(x);
     return box;
-  }));
+  })));
 }
 
 const attachedText = (): string => attached.map((a) => a.mention).join("\n");

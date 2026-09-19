@@ -373,10 +373,16 @@
   #bar.chat { background: #000; border-top-color: transparent; }
   #compsurface { display: flex; flex-direction: column; gap: 8px; background: var(--chat-raised);
     border: 1px solid var(--chat-edge); border-radius: var(--r3) var(--r3) var(--r1) var(--r3);
-    padding: 4px; transition: border-color var(--t); }
+    padding: 4px; transition: border-color var(--t), height var(--t); }
+  /* only while a height change runs (src/client.ts#reshapeSurface): the content is anchored to the
+     bottom edge, so the bottom row stays put and the new height opens from the top */
+  #compsurface.reshaping { overflow: hidden; }
   #compsurface:focus-within { border-color: var(--c-edge-hi); }
   #comp.err #compsurface { border-color: var(--danger); }
-  #comp.tall #compsurface { padding: 16px 8px 8px 16px; }
+  /* one text line + the control row + the inset: 8 + 1.5·fs + 4 + 28 + 6 (+ the 1px edges) */
+  #comp.tall #compsurface { justify-content: flex-end; gap: 4px; padding: 8px 6px 6px 16px; }
+  #comp.tall #send, #comp.tall #dropbtn, #comp.tall .optsw { height: 28px; }
+  #comp.tall #send, #comp.tall #dropbtn { width: 28px; }
   #comprow { display: flex; align-items: center; gap: 4px; }
   #compspace { flex: 1; }
   #input { flex: 1; min-height: 24px; max-height: 140px; resize: none; padding: 4px 0; border: 0;
@@ -384,9 +390,9 @@
     font: 400 var(--chat-fs) / 1.5 var(--chat-sans); outline: none; }
   #input::placeholder { color: var(--chat-faint); }
   /* flex: none — in the tall surface's column a flex basis of 0 would ignore growComposer's height */
-  #comp.tall #input { flex: none; min-height: 48px; max-height: 220px; padding: 0; }
+  #comp.tall #input { flex: none; min-height: calc(var(--chat-fs) * 1.5); max-height: 220px; padding: 0; }
   /* the strip: one line, + on the left like the tall form, attachments wrapping above it */
-  #comp.bar #compsurface { flex-flow: row wrap; align-items: center; gap: 4px; }
+  #comp.bar #compsurface { flex-flow: row wrap; align-items: center; align-content: flex-end; gap: 4px; }
   #comp.bar #comprow { display: contents; }
   #comp.bar #compfiles { order: -2; flex-basis: 100%; padding: 4px 4px 0; }
   #comp.bar #dropbtn { order: -1; }
@@ -465,6 +471,14 @@
     font: 400 12px var(--chat-mono); outline: none; transition: border-color var(--t); }
   .cmdinput:focus { border-color: var(--c-edge-hi); }
   .cmdlevels { display: flex; flex-wrap: nowrap; gap: 4px; }
+  /* the adapter's model list (server.ts#Harness.models): one clickable row per model */
+  .cmdlist { display: grid; gap: 2px; }
+  .cmdmodel { height: 28px; padding: 0 8px; text-align: left; font: 400 12px var(--chat-mono); color: var(--chat-mute);
+    background: transparent; border: 1px solid transparent; border-radius: var(--r1); cursor: pointer;
+    white-space: nowrap; transition: color var(--t), border-color var(--t), background-color var(--t); }
+  .cmdmodel:hover { color: var(--chat-ink); background: var(--c-hover); }
+  .cmdmodel.cur { color: var(--chat-ink); background: var(--c-hover); }
+  .cmdmodel.staged { color: var(--chat-ink); border-color: var(--chat-ink); }
   .cmdlevel, .cmdapply { height: 28px; padding: 0 8px; font: 400 12px var(--chat-sans); color: var(--chat-mute);
     background: transparent; border: 1px solid transparent; border-radius: var(--r1); cursor: pointer;
     white-space: nowrap; transition: color var(--t), border-color var(--t), background-color var(--t); }

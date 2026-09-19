@@ -8541,6 +8541,13 @@ async function qAct(id: string, action: string, body: Record<string, unknown> = 
 // confirmation is the one green the Vorgabe allows, and it says "copied" rather than turning into
 // an icon — the label is the receipt. Nothing here is markdown: the queue's texts are briefs and
 // requests, and mdcopy.ts (which would copy them AS markdown) lives on the unlanded chat lane.
+// a rail act as a list item: its label, and under it the one line that says what it does
+function qActDesc(node: HTMLElement, desc: string): HTMLElement {
+  node.classList.add("qact");
+  node.appendChild(el("span", "qactdesc", desc));
+  return node;
+}
+
 function qTextBlock(parent: HTMLElement, label: string, text: string): HTMLElement {
   const box = el("div", "qdblock");
   const head = el("div", "qdblockh");
@@ -9347,32 +9354,30 @@ function renderQueueDetail() {
       restoreFocus();
       return;
     }
-    shell.detail.appendChild(el("div", "rvhead", "New task"));
-    shell.detail.appendChild(el("div", "shellhint",
-      "Describe a feature or a fix. It lands as `pending` — only you move it to `queued`, and only"
-      + " then can the dispatcher pick it up."));
+    // THE NEW-TASK FORM (owner, 2026-09-19: "das 'new task' sieht noch echt schäbig aus"): a title
+    // and one line on what happens to it, the text, the two fields side by side under labels, and
+    // the one button at the bottom right — ⌘/Ctrl+Enter from the text does the same.
+    const form = el("div", "qnewform");
+    shell.detail.appendChild(form);
+    form.appendChild(el("div", "qdtitle-t", "New task"));
+    form.appendChild(el("div", "qnewsub",
+      "Lands as pending. Only you release it — and only a released task can be picked up by the dispatcher."));
     if (!qCompose) {
-      qCompose = el("textarea", "qaddin") as HTMLTextAreaElement;
-      qCompose.placeholder = "New task — describe a feature or fix…";
-      qCompose.rows = 8;
+      qCompose = el("textarea", "qaddin qnewtext") as HTMLTextAreaElement;
+      qCompose.placeholder = "Describe a feature or a fix — what should be true when it is done?";
+      qCompose.rows = 10;
     }
-    shell.detail.appendChild(qCompose);
+    form.appendChild(qCompose);
     if (!qRepoIn) {
       qRepoIn = el("input", "qaddin") as HTMLInputElement;
       // REQUIRED, and said so on the control itself. Empty was never "no repo": the server reads
       // an absent repo as the dispatch default, so the quiet path put tasks in the Fleet checkout
       // that were never meant for it. The button below refuses instead of posting.
-      qRepoIn.placeholder = "target repo (path) — required";
+      qRepoIn.placeholder = "path — required";
       qRepoIn.title = "where this task's lane spawns; suggestions come from your pinned/recent projects";
       qRepoIn.setAttribute("list", "qrepodl");
       void ensureRepoDatalist();
     }
-    shell.detail.appendChild(qRepoIn);
-    shell.detail.appendChild(el("div", "shellhint", dispatch.repo
-      ? `Target repo is required here. An empty value does not mean "no repo" — POST /api/tasks would`
-        + ` silently fall back to ${dispatch.repo}.`
-      : "Target repo is required here. An empty value does not mean \"no repo\" — the server would"
-        + " silently fall back to its own dispatch default."));
     // programId is accepted by POST /api/tasks for a confirmed|active program ONLY, so this
     // dropdown offers exactly that set: a value it cannot offer is a 409 it cannot provoke.
     // And ONLY while a read stands: after a failed GET /api/programs the cached rows are context,
@@ -9395,13 +9400,22 @@ function renderQueueDetail() {
       qProgSel.appendChild(o);
     }
     qProgSel.value = bindable.some((x) => x.id === keepProg) ? keepProg : "";
-    shell.detail.appendChild(labelled("program", qProgSel));
-    if (!bindable.length) shell.detail.appendChild(el("div", "shellhint",
-      programsRead === "fail" ? "GET /api/programs did not answer — no program is offered here until a"
-        + " fresh read succeeds; the cached rows in the list are context, not a current binding claim"
+    const field = (label: string, control: HTMLElement, hint: string) => {
+      const f = el("label", "qnewfield");
+      f.append(el("span", "qnewlabel", label), control, el("span", "qnewhint", hint));
+      return f;
+    };
+    const fields = el("div", "qnewfields");
+    fields.append(
+      field("Repo", qRepoIn, dispatch.repo
+        ? `required — empty would silently fall back to ${baseName(dispatch.repo)}`
+        : "required — empty would silently fall back to the server's dispatch default"),
+      field("Program", qProgSel, bindable.length ? "optional — confirmed or active programs only"
+        : programsRead === "fail" ? "GET /api/programs did not answer — none offered until a fresh read"
         : programsRead === "unread" ? "programs have not been read yet"
-        : "no confirmed or active program exists — a task can only bind to one of those"));
-    const add = el("button", "shrbtn primary", "add task") as HTMLButtonElement;
+        : "no confirmed or active program exists"));
+    form.appendChild(fields);
+    const add = el("button", "shrbtn primary", "Create task") as HTMLButtonElement;
     add.onclick = async () => {
       const box = qCompose;
       if (!box || !box.value.trim()) return;
@@ -9426,10 +9440,12 @@ function renderQueueDetail() {
       qKey = "";
       renderQueue();
     };
-    const acts = el("div", "pkdacts");
-    acts.style.marginTop = "10px";
-    acts.appendChild(add);
-    shell.detail.appendChild(acts);
+    qCompose.onkeydown = (e) => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); add.click(); }
+    };
+    const foot = el("div", "qnewfoot");
+    foot.append(el("span", "qnewkey", "⌘↵"), add);
+    form.appendChild(foot);
     restoreFocus();
     return;
   }
@@ -9992,7 +10008,12 @@ function renderQueueDetail() {
   // every other act stays here. The node is built once either way — same label rules, same
   // handler, same body — so the head is a placement, never a second copy of a door.
   const isMain = (act: QMainAct): boolean => head.main.act === act;
-  const place = (node: HTMLElement, act: QMainAct): void => { (isMain(act) ? mainBox : acts).appendChild(node); };
+  // an act in the rail's list says in one line what it DOES (owner, 2026-09-19: "die ganzen
+  // funktionen rechts sind … unklar wie man sie anwenden soll"). The main act has its own why-line.
+  const place = (node: HTMLElement, act: QMainAct, desc?: string): void => {
+    if (desc && !isMain(act)) qActDesc(node, desc);
+    (isMain(act) ? mainBox : acts).appendChild(node);
+  };
   const mainCls = (act: QMainAct): string => isMain(act) ? "shrbtn primary" : "shrbtn";
   const kindRow = el("label", "qkind");
   kindRow.appendChild(el("span", "qkind-label", "Kind"));
@@ -10078,7 +10099,7 @@ function renderQueueDetail() {
           : "opens a lane on the triple shown above and hands it the brief";
       sb.onclick = () => void qAct(t.id, "dispatch",
         qDispatchBody("start", qSpawnPick.get(t.id) ?? Q_SPAWN_EMPTY, raw));
-      place(sb, "start");
+      place(sb, "start", "opens a lane on it now — the dispatcher is not asked");
       if (spawnProblem) sb.disabled = true;
       if (raw) {
         sb.disabled = sb.disabled || qRawAck !== t.id;
@@ -10106,7 +10127,7 @@ function renderQueueDetail() {
       cb.disabled = spawnProblem !== null;
       cb.onclick = () => void qAct(t.id, "dispatch",
         qDispatchBody("clarify", qSpawnPick.get(t.id) ?? Q_SPAWN_EMPTY, false));
-      place(cb, "clarify");
+      place(cb, "clarify", "a lane settles with you what done means, then waits — no code yet");
     }
     // ↻ refine: rewrite the REQUEST itself — compile it into a work brief, or into the several
     // tasks it really is — before any lane sees it. Attended only; nothing on the server calls it.
@@ -10118,6 +10139,7 @@ function renderQueueDetail() {
       rb.title = "a read-only agent reads the repo and proposes a compiled brief — or a split."
         + " Nothing changes until you apply it";
       rb.onclick = () => void qAct(t.id, "refine", {});
+      qActDesc(rb, "an agent rewrites the request into a brief, or splits it — you approve it");
       acts.appendChild(rb);
     }
     // RELEASING IS THE DECISION, and since 2026-09-10 it is the ONLY one: the queue analyst that
@@ -10144,7 +10166,8 @@ function renderQueueDetail() {
       release.appendChild(b);
       place(release, "release");
     }
-    if (t.status === "queued") acts.appendChild(mk("hold", "unqueue"));
+    if (t.status === "queued")
+      acts.appendChild(qActDesc(mk("hold", "unqueue"), "takes it back out of the release order, to pending"));
   }
   // THE ③ HAKEN (Task.review): ask for an agentic code review of THIS row's lane. Offered while the
   // row can still reach a lane or runs in one — `sent` is the case that matters, the reviewer fires
@@ -10800,6 +10823,17 @@ function openQueue() {
     qKey = ""; renderQueue(); renderQueueDetail();
   };
   qBundleBtn = bundleBtn;
+  // ＋ NEW TASK as a button of its own (owner, 2026-09-19: "es gibt auch keinen knopf 'new task'"):
+  // the list's first row stays, but it scrolls away and is hidden while a search runs
+  const newBtn = el("button", "shrbtn primary qnewbtn", "＋ New task") as HTMLButtonElement;
+  newBtn.type = "button";
+  newBtn.onclick = () => {
+    if (qBundleMode) { qBundleMode = false; qSel.clear(); }
+    if (qView !== "work") chooseView("work");
+    qSelect(null);
+    qCompose?.focus();
+  };
+  shell.tools.appendChild(newBtn);
   shell.tools.appendChild(bundleBtn);
   shell.tools.appendChild(layoutBtn);
 

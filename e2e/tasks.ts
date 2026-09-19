@@ -661,6 +661,23 @@ export async function run(ctx: Ctx): Promise<void> {
         && headPaint.includes('el("span", "qdhead-age", summary.age.text)')
         && !detailSource.includes("summary.age]"),
       "rail tidy wiring");
+    // EVERY SECONDARY ACT SAYS WHAT IT DOES (owner, 2026-09-19: "die ganzen funktionen rechts sind
+    // … unklar wie man sie anwenden soll"). Mutation caught: an act placed without its line.
+    check("task detail rail: clarify, refine, hold and a non-main start each carry a one-line description",
+      /place\(sb, "start", "[^"]{12,}"\)/.test(detailSource) && /place\(cb, "clarify", "[^"]{12,}"\)/.test(detailSource)
+        && /qActDesc\(rb, "[^"]{12,}"\)/.test(detailSource) && /qActDesc\(mk\("hold", "unqueue"\), "[^"]{12,}"\)/.test(detailSource)
+        && /if \(desc && !isMain\(act\)\) qActDesc\(node, desc\)/.test(detailSource),
+      "act descriptions");
+    // THE NEW-TASK FORM and its button (owner, 2026-09-19: "das 'new task' sieht noch echt schäbig
+    // aus, und … es gibt auch keinen knopf 'new task'"). Mutations caught: the toolbar button
+    // dropped, its click not landing on the compose pane, the ⌘↵ path gone, the fields unlabelled.
+    check("new task: a toolbar button opens the compose pane, the form has labelled Repo/Program fields and ⌘↵ creates",
+      /const newBtn = el\("button", "shrbtn primary qnewbtn", "＋ New task"\)/.test(openQueueSource)
+        && /newBtn\.onclick = \(\) => \{[\s\S]{0,160}qSelect\(null\);\s*qCompose\?\.focus\(\);/.test(openQueueSource)
+        && /shell\.tools\.appendChild\(newBtn\)/.test(openQueueSource)
+        && detailSource.includes('field("Repo", qRepoIn,') && detailSource.includes('field("Program", qProgSel,')
+        && /e\.key === "Enter" && \(e\.metaKey \|\| e\.ctrlKey\)\) \{ e\.preventDefault\(\); add\.click\(\); \}/.test(detailSource),
+      "new-task wiring");
     // the rail below the head: the acts, the options, where the row lives, and the ⋯ fold last.
     // Mutations caught: the acts pushed under the facts, the facts dropped (built, never appended),
     // the ⋯ fold moved above the acts.

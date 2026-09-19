@@ -125,6 +125,27 @@ Eingeklappt (50 px): Nummer, Zustand, ein Zustandspunkt je Lane. Handy: die Leis
 Zeilen in Daumenhöhe, das Band wischt waagrecht. „20+ Sessions" gibt es nicht: `MAX_SLOTS` ist 16;
 das Mockup zeigt 11 Sessions plus 5 Lanes.
 
+### 3.2a Fassung 3: dieselbe Leiste, neu verpackt (`docs/design/sidebar/v3.html`)
+
+Owner 2026-09-19 zu Fassung 2: Ideen „ganz gut", aber „noch weit entfernt davon wie eine
+hochqualitative moderne UI auszusehen", Messlatte „AA Indie studio level UI". Fassung 2 bleibt als
+`index.html` unverändert stehen; das Modell aus §3.1/§3.2 ist in Fassung 3 unberührt. Befunde am
+2x-Bild von Fassung 2 und was Fassung 3 dagegen setzt:
+
+| Befund an Fassung 2 | Fassung 3 |
+|---|---|
+| `hsl(45 48% 38%)` ist Khaki, nicht Gold; 8 von 11 Kästen tragen es; HSL wiegt jede Farbe anders | Farben in OKLCH mit fester Helligkeit und Buntheit je Zustand; derselbe `projectHue`-Ton, auf den OKLCH-Winkel umgerechnet |
+| Glanz oben, dunkler Fuß, farbiger 1-px-Rand: liest sich als Plastik-Button | eloxiertes Aluminium: flacher Verlauf, richtungsloses Korn (SVG-Turbulenz per `overlay`), gefräste Fase aus heller Ober- und dunkler Unterkante, kein farbiger Rand |
+| eine seit 12 h ruhende Session ist so laut wie eine arbeitende; der Zustand ist ein 9-px-Punkt, auf `private-repo-r` grün auf grün | wer ruht, ist tiefer eloxiert (L .40 statt .50); der Zustand sitzt auf einem immer dunklen Schild und ist auf jedem Repo-Ton lesbar |
+| blaue Nummernspalte neben den Kästen konkurriert mit dem Inhalt | die Adresse ist ins Metall gestanzt: dunkles Schild links im Kasten mit Nummer (`3`) bzw. Lane-Name (`3A`); eingeklappt bleibt genau dieses Schild stehen |
+| eine Monospace für alles, bei 10 px so breit, dass „claude-…" und „Land-Pipe…" abschneiden | DIN Alternate für alles, was Adresse oder Zahl ist, Avenir Next (Condensed) für Wörter; beide auf macOS und iOS vorhanden, nichts wird nachgeladen |
+| Füllstand als 2-px-Haarlinie am Kastenboden | eingelassene Nut mit einem Strich bei 25 %, der Übergabe-Schwelle des Owners (nur claude-Sessions) |
+| Lichtstreif auf jedem Hover, Schein auf jeder Auswahl | ein inszenierter Moment: bei der Übergabe läuft der alte Kasten zu Stahl an, der neue fährt ein, einmal zieht Licht über das frische Metall. Auswahl ist ein weißer Ring mit Luft |
+| drei verschiedene Einzüge für Lanes, leerer grauer Stummel | Lanes hängen per Winkel-Linie am Kasten; Vorgänger sind Stahl mit derselben Fase; freie Plätze sind leere Fassungen mit der Nummer an derselben Stelle |
+
+Offen für S2: die Schriftwahl gilt hier nur für die Leiste, der Rest der App ist Monospace; und die
+Abstufung ruhend/aktiv über die Helligkeit ist mein Vorschlag, kein Owner-Satz.
+
 ### 3.3 Erschlossen, nicht gemessen
 
 - „wartet auf dich" und „fertig" haben heute kein eigenes Feld im Slot-Teil von `/api/sessions`
@@ -179,7 +200,9 @@ grep -E '"slot":(3|13)\b' <main>/audit.jsonl | grep -E 'succe|handoff'     # Bef
   --screenshot=x.png "file://$PWD/docs/design/sidebar/index.html#do=succeed,wide"
 ```
 
-Das Mockup spielt Schalter aus dem Hash ab (`#do=full,collapse`, `#do=phone`, `#do=succeed,wide`),
+Fassung 3 zusätzlich mit `--force-prefers-reduced-motion`: ohne das friert Headless-Chrome die
+Breiten-Transition ein und malt „eingeklappt" und „Handy" in der alten Breite (das DOM meldet 50 px
+bzw. 390 px, das Bild nicht). Das Mockup spielt Schalter aus dem Hash ab (`#do=full,collapse`, `#do=phone`, `#do=succeed,wide`),
 so ist jeder Zustand verlinkbar und headless prüfbar. Geprüft am Bild: schmal, breit, Übergabe
 (Session und Lane), Lane-Start, Rot, 16 Plätze, eingeklappt, Handy.
 

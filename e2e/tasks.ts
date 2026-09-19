@@ -9,7 +9,7 @@ import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, plantScreen,
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
 import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY, CARD_VALIDATOR_VERSION } from "../card-extract";
-import { renderWaveBrief, renderCardHead, CARD_HEAD_MAX_BYTES } from "../wave-brief";
+import { renderWaveBrief, renderCardHead, renderRowComments, CARD_HEAD_MAX_BYTES, ROW_COMMENTS_MAX_BYTES } from "../wave-brief";
 import { LOCAL_PROOF_STEPS } from "../verify-proportion";
 import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, topLevelDeclarations,
   type SymbolIndex, type TaskCluster } from "../task-metadata";
@@ -1933,6 +1933,57 @@ export async function run(ctx: Ctx): Promise<void> {
     check("a comment survives a server restart (it is state, not a live-process fact)",
       (await full())?.comments?.[0]?.text === "a second remark, after the brief was set");
     await post(`/api/tasks/${cid}/delete`, {});
+  }
+  // --- S3 (docs/messungen/2026-09-17-queue-felder-und-ihre-leser.md §3): DELIVERY, both cases
+  // driven. A row's comments reach the lane founded on them: the founding prompt carries them as
+  // their own block BEHIND the brief's exact bytes — never folded into the released brief — and a
+  // row without comments is delivered byte-identically to the delivery this replaces. The MANUAL
+  // dispatch door drives both probes (it bypasses the lane cap, so the family hangs on no
+  // dispatcher gate); the bytes come off the prompt ledger, like every delivered-brief check here.
+  {
+    const s3Probe = async (withComment: boolean): Promise<{ id: string; marker: string; text: string; slot: number | null }> => {
+      const marker = `S3-PROBE-${withComment ? "MIT" : "OHNE"} — die exakten Brief-Bytes dieser Zeile`;
+      const row = (await (await post("/api/tasks", { text: `${marker} · Auftrag`, queue: false })).json()) as { task: { id: string } };
+      await post(`/api/tasks/${row.task.id}/brief`, { text: marker });
+      if (withComment) {
+        await post(`/api/tasks/${row.task.id}/comment`,
+          { text: "S3-Kommentar: erst den Brief lesen, dann die Anmerkung — sie steht hinter ihm, nicht in ihm." });
+      }
+      const disp = (await (await post(`/api/tasks/${row.task.id}/dispatch`, {})).json()) as { ok?: boolean; slot?: number };
+      let text = "";
+      for (let i = 0; i < 40 && disp.slot; i++) { // polls: the boot grace lands the prompt in ~4-5 s
+        const hit = ((await (await get("/api/prompts?limit=100")).json()) as
+          { prompts: { slot?: number; source?: string; text?: string }[] }).prompts
+          .find((p) => p.slot === disp.slot && p.source === "auto" && (p.text ?? "").startsWith(marker));
+        if (hit) { text = hit.text ?? ""; break; }
+        await Bun.sleep(500);
+      }
+      return { id: row.task.id, marker, text, slot: disp.slot ?? null };
+    };
+    const s3Mit = await s3Probe(true);
+    const s3Ohne = await s3Probe(false);
+    check("(s3) a commented row's founding prompt opens with the brief's exact bytes, then carries the comment as its OWN block behind them",
+      s3Mit.text.startsWith(s3Mit.marker)
+      && s3Mit.text.includes("\n\n--- KOMMENTARE AUF DIESER ZEILE ---\n\nS3-Kommentar:")
+      && s3Mit.text.indexOf("S3-Kommentar:") > s3Mit.marker.length,
+      JSON.stringify(s3Mit.text.slice(0, 300)));
+    check("(s3) the block rides before the lane's exit footer, and the STORED brief is untouched by the comment",
+      s3Mit.text.indexOf("S3-Kommentar:") < s3Mit.text.indexOf(LANE_EXIT_MARK)
+      && (((await (await get("/api/tasks")).json()) as { tasks: { id: string; brief?: { text?: string } }[] }).tasks
+        .find((t) => t.id === s3Mit.id)?.brief?.text === s3Mit.marker),
+      `blockAt=${s3Mit.text.indexOf("S3-Kommentar:")} footerAt=${s3Mit.text.indexOf(LANE_EXIT_MARK)}`);
+    check("(s3) a commentless row's founding prompt carries no comments block — byte-wise the delivery this replaces",
+      s3Ohne.text.startsWith(s3Ohne.marker) && !s3Ohne.text.includes("KOMMENTARE AUF DIESER ZEILE"),
+      JSON.stringify(s3Ohne.text.slice(0, 200)));
+    const s3Slots = [s3Mit.slot, s3Ohne.slot].filter((s): s is number => typeof s === "number");
+    for (const s of s3Slots) await post(`/api/slots/${s}/kill`, {});
+    await slotsEmptied(s3Slots);
+    const s3Left = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string }[] }).tasks;
+    for (const id of [s3Mit.id, s3Ohne.id]) {
+      const row = s3Left.find((t) => t.id === id);
+      if (row?.status === "queued") await post(`/api/tasks/${id}/unqueue`, {});
+      if (row && row.status !== "sent") await post(`/api/tasks/${id}/delete`, {});
+    }
   }
   // the dispatch switch carries the same contract as /api/autos/switch: the dangerous direction is
   // OFF, because a stop that lives only in memory is silently re-armed by the next srv respawn
@@ -6912,6 +6963,10 @@ export async function run(ctx: Ctx): Promise<void> {
       const w3PinB = await post(`/api/tasks/${wB}/notes`, { note: w3Note, attach: true });
       check("(w3-n3) fixture: the same source is assigned to BOTH rows of the wave",
         w3PinA.ok && w3PinB.ok, `${w3PinA.status}/${w3PinB.status} note=${w3Note}`);
+      // S3 · a comment on ONE wave row must reach the wave lane as its own block behind that row's
+      // brief — written before the start, read off the same prompt the brief checks below use.
+      const w3Comment = "S3-Wellen-Kommentar: diese Zeile zuerst, die andere danach.";
+      const w3CommentRes = await post(`/api/tasks/${wB}/comment`, { text: w3Comment });
       const w3Since = Date.now();
       const w3Res = await w3Start({ ids: [wB, wA] }); // deliberately NOT in wave order: the door orders
       const w3Body = (await w3Res.json()) as
@@ -6987,6 +7042,12 @@ export async function run(ctx: Ctx): Promise<void> {
         w3Prompt.includes("EIN COMMIT JE ZEILE") && w3Prompt.includes("EIN LAND FÜR DIE GANZE LANE")
         && w3Prompt.includes("/api/self/wave/split"),
         w3Prompt.slice(0, 200));
+      check("(w3-s3) the follower's comment rides as its own block BEHIND that row's brief inside the wave prompt",
+        w3CommentRes.ok && w3Prompt.includes("--- KOMMENTARE AUF DIESER ZEILE ---")
+        && w3Prompt.includes(w3Comment)
+        && w3Prompt.indexOf("wave part two:") < w3Prompt.indexOf(w3Comment)
+        && w3Prompt.indexOf(w3Comment) < w3Prompt.indexOf("--- HOW THIS LANE ENDS"),
+        `ok=${w3CommentRes.ok} commentAt=${w3Prompt.indexOf(w3Comment)} rowAt=${w3Prompt.indexOf("wave part two:")}`);
 
       // (5) THE SELF-SPLIT. Its refusals first, so the success below is measured against a door
       // that was actually closed.
@@ -9432,6 +9493,36 @@ export async function run(ctx: Ctx): Promise<void> {
       new TextEncoder().encode(fat).byteLength <= CARD_HEAD_MAX_BYTES && fat.startsWith("KARTE")
       && fat.endsWith("--- AUFTRAG ---"),
       `${new TextEncoder().encode(fat).byteLength} bytes`);
+  }
+
+  // --- S3 (docs/messungen/2026-09-17-queue-felder-und-ihre-leser.md §3) THE ROW'S COMMENTS in the
+  // wave form: a row's comments ride as their own block BEHIND that row's brief — before the
+  // criterion line, never inside the brief — a commentless row carries none, and the byte-capped
+  // block names the count it left out and no author. Pure like the head checks above; the live
+  // seam is proven near the top of this file (single-row dispatch) and in (w3-s3) (wave door).
+  {
+    const s3Wave = renderWaveBrief({
+      rows: [
+        { id: "cccc3333", text: "ROW-C-PROSA", brief: "ROW-C-BRIEF", criterion: "das Done der Zeile",
+          card: null, comments: [{ text: "erste Anmerkung des Owners" }, { text: "zweite Anmerkung" }] },
+        { id: "dddd4444", text: "ROW-D-PROSA", brief: null, criterion: null, card: null },
+      ],
+      sharedFiles: ["wave-brief.ts"], klasse: "docs", units: 2, budget: 5, baseUrl: "http://127.0.0.1:1" });
+    const s3RowC = s3Wave.slice(s3Wave.indexOf("--- ZEILE 1 VON 2"), s3Wave.indexOf("--- ZEILE 2 VON 2"));
+    const s3RowD = s3Wave.slice(s3Wave.indexOf("--- ZEILE 2 VON 2"));
+    check("(s3) wave brief: a row's comments ride as their own block BEHIND that row's brief and before its criterion; a commentless row carries none",
+      s3RowC.includes("\nROW-C-BRIEF\n\n--- KOMMENTARE AUF DIESER ZEILE ---\n\nerste Anmerkung des Owners\n\nzweite Anmerkung")
+      && s3RowC.indexOf("zweite Anmerkung") < s3RowC.indexOf("DONE-KRITERIUM DIESER ZEILE")
+      && !s3RowD.includes("KOMMENTARE AUF DIESER ZEILE"),
+      JSON.stringify(s3RowC.slice(0, 300)));
+    const s3Big = Array.from({ length: 8 }, (_, i) =>
+      ({ text: `Anmerkung ${i} ${"x".repeat(400)}`, from: i === 7 ? "branch-geheim" : undefined }));
+    const s3CappedBlock = renderRowComments(s3Big);
+    check("(s3) comments block: byte-capped, the omitted count is NAMED inside the block, and an author field never leaks",
+      s3CappedBlock.includes("von 8 Kommentaren ausgelassen")
+      && new TextEncoder().encode(s3CappedBlock).byteLength <= ROW_COMMENTS_MAX_BYTES + 256
+      && !s3CappedBlock.includes("branch-geheim"),
+      `${new TextEncoder().encode(s3CappedBlock).byteLength} bytes · ${s3CappedBlock.slice(-100)}`);
   }
 
   // --- S6 (queue row 08ec67c0) THE AUTHOR'S CARD. Whoever files a row may hand its card along; it

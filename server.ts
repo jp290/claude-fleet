@@ -24767,12 +24767,12 @@ async function resolveTaskLane(id: string): Promise<TaskResolution> {
 //   · review3 the review's `patchId` — CONTENT identity of the reviewed diff, the same key the
 //     outcome row's coverage relation uses. It survives the land-path rebase, which a sha does
 //     not. A review with a null patchId is deliberately NOT labelable (no honest join key).
-//   · enhance `draftId` = sha256(enhanced prompt).slice(0,16), stamped by /api/enhance and echoed
-//     back by the client. Server-side so the join key cannot drift, and so the client needs no
-//     crypto.subtle (unavailable on the plain-http Tailscale origin).
-// A fourth shape — `analysis`, keyed by the `taskId` — retired with the queue analyst on
-// 2026-09-10. The WRITE door is closed by DISPOSITION_WORKERS (src/protocol.ts); the reader below
-// validates no worker name, so the labels already filed under it stay readable.
+// Two more shapes are retired, their WRITE doors closed by DISPOSITION_WORKERS (src/protocol.ts):
+// `analysis`, keyed by the `taskId`, with the queue analyst on 2026-09-10; and `enhance`, keyed by
+// the `draftId` = sha256(enhanced prompt).slice(0,16) that POST /api/enhance stamped, with the ✨
+// compose-box rework on 2026-09-19 (the route is gone; runEnhance lives on in the brief compiler,
+// which files no draft to label). The reader below validates no worker name, so the labels already
+// filed under either stay readable.
 // the worker names and the verdict vocabulary are src/protocol.ts's — the client sends both.
 // No worker gets a ref EXISTENCE check here: the rail records an owner opinion, and a label for a
 // row that has since been deleted is still a fact about what a worker produced. The shape gate
@@ -35518,26 +35518,6 @@ Bun.serve<WSData>({
       await saveStateNow();
       audit("helper_wake", undefined, `${d.name} <- wake ${out.sent ? "frame sent" : `NOT sent: ${out.error}`}`);
       return json({ sent: out.sent, at, deviceId: d.id, ...(out.sent ? {} : { error: out.error }) });
-    }
-    // ✨ rework a compose-box draft in the focused slot's cwd; the result replaces the box, never
-    // auto-sends. The slot's git state rides along as a DATA block (briefPayload) — facts only, the
-    // enhancer never sees the session itself.
-    if (url.pathname === "/api/enhance" && req.method === "POST") {
-      const body = await readJson(req);
-      if (!body || typeof body.text !== "string" || !body.text.trim() || body.text.length > 20_000)
-        return json({ error: "bad text" }, 400);
-      const s = slotFrom(body.slot);
-      // null on a non-repo cwd or no slot — buildEnhancePrompt says so explicitly rather
-      // than silently emitting an empty block
-      const facts = s?.cwd ? await briefPayload(s) : null;
-      try {
-        const prompt = await runEnhance(body.text.trim(), s?.cwd ?? HOME, facts);
-        // draftId: the disposition rail's join key. Stamped here, not client-side — the key must not drift,
-        // and plain-http Tailscale has no crypto.subtle. Identical output → identical id, correctly so.
-        return json({ prompt, draftId: createHash("sha256").update(prompt).digest("hex").slice(0, 16) });
-      } catch (e) {
-        return json({ error: e instanceof Error ? e.message : "enhance failed" }, 502);
-      }
     }
     // lane review: what did the agent actually DO — tracked diff vs HEAD + untracked list.
     // Complements the transcript view (what it said). Byte-capped: a phone shouldn't

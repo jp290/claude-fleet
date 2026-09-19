@@ -1,7 +1,7 @@
 // The steward principal, second half: filed proposals, per-slot model, the owner disposition
 // rail and the Tier-1 signal surface.
 import { spawnSync } from "node:child_process";
-import { readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { BASE, ROOT, REPO, check, get, post, readText, restartSrv, stopSrv, tmuxOut } from "./harness";
 import type { StewardCtx } from "./ctx";
 import type { DigJ } from "./steward-core";
@@ -377,30 +377,34 @@ export async function run(sc: StewardCtx): Promise<void> {
       relabeled.length === 2 && relabeled[0].disposition === "wrong" && relabeled[1].disposition === "accepted",
       JSON.stringify(relabeled.map((d) => d.disposition)));
 
-    // ref shapes 2 and 3 — review3 (patchId, content identity) and enhance (draftId).
+    // ref shape 2 — review3 (patchId, content identity).
     await post("/api/dispositions", { worker: "review3", ref: "deadbeefcafe0001", disposition: "wrong" });
-    for (const v of ["accepted", "edited", "ignored"])
-      await post("/api/dispositions", { worker: "enhance", ref: `draft-${v}`, disposition: v });
-    // A FOURTH ref shape — `analysis`, the queue analyst's verdict keyed by taskId — retired with
-    // the analyst on 2026-09-10. The write door is closed by DISPOSITION_WORKERS; the NEGATIVE is
-    // checked here, because a reopened door would take a label for a reading nobody produced.
-    const anWr = await post("/api/dispositions", { worker: "analysis", ref: "whatever", disposition: "edited" });
-    const anWrJ = (await anWr.json()) as { error?: string; ok?: boolean };
-    check("disposition: the retired `analysis` worker is refused by the closed set, naming the three that remain",
-      anWr.status === 400 && anWrJ.ok !== true
-        && typeof anWrJ.error === "string" && anWrJ.error.includes("land, review3, enhance")
-        && !anWrJ.error.includes("analysis"),
-      `${anWr.status} ${anWrJ.error ?? ""}`);
+    // the two verdicts the land rows above do not use ride on review3 refs, so all four stay exercised
+    for (const v of ["edited", "ignored"])
+      await post("/api/dispositions", { worker: "review3", ref: `deadbeefcafe-${v}`, disposition: v });
+    // Two more ref shapes are retired and their write doors closed by DISPOSITION_WORKERS: `analysis`
+    // (the queue analyst's verdict keyed by taskId, 2026-09-10) and `enhance` (the ✨ compose-box
+    // rework keyed by draftId, 2026-09-19 — POST /api/enhance is gone, so no draft exists to label).
+    // The NEGATIVE is checked here, because a reopened door would take a label for a thing nobody produced.
+    for (const retired of ["analysis", "enhance"]) {
+      const wr = await post("/api/dispositions", { worker: retired, ref: "whatever", disposition: "edited" });
+      const wrJ = (await wr.json()) as { error?: string; ok?: boolean };
+      check(`disposition: the retired \`${retired}\` worker is refused by the closed set, naming the two that remain`,
+        wr.status === 400 && wrJ.ok !== true
+          && typeof wrJ.error === "string" && wrJ.error.includes("land, review3")
+          && !wrJ.error.includes("analysis") && !wrJ.error.includes("enhance"),
+        `${wr.status} ${wrJ.error ?? ""}`);
+    }
 
     const all = await readDispos();
-    check("disposition: all three workers and all four verdicts are accepted on one rail",
-      ["land", "review3", "enhance"].every((w) => all.dispositions.some((d) => d.worker === w))
+    check("disposition: both workers and all four verdicts are accepted on one rail",
+      ["land", "review3"].every((w) => all.dispositions.some((d) => d.worker === w))
       && ["accepted", "edited", "ignored", "wrong"].every((v) => all.dispositions.some((d) => d.disposition === v)),
       JSON.stringify(all.dispositions.slice(0, 6)));
-    check("disposition: the three ✨ verdicts land under their own draft refs",
-      ["accepted", "edited", "ignored"].every((v) =>
-        all.dispositions.some((d) => d.worker === "enhance" && d.ref === `draft-${v}` && d.disposition === v)),
-      JSON.stringify(all.dispositions.filter((d) => d.worker === "enhance")));
+    // …and nothing retired got filed on the way
+    check("disposition: no row was filed under a retired worker",
+      !all.dispositions.some((d) => d.worker === "analysis" || d.worker === "enhance"),
+      JSON.stringify(all.dispositions.filter((d) => d.worker === "analysis" || d.worker === "enhance")));
 
     // the shape gate: an unknown worker/verdict or an empty ref is a 400, never a silently
     // recorded row — a rail that accepts junk is not evidence.
@@ -443,6 +447,14 @@ export async function run(sc: StewardCtx): Promise<void> {
     const totalAfterRefusals = (await readDispos()).total;
     check("disposition: the refused writes recorded NOTHING on the rail",
       totalAfterRefusals === all.total, `${totalAfterRefusals} vs ${all.total}`);
+    // closing a door retires a producer, it does not rewrite what an owner once said: a row filed
+    // under `enhance` before the retirement (appended as the old route's write left it, into THIS
+    // instance's rail) still reads back through the route, verdict and ref intact.
+    appendFileSync(`${ROOT}/dispositions.jsonl`, JSON.stringify(
+      { at: Date.now(), worker: "enhance", ref: "legacy-draft-0001", disposition: "accepted", source: "owner" }) + "\n");
+    const legacy = (await readDispos()).dispositions.find((d) => d.worker === "enhance" && d.ref === "legacy-draft-0001");
+    check("disposition: a legacy `enhance` row filed before the retirement stays readable",
+      legacy?.disposition === "accepted", JSON.stringify(legacy ?? null));
 
     // access model: no credential at all is the usual 401; the steward principal READS but never writes
     check("disposition: the rail requires a credential (401 unauthenticated)",

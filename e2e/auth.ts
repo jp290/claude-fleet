@@ -1,8 +1,7 @@
 // Auth and request guards (token, DNS-rebinding host, cross-origin, content-type, login
-// cookie), plus the ✨ enhance surface: the route through its FLEET_ENHANCE_CMD stand-in and
-// buildEnhancePrompt as a pure function.
+// cookie), plus the ✨ enhance surface: the retired route's absence and buildEnhancePrompt as a
+// pure function.
 import { buildEnhancePrompt } from "../enhance-prompt";
-import { createHash } from "node:crypto";
 import { BASE, H, PORT, TOKEN, check, get, post } from "./harness";
 
 export async function run(): Promise<void> {
@@ -13,25 +12,20 @@ export async function run(): Promise<void> {
   check("401 with wrong token", badtok.status === 401);
   const authed = await get("/api/sessions");
   check("200 with token", authed.status === 200);
-  // --- ✨ enhance (FLEET_ENHANCE_CMD stand-in): draft in → reworked prompt out ---
-  check("enhance rejects empty text", (await post("/api/enhance", { text: "  " })).status === 400);
-  const enhRes = await post("/api/enhance", { slot: 1, text: "mach mal x" });
-  const enhJ = (await enhRes.json()) as { prompt?: string; draftId?: string };
-  check("enhance returns reworked prompt via stand-in",
-    enhRes.ok && enhJ.prompt === "enhanced prompt. own your work! /sharpen3", JSON.stringify(enhJ));
-  // the disposition rail's join key for this draft, stamped server-side so it cannot drift between
-  // the answer and the label the client later files under it (server.ts, grep `DISPOSITION rail`).
+  // --- ✨ the compose-box rework route is GONE (owner 2026-09-19, "Rework soll einfach raus") ---
+  // Compared against a route that never existed rather than against a remembered status: "gone"
+  // means indistinguishable from unknown, whatever this server answers an unknown path with.
   {
-    const want = createHash("sha256").update(enhJ.prompt ?? "").digest("hex").slice(0, 16);
-    check("enhance stamps a draftId = sha256(prompt)[0:16] — the rail's join key, computed server-side",
-      enhJ.draftId === want && want.length === 16, `${enhJ.draftId} vs ${want}`);
-    const enhAgain = (await (await post("/api/enhance", { slot: 1, text: "mach mal x" })).json()) as { draftId?: string };
-    check("enhance: identical output yields an identical draftId (the label is about the CONTENT ruled on)",
-      enhAgain.draftId === enhJ.draftId, `${enhAgain.draftId} vs ${enhJ.draftId}`);
+    const gone = await post("/api/enhance", { slot: 1, text: "mach mal x" });
+    const never = await post("/api/never-was-a-route", { slot: 1, text: "mach mal x" });
+    const [goneBody, neverBody] = [await gone.text(), await never.text()];
+    check("POST /api/enhance is gone — it answers exactly like a route that never existed",
+      !gone.ok && gone.status === never.status && goneBody === neverBody,
+      `enhance=${gone.status} ${goneBody.slice(0, 80)} vs unknown=${never.status} ${neverBody.slice(0, 80)}`);
   }
   // --- buildEnhancePrompt: PURE-function unit tests against the REAL prompt module ---
-  // The stand-in check above only proves the ROUTE plumbs a subprocess answer through; the
-  // prompt text itself was untested — exactly buildMergePrompt's pre-extraction history. The
+  // The brief compiler (e2e/tasks.ts, e2e/summary.ts) only proves a subprocess answer is plumbed
+  // through; the prompt text itself is checked here — buildMergePrompt's pre-extraction history. The
   // real enhancer runs a live agent, so its EFFECT is not testable here; what IS deterministic
   // is that the built string carries the fact layer and still upholds its invariants.
   {

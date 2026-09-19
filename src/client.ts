@@ -371,6 +371,33 @@ function supportsOf(h: string | undefined): HarnessInfo["supports"] {
   // control on a harness that has none — inventing a capability instead of degrading to today's UI.
   return found?.supports ?? { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false };
 }
+// THE SLOT'S OWN ADAPTER ENTRY, for the surfaces that must show a control only where the harness
+// carries it. Deliberately stricter than supportsOf(): that one answers "assume today's behaviour"
+// for an unloaded catalogue, which is right for hiding a feature and wrong for OFFERING one — an
+// optimistic default here would paint a model button on a pi slot. null therefore means "not
+// answerable yet", and the caller renders nothing until loadHarnesses() has run.
+function harnessEntry(slot: number): HarnessInfo | null {
+  if (!harnesses.length) return null;
+  const s = fleet.find((x) => x.id === slot);
+  if (!s?.cwd) return null;
+  return harnesses.find((h) => h.id === s.harness) ?? (s.harness ? null : harnesses.find((h) => h.default) ?? null);
+}
+
+// A live slot's model/effort has TWO halves and neither writes the other (CLAUDE.md, supervisor
+// section, measured 2026-09-02): POST /api/slots/:id/model moves the RECORD and never touches the
+// pane, `/model <id>` in the pane moves the agent and never touches the record. So the move is
+// always a pair, record first — and if the record refuses the value (the adapter's modelRe), the
+// pane is deliberately NOT typed into: a rejected value must not reach the agent by the back door.
+async function setSlotSetting(slot: number, field: "model" | "effort", value: string): Promise<string> {
+  const rec = await post(`/api/slots/${slot}/model`, { [field]: value });
+  if (!rec.ok) {
+    const why = ((await rec.json().catch(() => null)) as { error?: string } | null)?.error ?? `HTTP ${rec.status}`;
+    return `record ✗ ${why} — pane not touched`;
+  }
+  const paneOk = await deliver(slot, `/${field} ${value}`);
+  return paneOk ? `${field} ${value} — record ✓ · pane ✓` : `record ✓ · pane ✗ — type /${field} ${value} yourself`;
+}
+
 let autosList: AutoInfo[] = [];
 let tasksList: TaskInfo[] = [];
 let dispatch: DispatchInfo = { available: false, on: false, maxLanes: 0, repo: "" };
@@ -517,6 +544,17 @@ class Pane {
   // conversation view: renders the claude transcript as structured messages —
   // reflows at any width, which the fixed-width pty stream can't
   private readonly chatEl: HTMLElement;
+  // the conversation view's own composer and the harness-command overlay above it
+  private readonly chatBar: HTMLElement;
+  private readonly chatIn: HTMLTextAreaElement;
+  private readonly cmdBtn: HTMLButtonElement;
+  private readonly cmdPanel: HTMLElement;
+  private cmdKey = "";
+  // the last verdict of a model/effort move, HELD outside the DOM: setting either one changes the
+  // poll's own key, which repaints this panel — and a verdict that lives only in the node the
+  // repaint replaces is a verdict the owner never reads. Measured in the preview: the record half
+  // succeeded, the panel repainted, and the line was blank.
+  private cmdMsg = "";
   private readonly flakes = new Flakes();
   private readonly sizeBtn: HTMLButtonElement;
   private readonly viewBtn: HTMLButtonElement;
@@ -543,6 +581,42 @@ class Pane {
       e.clipboardData.setData("text/plain", md);
       e.preventDefault();
     });
+    // --- the conversation view's composer: same POST /send as the box under the terminal ---
+    this.chatIn = document.createElement("textarea");
+    this.chatIn.className = "chatin";
+    this.chatIn.rows = 1;
+    this.chatIn.placeholder = "message this session — Enter sends, Shift+Enter newline";
+    const grow = () => {
+      this.chatIn.style.height = "auto";
+      this.chatIn.style.height = `${Math.min(160, this.chatIn.scrollHeight)}px`;
+    };
+    this.chatIn.addEventListener("input", grow);
+    this.chatIn.addEventListener("keydown", (e) => {
+      // desktop: Enter sends, Shift+Enter is a newline. Mobile keeps Enter as a newline and sends
+      // with ➤ — the same split the box under the terminal makes
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isMobile()) {
+        e.preventDefault();
+        void this.chatSend();
+      }
+    });
+    const chatSendBtn = el("button", "chatsend", "➤") as HTMLButtonElement;
+    chatSendBtn.title = "send to this session";
+    chatSendBtn.onclick = (e) => { e.stopPropagation(); void this.chatSend(); };
+    this.cmdBtn = el("button", "cmdbtn", "⌘") as HTMLButtonElement;
+    this.cmdBtn.title = "harness commands — model, effort";
+    this.cmdBtn.style.display = "none"; // shown only where the slot's adapter carries a control
+    this.cmdBtn.onclick = (e) => {
+      e.stopPropagation();
+      const open = !this.cmdPanel.classList.contains("open");
+      this.cmdPanel.classList.toggle("open", open);
+      this.cmdBtn.classList.toggle("on", open);
+      if (open) { this.cmdMsg = ""; this.renderCmdPanel(true); }
+    };
+    this.cmdPanel = el("div", "cmdpanel");
+    const bar = el("div", "chatbarin");
+    bar.append(this.cmdBtn, this.chatIn, chatSendBtn);
+    this.chatBar = el("div", "chatbar");
+    this.chatBar.append(this.cmdPanel, bar);
     this.sizeBtn = el("button", "chatsizebtn", "Aa") as HTMLButtonElement;
     this.sizeBtn.title = "Schriftgröße — Text, Code, Oberfläche (Strg/⌘ + / − / 0)";
     this.sizeBtn.onclick = (e) => {
@@ -585,8 +659,8 @@ class Pane {
     const navDn = el("button", "promptnav dn", "↓") as HTMLButtonElement;
     navDn.title = "next prompt of yours";
     navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
-    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.hint, this.jump, this.sizeBtn, this.viewBtn,
-      this.boardBtn, this.reloadBtn, navUp, navDn);
+    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.chatBar, this.hint, this.jump, this.sizeBtn,
+      this.viewBtn, this.boardBtn, this.reloadBtn, navUp, navDn);
     this.term = new Terminal({
       // 10k, not the 50k this carried from the first commit (f43e3fb1) without ever being
       // revisited. The number is a PER-PANE cost and the board shows several at once, so a
@@ -677,7 +751,10 @@ class Pane {
     // xterm's onScroll — listen to the DOM scroll so the jump pill stays in sync
     termEl.querySelector(".xterm-viewport")?.addEventListener("scroll", updateJump, { passive: true });
     this.jump.onclick = () => { this.term.scrollToBottom(); this.focus(); };
-    this.root.addEventListener("mousedown", () => focusPane(this.index));
+    this.root.addEventListener("mousedown", (e) => {
+      focusPane(this.index);
+      if (!this.chatBar.contains(e.target as Node)) this.closeCmdPanel();
+    });
     this.root.addEventListener("animationend", () => this.root.classList.remove("flash"));
   }
 
@@ -706,6 +783,8 @@ class Pane {
     this.viewBtn.title = v === "chat" ? "back to terminal" : "toggle conversation view";
     this.flakes.setActive(v === "chat");
     if (v !== "chat") sizePanel().classList.remove("open");
+    if (v === "chat") { this.syncHarnessAffordances(); if (!isMobile()) this.chatIn.focus(); }
+    else this.closeCmdPanel();
     clearTimeout(this.chatTimer);
     if (v === "chat") void this.pollChat();
     else this.term.focus();
@@ -716,8 +795,22 @@ class Pane {
   // toggle that always lands on "no transcript yet", which reads as "nothing has been said yet"
   // and is a different, and false, statement. Idempotent: called on assignment AND on every poll.
   syncHarnessAffordances(): void {
+    // The catalogue decides BOTH affordances below, so fetch it as soon as a pane holds a session —
+    // not only when the chat view or the picker opens. supportsOf() is optimistic by design (never
+    // hide a working feature), which means an unfetched catalogue offers 💬 on a harness that
+    // writes no transcript; measured in the preview on a pi slot, and it re-decides when it lands.
+    // …and the guard is `harnessesLoaded`, not the fetch's own early return: re-syncing after an
+    // already-resolved load would schedule the next sync from inside the last one, forever.
+    if (this.slot && !harnessesLoaded) void loadHarnesses().then(() => this.syncHarnessAffordances());
     const canChat = !this.slot || supportsOf(fleet.find((x) => x.id === this.slot)?.harness).transcript;
     this.viewBtn.style.display = this.slot && canChat ? "block" : "none";
+    this.applyCmdAffordance(); // also the path that HIDES it again when the pane leaves the chat
+    if (this.slot && this.view === "chat") {
+      // the catalogue is what decides which controls exist; it is fetched once, and the affordance
+      // is re-applied WHEN IT LANDS — a first sync before the fetch returns would otherwise leave
+      // the ⌘ button hidden until the next poll that happens to repaint the sidebar
+      this.chatIn.placeholder = `message slot ${this.slot} — Enter sends, Shift+Enter newline`;
+    }
     // a pane already sitting in the chat view must not be stranded there when its slot turns out
     // to have no transcript behind it
     if (this.slot && !canChat && this.view === "chat") this.setView("term");
@@ -803,6 +896,115 @@ class Pane {
 
   get isChat(): boolean {
     return this.view === "chat";
+  }
+
+  private async chatSend(): Promise<void> {
+    const text = this.chatIn.value.trim();
+    if (!text || !this.slot || this.chatIn.disabled) return;
+    this.chatIn.disabled = true;
+    try {
+      if (!await deliver(this.slot, text)) return; // text stays in the box
+      this.chatIn.value = "";
+      this.chatIn.style.height = "auto";
+      this.chatEl.scrollTop = this.chatEl.scrollHeight; // your own message is what you want to see next
+    } finally {
+      this.chatIn.disabled = false;
+      if (!isMobile()) this.chatIn.focus();
+    }
+  }
+
+  // NOT greyed out: a harness that has no model and no effort concept shows no button at all.
+  // Unknown (catalogue not in yet) is also "no button" — it becomes one the moment the fetch lands.
+  private applyCmdAffordance(): void {
+    const h = this.slot && this.view === "chat" ? harnessEntry(this.slot) : null;
+    const carries = !!h && (h.supports.model || (h.supports.effort && h.effortLevels.length > 0));
+    this.cmdBtn.style.display = carries ? "flex" : "none";
+    if (!carries) this.closeCmdPanel();
+    else if (this.cmdPanel.classList.contains("open")) this.renderCmdPanel(false);
+  }
+
+  private closeCmdPanel(): void {
+    this.cmdPanel.classList.remove("open");
+    this.cmdBtn.classList.remove("on");
+  }
+
+  // The overlay is a SHORTCUT to what this board can already do — the record route plus the
+  // harness's own slash command — and every control in it comes from the adapter (server.ts
+  // HARNESSES, via GET /api/harnesses), never from a list kept here.
+  private renderCmdPanel(force: boolean): void {
+    const slot = this.slot;
+    const h = slot ? harnessEntry(slot) : null;
+    if (!h) { this.closeCmdPanel(); return; }
+    const s = fleet.find((x) => x.id === slot);
+    const key = [h.id, s?.model ?? "", s?.effort ?? "", chipCmds.join(","), defaultModel ?? ""].join("|");
+    if (!force && key === this.cmdKey) return;
+    this.cmdKey = key;
+    const box = el("div", "cmdrows");
+    box.appendChild(el("div", "cmdhead", `${h.id} · commands`));
+    const status = el("div", "cmdstatus", this.cmdMsg);
+    const say = (msg: string) => { this.cmdMsg = msg; status.textContent = msg; };
+    if (h.supports.model) {
+      const row = el("div", "cmdrow");
+      row.appendChild(el("span", "cmdlabel", "model"));
+      const input = document.createElement("input");
+      input.className = "cmdinput";
+      input.value = s?.model ?? "";
+      input.placeholder = h.default && defaultModel ? defaultModel : "default";
+      const set = el("button", "cmdgo", "set") as HTMLButtonElement;
+      const run = async () => {
+        const v = input.value.trim();
+        if (!v || !slot) return;
+        set.disabled = true;
+        say(`setting model ${v} …`);
+        say(await setSlotSetting(slot, "model", v));
+        set.disabled = false;
+      };
+      set.onclick = (e) => { e.stopPropagation(); void run(); };
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); void run(); } });
+      row.append(input, set);
+      box.appendChild(row);
+    }
+    if (h.supports.effort && h.effortLevels.length) {
+      const row = el("div", "cmdrow");
+      row.appendChild(el("span", "cmdlabel", "effort"));
+      const levels = el("div", "cmdlevels");
+      for (const lv of h.effortLevels) {
+        const b = el("button", `cmdlevel${s?.effort === lv ? " on" : ""}`, lv) as HTMLButtonElement;
+        b.onclick = async (e) => {
+          e.stopPropagation();
+          if (!slot) return;
+          b.disabled = true;
+          say(`setting effort ${lv} …`);
+          say(await setSlotSetting(slot, "effort", lv));
+          b.disabled = false;
+        };
+        levels.appendChild(b);
+      }
+      row.append(levels);
+      box.appendChild(row);
+    }
+    // the server's own command prefixes (FLEET_CHIPS) — the only command list this board HAS.
+    // Absent env, absent row: inventing a per-harness slash catalogue here is exactly the
+    // hardcoded harness knowledge this file must not carry.
+    if (chipCmds.length) {
+      const row = el("div", "cmdrow");
+      row.appendChild(el("span", "cmdlabel", "prefix"));
+      const wrap = el("div", "cmdlevels");
+      for (const c of chipCmds) {
+        const b = el("button", "cmdlevel", c) as HTMLButtonElement;
+        b.onclick = (e) => {
+          e.stopPropagation();
+          this.chatIn.value = this.chatIn.value.startsWith(`${c} `) ? this.chatIn.value.slice(c.length + 1) : `${c} ${this.chatIn.value}`;
+          this.chatIn.focus();
+        };
+        wrap.appendChild(b);
+      }
+      row.append(wrap);
+      box.appendChild(row);
+    }
+    box.appendChild(el("div", "cmdnote", "sets the slot record AND types the command into the pane"));
+    box.appendChild(status);
+    this.cmdPanel.replaceChildren(box);
   }
 
   // One message: the rendered body (a bubble for you, free prose for the agent — t3code's layout
@@ -11974,12 +12176,11 @@ function flashSendError() {
   send.style.background = "var(--danger)";
   setTimeout(() => { send.style.background = ""; }, 1200);
 }
-async function doSend() {
-  const pane = panes[focused];
-  const text = ta.value.trim();
-  const slot = pane?.slot;
-  if (!text || !slot || send.disabled) return;
-  send.disabled = true;
+// ONE delivery path for every composer on this board (the terminal's box below the pane, and the
+// conversation view's own bar): same POST /send, same 409 reading, same failure sentence. The
+// second composer was the moment this had to stop being inline in doSend — two readings of a
+// three-shape 409 is one reading too many.
+async function deliver(slot: number, text: string): Promise<boolean> {
   try {
     const res = await post("/send", { slot, text, submit: true });
     // 409 is the one failure that is not a failure: the paste may have landed in part or in whole,
@@ -11998,6 +12199,21 @@ async function doSend() {
           : "send outcome uncertain — check the pane before retrying");
     }
     if (!res.ok) throw new Error(`send failed: ${res.status}`);
+    return true;
+  } catch {
+    flashSendError(); // text stays in the box so nothing typed is silently lost
+    return false;
+  }
+}
+
+async function doSend() {
+  const pane = panes[focused];
+  const text = ta.value.trim();
+  const slot = pane?.slot;
+  if (!text || !slot || send.disabled) return;
+  send.disabled = true;
+  try {
+    if (!await deliver(slot, text)) return;
     // the ✨ draft's verdict, decided by what actually went out (see pendingEnhance). Written only
     // after the send SUCCEEDED — a failed send leaves the text in the box and nothing labeled.
     if (pendingEnhance) {
@@ -12009,8 +12225,6 @@ async function doSend() {
     cyc = null;
     updateChips();
     pane.term.scrollToBottom();
-  } catch {
-    flashSendError(); // text stays in the box so nothing typed is silently lost
   } finally {
     send.disabled = false;
   }

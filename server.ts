@@ -4179,9 +4179,18 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
 // profile the owner granted, and the context packs this pane was handed when it was founded.
 // The packs are read from the delivery RECEIPT, never from the program's current declaration —
 // the receipt is what THIS session received, a declaration is only what a later MAIN intends.
+// A pack's sources are POINTERS, never content: an anchor is one heading or identifier with no
+// end (context-pack-validator.ts#ANCHOR_*), and nothing in this tree cuts a section out of one.
+// So a reader is handed the file at the commit the receipt names, and finds the anchor in it —
+// anything else would be this seam inventing a span the packs never defined.
+type SetupSource = { path: string; anchor: string };
 interface SessionSetup {
   profile: ProgramFoundingProfileKind | null; // null = no program bracket, i.e. plain standard
-  packs: { id: string; useWhen: string | null }[];
+  // the repo + commit the receipt was written against — what a pack's sources are read AT
+  repo: string | null; head: string | null;
+  // `sources` is null for a private pack: its content lives outside the repo and the server
+  // cannot read it, so the opaque id is all there is to show.
+  packs: { id: string; useWhen: string | null; sources: SetupSource[] | null; privateSourceId: string | null }[];
   omitted: { id: string; why: string }[];
   deliveredAt: number | null;
   deliveredBytes: number | null;
@@ -4218,11 +4227,26 @@ async function sessionSetup(s: Slot, branch: string | null): Promise<SessionSetu
     const om = Array.isArray(receipt.omitted) ? receipt.omitted : [];
     return {
       profile,
+      repo: typeof receipt.repo === "string" ? receipt.repo : null,
+      head: typeof receipt.head === "string" ? receipt.head : null,
       packs: sel.flatMap((raw) => {
         if (!raw || typeof raw !== "object") return [];
-        const row = raw as { id?: unknown; useWhen?: unknown };
+        const row = raw as { id?: unknown; useWhen?: unknown; anchors?: unknown };
         if (typeof row.id !== "string") return [];
-        return [{ id: row.id, useWhen: typeof row.useWhen === "string" ? row.useWhen : null }];
+        // a public pack's `anchors` is an array of {path, anchor}; a private one's is the opaque
+        // {privateSourceId} object, and the two are told apart the way the renderer tells them apart
+        const a = row.anchors;
+        const priv = a && typeof a === "object" && !Array.isArray(a)
+          && typeof (a as { privateSourceId?: unknown }).privateSourceId === "string"
+          ? (a as { privateSourceId: string }).privateSourceId : null;
+        const sources = Array.isArray(a) ? a.flatMap((s) => {
+          if (!s || typeof s !== "object") return [];
+          const src = s as { path?: unknown; anchor?: unknown };
+          return typeof src.path === "string" && typeof src.anchor === "string"
+            ? [{ path: src.path, anchor: src.anchor }] : [];
+        }) : null;
+        return [{ id: row.id, useWhen: typeof row.useWhen === "string" ? row.useWhen : null,
+          sources: priv ? null : sources, privateSourceId: priv }];
       }),
       omitted: om.flatMap((raw) => {
         if (!raw || typeof raw !== "object") return [];
@@ -4240,7 +4264,10 @@ async function sessionSetup(s: Slot, branch: string | null): Promise<SessionSetu
   const declared = program?.contextPacks ?? [];
   return {
     profile,
-    packs: declared.map((pack) => ({ id: pack.id, useWhen: pack.useWhen })),
+    // a declaration names no commit — its pointers are read against the session's own checkout
+    repo: s.worktree?.repo ?? null, head: null,
+    packs: declared.map((pack) => ({ id: pack.id, useWhen: pack.useWhen,
+      sources: pack.sources.map((src) => ({ path: src.path, anchor: src.anchor })), privateSourceId: null })),
     omitted: [],
     deliveredAt: null,
     deliveredBytes: null,

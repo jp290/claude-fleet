@@ -1042,10 +1042,10 @@ export async function run(): Promise<void> {
   // `gsec` (the guest-console panel) left with the console itself, 2026-08-08, and `dsec1` (the
   // helper register) left for the meter's device count, 2026-09-19 — both absences are asserted,
   // so a re-added machine-level section has to state where it goes.
-  check("client: the board renders in the owner's order — alarms → head → setup → changes → checks → history → tools",
+  check("client: the board renders in the owner's order — alarms → head → setup → changes → checks → history → lanes → tools",
     at("dsec0") >= 0 && at("dsec0") < at("esec0") && at("esec0") < at("idsec")
     && at("idsec") < at("su") && at("su") < at("work")
-    && at("work") < at("ck") && at("ck") < at("csec") && at("csec") < at("tsec")
+    && at("work") < at("ck") && at("ck") < at("csec") && at("csec") < at("lsec") && at("lsec") < at("tsec")
     && at("gsec") === -1 && at("dsec1") === -1,
     JSON.stringify(pushOrder));
   // SETUP is what the session is MADE of — owner, 2026-09-19: "das gewählte profil einer session
@@ -1054,19 +1054,52 @@ export async function run(): Promise<void> {
   // the context fill moves every minute, so it belongs to the head's state line, not to a block
   // of founding choices. Source is the evidence — this suite has no DOM.
   const setupSrc = boardSrc.slice(boardSrc.indexOf('el("div", "bsec bsetup")'), boardSrc.indexOf("if (brief) {"));
-  check("client: the setup block names the profile and the context packs, and reads them from the brief",
-    /row\("Profile", setup\?\.profile \?\? "standard"/.test(setupSrc)
+  check("client: the setup block names the session type and the context packs, and reads them from the brief",
+    /row\("Type", \[brief\?\.worktree \? "lane" : "repo session"/.test(setupSrc)
     && /const packs = setup\?\.packs \?\? \[\];/.test(setupSrc)
     && /el\("span", "bspack", p\.id\)/.test(setupSrc), "the setup section in renderBoard");
+  // A pack is a POINTER LIST. The board may open what it points at, and must never present a
+  // span as "the pack's content": an anchor has no end (context-pack-validator.ts), so any span
+  // would be this seam's invention. The window therefore shows pointers and hands over the FILE,
+  // read at the commit the receipt names — and a PRIVATE pack, whose source is outside the repo,
+  // must not be made to look openable.
+  const packsSrc = cliSrc.slice(cliSrc.indexOf("function openPacks("), cliSrc.indexOf("async function renderBoard()"));
+  check("client: a pack chip opens that pack",
+    /chip\.onclick = \(\) => openPacks\(setup, p\.id\)/.test(setupSrc), "the pack chips in renderBoard");
+  check("client: the pack window shows POINTERS and opens the source file at the receipt's commit",
+    /el\("div", "pksrcp", src\.path\)/.test(packsSrc) && /el\("div", "pksrca", src\.anchor\)/.test(packsSrc)
+    && /showFileView\(shell, \{/.test(packsSrc)
+    && /setup\.repo && setup\.head \? \{ path: src\.path, repo: setup\.repo, rev: setup\.head \}/.test(packsSrc)
+    && /an anchor is where to start reading, not a span/.test(packsSrc), "openPacks in src/client.ts");
+  check("client: a private pack is shown as unreadable, with no source row to click",
+    /if \(p\.privateSourceId\) \{/.test(packsSrc)
+    && /the server cannot read it/.test(packsSrc), "openPacks in src/client.ts");
+  check("client: the omitted packs are listed with their reason, not silently dropped",
+    /setup\.omitted\.length/.test(packsSrc) && /el\("span", "pkn", o\.why\)/.test(packsSrc), "openPacks in src/client.ts");
   check("client: a pack list says whether it was DELIVERED or merely declared — intent never passes for delivery",
     /packsFrom === "receipt"/.test(setupSrc) && /delivered with the founding brief/.test(setupSrc)
     && /declared by this session's program/.test(setupSrc), "the packs note in renderBoard");
-  check("client: the context fill lives in the head's state line, not in the setup block",
-    /% context`\)/.test(boardSrc) && !/s\.ctx/.test(setupSrc), "bheadmeta vs the setup section");
-  check("client: the folded tools come in the owner's order — files → lanes → agents → prompts",
-    ["files", "lanes", "agents", "prompts"].every((k, i, all) => i === 0 || foldOrder.indexOf(all[i - 1]) < foldOrder.indexOf(k))
-    && foldOrder.indexOf("files") >= 0,
+  // model, effort and context fill are the sidebar row's job — the owner called them redundant in
+  // the board on 2026-09-19, and a second copy is exactly what a "misslungener Aufbau" is made of
+  check("client: the board repeats neither the model, the effort nor the context fill",
+    !/s\.model/.test(boardSrc) && !/s\.effort/.test(boardSrc) && !/s\.ctx/.test(boardSrc),
+    "renderBoard vs the sidebar row");
+  // the lanes list LEFT the folded tools on 2026-09-19 ("die commits und auch die worktree's vllt
+  // doch lieber direkt voll einsehen") — it is a section now, and its absence from the fold list is
+  // asserted so it cannot quietly fold itself away again.
+  check("client: the folded tools come in the owner's order — files → agents → prompts, and lanes is NOT among them",
+    ["files", "agents", "prompts"].every((k, i, all) => i === 0 || foldOrder.indexOf(all[i - 1]) < foldOrder.indexOf(k))
+    && foldOrder.indexOf("files") >= 0 && foldOrder.indexOf("lanes") === -1,
     JSON.stringify(foldOrder));
+  // …and both long lists are shown WHOLE. A silent client-side cut is the one thing they must not
+  // do; where the SERVER caps (200 status lines, the newest 50 commits), the board names the cap
+  // instead of letting a cut list read as "all of it".
+  check("client: the file and commit lists are not truncated in the client, and a server cap is named",
+    !/brief\.uncommittedFiles\.slice\(/.test(boardSrc) && !/brief\.files\.slice\(/.test(boardSrc)
+    && /brief\.uncommitted > brief\.uncommittedFiles\.length/.test(boardSrc)
+    && /the server reads at most 200 status lines/.test(boardSrc)
+    && /ahead > brief\.commits\.length/.test(boardSrc) && /the brief carries the newest 50/.test(boardSrc),
+    "the changes + history sections in renderBoard");
   // owner call 2026-08-06, kept through the redesign: the advisory agents start folded on EVERY
   // load — the fold is session-only, excluded both when the folds are written and when they are read
   check("client: the advisory agents group is folded on every load, and the fold is not persisted",

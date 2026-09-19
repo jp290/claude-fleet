@@ -1247,7 +1247,11 @@ interface BriefInfo { branch: string | null; head: string | null; worktree: Work
   // pane, "program" only what its program declares now, null is "neither exists".
   setup?: BriefSetup }
 interface BriefSetup { profile: "standard" | "game-maker" | null;
-  packs: { id: string; useWhen: string | null }[];
+  repo: string | null; head: string | null;
+  // sources are POINTERS (path + one anchor string), never content — see server.ts#SetupSource.
+  // null sources + a privateSourceId = a private pack, whose content the server cannot read.
+  packs: { id: string; useWhen: string | null;
+    sources: { path: string; anchor: string }[] | null; privateSourceId: string | null }[];
   omitted: { id: string; why: string }[];
   deliveredAt: number | null; deliveredBytes: number | null;
   packsFrom: "receipt" | "program" | null }
@@ -2856,6 +2860,89 @@ function openExplorer(slot: number, cwd: string, startAt?: string) {
 
 
 let boardAgain = false;
+// THE CONTEXT PACKS OF ONE SESSION, opened from a chip in the board's setup block. What a pack
+// holds is a POINTER LIST, not text: one anchor string per source, with no end (the validator
+// takes a heading or an identifier, and nothing in this tree cuts a section out of one). So this
+// window shows the pointers in full and then hands over the FILE, read at the commit the receipt
+// names — the reader finds the anchor in it. A window that showed "the pack's content" would be
+// inventing a span that the packs never defined.
+let packsShell: Shell | null = null;
+function openPacks(setup: BriefSetup, want?: string): void {
+  packsShell?.close();
+  const shell = openShell({
+    id: "packs",
+    title: "Context packs",
+    subtitle: setup.packsFrom === "receipt"
+      ? `delivered with the founding brief${setup.head ? ` · read at ${setup.head}` : ""}`
+      : "declared by this session's program — not proof that this session received them",
+    detailHint: "Pick a pack on the left.",
+    listWidth: 300,
+    onClose: () => { packsShell = null; },
+  });
+  packsShell = shell;
+  const showPack = (p: BriefSetup["packs"][number]) => {
+    shell.detail.replaceChildren();
+    shell.detail.appendChild(el("div", "rvhead", p.id));
+    if (p.useWhen) shell.detail.appendChild(el("div", "pkwhen", p.useWhen));
+    if (p.privateSourceId) {
+      shell.detail.appendChild(el("div", "shellhint",
+        "a private pack: its source lives outside this repo, so the server cannot read it. What the "
+        + "receipt proves is that this opaque source was pointed at — nothing more."));
+      shell.detail.appendChild(el("div", "pksrcp", p.privateSourceId));
+      return;
+    }
+    const sources = p.sources ?? [];
+    if (!sources.length) { shell.detail.appendChild(el("div", "shellhint", "this pack names no source.")); return; }
+    shell.detail.appendChild(el("div", "pksub",
+      `${sources.length} source${sources.length === 1 ? "" : "s"} — an anchor is where to start reading, not a span`));
+    for (const src of sources) {
+      const row = el("button", "pksrc") as HTMLButtonElement;
+      row.appendChild(el("div", "pksrcp", src.path));
+      row.appendChild(el("div", "pksrca", src.anchor));
+      row.title = `${src.path} — open it${setup.head ? ` as it was at ${setup.head}` : ""} and find: ${src.anchor}`;
+      row.onclick = () => showFileView(shell, {
+        // with a receipt the file is read AT the commit it names; a declared pack names no
+        // commit, so its pointer is read against the checkout as it stands
+        ...(setup.repo && setup.head ? { path: src.path, repo: setup.repo, rev: setup.head }
+          : { path: setup.repo ? `${setup.repo}/${src.path}` : src.path }),
+        label: src.path.split("/").pop() ?? src.path,
+        source: setup.head ? `as it was at ${setup.head} — the commit this pack was delivered against`
+          : "as it is on disk right now",
+        back: { label: p.id, go: () => showPack(p) },
+      });
+      shell.detail.appendChild(row);
+    }
+  };
+  const rows: ShellRow[] = [];
+  for (const p of setup.packs) {
+    const r = el("button", "pkrow") as HTMLButtonElement;
+    r.appendChild(el("span", "pkid", p.id));
+    const n = p.privateSourceId ? "private" : `${(p.sources ?? []).length}`;
+    r.appendChild(el("span", "pkn", n));
+    r.onclick = () => { showPack(p); shell.showDetail(true); };
+    shell.list.appendChild(r);
+    rows.push({ el: r, open: () => showPack(p) });
+  }
+  // the ones the plan LEFT OUT ride along with their reason: "which packs does this session have"
+  // is only half an answer without "and which did it not get, and why"
+  if (setup.omitted.length) {
+    shell.list.appendChild(el("div", "pkhead", "omitted"));
+    for (const o of setup.omitted) {
+      const r = el("div", "pkrow off");
+      r.appendChild(el("span", "pkid", o.id));
+      r.appendChild(el("span", "pkn", o.why));
+      shell.list.appendChild(r);
+    }
+  }
+  shell.setRows(rows);
+  const i = want ? setup.packs.findIndex((p) => p.id === want) : -1;
+  if (setup.packs.length) {
+    const pick = i >= 0 ? i : 0;
+    shell.select(pick, false, false);
+    showPack(setup.packs[pick]);
+  }
+}
+
 async function renderBoard() {
   // a render requested while one is in flight (e.g. focus moved mid-fetch) must not be
   // dropped — remember it and re-run once the current pass finishes
@@ -2918,17 +3005,15 @@ async function renderBoard() {
       const working = sessionActive(slot);
       const meta = el("div", "bheadmeta");
       meta.appendChild(el("span", `bdot${working ? " on" : ""}`));
+      // no context fill and no model here: the sidebar row carries both for every session at once,
+      // and in the board they read as a second copy (owner, 2026-09-19 — "modell ctx und effort
+      // doch redundant"). What the head adds is the one thing the row cannot: how long the
+      // session has been quiet.
       const bits = [`${working ? "Working" : "Idle"} · ${brief?.worktree ? "lane" : "repo session"} in slot ${slot}`];
-      // the context fill is back in the board, in the HEAD and not in the setup block below: it is
-      // the one number here that moves every minute, and it decides when this session must hand
-      // over. null is an answer ("Fleet cannot tell"), and is written as one rather than skipped.
-      if (s.ctx !== undefined) bits.push(s.ctx === null ? "context unknown" : `${Math.round(s.ctx.pct)}% context`);
       if (!working && s.lastOutput > 0) bits.push(`quiet ${gateAge(Date.now() - s.lastOutput)}`);
       meta.appendChild(document.createTextNode(bits.join(" · ")));
       const since = brief?.sessionStart ?? s.openedAt ?? null;
-      meta.title = [since ? `session since ${new Date(since).toLocaleString()}` : null,
-        s.ctx ? `${s.ctx.usedTokens.toLocaleString()} of ${s.ctx.windowTokens.toLocaleString()} tokens` : null]
-        .filter(Boolean).join(" — ");
+      if (since) meta.title = `session since ${new Date(since).toLocaleString()}`;
       idsec.appendChild(meta);
     }
     // THE STATES THAT ONLY EXIST WHEN THEY ARE TRUE. Each is a sentence the owner would otherwise
@@ -3053,14 +3138,16 @@ async function renderBoard() {
         su.appendChild(r);
       };
       const setup = brief?.setup;
-      row("Profile", setup?.profile ?? "standard",
-        setup?.profile === "game-maker" ? "the owner granted this program the game-maker profile"
-          : setup?.profile === "standard" ? "this session's program runs on the standard profile"
-          : "no program bracket — a session opened by hand runs as standard");
-      row("Agent", [s.harness ?? "claude", s.model ?? null, s.effort ?? null].filter(Boolean).join(" · "),
-        s.model ? `harness ${s.harness ?? "claude"}, model ${s.model}` : "no model was named — the harness default answers");
-      if (s.context) row("Window", `${(s.context.window / 1000).toLocaleString()}k · compacts at ${Math.round(s.context.compactAt * 100)}%`,
-        "the context budget this pane was started with");
+      // WHAT KIND OF SESSION THIS IS. The owner's seat for the session kinds still to come
+      // (2026-09-19: "ein kommendes feature bei dem sich versch arten von sessions starten
+      // lassen … fleetWorker, eigene config"). Until they exist, this row says only what is
+      // actually true today and invents no kind: lane or repo session, plus a granted profile.
+      row("Type", [brief?.worktree ? "lane" : "repo session",
+        setup?.profile === "game-maker" ? "game-maker" : null].filter(Boolean).join(" · "),
+        setup?.profile === "game-maker" ? "the owner granted this session's program the game-maker profile"
+          : "the kind of session this pane holds — the session kinds still to come will be named here");
+      // model, effort and the context budget are NOT repeated here: they are on the sidebar row
+      // for every session at once, and the owner called them redundant in the board (2026-09-19).
       if (s.browser) row("Browser", "Playwright MCP", "this lane was started with the browser tool attached");
       if (s.container) row("Container", s.containerContext ? `${s.container} · ${s.containerContext}` : s.container,
         "the box and docker context this session's agent runs in");
@@ -3071,9 +3158,14 @@ async function renderBoard() {
         const r = el("div", "bsrow bspacks");
         r.appendChild(el("span", "bskey", "Packs"));
         const list = el("span", "bsval");
+        // every chip OPENS the pack — its pointers in full, and from there the source file itself
+        // (owner, 2026-09-19: "die kontextPacks anlickbar und zeigen dann deren aufmachung")
         for (const p of packs) {
-          const chip = el("span", "bspack", p.id);
-          if (p.useWhen) chip.title = p.useWhen;
+          const chip = el("button", "bspack", p.id) as HTMLButtonElement;
+          chip.title = [p.useWhen, p.privateSourceId ? "a private pack — its source is outside this repo"
+            : `${(p.sources ?? []).length} source${(p.sources ?? []).length === 1 ? "" : "s"} — click to open them`]
+            .filter(Boolean).join(" — ");
+          if (setup) chip.onclick = () => openPacks(setup, p.id);
           list.appendChild(chip);
         }
         r.appendChild(list);
@@ -3133,7 +3225,10 @@ async function renderBoard() {
         // the concrete uncommitted work — exactly what git status shows, with its codes
         if (brief.uncommittedFiles.length) {
           const uf = el("div", "bunc");
-          for (const f of brief.uncommittedFiles.slice(0, 40)) {
+          // every uncommitted file, not the first 40: the owner reads this list to decide what
+          // to commit, and a silent cut is the one thing it must not do (2026-09-19). The server
+          // caps the status read at 200 lines and says so below when it hit that cap.
+          for (const f of brief.uncommittedFiles) {
             // porcelain XY: X = staged (index) column, Y = worktree (unstaged) column
             const x = f[0] ?? " ", y = f[1] ?? " ";
             const row = el("button", "buncf");
@@ -3158,8 +3253,11 @@ async function renderBoard() {
               untracked ? { k: "untracked", path: upath } : { k: "file", path: upath });
             uf.appendChild(row);
           }
-          if (brief.uncommittedFiles.length > 40)
-            uf.appendChild(el("div", "bempty", `… ${brief.uncommittedFiles.length - 40} more`));
+          // the list is complete unless the SERVER's own 200-line status cap cut it — say which
+          // one it is, because "everything you changed" and "the first 200" are different claims
+          if (brief.uncommitted > brief.uncommittedFiles.length)
+            uf.appendChild(el("div", "bempty",
+              `… ${brief.uncommitted - brief.uncommittedFiles.length} more — the server reads at most 200 status lines`));
           work.appendChild(uf);
         }
         // the SAVE — lanes only. land/merge refuse a dirty tree; this commits so a kill can't
@@ -3366,6 +3464,11 @@ async function renderBoard() {
       else csec.appendChild(el("div", "bempty",
         brief.laneScoped ? `No commits on this lane yet.` : "No commits this session yet."));
       for (const cm of brief.commits) csec.appendChild(commitRow(cm, "session"));
+      // …and when the SERVER's cap cut the list, say so rather than let 50 rows read as "all of
+      // them" — the lane's own ahead-count is the honest total to compare against
+      if (brief.laneScoped && ahead > brief.commits.length)
+        csec.appendChild(el("div", "bempty",
+          `… ${ahead - brief.commits.length} older commit${ahead - brief.commits.length === 1 ? "" : "s"} — the brief carries the newest 50`));
 
       // 4 — FILES: the committed footprint — what this lane/session changes vs its base.
       if (brief.files.length) {
@@ -3373,7 +3476,8 @@ async function renderBoard() {
         const fh = el("div", "bsubhead", brief.laneScoped ? `Changed vs ${base}` : "Changed files");
         if (brief.shortstat) fh.appendChild(el("span", "bsubstat", brief.shortstat.replace(/ changed|\(|\)/g, "")));
         fsec.appendChild(fh);
-        for (const f of brief.files.slice(0, 30)) {
+        // the whole committed footprint, uncut — same rule as the uncommitted list above
+        for (const f of brief.files) {
           const row = el("button", "bfile");
           row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
           row.appendChild(document.createTextNode(f.slice(3)));
@@ -3411,7 +3515,15 @@ async function renderBoard() {
       // 6 — LANES: the repo's lane map — every open worktree, who holds it, its state, and
       // the orphans (killed slot, worktree still on disk) with reattach/remove/discard +
       // ＋ new lane.
-      if (wts) tools.push(boardFold("lanes", `Lanes in ${baseName(wts.repo)}`, String(wts.worktrees.length), (sec) => {
+      // LANES — a section of its own, no longer folded away with the tools: the owner reads the
+      // repo's open lanes as often as its commits, and asked for both in full view (2026-09-19,
+      // "die commits und auch die worktree's vllt doch lieber direkt voll einsehen").
+      if (wts) {
+        const lsec = el("div", "bsec");
+        const lhd = el("h3", "", `Lanes in ${baseName(wts.repo)}`);
+        lhd.appendChild(el("span", "bsubstat", String(wts.worktrees.length)));
+        lsec.appendChild(lhd);
+        const sec = lsec;
         if (!wts.worktrees.length) sec.appendChild(el("div", "bempty", "No open lanes."));
         for (const w of wts.worktrees) {
           const row = el("div", "bwt");
@@ -3559,7 +3671,8 @@ async function renderBoard() {
         nb.title = `fresh worktree lane off ${wts.main}, session opens in the first free slot — one click`;
         nb.onclick = () => { nb.disabled = true; void newLane(wts.repo); };
         sec.appendChild(nb);
-      }));
+        nodes.push(lsec);
+      }
     }
     if (brief) {
       // 8 — AGENTS: advisory, read-only. ✨ summarize + 🔍 review. Last of the lane story and

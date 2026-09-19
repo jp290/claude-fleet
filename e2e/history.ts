@@ -288,7 +288,9 @@ export async function run(): Promise<void> {
   // PROGRAM, and what a pane actually RECEIVED is only in the delivery receipt. The distinction
   // this family holds is that one: a receipt is delivery, a program's declaration is intent.
   {
-    type Setup = { profile: string | null; packs: { id: string; useWhen: string | null }[];
+    type Setup = { profile: string | null; repo: string | null; head: string | null;
+      packs: { id: string; useWhen: string | null; sources: { path: string; anchor: string }[] | null;
+        privateSourceId: string | null }[];
       omitted: { id: string; why: string }[]; deliveredAt: number | null;
       deliveredBytes: number | null; packsFrom: string | null };
     const setupOf = async (slot: number): Promise<Setup | undefined> =>
@@ -303,8 +305,14 @@ export async function run(): Promise<void> {
     const branch = bf1j.branch!;
     const at = Date.now();
     const row = (slot: number, br: string, id: string) => `${JSON.stringify({
-      id: `${slot}-${id}`, at, slot, branch: br, harness: "claude",
-      selected: [{ id, useWhen: `use ${id} when the lane touches it`, anchors: [] }],
+      id: `${slot}-${id}`, at, slot, branch: br, harness: "claude", repo: "/tmp/some-repo", head: "abc1234",
+      selected: [
+        { id, useWhen: `use ${id} when the lane touches it`,
+          anchors: [{ path: "docs/verify-tiering.md", anchor: "## 11.7 A red check is yours" }] },
+        // a PRIVATE pack: its anchors are the opaque id, never a path — the seam must keep the
+        // two apart, because one can be opened and the other provably cannot
+        { id: "private-overlay", anchors: { privateSourceId: "opaque-3f4c19d8a6e2b701" } },
+      ],
       omitted: [{ id: "left-out-pack", why: "source-unavailable" }],
       deliveredBytes: 2048,
     })}\n`;
@@ -312,18 +320,33 @@ export async function run(): Promise<void> {
       row(1, branch, "delivered-pack") + row(2, branch, "other-slot-pack") + row(1, "some/other-branch", "other-branch-pack"));
     const got = await setupOf(1);
     check("brief: the packs come from THIS slot's delivery receipt on THIS branch, with the omitted ones named",
-      !!got && got.packsFrom === "receipt" && got.packs.length === 1 && got.packs[0].id === "delivered-pack"
+      !!got && got.packsFrom === "receipt" && got.packs.length === 2 && got.packs[0].id === "delivered-pack"
       && got.packs[0].useWhen === "use delivered-pack when the lane touches it"
       && got.omitted.length === 1 && got.omitted[0].id === "left-out-pack"
       && got.omitted[0].why === "source-unavailable" && got.deliveredBytes === 2048 && got.deliveredAt === at,
       JSON.stringify(got));
+    // the POINTERS ride along — without them a pack chip has nothing to open — and the repo+commit
+    // they are read at come from the receipt, not from wherever the session happens to stand now
+    check("brief: a pack carries its source pointers, read at the commit the receipt names",
+      !!got && got.repo === "/tmp/some-repo" && got.head === "abc1234"
+      && got.packs[0].sources?.length === 1
+      && got.packs[0].sources[0].path === "docs/verify-tiering.md"
+      && got.packs[0].sources[0].anchor === "## 11.7 A red check is yours"
+      && got.packs[0].privateSourceId === null,
+      JSON.stringify(got?.packs[0]));
+    // a private pack is the case that must NOT be made openable: no path, no anchor, just the
+    // opaque id — its content is outside the repo and the server cannot read it
+    check("brief: a private pack hands over its opaque id and NO source path",
+      !!got && got.packs[1].id === "private-overlay" && got.packs[1].sources === null
+      && got.packs[1].privateSourceId === "opaque-3f4c19d8a6e2b701",
+      JSON.stringify(got?.packs[1]));
     // …and the cache behind it is keyed on the ledger's own identity, not on a TTL: a receipt
     // appended a moment later is visible on the very next read, or the board would show a
     // session's packs from before its last founding.
     appendFileSync(`${ROOT}/context-receipts.jsonl`, row(1, branch, "refounded-pack"));
     const after = await setupOf(1);
     check("brief: a receipt appended after the first read is seen at once, and the LAST one wins",
-      !!after && after.packs.length === 1 && after.packs[0].id === "refounded-pack",
+      !!after && after.packs.length === 2 && after.packs[0].id === "refounded-pack",
       JSON.stringify(after?.packs));
   }
 

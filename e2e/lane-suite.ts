@@ -779,7 +779,7 @@ export async function run(): Promise<void> {
   // says it — and says it in the exit footer, which is the part of the brief every non-clarify lane
   // gets. Read out of the SERVER's own text rather than a copy, so a reworded footer fails here.
   const footerSrc = readFileSync(`${ROOT}/server.ts`, "utf8");
-  const footer = footerSrc.slice(footerSrc.indexOf("const LANE_EXIT_FOOTER = `"));
+  const footer = footerSrc.slice(footerSrc.indexOf("function laneExitFooter("));
   const footerText = footer.slice(0, footer.indexOf("\n`;"));
   check("(LS.9c) the founding brief tells a lane the result COMES TO IT, and not to poll for it",
     footerText.includes("/api/self/suite-offer") && /[Dd]o not poll/.test(footerText)

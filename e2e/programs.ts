@@ -1190,16 +1190,20 @@ export async function run(ctx: Ctx): Promise<void> {
   const wdLane = await selfPost(`/api/self/attention/${wdId}/withdraw`, wdLaneTok, { reason: wdReason });
   check("attention withdraw: a lane is refused 409 — a lane raises no attention, so it has none to take back",
     wdLane.status === 409, String(wdLane.status));
-  // FOREIGN ROW: A's ORIGINAL occupant triple, planted back as an open row C does not own — the
-  // refusal must name the ownership, not the row's existence. Unplanted right after, so the open
-  // row cannot ride the ops payload into a later section's budget.
+  // FOREIGN ROW: an occupant triple that is NOT C's, planted as an open row — the refusal must
+  // name the ownership, not the row's existence. The watch lane's occupant names it: alive, so the
+  // boot reconcile keeps the row (no requester-gone path), and it has no succession lineage that
+  // could REBIND it to C — A's original triple would come back as C's own question, which is the
+  // one reading this check must not measure. Unplanted right after, so the open row cannot ride
+  // the ops payload into a later section's budget.
   const wdForeignId = "cd".repeat(12);
+  const wdForeignOpenedAt = readState().slots?.[String(fleetWatchLaneSlot)]?.openedAt ?? 0;
   await stopSrv();
   const wdPlant = readState();
   wdPlant.attentionRequests = [...(wdPlant.attentionRequests ?? []), {
     id: wdForeignId, raisedAt: Date.now(), kind: "decision",
     text: "withdraw probe: a question that belongs to another occupant",
-    requester: { slot: fleetSlot, openedAt: fleetAOpenedAt, sessionId: null },
+    requester: { slot: fleetWatchLaneSlot, openedAt: wdForeignOpenedAt, sessionId: null },
     programId: fleetProgram.id,
     status: "open", answer: null, refusedReason: null, closedAt: null,
   }];

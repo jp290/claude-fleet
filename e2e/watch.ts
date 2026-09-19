@@ -506,10 +506,34 @@ async function runFoundingWordWatch(): Promise<void> {
     JSON.stringify({ git: fwGit, tok: fwTok.length, openedAt: fwBefore }));
   if (fwGit?.ahead !== 1 || fwGit.dirty !== 0 || !fwTok) return;
 
+  // THE BATON NOW COSTS A TICKET (2026-09-18): the newest report of THIS occupant must be the
+  // handoff. This lane was hand-opened — no row, no program — and a report-less lane cannot file
+  // at all (nothing dispatched it, owner-inbox fallback needs a taskId), so the fixture plants the
+  // row through the state file exactly as the baton fixture does, and files through the REAL door.
+  const fwTask = (await (await post("/api/tasks",
+    { text: "founding-word fixture row: the cut the heir inherits", queue: false })).json()) as
+    { task?: { id?: string } };
+  const fwTaskId = fwTask.task?.id ?? "";
+  await stopSrv();
+  const fwPlantState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+    { slots?: Record<string, { taskId?: string | null }>;
+      tasks?: { id: string; status: string; slot: number | null }[] };
+  const fwSlotRow = fwPlantState.slots?.[String(lane.slot)];
+  if (fwSlotRow) fwSlotRow.taskId = fwTaskId;
+  const fwPlantedRow = fwPlantState.tasks?.find((t) => t.id === fwTaskId);
+  if (fwPlantedRow) { fwPlantedRow.status = "sent"; fwPlantedRow.slot = lane.slot; }
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(fwPlantState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const fwTok2 = fwSlot(lane.slot)?.selfToken ?? "";
+  const fwReport = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+    headers: { "content-type": "application/json", "x-fleet-self-token": fwTok2 },
+    body: JSON.stringify({ status: "handoff",
+      text: "founding-word: the cut is committed and green; what is open is the watch below." }) });
+
   // NOT awaited: succeedLane returns only after it has typed the brief, and the whole question is
   // what a subscriber is told in between.
   const fwSucceed = fetch(`${BASE}/api/self/succeed`, { method: "POST",
-    headers: { "content-type": "application/json", "x-fleet-self-token": fwTok }, body: "{}" });
+    headers: { "content-type": "application/json", "x-fleet-self-token": fwTok2 }, body: "{}" });
   let fwSubRes: Response | null = null;
   for (let i = 0; i < 1500; i++) {
     const row = fwSlot(lane.slot);
@@ -523,9 +547,9 @@ async function runFoundingWordWatch(): Promise<void> {
   const fwDone = (await (await fwSucceed).json()) as { ok?: boolean; delivered?: boolean; successions?: number };
   const fwAfter = fwSlot(lane.slot)?.openedAt ?? 0;
   check("founding-word setup: the heir stands, a watch subscribes to it, and the baton completes",
-    fwSubBody?.ok === true && fwSubBody.watch?.armed === true
+    fwReport.ok && fwSubBody?.ok === true && fwSubBody.watch?.armed === true
       && fwDone.delivered === true && fwDone.successions === 1 && fwAfter !== fwBefore,
-    JSON.stringify({ sub: fwSubRes?.status, armed: fwSubBody?.watch?.armed, succeed: fwDone, openedAt: fwAfter }));
+    JSON.stringify({ report: fwReport.status, sub: fwSubRes?.status, armed: fwSubBody?.watch?.armed, succeed: fwDone, openedAt: fwAfter }));
   if (fwSubBody?.watch?.armed !== true || fwDone.delivered !== true) return;
 
   const fwBrief = (await plogRead()).filter((e) => e.slot === lane.slot).slice(fwPlogBefore)
@@ -552,6 +576,7 @@ async function runFoundingWordWatch(): Promise<void> {
 
   await post(`/api/slots/${lane.slot}/kill`, {});
   await post(`/api/slots/${recv}/kill`, {});
+  await post(`/api/tasks/${fwTaskId}/delete`, {});
   spawnSync("git", ["-C", REPO, "worktree", "prune"]);
 }
 

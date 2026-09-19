@@ -7,6 +7,7 @@ import { mdInto, type MdEntityKind } from "./md";
 import { selectionMarkdown } from "./mdcopy";
 import { Flakes } from "./flakes";
 import { harnessMark, icon, type IconName } from "./icons";
+import { modelLabel } from "./modelname";
 import { attachEntityCards, type EntFacts } from "./entcard";
 import { loadChatSizes, sizePanel, stepChatSizes } from "./chatsize";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
@@ -3433,7 +3434,6 @@ let optMsg: Partial<Record<OptField, string>> = {};
 let optsSlot = 0;
 
 function renderComposerOpts(force: boolean): void {
-  renderComposerProfile();
   const pane = panes[focused];
   const slot = pane?.isChat ? pane.slot : 0;
   const h = slot ? harnessEntry(slot) : null;
@@ -3458,11 +3458,14 @@ function renderComposerOpts(force: boolean): void {
       // the adapter's list, clickable; a click STAGES like typing does — Apply stays the only send.
       // Free text stays beside it because modelRe admits more than any list names.
       const list = el("div", "cmdlist");
+      // each entry reads as the model's name (modelLabel); the raw id is its value and its tooltip
       const markStaged = (v: string) => {
-        for (const o of list.children) o.classList.toggle("staged", o.textContent === v && v !== current);
+        for (const o of list.children) o.classList.toggle("staged", (o as HTMLElement).dataset.id === v && v !== current);
       };
       for (const m of h.models ?? []) {
-        const b = el("button", "cmdmodel", m) as HTMLButtonElement;
+        const b = el("button", "cmdmodel", modelLabel(m)) as HTMLButtonElement;
+        b.dataset.id = m;
+        b.title = m;
         b.classList.toggle("cur", m === current);
         b.classList.toggle("staged", m === optStaged.model && m !== current);
         b.onclick = () => { input.value = m; stage(m); markStaged(m); };
@@ -3476,7 +3479,7 @@ function renderComposerOpts(force: boolean): void {
         input.closest(".optpop")?.querySelector<HTMLButtonElement>(".cmdapply")?.focus();
       });
       return { list: list.childElementCount ? list : undefined, row: [input] };
-    }, mark));
+    }, mark, modelLabel));
   }
   if (h.supports.effort && h.effortLevels.length) {
     const current = s?.effort ?? "";
@@ -3497,64 +3500,6 @@ function renderComposerOpts(force: boolean): void {
   }
 }
 
-// THE PROFILE LINE (ninth cut, owner: "eine profil zeile … auf der man nichts machen kann … die
-// versch injezierten Kontext-schichten des aktuellen Agenten"). EXPRESSLY A PLACEHOLDER: the full
-// version belongs to the reworked right-hand column. It reads only what this board already holds —
-// the slot row, the task on the 2 s poll, the Program digest, and the Program list if the queue has
-// loaded it — and never fetches. A layer the board does not hold says "—", never a guess:
-//   role     slot.worktree / Program.main.slot + the slot's harness
-//   brief    the `sent` task row naming this slot (its id hoverable like in the transcript)
-//   program  that row's programId, or the Program this slot is bound MAIN of
-//   packs    Program.contextPacks — the list row carries them, but only once /api/programs was read
-//   receipt  the context receipt ledger reaches only a MAIN's self route, never this owner board
-// Not a control: no click, no toggle; only the brief id answers a hover, as it does everywhere.
-const compProfile = $("compprofile");
-let profileKey = "";
-function renderComposerProfile(): void {
-  const slot = panes[focused]?.slot ?? 0;
-  const s = slot ? fleet.find((x) => x.id === slot) : undefined;
-  const task = s?.cwd ? tasksList.find((t) => t.slot === slot && t.status === "sent") : undefined;
-  const mainOf = programsRead === "ok"
-    ? programsList.find((p) => p.main?.slot === slot && (p.status === "active" || p.status === "confirmed")) : undefined;
-  const progId = task?.programId ?? mainOf?.id;
-  const prog = progId ? programsPoll.find((p) => p.id === progId) : undefined;
-  const full = progId ? programsList.find((p) => p.id === progId) : undefined;
-  const role = !s?.cwd ? "" : s.worktree ? "lane" : mainOf ? "MAIN" : programsRead === "ok" ? "session" : "";
-  // the harness only: model and effort are the composer's own two controls right beside it
-  const adapter = s?.cwd ? s.harness ?? "claude" : "";
-  const packs = !progId ? "" : programsRead !== "ok" ? "" : String(full?.contextPacks?.length ?? 0);
-  const packIds = full?.contextPacks?.map((c) => c.id).join(", ") ?? "";
-  const key = JSON.stringify([slot, role, adapter, task?.id, task?.briefAt, progId, prog?.title, packs, packIds]);
-  if (key === profileKey) return;
-  profileKey = key;
-  compProfile.replaceChildren();
-  if (!s?.cwd) return;
-  const dash = "—";
-  const seg = (label: string, value: string | HTMLElement, why: string) => {
-    const e = el("span", "pfseg");
-    e.title = why;
-    e.append(el("span", "pflabel", label), typeof value === "string" ? el("span", value === dash ? "pfval none" : "pfval", value) : value);
-    compProfile.appendChild(e);
-  };
-  compProfile.appendChild(el("span", "pfico")).appendChild(icon("layers"));
-  seg("role", role ? `${role} · ${adapter}` : `${dash} · ${adapter}`,
-    role ? "the slot row (worktree) and the Program list (bound MAIN), plus the slot's harness"
-      : "lane or MAIN is known once the Program list is loaded (open the queue once)");
-  let brief: string | HTMLElement = dash;
-  if (task) {
-    const id = el("span", "pfval ent", task.id);
-    id.setAttribute("data-ent", "task");
-    id.setAttribute("data-id", task.id);
-    brief = id;
-  }
-  seg("brief", brief, task ? `the queue row sent to slot ${slot}${task.briefAt ? " — a compiled brief exists" : ""}` : "no queue row is sent to this slot");
-  seg("program", prog ? prog.title : dash, prog ? `Program ${prog.id}` : "no Program on this slot's row");
-  seg("packs", packs || dash, packIds ? `context packs: ${packIds}`
-    : !progId ? "packs belong to a Program — this slot has none"
-    : programsRead !== "ok" ? "the Program list is not loaded on this board yet (it loads with the queue)" : "this Program carries no context packs");
-  seg("receipt", dash, "what was actually delivered (context receipts) is readable only by a MAIN's self route, not by this board");
-}
-
 // Close whatever is open and forget what was staged in it — closing without Apply discards.
 function closeOpts(focusField?: OptField): void {
   optOpen = null;
@@ -3567,13 +3512,14 @@ function closeOpts(focusField?: OptField): void {
 // one switch = its (staged or current) value with a chevron, and a small popover: the field's own
 // control(s), then Apply. The verdict line appears only after an Apply, never as an empty row.
 function optSwitch(field: OptField, slot: number, current: string, shown: string, lead: HTMLElement[],
-  body: (stage: (v: string) => void) => { list?: HTMLElement; row: HTMLElement[] }, mark: IconName | null): HTMLElement {
+  body: (stage: (v: string) => void) => { list?: HTMLElement; row: HTMLElement[] }, mark: Element | null,
+  label: (v: string) => string = (v) => v): HTMLElement {
   const wrap = el("div", `optswrap ${field}`);
   const btn = el("button", "optsw") as HTMLButtonElement;
   const what = `sets the slot record AND types /${field} into the pane — only when you press Apply`;
-  btn.title = mark ? `${harnessEntry(slot)?.id ?? ""} · ${field} — ${what}` : `${field} — ${what}`;
-  if (mark) lead[0]?.appendChild(icon(mark));
-  const val = el("span", `optval${field === "effort" ? " dim" : ""}`, optStaged[field] ?? shown);
+  const tip = (v: string) => `${mark ? `${harnessEntry(slot)?.id ?? ""} · ` : ""}${field} ${v} — ${what}`;
+  if (mark) lead[0]?.appendChild(mark);
+  const val = el("span", `optval${field === "effort" ? " dim" : ""}`, label(optStaged[field] ?? shown));
   btn.append(...lead, val);
   btn.appendChild(el("span", "optchev")).appendChild(icon("chevron"));
   const pop = el("div", `optpop ${field}`);
@@ -3586,7 +3532,8 @@ function optSwitch(field: OptField, slot: number, current: string, shown: string
     const pending = !!v && v !== current;
     apply.disabled = !pending;
     wrap.classList.toggle("staged", pending);
-    val.textContent = pending && v ? v : shown;
+    val.textContent = label(pending && v ? v : shown);
+    btn.title = tip(pending && v ? v : shown); // the raw id lives here, the name on the button
   };
   const stage = (v: string) => { optStaged = { ...optStaged, [field]: v }; sync(); };
   apply.onclick = async () => {
@@ -3656,8 +3603,6 @@ function buildTray(): void {
     // one icon language: the emoji the markup carries are replaced by the board's SVG grammar
     compTray.lastElementChild?.querySelector(".tricon")?.replaceChildren(icon(entry.icon));
   }
-  compTray.appendChild(compProfile); // the profile line shares the tray's row — no row of its own
-  attachEntityCards(compProfile, describeEntity);
   dropBtn.querySelector(".tricon")?.replaceChildren(icon("plus"));
   send.replaceChildren(icon("send"));
 }
@@ -7057,9 +7002,6 @@ type ProgramFoundingState = { state: "absent" }
   | { state: "pending"; record: PublicProgramFounding }
   | { state: "unreadable" };
 interface ProgramInfo extends ProgramDigest {
-  // the Program's context pointers (server/types.ts#Program.contextPacks) — they ride the list row
-  // whole; only the composer's profile line reads them, and only their ids
-  contextPacks?: { id: string; useWhen: string }[];
   intent?: string; successCriterion?: string;
   // ABSENT or null = unbound. A PRESENT object may still be incomplete, and that is `unknown`,
   // never `live` — see programMark.
@@ -12534,23 +12476,70 @@ function dropAttachment(i: number): void {
   if (gone?.thumb) URL.revokeObjectURL(gone.thumb);
 }
 function clearAttachments(): void {
+  closeLightbox(); // it may be showing a URL revoked on the next line
   for (const a of attached) if (a.thumb) URL.revokeObjectURL(a.thumb);
   attached.length = 0;
+}
+
+// Tenth cut (owner: an attached image must open large on click): ONE overlay for the page, over
+// the whole board, showing the same object URL the thumbnail uses. Escape or a click beside the
+// image closes it; the ✕ on the entry still only removes. It is built on first use, not in markup.
+let lightbox: HTMLElement | null = null;
+let lightboxBack: HTMLElement | null = null; // the thumbnail that opened it, to return focus to
+function openLightbox(url: string, name: string, from: HTMLElement): void {
+  if (!lightbox) {
+    lightbox = el("div", "lightbox");
+    lightbox.setAttribute("role", "dialog");
+    lightbox.setAttribute("aria-modal", "true");
+    lightbox.tabIndex = -1;
+    lightbox.addEventListener("click", (e) => { if (!(e.target instanceof HTMLImageElement)) closeLightbox(); });
+    lightbox.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeLightbox();
+    });
+    document.body.appendChild(lightbox);
+  }
+  const img = document.createElement("img");
+  img.src = url;
+  img.alt = name;
+  lightbox.replaceChildren(img, el("div", "lbname", name));
+  lightbox.setAttribute("aria-label", name);
+  lightboxBack = from;
+  lightbox.classList.add("open");
+  lightbox.focus();
+}
+function closeLightbox(): void {
+  if (!lightbox?.classList.contains("open")) return;
+  lightbox.classList.remove("open");
+  lightbox.replaceChildren();
+  lightboxBack?.focus();
+  lightboxBack = null;
 }
 
 function renderAttachments(): void {
   reshapeSurface(() => compFiles.replaceChildren(...attached.map((a, i) => {
     const box = el("div", "att");
     box.title = a.mention;
-    const lead = box.appendChild(el("span", "attico"));
-    const fallback = () => lead.replaceChildren(icon(/\.(png|jpe?g|gif|webp|svg|heic|avif)$/i.test(a.name) ? "image" : "file"));
+    // an image's thumbnail is a button that opens it large; everything else is a plain icon
+    const lead = box.appendChild(el(a.thumb ? "button" : "span", "attico"));
+    const fallback = () => {
+      lead.replaceChildren(icon(/\.(png|jpe?g|gif|webp|svg|heic|avif)$/i.test(a.name) ? "image" : "file"));
+      lead.classList.remove("attopen");
+      lead.onclick = null;
+    };
     if (a.thumb) {
+      const thumb = a.thumb;
       const img = document.createElement("img");
       img.className = "attthumb";
       img.alt = "";
-      img.src = a.thumb;
-      img.onerror = fallback; // a format this browser cannot draw (HEIC) keeps the icon
+      img.src = thumb;
+      img.onerror = fallback; // a format this browser cannot draw (HEIC) keeps the icon, and no lightbox
       lead.appendChild(img);
+      lead.classList.add("attopen");
+      lead.title = `open ${a.name}`;
+      lead.onclick = () => openLightbox(thumb, a.name, lead);
     } else fallback();
     // middle-truncated: the start gives way, the tail (last characters + extension) always shows
     const cut = Math.max(0, a.name.length - 8);

@@ -1000,8 +1000,8 @@
   /* ONE STEP SMALLER (owner, 2026-09-19: "die formattierungen überhaupt etwas kleiner"): the
      queue redefines the chat's type tokens for itself, so every rule below follows and the chat
      view keeps its own sizes. --chat-ui-fs stays: 11px is the floor for a label. */
-  #shell-queue { --chat-fs: 13px; --chat-code-fs: 12px;
-    font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
+  #shell-queue { --chat-fs: 13px; --chat-code-fs: 12px; }
+  #shell-queue { font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
   /* …and the window a size larger ("das dashboard insgesamt etwas größer"): 16px from every edge
      instead of min(1400px, 95vw) × min(880px, 92vh). The phone rule below takes the screen back. */
   #shell-queue .shellwin { width: calc(100vw - 32px); height: calc(100vh - 32px); }

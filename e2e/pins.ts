@@ -5603,18 +5603,25 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && (signals.match(/!mergeBlocksLane\(v\.merge\)/g) ?? []).length === 3
       && (signals.match(/MERGE_BLOCKING\.includes/g) ?? []).length === 1,
     `body=${blocksBody.replace(/\s+/g, " ").slice(0, 160)}`);
-  // ONE runtime writer on the clean path, plus ONE loader-only legacy backfill. The latter has to
-  // prove every old-writer field before it can mint the exemption; an invalid present reason takes
-  // the validation/drop arm and can never fall through into migration.
+  // TWO runtime writers since the guarded confirm learned to tell a lost ff from a resolution
+  // (2026-09-18 queue inspection, topic B): the clean path's mergeJob and the confirm path's
+  // guardedConfirmJob, each minting exactly one typed reason, plus ONE loader-only legacy backfill.
+  // The latter has to prove every old-writer field before it can mint the exemption; an invalid
+  // present reason takes the validation/drop arm and can never fall through into migration.
   const loaderAt = server.indexOf("function withValidErrorReason(row: MergeLast): MergeLast {");
   const loaderEnd = loaderAt < 0 ? -1 : server.indexOf("\n}\n", loaderAt);
   const loaderBody = loaderAt < 0 || loaderEnd < 0 ? "" : server.slice(loaderAt, loaderEnd + 2);
   const reasonSites = [...server.matchAll(/errorReason: "ff-lost"/g)].map((m) => m.index);
   const cleanAdvance = server.indexOf("await advanceIntegration(root, main, branch)");
-  pin(`${RULE_FF} — server.ts keeps one clean-path runtime mint plus one loader-only legacy backfill`,
-    reasonSites.length === 2
+  pin(`${RULE_FF} — server.ts keeps two runtime mints (clean path + guarded confirm, one each) plus one loader-only legacy backfill`,
+    reasonSites.length === 4
       && reasonSites.filter((at) => at >= loaderAt && at < loaderEnd).length === 1
       && reasonSites.filter((at) => at > cleanAdvance).length === 1
+      // the confirm path's half: a TYPED refusal body (never prose parsing) and exactly one
+      // folded verdict mint behind it, keyed on that body field
+      && server.includes('body: { status: "error", errorReason: "ff-lost",')
+      && server.includes('const ffLost = out.body.errorReason === "ff-lost";')
+      && server.includes('...(ffLost ? { errorReason: "ff-lost" as const } : {}),')
       && server.includes("MERGE_ERROR_REASONS.includes(row.errorReason)")
       && (server.match(/withValidErrorReason\(identityComplete/g) ?? []).length === 2,
     `reasonSites=${reasonSites.length} loader=${reasonSites.filter((at) => at >= loaderAt && at < loaderEnd).length} runtime=${reasonSites.filter((at) => at > cleanAdvance).length} calls=${(server.match(/withValidErrorReason\(identityComplete/g) ?? []).length}`);
@@ -5628,9 +5635,26 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     `body=${loaderBody.replace(/\s+/g, " ").slice(0, 240)}`);
   // the default-off latch that lets a suite hit the race, and the fixture that arms it — same
   // shape and same reason as the Game-Maker open latch pinned further down
-  const ffLatch = server.indexOf("await waitForLandFfTestLatch();");
+  // …and the same latch on the GUARDED CONFIRM path (2026-09-18, topic B): its lost ff is a few
+  // milliseconds of real race too, so the second call site sits after the confirm's fresh verify
+  // and before its land declaration — the one boundary no external probe can hit by timing.
+  const ffLatchSites = [...server.matchAll(/await waitForLandFfTestLatch\(\);/g)].map((m) => m.index);
   const ffIntent = server.indexOf("await markLandIntent(root, main, branch, mainBefore,");
   const ffAdvance = server.indexOf("const adv = await advanceIntegration(root, main, branch);");
+  const cffIntent = server.indexOf("await markLandIntent(repo, main, branch, mainBefore,");
+  const cffVerifyRefusal = server.indexOf("if (!fresh || fresh.ok !== true)");
+  pin(`${RULE_FF} — the default-off E2E latch sits at each land path's one unprobeable boundary — clean: between the land declaration and the fast-forward; guarded confirm: after the fresh verify, before its land declaration — and a fixture arms each`,
+    server.includes("process.env.FLEET_TEST_LAND_FF_LATCH ?? null")
+      && ffLatchSites.length === 2
+      && ffIntent >= 0 && ffAdvance > ffIntent
+      && ffLatchSites.filter((at) => at > ffIntent && at < ffAdvance).length === 1
+      && cffIntent >= 0 && cffVerifyRefusal > 0 && cffIntent > cffVerifyRefusal
+      && ffLatchSites.filter((at) => at > cffVerifyRefusal && at < cffIntent).length === 1
+      && read("e2e/programs.ts").includes("FLEET_TEST_LAND_FF_LATCH: ffLatch")
+      && read("e2e/programs.ts").includes("FLEET_TEST_LAND_FF_LATCH: cffLatch")
+      && read("e2e/programs.ts").includes("ffLatchReached")
+      && read("e2e/programs.ts").includes("ffLatchRelease"),
+    `clean=${ffLatchSites.filter((at) => at > ffIntent && at < ffAdvance).length} confirm=${ffLatchSites.filter((at) => at > cffVerifyRefusal && at < cffIntent).length} intent=${ffIntent} advance=${ffAdvance}`);
   // ...AND THE BOUNDED RETRY MAY NEVER LAND A TREE THE GATE HAS NOT SEEN. After a second rebase
   // the tree is a different one, so the re-rebase, the re-verify and the stop on anything non-green
   // must all sit BETWEEN the lost fast-forward and the next advance, in that order. An edit that
@@ -5688,13 +5712,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && m3Body.includes('"--no-renames"')
       && read("server.ts").includes("if (/[RC]/.test(entry.slice(0, 2))) {"),
     `body=${m3Body.replace(/\s+/g, " ").slice(0, 200)}`);
-  pin(`${RULE_FF} — the default-off E2E latch sits between the land declaration and the fast-forward, and a fixture arms it`,
-    server.includes("process.env.FLEET_TEST_LAND_FF_LATCH ?? null")
-      && ffIntent >= 0 && ffLatch > ffIntent && ffAdvance > ffLatch
-      && read("e2e/programs.ts").includes("FLEET_TEST_LAND_FF_LATCH: ffLatch")
-      && read("e2e/programs.ts").includes("ffLatchReached")
-      && read("e2e/programs.ts").includes("ffLatchRelease"),
-    `intent=${ffIntent} latch=${ffLatch} advance=${ffAdvance}`);
 }
 
 // --- SLICE B: THE RETURN PATH. Two halves of one rule, and they fail in opposite directions.

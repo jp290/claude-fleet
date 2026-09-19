@@ -2049,7 +2049,27 @@
   #board .bsetup .bspacks .bsval { display: flex; flex-wrap: wrap; gap: 3px; }
   #board .bsetup .bspack { padding: 1px 5px; border: 1px solid #202020; border-radius: 4px; background: #0a0a0a;
     font-size: 10.5px; color: var(--b-ink2); }
+  #board .bsetup .bspack { cursor: pointer; }
+  #board .bsetup .bspack:hover { color: #e8e8e8; border-color: #3a3a3a; background: #111; }
   #board .bsetup .bsnote { margin-top: 5px; font-size: 11px; color: var(--b-ink3); }
+
+  /* the context-packs window: a pack is a pointer list, and its sources open the file itself */
+  #packs .pkrow { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 7px 10px;
+    border: 0; border-radius: 6px; background: none; color: #e6e6e6; font: inherit; text-align: left; cursor: pointer; }
+  #packs .pkrow:hover { background: #151515; }
+  #packs .pkrow.off { color: #8a8a8a; cursor: default; }
+  #packs .pkrow.off:hover { background: none; }
+  #packs .pkid { flex: 1; min-width: 0; font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #packs .pkn { flex: none; font-size: 10.5px; color: #8a8a8a; }
+  #packs .pkhead { margin: 12px 10px 4px; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: #6e6e6e; }
+  #packs .pkwhen { margin: 6px 0 2px; color: #c9c9c9; line-height: 1.5; }
+  #packs .pksub { margin: 14px 0 8px; font-size: 11.5px; color: #8a8a8a; }
+  #packs .pksrc { display: block; width: 100%; margin-bottom: 6px; padding: 9px 11px; border: 1px solid #1e1e1e;
+    border-radius: 8px; background: #0a0a0a; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  #packs .pksrc:hover { border-color: #333; background: #101010; }
+  #packs .pksrcp { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: #e6e6e6; overflow-wrap: anywhere; }
+  #packs .pksrca { margin-top: 3px; font-size: 11.5px; color: #8a8a8a; overflow-wrap: anywhere; }
 
   #board .bmenu { margin-top: 10px; padding: 4px; border: 1px solid #222; border-radius: 8px; background: #080808; }
   #board .bmenuitem { display: block; width: 100%; padding: 6px 8px; border: 0; border-radius: 5px; background: none;

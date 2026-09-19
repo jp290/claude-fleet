@@ -4338,6 +4338,8 @@ const aliveInfo = new Map<number, boolean>();
 // gates nothing. Sight is the entire feature: the state is silent by construction, so an owner who
 // cannot see it has no way to learn it exists.
 const agentInfo = new Map<number, AgentState>();
+// rank 2 of the model precedence rule (src/running.ts#runningModel): the pane footer, behind the
+// session file and ahead of the slot record — and a push's read-back (modelPushedAt).
 type PaneModelInfo = { model: string | null; at: number; modelPushedAt?: number };
 const paneModelInfo = new Map<number, PaneModelInfo>();
 // wedged merge/rebase per slot, same tick + same reads-only contract as aliveInfo: the
@@ -35088,6 +35090,12 @@ Bun.serve<WSData>({
             // subdirectory. Older clients ignore it; a null before the slow git tick is UNKNOWN.
             repo: s.cwd ? (s.worktree?.repo ?? repoInfo.get(s.id) ?? null) : null,
             lastOutput: s.lastOutput,
+            // `model` is the slot RECORD (rank 3 of the ONE precedence rule,
+            // src/running.ts#runningModel — docs/harness-adapter.md describes it); `paneModel` below
+            // is the pane FOOTER (rank 2). Two source-named facts, NEVER merged here: the reader
+            // above them (the session file) is measured per chat-poll, and suppressing the footer
+            // wherever a transcript names a model would hide a push's read-back — right after a push
+            // the file still names the old request, and modelPushedAt is exactly how its landing is seen.
             git: gitInfo.get(s.id) ?? null, worktree: s.worktree, model: s.model,
             // OMITTED when null (the common case) — this is the 2s poll (data-saver); absent reads as "the
             // default harness". What each harness SUPPORTS is static and rides GET /api/harnesses once.

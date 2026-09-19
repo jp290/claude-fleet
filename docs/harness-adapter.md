@@ -284,7 +284,8 @@ Assistant-Zeile); der Client misst gegen gemessene Schwellen (`src/client.ts#cac
 codex 1 h, Claude unverändert 5 min; unbekannter Provider → kein Zähler). Der Zähler steht nur, solange die Session
 ruht (Pane malt seit ≥ 4 s nicht, `src/client.ts#CACHE_BUSY_MS`). Jede Payload trägt zudem `model`
 (Claude: `message.model` der neuesten Assistant-Zeile, codex: `turn_context`, pi: Assistant-`model`);
-der Composer zeigt es, wo der Slot-Datensatz kein Modell nennt.
+der Composer zeigt es nach der Modell-Rangfolge (§ unten): die Datei gewinnt gegen den
+Slot-Datensatz, nicht nur, wo der Datensatz nichts nennt.
 
 ### `pi-ox`: festes, derzeit anonym erreichbares Ox-Alpha-Profil in Pi
 
@@ -546,6 +547,32 @@ STOP-Befund der Feuerprobe 2026-09-15 (`docs/messungen/2026-09-15-pi-zai-automat
 und die Negativprobe ohne `.pi` (`docs/messungen/2026-09-18-pi-zai-start-readiness.md`). Kontext-Füllstand: glm-5.3 hat den exakten 1M-Nenner
 (`src/protocol.ts#contextWindowFor`); für glm-5.3-flash steht dort keine Zeile — ein Flash-Slot
 meldet ctx `unknown`, bis eine eigene Messung die Zeile rechtfertigt.
+
+## Welches Modell läuft — die Rangfolge
+
+Drei Leser für „welches Modell läuft“, EINE Rangfolge, an EINEM Ort in Code benannt
+(`src/running.ts#runningModel`): **Session-Datei vor Footer vor Slot-Datensatz.**
+
+1. **Session-Datei** — der neueste Request, gemessen je Chat-Poll (Claude: `message.model` der
+   neuesten Assistant-Zeile, `server.ts#transcriptModel`; codex/pi: `server/conversation-read.ts`).
+   Sie veraltet erst mit dem nächsten Request im Pane.
+2. **Footer** — `paneModel` auf `GET /api/sessions`, gelesen vom 30-s-Tick per Footer-Regex
+   (`server.ts#paneModelInfo`, `MODEL_FOOTER_READ_MS`); zugleich die Rücklese eines Modell-Pushs
+   (`modelPushedAt`). Nur Harnesses mit `modelFooter`-Muster liefern ihn.
+3. **Slot-Datensatz** — `model` auf `GET /api/sessions` und jeder Slot-Payload (`s.model`), gesetzt
+   durch Spawn und Push; er veraltet, sobald jemand im Pane `/model` tippt.
+
+Eine Ausnahme in der Rangfolge: nennt ein höherer Leser das Modell des Datensatzes ohne dessen
+`[suffix]` (Claude schreibt `claude-opus-5` für einen auf `claude-opus-5[1m]` gepinnten Slot), ist
+es DASSELBE Modell, und der Datensatz behält seine genauere ID (Gepinnt in `e2e/pins.ts`).
+
+`GET /api/sessions` fügt die beiden serverseitigen Fakten bewusst NICHT zusammen: `model` bleibt
+der Datensatz (sein kanonischer Name in jeder Slot-Payload), `paneModel` bleibt die Footer-Rücklese
+— die Namen tragen ihre Quellen. Wer „was läuft“ wissen will, wendet die Rangfolge selbst an. Eine
+Unterdrückung des Footers, wo die Datei etwas nennt, wäre teuer (die Datei wird je Chat-Poll
+gemessen, nicht für den 2-s-Poll) und würde die Push-Rücklese genau in ihrem Moment verlieren:
+nach einem Push nennt die Datei noch den alten Request, und `modelPushedAt` ist, wie sein Ankommen
+gelesen wird.
 
 ## Die Faktschicht `agent`
 

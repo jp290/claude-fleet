@@ -9579,6 +9579,15 @@ async function tickAcceptByLand(origin: "boot" | "tick" | "audit"): Promise<numb
 function reapLaneSuiteOffersFor(slotId: number): void {
   for (const j of laneSuiteJobs.values()) {
     if (j.slot !== slotId || (j.state !== "open" && j.state !== "claimed")) continue;
+    // A SUCCESSION TEARS ITS OWN SLOT DOWN (slot_kill `reopen`) — that is the baton passing, not
+    // the lane dying, and succeedLane carries open/claimed offers over the moment the successor
+    // exists. Reaping here closed a RUNNING preview mid-handover: the helper withdrew silently
+    // and neither session ever learned anything (measured 2026-09-19, the K12 succession — and
+    // the original loss, job f5f181f6433f on 2026-09-18, was this reaper plus the sweep's own
+    // `!live` arm racing the same window). laneSpawn is the reservation the dispatch tick and the
+    // lapse sweep already read; succeedLane's finally removes it, and a succession that fails
+    // honestly re-opens this reaper then.
+    if (laneSpawn.has(slotId)) continue;
     if (j.claim) { try { rmSync(j.claim.bundle, { force: true }); } catch { /* already gone */ } }
     j.claim = null;
     j.state = "reaped";

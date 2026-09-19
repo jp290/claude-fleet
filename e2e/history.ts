@@ -283,6 +283,50 @@ export async function run(): Promise<void> {
   check("brief files is an array", Array.isArray(bf1j.files));
   check("brief rejects inactive slot", (await get("/api/slots/4/brief")).status === 400);
 
+  // --- THE BRIEF'S NON-GIT HALF: what this session is MADE of (server.ts#sessionSetup). The board
+  // shows profile and context packs, and neither could reach a client before: both hang on the
+  // PROGRAM, and what a pane actually RECEIVED is only in the delivery receipt. The distinction
+  // this family holds is that one: a receipt is delivery, a program's declaration is intent.
+  {
+    type Setup = { profile: string | null; packs: { id: string; useWhen: string | null }[];
+      omitted: { id: string; why: string }[]; deliveredAt: number | null;
+      deliveredBytes: number | null; packsFrom: string | null };
+    const setupOf = async (slot: number): Promise<Setup | undefined> =>
+      ((await (await get(`/api/slots/${slot}/brief`)).json()) as { setup?: Setup }).setup;
+    const bare = await setupOf(1);
+    check("brief: a session with no program and no receipt answers the setup question, and answers it EMPTY",
+      !!bare && bare.profile === null && bare.packs.length === 0 && bare.omitted.length === 0
+      && bare.packsFrom === null && bare.deliveredAt === null,
+      JSON.stringify(bare));
+    // the receipt this slot's founding brief would have written, on ITS branch — the join is
+    // slot+branch, so a row for another slot or another branch must not be picked up
+    const branch = bf1j.branch!;
+    const at = Date.now();
+    const row = (slot: number, br: string, id: string) => `${JSON.stringify({
+      id: `${slot}-${id}`, at, slot, branch: br, harness: "claude",
+      selected: [{ id, useWhen: `use ${id} when the lane touches it`, anchors: [] }],
+      omitted: [{ id: "left-out-pack", why: "source-unavailable" }],
+      deliveredBytes: 2048,
+    })}\n`;
+    appendFileSync(`${ROOT}/context-receipts.jsonl`,
+      row(1, branch, "delivered-pack") + row(2, branch, "other-slot-pack") + row(1, "some/other-branch", "other-branch-pack"));
+    const got = await setupOf(1);
+    check("brief: the packs come from THIS slot's delivery receipt on THIS branch, with the omitted ones named",
+      !!got && got.packsFrom === "receipt" && got.packs.length === 1 && got.packs[0].id === "delivered-pack"
+      && got.packs[0].useWhen === "use delivered-pack when the lane touches it"
+      && got.omitted.length === 1 && got.omitted[0].id === "left-out-pack"
+      && got.omitted[0].why === "source-unavailable" && got.deliveredBytes === 2048 && got.deliveredAt === at,
+      JSON.stringify(got));
+    // …and the cache behind it is keyed on the ledger's own identity, not on a TTL: a receipt
+    // appended a moment later is visible on the very next read, or the board would show a
+    // session's packs from before its last founding.
+    appendFileSync(`${ROOT}/context-receipts.jsonl`, row(1, branch, "refounded-pack"));
+    const after = await setupOf(1);
+    check("brief: a receipt appended after the first read is seen at once, and the LAST one wins",
+      !!after && after.packs.length === 1 && after.packs[0].id === "refounded-pack",
+      JSON.stringify(after?.packs));
+  }
+
   await runForeignConversations();
 }
 

@@ -1004,8 +1004,9 @@ export async function run(): Promise<void> {
     const pct = (used: number, w: number | null): number | null =>
       w === null ? null : Math.round((used / w) * 1000) / 10;
     const wBig = contextWindowFor("claude-opus-5[1m]");
-    const wSmall = contextWindowFor("claude-opus-5");
-    check("context window: the [1m] suffix is 1M and its plain twin is 200k (same name, different window)",
+    // the 200k side is haiku: bare claude-opus-5 is 1M itself since 2026-09-19 (Claude Code 2.1.278's model table)
+    const wSmall = contextWindowFor("claude-haiku-4-5");
+    check("context window: the [1m] suffix is 1M and a 200k model is 200k (same tokens, different window)",
       wBig === CONTEXT_WINDOW_1M && wSmall === CONTEXT_WINDOW_BASE && CONTEXT_WINDOW_1M === 1_000_000
       && CONTEXT_WINDOW_BASE === 200_000, JSON.stringify({ wBig, wSmall }));
     // the whole point, stated as the assertion: ONE token count, TWO percentages
@@ -1037,11 +1038,13 @@ export async function run(): Promise<void> {
       contextWindowFor("claude-opus-9") === null && contextWindowFor("claude-nonesuch-1") === null
       && contextWindowFor("claude-") === null,
       JSON.stringify([contextWindowFor("claude-opus-9"), contextWindowFor("claude-nonesuch-1")]));
-    check("context window: the named 200k models still read 200k (the table moved nobody)",
-      contextWindowFor("claude-opus-5") === CONTEXT_WINDOW_BASE
-      && contextWindowFor("claude-sonnet-5") === CONTEXT_WINDOW_BASE
+    // bare claude-opus-5/claude-sonnet-5 are 1M by Claude Code 2.1.278's own model table (window:1e6,
+    // native_1m, read 2026-09-19); the old 200k rows published a bare-id session ~5x too full.
+    check("context window: bare claude-opus-5/claude-sonnet-5 are 1M, haiku stays 200k",
+      contextWindowFor("claude-opus-5") === CONTEXT_WINDOW_1M
+      && contextWindowFor("claude-sonnet-5") === CONTEXT_WINDOW_1M
       && contextWindowFor("claude-haiku-4-5") === CONTEXT_WINDOW_BASE,
-      JSON.stringify([contextWindowFor("claude-sonnet-5"), contextWindowFor("claude-haiku-4-5")]));
+      JSON.stringify([contextWindowFor("claude-opus-5"), contextWindowFor("claude-sonnet-5"), contextWindowFor("claude-haiku-4-5")]));
     // the bare-alias DECISION, written out: `fable` is carried literally by the standing supervisor
     // slot and is named, because an alias resolves inside ONE family and every Fable is 1M. The
     // other bare aliases are NOT named, because their families hold both windows and the alias says
@@ -1055,17 +1058,18 @@ export async function run(): Promise<void> {
     // the named set, and the set did not name it. The trap this family pins is the OBVIOUS repair —
     // strip the provider prefix and look up the rest — because the stripped id is a DIFFERENT window:
     // the bridge hands Claude Code `claude-opus-5[1m]` (pi-claude-bridge 0.6.3, src/models.ts
-    // resolveClaudeCodeRuntimeModel), while bare `claude-opus-5` is the 200k tier pinned above. ---
+    // resolveClaudeCodeRuntimeModel). Bare `claude-opus-5` reads 1M too since 2026-09-19, but on
+    // Claude Code's own table — the bridge row must stand as a whole name regardless. ---
     const BRIDGE_USED = 130_000; // the fill that footer read as 13.0% of 1.0M; it prints no token count
-    check("context window: the bridge id is 1M as a WHOLE name, while its stripped twin is still 200k",
+    check("context window: the bridge id is 1M as a WHOLE name, and its stripped twin agrees since 2026-09-19",
       contextWindowFor("claude-bridge/claude-opus-5") === CONTEXT_WINDOW_1M
-      && contextWindowFor("claude-opus-5") === CONTEXT_WINDOW_BASE,
+      && contextWindowFor("claude-opus-5") === CONTEXT_WINDOW_1M,
       JSON.stringify([contextWindowFor("claude-bridge/claude-opus-5"), contextWindowFor("claude-opus-5")]));
-    check("context fill: the bridge's measured 13.0% is what a stripped prefix would have published as 65.0%",
+    check("context fill: the bridge's measured 13.0% is what a 200k denominator would have published as 65.0%",
       pct(BRIDGE_USED, contextWindowFor("claude-bridge/claude-opus-5")) === 13
-      && pct(BRIDGE_USED, contextWindowFor("claude-opus-5")) === 65,
+      && pct(BRIDGE_USED, CONTEXT_WINDOW_BASE) === 65,
       JSON.stringify({ whole: pct(BRIDGE_USED, contextWindowFor("claude-bridge/claude-opus-5")),
-        stripped: pct(BRIDGE_USED, contextWindowFor("claude-opus-5")) }));
+        base: pct(BRIDGE_USED, CONTEXT_WINDOW_BASE) }));
     // the counter-probe, and it is the one that goes red if the 200k fallback is ever reinstated:
     // the bridge's OTHER ids stay null. `claude-haiku-4-5` behind the bridge really is a 200k model
     // and STILL reads null — an unmeasured row is not a row, and 200k is never an answer this

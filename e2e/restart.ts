@@ -808,7 +808,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // is written after the restart (its cwd is only known from the API).
   // PER RUN, never a constant — see newPlantedSid above for what a constant here cost.
   const PLANTED_SID = newPlantedSid();
-  const PLANTED_MODEL = "claude-sonnet-5"; // no [1m] suffix → a 200k window, unlike the fleet default
+  const PLANTED_MODEL = "claude-haiku-4-5"; // a 200k window, unlike the fleet default (bare claude-sonnet-5 is 1M since 2026-09-19)
   {
     const stFile = `${ROOT}/fleet.json`;
     let st: { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string }> } | null = null;

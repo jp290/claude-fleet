@@ -281,7 +281,10 @@ Ansicht leer. `/api/harnesses` veröffentlicht `supports.chat = transcript || co
 der 💬-Knopf. pi-ox, pi-unfenced und container haben keinen Leser. Die Payload trägt für diese Leser
 `cache: {at, provider}` (codex: neueste `token_usage_record`, pi: `message.timestamp` der neuesten
 Assistant-Zeile); der Client misst gegen gemessene Schwellen (`src/client.ts#cacheTtlFor`: z.ai 15 min,
-codex 1 h, Claude unverändert 5 min; unbekannter Provider → kein Zähler).
+codex 1 h, Claude unverändert 5 min; unbekannter Provider → kein Zähler). Der Zähler steht nur, solange die Session
+ruht (Pane malt seit ≥ 4 s nicht, `src/client.ts#CACHE_BUSY_MS`). Jede Payload trägt zudem `model`
+(Claude: `message.model` der neuesten Assistant-Zeile, codex: `turn_context`, pi: Assistant-`model`);
+der Composer zeigt es, wo der Slot-Datensatz kein Modell nennt.
 
 ### `pi-ox`: festes, derzeit anonym erreichbares Ox-Alpha-Profil in Pi
 

@@ -21,6 +21,9 @@ export interface ConversationRead {
   // to another branch of the tree). Empty for a linear file.
   branch: string;
   cache: CacheRef | null;
+  // the model the newest request ran on, as the file names it (codex turn_context, pi assistant
+  // message) — the composer shows it where the slot record names none
+  model: string | null;
   // lines the reader could use: a torn LAST line (mid-append) is left out so the next poll re-reads it
   total: number;
 }
@@ -55,9 +58,14 @@ export function readCodexRollout(lines: string[]): ConversationRead {
   const { rows, total } = parseLines(lines);
   const entries: TEntry[] = [];
   let cache: CacheRef | null = null;
+  let model: string | null = null;
   rows.forEach((row, i) => {
     if (!row) return;
     const ts = str(row.timestamp) || null;
+    if (row.type === "turn_context") {
+      model = str((row.payload as { model?: unknown } | undefined)?.model) || model;
+      return;
+    }
     if (row.type === "token_usage_record") {
       const at = ts ? Date.parse(ts) : NaN;
       if (Number.isFinite(at)) cache = { at, provider: "openai" };
@@ -87,7 +95,7 @@ export function readCodexRollout(lines: string[]): ConversationRead {
       entries.push({ n, role: "assistant", ts, blocks: [{ t: "tool_result", text: trim(text, 3000) }] });
     }
   });
-  return { entries, branch: "", cache, total };
+  return { entries, branch: "", cache, model, total };
 }
 
 // --- pi session ---------------------------------------------------------------------------------
@@ -119,6 +127,7 @@ export function readPiSession(lines: string[]): ConversationRead {
   }
   const entries: TEntry[] = [];
   let cache: CacheRef | null = null;
+  let model: string | null = null;
   rows.forEach((row, i) => {
     if (!row || row.type !== "message" || !onPath.has(str(row.id))) return;
     const m = (row.message ?? {}) as Record<string, unknown>;
@@ -141,10 +150,11 @@ export function readPiSession(lines: string[]): ConversationRead {
       if (blocks.length) entries.push({ n, role: "assistant", ts, blocks });
       const at = typeof m.timestamp === "number" ? m.timestamp : ts ? Date.parse(ts) : NaN;
       if (Number.isFinite(at)) cache = { at, provider: str(m.provider) };
+      model = str(m.model) || model;
     } else if (m.role === "toolResult") {
       const text = parts.map((b) => (b.type === "text" ? str(b.text) : "")).filter(Boolean).join("\n");
       entries.push({ n, role: "assistant", ts, blocks: [{ t: "tool_result", text: trim(text, 3000) }] });
     }
   });
-  return { entries, branch, cache, total };
+  return { entries, branch, cache, model, total };
 }

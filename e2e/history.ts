@@ -279,7 +279,7 @@ export async function run(): Promise<void> {
 // small fixture per format, each with its counter-probe: a FOREIGN session in the same cwd, written
 // newer, is not what the slot shows.
 interface ConvPayload { entries: { n: number; role: string; blocks: { t: string; text: string }[] }[];
-  total: number; source: string | null; cache?: { at: number; provider: string } | null }
+  total: number; source: string | null; cache?: { at: number; provider: string } | null; model?: string | null }
 const persistedSlot = (slot: number): { sessionId?: string | null } | undefined =>
   (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
     { slots?: Record<string, { sessionId?: string | null }> }).slots?.[String(slot)];
@@ -324,7 +324,7 @@ async function runForeignConversations(): Promise<void> {
       + msg("c", "r", "user", [{ type: "text", text: "ABANDONED branch" }])
       + msg("d", "c", "assistant", [{ type: "text", text: "ABANDONED answer" }], { provider: "zai", timestamp: T0 + 2000 })
       + msg("e", "r", "user", [{ type: "text", text: "question E" }])
-      + msg("f", "e", "assistant", [{ type: "thinking", thinking: "hmm" }, { type: "text", text: "answer F" }], { provider: "zai", timestamp: T0 + 3000 }));
+      + msg("f", "e", "assistant", [{ type: "thinking", thinking: "hmm" }, { type: "text", text: "answer F" }], { provider: "zai", model: "glm-5.3-flash", timestamp: T0 + 3000 }));
     // the counter-probe: a newer foreign session, same cwd, same directory, another id
     const foreignSid = "30000000-0000-4000-8000-00000000000f";
     writeFileSync(`${dir}/2026-09-19T11-00-00-000Z_${foreignSid}.jsonl`,
@@ -337,8 +337,8 @@ async function runForeignConversations(): Promise<void> {
       JSON.stringify(flat(p1)));
     check("pi conversation: the slot's OWN file is served — the newer foreign session in the same cwd is not",
       (p1.source ?? "").startsWith(`2026-09-19T10-00-00-000Z_${sid}.jsonl`) && !JSON.stringify(p1).includes("FOREIGN"), `source=${p1.source}`);
-    check("pi conversation: the cache reference is the newest path assistant's request start, provider zai",
-      p1.cache?.at === T0 + 3000 && p1.cache?.provider === "zai", JSON.stringify(p1.cache));
+    check("pi conversation: the cache reference is the newest path assistant's request start, provider zai, and its model",
+      p1.cache?.at === T0 + 3000 && p1.cache?.provider === "zai" && p1.model === "glm-5.3-flash", JSON.stringify([p1.cache, p1.model]));
     const p2 = (await (await get(`/api/slots/${piSlot}/transcript?after=${p1.total}`)).json()) as ConvPayload;
     check("pi conversation: an incremental fetch with nothing appended is empty and keeps the source",
       p2.entries.length === 0 && p2.total === p1.total && p2.source === p1.source, JSON.stringify(p2).slice(0, 200));
@@ -381,6 +381,7 @@ async function runForeignConversations(): Promise<void> {
     const item = (payload: Record<string, unknown>) => `${JSON.stringify({ timestamp: "2026-09-19T12:00:00.000Z", type: "response_item", payload })}\n`;
     writeFileSync(rollout, `${JSON.stringify({ type: "session_meta", payload: {
       id: ID, cwd: codexCwd, timestamp: new Date().toISOString(), thread_source: "user", originator: "codex-tui" } })}\n`
+      + `${JSON.stringify({ timestamp: "2026-09-19T12:00:00.000Z", type: "turn_context", payload: { model: "gpt-5.5" } })}\n`
       + item({ type: "message", role: "developer", content: [{ type: "input_text", text: "<permissions>DEVELOPER</permissions>" }] })
       + item({ type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions\nINJECTED" }] })
       + item({ type: "message", role: "user", content: [{ type: "input_text", text: "hello codex" }] })
@@ -406,8 +407,8 @@ async function runForeignConversations(): Promise<void> {
           ["assistant", `tool:{"cmd":"ls"}`], ["assistant", "tool_result:a.txt"]]), JSON.stringify(flat(c1)));
       check("codex conversation: the bound rollout is served — the newer foreign one in the same cwd is not",
         c1.source === rollout.split("/").pop() && !JSON.stringify(c1).includes("FOREIGN"), `source=${c1.source}`);
-      check("codex conversation: the cache reference is the newest token_usage_record, provider openai",
-        c1.cache?.at === Date.parse(TU) && c1.cache?.provider === "openai", JSON.stringify(c1.cache));
+      check("codex conversation: the cache reference is the newest token_usage_record, provider openai; model from turn_context",
+        c1.cache?.at === Date.parse(TU) && c1.cache?.provider === "openai" && c1.model === "gpt-5.5", JSON.stringify([c1.cache, c1.model]));
       rmSync(foreign, { force: true });
     }
     await post(`/api/slots/${cxSlot}/kill`, {});

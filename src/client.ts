@@ -604,6 +604,9 @@ class Pane {
   // the TTL the counter measures against, named by the conversation source: Claude's 5 min, or
   // the provider a codex/pi file names (cacheTtlFor). null = a provider nobody measured → no counter.
   cacheTtl: number | null = CACHE_TTL_MS;
+  // the model the conversation's newest request ran on, as its file names it (transcript payload
+  // `model`); null until the chat view has read one
+  observedModel: string | null = null;
   private chatSource: string | null = null;
   private chatTimer: ReturnType<typeof setTimeout> | undefined;
   private chatBusy = false;
@@ -820,6 +823,7 @@ class Pane {
     this.chatTotal = 0;
     this.lastTurnAt = 0;
     this.cacheTtl = CACHE_TTL_MS;
+    this.observedModel = null;
     this.chatSource = null;
     this.toolGroup = null;
     this.notifGroup = null;
@@ -960,7 +964,7 @@ class Pane {
       if (this.slot !== slot) return; // reassigned during the fetch — this response is stale
       if (!res.ok) return;
       const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null;
-        cache?: { at: number; provider: string } | null };
+        cache?: { at: number; provider: string } | null; model?: string | null };
       if (this.slot !== slot) return; // reassigned during json() — still stale
       // the slot's active transcript changed (fresh claude after a self-heal, or a better
       // pinned file appeared) — start over from the top of the new file
@@ -1001,6 +1005,10 @@ class Pane {
         if (data.cache && data.cache.at > this.lastTurnAt) this.lastTurnAt = data.cache.at;
         this.cacheTtl = data.cache ? cacheTtlFor(data.cache.provider) : this.cacheTtl;
         tickCacheAge();
+      }
+      if (data.model !== undefined && data.model !== this.observedModel) {
+        this.observedModel = data.model;
+        if (focused === this.index) renderComposerOpts(false);
       }
       this.chatTotal = data.total;
     } catch {
@@ -3589,7 +3597,7 @@ function renderComposerOpts(force: boolean): void {
   const slot = pane?.slot && (pane.isChat || (sup && !canChatOn(sup))) ? pane.slot : 0;
   const h = slot ? harnessEntry(slot) : null;
   const s = fleet.find((x) => x.id === slot);
-  const key = [slot, h?.id ?? "", s?.model ?? "", s?.effort ?? "", defaultModel ?? ""].join("|");
+  const key = [slot, h?.id ?? "", s?.model ?? "", s?.effort ?? "", defaultModel ?? "", pane?.observedModel ?? ""].join("|");
   if (!force && key === optsKey) return;
   optsKey = key;
   // a pick staged for one session must never be applied to the next one the focus lands on
@@ -3604,7 +3612,9 @@ function renderComposerOpts(force: boolean): void {
     const current = s?.model ?? "";
     // an unpinned slot runs the fleet default only where the server bakes it in (the default
     // harness, server.ts#DEFAULT_MODEL); elsewhere the harness picks, and the client cannot know
-    const shown = current || (h.default && defaultModel ? defaultModel : "—");
+    // ...and where the record names none, the model the transcript's newest turn actually ran on
+    // comes before that guess (Pane.observedModel — a hand-started or adopted session)
+    const shown = current || pane?.observedModel || (h.default && defaultModel ? defaultModel : "—");
     const mark = harnessMark(h.id);
     compOpts.appendChild(optSwitch("model", slot, current, shown, mark ? [el("span", "optmark")] : [], (stage) => {
       const input = document.createElement("input");
@@ -3645,7 +3655,10 @@ function renderComposerOpts(force: boolean): void {
         input.closest(".optpop")?.querySelector<HTMLButtonElement>(".cmdapply")?.focus();
       });
       return { list: list.childElementCount ? list : undefined, row: [input] };
-    }, mark, modelLabel));
+    // on a phone the switch carries the name alone — with the counter, the mark and the effort
+    // beside it, "GPT-5.5 · 272K" ellipsized to "GP…" at 390px (seventeenth cut); the popover
+    // list keeps the window
+    }, mark, (v) => (isMobile() ? modelLabel(v).split(" · ")[0] : modelLabel(v))));
   }
   if (h.supports.effort && h.effortLevels.length) {
     const current = s?.effort ?? "";

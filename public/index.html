@@ -198,8 +198,12 @@
     --chat-col: 780px; }
   .chatflakes { position: absolute; inset: 0; width: 100%; height: 100%; display: none; pointer-events: none; z-index: 0; }
   .pane.chat .chatflakes { display: block; }
+  /* top 44px: the first message starts below the pane's button row (↻ ℹ 💬 at 8–34px); right at
+     least 52px: the rail (💬 ↑ ↓ Aa, right 10px + 30px) never sits on a bubble — on a phone or a
+     split pane the column used to run under it (seventeenth cut, 390px: column to 369, rail 347–377) */
   .panechat { position: absolute; inset: 0; z-index: 1; display: none; overflow-y: auto;
-    padding: 20px max(18px, calc((100% - var(--chat-col)) / 2)) 24px; scrollbar-gutter: stable;
+    padding: 44px max(52px, calc((100% - var(--chat-col)) / 2)) 24px max(18px, calc((100% - var(--chat-col)) / 2));
+    scrollbar-gutter: stable;
     font-family: var(--chat-sans); font-size: var(--chat-fs); line-height: 1.65; color: var(--chat-prose);
     -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
   .pane.chat .paneterm { visibility: hidden; }
@@ -1722,6 +1726,17 @@
     /* 16px keeps iOS from zooming on focus — in BOTH composer sizes */
     #comp.bar #input, #comp.tall #input { font-size: 16px; }
     #comp.bar #input { min-height: 26px; max-height: 110px; }
+    /* the model/effort popovers anchor to the whole surface, not to their small switch: right-
+       aligned to a switch they reached past the screen's left edge and cut off the first model and
+       "low" (seventeenth cut, measured at 390px: x −17 … −65) */
+    #compsurface { position: relative; }
+    #comp .optswrap { position: static; }
+    #comp .optpop { left: 0; right: 0; width: auto; }
+    #comp .cmdlevels, #comp .cmdrow { flex-wrap: wrap; }
+    #comp .cmdinput { flex: 1; width: auto; }
+    /* no chevrons and tighter sides in the row: the model name needs the room ("GPT-5.5" was "GP…") */
+    #comp .optchev { display: none; }
+    #comp .optsw { padding: 0 8px; }
     #comp.bar #send, #comp.bar #dropbtn, #comp.tall #send, #comp.tall #dropbtn { width: 40px; height: 40px; }
     /* the tray entries carry labels now: finger height, natural width, scroll instead of overlap */
     #comptray { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }

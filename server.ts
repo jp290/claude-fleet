@@ -15216,7 +15216,7 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
 // reader — `after` = line count the client has already consumed, so entry numbering
 // must be absolute line numbers
 async function transcriptPayload(s: Slot, afterRaw: number):
-  Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"] }> {
+  Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"]; model?: string | null }> {
   const conv = harnessOf(s.harness).conversation;
   if (conv) return conversationPayload(s, conv, afterRaw);
   const file = transcriptFile(s);
@@ -15224,6 +15224,7 @@ async function transcriptPayload(s: Slot, afterRaw: number):
   const lines = (await Bun.file(file).text()).split("\n").filter((l) => l.trim() !== "");
   const after = Math.max(0, afterRaw | 0);
   const entries: TEntry[] = [];
+  const model = transcriptModel(lines);
   for (let i = after; i < lines.length; i++) {
     try {
       const e = viewEntry(JSON.parse(lines[i]), i + 1);
@@ -15232,10 +15233,26 @@ async function transcriptPayload(s: Slot, afterRaw: number):
       // only the FINAL line may be a partial mid-append (cap total so the next poll
       // re-reads it once complete) — an unparseable line mid-file is just skipped,
       // otherwise it would pin total forever and loop the client on the same range
-      if (i === lines.length - 1) return { entries, total: i, source: file.split("/").pop() ?? null };
+      if (i === lines.length - 1) return { entries, total: i, source: file.split("/").pop() ?? null, model };
     }
   }
-  return { entries, total: lines.length, source: file.split("/").pop() ?? null };
+  return { entries, total: lines.length, source: file.split("/").pop() ?? null, model };
+}
+
+// the model the conversation's newest assistant turn ran on (Claude writes message.model on every
+// assistant line; "<synthetic>" marks a locally made error turn, not a model). The composer shows
+// it where the slot record names no model — a hand-started or adopted session, which the fleet
+// default would otherwise mislabel (seventeenth cut: slot 5 ran Haiku 4.5, the switch said Opus 5).
+function transcriptModel(lines: string[]): string | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"assistant"') || !lines[i].includes('"model"')) continue;
+    try {
+      const d = JSON.parse(lines[i]) as { type?: unknown; message?: { model?: unknown } };
+      const m = d.message?.model;
+      if (d.type === "assistant" && typeof m === "string" && m && m !== "<synthetic>") return m;
+    } catch { /* a torn last line — keep walking back */ }
+  }
+  return null;
 }
 
 // codex / pi: the whole file is parsed (pi's tree needs every parentId), so an unchanged file is
@@ -15244,11 +15261,11 @@ async function transcriptPayload(s: Slot, afterRaw: number):
 // conversations are open at once, and a miss costs one read).
 const conversationCache = new Map<string, { size: number; mtime: number; read: ConversationRead }>();
 async function conversationPayload(s: Slot, conv: NonNullable<Harness["conversation"]>, afterRaw: number):
-  Promise<{ entries: TEntry[]; total: number; source: string | null; cache: ConversationRead["cache"] }> {
+  Promise<{ entries: TEntry[]; total: number; source: string | null; cache: ConversationRead["cache"]; model: string | null }> {
   const file = s.cwd && s.sessionId ? conv.file({ cwd: s.cwd, sessionId: s.sessionId }) : null;
-  if (!file) return { entries: [], total: 0, source: null, cache: null };
+  if (!file) return { entries: [], total: 0, source: null, cache: null, model: null };
   let st: { size: number; mtimeMs: number };
-  try { st = statSync(file); } catch { return { entries: [], total: 0, source: null, cache: null }; }
+  try { st = statSync(file); } catch { return { entries: [], total: 0, source: null, cache: null, model: null }; }
   let hit = conversationCache.get(file);
   if (!hit || hit.size !== st.size || hit.mtime !== st.mtimeMs) {
     const lines = (await Bun.file(file).text()).split("\n").filter((l) => l.trim() !== "");
@@ -15261,7 +15278,7 @@ async function conversationPayload(s: Slot, conv: NonNullable<Harness["conversat
   // the branch rides in `source`: when pi's leaf moves to another branch the client's consumed
   // lines are no longer the conversation, and a changed source is how it learns to start over
   const source = (file.split("/").pop() ?? "") + (read.branch ? `#${read.branch}` : "");
-  return { entries: read.entries.filter((e) => e.n > after), total: read.total, source, cache: read.cache };
+  return { entries: read.entries.filter((e) => e.n > after), total: read.total, source, cache: read.cache, model: read.model };
 }
 
 // --- terminal-prompt harvester: prompts typed DIRECTLY into the pty never pass /send,

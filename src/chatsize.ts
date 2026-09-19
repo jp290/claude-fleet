@@ -1,27 +1,34 @@
-// The conversation view's three text sizes — prose, code, and the surface around them (meta rows,
+// The conversation view's three text sizes (and, since the fifteenth cut, its column width) — prose, code, and the surface around them (meta rows,
 // step summaries, buttons). Three independent px variables rather than one zoom, the t3code
 // appearance model: code usually wants to stay a step smaller than prose, and scaling the chrome
 // with the prose makes a large reading size feel like a toy. Set on :root, so every pane follows.
 
-export type SizeKey = "text" | "code" | "ui";
+// The fourth variable is the column (owner, fifteenth cut): the transcript's and the composer's
+// max width. Its top stop is FULL — no cap, the column fills the pane (the padding keeps 18px).
+export type SizeKey = "text" | "code" | "ui" | "width";
 
-export const SIZE_SPEC: Record<SizeKey, { label: string; min: number; max: number; def: number; v: string }> = {
-  text: { label: "Text", min: 11, max: 24, def: 14, v: "--chat-fs" },
-  code: { label: "Code", min: 10, max: 22, def: 12.5, v: "--chat-code-fs" },
-  ui: { label: "Oberfläche", min: 9, max: 16, def: 11, v: "--chat-ui-fs" },
+export const SIZE_SPEC: Record<SizeKey, { label: string; min: number; max: number; def: number; step: number; v: string }> = {
+  text: { label: "Text", min: 11, max: 24, def: 14, step: 0.5, v: "--chat-fs" },
+  code: { label: "Code", min: 10, max: 22, def: 12.5, step: 0.5, v: "--chat-code-fs" },
+  ui: { label: "Oberfläche", min: 9, max: 16, def: 11, step: 0.5, v: "--chat-ui-fs" },
+  width: { label: "Breite", min: 600, max: 1640, def: 780, step: 20, v: "--chat-col" },
 };
+export const COLUMN_FULL = SIZE_SPEC.width.max;
+const cssValue = (k: SizeKey, n: number): string => (k === "width" && n >= COLUMN_FULL ? "100000px" : `${n}px`);
+const shown = (k: SizeKey, n: number): string => (k === "width" && n >= COLUMN_FULL ? "voll" : `${n}px`);
 
 const KEY = "fleet.chatsize";
 const KEYS = Object.keys(SIZE_SPEC) as SizeKey[];
 
-let sizes: Record<SizeKey, number> = { text: SIZE_SPEC.text.def, code: SIZE_SPEC.code.def, ui: SIZE_SPEC.ui.def };
+const DEFAULTS: Record<SizeKey, number> = { text: SIZE_SPEC.text.def, code: SIZE_SPEC.code.def, ui: SIZE_SPEC.ui.def, width: SIZE_SPEC.width.def };
+let sizes: Record<SizeKey, number> = { ...DEFAULTS };
 const listeners = new Set<() => void>();
 
 const clamp = (k: SizeKey, n: number): number =>
-  Math.round(Math.min(SIZE_SPEC[k].max, Math.max(SIZE_SPEC[k].min, n)) * 2) / 2;
+  Math.round(Math.min(SIZE_SPEC[k].max, Math.max(SIZE_SPEC[k].min, n)) / SIZE_SPEC[k].step) * SIZE_SPEC[k].step;
 
 function apply(): void {
-  for (const k of KEYS) document.documentElement.style.setProperty(SIZE_SPEC[k].v, `${sizes[k]}px`);
+  for (const k of KEYS) document.documentElement.style.setProperty(SIZE_SPEC[k].v, cssValue(k, sizes[k]));
   for (const l of listeners) l();
 }
 
@@ -49,11 +56,12 @@ export function setChatSize(k: SizeKey, n: number): void {
   save();
 }
 
-// Ctrl/Cmd +/− move all three together by one step, each inside its own range; 0 resets
+// Ctrl/Cmd +/− move the three TEXT sizes together by one step, each inside its own range (the
+// column stays where it is); 0 resets all four
 export function stepChatSizes(dir: -1 | 0 | 1): void {
   sizes = dir === 0
-    ? { text: SIZE_SPEC.text.def, code: SIZE_SPEC.code.def, ui: SIZE_SPEC.ui.def }
-    : { text: clamp("text", sizes.text + dir), code: clamp("code", sizes.code + dir), ui: clamp("ui", sizes.ui + dir * 0.5) };
+    ? { ...DEFAULTS }
+    : { ...sizes, text: clamp("text", sizes.text + dir), code: clamp("code", sizes.code + dir), ui: clamp("ui", sizes.ui + dir * 0.5) };
   apply();
   save();
 }
@@ -75,7 +83,7 @@ export function sizePanel(): HTMLElement {
     input.type = "range";
     input.min = String(spec.min);
     input.max = String(spec.max);
-    input.step = "0.5";
+    input.step = String(spec.step);
     const val = document.createElement("span");
     val.className = "sizeval";
     input.addEventListener("input", () => setChatSize(k, Number(input.value)));
@@ -85,7 +93,7 @@ export function sizePanel(): HTMLElement {
   const sync = () => {
     for (const r of rows) {
       r.input.value = String(sizes[r.k]);
-      r.val.textContent = `${sizes[r.k]}px`;
+      r.val.textContent = shown(r.k, sizes[r.k]);
     }
   };
   listeners.add(sync);
@@ -93,7 +101,7 @@ export function sizePanel(): HTMLElement {
   const reset = document.createElement("button");
   reset.className = "sizereset";
   reset.textContent = "Standard";
-  reset.title = "Standardgrößen (Strg/⌘ 0)";
+  reset.title = "Standardgrößen und -breite (Strg/⌘ 0)";
   reset.addEventListener("click", () => stepChatSizes(0));
   const hint = document.createElement("div");
   hint.className = "sizehint";

@@ -393,11 +393,24 @@ function harnessEntry(slot: number): HarnessInfo | null {
 // pane, `/model <id>` in the pane moves the agent and never touches the record. So the move is
 // always a pair, record first — and if the record refuses the value (the adapter's modelRe), the
 // pane is deliberately NOT typed into: a rejected value must not reach the agent by the back door.
+//
+// Only Claude Code takes `/model <id>` and `/effort <level>` as commands. Measured in the fifteenth
+// cut against real panes: codex has no such command, so the typed line went to the model as a
+// PROMPT; pi opens its own picker on it ("No matching models") and waits. For every other harness
+// the pane half is therefore a RESTART (POST /api/slots/:id/restart), which respawns the pane from
+// the record and resumes the pinned conversation. The owner is asked first (it stops running work).
+const switchesInPane = (h: HarnessInfo | null): boolean => h?.id === "claude";
 async function setSlotSetting(slot: number, field: "model" | "effort", value: string): Promise<string> {
   const rec = await post(`/api/slots/${slot}/model`, { [field]: value });
   if (!rec.ok) {
     const why = ((await rec.json().catch(() => null)) as { error?: string } | null)?.error ?? `HTTP ${rec.status}`;
     return `record ✗ ${why} — pane not touched`;
+  }
+  if (!switchesInPane(harnessEntry(slot))) {
+    const r = await post(`/api/slots/${slot}/restart`, {});
+    const j = (await r.json().catch(() => null)) as { resumed?: boolean; error?: string } | null;
+    if (!r.ok) return `record ✓ · restart ✗ ${j?.error ?? `HTTP ${r.status}`} — the pane still runs the old ${field}`;
+    return `${field} ${value} — record ✓ · pane restarted${j?.resumed ? ", conversation resumed" : " FRESH (the conversation could not be resumed)"}`;
   }
   const paneOk = await deliver(slot, `/${field} ${value}`);
   return paneOk ? `${field} ${value} — record ✓ · pane ✓` : `record ✓ · pane ✗ — type /${field} ${value} yourself`;
@@ -430,6 +443,12 @@ interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string
 interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[]; meta?: boolean }
 
 // markdown rendering shared with the guest reader — see src/md.ts
+
+// Claude Code (2.1.278) stores a pasted prompt — every composer send is one — wrapped as
+// <pasted_content id="x">…</pasted_content id="x">. The bubble shows what you wrote, so only a
+// wrapper whose closing id matches its opening one is taken off; the text inside stays verbatim.
+const PASTED_RE = /<pasted_content id="([^"]+)">\n?([\s\S]*?)\n?<\/pasted_content id="\1">/g;
+const unwrapPasted = (text: string): string => text.replace(PASTED_RE, "$2");
 
 const fmtClock = (ts: string | null) =>
   ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
@@ -864,14 +883,15 @@ class Pane {
     for (const b of e.blocks) {
       if (b.t === "text") {
         this.toolGroup = null; // a message ends the current work block
+        const text = e.role === "user" ? unwrapPasted(b.text) : b.text;
         const msg = el("div", `msg ${e.role}`);
         const body = el("div", "mbody");
-        mdInto(body, b.text, { entity: entityKnown });
+        mdInto(body, text, { entity: entityKnown });
         for (const code of body.querySelectorAll<HTMLElement>(".code")) decorateCode(code);
         const meta = el("div", "mmeta");
         const who = e.role === "user" ? "you" : "claude";
         meta.appendChild(el("span", "mwho", e.ts ? `${who} · ${fmtClock(e.ts)}` : who));
-        meta.appendChild(copyButton("copy", "copy this message as Markdown", () => b.text));
+        meta.appendChild(copyButton("copy", "copy this message as Markdown", () => text));
         msg.append(body, meta);
         this.chatEl.appendChild(msg);
       } else {
@@ -937,7 +957,12 @@ class Pane {
         const pinned = this.chatEl.scrollTop + this.chatEl.clientHeight >= this.chatEl.scrollHeight - 120;
         for (const e of data.entries) {
           this.appendEntry(e);
-          const at = e.ts ? Date.parse(e.ts) : NaN;
+          // the cache counter's reference is the last API REQUEST, and a request starts right
+          // after a prompt (a user entry) or a tool result — the agent's own text and tool calls
+          // are the response to it, not a new read of the cache (fifteenth cut, measured: counting
+          // every entry reset the counter up to 3× per tool turn)
+          const startsRequest = e.role === "user" || e.blocks.some((b) => b.t === "tool_result");
+          const at = startsRequest && e.ts ? Date.parse(e.ts) : NaN;
           if (at > this.lastTurnAt) this.lastTurnAt = at;
         }
         tickCacheAge();
@@ -3456,7 +3481,8 @@ function setModelWarnOff(): void {
 }
 
 // THE CACHE COUNTER (owner, twelfth cut: "seit der letzten Nachricht … ob der Cache noch warm sein
-// dürfte", threshold 5 min). Reference = the newest transcript entry's own timestamp (Pane.lastTurnAt,
+// dürfte", threshold 5 min; fifteenth cut: "seit dem letzten API-Request"). Reference = the newest
+// transcript entry that STARTS a request — a prompt or a tool result — by its own timestamp (Pane.lastTurnAt,
 // from the transcript poll the conversation view already runs, or the owner's own send, whichever
 // is newer) — not lastOutput, which moves with any byte the pane paints. Both are read on the
 // SERVER's clock (serverClock): the timestamps are written there, the viewer may be a phone. What the TTL of a given session IS stays unmeasured: Claude Code's own
@@ -3475,7 +3501,10 @@ const fmtAge = (ms: number): string => {
 // the server's clock now — transcript timestamps and a send stamped here are both in its frame
 const serverClock = (): number => Date.now() + serverClockSkew;
 function cacheAge(): number | null {
-  const at = panes[focused]?.lastTurnAt ?? 0;
+  const p = panes[focused];
+  // codex and pi write no transcript this board reads: there is no reference point, so no counter
+  if (!p?.slot || !harnessEntry(p.slot)?.supports.transcript) return null;
+  const at = p.lastTurnAt;
   return at ? Math.max(0, serverClock() - at) : null;
 }
 function tickCacheAge(): void {
@@ -3494,7 +3523,9 @@ setInterval(() => { if (!document.hidden) tickCacheAge(); }, 1000);
 
 function renderComposerOpts(force: boolean): void {
   const pane = panes[focused];
-  const slot = pane?.isChat ? pane.slot : 0;
+  // the switches live in the conversation view — or, for a harness that HAS none (no transcript:
+  // pi, codex), in the terminal view, its only one (fifteenth cut: pi had no switch anywhere)
+  const slot = pane?.slot && (pane.isChat || harnessEntry(pane.slot)?.supports.transcript === false) ? pane.slot : 0;
   const h = slot ? harnessEntry(slot) : null;
   const s = fleet.find((x) => x.id === slot);
   const key = [slot, h?.id ?? "", s?.model ?? "", s?.effort ?? "", defaultModel ?? ""].join("|");
@@ -3510,7 +3541,9 @@ function renderComposerOpts(force: boolean): void {
     compOpts.appendChild(ageEl);
     tickCacheAge();
     const current = s?.model ?? "";
-    const shown = current || (h.default && defaultModel ? defaultModel : "default");
+    // an unpinned slot runs the fleet default only where the server bakes it in (the default
+    // harness, server.ts#DEFAULT_MODEL); elsewhere the harness picks, and the client cannot know
+    const shown = current || (h.default && defaultModel ? defaultModel : "—");
     const mark = harnessMark(h.id);
     compOpts.appendChild(optSwitch("model", slot, current, shown, mark ? [el("span", "optmark")] : [], (stage) => {
       const input = document.createElement("input");
@@ -3589,7 +3622,10 @@ function optSwitch(field: OptField, slot: number, current: string, shown: string
   label: (v: string) => string = (v) => v): HTMLElement {
   const wrap = el("div", `optswrap ${field}`);
   const btn = el("button", "optsw") as HTMLButtonElement;
-  const what = `sets the slot record AND types /${field} into the pane — only when you press Apply`;
+  const inPane = switchesInPane(harnessEntry(slot));
+  const what = inPane
+    ? `sets the slot record AND types /${field} into the pane — only when you press Apply`
+    : `sets the slot record and RESTARTS the pane with it (this harness has no in-session /${field}) — only when you press Apply`;
   const tip = (v: string) => `${mark ? `${harnessEntry(slot)?.id ?? ""} · ` : ""}${field} ${v} — ${what}`;
   if (mark) lead[0]?.appendChild(mark);
   const val = el("span", `optval${field === "effort" ? " dim" : ""}`, label(optStaged[field] ?? shown));
@@ -3620,7 +3656,8 @@ function optSwitch(field: OptField, slot: number, current: string, shown: string
     renderComposerOpts(true); // the popover stays open (optOpen) and shows the verdict
   };
   apply.onclick = () => {
-    if (field === "model" && !modelWarnOff()) {
+    // a restart always asks (it stops whatever runs); the cache question can be switched off
+    if (!inPane || (field === "model" && !modelWarnOff())) {
       optConfirm = true;
       renderComposerOpts(true);
       compOpts.querySelector<HTMLElement>(".optconfirm .cmdcancel")?.focus();
@@ -3628,23 +3665,25 @@ function optSwitch(field: OptField, slot: number, current: string, shown: string
     }
     void run();
   };
-  if (field === "model" && optConfirm && optOpen === field) {
+  if (optConfirm && optOpen === field) {
     // the popover's body gives way to the question; the staged pick stays staged behind it
     const box = el("div", "optconfirm");
     box.setAttribute("role", "alertdialog");
     const ms = cacheAge();
-    box.appendChild(el("div", "cfmsg",
-      "Switching the model drops this session's prompt cache — the next turn re-reads the full context."));
+    box.appendChild(el("div", "cfmsg", inPane
+      ? "Switching the model drops this session's prompt cache — the next turn re-reads the full context."
+      : `${harnessEntry(slot)?.id ?? "This harness"} has no in-session /${field}: Switch restarts the pane with the new ${field} and resumes the conversation. Whatever it is doing right now stops.`));
     if (ms !== null) box.appendChild(el("div", "cfage", `Last message ${fmtAge(ms)} ago${ms >= CACHE_TTL_MS ? " — the cache is probably cold already" : ms >= CACHE_COLD_AT_MS ? " — the cache expires shortly" : ""}.`));
     const opt = el("label", "cfskip");
     const cb = document.createElement("input");
     cb.type = "checkbox";
     opt.append(cb, document.createTextNode("Don't show again"));
+    opt.hidden = !inPane; // a restart is asked every time
     const cancel = el("button", "cmdcancel", "Cancel") as HTMLButtonElement;
     cancel.onclick = () => cancelConfirm();
     const go = el("button", "cmdapply", "Switch") as HTMLButtonElement;
     go.onclick = () => {
-      if (cb.checked) setModelWarnOff();
+      if (inPane && cb.checked) setModelWarnOff();
       optConfirm = false;
       void run();
     };
@@ -5599,22 +5638,8 @@ function openCodexDlg(slot: number) {
   void loadCodexCandidates(slot);
 }
 
-// the pane's own project stripe: same hue as the slot row, painted down the 6px gutter the
-// terminal already leaves free (.paneterm is inset 6px on the left). Deliberately NOT the pane
-// border — that border is the focus signal in split layouts, and a project colour must not be able
-// to imitate or hide "this is the pane you are typing into".
-function paintPaneProjects() {
-  for (const p of panes) {
-    const s = p.slot ? fleet[p.slot - 1] : undefined;
-    p.root.classList.remove("proj");
-    p.root.style.removeProperty("--proj-h");
-    tintProject(p.root, s ? projectOf(s) : null);
-  }
-}
-
 function renderSlots() {
   updateTitle();
-  paintPaneProjects();
   // harness-dependent pane affordances follow the POLL, not just pane assignment: a session
   // started from another device (or another tab) changes what its slot can do, and a 💬 that
   // only re-decides on click would keep offering a conversation view that has nothing behind it.

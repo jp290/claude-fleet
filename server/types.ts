@@ -12,7 +12,7 @@ import { LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_FAIL_NAME_MAX, LANE_SUITE_
   type LaneSuiteWatchEventPayload, HARNESS_BLOCK_DETAIL_MAX, HARNESS_BLOCK_TOOL_MAX,
   type HarnessBlockEventPayload, LANE_REVIEW_FINDINGS_MAX, LANE_REVIEW_TITLE_MAX, LANE_REVIEW_FILE_MAX,
   LANE_REVIEW_NOTES_MAX, type LaneReviewEventPayload } from "../lane-signals";
-import type { RefineValidation } from "../refine-validate";
+import type { BriefReviewArm, BriefReviewKind, RefineValidation } from "../refine-validate";
 import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, type FleetReportStatus,
   type LaneAnchor } from "../src/protocol";
 import type { TaskCluster, TaskFilesOrigin, TaskSurface } from "../task-metadata";
@@ -1291,6 +1291,10 @@ interface Task {
   // touches this row's text — it only parks what it would become here, and the owner's confirm is
   // what mints the children. Propose/promote like `criterion`, for the same reason: the producer
   // must not be the one who rewrites the work order it was measured against.
+  briefReview?: TaskBriefReview; // the COUNTER-READ trial (docs/brief-gegenlese.md): which arm this
+  // row fell into and, on the reviewed arm, the model's PROPOSAL. Written only by the dispatch tick
+  // under FLEET_BRIEF_REVIEW, never by a door; it never touches `brief` or `text`. Absent = the
+  // switch was off, or the row was never eligible (no valid mittel|gross card) when it was started.
   brief?: TaskBrief;       // the compiled work brief — the EXACT bytes a lane will receive.
   // Compiled once per draft by the brief sweep, from then on stored, shown and editable (why it
   // is stored rather than compiled at spawn: server-narrativ-archiv.md#task).
@@ -1511,6 +1515,26 @@ interface TaskCriterionPart { text: string; check?: { cmd: string; expectExit: n
 // empty array means "checked, all tracked" while ABSENCE means the index could not be read at all.
 interface TaskFilesProposal { files: string[]; at: number; by: string; unknownPaths?: string[] }
 
+// The counter-read's record on a row. `arm` and `at` are written together, once, at the first tick
+// that sees the row eligible, and never change: the trial's allocation is a fact, not a state.
+// `state` exists on the reviewed arm only — the control arm has nothing running and nothing to say.
+// `atStart` is what the review's state WAS when the tick handed the row to a lane: the one fact the
+// evaluation needs to tell "reviewed and read" from "reviewed, but the budget ran out first".
+// `findings` + `brief` are the PROPOSAL; `brief` never replaces Task.brief (least of all by:owner),
+// and an empty string means the reviewer found nothing to rewrite.
+interface BriefReviewFinding { kind: BriefReviewKind; text: string; evidence: string }
+interface TaskBriefReview {
+  arm: BriefReviewArm;
+  at: number;
+  size: "mittel" | "gross";
+  state?: "running" | "done" | "failed";
+  model?: string;
+  doneAt?: number;
+  error?: string;
+  findings?: BriefReviewFinding[];
+  brief?: string;
+  atStart?: "running" | "done" | "failed";
+}
 // One compiled child. `text` is the request in its own words; the other three are what a hand-
 // written brief carries and a raw task usually does not. They are stored SEPARATELY rather than
 // pre-joined so the proposal stays reviewable field by field in the queue detail — the row text
@@ -2914,7 +2938,7 @@ export type {
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal, RefineChild,
-  RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
+  RefineProposal, TaskRefine, BriefReviewFinding, TaskBriefReview, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,

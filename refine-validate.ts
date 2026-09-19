@@ -159,3 +159,43 @@ export function validateRefineProposal(input: RefineValidationInput): RefineVali
     : findings.some((f) => f.severity === "unknown") ? "unknown" : "pass";
   return { verdict, findings };
 }
+
+// --- THE BRIEF COUNTER-READ (Gegenlese) — the pure half of the measurement trial the owner filed
+// 2026-09-14 (docs/brief-gegenlese.md). A strong model reads a mittel|gross row's brief back
+// against the code before a lane spends money on it; what it returns is a PROPOSAL beside the row,
+// never a verdict and never a gate (docs/queue-analyst.md §0 is why). What is decided here is the
+// two things that must not depend on a model or a clock: which rows are eligible, and which arm of
+// the trial a row falls into.
+
+export const BRIEF_REVIEW_KINDS = [
+  "premise-unsupported", // a claim about the code the reviewer could not find with rg
+  "done-impossible",     // a DONE sentence the brief's own DO NOT (or the tree) rules out
+  "done-contradicts",    // two DONE sentences that cannot both hold
+  "path-not-target",     // a cited path that is context, not something the row changes
+  "negative-case-missing", // no reject/fail case where the change has one
+  "scope-beyond",        // work the request did not ask for
+] as const;
+export type BriefReviewKind = (typeof BRIEF_REVIEW_KINDS)[number];
+export const isBriefReviewKind = (v: unknown): v is BriefReviewKind =>
+  typeof v === "string" && (BRIEF_REVIEW_KINDS as readonly string[]).includes(v);
+
+export type BriefReviewArm = "reviewed" | "control";
+
+// Eligible = the card's size says mittel or gross. The size is read, never written: `card.size`
+// and `card.klasse` have one writer each (the card tick), and a row with no valid card has no size
+// — it is not eligible, it is not defaulted into an arm.
+export const briefReviewEligible = (size: string | undefined | null): size is "mittel" | "gross" =>
+  size === "mittel" || size === "gross";
+
+// EVERY SECOND ELIGIBLE ROW, deterministically by id: FNV-1a over the id, its low bit picks the
+// arm. Not "alternate in arrival order" — that would make a row's arm depend on which other rows
+// happened to be filed around it and on the order a restart re-reads them; a hash of the id alone
+// answers the same for the same row on every process, and a reader can recompute it from the ledger.
+export function briefReviewArm(id: string): BriefReviewArm {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return (h & 1) === 0 ? "reviewed" : "control";
+}

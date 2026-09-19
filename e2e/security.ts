@@ -432,8 +432,8 @@ const PRE_AUTH_ROUTES = [
 // `/hub` and `/hub.js` joined it 2026-09-11, and the class was READ rather than assumed: hub.html is
 // a static shell (115 lines, one `<script src="/hub.js">` and no inline body, no embedded data), and
 // src/hub.ts carries no secret — it fetches /api/sessions, /api/commits and /api/context-receipts
-// with `credentials: "same-origin"`, so every byte it shows arrives through the `fleet=` cookie
-// (server/auth.ts#tokenFrom) over three routes that are NOT in the pre-auth set above and are
+// with `credentials: "same-origin"`, so every byte it shows arrives through the `fleet_<port>`
+// login cookie (server/auth.ts#cookieToken; legacy bare `fleet=` still read) over three routes that are NOT in the pre-auth set above and are
 // therefore owner-gated. Serving the shell and its bundle without a token hands an anonymous caller
 // an empty page: exactly the split `/` + `/app.js` already have.
 const STATIC_ROUTES = ["/", "/hub", "/app.js", "/hub.js", "/share.js", "/helper.js", "/xterm.css", "/manifest.webmanifest", "/icon.svg", "/icon-180.png"];

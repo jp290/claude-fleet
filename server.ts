@@ -162,8 +162,8 @@ import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, F
   TREE_CAP, FILE_WRITE_DENY, dirEntries, type DirEntry } from "./server/dir-explorer";
 import { json, HOST, PORT } from "./server/http";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
-import { tokenFrom, secretEq, commentStrike, authFails, failStrike, shareGate, closeShareClients,
-  guard } from "./server/auth";
+import { tokenFrom, cookieToken, cookieName, secretEq, commentStrike, authFails, failStrike,
+  shareGate, closeShareClients, guard } from "./server/auth";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 
 // lines of scrollback every WS connect is seeded with, from a fresh capture-pane. Capture
@@ -18450,8 +18450,7 @@ type LandActor =
 function tokenChannel(req: Request): "cookie" | "bearer" | "query" | null {
   const auth = req.headers.get("authorization");
   if (auth?.startsWith("Bearer ")) return "bearer";
-  const cookie = req.headers.get("cookie");
-  if (cookie && /(?:^|;\s*)fleet=([^;]+)/.test(cookie)) return "cookie";
+  if (cookieToken(req) !== null) return "cookie";
   return new URL(req.url).searchParams.get("token") !== null ? "query" : null;
 }
 // The owner-route arm of the actor, including the one inference. Split out because THREE owner
@@ -33992,7 +33991,7 @@ Bun.serve<WSData>({
         status: 302,
         headers: {
           location: "/",
-          "set-cookie": `fleet=${TOKEN}; Path=/; SameSite=Strict; HttpOnly; Max-Age=31536000`,
+          "set-cookie": `${cookieName}=${TOKEN}; Path=/; SameSite=Strict; HttpOnly; Max-Age=31536000`,
         },
       });
     }

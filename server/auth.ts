@@ -6,12 +6,31 @@ import type { Share, Slot } from "./types";
 // --- auth: single access token, sent once via ?token= then held in a SameSite=Strict cookie.
 // Strict cookie + Origin/Host guards below are what stand between "any website you visit"
 // and keystroke injection into your shells (WebSockets are not subject to CORS).
+// Cookies are host-scoped, not port-scoped, so two instances on one host (a preview lane on
+// 8873 next to the board on 8790) used to overwrite each other's login under the one fixed
+// name — measured 2026-09-19. The login cookie is therefore named per instance (`fleet_<port>`);
+// the bare legacy name stays READABLE so an open board session survives its own redeploy, and
+// is replaced by the new name at the next login.
+export const cookieName = `fleet_${PORT}`;
+
+// The cookie half of tokenFrom, shared with tokenChannel so the channel report cannot drift
+// from what the reader accepts. When two instances share a host the browser hands BOTH names
+// over in one Cookie header, so the instance's own name wins and the legacy name is only the
+// fallback. `[^;]+` keeps an empty value a non-match, exactly as before.
+export function cookieToken(req: Request): string | null {
+  const cookie = req.headers.get("cookie");
+  if (!cookie) return null;
+  const own = new RegExp(`(?:^|;\\s*)${cookieName}=([^;]+)`).exec(cookie);
+  if (own) return own[1];
+  const legacy = /(?:^|;\s*)fleet=([^;]+)/.exec(cookie);
+  return legacy ? legacy[1] : null;
+}
+
 export function tokenFrom(req: Request): string | null {
   const auth = req.headers.get("authorization");
   if (auth?.startsWith("Bearer ")) return auth.slice(7);
-  const cookie = req.headers.get("cookie");
-  const m = cookie ? /(?:^|;\s*)fleet=([^;]+)/.exec(cookie) : null;
-  if (m) return m[1];
+  const cookie = cookieToken(req);
+  if (cookie) return cookie;
   return new URL(req.url).searchParams.get("token");
 }
 

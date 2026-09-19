@@ -418,6 +418,10 @@ let intakeOn = false;
 // instance, which never sets the flag — keeps every land affordance exactly as it was.
 let landsEnabled = true;
 let serverNow = 0;
+// the server's clock minus this device's, from the same poll that carries serverNow. Transcript
+// timestamps are written on the server machine; a phone whose clock runs 3 min ahead would
+// otherwise read every fresh turn as 3 min old (the cache counter, owner's fourteenth cut).
+let serverClockSkew = 0;
 let shareBase = ""; // public URL prefix for share links (FLEET_SHARE_URL server-side)
 
 // --- transcript view model (mirrors server.ts's TEntry/TBlock) ---
@@ -3453,8 +3457,9 @@ function setModelWarnOff(): void {
 
 // THE CACHE COUNTER (owner, twelfth cut: "seit der letzten Nachricht … ob der Cache noch warm sein
 // dürfte", threshold 5 min). Reference = the newest transcript entry's own timestamp (Pane.lastTurnAt,
-// from the transcript poll the conversation view already runs) — not lastOutput, which moves with
-// any byte the pane paints. What the TTL of a given session IS stays unmeasured: Claude Code's own
+// from the transcript poll the conversation view already runs, or the owner's own send, whichever
+// is newer) — not lastOutput, which moves with any byte the pane paints. Both are read on the
+// SERVER's clock (serverClock): the timestamps are written there, the viewer may be a phone. What the TTL of a given session IS stays unmeasured: Claude Code's own
 // rule (2.1.278) is 1 h for the main conversation on a subscription within its limits and 5 min on
 // an API key or in overage, and nothing on this board says which applies — hence "probably". The
 // owner runs on the 5 min TTL (thirteenth cut) and wants the turn to cold 20 s BEFORE it, so the
@@ -3467,9 +3472,11 @@ const fmtAge = (ms: number): string => {
   if (s >= 3600) return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
+// the server's clock now — transcript timestamps and a send stamped here are both in its frame
+const serverClock = (): number => Date.now() + serverClockSkew;
 function cacheAge(): number | null {
   const at = panes[focused]?.lastTurnAt ?? 0;
-  return at ? Math.max(0, Date.now() - at) : null;
+  return at ? Math.max(0, serverClock() - at) : null;
 }
 function tickCacheAge(): void {
   if (!ageEl?.isConnected) return;
@@ -6100,6 +6107,7 @@ async function refresh() {
     deployGapInfo = data.deployGap ?? null;
     bundleStaleInfo = data.bundleStale ?? null;
     serverNow = data.now;
+    serverClockSkew = data.now - Date.now();
     shareBase = data.shareBase ?? "";
     chipCmds = data.chips;
     renderChips(data.chips);
@@ -12427,6 +12435,9 @@ async function doSend() {
   send.disabled = true;
   try {
     if (!await deliver(slot, outgoing)) return;
+    // the send IS the next turn: the counter restarts now, not one transcript poll later
+    pane.lastTurnAt = Math.max(pane.lastTurnAt, serverClock());
+    tickCacheAge();
     ta.value = "";
     clearAttachments();
     renderAttachments();

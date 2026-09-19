@@ -2156,15 +2156,21 @@ export async function run(ctx: Ctx): Promise<void> {
   const execLaneCwd = executionLaneBody.cwd ?? REPO;
   const execLaneBranch = executionLaneBody.branch ?? "missing";
   await post(`/api/programs/${mainProgram.id}/promotion`, { policy: { v: 1, selfLand: "green-only" } });
+  // THE WAIT IS THE WHOLE PREDICATE SHAPE, not git+output: after every restart the adopted pane
+  // redraws its prompt, which stamps lastOutput NOW — a wait that stops at ahead+output reads a
+  // lane whose idle clause is still unmet (R13) and blames the door for a phase the tick had not
+  // earned yet. Measured as exactly that red on the first preview run.
+  const execIdleMs = Math.max(MERGE_IDLE_MS, AUTO_REVIEW_IDLE_MS);
   const execLaneReady = async (wantAhead: number): Promise<boolean> => {
     try {
       await until(async () => {
-        const body = (await (await get("/api/sessions")).json()) as { slots:
+        const body = (await (await get("/api/sessions")).json()) as { now?: number; slots:
           { id: number; git?: { dirty: number; ahead: number } | null; lastOutput?: number }[] };
         const row = body.slots.find((x) => x.id === executionLaneBody.slot);
-        return row !== undefined && !!row.git && row.git.ahead === wantAhead && (row.lastOutput ?? 0) > 0;
-      }, { timeoutMs: 40_000, stepMs: 100, what: `execution fixture lane observed (ahead=${wantAhead})`,
-        last: () => "git facts never reached the wanted shape" });
+        return row !== undefined && !!row.git && row.git.ahead === wantAhead
+          && (row.lastOutput ?? 0) > 0 && (body.now ?? 0) - (row.lastOutput ?? 0) >= execIdleMs;
+      }, { timeoutMs: 40_000, stepMs: 100, what: `execution fixture lane done-looking (ahead=${wantAhead})`,
+        last: () => "git/idle facts never reached the wanted shape" });
       return true;
     } catch (e) { if (!(e instanceof UntilTimeout)) throw e; return false; }
   };
@@ -2226,7 +2232,9 @@ export async function run(ctx: Ctx): Promise<void> {
   const execPlantJobs = async (jobs: Record<string, unknown>[]): Promise<void> => {
     await stopSrv();
     const st = readState() as FleetState & { laneSuiteJobs?: Record<string, unknown>[] };
-    st.laneSuiteJobs = [...(st.laneSuiteJobs ?? []), ...jobs];
+    // REPLACE, not append: a live open offer outranks every settled verdict in lanePreviewFact, so
+    // a job left from an earlier round would silently decide every later round's door.
+    st.laneSuiteJobs = [...jobs];
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
     await restartSrv();
   };
@@ -2245,6 +2253,8 @@ export async function run(ctx: Ctx): Promise<void> {
       door: (next) => next.includes("ran red") && next.includes(`job ${execJobIds[2]}`)
         && next.includes("land after a green rerun") && !next.includes("land it yourself") },
     { name: "settled green", holds: false, jobs: [
+      execSuiteJob(execJobIds[2], "reported", execJobAt + 2,
+        { result: "red", exitCode: 1, tail: "fixture", checks: null, fails: ["e2e/programs.ts"] }),
       execSuiteJob(execJobIds[3], "reported", execJobAt + 4,
         { result: "green", exitCode: 0, tail: "fixture", checks: null, fails: [] })],
       door: (next) => next.includes("land it yourself") },
@@ -12166,6 +12176,10 @@ exit 0
     const cffLatch = `${ROOT}/cff.latch`;
     for (const f of [cffLatch, `${cffLatch}.reached`, `${cffLatch}.release`]) try { rmSync(f); } catch { /* absent */ }
     const cffProgram = await activateNewProgram("Self-land confirm lost ff");
+    // the resolver only runs in mode "do" — section 8's clean auto-land arms left "blocked", under
+    // which the same conflict ends a non-resolved verdict and this fixture would fail as ITS setup,
+    // not as the rule. Restored to "blocked" after the arm, the mode the section above left.
+    await setMergeMode("do");
     const cffBoot = await beginBootstrap(cffProgram.id, { cwd: REPO2, label: "selfland-cfflost-main" });
     const cffMainSlot = (await cffBoot.json() as { slot?: number }).slot ?? null;
     const cffTok = cffMainSlot === null ? "" : readState().slots?.[String(cffMainSlot)]?.selfToken ?? "";
@@ -12234,6 +12248,7 @@ exit 0
         now: main2Of().slice(0, 8), row: cffRowAfter?.status }));
 
     for (const f of [cffLatch, `${cffLatch}.reached`, `${cffLatch}.release`]) try { rmSync(f); } catch { /* spent */ }
+    await setMergeMode("blocked");
     await restartSrv();
     if (cffLane.slot !== null) await post(`/api/slots/${cffLane.slot}/kill`, {});
     await post(`/api/tasks/${cffRowId}/done`, {});

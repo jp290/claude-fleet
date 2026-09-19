@@ -306,12 +306,15 @@
   /* where the ONE composer lands while this pane shows the conversation (Pane.chatDock). The
      dock is only a position: the surface, its tray and its switches are #comp, the same node the
      terminal view uses one size smaller. */
-  .chatdock { display: none; position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
-    padding: 0 max(18px, calc((100% - 780px) / 2)) 14px;
-    background: linear-gradient(to top, #000 62%, #000c 82%, #0000); }
+  .chatdock { display: none; position: relative; flex: none; z-index: 4;
+    padding: 6px max(18px, calc((100% - 780px) / 2)) 14px; }
+  /* the conversation pane is a column: the transcript takes what the composer leaves and ENDS
+     above it — nothing of the composer lies over the text (fourth cut, the orchestrator's shot) */
+  .pane.chat { display: flex; flex-direction: column; }
+  .pane.chat .panechat { position: relative; inset: auto; flex: 1 1 0; min-height: 0; padding-bottom: 24px; }
   .pane.chat .chatdock { display: block; }
   .optswrap { position: relative; }
-  .optpop { bottom: calc(100% + 6px); left: 0; }
+  .optpop { bottom: calc(100% + 10px); right: 0; }
   .cmdrow { display: flex; align-items: center; gap: 8px; }
   .cmdinput { flex: 1; min-width: 0; padding: 5px 9px; background: var(--chat-surface);
     border: 1px solid var(--chat-edge); border-radius: 8px; color: var(--chat-ink);
@@ -373,14 +376,21 @@
   .chip.active { background: var(--accent); color: #10131c; }
   /* --- THE COMPOSER, one element in two sizes (owner 2026-09-19, ChatGPT-shaped):
      .bar   — a low strip under the terminal, one line high;
-     .tall  — the rounded surface in the conversation view, with the model/effort switches above
-              it and the slim tray below, outside the surface.
+     .tall  — ONE rounded surface in the conversation view: the text, then a bottom row with +,
+              the model/effort switch and send inside it; the slim tray below, outside it.
      The size is a class on #comp, not a second component — see src/client.ts#setComposerSize. */
   #comp { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   #compsurface { display: flex; flex-direction: column; gap: 6px; background: var(--raised);
     border: 1px solid var(--line); border-radius: 14px; padding: 7px 8px 7px 10px; }
-  #comp.tall #compsurface { background: #141416; border-color: var(--chat-edge); border-radius: 26px;
-    padding: 14px 14px 10px 18px; box-shadow: 0 10px 34px #0009; }
+  #comp.tall #compsurface { background: #1a1a1d; border-color: #2a2a2f; border-radius: 28px;
+    padding: 16px 12px 10px 20px; }
+  #comp.tall #comprow { gap: 4px; }
+  #comp.tall #dropbtn { border: 0; margin-left: -8px; color: var(--chat-mute); font-size: 20px; }
+  #comp.tall #dropbtn:hover { color: var(--chat-ink); background: #242428; }
+  #comp.tall #dropbtn .tricon { font-size: 22px; font-weight: 300; }
+  #comp.tall #send { background: var(--chat-ink); color: #000; font-size: 14px; }
+  #comp.tall #input:placeholder-shown ~ #comprow #send { background: #2c2c31; color: var(--chat-mute); }
+  #comp.tall #compsurface:has(.att) #comprow #send { background: var(--chat-ink); color: #000; }
   #comprow { display: flex; align-items: center; gap: 6px; }
   #compspace { flex: 1; }
   #input { flex: 1; min-height: 24px; max-height: 140px; resize: none; padding: 0; border: 0;
@@ -427,15 +437,18 @@
   #comp.tall #comptray button { font-size: 12px; padding: 4px 10px; }
   .tricon { flex: none; font-size: 12px; }
   #comp.bar #comptray button { padding: 2px 7px; font-size: 10.5px; }
-  /* the model/effort switches, conversation view only (a terminal strip stays a strip) */
-  #compopts { display: none; align-items: center; gap: 8px; padding: 0 12px; }
-  #comp.tall #compopts:not(:empty) { display: flex; }
-  .optsw { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 10px;
-    border: 1px solid var(--chat-edge); background: #141416; color: var(--chat-mute);
-    font-family: var(--chat-sans); font-size: calc(var(--chat-ui-fs) + 1px); cursor: pointer; }
-  .optsw:hover, .optsw.on { color: var(--chat-ink); border-color: var(--accent); }
-  .optval { color: var(--chat-ink); font-family: var(--chat-mono); }
-  .optchev { color: var(--chat-faint); }
+  /* the model/effort switch: plain text in the surface's bottom row, conversation view only
+     (a terminal strip stays a strip) */
+  #compopts { display: none; }
+  #comp.tall #compopts:not(:empty) { display: flex; align-items: center; min-width: 0; }
+  .optsw { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 6px 10px; border: 0;
+    border-radius: 12px; background: transparent; color: var(--chat-ink); font-family: var(--chat-sans);
+    font-size: calc(var(--chat-ui-fs) + 2px); cursor: pointer; }
+  .optsw:hover, .optsw.on { background: #242428; }
+  .optval { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .optval.dim { color: var(--chat-mute); flex: none; }
+  .optchev { color: var(--chat-faint); flex: none; }
+  .opthead { color: var(--chat-faint); font-size: var(--chat-ui-fs); letter-spacing: 0.05em; text-transform: uppercase; }
   .optpop { display: none; position: absolute; z-index: 8; min-width: 260px; padding: 12px 14px;
     background: rgba(12, 12, 14, 0.97); border: 1px solid var(--chat-edge); border-radius: 14px;
     box-shadow: 0 16px 48px #000d; font-family: var(--chat-sans); font-size: calc(var(--chat-ui-fs) + 1px); }
@@ -1705,7 +1718,6 @@
            terminal, #comp.tall mounted into the focused pane's chat dock. Nothing below is built
            twice — src/client.ts#mountComposer moves this node. -->
       <div id="comp" class="bar">
-        <div id="compopts"></div>
         <div id="compsurface">
           <div id="compfiles"></div>
           <textarea id="input" rows="1" placeholder="Prompt for the selected session…"
@@ -1713,6 +1725,7 @@
           <div id="comprow">
             <button id="dropbtn" title="attach files — drag&amp;drop and paste do the same thing"><span class="tricon">+</span></button>
             <div id="compspace"></div>
+            <div id="compopts"></div>
             <button id="send" title="send to this session">➤</button>
           </div>
         </div>

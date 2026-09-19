@@ -27,7 +27,7 @@ import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsPollRow, opsPollVisible, ops
 // the terminal status words, taken from the one place that defines them rather than re-listed here:
 // the retention check below counts exactly the rows pruneFleetEvents counts.
 import { FLEET_EVENT_TERMINAL } from "../server/types";
-import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, srvEnv, tmuxOut } from "./harness";
+import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
 
 interface WatchRow {
   id: string; slot: number; target: number; targetCwd: string; targetBranch: string;
@@ -341,10 +341,12 @@ async function runLearnedSessionAck(): Promise<void> {
   writeFileSync(rollout, `${JSON.stringify({ type: "session_meta", payload: {
     id: LEARNED, cwd: codexCwd, timestamp: new Date().toISOString(), thread_source: "user", originator: "codex-tui" } })}\n`);
   let learnedId: string | null | undefined = null;
-  for (let i = 0; i < 100 && learnedId !== LEARNED; i++) {
-    await Bun.sleep(250);
-    learnedId = persisted().slots?.[String(slot)]?.sessionId;
-  }
+  try {
+    learnedId = await until((): string | null => {
+      const sid = persisted().slots?.[String(slot)]?.sessionId ?? null;
+      return sid === LEARNED ? sid : null;
+    }, { timeoutMs: 25_000, stepMs: 250, what: `persisted slot ${slot} to carry the learned session id ${LEARNED}` });
+  } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
   const bindLine = auditRows().filter((a) => a.event === "codex_bind" && a.slot === slot && a.detail === `session=${LEARNED}`);
   check("learned-id fixture: the server's own codex_bind tick taught the SAME occupation its id",
     learnedId === LEARNED && persisted().slots?.[String(slot)]?.openedAt === openedAt && bindLine.length === 1,
@@ -2122,10 +2124,12 @@ export async function run(): Promise<void> {
     await restartSrv();
     const restoredRequests = (await selfClarifications(progTok)).requests;
     let deliveredProgram: ClarificationEventRow | undefined;
-    for (let i = 0; i < 80 && deliveredProgram?.status !== "delivered"; i++) {
-      await Bun.sleep(250);
-      deliveredProgram = (await clarificationEventRows()).find((e) => e.id === progRequest?.eventId);
-    }
+    try {
+      await until(async () => {
+        deliveredProgram = (await clarificationEventRows()).find((e) => e.id === progRequest?.eventId);
+        return deliveredProgram?.status === "delivered";
+      }, { timeoutMs: 20_000, stepMs: 250, what: `clarification event ${progRequest?.eventId} to deliver after the restart` });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     // main1 holds FOUR pending clarification events across this restart, so since c14fcd75 they may
     // reach it as ONE bundled wake-up that names the event id instead of typing each full question —
     // either way exactly one prompt carries it, and the full text is read off the event itself
@@ -2267,10 +2271,10 @@ export async function run(): Promise<void> {
     // BREAKS IF: a send-uncertain request is treated as terminal/closed, or the retry short-circuits
     // to answered without re-running sendText (the pane text below would then be missing).
     let healed = 1;
-    for (let i = 0; i < 60 && healed !== 0; i++) {
-      await Bun.sleep(250);
-      healed = (await tmuxOut("has-session", "-t", `s${watched.slot}`)).code;
-    }
+    try {
+      await until(async () => (healed = (await tmuxOut("has-session", "-t", `s${watched.slot}`)).code) === 0,
+        { timeoutMs: 15_000, stepMs: 250, what: `session s${watched.slot} to re-appear after the watch healed it` });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     const sameRetry = watchRequest ? await replyClarification(main1Tok, watchRequest.id, "answer to dead pane")
       : new Response(null, { status: 599 });
     const sameRetryBody = await sameRetry.json() as { request?: ClarificationRow };
@@ -2546,13 +2550,18 @@ export async function run(): Promise<void> {
         && failedReport?.provenance.instance === INSTANCE_NAME
         && !("instance" in (completeEvent?.payload ?? {})),
       JSON.stringify({ row: completeReport?.provenance, payload: completeEvent?.payload }));
-    await Bun.sleep(300);
-    const openAudits = auditRows().slice(reportAuditStart).filter((row) => row.event === "fleet_report_open");
     const expectedOpenAudits = [
       { id: completeReport?.id, slot: completeLane.slot },
       { id: needsReport?.id, slot: needsLane.slot },
       { id: failedReport?.id, slot: failedLane.slot },
     ].filter((entry): entry is { id: string; slot: number } => !!entry.id);
+    // the audit rows ARE the fact the fixed 300 ms paced: all three accepted opens written
+    try {
+      await until(() => auditRows().slice(reportAuditStart).filter((row) => row.event === "fleet_report_open")
+        .length >= expectedOpenAudits.length,
+      { timeoutMs: 5_000, stepMs: 50, what: "the fleet_report_open audit rows for the three accepted reports to land" });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+    const openAudits = auditRows().slice(reportAuditStart).filter((row) => row.event === "fleet_report_open");
     check("fleet-report audit: every accepted open records its id and slot without copying report text",
       openAudits.length === 3 && expectedOpenAudits.every(({ id, slot }) => openAudits.some((row) =>
         row.slot === slot && row.detail?.startsWith(`${id} receiver=${main} status=`)))
@@ -2642,10 +2651,12 @@ export async function run(): Promise<void> {
     setReportComposerMode("normal");
     writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
     let delivered: FleetReportEventRow | undefined;
-    for (let i = 0; i < 160 && delivered?.status !== "delivered"; i++) {
-      await Bun.sleep(250);
-      delivered = (await fleetReportEventRows()).find((e) => e.id === completeReport?.eventId);
-    }
+    try {
+      await until(async () => {
+        delivered = (await fleetReportEventRows()).find((e) => e.id === completeReport?.eventId);
+        return delivered?.status === "delivered";
+      }, { timeoutMs: 40_000, stepMs: 250, what: `fleet-report event ${completeReport?.eventId} to deliver after the latch release` });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     const reportPrompts = (await plogRead()).filter((p) => p.slot === main
       && p.text.includes(`report ${completeReport?.id}`));
     const beforeAckReports = (await selfFleetReports(mainTok)).reports;
@@ -3029,7 +3040,11 @@ export async function run(): Promise<void> {
       `${oldReports.length}/${hydratedOld.length}`);
     const pruneTrigger = await selfFleetReport(noReceiverTok,
       { status: "complete", text: "Trigger the bounded report retention pass." });
-    await Bun.sleep(300);
+    // the prune audit row IS the fact the fixed 300 ms paced: the retention pass ran
+    try {
+      await until(() => auditRows().slice(pruneAuditStart).some((row) => row.event === "fleet_report_prune"),
+        { timeoutMs: 5_000, stepMs: 50, what: "the fleet_report_prune audit row to land" });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     const pruneAudits = auditRows().slice(pruneAuditStart).filter((row) => row.event === "fleet_report_prune");
     const afterPruneIds = (await selfFleetReports(completeTok)).reports.map((r) => r.id);
     // PROPERTIES, not a fixed count: how many rows this pass may drop depends on how many OTHER

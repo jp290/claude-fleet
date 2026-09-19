@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
+import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, until, UntilTimeout, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
 import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY, CARD_VALIDATOR_VERSION } from "../card-extract";
@@ -28,6 +28,21 @@ import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLi
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
 import { FLEET_DEFAULT_MODEL } from "../src/protocol";
 import type { Ctx } from "./ctx";
+
+// WAIT ON THE KILL, NOT ON A CLOCK (the slotsEmptied shape from e3a936f7's programs.ts). A lane
+// kill is served before the next board read only in the happy case; the fixed 600 ms this replaces
+// paid in full every time and read too early on a loaded machine. The ceiling bounds a failure —
+// a slot that never reads empty is named by the timeout and the precondition check below says so.
+const slotsEmptied = async (ids: number[], timeoutMs = 10_000): Promise<void> => {
+  if (ids.length === 0) return;
+  try {
+    await until(async () => {
+      const slots = ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; cwd: string | null; worktree: unknown | null }[] }).slots;
+      return ids.every((id) => { const x = slots.find((y) => y.id === id); return !x || (!x.cwd && !x.worktree); });
+    }, { timeoutMs, what: `slots [${ids.join(",")}] to read empty after kill` });
+  } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+};
 
 // The first bytes of briefAndSend's LANE_EXIT_FOOTER. Deliberately the HEADING and not the whole
 // block: this file checks that the ending is delivered and what it names, while the exact wording
@@ -659,7 +674,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const qHeld = await qMake("queue guard: queued row with a hold");
     const qFree = await qMake("queue guard: queued row without a hold");
     await post(`/api/tasks/${qDone}/done`, {});
-    await Bun.sleep(200); // saveState is fire-and-forget; make the file quiescent before srv dies
+    // the file-quiescence fact, not a clock: saveState is fire-and-forget, so the row's done state
+    // ON DISK is what "quiescent" means
+    await until(() => { try {
+      return ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: { id?: string; status?: string }[] }).tasks ?? [])
+        .some((t) => t.id === qDone && t.status === "done");
+    } catch { return false; } }, { timeoutMs: 5_000, stepMs: 50, what: `fleet.json to persist ${qDone} as done` });
     await stopSrv();
     const qState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: Record<string, unknown>[] };
     const qPlant = (id: string, over: Record<string, unknown>): void => {
@@ -1071,7 +1091,11 @@ export async function run(ctx: Ctx): Promise<void> {
     const oldNote = ((await (await post("/api/tasks", {
       text: "legacy note migration probe", kind: "notiz", queue: false,
     })).json()) as { task: KRow }).task;
-    await Bun.sleep(200); // saveState is fire-and-forget; make the file quiescent before srv dies
+    // same fact, second site: both probe rows ON DISK before the session dies mid-write
+    await until(() => { try {
+      const tasks = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: { id?: string }[] }).tasks ?? [];
+      return tasks.some((t) => t.id === oldLane.id) && tasks.some((t) => t.id === oldNote.id);
+    } catch { return false; } }, { timeoutMs: 5_000, stepMs: 50, what: "fleet.json to persist the legacy lane and note probes" });
     await tmuxOut("kill-session", "-t", "srv");
     let migrationState: { tasks?: KRow[] } | null = null;
     let migrationError = "";
@@ -1247,7 +1271,12 @@ export async function run(ctx: Ctx): Promise<void> {
       // `awaiting` has no owner test route (correctly: only a clarify lane may set it). Persist the
       // already-open plain fixture while srv is stopped, then reload through the production parser.
       // This isolates the awaiting clause from the lane clause instead of testing both on one lane.
-      await Bun.sleep(200);
+      // same fact, third site: the delete must be ON DISK before the kill-session, or the reload
+      // resurrects the row the next block expects gone
+      await until(() => { try {
+        return !((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: { id?: string }[] }).tasks ?? [])
+          .some((t) => t.id === offTask);
+      } catch { return false; } }, { timeoutMs: 5_000, stepMs: 50, what: `fleet.json to drop ${offTask}` });
       await tmuxOut("kill-session", "-t", "srv");
       const persisted = readPersisted();
       check("backlog nudge setup precondition: fleet.json is readable before awaiting-owner mutation",
@@ -1916,12 +1945,13 @@ export async function run(ctx: Ctx): Promise<void> {
   await post("/api/dispatch", { on: true });
   const pin = (await (await post("/api/tasks", { text: "dispatch-persist-pin", queue: false })).json()) as { task: { id: string } };
   await post(`/api/tasks/${pin.task.id}/delete`, {});
-  await Bun.sleep(150);
+  // the fact on disk, not a clock: the debounce lands when the FILE says so
+  await until(() => dispPersisted() === true, { timeoutMs: 5_000, stepMs: 50, what: "fleet.json to persist dispatch:true" });
   check("control: the persisted state reads dispatch:true right before the stop (so the check below can fail)",
     dispPersisted() === true, `dispatch=${dispPersisted()}`);
   const dispOff = await post("/api/dispatch", { on: false });
   check("dispatch toggle endpoint works", dispOff.ok && ((await dispOff.json()) as { on?: boolean }).on === false);
-  await Bun.sleep(150); // let the route's saveState land
+  await until(() => dispPersisted() === false, { timeoutMs: 5_000, stepMs: 50, what: "fleet.json to persist dispatch:false" });
   check("the dispatch stop is persisted immediately (so a restart stays stopped)",
     dispPersisted() === false, `dispatch=${dispPersisted()}`);
   const dispAudit = ((await (await get("/api/audit?limit=100")).json()) as { events: { event?: string; detail?: string }[] })
@@ -1943,8 +1973,9 @@ export async function run(ctx: Ctx): Promise<void> {
       (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; worktree: unknown | null }[]; tasks: { id: string; status: string; note?: string }[]; dispatch: { on: boolean; maxLanes: number }; autosOn: boolean; quietHours: unknown };
     const laneIds = async (): Promise<number[]> => (await sessJson()).slots.filter((s) => s.worktree).map((s) => s.id);
     // free every worktree lane EXCEPT the persistence lane, so lanes < maxLanes and a slot is free
-    for (const id of await laneIds()) if (id !== ctx.restartSelfSlot) await post(`/api/slots/${id}/kill`, {});
-    await Bun.sleep(600);
+    const gateKills = (await laneIds()).filter((id) => id !== ctx.restartSelfSlot);
+    for (const id of gateKills) await post(`/api/slots/${id}/kill`, {});
+    await slotsEmptied(gateKills);
     await post("/api/dispatch", { on: true });
     const sess0 = await sessJson();
     const lanes0 = new Set(sess0.slots.filter((s) => s.worktree).map((s) => s.id));
@@ -2204,8 +2235,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // a clean field: no foreign lane may carry the probe program, no foreign released row may win a
     // tick ahead of the probes, and two slots must be free (one for the bracket, one for the
     // counter-probe). The persistence lane the restart section needs alive is never touched.
-    for (const s of (await pSess()).slots) if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
-    await Bun.sleep(600);
+    const fieldKills = (await pSess()).slots.filter((s) => s.worktree && s.id !== ctx.restartSelfSlot);
+    for (const s of fieldKills) await post(`/api/slots/${s.id}/kill`, {});
+    await slotsEmptied(fieldKills.map((s) => s.id));
     for (const t of (await pSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
     const pClean = await pSess();
     // PRECONDITION AS ITSELF #2 — nothing else can explain a row that fails to start.
@@ -2350,8 +2382,9 @@ export async function run(ctx: Ctx): Promise<void> {
       vSingle.status === 409 && vSingleText.includes(vGroupId), `${vSingle.status}:${vSingleText}`);
 
     // T2 · clean field: no foreign lane in REPO beside the persistence lane, no foreign released row
-    for (const s of (await vSess()).slots) if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
-    await Bun.sleep(600);
+    const vKills2 = (await vSess()).slots.filter((s) => s.worktree && s.id !== ctx.restartSelfSlot);
+    for (const s of vKills2) await post(`/api/slots/${s.id}/kill`, {});
+    await slotsEmptied(vKills2.map((s) => s.id));
     for (const t of (await vSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
     const vInRepo = (s: VSlot): boolean => {
       if (!s.worktree) return false;
@@ -2527,8 +2560,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // released row that could win a tick ahead of the probes
     const rClean = async (): Promise<void> => {
       await post("/api/dispatch", { on: false });
-      for (const x of (await rSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
-      await Bun.sleep(600);
+      const rKills2 = (await rSess()).slots.filter((x) => x.worktree && x.id !== ctx.restartSelfSlot);
+      for (const x of rKills2) await post(`/api/slots/${x.id}/kill`, {});
+      await slotsEmptied(rKills2.map((x) => x.id));
       for (const t of (await rSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
     };
 
@@ -2748,18 +2782,18 @@ export async function run(ctx: Ctx): Promise<void> {
     // shared worktree sweep below would miss it), the rows leave the queue, the group and its
     // variants and the fillers are deleted
     await post("/api/dispatch", { on: false });
-    if (typeof rMainSlot === "number") await post(`/api/slots/${rMainSlot}/kill`, {});
-    if (typeof rFill5.slot === "number") await post(`/api/slots/${rFill5.slot}/kill`, {});
-    if (typeof rFill5b.slot === "number") await post(`/api/slots/${rFill5b.slot}/kill`, {});
-    await Bun.sleep(600);
+    const vKills = [rMainSlot, rFill5.slot, rFill5b.slot].filter((s): s is number => typeof s === "number");
+    for (const s of vKills) await post(`/api/slots/${s}/kill`, {});
+    await slotsEmptied(vKills);
     for (const id of rSingles) await post(`/api/tasks/${id}/delete`, {});
     await rDrop(rGroup4);
 
     // cleanup — dispatcher off first, then the lanes and the rows this block minted
     await post("/api/dispatch", { on: false });
-    for (const x of (await rSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+    const rKills = (await rSess()).slots.filter((x) => x.worktree && x.id !== ctx.restartSelfSlot);
+    for (const x of rKills) await post(`/api/slots/${x.id}/kill`, {});
     if (typeof rFill3.slot === "number") await post(`/api/slots/${rFill3.slot}/kill`, {});
-    await Bun.sleep(600);
+    await slotsEmptied([...rKills.map((x) => x.id), ...(typeof rFill3.slot === "number" ? [rFill3.slot] : [])]);
     await rDrop(rGroup3);
     await post(`/api/tasks/${rSingle3}/delete`, {});
     await restartSrv();
@@ -2854,8 +2888,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // the fixture's field: no lane anywhere but the restart section's own, nothing queued
     const cClean = async (): Promise<void> => {
       await post("/api/dispatch", { on: false });
-      for (const x of (await cSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
-      await Bun.sleep(600);
+      const cKills = (await cSess()).slots.filter((x) => x.worktree && x.id !== ctx.restartSelfSlot);
+      for (const x of cKills) await post(`/api/slots/${x.id}/kill`, {});
+      await slotsEmptied(cKills.map((x) => x.id));
       for (const t of (await cSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
     };
     const cPropose = async (tok: string, gid: string, parts: unknown, text: string): Promise<{ status: number; body: Record<string, unknown> }> =>
@@ -2888,8 +2923,9 @@ export async function run(ctx: Ctx): Promise<void> {
     const cWorktrees: { path: string; branch: string }[] = [];
     const cDrop = async (gid: string): Promise<void> => {
       await post("/api/dispatch", { on: false });
-      for (const x of (await cSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
-      await Bun.sleep(600);
+      const cKills2 = (await cSess()).slots.filter((x) => x.worktree && x.id !== ctx.restartSelfSlot);
+      for (const x of cKills2) await post(`/api/slots/${x.id}/kill`, {});
+      await slotsEmptied(cKills2.map((x) => x.id));
       for (const t of (await cVars(gid))) await post(`/api/tasks/${t.id}/delete`, {});
       await post(`/api/tasks/${gid}/delete`, {});
     };
@@ -3201,8 +3237,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // a clean field: no foreign lane in either scratch repo, no foreign released row that could win
     // a tick ahead of the probes. The restart section's persistence lane is never touched — it
     // lives in a THIRD repo, so it cannot contribute to either cap count.
-    for (const x of (await eSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
-    await Bun.sleep(600);
+    const eKills = (await eSess()).slots.filter((x) => x.worktree && x.id !== ctx.restartSelfSlot);
+    for (const x of eKills) await post(`/api/slots/${x.id}/kill`, {});
+    await slotsEmptied(eKills.map((x) => x.id));
     for (const t of (await eSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
 
     // repo A is saturated by an ATTENDED lane — the cap bounds unattended fan-out, and a hand-opened
@@ -3339,8 +3376,9 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(e4) fixture: the machine default really is 1 for this block",
       fCfg.dispatch.maxLanes === 1, JSON.stringify({ maxLanes: fCfg.dispatch.maxLanes }));
 
-    for (const x of (await fSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
-    await Bun.sleep(600);
+    const fKills = (await fSess()).slots.filter((x) => x.worktree && x.id !== ctx.restartSelfSlot);
+    for (const x of fKills) await post(`/api/slots/${x.id}/kill`, {});
+    await slotsEmptied(fKills.map((x) => x.id));
     for (const t of (await fSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
 
     // THE ONE CALL. No restart follows it — that is half of what (a) asserts.
@@ -3483,8 +3521,9 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ perProgram: process.env.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM ?? null,
         maxLanes: (await gSess()).dispatch.maxLanes }));
 
-    for (const x of (await gSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
-    await Bun.sleep(600);
+    const gKills = (await gSess()).slots.filter((x) => x.worktree && x.id !== ctx.restartSelfSlot);
+    for (const x of gKills) await post(`/api/slots/${x.id}/kill`, {});
+    await slotsEmptied(gKills.map((x) => x.id));
     for (const t of (await gSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
 
     const gSet = await post("/api/repo-lane-cap", { repo: REPO2, maxLanes: 2 });
@@ -3589,8 +3628,9 @@ export async function run(ctx: Ctx): Promise<void> {
     const CAP_NOTE = `waiting: 1/1 lanes busy in ${basename(REPO2)} (machine default) — land or close one`;
 
     await restartSrv({ FLEET_DISPATCH_MAX_LANES: "1", FLEET_HARNESS_AUTOMATION: "1" });
-    for (const x of (await hSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
-    await Bun.sleep(600);
+    const hKills = (await hSess()).slots.filter((x) => x.worktree && x.id !== ctx.restartSelfSlot);
+    for (const x of hKills) await post(`/api/slots/${x.id}/kill`, {});
+    await slotsEmptied(hKills.map((x) => x.id));
     for (const t of (await hSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
 
     // PRECONDITION AS ITSELF, and only for what is READABLE: the cap really is 1 (or no row is ever
@@ -4492,9 +4532,12 @@ export async function run(ctx: Ctx): Promise<void> {
       (await (await fetch(`${BASE}/api/self/notes`, { headers: { "x-fleet-self-token": n3Tok } })).json()) as
         { notes?: N3SelfNote[]; receipts?: number };
     let n3Read = await n3Self();
-    for (let i = 0; i < 24 && !(n3Read.notes ?? []).some((x) => x.id === nF); i++) {
-      await Bun.sleep(500); n3Read = await n3Self();
-    }
+    try {
+      await until(async () => {
+        n3Read = await n3Self();
+        return (n3Read.notes ?? []).some((x) => x.id === nF);
+      }, { timeoutMs: 12_000, stepMs: 500, what: `slot self view to list note ${nF}` });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     const n3Texts = new Map((await taskRows()).map((t) => [t.id, t.text]));
     const n3SeenF = (n3Read.notes ?? []).find((x) => x.id === nF);
     check("(n3-e) API, brief, receipt and the lane's read door name the same sources — and the door serves the ORIGINAL text",
@@ -5053,10 +5096,12 @@ export async function run(ctx: Ctx): Promise<void> {
       // alone proves nothing here — the PASTE is the assertion, polled because the readiness wait
       // and the send sit behind the 4 s boot grace
       let readyCap = { out: "" };
-      for (let i = 0; i < 30 && !readyCap.out.includes("readiness-probe"); i++) {
-        await Bun.sleep(500);
-        readyCap = await tmuxOut("capture-pane", "-t", `s${ready.slot}`, "-p");
-      }
+      try {
+        await until(async () => {
+          readyCap = await tmuxOut("capture-pane", "-t", `s${ready.slot}`, "-p");
+          return readyCap.out.includes("readiness-probe");
+        }, { timeoutMs: 15_000, stepMs: 500, what: `pane s${ready.slot} to render readiness-probe` });
+      } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
       const readyRow = await f2Row(ready.id);
       check("a codex pane showing its READY COMPOSER receives the brief — the row stays sent",
         readyRow?.status === "sent" && readyRow.slot === ready.slot, JSON.stringify(readyRow));
@@ -5072,10 +5117,12 @@ export async function run(ctx: Ctx): Promise<void> {
         ">_ OpenAI Codex (v0.147.0)",
       ].join("\n"));
       let bannerCap = { out: "" };
-      for (let i = 0; i < 30 && !bannerCap.out.includes("readiness-probe"); i++) {
-        await Bun.sleep(500);
-        bannerCap = await tmuxOut("capture-pane", "-t", `s${banner.slot}`, "-p");
-      }
+      try {
+        await until(async () => {
+          bannerCap = await tmuxOut("capture-pane", "-t", `s${banner.slot}`, "-p");
+          return bannerCap.out.includes("readiness-probe");
+        }, { timeoutMs: 15_000, stepMs: 500, what: `pane s${banner.slot} to render readiness-probe` });
+      } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
       const bannerRow = await f2Row(banner.id);
       check("a codex UPDATE BANNER beside the ready marker stays ready and receives the brief",
         bannerRow?.status === "sent" && bannerRow.slot === banner.slot
@@ -5103,10 +5150,12 @@ export async function run(ctx: Ctx): Promise<void> {
       ] as const) {
         const lane = await screenLane(screen, "claude");
         let cap = { out: "" };
-        for (let i = 0; i < 30 && !cap.out.includes("readiness-probe"); i++) {
-          await Bun.sleep(500);
-          cap = await tmuxOut("capture-pane", "-t", `s${lane.slot}`, "-p");
-        }
+        try {
+          await until(async () => {
+            cap = await tmuxOut("capture-pane", "-t", `s${lane.slot}`, "-p");
+            return cap.out.includes("readiness-probe");
+          }, { timeoutMs: 15_000, stepMs: 500, what: `pane s${lane.slot} to render readiness-probe` });
+        } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
         const row = await f2Row(lane.id);
         check(`a claude pane showing ${what} is not blocked — the brief arrives and the row stays sent`,
           row?.status === "sent" && row.slot === lane.slot && cap.out.includes("readiness-probe"),
@@ -5305,7 +5354,14 @@ export async function run(ctx: Ctx): Promise<void> {
     const hQ = await mkTask("brief probe Q: released — the dispatcher must start exactly this one");
     await till(() => hFull(hQ), (r) => !!r?.brief);
     await post(`/api/tasks/${hQ}/queue`, {});
-    await Bun.sleep(afterTick(0, DISPATCH_TICK_MS));
+    // The tick's existence is read off the released row itself — the fixed one-tick-plus-slack
+    // window always paid 9.5 s and on a loaded machine could still read BEFORE the tick ran, which
+    // would make the negative half vacuous. Once hQ starts (the fact (h3) waits on anyway), the
+    // same tick has run, and the pending row must still be pending through THAT tick.
+    try {
+      await till(() => hRow(hQ), (r) => r?.status === "sent" || r?.status === "queued" && !!r.note,
+        Math.ceil((afterTick(0, DISPATCH_TICK_MS) + 5_000) / 250));
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     check("(h2) a pending row is NOT started, however well-briefed — releasing is the decision",
       (await hRow(hP))?.status === "pending", JSON.stringify(await hRow(hP)));
 
@@ -5386,9 +5442,14 @@ export async function run(ctx: Ctx): Promise<void> {
     const raceOwner = "owner brief, filed while the compiler was still running";
     const rb = await post(`/api/tasks/${raceId}/brief`, { text: raceOwner });
     const raceFinished = await till(async () => existsSync(REND), (v) => v, 60);
-    // the clobber is the statement right after the stand-in's last byte, so this only has to
-    // out-wait the server reading that byte — not the compile
-    await Bun.sleep(1500);
+    // the clobber is the statement right after the stand-in's last byte, and its AUDIT ROW is the
+    // fact that the server has read that byte — the fixed 1.5 s guessed at the same moment
+    try {
+      await until(async () => !!(((await (await get("/api/audit?limit=100")).json()) as
+        { events: { event?: string; taskId?: string }[] }).events)
+        .find((e) => e.event === "brief_compile_discarded" && e.taskId === raceId),
+      { timeoutMs: 15_000, stepMs: 100, what: `brief_compile_discarded audit row for ${raceId}` });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     check("(h4-race) fixture: the compile really was in flight when the owner filed, and finished after",
       raceStarted && rb.ok && raceFinished,
       JSON.stringify({ started: raceStarted, brief: rb.status, finished: raceFinished }));
@@ -8935,9 +8996,10 @@ export async function run(ctx: Ctx): Promise<void> {
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(tState, null, 2), { mode: 0o600 });
     await restartSrv();
     // a clean field in REPO2 — no lane there, and two free slots for the wave and for A
-    for (const x of ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { repo: string } | null }[] }).slots)
-      if (x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2)) await post(`/api/slots/${x.id}/kill`, {});
-    await Bun.sleep(600);
+    const spKills = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { repo: string } | null }[] }).slots
+      .filter((x) => x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2));
+    for (const x of spKills) await post(`/api/slots/${x.id}/kill`, {});
+    await slotsEmptied(spKills.map((x) => x.id));
     for (const id of [tW1, tW2, tX1, tA, tB, tC]) await post(`/api/tasks/${id}/queue`, {});
     const tPlan = (await (await get("/api/start-plan")).json()) as StartPlan;
     const tNexts = Object.fromEntries(tPlan.repos.flatMap((r) => r.waves).filter((w) => w.ids.some((id) => tIds.includes(id)))
@@ -8988,8 +9050,9 @@ export async function run(ctx: Ctx): Promise<void> {
       tOf(tLive, tC)?.status === "sent", JSON.stringify({ c: tOf(tLive, tC) }));
 
     await post("/api/dispatch", { on: false });
-    for (const id of [tW1, tC]) { const slot = (await tRow(id))?.slot; if (typeof slot === "number") await post(`/api/slots/${slot}/kill`, {}); }
-    await Bun.sleep(600);
+    const tKills: number[] = [];
+    for (const id of [tW1, tC]) { const slot = (await tRow(id))?.slot; if (typeof slot === "number") { tKills.push(slot); await post(`/api/slots/${slot}/kill`, {}); } }
+    await slotsEmptied(tKills);
     for (const id of tIds) {
       const row = await tRow(id);
       if (row?.status === "queued") await post(`/api/tasks/${id}/unqueue`, {});
@@ -9064,9 +9127,10 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rState, null, 2), { mode: 0o600 });
     await restartSrv();
-    for (const x of ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { repo: string } | null }[] }).slots)
-      if (x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2)) await post(`/api/slots/${x.id}/kill`, {});
-    await Bun.sleep(600);
+    const rKills3 = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { repo: string } | null }[] }).slots
+      .filter((x) => x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2));
+    for (const x of rKills3) await post(`/api/slots/${x.id}/kill`, {});
+    await slotsEmptied(rKills3.map((x) => x.id));
     const rSet = await post(`/api/programs/${rP}/release`, { release: { v: 1, policy: "card-valid" } });
     const rSetBody = (await rSet.json()) as { id?: string; release?: { v: number; policy: string; confirmedAt: number } | null };
     const rPlan = (await (await get("/api/start-plan")).json()) as StartPlan;
@@ -9111,7 +9175,7 @@ export async function run(ctx: Ctx): Promise<void> {
     await post("/api/dispatch", { on: false });
     const aSlot = (await rRows()).find((t) => t.id === rA)?.slot;
     if (typeof aSlot === "number") await post(`/api/slots/${aSlot}/kill`, {});
-    await Bun.sleep(600);
+    await slotsEmptied(typeof aSlot === "number" ? [aSlot] : []);
     await post(`/api/programs/${rP}/release`, { release: null });
     for (const id of rIds) {
       const row = rOf(await rRows(), id);
@@ -9181,9 +9245,10 @@ export async function run(ctx: Ctx): Promise<void> {
     await post("/api/dispatch", { on: false });
     for (const t of await vsAll()) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
     // a clean field in REPO2: the ONE lane below must be the only one the plan can name
-    for (const x of ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { repo: string } | null }[] }).slots)
-      if (x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2)) await post(`/api/slots/${x.id}/kill`, {});
-    await Bun.sleep(600);
+    const vsKills = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { repo: string } | null }[] }).slots
+      .filter((x) => x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2));
+    for (const x of vsKills) await post(`/api/slots/${x.id}/kill`, {});
+    await slotsEmptied(vsKills.map((x) => x.id));
     const vsLane = await vsRowOf("VS-LANE holds vs-in.ts and vs-out.ts");
     const vsOut = await vsGroupOf("VS-OUT variant group — zwei Agenten, ein Land");
     const vsIn = await vsGroupOf("VS-IN variant group — zwei Agenten, ein Land");
@@ -9261,7 +9326,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // fixture is left in REPO2 for the sections after it
     await post(`/api/tasks/${vsLane}/done`, {});
     if (vsLaneSlot >= 0) await post(`/api/slots/${vsLaneSlot}/kill`, {});
-    await Bun.sleep(600);
+    await slotsEmptied(vsLaneSlot >= 0 ? [vsLaneSlot] : []);
     for (const id of [...vsOut.variants, ...vsIn.variants, ...vsBrief.variants,
       vsOut.group, vsIn.group, vsBrief.group, vsOwn, vsLane]) {
       const row = vsOf(await vsAll(), id);
@@ -9363,7 +9428,13 @@ export async function run(ctx: Ctx): Promise<void> {
     const aCheckout = resolve(realpathSync(`${ROOT}/node_modules`), "..");
     const aReg = `${ROOT}/register-s6.sh`;
     writeFileSync(aReg, readFileSync(`${aCheckout}/register.sh`, "utf8"));
-    await Bun.sleep(1500); // saveState is debounced; the render reads the file
+    // saveState is debounced, and register.sh reads the FILE — so the fact is the card on disk,
+    // not a fixed 1.5 s
+    await until(() => { try {
+      const row = ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { tasks?: { id?: string; card?: { surface?: { files?: string[] } } }[] }).tasks ?? []).find((t) => t.id === aId);
+      return row?.card?.surface?.files?.join(" ") === "ctx-mod.txt";
+    } catch { return false; } }, { timeoutMs: 5_000, stepMs: 50, what: `fleet.json to persist ${aId}'s card` });
     const aOut = spawnSync("sh", [aReg], { encoding: "utf8", timeout: 60_000 }).stdout ?? "";
     rmSync(aReg, { force: true });
     const aLines = aOut.split("\n");
@@ -10154,9 +10225,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // no lane of this block may outlive it: after the stop, every REPO2 lane goes, whichever row it runs
     await post("/api/dispatch", { on: false });
     await Bun.sleep(2 * DISPATCH_TICK_MS);
-    for (const x of (await stSessions()).slots)
-      if (x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2)) await post(`/api/slots/${x.id}/kill`, {});
-    await Bun.sleep(600);
+    const stKills = (await stSessions()).slots.filter((x) => x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2));
+    for (const x of stKills) await post(`/api/slots/${x.id}/kill`, {});
+    await slotsEmptied(stKills.map((x) => x.id));
     for (const id of [stA, stB, stC]) {
       const row = await stOf(id);
       if (row?.status === "queued") await post(`/api/tasks/${id}/unqueue`, {});
@@ -10639,10 +10710,14 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     type NEvent = { kind: string; receiverSlot: number | null; delivery?: string; payload?: { taskId?: string; programId?: string | null } };
     let nRevEvents: NEvent[] = [];
-    for (let i = 0; i < 45 && nRevCommit === 0 && nRevEvents.length === 0; i++) {
-      await Bun.sleep(1000);
-      nRevEvents = ((await (await get("/api/events")).json()) as { events: NEvent[] }).events
-        .filter((e) => e.kind === "lane-review" && e.payload?.taskId === nRevId);
+    if (nRevCommit === 0) { // the guard the old loop head carried: a failed commit waits for nothing
+      try {
+        await until(async () => {
+          nRevEvents = ((await (await get("/api/events")).json()) as { events: NEvent[] }).events
+            .filter((e) => e.kind === "lane-review" && e.payload?.taskId === nRevId);
+          return nRevEvents.length > 0;
+        }, { timeoutMs: 45_000, stepMs: 1000, what: `lane-review event for ${nRevId}` });
+      } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     }
     check("review opt-in: a Program row's verdict is filed ONCE to the live bound MAIN's pane (receiver = its slot), never to the owner inbox",
       nRevCommit === 0 && nRevEvents.length === 1 && nRevEvents[0]!.receiverSlot === nSlot

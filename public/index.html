@@ -192,7 +192,7 @@
   .chatflakes { position: absolute; inset: 0; width: 100%; height: 100%; display: none; pointer-events: none; z-index: 0; }
   .pane.chat .chatflakes { display: block; }
   .panechat { position: absolute; inset: 0; z-index: 1; display: none; overflow-y: auto;
-    padding: 20px max(18px, calc((100% - 780px) / 2)) 56px; scrollbar-gutter: stable;
+    padding: 20px max(18px, calc((100% - 780px) / 2)) 104px; scrollbar-gutter: stable;
     font-family: var(--chat-sans); font-size: var(--chat-fs); line-height: 1.65; color: var(--chat-prose);
     -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
   .pane.chat .paneterm { visibility: hidden; }
@@ -303,6 +303,49 @@
   .nibody { padding: 2px 10px 8px; margin: 0; white-space: pre-wrap; word-break: break-word;
     color: #8a8163; font-size: var(--chat-code-fs); font-family: var(--chat-mono); max-height: 260px; overflow-y: auto; }
   .chatempty { color: var(--chat-faint); font-size: var(--chat-ui-fs); padding: 40px 10px; text-align: center; }
+  /* the conversation view's own composer: a floating surface on the column's width, the same
+     POST /send the box under the terminal uses. Above it, the harness-command overlay — every
+     control in it comes from the slot's adapter (GET /api/harnesses), so a harness without a
+     model or effort concept shows NO button rather than a dead one. */
+  .chatbar { display: none; position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
+    padding: 0 max(18px, calc((100% - 780px) / 2)) 14px;
+    background: linear-gradient(to top, #000 62%, #000c 82%, #0000); }
+  .pane.chat .chatbar { display: block; }
+  .chatbarin { display: flex; align-items: flex-end; gap: 6px; padding: 7px 8px 7px 10px;
+    background: rgba(17, 17, 19, 0.92); border: 1px solid var(--chat-edge); border-radius: 20px;
+    box-shadow: 0 10px 34px #000a; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  .chatin { flex: 1; resize: none; min-height: 26px; max-height: 160px; padding: 3px 2px;
+    background: transparent; border: 0; outline: none; color: var(--chat-ink);
+    font-family: var(--chat-sans); font-size: var(--chat-fs); line-height: 1.5; }
+  .chatin::placeholder { color: var(--chat-faint); }
+  .chatsend, .cmdbtn { flex: none; width: 30px; height: 30px; display: flex; align-items: center;
+    justify-content: center; border-radius: 50%; border: 1px solid var(--chat-edge); cursor: pointer;
+    background: var(--chat-raised); color: var(--chat-mute); font-size: 13px; font-family: var(--chat-sans); }
+  .chatsend { background: var(--accent); border-color: var(--accent); color: #0b1020; }
+  .chatsend:hover { filter: brightness(1.1); }
+  .cmdbtn:hover, .cmdbtn.on { color: var(--chat-ink); border-color: var(--accent); }
+  .cmdpanel { display: none; margin-bottom: 8px; padding: 12px 14px;
+    background: rgba(12, 12, 14, 0.97); border: 1px solid var(--chat-edge); border-radius: 14px;
+    box-shadow: 0 16px 48px #000d; font-family: var(--chat-sans); font-size: calc(var(--chat-ui-fs) + 1px); }
+  .cmdpanel.open { display: block; }
+  .cmdrows { display: grid; gap: 9px; }
+  .cmdhead { font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-mute); letter-spacing: 0.04em; }
+  .cmdrow { display: flex; align-items: center; gap: 8px; }
+  .cmdlabel { width: 48px; flex: none; color: var(--chat-mute); }
+  .cmdinput { flex: 1; min-width: 0; padding: 5px 9px; background: var(--chat-surface);
+    border: 1px solid var(--chat-edge); border-radius: 8px; color: var(--chat-ink);
+    font-family: var(--chat-mono); font-size: var(--chat-code-fs); outline: none; }
+  .cmdinput:focus { border-color: var(--accent); }
+  .cmdgo, .cmdlevel { font: inherit; font-family: var(--chat-sans); color: var(--chat-mute);
+    background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: 8px;
+    padding: 4px 11px; cursor: pointer; }
+  .cmdgo:hover, .cmdlevel:hover { color: var(--chat-ink); border-color: var(--accent); }
+  .cmdgo:disabled, .cmdlevel:disabled { opacity: 0.5; cursor: default; }
+  .cmdlevel.on { color: var(--accent); border-color: var(--sel); background: #141a28; }
+  .cmdlevels { display: flex; flex-wrap: wrap; gap: 6px; }
+  .cmdnote { color: var(--chat-faint); font-size: var(--chat-ui-fs); }
+  .cmdstatus { color: var(--chat-prose); font-family: var(--chat-mono); font-size: var(--chat-ui-fs);
+    overflow-wrap: anywhere; min-height: 1.2em; }
   /* text size: the Aa button under the prompt arrows opens three sliders (src/chatsize.ts) */
   .chatsizebtn { display: none; position: absolute; top: 102px; right: 10px; z-index: 6; width: 30px; height: 26px;
     border-radius: 7px; border: 1px solid var(--line); background: rgba(38, 38, 38, 0.85); color: var(--dim);

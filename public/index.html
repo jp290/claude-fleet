@@ -397,6 +397,9 @@
   #comp.tall #send, #comp.tall #dropbtn, #comp.tall .optsw { height: 28px; }
   #comp.tall #send, #comp.tall #dropbtn { width: 28px; }
   #comprow { display: flex; align-items: center; gap: 4px; }
+  /* an owner send parked behind a draft (src/client.ts#renderParkHint): the chat view's quiet ink */
+  #comppark { padding: 0 8px; font: 400 12px var(--chat-sans); color: var(--chat-mute); }
+  #comppark[hidden] { display: none; }
   #compspace { flex: 1; }
   #input { flex: 1; min-height: 24px; max-height: 140px; resize: none; padding: 4px 0; border: 0;
     background: transparent; color: var(--chat-ink); caret-color: var(--chat-ink);
@@ -1828,6 +1831,7 @@
            terminal, #comp.tall mounted into the focused pane's chat dock. Nothing below is built
            twice — src/client.ts#mountComposer moves this node. -->
       <div id="comp" class="bar">
+        <div id="comppark" hidden></div>
         <div id="compsurface">
           <div id="compfiles"></div>
           <textarea id="input" rows="1" placeholder="Prompt for the selected session…"

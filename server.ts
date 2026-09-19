@@ -6381,6 +6381,11 @@ class SendRefused extends Error { readonly refused = true; }
 // The owner /send's own refusal (requireAgent): the probe named no live agent after the bounded
 // boot wait, so the text would land in a pane nothing reads yet — a booting TUI's composer, where
 // a founding brief then finds it (2026-09-14 12:08, a spawning lane killed), or a bare shell.
+// …and the refusal that names an owner DRAFT by its size: the one SendRefused a caller may choose to
+// wait out (POST /send `whenFree`, THE PARKED SEND below). The message is the pre-class sentence, byte for byte.
+class SendComposerOccupied extends SendRefused {
+  constructor(readonly chars: number) { super(`composer occupied (${chars} chars) — nothing typed`); }
+}
 class SendAgentNotAlive extends SendRefused {
   constructor(readonly agent: AgentState) { super(`no agent alive in the pane (agent=${agent}) — nothing typed`); }
 }
@@ -6743,7 +6748,7 @@ async function sendText(s: Slot, given: string, submit: boolean,
       // both as one turn. Read BEFORE the boot block — a draft is a draft whatever the pane's age.
       const before = await readComposer(s, bound);
       if (!sameBoundPane(s, bound)) throw new Error("slot changed during composer probe");
-      if (before) throw new SendRefused(`composer occupied (${before.length} chars) — nothing typed`);
+      if (before) throw new SendComposerOccupied(before.length);
     }
     // Readiness is a process fact, not an output fact. `openedAt` asks "could this pane still be
     // booting?" without misclassifying an established dead agent. Empty comms = fast-path waiver.
@@ -17142,6 +17147,130 @@ async function tickMigrate(): Promise<void> {
     }
   } finally {
     migrateTickBusy = false;
+  }
+}
+
+// --- THE PARKED SEND (2026-09-19, Orchestratorin slot 4: a /send to slot 3 died on "composer
+// occupied (2 chars)" because "Ok" stood unsent in the field, and the caller ran its own 15 s retry
+// loop until the owner cleared it). POST /send with `whenFree: true` turns exactly THAT refusal into
+// a wait: 202 with delivery "parked", and this tick types the text once the composer reads empty.
+//
+// WHAT IT NEVER DOES: touch the draft. Delivery goes through sendText, whose pre-paste read refuses
+// an occupied composer before a byte is typed — a parked send is a caller that stopped retrying by
+// hand, never a way past the owner's field. No clear, no stash, no erase key.
+//
+// THE OCCUPANT PIN is the stream occupant (slot + openedAt + selfToken) captured at park time: a
+// slot NUMBER is recycled, and a pane that took the row since is a different addressee — its entry
+// is dropped with the reason on its receipt, never typed into the newcomer.
+//
+// THE SCHEDULE is the event hold's own function (holdBackoffMs, below) and nothing else of that
+// path: a separate map keyed by sendId, so the Watch/report rows and their trail are untouched.
+//
+// PROCESS-LOCAL, like the hold state: a restart drops every parked text unsent (the audit row
+// `send_parked` names each one), so a caller that must not lose one reads its receipt.
+const PARKED_SEND_MAX_PER_SLOT = 3;
+const PARKED_SEND_TTL_DEFAULT_MS = 30 * 60_000;
+const PARKED_SEND_TTL_MAX_MS = 30 * 60_000;
+const PARKED_SETTLED_KEEP = 50;
+type SendReceiver = { slot: number; openedAt: number; sessionId: string | null };
+type ParkedSend = {
+  sendId: string; occupant: SlotStreamOccupant; receiver: SendReceiver; text: string; submit: boolean;
+  parkedAt: number; deadlineAt: number; holds: number; nextProbeAt: number;
+  // the size of the draft that blocks it, as the last probe read it — the owner's pane shows it
+  draftChars: number;
+};
+type ParkedSettled = {
+  sendId: string; receiver: SendReceiver; parkedAt: number; at: number;
+  delivery: "delivered" | "dropped" | "uncertain"; reason: string; acceptance?: Acceptance;
+};
+const parkedSends: ParkedSend[] = [];
+const parkedSettled: ParkedSettled[] = [];
+let parkedTickBusy = false;
+
+// null = parked; a string = why it was not (the cap), for the 409 the route answers instead
+function parkSend(s: Slot, p: Omit<ParkedSend, "occupant" | "holds" | "nextProbeAt">): string | null {
+  const occupant = slotStreamOccupant(s);
+  if (!occupant) return "slot unavailable";
+  const held = parkedSends.filter((x) => x.occupant.slot === s.id).length;
+  if (held >= PARKED_SEND_MAX_PER_SLOT)
+    return `slot ${s.id} already holds ${held} parked sends (cap ${PARKED_SEND_MAX_PER_SLOT})`;
+  parkedSends.push({ ...p, occupant, holds: 1, nextProbeAt: p.parkedAt + holdBackoffMs(1) });
+  audit("send_parked", s.id, `${p.sendId} draft=${p.draftChars} bytes=${Buffer.byteLength(p.text, "utf8")}`,
+    { phase: "entry", deadlineAt: p.deadlineAt });
+  return null;
+}
+
+function settleParked(p: ParkedSend, delivery: ParkedSettled["delivery"], reason: string, acceptance?: Acceptance): void {
+  const i = parkedSends.indexOf(p);
+  if (i >= 0) parkedSends.splice(i, 1);
+  const at = Date.now();
+  parkedSettled.push({ sendId: p.sendId, receiver: p.receiver, parkedAt: p.parkedAt, at, delivery, reason,
+    ...(acceptance ? { acceptance } : {}) });
+  if (parkedSettled.length > PARKED_SETTLED_KEEP) parkedSettled.splice(0, parkedSettled.length - PARKED_SETTLED_KEEP);
+  audit("send_parked", p.occupant.slot, `${p.sendId} ${delivery}: ${reason.slice(0, 120)}`,
+    { phase: "end", delivery, holds: p.holds, heldMs: at - p.parkedAt });
+}
+
+// the receipt of a parked send, live or settled; null when this process never parked it
+function parkedReceipt(sendId: string): Record<string, unknown> | null {
+  const live = parkedSends.find((p) => p.sendId === sendId);
+  if (live) return { sendId, at: live.parkedAt, delivery: "parked", receiver: live.receiver,
+    parked: { draftChars: live.draftChars, holds: live.holds, nextProbeAt: live.nextProbeAt, deadlineAt: live.deadlineAt } };
+  const done = parkedSettled.find((p) => p.sendId === sendId);
+  return done ? { ...done } : null;
+}
+
+// what the board paints on a slot: omitted (undefined) when nothing waits for this occupant
+function parkedSendView(s: Slot): { count: number; draftChars: number; since: number } | undefined {
+  const mine = parkedSends.filter((p) => sameSlotStreamOccupant(s, p.occupant));
+  if (!mine.length) return undefined;
+  return { count: mine.length, draftChars: mine[0].draftChars, since: mine[0].parkedAt };
+}
+
+async function tickParkedSends(): Promise<void> {
+  if (parkedTickBusy || !parkedSends.length) return;
+  parkedTickBusy = true;
+  try {
+    const now = Date.now();
+    // endings first, for every entry: a pin that no longer matches or a deadline that passed
+    for (const p of [...parkedSends]) {
+      const s = slots.find((x) => x.id === p.occupant.slot);
+      if (!s || !sameSlotStreamOccupant(s, p.occupant))
+        settleParked(p, "dropped", "the receiver occupant ended or was replaced — never typed into the new one");
+      else if (now >= p.deadlineAt)
+        settleParked(p, "dropped", `expired — the composer stayed occupied for ${Math.round((now - p.parkedAt) / 1000)} s`);
+    }
+    // then ONE attempt per slot, oldest first: a later text never overtakes an earlier one
+    for (const slotId of [...new Set(parkedSends.map((p) => p.occupant.slot))]) {
+      const p = parkedSends.find((x) => x.occupant.slot === slotId);
+      const s = slots.find((x) => x.id === slotId);
+      if (!p || !s || Date.now() < p.nextProbeAt) continue;
+      // no await between this pin check and sendText's own occupant capture
+      if (!sameSlotStreamOccupant(s, p.occupant)) continue;
+      try {
+        const { acceptance } = await sendText(s, p.text, p.submit, { path: "owner", requireAgent: true });
+        const ts = Date.now();
+        s.history = [...s.history, { text: p.text, ts }].slice(-MAX_HISTORY);
+        saveHistory(s);
+        logPrompt(s, p.text, "owner", ts, p.sendId, acceptance === "unobservable" ? "unobserved" : "sent");
+        settleParked(p, "delivered", "the composer was free and Fleet typed into it", acceptance);
+      } catch (e) {
+        if (e instanceof SendRefused) {
+          // still a draft (or no live agent yet): nothing was typed, so wait on the same schedule
+          if (e instanceof SendComposerOccupied) p.draftChars = e.chars;
+          p.holds++;
+          p.nextProbeAt = Date.now() + holdBackoffMs(p.holds);
+          continue;
+        }
+        // typed in part or not accepted: the /send route's uncertain case, and it is never retried —
+        // a second paste of a text that may already sit in the pane is the duplicate this avoids
+        logPrompt(s, p.text, "owner", Date.now(), p.sendId, "uncertain");
+        settleParked(p, "uncertain", `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}`,
+          e instanceof SendNotAccepted ? e.acceptance : undefined);
+      }
+    }
+  } finally {
+    parkedTickBusy = false;
   }
 }
 
@@ -31267,6 +31396,8 @@ setInterval(() => void poll(), 100);
 setInterval(() => void tickAutos().catch((e: unknown) => logError("tickAutos", e)), AUTOS_TICK_MS);
 // the event-triggered delivery next to the time-triggered one — same cadence, same choke-point
 setInterval(() => void tickWatches().catch((e: unknown) => logError("tickWatches", e)), AUTOS_TICK_MS);
+// the owner's own parked /send (THE PARKED SEND): owner-initiated, so no automation switch holds it
+setInterval(() => void tickParkedSends().catch((e: unknown) => logError("tickParkedSends", e)), AUTOS_TICK_MS);
 setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), GIT_TICK_MS);
 void tickGit().catch((e: unknown) => logError("tickGit", e)); // warm the badge cache so the first paint isn't blank
 setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispatch", e)), DISPATCH_TICK_MS);
@@ -34947,6 +35078,7 @@ Bun.serve<WSData>({
           // paint one there, so it would be bytes on the 2 s poll for nothing.
           const inb = s.cwd ? inboundToday(s.id, pollNow) : null;
           const paneModel = s.cwd ? paneModelInfo.get(s.id) : undefined;
+          const parked = parkedSendView(s);
           return {
             id: s.id, cwd: s.cwd, label: s.label, openedAt: s.openedAt,
             // Canonical checkout identity, separate from cwd: a main session may live in a
@@ -34960,6 +35092,8 @@ Bun.serve<WSData>({
             ...(s.effort ? { effort: s.effort } : {}),
             ...(paneModel?.model ? { paneModel: paneModel.model } : {}),
             ...(paneModel?.modelPushedAt ? { modelPushedAt: paneModel.modelPushedAt } : {}),
+            // an owner /send waiting for an empty composer (THE PARKED SEND); omitted when none waits
+            ...(parked ? { parkedSend: parked } : {}),
             // a lane that starts WITH the Playwright MCP; omitted for the default text lane and every non-lane
             ...(s.worktree && s.browser ? { browser: true } : {}),
             // the pane's context budget (Slot.context); omitted when none was chosen
@@ -37378,6 +37512,11 @@ Bun.serve<WSData>({
       await killSlot(s, "owner");
       return json({ ok: true });
     }
+    // the receipt of a parked send (THE PARKED SEND): still waiting, delivered, or dropped and why
+    if (req.method === "GET" && url.pathname.startsWith("/send/")) {
+      const receipt = parkedReceipt(url.pathname.slice("/send/".length));
+      return receipt ? json({ receipt }) : json({ error: "no parked send with that id in this process" }, 404);
+    }
     if (req.method === "POST" && url.pathname === "/send") {
       const body = await readJson(req);
       if (!body) return json({ error: "expected application/json" }, 400);
@@ -37393,6 +37532,13 @@ Bun.serve<WSData>({
       // 409 naming who holds it now. No await between this check and sendText's own occupant capture.
       if (body.openedAt !== undefined && !(typeof body.openedAt === "number" && body.openedAt > 0))
         return json({ error: "bad openedAt" }, 400);
+      // THE PARKED SEND (opt-in): an occupied composer answers 202 "parked" instead of 409, and the
+      // tick types the text once the field is empty. Absent/false = the 409 below, byte for byte.
+      if (body.whenFree !== undefined && typeof body.whenFree !== "boolean")
+        return json({ error: "bad whenFree" }, 400);
+      if (body.whenFreeTtlSec !== undefined && !(typeof body.whenFreeTtlSec === "number"
+        && body.whenFreeTtlSec > 0 && body.whenFreeTtlSec * 1000 <= PARKED_SEND_TTL_MAX_MS))
+        return json({ error: `bad whenFreeTtlSec (1..${PARKED_SEND_TTL_MAX_MS / 1000})` }, 400);
       if (body.openedAt !== undefined && body.openedAt !== s.openedAt)
         return json({ error: `slot ${s.id} is held by a different occupant (openedAt ${s.openedAt}, not ${body.openedAt}) — nothing typed`,
           occupant: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId, label: s.label, lane: s.worktree?.branch ?? null } }, 409);
@@ -37413,6 +37559,16 @@ Bun.serve<WSData>({
         // Nothing typed: an occupied composer (owner draft), or no live agent after the bounded boot
         // wait, refuses before the paste. Plainly retryable, so it is neither journaled as a send nor
         // presented as uncertain.
+        if (e instanceof SendComposerOccupied && body.whenFree === true) {
+          const at = Date.now();
+          const deadlineAt = at + (typeof body.whenFreeTtlSec === "number"
+            ? Math.round(body.whenFreeTtlSec * 1000) : PARKED_SEND_TTL_DEFAULT_MS);
+          const capped = parkSend(s, { sendId, receiver, text: body.text, submit, parkedAt: at, deadlineAt,
+            draftChars: e.chars });
+          if (capped) return json({ error: `${e.message}; not parked — ${capped}`,
+            receipt: { sendId, at, delivery: "refused", receiver } }, 409);
+          return json({ ok: true, receipt: parkedReceipt(sendId) }, 202);
+        }
         if (e instanceof SendRefused)
           return json({ error: e.message, ...(e instanceof SendAgentNotAlive ? { agent: e.agent } : {}),
             receipt: { sendId, at: Date.now(), delivery: "refused", receiver } }, 409);

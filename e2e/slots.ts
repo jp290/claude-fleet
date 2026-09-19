@@ -572,6 +572,146 @@ export async function run(): Promise<void> {
       && heldRow?.modelPushedAt === undefined && !heldPane.includes("/model ") && pushAuditsAfter === pushAuditsBefore,
     JSON.stringify({ mode: composerMode !== "", open: heldOpen.status, agent: heldAgent, draft: draftPane.includes(draft),
       status: heldPush.status, error: heldBody.error, stamp: heldRow?.modelPushedAt, audits: [pushAuditsBefore, pushAuditsAfter] }));
+
+  // --- THE PARKED SEND (server.ts): the same draft-holding pane, asked to WAIT instead of refuse.
+  // The stand-in pi appends every SUBMITTED turn to `<state>.turns`, so "delivered exactly once" and
+  // "never delivered" are read off what the agent received, not off the server's own receipt.
+  {
+    type Rcpt = { sendId?: string; delivery?: string; reason?: string;
+      parked?: { draftChars?: number }; receiver?: { slot?: number; openedAt?: number } };
+    type Parked = { count: number; draftChars: number; since: number };
+    const statePath = process.env.FLEET_E2E_COMPOSER_STATE ?? "";
+    const turnsOf = (): string => { try { return readFileSync(`${statePath}.turns`, "utf8"); } catch { return ""; } };
+    const countIn = (hay: string, needle: string): number => hay.split(needle).length - 1;
+    const parkedOf = async (slot: number): Promise<Parked | undefined> =>
+      ((await (await get("/api/sessions")).json()) as { slots: { id: number; parkedSend?: Parked }[] })
+        .slots.find((x) => x.id === slot)?.parkedSend;
+    const receiptOf = async (id: string): Promise<Rcpt | undefined> =>
+      ((await (await get(`/send/${id}`)).json()) as { receipt?: Rcpt }).receipt;
+    const typeDraft = async (text: string): Promise<boolean> => {
+      await tmuxOut("send-keys", "-l", "-t", "s3", text);
+      for (let i = 0; i < 80; i++) {
+        if ((await tmuxOut("capture-pane", "-p", "-t", "s3")).out.includes(text)) return true;
+        await Bun.sleep(50);
+      }
+      return false;
+    };
+    const clearDraft = async (text: string): Promise<void> => {
+      for (let i = 0; i < [...text].length; i++) await tmuxOut("send-keys", "-t", "s3", "BSpace");
+    };
+    // its own check: a fixture that could not be built must fail as ITSELF, never as the route
+    check("parked-send fixture: slot 3 runs the stand-in pi with the owner draft in its composer and a turns ledger path",
+      statePath !== "" && heldAgent === "alive" && draftPane.includes(draft),
+      JSON.stringify({ statePath: statePath !== "", agent: heldAgent, draft: draftPane.includes(draft) }));
+
+    // (2) WITHOUT the field: the 409 sentence is the pre-feature one, byte for byte, and nothing parks.
+    // Mutation caught: parking by default, or rewording the refusal.
+    const plain = await post("/send", { slot: 3, text: "parked-probe-plain", submit: true });
+    const plainBody = await plain.json() as { error?: string; receipt?: Rcpt };
+    check("parked send: without whenFree an occupied composer is still 409 `composer occupied (N chars) — nothing typed` and parks nothing",
+      plain.status === 409 && plainBody.error === `composer occupied (${draft.length} chars) — nothing typed`
+        && plainBody.receipt?.delivery === "refused" && (await parkedOf(3)) === undefined,
+      JSON.stringify({ status: plain.status, body: plainBody }));
+    const badFlag = await post("/send", { slot: 3, text: "parked-probe-bad", whenFree: "yes" });
+    const badTtl = await post("/send", { slot: 3, text: "parked-probe-bad", whenFree: true, whenFreeTtlSec: 99_999 });
+    check("parked send: a non-boolean whenFree and an out-of-range whenFreeTtlSec are 400 and park nothing",
+      badFlag.status === 400 && badTtl.status === 400 && (await parkedOf(3)) === undefined,
+      `${badFlag.status} ${badTtl.status}`);
+
+    // (1) PARK three, then the cap refuses the fourth
+    const texts = ["parked-probe-one", "parked-probe-two", "parked-probe-three"];
+    const parked: { status: number; receipt?: Rcpt }[] = [];
+    for (const text of texts) {
+      const r = await post("/send", { slot: 3, text, submit: true, whenFree: true });
+      parked.push({ status: r.status, receipt: ((await r.json()) as { receipt?: Rcpt }).receipt });
+    }
+    const board = await parkedOf(3);
+    check("parked send: whenFree on an occupied composer answers 202 delivery:parked with the blocking draft's size, and the board carries it",
+      parked.every((p) => p.status === 202 && p.receipt?.delivery === "parked"
+        && p.receipt.parked?.draftChars === draft.length && p.receipt.receiver?.slot === 3 && !!p.receipt.sendId)
+        && board?.count === 3 && board.draftChars === draft.length,
+      JSON.stringify({ parked, board }));
+    const over = await post("/send", { slot: 3, text: "parked-probe-over", submit: true, whenFree: true });
+    const overBody = await over.json() as { error?: string; receipt?: Rcpt };
+    check("parked send: the per-slot cap (3) refuses a fourth with 409 delivery:refused and says why",
+      over.status === 409 && overBody.receipt?.delivery === "refused"
+        && overBody.error?.includes("not parked") === true && overBody.error.includes("cap 3")
+        && (await parkedOf(3))?.count === 3,
+      JSON.stringify({ status: over.status, body: overBody }));
+
+    // (4) several probes later: nothing typed, and the draft is exactly where the owner left it.
+    // Mutation caught: clearing/stashing the draft, or pasting past it.
+    await Bun.sleep(2000);
+    const heldTurns = turnsOf();
+    let heldState = "";
+    try { heldState = readFileSync(statePath, "utf8"); } catch { heldState = ""; }
+    const heldPaneNow = (await tmuxOut("capture-pane", "-p", "-t", "s3")).out;
+    check("parked send: while the draft stands nothing is typed and the draft is neither cleared nor extended",
+      texts.every((t) => !heldTurns.includes(t) && !heldPaneNow.includes(t)) && heldState.endsWith(draft)
+        && heldPaneNow.includes(draft),
+      JSON.stringify({ state: heldState.slice(-80), turnsTail: heldTurns.slice(-120) }));
+
+    // the owner clears the field: every parked text arrives exactly once, in order
+    await clearDraft(draft);
+    const ids = parked.map((p) => p.receipt?.sendId ?? "");
+    let settled: (Rcpt | undefined)[] = [];
+    for (let i = 0; i < 200; i++) {
+      settled = await Promise.all(ids.map(receiptOf));
+      if (settled.every((r) => r?.delivery && r.delivery !== "parked")) break;
+      await Bun.sleep(100);
+    }
+    await Bun.sleep(1000); // one more backoff window: a second paste would land inside it
+    const turns = turnsOf();
+    const at = texts.map((t) => turns.indexOf(t));
+    check("parked send: the cleared composer gets each parked text exactly once, in park order, and the draft is never submitted",
+      settled.every((r) => r?.delivery === "delivered") && texts.every((t) => countIn(turns, t) === 1)
+        && at[0] < at[1] && at[1] < at[2] && countIn(turns, draft) === 0
+        && !turns.includes("parked-probe-over") && !turns.includes("parked-probe-plain")
+        && (await parkedOf(3)) === undefined,
+      JSON.stringify({ settled, counts: texts.map((t) => countIn(turns, t)), at }));
+
+    // OCCUPANT PIN: a send parked for one occupant is dropped, never typed, when the slot is re-opened
+    const draft2 = "owner-draft-recycle";
+    const typed2 = await typeDraft(draft2);
+    const pinRes = await post("/send", { slot: 3, text: "parked-probe-recycled", submit: true, whenFree: true });
+    const pinBody = await pinRes.json() as { receipt?: Rcpt };
+    const reopen = await post("/api/slots/3/open", { cwd: "~", harness: "pi", model: "claude-bridge/claude-haiku-4-5" });
+    let pinReceipt: Rcpt | undefined;
+    for (let i = 0; i < 80; i++) {
+      pinReceipt = await receiptOf(pinBody.receipt?.sendId ?? "");
+      if (pinReceipt?.delivery === "dropped") break;
+      await Bun.sleep(100);
+    }
+    await Bun.sleep(1500); // the new occupant's composer is empty: a leaked delivery would land now
+    check("parked send: a re-opened slot never receives the previous occupant's parked text, and the receipt says why",
+      typed2 && pinRes.status === 202 && reopen.ok && pinReceipt?.delivery === "dropped"
+        && pinReceipt.reason?.includes("occupant") === true && !turnsOf().includes("parked-probe-recycled")
+        && (await parkedOf(3)) === undefined,
+      JSON.stringify({ typed2, status: pinRes.status, reopen: reopen.status, pinReceipt }));
+
+    // TIME CAP: a parked send outlives its whenFreeTtlSec only as a dropped receipt
+    let agent3: string | null | undefined;
+    for (let i = 0; i < 80 && agent3 !== "alive"; i++) {
+      agent3 = (await modelRowOf(3))?.agent;
+      if (agent3 !== "alive") await Bun.sleep(50);
+    }
+    const draft3 = "owner-draft-expiry";
+    const typed3 = await typeDraft(draft3);
+    const ttlRes = await post("/send", { slot: 3, text: "parked-probe-expired", submit: true, whenFree: true, whenFreeTtlSec: 1 });
+    const ttlBody = await ttlRes.json() as { receipt?: Rcpt };
+    let ttlReceipt: Rcpt | undefined;
+    for (let i = 0; i < 60; i++) {
+      ttlReceipt = await receiptOf(ttlBody.receipt?.sendId ?? "");
+      if (ttlReceipt?.delivery === "dropped") break;
+      await Bun.sleep(100);
+    }
+    await clearDraft(draft3);
+    await Bun.sleep(1500);
+    check("parked send: the time cap drops a send whose composer stayed occupied, and it is never typed afterwards",
+      agent3 === "alive" && typed3 && ttlRes.status === 202 && ttlReceipt?.delivery === "dropped"
+        && ttlReceipt.reason?.startsWith("expired") === true && !turnsOf().includes("parked-probe-expired"),
+      JSON.stringify({ agent3, typed3, status: ttlRes.status, ttlReceipt }));
+  }
   await post("/api/slots/3/kill", {});
   await post("/api/slots/1/open", { cwd: "~/claude-fleet" });
   await post("/api/slots/2/open", { cwd: "~" });

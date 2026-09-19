@@ -439,7 +439,11 @@ type AuditEvent =
   // a text over server.ts#PASTE_MAX_BYTES was STORED instead of pasted; the `send` row beside it
   // counts the one pointer line that was typed. Fields: `bytes` and `sha256` of the stored text,
   // `file` (where it is), `sendPath` (the channel) — a reference, never the text.
-  | "pane_inbox_stored";
+  | "pane_inbox_stored"
+  // an owner /send parked behind an occupied composer (server.ts, THE PARKED SEND). `phase` entry =
+  // parked (`deadlineAt`), end = settled (`delivery` delivered/dropped/uncertain, `holds`, `heldMs`);
+  // the detail names the sendId and the draft's LENGTH — never the text, never the draft.
+  | "send_parked";
 // `fields` — machine-readable columns for the rows that need them, beside (not instead of) the
 // prose `detail` every other event uses. The four identity keys are RESERVED: a caller cannot
 // overwrite what row this is, which is why they are filtered rather than merely documented.

@@ -12307,20 +12307,22 @@ async function deliver(slot: number, text: string): Promise<boolean> {
 
 async function doSend() {
   const pane = panes[focused];
-  const typed = ta.value.trim();
+  // `text` is the typed prompt — the ✨ verdict below compares it, and e2e/outcomes.ts (9e) reads
+  // that comparison by name; the attachments' mentions are not part of what the owner edited
+  const text = ta.value.trim();
   // exactly what the box used to carry after an upload: the prompt, then one mention per line
-  const text = [typed, attachedText()].filter(Boolean).join("\n");
+  const outgoing = [text, attachedText()].filter(Boolean).join("\n");
   const slot = pane?.slot;
-  if (!text || !slot || send.disabled) return;
+  if (!outgoing || !slot || send.disabled) return;
   send.disabled = true;
   try {
-    if (!await deliver(slot, text)) return;
+    if (!await deliver(slot, outgoing)) return;
     // the ✨ draft's verdict, decided by what actually went out (see pendingEnhance). Written only
     // after the send SUCCEEDED — a failed send leaves the text in the box and nothing labeled.
     if (pendingEnhance) {
       const p = pendingEnhance;
       pendingEnhance = null;
-      void labelDisposition("enhance", p.draftId, typed === p.text.trim() ? "accepted" : "edited");
+      void labelDisposition("enhance", p.draftId, text === p.text.trim() ? "accepted" : "edited");
     }
     ta.value = "";
     clearAttachments();

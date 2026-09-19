@@ -1180,6 +1180,52 @@
   #shell-queue .qorigin-arrow { color: var(--chat-faint); font-size: 11px; }
   /* in the queue a known id reads as the pane's inline code chip with a dotted underline; the
      chat's blue hover gives way to the ink, like every other accent here */
+  /* THE NOTES OVERVIEW: count tiles, a stacked bar per program, an age histogram. Two inks carry
+     the two kinds (notiz faint-to-mute, richtung ink) — no hue, the pair stays on states. */
+  .qnsub { font-size: 12px; line-height: 18px; margin-top: 4px; }
+  #shell-queue .qnsub { color: var(--chat-mute); }
+  .qnkpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 8px; margin: 16px 0 8px; }
+  .qnkpi { padding: 8px 12px; border: 1px solid var(--line-soft); border-radius: 8px; }
+  .qnkpin { font-size: 20px; line-height: 28px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .qnkpil { font-size: 11px; line-height: 16px; }
+  .qnhead { font-size: 11px; font-weight: 500; margin: 20px 0 8px; }
+  .qnlegend { display: flex; align-items: center; gap: 4px 8px; font-size: 11px; margin: -4px 0 8px; }
+  .qnsw { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  .qnlegend .qnsw + span { margin-right: 4px; }
+  .qnbars { display: flex; flex-direction: column; gap: 2px; max-width: 720px; }
+  .qnbar { display: grid; grid-template-columns: minmax(0, 200px) 1fr 32px; align-items: center; gap: 12px;
+    padding: 4px 8px; margin: 0 -8px; font: inherit; font-size: 12px; text-align: left; background: transparent;
+    border: 0; border-radius: 5px; cursor: pointer; }
+  .qnbarl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qnbartrack { height: 8px; border-radius: 2px; overflow: hidden; }
+  .qnbarfill { display: flex; height: 100%; min-width: 2px; }
+  .qnseg { display: block; flex-basis: 0; min-width: 2px; }
+  .qnbarfill .qnseg + .qnseg { border-left: 1px solid transparent; }
+  .qnbarn { text-align: right; font-variant-numeric: tabular-nums; }
+  .qnhist { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; max-width: 480px; }
+  .qnhcol { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+  .qnhn, .qnhl { font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; }
+  .qnhplot { height: 96px; display: flex; align-items: flex-end; }
+  .qnhstack { width: 100%; display: flex; flex-direction: column; min-height: 0; border-radius: 2px; overflow: hidden; }
+  .qnhstack .qnseg { min-height: 2px; }
+  .qnotesgo { margin-left: auto; font: inherit; font-size: 11px; background: transparent; border: 0; cursor: pointer; padding: 0 4px; }
+  #shell-queue .qnkpi { border-color: var(--chat-edge-soft); background: var(--chat-surface); }
+  #shell-queue .qnkpin { color: var(--chat-ink); }
+  #shell-queue .qnkpil, #shell-queue .qnhead, #shell-queue .qnlegend, #shell-queue .qnhl { color: var(--chat-mute); }
+  #shell-queue .qnhn, #shell-queue .qnbarn { color: var(--chat-mute); }
+  #shell-queue .qnbar { color: var(--chat-prose); transition: background var(--t); }
+  #shell-queue .qnbar:hover { background: var(--c-hover); }
+  #shell-queue .qnbartrack { background: var(--chat-raised); }
+  #shell-queue .k-notiz { background: var(--chat-mute); }
+  #shell-queue .k-richtung { background: var(--chat-ink); }
+  #shell-queue .k-other { background: var(--chat-faint); }
+  #shell-queue .qnkpi.k-notiz, #shell-queue .qnkpi.k-richtung, #shell-queue .qnkpi.k-other { background: var(--chat-surface); }
+  #shell-queue .qnkpi.k-notiz { box-shadow: inset 3px 0 0 var(--chat-mute); }
+  #shell-queue .qnkpi.k-richtung { box-shadow: inset 3px 0 0 var(--chat-ink); }
+  #shell-queue .qnkpi.k-other { box-shadow: inset 3px 0 0 var(--chat-faint); }
+  #shell-queue .qnbarfill .qnseg + .qnseg, #shell-queue .qnhstack .qnseg + .qnseg { box-shadow: inset 0 0 0 0 transparent; }
+  #shell-queue .qnotesgo { color: var(--chat-mute); }
+  #shell-queue .qnotesgo:hover { color: var(--chat-ink); }
   #shell-queue .ent { font-size: var(--chat-ui-fs); color: var(--chat-ink); border-bottom-color: var(--chat-faint); }
   #shell-queue .ent:hover, #shell-queue .ent:focus-visible { background: var(--c-hover); color: var(--chat-ink);
     border-bottom-color: var(--chat-ink); outline: none; }

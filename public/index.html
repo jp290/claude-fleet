@@ -1716,6 +1716,9 @@
     #comp.bar #input, #comp.tall #input { font-size: 16px; }
     #comp.bar #input { min-height: 26px; max-height: 110px; }
     #comp.bar #send, #comp.bar #dropbtn, #comp.tall #send, #comp.tall #dropbtn { width: 40px; height: 40px; }
+    /* pi/codex switches in the strip: on a phone they take their own line above the text, right
+       aligned — beside it they squeezed the field to one word per line (measured at 390px) */
+    #comp.bar #compopts:not(:empty) { order: -3; flex-basis: 100%; justify-content: flex-end; }
     /* the tray entries carry labels now: finger height, natural width, scroll instead of overlap */
     #comptray { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
     #comp #comptray button { flex: none; width: auto; min-height: 40px; font-size: 13px; }

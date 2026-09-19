@@ -196,31 +196,33 @@ Live-`fleet.json`. Keine Slots, kein Dispatcher, alle Worker-Kommandos auf `true
   `executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`, Viewport 1440×900.
   Das Skript klickt `#queuebtn` und macht einen Screenshot.
 
-## 6 · Prompt für die Folge-Session auf diesem Worktree
+## 6 · Prompt für die Folge-Session auf diesem Worktree (Session 3)
+
+Session 2 hat Teil 2 gebaut (§0) und auf Wunsch des Owners übergeben. Es ist nichts halb gemacht, und
+der Owner hat noch keine neue Aufgabe genannt.
 
 ```
 Du setzt die Queue-Ansicht-Arbeit auf Branch fleet/260918192319-a2cb fort, im Gespräch mit dem Owner.
-Lies zuerst docs/queue-redesign-2026-09.md ganz und `git log main..HEAD` mit Bodies.
+Lies zuerst §0 von docs/queue-redesign-2026-09.md und `git log main..HEAD` mit Bodies.
 
-AUFTRAG: Teil 2, ein NEUENTWURF (kein Umräumen) von (a) Detail-Panel und (b) oberer Leiste der
-Task-Queue in src/client.ts (renderQueueDetail, openQueue, paintQueueScope) und public/index.html.
-Die Liste aus Teil 1 bleibt, wie sie ist, außer der Owner sagt etwas anderes.
+STAND: Teil 2 ist gebaut und committet: D2-Detail (Lesespalte + sticky Schiene) und L2-Baum mit
+L3-Zeile als Umschalter. Die vier Entscheide aus §3 bleiben beim Ist-Zustand. Der Branch ist landbar
+(sauber, wouldConflict:false); landen tun MAIN oder Owner.
 
-ERSTER ZUG, danach auf den Owner warten, vorher kein Code:
-1. Die Vorschau-Instanz nach §5 hochziehen, oder die laufende auf :8871 wiederverwenden, wenn sie antwortet.
-2. Zwei bis drei Entwurfsvarianten für Detail-Panel und Leiste als kurze ASCII-Skizzen vorlegen. §3 ist
-   ein Vorschlag, keine Vorgabe.
-3. Die vier offenen Owner-Entscheide aus §3 als knappe Fragen stellen.
+VERIFY-STAND: Der volle ./e2e-isolated.sh auf 569b5bce (second-host) meldete 5048 Checks und 1 FAIL
+("task spawn choice source: both acts are disabled…"). Der Fix ist 306aea8e, lokal per extrahiertem
+Probe-Block plus Mutation belegt. Den Wiederholungslauf hat der Owner abgebrochen ("ist das wirklich
+nötig?" → ja, zurückziehen); der Post-Land-Audit fährt ihn ohnehin. Pins, tsc (Gate-Liste) und
+build sind grün.
 
-DANN: die gewählte Variante in kleinen Schritten bauen, je Schritt ein Commit. Jeder Schritt wird in
-der Vorschau selbst per Headless-Chrome angesehen, bevor der Owner den Link bekommt. Die Proben aus §4
-als Spezifikation mitziehen: Invarianten halten, nie aufweichen, und für jeden neuen Check einen
-Negativfall.
+ERSTER ZUG: Den Owner fragen, was als Nächstes kommt. Kein Code vorher.
+Offen aus dem Gespräch, nur auf seinen Wunsch:
+- Studio in der Schiene unter "place" als Program › Studio, erst wenn ein echtes Studio existiert.
+  Live gibt es 0 Studios und 0 Bindungen. Studio ist ein Workflow-Datensatz
+  (server/types.ts#Studio), keine Gruppierung; die Repos bleiben oberste Ebene (Owner, 2026-09-19).
+- Die Vorschau-Instanz auf :8871 stoppen, wenn der Owner sie nicht mehr braucht (Rezept §5).
 
-VERIFY vor jedem „fertig“: GET /api/self/gate, dann pins + tsc (Gate-Liste) + bun run build, danach
-FLEET_E2E_MODULES=tasks ./e2e-isolated.sh (per Suite-Offer, wenn ein Helfer frei ist). Beurteilt wird
-am Ende des Logs („ALL PASS“ bzw. den FAIL-Zeilen).
-
-NICHT: Jev bauen ohne Owner-Freigabe. bun server.ts mit Default-Env. Die Vorschau über die IP
-verlinken. Landen (das tut MAIN/Owner). Den Kontextfüllstand bei ~25 % melden.
+NICHT: Jev bauen ohne Freigabe. bun server.ts mit Default-Env. Die Vorschau über die IP verlinken.
+Landen. Einen Bauschritt aus einem unbeantworteten eigenen Vorschlag ableiten: gebaut wird der
+bestätigte Stand, vorher die Tabelle "sein Satz → Element".
 ```

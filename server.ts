@@ -7820,6 +7820,10 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
     // the verdict's mint finds the successor's occupation. Settled offers are NOT carried: their
     // verdict belongs to the occupation that read it, and the handoff report is where that
     // knowledge travels.
+    // TEMPORARY PROBE (removed once the (a) transfer is proven): speak the map, not the predicate.
+    audit("lane_succession", s.id,
+      `transfer probe: priorOpenedAt=${priorOpenedAt} now=${s.openedAt} jobs=`
+      + ([...laneSuiteJobs.values()].map((j) => `${j.id}:${j.slot}:${j.slotOpenedAt}:${j.state}`).join(",") || "(empty)"));
     for (const j of laneSuiteJobs.values())
       if (j.slot === s.id && j.slotOpenedAt === priorOpenedAt && (j.state === "open" || j.state === "claimed")) {
         j.slotOpenedAt = s.openedAt;

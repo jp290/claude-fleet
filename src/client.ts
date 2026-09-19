@@ -237,6 +237,9 @@ interface SlotInfo {
   // means nothing was delivered today — the server omits the key on the 2 s poll — and absent is
   // therefore an answer, not a gap: a session nobody has written to since midnight.
   inbound?: { sends: number; bytes: number };
+  // owner /sends parked behind an occupied composer (server.ts, THE PARKED SEND): how many wait,
+  // the size of the draft that blocks them, since when. ABSENT = nothing waits.
+  parkedSend?: { count: number; draftChars: number; since: number };
   // Codex rollout discovery is lazy and can terminally refuse ambiguity/loss. This is a typed
   // claim about the server poll, not inferred from harness/session recency in the client.
   codexRecovery?: { state: "pending" | "bound" | "ambiguous" | "lost";
@@ -3504,6 +3507,16 @@ function mountComposer(): void {
   const pane = panes[focused];
   setComposerSize(pane?.isChat ? "tall" : "bar");
   renderComposerOpts(false);
+  renderParkHint();
+}
+
+// the focused pane's parked sends (server.ts, THE PARKED SEND), one quiet line above the composer
+function renderParkHint(): void {
+  const hint = $("comppark");
+  const ps = fleet.find((x) => x.id === panes[focused]?.slot)?.parkedSend;
+  hint.hidden = !ps;
+  const text = ps ? `⏳ ${parkedSendLine(ps)}` : "";
+  if (hint.textContent !== text) hint.textContent = text;
 }
 
 // the model/effort switches: conversation view only, and only what the SLOT'S ADAPTER carries
@@ -5848,6 +5861,10 @@ function stackChips(g: Stack, open: boolean): HTMLElement[] {
 // B3 · the inbound chip's PAINTED text, in one place because two readers need exactly it: the row
 // that draws the chip and the sidebar's render key, which must be keyed on what is painted and not
 // on the raw byte count (the rule `behind` and the ctx chip above both document).
+// ONE sentence for a parked send, shared by the slot chip's tooltip and the pane view's hint
+const parkedSendLine = (ps: { count: number; draftChars: number }): string =>
+  `${ps.count} message${ps.count === 1 ? "" : "s"} wait${ps.count === 1 ? "s" : ""} for an empty input — `
+  + `a draft of ${ps.draftChars} char${ps.draftChars === 1 ? "" : "s"} holds the composer; send or clear it`;
 const inboundChipLabel = (inb: { sends: number; bytes: number }): string =>
   `in ${inb.bytes < 1024 ? `${inb.bytes} B` : `${Math.round(inb.bytes / 1024)} KB`}`;
 function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<number, string>): HTMLElement {
@@ -5969,6 +5986,14 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
           + "\nDelivered bytes only — a refused send costs the session nothing."
           + "\nCounted per slot number, so a slot recycled today carries both occupants' sends.";
         row.appendChild(inb);
+      }
+      // a send waiting for this pane's composer to empty: a hint, not an alarm — the draft is the
+      // owner's, and Fleet types nothing until the owner sends or clears it
+      if (s.parkedSend) {
+        const ps = s.parkedSend;
+        const pk = el("span", "ctxfill", `⏳${ps.count}`);
+        pk.title = `${parkedSendLine(ps)}\nwaiting since ${new Date(ps.since).toLocaleTimeString()}`;
+        row.appendChild(pk);
       }
       // green = live in a pane, or a background session that just produced output. A FOLDED anchor
       // also lights up for its hidden lanes: a lane that just produced output is exactly the kind of
@@ -6228,6 +6253,7 @@ async function refresh() {
     shareBase = data.shareBase ?? "";
     chipCmds = data.chips;
     renderChips(data.chips);
+    renderParkHint();
     // hot also for a PROPOSED done-criterion (2026-08-05): a clarify lane that filed its
     // proposal sits parked on the owner — before this, nothing on the board said so and the
     // lane waited invisibly until the owner happened to reselect the task
@@ -6260,7 +6286,8 @@ async function refresh() {
         // …and the inbound chip, through the SAME function that paints it — keying on the raw byte
         // count would rebuild the sidebar for a change the chip does not show, and leaving it out
         // would freeze the chip until another field moved (the `behind` bug this list documents).
-        s.inbound ? inboundChipLabel(s.inbound) : null])]);
+        s.inbound ? inboundChipLabel(s.inbound) : null,
+        s.parkedSend?.count, s.parkedSend?.draftChars])]);
     if (key !== lastRender) {
       lastRender = key;
       renderSlots();

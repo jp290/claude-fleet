@@ -3611,6 +3611,41 @@ die im Augenblick der Vergabe unsichtbar ist, wird versehentlich vergeben. Fuenf
 `promotionState`, und `unreadable` ist einer davon: ein Wunsch, den der Build nicht lesen kann,
 wird beim Confirm FALLEN GELASSEN, also waere „Sprosse" ein Versprechen und „nichts" eine Luege.
 
+## send whenFree — `POST /send` (OWNER-Route, nicht `/api/self/*`)
+
+Anlass (2026-09-19, Orchestratorin Slot 4): ein `/send` an Slot 3 kam mit
+`409 composer occupied (2 chars) — nothing typed` zurück, weil „Ok" ungesendet im Eingabefeld stand;
+der Absender fuhr einen eigenen Retry-Loop (alle 15 s), bis der Owner das Feld leerte. Der Parkplatz
+ersetzt diesen Loop (`server.ts`, Kommentar „THE PARKED SEND").
+
+- **Opt-in:** `{"slot":3,"text":"…","whenFree":true}` (optional `"whenFreeTtlSec": 1..1800`, Default
+  1800). Ist das Feld belegt, antwortet die Route **202** mit
+  `receipt:{sendId, at, delivery:"parked", receiver, parked:{draftChars, holds, nextProbeAt, deadlineAt}}`.
+  Ist es frei, geht der Send sofort raus wie immer (200). **Ohne `whenFree`** bleibt das Verhalten
+  byte-gleich: 409 mit demselben Satz und `delivery:"refused"`.
+- **Zustellung:** ein eigener Tick auf der Autos-Kadenz probt dieselbe Vor-Paste-Lesung wie jeder
+  Send, im Abstand der Hold-Backoff-Funktion der Events (`holdBackoffMs`: 2 Ticks, verdoppelnd bis
+  12). Pro Slot wird nur die älteste geparkte Nachricht angetippt — eine spätere überholt keine
+  frühere. Geliefert wird genau einmal; ein unsicherer Ausgang (Paste teilweise/nicht angenommen)
+  wird `delivery:"uncertain"` und NIE wiederholt.
+- **Der Entwurf wird nie angefasst:** kein Leeren, kein Stash, keine Löschtaste. Getippt wird erst,
+  wenn die Pane selbst ein leeres Feld zeigt.
+- **Occupant-Pin:** geparkt wird für den Occupant zum Park-Zeitpunkt (Slot + `openedAt` +
+  Self-Token). Wird der Slot neu belegt, fällt die Nachricht als `delivery:"dropped"` mit Grund
+  („the receiver occupant ended or was replaced …") — die neue Pane bekommt sie NIE.
+- **Deckel:** höchstens **3** geparkte Sends je Slot (der vierte: 409 `delivery:"refused"`, Satz
+  endet auf „not parked — … (cap 3)"); nach `whenFreeTtlSec` fällt eine Nachricht als `dropped`
+  („expired — …").
+- **Receipt nachlesen:** `GET /send/<sendId>` → `{receipt}` (parked · delivered · dropped ·
+  uncertain, mit `reason`); 404, wenn dieser Prozess die Id nie geparkt hat. Gehalten werden die
+  letzten 50 abgeschlossenen.
+- **Prozesslokal:** ein Serverneustart verwirft geparkte Texte ungesendet. Im Audit-Trail steht je
+  Park eine `send_parked`-Zeile (`phase:"entry"`) und je Ende eine (`phase:"end"`, `delivery`) —
+  mit Länge, nie mit Text.
+- **Sichtbar:** `GET /api/sessions` trägt am Slot `parkedSend:{count, draftChars, since}` (fehlt, wenn
+  nichts wartet). Das Board zeigt `⏳N` an der Slot-Zeile; die Pane-Sicht nennt über dem Eingabefeld
+  die Zeichenzahl des blockierenden Entwurfs.
+
 ## stalled — `GET /api/sessions` (OWNER-Route, nicht `/api/self/*`)
 
 Sie steht hier, weil sie die eine Stelle ist, an der die Flotte sagt **„diese Lane arbeitet nicht

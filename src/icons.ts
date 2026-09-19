@@ -14,6 +14,7 @@ const PATHS = {
   history: ["M3.5 12a8.5 8.5 0 1 0 2.5-6", "M3.5 4v4h4", "M12 7.5v4.7l3 1.8"],
   clock: ["M20.5 12a8.5 8.5 0 1 1-17 0a8.5 8.5 0 1 1 17 0z", "M12 7.5v4.7l3 1.8"],
   spark: ["M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9-1.9 5.1-1.9-5.1L5 10.5l5.1-1.9z", "M18.5 16v4", "M16.5 18h4"],
+  layers: ["M12 4l8 4-8 4-8-4z", "M4 12l8 4 8-4", "M4 16l8 4 8-4"],
   keys: ["M3 6.5h18v11H3z", "M7 10h.01", "M10.3 10h.01", "M13.7 10h.01", "M17 10h.01", "M8 14h8"],
   // one mark per agent harness — OWN plain geometry, deliberately not any vendor's logo (this repo
   // is public): claude an open ring around a point, codex a hexagon, the pi family the letter π

@@ -3433,6 +3433,7 @@ let optMsg: Partial<Record<OptField, string>> = {};
 let optsSlot = 0;
 
 function renderComposerOpts(force: boolean): void {
+  renderComposerProfile();
   const pane = panes[focused];
   const slot = pane?.isChat ? pane.slot : 0;
   const h = slot ? harnessEntry(slot) : null;
@@ -3494,6 +3495,64 @@ function renderComposerOpts(force: boolean): void {
       return { row: [levels] };
     }, null));
   }
+}
+
+// THE PROFILE LINE (ninth cut, owner: "eine profil zeile … auf der man nichts machen kann … die
+// versch injezierten Kontext-schichten des aktuellen Agenten"). EXPRESSLY A PLACEHOLDER: the full
+// version belongs to the reworked right-hand column. It reads only what this board already holds —
+// the slot row, the task on the 2 s poll, the Program digest, and the Program list if the queue has
+// loaded it — and never fetches. A layer the board does not hold says "—", never a guess:
+//   role     slot.worktree / Program.main.slot + the slot's harness
+//   brief    the `sent` task row naming this slot (its id hoverable like in the transcript)
+//   program  that row's programId, or the Program this slot is bound MAIN of
+//   packs    Program.contextPacks — the list row carries them, but only once /api/programs was read
+//   receipt  the context receipt ledger reaches only a MAIN's self route, never this owner board
+// Not a control: no click, no toggle; only the brief id answers a hover, as it does everywhere.
+const compProfile = $("compprofile");
+let profileKey = "";
+function renderComposerProfile(): void {
+  const slot = panes[focused]?.slot ?? 0;
+  const s = slot ? fleet.find((x) => x.id === slot) : undefined;
+  const task = s?.cwd ? tasksList.find((t) => t.slot === slot && t.status === "sent") : undefined;
+  const mainOf = programsRead === "ok"
+    ? programsList.find((p) => p.main?.slot === slot && (p.status === "active" || p.status === "confirmed")) : undefined;
+  const progId = task?.programId ?? mainOf?.id;
+  const prog = progId ? programsPoll.find((p) => p.id === progId) : undefined;
+  const full = progId ? programsList.find((p) => p.id === progId) : undefined;
+  const role = !s?.cwd ? "" : s.worktree ? "lane" : mainOf ? "MAIN" : programsRead === "ok" ? "session" : "";
+  // the harness only: model and effort are the composer's own two controls right beside it
+  const adapter = s?.cwd ? s.harness ?? "claude" : "";
+  const packs = !progId ? "" : programsRead !== "ok" ? "" : String(full?.contextPacks?.length ?? 0);
+  const packIds = full?.contextPacks?.map((c) => c.id).join(", ") ?? "";
+  const key = JSON.stringify([slot, role, adapter, task?.id, task?.briefAt, progId, prog?.title, packs, packIds]);
+  if (key === profileKey) return;
+  profileKey = key;
+  compProfile.replaceChildren();
+  if (!s?.cwd) return;
+  const dash = "—";
+  const seg = (label: string, value: string | HTMLElement, why: string) => {
+    const e = el("span", "pfseg");
+    e.title = why;
+    e.append(el("span", "pflabel", label), typeof value === "string" ? el("span", value === dash ? "pfval none" : "pfval", value) : value);
+    compProfile.appendChild(e);
+  };
+  compProfile.appendChild(el("span", "pfico")).appendChild(icon("layers"));
+  seg("role", role ? `${role} · ${adapter}` : `${dash} · ${adapter}`,
+    role ? "the slot row (worktree) and the Program list (bound MAIN), plus the slot's harness"
+      : "lane or MAIN is known once the Program list is loaded (open the queue once)");
+  let brief: string | HTMLElement = dash;
+  if (task) {
+    const id = el("span", "pfval ent", task.id);
+    id.setAttribute("data-ent", "task");
+    id.setAttribute("data-id", task.id);
+    brief = id;
+  }
+  seg("brief", brief, task ? `the queue row sent to slot ${slot}${task.briefAt ? " — a compiled brief exists" : ""}` : "no queue row is sent to this slot");
+  seg("program", prog ? prog.title : dash, prog ? `Program ${prog.id}` : "no Program on this slot's row");
+  seg("packs", packs || dash, packIds ? `context packs: ${packIds}`
+    : !progId ? "packs belong to a Program — this slot has none"
+    : programsRead !== "ok" ? "the Program list is not loaded on this board yet (it loads with the queue)" : "this Program carries no context packs");
+  seg("receipt", dash, "what was actually delivered (context receipts) is readable only by a MAIN's self route, not by this board");
 }
 
 // Close whatever is open and forget what was staged in it — closing without Apply discards.
@@ -3597,6 +3656,8 @@ function buildTray(): void {
     // one icon language: the emoji the markup carries are replaced by the board's SVG grammar
     compTray.lastElementChild?.querySelector(".tricon")?.replaceChildren(icon(entry.icon));
   }
+  compTray.appendChild(compProfile); // the profile line shares the tray's row — no row of its own
+  attachEntityCards(compProfile, describeEntity);
   dropBtn.querySelector(".tricon")?.replaceChildren(icon("plus"));
   send.replaceChildren(icon("send"));
 }
@@ -6996,6 +7057,9 @@ type ProgramFoundingState = { state: "absent" }
   | { state: "pending"; record: PublicProgramFounding }
   | { state: "unreadable" };
 interface ProgramInfo extends ProgramDigest {
+  // the Program's context pointers (server/types.ts#Program.contextPacks) — they ride the list row
+  // whole; only the composer's profile line reads them, and only their ids
+  contextPacks?: { id: string; useWhen: string }[];
   intent?: string; successCriterion?: string;
   // ABSENT or null = unbound. A PRESENT object may still be incomplete, and that is `unknown`,
   // never `live` — see programMark.
@@ -12320,7 +12384,7 @@ async function doSend() {
       void labelDisposition("enhance", p.draftId, typed === p.text.trim() ? "accepted" : "edited");
     }
     ta.value = "";
-    attached.length = 0;
+    clearAttachments();
     renderAttachments();
     growComposer();
     cyc = null;
@@ -12451,18 +12515,52 @@ const mainEl = $("main");
 // server words the mention); what changed in the third cut is only where the mention is KEPT:
 // on this list, shown as an icon with an ✕, instead of as a line the owner has to edit out of the
 // box. doSend appends them in upload order, so what leaves the board is the same text as before.
-const attached: { name: string; mention: string }[] = [];
+// Ninth cut (owner: "die beigelegten bilder in kleiner darstellung … mit ':1M' … dahinter"): an
+// image shows its own bytes as a thumbnail — an object URL over the File the browser already
+// holds, no request — and every entry carries its size. The URL is revoked wherever the entry
+// leaves the list (✕, send), otherwise every dropped screenshot stays in memory for the tab's life.
+const attached: { name: string; mention: string; size: number; thumb?: string }[] = [];
+
+// the owner's ":1M" — bytes in the short form a file list uses: 512B, 820K, 1.4M, 12M
+function fmtSize(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)}K`;
+  const m = n / (1024 * 1024);
+  return `${m < 10 ? Math.round(m * 10) / 10 : Math.round(m)}M`;
+}
+
+function dropAttachment(i: number): void {
+  const [gone] = attached.splice(i, 1);
+  if (gone?.thumb) URL.revokeObjectURL(gone.thumb);
+}
+function clearAttachments(): void {
+  for (const a of attached) if (a.thumb) URL.revokeObjectURL(a.thumb);
+  attached.length = 0;
+}
 
 function renderAttachments(): void {
   reshapeSurface(() => compFiles.replaceChildren(...attached.map((a, i) => {
     const box = el("div", "att");
     box.title = a.mention;
-    box.appendChild(el("span", "attico")).appendChild(icon(/\.(png|jpe?g|gif|webp|svg|heic|avif)$/i.test(a.name) ? "image" : "file"));
-    box.appendChild(el("span", "attname", a.name));
+    const lead = box.appendChild(el("span", "attico"));
+    const fallback = () => lead.replaceChildren(icon(/\.(png|jpe?g|gif|webp|svg|heic|avif)$/i.test(a.name) ? "image" : "file"));
+    if (a.thumb) {
+      const img = document.createElement("img");
+      img.className = "attthumb";
+      img.alt = "";
+      img.src = a.thumb;
+      img.onerror = fallback; // a format this browser cannot draw (HEIC) keeps the icon
+      lead.appendChild(img);
+    } else fallback();
+    // middle-truncated: the start gives way, the tail (last characters + extension) always shows
+    const cut = Math.max(0, a.name.length - 8);
+    const name = box.appendChild(el("span", "attname"));
+    name.append(el("span", "attstart", a.name.slice(0, cut)), el("span", "attend", a.name.slice(cut)));
+    box.appendChild(el("span", "attsize", fmtSize(a.size)));
     const x = el("button", "attx") as HTMLButtonElement;
     x.appendChild(icon("x"));
     x.title = `remove ${a.name} from this prompt`;
-    x.onclick = () => { attached.splice(i, 1); renderAttachments(); ta.focus(); };
+    x.onclick = () => { dropAttachment(i); renderAttachments(); ta.focus(); };
     box.appendChild(x);
     return box;
   })));
@@ -12489,7 +12587,8 @@ async function uploadDrops(files: File[]): Promise<void> {
       // repo that does not ignore the drop directory) applies to the whole batch, and a toast per
       // file would bury it.
       if (!res.ok || !j.mention) { toast(j.error ?? `upload failed (${res.status})`); return; }
-      attached.push({ name: f.name, mention: j.mention });
+      attached.push({ name: f.name, mention: j.mention, size: f.size,
+        ...(f.type.startsWith("image/") ? { thumb: URL.createObjectURL(f) } : {}) });
     }
     renderAttachments();
     updateChips();

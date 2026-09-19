@@ -428,6 +428,19 @@
   .attico { flex: none; display: grid; place-items: center; width: 32px; height: 32px; color: var(--chat-mute); }
   .attico .ico { width: 16px; height: 16px; }
   .attthumb { display: block; width: 32px; height: 32px; object-fit: cover; border-radius: var(--r1); }
+  button.attico { padding: 0; border: 0; border-radius: var(--r1); background: transparent; cursor: zoom-in; }
+  button.attico:hover .attthumb { opacity: 0.85; }
+  /* the attached image, large (src/client.ts#openLightbox): over the whole board, pure black at
+     90 %, the image at most 90vw × 85vh with the composer's code-block radius, its name under it */
+  .lightbox { position: fixed; inset: 0; z-index: 60; display: none; flex-direction: column; align-items: center;
+    justify-content: center; gap: 12px; padding: 16px; background: rgba(0, 0, 0, 0.9); cursor: zoom-out; outline: none; }
+  .lightbox.open { display: flex; animation: lbin 160ms cubic-bezier(0.2, 0.7, 0.2, 1); }
+  .lightbox img { max-width: 90vw; max-height: 85vh; object-fit: contain; border-radius: 10px; cursor: default;
+    border: 1px solid var(--chat-edge-soft); }
+  .lbname { max-width: 90vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font: 400 12px var(--chat-sans); color: var(--chat-mute); }
+  @keyframes lbin { from { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .lightbox.open { animation: none; } }
   .attname { flex: 1; display: flex; min-width: 0; font-size: 12px; color: var(--chat-prose); white-space: nowrap; }
   .attstart { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .attend { flex: none; white-space: pre; }
@@ -446,20 +459,6 @@
   #comptray button:disabled { opacity: 0.5; cursor: progress; }
   #comptray button.err { color: var(--danger); }
   #comptray .ico { width: 14px; height: 14px; }
-  /* the profile line (ninth cut, a PLACEHOLDER): read-only, in the tray's own row at its right end
-     so it adds no height; ink levels only, the tray's 12px, never a button */
-  /* flex-basis 0: it takes what the tray's row leaves and truncates, it never wraps to a row of its own */
-  #compprofile { flex: 1 1 0; display: flex; align-items: center; justify-content: flex-end; gap: 12px;
-    min-width: 0; overflow: hidden;
-    font: 400 11px var(--chat-sans); color: var(--chat-faint); white-space: nowrap; cursor: default; }
-  #compprofile:empty { display: none; }
-  .pfico { flex: none; display: grid; }
-  .pfico .ico { width: 12px; height: 12px; }
-  .pfseg { display: flex; gap: 4px; min-width: 0; flex-shrink: 1; }
-  .pflabel { flex: none; }
-  .pfval { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--chat-mute); }
-  .pfval.none { color: var(--chat-faint); }
-  #compprofile .ent { font-size: 11px; }
   /* live typing is a TOUCH affordance — a desktop owner clicks the terminal and types. It is a
      tray entry like every other, shown only where there is no hardware keyboard. */
   #comptray > #live { display: none; }
@@ -493,7 +492,7 @@
   .cmdlevels { display: flex; flex-wrap: nowrap; gap: 4px; }
   /* the adapter's model list (server.ts#Harness.models): one clickable row per model */
   .cmdlist { display: grid; gap: 2px; }
-  .cmdmodel { height: 28px; padding: 0 8px; text-align: left; font: 400 12px var(--chat-mono); color: var(--chat-mute);
+  .cmdmodel { height: 28px; padding: 0 8px; text-align: left; font: 400 13px var(--chat-sans); color: var(--chat-mute);
     background: transparent; border: 1px solid transparent; border-radius: var(--r1); cursor: pointer;
     white-space: nowrap; transition: color var(--t), border-color var(--t), background-color var(--t); }
   .cmdmodel:hover { color: var(--chat-ink); background: var(--c-hover); }
@@ -512,7 +511,11 @@
   /* a staged value shows on the switch itself, underlined until it is applied or discarded */
   .optswrap.staged .optval { color: var(--chat-ink); text-decoration: underline dotted; text-underline-offset: 3px; }
   .optmark { flex: none; display: grid; margin-right: 4px; color: var(--chat-mute); }
-  .optmark .ico { width: 14px; height: 14px; }
+  /* the harness marks are the CLIs' own signs (src/icons.ts#harnessMark), each in its own colour */
+  .optmark .mark.clawd { display: block; width: auto; height: 12px; }
+  .optmark .mark.codexmark, .optmark .mark.pimark { font: 700 12px/1 var(--chat-mono); }
+  .optmark .mark.codexmark { color: var(--chat-ink); }
+  .optmark .mark.pimark { color: #8abeb7; }
   .slot .autobadge { flex: none; font-size: 10px; color: var(--amber); }
   /* Lane suffix + left accent identify lanes without a redundant permanent glyph. */
   .slot.lane { border-left: 2px solid var(--focus); overflow: hidden; }
@@ -1790,7 +1793,6 @@
           </div>
         </div>
         <div id="comptray"></div>
-        <div id="compprofile" aria-label="context layers of this session (read-only)"></div>
         <input id="dropfile" type="file" multiple hidden>
         <button id="live" title="live typing — every key goes straight to the terminal"><span class="tricon"></span><span class="trlabel">Live</span></button>
         <button id="histbtn" title="prompt history (↑ in the empty box recalls too)"><span class="tricon"></span><span class="trlabel">History</span></button>

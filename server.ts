@@ -13411,6 +13411,11 @@ const VARIANT_RESERVE_MS = Math.max(0, Number(process.env.FLEET_VARIANT_RESERVE_
 // read at boot like every other knob, so a suite can size them and production keeps the defaults.
 const VARIANT_WAIT_MS = Math.max(0, Number(process.env.FLEET_VARIANT_WAIT_MS ?? 2 * 60 * 60_000) | 0);
 const VARIANT_CHECK_TIMEOUT_MS = Math.max(250, Number(process.env.FLEET_VARIANT_CHECK_TIMEOUT_MS ?? 60_000) | 0);
+// THE DRAIN BOUND — how long ONE check's stdout/stderr may stay open after its process exited
+// (runVariantCheck) before this side cancels its readers and moves on. Short by design: it covers
+// draining buffered output, never a live holder — a holder that survived the group kill is
+// exactly what this bound exists to stop waiting for.
+const VARIANT_CHECK_DRAIN_MS = Math.max(100, Number(process.env.FLEET_VARIANT_CHECK_DRAIN_MS ?? 2_000) | 0);
 const VARIANT_COMPARE_FILE = `${import.meta.dir}/variant-compare.jsonl`;
 // WHOSE freeing lane would end the hold — so a claim never holds a row it could not be waiting for.
 // A full program's claim must not stop a foreign row in the same repo; a full repo's must not stop
@@ -13686,16 +13691,49 @@ async function runVariantCheck(cwd: string, check: TaskCriterionPart["check"]): 
   if (!check || typeof check.cmd !== "string" || !check.cmd.trim()
     || typeof check.expectExit !== "number" || !Number.isSafeInteger(check.expectExit)
     || check.expectExit < 0 || check.expectExit > 255) return "unmeasured";
-  const p = Bun.spawn(["sh", "-c", check.cmd], { cwd, stdout: "pipe", stderr: "pipe", env: verifyChildEnv(null) });
+  // OWN PROCESS GROUP (detached makes the sh its own group leader): the timeout's kill must reach
+  // what the check LEAVES BEHIND, not only the sh it ran in. Measured 2026-09-19 (post-land audit
+  // of 65039505, red only on the Linux shard): dash never execs even a list's last command, so
+  // `sh -c "sleep 30"` forks a sleep the plain child-kill misses — it holds stdout/stderr open,
+  // the pipe drain below never returns, and one hung check pins variantCompareBusy for EVERY
+  // later group until restart. `kill(-pid)` is the group kill; where detached did not take effect
+  // it throws and the plain child kill is the fallback, with the drain bound as the second line
+  // that keeps the comparer alive regardless.
+  const p = Bun.spawn(["sh", "-c", check.cmd],
+    { cwd, stdout: "pipe", stderr: "pipe", env: verifyChildEnv(null), detached: true });
   let killed = false;
-  const timer = setTimeout(() => { killed = true; try { p.kill(9); } catch { /* already gone */ } },
-    VARIANT_CHECK_TIMEOUT_MS);
+  const timer = setTimeout(() => {
+    killed = true;
+    try { process.kill(-p.pid, "SIGKILL"); } catch { try { p.kill(9); } catch { /* already gone */ } }
+  }, VARIANT_CHECK_TIMEOUT_MS);
+  // A reader loop rather than Response.text(), on purpose: Bun's stream.cancel() does not settle a
+  // pending text() reader, and the cut below is what closes THIS side when a holder survives the
+  // kill — reader.cancel() does (measured, Bun 1.3.9).
+  const openPipe = (s: ReadableStream<Uint8Array>) => {
+    const r = s.getReader();
+    return { reader: r, done: (async (): Promise<void> => {
+      try { for (;;) { const x = await r.read(); if (x.done) return; } } catch { /* cut mid-read */ }
+    })() };
+  };
   try {
     // drained concurrently with the exit so a chatty check cannot deadlock on a full pipe
-    const out = new Response(p.stdout).text();
-    const err = new Response(p.stderr).text();
+    const out = openPipe(p.stdout);
+    const err = openPipe(p.stderr);
     const code = await p.exited;
-    await Promise.all([out, err]);
+    // THE DRAIN BOUND: the pipes close when their last holder dies — the group kill makes that
+    // now. A holder that survived anyway gets VARIANT_CHECK_DRAIN_MS, then this side cancels: one
+    // open pipe must never hold this function — and with it variantCompareBusy — past a bound.
+    // When the check ITSELF exited and only a leftover holds the pipes, the exit code still stands
+    // (the check finished; the measurement exists) — after a kill it does not.
+    const cutTimer = setTimeout(() => {
+      void out.reader.cancel().catch(() => { /* already closed */ });
+      void err.reader.cancel().catch(() => { /* already closed */ });
+    }, VARIANT_CHECK_DRAIN_MS);
+    try {
+      await Promise.all([out.done, err.done]);
+    } finally {
+      clearTimeout(cutTimer);
+    }
     if (killed) return "unmeasured"; // the timeout spoke; nothing was measured, and the tick moves on
     return code === check.expectExit ? "met" : "unmet";
   } finally {

@@ -544,17 +544,9 @@ class Pane {
   // conversation view: renders the claude transcript as structured messages —
   // reflows at any width, which the fixed-width pty stream can't
   private readonly chatEl: HTMLElement;
-  // the conversation view's own composer and the harness-command overlay above it
-  private readonly chatBar: HTMLElement;
-  private readonly chatIn: HTMLTextAreaElement;
-  private readonly cmdBtn: HTMLButtonElement;
-  private readonly cmdPanel: HTMLElement;
-  private cmdKey = "";
-  // the last verdict of a model/effort move, HELD outside the DOM: setting either one changes the
-  // poll's own key, which repaints this panel — and a verdict that lives only in the node the
-  // repaint replaces is a verdict the owner never reads. Measured in the preview: the record half
-  // succeeded, the panel repainted, and the line was blank.
-  private cmdMsg = "";
+  // where the ONE composer is moved to while this pane shows the conversation (mountComposer).
+  // A dock rather than an input of its own: the board has exactly one input component.
+  readonly chatDock: HTMLElement;
   private readonly flakes = new Flakes();
   private readonly sizeBtn: HTMLButtonElement;
   private readonly viewBtn: HTMLButtonElement;
@@ -581,42 +573,9 @@ class Pane {
       e.clipboardData.setData("text/plain", md);
       e.preventDefault();
     });
-    // --- the conversation view's composer: same POST /send as the box under the terminal ---
-    this.chatIn = document.createElement("textarea");
-    this.chatIn.className = "chatin";
-    this.chatIn.rows = 1;
-    this.chatIn.placeholder = "message this session — Enter sends, Shift+Enter newline";
-    const grow = () => {
-      this.chatIn.style.height = "auto";
-      this.chatIn.style.height = `${Math.min(160, this.chatIn.scrollHeight)}px`;
-    };
-    this.chatIn.addEventListener("input", grow);
-    this.chatIn.addEventListener("keydown", (e) => {
-      // desktop: Enter sends, Shift+Enter is a newline. Mobile keeps Enter as a newline and sends
-      // with ➤ — the same split the box under the terminal makes
-      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isMobile()) {
-        e.preventDefault();
-        void this.chatSend();
-      }
-    });
-    const chatSendBtn = el("button", "chatsend", "➤") as HTMLButtonElement;
-    chatSendBtn.title = "send to this session";
-    chatSendBtn.onclick = (e) => { e.stopPropagation(); void this.chatSend(); };
-    this.cmdBtn = el("button", "cmdbtn", "⌘") as HTMLButtonElement;
-    this.cmdBtn.title = "harness commands — model, effort";
-    this.cmdBtn.style.display = "none"; // shown only where the slot's adapter carries a control
-    this.cmdBtn.onclick = (e) => {
-      e.stopPropagation();
-      const open = !this.cmdPanel.classList.contains("open");
-      this.cmdPanel.classList.toggle("open", open);
-      this.cmdBtn.classList.toggle("on", open);
-      if (open) { this.cmdMsg = ""; this.renderCmdPanel(true); }
-    };
-    this.cmdPanel = el("div", "cmdpanel");
-    const bar = el("div", "chatbarin");
-    bar.append(this.cmdBtn, this.chatIn, chatSendBtn);
-    this.chatBar = el("div", "chatbar");
-    this.chatBar.append(this.cmdPanel, bar);
+    // the conversation view's INPUT is the board's one composer, moved in here while this pane
+    // is the focused chat (mountComposer). The dock is an empty landing place, nothing more.
+    this.chatDock = el("div", "chatdock");
     this.sizeBtn = el("button", "chatsizebtn", "Aa") as HTMLButtonElement;
     this.sizeBtn.title = "Schriftgröße — Text, Code, Oberfläche (Strg/⌘ + / − / 0)";
     this.sizeBtn.onclick = (e) => {
@@ -659,7 +618,7 @@ class Pane {
     const navDn = el("button", "promptnav dn", "↓") as HTMLButtonElement;
     navDn.title = "next prompt of yours";
     navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
-    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.chatBar, this.hint, this.jump, this.sizeBtn,
+    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.chatDock, this.hint, this.jump, this.sizeBtn,
       this.viewBtn, this.boardBtn, this.reloadBtn, navUp, navDn);
     this.term = new Terminal({
       // 10k, not the 50k this carried from the first commit (f43e3fb1) without ever being
@@ -751,10 +710,7 @@ class Pane {
     // xterm's onScroll — listen to the DOM scroll so the jump pill stays in sync
     termEl.querySelector(".xterm-viewport")?.addEventListener("scroll", updateJump, { passive: true });
     this.jump.onclick = () => { this.term.scrollToBottom(); this.focus(); };
-    this.root.addEventListener("mousedown", (e) => {
-      focusPane(this.index);
-      if (!this.chatBar.contains(e.target as Node)) this.closeCmdPanel();
-    });
+    this.root.addEventListener("mousedown", () => focusPane(this.index));
     this.root.addEventListener("animationend", () => this.root.classList.remove("flash"));
   }
 
@@ -783,8 +739,8 @@ class Pane {
     this.viewBtn.title = v === "chat" ? "back to terminal" : "toggle conversation view";
     this.flakes.setActive(v === "chat");
     if (v !== "chat") sizePanel().classList.remove("open");
-    if (v === "chat") { this.syncHarnessAffordances(); if (!isMobile()) this.chatIn.focus(); }
-    else this.closeCmdPanel();
+    this.syncHarnessAffordances();
+    mountComposer(); // the one composer follows the focused pane into (and out of) the chat view
     clearTimeout(this.chatTimer);
     if (v === "chat") void this.pollChat();
     else this.term.focus();
@@ -804,13 +760,7 @@ class Pane {
     if (this.slot && !harnessesLoaded) void loadHarnesses().then(() => this.syncHarnessAffordances());
     const canChat = !this.slot || supportsOf(fleet.find((x) => x.id === this.slot)?.harness).transcript;
     this.viewBtn.style.display = this.slot && canChat ? "block" : "none";
-    this.applyCmdAffordance(); // also the path that HIDES it again when the pane leaves the chat
-    if (this.slot && this.view === "chat") {
-      // the catalogue is what decides which controls exist; it is fetched once, and the affordance
-      // is re-applied WHEN IT LANDS — a first sync before the fetch returns would otherwise leave
-      // the ⌘ button hidden until the next poll that happens to repaint the sidebar
-      this.chatIn.placeholder = `message slot ${this.slot} — Enter sends, Shift+Enter newline`;
-    }
+    if (focused === this.index) renderComposerOpts(false);
     // a pane already sitting in the chat view must not be stranded there when its slot turns out
     // to have no transcript behind it
     if (this.slot && !canChat && this.view === "chat") this.setView("term");
@@ -896,115 +846,6 @@ class Pane {
 
   get isChat(): boolean {
     return this.view === "chat";
-  }
-
-  private async chatSend(): Promise<void> {
-    const text = this.chatIn.value.trim();
-    if (!text || !this.slot || this.chatIn.disabled) return;
-    this.chatIn.disabled = true;
-    try {
-      if (!await deliver(this.slot, text)) return; // text stays in the box
-      this.chatIn.value = "";
-      this.chatIn.style.height = "auto";
-      this.chatEl.scrollTop = this.chatEl.scrollHeight; // your own message is what you want to see next
-    } finally {
-      this.chatIn.disabled = false;
-      if (!isMobile()) this.chatIn.focus();
-    }
-  }
-
-  // NOT greyed out: a harness that has no model and no effort concept shows no button at all.
-  // Unknown (catalogue not in yet) is also "no button" — it becomes one the moment the fetch lands.
-  private applyCmdAffordance(): void {
-    const h = this.slot && this.view === "chat" ? harnessEntry(this.slot) : null;
-    const carries = !!h && (h.supports.model || (h.supports.effort && h.effortLevels.length > 0));
-    this.cmdBtn.style.display = carries ? "flex" : "none";
-    if (!carries) this.closeCmdPanel();
-    else if (this.cmdPanel.classList.contains("open")) this.renderCmdPanel(false);
-  }
-
-  private closeCmdPanel(): void {
-    this.cmdPanel.classList.remove("open");
-    this.cmdBtn.classList.remove("on");
-  }
-
-  // The overlay is a SHORTCUT to what this board can already do — the record route plus the
-  // harness's own slash command — and every control in it comes from the adapter (server.ts
-  // HARNESSES, via GET /api/harnesses), never from a list kept here.
-  private renderCmdPanel(force: boolean): void {
-    const slot = this.slot;
-    const h = slot ? harnessEntry(slot) : null;
-    if (!h) { this.closeCmdPanel(); return; }
-    const s = fleet.find((x) => x.id === slot);
-    const key = [h.id, s?.model ?? "", s?.effort ?? "", chipCmds.join(","), defaultModel ?? ""].join("|");
-    if (!force && key === this.cmdKey) return;
-    this.cmdKey = key;
-    const box = el("div", "cmdrows");
-    box.appendChild(el("div", "cmdhead", `${h.id} · commands`));
-    const status = el("div", "cmdstatus", this.cmdMsg);
-    const say = (msg: string) => { this.cmdMsg = msg; status.textContent = msg; };
-    if (h.supports.model) {
-      const row = el("div", "cmdrow");
-      row.appendChild(el("span", "cmdlabel", "model"));
-      const input = document.createElement("input");
-      input.className = "cmdinput";
-      input.value = s?.model ?? "";
-      input.placeholder = h.default && defaultModel ? defaultModel : "default";
-      const set = el("button", "cmdgo", "set") as HTMLButtonElement;
-      const run = async () => {
-        const v = input.value.trim();
-        if (!v || !slot) return;
-        set.disabled = true;
-        say(`setting model ${v} …`);
-        say(await setSlotSetting(slot, "model", v));
-        set.disabled = false;
-      };
-      set.onclick = (e) => { e.stopPropagation(); void run(); };
-      input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); void run(); } });
-      row.append(input, set);
-      box.appendChild(row);
-    }
-    if (h.supports.effort && h.effortLevels.length) {
-      const row = el("div", "cmdrow");
-      row.appendChild(el("span", "cmdlabel", "effort"));
-      const levels = el("div", "cmdlevels");
-      for (const lv of h.effortLevels) {
-        const b = el("button", `cmdlevel${s?.effort === lv ? " on" : ""}`, lv) as HTMLButtonElement;
-        b.onclick = async (e) => {
-          e.stopPropagation();
-          if (!slot) return;
-          b.disabled = true;
-          say(`setting effort ${lv} …`);
-          say(await setSlotSetting(slot, "effort", lv));
-          b.disabled = false;
-        };
-        levels.appendChild(b);
-      }
-      row.append(levels);
-      box.appendChild(row);
-    }
-    // the server's own command prefixes (FLEET_CHIPS) — the only command list this board HAS.
-    // Absent env, absent row: inventing a per-harness slash catalogue here is exactly the
-    // hardcoded harness knowledge this file must not carry.
-    if (chipCmds.length) {
-      const row = el("div", "cmdrow");
-      row.appendChild(el("span", "cmdlabel", "prefix"));
-      const wrap = el("div", "cmdlevels");
-      for (const c of chipCmds) {
-        const b = el("button", "cmdlevel", c) as HTMLButtonElement;
-        b.onclick = (e) => {
-          e.stopPropagation();
-          this.chatIn.value = this.chatIn.value.startsWith(`${c} `) ? this.chatIn.value.slice(c.length + 1) : `${c} ${this.chatIn.value}`;
-          this.chatIn.focus();
-        };
-        wrap.appendChild(b);
-      }
-      row.append(wrap);
-      box.appendChild(row);
-    }
-    box.appendChild(el("div", "cmdnote", "sets the slot record AND types the command into the pane"));
-    box.appendChild(status);
-    this.cmdPanel.replaceChildren(box);
   }
 
   // One message: the rendered body (a bubble for you, free prose for the agent — t3code's layout
@@ -1274,6 +1115,9 @@ class Pane {
     // clearing them makes that guard fire and end the loop on a disposed instance
     this.slot = 0;
     this.view = "term";
+    // the one composer may be docked in THIS pane; a dispose that took it out of the document
+    // with the pane would leave the board with no input at all
+    if (this.chatDock.contains(compEl)) barEl.appendChild(compEl);
     this.flakes.dispose();
     this.term.dispose();
     this.root.remove();
@@ -3507,6 +3351,148 @@ applyBoard();
 // the board's own 3s interval used to live here — it is armed by the poll pump now (grep
 // armPolls), together with refresh(), so document.hidden is handled in exactly one place.
 
+// --- THE ONE COMPOSER ------------------------------------------------------------------------
+// Owner 2026-09-19: the conversation view's input REPLACES the box under the terminal — there is
+// one input component on this board, in two sizes. `bar` is the low strip under a terminal pane;
+// `tall` is the rounded surface of the reference shot, with the model/effort switches above it and
+// the slim tray below. Moving one node is deliberately the whole mechanism: every behaviour hung
+// on #input/#send (history, ↑-recall, chips, ✨ rework, paste-to-upload, Enter-sends) keeps
+// working because it is the same element, wherever it currently hangs.
+const compEl = $("comp"), compOpts = $("compopts"), compTray = $("comptray"), compFiles = $("compfiles");
+const barEl = $("bar");
+
+function setComposerSize(size: "bar" | "tall"): void {
+  compEl.classList.toggle("tall", size === "tall");
+  compEl.classList.toggle("bar", size === "bar");
+  ta.rows = 1;
+  growComposer();
+}
+
+function growComposer(): void {
+  ta.style.height = "auto";
+  ta.style.height = `${Math.min(compEl.classList.contains("tall") ? 220 : 140, ta.scrollHeight)}px`;
+}
+
+// The composer lives under the terminal until the FOCUSED pane shows a conversation; then it moves
+// into that pane's dock. Only the focused pane can hold it, which is the same rule the composer
+// always had — it has only ever addressed the focused session.
+function mountComposer(): void {
+  const pane = panes[focused];
+  const host = pane?.isChat ? pane.chatDock : barEl;
+  if (compEl.parentElement !== host) {
+    const active = document.activeElement === ta;
+    host.appendChild(compEl);
+    if (active) ta.focus();
+  }
+  setComposerSize(pane?.isChat ? "tall" : "bar");
+  renderComposerOpts(false);
+}
+
+// the model/effort switches: conversation view only, and only what the SLOT'S ADAPTER carries
+// (GET /api/harnesses). Same rule as the second cut — what a harness has no concept of is absent,
+// not greyed — and the same two-half write (setSlotSetting).
+let optsKey = "";
+let optsMsg = "";
+function renderComposerOpts(force: boolean): void {
+  const pane = panes[focused];
+  const slot = pane?.isChat ? pane.slot : 0;
+  const h = slot ? harnessEntry(slot) : null;
+  const s = fleet.find((x) => x.id === slot);
+  const key = [slot, h?.id ?? "", s?.model ?? "", s?.effort ?? "", defaultModel ?? ""].join("|");
+  if (!force && key === optsKey) return;
+  optsKey = key;
+  compOpts.replaceChildren();
+  if (!h) return;
+  if (h.supports.model) compOpts.appendChild(optSwitch("model", s?.model ?? (h.default && defaultModel ? defaultModel : "default"), (pop, say) => {
+    const input = document.createElement("input");
+    input.className = "cmdinput";
+    input.value = s?.model ?? "";
+    input.placeholder = h.default && defaultModel ? defaultModel : "default";
+    const go = el("button", "cmdgo", "set") as HTMLButtonElement;
+    const run = async () => {
+      const v = input.value.trim();
+      if (!v || !slot) return;
+      go.disabled = true;
+      say(`setting model ${v} …`);
+      say(await setSlotSetting(slot, "model", v));
+      go.disabled = false;
+    };
+    go.onclick = () => void run();
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); void run(); } });
+    const row = el("div", "cmdrow");
+    row.append(input, go);
+    pop.appendChild(row);
+  }));
+  if (h.supports.effort && h.effortLevels.length) compOpts.appendChild(optSwitch("effort", s?.effort ?? "default", (pop, say) => {
+    const levels = el("div", "cmdlevels");
+    for (const lv of h.effortLevels) {
+      const b = el("button", `cmdlevel${s?.effort === lv ? " on" : ""}`, lv) as HTMLButtonElement;
+      b.onclick = async () => {
+        if (!slot) return;
+        b.disabled = true;
+        say(`setting effort ${lv} …`);
+        say(await setSlotSetting(slot, "effort", lv));
+        b.disabled = false;
+      };
+      levels.appendChild(b);
+    }
+    pop.appendChild(levels);
+  }));
+}
+
+// one switch = a labelled value with a chevron, and a popover its caller fills. The verdict line
+// is held in `optsMsg`, outside the DOM: a set changes the poll key, the poll repaints this row,
+// and a verdict living in the replaced node would read as silence (measured in the second cut).
+function optSwitch(label: string, value: string, fill: (pop: HTMLElement, say: (m: string) => void) => void): HTMLElement {
+  const wrap = el("div", "optswrap");
+  const btn = el("button", "optsw") as HTMLButtonElement;
+  btn.append(el("span", "optlabel", label), el("span", "optval", value), el("span", "optchev", "⌄"));
+  const pop = el("div", "optpop");
+  const status = el("div", "cmdstatus", optsMsg);
+  const say = (m: string) => { optsMsg = m; status.textContent = m; };
+  fill(pop, say);
+  pop.append(el("div", "cmdnote", "sets the slot record AND types the command into the pane"), status);
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const open = !pop.classList.contains("open");
+    for (const other of compOpts.querySelectorAll(".optpop.open")) other.classList.remove("open");
+    for (const other of compOpts.querySelectorAll(".optsw.on")) other.classList.remove("on");
+    pop.classList.toggle("open", open);
+    btn.classList.toggle("on", open);
+  };
+  wrap.append(btn, pop);
+  return wrap;
+}
+document.addEventListener("pointerdown", (e) => {
+  const t = e.target;
+  if (t instanceof Element && t.closest(".optswrap")) return;
+  for (const pop of compOpts.querySelectorAll(".optpop.open")) pop.classList.remove("open");
+  for (const b of compOpts.querySelectorAll(".optsw.on")) b.classList.remove("on");
+});
+
+// --- the tray under the surface. ENTRIES ARE DATA: a later one is a row here, not a rebuild.
+// Every entry is an existing function of this board that used to own an icon button of its own.
+const TRAY: { id: string; label: string; icon: string; btn?: HTMLButtonElement; run?: () => void }[] = [
+  { id: "files", label: "Files", icon: "🗂", run: () => dropFile.click() },
+  { id: "histbtn", label: "History", icon: "🕘" },
+  { id: "autobtn", label: "Schedule", icon: "⏱" },
+  { id: "enhbtn", label: "Rework", icon: "✨" },
+  { id: "live", label: "Live", icon: "⌨" },
+];
+function buildTray(): void {
+  for (const entry of TRAY) {
+    if (entry.run) {
+      const b = el("button", "") as HTMLButtonElement;
+      b.title = "attach files to this session";
+      b.append(el("span", "tricon", entry.icon), el("span", "trlabel", entry.label));
+      b.onclick = entry.run;
+      compTray.appendChild(b);
+      continue;
+    }
+    compTray.appendChild($(entry.id)); // the element keeps its id, its title and its wiring
+  }
+}
+
 function focusPane(index: number) {
   const changed = focused !== index;
   focused = index;
@@ -3515,6 +3501,7 @@ function focusPane(index: number) {
   const hint = isMobile() ? "" : " (Enter sends)";
   ta.placeholder = slot ? `Prompt for slot ${slot}…${hint}` : "Prompt… (no session in focused pane)";
   updateTitle();
+  mountComposer(); // the composer addresses the focused pane, so it travels with the focus
   // a no-op focus must not rebuild the sidebar: the first click of a double-click on a
   // slot label lands here, and rebuilding would replace the element mid-double-click
   if (changed) {
@@ -12208,7 +12195,9 @@ async function deliver(slot: number, text: string): Promise<boolean> {
 
 async function doSend() {
   const pane = panes[focused];
-  const text = ta.value.trim();
+  const typed = ta.value.trim();
+  // exactly what the box used to carry after an upload: the prompt, then one mention per line
+  const text = [typed, attachedText()].filter(Boolean).join("\n");
   const slot = pane?.slot;
   if (!text || !slot || send.disabled) return;
   send.disabled = true;
@@ -12219,9 +12208,12 @@ async function doSend() {
     if (pendingEnhance) {
       const p = pendingEnhance;
       pendingEnhance = null;
-      void labelDisposition("enhance", p.draftId, text === p.text.trim() ? "accepted" : "edited");
+      void labelDisposition("enhance", p.draftId, typed === p.text.trim() ? "accepted" : "edited");
     }
     ta.value = "";
+    attached.length = 0;
+    renderAttachments();
+    growComposer();
     cyc = null;
     updateChips();
     pane.term.scrollToBottom();
@@ -12283,6 +12275,7 @@ ta.addEventListener("input", () => {
     void labelDisposition("enhance", p.draftId, "ignored");
   }
   updateChips();
+  growComposer();
 });
 
 // --- ✨ enhance: hand the draft to the background rework agent; the result replaces
@@ -12339,16 +12332,40 @@ enhBtn.onclick = async () => {
 // prompt around it. The wording of that line comes from the SERVER (dropMention), so the mention
 // format is decided in one place rather than re-guessed here.
 const dropBtn = $("dropbtn") as HTMLButtonElement;
+// the + keeps its own icon span so a busy state can replace the glyph without eating the button
+const dropIcon = dropBtn.querySelector<HTMLElement>(".tricon") ?? dropBtn;
 const dropFile = $("dropfile") as HTMLInputElement;
 const dropLay = $("droplay");
 const mainEl = $("main");
+
+// WHAT IS ATTACHED RIGHT NOW. The upload path is unchanged (POST /api/slots/:id/upload, the
+// server words the mention); what changed in the third cut is only where the mention is KEPT:
+// on this list, shown as an icon with an ✕, instead of as a line the owner has to edit out of the
+// box. doSend appends them in upload order, so what leaves the board is the same text as before.
+const attached: { name: string; mention: string }[] = [];
+
+function renderAttachments(): void {
+  compFiles.replaceChildren(...attached.map((a, i) => {
+    const box = el("div", "att");
+    box.title = a.mention;
+    box.appendChild(el("span", "attico", /\.(png|jpe?g|gif|webp|svg|heic|avif)$/i.test(a.name) ? "🖼" : "📄"));
+    box.appendChild(el("span", "attname", a.name));
+    const x = el("button", "attx", "✕") as HTMLButtonElement;
+    x.title = `remove ${a.name} from this prompt`;
+    x.onclick = () => { attached.splice(i, 1); renderAttachments(); ta.focus(); };
+    box.appendChild(x);
+    return box;
+  }));
+}
+
+const attachedText = (): string => attached.map((a) => a.mention).join("\n");
 
 async function uploadDrops(files: File[]): Promise<void> {
   if (!files.length) return;
   const slot = panes[focused]?.slot;
   if (!slot) { toast("no session focused — pick one first"); return; }
   dropBtn.disabled = true;
-  dropBtn.textContent = "…";
+  dropIcon.textContent = "…";
   try {
     // sequential, not Promise.all: the mentions are appended to a shared box in the order the
     // owner picked the files, and the cap is per file — a parallel burst would only make a
@@ -12363,13 +12380,14 @@ async function uploadDrops(files: File[]): Promise<void> {
       // repo that does not ignore the drop directory) applies to the whole batch, and a toast per
       // file would bury it.
       if (!res.ok || !j.mention) { toast(j.error ?? `upload failed (${res.status})`); return; }
-      ta.value = ta.value.trim() ? `${ta.value.replace(/\s+$/, "")}\n${j.mention}` : j.mention;
+      attached.push({ name: f.name, mention: j.mention });
     }
+    renderAttachments();
     updateChips();
     ta.focus();
   } finally {
     dropBtn.disabled = false;
-    dropBtn.textContent = "📎";
+    dropIcon.textContent = "+";
   }
 }
 
@@ -12413,6 +12431,7 @@ dropFile.addEventListener("change", () => {
 });
 
 // --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
+buildTray(); // the tray's entries are the functions that used to own an icon button of their own
 void (async () => {
   await refresh();
   void loadDispositions(); // so an already-labeled ③ review renders its label, not "unbewertet"

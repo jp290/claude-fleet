@@ -70,7 +70,8 @@ import { buildRepoGraph, roleOf, type PathRole } from "../server/deploy-classify
 import { GATE_MACHINERY_FILES, isGateMachinery } from "../task-land-waves";
 // S3's byte-equality rule is DRIVEN, not scanned: the renderer is pure (no clock, no git, no
 // state — wave-brief.ts's own header says so), so the pin runs it over the no-comment shapes.
-import { withCardHead, renderRowComments, renderCardHead, ROW_COMMENTS_MARK, ROW_COMMENTS_MAX_BYTES } from "../wave-brief";
+import { withCardHead, renderRowComments, renderCardHead, ROW_COMMENTS_MARK, ROW_COMMENTS_MAX_BYTES,
+  renderBriefReviewBlock, BRIEF_REVIEW_MARK, BRIEF_REVIEW_MAX_BYTES } from "../wave-brief";
 import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
 import { readContextManifest } from "../context-manifest";
 import { validUseWhen, validateContextPacks } from "../context-pack-validator";
@@ -3122,6 +3123,28 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     pin("S3: the comments block has one renderer — server.ts carries no copy of the block's marker",
       !server.includes(ROW_COMMENTS_MARK),
       server.includes(ROW_COMMENTS_MARK) ? "server.ts re-spells the marker" : "absent");
+    // THE COUNTER-READ BLOCK (docs/brief-gegenlese.md, MAIN decision (b)): a row with no findings to
+    // deliver — every control row, every row the trial never saw — gets the OLD bytes, with and without
+    // comments, on the card-headed and the bare path. Run, not grepped, for the reason (1b) states.
+    const brComments = [{ text: "eine Anmerkung" }];
+    const brNoReview = renderBriefReviewBlock(undefined) === "" && renderBriefReviewBlock([]) === ""
+      && withCardHead(s3Card, s3Prose, undefined, undefined) === headAlone
+      && withCardHead(s3Card, s3Prose, undefined, []) === headAlone
+      && withCardHead(null, s3Prose, brComments, []) === `${s3Prose}${renderRowComments(brComments)}`
+      && withCardHead(null, s3Prose, brComments) === withCardHead(null, s3Prose, brComments, undefined);
+    const brOne = [{ kind: "done-impossible", text: "DONE widerspricht DO NOT", evidence: "rg -n tsc -> 3" }];
+    const brBody = withCardHead(null, s3Prose, brComments, brOne);
+    const brMany = renderBriefReviewBlock(Array.from({ length: 12 }, (_, i) =>
+      ({ kind: "scope-beyond", text: `Befund ${i} ${"y".repeat(300)}`, evidence: "rg" })));
+    pin("Gegenlese: without findings (control, never reviewed, review not landed) the founding bytes are the old bytes on both paths",
+      brNoReview, JSON.stringify({ brNoReview }));
+    pin("Gegenlese: the block rides BEHIND prose and comments, names kind + evidence, caps with a count, and has one renderer",
+      brBody.startsWith(`${s3Prose}${renderRowComments(brComments)}\n\n--- ${BRIEF_REVIEW_MARK} ---`)
+      && brBody.includes("[done-impossible] DONE widerspricht DO NOT — Beleg: rg -n tsc -> 3")
+      && brMany.includes("von 12 Befunden ausgelassen")
+      && new TextEncoder().encode(brMany).byteLength <= BRIEF_REVIEW_MAX_BYTES + 512
+      && !server.includes(BRIEF_REVIEW_MARK),
+      `${JSON.stringify(brBody).slice(0, 220)} · capped=${new TextEncoder().encode(brMany).byteLength}B`);
   }
   // (2) THE WAVE BUDGET (S7, 5ac5565d) HAS ONE DEFINITION, A PINNED DEFAULT, AND IS NOT THE UNDO
   // DEPTH. The door bounds on IDENTIFIERS — the live budget (env over the default) and the row

@@ -77,6 +77,41 @@ export function renderRowComments(comments?: readonly RowCommentInput[]): string
     : ""}`;
 }
 
+// THE COUNTER-READ'S FINDINGS reach the lane (docs/brief-gegenlese.md, MAIN decision (b) on
+// 2026-09-19): as their own capped block BEHIND the brief and the comments, never folded into the
+// released bytes, and ABSENT entirely when there is nothing to deliver — which is every control-arm
+// row, every row the trial never saw, and a reviewed row whose review did not land before the start.
+// That absence is what keeps those rows' founding prompts byte-identical (pinned in e2e/pins.ts).
+// Kind + sentence + evidence per finding; the reviewer's rewritten brief does NOT ride here — it is
+// a proposal for the row, and handing a lane two briefs would make it choose between them.
+export interface BriefReviewFindingInput {
+  readonly kind: string;
+  readonly text: string;
+  readonly evidence: string;
+}
+export const BRIEF_REVIEW_MARK = "GEGENLESE DIESER ZEILE";
+const BRIEF_REVIEW_FINDING_MAX_BYTES = 450;
+export const BRIEF_REVIEW_MAX_BYTES = 1500; // the findings' shared budget, header and count line excluded
+
+/** The exact bytes of a row's counter-read block, "" when there are no findings (never a header alone). */
+export function renderBriefReviewBlock(findings?: readonly BriefReviewFindingInput[]): string {
+  if (!findings?.length) return "";
+  const lines: string[] = [];
+  let used = 0;
+  for (const f of findings) {
+    const line = clipBytes(`- [${f.kind}] ${f.text.trim()}${f.evidence.trim() ? ` — Beleg: ${f.evidence.trim()}` : ""}`,
+      BRIEF_REVIEW_FINDING_MAX_BYTES);
+    const size = utf8.encode(line).byteLength + 1;
+    if (used + size > BRIEF_REVIEW_MAX_BYTES) break;
+    lines.push(line);
+    used += size;
+  }
+  const omitted = findings.length - lines.length;
+  return `\n\n--- ${BRIEF_REVIEW_MARK} ---\n\nEin zweites Modell hat diesen Brief vor deinem Start gegen den Code gelesen. Das sind BEFUNDE, kein Auftrag: der Brief oben gilt; pruefe jeden Befund selbst, bevor du ihm folgst.\n\n${lines.join("\n")}${omitted > 0
+    ? `\n\n(+${omitted} von ${findings.length} Befunden ausgelassen — der Platz war alle; der Rest steht auf der Zeile)`
+    : ""}`;
+}
+
 /** The exact head bytes for one valid card: first line starts with KARTE, whole head ≤ 1.5 KB. */
 export function renderCardHead(card: TaskCardBody): string {
   const surface = [card.surface.files.join(", "),
@@ -98,10 +133,11 @@ export function renderCardHead(card: TaskCardBody): string {
 }
 
 /** A row's lane-facing body: the card head before the prose when a valid card exists, else the
- *  prose — and the row's comment block behind it, absent (not empty) when the row has none. */
+ *  prose — and the row's comment block and counter-read block behind it, each absent (not empty)
+ *  when the row has none. */
 export function withCardHead(card: TaskCardBody | null, prose: string,
-  comments?: readonly RowCommentInput[]): string {
-  return `${card ? `${renderCardHead(card)}\n\n` : ""}${prose}${renderRowComments(comments)}`;
+  comments?: readonly RowCommentInput[], review?: readonly BriefReviewFindingInput[]): string {
+  return `${card ? `${renderCardHead(card)}\n\n` : ""}${prose}${renderRowComments(comments)}${renderBriefReviewBlock(review)}`;
 }
 
 export interface WaveBriefRow {
@@ -115,6 +151,8 @@ export interface WaveBriefRow {
   card: TaskCardBody | null;
   /** the row's comments (Task.comments) — their own capped block BEHIND `brief ?? text`, never in it */
   comments?: readonly RowCommentInput[];
+  /** the counter-read's findings, only where the row's review LANDED — their own block behind the comments */
+  review?: readonly BriefReviewFindingInput[];
 }
 
 export interface WaveBriefInput {
@@ -130,7 +168,7 @@ export interface WaveBriefInput {
 }
 
 const numbered = (row: WaveBriefRow, at: number, total: number): string => {
-  const body = withCardHead(row.card, (row.brief ?? row.text).trim(), row.comments);
+  const body = withCardHead(row.card, (row.brief ?? row.text).trim(), row.comments, row.review);
   const criterion = row.criterion?.trim();
   return `--- ZEILE ${at + 1} VON ${total} · ${row.id} ---
 

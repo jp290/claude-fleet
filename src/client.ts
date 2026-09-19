@@ -3388,9 +3388,11 @@ function mountComposer(): void {
   renderComposerOpts(false);
 }
 
-// the model/effort switches: conversation view only, and only what the SLOT'S ADAPTER carries
+// the model/effort switch: conversation view only, and only what the SLOT'S ADAPTER carries
 // (GET /api/harnesses). Same rule as the second cut — what a harness has no concept of is absent,
-// not greyed — and the same two-half write (setSlotSetting).
+// not greyed — and the same two-half write (setSlotSetting). Fourth cut (owner: "zwei getrennte
+// blasen"): ONE inline control in the surface's bottom row, left of send, like the reference shot —
+// the model in ink, the effort dimmer beside it, one popover holding both sections.
 let optsKey = "";
 let optsMsg = "";
 function renderComposerOpts(force: boolean): void {
@@ -3403,50 +3405,60 @@ function renderComposerOpts(force: boolean): void {
   optsKey = key;
   compOpts.replaceChildren();
   if (!h) return;
-  if (h.supports.model) compOpts.appendChild(optSwitch("model", s?.model ?? (h.default && defaultModel ? defaultModel : "default"), (pop, say) => {
-    const input = document.createElement("input");
-    input.className = "cmdinput";
-    input.value = s?.model ?? "";
-    input.placeholder = h.default && defaultModel ? defaultModel : "default";
-    const go = el("button", "cmdgo", "set") as HTMLButtonElement;
-    const run = async () => {
-      const v = input.value.trim();
-      if (!v || !slot) return;
-      go.disabled = true;
-      say(`setting model ${v} …`);
-      say(await setSlotSetting(slot, "model", v));
-      go.disabled = false;
-    };
-    go.onclick = () => void run();
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); void run(); } });
-    const row = el("div", "cmdrow");
-    row.append(input, go);
-    pop.appendChild(row);
-  }));
-  if (h.supports.effort && h.effortLevels.length) compOpts.appendChild(optSwitch("effort", s?.effort ?? "default", (pop, say) => {
-    const levels = el("div", "cmdlevels");
-    for (const lv of h.effortLevels) {
-      const b = el("button", `cmdlevel${s?.effort === lv ? " on" : ""}`, lv) as HTMLButtonElement;
-      b.onclick = async () => {
-        if (!slot) return;
-        b.disabled = true;
-        say(`setting effort ${lv} …`);
-        say(await setSlotSetting(slot, "effort", lv));
-        b.disabled = false;
+  const hasModel = h.supports.model;
+  const hasEffort = h.supports.effort && h.effortLevels.length > 0;
+  if (!hasModel && !hasEffort) return;
+  const values: [string, string][] = [];
+  if (hasModel) values.push(["optval", s?.model ?? (h.default && defaultModel ? defaultModel : "default")]);
+  if (hasEffort) values.push(["optval dim", s?.effort ?? "default"]);
+  compOpts.appendChild(optSwitch(values, (pop, say) => {
+    if (hasModel) {
+      const input = document.createElement("input");
+      input.className = "cmdinput";
+      input.value = s?.model ?? "";
+      input.placeholder = h.default && defaultModel ? defaultModel : "default";
+      const go = el("button", "cmdgo", "set") as HTMLButtonElement;
+      const run = async () => {
+        const v = input.value.trim();
+        if (!v || !slot) return;
+        go.disabled = true;
+        say(`setting model ${v} …`);
+        say(await setSlotSetting(slot, "model", v));
+        go.disabled = false;
       };
-      levels.appendChild(b);
+      go.onclick = () => void run();
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); void run(); } });
+      const row = el("div", "cmdrow");
+      row.append(input, go);
+      pop.append(el("div", "opthead", "model"), row);
     }
-    pop.appendChild(levels);
+    if (hasEffort) {
+      const levels = el("div", "cmdlevels");
+      for (const lv of h.effortLevels) {
+        const b = el("button", `cmdlevel${s?.effort === lv ? " on" : ""}`, lv) as HTMLButtonElement;
+        b.onclick = async () => {
+          if (!slot) return;
+          b.disabled = true;
+          say(`setting effort ${lv} …`);
+          say(await setSlotSetting(slot, "effort", lv));
+          b.disabled = false;
+        };
+        levels.appendChild(b);
+      }
+      pop.append(el("div", "opthead", "effort"), levels);
+    }
   }));
 }
 
-// one switch = a labelled value with a chevron, and a popover its caller fills. The verdict line
+// the switch = its values with a chevron, and a popover its caller fills. The verdict line
 // is held in `optsMsg`, outside the DOM: a set changes the poll key, the poll repaints this row,
 // and a verdict living in the replaced node would read as silence (measured in the second cut).
-function optSwitch(label: string, value: string, fill: (pop: HTMLElement, say: (m: string) => void) => void): HTMLElement {
+function optSwitch(values: [string, string][], fill: (pop: HTMLElement, say: (m: string) => void) => void): HTMLElement {
   const wrap = el("div", "optswrap");
   const btn = el("button", "optsw") as HTMLButtonElement;
-  btn.append(el("span", "optlabel", label), el("span", "optval", value), el("span", "optchev", "⌄"));
+  btn.title = "model and effort for this session";
+  for (const [cls, v] of values) btn.appendChild(el("span", cls, v));
+  btn.appendChild(el("span", "optchev", "⌄"));
   const pop = el("div", "optpop");
   const status = el("div", "cmdstatus", optsMsg);
   const say = (m: string) => { optsMsg = m; status.textContent = m; };

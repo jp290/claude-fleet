@@ -2272,6 +2272,10 @@ function programPhaseInput(t: Task, programId: string, outcome: PhaseOutcomeFact
     openAttention,
     outcome,
     idleThresholdMs: AUTO_REVIEW_IDLE_MS,
+    // I7/I8 — both distilled here so the reducer and the view read ONE join each (the reducer's
+    // pin forbids the ledger and the report array in program-phase.ts itself)
+    report: lane ? newestLaneReportFor(t.id, lane) : null,
+    preview: lane ? lanePreviewFact(lane) : null,
   };
 }
 
@@ -2285,8 +2289,10 @@ function programPhaseOutcome(t: Task, index: PhaseOutcomeIndex): PhaseOutcomeFac
 // The newest PRESENT fleet-report row for one task inside one program, projected down to the four
 // facts a reconstruction needs. Pure and per request, like every other join in the view: nothing is
 // stored, nothing is pruned here, and the full row stays reachable through GET /api/self/fleet-report
-// for the occupant it was filed to. Deliberately NOT an input to program-phase.ts — the reducer must
-// not read a prunable row (its own pin says so), and this fact changes no phase.
+// for the occupant it was filed to. The ROW still feeds no phase — but the claim half of the
+// complete/ahead=0 contradiction now does (newestLaneReportFor below, program-phase.ts R11b): the
+// 2026-09-18 queue inspection made that a phase fact, and the pin's token list still holds because
+// the reducer reads the distilled status, never this array.
 function latestReportFor(taskId: string, programId: string): {
   id: string; status: FleetReportStatus; disposition: FleetReportDisposition | null;
   decidedAt: number | null;
@@ -2301,6 +2307,40 @@ function latestReportFor(taskId: string, programId: string): {
     disposition: newest.decision?.disposition ?? null,
     decidedAt: newest.decision?.at ?? null,
   };
+}
+
+// I7 — the newest report STATUS the CURRENT lane occupant filed for THIS task, or null. The claim
+// half of the contradiction program-phase.ts R11b projects: the lane-end contract orders COMMIT
+// before REPORT, so complete+ahead=0 is a pair no reducer may explain away. Joined by the row's
+// provenance AND the occupant triple, exactly like laneSelfWord: a previous lane's report on this
+// slot number is not this lane's claim. Prunable like every fleet-report row — when the claim
+// falls out of the retention tail the row stops naming the contradiction (the view's retention
+// unknown line owns that at the ceiling).
+function newestLaneReportFor(taskId: string, lane: Slot): string | null {
+  let newest: FleetReport | null = null;
+  for (const r of fleetReports) {
+    if (r.provenance.taskId !== taskId) continue;
+    if (r.worker.slot !== lane.id || r.worker.openedAt !== lane.openedAt) continue;
+    if (r.worker.branch !== (lane.worktree?.branch ?? "")) continue;
+    if (!newest || r.reportedAt > newest.reportedAt) newest = r;
+  }
+  return newest?.status ?? null;
+}
+
+// I8 — the lane's own isolated-suite preview, distilled to the three states the land door names.
+// A LIVE job (offered/claimed) outranks the newest reported verdict, exactly as laneSuiteOfferOf
+// reads the one open offer; a reported job counts only when it ran RED — green or unknown settled
+// the debt as far as the door is concerned. No phase rule reads this: a phase must not grade a
+// verify debt, the door is where "may I land" is answered.
+function lanePreviewFact(lane: Slot): { state: "offered" | "running" | "red"; id: string } | null {
+  let settled: LaneSuiteJob | null = null;
+  for (const j of laneSuiteJobs.values()) {
+    if (j.slot !== lane.id || j.slotOpenedAt !== lane.openedAt) continue;
+    if (j.state === "open") return { state: "offered", id: j.id };
+    if (j.state === "claimed") return { state: "running", id: j.id };
+    if (j.state === "reported" && (!settled || j.offeredAt > settled.offeredAt)) settled = j;
+  }
+  return settled?.result?.result === "red" ? { state: "red", id: settled.id } : null;
 }
 
 // The row-level pointer that rides beside `phase`. Fact-only by construction: every branch is a
@@ -2325,6 +2365,18 @@ function nextActionFor(phase: Phase, t: Task, promotion: PromotionPolicy | undef
     return 'a merge job holds this lane — subscribe {kind:"merge"} on /api/self/watch and read the outcome there';
   if (phase === "OWNER_GATE") return "an open question is waiting on the owner — nothing here moves until it is answered";
   return null;
+}
+
+// THE OWED-RUN DOOR, composed only while a REVIEWABLE row's lane owes a suite preview that has not
+// settled green: offered, running, or red (PhaseInput.preview — lanePreviewFact). It REPLACES the
+// land door for exactly those rows, because landing now would skip the very run the row's verify
+// owes; a green, unknown or absent preview changes nothing. A pointer, never a grade, like
+// nextActionFor — and deliberately composed BESIDE it rather than inside it, whose inputs stay
+// phase + status + the promotion record.
+function owedPreviewDoor(preview: { state: "offered" | "running" | "red"; id: string }): string {
+  return preview.state === "red"
+    ? `the lane's isolated suite preview ran red (job ${preview.id}) — land after a green rerun`
+    : `the lane's isolated suite preview is ${preview.state} (job ${preview.id}) — land after it reports green`;
 }
 
 // ProgramExecutionView v1 is deliberately a projection, never a second lifecycle model. The
@@ -2435,7 +2487,8 @@ async function programExecutionView(s: Slot): Promise<Response> {
         rows: programTasks.map((t) => {
           // DERIVED per request, stored nowhere. `phase` says where the row sits on the rail; it
           // never says the work is good, and nothing here moves a persisted status.
-          const derived = phaseOf(programPhaseInput(t, p.id, programPhaseOutcome(t, outcomeIndex), now));
+          const input = programPhaseInput(t, p.id, programPhaseOutcome(t, outcomeIndex), now);
+          const derived = phaseOf(input);
           if (derived.unknown !== null) unknown.push(derived.unknown);
           return {
             id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy ?? null,
@@ -2449,7 +2502,9 @@ async function programExecutionView(s: Slot): Promise<Response> {
             // reading this view is exactly the principal that now has a land door, and a projection
             // that showed REVIEWABLE without naming the door left the MAIN to rediscover it (or,
             // measured once as `9cc8b1e`, to reach for the owner token instead).
-            nextAction: nextActionFor(derived.phase, t, p.promotion),
+            nextAction: input.preview !== null && derived.phase === "REVIEWABLE"
+              ? owedPreviewDoor(input.preview)
+              : nextActionFor(derived.phase, t, p.promotion),
             // THE WORKER'S TYPED RESULT AND WHAT THIS PROGRAM DID WITH IT, joined by the row's own
             // persisted provenance rather than by any occupant: the report was filed TO one MAIN
             // occupant, and the session reading this may be its successor, bound later through
@@ -10654,9 +10709,18 @@ async function guardedConfirmJob(lane: Slot, cwd: string, repo: string, main: st
     // is nothing left for this job to record, and writing a verdict on top would overwrite the land.
     if (out.body.status === "merged") return;
     const bodyVerify = out.body.verify as MergeLast["verify"] | null | undefined;
+    // A LOST FAST-FORWARD IS NOT A RESOLUTION. The confirm path's ff refusal arrives typed
+    // (confirmResolvedCandidate carries errorReason:"ff-lost" in the body), and folding it into
+    // `resolved` — as this job did before — read as "the resolution stands, landable", the one
+    // sentence a ff that lost may not say: the resolution stands, but the LAND lost and must be
+    // retried after a rebase. `error` + the closed `ff-lost` reason is the same shape the clean
+    // path writes (mergeJob). The ⏸ halves survive untouched: conflicted/resolvedBy ride on prev's
+    // spread, and carriedFromPendingVerdict discriminates on the RESOLUTION, never on the word.
+    const ffLost = out.body.errorReason === "ff-lost";
     res = {
       ...(prev ?? { status: "resolved" as const, landed: false, branch, at: 0, detail: "" }),
-      status: prev?.status ?? "resolved", landed: false, branch, at: Date.now(),
+      status: ffLost ? "error" : (prev?.status ?? "resolved"), landed: false, branch, at: Date.now(),
+      ...(ffLost ? { errorReason: "ff-lost" as const } : {}),
       ...(bodyVerify ? { verify: bodyVerify } : {}),
       detail: String(out.body.detail ?? "the guarded confirmation did not land").slice(0, 600),
     };
@@ -25301,11 +25365,18 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
     ...(s.worktree?.baseSha ? { forkSha: s.worktree.baseSha } : {}) };
   // same declaration-before-the-advance as the clean auto-land path (see markLandIntent)
   const laneTip = currentCandidate?.candidateSha ?? (await git(repo, "rev-parse", branch)).out;
+  // TEST-ONLY, inert in production — the same deterministic window the clean path's mergeJob latch
+  // widens (waitForLandFfTestLatch): after the fresh verify, before the fast-forward. The guarded
+  // confirm's lost ff is otherwise a few milliseconds of real race no external probe can hit.
+  await waitForLandFfTestLatch();
   await markLandIntent(repo, main, branch, mainBefore, laneTip, prov);
   const adv = await advanceIntegration(repo, main, branch);
   if (adv) {
     clearLandIntent(repo);
-    return { status: 409, body: { status: "error",
+    // TYPED, not prose: the caller (guardedConfirmJob) has to tell a lost fast-forward from a real
+    // resolution, and `detail` is never parsed (the MergeLast note says so at the source). The
+    // owner route returns this body verbatim; one more optional field is additive there.
+    return { status: 409, body: { status: "error", errorReason: "ff-lost",
       detail: `fast-forwarding ${main} failed: ${adv.error} — lane kept` } };
   }
   const mainAfter = (await git(repo, "rev-parse", main)).out;

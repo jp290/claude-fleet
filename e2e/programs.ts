@@ -1652,7 +1652,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const phaseInput = (over: Partial<PhaseInput> = {}): PhaseInput => ({
     task: { id: "phasetask", kind: "auftrag", status: "sent", note: null },
     lane: laneFacts(), merge: { inflight: false, start: false, last: null },
-    openAttention: 0, outcome: null, idleThresholdMs: 1_500, ...over,
+    openAttention: 0, outcome: null, idleThresholdMs: 1_500, report: null, preview: null, ...over,
   });
   const basisHas = (result: { phaseBasis: string[] }, needle: string): boolean =>
     result.phaseBasis.some((line) => line.includes(needle));
@@ -1800,6 +1800,21 @@ export async function run(ctx: Ctx): Promise<void> {
       && basisHas(r13, "idle") && basisHas(r13, "git.ahead>0"),
     JSON.stringify({ r12, r13 }));
 
+  // R11b (2026-09-18 queue inspection, topic B): the lane-end contract orders COMMIT before
+  // REPORT, so a complete claim over a tree with nothing to land is a contradiction no reducer may
+  // resolve — OWNER_GATE, with the contradiction named in the basis and the sentence in unknown[].
+  const r11b = phaseOf(phaseInput({ lane: laneFacts({ idleMs: 10_000, git: { dirty: 0, ahead: 0 } }), report: "complete" }));
+  const r11bAhead = phaseOf(phaseInput({ lane: laneFacts({ idleMs: 10_000, git: { dirty: 0, ahead: 1 } }), report: "complete" }));
+  const r11bHost = phaseOf(phaseInput({ lane: laneFacts({ idleMs: 10_000, git: { dirty: 4, ahead: 0 }, hostCommits: true }), report: "complete" }));
+  const r11bFailed = phaseOf(phaseInput({ lane: laneFacts({ idleMs: 10_000, git: { dirty: 0, ahead: 0 } }), report: "failed" }));
+  check("phase R11b: complete report + ahead=0 is OWNER_GATE naming the contradiction, while ahead=1 stays REVIEWABLE, a host-commit lane keeps its own REVIEWABLE shape, and any other report status is plain RUNNING",
+    r11b.phase === "OWNER_GATE" && basisHas(r11b, "R11b") && basisHas(r11b, "report says complete, git.ahead=0")
+      && r11b.unknown?.includes("nothing to land") === true && /\d/.test(r11b.unknown ?? "")
+      && r11bAhead.phase === "REVIEWABLE" && r11bAhead.unknown === null
+      && r11bHost.phase === "REVIEWABLE" && basisHas(r11bHost, "host-commit-looking")
+      && r11bFailed.phase === "RUNNING",
+    JSON.stringify({ r11b, r11bAhead, r11bHost, r11bFailed }));
+
   const stuck = phaseOf(phaseInput({ lane: laneFacts({ idleMs: 10_000, git: { dirty: 2, ahead: 0 } }) }));
   check("phase blind spot: idle+dirty+ahead=0 is NAMED in the basis of a RUNNING row and never promoted to a phase of its own",
     stuck.phase === "RUNNING"
@@ -1808,15 +1823,19 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(stuck));
 
   const allPhases: Phase[] = ["READY", "RUNNING", "REVIEWABLE", "INTEGRATING", "OWNER_GATE", "CONTINUE", "UNKNOWN"];
-  const sampled = [r0, r1, r2none, r3, r4, r5, r6, r7inflight, r8, r9, r10alive, r11done, r12, r13, stuck];
-  check("phase vocabulary: the table yields exactly the seven declared values, ids R0..R13 in order, and no eighth value",
-    PHASE_RULES.map((rule) => rule.id).join(",") === "R0,R1,R2,R3,R4,R5,R6,R7,R8,R9,R10,R11,R12,R13"
+  const sampled = [r0, r1, r2none, r3, r4, r5, r6, r7inflight, r8, r9, r10alive, r11done, r11b, r12, r13, stuck];
+  check("phase vocabulary: the table yields exactly the seven declared values, ids R0..R13 with R11b inserted between R11 and R12, and no eighth value",
+    PHASE_RULES.map((rule) => rule.id).join(",") === "R0,R1,R2,R3,R4,R5,R6,R7,R8,R9,R10,R11,R11b,R12,R13"
       && PHASE_RULES.every((rule) => allPhases.includes(rule.phase))
       && [...new Set(PHASE_RULES.map((rule) => rule.phase))].sort().join(",") === [...allPhases].sort().join(",")
       && sampled.every((r) => allPhases.includes(r.phase)),
     `[${[...new Set(PHASE_RULES.map((rule) => rule.phase))].join(",")}]`);
-  check("phase honesty arm: an unknown sentence exists for exactly the UNKNOWN rows and for no other phase",
-    sampled.every((r) => (r.unknown !== null) === (r.phase === "UNKNOWN"))
+  // R11b is the ONE non-UNKNOWN phase that carries a sentence: its two facts disagree and nothing
+  // in the reducer may decide which of them is wrong. Named predicate, per the check-writing rule.
+  const reportContradiction = (r: { phaseBasis: string[] }): boolean =>
+    r.phaseBasis.some((line) => line.startsWith("R11b:"));
+  check("phase honesty arm: an unknown sentence exists for exactly the UNKNOWN rows, the R11b report contradiction, and no other phase",
+    sampled.every((r) => (r.unknown !== null) === (r.phase === "UNKNOWN" || reportContradiction(r)))
       && sampled.filter((r) => r.phase === "UNKNOWN").every((r) => /\d/.test(r.unknown ?? "")),
     JSON.stringify(sampled.map((r) => [r.phase, r.unknown])));
 
@@ -2124,6 +2143,133 @@ export async function run(ctx: Ctx): Promise<void> {
         === JSON.stringify({ session: beforeExecutionReload.session, programs: withoutDerived(beforeExecutionReload.programs) })
       && (afterExecutionReload.view?.at ?? 0) >= beforeExecutionReload.at,
     JSON.stringify({ beforeAt: beforeExecutionReload.at, afterAt: afterExecutionReload.view?.at }));
+
+  // --- THE LAND DOOR ON THE ROUTE (2026-09-18 queue inspection, topic B) — the same bound MAIN,
+  // the same fixture row: (i) a complete report over a tree with nothing to land is R11b
+  // OWNER_GATE, (ii) the same report with a commit behind it stays REVIEWABLE, (iii) a lane suite
+  // preview that has not settled green replaces the land door with the owed run, and a green
+  // verdict hands the land door back. The facts are PLANTED while stopped, exactly the shapes the
+  // loader lifts (fleetReportFrom, the laneSuiteJobs guard) — nothing is FILED through the report
+  // route, because a filing mints delivery events and disarms watches, and this arm is about the
+  // projection alone.
+  const execPromotionBefore = readState().programs?.find((p) => p.id === mainProgram.id)?.promotion ?? null;
+  const execLaneCwd = executionLaneBody.cwd ?? REPO;
+  const execLaneBranch = executionLaneBody.branch ?? "missing";
+  await post(`/api/programs/${mainProgram.id}/promotion`, { policy: { v: 1, selfLand: "green-only" } });
+  const execLaneReady = async (wantAhead: number): Promise<boolean> => {
+    try {
+      await until(async () => {
+        const body = (await (await get("/api/sessions")).json()) as { slots:
+          { id: number; git?: { dirty: number; ahead: number } | null; lastOutput?: number }[] };
+        const row = body.slots.find((x) => x.id === executionLaneBody.slot);
+        return row !== undefined && !!row.git && row.git.ahead === wantAhead && (row.lastOutput ?? 0) > 0;
+      }, { timeoutMs: 40_000, stepMs: 100, what: `execution fixture lane observed (ahead=${wantAhead})`,
+        last: () => "git facts never reached the wanted shape" });
+      return true;
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; return false; }
+  };
+  const execDoorRow = async (): Promise<{ phase?: string; nextAction?: string | null;
+    phaseBasis: string[] } | undefined> =>
+    (await selfExecution(mainSelfToken)).view?.programs.find((x) => x.program.id === mainProgram.id)
+      ?.tasks.rows.find((row) => row.id === matchingTaskId);
+  const execDoorUnknown = async (): Promise<string[]> =>
+    (await selfExecution(mainSelfToken)).view?.programs.find((x) => x.program.id === mainProgram.id)?.unknown ?? [];
+  const execPlantReport = async (): Promise<void> => {
+    await stopSrv();
+    const st = readState();
+    const laneRow = st.slots?.[String(executionLaneBody.slot)];
+    st.fleetReports = [...(st.fleetReports ?? []), ({
+      id: "ec".repeat(12), reportedAt: Date.now(), status: "complete",
+      text: "execution door fixture: the lane claims its slice complete",
+      worker: { slot: executionLaneBody.slot, openedAt: laneRow?.openedAt ?? 0,
+        sessionId: laneRow?.sessionId ?? null, cwd: execLaneCwd, branch: execLaneBranch },
+      provenance: { taskId: matchingTaskId, originId: null, programId: mainProgram.id },
+      receiver: null, basis: "program", eventId: null,
+    } as unknown as { id?: string })];
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+    await restartSrv();
+  };
+
+  // (i) the contradiction: report complete, tree ahead=0.
+  await execPlantReport();
+  const execBReady = await execLaneReady(0);
+  const execRowB = await execDoorRow();
+  const execUnknownB = await execDoorUnknown();
+  check("ProgramExecutionView land door: a complete report over a tree with nothing to land is R11b OWNER_GATE — the contradiction named in the basis, the sentence in unknown, and never the land door",
+    execBReady && execRowB !== undefined && execRowB.phase === "OWNER_GATE"
+      && execRowB.phaseBasis.some((line) => line.startsWith("R11b: "))
+      && execRowB.phaseBasis.some((line) => line.includes("report says complete, git.ahead=0"))
+      && execUnknownB.some((line) => line.includes(matchingTaskId) && line.includes("nothing to land") && /\d/.test(line))
+      && !(execRowB.nextAction ?? "").includes("land it yourself"),
+    JSON.stringify({ ready: execBReady, row: execRowB, unknown: execUnknownB }));
+
+  // (ii) the SAME report with a commit behind it: R11 REVIEWABLE, the land door back.
+  writeFileSync(`${execLaneCwd}/execution-ahead.txt`, "the commit that gives the tree something to land\n");
+  spawnSync("git", ["-C", execLaneCwd, "add", "execution-ahead.txt"]);
+  spawnSync("git", ["-C", execLaneCwd, "commit", "-qm", "execution door fixture: ahead"]);
+  const execCReady = await execLaneReady(1);
+  const execRowC = await execDoorRow();
+  check("ProgramExecutionView land door: the same complete report with a commit behind it stays REVIEWABLE with the self-land door",
+    execCReady && execRowC !== undefined && execRowC.phase === "REVIEWABLE"
+      && execRowC.phaseBasis.some((line) => line.startsWith("R11: "))
+      && (execRowC.nextAction ?? "").includes("land it yourself"),
+    JSON.stringify({ ready: execCReady, row: execRowC }));
+
+  // (iii) the owed preview: planted suite jobs on THIS lane, one restart per state.
+  const execSuiteJob = (id: string, state: string, offeredAt: number,
+    result: Record<string, unknown> | null): Record<string, unknown> => ({
+    id, slot: executionLaneBody.slot,
+    slotOpenedAt: readState().slots?.[String(executionLaneBody.slot)]?.openedAt ?? 0,
+    repo: REPO, cwd: execLaneCwd, branch: execLaneBranch,
+    offeredAt, state, commitSha: null, treeSha: null, untracked: null, claim: null, result,
+  });
+  const execPlantJobs = async (jobs: Record<string, unknown>[]): Promise<void> => {
+    await stopSrv();
+    const st = readState() as FleetState & { laneSuiteJobs?: Record<string, unknown>[] };
+    st.laneSuiteJobs = [...(st.laneSuiteJobs ?? []), ...jobs];
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+    await restartSrv();
+  };
+  const execJobIds = ["ec", "ed", "ee", "ef"].map((x) => x.repeat(6));
+  const execJobAt = Date.now();
+  const execDoorCases: { name: string; holds: boolean; jobs: Record<string, unknown>[];
+    door: (next: string) => boolean }[] = [
+    { name: "offered", holds: true, jobs: [execSuiteJob(execJobIds[0], "open", execJobAt, null)],
+      door: (next) => next.includes("is offered") && next.includes(`job ${execJobIds[0]}`)
+        && next.includes("land after it reports green") && !next.includes("land it yourself") },
+    { name: "running", holds: true, jobs: [execSuiteJob(execJobIds[1], "claimed", execJobAt + 1, null)],
+      door: (next) => next.includes("is running") && next.includes(`job ${execJobIds[1]}`)
+        && next.includes("land after it reports green") && !next.includes("land it yourself") },
+    { name: "red", holds: true, jobs: [execSuiteJob(execJobIds[2], "reported", execJobAt + 2,
+      { result: "red", exitCode: 1, tail: "fixture", checks: null, fails: ["e2e/programs.ts"] })],
+      door: (next) => next.includes("ran red") && next.includes(`job ${execJobIds[2]}`)
+        && next.includes("land after a green rerun") && !next.includes("land it yourself") },
+    { name: "settled green", holds: false, jobs: [
+      execSuiteJob(execJobIds[3], "reported", execJobAt + 4,
+        { result: "green", exitCode: 0, tail: "fixture", checks: null, fails: [] })],
+      door: (next) => next.includes("land it yourself") },
+  ];
+  for (const c of execDoorCases) {
+    await execPlantJobs(c.jobs);
+    const ready = await execLaneReady(1);
+    const row = await execDoorRow();
+    check(`ProgramExecutionView land door: a ${c.name} suite preview ${c.holds
+      ? "holds the door — the owed run is named and the land door does not return"
+      : "does not hold the door — the newest settled verdict hands the land door back"}`,
+      ready && row !== undefined && row.phase === "REVIEWABLE" && c.door(row.nextAction ?? ""),
+      JSON.stringify({ ready, row }));
+  }
+
+  // …and the planted facts leave with the fixture: the report row and every suite job, so later
+  // modules read the fleet exactly as this one found it.
+  await stopSrv();
+  const execDoorCleanup = readState() as FleetState & { laneSuiteJobs?: Record<string, unknown>[] };
+  execDoorCleanup.fleetReports = (execDoorCleanup.fleetReports ?? []).filter((r) => r.id !== "ec".repeat(12));
+  execDoorCleanup.laneSuiteJobs = (execDoorCleanup.laneSuiteJobs ?? [])
+    .filter((j) => !execJobIds.includes(String(j.id)));
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(execDoorCleanup, null, 2), { mode: 0o600 });
+  await restartSrv();
+  await post(`/api/programs/${mainProgram.id}/promotion`, { policy: execPromotionBefore });
 
   await post(`/api/slots/${recycleSlot}/kill`, {});
   await Bun.sleep(2);
@@ -12006,6 +12152,95 @@ exit 0
     spawnSync("kill", [m2Occ2]);
     rmSync(ffrLock, { recursive: true, force: true });
     await m5Drop(m2D.slot);
+
+    // --- (8j) THE GUARDED CONFIRM'S LOST FAST-FORWARD IS ITS OWN REASON, NOT A RESOLUTION ------
+    // (2026-09-18 queue inspection, topic B, part 3 — checked at the tree first: the hole was
+    // OPEN. confirmResolvedCandidate returned the ff refusal as a bare 409 prose body, and
+    // guardedConfirmJob carried prev?.status ?? "resolved" over EVERY non-merged body, so a land
+    // that lost main's race read exactly like the resolution it failed to land.) The refusal now
+    // arrives TYPED (body errorReason:"ff-lost") and the verdict is error + the closed reason —
+    // with the ⏸ halves (conflicted/resolvedBy) intact, because the RESOLUTION still stands; only
+    // the LAND is lost. The latch is the clean path's own TEST-ONLY knob (8b) reused at the
+    // confirm's one await boundary no probe can hit by timing: after the fresh verify, before the
+    // fast-forward.
+    const cffLatch = `${ROOT}/cff.latch`;
+    for (const f of [cffLatch, `${cffLatch}.reached`, `${cffLatch}.release`]) try { rmSync(f); } catch { /* absent */ }
+    const cffProgram = await activateNewProgram("Self-land confirm lost ff");
+    const cffBoot = await beginBootstrap(cffProgram.id, { cwd: REPO2, label: "selfland-cfflost-main" });
+    const cffMainSlot = (await cffBoot.json() as { slot?: number }).slot ?? null;
+    const cffTok = cffMainSlot === null ? "" : readState().slots?.[String(cffMainSlot)]?.selfToken ?? "";
+    if (cffMainSlot !== null) landFixtureMains.push(cffMainSlot);
+    await setPromotion(cffProgram.id, { v: 1, selfLand: "guarded" });
+    const cffRowId = await makeTask({ text: "confirm lost-ff row", programId: cffProgram.id, repo: REPO2 });
+    const cffLane = await conflictLane(cffRowId);
+    if (cffLane.cwd) {
+      writeFileSync(`${cffLane.cwd}/cff.txt`, "lane side of the confirm conflict\n");
+      spawnSync("git", ["-C", cffLane.cwd, "add", "cff.txt"]);
+      spawnSync("git", ["-C", cffLane.cwd, "commit", "-qm", "confirm conflict lane side"]);
+    }
+    writeFileSync(`${REPO2}/cff.txt`, "main side of the confirm conflict\n");
+    spawnSync("git", ["-C", REPO2, "add", "cff.txt"]);
+    spawnSync("git", ["-C", REPO2, "commit", "-qm", "confirm conflict main side"]);
+    const cffReady = cffLane.slot === null ? false : await waitDoneLooking(cffLane.slot, cffLane.cwd);
+    const cffFirst = await selfLand(cffTok, cffRowId);
+    type CffVerdict = { status?: string; landed?: boolean; errorReason?: string; detail?: string;
+      conflicted?: string[]; resolvedBy?: string; candidateSha?: string };
+    let cffResolved: CffVerdict | null = null;
+    for (let i = 0; i < 240 && cffResolved === null; i++) {
+      await Bun.sleep(250);
+      const mg = (await (await get(`/api/slots/${cffLane.slot}/merge`)).json()) as
+        { running?: boolean; last?: CffVerdict | null };
+      if (mg.running === false && mg.last) cffResolved = mg.last;
+    }
+    check("confirm lost-ff fixture prerequisite: the conflict path produced a RESOLVED verdict holding an agent resolution, on a lane the door calls done",
+      cffReady && cffFirst.ok && cffResolved?.status === "resolved" && cffResolved.landed === false
+        && (cffResolved.conflicted?.length ?? 0) > 0 && !!cffResolved.resolvedBy
+        && /^[0-9a-f]{40,64}$/.test(cffResolved.candidateSha ?? ""),
+      JSON.stringify({ ready: cffReady, first: cffFirst.status, verdict: cffResolved }));
+
+    writeFileSync(cffLatch, "armed\n", { mode: 0o600 });
+    await restartSrv({ FLEET_TEST_LAND_FF_LATCH: cffLatch });
+    const cffReady2 = cffLane.slot === null ? false : await waitDoneLooking(cffLane.slot, cffLane.cwd);
+    const cffMainBefore = main2Of();
+    const cffConfirm = await selfLand(cffTok, cffRowId);
+    let cffReached = false;
+    for (let i = 0; i < 400 && !cffReached; i++) {
+      cffReached = existsSync(`${cffLatch}.reached`);
+      if (!cffReached) await Bun.sleep(100);
+    }
+    writeFileSync(`${REPO2}/cff-intruder.txt`, "a commit that stole the confirm's fast-forward\n");
+    spawnSync("git", ["-C", REPO2, "add", "cff-intruder.txt"]);
+    spawnSync("git", ["-C", REPO2, "commit", "-qm", "intruder stole the confirm ff"]);
+    const cffIntruder = main2Of();
+    writeFileSync(`${cffLatch}.release`, "go\n", { mode: 0o600 });
+    let cffVerdict: CffVerdict | null = null;
+    for (let i = 0; i < 480 && cffVerdict === null; i++) {
+      await Bun.sleep(250);
+      const mg = (await (await get(`/api/slots/${cffLane.slot}/merge`)).json()) as
+        { running?: boolean; last?: CffVerdict | null };
+      if (mg.running === false && mg.last) cffVerdict = mg.last;
+    }
+    const cffRowAfter = await slRow(cffRowId);
+    check("(8j) a guarded confirm that loses the fast-forward reads as its OWN reason — error + typed ff-lost, never resolved, with the resolution's guard halves intact, main unmoved and the row unlanded",
+      cffReady2 && cffConfirm.ok && cffReached && cffIntruder !== cffMainBefore
+        && cffVerdict?.status === "error" && cffVerdict.landed === false
+        && cffVerdict.errorReason === "ff-lost"
+        && (cffVerdict.conflicted?.length ?? 0) > 0 && !!cffVerdict.resolvedBy
+        && /^[0-9a-f]{40,64}$/.test(cffVerdict.candidateSha ?? "")
+        && (cffVerdict.detail ?? "").includes("fast-forwarding")
+        && main2Of() === cffIntruder && cffRowAfter?.status === "sent",
+      JSON.stringify({ ready: cffReady2, confirm: cffConfirm.status, reached: cffReached,
+        verdict: cffVerdict, before: cffMainBefore.slice(0, 8), intruder: cffIntruder.slice(0, 8),
+        now: main2Of().slice(0, 8), row: cffRowAfter?.status }));
+
+    for (const f of [cffLatch, `${cffLatch}.reached`, `${cffLatch}.release`]) try { rmSync(f); } catch { /* spent */ }
+    await restartSrv();
+    if (cffLane.slot !== null) await post(`/api/slots/${cffLane.slot}/kill`, {});
+    await post(`/api/tasks/${cffRowId}/done`, {});
+    await post(`/api/tasks/${cffRowId}/delete`, {});
+    if (cffMainSlot !== null) await post(`/api/slots/${cffMainSlot}/kill`, {});
+    await setPromotion(cffProgram.id, null);
+    await programPost(cffProgram.id, "complete");
 
     for (const f of [`${ffrLatch}`, `${ffrLatch}.reached`, `${ffrLatch}.release`, ffrVerify, ffrCount,
       ffrLog, `${ROOT}/ffretry.park.2`, `${ROOT}/ffretry.red.2`, `${ROOT}/ffretry.parked.2`,

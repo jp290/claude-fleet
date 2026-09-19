@@ -22,10 +22,16 @@
 // serialiser, because a phase that reads "READY" for a row nobody can account for is worse than no
 // phase at all: it looks like an answer.
 //
-// Inputs are the closed list in docs/attic/program-state-implementation-brief-2026-08-23.md §2 (I1–I6)
-// and nothing else. In particular NOT: fleetReports (pruned to 20 terminal rows, so a projection
-// over them would change with age), pane text, transcript bytes, task brief/comment text, any
-// `lastResult` prose, or terminal attention rows (also pruned). A pruned or live-text input would
+// Inputs are the closed list in docs/attic/program-state-implementation-brief-2026-08-23.md §2
+// (I1–I6) plus the two distilled facts the 2026-09-18 queue inspection added (I7 report, I8
+// preview — both computed in server.ts#programPhaseInput; this file never reads a ledger or the
+// report array). In particular NOT: report ROWS as history (fleetReports are pruned to 20 terminal
+// rows, so a projection over them would change with age), pane text, transcript bytes, task
+// brief/comment text, any `lastResult` prose, or terminal attention rows (also pruned). The one
+// prunable input the reducer DOES read is I7's distilled status — the CURRENT lane occupant's
+// newest claim about this task, a live-state question and not a reconstruction; when the claim
+// falls out of the retention tail the row simply stops naming the contradiction, which is the
+// view's retention unknown line, not a silent flip. A pruned-history or live-text input would
 // make the same row project differently between two GETs with no fact change — falsifier §10.3.
 import {
   DONE_LOOKING_RULES, HOST_COMMIT_LOOKING_RULES, laneWatchSignal, type LaneSignalView,
@@ -126,6 +132,16 @@ export interface PhaseInput {
   openAttention: number;
   outcome: PhaseOutcomeFacts | null;
   idleThresholdMs: number;
+  // I7 — the newest fleet-report STATUS the CURRENT lane occupant filed for this task (joined by
+  // provenance.taskId AND the occupant triple, server.ts#newestLaneReportFor), or null when none
+  // is present. The claim half of R11b. null is a real answer — never filed, or fallen out of the
+  // retention tail (the view owns that caveat) — never "unknown".
+  report: string | null;
+  // I8 — the lane's own isolated-suite preview, distilled to the three states the land door names
+  // (server.ts#lanePreviewFact). NO phase rule reads it: a phase must not grade a verify debt, and
+  // "may I land" is answered by the row's nextAction (programExecutionView#owedPreviewDoor), not
+  // by a phase.
+  preview: { state: "offered" | "running" | "red"; id: string } | null;
 }
 
 export interface PhaseCandidate {
@@ -258,6 +274,15 @@ export const PHASE_RULES: readonly PhaseRule[] = [
       + "a predicate over facts, NOT a report from that lane",
   },
   {
+    // Sits BELOW R11 on purpose: done-looking needs ahead>0, so an ahead=0 tree can never be the
+    // predicate's REVIEWABLE. Host-commit lanes never reach it (see the predicate above): for
+    // them complete+ahead=0 is the DESIGNED finished shape, not a contradiction.
+    id: "R11b", phase: "OWNER_GATE",
+    prose: "the lane's newest report says complete while the tree holds nothing to land",
+    holds: (v) => sentWithLane(v) && completeReportNothingToLand(v),
+    detail: () => "report says complete, git.ahead=0",
+  },
+  {
     id: "R12", phase: "OWNER_GATE",
     prose: "running lane with an open attention request",
     holds: (v) => sentWithLane(v) && v.openAttention > 0,
@@ -285,6 +310,16 @@ const IDLE_DIRTY_BASIS = "idle ≥ threshold, dirty>0, ahead=0 — not reviewabl
 const idleDirtyStuck = (v: PhaseInput): boolean => v.lane !== null && v.lane.git !== null
   && v.lane.idleMs !== null && v.lane.idleMs >= v.idleThresholdMs
   && v.lane.git.dirty > 0 && v.lane.git.ahead === 0;
+
+// THE CONTRADICTION PAIR R11b reads (2026-09-18 queue inspection, topic B). The lane's newest
+// report claims complete — and the lane-end contract orders COMMIT before REPORT — while the tree
+// holds nothing to land. Both halves are facts Fleet already holds; which of them is wrong is
+// exactly what no reducer may decide, so the pair is an owner gate, never a phase of its own.
+// Requires KNOWN git facts (R10 sits above) and excludes host-commit lanes, whose finished shape
+// is ahead=0 by design.
+const completeReportNothingToLand = (v: PhaseInput): boolean => v.report === "complete"
+  && v.lane !== null && v.lane.hostCommits === false
+  && v.lane.git !== null && v.lane.git.ahead === 0;
 
 // Which clauses of the lane predicates are NOT met, in their own prose. This is what makes a
 // RUNNING answer auditable without opening the pane: the reader sees "clean tree, git.ahead>0"
@@ -317,9 +352,9 @@ const candidateOf = (v: PhaseInput, phase: Phase): PhaseCandidate => {
 
 export function phaseOf(v: PhaseInput): PhaseResult {
   const rule = PHASE_RULES.find((r) => r.holds(v));
-  // Not reachable through the table above (R0…R13 partition every status), and deliberately not
-  // written as a `?? "RUNNING"` default: a status this build has never heard of is an unknown
-  // input, and unknown inputs have exactly one honest output.
+  // Not reachable through the table above (R0…R13 plus R11b partition every status), and
+  // deliberately not written as a `?? "RUNNING"` default: a status this build has never heard of
+  // is an unknown input, and unknown inputs have exactly one honest output.
   if (!rule) {
     return {
       phase: "UNKNOWN", phaseBasis: [`no rule matched status ${v.task.status}`],
@@ -340,8 +375,13 @@ export function phaseOf(v: PhaseInput): PhaseResult {
     note: waitingNote(v),
     candidate: candidateOf(v, rule.phase),
     // the view's own contract: every unknown sentence carries a number (it is a COUNT line beside
-    // the view's other unknowns), and it names the missing input rather than the row alone.
+    // the view's other unknowns), and it names the missing input rather than the row alone. R11b
+    // owes the reader the same sentence though it is not UNKNOWN: its two facts disagree with the
+    // rail's model, and nothing here can decide which of them is wrong — that IS the gate.
     unknown: rule.phase === "UNKNOWN"
-      ? `1 task (${v.task.id}) projects as phase UNKNOWN: ${detail || rule.prose}.` : null,
+      ? `1 task (${v.task.id}) projects as phase UNKNOWN: ${detail || rule.prose}.`
+      : rule.id === "R11b"
+        ? `1 task (${v.task.id}) reports complete while its tree holds nothing to land (git.ahead=0) — whether the act is tree-less by design or its commit step was skipped is not decidable from the facts Fleet holds.`
+        : null,
   };
 }

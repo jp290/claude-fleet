@@ -3,7 +3,11 @@ import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { WebglAddon } from "@xterm/addon-webgl";
 import qrcode from "qrcode-generator";
-import { mdInto } from "./md";
+import { mdInto, type MdEntityKind } from "./md";
+import { selectionMarkdown } from "./mdcopy";
+import { Flakes } from "./flakes";
+import { attachEntityCards, type EntFacts } from "./entcard";
+import { loadChatSizes, sizePanel, stepChatSizes } from "./chatsize";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
 import { gitUnquote, porcelainPath } from "./gitpath";
@@ -212,6 +216,8 @@ interface SlotInfo {
   // cwd can be a subdirectory and therefore cannot substitute for it in an ownership join.
   openedAt?: number; repo?: string | null;
   share?: ShareInfo | null; git?: GitInfo | null; worktree?: WorktreeInfo | null; mergePending?: boolean;
+  // the spawn-time model the server already puts on the poll (server.ts, the /api/sessions row)
+  model?: string | null;
   // which agent this session runs. ABSENT means the default harness — the server omits the field
   // when it is null (it is the 2 s poll), so absent and "claude" are the same state here too.
   harness?: string; effort?: string;
@@ -392,6 +398,104 @@ interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blo
 const fmtClock = (ts: string | null) =>
   ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 
+// --- conversation view chrome: copy buttons, code-block heads, hoverable ids, text size ---
+loadChatSizes();
+
+const COPIED_MS = 1200;
+function copyButton(label: string, title: string, source: () => string): HTMLButtonElement {
+  const btn = el("button", "copybtn", label) as HTMLButtonElement;
+  btn.title = title;
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    copyText(source());
+    btn.textContent = "copied ✓";
+    btn.classList.add("done");
+    setTimeout(() => { btn.textContent = label; btn.classList.remove("done"); }, COPIED_MS);
+  };
+  return btn;
+}
+
+// src/md.ts builds the block; the owner view gives it a head with the language, a wrap toggle and
+// a copy of the code itself (what you paste into a shell — a fence around it would be in the way)
+function decorateCode(code: HTMLElement): void {
+  const pre = code.querySelector("pre");
+  if (!pre) return;
+  code.querySelector(".codelang")?.remove();
+  const head = el("div", "cbhead");
+  head.appendChild(el("span", "cblang", code.getAttribute("data-lang") || "text"));
+  const wrap = el("button", "cbbtn", "wrap") as HTMLButtonElement;
+  wrap.title = "toggle line wrap";
+  wrap.onclick = (e) => {
+    e.stopPropagation();
+    const on = code.getAttribute("data-wrap") !== "1";
+    code.setAttribute("data-wrap", on ? "1" : "0");
+    wrap.classList.toggle("on", on);
+  };
+  const copy = copyButton("copy", "copy the code", () => pre.textContent ?? "");
+  copy.className = "cbbtn";
+  head.append(wrap, copy);
+  code.insertBefore(head, code.firstChild);
+}
+
+// which ids in transcript text become hoverable: only ones this board already knows
+function entityKnown(kind: MdEntityKind, id: string): boolean {
+  if (kind === "task") return tasksList.some((t) => t.id === id);
+  return fleet.some((sl) => sl.id === Number(id));
+}
+
+const entTextAsked = new Set<string>();
+function describeEntity(kind: string, id: string): EntFacts | null {
+  const now = Date.now();
+  if (kind === "task") {
+    const t = tasksList.find((x) => x.id === id);
+    if (!t) return null;
+    const text = taskText.get(id);
+    // the prompt text is not on the 2 s poll; ask the queue's own loader ONCE per id, then repaint
+    const later = text === undefined && !entTextAsked.has(id)
+      ? (entTextAsked.add(id), loadTaskTexts()) : undefined;
+    const worker = t.slot ? fleet.find((sl) => sl.id === t.slot) : undefined;
+    const workerLine = t.slot
+      ? `worker: slot ${t.slot}${worker?.label ? ` · ${worker.label}` : ""}${worker?.model ? ` · ${worker.model}` : ""}`
+      : "worker: —";
+    return {
+      meta: [`task ${t.id}`, t.status, t.kind].filter(Boolean).join(" · "),
+      title: text ? qFirstLine(text) : later ? "…" : "(no text on this board)",
+      lines: [
+        workerLine,
+        `${taskSourceLabel(t)} · filed ${fmtDur(Math.max(0, now - t.created))} ago`,
+        ...(t.cluster ? [[t.cluster.projekt, t.cluster.prozess, t.cluster.unterprozess].filter(Boolean).join(" / ")] : []),
+        ...(t.size ? [`size ${t.size}`] : []),
+      ],
+      later,
+    };
+  }
+  const sl = fleet.find((x) => x.id === Number(id));
+  if (!sl) return null;
+  if (!sl.cwd) return { meta: `slot ${sl.id} · free`, title: "no session in this slot", lines: [] };
+  const task = tasksList.find((t) => t.slot === sl.id && t.status === "sent");
+  const taskLine = task ? `task ${task.id}${taskText.has(task.id) ? ` · ${qFirstLine(taskText.get(task.id) ?? "")}` : ""}` : "";
+  return {
+    meta: [`slot ${sl.id}`, sl.worktree ? "lane" : "session", sl.ctx ? `ctx ${Math.round(sl.ctx.pct)}%` : ""].filter(Boolean).join(" · "),
+    title: sl.label || sl.cwd.split("/").filter(Boolean).pop() || sl.cwd,
+    lines: [
+      [sl.harness ?? "claude", sl.model, sl.effort].filter(Boolean).join(" · "),
+      sl.worktree ? `branch ${sl.worktree.branch}` : sl.cwd,
+      ...(taskLine ? [taskLine] : []),
+      ...(sl.lastOutput ? [`last output ${fmtDur(Math.max(0, now - sl.lastOutput))} ago`] : []),
+    ],
+  };
+}
+
+// Ctrl/Cmd +/−/0 resize the conversation text — only while the focused pane shows it, so the
+// browser's own page zoom keeps working everywhere else
+window.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || !panes[focused]?.isChat) return;
+  const dir = e.key === "+" || e.key === "=" ? 1 : e.key === "-" ? -1 : e.key === "0" ? 0 : null;
+  if (dir === null) return;
+  e.preventDefault();
+  stepChatSizes(dir);
+});
+
 // --- panes: each visible terminal owns its Terminal, WS, and resize state ---
 class Pane {
   slot = 0; // 0 = unassigned
@@ -413,6 +517,8 @@ class Pane {
   // conversation view: renders the claude transcript as structured messages —
   // reflows at any width, which the fixed-width pty stream can't
   private readonly chatEl: HTMLElement;
+  private readonly flakes = new Flakes();
+  private readonly sizeBtn: HTMLButtonElement;
   private readonly viewBtn: HTMLButtonElement;
   private readonly boardBtn: HTMLButtonElement;
   private readonly reloadBtn: HTMLButtonElement;
@@ -428,6 +534,27 @@ class Pane {
     this.hint = el("div", "panehint", "no session — click a slot");
     this.jump = el("button", "jump", "▼");
     this.chatEl = el("div", "panechat");
+    attachEntityCards(this.chatEl, describeEntity);
+    // a selection copies as the Markdown it was rendered from (src/mdcopy.ts); a selection the
+    // serializer declines (nothing of ours in it) keeps the browser's own copy
+    this.chatEl.addEventListener("copy", (e) => {
+      const md = selectionMarkdown(this.chatEl, window.getSelection());
+      if (!md || !e.clipboardData) return;
+      e.clipboardData.setData("text/plain", md);
+      e.preventDefault();
+    });
+    this.sizeBtn = el("button", "chatsizebtn", "Aa") as HTMLButtonElement;
+    this.sizeBtn.title = "Schriftgröße — Text, Code, Oberfläche (Strg/⌘ + / − / 0)";
+    this.sizeBtn.onclick = (e) => {
+      e.stopPropagation();
+      const panel = sizePanel();
+      if (panel.parentElement === this.root && panel.classList.contains("open")) {
+        panel.classList.remove("open");
+        return;
+      }
+      this.root.appendChild(panel);
+      panel.classList.add("open");
+    };
     this.viewBtn = el("button", "viewtoggle", "💬") as HTMLButtonElement;
     this.viewBtn.title = "toggle conversation view";
     this.viewBtn.style.display = "none";
@@ -458,7 +585,8 @@ class Pane {
     const navDn = el("button", "promptnav dn", "↓") as HTMLButtonElement;
     navDn.title = "next prompt of yours";
     navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
-    this.root.append(termEl, this.chatEl, this.hint, this.jump, this.viewBtn, this.boardBtn, this.reloadBtn, navUp, navDn);
+    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.hint, this.jump, this.sizeBtn, this.viewBtn,
+      this.boardBtn, this.reloadBtn, navUp, navDn);
     this.term = new Terminal({
       // 10k, not the 50k this carried from the first commit (f43e3fb1) without ever being
       // revisited. The number is a PER-PANE cost and the board shows several at once, so a
@@ -576,6 +704,8 @@ class Pane {
     this.root.classList.toggle("chat", v === "chat");
     this.viewBtn.textContent = v === "chat" ? "⌨" : "💬";
     this.viewBtn.title = v === "chat" ? "back to terminal" : "toggle conversation view";
+    this.flakes.setActive(v === "chat");
+    if (v !== "chat") sizePanel().classList.remove("open");
     clearTimeout(this.chatTimer);
     if (v === "chat") void this.pollChat();
     else this.term.focus();
@@ -671,6 +801,12 @@ class Pane {
     g.sum.textContent = `🔔 ${g.count} task notification${g.count === 1 ? "" : "s"}`;
   }
 
+  get isChat(): boolean {
+    return this.view === "chat";
+  }
+
+  // One message: the rendered body (a bubble for you, free prose for the agent — t3code's layout
+  // grammar) and a meta row that appears on hover with the time and a copy of the SOURCE text.
   private appendEntry(e: TEntry) {
     if (e.meta) { this.addNotif(e); return; }
     this.notifGroup = null; // a real entry ends the notification run
@@ -678,8 +814,14 @@ class Pane {
       if (b.t === "text") {
         this.toolGroup = null; // a message ends the current work block
         const msg = el("div", `msg ${e.role}`);
-        msg.appendChild(el("div", "mhead", e.role === "user" ? `you · ${fmtClock(e.ts)}` : "claude"));
-        mdInto(msg, b.text);
+        const body = el("div", "mbody");
+        mdInto(body, b.text, { entity: entityKnown });
+        for (const code of body.querySelectorAll<HTMLElement>(".code")) decorateCode(code);
+        const meta = el("div", "mmeta");
+        const who = e.role === "user" ? "you" : "claude";
+        meta.appendChild(el("span", "mwho", e.ts ? `${who} · ${fmtClock(e.ts)}` : who));
+        meta.appendChild(copyButton("copy", "copy this message as Markdown", () => b.text));
+        msg.append(body, meta);
         this.chatEl.appendChild(msg);
       } else {
         this.addStep(b);
@@ -930,6 +1072,7 @@ class Pane {
     // clearing them makes that guard fire and end the loop on a disposed instance
     this.slot = 0;
     this.view = "term";
+    this.flakes.dispose();
     this.term.dispose();
     this.root.remove();
   }

@@ -156,7 +156,11 @@
   #sidefoot { padding: 8px 12px; font-size: 10px; color: #555; line-height: 1.5;
     border-top: 1px solid var(--line-soft); }
 
-  #main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; }
+  /* pure black behind BOTH views (owner, eleventh cut: the terminal gets the chat view's #000): the
+     main column, the pane, the xterm theme (src/client.ts, Pane) and the composer strip are one
+     black, so the panes' 3px gutter shows no second black */
+  #main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative;
+    background: #000; }
   /* the drag&drop target. Covers the whole main column (pane + composer) because that is the
      shape of the gesture — you aim at the session, not at a widget. Hidden until a drag with
      actual files enters, and pointer-events:none so it can never eat a click. */
@@ -170,7 +174,10 @@
   #panes.l2 { grid-template-columns: 1fr 1fr; }
   #panes.l4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
   .pane { position: relative; min-width: 0; min-height: 0; border: 1px solid var(--line-soft);
-    border-radius: 8px; overflow: hidden; background: #141414; }
+    border-radius: 8px; overflow: hidden; background: #000; }
+  /* one pane: its grey edge would be the only line left on the black — it goes; several panes keep
+     it, because there it separates them and carries the focus ring */
+  #panes.l1 .pane { border-color: transparent; }
   #panes:not(.l1) .pane.focused { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
   /* desktop: briefly ring the pane a clicked sidebar slot landed in or already occupied —
      in a 2-up/2x2 layout it isn't always obvious at a glance which pane just changed */
@@ -188,7 +195,6 @@
     --chat-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     --chat-ink: #e7e7ea; --chat-prose: #d4d4d8; --chat-mute: #8b8b94; --chat-faint: #5c5c66;
     --chat-surface: #111113; --chat-raised: #17171a; --chat-edge: #26262b; --chat-edge-soft: #1b1b1f; }
-  .pane.chat { background: #000; }
   .chatflakes { position: absolute; inset: 0; width: 100%; height: 100%; display: none; pointer-events: none; z-index: 0; }
   .pane.chat .chatflakes { display: block; }
   .panechat { position: absolute; inset: 0; z-index: 1; display: none; overflow-y: auto;
@@ -340,7 +346,7 @@
     background: var(--raised); color: var(--dim); font-size: 13px; font-family: inherit; cursor: pointer; }
   #layouts button.active { color: var(--accent); border-color: var(--sel); background: #1c2437; }
 
-  #bar { flex: none; background: #0b0b0c; border-top: 1px solid var(--line-soft);
+  #bar { flex: none; background: #000; border-top: 1px solid transparent;
     padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; }
   #chips { display: flex; gap: 6px; overflow-x: auto; }
   #chips:empty { display: none; }
@@ -370,7 +376,6 @@
     display: flex; flex-direction: column; gap: 8px; min-width: 0; width: 100%; max-width: 780px;
     margin: 0 auto; font-family: var(--chat-sans); }
   @media (prefers-reduced-motion: reduce) { #comp { --t: 0ms linear; } }
-  #bar.chat { background: #000; border-top-color: transparent; }
   #compsurface { display: flex; flex-direction: column; gap: 8px; background: var(--chat-raised);
     border: 1px solid var(--chat-edge); border-radius: var(--r3) var(--r3) var(--r1) var(--r3);
     padding: 4px; transition: border-color var(--t), height var(--t); }
@@ -1797,7 +1802,10 @@
         <button id="live" title="live typing — every key goes straight to the terminal"><span class="tricon"></span><span class="trlabel">Live</span></button>
         <button id="histbtn" title="prompt history (↑ in the empty box recalls too)"><span class="tricon"></span><span class="trlabel">History</span></button>
         <button id="autobtn" title="scheduled prompts for this session"><span class="tricon"></span><span class="trlabel">Schedule</span></button>
-        <button id="enhbtn" title="✨ rework this prompt — a background agent weaves in your directives + /sharpen3 (usually ~20s, can take up to 3 min — never auto-sends)"><span class="tricon"></span><span class="trlabel">Rework</span></button>
+        <!-- ✨ Rework left the tray (owner, eleventh cut). The element and its handler stay, HIDDEN:
+             e2e/outcomes.ts (9e) pins the handler's disposition rail — retiring the flow is a
+             decision of its own, not a side effect of removing a button. -->
+        <button id="enhbtn" hidden title="✨ rework this prompt — a background agent weaves in your directives + /sharpen3 (usually ~20s, can take up to 3 min — never auto-sends)"><span class="tricon"></span><span class="trlabel">Rework</span></button>
       </div>
     </div>
     <div id="droplay">Drop to hand the file to this session</div>

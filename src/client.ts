@@ -638,7 +638,7 @@ class Pane {
       smoothScrollDuration: 100,
       fontSize: isMobile() ? 11 : 12,
       fontFamily: "ui-monospace, Menlo, Consolas, monospace",
-      theme: { background: "#141414", foreground: "#d8d8d8" },
+      theme: { background: "#000000", foreground: "#d8d8d8" }, // the chat view's black (index.html #main)
     });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
@@ -3356,7 +3356,6 @@ applyBoard();
 // switch only toggles the size class; #bar is the last item of the main column, so the extra
 // height pushes the panes up and the bottom edge stays where it is.
 const compEl = $("comp"), compOpts = $("compopts"), compTray = $("comptray"), compFiles = $("compfiles");
-const barEl = $("bar");
 
 function setComposerSize(size: "bar" | "tall"): void {
   reshapeSurface(() => {
@@ -3410,10 +3409,9 @@ function reshapeSurface(change: () => void): void {
 }
 
 // The composer follows the FOCUSED pane's view — the pane it has always addressed. It never moves;
-// only its size changes, and #bar goes black with a conversation above it.
+// only its size changes (#bar is black under both views since the eleventh cut).
 function mountComposer(): void {
   const pane = panes[focused];
-  barEl.classList.toggle("chat", !!pane?.isChat);
   setComposerSize(pane?.isChat ? "tall" : "bar");
   renderComposerOpts(false);
 }
@@ -3586,7 +3584,6 @@ const TRAY: { id: string; label: string; icon: IconName; run?: () => void }[] = 
   { id: "files", label: "Files", icon: "folder", run: () => dropFile.click() },
   { id: "histbtn", label: "History", icon: "history" },
   { id: "autobtn", label: "Schedule", icon: "clock" },
-  { id: "enhbtn", label: "Rework", icon: "spark" },
   { id: "live", label: "Live", icon: "keys" },
 ];
 function buildTray(): void {

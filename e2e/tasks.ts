@@ -2717,12 +2717,19 @@ export async function run(ctx: Ctx): Promise<void> {
     // success could never pass for a hold success — this sub-block runs in well under one span.
     for (const id of rSingles) await post(`/api/tasks/${id}/unqueue`, {});
     const rGroupRelease5 = await rSelfPost(`/api/self/tasks/${rGroup4}/release`, {});
+    // THE FIELD'S ARITHMETIC: inRepo counts WORKTREE lanes only (server.ts#inRepo), so the
+    // bootstrap MAIN — a checkout, no worktree — counts in NEITHER rLanes nor the tick's cap
+    // count. The first isolated run of this probe believed the opposite, ran one filler against
+    // the cap of 3, and the group started 1+2=3 instead of being held. Two fillers eat 2 of 3:
+    // the group (n=2) is capacity-held with its claim parked, the single row behind it carries
+    // the reserve sentence, and the hold below must drop that claim.
     const rFill5 = (await (await post("/api/lanes", { repo: REPO2 })).json()) as { slot?: number };
+    const rFill5b = (await (await post("/api/lanes", { repo: REPO2 })).json()) as { slot?: number };
     const rSingle5 = await rFileRow("(v-res)(5) single row behind a HELD group — the held claim must not stop it");
-    check("(v-res)(5) fixture: the group released clean (0+2 against 5), one filler lane in REPO2, the single row filed",
-      rGroupRelease5.status === 200 && typeof rFill5.slot === "number" && /^[0-9a-f]{6,}$/.test(rSingle5)
-      && (await rLanes()) === 2,
-      JSON.stringify({ release: rGroupRelease5.status, filler: rFill5.slot ?? null, single: rSingle5, lanes: await rLanes() }));
+    check("(v-res)(5) fixture: the group released clean (0+2 against 5), two filler lanes in REPO2, the single row filed",
+      rGroupRelease5.status === 200 && typeof rFill5.slot === "number" && typeof rFill5b.slot === "number"
+      && /^[0-9a-f]{6,}$/.test(rSingle5) && (await rLanes()) === 2,
+      JSON.stringify({ release: rGroupRelease5.status, fillers: [rFill5.slot ?? null, rFill5b.slot ?? null], single: rSingle5, lanes: await rLanes() }));
     await post("/api/dispatch", { on: true });
     const rHeld5 = await rTill(() => rRow(rSingle5), (t) => (t?.note ?? "").startsWith("waiting: the next lane is reserved"));
     check("(v-res)(5) fixture: the claim really stands — the single row carries the group's reserve sentence",
@@ -2743,6 +2750,7 @@ export async function run(ctx: Ctx): Promise<void> {
     await post("/api/dispatch", { on: false });
     if (typeof rMainSlot === "number") await post(`/api/slots/${rMainSlot}/kill`, {});
     if (typeof rFill5.slot === "number") await post(`/api/slots/${rFill5.slot}/kill`, {});
+    if (typeof rFill5b.slot === "number") await post(`/api/slots/${rFill5b.slot}/kill`, {});
     await Bun.sleep(600);
     for (const id of rSingles) await post(`/api/tasks/${id}/delete`, {});
     await rDrop(rGroup4);

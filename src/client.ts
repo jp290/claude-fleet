@@ -6,7 +6,7 @@ import qrcode from "qrcode-generator";
 import { mdInto, type MdEntityKind } from "./md";
 import { selectionMarkdown } from "./mdcopy";
 import { Flakes } from "./flakes";
-import { icon, type IconName } from "./icons";
+import { harnessMark, icon, type IconName } from "./icons";
 import { attachEntityCards, type EntFacts } from "./entcard";
 import { loadChatSizes, sizePanel, stepChatSizes } from "./chatsize";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
@@ -3375,13 +3375,21 @@ function mountComposer(): void {
   renderComposerOpts(false);
 }
 
-// the model/effort switch: conversation view only, and only what the SLOT'S ADAPTER carries
+// the model/effort switches: conversation view only, and only what the SLOT'S ADAPTER carries
 // (GET /api/harnesses). Same rule as the second cut — what a harness has no concept of is absent,
-// not greyed — and the same two-half write (setSlotSetting). Fourth cut (owner: "zwei getrennte
-// blasen"): ONE inline control in the surface's bottom row, left of send, like the reference shot —
-// the model in ink, the effort dimmer beside it, one popover holding both sections.
+// not greyed — and the same two-half write (setSlotSetting). Seventh cut (owner: "effort und modell
+// getrennt … ein übernahme-bestätigungs button … bevor dann wirklich der cmnd an die session geht"):
+// TWO controls in the surface's bottom row, each with its own small popover, and a pick is STAGED,
+// never run — only the popover's Apply writes the record and types into the pane. Closing without
+// Apply discards. State lives here, outside the DOM, because the poll repaints the row whenever the
+// slot's values move (measured in the second cut: a verdict held in a replaced node reads as silence).
+type OptField = "model" | "effort";
 let optsKey = "";
-let optsMsg = "";
+let optOpen: OptField | null = null;
+let optStaged: Partial<Record<OptField, string>> = {};
+let optMsg: Partial<Record<OptField, string>> = {};
+let optsSlot = 0;
+
 function renderComposerOpts(force: boolean): void {
   const pane = panes[focused];
   const slot = pane?.isChat ? pane.slot : 0;
@@ -3390,94 +3398,123 @@ function renderComposerOpts(force: boolean): void {
   const key = [slot, h?.id ?? "", s?.model ?? "", s?.effort ?? "", defaultModel ?? ""].join("|");
   if (!force && key === optsKey) return;
   optsKey = key;
+  // a pick staged for one session must never be applied to the next one the focus lands on
+  if (slot !== optsSlot) { optsSlot = slot; optOpen = null; optStaged = {}; optMsg = {}; }
   compOpts.replaceChildren();
-  if (!h) return;
-  const hasModel = h.supports.model;
-  const hasEffort = h.supports.effort && h.effortLevels.length > 0;
-  if (!hasModel && !hasEffort) return;
-  const values: [string, string][] = [];
-  if (hasModel) values.push(["optval", s?.model ?? (h.default && defaultModel ? defaultModel : "default")]);
-  if (hasEffort) values.push(["optval dim", s?.effort ?? "default"]);
-  compOpts.appendChild(optSwitch(values, (pop, say) => {
-    if (hasModel) {
+  if (!h || !slot) return;
+  if (h.supports.model) {
+    const current = s?.model ?? "";
+    const shown = current || (h.default && defaultModel ? defaultModel : "default");
+    const mark = harnessMark(h.id);
+    compOpts.appendChild(optSwitch("model", slot, current, shown, mark ? [el("span", "optmark")] : [], (stage) => {
       const input = document.createElement("input");
       input.className = "cmdinput";
-      input.value = s?.model ?? "";
-      input.placeholder = h.default && defaultModel ? defaultModel : "default";
-      const go = el("button", "cmdgo", "set") as HTMLButtonElement;
-      const run = async () => {
-        const v = input.value.trim();
-        if (!v || !slot) return;
-        go.disabled = true;
-        say(`setting model ${v} …`);
-        say(await setSlotSetting(slot, "model", v));
-        go.disabled = false;
-      };
-      go.onclick = () => void run();
-      input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); void run(); } });
-      const row = el("div", "cmdrow");
-      row.append(input, go);
-      pop.append(el("div", "opthead", "model"), row);
-    }
-    if (hasEffort) {
+      input.value = optStaged.model ?? current;
+      input.placeholder = shown;
+      input.spellcheck = false;
+      input.addEventListener("input", () => stage(input.value.trim()));
+      // Enter moves to Apply rather than applying: the explicit press stays the only way out
+      input.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        input.closest(".optpop")?.querySelector<HTMLButtonElement>(".cmdapply")?.focus();
+      });
+      return [input];
+    }, mark));
+  }
+  if (h.supports.effort && h.effortLevels.length) {
+    const current = s?.effort ?? "";
+    compOpts.appendChild(optSwitch("effort", slot, current, current || "default", [], (stage) => {
       const levels = el("div", "cmdlevels");
       for (const lv of h.effortLevels) {
-        const b = el("button", `cmdlevel${s?.effort === lv ? " on" : ""}`, lv) as HTMLButtonElement;
-        b.onclick = async () => {
-          if (!slot) return;
-          b.disabled = true;
-          say(`setting effort ${lv} …`);
-          say(await setSlotSetting(slot, "effort", lv));
-          b.disabled = false;
+        const b = el("button", "cmdlevel", lv) as HTMLButtonElement;
+        b.classList.toggle("cur", lv === current);
+        b.classList.toggle("staged", lv === optStaged.effort && lv !== current);
+        b.onclick = () => {
+          stage(lv);
+          for (const o of levels.children) o.classList.toggle("staged", o === b && lv !== current);
         };
         levels.appendChild(b);
       }
-      pop.append(el("div", "opthead", "effort"), levels);
-    }
-  }));
+      return [levels];
+    }, null));
+  }
 }
 
-// the switch = its values with a chevron, and a popover its caller fills. The verdict line
-// is held in `optsMsg`, outside the DOM: a set changes the poll key, the poll repaints this row,
-// and a verdict living in the replaced node would read as silence (measured in the second cut).
-function optSwitch(values: [string, string][], fill: (pop: HTMLElement, say: (m: string) => void) => void): HTMLElement {
-  const wrap = el("div", "optswrap");
+// Close whatever is open and forget what was staged in it — closing without Apply discards.
+function closeOpts(focusField?: OptField): void {
+  optOpen = null;
+  optStaged = {};
+  optMsg = {};
+  renderComposerOpts(true);
+  if (focusField) compOpts.querySelector<HTMLElement>(`.optswrap.${focusField} .optsw`)?.focus();
+}
+
+// one switch = its (staged or current) value with a chevron, and a small popover: the field's own
+// control(s), then Apply. The verdict line appears only after an Apply, never as an empty row.
+function optSwitch(field: OptField, slot: number, current: string, shown: string, lead: HTMLElement[],
+  body: (stage: (v: string) => void) => HTMLElement[], mark: IconName | null): HTMLElement {
+  const wrap = el("div", `optswrap ${field}`);
   const btn = el("button", "optsw") as HTMLButtonElement;
-  btn.title = "model and effort for this session";
-  for (const [cls, v] of values) btn.appendChild(el("span", cls, v));
+  const what = `sets the slot record AND types /${field} into the pane — only when you press Apply`;
+  btn.title = mark ? `${harnessEntry(slot)?.id ?? ""} · ${field} — ${what}` : `${field} — ${what}`;
+  if (mark) lead[0]?.appendChild(icon(mark));
+  const val = el("span", `optval${field === "effort" ? " dim" : ""}`, optStaged[field] ?? shown);
+  btn.append(...lead, val);
   btn.appendChild(el("span", "optchev")).appendChild(icon("chevron"));
-  const pop = el("div", "optpop");
-  const status = el("div", "cmdstatus", optsMsg);
-  const say = (m: string) => { optsMsg = m; status.textContent = m; };
-  fill(pop, say);
-  pop.append(el("div", "cmdnote", "sets the slot record AND types the command into the pane"), status);
+  const pop = el("div", `optpop ${field}`);
+  const apply = el("button", "cmdapply", "Apply") as HTMLButtonElement;
+  apply.title = what;
+  const status = el("div", "cmdstatus", optMsg[field] ?? "");
+  status.hidden = !optMsg[field];
+  const sync = () => {
+    const v = optStaged[field];
+    const pending = !!v && v !== current;
+    apply.disabled = !pending;
+    wrap.classList.toggle("staged", pending);
+    val.textContent = pending && v ? v : shown;
+  };
+  const stage = (v: string) => { optStaged = { ...optStaged, [field]: v }; sync(); };
+  apply.onclick = async () => {
+    const v = optStaged[field];
+    if (!v || v === current) return;
+    apply.disabled = true;
+    apply.textContent = "Applying…";
+    const verdict = await setSlotSetting(slot, field, v);
+    optStaged = { ...optStaged, [field]: undefined };
+    optMsg = { ...optMsg, [field]: verdict };
+    renderComposerOpts(true); // the popover stays open (optOpen) and shows the verdict
+  };
+  const row = el("div", "cmdrow");
+  row.append(...body(stage), apply);
+  pop.append(row, status);
+  sync();
+  if (optOpen === field) { pop.classList.add("open"); btn.classList.add("on"); }
   btn.onclick = (e) => {
     e.stopPropagation();
-    const open = !pop.classList.contains("open");
-    for (const other of compOpts.querySelectorAll(".optpop.open")) other.classList.remove("open");
-    for (const other of compOpts.querySelectorAll(".optsw.on")) other.classList.remove("on");
-    pop.classList.toggle("open", open);
-    btn.classList.toggle("on", open);
+    const opening = optOpen !== field;
+    optStaged = {};
+    optMsg = {};
+    optOpen = opening ? field : null;
+    renderComposerOpts(true);
+    const again = compOpts.querySelector<HTMLElement>(`.optswrap.${field}`);
+    if (opening) again?.querySelector<HTMLElement>(".cmdinput, .cmdlevel.cur, .cmdlevel")?.focus();
+    else again?.querySelector<HTMLElement>(".optsw")?.focus();
   };
   wrap.append(btn, pop);
   return wrap;
 }
 document.addEventListener("pointerdown", (e) => {
   const t = e.target;
-  if (t instanceof Element && t.closest(".optswrap")) return;
-  for (const pop of compOpts.querySelectorAll(".optpop.open")) pop.classList.remove("open");
-  for (const b of compOpts.querySelectorAll(".optsw.on")) b.classList.remove("on");
+  if (!optOpen || (t instanceof Element && t.closest(".optswrap"))) return;
+  closeOpts();
 });
-// Escape closes an open switch popover and hands focus back to its switch — the keyboard's way out
+// Escape closes an open switch popover (discarding) and hands focus back to its switch
 compOpts.addEventListener("keydown", (e) => {
-  const open = compOpts.querySelector(".optpop.open");
-  if (e.key !== "Escape" || !open) return;
+  if (e.key !== "Escape" || !optOpen) return;
   e.preventDefault();
   e.stopPropagation();
-  open.classList.remove("open");
-  const btn = open.parentElement?.querySelector(".optsw");
-  btn?.classList.remove("on");
-  if (btn instanceof HTMLElement) btn.focus();
+  closeOpts(optOpen);
 });
 
 // --- the tray under the surface. ENTRIES ARE DATA: a later one is a row here, not a rebuild.

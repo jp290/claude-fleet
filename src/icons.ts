@@ -15,6 +15,11 @@ const PATHS = {
   clock: ["M20.5 12a8.5 8.5 0 1 1-17 0a8.5 8.5 0 1 1 17 0z", "M12 7.5v4.7l3 1.8"],
   spark: ["M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9-1.9 5.1-1.9-5.1L5 10.5l5.1-1.9z", "M18.5 16v4", "M16.5 18h4"],
   keys: ["M3 6.5h18v11H3z", "M7 10h.01", "M10.3 10h.01", "M13.7 10h.01", "M17 10h.01", "M8 14h8"],
+  // one mark per agent harness — OWN plain geometry, deliberately not any vendor's logo (this repo
+  // is public): claude an open ring around a point, codex a hexagon, the pi family the letter π
+  markClaude: ["M18.4 8.2A7.5 7.5 0 1 0 18.4 15.8", "M12 12h.01"],
+  markCodex: ["M12 3.5l7.4 4.25v8.5L12 20.5l-7.4-4.25v-8.5z"],
+  markPi: ["M5 7.5h14", "M9.5 7.5v11", "M14.5 7.5v9.5a1.5 1.5 0 0 0 1.5 1.5h1"],
 } as const;
 
 export type IconName = keyof typeof PATHS;
@@ -35,4 +40,12 @@ export function icon(name: IconName): SVGSVGElement {
     svg.appendChild(p);
   }
   return svg;
+}
+
+// the mark for a harness id (GET /api/harnesses), or null — an unknown harness shows no mark
+export function harnessMark(id: string): IconName | null {
+  if (id === "claude") return "markClaude";
+  if (id === "codex") return "markCodex";
+  if (id === "pi" || id.startsWith("pi-")) return "markPi";
+  return null;
 }

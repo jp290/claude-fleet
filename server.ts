@@ -7820,10 +7820,6 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
     // the verdict's mint finds the successor's occupation. Settled offers are NOT carried: their
     // verdict belongs to the occupation that read it, and the handoff report is where that
     // knowledge travels.
-    // TEMPORARY PROBE (removed once the (a) transfer is proven): speak the map, not the predicate.
-    audit("lane_succession", s.id,
-      `transfer probe: priorOpenedAt=${priorOpenedAt} now=${s.openedAt} jobs=`
-      + ([...laneSuiteJobs.values()].map((j) => `${j.id}:${j.slot}:${j.slotOpenedAt}:${j.state}`).join(",") || "(empty)"));
     for (const j of laneSuiteJobs.values())
       if (j.slot === s.id && j.slotOpenedAt === priorOpenedAt && (j.state === "open" || j.state === "claimed")) {
         j.slotOpenedAt = s.openedAt;
@@ -20947,8 +20943,14 @@ function expireHelperClaims(): boolean {
     // The lane itself can be gone — landed, killed, or its slot recycled under a new session. An
     // offer nobody is waiting for must not sit in the portal inviting somebody to spend 13 minutes
     // on it. Identity is slot + openedAt, never the bare slot id (ids are recycled).
+    // A SUCCESSION HOLDS THE SLOT MID-ROTATION, and that is not "gone": openSlot clears cwd between
+    // the predecessor's teardown and the successor's open, and a sweep tick inside that window
+    // (measured — the founding delivery takes seconds, the tick 2 s) reaped a job the baton was
+    // about to carry, so the successor inherited `offer: null` and the runner withdrew silently.
+    // `laneSpawn` is the reservation the dispatch tick already reads; a succession that fails is
+    // de-registered in its finally, and the next sweep reaps honestly then.
     const live = slots.some((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
-    if (!live && (j.state === "open" || j.state === "claimed")) {
+    if (!live && !laneSpawn.has(j.slot) && (j.state === "open" || j.state === "claimed")) {
       if (j.claim) { try { rmSync(j.claim.bundle, { force: true }); } catch { /* already gone */ } }
       j.claim = null;
       j.state = "reaped";
@@ -21555,6 +21557,11 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
   const live = slots.find((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
   if (!live) {
     // reaped in the same turn it is refused: an offer whose lane is gone must not be offered again
+    // — UNLESS the lane is mid-succession (laneSpawn): the occupation is between occupants, the
+    // baton will carry this job, and closing it here is the same silent loss the reap guard in
+    // expireHelperClaims names. Refused WITHOUT a state change; the helper retries.
+    if (laneSpawn.has(j.slot))
+      return json({ error: "this preview's lane is handing the baton over — try again in a moment" }, 409);
     j.state = "withdrawn";
     await saveStateNow();
     return json({ error: "the lane that offered this preview is gone — nothing to run it for" }, 409);

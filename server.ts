@@ -520,6 +520,10 @@ interface Harness {
   // allowed set is named ids rather than a charset: a regex source answers the shape, not the
   // names, and the owner picking a model asked for the names. Absent = the regex source.
   modelErr?: string;
+  // The models the composer offers as a pick list (GET /api/harnesses → the model switch). A MENU,
+  // not a gate: modelRe still judges every value, free text stays possible, and an empty list only
+  // means the switch shows the free-text field alone. Every entry must pass this adapter's modelRe.
+  models: readonly string[];
   // The closed set of effort levels this harness accepts. Empty = it has no effort concept, and
   // the routes reject any effort for it. A LITERAL allowlist rather than a regex on purpose: the
   // value reaches a shell line, and membership in a fixed list of lowercase words is a stronger
@@ -642,6 +646,7 @@ const CLAUDE_HARNESS: Harness = {
   // it was read and silently cost every claude slot the knob. A level named here reaches the pane
   // through slotCmd → agentCmd; nothing else can, because effortOf judges the request against
   // exactly this list.
+  models: ["claude-opus-5[1m]", "claude-opus-5", "claude-fable-5-1[1m]", "claude-sonnet-5[1m]", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
   effortLevels: ["low", "medium", "high", "xhigh", "max"],
   supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false },
   note: null,
@@ -759,6 +764,7 @@ const PI_HARNESS: Harness = {
   // provider/id (`claude-bridge/claude-haiku-4-5`), a `:thinking` suffix, and globs — none of which
   // MODEL_RE admits, and it must not be widened to: a claude slot has no use for those characters.
   modelRe: HARNESS_MODEL_RE,
+  models: [],
   effortLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], // `pi --help`, the real installation
   supports: {
     resume: true,       // measured (a), including the pane respawn ensureSlot actually performs
@@ -861,6 +867,7 @@ const PI_ZAI_HARNESS: Harness = {
   laneForm: null,
   modelRe: /^glm-5\.3(-flash)?$/,
   modelErr: "one of: glm-5.3, glm-5.3-flash",
+  models: ["glm-5.3", "glm-5.3-flash"],
   effortLevels: ["low", "high", "max"],
   supports: {
     resume: true,
@@ -927,6 +934,7 @@ const PI_OX_HARNESS: Harness = {
   singleton: false,
   laneForm: null,
   modelRe: /^x-preview-f-free$/,
+  models: ["x-preview-f-free"],
   effortLevels: [],
   supports: {
     resume: true,
@@ -1155,6 +1163,7 @@ const CONTAINER_HARNESS: Harness = {
   // here to ask (both colima profiles down that day). An effort the owner set and the container's
   // agent rejected at startup is the silent drop `supports` exists to prevent. One command the day
   // a box is up — `docker --context <ctx> exec <box> claude --help` — and the answer goes here.
+  models: [],
   effortLevels: [],
   supports: {
     resume: true,
@@ -1348,6 +1357,7 @@ const CODEX_HARNESS: Harness = {
   // Codex exposes reasoning effort through config (`-c`) rather than a dedicated flag. Keep this
   // fixed list as the request validation boundary: only this key and these measured values may
   // reach the quoted pane command, never a general operator-supplied config pass-through.
+  models: ["gpt-5.6-sol", "gpt-5.5", "gpt-5.3-codex-spark"],
   effortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"],
   supports: {
     // TRUE only beside the discovery seam: `codex resume <exact-id>` was measured to continue the
@@ -35953,7 +35963,7 @@ Bun.serve<WSData>({
     if (url.pathname === "/api/harnesses" && req.method === "GET") {
       return json({
         harnesses: HARNESSES.map((h) => ({
-          id: h.id, supports: h.supports, effortLevels: h.effortLevels, note: h.note,
+          id: h.id, supports: h.supports, models: h.models, effortLevels: h.effortLevels, note: h.note,
           // apply | not-applicable | unsupported — whether a lane on it may name `browser: true`
           browserProfile: h.browserProfile,
           // whether an UNATTENDED path may ever drive this harness. The adapter's claim, not the

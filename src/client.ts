@@ -3456,8 +3456,11 @@ function setModelWarnOff(): void {
 // from the transcript poll the conversation view already runs) — not lastOutput, which moves with
 // any byte the pane paints. What the TTL of a given session IS stays unmeasured: Claude Code's own
 // rule (2.1.278) is 1 h for the main conversation on a subscription within its limits and 5 min on
-// an API key or in overage, and nothing on this board says which applies — hence "probably".
-const CACHE_WARM_MS = 5 * 60_000;
+// an API key or in overage, and nothing on this board says which applies — hence "probably". The
+// owner runs on the 5 min TTL (thirteenth cut) and wants the turn to cold 20 s BEFORE it, so the
+// expiry never arrives as a surprise.
+const CACHE_TTL_MS = 5 * 60_000;
+const CACHE_COLD_AT_MS = CACHE_TTL_MS - 20_000;
 let ageEl: HTMLElement | null = null;
 const fmtAge = (ms: number): string => {
   const s = Math.floor(ms / 1000);
@@ -3473,12 +3476,12 @@ function tickCacheAge(): void {
   const ms = cacheAge();
   ageEl.hidden = ms === null;
   if (ms === null) return;
-  const cold = ms >= CACHE_WARM_MS;
+  const cold = ms >= CACHE_COLD_AT_MS;
   ageEl.textContent = fmtAge(ms);
   ageEl.classList.toggle("cold", cold);
   ageEl.title = cold
-    ? `last message ${fmtAge(ms)} ago — past 5 min the prompt cache is probably cold (5 min TTL on an API key or in overage; a subscription within its limits keeps 1 h — which one applies here is not measured)`
-    : `last message ${fmtAge(ms)} ago — under 5 min the prompt cache is probably still warm`;
+    ? `last message ${fmtAge(ms)} ago — ${ms >= CACHE_TTL_MS ? "the prompt cache is probably cold" : "the prompt cache expires shortly"} (5 min TTL)`
+    : `last message ${fmtAge(ms)} ago — the prompt cache is probably still warm (5 min TTL)`;
 }
 setInterval(() => { if (!document.hidden) tickCacheAge(); }, 1000);
 
@@ -3625,7 +3628,7 @@ function optSwitch(field: OptField, slot: number, current: string, shown: string
     const ms = cacheAge();
     box.appendChild(el("div", "cfmsg",
       "Switching the model drops this session's prompt cache — the next turn re-reads the full context."));
-    if (ms !== null) box.appendChild(el("div", "cfage", `Last message ${fmtAge(ms)} ago${ms >= CACHE_WARM_MS ? " — the cache is probably cold already" : ""}.`));
+    if (ms !== null) box.appendChild(el("div", "cfage", `Last message ${fmtAge(ms)} ago${ms >= CACHE_TTL_MS ? " — the cache is probably cold already" : ms >= CACHE_COLD_AT_MS ? " — the cache expires shortly" : ""}.`));
     const opt = el("label", "cfskip");
     const cb = document.createElement("input");
     cb.type = "checkbox";
@@ -12416,8 +12419,6 @@ async function deliver(slot: number, text: string): Promise<boolean> {
 
 async function doSend() {
   const pane = panes[focused];
-  // `text` is the typed prompt — the ✨ verdict below compares it, and e2e/outcomes.ts (9e) reads
-  // that comparison by name; the attachments' mentions are not part of what the owner edited
   const text = ta.value.trim();
   // exactly what the box used to carry after an upload: the prompt, then one mention per line
   const outgoing = [text, attachedText()].filter(Boolean).join("\n");
@@ -12426,13 +12427,6 @@ async function doSend() {
   send.disabled = true;
   try {
     if (!await deliver(slot, outgoing)) return;
-    // the ✨ draft's verdict, decided by what actually went out (see pendingEnhance). Written only
-    // after the send SUCCEEDED — a failed send leaves the text in the box and nothing labeled.
-    if (pendingEnhance) {
-      const p = pendingEnhance;
-      pendingEnhance = null;
-      void labelDisposition("enhance", p.draftId, text === p.text.trim() ? "accepted" : "edited");
-    }
     ta.value = "";
     clearAttachments();
     renderAttachments();
@@ -12481,70 +12475,11 @@ function togglePrefix(cmd: string) {
   updateChips();
   ta.focus();
 }
-// the ✨ draft currently sitting in the box, awaiting the owner's next move. This is consumer 2 of
-// the disposition rail and it is ZERO-UI on purpose: the compose box already tells us, deterministic-
-// ally, what the owner did with the rework — sending it unchanged is `accepted`, editing then
-// sending is `edited`, clearing it away is `ignored`. Only those three are written. Everything else
-// (a page reload, a second ✨ over the same draft, scheduling it as an auto) is AMBIGUOUS, so the
-// pending draft is simply dropped and NOTHING is written — a guessed label is worse than no label.
-let pendingEnhance: { draftId: string; text: string } | null = null;
 ta.addEventListener("input", () => {
   cyc = null; // real typing (not our programmatic recall) ends a history cycle
-  // cleared to empty by hand: the rework was thrown away. Programmatic clears (send, auto-schedule)
-  // fire no `input` event, so this can only ever be the owner actually emptying the box.
-  if (pendingEnhance && ta.value.trim() === "") {
-    const p = pendingEnhance;
-    pendingEnhance = null;
-    void labelDisposition("enhance", p.draftId, "ignored");
-  }
   updateChips();
   growComposer();
 });
-
-// --- ✨ enhance: hand the draft to the background rework agent; the result replaces
-// the box for review — it NEVER auto-sends. On failure the draft stays untouched.
-// The server holds the request for up to SUMMARY_TIMEOUT_MS (3min, server.ts) — typically
-// ~20s but occasionally the full window, so past 20s we say so instead of sitting on "…"
-// looking stuck.
-const enhBtn = $("enhbtn") as HTMLButtonElement;
-const enhTitle = enhBtn.title;
-enhBtn.onclick = async () => {
-  const text = ta.value.trim();
-  if (!text || enhBtn.disabled) return;
-  const slot = panes[focused]?.slot ?? 0;
-  enhBtn.disabled = true;
-  // only the LABEL changes — replacing the button's text would take the tray icon with it
-  const enhLabel = enhBtn.querySelector(".trlabel");
-  if (enhLabel) enhLabel.textContent = "Reworking…";
-  const slowNotice = setTimeout(() => {
-    enhBtn.title = "✨ still working — this can take up to 3 min, not stuck";
-  }, 20_000);
-  try {
-    const res = await post("/api/enhance", { slot, text });
-    const j = (await res.json().catch(() => ({}))) as { prompt?: string; draftId?: string; error?: string };
-    if (!res.ok || !j.prompt) throw new Error(j.error ?? "enhance failed");
-    // the wait can run up to 3min — if the draft moved on (edited, sent, pane switched)
-    // in the meantime, dropping the stale result silently beats clobbering new work
-    if (ta.value.trim() === text && (panes[focused]?.slot ?? 0) === slot) {
-      ta.value = j.prompt;
-      // arm the disposition watch for THIS draft. A result that was dropped as stale above is
-      // never armed — nothing was put in front of the owner, so there is nothing to rule on.
-      // A previous pending draft is superseded here without a label: replaced-by-a-re-run is
-      // not one of the three deterministic cases.
-      pendingEnhance = j.draftId ? { draftId: j.draftId, text: j.prompt } : null;
-      updateChips();
-      ta.focus();
-    }
-  } catch {
-    enhBtn.classList.add("err");
-    setTimeout(() => { enhBtn.classList.remove("err"); }, 1500);
-  } finally {
-    clearTimeout(slowNotice);
-    enhBtn.disabled = false;
-    if (enhLabel) enhLabel.textContent = "Rework";
-    enhBtn.title = enhTitle;
-  }
-};
 
 // --- 📎 drops: hand a FILE to the focused session (drag&drop, paste, or the button) ----------
 // Three gestures, one path, because they differ only in where the FileList comes from. All three

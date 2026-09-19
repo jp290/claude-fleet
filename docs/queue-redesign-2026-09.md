@@ -228,31 +228,40 @@ Live-`fleet.json`. Keine Slots, kein Dispatcher, alle Worker-Kommandos auf `true
 
 ## 6 · Prompt für die Folge-Session auf diesem Worktree (Session 3)
 
-Session 2 hat Teil 2 gebaut (§0) und auf Wunsch des Owners übergeben. Es ist nichts halb gemacht, und
-der Owner hat noch keine neue Aufgabe genannt.
+Session 2 hat Teil 2 gebaut (§0) und danach die Stilvorgabe der Chat-Ansicht in vier Schnitten
+angewandt. Der Owner hat die Übergabe verlangt; es ist nichts halb gemacht.
 
 ```
-Du setzt die Queue-Ansicht-Arbeit auf Branch fleet/260918192319-a2cb fort, im Gespräch mit dem Owner.
-Lies zuerst §0 von docs/queue-redesign-2026-09.md und `git log main..HEAD` mit Bodies.
+Du setzt die Queue-Arbeit auf Branch fleet/260918192319-a2cb fort, im Gespräch mit dem Owner.
+Lies zuerst §0 dieser Datei (docs/queue-redesign-2026-09.md), dann `git log main..HEAD` mit Bodies.
 
-STAND: Teil 2 ist gebaut und committet: D2-Detail (Lesespalte + sticky Schiene) und L2-Baum mit
-L3-Zeile als Umschalter. Die vier Entscheide aus §3 bleiben beim Ist-Zustand. Der Branch ist landbar
-(sauber, wouldConflict:false); landen tun MAIN oder Owner.
+STAND: Teil 2 (D2-Detail, L2-Baum mit L3-Zeile) ist gebaut. Darauf liegen vier Stil-Schnitte:
+Tokens/Tinte-Skala, Klammern raus + 4/8/12/16-Raster, das komplementäre Paar --q-live/--q-wait
+(Owner: Bernstein, "etwas weniger kräftig" → #cc9a6b), Textblöcke mit Kopf und copy + IDs als
+Inline-Chips. Der Branch ist frisch auf main rebast (behind 0, kein Konflikt) und landbar; landen
+tun MAIN oder Owner.
 
-VERIFY-STAND: Der volle ./e2e-isolated.sh auf 569b5bce (second-host) meldete 5048 Checks und 1 FAIL
-("task spawn choice source: both acts are disabled…"). Der Fix ist 306aea8e, lokal per extrahiertem
-Probe-Block plus Mutation belegt. Den Wiederholungslauf hat der Owner abgebrochen ("ist das wirklich
-nötig?" → ja, zurückziehen); der Post-Land-Audit fährt ihn ohnehin. Pins, tsc (Gate-Liste) und
-build sind grün.
+ZIEL-ÄSTHETIK: die zwei Referenz-Screenshots des Owners, benannt in §0 ("ZIEL-ÄSTHETIK"). Sieh sie
+dir an, bevor du etwas zeichnest — sie sind die Abnahme-Latte, nicht die Prosa dieser Datei.
 
-ERSTER ZUG: Den Owner fragen, was als Nächstes kommt. Kein Code vorher.
-Offen aus dem Gespräch, nur auf seinen Wunsch:
-- Studio in der Schiene unter "place" als Program › Studio, erst wenn ein echtes Studio existiert.
-  Live gibt es 0 Studios und 0 Bindungen. Studio ist ein Workflow-Datensatz
-  (server/types.ts#Studio), keine Gruppierung; die Repos bleiben oberste Ebene (Owner, 2026-09-19).
-- Die Vorschau-Instanz auf :8871 stoppen, wenn der Owner sie nicht mehr braucht (Rezept §5).
+OFFEN, in dieser Reihenfolge, aber NUR auf Owner-Wunsch:
+1. Die Karte (GOAL/DONE/VERIFY/ROLE/AFTER) und die Bündel-Quellen als Tabelle mit Mute-Kopfzeile
+   und Haarlinien, wie die Tabelle im Prosa-Screenshot.
+2. Emoji in den Beschriftungen (🗄 📎 💬 ⧉) durch CLI-Marken und einstrichige SVG-Icons ersetzen
+   (src/icons.ts#harnessMark liegt auf der Chat-Lane).
+3. Flakes, hoverbare IDs und der "Aa"-Regler: brauchen src/flakes.ts, src/entcard.ts,
+   src/chatsize.ts von fleet/260919003602-4ba5. Solange stehen die --chat-* Tokens zweimal im Repo
+   (in :root hier UND dort); beim Land jener Lane die Dublette auflösen.
+4. Studio in der Schiene unter "place" — erst wenn ein echtes Studio existiert (live: 0).
 
-NICHT: Jev bauen ohne Freigabe. bun server.ts mit Default-Env. Die Vorschau über die IP verlinken.
-Landen. Einen Bauschritt aus einem unbeantworteten eigenen Vorschlag ableiten: gebaut wird der
-bestätigte Stand, vorher die Tabelle "sein Satz → Element".
+ARBEITSWEISE, die der Owner hier eingefordert hat:
+- Vor dem Bau die Tabelle "sein Satz → Element"; was keinen Satz hat, fliegt raus.
+- Je Schnitt: Kanten per getBoundingClientRect bei 1200x612 vor/nach, Screenshots qNN-<zustand>.png
+  auf den Screenshot-Server (:8874), pins + tsc(Gate-Liste) + build, und für jede neue Probe eine
+  Mutation, die sie rot macht.
+- Varianten entscheidest du selbst und sagst warum; nicht zurückfragen.
+- Vorschau-Instanz: preview.sh im Scratchpad der Session ecbea9ca (Port 8871, Socket fleetlane71),
+  nie über die IP verlinken. Rezept steht in §5.
+
+NICHT: bun server.ts mit Default-Env. Landen. Jev ohne Freigabe.
 ```

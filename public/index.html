@@ -449,29 +449,36 @@
     font: 500 13px var(--chat-sans); cursor: pointer; transition: background-color var(--t); }
   .optsw:hover, .optsw.on { background: var(--c-hover); }
   .optval { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .optval.dim { flex: none; margin-left: 4px; color: var(--chat-mute); font-weight: 400; }
+  .optval.dim { flex: none; color: var(--chat-mute); font-weight: 400; }
   .optchev { flex: none; display: grid; color: var(--chat-faint); transition: transform var(--t); }
   .optchev .ico { width: 14px; height: 14px; }
   .optsw.on .optchev { transform: rotate(180deg); }
-  .optpop { display: none; position: absolute; z-index: 8; bottom: calc(100% + 8px); right: 0; min-width: 260px;
-    padding: 12px; background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: var(--r2);
+  /* each switch has its OWN popover, only as tall as its content: one row (the control, then
+     Apply) and, only after an Apply, the verdict line */
+  .optpop { display: none; position: absolute; z-index: 8; bottom: calc(100% + 8px); right: 0; width: max-content;
+    padding: 8px; background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: var(--r2);
     font: 400 12px var(--chat-sans); color: var(--chat-prose); }
   .optpop.open { display: grid; gap: 8px; }
-  .opthead { color: var(--chat-faint); font-size: 11px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; }
-  .cmdrow { display: flex; align-items: center; gap: 8px; }
-  .cmdinput { flex: 1; min-width: 0; height: 28px; padding: 0 8px; background: var(--chat-surface);
+  .cmdrow { display: flex; align-items: center; gap: 4px; }
+  .cmdinput { width: 200px; min-width: 0; height: 28px; padding: 0 8px; background: var(--chat-surface);
     border: 1px solid var(--chat-edge); border-radius: var(--r1); color: var(--chat-ink);
     font: 400 12px var(--chat-mono); outline: none; transition: border-color var(--t); }
   .cmdinput:focus { border-color: var(--c-edge-hi); }
-  .cmdgo, .cmdlevel { height: 28px; padding: 0 12px; font: 400 12px var(--chat-sans); color: var(--chat-mute);
-    background: transparent; border: 1px solid var(--chat-edge); border-radius: var(--r1); cursor: pointer;
-    transition: color var(--t), border-color var(--t), background-color var(--t); }
-  .cmdgo:hover, .cmdlevel:hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
-  .cmdgo:disabled, .cmdlevel:disabled { opacity: 0.45; cursor: progress; }
-  .cmdlevel.on { color: #000; background: var(--chat-ink); border-color: var(--chat-ink); font-weight: 500; }
-  .cmdlevels { display: flex; flex-wrap: wrap; gap: 4px; }
-  .cmdnote { color: var(--chat-faint); font-size: 11px; }
-  .cmdstatus { color: var(--chat-prose); font: 400 11px var(--chat-mono); overflow-wrap: anywhere; min-height: 1.2em; }
+  .cmdlevels { display: flex; flex-wrap: nowrap; gap: 4px; }
+  .cmdlevel, .cmdapply { height: 28px; padding: 0 8px; font: 400 12px var(--chat-sans); color: var(--chat-mute);
+    background: transparent; border: 1px solid transparent; border-radius: var(--r1); cursor: pointer;
+    white-space: nowrap; transition: color var(--t), border-color var(--t), background-color var(--t); }
+  .cmdlevel:hover { color: var(--chat-ink); background: var(--c-hover); }
+  /* current = the quiet fill; staged = the ink outline — picked, not yet applied */
+  .cmdlevel.cur { color: var(--chat-ink); background: var(--c-hover); }
+  .cmdlevel.staged { color: var(--chat-ink); border-color: var(--chat-ink); }
+  .cmdapply { margin-left: 4px; padding: 0 12px; color: #000; background: var(--chat-ink); font-weight: 500; }
+  .cmdapply:disabled { color: var(--chat-faint); background: var(--chat-edge); cursor: default; }
+  .cmdstatus { color: var(--chat-prose); font: 400 11px var(--chat-mono); overflow-wrap: anywhere; max-width: 320px; }
+  /* a staged value shows on the switch itself, underlined until it is applied or discarded */
+  .optswrap.staged .optval { color: var(--chat-ink); text-decoration: underline dotted; text-underline-offset: 3px; }
+  .optmark { flex: none; display: grid; margin-right: 4px; color: var(--chat-mute); }
+  .optmark .ico { width: 14px; height: 14px; }
   .slot .autobadge { flex: none; font-size: 10px; color: var(--amber); }
   /* Lane suffix + left accent identify lanes without a redundant permanent glyph. */
   .slot.lane { border-left: 2px solid var(--focus); overflow: hidden; }

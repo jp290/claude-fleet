@@ -3,7 +3,7 @@
 // accept it for — including both opposite scope rules (lane-only questions vs main-only exit).
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, REPO2, REPO3, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, stopSrv } from "./harness";
+import { BASE, REPO, REPO2, REPO3, ROOT, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv } from "./harness";
 import type { Ctx } from "./ctx";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor } from "../verify-proportion";
 // the same table the runner reads, so this family measures the advice AND the closure it implies
@@ -251,6 +251,183 @@ export async function run(ctx: Ctx): Promise<void> {
     stewardSuccession.map((r, i) => `${r.status}:${stewardSuccessionText[i]}`).join(" | "));
   check("succession scope cleanup: the plain slot's prior label is restored",
     (await post("/api/slots/2/rename", { label: oldPlainLabel })).ok);
+
+  // --- THE LANE BATON TELLS THE TRUTH (bc1d7866 + MAIN verdict 2026-09-18, comment 7df98db9). ---
+  // One codex-harness lane, planted with its row, its Program and a succession counter at 4 of 5,
+  // proves in ONE real succession what the brief says now: the reason from the handoff report, the
+  // MAIN's verdict on the row verbatim, no succeed hint to a codex pane — and then the deckel the
+  // NEXT session hits. The report-ticket refusals ride the same lane BEFORE any succession and
+  // cost no pane at all: no report yet → 409; a newest `complete` report → 409 (the 89-loop's own
+  // shape, by verdict (a)); only a `handoff` report opens the door.
+  {
+    const stateFile = ():
+      { slots?: Record<string, { selfToken?: string; openedAt?: number; taskId?: string | null;
+        originId?: string | null; programId?: string | null; harness?: string | null;
+        laneSuccessions?: number; worktree?: { branch?: string } | null }>;
+        tasks?: { id: string; status: string; slot: number | null; note?: string | null }[];
+        programs?: { id: string }[];
+        fleetReports?: { id: string }[];
+        attentionRequests?: { id: string }[];
+        laneSucceedCounts?: Record<string, number> } =>
+      JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8"));
+    const laneSelfPost = (token: string, path: string, body: unknown): Promise<Response> =>
+      fetch(BASE + path, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": token },
+        body: JSON.stringify(body) });
+
+    const truthLn = (await (await post("/api/lanes", { repo: REPO })).json()) as
+      { ok?: boolean; slot?: number; cwd?: string; branch?: string };
+    const truthSlot = truthLn.slot ?? 0;
+    const truthCwd = truthLn.cwd ?? "";
+    const truthBranch = truthLn.branch ?? "";
+    const truthRowText = "BATON-TRUTH FIXTURE: the founding row a successor must read verbatim";
+    const truthTask = (await (await post("/api/tasks", { text: truthRowText, queue: false })).json()) as
+      { task?: { id?: string } };
+    const truthTaskId = truthTask.task?.id ?? "";
+    const truthReject = "BATON VERDICT: cut one rejected — the parser must read the spec, not the old diff.";
+    const truthHandoffText = "BATON TRUTH HANDOFF: verdict named above; open is the parser, next step is its spec.";
+    check("baton truth setup: a codex lane and its founding row exist",
+      truthLn.ok === true && truthSlot > 0 && truthCwd !== "" && truthTaskId !== "", JSON.stringify(truthLn));
+    writeFileSync(`${truthCwd}/baton-truth.txt`, "cut one\n");
+    spawnSync("git", ["-C", truthCwd, "add", "baton-truth.txt"]);
+    spawnSync("git", ["-C", truthCwd, "commit", "-qm", "baton-truth: cut one"]);
+    // planted exactly as the baton fixture plants its row: no owner route binds an EXISTING lane
+    // to a row, and this block's subject is the handover, not the dispatch that would precede it.
+    // The counter rides the same cut at 4 of 5, so the ONE live succession below lands the row on
+    // its cap and the heir's attempt is the 409.
+    await stopSrv();
+    const truthProgramId = "ba7018".padEnd(24, "0");
+    const truthPlant = stateFile();
+    const truthPlantedAt = Date.now();
+    // the SAME full row the baton fixture plants: an active Program is a shaped record, and a
+    // minimal one would load as absent — the reports below would silently fall to owner-inbox.
+    truthPlant.programs = [...(truthPlant.programs ?? []), {
+      id: truthProgramId, title: "Baton truth fixture", intent: "Prove the succession brief tells the truth",
+      successCriterion: "The successor brief names reason, verdict and no codex succeed hint",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [], status: "active",
+      createdAt: truthPlantedAt - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: truthPlantedAt - 900, activatedAt: truthPlantedAt - 800,
+    } as unknown as { id: string }];
+    const truthSlotRow = truthPlant.slots?.[String(truthSlot)];
+    if (truthSlotRow) { truthSlotRow.taskId = truthTaskId; truthSlotRow.originId = truthTaskId;
+      truthSlotRow.programId = truthProgramId; truthSlotRow.harness = "codex"; }
+    const truthRow = truthPlant.tasks?.find((t) => t.id === truthTaskId);
+    if (truthRow) { truthRow.status = "sent"; truthRow.slot = truthSlot; }
+    truthPlant.laneSucceedCounts = { ...(truthPlant.laneSucceedCounts ?? {}), [truthTaskId]: 4 };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(truthPlant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const truthTok = stateFile().slots?.[String(truthSlot)]?.selfToken ?? "";
+    check("baton truth setup: the lane carries row, Program, codex harness and a succession counter at 4",
+      /^[0-9a-f]{32}$/.test(truthTok)
+        && stateFile().slots?.[String(truthSlot)]?.originId === truthTaskId
+        && stateFile().slots?.[String(truthSlot)]?.harness === "codex"
+        && stateFile().laneSucceedCounts?.[truthTaskId] === 4,
+      JSON.stringify(stateFile().slots?.[String(truthSlot)] ?? {}).slice(0, 200));
+
+    // THE TICKET GATE, both halves (verdict (a)): no report yet, then a newest `complete`.
+    const noReportYet = await laneSelfPost(truthTok, "/api/self/succeed", {});
+    check("baton truth: a clean lane with no report is refused 409 — the handoff report is the ticket",
+      noReportYet.status === 409 && (await noReportYet.text()).includes("filed no fleet report"),
+      String(noReportYet.status));
+    const completeRes = await laneSelfPost(truthTok, "/api/self/fleet-report",
+      { status: "complete", text: "BATON TRUTH: cut one done (this verdict will be rejected)." });
+    const completeId = ((await completeRes.clone().json().catch(() => ({}))) as
+      { report?: { id?: string } }).report?.id ?? "";
+    check("baton truth setup: the complete report is filed and the owner rejects it with a named reason",
+      completeRes.ok && completeId !== ""
+        && (await post(`/api/fleet-report/${completeId}/reject`, { reason: truthReject })).ok,
+      `${completeRes.status} report=${completeId}`);
+    const completeSucceed = await laneSelfPost(truthTok, "/api/self/succeed", {});
+    const completeSucceedText = await completeSucceed.text();
+    check("baton truth: the 89-loop's own shape — succeed after a newest `complete` — is a 409 naming the status",
+      completeSucceed.status === 409 && completeSucceedText.includes("status complete, not handoff"),
+      `${completeSucceed.status} ${completeSucceedText.slice(0, 200)}`);
+
+    // THE RULEBOOK ORDER, then the baton passes: handoff report, succeed. The codex successor's
+    // pane cannot pass readiness until its harness screen is planted — the same dance the
+    // Program-MAIN fixtures run: start the succeed, watch for the new occupant, plant, await.
+    const truthHandoffRes = await laneSelfPost(truthTok, "/api/self/fleet-report",
+      { status: "handoff", text: truthHandoffText });
+    const promptsBefore = (await plogRead()).filter((e) => e.slot === truthSlot).length;
+    const plantedOpenedAt = stateFile().slots?.[String(truthSlot)]?.openedAt ?? 0;
+    const truthSucceedPending = laneSelfPost(truthTok, "/api/self/succeed", {});
+    let heirSeen = false;
+    for (let i = 0; i < 60 && !heirSeen; i++) {
+      await Bun.sleep(150);
+      const nowAt = stateFile().slots?.[String(truthSlot)]?.openedAt ?? 0;
+      if (nowAt !== plantedOpenedAt && nowAt > 0) heirSeen = true;
+    }
+    if (heirSeen) { await Bun.sleep(250); await plantScreen(truthSlot, ">_ OpenAI Codex (v0.147.0)", "baton truth fixture"); }
+    const truthSucceed = await truthSucceedPending;
+    const truthSucceedBody = (await truthSucceed.json().catch(() => ({}))) as
+      { ok?: boolean; successions?: number; session?: number; delivered?: boolean; error?: string };
+    check("baton truth: handoff report then succeed — the baton passes and counts the succession",
+      truthHandoffRes.ok && truthSucceed.ok && truthSucceedBody.successions === 1
+        && truthSucceedBody.session === 2 && truthSucceedBody.delivered === true,
+      `${truthSucceed.status} ${JSON.stringify(truthSucceedBody)}`);
+    const counterAfter = stateFile().laneSucceedCounts?.[truthTaskId];
+    const heirTok = stateFile().slots?.[String(truthSlot)]?.selfToken ?? "";
+    const heirPrompts = (await plogRead()).filter((e) => e.slot === truthSlot);
+    const heirBrief = heirPrompts.length > promptsBefore ? heirPrompts[heirPrompts.length - 1]!.text : "";
+    check("baton truth: the live succession incremented the row's counter to the cap",
+      counterAfter === 5, String(counterAfter));
+    check("baton truth: the successor's brief carries the row verbatim, the MAIN verdict VERBATIM, and no fixed truth about context or order",
+      heirBrief.includes(truthRowText) && heirBrief.includes(truthReject)
+        && heirBrief.includes("Die letzte Entscheidung zu dieser Zeile")
+        && heirBrief.includes("Deine Vorgängerin hat übergeben — Grund laut handoff-Report")
+        && !heirBrief.includes("weil ihr Kontext voll lief") && !heirBrief.includes("Der Auftrag ist unverändert"),
+      heirBrief.slice(0, 500));
+    check("baton truth: the codex successor's footer keeps the lane-exit frame and carries NO succeed hint",
+      heirBrief.includes("HOW THIS LANE ENDS") && !heirBrief.includes("POST /api/self/succeed"),
+      `succeed-mentions=${(heirBrief.match(/succeed/g) ?? []).length}`);
+
+    // THE DECKEL (verdict (b)): the counter is at 5, so the heir's baton is refused even though a
+    // fresh handoff report makes it ticket-clean — the cap precedes the ticket by design — and
+    // EXACTLY ONE owner attention is minted, however often the lane knocks.
+    const heirHandoff = await laneSelfPost(heirTok, "/api/self/fleet-report",
+      { status: "handoff", text: "BATON TRUTH: the heir is done; the row is at its cap." });
+    const heirSucceed = await laneSelfPost(heirTok, "/api/self/succeed", {});
+    const heirSucceedText = await heirSucceed.text();
+    check("baton truth: at the cap the heir's succeed is a 409 naming the origin, the cap and the needs-main way out",
+      heirHandoff.ok && heirSucceed.status === 409 && heirSucceedText.includes(truthTaskId)
+        && heirSucceedText.includes("FLEET_LANE_SUCCEED_MAX") && heirSucceedText.includes("needs-main"),
+      `${heirSucceed.status} ${heirSucceedText.slice(0, 240)}`);
+    const openCapAttention = async (): Promise<{ status?: string; text?: string }[]> =>
+      ((await (await get("/api/attention")).json()) as
+        { requests?: { status?: string; text?: string }[] }).requests ?? [];
+    const capAttentionCount = (await openCapAttention())
+      .filter((a) => a.status === "open" && (a.text ?? "").includes("succession cap")).length;
+    const heirSucceedAgain = await laneSelfPost(heirTok, "/api/self/succeed", {});
+    check("baton truth: repeated attempts over the cap mint EXACTLY ONE owner attention",
+      capAttentionCount === 1 && heirSucceedAgain.status === 409
+        && (await openCapAttention()).filter((a) => a.status === "open"
+          && (a.text ?? "").includes("succession cap")).length === 1,
+      `first=${capAttentionCount} again=${heirSucceedAgain.status}`);
+
+    // THE COUNTER OUTLIVES A REQUEUE (verdict (b)): killing the slot detaches the row back to
+    // `pending` through the real requeue path — and the per-row count must still be 5.
+    await post(`/api/slots/${truthSlot}/kill`, {});
+    const requeuedRow = stateFile().tasks?.find((t) => t.id === truthTaskId);
+    check("baton truth: a requeue does not reset the counter — the row is pending again, the count stands",
+      requeuedRow?.status === "pending" && stateFile().laneSucceedCounts?.[truthTaskId] === 5,
+      `row=${requeuedRow?.status} count=${stateFile().laneSucceedCounts?.[truthTaskId]}`);
+
+    // …AND THE PLANTED RECORDS GO BACK OUT THE WAY THEY CAME IN: Program, the lane's reports, the
+    // cap attention and the counter key. A fixture that makes a later section's budget check fail
+    // is a fixture that has to be un-planted, not a budget that has to be raised.
+    spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", truthCwd]);
+    await post(`/api/tasks/${truthTaskId}/delete`, {});
+    await stopSrv();
+    const unplant = stateFile();
+    unplant.programs = (unplant.programs ?? []).filter((p) => p.id !== truthProgramId);
+    unplant.fleetReports = (unplant.fleetReports ?? []).filter((r) =>
+      (r as { provenance?: { taskId?: string | null } }).provenance?.taskId !== truthTaskId);
+    unplant.attentionRequests = (unplant.attentionRequests ?? [])
+      .filter((a) => !((a as { text?: string }).text ?? "").includes("succession cap"));
+    if (unplant.laneSucceedCounts) delete unplant.laneSucceedCounts[truthTaskId];
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(unplant, null, 2), { mode: 0o600 });
+    await restartSrv();
+  }
 
   // --- GET /api/self/drift: the lane-facing read of "how far has the integration branch moved
   // past me". Committed state only — the probe (`git merge-tree`) simulates a merge, and `dirty`

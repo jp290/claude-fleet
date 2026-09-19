@@ -1160,6 +1160,61 @@ export async function run(ctx: Ctx): Promise<void> {
       && !chainPrompt.includes("the NEXT succession replaces that record"),
     JSON.stringify(chainPrompt.split("\n").filter((line) => line.startsWith("- Obligations"))));
 
+  // --- THE WITHDRAWAL TWIN (2026-09-18): a bound MAIN takes its own open question back. --------
+  // The row here is A's old decision, REBOUND twice down the chain to C — attentionBound proves
+  // ownership by the occupant triple, so the CURRENT occupant is the owner no matter who first
+  // raised the row. Withdrawal is the raise door's scope twin: non-lane, own row, open row only.
+  type WdRow = { id?: string; text?: string; status?: string; refusedReason?: string | null };
+  const wdCarried = ((chainAttentionView as { requests?: WdRow[] }).requests ?? [])
+    .find((a) => a.text === fleetSaveText && a.status === "open");
+  const wdId = wdCarried?.id ?? "ab".repeat(12);
+  const wdNoReason = await selfPost(`/api/self/attention/${wdId}/withdraw`, chainToken, {});
+  check("attention withdraw: a missing reason is a 400 — a question withdrawn without a stated why is how a decision disappears",
+    wdNoReason.status === 400, String(wdNoReason.status));
+  const wdReason = "the decision this asked for settled while the row stood open";
+  const wdOk = await selfPost(`/api/self/attention/${wdId}/withdraw`, chainToken, { reason: wdReason });
+  const wdView = await (await fetch(`${BASE}/api/self/attention`,
+    { headers: { "x-fleet-self-token": chainToken } })).json() as { requests?: WdRow[] };
+  const wdRow = (wdView.requests ?? []).find((a) => a.id === wdCarried?.id);
+  check("attention withdraw: C takes the carried open question back — the row ends refused with the withdrawal and its reason named verbatim",
+    wdOk.ok && wdRow?.status === "refused"
+      && (wdRow.refusedReason ?? "").startsWith("withdrawn by requester: ")
+      && (wdRow.refusedReason ?? "").includes(wdReason),
+    `${wdOk.status} ${JSON.stringify(wdRow).slice(0, 240)}`);
+  const wdAgain = await selfPost(`/api/self/attention/${wdId}/withdraw`, chainToken, { reason: wdReason });
+  check("attention withdraw: an already-closed row is a 409, never a silent no-op",
+    wdAgain.status === 409, String(wdAgain.status));
+  // A LANE HAS NO ATTENTION TO TAKE BACK: the watch-fixture lane is alive and carries its token,
+  // so this is the route's own scope refusal, not an authentication one.
+  const wdLaneTok = readState().slots?.[String(fleetWatchLaneSlot)]?.selfToken ?? "";
+  const wdLane = await selfPost(`/api/self/attention/${wdId}/withdraw`, wdLaneTok, { reason: wdReason });
+  check("attention withdraw: a lane is refused 409 — a lane raises no attention, so it has none to take back",
+    wdLane.status === 409, String(wdLane.status));
+  // FOREIGN ROW: A's ORIGINAL occupant triple, planted back as an open row C does not own — the
+  // refusal must name the ownership, not the row's existence. Unplanted right after, so the open
+  // row cannot ride the ops payload into a later section's budget.
+  const wdForeignId = "cd".repeat(12);
+  await stopSrv();
+  const wdPlant = readState();
+  wdPlant.attentionRequests = [...(wdPlant.attentionRequests ?? []), {
+    id: wdForeignId, raisedAt: Date.now(), kind: "decision",
+    text: "withdraw probe: a question that belongs to another occupant",
+    requester: { slot: fleetSlot, openedAt: fleetAOpenedAt, sessionId: null },
+    programId: fleetProgram.id,
+    status: "open", answer: null, refusedReason: null, closedAt: null,
+  }];
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(wdPlant, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const wdForeign = await selfPost(`/api/self/attention/${wdForeignId}/withdraw`, chainToken, { reason: wdReason });
+  check("attention withdraw: another session's open row is a 409 — a MAIN withdraws its own questions only",
+    wdForeign.status === 409, String(wdForeign.status));
+  await stopSrv();
+  const wdUnplant = readState();
+  wdUnplant.attentionRequests = (wdUnplant.attentionRequests ?? [])
+    .filter((a) => (a as { id?: string }).id !== wdForeignId);
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(wdUnplant, null, 2), { mode: 0o600 });
+  await restartSrv();
+
   // --- AND THE HANDOVER'S OWN LOSS IS AS VISIBLE AS THE INBOX'S. -------------------------------
   // Same disease, same cure, same proof: the loader drops an unreadable handover to absent, which
   // reads as "nothing was ever owed" — and here that is worse than for the inbox, because this

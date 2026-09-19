@@ -2039,6 +2039,18 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #board .bchip:hover { color: var(--b-ink); border-color: #333; }
   #board .bchip.link { color: var(--accent); }
+  #board .brefusal { margin-top: 8px; font-size: 11.5px; color: var(--b-ink3); border-left: 2px solid #2a2a2a; padding-left: 8px; }
+
+  /* setup — what the session is MADE of: a key/value list, keys quiet, machine strings in mono */
+  #board .bsetup .bsrow { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
+  #board .bsetup .bskey { flex: none; width: 66px; font-size: 11.5px; color: var(--b-ink3); }
+  #board .bsetup .bsval { flex: 1; min-width: 0; font-family: var(--b-mono); font-size: 11px; color: var(--b-ink2);
+    overflow-wrap: anywhere; }
+  #board .bsetup .bspacks .bsval { display: flex; flex-wrap: wrap; gap: 3px; }
+  #board .bsetup .bspack { padding: 1px 5px; border: 1px solid #202020; border-radius: 4px; background: #0a0a0a;
+    font-size: 10.5px; color: var(--b-ink2); }
+  #board .bsetup .bsnote { margin-top: 5px; font-size: 11px; color: var(--b-ink3); }
+
   #board .bmenu { margin-top: 10px; padding: 4px; border: 1px solid #222; border-radius: 8px; background: #080808; }
   #board .bmenuitem { display: block; width: 100%; padding: 6px 8px; border: 0; border-radius: 5px; background: none;
     color: var(--b-ink); font-size: 12px; text-align: left; cursor: pointer; }

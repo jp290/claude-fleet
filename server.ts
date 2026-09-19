@@ -4174,6 +4174,80 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
   };
 }
 
+// WHAT THIS SESSION IS MADE OF — the half of the brief that is not git. Both facts hang on the
+// PROGRAM, not on the slot, which is why the owner board could never show either: the execution
+// profile the owner granted, and the context packs this pane was handed when it was founded.
+// The packs are read from the delivery RECEIPT, never from the program's current declaration —
+// the receipt is what THIS session received, a declaration is only what a later MAIN intends.
+interface SessionSetup {
+  profile: ProgramFoundingProfileKind | null; // null = no program bracket, i.e. plain standard
+  packs: { id: string; useWhen: string | null }[];
+  omitted: { id: string; why: string }[];
+  deliveredAt: number | null;
+  deliveredBytes: number | null;
+  packsFrom: "receipt" | "program" | null; // null = neither exists for this session
+}
+// The receipt ledger is append-only and already 1.7 MB; the board re-renders on a timer, so it
+// must not be re-read per render. Keyed on the file's own mtime+size: a new receipt changes both,
+// and nothing else can change the rows.
+let receiptSetupCache: { mtimeMs: number; size: number; index: Map<string, Record<string, unknown>> } | null = null;
+async function receiptSetupIndex(): Promise<Map<string, Record<string, unknown>>> {
+  const f = Bun.file(CONTEXT_RECEIPT_FILE);
+  const stat = await f.exists() ? await f.stat() : null;
+  const mtimeMs = stat ? stat.mtimeMs : 0, size = stat ? stat.size : 0;
+  if (receiptSetupCache && receiptSetupCache.mtimeMs === mtimeMs && receiptSetupCache.size === size)
+    return receiptSetupCache.index;
+  const { rows } = await readLedger<Record<string, unknown>>(CONTEXT_RECEIPT_FILE);
+  const index = new Map<string, Record<string, unknown>>();
+  // chronological rows, last write wins: a slot that was re-founded on the same branch shows the
+  // brief it is living under now, not the one it started with
+  for (const row of rows) {
+    if (typeof row.slot !== "number" || typeof row.branch !== "string") continue;
+    index.set(`${row.slot}\u0000${row.branch}`, row);
+  }
+  receiptSetupCache = { mtimeMs, size, index };
+  return index;
+}
+async function sessionSetup(s: Slot, branch: string | null): Promise<SessionSetup> {
+  const program = s.programId ? programs.find((p) => p.id === s.programId) : undefined;
+  const profile: ProgramFoundingProfileKind | null =
+    program ? (isGameMaker(program) ? "game-maker" : "standard") : null;
+  const receipt = branch ? (await receiptSetupIndex()).get(`${s.id}\u0000${branch}`) : undefined;
+  if (receipt) {
+    const sel = Array.isArray(receipt.selected) ? receipt.selected : [];
+    const om = Array.isArray(receipt.omitted) ? receipt.omitted : [];
+    return {
+      profile,
+      packs: sel.flatMap((raw) => {
+        if (!raw || typeof raw !== "object") return [];
+        const row = raw as { id?: unknown; useWhen?: unknown };
+        if (typeof row.id !== "string") return [];
+        return [{ id: row.id, useWhen: typeof row.useWhen === "string" ? row.useWhen : null }];
+      }),
+      omitted: om.flatMap((raw) => {
+        if (!raw || typeof raw !== "object") return [];
+        const row = raw as { id?: unknown; why?: unknown };
+        if (typeof row.id !== "string") return [];
+        return [{ id: row.id, why: typeof row.why === "string" ? row.why : "unknown" }];
+      }),
+      deliveredAt: typeof receipt.at === "number" ? receipt.at : null,
+      deliveredBytes: typeof receipt.deliveredBytes === "number" ? receipt.deliveredBytes : null,
+      packsFrom: "receipt",
+    };
+  }
+  // no receipt: a session founded before the ledger, or one opened by hand. The program's
+  // declared packs are the honest second answer, and they are labelled as the weaker one.
+  const declared = program?.contextPacks ?? [];
+  return {
+    profile,
+    packs: declared.map((pack) => ({ id: pack.id, useWhen: pack.useWhen })),
+    omitted: [],
+    deliveredAt: null,
+    deliveredBytes: null,
+    packsFrom: declared.length > 0 ? "program" : null,
+  };
+}
+
 // branch/dirty/ahead-behind per active slot, refreshed on a slow tick — the sessions
 // poll must never block on 16 git spawns, so it reads this cache instead
 const gitInfo = new Map<number, GitInfo | null>(); // null = cwd is not a git repo
@@ -35665,7 +35739,8 @@ Bun.serve<WSData>({
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       const p = await briefPayload(s);
       if (!p) return json({ error: "not a git repository" }, 400);
-      return json({ ...p, worktree: s.worktree });
+      // …and the non-git half: what this session was BUILT from (profile + delivered packs)
+      return json({ ...p, worktree: s.worktree, setup: await sessionSetup(s, p.branch) });
     }
     // lane map: every open worktree of the focused slot's repo, including ORPHANS (worktrees whose slot
     // was killed). Works from lane slots too: `worktree list` from a linked worktree covers the repo.

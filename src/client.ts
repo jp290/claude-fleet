@@ -221,8 +221,16 @@ interface SlotInfo {
   // cwd can be a subdirectory and therefore cannot substitute for it in an ownership join.
   openedAt?: number; repo?: string | null;
   share?: ShareInfo | null; git?: GitInfo | null; worktree?: WorktreeInfo | null; mergePending?: boolean;
-  // the spawn-time model the server already puts on the poll (server.ts, the /api/sessions row)
-  model?: string | null;
+  // WHAT THIS PANE WAS STARTED WITH — the founding choices, all on the poll since the row was
+  // widened, none of them read by the board before. `model` is the spawn-time model the server
+  // already puts on the row; `browser`/`context` are omitted unless chosen.
+  model?: string | null; browser?: true; context?: { window: number; compactAt: number };
+  // "no-agent" is the one value that matters: a typeable pane with nothing behind it. null/absent
+  // = the slow tick has not reached this slot, which is not an answer and must not paint one.
+  agent?: "alive" | "no-agent" | "no-pane" | "unprobed" | null;
+  // omitted unless true / unless armed — see the server's slot row. `autoCloseRefusal: null` on a
+  // lane is an ANSWER ("nothing refuses this lane"), absent is "the question does not apply".
+  stalled?: true; stalledSince?: number; autoCloseRefusal?: string | null;
   // which agent this session runs. ABSENT means the default harness — the server omits the field
   // when it is null (it is the 2 s poll), so absent and "claude" are the same state here too.
   harness?: string; effort?: string;
@@ -1233,7 +1241,16 @@ interface BriefInfo { branch: string | null; head: string | null; worktree: Work
   sessionStart: number | null;
   uncommitted: number; uncommittedFiles: string[]; files: string[]; shortstat: string;
   commits: BriefCommit[]; repoCommits: BriefCommit[]; laneScoped: boolean; laneBase: string | null;
-  ahead: number; behind: number; gitOp?: boolean }
+  ahead: number; behind: number; gitOp?: boolean;
+  // the non-git half of the brief (server.ts#sessionSetup): what this session was BUILT from.
+  // `packsFrom` says how strong the pack list is — "receipt" is what was delivered into this
+  // pane, "program" only what its program declares now, null is "neither exists".
+  setup?: BriefSetup }
+interface BriefSetup { profile: "standard" | "game-maker" | null;
+  packs: { id: string; useWhen: string | null }[];
+  omitted: { id: string; why: string }[];
+  deliveredAt: number | null; deliveredBytes: number | null;
+  packsFrom: "receipt" | "program" | null }
 // Which repo string the REPO-WIDE routes will accept for this slot. `/api/commits` validates its
 // `repo` against knownRepos() (server.ts) — which holds a lane's PARENT repo and a plain session's
 // own cwd, never a lane's worktree path. Measured 2026-08-20: for a lane, `worktree.repo` is in
@@ -2901,9 +2918,36 @@ async function renderBoard() {
       const working = sessionActive(slot);
       const meta = el("div", "bheadmeta");
       meta.appendChild(el("span", `bdot${working ? " on" : ""}`));
-      meta.appendChild(document.createTextNode(`${working ? "Working" : "Idle"} · ${brief?.worktree ? "lane" : "repo session"} in slot ${slot}`));
-      if (brief?.sessionStart) meta.title = `session since ${new Date(brief.sessionStart).toLocaleString()}`;
+      const bits = [`${working ? "Working" : "Idle"} · ${brief?.worktree ? "lane" : "repo session"} in slot ${slot}`];
+      // the context fill is back in the board, in the HEAD and not in the setup block below: it is
+      // the one number here that moves every minute, and it decides when this session must hand
+      // over. null is an answer ("Fleet cannot tell"), and is written as one rather than skipped.
+      if (s.ctx !== undefined) bits.push(s.ctx === null ? "context unknown" : `${Math.round(s.ctx.pct)}% context`);
+      if (!working && s.lastOutput > 0) bits.push(`quiet ${gateAge(Date.now() - s.lastOutput)}`);
+      meta.appendChild(document.createTextNode(bits.join(" · ")));
+      const since = brief?.sessionStart ?? s.openedAt ?? null;
+      meta.title = [since ? `session since ${new Date(since).toLocaleString()}` : null,
+        s.ctx ? `${s.ctx.usedTokens.toLocaleString()} of ${s.ctx.windowTokens.toLocaleString()} tokens` : null]
+        .filter(Boolean).join(" — ");
       idsec.appendChild(meta);
+    }
+    // THE STATES THAT ONLY EXIST WHEN THEY ARE TRUE. Each is a sentence the owner would otherwise
+    // have to go looking for; none of them costs a line on a healthy session.
+    if (s.agent === "no-agent") {
+      const a = el("div", "bwait owner", "No agent behind this pane");
+      a.title = "the pane is alive and takes keystrokes, but nothing is running in it — typing here reaches no agent";
+      idsec.appendChild(a);
+    }
+    if (s.stalled) {
+      const st = el("div", "bwait main",
+        s.stalledSince ? `Stalled for ${gateAge(Date.now() - s.stalledSince)}` : "Stalled");
+      st.title = "no output, nothing waiting on an answer — the lane is standing still";
+      idsec.appendChild(st);
+    }
+    if (s.autoCloseRefusal) {
+      const r = el("div", "brefusal", s.autoCloseRefusal);
+      r.title = "why the autoclose tick is leaving this lane open";
+      idsec.appendChild(r);
     }
     if (s.awaiting) {
       const w = el("div", `bwait ${s.awaiting}`, s.awaiting === "owner" ? "Waiting on you" : "Waiting on its MAIN");
@@ -2990,6 +3034,76 @@ async function renderBoard() {
       idsec.appendChild(menu);
     }
     nodes.push(idsec);
+
+    // 1b — SETUP: what this session is MADE of, as opposed to what it has done (owner, 2026-09-19:
+    // "das gewählte profil einer session anzeigen + ctxPacks … den aufbau der aktuellen session
+    // ersichtlich machen"). Every row here was chosen when the session was founded and does not
+    // move while it runs — which is exactly why the one number that DOES move (context fill) lives
+    // in the head above and not here. Rows whose absence is the normal case (container, browser)
+    // appear only when they are true; the founding four are always written, "—" included, so the
+    // block reads the same on every session.
+    {
+      const su = el("div", "bsec bsetup");
+      su.appendChild(el("h3", "", "Setup"));
+      const row = (label: string, value: string, title?: string) => {
+        const r = el("div", "bsrow");
+        r.appendChild(el("span", "bskey", label));
+        r.appendChild(el("span", "bsval", value));
+        if (title) r.title = title;
+        su.appendChild(r);
+      };
+      const setup = brief?.setup;
+      row("Profile", setup?.profile ?? "standard",
+        setup?.profile === "game-maker" ? "the owner granted this program the game-maker profile"
+          : setup?.profile === "standard" ? "this session's program runs on the standard profile"
+          : "no program bracket — a session opened by hand runs as standard");
+      row("Agent", [s.harness ?? "claude", s.model ?? null, s.effort ?? null].filter(Boolean).join(" · "),
+        s.model ? `harness ${s.harness ?? "claude"}, model ${s.model}` : "no model was named — the harness default answers");
+      if (s.context) row("Window", `${(s.context.window / 1000).toLocaleString()}k · compacts at ${Math.round(s.context.compactAt * 100)}%`,
+        "the context budget this pane was started with");
+      if (s.browser) row("Browser", "Playwright MCP", "this lane was started with the browser tool attached");
+      if (s.container) row("Container", s.containerContext ? `${s.container} · ${s.containerContext}` : s.container,
+        "the box and docker context this session's agent runs in");
+      // THE PACKS, and where they come from. A receipt is what this pane actually received; the
+      // program's declaration is the weaker answer and says so rather than passing for delivery.
+      const packs = setup?.packs ?? [];
+      if (packs.length) {
+        const r = el("div", "bsrow bspacks");
+        r.appendChild(el("span", "bskey", "Packs"));
+        const list = el("span", "bsval");
+        for (const p of packs) {
+          const chip = el("span", "bspack", p.id);
+          if (p.useWhen) chip.title = p.useWhen;
+          list.appendChild(chip);
+        }
+        r.appendChild(list);
+        su.appendChild(r);
+        const from = setup?.packsFrom === "receipt"
+          ? `delivered with the founding brief${setup.deliveredAt ? ` ${gateAge(Date.now() - setup.deliveredAt)} ago` : ""}`
+            + `${setup.deliveredBytes ? `, ${Math.round(setup.deliveredBytes / 1024)} KB` : ""}`
+          : "declared by this session's program — not proof that this pane received them";
+        const note = el("div", "bsnote", from);
+        if (setup?.omitted.length) note.textContent += ` · ${setup.omitted.length} omitted`;
+        if (setup?.omitted.length) note.title = setup.omitted.map((o) => `${o.id}: ${o.why}`).join("\n");
+        su.appendChild(note);
+      } else {
+        row("Packs", "none", setup?.packsFrom === null || setup === undefined
+          ? "no context packs were delivered to this session and its program declares none"
+          : "no context packs");
+      }
+      const since = brief?.sessionStart ?? s.openedAt ?? null;
+      const foot: string[] = [];
+      if (since) foot.push(`open ${gateAge(Date.now() - since)}`);
+      if (s.inbound) foot.push(`${s.inbound.sends} send${s.inbound.sends === 1 ? "" : "s"} today`);
+      const mine = autosList.filter((a) => a.slot === slot && a.enabled).length;
+      if (mine) foot.push(`${mine} check-in${mine === 1 ? "" : "s"} armed`);
+      if (foot.length) {
+        const f = el("div", "bsnote", foot.join(" · "));
+        f.title = "how long this occupant has held the slot, what Fleet typed into it today, and its own scheduled prompts";
+        su.appendChild(f);
+      }
+      nodes.push(su);
+    }
 
     if (brief) {
       // for a lane, ahead/behind are vs the base branch (from the brief); for a non-lane

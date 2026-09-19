@@ -1042,11 +1042,27 @@ export async function run(): Promise<void> {
   // `gsec` (the guest-console panel) left with the console itself, 2026-08-08, and `dsec1` (the
   // helper register) left for the meter's device count, 2026-09-19 — both absences are asserted,
   // so a re-added machine-level section has to state where it goes.
-  check("client: the board renders in the owner's order — alarms → head → changes → checks → history → tools",
+  check("client: the board renders in the owner's order — alarms → head → setup → changes → checks → history → tools",
     at("dsec0") >= 0 && at("dsec0") < at("esec0") && at("esec0") < at("idsec")
-    && at("idsec") < at("work") && at("work") < at("ck") && at("ck") < at("csec") && at("csec") < at("tsec")
+    && at("idsec") < at("su") && at("su") < at("work")
+    && at("work") < at("ck") && at("ck") < at("csec") && at("csec") < at("tsec")
     && at("gsec") === -1 && at("dsec1") === -1,
     JSON.stringify(pushOrder));
+  // SETUP is what the session is MADE of — owner, 2026-09-19: "das gewählte profil einer session
+  // anzeigen + ctxPacks … den aufbau der aktuellen session ersichtlich machen". The two fields he
+  // named are asserted by name, and so is the ONE number that deliberately did NOT go in here:
+  // the context fill moves every minute, so it belongs to the head's state line, not to a block
+  // of founding choices. Source is the evidence — this suite has no DOM.
+  const setupSrc = boardSrc.slice(boardSrc.indexOf('el("div", "bsec bsetup")'), boardSrc.indexOf("if (brief) {"));
+  check("client: the setup block names the profile and the context packs, and reads them from the brief",
+    /row\("Profile", setup\?\.profile \?\? "standard"/.test(setupSrc)
+    && /const packs = setup\?\.packs \?\? \[\];/.test(setupSrc)
+    && /el\("span", "bspack", p\.id\)/.test(setupSrc), "the setup section in renderBoard");
+  check("client: a pack list says whether it was DELIVERED or merely declared — intent never passes for delivery",
+    /packsFrom === "receipt"/.test(setupSrc) && /delivered with the founding brief/.test(setupSrc)
+    && /declared by this session's program/.test(setupSrc), "the packs note in renderBoard");
+  check("client: the context fill lives in the head's state line, not in the setup block",
+    /% context`\)/.test(boardSrc) && !/s\.ctx/.test(setupSrc), "bheadmeta vs the setup section");
   check("client: the folded tools come in the owner's order — files → lanes → agents → prompts",
     ["files", "lanes", "agents", "prompts"].every((k, i, all) => i === 0 || foldOrder.indexOf(all[i - 1]) < foldOrder.indexOf(k))
     && foldOrder.indexOf("files") >= 0,

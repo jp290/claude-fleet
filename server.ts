@@ -458,6 +458,9 @@ interface Harness {
   // so the reason must never be generic. `accept: null` declares blocks WITHOUT a measured ready
   // marker (claude): only a matching block refuses, and everything else is today's behaviour.
   readiness?: { accept: RegExp | null; blocks: readonly ScreenBlock[] };
+  // A measured footer parser, with exactly one capture group for the rendered model name.
+  // Optional because a missing declaration means this harness exposes no readable model fact.
+  modelFooter?: RegExp;
   // Where this harness RENDERS its composer, so a delivery can observe acceptance instead of
   // echoing the request flag (ACP-25). Measured 2026-08-22 on the installed binaries, rendered
   // frames with `capture-pane -e`: Claude's composer is the LAST `❯` line (its transcript echoes
@@ -619,6 +622,7 @@ const CLAUDE_HARNESS: Harness = {
   // and a suite fixture can paint it. `accept: null`: no ready marker is declared for claude, so a
   // pane without the dialog keeps exactly its pre-readiness behaviour at every gate.
   readiness: { accept: null, blocks: [CLAUDE_TRUST_DIALOG] },
+  modelFooter: /^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\] (?:\d+|--)% {2}\| {2}(.+?)(?: {3,}.*)?$/m,
   // Claude owns its repository metadata; Fleet has not fenced it out of commits.
   hostCommits: false,
   // the default adapter is automatable unconditionally — it is what every automation on this fleet
@@ -3307,6 +3311,7 @@ const GIT_TIMEOUT_MS = Number(process.env.FLEET_GIT_TIMEOUT_MS) || 30_000;
 // there every assertion otherwise out-waits a 10 s tick. Floor 1 s, not TICK_FLOOR_MS: one pass
 // spawns about a dozen subprocesses per slot, and tickGit already skips a round while busy.
 const GIT_TICK_MS = Math.max(1000, Number(process.env.FLEET_GIT_TICK_MS ?? 10_000) | 0);
+const MODEL_FOOTER_READ_MS = 30_000;
 // don't start a rebase while the pane is actively producing output. Unset is the old 3000 literal;
 // the isolated suite shortens it (every land there first out-waits the pane's own shell prompt),
 // floor 500 ms so a stray value can never turn the gate into a no-op.
@@ -4295,6 +4300,8 @@ const aliveInfo = new Map<number, boolean>();
 // gates nothing. Sight is the entire feature: the state is silent by construction, so an owner who
 // cannot see it has no way to learn it exists.
 const agentInfo = new Map<number, AgentState>();
+type PaneModelInfo = { model: string | null; at: number; modelPushedAt?: number };
+const paneModelInfo = new Map<number, PaneModelInfo>();
 // wedged merge/rebase per slot, same tick + same reads-only contract as aliveInfo: the
 // steward overview needs it fleet-wide (the per-slot brief computes it fresh), and the
 // commit/land guards keep their own fresh gitOpInProgress calls.
@@ -4310,7 +4317,7 @@ async function tickGit(): Promise<void> {
   gitTickBusy = true;
   try {
     for (const s of slots) {
-      if (!s.cwd) { gitInfo.delete(s.id); repoInfo.delete(s.id); aliveInfo.delete(s.id); agentInfo.delete(s.id); gitOpInfo.delete(s.id); laneHunkInfo.delete(s.id); continue; }
+      if (!s.cwd) { gitInfo.delete(s.id); repoInfo.delete(s.id); aliveInfo.delete(s.id); agentInfo.delete(s.id); paneModelInfo.delete(s.id); gitOpInfo.delete(s.id); laneHunkInfo.delete(s.id); continue; }
       await tickCodexRecovery(s);
       // liveness is independent of git state — compute it before the git branching so a
       // non-repo cwd (st.code !== 0 below) still gets an alive reading. ONE probe feeds both maps:
@@ -4321,6 +4328,18 @@ async function tickGit(): Promise<void> {
       // binary the slot's own harness runs. Before commsFor this asked every slot about claude, so a
       // healthy Pi pane was reported `no-agent` — the board stating something untrue about reality.
       agentInfo.set(s.id, agentState);
+      const modelFooter = harnessOf(s.harness).modelFooter;
+      const previousPaneModel = paneModelInfo.get(s.id);
+      const modelReadAt = Date.now();
+      if (modelFooter && (!previousPaneModel || modelReadAt - previousPaneModel.at >= MODEL_FOOTER_READ_MS)) {
+        const cap = await tmux("capture-pane", "-p", "-t", paneTarget(sess(s.id)));
+        const match = cap.code === 0 ? modelFooter.exec(cap.out) : null;
+        paneModelInfo.set(s.id, {
+          model: match?.[1]?.trim() || null,
+          at: modelReadAt,
+          ...(previousPaneModel?.modelPushedAt ? { modelPushedAt: previousPaneModel.modelPushedAt } : {}),
+        });
+      }
       // THE GATE, which is a different question and must not inherit the fact's answer: aliveInfo
       // feeds laneSignalView, so `alive` is what makes a LANE eligible as the TARGET of completion
       // consumers such as a Watch and auto-③. A foreign-harness lane therefore stays ineligible
@@ -5808,6 +5827,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   if (parkedVerdict) { mergeLast.set(s.id, parkedVerdict); mergeParked.delete(parkedVerdict.branch); }
   mergeInflight.delete(s.id); mergeStart.delete(s.id); // ...nor report the prior lane's merge JOB as running:true and 409 the new lane (the old job's finally self-checks identity, so dropping the entry here is safe)
   aliveInfo.delete(s.id); // ...nor its liveness/wedge readings until the next tick recomputes
+  paneModelInfo.delete(s.id); // ...nor the previous occupant's measured/pushed runtime model
   gitOpInfo.delete(s.id);
   laneHunkInfo.delete(s.id); // ...nor the previous lane's hunks as this lane's collision edge
   // ...nor its GIT facts: killSlot leaves gitInfo for tickGit to reap (≤10 s), and a slot recycled
@@ -6382,6 +6402,7 @@ type SendPath =
   | "fleet-event"       // a watch event or a fleet-report recovery reaching its receiver
   | "clarification-reply" // a MAIN answering a worker's clarification
   | "report-decision"   // an owner/MAIN decision on a fleet-report reaching the worker
+  | "model-push"       // the owner model route opting into /model on the live pane
   | "merge-author"      // the conflict author prompt into the lane that owns the branch
   | "merge-verdict"     // the terminal merge verdict typed back into that lane
   | "supervisor-nudge"  // the Supervisor nudging a bound Program-MAIN
@@ -34694,6 +34715,7 @@ Bun.serve<WSData>({
           // earned it, and a free row has no pane for the sentence to be about — nor does the board
           // paint one there, so it would be bytes on the 2 s poll for nothing.
           const inb = s.cwd ? inboundToday(s.id, pollNow) : null;
+          const paneModel = s.cwd ? paneModelInfo.get(s.id) : undefined;
           return {
             id: s.id, cwd: s.cwd, label: s.label, openedAt: s.openedAt,
             // Canonical checkout identity, separate from cwd: a main session may live in a
@@ -34705,6 +34727,8 @@ Bun.serve<WSData>({
             // default harness". What each harness SUPPORTS is static and rides GET /api/harnesses once.
             ...(s.harness ? { harness: s.harness } : {}),
             ...(s.effort ? { effort: s.effort } : {}),
+            ...(paneModel?.model ? { paneModel: paneModel.model } : {}),
+            ...(paneModel?.modelPushedAt ? { modelPushedAt: paneModel.modelPushedAt } : {}),
             // a lane that starts WITH the Playwright MCP; omitted for the default text lane and every non-lane
             ...(s.worktree && s.browser ? { browser: true } : {}),
             // the pane's context budget (Slot.context); omitted when none was chosen
@@ -36921,6 +36945,8 @@ Bun.serve<WSData>({
       if (slotMatch[2] === "model") {
         if (!s.cwd) return json({ error: "slot not active" }, 400);
         const body = await readJson(req);
+        if (body?.push !== undefined && typeof body.push !== "boolean")
+          return json({ error: "push must be a boolean" }, 400);
         if (!body || (body.model === undefined && body.effort === undefined))
           return json({ error: "expected { model?, effort? }" }, 400);
         const hh = harnessOf(s.harness);
@@ -36932,7 +36958,28 @@ Bun.serve<WSData>({
         if (body.effort !== undefined) s.effort = eo.effort;
         audit("slot_model", s.id, `model=${s.model ?? "-"} effort=${s.effort ?? "-"}`);
         saveState();
-        return json({ ok: true, model: s.model, effort: s.effort });
+        let modelPushedAt: number | undefined;
+        if (body.push === true) {
+          const gate = await canDeliver(s, { now: Date.now(), idleMs: 0, harness: false });
+          if (!gate.ok)
+            return json({ error: `model push held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` }, 409);
+          try {
+            await sendText(s, `/model ${s.model}`, true, { path: "model-push" });
+          } catch (e) {
+            if (e instanceof SendRefused) return json({ error: `model push held (${e.message})` }, 409);
+            return json({ error: `model push outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` }, 409);
+          }
+          modelPushedAt = Date.now();
+          const previous = paneModelInfo.get(s.id);
+          paneModelInfo.set(s.id, {
+            model: previous?.model ?? null,
+            at: previous?.at ?? 0,
+            modelPushedAt,
+          });
+          audit("slot_model_push", s.id, `model=${s.model ?? "-"}`);
+        }
+        return json({ ok: true, model: s.model, effort: s.effort,
+          ...(modelPushedAt ? { modelPushedAt } : {}) });
       }
       // the owner writes this slot's standing intention (Slot.mission). Owner-only by CONSTRUCTION: the
       // steward gate above default-denies, and it must stay that way — a producer that can write the

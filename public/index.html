@@ -303,23 +303,6 @@
   .nibody { padding: 2px 10px 8px; margin: 0; white-space: pre-wrap; word-break: break-word;
     color: #8a8163; font-size: var(--chat-code-fs); font-family: var(--chat-mono); max-height: 260px; overflow-y: auto; }
   .chatempty { color: var(--chat-faint); font-size: var(--chat-ui-fs); padding: 40px 10px; text-align: center; }
-  .optswrap { position: relative; }
-  .optpop { bottom: calc(100% + 10px); right: 0; }
-  .cmdrow { display: flex; align-items: center; gap: 8px; }
-  .cmdinput { flex: 1; min-width: 0; padding: 5px 9px; background: var(--chat-surface);
-    border: 1px solid var(--chat-edge); border-radius: 8px; color: var(--chat-ink);
-    font-family: var(--chat-mono); font-size: var(--chat-code-fs); outline: none; }
-  .cmdinput:focus { border-color: var(--accent); }
-  .cmdgo, .cmdlevel { font: inherit; font-family: var(--chat-sans); color: var(--chat-mute);
-    background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: 8px;
-    padding: 4px 11px; cursor: pointer; }
-  .cmdgo:hover, .cmdlevel:hover { color: var(--chat-ink); border-color: var(--accent); }
-  .cmdgo:disabled, .cmdlevel:disabled { opacity: 0.5; cursor: default; }
-  .cmdlevel.on { color: var(--accent); border-color: var(--sel); background: #141a28; }
-  .cmdlevels { display: flex; flex-wrap: wrap; gap: 6px; }
-  .cmdnote { color: var(--chat-faint); font-size: var(--chat-ui-fs); }
-  .cmdstatus { color: var(--chat-prose); font-family: var(--chat-mono); font-size: var(--chat-ui-fs);
-    overflow-wrap: anywhere; min-height: 1.2em; }
   /* text size: the Aa button under the prompt arrows opens three sliders (src/chatsize.ts) */
   .chatsizebtn { display: none; position: absolute; top: 102px; right: 10px; z-index: 6; width: 30px; height: 26px;
     border-radius: 7px; border: 1px solid var(--line); background: rgba(38, 38, 38, 0.85); color: var(--dim);
@@ -357,7 +340,7 @@
     background: var(--raised); color: var(--dim); font-size: 13px; font-family: inherit; cursor: pointer; }
   #layouts button.active { color: var(--accent); border-color: var(--sel); background: #1c2437; }
 
-  #bar { flex: none; background: #1c1c1c; border-top: 1px solid var(--line-soft);
+  #bar { flex: none; background: #0b0b0c; border-top: 1px solid var(--line-soft);
     padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; }
   #chips { display: flex; gap: 6px; overflow-x: auto; }
   #chips:empty { display: none; }
@@ -373,81 +356,122 @@
      view switch changes neither x nor width. #bar is the main column's last item — the extra height
      of .tall pushes the panes up and the bottom edge stays put. The tray under the surface is
      styled the same in both sizes for the same reason.
+     THE SYSTEM (sixth cut, "AA Indie", one hand):
+       idea    — the composer is YOUR bubble before it is sent: .msg.user's material (raised, edge)
+                 and its 6px tail corner bottom-right; send repeats that shape in small
+       radii   — 6 (tail, chips, tray) · 10 (code block, buttons, popover) · 18 (bubble, surface)
+       space   — 4px grid: 4 · 8 · 12 · 16
+       accent  — ink, the flakes' white: faint → mute → ink (rest · hover · ready); danger = error only
+       type    — the chat sans, 400 text / 500 labels; icons: src/icons.ts, the board's SVG grammar
+       motion  — one duration, one curve (--t), colours only, off under prefers-reduced-motion
      The size is a class on #comp, not a second component — see src/client.ts#setComposerSize. */
-  #comp { display: flex; flex-direction: column; gap: 6px; min-width: 0; width: 100%; max-width: 780px;
-    margin: 0 auto; }
+  #comp { --r1: 6px; --r2: 10px; --r3: 18px; --t: 160ms cubic-bezier(0.2, 0.7, 0.2, 1);
+    --c-hover: #202024; --c-edge-hi: #4a4a52;
+    display: flex; flex-direction: column; gap: 8px; min-width: 0; width: 100%; max-width: 780px;
+    margin: 0 auto; font-family: var(--chat-sans); }
+  @media (prefers-reduced-motion: reduce) { #comp { --t: 0ms linear; } }
   #bar.chat { background: #000; border-top-color: transparent; }
-  #compsurface { display: flex; flex-direction: column; gap: 6px; background: #1a1a1d;
-    border: 1px solid #2a2a2f; border-radius: 23px; padding: 6px 7px 6px 12px; }
-  #comp.tall #compsurface { border-radius: 28px; padding: 16px 12px 10px 20px; }
-  #comp.tall #comprow { gap: 4px; }
-  #dropbtn { border: 0; color: var(--chat-mute); }
-  #dropbtn:hover { color: var(--chat-ink); background: #242428; }
-  #comp.tall #dropbtn { margin-left: -8px; }
-  #dropbtn .tricon { font-size: 20px; font-weight: 300; }
-  #comp.tall #dropbtn .tricon { font-size: 22px; }
-  #send { background: var(--chat-ink); color: #000; }
-  #input:placeholder-shown ~ #comprow #send { background: #2c2c31; color: var(--chat-mute); }
-  #compsurface:has(.att) #comprow #send { background: var(--chat-ink); color: #000; }
-  #comprow { display: flex; align-items: center; gap: 6px; }
+  #compsurface { display: flex; flex-direction: column; gap: 8px; background: var(--chat-raised);
+    border: 1px solid var(--chat-edge); border-radius: var(--r3) var(--r3) var(--r1) var(--r3);
+    padding: 4px; transition: border-color var(--t); }
+  #compsurface:focus-within { border-color: var(--c-edge-hi); }
+  #comp.err #compsurface { border-color: var(--danger); }
+  #comp.tall #compsurface { padding: 16px 8px 8px 16px; }
+  #comprow { display: flex; align-items: center; gap: 4px; }
   #compspace { flex: 1; }
-  #input { flex: 1; min-height: 24px; max-height: 140px; resize: none; padding: 0; border: 0;
-    background: transparent; color: #eee; font-size: 13px; font-family: inherit; line-height: 1.45; outline: none; }
+  #input { flex: 1; min-height: 24px; max-height: 140px; resize: none; padding: 4px 0; border: 0;
+    background: transparent; color: var(--chat-ink); caret-color: var(--chat-ink);
+    font: 400 var(--chat-fs) / 1.5 var(--chat-sans); outline: none; }
+  #input::placeholder { color: var(--chat-faint); }
   /* flex: none — in the tall surface's column a flex basis of 0 would ignore growComposer's height */
-  #comp.tall #input { flex: none; min-height: 46px; max-height: 220px; font-family: var(--chat-sans);
-    font-size: var(--chat-fs); line-height: 1.55; color: var(--chat-ink); }
+  #comp.tall #input { flex: none; min-height: 48px; max-height: 220px; padding: 0; }
   /* the strip: one line, + on the left like the tall form, attachments wrapping above it */
-  #comp.bar #compsurface { flex-flow: row wrap; align-items: center; gap: 8px; }
+  #comp.bar #compsurface { flex-flow: row wrap; align-items: center; gap: 4px; }
   #comp.bar #comprow { display: contents; }
-  #comp.bar #compfiles { order: -2; flex-basis: 100%; }
-  #comp.bar #dropbtn { order: -1; width: 28px; height: 28px; font-size: 15px; }
+  #comp.bar #compfiles { order: -2; flex-basis: 100%; padding: 4px 4px 0; }
+  #comp.bar #dropbtn { order: -1; }
   #comp.bar #input { order: 0; }
-  #comp.bar #send { order: 1; width: 30px; height: 30px; font-size: 14px; }
+  #comp.bar #send { order: 1; }
   #comp.bar #compspace { display: none; }
-  #send { flex: none; width: 34px; height: 34px; border-radius: 50%; border: none;
-    font-size: 14px; font-weight: 700; cursor: pointer; }
-  #send:disabled { opacity: 0.5; }
-  #dropbtn { flex: none; width: 32px; height: 32px; border-radius: 50%;
-    background: transparent; font-size: 17px; font-family: inherit; cursor: pointer; }
-  /* attachments: one icon per uploaded file, with the ✕ that takes its mention back out */
-  #compfiles { display: none; flex-wrap: wrap; gap: 6px; }
+  .ico { display: block; flex: none; width: 16px; height: 16px; }
+  .tricon { flex: none; display: grid; place-items: center; }
+  #dropbtn { flex: none; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0;
+    border-radius: var(--r2); background: transparent; color: var(--chat-mute); cursor: pointer;
+    transition: color var(--t), background-color var(--t), opacity var(--t); }
+  #dropbtn:hover { color: var(--chat-ink); background: var(--c-hover); }
+  #dropbtn:disabled { opacity: 0.4; cursor: progress; }
+  #comp.tall #dropbtn { margin-left: -8px; }
+  /* send: the bubble's shape in small — ink when there is something to send, quiet when not */
+  #send { flex: none; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0;
+    border-radius: var(--r2) var(--r2) var(--r1) var(--r2); background: var(--chat-ink); color: #000;
+    cursor: pointer; transition: background-color var(--t), color var(--t), opacity var(--t); }
+  #send .ico { stroke-width: 2.2; }
+  #input:placeholder-shown ~ #comprow #send { background: var(--chat-edge); color: var(--chat-faint); }
+  #compsurface:has(.att) #comprow #send { background: var(--chat-ink); color: #000; }
+  #send:disabled { opacity: 0.45; cursor: progress; }
+  #comp.err #compsurface #comprow #send { background: var(--danger); color: #000; }
+  #comp button:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 2px; }
+  /* attachments: the code block's material (surface, soft edge), one per file, with its ✕ */
+  #compfiles { display: none; flex-wrap: wrap; gap: 4px; }
   #compfiles:not(:empty) { display: flex; }
-  .att { display: flex; align-items: center; gap: 6px; max-width: 220px; padding: 4px 6px 4px 8px;
-    border: 1px solid var(--line); border-radius: 10px; background: #0f0f11; }
-  .attico { flex: none; font-size: 13px; }
+  .att { display: flex; align-items: center; gap: 8px; max-width: 240px; height: 28px; padding: 0 4px 0 8px;
+    border: 1px solid var(--chat-edge-soft); border-radius: var(--r1); background: var(--chat-surface); }
+  .attico { flex: none; display: grid; color: var(--chat-mute); }
+  .attico .ico { width: 14px; height: 14px; }
   .attname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-size: 11px; color: var(--text); }
-  .attx { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 0; background: transparent;
-    color: var(--dim); font-size: 12px; font-family: inherit; cursor: pointer; line-height: 1; }
-  .attx:hover { color: #fff; background: var(--sel); }
+    font-size: 12px; color: var(--chat-prose); }
+  .attx { flex: none; display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0;
+    border-radius: var(--r1); background: transparent; color: var(--chat-faint); cursor: pointer;
+    transition: color var(--t), background-color var(--t); }
+  .attx .ico { width: 12px; height: 12px; }
+  .attx:hover { color: var(--chat-ink); background: var(--c-hover); }
   /* the slim tray outside the surface: entries are DATA (src/client.ts#TRAY), not layout */
-  #comptray { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 0 10px; }
-  #comptray button { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border: 0;
-    border-radius: 8px; background: transparent; color: var(--dim); font-family: inherit;
-    font-size: 12px; cursor: pointer; }
-  #comptray button:hover { color: var(--text); background: var(--raised); }
-  #comptray button:disabled { opacity: 0.5; cursor: default; }
+  #comptray { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 0 8px; }
+  #comptray button { display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px; border: 0;
+    border-radius: var(--r1); background: transparent; color: var(--chat-mute);
+    font: 400 12px var(--chat-sans); cursor: pointer; transition: color var(--t), background-color var(--t); }
+  #comptray button:hover { color: var(--chat-ink); background: #141416; }
+  #comptray button:disabled { opacity: 0.5; cursor: progress; }
+  #comptray button.err { color: var(--danger); }
+  #comptray .ico { width: 14px; height: 14px; }
   /* live typing is a TOUCH affordance — a desktop owner clicks the terminal and types. It is a
      tray entry like every other, shown only where there is no hardware keyboard. */
   #comptray > #live { display: none; }
   @media (any-pointer: coarse) { #comptray > #live { display: flex; } }
-  .tricon { flex: none; font-size: 12px; }
+  #comptray > #live.on { color: var(--chat-ink); background: var(--c-hover); }
   /* the model/effort switch: plain text in the surface's bottom row, conversation view only
      (a terminal strip stays a strip) */
   #compopts { display: none; }
   #comp.tall #compopts:not(:empty) { display: flex; align-items: center; min-width: 0; }
-  .optsw { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 6px 10px; border: 0;
-    border-radius: 12px; background: transparent; color: var(--chat-ink); font-family: var(--chat-sans);
-    font-size: calc(var(--chat-ui-fs) + 2px); cursor: pointer; }
-  .optsw:hover, .optsw.on { background: #242428; }
+  .optswrap { position: relative; min-width: 0; }
+  .optsw { display: flex; align-items: center; gap: 4px; min-width: 0; height: 32px; padding: 0 8px 0 12px;
+    border: 0; border-radius: var(--r2); background: transparent; color: var(--chat-ink);
+    font: 500 13px var(--chat-sans); cursor: pointer; transition: background-color var(--t); }
+  .optsw:hover, .optsw.on { background: var(--c-hover); }
   .optval { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .optval.dim { color: var(--chat-mute); flex: none; }
-  .optchev { color: var(--chat-faint); flex: none; }
-  .opthead { color: var(--chat-faint); font-size: var(--chat-ui-fs); letter-spacing: 0.05em; text-transform: uppercase; }
-  .optpop { display: none; position: absolute; z-index: 8; min-width: 260px; padding: 12px 14px;
-    background: rgba(12, 12, 14, 0.97); border: 1px solid var(--chat-edge); border-radius: 14px;
-    box-shadow: 0 16px 48px #000d; font-family: var(--chat-sans); font-size: calc(var(--chat-ui-fs) + 1px); }
-  .optpop.open { display: grid; gap: 9px; }
+  .optval.dim { flex: none; margin-left: 4px; color: var(--chat-mute); font-weight: 400; }
+  .optchev { flex: none; display: grid; color: var(--chat-faint); transition: transform var(--t); }
+  .optchev .ico { width: 14px; height: 14px; }
+  .optsw.on .optchev { transform: rotate(180deg); }
+  .optpop { display: none; position: absolute; z-index: 8; bottom: calc(100% + 8px); right: 0; min-width: 260px;
+    padding: 12px; background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: var(--r2);
+    font: 400 12px var(--chat-sans); color: var(--chat-prose); }
+  .optpop.open { display: grid; gap: 8px; }
+  .opthead { color: var(--chat-faint); font-size: 11px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; }
+  .cmdrow { display: flex; align-items: center; gap: 8px; }
+  .cmdinput { flex: 1; min-width: 0; height: 28px; padding: 0 8px; background: var(--chat-surface);
+    border: 1px solid var(--chat-edge); border-radius: var(--r1); color: var(--chat-ink);
+    font: 400 12px var(--chat-mono); outline: none; transition: border-color var(--t); }
+  .cmdinput:focus { border-color: var(--c-edge-hi); }
+  .cmdgo, .cmdlevel { height: 28px; padding: 0 12px; font: 400 12px var(--chat-sans); color: var(--chat-mute);
+    background: transparent; border: 1px solid var(--chat-edge); border-radius: var(--r1); cursor: pointer;
+    transition: color var(--t), border-color var(--t), background-color var(--t); }
+  .cmdgo:hover, .cmdlevel:hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
+  .cmdgo:disabled, .cmdlevel:disabled { opacity: 0.45; cursor: progress; }
+  .cmdlevel.on { color: #000; background: var(--chat-ink); border-color: var(--chat-ink); font-weight: 500; }
+  .cmdlevels { display: flex; flex-wrap: wrap; gap: 4px; }
+  .cmdnote { color: var(--chat-faint); font-size: 11px; }
+  .cmdstatus { color: var(--chat-prose); font: 400 11px var(--chat-mono); overflow-wrap: anywhere; min-height: 1.2em; }
   .slot .autobadge { flex: none; font-size: 10px; color: var(--amber); }
   /* Lane suffix + left accent identify lanes without a redundant permanent glyph. */
   .slot.lane { border-left: 2px solid var(--focus); overflow: hidden; }
@@ -1718,18 +1742,18 @@
           <textarea id="input" rows="1" placeholder="Prompt for the selected session…"
             autocomplete="off"></textarea>
           <div id="comprow">
-            <button id="dropbtn" title="attach files — drag&amp;drop and paste do the same thing"><span class="tricon">+</span></button>
+            <button id="dropbtn" title="attach files — drag&amp;drop and paste do the same thing"><span class="tricon"></span></button>
             <div id="compspace"></div>
             <div id="compopts"></div>
-            <button id="send" title="send to this session">➤</button>
+            <button id="send" title="send to this session"></button>
           </div>
         </div>
         <div id="comptray"></div>
         <input id="dropfile" type="file" multiple hidden>
-        <button id="live" title="live typing — every key goes straight to the terminal"><span class="tricon">⌨</span><span class="trlabel">Live</span></button>
-        <button id="histbtn" title="prompt history (↑ in the empty box recalls too)"><span class="tricon">🕘</span><span class="trlabel">History</span></button>
-        <button id="autobtn" title="scheduled prompts for this session"><span class="tricon">⏱</span><span class="trlabel">Schedule</span></button>
-        <button id="enhbtn" title="✨ rework this prompt — a background agent weaves in your directives + /sharpen3 (usually ~20s, can take up to 3 min — never auto-sends)"><span class="tricon">✨</span><span class="trlabel">Rework</span></button>
+        <button id="live" title="live typing — every key goes straight to the terminal"><span class="tricon"></span><span class="trlabel">Live</span></button>
+        <button id="histbtn" title="prompt history (↑ in the empty box recalls too)"><span class="tricon"></span><span class="trlabel">History</span></button>
+        <button id="autobtn" title="scheduled prompts for this session"><span class="tricon"></span><span class="trlabel">Schedule</span></button>
+        <button id="enhbtn" title="✨ rework this prompt — a background agent weaves in your directives + /sharpen3 (usually ~20s, can take up to 3 min — never auto-sends)"><span class="tricon"></span><span class="trlabel">Rework</span></button>
       </div>
     </div>
     <div id="droplay">Drop to hand the file to this session</div>

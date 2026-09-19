@@ -1096,10 +1096,21 @@ export async function run(): Promise<void> {
       && contextWindowFor("openai-codex/gpt-5.6-sol") === CONTEXT_WINDOW_GPT
       && contextWindowFor("openai/gpt-5-codex:high") === CONTEXT_WINDOW_GPT,
       JSON.stringify(CONTEXT_WINDOW_GPT));
-    check("context window: only the exact GLM-5.3 id gets the measured one-million-token window",
+    check("context window: the bare GLM-5.3 id gets the measured one-million-token window (glm-5.2 and the zai-prefixed spelling do not)",
       CONTEXT_WINDOW_GLM_5_3 === 1_000_000 && contextWindowFor("glm-5.3") === CONTEXT_WINDOW_GLM_5_3
       && contextWindowFor("glm-5.2") === null && contextWindowFor("zai/glm-5.3") === null,
       JSON.stringify(CONTEXT_WINDOW_GLM_5_3));
+    // the two ids a slot record can carry that this sensor could not place: glm-5.3-flash (the
+    // pi-zai adapter's second tier, whose own catalog injects 1M) and the dated haiku release id
+    // (the same 200k model as the undated row above). Both fell through to "cannot tell" — the ctx
+    // chip stayed "?" — until these exact rows existed.
+    check("context window: glm-5.3-flash reads the 1M its adapter injects, claude-haiku-4-5-20251001 the 200k of its undated twin",
+      contextWindowFor("glm-5.3-flash") === CONTEXT_WINDOW_GLM_5_3
+      && contextWindowFor("claude-haiku-4-5-20251001") === CONTEXT_WINDOW_BASE,
+      JSON.stringify([contextWindowFor("glm-5.3-flash"), contextWindowFor("claude-haiku-4-5-20251001")]));
+    check("context window: an unnamed flash sibling stays null — these rows are exact ids, never a family rule",
+      contextWindowFor("glm-5.3-flash-lite") === null && contextWindowFor("glm-5.3-flash-pro") === null,
+      JSON.stringify([contextWindowFor("glm-5.3-flash-lite"), contextWindowFor("glm-5.3-flash-pro")]));
     check("context window: the exact Ox Alpha free id gets its catalog-declared 1M window, never a fuzzy sibling",
       contextWindowFor("x-preview-f-free") === CONTEXT_WINDOW_1M
       && contextWindowFor("opencode/x-preview-f-free") === null

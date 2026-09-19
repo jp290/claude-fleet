@@ -283,6 +283,8 @@ const CLAUDE_CONTEXT_WINDOWS: Readonly<Record<string, number | undefined>> = {
   "claude-sonnet-5": CONTEXT_WINDOW_BASE,
   // 200k as a ceiling rather than a tier — there is no 1M variant of this one to ask for.
   "claude-haiku-4-5": CONTEXT_WINDOW_BASE,
+  // the DATED release id slot records carry when spawned with the full name — same 200k ceiling, no 1M variant of it to ask for either.
+  "claude-haiku-4-5-20251001": CONTEXT_WINDOW_BASE,
   // 1M WITHOUT a suffix — the model that broke the old rule, measured 2026-08-18 on a live slot:
   // 176,680 tokens, which its own pane reported as 17.7%.
   "claude-fable-5": CONTEXT_WINDOW_1M,
@@ -320,6 +322,8 @@ const CLAUDE_CONTEXT_WINDOWS: Readonly<Record<string, number | undefined>> = {
 export function contextWindowFor(model: string | null): number | null {
   if (!model) return null;
   if (model === "glm-5.3") return CONTEXT_WINDOW_GLM_5_3;
+  // flash's window is a fact of THIS repo: server.ts#PI_ZAI_HARNESS injects contextWindow 1000000 for it.
+  if (model === "glm-5.3-flash") return CONTEXT_WINDOW_GLM_5_3;
   if (model === "x-preview-f-free") return CONTEXT_WINDOW_1M;
   if (/(?:^|\/)gpt-[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9_-]+)?$/i.test(model)) {
     return CONTEXT_WINDOW_GPT;

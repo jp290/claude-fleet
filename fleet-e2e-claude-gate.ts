@@ -816,6 +816,122 @@ for (const s of (await dispSess()).slots) if (s.worktree && !lanesBefore.has(s.i
   }
 }
 
+// --- 💤 SLEEP / WAKE under a real pin (server.ts#sleepSlot, #wakeSlot). Only this harness pins a
+// session id at spawn (FLEET_CMD is a `claude`), so only here can "the SAME conversation comes back"
+// be read off the pane's own argv instead of assumed; the main suite (e2e/slots.ts) owns the named
+// refusals. In order: (e) a pin without a transcript is refused; (a) a slept pane stays gone across
+// three self-heal ticks; (b) the owner wake resumes the pinned id against the same transcript file;
+// (c) a scheduled delivery wakes a sleeper and arrives, and a wake whose agent never comes up is NOT
+// booked as delivered. Mutation caught: ensureSlot without `if (s.sleeping) return;` fails (a). ---
+{
+  const MERGE_IDLE_MS = Math.max(500, Number(process.env.FLEET_MERGE_IDLE_MS ?? 3000) | 0); // server.ts twin
+  type Row = { id: number; cwd: string | null; lastOutput: number; sleeping?: { sessionId: string } };
+  const rowsNow = async (): Promise<Row[]> => ((await (await get("/api/sessions")).json()) as { slots: Row[] }).slots;
+  const install = async (variant: "claude-hang" | "claude-exit"): Promise<void> => {
+    await Bun.$`rm -f ${FAKEBIN}/claude`.quiet(); // fresh inode — see the fresh-gate branch for why
+    await Bun.write(`${FAKEBIN}/claude`, await Bun.file(`${FAKEBIN}/${variant}`).arrayBuffer());
+    await Bun.$`chmod +x ${FAKEBIN}/claude`.quiet();
+  };
+  await install("claude-hang");
+  const SL = (await rowsNow()).filter((r) => !r.cwd).map((r) => r.id).reverse()[0] ?? 16;
+  const pinOf = (): string | null => {
+    try {
+      return (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { sessionId?: string | null }> }).slots?.[String(SL)]?.sessionId ?? null;
+    } catch { return null; }
+  };
+  const hasPane = async (): Promise<boolean> => (await tmuxOut("has-session", "-t", `=s${SL}`)).code === 0;
+  const startCmd = async (): Promise<string> =>
+    (await tmuxOut("display-message", "-p", "-t", `=s${SL}:`, "#{pane_start_command}")).out;
+  const settleIdle = async (): Promise<void> => {
+    for (let i = 0; i < 100; i++) {
+      const row = (await rowsNow()).find((r) => r.id === SL);
+      if (row && Date.now() - row.lastOutput > MERGE_IDLE_MS + 300) return;
+      await Bun.sleep(100);
+    }
+  };
+  const sleepNow = async (): Promise<{ status: number; body: { reason?: string; sleeping?: { sessionId?: string; transcript?: string } } }> => {
+    await settleIdle();
+    const r = await post(`/api/slots/${SL}/sleep`, {});
+    return { status: r.status, body: (await r.json()) as never };
+  };
+  const autoResult = async (id: string, budgetMs: number): Promise<string | null> => {
+    const until = Date.now() + budgetMs;
+    for (;;) {
+      const a = ((await (await get("/api/sessions")).json()) as { autos: AutoInfo[] }).autos.find((x) => x.id === id);
+      if (a?.lastResult || Date.now() >= until) return a?.lastResult ?? null;
+      await Bun.sleep(200);
+    }
+  };
+
+  const slOpen = await post(`/api/slots/${SL}/open`, { cwd: process.cwd() });
+  let pin: string | null = null;
+  for (let i = 0; i < 40 && !pin; i++) { pin = pinOf(); if (!pin) await Bun.sleep(250); }
+  const up = await awaitPaneComm(`=s${SL}:`, "claude", 8000);
+  check("sleep fixture: a plain slot under a resident claude, pinned with --session-id",
+    slOpen.ok && !!pin && up.some((c) => c.startsWith("claude")) && (await startCmd()).includes(`--session-id ${pin}`),
+    `open=${slOpen.status} pin=${pin} comms=${up.join(",")}`);
+
+  // (e) the fake claude writes no transcript: the pin names nothing on disk
+  const e = await sleepNow();
+  check("sleep refuses a pinned claude whose transcript is not on disk (no-transcript) and leaves it running",
+    e.status === 409 && e.body.reason === "no-transcript" && await hasPane(), JSON.stringify(e));
+
+  const trDir = `${process.env.HOME}/.claude/projects/${process.cwd().replace(/[^a-zA-Z0-9]/g, "-")}`;
+  const trFile = `${trDir}/${pin}.jsonl`;
+  await Bun.write(trFile, `${JSON.stringify({ type: "user", timestamp: "2026-09-19T12:00:00Z" })}\n`);
+
+  // (a) asleep: gone, and kept gone by the heal loop
+  const a = await sleepNow();
+  check("sleep puts the pinned claude session down, naming its session id and transcript file",
+    a.status === 200 && a.body.sleeping?.sessionId === pin && a.body.sleeping?.transcript === trFile, JSON.stringify(a));
+  const goneAt = Date.now();
+  let back = false;
+  while (Date.now() - goneAt < 3 * 2000 + 700) {
+    if (await hasPane()) { back = true; break; }
+    await Bun.sleep(150);
+  }
+  check("(a) the sleeping session's tmux session is gone and the self-heal does NOT recreate it over three ticks",
+    !back && pinOf() === pin, `reappeared=${back} pin=${pinOf()}`);
+
+  // (b) owner wake: same id, same transcript, `--resume` in the pane's own argv
+  const w = await post(`/api/slots/${SL}/wake`, {});
+  const wJ = (await w.json()) as { ok?: boolean; resumed?: boolean | null; sessionId?: string };
+  const wArgv = await paneArgv(`=s${SL}:`, "claude");
+  check("(b) wake resumes the SAME conversation: resumed:true, the pin unchanged, `--resume <id>` in the resident claude's argv",
+    w.ok && wJ.resumed === true && wJ.sessionId === pin && pinOf() === pin
+      && wArgv.some((v) => v.includes(`--resume ${pin}`) && !v.includes("--session-id")),
+    `${w.status} ${JSON.stringify(wJ)} argv=${wArgv.join(" | ").slice(-200)}`);
+  check("(b) ...against the transcript file the sleep named — the file resume reads is the one that was checked",
+    a.body.sleeping?.transcript === `${trDir}/${wJ.sessionId}.jsonl`, `${a.body.sleeping?.transcript} vs ${wJ.sessionId}`);
+
+  // (c) a delivery wakes the sleeper and arrives
+  const c1 = await sleepNow();
+  const marker = "sleep-wake-delivery-marker";
+  const auto1 = (await (await post(`/api/slots/${SL}/autos`, { text: marker, inSec: 1, idleSec: 60 })).json()) as { auto?: AutoInfo };
+  const r1 = auto1.auto ? await autoResult(auto1.auto.id, 20_000) : null;
+  const c1Argv = await paneArgv(`=s${SL}:`, "claude");
+  const cap1 = (await tmuxOut("capture-pane", "-p", "-t", `=s${SL}:`)).out;
+  check("(c) a scheduled prompt to a sleeping session wakes it, resumes the same id, and is delivered",
+    c1.status === 200 && r1 === "sent" && c1Argv.some((v) => v.includes(`--resume ${pin}`)) && cap1.includes(marker),
+    `sleep=${c1.status} result=${r1} argv=${c1Argv.join(" | ").slice(-160)} pane=${cap1.slice(-120)}`);
+
+  // (c) counter-proof: the wake spawns a claude that exits at once — the prompt must NOT be booked
+  const c2 = await sleepNow();
+  await install("claude-exit");
+  const marker2 = "sleep-wake-must-not-type-this";
+  const auto2 = (await (await post(`/api/slots/${SL}/autos`, { text: marker2, inSec: 1, idleSec: 60 })).json()) as { auto?: AutoInfo };
+  const r2 = auto2.auto ? await autoResult(auto2.auto.id, 40_000) : null;
+  const cap2 = (await tmuxOut("capture-pane", "-p", "-t", `=s${SL}:`)).out;
+  check("(c) a delivery whose wake finds no agent is NOT booked as sent, and nothing reaches the bare shell",
+    c2.status === 200 && r2 !== null && r2 !== "sent" && r2.startsWith("skipped") && !cap2.includes(marker2),
+    `sleep=${c2.status} result=${r2} pane=${cap2.slice(-120)}`);
+
+  await post(`/api/slots/${SL}/kill`, {});
+  rmSync(trFile, { force: true });
+  try { rmdirSync(trDir); } catch { /* not ours to empty — leave it */ }
+}
+
 console.log(results.join("\n"));
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
 process.exit(failures() ? 1 : 0);

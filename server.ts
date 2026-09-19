@@ -138,7 +138,7 @@ import {
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskCard, type TaskCriterion, type TaskFilesProposal,
   type RefineChild, type RefineProposal,
-  type TaskRefine, type LaneForm, type LaneRef, type SuccessionRetirement, type CodexRecoveryState,
+  type TaskRefine, type LaneForm, type LaneRef, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
   type PromotionSelfLand, type PromotionPolicy, type PromotionRequest, type ProgramProfileKind, type ProgramProfile,
   type ProgramLineageVia, type ProgramLineageEndedBy, type ProgramLineageEntry, type ProgramLineage,
@@ -1888,6 +1888,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   codexPaneSpawnedAt: null,
   codexRecoveryState: null,
   codexDisconnectSeenAt: null,
+  sleeping: null,
   history: [],
   clients: new Set(),
   inputChain: Promise.resolve(),
@@ -3545,11 +3546,11 @@ function stateSnapshot(): string {
     container: string | null; containerContext: string | null;
     taskId: string | null; originId: string | null; programId: string | null;
     releasedBy: "owner" | "machine" | null; laneSuccessions: number; lineageId: string | null; selfToken: string;
-    browser?: true; context?: SlotContext }> = {};
+    browser?: true; context?: SlotContext; sleeping?: SlotSleep }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, lineageId: s.lineageId, selfToken: s.selfToken };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   return JSON.stringify({ token: persistedToken, stewardToken, helperToken,
@@ -5514,8 +5515,11 @@ async function waitForSlotTeardownTestLatch(occupant: SlotStreamOccupant, target
 
 // `cause` only picks which audit event the rebuild is booked under; the rebuild itself is
 // identical either way. "heal" = the pane died on us, "restart" = the owner asked for it.
-async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"): Promise<void> {
+async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" = "heal"): Promise<void> {
   if (slotTeardownInflight.has(s.id)) return;
+  // ASLEEP ON PURPOSE (sleepSlot): the absent pane is the state, not damage. Every caller — the 2 s
+  // self-heal first of all — must leave it absent; only wakeSlot clears the mark and then calls here.
+  if (s.sleeping) return;
   let occupant = slotSpawnOccupant(s);
   if (!occupant) return;
   const entrySpawn = slotSpawnInflight.get(s.id);
@@ -5626,7 +5630,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
           : priorCodexState === "ambiguous" ? "ambiguous" : "pending";
       }
       saveState();
-      audit(cause === "restart" ? "slot_restart" : "self_heal_recreate", s.id, healDetail); // classified pre-spawn — see healDetail above
+      audit(cause === "restart" ? "slot_restart" : cause === "wake" ? "slot_wake" : "self_heal_recreate", s.id, healDetail); // classified pre-spawn — see healDetail above
       console.log(`slot ${s.id}: ${resume ? `resumed ${h.id} session ${candidate} in` : "created tmux session"} '${name}' in ${occupant.cwd}`);
     })();
     slotSpawnInflight.set(s.id, spawn);
@@ -5793,6 +5797,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.codexPaneSpawnedAt = null;
   s.codexRecoveryState = null;
   s.codexDisconnectSeenAt = null;
+  s.sleeping = null; // a new occupant is awake; the old one's sleep named a conversation that is not this one
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0), skipping: 0 }); // sentinel: harvest the NEW transcript from byte 0
   startCache.delete(s.id); // the fresh session gets a fresh start anchor
@@ -5980,6 +5985,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.codexPaneSpawnedAt = null;
   s.codexRecoveryState = null;
   s.codexDisconnectSeenAt = null;
+  s.sleeping = null;
   for (const ws of s.clients) ws.close(4000, "slot killed");
   s.clients.clear();
   s.inputChain = Promise.resolve();
@@ -6005,6 +6011,117 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
     await promise;
   } finally {
     if (slotTeardownInflight.get(s.id) === latch) slotTeardownInflight.delete(s.id);
+  }
+}
+
+// --- SLEEP: an idle session gives its RAM back without ending (owner idea 2026-09-17). Not a kill:
+// the tmux session goes, the OCCUPANT stays — cwd, label, selfToken, sessionId, autos, watches — and
+// Slot.sleeping tells ensureSlot (so the 2 s self-heal) to leave the pane absent. Waking is clearing
+// that mark and letting the untouched spawn path resume the pinned conversation. This is the DOOR
+// only; nothing in Fleet decides on its own when to use it.
+// Every refusal is named (`reason`), never a silent no-op, and each one guards something a sleep would
+// break: a lane's land path hangs on its session, a Program's MAIN is its only addressee, a pane mid-turn
+// would lose the turn, and what is not resumable must not be put down as if it were.
+type SleepRefusal = "not-active" | "already-asleep" | "slot-changing" | "lane" | "program-main" | "busy"
+  | "no-session" | "not-resumable" | "no-transcript";
+const SLEEP_COMPOSER_NOTE = "unsent composer text is discarded with the pane — it is the agent's own "
+  + "residue, not an owner draft";
+async function sleepSlot(s: Slot): Promise<{ ok: true; sleeping: SlotSleep; composer: string }
+  | { ok: false; code: number; reason: SleepRefusal; error: string }> {
+  const no = (code: number, reason: SleepRefusal, error: string) => ({ ok: false as const, code, reason, error });
+  if (!s.cwd) return no(400, "not-active", "slot not active");
+  if (s.sleeping || slotWakeInflight.has(s.id)) return no(409, "already-asleep", "slot is already asleep");
+  if (slotTeardownInflight.has(s.id) || restarting.has(s.id) || slotSpawnInflight.has(s.id))
+    return no(409, "slot-changing", "slot is stopping, restarting or spawning — nothing was put to sleep");
+  if (s.worktree)
+    return no(409, "lane", "a lane is never put to sleep — it holds a worktree and the land path hangs on its session");
+  if (programs.some((p) => p.status !== "complete" && p.main?.slot === s.id && p.main.openedAt === s.openedAt))
+    return no(409, "program-main", "a bound Program-MAIN is never put to sleep — its Program would have no reachable addressee");
+  // the busy predicate the owner-act deliveries use (the land gate's own call shape), not a second one
+  const idle = await canDeliver(s, { now: Date.now(), killSwitch: false, harness: false, alive: false,
+    quietHours: false, idleMs: MERGE_IDLE_MS });
+  if (!idle.ok) return no(409, "busy", `pane is mid-turn (output within ${MERGE_IDLE_MS}ms) — nothing was put to sleep`);
+  const sessionId = s.sessionId;
+  if (!sessionId) return no(409, "no-session", "slot has no session id — a sleep could not be resumed, so it stays awake");
+  // THE SAME EVIDENCE ensureSlot's resume formula asks for, asked BEFORE the pane is gone: a slot
+  // whose conversation is not on disk would wake as a fresh TUI wearing the old identity — the
+  // confusion the codex path refuses by name. Twin of ensureSlot's `resume` expression; keep them equal.
+  const h = harnessOf(s.harness);
+  if (!h.supports.resume) return no(409, "not-resumable", `harness ${h.id} cannot resume a conversation — it stays awake`);
+  const cwd = s.cwd;
+  const transcript = h.id === "codex" ? await codexRolloutForId(sessionId)
+    : h.supports.transcript && existsSync(`${projDir(cwd)}/${sessionId}.jsonl`) ? `${projDir(cwd)}/${sessionId}.jsonl` : null;
+  if (!transcript) return no(409, "no-transcript", h.id !== "codex" && !h.supports.transcript
+    ? `harness ${h.id} keeps no transcript Fleet can verify on disk — it stays awake`
+    : `no transcript on disk for session ${sessionId} — it stays awake`);
+  const occupant = slotStreamOccupant(s);
+  if (!occupant || s.cwd !== cwd || s.sessionId !== sessionId || s.sleeping || slotTeardownInflight.has(s.id)
+    || restarting.has(s.id) || slotSpawnInflight.has(s.id))
+    return no(409, "slot-changing", "slot changed while the sleep was checked — nothing was put to sleep");
+  // the mark BEFORE the kill: from here no ensureSlot rebuilds the pane, so the kill cannot be undone
+  const sleeping: SlotSleep = { at: Date.now(), sessionId, transcript };
+  s.sleeping = sleeping;
+  const gone = await tmux("kill-session", "-t", sessTarget(sess(s.id)));
+  if (gone.code !== 0 && (await tmux("has-session", "-t", sessTarget(sess(s.id)))).code === 0) {
+    if (s.sleeping === sleeping) s.sleeping = null;
+    return no(409, "slot-changing", "the pane could not be stopped — the session stays awake");
+  }
+  if (!sameSlotStreamOccupant(s, occupant) || s.sleeping !== sleeping)
+    return no(409, "slot-changing", "slot changed while it was put to sleep");
+  aliveInfo.delete(s.id);
+  await saveStateNow();
+  audit("slot_sleep", s.id, `session=${sessionId}`);
+  return { ok: true, sleeping, composer: SLEEP_COMPOSER_NOTE };
+}
+
+// WAKE. Clears the mark and lets ensureSlot spawn exactly as a heal would (resume formula untouched),
+// then waits until the agent is really there — a delivery that wakes a pane must not paste into a
+// shell whose agent has not started. One wake per slot at a time: a second caller joins the first.
+type WakeResult = { ok: true; woke: boolean; resumed: boolean | null } | { ok: false; reason: string };
+const slotWakeInflight = new Map<number, Promise<WakeResult>>();
+async function wakeSlot(s: Slot, via: "owner" | "delivery"): Promise<WakeResult> {
+  const pending = slotWakeInflight.get(s.id);
+  if (pending) return pending;
+  const sleep = s.sleeping;
+  if (!sleep) return { ok: true, woke: false, resumed: null };
+  const wake = (async (): Promise<WakeResult> => {
+    const occupant = slotStreamOccupant(s);
+    if (!occupant) return { ok: false, reason: "slot not active" };
+    s.sleeping = null;
+    saveState();
+    try {
+      await ensureSlot(s, "wake");
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : "spawn failed" };
+    }
+    const current = (): boolean => sameSlotStreamOccupant(s, occupant) && !slotTeardownInflight.has(s.id);
+    if (!current()) return { ok: false, reason: "slot changed during wake" };
+    const target = await existingTmuxTarget(sess(s.id));
+    if (!target) return { ok: false, reason: "no pane after the wake spawn" };
+    const comms = commsFor(s);
+    if (comms.length > 0) {
+      const started = Date.now();
+      let state = await paneAgentAt(target.paneId, comms);
+      while (state !== "alive" && Date.now() - started < READY_WAIT_MS) {
+        await Bun.sleep(200);
+        if (!current()) return { ok: false, reason: "slot changed during wake" };
+        state = await paneAgentAt(target.paneId, comms);
+      }
+      if (state !== "alive") return { ok: false, reason: `agent not running after the wake spawn (${state})` };
+      await Bun.sleep(harnessOf(s.harness).bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS);
+    }
+    const ready = await waitForFoundingReadiness(s, current);
+    if (!ready.ok) return { ok: false, reason: ready.reason };
+    // read off what ensureSlot DID, as the ↻ route does: the pin kept = the conversation came back
+    const resumed = s.sessionId === sleep.sessionId;
+    console.log(`slot ${s.id}: woken (${via}) — ${resumed ? `resumed ${sleep.sessionId}` : "NOT resumed"}`);
+    return { ok: true, woke: true, resumed };
+  })();
+  slotWakeInflight.set(s.id, wake);
+  try {
+    return await wake;
+  } finally {
+    if (slotWakeInflight.get(s.id) === wake) slotWakeInflight.delete(s.id);
   }
 }
 
@@ -6552,6 +6669,12 @@ async function sendText(s: Slot, given: string, submit: boolean,
   // route through inputChain like raw keystrokes do — otherwise a compose-box send racing
   // concurrent WS keystrokes can interleave with them and reorder pty input
   const task = s.inputChain.then(async () => {
+    // every paste reaches a sleeping pane by waking it first; a failed wake types nothing, and the
+    // ledger row below books it as SendRefused rather than as a delivery
+    if (s.sleeping || slotWakeInflight.has(s.id)) {
+      const w = await wakeSlot(s, "delivery");
+      if (!w.ok) throw new SendRefused(`slot is asleep and the wake failed (${w.reason}) — nothing typed`);
+    }
     if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
       throw new Error("slot changed before send");
     const target = await existingTmuxTarget(sess(occupant.slot));
@@ -11828,7 +11951,18 @@ async function canDeliver(s: Slot, opts: {
   // ps), not the work-prompt policy question. It is also the cheap check — no tmux, no ps — so
   // putting it first costs nothing and names the reason precisely.
   if ((opts.harness ?? true) && !harnessAutomatable(s)) return { ok: false, gate: "harness" };
+  let woke = false;
   if (opts.alive ?? true) {
+    // A SLEEPING PANE IS WOKEN, NOT SKIPPED: a delivery that answered "not-alive" here would be swallowed
+    // exactly when nobody watches the pane. Behind the alive opt-in on purpose — a caller that waives
+    // the probe is about to deliver nothing into a pane (a policy pre-check, an owner git op), and
+    // sendText wakes for the ones that then paste anyway. Quiet hours first: never wake to refuse.
+    if (s.sleeping || slotWakeInflight.has(s.id)) {
+      if ((opts.quietHours ?? true) && inQuietHours(opts.now)) return { ok: false, gate: "quiet-hours" };
+      const w = await wakeSlot(s, "delivery");
+      if (!w.ok) return { ok: false, gate: "not-alive", detail: `asleep — wake failed: ${w.reason}` };
+      woke = w.woke;
+    }
     if (!(await claudeAlive(s))) return { ok: false, gate: "not-alive" };
     // behind the SAME opt-out as the process probe, deliberately: both are pane probes, and the
     // callers that waive one waive it because they cannot afford a probe at all (an owner git ff),
@@ -11838,7 +11972,8 @@ async function canDeliver(s: Slot, opts: {
     if (rd?.state === "blocked") return { ok: false, gate: "blocked-screen", detail: rd.why };
   }
   if ((opts.quietHours ?? true) && inQuietHours(opts.now)) return { ok: false, gate: "quiet-hours" };
-  if (opts.idleMs && opts.now - s.lastOutput < opts.idleMs) return { ok: false, gate: "busy" };
+  // a pane this very call woke is idle by construction — its repaint is not a turn in progress
+  if (!woke && opts.idleMs && opts.now - s.lastOutput < opts.idleMs) return { ok: false, gate: "busy" };
   return { ok: true };
 }
 
@@ -30371,6 +30506,15 @@ if (existsSync(STATE_FILE)) {
           && Number.isFinite((psl as { at: number }).at) && (psl as { at: number }).at > 0)
           s.sessionIdLearned = { id: (psl as { id: string }).id, at: (psl as { at: number }).at };
         if (typeof (v as { selfToken?: unknown }).selfToken === "string") s.selfToken = (v as { selfToken: string }).selfToken;
+        // sleep survives a restart only for the SAME conversation it was taken for; anything else loads
+        // as awake, and the self-heal brings the pane back — the fail-safe direction of the two.
+        const psl2 = (v as { sleeping?: unknown }).sleeping;
+        if (typeof psl2 === "object" && psl2 !== null && typeof (psl2 as { at?: unknown }).at === "number"
+          && Number.isFinite((psl2 as { at: number }).at) && (psl2 as { at: number }).at > 0
+          && typeof (psl2 as { transcript?: unknown }).transcript === "string"
+          && s.sessionId !== null && (psl2 as { sessionId?: unknown }).sessionId === s.sessionId)
+          s.sleeping = { at: (psl2 as { at: number }).at, sessionId: s.sessionId,
+            transcript: (psl2 as { transcript: string }).transcript };
         const psr = (v as { successionRetirement?: unknown }).successionRetirement;
         if (typeof psr === "object" && psr !== null
           && typeof (psr as { at?: unknown }).at === "number" && Number.isFinite((psr as { at: number }).at)
@@ -30451,6 +30595,8 @@ if (existsSync(STATE_FILE)) {
     // loop, not inside it — the codex normalization above can put `sessionId` BACK to null. Same
     // helper, same three refusals; no save needed. Narrativ: server-narrativ-archiv.md#boot-state-restore
     for (const s of slots) backfillProgramMainSessionId(s);
+    // the codex normalization above may have dropped the id the sleep was taken for — then it is no sleep
+    for (const s of slots) if (s.sleeping && s.sleeping.sessionId !== s.sessionId) s.sleeping = null;
     // THE FIFTH SITE, and it repairs NOTHING — it only says a fact out loud. The binding above was
     // rehydrated from its FORM alone, and it had to be: this loader runs before the slot loop, so
     // at that point no slot carries a cwd yet and no liveness question can be asked. By here the
@@ -34563,6 +34709,8 @@ Bun.serve<WSData>({
             ...(s.worktree && s.browser ? { browser: true } : {}),
             // the pane's context budget (Slot.context); omitted when none was chosen
             ...(s.context ? { context: s.context } : {}),
+            // asleep on purpose (sleepSlot): omitted while awake, the common case on this 2 s poll
+            ...(s.sleeping ? { sleeping: { at: s.sleeping.at, sessionId: s.sleeping.sessionId } } : {}),
             // Codex binds its rollout lazily after the first prompt. This typed advisory is the
             // owner's whole v1 control surface: ambiguity/loss are visible but never automated,
             // and a rendered disconnect while the TUI is alive remains Codex's own retry problem.
@@ -36723,7 +36871,7 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true });
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|model|share|unshare|land|shelve|restart)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|model|share|unshare|land|shelve|restart|sleep|wake)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
@@ -36872,8 +37020,23 @@ Bun.serve<WSData>({
       // drop shares and autos, detach tasks, emit a lane outcome: a session ENDING). ensureSlot, seeing the
       // untouched s.sessionId and its transcript, respawns with `--resume <id>` (slotCmd). The occasion —
       // claude switching conversations IN-PROCESS, measured 2026-08-06: server-narrativ-archiv.md#fetch-post-apislotsidrestart
+      // 💤 put an idle session to sleep / wake it again (sleepSlot, wakeSlot). Owner doors only: when to
+      // sleep is the owner's decision, and nothing in Fleet takes it on its own.
+      if (slotMatch[2] === "sleep") {
+        const r = await sleepSlot(s);
+        if (!r.ok) return json({ error: r.error, reason: r.reason }, r.code);
+        return json({ ok: true, sleeping: r.sleeping, composer: r.composer });
+      }
+      if (slotMatch[2] === "wake") {
+        if (!s.cwd) return json({ error: "slot not active" }, 400);
+        if (!s.sleeping && !slotWakeInflight.has(s.id)) return json({ error: "slot is not asleep", reason: "awake" }, 409);
+        const w = await wakeSlot(s, "owner");
+        if (!w.ok) return json({ error: `wake failed: ${w.reason}` }, 502);
+        return json({ ok: true, resumed: w.resumed, sessionId: s.sessionId });
+      }
       if (slotMatch[2] === "restart") {
         if (!s.cwd) return json({ error: "slot not active" }, 400);
+        if (s.sleeping || slotWakeInflight.has(s.id)) return json({ error: "slot is asleep — POST /api/slots/:id/wake brings it back" }, 409);
         if (slotTeardownInflight.has(s.id)) return json({ error: "slot is stopping" }, 409);
         if (restarting.has(s.id)) return json({ error: "a restart is already in flight" }, 409);
         const pinned = s.sessionId;

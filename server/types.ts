@@ -1546,6 +1546,10 @@ interface LaneRef {
 }
 interface SuccessionRetirement { at: number; cwd: string; token: string }
 type CodexRecoveryState = "pending" | "bound" | "ambiguous" | "lost";
+// A slot put to sleep on purpose (server.ts#sleepSlot): its tmux session is gone, its occupant is not.
+// `sessionId` and `transcript` are the resume evidence the door checked BEFORE it tore the pane down —
+// kept so a wake can say which conversation it was meant to bring back.
+interface SlotSleep { at: number; sessionId: string; transcript: string }
 
 interface Slot {
   id: number;
@@ -1643,6 +1647,10 @@ interface Slot {
   codexPaneSpawnedAt: number | null; // current Codex pane life's discovery-window anchor
   codexRecoveryState: CodexRecoveryState | null; // null for every non-Codex occupant
   codexDisconnectSeenAt: number | null; // advisory only; a live TUI owns its own retry
+  // non-null = asleep: ensureSlot (and with it the 2 s self-heal) leaves the pane absent, and every
+  // delivery path wakes it first (server.ts#wakeSlot). Cleared by wake, open and teardown. Persisted,
+  // so a restart does not silently wake every sleeper.
+  sleeping: SlotSleep | null;
   history: { text: string; ts: number }[]; // the durable "what did I prompt" record,
   // newest last: composed sends, plus terminal-typed prompts harvested from the
   // transcript (tickHarvest) — raw keystrokes themselves are deliberately not captured
@@ -2906,7 +2914,7 @@ export type {
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal, RefineChild,
-  RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
+  RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,

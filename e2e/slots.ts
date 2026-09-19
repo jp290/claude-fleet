@@ -1,12 +1,12 @@
 // Slots: open/reject/rename, WS streaming + input, the width-aware reseed, the data-saver
 // seed budget + poll plan, and HTML/txt export (including the real-metacharacter escaping
 // regression).
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
-import { BASE, IP, PORT, REPO, ROOT, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
-import { exists } from "./lane-helpers";
+import { BASE, IP, PORT, REPO, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
+import { MERGE_IDLE_MS, exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
 import { slotStats } from "../slotstats";
@@ -1702,5 +1702,133 @@ export async function run(): Promise<void> {
       JSON.stringify(sbody).slice(0, 200));
     const sauth = await fetch(`${BASE}/api/slot-stats`);
     check("/api/slot-stats rejects an unauthenticated read", sauth.status === 401, String(sauth.status));
+  }
+
+  // --- 💤 SLEEP (server.ts#sleepSlot): the four named refusals, the no-transcript refusal, and the
+  // heal loop leaving a sleeping pane absent. This suite runs FLEET_CMD=true, which pins no session id,
+  // so the pin is PLANTED the way restart.ts plants one — through the state file across a restart —
+  // together with the Program-MAIN binding. The resumed conversation itself needs a pinning `claude`
+  // and is proven in ./e2e-claude-gate.sh; here a wake can only honestly answer resumed:false.
+  // Mutation caught: dropping ensureSlot's `if (s.sleeping) return;` rebuilds the pane inside one tick. ---
+  {
+    type SleepRow = { id: number; cwd: string | null; lastOutput: number; openedAt: number; sleeping?: { at: number; sessionId: string } };
+    const rows = async (): Promise<SleepRow[]> => ((await (await get("/api/sessions")).json()) as { slots: SleepRow[] }).slots;
+    const sleepAt = async (slot: number): Promise<{ status: number; body: { ok?: boolean; reason?: string; error?: string; composer?: string; sleeping?: { sessionId?: string; transcript?: string } } }> => {
+      const r = await post(`/api/slots/${slot}/sleep`, {});
+      return { status: r.status, body: (await r.json()) as never };
+    };
+    const hasPane = async (slot: number): Promise<boolean> => (await tmuxOut("has-session", "-t", `=s${slot}`)).code === 0;
+    const settleIdle = async (slot: number): Promise<void> => {
+      for (let i = 0; i < 60; i++) {
+        const row = (await rows()).find((r) => r.id === slot);
+        if (row && Date.now() - row.lastOutput > MERGE_IDLE_MS + 200) return;
+        await Bun.sleep(100);
+      }
+    };
+    const free = (await rows()).filter((r) => !r.cwd).map((r) => r.id).reverse();
+    const [N, P] = [free[0], free[1]];
+    const nOpen = await post(`/api/slots/${N}/open`, { cwd: ROOT });
+    const pOpen = await post(`/api/slots/${P}/open`, { cwd: ROOT });
+    const lRes = await post("/api/lanes", { repo: REPO });
+    const L = ((await lRes.json()) as { slot?: number }).slot;
+    check("sleep fixture: two plain slots and one lane are open", nOpen.ok && pOpen.ok && lRes.ok && typeof L === "number",
+      `N=${N}:${nOpen.status} P=${P}:${pOpen.status} lane=${lRes.status}`);
+
+    await settleIdle(N);
+    const noSession = await sleepAt(N);
+    check("sleep refuses a slot with no session id, by name — it could not be resumed, so it stays awake",
+      noSession.status === 409 && noSession.body.reason === "no-session" && await hasPane(N), JSON.stringify(noSession));
+
+    await tmuxOut("send-keys", "-t", `=s${N}:`, "while :; do echo sleep-busy-probe; sleep 0.1; done", "Enter");
+    let busy = noSession;
+    for (let i = 0; i < 30; i++) {
+      await Bun.sleep(100);
+      busy = await sleepAt(N);
+      if (busy.body.reason === "busy") break;
+    }
+    check("sleep refuses a pane mid-turn (output inside the owner-act idle gate), by name",
+      busy.status === 409 && busy.body.reason === "busy" && await hasPane(N), JSON.stringify(busy));
+    await tmuxOut("send-keys", "-t", `=s${N}:`, "C-c");
+
+    const lane = typeof L === "number" ? await sleepAt(L) : null;
+    check("sleep refuses a lane, by name — its worktree and land path hang on the session",
+      lane?.status === 409 && lane.body.reason === "lane" && typeof L === "number" && await hasPane(L), JSON.stringify(lane));
+
+    // plant: a Program bound to P's exact occupant, and a pin on N whose transcript does not exist yet
+    const statePath = `${ROOT}/fleet.json`;
+    const SID = crypto.randomUUID();
+    const PROGRAM = "5".repeat(24);
+    const transcriptDir = `${process.env.HOME}/.claude/projects/${ROOT.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    const transcript = `${transcriptDir}/${SID}.jsonl`;
+    await stopSrv();
+    const st = JSON.parse(readFileSync(statePath, "utf8")) as { slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[] };
+    const pRow = st.slots[String(P)];
+    st.slots[String(N)]!.sessionId = SID;
+    st.programs = [...(st.programs ?? []), {
+      id: PROGRAM, title: "sleep fixture", intent: "Bind a MAIN the sleep door must refuse",
+      successCriterion: "sleep answers program-main", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      status: "active", createdAt: Date.now() - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: Date.now() - 900, activatedAt: Date.now() - 800,
+      main: { slot: P, openedAt: pRow?.openedAt, sessionId: pRow?.sessionId ?? null, boundAt: Date.now() - 700 },
+    }];
+    writeFileSync(statePath, JSON.stringify(st, null, 2), { mode: 0o600 });
+    await restartSrv();
+
+    await settleIdle(P);
+    const main = await sleepAt(P);
+    check("sleep refuses a bound Program-MAIN, by name — its Program would have no reachable addressee",
+      main.status === 409 && main.body.reason === "program-main" && await hasPane(P), JSON.stringify(main));
+
+    await settleIdle(N);
+    const noTranscript = await sleepAt(N);
+    check("sleep refuses a pinned slot whose transcript is not on disk — a fresh TUI must never wake under the old id",
+      noTranscript.status === 409 && noTranscript.body.reason === "no-transcript" && await hasPane(N),
+      JSON.stringify(noTranscript));
+
+    mkdirSync(transcriptDir, { recursive: true });
+    writeFileSync(transcript, `${JSON.stringify({ type: "user", timestamp: "2026-09-19T12:00:00Z" })}\n`);
+    await settleIdle(N);
+    const slept = await sleepAt(N);
+    check("sleep puts an idle, pinned, resumable plain session down and names the evidence and the composer loss",
+      slept.status === 200 && slept.body.sleeping?.sessionId === SID && slept.body.sleeping?.transcript === transcript
+        && (slept.body.composer ?? "").includes("composer"), JSON.stringify(slept));
+    const goneAt = Date.now();
+    let reappeared = false;
+    while (Date.now() - goneAt < 3 * 2000 + 700) { // three self-heal ticks (2 s each) and a margin
+      if (await hasPane(N)) { reappeared = true; break; }
+      await Bun.sleep(150);
+    }
+    check("a sleeping slot's tmux session is gone and the self-heal does NOT bring it back over three ticks",
+      !reappeared, `reappeared=${reappeared} after ${Date.now() - goneAt}ms`);
+    const nRow = (await rows()).find((r) => r.id === N);
+    const persisted = (JSON.parse(readFileSync(statePath, "utf8")) as { slots: Record<string, { sleeping?: { sessionId?: string }; sessionId?: string; cwd?: string }> }).slots[String(N)];
+    check("the sleeping occupant keeps its identity: cwd and session id stand, the board and the state file say asleep",
+      nRow?.cwd === ROOT && nRow.sleeping?.sessionId === SID && persisted?.sleeping?.sessionId === SID && persisted.sessionId === SID,
+      JSON.stringify({ row: nRow?.sleeping ?? null, persisted }));
+    const again = await sleepAt(N);
+    const rs = await post(`/api/slots/${N}/restart`, {});
+    check("a sleeping slot answers a second sleep and ↻ restart with a named 409, never a silent rebuild",
+      again.status === 409 && again.body.reason === "already-asleep" && rs.status === 409 && !(await hasPane(N)),
+      `${JSON.stringify(again)} restart=${rs.status}`);
+
+    const woke = await post(`/api/slots/${N}/wake`, {});
+    const wokeJ = (await woke.json()) as { ok?: boolean; resumed?: boolean | null };
+    const wokeRow = (await rows()).find((r) => r.id === N);
+    check("wake rebuilds the pane and clears the mark; under the unpinned FLEET_CMD=true it answers resumed:false, never a claimed resume",
+      woke.ok && wokeJ.resumed === false && await hasPane(N) && !wokeRow?.sleeping, `${woke.status} ${JSON.stringify(wokeJ)}`);
+    const awake = await post(`/api/slots/${N}/wake`, {});
+    check("wake of an awake slot is a named 409", awake.status === 409, String(awake.status));
+
+    // cleanup: the three slots, the transcript we wrote, and the planted Program (a second plant)
+    await post(`/api/slots/${N}/kill`, {});
+    await post(`/api/slots/${P}/kill`, {});
+    if (typeof L === "number") await post(`/api/slots/${L}/kill`, {});
+    rmSync(transcript, { force: true });
+    try { rmdirSync(transcriptDir); } catch { /* not ours to empty — rmdir refuses a non-empty dir */ }
+    await stopSrv();
+    const st2 = JSON.parse(readFileSync(statePath, "utf8")) as { programs?: { id?: string }[] };
+    st2.programs = (st2.programs ?? []).filter((p) => p.id !== PROGRAM);
+    writeFileSync(statePath, JSON.stringify(st2, null, 2), { mode: 0o600 });
+    await restartSrv();
   }
 }

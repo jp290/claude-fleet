@@ -2658,7 +2658,8 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const unguarded = briefEditSites.filter(({ n }) =>
     !/briefByMain\(/.test(briefClient.split("\n").slice(n - 1, n + 2).join("\n")));
   pin("every client site that renders a pinned brief's edited flag reads its AUTHOR through the one shared predicate",
-    briefEditSites.length === 3 && unguarded.length === 0
+    // four since 2026-09-19: the queue's "arrived as" strip names the brief's author too
+    briefEditSites.length === 4 && unguarded.length === 0
       && /const briefByMain = \(b: \{ edited: boolean; by\?: string \} \| undefined\): boolean =>\n\s*!!b && b\.edited && b\.by === "main";/.test(briefClient),
     `sites=${briefEditSites.length} unguarded=[${unguarded.map((x) => x.n).join(",")}]`);
   pin("a brief with no recorded author renders in the three legacy strings, unchanged",

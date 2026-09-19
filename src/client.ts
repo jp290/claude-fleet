@@ -8548,6 +8548,9 @@ function qActDesc(node: HTMLElement, desc: string): HTMLElement {
   return node;
 }
 
+// the row whose original request the owner opened from the "arrived as" strip
+let qShowOriginal: string | null = null;
+
 function qTextBlock(parent: HTMLElement, label: string, text: string): HTMLElement {
   const box = el("div", "qdblock");
   const head = el("div", "qdblockh");
@@ -8564,7 +8567,12 @@ function qTextBlock(parent: HTMLElement, label: string, text: string): HTMLEleme
     setTimeout(() => { copy.textContent = "copy"; copy.classList.remove("ok"); }, 1200);
   };
   head.appendChild(copy);
-  box.append(head, el("div", "qdtext", text));
+  // the text RENDERED (owner, 2026-09-19: "textfelder besser formattieren"): headings, lists,
+  // code and quotes through the chat's own markdown renderer; the copy button still takes the raw
+  // bytes, which are what a lane gets
+  const body = el("div", "qdtext qdmd");
+  mdInto(body, text);
+  box.append(head, body);
   parent.appendChild(box);
   return box;
 }
@@ -9642,7 +9650,7 @@ function renderQueueDetail() {
   const refinement = hasRefinement ? qDetailSection(read, "Refinement") : null;
   // Once a compiled brief exists, the original request is supporting evidence rather than the
   // primary working text. Keep it one click away; raw tasks stay open because it is all they have.
-  const request = qDetailSection(read, "Request", true, brief === undefined);
+  const request = qDetailSection(read, "Request", true, brief === undefined || qShowOriginal === t.id);
   // EVIDENCE: the lane this row is running in, or why none attaches (a `sent` row with nothing
   // attached is the state the owner must be able to read). Verify facts are NOT on the owner
   // poll, and the section says that rather than leaving the absence to be read as a green run.
@@ -9941,6 +9949,38 @@ function renderQueueDetail() {
   // brief exists, because then these are two different texts and confusing them is the whole
   // defect this panel was built to end.
   const body = qTaskText(t.id);
+  // HOW THE ROW ARRIVED (owner, 2026-09-19: "vllt auch option anzeigen wie der task ankam
+  // (refinement ist ja nicht das original oder?)"). No — the brief is a rewrite. This strip names
+  // each text the row has had, in order, and every step opens the section that holds it.
+  const openAt = (bodyEl: HTMLElement | null) => {
+    const sec = bodyEl?.parentElement;
+    if (!sec) return;
+    if (sec instanceof HTMLDetailsElement) sec.open = true;
+    sec.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
+  const arrived = el("div", "qorigin");
+  const step = (label: string, sub: string, target: HTMLElement | null, title: string) => {
+    const b = el("button", "qorigin-st", "") as HTMLButtonElement;
+    b.type = "button";
+    b.title = title;
+    b.append(el("span", "qorigin-l", label), el("span", "qorigin-s", sub));
+    b.onclick = () => openAt(target);
+    if (arrived.querySelector(".qorigin-st")) arrived.appendChild(el("span", "qorigin-arrow", "→"));
+    arrived.appendChild(b);
+  };
+  arrived.appendChild(el("span", "qorigin-h", "arrived as"));
+  step("original", `${taskSourceLabel(t)} · ${fmtTs(t.created)}`, request,
+    "the text exactly as it was filed — under Request");
+  // the original stays open across the poll's repaints once asked for — otherwise the next
+  // repaint folds it again under the reader (measured in the preview, 2026-09-19)
+  arrived.querySelector(".qorigin-st")?.addEventListener("click", () => { qShowOriginal = t.id; });
+  if (brief) step("brief", `${brief.edited ? (briefByMain(brief) ? "by its MAIN" : "yours") : "compiled"} · ${fmtTs(brief.at)}`,
+    refinement, "a rewrite of the original — this is what a lane receives; under Refinement");
+  if (ref) step("refine", `${ref.proposal.unchanged ? "unchanged" : "proposed"} · ${fmtTs(ref.at)}`,
+    refinement, "an agent's proposed rewrite or split — nothing changes until you apply it");
+  if (crit) step("criterion", crit.confirmedAt !== null ? `confirmed · ${fmtTs(crit.confirmedAt)}` : "proposed",
+    refinement, "what done means for this row — under Refinement");
+  read.prepend(arrived);
   if (brief) request.appendChild(el("div", "rvhead", "your draft, as filed"));
   if (body) qTextBlock(request, brief ? "your draft" : "request", body);
   else request.appendChild(el("div", "shellhint", "loading the prompt text…"));

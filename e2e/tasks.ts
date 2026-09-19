@@ -678,6 +678,21 @@ export async function run(ctx: Ctx): Promise<void> {
         && detailSource.includes('field("Repo", qRepoIn,') && detailSource.includes('field("Program", qProgSel,')
         && /e\.key === "Enter" && \(e\.metaKey \|\| e\.ctrlKey\)\) \{ e\.preventDefault\(\); add\.click\(\); \}/.test(detailSource),
       "new-task wiring");
+    // HOW THE ROW ARRIVED (owner, 2026-09-19: "option anzeigen wie der task ankam (refinement ist
+    // ja nicht das original oder?)"). The strip names the original first and every later text after
+    // it; "original" opens Request and KEEPS it open across repaints. Mutations caught: the strip
+    // not reaching the column, original not first, the open state not remembered.
+    check("task detail: an 'arrived as' strip leads the reading column — original first, then brief/refine/criterion, each opening its section",
+      /read\.prepend\(arrived\)/.test(detailSource)
+        && detailSource.indexOf('step("original",') > 0
+        && ['step("brief",', 'step("refine",', 'step("criterion",'].every((n) => detailSource.indexOf(n) > detailSource.indexOf('step("original",'))
+        && /qDetailSection\(read, "Request", true, brief === undefined \|\| qShowOriginal === t\.id\)/.test(detailSource)
+        && /addEventListener\("click", \(\) => \{ qShowOriginal = t\.id; \}\)/.test(detailSource),
+      "arrived-as wiring");
+    check("task detail: a text block renders its text as markdown and still copies the raw bytes",
+      /const body = el\("div", "qdtext qdmd"\);\s*mdInto\(body, text\);/.test(taskClientSource)
+        && /copy\.onclick = \(\) => \{\s*copyText\(text\);/.test(taskClientSource),
+      "text block rendering");
     // the rail below the head: the acts, the options, where the row lives, and the ⋯ fold last.
     // Mutations caught: the acts pushed under the facts, the facts dropped (built, never appended),
     // the ⋯ fold moved above the acts.

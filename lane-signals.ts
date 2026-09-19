@@ -522,7 +522,13 @@ export function laneSuiteWatchMessage(jobId: string, event: LaneSuiteWatchEventV
   // the SAMPLE is labelled as one. `failCount` is the number that matters and the names are three
   // of it at most — saying "2 failures: a, b" over a run that had twelve would be the worst kind
   // of wrong here, because it reads like a complete answer.
-  const failed = p.failCount === 0
+  const failed = p.result === "unknown"
+    // A LOST RUN IS NOT A CLEAN ONE. "no failures" about a job whose runner never sent a verdict
+    // would read green in exactly the pane that has to decide what to do instead (run it here,
+    // re-offer, let it go — nothing re-runs by itself), which is the one misreading this rail
+    // exists to prevent. The offer no longer binds: a terminal state is not open or claimed.
+    ? "NO VERDICT — nothing was measured; the offer no longer binds this tree"
+    : p.failCount === 0
     // TWO DIFFERENT ZEROES, and collapsing them would erase the measurement that bought `fails[]`
     // in the first place (2026-09-05, job c893717a: red 1 of 3717 and WHICH one was not answerable
     // from this box). A green names none because there were none; a RED that names none means the

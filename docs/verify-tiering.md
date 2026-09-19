@@ -2860,7 +2860,12 @@ die mit gesetztem `FLEET_POSTLAND_AUDIT_CMD` bootet und deshalb überhaupt eine 
 etwas beansprucht werden könnte. Die Fixtur, ohne die keine dieser Prüfungen existieren kann, ist ein
 ZWEITES Repo: eine wartende Zeile bei leerlaufendem Drain gibt es nicht — der Drain startet auf dem
 Land, das sie einreiht —, ein beanspruchbarer Job braucht also einen Drain, der anderswo beschäftigt
-ist.
+ist. **Dasselbe Tier gilt für den Verlust-Fall (K12, 2026-09-19):** ein Runner, der ohne Ergebnis
+stirbt oder seine Claim-Frist überläuft, bekommt sein `unknown`-Verdikt und die Pane-Zeile an die
+anbietende Lane nur hier bewiesen — die Pre-Land-Kette (install/pins/tsc/build) fährt das Portal
+nicht, und `./e2e-isolated.sh` ebenso wenig (helper-portal gehört allein zur Postland-Suite). Was
+eine Lane-Vorschau zusätzlich beweist, ist der LIVE-Weg: dass ein echtes Verdikt auf dem echten
+Host in der Pane ankommt — nicht aber der Verlust-Fall, den im Betrieb hoffentlich niemand liefert.
 
 
 ### 11.2m Eine fünfzehnte Familie: das PARKED-Quartett in `e2e/repo-worker-audit.ts` (2026-09-04 — Wurzel AM GEHALTENEN INSTANZ-LEDGER ABGELESEN, NICHT repariert)

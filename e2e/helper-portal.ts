@@ -23,6 +23,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { BASE, ROOT, check, get, post } from "./harness";
 import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
+import { laneSuiteWatchMessage } from "../lane-signals";
 
 interface HelperJob {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
@@ -2096,6 +2097,182 @@ export async function run(h: {
     // leave the register as the harness after this one expects it: the shard box is no candidate
     await post(`/api/helper/devices/${SHARDBOX}/mode`, { mode: "off" });
     check("(K11) teardown: the machine is idle with an empty queue",
+      await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0, JSON.stringify((await jobs()).jobs));
+  }
+
+  // ===== (K12) A RUNNER THAT DIES WITHOUT A RESULT STILL DELIVERS A VERDICT =======================
+  // Measured 2026-09-18 (job f5f181f6433f, second-host journal): a lane succession reaped the RUNNING
+  // preview three minutes into its claim — the daemon read its own job list and withdrew
+  // ("ended by withdrawal after 168s — nothing reported", by design), the successor read
+  // `offer: null` while the job was still live, and the lane waited 1 h 38 min for a verdict that
+  // no longer had a runner. Two halves, one causal chain, both driven here with a STAND-IN RUNNER
+  // that claims and then never reports:
+  //   (a) the baton: an open/claimed offer keeps its identity (slot + openedAt) across
+  //       POST /api/self/succeed — the successor sees it on GET and receives the verdict;
+  //   (b) the deadline: a claim that expires WITHOUT a report settles the job `lapsed` WITH a
+  //       verdict — `unknown`, `remote.reason: "timeout"`, the budget it died at — and a pane
+  //       event to the offering lane. Never green, never silent, and nothing re-runs by itself:
+  //       the lane decides what happens to its tree.
+  // MUTATIONS: drop the transfer loop in succeedLane ⇒ (a)'s GET reads `offer: null` and the
+  // sweep reaps the job before the report ⇒ red. Drop the sweep's laneSuiteLapseResult + queue
+  // push ⇒ (b) has `result: null` and no event ⇒ red. Let laneSuiteWatchMessage fall through to
+  // `no failures` on `result: "unknown"` ⇒ (b2) ⇒ red.
+  {
+    interface K12EventRow {
+      id?: string; kind?: string; delivery?: string; status?: string;
+      receiverSlot?: number | null; receiverOpenedAt?: number | null;
+      subjectJobId?: string;
+      payload?: { result?: string; exitCode?: number | null; failCount?: number; reason?: string };
+    }
+    interface K12Offer {
+      id?: string; state?: string; branch?: string;
+      claim?: { name: string; claimedAt: number; expiresAt: number } | null;
+      result?: { result?: string; exitCode?: number | null;
+        remote?: { name?: string; reason?: string; timeoutMs?: number } } | null;
+    }
+    const RELAY = "e2ek12relaybox01";
+    const RELAY_NAME = "k12 relay box (e2e)";
+    const beatRelay = (): Promise<Response> => hpost("/api/helper/device",
+      { deviceId: RELAY, name: RELAY_NAME, mode: "active", load: 0.1 });
+    const k12Events = async (): Promise<K12EventRow[]> =>
+      ((await (await get("/api/events")).json()) as { events?: K12EventRow[] }).events ?? [];
+    const eventsFor = async (job: string): Promise<K12EventRow[]> =>
+      (await k12Events()).filter((e) => e.kind === "lane-suite" && e.subjectJobId === job);
+    const waitForEvent = async (job: string): Promise<K12EventRow[]> => {
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const rows = await eventsFor(job);
+        if (rows.length || Date.now() >= deadline) return rows;
+        await Bun.sleep(200);
+      }
+    };
+    // the lane's own reads and writes, by credential — the same shapes every suite-offer section above uses
+    const offerPost = async (tok: string): Promise<K12Offer | null | undefined> =>
+      ((await (await fetch(`${BASE}/api/self/suite-offer`, { method: "POST",
+        headers: { "x-fleet-self-token": tok, "content-type": "application/json" }, body: "{}" })).json()) as
+        { offer?: K12Offer | null }).offer;
+    const offerGet = async (tok: string): Promise<K12Offer | null | undefined> =>
+      ((await (await fetch(`${BASE}/api/self/suite-offer`,
+        { headers: { "x-fleet-self-token": tok } })).json()) as { offer?: K12Offer | null }).offer;
+    // the persisted slot row — credential and openedAt together, so a succession can be proved by
+    // the ROTATION and not by a slot number that never changes. `succeed` answers only after its
+    // saveStateNow, so the row is on disk when this reads it; the poll is for the mid-write case
+    // selfTokenOf above already tolerates.
+    const slotRow = async (slot: number, differsFrom?: string):
+      Promise<{ selfToken: string; openedAt: number } | undefined> => {
+      for (let i = 0; i < 60; i++) {
+        try {
+          const row = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+            { slots?: Record<string, { selfToken?: string; openedAt?: number }> }).slots?.[String(slot)];
+          if (row?.selfToken && row.openedAt && row.selfToken !== differsFrom)
+            return { selfToken: row.selfToken, openedAt: row.openedAt };
+        } catch { /* mid-write */ }
+        await Bun.sleep(50);
+      }
+      return undefined;
+    };
+    const selfPost = async (tok: string, path: string, body: unknown): Promise<Response> =>
+      fetch(`${BASE}${path}`, { method: "POST",
+        headers: { "x-fleet-self-token": tok, "content-type": "application/json" }, body: JSON.stringify(body) });
+
+    // --- (a) THE BATON: a claimed offer crosses a succession ------------------------------
+    await killSrv();
+    check("(K12) setup: the server restarts with a claim budget long enough to cross a succession",
+      await startSrv({ audit: true, extra: { FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000",
+        FLEET_HELPER_SWEEP_MS: "2000" } }));
+    await Bun.sleep(750);
+    await beatRelay();
+    const relay = await openLane(REPO, "relayone");
+    const relayBefore = await slotRow(relay.slot);
+    const relayTok = relayBefore?.selfToken ?? "";
+    const relayJob = (await offerPost(relayTok))?.id ?? "";
+    const relayClaim = await hpost("/api/helper/claim", { jobId: relayJob, deviceId: RELAY });
+    check("(K12) setup: the relay lane's preview is claimed and stays live — what follows is a baton pass, not a lapse",
+      /^[0-9a-f]{12}$/.test(relayJob) && relayClaim.status === 200,
+      `job=${relayJob} claim=${relayClaim.status}`);
+    const relayHandoff = await selfPost(relayTok, "/api/self/fleet-report",
+      { status: "handoff", text: "K12 relay: preview claimed, the runner holds the tree, verdict pending" });
+    const relaySucceed = await selfPost(relayTok, "/api/self/succeed", {});
+    const relaySucceedBody = (await relaySucceed.json()) as { ok?: boolean; delivered?: boolean; error?: string };
+    const relayAfter = await slotRow(relay.slot, relayTok);
+    check("(K12) setup: the lane succeeds — SAME slot, new occupation (the rotation is the fact under test)",
+      relayHandoff.ok && relaySucceed.ok && relaySucceedBody.delivered === true
+        && relayAfter !== undefined && relayAfter.openedAt !== relayBefore?.openedAt,
+      `handoff=${relayHandoff.status} succeed=${relaySucceed.status}`
+      + ` ${JSON.stringify(relaySucceedBody).slice(0, 160)}`
+      + ` openedAt ${relayBefore?.openedAt} -> ${relayAfter?.openedAt}`);
+    const relayView = await offerGet(relayAfter?.selfToken ?? "");
+    check("(K12) (a) THE OFFER RIDES THE BATON: the successor's own GET names the SAME job, still claimed — not `offer: null`",
+      relayView?.id === relayJob && relayView?.state === "claimed",
+      JSON.stringify(relayView));
+    const relayReport = await hpost("/api/helper/result",
+      { jobId: relayJob, exitCode: 0, tail: "PASS  relay\nALL PASS" });
+    const relayRows = await waitForEvent(relayJob);
+    const relayViewAfter = await offerGet(relayAfter?.selfToken ?? "");
+    check("(K12) (a) …AND THE VERDICT REACHES THE SUCCESSOR: the report is accepted, one pane row names the successor occupation, and its own GET carries the green",
+      relayReport.status === 200 && relayRows.length === 1 && relayRows[0]?.delivery === "pane"
+        && relayRows[0]?.receiverSlot === relay.slot && relayRows[0]?.receiverOpenedAt === relayAfter?.openedAt
+        && relayRows[0]?.payload?.result === "green"
+        && relayViewAfter?.state === "reported" && relayViewAfter?.result?.result === "green",
+      `report=${relayReport.status} rows=${JSON.stringify(relayRows)}`
+      + ` view=${JSON.stringify({ state: relayViewAfter?.state, r: relayViewAfter?.result?.result })}`);
+
+    // --- (b) THE DEADLINE: the stand-in runner dies without reporting ---------------------
+    await killSrv();
+    check("(K12) setup: the server restarts with a 4 s claim budget and a 1 s sweep — the named deadline the claim itself carries",
+      await startSrv({ audit: true, extra: { FLEET_HELPER_CLAIM_TIMEOUT_MS: "4000",
+        FLEET_HELPER_SWEEP_MS: "1000" } }));
+    await Bun.sleep(750);
+    await beatRelay();
+    const mute = await openLane(REPO, "relaymute");
+    const muteTok = (await slotRow(mute.slot))?.selfToken ?? "";
+    const muteJob = (await offerPost(muteTok))?.id ?? "";
+    const muteClaimBody = (await (await hpost("/api/helper/claim", { jobId: muteJob, deviceId: RELAY })).json()) as
+      { job?: { expiresAt?: number; claimedAt?: number } };
+    const muteBudget = (muteClaimBody.job?.expiresAt ?? 0) - (muteClaimBody.job?.claimedAt ?? 0);
+    check("(K12) (b) setup: the stand-in runner claims and then DIES — no report will ever come, and the claim named its own deadline",
+      /^[0-9a-f]{12}$/.test(muteJob) && muteBudget === 4000,
+      `job=${muteJob} budget=${muteBudget}ms`);
+    // the runner is dead from here on: nothing will report. Wait out deadline + sweep + mint.
+    const muteWaitDeadline = Date.now() + 20_000;
+    let muteView: K12Offer | null | undefined;
+    for (;;) {
+      muteView = await offerGet(muteTok);
+      if (muteView?.result || Date.now() >= muteWaitDeadline) break;
+      await Bun.sleep(250);
+    }
+    check("(K12) (b) A RUNNER THAT DIES PAST ITS NAMED DEADLINE SETTLES TERMINAL: `lapsed` WITH a verdict — unknown, no exit code, the helper named, the budget named, never green",
+      muteView?.state === "lapsed" && muteView.result?.result === "unknown"
+        && muteView.result.exitCode === null && muteView.result.remote?.reason === "timeout"
+        && muteView.result.remote?.name === RELAY_NAME && (muteView.result.remote?.timeoutMs ?? 0) === 4000
+        && muteView.claim === null,
+      JSON.stringify(muteView));
+    const muteRows = await waitForEvent(muteJob);
+    check("(K12) (b) …AND THE LANE IS TOLD IN ITS PANE: one pane row to the offering lane, result `unknown`, the reason travelling with it — never silent",
+      muteRows.length === 1 && muteRows[0]?.delivery === "pane" && muteRows[0]?.receiverSlot === mute.slot
+        && muteRows[0]?.receiverOpenedAt === (await slotRow(mute.slot))?.openedAt
+        && muteRows[0]?.payload?.result === "unknown"
+        && (muteRows[0]?.payload?.reason ?? "").includes("deadline"),
+      `rows=${JSON.stringify(muteRows)}`);
+    const lateMute = await hpost("/api/helper/result", { jobId: muteJob, exitCode: 0, tail: "ALL PASS" });
+    check("(K12) should-reject: the dead runner's LATE verdict is refused — the settled unknown stays the one truth, no second answer about the tree",
+      lateMute.status === 409, `${lateMute.status} ${JSON.stringify(await lateMute.json())}`);
+    check("(K12) …and NOTHING RE-RUNS BY ITSELF: no owner-inbox row for a lost preview, and the job left the portal list — the lane decides what happens to its tree",
+      !(await eventsFor(muteJob)).some((e) => e.delivery === "inbox")
+        && !(await jobs()).jobs.some((j) => j.id === muteJob),
+      `list=${JSON.stringify((await jobs()).jobs.map((j) => j.id))}`);
+    // (b2) THE HINT CANNOT READ GREEN. Rendered, not source-scanned: this is the sentence a pane
+    // would actually receive about a job whose runner never spoke.
+    const hintLost = laneSuiteWatchMessage(muteJob, { id: "e", kind: "lane-suite",
+      payload: { result: "unknown", branch: mute.branch, exitCode: null, fails: [], failCount: 0,
+        tail: "", reason: muteView?.result?.remote?.name } });
+    check("(K12) (b2) the pane hint says NO VERDICT, never `no failures`, about a lost run",
+      hintLost.includes("NO VERDICT") && !hintLost.includes("no failures"),
+      JSON.stringify(hintLost.slice(0, 220)));
+    await post(`/api/slots/${mute.slot}/kill`, {});
+    await post(`/api/slots/${relay.slot}/kill`, {});
+    await post(`/api/helper/devices/${RELAY}/mode`, { mode: "off" });
+    check("(K12) teardown: the machine is idle with an empty queue",
       await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0, JSON.stringify((await jobs()).jobs));
   }
 }

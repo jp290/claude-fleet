@@ -1089,6 +1089,37 @@
     color: var(--chat-faint); }
   #shell-queue .qdrail .qdsection-title:hover { color: var(--chat-ink); }
   #shell-queue .qrawack input { width: 12px; height: 12px; }
+  /* the rail's acts as a LIST: each one its label and the line that says what it does, so a
+     button never has to be hovered to be understood */
+  .qdrail > .pkdacts { flex-direction: column; align-items: stretch; gap: 0; }
+  .shrbtn.qact { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }
+  .qactdesc { font-size: 11px; line-height: 15px; color: var(--faint); font-weight: 400; white-space: normal; }
+  #shell-queue .shrbtn.qact { padding: 8px; margin: 0 -8px; background: transparent; border-color: transparent;
+    color: var(--chat-ink); }
+  #shell-queue .shrbtn.qact:hover { background: var(--c-hover); border-color: var(--chat-edge); }
+  #shell-queue .qactdesc { color: var(--chat-mute); }
+  #shell-queue .shrbtn.qact:disabled { opacity: .5; }
+  /* THE NEW-TASK FORM: one column at reading width, labels over their fields, the button last */
+  .qnewform { display: flex; flex-direction: column; gap: 12px; max-width: 720px; }
+  .qnewsub { font-size: 12px; line-height: 18px; color: var(--dim); margin-top: -8px; }
+  .qnewform .qnewtext { flex: none; min-height: 200px; width: 100%; box-sizing: border-box; }
+  .qnewfields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .qnewfield { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .qnewfield .qaddin, .qnewfield .pkdsel { width: 100%; box-sizing: border-box; min-height: 32px; }
+  .qnewlabel { font-size: 11px; font-weight: 500; color: var(--dim); }
+  .qnewhint { font-size: 11px; line-height: 15px; color: var(--faint); }
+  .qnewfoot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+  .qnewkey { font-size: 11px; color: var(--faint); font-family: ui-monospace, Menlo, monospace; }
+  #shell-queue .qnewsub, #shell-queue .qnewlabel { color: var(--chat-mute); }
+  #shell-queue .qnewhint, #shell-queue .qnewkey { color: var(--chat-faint); }
+  #shell-queue .qnewform .qnewtext { font-family: var(--chat-sans); font-size: var(--chat-fs); line-height: 1.6;
+    padding: 12px; }
+  #shell-queue .qaddin:focus, #shell-queue .qdcrit:focus, #shell-queue .pkdsel:focus {
+    outline: none; border-color: var(--c-edge-hi); }
+  #shell-queue .qnewfield .pkdsel { font-family: var(--chat-sans); font-size: var(--chat-ui-fs); padding: 4px 8px;
+    border-radius: var(--r2); background: var(--chat-raised); border: 1px solid var(--chat-edge); color: var(--chat-prose); }
+  #shell-queue .qnewbtn { margin-left: auto; }
+  #shell-queue .qnewbtn + .qbundlebtn { margin-left: 0; }
   /* the larger window goes to the LIST (listWidth in openQueue), which wrapped its chips at
      330px, and not to the scope tree */
   #shell-queue .qtree { width: 184px; }
@@ -1227,10 +1258,12 @@
     .qkind-select { min-height: 44px; font-size: 16px; }
     #shell-queue .shellwin { width: 100vw; height: 100dvh; height: var(--vvh, 100dvh); border-radius: 0; }
     #shell-queue .qdrail > .pkdacts .shrbtn { min-height: 40px; }
+    .qnewfields { grid-template-columns: 1fr; }
     #shell-queue .qview { flex: 1 0 100%; flex-basis: 100%; }
     #shell-queue .qscope { flex: 1 0 100%; flex-wrap: wrap; }
     #shell-queue .qprogsel { flex: 1 1 auto; max-width: none; min-height: 40px; }
     #shell-queue .qbundlebtn { margin-left: 0; min-height: 40px; }
+    #shell-queue .qnewbtn { margin-left: 0; min-height: 40px; }
     #shell-queue .qtree, #shell-queue .qlayoutbtn { display: none; }
     .qview button { flex: 1; min-height: 40px; }
     #shell-queue .pkfilterin { flex: 1 0 100%; max-width: none; min-height: 40px; }

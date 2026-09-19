@@ -24,6 +24,10 @@ export interface ConversationRead {
   // the model the newest request ran on, as the file names it (codex turn_context, pi assistant
   // message) — the composer shows it where the slot record names none
   model: string | null;
+  // the reasoning effort the session runs at, as the file names it (codex turn_context `effort`, pi
+  // its newest thinking_level_change on the path) — null when the file names none, and then the
+  // composer says "default" rather than guess
+  effort: string | null;
   // lines the reader could use: a torn LAST line (mid-append) is left out so the next poll re-reads it
   total: number;
 }
@@ -59,11 +63,14 @@ export function readCodexRollout(lines: string[]): ConversationRead {
   const entries: TEntry[] = [];
   let cache: CacheRef | null = null;
   let model: string | null = null;
+  let effort: string | null = null;
   rows.forEach((row, i) => {
     if (!row) return;
     const ts = str(row.timestamp) || null;
     if (row.type === "turn_context") {
-      model = str((row.payload as { model?: unknown } | undefined)?.model) || model;
+      const tc = (row.payload ?? {}) as { model?: unknown; effort?: unknown };
+      model = str(tc.model) || model;
+      effort = str(tc.effort) || effort;
       return;
     }
     if (row.type === "token_usage_record") {
@@ -95,7 +102,7 @@ export function readCodexRollout(lines: string[]): ConversationRead {
       entries.push({ n, role: "assistant", ts, blocks: [{ t: "tool_result", text: trim(text, 3000) }] });
     }
   });
-  return { entries, branch: "", cache, model, total };
+  return { entries, branch: "", cache, model, effort, total };
 }
 
 // --- pi session ---------------------------------------------------------------------------------
@@ -128,7 +135,10 @@ export function readPiSession(lines: string[]): ConversationRead {
   const entries: TEntry[] = [];
   let cache: CacheRef | null = null;
   let model: string | null = null;
+  // pi writes a thinking_level_change at session start and on every in-session switch
+  let effort: string | null = null;
   rows.forEach((row, i) => {
+    if (row?.type === "thinking_level_change" && onPath.has(str(row.id))) effort = str(row.thinkingLevel) || effort;
     if (!row || row.type !== "message" || !onPath.has(str(row.id))) return;
     const m = (row.message ?? {}) as Record<string, unknown>;
     const ts = str(row.timestamp) || null;
@@ -156,5 +166,5 @@ export function readPiSession(lines: string[]): ConversationRead {
       entries.push({ n, role: "assistant", ts, blocks: [{ t: "tool_result", text: trim(text, 3000) }] });
     }
   });
-  return { entries, branch, cache, model, total };
+  return { entries, branch, cache, model, effort, total };
 }

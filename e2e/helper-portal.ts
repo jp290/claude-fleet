@@ -19,7 +19,7 @@
 // section seeds one instead of reusing the harness's.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { BASE, ROOT, check, get, post } from "./harness";
 import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
@@ -2183,6 +2183,44 @@ export async function run(h: {
     await Bun.sleep(750);
     await beatRelay();
     const relay = await openLane(REPO, "relayone");
+    // THE TICKET NEEDS A RECEIVER. A plain lane's fleet-report stays 409 by design — nothing
+    // dispatched it, so nothing is owed its terminal fact (server.ts#openFleetReport) — and the
+    // succession's ticket gate reads exactly that report. So the relay gets what every real relay
+    // has: a founding row and a Program. The row comes through the OWNER route; the BINDING of an
+    // EXISTING lane to it has no owner route and is planted through the state file, the same way
+    // the lanes-lifecycle baton fixture does it — the subject here is the handover, not dispatch.
+    const relayTaskText = "K12 RELAY FIXTURE: the founding row the relay's handoff report is filed against";
+    const relayTaskId = ((await (await post("/api/tasks", { text: relayTaskText, queue: false })).json()) as
+      { task?: { id?: string } }).task?.id ?? "";
+    await killSrv();
+    const relayProgramId = "k12re1a".padEnd(24, "0");
+    const plant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { taskId?: string | null; programId?: string | null }>;
+        tasks?: { id: string; status: string; slot: number | null; programId?: string | null }[];
+        programs?: Record<string, unknown>[] };
+    const plantedAt = Date.now();
+    plant.programs = [...(plant.programs ?? []), {
+      id: relayProgramId, title: "K12 relay fixture", intent: "Prove a preview rides the baton",
+      successCriterion: "The successor sees the running offer and receives its verdict", nonGoals: [],
+      decisions: [], evidence: [], openQuestions: [], status: "active",
+      createdAt: plantedAt - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: plantedAt - 900, activatedAt: plantedAt - 800,
+    }];
+    if (plant.slots?.[String(relay.slot)]) {
+      plant.slots[String(relay.slot)].taskId = relayTaskId;
+      plant.slots[String(relay.slot)].programId = relayProgramId;
+    }
+    const plantedRow = plant.tasks?.find((t) => t.id === relayTaskId);
+    if (plantedRow) { plantedRow.status = "sent"; plantedRow.slot = relay.slot; plantedRow.programId = relayProgramId; }
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(plant, null, 2), { mode: 0o600 });
+    check("(K12) setup: the relay holds its planted founding row and Program after the restart",
+      relayTaskId !== "" && await startSrv({ audit: true, extra: { FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000",
+        FLEET_HELPER_SWEEP_MS: "2000" } })
+        && (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { slots?: Record<string, { taskId?: string | null }> }).slots?.[String(relay.slot)]?.taskId === relayTaskId,
+      `task=${relayTaskId}`);
+    await Bun.sleep(750);
+    await beatRelay(); // the register came back from disk; the presence window did not
     const relayBefore = await slotRow(relay.slot);
     const relayTok = relayBefore?.selfToken ?? "";
     const relayJob = (await offerPost(relayTok))?.id ?? "";

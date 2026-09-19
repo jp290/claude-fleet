@@ -516,8 +516,8 @@
   /* a staged value shows on the switch itself, underlined until it is applied or discarded */
   .optswrap.staged .optval { color: var(--chat-ink); text-decoration: underline dotted; text-underline-offset: 3px; }
   .optmark { flex: none; display: grid; margin-right: 4px; color: var(--chat-mute); }
-  /* time since the session's last message (src/client.ts#tickCacheAge): quiet mute under 5 min,
-     faint + dashed underline once the prompt cache is probably cold — the tooltip says why */
+  /* time since the session's last message (src/client.ts#tickCacheAge): quiet mute under 4:40,
+     faint + dashed underline from 4:40 (CACHE_COLD_AT_MS), 20 s before the 5 min TTL — the tooltip says why */
   .optage { flex: none; margin-right: 4px; padding: 0 4px; font: 400 12px var(--chat-sans);
     font-variant-numeric: tabular-nums; color: var(--chat-mute); cursor: default;
     transition: color var(--t); }
@@ -1817,10 +1817,6 @@
         <button id="live" title="live typing — every key goes straight to the terminal"><span class="tricon"></span><span class="trlabel">Live</span></button>
         <button id="histbtn" title="prompt history (↑ in the empty box recalls too)"><span class="tricon"></span><span class="trlabel">History</span></button>
         <button id="autobtn" title="scheduled prompts for this session"><span class="tricon"></span><span class="trlabel">Schedule</span></button>
-        <!-- ✨ Rework left the tray (owner, eleventh cut). The element and its handler stay, HIDDEN:
-             e2e/outcomes.ts (9e) pins the handler's disposition rail — retiring the flow is a
-             decision of its own, not a side effect of removing a button. -->
-        <button id="enhbtn" hidden title="✨ rework this prompt — a background agent weaves in your directives + /sharpen3 (usually ~20s, can take up to 3 min — never auto-sends)"><span class="tricon"></span><span class="trlabel">Rework</span></button>
       </div>
     </div>
     <div id="droplay">Drop to hand the file to this session</div>

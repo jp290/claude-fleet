@@ -1126,13 +1126,12 @@ export async function run(): Promise<void> {
       /const cur = dispoOf\("land", ref\)/.test(cliSrc)
       && /cur \? `your label: \$\{DISPO_WORD_UI\[cur\]\}` : "unlabeled"/.test(cliSrc),
       "the land label strip in renderOutcomes (src/client.ts)");
-    // Second: the ✨ flow's three deterministic cases. `accepted` iff what was SENT is byte-equal to
-    // what the enhancer returned, `edited` iff it was sent changed, `ignored` iff the box was
-    // cleared by hand — and nothing at all in any other case (reload, re-run, auto-schedule).
-    check("client: the ✨ flow writes accepted/edited from the SEND and ignored from a hand-cleared box",
-      /text === p\.text\.trim\(\) \? "accepted" : "edited"/.test(cliSrc)
-      && /ta\.value\.trim\(\) === ""[\s\S]{0,200}?labelDisposition\("enhance", p\.draftId, "ignored"\)/.test(cliSrc),
-      "doSend + the ta input listener (src/client.ts)");
+    // Second: ✨ Rework is retired (owner, thirteenth cut) — the client carries no entry point and
+    // writes no `enhance` label any more. The server route and the `enhance` worker stay (the brief
+    // compiler uses the same prompt module); this pins that the CLIENT half did not half-survive.
+    check("client: ✨ Rework is retired — no #enhbtn, no /api/enhance call, no enhance label written",
+      !/enhbtn|pendingEnhance|"\/api\/enhance"|labelDisposition\("enhance"/.test(cliSrc),
+      "src/client.ts still carries a piece of the ✨ flow");
     // Third, the same method over the model chip: since 2026-09-17 a present model no longer means
     // the lane pinned one, so the pane must SAY which it was. The regression this catches is the
     // silent one — dropping the origin and rendering a resolved default as a bare id, i.e. the
@@ -1142,10 +1141,6 @@ export async function run(): Promise<void> {
       && /o\.modelOrigin === "ambient"/.test(cliSrc) && /model chosen by the harness/.test(cliSrc)
       && /chip\("model not pinned", "dim"\)/.test(cliSrc),
       "the model chip in renderOutcomes (src/client.ts)");
-    check("client: a ✨ result dropped as stale arms no disposition watch (nothing was shown to rule on)",
-      /pendingEnhance = j\.draftId \? \{ draftId: j\.draftId, text: j\.prompt \} : null/.test(cliSrc)
-      && cliSrc.indexOf("pendingEnhance = j.draftId") > cliSrc.indexOf("if (ta.value.trim() === text &&"),
-      "the enhance handler (src/client.ts)");
 
     // (9f) CRITERIA PROGRESS (docs/graduation-criteria.md §1 + §2). Unlike (9d)/(9e) this is not a
     // regex over the source: the counting rules are the whole point, so the REAL `kProgress` is cut

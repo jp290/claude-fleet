@@ -42,6 +42,55 @@ function node(tag: string, cls: string, text?: string): HTMLElement {
   return e;
 }
 
+// --- entities --------------------------------------------------------------------------
+// The owner view makes task ids and slot numbers hoverable. The renderer only MARKS them — a span
+// with data-ent/data-id and the matched source as its textContent — and only for ids the caller
+// confirms exist; what a hover shows is the caller's business. Unset (the guest reader, §7b), the
+// text path below is the plain createTextNode it always was. Module state rather than a parameter
+// threaded through every recursion: mdInto is synchronous, so the hook cannot leak across calls.
+export type MdEntityKind = "task" | "slot";
+export interface MdOpts { entity?: (kind: MdEntityKind, id: string) => boolean }
+let entityOk: MdOpts["entity"] | null = null;
+
+const ENT = /\b([0-9a-f]{8})\b|\b([Ss]lots?\s*#?)(\d{1,3}(?:\s*[/,+&]\s*#?\d{1,3})*)\b/g;
+
+function entity(kind: MdEntityKind, id: string, text: string): HTMLElement {
+  const e = node("span", `ent ent-${kind}`, text);
+  e.setAttribute("data-ent", kind);
+  e.setAttribute("data-id", id);
+  return e;
+}
+
+function text(target: HTMLElement, s: string): void {
+  const ok = entityOk;
+  if (!ok) { target.appendChild(document.createTextNode(s)); return; }
+  let at = 0;
+  const put = (upto: number): void => {
+    if (upto > at) target.appendChild(document.createTextNode(s.slice(at, upto)));
+  };
+  for (const m of s.matchAll(ENT)) {
+    const i = m.index ?? 0;
+    if (m[1] !== undefined) {
+      if (!ok("task", m[1])) continue;
+      put(i);
+      target.appendChild(entity("task", m[1], m[1]));
+      at = i + m[0].length;
+      continue;
+    }
+    // "Slots 6/7/12": the word stays text, each number that names a known slot becomes its own span
+    put(i);
+    target.appendChild(document.createTextNode(m[2]));
+    let j = i + m[2].length;
+    for (const part of m[3].split(/(\d+)/)) {
+      if (/^\d+$/.test(part) && ok("slot", part)) target.appendChild(entity("slot", part, part));
+      else if (part) target.appendChild(document.createTextNode(part));
+      j += part.length;
+    }
+    at = j;
+  }
+  put(s.length);
+}
+
 // --- inline spans ------------------------------------------------------------------------
 // One left-to-right scan, alternatives in precedence order: a code span wins over everything
 // inside it, `**` is tried before `*`. Emphasis recurses, so `**bold `code`**` nests correctly;
@@ -55,15 +104,24 @@ const INLINE = new RegExp([
   "(https?://[^\\s<>()\\[\\]]+)",        // 8    bare url
 ].join("|"), "g");
 
-function inline(target: HTMLElement, text: string): void {
+function inline(target: HTMLElement, src: string): void {
   let at = 0;
-  for (const m of text.matchAll(INLINE)) {
+  for (const m of src.matchAll(INLINE)) {
     const i = m.index ?? 0;
     if (i < at) continue; // an earlier alternative already consumed this span
-    if (i > at) target.appendChild(document.createTextNode(text.slice(at, i)));
+    if (i > at) text(target, src.slice(at, i));
     at = i + m[0].length;
     if (m[2] !== undefined) {
-      target.appendChild(node("code", "mdcode", m[2].replace(/^ (.*) $/, "$1")));
+      const body = m[2].replace(/^ (.*) $/, "$1");
+      const code = node("code", "mdcode", body);
+      // a code span that IS a known id (`0617cf27`) is the most common way an agent writes one
+      const id = /^[0-9a-f]{8}$/.test(body) && entityOk?.("task", body) ? body : null;
+      if (id) {
+        code.className = "mdcode ent ent-task";
+        code.setAttribute("data-ent", "task");
+        code.setAttribute("data-id", id);
+      }
+      target.appendChild(code);
     } else if (m[3] !== undefined) {
       const b = node("strong", "");
       inline(b, m[3]);
@@ -105,7 +163,7 @@ function inline(target: HTMLElement, text: string): void {
       }
     }
   }
-  if (at < text.length) target.appendChild(document.createTextNode(text.slice(at)));
+  if (at < src.length) text(target, src.slice(at));
 }
 
 // --- block grammar -----------------------------------------------------------------------
@@ -138,6 +196,7 @@ function blocks(target: HTMLElement, lines: string[]): void {
       while (i < lines.length && !closer.test(lines[i] ?? "")) { body.push(lines[i] ?? ""); i++; }
       i++; // the closing fence, or the end of input for an unterminated block
       const wrap = node("div", "code");
+      if (fence[2]) wrap.setAttribute("data-lang", fence[2]);
       if (fence[2]) wrap.appendChild(node("div", "codelang", fence[2]));
       wrap.appendChild(node("pre", "", body.join("\n")));
       target.appendChild(wrap);
@@ -277,6 +336,11 @@ function table(target: HTMLElement, lines: string[], from: number): number {
   return i;
 }
 
-export function mdInto(target: HTMLElement, text: string): void {
-  blocks(target, text.replace(/\r\n?/g, "\n").split("\n"));
+export function mdInto(target: HTMLElement, text: string, opts: MdOpts = {}): void {
+  entityOk = opts.entity ?? null;
+  try {
+    blocks(target, text.replace(/\r\n?/g, "\n").split("\n"));
+  } finally {
+    entityOk = null;
+  }
 }

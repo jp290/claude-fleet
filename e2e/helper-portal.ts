@@ -2228,15 +2228,24 @@ export async function run(h: {
     check("(K12) setup: the relay lane's preview is claimed and stays live — what follows is a baton pass, not a lapse",
       /^[0-9a-f]{12}$/.test(relayJob) && relayClaim.status === 200,
       `job=${relayJob} claim=${relayClaim.status}`);
-    const relayHandoff = await selfPost(relayTok, "/api/self/fleet-report",
+    const relayHandoffRes = await selfPost(relayTok, "/api/self/fleet-report",
       { status: "handoff", text: "K12 relay: preview claimed, the runner holds the tree, verdict pending" });
+    const relayHandoffBody = (await relayHandoffRes.json()) as { error?: string; report?: { id?: string } };
+    // the in-memory reading beside the refusal — the persisted state IS the memory, written by
+    // every saveStateNow on this path: if the boot reconcile dropped the planted binding, this row
+    // says so. A 409 without its reason and without the state it refused from measures nothing.
+    const relayPersisted = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { taskId?: string | null; programId?: string | null;
+        openedAt?: number }> }).slots?.[String(relay.slot)];
     const relaySucceed = await selfPost(relayTok, "/api/self/succeed", {});
     const relaySucceedBody = (await relaySucceed.json()) as { ok?: boolean; delivered?: boolean; error?: string };
     const relayAfter = await slotRow(relay.slot, relayTok);
     check("(K12) setup: the lane succeeds — SAME slot, new occupation (the rotation is the fact under test)",
-      relayHandoff.ok && relaySucceed.ok && relaySucceedBody.delivered === true
+      relayHandoffRes.ok && relaySucceed.ok && relaySucceedBody.delivered === true
         && relayAfter !== undefined && relayAfter.openedAt !== relayBefore?.openedAt,
-      `handoff=${relayHandoff.status} succeed=${relaySucceed.status}`
+      `handoff=${relayHandoffRes.status} ${JSON.stringify(relayHandoffBody).slice(0, 220)}`
+      + ` persisted=${JSON.stringify(relayPersisted)}`
+      + ` succeed=${relaySucceed.status}`
       + ` ${JSON.stringify(relaySucceedBody).slice(0, 160)}`
       + ` openedAt ${relayBefore?.openedAt} -> ${relayAfter?.openedAt}`);
     const relayView = await offerGet(relayAfter?.selfToken ?? "");

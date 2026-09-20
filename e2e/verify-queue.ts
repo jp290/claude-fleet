@@ -43,7 +43,8 @@ interface GateLock {
 }
 interface GateReport { slot: number | null; label: string | null; phase: string; suite: string;
   exitCode: number | null; at: number; origin?: string; branch?: string | null }
-interface Gate { lock: GateLock | null; reports: GateReport[] }
+interface GateQueueTicket { n: number; pid: number; alive: boolean; dead?: string; sinceMs: number | null; position: number }
+interface Gate { lock: GateLock | null; reports: GateReport[]; queue?: GateQueueTicket[] }
 
 const gateOf = async (): Promise<Gate | null | undefined> =>
   ((await (await get("/api/sessions")).json()) as { gate?: Gate | null }).gate;
@@ -289,6 +290,72 @@ export async function run(): Promise<void> {
 
     rmSync(OWN_LOCK, { recursive: true, force: true });
     check("§2 the lock going away is visible on the next poll",
+      (await gateOf()) == null, JSON.stringify(await gateOf()));
+  }
+
+  // ===== §2q the LINE behind the lock (owner, 2026-09-20: the meter is fleet-wide, so it owes
+  // the queue at the mutex and each waiter's position) =====
+  // e2e-stage.sh does not race, it queues: `t<n>.<pid>` under `$FLEET_SUITE_LOCK.q`, front of the
+  // line first (#_st_queue_scan). The server read the LOCK from the day the gate line existed and
+  // never the line behind it, so "busy 20m" was drawn with an empty waiting station beside it and
+  // a hand-started ./e2e-isolated.sh — which takes a ticket and files no verify-intent — was
+  // invisible on every surface. Same private dir as §2, for the same reason: writing a ticket into
+  // the real queue would put a phantom contender in front of every suite on this box.
+  {
+    const QUEUE = `${OWN_LOCK}.q`;
+    rmSync(QUEUE, { recursive: true, force: true });
+    mkdirSync(OWN_LOCK, { recursive: true });
+    writeFileSync(`${OWN_LOCK}/pid`, `${process.pid}\n`);
+    writeFileSync(`${OWN_LOCK}/birth`, `${thisBirth}\n`);
+    check("§2q a held lock with no queue dir reports no waiters — absent is not an empty line",
+      (await gateOf())?.queue === undefined, JSON.stringify((await gateOf())?.queue));
+
+    // two live tickets, minted out of order on purpose: the ORDER is the wrappers' order (ticket
+    // number, then pid), never readdir's, or the position a waiter reads here would differ from
+    // the one its own wrapper prints.
+    mkdirSync(`${QUEUE}/t7.${process.pid}`, { recursive: true });
+    writeFileSync(`${QUEUE}/t7.${process.pid}/birth`, `${thisBirth}\n`);
+    const second = spawnSync("/bin/sh", ["-c", "exit 0"]).pid ?? 0; // reaped: a ticket whose owner is gone
+    mkdirSync(`${QUEUE}/t3.${process.pid}`, { recursive: true });
+    writeFileSync(`${QUEUE}/t3.${process.pid}/birth`, `${thisBirth}\n`);
+    const line = (await gateOf())?.queue ?? [];
+    check("§2q both live tickets are served, oldest ticket number FIRST — the wrappers' own order",
+      line.length === 2 && line[0]?.n === 3 && line[1]?.n === 7, JSON.stringify(line));
+    check("§2q position is the rank the waiting wrapper prints about itself: 1 is the front of the line",
+      line[0]?.position === 1 && line[1]?.position === 2 && line.every((t) => t.alive === true),
+      JSON.stringify(line.map((t) => [t.n, t.position, t.alive])));
+    check("§2q a ticket says how long it has been in the line, and never a negative or absent age",
+      line.every((t) => t.sinceMs !== null && t.sinceMs >= 0), JSON.stringify(line.map((t) => t.sinceMs)));
+
+    // a ticket whose process is gone: the WRAPPERS reap it on the next contention, so the server
+    // says so and leaves it — and a dead ticket may never take a place in the line, or every
+    // waiter behind it would read one rank too far back.
+    let secondIsDead = false;
+    try { process.kill(second, 0); } catch { secondIsDead = true; }
+    check("§2q fixture: the orphan ticket's pid is genuinely no longer running", secondIsDead && second > 0, String(second));
+    mkdirSync(`${QUEUE}/t1.${second}`, { recursive: true });
+    const withOrphan = (await gateOf())?.queue ?? [];
+    check("§2q an orphaned ticket is SHOWN, flagged dead, and holds NO position — the live ranks close up",
+      withOrphan.length === 3 && withOrphan[0]?.n === 1 && withOrphan[0].alive === false
+        && withOrphan[0].position === 0 && withOrphan.find((t) => t.n === 3)?.position === 1
+        && withOrphan.find((t) => t.n === 7)?.position === 2, JSON.stringify(withOrphan));
+    check("§2q the orphan is named as gone rather than as a recycled pid — two different findings",
+      withOrphan[0]?.dead === "gone", JSON.stringify(withOrphan[0]));
+    // the same read-only rule the lock half holds: the reap lives in the wrappers, and a poll that
+    // removed a ticket would drop a live contender's place in the line
+    check("§2q the reporting path removed no ticket — reaping the queue is the wrappers' act alone",
+      readdirSync(QUEUE).sort().join(",") === [`t1.${second}`, `t3.${process.pid}`, `t7.${process.pid}`].sort().join(","),
+      readdirSync(QUEUE).join(","));
+    // a ticket whose birth fingerprint does not match a LIVE pid is a recycled pid, exactly as in
+    // the lock: the process answering signal 0 is not the one that queued.
+    writeFileSync(`${QUEUE}/t3.${process.pid}/birth`, `${differentValidBirth(thisBirth)}\n`);
+    const recycledTicket = ((await gateOf())?.queue ?? []).find((t) => t.n === 3);
+    check("§2q a live pid whose birth fingerprint differs is a RECYCLED ticket, not a waiter",
+      recycledTicket?.alive === false && recycledTicket.dead === "recycled" && recycledTicket.position === 0,
+      JSON.stringify(recycledTicket));
+    rmSync(QUEUE, { recursive: true, force: true });
+    rmSync(OWN_LOCK, { recursive: true, force: true });
+    check("§2q the line going away is visible on the next poll",
       (await gateOf()) == null, JSON.stringify(await gateOf()));
   }
 

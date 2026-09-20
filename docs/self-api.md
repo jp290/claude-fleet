@@ -449,6 +449,17 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   nicht feuern kann. Die Stups-Zahl ist prozesslokal wie `migrateTried`: nach einem Neustart steht
   dort 0, während das Prompt-Ledger den Stups behält. Gemessen in `e2e/watch.ts` an derselben
   Fixture, an der der Tick selbst gemessen wird.
+- **Die WARTESCHLANGE am Suite-Mutex ist seit 2026-09-20 dieselbe Frage wie der Lock:** `gate.queue`
+  auf `/api/sessions` (`server.ts#suiteQueueView`) liest die Ticket-Verzeichnisse
+  `t<n>.<pid>` unter `$FLEET_SUITE_LOCK.q`, die `e2e-stage.sh#_st_queue_scan` schreibt — in DEREN
+  Reihenfolge (Ticketnummer, bei Gleichstand PID), sodass `position` genau die Zahl ist, die der
+  wartende Wrapper über sich selbst druckt. **Nur lesend:** das Reapen gehört den Wrappern, ein Poll
+  der ein Ticket entfernte, nähme einem lebenden Contender seinen Platz. Ein Ticket, dessen Prozess
+  weg ist (`alive:false`, `dead:"gone"`) oder dessen PID recycelt wurde (`dead:"recycled"`), wird
+  GEZEIGT und bekommt `position: 0` — es steht nicht in der Reihe, verschwindet aber auch nicht
+  still. Fehlt `queue` ganz, ist das „nicht berichtet", nie „niemand wartet". Gemessen:
+  `e2e/verify-queue.ts` §2q, an einem privaten Lock-Verzeichnis — in die echte Schlange zu
+  schreiben wäre ein Phantom-Contender vor jeder Suite dieser Maschine.
 
 
 ## Program-MAIN-Ausführungsschiene (der Gründungsbrief benennt sie)

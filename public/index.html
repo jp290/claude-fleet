@@ -1972,10 +1972,10 @@
   /* --- right sideboard: session brief. Desktop-only; mirrors #side's structure.
      Renders only deterministic data (git facts, prompt outline) — no derived state to drift */
   #board { width: 264px; flex: none; display: none; flex-direction: column;
-    background: #1a1a1a; border-left: 1px solid var(--line-soft); }
+    background: var(--chat-surface); border-left: 1px solid var(--line-soft); }
   body.board #board { display: flex; }
   #boardhead { display: flex; align-items: center; gap: 6px; padding: 10px 10px 8px;
-    font-size: 12px; font-weight: 700; color: #e8e8e8; }
+    font-size: 12px; font-weight: 700; color: var(--chat-ink); }
   #boardtitle { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #boardclose { flex: none; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--line);
     background: var(--raised); color: var(--dim); font-size: 13px; font-family: inherit; cursor: pointer;
@@ -1988,10 +1988,17 @@
      a state). A sans for what a person reads, mono only for what a machine reads — branch, sha,
      path, suite — which is also what you would paste into a terminal. Sections are separated by
      space and a sentence-case heading, never by boxes. The one loud thing is the suite meter. */
-  #board { --b-ink: #e8e8e8; --b-ink2: #9c9c9c; --b-ink3: #626262; --b-rule: #1c1c1c; --b-hover: #101010;
-    --b-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
-    --b-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    width: 300px; background: #000; border-left: 1px solid var(--b-rule);
+  /* THE COLUMN HAS NO PALETTE OF ITS OWN. Every value here is the landed chat/queue token
+     (:root, --chat-*) under the board's own name, so a change to the one source moves this
+     column with it — it ran 47 hand-written hex values beside that source until 2026-09-20. */
+  #board { --b-ink: var(--chat-ink); --b-ink2: var(--chat-prose); --b-ink3: var(--chat-mute);
+    --b-faint: var(--chat-faint); --b-rule: var(--chat-edge-soft); --b-edge: var(--chat-edge);
+    --b-hover: var(--chat-raised); --b-surface: var(--chat-surface);
+    --b-sans: var(--chat-sans);
+    --b-mono: var(--chat-mono);
+    /* the column's own ground: the chat surface, not a second black. The terminal beside it is
+       darker, and that contrast is what separates reading from working. */
+    width: 300px; background: var(--b-surface); border-left: 1px solid var(--b-rule);
     font-family: var(--b-sans); color: var(--b-ink); -webkit-font-smoothing: antialiased; }
   #board button { font-family: inherit; }
   #board :focus-visible { outline: 1.5px solid var(--accent); outline-offset: 1px; border-radius: 5px; }
@@ -2036,19 +2043,19 @@
     background: none; color: var(--b-ink3); font-size: 15px; line-height: 1; cursor: pointer; }
   #board .bheadmenu:hover, #board .bheadmenu.on { color: var(--b-ink); background: var(--b-hover); }
   #board .bheadmeta { display: flex; align-items: center; gap: 7px; margin-top: 5px; font-size: 11.5px; color: var(--b-ink3); }
-  #board .bdot { width: 6px; height: 6px; border-radius: 50%; background: #3a3a3a; }
+  #board .bdot { width: 6px; height: 6px; border-radius: 50%; background: var(--chat-edge); }
   #board .bdot.on { background: var(--add); box-shadow: 0 0 6px rgba(158,206,106,.6); }
   #board .bwait { display: inline-block; margin-top: 10px; padding: 3px 8px; border-radius: 5px; font-size: 11.5px; font-weight: 600; }
   #board .bwait.owner { color: var(--amber); background: rgba(224,175,104,.1); }
   #board .bwait.main { color: var(--accent); background: rgba(122,162,247,.1); }
-  #board .bmission { margin-top: 10px; color: #c9c9c9; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  #board .bmission { margin-top: 10px; color: var(--chat-prose); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
   #board .bchips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 12px; }
-  #board .bchip { max-width: 100%; padding: 2px 6px; border: 1px solid #202020; border-radius: 4px; background: #0a0a0a;
+  #board .bchip { max-width: 100%; padding: 2px 6px; border: 1px solid var(--chat-edge-soft); border-radius: 4px; background: var(--chat-surface);
     font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink2); cursor: pointer;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #board .bchip:hover { color: var(--b-ink); border-color: #333; }
+  #board .bchip:hover { color: var(--b-ink); border-color: var(--chat-edge); }
   #board .bchip.link { color: var(--accent); }
-  #board .brefusal { margin-top: 8px; font-size: 11.5px; color: var(--b-ink3); border-left: 2px solid #2a2a2a; padding-left: 8px; }
+  #board .brefusal { margin-top: 8px; font-size: 11.5px; color: var(--b-ink3); border-left: 2px solid var(--chat-edge); padding-left: 8px; }
 
   /* setup — what the session is MADE of: a key/value list, keys quiet, machine strings in mono */
   #board .bsetup .bsrow { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
@@ -2056,42 +2063,44 @@
   #board .bsetup .bsval { flex: 1; min-width: 0; font-family: var(--b-mono); font-size: 11px; color: var(--b-ink2);
     overflow-wrap: anywhere; }
   #board .bsetup .bspacks .bsval { display: flex; flex-wrap: wrap; gap: 3px; }
-  #board .bsetup .bspack { padding: 1px 5px; border: 1px solid #202020; border-radius: 4px; background: #0a0a0a;
+  #board .bsetup .bspack { padding: 1px 5px; border: 1px solid var(--chat-edge-soft); border-radius: 4px; background: var(--chat-surface);
     font-size: 10.5px; color: var(--b-ink2); }
   #board .bsetup .bspack { cursor: pointer; }
-  #board .bsetup .bspack:hover { color: #e8e8e8; border-color: #3a3a3a; background: #111; }
+  #board .bsetup .bspack:hover { color: var(--chat-ink); border-color: var(--chat-edge); background: var(--chat-raised); }
   #board .bsetup .bsnote { margin-top: 5px; font-size: 11px; color: var(--b-ink3); }
 
   /* the context-packs window: a pack is a pointer list, and its sources open the file itself */
-  #packs .pkrow { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 7px 10px;
+  #shell-packs .cpkrow, #shell-packs .cpksrc { border: 0; background: none; font: inherit; color: inherit;
+    text-align: left; -webkit-appearance: none; appearance: none; }
+  #shell-packs .cpkrow { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 7px 10px;
     border: 0; border-radius: 6px; background: none; color: #e6e6e6; font: inherit; text-align: left; cursor: pointer; }
-  #packs .pkrow:hover { background: #151515; }
-  #packs .pkrow.off { color: #8a8a8a; cursor: default; }
-  #packs .pkrow.off:hover { background: none; }
-  #packs .pkid { flex: 1; min-width: 0; font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+  #shell-packs .cpkrow:hover { background: var(--chat-raised); }
+  #shell-packs .cpkrow.off { color: var(--chat-mute); cursor: default; }
+  #shell-packs .cpkrow.off:hover { background: none; }
+  #shell-packs .cpkid { flex: 1; min-width: 0; font-family: var(--chat-mono); font-size: 12px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #packs .pkn { flex: none; font-size: 10.5px; color: #8a8a8a; }
-  #packs .pkhead { margin: 12px 10px 4px; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: #6e6e6e; }
-  #packs .pkwhen { margin: 6px 0 2px; color: #c9c9c9; line-height: 1.5; }
-  #packs .pksub { margin: 14px 0 8px; font-size: 11.5px; color: #8a8a8a; }
-  #packs .pksrc { display: block; width: 100%; margin-bottom: 6px; padding: 9px 11px; border: 1px solid #1e1e1e;
+  #shell-packs .cpkn { flex: none; font-size: 10.5px; color: var(--chat-mute); }
+  #shell-packs .cpkhead { margin: 12px 10px 4px; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--chat-faint); }
+  #shell-packs .cpkwhen { margin: 6px 0 2px; color: var(--chat-prose); line-height: 1.5; }
+  #shell-packs .cpksub { margin: 14px 0 8px; font-size: 11.5px; color: var(--chat-mute); }
+  #shell-packs .cpksrc { display: block; width: 100%; margin-bottom: 6px; padding: 9px 11px; border: 1px solid var(--chat-edge-soft);
     border-radius: 8px; background: #0a0a0a; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-  #packs .pksrc:hover { border-color: #333; background: #101010; }
-  #packs .pksrcp { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: #e6e6e6; overflow-wrap: anywhere; }
-  #packs .pksrca { margin-top: 3px; font-size: 11.5px; color: #8a8a8a; overflow-wrap: anywhere; }
+  #shell-packs .cpksrc:hover { border-color: var(--chat-edge); background: var(--chat-raised); }
+  #shell-packs .cpkpath { font-family: var(--chat-mono); font-size: 11.5px; color: var(--chat-ink); overflow-wrap: anywhere; }
+  #shell-packs .cpkanchor { margin-top: 3px; font-size: 11.5px; color: var(--chat-mute); overflow-wrap: anywhere; }
 
-  #board .bmenu { margin-top: 10px; padding: 4px; border: 1px solid #222; border-radius: 8px; background: #080808; }
+  #board .bmenu { margin-top: 10px; padding: 4px; border: 1px solid var(--chat-edge); border-radius: 8px; background: var(--chat-surface); }
   #board .bmenuitem { display: block; width: 100%; padding: 6px 8px; border: 0; border-radius: 5px; background: none;
     color: var(--b-ink); font-size: 12px; text-align: left; cursor: pointer; }
-  #board .bmenuitem:hover:not(:disabled) { background: #161616; }
+  #board .bmenuitem:hover:not(:disabled) { background: var(--chat-raised); }
 
   /* buttons: bordered = an action, quiet = a lesser one, primary = THE action (one at a time) */
   #board .bbtnrow, #board .blandacts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
-  #board .bbtn { margin-top: 0; padding: 5px 11px; border: 1px solid #2b2b2b; border-radius: 6px; background: none;
+  #board .bbtn { margin-top: 0; padding: 5px 11px; border: 1px solid var(--chat-edge); border-radius: 6px; background: none;
     color: var(--b-ink); font-size: 12px; font-weight: 500; }
-  #board .bbtn:hover:not(:disabled) { border-color: #454545; background: var(--b-hover); color: #fff; }
-  #board .bbtn.primary { border-color: #ededed; background: #ededed; color: #000; font-weight: 600; }
-  #board .bbtn.primary:hover:not(:disabled) { background: #fff; color: #000; }
+  #board .bbtn:hover:not(:disabled) { border-color: var(--chat-faint); background: var(--b-hover); color: var(--chat-ink); }
+  #board .bbtn.primary { border-color: var(--chat-ink); background: var(--chat-ink); color: var(--chat-surface); font-weight: 600; }
+  #board .bbtn.primary:hover:not(:disabled) { background: var(--chat-ink); color: var(--chat-surface); }
   #board .bbtn.quiet { border-color: transparent; color: var(--b-ink2); padding: 5px 7px; }
   #board .bbtn.quiet:hover:not(:disabled) { color: var(--b-ink); background: var(--b-hover); border-color: transparent; }
   #board .bmergedetail { color: var(--b-ink3); font-size: 11.5px; }
@@ -2100,7 +2109,7 @@
   #board .brow, #board .bfile, #board .buncf, #board .bprompt {
     display: flex; align-items: baseline; gap: 8px; width: calc(100% + 12px); margin: 0 -6px; padding: 3px 6px;
     border: 0; border-radius: 5px; background: none; color: #c9c9c9; font-size: 12px; text-align: left; cursor: pointer; }
-  #board .brow:hover, #board .bfile:hover, #board .buncf:hover, #board .bprompt:hover { background: var(--b-hover); color: #fff; }
+  #board .brow:hover, #board .bfile:hover, #board .buncf:hover, #board .bprompt:hover { background: var(--b-hover); color: var(--chat-ink); }
   #board .brow .bhash { flex: none; font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3); }
   #board .brow:hover .bhash { color: var(--accent); }
   #board .bfile, #board .buncf { font-family: var(--b-mono); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
@@ -2111,7 +2120,7 @@
 
   /* checks — this session's suites */
   #board .bcheck { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
-  #board .bcheckwhat { flex: 1; min-width: 0; font-family: var(--b-mono); font-size: 11px; color: #c9c9c9;
+  #board .bcheckwhat { flex: 1; min-width: 0; font-family: var(--b-mono); font-size: 11px; color: var(--chat-prose);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #board .bcheckstate { font-size: 11.5px; color: var(--b-ink2); }
   #board .bcheckage { font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3); }
@@ -2121,10 +2130,10 @@
 
   /* folds — the tools you reach for rather than read */
   #board .btools { margin-top: 18px; padding-top: 6px; border-top: 1px solid var(--b-rule); }
-  #board .bfold + .bfold { border-top: 1px solid #111; }
+  #board .bfold + .bfold { border-top: 1px solid var(--chat-raised); }
   #board .bfoldhd { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 0; border: 0; background: none;
     color: #c9c9c9; font-size: 12.5px; text-align: left; cursor: pointer; }
-  #board .bfoldhd:hover { color: #fff; }
+  #board .bfoldhd:hover { color: var(--chat-ink); }
   #board .bfoldn { margin-left: auto; font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3); }
   #board .bfoldbody { padding: 0 0 12px 15px; }
   #board .bfoldbody > .bwthead { display: flex; gap: 2px; margin: 0 0 6px -7px; }
@@ -2132,7 +2141,7 @@
     transform: rotate(-45deg); opacity: .55; transition: transform .15s ease; }
   #board .bfold.open > .bfoldhd .bchev, #board .smtog.open .bchev { transform: rotate(45deg); }
   #board .bwt { font-size: 11.5px; }
-  #board .bwt .bwtbr { font-family: var(--b-mono); font-size: 11px; color: #c9c9c9; }
+  #board .bwt .bwtbr { font-family: var(--b-mono); font-size: 11px; color: var(--chat-prose); }
   #board .bwtact { border: 0; background: none; color: var(--b-ink2); font-size: 11px; padding: 1px 4px; }
   #board .bwtact:hover:not(:disabled) { color: var(--b-ink); background: var(--b-hover); }
   #board .bwtact:disabled { color: var(--b-ink3); }
@@ -2156,11 +2165,11 @@
   .smbulb { position: absolute; left: 0; top: 2px; width: 14px; height: 14px; border-radius: 50%; box-sizing: border-box;
     border: 1px solid #2e2e2e; background: radial-gradient(circle at 35% 30%, #262626, #050505 70%);
     transition: background .5s, border-color .5s, box-shadow .5s; }
-  #boardsuites.lock-held .smbulb { border-color: #d0d0d0; background: radial-gradient(circle at 35% 30%, #fff, #a9a9a9 75%);
+  #boardsuites.lock-held .smbulb { border-color: var(--chat-prose); background: radial-gradient(circle at 35% 30%, var(--chat-ink), var(--chat-mute) 75%);
     box-shadow: 0 0 10px rgba(255,255,255,.22); }
   #boardsuites.lock-overdue .smbulb, #boardsuites.lock-unknown .smbulb { border-color: var(--amber);
     background: radial-gradient(circle at 35% 30%, #f6d9a8, #b98537 75%); box-shadow: 0 0 10px rgba(224,175,104,.3); }
-  #boardsuites.lock-parked .smbulb { border-color: #555; }
+  #boardsuites.lock-parked .smbulb { border-color: var(--chat-faint); }
   .smglass { position: absolute; left: 11px; right: 0; top: 5px; height: 8px; box-sizing: border-box; border-radius: 0 5px 5px 0;
     border: 1px solid #262626; border-left: 0; background: linear-gradient(to bottom, rgba(255,255,255,.06), rgba(255,255,255,0) 55%); }
   .smline { position: absolute; left: 13px; right: 4px; top: 8.5px; height: 1px;

@@ -1338,8 +1338,11 @@ async function doRebase(slot: number): Promise<void> {
     void renderBoard();
   }
 }
-// the head's ⋯ session menu — module state for the same reason: the 3s repaint must not shut it
+// the head's ⋯ session menu — module state for the same reason: the 3s repaint must not shut it.
+// Bound to the SLOT it was opened on: it used to stay open across a focus change, offering one
+// session's share/export/rename under another session's name.
 let boardMenuOpen = false;
+let boardMenuSlot: number | null = null;
 // per-slot outline cursor, incremental like pollChat: full fetch once, then only new entries
 const outline = new Map<number, { total: number; source: string | null; prompts: string[]; err: string | null }>();
 // A review finding as the OUTCOME LENS reads it (src/client.ts, the outcome detail): the board's
@@ -2917,22 +2920,22 @@ function openPacks(setup: BriefSetup, want?: string): void {
   const showPack = (p: BriefSetup["packs"][number]) => {
     shell.detail.replaceChildren();
     shell.detail.appendChild(el("div", "rvhead", p.id));
-    if (p.useWhen) shell.detail.appendChild(el("div", "pkwhen", p.useWhen));
+    if (p.useWhen) shell.detail.appendChild(el("div", "cpkwhen", p.useWhen));
     if (p.privateSourceId) {
       shell.detail.appendChild(el("div", "shellhint",
         "a private pack: its source lives outside this repo, so the server cannot read it. What the "
         + "receipt proves is that this opaque source was pointed at — nothing more."));
-      shell.detail.appendChild(el("div", "pksrcp", p.privateSourceId));
+      shell.detail.appendChild(el("div", "cpkpath", p.privateSourceId));
       return;
     }
     const sources = p.sources ?? [];
     if (!sources.length) { shell.detail.appendChild(el("div", "shellhint", "this pack names no source.")); return; }
-    shell.detail.appendChild(el("div", "pksub",
+    shell.detail.appendChild(el("div", "cpksub",
       `${sources.length} source${sources.length === 1 ? "" : "s"} — an anchor is where to start reading, not a span`));
     for (const src of sources) {
-      const row = el("button", "pksrc") as HTMLButtonElement;
-      row.appendChild(el("div", "pksrcp", src.path));
-      row.appendChild(el("div", "pksrca", src.anchor));
+      const row = el("button", "cpksrc") as HTMLButtonElement;
+      row.appendChild(el("div", "cpkpath", src.path));
+      row.appendChild(el("div", "cpkanchor", src.anchor));
       row.title = `${src.path} — open it${setup.head ? ` as it was at ${setup.head}` : ""} and find: ${src.anchor}`;
       row.onclick = () => showFileView(shell, {
         // with a receipt the file is read AT the commit it names; a declared pack names no
@@ -2949,10 +2952,10 @@ function openPacks(setup: BriefSetup, want?: string): void {
   };
   const rows: ShellRow[] = [];
   for (const p of setup.packs) {
-    const r = el("button", "pkrow") as HTMLButtonElement;
-    r.appendChild(el("span", "pkid", p.id));
+    const r = el("button", "cpkrow") as HTMLButtonElement;
+    r.appendChild(el("span", "cpkid", p.id));
     const n = p.privateSourceId ? "private" : `${(p.sources ?? []).length}`;
-    r.appendChild(el("span", "pkn", n));
+    r.appendChild(el("span", "cpkn", n));
     r.onclick = () => { showPack(p); shell.showDetail(true); };
     shell.list.appendChild(r);
     rows.push({ el: r, open: () => showPack(p) });
@@ -2960,11 +2963,11 @@ function openPacks(setup: BriefSetup, want?: string): void {
   // the ones the plan LEFT OUT ride along with their reason: "which packs does this session have"
   // is only half an answer without "and which did it not get, and why"
   if (setup.omitted.length) {
-    shell.list.appendChild(el("div", "pkhead", "omitted"));
+    shell.list.appendChild(el("div", "cpkhead", "omitted"));
     for (const o of setup.omitted) {
-      const r = el("div", "pkrow off");
-      r.appendChild(el("span", "pkid", o.id));
-      r.appendChild(el("span", "pkn", o.why));
+      const r = el("div", "cpkrow off");
+      r.appendChild(el("span", "cpkid", o.id));
+      r.appendChild(el("span", "cpkn", o.why));
       shell.list.appendChild(r);
     }
   }
@@ -2994,8 +2997,12 @@ async function renderBoard() {
       // ...and so is the device register: which machines can take work is a fact about the room,
       // not about the empty pane.
       const dv = devicesSection();
+      // the same scroll rescue the main path has: these three sections can be taller than the
+      // column, and without it the machine zone jumped back to the top on every tick
+      const y0 = boardBody.scrollTop;
       boardBody.replaceChildren(...(dp ? [dp] : []), ...(er ? [er] : []),
-        ...(dv ? [dv] : []), el("div", "bempty bnone", "Focus a pane with a session to see its brief."));
+        ...(dv ? [dv] : []), el("div", "bempty", "Focus a pane with a session to see its brief."));
+      boardBody.scrollTop = y0;
       return;
     }
     const [briefRes, outlineRes, wtRes, mgRes] = await Promise.all([
@@ -3039,7 +3046,7 @@ async function renderBoard() {
     const mbtn = el("button", `bheadmenu${boardMenuOpen ? " on" : ""}`, "⋯") as HTMLButtonElement;
     mbtn.title = "session actions — share, export, rename, bring the session back";
     mbtn.setAttribute("aria-expanded", String(boardMenuOpen));
-    mbtn.onclick = () => { boardMenuOpen = !boardMenuOpen; void renderBoard(); };
+    mbtn.onclick = () => { boardMenuOpen = !boardMenuOpen; boardMenuSlot = slot; void renderBoard(); };
     top.appendChild(mbtn);
     idsec.appendChild(top);
     {
@@ -3119,6 +3126,7 @@ async function renderBoard() {
       chips.appendChild(c);
     }
     if (chips.childElementCount) idsec.appendChild(chips);
+    if (boardMenuOpen && boardMenuSlot !== slot) boardMenuOpen = false; // it was another session's menu
     if (boardMenuOpen) {
       const menu = el("div", "bmenu");
       const item = (label: string, title: string, run: (b: HTMLButtonElement) => void) => {
@@ -3812,10 +3820,24 @@ async function renderBoard() {
     // the focus moved to another pane while we were fetching — this render describes
     // the wrong slot; drop it (the re-run below paints the right one)
     if (panes[focused]?.slot !== slot) { boardAgain = true; return; }
-    // rebuild in place but keep the reading position
+    // rebuild in place but keep the reading position — AND the keyboard focus. Every node here
+    // is new on every tick, so a focused control was dropped to <body> three times a minute; a
+    // stable key (the element's own text plus its class) finds its successor after the swap.
     const y = boardBody.scrollTop;
+    const focusKey = ((): string | null => {
+      const a = document.activeElement;
+      if (!(a instanceof HTMLElement) || !boardBody.contains(a)) return null;
+      return `${a.tagName}\u0000${a.className}\u0000${(a.textContent ?? "").slice(0, 40)}`;
+    })();
     boardBody.replaceChildren(...nodes);
     boardBody.scrollTop = y;
+    if (focusKey) {
+      for (const cand of boardBody.querySelectorAll<HTMLElement>("button, [tabindex]")) {
+        if (`${cand.tagName}\u0000${cand.className}\u0000${(cand.textContent ?? "").slice(0, 40)}` !== focusKey) continue;
+        cand.focus();
+        break;
+      }
+    }
     // the explorer card's own scroll offset and its search box's focus/caret — restorable only
     // now that the nodes this pass built are actually in the document (see fxRestoreAfterPaint)
     fxRestoreAfterPaint();
@@ -4677,7 +4699,7 @@ function dirRow(o: DirRowOpts): HTMLElement {
   row.appendChild(pkIcon(o.tree ? (open ? "folderOpen" : "folder") : o.icon));
   const name = el("span", "pkname");
   name.appendChild(el("span", "pkleaf", o.label));
-  if (o.sub) name.appendChild(el("span", "pksub", o.sub));
+  if (o.sub) name.appendChild(el("span", "cpksub", o.sub));
   row.appendChild(name);
   if (o.repo) {
     const g = el("span", "pkgit", "⎇");

@@ -1067,7 +1067,7 @@ export async function run(): Promise<void> {
   check("client: a pack chip opens that pack",
     /chip\.onclick = \(\) => openPacks\(setup, p\.id\)/.test(setupSrc), "the pack chips in renderBoard");
   check("client: the pack window shows POINTERS and opens the source file at the receipt's commit",
-    /el\("div", "pksrcp", src\.path\)/.test(packsSrc) && /el\("div", "pksrca", src\.anchor\)/.test(packsSrc)
+    /el\("div", "cpkpath", src\.path\)/.test(packsSrc) && /el\("div", "cpkanchor", src\.anchor\)/.test(packsSrc)
     && /showFileView\(shell, \{/.test(packsSrc)
     && /setup\.repo && setup\.head \? \{ path: src\.path, repo: setup\.repo, rev: setup\.head \}/.test(packsSrc)
     && /an anchor is where to start reading, not a span/.test(packsSrc), "openPacks in src/client.ts");
@@ -1075,12 +1075,42 @@ export async function run(): Promise<void> {
     /if \(p\.privateSourceId\) \{/.test(packsSrc)
     && /the server cannot read it/.test(packsSrc), "openPacks in src/client.ts");
   check("client: the omitted packs are listed with their reason, not silently dropped",
-    /setup\.omitted\.length/.test(packsSrc) && /el\("span", "pkn", o\.why\)/.test(packsSrc), "openPacks in src/client.ts");
+    /setup\.omitted\.length/.test(packsSrc) && /el\("span", "cpkn", o\.why\)/.test(packsSrc), "openPacks in src/client.ts");
+  // THE WINDOW IS ACTUALLY STYLED. Its rules hung on `#packs` while openShell gives the overlay
+  // `id="shell-packs"` (src/shell.ts), so every rule missed and the buttons rendered as UA chrome
+  // inside a black window; the class names also collided with the file picker's global .pk*
+  // family, which then styled them wrongly. Both are asserted here, because neither is visible
+  // in any DOM-less check other than this one.
+  check("client: the packs window's CSS targets the shell id it actually gets, with its own class family",
+    indexSrc.includes("#shell-packs .cpkrow") && !/#packs \./.test(indexSrc)
+    && !/"pkrow"|"pkid"|"pksub"|"pksrc"/.test(cliSrc),
+    "public/index.html + openPacks");
   check("client: a pack list says whether it was DELIVERED or merely declared — intent never passes for delivery",
     /packsFrom === "receipt"/.test(setupSrc) && /delivered with the founding brief/.test(setupSrc)
     && /declared by this session's program/.test(setupSrc), "the packs note in renderBoard");
   // model, effort and context fill are the sidebar row's job — the owner called them redundant in
   // the board on 2026-09-19, and a second copy is exactly what a "misslungener Aufbau" is made of
+  // NOTHING IN THIS COLUMN TWITCHES. It is rebuilt whole every 3s, so the three things a reader
+  // holds across a tick — the scroll offset, the keyboard focus, and an open menu — have to be
+  // carried by hand. The menu is bound to the slot it was opened on, or it would hang one
+  // session's actions under another session's name.
+  check("client: a repaint keeps the reading position, the keyboard focus and nothing else",
+    /const focusKey = \(\(\): string \| null =>/.test(boardSrc)
+    && /boardBody\.scrollTop = y;/.test(boardSrc)
+    && /if \(boardMenuOpen && boardMenuSlot !== slot\) boardMenuOpen = false;/.test(boardSrc),
+    "renderBoard's paint step");
+  check("client: the no-session branch rescues the scroll too, and the dead bnone selector is gone",
+    /const y0 = boardBody\.scrollTop;/.test(boardSrc) && !/bnone/.test(cliSrc) && !/bnone/.test(indexSrc),
+    "renderBoard's empty branch");
+  // ONE PALETTE. The landed chat/queue tokens are the single source (Stilvorgabe 2026-09-19), and
+  // the column ran 47 hand-written hex values beside them until 2026-09-20.
+  {
+    const boardCss = indexSrc.split("\n").filter((l) => /^  #(board|boardhead|boardbody|boardsuites|shell-packs)\b/.test(l));
+    const withHex = boardCss.filter((l) => /#[0-9a-fA-F]{3,6}\b/.test(l.slice(l.indexOf("{"))));
+    check("client: the board's CSS carries no palette of its own — every colour is a --chat-* token",
+      withHex.length === 0 && boardCss.some((l) => l.includes("--b-ink: var(--chat-ink)")),
+      withHex.slice(0, 3).join(" | ") || `${boardCss.length} rules, none with a literal colour`);
+  }
   check("client: the board repeats neither the model, the effort nor the context fill",
     !/s\.model/.test(boardSrc) && !/s\.effort/.test(boardSrc) && !/s\.ctx/.test(boardSrc),
     "renderBoard vs the sidebar row");

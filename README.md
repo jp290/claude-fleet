@@ -1,129 +1,178 @@
 # Claude Fleet
 
-**Run and steer coding-agent sessions from one local control plane — from your desk or phone.**
+**A local control plane that runs coding-agent sessions in tmux panes, hands each one a queue row
+to work in an isolated git worktree, and lets that work reach the integration branch only through a
+verify gate it cannot talk its way past.**
 
-Web dashboard (desktop + mobile) for up to 16 persistent tmux-backed agent sessions on one machine.
-Fleet began as a multi-session Claude harness and now also coordinates Codex- and Pi-compatible
-harnesses, isolated lanes, Programs, delegation and evidence-backed promotion. The stable target
-model — controllers, Project MAINs, Workers, Supervisors, Acts and context layers — lives in
-[`SYSTEM.md`](SYSTEM.md). Current implementation can lag that target; code and live sensors remain
-authoritative for what works today.
+It is a web dashboard (desktop + mobile) over 16 persistent tmux-backed sessions on one machine,
+plus the machinery around them: a queue, isolated lanes, Programs, a land path with a proportional
+proof, a post-land audit, and append-only ledgers. `SYSTEM.md` describes a target model that the
+code does not fully implement; this file describes what the code does today. Where they disagree,
+the code wins. Fork of [claude-deck](https://github.com/jp290/claude-deck).
 
-The original terminal surface remains: sidebar activity, xterm.js scrollback, direct input,
-project picker, prompt history, export, Claude conversation view, guest sharing, scheduled prompts
-and crash-resilient sessions. Fork of [claude-deck](https://github.com/jp290/claude-deck), expanded
-into a local agent control plane.
+![claude-fleet — four agent sessions in a 2×2 grid](docs/screenshot.png)
 
-![claude-fleet — four Claude Code sessions in a 2×2 grid](docs/screenshot.png)
+**Requirements:** [Bun](https://bun.sh), tmux, at least one agent CLI, macOS or Linux.
 
-**Requirements:** [Bun](https://bun.sh), tmux, the `claude` CLI, macOS or Linux.
-
-**Quickstart:**
 ```sh
 bun install
 bun run build
-FLEET_HOST=$(tailscale ip -4) bun server.ts   # defaults to 127.0.0.1 (loopback only)
+bun server.ts            # binds 127.0.0.1:8790 unless FLEET_HOST/FLEET_PORT say otherwise
 ```
-The server prints a one-click login URL (`http://<ip>:8790/?token=…`) on boot when stdout is a terminal — with output redirected to a log (the tmux setup under Ops) it deliberately withholds the token; read it from `fleet.json` instead. Open the URL from any machine on the same private network. The token is stored in a `SameSite=Strict` cookie; you log in once per browser.
+On boot the server prints a one-click login URL carrying the access token — but only when stdout is
+a terminal; redirected to a log it withholds the token, which then has to be read out of
+`fleet.json`. The token goes into a `SameSite=Strict` cookie, so you log in once per browser.
 
-## Security model
+## The core objects
 
-A reachable fleet is **remote code execution as your user** — every session is a shell. Defenses, in order:
+**Slot and session.** A slot is one of 16 fixed places (`server/types.ts#MAX_SLOTS`), each backed by
+a tmux session on the configured socket. `server.ts#ensureSlot` builds the pane and bakes the
+session's own credentials into its shell; `server.ts#openSlot` gives it a working
+directory, an optional lane ref, a label, a harness, a model and an effort. The pane's output is tailed from a `pipe-pane` stream and broadcast per
+slot over a WebSocket, and a self-heal loop rebuilds a pane whose tmux session died — resuming the
+pinned conversation where the adapter supports it, rather than starting a new one. `server.ts#sleepSlot` / `#wakeSlot` tear the
+pane down and bring it back without ending the occupancy.
 
-1. **Bind address** — defaults to loopback. Only set `FLEET_HOST` to a private (Tailscale/VPN/LAN) address you trust end-to-end; traffic is plain `ws://`, so on anything but an encrypted overlay network (Tailscale is WireGuard) it's sniffable.
-2. **Access token** — required on every API/WebSocket request (`?token=` login URL → cookie, or `Authorization: Bearer`). Generated on first boot and persisted in `fleet.json` (mode 600); override with `FLEET_TOKEN`.
-3. **Cross-site guards** — `SameSite=Strict` cookie plus Origin and Host checks block cross-site WebSocket hijacking, CSRF, and DNS rebinding (a malicious website in a tab on the same machine can't reach the fleet, even though WebSockets ignore CORS). If you access the fleet via a hostname (e.g. MagicDNS), add it to `FLEET_ALLOWED_HOSTS=myhost.tailnet.ts.net:8790`.
-4. **Session command** — defaults to plain `claude` (with its permission prompts). Unattended mode is an explicit opt-in: `FLEET_CMD='claude --dangerously-skip-permissions'`.
-5. Stream files and state are chmod 600/700 (terminal output can contain secrets).
+**Lane and worktree.** A lane is a session whose cwd is a throwaway git worktree on its own branch,
+created by `server.ts#createWorktree`. It is the unit of isolation: the lane commits into its own
+tree, and nothing it does touches the integration branch until a land runs. `server.ts#laneDrift`
+tells a lane whether main has moved under it, `server.ts#gateView` tells it what will actually gate
+its land, and `server.ts#removeWorktreeSafe` is the only way a lane's tree goes away.
 
-Not provided: TLS, multi-user, rate limiting. For HTTPS + tailnet-identity auth in front, `tailscale serve` works well.
+**Task and kinds.** A queue row (`server/types.ts` `Task`) carries text, an optional compiled brief,
+a target repo, a chosen agent (`spawn`), a file surface and a card. Four kinds exist
+(`server/types.ts#TASK_KINDS`) and only `auftrag` is executable — `richtung`, `notiz` and `betrieb`
+are advisory and every dispatch path skips them. A row is created `pending` and only an owner act
+moves it to `queued` (`server.ts#releaseTask`); text arriving through the public intake address is
+data until then, never a command.
 
-## Architecture — tmux without attach, ×16
+**Program.** A Program is an owner-confirmed bracket around rows, with a bound Project MAIN session.
+Its statuses are `proposed · confirmed · active · complete` (`server/types.ts#PROGRAM_STATUSES`) and
+only the owner promotes between them. A bound MAIN gets its own doors — file a row, release it,
+raise attention, read a derived lifecycle projection (`server.ts#programExecutionView`) — and
+`server.ts#boundProgramForMain` is what decides whether a caller has that binding at all.
 
-Same core as claude-deck (see its README for the full rationale), parameterized per slot:
+**Land.** Landing is a server-side job, not a git command an agent runs: `server.ts#mergeJob`
+rebases the lane, takes the machine-wide suite mutex, runs the verify command, and only then
+fast-forwards the integration branch (`server.ts#advanceIntegration`, `server.ts#recordLand`). A
+verify that was skipped, timed out, or never started because it sat in the mutex queue is treated as
+*no verdict about this tree* and does not auto-land; the owner keeps the latitude to land anyway.
 
-- tmux socket `claudefleet`, sessions `s1`..`s16`, each created lazily in a directory chosen via the picker (recents are persisted)
-- `pipe-pane` per session → `streams/sN.raw`; the Bun server tails all active streams (100ms poll) and broadcasts per-slot over `ws://…/ws/<N>`
-- Reconnect/slot-switch replays the last 2 MB of that slot's stream
-- Per-slot input promise chains and per-slot tmux paste buffers (`fleetbufN`) — one hung session can't stall input to the others, and concurrent sends can't race
-- `fleet.json` persists slot→cwd/label/sessionId + recents + shares + token (writes serialized). Self-heal (2s loop) recreates any *activated* slot whose pane died — and because each pane's claude session id is pinned at creation (`claude --session-id`), recreation runs `claude --resume <id>` when the transcript still exists: **the conversation survives the crash**. Kill via the UI ✕ removes the slot from state first, so killed slots stay dead. Server restart re-adopts slots from `fleet.json` plus any stray `sN` tmux sessions.
-- **↻ bring session back** (`POST /api/slots/:id/restart`) is the same resume path on demand: it kills only the *pane* and leaves the slot record standing, so the rebuild resumes the pinned conversation. Needed because Claude Code can switch conversation **in-process** — the pane's argv goes on naming the pinned session while a different transcript is written, and Escape does not undo it; nothing outside the pane can put it back. It is deliberately not a teardown: sessionId, worktree, label, model, mission, shares and scheduled prompts all survive, and no lane outcome is recorded. Trailed as `slot_restart`, never `self_heal_recreate`, so an owner-triggered rebuild can't inflate the resume rate that measures crash durability.
-- **💤 sleep / wake** (`POST /api/slots/:id/sleep`, `POST /api/slots/:id/wake`) gives an idle session's memory back without ending it: the tmux session is torn down, the occupant (cwd, label, session id, schedules, watches) stays, and the self-heal leaves the pane absent (`server.ts#sleepSlot`). Refused by name (`reason`) for a lane, a bound Program-MAIN, a pane mid-turn, a slot without a session id, and a slot whose transcript is not on disk; unsent composer text is discarded, and the answer says so. Every delivery path wakes a sleeper before it pastes (`server.ts#wakeSlot`, called from `canDeliver` and `sendText`); a wake whose agent does not come up delivers nothing. Wake rebuilds through the unchanged resume path and is trailed as `slot_wake`. No policy puts a session to sleep on its own; these are owner doors.
-- **Model/effort of a live slot** (`POST /api/slots/:id/model {model?, effort?}`) rewrites the slot *record* without touching the pane — the record is what the heal loop, ↻ restart and succession spawn from, and until 2026-09-02 all three fell back to the spawn-time value even after the owner had switched the pane with `/model`. Validated exactly like open/dispatch against the slot's harness; `POST /api/self/succeed` takes the same optional pair as an override for the successor. Trailed as `slot_model`.
-- The pinned session id also gives the 💬 conversation view a deterministic transcript path (`~/.claude/projects/<cwd-slug>/<uuid>.jsonl`, served incrementally via `/api/slots/:id/transcript`); adopted pre-pinning sessions fall back to newest-by-mtime.
+**Audit.** After a land, an optional second tier re-runs the full suite against the landed tree
+(`server.ts#drainPostLandAudits`, `server.ts#runPostLandAudit`) and writes one row per run. It is off
+unless `FLEET_POSTLAND_AUDIT_CMD` is set. A red audit is not automatically a regression: it is
+adjudicated (`server.ts#writeAuditAdjudication`), including carrying a known flake forward, and the
+verdict reaches the Programs whose rows the land covered.
 
-## Mobile
+## The life of one row
 
-Below 700px viewport width (or a coarse-pointer device in short landscape) the same page switches to a phone layout — one shared codebase, no separate build:
+1. **Filed** — owner, public intake, a steward pulse, or a bound Program MAIN writes a `pending` row.
+2. **Compiled** — optional sweeps turn the row's text into a brief (`server.ts#compileBriefs`) and a
+   card extracted by a small model and then checked deterministically (`card-extract.ts`).
+3. **Released** — an owner act (or a Program's release policy) moves it to `queued`.
+4. **Dispatched** — `server.ts#tickDispatch` runs on a timer, picks a queued row that fits the caps
+   and the wave projection, creates the worktree, spawns the lane, and sends it a founding brief with
+   its context anchors (`server.ts#briefAndSend`, `context-plan.ts`, `context-packs.ts`).
+5. **Worked** — the lane commits in its own tree, may ask its MAIN a question
+   (`POST /api/self/clarifications`), may schedule its own check-in (`server.ts#createAutoForSlot`),
+   and may hand a preview run to another machine (`server.ts#claimLaneSuite`).
+6. **Reported** — the lane files one typed report (`server.ts#openFleetReport`, status
+   `complete · needs-main · failed · handoff`). The report is a message, never a state change.
+7. **Landed** — `mergeJob` as above; conflicts may go through a resolver agent and a repair round
+   (`server.ts#runMerge`, `server.ts#runRepair`), and the verdict is delivered to whoever landed.
+8. **Audited** — tier 2, then adjudication.
+9. **Deployed** — `POST /api/deploy` (`server.ts#deployVerb`) rebuilds the client bundles and
+   restarts the server; because the restart kills the process, the verdict is written by the next
+   boot (`server.ts#judgeDeploy`) and read back at `GET /api/deploys`.
 
-<img src="docs/screenshot-mobile.png" alt="claude-fleet on a phone — app bar, key row, compose bar" width="360">
+Every step leaves a row somewhere: security events in `audit.jsonl` (`server/audit-log.ts`), how a
+lane ended in `lane-outcomes.jsonl` (`server.ts#buildLaneOutcome`), audits in
+`post-land-audits.jsonl`, reports in `fleet-reports.jsonl`, sends in `streams/prompts.jsonl`, and
+what a lane was actually given in `context-receipts.jsonl`. `server.ts#laneDossier` is the join over
+them for one lane.
 
+## Harness adapters
 
-- **App bar + drawer** — ☰ opens the session list (same slots UI as the desktop sidebar); tapping a slot switches and closes it. Title shows the focused session, dot shows WS state. On touch there's no hover, so each row's ✎ rename and ✕ delete icons are pinned visible and finger-sized — you can rename or kill a session straight from the phone (✕ still guards with a confirm).
-- **Key row** — `esc ⇥ ⇧⇥ ↑ ↓ ← → ⏎ ^C` buttons send raw bytes over the WS, covering everything Claude Code's TUI needs (interrupt, mode cycle, menu navigation) that virtual keyboards lack.
-- **Live typing (⌨)** — the toggle left of the compose box opens a dedicated input that relays every keystroke straight to the focused pane's pty — characters plus Enter/Esc/Backspace/Tab/arrows. Uses a real visible field, not xterm's hidden textarea (unreliable on iOS: keyboard often won't open, autocorrect swallows input); a sweeper keeps the field empty and `beforeinput`/`compositionend` handling makes IME and dictation work. Tap ⌨ again to exit; leaving mobile width auto-disables it.
-- **Compose** — for longer prompts: Enter inserts a newline on mobile (messaging convention); ➤ sends. Inputs are 16px so iOS doesn't zoom on focus.
-- **Keyboard-safe layout** — app height tracks `visualViewport` (plus `dvh`/`interactive-widget`), so the compose/live bar rides above the on-screen keyboard; safe-area insets handled for notch/home-indicator. The terminal's own hidden textarea gets `inputmode=none` so *tapping the terminal* never pops the keyboard; direct input is opt-in through the ⌨ live bar instead. The viewport handler debounces before refitting (~200ms) — the keyboard's predictive-text bar toggles the visual viewport height in a burst while typing, and refitting on every micro-wobble was triggering spurious `/resize` calls mid-keystroke.
-- **Scrollback** — touch-drag scrolling is xterm.js's own gesture handler (`Viewport.handleTouchStart`/`handleTouchMove`, not native browser scrolling — `.xterm-viewport` already ships `overflow-y: scroll`); a native viewport-scroll listener keeps the ▼ jump-to-bottom pill in sync since xterm's `onScroll` doesn't fire for it. Known caveat: xterm gates that handler on `!coreMouseService.areMouseEventsActive`, so a subprocess that enables terminal mouse-reporting (a pager, `lazygit`, etc.) can silently turn touch-drags into mouse clicks instead of scroll until it's disabled again. Cross-width scrollback reflow (connecting at a different width than the pane's current one) is handled by the server's width-reseed path — see "Scrollback fidelity across widths" below for what it fixes and its one remaining gap.
-- **Canvas renderer** — xterm without a rendering addon falls back to its DOM renderer, which paints every visible cell as a real DOM node; a busy Claude session streaming output while the terminal is being scrolled means frequent DOM churn competing with the scroll gesture for the main thread, especially on mobile Safari. `@xterm/addon-canvas` paints to a `<canvas>` instead, which is xterm's own recommended upgrade path for this. Loaded on both desktop and mobile panes.
-- **No disruptive resize jiggle on no-op resizes** — `/resize` forces the tmux pane through a shrink-then-grow redraw (`repaint()`) so stubborn TUIs reflow; without a same-size guard, this fired on every `/resize` call including ones the client sends for a size it already reported, blanking the bottom (active-input) row for ~200ms while typing. The server now skips the jiggle when the requested size matches the pane's current size.
-- **Installable** — web manifest + icons; "Add to Home Screen" gives a standalone full-screen app. Terminal font drops to 11px (~50 cols portrait). Resizes still follow last-writer-wins across clients, same as two desktop windows.
+A harness is *how* an agent runs — not just which model. Each adapter (`server.ts` `Harness`)
+declares its spawn line, whether it can host a throwaway worker session, how to read its context
+usage, whether it pins a session id at spawn, which process names prove its agent is alive, and
+which pane screens silently eat a pasted prompt. Seven are registered today
+(`server.ts#HARNESSES`): the default Claude adapter, three Pi variants, an unfenced Pi, a
+containerised one, and Codex. `server.ts#harnessOf` resolves an id, and model and effort are
+validated against *that* adapter at set time, so a spawn line can never carry a value the adapter
+never admitted. Only adapters that declare themselves automatable may be started unattended, and
+even then only with `FLEET_HARNESS_AUTOMATION=1`. Design notes: `docs/harness-adapter.md`.
 
-## Client (desktop)
+## Security and trust model
 
-- xterm.js stdin is **enabled**: click the terminal and type; keystrokes relay raw over the WS (chunked ≤1000 B). ⌘C/⌘V work natively.
-- **⌃1–⌃0** switches slots (⌘+digit is reserved by macOS browsers for tab switching — don't "fix" this back to ⌘).
-- Compose box for long prompts: Enter sends (bracketed paste + Enter server-side), ⇧Enter = newline. Command-prefix chips are opt-in via `FLEET_CHIPS=/cmd1,/cmd2` (default: hidden).
+A reachable fleet is **remote code execution as your user** — every session is a shell. In order:
 
-### Bundled chips: /sharpen and /gosharp
+1. **Bind address** — loopback by default. `FLEET_HOST` should only ever name a private address on a
+   network you trust end to end; traffic is plain `ws://`, so anything but an encrypted overlay is
+   sniffable.
+2. **Owner token** — required on every API and WebSocket request (`server.ts#tokenGate`), generated
+   on first boot, persisted in `fleet.json` at mode 600, overridable with `FLEET_TOKEN`. It is the
+   whole owner authority: there is one principal, not accounts.
+3. **Self-token** — each session additionally holds a scoped credential (`Slot.selfToken`) that can
+   only ever act on its own slot. It is what makes `/api/self/*` safe to hand to an agent: the route
+   binds to the token's slot, a `slot` field in the body is ignored, and lane-only doors answer a
+   non-lane `409`, never `401`. Because the credential is exported into the pane's shell, it is
+   visible in that machine's process list — a hygiene fact, not isolation. Scope list:
+   `docs/self-api.md`.
+4. **Share links** — a share is a *window*, not an account: password-gated, view-only, one slot, and
+   served on its own hostname set (`FLEET_SHARE_HOSTS`) where everything else 404s. See
+   [SHARING.md](SHARING.md).
+5. **Cross-site guards** — `SameSite=Strict` cookie plus Origin and Host checks
+   (`server/auth.ts#guard`) block cross-site WebSocket hijacking, CSRF and DNS rebinding. Reaching
+   the fleet by hostname needs that name in `FLEET_ALLOWED_HOSTS`.
+6. **Session command** — defaults to the plain CLI with its own permission prompts; unattended mode
+   is an explicit opt-in via `FLEET_CMD`. Stream files and state are chmod 600/700, because terminal
+   output contains secrets.
 
-Two general-purpose Claude Code slash commands ship in [`attic/commands/`](attic/commands/) as a working chips demo (canonical home: [jp290/sharpen](https://github.com/jp290/sharpen)):
+Not provided: TLS, multiple users, rate limiting. Two suites hold the perimeter rather than one:
+`e2e/security.ts` pins which routes are reachable *above* the owner gate at source level, and
+`fleet-e2e-security.ts` (run by `./e2e-security.sh`, which the land gate runs) drives the share
+brute-force lockout, the injection charsets, the self-token's out-of-scope refusals, and the proof
+that a `pending` row is never dispatched.
 
-- **`/sharpen`** — prompt compiler: reshapes a rough prompt into the right context plus only the discipline the task needs; executes it only on clear "do this" intent
-- **`/gosharp`** — executor: does the work under sharpened discipline (visible restatement of intent, free self-checks, argue-against-your-own-conclusion before finalizing)
+## The dashboard
 
-Install them user-wide so every fleet session can invoke them, then surface them as chips:
-```sh
-cp attic/commands/*.md ~/.claude/commands/
-FLEET_CHIPS='/sharpen,/gosharp' bun server.ts
-```
-- Slot-row actions (hover): **⤴ share** (password-gated, view-only guest link — see [SHARING.md](SHARING.md)), **⇩ export** (full scrollback as a printable light page; `?format=txt` for raw), **✎ rename**, **✕ kill**.
-- **🕘 prompt history** next to the compose box: composed sends are recorded per slot server-side (last 100, dies with the session); the popover copies or re-inserts old prompts, ArrowUp in an empty compose box cycles them.
-- **global prompt log** — independent of the per-slot history, every composed send (owner, share guest, scheduled auto) is appended to `streams/prompts.jsonl` (`{ts, slot, cwd, label, source, text}`, mode 600). Never capped, never rotated, survives slot close and server restarts — raw material for prompt analysis/distillation.
-- **directory picker** — opens at the last-browsed directory; a filter box narrows the folder list as you type (first match pre-selected), ↑/↓ move the selection, Enter descends into it, ⌘/Ctrl+Enter starts the session there.
-- **💬 conversation view** per pane: renders the claude transcript as structured messages — your prompts as timestamped anchors (↑/↓ jump between them), everything the agent did in between collapsed to one expandable "⚙ n steps" line. Reflows at any width; the terminal stays the surface for interaction (permission prompts live only there).
-- Rename a session via the ✎ icon or double-clicking its name (Enter saves, Esc cancels, blank resets to the folder name). Labels persist in `fleet.json` and die with the session. The ✎/✕ icons overlay the row's right edge on hover only, so labels get the full sidebar width the rest of the time.
-- **Collapse toggle (‹/›)** in the header shrinks the sidebar to a ~50px rail (slot numbers + activity dots) to hand the width to the terminals; click again to restore. State persists in localStorage; it's a desktop-only affordance (on mobile the sidebar is the ☰ drawer).
-- Sidebar polls `/api/sessions` every 2s; green dot = output within 5s (timestamps compared against server `now` to dodge clock skew). DOM only re-renders on actual change.
-- Last-viewed slot and sidebar-collapsed state are restored from localStorage on reload.
+One page, one bundle: a terminal grid with xterm.js and direct stdin, a sidebar of all 16 slots with
+activity dots, a queue board that renders each row's lifecycle, card, file surface and brief
+(`src/client.ts#renderQueue`, `#renderQueueDetail`), a Programs view, an ops dialog, a per-pane
+conversation view that renders the agent's transcript as structured messages, a directory picker,
+prompt history, export, and share links — and below 700px the same page becomes a phone layout with
+a key row, a live-typing bar and a keyboard-safe shell. The guest share page, the helper portal and
+the landing page are separate documents in `public/`.
 
 ## Ops
 
-The recommended setup is the launchd watchdog — survives crashes *and* reboots:
-```sh
-# watchdog.sh keeps the `srv` tmux session alive; edit its env line, then:
-cp launchd-example.plist ~/Library/LaunchAgents/com.claude-fleet.watchdog.plist  # adjust paths
-launchctl load ~/Library/LaunchAgents/com.claude-fleet.watchdog.plist
-```
-Manual, without the watchdog:
-```sh
-tmux -L claudefleet new-session -d -s srv 'cd ~/claude-fleet && FLEET_HOST=<ip> exec bun server.ts >> server.log 2>&1'   # start
-tmux -L claudefleet kill-session -t srv    # stop (claude sessions survive)
-bun run build                              # rebuild client bundles after editing src/
-./e2e-isolated.sh                          # full e2e against a throwaway instance (own tmux socket/port — never touches the live fleet)
-./e2e-claude-gate.sh                       # separate: exercises the claude-alive gate against a real compiled stand-in binary (needs a C compiler; own socket/port)
-```
+The recommended setup is the launchd/systemd watchdog, which survives crashes *and* reboots and is
+also where the live land-path configuration is written: `watchdog.sh` holds the spawn line, and
+`FLEET_VERIFY_CMD`, `FLEET_POSTLAND_AUDIT_CMD` and `FLEET_CLEAN_REVIEW` on it decide what the gate,
+tier 2 and the advisory reviewer actually do. `bun run build` rebuilds the client bundles;
+`./e2e-isolated.sh` runs the full suite against a throwaway instance on its own tmux socket and port,
+and `bun e2e/pins.ts` is the millisecond-fast first stage that catches drift no compiler sees.
+`bun review-sweep.ts` and `bun repo-map.ts` are the read-only sensors over the tree itself.
 
-Env: `FLEET_HOST` (default `127.0.0.1`), `FLEET_PORT` (8790), `FLEET_SOCK` (tmux socket, default `claudefleet`), `FLEET_TOKEN`, `FLEET_ALLOWED_HOSTS`, `FLEET_CMD`, `FLEET_CHIPS`, `FLEET_TMUX_NEW_SESSION_TIMEOUT_MS` (default 15000; empty, malformed, or below 100 uses the default), and for sharing `FLEET_SHARE_HOSTS` + `FLEET_SHARE_URL` (see SHARING.md).
-
-## Pinned: xterm 5.5.0, NOT 6.x
-
-Inherited from claude-deck (6.x removed the overflow-scroll viewport). Desktop probably tolerates 6.x, but don't upgrade without testing scroll + stdin.
+Env worth knowing: `FLEET_HOST`, `FLEET_PORT`, `FLEET_SOCK`, `FLEET_TOKEN`, `FLEET_ALLOWED_HOSTS`,
+`FLEET_CMD`, `FLEET_DISPATCH_REPO`, `FLEET_DISPATCH_MAX_LANES` (default 3),
+`FLEET_HARNESS_AUTOMATION`, `FLEET_VERIFY_CMD`, `FLEET_POSTLAND_AUDIT_CMD`, `FLEET_SHARE_HOSTS`.
 
 ## Known limits
 
-- `streams/*.raw` grow unbounded (~KB/interaction; killing a slot deletes its stream)
-- One terminal size per session, last resize wins — fine for a single client; a second browser window fights over size
-- **Scrollback fidelity across widths** — when a connecting client's width differs from the pane's, the server resizes the tmux window and re-seeds from a fresh plain-text `capture-pane` (tmux reflows history on resize, so this replays correctly-wrapped text instead of the raw stream's stale wrapping). `capture-pane`'s text output separates rows with a bare LF, never a CR; xterm.js doesn't treat LF alone as "return to column 0", so any captured line shorter than the pane's width used to leave the cursor short and stagger everything after it — this, not any inherent tmux/rendering limitation, was the cause of the severe garbling (including in content drawn with absolute cursor addressing, like Claude Code's own onboarding banner, which reflows fine once every row is properly CRLF-terminated). Both `capture-pane` call sites now normalize to CRLF before anything reaches a terminal. `/resize` also force-repaints so the live screen redraws immediately instead of waiting on the app's own SIGWINCH handling. One real gap remains: it's still one shared pty width — a second connecting client (or the same client at a new width) resizes the pane for everyone, so simultaneous phone+desktop viewers of the same slot still fight over live width. A true per-client fix would need a per-client VT-emulated render, not attempted here.
-- Kill ✕ is destructive (session + scrollback gone) behind a `confirm()` only
-- Single shared token, no TLS, no rate limiting — the private network is part of the trust boundary
+- **One suite at a time.** The verify gate, the previews and the audit all serialize on a single
+  machine-wide lock (`server.ts#holdSuiteLock`). A land can therefore wait minutes for the machine
+  without ever looking at its own tree, and the code says so rather than calling it a red.
+- **The suite is not deterministic.** Known flake families are tracked in `docs/verify-tiering.md`
+  and adjudicated per audit row; a green re-run at a base rate of a few percent proves little, which
+  is why the trail register exists instead of a re-run rule.
+- **Caps are blunt.** Lanes per repo, tasks, programs, watches, autos and report sizes are all fixed
+  numbers in `server.ts`. They bound damage; they do not schedule intelligently.
+- **The land path mutates a tree someone may be sitting in** — if a worktree has the integration
+  branch checked out, the fast-forward happens inside it (`docs/land-mechanics.md`).
+- Single shared owner token, no TLS, no rate limiting: the private network is part of the trust
+  boundary.
+- `streams/*.raw` grow unbounded; killing a slot deletes its stream.
+- One terminal size per session, last writer wins — two clients on one slot fight over width.
+- xterm is pinned at 5.5.0; 6.x removed the overflow-scroll viewport the mobile scrollback depends on.

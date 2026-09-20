@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>Engine-Probe</title>
+<!-- Beweisstand fuer EINE Behauptung: die Marke ist in jeder JS-Engine dieselbe. Die Seite gibt je
+     Session Belegung und Bahnpunkt des Attraktors als Text aus; dasselbe Stueck laeuft in Bun
+     (JavaScriptCore) direkt gegen marken3.js. Stimmen die Zeilen byteweise ueberein, ist die
+     Identitaet geraeteunabhaengig. Vor dem eigenen Sinus taten sie das NICHT. --><body style="background:#000;color:#ddd"><pre id=out>…</pre>
+<script type="module">
+import { SYSTEME, seedOf, family } from "./marken3.js";
+import { SLOTS } from "./marken-daten.js";
+const flat = SLOTS.flatMap(s => s.free ? [] : [{...s, role:"main"}, ...(s.lanes??[]).map(l=>({...l, role:"lane"}))]);
+const out = [];
+for (const s of flat) {
+  const c = { x:0,y:0,w:24,h:24,t:0, seed:seedOf(s), fam:family(s.harness), hue:0 };
+  SYSTEME.attraktor.init(c);
+  out.push(`${s.slot}:${c.fill}:${c.px.toFixed(12)}`);
+}
+document.getElementById("out").textContent = out.join(" ");
+</script>

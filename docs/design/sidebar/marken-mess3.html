@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Messstand · Runde 3</title>
+<!-- Messstand: GENAU EINE Marke, 24 px, alles ueber die Adresszeile steuerbar. Zwei Bilder
+     unterscheiden sich damit in genau einem Fakt, und der Pixelvergleich misst diesen Fakt.
+     Dieselbe Methode wie in Runde 1 und 2, nur auf die laufenden Systeme angewandt. Gemessen wird
+     das EINGEBRANNTE Bild bei Phase 0 — deterministisch, also wiederholbar. -->
+<style>
+  html, body { margin: 0; background: #000; }
+  #box { width: 48px; height: 48px; padding: 12px; }
+  canvas { display: block; }
+  body.grau canvas { filter: grayscale(1); }
+</style>
+</head>
+<body>
+<div id="box"><canvas id="cv"></canvas></div>
+<script type="module">
+import { MarkStage } from "./marken3.js";
+const q = new URLSearchParams(location.search);
+if (q.get("grau")) document.body.classList.add("grau");
+const size = Number(q.get("size") || 24);
+const stage = new MarkStage(document.getElementById("cv"));
+stage.on = false;                       // kein rAF: genau EIN Bild, das eingebrannte
+stage.setRows([{
+  x: 0, y: 0, size,
+  repo: q.get("repo") || "/Users/o/claude-fleet",
+  harness: q.get("harness") || "claude",
+  role: q.get("role") || "main",
+  slot: q.get("slot") || "7",
+  openedAt: Number(q.get("openedAt") || 1789740700000),
+  state: q.get("state") || "rest",
+  system: q.get("system") || "automat",
+}], size, size);
+document.documentElement.dataset.ready = "1";
+</script>
+</body>
+</html>

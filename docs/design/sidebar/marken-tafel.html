@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Kontaktbogen · 19 Sessions × 3 Systeme</title>
+<!-- Kontaktbogen: alle 19 Sessions in allen drei Systemen, jede Marke 24 px, jede an einer
+     bekannten Rasterstelle. Ein Bild statt 114 Chrome-Starts — und die Rasterstellen sind genau
+     die Ausschnitte, die der Pixelvergleich danach misst. `?grau=1` schaltet die Farbe ab. -->
+<style>
+  html, body { margin: 0; background: #000; }
+  #bogen { display: block; }
+  body.grau #bogen { filter: grayscale(1); }
+</style>
+</head>
+<body>
+<canvas id="bogen"></canvas>
+<script type="module">
+import { MarkStage } from "./marken3.js";
+import { SLOTS } from "./marken-daten.js";
+const q = new URLSearchParams(location.search);
+if (q.get("grau")) document.body.classList.add("grau");
+const Z = 24, PAD = 8, SCHRITT = Z + PAD;           // Rasterweite: 32 px, Marke bei +0
+const SESS = SLOTS.flatMap((s) => s.free ? [] : [{ ...s, role: "main" }, ...(s.lanes ?? []).map((l) => ({ ...l, role: "lane" }))]);
+const SYS = ["stroemung", "automat", "attraktor"];
+const W = PAD + SESS.length * SCHRITT, H = PAD + SYS.length * SCHRITT;
+const stage = new MarkStage(document.getElementById("bogen"));
+stage.on = false;                                    // ein Bild, das eingebrannte, kein rAF
+const rows = [];
+SYS.forEach((sys, y) => SESS.forEach((s, x) => rows.push({
+  x: PAD + x * SCHRITT, y: PAD + y * SCHRITT, size: Z,
+  repo: s.repo, harness: s.harness, role: s.role, slot: s.slot, openedAt: s.openedAt,
+  state: q.get("state") || s.state, system: sys,
+})));
+stage.setRows(rows, W, H);
+window.__raster = { PAD, Z, SCHRITT, sess: SESS.map((s) => String(s.slot)), sys: SYS };
+document.documentElement.dataset.ready = "1";
+</script>
+</body>
+</html>

@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet · Session-Marke · drei laufende Systeme</title>
+<!-- Runde 3. Drei grundverschiedene laufende Systeme, dieselben 16 Plätze, dieselben Seeds,
+     nebeneinander. Jede Spalte ist EINE Canvas hinter der Liste, nicht 21 kleine. -->
+<link rel="stylesheet" href="marken2.css">
+<style>
+  #app { display: block; overflow: auto; }
+  #kopf { position: sticky; top: 0; z-index: 3; background: #000;
+    border-bottom: 1px solid var(--chat-edge-soft); padding: 14px 20px 12px; }
+  #kopf h1 { font-size: var(--chat-fs); font-weight: 650; color: var(--chat-ink); }
+  #kopf p { margin-top: 6px; max-width: 96ch; font-size: var(--chat-code-fs); line-height: 1.6; color: var(--chat-mute); }
+  #steuer { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
+  button { font: 500 var(--chat-ui-fs) var(--chat-sans); color: var(--chat-prose);
+    background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: 7px;
+    padding: 5px 10px; cursor: pointer; }
+  button:hover { color: var(--chat-ink); border-color: #3a3a42; }
+  button[aria-pressed="true"] { color: #000; background: var(--chat-ink); border-color: var(--chat-ink); }
+  #steuer span { font: 500 var(--chat-ui-fs) var(--chat-mono); color: var(--chat-faint); }
+
+  #spalten { display: flex; gap: 0; align-items: flex-start; }
+  .spalte { width: 300px; flex: none; border-right: 1px solid var(--chat-edge-soft); padding-bottom: 40px; }
+  .spalte > header { padding: 14px 16px 10px; }
+  .spalte h2 { font: 650 var(--chat-fs) var(--chat-sans); color: var(--chat-ink); }
+  .spalte dl { margin-top: 8px; font-size: var(--chat-ui-fs); line-height: 1.65; }
+  .spalte dt { color: var(--chat-faint); float: left; width: 58px; }
+  .spalte dd { color: var(--chat-mute); margin-left: 58px; }
+  .messe { margin: 8px 16px 2px; font: 500 var(--chat-ui-fs) var(--chat-mono); color: var(--chat-faint); }
+  .messe b { color: #9ee6a0; font-weight: 500; }
+
+  /* Die Liste: EINE Canvas liegt hinter allen Zeilen, jede Zeile laesst links Platz fuer ihre Zelle */
+  .liste { position: relative; padding: 4px 8px 8px; }
+  .liste canvas { position: absolute; inset: 0; pointer-events: none; }
+  .liste .row { position: relative; z-index: 1; padding-left: 41px; gap: 8px; }
+  .liste .lanes { margin-left: 0; padding-left: 0; border-left: none; }
+  .liste .lanes .row { padding-left: 57px; }
+  .liste .lanes .row::before { content: ""; position: absolute; left: 41px; top: -1px; bottom: -1px;
+    width: 1px; background: var(--chat-edge); }
+  .liste .lbl { font-size: var(--chat-code-fs); }
+  body.grau .liste canvas { filter: grayscale(1); }
+</style>
+</head>
+<body>
+<div id="kopf">
+  <h1>Session-Marke · drei laufende Systeme</h1>
+  <p>Das Werk ist das laufende System, nicht der Screenshot — diese Seite muss man sich bewegen sehen.
+    Drei grundverschiedene Systeme, dieselben 16 Plätze, dieselben Seeds, dieselbe Bauform wie
+    <code>src/flakes.ts</code>: je Spalte <em>eine</em> Canvas, <em>ein</em> requestAnimationFrame.
+    Was läuft, ist der Zustand; was steht, ist die Regel — darum bleibt jede Marke sie selbst, auch
+    eingefroren. Ein Farbton je Marke, nur Helligkeit variiert.</p>
+  <div id="steuer">
+    <button id="b16" aria-pressed="false">alle 16 arbeiten (Messfall)</button>
+    <button id="bruhe" aria-pressed="false">alles einfrieren</button>
+    <button id="bschlaf" aria-pressed="false">alles schlafen</button>
+    <button id="bfehler" aria-pressed="false">alles stören</button>
+    <button id="bzurueck" aria-pressed="true">echter Betrieb</button>
+    <button id="bgrau" aria-pressed="false">ohne Farbe</button>
+    <span id="hinweis"></span>
+  </div>
+</div>
+<div id="spalten"></div>
+
+<script type="module">
+import { SLOTS } from "./marken-daten.js";
+import { MarkStage } from "./marken3.js";
+
+const SYS = [
+  { id: "stroemung", name: "A · Strömung",
+    regel: "Ein Vektorfeld aus Wert-Rauschen; sieben Agenten schwimmen darin und ziehen Spuren.",
+    identitaet: "Das Feld — seine Wirbel liegen fest, also zeichnen zwei Sessions zwei Linienbilder.",
+    kippt: "Bei 24 px passen nur 2–4 Wirbel ins Bild; zu wenig Topologie, und alles wird „ein paar Kratzer“." },
+  { id: "automat", name: "B · Automat",
+    regel: "Ein elementarer zellulärer Automat; aus einer Zeile wird die nächste, das Bild scrollt.",
+    identitaet: "Regelnummer (Familie = Harness) und Anfangszeile (= Session).",
+    kippt: "Dichte Regeln füllen die Zelle; 16 davon untereinander können als Rauschwand lesen." },
+  { id: "attraktor", name: "C · Attraktor",
+    regel: "Eine iterierte Abbildung (Clifford), vier Parameter aus dem Seed, akkumulierend gezeichnet.",
+    identitaet: "Die vier Parameter. Der Formenraum ist riesig — zwei Seeds sehen nie gleich aus.",
+    kippt: "Viele Parametersätze fallen auf einen Punkt zusammen; ohne Rückweisung wäre die Marke leer." },
+];
+
+const FLACH = SLOTS.flatMap((s) => s.free ? [{ ...s, role: "main" }]
+  : [{ ...s, role: "main" }, ...(s.lanes ?? []).map((l) => ({ ...l, role: "lane" }))]);
+
+const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c; if (x != null) n.textContent = x; return n; };
+const spalten = document.getElementById("spalten");
+const buehnen = [];
+
+for (const sys of SYS) {
+  const col = el("div", "spalte");
+  const h = el("header");
+  h.append(el("h2", null, sys.name));
+  const dl = el("dl");
+  for (const [k, v] of [["Regel", sys.regel], ["Identität", sys.identitaet], ["kippt bei", sys.kippt]]) {
+    dl.append(el("dt", null, k), el("dd", null, v));
+  }
+  h.append(dl); col.append(h);
+  const messe = el("div", "messe"); col.append(messe);
+  const liste = el("div", "liste");
+  const cv = el("canvas"); liste.append(cv);
+  for (const s of SLOTS) {
+    liste.append(zeile(s, false));
+    if (s.lanes) { const box = el("div", "lanes"); s.lanes.forEach((l) => box.append(zeile(l, true))); liste.append(box); }
+  }
+  col.append(liste); spalten.append(col);
+  buehnen.push({ sys, liste, cv, messe, stage: new MarkStage(cv) });
+}
+
+function zeile(s, lane) {
+  const r = el("div", "row " + (s.free ? "free" : s.state));
+  r.dataset.slot = String(s.slot);
+  r.append(el("span", "lbl", s.free ? "frei" : s.label));
+  r.append(el("span", "pct", s.pct != null ? s.pct + "%" : ""));
+  r.append(el("span", "meta", s.free ? "" : s.meta));
+  return r;
+}
+
+// Die Zellen kommen aus dem gemessenen Layout der Zeilen, nicht aus geratenen Zahlen: so sitzt die
+// Marke garantiert auf ihrer Zeile, egal wie die Liste umbricht.
+function verteilen(zustandVon) {
+  for (const b of buehnen) {
+    const box = b.liste.getBoundingClientRect();
+    const rows = [...b.liste.querySelectorAll(".row")];
+    const cells = rows.map((row, i) => {
+      const rb = row.getBoundingClientRect();
+      const ident = FLACH[i];
+      const lane = ident.role === "lane";
+      const size = lane ? 19 : 24;
+      return {
+        x: (lane ? 24 : 8) + 1, y: Math.round(rb.top - box.top + (rb.height - size) / 2),
+        size, repo: ident.repo ?? "", harness: ident.harness ?? "claude", role: ident.role,
+        slot: ident.slot, openedAt: ident.openedAt ?? 0,
+        state: ident.free ? "free" : zustandVon(ident), system: b.sys.id,
+      };
+    });
+    b.stage.setRows(cells, box.width, box.height);
+  }
+}
+
+const ECHT = (s) => s.state;
+let modus = ECHT;
+const knoepfe = { b16: () => "work", bruhe: () => "rest", bschlaf: () => "sleep", bfehler: () => "bad", bzurueck: ECHT };
+for (const [id, fn] of Object.entries(knoepfe)) {
+  document.getElementById(id).addEventListener("click", () => {
+    modus = fn;
+    for (const k of Object.keys(knoepfe)) document.getElementById(k).setAttribute("aria-pressed", String(k === id));
+    verteilen(modus);
+  });
+}
+document.getElementById("bgrau").addEventListener("click", (e) => {
+  const on = document.body.classList.toggle("grau");
+  e.currentTarget.setAttribute("aria-pressed", String(on));
+});
+
+addEventListener("resize", () => verteilen(modus));
+requestAnimationFrame(() => {
+  verteilen(modus);
+  const hin = document.getElementById("hinweis");
+  hin.textContent = matchMedia("(prefers-reduced-motion: reduce)").matches
+    ? "prefers-reduced-motion: alles steht, ein Standbild je Marke"
+    : `${FLACH.filter((f) => !f.free).length} Sessions · 16 Plätze`;
+  setInterval(() => {
+    for (const b of buehnen) {
+      const lebend = b.stage.cells.filter((c) => c.state !== "free" && c.state !== "rest" && c.state !== "done").length;
+      b.messe.innerHTML = `<b>${b.stage.fps.toFixed(0)} Bilder/s</b> · ${lebend} laufende Marken · eine Canvas`;
+    }
+  }, 500);
+  window.__bench = () => buehnen.map((b) => ({ sys: b.sys.id, ...b.stage.bench() }));
+});
+</script>
+</body>
+</html>

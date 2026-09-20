@@ -37,6 +37,9 @@ deploys.jsonl
 deploys.jsonl.1
 deploy-inflight.json
 deploy-inflight.json.tmp
+# the rotation's third form: persist.ts appends the outgoing .1 to <name>.jsonl.archive before the
+# ledger starts over — the file exists at every ledger from its first rotation on, never tracked.
+*.jsonl.archive
 e2e-trail/
 *.log
 public/app.js

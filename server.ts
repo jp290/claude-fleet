@@ -36074,6 +36074,79 @@ Bun.serve<WSData>({
       return json({ ok: true, repo: top.out, main: rec.main, branch: rec.branch, from: rec.mainAfter, to: rec.mainBefore,
         note: `${rec.main} reset to ${rec.mainBefore.slice(0, 8)}. The '${rec.branch}' branch still exists — reopen the lane to recover the work.` });
     }
+    // ↻ REBASE THE LANE ONTO ITS BASE — and nothing else. It does not verify, it does not land,
+    // and it never resolves a conflict: on the first conflict it ABORTS and leaves the tree exactly
+    // as it found it, naming the files, because the lane's own session is the one that can resolve
+    // them with the context to do it. Every refusal is a named sentence the column can print.
+    const rbMatch = /^\/api\/slots\/(\d+)\/rebase$/.exec(url.pathname);
+    if (rbMatch && req.method === "POST") {
+      const s = slotFrom(rbMatch[1]);
+      if (!s || !s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
+      const cwd = s.cwd, lane = s.worktree.branch;
+      const base = await laneBaseRef(s);
+      if (!base) return json({ reason: "no-base", error: "this lane has no base branch to rebase onto" }, 409);
+      // 1 — the lane must be ON its branch. A detached HEAD or a hand-checked-out branch would be
+      // replayed instead of the lane, which is a different tree than the one the owner is looking at.
+      const br = await git(cwd, "rev-parse", "--abbrev-ref", "HEAD");
+      const on = br.code === 0 ? br.out : null;
+      if (on !== lane)
+        return json({ reason: "not-on-branch",
+          error: `the worktree is on ${on ?? "an unreadable HEAD"}, not on its lane branch ${lane} — checked out by hand, nothing was rebased` }, 409);
+      // 2 — a dirty tree: a rebase would carry uncommitted work through the replay, or refuse
+      // halfway. Commit or shelve first, and the column says which.
+      const st = await statusLines(cwd);
+      if (st.code !== 0) return json({ reason: "git-unreadable", error: "git status could not be read — nothing was rebased" }, 409);
+      if (st.lines.length > 0)
+        return json({ reason: "dirty",
+          error: `the working tree has ${st.lines.length} uncommitted file${st.lines.length === 1 ? "" : "s"} — commit or shelve them first, nothing was rebased` }, 409);
+      // 3 — an interrupted merge/rebase already in this worktree
+      if (await gitOpInProgress(cwd))
+        return json({ reason: "git-op",
+          error: "a merge or rebase is already in progress in this worktree — finish or abort it first, nothing was rebased" }, 409);
+      // 4 — a merge/land JOB on this slot, read from the job state and never from a process list:
+      // the job moves this very tree, and two writers on one worktree is the one unrecoverable case.
+      if (mergeInflight.has(s.id) || mergeStart.has(s.id))
+        return json({ reason: "merge-running",
+          error: "a merge & land job is running on this slot — it moves this same worktree, nothing was rebased" }, 409);
+      if (needsMergeReview(s.id))
+        return json({ reason: "merge-review",
+          error: "a merge on this slot is waiting for your review — settle it first, nothing was rebased" }, 409);
+      // 5 — THE DANGEROUS ONE: an agent mid-turn in this worktree. A rebase pulls the files out
+      // from under a session that is writing them. Same busy predicate the owner-act deliveries
+      // use (canDeliver), not a second one.
+      const idle = await canDeliver(s, { now: Date.now(), killSwitch: false, harness: false, alive: false,
+        quietHours: false, idleMs: MERGE_IDLE_MS });
+      if (!idle.ok)
+        return json({ reason: "lane-working",
+          error: `this lane's agent is mid-turn (output within ${MERGE_IDLE_MS}ms) — a rebase would pull the files out from under it, nothing was rebased` }, 409);
+      // 6 — nothing to do is not an error worth a button, but it IS an answer
+      const ab0 = await git(cwd, "rev-list", "--left-right", "--count", `${base}...HEAD`);
+      const m0 = /^(\d+)\s+(\d+)$/.exec(ab0.out);
+      const behind = m0 ? Number(m0[1]) : 0;
+      if (behind === 0) return json({ reason: "not-behind", error: `the lane is already up to date with ${base}` }, 409);
+      const before = (await git(cwd, "rev-parse", "HEAD")).out;
+      const rb = await git(cwd, "rebase", base);
+      if (rb.code !== 0) {
+        // the conflicted paths, read BEFORE the abort — afterwards there is nothing left to read
+        const cf = await git(cwd, "diff", "--name-only", "--diff-filter=U");
+        const files = cf.code === 0 ? cf.out.split("\n").filter(Boolean) : [];
+        await git(cwd, "rebase", "--abort");
+        const after = (await git(cwd, "rev-parse", "HEAD")).out;
+        // the abort is asserted, not assumed: a tree left half-rebased is the outcome this route
+        // exists to prevent, and saying "unchanged" without checking would be the same lie twice
+        const restored = after === before && !(await gitOpInProgress(cwd));
+        return json({ reason: "conflict", error: files.length
+          ? `rebase onto ${base} conflicts in ${files.length} file${files.length === 1 ? "" : "s"} — aborted, the lane is untouched. Resolve it in this lane's own session.`
+          : `rebase onto ${base} failed — aborted, the lane is untouched.`,
+          files, restored, head: after, detail: rb.err.slice(0, 400) }, 409);
+      }
+      const head = (await git(cwd, "rev-parse", "--short", "HEAD")).out;
+      const ab1 = await git(cwd, "rev-list", "--left-right", "--count", `${base}...HEAD`);
+      const m1 = /^(\d+)\s+(\d+)$/.exec(ab1.out);
+      gitInfo.delete(s.id); // the cached branch/ahead/behind is stale the instant this returns
+      return json({ ok: true, base, was: behind, behind: m1 ? Number(m1[1]) : 0, ahead: m1 ? Number(m1[2]) : 0,
+        head, from: before.slice(0, 7) });
+    }
     // ⏫ agent merge & land. POST: deterministic guards → start the background job (the
     // fuzzy middle: rebase + conflict resolution in the lane) → deterministic re-verify,
     // server-side ff-merge and landLane inside the job. GET: job state for the board's

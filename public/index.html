@@ -2016,6 +2016,9 @@
   /* the file tree keeps its own scroll box in the column, so a 4000-file repo cannot push the
      lanes and the prompt outline off the screen (owner, 2026-09-20: open, but not displacing) */
   #board .fxtree { max-height: 240px; }
+  /* a refused or conflicting rebase — the reason, and the files it named */
+  #board .rbfail { color: var(--amber); margin-top: 8px; }
+  #board .rbfail .bfile { color: var(--b-ink2); cursor: default; }
   #board .bfail h3 { color: var(--amber); }
   #board .bfail .bstate { color: var(--amber); }
 

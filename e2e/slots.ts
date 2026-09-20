@@ -1030,7 +1030,7 @@ export async function run(): Promise<void> {
 
   // --- the board's SECTION ORDER. The owner set it twice: §F4 (briefs/ui-next-level-2026-08-06.md)
   // and the redesign of 2026-09-18/19 — machine alarms → head → changes → checks → history → the
-  // folded tools (files, lanes, agents, prompts). Nothing else in the suite would notice a re-sort
+  // sections and one fold. Nothing else in the suite would notice a re-sort
   // undoing it. Asserted as a RELATIVE order over renderBoard's own pushes (and, for the tools, its
   // fold calls), so a section inserted between two of them does not trip it — only a reordering
   // does. This suite has no DOM, so the source is the evidence; the rendered result was checked by
@@ -1087,10 +1087,16 @@ export async function run(): Promise<void> {
   // the lanes list LEFT the folded tools on 2026-09-19 ("die commits und auch die worktree's vllt
   // doch lieber direkt voll einsehen") — it is a section now, and its absence from the fold list is
   // asserted so it cannot quietly fold itself away again.
-  check("client: the folded tools come in the owner's order — files → agents → prompts, and lanes is NOT among them",
-    ["files", "agents", "prompts"].every((k, i, all) => i === 0 || foldOrder.indexOf(all[i - 1]) < foldOrder.indexOf(k))
-    && foldOrder.indexOf("files") >= 0 && foldOrder.indexOf("lanes") === -1,
+  // Files and Lanes became SECTIONS (owner, 2026-09-19/20: the lane map read as often as the
+  // commits, and the explorer "ohne ausklappen"), and the advisory agents left the column
+  // entirely. What remains behind a disclosure is the prompt outline, and only that.
+  check("client: only the prompt outline is still folded — files, lanes and agents are not folds",
+    foldOrder.length === 1 && foldOrder[0] === "prompts",
     JSON.stringify(foldOrder));
+  check("client: the file tree is a section of its own, with the scroll box that keeps it in place",
+    /nodes\.push\(fx\)/.test(boardSrc) && /fileTreeSection\(slot, s\.cwd\)/.test(boardSrc)
+    && /#board \.fxtree \{[^}]*max-height/.test(indexSrc) && /\.fxtree \{[^}]*overflow-y: auto/.test(indexSrc),
+    "the files section in renderBoard + #board .fxtree");
   // …and both long lists are shown WHOLE. A silent client-side cut is the one thing they must not
   // do; where the SERVER caps (200 status lines, the newest 50 commits), the board names the cap
   // instead of letting a cut list read as "all of it".
@@ -1124,17 +1130,19 @@ export async function run(): Promise<void> {
   // the suite ages in this column are the SERVER's stamps; this pane's clock may sit minutes away
   check("client: a check's age is measured against the corrected server clock",
     /gateAge\(serverClock\(\) - b\.at\)/.test(boardSrc), "the checks section in renderBoard");
-  // owner call 2026-08-06, kept through the redesign: the advisory agents start folded on EVERY
-  // load — the fold is session-only, excluded both when the folds are written and when they are read
-  check("client: the advisory agents group is folded on every load, and the fold is not persisted",
-    /const FOLD_SESSION_ONLY = new Set\(\["agents"\]\);/.test(cliSrc)
-    && /setItem\(FOLD_KEY, JSON\.stringify\(\[\.\.\.boardFolds\]\.filter\(\(k\) => !FOLD_SESSION_ONLY\.has\(k\)\)\)\)/.test(cliSrc)
-    && /typeof x === "string" && !FOLD_SESSION_ONLY\.has\(x\)/.test(cliSrc)
-    && !/fleet\.agents/.test(cliSrc), "FOLD_SESSION_ONLY / boardFolds in src/client.ts");
-  // folding must not silently retire the ③ reviewer — the button and its POST stay reachable
-  check("client: folding agents away keeps both agent actions — nothing was deleted",
-    /"Review changes"/.test(boardSrc) && /"Summarize"/.test(boardSrc)
-    && /post\(`\/api\/slots\/\$\{slot\}\/review`/.test(boardSrc), "the agents group in renderBoard");
+  // THE ADVISORY AGENTS ARE GONE from this column (owner, 2026-09-20: "die agenten auch vorerst
+  // rauschmeißen (veraltetes Setup hinter den buttons)"). Removed, not hidden: no buttons, no
+  // caches, no session-only fold machinery. The SERVER routes stay, because the ③ auto-review
+  // writes the outcome ledger through them — asserted here so a cleanup cannot take them too.
+  check("client: the advisory agent buttons and their caches are gone from the board",
+    !/"Review changes"/.test(cliSrc) && !/"Summarize"/.test(cliSrc)
+    && !/sumCache|revCache|sumBusy|revBusy|FOLD_SESSION_ONLY/.test(cliSrc)
+    && !/boardFold\("agents"/.test(cliSrc), "src/client.ts");
+  // …and the routes themselves are proven ALIVE, not by reading source: the ③ auto-review and the
+  // share view still reach them, so a GET must answer for a live slot.
+  const sumProbe = await get("/api/slots/1/summary");
+  check("server: the summary route survives the board's cleanup (cache GET still answers)",
+    sumProbe.status === 200, `status=${sumProbe.status}`);
 
   // --- stable lane anchor creation. Slots 3/4 are deliberately real same-repo mains: the first
   // request names slot 3 exactly; the generic route chooses the last-active eligible main once.

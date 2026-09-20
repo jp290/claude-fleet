@@ -2013,6 +2013,9 @@
   #board .bempty { padding: 2px 0; color: var(--b-ink3); }
   #board .bstale { color: var(--amber); font-size: 11.5px; margin-top: 6px; }
   /* a READ that failed — never the same shape as "there is nothing here" */
+  /* the file tree keeps its own scroll box in the column, so a 4000-file repo cannot push the
+     lanes and the prompt outline off the screen (owner, 2026-09-20: open, but not displacing) */
+  #board .fxtree { max-height: 240px; }
   #board .bfail h3 { color: var(--amber); }
   #board .bfail .bstate { color: var(--amber); }
 
@@ -2130,7 +2133,6 @@
   #board .bwtact { border: 0; background: none; color: var(--b-ink2); font-size: 11px; padding: 1px 4px; }
   #board .bwtact:hover:not(:disabled) { color: var(--b-ink); background: var(--b-hover); }
   #board .bwtact:disabled { color: var(--b-ink3); }
-  #board .bagenthint { color: var(--b-ink3); font-size: 11px; margin-bottom: 6px; }
 
   /* --- the suite meter: a glass thermometer pinned under the board head. White balls ride the line
      through the tube and gather at four stations — waiting, running, on a helper, done — and every
@@ -2286,7 +2288,6 @@
   #devpanel .bstate { font-size: 12px; }
   #devpanel .bidmeta { font-size: 11px; }
   /* AGENTS group: make the advisory / read-only nature legible */
-  .bagenthint { color: var(--faint); font-size: 10px; margin-bottom: 2px; }
   /* a commit row is a <button>: both lists are clickable, and Enter/Space + the focus ring come
      from the tag rather than from a handler. The reset keeps it looking like the row it was. */
   .brow { display: flex; gap: 7px; padding: 2px 4px; margin-left: -4px; color: #999;
@@ -2320,14 +2321,8 @@
   .bprompt .bn { flex: none; color: var(--accent); font-weight: 700; min-width: 16px; text-align: right; }
   .bprompt .bt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bempty { color: #555; padding: 14px 2px; }
-  /* ✨ agent summary — click-only, visibly aged when the git state moved on */
-  .bsum { color: #c4c4c4; line-height: 1.5; margin: 2px 0 6px; }
+  /* "computed for an older state" — still used by the outcome lens's aged results */
   .bstale { color: var(--amber); font-size: 10.5px; margin: 2px 0 5px; }
-  .bsumhead { font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); margin: 6px 0 2px; }
-  .bsumrow { color: #aaa; line-height: 1.45; padding: 1px 0; }
-  .bsumver { color: #889978; margin: 6px 0 2px; line-height: 1.45; }
-  .bsummeta { color: #555; font-size: 10px; margin-top: 5px; }
-  .bsumerr { color: var(--del); line-height: 1.45; margin: 2px 0 6px; word-break: break-word; }
   /* 🔍 agent review — ranked findings, each pinned to a cited file:line */
   .bfind { margin: 5px 0; padding: 5px 8px; border-radius: 6px; background: #1c1c1c; border-left: 2px solid #3a3a44; }
   .bfind.high { border-left-color: var(--del); }

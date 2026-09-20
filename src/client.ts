@@ -1269,16 +1269,14 @@ const repoOfSlot = (s: SlotInfo | undefined, brief: BriefInfo): string | null =>
 const boardBody = $("boardbody");
 let boardOpen = localStorage.getItem("fleet.board") === "1";
 let boardBusy = false;
-// THE BOARD'S FOLDS: files, lanes, agents and prompts each sit behind a disclosure. Module state,
-// so the 3s re-render cannot snap one shut while you read in it; remembered per browser — except
-// AGENTS, which starts folded on every page load (owner call 2026-08-06: the advisory summary and
-// review are the least-used part of the board and must not push the git story down unasked).
+// THE BOARD'S FOLDS. Only what a reader reaches for rarely still sits behind a disclosure —
+// files and lanes became sections of their own, and the advisory agents left the column. Module
+// state, so the 3s re-render cannot snap one shut while you read in it; remembered per browser.
 const FOLD_KEY = "fleet.board.folds";
-const FOLD_SESSION_ONLY = new Set(["agents"]);
 const boardFolds: Set<string> = (() => {
   try {
     const v: unknown = JSON.parse(localStorage.getItem(FOLD_KEY) ?? "[]");
-    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !FOLD_SESSION_ONLY.has(x)) : []);
+    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
   } catch { return new Set(); } // a hand-edited or foreign value is "nothing open", not a crash
 })();
 function boardFold(key: string, title: string, count: string | null, fill: (body: HTMLElement) => void): HTMLElement {
@@ -1289,7 +1287,7 @@ function boardFold(key: string, title: string, count: string | null, fill: (body
   hd.append(el("span", "bchev"), el("span", "bfoldt", title), ...(count !== null ? [el("span", "bfoldn", count)] : []));
   hd.onclick = () => {
     if (boardFolds.has(key)) boardFolds.delete(key); else boardFolds.add(key);
-    try { localStorage.setItem(FOLD_KEY, JSON.stringify([...boardFolds].filter((k) => !FOLD_SESSION_ONLY.has(k)))); }
+    try { localStorage.setItem(FOLD_KEY, JSON.stringify([...boardFolds])); }
     catch { /* storage refused — the fold still works for this page */ }
     void renderBoard();
   };
@@ -1306,24 +1304,11 @@ function boardFold(key: string, title: string, count: string | null, fill: (body
 let boardMenuOpen = false;
 // per-slot outline cursor, incremental like pollChat: full fetch once, then only new entries
 const outline = new Map<number, { total: number; source: string | null; prompts: string[]; err: string | null }>();
-// ✨ agent summary (BACKLOG #14 Phase 2): result of the server's short-lived
-// claude -p run, cached per slot. Only ever fetched via GET (cache lookup) on
-// first view — the model call itself is strictly click-triggered (POST).
-interface SummaryInfo { summary?: string; openThreads?: string[]; verification?: string;
-  model?: string; at?: number; head?: string | null; dirty?: number; error?: string }
-const sumCache = new Map<number, SummaryInfo>();
-const sumBusy = new Set<number>();
-// 🔍 agent review: the same click-only contract as the summary, over this slot's own code
-// changes. Owner-only (no share counterpart) and purely advisory — nothing here gates a land.
+// A review finding as the OUTCOME LENS reads it (src/client.ts, the outcome detail): the board's
+// own advisory review left on 2026-09-20, this type did not — the ③ auto-review keeps writing
+// findings into the outcome ledger, and that lens still renders them.
 interface ReviewFinding { title: string; file: string; line: number | null;
   impact: "high" | "medium" | "low"; cost: string; basis: "verified" | "inferred"; detail: string }
-interface ReviewInfo { findings?: ReviewFinding[]; scope?: string; notes?: string;
-  model?: string; at?: number; head?: string | null; dirty?: number; error?: string;
-  // content identity of the reviewed diff — the disposition rail's join key for a review label
-  // (null = not computable, and then the review is deliberately not labelable)
-  patchId?: string | null }
-const revCache = new Map<number, ReviewInfo>();
-const revBusy = new Set<number>();
 // lane map + ⏫ merge agent (async job on the server; the board's 3s poll carries state)
 interface WtRisk { dirtyFiles: string[]; unpushedCommits: { hash: string; subject: string }[];
   shortstat: string | null; empty: boolean }
@@ -3160,10 +3145,20 @@ async function renderBoard() {
       // (2026-09-19: "ein kommendes feature bei dem sich versch arten von sessions starten
       // lassen … fleetWorker, eigene config"). Until they exist, this row says only what is
       // actually true today and invents no kind: lane or repo session, plus a granted profile.
-      row("Type", [brief?.worktree ? "lane" : "repo session",
-        setup?.profile === "game-maker" ? "game-maker" : null].filter(Boolean).join(" · "),
+      // PROFILE — its own row, always written, because the owner reads it as a fact of the
+      // session and not as a decoration of another line. It was invisible in every real session
+      // until 2026-09-20: it was a suffix that only appeared for "game-maker", and the server
+      // resolves it through `slot.programId`, which none of the ten live sessions carried.
+      // Absence of a program bracket IS standard (server/types.ts: "Abwesenheit = Standard-MAIN"),
+      // so absence is written as the answer it is, with the reason on hover.
+      row("Profile", setup?.profile ?? "standard",
         setup?.profile === "game-maker" ? "the owner granted this session's program the game-maker profile"
-          : "the kind of session this pane holds — the session kinds still to come will be named here");
+          : setup?.profile === "standard" ? "this session's program runs on the standard profile"
+          : "standard by default — this session has no program bracket to grant another profile");
+      // …and what KIND of session holds the pane. The session kinds still to come (fleetWorker,
+      // a session's own config) will be named here; until they exist this invents none.
+      row("Type", brief?.worktree ? "lane" : "repo session",
+        "the kind of session this pane holds — the session kinds still to come will be named here");
       // model, effort and the context budget are NOT repeated here: they are on the sidebar row
       // for every session at once, and the owner called them redundant in the board (2026-09-19).
       if (s.browser) row("Browser", "Playwright MCP", "this lane was started with the browser tool attached");
@@ -3541,11 +3536,16 @@ async function renderBoard() {
       // plain directory would get a card whose only content is "not a git repo" on every repaint.
       // A detached HEAD loses the card too — the honest cost of reading git-ness off the one field
       // the brief already carries, rather than adding a probe to the 3s render for an edge case.
+      // OPEN, not folded (owner, 2026-09-20: "den File Explorer ohne ausklappen aufsetzen"). The
+      // tree keeps its own scroll box (public/index.html .fxtree), so a repo with 4000 files does
+      // not push Lanes and the rest of the column off the screen.
       if (brief.branch) {
         const known = fxTree.get(s.cwd);
-        const cwd = s.cwd;
-        tools.push(boardFold("files", "Files in this repo", known && !("error" in known) ? String(known.total) : null,
-          (box) => { box.append(...fileTreeSection(slot, cwd).childNodes); }));
+        const fx = fileTreeSection(slot, s.cwd);
+        const fhd = el("h3", "", "Files");
+        if (known && !("error" in known)) fhd.appendChild(el("span", "bsubstat", String(known.total)));
+        fx.insertBefore(fhd, fx.firstChild);
+        nodes.push(fx);
       }
 
       // 6 — LANES: the repo's lane map — every open worktree, who holds it, its state, and
@@ -3716,162 +3716,9 @@ async function renderBoard() {
         nodes.push(lsec);
       }
     }
-    if (brief) {
-      // 8 — AGENTS: advisory, read-only. ✨ summarize + 🔍 review. Last of the lane story and
-      // folded behind "more ▸", closed on every load (owner call §F4): the git story above is
-      // what the board is for, and these two were sitting in the middle of it. NOTHING is
-      // removed — the ③ auto-review keeps writing the outcome ledger either way; this decides
-      // only what the board shows unasked.
-      tools.push(boardFold("agents", "Agents", null, (asec) => {
-        // both cache reads happen on OPEN, not on render: a folded group must not spend two
-        // requests per slot on results nobody is looking at (GET never spawns the agent)
-        if (!sumCache.has(slot)) {
-          sumCache.set(slot, {});
-          void api(`/api/slots/${slot}/summary`).then(async (r) => {
-            if (!r.ok) return;
-            const j = (await r.json()) as SummaryInfo;
-            if (j.summary) { sumCache.set(slot, j); void renderBoard(); }
-          }).catch(() => { /* transient — the button still works */ });
-        }
-        // same one-shot cache recovery for the review (GET is a pure cache lookup server-side)
-        if (!revCache.has(slot)) {
-          revCache.set(slot, {});
-          void api(`/api/slots/${slot}/review`).then(async (r) => {
-            if (!r.ok) return;
-            const j = (await r.json()) as ReviewInfo;
-            if (j.findings) { revCache.set(slot, j); void renderBoard(); }
-          }).catch(() => { /* transient — the button still works */ });
-        }
-        // a result is pinned to the git state it was computed on — say so when that state moved on
-        const agedOut = (head?: string | null, dirty?: number) => {
-          const c0 = brief.commits[0];
-          return (!!head && !!c0 && !head.startsWith(c0.hash)) || dirty !== brief.uncommitted;
-        };
-        asec.appendChild(el("div", "bagenthint", "advisory · read-only — these never change your files"));
-        // The summarizer's evidence is the TRANSCRIPT TAIL (server.ts, the "## transcript tail"
-        // block). On a harness that writes none, it would still run, still cost a model call, and
-        // still answer confidently — from the diff alone, with the conversation silently missing.
-        // So it is withdrawn and SAID, rather than offered and quietly degraded.
-        //
-        // 🔍 review below is deliberately NOT withdrawn: it reads the git diff (reviewContextBlocks
-        // takes a cwd, never a Slot), so it is unaffected by the harness. Checked, not assumed —
-        // the design note that grouped "✨/🔍" together was written before either was traced.
-        const canSum = supportsOf(fleet.find((x) => x.id === slot)?.harness).transcript;
-        const sum = sumCache.get(slot);
-        if (!canSum)
-          asec.appendChild(el("div", "bstale",
-            "📋 summary needs a conversation transcript — this session's harness writes none"));
-        const sbtn = el("button", "bbtn quiet",
-          sumBusy.has(slot) ? "Summarizing…" : sum?.summary ? "Summarize again" : "Summarize") as HTMLButtonElement;
-        sbtn.disabled = sumBusy.has(slot) || !canSum;
-        sbtn.title = canSum
-          ? "run a short-lived read-only agent (background claude session in this checkout, uses the subscription) — one model call"
-          : "unavailable: this session's harness writes no transcript for the summarizer to read";
-        sbtn.onclick = async () => {
-          if (sumBusy.has(slot)) return;
-          sumBusy.add(slot);
-          sbtn.disabled = true;
-          sbtn.textContent = "Summarizing…";
-          try {
-            const r = await post(`/api/slots/${slot}/summary`, {});
-            const j = (await r.json().catch(() => ({}))) as SummaryInfo;
-            sumCache.set(slot, r.ok ? j : { error: j.error ?? "summarizer failed" });
-          } catch {
-            sumCache.set(slot, { error: "summarizer failed — network error" });
-          } finally {
-            sumBusy.delete(slot);
-            void renderBoard();
-          }
-        };
-        asec.appendChild(sbtn);
-        if (sum?.summary) {
-          // visible aging: the summary is pinned to the git state it was computed on
-          if (agedOut(sum.head, sum.dirty))
-            asec.appendChild(el("div", "bstale", "⚠ computed for an older state — re-run to refresh"));
-          asec.appendChild(el("div", "bsum", sum.summary));
-          if (sum.openThreads?.length) {
-            asec.appendChild(el("div", "bsumhead", "open threads"));
-            for (const t of sum.openThreads) asec.appendChild(el("div", "bsumrow", `· ${t}`));
-          }
-          if (sum.verification) asec.appendChild(el("div", "bsumver", `verified: ${sum.verification}`));
-          if (sum.model && sum.at)
-            asec.appendChild(el("div", "bsummeta", `${sum.model} · ${new Date(sum.at).toLocaleTimeString()}`));
-        } else if (sum?.error) {
-          asec.appendChild(el("div", "bsumerr", sum.error));
-        }
-        // 🔍 review — a SECOND agent beside the summarizer, over this slot's code changes.
-        // Advisory only: it never gates or alters a land, a merge or a file.
-        const rev = revCache.get(slot);
-        const rbtn = el("button", "bbtn quiet",
-          revBusy.has(slot) ? "Reviewing…" : rev?.findings ? "Review again" : "Review changes") as HTMLButtonElement;
-        rbtn.disabled = revBusy.has(slot);
-        rbtn.title = "run a short-lived read-only agent over this session's own code changes — one model call, advisory only";
-        rbtn.onclick = async () => {
-          if (revBusy.has(slot)) return;
-          revBusy.add(slot);
-          rbtn.disabled = true;
-          rbtn.textContent = "Reviewing…";
-          try {
-            const r = await post(`/api/slots/${slot}/review`, {});
-            const j = (await r.json().catch(() => ({}))) as ReviewInfo;
-            revCache.set(slot, r.ok ? j : { error: j.error ?? "reviewer failed" });
-          } catch {
-            revCache.set(slot, { error: "reviewer failed — network error" });
-          } finally {
-            revBusy.delete(slot);
-            void renderBoard();
-          }
-        };
-        asec.appendChild(rbtn);
-        if (rev?.findings) {
-          if (agedOut(rev.head, rev.dirty))
-            asec.appendChild(el("div", "bstale", "⚠ reviewed an older state — re-run to refresh"));
-          if (!rev.findings.length) {
-            asec.appendChild(el("div", "bsumrow", "· no findings in the reviewed changes"));
-          } else {
-            asec.appendChild(el("div", "bsumhead", `findings — ${rev.findings.length}, worst first`));
-            for (const f of rev.findings) {
-              const row = el("div", `bfind ${f.impact}`);
-              const hd = el("div", "bfindhd");
-              hd.appendChild(el("span", "bfindimp", f.impact));
-              hd.appendChild(el("span", "bfindt", f.title || "(untitled)"));
-              row.appendChild(hd);
-              row.appendChild(el("div", "bfindcite", `${f.file}:${f.line} · ${f.basis}`));
-              if (f.detail) row.appendChild(el("div", "bfinddet", f.detail));
-              if (f.cost) row.appendChild(el("div", "bfindcost", `cost: ${f.cost}`));
-              asec.appendChild(row);
-            }
-          }
-          if (rev.notes) asec.appendChild(el("div", "bsumver", `not checked: ${rev.notes}`));
-          if (rev.scope) asec.appendChild(el("div", "bsummeta", rev.scope));
-          if (rev.model && rev.at)
-            asec.appendChild(el("div", "bsummeta", `${rev.model} · ${new Date(rev.at).toLocaleTimeString()}`));
-          // was this review worth anything? One tap, owner-only, joined by patchId (content identity,
-          // so the label survives the land-path rebase). A review with no patchId gets no buttons —
-          // there is no honest key to file the label under, and a guessed one is worse than none.
-          if (rev.patchId) {
-            const rref = rev.patchId;
-            const rcur = dispoOf("review3", rref);
-            const rlab = el("div", "ocdispo-row");
-            rlab.appendChild(el("span", "ocdispo-state" + (rcur ? ` is-${rcur}` : " is-none"),
-              rcur ? `dein Urteil: ${DISPO_WORD_UI[rcur]}` : "unbewertet"));
-            for (const [verdict, word] of [["accepted", "nützlich"], ["wrong", "falsch"]] as [DispositionVerdict, string][]) {
-              const b = el("button", `ocdispo-btn${rcur === verdict ? " active" : ""}`, word) as HTMLButtonElement;
-              b.title = `label this review — records an owner \`${verdict}\` disposition on the rail`;
-              b.onclick = async () => {
-                b.disabled = true;
-                if (await labelDisposition("review3", rref, verdict)) void renderBoard();
-                else b.disabled = false;
-              };
-              rlab.appendChild(b);
-            }
-            asec.appendChild(rlab);
-          }
-        } else if (rev?.error) {
-          asec.appendChild(el("div", "bsumerr", rev.error));
-        }
-      }));
-    }
+    // The advisory agents (✨ summarize · 🔍 review) LEFT this column on 2026-09-20: the owner
+    // called the setup behind those two buttons outdated. The server routes stay — the ③
+    // auto-review writes the outcome ledger through them — only the board no longer offers them.
 
     // 9 — OUTLINE: prompt-jump navigation, kept at the bottom (lowest priority)
     tools.push(boardFold("prompts", "Your prompts", outlineErr ? "—" : String(prompts.length), (psec) => {

@@ -1054,8 +1054,9 @@ export async function run(): Promise<void> {
   // the context fill moves every minute, so it belongs to the head's state line, not to a block
   // of founding choices. Source is the evidence — this suite has no DOM.
   const setupSrc = boardSrc.slice(boardSrc.indexOf('el("div", "bsec bsetup")'), boardSrc.indexOf("if (brief) {"));
-  check("client: the setup block names the session type and the context packs, and reads them from the brief",
-    /row\("Type", \[brief\?\.worktree \? "lane" : "repo session"/.test(setupSrc)
+  check("client: the setup block names the profile, the session type and the context packs",
+    /row\("Profile", setup\?\.profile \?\? "standard"/.test(setupSrc)
+    && /row\("Type", brief\?\.worktree \? "lane" : "repo session"/.test(setupSrc)
     && /const packs = setup\?\.packs \?\? \[\];/.test(setupSrc)
     && /el\("span", "bspack", p\.id\)/.test(setupSrc), "the setup section in renderBoard");
   // A pack is a POINTER LIST. The board may open what it points at, and must never present a
@@ -1120,8 +1121,10 @@ export async function run(): Promise<void> {
   // Files and Lanes became SECTIONS (owner, 2026-09-19/20: the lane map read as often as the
   // commits, and the explorer "ohne ausklappen"), and the advisory agents left the column
   // entirely. What remains behind a disclosure is the prompt outline, and only that.
-  check("client: only the prompt outline is still folded — files, lanes and agents are not folds",
-    foldOrder.length === 1 && foldOrder[0] === "prompts",
+  // what is left behind a disclosure is exactly two things a reader reaches for rarely: the base
+  // branch's own history, and the prompt outline. files/lanes/agents are NOT among them.
+  check("client: only 'already in main' and the prompt outline are folded — files, lanes and agents are not",
+    foldOrder.join(",") === "repoCommits,prompts",
     JSON.stringify(foldOrder));
   check("client: the file tree is a section of its own, with the scroll box that keeps it in place",
     /nodes\.push\(fx\)/.test(boardSrc) && /fileTreeSection\(slot, s\.cwd\)/.test(boardSrc)

@@ -630,11 +630,27 @@ export async function run(lc: LaneCtx): Promise<void> {
     g(ln.cwd, "checkout", "-q", ln.branch);
 
     // 4 — THE DANGEROUS ONE: an agent mid-turn in this worktree. A send makes the pane produce
-    // output, which is exactly the signal the land path's own busy predicate reads.
+    // output, which is exactly the signal the land path's own busy predicate reads — but the
+    // output arrives when it arrives, so the busy state is WAITED FOR and then acted on. Without
+    // that wait this raced the predicate and the rebase ran, which took the two checks after it
+    // down with it (measured on a helper preview, 2026-09-20).
     await post("/send", { slot: ln.slot, text: "echo rebase-guard" });
-    const working = await rebase(ln.slot);
-    check("rebase refuses while the lane's agent is mid-turn, by name",
-      working.status === 409 && working.j.reason === "lane-working", JSON.stringify(working.j));
+    let busy = false;
+    for (let i = 0; i < 60 && !busy; i++) {
+      const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
+      const row = sx.slots.find((x) => x.id === ln.slot);
+      busy = !!row && sx.now - row.lastOutput < MERGE_IDLE_MS;
+      if (!busy) await Bun.sleep(50);
+    }
+    // a fixture that could not produce the state under test fails AS ITSELF, and the verdict below
+    // is not read as a statement about the refusal
+    check("rebase fixture: the pane is observably mid-turn before the refusal is asked for",
+      busy, `no output within ${MERGE_IDLE_MS}ms of a send`);
+    if (busy) {
+      const working = await rebase(ln.slot);
+      check("rebase refuses while the lane's agent is mid-turn, by name",
+        working.status === 409 && working.j.reason === "lane-working", JSON.stringify(working.j));
+    }
     await settleForMerge(ln.slot);
 
     // 5 — and then it does the one thing it is for

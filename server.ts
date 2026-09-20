@@ -26005,9 +26005,18 @@ function suiteOffersView(now: number): SuiteOfferRow[] {
     if (j.state === "open" || j.state === "claimed")
       rows.push({ slot: j.slot, branch: j.branch, state: j.state, device: j.claim?.name ?? null,
         at: j.claim?.claimedAt ?? j.offeredAt, result: null });
-    else if (j.state === "reported" && j.result && now - j.result.remote.reportedAt <= VERIFY_TERMINAL_MS)
-      rows.push({ slot: j.slot, branch: j.branch, state: "reported", device: j.result.remote.name,
-        at: j.result.remote.reportedAt, result: j.result.result });
+    else if (j.state === "reported" && j.result) {
+      // READ DEFENSIVELY: this view rides the 2 s owner poll, so it is the last place that may
+      // throw on a shape. A verdict whose remote block is unreadable falls back to the job's own
+      // end stamp, and if there is none the offer simply does not appear — a missing row on a
+      // meter is a far smaller failure than a poll that 500s for every client.
+      const rem = j.result.remote as LaneSuiteResult["remote"] | undefined;
+      const at = typeof rem?.reportedAt === "number" ? rem.reportedAt
+        : typeof j.endedAt === "number" ? j.endedAt : null;
+      if (at !== null && now - at <= VERIFY_TERMINAL_MS)
+        rows.push({ slot: j.slot, branch: j.branch, state: "reported", device: rem?.name ?? null,
+          at, result: j.result.result });
+    }
   }
   return rows.sort((a, b) => a.slot - b.slot);
 }
@@ -30471,7 +30480,20 @@ if (existsSync(STATE_FILE)) {
     if (Array.isArray((persisted as { laneSuiteJobs?: unknown }).laneSuiteJobs))
       for (const j of (persisted as { laneSuiteJobs: LaneSuiteJob[] }).laneSuiteJobs)
         if (j && typeof j.id === "string" && typeof j.slot === "number" && typeof j.slotOpenedAt === "number"
-          && typeof j.cwd === "string" && typeof j.state === "string") laneSuiteJobs.set(j.id, j);
+          && typeof j.cwd === "string" && typeof j.state === "string") {
+          // …and its VERDICT is validated too, not merely carried. A `result` without a readable
+          // `remote.reportedAt` — an older generation's row, a hand-edited state file — used to be
+          // restored whole and then dereferenced on the 2 s owner poll, where one malformed row
+          // took /api/sessions down for the entire fleet (measured on a helper preview,
+          // 2026-09-20: "TypeError: undefined is not an object (evaluating
+          // 'j.result.remote.reportedAt')" at suiteOffersView). The row survives, its unreadable
+          // verdict does not: the offer is still visible as one that ended without a usable answer.
+          const res = j.result as LaneSuiteResult | null | undefined;
+          const readable = !!res && !!res.remote && typeof res.remote.reportedAt === "number"
+            && typeof res.remote.name === "string";
+          if (res && !readable) console.error(`lane-suite job ${j.id}: result restored without a readable remote block — dropped`);
+          laneSuiteJobs.set(j.id, readable ? j : { ...j, result: null });
+        }
 
     // The command register is restored through the SAME allowlist the self door enforces
     // (helperCmdCheck): a row whose `cmd` is no longer allowed — the list narrowed while the row sat

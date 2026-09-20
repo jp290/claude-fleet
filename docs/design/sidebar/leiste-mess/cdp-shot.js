@@ -24,7 +24,12 @@ const evaluate = (expression) => send("Runtime.evaluate", { expression, awaitPro
 await send("Page.enable");
 await send("Page.navigate", { url });
 await Bun.sleep(4000);
-await evaluate(`localStorage.setItem("fleet.stacks", JSON.stringify(${JSON.stringify([repo])}))`);
+// The stack used to be seeded open through localStorage here, because the store held the OPEN
+// stacks and a fresh browser therefore hid every lane. Since the store holds the CLOSED ones
+// (src/client.ts, "DEFAULT IS OPEN"), seeding would measure the seed instead of the product — so
+// the store is CLEARED and the picture shows what a browser that has never been told anything
+// shows. `repo` stays in the signature: it is what a caller would fold, if a shot ever needs to.
+await evaluate(`localStorage.removeItem("fleet.stacks"); localStorage.removeItem("fleet.stacks.closed"); ${JSON.stringify(repo)}`);
 await send("Page.reload");
 await Bun.sleep(6000);
 for (const w of [900, 1200]) {

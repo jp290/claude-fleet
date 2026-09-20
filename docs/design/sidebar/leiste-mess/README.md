@@ -27,6 +27,12 @@ Browser gesteuert statt angeschossen.
 - **Auth ist `authorization: Bearer <token>`**, nicht `x-fleet-token`.
 - `instanz-shot.sh` zieht `e2e-stage.sh` herein und nimmt damit den **Suite-Mutex**: nicht parallel
   zu einem laufenden Suite-Lauf starten, sonst misst man die Last mit.
+- **Der Debug-Port 9222 ist fest verdrahtet, und `cdp-shot.js` nimmt das ERSTE Seiten-Target, das
+  er dort findet.** Läuft schon ein Chrome auf 9222 — etwa der, mit dem gerade die Testinstanz
+  fotografiert wurde —, misst der Lauf DESSEN Seite und meldet trotzdem „done". Genau so kam am
+  2026-09-20 ein v5-Budget mit 11 belegten Zeilen und 54 px Medianhöhe zustande, während das
+  Fixture 5 belegte Zeilen und 29 px hat. Vor jedem Lauf prüfen:
+  `curl -s -m 2 http://127.0.0.1:9222/json` muss FEHLSCHLAGEN.
 
 ## Bezugsgrösse
 `docs/messungen/INDEX.md` (Notiz `2026-09-20-session-marke-entwurf.md`) misst die ALTE Leiste mit

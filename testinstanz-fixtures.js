@@ -36,10 +36,60 @@ const DIR = process.env.FLEET_TI_DIR ?? "";
 const SOCK = process.env.FLEET_TI_SOCK ?? "";
 const ARG = process.argv[2] ?? "mixed";
 const READ_ONLY = ARG === "states";
+const PATCH = ARG === "succession-patch";
 const MODE = ARG === "full" ? "full" : "mixed";
 if (!BASE || !TOKEN || !DIR || !SOCK) {
   console.error("FLEET_TI_BASE, FLEET_TI_TOKEN, FLEET_TI_DIR and FLEET_TI_SOCK are required");
   process.exit(2);
+}
+
+// SUCCESSION FACTS CANNOT BE ASKED FOR OVER HTTP — they are the record of handovers that really
+// happened, and this instance has had none. They ARE persisted (`laneSuccessions` on the slot,
+// `lineageHandovers` as a top-level list, `laneSucceedCounts` as a map), unlike `lastOutput`, so
+// they can be planted in the state file. The server must be DOWN while this runs: it holds the
+// state in memory and writes it back over anything edited underneath it. testinstanz.sh stops it,
+// calls this, and starts it again on the same tmux socket, where the panes are still standing.
+if (PATCH) {
+  const file = `${DIR}/fleet.json`;
+  const st = JSON.parse(await Bun.file(file).text());
+  const ids = Object.keys(st.slots ?? {});
+  const laneIds = ids.filter((id) => st.slots[id]?.worktree);
+  const mainIds = ids.filter((id) => st.slots[id]?.cwd && !st.slots[id]?.worktree);
+  const planted = [];
+  // A lane on its third session, with two of five batons spent. `taken` is counted per QUEUE ROW
+  // (originId), which a hand-made lane has none of — so the row gets one, which is also what
+  // makes the cap apply at all (successionFacts: cap is null without an originId).
+  if (laneIds[0]) {
+    st.slots[laneIds[0]].laneSuccessions = 2;
+    st.slots[laneIds[0]].originId = "fixture0";
+    st.laneSucceedCounts = { ...(st.laneSucceedCounts ?? {}), fixture0: 2 };
+    planted.push(`slot ${laneIds[0]} (lane): session 3, 2 of the cap spent`);
+  }
+  // A second lane one session in, with no queue row: session 2, no cap — the other half of the
+  // question, so the picture shows a capped and an uncapped row side by side.
+  if (laneIds[1]) {
+    st.slots[laneIds[1]].laneSuccessions = 1;
+    planted.push(`slot ${laneIds[1]} (lane): session 2, no cap`);
+  }
+  // A main on its fourth session: three handover records addressed to this occupant's line.
+  if (mainIds[1]) {
+    const m = st.slots[mainIds[1]];
+    // 24 hex, and ALL TEN FIELDS: the loader refuses a record that does not contain exactly
+    // v, lineageId, role, at, from, to, obligations, intent, pointer, supersededBy, and it refuses
+    // it into a SCAR rather than an error — the first fixture here lost three records that way and
+    // the only trace was one line in the instance's server.log.
+    const lineageId = "f1c70000000000000000cafe";
+    m.lineageId = lineageId;
+    st.lineageHandovers = [...(st.lineageHandovers ?? []), ...[0, 1, 2].map((i) => ({
+      v: 1, lineageId, role: "generic", at: (m.openedAt ?? Date.now()) - (3 - i) * 3600_000,
+      from: { slot: Number(mainIds[1]), openedAt: (m.openedAt ?? Date.now()) - (4 - i) * 3600_000 },
+      to: { slot: Number(mainIds[1]), openedAt: (m.openedAt ?? Date.now()) - (3 - i) * 3600_000 },
+      obligations: [], intent: "fixture handover", pointer: null, supersededBy: null }))];
+    planted.push(`slot ${mainIds[1]} (main): session 4`);
+  }
+  await Bun.write(file, JSON.stringify(st));
+  console.log(`succession planted in the state file: ${planted.join(" · ") || "nothing (no slots)"}`);
+  process.exit(0);
 }
 
 const H = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };

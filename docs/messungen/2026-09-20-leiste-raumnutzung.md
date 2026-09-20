@@ -30,6 +30,8 @@ Zwei Reparaturen an der Apparatur, beide vorher gemessen falsch:
 | v2 Schnitt 2 — Innenabstände | **54** | **49** | 29 | 37,49 | 20,61 | 41,90 | 16 von 16 |
 | v3 Schnitt 3 — Breite ans Label | 54 | 49 | 29 | 36,52 | 22,19 | 41,29 | 16 von 16 |
 | v4 Schnitt 4 — linkes Band | 54 | 49 | 29 | 35,87 | 22,77 | 41,35 | 16 von 16 |
+| v5 Schnitt 5 — Stacks offen als Default | 54 | 49 | 29 | 35,74 | 22,77 | 41,49 | 16 von 16 |
+| v6 Schnitt 6 — unfokussierte Lane einzeilig | 54 | 49 / **32** | 29 | 35,05 | 23,41 | 41,54 | 16 von 16 |
 
 Fläche der ganzen Leiste: **182 950 px² → 137 730 px² (−24,7 %) bei GLEICHEM Fakt-Anteil in
 Tinte** (50 295 → 50 298 px², die Streuung ist Messrauschen der Textkästen). Das ist die Aussage des
@@ -85,6 +87,75 @@ also nichts zu verschieben — die Spalte existiert auf den anderen Zeilen gar n
 Zweimal in dieser Tabelle steigt der Chrome-Anteil, obwohl Fläche gewonnen wurde (v3 und v4): die
 Zeilen werden BREITER, und beim ungekürzten Label zählt das Messgerät zusätzliche Kastenbreite
 per Definition als Chrome statt als Tinte. Die Fakt-TINTE bleibt konstant (50 016 → 50 034 px²).
+
+## Schnitt 5 — die Lanes einer Session sind immer sichtbar
+
+Owner, wörtlich: „ich will nicht das sie immer eingeklappt sind". `stackOpen` wurde aus
+`localStorage` mit Default `[]` initialisiert und hielt die OFFENEN Stacks — jeder frische Browser
+zeigte also jede Lane zugeklappt, bis jemand klickte. Der Speicher hält jetzt die **Abweichung**
+(`fleet.stacks.closed`): leerer Speicher heisst offen, die Faltung bleibt und merkt sich nur, was
+bewusst zugeklappt wurde. Kein Migrationspfad, weil die alte Liste nicht als die neue lesbar ist —
+ein fehlender Stack hiess dort ZU und heisst hier AUF; der alte Schlüssel wird beim ersten
+Schreiben entfernt, damit er nicht liegen bleibt.
+
+**Am Fixture ändert sich keine Zahl, und das ist der Beweis, nicht sein Fehlen:** `cdp-shot.js`
+hat den Stack bisher über `localStorage` aufgeklappt, bevor es fotografierte. Dieser Treiber
+LÖSCHT den Speicher jetzt — das Bild zeigt, was ein Browser zeigt, dem nie etwas gesagt wurde,
+und die Lanes stehen trotzdem da. v5 ist v4 in Zahlen und ein anderes Bild in der Praxis.
+
+**WAS ES AUF EINER VOLLEN LEISTE KOSTET, gemessen, nicht geschätzt** (Testinstanz, Stand `full`:
+13 Sessions + 3 Lanes, 0 freie Plätze, Fenster 900 px): zugeklappt trug die Leiste 13 Zeilen und
+alle waren im Bild. Offen sind es 16 Zeilen mit zusammen 849 px gegen 775 px Leistenhöhe —
+**14 von 16 im Bild, die Achse scrollt.** Das kippt, und es steht hier, statt zu fehlen.
+
+## Schnitt 6 — eine Lane, in der du nicht bist, ist eine Zeile
+
+Die zweite Hälfte des Owner-Satzes („vllt werden sie groesser wenn man direkt drauf geht") als
+Vorschlag gebaut: die unfokussierte Lane verliert ihre zweite Zeile, die fokussierte behält sie.
+49 → **32 px**. Sie behält Band, Label, Lifecycle-Punkt und Zustand; sie gibt auf: den
+Checkout-Namen (der auf einer Lane das Label wiederholt), ihren Kontextstand und ihr Alter.
+
+**Der Preis ist gemessen und ist ein FAKT-Verlust, kein freier Gewinn:** am Fixture fällt die
+Fakt-Tinte 50 034 → 47 499 px² (−2 535 px² = die zweite Zeile EINER Lane), am vollen Stand
+55 427 → 51 173 px² für drei. **Und es kauft die Zeile nicht zurück:** die 16 Zeilen des vollen
+Stands schrumpfen 849 → 798 px, das Fenster hat 775 — **weiterhin 14 von 16**. Der bindende
+Posten sind die dreizehn zweizeiligen SESSION-Zeilen (13 × 54 = 702 px), nicht die Lanes.
+Wer die zweite Zeile der Lane behalten will, macht eine CSS-Zeile rückgängig.
+
+## Die Succession in der Leiste — drei Fassungen zur Wahl, keine gebaut
+
+„hier fehlt das band wo die succession-session reihe angezeigt wird oder?" — stimmt: die Fakten
+stehen in `server.ts#successionFacts` und werden nur von der RECHTEN SPALTE gelesen
+(`srow("Baton", …)`), ausgeliefert über `GET /api/slots/:id/brief`, also nur für die eine offene
+Session. In der Leiste kam davon nichts vor.
+
+**Wie der Fakt dorthin kommt, und was das kostet.** Er hängt jetzt am 2-s-Poll als `succession`
+(`server.ts#successionRowView`). CPU ist nicht der Preis — alle Werte liegen im Speicher
+(`laneSuccessions` am Slot, `laneSucceedCounts`, ein Filter über `lineageHandovers`, das auf
+dieser Maschine 10 Datensätze hält). Der Preis sind BYTES, und dieser Poll hat ein gemessenes
+Budget (14 KiB, ~1 300 B Luft, in `e2e/tasks.ts` gepinnt): **37–43 B je Zeile, die etwas zu sagen
+hat**; unbedingt wären es ~640 B für 16 Zeilen, also die halbe Luft für eine Aussage, die auf
+einem frischen Fleet auf keiner Zeile steht. Darum folgt das Feld der Regel von `stalled` und wird
+WEGGELASSEN, wenn nichts zu sagen ist.
+
+**Abwesend heisst „keine Nachfolge für diesen Platzinhaber verzeichnet" — und ausdrücklich NICHT
+„Session 1".** `successionFacts` leitet die Linie einer MAIN mit `lineageStateOf(s)?.line.length ?? 0`
+ab und liest damit eine Session ohne jede Lineage genauso wie eine gründende. Eine Fassung, die
+aus einem abwesenden Schlüssel „s1" druckte, behauptete etwas, das dieser Server nicht
+unterscheiden kann. Also druckt keine der drei etwas, wenn der Schlüssel fehlt.
+
+Die drei Fassungen liegen auf der laufenden Testinstanz, gleiche Plätze, gleiche Fixture-Daten
+(`…/?token=…#band=a|b|c` — im HASH, weil `/?token=…` mit 302 auf `/` antwortet und eine Query
+dabei verloren geht):
+
+| | was man sieht | was sie kostet |
+|---|---|---|
+| **A** eigene Bahn | eine dünne Linie unter der Zeile, darauf `s3 · 2/5` | **+17 px Zeilenhöhe** je Zeile mit Nachfolge; bei 900 px fällt der 16. Platz aus dem Bild |
+| **B** in Zeile 2 | `s3 · 2/5` zwischen `ctx` und dem Alter, wo die anderen Messwerte stehen | **0 px Höhe, 0 px Label**; dafür steht die Nachfolge zwischen Sensoren, obwohl sie keiner ist |
+| **C** Chip in Zeile 1 | ein Chip `s3 · 2/5` neben dem Label, im Rezept des Adress-Chips | **Label-Breite**: das Lane-Label verliert ~45 px; dafür ist es das Einzige, was eine ZUGEKLAPPTE Zeile behält |
+
+Das Gerüst (`BAND_VARIANT`) ist genau das — ein Gerüst. Steht die Wahl, bleibt eine Fassung und
+der Schalter geht; er darf kein Land sehen.
 
 ## Der EINE Posten, den ich gemessen und NICHT gebaut habe: die Rinne der Marke
 

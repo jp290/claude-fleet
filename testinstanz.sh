@@ -15,6 +15,7 @@
 #
 #   ./testinstanz.sh up [mixed|full]        stage, start, plant the fixtures, print the URL
 #   ./testinstanz.sh fixtures [mixed|full]  replant against the running instance, no restart
+#   ./testinstanz.sh succession             plant the succession facts (stops+starts the server)
 #   ./testinstanz.sh states                 what the bar paints right now, per state
 #   ./testinstanz.sh status                 is it up, where, and who holds the suite mutex
 #   ./testinstanz.sh down                   stop the server, kill ITS tmux by socket, remove the dir
@@ -53,6 +54,20 @@ ti_plant() {
     FLEET_TI_DIR="$DIR" FLEET_TI_SOCK="$SOCK" bun "$SRC/testinstanz-fixtures.js" "$1"
 }
 
+# Start the server against the staged directory and wait until it answers. Used by `up` and by
+# `succession`, which stops it to edit the state file underneath and starts it again — the tmux
+# sessions stand through that, so the panes come back with the instance.
+ti_serve() {
+  ( cd "$DIR" && exec env FLEET_HOST="$(ti_addr)" FLEET_PORT="$PORT" FLEET_SOCK="$SOCK" FLEET_CMD=true \
+      FLEET_LANE_SUCCEED_MAX=5 FLEET_TOKEN="$(cat "$TOKF")" bun server.ts >> "$DIR/server.log" 2>&1 ) &
+  echo $! > "$PIDF"
+  i=0
+  until curl -sf "http://$(ti_addr):$PORT/api/sessions" -H "authorization: Bearer $(cat "$TOKF")" >/dev/null 2>&1; do
+    i=$((i+1)); [ "$i" -gt 60 ] && { echo "server never came up:" >&2; tail -20 "$DIR/server.log" >&2; return 1; }
+    sleep 0.5
+  done
+}
+
 case "${1:-}" in
 up)
   ti_alive && { echo "already up — ./testinstanz.sh status"; exit 0; }
@@ -64,17 +79,7 @@ up)
   TOK=$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')
   printf '%s' "$TOK" > "$TOKF"; chmod 600 "$TOKF"
   ADDR=$(ti_addr)
-  # `exec` matters: without it the recorded pid is the SUBSHELL's, the subshell exits, and `down`
-  # then kills a pid that is already gone while the server keeps the port. Measured here on
-  # 2026-09-20 — the next `up` died with EADDRINUSE and the old instance was still serving.
-  ( cd "$DIR" && exec env FLEET_HOST="$ADDR" FLEET_PORT="$PORT" FLEET_SOCK="$SOCK" FLEET_CMD=true \
-      FLEET_TOKEN="$TOK" bun server.ts > "$DIR/server.log" 2>&1 ) &
-  echo $! > "$PIDF"
-  i=0
-  until curl -sf "http://$ADDR:$PORT/api/sessions" -H "authorization: Bearer $TOK" >/dev/null 2>&1; do
-    i=$((i+1)); [ "$i" -gt 60 ] && { echo "server never came up:" >&2; tail -20 "$DIR/server.log" >&2; exit 1; }
-    sleep 0.5
-  done
+  ti_serve || exit 1
   ti_plant "${2:-mixed}"
   echo
   echo "TESTINSTANZ UP   http://$ADDR:$PORT/?token=$TOK"
@@ -84,6 +89,18 @@ up)
 fixtures)
   ti_alive || { echo "not up — ./testinstanz.sh up" >&2; exit 1; }
   ti_plant "${2:-mixed}"
+  ;;
+succession)
+  # Plants the succession facts, which no HTTP route can set (see testinstanz-fixtures.js). The
+  # server is stopped for the edit because it would otherwise write its in-memory state back over
+  # it; the tmux sessions are left alone, so the panes are still there when it comes back.
+  ti_alive || { echo "not up — ./testinstanz.sh up" >&2; exit 1; }
+  kill "$(cat "$PIDF")" 2>/dev/null || true
+  i=0; while kill -0 "$(cat "$PIDF")" 2>/dev/null && [ "$i" -lt 40 ]; do i=$((i+1)); sleep 0.25; done
+  ti_plant succession-patch
+  ti_serve || exit 1
+  sleep 3
+  ti_plant states
   ;;
 states)
   # Plants nothing. `asleep` is the state no fixture can produce (see testinstanz-fixtures.js);
@@ -115,5 +132,5 @@ down)
   echo "down: server stopped, port $PORT free, tmux -L $SOCK killed, $DIR removed"
   ;;
 *)
-  echo "usage: ./testinstanz.sh up [mixed|full] | fixtures [mixed|full] | states | status | down" >&2; exit 2;;
+  echo "usage: ./testinstanz.sh up|fixtures [mixed|full] | succession | states | status | down" >&2; exit 2;;
 esac

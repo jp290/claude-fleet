@@ -183,6 +183,15 @@
      lands in — and empty on purpose: a placeholder that draws something is not a placeholder. */
   .slot .mark { flex: none; width: var(--mark-size, 26px); height: var(--mark-size, 26px); }
   .slot.lane { --mark-size: 21px; }
+  /* A LANE YOU ARE NOT IN IS ONE LINE; THE ONE YOU ARE IN KEEPS BOTH. Owner, 2026-09-20: "ich will
+     nicht das sie immer eingeklappt sind" and "vllt werden sie groesser wenn man direkt drauf
+     geht". Always-open costs height — on a FULL bar (13 sessions + 3 lanes) 16 rows at 54/49 px no
+     longer fit a 900 px window, measured 14 of 16 — and this is where the height comes back.
+     WHAT AN UNFOCUSED LANE GIVES UP is its second line: the checkout name (which on a lane repeats
+     the label), its context fill and its idle time. It keeps its band, its label, its lifecycle dot
+     and its state. Click it and all three come back. This is a TRADE, not a free win. */
+  .slot.lane:not(.current) .r2 { display: none; }
+  .slot.lane:not(.current) { padding-top: 4px; padding-bottom: 5px; }
   /* THE ADDRESS IS A CHIP, and it is the same object the chat view sets an id or a code span in
      (.mdcode: mono on --chat-raised behind a hairline) — so the thing you type into a route and the
      thing you point at in the bar look like one kind of thing. It carries the ONLY colour left in
@@ -205,6 +214,18 @@
      session for a mark to stand for. */
   .slot.empty { padding: 3px 8px 4px 6px; }
   .slot.empty .mark { height: 16px; }
+  /* THE THREE SUCCESSION FASSUNGEN — scaffolding behind #band=a|b|c (src/client.ts, BAND_VARIANT).
+     No new colour, no new edge, no new family: .succ is the same mono-on-faint the other readings of
+     line 2 use, .succhip is the address chip's own recipe at the lane size, and the band's rule is
+     --chat-edge-soft, which already draws every hairline in this sheet. */
+  .slot .succ { flex: none; font-family: var(--chat-mono); font-variant-numeric: tabular-nums; }
+  .slot .succband { display: flex; margin: 2px 0 0 calc(var(--mark-size, 26px) + 6px);
+    padding-top: 2px; border-top: 1px solid var(--chat-edge-soft);
+    font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  .slot .succhip { flex: none; padding: 1px 5px; border-radius: 5px; font-family: var(--chat-mono);
+    font-size: var(--chat-ui-fs); line-height: 1.45; font-variant-numeric: tabular-nums;
+    white-space: nowrap; color: var(--chat-mute);
+    background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
   .slot .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     letter-spacing: -0.005em; }
   .slot.current .lbl { color: var(--chat-ink); }

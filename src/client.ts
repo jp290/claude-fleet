@@ -231,6 +231,11 @@ interface SlotInfo {
   // omitted unless true / unless armed — see the server's slot row. `autoCloseRefusal: null` on a
   // lane is an ANSWER ("nothing refuses this lane"), absent is "the question does not apply".
   stalled?: true; stalledSince?: number; autoCloseRefusal?: string | null;
+  // which session of its line this row is, and what the lane cap has spent (server.ts#
+  // successionRowView). ABSENT = no succession recorded for this occupant, which is an answer and
+  // is NOT the same claim as "session 1" — the server cannot tell a founding main apart from one
+  // whose lineage was never recorded, so nothing is printed for an absent key.
+  succession?: { session: number; taken: number | null; cap: number | null };
   // which agent this session runs. ABSENT means the default harness — the server omits the field
   // when it is null (it is the 2 s poll), so absent and "claude" are the same state here too.
   harness?: string; effort?: string;
@@ -4552,7 +4557,7 @@ function showSlot(id: number) {
   // showing a lane while the sidebar pretends it isn't there is worse than no folding at all.
   if (s.worktree) {
     const stack = stacksOf().find((g) => g.lanes.some((lane) => lane.id === s.id));
-    if (stack && !stackOpen.has(stack.foldKey)) setStackOpen(stack, true);
+    if (stack && !stackIsOpen(stack.foldKey)) setStackOpen(stack, true);
   }
   setDrawer(false);
   const existing = panes.find((p) => p.slot === id);
@@ -6154,19 +6159,59 @@ interface Stack {
   at: number;                 // the fixed slot position the whole stack renders at
 }
 // Open/closed per device, on purpose (§F3): a phone and a desktop are allowed to disagree about
-// what is unfolded. Default is CLOSED — the point of the feature is the folded overview.
-const STACK_LS = "fleet.stacks";
-const stackOpen = new Set<string>(((): string[] => {
+// what is unfolded. DEFAULT IS OPEN, and the store holds the DEVIATION — the stacks this device
+// was told to fold — not the permission to show. The old store held the opposite (the open ones,
+// default closed), which made every fresh browser hide every lane until someone clicked: "ich will
+// nicht das sie immer eingeklappt sind" (owner, 2026-09-20). A new key rather than a migration,
+// because the old list cannot be read as the new one: a stack missing from it meant CLOSED there
+// and means OPEN here. The legacy key is dropped on the first write so it cannot rot in place.
+const STACK_LS = "fleet.stacks.closed";
+const STACK_LS_LEGACY = "fleet.stacks";
+const stackClosed = new Set<string>(((): string[] => {
   try {
     const v: unknown = JSON.parse(localStorage.getItem(STACK_LS) ?? "[]");
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   } catch { return []; }
 })());
+const stackIsOpen = (foldKey: string): boolean => !stackClosed.has(foldKey);
 function setStackOpen(g: Stack, on: boolean) {
-  if (on) stackOpen.add(g.foldKey);
-  else stackOpen.delete(g.foldKey);
-  localStorage.setItem(STACK_LS, JSON.stringify([...stackOpen]));
+  if (on) stackClosed.delete(g.foldKey);
+  else stackClosed.add(g.foldKey);
+  try {
+    localStorage.setItem(STACK_LS, JSON.stringify([...stackClosed]));
+    localStorage.removeItem(STACK_LS_LEGACY);
+  } catch { /* private window, blocked site data: the fold still works for this session */ }
   renderSlots();
+}
+
+// THE SUCCESSION BAND — THREE FASSUNGEN SIDE BY SIDE, SCAFFOLDING, NOT A FEATURE.
+// The owner asked for the succession line to be visible in the bar and did not say in what shape;
+// three shapes that differ in KIND (a band of its own · a reading in line 2 · a chip in line 1) are
+// cheaper to judge than to describe. WHEN HE HAS CHOSEN this collapses to the one he picked and the
+// switch goes — it must not survive into a land.
+//
+// Read from the HASH, not the query: `/?token=…` answers 302 to `/`, so a query parameter is gone
+// before any of this runs (measured: `location.search` was empty in the page). A fragment is never
+// sent to the server and survives the redirect, so the comparison URL is `…/?token=…#band=a`.
+// The query is still read, for a page opened without the login redirect.
+const BAND_VARIANT: "a" | "b" | "c" | null = ((): "a" | "b" | "c" | null => {
+  try {
+    const v = new URLSearchParams(location.hash.replace(/^#/, "")).get("band")
+      ?? new URLSearchParams(location.search).get("band");
+    return v === "a" || v === "b" || v === "c" ? v : null;
+  } catch { return null; }
+})();
+// "session 3 · 2 of 5" is the right column's wording (srow("Baton", …)). The bar has a quarter of
+// that width, so the three numbers are spelled short here and the long form goes in the tooltip.
+function successionText(sc: NonNullable<SlotInfo["succession"]>): string {
+  return `s${sc.session}`
+    + (sc.cap !== null ? ` · ${sc.taken ?? 0}/${sc.cap}` : sc.taken !== null ? ` · ${sc.taken}` : "");
+}
+function successionTitle(sc: NonNullable<SlotInfo["succession"]>): string {
+  return `session ${sc.session} of this line`
+    + (sc.cap !== null
+      ? ` · ${sc.taken ?? 0} of ${sc.cap} batons spent (FLEET_LANE_SUCCEED_MAX, counted per queue row)`
+      : sc.taken !== null ? ` · ${sc.taken} taken, no cap` : " · no cap");
 }
 
 // Which stacks exist right now. A repo with no lanes is NOT a stack — a lone session stays the
@@ -6446,7 +6491,7 @@ function emptyRow(s: SlotInfo): HTMLElement {
 
 // The whole stack: its anchor row and, when unfolded, its active lane rows.
 function renderStack(g: Stack, refs: ReadonlyMap<number, string>) {
-  const open = stackOpen.has(g.foldKey);
+  const open = stackIsOpen(g.foldKey);
   slotsEl.appendChild(g.anchor ? slotRow(g.anchor, g, refs) : repoHeaderRow(g, open));
   if (!open) return;
   for (const l of g.lanes) {
@@ -6532,7 +6577,7 @@ const parkedSendLine = (ps: { count: number; draftChars: number }): string =>
 const inboundChipLabel = (inb: { sends: number; bytes: number }): string =>
   `in ${inb.bytes < 1024 ? `${inb.bytes} B` : `${Math.round(inb.bytes / 1024)} KB`}`;
 function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<number, string>): HTMLElement {
-  const open = stack ? stackOpen.has(stack.foldKey) : false;
+  const open = stack ? stackIsOpen(stack.foldKey) : false;
   const visible = panes.some((p) => p.slot === s.id);
   const isFocused = panes[focused]?.slot === s.id;
   const row = el("div", "slot" + (isFocused ? " current" : visible ? " shown" : "") + (s.worktree ? " lane" : ""));
@@ -6575,6 +6620,13 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         const b = el("span", "autobadge", "⏱");
         b.title = "has scheduled prompts";
         r1.appendChild(b);
+      }
+      // FASSUNG C — a chip in line 1, beside the label: the succession reads as part of the
+      // ADDRESS rather than as a reading, and it is the only one of the three a folded row keeps.
+      if (BAND_VARIANT === "c" && s.succession) {
+        const sc = el("span", "succhip", successionText(s.succession));
+        sc.title = successionTitle(s.succession);
+        r1.appendChild(sc);
       }
       if (stack) for (const c of stackChips(stack, open)) r1.appendChild(c);
       // ⎇+ used to sit on all twelve empty rows at once, saying nothing about which repo it meant.
@@ -6700,8 +6752,24 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         }
         const when = el("span", "when", sinceShort(serverNow - s.lastOutput));
         when.title = `last output ${new Date(s.lastOutput).toLocaleString()}`;
+        // FASSUNG B — a reading among the readings: the succession sits in line 2 beside repo, ctx
+        // and idle, and costs the row no height at all.
+        if (BAND_VARIANT === "b" && s.succession) {
+          const sb = el("span", "succ", successionText(s.succession));
+          sb.title = successionTitle(s.succession);
+          r2.appendChild(sb);
+        }
         r2.appendChild(when);
         row.appendChild(r2);
+        // FASSUNG A — a thin band of its own under the row: the succession is not a sensor like
+        // ctx, it is what the row IS, so it gets its own line and a rule to sit on.
+        if (BAND_VARIANT === "a" && s.succession) {
+          const band = el("div", "succband");
+          const t = el("span", "succ", successionText(s.succession));
+          t.title = successionTitle(s.succession);
+          band.appendChild(t);
+          row.appendChild(band);
+        }
       }
       const act = el("div", "slotact");
       if (s.git && !s.worktree) {

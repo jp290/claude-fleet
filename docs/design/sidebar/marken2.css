@@ -1,0 +1,61 @@
+/* Runde 2. Dieselben Tokens wie `marken.css` (woertlich aus public/index.html:193-198); geaendert ist
+   nur, was ein Befund am Bild von Runde 1 verlangt hat. Kein Verlauf, kein Shader, kein
+   Schlagschatten — die Stiloeffnung gilt der Marke, nicht der Leiste. */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --chat-fs: 14px; --chat-code-fs: 12.5px; --chat-ui-fs: 11px;
+  --chat-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  --chat-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --chat-ink: #e7e7ea; --chat-prose: #d4d4d8; --chat-mute: #8b8b94; --chat-faint: #5c5c66;
+  --chat-surface: #111113; --chat-raised: #17171a; --chat-edge: #26262b; --chat-edge-soft: #1b1b1f;
+  --danger: #f85149; --t: 160ms cubic-bezier(.2,.7,.2,1);
+}
+html, body { height: 100%; background: #000; color: var(--chat-prose);
+  font: 400 var(--chat-fs)/1.5 var(--chat-sans); -webkit-font-smoothing: antialiased; overflow: hidden; }
+#app { display: flex; height: 100dvh; }
+#side { width: 252px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--chat-edge-soft); }
+#sidehead { display: flex; align-items: baseline; gap: 8px; padding: 12px 12px 8px; }
+#sidehead b { font-size: var(--chat-fs); font-weight: 650; color: var(--chat-ink); }
+#sidehead span { font-size: var(--chat-ui-fs); color: var(--chat-faint); font-variant-numeric: tabular-nums; }
+#list { flex: 1; overflow-y: auto; padding: 4px 8px 16px; scrollbar-width: none; }
+#list::-webkit-scrollbar { display: none; }
+
+/* [B5] DREI Spalten statt vier: Marke (traegt die Adresse) · Name · Zahlen. Der Mono-Chip ist weg. */
+.row { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 9px;
+  border-radius: 10px; background: none; text-align: left; cursor: default; overflow: hidden; }
+.row + .row { margin-top: 1px; }
+.mark { flex: none; display: block; }
+.lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--chat-prose); }
+/* [B9, eigener Befund] Feste Spaltenbreiten. In Runde 1 sassen pct und meta hinter einem flexiblen
+   Label und wanderten dadurch je Zeile um bis zu 40 px — eine Zahlenspalte, die keine Spalte war. */
+.pct { flex: none; width: 28px; text-align: right; font: 500 var(--chat-ui-fs)/1 var(--chat-mono);
+  color: var(--chat-faint); font-variant-numeric: tabular-nums; }
+.meta { flex: none; width: 38px; text-align: right; font-size: var(--chat-ui-fs); color: var(--chat-faint);
+  font-variant-numeric: tabular-nums; }
+.row.work .lbl { color: var(--chat-ink); }
+.row.need .lbl { color: var(--chat-ink); }
+.row.rest .lbl { color: var(--chat-prose); }
+.row.done .lbl, .row.sleep .lbl { color: var(--chat-faint); }
+.row.bad .lbl { color: #f2b3ae; }
+.row.free .lbl { color: var(--chat-faint); font-size: var(--chat-code-fs); }
+.row:hover { background: #0c0c0e; }
+
+/* [B8] Die Lane-Schiene ist jetzt eine ECHTE Schiene: eine durchgehende Linie an der Gruppe. In
+   Runde 1 war die senkrechte Linie an `.row.work` gehaengt, sah aber aus wie eine Gruppenlinie —
+   deshalb fehlte sie bei 3A (Zustand `need`) und bei 10A (`done`). Ein Mittel, eine Bedeutung. */
+.lanes { margin-left: 8px; padding-left: 10px; border-left: 1px solid var(--chat-edge); }
+.lanes .row { padding-top: 4px; padding-bottom: 4px; }
+
+#stage { flex: 1; min-width: 0; padding: 26px 30px; overflow-y: auto; color: var(--chat-mute); }
+#stage h1 { font-size: var(--chat-fs); font-weight: 650; color: var(--chat-ink); }
+#stage p { margin-top: 8px; max-width: 64ch; line-height: 1.6; font-size: var(--chat-code-fs); }
+#stage table { margin-top: 14px; border-collapse: collapse; font-size: var(--chat-code-fs); }
+#stage td { border-bottom: 1px solid var(--chat-edge-soft); padding: 5px 16px 5px 0; vertical-align: top; }
+#stage code { font: 500 var(--chat-code-fs) var(--chat-mono); color: var(--chat-prose); background: var(--chat-raised);
+  padding: 1px 5px; border-radius: 5px; }
+#rate { margin-top: 16px; font: 500 var(--chat-ui-fs) var(--chat-mono); color: var(--chat-faint); }
+/* Zustandstafel: alle sechs Zustaende nebeneinander, damit ein Bild belegt, dass sie sich trennen */
+#tafel { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 18px; }
+#tafel figure { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+#tafel figcaption { font: 500 var(--chat-ui-fs) var(--chat-mono); color: var(--chat-faint); }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

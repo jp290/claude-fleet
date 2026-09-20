@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet · Session-Marke · A2 (Zifferblatt)</title>
+<!-- A2: die ueberarbeitete Variante A. Die Marke ist ein Zifferblatt — sie traegt die Adresse im
+     Zentrum und den Kontext-Fuellstand als Bogen, also zwei Werte, die vorher als Text daneben
+     standen. Die Kachel ist weg, die Spalte hat ein Feld weniger. -->
+<link rel="stylesheet" href="marken2.css">
+</head>
+<body>
+<div id="app">
+  <aside id="side"><div id="sidehead"><b>Fleet</b><span id="count"></span></div><div id="list"></div></aside>
+  <main id="stage">
+    <h1>A2 · Zifferblatt</h1>
+    <p>Dieselben Fakten wie A, anderes Traggerüst. Die Marke ist zuerst ein Messgerät und erst danach
+      ein Erkennungszeichen: der Bogen ist der Kontext-Füllstand, das Zentrum die Adresse. Keine
+      Kachel mehr — was den Platz hält, ist die Spur, und die gibt es auch auf einem freien Platz.</p>
+    <table>
+      <tr><td>Farbton</td><td>Projekt — <code>projectHue(repo)</code>, unverändert</td></tr>
+      <tr><td>Tonstufe</td><td>Session — fünf Stufen <em>innerhalb</em> des Projekttons (Hue ≤ 8°)</td></tr>
+      <tr><td>Strichart</td><td>Harness — claude voll · codex Striche · pi Punkte</td></tr>
+      <tr><td>Bogen</td><td>Kontext-% — von 12 Uhr im Uhrzeigersinn, 100 % = geschlossen</td></tr>
+      <tr><td>Zentrum</td><td>Adresse — MAIN die Slot-Zahl, Lane ihr Buchstabe</td></tr>
+      <tr><td>Spur</td><td>Rolle — MAIN geschlossen, Lane unten offen, frei nur Spur</td></tr>
+      <tr><td>Zustand</td><td>ruhend farbig/still · schlafend grau · wartend invertiert + Atem · rot zerrissen</td></tr>
+    </table>
+    <div id="tafel"></div>
+    <div id="rate">…</div>
+  </main>
+</div>
+<script type="module">
+import { SLOTS } from "./marken-daten.js";
+import { Mark2, MarkTicker, markOptions, projectHue, family, seedOf } from "./marken2.js";
+const ticker = new MarkTicker(8);
+const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c; if (x != null) n.textContent = x; return n; };
+function row(s, lane) {
+  const r = el("div", "row " + (s.free ? "free" : s.state));
+  const cv = el("canvas", "mark");
+  r.append(cv, el("span", "lbl", s.free ? "frei · Session starten" : s.label));
+  r.append(el("span", "pct", s.pct != null ? s.pct + "%" : ""));
+  r.append(el("span", "meta", s.free ? "" : s.meta));
+  ticker.add(new Mark2(cv, markOptions({ ...s, role: lane ? "lane" : "main" }, lane ? 21 : 26)));
+  return r;
+}
+const list = document.getElementById("list");
+for (const s of SLOTS) {
+  list.append(row(s, false));
+  if (s.lanes) { const box = el("div", "lanes"); s.lanes.forEach((l) => box.append(row(l, true))); list.append(box); }
+}
+// Zustandstafel: jeder Zustand einmal, gleiches Projekt, gleiches Harness — nur der Zustand wechselt
+const tafel = document.getElementById("tafel");
+for (const st of ["work", "need", "rest", "done", "sleep", "bad", "free"]) {
+  const f = el("figure"), cv = el("canvas", "mark");
+  f.append(cv, el("figcaption", null, st)); tafel.append(f);
+  ticker.add(new Mark2(cv, { size: 34, hue: projectHue("/Users/o/claude-fleet"), fam: "rings",
+    seed: 0.5, state: st, role: "main", pct: 62, addr: "7" }));
+}
+document.getElementById("count").textContent = ticker.marks.size + " Marken";
+const b = ticker.bench();
+document.getElementById("rate").textContent =
+  `gemessen: ein Bild über ${b.moving} bewegte von ${b.total} Marken = ${b.ms.toFixed(2)} ms · ` +
+  `bei ${ticker.fps} Bildern/s sind das ${b.share.toFixed(1)} % eines Kerns`;
+window.__bench = () => b;
+</script>
+</body>
+</html>

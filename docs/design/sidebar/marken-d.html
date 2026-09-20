@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet · Session-Marke · D (Kerbe)</title>
+<!-- Gegenentwurf D: dieselbe Scheibe wie A2, aber Zentrum und Adresse sind getauscht. Im Zentrum
+     steht das Projekt als Monogramm, die Slot-Adresse wird zu einer Kerbe an ihrer Uhrzeit. -->
+<link rel="stylesheet" href="marken2.css">
+<style>.lanes .row .mono { display: none; }</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side"><div id="sidehead"><b>Fleet</b><span id="count"></span></div><div id="list"></div></aside>
+  <main id="stage">
+    <h1>D · Kerbe</h1>
+    <p>Gegenentwurf zu A2. Die Scheibe ist dieselbe, die beiden inneren Kanäle sind getauscht: das
+      Zentrum trägt das <em>Projekt</em> als Monogramm, die <em>Adresse</em> wird ein Ort — eine
+      Kerbe auf der Spur, an der Uhrzeit des Slots. Sechzehn Plätze, sechzehn Stunden.</p>
+    <table>
+      <tr><td>Zentrum</td><td>Projekt — zwei Zeichen aus dem Repo-Namen (<code>cf</code>, <code>wd</code>, <code>ko</code>)</td></tr>
+      <tr><td>Kerbe</td><td>Adresse — Slot 1 auf 12 Uhr, dann im Uhrzeigersinn</td></tr>
+      <tr><td>sonst</td><td>wie A2: Spur = Harness + Rolle, Bogen = Kontext-%, Zustand = Chroma + Bewegung</td></tr>
+    </table>
+    <p>Was D besser kann: das Projekt liest sich ohne Farbe und ohne Gedächtnis — <code>ko</code> ist
+      <code>private-repo-r</code>, auch für den, der die acht Töne nicht kennt. Was D schlechter kann: die
+      Adresse muss man an einer Winkelstellung abschätzen, und zwei Sessions desselben Projekts
+      tragen wieder dasselbe Zentrum.</p>
+    <div id="rate">…</div>
+  </main>
+</div>
+<script type="module">
+import { SLOTS } from "./marken-daten.js";
+import { MarkD, MarkTicker, markOptions, monogram } from "./marken2.js";
+const ticker = new MarkTicker(8);
+const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c; if (x != null) n.textContent = x; return n; };
+function row(s, lane) {
+  const r = el("div", "row " + (s.free ? "free" : s.state));
+  const cv = el("canvas", "mark");
+  r.append(cv, el("span", "lbl", s.free ? "frei · Session starten" : s.label));
+  r.append(el("span", "pct", s.pct != null ? s.pct + "%" : ""));
+  r.append(el("span", "meta", s.free ? "" : s.meta));
+  const o = markOptions({ ...s, role: lane ? "lane" : "main" }, lane ? 21 : 26);
+  ticker.add(new MarkD(cv, { ...o, addrSlot: s.slot, mono: s.free ? "" : monogram(s.repo) }));
+  return r;
+}
+const list = document.getElementById("list");
+for (const s of SLOTS) {
+  list.append(row(s, false));
+  if (s.lanes) { const box = el("div", "lanes"); s.lanes.forEach((l) => box.append(row(l, true))); list.append(box); }
+}
+document.getElementById("count").textContent = ticker.marks.size + " Marken";
+const b = ticker.bench();
+document.getElementById("rate").textContent =
+  `gemessen: ein Bild über ${b.moving} bewegte von ${b.total} Marken = ${b.ms.toFixed(2)} ms · ` +
+  `bei ${ticker.fps} Bildern/s sind das ${b.share.toFixed(1)} % eines Kerns`;
+window.__bench = () => b;
+</script>
+</body>
+</html>

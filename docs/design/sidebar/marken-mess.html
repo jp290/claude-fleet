@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Messstand</title>
+<!-- Messstand, nicht Entwurf: EINE Zeile in fester Groesse, jeder Fakt ueber die Adresszeile
+     steuerbar. Damit unterscheiden sich zwei Bilder in genau einem Fakt und der Pixelvergleich
+     misst diesen Fakt und sonst nichts — dieselbe Methode wie §1 und §4 der Messnotiz von Runde 1. -->
+<link rel="stylesheet" href="marken2.css">
+<style>
+  html, body { overflow: hidden; }
+  #app { display: block; }
+  #one { width: 252px; padding: 4px 8px; background: #000; }
+  #one .row { width: 236px; }
+  /* Masse der Runde-1-Zeile, damit A und A2 auf derselben Flaeche gemessen werden */
+  #one .mark-a { border-radius: 7px; }
+</style>
+</head>
+<body>
+<div id="one"></div>
+<script type="module">
+import { projectHue as hue1, family as fam1, seedOf as seed1, Mark, MarkTicker } from "./marken.js";
+import { Mark2, MarkD, markOptions, monogram } from "./marken2.js";
+const q = new URLSearchParams(location.search);
+const v     = q.get("v") || "a2";
+const state = q.get("state") || "rest";
+const repo  = q.get("repo") || "/Users/o/claude-fleet";
+const harn  = q.get("harness") || "claude";
+const slot  = q.get("slot") || "7";
+const opened= Number(q.get("openedAt") || 1789740700000);
+const pct   = q.get("pct") === "" ? null : Number(q.get("pct") ?? 18);
+const role  = q.get("role") || "main";
+const label = q.get("label") || "Sitzung";
+const meta  = q.get("meta") || "9 min";
+const ph    = Number(q.get("phase") || 0);
+
+const ticker = new MarkTicker(8);
+const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c; if (x != null) n.textContent = x; return n; };
+const box = document.getElementById("one");
+const r = el("div", "row " + state);
+const cv = el("canvas", "mark");
+const s = { slot, repo, label, role, harness: harn, state, pct, meta, openedAt: opened, free: state === "free" };
+
+if (v === "a") {
+  // Runde 1, woertlich wie in marken-a.html: Marke, Mono-Chip, Name, Zahlen — vier Spalten
+  cv.classList.add("mark-a");
+  r.append(cv, el("span", "id", slot), el("span", "lbl", label));
+  if (pct != null) r.append(el("span", "pct", pct + "%"));
+  r.append(el("span", "meta", meta));
+  const m = new Mark(cv, { size: role === "lane" ? 16 : 22, hue: hue1(repo), fam: fam1(harn),
+    seed: seed1(slot, opened), state: state === "free" ? "sleep" : state, role });
+  m.paint(ph); box.append(r);
+  document.documentElement.dataset.ready = "1";
+} else {
+  const o = markOptions(s, role === "lane" ? 21 : 26);
+  r.append(cv, el("span", "lbl", label));
+  r.append(el("span", "pct", pct != null ? pct + "%" : ""));
+  r.append(el("span", "meta", state === "free" ? "" : meta));
+  const m = v === "d" ? new MarkD(cv, { ...o, addrSlot: slot, mono: monogram(repo) }) : new Mark2(cv, o);
+  m.paint(ph); box.append(r);
+  document.documentElement.dataset.ready = "1";
+}
+// Variante A braucht ihre eigene Zeilen-CSS (Chip, Abstaende) — als <style>, damit der Messstand
+// beide Generationen auf derselben Flaeche zeigt, ohne dass eine von beiden umgebaut wird.
+if (v === "a") {
+  const st = document.createElement("style");
+  st.textContent = `.row { gap: 8px; padding: 7px 9px; }
+    .id { flex: none; padding: 1px 5px; border-radius: 5px; font: 500 var(--chat-ui-fs)/1.45 var(--chat-mono);
+      color: var(--chat-mute); background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+    .pct { width: auto; } .meta { width: auto; }`;
+  document.head.append(st);
+}
+</script>
+</body>
+</html>

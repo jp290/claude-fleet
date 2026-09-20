@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet · Session-Marke · E (Kantenzeile)</title>
+<!-- Gegenentwurf E, der skeptische: KEINE Marke. Die Annahme von A, A2 und D ist, dass die Leiste
+     ein Zeichen mehr braucht. E prueft die Gegenannahme — dass "unuebersichtlich" von zu VIELEN
+     Sprungzielen kommt und die Antwort weniger ist, nicht mehr. Kein Canvas, keine Animation, nur
+     die Zeile selbst: ihre Kante traegt Projekt und Fuellstand, ihre Schrift den Zustand. -->
+<link rel="stylesheet" href="marken2.css">
+<style>
+  /* Die Kante IST die Marke: 3 px breit, in der Hoehe der Zeile; der gefuellte Teil ist der
+     Kontext-Fuellstand, der Rest die Spur. Ein Element, zwei Werte, kein Zeichenvorgang. */
+  .row { padding-left: 14px; }
+  .row .edge { position: absolute; left: 0; top: 5px; bottom: 5px; width: 3px; border-radius: 3px;
+    background: var(--track); overflow: hidden; }
+  .row .edge i { position: absolute; left: 0; right: 0; bottom: 0; height: var(--fill, 0%);
+    background: var(--ink); border-radius: 3px; }
+  /* Der Zustand sitzt in der Schrift und in EINEM Zeichen vor dem Namen — nicht in einer Flaeche */
+  .row .sig { flex: none; width: 11px; text-align: center; font: 600 var(--chat-ui-fs)/1 var(--chat-mono);
+    color: var(--sig, var(--chat-faint)); }
+  .row.work { animation: none; }
+  .row.work .sig { color: var(--ink); }
+  .row.need .sig { color: var(--ink); background: var(--ink); color: #08080a; border-radius: 3px; }
+  .row.bad .sig, .row.bad .edge i { color: #f2b3ae; background: var(--danger); }
+  .row.sleep .edge i, .row.done .edge i { background: #3a3a42; }
+  .row.sleep .sig, .row.done .sig { color: var(--chat-faint); }
+  .adr { flex: none; width: 21px; text-align: right; font: 500 var(--chat-ui-fs)/1 var(--chat-mono);
+    color: var(--chat-mute); font-variant-numeric: tabular-nums; }
+  .lanes { margin-left: 8px; padding-left: 10px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side"><div id="sidehead"><b>Fleet</b><span id="count"></span></div><div id="list"></div></aside>
+  <main id="stage">
+    <h1>E · Kantenzeile</h1>
+    <p>Der skeptische Gegenentwurf: <em>keine</em> Marke. A, A2 und D nehmen an, die Leiste brauche
+      ein Zeichen mehr. E prüft die Gegenannahme — dass „unübersichtlich“ von zu vielen Sprungzielen
+      kommt und die Antwort <em>weniger</em> ist. Kein Canvas, keine Animation, kein Bild pro Sekunde.</p>
+    <table>
+      <tr><td>Kante</td><td>Projekt (Farbton) und Kontext-% (Füllhöhe) — ein 3-px-Element ganz links</td></tr>
+      <tr><td>Zeichen</td><td>Harness — <code>c</code> claude · <code>x</code> codex · <code>π</code> pi; im Zustand <em>wartend</em> invertiert</td></tr>
+      <tr><td>Schrift</td><td>Zustand — arbeitend hell, ruhend normal, schlafend/fertig fahl, rot rot</td></tr>
+      <tr><td>Adresse</td><td>rechts als Zahl in der Zahlenspalte, nicht links als Chip</td></tr>
+      <tr><td>Kosten</td><td>0 ms — es wird nichts gezeichnet</td></tr>
+    </table>
+    <p>Was E besser kann: es ist das Einzige, was garantiert nie flimmert, nie Strom zieht und auf
+      einem 320-px-Handy unverändert funktioniert. Was E schlechter kann: der Zustand hat wieder nur
+      Helligkeit als Mittel — genau der Befund aus Runde 1 (§1 der Messnotiz), nur mit mehr Fläche.</p>
+  </main>
+</div>
+<script type="module">
+import { SLOTS } from "./marken-daten.js";
+import { projectHue, seedOf, toneOf, family } from "./marken2.js";
+const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c; if (x != null) n.textContent = x; return n; };
+const SIG = { rings: "c", lines: "x", grid: "π" };
+let n = 0;
+function row(s, lane) {
+  const r = el("div", "row " + (s.free ? "free" : s.state));
+  if (!s.free) {
+    n++;
+    const tone = toneOf(seedOf(s.slot, s.openedAt)), hue = (projectHue(s.repo) + tone.dh + 360) % 360;
+    const sleepy = s.state === "sleep" || s.state === "done";
+    r.style.setProperty("--ink", `hsl(${hue} ${sleepy ? 0 : 52 + tone.ds}% ${54 + tone.dl}%)`);
+    r.style.setProperty("--track", `hsl(${hue} ${sleepy ? 0 : 30}% 18%)`);
+    const e = el("div", "edge"); const f = el("i");
+    f.style.setProperty("--fill", (s.pct ?? 0) + "%"); e.append(f); r.append(e);
+    r.append(el("span", "sig", SIG[family(s.harness)]));
+  } else { r.append(el("div", "edge"), el("span", "sig", "")); }
+  r.append(el("span", "lbl", s.free ? "frei · Session starten" : s.label));
+  r.append(el("span", "adr", String(s.slot)));
+  r.append(el("span", "pct", s.pct != null ? s.pct + "%" : ""));
+  r.append(el("span", "meta", s.free ? "" : s.meta));
+  return r;
+}
+const list = document.getElementById("list");
+for (const s of SLOTS) {
+  list.append(row(s, false));
+  if (s.lanes) { const box = el("div", "lanes"); s.lanes.forEach((l) => box.append(row(l, true))); list.append(box); }
+}
+document.getElementById("count").textContent = n + " Sessions · 0 Marken";
+</script>
+</body>
+</html>

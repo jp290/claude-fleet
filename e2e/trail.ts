@@ -81,13 +81,31 @@ export async function run(): Promise<void> {
     : "trail: FLEET_E2E_PHASES=0 writes no phases field on any row",
   rows.length > 0 && badPhases.length === 0,
   `rows=${rows.length} bad=${badPhases.length} first=${JSON.stringify(badPhases[0] ?? null).slice(0, 300)}`);
-  // ...and the probe is not vacuous: every shard of the runner drives tmux, polls over HTTP and
-  // sleeps, so a phase with zero booked ms means a wrapper silently missed its primitive. `boot` is
-  // left out on purpose — a shard need not restart srv, and it shares the one `timed` path anyway.
+  // ...and the probe is not vacuous: a full run drives tmux, polls over HTTP and sleeps, so a phase
+  // with zero booked ms means a wrapper silently missed its primitive. `boot` is left out on purpose
+  // — a shard need not restart srv, and it shares the one `timed` path anyway.
+  //
+  // BUT THE PROBE ASKS ITS OWN PRECONDITION FIRST, because `tmux: 0` is not always a regress. Only
+  // an OUTERMOST call books ms to its phase, and a fine-grained shard can hold units that touch tmux
+  // solely through restartSrv, whose time is booked under `boot` — then zero tmux ms is the CORRECT
+  // value and this probe, unasked, reported a regress that was not one (measured 2026-09-16 on
+  // `FLEET_E2E_SHARD=10/16`, 114 PASS / 1 FAIL, with `8/16` green as the control — e2e/host-hygiene.ts
+  // names it in its own header). So a phase with no outermost call in THIS process is reported
+  // UNMEASURED, in the check's own name, and never counted against the tree. The assertion is not
+  // weakened: a phase that DID have such a unit must still show booked time, and in a full run all
+  // three do — the row then carries the old name verbatim. What cannot be measured must fail as
+  // itself, not as a regress.
+  const WANT = ["tmux", "http", "sleep"] as const;
   const booked = PHASE_PRIORITY.filter((ph) => rows.some((r) => (r.phases?.[ph] ?? 0) > 0));
-  check("trail: phases is not vacuous — tmux, http and sleep each booked time in this run",
-    !PHASES_ON || (["tmux", "http", "sleep"] as const).every((ph) => booked.includes(ph)),
-    `booked=${booked.join(",")} calls=${JSON.stringify(phaseClock.calls())}`);
+  const booking = phaseClock.booking();
+  const unmeasured = PHASES_ON ? WANT.filter((ph) => booking[ph] === 0) : [];
+  const missing = WANT.filter((ph) => booking[ph] > 0 && !booked.includes(ph));
+  check(unmeasured.length === 0
+    ? "trail: phases is not vacuous — tmux, http and sleep each booked time in this run"
+    : `trail: phases is not vacuous for the phases this run could book (UNMEASURED, no outermost call: ${unmeasured.join(",")})`,
+  !PHASES_ON || missing.length === 0,
+  `booked=${booked.join(",")} missing=${missing.join(",") || "-"} unmeasured=${unmeasured.join(",") || "-"}`
+    + ` outermost=${JSON.stringify(booking)} calls=${JSON.stringify(phaseClock.calls())}`);
 
   // the attribution itself, on a synthetic clock — the scenario the clock= lines below replay:
   let clock = 0;
@@ -162,6 +180,19 @@ export async function run(): Promise<void> {
   ]);
   check("trail: phaseSum names the site whose outermost calls sum to the most, with their count",
     sumDied === "", sumDied);
+  // the vacuity probe's precondition, on the same synthetic run: `calls` counts every instrumented
+  // call, `booking` only the OUTERMOST ones — the ones that can put ms on the board. They differ
+  // here by construction (the get() and the sleep inside boot, and the fetch that started inside it),
+  // and that difference is the whole reason the probe reads `booking` and not `calls`.
+  const bookDied = died([
+    [`booking=${JSON.stringify(pc.booking())}`,
+      JSON.stringify(pc.booking()) === JSON.stringify({ boot: 1, tmux: 0, http: 1, sleep: 3 })],
+    [`calls=${JSON.stringify(pc.calls())}`,
+      JSON.stringify(pc.calls()) === JSON.stringify({ boot: 1, tmux: 0, http: 3, sleep: 4 })],
+  ]);
+  check("trail: booking counts only OUTERMOST calls — the vacuity probe's precondition, not every call",
+    bookDied === "", bookDied);
+
   const row = withPhases(trailRow("x", true, "", 200, 200), synth);
   check("trail: rest is msSincePrev minus the four phases, and a cut starts the next row empty",
     row.phases?.rest === 28 && JSON.stringify(pc.cut(260)) === JSON.stringify({ ms: { boot: 0, tmux: 0, http: 0, sleep: 0 }, top: {}, sum: {} }),

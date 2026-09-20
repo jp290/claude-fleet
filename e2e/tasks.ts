@@ -6089,6 +6089,33 @@ export async function run(ctx: Ctx): Promise<void> {
       method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
       body: JSON.stringify({ text }),
     });
+    // --- WHO ELSE COULD HAVE PROPOSED, before this probe proposes anything ------------------
+    // Step 4 of the frame (clarify-prompt.ts) carries a RUNNABLE curl to this very door, and a
+    // FLEET_CMD=true pane is a bare shell — so the brief can file a criterion by being pasted.
+    // MEASURED 2026-09-20, replaying the server's own paste primitive (load-buffer → paste-buffer
+    // -p → Enter, server.ts#sendText) with the real 2 472-byte frame into a bare pane, against a
+    // stub standing in for this route:
+    //   zsh   → `zsh: parse error near '>'` (the <<<REQUEST fence), the whole buffer is parsed
+    //           before anything runs, NOTHING is executed, no request reaches the door.
+    //   bash  → the curl RUNS and POSTs /api/self/criterion with the pane's own FLEET_SELF_TOKEN.
+    //   sh    → likewise.
+    // So this is not a suite-wide fact but a property of the SHELL the server hands its panes
+    // (server.ts#SHELL = process.env.SHELL, inherited straight through e2e-isolated.sh — which is
+    // why this box, on zsh, never saw it and the LINUX helper preview ff99319d5abc did, raising the
+    // row 5.7 s before p1 and forcing the weakened predicate in (i-attn a) below).
+    // Asserted where it is decidable and RECORDED where it is not — the same split e2e/host-hygiene.ts
+    // makes per platform, and neither half is a skip.
+    const critBefore = ((await (await get("/api/tasks")).json()) as
+      { tasks: { id: string; criterion?: { text: string } }[] })
+      .tasks.find((t) => t.id === iT.task.id)?.criterion ?? null;
+    const paneShell = (process.env.SHELL ?? "/bin/sh").split("/").pop() ?? "";
+    const frameCanSelfExecute = paneShell !== "zsh";
+    check(frameCanSelfExecute
+      ? `(i-exec) recorded: on ${paneShell} the pasted frame's step-4 curl RUNS as a shell command — a criterion here is the frame's, not a lane's`
+      : `(i-exec) on ${paneShell} the pasted frame cannot self-execute (the fence is a parse error), so NOTHING proposed a criterion before this probe did`,
+    frameCanSelfExecute || critBefore === null,
+    `shell=${paneShell} selfExecutable=${frameCanSelfExecute} criterionBefore=${JSON.stringify(critBefore)}`);
+
     const p1 = await propose("done = the scrollback slice, verified by ./e2e-isolated.sh");
     const p1Body = (await p1.json()) as { attention?: { id: string | null; existing?: boolean; why?: string } };
     check("(i) the lane can propose a criterion onto its own founding task",
@@ -6106,8 +6133,10 @@ export async function run(ctx: Ctx): Promise<void> {
     const a1Open = a1.filter((a) => a.status === "open");
     check("(i-attn a) a proposed criterion opens exactly ONE owner decision naming the task, criterion-confirm and the first line",
       // NOT `existing === false`: the frame carries a live curl to this door, and a shell pane
-      // (FLEET_CMD=true) may run it on paste — helper preview ff99319d5abc raised the row 5.7 s
-      // before p1 did. That is a proposal too; the invariant is ONE open row carrying p1's line.
+      // (FLEET_CMD=true) DOES run it on paste wherever that shell is not zsh — measured at (i-exec)
+      // above, which names it in a row of its own instead of letting this predicate absorb it
+      // silently; helper preview ff99319d5abc raised the row 5.7 s before p1 did. That is a
+      // proposal too; the invariant is ONE open row carrying p1's line.
       a1Open.length === 1 && a1Open[0].kind === "decision" && p1Body.attention?.id === a1Open[0].id
       && a1Open[0].text.includes(`POST /api/tasks/${iT.task.id}/criterion-confirm`)
       && a1Open[0].text.includes("done = the scrollback slice"),

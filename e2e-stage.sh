@@ -468,6 +468,68 @@ for _st_sock in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/fleet*; do
   tmux -S "$_st_sock" list-sessions >/dev/null 2>&1 || rm -f "$_st_sock"
 done
 
+# --- the OTHER half of that reap: the pane CHILDREN a dead instance left behind ----------------
+# The loop above retires a dead server's socket, and `scratch-reap.sh` retires its directory —
+# neither touches a PROCESS ("Nothing here kills a process", scratch-reap.sh's own header). Only
+# e2e-isolated.sh reaps pane children, and it can do it only through a socket's pane list: once
+# that socket is gone (killed, or unlinked by the loop above), the children are reparented to init
+# and nothing in any of the seven wrappers can still see them. What they DO still have is their
+# cwd — inside the instance directory they were spawned in — and that is the identity used here.
+#
+# THE IDENTITY IS THE CWD, NEVER A NAME. `pkill -f` on any of these commands would reach the LIVE
+# server (CLAUDE.md, AGENTS.md §Verify), and a suite pane runs `true; exec $SHELL` — a name pattern
+# that matched it would match every shell on the box. A cwd under `$TMPDIR/fleet-e2e-*instance-<pid>`
+# is a place nothing else on this machine runs: the live server's cwd is the checkout.
+#
+# THE LIVENESS GATE IS scratch-reap.sh's, verbatim in intent, and for its reason: these wrappers are
+# expressly run CONCURRENTLY, so a live run's pid is alive BY DEFINITION and liveness can never shoot
+# down a neighbour the way an age cutoff could. Both clauses must hold before anything is signalled:
+# the pid in the dir name is dead, AND no tmux socket for that pid is left in the socket dir (the
+# five wrapper families carry five prefixes, so the match is on the pid SUFFIX). A dead pid since
+# recycled reads as alive, the children survive to the next run, and leaked processes cost less than
+# a killed live run — the same safe direction every other reap in this repo takes.
+#
+# It FAILS OPEN: no way to read a cwd (no /proc, no lsof) means no pids, and the suite proceeds
+# exactly as it did before this block existed.
+_stage_cwd_pids() {  # $1 = directory prefix; prints the pids whose cwd is at or under it
+  if [ -r /proc/self/cwd ]; then
+    for _st_pd in /proc/[0-9]*; do
+      _st_pp="${_st_pd#/proc/}"
+      _st_cw=$(readlink "$_st_pd/cwd" 2>/dev/null) || continue
+      case "$_st_cw" in "$1"|"$1"/*) printf '%s\n' "$_st_pp" ;; esac
+    done
+  else
+    lsof -n -w -d cwd -F pn 2>/dev/null | awk -v pre="$1" '
+      /^p/ { pid = substr($0, 2); next }
+      /^n/ { p = substr($0, 2); if (p == pre || index(p, pre "/") == 1) print pid }'
+  fi
+}
+_st_orphans=""
+for _st_inst in "${TMPDIR:-/tmp}"/fleet-e2e-*instance-*; do
+  [ -d "$_st_inst" ] || continue
+  _st_ipid="${_st_inst##*-}"
+  case "$_st_ipid" in ''|*[!0-9]*) continue ;; esac   # only …-<pid>, never a hand-named dir
+  [ "$_st_ipid" = "$$" ] && continue
+  kill -0 "$_st_ipid" 2>/dev/null && continue          # owner alive → a live run, hands off
+  _st_isock=""
+  for _st_s2 in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/fleet*"$_st_ipid"; do
+    [ -S "$_st_s2" ] && _st_isock=1
+  done
+  [ -n "$_st_isock" ] && continue                      # its socket still stands → e2e-isolated.sh's reap owns it
+  for _st_op in $(_stage_cwd_pids "$_st_inst"); do
+    [ "$_st_op" = "$$" ] && continue
+    [ "$_st_op" = "1" ] && continue
+    case " $_st_orphans " in *" $_st_op "*) ;; *) _st_orphans="$_st_orphans $_st_op" ;; esac
+  done
+done
+if [ -n "$_st_orphans" ]; then
+  printf '[suite-reap] %s: %s orphaned pane children of dead instances (by cwd)\n' \
+    "$_st_who" "$(printf '%s' "$_st_orphans" | wc -w | tr -d ' ')" >&2
+  for _st_op in $_st_orphans; do kill -TERM "$_st_op" 2>/dev/null; done
+  sleep 1
+  for _st_op in $_st_orphans; do kill -KILL "$_st_op" 2>/dev/null; done
+fi
+
 # normalize a relative path in place: `e2e/../src/backoff` → `src/backoff`
 _stage_norm() {
   printf '%s' "$1" | awk -F/ '{

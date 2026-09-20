@@ -252,6 +252,12 @@ export const createPhaseClock = (now: () => number, root: string, self: string, 
   let rowStart = last;
   // instrumented calls per phase over the whole run — the multiplier of the per-call overhead
   const calls: PhaseMs = zeroPhases();
+  // ...and the subset of them that were OUTERMOST. Only an outermost call can book ms to its phase
+  // (an inner one's interval belongs to whatever of equal or higher priority is already running),
+  // so this — not `calls` — is the honest answer to "could this process book this phase at all?".
+  // e2e/trail.ts's vacuity probe reads it as its own precondition: a unit that drives tmux only
+  // through restartSrv makes tmux CALLS and books zero tmux ms, by design, not by regression.
+  const booking: PhaseMs = zeroPhases();
   const dominant = (): Phase | null => PHASE_PRIORITY.find((p) => active[p] > 0) ?? null;
   const advance = (t: number): void => {
     const d = dominant();
@@ -265,6 +271,7 @@ export const createPhaseClock = (now: () => number, root: string, self: string, 
     const outer = PHASE_PRIORITY.slice(0, PHASE_PRIORITY.indexOf(phase) + 1).every((p) => active[p] === 0);
     active[phase]++;
     calls[phase]++;
+    if (outer) booking[phase]++;
     return { phase, start: t, outer, err };
   };
   const end = (c: OpenCall): void => {
@@ -281,6 +288,7 @@ export const createPhaseClock = (now: () => number, root: string, self: string, 
   };
   return {
     calls: (): PhaseMs => ({ ...calls }),
+    booking: (): PhaseMs => ({ ...booking }),
     timed<T>(phase: Phase, fn: () => Promise<T>, err: Error | null = null): Promise<T> {
       const c = begin(phase, err);
       let p: Promise<T>;

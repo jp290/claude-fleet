@@ -268,6 +268,31 @@ Die Adapter-Liste ist `HARNESSES` in `server.ts` (aktuell claude, pi, pi-zai, pi
 container, codex; `pi-unfenced` ist serverseitig `automatable:false`, `allowsLanes:false`,
 `singleton:true` — genau EINE Main-Session, warnt im Picker vor unbeschränkten Rechten).
 
+### `commands` — die sendbaren Slash-Kommandos im ⌘-Overlay (seit 2026-09-19)
+
+Jeder Adapter trägt `commands` (Pflichtfeld — ein neuer Adapter antwortet darauf zur Compile-Zeit):
+die **baren** Slash-Kommandos, die seine TUI kennt und die über `POST /send` **blind sicher** zu
+schicken sind — bar heißt ohne Argument und ohne Picker/Dialog/Settings-Interface hinter dem
+Kommando. Je Eintrag `name` und `purpose` (eine Zeile, der belegte Zweck); `confirm: true` markiert,
+was die Session beendet oder ihren Kontext verwirft — das Overlay im Board fragt vorher nach, bevor
+es tippt.
+
+**Die Belegregel ist der Punkt des Felds:** ein Eintrag steht nur mit Beleg am Adapter — für claude
+der Command-Reference des Herstellers (`code.claude.com/docs/en/commands.md`, Stand 2026-09-19), für
+die Pi-Adapter die `usage.md` des installierten `@earendil-works/pi-coding-agent` (0.85.0), also
+derselben Binary, die die Adapter spawnen. Was nicht belegt ist, kommt nicht hinein; **leer ist die
+ehrliche Antwort** und heißt „nichts belegt", nie „bewiesen, dass es nichts gibt". Stand der
+Belege: claude `/clear`·`/compact` (je confirm) · `/context` · `/usage`; pi, pi-zai und das darüber
+gesprenkelte pi-unfenced `/new`·`/compact` (je confirm) · `/session`; pi-ox (Profil mit
+Discovery-Sperren, nie geprüft), codex (Docs tracken den Release, nicht die gepinnte 0.153.x) und
+container (kein Agent) führen leer.
+
+Das Feld reist im **Harness-Katalog** (`GET /api/harnesses`) — derselben einmal geholten
+Projektion, aus der das ⌘-Overlay schon `models` und `effortLevels` liest; kein neuer Endpunkt, und
+die 2-s-`/api/sessions`-Poll trägt es bewusst nicht. Der Client hartkodiert nichts: er zeigt, was
+der Katalog des Slot-Harnesses hergibt, und bei leerer Liste keinen Knopf (`e2e/pins.ts` hält die
+Regel „keine Harness-Kommando-Liste im Client" fest).
+
 **Konversationsansicht (💬) ≠ `supports.transcript` (seit 2026-09-19).** `supports.transcript` heißt
 weiter „Claude-Code-Transcript unter `projDir()`" und trägt Worker-Antwort, ✨-Evidenz, Prompt-Harvester
 und die Resume-Probe der Heilung; es bleibt für pi/pi-zai/codex `false`. Die Ansicht liest stattdessen

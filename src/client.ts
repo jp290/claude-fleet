@@ -266,6 +266,10 @@ interface HarnessInfo { id: string; supports: { resume: boolean; transcript: boo
   // the adapter's pick list for the composer's model switch (server.ts#Harness.models) — a menu,
   // not a gate; optional for an older server, which then gets the free-text field alone
   models?: string[];
+  // the TUI's safely-sendable slash commands (server.ts#HarnessCommand), same one-shot catalogue.
+  // Optional for an older server, which then simply offers none; the ⌘-overlay renders exactly
+  // this list — never a second, client-side copy of any harness's commands.
+  commands?: { name: string; purpose: string; confirm?: boolean }[];
   // Optional for an older server. False is a hard server policy too; this copy only prevents a
   // picker gesture whose answer is already known. Singleton is shown through the adapter note.
   allowsLanes?: boolean; singleton?: boolean;
@@ -3528,7 +3532,7 @@ function renderParkHint(): void {
 // never run — only the popover's Apply writes the record and types into the pane. Closing without
 // Apply discards. State lives here, outside the DOM, because the poll repaints the row whenever the
 // slot's values move (measured in the second cut: a verdict held in a replaced node reads as silence).
-type OptField = "model" | "effort";
+type OptField = "model" | "effort" | "cmds";
 let optsKey = "";
 let optOpen: OptField | null = null;
 let optStaged: Partial<Record<OptField, string>> = {};
@@ -3704,6 +3708,74 @@ function renderComposerOpts(force: boolean): void {
       return { row: [levels] };
     }, null));
   }
+  // the slot's harness knows sendable slash commands: a third switch — but one that SENDS instead
+  // of staging. What the catalogue carries is everything this shows; an empty or absent list
+  // renders nothing at all (no button), and no command name exists anywhere in this file.
+  if (h.commands?.length) compOpts.appendChild(commandSwitch(slot, h));
+}
+
+// The ⌘ switch: one row per documented command (name + the evidence line), click = deliver() —
+// the ONE delivery path every composer on this board uses, 409 reading included. Entries flagged
+// `confirm` (session-ending or context-discarding) ask first, and the ask states what the command
+// does — it never fires on the click that opened the list.
+function commandSwitch(slot: number, h: HarnessInfo): HTMLElement {
+  const wrap = el("div", "optswrap cmds");
+  const btn = el("button", "optsw") as HTMLButtonElement;
+  btn.append(el("span", "optval", `⌘ ${h.commands!.length}`));
+  btn.appendChild(el("span", "optchev")).appendChild(icon("chevron"));
+  btn.title = `commands ${h.id} accepts — clicking one sends it to the slot`;
+  const pop = el("div", "optpop cmds");
+  const list = el("div", "cmdlist");
+  for (const c of h.commands ?? []) {
+    const row = el("button", "cmdline") as HTMLButtonElement;
+    row.append(el("span", "cmdname", c.name), el("span", "cmdpurpose", c.purpose));
+    if (c.confirm) row.appendChild(el("span", "cmdwarn", "⚠"));
+    row.title = c.confirm ? `${c.purpose} — asks first` : c.purpose;
+    row.onclick = async () => {
+      if (c.confirm && !(await confirmCommand(slot, c.name, c.purpose))) return;
+      if (await deliver(slot, c.name)) { optOpen = null; renderComposerOpts(true); }
+    };
+    list.appendChild(row);
+  }
+  pop.appendChild(list);
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    optOpen = optOpen === "cmds" ? null : "cmds";
+    optStaged = {};
+    optMsg = {};
+    optConfirm = false;
+    renderComposerOpts(true);
+    if (optOpen === "cmds") compOpts.querySelector<HTMLElement>(".optswrap.cmds .cmdline")?.focus();
+  };
+  if (optOpen === "cmds") { pop.classList.add("open"); btn.classList.add("on"); }
+  wrap.append(btn, pop);
+  return wrap;
+}
+
+// the ask a `confirm` command owes (VERBOTEN half of the commands card): a dialog that names the
+// command and what it does to this slot's context, with the send behind one more press.
+function confirmCommand(slot: number, name: string, purpose: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = el("div", "overlay riskoverlay");
+    overlay.style.display = "flex";
+    const panel = el("div", "panel riskpanel");
+    panel.appendChild(el("h2", "", `Send ${name} to slot ${slot}?`));
+    panel.appendChild(el("div", "bmidrun",
+      `${purpose}. This discards or rewrites the session's live context — the conversation it has read so far does not come back.`));
+    const btns = el("div", "riskbtns");
+    const cancel = el("button", "riskbtn", "cancel") as HTMLButtonElement;
+    const go = el("button", "riskbtn danger", `send ${name}`) as HTMLButtonElement;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); finish(false); } };
+    const finish = (ok: boolean) => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(ok); };
+    document.addEventListener("keydown", onKey, true);
+    cancel.onclick = () => finish(false);
+    go.onclick = () => finish(true);
+    overlay.onclick = (e) => { if (e.target === overlay) finish(false); };
+    btns.append(cancel, go);
+    panel.appendChild(btns);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+  });
 }
 
 // Close whatever is open and forget what was staged in it — closing without Apply discards.
@@ -3716,9 +3788,10 @@ function closeOpts(focusField?: OptField): void {
   if (focusField) compOpts.querySelector<HTMLElement>(`.optswrap.${focusField} .optsw`)?.focus();
 }
 
-// one switch = its (staged or current) value with a chevron, and a small popover: the field's own
-// control(s), then Apply. The verdict line appears only after an Apply, never as an empty row.
-function optSwitch(field: OptField, slot: number, current: string, shown: string, lead: HTMLElement[],
+// staged or current) value with a chevron, and a small popover: the field's own control(s), then
+// Apply. The verdict line appears only after an Apply, never as an empty row. (The ⌘ switch is not
+// one of these — it sends instead of staging — but its field still lives in OptField's union.)
+function optSwitch(field: "model" | "effort", slot: number, current: string, shown: string, lead: HTMLElement[],
   body: (stage: (v: string) => void) => { list?: HTMLElement; row: HTMLElement[] }, mark: Element | null,
   label: (v: string) => string = (v) => v): HTMLElement {
   const wrap = el("div", `optswrap ${field}`);

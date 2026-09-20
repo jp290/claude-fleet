@@ -534,6 +534,14 @@
   .cmdapply { margin-left: 4px; padding: 0 12px; color: #000; background: var(--chat-ink); font-weight: 500; }
   .cmdapply:disabled { color: var(--chat-faint); background: var(--chat-edge); cursor: default; }
   .cmdstatus { color: var(--chat-prose); font: 400 11px var(--chat-mono); overflow-wrap: anywhere; max-width: 320px; }
+  /* the ⌘ switch's rows: name (mono, fixed) + the adapter's evidence line (dim, truncating) */
+  .cmdline { display: flex; align-items: baseline; gap: 8px; width: 340px; max-width: 76vw; height: auto; padding: 5px 8px;
+    text-align: left; background: transparent; border: 0; border-radius: var(--r1); cursor: pointer;
+    font: 400 12px var(--chat-sans); color: var(--chat-mute); transition: color var(--t), background-color var(--t); }
+  .cmdline:hover { color: var(--chat-ink); background: var(--c-hover); }
+  .cmdname { flex: none; font: 500 12px var(--chat-mono); color: var(--chat-ink); }
+  .cmdpurpose { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmdwarn { flex: none; margin-left: auto; color: var(--chat-faint); }
   /* a staged value shows on the switch itself, underlined until it is applied or discarded */
   .optswrap.staged .optval { color: var(--chat-ink); text-decoration: underline dotted; text-underline-offset: 3px; }
   .optmark { flex: none; display: grid; margin-right: 4px; color: var(--chat-mute); }

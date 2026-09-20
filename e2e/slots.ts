@@ -19,6 +19,49 @@ export async function run(): Promise<void> {
     fixed.slots.length === 16 && fixed.slots.every((s, i) => s.id === i + 1),
     JSON.stringify(fixed.slots.map((s) => s.id)));
 
+  // --- the harness catalogue's commands field (the ⌘-overlay's fact layer, 2026-09-19). The card's
+  // evidence rule made mechanical: the SETS below are the documented bare commands (claude: the
+  // vendor's command reference on code.claude.com; pi family: the installed pi-coding-agent's
+  // usage.md), so a catalogue change must pass by consciously editing THIS check with its new
+  // citation — never by drifting. Checks live in this module because there is no harness module:
+  // slots is the family that drives the slot surface the overlay serves (e2e/harness.ts is
+  // plumbing, no checks). ---
+  {
+    interface CatCmd { name: string; purpose: string; confirm?: boolean }
+    interface CatHarness { id: string; commands: CatCmd[] }
+    const cat = ((await (await get("/api/harnesses")).json()) as { harnesses: CatHarness[] }).harnesses;
+    const byId = new Map(cat.map((h) => [h.id, h]));
+    check("harness catalogue: every adapter carries a commands list",
+      cat.length >= 7 && cat.every((h) => Array.isArray(h.commands)),
+      JSON.stringify(cat.map((h) => `${h.id}:${h.commands?.length}`)));
+    const shape = cat.flatMap((h) => h.commands.map((c) => ({ h: h.id, ...c })));
+    check("harness catalogue: every command entry is bare and names one evidence line",
+      shape.every((c) => /^\/[A-Za-z][A-Za-z0-9-]*$/.test(c.name) && typeof c.purpose === "string"
+        && c.purpose.length >= 8 && !c.purpose.includes("\n")),
+      JSON.stringify(shape.filter((c) => !(/^\/[A-Za-z][A-Za-z0-9-]*$/.test(c.name) && typeof c.purpose === "string"
+        && c.purpose.length >= 8 && !c.purpose.includes("\n")))));
+    const names = (h: string): string[] => (byId.get(h)?.commands ?? []).map((c) => c.name);
+    check("harness catalogue: claude lists exactly the documented bare commands",
+      JSON.stringify(names("claude")) === JSON.stringify(["/clear", "/compact", "/context", "/usage"]),
+      JSON.stringify(names("claude")));
+    check("harness catalogue: the pi TUI lists exactly its documented bare commands — on pi, pi-zai and the pi-unfenced spread",
+      names("pi").join(",") === "/new,/compact,/session" && names("pi-zai").join(",") === "/new,/compact,/session"
+        && names("pi-unfenced").join(",") === "/new,/compact,/session",
+      JSON.stringify({ pi: names("pi"), zai: names("pi-zai"), unf: names("pi-unfenced") }));
+    // the confirm flag is the safety property: the context-discarding commands must carry it, the
+    // read-only ones must not — judged per NAME across every adapter that lists the command.
+    const discarding = ["/clear", "/compact", "/new"];
+    const readonly = ["/context", "/usage", "/session"];
+    const badConfirm = shape.filter((c) => discarding.includes(c.name) !== (c.confirm === true)
+      && (discarding.includes(c.name) || readonly.includes(c.name)));
+    check("harness catalogue: context-discarding commands carry confirm, read-only ones do not",
+      badConfirm.length === 0, JSON.stringify(badConfirm));
+    const rows = ((await (await get("/api/sessions")).json()) as { slots: Record<string, unknown>[] }).slots;
+    check("the 2s slot poll carries no commands list — the field rides /api/harnesses alone",
+      rows.length > 0 && rows.every((s) => !("commands" in s)),
+      JSON.stringify(rows.filter((s) => "commands" in s).length));
+  }
+
   // --- regression (2026-09-01): tmux resolves a bare `-t s1` by PREFIX once no exact `s1` exists,
   // so with `s10` alive and slot 1 free, ensureSlot's has-session answered 0 for a session that was
   // not there, existingTmuxTarget returned s10's pane, no s1 was ever created, and the founding

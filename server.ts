@@ -3893,11 +3893,15 @@ function parseCommitLog(out: string): CommitRow[] {
 // recent commits, session-scoped where the transcript gives a start anchor — used for
 // NON-lane sessions, which have no branch boundary. (Lanes use laneCommits: a worktree
 // lane has an exact base branch, so its own commits are base..HEAD, never a time window.)
+// How many commits a brief carries at most. Named, because the CLIENT has to say which cap it
+// hit — a list that silently stops at 15 reads as "this session made 15 commits".
+const SESSION_COMMIT_CAP = 15;
+const LANE_COMMIT_CAP = 50;
 async function sessionCommits(s: Slot): Promise<CommitRow[]> {
   const start = sessionStart(s);
   const lg = start
-    ? await git(s.cwd!, "log", "--no-color", `--since=${new Date(start).toISOString()}`, "--format=%h%x09%ct%x09%s", "-15")
-    : await git(s.cwd!, "log", "--no-color", "--format=%h%x09%ct%x09%s", "-15");
+    ? await git(s.cwd!, "log", "--no-color", `--since=${new Date(start).toISOString()}`, "--format=%h%x09%ct%x09%s", `-${SESSION_COMMIT_CAP}`)
+    : await git(s.cwd!, "log", "--no-color", "--format=%h%x09%ct%x09%s", `-${SESSION_COMMIT_CAP}`);
   return lg.code === 0 ? parseCommitLog(lg.out) : [];
 }
 // the ref a lane sits on top of: the primary checkout's current branch (e.g. "main"),
@@ -4089,9 +4093,16 @@ async function diffPayload(cwd: string, base: string | null): Promise<{ branch: 
 // the deterministic session overview — recent commits, changed files, uncommitted
 // summary — shared by the owner sideboard and the guest info tab. Fresh git output per
 // request (never cached) so neither view can drift from reality. null = not a git repo.
+// THE COUNTS ARE THE TRUE ONES, the lists are the capped ones — and the two are separate fields
+// for exactly that reason. `uncommitted` used to be the length of the ALREADY CAPPED list, so a
+// tree with 300 changed files reported "200 uncommitted files" and no reader could tell (the
+// board's own "some were not listed" note was dead code against it, measured 2026-09-20).
 interface BriefPayload { branch: string | null; head: string | null; sessionStart: number | null;
-  uncommitted: number; uncommittedFiles: string[]; files: string[]; shortstat: string;
+  uncommitted: number; uncommittedFiles: string[]; files: string[]; filesTotal: number; shortstat: string;
   commits: CommitRow[]; repoCommits: CommitRow[]; laneScoped: boolean; laneBase: string | null;
+  // how many commits this brief would carry at most — the client says which cap it hit instead
+  // of letting a list that stops at 15 or 50 read as "all of them"
+  commitsCap: number;
   ahead: number; behind: number; gitOp: boolean }
 // the history the session is NOT scoped to — "what else happened in this project lately".
 // A lane's own commits are base..HEAD, so the complement is the BASE branch's recent history;
@@ -4118,6 +4129,7 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
   // the concrete uncommitted work in this worktree — staged/unstaged/untracked, porcelain
   // codes intact so the client shows exactly what git sees. Shown for lanes and non-lanes.
   const uncommittedFiles = st.lines.slice(0, 200);
+  const uncommittedTotal = st.lines.length; // the TRUE count, before the list was capped
   const branch = br.code === 0 ? br.out : null;
 
   // a worktree lane has a precise boundary — its base branch — so its commits and committed
@@ -4127,18 +4139,20 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
     // commits = two-dot log (reachable from HEAD, not base = the lane's own commits).
     // footprint = THREE-dot diff (base...HEAD, from the merge-base) so a lane that is
     // behind main shows only ITS OWN file changes, not main's divergent commits inverted.
-    const lg = await git(s.cwd!, "log", "--no-color", `${laneBase}..HEAD`, "--format=%h%x09%ct%x09%s", "-50");
+    const lg = await git(s.cwd!, "log", "--no-color", `${laneBase}..HEAD`, "--format=%h%x09%ct%x09%s", `-${LANE_COMMIT_CAP}`);
     const ns = await git(s.cwd!, "diff", "--name-status", "--no-color", `${laneBase}...HEAD`);
     const sh = await git(s.cwd!, "diff", `${laneBase}...HEAD`, "--shortstat", "--no-color");
     // ahead/behind vs the base branch, NOT vs an upstream — a lane usually has no upstream,
     // so the sessions-poll gitInfo (branch.ab, upstream-tracking) reports 0/0 for it
     const ab = await git(s.cwd!, "rev-list", "--left-right", "--count", `${laneBase}...HEAD`);
     const abm = /^(\d+)\s+(\d+)$/.exec(ab.out); // left = base-only (behind), right = HEAD-only (ahead)
+    const laneFiles = sessionFiles(ns.code === 0 ? ns.out : "", ""); // committed footprint, no untracked
     return {
       branch, head, sessionStart: sessionStart(s),
-      uncommitted: uncommittedFiles.length, uncommittedFiles,
-      files: sessionFiles(ns.code === 0 ? ns.out : "", "").slice(0, 200), // committed footprint, no untracked
+      uncommitted: uncommittedTotal, uncommittedFiles,
+      files: laneFiles.slice(0, 200), filesTotal: laneFiles.length,
       shortstat: sh.code === 0 ? sh.out : "",
+      commitsCap: LANE_COMMIT_CAP,
       commits: lg.code === 0 ? parseCommitLog(lg.out) : [],
       repoCommits: await repoRecentCommits(s.cwd!, laneBase), // what is already in the base branch
       laneScoped: true, laneBase,
@@ -4156,15 +4170,16 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
   let files: string[];
   if (base) {
     const ns = await gitRead(s.cwd!, "diff", "--name-status", "--no-color", base);
-    files = sessionFiles(ns.code === 0 ? ns.out : "", st.lines.join("\n")).slice(0, 200);
+    files = sessionFiles(ns.code === 0 ? ns.out : "", st.lines.join("\n"));
   } else {
-    files = uncommittedFiles.slice(0, 200);
+    files = st.lines;
   }
   return {
     branch, head, sessionStart: start,
-    uncommitted: uncommittedFiles.length, uncommittedFiles,
-    files,
+    uncommitted: uncommittedTotal, uncommittedFiles,
+    files: files.slice(0, 200), filesTotal: files.length,
     shortstat: sh.code === 0 ? sh.out : "",
+    commitsCap: SESSION_COMMIT_CAP,
     commits: await sessionCommits(s),
     // only when `commits` above is time-scoped — without a start it already reads plain `git log`
     repoCommits: await repoRecentCommits(s.cwd!, start ? "HEAD" : null),

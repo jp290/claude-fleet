@@ -1435,64 +1435,103 @@ export async function run(): Promise<void> {
       const a = cliSrc.indexOf(from), b = cliSrc.indexOf(to);
       return a >= 0 && b > a ? cliSrc.slice(a, b) : "";
     };
-    const refSrc = cut("function laneBranchRefs(", "// --- project colour");
-    type RefInput = { id: number; branch: string };
-    let laneBranchRefs: ((lanes: readonly RefInput[]) => Map<number, string>) | null = null;
+    // --- A LANE'S ONE ADDRESS. The suffix rule that stood here (shortest unique tail of the branch)
+    // is gone: a lane is called after the band of the main it hangs under (3A, 16B), the owner's
+    // confirmed model, and that name is the only one the bar shows. What the suffix rule had to
+    // ITERATE for — uniqueness — this one has by construction, so what is worth checking moved: that
+    // the band is the anchor's slot number, that the letters count within one band and not across
+    // the bar, that a bandless lane lands on band 0 rather than colliding with band 1, and that
+    // neither ordering of the input changes an answer.
+    const refSrc = cut("const bandLetter =", "// THE FOUR STATES A ROW");
+    type BandStack = { anchor: { id: number } | null; lanes: { id: number }[] };
+    let laneBandNames: ((stacks: readonly BandStack[]) => Map<number, string>) | null = null;
     try {
-      laneBranchRefs = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(refSrc)
-        + "\nreturn laneBranchRefs;")() as (lanes: readonly RefInput[]) => Map<number, string>;
-    } catch { laneBranchRefs = null; }
-    check("probe: lane branch references are a liftable DOM-free pure helper",
-      !!laneBranchRefs && !/document|HTMLElement|localStorage|Math\.random/.test(refSrc),
-      refSrc.slice(0, 90) || "no laneBranchRefs block");
+      laneBandNames = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(refSrc)
+        + "\nreturn laneBandNames;")() as (stacks: readonly BandStack[]) => Map<number, string>;
+    } catch { laneBandNames = null; }
+    check("probe: lane band names are a liftable DOM-free pure helper",
+      !!laneBandNames && !/document|HTMLElement|localStorage|Math\.random/.test(refSrc),
+      refSrc.slice(0, 90) || "no laneBandNames block");
 
-    const four = laneBranchRefs?.([
-      { id: 1, branch: "fleet/task-aa01" }, { id: 2, branch: "fleet/task-bb02" },
+    const oneBand = laneBandNames?.([{ anchor: { id: 3 }, lanes: [{ id: 7 }, { id: 5 }, { id: 12 }] }]);
+    check("a lane is named after its band, and the letters run in slot order within that band",
+      oneBand?.get(5) === "3A" && oneBand.get(7) === "3B" && oneBand.get(12) === "3C",
+      JSON.stringify([...oneBand?.entries() ?? []]));
+
+    const twoBands = laneBandNames?.([
+      { anchor: { id: 16 }, lanes: [{ id: 2 }, { id: 9 }] },
+      { anchor: { id: 3 }, lanes: [{ id: 4 }] },
     ]);
-    check("lane refs use exactly four trailing branch characters when those are already unique",
-      four?.get(1) === "aa01" && four.get(2) === "bb02", JSON.stringify([...four?.entries() ?? []]));
+    check("the letter counts within ONE band — a second band starts at A again, and both bands keep their number",
+      twoBands?.get(4) === "3A" && twoBands.get(2) === "16A" && twoBands.get(9) === "16B",
+      JSON.stringify([...twoBands?.entries() ?? []]));
 
-    const pairFx: RefInput[] = [
-      { id: 11, branch: "fleet/alphaX1234" }, { id: 12, branch: "fleet/betaY1234" },
-    ];
-    const pair = laneBranchRefs?.(pairFx);
-    check("a shared last four lengthens only to the shortest unique suffix",
-      pair?.get(11) === "X1234" && pair.get(12) === "Y1234", JSON.stringify([...pair?.entries() ?? []]));
-
-    const three = laneBranchRefs?.([
-      { id: 21, branch: "fleet/oneQ7777" }, { id: 22, branch: "fleet/twoR7777" },
-      { id: 23, branch: "fleet/threeS7777" },
+    // a lane whose anchor is gone (recycled, wrong repo, born parentless) still has to be
+    // addressable, and must not be given band 1's name — band 0 is the collecting band
+    const bandless = laneBandNames?.([
+      { anchor: null, lanes: [{ id: 8 }, { id: 6 }] },
+      { anchor: { id: 1 }, lanes: [{ id: 2 }] },
     ]);
-    check("three or more colliding lane refs separate together without over-lengthening",
-      three?.get(21) === "Q7777" && three.get(22) === "R7777" && three.get(23) === "S7777",
-      JSON.stringify([...three?.entries() ?? []]));
+    check("a lane with no live band collects on band 0, never on band 1",
+      bandless?.get(6) === "0A" && bandless.get(8) === "0B" && bandless.get(2) === "1A",
+      JSON.stringify([...bandless?.entries() ?? []]));
 
-    const short = laneBranchRefs?.([
-      { id: 31, branch: "abc" }, { id: 32, branch: "wxyz" },
-      { id: 33, branch: "branch" }, { id: 34, branch: "xbranch" },
-    ]);
-    check("short branches stay honest full strings and distinct nested full branches still separate",
-      short?.get(31) === "abc" && short.get(32) === "wxyz"
-        && short.get(33) === "branch" && short.get(34) === "xbranch",
-      JSON.stringify([...short?.entries() ?? []]));
+    check("two bandless STACKS share one band-0 letter run, so two orphans can never collide",
+      (() => {
+        const split = laneBandNames?.([
+          { anchor: null, lanes: [{ id: 5 }] }, { anchor: null, lanes: [{ id: 6 }] },
+        ]);
+        return split?.get(5) === "0A" && split.get(6) === "0B";
+      })(), "two orphan stacks");
 
-    const pairReverse = laneBranchRefs?.([...pairFx].reverse());
-    check("lane refs are stable when active-lane input order reverses",
-      pairFx.every((lane) => pair?.get(lane.id) === pairReverse?.get(lane.id)),
-      JSON.stringify({ forward: [...pair?.entries() ?? []], reverse: [...pairReverse?.entries() ?? []] }));
+    const forward = laneBandNames?.([
+      { anchor: { id: 4 }, lanes: [{ id: 11 }, { id: 3 }] }, { anchor: { id: 2 }, lanes: [{ id: 9 }] }]);
+    const reverse = laneBandNames?.([
+      { anchor: { id: 2 }, lanes: [{ id: 9 }] }, { anchor: { id: 4 }, lanes: [{ id: 3 }, { id: 11 }] }]);
+    check("band names are stable when the stack and lane input orders reverse",
+      !!forward && [...forward.keys()].every((id) => forward.get(id) === reverse?.get(id))
+        && forward.get(3) === "4A" && forward.get(9) === "2A",
+      JSON.stringify({ forward: [...forward?.entries() ?? []], reverse: [...reverse?.entries() ?? []] }));
 
-    const acrossRepos = [
-      { repo: "/repo/one", stack: 1, id: 41, branch: "fleet/repo-one-A9000" },
-      { repo: "/repo/two", stack: 2, id: 42, branch: "fleet/repo-two-B9000" },
-      { repo: "/repo/one", stack: 3, id: 43, branch: "fleet/repo-one-C8000" },
-    ];
-    const globalRefs = laneBranchRefs?.(acrossRepos.map(({ id, branch }) => ({ id, branch })));
-    check("lane refs are globally unique across repositories and stacks, not computed per group",
-      !!globalRefs && new Set(globalRefs.values()).size === acrossRepos.length
-        && globalRefs.get(41) === "A9000" && globalRefs.get(42) === "B9000",
-      JSON.stringify([...globalRefs?.entries() ?? []]));
+    check("band names are globally unique across bands and repositories",
+      (() => {
+        const all = laneBandNames?.([
+          { anchor: { id: 1 }, lanes: [{ id: 21 }, { id: 22 }] },
+          { anchor: { id: 2 }, lanes: [{ id: 23 }] }, { anchor: null, lanes: [{ id: 24 }] }]);
+        return !!all && new Set(all.values()).size === 4;
+      })(), "four lanes over three bands");
 
-    const deps = cut("const isActive = ", "// A lane's spoken identity")
+    // --- THE FOUR STATES, lifted the same way. What the bar could say before was "hot" or "not",
+    // and the not held three different facts. Order is part of the rule: a broken session that
+    // happens to be on screen is broken, not working.
+    const stSrc = cut("const SLEEP_MS =", "// \"how long since this session");
+    type StateFn = (s: object, now: number, awake: boolean) => string;
+    let slotState: StateFn | null = null;
+    try {
+      slotState = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(
+        "const RECENT_MS = 5000;\n" + stSrc) + "\nreturn slotState;")() as StateFn;
+    } catch { slotState = null; }
+    check("probe: the row's state rule is a liftable DOM-free pure helper",
+      !!slotState, stSrc.slice(0, 80) || "no slotState block");
+    const NOW = 1_000_000_000;
+    check("working = on screen, or output within the recent window",
+      slotState?.({ lastOutput: NOW - 60_000 }, NOW, true) === "work"
+        && slotState?.({ lastOutput: NOW - 1_000 }, NOW, false) === "work",
+      "slotState work");
+    check("resting and asleep are two states, split at half an hour of silence",
+      slotState?.({ lastOutput: NOW - 29 * 60_000 }, NOW, false) === "rest"
+        && slotState?.({ lastOutput: NOW - 31 * 60_000 }, NOW, false) === "sleep"
+        && slotState?.({ lastOutput: NOW - 30 * 60_000 }, NOW, false) === "sleep",
+      "slotState rest/sleep boundary");
+    check("broken wins over every other reading, including a session that is on screen right now",
+      slotState?.({ lastOutput: NOW, stalled: true }, NOW, true) === "bad"
+        && slotState?.({ lastOutput: NOW - 1_000, agent: "no-agent" }, NOW, false) === "bad"
+        && slotState?.({ lastOutput: NOW - 9 * 60 * 60_000, agent: "no-pane" }, NOW, false) === "bad"
+        // …and an agent Fleet simply has not probed yet is NOT an error
+        && slotState?.({ lastOutput: NOW - 60_000, agent: "unprobed" }, NOW, false) === "rest",
+      "slotState bad");
+
+    const deps = cut("const isActive = ", "// A LANE'S ONE ADDRESS")
       + cut("function projectOf(", "// Eight hues");
     const stackSrc = cut("function stacksOf()", "function startRename(");
     type FxSlot = {
@@ -1602,18 +1641,31 @@ export async function run(): Promise<void> {
     check("fixed empty rows and active non-lane rows retain their displayed slot numbers",
       renderSrc.includes("slotsEl.appendChild(emptyRow(s))")
         && emptySrc.includes('el("span", "n", String(s.id))')
-        && /else \{\s*row\.append\(el\("span", "n", String\(s\.id\)\), lbl\)/.test(rowSrc),
+        && /else \{\s*r1\.append\(el\("span", "n", String\(s\.id\)\), lbl\)/.test(rowSrc),
       "renderSlots + emptyRow + slotRow main-number branch");
-    check("active lane rows replace the visible number with ref · mutable label",
-      /if \(s\.worktree\) \{[\s\S]*?"laneref"[\s\S]*?"lanesep", "·"[\s\S]*?\} else \{\s*row\.append\(el\("span", "n"/.test(rowSrc)
+    // THE BAND NAME IS THE LANE'S ONLY ADDRESS in the bar. The branch suffix is not beside it, not
+    // under it and not in a second chip — it is in the tooltip, with the rest of the git facts. A
+    // second visible address is exactly what the model was confirmed to remove.
+    check("an active lane row shows its band name and NOTHING else as its address",
+      /if \(s\.worktree\) \{[\s\S]*?el\("span", "laneref", refs\.get\(s\.id\)[\s\S]*?\} else \{\s*r1\.append\(el\("span", "n"/.test(rowSrc)
         && (rowSrc.match(/"n", String\(s\.id\)/g) ?? []).length === 1
+        && !rowSrc.includes('"lanesep"') && !rowSrc.includes('"laneidentity"')
+        && !indexSrc.includes(".lanesep") && !indexSrc.includes(".laneidentity")
         && rowSrc.includes("s.label ?? baseName(s.cwd)")
-        && indexSrc.includes(".slot .laneref { flex: none; white-space: nowrap;")
-        && indexSrc.includes(".slot .laneidentity .lbl { min-width: 0; }"),
-      "lane identity branch + compact CSS");
+        // the branch did not vanish, it moved: the tooltip still names it
+        && /title = `\$\{refs\.get\(s\.id\)[\s\S]*?\$\{s\.worktree\.branch\}/.test(rowSrc),
+      "lane identity branch + sidebar CSS");
+    // THE ADDRESS IS ONE OBJECT, drawn once — the session's number and the lane's band name share
+    // the chip rule, which is how they can be the same kind of thing to look at.
+    check("the session number and the lane band name are the same chip, in mono, tinted by project",
+      /\.slot \.n, \.slot \.laneref \{[^}]*font-family: var\(--chat-mono\)/.test(indexSrc)
+        && /\.slot \.n, \.slot \.laneref \{[^}]*color: hsl\(var\(--proj-h/.test(indexSrc),
+      "the address chip rule in public/index.html");
     check("lane row internals keep slot ids, routes, tooltips and rename persistence",
       rowSrc.includes("row.dataset.slot = String(s.id)")
-        && rowSrc.includes("slot ${s.id} · ${displayLabel}")
+        // the tooltip still answers "which slot is this lane in", which is what the routes below
+        // are addressed by — it sits beside the cwd now that the band name carries the identity
+        && rowSrc.includes("slot ${s.id} · ${s.cwd}")
         && rowSrc.includes("showSlot(s.id)")
         && rowSrc.includes("`/api/slots/${s.id}/kill`")
         && cliSrc.includes("`/api/slots/${s.id}/rename`")
@@ -1651,15 +1703,91 @@ export async function run(): Promise<void> {
         && /(?:^|;)\s*flex-direction:\s*column(?:;|$)/.test(slotsCss)
         && /(?:^|;)\s*overflow-y:\s*auto(?:;|$)/.test(slotsCss),
       JSON.stringify({ slotCss: slotCss.trim(), slotsCss: slotsCss.trim() }));
-    check("empty rows stay numbered navigation but use only the quiet compact empty label",
+    // A FREE PLACE IS A PLACE: numbered, visible in the axis, and clickable across the whole row.
+    // "Visible" is the part a hairline treatment would quietly lose, so the label says what a click
+    // does instead of leaving the row to be read as a gap.
+    check("empty rows stay numbered, say what a click does, and are clickable as a whole row",
       emptySrc.includes('el("span", "n", String(s.id))')
-        && emptySrc.includes('el("span", "lbl dim", "empty")')
+        && emptySrc.includes('el("span", "lbl dim", "free · start a session")')
         && emptySrc.includes("row.onclick = () => openPicker(s.id)")
-        && !emptySrc.includes("start here") && !emptySrc.includes("empty —"),
+        && /\.slot\.empty \.n \{/.test(indexSrc),
       emptySrc.slice(0, 300));
-    check("lane suffix replaces the slot number without a redundant permanent lane glyph",
+    check("the band name replaces the slot number without a redundant permanent lane glyph",
       !rowSrc.includes('"lanechip"') && !indexSrc.includes(".slot .lanechip"),
       "slotRow + sidebar CSS");
+    // --- THE BAR SPEAKS ONE LANGUAGE, and it is not its own. Every colour it paints is a token
+    // from the chat view's :root block (or the queue's extension of it); the bar declares no
+    // palette. This is the same cut the board took on 2026-09-20, applied to the last surface that
+    // was still on the old sheet — and a literal hex creeping back is exactly how that ends.
+    {
+      // comments stripped FIRST: the palette block's prose names `.slot.lane`, and a selector
+      // match that reads comments makes :root itself look like a rule of this bar
+      const css = indexSrc.slice(indexSrc.indexOf("<style>"), indexSrc.indexOf("</style>"))
+        .replace(/\/\*[\s\S]*?\*\//g, "");
+      const rules = [...css.matchAll(/(^|\n)([^{}\n][^{}]*?)\{([^{}]*)\}/g)];
+      const isBar = (sel: string) => /(^|[\s,])(#side|#slots|#sidehead|#sidetitle|#sidetools|#sidefoot|#instwrap|#instbtn|#instmenu|#morebtn|#morepanel|#collapse|\.instrow|\.slot|\.slotact|\.renamein|\.rowacts|\.cmtb|\.revb)\b/.test(sel);
+      const withHex = rules.filter((m) => isBar(m[2]) && /#[0-9a-fA-F]{3,8}\b/.test(m[3]));
+      check("client: the sidebar's CSS carries no palette of its own — every colour is a token",
+        withHex.length === 0 && rules.some((m) => /^#side\b/.test(m[2].trim())
+          && m[3].includes("var(--chat-void)") && m[3].includes("var(--chat-sans)")),
+        withHex.slice(0, 3).map((m) => m[2].trim().replace(/\s+/g, " ")).join(" | ")
+          || `${rules.filter((m) => isBar(m[2])).length} bar rules, none with a literal colour`);
+    }
+    // MONO IS FOR ADDRESSES AND NUMBERS, sans for words. The old bar was one monospace for
+    // everything, which is what made a label and an id look like the same kind of fact.
+    check("client: the bar sets sans for words and keeps mono for the address, the age and the fill",
+      /#side \{[^}]*font-family: var\(--chat-sans\)/.test(indexSrc)
+        && /\.slot \.r2 \.when \{[^}]*font-family: var\(--chat-mono\)/.test(indexSrc)
+        && /\.slot \.ctxfill \{[^}]*font-family: var\(--chat-mono\)/.test(indexSrc),
+      "the font assignments in the sidebar block");
+    // FOUR STATES, FOUR SHAPES. The rule the card set is that the reading survives without colour,
+    // so each state must change the GEOMETRY of the glyph — and resting and asleep must not be the
+    // same means twice (two brightnesses of one dot is the failure this forbids).
+    {
+      const glyph = (sel: string) => new RegExp(`\\.slot \\.act${sel}\\s*\\{([^}]*)\\}`).exec(indexSrc)?.[1] ?? "";
+      const base = glyph(""), rest = glyph("\\.rest"), sleep = glyph("\\.sleep"), bad = glyph("\\.bad");
+      check("client: the four states differ in SHAPE, and resting and asleep differ from each other",
+        /border-radius: 50%/.test(base) && /background: var\(/.test(base)
+          && /background: none/.test(rest) && /box-shadow: inset/.test(rest)
+          && /height: 2px/.test(sleep) && !/box-shadow/.test(sleep)
+          && /clip-path: polygon/.test(bad),
+        JSON.stringify({ base: base.trim(), rest: rest.trim(), sleep: sleep.trim(), bad: bad.trim() }));
+      check("client: the row paints one of those four and names it in words",
+        /el\("span", `act \$\{state\}`\)/.test(rowSrc) && /live\.title = STATE_WORD\[state\]/.test(rowSrc)
+          // the two-state dot is gone: the glyph is no longer built by concatenating a "hot"
+          // onto a bare "act" (the guest-chat chip has its own ` hot`, and it stays)
+          && !/"act" \+ \(/.test(rowSrc) && !/"act hot"/.test(rowSrc),
+        "the state glyph in slotRow");
+    }
+    // THE ROW REPAINTS ONLY WHEN WHAT IS PAINTED CHANGES, and the key is what enforces it. Both new
+    // paintings go through the SAME functions the row uses — a state left out here freezes on
+    // screen until some other field happens to move (the `behind` bug that list documents).
+    check("client: the render key carries the state glyph and the age at the row's own resolution",
+      /slotState\(s, serverNow, panes\.some\(\(p\) => p\.slot === s\.id\)\)/.test(cliSrc)
+        && /sinceShort\(serverNow - s\.lastOutput\)/.test(cliSrc)
+        && !/serverNow - s\.lastOutput < RECENT_MS,\n/.test(cliSrc.slice(cliSrc.indexOf("const key = JSON.stringify"))),
+      "the sidebar render key");
+    // THE PLACE FOR THE MARK IS PREPARED AND EMPTY. Build 2 of this card draws it; build 1 owes the
+    // geometry, so that landing the mark moves nothing. "Empty" is asserted too — a placeholder
+    // that paints something is a mark nobody chose.
+    check("client: every row reserves the session mark's place, at one declared size, with nothing in it",
+      /r1\.appendChild\(el\("span", "mark"\)\)/.test(rowSrc)
+        && /el\("span", "mark"\)/.test(emptySrc)
+        && /\.slot \.mark \{[^}]*width: var\(--mark-size, 26px\)[^}]*height: var\(--mark-size, 26px\)/.test(indexSrc)
+        && /\.slot\.lane \{ --mark-size: 21px; \}/.test(indexSrc)
+        // nothing is drawn into it: no content, no background, no border anywhere in the bar
+        && !/el\("span", "mark", /.test(cliSrc)
+        && !/\.slot \.mark[^{]*\{[^}]*(background|border|content)/.test(indexSrc),
+      "the mark placeholder in slotRow/emptyRow + its CSS");
+    // LINE 2 EXISTS AND CARRIES THE TWO FACTS THE COLOUR USED TO CARRY. The project stripe left in
+    // the same change; if it came back, the row would be saying the repo twice and the second line
+    // would have no reason to exist.
+    check("client: the row's second line names the checkout and the age, and the project stripe is gone",
+      /el\("div", "r2"\)/.test(rowSrc) && /el\("span", "repo", baseName\(project\)\)/.test(rowSrc)
+        && /el\("span", "when", sinceShort\(serverNow - s\.lastOutput\)\)/.test(rowSrc)
+        && !indexSrc.includes(".slot.proj {") && !/\.slot\.proj[^}]*border-left/.test(indexSrc)
+        && cliSrc.includes("tintProject(row, projectOf(s))"),
+      "the second line in slotRow + the retired stripe");
     check("hover and focus actions use a solid row-coloured surface over passive facts",
       /background:\s*var\(--rb\)/.test(slotactCss)
         && !/transparent|gradient|opacity/i.test(slotactCss)
@@ -1671,7 +1799,10 @@ export async function run(): Promise<void> {
     const mobileRowacts = /(?:^|\n)\s*\.rowacts\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";
     const mobileRowact = /(?:^|\n)\s*\.rowacts \.rowact\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";
     check("mobile rows and existing actions wrap within the drawer without clipping",
-      /\.slot\s*\{[^}]*flex-wrap:\s*wrap/.test(mobileCss)
+      // the row became a BLOCK when the bar moved onto the chat language, so what wraps in a narrow
+      // drawer is line 1 — asserting the old `.slot { flex-wrap }` here would pass on a rule that
+      // no longer does anything
+      /\.slot \.r1\s*\{[^}]*flex-wrap:\s*wrap/.test(mobileCss)
         && /flex-wrap:\s*wrap/.test(mobileRowacts)
         && /max-width:\s*100%/.test(mobileRowacts)
         && /min-width:\s*40px/.test(mobileRowact)

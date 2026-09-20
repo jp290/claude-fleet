@@ -6044,39 +6044,62 @@ function baseName(p: string) {
 type ActiveSlot = SlotInfo & { cwd: string };
 const isActive = (s: SlotInfo): s is ActiveSlot => !!s.cwd;
 
-// A lane's spoken identity is the shortest suffix that separates it from every other active lane.
-// Pure and DOM-free so the rule can be exercised directly. Lengths advance as collision groups,
-// never by input order; sorting by id also makes iteration of the returned map deterministic.
-function laneBranchRefs(lanes: readonly { id: number; branch: string }[]): Map<number, string> {
-  const ordered = [...lanes].sort((a, b) => a.id - b.id);
-  const lengths = new Map(ordered.map((lane) => [lane.id, Math.min(4, lane.branch.length)]));
-  while (true) {
-    const groups = new Map<string, typeof ordered>();
-    for (const lane of ordered) {
-      const length = lengths.get(lane.id) ?? 0;
-      const ref = lane.branch.slice(-length);
-      const group = groups.get(ref) ?? [];
-      group.push(lane);
-      groups.set(ref, group);
-    }
-    let lengthened = false;
-    for (const group of groups.values()) {
-      if (group.length < 2) continue;
-      for (const lane of group) {
-        const length = lengths.get(lane.id) ?? 0;
-        if (length >= lane.branch.length) continue;
-        lengths.set(lane.id, length + 1);
-        lengthened = true;
-      }
-    }
-    // No movement is possible only for duplicate full branch strings. Returning those full strings
-    // is the honest representation; every pair of distinct full branch strings separates first.
-    if (!lengthened) break;
+// A LANE'S ONE ADDRESS. The owner-confirmed model (docs/messungen/2026-09-18-slot-system-und-linke-leiste.md
+// §3.1, "ok" 2026-09-19): a band is a slot number, a lane hangs on the band of the main it came
+// from, and it is CALLED after that band — 3A, 3B, 16B. That name is its only name in the bar, so
+// the branch suffix that used to stand here is gone from the row and lives in the tooltip with the
+// rest of the git facts. A lane with no band at all (no live anchor: recycled, wrong-repo, born
+// parentless) collects on band 0 as 0A, 0B — derived from the same model rather than inventing a
+// second address form (docs/messungen/2026-09-20-session-marke-entwurf.md §6).
+//
+// Unique by construction, which is the property the old suffix rule had to iterate for: the band is
+// a slot number and the letter counts within that one band. Pure and DOM-free so the rule can be
+// exercised directly; both orderings are by id, so the map is deterministic.
+const bandLetter = (i: number): string => i < 26
+  ? String.fromCharCode(65 + i)
+  : bandLetter(Math.floor(i / 26) - 1) + String.fromCharCode(65 + (i % 26));
+function laneBandNames(
+  stacks: readonly { anchor: { id: number } | null; lanes: readonly { id: number }[] }[],
+): Map<number, string> {
+  const out = new Map<number, string>();
+  const bandless: number[] = [];
+  for (const g of [...stacks].sort((a, b) => (a.anchor?.id ?? 0) - (b.anchor?.id ?? 0))) {
+    if (!g.anchor) { bandless.push(...g.lanes.map((l) => l.id)); continue; }
+    const band = g.anchor.id;
+    [...g.lanes].sort((a, b) => a.id - b.id).forEach((l, i) => out.set(l.id, `${band}${bandLetter(i)}`));
   }
-  return new Map(ordered.map((lane) => {
-    const length = lengths.get(lane.id) ?? 0;
-    return [lane.id, lane.branch.slice(-length)] as const;
-  }));
+  bandless.sort((a, b) => a - b).forEach((id, i) => out.set(id, `0${bandLetter(i)}`));
+  return out;
+}
+
+// THE FOUR STATES A ROW MUST TELL APART WITHOUT COLOUR (owner, the left-bar card: working, resting,
+// asleep, broken). The shapes are in the CSS; what is decided here is which one a row is in, and the
+// order matters — a broken session that happens to be on screen is broken first. Resting and asleep
+// are one fact read at two distances: a session that produced nothing for half an hour is not the
+// same thing as one that paused between two answers, and the bar had no way to say so.
+const SLEEP_MS = 30 * 60_000;
+type SlotState = "work" | "rest" | "sleep" | "bad";
+function slotState(s: SlotInfo, now: number, awake: boolean): SlotState {
+  if (s.stalled || s.agent === "no-agent" || s.agent === "no-pane") return "bad";
+  if (awake || now - s.lastOutput < RECENT_MS) return "work";
+  return now - s.lastOutput >= SLEEP_MS ? "sleep" : "rest";
+}
+// The shape is the reading; this is the same reading in words, for the tooltip and for anyone who
+// has to name the state out loud. Not decoration: a shape nobody can name is a shape nobody learns.
+const STATE_WORD: Record<SlotState, string> = {
+  work: "working", rest: "resting", sleep: "asleep — nothing for half an hour or more",
+  bad: "broken — stalled, or a pane with no agent behind it" };
+
+// "how long since this session last said anything", short enough for a 250px line. Takes the AGE,
+// not a timestamp: the caller has the server's clock and the client's is allowed to disagree with
+// it. Whole minutes, so the string is stable between two polls — the sidebar's render key is keyed
+// on what is PAINTED, and a seconds-resolution age here would rebuild the bar on every tick.
+function sinceShort(ageMs: number): string {
+  const min = Math.max(0, Math.round(ageMs / 60000));
+  if (min < 1) return "now";
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
 // --- project colour: one hue per checkout, derived, never stored ---------------------------------
@@ -6392,8 +6415,7 @@ function renderSlots() {
   // twelve empty rows overflowed a phone screen, and folding the lanes is what buys that back.
   // Empty rows do not move, so "start a session in slot 7" still means the same place.
   const stacks = stacksOf();
-  const refs = laneBranchRefs(fleet.flatMap((s) => isActive(s) && s.worktree
-    ? [{ id: s.id, branch: s.worktree.branch }] : []));
+  const refs = laneBandNames(stacks);
   const stackAt = new Map(stacks.map((g) => [g.at, g]));
   const stackedLanes = new Set(stacks.flatMap((g) => g.lanes.map((lane) => lane.id)));
   for (const s of fleet) {
@@ -6405,11 +6427,16 @@ function renderSlots() {
   }
 }
 
+// A FREE PLACE IS STILL A PLACE (owner: "ich will immernoch irgendwo hinklicken koennen um eine
+// session zu starten"). It keeps its number, it stays visible in the axis rather than thinning to a
+// hairline, and the whole row is the click target — so the numbers run 1..16 unbroken whether or not
+// anything lives at them, and choosing the number IS the ordering.
 function emptyRow(s: SlotInfo): HTMLElement {
   const row = el("div", "slot empty");
   row.dataset.slot = String(s.id);
-  row.appendChild(el("span", "n", String(s.id)));
-  row.appendChild(el("span", "lbl dim", "empty"));
+  const r1 = el("div", "r1");
+  r1.append(el("span", "mark"), el("span", "n", String(s.id)), el("span", "lbl dim", "free · start a session"));
+  row.appendChild(r1);
   row.onclick = () => openPicker(s.id);
   // The ⎇+ quick-lane chip used to hang here, on EVERY empty row — twelve identical chips the
   // moment a repo session had focus, none of them saying which repo they meant. It lives on the
@@ -6435,12 +6462,14 @@ function renderStack(g: Stack, refs: ReadonlyMap<number, string>) {
 function repoHeaderRow(g: Stack, open: boolean): HTMLElement {
   const row = el("div", "slot repohead");
   tintProject(row, g.key);
-  row.appendChild(foldArrow(g, open));
+  const r1 = el("div", "r1");
+  r1.appendChild(foldArrow(g, open));
   const lbl = el("span", "lbl dim", baseName(g.key));
   lbl.title = `${g.key}\nno matching anchored main session — orphan/parentless lanes`;
-  row.appendChild(lbl);
-  for (const c of stackChips(g, open)) row.appendChild(c);
-  row.appendChild(quickLaneChip(g.key));
+  r1.appendChild(lbl);
+  for (const c of stackChips(g, open)) r1.appendChild(c);
+  r1.appendChild(quickLaneChip(g.key));
+  row.appendChild(r1);
   row.onclick = () => setStackOpen(g, !open);
   return row;
 }
@@ -6509,21 +6538,33 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
   const row = el("div", "slot" + (isFocused ? " current" : visible ? " shown" : "") + (s.worktree ? " lane" : ""));
   row.dataset.slot = String(s.id);
   tintProject(row, projectOf(s));
-  if (stack) row.appendChild(foldArrow(stack, open));
+  // TWO LINES, not one run of glyphs: line 1 is address · label · state and everything that asks
+  // for a decision; line 2 is the two quiet facts the row used to say only in colour — which
+  // checkout this is, and how long ago it last spoke. `.slotact` and `.rowacts` stay children of
+  // the ROW, not of a line: the first is absolutely positioned over the row's right edge, the
+  // second is a full-width strip the phone drawer wraps under both lines.
+  const r1 = el("div", "r1");
+  const r2 = el("div", "r2");
+  if (stack) r1.appendChild(foldArrow(stack, open));
   {
       const displayLabel = s.label ?? baseName(s.cwd);
       const lbl = el("span", "lbl", displayLabel);
+      // THE PLACE FOR THE SESSION MARK — reserved, sized, and deliberately EMPTY. It is build 2 of
+      // this card and waits on the owner's choice between the drawn variants
+      // (docs/messungen/2026-09-20-session-marke-runde-2.md §7). Reserving it now means the row's
+      // geometry is already the one the mark lands in, so nothing moves twice.
+      r1.appendChild(el("span", "mark"));
       if (s.worktree) {
-        const title = `${s.worktree.branch}\nslot ${s.id} · ${displayLabel}\n${s.cwd}`;
-        const identity = el("span", "laneidentity");
-        const ref = el("span", "laneref", refs.get(s.id) ?? s.worktree.branch);
+        // A LANE'S NAME IS ITS BAND'S (3A, 16B) AND IT IS THE ONLY ONE the bar shows. The branch
+        // suffix that used to stand here said nothing a reader could use to address the lane; the
+        // branch itself is one hover away, with the rest of the git facts.
+        const title = `${refs.get(s.id) ?? "lane"} · ${displayLabel}\n${s.worktree.branch}\nslot ${s.id} · ${s.cwd}`;
+        const ref = el("span", "laneref", refs.get(s.id) ?? String(s.id));
         ref.title = title;
-        identity.title = title;
-        identity.append(ref, el("span", "lanesep", "·"), lbl);
-        row.appendChild(identity);
+        r1.append(ref, lbl);
         lbl.title = title;
       } else {
-        row.append(el("span", "n", String(s.id)), lbl);
+        r1.append(el("span", "n", String(s.id)), lbl);
         lbl.title = s.cwd;
       }
       lbl.ondblclick = (e) => {
@@ -6533,15 +6574,15 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       if (autosList.some((a) => a.slot === s.id && a.enabled)) {
         const b = el("span", "autobadge", "⏱");
         b.title = "has scheduled prompts";
-        row.appendChild(b);
+        r1.appendChild(b);
       }
-      if (stack) for (const c of stackChips(stack, open)) row.appendChild(c);
+      if (stack) for (const c of stackChips(stack, open)) r1.appendChild(c);
       // ⎇+ used to sit on all twelve empty rows at once, saying nothing about which repo it meant.
       // Here it names its own repo by sitting on it. Not on lanes: a lane off a lane would nest
       // .worktrees inside a worktree, which is the same rule the old `quickRepo` followed.
       if (s.git && !s.worktree) {
         const parent = normalizeLaneAnchor({ slot: s.id, openedAt: s.openedAt });
-        row.appendChild(quickLaneChip(s.repo ?? s.cwd, parent ?? undefined));
+        r1.appendChild(quickLaneChip(s.repo ?? s.cwd, parent ?? undefined));
       }
       // row = identity + state: a lane's lifecycle color IS its land-readiness, shown as
       // ONE dot. The branch name and counts that used to fill a 96px badge move into the
@@ -6552,7 +6593,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         const dot = el("span", `lcdot ${state}`);
         dot.title = `${s.git.branch} — ${s.git.dirty} uncommitted, ${s.git.ahead} to land, ${s.git.behind} behind`
           + `\nFleet lane (${state}). ± review · open the board to land`;
-        row.appendChild(dot);
+        r1.appendChild(dot);
       }
       // a lane's whole point is review-then-land, so its ± sits inline (not hover-hidden) —
       // the one action that belongs on the row; everything else (share/export/rename/land)
@@ -6561,21 +6602,21 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         const dff = el("span", "lanediff", "±");
         dff.title = "review this lane's diff";
         dff.onclick = (e) => { e.stopPropagation(); void openDiff(s.id); };
-        row.appendChild(dff);
+        r1.appendChild(dff);
       }
       if (s.share && s.share.comments > 0) {
         // passive signal — hidden while the hover-action row is up; the 💬 in that row
         // (below) is the clickable path, so aiming at the badge still lands right
         const cb = el("span", "cmtb", `💬${s.share.comments}`);
         cb.title = `guest chat — ${s.share.comments} message${s.share.comments === 1 ? "" : "s"}`;
-        row.appendChild(cb);
+        r1.appendChild(cb);
       }
       if (s.mergePending) {
         // a resolved conflict waiting for review — discoverable without opening the board
         const rb = el("span", "revb", "⏸");
         rb.title = "agent conflict resolutions nobody has reviewed — review & land (open the board)";
         rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
-        row.appendChild(rb);
+        r1.appendChild(rb);
       }
       if (s.codexRecovery) {
         const cr = s.codexRecovery;
@@ -6590,7 +6631,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
           + (needsOwner ? "\nowner attention required; Fleet will not guess" : "")
           + "\nclick to inspect eligible identities and bind one exact UUID";
         chip.onclick = (e) => { e.stopPropagation(); openCodexDlg(s.id); };
-        row.appendChild(chip);
+        r1.appendChild(chip);
       }
       // context fill — a SENSOR and nothing else: no threshold, no colour state, no action. The
       // unknown case is drawn as "ctx ?", never as 0% and never as an empty bar: a blank meter reads
@@ -6606,7 +6647,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
           ? `context fill — ${c.usedTokens.toLocaleString()} of ${c.windowTokens.toLocaleString()} input tokens (${c.pct}%)`
           : "context fill unknown — this slot has no pinned claude transcript with a usage record yet"
             + " (or runs a harness/model Fleet cannot measure). Not an empty context.";
-        row.appendChild(cx);
+        r2.appendChild(cx);
       }
       // B3 · the cost of talking to this session today. A SENSOR beside the context fill and read
       // the same way: no threshold, no colour, no action. It is only drawn when the server sent the
@@ -6620,7 +6661,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
           + ` in ${sends} send${sends === 1 ? "" : "s"} (local day).`
           + "\nDelivered bytes only — a refused send costs the session nothing."
           + "\nCounted per slot number, so a slot recycled today carries both occupants' sends.";
-        row.appendChild(inb);
+        r2.appendChild(inb);
       }
       // a send waiting for this pane's composer to empty: a hint, not an alarm — the draft is the
       // owner's, and Fleet types nothing until the owner sends or clears it
@@ -6628,16 +6669,40 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         const ps = s.parkedSend;
         const pk = el("span", "ctxfill", `⏳${ps.count}`);
         pk.title = `${parkedSendLine(ps)}\nwaiting since ${new Date(ps.since).toLocaleTimeString()}`;
-        row.appendChild(pk);
+        r2.appendChild(pk);
       }
-      // green = live in a pane, or a background session that just produced output. A FOLDED anchor
-      // also lights up for its hidden lanes: a lane that just produced output is exactly the kind of
-      // thing you must not have to unfold to notice (§F3 edge 2).
+      // The state, in one glyph and FOUR readings instead of two. Working is still "live in a pane,
+      // or just produced output", and a FOLDED anchor still lights up for its hidden lanes — a lane
+      // that just produced output is exactly the kind of thing you must not have to unfold to
+      // notice (§F3 edge 2). What is new is the other half: resting, asleep and broken used to be
+      // one grey dot between them. Each has its own SHAPE (the CSS), so the four survive a
+      // greyscale screenshot, and the word is in the tooltip for the case where they do not.
       const hidHot = !!stack && !open && stack.lanes.some(
         (l) => serverNow - l.lastOutput < RECENT_MS || panes.some((p) => p.slot === l.id));
-      const live = el("span", "act" + (visible || serverNow - s.lastOutput < RECENT_MS || hidHot ? " hot" : ""));
-      if (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS) live.title = "a folded lane is active";
-      row.appendChild(live);
+      const state = slotState(s, serverNow, visible || hidHot);
+      const live = el("span", `act ${state}`);
+      live.title = STATE_WORD[state]
+        + (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS ? " — a folded lane is active" : "");
+      r1.appendChild(live);
+      row.appendChild(r1);
+      // LINE 2 — the READINGS. Two of them the row used to carry only as a colour and a brightness:
+      // the project stripe left with the old sheet (the hue lives in the address chip now and
+      // nowhere else), so the checkout has to be readable as a WORD, and once resting and asleep are
+      // two states, "how long ago" is the number behind them. The rest are the sensors that were
+      // crowding line 1 — the context fill, today's inbound bytes, a parked send — none of which
+      // asks the reader to do anything. Line 1 keeps identity and everything that does.
+      {
+        const project = projectOf(s);
+        if (project) {
+          const repo = el("span", "repo", baseName(project));
+          repo.title = project;
+          r2.insertBefore(repo, r2.firstChild);
+        }
+        const when = el("span", "when", sinceShort(serverNow - s.lastOutput));
+        when.title = `last output ${new Date(s.lastOutput).toLocaleString()}`;
+        r2.appendChild(when);
+        row.appendChild(r2);
+      }
       const act = el("div", "slotact");
       if (s.git && !s.worktree) {
         // plain repo session: diff is available but secondary, so it stays in the hover row
@@ -6902,7 +6967,13 @@ async function refresh() {
     // skip the DOM rebuild when nothing visible changed — a full re-render kills hover state
     const key = JSON.stringify([focused, panes.map((p) => p.slot),
       autosList.filter((a) => a.enabled).map((a) => a.slot),
-      data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.comments, s.mergePending, serverNow - s.lastOutput < RECENT_MS,
+      data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.comments, s.mergePending,
+        // the STATE GLYPH and the age beside it, both at the resolution the row paints them. The
+        // glyph was a boolean here while it had two readings; it has four now, and `stalled`/`agent`
+        // reach the row through nothing else — leaving them out would freeze a session at "resting"
+        // for as long as no other field moved (the `behind` bug this list documents).
+        slotState(s, serverNow, panes.some((p) => p.slot === s.id)),
+        sinceShort(serverNow - s.lastOutput),
         // every git field renderSlots actually paints, or the skip-the-rebuild shortcut below
         // silently freezes it: `behind` was missing here while the lane dot's tooltip has shown
         // it since the dot existed, so a lane falling behind main kept the old count until some

@@ -1115,6 +1115,19 @@ export async function run(): Promise<void> {
     && !/brief\.files\.length - 30/.test(boardSrc)
     && /!brief\.laneScoped && brief\.commits\.length >= brief\.commitsCap/.test(boardSrc),
     "the history section in renderBoard");
+  // ↻ THE REBASE BUTTON carries the count, so the column never shows a number without the action
+  // that fixes it — and never the action without its reason. What it does NOT do is half of what
+  // it says: no verify, no land (owner-set contract, 2026-09-20).
+  check("client: the rebase button carries the behind-count and only a lane gets one",
+    /Rebase — \$\{behind\} behind \$\{baseName_\}/.test(boardSrc)
+    && /if \(behind && brief\.laneScoped\) \{/.test(boardSrc)
+    && /post\(`\/api\/slots\/\$\{slot\}\/rebase`/.test(cliSrc), "the changes section in renderBoard");
+  check("client: after a rebase the column says the verify chain must be run again",
+    /Nothing was verified and nothing was landed: run the verify chain again before landing/.test(cliSrc),
+    "doRebase in src/client.ts");
+  check("client: a refused or conflicting rebase shows the server's own sentence and its files",
+    /rebaseNote\.set\(slot, \{ ok: false/.test(cliSrc) && /note\.files\?\.length/.test(boardSrc)
+    && /the worktree could not be confirmed unchanged/.test(cliSrc), "doRebase + the changes section");
   // A FAILED READ IS NOT AN EMPTY SESSION — each of the four reads behind this column says so in
   // its own words, where its content would have been.
   check("client: a failed brief, lane map, transcript or error read is NAMED, not rendered as empty",

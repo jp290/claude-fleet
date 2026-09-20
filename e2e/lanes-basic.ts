@@ -581,6 +581,107 @@ export async function run(lc: LaneCtx): Promise<void> {
     spawnSync("git", ["-C", REPO, "branch", "-qD", fbBranch]);
   }
 
+
+  // --- ↻ REBASE THE LANE (owner, 2026-09-20: "vllt fügen wir auch gleich noch einen rebase button
+  // hinzu"). The route ONLY rebases: no verify, no land, and on a conflict it aborts and leaves
+  // the worktree byte-identical to what it found. Every refusal below is a sentence the column
+  // prints, so each one is asserted BY ITS REASON, not merely by its status code. ---
+  {
+    const g = (dir: string, ...a: string[]) => spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" });
+    const sha = (dir: string) => g(dir, "rev-parse", "HEAD").stdout.trim();
+    const status = (dir: string) => g(dir, "status", "--porcelain").stdout;
+    type Rb = { ok?: boolean; reason?: string; error?: string; files?: string[]; restored?: boolean;
+      was?: number; behind?: number; base?: string; head?: string };
+    const rebase = async (slot: number): Promise<{ status: number; j: Rb }> => {
+      const r = await post(`/api/slots/${slot}/rebase`, {});
+      return { status: r.status, j: (await r.json().catch(() => ({}))) as Rb };
+    };
+
+    const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    check("rebase fixture: a lane exists to rebase", !!ln.cwd && !!ln.branch, JSON.stringify(ln));
+    await settleForMerge(ln.slot);
+
+    // 1 — a lane level with its base has nothing to do, and says so rather than running git
+    const level = await rebase(ln.slot);
+    check("rebase refuses a lane that is not behind, by name",
+      level.status === 409 && level.j.reason === "not-behind", JSON.stringify(level.j));
+
+    // main moves; the lane now has something to replay onto
+    writeFileSync(`${REPO}/rebase-main.txt`, "main moved\n");
+    g(REPO, "add", "rebase-main.txt"); g(REPO, "commit", "-qm", "main moves under the lane");
+    // …and the lane has a commit of its own, so a successful rebase has something to preserve
+    writeFileSync(`${ln.cwd}/rebase-lane.txt`, "lane work\n");
+    g(ln.cwd, "add", "rebase-lane.txt"); g(ln.cwd, "commit", "-qm", "lane work");
+
+    // 2 — a dirty tree: the replay would carry uncommitted work through it
+    writeFileSync(`${ln.cwd}/dirty.txt`, "uncommitted\n");
+    const dirty = await rebase(ln.slot);
+    check("rebase refuses a dirty worktree, by name and with the file count",
+      dirty.status === 409 && dirty.j.reason === "dirty" && /1 uncommitted file\b/.test(dirty.j.error ?? ""),
+      JSON.stringify(dirty.j));
+    rmSync(`${ln.cwd}/dirty.txt`, { force: true });
+
+    // 3 — the worktree checked out by hand onto something else: what would be replayed is not
+    // the lane the owner is looking at
+    g(ln.cwd, "checkout", "-q", "--detach");
+    const detached = await rebase(ln.slot);
+    check("rebase refuses a worktree that is not on its lane branch, by name",
+      detached.status === 409 && detached.j.reason === "not-on-branch", JSON.stringify(detached.j));
+    g(ln.cwd, "checkout", "-q", ln.branch);
+
+    // 4 — THE DANGEROUS ONE: an agent mid-turn in this worktree. A send makes the pane produce
+    // output, which is exactly the signal the land path's own busy predicate reads.
+    await post("/send", { slot: ln.slot, text: "echo rebase-guard" });
+    const working = await rebase(ln.slot);
+    check("rebase refuses while the lane's agent is mid-turn, by name",
+      working.status === 409 && working.j.reason === "lane-working", JSON.stringify(working.j));
+    await settleForMerge(ln.slot);
+
+    // 5 — and then it does the one thing it is for
+    const before = sha(ln.cwd);
+    const done = await rebase(ln.slot);
+    check("rebase replays the lane onto its base and reports what it moved",
+      done.status === 200 && done.j.ok === true && done.j.was === 1 && done.j.behind === 0,
+      JSON.stringify(done.j));
+    check("rebase moved HEAD and kept the lane's own commit",
+      sha(ln.cwd) !== before && exists(`${ln.cwd}/rebase-lane.txt`) && exists(`${ln.cwd}/rebase-main.txt`),
+      `${before.slice(0, 7)} → ${sha(ln.cwd).slice(0, 7)}`);
+    check("rebase leaves no rebase in progress behind it",
+      !exists(`${REPO}/.git/worktrees/${ln.branch.split("/").pop()}/rebase-merge`) && status(ln.cwd) === "",
+      JSON.stringify(status(ln.cwd)));
+    await post(`/api/slots/${ln.slot}/kill`, {});
+
+    // 6 — THE CONFLICT: a second lane touching the same line main moved. The route must ABORT and
+    // leave the worktree exactly as it found it — a half-rebased lane is the outcome this exists
+    // to prevent — and it must name the files rather than resolve them.
+    const cl = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    writeFileSync(`${cl.cwd}/rebase-main.txt`, "the lane's version\n");
+    g(cl.cwd, "add", "rebase-main.txt"); g(cl.cwd, "commit", "-qm", "lane rewrites the same file");
+    writeFileSync(`${REPO}/rebase-main.txt`, "main's newer version\n");
+    g(REPO, "add", "rebase-main.txt"); g(REPO, "commit", "-qm", "main rewrites it too");
+    await settleForMerge(cl.slot);
+    const headBefore = sha(cl.cwd), stBefore = status(cl.cwd);
+    const conflict = await rebase(cl.slot);
+    check("a conflicting rebase is refused with the conflicting files named",
+      conflict.status === 409 && conflict.j.reason === "conflict"
+      && (conflict.j.files ?? []).includes("rebase-main.txt"), JSON.stringify(conflict.j));
+    check("a conflicting rebase leaves the worktree EXACTLY as it found it",
+      sha(cl.cwd) === headBefore && status(cl.cwd) === stBefore && conflict.j.restored === true,
+      `${headBefore.slice(0, 7)} vs ${sha(cl.cwd).slice(0, 7)} · restored=${conflict.j.restored}`);
+    check("a conflicting rebase leaves no rebase state in the worktree",
+      !exists(`${REPO}/.git/worktrees/${cl.branch.split("/").pop()}/rebase-merge`)
+      && !exists(`${REPO}/.git/worktrees/${cl.branch.split("/").pop()}/rebase-apply`),
+      "rebase-merge / rebase-apply");
+    check("the lane's own commit survived the aborted rebase",
+      readFileSync(`${cl.cwd}/rebase-main.txt`, "utf8") === "the lane's version\n",
+      readFileSync(`${cl.cwd}/rebase-main.txt`, "utf8"));
+    await post(`/api/slots/${cl.slot}/kill`, {});
+
+    // 7 — and a session that holds no lane has nothing to rebase
+    const plain = await post("/api/slots/1/rebase", {});
+    check("rebase refuses a session that holds no worktree lane", plain.status === 400, String(plain.status));
+  }
+
   // --- integration-branch config (/api/repo-base): overrides the branch derived from the
   // primary's HEAD, so the primary can be parked off the integration branch. Set to a decoy
   // real branch, confirm the worktrees map reports it, then clear back to derived. ---

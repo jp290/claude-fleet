@@ -4405,7 +4405,7 @@ statt nur ihre Namen, sind es drei verschiedene Dinge:
 | --- | --- | --- |
 | **S1 — EIN Prompt, an B statt A, Setup-Zeilen grün** | 2 | `9b296576` (dirty, 09-16 14:38) · `2f11ee72` (clean, 09-16 18:57) — **beide diese Lane** |
 | **S2 — ZWEI Prompts in einer Runde** (`[{"slot":4,…},{"slot":6,…}]`) | 1 | `037d246349cd`, 2026-08-26, **Ancestor von main** (`git merge-base --is-ancestor` geprüft) |
-| **S3 — Register verschmutzt, Setup-Zeile ROT** (§11.2p) | 3 | `1ba06c2b2638` (09-07) · `519ff13ee95a` (09-08) · `69c98c72ab2e` (09-12), alle `dirty:false` |
+| **S3 — Register verschmutzt, Setup-Zeile ROT** (§11.2p) | 3 + 1 (09-20, siehe unten) | `1ba06c2b2638` (09-07) · `519ff13ee95a` (09-08) · `69c98c72ab2e` (09-12), alle `dirty:false` |
 
 S3 ist nicht diese Familie und nicht einmal eine Verletzung: in allen drei Läufen ist
 `backlog nudge setup: the only open row is a pending kind:notiz observation` rot, weil eine fremde
@@ -4414,6 +4414,24 @@ counter-proof row`, `criterion fixture: settle what done means …`) — **alles
 die Kopfzeile eingeschlossen. S2 teilt die WURZEL (die Fixture hatte ihre Prämisse nie hergestellt:
 `git show 037d246349cd:e2e/tasks.ts` sagt an der Stelle noch wörtlich „A is touched first and
 therefore is the longest-idle eligible main"), aber nicht das Symptom.
+
+**Vierte S3-Sichtung, 2026-09-20 — und diesmal ist die Quelle der fremden Zeile BENANNT.** Ein
+lokaler `./e2e-isolated.sh` auf dem Inhalt von `d2e893c9` (Lane `fleet/260920104118-733b`) lief
+5 309 PASS / 17 FAIL. Zwölf davon sind diese Signatur; die fremde Zeile hieß
+`wave land three: AGENTS.md again, but the work reaches further`. Dieser Titel wird an genau EINER
+Stelle im Baum gemintet — `e2e/land-provenance.ts` in der Fixture der ZWEITEN Welle, also der Welle,
+die `docs` deklariert und Code anfasst — und `fleet-e2e.ts` fährt `land-provenance` VOR `tasks`.
+**Damit ist die Richtung der Verursachung gelesen und nicht geraten:** im selben Lauf waren die
+beiden `(w3)`-Checks genau dieser Welle rot, ihre Zeile blieb offen, und die Setup-Zeile von
+`tasks.ts` fand sie. Die zwölf sind eine FOLGE, kein zweites Ereignis — von den 17 roten Checks
+jenes Laufs hängen 14 an einer Wurzel.
+
+Nicht reproduziert: derselbe Inhalt plus einen reinen CSS-/Doku-Aufsatz (`d7af9814`) lief am
+2026-09-20 als Helfer-Vorschau auf `second-host` über **5 322 Checks, 0 FAIL, exit 0** — sauberer
+Baum, `treeSha 542783e8`, 1 834 s. Das entlastet nichts (ein grüner Rerun beweist bei diesen
+Basisraten nichts) und registriert keine Familie; es hält nur fest, dass gegen jenen Zweig heute
+kein Rot steht. Die Trail-Run-Id des roten Laufs ist über die Staffelstab-Übergabe nicht
+mitgekommen — nachfahrbar sind der Titel der Zeile und die Modul-Reihenfolge, beides oben zitiert.
 
 **Für S1 gibt es damit in 8 631 Läufen keinen Vorgänger.** Auf den Bäumen dieser Lane: 2 von 9 = 22 %;
 auf allen anderen Bäumen zusammen: 0 von 536 für S1 (4 von 536 = 0,7 % für den Check-Namen). Wer den

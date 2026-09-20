@@ -79,5 +79,7 @@ eine Owner-Frage, keine Lane-Entscheidung**, und sie ist mit Bau 2 zu entscheide
   Leiste (0 freie Plätze) trägt Schnitt 1 nichts bei, und der Gewinn fällt auf das, was Schnitt 2
   und 3 halten.
 
-Bilder und die rohen `*-budget.json`: `http://100.64.0.1:25411/raumnutzung/` (Tailscale, diese
-Maschine; die Bilder liegen nicht im Baum, die Treiber und die Zahlen hier schon).
+Bilder und die rohen `*-budget.json` liegen unter `/tmp/fleet-shots-public/raumnutzung/` auf dem
+Bild-Server dieser Maschine — die Adresse steht bewusst NICHT hier (`leak-pin: tracked files contain
+no configured deploy identity` hat genau diese Zeile gestellt). Nachfahrbar ist die Messung ohne die
+Bilder: die Treiber und alle Zahlen stehen im Baum.

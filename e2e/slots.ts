@@ -1058,7 +1058,8 @@ export async function run(): Promise<void> {
     /row\("Profile", setup\?\.profile \?\? "standard"/.test(setupSrc)
     && /row\("Type", brief\?\.worktree \? "lane" : "repo session"/.test(setupSrc)
     && /const packs = setup\?\.packs \?\? \[\];/.test(setupSrc)
-    && /el\("span", "bspack", p\.id\)/.test(setupSrc), "the setup section in renderBoard");
+    // a chip is a BUTTON since the packs became openable — the span form was the read-only one
+    && /el\("button", "bspack", p\.id\)/.test(setupSrc), "the setup section in renderBoard");
   // A pack is a POINTER LIST. The board may open what it points at, and must never present a
   // span as "the pack's content": an anchor has no end (context-pack-validator.ts), so any span
   // would be this seam's invention. The window therefore shows pointers and hands over the FILE,

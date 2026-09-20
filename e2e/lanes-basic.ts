@@ -634,7 +634,11 @@ export async function run(lc: LaneCtx): Promise<void> {
     // output arrives when it arrives, so the busy state is WAITED FOR and then acted on. Without
     // that wait this raced the predicate and the rebase ran, which took the two checks after it
     // down with it (measured on a helper preview, 2026-09-20).
-    await post("/send", { slot: ln.slot, text: "echo rebase-guard" });
+    // …and the output is produced by TYPING INTO THE PANE, not by /send: this suite runs
+    // FLEET_CMD=true, so the pane holds a bare shell and the delivery gate refuses a composed
+    // send to it — measured on a helper preview (2026-09-20), where the send was accepted and
+    // nothing was ever typed, so the pane stayed idle and the refusal under test never fired.
+    await tmuxOut("send-keys", "-t", `s${ln.slot}`, "echo rebase-guard", "Enter");
     let busy = false;
     for (let i = 0; i < 60 && !busy; i++) {
       const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };

@@ -783,6 +783,16 @@ export async function run(): Promise<void> {
     const back = persistedLaneSuiteJob(bad);
     check("(LS.6c) the row survives the restart, its unreadable verdict does not",
       back?.state === "reported" && back.result === null, JSON.stringify(back?.result));
+    // …and it LEAVES no fixture behind: a reported job with no verdict reads as an owed run to
+    // every later consumer of this state (the program execution view's land door among them), so
+    // the row is removed and the server restarted before the next module sees the file.
+    const cleaned = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { laneSuiteJobs?: Record<string, unknown>[] };
+    cleaned.laneSuiteJobs = (cleaned.laneSuiteJobs ?? []).filter((j) => j.id !== bad);
+    await Bun.write(`${ROOT}/fleet.json`, JSON.stringify(cleaned));
+    await restartSrv();
+    check("(LS.6c) the fixture row is gone again, so no later module inherits an owed preview",
+      persistedLaneSuiteJob(bad) === undefined, JSON.stringify(persistedLaneSuiteJob(bad)));
   }
 
   // ===== (LS.7) THE LANE DISAPPEARS =============================================================

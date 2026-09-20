@@ -67,6 +67,32 @@ const script = `(() => {
       h: Math.round(rb.height), w: Math.round(rb.width),
       a: Math.round(a), f: Math.round(f), c: Math.round(c), mark: Math.round(mk) });
   }
+  // THE LEFT BAND, decomposed at the DOM (the owner measured it on the delivered PNG and asked
+  // which part is the mark's RESERVATION and which is plain indent). Per row: where the row box
+  // starts, where each r1 child sits, and where the first TEXT ink of the row is. A picture cannot
+  // tell a 26px reserved element from 26px of padding; the boxes can.
+  const barBox = document.getElementById("slots").getBoundingClientRect();
+  const band = rows.filter((r) => r.getBoundingClientRect().height).map((row) => {
+    const rb = row.getBoundingClientRect();
+    const r1 = row.querySelector(".r1");
+    const kids = r1 ? [...r1.children].map((k) => {
+      const b = k.getBoundingClientRect();
+      return { cls: [...k.classList].join(".") || k.tagName.toLowerCase(),
+        x: +(b.left - barBox.left).toFixed(1), w: +b.width.toFixed(1) };
+    }) : [];
+    let inkX = null;
+    const walk = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      if (!n.textContent.trim()) continue;
+      const rg = document.createRange(); rg.selectNodeContents(n);
+      const b = rg.getBoundingClientRect();
+      if (!b.width) continue;
+      const x = +(b.left - barBox.left).toFixed(1);
+      if (inkX === null || x < inkX) inkX = x;
+    }
+    return { kind: row.classList.contains("empty") ? "free" : row.classList.contains("lane") ? "lane" : "session",
+      rowX: +(rb.left - barBox.left).toFixed(1), inkX, kids };
+  });
   const bar = document.getElementById("slots").getBoundingClientRect();
   return JSON.stringify({
     rows: n, occupied, barW: Math.round(bar.width), barH: Math.round(bar.height),
@@ -79,6 +105,7 @@ const script = `(() => {
     emptyPct: +(100 * (area - fact - chrome) / area).toFixed(2),
     lblClipped: per.filter(p => p.lblShort > 0).length,
     lblShortTotal: per.reduce((t, p) => t + p.lblShort, 0),
+    band,
     medianRowH: per.map(p => p.h).sort((x, y) => x - y)[Math.floor(per.length / 2)],
     per });
 })()`;

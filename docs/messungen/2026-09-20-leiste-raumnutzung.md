@@ -29,6 +29,7 @@ Zwei Reparaturen an der Apparatur, beide vorher gemessen falsch:
 | v1 Schnitt 1 — freie Plätze | 61 | 56 | **29** | 35,35 | 19,49 | 45,16 | 16 von 16 |
 | v2 Schnitt 2 — Innenabstände | **54** | **49** | 29 | 37,49 | 20,61 | 41,90 | 16 von 16 |
 | v3 Schnitt 3 — Breite ans Label | 54 | 49 | 29 | 36,52 | 22,19 | 41,29 | 16 von 16 |
+| v4 Schnitt 4 — linkes Band | 54 | 49 | 29 | 35,87 | 22,77 | 41,35 | 16 von 16 |
 
 Fläche der ganzen Leiste: **182 950 px² → 137 730 px² (−24,7 %) bei GLEICHEM Fakt-Anteil in
 Tinte** (50 295 → 50 298 px², die Streuung ist Messrauschen der Textkästen). Das ist die Aussage des
@@ -49,6 +50,41 @@ Owner-Satzes als Zahl: derselbe Inhalt auf einem Viertel weniger Fläche.
   Lane-Branchnamen — die sind länger als jede erreichbare Spalte. Der Fakt-Anteil sinkt dabei
   optisch von 37,49 auf 36,52 %: die Zeilen werden BREITER (233 → 239 px), und beim ungekürzten
   Label zählt das Messgerät zusätzliche Kastenbreite per Definition als Chrome, nicht als Tinte.
+
+## Schnitt 4 — das leere Band links, am DOM zerlegt
+
+Der Owner hat es am ausgelieferten Bild gesehen („guck dochmal wie viel platz links noch ist bei
+v3") und auf ~46 CSS px beziffert, davon ~13,3 px nicht von der Marken-Rinne gedeckt. **Die Zahl
+hält:** am DOM gemessen sind es 14,0 px, nicht 13,3 — die Abweichung ist, dass die
+Rinnen-Rechnung oben den 6-px-Abstand hinter der Marke der Reservierung zuschlägt.
+
+Das Band einer gewöhnlichen Session-/Frei-Zeile bei v3, jeder Posten eine Kastenkante, keine
+Pixelschwelle (`flaechenbudget.js` bucht seit diesem Schnitt `band` je Zeile):
+
+| x (von der Leistenkante) | Breite | was dort steht |
+|---|---|---|
+| 0 – 5 | 5 px | `#slots` Polster |
+| 5 – 14 | 9 px | Polster der Zeile (8) + ihre 1-px-Kante |
+| 14 – 40 | **26 px** | **`.mark` — die Reservierung** (Owner-Frage, unangetastet) |
+| 40 – 46 | 6 px | `r1`-Abstand; er existiert NUR, weil die Marke vor dem Chip steht |
+| 46 – 52 | 6 px | Polster des Adress-Chips — seine eigene Lesbarkeit, keine Leere |
+
+**Also: 32 der 46 px hängen an der Reservierung, 14 sind schlichter Einzug.** Von diesen 14 sind
+**5 genommen** (`#slots` 5 → 2, Zeilenpolster 8 → 6); die verbleibenden 9 px sind der Einzug der
+Pille und ihr eigenes Polster — darunter stösst Tinte an die gerundete Kante. Ergebnis: die erste
+Tinte der Zeile rückt von 52 auf 47 px, Zeile 2 von 46 auf 41, und das Label bekommt die 5 px
+(117 → 122 px, Fehlbetrag aller Labels 239 → 225).
+
+**Die Faltspalte liegt NICHT auf 15 von 16 Zeilen.** Der Verdacht war naheliegend und ist am DOM
+widerlegt: `stackfold` ist ein Kind von `r1`, das der Client nur anhängt, wenn die Zeile einen
+Stack trägt (`src/client.ts#slotRow`, `if (stack)`). In der `band`-Buchung beginnt die
+Kinderliste jeder Session-, Lane- und Frei-Zeile mit `mark`; nur die Stack-Elternzeile hat davor
+ein `stackfold` bei x = 11 (mit `margin-left: -3px`, deshalb die 15,5 px Tinte im Bild). Es ist
+also nichts zu verschieben — die Spalte existiert auf den anderen Zeilen gar nicht.
+
+Zweimal in dieser Tabelle steigt der Chrome-Anteil, obwohl Fläche gewonnen wurde (v3 und v4): die
+Zeilen werden BREITER, und beim ungekürzten Label zählt das Messgerät zusätzliche Kastenbreite
+per Definition als Chrome statt als Tinte. Die Fakt-TINTE bleibt konstant (50 016 → 50 034 px²).
 
 ## Der EINE Posten, den ich gemessen und NICHT gebaut habe: die Rinne der Marke
 

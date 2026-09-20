@@ -87,6 +87,9 @@ interface PersistedLaneSuiteJob {
   id: string; state: string; offeredAt: number; claim: unknown;
   claimWas?: { deviceId: string; name: string; claimedAt: number; expiresAt: number };
   endedAt?: number;
+  // the VERDICT as it sits on disk — unknown, because (LS.6c) is about a row whose shape the
+  // server does not vouch for: what is asserted there is that it comes back null, not its fields
+  result?: unknown;
 }
 
 const DEVICE = "lanesuitedev01";     // matches the server's /^[a-z0-9]{8,32}$/
@@ -755,6 +758,32 @@ export async function run(): Promise<void> {
       && abandonedAfterRestart.claimWas.expiresAt === claim4Body.job?.expiresAt
       && typeof abandonedAfterRestart.endedAt === "number",
     JSON.stringify({ save: hydrationSaveId, free: withdrawnAfterRestart, held: abandonedAfterRestart }));
+
+  // ===== (LS.6c) A MALFORMED VERDICT ON DISK MUST NOT TAKE THE OWNER POLL DOWN ==================
+  // Measured, not imagined: a helper preview on 2026-09-20 died with "TypeError: undefined is not
+  // an object (evaluating 'j.result.remote.reportedAt')" in suiteOffersView, because loadState
+  // restored any persisted job whose id/cwd/state were strings and the meter's view then
+  // dereferenced its verdict on the 2 s poll. ONE unreadable row 500'd /api/sessions for every
+  // client of the fleet — the widest blast radius a sight-only surface can have.
+  {
+    const bad = "ffffffffffff";
+    const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { laneSuiteJobs?: Record<string, unknown>[] };
+    const rows = state.laneSuiteJobs ?? [];
+    rows.push({ id: bad, slot: 1, slotOpenedAt: Date.now(), repo: REPO, cwd: REPO, branch: "fleet/broken",
+      offeredAt: Date.now(), state: "reported", commitSha: null, treeSha: null, untracked: null, claim: null,
+      // the shape of an older generation: a verdict with NO remote block at all
+      result: { exitCode: 0, result: "green", tail: "ALL PASS", checks: null, fails: [], ms: 1 } });
+    state.laneSuiteJobs = rows;
+    await Bun.write(`${ROOT}/fleet.json`, JSON.stringify(state));
+    await restartSrv();
+    const poll = await get("/api/sessions");
+    check("(LS.6c) a persisted verdict without a remote block does not break the owner poll",
+      poll.ok, `status=${poll.status}`);
+    const back = persistedLaneSuiteJob(bad);
+    check("(LS.6c) the row survives the restart, its unreadable verdict does not",
+      back?.state === "reported" && back.result === null, JSON.stringify(back?.result));
+  }
 
   // ===== (LS.7) THE LANE DISAPPEARS =============================================================
   // There is no drain behind a preview: its only interested party is one lane, and that lane can

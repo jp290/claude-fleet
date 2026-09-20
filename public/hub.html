@@ -10,6 +10,20 @@
     --text:#ccc; --dim:#888; --faint:#666;
     --accent:#7aa2f7; --sel:#2c3a5e; --focus:#3a4a7a;
     --amber:#e0af68; --add:#9ece6a; --del:#f7768e;
+    /* scrollbar tokens: quiet line, one palette step brighter on hover, no track strip */
+    --sb-thumb:var(--line); --sb-thumb-h:var(--faint); --sb-track:transparent;
+  }
+  /* SCROLLBARS — ONE rule for every scroller on this page (owner 2026-09-20: "konsistent unserem
+     design anpassen"). No hex here: this page's language carries --sb-thumb/--sb-thumb-h/--sb-track
+     in its :root. Both engines are dressed — one with ::-webkit-scrollbar takes that branch (it owns
+     hover, the only state), the rest take the standard thin pair. */
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-track{background:var(--sb-track)}
+  ::-webkit-scrollbar-thumb{background-color:var(--sb-thumb);border:3px solid transparent;border-radius:5px;background-clip:padding-box}
+  ::-webkit-scrollbar-thumb:hover{background-color:var(--sb-thumb-h)}
+  ::-webkit-scrollbar-corner{background:var(--sb-track)}
+  @supports not selector(::-webkit-scrollbar){
+    *{scrollbar-width:thin;scrollbar-color:var(--sb-thumb) var(--sb-track)}
   }
   *{box-sizing:border-box}
   html,body{margin:0;background:var(--bg);color:var(--text);

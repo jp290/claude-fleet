@@ -13406,13 +13406,23 @@ const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | n
 };
 // THE FILING FORMAT NEEDS NO MODEL (card-extract.ts#parseFormattedCard): a row whose own text opens
 // with the headers is read by the parser and checked by the same validator against the same tree.
-// `model: "format"` names the producer the way "author" and "refine" do — no extractor ran. Read
-// from `t.text` alone, because the headers are the filer's and a brief placed before them would
-// hide them; `null` hands the row to the extractor exactly as before.
+// `model: "format"` names the producer the way "author" and "refine" do — no extractor ran. BOTH
+// texts are read, the brief first — the same source the model path (extractCard) reads — but as
+// TWO parses, never one joined string: the parser reads only the block that LEADS a text, so a
+// brief pasted ahead of the headers would hide them and push a formatted row to the extractor.
+// WHICH BLOCK WINS WHEN BOTH TEXTS CARRY HEADERS: the BRIEF's, whole. The brief is the owner's
+// later, complete replacement text, so its FLAECHE replaces the raw text's instead of adding to
+// it — a row whose original FLAECHE header is broken is otherwise unreleasable forever, because
+// the brief was the one sharpening tool the card reader did not read. A brief with no (or a half)
+// header block wins nothing and falls through to the raw text, per the parser's prose rule. The
+// card is validated against the JOINED text — the string the model path validates against — so
+// the quote rule asks both paths the same question. `null` still hands the row to the extractor
+// exactly as before.
 function formatCardOf(t: Task, snapshot: TrackedSnapshot | null, index: SymbolIndexSnapshot | null): TaskCard | null {
-  const raw = parseFormattedCard(t.text);
+  const source = [t.brief?.text, t.text].filter((x): x is string => !!x).join("\n\n");
+  const raw = (t.brief?.text ? parseFormattedCard(t.brief.text) : null) ?? parseFormattedCard(t.text);
   if (!raw) return null;
-  const checked = validateCard(raw, cardValidationContext(t.text, snapshot, index));
+  const checked = validateCard(raw, cardValidationContext(source, snapshot, index));
   return { ...checked.body, model: "format", at: Date.now(), ms: 0, valid: checked.valid,
     surfaceValid: checked.surfaceValid, validatorVersion: CARD_VALIDATOR_VERSION, gaps: checked.gaps };
 }

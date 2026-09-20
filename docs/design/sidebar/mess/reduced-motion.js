@@ -12,7 +12,7 @@ const proc = Bun.spawn(args, { stdout: "ignore", stderr: "ignore" });
 async function target() {
   for (let i = 0; i < 60; i++) {
     try { const j = await (await fetch(`http://127.0.0.1:${PORT}/json`)).json();
-      const p = j.find((t: any) => t.type === "page" && t.url.includes("marken"));
+      const p = j.find((t) => t.type === "page" && t.url.includes("marken"));
       if (p?.webSocketDebuggerUrl) return p.webSocketDebuggerUrl; } catch {}
     await Bun.sleep(250);
   }
@@ -21,14 +21,14 @@ async function target() {
 const ws = new WebSocket(await target());
 await new Promise((r) => (ws.onopen = r));
 let id = 0;
-const call = (method: string, params: any = {}) => new Promise<any>((res) => {
+const call = (method, params = {}) => new Promise((res) => {
   const my = ++id;
-  const on = (e: MessageEvent) => { const m = JSON.parse(String(e.data));
+  const on = (e) => { const m = JSON.parse(String(e.data));
     if (m.id === my) { ws.removeEventListener("message", on); res(m.result); } };
   ws.addEventListener("message", on);
   ws.send(JSON.stringify({ id: my, method, params }));
 });
-const shot = async () => (await call("Page.captureScreenshot", { format: "png" })).data as string;
+const shot = async () => (await call("Page.captureScreenshot", { format: "png" })).data;
 await Bun.sleep(2500);
 const a = await shot(); await Bun.sleep(2000); const b = await shot();
 await Bun.write(`${process.env.S}/shots/red-${reduce ? "on" : "off"}-1.png`, Buffer.from(a, "base64"));

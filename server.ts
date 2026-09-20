@@ -4977,6 +4977,19 @@ async function worktreeRisk(repo: string, path: string): Promise<WorktreeRisk> {
   };
 }
 
+// the /api/slots/:id/worktrees board, cached serve-stale-while-revalidate (see the route):
+// a session switch must not wait for ~150 git spawns (~5 s on a loaded machine, measured
+// 2026-09-20), and EVERY other displayed git fact on this dashboard already carries the
+// tickGit staleness doctrine. DISPLAY ONLY by contract: nothing destructive may ever read
+// rows from here — risk previews and removeWorktreeSafe compute worktreeRisk fresh.
+interface WorktreeBoardRow {
+  path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number;
+  dirtyFiles: string[]; unpushedCommits: CommitRow[]; shortstat: string | null; empty: boolean; note: string | null;
+}
+interface WorktreeBoard { repo: string; main: string; worktrees: WorktreeBoardRow[] }
+const worktreeBoardCache = new Map<string, { body: WorktreeBoard; at: number }>();
+const worktreeBoardRecomputing = new Set<string>();
+
 // "safe to drop" checks + removal, shared by land and orphan cleanup: git's OWN
 // dirty/unmerged refusal in `worktree remove` is the backstop — on top we refuse while
 // commits are neither pushed to any remote nor merged, so removal can never eat work
@@ -35964,42 +35977,134 @@ Bun.serve<WSData>({
     if (req.method === "GET" && wtsMatch) {
       const s = slotFrom(wtsMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
-      // From a CLONE lane, `--show-toplevel` is the clone itself; the recorded repo is the one fact that
-      // still points at the origin, so it wins. A worktree lane answers identically either way.
-      const top = s.worktree?.form === "clone"
-        ? { code: 0, out: s.worktree.repo, err: "" }
-        : await git(s.cwd, "rev-parse", "--show-toplevel");
-      if (top.code !== 0) return json({ error: "not a git repository" }, 400);
-      const list = await listWorktrees(top.out);
-      const primary = list.find((w) => w.primary);
-      if (!primary) return json({ error: "no worktree info" }, 400);
-      // ahead/behind measured against the integration branch, not the primary's HEAD (which may
-      // be parked off it) — matches what land actually integrates onto
-      const intb = (await integrationBranch(primary.path)) ?? "HEAD";
-      // `git worktree list` CANNOT see a clone lane (it is its own repository); left out, a clone lane
-      // would be missing from the one surface whose job is "every lane open on this repo". Only clones of
-      // THIS repo, and only live ones — a clone has no on-disk registry, so no orphan to rediscover.
-      const cloneLanes: WtEntry[] = slots
-        .filter((x) => x.cwd && x.worktree?.form === "clone" && x.worktree.repo === top.out)
-        .map((x) => ({ path: x.cwd!, branch: x.worktree!.branch, primary: false }));
-      const rows = [];
-      for (const w of [...list, ...cloneLanes]) {
-        if (w.primary) continue;
-        const st = await git(w.path, "status", "--porcelain");
-        const ab = await git(primary.path, "rev-list", "--left-right", "--count", `${w.branch}...${intb}`);
-        const m = /^(\d+)\s+(\d+)$/.exec(ab.out);
-        const holder = slots.find((x) => x.cwd === w.path);
-        const risk = await worktreeRisk(primary.path, w.path);
-        rows.push({
-          path: w.path, branch: w.branch, slot: holder?.id ?? null,
-          dirty: st.code === 0 ? st.out.split("\n").filter(Boolean).length : 0,
-          ahead: m ? Number(m[1]) : 0, behind: m ? Number(m[2]) : 0,
-          dirtyFiles: risk.dirtyFiles, unpushedCommits: risk.unpushedCommits,
-          shortstat: risk.shortstat, empty: risk.empty,
-          note: shelved[w.path]?.note ?? null, // shelve note, if this orphan was set aside
-        });
+      const cwd = s.cwd;
+      // THE COMPUTE for one slot's repo board: the old request-path preamble (toplevel,
+      // worktree list, integration branch) plus the flattened per-worktree wave, all inside one
+      // async so a stale-cache hit can run it in the BACKGROUND while answering instantly.
+      const computeWorktreeBoard = async (): Promise<WorktreeBoard | { error: string; code: number }> => {
+        // From a CLONE lane, `--show-toplevel` is the clone itself; the recorded repo is the one fact that
+        // still points at the origin, so it wins. A worktree lane answers identically either way.
+        const top = s.worktree?.form === "clone"
+          ? { code: 0, out: s.worktree.repo, err: "" }
+          : await git(cwd, "rev-parse", "--show-toplevel");
+        if (top.code !== 0) return { error: "not a git repository", code: 400 };
+        const list = await listWorktrees(top.out);
+        const primary = list.find((w) => w.primary);
+        if (!primary) return { error: "no worktree info", code: 400 };
+        // ahead/behind measured against the integration branch, not the primary's HEAD (which may
+        // be parked off it) — matches what land actually integrates onto
+        const intb = (await integrationBranch(primary.path)) ?? "HEAD";
+        // `git worktree list` CANNOT see a clone lane (it is its own repository); left out, a clone lane
+        // would be missing from the one surface whose job is "every lane open on this repo". Only clones of
+        // THIS repo, and only live ones — a clone has no on-disk registry, so no orphan to rediscover.
+        const cloneLanes: WtEntry[] = slots
+          .filter((x) => x.cwd && x.worktree?.form === "clone" && x.worktree.repo === top.out)
+          .map((x) => ({ path: x.cwd!, branch: x.worktree!.branch, primary: false }));
+        // THE SESSION-SWITCH POST: renderBoard awaits this route before it repaints the right
+        // column, so every serial git spawn here is UI latency the owner feels on every pane
+        // switch (measured 2026-09-20: 12-14 s for 21 worktrees, ~200 serial processes). This
+        // recomputation flattens worktreeRisk: all six per-worktree git READS run in one
+        // concurrent wave, worktrees run capped-concurrently, and the three repo-level facts
+        // are computed once per request instead of once per worktree. Fields are identical to
+        // the old serial loop — the substitutions that make it so:
+        //      · status: ONE statusLines feeds both `dirty` and `dirtyFiles` (the route and
+        //        worktreeRisk used to run the same `status --porcelain` twice per worktree; risk's
+        //        lock-free read now serves both, so dirty and dirtyFiles can no longer disagree).
+        //      · branch: listWorktrees' branch IS `rev-parse --abbrev-ref HEAD` for an attached
+        //        worktree. A detached row reads "(detached)" where the old code read "HEAD" —
+        //        neither matches a real branch in `--merged`, so the outcomes are unchanged.
+        //      · merged: membership in ONE full `branch --merged <intb>` list ≡ `--list <branch>`
+        //        for names without glob metachars (worktree markers `* `/`+ ` stripped first). A
+        //        name WITH metachars keeps the original per-worktree `--list` call.
+        //      · baseSha: `rev-parse <intb>` once per request (was: once per worktree, same ref).
+        //      · the deep unpushed log is fired speculatively in the same wave and its value
+        //        simply goes unused whenever the @{push} branch or the onRemote/merged checks
+        //        short-circuit — the same command the serial version ran, just early. Read-only.
+        //    Keep in sync with worktreeRisk — which stays serial on purpose for its single-
+        //    worktree callers (risk preview, removeWorktreeSafe), where one worktree has no
+        //    wave to widen.
+        const targets = [...list, ...cloneLanes].filter((w) => !w.primary);
+        const [mergedAll, baseSha] = await Promise.all([
+          git(primary.path, "branch", "--merged", intb),
+          git(primary.path, "rev-parse", intb).then((r) => r.out),
+        ]);
+        // `--list <branch>` pattern-matches; full-list membership must too when the name itself
+        // carries a glob metachar — those names keep the original per-worktree call (see wave).
+        const mergedIntoIntb = (branch: string, out: string): boolean =>
+          /[*?[]/.test(branch)
+            ? out.trim().length > 0
+            : out.split("\n").some((l) => l.replace(/^([*+]\s+)?/, "").trim() === branch);
+        const wtRow = async (w: WtEntry): Promise<WorktreeBoardRow> => {
+          const deepArgs = baseSha ? [`${baseSha}..HEAD`] : [];
+          const [st, unpushed, onRemote, deep, ab, sh, merged] = await Promise.all([
+            statusLines(w.path),
+            git(w.path, "log", "--no-color", "@{push}..", "--format=%h%x09%ct%x09%s"),
+            git(w.path, "branch", "-r", "--contains", "HEAD"),
+            git(w.path, "log", "--no-color", ...deepArgs, "--format=%h%x09%ct%x09%s"),
+            git(primary.path, "rev-list", "--left-right", "--count", `${w.branch}...${intb}`),
+            git(w.path, "diff", "HEAD", "--shortstat", "--no-color"),
+            /[*?[]/.test(w.branch)
+              ? git(primary.path, "branch", "--merged", intb, "--list", w.branch)
+              : Promise.resolve(mergedAll),
+          ]);
+          const dirtyFiles = st.code === 0 ? st.lines.slice(0, 200) : [];
+          let unpushedCommits: CommitRow[] = [];
+          if (unpushed.code === 0) {
+            unpushedCommits = parseCommitLog(unpushed.out);
+          } else if (!onRemote.out.trim() && !mergedIntoIntb(w.branch, merged.out)) {
+            // scope to the lane's OWN commits (see worktreeRisk): else a no-upstream lane
+            // over-reports all of main's history as "unpushed"
+            unpushedCommits = parseCommitLog(deep.out);
+          }
+          const m = /^(\d+)\s+(\d+)$/.exec(ab.out);
+          const holder = slots.find((x) => x.cwd === w.path);
+          return {
+            path: w.path, branch: w.branch, slot: holder?.id ?? null,
+            dirty: st.code === 0 ? st.lines.length : 0,
+            ahead: m ? Number(m[1]) : 0, behind: m ? Number(m[2]) : 0,
+            dirtyFiles, unpushedCommits,
+            shortstat: sh.code === 0 && sh.out ? sh.out : null,
+            empty: dirtyFiles.length === 0 && unpushedCommits.length === 0,
+            note: shelved[w.path]?.note ?? null, // shelve note, if this orphan was set aside
+          };
+        };
+        const rows: WorktreeBoardRow[] = new Array(targets.length);
+        let next = 0;
+        // the deckel is for fleet-size futures, not today's ~25: each in-flight worktree holds
+        // ~6 git reads, and the measured wall on a loaded machine sits at ~2-3 effective
+        // workers — a wider storm thrashes, a narrower one underuses what there is.
+        await Promise.all(Array.from({ length: Math.min(12, targets.length) }, async () => {
+          for (;;) {
+            const i = next++;
+            if (i >= targets.length) return;
+            rows[i] = await wtRow(targets[i]);
+          }
+        }));
+        return { repo: primary.path, main: intb !== "HEAD" ? intb : primary.branch, worktrees: rows };
+      };
+      // THE SWITCH CONTRACT: a session switch must not cost a single git spawn. Every answer
+      // after a slot's first comes from the per-slot cache (keyed by cwd) in single-digit ms; an
+      // entry older than GIT_TICK_MS is served INSTANTLY and refreshed in the background, at
+      // most one recompute per slot per tick — the same staleness the dashboard's git tick
+      // already puts under every displayed number. DISPLAY ONLY by contract: nothing destructive
+      // reads this route; risk previews and removal recompute worktreeRisk fresh. The one cold
+      // request (boot, or a slot's first board open) pays the compute inline once.
+      const cached = worktreeBoardCache.get(cwd);
+      if (cached && Date.now() - cached.at <= GIT_TICK_MS) return json(cached.body);
+      if (cached) {
+        if (!worktreeBoardRecomputing.has(cwd)) {
+          worktreeBoardRecomputing.add(cwd);
+          void computeWorktreeBoard()
+            .then((b) => { if ("repo" in b) worktreeBoardCache.set(cwd, { body: b, at: Date.now() }); })
+            .catch((e: unknown) => logError("worktrees-board", e))
+            .finally(() => worktreeBoardRecomputing.delete(cwd));
+        }
+        return json(cached.body);
       }
-      return json({ repo: primary.path, main: intb !== "HEAD" ? intb : primary.branch, worktrees: rows });
+      const computed = await computeWorktreeBoard();
+      if (!("repo" in computed)) return json({ error: computed.error }, computed.code);
+      worktreeBoardCache.set(cwd, { body: computed, at: Date.now() });
+      return json(computed);
     }
     // focused risk preview for a SLOT's own lane worktree — read by the client before ⏏ land and before
     // killing a lane-holding slot.

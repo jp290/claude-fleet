@@ -80,13 +80,41 @@ export const MERGE_IDLE_MS = Math.max(500, Number(process.env.FLEET_MERGE_IDLE_M
 // merge gate (3 000/2 000) happened to be the wider of the two, and stopped the moment the suite
 // took it to its 500 ms floor. Same parse, same default as the server, for the same reason.
 export const AUTO_REVIEW_IDLE_MS = Number(process.env.FLEET_AUTO_REVIEW_IDLE_MS ?? 60_000) | 0;
-export const settleForMerge = async (slot: number): Promise<void> => {
+// THE SILENT HALF, for the one caller that is allowed to fail here: it polls, and it SAYS whether
+// the gate cleared. Everything below is built on the difference between "idle" and "I stopped
+// asking" — for twelve seconds those two returned identically, and the check that fired next
+// reported the missed gate as its OWN failure (docs/verify-tiering.md §11.2n; 11 of 655 rows
+// across eleven trees, 1,7 %, four of them before the land that was blamed for it).
+export interface MergeSettle { ok: boolean; idleMs: number | null; waitedMs: number; rounds: number; gateMs: number }
+export const trySettleForMerge = async (slot: number): Promise<MergeSettle> => {
+  const t0 = Date.now();
+  let idleMs: number | null = null;
   for (let i = 0; i < 80; i++) {
     const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
     const sl = sx.slots.find((x) => x.id === slot);
-    if (sl && sx.now - sl.lastOutput >= MERGE_IDLE_MS) return;
+    idleMs = sl ? sx.now - sl.lastOutput : null;
+    if (idleMs !== null && idleMs >= MERGE_IDLE_MS)
+      return { ok: true, idleMs, waitedMs: Date.now() - t0, rounds: i + 1, gateMs: MERGE_IDLE_MS };
     await Bun.sleep(150);
   }
+  return { ok: false, idleMs, waitedMs: Date.now() - t0, rounds: 80, gateMs: MERGE_IDLE_MS };
+};
+
+// ...and the half every fixture calls. It NAMES the precondition when it could not be established,
+// in a row of its own, so the red belongs to the gate that was never cleared and not to whichever
+// check ran next. Deliberately NOT a throw: the runner has no per-family catch (fleet-e2e.ts, the
+// `finally` only prints), so a throw here would end the whole run over one unsettled pane and
+// discard every family after it — a worse trade than one honest FAIL plus its collateral.
+// Silent on success: a passing row per call would add ~140 rows saying nothing, and on the happy
+// path the checks that follow ARE the measurement of this precondition.
+export const settleForMerge = async (slot: number): Promise<MergeSettle> => {
+  const st = await trySettleForMerge(slot);
+  if (!st.ok)
+    check(`lane-helpers: the merge idle gate cleared for slot ${slot} before the checks that follow`, false,
+      `PRECONDITION NOT ESTABLISHED after ${st.rounds}×150 ms (${st.waitedMs} ms): `
+      + `${st.idleMs === null ? "slot absent from /api/sessions" : `idle=${st.idleMs}ms`} < gate=${st.gateMs}ms`
+      + " — a merge check failing below is this gate's collateral until proven otherwise (docs/verify-tiering.md §11.2n)");
+  return st;
 };
 
 // --- ② the AUTHOR-path fixture: make ONE lane pane look like a live claude ---------------------
@@ -164,9 +192,11 @@ export const fakeClaudeInPane = async (slot: number, timeoutMs = 20_000): Promis
 // /api/sessions answer — because that is literally the subtraction canDeliver performs, and taking
 // both from one response keeps this request's own latency out of the result.
 //
-// Reading it back is the whole point: `settleForMerge` gives up silently after its 80 rounds and
-// returns exactly as it returns on success, so a fixture that only CALLS it cannot tell "idle" from
-// "I stopped asking" — and neither can the fourteen checks that then run on its word.
+// Reading it back is the whole point: the loop above uses `trySettleForMerge`, the silent half, and
+// tolerates its failure by design — so a fixture that only CALLS it cannot tell "idle" from "I
+// stopped asking" — and neither can the fourteen checks that then run on its word. (The loud half,
+// `settleForMerge`, now writes its own FAIL row instead; this function answers for BOTH gates and
+// therefore keeps the silent one.)
 export interface AuthorGates { alive: boolean; idle: boolean; comm: string; panePid: number;
   idleMs: number | null; gateMs: number; tail: string }
 export const probeAuthorGates = async (slot: number): Promise<AuthorGates> => {
@@ -194,7 +224,9 @@ export const probeAuthorGates = async (slot: number): Promise<AuthorGates> => {
 export const settleForAuthorMerge = async (slot: number, rounds = 4): Promise<AuthorGates> => {
   let g = await probeAuthorGates(slot);
   for (let i = 0; i < rounds && !(g.alive && g.idle); i++) {
-    await settleForMerge(slot);
+    // the SILENT half on purpose: this loop expects to fail and re-probes, and it reports both
+    // gates itself below — a FAIL row per round would redden runs this function then settles.
+    await trySettleForMerge(slot);
     g = await probeAuthorGates(slot);
   }
   return g;

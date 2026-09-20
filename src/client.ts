@@ -6194,13 +6194,28 @@ function setStackOpen(g: Stack, on: boolean) {
 // before any of this runs (measured: `location.search` was empty in the page). A fragment is never
 // sent to the server and survives the redirect, so the comparison URL is `…/?token=…#band=a`.
 // The query is still read, for a page opened without the login redirect.
-const BAND_VARIANT: "a" | "b" | "c" | null = ((): "a" | "b" | "c" | null => {
+//
+// AND IT RE-READS ON hashchange. A module-level const evaluated once at start is the trap this
+// switch walked into: changing `#band=a` to `#band=c` in the address bar is a same-document
+// navigation, so the page keeps drawing the Fassung it was LOADED with and the comparison is
+// three pictures of the same thing (measured from outside on 2026-09-20). The reader below is a
+// function, the two switches are `let`, and `hashchange` re-reads and repaints both.
+function readVariant(key: string): "a" | "b" | "c" | null {
   try {
-    const v = new URLSearchParams(location.hash.replace(/^#/, "")).get("band")
-      ?? new URLSearchParams(location.search).get("band");
+    const v = new URLSearchParams(location.hash.replace(/^#/, "")).get(key)
+      ?? new URLSearchParams(location.search).get(key);
     return v === "a" || v === "b" || v === "c" ? v : null;
   } catch { return null; }
-})();
+}
+let BAND_VARIANT = readVariant("band");
+// The head row's Fassungen (#head=a|b|c) — the same scaffolding, the same exit: when the owner
+// has chosen, the loser branches and this switch go with them.
+let HEAD_VARIANT = readVariant("head");
+addEventListener("hashchange", () => {
+  const b = readVariant("band"), h = readVariant("head");
+  if (b !== BAND_VARIANT) { BAND_VARIANT = b; renderSlots(); }
+  if (h !== HEAD_VARIANT) { HEAD_VARIANT = h; applyHeadVariant(); }
+});
 // "session 3 · 2 of 5" is the right column's wording (srow("Baton", …)). The bar has a quarter of
 // that width, so the three numbers are spelled short here and the long form goes in the tooltip.
 function successionText(sc: NonNullable<SlotInfo["succession"]>): string {
@@ -13336,6 +13351,92 @@ moreBtn.onclick = () => {
 $("sidetools").appendChild(moreBtn);
 $("sidetools").after(morePanel);
 applyMore();
+
+// THE HEAD ROW — THREE FASSUNGEN SIDE BY SIDE (#head=a|b|c), SCAFFOLDING, NOT A FEATURE.
+// Owner, 2026-09-20: "die ganzen komischen aktuellen knoepfe sollten auch noch ueberarbeitet
+// werden, eig ist nur der worktree knopf sinnvoll so wie er ist". The ⎇+ chip is the measure he
+// names: it SAYS what it does and carries its repo in its own name. These are raw emoji whose
+// meaning lives only in a title attribute — while the tray one screen below (Files · History ·
+// Schedule) already speaks SVG + word. This row is the last place with the old accent.
+// The three differ in KIND, not in colour (colour, edge, type and radius stay untouched):
+//   a  icon + word, the tray's own grammar, wrapped over as many lines as the words need
+//   b  one SVG grammar, no words, the row's geometry exactly as today
+//   c  only what is used daily stays in the row; audit, lands and saver fold under ⋯
+// THE THREE CONDITIONAL BUTTONS (📣 attn · 📥 ops · 💻 dev) are never folded by a Fassung: their
+// own writers reveal them exactly when they have something to say, and a Fassung that had folded
+// them would break in that moment. They keep their count, too — those writers rewrite
+// `textContent` on every poll, which would wipe an icon painted once, so the paint is re-applied
+// from a MutationObserver and the badge is read back out of the text the writer left.
+const HEAD_BTNS: ReadonlyArray<{ id: string; icon: IconName; word: string; daily: boolean }> = [
+  { id: "queuebtn", icon: "list", word: "Queue", daily: true },
+  { id: "attnbtn", icon: "megaphone", word: "Attention", daily: true },
+  { id: "opsbtn", icon: "inbox", word: "Inbox", daily: true },
+  { id: "auditbtn", icon: "shield", word: "Audit", daily: false },
+  { id: "outcomebtn", icon: "receipt", word: "Lands", daily: false },
+  { id: "devbtn", icon: "laptop", word: "Devices", daily: true },
+  { id: "saverbtn", icon: "saver", word: "Saver", daily: false },
+];
+// The glyph each button was born with, so leaving a Fassung (#head= gone, or a hashchange back)
+// restores the row instead of a half-painted mixture.
+const headGlyph = new Map<string, string>();
+// What a writer added to the glyph: "📣3" -> "3", "💻2 ⚠1" -> "2 ⚠1", "🗒" -> "".
+// What a writer added to the glyph: "📣3" -> "3", "💻2 ⚠1" -> "2 ⚠1", "🗒" -> "".
+// TWO RULES, both paid for by a measurement:
+// (1) READ THE BUTTON'S OWN TEXT NODES, never `textContent`. Once a Fassung has painted an icon
+//     and a word into the button, `textContent` returns that word, and the next repaint counted
+//     "Queue" as the queue's badge and appended it again on every pass ("QueueQueue", then
+//     "QueueQueueQueue"). Direct text nodes are exactly what a writer leaves and a paint removes.
+// (2) A BADGE IS A NUMBER, not "whatever is not an emoji". Stripping emoji left the ⋯ button's
+//     own "⋯" standing as its badge, and the button came back from a Fassung as "⋯⋯".
+// When the button carries no text node at all, the paint before this one is holding the count in
+// its .hbadge; when it carries text, that text is the whole truth, including "the count is gone".
+const headBadge = (b: HTMLElement): string => {
+  const own = [...b.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE)
+    .map((n) => n.textContent ?? "").join("");
+  if (own.trim() !== "") return own.match(/\d+(?:\s*⚠\s*\d+)?/)?.[0] ?? "";
+  return b.querySelector(".hbadge")?.textContent ?? "";
+};
+
+function paintHeadBtn(b: HTMLElement, ico: IconName, word: string, mode: "glyph" | "icon" | "iconword") {
+  const badge = headBadge(b);
+  if (mode === "glyph") {
+    if (!b.firstElementChild) return; // untouched by us — the writer's own text stands
+    // Only what the LAST PAINT is holding may come back with the glyph. Recomputing it here
+    // would read the glyph itself: "⋯" is not Extended_Pictographic, so it survived the strip
+    // and the ⋯ button came back as "⋯⋯" (measured).
+    b.replaceChildren(document.createTextNode(
+      (headGlyph.get(b.id) ?? "") + (b.querySelector(".hbadge")?.textContent ?? "")));
+    return;
+  }
+  const ic = el("span", "tricon");
+  ic.appendChild(icon(ico));
+  b.replaceChildren(ic);
+  if (mode === "iconword") b.appendChild(el("span", "trlabel", word));
+  if (badge) b.appendChild(el("span", "hbadge", badge));
+}
+
+const headObs = new MutationObserver(() => applyHeadVariant());
+function applyHeadVariant() {
+  const tools = $("sidetools");
+  for (const v of ["a", "b", "c"] as const) tools.classList.toggle(`hv-${v}`, HEAD_VARIANT === v);
+  const mode = HEAD_VARIANT === null ? "glyph" : HEAD_VARIANT === "a" ? "iconword" : "icon";
+  for (const spec of HEAD_BTNS) {
+    const b = $(spec.id);
+    // the order is rebuilt on every pass, which is also how a button comes back out of ⋯
+    const fold = HEAD_VARIANT === "c" && !spec.daily;
+    if (fold) morePanel.appendChild(b); else tools.insertBefore(b, moreBtn);
+    b.classList.toggle("hmoved", fold);
+    paintHeadBtn(b, spec.icon, spec.word, fold ? "iconword" : mode);
+  }
+  paintHeadBtn(moreBtn, "dots", "Mehr", mode);
+  headObs.takeRecords(); // never react to this function's own writes
+}
+for (const spec of HEAD_BTNS) {
+  headGlyph.set(spec.id, $(spec.id).textContent ?? "");
+  headObs.observe($(spec.id), { childList: true, characterData: true, subtree: true });
+}
+headGlyph.set("morebtn", moreBtn.textContent ?? "");
+applyHeadVariant();
 
 function copyLine(label: string, value: string): HTMLElement {
   const row = el("div", "shrline");

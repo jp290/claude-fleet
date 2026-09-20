@@ -143,6 +143,49 @@
     text-transform: uppercase; }
   #morepanel .bbtn { margin-top: 0; }
   #morepanel[hidden] { display: none; }
+  /* THE HEAD ROW'S THREE FASSUNGEN (#head=a|b|c, client.ts HEAD_VARIANT) — SCAFFOLDING, and it
+     goes when the owner has chosen. Every rule here changes SHAPE and what is drawn INSIDE a
+     button that already exists; not one of them touches colour, edge, radius or type family, so
+     the comparison is about the kind of sign, not about a new palette. (That the row still uses
+     --line/--raised/--dim while the bar below it speaks --chat-* is a SEPARATE question and
+     deliberately not answered here.) */
+  #sidetools .tricon { display: grid; place-items: center; }
+  #sidetools .ico { width: 15px; height: 15px; }
+  #sidetools .trlabel { font-size: var(--chat-ui-fs); line-height: 1; }
+  #sidetools .hbadge { font-family: var(--chat-mono); font-size: var(--chat-ui-fs);
+    font-variant-numeric: tabular-nums; line-height: 1; }
+  /* ONE SKIN FOR ALL OF THEM, and it is the one the row already owns. #auditbtn and #outcomebtn
+     carry NO css today (grep them in this file: only the two <button> lines) — they are raw UA
+     buttons that happen to look tolerable while their content is a single emoji, and they turn
+     into white pills the moment the content changes. Every value below is copied from their
+     neighbours' rule (#queuebtn/#saverbtn), so a Fassung introduces no colour of its own; that
+     the row still speaks --line/--raised/--dim while the bar under it speaks --chat-* is a
+     separate question, deliberately not answered here. */
+  #sidetools.hv-a button, #sidetools.hv-b button, #sidetools.hv-c button {
+    display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+    height: 26px; border-radius: 7px; border: 1px solid var(--line); background: var(--raised);
+    color: var(--dim); font-size: 13px; font-family: inherit; cursor: pointer; }
+  #sidetools.hv-a button:hover, #sidetools.hv-b button:hover, #sidetools.hv-c button:hover { color: var(--text); }
+  #sidetools.hv-a #layouts button.active, #sidetools.hv-b #layouts button.active,
+  #sidetools.hv-c #layouts button.active { color: var(--accent); border-color: var(--sel); background: #1c2437; }
+  /* a — icon + word, the tray's own grammar. Eight words do not fit one 249px line, so the row
+     WRAPS: this Fassung buys legibility with height, and it shows that price instead of hiding
+     it. Each button sizes to its word, so #queuebtn's `margin-left: auto` (which pushes the row
+     apart on one line) has to go, or the first wrapped line would be a single button. */
+  #sidetools.hv-a { flex-wrap: wrap; gap: 4px; }
+  #sidetools.hv-a button { width: auto; padding: 0 8px; }
+  #sidetools.hv-a #morebtn { width: auto; }
+  #sidetools.hv-a #queuebtn { margin-left: 0; }
+  /* b — one icon grammar, no words: the row keeps exactly today's geometry, and the only change
+     is that the meaning is drawn instead of hidden in a title. A button that carries a count
+     grows for it, as it does today. */
+  #sidetools.hv-b #queuebtn, #sidetools.hv-c #queuebtn,
+  #sidetools.hv-b #saverbtn, #sidetools.hv-c #saverbtn { width: auto; min-width: 26px; padding: 0 5px; }
+  /* c — only the daily row stays; audit, lands and saver move into ⋯ and read as full rows there.
+     The three conditional buttons are NOT moved (client.ts says why) — they appear in the row the
+     moment they have something to say, which is the one moment folding them would cost. */
+  #morepanel .hmoved { flex: 1 0 100%; justify-content: flex-start; width: auto; height: 26px;
+    padding: 0 8px; gap: 6px; }
   #collapse { flex: none; width: 22px; height: 22px; border-radius: 7px; border: 1px solid var(--chat-edge);
     background: var(--chat-raised); color: var(--chat-mute); font-size: 13px; font-family: inherit; cursor: pointer;
     display: flex; align-items: center; justify-content: center; line-height: 1; }

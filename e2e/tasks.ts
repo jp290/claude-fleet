@@ -8382,7 +8382,7 @@ export async function run(ctx: Ctx): Promise<void> {
     await Bun.write(FAKECARD, `#!/bin/sh\ncat >/dev/null\ncat <<'JSON'\n${cardAnswer}\nJSON\n`);
     spawnSync("chmod", ["+x", FAKECARD]);
 
-    interface CRow { id: string; card?: { ziel: string; model: string; ms: number; valid: boolean;
+    interface CRow { id: string; card?: { ziel: string; done: string; model: string; ms: number; valid: boolean;
       at: number; verboten: string[];
       gaps: string[]; surface: { files: string[]; ranges: unknown }; rolle: { effort: string | null } } }
     const cardOf = async (id: string): Promise<CRow["card"]> =>
@@ -8611,6 +8611,55 @@ export async function run(ctx: Ctx): Promise<void> {
       vbBrief.ok && !!vbAgain && vbAgain.at > vbFirstAt && vbAgain.ziel === vbZiel
       && JSON.stringify(vbAgain.verboten) === JSON.stringify(["nichts an code.txt", "kein Auto-Dispatch"]),
       `${vbBrief.status} first=${vbFirstAt} ${JSON.stringify(vbAgain ?? null)}`);
+
+    // --- THE BRIEF REPAIRS A BROKEN CARD (measured 2026-09-20 on two live rows): a row whose
+    // ORIGINAL text opens with filing headers carries an invalid card when one header is broken,
+    // and the brief is the ONLY sharpening tool that can reach it — the raw text is immutable.
+    // The brief is a FULL REPLACEMENT text: when both texts carry header blocks, the BRIEF's
+    // block must win WHOLE — its FLAECHE replaces the raw text's, never appends to it.
+    const rpText = [
+      "[REPARATUR-PROBE · KAPUTT]",
+      "ROLLE: claude/claude-opus-5[1m]/high",
+      "GROESSE: klein",
+      "FLAECHE: gibt-es-nicht.ts",
+      "VERIFY: bun e2e/pins.ts",
+      "DONE: die Karte bleibt ungueltig, bis der Brief sie ersetzt",
+      "BAU: die FLAECHE-Kopfzeile des Originaltexts nennt einen Pfad, den der Baum nicht hat.",
+    ].join("\n");
+    const rpRow = ((await (await post("/api/tasks", { text: rpText, queue: false, repo: REPO })).json()) as { task: { id: string } }).task;
+    let rpBroken: CRow["card"];
+    for (let i = 0; i < 40 && !rpBroken; i++) { rpBroken = await cardOf(rpRow.id); if (!rpBroken) await Bun.sleep(250); }
+    check("(fmt) a row whose ORIGINAL text opens with a broken FLAECHE header carries an invalid format card",
+      rpBroken?.model === "format" && rpBroken.valid === false
+      && rpBroken.gaps.some((g) => g.includes("gibt-es-nicht.ts")),
+      JSON.stringify(rpBroken ?? null));
+    const rpZiel = "BAU: Der Brief ist der Ersatztext, seine FLAECHE ersetzt die des Rohtexts.";
+    const rpDone = "der Brief hat die Karte repariert";
+    const rpBriefText = [
+      "[REPARATUR-PROBE · BRIEF]",
+      "ROLLE: claude/claude-opus-5[1m]/high",
+      "GROESSE: klein",
+      "FLAECHE: fleet-e2e.ts",
+      "VERIFY: bun e2e/pins.ts",
+      `DONE: ${rpDone}`,
+      rpZiel,
+    ].join("\n");
+    const rpAt = rpBroken?.at ?? 0;
+    const rpBriefRes = await post(`/api/tasks/${rpRow.id}/brief`, { text: rpBriefText });
+    let rpFixed: CRow["card"];
+    for (let i = 0; i < 40; i++) {
+      rpFixed = await cardOf(rpRow.id);
+      if (rpFixed && rpFixed.at > rpAt && rpFixed.valid) break;
+      await Bun.sleep(250);
+    }
+    // model "format" proves the repair went through the parser, not the stand-in; surface + ziel
+    // + done from the BRIEF prove the replacement reading — a revert of the fix re-reads the raw
+    // text and this check stays red on the invalid card it then keeps.
+    check("(fmt) a brief with clean headers REPAIRS the card — the brief's block wins whole, replace not append",
+      rpBriefRes.ok && !!rpFixed && rpFixed.at > rpAt && rpFixed.model === "format" && rpFixed.valid === true
+      && rpFixed.ziel === rpZiel && rpFixed.done === rpDone
+      && rpFixed.surface.files.join(" ") === "fleet-e2e.ts",
+      `${rpBriefRes.status} ${JSON.stringify(rpFixed ?? null)}`);
 
     // (4) EVERY run is a ledger line, valid or not.
     const cardLedger = `${ROOT}/cards.jsonl`;

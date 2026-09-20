@@ -377,6 +377,18 @@ interface ScreenBlock { re: RegExp; why: string }
 // `supports` is the whole point of the abstraction: every feature that used to ASSUME claude asks
 // its question here and degrades VISIBLY, instead of running against a file that will never exist
 // and reporting the emptiness as fact.
+// One entry of Harness.commands: a slash command the harness's TUI knows that is safe to send
+// blind over POST /send — BARE (no argument; an entry needing one cannot be delivered by a click),
+// with no picker, dialog or settings interface behind it. `confirm: true` marks the ones that end
+// the session or discard its context: the board must ask before sending those, never run them on
+// one click. `purpose` is the one line the overlay shows under the name — EVIDENCE, not copy:
+// each string paraphrases the entry's documented behaviour (see the adapter's own citation).
+interface HarnessCommand {
+  name: string;
+  purpose: string;
+  confirm?: boolean;
+}
+
 interface Harness {
   id: string;
   // The spawn line, already shell-safe. Everything interpolated here has been validated at SET
@@ -538,6 +550,15 @@ interface Harness {
   // value reaches a shell line, and membership in a fixed list of lowercase words is a stronger
   // guarantee than any charset — there is no metacharacter it could carry.
   effortLevels: readonly string[];
+  // The slash commands this TUI knows that a REMOTE surface may send blind (HarnessCommand above).
+  // Required, so a new adapter answers this at compile time — an empty list is an answer ("nothing
+  // evidenced"), not an omission. THE EVIDENCE RULE, and it is the field's whole point: an entry is
+  // written from the harness's OWN documentation or a pane probe, never from memory or a wish — an
+  // entry without a citation stays out, and an empty list must be read as "no evidenced entry",
+  // never as "proven to have none". Published on GET /api/harnesses — the SAME projection the
+  // board's ⌘-overlay already reads `models` and `effortLevels` from, no second endpoint; the 2 s
+  // /api/sessions poll deliberately carries none of it.
+  commands: readonly HarnessCommand[];
   // `container`: does a slot on this harness run inside one — i.e. may the spawn request name a
   // container and a docker context, and does the row report which. FALSE for every adapter but
   // one, and the routes REJECT the fields for those rather than dropping them: a box the owner
@@ -655,6 +676,20 @@ const CLAUDE_HARNESS: Harness = {
   // it was read and silently cost every claude slot the knob. A level named here reaches the pane
   // through slotCmd → agentCmd; nothing else can, because effortOf judges the request against
   // exactly this list.
+  // EVIDENCED 2026-09-19 against the vendor's own command reference (en/commands.md on
+  // code.claude.com, the table's own wording below) — the four BARE commands that complete without
+  // further interaction. Everything else in that table needs an argument (/model <id>, /compact
+  // <instructions>), opens a picker or settings interface (/status, /model, /release-notes,
+  // /config), writes into the repo (/init), or is a prompt handed to the model — none of that is
+  // safely sendable blind, so none of it is listed. /exit would END the session and is never
+  // listable. /clear and /compact discard or rewrite the live context, so they carry `confirm` —
+  // the board asks before it types them.
+  commands: [
+    { name: "/clear", purpose: "Start a new conversation with empty context", confirm: true },
+    { name: "/compact", purpose: "Free up context by summarizing the conversation so far", confirm: true },
+    { name: "/context", purpose: "Visualize current context usage as a colored grid" },
+    { name: "/usage", purpose: "Show session cost, plan usage limits, and activity stats" },
+  ],
   models: ["claude-opus-5[1m]", "claude-opus-5", "claude-fable-5-1[1m]", "claude-sonnet-5[1m]", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
   effortLevels: ["low", "medium", "high", "xhigh", "max"],
   supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false },
@@ -717,6 +752,19 @@ const PI_COMPOSER = { kind: "rules" } as const;
 
 const PI_HARNESS: Harness = {
   id: "pi",
+  // EVIDENCED 2026-09-19 against the shipped reference of the very package these adapters spawn
+  // (~/.local/lib/node_modules/@earendil-works/pi-coding-agent, its usage.md of pi 0.85.0 — the
+  // command table and the /compact note): the three BARE commands that complete without a picker.
+  // The rest of that table opens interactive UI (/model, /resume, /tree, /settings, /fork, …),
+  // takes an argument (/name <name>, /export [file]) or quits (/quit) — not sendable blind. The
+  // measured in-session /model zai/<id> and /thinking <level> (sixteenth cut) need arguments and
+  // stay with the model/effort switches. /new and /compact discard or rewrite the live context,
+  // so they carry `confirm`.
+  commands: [
+    { name: "/new", purpose: "Start a new session", confirm: true },
+    { name: "/compact", purpose: "Manually compact context, optionally with custom instructions", confirm: true },
+    { name: "/session", purpose: "Show session file, ID, messages, tokens, and cost" },
+  ],
   // `--session-id` is create-or-attach in ONE flag (measured (a): a second process with the same
   // id continues the conversation, and the "creating a new session" warning is absent the second
   // time). So `resume` is ignored here — claude needs two flags for the two roles, Pi needs one,
@@ -881,6 +929,13 @@ const PI_ZAI_HARNESS: Harness = {
   laneForm: null,
   modelRe: /^glm-5\.3(-flash)?$/,
   modelErr: "one of: glm-5.3, glm-5.3-flash",
+  // SAME EVIDENCE AS THE pi ADAPTER (pi 0.85.0 shipped usage.md — pi-zai is pi on another
+  // provider, measured 2026-09-18 to render the same TUI: same readiness dialog, same footer).
+  commands: [
+    { name: "/new", purpose: "Start a new session", confirm: true },
+    { name: "/compact", purpose: "Manually compact context, optionally with custom instructions", confirm: true },
+    { name: "/session", purpose: "Show session file, ID, messages, tokens, and cost" },
+  ],
   models: ["glm-5.3", "glm-5.3-flash"],
   effortLevels: ["low", "high", "max"],
   supports: {
@@ -948,6 +1003,11 @@ const PI_OX_HARNESS: Harness = {
   singleton: false,
   laneForm: null,
   modelRe: /^x-preview-f-free$/,
+  // EMPTY deliberately: pi-ox is the minimal unattended profile (--no-extensions --no-skills
+  // --no-prompt-templates --no-themes), and whether its built-in commands survive that profile was
+  // never probed — the pi reference alone does not answer it for THIS spawn line. An evidenced
+  // pane probe puts entries here; a reasoned one does not.
+  commands: [],
   models: ["x-preview-f-free"],
   effortLevels: [],
   supports: {
@@ -1177,6 +1237,8 @@ const CONTAINER_HARNESS: Harness = {
   // here to ask (both colima profiles down that day). An effort the owner set and the container's
   // agent rejected at startup is the silent drop `supports` exists to prevent. One command the day
   // a box is up — `docker --context <ctx> exec <box> claude --help` — and the answer goes here.
+  // EMPTY: no TUI catalogue to speak of — this entry is a place (Harness.role), not an agent.
+  commands: [],
   models: [],
   effortLevels: [],
   supports: {
@@ -1374,6 +1436,10 @@ const CODEX_HARNESS: Harness = {
   // Codex exposes reasoning effort through config (`-c`) rather than a dedicated flag. Keep this
   // fixed list as the request validation boundary: only this key and these measured values may
   // reach the quoted pane command, never a general operator-supplied config pass-through.
+  // EMPTY for now, and honestly so: codex-cli has slash commands, but none was evidenced for the
+  // PINNED binary in this slice (its upstream reference tracks the latest release, not the 0.153.x
+  // this fleet runs) — under the field's evidence rule that means no entries, not guessed ones.
+  commands: [],
   models: ["gpt-5.6-sol", "gpt-5.5", "gpt-5.3-codex-spark"],
   effortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"],
   supports: {
@@ -36157,6 +36223,9 @@ Bun.serve<WSData>({
           // transcript, or an adapter's own conversation reader (codex, pi). Derived, so it can
           // never disagree with the two facts it is made of.
           id: h.id, supports: { ...h.supports, chat: h.supports.transcript || !!h.conversation }, models: h.models, effortLevels: h.effortLevels, note: h.note,
+          // the TUI's safely-sendable slash commands (Harness.commands) — the ⌘-overlay's third
+          // list, read from this same one-shot catalogue, never from the 2 s slot poll
+          commands: h.commands,
           // apply | not-applicable | unsupported — whether a lane on it may name `browser: true`
           browserProfile: h.browserProfile,
           // whether an UNATTENDED path may ever drive this harness. The adapter's claim, not the

@@ -3870,6 +3870,20 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     server.includes("const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_ZAI_HARNESS, PI_OX_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];"),
     server.match(/const HARNESSES: readonly Harness\[\] = \[[^\n]+/)?.[0] ?? "registry absent");
 
+  // THE ⌘-OVERLAY'S FACT LAYER HAS ONE SIDE. server.ts#Harness.commands is the only place a
+  // harness's sendable slash commands may be named; the board renders whatever that catalogue
+  // publishes and keeps no list of its own (commands card, 2026-09-19). Both sides are TypeScript
+  // and deliberately share NO module for this — a shared declaration is exactly the coupling the
+  // card forbids the client to grow. So the fastener is textual: every command name the server's
+  // catalogue declares must appear in the client universe NOWHERE as a string literal. Adding an
+  // entry is a server act with a citation; special-casing a name in the client is what this pin
+  // refuses.
+  const cmdNames = [...new Set([...server.matchAll(/\{ name: "(\/[A-Za-z][A-Za-z0-9-]*)", purpose: "/g)].map((m) => m[1]))];
+  const leakedCmds = cmdNames.filter((n) => clientU.text.includes(`"${n}"`));
+  pin("the client names no harness command — the ⌘-overlay renders only the server's catalogue",
+    cmdNames.length >= 5 && leakedCmds.length === 0,
+    `catalogue=[${cmdNames.join(",")}] leakedIntoClient=[${leakedCmds.join(",")}]`);
+
   const poStart = server.indexOf("const PI_OX_HARNESS: Harness = {");
   const poBody = poStart < 0 ? "" : server.slice(poStart, server.indexOf("\n};\n", poStart));
   const poCode = poBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");

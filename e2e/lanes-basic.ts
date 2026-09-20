@@ -638,9 +638,18 @@ export async function run(lc: LaneCtx): Promise<void> {
     // FLEET_CMD=true, so the pane holds a bare shell and the delivery gate refuses a composed
     // send to it — measured on a helper preview (2026-09-20), where the send was accepted and
     // nothing was ever typed, so the pane stayed idle and the refusal under test never fired.
-    await tmuxOut("send-keys", "-t", `s${ln.slot}`, "echo rebase-guard", "Enter");
+    // …and the output is SUSTAINED, not a single line. `lastOutput` is stamped only while the pane
+    // is past its quiet window (server.ts, the stream reader), and MERGE_IDLE_MS is 500 ms wide —
+    // so one `echo` can be swallowed by that window, or land BETWEEN two rounds of this loop on a
+    // machine where an /api/sessions round trip takes longer than the window itself. Measured on a
+    // helper preview (job 770a8706a5f8, 2026-09-20): "no output within 500ms of a send", with the
+    // whole fixture red although nothing about the refusal had changed. A pane that prints for
+    // several seconds holds the state still long enough to be OBSERVED and then ACTED ON — the
+    // rebase call below needs it to be true too, not only this poll.
+    await tmuxOut("send-keys", "-t", `s${ln.slot}`,
+      "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do echo rebase-guard $i; sleep 0.3; done", "Enter");
     let busy = false;
-    for (let i = 0; i < 60 && !busy; i++) {
+    for (let i = 0; i < 100 && !busy; i++) {
       const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
       const row = sx.slots.find((x) => x.id === ln.slot);
       busy = !!row && sx.now - row.lastOutput < MERGE_IDLE_MS;
@@ -649,7 +658,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     // a fixture that could not produce the state under test fails AS ITSELF, and the verdict below
     // is not read as a statement about the refusal
     check("rebase fixture: the pane is observably mid-turn before the refusal is asked for",
-      busy, `no output within ${MERGE_IDLE_MS}ms of a send`);
+      busy, `no output within ${MERGE_IDLE_MS}ms of a send, over a 5 s wait on a pane printing for 6 s`);
     if (busy) {
       const working = await rebase(ln.slot);
       check("rebase refuses while the lane's agent is mid-turn, by name",

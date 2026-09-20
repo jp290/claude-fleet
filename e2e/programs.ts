@@ -2299,6 +2299,18 @@ export async function run(ctx: Ctx): Promise<void> {
   };
   const execJobIds = ["ec", "ed", "ee", "ef"].map((x) => x.repeat(6));
   const execJobAt = Date.now();
+  // A PLANTED VERDICT IS A WHOLE VERDICT. Since 4ca06557 loadState drops a persisted `result` whose
+  // `remote` block is unreadable — that shape used to take the 2 s owner poll down — so a fixture
+  // that plants a verdict WITHOUT one is restored as `result: null`, lanePreviewFact finds nothing
+  // settled, and the door comes back while the check is still reading it as the door being held.
+  // Measured on a helper preview (job 770a8706a5f8, 2026-09-20): only the `red` case failed, with
+  // "land it yourself" in nextAction, because it is the only holding case whose verdict is read.
+  // The provenance half is what a real verdict always carries, so the fixture carries it too.
+  const execVerdict = (result: "red" | "green", fails: string[]): Record<string, unknown> => ({
+    exitCode: result === "red" ? 1 : 0, result, tail: "fixture", checks: null, fails,
+    remote: { name: "fixture-helper", claimedAt: execJobAt, reportedAt: execJobAt + 10 },
+    treeSha: "f".repeat(40), ms: 1,
+  });
   const execDoorCases: { name: string; holds: boolean; jobs: Record<string, unknown>[];
     door: (next: string) => boolean }[] = [
     { name: "offered", holds: true, jobs: [execSuiteJob(execJobIds[0], "open", execJobAt, null)],
@@ -2308,14 +2320,12 @@ export async function run(ctx: Ctx): Promise<void> {
       door: (next) => next.includes("is running") && next.includes(`job ${execJobIds[1]}`)
         && next.includes("land after it reports green") && !next.includes("land it yourself") },
     { name: "red", holds: true, jobs: [execSuiteJob(execJobIds[2], "reported", execJobAt + 2,
-      { result: "red", exitCode: 1, tail: "fixture", checks: null, fails: ["e2e/programs.ts"] })],
+      execVerdict("red", ["e2e/programs.ts"]))],
       door: (next) => next.includes("ran red") && next.includes(`job ${execJobIds[2]}`)
         && next.includes("land after a green rerun") && !next.includes("land it yourself") },
     { name: "settled green", holds: false, jobs: [
-      execSuiteJob(execJobIds[2], "reported", execJobAt + 2,
-        { result: "red", exitCode: 1, tail: "fixture", checks: null, fails: ["e2e/programs.ts"] }),
-      execSuiteJob(execJobIds[3], "reported", execJobAt + 4,
-        { result: "green", exitCode: 0, tail: "fixture", checks: null, fails: [] })],
+      execSuiteJob(execJobIds[2], "reported", execJobAt + 2, execVerdict("red", ["e2e/programs.ts"])),
+      execSuiteJob(execJobIds[3], "reported", execJobAt + 4, execVerdict("green", []))],
       door: (next) => next.includes("land it yourself") },
   ];
   for (const c of execDoorCases) {

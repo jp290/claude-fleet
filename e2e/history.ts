@@ -283,6 +283,43 @@ export async function run(): Promise<void> {
   check("brief files is an array", Array.isArray(bf1j.files));
   check("brief rejects inactive slot", (await get("/api/slots/4/brief")).status === 400);
 
+  // --- THE COUNTS VS THE LISTS. The brief caps every list at 200 lines; the counts beside them
+  // must stay TRUE, or the column states a number it invented. Measured against a repo built for
+  // it: 205 changed files, so every cap is crossed by exactly five.
+  {
+    const cwd = `${tmpdir()}/fleet-e2e-brief-caps-${process.pid}`;
+    rmSync(cwd, { recursive: true, force: true });
+    mkdirSync(cwd, { recursive: true });
+    const git = (...a: string[]) => Bun.spawnSync(["git", ...a], { cwd });
+    git("init", "-q");
+    git("config", "user.email", "e2e@fleet");
+    git("config", "user.name", "e2e");
+    writeFileSync(`${cwd}/seed.txt`, "seed\n");
+    git("add", "-A"); git("commit", "-qm", "seed");
+    for (let i = 0; i < 205; i++) writeFileSync(`${cwd}/f${i}.txt`, `${i}\n`);
+    const slot = await freeSlotId();
+    if (slot === undefined) check("brief caps: a free slot exists for the fixture", false, "no free slot");
+    else {
+      const opened = await post(`/api/slots/${slot}/open`, { cwd });
+      check("brief caps fixture: a session opens on a repo with 205 changed files", opened.ok, `${opened.status}`);
+      const b = (await (await get(`/api/slots/${slot}/brief`)).json()) as
+        { uncommitted: number; uncommittedFiles: string[]; files: string[]; filesTotal: number; commitsCap: number };
+      check("brief: the uncommitted COUNT is the true one while its list stays capped at 200",
+        b.uncommitted === 205 && b.uncommittedFiles.length === 200,
+        `count=${b.uncommitted} listed=${b.uncommittedFiles.length}`);
+      // the board subtracts these two to say "… N more"; when they are derived from one another
+      // the sentence can never appear, which is exactly the dead code this replaced
+      check("brief: count minus listed is the number the column can report, not zero",
+        b.uncommitted - b.uncommittedFiles.length === 5, `${b.uncommitted - b.uncommittedFiles.length}`);
+      check("brief: the changed-file list carries its own true total",
+        b.filesTotal === 205 && b.files.length === 200, `total=${b.filesTotal} listed=${b.files.length}`);
+      check("brief: the commit cap is named, so a list that stops can say which cap it hit",
+        b.commitsCap === 15, `commitsCap=${b.commitsCap}`);
+      await post(`/api/slots/${slot}/kill`, {});
+    }
+    rmSync(cwd, { recursive: true, force: true });
+  }
+
   // --- THE BRIEF'S NON-GIT HALF: what this session is MADE of (server.ts#sessionSetup). The board
   // shows profile and context packs, and neither could reach a client before: both hang on the
   // PROGRAM, and what a pane actually RECEIVED is only in the delivery receipt. The distinction

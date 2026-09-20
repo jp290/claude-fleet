@@ -1239,8 +1239,10 @@ let layout = 1;
 interface BriefCommit { hash: string; ts: number; subject: string }
 interface BriefInfo { branch: string | null; head: string | null; worktree: WorktreeInfo | null;
   sessionStart: number | null;
-  uncommitted: number; uncommittedFiles: string[]; files: string[]; shortstat: string;
+  // the COUNTS are true, the LISTS are capped at 200 — never derive one from the other
+  uncommitted: number; uncommittedFiles: string[]; files: string[]; filesTotal: number; shortstat: string;
   commits: BriefCommit[]; repoCommits: BriefCommit[]; laneScoped: boolean; laneBase: string | null;
+  commitsCap: number;
   ahead: number; behind: number; gitOp?: boolean;
   // the non-git half of the brief (server.ts#sessionSetup): what this session was BUILT from.
   // `packsFrom` says how strong the pack list is — "receipt" is what was delivered into this
@@ -1303,7 +1305,7 @@ function boardFold(key: string, title: string, count: string | null, fill: (body
 // the head's ⋯ session menu — module state for the same reason: the 3s repaint must not shut it
 let boardMenuOpen = false;
 // per-slot outline cursor, incremental like pollChat: full fetch once, then only new entries
-const outline = new Map<number, { total: number; source: string | null; prompts: string[] }>();
+const outline = new Map<number, { total: number; source: string | null; prompts: string[]; err: string | null }>();
 // ✨ agent summary (BACKLOG #14 Phase 2): result of the server's short-lived
 // claude -p run, cached per slot. Only ever fetched via GET (cache lookup) on
 // first view — the model call itself is strictly click-triggered (POST).
@@ -1874,16 +1876,18 @@ function setBoard(on: boolean) {
   if (on) { void renderBoard(); renderSuiteMeter(); }
 }
 
-async function pollOutline(slot: number): Promise<string[]> {
-  const c = outline.get(slot) ?? { total: 0, source: null, prompts: [] };
+async function pollOutline(slot: number): Promise<{ prompts: string[]; err: string | null }> {
+  const c = outline.get(slot) ?? { total: 0, source: null, prompts: [], err: null };
   try {
     const res = await api(`/api/slots/${slot}/transcript?after=${c.total}`);
-    if (!res.ok) return c.prompts;
+    // a failed read is remembered AS a failed read: "no prompts" and "could not ask" are
+    // different sentences, and the fold said the first one for both until 2026-09-20
+    if (!res.ok) { c.err = `HTTP ${res.status}`; outline.set(slot, c); return { prompts: c.prompts, err: c.err }; }
     const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null };
     // fresh claude after a self-heal → transcript restarted; rebuild from the top
     if (c.source !== null && data.source !== c.source) {
-      outline.set(slot, { total: 0, source: data.source, prompts: [] });
-      return [];
+      outline.set(slot, { total: 0, source: data.source, prompts: [], err: null });
+      return { prompts: [], err: null };
     }
     c.source = data.source;
     for (const e of data.entries) {
@@ -1897,11 +1901,13 @@ async function pollOutline(slot: number): Promise<string[]> {
       }
     }
     c.total = data.total;
+    c.err = null;
     outline.set(slot, c);
   } catch {
-    // transient fetch error — next render retries
+    c.err = "the server could not be reached";
+    outline.set(slot, c);
   }
-  return c.prompts;
+  return { prompts: c.prompts, err: c.err };
 }
 
 
@@ -2518,7 +2524,7 @@ let errorsInfo: ErrorsInfo | null = null;
 // /api/sessions was shrunk for). `null` = not asked yet. The cache key carries `since` as well as
 // `total` BECAUSE the list dies with the server: after a restart both counters start again from
 // zero, so a total alone would match a stale cache and paint a dead process's errors as live ones.
-let errorRows: { key: string; rows: ErrorRow[] } | null = null;
+let errorRows: { key: string; rows: ErrorRow[]; err: string | null } | null = null;
 const errorKey = (e: ErrorsInfo): string => `${e.since}:${e.total}`;
 let errorsOpen = false;
 function errorsSection(): HTMLElement | null {
@@ -2540,9 +2546,13 @@ function errorsSection(): HTMLElement | null {
     // one fetch per (boot, total): reopening after nothing new happened costs no request
     if (errorsOpen && errorRows?.key !== errorKey(e)) {
       void api("/api/errors").then(async (r) => {
-        if (!r.ok) return;
+        if (!r.ok) { errorRows = { key: errorKey(e), rows: [], err: `HTTP ${r.status}` }; void renderBoard(); return; }
         const j = (await r.json()) as { errors?: ErrorRow[] };
-        errorRows = { key: errorKey(e), rows: j.errors ?? [] };
+        errorRows = { key: errorKey(e), rows: j.errors ?? [], err: null };
+        void renderBoard();
+      }).catch(() => {
+        // an unhandled rejection here used to leave the section open and empty forever
+        errorRows = { key: errorKey(e), rows: [], err: "the server could not be reached" };
         void renderBoard();
       });
     }
@@ -2556,6 +2566,7 @@ function errorsSection(): HTMLElement | null {
     // rows one poll behind the COUNTER are still drawn — a row that arrived a second ago is a true
     // thing that happened, and blanking the list mid-fetch would hide it. Rows from a previous BOOT
     // are not: this server never threw them, and the header above already says "since <this boot>".
+    if (errorRows?.err) sec.appendChild(el("div", "bstate", `The error list could not be read — ${errorRows.err}.`));
     const live = errorRows?.key.startsWith(`${e.since}:`) ? errorRows.rows : [];
     for (const r of live) {
       const row = el("div", "bidmeta", `${r.where} · ${r.msg}${r.n > 1 ? ` ×${r.n}` : ""} · ${fmtTs(r.last)}`);
@@ -2964,13 +2975,20 @@ async function renderBoard() {
         ...(dv ? [dv] : []), el("div", "bempty bnone", "Focus a pane with a session to see its brief."));
       return;
     }
-    const [briefRes, prompts, wtRes, mgRes] = await Promise.all([
+    const [briefRes, outlineRes, wtRes, mgRes] = await Promise.all([
       api(`/api/slots/${slot}/brief`), pollOutline(slot),
       s.git ? api(`/api/slots/${slot}/worktrees`) : Promise.resolve(null),
       s.worktree ? api(`/api/slots/${slot}/merge`) : Promise.resolve(null),
     ]);
+    const { prompts, err: outlineErr } = outlineRes;
     const brief = briefRes.ok ? ((await briefRes.json()) as BriefInfo) : null;
+    // WHY it is null, kept for the reader: a failed read used to remove Changes, History and Lanes
+    // with no word at all, which is indistinguishable from a session that has done nothing.
+    const briefErr = briefRes.ok ? null
+      : ((await briefRes.json().catch(() => null)) as { error?: string } | null)?.error ?? `HTTP ${briefRes.status}`;
     const wts = wtRes?.ok ? ((await wtRes.json()) as WtInfo) : null;
+    const wtErr = !wtRes || wtRes.ok ? null
+      : ((await wtRes.json().catch(() => null)) as { error?: string } | null)?.error ?? `HTTP ${wtRes.status}`;
     const mg = mgRes?.ok ? ((await mgRes.json()) as MergeState) : null;
     if (mg?.running) mergeWatch.add(slot);
     const nodes: HTMLElement[] = [];
@@ -3197,6 +3215,14 @@ async function renderBoard() {
       nodes.push(su);
     }
 
+    if (briefErr) {
+      const fail = el("div", "bsec bfail");
+      fail.appendChild(el("h3", "", "Changes, history and lanes are missing"));
+      fail.appendChild(el("div", "bstate", `The session brief could not be read — ${briefErr}.`));
+      fail.appendChild(el("div", "bempty", "This is a failed read, not an empty session. The column keeps "
+        + "trying; if it persists, the session's working directory may be gone."));
+      nodes.push(fail);
+    }
     if (brief) {
       // for a lane, ahead/behind are vs the base branch (from the brief); for a non-lane
       // session, vs the upstream (from the sessions-poll gitInfo)
@@ -3417,7 +3443,9 @@ async function renderBoard() {
         for (const b of mine) {
           const row = el("div", `bcheck tone-${b.tone}`);
           row.append(el("span", "smdot"), el("span", "bcheckwhat", b.what), el("span", "bcheckstate", meterState(b)));
-          if (b.at > 0) row.appendChild(el("span", "bcheckage", gateAge(Date.now() - b.at)));
+          // serverClock(), not Date.now(): `b.at` is the SERVER's stamp, and this pane's clock
+          // may sit minutes away from it — the same correction every other age here uses
+          if (b.at > 0) row.appendChild(el("span", "bcheckage", gateAge(serverClock() - b.at)));
           row.title = `${b.what} — ${meterState(b)}`;
           ck.appendChild(row);
         }
@@ -3466,9 +3494,13 @@ async function renderBoard() {
       for (const cm of brief.commits) csec.appendChild(commitRow(cm, "session"));
       // …and when the SERVER's cap cut the list, say so rather than let 50 rows read as "all of
       // them" — the lane's own ahead-count is the honest total to compare against
+      // a list that stops at its cap must say so — for a lane the true total is `ahead`, and a
+      // time-scoped session has no total, so there the cap itself is the honest sentence
       if (brief.laneScoped && ahead > brief.commits.length)
         csec.appendChild(el("div", "bempty",
-          `… ${ahead - brief.commits.length} older commit${ahead - brief.commits.length === 1 ? "" : "s"} — the brief carries the newest 50`));
+          `… ${ahead - brief.commits.length} older commit${ahead - brief.commits.length === 1 ? "" : "s"} — the brief carries the newest ${brief.commitsCap}`));
+      else if (!brief.laneScoped && brief.commits.length >= brief.commitsCap)
+        csec.appendChild(el("div", "bempty", `the newest ${brief.commitsCap} — this session may have made more`));
 
       // 4 — FILES: the committed footprint — what this lane/session changes vs its base.
       if (brief.files.length) {
@@ -3490,7 +3522,11 @@ async function renderBoard() {
           row.onclick = () => void openReview(slot, "working", { k: "file", path });
           fsec.appendChild(row);
         }
-        if (brief.files.length > 30) fsec.appendChild(el("div", "bempty", `and ${brief.files.length - 30} more`));
+        // the list above draws every file the brief carries; the only thing left to say is
+        // whether the SERVER capped it, and that is a comparison against its own true total
+        if (brief.filesTotal > brief.files.length)
+          fsec.appendChild(el("div", "bempty",
+            `… ${brief.filesTotal - brief.files.length} more — the brief carries the first 200`));
       }
       if (brief.repoCommits.length)
         csec.appendChild(boardFold("repoCommits", brief.laneScoped ? `Already in ${base}` : "Earlier in this repo",
@@ -3518,6 +3554,12 @@ async function renderBoard() {
       // LANES — a section of its own, no longer folded away with the tools: the owner reads the
       // repo's open lanes as often as its commits, and asked for both in full view (2026-09-19,
       // "die commits und auch die worktree's vllt doch lieber direkt voll einsehen").
+      if (wtErr) {
+        const lfail = el("div", "bsec bfail");
+        lfail.appendChild(el("h3", "", "Lanes"));
+        lfail.appendChild(el("div", "bstate", `The lane map could not be read — ${wtErr}.`));
+        nodes.push(lfail);
+      }
       if (wts) {
         const lsec = el("div", "bsec");
         const lhd = el("h3", "", `Lanes in ${baseName(wts.repo)}`);
@@ -3832,8 +3874,9 @@ async function renderBoard() {
     }
 
     // 9 — OUTLINE: prompt-jump navigation, kept at the bottom (lowest priority)
-    tools.push(boardFold("prompts", "Your prompts", String(prompts.length), (psec) => {
-    if (!prompts.length) psec.appendChild(el("div", "bempty", "None in the transcript yet."));
+    tools.push(boardFold("prompts", "Your prompts", outlineErr ? "—" : String(prompts.length), (psec) => {
+    if (outlineErr) psec.appendChild(el("div", "bstate", `The transcript could not be read — ${outlineErr}.`));
+    else if (!prompts.length) psec.appendChild(el("div", "bempty", "None in the transcript yet."));
     prompts.forEach((p, i) => {
       const row = el("button", "bprompt");
       row.appendChild(el("span", "bn", String(i + 1)));

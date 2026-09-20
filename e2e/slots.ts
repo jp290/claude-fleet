@@ -1098,8 +1098,32 @@ export async function run(): Promise<void> {
     !/brief\.uncommittedFiles\.slice\(/.test(boardSrc) && !/brief\.files\.slice\(/.test(boardSrc)
     && /brief\.uncommitted > brief\.uncommittedFiles\.length/.test(boardSrc)
     && /the server reads at most 200 status lines/.test(boardSrc)
-    && /ahead > brief\.commits\.length/.test(boardSrc) && /the brief carries the newest 50/.test(boardSrc),
+    && /ahead > brief\.commits\.length/.test(boardSrc) && /the brief carries the newest \$\{brief\.commitsCap\}/.test(boardSrc),
     "the changes + history sections in renderBoard");
+  // EVERY number the column prints is compared against a total the SERVER measured — never
+  // against a length the client derived from the very list it is describing. The "and N more"
+  // line under the changed files did exactly that until 2026-09-20 and contradicted the loop
+  // above it, and the time-scoped 15-commit cut said nothing at all.
+  check("client: a capped list is reported against the server's own total, not against itself",
+    /brief\.filesTotal > brief\.files\.length/.test(boardSrc)
+    && !/brief\.files\.length - 30/.test(boardSrc)
+    && /!brief\.laneScoped && brief\.commits\.length >= brief\.commitsCap/.test(boardSrc),
+    "the history section in renderBoard");
+  // A FAILED READ IS NOT AN EMPTY SESSION — each of the four reads behind this column says so in
+  // its own words, where its content would have been.
+  check("client: a failed brief, lane map, transcript or error read is NAMED, not rendered as empty",
+    /The session brief could not be read/.test(boardSrc)
+    && /The lane map could not be read/.test(boardSrc)
+    && /The transcript could not be read/.test(boardSrc)
+    && /The error list could not be read/.test(cliSrc)
+    && /This is a failed read, not an empty session/.test(boardSrc),
+    "the failure sections in renderBoard");
+  check("client: the errors fetch can no longer end in an unhandled rejection",
+    /void api\("\/api\/errors"\)[\s\S]{0,700}?\}\)\.catch\(\(\) => \{/.test(cliSrc),
+    "errorsSection in src/client.ts");
+  // the suite ages in this column are the SERVER's stamps; this pane's clock may sit minutes away
+  check("client: a check's age is measured against the corrected server clock",
+    /gateAge\(serverClock\(\) - b\.at\)/.test(boardSrc), "the checks section in renderBoard");
   // owner call 2026-08-06, kept through the redesign: the advisory agents start folded on EVERY
   // load — the fold is session-only, excluded both when the folds are written and when they are read
   check("client: the advisory agents group is folded on every load, and the fold is not persisted",

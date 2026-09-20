@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fleet · linke Leiste · Fassung 6</title>
+<!-- Statisches Mockup zu docs/messungen/2026-09-18-slot-system-und-linke-leiste.md, Fassung 5.
+     MODELL unveraendert (Fassung 2, vom Owner bestaetigt): Band = Slot-Nummer, Uebergabe ergraut den
+     Kasten und faehrt den neuen rechts davon ein, Lanes heissen 3A/16B, freie Plaetze bleiben nummeriert.
+     NEU: kein erfundenes Material und keine erfundene Schrift mehr. Jeder Token unten steht so in
+     public/index.html der laufenden App; die Fundstellen stehen am jeweiligen Block.
+     Daten: GET /api/sessions vom 2026-09-18, geschwaerzt. Kein Produktcode. -->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  /* Sprache der CHAT-ANSICHT, die auf main schon gebaut ist: der --chat-*-Block aus
+     public/index.html:193-198 (Owner-Screenshot 2026-09-20 08:34 zeigt sie). Reines Schwarz mit
+     Flocken, Sans fuer Woerter, Mono NUR fuer IDs und Code, weiche Chips, viel Luft, kaum Farbe.
+     Die Token unten sind WOERTLICH von dort; eigene Werte sind als solche markiert. */
+  :root {
+    --chat-fs: 14px; --chat-code-fs: 12.5px; --chat-ui-fs: 11px;
+    --chat-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    --chat-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --chat-ink: #e7e7ea; --chat-prose: #d4d4d8; --chat-mute: #8b8b94; --chat-faint: #5c5c66;
+    --chat-surface: #111113; --chat-raised: #17171a; --chat-edge: #26262b; --chat-edge-soft: #1b1b1f;
+    /* nur fuer die Leiste dazu: die gewaehlte Zeile und der Zustand */
+    --row-sel: var(--chat-raised); --row-hover: #0d0d0f;
+    --work: #58c98a; --need: #e0b072; --done: #86a8ff; --bad: #ef6a63;
+    --ink: var(--chat-ink); --ink-2: var(--chat-prose); --ink-3: var(--chat-mute); --ink-4: var(--chat-faint);
+    --sans: var(--chat-sans); --mono: var(--chat-mono); --chip: var(--chat-raised); --hair: var(--chat-edge-soft);
+    --bg: #000; --row: var(--row-hover);
+    --ease: cubic-bezier(.2, .7, .2, 1); --peek: 16px;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--ink);
+    font: 400 var(--chat-fs)/1.5 var(--sans); overflow: hidden; -webkit-font-smoothing: antialiased; }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  #app { position: relative; z-index: 1; display: flex; height: 100dvh; }
+  /* die Flocken der Chat-Ansicht: ruhiger Staub, keine Bewegung */
+  #flakes { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+  #flakes i { position: absolute; width: 1.5px; height: 1.5px; border-radius: 50%; background: #fff; }
+
+  #side { width: 250px; flex: none; display: flex; flex-direction: column;
+    border-right: 1px solid var(--hair); transition: width .24s var(--ease); }
+  #sidehead { display: flex; align-items: center; gap: 6px; padding: 14px 12px 8px; }
+  #sidetitle { flex: 1; min-width: 0; font-size: var(--chat-fs); font-weight: 650; letter-spacing: -.005em; color: var(--chat-ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #sidehead button { flex: none; width: 26px; height: 26px; border-radius: 8px; background: #101010;
+    color: var(--ink-3); font-size: 12px; display: grid; place-items: center; }
+  #sidehead button:hover { background: #181818; color: var(--ink); }
+  #sidehead button.on { color: var(--ink); background: #1e1e1e; }
+  #bands { flex: 1; overflow-y: auto; padding: 4px 8px 16px; display: flex; flex-direction: column; gap: 6px;
+    scrollbar-width: none; }
+  #bands::-webkit-scrollbar { display: none; }
+
+  /* EIN BAND: keine Rinne mehr. Die Nummer ist ein Mono-Chip IM Kasten — dieselbe Art Chip, mit der
+     die Chat-Ansicht Code und IDs setzt, und damit die anfassbare Adresse der Session. */
+  .band { display: block; }
+  .strip { display: flex; gap: 3px; align-items: flex-start; overflow-x: auto; scrollbar-width: none; }
+  .strip::-webkit-scrollbar { display: none; }
+  .col { flex: 0 0 100%; min-width: 0; }
+  .band.haspast .col { flex-basis: calc(100% - var(--peek) - 3px); }
+
+  .box { position: relative; display: block; width: 100%; padding: 9px 11px 10px; border-radius: 12px;
+    background: none; text-align: left; cursor: pointer; overflow: hidden; transition: background .12s, opacity .4s; }
+  .box:hover { background: var(--row); }
+  .box.sel { background: var(--row-sel); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .box.bad { box-shadow: inset 0 0 0 1px #3a1f1e; }
+
+  .r1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  /* der ID-Chip traegt die Repo-Farbe, sonst ist die Leiste monochrom */
+  .id { flex: none; padding: 1px 6px; border-radius: 5px; font: 500 var(--chat-code-fs)/1.45 var(--mono);
+    color: hsl(var(--h, 0) 30% 80%); background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .box.sel .id, .lane.sel .id { color: hsl(var(--h, 0) 45% 86%); background: hsl(var(--h, 0) 35% 62% / .16); }
+  .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: var(--chat-fs); color: var(--ink-2); letter-spacing: -.005em; }
+  .box.sel .lbl { color: var(--ink); }
+  .role { flex: none; padding: 1px 5px; border-radius: 5px; font: 500 var(--chat-ui-fs)/1.5 var(--sans); color: var(--ink-3); background: var(--chip); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .pct { flex: none; font: 500 var(--chat-ui-fs)/1 var(--mono); color: var(--ink-4); font-variant-numeric: tabular-nums; }
+  .pct.warn { color: var(--need); }
+  .r2 { display: flex; gap: 8px; margin: 3px 0 0 2px; font-size: var(--chat-ui-fs); color: var(--ink-4); }
+  .r2 .repo { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Fuellstand: eine Haarlinie, kein Balken; der Strich sitzt bei 25 %, der Uebergabe-Schwelle */
+  .ctx { display: none; position: absolute; left: 11px; right: 11px; bottom: 4px; height: 1px; background: #191919; }
+  .box.sel .ctx, .lane.sel .ctx { display: block; }
+  .ctx i { position: absolute; inset: 0 auto 0 0; background: #3a3a3a; }
+  .ctx.warn i { background: var(--need); opacity: .8; }
+  .ctx.mark::after { content: ""; position: absolute; left: 25%; top: -1.5px; bottom: -1.5px; width: 1px; background: #2e2e2e; }
+
+  .st { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #2e2e2e; }
+  .st.work { background: var(--work); }
+  .st.need { border-radius: 1px; background: var(--need); transform: rotate(45deg) scale(.95); }
+  .st.done { border-radius: 1.5px; background: var(--done); }
+  .st.bad { border-radius: 0; background: var(--bad);
+    clip-path: polygon(20% 0, 50% 30%, 80% 0, 100% 20%, 70% 50%, 100% 80%, 80% 100%, 50% 70%, 20% 100%, 0 80%, 30% 50%, 0 20%); }
+
+  /* LANES: eingerueckt unter ihrer Session, der Name 3A als derselbe ID-Chip, eine Stufe kleiner */
+  .lanes { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 0 16px; }
+  .lg { display: flex; gap: 3px; min-width: 0; }
+  .lane { position: relative; flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px 7px; border-radius: 10px; background: none; text-align: left; cursor: pointer;
+    overflow: hidden; white-space: nowrap; transition: background .12s, flex-basis .4s var(--ease), padding .4s, opacity .4s; }
+  .lane:hover { background: var(--row); }
+  .lane.sel { background: var(--row-sel); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .lane .lbl { font-size: var(--chat-code-fs); }
+  .lane .id { font-size: var(--chat-ui-fs); padding: 1px 5px; }
+  .lane .ctx { left: 10px; right: 10px; bottom: 3px; }
+  .lane.past { flex: 0 0 14px; padding: 6px 3px; opacity: .45; }
+  .lane.past > :not(.st) { display: none; }
+  .lane.gone { animation: gone .3s var(--ease) forwards; }
+  @keyframes gone { to { opacity: 0; transform: scale(.95); } }
+
+  /* DER VORGAENGER bleibt ein ganzer Kasten, nur still. Schmal schaut er 16px hervor. */
+  .col.past .box { opacity: .42; }
+  .col.past .box:hover { opacity: .7; background: var(--row); }
+  .box.greying { opacity: .42; }
+  #side:not(.wide) .band:not(.peeking) .col.past .box > * { visibility: hidden; }
+
+  /* DIE UEBERGABE ist die einzige Bewegung: der neue Kasten faehrt von rechts ein und wird einmal hell */
+  .col.arrive { flex-basis: 0 !important; opacity: 0; }
+  .col.arrive.in { flex-basis: calc(100% - var(--peek) - 3px) !important; opacity: 1;
+    transition: flex-basis .5s var(--ease), opacity .35s .1s; }
+  #side.wide .col.arrive.in { flex-basis: 218px !important; }
+  .spark { animation: spark 1.2s var(--ease); }
+  @keyframes spark { 0% { background: #2a2a2a; } 100% { background: var(--row-sel); } }
+  .lane.arrive { animation: arrive .4s var(--ease); transform-origin: left center; }
+  @keyframes arrive { from { opacity: 0; transform: scaleX(.4); } }
+
+  /* FREIER PLATZ: die Nummer bleibt, der Rest ist Luft, bis man hinzeigt */
+  .band.free .box { opacity: .5; }
+  .band.free .box:hover { opacity: 1; }
+  .band.free .id { color: var(--ink-4); background: #101010; }
+  .band.free .lbl { color: var(--ink-4); font-size: 12.5px; }
+  :focus-visible { outline: 1.5px solid #3a4a7a; outline-offset: 2px; }
+
+  #side.wide { width: min(900px, calc(100vw - 340px)); }
+  #side.wide .col, #side.wide .band.haspast .col { flex-basis: 218px; }
+  #side.collapsed { width: 56px; }
+  #side.collapsed #sidetitle, #side.collapsed #widen, #side.collapsed .col.past, #side.collapsed .r2,
+  #side.collapsed .lbl, #side.collapsed .role, #side.collapsed .pct, #side.collapsed .ctx,
+  #side.collapsed .lane > :not(.st) { display: none; }
+  #side.collapsed #sidehead { padding: 14px 0 8px; justify-content: center; }
+  #side.collapsed #bands { padding: 4px 6px; }
+  #side.collapsed .col { flex-basis: 100% !important; }
+  #side.collapsed .box { padding: 8px 4px; display: flex; justify-content: center; }
+  #side.collapsed .r1 { flex-direction: column; gap: 5px; }
+  #side.collapsed .lanes { flex-direction: row; flex-wrap: wrap; justify-content: center; gap: 4px; margin: 4px 0 2px; }
+  #side.collapsed .lg { flex: none; } #side.collapsed .lane.past { display: none; }
+  #side.collapsed .lane { flex: none; padding: 2px; }
+
+  /* Buehne rechts: Erklaerung und Schalter, in derselben Sprache wie die Chat-Ansicht */
+  #stage { flex: 1; min-width: 0; padding: 30px 34px; overflow-y: auto; }
+  #stage > * { max-width: 600px; }
+  #pane h1 { font-size: 15px; font-weight: 600; color: #f4f4f4; letter-spacing: -.01em; }
+  #pane p { margin-top: 8px; color: var(--ink-3); line-height: 1.6; }
+  #pane code { font: 500 12px var(--mono); color: var(--ink-2); background: var(--chip); padding: 1.5px 5px; border-radius: 5px; }
+  .ctl { margin-top: 26px; } .ctl h2 { font-size: 11.5px; font-weight: 500; color: var(--ink-4); margin: 18px 0 8px; }
+  .ctl .row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ctl button, .ctl a { padding: 7px 12px; border-radius: 10px; background: #101010; color: var(--ink-2);
+    font-size: 12.5px; text-decoration: none; }
+  .ctl button:hover, .ctl a:hover { background: #1a1a1a; color: var(--ink); }
+  #legend { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--ink-3); font-size: 12.5px; }
+  #legend div { display: flex; align-items: center; gap: 8px; }
+  #tip { position: fixed; z-index: 9; max-width: 280px; padding: 9px 11px; border-radius: 10px; background: #111;
+    box-shadow: 0 0 0 1px #1f1f1f, 0 12px 30px #000; font-size: 12px; line-height: 1.5; color: var(--ink-2);
+    pointer-events: none; opacity: 0; transition: opacity .12s; white-space: pre-line; }
+
+  body.phone #app { width: 390px; height: min(844px, 100dvh); margin: 0 auto; box-shadow: 0 0 0 1px #1a1a1a; border-radius: 26px; overflow: hidden; }
+  body.phone #side { width: 100%; border: 0; } body.phone #stage, body.phone #widen { display: none; }
+  body.phone #bands { padding: 6px 10px 18px; gap: 3px; }
+  body.phone .box { padding: 12px 12px 13px; border-radius: 14px; } body.phone .lbl { font-size: 15px; }
+  body.phone .r2 { font-size: 12.5px; } body.phone .id { font-size: 12px; padding: 2px 7px; }
+  body.phone .lane { padding: 10px 11px; border-radius: 12px; } body.phone .lane .lbl { font-size: 13.5px; }
+  #back { display: none; position: fixed; right: 16px; bottom: 16px; padding: 9px 14px; border-radius: 12px;
+    background: #1a1a1a; color: var(--ink); font-size: 12.5px; }
+  body.phone #back { display: block; }
+  @media (max-width: 700px) { #stage, #widen { display: none; } #side { width: 100%; border: 0; } }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="flakes"></div>
+<div id="app">
+  <aside id="side" aria-label="Sessions">
+    <div id="sidehead"><span id="sidetitle">Fleet</span><button id="widen" title="ganze Bänder zeigen">⇥</button><button id="collapse" title="ein- und ausklappen">‹</button></div>
+    <div id="bands"></div>
+  </aside>
+  <main id="stage">
+    <div id="pane"></div>
+    <div class="ctl">
+      <h2>Was passiert, wenn</h2>
+      <div class="row">
+        <button data-do="succeed">die gewählte Session oder Lane übergibt</button>
+        <button data-do="lane">am gewählten Band eine Lane startet</button>
+        <button data-do="land">eine Lane landet</button>
+        <button data-do="red">etwas rot wird</button>
+        <button data-do="full">alle 16 Plätze belegt sind</button>
+        <button data-do="reset">zurück zum Live-Stand</button>
+      </div>
+      <h2>Ansicht</h2>
+      <div class="row"><button data-do="wide">breit: ganze Bänder</button><button data-do="collapse">eingeklappt</button><button data-do="phone">Handy</button><a href="v5.html">Fassung 5 zum Vergleich</a></div>
+      <h2>Zustände</h2>
+      <div id="legend">
+        <div><i class="st work"></i>arbeitet</div><div><i class="st need"></i>wartet auf dich</div><div><i class="st done"></i>fertig, landbar</div>
+        <div><i class="st bad"></i>rot</div><div><i class="st"></i>ruht</div>
+      </div>
+    </div>
+  </main>
+</div>
+<button id="back" data-do="phone">Desktop</button>
+<div id="tip"></div>
+<script>
+// Live-Stand 2026-09-18 (GET /api/sessions), geschwaerzt; identisch zu den Fassungen davor.
+const LIVE = () => ({
+  2: { repo: "privat-1", cols: [{ label: "Privat", model: "", pct: 14.1, claude: true, idle: "84 min", git: "main ↑51 ●2", st: "rest" }], lanes: [] },
+  3: { repo: "claude-fleet", cols: [
+      { label: "Orchestrator", model: "opus-5", pct: 31, until: "18.09. 00:38" }, { label: "Orchestrator", model: "opus-5", pct: 33, until: "18.09. 23:37" },
+      { label: "Orchestrator", model: "opus-5", effort: "high", pct: 11.2, claude: true, idle: "25 min", git: "main", st: "rest" }],
+    lanes: [{ label: "Queue-Ansicht", model: "opus-5", pct: 31.9, claude: true, git: "↑7", st: "need", past: 1 },
+      { label: "Info-Leiste", model: "opus-5", pct: 13.4, claude: true, git: "", st: "need" },
+      { label: "Linke Leiste", model: "opus-5", pct: 8.4, claude: true, git: "", st: "work" }] },
+  4: { repo: "claude-fleet", cols: [{ label: "Fleet-Betrieb", role: "main", model: "opus-5", effort: "high", pct: 27.3, claude: true, idle: "66 min", git: "main", st: "rest" }],
+    lanes: [{ label: "task 8ff7", model: "glm-5.3-flash", pct: null, git: "↑3 ●2", st: "work", bg: true }] },
+  5: { repo: "private-repo-aa", cols: [{ label: "Private-repo-aa", role: "main", model: "astra", effort: "medium", pct: 58.4, idle: "4 h", git: "main", st: "rest" }], lanes: [] },
+  8: { repo: "claude-fleet", cols: [{ label: "memory", model: "", pct: 13.7, claude: true, idle: "4 h", git: "main", st: "rest" }], lanes: [] },
+  10: { repo: "claude-fleet", cols: [{ label: "Leichtgewicht", role: "main", model: "astra", effort: "medium", pct: 72.8, idle: "12 h", git: "main", st: "rest" }], lanes: [] },
+  11: { repo: "claude-fleet", cols: [{ label: "Worktrail-Analyse", model: "astra", effort: "medium", pct: 54.7, idle: "12 h", git: "main", st: "rest" }], lanes: [] },
+  16: { repo: "~", cols: [{ label: "Shell", model: "", pct: 6, claude: true, idle: "jetzt", git: "", st: "work" }], lanes: [] },
+});
+const MAX = 16;
+let bands, sel;
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
+// Farbton je Repo: der echte src/client.ts#projectHue (FNV-1a ueber den Pfad, PROJECT_HUES) des
+// Live-Stands, vorab berechnet. Eingesetzt wie in der App: 3px-Kante links und Chip auf 16 % derselben
+// Farbe, Saettigung/Helligkeit aus --proj-s/--proj-l. ~ und claude-fleet fallen live auf denselben Ton.
+const HUES = { "claude-fleet": 45, "private-repo-aa": 315, "privat-1": 175, "~": 45, "private-repo-r": 135 };
+const hue = (k) => HUES[k] ?? 205;
+const warn = (x) => !!x.claude && x.pct != null && x.pct >= 25; // Owner-Band 25 %: nur claude, codex kompaktiert selbst
+const live = (B) => B.cols[B.cols.length - 1];
+const ref = (n, j) => n + String.fromCharCode(65 + j); // 3A, 16B: der Name IST die Adresse der Lane
+const tip = $("tip");
+function hint(node, text) {
+  node.onmouseenter = () => { tip.textContent = text; tip.style.opacity = 1; const r = node.getBoundingClientRect();
+    tip.style.left = Math.min(r.right + 8, innerWidth - 280) + "px"; tip.style.top = Math.max(8, r.top - 2) + "px"; };
+  node.onmouseleave = () => { tip.style.opacity = 0; };
+}
+function reset() { bands = LIVE(); sel = { n: 3, lane: 2 }; render(); }
+function ctx(x, on) {
+  const c = el("div", "ctx" + (on && warn(x) ? " warn" : "") + (x.claude ? " mark" : "")), f = el("i");
+  f.style.width = x.pct + "%"; c.append(f); return c;
+}
+
+function box(n, B, s, isLive) {
+  const b = el("button", "box" + (isLive && s.st === "bad" ? " bad" : "") + (isLive && sel.n === n && sel.lane == null ? " sel" : ""));
+  b.style.setProperty("--h", hue(B.repo));
+  const r1 = el("div", "r1");
+  r1.append(el("i", "st " + (isLive ? s.st : "rest")), el("span", "id", n), el("span", "lbl", s.label));
+  if (s.role) r1.append(el("span", "role", s.role));
+  if (s.pct != null) r1.append(el("span", "pct" + (isLive && warn(s) ? " warn" : ""), Math.round(s.pct) + "%"));
+  const r2 = el("div", "r2");
+  r2.append(el("span", "repo", B.repo), el("span", "", s.model), el("span", "", isLive ? s.idle : "übergab " + s.until.slice(-5)));
+  b.append(r1, r2);
+  if (s.pct != null) b.append(ctx(s, isLive));
+  hint(b, isLive ? `${n}  ${s.label}${s.role ? "  " + s.role : ""}\n${B.repo}  ${s.git}\n${[s.model, s.effort].filter(Boolean).join(" ")}\nzuletzt aktiv: ${s.idle}`
+    : `Vorgänger auf Band ${n}: ${s.label}\nübergeben ${s.until} bei ${Math.round(s.pct)} %\nbeendet, belegt keinen Platz mehr`);
+  return b;
+}
+function laneBox(n, B, l, j) {
+  const x = el("button", "lane" + (l.st === "bad" ? " bad" : "") + (sel.n === n && sel.lane === j ? " sel" : "") + (l.born ? " arrive" : "")); delete l.born;
+  x.style.setProperty("--h", hue(B.repo));
+  x.append(el("i", "st " + l.st), el("span", "id", ref(n, j)), el("span", "lbl", l.label));
+  if (l.pct != null) x.append(ctx(l, true));
+  x.onclick = (e) => { e.stopPropagation(); sel = { n, lane: j }; render(); };
+  hint(x, `Lane ${ref(n, j)}  ${l.label}${l.bg ? "  (Hintergrund, vom Tick gestartet)" : ""}\n${l.model}  ${l.git || "sauber"}${l.pct != null ? "  " + Math.round(l.pct) + " %" : ""}\n${l.st === "done" ? "fertig, landbar\n" : ""}belegt keine Bandnummer`);
+  return x;
+}
+function render() {
+  const host = $("bands"); host.replaceChildren();
+  const top = Math.min(MAX, Math.max(...Object.keys(bands).map(Number)) + 1);
+  for (let n = 1; n <= top; n++) {
+    const B = bands[n], row = el("div", "band" + (B ? (B.cols.length > 1 ? " haspast" : "") : " free")); row.dataset.n = n;
+    if (!B) {
+      const f = el("button", "box"), fr = el("div", "r1");
+      fr.append(el("i", "st"), el("span", "id", n), el("span", "lbl", "frei · Session starten"));
+      f.append(fr); f.onclick = () => startAt(n);
+      row.append(f); host.append(row); continue;
+    }
+    const strip = el("div", "strip");
+    B.cols.slice(-4).forEach((s, k, shown) => { /* die letzten drei Vorgaenger bleiben auf dem Band */
+      const isLive = k === shown.length - 1, col = el("div", "col" + (isLive ? "" : " past")), b = box(n, B, s, isLive);
+      b.onclick = () => { if (isLive) { sel = { n }; render(); } else { row.classList.add("peeking"); col.scrollIntoView({ inline: "start", block: "nearest" }); } };
+      col.append(b);
+      if (isLive && B.lanes.length) { const ls = el("div", "lanes");
+        B.lanes.forEach((l, j) => { const grp = el("div", "lg");
+          for (let p = 0; p < Math.min(l.past ?? 0, 2); p++) { const g = el("div", "lane past"); g.style.setProperty("--h", hue(B.repo));
+            g.append(el("i", "st")); hint(g, `Vorgänger von Lane ${ref(n, j)}\nselber Platz, selber Worktree, selber Branch`); grp.append(g); }
+          grp.append(laneBox(n, B, l, j)); ls.append(grp); });
+        col.append(ls); }
+      strip.append(col);
+    });
+    row.onmouseleave = () => { row.classList.remove("peeking"); toEnd(strip, true); };
+    row.append(strip); host.append(row); toEnd(strip, false);
+  }
+  paintPane();
+}
+// das Band steht immer so, dass der lebende Kasten ganz zu sehen ist; links schaut der Vorgaenger hervor
+function toEnd(strip, smooth) {
+  strip.style.scrollBehavior = smooth ? "smooth" : "auto";
+  // breit ist Platz fuer das ganze Band: dann steht es am Anfang, sonst am lebenden Kasten rechts
+  strip.scrollLeft = $("side").classList.contains("wide") ? 0 : strip.scrollWidth;
+}
+function startAt(n) {
+  bands[n] = { repo: "claude-fleet", cols: [{ label: "neue Session", model: "opus-5", effort: "high", pct: 0, claude: true, idle: "jetzt", git: "main", st: "work" }], lanes: [] };
+  sel = { n }; render(); $("bands").querySelector(`.band[data-n="${n}"] .box`).classList.add("spark");
+}
+function paintPane() {
+  const B = bands[sel.n], l = sel.lane != null ? B.lanes[sel.lane] : null, name = l ? ref(sel.n, sel.lane) : String(sel.n);
+  $("pane").innerHTML = `<h1>${name}  ${(l ?? live(B)).label}</h1>` + (l
+    ? `<p>Lane <code>${name}</code> gehört zu Band ${sel.n} und belegt keine Bandnummer. <code>${name}</code> ist ihr einziger Name: in der Leiste, im Gespräch, in <code>state.sh</code> und als Adresse <code>/api/slots/${name}/…</code>. Übergibt die Session auf Band ${sel.n}, bleibt die Lane am Band hängen.</p>`
+    : `<p>Band <code>${sel.n}</code> bleibt <code>${sel.n}</code>, auch nach jeder Übergabe: „schau auf ${sel.n}" meint immer die Session, die gerade dort lebt. Der Vorgänger bleibt still links davon auf dem Band stehen.</p>`);
+}
+// Uebergabe: der lebende Kasten wird still, rechts davon faehrt der neue aufs Band, die Lanes ziehen mit
+function succeed() {
+  if (sel.lane != null) return succeedLane();
+  const n = sel.n, B = bands[n], row = $("bands").querySelector(`.band[data-n="${n}"]`), strip = row.querySelector(".strip"), oldCol = strip.lastElementChild;
+  const prev = live(B), next = { ...prev, pct: 3, idle: "jetzt", st: "work" };
+  Object.assign(prev, { until: "gerade eben" });
+  row.classList.add("haspast"); oldCol.querySelector(".box").classList.add("greying"); oldCol.querySelector(".box").classList.remove("sel");
+  const col = el("div", "col arrive"), nb = box(n, B, next, true); nb.classList.add("sel", "spark"); col.append(nb);
+  const ls = oldCol.querySelector(".lanes"); if (ls) col.append(ls);
+  strip.append(col); strip.style.scrollBehavior = "auto";
+  requestAnimationFrame(() => requestAnimationFrame(() => col.classList.add("in")));
+  const t0 = performance.now(); (function follow(t) { strip.scrollLeft = strip.scrollWidth; if (t - t0 < 700) requestAnimationFrame(follow); })(t0);
+  setTimeout(() => { B.cols.push(next); render(); }, 1400);
+}
+function succeedLane() {
+  const { n, lane: j } = sel, l = bands[n].lanes[j];
+  const old = $("bands").querySelectorAll(`.band[data-n="${n}"] .lane:not(.past)`)[j]; old.classList.remove("sel"); old.classList.add("past");
+  l.pct = 3; l.st = "work"; l.born = true; const neu = laneBox(n, bands[n], l, j); old.after(neu);
+  setTimeout(() => { l.past = (l.past ?? 0) + 1; render(); }, 1300);
+}
+function addLane() { const B = bands[sel.n]; B.lanes.push({ label: "neue Lane", model: "glm-5.3-flash", pct: 0, git: "", st: "work", born: true }); sel = { n: sel.n }; render(); }
+function land() {
+  const n = Object.keys(bands).find((k) => bands[k].lanes.length); if (!n) return; const B = bands[n], l = B.lanes[0];
+  if (l.st !== "done") { l.st = "done"; l.git = "↑7"; sel = { n: +n, lane: 0 }; render(); return; }
+  $("bands").querySelectorAll(`.band[data-n="${n}"] .lane:not(.past)`)[0].classList.add("gone");
+  setTimeout(() => { B.lanes.shift(); sel = { n: +n }; render(); }, 320);
+}
+function full() {
+  bands = LIVE(); const names = ["Land-Pipeline", "Audit", "Studio"];
+  [1, 6, 7].forEach((n, k) => { bands[n] = { repo: k % 2 ? "private-repo-r" : "claude-fleet", cols: [{ label: names[k], model: "opus-5", pct: 30, until: "gestern 21:10" },
+    { label: names[k], role: "main", model: "opus-5", effort: "high", pct: 18, claude: true, idle: "9 min", git: "main", st: "rest" }], lanes: [] }; });
+  bands[10].lanes.push({ label: "task c779", model: "glm-5.3-flash", pct: null, git: "↑2", st: "done", bg: true });
+  sel = { n: 3 }; render(); // 11 Sessions + 5 Lanes = 16 laufende Prozesse
+}
+const DO = { succeed, lane: addLane, land, full, reset, band: () => { sel = { n: 3 }; render(); },
+  red: () => { const B = bands[4]; (B.lanes[0] ?? live(B)).st = "bad"; sel = { n: 4, lane: B.lanes.length ? 0 : undefined }; render(); },
+  wide: () => { $("side").classList.remove("collapsed"); $("side").classList.toggle("wide"); $("widen").classList.toggle("on"); setTimeout(render, 220); },
+  collapse: () => { $("side").classList.remove("wide"); $("widen").classList.remove("on"); $("side").classList.toggle("collapsed"); setTimeout(render, 220); },
+  phone: () => { document.body.classList.toggle("phone"); render(); } };
+document.addEventListener("click", (e) => { const d = e.target.closest?.("[data-do]"); if (d) DO[d.dataset.do](); });
+$("collapse").onclick = DO.collapse; $("widen").onclick = DO.wide;
+// Flocken wie in der Chat-Ansicht: fest verteilt, ruhig, nie im Weg
+(() => { const f = document.getElementById("flakes"); let seed = 7;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  for (let i = 0; i < 46; i++) { const d = document.createElement("i");
+    d.style.left = (rnd() * 100).toFixed(2) + "%"; d.style.top = (rnd() * 100).toFixed(2) + "%";
+    d.style.opacity = (0.06 + rnd() * 0.22).toFixed(2); f.append(d); } })();
+reset();
+// #do=succeed,wide spielt Schalter beim Laden ab, damit jeder Zustand verlinkbar und headless pruefbar ist
+location.hash.replace(/^#do=/, "").split(",").filter((k) => DO[k]).forEach((k, i) => setTimeout(DO[k], 60 + i * 1600));
+</script>
+</body>
+</html>

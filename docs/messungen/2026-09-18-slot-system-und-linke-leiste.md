@@ -202,6 +202,44 @@ Fehler dabei gefunden und behoben: `--tint` auf `:root` rechnet mit dem dort feh
 färbte alle Chips rot (die hsl()-Formel steht jetzt in jeder Regel, wie in der App auch); und in der
 breiten Ansicht stand das Band am rechten Ende, sodass der älteste Vorgänger abgeschnitten war.
 
+### 3.2d Der eigentliche Befund: die App hat ZWEI Sprachen, und die Leiste folgte der alten
+
+Owner 2026-09-20 zu Fassung 5: „in gewisser hinsicht gar nicht so schlecht, aber vom Design
+immernoch ziemlich weit weg von dort wo es sein sollte" — dazu ein Screenshot seiner Chat-Ansicht.
+Der Screenshot löst auf, woran die Fassungen 3 bis 5 scheiterten:
+
+**`public/index.html` trägt zwei Gestaltungssprachen nebeneinander.** Die ALTE (Leiste, Slot-Zeilen,
+Board) ist Monospace auf `#1a1a1a`, 12 px, dicht, Radius 7–8. Die NEUE ist die Chat-Ansicht mit
+eigenem Token-Block (`public/index.html:193-198` auf `main`): `--chat-sans` (ui-sans-serif/Inter),
+`--chat-fs: 14px`, `--chat-ink #e7e7ea`, `--chat-prose #d4d4d8`, `--chat-mute #8b8b94`,
+`--chat-faint #5c5c66`, `--chat-surface #111113`, `--chat-raised #17171a`, `--chat-edge #26262b`,
+Radius 10–18, Code als Mono-Chip auf `--chat-raised` mit 1-px-Kante (`.mdcode`), dazu die driftenden
+Flocken (`.chatflakes`, Kommentar dort: „modern like other GUI coding agents"). Die Queue-Ansicht
+ist dieser Sprache schon gefolgt (`f5ed3188`: „the queue reads the chat view's :root block").
+
+Fassung 5 war also nicht schlecht gebaut, sondern an der falschen Hälfte gemessen: sie hat die ALTE
+Sprache perfekt getroffen. **Fassung 6 (`docs/design/sidebar/v6.html`) nimmt den `--chat-*`-Block
+wörtlich** und baut die Leiste daraus:
+
+- Fläche schwarz mit ruhigen Flocken; keine Zeilenkästen mehr, nur Luft.
+- Die Bandnummer ist ein Mono-Chip in der Zeile — derselbe Chip, mit dem die Chat-Ansicht Code und
+  IDs setzt (`.mdcode`: mono, `--chat-raised`, 1-px-Kante, Radius 5). Die Adresse ist damit dasselbe
+  Objekt wie eine ID im Text, passend zu „hoverbare IDs" aus dem Chat-Feedback vom 18.09.
+- Ein Lane-Name (`3A`) ist derselbe Chip, eine Stufe kleiner; die Repo-Farbe lebt nur noch als
+  leichte Tönung IM Chip (Buntheit 30–45 %), sonst ist die Leiste monochrom.
+- Label in `--chat-fs`/Sans, Nebenzeile und Chips in `--chat-ui-fs`; gewählte Zeile `--chat-raised`
+  mit `--chat-edge`-Kante, Hover fast unsichtbar.
+- Der Füllstand ist nur noch eine Zahl (amber ab 25 %); die Haarlinie erscheint nur an der gewählten
+  Zeile. Die Übergabe bleibt die einzige Bewegung.
+
+Vergleichsblatt `docs/design/sidebar/richtungen.html`: dieselben Daten in vier Sprachen (A Regal =
+Fassung 5, B Schwarzplan, C Karten, D Konsole) — gebaut, BEVOR der Screenshot kam, und damit
+überholt; es bleibt nur als Beleg, wie weit die Sprachen auseinanderliegen.
+
+**Folge für den Stufenplan:** S2 baut die Leiste in der Chat-Sprache, nicht in der alten. Damit ist
+S2 kein reiner Leisten-Umbau mehr, sondern der Punkt, an dem auch die Leiste auf den `--chat-*`-Block
+umzieht — so wie die Queue es in `f5ed3188` schon getan hat.
+
 ### 3.3 Erschlossen, nicht gemessen
 
 - „wartet auf dich" und „fertig" haben heute kein eigenes Feld im Slot-Teil von `/api/sessions`

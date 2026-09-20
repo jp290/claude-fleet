@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet · linke Leiste · vier Richtungen</title>
+<!-- Vier Gestaltungssprachen fuer DIESELBE Leiste, nebeneinander. Modell und Daten sind in allen
+     vier gleich (Band = Slot-Nummer, Vorgaenger links, Lanes 3A/3B/3C, freier Platz nummeriert);
+     verschieden ist NUR, wie es aussieht. Zweck: eine Richtung waehlen, nicht Details beurteilen.
+     Daten: GET /api/sessions vom 2026-09-18, geschwaerzt. Kein Produktcode. -->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #0a0a0a; color: #ccc; font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace; }
+  body { padding: 26px 26px 60px; }
+  h1 { font-size: 14px; font-weight: 700; color: #eee; }
+  .sub { margin-top: 5px; color: #777; font-size: 12px; max-width: 78ch; line-height: 1.55; }
+  .sheet { display: flex; gap: 22px; margin-top: 24px; flex-wrap: wrap; align-items: flex-start; }
+  .tile { width: 252px; }
+  .cap { display: flex; align-items: baseline; gap: 7px; margin-bottom: 4px; }
+  .cap b { font-size: 12px; color: #eee; } .cap span { font-size: 11px; color: #666; }
+  .why { margin-top: 7px; color: #6c6c6c; font-size: 11px; line-height: 1.5; }
+  .rail { height: 560px; overflow: hidden; }
+  .rail .row { overflow: hidden; }
+  .rail .r1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .rail .r2 { min-width: 0; }
+  .rail .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rail .gut, .rail .num, .rail .repo, .rail .pct, .rail .chip, .rail .st, .rail .ref { flex: none; }
+  /* A und B tragen die Nummer in der Rinne links, C und D in der Zeile selbst */
+  .d-a .row .num, .d-b .row .num, .d-a .r1 .repo, .d-b .r1 .repo, .d-c .gut, .d-d .gut { display: none; }
+
+  /* ---------- A · Regal (die heutige App-Sprache, Fassung 5) --------------------------------- */
+  .d-a .rail { background: #1a1a1a; border-right: 1px solid #2a2a2a; padding: 6px 7px; }
+  .d-a .band { display: grid; grid-template-columns: 16px 1fr; column-gap: 5px; margin-bottom: 3px; }
+  .d-a .gut { padding-top: 6px; text-align: right; color: #7aa2f7; font-weight: 700; font-size: 12px; }
+  .d-a .band.free .gut { color: #555; font-weight: 400; }
+  .d-a .row { position: relative; padding: 6px 9px 7px; border-radius: 8px; border: 1px solid transparent;
+    border-left: 3px solid hsl(var(--h) 58% 72% / .8); background: #1e1e1e; font-size: 12px; }
+  .d-a .row.sel { background: #26314f; border-color: #3a4a7a; }
+  .d-a .row.past { background: #1a1a1a; border-left-color: #3a3a3a; opacity: .6; margin-bottom: 3px; }
+  .d-a .r1 { gap: 7px; }
+  .d-a .lbl { color: #ccc; }
+  .d-a .pct { color: #888; font-size: 11px; } .d-a .pct.warn { color: #e0af68; }
+  .d-a .r2 { display: flex; gap: 7px; margin-top: 2px; font-size: 10.5px; color: #666; }
+  .d-a .r2 .repo { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .d-a .chip { font-size: 10.5px; font-weight: 700; padding: 0 4px; border-radius: 4px;
+    color: hsl(var(--h) 58% 72%); background: hsl(var(--h) 58% 72% / .16); }
+  .d-a .lanes { margin: 3px 0 0 10px; display: grid; gap: 3px; }
+  .d-a .lane { display: flex; align-items: center; gap: 6px; padding: 4px 8px 5px; border-radius: 7px;
+    border-left: 2px solid hsl(var(--h) 58% 72% / .7); background: #1c1c1c; font-size: 11.5px; }
+  .d-a .gauge { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: #242424; }
+  .d-a .gauge i { position: absolute; inset: 0 auto 0 0; background: #3a3a3a; } .d-a .gauge.warn i { background: #e0af68; }
+  .d-a .st { width: 7px; height: 7px; border-radius: 50%; background: #3a3a3a; flex: none; }
+  .d-a .st.work { background: #3fb950; } .d-a .st.need { background: #e0af68; border-radius: 1px; transform: rotate(45deg); }
+  .d-a .st.done { background: #7aa2f7; border-radius: 1px; }
+
+  /* ---------- B · Schwarzplan (reines Schwarz, Haarlinien, die Schrift traegt alles) ---------- */
+  .d-b .rail { background: #000; padding: 4px 0 0; }
+  .d-b .band { display: grid; grid-template-columns: 26px 1fr; align-items: start;
+    border-top: 1px solid #141414; }
+  .d-b .band:first-child { border-top: 0; }
+  .d-b .gut { padding: 11px 0 0; text-align: center; color: #3c3c3c; font-size: 12px; font-weight: 700; }
+  .d-b .band.on .gut { color: #fff; }
+  .d-b .row { position: relative; padding: 9px 12px 10px 4px; }
+  .d-b .row.sel::before { content: ""; position: absolute; left: -26px; top: 0; bottom: 0; width: 2px; background: #fff; }
+  .d-b .row.past { opacity: .32; padding-bottom: 4px; }
+  .d-b .r1 { align-items: baseline; gap: 8px; }
+  .d-b .lbl { color: #9a9a9a; font-size: 14px; letter-spacing: -.01em; }
+  .d-b .row.sel .lbl { color: #fff; }
+  .d-b .pct { color: #4a4a4a; font-size: 12px; } .d-b .pct.warn { color: #e0af68; }
+  .d-b .r2 { margin-top: 3px; font-size: 11px; color: #3c3c3c; display: flex; gap: 8px; }
+  .d-b .r2 .repo { color: hsl(var(--h) 45% 58%); }
+  .d-b .chip { color: #555; font-size: 11px; }
+  .d-b .lanes { margin: 6px 0 2px 2px; display: grid; gap: 5px; }
+  .d-b .lane { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: #7a7a7a; }
+  .d-b .lane .ref { color: #fff; font-weight: 700; font-size: 11.5px; }
+  .d-b .st { width: 5px; height: 5px; border-radius: 50%; background: #333; flex: none; transform: translateY(-2px); }
+  .d-b .st.work { background: #fff; } .d-b .st.need { background: #e0af68; } .d-b .st.done { background: #7aa2f7; }
+  .d-b .gauge { display: none; }
+
+  /* ---------- C · Karten (Luft, groessere Schrift, Fakten erst bei der gewaehlten Zeile) ------ */
+  .d-c .rail { background: #0d0d0d; padding: 10px; display: grid; gap: 7px; align-content: start; }
+  .d-c .band { display: block; } .d-c .band.free .row { display: block; }
+  .d-c .row { position: relative; padding: 11px 12px; border-radius: 11px; background: #151515;
+    border: 1px solid #1d1d1d; }
+  .d-c .row.sel { background: #17181c; border-color: hsl(var(--h) 45% 40%); }
+  .d-c .row.past { display: none; }               /* Vorgaenger nur im breiten Band, nicht hier */
+  .d-c .r1 { gap: 9px; }
+  .d-c .num { flex: none; min-width: 20px; color: #4a4a4a; font-size: 12px; font-weight: 700; }
+  .d-c .band.on .num, .d-c .row.sel .num { color: hsl(var(--h) 58% 72%); }
+  .d-c .lbl { color: #e6e6e6; font-size: 13.5px; } .d-c .r1 .repo { display: none; }
+  .d-c .pct { color: #5e5e5e; font-size: 11.5px; } .d-c .pct.warn { color: #e0af68; }
+  .d-c .r2 { display: none; }                      /* Fakten nur an der gewaehlten Karte */
+  .d-c .row.sel .r2 { display: flex; gap: 9px; margin: 7px 0 0 29px; font-size: 11px; color: #6a6a6a; }
+  .d-c .chip { font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 1px 5px; border-radius: 999px;
+    color: hsl(var(--h) 58% 76%); background: hsl(var(--h) 58% 72% / .13); }
+  .d-c .lanes { margin: 8px 12px 0 29px; display: grid; gap: 5px; }
+  .d-c .lane { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #a5a5a5; }
+  .d-c .lane .ref { font-size: 10.5px; font-weight: 700; color: #6f6f6f; }
+  .d-c .band.free .row { background: none; border-style: dashed; border-color: #1d1d1d; color: #3f3f3f; text-align: center; }
+  .d-c .st { width: 7px; height: 7px; border-radius: 50%; background: #333; flex: none; }
+  .d-c .st.work { background: #3fb950; box-shadow: 0 0 8px #3fb95066; }
+  .d-c .st.need { background: #e0af68; } .d-c .st.done { background: #7aa2f7; }
+  .d-c .gauge { position: absolute; left: 12px; right: 12px; bottom: 5px; height: 1px; background: #1f1f1f; }
+  .d-c .gauge i { position: absolute; inset: 0 auto 0 0; background: #3a3a3a; } .d-c .gauge.warn i { background: #e0af68; }
+
+  /* ---------- D · Konsole (Spalten wie in einem TUI, Auswahl invertiert) ---------------------- */
+  .d-d .rail { background: #000; padding: 6px 0; font-size: 12.5px; }
+  .d-d .r1 { width: 100%; }
+  .d-d .band { display: block; }
+  .d-d .row { padding: 3px 10px; white-space: nowrap; }
+  .d-d .row.sel { background: #d8d8d8; color: #000; }
+  .d-d .row.past { color: #333; } .d-d .row.past .lbl { color: #333; }
+  .d-d .num { flex: none; width: 20px; color: hsl(var(--h) 45% 55%); }
+  .d-d .row.sel .num { color: #000; font-weight: 700; }
+  .d-d .lbl { color: #b9b9b9; }
+  .d-d .row.sel .lbl { color: #000; font-weight: 700; }
+  .d-d .repo { flex: none; width: 86px; overflow: hidden; text-overflow: ellipsis; color: #5a5a5a; font-size: 11.5px; }
+  .d-d .row.sel .repo { color: #333; }
+  .d-d .pct { flex: none; width: 30px; text-align: right; color: #6a6a6a; font-size: 11.5px; }
+  .d-d .pct.warn { color: #e0af68; } .d-d .row.sel .pct { color: #333; }
+  .d-d .chip, .d-d .r2, .d-d .gauge { display: none; }
+  .d-d .lanes { display: block; } .d-d .lane { display: flex; align-items: center; gap: 8px; padding: 3px 10px 3px 26px; }
+  .d-d .lane .ref { flex: none; width: 24px; color: #8a8a8a; }
+  .d-d .lane .lbl { color: #8f8f8f; }
+  .d-d .band.free .row .lbl { color: #2e2e2e; }
+  .d-d .st { flex: none; width: 7px; text-align: center; font-size: 10px; color: #444; }
+  .d-d .st.work { color: #3fb950; } .d-d .st.need { color: #e0af68; } .d-d .st.done { color: #7aa2f7; }
+</style>
+</head>
+<body>
+<h1>Dieselbe Leiste, vier Gestaltungssprachen</h1>
+<p class="sub">Modell, Daten und Inhalt sind in allen vier gleich — Band = Slot-Nummer, der Vorgänger steht
+still auf dem Band, Lanes heißen 3A/3B/3C, ein freier Platz bleibt nummeriert. Verschieden ist nur, wie es
+aussieht. Sag mir einen Buchstaben (oder „keiner davon“), dann baue ich diese Richtung fertig aus.</p>
+<div class="sheet" id="sheet"></div>
+<script>
+// Live-Stand 2026-09-18, geschwaerzt und auf fuenf Baender gekuerzt, damit die Kacheln vergleichbar bleiben.
+const BANDS = [
+  { n: 2, repo: "privat-1", h: 175, live: { label: "Privat", pct: 14, model: "", idle: "84 min", st: "rest" }, past: [], lanes: [] },
+  { n: 3, repo: "claude-fleet", h: 45, sel: true,
+    live: { label: "Orchestrator", pct: 11, model: "opus-5", idle: "25 min", st: "rest" },
+    past: [{ label: "Orchestrator", pct: 33, model: "opus-5", idle: "übergab 23:37", st: "rest" }],
+    lanes: [{ ref: "3A", label: "Queue-Ansicht", pct: 32, st: "need" }, { ref: "3B", label: "Info-Leiste", pct: 13, st: "need" },
+      { ref: "3C", label: "Linke Leiste", pct: 8, st: "work" }] },
+  { n: 4, repo: "claude-fleet", h: 45, live: { label: "Fleet-Betrieb", role: "main", pct: 27, model: "opus-5", idle: "66 min", st: "rest" },
+    past: [], lanes: [{ ref: "4A", label: "task 8ff7", pct: null, st: "work" }] },
+  { n: 9, free: true },
+  { n: 16, repo: "~", h: 45, live: { label: "Shell", pct: 6, model: "", idle: "jetzt", st: "work" }, past: [], lanes: [] },
+];
+const DIRS = [
+  { k: "a", name: "Regal", one: "die heutige App-Sprache",
+    why: "Genau die Bauteile, die public/index.html schon hat: Zeile mit Radius 8, Repo-Ton als 3-px-Kante, Zustandspunkt, Chip. Fügt sich nahtlos ein und fällt nirgends auf." },
+  { k: "b", name: "Schwarzplan", one: "reines Schwarz, Haarlinien",
+    why: "Keine Flächen, keine Kästen: nur Schwarz, feine Trennlinien und Schriftgrößen. Das Label ist groß und weiß, alles andere tritt zurück. Ruhig und sehr lesbar, aber ohne jede Gemütlichkeit." },
+  { k: "c", name: "Karten", one: "Luft, große Schrift, weniger auf einmal",
+    why: "Wenige, große Karten mit viel Rand; Repo, Modell und Ruhezeit erscheinen nur an der gewählten. Angenehm auf dem Handy, zeigt aber weniger Fakten gleichzeitig." },
+  { k: "d", name: "Konsole", one: "Spalten wie in einem TUI",
+    why: "Keine Dekoration, dafür feste Spalten und eine invertierte Zeile als Cursor — die Sprache von htop und k9s. Sehr dicht, passt zum Terminal daneben, wirkt technisch statt gestaltet." },
+];
+const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c; if (x != null) n.textContent = x; return n; };
+const warn = (p) => p != null && p >= 25;
+function rowOf(B, s, kind) {
+  const r = el("div", "row" + (kind === "past" ? " past" : "") + (kind === "live" && B.sel ? " sel" : ""));
+  const r1 = el("div", "r1");
+  r1.append(el("span", "num", B.n), el("i", "st " + s.st, "●"), el("span", "lbl", s.label));
+  if (s.role) r1.append(el("span", "chip", s.role));
+  r1.append(el("span", "repo", B.repo));
+  if (s.pct != null) r1.append(el("span", "pct" + (warn(s.pct) ? " warn" : ""), s.pct + "%"));
+  const r2 = el("div", "r2");
+  r2.append(el("span", "repo", B.repo), el("span", "", s.model), el("span", "", s.idle));
+  r.append(r1, r2);
+  if (s.pct != null) { const g = el("div", "gauge" + (warn(s.pct) ? " warn" : "")), i = el("i"); i.style.width = s.pct + "%"; g.append(i); r.append(g); }
+  return r;
+}
+function build(dir) {
+  const tile = el("div", "tile d-" + dir.k), cap = el("div", "cap");
+  cap.append(el("b", "", dir.k.toUpperCase() + " · " + dir.name), el("span", "", dir.one));
+  const rail = el("div", "rail");
+  BANDS.forEach((B) => {
+    const band = el("div", "band" + (B.free ? " free" : "") + (B.sel ? " on" : ""));
+    band.style.setProperty("--h", B.h ?? 0);
+    if (B.free) {
+      const r = el("div", "row"), fr = el("div", "r1");
+      fr.append(el("span", "num", B.n), el("span", "lbl", "frei · Session starten")); r.append(fr);
+      band.append(el("div", "gut", B.n), r); rail.append(band); return;
+    }
+    const wrap = el("div", "");
+    B.past.forEach((p) => wrap.append(rowOf(B, p, "past")));
+    wrap.append(rowOf(B, B.live, "live"));
+    if (B.lanes.length) { const ls = el("div", "lanes");
+      B.lanes.forEach((l) => { const x = el("div", "lane");
+        x.append(el("i", "st " + l.st, "●"), el("span", "ref", l.ref), el("span", "lbl", l.label));
+        if (l.pct != null) x.append(el("span", "pct" + (warn(l.pct) ? " warn" : ""), l.pct + "%"));
+        ls.append(x); });
+      wrap.append(ls); }
+    band.append(el("div", "gut", B.n), wrap); rail.append(band);
+  });
+  tile.append(cap, rail, el("p", "why", dir.why));
+  return tile;
+}
+document.getElementById("sheet").append(...DIRS.map(build));
+</script>
+</body>
+</html>

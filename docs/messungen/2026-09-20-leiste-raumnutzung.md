@@ -190,3 +190,30 @@ Bilder und die rohen `*-budget.json` liegen unter `/tmp/fleet-shots-public/raumn
 Bild-Server dieser Maschine — die Adresse steht bewusst NICHT hier (`leak-pin: tracked files contain
 no configured deploy identity` hat genau diese Zeile gestellt). Nachfahrbar ist die Messung ohne die
 Bilder: die Treiber und alle Zahlen stehen im Baum.
+
+## Nachtrag (Session 3): die absoluten Tintenzahlen sind NUR innerhalb dieser Tabelle vergleichbar
+
+Ein Nachlauf des Treibers gegen `30d1170f` (HEAD, also derselbe Client wie v6) liefert **nicht**
+die v6-Zeile: `fact` 41 245 statt ~48 000–50 000 px², `factPct` 30,43 statt 35,05, `lblShortTotal`
+30 px statt 225. Die Ursache ist kein Regress am Client, sondern **die Apparatur hat sich zwischen
+v6 und diesem Lauf geändert**: bis `30d1170f` bekamen Slot 2/4 und beide Lanes `$SRC` — also DIESES
+Repository — als `cwd`/`repo`. Die Zeilen trugen damit echte Git-Fakten (Lane-Diff, Lifecycle-Punkt
+mit Inhalt) und lange, echte Namen. Seit dem Fix zeigt das Fixture auf ein Wegwerf-Repo mit einem
+Commit: kürzere Namen, keine Diffs, weniger Tinte bei gleicher Geometrie.
+
+Was das für Leser heißt:
+
+- Die Tabelle v0…v6 bleibt gültig — alle sieben Stände wurden mit **derselben** Apparatur gemessen,
+  und die Aussage ist ein VERHÄLTNIS (−24,7 % Fläche bei gleicher Fakt-Tinte).
+- Ein einzelner Nachlauf nach `30d1170f` darf **nicht** gegen eine Zelle dieser Tabelle gehalten
+  werden. Wer v0 und HEAD erneut vergleichen will, misst BEIDE Stände neu mit dem heutigen Treiber.
+- Geometrie ist unverändert nachprüfbar: `rows` 16, `occupied` 5, `medianRowH` 29,
+  `rowsVisibleInBar` 16 — der Nachlauf bestätigt, dass bei 900 px alle sechzehn Zeilen im Bild
+  stehen.
+
+Vorher/Nachher als Bild (900 und 1200 px, `deviceScaleFactor: 2`) liegt unter `leiste-733b/` auf dem
+Bild-Server dieser Maschine, `vorher-*` ist der Stand `d2e893c9^` (vor Bau 1), `nachher-*` ist
+`30d1170f`. Eine Einschränkung, die am Bild sichtbar ist: im `vorher`-Lauf blieb der Lane-Stack
+ZUGEKLAPPT (der alte Client reagierte nicht auf den Aufklapp-Schritt von `cdp-shot.js`), das Bild
+zeigt daher 14 Zeilen und keine Lane-Zeile. Als Vergleich der DESIGNSPRACHE taugt das Paar, als
+Flächenvergleich nicht.

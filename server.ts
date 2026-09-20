@@ -17498,6 +17498,29 @@ function successionFacts(s: Slot): SuccessionFacts {
   };
 }
 
+// THE SUCCESSION LINE, small enough for the 2 s poll. The brief (GET /api/slots/:id/brief) has
+// carried these three numbers since f93293b9, but only the RIGHT COLUMN reads it and only for the
+// one open session — so the bar has never been able to say which session of a line a row is
+// ("hier fehlt das band wo die succession-session reihe angezeigt wird", owner 2026-09-20).
+//
+// WHAT IT COSTS, because this poll has a measured budget (14 KiB, ~1 300 B of headroom, pinned in
+// e2e/tasks.ts): unconditional this would be ~40 B × 16 rows ≈ 640 B — half the headroom for a
+// fact that says nothing on a fresh fleet. So it follows the rule `stalled` follows and is OMITTED
+// when there is nothing to say. CPU is not the cost: every value is already in memory
+// (`laneSucceessions` on the slot, `laneSucceedCounts`, and a filter over `lineageHandovers`,
+// which holds 10 records on this machine).
+//
+// ABSENT MEANS "no succession recorded for this occupant" — an answer, like an absent `stalled`.
+// It deliberately does NOT mean "session 1": `successionFacts` derives a main's line with
+// `lineageStateOf(s)?.line.length ?? 0`, which reads a session with no lineage at all the same as
+// a founding one. A reader that printed "session 1" from an absent key would be asserting
+// something this server cannot tell apart.
+function successionRowView(s: Slot): { session: number; taken: number | null; cap: number | null } | null {
+  const f = successionFacts(s);
+  if (f.session <= 1 && f.taken === null && f.cap === null) return null;
+  return { session: f.session, taken: f.taken, cap: f.cap };
+}
+
 function migrateMessage(fill: ContextFill, rail: MigrateRail): string {
   const opening = `[fleet] Dein Kontext ist bei ${fill.pct}% (${fill.usedTokens} von ${fill.windowTokens} Tokens im Fenster). `
     + "Das ist ein Server-Prädikat, keine Meldung von dir. Übergib jetzt in dieser Reihenfolge: ";
@@ -35750,6 +35773,12 @@ Bun.serve<WSData>({
             // fleet pays nothing and the one stopped lane is the only row that grows.
             ...(st.stalled ? { stalled: true } : {}),
             ...(st.stalledSince !== null ? { stalledSince: st.stalledSince } : {}),
+            // which session of its line this is, and what the lane cap has spent — omitted when
+            // there is nothing to say, and absent is an ANSWER: see successionRowView.
+            ...((): Record<string, unknown> => {
+              const sc = successionRowView(s);
+              return sc ? { succession: sc } : {};
+            })(),
             // WHY THIS LANE IS STILL STANDING, in the actuator's own words — the sentence the
             // tick's next pass will decide on, through the one function it decides with
             // (laneAutoCloseView). Served ONLY while armed, because `laneAutoclose` above answers

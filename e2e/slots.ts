@@ -1090,8 +1090,32 @@ export async function run(): Promise<void> {
   check("client: a pack list says whether it was DELIVERED or merely declared — intent never passes for delivery",
     /packsFrom === "receipt"/.test(setupSrc) && /delivered with the founding brief/.test(setupSrc)
     && /declared by this session's program/.test(setupSrc), "the packs note in renderBoard");
-  // model, effort and context fill are the sidebar row's job — the owner called them redundant in
-  // the board on 2026-09-19, and a second copy is exactly what a "misslungener Aufbau" is made of
+  // THE SUCCESSION NUMBERS in the head (owner, 2026-09-20: they belong in the identity block he
+  // signed off). Four label/value rows, every value read off the brief's server-computed block —
+  // the two traps being a board that prints a threshold nobody armed, and one that draws an
+  // unmeasurable context as 0 %. Source is the evidence; this suite has no DOM, and the served
+  // numbers themselves are measured live in e2e/watch.ts against tickMigrate's own fixture.
+  const succSrc = boardSrc.slice(boardSrc.indexOf("if (brief?.succession) {"),
+    boardSrc.indexOf("// identifiers: machine strings in mono"));
+  check("client: the head names all four succession facts — fill, handover threshold, rail, baton",
+    /srow\("Fill",/.test(succSrc) && /srow\("Handover",/.test(succSrc)
+    && /srow\("Rail", sc\.rail/.test(succSrc) && /srow\("Baton",/.test(succSrc),
+    "the succession rows in renderBoard");
+  check("client: an unmeasurable fill reads \"not measurable\" — the percentage exists only inside the sc.fill branch",
+    /: "not measurable"/.test(succSrc)
+    && /sc\.fill\n?\s*\? `\$\{tok\(sc\.fill\.usedTokens\)\} \/ \$\{tok\(sc\.fill\.windowTokens\)\} · \$\{Math\.round\(sc\.fill\.pct\)\} %`/.test(succSrc),
+    "the Fill row in renderBoard");
+  check("client: a threshold is printed only when the server sent one, otherwise the named reason",
+    /sc\.thresholdPct !== null \? `at \$\{sc\.thresholdPct\} % — \$\{nudge\}`/.test(succSrc)
+    && /`off — \$\{offWhy\[sc\.thresholdOff \?\? "rail"\]\}`/.test(succSrc),
+    "the Handover row in renderBoard");
+  check("client: the cap is drawn only where one exists — without one the row says `no cap`, never 0 of 5",
+    /sc\.cap !== null \? `session \$\{sc\.session\} · \$\{sc\.taken \?\? 0\} of \$\{sc\.cap\}`/.test(succSrc)
+    && /`session \$\{sc\.session\} · no cap`/.test(succSrc), "the Baton row in renderBoard");
+  // model, effort and the sidebar's ctx CHIP are the row's job — the owner called them redundant in
+  // the board on 2026-09-19, and a second copy is exactly what a "misslungener Aufbau" is made of.
+  // The 2026-09-20 succession group does not reopen that door: its fill arrives on the BRIEF, paired
+  // with the threshold it is compared against, and `s.ctx` stays out of this column entirely.
   // NOTHING IN THIS COLUMN TWITCHES. It is rebuilt whole every 3s, so the three things a reader
   // holds across a tick — the scroll offset, the keyboard focus, and an open menu — have to be
   // carried by hand. The menu is bound to the slot it was opened on, or it would hang one

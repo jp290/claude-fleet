@@ -438,6 +438,17 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   Program-MAIN wird nicht mehr zu einem HANDOFF-Commit aufgefordert, ein Game-Maker zum Checkpoint
   ohne `carry`, eine ungebundene Session (und der Supervisor) seit e3e5084a zum Linien-Record mit
   optionalem `intent` ODER `pointer`. Die Lane-Nachricht ist unverändert.
+- **Dieselben vier Zahlen sind seit 2026-09-20 LESBAR, nicht nur wirksam:** `GET /api/slots/:id/brief`
+  trägt `succession` (`server.ts#successionFacts`, nur lesend), und die rechte Spalte zeichnet sie
+  als vier Label/Wert-Zeilen im Kopf: Füllstand (`contextFill`; `null` = nicht messbar, NIE 0 %),
+  die WIRKSAME Schwelle samt zugestelltem Stups, die Schiene und die wievielte Session der Linie
+  gegen den Deckel (`taken`/`cap` sind `null`, wo kein Deckel existiert — eine handgeöffnete Lane
+  hat keine Zeile). `thresholdPct: null` kommt IMMER mit `thresholdOff`: `steward` · `waiting` ·
+  `unpinned` · `harness` · `fleet` (Hauptschalter) · `rail` — in genau der Reihenfolge, in der
+  `tickMigrate` seine Tore anlegt, damit die ROHE Env-Zahl nirgends als Schwelle erscheint, die
+  nicht feuern kann. Die Stups-Zahl ist prozesslokal wie `migrateTried`: nach einem Neustart steht
+  dort 0, während das Prompt-Ledger den Stups behält. Gemessen in `e2e/watch.ts` an derselben
+  Fixture, an der der Tick selbst gemessen wird.
 
 
 ## Program-MAIN-Ausführungsschiene (der Gründungsbrief benennt sie)

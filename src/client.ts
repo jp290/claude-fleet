@@ -1247,7 +1247,20 @@ interface BriefInfo { branch: string | null; head: string | null; worktree: Work
   // the non-git half of the brief (server.ts#sessionSetup): what this session was BUILT from.
   // `packsFrom` says how strong the pack list is — "receipt" is what was delivered into this
   // pane, "program" only what its program declares now, null is "neither exists".
-  setup?: BriefSetup }
+  setup?: BriefSetup;
+  // what the SUCCESSION rail has already done with this session (server.ts#successionFacts).
+  // Optional for an older server, and every field keeps the server's three-valued honesty: a null
+  // fill is "cannot measure", a null thresholdPct comes with the reason no threshold applies, and
+  // a null cap means no lid exists to spend — none of the three is ever a zero.
+  succession?: BriefSuccession }
+interface BriefSuccession {
+  rail: "lane" | "standard-main" | "game-maker-main" | "handoff";
+  fill: { usedTokens: number; windowTokens: number; pct: number } | null;
+  thresholdPct: number | null;
+  thresholdOff: "steward" | "waiting" | "unpinned" | "harness" | "fleet" | "rail" | null;
+  nudges: number; nudgedAt: number | null; gaveUp: boolean; maxNudges: number;
+  session: number; taken: number | null; cap: number | null;
+}
 interface BriefSetup { profile: "standard" | "game-maker" | null;
   repo: string | null; head: string | null;
   // sources are POINTERS (path + one anchor string), never content — see server.ts#SetupSource.
@@ -3093,6 +3106,71 @@ async function renderBoard() {
       const mi = el("div", "bmission", s.mission);
       mi.title = s.mission;
       idsec.appendChild(mi);
+    }
+    // THE SUCCESSION NUMBERS (owner, 2026-09-20: they belong in the identity block he signed off).
+    // Four bare facts in the same label/value row form the setup block uses — no tile, no bar, no
+    // second box: how full this session is, what happens at which percentage and whether it has
+    // already been said, which exit the rail would name, and which session of this line holds the
+    // pane. All four come from the BRIEF (server.ts#successionFacts), never from the poll row: the
+    // row's ctx chip is the sidebar's job and a second copy of it is what the owner cut on
+    // 2026-09-19. Here the fill is the number the threshold is compared against, and it is never
+    // drawn without it.
+    if (brief?.succession) {
+      const sc = brief.succession;
+      let nth = 0;
+      const srow = (label: string, value: string, title: string) => {
+        const r = el("div", `bsrow bsucc${nth++ === 0 ? " bsucctop" : ""}`);
+        r.appendChild(el("span", "bskey", label));
+        r.appendChild(el("span", "bsval", value));
+        r.title = title;
+        idsec.appendChild(r);
+      };
+      const tok = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M`
+        : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
+      const clock = (ts: number) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      // an unmeasurable window is NEVER drawn as 0 % — a session Fleet cannot read and an empty one
+      // are not the same session, and the whole rail hangs off this number
+      srow("Fill", sc.fill
+        ? `${tok(sc.fill.usedTokens)} / ${tok(sc.fill.windowTokens)} · ${Math.round(sc.fill.pct)} %`
+        : "not measurable",
+        sc.fill
+          ? `${sc.fill.usedTokens} of ${sc.fill.windowTokens} tokens in the window — the measurement the succession threshold is compared against`
+          : "Fleet cannot measure this session's context: no pinned conversation, no usage record yet, or no window it can name. That is not an empty context.");
+      // threshold AND nudge on ONE line, because the second is only ever news about the first
+      const offWhy: Record<NonNullable<BriefSuccession["thresholdOff"]>, string> = {
+        fleet: "migration is not armed on this fleet",
+        rail: "this rail's own threshold is 0",
+        harness: `${s.harness ?? "this harness"} is not on the handover band`,
+        steward: "the planning pane is not nudged",
+        waiting: "this session waits on the owner",
+        unpinned: "no pinned conversation to measure",
+      };
+      // the count and the budget live on the hover: the owner's form for this line is a bare fact
+      // ("Nachfolge bei 33 % — gestupst 08:12"), and a second bracket made it wrap
+      const nudge = sc.gaveUp ? `gave up after ${sc.nudges}`
+        : sc.nudges === 0 ? "not nudged"
+        : `nudged ${sc.nudgedAt ? clock(sc.nudgedAt) : "at an unrecorded time"}`;
+      srow("Handover", sc.thresholdPct !== null ? `at ${sc.thresholdPct} % — ${nudge}`
+        : `off — ${offWhy[sc.thresholdOff ?? "rail"]}`,
+        sc.thresholdPct !== null
+          ? `${sc.nudges} of at most ${sc.maxNudges} handover instructions delivered to this conversation. The server types one into this pane at ${sc.thresholdPct} %; the count is kept in memory only, so a server restart forgets it.`
+          : "nothing in the server would ask this session to hand over; the succession routes still work by hand.");
+      const railWhy: Record<BriefSuccession["rail"], string> = {
+        lane: "the successor is a fresh session on THIS worktree, branch and slot — commit, file a handoff report, then POST /api/self/succeed",
+        "standard-main": "a bound Program-MAIN hands over through the Program record the server already keeps — no handover commit is a gate",
+        "game-maker-main": "the committed `## Current game checkpoint` section in HANDOFF.md is the one handover channel, and it takes no carry",
+        handoff: "watches, autos and reports carry by id; succeed with an intent OR a committed pointer, never both",
+      };
+      srow("Rail", sc.rail, railWhy[sc.rail]);
+      // the lid is keyed by the QUEUE ROW (originId), so a hand-opened lane has none to spend
+      srow("Baton", sc.cap !== null ? `session ${sc.session} · ${sc.taken ?? 0} of ${sc.cap}`
+        : sc.taken !== null ? `session ${sc.session} · ${sc.taken} taken, no cap`
+        : `session ${sc.session} · no cap`,
+        sc.cap !== null
+          ? `past ${sc.cap} successions this row's baton cannot pass again (FLEET_LANE_SUCCEED_MAX) — the refusal names a needs-main report as the way out. The count is kept per queue row, so a requeue does not reset it.`
+          : sc.rail === "lane"
+            ? "this lane holds no queue row, so no succession cap counts against it"
+            : "the main rails have no succession cap — only the lane rail does");
     }
     // identifiers: machine strings in mono, each a chip — hover says what it is, a click does the one
     // thing it is for (copy a sha or a branch; open the queue on a task or a program)

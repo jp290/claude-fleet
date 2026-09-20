@@ -2060,11 +2060,14 @@
   #board .bchip.link { color: var(--accent); }
   #board .brefusal { margin-top: 8px; font-size: 11.5px; color: var(--b-ink3); border-left: 2px solid var(--chat-edge); padding-left: 8px; }
 
-  /* setup — what the session is MADE of: a key/value list, keys quiet, machine strings in mono */
-  #board .bsetup .bsrow { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
-  #board .bsetup .bskey { flex: none; width: 66px; font-size: 11.5px; color: var(--b-ink3); }
-  #board .bsetup .bsval { flex: 1; min-width: 0; font-family: var(--b-mono); font-size: 11px; color: var(--b-ink2);
+  /* the key/value row: one form for every section that lists facts — the setup block's founding
+     choices and the head's succession numbers. Keys quiet, machine strings in mono. */
+  #board .bsec .bsrow { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
+  #board .bsec .bskey { flex: none; width: 66px; font-size: 11.5px; color: var(--b-ink3); }
+  #board .bsec .bsval { flex: 1; min-width: 0; font-family: var(--b-mono); font-size: 11px; color: var(--b-ink2);
     overflow-wrap: anywhere; }
+  /* the succession group sits in the head, one gap above it and none inside */
+  #board .bhead .bsucctop { margin-top: 12px; }
   #board .bsetup .bspacks .bsval { display: flex; flex-wrap: wrap; gap: 3px; }
   #board .bsetup .bspack { padding: 1px 5px; border: 1px solid var(--chat-edge-soft); border-radius: 4px; background: var(--chat-surface);
     font-size: 10.5px; color: var(--b-ink2); }

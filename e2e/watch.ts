@@ -6871,6 +6871,59 @@ export async function run(): Promise<void> {
       JSON.stringify({ steward: (await migratePrompts(stewardId)).length,
         unknown: (await migratePrompts(unknownId)).length }));
 
+    // === THE SAME RAIL, READ FOR THE BOARD (server.ts#successionFacts) ==========================
+    // Owner 2026-09-20: the succession numbers belong in the board's identity block. Until then
+    // every one of them lived inside server.ts and reached no reader — a session could be seen at
+    // 50 % with no way to tell whether anything happens at 44, how often the server had already
+    // said so, which exit it would be told to take, or how much of the row's lid the line had
+    // spent. These rows read the four facts off the SAME fixture the nudges above were measured on,
+    // so what the board draws is provably the state the tick acted on and not a second derivation.
+    type Succ = { rail: string; fill: { pct: number; usedTokens: number; windowTokens: number } | null;
+      thresholdPct: number | null; thresholdOff: string | null; nudges: number; nudgedAt: number | null;
+      gaveUp: boolean; maxNudges: number; session: number; taken: number | null; cap: number | null };
+    const succOf = async (slot: number): Promise<Succ | null> =>
+      ((await (await get(`/api/slots/${slot}/brief`)).json()) as { succession?: Succ }).succession ?? null;
+    {
+      const laneSucc = await succOf(lane.slot);
+      check("succession facts: the fill the board reads is the one the nudge quoted — 500000 of 1000000 at 50%",
+        laneSucc?.fill?.usedTokens === 500_000 && laneSucc.fill.windowTokens === 1_000_000
+          && laneSucc.fill.pct === 50, JSON.stringify(laneSucc?.fill));
+      // the EFFECTIVE threshold and the nudge that was actually delivered, on one row because the
+      // second is only ever news about the first. BREAKS IF: the reader prints the raw env instead
+      // of the rail's own armed number, or counts a nudge from another conversation.
+      check("succession facts: an armed lane reports its own 44 and the one nudge it was sent, with its time",
+        laneSucc?.thresholdPct === 44 && laneSucc.thresholdOff === null && laneSucc.nudges === 1
+          && laneSucc.nudgedAt !== null && laneSucc.gaveUp === false && laneSucc.maxNudges === 3,
+        JSON.stringify(laneSucc));
+      // a hand-opened lane holds no queue row, so FLEET_LANE_SUCCEED_MAX (keyed by originId) has
+      // nothing to count against it — absence written as the answer it is, never as 0 of 5
+      check("succession facts: a fresh hand-opened lane is session 1 with no queue row and no cap",
+        laneSucc?.session === 1 && laneSucc.taken === null && laneSucc.cap === null,
+        JSON.stringify({ session: laneSucc?.session, taken: laneSucc?.taken, cap: laneSucc?.cap }));
+      const mainSucc = await succOf(mainId);
+      const boundSucc = await succOf(boundId);
+      check("succession facts: the rail named is the one the succeed call would apply — lane, handoff, standard-main",
+        laneSucc?.rail === "lane" && mainSucc?.rail === "handoff" && boundSucc?.rail === "standard-main",
+        JSON.stringify({ lane: laneSucc?.rail, main: mainSucc?.rail, bound: boundSucc?.rail }));
+      // THE MEASUREMENT IS NOT THE PRESSURE (owner, 2026-09-06): contextFill answers for a pi slot
+      // too, and the board must still not read it as a handover band. The fill is served, the
+      // threshold is off, and the reason names the harness rather than leaving a blank.
+      const piSucc = await succOf(piId);
+      check("succession facts: a non-claude slot at the same 50% is served its fill and NO threshold, named as the harness gate",
+        piSucc?.fill?.pct === 50 && piSucc.thresholdPct === null && piSucc.thresholdOff === "harness"
+          && piSucc.nudges === 0, JSON.stringify(piSucc));
+      const stewardSucc = await succOf(stewardId);
+      check("succession facts: the ⚙ steward is off the band BY NAME, not by a missing number",
+        stewardSucc?.thresholdPct === null && stewardSucc.thresholdOff === "steward"
+          && stewardSucc.fill?.pct === 50, JSON.stringify(stewardSucc));
+      // the ctx:null control: an unmeasurable window is null, never a 0 % that would read as a
+      // fresh session — and with no pinned conversation the threshold is off for that reason first
+      const unknownSucc = await succOf(unknownId);
+      check("succession facts: an unmeasurable context is null and never 0%, and the threshold is off as unpinned",
+        unknownSucc?.fill === null && unknownSucc.thresholdPct === null
+          && unknownSucc.thresholdOff === "unpinned", JSON.stringify(unknownSucc));
+    }
+
     const tickMs = Number(process.env.FLEET_MIGRATE_TICK_MS ?? 60_000) | 0;
     await Bun.sleep(tickMs * 4 + 500);
     check("a second migration tick inside MIGRATE_COOLDOWN_MS sends no second prompt, on either rail",
@@ -6893,6 +6946,12 @@ export async function run(): Promise<void> {
     check("FLEET_LANE_MIGRATE_PCT=0 silences the LANE rail alone — the main rail, re-armed by the restart, sends again",
       (await migratePrompts(mainId)).length === 2 && (await migratePrompts(lane.slot)).length === 1,
       `main=${(await migratePrompts(mainId)).length} lane=${(await migratePrompts(lane.slot)).length}`);
+    // …and the board reads that same asymmetry as a NAMED off, not as a threshold of 0: a rail whose
+    // own knob is zero is off for its own reason while the other rail keeps its number.
+    check("succession facts: zeroing the lane rail alone reports the lane off as `rail` while the main keeps its 44",
+      (await succOf(lane.slot))?.thresholdOff === "rail" && (await succOf(lane.slot))?.thresholdPct === null
+      && (await succOf(mainId))?.thresholdPct === 44,
+      JSON.stringify({ lane: await succOf(lane.slot), main: (await succOf(mainId))?.thresholdPct }));
 
     // Restart resets the process-local marker. With the threshold still armed this same 50% slot
     // would be nudged again; overriding it to zero proves the stronger default-off contract: no
@@ -6910,6 +6969,20 @@ export async function run(): Promise<void> {
     check("FLEET_MIGRATE_PCT=0 registers no migration tick — neither rail sends, whatever the lane threshold is",
       (await migratePrompts(mainId)).length === 2 && (await migratePrompts(lane.slot)).length === 1,
       `main=${(await migratePrompts(mainId)).length} lane=${(await migratePrompts(lane.slot)).length}`);
+    // THE MASTER SWITCH, as the board reads it. The lane's own threshold is still 44 in this
+    // process's env, and reporting it would name a gate that cannot fire — no timer is registered
+    // at all. Both rails must therefore answer `fleet`, and neither may print a number.
+    check("succession facts: the master switch off is reported as `fleet` on BOTH rails, never as the raw lane env",
+      (await succOf(lane.slot))?.thresholdOff === "fleet" && (await succOf(lane.slot))?.thresholdPct === null
+      && (await succOf(mainId))?.thresholdOff === "fleet" && (await succOf(mainId))?.thresholdPct === null,
+      JSON.stringify({ lane: await succOf(lane.slot), main: await succOf(mainId) }));
+    // …and the delivered-nudge count is honestly FORGOTTEN across that restart (migrateTried is
+    // process-local by design), while the prompt ledger still holds the nudge that was sent. A
+    // reader that persisted the count would have to move this check, not quietly pass it.
+    check("succession facts: delivered nudges are memory-only — after a restart the count is 0 while the ledger still shows the nudge",
+      (await succOf(lane.slot))?.nudges === 0 && (await succOf(lane.slot))?.nudgedAt === null
+      && (await migratePrompts(lane.slot)).length === 1,
+      JSON.stringify({ succ: await succOf(lane.slot), ledger: (await migratePrompts(lane.slot)).length }));
 
     for (const id of [mainId, lane.slot, stewardId, unknownId, boundId, piId]) if (id) await post(`/api/slots/${id}/kill`, {});
     for (const file of usageFiles) rmSync(file, { force: true });

@@ -1750,7 +1750,17 @@ happen now fails as a named FIXTURE check — `owner-token ambient use fixture: 
 LANDED — main moved off the tip this probe recorded` — and the product check under it does not run,
 so a fixture that could not be built can never be read as "the flag is missing". Both halves of the
 pair carry the identical repair. The row is not asserted anywhere; that claim is already carried by
-the self-land checks earlier in the same file, whose lands are minutes clear of the tail.
+the self-land checks earlier in the same file, ~~whose lands are minutes clear of the tail~~.
+
+> **FALSIFIZIERT 2026-09-20 (§11.2ac).** Die durchgestrichene Begruendung ist die einzige Stelle,
+> an der diese Sektion die self-land-Checks als IMMUN erklaert, und sie ist am Register
+> nachgemessen falsch: der Abstand Dispatch → Land-Ask ist in KEINEM der 409 Laeufe Minuten. Die
+> obere Schranke (Abstand der beiden Fixture-Checks, die den Dispatch einschliessen) hat Median
+> 9,2 s, Maximum 49,1 s und Minimum 0,88 s — der schnellste Lauf landet also INNERHALB der 4000 ms,
+> die der Tail schlaeft. Genau diese beiden Checks sind siebenmal rot geworden, im selben Bild;
+> sie stehen jetzt als eigene Familie in §11.2ac. Die REPARATUR oben bleibt richtig — nur ihre
+> Begruendung war es nicht, und sie hat die Nachbar-Checks vier Wochen laenger ungeschuetzt
+> gelassen, als sie es gewesen waeren.
 
 **Mutation proof** (isolated scratch instance, own socket/port, `FLEET_CMD=true`; the ONE controlled
 variable is when the merge is fired, relative to the tail's 4000 ms sleep):
@@ -4709,6 +4719,77 @@ die ein echtes Praefix von `[fleet inbox] 1 ungelesene Eintraege …` ist, ist d
 Zeile mit `phase:"entered"`, mit voller Nutzlast als `residue`, oder mit einer ANDEREN Zeichenkette
 ist es NICHT — dann ist die Rueckrollung wirklich ausgeblieben, und das ist ein Produktbefund an
 `server.ts:6221-6238`, der dem gehoert, der ihn sieht.
+
+### 11.2ac Eine dreissigste Familie: die beiden self-land-Checks in `e2e/programs.ts`, die §11.2h ausdruecklich fuer immun erklaert hat — dieselbe Requeue-Wurzel, und §11.2h's Begruendung ist die falsifizierte Stelle (2026-09-20 registriert; Rate ueber das GANZE lokale Register per Direktscan gerechnet, Signatur aus den `detail`-Feldern gelesen, Wurzel bereits REPARIERT in `f8f3ee90`)
+
+**Die zwei Checks** (`e2e/programs.ts#9689` und `#9726`, self-land-Sektion):
+
+> `self-land: the integration branch moved and the row retired — the land completed through the ordinary land path`
+> `self-land: a second call on the same landed row is refused 'already landed' — a landed row is not landed twice`
+
+**Fingerabdruck**, und er ist an BEIDEN derselbe Vorgang:
+
+| Check | `detail` im Rot | was es heisst |
+| --- | --- | --- |
+| „row retired" | `{"status":"queued","before":"<sha8>","after":"<anderer sha8>"}` | main IST bewegt, die Zeile steht trotzdem auf `queued` |
+| „already landed" | `409 {"error":"task is queued — only a running row has a lane to land"}` | die Folge davon: die Tuer findet keine laufende Zeile mehr |
+
+Dazu `msSincePrev` ≈ 63,5 s am ersten Check — der volle 60-s-Poll (`240 × 250 ms`, Zeile 9684)
+plus Fixture, also exakt die ≈65-s-Signatur aus §11.2h. Die beiden roten Zeilen liegen **44 ms**
+auseinander (`isolated-20260911T132908Z-72444`, 15:52:14.500 und 15:52:14.544).
+
+**Basisrate, Direktscan ueber BEIDE Trail-Verzeichnisse** (`~/claude-fleet/e2e-trail/` und
+`$TMPDIR/fleet-e2e-trail/`, 1060 `isolated-`-Dateien, kein Deckel, also keine `truncated`-Frage):
+**409 Laeufe** enthalten die Checks, aelteste Zeile 2026-08-23 15:28, juengste 2026-09-20 19:33.
+
+| Population | „already landed" rot | „row retired" rot |
+| --- | ---: | ---: |
+| ganzes Register (409 Laeufe) | 7 (1,7 %) | 3 (0,7 %) |
+| Baeume OHNE `f8f3ee90` (315 Laeufe) | 7 (2,2 %) | 3 (1,0 %) |
+| Baeume MIT `f8f3ee90` (92 Laeufe, 63 Baeume) | **0** | **0** |
+
+Die Rot-Laeufe sind sieben verschiedene Baeume, keiner Vorfahr eines anderen: `fabad731` ·
+`3b117c01` · `49460dfd` · `230eb691` · `a74319cd` · `e54c8d94` · `1d250a87`. In zweien
+(`230eb691`, `1d250a87`) fallen BEIDE Checks, in vieren nur der zweite — der Requeue traf dann in
+die 30–40 ms zwischen ihnen.
+
+**EINE der sieben Sichtungen gehoert NICHT dazu, und die Signatur sagt es:**
+`isolated-20260823T131519Z-92143` (Baum `fabad731`, 12 Rot im ganzen Lauf) hat am ersten Check
+`{"status":"sent","mainBefore":"aff9ca5a","mainAfter":"aff9ca5a"}` — main hat sich NIE bewegt,
+es gab also gar keinen Land — und am zweiten `401 {"error":"unauthorized"}` statt des 409. Ohne
+diesen Ausreisser: **6/315 (1,9 %)** und **2/315 (0,6 %)**. Die 2,3 %/1,0 %, die die Notiz
+`4d53b489` nennt, sind mit ihrem damaligen Nenner (303) korrekt gerechnet; der Nenner ist seither
+gewachsen, der Zaehler nicht.
+
+**Wurzel: §11.2w, unveraendert.** `server.ts#briefAndSend`s detachter Tail schrieb die gelandete
+`done`-Zeile auf `queued` zurueck. Diese Sektion fuegt dem nichts hinzu ausser der
+Zugehoerigkeit — und der Widerlegung der Immunitaets-Begruendung aus §11.2h.
+
+**Die Messung, die §11.2h's Satz faellt.** §11.2h begruendet, warum die self-land-Checks ihre
+Zeile lesen DUERFEN, mit „whose lands are minutes clear of the tail". Ueber alle 409 Laeufe
+gerechnet, aus den ts der Sonde selbst:
+
+| Schranke fuer Dispatch → Land-Ask | min | p50 | p95 | max |
+| --- | ---: | ---: | ---: | ---: |
+| UNTERE (Land-Ask minus Check „the row is running on a live lane") | 0,07 s | 0,09 s | 10,2 s | 44,7 s |
+| OBERE (Land-Ask minus Check „the MAIN is bound in the ONE repo") | 0,88 s | 9,2 s | 14,6 s | 49,1 s |
+
+Der Dispatch (Zeile 9355) liegt zwischen diesen beiden Checks, der Land-Ask ist Zeile 9675. **Kein
+einziger Lauf kommt ueber 49 s**, und der schnellste liegt mit 0,88 s OBERER Schranke ganz
+innerhalb der 4000 ms, die der Tail schlaeft. „Minuten" war nie wahr; die Checks waren nie
+geschuetzt.
+
+**Was NICHT gemessen ist.** Die Trail-Zeile traegt kein `briefHash` — der Fingerabdruck
+`briefHash: null` auf der gelandeten Outcome-Zeile, den §11.2h an einer AUFBEWAHRTEN Instanz
+gelesen hat, ist aus dem Register selbst nicht nachpruefbar. Ob das Register zwischen 2026-08-23
+und heute vollstaendig ist, ist nicht behauptet: geloeschte Trail-Dateien sind unsichtbar.
+
+**Ein Rot eines dieser beiden Checks NACH `f8f3ee90` ist wieder ECHT** — 92 Laeufe auf 63 Baeumen
+mit dem Fix sind 0 Rot, das Kriterium des Programs („>= 10 solche Laeufe") also uebererfuellt.
+Die Sonde selbst liest weiterhin die ZEILE (`e2e/programs.ts#9683-9692`, `240 × 250 ms` auf
+`status === "done"`) statt des ZIELS, wie §11.2h es fuer das owner-token-Paar repariert hat; das
+ist unangetastet und bleibt die Form, die beim naechsten zweiten Schreiber auf der Zeile wieder
+60 s verbrennt, statt in 300 ms zu antworten.
 
 ## 15. Die Scratch-Halde unter `$TMPDIR` — drei Klassen, gemessen, und wer sie ab jetzt besitzt (2026-09-17)
 

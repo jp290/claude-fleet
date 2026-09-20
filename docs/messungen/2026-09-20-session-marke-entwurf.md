@@ -1,9 +1,9 @@
 ---
 frage: Wie werden die Sessions in der linken Leiste auffälliger UND übersichtlicher, ohne eine zweite Identität zu erfinden?
-urteil: Der Zustand trägt heute 45 von 9120 Pixeln einer Zeile (0,49 %) — das ist der Grund für beide Klagen zugleich. Die Antwort ist eine abgeleitete Session-Marke auf dem vorhandenen Algorithmus (projectHue) mit vier Kanälen: Farbton = Projekt, Muster = Harness, Seed = Slot + openedAt, Bewegung = Zustand. Drei Varianten gebaut und gemessen; Empfehlung A als Grundlage, C als Aufsatz, B nur für den Fehlerfall.
+urteil: Der Zustand trägt heute 45 von 9120 Pixeln einer Zeile (0,49 %) — das ist der Grund für beide Klagen zugleich. Die Antwort ist eine abgeleitete Session-Marke auf dem vorhandenen Algorithmus (projectHue) mit vier Kanälen: Farbton = Projekt, Muster = Harness, Seed = Slot + openedAt, Bewegung = Zustand. Drei Varianten gebaut und gemessen; entschieden ist A als Grundlage, C als Aufsatz, B nur für den Fehlerfall. Gebaut ist nichts: der Stufenplan-Schritt S2 ist blockiert, solange Client-Lanes offen sind.
 bereich: [leiste, session-marke, identitaet]
 belege: [src/client.ts#projectHue, src/client.ts#projectOf, src/icons.ts#harnessMark, src/flakes.ts, public/index.html, docs/design/sidebar/marken.js, docs/design/sidebar/marken-a.html, docs/design/sidebar/marken-b.html, docs/design/sidebar/marken-c.html]
-nicht-gemessen: kein Produktcode, keine Suite; die CSS-Animationen der Variante B sind nicht in der Zeichenmessung enthalten; versteckter Tab nur am Code belegt, nicht gemessen; keine Messung auf einem echten Handy.
+nicht-gemessen: kein Produktcode, keine Suite; die CSS-Animationen der Variante B sind nicht in der Zeichenmessung enthalten; versteckter Tab nur am Code belegt, nicht gemessen; keine Messung auf einem echten Handy; ob zwölf Projekt-Töne besser trennen als acht, ist offen und ungemessen (§6).
 stand: 2026-09-20
 ---
 
@@ -103,9 +103,13 @@ Der Zustand trägt damit das **14-fache** seines heutigen Gewichts, das Projekt 
 - **Text bleibt lesbar**: die Marke sitzt neben dem Text, nie darunter; Label und Zahlen behalten die
   Farben der Chat-Ansicht (`--chat-ink`/`--chat-prose` auf Schwarz).
 
-## 5. Empfehlung
+## 5. Entscheidung
 
-**A als Grundlage, C als Aufsatz, B nicht.** A löst den gemessenen Befund (Zustand 14-fach, Projekt
+**Entschieden: A als Grundlage, C als Aufsatz, B nicht** — getroffen von dieser Lane, nicht vom
+Owner. Die stehende Regel ist, dass eine Varianten- oder Ergebniswahl nicht beim Owner landet, wenn
+sie an Zahlen hängt; hier hängt sie an §1 und §3.
+
+A löst den gemessenen Befund (Zustand 14-fach, Projekt
 3,7-fach) ohne die Liste umzubauen und ist die billigste Variante. C ist die einzige, die
 „unübersichtlich" STRUKTURELL angeht: ein fester Ort je Platz macht den Fleet in einem Blick lesbar,
 und der Ort überlebt jede Übergabe — das passt zum bestätigten Modell (Band = Slot-Nummer). B ist
@@ -115,6 +119,40 @@ Teil, den ich behalten würde — als Fehlerdarstellung in A.
 
 Stilgrenze: die Öffnung gilt nur für die Session-Marke in der linken Leiste. Chat-Prosa, Queue-Texte
 und die rechte Spalte bleiben neutral (`8874/design-prompt.md`).
+
+**Und sie gilt INNERHALB der Chat-Sprache.** Der Owner hat drei ganze Sprachen abgelehnt — v3
+Eloxal, v4 Edelstahl mit WebGL-Shader, v5 die alte App-Sprache; gültig ist v6. Das ist keine
+Detailkritik: Metallik-Optik und eigenständige Shader-Flächen sind als Sprache erledigt, und seine
+ältere Vorgabe „voll gefärbte stylische boxen … mit leichtem metallik look" ist davon überholt.
+„Farben, Muster, Effekte, Partikel" heißt deshalb: ein kleines, dichtes Element in einer ruhigen
+Leiste, keine zweite Oberfläche. Die drei Varianten hier halten das nachprüfbar ein —
+`docs/design/sidebar/marken.css` zieht 27-mal `--chat-*` und kennt kein `linear-gradient`, keinen
+Shader und keinen Schlagschatten (der einzige `box-shadow` ist eine `inset`-Haarlinie als Rahmen).
+Greift eine künftige Variante die metallische Richtung doch auf, dann als eine von dreien und mit
+dem Satz, warum sie diesmal trägt.
+
+## 6. Was daraus offen bleibt — und bei wem
+
+Drei Punkte standen am Ende der Vorsitzung als „offen beim Owner". Zwei davon sind aus dem
+bestätigten Modell ableitbar und hier entschieden, einer ist messbar und gehört in eine eigene
+Runde. Keiner davon ist eine Frage an den Owner.
+
+- **Sammelband 0 für Lanes ohne Band: ja.** Das bestätigte Modell sagt, eine Lane heißt nach ihrem
+  Band und das ist ihre einzige Adresse; eine Lane ohne Herkunftsband hätte dann keine. `0A`, `0B`
+  schließen die Lücke, ohne eine zweite Adressform zu erfinden. Abgeleitet, nicht gewählt.
+- **Acht Töne in `PROJECT_HUES`: bleibt vorerst bei acht, offen als MESSUNG, nicht als Geschmack.**
+  Der beobachtete Fall (`~` und `claude-fleet` fallen live auf denselben Ton) trennt sich heute nur
+  über Seed-Variante, nicht über Muster, wenn beide dasselbe Harness fahren. Ob zwölf Töne das
+  besser lösen als acht, entscheidet dieselbe Methode wie §1/§4: Paarabstand der Töne in Graustufen
+  und in Farbe bei acht gegen zwölf. Der Kommentar an `src/client.ts#projectHue` begründet die
+  Quantisierung; mehr Töne heißt nähere Töne, das ist der Preis, der gemessen gehört.
+- **Reichweite und Stufenplan S0–S5 (`docs/messungen/2026-09-18-slot-system-und-linke-leiste.md`)
+  sind NICHT von dieser Lane zu bestätigen** — sie brauchen Produktcode. Dazu ein harter Befund,
+  unabhängig von jeder Meinung: der Reihenfolge-Zwang dort („S2 erst, wenn die Client-Lanes gelandet
+  sind") ist heute NICHT erfüllt. `GET /api/self/drift` meldet am 2026-09-20 zwei offene Lanes, die
+  `src/client.ts` und `public/index.html` anfassen (`fleet/260920065326-d5fa`,
+  `fleet/260918203940-4198`). S2 ist damit blockiert, S0 und S1 sind es nicht — sie fassen
+  `src/client.ts` nicht an.
 
 ## Methode
 

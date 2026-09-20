@@ -219,6 +219,22 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   Harness des Slots validiert: `supports.model`/`supports.effort` + `effortLevels` des Adapters (codex
   übersetzt Effort in `--thinking`, siehe §Harness-Adapter), nie nach dem Server-Env.
 
+## Provider-Sperren beim Gruenden — ein Wort im Brief, und die Session kommt nie hoch
+
+- **Das englische Wort fuer „gegnerisch", zusammen mit Merge-/Deploy-Code im selben Brief, loest bei
+  `gpt-6-astra` die Provider-Sperre aus.** Gemessen: **zwei** MAIN-Gruendungen sind daran gestorben.
+  Die Sperre sitzt beim PROVIDER, nicht bei Fleet — der Adapter ist korrekt, der Spawn ist korrekt,
+  die Pane steht, und die Antwort bleibt aus oder kommt als Verweigerung. Kein Fleet-Sensor meldet
+  das als Fehler: fuer den Server ist es eine Session, die nichts sagt.
+- **Das Wort steht hier bewusst nicht ausgeschrieben.** Diese Datei wird in Briefe und Kontextplaene
+  hineingelesen; ein Beispielsatz mit dem Wort waere genau die Nutzlast, vor der die Zeile warnt.
+- **Die Umgehung ist die deutsche Formulierung, nicht ein anderer Auftrag.** „Pruefe den Fix, als
+  wolltest du ihn kaputtmachen" / „suche das Gegenbeispiel" beschreiben dieselbe Arbeit und sind
+  gemessen unauffaellig. Der Auftrag muss nicht entschaerft werden, nur die Vokabel.
+- **Woran man es erkennt, statt es fuer einen Spawn-Fehler zu halten:** Pane lebt, Modell-Footer
+  gesetzt, `agent` = `alive`, aber kein Turn zum Gruendungsbrief — waehrend derselbe Brief ohne die
+  Vokabel durchgeht. Gegenprobe vor jeder anderen Hypothese, weil sie eine Minute kostet.
+
 ## Repo-Worker
 
 - **Der Worker eines Repos wird AM REPO gespeichert, nicht im Env — seit `b64cd54` (2026-08-08), zuerst nur

@@ -42,6 +42,13 @@ des Programs. Die Program-MAIN hat dagegen den tatsaechlichen einzeiligen Text a
 24-stellige gespeicherte Program-ID erklaert die Differenz von 16 Zeichen zur rekonstruierten
 177-Zeichen-Fassung. Die geloggte Nutzlast wird hier nicht erneut aus einem Template nachgebaut.
 
+**Nachgerechnet 2026-09-20** an derselben Quelle (`streams/prompts.jsonl`, `slot:10`,
+`source:"auto"`): im Fenster 12:51:53.223 – 14:49:30.334 des 2026-09-11 stehen **genau 12** Zeilen,
+alle **byte-identisch**, `len(text) == 193`, `len(text.encode()) == 195`. Die gespeicherte
+Program-Id `f9dc8e10…` ist 24 Zeichen lang, die Anzeigeform 8 — die Differenz 24-8=16 ergibt die
+fruehere 177 (193-16). Beide Zahlen dieses Abschnitts sind damit an der Quelle bestaetigt, nicht
+aus einer Notiz uebernommen.
+
 Vier belegte Punkte ersetzen die alte Praefix-Deutung:
 
 1. `sendText` bildet die Fehlerzahl aus `awaitComposer` → `readComposer` → `composerResidue`.

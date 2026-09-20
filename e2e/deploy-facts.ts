@@ -30,7 +30,7 @@ interface Bundle {
   hubJsMtime: number | null;
   srcNewestMtime: number | null; stale: boolean | null;
 }
-interface Facts { deployGap?: Gap | null; bundleStale?: Bundle | null }
+interface Facts { deployGap?: Gap | null; bundleStale?: Bundle | null; deployFactsAt?: number | null }
 interface DeployWatchRow { id: string; kind: "deploy"; deployId: string; armed: boolean }
 interface DeployEventRow {
   id: string; watchId: string; kind: "deploy-terminal"; subjectDeployId: string;
@@ -111,6 +111,19 @@ export async function run(): Promise<void> {
       f.bundleStale != null, JSON.stringify(f.bundleStale));
     check("§1 a server booted from HEAD reports no gap, and says so as false, not as null",
       f.deployGap?.behindCount === 0 && f.deployGap.codeBehind === false, JSON.stringify(f.deployGap));
+    // WHEN the pair was measured, which is what tells a frozen cache from a fresh one. Two of
+    // refreshDeployFacts' failure paths keep serving the previous reading in silence, so a pair
+    // without this number cannot be judged at all (docs/messungen/2026-09-20-bundlestale-refresh-messfrage.md).
+    check("§1 the pair carries WHEN it was measured — a number, and one that is not in the future",
+      typeof f.deployFactsAt === "number" && f.deployFactsAt > 0 && f.deployFactsAt <= Date.now(),
+      JSON.stringify({ at: f.deployFactsAt ?? null, now: Date.now() }));
+    // …and it dates the READING, not the boot: stamped once at startup it would never move, which
+    // is precisely the state this number exists to make visible.
+    const firstAt = f.deployFactsAt ?? 0;
+    const moved = await settle((x) => typeof x.deployFactsAt === "number" && x.deployFactsAt > firstAt, 30_000);
+    check("§1 the measured-at ADVANCES with the tick — it dates the reading, never the boot",
+      typeof moved.deployFactsAt === "number" && moved.deployFactsAt > firstAt,
+      JSON.stringify({ first: firstAt, later: moved.deployFactsAt ?? null }));
   }
 
   // ===== §2 a commit the server has not booted =====

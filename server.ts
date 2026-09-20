@@ -29285,9 +29285,17 @@ async function supervisorView(s: Slot): Promise<Response> {
     // null until the git tick has run once — an honest "not measured yet", never an all-clear.
     deployGap: deployFacts ? deployFacts.gap : null,
     bundle: deployFacts ? deployFacts.bundle : null,
+    // same number, same name as on /api/sessions: when the two facts above were measured. A pair
+    // with an hours-old `at` is a STOPPED tick, not an all-clear (see refreshDeployFacts).
+    deployFactsAt: deployFacts ? deployFacts.at : null,
   };
   if (!deployFacts)
     unknown.push("the deploy-gap and bundle facts have not been measured yet; deployGap and bundle are null, which is not an all-clear.");
+  // A reading that STOPPED refreshing is the same wrong answer as a missing one, only quieter: it
+  // keeps asserting whatever was true when the tick last carried. Ten ticks of silence is far past
+  // any scheduling jitter and is the shape refreshDeployFacts' two silent paths produce.
+  else if (Date.now() - deployFacts.at > GIT_TICK_MS * 10)
+    unknown.push(`the deploy-gap and bundle facts were last measured ${Math.round((Date.now() - deployFacts.at) / 1000)}s ago and have stopped refreshing; they describe that moment, not now.`);
   if (deployLedger.malformed > 0)
     unknown.push(`${deployLedger.malformed} malformed deploy ledger rows make the integration picture incomplete.`);
   if (auditLedger.malformed > 0)
@@ -32904,13 +32912,26 @@ function newestMtime(dir: string): number | null {
 // What they do NOT see, stated because the wording on screen depends on it: both measure the
 // COMMITTED tree. A bundle built from uncommitted src reads `stale: false` while serving code that
 // is in no commit, and deployGap compares the boot commit to HEAD, not to the working tree.
-let deployFacts: { gap: DeployGap; bundle: BundleStale } | null = null;
+//
+// AND THE READING CARRIES WHEN IT WAS TAKEN (`at`), which is not decoration — it is the only thing
+// that tells a FROZEN cache from a fresh one. Two of this region's three silent-failure paths hold
+// the previous reading forever and say nothing: the `catch` below by design, and `gitTickBusy`,
+// which latches `true` for the lifetime of any hung `await` in tickGit's loop — `tmux()` carries no
+// timeout ON PURPOSE (server/tmux.ts), so a wedged tmux server stops these facts without throwing.
+// (The third, a throw ESCAPING tickGit, is already loud: logError("tickGit") → server.log and the
+// `errors` channel.) On 2026-09-17 a reader saw `appJsMtime` five seconds older than that boot and
+// `stale:true` four hours after building, and could not tell a stopped tick from a build in the
+// wrong checkout — because both look identical without this number. Neither could be reconstructed
+// afterwards: server.log and `errors` are per-boot, and that boot was gone
+// (docs/messungen/2026-09-20-bundlestale-refresh-messfrage.md).
+let deployFacts: { gap: DeployGap; bundle: BundleStale; at: number } | null = null;
 async function refreshDeployFacts(): Promise<void> {
   try {
-    deployFacts = { gap: await deployGap(), bundle: bundleStale() };
+    deployFacts = { gap: await deployGap(), bundle: bundleStale(), at: Date.now() };
   } catch {
     // keep the previous reading: a refresh that failed is not a new fact, and replacing a good
-    // answer with a blank one would make the surface flicker between "due" and "nothing to say"
+    // answer with a blank one would make the surface flicker between "due" and "nothing to say".
+    // `at` stays at the kept reading's own time — it dates the FACT, never the attempt.
   }
 }
 function bundleMtime(file: string): number | null {
@@ -35458,6 +35479,9 @@ Bun.serve<WSData>({
         // them across the fleet. Cached on the git tick; null until it has run once.
         deployGap: deployFacts?.gap ?? null,
         bundleStale: deployFacts?.bundle ?? null,
+        // when the pair above was MEASURED. Without it a cached reading that stopped refreshing
+        // reads exactly like a fresh one — see refreshDeployFacts.
+        deployFactsAt: deployFacts?.at ?? null,
         slots: slots.map((s) => {
           const sh = shares.find((x) => x.slot === s.id);
           // the stopped-lane fact, same single derivation the steward view serves (stalledFacts).

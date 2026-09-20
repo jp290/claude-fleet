@@ -25661,7 +25661,7 @@ interface GateLock {
 // of a slot is the fact. `origin` is what keeps measurement and hearsay apart now that both ride
 // this one list — the UI reads it to decide what the row may be trusted for.
 interface GateReport { slot: number | null; label: string | null; phase: VerifyPhase; suite: string; exitCode: number | null; at: number; origin: "lane" | "server"; branch: string | null }
-interface GateView { lock: GateLock | null; reports: GateReport[] }
+interface GateView { lock: GateLock | null; reports: GateReport[]; queue?: GateQueueTicket[] }
 // The lock as it is on disk right now. `null` = the dir does not exist, i.e. nothing holds the
 // mutex. Costs two stats, a small read and one signal-0 per call, which is why it is computed per
 // request rather than cached: a cached answer to "is a suite running right now" would be the one
@@ -26017,6 +26017,75 @@ function releaseSuiteLock(owner: symbol | null = null): void {
     rmdirSync(SUITE_LOCK);
   } catch { /* already gone: nothing to give back */ }
 }
+// --- THE QUEUE AT THE MUTEX, read the way the lock is read ---------------------------------------
+// e2e-stage.sh does not race for the mutex, it QUEUES: every contender takes a ticket directory
+// `t<n>.<pid>` under `$FLEET_SUITE_LOCK.q`, and only the holder of the oldest live ticket attempts
+// the lock (the wrapper prints "position N of M" while it waits). The server has read the LOCK
+// since the gate line existed and never the queue, so the board could say "busy 20m" without ever
+// saying that three more runs were standing behind it — the single number that decides whether an
+// offer to a helper is worth making.
+//
+// READ-ONLY, and that is not a detail: the wrappers reap orphaned tickets as part of taking one,
+// and a server that removed a ticket could drop a live contender's place in the line. Liveness is
+// therefore DIAGNOSED here and never acted on, with exactly the wrappers' own test — the pid must
+// answer signal 0, and if the ticket recorded a process-birth fingerprint it must still match, or
+// the ticket belongs to a recycled pid. A ticket this server cannot judge is reported as it is.
+//
+// ORDER IS THE WRAPPERS' ORDER (e2e-stage.sh#_st_queue_scan): lower ticket number first, and on a
+// tie — two contenders that minted the same number in the same instant — the lower pid. Position 1
+// is the only rank allowed to touch the lock, so `position` here is the same number the waiting
+// wrapper prints about itself.
+interface GateQueueTicket {
+  n: number;                 // the ticket number the wrapper minted
+  pid: number;
+  alive: boolean;            // the wrappers' own liveness test, diagnosed and never acted on
+  // Why it is not alive, when it is not: `gone` (no such process) or `recycled` (the pid answers
+  // but its birth fingerprint is not the one the ticket recorded). null while it IS alive.
+  dead?: "gone" | "recycled";
+  sinceMs: number | null;    // how long this ticket has been in the queue; null = not timeable
+  position: number;          // 1-based rank among LIVE tickets; 0 = this ticket is not in the line
+}
+const SUITE_QUEUE = `${SUITE_LOCK}.q`;
+const SUITE_QUEUE_MAX = 20;  // the poll carries a line per waiter, not a directory listing
+const SUITE_TICKET_RE = /^t(\d+)\.(\d+)$/;
+function suiteQueueView(): GateQueueTicket[] {
+  let names: string[];
+  try { names = readdirSync(SUITE_QUEUE); } catch { return []; }  // no queue dir = nobody queued
+  const seen: GateQueueTicket[] = [];
+  for (const name of names) {
+    const m = SUITE_TICKET_RE.exec(name);
+    if (!m) continue;
+    const n = Number(m[1]);
+    const pid = Number(m[2]);
+    if (!Number.isInteger(n) || !Number.isInteger(pid) || pid <= 0) continue;
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; }
+    catch (e: unknown) { alive = (e as { code?: string }).code === "EPERM"; }
+    let dead: GateQueueTicket["dead"] = alive ? undefined : "gone";
+    if (alive) {
+      // the same fingerprint test the lock makes, for the same reason: a pid that came back as a
+      // different process is not this ticket's owner. A ticket with no readable fingerprint keeps
+      // its place — absence of the file is the wrappers' own tolerated case, not evidence.
+      const stored = readStoredLockBirth(`${SUITE_QUEUE}/${name}/birth`);
+      if (stored.state === "matched") {
+        const current = processBirthFingerprint(pid);
+        if (current !== null && current !== stored.value) { alive = false; dead = "recycled"; }
+      }
+    }
+    let sinceMs: number | null = null;
+    try {
+      const st = statSync(`${SUITE_QUEUE}/${name}`);
+      const born = st.birthtimeMs || st.mtimeMs;
+      if (Number.isFinite(born) && born > 0) sinceMs = Math.max(0, Date.now() - born);
+    } catch { /* not timeable; the ticket still counts */ }
+    seen.push({ n, pid, alive, ...(dead ? { dead } : {}), sinceMs, position: 0 });
+  }
+  seen.sort((a, b) => a.n - b.n || a.pid - b.pid);
+  let rank = 0;
+  for (const t of seen) if (t.alive) t.position = ++rank;
+  return seen.slice(0, SUITE_QUEUE_MAX);
+}
+
 // One projection for /api/sessions. Returns null when there is nothing to say, so the 2s poll
 // carries four bytes rather than an empty shape (the payload is already the fleet's biggest, see
 // docs/data-saver.md). Prunes as it reads: this is the only reader, so a timer would be a second
@@ -26054,10 +26123,14 @@ function gateView(): GateView | null {
       at: r.at, origin: "server", branch: r.branch });
   }
   const lock = suiteLockView();
-  if (!lock && reports.length === 0) return null;
+  // the waiters are read even when the lock reads free: a ticket outliving its holder by a moment
+  // is exactly the state a reader needs to see, and an empty queue costs one readdir that fails.
+  const queue = suiteQueueView();
+  if (!lock && reports.length === 0 && queue.length === 0) return null;
   // slot order as before; the slotless audit row sorts last rather than first, so the rows that
   // answer "which session" stay where a reader already looks for them.
-  return { lock, reports: reports.sort((a, b) => (a.slot ?? Number.MAX_SAFE_INTEGER) - (b.slot ?? Number.MAX_SAFE_INTEGER)) };
+  return { lock, reports: reports.sort((a, b) => (a.slot ?? Number.MAX_SAFE_INTEGER) - (b.slot ?? Number.MAX_SAFE_INTEGER)),
+    ...(queue.length ? { queue } : {}) };
 }
 // The board's suite meter reads the lanes' helper offers beside the gate: an offer is a suite that is
 // WAITING for a helper or RUNNING on one, and neither shows up in the lock or in the lane's own

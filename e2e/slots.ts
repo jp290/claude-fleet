@@ -1054,9 +1054,8 @@ export async function run(): Promise<void> {
   // the context fill moves every minute, so it belongs to the head's state line, not to a block
   // of founding choices. Source is the evidence — this suite has no DOM.
   const setupSrc = boardSrc.slice(boardSrc.indexOf('el("div", "bsec bsetup")'), boardSrc.indexOf("if (brief) {"));
-  check("client: the setup block names the profile, the session type and the context packs",
+  check("client: the setup block names the profile and the context packs",
     /row\("Profile", setup\?\.profile \?\? "standard"/.test(setupSrc)
-    && /row\("Type", brief\?\.worktree \? "lane" : "repo session"/.test(setupSrc)
     && /const packs = setup\?\.packs \?\? \[\];/.test(setupSrc)
     // a chip is a BUTTON since the packs became openable — the span form was the read-only one
     && /el\("button", "bspack", p\.id\)/.test(setupSrc), "the setup section in renderBoard");
@@ -1112,6 +1111,63 @@ export async function run(): Promise<void> {
   check("client: the cap is drawn only where one exists — without one the row says `no cap`, never 0 of 5",
     /sc\.cap !== null \? `session \$\{sc\.session\} · \$\{sc\.taken \?\? 0\} of \$\{sc\.cap\}`/.test(succSrc)
     && /`session \$\{sc\.session\} · no cap`/.test(succSrc), "the Baton row in renderBoard");
+  // THE SPACE CUT (owner, 2026-09-20: "vllt muss dann noch etwas für platz usw. optimiert
+  // werden"). Three lines left the column, and each of them was a REPETITION or a non-event, never
+  // a fact: the setup block's `Type` row said what the head's own state line says word for word,
+  // the `Packs: none` row spent a line on the ordinary case, and the Checks section drew a headed
+  // "No suite reported" on every session that was not running one. Asserted as ABSENCES, with the
+  // fact each one was standing in for asserted beside it, so a re-added copy trips this.
+  check("client: the session's KIND is said once — the head's state line, not a second Setup row",
+    !/row\("Type",/.test(setupSrc)
+    && /brief\?\.worktree \? "lane" : "repo session"\} in slot \$\{slot\}/.test(boardSrc),
+    "the Type row vs the head's state line");
+  check("client: a session with no packs draws no `none` row — absence is the ordinary case",
+    !/row\("Packs", "none"/.test(setupSrc) && /if \(packs\.length\) \{/.test(setupSrc),
+    "the packs branch in renderBoard");
+  check("client: an empty Checks section is not drawn at all, and a session WITH runs still gets one",
+    /if \(mine\.length\) nodes\.push\(ck\);/.test(boardSrc)
+    && !/No suite reported in the last few minutes/.test(cliSrc),
+    "the Checks section in renderBoard");
+  // WHOSE FACT: every section head carries one word from the closed set, and the two machine
+  // alarms — which have no head of their own — carry it as their first line. A section that
+  // re-appears without one is the confusion this cut exists to end (a fleet number read as a
+  // session number), so the check is over the CALL SITES, not over a sample.
+  check("client: every board section head names its reach — session · repo · machine · fleet",
+    !/appendChild\(el\("h3", "",/.test(boardSrc) && !/el\("h3", "", "Setup"\)/.test(cliSrc)
+    && /boardHead\("Changes", "session"\)/.test(boardSrc) && /boardHead\("Checks", "session"\)/.test(boardSrc)
+    && /boardHead\("History", "repo"\)/.test(boardSrc) && /boardHead\(`Lanes in \$\{baseName\(wts\.repo\)\}`, "repo"\)/.test(boardSrc)
+    && /boardHead\("helper devices", "fleet"\)/.test(cliSrc)
+    && /sec\.appendChild\(scopeTag\("machine"\)\);/.test(cliSrc),
+    "the section heads in renderBoard");
+  check("client: the scope vocabulary is CLOSED — four words, each with a sentence saying what it covers",
+    /type BoardScope = "session" \| "repo" \| "machine" \| "fleet";/.test(cliSrc)
+    && /const SCOPE_TITLE: Record<BoardScope, string>/.test(cliSrc),
+    "BoardScope in src/client.ts");
+  // …and the meter is the FLEET one, which is the whole reason the vocabulary exists. Its head
+  // says so, and where another instance is configured it names the end of its own reach rather
+  // than letting an empty station read as a quiet fleet — FLEET_INSTANCES is a link list, not a
+  // federation, so nothing here can see that fleet's runs.
+  check("client: the suite meter's head carries the fleet scope and names what it CANNOT see",
+    /const scopeTag = el\("span", "bscope", "fleet"\);/.test(cliSrc)
+    && /instanceLinks\.filter\(\(l\) => l\.name !== instanceName\)/.test(cliSrc)
+    && /only`\)/.test(cliSrc) && /not a federation/.test(cliSrc),
+    "renderSuiteMeter's head");
+  // …and the place is the column that may NEVER give way. The row is ~267 px wide at the board's
+  // real width, so something has to: the lane name shrinks, the suite name shrinks, the machine
+  // does not — it is the half a truncated row used to lose. The STATE is not a column at all any
+  // more; it rides the dot and the row's station class, because the tube above already draws it
+  // twice (the ball's position, and the count under its station).
+  check("client: a meter row draws the PLACE in its own span, and that span never shrinks",
+    /el\("span", "smplace", b\.where\)/.test(cliSrc)
+    && /\.smplace \{ flex: none; margin-left: auto;/.test(indexSrc)
+    && /\.smname \{ flex: 0 1 auto;/.test(indexSrc) && /\.smwhat \{ flex: 1 1 auto;/.test(indexSrc),
+    "the meter row + its CSS");
+  check("client: the state is NOT a fourth column — it is the row's station class and its dot",
+    /`smrow tone-\$\{b\.tone\} st-\$\{b\.station\}/.test(cliSrc)
+    && /\.smrow\.st-wait \.smdot \{ background: none;/.test(indexSrc)
+    && !/el\("span", "smwhere", meterState\(b\)\)/.test(cliSrc),
+    "renderSuiteMeter's rows");
+
   // model, effort and the sidebar's ctx CHIP are the row's job — the owner called them redundant in
   // the board on 2026-09-19, and a second copy is exactly what a "misslungener Aufbau" is made of.
   // The 2026-09-20 succession group does not reopen that door: its fill arrives on the BRIEF, paired

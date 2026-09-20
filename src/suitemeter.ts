@@ -22,7 +22,14 @@ export interface MeterBall {
   station: MeterStation;
   slot: number | null;     // null = fleet's own work (the audit) or a holder nobody named
   name: string;            // who: the lane, said the way the sidebar says it
-  what: string;            // which suite / where, one short phrase
+  what: string;            // which suite, one short phrase
+  // WHERE IT RUNS, as a place a reader can go to: this fleet's own instance name (or "this
+  // machine" when the operator never named it) for everything on this box, and the DEVICE name for
+  // anything a helper took. It is its own field and not a tail on `what` because it must never be
+  // the part that gets truncated — "which machine is this running on" is the question the station
+  // alone could only half answer, and a ball waiting for a helper has no place yet ("no helper
+  // yet"), which is a different answer from "here".
+  where: string;
   tone: MeterTone;
   at: number;              // when this row last changed state (server clock)
 }
@@ -33,12 +40,19 @@ export interface Meter { balls: MeterBall[]; lock: MeterLock }
 // module takes only the fields it reads so the e2e caller can hand it plain objects.
 export interface MeterGate {
   lock: { pid: number | null; alive: boolean | null; state?: string } | null;
+  // the wrappers' ticket line at the mutex (server.ts#suiteQueueView). Optional for the usual
+  // wire-tolerance reason: an older server sends none, and absent must read as "not reported",
+  // never as "nobody is waiting".
+  queue?: { n: number; pid: number; alive: boolean; sinceMs: number | null; position: number }[];
   reports: { slot: number | null; label: string | null; phase: string; suite: string;
     exitCode: number | null; at: number; origin?: string; branch?: string | null }[];
 }
 export interface MeterDevice { name: string; claims?: { kind?: string; repo: string; ref: string; expiresAt: number }[] }
 export interface MeterSlot { id: number; label: string | null; branch: string | null }
 export interface MeterInput {
+  // what THIS fleet calls itself (FLEET_INSTANCE). null = the operator named none, and the meter
+  // then says "this machine" rather than inventing a name two hosts could share.
+  instance: string | null;
   gate: MeterGate | null;
   audit: PostLandAuditLiveInfo | null;
   offers: SuiteOfferRow[];
@@ -55,6 +69,7 @@ export function laneTail(branch: string): string {
 
 export function suiteMeter(inp: MeterInput): Meter {
   const balls: MeterBall[] = [];
+  const here = inp.instance ?? "this machine";
   const nameOf = (slot: number | null, label: string | null, branch: string | null): string => {
     const s = slot === null ? undefined : inp.slots.find((x) => x.id === slot);
     const lbl = label ?? s?.label ?? null;
@@ -76,31 +91,48 @@ export function suiteMeter(inp: MeterInput): Meter {
     const tone: MeterTone = r.phase === "done" ? "ok" : r.phase === "failed" ? "red" : "plain";
     const what = r.phase === "failed" && r.exitCode !== null ? `${r.suite} · exit ${r.exitCode}` : r.suite;
     balls.push({ key: `gate:${r.origin ?? "lane"}:${r.slot ?? r.label ?? "-"}:${r.suite}`, station,
-      slot: r.slot, name: nameOf(r.slot, r.label, r.branch ?? null), what, tone, at: r.at });
+      slot: r.slot, name: nameOf(r.slot, r.label, r.branch ?? null), what, where: here, tone, at: r.at });
   }
 
   for (const o of inp.offers) {
     const station: MeterStation = o.state === "open" ? "wait" : o.state === "claimed" ? "helper" : "done";
     const tone: MeterTone = o.state !== "reported" ? "plain"
       : o.result === "green" ? "ok" : o.result === "red" ? "red" : "unknown";
-    const what = o.state === "open" ? "suite offer · no helper yet" : `suite offer · ${o.device ?? "helper"}`;
+    // the PLACE of an offer is the device that took it; an offer nobody claimed is not running
+    // anywhere yet, and saying "here" about it would be the one wrong answer
     balls.push({ key: `offer:${o.slot}:${o.branch}`, station, slot: o.slot,
-      name: nameOf(o.slot, null, o.branch), what, tone, at: o.at });
+      name: nameOf(o.slot, null, o.branch), what: "suite offer",
+      where: o.state === "open" ? "unclaimed" : o.device ?? "helper", tone, at: o.at });
   }
 
   if (auditRuns) {
     const sha = (auditRuns.mainSha ?? "").slice(0, 8);
     const tree = `${auditRuns.main ?? "main"}${sha ? `@${sha}` : ""}`;
     balls.push({ key: "audit:run", station: auditHeld ? "helper" : "run", slot: null, name: "post-land audit",
-      what: auditHeld ? `${tree} · ${auditHeld.device}` : auditRuns.phase === "starting" ? "starting" : tree,
-      tone: "plain", at: auditRuns.startedAt ?? 0 });
+      what: auditRuns.phase === "starting" && !auditHeld ? "starting" : tree,
+      where: auditHeld ? auditHeld.device : here, tone: "plain", at: auditRuns.startedAt ?? 0 });
   } else if (auditHeld) {
     balls.push({ key: "audit:run", station: "helper", slot: null, name: "post-land audit",
-      what: `${auditHeld.claim.ref} · ${auditHeld.device}`, tone: "plain", at: 0 });
+      what: auditHeld.claim.ref, where: auditHeld.device, tone: "plain", at: 0 });
   }
   for (const w of inp.audit?.waiting ?? []) {
     balls.push({ key: `audit:wait:${w.branch}`, station: "wait", slot: null, name: "post-land audit",
-      what: `after ${laneTail(w.branch)}`, tone: "plain", at: w.at });
+      what: `after ${laneTail(w.branch)}`, where: here, tone: "plain", at: w.at });
+  }
+
+  // THE TICKET LINE AT THE MUTEX. Every live ticket is one ball at `wait`, carrying the position
+  // its own wrapper is printing while it sleeps. These are the runs NOBODY ELSE on this surface can
+  // see: a hand-started ./e2e-isolated.sh takes a ticket and files no verify-intent, so without
+  // this the board showed a 20-minute hold with an empty waiting station behind it. A ticket whose
+  // process is gone is kept and SAID to be dead rather than hidden — the wrappers reap it on the
+  // next contention, and until then it is part of what a reader is looking at.
+  const queue = inp.gate?.queue ?? [];
+  const inLine = queue.filter((t) => t.alive).length;
+  for (const t of queue) {
+    balls.push({ key: `queue:${t.n}.${t.pid}`, station: "wait", slot: null, name: "queued suite",
+      what: t.alive ? `position ${t.position} of ${inLine}` : `ticket ${t.n} · its process is gone`,
+      where: here, tone: t.alive ? "plain" : "warn",
+      at: t.sinceMs === null ? 0 : Date.now() - t.sinceMs });
   }
 
   const lk = inp.gate?.lock ?? null;
@@ -111,7 +143,7 @@ export function suiteMeter(inp: MeterInput): Meter {
   if ((lock === "held" || lock === "overdue" || lock === "unknown") && !balls.some((b) => b.station === "run")) {
     balls.push({ key: "lock:holder", station: "run", slot: null, name: "unnamed holder",
       what: lk?.pid === null || lk?.pid === undefined ? "pid unreadable" : `pid ${lk.pid}`,
-      tone: lock === "overdue" ? "warn" : "plain", at: 0 });
+      where: here, tone: lock === "overdue" ? "warn" : "plain", at: 0 });
   }
   return { balls, lock };
 }

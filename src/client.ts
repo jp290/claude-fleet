@@ -1292,6 +1292,34 @@ const boardFolds: Set<string> = (() => {
     return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
   } catch { return new Set(); } // a hand-edited or foreign value is "nothing open", not a crash
 })();
+// --- WHOSE FACT IS THIS? (owner, 2026-09-20: "manche info's z.b die suites, system übergreifend
+// erfassen"). The column mixes four reaches and used to say which for none of them, so a fleet-wide
+// number read as a number about the session under the cursor. One word per section head, from a
+// closed set, and the hover says what the word covers:
+//   session — this pane's own conversation and the work in its tree
+//   repo    — the repository this session sits in: its history, its other lanes, its files
+//   machine — this box: the code that is deployed on it, the errors its server logged
+//   fleet   — this server and every device it lends work to (and, where one exists, the named
+//             end of that reach: another instance is NOT included)
+type BoardScope = "session" | "repo" | "machine" | "fleet";
+const SCOPE_TITLE: Record<BoardScope, string> = {
+  session: "a fact about THIS session — the pane under the cursor, its conversation and the work in its tree",
+  repo: "a fact about the REPOSITORY this session sits in — shared with every other lane in it",
+  machine: "a fact about THIS MACHINE — the same for every session on this box, whatever pane you focus",
+  fleet: "a fact about the WHOLE FLEET — this server and the devices it lends work to",
+};
+function scopeTag(scope: BoardScope): HTMLElement {
+  const t = el("span", "bscope", scope);
+  t.title = SCOPE_TITLE[scope];
+  return t;
+}
+// a section head that carries its own reach: <h3>Title <span class=bscope>session</span></h3>
+function boardHead(title: string, scope: BoardScope): HTMLElement {
+  const h = el("h3", "", title);
+  h.appendChild(scopeTag(scope));
+  return h;
+}
+
 function boardFold(key: string, title: string, count: string | null, fill: (body: HTMLElement) => void): HTMLElement {
   const open = boardFolds.has(key);
   const box = el("div", `bfold${open ? " open" : ""}`);
@@ -1970,6 +1998,9 @@ interface GateInfo {
     nextAction?: string; reason?: string; effect?: string; state?: string } | null;
   reports: { slot: number | null; label: string | null; phase: string; suite: string; exitCode: number | null; at: number;
     origin?: string; branch?: string | null }[];
+  // the ticket line at the machine-wide suite mutex (server.ts#suiteQueueView). Absent from an
+  // older server, and absent then means NOT REPORTED — never "nobody is waiting".
+  queue?: { n: number; pid: number; alive: boolean; dead?: string; sinceMs: number | null; position: number }[];
 }
 let gateInfo: GateInfo | null = null;
 // fmtDur rounds to whole minutes, which reads as "0m" for the first half-minute of a hold — the
@@ -2120,10 +2151,16 @@ let meterSuites: SuiteOfferRow[] = [];
 let meterOpen = localStorage.getItem("fleet.meter.open") === "1";
 const METER_WORD: Record<MeterStation, string> = { wait: "waiting", run: "running", helper: "on helper", done: "done" };
 // a finished ball says HOW it finished — the station alone would call a red run "done"
+// WHAT IT IS DOING, which is not the same question as WHERE (the row's place column). A ball at
+// `helper` is RUNNING — on the machine the place already names — so spelling "on helper" here said
+// the place a second time in the narrowest column on the board. Four states, one of each kind:
+// waiting, running, and the two ways a run can be over.
 const meterState = (b: MeterBall): string =>
-  b.station !== "done" ? METER_WORD[b.station] : b.tone === "red" ? "failed" : b.tone === "unknown" ? "no result" : "passed";
+  b.station === "wait" ? "waiting" : b.station !== "done" ? "running"
+  : b.tone === "red" ? "failed" : b.tone === "unknown" ? "no result" : "passed";
 function meterModel() {
   return suiteMeter({
+    instance: instanceName,
     gate: gateInfo, audit: postLandLive, offers: meterSuites, devices: helperDevicesInfo,
     slots: fleet.filter((s) => s.cwd).map((s) => ({ id: s.id, label: s.label, branch: s.worktree?.branch ?? null })),
   });
@@ -2181,6 +2218,20 @@ function renderSuiteMeter() {
   const hs = helperSummary();
   const devEl = hs ? el("button", "smdev", hs) as HTMLButtonElement : null;
   if (devEl) { devEl.title = "helper devices — open the register"; devEl.onclick = () => devbtn.click(); }
+  // WHOSE FACTS THESE ARE, and the honest end of them. This meter shows this fleet's own runs and
+  // the helpers THIS fleet lends work to. Another instance from the switcher is a separate server
+  // with its own mutex, and FLEET_INSTANCES is a link list, not a federation (docs/harness-adapter
+  // .md: no proxy, no shared token, one fetch in the whole server) — so its runs cannot be seen
+  // from here, and the meter says so instead of letting an empty station read as a quiet fleet.
+  const elsewhere = instanceLinks.filter((l) => l.name !== instanceName);
+  const scopeTag = el("span", "bscope", "fleet");
+  scopeTag.title = "this fleet: its machine-wide suite mutex, the lanes on this box, and the helper devices it lends work to";
+  // …and the named end of that reach, drawn only when another instance exists to be confused with.
+  const scope = elsewhere.length ? el("span", "smscope", `${instanceName ?? "this machine"} only`) : null;
+  if (scope) scope.title = `${elsewhere.map((l) => l.name).join(", ")} `
+    + `${elsewhere.length === 1 ? "is a separate fleet" : "are separate fleets"} with its own suite mutex. `
+    + "The switcher can open it; nothing here can read it — FLEET_INSTANCES is a link list, not a federation, "
+    + "so none of its runs is counted in these numbers and an empty station here says nothing about it.";
   const tog = el("button", `smtog${meterOpen ? " open" : ""}`) as HTMLButtonElement;
   tog.append(el("span", "bchev"), el("span", "smtitle", "Suites"));
   tog.setAttribute("aria-expanded", String(meterOpen));
@@ -2190,7 +2241,7 @@ function renderSuiteMeter() {
     try { localStorage.setItem("fleet.meter.open", meterOpen ? "1" : "0"); } catch { /* the toggle still works for this page */ }
     renderSuiteMeter();
   };
-  meterHead.replaceChildren(tog, lockEl, ...(devEl ? [devEl] : []));
+  meterHead.replaceChildren(tog, scopeTag, lockEl, ...(scope ? [scope] : []), ...(devEl ? [devEl] : []));
 
   // balls: keyed, so one run keeps its element while it moves from station to station
   const seen = new Set<string>();
@@ -2230,10 +2281,17 @@ function renderSuiteMeter() {
     METER_STATIONS.indexOf(a.station) - METER_STATIONS.indexOf(b.station) || a.at - b.at);
   meterRows.replaceChildren(...order.slice(0, METER_ROWS_MAX).map((b) => {
     const mine = b.slot !== null && b.slot === focusSlot;
-    const row = el("button", `smrow tone-${b.tone}${mine ? " mine" : ""}`) as HTMLButtonElement;
+    const row = el("button", `smrow tone-${b.tone} st-${b.station}${mine ? " mine" : ""}`) as HTMLButtonElement;
+    // NAME · WHAT · WHERE, and the row is CLASSED by its station. The state used to be a fourth
+    // column, and it was the one thing this surface already said twice: the ball sits at its
+    // station in the tube above, and the station label under it carries the count. Four columns in
+    // ~267 px meant the LANE NAME was what got cut ("2 · ⎇ demo …"), which is the one thing the
+    // rows exist for — "a lane is NAMED, never cut to three letters". So the state moved onto the
+    // dot (hollow = waiting, filled = running, ringed = how it ended) and into the row's title,
+    // and the place — the half a truncated row used to lose — took its column. (2026-09-20)
     row.append(el("span", "smdot"), el("span", "smname", b.name), el("span", "smwhat", b.what),
-      el("span", "smwhere", meterState(b)));
-    row.title = `${b.name} — ${b.what}${b.slot !== null ? " · click to open the lane" : ""}`;
+      el("span", "smplace", b.where));
+    row.title = `${b.name} — ${b.what} · ${b.where} · ${meterState(b)}${b.slot !== null ? " · click to open the lane" : ""}`;
     const slot = b.slot;
     if (slot !== null && fleet[slot - 1]?.cwd) row.onclick = () => showSlot(slot);
     else row.disabled = true;
@@ -2305,7 +2363,7 @@ function devicesSection(): HTMLElement | null {
   // seen a helper draws nothing at all here.
   if (!helperDevicesInfo.length) return null;
   const sec = el("div", "bsec");
-  sec.appendChild(el("h3", "", "helper devices"));
+  sec.appendChild(boardHead("helper devices", "fleet"));
   for (const d of helperDevicesInfo) sec.appendChild(deviceCard(d));
   return sec;
 }
@@ -2531,6 +2589,8 @@ function deploySection(): HTMLElement | null {
   const bundleDue = bundleStaleInfo?.stale === true;
   if (!codeDue && !bundleDue) return null;
   const sec = el("div", "bsec balert");
+  // no title row of its own, so the reach rides the first line: this is the BOX, not the pane
+  sec.appendChild(scopeTag("machine"));
   if (codeDue) {
     const n = deployGapInfo?.behindCount ?? null;
     const row = el("div", "bstate",
@@ -2570,6 +2630,7 @@ function errorsSection(): HTMLElement | null {
   const e = errorsInfo;
   if (!e) return null;
   const sec = el("div", "bsec balert");
+  sec.appendChild(scopeTag("machine"));
   const many = e.total !== e.distinct;
   const head = el("div", "bstate",
     `⚠ ${e.total} server error${e.total === 1 ? "" : "s"}${many ? ` · ${e.distinct} distinct` : ""}`
@@ -3056,6 +3117,7 @@ async function renderBoard() {
     const idsec = el("div", "bsec bhead");
     const top = el("div", "bheadtop");
     top.appendChild(el("div", "bheadname", s.label ?? baseName(s.cwd)));
+    top.appendChild(scopeTag("session"));
     const mbtn = el("button", `bheadmenu${boardMenuOpen ? " on" : ""}`, "⋯") as HTMLButtonElement;
     mbtn.title = "session actions — share, export, rename, bring the session back";
     mbtn.setAttribute("aria-expanded", String(boardMenuOpen));
@@ -3256,7 +3318,7 @@ async function renderBoard() {
     // block reads the same on every session.
     {
       const su = el("div", "bsec bsetup");
-      su.appendChild(el("h3", "", "Setup"));
+      su.appendChild(boardHead("Setup", "session"));
       const row = (label: string, value: string, title?: string) => {
         const r = el("div", "bsrow");
         r.appendChild(el("span", "bskey", label));
@@ -3279,10 +3341,10 @@ async function renderBoard() {
         setup?.profile === "game-maker" ? "the owner granted this session's program the game-maker profile"
           : setup?.profile === "standard" ? "this session's program runs on the standard profile"
           : "standard by default — this session has no program bracket to grant another profile");
-      // …and what KIND of session holds the pane. The session kinds still to come (fleetWorker,
-      // a session's own config) will be named here; until they exist this invents none.
-      row("Type", brief?.worktree ? "lane" : "repo session",
-        "the kind of session this pane holds — the session kinds still to come will be named here");
+      // THE KIND OF SESSION IS NOT REPEATED HERE. The head's own state line already reads
+      // "lane in slot 2" / "repo session in slot 1", four rows further up the same column, and the
+      // space cut of 2026-09-20 removed the second copy rather than a fact. The session kinds still
+      // to come (fleetWorker, a session's own config) belong on that line too when they exist.
       // model, effort and the context budget are NOT repeated here: they are on the sidebar row
       // for every session at once, and the owner called them redundant in the board (2026-09-19).
       if (s.browser) row("Browser", "Playwright MCP", "this lane was started with the browser tool attached");
@@ -3315,11 +3377,10 @@ async function renderBoard() {
         if (setup?.omitted.length) note.textContent += ` · ${setup.omitted.length} omitted`;
         if (setup?.omitted.length) note.title = setup.omitted.map((o) => `${o.id}: ${o.why}`).join("\n");
         su.appendChild(note);
-      } else {
-        row("Packs", "none", setup?.packsFrom === null || setup === undefined
-          ? "no context packs were delivered to this session and its program declares none"
-          : "no context packs");
       }
+      // no row for "no packs": a session without them is the ordinary case, and a row saying `none`
+      // cost a line on every session to answer a question only a packed one raises. The hover on
+      // the section's own head still says what the block is. (space cut, 2026-09-20)
       const since = brief?.sessionStart ?? s.openedAt ?? null;
       const foot: string[] = [];
       if (since) foot.push(`open ${gateAge(Date.now() - since)}`);
@@ -3336,7 +3397,7 @@ async function renderBoard() {
 
     if (briefErr) {
       const fail = el("div", "bsec bfail");
-      fail.appendChild(el("h3", "", "Changes, history and lanes are missing"));
+      fail.appendChild(boardHead("Changes, history and lanes are missing", "session"));
       fail.appendChild(el("div", "bstate", `The session brief could not be read — ${briefErr}.`));
       fail.appendChild(el("div", "bempty", "This is a failed read, not an empty session. The column keeps "
         + "trying; if it persists, the session's working directory may be gone."));
@@ -3353,7 +3414,7 @@ async function renderBoard() {
       // owner's order (§F4, briefs/ui-next-level-2026-08-06.md): what is still PENDING comes
       // before the history of what is already done, and commits/files below are that history.
       const work = el("div", "bsec");
-      work.appendChild(el("h3", "", "Changes"));
+      work.appendChild(boardHead("Changes", "session"));
       // an interrupted rebase/merge (e.g. a deploy that killed the server mid-land) wedges
       // commit + land here — surface it as an explicit, fixable state, not a silent refusal
       if (brief.gitOp) {
@@ -3594,10 +3655,14 @@ async function renderBoard() {
       // slot is this one. The land's own verify verdict stays with the land above, where it decides.
       {
         const mine = meterModel().balls.filter((b) => b.slot === slot);
+        // NO SUITE, NO SECTION (space cut, 2026-09-20). The sentence this used to draw — "No suite
+        // reported in the last few minutes" — cost a headed section on every session that is not
+        // running one, which is most of them most of the time, and the meter above is the always-on
+        // answer to the same question for the WHOLE fleet. What is kept is the half the meter cannot
+        // guarantee: the meter is capped at six rows, so this section is where THIS session's own
+        // runs are certain to be readable.
         const ck = el("div", "bsec");
-        ck.appendChild(el("h3", "", "Checks"));
-        if (!mine.length) ck.appendChild(el("div", "bempty",
-          "No suite reported in the last few minutes."));
+        ck.appendChild(boardHead("Checks", "session"));
         for (const b of mine) {
           const row = el("div", `bcheck tone-${b.tone}`);
           row.append(el("span", "smdot"), el("span", "bcheckwhat", b.what), el("span", "bcheckstate", meterState(b)));
@@ -3607,7 +3672,7 @@ async function renderBoard() {
           row.title = `${b.what} — ${meterState(b)}`;
           ck.appendChild(row);
         }
-        nodes.push(ck);
+        if (mine.length) nodes.push(ck);
       }
 
       // 3 — COMMITS: the history, and deliberately TWO lists ("vllt beides", owner §F4) — what
@@ -3643,7 +3708,7 @@ async function renderBoard() {
       // HISTORY is one section: the commits this lane/session added, then the files they touched.
       // The project's own commits around it are folded — context, not this session's story.
       const csec = el("div", "bsec");
-      csec.appendChild(el("h3", "", "History"));
+      csec.appendChild(boardHead("History", "repo"));
       const base = brief.laneBase ?? "main";
       if (brief.commits.length) csec.appendChild(el("div", "bsubhead", brief.laneScoped ? `Commits on this lane`
         : brief.sessionStart ? "Commits this session" : "Recent commits"));
@@ -3705,7 +3770,7 @@ async function renderBoard() {
       if (brief.branch) {
         const known = fxTree.get(s.cwd);
         const fx = fileTreeSection(slot, s.cwd);
-        const fhd = el("h3", "", "Files");
+        const fhd = boardHead("Files", "repo");
         if (known && !("error" in known)) fhd.appendChild(el("span", "bsubstat", String(known.total)));
         fx.insertBefore(fhd, fx.firstChild);
         nodes.push(fx);
@@ -3719,13 +3784,13 @@ async function renderBoard() {
       // "die commits und auch die worktree's vllt doch lieber direkt voll einsehen").
       if (wtErr) {
         const lfail = el("div", "bsec bfail");
-        lfail.appendChild(el("h3", "", "Lanes"));
+        lfail.appendChild(boardHead("Lanes", "repo"));
         lfail.appendChild(el("div", "bstate", `The lane map could not be read — ${wtErr}.`));
         nodes.push(lfail);
       }
       if (wts) {
         const lsec = el("div", "bsec");
-        const lhd = el("h3", "", `Lanes in ${baseName(wts.repo)}`);
+        const lhd = boardHead(`Lanes in ${baseName(wts.repo)}`, "repo");
         lhd.appendChild(el("span", "bsubstat", String(wts.worktrees.length)));
         lsec.appendChild(lhd);
         const sec = lsec;

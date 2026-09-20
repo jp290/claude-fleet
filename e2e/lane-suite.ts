@@ -141,7 +141,7 @@ export async function run(): Promise<void> {
   // how its lane is named. The rules are the owner's reading of the meter: one ball per wire row,
   // at the station its run is AT, the lane named so two lanes never read alike.
   {
-    const base: MeterInput = { gate: null, audit: null, offers: [], devices: [], slots: [] };
+    const base: MeterInput = { instance: "oldmac", gate: null, audit: null, offers: [], devices: [], slots: [] };
     const at = (m: ReturnType<typeof suiteMeter>) => m.balls.map((b) => `${b.station}:${b.name}:${b.tone}`).sort().join(" ");
     const none = suiteMeter(base);
     check("(LS.meter) a server that sends no gate yields NO balls and an UNKNOWN lock (null), never 'free'",
@@ -197,9 +197,54 @@ export async function run(): Promise<void> {
         && audit.balls.find((b) => b.station === "wait")?.what === "after 2222", JSON.stringify(audit.balls));
     const onHelper = suiteMeter({ ...base, audit: live,
       devices: [{ name: "second-host", claims: [{ kind: "audit", repo: "claude-fleet", ref: "main", expiresAt: 0 }] }] });
-    check("(LS.meter) an audit a helper holds sits at 'helper' and names the device",
+    check("(LS.meter) an audit a helper holds sits at 'helper' and names the device as its PLACE",
       onHelper.balls.find((b) => b.key === "audit:run")?.station === "helper"
-        && /second-host$/.test(onHelper.balls.find((b) => b.key === "audit:run")?.what ?? ""), JSON.stringify(onHelper.balls));
+        && onHelper.balls.find((b) => b.key === "audit:run")?.where === "second-host", JSON.stringify(onHelper.balls));
+
+    // === WHERE EACH RUN IS (owner, 2026-09-20: the meter is fleet-wide, so every ball must say
+    // which machine it is on). The station answered it only by implication, and the one row that
+    // did name a device carried it in `what`, the field the column truncates first.
+    check("(LS.meter) a run on this box is placed at THIS fleet's own instance name",
+      suiteMeter({ ...base, gate: { lock: null, reports: [rep(2, "running")] } }).balls[0]?.where === "oldmac",
+      JSON.stringify(suiteMeter({ ...base, gate: { lock: null, reports: [rep(2, "running")] } }).balls[0]));
+    // an unnamed fleet says "this machine" rather than inventing a name two hosts could share —
+    // the same rule FLEET_INSTANCE itself follows (src/protocol.ts#instanceNameFrom)
+    check("(LS.meter) a fleet the operator never named places its runs at 'this machine', never at a made-up name",
+      suiteMeter({ ...base, instance: null, gate: { lock: null, reports: [rep(2, "running")] } }).balls[0]?.where === "this machine",
+      JSON.stringify(suiteMeter({ ...base, instance: null, gate: { lock: null, reports: [rep(2, "running")] } }).balls[0]));
+    const placed = suiteMeter({ ...base, offers: [
+      { slot: 5, branch: "fleet/x-aaaa", state: "open", device: null, at: 1, result: null },
+      { slot: 6, branch: "fleet/y-bbbb", state: "claimed", device: "second-host", at: 2, result: null }] });
+    check("(LS.meter) an offer nobody took is placed 'unclaimed' — never at this machine, where it is NOT running",
+      placed.balls.find((b) => b.slot === 5)?.where === "unclaimed"
+        && placed.balls.find((b) => b.slot === 6)?.where === "second-host",
+      JSON.stringify(placed.balls.map((b) => [b.slot, b.where])));
+    check("(LS.meter) every ball carries a place — none is served with an empty one",
+      [...placed.balls, ...suiteMeter({ ...base, audit: live, gate: { lock: { pid: 1, alive: true },
+        reports: [serverAuditRow] } }).balls].every((b) => b.where.length > 0), "a ball with where: ''");
+
+    // === THE TICKET LINE AT THE MUTEX. e2e-stage.sh queues rather than races, and nothing on any
+    // surface said how long that line was: a hand-started ./e2e-isolated.sh takes a ticket and files
+    // no verify-intent, so a 20-minute hold used to be drawn with an empty waiting station behind it.
+    const q = (n: number, pid: number, alive: boolean, position: number, sinceMs: number | null = 1000) =>
+      ({ n, pid, alive, sinceMs, position });
+    const queued = suiteMeter({ ...base, gate: { lock: { pid: 900, alive: true },
+      reports: [], queue: [q(1, 901, true, 1), q(2, 902, true, 2)] } });
+    check("(LS.meter) every live ticket at the mutex is one WAITING ball carrying its own position",
+      queued.balls.filter((b) => b.station === "wait").length === 2
+        && queued.balls.some((b) => b.what === "suite mutex · position 1")
+        && queued.balls.some((b) => b.what === "suite mutex · position 2"),
+      JSON.stringify(queued.balls.map((b) => [b.station, b.what])));
+    // a ticket whose process is gone is the wrappers' to reap, not this reader's to hide: it is
+    // still part of what the directory says, and a silently dropped one would make the line look
+    // shorter than the next contender will find it
+    const orphan = suiteMeter({ ...base, gate: { lock: null, reports: [], queue: [q(3, 903, false, 0)] } });
+    check("(LS.meter) a ticket whose process is gone is SHOWN and said to be gone, never silently dropped",
+      orphan.balls.length === 1 && orphan.balls[0].tone === "warn"
+        && /its process is gone/.test(orphan.balls[0].what), JSON.stringify(orphan.balls));
+    check("(LS.meter) a server that sends no queue draws no waiters — absent is 'not reported', not 'nobody waits'",
+      suiteMeter({ ...base, gate: { lock: { pid: 900, alive: true }, reports: [rep(2, "running")] } })
+        .balls.filter((b) => b.name === "queued suite").length === 0, "a phantom waiter");
   }
 
   if (!REPO) return; // the runner only calls this inside its REPO block, but say so rather than throw

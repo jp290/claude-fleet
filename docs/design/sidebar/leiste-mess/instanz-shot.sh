@@ -3,7 +3,13 @@
 # $1 = source checkout   $2 = label   $3 = port   $4 = tmux socket suffix
 set -e
 SRC="$1"; LABEL="$2"; PORT="$3"; SFX="$4"
-OUT=/private/tmp/claude-501/-Users-owner-claude-fleet-worktrees-fleet-260920104118-733b/a2c78974-84db-4581-93d1-fa640107c06f/scratchpad/shots
+# The output directory is the CALLER's: a scratchpad path baked into this file dies with the
+# session that wrote it, and the next measurement then writes into a directory nobody serves.
+OUT="${SHOT_OUT:?set SHOT_OUT to the directory the images and the budget json go into}"
+# Resolved BEFORE the first `cd`: the two drivers are called from inside the staged instance, where
+# a relative `dirname $0` resolves to nothing and bun answers "Module not found" — not a crash, just
+# two missing files and a run that measured nothing.
+HERE=$(cd "$(dirname "$0")" && pwd -P)
 DIR=$(mktemp -d "${TMPDIR:-/tmp}/fleet-shot-$LABEL-XXXX")
 mkdir -p "$OUT"
 cd "$SRC"
@@ -36,7 +42,11 @@ REAL=$(cd "$SRC" && pwd -P)
   --remote-debugging-port=9222 --user-data-dir="$DIR/chrome" --no-first-run \
   "http://127.0.0.1:$PORT/?token=$TOK" > "$DIR/chrome.log" 2>&1 &
 CHROME=$!
-bun "$(dirname "$0")/cdp-shot.js" "http://127.0.0.1:$PORT/?token=$TOK" "$REAL" "$OUT/$LABEL" || true
+bun "$HERE/cdp-shot.js" "http://127.0.0.1:$PORT/?token=$TOK" "$REAL" "$OUT/$LABEL" || true
+# The area budget is read from the SAME live page, while Chrome is still up and still emulating the
+# last width cdp-shot.js set (1200). Two drivers, one instance: a budget taken against a separately
+# staged instance would be measuring a different fixture than the picture beside it.
+bun "$HERE/flaechenbudget.js" > "$OUT/$LABEL-budget.json" || true
 
 kill "$CHROME" 2>/dev/null || true
 kill "$SRV" 2>/dev/null || true

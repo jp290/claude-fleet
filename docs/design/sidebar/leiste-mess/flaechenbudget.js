@@ -34,36 +34,51 @@ const script = `(() => {
     return w * h;
   };
   const rows = [...document.querySelectorAll("#slots > .slot")];
-  let area = 0, fact = 0, chrome = 0, n = 0, occupied = 0;
+  let area = 0, fact = 0, chrome = 0, mark = 0, n = 0, occupied = 0;
   const per = [];
   for (const row of rows) {
     const rb = row.getBoundingClientRect();
     if (!rb.height) continue;
     const a = rb.width * rb.height;
-    let f = 0, c = 0;
+    let f = 0, c = 0, mk = 0;
     for (const el of row.querySelectorAll("*")) {
       if (el.closest(".slotact") || el.closest(".rowacts")) continue;
       const cls = [...el.classList];
       const eb = el.getBoundingClientRect();
       if (!eb.width || !eb.height) continue;
       if (cls.some((k) => FACT.includes(k))) { const ink = inkOf(el); f += ink; c += Math.max(0, eb.width * eb.height - ink); }
-      else if (cls.some((k) => CHROME_EL.includes(k))) c += eb.width * eb.height;
+      else if (cls.some((k) => CHROME_EL.includes(k))) {
+        c += eb.width * eb.height;
+        // The mark's gutter is priced SEPARATELY as well as inside chrome: it is the one reserved
+        // area the owner asked for a number on before anyone is allowed to touch it.
+        if (cls.includes("mark")) mk += eb.width * eb.height;
+      }
     }
     const bw = parseFloat(getComputedStyle(row).borderTopWidth) || 0;
     c += bw * 2 * (rb.width + rb.height);
-    area += a; fact += f; chrome += c; n++;
+    area += a; fact += f; chrome += c; mark += mk; n++;
     if (!row.classList.contains("empty")) occupied++;
-    per.push({ h: Math.round(rb.height), a: Math.round(a), f: Math.round(f), c: Math.round(c) });
+    // Lever 4 ("the won space goes to the label") is only provable if the label's SHORTFALL is a
+    // number: how many px the label would need beyond the width it was given before the ellipsis
+    // stops appearing. 0 = the name is on screen in full.
+    const lblEl = row.querySelector(".lbl");
+    const lblShort = lblEl ? Math.max(0, Math.round(lblEl.scrollWidth - lblEl.clientWidth)) : 0;
+    per.push({ lblW: lblEl ? Math.round(lblEl.clientWidth) : 0, lblShort, kind: row.classList.contains("empty") ? "free" : row.classList.contains("lane") ? "lane" : "session",
+      h: Math.round(rb.height), w: Math.round(rb.width),
+      a: Math.round(a), f: Math.round(f), c: Math.round(c), mark: Math.round(mk) });
   }
   const bar = document.getElementById("slots").getBoundingClientRect();
   return JSON.stringify({
     rows: n, occupied, barW: Math.round(bar.width), barH: Math.round(bar.height),
     rowsVisibleInBar: rows.filter(r => { const b = r.getBoundingClientRect();
       return b.top >= bar.top - 1 && b.bottom <= bar.bottom + 1; }).length,
-    area: Math.round(area), fact: Math.round(fact), chrome: Math.round(chrome),
+    area: Math.round(area), fact: Math.round(fact), chrome: Math.round(chrome), mark: Math.round(mark),
+    markPct: +(100 * mark / area).toFixed(2),
     empty: Math.round(area - fact - chrome),
     factPct: +(100 * fact / area).toFixed(2), chromePct: +(100 * chrome / area).toFixed(2),
     emptyPct: +(100 * (area - fact - chrome) / area).toFixed(2),
+    lblClipped: per.filter(p => p.lblShort > 0).length,
+    lblShortTotal: per.reduce((t, p) => t + p.lblShort, 0),
     medianRowH: per.map(p => p.h).sort((x, y) => x - y)[Math.floor(per.length / 2)],
     per });
 })()`;

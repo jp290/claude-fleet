@@ -17224,6 +17224,73 @@ function migrateRailOf(s: Slot): MigrateRail {
   return isGameMaker(bound.program) ? "game-maker-main" : "standard-main";
 }
 
+// --- WHAT THE SUCCESSION RAIL HAS ALREADY DONE WITH THIS SESSION, read for the board -------------
+// The four facts the head shows without a click (owner, 2026-09-20: the succession numbers belong
+// in the identity block). Until now every one of them lived inside this file and reached nobody: a
+// reader could see a session at 61 % and still not tell whether anything happens at 40, how often
+// the server had already said so, which exit it would be told to take, or how much of the row's lid
+// the line had spent. All four are READ here and nothing is decided — tickMigrate and succeedLane
+// remain the only writers.
+//
+// THE THRESHOLD IS THE EFFECTIVE ONE, never the raw env. FLEET_MIGRATE_PCT = 0 leaves tickMigrate
+// unregistered (the setInterval at the bottom of this file), which turns the LANE rail's own 40 off
+// with it; a board printing 40 there would name a gate that cannot fire. Every other `off` reason
+// is one of the tick's own skips, in the order the tick applies them.
+type ThresholdOff = "steward" | "waiting" | "unpinned" | "harness" | "fleet" | "rail";
+interface SuccessionFacts {
+  rail: "lane" | MigrateRail;
+  // the measurement the threshold is compared against — contextFill, the one the nudge quotes.
+  // null = it could not answer (no pinned conversation, no usage record, no nameable window), and
+  // never 0: a zero fill is a measurement.
+  fill: ContextFill | null;
+  thresholdPct: number | null;
+  thresholdOff: ThresholdOff | null;
+  // nudges DELIVERED to THIS conversation. migrateTried is keyed by sessionId and process-local, so
+  // a restart honestly forgets them instead of carrying automation intent into a new process — which
+  // means 0 here reads "none since this server booted", the same bargain successionReasonFor makes.
+  nudges: number; nudgedAt: number | null; gaveUp: boolean; maxNudges: number;
+  // which session of this line holds the pane (the founding one is 1), and how much of the lid the
+  // line has spent. `taken`/`cap` are null where no lid exists to spend: FLEET_LANE_SUCCEED_MAX is
+  // keyed by originId, so a hand-opened lane has no row to count against, and the main rails have
+  // no cap at all.
+  session: number; taken: number | null; cap: number | null;
+}
+function successionThresholdOff(s: Slot, lane: boolean): ThresholdOff | null {
+  if (s.label === STEWARD_LABEL) return "steward";
+  if (s.awaiting === "owner") return "waiting";
+  if (!s.sessionId) return "unpinned";
+  if (harnessOf(s.harness) !== CLAUDE_HARNESS) return "harness";
+  if (MIGRATE_PCT <= 0) return "fleet";        // the master switch: no tick is registered at all
+  if ((lane ? LANE_MIGRATE_PCT : MIGRATE_PCT) <= 0) return "rail";
+  return null;
+}
+function successionFacts(s: Slot): SuccessionFacts {
+  const lane = s.worktree !== null;
+  const off = successionThresholdOff(s, lane);
+  const attempt = migrateTried.get(s.id);
+  // the record counts only while it names THIS conversation, exactly as the tick reads it: a /clear
+  // or a non-resumable respawn is a fresh budget, and reporting the old count against a new session
+  // would be a nudge history for a conversation that never received one.
+  const mine = attempt && attempt.sessionId === s.sessionId ? attempt : null;
+  // the line's length: a lane counts its batons on the slot (laneSuccessions, persisted), a main
+  // counts the handover records addressed to its line. No line yet = this is the founding session.
+  const line = lane ? s.laneSuccessions : lineageStateOf(s)?.line.length ?? 0;
+  const taken = lane && s.originId ? laneSucceedCounts.get(s.originId) ?? 0 : null;
+  return {
+    rail: lane ? "lane" : migrateRailOf(s),
+    fill: contextFill(s),
+    thresholdPct: off ? null : lane ? LANE_MIGRATE_PCT : MIGRATE_PCT,
+    thresholdOff: off,
+    nudges: mine?.nudges ?? 0,
+    nudgedAt: mine?.lastAt ? mine.lastAt : null,
+    gaveUp: mine?.gaveUp ?? false,
+    maxNudges: MIGRATE_MAX_NUDGES,
+    session: line + 1,
+    taken,
+    cap: lane && s.originId && FLEET_LANE_SUCCEED_MAX > 0 ? FLEET_LANE_SUCCEED_MAX : null,
+  };
+}
+
 function migrateMessage(fill: ContextFill, rail: MigrateRail): string {
   const opening = `[fleet] Dein Kontext ist bei ${fill.pct}% (${fill.usedTokens} von ${fill.windowTokens} Tokens im Fenster). `
     + "Das ist ein Server-Prädikat, keine Meldung von dir. Übergib jetzt in dieser Reihenfolge: ";
@@ -35803,8 +35870,10 @@ Bun.serve<WSData>({
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       const p = await briefPayload(s);
       if (!p) return json({ error: "not a git repository" }, 400);
-      // …and the non-git half: what this session was BUILT from (profile + delivered packs)
-      return json({ ...p, worktree: s.worktree, setup: await sessionSetup(s, p.branch) });
+      // …and the non-git half: what this session was BUILT from (profile + delivered packs), plus
+      // what the succession rail has already done with it (successionFacts — read-only).
+      return json({ ...p, worktree: s.worktree, setup: await sessionSetup(s, p.branch),
+        succession: successionFacts(s) });
     }
     // lane map: every open worktree of the focused slot's repo, including ORPHANS (worktrees whose slot
     // was killed). Works from lane slots too: `worktree list` from a linked worktree covers the repo.

@@ -14,6 +14,17 @@ const PATHS = {
   history: ["M3.5 12a8.5 8.5 0 1 0 2.5-6", "M3.5 4v4h4", "M12 7.5v4.7l3 1.8"],
   clock: ["M20.5 12a8.5 8.5 0 1 1-17 0a8.5 8.5 0 1 1 17 0z", "M12 7.5v4.7l3 1.8"],
   keys: ["M3 6.5h18v11H3z", "M7 10h.01", "M10.3 10h.01", "M13.7 10h.01", "M17 10h.01", "M8 14h8"],
+  // THE HEAD ROW'S SET — scaffolding for the three Fassungen of #sidetools (client.ts,
+  // HEAD_VARIANT). Same 24-unit box, stroke 1.8, currentColor as everything above, so an icon
+  // row in the bar and the tray under the composer read as one grammar.
+  list: ["M4 7h3", "M4 12h3", "M4 17h3", "M10 7h10", "M10 12h10", "M10 17h10"],
+  megaphone: ["M4 10v4a1 1 0 0 0 1 1h3l6 4V5L8 9H5a1 1 0 0 0-1 1z", "M17.5 9a4 4 0 0 1 0 6"],
+  inbox: ["M4 13h4l1.5 3h5L16 13h4", "M4 13l2.5-7.5h11L20 13v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"],
+  shield: ["M12 3.5l7 2.5v5.5c0 4-3 7-7 9-4-2-7-5-7-9V6z"],
+  receipt: ["M6 3.5h12v17l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5z", "M9 8h6", "M9 12h6"],
+  laptop: ["M5.5 6h13v9h-13z", "M3 18.5h18"],
+  saver: ["M12 20a8 8 0 1 1 8-8", "M12 12l4.5-3.5", "M12 20v.01"],
+  dots: ["M6 12h.01", "M12 12h.01", "M18 12h.01"],
 } as const;
 
 export type IconName = keyof typeof PATHS;

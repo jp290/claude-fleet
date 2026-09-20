@@ -150,7 +150,7 @@
   /* The bar's own side padding and the row's used to sit on top of each other: 8 + 10 on each side,
      36px of a 249px column spent before a single character. 5 + 8 keeps the rows off the edge and
      off the scrollbar and gives the 10px back to the one element that is flex:1 — the label. */
-  #slots { flex: 1; overflow-y: auto; padding: 4px 5px 8px; display: flex; flex-direction: column; gap: 2px; }
+  #slots { flex: 1; overflow-y: auto; padding: 4px 5px 8px 2px; display: flex; flex-direction: column; gap: 2px; }
   /* A ROW IS TWO LINES now. Line 1 (.r1) is address · label · state and everything that asks for a
      decision; line 2 (.r2) carries the two facts the row used to say only in colour and brightness
      — which checkout, and how long since it last spoke. `flex: none` stays: a row that can be
@@ -160,7 +160,7 @@
      reads as one object. 5/6/1 keeps the rows apart (the 2px gap in #slots does that) and hands
      the difference back to the axis. What it CANNOT reach is the 26px gutter itself: the mark's
      reservation is the floor under line 1, and it is not this cut's to move — see the report. */
-  .slot { position: relative; flex: none; display: block; padding: 5px 8px 6px;
+  .slot { position: relative; flex: none; display: block; padding: 5px 8px 6px 6px;
     border-radius: 12px; border: 1px solid transparent; cursor: pointer; font-size: var(--chat-fs);
     color: var(--chat-prose); user-select: none; -webkit-user-select: none; --rb: var(--c-hover); }
   .slot:hover, .slot:focus-within { background: var(--c-hover); }
@@ -203,7 +203,7 @@
      900px window at place 15. The gutter's WIDTH stays (the numbers of free and occupied places
      must keep standing on one left edge); only its height gives way, and only where there is no
      session for a mark to stand for. */
-  .slot.empty { padding: 3px 8px 4px; }
+  .slot.empty { padding: 3px 8px 4px 6px; }
   .slot.empty .mark { height: 16px; }
   .slot .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     letter-spacing: -0.005em; }

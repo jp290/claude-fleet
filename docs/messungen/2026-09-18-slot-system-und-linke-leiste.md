@@ -169,6 +169,39 @@ Geprüft: Headless-Chrome meldet `data-brush="shader"`, der Shader läuft also d
 Bewegung, Safari auf iOS (dort ignoriert Safari `background-attachment: fixed`; das Licht steht dann
 still, die Platte bleibt korrekt).
 
+### 3.2c Fassung 5: die Sprache der App statt eines erfundenen Materials (`docs/design/sidebar/v5.html`)
+
+Owner 2026-09-19/20 zu Fassung 4 (Edelstahl): „ansich schon nicht schlecht", aber „ich denke nicht
+dass es so zu unserem restlichen Layout passt … sehr minimalistisch übersichtlich und AA
+Indie-professional like". Der Fehler der Fassungen 3 und 4 war derselbe: beide erfanden ein Material
+UND ein Schriftsystem (Eloxal/Stahl, DIN/Avenir), statt die Sprache zu benutzen, die die App spricht.
+Fassung 5 baut die Leiste aus den Bauteilen, die in `public/index.html` schon stehen:
+
+| Element | Herkunft in der laufenden App |
+|---|---|
+| Token (`--text`, `--dim`, `--faint`, `--accent`, `--focus`, `--amber`, `--danger`, `--proj-s/l`) | `public/index.html:328-333` |
+| Schrift `ui-monospace, Menlo, Consolas`, Zeile 12 px, Nebenzeile 10.5 px | `public/index.html:18`, `.slot` 124-126, `.stackn` 344 |
+| Kasten = die Slot-Zeile: Radius 8, 1px Rahmen, Hover `#242424`, gewählt `#26314f` + `--focus` | `public/index.html:124-129` |
+| Repo-Farbe als 3-px-Kante links (Session) bzw. 2 px (Lane), nie als Fläche | `.slot.proj` 334-335, `.slot.lane` 294 |
+| Lane-Name `3A` als Chip im Repo-Ton auf 16 % | `.stackn` 344-346 |
+| Lanes 10 px eingerückt unter ihrem Kasten | `.slot.stacked` 349 |
+| Zustand als 7-px-Punkt (grün `#3fb950` = arbeitet) | `.slot .act` / `.act.hot` 134-135 |
+| Bandnummer in 16-px-Spalte, `--accent`, frei = `#555` | `.slot .n` 130-133 |
+| Leiste 228 px / eingeklappt 50 px, `#1a1a1a`, `--line-soft` rechts | `public/index.html:73-74, 146-152` |
+| kein Übergang bei Hover/Auswahl (die App hat keinen) | Bericht §7: in `.slot` kein `transition` |
+
+Eigene Zutaten (mein Geschmack, kein Owner-Satz): die zweite Zeile mit Repo, Modell und Ruhezeit in
+`--faint`; die 2-px-Füllstandsnut an der Unterkante mit dem Strich bei 25 %; die Rolle (`main`) als
+Chip. Die Übergabe bleibt die EINZIGE Bewegung: der Vorgänger wird still (Opazität .62, graue Kante),
+der neue fährt in 0,5 s von rechts ein und blitzt einmal in `--accent` auf — derselbe Ring, den die
+App für `paneflash` benutzt (`public/index.html:177`).
+
+Geprüft an 2x-Bildern: volle Belegung, Übergabe schmal und breit, eingeklappt, Handy, dazu
+`public/index.html` selbst headless gerendert als Vergleich derselben Schrift und Flächen. Zwei
+Fehler dabei gefunden und behoben: `--tint` auf `:root` rechnet mit dem dort fehlenden `--h` und
+färbte alle Chips rot (die hsl()-Formel steht jetzt in jeder Regel, wie in der App auch); und in der
+breiten Ansicht stand das Band am rechten Ende, sodass der älteste Vorgänger abgeschnitten war.
+
 ### 3.3 Erschlossen, nicht gemessen
 
 - „wartet auf dich" und „fertig" haben heute kein eigenes Feld im Slot-Teil von `/api/sessions`

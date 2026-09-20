@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fleet · linke Leiste · Fassung 5</title>
+<!-- Statisches Mockup zu docs/messungen/2026-09-18-slot-system-und-linke-leiste.md, Fassung 5.
+     MODELL unveraendert (Fassung 2, vom Owner bestaetigt): Band = Slot-Nummer, Uebergabe ergraut den
+     Kasten und faehrt den neuen rechts davon ein, Lanes heissen 3A/16B, freie Plaetze bleiben nummeriert.
+     NEU: kein erfundenes Material und keine erfundene Schrift mehr. Jeder Token unten steht so in
+     public/index.html der laufenden App; die Fundstellen stehen am jeweiligen Block.
+     Daten: GET /api/sessions vom 2026-09-18, geschwaerzt. Kein Produktcode. -->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  /* Token 1:1 aus public/index.html #:root (Zeile 8-13 dort) */
+  :root {
+    --text: #ccc; --dim: #888; --faint: #666;
+    --raised: #262626; --line: #333; --line-soft: #2a2a2a;
+    --accent: #7aa2f7; --sel: #2c3a5e; --focus: #3a4a7a;
+    --amber: #e0af68; --add: #9ece6a; --del: #f7768e; --danger: #f85149;
+    --proj-s: 58%; --proj-l: 72%;
+    --ease: cubic-bezier(.2, .7, .2, 1);
+    --peek: 18px;          /* so viel vom Vorgaenger bleibt in der schmalen Leiste stehen */
+  }
+  /* body-Schrift wie die App: ui-monospace, nichts wird nachgeladen (public/index.html Z. 18) */
+  html, body { height: 100%; background: #141414; color: var(--text);
+    font: 12px/1.35 ui-monospace, Menlo, Consolas, monospace; overflow: hidden; -webkit-text-size-adjust: 100%; }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  #app { display: flex; height: 100dvh; }
+
+  /* Leiste: 228px, #1a1a1a, rechte Trennlinie --line-soft (public/index.html Z. 73-74) */
+  #side { width: 228px; flex: none; display: flex; flex-direction: column; background: #1a1a1a;
+    border-right: 1px solid var(--line-soft); transition: width .2s var(--ease); }
+  #sidehead { display: flex; align-items: center; gap: 8px; padding: 10px 10px 6px; font-size: 12px; font-weight: 700; color: #e8e8e8; }
+  #sidetitle { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #sidehead button { flex: none; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--raised); color: var(--dim); font-size: 13px; display: flex; align-items: center; justify-content: center; line-height: 1; }
+  #sidehead button:hover { color: var(--text); }
+  #sidehead button.on { color: var(--accent); border-color: var(--focus); }
+  #bands { flex: 1; overflow-y: auto; padding: 4px 7px; display: flex; flex-direction: column; gap: 3px; }
+
+  /* EIN BAND. Links die Nummer in einer 16px-Spalte (wie .slot .n, public/index.html Z. 132),
+     rechts der Streifen, auf dem die Kaesten laufen. Das Band selbst wird nicht gezeichnet. */
+  .band { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 5px; }
+  .n { padding-top: 6px; color: var(--accent); font-weight: 700; text-align: right; user-select: none; font-variant-numeric: tabular-nums; }
+  .band.free .n { color: #555; font-weight: 400; }
+  .strip { display: flex; gap: 3px; align-items: flex-start; overflow-x: auto; scrollbar-width: none; }
+  .strip::-webkit-scrollbar { display: none; }
+  .col { flex: 0 0 100%; min-width: 0; }
+  .band.haspast .col { flex-basis: calc(100% - var(--peek) - 3px); }
+
+  /* EIN KASTEN ist die Zeile der App: Radius 8, 1px Rahmen, Hover #242424, gewaehlt #26314f mit
+     --focus-Rahmen (public/index.html Z. 128-131), und links die 3px-Kante im Repo-Ton
+     (.slot.proj, Z. 14-15 dort). Keine Verlaeufe, keine Schatten, kein Material. */
+  .box { position: relative; display: block; width: 100%; padding: 6px 9px 7px; border-radius: 8px;
+    border: 1px solid transparent; border-left: 3px solid hsl(var(--h, 0) var(--proj-s) var(--proj-l) / .8);
+    background: #1e1e1e; cursor: pointer; overflow: hidden; text-align: left; transition: opacity .45s; }
+  .box:hover { background: #242424; border-left-color: hsl(var(--h, 0) var(--proj-s) var(--proj-l)); }
+  .box.sel { background: #26314f; border-color: var(--focus); border-left-color: hsl(var(--h, 0) var(--proj-s) var(--proj-l)); }
+  .box.bad { border-color: #5a2a28; }
+  .box.bad.sel { border-color: var(--danger); }
+
+  .r1 { display: flex; align-items: center; gap: 7px; }
+  .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .box.sel .lbl { color: #dbe6ff; }
+  /* Rolle als Chip wie .stackn (public/index.html Z. 20-23): Repo-Ton auf 16 % derselben Farbe */
+  .chip { flex: none; font-size: 10.5px; font-weight: 700; padding: 0 4px; border-radius: 4px;
+    color: hsl(var(--h, 0) var(--proj-s) var(--proj-l)); background: hsl(var(--h, 0) var(--proj-s) var(--proj-l) / .16); }
+  .pct { flex: none; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; } /* tabular wie .ctxfill/.laneref */
+  .pct.warn { color: var(--amber); }
+  /* zweite Zeile: die stillen Fakten, --faint wie die Nebeninfos der App */
+  .r2 { display: flex; gap: 7px; margin-top: 2px; font-size: 10.5px; color: var(--faint); }
+  .r2 .repo { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Fuellstand: 2px an der Unterkante, ein Strich bei 25 % (die Uebergabe-Schwelle des Owners,
+     nur fuer claude-Sessions). Flach, in der Farbe der App, kein Verlauf. */
+  .ctx { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: #242424; }
+  .ctx i { position: absolute; left: 0; top: 0; bottom: 0; background: #3a3a3a; }
+  .ctx.warn i { background: var(--amber); }
+  .ctx.mark::after { content: ""; position: absolute; left: 25%; top: 0; bottom: 0; width: 1px; background: #4a4a4a; }
+
+  /* ZUSTAND: der 7px-Punkt der App (.slot .act, Z. 134-135), pro Zustand eine Form UND eine Farbe */
+  .st { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #3a3a3a; }
+  .st.work { background: #3fb950; }
+  .st.need { border-radius: 1px; background: var(--amber); transform: rotate(45deg); }
+  .st.done { border-radius: 1px; background: var(--accent); }
+  .st.bad { border-radius: 0; background: var(--danger);
+    clip-path: polygon(20% 0, 50% 30%, 80% 0, 100% 20%, 70% 50%, 100% 80%, 80% 100%, 50% 70%, 20% 100%, 0 80%, 30% 50%, 0 20%); }
+
+  /* LANES: die Stapel-Grammatik der App — 10px eingerueckt (.slot.stacked, Z. 25) und der Name als
+     Chip (.stackn). `3A` ist der ganze Name, es gibt keine zweite Nummer. */
+  .lanes { display: flex; flex-direction: column; gap: 3px; margin-top: 3px; padding-left: 10px; }
+  .lg { display: flex; gap: 3px; min-width: 0; }
+  .lane { position: relative; flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px;
+    padding: 4px 8px 5px; border-radius: 7px; border: 1px solid transparent;
+    border-left: 2px solid hsl(var(--h, 0) var(--proj-s) var(--proj-l) / .7); background: #1c1c1c;
+    cursor: pointer; overflow: hidden; white-space: nowrap; font-size: 11.5px; text-align: left;
+    transition: flex-basis .4s var(--ease), padding .4s, opacity .4s; }
+  .lane:hover { background: #242424; }
+  .lane.sel { background: #26314f; border-color: var(--focus); }
+  .lane .ref { flex: none; font-size: 10.5px; font-weight: 700; padding: 0 4px; border-radius: 4px;
+    color: hsl(var(--h, 0) var(--proj-s) var(--proj-l)); background: hsl(var(--h, 0) var(--proj-s) var(--proj-l) / .16); }
+  .lane .ctx { height: 1.5px; }
+  /* auch eine Lane uebergibt: der Vorgaenger schrumpft auf einen Stummel, der neue steht rechts davon */
+  .lane.past { flex: 0 0 12px; padding: 4px 2px; opacity: .5; }
+  .lane.past > :not(.st) { display: none; }
+  .lane.gone { animation: gone .3s var(--ease) forwards; }
+  @keyframes gone { to { opacity: 0; transform: scale(.94); } }
+
+  /* DER VORGAENGER bleibt ein ganzer Kasten und wird still: graue Kante, gedaempfte Schrift.
+     In der schmalen Leiste schaut er 18px hervor; ein Klick fährt das Band zu ihm zurueck. */
+  .col.past .box { background: #1a1a1a; border-left-color: #3a3a3a; opacity: .62; }
+  .col.past .box:hover { opacity: .9; background: #212121; }
+  .box.greying { background: #1a1a1a; border-left-color: #3a3a3a; opacity: .62; }
+  #side:not(.wide) .band:not(.peeking) .col.past .box > * { visibility: hidden; }
+
+  /* DER EINE MOMENT: die Uebergabe. Der alte Kasten wird still, der neue faehrt von rechts aufs Band
+     und blitzt einmal in --focus auf (derselbe Rahmen, den die App fuer „hier bist du" benutzt). */
+  .col.arrive { flex-basis: 0 !important; opacity: 0; }
+  .col.arrive.in { flex-basis: calc(100% - var(--peek) - 3px) !important; opacity: 1;
+    transition: flex-basis .5s var(--ease), opacity .35s .1s; }
+  #side.wide .col.arrive.in { flex-basis: 196px !important; }
+  .spark { animation: spark 1.1s ease-out; }
+  @keyframes spark { 0% { box-shadow: 0 0 0 1px var(--accent); } 100% { box-shadow: 0 0 0 1px transparent; } }
+  .lane.arrive { animation: arrive .4s var(--ease); transform-origin: left center; }
+  @keyframes arrive { from { opacity: 0; transform: scaleX(.4); } }
+
+  /* FREIER PLATZ: dieselbe Zeile, nur leer — Nummer dim, Text erst beim Zeigen (.slot.empty, Z. 133) */
+  .band.free .box { background: none; border-left-color: transparent; color: #555; padding: 5px 9px 6px; }
+  .band.free .box:hover { background: #202020; color: var(--dim); }
+  .band.free .box span { opacity: 0; transition: opacity .15s; }
+  .band.free .box:hover span, .band.free .box:focus-visible span { opacity: 1; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  /* BREIT: das ganze Band, alle Vorgaenger als Kaesten nebeneinander */
+  #side.wide { width: min(880px, calc(100vw - 340px)); }
+  #side.wide .col, #side.wide .band.haspast .col { flex-basis: 196px; }
+  #side.wide .band.free .box { max-width: 196px; }
+  /* EINGEKLAPPT: 50px, Nummer und Zustand, je Lane ein Punkt (public/index.html Z. 146-152) */
+  #side.collapsed { width: 50px; }
+  #side.collapsed #sidetitle, #side.collapsed #widen, #side.collapsed .col.past, #side.collapsed .r2,
+  #side.collapsed .lbl, #side.collapsed .chip, #side.collapsed .pct, #side.collapsed .ctx,
+  #side.collapsed .lane > :not(.st), #side.collapsed .band.free .box span { display: none; }
+  #side.collapsed #sidehead { padding: 10px 0 6px; justify-content: center; }
+  #side.collapsed #bands { padding: 4px 4px; }
+  #side.collapsed .band { grid-template-columns: 14px minmax(0, 1fr); column-gap: 3px; }
+  #side.collapsed .n { padding-top: 7px; }
+  #side.collapsed .col { flex-basis: 100% !important; }
+  #side.collapsed .box { padding: 7px 2px; display: flex; justify-content: center; }
+  #side.collapsed .lanes { flex-direction: row; flex-wrap: wrap; gap: 3px; padding-left: 0; justify-content: center; }
+  #side.collapsed .lg { flex: none; } #side.collapsed .lane.past { display: none; }
+  #side.collapsed .lane { flex: none; padding: 2px; border: 0; background: none; }
+
+  /* Buehne rechts: Erklaerung und Schalter, nicht Teil des Entwurfs */
+  #stage { flex: 1; min-width: 0; padding: 22px 26px; overflow-y: auto; }
+  #stage > * { max-width: 620px; }
+  #pane { border: 1px solid var(--line-soft); border-radius: 10px; padding: 14px 16px; background: #181818; }
+  #pane h1 { font-size: 13px; color: #e8e8e8; } #pane p { margin-top: 6px; color: var(--dim); max-width: 66ch; line-height: 1.5; }
+  #pane code { color: #a9c1f5; }
+  .ctl { margin-top: 18px; } .ctl h2 { font-size: 10px; color: #777; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; margin: 16px 0 6px; }
+  .ctl .row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ctl button, .ctl a { padding: 6px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--raised);
+    color: var(--text); font-size: 11.5px; text-decoration: none; }
+  .ctl button:hover, .ctl a:hover { border-color: var(--focus); }
+  #legend { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--dim); font-size: 11.5px; }
+  #legend div { display: flex; align-items: center; gap: 8px; }
+  #tip { position: fixed; z-index: 9; max-width: 270px; padding: 7px 9px; border-radius: 7px; background: #181818;
+    border: 1px solid var(--line); box-shadow: 0 8px 22px #000a; font-size: 11px; color: var(--text);
+    pointer-events: none; opacity: 0; transition: opacity .1s; white-space: pre-line; }
+
+  /* Handy: die Leiste ist die Schublade der App (public/index.html Z. 1431-1440), Zeilen in Daumenhoehe */
+  body.phone #app { width: 390px; height: min(844px, 100dvh); margin: 0 auto; border: 1px solid var(--line); border-radius: 22px; overflow: hidden; }
+  body.phone #side { width: 100%; border: 0; } body.phone #stage, body.phone #widen { display: none; }
+  body.phone #bands { padding: 6px 10px; gap: 5px; }
+  body.phone .box { padding: 9px 10px 11px; font-size: 13.5px; } body.phone .r2 { font-size: 11.5px; }
+  body.phone .lane { padding: 8px 9px 9px; font-size: 12.5px; } body.phone .n { padding-top: 9px; font-size: 13px; }
+  #back { display: none; position: fixed; right: 14px; bottom: 14px; padding: 8px 12px; border-radius: 8px;
+    border: 1px solid var(--focus); background: var(--sel); color: #dbe6ff; }
+  body.phone #back { display: block; }
+  @media (max-width: 700px) { #stage, #widen { display: none; } #side { width: 100%; border: 0; } }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side" aria-label="Sessions">
+    <div id="sidehead"><button id="collapse" title="ein- und ausklappen">‹</button><span id="sidetitle">Fleet</span><button id="widen" title="ganze Bänder zeigen">⇥</button></div>
+    <div id="bands"></div>
+  </aside>
+  <main id="stage">
+    <div id="pane"></div>
+    <div class="ctl">
+      <h2>Was passiert, wenn</h2>
+      <div class="row">
+        <button data-do="succeed">die gewählte Session oder Lane übergibt</button>
+        <button data-do="lane">am gewählten Band eine Lane startet</button>
+        <button data-do="land">eine Lane landet</button>
+        <button data-do="red">etwas rot wird</button>
+        <button data-do="full">alle 16 Plätze belegt sind</button>
+        <button data-do="reset">zurück zum Live-Stand</button>
+      </div>
+      <h2>Ansicht</h2>
+      <div class="row"><button data-do="wide">breit: ganze Bänder</button><button data-do="collapse">eingeklappt</button><button data-do="phone">Handy</button><a href="v4.html">Fassung 4 zum Vergleich</a></div>
+      <h2>Zustände</h2>
+      <div id="legend">
+        <div><i class="st work"></i>arbeitet</div><div><i class="st need"></i>wartet auf dich</div><div><i class="st done"></i>fertig, landbar</div>
+        <div><i class="st bad"></i>rot</div><div><i class="st"></i>ruht</div>
+      </div>
+    </div>
+  </main>
+</div>
+<button id="back" data-do="phone">Desktop</button>
+<div id="tip"></div>
+<script>
+// Live-Stand 2026-09-18 (GET /api/sessions), geschwaerzt; identisch zu den Fassungen davor.
+const LIVE = () => ({
+  2: { repo: "privat-1", cols: [{ label: "Privat", model: "", pct: 14.1, claude: true, idle: "84 min", git: "main ↑51 ●2", st: "rest" }], lanes: [] },
+  3: { repo: "claude-fleet", cols: [
+      { label: "Orchestrator", model: "opus-5", pct: 31, until: "18.09. 00:38" }, { label: "Orchestrator", model: "opus-5", pct: 33, until: "18.09. 23:37" },
+      { label: "Orchestrator", model: "opus-5", effort: "high", pct: 11.2, claude: true, idle: "25 min", git: "main", st: "rest" }],
+    lanes: [{ label: "Queue-Ansicht", model: "opus-5", pct: 31.9, claude: true, git: "↑7", st: "need", past: 1 },
+      { label: "Info-Leiste", model: "opus-5", pct: 13.4, claude: true, git: "", st: "need" },
+      { label: "Linke Leiste", model: "opus-5", pct: 8.4, claude: true, git: "", st: "work" }] },
+  4: { repo: "claude-fleet", cols: [{ label: "Fleet-Betrieb", role: "main", model: "opus-5", effort: "high", pct: 27.3, claude: true, idle: "66 min", git: "main", st: "rest" }],
+    lanes: [{ label: "task 8ff7", model: "glm-5.3-flash", pct: null, git: "↑3 ●2", st: "work", bg: true }] },
+  5: { repo: "private-repo-aa", cols: [{ label: "Private-repo-aa", role: "main", model: "astra", effort: "medium", pct: 58.4, idle: "4 h", git: "main", st: "rest" }], lanes: [] },
+  8: { repo: "claude-fleet", cols: [{ label: "memory", model: "", pct: 13.7, claude: true, idle: "4 h", git: "main", st: "rest" }], lanes: [] },
+  10: { repo: "claude-fleet", cols: [{ label: "Leichtgewicht", role: "main", model: "astra", effort: "medium", pct: 72.8, idle: "12 h", git: "main", st: "rest" }], lanes: [] },
+  11: { repo: "claude-fleet", cols: [{ label: "Worktrail-Analyse", model: "astra", effort: "medium", pct: 54.7, idle: "12 h", git: "main", st: "rest" }], lanes: [] },
+  16: { repo: "~", cols: [{ label: "Shell", model: "", pct: 6, claude: true, idle: "jetzt", git: "", st: "work" }], lanes: [] },
+});
+const MAX = 16;
+let bands, sel;
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
+// Farbton je Repo: der echte src/client.ts#projectHue (FNV-1a ueber den Pfad, PROJECT_HUES) des
+// Live-Stands, vorab berechnet. Eingesetzt wie in der App: 3px-Kante links und Chip auf 16 % derselben
+// Farbe, Saettigung/Helligkeit aus --proj-s/--proj-l. ~ und claude-fleet fallen live auf denselben Ton.
+const HUES = { "claude-fleet": 45, "private-repo-aa": 315, "privat-1": 175, "~": 45, "private-repo-r": 135 };
+const hue = (k) => HUES[k] ?? 205;
+const warn = (x) => !!x.claude && x.pct != null && x.pct >= 25; // Owner-Band 25 %: nur claude, codex kompaktiert selbst
+const live = (B) => B.cols[B.cols.length - 1];
+const ref = (n, j) => n + String.fromCharCode(65 + j); // 3A, 16B: der Name IST die Adresse der Lane
+const tip = $("tip");
+function hint(node, text) {
+  node.onmouseenter = () => { tip.textContent = text; tip.style.opacity = 1; const r = node.getBoundingClientRect();
+    tip.style.left = Math.min(r.right + 8, innerWidth - 280) + "px"; tip.style.top = Math.max(8, r.top - 2) + "px"; };
+  node.onmouseleave = () => { tip.style.opacity = 0; };
+}
+function reset() { bands = LIVE(); sel = { n: 3, lane: 2 }; render(); }
+function ctx(x, on) {
+  const c = el("div", "ctx" + (on && warn(x) ? " warn" : "") + (x.claude ? " mark" : "")), f = el("i");
+  f.style.width = x.pct + "%"; c.append(f); return c;
+}
+
+function box(n, B, s, isLive) {
+  const b = el("button", "box" + (isLive && s.st === "bad" ? " bad" : "") + (isLive && sel.n === n && sel.lane == null ? " sel" : ""));
+  b.style.setProperty("--h", hue(B.repo));
+  const r1 = el("div", "r1"); r1.append(el("i", "st " + (isLive ? s.st : "rest")), el("span", "lbl", s.label));
+  if (s.role) r1.append(el("span", "chip", s.role));
+  if (s.pct != null) r1.append(el("span", "pct" + (isLive && warn(s) ? " warn" : ""), Math.round(s.pct) + "%"));
+  const r2 = el("div", "r2");
+  r2.append(el("span", "repo", B.repo), el("span", "", s.model), el("span", "", isLive ? s.idle : "übergab " + s.until.slice(-5)));
+  b.append(r1, r2);
+  if (s.pct != null) b.append(ctx(s, isLive));
+  hint(b, isLive ? `${n}  ${s.label}${s.role ? "  " + s.role : ""}\n${B.repo}  ${s.git}\n${[s.model, s.effort].filter(Boolean).join(" ")}\nzuletzt aktiv: ${s.idle}`
+    : `Vorgänger auf Band ${n}: ${s.label}\nübergeben ${s.until} bei ${Math.round(s.pct)} %\nbeendet, belegt keinen Platz mehr`);
+  return b;
+}
+function laneBox(n, B, l, j) {
+  const x = el("button", "lane" + (l.st === "bad" ? " bad" : "") + (sel.n === n && sel.lane === j ? " sel" : "") + (l.born ? " arrive" : "")); delete l.born;
+  x.style.setProperty("--h", hue(B.repo));
+  x.append(el("i", "st " + l.st), el("span", "ref", ref(n, j)), el("span", "lbl", l.label));
+  if (l.pct != null) x.append(ctx(l, true));
+  x.onclick = (e) => { e.stopPropagation(); sel = { n, lane: j }; render(); };
+  hint(x, `Lane ${ref(n, j)}  ${l.label}${l.bg ? "  (Hintergrund, vom Tick gestartet)" : ""}\n${l.model}  ${l.git || "sauber"}${l.pct != null ? "  " + Math.round(l.pct) + " %" : ""}\n${l.st === "done" ? "fertig, landbar\n" : ""}belegt keine Bandnummer`);
+  return x;
+}
+function render() {
+  const host = $("bands"); host.replaceChildren();
+  const top = Math.min(MAX, Math.max(...Object.keys(bands).map(Number)) + 1);
+  for (let n = 1; n <= top; n++) {
+    const B = bands[n], row = el("div", "band" + (B ? (B.cols.length > 1 ? " haspast" : "") : " free")); row.dataset.n = n;
+    if (!B) {
+      const f = el("button", "box"); f.append(el("span", "", "Session starten")); f.onclick = () => startAt(n);
+      row.append(el("div", "n", n), f); host.append(row); continue;
+    }
+    const strip = el("div", "strip");
+    B.cols.slice(-4).forEach((s, k, shown) => { /* die letzten drei Vorgaenger bleiben auf dem Band */
+      const isLive = k === shown.length - 1, col = el("div", "col" + (isLive ? "" : " past")), b = box(n, B, s, isLive);
+      b.onclick = () => { if (isLive) { sel = { n }; render(); } else { row.classList.add("peeking"); col.scrollIntoView({ inline: "start", block: "nearest" }); } };
+      col.append(b);
+      if (isLive && B.lanes.length) { const ls = el("div", "lanes");
+        B.lanes.forEach((l, j) => { const grp = el("div", "lg");
+          for (let p = 0; p < Math.min(l.past ?? 0, 2); p++) { const g = el("div", "lane past"); g.style.setProperty("--h", hue(B.repo));
+            g.append(el("i", "st")); hint(g, `Vorgänger von Lane ${ref(n, j)}\nselber Platz, selber Worktree, selber Branch`); grp.append(g); }
+          grp.append(laneBox(n, B, l, j)); ls.append(grp); });
+        col.append(ls); }
+      strip.append(col);
+    });
+    row.onmouseleave = () => { row.classList.remove("peeking"); toEnd(strip, true); };
+    row.append(el("div", "n", n), strip); host.append(row); toEnd(strip, false);
+  }
+  paintPane();
+}
+// das Band steht immer so, dass der lebende Kasten ganz zu sehen ist; links schaut der Vorgaenger hervor
+function toEnd(strip, smooth) {
+  strip.style.scrollBehavior = smooth ? "smooth" : "auto";
+  // breit ist Platz fuer das ganze Band: dann steht es am Anfang, sonst am lebenden Kasten rechts
+  strip.scrollLeft = $("side").classList.contains("wide") ? 0 : strip.scrollWidth;
+}
+function startAt(n) {
+  bands[n] = { repo: "claude-fleet", cols: [{ label: "neue Session", model: "opus-5", effort: "high", pct: 0, claude: true, idle: "jetzt", git: "main", st: "work" }], lanes: [] };
+  sel = { n }; render(); $("bands").querySelector(`.band[data-n="${n}"] .box`).classList.add("spark");
+}
+function paintPane() {
+  const B = bands[sel.n], l = sel.lane != null ? B.lanes[sel.lane] : null, name = l ? ref(sel.n, sel.lane) : String(sel.n);
+  $("pane").innerHTML = `<h1>${name}  ${(l ?? live(B)).label}</h1>` + (l
+    ? `<p>Lane <code>${name}</code> gehört zu Band ${sel.n} und belegt keine Bandnummer. <code>${name}</code> ist ihr einziger Name: in der Leiste, im Gespräch, in <code>state.sh</code> und als Adresse <code>/api/slots/${name}/…</code>. Übergibt die Session auf Band ${sel.n}, bleibt die Lane am Band hängen.</p>`
+    : `<p>Band <code>${sel.n}</code> bleibt <code>${sel.n}</code>, auch nach jeder Übergabe: „schau auf ${sel.n}" meint immer die Session, die gerade dort lebt. Der Vorgänger bleibt still links davon auf dem Band stehen.</p>`);
+}
+// Uebergabe: der lebende Kasten wird still, rechts davon faehrt der neue aufs Band, die Lanes ziehen mit
+function succeed() {
+  if (sel.lane != null) return succeedLane();
+  const n = sel.n, B = bands[n], row = $("bands").querySelector(`.band[data-n="${n}"]`), strip = row.querySelector(".strip"), oldCol = strip.lastElementChild;
+  const prev = live(B), next = { ...prev, pct: 3, idle: "jetzt", st: "work" };
+  Object.assign(prev, { until: "gerade eben" });
+  row.classList.add("haspast"); oldCol.querySelector(".box").classList.add("greying"); oldCol.querySelector(".box").classList.remove("sel");
+  const col = el("div", "col arrive"), nb = box(n, B, next, true); nb.classList.add("sel", "spark"); col.append(nb);
+  const ls = oldCol.querySelector(".lanes"); if (ls) col.append(ls);
+  strip.append(col); strip.style.scrollBehavior = "auto";
+  requestAnimationFrame(() => requestAnimationFrame(() => col.classList.add("in")));
+  const t0 = performance.now(); (function follow(t) { strip.scrollLeft = strip.scrollWidth; if (t - t0 < 700) requestAnimationFrame(follow); })(t0);
+  setTimeout(() => { B.cols.push(next); render(); }, 1400);
+}
+function succeedLane() {
+  const { n, lane: j } = sel, l = bands[n].lanes[j];
+  const old = $("bands").querySelectorAll(`.band[data-n="${n}"] .lane:not(.past)`)[j]; old.classList.remove("sel"); old.classList.add("past");
+  l.pct = 3; l.st = "work"; l.born = true; const neu = laneBox(n, bands[n], l, j); old.after(neu);
+  setTimeout(() => { l.past = (l.past ?? 0) + 1; render(); }, 1300);
+}
+function addLane() { const B = bands[sel.n]; B.lanes.push({ label: "neue Lane", model: "glm-5.3-flash", pct: 0, git: "", st: "work", born: true }); sel = { n: sel.n }; render(); }
+function land() {
+  const n = Object.keys(bands).find((k) => bands[k].lanes.length); if (!n) return; const B = bands[n], l = B.lanes[0];
+  if (l.st !== "done") { l.st = "done"; l.git = "↑7"; sel = { n: +n, lane: 0 }; render(); return; }
+  $("bands").querySelectorAll(`.band[data-n="${n}"] .lane:not(.past)`)[0].classList.add("gone");
+  setTimeout(() => { B.lanes.shift(); sel = { n: +n }; render(); }, 320);
+}
+function full() {
+  bands = LIVE(); const names = ["Land-Pipeline", "Audit", "Studio"];
+  [1, 6, 7].forEach((n, k) => { bands[n] = { repo: k % 2 ? "private-repo-r" : "claude-fleet", cols: [{ label: names[k], model: "opus-5", pct: 30, until: "gestern 21:10" },
+    { label: names[k], role: "main", model: "opus-5", effort: "high", pct: 18, claude: true, idle: "9 min", git: "main", st: "rest" }], lanes: [] }; });
+  bands[10].lanes.push({ label: "task c779", model: "glm-5.3-flash", pct: null, git: "↑2", st: "done", bg: true });
+  sel = { n: 3 }; render(); // 11 Sessions + 5 Lanes = 16 laufende Prozesse
+}
+const DO = { succeed, lane: addLane, land, full, reset, band: () => { sel = { n: 3 }; render(); },
+  red: () => { const B = bands[4]; (B.lanes[0] ?? live(B)).st = "bad"; sel = { n: 4, lane: B.lanes.length ? 0 : undefined }; render(); },
+  wide: () => { $("side").classList.remove("collapsed"); $("side").classList.toggle("wide"); $("widen").classList.toggle("on"); setTimeout(render, 220); },
+  collapse: () => { $("side").classList.remove("wide"); $("widen").classList.remove("on"); $("side").classList.toggle("collapsed"); setTimeout(render, 220); },
+  phone: () => { document.body.classList.toggle("phone"); render(); } };
+document.addEventListener("click", (e) => { const d = e.target.closest?.("[data-do]"); if (d) DO[d.dataset.do](); });
+$("collapse").onclick = DO.collapse; $("widen").onclick = DO.wide;
+reset();
+// #do=succeed,wide spielt Schalter beim Laden ab, damit jeder Zustand verlinkbar und headless pruefbar ist
+location.hash.replace(/^#do=/, "").split(",").filter((k) => DO[k]).forEach((k, i) => setTimeout(DO[k], 60 + i * 1600));
+</script>
+</body>
+</html>

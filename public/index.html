@@ -158,7 +158,11 @@
      carry NO css today (grep them in this file: only the two <button> lines) — they are raw UA
      buttons that happen to look tolerable while their content is a single emoji, and they turn
      into white pills the moment the content changes. Every value below is copied from their
-     neighbours' rule (#queuebtn/#saverbtn), so a Fassung introduces no colour of its own; that
+     neighbours' rule (#queuebtn/#saverbtn), so a Fassung introduces no colour of its own — and
+     no literal hex either: `#layouts button.active` keeps its own state rule, which sits LATER in
+     this sheet at the same specificity and therefore still wins over the skin below. (Copying it
+     up here is what turned this preview red: e2e/slots.ts reads every #sidetools rule for a
+     literal colour, and that check is right — the bar declares no palette.) That
      the row still speaks --line/--raised/--dim while the bar under it speaks --chat-* is a
      separate question, deliberately not answered here. */
   #sidetools.hv-a button, #sidetools.hv-b button, #sidetools.hv-c button {
@@ -166,8 +170,6 @@
     height: 26px; border-radius: 7px; border: 1px solid var(--line); background: var(--raised);
     color: var(--dim); font-size: 13px; font-family: inherit; cursor: pointer; }
   #sidetools.hv-a button:hover, #sidetools.hv-b button:hover, #sidetools.hv-c button:hover { color: var(--text); }
-  #sidetools.hv-a #layouts button.active, #sidetools.hv-b #layouts button.active,
-  #sidetools.hv-c #layouts button.active { color: var(--accent); border-color: var(--sel); background: #1c2437; }
   /* a — icon + word, the tray's own grammar. Eight words do not fit one 249px line, so the row
      WRAPS: this Fassung buys legibility with height, and it shows that price instead of hiding
      it. Each button sizes to its word, so #queuebtn's `margin-left: auto` (which pushes the row

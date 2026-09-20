@@ -89,6 +89,12 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 - **`scope-inflation.md`** — the step from a finding to a *program*, and how it inflates: a
   ranked list without a cut line is a portfolio, not a plan. Quote the owner's ask verbatim
   and cut the list where it is satisfied.
+- **`entwurf-zu-bau.md`** — the five-stage chain from a design round to a live change
+  (Entwurfsrunde → Entscheidung → Bau-Zeile → Land → Deploy), with the fahrer, the fertig-merkmal
+  and the verbot of each. Carries the hard rule that a docs-only design lane is not closed before
+  its build row exists, and the two measured holes a lane WITHOUT a queue row falls into: no
+  fleet-report receiver (so no succession), and no Program-MAIN land door. Read before closing a
+  design lane, and before founding one by hand.
 
 **Product working circles**
 - [GameDev-Einstieg](game-maker/README.md) — Private-repo-j und Private-repo-o: datierte Bestandsaufnahme,

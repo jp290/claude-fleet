@@ -232,8 +232,9 @@ export async function run(): Promise<void> {
       reports: [], queue: [q(1, 901, true, 1), q(2, 902, true, 2)] } });
     check("(LS.meter) every live ticket at the mutex is one WAITING ball carrying its own position",
       queued.balls.filter((b) => b.station === "wait").length === 2
-        && queued.balls.some((b) => b.what === "suite mutex · position 1")
-        && queued.balls.some((b) => b.what === "suite mutex · position 2"),
+        && queued.balls.filter((b) => b.station === "wait").every((b) => b.name === "queued suite")
+        && queued.balls.some((b) => b.what === "position 1 of 2")
+        && queued.balls.some((b) => b.what === "position 2 of 2"),
       JSON.stringify(queued.balls.map((b) => [b.station, b.what])));
     // a ticket whose process is gone is the wrappers' to reap, not this reader's to hide: it is
     // still part of what the directory says, and a silently dropped one would make the line look

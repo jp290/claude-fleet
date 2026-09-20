@@ -195,6 +195,9 @@
     --chat-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     --chat-ink: #e7e7ea; --chat-prose: #d4d4d8; --chat-mute: #8b8b94; --chat-faint: #5c5c66;
     --chat-surface: #111113; --chat-raised: #17171a; --chat-edge: #26262b; --chat-edge-soft: #1b1b1f;
+    /* PURE BLACK, the owner's call for the reading grounds (2026-09-18 for the chat view, again
+       2026-09-20 for the right column): one definition here, so no surface invents its own. */
+    --chat-void: #000;
     --chat-col: 780px; }
   .chatflakes { position: absolute; inset: 0; width: 100%; height: 100%; display: none; pointer-events: none; z-index: 0; }
   .pane.chat .chatflakes { display: block; }
@@ -1972,7 +1975,7 @@
   /* --- right sideboard: session brief. Desktop-only; mirrors #side's structure.
      Renders only deterministic data (git facts, prompt outline) — no derived state to drift */
   #board { width: 264px; flex: none; display: none; flex-direction: column;
-    background: var(--chat-surface); border-left: 1px solid var(--line-soft); }
+    background: var(--chat-void); border-left: 1px solid var(--line-soft); }
   body.board #board { display: flex; }
   #boardhead { display: flex; align-items: center; gap: 6px; padding: 10px 10px 8px;
     font-size: 12px; font-weight: 700; color: var(--chat-ink); }
@@ -1993,12 +1996,12 @@
      column with it — it ran 47 hand-written hex values beside that source until 2026-09-20. */
   #board { --b-ink: var(--chat-ink); --b-ink2: var(--chat-prose); --b-ink3: var(--chat-mute);
     --b-faint: var(--chat-faint); --b-rule: var(--chat-edge-soft); --b-edge: var(--chat-edge);
-    --b-hover: var(--chat-raised); --b-surface: var(--chat-surface);
+    --b-hover: var(--chat-raised); --b-surface: var(--chat-void);
     --b-sans: var(--chat-sans);
     --b-mono: var(--chat-mono);
-    /* the column's own ground: the chat surface, not a second black. The terminal beside it is
-       darker, and that contrast is what separates reading from working. */
-    width: 300px; background: var(--b-surface); border-left: 1px solid var(--b-rule);
+    /* the column's ground is PURE BLACK (owner, 2026-09-20: "der hintergrund sollte auf jedenfall
+       komplett schwarz sein") — the token, never a literal, so it stays one definition. */
+    width: 300px; background: var(--chat-void); border-left: 1px solid var(--b-rule);
     font-family: var(--b-sans); color: var(--b-ink); -webkit-font-smoothing: antialiased; }
   #board button { font-family: inherit; }
   #board :focus-visible { outline: 1.5px solid var(--accent); outline-offset: 1px; border-radius: 5px; }

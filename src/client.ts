@@ -3377,36 +3377,40 @@ async function renderBoard() {
       // BEHIND — and, on a lane, the one action that fixes it. The button carries the number, so
       // there is never a count without a way to act on it and never an action without its reason;
       // at behind 0 there is no button at all, only the state (owner, 2026-09-20).
+      const baseName_ = brief.laneBase ?? "main";
+      // BEHIND, and on a lane the one action that fixes it. The button carries the count, so there
+      // is never a number without a way to act on it and never an action without its reason; at
+      // behind 0 there is no button at all. It is built here (where the count is) and placed with
+      // the other lane verbs below (owner, 2026-09-20: "bei den Lane-Aktionen").
+      let rebaseBtn: HTMLButtonElement | null = null;
       if (behind && brief.laneScoped) {
-        const baseName_ = brief.laneBase ?? "main";
         if (brief.worktree) {
-          const rb = el("button", "bbtn quiet",
+          rebaseBtn = el("button", "bbtn quiet",
             rebaseBusy.has(slot) ? "Rebasing…" : `Rebase — ${behind} behind ${baseName_}`) as HTMLButtonElement;
-          rb.disabled = rebaseBusy.has(slot);
-          rb.title = `replay this lane's commits on top of ${baseName_}. It ONLY rebases: it does not verify and `
-            + "it does not land, and on a conflict it aborts and leaves the lane exactly as it is.";
-          rb.onclick = () => void doRebase(slot);
-          work.appendChild(rb);
+          rebaseBtn.disabled = rebaseBusy.has(slot);
+          rebaseBtn.title = `replay this lane's commits on top of ${baseName_}. It ONLY rebases: it does not verify `
+            + "and it does not land, and on a conflict it aborts and leaves the lane exactly as it is.";
+          rebaseBtn.onclick = () => void doRebase(slot);
         } else {
           work.appendChild(el("div", "bnote", `${behind} commit${behind === 1 ? "" : "s"} behind ${baseName_}`));
         }
-        const note = rebaseNote.get(slot);
-        if (note && Date.now() - note.at > REBASE_NOTE_MS) rebaseNote.delete(slot);
-        if (note && Date.now() - note.at <= REBASE_NOTE_MS) {
-          const n = el("div", note.ok ? "bnote ready" : "bstate rbfail", note.text);
-          if (note.files?.length) {
-            const list = el("div", "bunc");
-            for (const f of note.files) list.appendChild(el("div", "bfile", f));
-            n.appendChild(list);
-          }
-          work.appendChild(n);
-        }
-      } else if ((rebaseNote.get(slot)?.at ?? 0) > Date.now() - REBASE_NOTE_MS) {
-        // the success line outlives the count it removed — otherwise a rebase that worked would
-        // leave the column looking as if nothing had happened
-        const note = rebaseNote.get(slot)!;
-        work.appendChild(el("div", note.ok ? "bnote ready" : "bstate rbfail", note.text));
       }
+      // …and what the last rebase did, which outlives the count it removed: a rebase that WORKED
+      // deletes the very number that explained the button, so without this line the column would
+      // look as if nothing had happened.
+      const rbNote = ((): HTMLElement | null => {
+        const note = rebaseNote.get(slot);
+        if (!note) return null;
+        if (Date.now() - note.at > REBASE_NOTE_MS) { rebaseNote.delete(slot); return null; }
+        const n = el("div", note.ok ? "bnote ready" : "bstate rbfail", note.text);
+        if (note.files?.length) {
+          const list = el("div", "bunc");
+          for (const f of note.files) list.appendChild(el("div", "bfile", f));
+          n.appendChild(list);
+        }
+        return n;
+      })();
+      if (rbNote && !brief.worktree) work.appendChild(rbNote);
       // the lane's endgame, in the same section because it is the same subject: ONE land action
       // whose label carries the auto-vs-review-needed distinction as text. doLand tries the direct
       // /land path, then falls back to the /merge agent — the UI is collapsed to one control.
@@ -3452,6 +3456,9 @@ async function renderBoard() {
         shb.title = "set this lane aside with a note (what's left) — kills the slot, keeps the worktree to resume later; nothing lost, nothing destroyed";
         shb.onclick = () => void doShelve(slot);
         land.appendChild(shb);
+        // ↻ rebase sits with the other lane verbs, because it is one: it moves this lane, and the
+        // reader decides between "land it" and "bring it up to date" in one place.
+        if (rebaseBtn) land.appendChild(rebaseBtn);
         // ↩ undo last land — only when the server still holds an undoable land for THIS repo
         // (main not moved since, not pushed). Reverses the one action that mutates main.
         if (mg?.undoable && brief.worktree.repo) {
@@ -3501,6 +3508,7 @@ async function renderBoard() {
           land.appendChild(vn);
         }
         work.appendChild(land);
+        if (rbNote) work.appendChild(rbNote);
       }
       nodes.push(work);
 

@@ -5020,6 +5020,27 @@ interface WorktreeBoard { repo: string; main: string; worktrees: WorktreeBoardRo
 const worktreeBoardCache = new Map<string, { body: WorktreeBoard; at: number }>();
 const worktreeBoardRecomputing = new Set<string>();
 
+// …and the three fields in that body which are NOT git-derived: `main` (the configured
+// integration branch — a plain object read unless it has to be derived from the primary's HEAD),
+// `slot` (the holding session, from `slots`) and `note` (the shelve note, in memory). They cost
+// nothing to recompute, so EVERY answer gets them fresh — cached or not. Serving them stale is
+// what the post-land audit of ea3b141b caught: a repo-base change, a shelve and a resume were
+// each invisible for up to GIT_TICK_MS, because the mutation never touched git and the cache
+// only ages on git time. Overlaying beats invalidating at the mutation sites: an overlay cannot
+// be defeated by a writer nobody remembered to find.
+async function freshenWorktreeBoard(b: WorktreeBoard): Promise<WorktreeBoard> {
+  const intb = await integrationBranch(b.repo);
+  return {
+    ...b,
+    main: intb ?? b.main, // null = primary is detached; the computed fallback stands
+    worktrees: b.worktrees.map((w) => ({
+      ...w,
+      slot: slots.find((x) => x.cwd === w.path)?.id ?? null,
+      note: shelved[w.path]?.note ?? null,
+    })),
+  };
+}
+
 // "safe to drop" checks + removal, shared by land and orphan cleanup: git's OWN
 // dirty/unmerged refusal in `worktree remove` is the backstop — on top we refuse while
 // commits are neither pushed to any remote nor merged, so removal can never eat work
@@ -36165,15 +36186,17 @@ Bun.serve<WSData>({
         }));
         return { repo: primary.path, main: intb !== "HEAD" ? intb : primary.branch, worktrees: rows };
       };
-      // THE SWITCH CONTRACT: a session switch must not cost a single git spawn. Every answer
-      // after a slot's first comes from the per-slot cache (keyed by cwd) in single-digit ms; an
+      // THE SWITCH CONTRACT: a session switch must not cost the ~150-git-spawn wave. Every answer
+      // after a slot's first comes from the per-slot cache (keyed by cwd) in single-digit ms —
+      // plus freshenWorktreeBoard, which is pure memory unless the integration branch has to be
+      // derived, and then exactly ONE rev-parse; an
       // entry older than GIT_TICK_MS is served INSTANTLY and refreshed in the background, at
       // most one recompute per slot per tick — the same staleness the dashboard's git tick
       // already puts under every displayed number. DISPLAY ONLY by contract: nothing destructive
       // reads this route; risk previews and removal recompute worktreeRisk fresh. The one cold
       // request (boot, or a slot's first board open) pays the compute inline once.
       const cached = worktreeBoardCache.get(cwd);
-      if (cached && Date.now() - cached.at <= GIT_TICK_MS) return json(cached.body);
+      if (cached && Date.now() - cached.at <= GIT_TICK_MS) return json(await freshenWorktreeBoard(cached.body));
       if (cached) {
         if (!worktreeBoardRecomputing.has(cwd)) {
           worktreeBoardRecomputing.add(cwd);
@@ -36182,7 +36205,7 @@ Bun.serve<WSData>({
             .catch((e: unknown) => logError("worktrees-board", e))
             .finally(() => worktreeBoardRecomputing.delete(cwd));
         }
-        return json(cached.body);
+        return json(await freshenWorktreeBoard(cached.body));
       }
       const computed = await computeWorktreeBoard();
       if (!("repo" in computed)) return json({ error: computed.error }, computed.code);

@@ -147,22 +147,30 @@
     background: var(--chat-raised); color: var(--chat-mute); font-size: 13px; font-family: inherit; cursor: pointer;
     display: flex; align-items: center; justify-content: center; line-height: 1; }
   #collapse:hover { color: var(--chat-ink); }
-  #slots { flex: 1; overflow-y: auto; padding: 4px 8px 16px; display: flex; flex-direction: column; gap: 2px; }
+  /* The bar's own side padding and the row's used to sit on top of each other: 8 + 10 on each side,
+     36px of a 249px column spent before a single character. 5 + 8 keeps the rows off the edge and
+     off the scrollbar and gives the 10px back to the one element that is flex:1 — the label. */
+  #slots { flex: 1; overflow-y: auto; padding: 4px 5px 8px; display: flex; flex-direction: column; gap: 2px; }
   /* A ROW IS TWO LINES now. Line 1 (.r1) is address · label · state and everything that asks for a
      decision; line 2 (.r2) carries the two facts the row used to say only in colour and brightness
      — which checkout, and how long since it last spoke. `flex: none` stays: a row that can be
      squeezed is a row whose label vanishes first, and the phone drawer depends on it too. */
-  .slot { position: relative; flex: none; display: block; padding: 8px 10px 9px;
+  /* The inner spacing was set on air, not on legibility: 8/9 above and below a line whose own
+     height is already fixed by the reserved gutter, and 2px between the two lines of a row that
+     reads as one object. 5/6/1 keeps the rows apart (the 2px gap in #slots does that) and hands
+     the difference back to the axis. What it CANNOT reach is the 26px gutter itself: the mark's
+     reservation is the floor under line 1, and it is not this cut's to move — see the report. */
+  .slot { position: relative; flex: none; display: block; padding: 5px 8px 6px;
     border-radius: 12px; border: 1px solid transparent; cursor: pointer; font-size: var(--chat-fs);
     color: var(--chat-prose); user-select: none; -webkit-user-select: none; --rb: var(--c-hover); }
   .slot:hover, .slot:focus-within { background: var(--c-hover); }
   .slot.shown { background: var(--chat-surface); border-color: var(--chat-edge-soft); --rb: var(--chat-surface); }
   .slot.current { background: var(--chat-raised); border-color: var(--chat-edge); --rb: var(--chat-raised); }
-  .slot .r1 { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .slot .r1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
   /* line 2 hangs under the LABEL, not under the row: the mark's gutter is a column that both lines
      share, so the address, the label and the readings below them line up on one left edge. */
   .slot .r2 { display: flex; align-items: baseline; gap: 8px; min-width: 0;
-    margin: 2px 0 0 calc(var(--mark-size, 26px) + 7px);
+    margin: 1px 0 0 calc(var(--mark-size, 26px) + 6px);
     font-size: var(--chat-ui-fs); color: var(--chat-faint); }
   .slot .r2:empty { display: none; }
   .slot .r2 .repo { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -189,6 +197,14 @@
   .slot.current .n, .slot.current .laneref {
     background: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l) / 0.16); }
   .slot.empty .n { color: var(--chat-faint); background: var(--chat-surface); }
+  /* A FREE PLACE IS ONE LINE AND IT IS FLATTER THAN A SESSION. It carries one fact (its number)
+     and an invitation; a session carries eight. At the old geometry it cost 45px against a
+     session's 61 — eleven of them ate 495 of the bar's 775px, and the axis ran off the bottom of a
+     900px window at place 15. The gutter's WIDTH stays (the numbers of free and occupied places
+     must keep standing on one left edge); only its height gives way, and only where there is no
+     session for a mark to stand for. */
+  .slot.empty { padding: 3px 8px 4px; }
+  .slot.empty .mark { height: 16px; }
   .slot .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     letter-spacing: -0.005em; }
   .slot.current .lbl { color: var(--chat-ink); }

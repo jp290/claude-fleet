@@ -735,23 +735,31 @@ export async function run(lc: LaneCtx): Promise<void> {
   // after the tick. So: warm the cache, mutate all three without touching git, read again INSIDE
   // the freshness window, and demand all three moved. Counter-check: drop the overlay in
   // server.ts (freshenWorktreeBoard) and this goes red while the cached git facts stay right.
+  //
+  // The reader is its OWN lane, opened AFTER the subject: the cache is keyed on the READING
+  // slot's cwd, so a reader nobody has read for yet computes cold — and a cold body is the only
+  // one that can contain a subject this young. (Row MEMBERSHIP is git-derived and stays cached;
+  // only the fields of rows already present are overlaid. Reading through lnSlot here would test
+  // that instead, and fail for a reason this probe is not about.)
   {
     const tick = Math.max(1000, Number(process.env.FLEET_GIT_TICK_MS ?? 10_000) | 0);
     spawnSync("git", ["-C", REPO, "branch", "-f", "integ-overlay-decoy", "HEAD"]);
     const ov = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
-    check("overlay probe: its own lane opened", typeof ov.slot === "number" && typeof ov.cwd === "string", JSON.stringify(ov));
+    const rd = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    check("overlay probe: subject and reader lanes opened",
+      typeof ov.slot === "number" && typeof rd.slot === "number" && ov.cwd !== rd.cwd, JSON.stringify([ov, rd]));
     type Board = { main: string; worktrees: { path: string; slot: number | null; note: string | null }[] };
-    const board = async (): Promise<Board> => (await (await get(`/api/slots/${lnSlot}/worktrees`)).json()) as Board;
-    const warm = await board(); // this answer is now the cache entry every later read is served from
+    const board = async (): Promise<Board> => (await (await get(`/api/slots/${rd.slot}/worktrees`)).json()) as Board;
+    const warm = await board(); // cold compute → becomes the entry every later read is served from
     const t0 = Date.now();
-    check("overlay probe: the warm board holds the lane in its slot, note-free",
-      warm.worktrees.find((w) => w.path === ov.cwd)?.slot === ov.slot
-      && warm.worktrees.find((w) => w.path === ov.cwd)?.note == null,
-      JSON.stringify(warm.worktrees.find((w) => w.path === ov.cwd)));
+    const warmRow = warm.worktrees.find((w) => w.path === ov.cwd);
+    // the probe's own precondition: no row, nothing to overlay, and the rest would be vacuous
+    check("overlay probe: the warm board holds the subject in its slot, note-free",
+      warmRow?.slot === ov.slot && warmRow.note == null, JSON.stringify(warmRow));
     // two mutations, zero git writes: one moves `main`, the other moves `slot` AND `note`
     check("overlay probe: repo-base accepted the decoy",
       ((await (await post("/api/repo-base", { repo: REPO, branch: "integ-overlay-decoy" })).json()) as { ok?: boolean }).ok === true);
-    check("overlay probe: the lane shelved", (await post(`/api/slots/${ov.slot}/shelve`, { note: "overlay-probe-note" })).ok);
+    check("overlay probe: the subject shelved", (await post(`/api/slots/${ov.slot}/shelve`, { note: "overlay-probe-note" })).ok);
     const after = await board();
     const row = after.worktrees.find((w) => w.path === ov.cwd);
     // a probe that spent longer than the cache's own freshness window proved nothing about
@@ -762,6 +770,8 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("non-git field is fresh on a cache hit: slot", row?.slot === null, JSON.stringify(row));
     check("non-git field is fresh on a cache hit: note", row?.note === "overlay-probe-note", JSON.stringify(row));
     await post("/api/repo-base", { repo: REPO, branch: "" });
+    await post(`/api/slots/${rd.slot}/kill`, {});
     await post("/api/worktrees/discard", { repo: REPO, path: ov.cwd, branch: ov.branch });
+    await post("/api/worktrees/discard", { repo: REPO, path: rd.cwd, branch: rd.branch });
   }
 }

@@ -26,18 +26,27 @@ i=0; until curl -sf "http://127.0.0.1:$PORT/api/sessions" -H "authorization: Bea
 done
 api() { curl -sf -X POST "http://127.0.0.1:$PORT$1" -H "authorization: Bearer $TOK" \
   -H 'content-type: application/json' -d "$2" >/dev/null || echo "  (failed: $1 $2)"; }
+# A REPO OF ITS OWN for the lanes, inside the throwaway directory. Pointing them at $SRC made the
+# server cut REAL worktrees and REAL branches in the owner's repository — 22 of them accumulated
+# from this driver alone on 2026-09-20, each a `fleet/…` branch nobody asked for. The fixture needs
+# a git repo with one commit, not this one.
+FXREPO="$DIR/fixture-repo"
+mkdir -p "$FXREPO"
+echo "fixture repo for the sidebar shot" > "$FXREPO/README.md"
+( cd "$FXREPO" && git init -q && git add -A \
+  && git -c user.email=t@t -c user.name=t commit -qm fixture ) || exit 1
 # a bar with something in it: two repo sessions, one plain, plus two lanes off the first
-api /api/slots/2/open  "{\"cwd\":\"$SRC\",\"label\":\"Orchestrator\"}"
-api /api/slots/4/open  "{\"cwd\":\"$SRC\",\"label\":\"Fleet-Betrieb\"}"
+api /api/slots/2/open  "{\"cwd\":\"$FXREPO\",\"label\":\"Orchestrator\"}"
+api /api/slots/4/open  "{\"cwd\":\"$FXREPO\",\"label\":\"Fleet-Betrieb\"}"
 api /api/slots/7/open  "{\"cwd\":\"$HOME\",\"label\":\"Shell\"}"
 sleep 3
-api /api/lanes "{\"repo\":\"$SRC\"}"
-api /api/lanes "{\"repo\":\"$SRC\"}"
+api /api/lanes "{\"repo\":\"$FXREPO\"}"
+api /api/lanes "{\"repo\":\"$FXREPO\"}"
 sleep 6
 # The lane rows ARE the thing under test (their band names), and the fold state lives in
 # localStorage — which only a page on this origin can seed, and this server serves no such page.
 # So Chrome is DRIVEN instead of merely pointed: open, unfold, reload, capture at both widths.
-REAL=$(cd "$SRC" && pwd -P)
+REAL=$(cd "$FXREPO" && pwd -P)
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
   --remote-debugging-port=9222 --user-data-dir="$DIR/chrome" --no-first-run \
   "http://127.0.0.1:$PORT/?token=$TOK" > "$DIR/chrome.log" 2>&1 &

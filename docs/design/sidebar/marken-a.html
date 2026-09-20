@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet · Session-Marke · Variante A (Marke)</title>
+<!-- Variante A: jede Session bekommt EIN Zeichen, 22px, links in ihrer Zeile. Alles andere bleibt die
+     Chat-Sprache. Der Zustand lebt im Zeichen (laeuft/steht/gedimmt/bricht), nicht in einem Punkt. -->
+<link rel="stylesheet" href="marken.css">
+<style>
+  .row .mark { width: 22px; height: 22px; }
+  .lanes .row .mark { width: 16px; height: 16px; }
+  .row.work::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px;
+    border-radius: 2px; background: var(--chat-edge); }
+  .row:hover { background: #0d0d0f; }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side"><div id="sidehead"><b>Fleet</b><span id="count"></span></div><div id="list"></div></aside>
+  <main id="stage">
+    <h1>A · Marke</h1>
+    <p>Ein abgeleitetes Zeichen je Session, 22 px, an der Stelle des heutigen 7-px-Punkts. Die Zeile bleibt
+      die Chat-Sprache: Sans, Mono-Chip für die Adresse, kein Kasten.</p>
+    <table>
+      <tr><td>Farbton</td><td>Projekt — <code>projectHue(repo)</code>, unverändert</td></tr>
+      <tr><td>Muster</td><td>Harness — claude Ringe · codex Zeilen · pi Gitter</td></tr>
+      <tr><td>Variante</td><td>Slot + <code>openedAt</code> als Seed (stabil über Neustart)</td></tr>
+      <tr><td>Rahmen</td><td>Rolle — MAIN geschlossen, Lane offen</td></tr>
+      <tr><td>Bewegung</td><td>Zustand — arbeitet läuft, ruht steht, schläft ist gedimmt, rot bricht</td></tr>
+    </table>
+    <div id="rate">…</div>
+  </main>
+</div>
+<script type="module">
+import { SLOTS } from "./marken-daten.js";
+import { projectHue, family, seedOf, Mark, MarkTicker } from "./marken.js";
+const ticker = new MarkTicker(8);
+const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c; if (x != null) n.textContent = x; return n; };
+function row(s, lane) {
+  const r = el("div", "row " + s.state);
+  const cv = el("canvas", "mark");
+  r.append(cv, el("span", "id", s.slot), el("span", "lbl", s.label));
+  if (s.pct != null) r.append(el("span", "pct", s.pct + "%"));
+  r.append(el("span", "meta", s.meta));
+  ticker.add(new Mark(cv, { size: lane ? 16 : 22, hue: projectHue(s.repo), fam: family(s.harness),
+    seed: seedOf(s.slot, s.openedAt), state: s.state, role: s.role }));
+  return r;
+}
+const list = document.getElementById("list");
+for (const s of SLOTS) {
+  if (s.free) { const f = el("div", "row free"); f.append(el("span", "id", s.slot), el("span", "lbl", "frei · Session starten")); list.append(f); continue; }
+  list.append(row(s, false));
+  if (s.lanes) { const box = el("div", "lanes"); s.lanes.forEach((l) => box.append(row(l, true))); list.append(box); }
+}
+document.getElementById("count").textContent = ticker.marks.size + " Marken";
+const b = ticker.bench();
+document.getElementById("rate").textContent =
+  `gemessen: ein Bild über ${b.moving} bewegte von ${b.total} Marken = ${b.ms.toFixed(2)} ms · ` +
+  `bei ${ticker.fps} Bildern/s sind das ${b.share.toFixed(1)} % eines Kerns`;
+window.__bench = () => b;
+</script>
+</body>
+</html>

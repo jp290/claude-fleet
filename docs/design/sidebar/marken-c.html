@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet · Session-Marke · Variante C (Panel)</title>
+<!-- Variante C: ueber der Liste steht ein 4x4-Feld mit allen 16 Plaetzen. Platz 7 ist IMMER dieselbe
+     Zelle, also merkt man sich den Ort und nicht die Zeile. Die Liste darunter wird einzeilig. -->
+<link rel="stylesheet" href="marken.css">
+<style>
+  .row .mark { width: 14px; height: 14px; }
+  .lanes .row .mark { width: 11px; height: 11px; }
+  .row { padding: 5px 9px; } .row + .row { margin-top: 0; }
+  .row:hover { background: #0d0d0f; }
+  /* das Feld: 16 Zellen, feste Plaetze, 4 Spalten. Die Zelle IST der Platz. */
+  #panel { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 8px 10px 12px; }
+  .cell { position: relative; aspect-ratio: 1; border-radius: 10px; display: grid; place-items: center;
+    background: var(--chat-surface); box-shadow: inset 0 0 0 1px var(--chat-edge-soft); }
+  .cell .mark { width: 34px; height: 34px; }
+  .cell .no { position: absolute; left: 5px; top: 3px; font: 500 10px var(--chat-mono); color: var(--chat-faint); }
+  .cell.work { box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .cell.bad { box-shadow: inset 0 0 0 1px #5e2a28; }
+  .cell.free { background: none; box-shadow: inset 0 0 0 1px #131316; }
+  .cell .lanedot { position: absolute; right: 4px; bottom: 4px; display: flex; gap: 2px; }
+  .cell .lanedot i { width: 4px; height: 4px; border-radius: 50%; background: var(--chat-mute); }
+  #panelcap { padding: 0 12px; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #list { border-top: 1px solid var(--chat-edge-soft); padding-top: 6px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side"><div id="sidehead"><b>Fleet</b><span id="count"></span></div>
+    <div id="panel"></div><div id="panelcap">16 Plätze · Zelle = Platz</div><div id="list"></div></aside>
+  <main id="stage">
+    <h1>C · Panel</h1>
+    <p>Über der Liste steht ein 4×4-Feld mit allen 16 Plätzen. Platz 7 ist immer dieselbe Zelle, also
+      trägt der Ort die Adresse und man sieht den ganzen Fleet in einem Blick. Die Liste darunter wird
+      einzeilig und dient dem Lesen, nicht dem Suchen.</p>
+    <table>
+      <tr><td>Farbton</td><td>Projekt — <code>projectHue(repo)</code>, unverändert</td></tr>
+      <tr><td>Muster</td><td>Harness — claude Ringe · codex Zeilen · pi Gitter</td></tr>
+      <tr><td>Variante</td><td>Slot + <code>openedAt</code> als Seed (stabil über Neustart)</td></tr>
+      <tr><td>Rahmen</td><td>Rolle — MAIN geschlossen, Lane offen</td></tr>
+      <tr><td>Bewegung</td><td>Zustand — arbeitet läuft, ruht steht, schläft ist gedimmt, rot bricht</td></tr>
+    </table>
+    <div id="rate">…</div>
+  </main>
+</div>
+<script type="module">
+import { SLOTS } from "./marken-daten.js";
+import { projectHue, family, seedOf, Mark, MarkTicker } from "./marken.js";
+const ticker = new MarkTicker(8);
+const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c; if (x != null) n.textContent = x; return n; };
+function row(s, lane) {
+  const r = el("div", "row " + s.state);
+  const cv = el("canvas", "mark");
+  r.append(cv, el("span", "id", s.slot), el("span", "lbl", s.label));
+  if (s.pct != null) r.append(el("span", "pct", s.pct + "%"));
+  r.append(el("span", "meta", s.meta));
+  ticker.add(new Mark(cv, { size: lane ? 16 : 22, hue: projectHue(s.repo), fam: family(s.harness),
+    seed: seedOf(s.slot, s.openedAt), state: s.state, role: s.role }));
+  return r;
+}
+// das Feld zuerst: 16 Zellen in fester Ordnung
+const panel = document.getElementById("panel");
+for (const s of SLOTS) {
+  const cell = el("div", "cell " + (s.free ? "free" : s.state));
+  cell.append(el("span", "no", s.slot));
+  if (!s.free) {
+    const cv = el("canvas", "mark"); cell.append(cv);
+    ticker.add(new Mark(cv, { size: 34, hue: projectHue(s.repo), fam: family(s.harness),
+      seed: seedOf(s.slot, s.openedAt), state: s.state, role: s.role }));
+    if (s.lanes) { const d = el("div", "lanedot"); s.lanes.forEach(() => d.append(el("i"))); cell.append(d); }
+  }
+  panel.append(cell);
+}
+const list = document.getElementById("list");
+for (const s of SLOTS) {
+  if (s.free) { const f = el("div", "row free"); f.append(el("span", "id", s.slot), el("span", "lbl", "frei · Session starten")); list.append(f); continue; }
+  list.append(row(s, false));
+  if (s.lanes) { const box = el("div", "lanes"); s.lanes.forEach((l) => box.append(row(l, true))); list.append(box); }
+}
+document.getElementById("count").textContent = ticker.marks.size + " Marken";
+const b = ticker.bench();
+document.getElementById("rate").textContent =
+  `gemessen: ein Bild über ${b.moving} bewegte von ${b.total} Marken = ${b.ms.toFixed(2)} ms · ` +
+  `bei ${ticker.fps} Bildern/s sind das ${b.share.toFixed(1)} % eines Kerns`;
+window.__bench = () => b;
+</script>
+</body>
+</html>

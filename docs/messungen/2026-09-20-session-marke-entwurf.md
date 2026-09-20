@@ -120,7 +120,8 @@ und die rechte Spalte bleiben neutral (`8874/design-prompt.md`).
 
 ```
 # Prototypen (nur Vorschau, nicht gelandet)
-http://100.64.0.1:8890/marken-a.html · marken-b.html · marken-c.html
+# Vorschau-Server auf Port 8890 mit Wurzel docs/design/sidebar/ (Adresse steht nicht im Baum):
+#   marken-a.html · marken-b.html · marken-c.html
 # Bilder auf der Vorschau der Chat-Lane
 c16-marke-a.png · c16-marke-b.png · c16-marke-c.png · c16-marke-*-ohne-farbe.png
 c16-marke-a-reduced-motion.png

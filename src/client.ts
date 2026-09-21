@@ -13351,7 +13351,7 @@ moreBtn.onclick = () => {
   localStorage.setItem("fleet.more", moreOpen ? "1" : "0");
   applyMore();
 };
-$("sidetools").appendChild(moreBtn);
+$("toolrow2").appendChild(moreBtn);
 $("sidetools").after(morePanel);
 applyMore();
 

@@ -56,9 +56,13 @@ vorher) als Dauerzustand; a und c sind samt Schalter entfernt. Dazu:
   Quadratrahmen — die Einzelansicht IST ein Quadrat.
 - **Ansicht 3 ist neu** (`#panes.l3`: erste Pane über zwei Zeilen, zwei gestapelt daneben); vorher gab
   es nur 1, 2 und 4.
-- Eine Form für die ganze Reihe: `#sidetools button`, 23 px, Chat-Tokens. Vier Ansichten + fünf
-  stehende Funktionen = 221 px bei 229 verfügbaren (gemessen im DOM; bei 24 px brach ⋯ um). Spricht
-  ein bedingter Knopf (attn/ops/dev), bricht die Reihe um, statt überzulaufen.
+- Eine Form für alle: `#sidetools button`, 23 px, Chat-Tokens.
+- **Zweireihig** (Nachtrag zu Runde 10: *„die pane-split buttons in ein quadrat packen und auch die
+  leiste zwei-reihig machen"*): die vier Ansichten als EIN Quadrat (2×2, 48×48 px) links über beide
+  Reihen, rechts die Funktionen in alter Reihenfolge auf `#toolrow1` (Queue · Attention · Inbox ·
+  Audit) und `#toolrow2` (Lands · Devices · Saver · ⋯). Die Teilung steht im Markup, damit ein
+  auftauchender bedingter Knopf nichts verschiebt; gemessen mit allen dreien samt Zahl endet die
+  längste Reihe bei 197 von 239 px.
 
 `leiste-mess/kopfreihe-shot.js` fotografiert den alten `#head`-Schalter und ist damit Messgeschichte.
 

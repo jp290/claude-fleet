@@ -138,17 +138,20 @@
   #instbtn .devcount { flex: none; color: var(--chat-faint); font-variant-numeric: tabular-nums; }
   .instnote { padding: 6px 7px 3px; border-top: 1px solid var(--chat-edge); margin-top: 2px;
     color: var(--chat-faint); font-size: var(--chat-ui-fs); line-height: 1.4; }
-  /* row 2: the views on the left, the functions to their right (owner 2026-09-21: "Zuerst sollte
-     die Ansicht ganz links als quadrat dargestellt werden … Rechts davon zeigen wir dann
-     überarbeitete buttons für die Funktionen an"). ONE button grammar for the whole row: a 23px
-     square (four views and the five standing functions are 221px, the column gives 229 — at 24px
-     the ⋯ wrapped), a drawn icon (src/icons.ts, the tray's grammar), the chat tokens — the emoji and the
-     two raw UA buttons (#auditbtn/#outcomebtn had no css at all) are gone. What a button means is
-     its title and aria-label. The moment a conditional button (attn/ops/dev) speaks, the row wraps
-     instead of overflowing the 249px column. */
-  #sidetools { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 0 10px 8px; }
-  #sidetools #queuebtn { margin-left: auto; }
-  #layouts { display: flex; gap: 2px; }
+  /* THE HEAD UNDER THE TITLE IS TWO ROWS (owner 2026-09-21: "die pane-split buttons in ein quadrat
+     packen und auch die leiste zwei-reihig machen"). Left, over both rows, the four views as ONE
+     square — a 2×2 grid of 23px buttons, 48px a side, each drawing its arrangement. Right, the
+     functions in their old order, broken over two rows: queue · attn · ops · audit on the first,
+     lands · dev · saver · ⋯ on the second (the split is in the markup, #toolrow1/#toolrow2, so it
+     does not move when a conditional button appears). A row takes at most four buttons, two of
+     them with a count (~35px each) — 125px against the 173px beside the square, so the
+     conditional attn/ops (row 1) and dev (row 2) never push a third row. One button grammar for
+     all: a 23px square, a drawn icon (src/icons.ts), the chat tokens; the emoji and the two raw
+     UA buttons (#auditbtn/#outcomebtn had no css at all) are gone. Meaning is title + aria-label. */
+  #sidetools { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; padding: 0 10px 8px; }
+  #layouts { grid-row: 1 / span 2; display: grid; grid-template-columns: 23px 23px; grid-auto-rows: 23px; gap: 2px; }
+  .toolrow { display: flex; align-items: center; gap: 2px; min-width: 0; height: 23px; }
+  #toolrow2 { margin-top: 2px; }
   #sidetools button { flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 3px;
     min-width: 23px; height: 23px; padding: 0; border-radius: 6px; border: 1px solid var(--chat-edge);
     background: var(--chat-raised); color: var(--chat-mute); font-size: var(--chat-ui-fs);
@@ -2707,6 +2710,10 @@
        in the drawer instead of the 26px desktop chip */
     #sidetools #saverbtn, #sidetools #morebtn { width: 40px; height: 40px; }
     #sidetools #saverbtn .ico, #sidetools #morebtn .ico { width: 18px; height: 18px; }
+    /* no views on the phone (#layouts is hidden above): the two function rows take the width, and
+       the finger-sized saver/⋯ make their row as tall as they are */
+    #sidetools { grid-template-columns: 1fr; }
+    .toolrow { height: auto; }
     #morepanel .bbtn { min-height: 40px; }
 
     .panel { max-width: 96vw; max-height: 86vh; padding: 13px; }
@@ -2753,16 +2760,20 @@
         <button data-l="3" title="one tall pane, two beside it"></button>
         <button data-l="4" title="2×2 grid"></button>
       </span>
+      <span id="toolrow1" class="toolrow">
       <button id="queuebtn" title="task queue">🗒</button>
       <button id="attnbtn" title="attention — what a program's main session raised for you (decision / blocked / review-ready)" style="display:none">📣</button>
       <button id="opsbtn" title="operations inbox — completions a subscription asked to be filed here instead of typed into a pane (merge / audit / deploy / lane)" style="display:none">📥</button>
       <button id="auditbtn" title="audit trail — what Fleet did to each slot (killed / shelved / self-healed)">🛡</button>
+      </span>
+      <span id="toolrow2" class="toolrow">
       <button id="outcomebtn" title="outcome feed — what each lane landed, how, and what ③ review said about it">🧾</button>
       <button id="devbtn" title="helper devices — the machines that take suite and audit work off this box" style="display:none">💻</button>
       <!-- lives in the sidebar on purpose: #sidetools is NOT hidden by the mobile media
            query, so the ☰ drawer makes this reachable on the phone, which is the only
            device the switch is for. The live title is written by applySaver(). -->
       <button id="saverbtn" title="data saver">🐢</button>
+      </span>
     </div>
     <div id="slots"></div>
     <div id="sidefoot">Enter — send · Shift+Enter — new line<br>Click a terminal to type into it directly</div>

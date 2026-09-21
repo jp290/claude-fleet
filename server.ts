@@ -17561,6 +17561,46 @@ function successionChain(s: Slot): { session: number; taken: number | null; cap:
   return { session: f.session, taken: f.taken, cap: f.cap, past };
 }
 
+// ONE PAST SESSION'S CONVERSATION — what the bar's band shows when it is pulled back onto a session
+// that has handed over (owner 2026-09-21: "das transscript der vorherigen session ansehen und
+// analysieren"). The identity is the one fact that ties a past occupant to a file: the handoff
+// report it filed carries `worker.sessionId` + `worker.cwd`, and that pair is read exactly as the 💬
+// view reads the running occupant (transcriptPayload on a copy of the slot). Nothing is guessed:
+// a MAIN's lineage record names slot + openedAt only, and 2 to 29 transcripts of its cwd fall into
+// such a window (docs/messungen/2026-09-21-band-transkript-quelle.md §2) — so a past session with no
+// report, or a report without a sessionId, answers `assigned: false` with the reason, never a
+// neighbour's conversation. `ctx` is where that session's window stood when it handed over: the
+// last usage record of the same file, over the slot's window. The slot's CURRENT model names that
+// window — a line keeps its model across a succession, and a past occupant's own is not recorded.
+function contextFillOf(s: Slot, cwd: string, sessionId: string): ContextFill | null {
+  const h = harnessOf(s.harness);
+  const reader = h.context;
+  if (!reader) return null;
+  const modelWindow = reader.windowFromFile ? null : contextWindowFor(s.model ?? harnessDefaultModel(h));
+  if (!reader.windowFromFile && modelWindow === null) return null;
+  const file = reader.file({ cwd, sessionId });
+  if (!file) return null;
+  let read: number | ContextRead | null;
+  try { read = reader.used(file, statSync(file).size); } catch { return null; }
+  if (read === null) return null;
+  const usedTokens = typeof read === "number" ? read : read.used;
+  const windowTokens = typeof read === "number" ? modelWindow : read.window;
+  if (windowTokens === null) return null;
+  return { usedTokens, windowTokens, pct: Math.round((usedTokens / windowTokens) * 1000) / 10 };
+}
+const TRANSCRIPT_UNASSIGNED = "Transkript nicht zugeordnet — für diese Session liegt kein Übergabe-Report mit Session-Kennung vor";
+async function pastTranscript(s: Slot, n: number, after: number) {
+  const past = successionChain(s).past.find((p) => p.session === n);
+  if (!past) return null;
+  const report = past.report ? fleetReports.find((r) => r.id === past.report) ?? null : null;
+  const base = { session: n, startedAt: past.startedAt, handedAt: past.handedAt, report: past.report };
+  if (!report?.worker.sessionId || !report.worker.cwd)
+    return { ...base, assigned: false as const, reason: TRANSCRIPT_UNASSIGNED, ctx: null, entries: [], total: 0, source: null };
+  const was: Slot = { ...s, cwd: report.worker.cwd, sessionId: report.worker.sessionId };
+  return { ...base, assigned: true as const, ctx: contextFillOf(s, report.worker.cwd, report.worker.sessionId),
+    ...(await transcriptPayload(was, after)) };
+}
+
 function migrateMessage(fill: ContextFill, rail: MigrateRail): string {
   const opening = `[fleet] Dein Kontext ist bei ${fill.pct}% (${fill.usedTokens} von ${fill.windowTokens} Tokens im Fenster). `
     + "Das ist ein Server-Prädikat, keine Meldung von dir. Übergib jetzt in dieser Reihenfolge: ";
@@ -36253,6 +36293,13 @@ Bun.serve<WSData>({
       const s = slotFrom(chainMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       return json(successionChain(s));
+    }
+    const pastMatch = /^\/api\/slots\/(\d+)\/succession\/(\d+)\/transcript$/.exec(url.pathname);
+    if (req.method === "GET" && pastMatch) {
+      const s = slotFrom(pastMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      const p = await pastTranscript(s, Number(pastMatch[2]), Number(url.searchParams.get("after") ?? 0));
+      return p ? json(p) : json({ error: "no such past session on this line" }, 404);
     }
     // lane map: every open worktree of the focused slot's repo, including ORPHANS (worktrees whose slot
     // was killed). Works from lane slots too: `worktree list` from a linked worktree covers the repo.

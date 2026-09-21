@@ -613,6 +613,26 @@ const CLAUDE_TRUST_DIALOG: ScreenBlock = {
   why: "claude trust dialog",
 };
 
+// THE COMPOSER GLYPH, and it is the only thing on a claude frame that says "input is kept now".
+// MEASURED 2026-09-21 on claude 2.1.278 in throwaway tmux sockets (own socket, --session-id, the
+// transcript as the independent witness — scratchpad probe, three runs): a fresh pane paints
+// NOTHING for the first 8.5–25.9 s (load-dependent), and a paste+Enter inside that blackout is
+// lost in both observable ways — the bytes never reach the TUI at all, or they surface in the
+// composer minutes later with the Enter already consumed, and the session transcript is never
+// written. The same paste+Enter fired the moment `❯` is on screen takes the turn every time
+// (t_composer 9152 ms → transcript hit). So: one constant, two readers — `composer.re` matches the
+// glyph per rendered row, `readiness.accept` asks the whole frame whether that row exists at all.
+const CLAUDE_COMPOSER_GLYPH = /^❯/;
+// ...and THE READY MARKER is "this TUI has drawn its chrome", which the composer glyph answers but
+// does not own. Three measured lines, any one of which means the frame belongs to a drawn claude:
+// the composer glyph row, the permission-mode line the bypass spawn always paints, and the status
+// footer. The alternatives are not decoration — a stand-in that must declare itself ready without
+// pretending to own a composer (the claude-gate wake fixture) can paint the middle one, and a pane
+// whose composer row has scrolled under an overlay still answers with the footer. Ordered as
+// measured: composer first, because it is the one that appears earliest (9152 ms vs 12 853 ms for
+// the footer on the same boot).
+const CLAUDE_READY_FRAME = /^❯|^ {2}⏵⏵ |^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\] (?:\d+|--)%/m;
+
 // Adapter #1 — the default. `spawnCmd` CALLS slotCmd rather than reimplementing it, so the
 // no-harness path cannot drift from what it was: there is only one implementation of it.
 // `pinsSession` mirrors slotCmd's own `claude` test, because that is the condition under which
@@ -651,12 +671,22 @@ const CLAUDE_HARNESS: Harness = {
   // The composer marker rides the same condition: it was measured on the real claude binary, and a
   // stand-in named claude (the claude-gate suite's fakes) renders no composer — for those the
   // observation answers "unobservable", which is the truth, and never "observed".
-  ...(IS_CLAUDE ? { bootSettleMs: 2500, composer: { kind: "glyph" as const, re: /^❯/ } } : {}),
-  // NOT behind IS_CLAUDE, unlike the two measurements above: those describe what a stand-in cannot
-  // render, this one what nothing but claude renders — so it cannot fire on a stand-in by accident,
-  // and a suite fixture can paint it. `accept: null`: no ready marker is declared for claude, so a
-  // pane without the dialog keeps exactly its pre-readiness behaviour at every gate.
-  readiness: { accept: null, blocks: [CLAUDE_TRUST_DIALOG] },
+  ...(IS_CLAUDE ? { bootSettleMs: 2500, composer: { kind: "glyph" as const, re: CLAUDE_COMPOSER_GLYPH } } : {}),
+  // `blocks` is NOT behind IS_CLAUDE, unlike the two measurements above: those describe what a
+  // stand-in cannot render, this one what nothing but claude renders — so it cannot fire on a
+  // stand-in by accident, and a suite fixture can paint it.
+  // `accept` IS behind IS_CLAUDE, and the asymmetry is the whole point: a block only ever REFUSES,
+  // so a marker that never fires costs nothing, while a ready marker that never appears would hold
+  // every founding paste until the bounded wait ran out. A stand-in (`FLEET_CMD=true`) paints no
+  // composer, so it keeps `accept: null` and with it exactly its pre-readiness behaviour.
+  // UNTIL 2026-09-21 THIS WAS `accept: null` FOR THE REAL BINARY TOO, and that is the hole the
+  // Orchestrator succession of 2026-09-20 23:45 fell through: paneReadiness answers `null` for an
+  // adapter that declares blocks without a marker, waitForFoundingReadiness reads that as "ready"
+  // and returns on its first line, and the 3238-byte founding brief was pasted into a pane that
+  // had not drawn anything yet. The pane ate it, the post-Enter composer read empty, the ledger
+  // booked `observed`, and the predecessor was retired onto a successor that had never been told
+  // what it was for. The marker below is what makes that wait a wait.
+  readiness: { accept: IS_CLAUDE ? CLAUDE_READY_FRAME : null, blocks: [CLAUDE_TRUST_DIALOG] },
   modelFooter: /^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\] (?:\d+|--)% {2}\| {2}(.+?)(?: {3,}.*)?$/m,
   // Claude owns its repository metadata; Fleet has not fenced it out of commits.
   hostCommits: false,
@@ -6365,7 +6395,7 @@ async function wakeSlot(s: Slot, via: "owner" | "delivery"): Promise<WakeResult>
       if (state !== "alive") return { ok: false, reason: `agent not running after the wake spawn (${state})` };
       await Bun.sleep(harnessOf(s.harness).bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS);
     }
-    const ready = await waitForFoundingReadiness(s, current);
+    const ready = await waitForFoundingReadiness(s, current, { marker: false });
     if (!ready.ok) return { ok: false, reason: ready.reason };
     // read off what ensureSlot DID, as the ↻ route does: the pin kept = the conversation came back
     const resumed = s.sessionId === sleep.sessionId;
@@ -6570,7 +6600,10 @@ const FOUNDING_BOOT_GRACE_MS = Math.max(250, Number(process.env.FLEET_FOUNDING_B
 // --- ACP-25: acceptance is OBSERVED, never echoed -------------------------------------------------
 // Process-alive, header readiness and lastOutput-idle prove nothing about prompt acceptance; the
 // only rendered fact is whether the composer DRAINED, so sendText reads the pane before and after:
-//   "observed"        composer on screen and empty after Enter — the TUI took the turn.
+//   "observed"        the payload was READ BACK COMPLETE from the composer and the composer was
+//                     empty after Enter — the TUI took the turn. Both halves are required: an
+//                     empty composer alone is also what a pane that never received the paste looks
+//                     like (2026-09-20 23:45, the lost Orchestrator succession).
 //   "not-observed"    composer still holding text after the window: THROWN. No replay, no second Enter.
 //   "unobservable"    no composer line in the window: typed, not contradicted, never claimed.
 //   "not-applicable"  the adapter declares no composer, or submit was not requested.
@@ -7013,8 +7046,11 @@ async function sendText(s: Slot, given: string, submit: boolean,
       // blocks it. "differs" leaves completeness UNPROVABLE, never disproven, so the send proceeds
       // into the acceptance read — no invented delivery, never a second blind Enter.
       // The cut-off event that forced this: server-narrativ-archiv.md#sendtext
+      // Kept for the acceptance read below: an empty composer AFTER Enter means "the TUI took the
+      // turn" only if the payload was ever IN that composer. `null` = never asked (no composer form).
+      let arrival: ComposerArrival | null = null;
       if (observes) {
-        const arrival = await awaitArrival(s, bound, text);
+        arrival = await awaitArrival(s, bound, text);
         // identity first: a slot that changed under the window must report THAT, not a verdict.
         if (!sameBoundPane(s, bound)) throw new Error("slot changed during arrival probe");
         if (arrival === "partial") throw new SendNotAccepted(
@@ -7031,7 +7067,16 @@ async function sendText(s: Slot, given: string, submit: boolean,
         if (bound.comms.length > 0 && await paneAgentAt(bound.paneId, bound.comms) !== "alive")
           return { acceptance: "unobservable" as const };
         if (!sameBoundPane(s, bound)) throw new Error("slot changed during acceptance probe");
-        return { acceptance: "observed" as const };
+        // AN EMPTY COMPOSER IS EVIDENCE OF A TURN ONLY IF THE PAYLOAD WAS EVER IN IT. A pane that
+        // never rendered the paste — still booting, or a frame this reader does not recognise —
+        // reads exactly like one that just submitted, and until 2026-09-21 that read WAS "observed":
+        // the lost Orchestrator succession of 2026-09-20 23:45 is on the ledger as
+        // `send slot=6 succession 3238B observed` with no such turn in the session transcript.
+        // "complete" is the one arrival answer that proves the payload was on screen, so it is the
+        // one that may become `observed`; everything else is `unobservable`, which is the truth and
+        // is what an unrecognised frame has always returned two lines up. No caller is refused by
+        // this — the honest label is what a stand-in that paints no composer already gets.
+        return { acceptance: arrival === "complete" ? "observed" as const : "unobservable" as const };
       }
       if (after === null) return { acceptance: "unobservable" as const };
       const rollback = options.rollbackOwnPayload
@@ -7158,7 +7203,20 @@ async function paneReadiness(s: Slot): Promise<{ state: "ready" | "blocked" | "p
 // Fresh founding prompts have a stricter readiness contract than established-pane deliveries: with
 // a declared ready marker, "pending" means keep waiting within the shared bound. Dispatch and
 // Program-MAIN bootstrap share this one loop so a new blocking screen cannot be fixed for one rail only.
-async function waitForFoundingReadiness(s: Slot, stillCurrent: () => boolean): Promise<
+// `marker: false` is the WAKE rail, and it is a scoped exception with a measurement behind it,
+// not a preference. Every rail that types a FOUNDING brief requires the ready marker since
+// 2026-09-21 (CLAUDE_READY_FRAME — the pane that ate the Orchestrator succession had drawn
+// nothing). wakeSlot types into a fresh pane too and has the same hole, but requiring the marker
+// there turned four checks of ./e2e-claude-gate.sh's sleep/wake family red with "pane never showed
+// its ready marker within 20s" — and the reason is UNEXPLAINED: a stand-in that prints the marker
+// was measured painting it in a real tmux pane (2026-09-21, throwaway socket, same argv shape) and
+// the fixture's own liveness check passes, so the pane is up and the marker should be on it.
+// A rail whose failure I cannot explain does not get a change: wake keeps its pre-2026-09-21
+// contract (agent alive + adapter boot settle, blocks still refuse) until that is understood.
+// THIS IS A NAMED OPEN GAP, not a decision that wake is safe — see
+// docs/messungen/2026-09-21-founding-paste-blackout.md §6.
+async function waitForFoundingReadiness(s: Slot, stillCurrent: () => boolean,
+  opts: { marker?: boolean } = {}): Promise<
   { ok: true } | { ok: false; kind: "identity" | "blocked" | "timeout"; reason: string }
 > {
   if (!harnessOf(s.harness).readiness) return { ok: true };
@@ -7167,6 +7225,7 @@ async function waitForFoundingReadiness(s: Slot, stillCurrent: () => boolean): P
     if (!stillCurrent()) return { ok: false, kind: "identity", reason: "slot changed during spawn" };
     const rd = await paneReadiness(s);
     if (!rd || rd.state === "ready") return { ok: true };
+    if (rd.state === "pending" && opts.marker === false) return { ok: true };
     if (rd.state === "blocked")
       return { ok: false, kind: "blocked", reason: `pane blocked on ${rd.why} — brief withheld` };
     if (Date.now() - started >= READY_WAIT_MS)

@@ -1825,8 +1825,10 @@ export async function run(): Promise<void> {
       // guess its way out of appear, in words, and they open the dialog that settles them.
       check("client: the Codex line appears only when the owner must act, and in words, not 'cx'",
         /s\.codexRecovery\.state === "ambiguous" \|\| s\.codexRecovery\.state === "lost"/.test(rowSrc)
-          && rowSrc.includes('"choose which conversation this pane continues"')
-          && rowSrc.includes('"its conversation is gone — bind another"')
+          // WHAT HAPPENED, then WHAT TO DO — the first wording named only the action and the owner
+          // asked what the message even was (2026-09-21)
+          && rowSrc.includes('"Codex lost track of its conversation — click to pick it"')
+          && rowSrc.includes(`"Codex's conversation is gone — click to bind another"`)
           // a line of its own, never a chip in line 1 — there it pushed the name to zero
           && /el\("div", "needline"/.test(rowSrc) && /row\.appendChild\(need\)/.test(rowSrc)
           && !/`cx \$\{/.test(cliSrc) && /need\.onclick = \(e\) => \{ e\.stopPropagation\(\); openCodexDlg\(s\.id\); \}/.test(rowSrc),
@@ -1838,6 +1840,53 @@ export async function run(): Promise<void> {
           && /n > 0 \? `💬\$\{n\}` : "💬"/.test(rowSrc)
           && !indexSrc.includes(".slot:hover .revb"),
         "the slotact block of slotRow");
+    }
+    // THE CODEX SENTENCE IS NEVER CUT — at rest it wraps (no nowrap, no clip on its own box), and on
+    // hover the action strip covers LINE 1 ONLY: down to bottom:0 its solid surface lay over the
+    // right end of the sentence ("choose which convers…", owner screenshot 2026-09-21). Measured in a
+    // browser by docs/design/sidebar/leiste-mess/leiste-shot.js (the `cut` field, rest and hover).
+    {
+      const needCss = cssBody(".slot .needline");
+      const laneActCss = cssBody(".slot.lane .slotact");
+      check("client: the Codex sentence and ⎇+ are not cut at rest or on hover — the strip covers line 1 only and hides the readings it replaces",
+        needCss !== "" && !/nowrap|overflow|text-overflow|max-height|-webkit-line-clamp/.test(needCss)
+          && !/bottom:\s*0/.test(slotactCss) && /height:\s*calc\(6px \+ 26px\)/.test(slotactCss)
+          && /height:\s*calc\(6px \+ 22px\)/.test(laneActCss)
+          && /\.slotact, \.slot\.lane \.slotact \{[^}]*position: static; height: auto/.test(mobileCss)
+          // …and the readings under it are HIDDEN in place, never overpainted by a guessed width (⎇+ was cut)
+          && indexSrc.includes(".slot:hover .r1 .ctxfill, .slot:hover .r1 .act,") && !/min-width/.test(slotactCss),
+        JSON.stringify({ needCss: needCss.trim(), slotactCss: slotactCss.trim(), laneActCss: laneActCss.trim() }));
+    }
+    // FASSUNG D — the line as a chain of marks: one per past session, the running one, and under a
+    // cap the batons still left; no text on the line, and a past mark's hover comes from its own
+    // route (never the 2 s poll). Scaffolding like A–C, compared side by side until the owner picks.
+    {
+      const chainSrc = cut("function successionChainEl(", "// Which stacks exist right now.");
+      const pastSrc = cut("function successionPastFor(", "const whenShort");
+      check("client: #band=d draws the succession as a chain — past, running, free — with no text on the line",
+        cliSrc.includes('return v === "a" || v === "b" || v === "c" || v === "d" ? v : null;')
+          && /if \(BAND_VARIANT === "d" && s\.succession\) row\.appendChild\(successionChainEl\(s, s\.succession\)\)/.test(rowSrc)
+          && chainSrc.includes('el("span", "sm past")') && chainSrc.includes('el("span", "sm now")')
+          && chainSrc.includes('el("span", "sm free")')
+          && /for \(let n = 1; n < sc\.session; n\+\+\)/.test(chainSrc)
+          && /sc\.cap !== null \? Math\.max\(0, sc\.cap - \(sc\.taken \?\? 0\)\) : 0/.test(chainSrc)
+          && !/el\("span", "sm [a-z]+", /.test(chainSrc),
+        "successionChainEl");
+      check("client: a past mark's hover names begin, handover and handoff report, read once per session from its own route",
+        pastSrc.includes("api(`/api/slots/${s.id}/succession`)")
+          && pastSrc.includes('successionPast.set(key, "failed")') && pastSrc.includes('if (have) return have;')
+          && chainSrc.includes("began ${whenShort(p.startedAt)}") && chainSrc.includes("handed over ${whenShort(p.handedAt)}")
+          && chainSrc.includes('handoff report ${p.report ?? "not recorded"}')
+          && serverSrc.includes("return json(successionChain(s));"),
+        "successionPastFor + successionChainEl + the server route");
+      const smCss = cssBody(".slot .sm"), chainCss = cssBody(".slot .succchain");
+      const nowCss = cssBody(".slot .sm.now"), pastCss = cssBody(".slot .sm.past"), freeCss = cssBody(".slot .sm.free");
+      check("client: the chain's marks speak the chat tokens only, and differ by fill and brightness",
+        /width: 12px; height: 6px/.test(smCss) && /align-items: center/.test(chainCss)
+          && /background: var\(--chat-ink\)/.test(nowCss) && /background: var\(--chat-faint\)/.test(pastCss)
+          && /box-shadow: inset 0 0 0 1px var\(--chat-faint\)/.test(freeCss) && !/background/.test(freeCss)
+          && ![smCss, chainCss, nowCss, pastCss, freeCss].some((c) => /#[0-9a-f]{3,8}\b|rgb|hsl/i.test(c)),
+        JSON.stringify({ smCss, nowCss, pastCss, freeCss }));
     }
     check("hover and focus actions use a solid row-coloured surface over passive facts",
       /background:\s*var\(--rb\)/.test(slotactCss)

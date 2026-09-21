@@ -103,13 +103,47 @@ if (PATCH) {
     // the only trace was one line in the instance's server.log.
     const lineageId = "f1c70000000000000000cafe";
     m.lineageId = lineageId;
-    st.lineageHandovers = [...(st.lineageHandovers ?? []), ...[0, 1, 2].map((i) => ({
+    // replaced, not appended: a second `succession` would otherwise make this session 7
+    st.lineageHandovers = [...(st.lineageHandovers ?? []).filter((r) => r.lineageId !== lineageId), ...[0, 1, 2].map((i) => ({
       v: 1, lineageId, role: "generic", at: (m.openedAt ?? Date.now()) - (3 - i) * 3600_000,
       from: { slot: 2, openedAt: (m.openedAt ?? Date.now()) - (4 - i) * 3600_000 },
       to: { slot: 2, openedAt: (m.openedAt ?? Date.now()) - (3 - i) * 3600_000 },
       obligations: [], intent: "fixture handover", pointer: null, supersededBy: null }))];
     planted.push("slot 2 (main): session 4");
   }
+  // THE HANDOFF REPORTS the past sessions filed — what #band=d's hover names per past mark
+  // (server.ts#successionChain). A lane's past occupants ARE its handoff reports (slot + branch);
+  // a main's are matched to its lineage records by slot + openedAt, so slot 2 gets two of its three
+  // and the demo also shows a past session whose report was never filed. Ids start f1c7 so a
+  // re-plant replaces them instead of stacking.
+  const HOUR = 3600_000;
+  // `id` is passed, not read off the row: a persisted slot is KEYED by its number and carries no
+  // `id` field — reading s.id planted five reports with no worker slot, and the loader dropped all five
+  const report = (i, id, s, openedAt, reportedAt) => ({
+    id: `f1c7${String(i).padStart(20, "0")}`, reportedAt, status: "handoff",
+    text: `fixture handoff: session of slot ${id} laid the baton down`,
+    worker: { slot: id, openedAt, sessionId: null, cwd: s.cwd, branch: s.worktree?.branch ?? "main" },
+    provenance: { taskId: null, originId: null, programId: null }, receiver: null, basis: "owner-inbox",
+    eventId: `e1c7${String(i).padStart(20, "0")}`,
+    // JUDGED, so they sit in no inbox: an undecided owner-inbox row is an item the owner owes a
+    // verdict on, and five fixture rows lit the head row's inbox badge with a "5" (2026-09-21)
+    decision: { disposition: "accepted", by: "owner", at: reportedAt + 1, reason: null } });
+  const reports = [];
+  const pastLane = (id, n) => {
+    const s = slot(id);
+    if (!s?.worktree) return;
+    const now = s.openedAt ?? Date.now();
+    for (let k = 0; k < n; k++)
+      reports.push(report(reports.length + 1, id, s, now - (n - k + 1) * HOUR, now - (n - k) * HOUR - 60_000));
+  };
+  pastLane(9, 2);
+  pastLane(10, 1);
+  if (m) {
+    const now = m.openedAt ?? Date.now();
+    for (const i of [0, 2]) reports.push(report(reports.length + 1, 2, m, now - (4 - i) * HOUR, now - (3 - i) * HOUR - 60_000));
+  }
+  st.fleetReports = [...(st.fleetReports ?? []).filter((r) => !String(r.id).startsWith("f1c7")), ...reports];
+  planted.push(`handoff reports: ${reports.length} (lane 9: 2 · lane 10: 1 · main 2: sessions 1 and 3, session 2 has none)`);
   // CONTEXT FILL: a session id on the slot and a transcript at the path the claude reader derives
   // from it — under THIS INSTANCE'S HOME (testinstanz.sh starts the server with HOME=$DIR/home),
   // so nothing is written into the real ~/.claude.

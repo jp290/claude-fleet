@@ -51,6 +51,31 @@ const readRows = `JSON.stringify([...document.querySelectorAll("#slots .slot")].
     label: r.querySelector(".lbl")?.textContent ?? null, h: Math.round(r.getBoundingClientRect().height), shown };
 }))`;
 
+// THE CODEX SENTENCE, measured: is any of it hidden — by its own box (scrollWidth past clientWidth,
+// a clipped height) or by the hover strip's solid surface lying over it? Read once at rest and once
+// with the pointer on that row, which is the state the owner's screenshot caught.
+const readCut = `JSON.stringify([...document.querySelectorAll("#slots .slot .needline")].map((n) => {
+  const row = n.closest(".slot"), act = row.querySelector(".slotact");
+  const a = act && getComputedStyle(act).display !== "none" ? act.getBoundingClientRect() : null;
+  const r = n.getBoundingClientRect();
+  const covered = !!a && a.left < r.right && a.right > r.left && a.top < r.bottom && a.bottom > r.top;
+  return { slot: row.dataset.slot, text: n.textContent, clipped: n.scrollWidth > n.clientWidth + 1
+    || n.scrollHeight > n.clientHeight + 1, coveredByHoverStrip: covered, h: Math.round(r.height) };
+}))`;
+// A native tooltip is not painted into a headless screenshot, so what a hover SAYS is read from the
+// title attributes: every chain mark (#band=d) and every succession reading of A–C.
+const readTitles = `JSON.stringify([...document.querySelectorAll("#slots .slot")].flatMap((r) =>
+  [...r.querySelectorAll(".sm, .succ, .succhip")].map((m) => ({ slot: r.dataset.slot, cls: m.className, title: m.title }))))`;
+const hoverRow = async (slot) => {
+  const box = await evaluate(`(() => { const r = document.querySelector('#slots .slot[data-slot="${slot}"]');
+    if (!r) return null; const b = r.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + 12 }; })()`);
+  if (!box) return false;
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
+  await Bun.sleep(400);
+  return true;
+};
+const HOVER_ROWS = (process.env.HOVER_ROWS ?? "9,5").split(",").filter(Boolean);
+
 await send("Page.enable");
 for (const hash of hashes.length ? hashes : [""]) {
   for (const w of [900, 1200]) {
@@ -62,8 +87,19 @@ for (const hash of hashes.length ? hashes : [""]) {
     const tag = hash.replace(/^#/, "").replace(/[^a-z0-9=]/gi, "_").replace(/=/g, "-") || "plain";
     const shot = await send("Page.captureScreenshot", { format: "png" });
     await Bun.write(`${outBase}-${tag}-${w}.png`, Buffer.from(shot.data, "base64"));
+    const cut = { rest: JSON.parse(await evaluate(readCut)) };
     if (w === 900) await Bun.write(`${outBase}-${tag}-rows.json`, await evaluate(readRows));
+    if (w === 900) await Bun.write(`${outBase}-${tag}-titles.json`, await evaluate(readTitles));
     console.log(`wrote ${outBase}-${tag}-${w}.png`);
+    for (const slot of HOVER_ROWS) {
+      if (!(await hoverRow(slot))) { console.log(`no row ${slot} — no hover shot`); continue; }
+      const hs = await send("Page.captureScreenshot", { format: "png" });
+      await Bun.write(`${outBase}-${tag}-hover${slot}-${w}.png`, Buffer.from(hs.data, "base64"));
+      cut[`hover${slot}`] = JSON.parse(await evaluate(readCut));
+      console.log(`wrote ${outBase}-${tag}-hover${slot}-${w}.png`);
+    }
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: w - 5, y: 5 });
+    await Bun.write(`${outBase}-${tag}-cut-${w}.json`, JSON.stringify(cut, null, 1));
   }
 }
 ws.close();

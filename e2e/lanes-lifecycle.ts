@@ -899,6 +899,19 @@ export async function run(lc: LaneCtx): Promise<void> {
         && after?.openedAt !== batonOpenedAt && after?.selfToken !== batonTok
         && exists(batonCwd),
       JSON.stringify(after).slice(0, 240));
+    // THE LINE, SESSION BY SESSION (the bar's #band=d hover): session 1 is the predecessor — it
+    // began at the occupant's openedAt and its handoff report is the one filed just above.
+    const chainRes = await get(`/api/slots/${batonSlotId}/succession`);
+    const chain = (await chainRes.json()) as { session?: number;
+      past?: { session: number; startedAt: number | null; handedAt: number | null; report: string | null }[] };
+    check("(baton) GET /api/slots/:id/succession names the predecessor: its begin, its handover, its handoff report",
+      chainRes.ok && chain.session === 2 && chain.past?.length === 1 && chain.past[0]?.session === 1
+        && chain.past[0]?.startedAt === batonOpenedAt && chain.past[0]?.report === handoffBody.report?.id
+        && typeof chain.past[0]?.handedAt === "number" && chain.past[0].handedAt >= batonOpenedAt,
+      `${chainRes.status} ${JSON.stringify(chain).slice(0, 240)}`);
+    const noChain = await get("/api/slots/0/succession");
+    check("(baton) GET /api/slots/:id/succession refuses a slot that is not one (400), never an empty line",
+      noChain.status === 400, String(noChain.status));
     const oldTokenNow = (await selfGet(batonTok)).status;
     check("(baton) the predecessor's credential went with its session — the old token authenticates nothing",
       oldTokenNow === 401, String(oldTokenNow));

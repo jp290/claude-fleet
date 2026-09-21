@@ -6200,11 +6200,11 @@ function setStackOpen(g: Stack, on: boolean) {
 // navigation, so the page keeps drawing the Fassung it was LOADED with and the comparison is
 // three pictures of the same thing (measured from outside on 2026-09-20). The reader below is a
 // function, the two switches are `let`, and `hashchange` re-reads and repaints both.
-function readVariant(key: string): "a" | "b" | "c" | null {
+function readVariant(key: string): "a" | "b" | "c" | "d" | null {
   try {
     const v = new URLSearchParams(location.hash.replace(/^#/, "")).get(key)
       ?? new URLSearchParams(location.search).get(key);
-    return v === "a" || v === "b" || v === "c" ? v : null;
+    return v === "a" || v === "b" || v === "c" || v === "d" ? v : null;
   } catch { return null; }
 }
 let BAND_VARIANT = readVariant("band");
@@ -6227,6 +6227,64 @@ function successionTitle(sc: NonNullable<SlotInfo["succession"]>): string {
     + (sc.cap !== null
       ? ` · ${sc.taken ?? 0} of ${sc.cap} batons spent (FLEET_LANE_SUCCEED_MAX, counted per queue row)`
       : sc.taken !== null ? ` · ${sc.taken} taken, no cap` : " · no cap");
+}
+
+// FASSUNG D — THE LINE AS A CHAIN (owner 2026-09-21: "Ich kann immer noch keine sessions
+// hintereinander sehen"). A, B and C only move a counter around; D draws one mark per session, left
+// to right in order: past ones dim, the running one full, and under a cap the batons still left as
+// empty outlines. No text on the line. What a past mark stands for — when it began, when it handed
+// over, its handoff report — is not on the 2 s poll (server.ts#successionChain, the poll's budget),
+// so it is asked for once per (slot, occupant, session) and kept.
+interface SuccessionPast { session: number; startedAt: number | null; handedAt: number | null; report: string | null }
+const successionPast = new Map<string, SuccessionPast[] | "pending" | "failed">();
+const CHAIN_SHOWN_MAX = 12;
+function successionPastFor(s: ActiveSlot, session: number): SuccessionPast[] | "pending" | "failed" {
+  const key = `${s.id}:${s.openedAt ?? 0}:${session}`;
+  const have = successionPast.get(key);
+  if (have) return have;
+  successionPast.set(key, "pending");
+  api(`/api/slots/${s.id}/succession`)
+    .then((r) => r.ok ? r.json() as Promise<{ past?: SuccessionPast[] }> : null)
+    // a failed read is REMEMBERED as failed, not retried on every poll, and the hover says so
+    .then((j) => { successionPast.set(key, j?.past ?? "failed"); renderSlots(); })
+    .catch(() => { successionPast.set(key, "failed"); renderSlots(); });
+  return "pending";
+}
+const whenShort = (t: number | null): string => t === null ? "not recorded" : new Date(t).toLocaleString();
+function successionChainEl(s: ActiveSlot, sc: NonNullable<SlotInfo["succession"]>): HTMLElement {
+  const chain = el("div", "succchain");
+  const past = successionPastFor(s, sc.session);
+  // the batons still left under a cap: every succession spends one, so a capped line can still
+  // reach cap - taken more sessions after this one
+  const free = sc.cap !== null ? Math.max(0, sc.cap - (sc.taken ?? 0)) : 0;
+  const marks: HTMLElement[] = [];
+  for (let n = 1; n < sc.session; n++) {
+    const m = el("span", "sm past");
+    const p = typeof past === "string" ? null : past.find((x) => x.session === n) ?? null;
+    m.title = `session ${n}`
+      + (p ? `\nbegan ${whenShort(p.startedAt)}\nhanded over ${whenShort(p.handedAt)}`
+        + `\nhandoff report ${p.report ?? "not recorded"}`
+        : past === "failed" ? "\nthe line's history could not be read" : "\nloading…");
+    marks.push(m);
+  }
+  const cur = el("span", "sm now");
+  cur.title = `session ${sc.session} — the one in this pane`
+    + (s.openedAt ? `, since ${new Date(s.openedAt).toLocaleString()}` : "");
+  marks.push(cur);
+  for (let i = 0; i < free; i++) {
+    const m = el("span", "sm free");
+    m.title = `a baton left — ${free} of ${sc.cap} successions still possible on this row (FLEET_LANE_SUCCEED_MAX)`;
+    marks.push(m);
+  }
+  // a very long line keeps its END: the running session and what is still free are the reading
+  if (marks.length > CHAIN_SHOWN_MAX) {
+    const cut = marks.length - CHAIN_SHOWN_MAX + 1;
+    const more = el("span", "sm more");
+    more.title = `sessions 1–${cut} not drawn`;
+    chain.append(more, ...marks.slice(cut));
+  } else chain.append(...marks);
+  chain.title = successionTitle(sc);
+  return chain;
 }
 
 // Which stacks exist right now. A repo with no lanes is NOT a stack — a lone session stays the
@@ -6682,9 +6740,11 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       // the signal, too. The click opens the dialog that settles it.
       if (s.codexRecovery && (s.codexRecovery.state === "ambiguous" || s.codexRecovery.state === "lost")) {
         const cr = s.codexRecovery;
+        // WHAT HAPPENED, THEN WHAT TO DO (owner 2026-09-21, "Was ist das hier für eine Meldung?"):
+        // the first wording named only the action, and the reader could not tell why it was asked.
         const need = el("div", "needline", cr.state === "ambiguous"
-          ? "choose which conversation this pane continues"
-          : "its conversation is gone — bind another");
+          ? "Codex lost track of its conversation — click to pick it"
+          : "Codex's conversation is gone — click to bind another");
         need.title = (cr.state === "ambiguous"
           ? "Codex: several conversations could belong to this pane, and Fleet will not guess which."
           : "Codex: the conversation this pane was bound to is gone.")
@@ -6702,6 +6762,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         r2.appendChild(sb);
         row.appendChild(r2);
       }
+      if (BAND_VARIANT === "d" && s.succession) row.appendChild(successionChainEl(s, s.succession));
       // FASSUNG A — a thin band of its own under the row.
       if (BAND_VARIANT === "a" && s.succession) {
         const band = el("div", "succband");

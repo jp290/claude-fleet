@@ -1541,6 +1541,9 @@ window.addEventListener("keydown", (e) => {
 // action is about to touch, before the click — not only after a refusal (the server always
 // re-verifies via worktreeRisk regardless of what this shows; this is purely informational).
 function showRiskPreview(title: string, risk: WtRisk, confirmLabel: string): Promise<boolean> {
+  // the phone drawer (#side, z 30) and its shade (29) sit above every .overlay (20): a lane's ✕ or
+  // ⏏ tapped in the drawer opened this panel UNDER it, where no tap could reach "kill" or "cancel"
+  setDrawer(false);
   return new Promise((resolve) => {
     const overlay = el("div", "overlay riskoverlay");
     overlay.style.display = "flex";
@@ -6622,7 +6625,9 @@ function startRename(row: HTMLElement, s: SlotInfo) {
     if (!(live instanceof HTMLElement)) return;
     row = live;
   }
-  const lbl = row.querySelector(".lbl");
+  // the RUNNING session's line 1: on a band row the past cells come first in the track, and the
+  // first .lbl was one of them — off-screen, so the input opened where nobody could see it
+  const lbl = row.querySelector(".r1:not(.pastcell) .lbl");
   if (!lbl || row.querySelector(".renamein")) return;
   const input = document.createElement("input");
   input.className = "renamein";

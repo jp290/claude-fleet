@@ -1860,6 +1860,33 @@ export async function run(): Promise<void> {
           && /@media \(hover: none\) \{[^@]*\.slot:focus-within \.r1 \.act \{ visibility: visible; \}/.test(indexSrc),
         JSON.stringify({ needCss: needCss.trim(), slotactCss: slotactCss.trim(), laneActCss: laneActCss.trim() }));
     }
+    // EVERY LIVE ROW CAN BE CLOSED (owner 2026-09-21: "ich sessions mit der neuen leiste nicht
+    // schließen kann"). The ✕ hangs on the ROW, never inside line 1 — bandify moves line 1 into the
+    // band's track, and a ✕ there would ride off with a pulled-back cell. And a lane's ✕ confirms
+    // through showRiskPreview, whose .overlay (z 20) lay UNDER the phone drawer (#side z 30): the
+    // tap fetched the risk and opened a panel nobody could reach. Either the preview closes the
+    // drawer, or the overlay stacks above it.
+    {
+      const riskSrc = cut("function showRiskPreview(", "function confirmMidRun(");
+      const zOf = (css: string): number => Number(/z-index:\s*(\d+)/.exec(css)?.[1] ?? NaN);
+      const overlayZ = zOf(cssBody(".overlay")), drawerZ = zOf(/#side \{[^}]*\}/.exec(mobileCss)?.[0] ?? "");
+      check("client: every live row keeps a reachable ✕ — on the row, above the phone drawer, hidden only on a past band cell",
+        /const kill = el\("span", "kill", "✕"\)/.test(rowSrc) && /act\.appendChild\(kill\);\s*row\.appendChild\(act\);/.test(rowSrc)
+          && rowSrc.includes("post(`/api/slots/${s.id}/kill`, {})")
+          && /\.slot\.back \.slotact/.test(indexSrc)
+          && (/^\s*setDrawer\(false\);/m.test(riskSrc.split("new Promise")[0] ?? "") || overlayZ > drawerZ),
+        JSON.stringify({ overlayZ, drawerZ, riskHead: riskSrc.split("new Promise")[0]?.trim().slice(-160) }));
+      // …and every live row can be RENAMED where it is seen (owner, same day: "ich übrigens auch
+      // nicht richtig die sessions umbenennen"). bandify puts the past cells — each with its own
+      // .lbl — BEFORE line 1 in the track; a bare `.lbl` lookup opened the input in the first past
+      // cell, outside the view. The rename must address the running line, not a pastcell.
+      const renameSrc = cut("function startRename(", "function updateTitle(");
+      const lblPick = /const lbl = row\.querySelector\("([^"]*)"\)/.exec(renameSrc)?.[1] ?? "";
+      check("client: a rename opens in the running session's line 1, never in a band's past cell",
+        /\bpastcell\b/.test(cliSrc) && lblPick.includes(":not(.pastcell)")
+          && /c = el\("div", "r1 pastcell"\)/.test(cliSrc) && /lbl\.replaceWith\(input\)/.test(renameSrc),
+        JSON.stringify({ lblPick }));
+    }
     // THE BAND (owner rounds 3–10, 2026-09-21): a row whose line has handed over is a track you pull
     // back through its past; the session it rests on opens read-only in the pane. Every value below
     // is one the owner chose, driven over CDP first (docs/design/sidebar/leiste-mess/band-zieh.js).

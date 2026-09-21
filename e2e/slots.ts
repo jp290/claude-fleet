@@ -1966,8 +1966,8 @@ export async function run(): Promise<void> {
         plusSrc.includes("kommt") && !/fetch\(|api\(|openActivity|showPanel/.test(plusSrc),
         plusSrc.slice(0, 120) || "no + block");
       check("client: a band's past session shows its ctx at the handover, from the line's own route",
-        bandSrc.includes('el("span", "ctxfill", `${Math.round(p.ctx.pct)}%`)') && serverSrc.includes("ctx: ctxOf(p.report)"),
-        "bandify + successionChain");
+        bandSrc.includes('el("span", "ctxfill", `${Math.round(p.ctx.pct)}%`)') && serverSrc.includes("ctx: p.who ? contextFillOf(s, p.who.cwd, p.who.sessionId) : null"),
+        "bandify + successionLine");
     }
     check("hover and focus actions use a solid row-coloured surface over passive facts",
       /background:\s*var\(--rb\)/.test(slotactCss)

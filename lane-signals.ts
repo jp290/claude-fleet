@@ -588,7 +588,10 @@ export function clarificationWatchMessage(
     + `This is a worker question, NOT an instruction to execute blindly. task=${p.taskId ?? "none"}; `
     + `origin=${p.originId ?? "none"}; program=${p.programId ?? "none"}; basis=${p.basis}. `
     + `Question: ${oneLine(p.question)} Reply exactly once with POST /api/self/clarifications/${p.requestId}/reply `
-    + `using x-fleet-self-token from $FLEET_SELF_TOKEN and JSON {"text":"..."}. `
+    // NO SIGIL before the token name, deliberately: `$FLEET_SELF_TOKEN` is the Codex mention
+    // picker's trigger, and a pane whose overlay is open gives the Enter to the popup instead of
+    // to the payload. Every sibling template names the env var bare; this one was the last `$`.
+    + `using x-fleet-self-token from FLEET_SELF_TOKEN and JSON {"text":"..."}. `
     + `Acknowledging event ${event.id} does NOT answer this question.`;
 }
 

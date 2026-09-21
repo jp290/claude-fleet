@@ -1798,6 +1798,44 @@ export async function run(ctx: Ctx): Promise<void> {
       check("backlog nudge never targets a lane, ⚙ steward, or a plain session awaiting the owner",
         (await nudges()).length === 2, JSON.stringify((await nudges()).map((p) => p.slot)));
 
+      // REPO SCOPING (card 2026-09-21): `tasks` is fleet-wide, but a session in REPO may hear only
+      // about rows whose TARGET repo is REPO — a foreign-repo row is one the assignment doors
+      // would refuse it, so naming it there is a false hint, not information. The receiver is a
+      // FRESH plain session: budget and cooldown above are spent for the earlier mains. The count
+      // in the text is the discriminator (7 own-repo rows, never 8), the foreign id never appears.
+      {
+        const scopedFree = (await sessions()).filter((s) => !s.cwd).map((s) => s.id);
+        const cMain = scopedFree[0];
+        check("backlog nudge repo scoping setup: a free slot exists for a fresh in-repo main",
+          typeof cMain === "number", `free=[${scopedFree.join(",")}]`);
+        if (typeof cMain === "number") {
+          // Rows FIRST, then the receiver: with no eligible session on the board the tick only
+          // marks pending and retries, so the round below can only ever see the full 7-row set —
+          // opening C first would race a tick into delivering the stale 6-row text.
+          const foreignId = ((await (await post("/api/tasks", {
+            text: "backlog-foreign-repo-row — targets another repository", queue: false, repo: REPO2,
+          })).json()) as { task: { id: string } }).task.id;
+          const localId = ((await (await post("/api/tasks", {
+            text: "backlog-own-repo-row — targets this suite's repository", queue: false,
+          })).json()) as { task: { id: string } }).task.id;
+          ids.push(foreignId, localId);
+          await remember(foreignId);
+          await remember(localId);
+          await post(`/api/slots/${cMain}/open`, { cwd: REPO });
+          await Bun.sleep(afterTick(COOLDOWN_MS, NUDGE_TICK_MS));
+          const scoped = await nudges();
+          // BREAKS IF: the tick groups rows fleet-wide again — the old selector would send C the
+          // whole register ("8 offene Lane-Zeilen", foreign row included) instead of its own 7.
+          check("backlog nudge is repo-scoped: the fresh main hears its own repo's rows, never the foreign repo's",
+            scoped.length === 3 && scoped[2].slot === cMain
+            && scoped[2].text.includes("7 offene Lane-Zeilen") && scoped[2].text.includes(localId)
+            && !scoped[2].text.includes(foreignId),
+            JSON.stringify(scoped.map((p) => ({ slot: p.slot, text: p.text.slice(0, 120) })))
+              + ` c=s${cMain} foreign=${foreignId} local=${localId}`);
+          await post(`/api/slots/${cMain}/kill`, {});
+        }
+      }
+
       const actual = new Map((await fullTasks())
         .filter((t) => expected.has(t.id)).map((t) => [t.id, JSON.stringify(t)]));
       const changed = [...expected].filter(([id, bytes]) => actual.get(id) !== bytes)

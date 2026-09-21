@@ -2651,6 +2651,10 @@
   /* touch devices: hover-revealed controls have no hover to reveal them — pin them in flow */
   @media (hover: none) {
     .slotact, .slot.lane .slotact { display: flex; position: static; height: auto; padding-left: 0; background: none; }
+    /* the strip is IN FLOW here, beside the readings — nothing to hide them for (same selectors as
+       the hover rule, later in the sheet, so this wins) */
+    .slot:hover .r1 .ctxfill, .slot:hover .r1 .act,
+    .slot:focus-within .r1 .ctxfill, .slot:focus-within .r1 .act { visibility: visible; }
     .pkrow .pkuse, .pkrow .pkpin { visibility: visible; }
   }
 

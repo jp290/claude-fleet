@@ -1852,9 +1852,11 @@ export async function run(): Promise<void> {
         needCss !== "" && !/nowrap|overflow|text-overflow|max-height|-webkit-line-clamp/.test(needCss)
           && !/bottom:\s*0/.test(slotactCss) && /height:\s*calc\(6px \+ 26px\)/.test(slotactCss)
           && /height:\s*calc\(6px \+ 22px\)/.test(laneActCss)
-          && /\.slotact, \.slot\.lane \.slotact \{[^}]*position: static; height: auto/.test(mobileCss)
+          && /\.slotact, \.slot\.lane \.slotact \{[^}]*position: static; height: auto/.test(indexSrc)
           // …and the readings under it are HIDDEN in place, never overpainted by a guessed width (⎇+ was cut)
-          && indexSrc.includes(".slot:hover .r1 .ctxfill, .slot:hover .r1 .act,") && !/min-width/.test(slotactCss),
+          && indexSrc.includes(".slot:hover .r1 .ctxfill, .slot:hover .r1 .act,") && !/min-width/.test(slotactCss)
+          // …except on touch, where the strip is in flow beside them
+          && /@media \(hover: none\) \{[^@]*\.slot:focus-within \.r1 \.act \{ visibility: visible; \}/.test(indexSrc),
         JSON.stringify({ needCss: needCss.trim(), slotactCss: slotactCss.trim(), laneActCss: laneActCss.trim() }));
     }
     // FASSUNG D — the line as a chain of marks: one per past session, the running one, and under a

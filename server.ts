@@ -13557,6 +13557,34 @@ async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | nu
     gaps: checked.gaps, ...cardTokens(observed) };
 }
 
+// THE CARD'S ROLE ADOPTS AT SET TIME. A brief's `ROLLE:` line is validated into `card.rolle` by the
+// card rules — advisory there (`rolle.*` gaps never invalidate a card) — while `Task.spawn` stayed
+// the only persisted choice, so a row that NAMED a role in its text but filed without a body triple
+// spawned on the default adapter with nothing anywhere saying so (measured on live rows
+// 75c28778/fe2bf284/8bd19aac, 2026-09-20). This is the one adoption, called at the one place a card
+// is born (the sweep's `t.card = card`): a row whose spawn is still ABSENT takes it from the valid
+// card just attached, through the SAME three validators a body triple passes (taskSpawnFromBody,
+// harness first) — a role that does not survive them sets nothing, and the row stays exactly as it
+// was. The precedence never flips: a body triple is written at mint, and this helper refuses a row
+// that already carries one, so the card can only fill an absence, never overwrite a choice. The
+// status and dispatch guards repeat cardDue's own exclusions so the rule stays one rule wherever a
+// future attach point calls it: a sent row's lane already runs, a mid-dispatch row keeps the choice
+// the dispatcher read, and a variant's choice is its group's `variants`, never a card. All-absent or
+// unresolvable answers false and leaves the row untouched — absence stays the honest legacy shape,
+// never an all-null object.
+// COUNTER-PROBE (e2e/tasks.ts, (j2) sweep family, 2026-09-20): removing the adoption call at
+// `t.card = card` leaves the probe row spawn-less and turns its check red.
+const adoptSpawnFromCard = (t: Task): boolean => {
+  if (t.spawn || t.variants?.length || t.variantOf !== undefined) return false;
+  if (t.status !== "pending" && t.status !== "queued" || dispatchingTasks.has(t.id)) return false;
+  const role = t.card?.valid ? t.card.rolle : undefined;
+  if (!role || (!role.harness && !role.model && !role.effort)) return false;
+  const checked = taskSpawnFromBody({ harness: role.harness, model: role.model, effort: role.effort });
+  if (!checked.ok || !checked.spawn) return false;
+  t.spawn = checked.spawn;
+  return true;
+};
+
 async function tickCardSweep(): Promise<void> {
   if (cardSweepBusy || !CARD_ON) return;
   cardSweepBusy = true;
@@ -13585,6 +13613,11 @@ async function tickCardSweep(): Promise<void> {
         const run: { answer?: string } = {};
         const card = formatted ?? await extractCard(t, repo, snapshot, index, (answer) => { run.answer = answer; });
         t.card = card;
+        // THE BIRTH OF A CARD is where its role adopts (adoptSpawnFromCard above): a row that filed
+        // without a body triple takes Task.spawn from the card just attached. cardDue has already
+        // excluded a started, mid-dispatch or variant row; the helper re-asks so the rule stays one
+        // rule for the next attach point.
+        const spawnAdopted = adoptSpawnFromCard(t);
         liftCardSurface(t);
         cardRetry.delete(t.id);
         wrote = true;
@@ -13593,7 +13626,8 @@ async function tickCardSweep(): Promise<void> {
         await appendEvent(CARD_FILE, { at: card.at, taskId: t.id, source: formatted ? "format" : "model", model: card.model, ms: card.ms,
           valid: card.valid, surfaceValid: card.surfaceValid, validatorVersion: card.validatorVersion,
           gaps: card.gaps, ...(card.tokens ? { tokens: card.tokens } : {}),
-          ...(run.answer !== undefined ? cardAnswerForLedger(run.answer) : {}) });
+          ...(run.answer !== undefined ? cardAnswerForLedger(run.answer) : {}),
+          ...(spawnAdopted ? { spawnAdopted: true } : {}) });
       } catch (e) {
         cardRetry.set(t.id, { attempts: (cardRetry.get(t.id)?.attempts ?? 0) + 1, at: Date.now() });
         console.log(`card extractor: read failed for ${t.id}, the row keeps its prose: ${e instanceof Error ? e.message : e}`);

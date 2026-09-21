@@ -1194,7 +1194,9 @@ interface Task {
   spawn?: DispatchSpawn; // the row's persisted agent choice — WHICH harness/model/effort its lane
   // runs, in exactly the shape the attended ▸ start button already sends. Validated at SET time
   // (taskSpawnFromBody: the same three adapter validators as the attended route, harness first),
-  // written only by the owner create route and the Program-MAIN filing door. ABSENT is the honest
+  // written by the owner create route, the Program-MAIN filing door, and — when the row filed
+  // with no triple of its own — the card sweep's role adoption (server.ts#adoptSpawnFromCard).
+  // ABSENT is the honest
   // legacy shape and resolves to DEFAULT_SPAWN at every consumer (taskSpawnOf) — never backfilled,
   // and never stored as an all-null object. The release door and the tick judge THIS field's
   // harness for automatability, so an invalid or non-automatable stored choice is refused loudly
@@ -1255,7 +1257,9 @@ interface Task {
   // the same fact as an empty list — "not measured" against "measured, nothing to point at".
   card?: TaskCard; // WHAT THIS ROW SAYS ABOUT ITSELF, extracted once from its own text by a small
   // model and then validated deterministically (card-extract.ts). It is a READING, never an
-  // authority: nothing dispatches from it, `rolle` is not `spawn`, and every value inside it
+  // authority: nothing dispatches from it, `rolle` is not `spawn` (a role adopts into Task.spawn
+  // only once, at set time, through server.ts#adoptSpawnFromCard when the row filed with no triple
+  // of its own — every dispatch still reads the spawn, never the card), and every value inside it
   // survived a check this process could run on its own — a tracked path, a resolvable symbol, a
   // known chain step, a registered harness. What did not survive is in `gaps`, in the extractor's
   // own words, and is never repaired or defaulted. `valid:false` is therefore a stored fact and

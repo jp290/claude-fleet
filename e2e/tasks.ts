@@ -8447,6 +8447,39 @@ export async function run(ctx: Ctx): Promise<void> {
       && cCard.model !== "claude-haiku-4-5-20251001"
       && typeof cCard.ms === "number" && cCard.ms >= 0,
       JSON.stringify({ model: cCard?.model, ms: cCard?.ms }));
+    // (6) THE CARD'S ROLE ADOPTS (2026-09-20, live rows 75c28778/fe2bf284/8bd19aac): a row that
+    // names its role in its own text but files with NO body triple spawned on the default adapter
+    // with nothing saying so. The row below opens with the filing headers, so its card is born on
+    // the format path (parseFormattedCard, no model call) carrying exactly the ROLLE: triple — and
+    // the sweep's adoption (server.ts#adoptSpawnFromCard) must leave Task.spawn equal to it.
+    // COUNTER-PROBE: removing the adoption call at the sweep's `t.card = card` leaves this row
+    // spawn-less (absence, not all-null) and turns this check red. The probe reads the QUEUE ROW
+    // only — never released, so no lane spawns and no real spawn is awaited.
+    const roleSpawnText = [
+      "[FLEET-BETRIEB · ROLLE-UEBERNAHME · 2026-09-20]",
+      "ROLLE: pi-zai/glm-5.3-flash/low",
+      "GROESSE: klein",
+      "FLAECHE: server.ts, task-metadata.ts",
+      "VERIFY: bun e2e/pins.ts",
+      "DONE: die Zeile traegt den Spawn aus ihrer eigenen Rolle",
+      "BAU: die Karte liest die Rolle und der Spawn folgt.",
+    ].join("\n");
+    const roleSpawnId = ((await (await post("/api/tasks", {
+      text: roleSpawnText, queue: false, repo: REPO,
+    })).json()) as { task: { id: string } }).task.id;
+    interface RoleSpawnRow { spawn?: { harness: string | null; model: string | null; effort: string | null } | null;
+      card?: { valid?: boolean; rolle?: { harness: string | null; model: string | null; effort: string | null } } }
+    let roleSpawnRow: RoleSpawnRow | undefined;
+    for (let i = 0; i < 40 && !roleSpawnRow?.card; i++) {
+      roleSpawnRow = ((await (await get("/api/tasks")).json()) as { tasks: (RoleSpawnRow & { id: string })[] })
+        .tasks.find((t) => t.id === roleSpawnId);
+      if (!roleSpawnRow?.card) await Bun.sleep(250);
+    }
+    check("(j2) a row that names ROLLE: in its text and files with no body triple carries Task.spawn from the card's parsed role after one sweep tick",
+      roleSpawnRow?.card?.valid === true
+      && JSON.stringify(roleSpawnRow.card.rolle) === JSON.stringify({ harness: "pi-zai", model: "glm-5.3-flash", effort: "low" })
+      && JSON.stringify(roleSpawnRow.spawn) === JSON.stringify({ harness: "pi-zai", model: "glm-5.3-flash", effort: "low" }),
+      JSON.stringify({ card: roleSpawnRow?.card, spawn: roleSpawnRow?.spawn }));
     // (3) the quote rule reaches the card too — through the extractor's prompt, and through the
     // validator behind it. The stand-in cannot prove the model obeys, so what is proven here is the
     // half that does not depend on a model: a cited path the answer put in `surface` is checked

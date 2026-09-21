@@ -1905,31 +1905,36 @@ export async function run(): Promise<void> {
       check("client: the past bar's way back is not covered — ℹ, 💬 and ↻ all leave a past pane",
         /display: none/.test(cssBody(".pane.past .viewtoggle, .pane.past .panereload, .pane.past .boardtoggle")),
         cssBody(".pane.past .viewtoggle, .pane.past .panereload, .pane.past .boardtoggle") || "no such rule");
-      // rounds 12/13 (owner): the views square left and unchanged, the functions one right-aligned
-      // block — three small rows, then the task queue as its own square in the right corner, sized
-      // by ONE constant (--queue-scale, 2 = round 13) — the conditional buttons first in their row
-      // so an appearing one moves no fixed button, and a quiet + last that only says what is coming
+      // rounds 12–14 (owner): the views square left and unchanged, the functions one right-aligned
+      // block — two small rows, then the task queue as its own square in the right corner, sized
+      // by ONE constant (--queue-scale 1.48 = 34px, the largest at which two rows still fit) and
+      // drawn with the SAME line weight as the small icons — the conditional buttons first in
+      // their row so an appearing one moves no fixed button, and a quiet + last
       const rowIds = (id: string): string[] => {
         const m = new RegExp(`<span id="${id}" class="toolrow">([\\s\\S]*?)</span>`).exec(indexSrc);
         return [...(m?.[1] ?? "").matchAll(/<button id="([a-z]+)"/g)].map((x) => x[1]!);
       };
-      const rows = ["toolrow1", "toolrow2", "toolrow3"].map(rowIds);
+      const rows = ["toolrow1", "toolrow2"].map(rowIds);
       const headHtml = /<div id="sidetools">[\s\S]*?<div id="slots">/.exec(indexSrc)?.[0] ?? "";
-      check("client: the head's functions are one right-aligned block — came in · where it ran · settings, the queue in the corner",
-        JSON.stringify(rows) === JSON.stringify([["attnbtn", "opsbtn", "auditbtn"], ["devbtn", "outcomebtn"], ["saverbtn"]])
+      check("client: the head's functions are one right-aligned block — came in and happened · setup, the queue in the corner",
+        JSON.stringify(rows) === JSON.stringify([["attnbtn", "opsbtn", "auditbtn", "outcomebtn"], ["devbtn", "saverbtn"]])
+          && !headHtml.includes('id="toolrow3"')
           && /<\/span>\s*<\/span>\s*<button id="queuebtn"[^>]*>[^<]*<\/button>\s*<\/div>/.test(headHtml)
           && /justify-content: flex-end/.test(cssBody(".toolrow")) && /margin-left: auto/.test(cssBody("#toolrows"))
-          && cliSrc.indexOf('$("toolrow3").appendChild(moreBtn)') >= 0
-          && cliSrc.indexOf('$("toolrow3").appendChild(moreBtn)') < cliSrc.indexOf('$("toolrow3").appendChild(plusBtn)')
+          && cliSrc.indexOf('$("toolrow2").appendChild(moreBtn)') >= 0
+          && cliSrc.indexOf('$("toolrow2").appendChild(moreBtn)') < cliSrc.indexOf('$("toolrow2").appendChild(plusBtn)')
           && cliSrc.includes('{ id: "headplus", icon: "plus", word: "Eigener Knopf" }'),
         JSON.stringify({ rows, toolrow: cssBody(".toolrow") }));
-      check("client: the task queue is doubled by ONE constant (--queue-scale: 2), the views square stays 23px",
-        /--queue-scale: 2;/.test(cssBody("#sidetools"))
+      check("client: the task queue is sized by ONE constant (1.48 = 34px), same line weight, the views square stays 23px",
+        /--queue-scale: 1\.48;/.test(cssBody("#sidetools"))
           && /width: calc\(23px \* var\(--queue-scale\)\); height: calc\(23px \* var\(--queue-scale\)\)/.test(cssBody("#sidetools #queuebtn"))
           && /calc\(14px \* var\(--queue-scale\)\)/.test(cssBody("#sidetools #queuebtn .ico"))
+          && /stroke-width: calc\(1\.8px \/ var\(--queue-scale\)\)/.test(cssBody("#sidetools #queuebtn .ico"))
           && /grid-template-columns: 23px 23px; grid-auto-rows: 23px/.test(cssBody("#layouts"))
-          && (indexSrc.match(/--queue-scale: \d/g) ?? []).length === 1,
-        JSON.stringify({ sidetools: cssBody("#sidetools"), queue: cssBody("#sidetools #queuebtn"), layouts: cssBody("#layouts") }));
+          && (indexSrc.match(/--queue-scale: [\d.]+;/g) ?? []).length === 2
+          && /--queue-scale: 1;/.test(cssBody('#sidetools[data-queue="iii"]'))
+          && cliSrc.includes('if (f === "iii") $("toolrow1").appendChild(q);'),
+        JSON.stringify({ sidetools: cssBody("#sidetools"), queue: cssBody("#sidetools #queuebtn .ico") }));
       const plusSrc = cut("const plusBtn = ", '$("sidetools").after(plusNote);');
       check("client: the + only says what is coming — it fetches nothing and opens nothing",
         plusSrc.includes("kommt") && !/fetch\(|api\(|openActivity|showPanel/.test(plusSrc),

@@ -13601,7 +13601,7 @@ moreBtn.onclick = () => {
   localStorage.setItem("fleet.more", moreOpen ? "1" : "0");
   applyMore();
 };
-$("toolrow3").appendChild(moreBtn);
+$("toolrow2").appendChild(moreBtn);
 $("sidetools").after(morePanel);
 applyMore();
 
@@ -13619,7 +13619,7 @@ plusBtn.onclick = () => {
   clearTimeout(plusNoteTimer);
   if (!plusNote.hidden) plusNoteTimer = window.setTimeout(() => { plusNote.hidden = true; }, 4000);
 };
-$("toolrow3").appendChild(plusBtn);
+$("toolrow2").appendChild(plusBtn);
 $("sidetools").after(plusNote);
 
 // THE HEAD ROW — one icon grammar (owner 2026-09-21: "Rechts davon zeigen wir dann überarbeitete
@@ -13673,6 +13673,19 @@ function paintHead() {
 for (const spec of HEAD_BTNS)
   headObs.observe($(spec.id), { childList: true, characterData: true, subtree: true });
 paintHead();
+// ROUND 14'S THREE FASSUNGEN of the queue button (owner 2026-09-21: "viel zu groß … irgendwo
+// dazwischen … oder vllt auch ne andere Farbe") — i 34px neutral (default) · ii 34px accent ·
+// iii 23px accent at the end of row 1. The css reads data-queue; iii also moves the button, which
+// css cannot. Leaves with the owner's pick, like the #head and #dev switches before it.
+function applyQueueFassung() {
+  const f = /(?:^#|&)queue=(i{1,3})\b/.exec(location.hash)?.[1] ?? "i";
+  const tools = $("sidetools"), q = $("queuebtn");
+  tools.dataset.queue = f;
+  if (f === "iii") $("toolrow1").appendChild(q);
+  else tools.appendChild(q);
+}
+applyQueueFassung();
+window.addEventListener("hashchange", applyQueueFassung);
 // the views: each button draws the arrangement it makes (src/icons.ts view1…view4)
 for (const b of document.querySelectorAll<HTMLButtonElement>("#layouts button")) {
   const ic = el("span", "tricon");

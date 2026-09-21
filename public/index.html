@@ -138,24 +138,24 @@
   #instbtn .devcount { flex: none; color: var(--chat-faint); font-variant-numeric: tabular-nums; }
   .instnote { padding: 6px 7px 3px; border-top: 1px solid var(--chat-edge); margin-top: 2px;
     color: var(--chat-faint); font-size: var(--chat-ui-fs); line-height: 1.4; }
-  /* THE HEAD UNDER THE TITLE (owner 2026-09-21, rounds 10/12/13: "die pane-split buttons in ein
+  /* THE HEAD UNDER THE TITLE (owner 2026-09-21, rounds 10/12/13/14: "die pane-split buttons in ein
      quadrat packen" · "das viererbündel … linksbündig … und der rest rechts und dann sauber
-     sortiert" · "der task-queue button darf größer, weil der auch so wichtig ist", "vorerst").
-     Left, the four views as ONE square — a 2×2 grid of 23px buttons, 48px a side. Right, one
-     right-aligned block: the small functions in three rows and, in the corner, the task queue as
-     a square of its own, sized by ONE constant (--queue-scale; 2 is round 13, 46px, and 1 takes it
-     back). The queue takes the right corner because the most important button belongs on the
-     one spot that never moves: everything that comes and goes grows leftwards, away from it.
-     Three rows and not two, because the width decides it: beside the square and the big queue
-     the rows have 120px, and with attn, ops and dev showing a count the other eight buttons are
-     248px wide — two rows would need 130px each. Sorted by what they are: row 1 what came in
-     (attn · ops) and what Fleet did (audit), row 2 where the work ran (dev · lands), row 3
-     settings (saver · ⋯ · +). The conditional buttons (attn, ops, dev) lead their row, so one
-     that appears grows the row leftwards and no fixed button moves. The split is in the markup
-     (#toolrow1-3). One button grammar: a 23px square, a drawn icon (src/icons.ts), the chat
-     tokens; meaning is title + aria-label. The + at the end is the place for buttons the owner
-     builds from an idea later (its own queue row) — today it only says so, drawn quieter. */
-  #sidetools { --queue-scale: 2; display: flex; align-items: center; gap: 8px; padding: 0 10px 8px; }
+     sortiert" · "der task-queue button darf größer" · "so jetzt doch viel zu groß … irgendwo
+     dazwischen … oder vllt auch ne andere Farbe"). Left, the four views as ONE square — a 2×2
+     grid of 23px buttons, 48px a side. Right, one right-aligned block: the small functions in
+     TWO rows and, in the corner, the task queue as a square of its own, sized by ONE constant
+     (--queue-scale). 1.48 makes it 34px: the largest size at which two rows still fit with room
+     to spare — the rows get 166px minus the queue, and with attn, ops and dev showing a count
+     each row is 130px wide, so 36px is the ceiling and 34 keeps 2px. The queue takes the corner
+     because the most important button belongs on the one spot that never moves: everything
+     that comes and goes grows leftwards, away from it. Row 1 what came in and what happened
+     (attn · ops · audit · lands), row 2 setup (dev · saver · ⋯ · +); the conditional buttons lead
+     their row. One button grammar: 23px squares, a drawn icon (src/icons.ts) whose stroke is
+     divided by the scale so a bigger icon draws the SAME line weight, the chat tokens.
+     ROUND 14 FASSUNGEN, until the owner picks (#queue= in the URL, client.ts#applyQueueFassung):
+     i = 34px neutral · ii = 34px in the accent · iii = 23px in the accent, back in row 1. */
+  #sidetools { --queue-scale: 1.48; display: flex; align-items: center; gap: 8px; padding: 0 10px 8px; }
+  #sidetools[data-queue="iii"] { --queue-scale: 1; }
   #layouts { flex: none; display: grid; grid-template-columns: 23px 23px; grid-auto-rows: 23px; gap: 2px; }
   #toolrows { margin-left: auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .toolrow { display: flex; align-items: center; justify-content: flex-end; gap: 2px; min-width: 0; height: 23px; }
@@ -172,7 +172,11 @@
   #sidetools .tricon { display: grid; place-items: center; }
   #sidetools .ico { width: 14px; height: 14px; }
   #sidetools #queuebtn { width: calc(23px * var(--queue-scale)); height: calc(23px * var(--queue-scale)); }
-  #sidetools #queuebtn .ico { width: calc(14px * var(--queue-scale)); height: calc(14px * var(--queue-scale)); }
+  #sidetools #queuebtn .ico { width: calc(14px * var(--queue-scale)); height: calc(14px * var(--queue-scale));
+    stroke-width: calc(1.8px / var(--queue-scale)); }
+  #sidetools[data-queue="ii"] #queuebtn, #sidetools[data-queue="iii"] #queuebtn { color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--chat-edge));
+    background: color-mix(in srgb, var(--accent) 12%, var(--chat-raised)); }
   /* a count widens its button instead of squeezing the icon */
   #sidetools button:has(.hbadge) { padding: 0 5px; }
   #sidetools .hbadge { font-family: var(--chat-mono); font-size: var(--chat-ui-fs);
@@ -2812,12 +2816,10 @@
       <button id="attnbtn" title="attention — what a program's main session raised for you (decision / blocked / review-ready)" style="display:none">📣</button>
       <button id="opsbtn" title="operations inbox — completions a subscription asked to be filed here instead of typed into a pane (merge / audit / deploy / lane)" style="display:none">📥</button>
       <button id="auditbtn" title="audit trail — what Fleet did to each slot (killed / shelved / self-healed)">🛡</button>
+      <button id="outcomebtn" title="outcome feed — what each lane landed, how, and what ③ review said about it">🧾</button>
       </span>
       <span id="toolrow2" class="toolrow">
       <button id="devbtn" title="helper devices — the machines that take suite and audit work off this box" style="display:none">💻</button>
-      <button id="outcomebtn" title="outcome feed — what each lane landed, how, and what ③ review said about it">🧾</button>
-      </span>
-      <span id="toolrow3" class="toolrow">
       <!-- lives in the sidebar on purpose: #sidetools is NOT hidden by the mobile media
            query, so the ☰ drawer makes this reachable on the phone, which is the only
            device the switch is for. The live title is written by applySaver(). -->

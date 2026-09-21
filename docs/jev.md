@@ -121,11 +121,17 @@ liefert eine FORM, geprueft wird gegen eine Tatsache.
   einem Cookbook. Vor jedem Einsatz klaeren, wohin ein „unsicher" faellt: ein Drittprojekt war je Aufruf
   96 % billiger und im System 4,1 % teurer, weil unsichere Faelle in einen Alles-oder-nichts-Pfad
   zurueckfielen [Agent].
-- **Modell, URL und Schluessel leben in der gitignorierten `.env`**, nie in einer getrackten Datei.
+- **Modell, URL und Schluessel leben nie in einer getrackten Datei.** Der Key liegt seit 2026-09-21
+  AUSSERHALB jedes Repos in `~/.config/typesafe/jev.env` (Modus 600) und nicht in der `.env` des
+  Haupt-Checkouts — die laedt Bun in jeden Prozess dort, auch in den Live-Server. Eine Lane bekommt
+  ihn nie; echte Laeufe faehrt die Jev-Program-MAIN.
 
 ## 6. Offen
 
-- Ob dieser Host `api.typesafe.ai` erreicht (die Docs ja, die API ist ungeprobt).
+- ~~Ob dieser Host `api.typesafe.ai` erreicht~~ — ja, gemessen 2026-09-21 mit dem vom Owner gegebenen
+  Key: zwei Aufrufe (ein konstruierter Absatz deutsch und englisch, je vier Nouls, keine Fleet-Daten),
+  HTTP 200 in 1 096 und 893 ms, `jev-1.13.0`, 350 und 336 Input-Tokens, Antwort-IDs = Frage-IDs. Ein
+  Beispiel, keine Guete-Aussage: DE 0,95 / 0,03 / 0,04 / 0,05 gegen EN 0,96 / 0,02 / 0,06 / 0,03.
 - Guete auf DEUTSCHEM Fleet-Material — die erste eigene Messung vor jedem Bau.
 - Ob DPA und Privacy Policy des Anbieters das Senden von Fleet-Daten tragen: die Vertragstexte sind am
   2026-09-21 gelesen (`docs/messungen/2026-09-21-jev-vertragstexte-gelesen.md`) — kein Training auf

@@ -64,7 +64,7 @@ function laneChain(id) {
     const has = !!file && existsSync(file);
     return { startedAt: r.worker.openedAt, handedAt: r.reportedAt, report: r.id, sessionId: r.worker.sessionId,
       handoff: scrub(r.text), transcript: has ? turnsOf(file) : null,
-      why: has ? null : r.worker.sessionId ? "the transcript file is gone from disk" : "the report names no session" };
+      why: has ? null : r.worker.sessionId ? "die Transkript-Datei ist nicht mehr auf der Platte" : "der Report nennt keine Session" };
   });
   return { id, label: s.label ?? "", kind: "lane", branch: s.worktree.branch, openedAt: s.openedAt, past };
 }
@@ -75,7 +75,7 @@ function mainChain(id) {
   const past = (st.lineageHandovers ?? []).filter((h) => h.lineageId === s.lineageId).sort((a, b) => a.at - b.at)
     .map((h) => ({ startedAt: h.from.openedAt, handedAt: h.at, report: null, sessionId: null, fromSlot: h.from.slot,
       handoff: scrub(h.intent ?? (h.pointer ? `pointer: ${h.pointer}` : "")), transcript: null,
-      why: "a lineage record names slot + openedAt only — which conversation that occupant was is written down nowhere" }));
+      why: "ein Linien-Record nennt nur Slot und Startzeit — welches Gespräch diese Session war, steht nirgends" }));
   return { id, label: s.label ?? "", kind: "main", openedAt: s.openedAt, past };
 }
 
@@ -83,6 +83,8 @@ const chains = [laneChain(Number(laneArg ?? 4)), mainChain(Number(mainArg ?? 1))
 const others = Object.entries(st.slots ?? {}).filter(([, s]) => s?.cwd).map(([k, s]) => ({ id: Number(k), label: s.label ?? "" }))
   .filter((o) => !chains.some((c) => c.id === o.id));
 const data = JSON.stringify({ chains, others, built: Date.now() }).replace(/</g, "\\u003c");
+const hintFile = outFile.replace(/\.html$/, "") + "-andeutung.html";
+const hintName = hintFile.split("/").pop();
 
 writeFileSync(outFile, `<!doctype html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Band ziehen</title>
@@ -134,7 +136,7 @@ button[disabled] { color:var(--faint); cursor:not-allowed; }
 .live { color:var(--mute); }
 @media (max-width: 700px) { body { flex-direction:column; } #side { width:auto; max-height:45vh; border-right:0; border-bottom:1px solid var(--edge-soft); } }
 </style></head><body>
-<nav id="side"><h1>Band ziehen · Entwurf</h1><div id="rows"></div>
+<nav id="side"><h1>Band ziehen · Entwurf <a href="${hintName}" style="color:var(--mute);font-weight:400;margin-left:6px">→ Andeutung A/B</a></h1><div id="rows"></div>
 <div class="hint">Ziehe ein Band nach rechts, um auf die vorherige Session zu kommen (auch: Klick auf den Rand links, ← → mit Fokus, Shift+Rad).</div></nav>
 <main id="main"><div id="head"></div><div id="body"></div></main>
 <script>
@@ -244,4 +246,164 @@ for (const id of [...new Set([...others.map((o) => o.id), ...D.chains.map((c) =>
 }
 if (first) requestAnimationFrame(() => first.r.go(first.c.past.length));
 </script></body></html>`);
-console.log(`wrote ${outFile}: ${chains.map((c) => `slot ${c.id} (${c.kind}) ${c.past.length} past, ${c.past.filter((p) => p.transcript).length} with transcript`).join(" · ")}`);
+writeFileSync(hintFile, hintPage(data));
+console.log(`wrote ${outFile} + ${hintName}: ${chains.map((c) => `slot ${c.id} (${c.kind}) ${c.past.length} past, ${c.past.filter((p) => p.transcript).length} with transcript`).join(" · ")}`);
+
+// THE BAND, NOT DRAWN (owner round 4, 2026-09-21: "das zieh-band sieht auch gut aus, wobei ich das
+// band als Solches nicth sichbar anzeigen wollen würde, lieberminimalistisch mit einer andeutung das
+// man das so ziehen kann"). The row at rest is today's row. The band exists only while the finger
+// moves; at rest ONE quiet hint says the row can be pulled — and only on a row that has a past.
+// Two hints side by side over the SAME chains:
+//   A · Kante — a 2px sliver on the row's left edge, as if the earlier card lay under it (always
+//       there when a past exists; a touch brighter on hover).
+//   B · Griff — a ‹ in the row's left gutter, only on hover/focus.
+// On a past session the one hint points the other way (A: the sliver on the right, B: ›), so it
+// is never two at once.
+function hintPage(data) {
+  return `<!doctype html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Band ziehen · Andeutung</title>
+<style>
+:root { --ink:#e7e7ea; --prose:#d4d4d8; --mute:#8b8b94; --faint:#5c5c66; --surface:#111113; --raised:#17171a;
+  --edge:#26262b; --edge-soft:#1b1b1f; --void:#000; --wait:#e0a458; --live:#4ade80;
+  --sans: ui-sans-serif,-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif;
+  --mono: ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--void); color:var(--prose); font:13px/1.45 var(--sans); display:flex; height:100vh; overflow:hidden; }
+.side { width:250px; flex:none; border-right:1px solid var(--edge-soft); padding:12px 8px; overflow-y:auto; }
+.side h1 { font-size:12px; color:var(--mute); margin:2px 6px 10px; font-weight:500; }
+.side h1 b { color:var(--ink); font-weight:600; }
+.row { position:relative; border-radius:12px; margin-bottom:2px; }
+.row:hover, .row:focus-within { background:#141416; }
+.row.cur { background:var(--raised); box-shadow:inset 0 0 0 1px var(--edge); }
+.view { overflow:hidden; border-radius:12px; touch-action:pan-y; user-select:none; outline:none; }
+.row.pull .view { cursor:grab; }
+.view.drag { cursor:grabbing; }
+.track { display:flex; transition:transform .26s cubic-bezier(.2,.8,.2,1); will-change:transform; }
+.view.drag .track { transition:none; }
+.cell { flex:none; display:flex; align-items:center; gap:6px; min-height:40px; padding:6px 10px 6px 30px; }
+.cell.past { padding-right:26px; }
+.cell.past { background:var(--surface); }
+.n { font:12px/1.45 var(--mono); padding:1px 6px; border-radius:5px; background:var(--raised); box-shadow:inset 0 0 0 1px var(--edge); color:var(--mute); flex:none; }
+.lbl { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cell.past .lbl { color:var(--mute); }
+.when { font:11px var(--mono); color:var(--faint); flex:none; }
+.act { width:8px; height:8px; border-radius:50%; flex:none; box-shadow:inset 0 0 0 1.5px var(--mute); }
+/* A · Kante */
+.A .row.pull::before { content:""; position:absolute; left:3px; top:9px; bottom:9px; width:2px; border-radius:1px; background:var(--edge); transition:background .15s; z-index:1; pointer-events:none; }
+.A .row.pull:hover::before, .A .row.pull:focus-within::before { background:var(--faint); }
+.A .row.pull.back::before { left:auto; right:3px; background:var(--faint); }
+.A .row.pull.back.first::before { display:none; }
+/* B · Griff */
+.B .row .grip { position:absolute; left:10px; top:50%; transform:translateY(-50%); font:13px var(--sans); color:var(--faint); opacity:0; transition:opacity .15s; pointer-events:none; }
+.B .row.pull:hover .grip, .B .row.pull:focus-within .grip { opacity:1; }
+.B .row .view.drag ~ .grip { opacity:0; }
+#main { flex:1; min-width:0; display:flex; flex-direction:column; }
+#head { padding:14px 22px 10px; border-bottom:1px solid var(--edge-soft); }
+#head .t { color:var(--ink); font-size:15px; font-weight:600; }
+#head .s { color:var(--mute); font:12px var(--mono); margin-top:3px; word-break:break-all; }
+#head .acts { margin-top:8px; }
+button { font:12px var(--sans); color:var(--prose); background:var(--raised); border:1px solid var(--edge); border-radius:7px; padding:4px 10px; }
+button[disabled] { color:var(--faint); }
+#body { flex:1; overflow-y:auto; padding:14px 22px 40px; }
+.hand { border:1px solid var(--edge); border-radius:10px; padding:10px 12px; margin-bottom:16px; background:var(--surface); white-space:pre-wrap; font-size:12px; max-height:200px; overflow:auto; }
+.turn { margin:0 0 10px; padding:8px 12px; border-radius:10px; white-space:pre-wrap; word-break:break-word; max-width:860px; }
+.turn.user { background:var(--raised); color:var(--ink); }
+.turn .tools { font:11px var(--mono); color:var(--faint); margin-top:4px; }
+.turn.gap { color:var(--faint); font-style:italic; text-align:center; }
+.empty { color:var(--wait); border:1px dashed var(--edge); border-radius:10px; padding:14px; max-width:620px; }
+.note { color:var(--mute); max-width:640px; }
+</style></head><body>
+<nav class="side A"><h1><b>A · Kante</b> — Strich am Rand</h1><div class="rows"></div></nav>
+<nav class="side B"><h1><b>B · Griff</b> — ‹ nur beim Zeigen</h1><div class="rows"></div></nav>
+<main id="main"><div id="head"></div><div id="body"></div></main>
+<script>
+const D = ${data};
+const fmt = (t) => t ? new Date(t).toLocaleString() : "—";
+const short = (t) => t ? new Date(t).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+const head = document.getElementById("head"), body = document.getElementById("body");
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function show(chain, i) {
+  const live = i === chain.past.length, p = chain.past[i];
+  head.replaceChildren(); body.replaceChildren();
+  head.append(el("div", "t", "Slot " + chain.id + (live ? "" : " · Session " + (i + 1) + " von " + (chain.past.length + 1))));
+  if (live) {
+    head.append(el("div", "s", chain.label + " · läuft seit " + fmt(chain.openedAt)));
+    body.append(el("p", "note", chain.past.length
+      ? "Die laufende Session — hier stünde das Terminal. Die Zeile lässt sich nach rechts ziehen: dahinter liegen " + chain.past.length + " frühere Sessions."
+      : "Die laufende Session — hier stünde das Terminal."));
+    return;
+  }
+  head.append(el("div", "s", "begann " + fmt(p.startedAt) + " · übergab " + fmt(p.handedAt)
+    + (p.fromSlot && p.fromSlot !== chain.id ? " · saß auf Slot " + p.fromSlot : "") + (p.report ? " · Report " + p.report : "")));
+  const acts = el("div", "acts"); const b = el("button", null, "✨ analysieren"); b.disabled = !p.transcript; acts.append(b); head.append(acts);
+  if (p.handoff) body.append(el("div", "hand", p.handoff));
+  if (!p.transcript) { body.append(el("div", "empty", "Transkript nicht zugeordnet — " + p.why + ".")); return; }
+  for (const x of p.transcript.turns) {
+    const d = el("div", "turn " + x.who, x.text || "");
+    if (x.tools && x.tools.length) { const c = new Map(); for (const n of x.tools) c.set(n, (c.get(n) || 0) + 1);
+      d.append(el("div", "tools", "⚙ " + [...c].map(([n, k]) => k > 1 ? n + " ×" + k : n).join(" · "))); }
+    body.append(d);
+  }
+}
+const all = [...D.others.map((o) => ({ id: o.id, label: o.label, past: [] })), ...D.chains].sort((a, b) => a.id - b.id);
+const rowsByVariant = { A: [], B: [] };
+function makeRow(host, variant, chain) {
+  const n = chain.past.length + 1, pull = chain.past.length > 0;
+  const row = el("div", "row" + (pull ? " pull" : ""));
+  const view = el("div", "view"); view.tabIndex = 0; const track = el("div", "track");
+  view.append(track); row.append(view);
+  if (variant === "B" && pull) row.append(el("span", "grip", "‹"));
+  for (let k = 0; k < n; k++) {
+    const live = k === n - 1, p = chain.past[k];
+    const c = el("div", "cell" + (live ? "" : " past"));
+    // a past session has no live state, so its row carries no state glyph — the right edge is
+    // where the one hint points back to the present
+    c.append(el("span", "n", String(chain.id)), el("span", "lbl", live ? (chain.label || "—") : "Session " + (k + 1)));
+    if (!live) c.append(el("span", "when", short(p.startedAt)));
+    else c.append(el("span", "act"));
+    track.append(c);
+  }
+  let idx = n - 1, W = 0;
+  const cells = [...track.children];
+  const layout = () => { W = view.clientWidth; cells.forEach((c) => c.style.width = W + "px"); };
+  const paint = () => {
+    track.style.transform = "translateX(" + (-idx * W) + "px)";
+    row.classList.toggle("back", idx < n - 1); row.classList.toggle("first", idx === 0);
+    const g = row.querySelector(".grip"); if (g) g.textContent = idx < n - 1 ? "›" : "‹";
+    if (g) { g.style.left = idx < n - 1 ? "auto" : "10px"; g.style.right = idx < n - 1 ? "10px" : "auto"; }
+  };
+  const go = (i, open) => {
+    idx = Math.max(0, Math.min(n - 1, i)); paint();
+    if (open === false) return;
+    for (const v of ["A", "B"]) for (const r of rowsByVariant[v]) {
+      r.row.classList.toggle("cur", r.chain === chain);
+      if (r.chain === chain && r.row !== row) r.set(idx);
+    }
+    show(chain, idx);
+  };
+  let start = null, moved = 0;
+  view.addEventListener("pointerdown", (e) => { start = e.clientX; moved = 0; if (pull) { view.setPointerCapture(e.pointerId); view.classList.add("drag"); } });
+  view.addEventListener("pointermove", (e) => { if (start === null || !pull) return; moved = e.clientX - start;
+    // resist past the ends, as a real band would
+    const edge = (idx === n - 1 && moved < 0) || (idx === 0 && moved > 0);
+    track.style.transform = "translateX(" + (-idx * W + (edge ? moved / 4 : moved)) + "px)"; });
+  const end = () => { if (start === null) return; view.classList.remove("drag"); start = null;
+    if (Math.abs(moved) < 4) { go(idx); return; }
+    const step = Math.round(-moved / W) || (Math.abs(moved) > W / 5 ? (moved > 0 ? -1 : 1) : 0);
+    go(idx + step); };
+  view.addEventListener("pointerup", end); view.addEventListener("pointercancel", end);
+  view.addEventListener("wheel", (e) => { if (!pull) return; const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.shiftKey ? e.deltaY : 0;
+    if (!d) return; e.preventDefault(); clearTimeout(view._w); view._w = setTimeout(() => go(idx + (d > 0 ? 1 : -1)), 60); }, { passive: false });
+  view.addEventListener("keydown", (e) => { if (!pull) return; if (e.key === "ArrowLeft") go(idx - 1); if (e.key === "ArrowRight" || e.key === "Escape") go(e.key === "Escape" ? n - 1 : idx + 1); });
+  host.append(row);
+  const rec = { row, chain, set: (i) => { idx = i; paint(); } };
+  rowsByVariant[variant].push(rec);
+  requestAnimationFrame(() => { layout(); paint(); });
+  addEventListener("resize", () => { layout(); paint(); });
+  return rec;
+}
+for (const v of ["A", "B"]) { const host = document.querySelector(".side." + v + " .rows"); for (const c of all) makeRow(host, v, c); }
+const lane = D.chains.find((c) => c.past.some((p) => p.transcript)) || D.chains[0];
+if (lane) requestAnimationFrame(() => show(lane, lane.past.length));
+</script></body></html>`;
+}

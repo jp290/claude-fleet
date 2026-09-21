@@ -4791,6 +4791,72 @@ Die Sonde selbst liest weiterhin die ZEILE (`e2e/programs.ts#9683-9692`, `240 ×
 ist unangetastet und bleibt die Form, die beim naechsten zweiten Schreiber auf der Zeile wieder
 60 s verbrennt, statt in 300 ms zu antworten.
 
+### 11.2ad Eine einunddreissigste Familie: die SETUP-Gruppe um `await landClean(wvSlot)` in `e2e/land-provenance.ts` und die `programs isolation`-Zeile in `e2e/programs.ts` — sechs Fails EINES Shard-Laufs, Gegenproben am identischen Baum gruen, Registerrate unauffaellig; als Flake selbst NICHT bewiesen (2026-09-20 registriert; alle Zahlen gemessen, Program-Notiz `8d172bb8`, hier gegen Audit-Ledger, Trail-Register und Code nachgelesen)
+
+**Der Anlass.** Das Post-Land-Audit zu `213a88fc` (at `1789940183757`) fiel ROT mit 8 Fails. Shard 2
+trug die zwei bekannten (worktreeBoardCache — seitdem repariert und gelandet als `795027db`).
+Shard 1 trug SECHS: fuenf `(w3)`-Zeilen aus `e2e/land-provenance.ts` plus
+`programs isolation: dispatch configuration is unchanged and no task gains programId without the
+owner naming one` aus `e2e/programs.ts`. Die Ledger-Zeile ist nachgelesen: `result:"red"`, gefahren
+remote auf dem Helfer `second-host` mit `FLEET_E2E_SHARD=k/2`.
+
+**Die fuenf `(w3)` sind EINE Wurzel, nicht fuenf Befunde.** `e2e/land-provenance.ts#469` (Stand
+dieses Eintrags; im Baum des Audits `213a88fc` las der Brief es bei `#473`) fuehrt
+`await landClean(wvSlot)` als SETUP; die vier Checks darunter pruefen gegen `wvMainAfter` — der
+erste ist `(w3) LAND: the wave lane landed — main moved to the lane tip` (heut `#473`). Bewegt main
+sich nicht, sind sie UNGEMESSEN statt verletzt; alle fuenf `(w3)`-Zeilen der Sektion fielen mit
+dem Setup. Die drei Waechter darueber (Welle als EINE docs-Lane gestartet, Brief angekommen,
+Undo-Stack beidseitig lesbar) waren gruen. Das ist die SETUP-Regel des Regelbuchs — ein Check unter
+einer nicht hergestellten Vorbedingung misst nichts, statt etwas zu verletzen — an einem konkreten
+Fall, und wird als solche benannt.
+
+**Last scheidet aus**, mit der kontrollierten Reihe der Shard-1-Laeufe:
+
+| Lauf | ms | checks | fails |
+| --- | ---: | ---: | ---: |
+| `aee5d593` | 859252 | 2168 | 0 |
+| `88cda198` | 865748 | 2168 | 0 |
+| `ea3b141b` | 863795 | 2168 | 0 |
+| `b592e0c8` | 864232 | 2169 | 0 |
+| `213a88fc` | 864311 | 2169 | **SECHS** |
+| `795027db` | 861881 | 2169 | 0 |
+
+Gleiche Wandzeit, gleiche Checkzahl, volle Ko-Residenz mit Shard 2 in JEDEM Lauf
+(`coResident.ms` ~862–866 s; `FLEET_AUDIT_SHARDS=2` ist konfiguriert). Fuenf gruen, ein rot, keine
+unterscheidende Groesse.
+
+**Gegenproben, beide gruen.** (a) Seriell und lokal am IDENTISCHEN Baum `213a88fc` (sauberer
+Haupt-Checkout), `FLEET_E2E_MODULES=land-provenance,programs`, Lauf
+`isolated-20260920T213852Z-29256` — alle sechs PASS, darunter `(w3) LAND: the wave lane landed
+(660ee7d7 -> f5e9b560)`. (b) Das naechste volle Audit, `795027db`, lief 5482 / failed 0 — Shard 1
+mit identischer Checkzahl 2169 unter identischer Ko-Residenz.
+
+**Trail-Basisraten** (`e2e-trail/`, 9526 Dateien zum Messzeitpunkt 2026-09-20 23:5x):
+`(w3) LAND: the wave lane landed` **0 rot / 120**;
+`programs isolation: dispatch configuration is unchanged` **1 rot / 570** — und dieses eine Rot ist
+Lauf `isolated-20260920T115935Z-4070` am Baum `005a3420`, 2026-09-20 11:59, also VOR dem Land und
+an einem ANDEREN Baum. Diese Zeile kann demnach ohne `213a88fc` rot werden. Nachzaehlkontrolle
+dieser Lane, 2026-09-21, Register auf 9554 Dateien gewachsen: **0/122** und **1/572** — derselbe
+eine rote Lauf, Zaehler unveraendert, nur die Naenner gewachsen.
+
+**Urteil, woertlich:** sporadische Familie, NICHT als Regress von `213a88fc` belegt und fuer
+`programs isolation` mit datiertem Gegenbeleg widerlegt. Ausdruecklich NICHT bewiesen ist, dass es
+ein Flake IST — bei 0/120 beweist ein gruener Rerun nichts; was vorliegt, sind zwei unabhaengige
+gruene Messungen desselben Baumes und ein datiertes Rot derselben Zeile an einem fremden Baum. Ein
+Rot dieser Zeilen wird gegen DIESEN Abschnitt adjudiziert, nicht automatisch geflackt.
+
+**Nicht gemessen**, als eigene Aussage: ob die Ko-Residenz der beiden Shards ursaechlich ist (die
+fuenf gruenen Ko-Residenz-Laeufe sprechen dagegen — geprueft ist es nicht) · die Trail-Zeilen der
+Second-host-Shards, die in KEINEM der beiden Trail-Verzeichnisse dieses Hosts liegen — darum fehlt
+das Audit-Rot in der 0/120 oben, und das ist kein Widerspruch, sondern eine Luecke des Instruments
+(Ledger: `cmd: remote helper (second-host): FLEET_E2E_SHARD=k/2 ./e2e-isolated.sh`).
+
+**Nebenfund**, eine Zeile wert, weil er beim Nachmessen entstand:
+`Orchestrator role card: the succession door delivers the SAME six blocks`
+(`e2e/programs.ts#3925`) fiel in Gegenprobe (a) mit `500`, `roleCard=null`, `lineage=null`, leerer
+`history` — **1 rot / 48** im Trail (Nachzaehlkontrolle 2026-09-21: 1/50), und dieses eine Rot IST
+diese Gegenprobe. Erstes Rot der Familie; als offen notiert, nicht als geklaert.
+
 ## 15. Die Scratch-Halde unter `$TMPDIR` — drei Klassen, gemessen, und wer sie ab jetzt besitzt (2026-09-17)
 
 `e2e-isolated.sh` hat genau EINE Aufbewahrungsnaht, und sie ist eine Zeile:

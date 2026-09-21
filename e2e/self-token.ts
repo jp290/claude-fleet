@@ -979,6 +979,24 @@ export async function run(ctx: Ctx): Promise<void> {
         && (await occupied()) === occupiedBefore,
       `${undated.status} ${undatedText} | ${uncommitted.status} ${uncommittedText}`);
 
+    // --- THE BAND'S IDENTITY (2026-09-21: "wenn ich auf dem band ziehe, sehe ich nichtmal die alte
+    // session"): FLEET_CMD=true pins no session, so A gets one planted — with the server stopped, as
+    // the sleep fixture does — plus its transcript under A's cwd. The succession below must write
+    // that pair into the record's `from`; before it did, the successor's band answered
+    // `assigned: false` for A, because a lineage record named slot + openedAt only. ---
+    const bandSid = crypto.randomUUID();
+    const bandProj = `${process.env.HOME}/.claude/projects/${sr.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    mkdirSync(bandProj, { recursive: true });
+    writeFileSync(`${bandProj}/${bandSid}.jsonl`, [
+      { type: "user", timestamp: new Date().toISOString(), message: { content: "BAND MAIN PROBE: what was open?" } },
+      { type: "assistant", timestamp: new Date().toISOString(), message: { content: [{ type: "text", text: "BAND MAIN PROBE: the wave" }] } },
+    ].map((l) => JSON.stringify(l)).join("\n") + "\n");
+    await stopSrv();
+    const bandState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, Record<string, unknown>> };
+    if (bandState.slots?.[String(free)]) bandState.slots[String(free)]!.sessionId = bandSid;
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(bandState, null, 2), { mode: 0o600 });
+    await restartSrv();
+
     // --- A → B: no HANDOFF commit, a capped label, the intent ---
     const INTENT = "Absicht: erst die offene Welle landen, dann den Audit lesen.\nKorrektur: Slot 3 ist NICHT frei.";
     const longLabel = `next-${"x".repeat(60)}`;
@@ -1036,6 +1054,24 @@ export async function run(ctx: Ctx): Promise<void> {
         && recB.obligations[0]?.owedBy === `slot ${free}@${oldOpenedAt}` && recB.obligations[0]?.reArm === "POST /api/self/autos"
         && !JSON.stringify(lineB).includes("lineage-body-marker"),
       JSON.stringify(recB?.obligations));
+
+    // THE BAND READS A THROUGH THE RECORD. B sits on ANOTHER slot than A (the 2→6 case), so no
+    // report of B's slot could name A, and A filed none: only the pair in `from` ties A to its file.
+    const fromSeat = recB?.from as { sessionId?: unknown; cwd?: unknown } | undefined;
+    check("(band) the lineage record's `from` names the leaving conversation: A's sessionId and A's cwd, read at the handover",
+      fromSeat?.sessionId === bandSid && fromSeat.cwd === sr, JSON.stringify(recB?.from));
+    const bandChain = (await (await get(`/api/slots/${sj.slot}/succession`)).json()) as
+      { session?: number; past?: { session: number; startedAt: number | null; report: string | null }[] };
+    const bandPast = await get(`/api/slots/${sj.slot}/succession/1/transcript`);
+    const bandPastBody = (await bandPast.json()) as { assigned?: boolean; source?: string | null; report?: string | null;
+      entries?: { role: string }[]; reason?: string };
+    check("(band) a MAIN succession onto another slot makes the predecessor's transcript readable through its cwd — no report needed",
+      free !== sj.slot && bandChain.session === 2 && bandChain.past?.[0]?.startedAt === oldOpenedAt
+        && bandChain.past[0]?.report === null && !JSON.stringify(bandChain).includes(bandSid)
+        && bandPast.status === 200 && bandPastBody.assigned === true && bandPastBody.source === `${bandSid}.jsonl`
+        && (bandPastBody.entries ?? []).map((e) => e.role).join(",") === "user,assistant",
+      `${bandPast.status} ${JSON.stringify({ ...bandPastBody, entries: bandPastBody.entries?.length })} chain=${JSON.stringify(bandChain).slice(0, 200)}`);
+    rmSync(`${bandProj}/${bandSid}.jsonl`, { force: true });
 
     let oldGone = false;
     for (let i = 0; i < 50 && !oldGone; i++) {
@@ -1125,6 +1161,15 @@ export async function run(ctx: Ctx): Promise<void> {
         && lineC?.record?.intent === null && lineC?.record?.pointer === null && onDisk.length === 2
         && recordToB?.supersededBy?.slot === oj.slot && recordToB?.supersededBy?.openedAt === overrideRow?.openedAt,
       JSON.stringify({ lineC, onDisk }));
+    // B had no session to give (FLEET_CMD=true pins none): its seat says so as null, and the band
+    // answers B honestly unassigned instead of reaching for any file of the shared cwd
+    const fromB = lineC?.record?.from as { sessionId?: unknown; cwd?: unknown } | undefined;
+    const bPast = oj.slot ? await get(`/api/slots/${oj.slot}/succession/2/transcript`) : null;
+    const bPastBody = (await bPast?.json()) as { assigned?: boolean; reason?: string } | undefined;
+    check("(band) a predecessor without a session id writes `sessionId: null` beside its cwd, and its band stays 'nicht zugeordnet'",
+      fromB?.sessionId === null && fromB.cwd === sr && bPast?.status === 200 && bPastBody?.assigned === false
+        && (bPastBody.reason ?? "").includes("nicht zugeordnet"),
+      `${JSON.stringify(lineC?.record?.from)} ${bPast?.status} ${JSON.stringify(bPastBody)}`);
 
     // THE REBUILD READS THE RECORD AND NOTHING ELSE: kind + target fields -> the door's body
     const watchOb = lineC?.record?.obligations?.find((o) => o.kind === "watch" && o.id === watchedJ.watch?.id);

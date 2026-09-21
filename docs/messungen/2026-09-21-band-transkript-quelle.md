@@ -69,3 +69,28 @@ Gemessen per Chrome/CDP mit echten Zeigerereignissen: Laden öffnet Slot 4 auf d
 Session 4. Zieh nach rechts rastet auf Session 3 ein (47 Beiträge), noch einmal auf Session 2 (24),
 nach links zurück auf 3. Auf Slot 1 zeigt Session 5 „Kein Transkript: a lineage record names slot +
 openedAt only …".
+
+## 4. Nachtrag: gebaut (2026-09-21, Branch `fleet/260921195502-0682`, Shas setzt die MAIN)
+
+Anlass, Owner woertlich: „die private-repo-a-Session auf slot2 hat gerade eine succession auf slot6
+gemacht.. und wenn ich auf dem band ziehe, sehe ich nichtmal die alte session :(" — gemessen am
+Live-Server: `GET /api/slots/6/succession` fuenf vergangene Sessions, jede `report: null`, jede
+`assigned: false`.
+
+Was §2 als „nicht gebaut" beschrieb, steht jetzt:
+- **Linien-Record (Orchestratorin, Legacy-MAIN, Supervisor):** `from` traegt `sessionId` und `cwd`
+  der Abgeloesten (`server/types.ts#LineageSeat`), gelesen in `server.ts#handleSelfSucceed`
+  direkt nach der letzten Occupant-Pruefung. Ein Record ohne die beiden Schluessel laedt weiter
+  (Alt-Record); `sessionId: null` heisst „die Session hatte keine" (FLEET_CMD=true, fremder Harness).
+- **Lane:** jede Uebergabe schreibt einen Sitz `{openedAt, handedAt, sessionId, cwd}` auf den Slot
+  (`Slot.laneSeats`, persistiert, max. 50, Reset in openSlot wie `laneSuccessions`). Der Report bleibt
+  Rueckfall, der Sitz ueberlebt `pruneFleetReports`.
+- **Lesen:** `server.ts#successionLine` nimmt das Paar aus Sitz/Record zuerst, den Report danach;
+  `successionChain` gibt es nicht auf den Draht, `pastTranscript` liest es.
+- **Program-MAIN** ist nicht Teil dieses Schnitts: `ProgramHandover.from` und `ProgramLineageEntry`
+  tragen `sessionId` schon, aber `successionChain` liest fuer eine Program-MAIN gar keine Linie
+  (sie hat keine `lineageId`, ihr Band zeigt Session 1). Offen.
+
+Alte Records bleiben `assigned: false` — kein Backfill ueber Zeitfenster (§2). Die fuenf Sessions
+der Bewerbung-Linie bleiben also leer; erst die naechste Nachfolge nach dem Deploy fuellt das Band.
+

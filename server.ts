@@ -112,10 +112,10 @@ import {
   PROGRAM_RECORD_LOSS_ERROR_MAX,
   PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, loadProgramHandover,
   type ProgramHandover, type ProgramHandoverObligation, type ProgramHandoverDetail,
-  LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX,
+  LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE, type LaneSeat,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
   loadLineageHandover, loadLineageHandoverLoss,
-  type LineageRole, type LineageOccupant, type LineageWatchTarget, type LineageObligationRef, type LineageHandover,
+  type LineageRole, type LineageOccupant, type LineageSeat, type LineageWatchTarget, type LineageObligationRef, type LineageHandover,
   type LineageHandoverLoss,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
@@ -2005,6 +2005,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   programId: null,
   releasedBy: null,
   laneSuccessions: 0,
+  laneSeats: [],
   lineageId: null,
   selfToken: randomBytes(16).toString("hex"),
   offset: 0,
@@ -3699,12 +3700,12 @@ function stateSnapshot(): string {
     harness: string | null; effort: string | null;
     container: string | null; containerContext: string | null;
     taskId: string | null; originId: string | null; programId: string | null;
-    releasedBy: "owner" | "machine" | null; laneSuccessions: number; lineageId: string | null; selfToken: string;
+    releasedBy: "owner" | "machine" | null; laneSuccessions: number; laneSeats?: LaneSeat[]; lineageId: string | null; selfToken: string;
     browser?: true; context?: SlotContext; sleeping?: SlotSleep }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   return JSON.stringify({ token: persistedToken, stewardToken, helperToken,
@@ -6110,6 +6111,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.laneSuccessions = 0; // ...and a recycled slot starts a NEW lane's count at zero. succeedLane is
   // the one caller that stamps it back (prior + 1) right after this call, for the one case where
   // the slot keeps the same worktree and the same work across the session boundary
+  s.laneSeats = []; // ...and its seats with it, stamped back by succeedLane on the same terms
   s.selfToken = treeLease?.targetSelfToken ?? randomBytes(16).toString("hex"); // rotate: a recycled slot must not honor
   // whatever session used to hold it
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
@@ -7919,7 +7921,9 @@ function captureLineageObligations(pred: LineageOccupant): LineageObligationRef[
 // The draft is judged by the LOADER that will read it back after a boot, before any slot opens: a
 // record this server could not reload is a handover that would be lost, and a succession that
 // reported success over it would be lying (handoverCaptureRefusal's rule, for the same reason).
-function lineageDraft(role: LineageRole, lineageId: string, pred: LineageOccupant,
+// an id the seat loaders would refuse is written as null rather than refusing the succession over it
+const seatSessionId = (id: string | null): string | null => id && LINEAGE_SESSION_ID_RE.test(id) ? id : null;
+function lineageDraft(role: LineageRole, lineageId: string, pred: LineageSeat,
   obligations: LineageObligationRef[], channel: LineageChannel): LineageHandover | string {
   const draft: LineageHandover = { v: 1, lineageId, role, at: Date.now(), from: pred,
     to: { slot: pred.slot, openedAt: pred.openedAt }, obligations, intent: channel.intent,
@@ -8296,6 +8300,9 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   const browser = s.browser; // the successor runs the same MCP profile as the lane it continues
   const successions = s.laneSuccessions + 1;
   const priorOpenedAt = s.openedAt; // the predecessor occupation, read before openSlot rotates it
+  // WHICH CONVERSATION LEAVES, read before openSlot clears sessionId — never guessed afterwards
+  const seats: LaneSeat[] = [...s.laneSeats,
+    { openedAt: priorOpenedAt, handedAt: Date.now(), sessionId: seatSessionId(s.sessionId), cwd }].slice(-LANE_SEATS_MAX);
   // the slot briefly has no cwd inside openSlot's teardown; without this reservation the dispatch
   // tick could read it as free and found a different lane into it mid-handover.
   laneSpawn.add(s.id);
@@ -8314,6 +8321,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
     s.programId = provenance.programId;
     s.releasedBy = provenance.releasedBy;
     s.laneSuccessions = successions;
+    s.laneSeats = seats;
     // A RUNNING PREVIEW RIDES THE BATON. The successor is the same lane on the same branch, so an
     // open or claimed offer keeps its identity (slot + openedAt) under the successor's occupation.
     // Without this the sweep reaps the job mid-run at its next tick — measured 2026-09-18, job
@@ -8515,8 +8523,11 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     }
     // THE LINE and what dies with the predecessor, captured while it is still whole and judged by the
     // loader BEFORE a slot opens; the record is written only once the founding brief was delivered
+    // `from` names the leaving conversation too (LineageSeat), read here while the occupant is
+    // still the one the preflight just re-proved — it is what makes the band's past session readable
     const draft = lineageDraft(isSupervisor ? "supervisor" : "generic", s.lineageId ?? randomBytes(12).toString("hex"),
-      { slot: predecessorIdentity.slot, openedAt: predecessorIdentity.openedAt },
+      { slot: predecessorIdentity.slot, openedAt: predecessorIdentity.openedAt,
+        sessionId: seatSessionId(s.sessionId), cwd: predecessorIdentity.cwd },
       captureLineageObligations({ slot: predecessorIdentity.slot, openedAt: predecessorIdentity.openedAt }), channel);
     if (typeof draft === "string") return json({ error: draft }, 409);
     if (isSupervisor) return await succeedSupervisor(s, label, carry, spawn, predecessor, draft);
@@ -17600,52 +17611,71 @@ function successionRowView(s: Slot): { session: number; taken: number | null; ca
 //    (`worker.openedAt` is when that occupant began, `reportedAt` when it laid the baton down);
 //    `session - 1` of them are shown, and a line longer than its surviving reports (retention,
 //    a succeed without a report) gets its oldest sessions as nulls.
+//    Each lane handover also leaves a seat on the slot (Slot.laneSeats), which outlives the
+//    report's pruning and gives the begin and the handover moment where the report is gone.
 //  · a MAIN's past occupants are the `from` sides of its lineage records (the begin) and the
 //    records' `at` (the handover); its report is the handoff report that occupant filed, if any.
-//  · `ctx` is where that session's window stood when it handed over — the last usage record of the
-//    transcript its handoff report names (contextFillOf); null when no report names one.
+//  · `ctx` is where that session's window stood when it handed over — the last usage record of its
+//    transcript (contextFillOf over successionLine's pair); null when no pair is known.
 interface SuccessionPast { session: number; startedAt: number | null; handedAt: number | null; report: string | null;
   ctx: ContextFill | null }
-function successionChain(s: Slot): { session: number; taken: number | null; cap: number | null; past: SuccessionPast[] } {
+// WHICH CONVERSATION a past occupant was: the pair the succession wrote in the moment of the
+// handover (a lane's seat, a lineage record's `from`) FIRST, the handoff report's worker second.
+// Never on the wire of the chain — the transcript route below is the one reader.
+type PastWho = { sessionId: string; cwd: string } | null;
+type PastEntry = Omit<SuccessionPast, "session" | "ctx"> & { who: PastWho };
+const whoOf = (sessionId: string | null | undefined, cwd: string | null | undefined): PastWho =>
+  sessionId && cwd ? { sessionId, cwd } : null;
+function successionLine(s: Slot): { f: SuccessionFacts; past: (SuccessionPast & { who: PastWho })[] } {
   const f = successionFacts(s);
   const handoffOf = (slot: number, openedAt: number): FleetReport | null =>
     fleetReports.filter((r) => r.status === "handoff" && r.worker.slot === slot && r.worker.openedAt === openedAt)
       .at(-1) ?? null;
   const n = f.session - 1;
-  let known: Omit<SuccessionPast, "session" | "ctx">[];
+  let known: PastEntry[];
   if (s.worktree) {
     const branch = s.worktree.branch;
-    const byOccupant = new Map<number, FleetReport>();
+    const byOccupant = new Map<number, PastEntry>();
     for (const r of fleetReports)
       if (r.status === "handoff" && r.worker.slot === s.id && r.worker.branch === branch && r.worker.openedAt < s.openedAt)
-        byOccupant.set(r.worker.openedAt, r);
-    known = [...byOccupant.values()].sort((a, b) => a.worker.openedAt - b.worker.openedAt)
-      .map((r) => ({ startedAt: r.worker.openedAt, handedAt: r.reportedAt, report: r.id }));
+        byOccupant.set(r.worker.openedAt, { startedAt: r.worker.openedAt, handedAt: r.reportedAt, report: r.id,
+          who: whoOf(r.worker.sessionId, r.worker.cwd) });
+    // the seat outlives the pruned report, and its pair outranks the report's
+    for (const seat of s.laneSeats) {
+      if (seat.openedAt >= s.openedAt) continue;
+      const r = byOccupant.get(seat.openedAt);
+      byOccupant.set(seat.openedAt, { startedAt: seat.openedAt, handedAt: seat.handedAt, report: r?.report ?? null,
+        who: whoOf(seat.sessionId, seat.cwd) ?? r?.who ?? null });
+    }
+    known = [...byOccupant.values()].sort((a, b) => a.startedAt! - b.startedAt!);
   } else {
-    known = [...(lineageStateOf(s)?.line ?? [])].sort((a, b) => a.at - b.at).map((h) => ({
-      startedAt: h.from.openedAt, handedAt: h.at, report: handoffOf(h.from.slot, h.from.openedAt)?.id ?? null }));
+    known = [...(lineageStateOf(s)?.line ?? [])].sort((a, b) => a.at - b.at).map((h) => {
+      const r = handoffOf(h.from.slot, h.from.openedAt);
+      return { startedAt: h.from.openedAt, handedAt: h.at, report: r?.id ?? null,
+        who: whoOf(h.from.sessionId, h.from.cwd) ?? whoOf(r?.worker.sessionId, r?.worker.cwd) };
+    });
   }
   const tail = n > 0 ? known.slice(-n) : [];
-  const ctxOf = (id: string | null): ContextFill | null => {
-    const w = id ? fleetReports.find((r) => r.id === id)?.worker : undefined;
-    return w?.sessionId && w.cwd ? contextFillOf(s, w.cwd, w.sessionId) : null;
-  };
   const past = [
-    ...Array.from({ length: n - tail.length }, () => ({ startedAt: null, handedAt: null, report: null })),
+    ...Array.from({ length: n - tail.length }, (): PastEntry => ({ startedAt: null, handedAt: null, report: null, who: null })),
     ...tail,
-  ].map((p, i) => ({ session: i + 1, ...p, ctx: ctxOf(p.report) }));
-  return { session: f.session, taken: f.taken, cap: f.cap, past };
+  ].map((p, i) => ({ session: i + 1, ...p, ctx: p.who ? contextFillOf(s, p.who.cwd, p.who.sessionId) : null }));
+  return { f, past };
+}
+function successionChain(s: Slot): { session: number; taken: number | null; cap: number | null; past: SuccessionPast[] } {
+  const { f, past } = successionLine(s);
+  return { session: f.session, taken: f.taken, cap: f.cap, past: past.map(({ who: _who, ...p }) => p) };
 }
 
 // ONE PAST SESSION'S CONVERSATION — what the bar's band shows when it is pulled back onto a session
 // that has handed over (owner 2026-09-21: "das transscript der vorherigen session ansehen und
-// analysieren"). The identity is the one fact that ties a past occupant to a file: the handoff
-// report it filed carries `worker.sessionId` + `worker.cwd`, and that pair is read exactly as the 💬
-// view reads the running occupant (transcriptPayload on a copy of the slot). Nothing is guessed:
-// a MAIN's lineage record names slot + openedAt only, and 2 to 29 transcripts of its cwd fall into
-// such a window (docs/messungen/2026-09-21-band-transkript-quelle.md §2) — so a past session with no
-// report, or a report without a sessionId, answers `assigned: false` with the reason, never a
-// neighbour's conversation. `ctx` is where that session's window stood when it handed over: the
+// analysieren"). The identity is the one fact that ties a past occupant to a file: `sessionId` +
+// `cwd`, written by the succession itself (Slot.laneSeats, LineageHandover.from) and, for sessions
+// handed over before that, the handoff report's `worker` pair (successionLine). It is read exactly
+// as the 💬 view reads the running occupant (transcriptPayload on a copy of the slot). Nothing is
+// guessed: an older lineage record names slot + openedAt only, and 2 to 29 transcripts of its cwd
+// fall into such a window (docs/messungen/2026-09-21-band-transkript-quelle.md §2) — so a past
+// session with neither answers `assigned: false` with the reason, never a neighbour's conversation. `ctx` is where that session's window stood when it handed over: the
 // last usage record of the same file, over the slot's window. The slot's CURRENT model names that
 // window — a line keeps its model across a succession, and a past occupant's own is not recorded.
 function contextFillOf(s: Slot, cwd: string, sessionId: string): ContextFill | null {
@@ -17664,15 +17694,14 @@ function contextFillOf(s: Slot, cwd: string, sessionId: string): ContextFill | n
   if (windowTokens === null) return null;
   return { usedTokens, windowTokens, pct: Math.round((usedTokens / windowTokens) * 1000) / 10 };
 }
-const TRANSCRIPT_UNASSIGNED = "Transkript nicht zugeordnet — für diese Session liegt kein Übergabe-Report mit Session-Kennung vor";
+const TRANSCRIPT_UNASSIGNED = "Transkript nicht zugeordnet — für diese Session liegt weder im Nachfolge-Record noch in einem Übergabe-Report eine Session-Kennung vor";
 async function pastTranscript(s: Slot, n: number, after: number) {
-  const past = successionChain(s).past.find((p) => p.session === n);
+  const past = successionLine(s).past.find((p) => p.session === n);
   if (!past) return null;
-  const report = past.report ? fleetReports.find((r) => r.id === past.report) ?? null : null;
   const base = { session: n, startedAt: past.startedAt, handedAt: past.handedAt, report: past.report };
-  if (!report?.worker.sessionId || !report.worker.cwd)
+  if (!past.who)
     return { ...base, assigned: false as const, reason: TRANSCRIPT_UNASSIGNED, ctx: null, entries: [], total: 0, source: null };
-  const was: Slot = { ...s, cwd: report.worker.cwd, sessionId: report.worker.sessionId };
+  const was: Slot = { ...s, cwd: past.who.cwd, sessionId: past.who.sessionId };
   return { ...base, assigned: true as const, ctx: past.ctx, ...(await transcriptPayload(was, after)) };
 }
 
@@ -31735,6 +31764,11 @@ if (existsSync(STATE_FILE)) {
         // keeps the initialized 0, which is the honest reading for every lane that predates it.
         const pls = (v as { laneSuccessions?: unknown }).laneSuccessions;
         if (typeof pls === "number" && Number.isInteger(pls) && pls >= 0) s.laneSuccessions = pls;
+        // a malformed seat is dropped alone: the band then reports that one session unassigned,
+        // which is the honest answer, and the rest of the line stays readable
+        const pse = (v as { laneSeats?: unknown }).laneSeats;
+        if (Array.isArray(pse))
+          s.laneSeats = pse.map(laneSeatFrom).filter((x): x is LaneSeat => x !== null).slice(-LANE_SEATS_MAX);
         const pli = (v as { lineageId?: unknown }).lineageId;
         if (typeof pli === "string" && LINEAGE_ID_RE.test(pli)) s.lineageId = pli;
         const wt = (v as { worktree?: unknown }).worktree;

@@ -1652,6 +1652,12 @@ interface Slot {
   // slot is the only object that still knows the lane spanned more than one session: `sessionMs`
   // measures the LAST one alone, so without this a three-session lane reads as a short one.
   laneSuccessions: number;
+  // WHO HELD THIS LANE BEFORE, one seat per baton, oldest first (server.ts#succeedLane): the
+  // conversation that left, read off the slot in the moment of the handover. The handoff report
+  // names the same pair, but reports are pruned (pruneFleetReports) and this is not — so the band
+  // can still open a past session's transcript after its report is gone. Same lifetime as
+  // laneSuccessions: reset by openSlot, stamped back by succeedLane, persisted in fleet.json.
+  laneSeats: LaneSeat[];
   // THE ROLE LINE this session holds (LineageHandover): minted by the first generic or Supervisor
   // succession of a line, inherited by every successor, null for every session that never took part
   // in one — and for a Program-MAIN, whose line is its Program id. Reset by openSlot/killSlot.
@@ -2707,6 +2713,29 @@ const LINEAGE_OBLIGATIONS_MAX = 200;
 const LINEAGE_RECORDS_PER_LINE = 5;
 const LINEAGE_RECORDS_MAX = 100;
 interface LineageOccupant { slot: number; openedAt: number }
+// a lane's past occupant (Slot.laneSeats): same pair, same honesty as LineageSeat — sessionId null
+// where the occupant had none to give
+interface LaneSeat { openedAt: number; handedAt: number; sessionId: string | null; cwd: string }
+const LANE_SEATS_MAX = 50;
+const laneSeatFrom = (raw: unknown): LaneSeat | null => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (Object.keys(o).length !== 4) return null;
+  for (const k of ["openedAt", "handedAt"] as const)
+    if (typeof o[k] !== "number" || !Number.isFinite(o[k]) || (o[k] as number) <= 0) return null;
+  if (!(o.sessionId === null || (typeof o.sessionId === "string" && LINEAGE_SESSION_ID_RE.test(o.sessionId)))) return null;
+  if (!lineagePathOk(o.cwd)) return null;
+  return { openedAt: o.openedAt as number, handedAt: o.handedAt as number, sessionId: o.sessionId as string | null, cwd: o.cwd };
+};
+// THE HANDED-OVER SEAT: `from` also names WHICH CONVERSATION left, read off the slot at the moment
+// of the handover (s.sessionId + s.cwd) — the one pair the band needs to open the predecessor's
+// transcript (docs/messungen/2026-09-21-band-transkript-quelle.md §2). Both keys or neither:
+// ABSENT = a record written before the field existed (its band stays unassigned — no time-window
+// guess backfills it); `sessionId: null` = the occupant had none to give (a harness that never
+// pinned one), said honestly.
+interface LineageSeat extends LineageOccupant { sessionId?: string | null; cwd?: string | null }
+// no slash, no dot-start: the id is joined into a transcript path by the harness readers
+const LINEAGE_SESSION_ID_RE = /^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/;
 type LineageWatchTarget =
   | { kind: "lane" | "merge"; target: number; targetCwd: string; targetBranch: string }
   | { kind: "audit"; repo: string; mainAfter: string };
@@ -2722,7 +2751,7 @@ interface LineageHandover {
   lineageId: string;
   role: LineageRole;
   at: number;
-  from: LineageOccupant;
+  from: LineageSeat;
   to: LineageOccupant;
   obligations: LineageObligationRef[];
   intent: string | null;
@@ -2769,6 +2798,17 @@ const lineageOccupantFrom = (raw: unknown): LineageOccupant | null => {
     || o.openedAt <= 0) return null;
   return { slot: o.slot as number, openedAt: o.openedAt };
 };
+const lineageSeatFrom = (raw: unknown): LineageSeat | null => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (!Object.hasOwn(o, "sessionId") && !Object.hasOwn(o, "cwd")) return lineageOccupantFrom(o);
+  const { sessionId, cwd, ...rest } = o;
+  const occupant = lineageOccupantFrom(rest);
+  if (!occupant || Object.keys(o).length !== 4) return null;
+  if (!(sessionId === null || (typeof sessionId === "string" && LINEAGE_SESSION_ID_RE.test(sessionId)))) return null;
+  if (!(cwd === null || lineagePathOk(cwd))) return null;
+  return { ...occupant, sessionId: sessionId as string | null, cwd: cwd as string | null };
+};
 // CLOSED, VERSIONED, and a failure keeps the one thing that makes it attributable: the lineage id,
 // when the raw row still carries a well-formed one. A loss is reported to that line's reader as
 // `handoverLost`, never rendered as "nothing was owed".
@@ -2786,9 +2826,9 @@ const loadLineageHandover = (value: unknown): LineageHandoverRead => {
   if (typeof r.role !== "string" || !LINEAGE_ROLES.includes(r.role as LineageRole))
     return fail(`role must be one of ${LINEAGE_ROLES.join(", ")}`);
   if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0) return fail("at must be a positive number");
-  const from = lineageOccupantFrom(r.from);
+  const from = lineageSeatFrom(r.from);
   const to = lineageOccupantFrom(r.to);
-  if (!from || !to) return fail("from and to must each be exactly {slot, openedAt}");
+  if (!from || !to) return fail("from must be exactly {slot, openedAt} or {slot, openedAt, sessionId, cwd}, and to exactly {slot, openedAt}");
   const supersededBy = r.supersededBy === null ? null : lineageOccupantFrom(r.supersededBy);
   if (r.supersededBy !== null && !supersededBy) return fail("supersededBy must be null or exactly {slot, openedAt}");
   if (!(r.intent === null || (typeof r.intent === "string" && r.intent !== "" && r.intent.length <= LINEAGE_INTENT_MAX)))
@@ -2956,7 +2996,7 @@ export type {
   StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
   StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold, StallRepoClock, StallSensorState,
-  TaskDisposition, LineageRole, LineageObligationKind, LineageOccupant, LineageWatchTarget, LineageObligationRef, LineageHandover,
+  TaskDisposition, LineageRole, LineageObligationKind, LineageOccupant, LineageSeat, LaneSeat, LineageWatchTarget, LineageObligationRef, LineageHandover,
   LineageHandoverRead, LineageHandoverLoss,
 };
 export {
@@ -2979,7 +3019,7 @@ export {
   MESSAGES_MAX, loadMessageAddress, loadMessagePayload, loadMessageEntry, loadMessages,
   PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, PROGRAM_HANDOVER_KINDS,
   loadProgramHandover, loadProgramRecordLoss,
-  LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LINEAGE_OBLIGATIONS_MAX,
+  LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LINEAGE_OBLIGATIONS_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
   loadLineageHandover, loadLineageHandoverLoss,
   foundingOccupantFrom, foundingIdentityFrom,

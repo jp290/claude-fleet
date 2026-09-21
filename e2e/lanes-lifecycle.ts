@@ -985,14 +985,39 @@ export async function run(lc: LaneCtx): Promise<void> {
       check("(band) the line itself carries that ctx per past session, for the band's cells",
         JSON.stringify(chainNow.past?.[0]?.ctx) === JSON.stringify(ctx), JSON.stringify(chainNow).slice(0, 240));
       const mainPast = mainId ? await pastOf(mainId, 1) : { status: 0, body: {} as PastBody };
-      check("(band) a MAIN's past session — a lineage record names slot + openedAt only — is the honest empty state",
+      check("(band) a MAIN's past session on an OLD lineage record (slot + openedAt only, written before `from` named a session) stays the honest empty state — no backfill",
         mainId > 0 && mainPast.status === 200 && mainPast.body.assigned === false
           && (mainPast.body.reason ?? "").includes("nicht zugeordnet") && (mainPast.body.entries ?? []).length === 0,
         `main=${mainId} ${mainPast.status} ${JSON.stringify(mainPast.body).slice(0, 240)}`);
 
-      // un-plant: the line on the main and the file; the report goes with the block's own cleanup below
+      // (5) THE SEAT: the succession wrote the leaving occupant onto the slot itself (Slot.laneSeats),
+      // because the report is pruned and the seat is not. FLEET_CMD=true had no session to give, so the
+      // seat says null; with the pair moved from the report onto the seat, the band must still find the
+      // file — a route that read only the report would answer "nicht zugeordnet" here.
+      type SeatRow = { openedAt: number; handedAt: number; sessionId: string | null; cwd: string };
       await stopSrv();
-      const bandUnplant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof bandPlant;
+      const seatPlant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof bandPlant
+        & { slots?: Record<string, { laneSeats?: SeatRow[] }> };
+      const seats = seatPlant.slots?.[String(batonSlotId)]?.laneSeats ?? [];
+      check("(band) a lane succession leaves the leaving occupant's seat on the slot: its begin, the handover, its cwd, and null for no session",
+        seats.length === 1 && seats[0]?.openedAt === batonOpenedAt && seats[0].sessionId === null && seats[0].cwd === batonCwd
+          && seats[0].handedAt >= batonOpenedAt,
+        JSON.stringify(seats));
+      const seatReport = seatPlant.fleetReports?.find((r) => r.id === handoffBody.report?.id);
+      if (seatReport) seatReport.worker.sessionId = null;
+      if (seats[0]) seats[0].sessionId = sid;
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(seatPlant, null, 2), { mode: 0o600 });
+      await restartSrv();
+      const bySeat = await pastOf(batonSlotId, 1);
+      check("(band) the seat's pair outlives the report's: with the report naming no session, the band still reads the predecessor's file",
+        bySeat.status === 200 && bySeat.body.assigned === true && bySeat.body.source === `${sid}.jsonl`
+          && bySeat.body.report === handoffBody.report?.id,
+        `${bySeat.status} ${JSON.stringify({ ...bySeat.body, entries: bySeat.body.entries?.length }).slice(0, 240)}`);
+
+      // un-plant: the line on the main, the seat's session and the file; the report goes with the block's own cleanup below
+      await stopSrv();
+      const bandUnplant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof seatPlant;
+      for (const seat of bandUnplant.slots?.[String(batonSlotId)]?.laneSeats ?? []) seat.sessionId = null;
       bandUnplant.lineageHandovers = (bandUnplant.lineageHandovers ?? []).filter((r) => r.lineageId !== lineageId);
       if (mainId && bandUnplant.slots?.[String(mainId)]) delete bandUnplant.slots[String(mainId)]!.lineageId;
       writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(bandUnplant, null, 2), { mode: 0o600 });

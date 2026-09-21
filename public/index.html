@@ -205,13 +205,21 @@
      reads as one object. 5/6/1 keeps the rows apart (the 2px gap in #slots does that) and hands
      the difference back to the axis. What it CANNOT reach is the 26px gutter itself: the mark's
      reservation is the floor under line 1, and it is not this cut's to move — see the report. */
-  .slot { position: relative; flex: none; display: block; padding: 5px 8px 6px 6px;
+  .slot { position: relative; flex: none; display: block; padding: 6px 8px 6px 6px;
     border-radius: 12px; border: 1px solid transparent; cursor: pointer; font-size: var(--chat-fs);
     color: var(--chat-prose); user-select: none; -webkit-user-select: none; --rb: var(--c-hover); }
   .slot:hover, .slot:focus-within { background: var(--c-hover); }
   .slot.shown { background: var(--chat-surface); border-color: var(--chat-edge-soft); --rb: var(--chat-surface); }
   .slot.current { background: var(--chat-raised); border-color: var(--chat-edge); --rb: var(--chat-raised); }
-  .slot .r1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  /* ONE LINE, ON A 4px RHYTHM. The row is the owner's five things on one axis (src/client.ts,
+     slotRow): a session row is 26 + 2×6 + 2 = 40px, a lane 22 + 12 + 2 = 36, a free place
+     20 + 2×5 + 2 = 32 (20 is its number chip's own height). The minimum heights are what make that true whatever a chip's own line
+     box says, and every chip on the line is centred on the same axis by the flex, never by a
+     baseline — a mono number and a sans word do not share a baseline, they share a centre.
+     The gap is 4, not 6: seven children share 227px, and every 2px of gap is 12px of name. */
+  .slot .r1 { display: flex; align-items: center; gap: 4px; min-width: 0; min-height: 26px; }
+  .slot.lane .r1 { min-height: 22px; }
+  .slot.empty .r1 { min-height: 20px; }
   /* line 2 hangs under the LABEL, not under the row: the mark's gutter is a column that both lines
      share, so the address, the label and the readings below them line up on one left edge. */
   .slot .r2 { display: flex; align-items: baseline; gap: 8px; min-width: 0;
@@ -228,15 +236,6 @@
      lands in — and empty on purpose: a placeholder that draws something is not a placeholder. */
   .slot .mark { flex: none; width: var(--mark-size, 26px); height: var(--mark-size, 26px); }
   .slot.lane { --mark-size: 21px; }
-  /* A LANE YOU ARE NOT IN IS ONE LINE; THE ONE YOU ARE IN KEEPS BOTH. Owner, 2026-09-20: "ich will
-     nicht das sie immer eingeklappt sind" and "vllt werden sie groesser wenn man direkt drauf
-     geht". Always-open costs height — on a FULL bar (13 sessions + 3 lanes) 16 rows at 54/49 px no
-     longer fit a 900 px window, measured 14 of 16 — and this is where the height comes back.
-     WHAT AN UNFOCUSED LANE GIVES UP is its second line: the checkout name (which on a lane repeats
-     the label), its context fill and its idle time. It keeps its band, its label, its lifecycle dot
-     and its state. Click it and all three come back. This is a TRADE, not a free win. */
-  .slot.lane:not(.current) .r2 { display: none; }
-  .slot.lane:not(.current) { padding-top: 4px; padding-bottom: 5px; }
   /* THE ADDRESS IS A CHIP, and it is the same object the chat view sets an id or a code span in
      (.mdcode: mono on --chat-raised behind a hairline) — so the thing you type into a route and the
      thing you point at in the bar look like one kind of thing. It carries the ONLY colour left in
@@ -257,7 +256,7 @@
      900px window at place 15. The gutter's WIDTH stays (the numbers of free and occupied places
      must keep standing on one left edge); only its height gives way, and only where there is no
      session for a mark to stand for. */
-  .slot.empty { padding: 3px 8px 4px 6px; }
+  .slot.empty { padding: 5px 8px 5px 6px; }
   .slot.empty .mark { height: 16px; }
   /* THE THREE SUCCESSION FASSUNGEN — scaffolding behind #band=a|b|c (src/client.ts, BAND_VARIANT).
      No new colour, no new edge, no new family: .succ is the same mono-on-faint the other readings of
@@ -282,14 +281,23 @@
      are the pair a reader most needs to separate: one is a session between answers, the other has
      said nothing for half an hour. The inks are the app's existing vocabulary (the queue's live
      hue, the chat greys, the one red the palette has); the bar names none of its own. */
-  .slot .act { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--q-live); }
+  /* ONE 8px BOX FOR ALL FOUR, on the 4/8 grid: the shape changes, the box never does, so a row
+     whose session falls asleep does not move by a pixel. The flat bar is drawn INSIDE the square
+     (a centred 8×2 gradient) instead of shrinking the element to 2px — which is what made it
+     "a different size" than the disc beside it. */
+  .slot .act { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--q-live); }
   .slot .act.rest { background: none; box-shadow: inset 0 0 0 1.5px var(--chat-mute); }
-  .slot .act.sleep { width: 9px; height: 2px; border-radius: 1px; background: var(--chat-faint); }
+  .slot .act.sleep { border-radius: 0;
+    background: linear-gradient(var(--chat-faint), var(--chat-faint)) center / 8px 2px no-repeat; }
   .slot .act.bad { border-radius: 1px; background: var(--danger);
     clip-path: polygon(20% 0, 50% 30%, 80% 0, 100% 20%, 70% 50%, 100% 80%, 80% 100%,
       50% 70%, 20% 100%, 0 80%, 30% 50%, 0 20%); }
   /* Actions replace the row's right edge on a solid matching surface, never overpaint facts. */
+  /* ...and it replaces the WHOLE reading zone (ctx + state), never a slice of it: with ctx on line 1
+     since 2026-09-21, a strip only as wide as ✕ cut the fill's last digits in half on every hover.
+     62px is "ctx 78%" + gap + the 8px state box; the actions sit at its right end. */
   .slotact { position: absolute; right: 6px; top: 0; bottom: 0; display: none; align-items: center;
+    justify-content: flex-end; min-width: 62px;
     gap: 2px; padding-left: 6px; background: var(--rb); }
   .slot:hover .slotact, .slot:focus-within .slotact { display: flex; }
   .slot .kill { color: var(--chat-faint); font-size: 13px; padding: 2px 5px; border-radius: 5px; }
@@ -303,8 +311,7 @@
   #side.collapsed #instwrap,
   #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .slotact,
   #side.collapsed .r2, #side.collapsed .mark, #side.collapsed .ctxfill,
-  #side.collapsed .autobadge, #side.collapsed .quicklane, #side.collapsed .lanediff,
-  #side.collapsed .diff { display: none; }
+  #side.collapsed .autobadge, #side.collapsed .quicklane, #side.collapsed .needline { display: none; }
   #side.collapsed #sidehead { padding: 10px 0 6px; justify-content: center; }
   #side.collapsed #slots { padding: 4px 4px; }
   #side.collapsed .slot { padding: 8px 2px; }
@@ -739,22 +746,14 @@
      lane, and the band is a slot number — so the chip that carries the address carries the
      laneness too, and the blue left rule that used to fight the project stripe is gone with both. */
   .slot.lane { overflow: hidden; }
-  /* ONE lifecycle dot replaces the old branch-name badge. The full branch and the •N/↑N
-     counts stay in tooltips instead of squeezing the mutable label down to a sliver. */
-  .slot .lcdot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--chat-mute); }
-  .slot .lcdot.editing { background: var(--q-wait); }  /* uncommitted work in progress */
-  .slot .lcdot.ready { background: var(--q-live); }    /* clean, commits waiting to push/land */
   /* context fill — a reading, not a warning: one muted tone at every level, deliberately with no
      threshold colour, so the row never implies an action nobody built. `?` (unknown) is dimmer
      still, and is never an empty bar — a blank meter would read as a fresh session. Mono because
      it is a number, which is the same reason the address is mono. */
-  .slot .ctxfill { flex: none; font-family: var(--chat-mono); font-size: var(--chat-ui-fs);
+  .slot .ctxfill { flex: none; display: inline-flex; align-items: center; height: 18px; line-height: 1;
+    font-family: var(--chat-mono); font-size: var(--chat-ui-fs);
     color: var(--chat-mute); font-variant-numeric: tabular-nums; }
   .slot .ctxfill.unknown { color: var(--chat-faint); }
-  .slot .ctxfill.cxaction { cursor: pointer; }
-  .slot .ctxfill.cxaction:hover { color: var(--chat-ink); }
-  .slot .lanediff { flex: none; font-size: 13px; color: var(--chat-mute); cursor: pointer; padding: 0 2px; }
-  .slot .lanediff:hover { color: var(--chat-ink); }
   /* the palette. Names are share.html's (the guest page) wherever the role is the same — the VALUES
      here are the board's own and unchanged by the naming, so the two pages share a vocabulary, not
      a look. Only the twelve most-used tones are named; one-off shades stay literal on purpose, so a
@@ -800,12 +799,19 @@
   /* the pane carries no project stripe (owner, fifteenth cut: a 3px bar clipped by the pane's 8px
      radius read as one big bracket down the left edge). The project colour lives on the sidebar row. */
   /* slot stacks (F3): the anchor carries the arrow, its lanes are indented under it */
-  .slot .stackfold { flex: none; width: 12px; margin-left: -3px; color: var(--chat-faint);
-    font-size: var(--chat-ui-fs); text-align: center; cursor: pointer; }
-  .slot .stackfold:hover { color: var(--chat-ink); }
-  .slot .stackn { flex: none; font-size: var(--chat-ui-fs); padding: 0 5px; border-radius: 5px;
-    color: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l));
-    background: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l) / 0.16); }
+  /* THE CHIPS OF LINE 1 ARE ONE BOX: 18px high, centred, 5px inner edge, a 1px ring. The lane
+     count and the ⎇+ use it, so they stand on the same axis
+     at the same spacing and a hover changes a colour, never a size. */
+  .slot .stackn, .slot .quicklane { flex: none; display: inline-flex; align-items: center;
+    height: 18px; padding: 0 5px; border-radius: 5px; font-size: var(--chat-ui-fs); line-height: 1;
+    cursor: pointer; }
+  /* the count of lanes IS the fold: filled while they are shown, a ring while hidden — the two
+     read apart without the hue */
+  .slot .stackn { color: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l));
+    background: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l) / 0.16);
+    box-shadow: inset 0 0 0 1px transparent; }
+  .slot .stackn.folded { background: none;
+    box-shadow: inset 0 0 0 1px hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l) / 0.5); }
   /* small on purpose: the sidebar is 228px and a lane label is already tight, so the indent buys
      "belongs to the row above" with the least width it can be read at */
   .slot.stacked { margin-left: 10px; }
@@ -814,9 +820,7 @@
   /* the 50px rail centres its rows and has no width to spend on hierarchy — drop the indent and
      the text chips there; the fold arrow stays, so a stack is still openable from the rail */
   #side.collapsed .slot.stacked { margin-left: 0; }
-  #side.collapsed .stackn { display: none; }
-  .slot .diff { flex: none; font-size: var(--chat-code-fs); color: var(--chat-faint); cursor: pointer; }
-  .slot .diff:hover { color: var(--chat-ink); }
+  /* the count stays on the rail: it is the fold now, and the rail has no other way to open one */
   /* queue window: the dispatcher strip, the compose box, and the full task text in the detail */
   /* the queue's scope, inline in the toolbar line: project switch + program picker */
   .qscope { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -2079,12 +2083,11 @@
   .shrreplyin { flex: 1; min-width: 0; height: 30px; padding: 0 10px; border-radius: 8px;
     border: 1px solid var(--line); background: var(--raised); color: #eee; font-size: 12px; font-family: inherit; }
   .shrreplyin:focus { outline: none; border-color: var(--focus); }
-  .cmtb { flex: none; font-size: var(--chat-ui-fs); color: var(--chat-prose); background: var(--chat-raised);
-    border: 1px solid var(--chat-edge); border-radius: 6px; padding: 1px 6px; }
-  .slot:hover .cmtb, .slot:focus-within .cmtb { display: none; }
+  /* ⏸ lives in the HOVER ROW now (it had no sentence on the resting row, 2026-09-21), so the rule
+     that hid it on hover — when it was the resting row's badge and the hover row had its own —
+     would now hide it exactly when it is shown. The 💬 count badge is the hover row's 💬 itself. */
   .revb { flex: none; font-size: var(--chat-ui-fs); color: var(--q-wait); background: var(--q-wait-dim);
     border: 1px solid var(--chat-edge); border-radius: 6px; padding: 1px 5px; cursor: pointer; }
-  .slot:hover .revb, .slot:focus-within .revb { display: none; }
   .slot .cmtact { color: var(--chat-faint); font-size: var(--chat-code-fs); padding: 2px 5px; border-radius: 5px; }
   .slot .cmtact.hot { color: var(--chat-ink); }
   .slot .cmtact:hover { color: var(--chat-ink); background: var(--chat-raised); }
@@ -2609,8 +2612,14 @@
     color: #aaa; font-size: 11px; font-family: inherit; cursor: pointer; }
   .bactbtn:hover { color: #ddd; border-color: var(--focus); }
   .bactbtn.on { color: var(--amber); border-color: #5a4a2a; }
-  .slot .quicklane { flex: none; font-size: var(--chat-ui-fs); color: var(--chat-faint); cursor: pointer;
-    padding: 0 4px; border: 1px solid var(--chat-edge); border-radius: 5px; }
+  /* a Codex conversation the owner has to settle: a sentence under the name, in the one ink the bar
+     uses for "waiting on you", hung on the same left edge as the name above it */
+  .slot .needline { margin: 2px 0 0 calc(var(--mark-size, 26px) + 28px); cursor: pointer;
+    font-size: var(--chat-ui-fs); line-height: 1.3; color: var(--q-wait); }
+  .slot .needline:hover { color: var(--chat-ink); text-decoration: underline; }
+  /* ⎇+ — its box is the shared chip box above; the ring is a box-shadow, not a border, so it adds
+     no width to the box and cannot shift its neighbours */
+  .slot .quicklane { color: var(--chat-faint); box-shadow: inset 0 0 0 1px var(--chat-edge); }
   .slot .quicklane:hover { color: var(--chat-ink); background: var(--chat-raised); }
 
   #gate .panel { width: 380px; }

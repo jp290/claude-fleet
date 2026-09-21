@@ -9,13 +9,14 @@
 // stay in the axis) or `full` (all 16 taken).
 //
 // THE FOUR STATES AND HOW EACH IS PRODUCED (src/client.ts#slotState):
-//   working  — pane painted within RECENT_MS (5 s): every fresh open, for five seconds
-//   resting  — quiet between 5 s and 30 min: the same sessions, moments later
+//   working  — pane painted within RECENT_MS (5 s). testinstanz.sh#ti_paint keeps lane 10 printing
+//              every 2 s, and the slot on screen always reads as working.
+//   resting  — quiet between 5 s and 30 min. ti_paint has every other live row print once every
+//              10 min, so resting holds for as long as the instance stands.
 //   asleep   — quiet for SLEEP_MS (30 min) or more. NOT PLANTABLE, and the reason is structural:
 //              the clock it reads is `lastOutput`, which the server keeps in MEMORY and never
-//              writes to fleet.json (the persisted slot keys are cwd/label/harness/model/…, no
-//              lastOutput, no quietUntil), so there is no file to age and no route to set it.
-//              It arrives on its own once the instance has stood quiet for half an hour.
+//              writes to fleet.json, so there is no file to age and no route to set it. Slot 4 is
+//              the row that gets no painter: it falls asleep 30 minutes after `up`, and only then.
 //   broken   — `stalled`, or an `agent` of no-agent/no-pane. Killing the tmux session does NOT
 //              work: the server self-heals it within seconds (measured 2026-09-20, s6 was back
 //              9 s later). What holds is `remain-on-exit on` plus killing the pane's own process:
@@ -49,31 +50,53 @@ if (!BASE || !TOKEN || !DIR || !SOCK) {
 // they can be planted in the state file. The server must be DOWN while this runs: it holds the
 // state in memory and writes it back over anything edited underneath it. testinstanz.sh stops it,
 // calls this, and starts it again on the same tmux socket, where the panes are still standing.
+// THE DEMO LAYOUT (2026-09-21, owner: "am ende will ich all diese zsm mit dem band in einer guten
+// demo testen und bewerten"). Every row property of the bar has at least one row that shows it, and
+// the slot numbers are FIXED so the report can say "look at slot N" and mean it:
+//   mains with 0 / 1 / 3 lanes ....... 1 · 3 (lane 12 = 3A) · 2 (lanes 9, 10, 11 = 2A 2B 2C)
+//   working / resting / asleep / broken  1 (+ lane 10 painting) / most / 4 (after 30 min) / 6
+//   ctx low / mid / near a handover .... 12 → 5 %, 1 → 12 %, 10 → 21 %, 3 → 45 %, lane 9 → 37 % (the
+//                                         lane rail hands over at 40), main 2 → 78 %; the rest "ctx ?"
+//   succession ......................... 2 main s4 · 9 lane s3 · 2/5 (capped) · 10 lane s2 (no cap)
+//                                         · 12 lane s1 · 0/5 (a FIRST session — only a capped lane
+//                                         has one to show: the server omits an uncapped s1)
+//   codex .............................. 5 "pick conversation" (owner must act) · 8 healthy: nothing
+const CTX_PCT = { 1: 12, 2: 78, 3: 45, 9: 37, 10: 21, 12: 5 };
+// claude's default here is claude-opus-5[1m] (src/protocol.ts#FLEET_DEFAULT_MODEL): one percent of
+// its window is 10 000 input tokens. The API is read back after the restart, never assumed.
+const WINDOW = 1_000_000;
+
+// SUCCESSION FACTS CANNOT BE ASKED FOR OVER HTTP — they are the record of handovers that really
+// happened, and this instance has had none. They ARE persisted (`laneSuccessions` on the slot,
+// `lineageHandovers` as a top-level list, `laneSucceedCounts` as a map), unlike `lastOutput`, so
+// they can be planted in the state file. So can a Codex binding state (`codexRecoveryState`) and a
+// session id — and a session id plus a transcript with a usage record is what the context fill is
+// measured from. The server must be DOWN while this runs: it holds the state in memory and writes
+// it back over anything edited underneath it. testinstanz.sh stops it, calls this, and starts it
+// again on the same tmux socket, where the panes are still standing.
 if (PATCH) {
   const file = `${DIR}/fleet.json`;
   const st = JSON.parse(await Bun.file(file).text());
-  const ids = Object.keys(st.slots ?? {});
-  const laneIds = ids.filter((id) => st.slots[id]?.worktree);
-  const mainIds = ids.filter((id) => st.slots[id]?.cwd && !st.slots[id]?.worktree);
+  const slot = (id) => st.slots?.[String(id)] ?? null;
   const planted = [];
-  // A lane on its third session, with two of five batons spent. `taken` is counted per QUEUE ROW
-  // (originId), which a hand-made lane has none of — so the row gets one, which is also what
-  // makes the cap apply at all (successionFacts: cap is null without an originId).
-  if (laneIds[0]) {
-    st.slots[laneIds[0]].laneSuccessions = 2;
-    st.slots[laneIds[0]].originId = "fixture0";
-    st.laneSucceedCounts = { ...(st.laneSucceedCounts ?? {}), fixture0: 2 };
-    planted.push(`slot ${laneIds[0]} (lane): session 3, 2 of the cap spent`);
-  }
-  // A second lane one session in, with no queue row: session 2, no cap — the other half of the
-  // question, so the picture shows a capped and an uncapped row side by side.
-  if (laneIds[1]) {
-    st.slots[laneIds[1]].laneSuccessions = 1;
-    planted.push(`slot ${laneIds[1]} (lane): session 2, no cap`);
-  }
+  const lane = (id, successions, originId, taken) => {
+    const s = slot(id);
+    if (!s?.worktree) { planted.push(`! slot ${id} is not a lane — nothing planted there`); return; }
+    s.laneSuccessions = successions;
+    if (originId) {
+      // `taken` is counted per QUEUE ROW (originId), which a hand-made lane has none of — so the
+      // row gets one, which is also what makes the cap apply at all (cap is null without one)
+      s.originId = originId;
+      st.laneSucceedCounts = { ...(st.laneSucceedCounts ?? {}), [originId]: taken };
+    }
+    planted.push(`slot ${id} (lane): session ${successions + 1}${originId ? `, ${taken} of the cap spent` : ", no cap"}`);
+  };
+  lane(9, 2, "fixture0", 2);
+  lane(10, 1, null, 0);
+  lane(12, 0, "fixture1", 0);
   // A main on its fourth session: three handover records addressed to this occupant's line.
-  if (mainIds[1]) {
-    const m = st.slots[mainIds[1]];
+  const m = slot(2);
+  if (m) {
     // 24 hex, and ALL TEN FIELDS: the loader refuses a record that does not contain exactly
     // v, lineageId, role, at, from, to, obligations, intent, pointer, supersededBy, and it refuses
     // it into a SCAR rather than an error — the first fixture here lost three records that way and
@@ -82,13 +105,38 @@ if (PATCH) {
     m.lineageId = lineageId;
     st.lineageHandovers = [...(st.lineageHandovers ?? []), ...[0, 1, 2].map((i) => ({
       v: 1, lineageId, role: "generic", at: (m.openedAt ?? Date.now()) - (3 - i) * 3600_000,
-      from: { slot: Number(mainIds[1]), openedAt: (m.openedAt ?? Date.now()) - (4 - i) * 3600_000 },
-      to: { slot: Number(mainIds[1]), openedAt: (m.openedAt ?? Date.now()) - (3 - i) * 3600_000 },
+      from: { slot: 2, openedAt: (m.openedAt ?? Date.now()) - (4 - i) * 3600_000 },
+      to: { slot: 2, openedAt: (m.openedAt ?? Date.now()) - (3 - i) * 3600_000 },
       obligations: [], intent: "fixture handover", pointer: null, supersededBy: null }))];
-    planted.push(`slot ${mainIds[1]} (main): session 4`);
+    planted.push("slot 2 (main): session 4");
   }
+  // CONTEXT FILL: a session id on the slot and a transcript at the path the claude reader derives
+  // from it — under THIS INSTANCE'S HOME (testinstanz.sh starts the server with HOME=$DIR/home),
+  // so nothing is written into the real ~/.claude.
+  for (const [id, pct] of Object.entries(CTX_PCT)) {
+    const s = slot(id);
+    if (!s?.cwd) { planted.push(`! slot ${id} has no cwd — no ctx`); continue; }
+    const sid = crypto.randomUUID();
+    s.sessionId = sid;
+    const proj = `${DIR}/home/.claude/projects/${s.cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    mkdirSync(proj, { recursive: true });
+    const used = Math.round((pct / 100) * WINDOW);
+    writeFileSync(`${proj}/${sid}.jsonl`, JSON.stringify({ type: "assistant",
+      message: { usage: { input_tokens: used, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 } } }) + "\n");
+  }
+  planted.push(`ctx on ${Object.entries(CTX_PCT).map(([id, p]) => `${id}=${p}%`).join(" ")}`);
+  // CODEX: slot 5 in the state Fleet will not guess its way out of, slot 8 bound and healthy.
+  const cx = (id, state) => {
+    const s = slot(id);
+    if (!s) { planted.push(`! slot ${id} missing — no codex state`); return; }
+    s.codexRecoveryState = state;
+    if (state === "bound") s.sessionId = s.sessionId ?? crypto.randomUUID();
+    planted.push(`slot ${id} (codex): ${state}`);
+  };
+  cx(5, "ambiguous");
+  cx(8, "bound");
   await Bun.write(file, JSON.stringify(st));
-  console.log(`succession planted in the state file: ${planted.join(" · ") || "nothing (no slots)"}`);
+  console.log(`planted in the state file: ${planted.join(" · ") || "nothing (no slots)"}`);
   process.exit(0);
 }
 
@@ -117,23 +165,35 @@ if (!existsSync(repo)) {
   sh(repo, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fixture");
 }
 
+// A SECOND PROJECT, also inside the instance's own directory. Slots 4 and 5 used to open in THIS
+// checkout (`SRC`) to give the bar a second project hue — and with the harness CLIs real at the
+// time, that put a live `codex --dangerously-bypass-approvals-and-sandbox` into the lane's own
+// worktree. The hue only needs a second repo, not this one.
+const other = `${DIR}/fixture-other`;
+if (!existsSync(other)) {
+  mkdirSync(other, { recursive: true });
+  writeFileSync(`${other}/README.md`, "second fixture repo for the standing test instance\n");
+  sh(other, "git", "init", "-q");
+  sh(other, "git", "add", "-A");
+  sh(other, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fixture");
+}
+
 // Labels at the edge on purpose: the bar's job is to stay readable when a name does not fit. The
 // server caps a label at 40 chars, so the longest here is exactly 40.
 const SESSIONS = [
   { slot: 1, label: "Orchestrator", cwd: repo },
   { slot: 2, label: "Fleet-Betrieb", cwd: repo },
   { slot: 3, label: "Program-MAIN Leiste und Slot-System", cwd: repo },
-  { slot: 4, label: "⚙ steward", cwd: SRC || repo, harness: "pi" },
-  { slot: 5, label: "Astra", cwd: SRC || repo, harness: "codex" },
+  { slot: 4, label: "⚙ steward", cwd: other, harness: "pi" },
+  { slot: 5, label: "Astra", cwd: other, harness: "codex" },
   { slot: 6, label: "GLM Sammelzeile", cwd: repo, harness: "pi-zai" },
   { slot: 7, label: "Shell", cwd: process.env.HOME ?? repo },
-  { slot: 8, label: "Queue-Sichtung, dritte Runde in 24 h", cwd: repo },
+  { slot: 8, label: "Sol", cwd: repo, harness: "codex" },
 ];
 // `full` means all sixteen places taken, and a LANE TAKES A PLACE — so the full stand is thirteen
 // sessions plus three lanes, not sixteen sessions (sixteen sessions leave the lanes a 409 "no free
 // slot", which is how this number was found).
 const BROKEN_SLOT = 6;
-const LANE_PARENT = 2;
 
 // A FRESH CANVAS FIRST. Replanting on top of a standing instance re-opens slots that are already
 // open, and the server refuses that — one refusal on 2026-09-20 even named a DIFFERENT slot ("could
@@ -163,18 +223,22 @@ for (const s of plan) {
 }
 await Bun.sleep(3000);
 
-// THREE lanes under ONE session, and `parent` is not decoration: without it the server picks an
-// anchor per lane, several sessions of this repo qualify, and the bar ends up with TWO stacks. Two
-// stacks make the fold key generation-qualified (`${key}\n${slot}:${openedAt}`, src/client.ts) —
-// one stack keeps it the plain repo path, which is the key a reader can actually reason about.
+// LANES UNDER TWO MAINS — three under slot 2, one under slot 3 — so the bar shows a main with
+// many lanes, one with a single lane, and (slot 1) one with none. `parent` is not decoration:
+// without it the server picks an anchor per lane and the lanes land under whichever session of this
+// repo it likes. Created in this order, the lanes take the free places 9, 10, 11 and then 12, which
+// is what the demo layout above and the report's "look at slot N" rely on (read back below).
 const before = (await api("/api/sessions")).body;
-const anchor = (Array.isArray(before?.slots) ? before.slots : []).find((x) => x.id === LANE_PARENT);
+const bySlot = (id) => (Array.isArray(before?.slots) ? before.slots : []).find((x) => x.id === id);
 let made = 0;
-if (!anchor?.openedAt) notes.push(`no lane anchor: slot ${LANE_PARENT} carries no openedAt`);
-else for (let i = 0; i < 3; i++) {
-  const r = await api("/api/lanes", { repo, parent: { slot: LANE_PARENT, openedAt: anchor.openedAt } });
-  if (r.status < 300) made++;
-  else notes.push(`lane ${i + 1} NOT created (${r.status}): ${JSON.stringify(r.body).slice(0, 180)}`);
+for (const [parentSlot, count] of [[2, 3], [3, 1]]) {
+  const anchor = bySlot(parentSlot);
+  if (!anchor?.openedAt) { notes.push(`no lane anchor: slot ${parentSlot} carries no openedAt`); continue; }
+  for (let i = 0; i < count; i++) {
+    const r = await api("/api/lanes", { repo, parent: { slot: parentSlot, openedAt: anchor.openedAt } });
+    if (r.status < 300) made++;
+    else notes.push(`lane under ${parentSlot} NOT created (${r.status}): ${JSON.stringify(r.body).slice(0, 180)}`);
+  }
 }
 await Bun.sleep(6000);
 

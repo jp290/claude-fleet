@@ -6523,11 +6523,11 @@ function repoHeaderRow(g: Stack, open: boolean): HTMLElement {
   const row = el("div", "slot repohead");
   tintProject(row, g.key);
   const r1 = el("div", "r1");
-  r1.appendChild(foldArrow(g, open));
+  r1.appendChild(el("span", "mark"));
   const lbl = el("span", "lbl dim", baseName(g.key));
   lbl.title = `${g.key}\nno matching anchored main session — orphan/parentless lanes`;
   r1.appendChild(lbl);
-  for (const c of stackChips(g, open)) r1.appendChild(c);
+  r1.appendChild(laneCountChip(g, open));
   r1.appendChild(quickLaneChip(g.key));
   row.appendChild(r1);
   row.onclick = () => setStackOpen(g, !open);
@@ -6541,47 +6541,28 @@ function quickLaneChip(repo: string, parent?: LaneAnchor): HTMLElement {
   return q;
 }
 
-function foldArrow(g: Stack, open: boolean): HTMLElement {
-  const a = el("span", "stackfold", open ? "▾" : "▸");
-  a.title = open ? `fold ${baseName(g.key)}'s lanes away` : `unfold ${g.lanes.length} lane(s)`;
-  a.onclick = (e) => { e.stopPropagation(); setStackOpen(g, !open); };
-  return a;
-}
-
-// The anchor's own chips: how many lanes, what they need while hidden, and one way to start another.
-function stackChips(g: Stack, open: boolean): HTMLElement[] {
-  const out: HTMLElement[] = [];
-  const n = el("span", "stackn", `⎇${g.lanes.length}`);
-  n.title = `${g.lanes.length} lane${g.lanes.length === 1 ? "" : "s"} in ${baseName(g.key)}`;
-  out.push(n);
+// THE NUMBER OF LANES, and the fold. The owner's list has "indication of nr of lanes" and no fold
+// arrow, so the count IS the fold control: one click shows or hides the lanes it counts. What the
+// folded chips (⏸ unreviewed resolutions, 💬 guest messages in hidden lanes) used to say at rest is
+// in the tooltip now, and on each lane's own hover row once unfolded; a hidden lane that is working
+// still lights the anchor's state indicator (hidHot in slotRow).
+function laneCountChip(g: Stack, open: boolean): HTMLElement {
+  const n = el("span", "stackn" + (open ? "" : " folded"), `⎇${g.lanes.length}`);
+  const lines = [`${g.lanes.length} lane${g.lanes.length === 1 ? "" : "s"} in ${baseName(g.key)}`
+    + ` — click to ${open ? "hide" : "show"} them`];
   if (!open) {
-    // Aggregation, not decoration: these two are the "somebody has to look at this" signals, and
-    // folding must not be able to hide them. Clicking takes you to the lane that owns the signal —
-    // which means unfolding first, so what you land on is visible in the list you came from.
-    const pending = g.lanes.filter((l) => l.mergePending);
-    if (pending.length) {
-      const rb = el("span", "revb", pending.length > 1 ? `⏸${pending.length}` : "⏸");
-      rb.title = `${pending.length} folded lane(s) with agent conflict resolutions nobody has reviewed`;
-      rb.onclick = (e) => {
-        e.stopPropagation();
-        setStackOpen(g, true);
-        showSlot(pending[0].id);
-        setBoard(true);
-      };
-      out.push(rb);
-    }
+    const pending = g.lanes.filter((l) => l.mergePending).length;
+    if (pending) lines.push(`${pending} hidden lane(s) with agent conflict resolutions nobody has reviewed`);
     const comments = g.lanes.reduce((a, l) => a + (l.share?.comments ?? 0), 0);
-    if (comments > 0) {
-      const cb = el("span", "cmtb", `💬${comments}`);
-      cb.title = `${comments} guest message(s) in folded lanes`;
-      out.push(cb);
-    }
+    if (comments) lines.push(`${comments} guest message(s) in hidden lanes`);
   }
-  return out;
+  n.title = lines.join("\n");
+  n.onclick = (e) => { e.stopPropagation(); setStackOpen(g, !open); };
+  return n;
 }
 
 // One occupied slot. `stack` is set only when this row is the anchor of a fold — it carries the
-// arrow, the ⎇N chip, the quick-lane chip and, while folded, the badges of the lanes it hides.
+// ⎇N chip, which is also the fold.
 // B3 · the inbound chip's PAINTED text, in one place because two readers need exactly it: the row
 // that draws the chip and the sidebar's render key, which must be keyed on what is painted and not
 // on the raw byte count (the rule `behind` and the ctx chip above both document).
@@ -6598,44 +6579,57 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
   const row = el("div", "slot" + (isFocused ? " current" : visible ? " shown" : "") + (s.worktree ? " lane" : ""));
   row.dataset.slot = String(s.id);
   tintProject(row, projectOf(s));
-  // TWO LINES, not one run of glyphs: line 1 is address · label · state and everything that asks
-  // for a decision; line 2 is the two quiet facts the row used to say only in colour — which
-  // checkout this is, and how long ago it last spoke. `.slotact` and `.rowacts` stay children of
-  // the ROW, not of a line: the first is absolutely positioned over the row's right edge, the
-  // second is a full-width strip the phone drawer wraps under both lines.
+  // THE RESTING ROW IS FIVE THINGS, and the list is the owner's, verbatim (2026-09-21): "slotNr,
+  // Ctx-fill, indication of nr of lanes, name, workIndicator und kein 'cx bound' (nie verstanden
+  // wofür das ist)". Plus the ⎇+ chip he named as the one button that is right as it is. It is ONE
+  // line now. Everything else the row used to carry has no sentence of his and left it — but no
+  // function left with it; each one says below where it went (the label's tooltip, the state's
+  // tooltip, the hover row, the lane-count chip, or the board). `.slotact` and `.rowacts` stay
+  // children of the ROW: the first overlays its right edge on hover, the second is the phone strip.
   const r1 = el("div", "r1");
-  const r2 = el("div", "r2");
-  if (stack) r1.appendChild(foldArrow(stack, open));
   {
       const displayLabel = s.label ?? baseName(s.cwd);
       const lbl = el("span", "lbl", displayLabel);
       // THE PLACE FOR THE SESSION MARK — reserved, sized, and deliberately EMPTY. It is build 2 of
       // this card and waits on the owner's choice between the drawn variants
-      // (docs/messungen/2026-09-20-session-marke-runde-2.md §7). Reserving it now means the row's
-      // geometry is already the one the mark lands in, so nothing moves twice.
+      // (docs/messungen/2026-09-20-session-marke-runde-2.md §7). It draws nothing, so it is not a
+      // sixth thing on the row; it is the geometry the mark will land in.
       r1.appendChild(el("span", "mark"));
+      // WHAT THE ROW NO LONGER SAYS, the label says on hover: which checkout, a lane's branch and
+      // git state (the lifecycle dot's three words), today's inbound bytes, a parked send. These
+      // were line 2 and two chips; the board says all of them again, with actions.
+      const facts: string[] = [];
       if (s.worktree) {
-        // A LANE'S NAME IS ITS BAND'S (3A, 16B) AND IT IS THE ONLY ONE the bar shows. The branch
-        // suffix that used to stand here said nothing a reader could use to address the lane; the
-        // branch itself is one hover away, with the rest of the git facts.
-        const title = `${refs.get(s.id) ?? "lane"} · ${displayLabel}\n${s.worktree.branch}\nslot ${s.id} · ${s.cwd}`;
+        facts.push(`${refs.get(s.id) ?? "lane"} · ${displayLabel}`, s.worktree.branch);
+        if (s.git) {
+          // lifecycle: editing (uncommitted) → ready (clean but commits to land) → clean — it was a
+          // dot beside the state dot, a SECOND dot the resting row has no place for
+          const lc = s.git.dirty > 0 ? "editing" : s.git.ahead > 0 ? "ready to land" : "clean";
+          facts.push(`${lc} — ${s.git.dirty} uncommitted, ${s.git.ahead} to land, ${s.git.behind} behind`);
+        }
+        facts.push(`slot ${s.id} · ${s.cwd}`);
+      } else {
+        facts.push(s.cwd ?? "");
+      }
+      if (s.inbound) {
+        const { sends, bytes } = s.inbound;
+        facts.push(`Fleet typed ${bytes.toLocaleString()} bytes into this pane today, in ${sends} send${sends === 1 ? "" : "s"}`);
+      }
+      if (s.parkedSend) facts.push(parkedSendLine(s.parkedSend));
+      facts.push("open the board for the diff, the files and the actions · double-click to rename");
+      lbl.title = facts.join("\n");
+      if (s.worktree) {
+        // A LANE'S NAME IS ITS BAND'S (3A, 16B) AND IT IS THE ONLY ONE the bar shows.
         const ref = el("span", "laneref", refs.get(s.id) ?? String(s.id));
-        ref.title = title;
+        ref.title = lbl.title;
         r1.append(ref, lbl);
-        lbl.title = title;
       } else {
         r1.append(el("span", "n", String(s.id)), lbl);
-        lbl.title = s.cwd;
       }
       lbl.ondblclick = (e) => {
         e.stopPropagation();
         startRename(row, s);
       };
-      if (autosList.some((a) => a.slot === s.id && a.enabled)) {
-        const b = el("span", "autobadge", "⏱");
-        b.title = "has scheduled prompts";
-        r1.appendChild(b);
-      }
       // FASSUNG C — a chip in line 1, beside the label: the succession reads as part of the
       // ADDRESS rather than as a reading, and it is the only one of the three a folded row keeps.
       if (BAND_VARIANT === "c" && s.succession) {
@@ -6643,163 +6637,100 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         sc.title = successionTitle(s.succession);
         r1.appendChild(sc);
       }
-      if (stack) for (const c of stackChips(stack, open)) r1.appendChild(c);
-      // ⎇+ used to sit on all twelve empty rows at once, saying nothing about which repo it meant.
-      // Here it names its own repo by sitting on it. Not on lanes: a lane off a lane would nest
-      // .worktrees inside a worktree, which is the same rule the old `quickRepo` followed.
+      // THE NUMBER OF LANES — his third item — and, since the fold arrow left the row, the fold
+      // itself: clicking the count shows or hides the lanes it counts. While folded, what the hidden
+      // lanes are waiting for is in its tooltip, and a hidden lane that works still lights the
+      // state below (hidHot).
+      if (stack) r1.appendChild(laneCountChip(stack, open));
+      // ⎇+ — the one button the owner calls right as it is. Not on lanes: a lane off a lane would
+      // nest .worktrees inside a worktree.
       if (s.git && !s.worktree) {
         const parent = normalizeLaneAnchor({ slot: s.id, openedAt: s.openedAt });
         r1.appendChild(quickLaneChip(s.repo ?? s.cwd, parent ?? undefined));
       }
-      // row = identity + state: a lane's lifecycle color IS its land-readiness, shown as
-      // ONE dot. The branch name and counts that used to fill a 96px badge move into the
-      // tooltip — the name up top is already derived from this same branch (baseName(cwd))
-      if (s.worktree && s.git?.branch) {
-        // lifecycle: editing (uncommitted) → ready (clean but commits to push/land) → clean
-        const state = s.git.dirty > 0 ? "editing" : s.git.ahead > 0 ? "ready" : "clean";
-        const dot = el("span", `lcdot ${state}`);
-        dot.title = `${s.git.branch} — ${s.git.dirty} uncommitted, ${s.git.ahead} to land, ${s.git.behind} behind`
-          + `\nFleet lane (${state}). ± review · open the board to land`;
-        r1.appendChild(dot);
-      }
-      // a lane's whole point is review-then-land, so its ± sits inline (not hover-hidden) —
-      // the one action that belongs on the row; everything else (share/export/rename/land)
-      // lives in the board now
-      if (s.worktree) {
-        const dff = el("span", "lanediff", "±");
-        dff.title = "review this lane's diff";
-        dff.onclick = (e) => { e.stopPropagation(); void openDiff(s.id); };
-        r1.appendChild(dff);
-      }
-      if (s.share && s.share.comments > 0) {
-        // passive signal — hidden while the hover-action row is up; the 💬 in that row
-        // (below) is the clickable path, so aiming at the badge still lands right
-        const cb = el("span", "cmtb", `💬${s.share.comments}`);
-        cb.title = `guest chat — ${s.share.comments} message${s.share.comments === 1 ? "" : "s"}`;
-        r1.appendChild(cb);
-      }
-      if (s.mergePending) {
-        // a resolved conflict waiting for review — discoverable without opening the board
-        const rb = el("span", "revb", "⏸");
-        rb.title = "agent conflict resolutions nobody has reviewed — review & land (open the board)";
-        rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
-        r1.appendChild(rb);
-      }
-      if (s.codexRecovery) {
-        const cr = s.codexRecovery;
-        const needsOwner = cr.state === "ambiguous" || cr.state === "lost";
-        const chip = el("span", `ctxfill cxaction${needsOwner ? " unknown" : ""}`,
-          `cx ${cr.state}${cr.disconnectSeenAt ? " !" : ""}`);
-        chip.title = `Codex recovery: ${cr.state}`
-          + (cr.sessionId ? `\nsession ${cr.sessionId}` : "\nno conversation id bound")
-          + (cr.disconnectSeenAt
-            ? `\nstream disconnect seen ${new Date(cr.disconnectSeenAt).toLocaleString()} — advisory; the live TUI owns retry`
-            : "")
-          + (needsOwner ? "\nowner attention required; Fleet will not guess" : "")
-          + "\nclick to inspect eligible identities and bind one exact UUID";
-        chip.onclick = (e) => { e.stopPropagation(); openCodexDlg(s.id); };
-        r1.appendChild(chip);
-      }
       // context fill — a SENSOR and nothing else: no threshold, no colour state, no action. The
       // unknown case is drawn as "ctx ?", never as 0% and never as an empty bar: a blank meter reads
       // as "fresh session", which is the one wrong answer this fact must not be able to give.
-      // Rounded to whole percent because the render key below is keyed on what is painted — a live
-      // decimal would rebuild the sidebar every poll and kill hover state.
       {
         const c = s.ctx ?? null;
-        // "ctx" spelled out: a bare "?" next to the row's other glyphs would be unreadable, and "ctx NN%"
-        // is the vocabulary the owner's own terminal status line already uses for this number.
         const cx = el("span", "ctxfill" + (c ? "" : " unknown"), c ? `ctx ${Math.round(c.pct)}%` : "ctx ?");
         cx.title = c
           ? `context fill — ${c.usedTokens.toLocaleString()} of ${c.windowTokens.toLocaleString()} input tokens (${c.pct}%)`
           : "context fill unknown — this slot has no pinned claude transcript with a usage record yet"
             + " (or runs a harness/model Fleet cannot measure). Not an empty context.";
-        r2.appendChild(cx);
+        r1.appendChild(cx);
       }
-      // B3 · the cost of talking to this session today. A SENSOR beside the context fill and read
-      // the same way: no threshold, no colour, no action. It is only drawn when the server sent the
-      // key, because the key's absence IS the answer ("nothing typed into this pane today") — and
-      // an unconditional "in 0" would read as a claim about a session Fleet may never have written
-      // to at all.
-      if (s.inbound) {
-        const { sends, bytes } = s.inbound;
-        const inb = el("span", "ctxfill", inboundChipLabel(s.inbound));
-        inb.title = `Fleet typed ${bytes.toLocaleString()} bytes into this pane today,`
-          + ` in ${sends} send${sends === 1 ? "" : "s"} (local day).`
-          + "\nDelivered bytes only — a refused send costs the session nothing."
-          + "\nCounted per slot number, so a slot recycled today carries both occupants' sends.";
-        r2.appendChild(inb);
-      }
-      // a send waiting for this pane's composer to empty: a hint, not an alarm — the draft is the
-      // owner's, and Fleet types nothing until the owner sends or clears it
-      if (s.parkedSend) {
-        const ps = s.parkedSend;
-        const pk = el("span", "ctxfill", `⏳${ps.count}`);
-        pk.title = `${parkedSendLine(ps)}\nwaiting since ${new Date(ps.since).toLocaleTimeString()}`;
-        r2.appendChild(pk);
-      }
-      // The state, in one glyph and FOUR readings instead of two. Working is still "live in a pane,
-      // or just produced output", and a FOLDED anchor still lights up for its hidden lanes — a lane
-      // that just produced output is exactly the kind of thing you must not have to unfold to
-      // notice (§F3 edge 2). What is new is the other half: resting, asleep and broken used to be
-      // one grey dot between them. Each has its own SHAPE (the CSS), so the four survive a
-      // greyscale screenshot, and the word is in the tooltip for the case where they do not.
+      // The state, in one glyph and FOUR readings. Each has its own SHAPE (the CSS), so the four
+      // survive a greyscale screenshot; how long ago the session last spoke — line 2's other reading
+      // — is in the tooltip beside the word.
       const hidHot = !!stack && !open && stack.lanes.some(
         (l) => serverNow - l.lastOutput < RECENT_MS || panes.some((p) => p.slot === l.id));
       const state = slotState(s, serverNow, visible || hidHot);
       const live = el("span", `act ${state}`);
       live.title = STATE_WORD[state]
-        + (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS ? " — a folded lane is active" : "");
+        + (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS ? " — a folded lane is active" : "")
+        + `\nlast output ${sinceShort(serverNow - s.lastOutput)} ago · ${new Date(s.lastOutput).toLocaleString()}`;
       r1.appendChild(live);
       row.appendChild(r1);
-      // LINE 2 — the READINGS. Two of them the row used to carry only as a colour and a brightness:
-      // the project stripe left with the old sheet (the hue lives in the address chip now and
-      // nowhere else), so the checkout has to be readable as a WORD, and once resting and asleep are
-      // two states, "how long ago" is the number behind them. The rest are the sensors that were
-      // crowding line 1 — the context fill, today's inbound bytes, a parked send — none of which
-      // asks the reader to do anything. Line 1 keeps identity and everything that does.
-      {
-        const project = projectOf(s);
-        if (project) {
-          const repo = el("span", "repo", baseName(project));
-          repo.title = project;
-          r2.insertBefore(repo, r2.firstChild);
-        }
-        const when = el("span", "when", sinceShort(serverNow - s.lastOutput));
-        when.title = `last output ${new Date(s.lastOutput).toLocaleString()}`;
-        // FASSUNG B — a reading among the readings: the succession sits in line 2 beside repo, ctx
-        // and idle, and costs the row no height at all.
-        if (BAND_VARIANT === "b" && s.succession) {
-          const sb = el("span", "succ", successionText(s.succession));
-          sb.title = successionTitle(s.succession);
-          r2.appendChild(sb);
-        }
-        r2.appendChild(when);
+      // CODEX RECOVERY — only when the OWNER has to act, and then as a SENTENCE on a line of its own.
+      // "cx bound" / "cx pending" were the healthy states and the owner never knew what they meant
+      // ("nie verstanden wofür das ist"): healthy says nothing now. The two states Fleet will not
+      // guess its way out of get words that say what to do — and a line, not a chip, because the
+      // resting row is the owner's five things and a 250px bar has no width left for a sixth: as a
+      // chip in line 1 it pushed the NAME to zero and the row past the bar's edge (measured
+      // 2026-09-21, slot 5 of the demo). A row that needs a hand is allowed to be taller; that is
+      // the signal, too. The click opens the dialog that settles it.
+      if (s.codexRecovery && (s.codexRecovery.state === "ambiguous" || s.codexRecovery.state === "lost")) {
+        const cr = s.codexRecovery;
+        const need = el("div", "needline", cr.state === "ambiguous"
+          ? "choose which conversation this pane continues"
+          : "its conversation is gone — bind another");
+        need.title = (cr.state === "ambiguous"
+          ? "Codex: several conversations could belong to this pane, and Fleet will not guess which."
+          : "Codex: the conversation this pane was bound to is gone.")
+          + (cr.sessionId ? `\nlast bound: ${cr.sessionId}` : "")
+          + "\nclick to see the candidates and bind one exact conversation";
+        need.onclick = (e) => { e.stopPropagation(); openCodexDlg(s.id); };
+        row.appendChild(need);
+      }
+      // FASSUNG B — a reading on a line of its own under the label. The row has no line 2 any more,
+      // so B draws one only where there is a succession to read.
+      if (BAND_VARIANT === "b" && s.succession) {
+        const r2 = el("div", "r2");
+        const sb = el("span", "succ", successionText(s.succession));
+        sb.title = successionTitle(s.succession);
+        r2.appendChild(sb);
         row.appendChild(r2);
-        // FASSUNG A — a thin band of its own under the row: the succession is not a sensor like
-        // ctx, it is what the row IS, so it gets its own line and a rule to sit on.
-        if (BAND_VARIANT === "a" && s.succession) {
-          const band = el("div", "succband");
-          const t = el("span", "succ", successionText(s.succession));
-          t.title = successionTitle(s.succession);
-          band.appendChild(t);
-          row.appendChild(band);
-        }
       }
+      // FASSUNG A — a thin band of its own under the row.
+      if (BAND_VARIANT === "a" && s.succession) {
+        const band = el("div", "succband");
+        const t = el("span", "succ", successionText(s.succession));
+        t.title = successionTitle(s.succession);
+        band.appendChild(t);
+        row.appendChild(band);
+      }
+      // THE HOVER ROW carries what asks for a hand: the guest chat (with its count — the 💬 badge
+      // that used to sit on the resting row), an unreviewed conflict resolution (the ⏸ badge), the
+      // scheduled-prompt mark, and kill. The ± diff that stood here and inline on lanes is gone
+      // (owner: "der diff button raus"): the board's file rows, commit rows and "Review diff" open
+      // the same review window, on the exact file or commit instead of the whole tree.
       const act = el("div", "slotact");
-      if (s.git && !s.worktree) {
-        // plain repo session: diff is available but secondary, so it stays in the hover row
-        const dff = el("span", "diff", "±");
-        dff.title = "review working diff";
-        dff.onclick = (e) => { e.stopPropagation(); void openDiff(s.id); };
-        act.appendChild(dff);
+      if (autosList.some((a) => a.slot === s.id && a.enabled)) {
+        const b = el("span", "autobadge", "⏱");
+        b.title = "has scheduled prompts — the Schedule tray under the composer lists them";
+        act.appendChild(b);
       }
-      // rename/merge/land used to live here as hover-only glyphs — moved to the board's
-      // labeled "actions" section (renb/lb) so they're touch-reachable and self-explanatory;
-      // the row keeps only ± (added above) and ✕ kill (below) plus this chat badge.
+      if (s.mergePending) {
+        const rb = el("span", "revb", "⏸");
+        rb.title = "agent conflict resolutions nobody has reviewed — review & land (open the board)";
+        rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
+        act.appendChild(rb);
+      }
       if (s.share) {
-        const ca = el("span", "cmtact" + (s.share.comments > 0 ? " hot" : ""), "💬");
-        ca.title = "guest chat";
+        const n = s.share.comments;
+        const ca = el("span", "cmtact" + (n > 0 ? " hot" : ""), n > 0 ? `💬${n}` : "💬");
+        ca.title = n > 0 ? `guest chat — ${n} message${n === 1 ? "" : "s"}` : "guest chat";
         ca.onclick = (e) => { e.stopPropagation(); openShareDlg(s.id); };
         act.appendChild(ca);
       }

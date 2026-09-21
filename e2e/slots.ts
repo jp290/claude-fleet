@@ -1652,8 +1652,10 @@ export async function run(): Promise<void> {
         && !rowSrc.includes('"lanesep"') && !rowSrc.includes('"laneidentity"')
         && !indexSrc.includes(".lanesep") && !indexSrc.includes(".laneidentity")
         && rowSrc.includes("s.label ?? baseName(s.cwd)")
-        // the branch did not vanish, it moved: the tooltip still names it
-        && /title = `\$\{refs\.get\(s\.id\)[\s\S]*?\$\{s\.worktree\.branch\}/.test(rowSrc),
+        // the branch did not vanish, it moved: the label's tooltip still names it (2026-09-21 the
+        // tooltip became the list of everything the resting row stopped saying)
+        && /facts\.push\(`\$\{refs\.get\(s\.id\)[^\n]*s\.worktree\.branch\)/.test(rowSrc)
+        && rowSrc.includes('lbl.title = facts.join("\\n")'),
       "lane identity branch + sidebar CSS");
     // THE ADDRESS IS ONE OBJECT, drawn once — the session's number and the lane's band name share
     // the chip rule, which is how they can be the same kind of thing to look at.
@@ -1735,9 +1737,10 @@ export async function run(): Promise<void> {
     }
     // MONO IS FOR ADDRESSES AND NUMBERS, sans for words. The old bar was one monospace for
     // everything, which is what made a label and an id look like the same kind of fact.
-    check("client: the bar sets sans for words and keeps mono for the address, the age and the fill",
+    // The AGE was the third mono reading; it left the resting row on 2026-09-21 (owner's list:
+    // slot number, ctx, lanes, name, work indicator) and is the state glyph's tooltip now.
+    check("client: the bar sets sans for words and keeps mono for the address and the fill",
       /#side \{[^}]*font-family: var\(--chat-sans\)/.test(indexSrc)
-        && /\.slot \.r2 \.when \{[^}]*font-family: var\(--chat-mono\)/.test(indexSrc)
         && /\.slot \.ctxfill \{[^}]*font-family: var\(--chat-mono\)/.test(indexSrc),
       "the font assignments in the sidebar block");
     // FOUR STATES, FOUR SHAPES. The rule the card set is that the reading survives without colour,
@@ -1749,9 +1752,16 @@ export async function run(): Promise<void> {
       check("client: the four states differ in SHAPE, and resting and asleep differ from each other",
         /border-radius: 50%/.test(base) && /background: var\(/.test(base)
           && /background: none/.test(rest) && /box-shadow: inset/.test(rest)
-          && /height: 2px/.test(sleep) && !/box-shadow/.test(sleep)
+          && /8px 2px/.test(sleep) && !/box-shadow/.test(sleep)
           && /clip-path: polygon/.test(bad),
         JSON.stringify({ base: base.trim(), rest: rest.trim(), sleep: sleep.trim(), bad: bad.trim() }));
+      // ONE BOX FOR ALL FOUR (owner 2026-09-21: "sauber angezeigt", on the 4/8 grid). The shape is
+      // what changes; a state whose rule set its own width or height would move the row the moment a
+      // session falls asleep — the old 9×2 bar was exactly that.
+      check("client: the four state glyphs share one 8px box — no state sets its own width or height",
+        /width: 8px; height: 8px/.test(base)
+          && [rest, sleep, bad].every((g) => !/(^|[;\s])(width|height):/.test(g)),
+        JSON.stringify({ base: base.trim(), sleep: sleep.trim() }));
       check("client: the row paints one of those four and names it in words",
         /el\("span", `act \$\{state\}`\)/.test(rowSrc) && /live\.title = STATE_WORD\[state\]/.test(rowSrc)
           // the two-state dot is gone: the glyph is no longer built by concatenating a "hot"
@@ -1779,15 +1789,56 @@ export async function run(): Promise<void> {
         && !/el\("span", "mark", /.test(cliSrc)
         && !/\.slot \.mark[^{]*\{[^}]*(background|border|content)/.test(indexSrc),
       "the mark placeholder in slotRow/emptyRow + its CSS");
-    // LINE 2 EXISTS AND CARRIES THE TWO FACTS THE COLOUR USED TO CARRY. The project stripe left in
-    // the same change; if it came back, the row would be saying the repo twice and the second line
-    // would have no reason to exist.
-    check("client: the row's second line names the checkout and the age, and the project stripe is gone",
-      /el\("div", "r2"\)/.test(rowSrc) && /el\("span", "repo", baseName\(project\)\)/.test(rowSrc)
-        && /el\("span", "when", sinceShort\(serverNow - s\.lastOutput\)\)/.test(rowSrc)
-        && !indexSrc.includes(".slot.proj {") && !/\.slot\.proj[^}]*border-left/.test(indexSrc)
-        && cliSrc.includes("tintProject(row, projectOf(s))"),
-      "the second line in slotRow + the retired stripe");
+    // THE RESTING ROW IS THE OWNER'S FIVE, ON ONE LINE (2026-09-21, verbatim: "slotNr, Ctx-fill,
+    // indication of nr of lanes, name, workIndicator und kein 'cx bound'"). The second line is gone
+    // — only band Fassung B, scaffolding behind #band=b, still draws one, and only for a row with a
+    // succession. What the line said moved to the label's tooltip, never into nothing.
+    {
+      const rOnly = rowSrc.replace(/if \(BAND_VARIANT === "b"[\s\S]*?row\.appendChild\(r2\);\s*\}/, "");
+      check("client: the resting row is one line — number, name, lane count, ⎇+, ctx, state",
+        !/el\("div", "r2"\)/.test(rOnly)
+          && /r1\.appendChild\(cx\)/.test(rowSrc) && /r1\.appendChild\(live\)/.test(rowSrc)
+          && /r1\.appendChild\(laneCountChip\(stack, open\)\)/.test(rowSrc)
+          && /r1\.appendChild\(quickLaneChip\(/.test(rowSrc)
+          // the fold arrow and the lifecycle dot have no sentence of his: gone from the row
+          && !cliSrc.includes("function foldArrow(") && !/"lcdot/.test(cliSrc) && !indexSrc.includes(".lcdot")
+          && !cliSrc.includes("function stackChips(")
+          // and what they said is still said: the lifecycle in the label's tooltip, the fold on the
+          // count, the age beside the state's word
+          && /const lc = s\.git\.dirty > 0 \? "editing"/.test(rowSrc)
+          && /n\.onclick = \(e\) => \{ e\.stopPropagation\(\); setStackOpen\(g, !open\); \}/.test(cliSrc)
+          && /live\.title = STATE_WORD\[state\][\s\S]*?sinceShort\(serverNow - s\.lastOutput\)/.test(rowSrc)
+          && !indexSrc.includes(".slot.proj {") && !/\.slot\.proj[^}]*border-left/.test(indexSrc)
+          && cliSrc.includes("tintProject(row, projectOf(s))"),
+        "slotRow + laneCountChip + the retired stripe");
+      // "der diff button raus" — and the diff is not orphaned: the board's rows open the SAME review
+      // window, on the exact file or commit. If the board ever lost those, the ± removal would have
+      // taken the function with it, which the owner's instruction forbids.
+      check("client: no ± on the row or its hover strip, and the board still opens every diff",
+        !rowSrc.includes('"±"') && !/"lanediff"|"diff", "±"/.test(cliSrc)
+          && !indexSrc.includes(".lanediff") && !/\.slot \.diff\b/.test(indexSrc)
+          && /row\.onclick = \(\) => void openReview\(slot, "working", \{ k: "file", path \}\)/.test(cliSrc)
+          && /openReview\(slot, "working", \{ k: "commit", hash: cm\.hash \}\)/.test(cliSrc)
+          && /rev\.onclick = \(\) => void openMergeDiff\(slot\)/.test(cliSrc),
+        "slotRow + renderBoard review entry points");
+      // "kein 'cx bound'": a healthy Codex binding says nothing; only the two states Fleet will not
+      // guess its way out of appear, in words, and they open the dialog that settles them.
+      check("client: the Codex line appears only when the owner must act, and in words, not 'cx'",
+        /s\.codexRecovery\.state === "ambiguous" \|\| s\.codexRecovery\.state === "lost"/.test(rowSrc)
+          && rowSrc.includes('"choose which conversation this pane continues"')
+          && rowSrc.includes('"its conversation is gone — bind another"')
+          // a line of its own, never a chip in line 1 — there it pushed the name to zero
+          && /el\("div", "needline"/.test(rowSrc) && /row\.appendChild\(need\)/.test(rowSrc)
+          && !/`cx \$\{/.test(cliSrc) && /need\.onclick = \(e\) => \{ e\.stopPropagation\(\); openCodexDlg\(s\.id\); \}/.test(rowSrc),
+        "the codex branch of slotRow");
+      // everything else that left the resting row is on the hover row — no function lost
+      check("client: ⏸, the scheduled mark and the guest-chat count sit on the hover row",
+        /act\.appendChild\(rb\)/.test(rowSrc) && /el\("span", "revb", "⏸"\)/.test(rowSrc)
+          && /act\.appendChild\(b\)/.test(rowSrc) && /el\("span", "autobadge", "⏱"\)/.test(rowSrc)
+          && /n > 0 \? `💬\$\{n\}` : "💬"/.test(rowSrc)
+          && !indexSrc.includes(".slot:hover .revb"),
+        "the slotact block of slotRow");
+    }
     check("hover and focus actions use a solid row-coloured surface over passive facts",
       /background:\s*var\(--rb\)/.test(slotactCss)
         && !/transparent|gradient|opacity/i.test(slotactCss)

@@ -278,11 +278,17 @@ console.log(`wrote ${outFile} + ${hintName}: ${chains.map((c) => `slot ${c.id} (
 // pointer decides and the animation moves: while the button is down the row only leans, damped and
 // capped (a share of its width, never 1:1), and the moment the pull passes a short threshold the
 // next session snaps in with a spring, button still down. Pull on and it steps again once the snap
-// has landed. Two value sets side by side, switchable on the page (#knapp / #weich):
-//   knapp · 24 px to switch, lean k=0.6 capped at 18 % of the row, 220 ms with a clear overshoot
-//   weich · 40 px to switch, lean k=0.8 capped at 28 % of the row, 380 ms with a softer overshoot
-// 24 px is a tenth of the row and three times the 7 px dead zone, so a wobble never switches; 40 px
-// is still under the ~50 px (a fifth of the row) round 5 asked the mouse to travel.
+// has landed. Round 7 chose "weich": 40 px to switch, lean k=0.8 capped at 28 % of the row, 380 ms
+// with a soft overshoot ("knapp", 24 px / 220 ms, is gone).
+//
+// Round 7 (owner: "ich hätte gerne noch einen indikator oder so wie viele sessions kommen"): a depth
+// indicator, switchable between two forms (#punkte / #zahl). It is not a second permanent element —
+// the sliver stays the only one — so it shows only on hover, focus, while pulling, and for a moment
+// after a step. Dots: one per session, oldest left, the present right, the current one lit; past
+// seven the dots become a window that slides with the position, and a smaller end dot says there is
+// more beyond it — 14 sessions never overflow the row. Number: position/total in the corner.
+// DEPTH is how far back a row reaches, read in ONE place (reach); the later setting "only the last
+// 3 or 5 sessions" is a one-liner there, and the indicator then counts the capped depth.
 function hintPage(data) {
   return `<!doctype html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Band ziehen · Kante</title>
@@ -311,6 +317,13 @@ body { margin:0; background:var(--void); color:var(--prose); font:13px/1.45 var(
 .feel button { border:0; background:none; color:var(--mute); padding:2px 10px; border-radius:6px; font:11px var(--sans); cursor:pointer; }
 .feel button[aria-pressed="true"] { background:var(--raised); color:var(--ink); box-shadow:inset 0 0 0 1px var(--edge); }
 .feelvals { font:11px var(--mono); color:var(--faint); margin:-4px 6px 10px; }
+.depth { position:absolute; pointer-events:none; opacity:0; transition:opacity .15s; z-index:1; }
+.row.pull:hover .depth, .row.pull:focus-within .depth, .row.pull.dragging .depth, .row.pull.stepped .depth { opacity:1; }
+.depth.dots { left:0; right:0; bottom:3px; display:flex; justify-content:center; align-items:center; gap:3px; }
+.depth.dots i { width:4px; height:4px; border-radius:2px; background:var(--edge); transition:width .2s, background .2s; }
+.depth.dots i.on { width:10px; background:var(--mute); }
+.depth.dots i.more { width:2px; height:2px; }
+.depth.num { right:10px; top:3px; font:10px/1 var(--mono); color:var(--faint); }
 .cell { flex:none; display:flex; align-items:center; gap:6px; min-height:40px; padding:6px 10px 6px 30px; }
 .cell.past { padding-right:26px; background:var(--surface); }
 .n { font:12px/1.45 var(--mono); padding:1px 6px; border-radius:5px; background:var(--raised); box-shadow:inset 0 0 0 1px var(--edge); color:var(--mute); flex:none; }
@@ -343,31 +356,32 @@ button[disabled] { color:var(--faint); }
 @media (prefers-reduced-motion: reduce) { .track.snap, .track.snap.mouse { transition:none; } }
 </style></head><body>
 <nav class="side A"><h1><b>Band ziehen</b> · Strich am Rand</h1>
-<div class="feel" role="group" aria-label="Maus-Gefühl"><button data-feel="knapp">knapp</button><button data-feel="weich">weich</button></div>
+<div class="feel" role="group" aria-label="Tiefen-Anzeige"><button data-ind="punkte">Punkte</button><button data-ind="zahl">Zahl</button></div>
 <div class="feelvals"></div><div class="rows"></div>
 <div class="how">Zeile nach rechts ziehen = frühere Session · Maus: kurz anziehen, sie rastet selbst ein · Finger oder waagrecht wischen · ← → mit Fokus · Esc = laufende</div></nav>
 <main id="main"><div id="head"></div><div id="body"></div></main>
 <script>
 const D = ${data};
 const SLOP = 7, COMMIT = 0.2, FLICK = 0.35, SWIPE_COMMIT = 0.33, WHEEL_IDLE = 90, MOMENTUM_GAP = 180, SNAP_MS = 340;
-// the mouse: T px to switch, lean slope k, lean cap as a share of the row, snap duration and curve
-const FEELS = {
-  knapp: { T: 24, k: 0.6, cap: 0.18, ms: 220, ease: "cubic-bezier(.3,1.45,.5,1)" },
-  weich: { T: 40, k: 0.8, cap: 0.28, ms: 380, ease: "cubic-bezier(.2,1.3,.3,1)" },
-};
+// the mouse (round 7: "weich"): T px to switch, lean slope k, lean cap as a share of the row, snap
+const FEEL = { T: 40, k: 0.8, cap: 0.28, ms: 380, ease: "cubic-bezier(.2,1.3,.3,1)" };
+// how many past sessions a row reaches back — the later setting (3 or 5) replaces this one value
+const DEPTH = Infinity;
+const reach = (chain) => { const past = chain.past.slice(-DEPTH); return { ...chain, past, hidden: chain.past.length - past.length }; };
+const MAX_DOTS = 7, STEPPED_MS = 1200;
 const still = matchMedia("(prefers-reduced-motion: reduce)");
-let FEEL = FEELS.knapp;
-function setFeel(name) {
-  if (!FEELS[name]) name = "knapp";
-  FEEL = FEELS[name];
-  document.documentElement.style.setProperty("--snap-ms", FEEL.ms + "ms");
-  document.documentElement.style.setProperty("--snap-ease", FEEL.ease);
-  document.querySelectorAll(".feel button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.feel === name)));
-  document.querySelector(".feelvals").textContent = FEEL.T + " px · Ausschlag max " + Math.round(FEEL.cap * 100) + " % · " + FEEL.ms + " ms";
-  if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+document.documentElement.style.setProperty("--snap-ms", FEEL.ms + "ms");
+document.documentElement.style.setProperty("--snap-ease", FEEL.ease);
+let IND = "punkte";
+const indicators = [];
+function setInd(name) {
+  IND = name === "zahl" ? "zahl" : "punkte";
+  document.querySelectorAll(".feel button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.ind === IND)));
+  document.querySelector(".feelvals").textContent = "weich · " + FEEL.T + " px · " + FEEL.ms + " ms · Tiefe " + (DEPTH === Infinity ? "alle" : DEPTH);
+  if (location.hash !== "#" + IND) history.replaceState(null, "", "#" + IND);
+  indicators.forEach((f) => f());
 }
-document.querySelectorAll(".feel button").forEach((b) => b.addEventListener("click", () => setFeel(b.dataset.feel)));
-setFeel(location.hash.slice(1));
+document.querySelectorAll(".feel button").forEach((b) => b.addEventListener("click", () => setInd(b.dataset.ind)));
 const fmt = (t) => t ? new Date(t).toLocaleString() : "—";
 const short = (t) => t ? new Date(t).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
 const head = document.getElementById("head"), body = document.getElementById("body");
@@ -375,7 +389,7 @@ function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.
 function show(chain, i) {
   const live = i === chain.past.length, p = chain.past[i];
   head.replaceChildren(); body.replaceChildren();
-  head.append(el("div", "t", "Slot " + chain.id + (live ? "" : " · Session " + (i + 1) + " von " + (chain.past.length + 1))));
+  head.append(el("div", "t", "Slot " + chain.id + (live ? "" : " · Session " + (chain.hidden + i + 1) + " von " + (chain.hidden + chain.past.length + 1))));
   if (live) {
     head.append(el("div", "s", chain.label + " · läuft seit " + fmt(chain.openedAt)));
     body.append(el("p", "note", chain.past.length
@@ -395,7 +409,10 @@ function show(chain, i) {
     body.append(d);
   }
 }
-const all = [...D.others.map((o) => ({ id: o.id, label: o.label, past: [] })), ...D.chains].sort((a, b) => a.id - b.id);
+// a long chain to check the indicator against (> 8 sessions) — invented, and labelled as such
+const probe = { id: 90, label: "Probe: 14 Sessions (erfunden)", kind: "lane", openedAt: D.built, past: Array.from({ length: 13 }, (_, k) =>
+  ({ startedAt: D.built - (13 - k) * 3600e3, handedAt: D.built - (12 - k) * 3600e3, report: null, handoff: "", transcript: null, why: "Probe-Kette, keine echte Session" })) };
+const all = [...D.others.map((o) => ({ id: o.id, label: o.label, past: [] })), ...D.chains, probe].sort((a, b) => a.id - b.id).map(reach);
 const rows = [];
 function makeRow(host, chain) {
   const n = chain.past.length + 1, pull = chain.past.length > 0;
@@ -405,7 +422,7 @@ function makeRow(host, chain) {
   for (let k = 0; k < n; k++) {
     const live = k === n - 1, p = chain.past[k];
     const c = el("div", "cell" + (live ? "" : " past"));
-    c.append(el("span", "n", String(chain.id)), el("span", "lbl", live ? (chain.label || "—") : "Session " + (k + 1)));
+    c.append(el("span", "n", String(chain.id)), el("span", "lbl", live ? (chain.label || "—") : "Session " + (chain.hidden + k + 1)));
     c.append(live ? el("span", "act") : el("span", "when", short(p.startedAt)));
     track.append(c);
   }
@@ -424,7 +441,24 @@ function makeRow(host, chain) {
   const resist = (d) => { const over = (idx === n - 1 && d < 0) || (idx === 0 && d > 0);
     return over ? Math.sign(d) * W * 0.18 * (1 - Math.exp(-Math.abs(d) / (W * 0.5))) : d; };
   const layout = () => { W = view.clientWidth; cells.forEach((c) => c.style.width = W + "px"); put(base(), false); };
-  const paint = () => { row.classList.toggle("back", idx < n - 1); };
+  const depth = el("div", "depth");
+  if (pull) row.append(depth);
+  const paintDepth = () => {
+    if (!pull) return;
+    if (IND === "zahl") { depth.className = "depth num"; depth.textContent = (idx + 1) + "/" + n; return; }
+    depth.className = "depth dots"; depth.replaceChildren();
+    const from = n <= MAX_DOTS ? 0 : Math.max(0, Math.min(n - MAX_DOTS, idx - (MAX_DOTS >> 1))), to = Math.min(n, from + MAX_DOTS);
+    for (let k = from; k < to; k++) {
+      const more = (k === from && from > 0) || (k === to - 1 && to < n);
+      depth.append(el("i", k === idx ? "on" : more ? "more" : null));
+    }
+  };
+  indicators.push(paintDepth);
+  let stepT = 0, shown = n - 1;
+  const paint = () => {
+    row.classList.toggle("back", idx < n - 1); paintDepth();
+    if (idx !== shown) { shown = idx; row.classList.add("stepped"); clearTimeout(stepT); stepT = setTimeout(() => row.classList.remove("stepped"), STEPPED_MS); }
+  };
   const go = (i, open, mouse) => {
     const to = Math.max(0, Math.min(n - 1, i)), moved = to !== idx;
     idx = to; put(base(), true, mouse); paint();
@@ -522,7 +556,8 @@ function makeRow(host, chain) {
 }
 const host = document.querySelector(".side .rows");
 for (const c of all) makeRow(host, c);
-const lane = D.chains.find((c) => c.past.some((p) => p.transcript)) || D.chains[0];
+setInd(location.hash.slice(1));
+const lane = all.find((c) => c.past.some((p) => p.transcript)) || all.find((c) => c.past.length);
 if (lane) requestAnimationFrame(() => show(lane, lane.past.length));
 </script></body></html>`;
 }

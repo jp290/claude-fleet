@@ -116,7 +116,10 @@ liefert eine FORM, geprueft wird gegen eine Tatsache.
   gespeicherte Urteile neu schwellbar bleiben.
 - **Fragen:** Aussageform, State-Felder beim Namen genannt, ein Ausschluss fuer den Beinahe-Fall in
   jeder Frage, keine Frage sagt, was zu tun ist, Strings versioniert. Rechnen, Zaehlen und
-  Kandidaten-Erzeugen bleiben Code.
+  Kandidaten-Erzeugen bleiben Code. Eine freie Zahl erfragt man nie: ein Fremdlauf bekam auf dieselbe
+  Anfrage 100, 100 und 1, waehrend die Stufe auf beschriebenen Stufen (`score`) an denselben Aufrufen
+  71,6 / 70,6 / 68,8 las [Artikel] — Jev beschreibt den Zustand, die Zahl rechnet Code
+  (`docs/messungen/2026-09-21-jev-southbridge-system15.md` §3).
 - **Schwellen** kommen aus eigenen Labels und aus dem Kostenverhaeltnis der jeweiligen Aktion, nie aus
   einem Cookbook. Vor jedem Einsatz klaeren, wohin ein „unsicher" faellt: ein Drittprojekt war je Aufruf
   96 % billiger und im System 4,1 % teurer, weil unsichere Faelle in einen Alles-oder-nichts-Pfad

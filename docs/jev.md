@@ -118,7 +118,11 @@ liefert eine FORM, geprueft wird gegen eine Tatsache.
 
 - Ob dieser Host `api.typesafe.ai` erreicht (die Docs ja, die API ist ungeprobt).
 - Guete auf DEUTSCHEM Fleet-Material — die erste eigene Messung vor jedem Bau.
-- Ob DPA und Privacy Policy des Anbieters das Senden von Fleet-Daten tragen: die Seiten existieren, die
-  Vertragstexte sind nicht gelesen, eine Freigabe gibt es nicht. Bis dahin kein API-Aufruf mit Fleet-Daten.
+- Ob DPA und Privacy Policy des Anbieters das Senden von Fleet-Daten tragen: die Vertragstexte sind am
+  2026-09-21 gelesen (`docs/messungen/2026-09-21-jev-vertragstexte-gelesen.md`) — kein Training auf
+  Input, aber keine Aufbewahrungsfrist, kein Loeschanspruch, unbefristet freie „Telemetry", ZDR nur
+  Enterprise. Tragbar fuer bereits oeffentliches Material; eine Freigabe gibt es weiterhin nicht. Bis
+  dahin kein API-Aufruf mit Fleet-Daten. Vertraglich ausgeschlossen: Jev-Urteile als Trainingslabels
+  fuer ein eigenes Modell (MCA 2.3 b).
 - Bestand der Schnittstelle: drei Tage oeffentlich, ein Anbieter, geschlossene Gewichte, Limits in
   Bewegung. Deshalb steht Jev nie auf einem kritischen Pfad.

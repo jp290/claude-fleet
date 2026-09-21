@@ -1900,6 +1900,11 @@ export async function run(): Promise<void> {
           && cliSrc.includes("ta.disabled = pastN !== null;")
           && /display: none/.test(cssBody(".slot.back .slotact, .slot.back:hover .slotact, .slot.back:focus-within .slotact")),
         "Pane#pollChat + mountComposer + band CSS");
+      // the three top-right pane buttons sit at right 10/46/… px, exactly where the past bar puts
+      // "↩ laufende Session" — any one left standing paints over it (the ℹ did, r11 shots 2026-09-21)
+      check("client: the past bar's way back is not covered — ℹ, 💬 and ↻ all leave a past pane",
+        /display: none/.test(cssBody(".pane.past .viewtoggle, .pane.past .panereload, .pane.past .boardtoggle")),
+        cssBody(".pane.past .viewtoggle, .pane.past .panereload, .pane.past .boardtoggle") || "no such rule");
       check("client: a band's past session shows its ctx at the handover, from the line's own route",
         bandSrc.includes('el("span", "ctxfill", `${Math.round(p.ctx.pct)}%`)') && serverSrc.includes("ctx: ctxOf(p.report)"),
         "bandify + successionChain");

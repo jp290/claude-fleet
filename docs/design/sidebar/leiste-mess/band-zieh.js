@@ -136,7 +136,7 @@ button[disabled] { color:var(--faint); cursor:not-allowed; }
 .live { color:var(--mute); }
 @media (max-width: 700px) { body { flex-direction:column; } #side { width:auto; max-height:45vh; border-right:0; border-bottom:1px solid var(--edge-soft); } }
 </style></head><body>
-<nav id="side"><h1>Band ziehen · Entwurf <a href="${hintName}" style="color:var(--mute);font-weight:400;margin-left:6px">→ Andeutung A/B</a></h1><div id="rows"></div>
+<nav id="side"><h1>Band ziehen · Entwurf <a href="${hintName}" style="color:var(--mute);font-weight:400;margin-left:6px">→ Andeutung</a></h1><div id="rows"></div>
 <div class="hint">Ziehe ein Band nach rechts, um auf die vorherige Session zu kommen (auch: Klick auf den Rand links, ← → mit Fokus, Shift+Rad).</div></nav>
 <main id="main"><div id="head"></div><div id="body"></div></main>
 <script>
@@ -249,54 +249,64 @@ if (first) requestAnimationFrame(() => first.r.go(first.c.past.length));
 writeFileSync(hintFile, hintPage(data));
 console.log(`wrote ${outFile} + ${hintName}: ${chains.map((c) => `slot ${c.id} (${c.kind}) ${c.past.length} past, ${c.past.filter((p) => p.transcript).length} with transcript`).join(" · ")}`);
 
-// THE BAND, NOT DRAWN (owner round 4, 2026-09-21: "das zieh-band sieht auch gut aus, wobei ich das
-// band als Solches nicth sichbar anzeigen wollen würde, lieberminimalistisch mit einer andeutung das
-// man das so ziehen kann"). The row at rest is today's row. The band exists only while the finger
-// moves; at rest ONE quiet hint says the row can be pulled — and only on a row that has a past.
-// Two hints side by side over the SAME chains:
-//   A · Kante — a 2px sliver on the row's left edge, as if the earlier card lay under it (always
-//       there when a past exists; a touch brighter on hover).
-//   B · Griff — a ‹ in the row's left gutter, only on hover/focus.
-// On a past session the one hint points the other way (A: the sliver on the right, B: ›), so it
-// is never two at once.
+// THE BAND, NOT DRAWN — FASSUNG A, WITH A GESTURE THAT DOES NOT CATCH (owner round 4, 2026-09-21:
+// "lieberminimalistisch mit einer andeutung das man das so ziehen kann"; round 5: "Strich am rand
+// finde ich super, aber die bedienung ist ziemlich hakelig gerade.."). B is gone; A is the hint: a
+// 2px sliver on the row's left edge, only on a row that has a past; on a past session it moves to
+// the right edge and points back to the present. The row drops its state glyph there.
+//
+// What made round 4 catch, each one driven over CDP before it was changed:
+//  · a trackpad swipe did not move the row at all while the fingers moved — the wheel handler
+//    debounced to ONE step 60 ms after the last event, and macOS keeps sending momentum events for
+//    most of a second: the step came ~1 s late, and any gap in the tail stepped again (1 to 3
+//    sessions per swipe, depending on timing);
+//  · a quick flick did nothing: release looked at distance only (a fifth of the row, ~47 px);
+//  · no dead zone and no direction decision: every pixel of sideways drift moved the band, also
+//    during a vertical movement, and every release re-rendered the main pane;
+//  · a press during the snap animation jumped the band ~25 px (it restarted from the target, not
+//    from where the eye saw it);
+//  · a mostly vertical trackpad scroll with a little sideways noise stepped the band.
+// The rules below answer those one by one: 7 px dead zone, then horizontal or vertical is decided
+// once; the row follows 1:1 through a transform written once per frame; release snaps by distance
+// OR speed with a short spring; a swipe commits the moment it is a third across and swallows the
+// rest of its momentum (one swipe, one session); a press grabs the band where it visibly is; ← → on
+// focus; no click fires after a drag.
 function hintPage(data) {
   return `<!doctype html><html lang="de"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Band ziehen · Andeutung</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Band ziehen · Kante</title>
 <style>
 :root { --ink:#e7e7ea; --prose:#d4d4d8; --mute:#8b8b94; --faint:#5c5c66; --surface:#111113; --raised:#17171a;
-  --edge:#26262b; --edge-soft:#1b1b1f; --void:#000; --wait:#e0a458; --live:#4ade80;
+  --hover:#141416; --edge:#26262b; --edge-soft:#1b1b1f; --void:#000; --wait:#e0a458;
   --sans: ui-sans-serif,-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif;
   --mono: ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--void); color:var(--prose); font:13px/1.45 var(--sans); display:flex; height:100vh; overflow:hidden; }
-.side { width:250px; flex:none; border-right:1px solid var(--edge-soft); padding:12px 8px; overflow-y:auto; }
+.side { width:268px; flex:none; border-right:1px solid var(--edge-soft); padding:12px 8px; overflow-y:auto; display:flex; flex-direction:column; }
 .side h1 { font-size:12px; color:var(--mute); margin:2px 6px 10px; font-weight:500; }
 .side h1 b { color:var(--ink); font-weight:600; }
+.rows { flex:1; }
+.how { font-size:11px; color:var(--faint); margin:12px 6px 2px; line-height:1.5; }
 .row { position:relative; border-radius:12px; margin-bottom:2px; }
-.row:hover, .row:focus-within { background:#141416; }
+.row:hover, .row:focus-within { background:var(--hover); }
 .row.cur { background:var(--raised); box-shadow:inset 0 0 0 1px var(--edge); }
-.view { overflow:hidden; border-radius:12px; touch-action:pan-y; user-select:none; outline:none; }
+.view { overflow:hidden; border-radius:12px; touch-action:pan-y; user-select:none; -webkit-user-select:none; outline:none; }
 .row.pull .view { cursor:grab; }
 .view.drag { cursor:grabbing; }
-.track { display:flex; transition:transform .26s cubic-bezier(.2,.8,.2,1); will-change:transform; }
-.view.drag .track { transition:none; }
+.track { display:flex; will-change:transform; }
+.track.snap { transition:transform .34s cubic-bezier(.22,1.22,.36,1); }
 .cell { flex:none; display:flex; align-items:center; gap:6px; min-height:40px; padding:6px 10px 6px 30px; }
-.cell.past { padding-right:26px; }
-.cell.past { background:var(--surface); }
+.cell.past { padding-right:26px; background:var(--surface); }
 .n { font:12px/1.45 var(--mono); padding:1px 6px; border-radius:5px; background:var(--raised); box-shadow:inset 0 0 0 1px var(--edge); color:var(--mute); flex:none; }
 .lbl { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .cell.past .lbl { color:var(--mute); }
 .when { font:11px var(--mono); color:var(--faint); flex:none; }
 .act { width:8px; height:8px; border-radius:50%; flex:none; box-shadow:inset 0 0 0 1.5px var(--mute); }
-/* A · Kante */
-.A .row.pull::before { content:""; position:absolute; left:3px; top:9px; bottom:9px; width:2px; border-radius:1px; background:var(--edge); transition:background .15s; z-index:1; pointer-events:none; }
-.A .row.pull:hover::before, .A .row.pull:focus-within::before { background:var(--faint); }
-.A .row.pull.back::before { left:auto; right:3px; background:var(--faint); }
-.A .row.pull.back.first::before { display:none; }
-/* B · Griff */
-.B .row .grip { position:absolute; left:10px; top:50%; transform:translateY(-50%); font:13px var(--sans); color:var(--faint); opacity:0; transition:opacity .15s; pointer-events:none; }
-.B .row.pull:hover .grip, .B .row.pull:focus-within .grip { opacity:1; }
-.B .row .view.drag ~ .grip { opacity:0; }
+/* the hint: one 2px sliver — left while the present shows (a past lies under it), right on a past
+   session (the present lies that way) */
+.row.pull::before { content:""; position:absolute; left:3px; top:9px; bottom:9px; width:2px; border-radius:1px; background:var(--edge); transition:background .15s; z-index:1; pointer-events:none; }
+.row.pull:hover::before, .row.pull:focus-within::before, .row.pull.dragging::before { background:var(--faint); }
+.row.pull.back::before { left:auto; right:3px; background:var(--faint); }
+.view:focus-visible { box-shadow:inset 0 0 0 1px var(--mute); }
 #main { flex:1; min-width:0; display:flex; flex-direction:column; }
 #head { padding:14px 22px 10px; border-bottom:1px solid var(--edge-soft); }
 #head .t { color:var(--ink); font-size:15px; font-weight:600; }
@@ -312,12 +322,15 @@ button[disabled] { color:var(--faint); }
 .turn.gap { color:var(--faint); font-style:italic; text-align:center; }
 .empty { color:var(--wait); border:1px dashed var(--edge); border-radius:10px; padding:14px; max-width:620px; }
 .note { color:var(--mute); max-width:640px; }
+@media (max-width: 700px) { body { flex-direction:column; } .side { width:auto; max-height:45vh; border-right:0; border-bottom:1px solid var(--edge-soft); } }
+@media (prefers-reduced-motion: reduce) { .track.snap { transition-duration:.01s; } }
 </style></head><body>
-<nav class="side A"><h1><b>A · Kante</b> — Strich am Rand</h1><div class="rows"></div></nav>
-<nav class="side B"><h1><b>B · Griff</b> — ‹ nur beim Zeigen</h1><div class="rows"></div></nav>
+<nav class="side A"><h1><b>Band ziehen</b> · Strich am Rand</h1><div class="rows"></div>
+<div class="how">Zeile nach rechts ziehen = frühere Session · Maus, Finger oder waagrecht wischen · ← → mit Fokus · Esc = laufende</div></nav>
 <main id="main"><div id="head"></div><div id="body"></div></main>
 <script>
 const D = ${data};
+const SLOP = 7, COMMIT = 0.2, FLICK = 0.35, SWIPE_COMMIT = 0.33, WHEEL_IDLE = 90, MOMENTUM_GAP = 180;
 const fmt = (t) => t ? new Date(t).toLocaleString() : "—";
 const short = (t) => t ? new Date(t).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
 const head = document.getElementById("head"), body = document.getElementById("body");
@@ -346,63 +359,111 @@ function show(chain, i) {
   }
 }
 const all = [...D.others.map((o) => ({ id: o.id, label: o.label, past: [] })), ...D.chains].sort((a, b) => a.id - b.id);
-const rowsByVariant = { A: [], B: [] };
-function makeRow(host, variant, chain) {
+const rows = [];
+function makeRow(host, chain) {
   const n = chain.past.length + 1, pull = chain.past.length > 0;
   const row = el("div", "row" + (pull ? " pull" : ""));
   const view = el("div", "view"); view.tabIndex = 0; const track = el("div", "track");
   view.append(track); row.append(view);
-  if (variant === "B" && pull) row.append(el("span", "grip", "‹"));
   for (let k = 0; k < n; k++) {
     const live = k === n - 1, p = chain.past[k];
     const c = el("div", "cell" + (live ? "" : " past"));
-    // a past session has no live state, so its row carries no state glyph — the right edge is
-    // where the one hint points back to the present
     c.append(el("span", "n", String(chain.id)), el("span", "lbl", live ? (chain.label || "—") : "Session " + (k + 1)));
-    if (!live) c.append(el("span", "when", short(p.startedAt)));
-    else c.append(el("span", "act"));
+    c.append(live ? el("span", "act") : el("span", "when", short(p.startedAt)));
     track.append(c);
   }
-  let idx = n - 1, W = 0;
   const cells = [...track.children];
-  const layout = () => { W = view.clientWidth; cells.forEach((c) => c.style.width = W + "px"); };
-  const paint = () => {
-    track.style.transform = "translateX(" + (-idx * W) + "px)";
-    row.classList.toggle("back", idx < n - 1); row.classList.toggle("first", idx === 0);
-    const g = row.querySelector(".grip"); if (g) g.textContent = idx < n - 1 ? "›" : "‹";
-    if (g) { g.style.left = idx < n - 1 ? "auto" : "10px"; g.style.right = idx < n - 1 ? "10px" : "auto"; }
+  let idx = n - 1, W = 0, frame = 0, want = 0;
+  const base = () => -idx * W;
+  // one transform write per frame, however many moves arrived in it
+  const put = (px, spring) => {
+    track.classList.toggle("snap", !!spring); want = px;
+    if (!frame) frame = requestAnimationFrame(() => { frame = 0; track.style.transform = "translate3d(" + want + "px,0,0)"; });
   };
+  // where the eye sees the band right now — a press mid-spring grabs it THERE, not at the target
+  const seen = () => new DOMMatrix(getComputedStyle(track).transform).m41;
+  // past either end the band gives, but less and less
+  const resist = (d) => { const over = (idx === n - 1 && d < 0) || (idx === 0 && d > 0);
+    return over ? Math.sign(d) * W * 0.18 * (1 - Math.exp(-Math.abs(d) / (W * 0.5))) : d; };
+  const layout = () => { W = view.clientWidth; cells.forEach((c) => c.style.width = W + "px"); put(base(), false); };
+  const paint = () => { row.classList.toggle("back", idx < n - 1); };
   const go = (i, open) => {
-    idx = Math.max(0, Math.min(n - 1, i)); paint();
-    if (open === false) return;
-    for (const v of ["A", "B"]) for (const r of rowsByVariant[v]) {
-      r.row.classList.toggle("cur", r.chain === chain);
-      if (r.chain === chain && r.row !== row) r.set(idx);
-    }
+    const to = Math.max(0, Math.min(n - 1, i)), moved = to !== idx;
+    idx = to; put(base(), true); paint();
+    if (!moved && !open) return;
+    for (const r of rows) r.row.classList.toggle("cur", r.row === row);
     show(chain, idx);
   };
-  let start = null, moved = 0;
-  view.addEventListener("pointerdown", (e) => { start = e.clientX; moved = 0; if (pull) { view.setPointerCapture(e.pointerId); view.classList.add("drag"); } });
-  view.addEventListener("pointermove", (e) => { if (start === null || !pull) return; moved = e.clientX - start;
-    // resist past the ends, as a real band would
-    const edge = (idx === n - 1 && moved < 0) || (idx === 0 && moved > 0);
-    track.style.transform = "translateX(" + (-idx * W + (edge ? moved / 4 : moved)) + "px)"; });
-  const end = () => { if (start === null) return; view.classList.remove("drag"); start = null;
-    if (Math.abs(moved) < 4) { go(idx); return; }
-    const step = Math.round(-moved / W) || (Math.abs(moved) > W / 5 ? (moved > 0 ? -1 : 1) : 0);
-    go(idx + step); };
-  view.addEventListener("pointerup", end); view.addEventListener("pointercancel", end);
-  view.addEventListener("wheel", (e) => { if (!pull) return; const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.shiftKey ? e.deltaY : 0;
-    if (!d) return; e.preventDefault(); clearTimeout(view._w); view._w = setTimeout(() => go(idx + (d > 0 ? 1 : -1)), 60); }, { passive: false });
-  view.addEventListener("keydown", (e) => { if (!pull) return; if (e.key === "ArrowLeft") go(idx - 1); if (e.key === "ArrowRight" || e.key === "Escape") go(e.key === "Escape" ? n - 1 : idx + 1); });
+  // distance OR speed: more than half a row counts whole rows; less than that, a fifth of a row or
+  // a flick of FLICK px/ms goes one step in the direction of travel
+  const decide = (d, v) => {
+    if (Math.abs(d) > W / 2) return -Math.round(d / W);
+    if (Math.abs(d) > W * COMMIT || (Math.abs(v) > FLICK && Math.sign(v) === Math.sign(d))) return d > 0 ? -1 : 1;
+    return 0;
+  };
+  const speed = (s) => { const now = s.at(-1); const old = s.find((x) => now[0] - x[0] <= 80) || s[0];
+    return now[0] > old[0] ? (now[1] - old[1]) / (now[0] - old[0]) : 0; };
+
+  let g = null, swallowClick = false;
+  view.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    const from = pull ? seen() - base() : 0;
+    if (pull) put(base() + from, false);
+    g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, from, dir: null, s: [[e.timeStamp, e.clientX]] };
+  });
+  view.addEventListener("pointermove", (e) => {
+    if (!g || e.pointerId !== g.id) return;
+    const dx = e.clientX - g.x0, dy = e.clientY - g.y0;
+    if (!g.dir) {
+      if (Math.hypot(dx, dy) < SLOP) return;
+      g.dir = pull && Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+      if (g.dir === "y") { if (pull) go(idx, false); g = null; return; }
+      g.x0 += Math.sign(dx) * SLOP;
+      view.setPointerCapture(e.pointerId); view.classList.add("drag"); row.classList.add("dragging");
+    }
+    g.s.push([e.timeStamp, e.clientX]); if (g.s.length > 12) g.s.shift();
+    put(base() + resist(g.from + e.clientX - g.x0), false);
+  });
+  const end = (e, cancelled) => {
+    if (!g || e.pointerId !== g.id) return;
+    const was = g; g = null; view.classList.remove("drag"); row.classList.remove("dragging");
+    if (!was.dir) { if (!cancelled) go(idx, true); else put(base(), true); return; }
+    swallowClick = true; setTimeout(() => { swallowClick = false; }, 0);
+    if (cancelled) { put(base(), true); return; }
+    go(idx + decide(was.from + e.clientX - was.x0, speed(was.s)), false);
+  };
+  view.addEventListener("pointerup", (e) => end(e, false));
+  view.addEventListener("pointercancel", (e) => end(e, true));
+  view.addEventListener("click", (e) => { if (swallowClick) { e.stopPropagation(); e.preventDefault(); } }, true);
+
+  // a sideways trackpad swipe: the row follows the fingers; it commits the moment it is a third
+  // across, and whatever momentum the swipe still carries is swallowed until the events pause
+  let w = null, lockUntil = 0;
+  const wheelEnd = () => { if (!w) return; const d = w.d, v = speed(w.s); w = null; lockUntil = performance.now() + MOMENTUM_GAP; go(idx + decide(d, v), false); };
+  view.addEventListener("wheel", (e) => {
+    if (!pull) return;
+    const sideways = Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5 && Math.abs(e.deltaX) >= 1;
+    if (e.timeStamp < lockUntil) { if (sideways || w) { e.preventDefault(); lockUntil = e.timeStamp + MOMENTUM_GAP; } return; }
+    if (!w) { if (!sideways) return; w = { d: seen() - base(), s: [] }; }
+    e.preventDefault();
+    w.d -= e.deltaX; w.s.push([e.timeStamp, w.d]); if (w.s.length > 12) w.s.shift();
+    put(base() + resist(w.d), false);
+    clearTimeout(w.t);
+    if (Math.abs(w.d) > W * SWIPE_COMMIT) { wheelEnd(); return; }
+    w.t = setTimeout(wheelEnd, WHEEL_IDLE);
+  }, { passive: false });
+  view.addEventListener("keydown", (e) => {
+    if (!pull) { if (e.key === "Enter") go(idx, true); return; }
+    const to = { ArrowLeft: idx - 1, ArrowRight: idx + 1, Home: 0, End: n - 1, Escape: n - 1, Enter: idx }[e.key];
+    if (to === undefined) return; e.preventDefault(); go(to, e.key === "Enter");
+  });
   host.append(row);
-  const rec = { row, chain, set: (i) => { idx = i; paint(); } };
-  rowsByVariant[variant].push(rec);
+  rows.push({ row, chain });
   requestAnimationFrame(() => { layout(); paint(); });
-  addEventListener("resize", () => { layout(); paint(); });
-  return rec;
+  addEventListener("resize", layout);
 }
-for (const v of ["A", "B"]) { const host = document.querySelector(".side." + v + " .rows"); for (const c of all) makeRow(host, v, c); }
+const host = document.querySelector(".side .rows");
+for (const c of all) makeRow(host, c);
 const lane = D.chains.find((c) => c.past.some((p) => p.transcript)) || D.chains[0];
 if (lane) requestAnimationFrame(() => show(lane, lane.past.length));
 </script></body></html>`;

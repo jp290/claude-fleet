@@ -463,20 +463,25 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
 - **Die Linie Session für Session** (Owner-Route, seit 2026-09-21, für das Zieh-Band der Leiste):
   `GET /api/slots/:id/succession` antwortet `{session, taken, cap, past}` — `past` hat genau
   `session - 1` Einträge `{session, startedAt, handedAt, report, ctx}` (`server.ts#successionChain`;
-  `ctx` = Kontextstand beim Übergeben aus dem Transkript, das der Report nennt, sonst `null`). Bei
-  einer Lane sind die vergangenen Sessions ihre `handoff`-Reports (Slot + Branch), bei einer MAIN
-  ihre Linien-Records, per Slot + `openedAt` einem Report zugeordnet. `null` heißt „nicht
+  `ctx` = Kontextstand beim Übergeben aus dem Transkript der Session, sonst `null`). Bei einer Lane
+  sind die vergangenen Sessions ihre Sitze auf dem Slot (`Slot.laneSeats`, geschrieben von
+  `server.ts#succeedLane`, nicht beschnitten) und ihre `handoff`-Reports (Slot + Branch), bei einer
+  MAIN ihre Linien-Records, per Slot + `openedAt` einem Report zugeordnet. `null` heißt „nicht
   aufgezeichnet" (Retention, succeed ohne Report), nie „nicht passiert". Bewusst NICHT im 2-s-Poll:
   die Leiste fragt einmal je (Slot, Occupant, Session). Gemessen in `e2e/lanes-lifecycle.ts` an der
   echten Staffelstab-Fixture.
 - **Eine vergangene Session lesen** (Owner-Route, seit 2026-09-21, das Band zeigt sie in der Pane):
   `GET /api/slots/:id/succession/:n/transcript?after=` antwortet wie `/transcript` (`entries`,
   `total`, `source`) plus `{session, startedAt, handedAt, report, assigned, ctx}`
-  (`server.ts#pastTranscript`). Die Identität ist ALLEIN `worker.sessionId` + `worker.cwd` des
-  `handoff`-Reports dieser Session; nennt er keine (jede MAIN heute: ein Linien-Record kennt nur
-  Slot + `openedAt`), kommt `assigned: false` mit `reason` „Transkript nicht zugeordnet …" — nie die
-  neueste Datei desselben cwd. Ein `n`, das keine vergangene Session der Linie ist (0, die laufende,
-  darüber), ist 404. Gemessen in `e2e/lanes-lifecycle.ts` (Staffelstab-Fixture + gepflanzte MAIN-Linie).
+  (`server.ts#pastTranscript`). Die Identität ist `sessionId` + `cwd`, die die Nachfolge selbst im
+  Moment der Übergabe schreibt (Lane: `Slot.laneSeats`; MAIN/Supervisor: `from` des Linien-Records,
+  `server/types.ts#LineageSeat`), sonst `worker.sessionId` + `worker.cwd` des `handoff`-Reports.
+  Nennt keins von beiden eine Session (ein Record von vor 2026-09-21 kennt nur Slot + `openedAt`;
+  ein Harness ohne Session-Kennung schreibt `null`), kommt `assigned: false` mit `reason`
+  „Transkript nicht zugeordnet …" — nie die neueste Datei desselben cwd, kein Backfill über
+  Zeitfenster. Ein `n`, das keine vergangene Session der Linie ist (0, die laufende, darüber), ist
+  404. Gemessen in `e2e/lanes-lifecycle.ts` (Staffelstab-Fixture, Sitz, gepflanzte Alt-Linie) und
+  `e2e/self-token.ts` (echte MAIN-Nachfolge auf einen anderen Slot).
 - **Die WARTESCHLANGE am Suite-Mutex ist seit 2026-09-20 dieselbe Frage wie der Lock:** `gate.queue`
   auf `/api/sessions` (`server.ts#suiteQueueView`) liest die Ticket-Verzeichnisse
   `t<n>.<pid>` unter `$FLEET_SUITE_LOCK.q`, die `e2e-stage.sh#_st_queue_scan` schreibt — in DEREN

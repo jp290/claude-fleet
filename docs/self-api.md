@@ -460,14 +460,23 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   nicht feuern kann. Die Stups-Zahl ist prozesslokal wie `migrateTried`: nach einem Neustart steht
   dort 0, während das Prompt-Ledger den Stups behält. Gemessen in `e2e/watch.ts` an derselben
   Fixture, an der der Tick selbst gemessen wird.
-- **Die Linie Session für Session** (Owner-Route, seit 2026-09-21, für die Kette der Leiste `#band=d`):
+- **Die Linie Session für Session** (Owner-Route, seit 2026-09-21, für das Zieh-Band der Leiste):
   `GET /api/slots/:id/succession` antwortet `{session, taken, cap, past}` — `past` hat genau
-  `session - 1` Einträge `{session, startedAt, handedAt, report}` (`server.ts#successionChain`). Bei
+  `session - 1` Einträge `{session, startedAt, handedAt, report, ctx}` (`server.ts#successionChain`;
+  `ctx` = Kontextstand beim Übergeben aus dem Transkript, das der Report nennt, sonst `null`). Bei
   einer Lane sind die vergangenen Sessions ihre `handoff`-Reports (Slot + Branch), bei einer MAIN
   ihre Linien-Records, per Slot + `openedAt` einem Report zugeordnet. `null` heißt „nicht
   aufgezeichnet" (Retention, succeed ohne Report), nie „nicht passiert". Bewusst NICHT im 2-s-Poll:
   die Leiste fragt einmal je (Slot, Occupant, Session). Gemessen in `e2e/lanes-lifecycle.ts` an der
   echten Staffelstab-Fixture.
+- **Eine vergangene Session lesen** (Owner-Route, seit 2026-09-21, das Band zeigt sie in der Pane):
+  `GET /api/slots/:id/succession/:n/transcript?after=` antwortet wie `/transcript` (`entries`,
+  `total`, `source`) plus `{session, startedAt, handedAt, report, assigned, ctx}`
+  (`server.ts#pastTranscript`). Die Identität ist ALLEIN `worker.sessionId` + `worker.cwd` des
+  `handoff`-Reports dieser Session; nennt er keine (jede MAIN heute: ein Linien-Record kennt nur
+  Slot + `openedAt`), kommt `assigned: false` mit `reason` „Transkript nicht zugeordnet …" — nie die
+  neueste Datei desselben cwd. Ein `n`, das keine vergangene Session der Linie ist (0, die laufende,
+  darüber), ist 404. Gemessen in `e2e/lanes-lifecycle.ts` (Staffelstab-Fixture + gepflanzte MAIN-Linie).
 - **Die WARTESCHLANGE am Suite-Mutex ist seit 2026-09-20 dieselbe Frage wie der Lock:** `gate.queue`
   auf `/api/sessions` (`server.ts#suiteQueueView`) liest die Ticket-Verzeichnisse
   `t<n>.<pid>` unter `$FLEET_SUITE_LOCK.q`, die `e2e-stage.sh#_st_queue_scan` schreibt — in DEREN

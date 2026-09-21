@@ -1,28 +1,34 @@
 # Die Fassungen auf der Testinstanz — Succession-Band und Kopfreihe
 
-Zwei Entwürfe stehen als Fassungen nebeneinander auf der stehenden Testinstanz
-(`./testinstanz.sh up`), keiner ist gebaute Meinung: **`#band=a|b|c`** für die Succession-Zeile,
-die Kopfreihe und die Geräte-Anzeige sind entschieden (unten). Ohne Hash steht überall der heutige Stand.
+Alle Entwürfe dieser Seite sind entschieden und gebaut; es gibt keinen Hash-Schalter mehr. Die
+Abschnitte halten fest, was gewählt wurde und warum.
 
-## So sieht man sie an
+## Der Hash-Schalter (Geschichte — seit Runde 10 entfernt)
 
-    <instanz-url>#band=a        eine Fassung
-
-**Ein Hash-Wechsel wirkt SOFORT, ohne Neuladen** — seit dieser Runde. Vorher war das die teuerste
+**Ein Hash-Wechsel wirkte SOFORT, ohne Neuladen** — ab 2026-09-20. Vorher war das die teuerste
 Falle des Vergleichs: beide Schalter waren Modul-Level-`const`, einmal beim Start ausgewertet, und
 ein Hash-Wechsel an einer offenen Seite ist eine Same-Document-Navigation. Wer die Fassungen durch
 Tippen in der Adresszeile verglich, sah **dreimal dieselbe** und schloss daraus, die Fassung sei
 kaputt oder die Daten fehlten. Gemessen von aussen am 2026-09-20 (Playwright: von `#band=a` auf
-`#band=c` navigiert, ohne Reload → weiterhin Fassung A). `src/client.ts#readVariant` ist jetzt eine
-Funktion, die beiden Schalter sind `let`, und ein `hashchange`-Listener liest neu und zeichnet neu.
+`#band=c` navigiert, ohne Reload → weiterhin Fassung A). `readVariant` wurde damals eine
+Funktion, die Schalter `let`, und ein `hashchange`-Listener las neu und zeichnete neu.
 
-Nachfahrbar mit dem Treiber im Baum, der genau diesen Weg geht (laden, danach nur noch
+Der Treiber, der das damals bewies (misst heute nichts mehr, der Schalter ist weg) (laden, danach nur noch
 `location.hash` setzen — ein Bild, das sich unterscheidet, IST der Beweis):
 
     bun docs/design/sidebar/leiste-mess/kopfreihe-shot.js "<instanz-url>" /pfad/basis
     bun docs/design/sidebar/leiste-mess/kopfreihe-shot.js "<instanz-url>" /pfad/basis --reload   # Kontrolle
 
-## Succession-Band — was die drei Fassungen WIRKLICH zeigen
+## Succession-Band — gebaut (Owner-Runde 10, 2026-09-21)
+
+Die Fassungen `#band=a–d` und ihr Schalter sind entfernt. Gebaut ist das Zieh-Band aus
+`leiste-mess/band-zieh.js` mit den abgenommenen Werten: Strich A am Rand, Maus „weich" (40 px, k 0,8,
+28 %, 380 ms), Trackpad/Finger nach Runde 5, Punkte nur bei Bedarf, `DEPTH` als eine Konstante,
+Kennwerte „Reihe" (Lane-Punkt · ctx als Zahl, „?" wenn unmessbar · Zustand). Eine vergangene Session
+öffnet lesend in der Pane über `GET /api/slots/:id/succession/:n/transcript` (`docs/self-api.md`).
+Code: `src/client.ts#bandify`, `Pane#showPast`. Der Abschnitt unten ist Messgeschichte.
+
+## Succession-Band — was die drei Fassungen WIRKLICH zeigten (Geschichte)
 
 Gemessen am selben Fixture (Succession auf Slot 2 = MAIN, Slot 9 und 10 = Lanes), gezählt sowohl im
 DOM als auch nach Sichtbarkeit (`offsetParent !== null`):

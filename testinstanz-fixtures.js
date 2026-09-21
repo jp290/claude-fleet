@@ -119,22 +119,43 @@ if (PATCH) {
   const HOUR = 3600_000;
   // `id` is passed, not read off the row: a persisted slot is KEYED by its number and carries no
   // `id` field — reading s.id planted five reports with no worker slot, and the loader dropped all five
-  const report = (i, id, s, openedAt, reportedAt) => ({
+  const report = (i, id, s, openedAt, reportedAt, sessionId = null) => ({
     id: `f1c7${String(i).padStart(20, "0")}`, reportedAt, status: "handoff",
     text: `fixture handoff: session of slot ${id} laid the baton down`,
-    worker: { slot: id, openedAt, sessionId: null, cwd: s.cwd, branch: s.worktree?.branch ?? "main" },
+    worker: { slot: id, openedAt, sessionId, cwd: s.cwd, branch: s.worktree?.branch ?? "main" },
     provenance: { taskId: null, originId: null, programId: null }, receiver: null, basis: "owner-inbox",
     eventId: `e1c7${String(i).padStart(20, "0")}`,
     // JUDGED, so they sit in no inbox: an undecided owner-inbox row is an item the owner owes a
     // verdict on, and five fixture rows lit the head row's inbox badge with a "5" (2026-09-21)
     decision: { disposition: "accepted", by: "owner", at: reportedAt + 1, reason: null } });
   const reports = [];
+  // THE BAND'S TRANSCRIPTS (GET /api/slots/:id/succession/:n/transcript): a lane's past session is
+  // read through the sessionId its handoff report names. The OLDEST past session of each lane gets a
+  // short conversation on disk (with a usage record, so its cell shows a ctx at handover); lane 9's
+  // second one names a session whose file is not there — the "no longer on the disk" state; the
+  // main's reports name no session at all — "Transkript nicht zugeordnet". Under $DIR/home only.
+  const pastTranscript = (s, sid, id, k, pct) => {
+    const proj = `${DIR}/home/.claude/projects/${s.cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    mkdirSync(proj, { recursive: true });
+    const at = (m) => new Date(Date.now() - (5 - m) * 60_000).toISOString();
+    const lines = [
+      { type: "user", timestamp: at(0), message: { content: `Slot ${id}, Session ${k}: bitte den Kopf der Leiste messen` } },
+      { type: "assistant", timestamp: at(1), message: { content: [{ type: "text", text: `Gemessen: der Kopf ist **48 px** hoch, die Knöpfe stehen in zwei Reihen.` }],
+        usage: { input_tokens: Math.round((pct / 100) * WINDOW), cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 } } },
+      { type: "user", timestamp: at(2), message: { content: "Gut — dann übergib den Staffelstab." } },
+      { type: "assistant", timestamp: at(3), message: { content: [{ type: "text", text: "Übergeben: fertig, offen, nächster Schritt stehen im Report." }] } },
+    ];
+    writeFileSync(`${proj}/${sid}.jsonl`, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  };
   const pastLane = (id, n) => {
     const s = slot(id);
     if (!s?.worktree) return;
     const now = s.openedAt ?? Date.now();
-    for (let k = 0; k < n; k++)
-      reports.push(report(reports.length + 1, id, s, now - (n - k + 1) * HOUR, now - (n - k) * HOUR - 60_000));
+    for (let k = 0; k < n; k++) {
+      const sid = crypto.randomUUID();
+      if (k === 0) pastTranscript(s, sid, id, k + 1, 61 + id);
+      reports.push(report(reports.length + 1, id, s, now - (n - k + 1) * HOUR, now - (n - k) * HOUR - 60_000, sid));
+    }
   };
   pastLane(9, 2);
   pastLane(10, 1);
@@ -143,7 +164,8 @@ if (PATCH) {
     for (const i of [0, 2]) reports.push(report(reports.length + 1, 2, m, now - (4 - i) * HOUR, now - (3 - i) * HOUR - 60_000));
   }
   st.fleetReports = [...(st.fleetReports ?? []).filter((r) => !String(r.id).startsWith("f1c7")), ...reports];
-  planted.push(`handoff reports: ${reports.length} (lane 9: 2 · lane 10: 1 · main 2: sessions 1 and 3, session 2 has none)`);
+  planted.push(`handoff reports: ${reports.length} (lane 9: 2 · lane 10: 1 · main 2: sessions 1 and 3, session 2 has none)`
+    + " · transcripts: lane 9 s1 + lane 10 s1 on disk, lane 9 s2 missing, main unassigned");
   // CONTEXT FILL: a session id on the slot and a transcript at the path the claude reader derives
   // from it — under THIS INSTANCE'S HOME (testinstanz.sh starts the server with HOME=$DIR/home),
   // so nothing is written into the real ~/.claude.

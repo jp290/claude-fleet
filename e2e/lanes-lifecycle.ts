@@ -2,7 +2,7 @@
 // brief, the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase), and
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
 import { BASE, REPO, ROOT, check, get, plogRead, post, restartSrv, stopSrv, tmuxOut } from "./harness";
@@ -912,6 +912,93 @@ export async function run(lc: LaneCtx): Promise<void> {
     const noChain = await get("/api/slots/0/succession");
     check("(baton) GET /api/slots/:id/succession refuses a slot that is not one (400), never an empty line",
       noChain.status === 400, String(noChain.status));
+
+    // THE BAND'S READ OF A PAST SESSION — GET /api/slots/:id/succession/:n/transcript. The identity
+    // is the handoff report's worker.sessionId + cwd and NOTHING ELSE: a past session whose report
+    // names no session is "nicht zugeordnet", never the newest file of its cwd. Each check below
+    // turns red on the one violation it names: a route that guessed by cwd would hand back entries
+    // in (1) and on the main in (4); a route keyed on something other than the report's sessionId
+    // would miss the planted file in (3); a route that served the RUNNING session as a past one
+    // would answer n=2 in (2).
+    {
+      type PastBody = { assigned?: boolean; reason?: string; entries?: { role: string }[]; source?: string | null;
+        session?: number; report?: string | null; ctx?: { usedTokens: number; windowTokens: number; pct: number } | null;
+        error?: string };
+      const pastOf = async (id: number, n: number): Promise<{ status: number; body: PastBody }> => {
+        const r = await get(`/api/slots/${id}/succession/${n}/transcript`);
+        return { status: r.status, body: (await r.json()) as PastBody };
+      };
+      type ReportRow = { id: string; worker: { sessionId: string | null; cwd: string } };
+      const reportRow = (): ReportRow | undefined => (batonState() as { fleetReports?: ReportRow[] }).fleetReports
+        ?.find((r) => r.id === handoffBody.report?.id);
+      // (1) FLEET_CMD=true pins no session, so the report names none — the premise is asserted too
+      const bare = await pastOf(batonSlotId, 1);
+      check("(band) a past session whose handoff report names no session is 'nicht zugeordnet' — no file is guessed from its cwd",
+        reportRow()?.worker.sessionId === null && bare.status === 200 && bare.body.assigned === false
+          && (bare.body.reason ?? "").includes("nicht zugeordnet") && (bare.body.entries ?? []).length === 0
+          && bare.body.report === handoffBody.report?.id,
+        `${bare.status} ${JSON.stringify(bare.body).slice(0, 240)} sid=${reportRow()?.worker.sessionId}`);
+      // (2) only a PAST session of the line: 0, the running session (2) and beyond are 404
+      const outOfLine = await Promise.all([0, 2, 9].map(async (n) => (await get(`/api/slots/${batonSlotId}/succession/${n}/transcript`)).status));
+      check("(band) n that is not a past session of the line — 0, the running one, beyond — answers 404",
+        outOfLine.every((c) => c === 404), JSON.stringify(outOfLine));
+
+      // (3) + (4): plant a session on the report and its transcript on disk, and a one-record line on
+      // a MAIN — through the state file, with the server stopped, as the fixtures above do
+      await stopSrv();
+      const sid = crypto.randomUUID();
+      const USED = 123_456;
+      const proj = `${process.env.HOME}/.claude/projects/${batonCwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+      mkdirSync(proj, { recursive: true });
+      writeFileSync(`${proj}/${sid}.jsonl`, [
+        { type: "user", timestamp: new Date().toISOString(), message: { content: "BAND PROBE: what did the predecessor say?" } },
+        { type: "assistant", timestamp: new Date().toISOString(), message: { content: [{ type: "text", text: "BAND PROBE: the answer" }],
+          usage: { input_tokens: USED, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 } } },
+      ].map((l) => JSON.stringify(l)).join("\n") + "\n");
+      const lineageId = "ba4d".padEnd(24, "0");
+      const bandPlant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { fleetReports?: ReportRow[];
+        slots?: Record<string, { cwd?: string | null; worktree?: unknown; openedAt?: number; lineageId?: string | null }>;
+        lineageHandovers?: { lineageId: string }[] };
+      const pr = bandPlant.fleetReports?.find((r) => r.id === handoffBody.report?.id);
+      if (pr) pr.worker.sessionId = sid;
+      // a main with no line of its own: the planted record must be the only one it has
+      const mainEntry = Object.entries(bandPlant.slots ?? {}).find(([, x]) => x.cwd && !x.worktree && x.openedAt && !x.lineageId);
+      const mainId = mainEntry ? Number(mainEntry[0]) : 0;
+      const mainOpened = mainEntry?.[1].openedAt ?? 0;
+      if (mainEntry) {
+        mainEntry[1].lineageId = lineageId;
+        bandPlant.lineageHandovers = [...(bandPlant.lineageHandovers ?? []), { v: 1, lineageId, role: "generic",
+          at: mainOpened, from: { slot: mainId, openedAt: mainOpened - 3_600_000 }, to: { slot: mainId, openedAt: mainOpened },
+          obligations: [], intent: "band probe", pointer: null, supersededBy: null } as { lineageId: string }];
+      }
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(bandPlant, null, 2), { mode: 0o600 });
+      await restartSrv();
+      const named = await pastOf(batonSlotId, 1);
+      const ctx = named.body.ctx ?? null;
+      check("(band) a lane's past session is read through the session its handoff report names — its entries and its ctx at the handover",
+        named.status === 200 && named.body.assigned === true && named.body.source === `${sid}.jsonl`
+          && (named.body.entries ?? []).map((e) => e.role).join(",") === "user,assistant"
+          && ctx !== null && ctx.usedTokens === USED && ctx.windowTokens > 0
+          && ctx.pct === Math.round((USED / ctx.windowTokens) * 1000) / 10,
+        `${named.status} ${JSON.stringify({ ...named.body, entries: named.body.entries?.length }).slice(0, 300)}`);
+      const chainNow = (await (await get(`/api/slots/${batonSlotId}/succession`)).json()) as { past?: { ctx: unknown }[] };
+      check("(band) the line itself carries that ctx per past session, for the band's cells",
+        JSON.stringify(chainNow.past?.[0]?.ctx) === JSON.stringify(ctx), JSON.stringify(chainNow).slice(0, 240));
+      const mainPast = mainId ? await pastOf(mainId, 1) : { status: 0, body: {} as PastBody };
+      check("(band) a MAIN's past session — a lineage record names slot + openedAt only — is the honest empty state",
+        mainId > 0 && mainPast.status === 200 && mainPast.body.assigned === false
+          && (mainPast.body.reason ?? "").includes("nicht zugeordnet") && (mainPast.body.entries ?? []).length === 0,
+        `main=${mainId} ${mainPast.status} ${JSON.stringify(mainPast.body).slice(0, 240)}`);
+
+      // un-plant: the line on the main and the file; the report goes with the block's own cleanup below
+      await stopSrv();
+      const bandUnplant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof bandPlant;
+      bandUnplant.lineageHandovers = (bandUnplant.lineageHandovers ?? []).filter((r) => r.lineageId !== lineageId);
+      if (mainId && bandUnplant.slots?.[String(mainId)]) delete bandUnplant.slots[String(mainId)]!.lineageId;
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(bandUnplant, null, 2), { mode: 0o600 });
+      rmSync(`${proj}/${sid}.jsonl`, { force: true });
+      await restartSrv();
+    }
     const oldTokenNow = (await selfGet(batonTok)).status;
     check("(baton) the predecessor's credential went with its session — the old token authenticates nothing",
       oldTokenNow === 401, String(oldTokenNow));

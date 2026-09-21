@@ -652,6 +652,11 @@ class Pane {
   private chatSource: string | null = null;
   private chatTimer: ReturnType<typeof setTimeout> | undefined;
   private chatBusy = false;
+  // THE BAND'S PAST SESSION (bandify): the session number of this slot's line the pane is showing
+  // instead of the running one, read-only, or null. The sidebar reads its band position from here.
+  pastN: number | null = null;
+  private viewBeforePast: "term" | "chat" = "term";
+  private readonly pastBar: HTMLElement;
 
   constructor(readonly index: number) {
     this.root = el("div", "pane");
@@ -710,7 +715,8 @@ class Pane {
     const navDn = el("button", "promptnav dn", "↓") as HTMLButtonElement;
     navDn.title = "next prompt of yours";
     navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
-    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.hint, this.jump, this.sizeBtn,
+    this.pastBar = el("div", "pastbar");
+    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.sizeBtn,
       this.viewBtn, this.boardBtn, this.reloadBtn, navUp, navDn);
     this.term = new Terminal({
       // 10k, not the 50k this carried from the first commit (f43e3fb1) without ever being
@@ -944,6 +950,48 @@ class Pane {
   get isChat(): boolean {
     return this.view === "chat";
   }
+  // what a reload should come back to: the view the RUNNING session had, never a past one
+  get savedChat(): boolean {
+    return this.pastN !== null ? this.viewBeforePast === "chat" : this.view === "chat";
+  }
+
+  // Show session `n` of this slot's line, read-only, in the conversation view — or, with null, the
+  // running session again in the view it had. The composer goes quiet while a past is shown
+  // (mountComposer): a prompt typed there would reach the RUNNING session, not the one on screen.
+  // `fromBand`: the band already shows where it rests — rebuilding the sidebar under it would drop
+  // its snap and the keyboard focus (measured: two ← moved one step)
+  showPast(n: number | null, fromBand = false) {
+    if (n === this.pastN) return;
+    if (n === null) { this.leavePast(); mountComposer(); if (!fromBand) renderSlots(); return; }
+    if (this.pastN === null) this.viewBeforePast = this.view;
+    this.pastN = n;
+    this.root.classList.add("past");
+    this.pastBar.replaceChildren(el("span", "pastwho", `Session ${n}`), el("span", "pastmeta", "lädt…"));
+    this.resetChat();
+    if (this.view !== "chat") this.setView("chat");
+    else void this.pollChat();
+    mountComposer();
+  }
+  private leavePast() {
+    if (this.pastN === null) return;
+    this.pastN = null;
+    this.root.classList.remove("past");
+    this.pastBar.replaceChildren();
+    this.resetChat();
+    if (this.view !== this.viewBeforePast) this.setView(this.viewBeforePast);
+    else if (this.view === "chat") void this.pollChat();
+  }
+  private paintPastBar(d: { session: number; startedAt: number | null; handedAt: number | null;
+    ctx: { usedTokens: number; windowTokens: number; pct: number } | null }) {
+    const back = el("button", "pastback", "↩ laufende Session") as HTMLButtonElement;
+    back.title = "zurück zur laufenden Session dieses Slots (Esc auf der Zeile)";
+    back.onclick = (e) => { e.stopPropagation(); this.showPast(null); };
+    const bits = [`begann ${whenLong(d.startedAt)}`, `übergab ${whenLong(d.handedAt)}`];
+    if (d.ctx) bits.push(`ctx ${Math.round(d.ctx.pct)}% beim Übergeben`);
+    const meta = el("span", "pastmeta", bits.join(" · "));
+    if (d.ctx) meta.title = `Kontext beim Übergeben — ${ctxLine(d.ctx)}`;
+    this.pastBar.replaceChildren(el("span", "pastwho", `Session ${d.session} · nur lesend`), meta, back);
+  }
 
   // One message: the rendered body (a bubble for you, free prose for the agent — t3code's layout
   // grammar) and a meta row that appears on hover with the time and a copy of the SOURCE text.
@@ -1000,16 +1048,33 @@ class Pane {
     if (!this.slot || this.view !== "chat" || this.chatBusy) return;
     // capture the slot this fetch belongs to: assign()→resetChat() can reassign the pane
     // mid-fetch, and the old slot's entries must NOT append under the new slot's header.
-    const slot = this.slot;
+    const slot = this.slot, past = this.pastN;
     this.chatBusy = true;
+    let grew = false;
     try {
-      const res = await api(`/api/slots/${slot}/transcript?after=${this.chatTotal}`);
-      if (this.slot !== slot) return; // reassigned during the fetch — this response is stale
+      const res = await api(past === null ? `/api/slots/${slot}/transcript?after=${this.chatTotal}`
+        : `/api/slots/${slot}/succession/${past}/transcript?after=${this.chatTotal}`);
+      if (this.slot !== slot || this.pastN !== past) return; // reassigned during the fetch — stale
       if (!res.ok) return;
       const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null;
         cache?: { at: number; provider: string } | null; model?: string | null;
-        effort?: string | null };
-      if (this.slot !== slot) return; // reassigned during json() — still stale
+        effort?: string | null;
+        // the band's past session (GET /api/slots/:id/succession/:n/transcript)
+        session?: number; startedAt?: number | null; handedAt?: number | null; assigned?: boolean;
+        reason?: string; ctx?: { usedTokens: number; windowTokens: number; pct: number } | null };
+      if (this.slot !== slot || this.pastN !== past) return; // reassigned during json() — still stale
+      grew = data.entries.length > 0;
+      if (past !== null) {
+        this.paintPastBar({ session: past, startedAt: data.startedAt ?? null, handedAt: data.handedAt ?? null,
+          ctx: data.ctx ?? null });
+        if (data.assigned !== true) {
+          this.chatEl.replaceChildren(el("div", "chatempty", data.reason ?? "Transkript nicht zugeordnet"));
+          return;
+        }
+        // a past file does not grow: what it names about model, effort and cache is not the
+        // composer's business, so only the entries are read below
+        data.cache = undefined; data.model = undefined; data.effort = undefined;
+      }
       // the slot's active transcript changed (fresh claude after a self-heal, or a better
       // pinned file appeared) — start over from the top of the new file
       if (this.chatSource !== null && data.source !== this.chatSource) {
@@ -1020,7 +1085,9 @@ class Pane {
       }
       this.chatSource = data.source;
       if (data.source === null && !this.chatEl.childElementCount) {
-        this.chatEl.replaceChildren(el("div", "chatempty", "no transcript yet — say something in the terminal"));
+        this.chatEl.replaceChildren(el("div", "chatempty", past !== null
+          ? "Die Transkript-Datei dieser Session liegt nicht mehr auf der Platte"
+          : "no transcript yet — say something in the terminal"));
       }
       if (data.entries.length) {
         const empty = this.chatEl.querySelector(".chatempty");
@@ -1069,7 +1136,8 @@ class Pane {
         // chatMs === 0 means the tab went hidden mid-fetch: stop the chain rather than
         // re-arm it. chatPump() (driven by the poll pump on the way back) restarts it.
         const ms = plan().chatMs;
-        if (this.view === "chat" && ms) {
+        // a past session's file is finished: once a read brings nothing new there is nothing to poll
+        if (this.view === "chat" && ms && (past === null || grew)) {
           clearTimeout(this.chatTimer);
           this.chatTimer = setTimeout(() => void this.pollChat(), ms);
         }
@@ -1147,6 +1215,7 @@ class Pane {
 
   assign(slot: number) {
     if (slot === this.slot) { this.focus(); return; }
+    this.leavePast();
     this.slot = slot;
     this.retries = 0; // a different pane: the old one's backoff says nothing about this one
     this.gen++; // orphan the old socket before close so its onclose can't reconnect
@@ -4090,6 +4159,12 @@ function reshapeSurface(change: () => void): void {
 // only its size changes (#bar is black under both views since the eleventh cut).
 function mountComposer(): void {
   const pane = panes[focused];
+  // a past session on screen is read-only: the composer would address the RUNNING session
+  const pastN = pane?.pastN ?? null;
+  ta.disabled = pastN !== null;
+  if (pastN !== null) ta.placeholder = `Session ${pastN} liest nur — ↩ oder Esc auf der Zeile führt zur laufenden`;
+  else if (ta.placeholder.startsWith("Session "))
+    ta.placeholder = pane?.slot ? `Prompt for slot ${pane.slot}…${isMobile() ? "" : " (Enter sends)"}` : "Prompt… (no session in focused pane)";
   setComposerSize(pane?.isChat ? "tall" : "bar");
   renderComposerOpts(false);
   renderParkHint();
@@ -4686,7 +4761,7 @@ function saveView() {
   // `chats`: which panes show the conversation view — a reload used to land every pane back on the
   // terminal, and with it the composer's switches and cache counter were gone (seventeenth cut)
   localStorage.setItem("fleet.view", JSON.stringify({ layout, panes: panes.map((p) => p.slot), focused,
-    chats: panes.map((p) => p.isChat) }));
+    chats: panes.map((p) => p.savedChat) }));
 }
 
 // --- directory picker ---
@@ -6199,56 +6274,47 @@ function setStackOpen(g: Stack, on: boolean) {
   renderSlots();
 }
 
-// THE SUCCESSION BAND — THREE FASSUNGEN SIDE BY SIDE, SCAFFOLDING, NOT A FEATURE.
-// The owner asked for the succession line to be visible in the bar and did not say in what shape;
-// three shapes that differ in KIND (a band of its own · a reading in line 2 · a chip in line 1) are
-// cheaper to judge than to describe. WHEN HE HAS CHOSEN this collapses to the one he picked and the
-// switch goes — it must not survive into a land.
+// THE BAND — a row you pull back through its own past (owner 2026-09-21: "Ich möchte das man die
+// einzelnen session slots quasi durch ein Band ziehen kann, um so dann z.b das transscript der
+// vorherigen session ansehen und analysieren zu können"; rounds 4–10 chose every value below, each
+// driven over CDP in docs/design/sidebar/leiste-mess/band-zieh.js before it came here).
 //
-// Read from the HASH, not the query: `/?token=…` answers 302 to `/`, so a query parameter is gone
-// before any of this runs (measured: `location.search` was empty in the page). A fragment is never
-// sent to the server and survives the redirect, so the comparison URL is `…/?token=…#band=a`.
-// The query is still read, for a page opened without the login redirect.
-//
-// AND IT RE-READS ON hashchange. A module-level const evaluated once at start is the trap this
-// switch walked into: changing `#band=a` to `#band=c` in the address bar is a same-document
-// navigation, so the page keeps drawing the Fassung it was LOADED with and the comparison is
-// three pictures of the same thing (measured from outside on 2026-09-20). The reader below is a
-// function, the two switches are `let`, and `hashchange` re-reads and repaints both.
-function readVariant(key: string): "a" | "b" | "c" | "d" | null {
-  try {
-    const v = new URLSearchParams(location.hash.replace(/^#/, "")).get(key)
-      ?? new URLSearchParams(location.search).get(key);
-    return v === "a" || v === "b" || v === "c" || v === "d" ? v : null;
-  } catch { return null; }
-}
-let BAND_VARIANT = readVariant("band");
-addEventListener("hashchange", () => {
-  const b = readVariant("band");
-  if (b !== BAND_VARIANT) { BAND_VARIANT = b; renderSlots(); }
-});
-// "session 3 · 2 of 5" is the right column's wording (srow("Baton", …)). The bar has a quarter of
-// that width, so the three numbers are spelled short here and the long form goes in the tooltip.
-function successionText(sc: NonNullable<SlotInfo["succession"]>): string {
-  return `s${sc.session}`
-    + (sc.cap !== null ? ` · ${sc.taken ?? 0}/${sc.cap}` : sc.taken !== null ? ` · ${sc.taken}` : "");
-}
-function successionTitle(sc: NonNullable<SlotInfo["succession"]>): string {
-  return `session ${sc.session} of this line`
-    + (sc.cap !== null
-      ? ` · ${sc.taken ?? 0} of ${sc.cap} batons spent (FLEET_LANE_SUCCEED_MAX, counted per queue row)`
-      : sc.taken !== null ? ` · ${sc.taken} taken, no cap` : " · no cap");
-}
+// A row whose line has handed over at least once (`s.succession.session > 1`) is a track of cells:
+// its past sessions to the left, the running one — the ordinary line 1 — at the right end. Pulling
+// the row to the RIGHT goes back in time; the session it rests on opens in the pane that shows this
+// slot, read-only, from GET /api/slots/:id/succession/:n/transcript. Back on the running session,
+// the pane is the terminal (or chat) it was.
+//  · THE HINT is one 2px sliver on the row's edge (Fassung A, "Kante"): left while the present
+//    shows — a past lies under it — right while a past session shows. Nothing else is permanent.
+//  · THE MOUSE ("weich") never carries the row: it leans, damped and capped at 28 % of the row, and
+//    past 40 px of pull the next session snaps in with a soft overshoot, button still down.
+//  · TRACKPAD AND FINGER (round 5): a 7 px dead zone, then horizontal or vertical is decided once;
+//    the row follows 1:1; release switches by distance OR speed; a swipe commits a third across
+//    and swallows the rest of its momentum (one swipe, one session); a press grabs the row where
+//    the eye sees it; no click fires after a drag. ← → Home End Esc Enter on focus.
+//  · THE DOTS show only on hover, focus, while pulling and for a moment after a step; past eight
+//    sessions they are a window of seven with a small end dot.
+//  · DEPTH is how far back a row reaches, read in ONE place (bandReach). A later "only the last 3"
+//    is that one value; the row and the dots count the capped depth, the pane the real number.
+// WHICH past session is shown lives in ONE place, the pane (Pane#pastN): the sidebar is rebuilt on
+// the poll, and a row built fresh reads its position from the pane that shows its slot — through a
+// percentage transform, so no width has to be measured to draw it. While a gesture runs the
+// sidebar is not rebuilt at all (renderSlots, bandGesture), or the row would vanish under the hand.
+const DEPTH = Infinity;
+const bandReach = (session: number): number => Math.min(session - 1, DEPTH);
+const BAND_SLOP = 7, BAND_COMMIT = 0.2, BAND_FLICK = 0.35, BAND_SWIPE_COMMIT = 0.33;
+const BAND_WHEEL_IDLE = 90, BAND_MOMENTUM_GAP = 180, BAND_SNAP_MS = 340;
+const BAND_MOUSE = { T: 40, k: 0.8, cap: 0.28, ms: 380 };
+const BAND_DOTS = 7, BAND_STEPPED_MS = 1200;
+const bandStill = matchMedia("(prefers-reduced-motion: reduce)");
+let bandGesture = 0; // > 0 while a pointer or a swipe holds a band; renderSlots waits for it
+let slotsDirty = false;
 
-// FASSUNG D — THE LINE AS A CHAIN (owner 2026-09-21: "Ich kann immer noch keine sessions
-// hintereinander sehen"). A, B and C only move a counter around; D draws one mark per session, left
-// to right in order: past ones dim, the running one full, and under a cap the batons still left as
-// empty outlines. No text on the line. What a past mark stands for — when it began, when it handed
-// over, its handoff report — is not on the 2 s poll (server.ts#successionChain, the poll's budget),
-// so it is asked for once per (slot, occupant, session) and kept.
-interface SuccessionPast { session: number; startedAt: number | null; handedAt: number | null; report: string | null }
+// The line's past, from its own route (never the 2 s poll: its budget is rationed), asked once per
+// (slot, occupant, session) and kept. A failed read is remembered as failed, not retried per poll.
+interface SuccessionPast { session: number; startedAt: number | null; handedAt: number | null;
+  report: string | null; ctx: { usedTokens: number; windowTokens: number; pct: number } | null }
 const successionPast = new Map<string, SuccessionPast[] | "pending" | "failed">();
-const CHAIN_SHOWN_MAX = 12;
 function successionPastFor(s: ActiveSlot, session: number): SuccessionPast[] | "pending" | "failed" {
   const key = `${s.id}:${s.openedAt ?? 0}:${session}`;
   const have = successionPast.get(key);
@@ -6256,46 +6322,232 @@ function successionPastFor(s: ActiveSlot, session: number): SuccessionPast[] | "
   successionPast.set(key, "pending");
   api(`/api/slots/${s.id}/succession`)
     .then((r) => r.ok ? r.json() as Promise<{ past?: SuccessionPast[] }> : null)
-    // a failed read is REMEMBERED as failed, not retried on every poll, and the hover says so
     .then((j) => { successionPast.set(key, j?.past ?? "failed"); renderSlots(); })
     .catch(() => { successionPast.set(key, "failed"); renderSlots(); });
   return "pending";
 }
-const whenShort = (t: number | null): string => t === null ? "not recorded" : new Date(t).toLocaleString();
-function successionChainEl(s: ActiveSlot, sc: NonNullable<SlotInfo["succession"]>): HTMLElement {
-  const chain = el("div", "succchain");
-  const past = successionPastFor(s, sc.session);
-  // the batons still left under a cap: every succession spends one, so a capped line can still
-  // reach cap - taken more sessions after this one
-  const free = sc.cap !== null ? Math.max(0, sc.cap - (sc.taken ?? 0)) : 0;
-  const marks: HTMLElement[] = [];
-  for (let n = 1; n < sc.session; n++) {
-    const m = el("span", "sm past");
-    const p = typeof past === "string" ? null : past.find((x) => x.session === n) ?? null;
-    m.title = `session ${n}`
-      + (p ? `\nbegan ${whenShort(p.startedAt)}\nhanded over ${whenShort(p.handedAt)}`
-        + `\nhandoff report ${p.report ?? "not recorded"}`
-        : past === "failed" ? "\nthe line's history could not be read" : "\nloading…");
-    marks.push(m);
+const whenLong = (t: number | null): string => t === null ? "nicht aufgezeichnet" : new Date(t).toLocaleString();
+// a past cell's time: the clock alone when it is from today, the date alone otherwise — the full
+// stamp took the width the session's name needs
+const whenCell = (t: number): string => new Date(t).toDateString() === new Date().toDateString()
+  ? new Date(t).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
+  : new Date(t).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" });
+const ctxLine = (c: { usedTokens: number; windowTokens: number; pct: number }): string =>
+  `${c.usedTokens.toLocaleString()} von ${c.windowTokens.toLocaleString()} Tokens (${c.pct} %)`;
+
+// open session `n` of slot `id` in the pane that shows it — or the running one when n is null
+function openBandSession(id: number, n: number | null) {
+  let pane = panes.find((p) => p.slot === id);
+  if (!pane && n === null) return;
+  if (!pane) { showSlot(id); pane = panes.find((p) => p.slot === id); }
+  pane?.showPast(n, true);
+}
+
+// Turn a finished line 1 into the band's right end. `row` keeps line 1's place; everything else
+// the row carries (the Codex line, the hover strip) stays where it was, outside the track.
+function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: number) {
+  const reach = bandReach(session);
+  if (reach < 1) return;
+  const first = session - reach; // the session number of the leftmost cell
+  const n = reach + 1;
+  const shownPast = panes.find((p) => p.slot === s.id)?.pastN ?? null;
+  let idx = shownPast !== null && shownPast >= first && shownPast < session ? shownPast - first : n - 1;
+  row.classList.add("pull");
+  const view = el("div", "bandview");
+  view.tabIndex = 0;
+  const track = el("div", "bandtrack");
+  const past = successionPastFor(s, session);
+  const addr = r1.querySelector(".n, .laneref");
+  for (let k = 0; k < reach; k++) {
+    const num = first + k;
+    const p = typeof past === "string" ? null : past.find((x) => x.session === num) ?? null;
+    // the same order as line 1: the mark's place, the address, the name
+    const c = el("div", "r1 pastcell");
+    c.appendChild(el("span", "mark"));
+    if (addr) c.appendChild(addr.cloneNode(true));
+    c.appendChild(el("span", "lbl", `Session ${num}`));
+    if (p?.startedAt) c.appendChild(el("span", "when", whenCell(p.startedAt)));
+    if (p?.ctx) {
+      const cx = el("span", "ctxfill", `${Math.round(p.ctx.pct)}%`);
+      cx.title = `Kontext beim Übergeben — ${ctxLine(p.ctx)}`;
+      c.appendChild(cx);
+    }
+    c.title = `Session ${num} von ${session}\nbegann ${whenLong(p?.startedAt ?? null)}\nübergab ${whenLong(p?.handedAt ?? null)}`
+      + (p?.report ? `\nÜbergabe-Report ${p.report}` : "")
+      + (past === "failed" ? "\ndie Linie konnte nicht gelesen werden" : past === "pending" ? "\nlädt…" : "")
+      + "\nKlick oder loslassen zeigt ihr Transkript — nur lesend";
+    track.appendChild(c);
   }
-  const cur = el("span", "sm now");
-  cur.title = `session ${sc.session} — the one in this pane`
-    + (s.openedAt ? `, since ${new Date(s.openedAt).toLocaleString()}` : "");
-  marks.push(cur);
-  for (let i = 0; i < free; i++) {
-    const m = el("span", "sm free");
-    m.title = `a baton left — ${free} of ${sc.cap} successions still possible on this row (FLEET_LANE_SUCCEED_MAX)`;
-    marks.push(m);
-  }
-  // a very long line keeps its END: the running session and what is still free are the reading
-  if (marks.length > CHAIN_SHOWN_MAX) {
-    const cut = marks.length - CHAIN_SHOWN_MAX + 1;
-    const more = el("span", "sm more");
-    more.title = `sessions 1–${cut} not drawn`;
-    chain.append(more, ...marks.slice(cut));
-  } else chain.append(...marks);
-  chain.title = successionTitle(sc);
-  return chain;
+  r1.replaceWith(view);
+  track.appendChild(r1);
+  view.appendChild(track);
+  const depth = el("div", "depth");
+  row.appendChild(depth);
+
+  let W = 0, frame = 0, want = 0, snapEnd = 0;
+  const put = (dx: number, spring: boolean, mouse = false) => {
+    track.classList.toggle("snap", spring);
+    track.classList.toggle("mouse", spring && mouse);
+    want = dx;
+    if (spring) snapEnd = performance.now() + (bandStill.matches ? 0 : mouse ? BAND_MOUSE.ms : BAND_SNAP_MS);
+    if (!frame) frame = requestAnimationFrame(() => {
+      frame = 0;
+      track.style.transform = `translate3d(calc(${-idx * 100}% + ${want}px), 0, 0)`;
+    });
+  };
+  // where the eye sees the band right now, relative to the resting cell — a press mid-spring grabs
+  // it THERE, not at the target
+  const seen = (): number => new DOMMatrix(getComputedStyle(track).transform).m41 + idx * W;
+  // past either end the band gives, but less and less
+  const resist = (d: number): number => {
+    const over = (idx === n - 1 && d < 0) || (idx === 0 && d > 0);
+    return over ? Math.sign(d) * W * 0.18 * (1 - Math.exp(-Math.abs(d) / (W * 0.5))) : d;
+  };
+  const paintDepth = () => {
+    depth.replaceChildren();
+    const from = n <= BAND_DOTS ? 0 : Math.max(0, Math.min(n - BAND_DOTS, idx - (BAND_DOTS >> 1)));
+    const to = Math.min(n, from + BAND_DOTS);
+    for (let k = from; k < to; k++) {
+      const more = (k === from && from > 0) || (k === to - 1 && to < n);
+      depth.appendChild(el("i", k === idx ? "on" : more ? "more" : ""));
+    }
+  };
+  let stepT: ReturnType<typeof setTimeout> | undefined;
+  const paint = (stepped: boolean) => {
+    row.classList.toggle("back", idx < n - 1);
+    paintDepth();
+    if (!stepped) return;
+    row.classList.add("stepped");
+    clearTimeout(stepT);
+    stepT = setTimeout(() => row.classList.remove("stepped"), BAND_STEPPED_MS);
+  };
+  const go = (i: number, mouse = false) => {
+    const to = Math.max(0, Math.min(n - 1, i)), moved = to !== idx;
+    idx = to;
+    put(0, true, mouse);
+    paint(moved);
+    if (moved) openBandSession(s.id, idx === n - 1 ? null : first + idx);
+  };
+  // distance OR speed: more than half a row counts whole rows; less than that, a fifth of a row or
+  // a flick of BAND_FLICK px/ms goes one step in the direction of travel
+  const decide = (d: number, v: number): number => {
+    if (Math.abs(d) > W / 2) return -Math.round(d / W);
+    if (Math.abs(d) > W * BAND_COMMIT || (Math.abs(v) > BAND_FLICK && Math.sign(v) === Math.sign(d))) return d > 0 ? -1 : 1;
+    return 0;
+  };
+  const speed = (smp: [number, number][]): number => {
+    const now = smp[smp.length - 1], old = smp.find((x) => now[0] - x[0] <= 80) ?? smp[0];
+    return now[0] > old[0] ? (now[1] - old[1]) / (now[0] - old[0]) : 0;
+  };
+  const release = () => {
+    bandGesture = Math.max(0, bandGesture - 1);
+    if (!bandGesture && slotsDirty) setTimeout(() => { if (!bandGesture) renderSlots(); }, bandStill.matches ? 0 : BAND_MOUSE.ms);
+  };
+
+  let g: { id: number; x0: number; y0: number; from: number; dir: "x" | "y" | null; mouse: boolean;
+    s: [number, number][]; rearm?: boolean } | null = null;
+  let swallowClick = false;
+  view.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    W = view.clientWidth;
+    const mouse = e.pointerType === "mouse";
+    // a finger grabs the band where the eye sees it; the mouse lets a running snap land first
+    const from = mouse ? 0 : seen();
+    if (!mouse) put(from, false);
+    g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, from, dir: null, mouse, s: [[e.timeStamp, e.clientX]] };
+  });
+  // the mouse leans the row, it never carries it: past T px the next session snaps in, and the pull
+  // counts again from wherever the pointer is once that snap has landed
+  const lean = (cx: number) => {
+    if (!g) return;
+    if (performance.now() < snapEnd) { g.rearm = true; return; }
+    if (g.rearm) { g.x0 = cx; g.rearm = false; }
+    const raw = cx - g.x0, can = raw > 0 ? idx > 0 : idx < n - 1;
+    if (can && Math.abs(raw) >= BAND_MOUSE.T) { g.rearm = true; go(idx + (raw > 0 ? -1 : 1), true); return; }
+    const cap = W * BAND_MOUSE.cap * (can ? 1 : 0.35);
+    put(Math.sign(raw) * cap * (1 - Math.exp(-BAND_MOUSE.k * Math.abs(raw) / cap)), false);
+  };
+  view.addEventListener("pointermove", (e) => {
+    if (!g || e.pointerId !== g.id) return;
+    const dx = e.clientX - g.x0, dy = e.clientY - g.y0;
+    if (!g.dir) {
+      if (Math.hypot(dx, dy) < BAND_SLOP) return;
+      g.dir = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+      if (g.dir === "y") { put(0, true); g = null; return; }
+      if (!g.mouse) g.x0 += Math.sign(dx) * BAND_SLOP; // the mouse counts its pull from the press
+      view.setPointerCapture(e.pointerId);
+      row.classList.add("dragging");
+      bandGesture++;
+    }
+    g.s.push([e.timeStamp, e.clientX]);
+    if (g.s.length > 12) g.s.shift();
+    if (g.mouse) { lean(e.clientX); return; }
+    put(resist(g.from + e.clientX - g.x0), false);
+  });
+  const end = (e: PointerEvent, cancelled: boolean) => {
+    if (!g || e.pointerId !== g.id) return;
+    const was = g;
+    g = null;
+    if (!was.dir) { put(0, true); return; } // a plain click: the row's own onclick handles it
+    row.classList.remove("dragging");
+    swallowClick = true;
+    setTimeout(() => { swallowClick = false; }, 0);
+    if (cancelled) put(0, true, was.mouse);
+    else if (was.mouse) {
+      // under the threshold only a flick still switches; otherwise the lean springs back
+      const v = speed(was.s), raw = e.clientX - was.x0;
+      const flick = !was.rearm && Math.abs(v) > BAND_FLICK && Math.sign(v) === Math.sign(raw);
+      if (performance.now() >= snapEnd || flick) go(idx + (flick ? (raw > 0 ? -1 : 1) : 0), true);
+    } else go(idx + decide(was.from + e.clientX - was.x0, speed(was.s)));
+    release();
+  };
+  view.addEventListener("pointerup", (e) => end(e, false));
+  view.addEventListener("pointercancel", (e) => end(e, true));
+  view.addEventListener("click", (e) => { if (swallowClick) { e.stopPropagation(); e.preventDefault(); } }, true);
+
+  // a sideways trackpad swipe: the row follows the fingers; it commits the moment it is a third
+  // across, and whatever momentum the swipe still carries is swallowed until the events pause
+  let w: { d: number; s: [number, number][]; t?: ReturnType<typeof setTimeout> } | null = null;
+  let lockUntil = 0;
+  const wheelEnd = () => {
+    if (!w) return;
+    const d = w.d, v = speed(w.s.length ? w.s : [[0, 0]]);
+    w = null;
+    lockUntil = performance.now() + BAND_MOMENTUM_GAP;
+    go(idx + decide(d, v));
+    release();
+  };
+  view.addEventListener("wheel", (e) => {
+    const sideways = Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5 && Math.abs(e.deltaX) >= 1;
+    if (e.timeStamp < lockUntil) {
+      if (sideways || w) { e.preventDefault(); lockUntil = e.timeStamp + BAND_MOMENTUM_GAP; }
+      return;
+    }
+    if (!w) {
+      if (!sideways) return;
+      W = view.clientWidth;
+      w = { d: seen(), s: [] };
+      bandGesture++;
+    }
+    e.preventDefault();
+    w.d -= e.deltaX;
+    w.s.push([e.timeStamp, w.d]);
+    if (w.s.length > 12) w.s.shift();
+    put(resist(w.d), false);
+    clearTimeout(w.t);
+    if (Math.abs(w.d) > W * BAND_SWIPE_COMMIT) { wheelEnd(); return; }
+    w.t = setTimeout(wheelEnd, BAND_WHEEL_IDLE);
+  }, { passive: false });
+  view.addEventListener("keydown", (e) => {
+    const to = ({ ArrowLeft: idx - 1, ArrowRight: idx + 1, Home: 0, End: n - 1, Escape: n - 1 } as Record<string, number>)[e.key];
+    if (e.key === "Enter") { e.preventDefault(); showSlot(s.id); return; }
+    if (to === undefined) return;
+    e.preventDefault();
+    e.stopPropagation();
+    go(to, true);
+  });
+  track.style.transform = `translate3d(${-idx * 100}%, 0, 0)`;
+  paint(false);
 }
 
 // Which stacks exist right now. A repo with no lanes is NOT a stack — a lone session stays the
@@ -6537,6 +6789,12 @@ function renderSlots() {
   // only re-decides on click would keep offering a conversation view that has nothing behind it.
   for (const p of panes) p.syncHarnessAffordances();
   if (slotsEl.querySelector(".renamein")) return; // never destroy an in-progress rename
+  // …nor a band under the hand: the rebuild waits for the gesture's end (bandify's release)
+  if (bandGesture > 0) { slotsDirty = true; return; }
+  slotsDirty = false;
+  // a band that had the keyboard gets it back on the rebuilt row (← → Esc keep working)
+  const bandFocus = document.activeElement instanceof HTMLElement && document.activeElement.classList.contains("bandview")
+    ? document.activeElement.closest<HTMLElement>(".slot")?.dataset.slot ?? null : null;
   slotsEl.replaceChildren();
   // Every slot still gets a row and empty slots still hold their place — but a lane whose project
   // has a home in this list now renders under it instead of at its own number. The "slots are fixed
@@ -6554,6 +6812,7 @@ function renderSlots() {
     if (stackedLanes.has(s.id)) continue; // folded (or drawn) under its persisted anchor/header
     slotsEl.appendChild(slotRow(s, undefined, refs)); // plain session, including another main with no lanes
   }
+  if (bandFocus) slotsEl.querySelector<HTMLElement>(`.slot[data-slot="${bandFocus}"] .bandview`)?.focus();
 }
 
 // A FREE PLACE IS STILL A PLACE (owner: "ich will immernoch irgendwo hinklicken koennen um eine
@@ -6699,13 +6958,6 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         e.stopPropagation();
         startRename(row, s);
       };
-      // FASSUNG C — a chip in line 1, beside the label: the succession reads as part of the
-      // ADDRESS rather than as a reading, and it is the only one of the three a folded row keeps.
-      if (BAND_VARIANT === "c" && s.succession) {
-        const sc = el("span", "succhip", successionText(s.succession));
-        sc.title = successionTitle(s.succession);
-        r1.appendChild(sc);
-      }
       // THE NUMBER OF LANES — his third item — and, since the fold arrow left the row, the fold
       // itself: clicking the count shows or hides the lanes it counts. While folded, what the hidden
       // lanes are waiting for is in its tooltip, and a hidden lane that works still lights the
@@ -6717,12 +6969,24 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         const parent = normalizeLaneAnchor({ slot: s.id, openedAt: s.openedAt });
         r1.appendChild(quickLaneChip(s.repo ?? s.cwd, parent ?? undefined));
       }
+      // THE READINGS, "Reihe" (owner rounds 8/9, 2026-09-21: "die beiden aktivitätsleuchten und auch
+      // das Kontext level … reihe mit dem ctx als Zahl finde Ich besser"): a lane's lifecycle dot,
+      // the ctx as a number, the state glyph — in that order, on the row's vertical centre.
+      // The lifecycle dot: editing (uncommitted) a filled amber disc, ready (commits to land) a
+      // green ring, clean nothing. Its three words stay in the label's tooltip.
+      if (s.worktree && s.git && (s.git.dirty > 0 || s.git.ahead > 0)) {
+        const life = s.git.dirty > 0 ? "editing" : "ready";
+        const d = el("span", `lc ${life}`);
+        d.title = `Lane: ${life === "editing" ? "in Arbeit — nicht committet" : "bereit — Commits warten aufs Landen"}`
+          + ` · ${s.git.dirty} uncommitted, ${s.git.ahead} to land`;
+        r1.appendChild(d);
+      }
       // context fill — a SENSOR and nothing else: no threshold, no colour state, no action. The
-      // unknown case is drawn as "ctx ?", never as 0% and never as an empty bar: a blank meter reads
+      // unknown case is drawn as "?", never as 0% and never as an empty bar: a blank meter reads
       // as "fresh session", which is the one wrong answer this fact must not be able to give.
       {
         const c = s.ctx ?? null;
-        const cx = el("span", "ctxfill" + (c ? "" : " unknown"), c ? `ctx ${Math.round(c.pct)}%` : "ctx ?");
+        const cx = el("span", "ctxfill" + (c ? "" : " unknown"), c ? `${Math.round(c.pct)}%` : "?");
         cx.title = c
           ? `context fill — ${c.usedTokens.toLocaleString()} of ${c.windowTokens.toLocaleString()} input tokens (${c.pct}%)`
           : "context fill unknown — this slot has no pinned claude transcript with a usage record yet"
@@ -6764,24 +7028,8 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         need.onclick = (e) => { e.stopPropagation(); openCodexDlg(s.id); };
         row.appendChild(need);
       }
-      // FASSUNG B — a reading on a line of its own under the label. The row has no line 2 any more,
-      // so B draws one only where there is a succession to read.
-      if (BAND_VARIANT === "b" && s.succession) {
-        const r2 = el("div", "r2");
-        const sb = el("span", "succ", successionText(s.succession));
-        sb.title = successionTitle(s.succession);
-        r2.appendChild(sb);
-        row.appendChild(r2);
-      }
-      if (BAND_VARIANT === "d" && s.succession) row.appendChild(successionChainEl(s, s.succession));
-      // FASSUNG A — a thin band of its own under the row.
-      if (BAND_VARIANT === "a" && s.succession) {
-        const band = el("div", "succband");
-        const t = el("span", "succ", successionText(s.succession));
-        t.title = successionTitle(s.succession);
-        band.appendChild(t);
-        row.appendChild(band);
-      }
+      // THE BAND: a line that has handed over becomes a track you pull back through (bandify)
+      if (s.succession && s.succession.session > 1) bandify(row, r1, s, s.succession.session);
       // THE HOVER ROW carries what asks for a hand: the guest chat (with its count — the 💬 badge
       // that used to sit on the resting row), an unreviewed conflict resolution (the ⏸ badge), the
       // scheduled-prompt mark, and kill. The ± diff that stood here and inline on lanes is gone
@@ -7082,7 +7330,9 @@ async function refresh() {
         // count would rebuild the sidebar for a change the chip does not show, and leaving it out
         // would freeze the chip until another field moved (the `behind` bug this list documents).
         s.inbound ? inboundChipLabel(s.inbound) : null,
-        s.parkedSend?.count, s.parkedSend?.draftChars])]);
+        s.parkedSend?.count, s.parkedSend?.draftChars,
+        // the band: a new session on the line adds a cell (bandify)
+        s.succession?.session])]);
     if (key !== lastRender) {
       lastRender = key;
       renderSlots();

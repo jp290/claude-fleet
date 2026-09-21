@@ -1790,18 +1790,19 @@ export async function run(): Promise<void> {
         && !/\.slot \.mark[^{]*\{[^}]*(background|border|content)/.test(indexSrc),
       "the mark placeholder in slotRow/emptyRow + its CSS");
     // THE RESTING ROW IS THE OWNER'S FIVE, ON ONE LINE (2026-09-21, verbatim: "slotNr, Ctx-fill,
-    // indication of nr of lanes, name, workIndicator und kein 'cx bound'"). The second line is gone
-    // — only band Fassung B, scaffolding behind #band=b, still draws one, and only for a row with a
-    // succession. What the line said moved to the label's tooltip, never into nothing.
+    // indication of nr of lanes, name, workIndicator und kein 'cx bound'"). The second line is gone.
+    // What the line said moved to the label's tooltip, never into nothing. Round 8 brought ONE
+    // reading back ("die beiden aktivitätsleuchten"): a lane's lifecycle as a dot (`lc`), beside
+    // the ctx — its three words stay in the tooltip.
     {
-      const rOnly = rowSrc.replace(/if \(BAND_VARIANT === "b"[\s\S]*?row\.appendChild\(r2\);\s*\}/, "");
-      check("client: the resting row is one line — number, name, lane count, ⎇+, ctx, state",
-        !/el\("div", "r2"\)/.test(rOnly)
+      check("client: the resting row is one line — number, name, lane count, ⎇+, lifecycle, ctx, state",
+        !/el\("div", "r2"\)/.test(rowSrc)
           && /r1\.appendChild\(cx\)/.test(rowSrc) && /r1\.appendChild\(live\)/.test(rowSrc)
           && /r1\.appendChild\(laneCountChip\(stack, open\)\)/.test(rowSrc)
           && /r1\.appendChild\(quickLaneChip\(/.test(rowSrc)
-          // the fold arrow and the lifecycle dot have no sentence of his: gone from the row
+          // the fold arrow has no sentence of his: gone from the row; the lifecycle is the round-8 dot
           && !cliSrc.includes("function foldArrow(") && !/"lcdot/.test(cliSrc) && !indexSrc.includes(".lcdot")
+          && /el\("span", `lc \$\{life\}`\)/.test(rowSrc) && /\.slot \.lc\.editing \{ background: var\(--amber\)/.test(indexSrc)
           && !cliSrc.includes("function stackChips(")
           // and what they said is still said: the lifecycle in the label's tooltip, the fold on the
           // count, the age beside the state's word
@@ -1859,44 +1860,58 @@ export async function run(): Promise<void> {
           && /@media \(hover: none\) \{[^@]*\.slot:focus-within \.r1 \.act \{ visibility: visible; \}/.test(indexSrc),
         JSON.stringify({ needCss: needCss.trim(), slotactCss: slotactCss.trim(), laneActCss: laneActCss.trim() }));
     }
-    // FASSUNG D — the line as a chain of marks: one per past session, the running one, and under a
-    // cap the batons still left; no text on the line, and a past mark's hover comes from its own
-    // route (never the 2 s poll). Scaffolding like A–C, compared side by side until the owner picks.
+    // THE BAND (owner rounds 3–10, 2026-09-21): a row whose line has handed over is a track you pull
+    // back through its past; the session it rests on opens read-only in the pane. Every value below
+    // is one the owner chose, driven over CDP first (docs/design/sidebar/leiste-mess/band-zieh.js).
+    // The scaffolding that preceded it — four Fassungen behind #band=a–d — is gone, switch included.
     {
-      const chainSrc = cut("function successionChainEl(", "// Which stacks exist right now.");
-      const pastSrc = cut("function successionPastFor(", "const whenShort");
-      check("client: #band=d draws the succession as a chain — past, running, free — with no text on the line",
-        cliSrc.includes('return v === "a" || v === "b" || v === "c" || v === "d" ? v : null;')
-          && /if \(BAND_VARIANT === "d" && s\.succession\) row\.appendChild\(successionChainEl\(s, s\.succession\)\)/.test(rowSrc)
-          && chainSrc.includes('el("span", "sm past")') && chainSrc.includes('el("span", "sm now")')
-          && chainSrc.includes('el("span", "sm free")')
-          && /for \(let n = 1; n < sc\.session; n\+\+\)/.test(chainSrc)
-          && /sc\.cap !== null \? Math\.max\(0, sc\.cap - \(sc\.taken \?\? 0\)\) : 0/.test(chainSrc)
-          && !/el\("span", "sm [a-z]+", /.test(chainSrc),
-        "successionChainEl");
-      check("client: a past mark's hover names begin, handover and handoff report, read once per session from its own route",
-        pastSrc.includes("api(`/api/slots/${s.id}/succession`)")
-          && pastSrc.includes('successionPast.set(key, "failed")') && pastSrc.includes('if (have) return have;')
-          && chainSrc.includes("began ${whenShort(p.startedAt)}") && chainSrc.includes("handed over ${whenShort(p.handedAt)}")
-          && chainSrc.includes('handoff report ${p.report ?? "not recorded"}')
-          && serverSrc.includes("return json(successionChain(s));"),
-        "successionPastFor + successionChainEl + the server route");
-      const smCss = cssBody(".slot .sm"), chainCss = cssBody(".slot .succchain");
-      const nowCss = cssBody(".slot .sm.now"), pastCss = cssBody(".slot .sm.past"), freeCss = cssBody(".slot .sm.free");
-      check("client: the chain's marks speak the chat tokens only, and differ by fill and brightness",
-        /width: 12px; height: 6px/.test(smCss) && /align-items: center/.test(chainCss)
-          && /background: var\(--chat-ink\)/.test(nowCss) && /background: var\(--chat-faint\)/.test(pastCss)
-          && /box-shadow: inset 0 0 0 1px var\(--chat-faint\)/.test(freeCss) && !/background/.test(freeCss)
-          && ![smCss, chainCss, nowCss, pastCss, freeCss].some((c) => /#[0-9a-f]{3,8}\b|rgb|hsl/i.test(c)),
-        JSON.stringify({ smCss, nowCss, pastCss, freeCss }));
+      const bandSrc = cut("function bandify(", "// Which stacks exist right now.");
+      const code = cliSrc.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+      check("client: no band Fassung and no hash switch survive — the band is the one built form",
+        !cliSrc.includes("BAND_VARIANT") && !cliSrc.includes("function readVariant(")
+          && !cliSrc.includes("successionChainEl") && !/"succ(hip|band|chain)?"/.test(cliSrc)
+          && !/\.slot \.(succ|succband|succhip|succchain|sm)\b/.test(indexSrc),
+        "client + sidebar CSS");
+      check("client: a row becomes a band exactly when its line has handed over",
+        /if \(s\.succession && s\.succession\.session > 1\) bandify\(row, r1, s, s\.succession\.session\)/.test(rowSrc)
+          && bandSrc.includes("r1.replaceWith(view)") && bandSrc.includes("track.appendChild(r1)"),
+        "slotRow + bandify");
+      check("client: DEPTH is one constant, read in one place",
+        (code.match(/\bDEPTH\b/g) ?? []).length === 2 && /const bandReach = \(session: number\): number => Math\.min\(session - 1, DEPTH\)/.test(code),
+        `${(code.match(/\bDEPTH\b/g) ?? []).length} code uses`);
+      check("client: the mouse is 'weich' and trackpad/finger is round 5 — the chosen values, nowhere else",
+        cliSrc.includes("const BAND_MOUSE = { T: 40, k: 0.8, cap: 0.28, ms: 380 };")
+          && cliSrc.includes("const BAND_SLOP = 7, BAND_COMMIT = 0.2, BAND_FLICK = 0.35, BAND_SWIPE_COMMIT = 0.33;")
+          && /\.slot \.bandtrack\.snap\.mouse \{ transition: transform 0\.38s cubic-bezier\(\.2, 1\.3, \.3, 1\)/.test(indexSrc)
+          && /prefers-reduced-motion: reduce\) \{ \.slot \.bandtrack\.snap, \.slot \.bandtrack\.snap\.mouse \{ transition: none/.test(indexSrc)
+          && bandSrc.includes("view.setPointerCapture(e.pointerId)") && bandSrc.includes("{ passive: false }")
+          && /touch-action: pan-y/.test(cssBody(".slot .bandview")),
+        "bandify + band CSS");
+      check("client: the hint is one 2px sliver — left on the present, right on a past — and the dots show only on demand",
+        /width: 2px/.test(cssBody(".slot.pull::before")) && /left: auto; right: 2px/.test(cssBody(".slot.pull.back::before"))
+          && /opacity: 0/.test(cssBody(".slot .depth")) && cliSrc.includes("const BAND_DOTS = 7, BAND_STEPPED_MS = 1200;"),
+        JSON.stringify({ hint: cssBody(".slot.pull::before"), depth: cssBody(".slot .depth") }));
+      check("client: the sidebar is not rebuilt under a band in the hand, and a rebuilt band keeps the keyboard",
+        cliSrc.includes("if (bandGesture > 0) { slotsDirty = true; return; }")
+          && cliSrc.includes('slotsEl.querySelector<HTMLElement>(`.slot[data-slot="${bandFocus}"] .bandview`)?.focus()'),
+        "renderSlots");
+      check("client: a past session is read-only — its own route, a quiet composer, no ✕ over the running session",
+        cliSrc.includes("`/api/slots/${slot}/succession/${past}/transcript?after=${this.chatTotal}`")
+          && cliSrc.includes("ta.disabled = pastN !== null;")
+          && /display: none/.test(cssBody(".slot.back .slotact, .slot.back:hover .slotact, .slot.back:focus-within .slotact")),
+        "Pane#pollChat + mountComposer + band CSS");
+      check("client: a band's past session shows its ctx at the handover, from the line's own route",
+        bandSrc.includes('el("span", "ctxfill", `${Math.round(p.ctx.pct)}%`)') && serverSrc.includes("ctx: ctxOf(p.report)"),
+        "bandify + successionChain");
     }
     check("hover and focus actions use a solid row-coloured surface over passive facts",
       /background:\s*var\(--rb\)/.test(slotactCss)
         && !/transparent|gradient|opacity/i.test(slotactCss)
         && indexSrc.includes(".slot:hover .slotact, .slot:focus-within .slotact { display: flex; }"),
       slotactCss.trim());
-    check("unknown context remains the literal ctx ? reading",
-      rowSrc.includes('c ? `ctx ${Math.round(c.pct)}%` : "ctx ?"'),
+    // round 9, "Reihe": the ctx is a NUMBER ("24%"), and unknown is "?" — never 0, never empty
+    check("unknown context remains the literal ? reading, and a known one is a bare percentage",
+      rowSrc.includes('c ? `${Math.round(c.pct)}%` : "?"'),
       "slotRow context source");
     const mobileRowacts = /(?:^|\n)\s*\.rowacts\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";
     const mobileRowact = /(?:^|\n)\s*\.rowacts \.rowact\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";

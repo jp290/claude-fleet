@@ -1905,22 +1905,31 @@ export async function run(): Promise<void> {
       check("client: the past bar's way back is not covered — ℹ, 💬 and ↻ all leave a past pane",
         /display: none/.test(cssBody(".pane.past .viewtoggle, .pane.past .panereload, .pane.past .boardtoggle")),
         cssBody(".pane.past .viewtoggle, .pane.past .panereload, .pane.past .boardtoggle") || "no such rule");
-      // round 12 (owner): the views square left, the functions ONE right-aligned block, sorted —
-      // conditional buttons first in their row so an appearing one moves no fixed button — and a
-      // quiet + at the end that only says what is coming (the builder is its own row)
+      // rounds 12/13 (owner): the views square left and unchanged, the functions one right-aligned
+      // block — three small rows, then the task queue as its own square in the right corner, sized
+      // by ONE constant (--queue-scale, 2 = round 13) — the conditional buttons first in their row
+      // so an appearing one moves no fixed button, and a quiet + last that only says what is coming
       const rowIds = (id: string): string[] => {
         const m = new RegExp(`<span id="${id}" class="toolrow">([\\s\\S]*?)</span>`).exec(indexSrc);
         return [...(m?.[1] ?? "").matchAll(/<button id="([a-z]+)"/g)].map((x) => x[1]!);
       };
-      const r1 = rowIds("toolrow1"), r2 = rowIds("toolrow2");
-      check("client: the head's functions are one right-aligned block — row 1 reads, row 2 sets up, the + is last",
-        JSON.stringify(r1) === JSON.stringify(["attnbtn", "opsbtn", "queuebtn", "auditbtn", "outcomebtn"])
-          && JSON.stringify(r2) === JSON.stringify(["devbtn", "saverbtn"])
-          && /justify-content: flex-end/.test(cssBody(".toolrow"))
-          && /grid-row: 1 \/ span 2/.test(cssBody("#layouts"))
-          && cliSrc.indexOf('$("toolrow2").appendChild(moreBtn)') < cliSrc.indexOf('$("toolrow2").appendChild(plusBtn)')
+      const rows = ["toolrow1", "toolrow2", "toolrow3"].map(rowIds);
+      const headHtml = /<div id="sidetools">[\s\S]*?<div id="slots">/.exec(indexSrc)?.[0] ?? "";
+      check("client: the head's functions are one right-aligned block — came in · where it ran · settings, the queue in the corner",
+        JSON.stringify(rows) === JSON.stringify([["attnbtn", "opsbtn", "auditbtn"], ["devbtn", "outcomebtn"], ["saverbtn"]])
+          && /<\/span>\s*<\/span>\s*<button id="queuebtn"[^>]*>[^<]*<\/button>\s*<\/div>/.test(headHtml)
+          && /justify-content: flex-end/.test(cssBody(".toolrow")) && /margin-left: auto/.test(cssBody("#toolrows"))
+          && cliSrc.indexOf('$("toolrow3").appendChild(moreBtn)') >= 0
+          && cliSrc.indexOf('$("toolrow3").appendChild(moreBtn)') < cliSrc.indexOf('$("toolrow3").appendChild(plusBtn)')
           && cliSrc.includes('{ id: "headplus", icon: "plus", word: "Eigener Knopf" }'),
-        JSON.stringify({ r1, r2, toolrow: cssBody(".toolrow") }));
+        JSON.stringify({ rows, toolrow: cssBody(".toolrow") }));
+      check("client: the task queue is doubled by ONE constant (--queue-scale: 2), the views square stays 23px",
+        /--queue-scale: 2;/.test(cssBody("#sidetools"))
+          && /width: calc\(23px \* var\(--queue-scale\)\); height: calc\(23px \* var\(--queue-scale\)\)/.test(cssBody("#sidetools #queuebtn"))
+          && /calc\(14px \* var\(--queue-scale\)\)/.test(cssBody("#sidetools #queuebtn .ico"))
+          && /grid-template-columns: 23px 23px; grid-auto-rows: 23px/.test(cssBody("#layouts"))
+          && (indexSrc.match(/--queue-scale: \d/g) ?? []).length === 1,
+        JSON.stringify({ sidetools: cssBody("#sidetools"), queue: cssBody("#sidetools #queuebtn"), layouts: cssBody("#layouts") }));
       const plusSrc = cut("const plusBtn = ", '$("sidetools").after(plusNote);');
       check("client: the + only says what is coming — it fetches nothing and opens nothing",
         plusSrc.includes("kommt") && !/fetch\(|api\(|openActivity|showPanel/.test(plusSrc),

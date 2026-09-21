@@ -13601,7 +13601,7 @@ moreBtn.onclick = () => {
   localStorage.setItem("fleet.more", moreOpen ? "1" : "0");
   applyMore();
 };
-$("toolrow2").appendChild(moreBtn);
+$("toolrow3").appendChild(moreBtn);
 $("sidetools").after(morePanel);
 applyMore();
 
@@ -13619,7 +13619,7 @@ plusBtn.onclick = () => {
   clearTimeout(plusNoteTimer);
   if (!plusNote.hidden) plusNoteTimer = window.setTimeout(() => { plusNote.hidden = true; }, 4000);
 };
-$("toolrow2").appendChild(plusBtn);
+$("toolrow3").appendChild(plusBtn);
 $("sidetools").after(plusNote);
 
 // THE HEAD ROW — one icon grammar (owner 2026-09-21: "Rechts davon zeigen wir dann überarbeitete

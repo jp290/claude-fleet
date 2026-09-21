@@ -138,23 +138,27 @@
   #instbtn .devcount { flex: none; color: var(--chat-faint); font-variant-numeric: tabular-nums; }
   .instnote { padding: 6px 7px 3px; border-top: 1px solid var(--chat-edge); margin-top: 2px;
     color: var(--chat-faint); font-size: var(--chat-ui-fs); line-height: 1.4; }
-  /* THE HEAD UNDER THE TITLE IS TWO ROWS (owner 2026-09-21: "die pane-split buttons in ein quadrat
-     packen und auch die leiste zwei-reihig machen"; round 12: "das viererbündel der pane-split
-     buttons linksbündig … und der rest rechts und dann sauber sortiert"). Left, over both rows,
-     the four views as ONE square — a 2×2 grid of 23px buttons, 48px a side, flush with the bar's
-     left edge. Right, the functions as ONE right-aligned block, sorted by what they are: row 1
-     reads (attn · ops — what is owed you — then queue · audit · lands), row 2 sets up
-     (dev · saver · ⋯ · +). The conditional buttons (attn, ops, dev) sit at the LEFT end of their
-     row, so when one appears it grows the row leftwards and no fixed button moves. The split is
-     in the markup (#toolrow1/#toolrow2). Worst case, attn and ops with a count (~35px each), row
-     1 is ~150px against the ~173px beside the square — never a third row. One button grammar
-     for all: a 23px square, a drawn icon (src/icons.ts), the chat tokens; meaning is title +
-     aria-label. The + at the end is the place for buttons the owner builds from an idea later
-     (its own queue row) — today it only says so, and it is drawn quieter than a function. */
-  #sidetools { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; padding: 0 10px 8px; }
-  #layouts { grid-row: 1 / span 2; display: grid; grid-template-columns: 23px 23px; grid-auto-rows: 23px; gap: 2px; }
+  /* THE HEAD UNDER THE TITLE (owner 2026-09-21, rounds 10/12/13: "die pane-split buttons in ein
+     quadrat packen" · "das viererbündel … linksbündig … und der rest rechts und dann sauber
+     sortiert" · "der task-queue button darf größer, weil der auch so wichtig ist", "vorerst").
+     Left, the four views as ONE square — a 2×2 grid of 23px buttons, 48px a side. Right, one
+     right-aligned block: the small functions in three rows and, in the corner, the task queue as
+     a square of its own, sized by ONE constant (--queue-scale; 2 is round 13, 46px, and 1 takes it
+     back). The queue takes the right corner because the most important button belongs on the
+     one spot that never moves: everything that comes and goes grows leftwards, away from it.
+     Three rows and not two, because the width decides it: beside the square and the big queue
+     the rows have 120px, and with attn, ops and dev showing a count the other eight buttons are
+     248px wide — two rows would need 130px each. Sorted by what they are: row 1 what came in
+     (attn · ops) and what Fleet did (audit), row 2 where the work ran (dev · lands), row 3
+     settings (saver · ⋯ · +). The conditional buttons (attn, ops, dev) lead their row, so one
+     that appears grows the row leftwards and no fixed button moves. The split is in the markup
+     (#toolrow1-3). One button grammar: a 23px square, a drawn icon (src/icons.ts), the chat
+     tokens; meaning is title + aria-label. The + at the end is the place for buttons the owner
+     builds from an idea later (its own queue row) — today it only says so, drawn quieter. */
+  #sidetools { --queue-scale: 2; display: flex; align-items: center; gap: 8px; padding: 0 10px 8px; }
+  #layouts { flex: none; display: grid; grid-template-columns: 23px 23px; grid-auto-rows: 23px; gap: 2px; }
+  #toolrows { margin-left: auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .toolrow { display: flex; align-items: center; justify-content: flex-end; gap: 2px; min-width: 0; height: 23px; }
-  #toolrow2 { margin-top: 2px; }
   #sidetools button { flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 3px;
     min-width: 23px; height: 23px; padding: 0; border-radius: 6px; border: 1px solid var(--chat-edge);
     background: var(--chat-raised); color: var(--chat-mute); font-size: var(--chat-ui-fs);
@@ -167,6 +171,8 @@
   #layouts button.active { color: var(--chat-ink); border-color: var(--chat-mute); background: var(--chat-surface); }
   #sidetools .tricon { display: grid; place-items: center; }
   #sidetools .ico { width: 14px; height: 14px; }
+  #sidetools #queuebtn { width: calc(23px * var(--queue-scale)); height: calc(23px * var(--queue-scale)); }
+  #sidetools #queuebtn .ico { width: calc(14px * var(--queue-scale)); height: calc(14px * var(--queue-scale)); }
   /* a count widens its button instead of squeezing the icon */
   #sidetools button:has(.hbadge) { padding: 0 5px; }
   #sidetools .hbadge { font-family: var(--chat-mono); font-size: var(--chat-ui-fs);
@@ -2752,9 +2758,8 @@
        in the drawer instead of the 26px desktop chip */
     #sidetools #saverbtn, #sidetools #morebtn { width: 40px; height: 40px; }
     #sidetools #saverbtn .ico, #sidetools #morebtn .ico { width: 18px; height: 18px; }
-    /* no views on the phone (#layouts is hidden above): the two function rows take the width, and
-       the finger-sized saver/⋯ make their row as tall as they are */
-    #sidetools { grid-template-columns: 1fr; }
+    /* no views on the phone (#layouts is hidden above): the function rows and the queue keep the
+       right edge, and the finger-sized saver/⋯ make their row as tall as they are */
     .toolrow { height: auto; }
     #morepanel .bbtn { min-height: 40px; }
 
@@ -2802,20 +2807,24 @@
         <button data-l="3" title="one tall pane, two beside it"></button>
         <button data-l="4" title="2×2 grid"></button>
       </span>
+      <span id="toolrows">
       <span id="toolrow1" class="toolrow">
       <button id="attnbtn" title="attention — what a program's main session raised for you (decision / blocked / review-ready)" style="display:none">📣</button>
       <button id="opsbtn" title="operations inbox — completions a subscription asked to be filed here instead of typed into a pane (merge / audit / deploy / lane)" style="display:none">📥</button>
-      <button id="queuebtn" title="task queue">🗒</button>
       <button id="auditbtn" title="audit trail — what Fleet did to each slot (killed / shelved / self-healed)">🛡</button>
-      <button id="outcomebtn" title="outcome feed — what each lane landed, how, and what ③ review said about it">🧾</button>
       </span>
       <span id="toolrow2" class="toolrow">
       <button id="devbtn" title="helper devices — the machines that take suite and audit work off this box" style="display:none">💻</button>
+      <button id="outcomebtn" title="outcome feed — what each lane landed, how, and what ③ review said about it">🧾</button>
+      </span>
+      <span id="toolrow3" class="toolrow">
       <!-- lives in the sidebar on purpose: #sidetools is NOT hidden by the mobile media
            query, so the ☰ drawer makes this reachable on the phone, which is the only
            device the switch is for. The live title is written by applySaver(). -->
       <button id="saverbtn" title="data saver">🐢</button>
       </span>
+      </span>
+      <button id="queuebtn" title="task queue">🗒</button>
     </div>
     <div id="slots"></div>
     <div id="sidefoot">Enter — send · Shift+Enter — new line<br>Click a terminal to type into it directly</div>

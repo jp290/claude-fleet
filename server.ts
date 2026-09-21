@@ -15533,10 +15533,28 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
   const d = raw as {
     type?: unknown; isMeta?: unknown; isSidechain?: unknown; timestamp?: unknown;
     message?: { content?: unknown };
+    attachment?: { type?: unknown; prompt?: unknown; commandMode?: unknown; timestamp?: unknown };
   };
-  if (d.type !== "user" && d.type !== "assistant") return null;
+  if (d.type !== "user" && d.type !== "assistant" && d.type !== "attachment") return null;
   if (d.isMeta === true || d.isSidechain === true) return null;
   const ts = typeof d.timestamp === "string" ? d.timestamp : null;
+  // A message typed while a turn runs is no user line: claude code queues it as an
+  // attachment/queued_command (measured 2026-09-21, live transcript daccbb0e) — terminal typing
+  // and chat-view sends alike, the chat view's prompt wrapped in its pasted_content envelope.
+  // commandMode "prompt" is the owner's own words and renders as the user turn it is, through
+  // the same text path (the client unwraps the envelope as on any typed turn); every other
+  // attachment kind or queue mode (hook_*, token reminders, task-notification queues) is
+  // harness plumbing, folded.
+  if (d.type === "attachment") {
+    const a = d.attachment;
+    if (!a || a.type !== "queued_command" || a.commandMode !== "prompt"
+      || typeof a.prompt !== "string" || !a.prompt) return null;
+    return {
+      n, role: "user",
+      ts: ts ?? (typeof a.timestamp === "string" ? a.timestamp : null),
+      blocks: [{ t: "text", text: trim(a.prompt, 20_000) }],
+    };
+  }
   const content = d.message?.content;
   const blocks: TBlock[] = [];
   let meta = false;
@@ -15581,11 +15599,26 @@ async function transcriptPayload(s: Slot, afterRaw: number):
   if (!file) return { entries: [], total: 0, source: null };
   const lines = (await Bun.file(file).text()).split("\n").filter((l) => l.trim() !== "");
   const after = Math.max(0, afterRaw | 0);
+  // A queued prompt the transcript ALSO records as its own type:user turn (same source_uuid)
+  // shows once, at the attachment's earlier position — the later duplicate is dropped. Pass 1
+  // collects over the WHOLE file: the attachment may sit before `after`, its duplicate after.
+  const queued = new Set<string>();
+  for (const l of lines) {
+    if (!l.includes("queued_command")) continue;
+    try {
+      const d = JSON.parse(l) as { type?: unknown; attachment?: { type?: unknown; commandMode?: unknown; source_uuid?: unknown } };
+      if (d.type === "attachment" && d.attachment?.type === "queued_command" && d.attachment.commandMode === "prompt"
+        && typeof d.attachment.source_uuid === "string") queued.add(d.attachment.source_uuid);
+    } catch { /* torn line — the render loop reports it */ }
+  }
   const entries: TEntry[] = [];
   const { model, effort } = transcriptModel(lines);
   for (let i = after; i < lines.length; i++) {
     try {
-      const e = viewEntry(JSON.parse(lines[i]), i + 1);
+      const parsed: unknown = JSON.parse(lines[i]);
+      const u = parsed as { type?: unknown; source_uuid?: unknown };
+      if (queued.size && u.type === "user" && typeof u.source_uuid === "string" && queued.has(u.source_uuid)) continue;
+      const e = viewEntry(parsed, i + 1);
       if (e) entries.push(e);
     } catch {
       // only the FINAL line may be a partial mid-append (cap total so the next poll

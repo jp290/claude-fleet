@@ -176,6 +176,59 @@ export async function run(): Promise<void> {
       check("transcript payload: model and effort come from the newest assistant line; a line without effort gives null, not the previous level",
         tr4j.model === "claude-opus-5" && tr4j.effort === "xhigh" && tr5j.model === "claude-haiku-4-5-20251001" && tr5j.effort === null,
         JSON.stringify([tr4j.model, tr4j.effort, tr5j.model, tr5j.effort]));
+      // --- a message typed WHILE a turn runs: claude code does not write a user line for it — it
+      // queues an attachment/queued_command row (measured on the live orchestrator transcript
+      // daccbb0e, 2026-09-21: outer row type "attachment", commandMode "prompt", the text in
+      // .attachment.prompt, timestamp on the row AND inside the attachment, no isMeta). viewEntry
+      // let that fall out silently, so the owner's own words vanished from the chat view. The
+      // fixture holds BOTH shapes the transcript can carry — the queued attachment and, per the
+      // same source_uuid, the type:user turn the consumed queue can additionally record — plus
+      // the two attachment kinds that must stay folded (a task-notification queue and a
+      // hook_success, both measured shapes). ---
+      const trQBase = ((await (await get(`/api/slots/${trFree}/transcript`)).json()) as { total: number }).total;
+      const TQ = "2026-09-21T17:00:35.396Z";
+      // the paste envelope the chat-view composer puts around every send (client.ts#PASTED_RE) —
+      // a queued chat-view prompt carries it too (measured, orchestrator note on daccbb0e), and
+      // the queued path must hand it to the client byte-for-byte like a type:user turn does
+      const PASTED = `<pasted_content id="p-1">\npasted from the chat view mid-turn\n</pasted_content id="p-1">`;
+      const attLine = (att: Record<string, unknown>) => `${JSON.stringify({
+        isSidechain: false, cwd: trCwd, userType: "external", type: "attachment", timestamp: TQ,
+        attachment: att })}\n`;
+      const queuedDupLine = `${JSON.stringify({ isSidechain: false, cwd: trCwd, type: "user",
+        timestamp: "2026-09-21T17:02:00.000Z", source_uuid: "q-src-dup-1",
+        message: { role: "user", content: [{ type: "text", text: "typed during the turn" }] } })}\n`;
+      const pastedUserLine = `${JSON.stringify({ isSidechain: false, cwd: trCwd, type: "user",
+        timestamp: "2026-09-21T17:02:01.000Z",
+        message: { role: "user", content: [{ type: "text", text: PASTED }] } })}\n`;
+      appendFileSync(`${trProj}/own.jsonl`,
+        trLine("assistant", "before the queue")
+        + attLine({ type: "queued_command", prompt: "typed during the turn", source_uuid: "q-src-dup-1",
+          commandMode: "prompt", origin: { kind: "human" }, humanTurn: true, timestamp: TQ })
+        + attLine({ type: "queued_command", prompt: PASTED, source_uuid: "q-src-paste",
+          commandMode: "prompt", origin: { kind: "human" }, humanTurn: true, timestamp: TQ })
+        + attLine({ type: "queued_command", prompt: "<task-notification>\n<task-id>t</task-id>\n</task-notification>",
+          source_uuid: "q-src-tn", commandMode: "task-notification", timestamp: TQ })
+        + attLine({ type: "hook_success", hookName: "PreToolUse:Bash", toolUseID: "t1", hookEvent: "PreToolUse",
+          command: "ls", stdout: "a.txt", stderr: "", exitCode: 0, durationMs: 3 })
+        + trLine("assistant", "the turn continued")
+        + queuedDupLine + pastedUserLine);
+      const trQ = (await (await get(`/api/slots/${trFree}/transcript?after=${trQBase}`)).json()) as
+        { entries: { n: number; role: string; ts: string | null; blocks: { t: string; text: string }[] }[]; total: number };
+      check("transcript: a message typed DURING a turn (queued_command attachment) renders as the owner's message at its place",
+        JSON.stringify(trQ.entries.map((e) => [e.role, ...e.blocks.map((b) => b.text)]))
+          === JSON.stringify([["assistant", "before the queue"], ["user", "typed during the turn"],
+            ["user", PASTED], ["assistant", "the turn continued"], ["user", PASTED]]),
+        JSON.stringify(trQ.entries));
+      check("transcript: the queued owner message is stamped with the moment it was queued, not left undated",
+        trQ.entries.find((e) => e.blocks[0]?.text === "typed during the turn")?.ts === TQ,
+        JSON.stringify(trQ.entries.map((e) => e.ts)));
+      check("transcript: a queued chat-view paste arrives byte-for-byte like the same envelope on a type:user turn (one code path, client unwraps)",
+        JSON.stringify(trQ.entries.filter((e) => e.blocks[0]?.text === PASTED).map((e) => e.blocks))
+          === JSON.stringify([[{ t: "text", text: PASTED }], [{ t: "text", text: PASTED }]]),
+        JSON.stringify(trQ.entries.filter((e) => e.blocks[0]?.text.includes("pasted_content"))));
+      check("transcript: the same queued text also recorded as its own type:user turn (same source_uuid) shows once, not twice",
+        trQ.entries.filter((e) => e.blocks.some((b) => b.text.includes("typed during the turn"))).length === 1,
+        JSON.stringify(trQ.entries.map((e) => e.blocks.map((b) => b.text))));
       await post(`/api/slots/${trFree}/kill`, {});
     }
     rmSync(trProj, { recursive: true, force: true }); // it lives outside the repo — do not leave it

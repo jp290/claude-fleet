@@ -357,11 +357,9 @@ console.log(`wrote ${outFile} + ${hintName}: ${chains.map((c) => `slot ${c.id} (
 // klar&sauber in die dargestellten slots zu integrieren"). The two lights are main's: the state
 // glyph (four shapes: work disc, rest ring, sleep bar, broken cross) and, on a lane, the lifecycle
 // dot (editing filled amber, ready green ring, clean none). The ctx level sits between the label
-// and them. Two forms, #reihe / #ring:
-//   Reihe — "24%" as mono text, then the lights; "?" when it cannot be measured, never 0.
-//   Ring  — ctx as a thin arc AROUND the state glyph, so the two share one place; unmeasurable =
-//           a dashed ring. The number is in the tooltip.
-// Both sit on the vertical centre, the dots on the bottom edge: they cannot meet. A past session has
+// and them — round 9 chose "Reihe": "24%" as mono text, then the lights; "?" when it cannot be
+// measured, never 0 (the ring form is gone). They sit on the vertical centre, the dots on the
+// bottom edge: they cannot meet. A past session has
 // no lamps — only its ctx at the handover, faint, and only where its transcript measured it.
 function hintPage(data) {
   return `<!doctype html><html lang="de"><head><meta charset="utf-8">
@@ -409,15 +407,6 @@ body { margin:0; background:var(--void); color:var(--prose); font:13px/1.45 var(
 .st.sleep { border-radius:0; background:linear-gradient(var(--faint), var(--faint)) center / 8px 2px no-repeat; }
 .st.bad { border-radius:1px; background:var(--danger); clip-path:polygon(20% 0,50% 30%,80% 0,100% 20%,70% 50%,100% 80%,80% 100%,50% 70%,20% 100%,0 80%,30% 50%,0 20%); }
 .st.unknown { background:none; box-shadow:none; outline:1px dashed var(--faint); outline-offset:-1px; }
-.ring { position:relative; width:16px; height:16px; flex:none; display:grid; place-items:center; border-radius:50%;
-  background:conic-gradient(var(--mute) calc(var(--p) * 1%), var(--edge) 0);
-  -webkit-mask:radial-gradient(circle, transparent 5.5px, #000 6px); mask:radial-gradient(circle, transparent 5.5px, #000 6px); }
-.ring.unknown { background:none; -webkit-mask:none; mask:none; box-shadow:none; outline:1px dashed var(--faint); outline-offset:-1px; }
-.cell.past .ring { background:conic-gradient(var(--faint) calc(var(--p) * 1%), var(--edge-soft) 0); }
-.ringwrap { position:relative; width:16px; height:16px; flex:none; display:grid; place-items:center; }
-.ringwrap > .ring { position:absolute; inset:0; }
-.ringwrap > .st { width:6px; height:6px; }
-.ringwrap > .st.sleep { background-size:6px 2px; }
 .cell { flex:none; display:flex; align-items:center; gap:6px; min-height:40px; padding:6px 10px 6px 30px; }
 .cell.past { padding-right:12px; background:var(--surface); }
 .n { font:12px/1.45 var(--mono); padding:1px 6px; border-radius:5px; background:var(--raised); box-shadow:inset 0 0 0 1px var(--edge); color:var(--mute); flex:none; }
@@ -450,7 +439,6 @@ button[disabled] { color:var(--faint); }
 @media (prefers-reduced-motion: reduce) { .track.snap, .track.snap.mouse { transition:none; } }
 </style></head><body>
 <nav class="side A"><h1><b>Band ziehen</b> · Strich am Rand</h1>
-<div class="feel" role="group" aria-label="Kennwerte"><button data-kv="reihe">Reihe</button><button data-kv="ring">Ring</button></div>
 <div class="feelvals"></div><div class="rows"></div>
 <div class="how">Zeile nach rechts ziehen = frühere Session · Maus: kurz anziehen, sie rastet selbst ein · Finger oder waagrecht wischen · ← → mit Fokus · Esc = laufende</div></nav>
 <main id="main"><div id="head"></div><div id="body"></div></main>
@@ -466,28 +454,17 @@ const MAX_DOTS = 7, STEPPED_MS = 1200;
 const still = matchMedia("(prefers-reduced-motion: reduce)");
 document.documentElement.style.setProperty("--snap-ms", FEEL.ms + "ms");
 document.documentElement.style.setProperty("--snap-ease", FEEL.ease);
-let KV = "reihe";
-const readings = [];
-function setKv(name) {
-  KV = name === "ring" ? "ring" : "reihe";
-  document.querySelectorAll(".feel button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.kv === KV)));
-  document.querySelector(".feelvals").textContent = "Stand " + short(D.built) + " · Tiefe " + (DEPTH === Infinity ? "alle" : DEPTH);
-  if (location.hash !== "#" + KV) history.replaceState(null, "", "#" + KV);
-  readings.forEach((f) => f());
-}
-document.querySelectorAll(".feel button").forEach((b) => b.addEventListener("click", () => setKv(b.dataset.kv)));
 const STATE_WORD = { work: "arbeitet", rest: "ruht", sleep: "schläft — seit 30 min oder mehr still", bad: "kaputt — hängt, oder kein Agent in der Pane" };
 const LIFE_WORD = { editing: "in Arbeit — nicht committet", ready: "bereit — Commits warten aufs Landen", clean: "sauber" };
 const ago = (ms) => { const m = Math.round(ms / 60000); return m < 1 ? "gerade eben" : m < 60 ? "vor " + m + " min" : m < 1440 ? "vor " + Math.round(m / 60) + " h" : "vor " + Math.round(m / 1440) + " d"; };
 const ctxTitle = (c, why, end) => c ? (end ? "Kontext beim Übergeben — " : "Kontext — ") + c.usedTokens.toLocaleString() + " von " + c.windowTokens.toLocaleString() + " Tokens (" + c.pct + " %)"
   : "Kontext unbekannt — " + (why || "nicht gemessen") + ". Kein leerer Kontext.";
-// the readings of ONE cell, drawn fresh for the current form; a past cell gets only its end ctx
+// the readings of ONE cell; a past cell gets only its end ctx
 function kvOf(live, past) {
   const box = el("span", "kv");
   if (past) {
     if (!past.ctxEnd) return box;
-    if (KV === "ring") { const r = el("span", "ring"); r.style.setProperty("--p", String(past.ctxEnd.pct)); r.title = ctxTitle(past.ctxEnd, null, true); box.append(r); }
-    else { const t = el("span", "ctx", Math.round(past.ctxEnd.pct) + "%"); t.title = ctxTitle(past.ctxEnd, null, true); box.append(t); }
+    const t = el("span", "ctx", Math.round(past.ctxEnd.pct) + "%"); t.title = ctxTitle(past.ctxEnd, null, true); box.append(t);
     return box;
   }
   if (!live) return box;
@@ -499,14 +476,8 @@ function kvOf(live, past) {
   const st = el("span", "st " + (live.state || "unknown"));
   st.title = live.state ? STATE_WORD[live.state] + (live.age != null ? " · letzte Ausgabe " + ago(live.age) : "") + (live.source === "transcript" ? " (Transkript, Stand des Entwurfs)" : "")
     : "Zustand in diesem Entwurf nicht gelesen";
-  if (KV === "ring") {
-    const w = el("span", "ringwrap"), r = el("span", "ring" + (live.ctx ? "" : " unknown"));
-    if (live.ctx) r.style.setProperty("--p", String(live.ctx.pct));
-    w.title = ctxTitle(live.ctx, live.why) + "\\n" + st.title; w.append(r, st); box.append(w);
-  } else {
-    const t = el("span", "ctx" + (live.ctx ? "" : " unknown"), live.ctx ? Math.round(live.ctx.pct) + "%" : "?");
-    t.title = ctxTitle(live.ctx, live.why); box.append(t, st);
-  }
+  const t = el("span", "ctx" + (live.ctx ? "" : " unknown"), live.ctx ? Math.round(live.ctx.pct) + "%" : "?");
+  t.title = ctxTitle(live.ctx, live.why); box.append(t, st);
   return box;
 }
 const fmt = (t) => t ? new Date(t).toLocaleString() : "—";
@@ -555,9 +526,7 @@ function makeRow(host, chain) {
     const c = el("div", "cell" + (live ? "" : " past"));
     c.append(el("span", "n", String(chain.id)), el("span", "lbl", live ? (chain.label || "—") : "Session " + (chain.hidden + k + 1)));
     if (!live) { const w = el("span", "when", when(p.startedAt)); w.title = "begann " + fmt(p.startedAt); c.append(w); }
-    const slotKv = el("span", "kvslot"); c.append(slotKv);
-    const draw = () => slotKv.replaceChildren(kvOf(live ? chain.live : null, live ? null : p));
-    readings.push(draw); draw();
+    c.append(kvOf(live ? chain.live : null, live ? null : p));
     track.append(c);
   }
   const cells = [...track.children];
@@ -689,7 +658,7 @@ function makeRow(host, chain) {
 }
 const host = document.querySelector(".side .rows");
 for (const c of all) makeRow(host, c);
-setKv(location.hash.slice(1));
+document.querySelector(".feelvals").textContent = "Stand " + short(D.built) + " · Tiefe " + (DEPTH === Infinity ? "alle" : DEPTH);
 const lane = all.find((c) => c.past.some((p) => p.transcript)) || all.find((c) => c.past.length);
 if (lane) requestAnimationFrame(() => show(lane, lane.past.length));
 </script></body></html>`;

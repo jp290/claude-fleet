@@ -73,8 +73,11 @@ serialisierten Antwort, kein Mass fuer Generation [Essay]. Ueber einem Limit ant
    Ballast · anfaellig fuer Text im State, der das Urteil lenken will · keine Generation · und
    **Nicht-Englisch hat laut `models.md` geringere Genauigkeit**; eine Noul und eine Choice auf dieselbe
    Aussage koennen weit auseinanderliegen, und Aussage plus Negation summieren nicht auf 1 (Jaggedness-
-   Seite: 0,72 + 0,47). Fuer Deutsch gibt es nirgends eine Messung; das
-   naechstbeste sind 799 japanische Datensaetze mit nur zwei Positiven [Agent].
+   Seite: 0,72 + 0,47). Fuer Deutsch gab es bis 2026-09-21 nirgends eine Messung (das naechstbeste
+   waren 799 japanische Datensaetze mit nur zwei Positiven [Agent]); die eigene steht in
+   `docs/messungen/2026-09-21-jev-deutsch-probe-ergebnis.md`: auf 90 oeffentlichen deutschen
+   Absaetzen AUC 0,98 mit deutschen gegen 0,99 mit englischen Fragen, Minimalpaare 30 von 30 in der
+   richtigen Richtung, Aussage plus Negation im Mittel 0,05 neben 1 — Doku-Prosa, keine Fleet-Aufgabe.
 8. **Optionsgrenzen lassen sich durch Text nicht faelschen** (105 Versuche, sieben Trennformate)
    [Essay]. Das schuetzt die Form der Antwort, nicht ihren Inhalt.
 
@@ -135,7 +138,10 @@ liefert eine FORM, geprueft wird gegen eine Tatsache.
   Key: zwei Aufrufe (ein konstruierter Absatz deutsch und englisch, je vier Nouls, keine Fleet-Daten),
   HTTP 200 in 1 096 und 893 ms, `jev-1.13.0`, 350 und 336 Input-Tokens, Antwort-IDs = Frage-IDs. Ein
   Beispiel, keine Guete-Aussage: DE 0,95 / 0,03 / 0,04 / 0,05 gegen EN 0,96 / 0,02 / 0,06 / 0,03.
-- Guete auf DEUTSCHEM Fleet-Material — die erste eigene Messung vor jedem Bau.
+- ~~Guete auf DEUTSCHEM Text~~ — gemessen 2026-09-21 auf Klasse-A-Prosa, alle vier vorab gesetzten
+  Kippwerte gehalten, zwei Laeufe gleich (`docs/messungen/2026-09-21-jev-deutsch-probe-ergebnis.md`).
+  Offen bleibt die Guete auf einer FLEET-AUFGABE: die braucht eigene Labels, und ihr Material
+  (Queue-Zeilen, Pane-Text) liegt hinter dem DPA-Tor im naechsten Punkt.
 - Ob DPA und Privacy Policy des Anbieters das Senden von Fleet-Daten tragen: die Vertragstexte sind am
   2026-09-21 gelesen (`docs/messungen/2026-09-21-jev-vertragstexte-gelesen.md`) — kein Training auf
   Input, aber keine Aufbewahrungsfrist, kein Loeschanspruch, unbefristet freie „Telemetry", ZDR nur

@@ -6533,6 +6533,28 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
         : `closes=${(landBody.match(/t\.status = "done";/g) ?? []).length} settles=${/v\.landedAt = at;/.test(landBody)}`);
   }
 
+  // BEFUND 3, MINIMAL VARIANT (docs/messungen/2026-09-20-quellen-referenzen-retention.md §3, §5;
+  // decision on e4409bf2): laneNoteSources loses join hits GRADUALLY to explicit pins — each pin
+  // consumes a slot, at cap ALL join hits fall, and out of `reachable`, whose join half is taken
+  // from `shown`. The repair was documentation only: say the mechanics where they happen, build no
+  // counter-booking. A comment is not code — nothing else in the tree notices a clause rotting out
+  // of it, which is what this pin is for. It reads the function's COMMENT lines only, never the
+  // whole body: `cap - explicit.length` also exists as live code, and a body-wide grep would stay
+  // green over a comment that had lost the sentence.
+  {
+    const laneSrc = read("task-notes.ts");
+    const body = laneSrc.match(/export function laneNoteSources\([\s\S]*?\n\}/)?.[0] ?? "";
+    const said = (body.match(/^\s*\/\/.*$/gm) ?? []).join("\n");
+    const slot = /`cap - explicit\.length`/.test(said);
+    const allFall = /ALL join hits fall/.test(said);
+    const reachable = /out of `reachable`, not only out of `shown`/.test(said)
+      && /join half from `shown`/.test(said);
+    pin("laneNoteSources' comment states the cap collision — explicit pins consume join slots, at cap ALL join hits fall, out of `reachable` whose join half comes from `shown`",
+      body !== "" && said.includes("CAP COLLISION") && slot && allFall && reachable,
+      body === "" ? "laneNoteSources not found"
+        : `slot=${slot} allFall=${allFall} reachableFromShown=${reachable}`);
+  }
+
   // K2 · THE SAME BARGAIN ON THE PROGRAM SIDE, and the one half a suite cannot see. e2e/programs.ts
   // DRIVES the behaviour (planted state, both entrances, seven counter-probes) — that is the proof.
   // What no test can observe is the ORDER inside loadState: if the Program cap ever ran before the

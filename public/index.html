@@ -246,25 +246,44 @@
      No new colour, no new edge, no new family: .succ is the same mono-on-faint the other readings of
      line 2 use, .succhip is the address chip's own recipe at the lane size, and the band's rule is
      --chat-edge-soft, which already draws every hairline in this sheet. */
-  .slot .succ { flex: none; font-family: var(--chat-mono); font-variant-numeric: tabular-nums; }
-  .slot .succband { display: flex; margin: 2px 0 0 calc(var(--mark-size, 26px) + 6px);
-    padding-top: 2px; border-top: 1px solid var(--chat-edge-soft);
-    font-size: var(--chat-ui-fs); color: var(--chat-faint); }
-  .slot .succhip { flex: none; padding: 1px 5px; border-radius: 5px; font-family: var(--chat-mono);
-    font-size: var(--chat-ui-fs); line-height: 1.45; font-variant-numeric: tabular-nums;
-    white-space: nowrap; color: var(--chat-mute);
-    background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
-  /* FASSUNG D — the line as a chain, one mark per session, hung under the NAME (the needline's left
-     edge). Three readings by FILL and brightness, no text: past = filled in --chat-faint, the running
-     one = filled in --chat-ink, a baton still left under the cap = an empty --chat-faint outline.
-     A pill, not a disc, so no mark here can be read as the row's state glyph (.act, 8px round). */
-  .slot .succchain { display: flex; align-items: center; gap: 3px; min-height: 12px;
-    margin: 1px 0 0 calc(var(--mark-size, 26px) + 28px); }
-  .slot .sm { flex: none; width: 12px; height: 6px; border-radius: 3px; }
-  .slot .sm.past { background: var(--chat-faint); }
-  .slot .sm.now { background: var(--chat-ink); }
-  .slot .sm.free { box-shadow: inset 0 0 0 1px var(--chat-faint); }
-  .slot .sm.more { width: 4px; background: var(--chat-edge); }
+  /* THE BAND (client.ts#bandify): a row whose line has handed over is a track of cells, its past
+     sessions left of line 1. The view clips inside the row's padding; each cell is the view's full
+     width, so the resting position is a percentage and needs no measurement. */
+  .slot .bandview { overflow: hidden; touch-action: pan-y; outline: none; border-radius: 8px; }
+  .slot .bandview:focus-visible { box-shadow: inset 0 0 0 1px var(--chat-mute); }
+  .slot.pull .bandview { cursor: grab; }
+  .slot.dragging .bandview { cursor: grabbing; }
+  .slot .bandtrack { display: flex; will-change: transform; }
+  .slot .bandtrack > .r1 { flex: 0 0 100%; }
+  .slot .bandtrack.snap { transition: transform 0.34s cubic-bezier(.22, 1.22, .36, 1); }
+  .slot .bandtrack.snap.mouse { transition: transform 0.38s cubic-bezier(.2, 1.3, .3, 1); }
+  .slot .pastcell .lbl { color: var(--chat-mute); }
+  .slot .pastcell .when { flex: none; font-family: var(--chat-mono); font-size: var(--chat-ui-fs);
+    color: var(--chat-faint); font-variant-numeric: tabular-nums; }
+  .slot .pastcell .ctxfill { color: var(--chat-faint); }
+  /* the hint, Fassung A "Kante": one 2px sliver — left while the present shows, right on a past */
+  .slot.pull::before { content: ""; position: absolute; left: 2px; top: 9px; bottom: 9px; width: 2px;
+    border-radius: 1px; background: var(--chat-edge); pointer-events: none; z-index: 1; }
+  .slot.pull:hover::before, .slot.pull:focus-within::before, .slot.pull.dragging::before { background: var(--chat-faint); }
+  .slot.pull.back::before { left: auto; right: 2px; background: var(--chat-faint); }
+  /* the dots: only on hover, focus, while pulling, and a moment after a step */
+  .slot .depth { position: absolute; left: 0; right: 0; bottom: 1px; display: flex; justify-content: center;
+    align-items: center; gap: 3px; pointer-events: none; opacity: 0; transition: opacity 0.15s; }
+  .slot.pull:hover .depth, .slot.pull:focus-within .depth, .slot.pull.dragging .depth,
+  .slot.pull.stepped .depth { opacity: 1; }
+  .slot .depth i { width: 4px; height: 4px; border-radius: 2px; background: var(--chat-edge);
+    transition: width 0.2s, background 0.2s; }
+  .slot .depth i.on { width: 10px; background: var(--chat-mute); }
+  .slot .depth i.more { width: 2px; height: 2px; }
+  /* on a past session the hover strip stays away: its ✕ would kill the RUNNING session */
+  .slot.back .slotact, .slot.back:hover .slotact, .slot.back:focus-within .slotact { display: none; }
+  .slot.back:hover .r1 .ctxfill, .slot.back:hover .r1 .act, .slot.back:focus-within .r1 .ctxfill,
+  .slot.back:focus-within .r1 .act { visibility: visible; }
+  /* the lane's lifecycle dot (owner round 8): editing a filled amber disc, ready a green ring */
+  .slot .lc { flex: none; width: 6px; height: 6px; border-radius: 50%; }
+  .slot .lc.editing { background: var(--amber); }
+  .slot .lc.ready { box-shadow: inset 0 0 0 1.5px var(--q-live); }
+  @media (prefers-reduced-motion: reduce) { .slot .bandtrack.snap, .slot .bandtrack.snap.mouse { transition: none; } }
   .slot .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     letter-spacing: -0.005em; }
   .slot.current .lbl { color: var(--chat-ink); }
@@ -301,7 +320,8 @@
     gap: 2px; padding-left: 6px; background: var(--rb); }
   .slot.lane .slotact { height: calc(6px + 22px); }
   .slot:hover .r1 .ctxfill, .slot:hover .r1 .act,
-  .slot:focus-within .r1 .ctxfill, .slot:focus-within .r1 .act { visibility: hidden; }
+  .slot:focus-within .r1 .ctxfill, .slot:focus-within .r1 .act,
+  .slot:hover .r1 .lc, .slot:focus-within .r1 .lc { visibility: hidden; }
   .slot:hover .slotact, .slot:focus-within .slotact { display: flex; }
   .slot .kill { color: var(--chat-faint); font-size: 13px; padding: 2px 5px; border-radius: 5px; }
   .slot .kill:hover { color: var(--danger); background: var(--chat-raised); }
@@ -389,6 +409,21 @@
     -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
   .pane.chat .paneterm { visibility: hidden; }
   .pane.chat .panechat { display: block; }
+  /* THE BAND'S PAST SESSION in the pane (Pane#showPast): the conversation view, read-only, under a
+     bar that says which session this is and leads back to the running one */
+  .pastbar { display: none; }
+  .pane.past .pastbar { position: absolute; z-index: 3; top: 0; left: 0; right: 0; display: flex;
+    align-items: center; gap: 10px; padding: 7px 12px; background: var(--chat-raised);
+    border-bottom: 1px solid var(--chat-edge); font-family: var(--chat-sans); font-size: var(--chat-ui-fs);
+    color: var(--chat-mute); }
+  .pane.past .panechat { top: 34px; }
+  .pastbar .pastwho { color: var(--chat-ink); font-weight: 600; flex: none; }
+  .pastbar .pastmeta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--chat-mono); }
+  .pastbar .pastback { flex: none; font: inherit; color: var(--chat-prose); background: var(--chat-surface);
+    border: 1px solid var(--chat-edge); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+  .pastbar .pastback:hover { color: var(--chat-ink); }
+  .pane.past .viewtoggle, .pane.past .panereload { display: none !important; }
   .viewtoggle { position: absolute; top: 8px; right: 10px; z-index: 6; width: 30px; height: 26px;
     border-radius: 7px; border: 1px solid var(--line); background: rgba(38, 38, 38, 0.85); color: var(--dim);
     font-size: 13px; font-family: inherit; cursor: pointer; }

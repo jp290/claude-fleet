@@ -17533,14 +17533,17 @@ function successionRowView(s: Slot): { session: number; taken: number | null; ca
 //    a succeed without a report) gets its oldest sessions as nulls.
 //  · a MAIN's past occupants are the `from` sides of its lineage records (the begin) and the
 //    records' `at` (the handover); its report is the handoff report that occupant filed, if any.
-interface SuccessionPast { session: number; startedAt: number | null; handedAt: number | null; report: string | null }
+//  · `ctx` is where that session's window stood when it handed over — the last usage record of the
+//    transcript its handoff report names (contextFillOf); null when no report names one.
+interface SuccessionPast { session: number; startedAt: number | null; handedAt: number | null; report: string | null;
+  ctx: ContextFill | null }
 function successionChain(s: Slot): { session: number; taken: number | null; cap: number | null; past: SuccessionPast[] } {
   const f = successionFacts(s);
   const handoffOf = (slot: number, openedAt: number): FleetReport | null =>
     fleetReports.filter((r) => r.status === "handoff" && r.worker.slot === slot && r.worker.openedAt === openedAt)
       .at(-1) ?? null;
   const n = f.session - 1;
-  let known: Omit<SuccessionPast, "session">[];
+  let known: Omit<SuccessionPast, "session" | "ctx">[];
   if (s.worktree) {
     const branch = s.worktree.branch;
     const byOccupant = new Map<number, FleetReport>();
@@ -17554,10 +17557,14 @@ function successionChain(s: Slot): { session: number; taken: number | null; cap:
       startedAt: h.from.openedAt, handedAt: h.at, report: handoffOf(h.from.slot, h.from.openedAt)?.id ?? null }));
   }
   const tail = n > 0 ? known.slice(-n) : [];
+  const ctxOf = (id: string | null): ContextFill | null => {
+    const w = id ? fleetReports.find((r) => r.id === id)?.worker : undefined;
+    return w?.sessionId && w.cwd ? contextFillOf(s, w.cwd, w.sessionId) : null;
+  };
   const past = [
     ...Array.from({ length: n - tail.length }, () => ({ startedAt: null, handedAt: null, report: null })),
     ...tail,
-  ].map((p, i) => ({ session: i + 1, ...p }));
+  ].map((p, i) => ({ session: i + 1, ...p, ctx: ctxOf(p.report) }));
   return { session: f.session, taken: f.taken, cap: f.cap, past };
 }
 
@@ -17597,8 +17604,7 @@ async function pastTranscript(s: Slot, n: number, after: number) {
   if (!report?.worker.sessionId || !report.worker.cwd)
     return { ...base, assigned: false as const, reason: TRANSCRIPT_UNASSIGNED, ctx: null, entries: [], total: 0, source: null };
   const was: Slot = { ...s, cwd: report.worker.cwd, sessionId: report.worker.sessionId };
-  return { ...base, assigned: true as const, ctx: contextFillOf(s, report.worker.cwd, report.worker.sessionId),
-    ...(await transcriptPayload(was, after)) };
+  return { ...base, assigned: true as const, ctx: past.ctx, ...(await transcriptPayload(was, after)) };
 }
 
 function migrateMessage(fill: ContextFill, rail: MigrateRail): string {

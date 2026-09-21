@@ -759,8 +759,10 @@ export async function run(lc: LaneCtx): Promise<void> {
   await post(`/api/slots/${lnVf.slot}/kill`, {});
   await post("/api/worktrees/discard", { repo: REPO, path: lnVf.cwd, branch: lnVf.branch });
 
-  // ACP-03 Q3 counter-probe: the same red-verify review flow, with no commit after the verdict,
-  // still preserves owner latitude and lands normally.
+  // ACP-03 Q3 counter-probe: the same red-verify review flow, with no commit after the verdict.
+  // Until 578e8975 this confirm-landed on "owner latitude"; now the owner arm holds the MAIN arm's
+  // bar — a recorded verify that is not green never lands — so the unchanged red candidate is
+  // refused, main does not move, and the lane is discarded instead of scrubbed out of main.
   const lnVfresh = (await (await post("/api/lanes", { repo: REPO })).json()) as
     { slot: number; cwd: string; branch: string };
   await Bun.write(`${lnVfresh.cwd}/verify-fresh-confirm.txt`, "lane work with a VERIFYBAD marker\n");
@@ -784,16 +786,16 @@ export async function run(lc: LaneCtx): Promise<void> {
   const freshMainBefore = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
   await settleForMerge(lnVfresh.slot);
   const freshConfirmR = await post(`/api/slots/${lnVfresh.slot}/merge`, { confirm: true });
-  const freshConfirm = (await freshConfirmR.json()) as { status?: string; landed?: boolean };
+  const freshConfirm = (await freshConfirmR.json()) as { status?: string; landed?: boolean;
+    detail?: string; verify?: { ok?: boolean | null } };
   const freshMainAfter = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
-  check("ACP-03 Q3: the unchanged candidate still confirm-lands normally",
-    freshConfirmR.ok && freshConfirm.status === "merged" && freshConfirm.landed === true
-      && freshMainBefore !== freshMainAfter,
+  check("ACP-03 Q3 (578e8975): a confirm over a RED recorded verify is refused 409 with the verdict attached, and main does not move",
+    freshConfirmR.status === 409 && freshConfirm.status === "resolved" && freshConfirm.landed === false
+      && freshConfirm.verify?.ok === false && (freshConfirm.detail ?? "").includes("not green")
+      && freshMainBefore === freshMainAfter,
     `${freshConfirmR.status} ${JSON.stringify({ freshConfirm, freshMainBefore, freshMainAfter })}`);
-  // scrub the VERIFYBAD marker back out of main so later clean lanes (this suite reuses REPO
-  // heavily) don't inherit a red verify from this deliberately-broken confirm-land.
-  spawnSync("git", ["-C", REPO, "rm", "-q", "verify-fresh-confirm.txt"]);
-  spawnSync("git", ["-C", REPO, "commit", "-qm", "cleanup: drop VERIFYBAD marker from main"]);
+  await post(`/api/slots/${lnVfresh.slot}/kill`, {});
+  await post("/api/worktrees/discard", { repo: REPO, path: lnVfresh.cwd, branch: lnVfresh.branch });
 
   // ACP-03 Q4: boot a genuinely persisted pre-identity row. Killing the scratch server before
   // editing its scratch fleet.json makes the fixture deterministic: no process can overwrite it.
@@ -827,6 +829,10 @@ export async function run(lc: LaneCtx): Promise<void> {
     delete legacyRow.mainSha;
     delete legacyRow.candidateSha;
     delete legacyRow.diffHash;
+    // the VERIFYBAD marker is only how this fixture reaches a reviewable verdict; the escape hatch
+    // under test is the IDENTITY one, so the recorded gate is made green (578e8975 refuses a red)
+    const v = legacyRow.verify as { ok?: boolean | null } | undefined;
+    if (v) v.ok = true;
   }
   await Bun.write(`${ROOT}/fleet.json`, JSON.stringify(legacyState, null, 2));
   await restartSrv();

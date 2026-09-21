@@ -2396,7 +2396,8 @@ function programPhaseInput(t: Task, programId: string, outcome: PhaseOutcomeFact
       inflight: lane !== null && mergeInflight.has(lane.id),
       start: lane !== null && mergeStart.has(lane.id),
       last: last
-        ? { status: last.status, landed: last.landed, candidateSha: last.candidateSha ?? null }
+        ? { status: last.status, landed: last.landed, candidateSha: last.candidateSha ?? null,
+          verifyOk: last.verify?.ok ?? null }
         : null,
     },
     openAttention,
@@ -2495,6 +2496,17 @@ function nextActionFor(phase: Phase, t: Task, promotion: PromotionPolicy | undef
     return 'a merge job holds this lane — subscribe {kind:"merge"} on /api/self/watch and read the outcome there';
   if (phase === "OWNER_GATE") return "an open question is waiting on the owner — nothing here moves until it is answered";
   return null;
+}
+
+// THE RED-VERDICT DOOR (563ec115). R9 makes every non-land verdict REVIEWABLE, and a MEASURED red
+// (verify.ok === false) is one — but selfLandTaskForMain's progress guard refuses exactly that
+// verdict's candidate unchanged with 409 (a kill or a never-came-up server is ok:null and stays
+// retryable, so it never reaches here). Naming the land door there sent a MAIN into a refusal.
+// Composed beside nextActionFor for the same reason owedPreviewDoor is, and only where the
+// self-land door exists at all: without a promotion the row already names the owner's board.
+function redVerdictDoor(candidateSha: string | null): string {
+  return `the land gate ran red on candidate ${candidateSha ? candidateSha.slice(0, 8) : "(unrecorded)"}`
+    + " — the land door refuses that candidate unchanged (409); the lane commits a repair first, and the next call gates the new head";
 }
 
 // THE OWED-RUN DOOR, composed only while a REVIEWABLE row's lane owes a suite preview that has not
@@ -2634,7 +2646,10 @@ async function programExecutionView(s: Slot): Promise<Response> {
             // measured once as `9cc8b1e`, to reach for the owner token instead).
             nextAction: input.preview !== null && derived.phase === "REVIEWABLE"
               ? owedPreviewDoor(input.preview)
-              : nextActionFor(derived.phase, t, p.promotion),
+              : derived.phase === "REVIEWABLE" && input.merge.last?.verifyOk === false
+                && !input.merge.last.landed && p.promotion && p.promotion.selfLand !== "off"
+                ? redVerdictDoor(input.merge.last.candidateSha)
+                : nextActionFor(derived.phase, t, p.promotion),
             // THE WORKER'S TYPED RESULT AND WHAT THIS PROGRAM DID WITH IT, joined by the row's own
             // persisted provenance rather than by any occupant: the report was filed TO one MAIN
             // occupant, and the session reading this may be its successor, bound later through
@@ -23909,8 +23924,10 @@ const ADJUDICATION_VERDICTS = ["real", "flake", "stale-test", "unknowable"] as c
 // accepted adjudication cannot race its still-queued append and be mistaken for an open red.
 const auditAdjudicationClaims = new Set<number>();
 type AdjudicationVerdict = typeof ADJUDICATION_VERDICTS[number];
-// one sentence of why, the same shape and cap as Slot.mission — a note, never a report
-const MAX_ADJUDICATION_NOTE = 300;
+// the WHY with room for its evidence — the red check's name, the rerun's transcript line, the fix sha
+// (0c190377). 300 held one sentence, and an adjudication with no room for its proof is an opinion;
+// the cap is the comment rail's, the one other place a human writes a reasoned text into this server.
+const MAX_ADJUDICATION_NOTE = MAX_COMMENT_TEXT;
 // `by` is stamped server-side, never read from the body: "owner" is a human decision, "backfill" is
 // the one-shot migration below. A reader must be able to tell them apart — a judgement nobody typed
 // is weaker evidence than one somebody did, and hiding that would be the whole point, inverted.
@@ -26680,8 +26697,8 @@ function freshConfirmRefusal(fresh: MergeLast["verify"]): string {
 //
 // TWO ARMS, and the differences are exactly three:
 //   · `byHuman:true`  — the board's ⏸ confirm. Verify is MARKED stale, never re-run (a re-run would
-//                       hold the request for the suite runtime); owner latitude stands, so a red
-//                       recorded verify does not block; `confirmedByHuman` is true.
+//                       hold the request for the suite runtime); a recorded verify that is not
+//                       ok:true refuses (578e8975, below); `confirmedByHuman` is true.
 //   · `byHuman:false` — the bound MAIN's confirm. Verify is RE-RUN fresh against the candidate and
 //                       ok:true is the only outcome that lands; `confirmedByHuman` is false, and
 //                       WHO it was lives on the actor/`landedBy` rail instead.
@@ -26726,6 +26743,19 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
     reviewed: reviewed ? { mainSha: reviewed.mainSha ?? null, candidateSha: reviewed.candidateSha ?? null,
       diffHash: reviewed.diffHash ?? null } : null,
     current: currentCandidate } };
+  // THE OWNER ARM'S VERIFY BAR (578e8975), asked after the identity gate (a changed candidate is
+  // told to review the NEW one first) and before anything rewrites the lane. The arm used to
+  // land over a RED recorded verify on "owner latitude" — a rule nobody promoted: OWNER.md §4a grants
+  // agents latitude on reversible acts, it never said a human confirm lands a measured red. So both
+  // arms now share one invariant: a recorded gate result lands only as ok:true. Red, skipped, timed
+  // out, never started and server-down all refuse here with the verdict attached, and the way on is
+  // the lane's repair plus a ⏫ re-run, which measures the new tree. A verdict with NO verify field
+  // is untouched: that is a deployment with no gate configured, whose rule is "clean rebase = land"
+  // (MergeLast.verify, the six states), and a stale ok:true keeps the owner's discretion below.
+  const recorded = reviewed?.verify;
+  if (opts.byHuman && recorded && recorded.ok !== true)
+    return { status: 409, body: { status: "resolved", landed: false, branch, verify: recorded,
+      detail: `the recorded verify is not green (${recorded.ok === false ? "red" : "not a measurement"}) — a confirm never lands over it; repair the lane and re-run ⏫ merge, which verifies the new tree` } };
   // Defensive ancestry check for a structurally fresh identity. Normal resolved verdicts
   // are already descendants of their bound mainSha; when main moved, the server may replay
   // onto it and the second identity check accepts only the exact tip that replay produced.
@@ -26773,8 +26803,8 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
   const mainBefore = currentCandidate?.mainSha ?? (await git(repo, "rev-parse", main)).out;
   // THE FRESH RUN, and it exists on the MAIN arm ONLY. The owner's confirm deliberately does NOT
   // re-verify: it MARKS a superseded verify stale, because a re-run would hold the owner's request
-  // for the whole suite runtime and owner latitude stands anyway (OWNER.md §4a — a human confirm
-  // never hard-blocks on ok:false). A Program-MAIN's confirm is the opposite trade in every term:
+  // for the whole suite runtime — and it has already refused any recorded verify that was not
+  // green (above). A Program-MAIN's confirm is the opposite trade in every term:
   // it has no latitude, it is not holding a browser open, and the owner policy of 2026-08-23 grants
   // it the conflict path only "with the authoritative verification re-run FRESH on the resolved
   // candidate". So this arm measures rather than marks, and lands ONLY on ok:true — a red, a
@@ -26795,7 +26825,7 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
   // stale-verify guard, the OWNER arm's answer: `verify.mainSha` bound the verdict to the main it
   // verified against — if main moved past it since (the replay above), the recorded green never saw
   // the landed state. MARK it stale rather than re-running (see the fresh run above for why the two
-  // arms differ). Owner latitude stands — stale never blocks.
+  // arms differ). A stale GREEN never blocks — the owner judges a moved main; a red never got here.
   const rv = reviewed?.verify;
   const verifyProv = opts.byHuman
     ? (rv && rv.mainSha !== mainBefore ? { ...rv, stale: true } : rv)

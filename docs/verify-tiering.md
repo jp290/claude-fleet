@@ -634,7 +634,7 @@ Read first-hand: `git -C …/post-land-audit diff main...HEAD` (5 lane commits, 
   carrying a judgement, because no field existed to carry one**. A red was therefore permanently
   ambiguous between *nobody looked* and *looked, it was noise*, and that ambiguity is what trained
   the reflex of scrolling past red. Now: `POST /api/post-land-audits/adjudicate` (owner-only, keyed
-  on the row's `at`) appends `{verdict: real|flake|stale-test|unknowable, at, by, note≤300}` to a
+  on the row's `at`) appends `{verdict: real|flake|stale-test|unknowable, at, by, note≤2000}` (the cap is `server.ts#MAX_ADJUDICATION_NOTE`, since 0c190377 the comment rail's `MAX_COMMENT_TEXT`) to a
   SEPARATE append-only rail, `audit-adjudications.jsonl`, which every reader JOINS onto the row it
   judges — `GET /api/post-land-audits` and the steward's `ledgers.audits` projection both serve
   `adjudication` on the row. A side rail rather than a field rewritten in place, for three reasons:

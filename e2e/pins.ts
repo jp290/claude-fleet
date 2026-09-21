@@ -21,7 +21,7 @@
 // NOT what this file is for: e2e/dirs-pins.ts, an unrelated neighbour, tests the directory picker's
 // bookmark list. "Pin" there is a UI feature; "pin" here is a fastener between two files.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
@@ -161,6 +161,20 @@ function pin(name: string, ok: boolean, detail = "", soft = false): void {
   rows.push(`${ok ? "PASS" : soft ? "WARN" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
   if (!ok && !soft) failed++;
 }
+// A rule whose EVERY input is the SOURCE checkout's own state (its gitignored CLAUDE.md, rulebook/,
+// .env) measures that checkout, not the tree under test. In the source checkout itself that IS the
+// tree, and the rule fails like any other. Anywhere else — a lane, the land gate's rebased
+// worktree — no byte of the tree can make it red or green, so a red there is TYPED `SRC-FAIL`,
+// printed with its difference, and does not count: a lane must not lose its land to a defect it
+// cannot repair (measured 2026-09-04: three hand edits to the main CLAUDE.md killed every land of
+// this machine at stage 1 for ~20 min). The row prefix deliberately does not start with `FAIL`,
+// which every `^FAIL` log reader counts as the tree's own. Bound after SOURCE_DIR below.
+let sourceFailed = 0;
+function pinSource(name: string, ok: boolean, detail: string, inSource: boolean): void {
+  if (ok || inSource) { pin(name, ok, detail); return; }
+  rows.push(`SRC-FAIL  ${name}  (${detail}) — the source checkout's own state, not this tree's; fix it there`);
+  sourceFailed++;
+}
 // a rule that could not be evaluated at all must say SO, under its own name. A skipped rule that
 // prints PASS is vacuum-green: the same word for "measured, fine" and "never measured".
 function skip(name: string, why: string): void { rows.push(`SKIP  ${name}  (${why})`); }
@@ -230,6 +244,8 @@ const SOURCE_DIR = ((): string | null => {
     return i > 0 ? m![1].slice(0, i) : null;
   } catch { return null; }
 })();
+// the ONE place a source-scoped rule is held hard (pinSource above): the tree under test IS the source
+const IN_SOURCE = SOURCE_DIR === ROOT;
 
 // ================================================================================================
 // 0. Public-repository deployment identity
@@ -1367,6 +1383,50 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       && proofChain.length > 0 && docChain === gateChain && docChain === proofChain,
       `chain doc=[${docChain}] gate=[${gateChain}] localProof=[${proofChain}]; `
       + `suites missing=[${missSuite}] extra=[${extraSuite}]; tsc missing=[${missTsc}] extra=[${extraTsc}]`);
+
+    // THE CHAIN THAT ACTUALLY RUNS. The rule above holds three FILES together, but the server
+    // resolves a repo's gate entry-then-global (server.ts#VERIFY_CMD_REPOS): an entry for this repo
+    // in the deployment's FLEET_VERIFY_CMD_REPOS REPLACES watchdog.sh's VERIFY_CMD, and nothing held
+    // it to anything. Measured 2026-09-21: the live entry for this repo lacked seven tsc files the
+    // documented chain names, so the land gate type-checked less than AGENTS.md tells every lane it
+    // does. The .env is the source checkout's private config, so the rule is SOURCE-SCOPED
+    // (pinSource) and its detail names only step ids and .ts entries, never a path or a host.
+    const RULE_EFFECTIVE = "the effective verify command for this repo (FLEET_VERIFY_CMD_REPOS entry, else VERIFY_CMD) is the AGENTS.md chain";
+    const envText = ((): string | null => {
+      try { return SOURCE_DIR === null ? null : readFileSync(`${SOURCE_DIR}/.env`, "utf8"); } catch { return null; }
+    })();
+    if (envText === null) skip(RULE_EFFECTIVE, SOURCE_DIR === null ? "source checkout not locatable from here"
+      : "no .env in the source checkout — the deployment configures no per-repo entry here");
+    else {
+      const line = envText.split("\n").map((l) => l.trim())
+        .find((l) => /^(?:export\s+)?FLEET_VERIFY_CMD_REPOS\s*=/.test(l));
+      let raw = line?.replace(/^(?:export\s+)?FLEET_VERIFY_CMD_REPOS\s*=\s*/, "") ?? "";
+      if ((raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith('"') && raw.endsWith('"'))) raw = raw.slice(1, -1);
+      const canon = (p: string): string => { try { return realpathSync(p); } catch { return p; } };
+      let map: Record<string, unknown> | null = null;
+      try { map = raw === "" ? {} : JSON.parse(raw) as Record<string, unknown>; } catch { /* named below */ }
+      const entry = map === null || SOURCE_DIR === null ? undefined
+        : Object.entries(map).find(([repo]) => canon(repo) === canon(SOURCE_DIR))?.[1];
+      if (map === null || typeof map !== "object" || Array.isArray(map))
+        pinSource(RULE_EFFECTIVE, false, "FLEET_VERIFY_CMD_REPOS in the source .env is not a JSON object — the server ignores it and every repo falls back to VERIFY_CMD", IN_SOURCE);
+      else {
+        // an entry that is not a non-empty string is dropped by the server, so the global runs
+        const effective = typeof entry === "string" && entry.trim() !== "" ? entry : verifyCmd;
+        const source = effective === verifyCmd ? "VERIFY_CMD (no repo entry)" : "repo entry";
+        const effTsc = /--types bun ([^&]+?)(?:&&|$)/.exec(effective)?.[1]?.trim().split(/\s+/) ?? [];
+        const effSuites = [...effective.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => m[1]);
+        const effChain = stepsOf(effective).join(">");
+        const diffs = [
+          effChain !== docChain ? `chain effective=[${effChain}] doc=[${docChain}]` : "",
+          same(docTsc, effTsc) ? `tsc the doc names but the gate does not check=[${same(docTsc, effTsc)}]` : "",
+          same(effTsc, docTsc) ? `tsc the gate checks beyond the doc=[${same(effTsc, docTsc)}]` : "",
+          same(docSuites, effSuites) ? `suites the doc names but the gate does not run=[${same(docSuites, effSuites)}]` : "",
+          same(effSuites, docSuites) ? `suites the gate runs beyond the doc=[${same(effSuites, docSuites)}]` : "",
+        ].filter(Boolean);
+        pinSource(RULE_EFFECTIVE, diffs.length === 0,
+          `${source}: ${diffs.length ? diffs.join("; ") : `chain [${effChain}], ${effTsc.length} tsc entries`}`, IN_SOURCE);
+      }
+    }
   }
 
   // THE SECOND BOOT PATH, held to the first. macOS starts watchdog.sh through
@@ -5034,9 +5094,18 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     const monolith = ((): string | null => {
       try { return readFileSync(`${SOURCE_DIR}/CLAUDE.md`, "utf8"); } catch { return null; }
     })();
+    // Both inputs live in the source checkout; the one byte of THIS tree the rule reads is the
+    // renderer itself. So the red is the source's own only while this tree renders exactly as the
+    // source does — a lane that changed rulebook.ts owns the mismatch it produced (pinSource).
+    const sameRenderer = ((): boolean => {
+      try { return read("rulebook.ts") === readFileSync(`${SOURCE_DIR}/rulebook.ts`, "utf8"); }
+      catch { return false; }
+    })();
     if (monolith === null) skip(RULE_RENDER, "CLAUDE.md not readable in the source checkout");
-    else pin(RULE_RENDER, rendered === monolith,
-      `rendered ${Buffer.byteLength(rendered)} B vs CLAUDE.md ${Buffer.byteLength(monolith)} B`);
+    else pinSource(RULE_RENDER, rendered === monolith,
+      `rendered ${Buffer.byteLength(rendered)} B vs CLAUDE.md ${Buffer.byteLength(monolith)} B`
+        + (sameRenderer ? "" : "; this tree's rulebook.ts differs from the source's"),
+      IN_SOURCE || !sameRenderer);
 
     if (probe === null) {
       skip(RULE_PLACED, "the meaning probe is not in this tree");
@@ -10289,5 +10358,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 }
 
 console.log(rows.join("\n"));
+if (sourceFailed) console.log(`\n${sourceFailed} SOURCE-CHECKOUT FINDING(S) — not this tree's, not counted (rows SRC-FAIL above)`);
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

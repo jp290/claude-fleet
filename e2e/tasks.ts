@@ -8452,6 +8452,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // with nothing saying so. The row below opens with the filing headers, so its card is born on
     // the format path (parseFormattedCard, no model call) carrying exactly the ROLLE: triple — and
     // the sweep's adoption (server.ts#adoptSpawnFromCard) must leave Task.spawn equal to it.
+    // FLAECHE names fleet-e2e.ts because the card is validated against the row's OWN repo —
+    // testrepo, where that is the tracked fixture file (the same name the (fmt) row below uses);
+    // a path from this checkout's tree would be refused as untracked and the card invalid.
     // COUNTER-PROBE: removing the adoption call at the sweep's `t.card = card` leaves this row
     // spawn-less (absence, not all-null) and turns this check red. The probe reads the QUEUE ROW
     // only — never released, so no lane spawns and no real spawn is awaited.
@@ -8459,7 +8462,7 @@ export async function run(ctx: Ctx): Promise<void> {
       "[FLEET-BETRIEB · ROLLE-UEBERNAHME · 2026-09-20]",
       "ROLLE: pi-zai/glm-5.3-flash/low",
       "GROESSE: klein",
-      "FLAECHE: server.ts, task-metadata.ts",
+      "FLAECHE: fleet-e2e.ts",
       "VERIFY: bun e2e/pins.ts",
       "DONE: die Zeile traegt den Spawn aus ihrer eigenen Rolle",
       "BAU: die Karte liest die Rolle und der Spawn folgt.",

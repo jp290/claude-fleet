@@ -99,6 +99,15 @@ liefert eine FORM, geprueft wird gegen eine Tatsache.
 - **Ein Jev-Urteil ist ein Bericht, nie ein Gate.** `null` heisst unbekannt und ist nie Erlaubnis —
   dieselbe Richtung wie jede Klausel in `lane-signals.ts`. Wo ein deterministischer Fakt existiert,
   fragt niemand ein Modell.
+- **„[Zitat entfernt]“ ist zu undifferenziert** (Owner 2026-09-21, woertlich): „[Zitat entfernt]“
+  
+  
+  werden können". Die Trennlinie laeuft also nicht zwischen Bericht und Entscheidung, sondern so: Jev
+  waehlt unter Optionen, die CODE als legal gebaut hat, und macht aus Live-Zustand getypte Daten; was
+  mit den Daten geschieht, und jede harte Regel (Land, Deploy, Deckel, Master-Stop), bleibt Skript.
+  Vorbild ist der Spiel-Lauf: Jev faehrt, der Planer ruft selten ein Ziel hinein, das Bett-Timing
+  bleibt Code (`docs/messungen/2026-09-21-video-jev-theo.md` §3). Der Satz darueber gilt unveraendert
+  — ein Gate wird Jev dadurch nicht.
 - **Fehler faellt auf `null`:** ein hartes Timeout, keine Retries im heissen Pfad, die ganze Antwort
   validieren, bevor ein Urteil gelesen wird (Antwort-IDs = Frage-IDs). Ein zu grosser State fuehrt zur
   Enthaltung, nicht zum Abschneiden.

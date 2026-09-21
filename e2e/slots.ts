@@ -11,6 +11,7 @@ import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
 import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
+import { composerResidue } from "../composer";
 
 export async function run(): Promise<void> {
   // --- slots ---
@@ -754,6 +755,37 @@ export async function run(): Promise<void> {
       agent3 === "alive" && typed3 && ttlRes.status === 202 && ttlReceipt?.delivery === "dropped"
         && ttlReceipt.reason?.startsWith("expired") === true && !turnsOf().includes("parked-probe-expired"),
       JSON.stringify({ agent3, typed3, status: ttlRes.status, ttlReceipt }));
+
+    // --- THE FALSE RECEIPT. An empty composer after Enter is ALSO what a pane that never received
+    // the paste looks like, and until 2026-09-21 sendText read the second as the first: the
+    // Orchestrator succession of 2026-09-20 23:45 is on the ledger as `send slot=6 succession
+    // 3238B observed` while the successor's session transcript holds no such turn and the pane
+    // scrollback never echoed one byte of it — the predecessor was retired onto a session that had
+    // never been told what it was for. `blackout` is that frame sequence, mechanically: no composer
+    // on the frame while the paste arrives (so the arrival read answers `differs`, never `partial`),
+    // the payload swallowed, and an ordinary EMPTY composer painted by the Enter itself. The turns
+    // ledger is the independent witness that no turn was taken.
+    // BREAKS IF: `observed` is returned for an empty post-Enter composer without the arrival read
+    // proving the payload was ever on screen.
+    const blackoutBefore = turnsOf().length;
+    writeFileSync(composerMode, "blackout\n");
+    const blind = await post("/send", { slot: 3, text: "blackout-acceptance-probe", submit: true });
+    const blindBody = await blind.json() as { receipt?: { acceptance?: string } };
+    const blindTurns = turnsOf().slice(blackoutBefore);
+    // THE DISCRIMINATOR, without which this check is satisfiable the old way too: `unobservable` is
+    // ALSO what the pre-2026-09-21 code returned when no composer was on the frame after the Enter
+    // (`after === null`). So the post-Enter frame must be asked directly — composer PRESENT and
+    // EMPTY is exactly the read that used to be booked as `observed`, and it is the only state in
+    // which this check can only be passed by the arrival-gated verdict.
+    const blindFrame = (await tmuxOut("capture-pane", "-p", "-e", "-t", "s3")).out;
+    const blindResidue = composerResidue({ kind: "rules" }, blindFrame);
+    writeFileSync(composerMode, "normal\n");
+    check("acceptance: a pane that painted no composer while the paste arrived is `unobservable` after Enter, never `observed` — the empty composer is not the witness",
+      blind.status === 200 && blindBody.receipt?.acceptance === "unobservable"
+        && blindResidue === "" && !blindTurns.includes("blackout-acceptance-probe"),
+      JSON.stringify({ status: blind.status, acceptance: blindBody.receipt?.acceptance,
+        composerAfterEnter: blindResidue === null ? "absent" : `present, ${blindResidue.length} chars`,
+        submittedTurn: blindTurns.includes("blackout-acceptance-probe") }));
   }
   await post("/api/slots/3/kill", {});
   await post("/api/slots/1/open", { cwd: "~/claude-fleet" });

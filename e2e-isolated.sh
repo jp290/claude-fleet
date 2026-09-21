@@ -218,6 +218,14 @@ static char hold[16384];
 static size_t hold_len = 0;
 static long long release_at = 0;
 static char display_mode[32] = "normal";
+/* mode "blackout": the BOOTING pane. It paints nothing at all — no rules, so no composer for the
+   arrival read to find — swallows whatever is pasted into it, and only the Enter that follows
+   turns it into an ordinary EMPTY composer without ever submitting a turn. That is the shape of
+   the lost Orchestrator succession of 2026-09-20 23:45 (claude 2.1.278 paints nothing for the
+   first 8.5-25.9 s of a pane), and it is the one frame sequence in which an empty post-Enter
+   composer is NOT evidence of a turn. Sticky once the Enter has been seen, so the mode file can
+   stay put while the pane goes back to behaving normally. */
+static int blackout_done = 0;
 static int zai_footer = 0;
 static char turn_id[25] = "none";
 static const char *mode_path(void) { return getenv("FLEET_E2E_COMPOSER_MODE"); }
@@ -258,6 +266,12 @@ static void save_state(const char *phase) {
 }
 static void composer(void) {
   int j;
+  if (!strcmp(display_mode, "blackout") && !blackout_done) {
+    /* normal screen, then wiped: fewer than two rules on the frame is exactly "no composer here" */
+    fputs("\033[?1049l\033[2J\033[H", stdout);
+    fflush(stdout);
+    return;
+  }
   if (!strcmp(display_mode, "unobservable")) {
     fputs("\033[?1049h\033[2J\033[HDo you trust the files in this folder?\n  1. Yes\n  2. No\n", stdout);
     /* unobservable is a COMPOSER the probe cannot read, not a boot screen: pi-zai's ready marker stays */
@@ -357,6 +371,10 @@ int main(int argc, char **argv) {
         if (len + strlen(owner) < sizeof buf) { memcpy(buf + len, owner, strlen(owner)); len += strlen(owner); }
       } else if (!strcmp(display_mode, "edit") && len > 1) {
         buf[1] = buf[1] == 'f' ? 'F' : 'X';
+      } else if (!strcmp(display_mode, "blackout") && !blackout_done) {
+        /* the paste is GONE and no turn is recorded — the turns ledger is what proves that */
+        blackout_done = 1;
+        len = 0;
       } else if (!strcmp(display_mode, "normal") || !strcmp(display_mode, "prefix")) {
         /* recorded BEFORE the buffer is cleared: a prefix submitted while the tail is still held is
            exactly what this file has to be able to show */

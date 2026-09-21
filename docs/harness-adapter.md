@@ -519,9 +519,16 @@ Netzwerkkosten werden nicht als null behauptet.
     deklarieren, wo seine TUI den Composer malt (`{kind:"glyph", re}` = letzte Zeile mit diesem Glyph;
     `{kind:"rules"}` = Region zwischen den letzten zwei Vollbreiten-Linien). `sendText` liest den
     Frame mit `capture-pane -e` VOR dem Paste (Residuum ohne dim-Placeholder ⇒ Owner-Entwurf ⇒ 409
-    `delivery:"refused"`, nichts getippt) und NACH dem Enter (leer + Agent alive ⇒ `observed`; noch
-    Text ⇒ `SendNotAccepted` → 409 `acceptance:"not-observed"`, kein Replay, kein zweites Enter; kein
-    Composer im Fenster ⇒ `unobservable`). Ohne Deklaration: `not-applicable`. Gemessen an den echten
+    `delivery:"refused"`, nichts getippt) und NACH dem Enter (leer **und** die Ankunftslesung vor dem
+    Enter hat die Nutzlast VOLLSTÄNDIG zurückgelesen (`composerArrival` = `complete`) und Agent alive
+    ⇒ `observed`; noch Text ⇒ `SendNotAccepted` → 409 `acceptance:"not-observed"`, kein Replay, kein
+    zweites Enter; kein Composer im Fenster ⇒ `unobservable`). **Beide Hälften sind seit 2026-09-21
+    nötig, und das ist eine Korrektur, kein Zusatz:** ein leerer Composer nach dem Enter ist AUCH das
+    Bild einer Pane, die den Paste nie bekommen hat — genau so buchte das Ledger die verlorene
+    Orchestrator-Nachfolge vom 2026-09-20 23:45 als `send slot=6 succession 3238B observed`, während
+    das Session-Transcript des Nachfolgers keinen solchen Turn kennt. Wer die Nutzlast nicht
+    zurücklesen kann, bekommt `unobservable` — dasselbe ehrliche Wort, das ein Stand-in ohne Composer
+    schon immer bekam. Ohne Deklaration: `not-applicable`. Gemessen an den echten
     Binaries: claude 2.1.240 (`❯`, Placeholder `\e[2m`), codex-cli 0.147.0 (`›` — das Transcript-Echo
     nutzt DENSELBEN Glyph, darum „letzte"), pi 0.84.0 (rules). Der Default-Adapter deklariert `❯` nur
     bei echtem `IS_CLAUDE`; die Stand-ins der Suiten antworten `unobservable`. `FleetEvent` wird erst
@@ -530,6 +537,26 @@ Netzwerkkosten werden nicht als null behauptet.
     `./acceptance-probe.sh` (kein Gate, kostet Modell-Turns). Befund, der nicht gefixt ist: codex
     zeigt beim Start einen **Update-Prompt** (`✨ Update available … Press enter to continue`), den
     `readiness.blocks` nicht kennt — ein dritter Paste-fressender Screen.
+  - **`readiness.accept` beim claude-Adapter — der Founding-Paste wartet auf den Composer
+    (2026-09-21).** `paneReadiness` antwortet `null`, wenn ein Adapter Blocks ohne Ready-Marker
+    deklariert, und `waitForFoundingReadiness` liest dieses `null` in seiner ERSTEN Zeile als
+    „ready". Damit war der Founding-Gate für claude jahrelang ein No-op: es blieb allein
+    `FOUNDING_BOOT_GRACE_MS` (4 s). GEMESSEN 2026-09-21 an claude 2.1.278 in Wegwerf-Sockets, mit
+    dem Session-Transcript als unabhängigem Zeugen: eine frische Pane malt **8,5–25,9 s lang gar
+    nichts** (lastabhängig), und ein Paste+Enter in dieses Schwarz ist in beiden beobachtbaren
+    Formen verloren — die Bytes erreichen die TUI nie, oder sie tauchen viel später im Composer auf,
+    während das Enter schon verbraucht ist; ein Transcript entsteht in keinem Fall. Derselbe
+    Paste+Enter in dem Moment, in dem `❯` auf dem Frame steht, nimmt den Turn jedes Mal
+    (t_composer 9152 ms → Transcript-Treffer). Darum deklariert der Adapter jetzt
+    `accept: IS_CLAUDE ? CLAUDE_COMPOSER_DRAWN : null` — **eine** Konstante für zwei Leser
+    (`composer.re` zeilenweise, `readiness.accept` auf den ganzen Frame). `accept` hängt an
+    `IS_CLAUDE`, `blocks` nicht, und die Asymmetrie ist Absicht: ein Block verweigert nur, ein
+    Ready-Marker, der nie erscheint, würde JEDEN Founding-Paste bis zum Budget-Ende halten — ein
+    Stand-in (`FLEET_CMD=true`) malt keinen Composer und behält darum `accept: null`. Die
+    Verweigerung ist jetzt laut und erholbar (`successor pane never showed its ready marker within
+    Ns` ⇒ Cleanup + 500, die Vorgängerin bleibt stehen) statt still. Budget auf diesem Host:
+    `FLEET_READY_WAIT_MS='45000'` in `.env`, weil 4 s + der Code-Default 20 s innerhalb der
+    gemessenen Streuung lägen. Belege: `docs/messungen/2026-09-21-founding-paste-blackout.md`.
   - **ACP-26 — Rollback nur für Fleets eigenen Event-Payload (2026-08-24).** Zwei echte
     `post-land-audit`-Zeilen belegten denselben Schaden gegen denselben Controller-Okkupanten:
     `f426d94b8bb603d354c6e570` (`delivery:"pane"`, idle 60 s, attempts 1) und

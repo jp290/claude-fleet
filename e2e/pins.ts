@@ -3392,6 +3392,48 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   //     the trust prelude) is not a red check but a lane that wedges on codex's own trust prompt
   //     and eats its brief. Scoped to this adapter's own object literal, so the string appearing
   //     in a comment elsewhere cannot satisfy or break it.
+  // THE CLAUDE ADAPTER'S READY MARKER, and why it is a RULE over the source rather than a runtime
+  // check: on a suite fleet FLEET_CMD is `true`, IS_CLAUDE is false, and the marker is not even
+  // constructed — a regression that removed it would be invisible here at runtime, exactly like the
+  // codex coupling above. It WAS missing, as the original design: `accept: null` makes paneReadiness
+  // answer `null` for an adapter that declares blocks without a marker, waitForFoundingReadiness
+  // reads that `null` as "ready" on its first line, and so the 3238-byte founding brief of the
+  // 2026-09-20 23:45 Orchestrator succession was pasted into a pane that had drawn nothing yet
+  // (claude 2.1.278 paints its first frame 8.5–25.9 s after the pane opens, measured 2026-09-21 in
+  // throwaway sockets with the session transcript as the witness). The pane ate it, the post-Enter
+  // composer read empty, the ledger booked `observed`, and the predecessor was retired onto a
+  // successor that had never been told what it was for. ONE constant feeds both readers, so a
+  // ready marker names the composer glyph among its alternatives, so a glyph that moves is one edit,
+  // and the two other alternatives are what let a stand-in declare itself ready without pretending
+  // to own a composer (the claude-gate wake fixture) — see CLAUDE_READY_FRAME for each measurement.
+  const clStart = server.indexOf("const CLAUDE_HARNESS: Harness = {");
+  const clBody = clStart < 0 ? "" : server.slice(clStart, server.indexOf("\n};\n", clStart));
+  pin("the claude adapter's literal is bounded and non-empty (an unfound one would make the rule below vacuous)",
+    clStart > 0 && clBody.length > 500 && clBody.length < 14_000, `${clBody.length} bytes`);
+  pin("claude declares a POSITIVE ready marker for the real binary, beside the composer glyph it also reads",
+    /readiness: \{ accept: IS_CLAUDE \? CLAUDE_READY_FRAME : null, blocks: \[CLAUDE_TRUST_DIALOG\] \}/.test(clBody)
+      && /composer: \{ kind: "glyph" as const, re: CLAUDE_COMPOSER_GLYPH \}/.test(clBody)
+      && /\nconst CLAUDE_COMPOSER_GLYPH = \/\^❯\/;/.test(server)
+      && /\nconst CLAUDE_READY_FRAME = \/\^❯\|\^ \{2\}⏵⏵ \|/.test(server),
+    clBody.match(/readiness: \{[^\n]*/)?.[0] ?? "no readiness field");
+  // THE SCOPED EXCEPTION, pinned so it cannot spread. `marker: false` waives the ready-marker half
+  // of the founding readiness wait, and exactly ONE rail may hold that waiver: wakeSlot, for the
+  // named and still-unexplained gate failure recorded at waitForFoundingReadiness. A second call
+  // site would be a rail quietly opting out of the thing that closed the 2026-09-20 hole, and on a
+  // suite fleet (FLEET_CMD=true, no marker constructed) that would be invisible at runtime.
+  pin("exactly one rail waives the founding READY MARKER, and it is the wake rail",
+    (server.match(/waitForFoundingReadiness\([^)]*marker: false[^)]*\)/g) ?? []).length === 1
+      && /const ready = await waitForFoundingReadiness\(s, current, \{ marker: false \}\);/.test(server)
+      && /if \(rd\.state === "pending" && opts\.marker === false\) return \{ ok: true \};/.test(server),
+    `${(server.match(/marker: false/g) ?? []).length} waivers`);
+  // THE OTHER HALF of the same incident, and it is not adapter-specific: an empty composer after
+  // Enter is also what a pane that never received the paste looks like. `complete` is the only
+  // arrival answer that proves the payload was on screen, so it is the only one that may become
+  // `observed`; e2e/slots.ts drives the frame sequence live against the stand-in's `blackout` mode.
+  pin("`observed` needs the payload read back COMPLETE — an empty post-Enter composer alone is `unobservable`",
+    /return \{ acceptance: arrival === "complete" \? "observed" as const : "unobservable" as const \};/.test(server),
+    server.match(/return \{ acceptance: arrival[^\n]*/)?.[0] ?? "no arrival-gated acceptance");
+
   const xStart = server.indexOf("const CODEX_HARNESS: Harness = {");
   const xBody = xStart < 0 ? "" : server.slice(xStart, server.indexOf("\n};\n", xStart));
   pin("the codex adapter's literal is bounded and non-empty (an unfound one would make the rules below vacuous)",

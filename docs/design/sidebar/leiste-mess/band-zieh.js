@@ -4,7 +4,11 @@
 // REAL succession chain of two slots of a running fleet, and writes it OUTSIDE the checkout —
 // transcripts are private working material and never enter the tree.
 //
-//   bun band-zieh.js <fleet.json> <out.html> <lane-slot> <main-slot>
+//   bun band-zieh.js <fleet.json> <out.html> <lane-slot> <main-slot> [sessions.json]
+//
+// sessions.json is optional: the body of GET /api/sessions (owner token). With it, ctx and the
+// state come from the live poll itself; without it (a lane's self-token gets 401 there) they are
+// computed the way the server computes them — see "THE ROW'S READINGS" below.
 //
 // Where each past session comes from — the same sources a product route would have (the note:
 // docs/messungen/2026-09-21-band-transkript-quelle.md):
@@ -12,10 +16,12 @@
 //    `sessionId` + `cwd`, and ~/.claude/projects/<slug(cwd)>/<sessionId>.jsonl is its transcript.
 //  · a MAIN's past occupants are its lineage records' `from` sides — slot + openedAt, NO sessionId.
 //    Nothing ties them to a transcript, and the mockup says so instead of guessing by time.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { execFileSync } from "node:child_process";
+import { contextWindowFor, FLEET_DEFAULT_MODEL } from "../../../../src/protocol.ts";
 
-const [stateFile, outFile, laneArg, mainArg] = process.argv.slice(2);
+const [stateFile, outFile, laneArg, mainArg, sessionsFile] = process.argv.slice(2);
 if (!stateFile || !outFile) { console.error("usage: bun band-zieh.js <fleet.json> <out.html> <lane-slot> <main-slot>"); process.exit(2); }
 const st = JSON.parse(readFileSync(stateFile, "utf8"));
 const reports = st.fleetReports ?? [];
@@ -27,6 +33,61 @@ const TURNS_MAX = 80, TURN_CHARS = 600;
 const scrub = (s) => s
   .replace(/(token=|FLEET_[A-Z_]*TOKEN[=: ]+|x-fleet-self-token: |Bearer )\S+/g, "$1…")
   .replace(/\b[0-9a-f]{32,}\b/g, "…");
+
+// THE ROW'S READINGS (owner round 8: "die beiden aktivitätsleuchten und auch das Kontext level"). The
+// same three facts src/client.ts#slotRow draws, from the same sources:
+//  · ctx — server.ts#contextFill: the LAST usage record of the pinned claude transcript, input plus
+//    both cache tiers, over protocol.ts#contextWindowFor(model, default FLEET_DEFAULT_MODEL). A
+//    harness Fleet reads differently (Codex: its rollout) is not read here and says so; nothing
+//    becomes 0.
+//  · state — src/client.ts#slotState: work under RECENT_MS since the last output, asleep from
+//    SLEEP_MS, otherwise resting; broken when stalled / no agent. Without the live poll the last
+//    output is the transcript's mtime, a snapshot at build time.
+//  · a lane's lifecycle — the lcdot on main: editing (uncommitted) / ready (commits to land) / clean,
+//    read with git in the worktree.
+// A PAST session has no live state: it gets its ctx at the handover (its own transcript's last usage
+// record) and nothing else.
+const RECENT_MS = 5000, SLEEP_MS = 30 * 60_000, CTX_TAIL = 256 * 1024, NOW = Date.now();
+const polled = sessionsFile ? new Map((JSON.parse(readFileSync(sessionsFile, "utf8")).slots ?? []).map((x) => [x.id, x])) : null;
+const pollNow = sessionsFile ? JSON.parse(readFileSync(sessionsFile, "utf8")).now ?? NOW : NOW;
+const transcriptOf = (cwd, sid) => `${homedir()}/.claude/projects/${slug(cwd)}/${sid}.jsonl`;
+function lastUsage(file) {
+  let text;
+  try { const size = statSync(file).size, from = Math.max(0, size - CTX_TAIL), fd = openSync(file, "r"), buf = Buffer.alloc(size - from);
+    const n = readSync(fd, buf, 0, buf.length, from); closeSync(fd); text = buf.toString("utf8", 0, n); } catch { return null; }
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"usage"')) continue;
+    let u; try { u = JSON.parse(lines[i]).message?.usage; } catch { continue; }
+    if (typeof u !== "object" || u === null) continue;
+    const num = (k) => (typeof u[k] === "number" && u[k] >= 0 ? u[k] : 0);
+    return num("input_tokens") + num("cache_creation_input_tokens") + num("cache_read_input_tokens");
+  }
+  return null;
+}
+const isClaude = (s) => !s.harness || s.harness === "claude";
+const windowOf = (s) => (isClaude(s) ? contextWindowFor(s.model ?? FLEET_DEFAULT_MODEL) : null);
+const fill = (used, win) => (used != null && win ? { usedTokens: used, windowTokens: win, pct: Math.round((used / win) * 1000) / 10 } : null);
+function liveFacts(id) {
+  const s = st.slots[String(id)], p = polled?.get(id);
+  let git = null;
+  if (s.worktree) try {
+    const dirty = execFileSync("git", ["-C", s.cwd, "status", "--porcelain"], { encoding: "utf8" }).split("\n").filter(Boolean).length;
+    const ahead = Number(execFileSync("git", ["-C", s.cwd, "rev-list", "--count", "main..HEAD"], { encoding: "utf8" }).trim());
+    git = { dirty, ahead, life: dirty > 0 ? "editing" : ahead > 0 ? "ready" : "clean" };
+  } catch { git = null; }
+  if (p) {
+    const age = pollNow - p.lastOutput, bad = p.stalled || p.agent === "no-agent" || p.agent === "no-pane";
+    return { ctx: p.ctx ?? null, why: p.ctx ? null : "der Server kann diesen Slot nicht messen", source: "live-poll",
+      state: bad ? "bad" : age < RECENT_MS ? "work" : age >= SLEEP_MS ? "sleep" : "rest", age, git };
+  }
+  const file = isClaude(s) && s.sessionId ? transcriptOf(s.cwd, s.sessionId) : null;
+  let mtime = null; try { mtime = file ? statSync(file).mtimeMs : null; } catch { mtime = null; }
+  const ctx = fill(mtime != null ? lastUsage(file) : null, windowOf(s)), age = mtime == null ? null : NOW - mtime;
+  return { ctx, source: "transcript", git, age,
+    why: ctx ? null : !isClaude(s) ? `Harness ${s.harness}: den liest der Server selbst (Rollout), dieser Entwurf nicht` : "kein usage-Eintrag im Transkript",
+    state: age == null ? null : age < RECENT_MS ? "work" : age >= SLEEP_MS ? "sleep" : "rest" };
+}
 
 function turnsOf(file) {
   const out = [];
@@ -63,10 +124,11 @@ function laneChain(id) {
     const file = r.worker.sessionId ? `${homedir()}/.claude/projects/${slug(r.worker.cwd)}/${r.worker.sessionId}.jsonl` : null;
     const has = !!file && existsSync(file);
     return { startedAt: r.worker.openedAt, handedAt: r.reportedAt, report: r.id, sessionId: r.worker.sessionId,
+      ctxEnd: has ? fill(lastUsage(file), windowOf(s)) : null,
       handoff: scrub(r.text), transcript: has ? turnsOf(file) : null,
       why: has ? null : r.worker.sessionId ? "die Transkript-Datei ist nicht mehr auf der Platte" : "der Report nennt keine Session" };
   });
-  return { id, label: s.label ?? "", kind: "lane", branch: s.worktree.branch, openedAt: s.openedAt, past };
+  return { id, label: s.label ?? "", kind: "lane", branch: s.worktree.branch, openedAt: s.openedAt, past, live: liveFacts(id) };
 }
 
 function mainChain(id) {
@@ -76,11 +138,11 @@ function mainChain(id) {
     .map((h) => ({ startedAt: h.from.openedAt, handedAt: h.at, report: null, sessionId: null, fromSlot: h.from.slot,
       handoff: scrub(h.intent ?? (h.pointer ? `pointer: ${h.pointer}` : "")), transcript: null,
       why: "ein Linien-Record nennt nur Slot und Startzeit — welches Gespräch diese Session war, steht nirgends" }));
-  return { id, label: s.label ?? "", kind: "main", openedAt: s.openedAt, past };
+  return { id, label: s.label ?? "", kind: "main", openedAt: s.openedAt, past, live: liveFacts(id) };
 }
 
 const chains = [laneChain(Number(laneArg ?? 4)), mainChain(Number(mainArg ?? 1))].filter(Boolean);
-const others = Object.entries(st.slots ?? {}).filter(([, s]) => s?.cwd).map(([k, s]) => ({ id: Number(k), label: s.label ?? "" }))
+const others = Object.entries(st.slots ?? {}).filter(([, s]) => s?.cwd).map(([k, s]) => ({ id: Number(k), label: s.label ?? "", live: liveFacts(Number(k)) }))
   .filter((o) => !chains.some((c) => c.id === o.id));
 const data = JSON.stringify({ chains, others, built: Date.now() }).replace(/</g, "\\u003c");
 const hintFile = outFile.replace(/\.html$/, "") + "-andeutung.html";
@@ -289,12 +351,24 @@ console.log(`wrote ${outFile} + ${hintName}: ${chains.map((c) => `slot ${c.id} (
 // more beyond it — 14 sessions never overflow the row. Number: position/total in the corner.
 // DEPTH is how far back a row reaches, read in ONE place (reach); the later setting "only the last
 // 3 or 5 sessions" is a one-liner there, and the indicator then counts the capped depth.
+// Round 8 chose the dots (the number is gone).
+//
+// Round 8 (owner: "die kennwerte wie z.b die beiden aktivitätsleuchten und auch das Kontext level,
+// klar&sauber in die dargestellten slots zu integrieren"). The two lights are main's: the state
+// glyph (four shapes: work disc, rest ring, sleep bar, broken cross) and, on a lane, the lifecycle
+// dot (editing filled amber, ready green ring, clean none). The ctx level sits between the label
+// and them. Two forms, #reihe / #ring:
+//   Reihe — "24%" as mono text, then the lights; "?" when it cannot be measured, never 0.
+//   Ring  — ctx as a thin arc AROUND the state glyph, so the two share one place; unmeasurable =
+//           a dashed ring. The number is in the tooltip.
+// Both sit on the vertical centre, the dots on the bottom edge: they cannot meet. A past session has
+// no lamps — only its ctx at the handover, faint, and only where its transcript measured it.
 function hintPage(data) {
   return `<!doctype html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Band ziehen · Kante</title>
 <style>
 :root { --ink:#e7e7ea; --prose:#d4d4d8; --mute:#8b8b94; --faint:#5c5c66; --surface:#111113; --raised:#17171a;
-  --hover:#141416; --edge:#26262b; --edge-soft:#1b1b1f; --void:#000; --wait:#e0a458;
+  --hover:#141416; --edge:#26262b; --edge-soft:#1b1b1f; --void:#000; --wait:#e0a458; --live:#3fb950; --danger:#f85149;
   --sans: ui-sans-serif,-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif;
   --mono: ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
 * { box-sizing: border-box; }
@@ -323,14 +397,34 @@ body { margin:0; background:var(--void); color:var(--prose); font:13px/1.45 var(
 .depth.dots i { width:4px; height:4px; border-radius:2px; background:var(--edge); transition:width .2s, background .2s; }
 .depth.dots i.on { width:10px; background:var(--mute); }
 .depth.dots i.more { width:2px; height:2px; }
-.depth.num { right:10px; top:3px; font:10px/1 var(--mono); color:var(--faint); }
+.kv { display:flex; align-items:center; gap:6px; flex:none; }
+.ctx { font:11px/1 var(--mono); color:var(--mute); font-variant-numeric:tabular-nums; }
+.ctx.unknown { color:var(--faint); }
+.cell.past .ctx { color:var(--faint); }
+.lc { width:6px; height:6px; border-radius:50%; flex:none; }
+.lc.editing { background:var(--wait); }
+.lc.ready { box-shadow:inset 0 0 0 1.5px var(--live); }
+.st { width:8px; height:8px; border-radius:50%; flex:none; background:var(--live); }
+.st.rest { background:none; box-shadow:inset 0 0 0 1.5px var(--mute); }
+.st.sleep { border-radius:0; background:linear-gradient(var(--faint), var(--faint)) center / 8px 2px no-repeat; }
+.st.bad { border-radius:1px; background:var(--danger); clip-path:polygon(20% 0,50% 30%,80% 0,100% 20%,70% 50%,100% 80%,80% 100%,50% 70%,20% 100%,0 80%,30% 50%,0 20%); }
+.st.unknown { background:none; box-shadow:none; outline:1px dashed var(--faint); outline-offset:-1px; }
+.ring { position:relative; width:16px; height:16px; flex:none; display:grid; place-items:center; border-radius:50%;
+  background:conic-gradient(var(--mute) calc(var(--p) * 1%), var(--edge) 0);
+  -webkit-mask:radial-gradient(circle, transparent 5.5px, #000 6px); mask:radial-gradient(circle, transparent 5.5px, #000 6px); }
+.ring.unknown { background:none; -webkit-mask:none; mask:none; box-shadow:none; outline:1px dashed var(--faint); outline-offset:-1px; }
+.cell.past .ring { background:conic-gradient(var(--faint) calc(var(--p) * 1%), var(--edge-soft) 0); }
+.ringwrap { position:relative; width:16px; height:16px; flex:none; display:grid; place-items:center; }
+.ringwrap > .ring { position:absolute; inset:0; }
+.ringwrap > .st { width:6px; height:6px; }
+.ringwrap > .st.sleep { background-size:6px 2px; }
 .cell { flex:none; display:flex; align-items:center; gap:6px; min-height:40px; padding:6px 10px 6px 30px; }
-.cell.past { padding-right:26px; background:var(--surface); }
+.cell.past { padding-right:12px; background:var(--surface); }
 .n { font:12px/1.45 var(--mono); padding:1px 6px; border-radius:5px; background:var(--raised); box-shadow:inset 0 0 0 1px var(--edge); color:var(--mute); flex:none; }
 .lbl { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .cell.past .lbl { color:var(--mute); }
 .when { font:11px var(--mono); color:var(--faint); flex:none; }
-.act { width:8px; height:8px; border-radius:50%; flex:none; box-shadow:inset 0 0 0 1.5px var(--mute); }
+
 /* the hint: one 2px sliver — left while the present shows (a past lies under it), right on a past
    session (the present lies that way) */
 .row.pull::before { content:""; position:absolute; left:3px; top:9px; bottom:9px; width:2px; border-radius:1px; background:var(--edge); transition:background .15s; z-index:1; pointer-events:none; }
@@ -356,7 +450,7 @@ button[disabled] { color:var(--faint); }
 @media (prefers-reduced-motion: reduce) { .track.snap, .track.snap.mouse { transition:none; } }
 </style></head><body>
 <nav class="side A"><h1><b>Band ziehen</b> · Strich am Rand</h1>
-<div class="feel" role="group" aria-label="Tiefen-Anzeige"><button data-ind="punkte">Punkte</button><button data-ind="zahl">Zahl</button></div>
+<div class="feel" role="group" aria-label="Kennwerte"><button data-kv="reihe">Reihe</button><button data-kv="ring">Ring</button></div>
 <div class="feelvals"></div><div class="rows"></div>
 <div class="how">Zeile nach rechts ziehen = frühere Session · Maus: kurz anziehen, sie rastet selbst ein · Finger oder waagrecht wischen · ← → mit Fokus · Esc = laufende</div></nav>
 <main id="main"><div id="head"></div><div id="body"></div></main>
@@ -372,18 +466,55 @@ const MAX_DOTS = 7, STEPPED_MS = 1200;
 const still = matchMedia("(prefers-reduced-motion: reduce)");
 document.documentElement.style.setProperty("--snap-ms", FEEL.ms + "ms");
 document.documentElement.style.setProperty("--snap-ease", FEEL.ease);
-let IND = "punkte";
-const indicators = [];
-function setInd(name) {
-  IND = name === "zahl" ? "zahl" : "punkte";
-  document.querySelectorAll(".feel button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.ind === IND)));
-  document.querySelector(".feelvals").textContent = "weich · " + FEEL.T + " px · " + FEEL.ms + " ms · Tiefe " + (DEPTH === Infinity ? "alle" : DEPTH);
-  if (location.hash !== "#" + IND) history.replaceState(null, "", "#" + IND);
-  indicators.forEach((f) => f());
+let KV = "reihe";
+const readings = [];
+function setKv(name) {
+  KV = name === "ring" ? "ring" : "reihe";
+  document.querySelectorAll(".feel button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.kv === KV)));
+  document.querySelector(".feelvals").textContent = "Stand " + short(D.built) + " · Tiefe " + (DEPTH === Infinity ? "alle" : DEPTH);
+  if (location.hash !== "#" + KV) history.replaceState(null, "", "#" + KV);
+  readings.forEach((f) => f());
 }
-document.querySelectorAll(".feel button").forEach((b) => b.addEventListener("click", () => setInd(b.dataset.ind)));
+document.querySelectorAll(".feel button").forEach((b) => b.addEventListener("click", () => setKv(b.dataset.kv)));
+const STATE_WORD = { work: "arbeitet", rest: "ruht", sleep: "schläft — seit 30 min oder mehr still", bad: "kaputt — hängt, oder kein Agent in der Pane" };
+const LIFE_WORD = { editing: "in Arbeit — nicht committet", ready: "bereit — Commits warten aufs Landen", clean: "sauber" };
+const ago = (ms) => { const m = Math.round(ms / 60000); return m < 1 ? "gerade eben" : m < 60 ? "vor " + m + " min" : m < 1440 ? "vor " + Math.round(m / 60) + " h" : "vor " + Math.round(m / 1440) + " d"; };
+const ctxTitle = (c, why, end) => c ? (end ? "Kontext beim Übergeben — " : "Kontext — ") + c.usedTokens.toLocaleString() + " von " + c.windowTokens.toLocaleString() + " Tokens (" + c.pct + " %)"
+  : "Kontext unbekannt — " + (why || "nicht gemessen") + ". Kein leerer Kontext.";
+// the readings of ONE cell, drawn fresh for the current form; a past cell gets only its end ctx
+function kvOf(live, past) {
+  const box = el("span", "kv");
+  if (past) {
+    if (!past.ctxEnd) return box;
+    if (KV === "ring") { const r = el("span", "ring"); r.style.setProperty("--p", String(past.ctxEnd.pct)); r.title = ctxTitle(past.ctxEnd, null, true); box.append(r); }
+    else { const t = el("span", "ctx", Math.round(past.ctxEnd.pct) + "%"); t.title = ctxTitle(past.ctxEnd, null, true); box.append(t); }
+    return box;
+  }
+  if (!live) return box;
+  if (live.git && live.git.life !== "clean") {
+    const d = el("span", "lc " + live.git.life);
+    d.title = "Lane: " + LIFE_WORD[live.git.life] + " — " + live.git.dirty + " nicht committet, " + live.git.ahead + " zu landen";
+    box.append(d);
+  }
+  const st = el("span", "st " + (live.state || "unknown"));
+  st.title = live.state ? STATE_WORD[live.state] + (live.age != null ? " · letzte Ausgabe " + ago(live.age) : "") + (live.source === "transcript" ? " (Transkript, Stand des Entwurfs)" : "")
+    : "Zustand in diesem Entwurf nicht gelesen";
+  if (KV === "ring") {
+    const w = el("span", "ringwrap"), r = el("span", "ring" + (live.ctx ? "" : " unknown"));
+    if (live.ctx) r.style.setProperty("--p", String(live.ctx.pct));
+    w.title = ctxTitle(live.ctx, live.why) + "\\n" + st.title; w.append(r, st); box.append(w);
+  } else {
+    const t = el("span", "ctx" + (live.ctx ? "" : " unknown"), live.ctx ? Math.round(live.ctx.pct) + "%" : "?");
+    t.title = ctxTitle(live.ctx, live.why); box.append(t, st);
+  }
+  return box;
+}
 const fmt = (t) => t ? new Date(t).toLocaleString() : "—";
 const short = (t) => t ? new Date(t).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+// a past cell's time: the clock alone when it is from the build's day, the date alone otherwise —
+// the full stamp took the width the session's name needs
+const when = (t) => new Date(t).toDateString() === new Date(D.built).toDateString()
+  ? new Date(t).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : new Date(t).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" });
 const head = document.getElementById("head"), body = document.getElementById("body");
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 function show(chain, i) {
@@ -412,7 +543,7 @@ function show(chain, i) {
 // a long chain to check the indicator against (> 8 sessions) — invented, and labelled as such
 const probe = { id: 90, label: "Probe: 14 Sessions (erfunden)", kind: "lane", openedAt: D.built, past: Array.from({ length: 13 }, (_, k) =>
   ({ startedAt: D.built - (13 - k) * 3600e3, handedAt: D.built - (12 - k) * 3600e3, report: null, handoff: "", transcript: null, why: "Probe-Kette, keine echte Session" })) };
-const all = [...D.others.map((o) => ({ id: o.id, label: o.label, past: [] })), ...D.chains, probe].sort((a, b) => a.id - b.id).map(reach);
+const all = [...D.others.map((o) => ({ id: o.id, label: o.label, past: [], live: o.live })), ...D.chains, probe].sort((a, b) => a.id - b.id).map(reach);
 const rows = [];
 function makeRow(host, chain) {
   const n = chain.past.length + 1, pull = chain.past.length > 0;
@@ -423,7 +554,10 @@ function makeRow(host, chain) {
     const live = k === n - 1, p = chain.past[k];
     const c = el("div", "cell" + (live ? "" : " past"));
     c.append(el("span", "n", String(chain.id)), el("span", "lbl", live ? (chain.label || "—") : "Session " + (chain.hidden + k + 1)));
-    c.append(live ? el("span", "act") : el("span", "when", short(p.startedAt)));
+    if (!live) { const w = el("span", "when", when(p.startedAt)); w.title = "begann " + fmt(p.startedAt); c.append(w); }
+    const slotKv = el("span", "kvslot"); c.append(slotKv);
+    const draw = () => slotKv.replaceChildren(kvOf(live ? chain.live : null, live ? null : p));
+    readings.push(draw); draw();
     track.append(c);
   }
   const cells = [...track.children];
@@ -445,7 +579,6 @@ function makeRow(host, chain) {
   if (pull) row.append(depth);
   const paintDepth = () => {
     if (!pull) return;
-    if (IND === "zahl") { depth.className = "depth num"; depth.textContent = (idx + 1) + "/" + n; return; }
     depth.className = "depth dots"; depth.replaceChildren();
     const from = n <= MAX_DOTS ? 0 : Math.max(0, Math.min(n - MAX_DOTS, idx - (MAX_DOTS >> 1))), to = Math.min(n, from + MAX_DOTS);
     for (let k = from; k < to; k++) {
@@ -453,7 +586,7 @@ function makeRow(host, chain) {
       depth.append(el("i", k === idx ? "on" : more ? "more" : null));
     }
   };
-  indicators.push(paintDepth);
+
   let stepT = 0, shown = n - 1;
   const paint = () => {
     row.classList.toggle("back", idx < n - 1); paintDepth();
@@ -556,7 +689,7 @@ function makeRow(host, chain) {
 }
 const host = document.querySelector(".side .rows");
 for (const c of all) makeRow(host, c);
-setInd(location.hash.slice(1));
+setKv(location.hash.slice(1));
 const lane = all.find((c) => c.past.some((p) => p.transcript)) || all.find((c) => c.past.length);
 if (lane) requestAnimationFrame(() => show(lane, lane.past.length));
 </script></body></html>`;

@@ -1032,6 +1032,13 @@ export async function run(): Promise<void> {
       && pct(FABLE_USED, CONTEXT_WINDOW_BASE) === 88.3,
       JSON.stringify({ now: pct(FABLE_USED, contextWindowFor("claude-fable-5")),
         thenWrongly: pct(FABLE_USED, CONTEXT_WINDOW_BASE) }));
+    // claude-fable-5-1 — the id live Fable 5.1 slots actually carry — read 2026-09-21 out of Claude
+    // Code 2.1.278's model table (window:1e6, native_1m), the same source as the bare opus-5 rows.
+    // The invented sibling stays null: Fable rows are named per release, ids only.
+    check("context window: claude-fable-5-1 is 1M by its dated table row; an invented claude-fable-9 stays null",
+      contextWindowFor("claude-fable-5-1") === CONTEXT_WINDOW_1M
+      && contextWindowFor("claude-fable-9") === null,
+      JSON.stringify([contextWindowFor("claude-fable-5-1"), contextWindowFor("claude-fable-9")]));
     // the new core: an unnamed claude id is "cannot tell", the same answer an unknown suffix gets.
     // Reinstating the 200k fallback turns this one red on its own.
     check("context window: a claude id the table does not name is null, never the 200k base window",

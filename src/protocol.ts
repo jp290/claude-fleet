@@ -312,6 +312,14 @@ const CLAUDE_CONTEXT_WINDOWS: Readonly<Record<string, number | undefined>> = {
   // 1M WITHOUT a suffix — the model that broke the old rule, measured 2026-08-18 on a live slot:
   // 176,680 tokens, which its own pane reported as 17.7%.
   "claude-fable-5": CONTEXT_WINDOW_1M,
+  // the successor id, named 2026-09-21 because live slots carry exactly this string and published
+  // ctx: null without a row (owner intake: "Fable Sessions scheinen keine KontextZahl anzuzeigen").
+  // Same source as the opus-5 rows above — the installed Claude Code 2.1.278 model table, read
+  // 2026-09-21, carries for this id verbatim
+  //   "claude-fable-5-1",…,fallback_3p:"claude-fable-5",context:{window:1e6,native_1m:!0,supports_1m_beta:!0}
+  // — its own window is 1M and its third-party fallback is the 1M row above. The row is the id,
+  // never the family: `claude-fable-9` appears nowhere in the binary's table and must stay null.
+  "claude-fable-5-1": CONTEXT_WINDOW_1M,
   // `fable` — the BARE alias, and a deliberate exception to "ids only". It is what lands in a slot
   // record when a session is spawned by alias: slot 9, the standing supervisor, carries literally
   // this string, so without this row the one slot the incident above happened on publishes no fill

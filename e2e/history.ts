@@ -2,7 +2,7 @@
 // served from it, plus the transcript and session-brief reads.
 import { appendFileSync, existsSync, statSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { check, get, post, plogPath, plogRead, ROOT, REPO, restartSrv, until, UntilTimeout } from "./harness";
 import { WORKER_CONTRACTS } from "../src/protocol";
 import { mdInto } from "../src/md";
@@ -512,7 +512,15 @@ function runLinks(): void {
   check("terminal: the installed addon's @xterm/xterm peer range admits the pinned xterm",
     peer !== undefined && Bun.semver.satisfies(pkg.dependencies["@xterm/xterm"] ?? "", peer),
     `peer ${peer ?? "(addon not installed)"} vs xterm ${pkg.dependencies["@xterm/xterm"]}`);
-  const client = readFileSync(`${ROOT}/src/client.ts`, "utf8");
+  // the staged instance carries no src/client.ts: the source is the node_modules symlink's parent
+  // (the same resolution as e2e/slots.ts), and a probe that cannot read it fails as itself
+  let client = "", clientError = "";
+  try {
+    client = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+  } catch (e) { clientError = e instanceof Error ? e.message : String(e); }
+  check("precondition: node_modules exposes src/client.ts for the terminal link checks",
+    client.length > 0, clientError);
+  if (!client) return;
   check("terminal: bare urls are linkified by WebLinksAddon, through the same handler as OSC 8 links",
     /loadAddon\(new WebLinksAddon\(openTermLink\)\)/.test(client) && /linkHandler: \{ activate: openTermLink \}/.test(client));
   const opener = /function openTermLink\([\s\S]*?\n\}/.exec(client)?.[0] ?? "";

@@ -186,6 +186,15 @@ export function laneNoteSources(
     }
   }
   // the join runs over the SAME candidates and is then stripped of everything already chosen
+  //
+  // CAP COLLISION (measured 2026-09-20, docs/messungen/2026-09-20-quellen-referenzen-retention.md
+  // §3, §5 Befund 3): every EXPLICIT pin consumes one join slot — the join half receives only
+  // `cap - explicit.length` places, so the loss is gradual, not first at cap — and at `cap`
+  // explicit pins ALL join hits fall, out of `reachable`, not only out of `shown`, because
+  // `reachable` takes its join half from `shown`. Explicit pins are never lost (`...explicit`
+  // rides complete, the excess is named as `overflow`); the displaced join hits have no
+  // counter-entry and vanish without a trace. Documented, not repaired: at measurement time
+  // exactly one pin stood fleet-wide, so what was missing was the knowledge, not the mechanism.
   const joined = notesForTask(auftrag, notizen, opts).filter((r) => !seen.has(r.id));
   const shown = [...explicit.slice(0, cap), ...joined.slice(0, Math.max(0, cap - explicit.length))];
   const overflow = explicit.slice(cap);

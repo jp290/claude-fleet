@@ -1825,10 +1825,13 @@ export async function run(ctx: Ctx): Promise<void> {
           await Bun.sleep(afterTick(COOLDOWN_MS, NUDGE_TICK_MS));
           const scoped = await nudges();
           // BREAKS IF: the tick groups rows fleet-wide again — the old selector would send C the
-          // whole register ("8 offene Lane-Zeilen", foreign row included) instead of its own 7.
+          // whole register: the count reads "8 offene Lane-Zeilen" instead of 7 and the foreign
+          // row enters it. Count (7, never 8) and the absent foreign id ARE the discriminators;
+          // the message lists only the THREE OLDEST rows, so the last-created localId can never
+          // appear in the text and asserting it would hold even over a fleet-wide leak.
           check("backlog nudge is repo-scoped: the fresh main hears its own repo's rows, never the foreign repo's",
             scoped.length === 3 && scoped[2].slot === cMain
-            && scoped[2].text.includes("7 offene Lane-Zeilen") && scoped[2].text.includes(localId)
+            && scoped[2].text.includes("7 offene Lane-Zeilen")
             && !scoped[2].text.includes(foreignId),
             JSON.stringify(scoped.map((p) => ({ slot: p.slot, text: p.text.slice(0, 120) })))
               + ` c=s${cMain} foreign=${foreignId} local=${localId}`);

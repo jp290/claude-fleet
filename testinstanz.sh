@@ -181,7 +181,9 @@ down)
   # By SOCKET NAME, never a name pattern: `pkill -f` on this machine reaches the live server and
   # the post-land audit (AGENTS.md §Verify).
   tmux -L "$SOCK" kill-server 2>/dev/null || true
-  rm -rf "$DIR"
+  # The dying panes' zsh still writes $DIR/home/.zsh_history after kill-server returns; a single
+  # rm raced it ("Directory not empty", 2026-09-21). One retry after the shells are gone.
+  rm -rf "$DIR" 2>/dev/null || { sleep 1; rm -rf "$DIR"; }
   # The claim is checked, not asserted: a still-bound port means something is serving that this
   # script did not stop, and the honest answer is to NAME it rather than reach for a pattern kill.
   sleep 1

@@ -460,6 +460,14 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   nicht feuern kann. Die Stups-Zahl ist prozesslokal wie `migrateTried`: nach einem Neustart steht
   dort 0, während das Prompt-Ledger den Stups behält. Gemessen in `e2e/watch.ts` an derselben
   Fixture, an der der Tick selbst gemessen wird.
+- **Die Linie Session für Session** (Owner-Route, seit 2026-09-21, für die Kette der Leiste `#band=d`):
+  `GET /api/slots/:id/succession` antwortet `{session, taken, cap, past}` — `past` hat genau
+  `session - 1` Einträge `{session, startedAt, handedAt, report}` (`server.ts#successionChain`). Bei
+  einer Lane sind die vergangenen Sessions ihre `handoff`-Reports (Slot + Branch), bei einer MAIN
+  ihre Linien-Records, per Slot + `openedAt` einem Report zugeordnet. `null` heißt „nicht
+  aufgezeichnet" (Retention, succeed ohne Report), nie „nicht passiert". Bewusst NICHT im 2-s-Poll:
+  die Leiste fragt einmal je (Slot, Occupant, Session). Gemessen in `e2e/lanes-lifecycle.ts` an der
+  echten Staffelstab-Fixture.
 - **Die WARTESCHLANGE am Suite-Mutex ist seit 2026-09-20 dieselbe Frage wie der Lock:** `gate.queue`
   auf `/api/sessions` (`server.ts#suiteQueueView`) liest die Ticket-Verzeichnisse
   `t<n>.<pid>` unter `$FLEET_SUITE_LOCK.q`, die `e2e-stage.sh#_st_queue_scan` schreibt — in DEREN

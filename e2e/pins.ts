@@ -8567,6 +8567,22 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     badRender.length
       ? badRender.map(([n, t]) => `${n}: …${JSON.stringify(t.slice(-48))}`).join("; ")
       : `${Object.keys(rendered).length} rendered hint(s), tails clean`);
+  // THE SELF-TOKEN IS NAMED BARE, WHEREVER IT SITS. The tail rule above is positional on purpose
+  // (measured 2026-09-05: a mid-text `$` outside the cursor path submits fine) — but Fleet's own
+  // delivery templates name ONE env var, and a `$` before it is the picker's trigger the moment a
+  // wrap puts the cursor beside it, so these DERIVED hints carry none at all. Retired form:
+  // clarificationWatchMessage ended its reply instruction on `$FLEET_SELF_TOKEN` (note e9e22694).
+  const sigiled = (t: string): boolean => t.includes("$FLEET_SELF_TOKEN");
+  const badToken = Object.entries(rendered).filter(([, text]) => sigiled(text));
+  pin(`${RULE_SIGIL} — rendered: no lane-signals hint sigils the self-token name ($ before FLEET_SELF_TOKEN is the Codex picker trigger)`,
+    badToken.length === 0,
+    badToken.length
+      ? badToken.map(([n]) => n).join("; ")
+      : `${Object.keys(rendered).length} rendered hint(s), token named bare`);
+  // …and the predicate can FAIL, on exactly the form it retired — not only pass on clean text.
+  pin(`${RULE_SIGIL} — the self-token predicate flags the retired $-form and passes the bare name`,
+    sigiled("reply … from $FLEET_SELF_TOKEN and JSON") && !sigiled("reply … from FLEET_SELF_TOKEN and JSON"),
+    "control form: `$FLEET_SELF_TOKEN` flagged, bare name clean");
 
   // --- HALF TWO: the server-local builders cannot be imported (server.ts boots on import), so they
   //     are read. What is judged is the MESSAGE TAIL and only that: a literal that TERMINATES a

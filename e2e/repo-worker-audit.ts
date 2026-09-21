@@ -270,6 +270,68 @@ exit 0
   await restartSrv();
   await setRwMode("green");
 
+  // ===== (RW.12) THE RED-AUDIT PING NEVER CROSSES A REPO BORDER ====================================
+  // The ping used to pick "the quietest non-lane session" with NO look at the repo, and a red
+  // audit belongs to ONE repo — measured 2026-09-21 on the live prompts.jsonl: 27 of 111 pings
+  // landed in a checkout of another repository. The receiver selector is repo-scoped now, and
+  // this probe is its SPEC: a red row for REPO must reach the session checked out IN REPO and
+  // never the one sitting in another repo — even when the foreign session is the LONGEST-IDLE
+  // pane the old selector would have picked first (mutation: ignore the repo argument -> red).
+  {
+    for (const prior of await auditRows())
+      if (prior.result === "red")
+        await post("/api/post-land-audits/adjudicate",
+          { at: prior.at, verdict: "unknowable", note: "(RW.12) fixture: this repo's red is the subject" });
+    const y = `${REPO}-rwaudit-y`;
+    await seedRepo(y);
+    const free = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.filter((s) => !s.cwd).map((s) => s.id);
+    check("(RW.12) fixture: two free slots exist for the in-repo and the foreign receiver",
+      free.length >= 2, `free=[${free.join(",")}]`);
+    if (free.length >= 2) {
+      // The ping tick is opt-in and the block above disarmed it on its way out — arm it here, the
+      // same knobs the delivery test above this one uses, and disarm on the way out below.
+      await restartSrv({ FLEET_AUDIT_PING_MS: "1000", FLEET_BACKLOG_NUDGE_IDLE_MS: "100" });
+      const [foreignSlot, repoSlot] = free;
+      // Open order IS the idle order: the foreign pane boots first and settles, the in-repo pane
+      // boots younger BY CONSTRUCTION — exactly the ranking the repo-blind selector sorted on.
+      await post(`/api/slots/${foreignSlot}/open`, { cwd: y });
+      await Bun.sleep(1_600);
+      await post(`/api/slots/${repoSlot}/open`, { cwd: REPO });
+      const probeForeign = await paneEnv(`s${foreignSlot}`, "FLEET_SELF_SLOT");
+      const probeRepo = await paneEnv(`s${repoSlot}`, "FLEET_SELF_SLOT");
+      check("(RW.12) fixture: both receiver panes answer the paneEnv probe (a dead pane proves nothing)",
+        probeForeign === String(foreignSlot) && probeRepo === String(repoSlot),
+        `foreign=${probeForeign} repo=${probeRepo}`);
+      await setAuditMode("red");
+      const xLane = await openLane(REPO, "rw-pingrepo");
+      const xHad = (await rowsFor(REPO)).length;
+      await land(xLane);
+      const xRed = await waitNewRow(REPO, xHad);
+      check("(RW.12) fixture: the landed REPO lane produced a red row for REPO",
+        xRed?.result === "red" && base(xRed?.repo ?? "?") === base(REPO), JSON.stringify(xRed).slice(0, 300));
+      let repoPane = "";
+      const deadline = Date.now() + 12_000;
+      while (Date.now() < deadline) {
+        repoPane = (await tmuxOut("capture-pane", "-t", `s${repoSlot}`, "-p", "-J", "-S", "-")).out;
+        if (xRed !== null && repoPane.includes(`at=${xRed.at}`)) break;
+        await Bun.sleep(200);
+      }
+      const foreignPane = (await tmuxOut("capture-pane", "-t", `s${foreignSlot}`, "-p", "-J", "-S", "-")).out;
+      // BREAKS IF: receiversInRepo ignores its repo argument — the foreign session is the older
+      // pane, so the repo-blind selector would hand THIS ping to it and the in-repo pane to none.
+      check("(RW.12) a red audit for REPO reaches the session IN REPO and never the foreign-repo session",
+        xRed !== null && xRed.result === "red" && repoPane.includes(`at=${xRed.at}`)
+          && !foreignPane.includes("[fleet post-land audit]"),
+        `repo(s${repoSlot})=${JSON.stringify(repoPane.slice(-400))} foreign(s${foreignSlot})=`
+          + `${JSON.stringify(foreignPane.slice(-400))}`);
+      await post(`/api/slots/${foreignSlot}/kill`, {});
+      await post(`/api/slots/${repoSlot}/kill`, {});
+    }
+    await setAuditMode("green");
+    await restartSrv();
+  }
+
   // ===== (RW.5) THE HELPER PORTAL NEVER OFFERS IT ==================================================
   // The daemon runs exactly one command, cfg.suiteCmd (fleet's suite), against whatever it clones —
   // a repo-worker audit handed over would be measured by the wrong suite and recorded under the

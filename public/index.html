@@ -139,24 +139,31 @@
   .instnote { padding: 6px 7px 3px; border-top: 1px solid var(--chat-edge); margin-top: 2px;
     color: var(--chat-faint); font-size: var(--chat-ui-fs); line-height: 1.4; }
   /* THE HEAD UNDER THE TITLE IS TWO ROWS (owner 2026-09-21: "die pane-split buttons in ein quadrat
-     packen und auch die leiste zwei-reihig machen"). Left, over both rows, the four views as ONE
-     square — a 2×2 grid of 23px buttons, 48px a side, each drawing its arrangement. Right, the
-     functions in their old order, broken over two rows: queue · attn · ops · audit on the first,
-     lands · dev · saver · ⋯ on the second (the split is in the markup, #toolrow1/#toolrow2, so it
-     does not move when a conditional button appears). A row takes at most four buttons, two of
-     them with a count (~35px each) — 125px against the 173px beside the square, so the
-     conditional attn/ops (row 1) and dev (row 2) never push a third row. One button grammar for
-     all: a 23px square, a drawn icon (src/icons.ts), the chat tokens; the emoji and the two raw
-     UA buttons (#auditbtn/#outcomebtn had no css at all) are gone. Meaning is title + aria-label. */
+     packen und auch die leiste zwei-reihig machen"; round 12: "das viererbündel der pane-split
+     buttons linksbündig … und der rest rechts und dann sauber sortiert"). Left, over both rows,
+     the four views as ONE square — a 2×2 grid of 23px buttons, 48px a side, flush with the bar's
+     left edge. Right, the functions as ONE right-aligned block, sorted by what they are: row 1
+     reads (attn · ops — what is owed you — then queue · audit · lands), row 2 sets up
+     (dev · saver · ⋯ · +). The conditional buttons (attn, ops, dev) sit at the LEFT end of their
+     row, so when one appears it grows the row leftwards and no fixed button moves. The split is
+     in the markup (#toolrow1/#toolrow2). Worst case, attn and ops with a count (~35px each), row
+     1 is ~150px against the ~173px beside the square — never a third row. One button grammar
+     for all: a 23px square, a drawn icon (src/icons.ts), the chat tokens; meaning is title +
+     aria-label. The + at the end is the place for buttons the owner builds from an idea later
+     (its own queue row) — today it only says so, and it is drawn quieter than a function. */
   #sidetools { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; padding: 0 10px 8px; }
   #layouts { grid-row: 1 / span 2; display: grid; grid-template-columns: 23px 23px; grid-auto-rows: 23px; gap: 2px; }
-  .toolrow { display: flex; align-items: center; gap: 2px; min-width: 0; height: 23px; }
+  .toolrow { display: flex; align-items: center; justify-content: flex-end; gap: 2px; min-width: 0; height: 23px; }
   #toolrow2 { margin-top: 2px; }
   #sidetools button { flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 3px;
     min-width: 23px; height: 23px; padding: 0; border-radius: 6px; border: 1px solid var(--chat-edge);
     background: var(--chat-raised); color: var(--chat-mute); font-size: var(--chat-ui-fs);
     font-family: inherit; cursor: pointer; }
   #sidetools button:hover { color: var(--chat-ink); }
+  #sidetools #headplus { border-style: dashed; background: none; color: var(--chat-faint); }
+  .headnote { margin: 0 10px 8px; padding: 6px 8px; border: 1px solid var(--chat-edge); border-radius: 8px;
+    color: var(--chat-mute); font-size: var(--chat-ui-fs); line-height: 1.4; }
+  .headnote[hidden] { display: none; }
   #layouts button.active { color: var(--chat-ink); border-color: var(--chat-mute); background: var(--chat-surface); }
   #sidetools .tricon { display: grid; place-items: center; }
   #sidetools .ico { width: 14px; height: 14px; }
@@ -2796,13 +2803,13 @@
         <button data-l="4" title="2×2 grid"></button>
       </span>
       <span id="toolrow1" class="toolrow">
-      <button id="queuebtn" title="task queue">🗒</button>
       <button id="attnbtn" title="attention — what a program's main session raised for you (decision / blocked / review-ready)" style="display:none">📣</button>
       <button id="opsbtn" title="operations inbox — completions a subscription asked to be filed here instead of typed into a pane (merge / audit / deploy / lane)" style="display:none">📥</button>
+      <button id="queuebtn" title="task queue">🗒</button>
       <button id="auditbtn" title="audit trail — what Fleet did to each slot (killed / shelved / self-healed)">🛡</button>
+      <button id="outcomebtn" title="outcome feed — what each lane landed, how, and what ③ review said about it">🧾</button>
       </span>
       <span id="toolrow2" class="toolrow">
-      <button id="outcomebtn" title="outcome feed — what each lane landed, how, and what ③ review said about it">🧾</button>
       <button id="devbtn" title="helper devices — the machines that take suite and audit work off this box" style="display:none">💻</button>
       <!-- lives in the sidebar on purpose: #sidetools is NOT hidden by the mobile media
            query, so the ☰ drawer makes this reachable on the phone, which is the only

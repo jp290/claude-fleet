@@ -13605,23 +13605,41 @@ $("toolrow2").appendChild(moreBtn);
 $("sidetools").after(morePanel);
 applyMore();
 
+// + — the place for a button the owner builds from an idea (round 12: "mit einem eigenen kleinen
+// plus button worüber der nutzer später dann mit einer eigenen Idee direkt einen button einbauen
+// kann"). The builder is its own queue row; until it lands, the click says so and nothing else.
+const plusBtn = el("button", "", "+") as HTMLButtonElement;
+plusBtn.id = "headplus";
+plusBtn.title = "eigener Knopf — kommt";
+const plusNote = el("div", "headnote", "Eigene Knöpfe — kommt: hier baust du später aus einer Idee einen eigenen Knopf.");
+plusNote.hidden = true;
+let plusNoteTimer = 0;
+plusBtn.onclick = () => {
+  plusNote.hidden = !plusNote.hidden;
+  clearTimeout(plusNoteTimer);
+  if (!plusNote.hidden) plusNoteTimer = window.setTimeout(() => { plusNote.hidden = true; }, 4000);
+};
+$("toolrow2").appendChild(plusBtn);
+$("sidetools").after(plusNote);
+
 // THE HEAD ROW — one icon grammar (owner 2026-09-21: "Rechts davon zeigen wir dann überarbeitete
-// buttons für die Funktionen an … mach das nur so das es gut passt"). The row keeps its order and
-// its buttons; what changed is the sign: the raw emoji, whose meaning lived only in a title, are
-// the tray's SVG grammar now, and the word is the aria-label. This is the #head=b Fassung made the
+// buttons für die Funktionen an … mach das nur so das es gut passt"). Round 12 sorted the buttons
+// (the order and its reason are in the #sidetools css); the sign is the same: the raw emoji, whose
+// meaning lived only in a title, are the tray's SVG grammar now, and the word is the aria-label. This is the #head=b Fassung made the
 // standing state; a (icon + word, wrapped to three lines) and c (fold under ⋯) left with the switch.
 // THE THREE CONDITIONAL BUTTONS (attn · ops · dev) keep their count: those writers rewrite
 // `textContent` on every poll, which would wipe an icon painted once, so the paint is re-applied
 // from a MutationObserver and the badge is read back out of the text the writer left.
 const HEAD_BTNS: ReadonlyArray<{ id: string; icon: IconName; word: string }> = [
-  { id: "queuebtn", icon: "list", word: "Queue" },
   { id: "attnbtn", icon: "megaphone", word: "Attention" },
   { id: "opsbtn", icon: "inbox", word: "Inbox" },
+  { id: "queuebtn", icon: "list", word: "Queue" },
   { id: "auditbtn", icon: "shield", word: "Audit" },
   { id: "outcomebtn", icon: "receipt", word: "Lands" },
   { id: "devbtn", icon: "laptop", word: "Devices" },
   { id: "saverbtn", icon: "saver", word: "Saver" },
   { id: "morebtn", icon: "dots", word: "Mehr" },
+  { id: "headplus", icon: "plus", word: "Eigener Knopf" },
 ];
 // What a writer added to the glyph: "📣3" -> "3", "💻2 ⚠1" -> "2 ⚠1", "🗒" -> "".
 // TWO RULES, both paid for by a measurement:

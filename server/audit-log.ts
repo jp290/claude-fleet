@@ -37,6 +37,9 @@ type AuditEvent =
   // a Program-MAIN held a row against its program's release policy, or a release lifted a hold on a
   // row that was already queued (server.ts#holdTaskForMain, #releaseTaskForMain)
   | "task_hold"
+  // a kill that names {archiveTask:true} made its lane's `sent` rows terminal BEFORE the teardown's
+  // requeue could hand them back — detail records the archived row ids (server.ts, the kill route)
+  | "task_kill_archive"
   | "task_kind" // owner changed a task's category; detail records id and both values
   | "task_review" // Task.review set or cleared; detail records id, both values and which door (owner|main)
   // E4 · the variant group's three acts (server.ts): a group filed with its n variant rows, all n

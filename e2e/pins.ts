@@ -6405,21 +6405,28 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       + ` assertion=${autoCloseTick.includes('row.disposition !== "killed-empty"')}`);
   // The act, as SOURCE. The trail must be written BEFORE the teardown (killSlot clears the lane
   // state buildLaneOutcome reads), the tick must never reach a land, and the timer must exist only
-  // behind the flag — a registration outside that guard is a tick that arms itself.
+  // behind the flag — a registration outside that guard is a tick that arms itself. SINCE
+  // SAMMELZEILE A (2026-09-20) the close also takes the lane's tree with it, and this rule flips
+  // with the behavior: removeWorktreeSafe is no longer forbidden here, it is REQUIRED — the one
+  // door through which the tick may remove a tree (never a raw rm), placed after the row and
+  // before killSlot. Everything else the old list refused stays refused: the tick lands nothing,
+  // merges nothing, sends nothing, dispatches nothing.
   const emitAt = autoCloseTick.indexOf("emitLaneOutcome({ ...row, autoClose:");
   const killAt = autoCloseTick.indexOf('await killSlot(s, "owner");');
-  const autoCloseForbidden = ["landLane", "mergeJob", "sendText", "removeWorktreeSafe",
+  const rmAt = autoCloseTick.indexOf("await removeWorktreeSafe(");
+  const autoCloseForbidden = ["landLane", "mergeJob", "sendText",
     "tickDispatch", "dispatchTask"].filter((token) => new RegExp(`\\b${token}\\b`).test(autoCloseTick));
   // …and the ONE-ATTEMPT ceiling, spent BEFORE the row: the trigger is level-triggered, so a lane
   // that survives a thrown teardown would otherwise earn a second outcome row for one close.
   const triedAt = autoCloseTick.indexOf("autoCloseTried.set(s.id, s.openedAt);");
-  pin(`${RULE_RECEIVER} — the auto-close records before it tears down, lands nothing, and is registered only behind the flag (D2)`,
+  pin(`${RULE_RECEIVER} — the auto-close records before it tears down, takes the tree through removeWorktreeSafe only, lands nothing, and is registered only behind the flag (D2)`,
     autoCloseTick !== "" && emitAt >= 0 && killAt > emitAt && autoCloseForbidden.length === 0
+      && rmAt > emitAt && killAt > rmAt && !/\brmSync\(/.test(autoCloseTick)
       && triedAt >= 0 && triedAt < emitAt
       && autoCloseTick.includes("autoCloseTried.get(s.id) === s.openedAt")
       && server.includes("if (LANE_AUTOCLOSE_ON) setInterval(() => void tickLaneAutoClose()")
       && (server.split("tickLaneAutoClose(").length - 2) === 1,
-    `emit@${emitAt} kill@${killAt} forbidden=[${autoCloseForbidden.join(",")}]`
+    `emit@${emitAt} kill@${killAt} rm@${rmAt} forbidden=[${autoCloseForbidden.join(",")}]`
       + ` callSites=${server.split("tickLaneAutoClose(").length - 2}`);
   // …and the DECISION IS READABLE FROM OUTSIDE, through the same function the tick decides on. Every
   // refusal already carried a sentence and the tick dropped all of them at its two `continue`s, so

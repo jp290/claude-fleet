@@ -271,6 +271,18 @@ console.log(`wrote ${outFile} + ${hintName}: ${chains.map((c) => `slot ${c.id} (
 // OR speed with a short spring; a swipe commits the moment it is a third across and swallows the
 // rest of its momentum (one swipe, one session); a press grabs the band where it visibly is; ← → on
 // focus; no click fires after a drag.
+//
+// Round 6 (owner: "für bessere Mausbedienung sollten wir glaube ich einen faktor einführen der es
+// einfacher macht zu wechseln, vlt auch eine bessere animation die dann auch einrastet und nicht
+// komplett dem mauszeiger folgt"). For the MOUSE only — trackpad and finger keep round 5 — the
+// pointer decides and the animation moves: while the button is down the row only leans, damped and
+// capped (a share of its width, never 1:1), and the moment the pull passes a short threshold the
+// next session snaps in with a spring, button still down. Pull on and it steps again once the snap
+// has landed. Two value sets side by side, switchable on the page (#knapp / #weich):
+//   knapp · 24 px to switch, lean k=0.6 capped at 18 % of the row, 220 ms with a clear overshoot
+//   weich · 40 px to switch, lean k=0.8 capped at 28 % of the row, 380 ms with a softer overshoot
+// 24 px is a tenth of the row and three times the 7 px dead zone, so a wobble never switches; 40 px
+// is still under the ~50 px (a fifth of the row) round 5 asked the mouse to travel.
 function hintPage(data) {
   return `<!doctype html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Band ziehen · Kante</title>
@@ -294,6 +306,11 @@ body { margin:0; background:var(--void); color:var(--prose); font:13px/1.45 var(
 .view.drag { cursor:grabbing; }
 .track { display:flex; will-change:transform; }
 .track.snap { transition:transform .34s cubic-bezier(.22,1.22,.36,1); }
+.track.snap.mouse { transition:transform var(--snap-ms) var(--snap-ease); }
+.feel { display:flex; gap:2px; margin:0 6px 10px; padding:2px; border-radius:8px; background:var(--surface); box-shadow:inset 0 0 0 1px var(--edge-soft); width:max-content; }
+.feel button { border:0; background:none; color:var(--mute); padding:2px 10px; border-radius:6px; font:11px var(--sans); cursor:pointer; }
+.feel button[aria-pressed="true"] { background:var(--raised); color:var(--ink); box-shadow:inset 0 0 0 1px var(--edge); }
+.feelvals { font:11px var(--mono); color:var(--faint); margin:-4px 6px 10px; }
 .cell { flex:none; display:flex; align-items:center; gap:6px; min-height:40px; padding:6px 10px 6px 30px; }
 .cell.past { padding-right:26px; background:var(--surface); }
 .n { font:12px/1.45 var(--mono); padding:1px 6px; border-radius:5px; background:var(--raised); box-shadow:inset 0 0 0 1px var(--edge); color:var(--mute); flex:none; }
@@ -323,14 +340,34 @@ button[disabled] { color:var(--faint); }
 .empty { color:var(--wait); border:1px dashed var(--edge); border-radius:10px; padding:14px; max-width:620px; }
 .note { color:var(--mute); max-width:640px; }
 @media (max-width: 700px) { body { flex-direction:column; } .side { width:auto; max-height:45vh; border-right:0; border-bottom:1px solid var(--edge-soft); } }
-@media (prefers-reduced-motion: reduce) { .track.snap { transition-duration:.01s; } }
+@media (prefers-reduced-motion: reduce) { .track.snap, .track.snap.mouse { transition:none; } }
 </style></head><body>
-<nav class="side A"><h1><b>Band ziehen</b> · Strich am Rand</h1><div class="rows"></div>
-<div class="how">Zeile nach rechts ziehen = frühere Session · Maus, Finger oder waagrecht wischen · ← → mit Fokus · Esc = laufende</div></nav>
+<nav class="side A"><h1><b>Band ziehen</b> · Strich am Rand</h1>
+<div class="feel" role="group" aria-label="Maus-Gefühl"><button data-feel="knapp">knapp</button><button data-feel="weich">weich</button></div>
+<div class="feelvals"></div><div class="rows"></div>
+<div class="how">Zeile nach rechts ziehen = frühere Session · Maus: kurz anziehen, sie rastet selbst ein · Finger oder waagrecht wischen · ← → mit Fokus · Esc = laufende</div></nav>
 <main id="main"><div id="head"></div><div id="body"></div></main>
 <script>
 const D = ${data};
-const SLOP = 7, COMMIT = 0.2, FLICK = 0.35, SWIPE_COMMIT = 0.33, WHEEL_IDLE = 90, MOMENTUM_GAP = 180;
+const SLOP = 7, COMMIT = 0.2, FLICK = 0.35, SWIPE_COMMIT = 0.33, WHEEL_IDLE = 90, MOMENTUM_GAP = 180, SNAP_MS = 340;
+// the mouse: T px to switch, lean slope k, lean cap as a share of the row, snap duration and curve
+const FEELS = {
+  knapp: { T: 24, k: 0.6, cap: 0.18, ms: 220, ease: "cubic-bezier(.3,1.45,.5,1)" },
+  weich: { T: 40, k: 0.8, cap: 0.28, ms: 380, ease: "cubic-bezier(.2,1.3,.3,1)" },
+};
+const still = matchMedia("(prefers-reduced-motion: reduce)");
+let FEEL = FEELS.knapp;
+function setFeel(name) {
+  if (!FEELS[name]) name = "knapp";
+  FEEL = FEELS[name];
+  document.documentElement.style.setProperty("--snap-ms", FEEL.ms + "ms");
+  document.documentElement.style.setProperty("--snap-ease", FEEL.ease);
+  document.querySelectorAll(".feel button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.feel === name)));
+  document.querySelector(".feelvals").textContent = FEEL.T + " px · Ausschlag max " + Math.round(FEEL.cap * 100) + " % · " + FEEL.ms + " ms";
+  if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+}
+document.querySelectorAll(".feel button").forEach((b) => b.addEventListener("click", () => setFeel(b.dataset.feel)));
+setFeel(location.hash.slice(1));
 const fmt = (t) => t ? new Date(t).toLocaleString() : "—";
 const short = (t) => t ? new Date(t).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
 const head = document.getElementById("head"), body = document.getElementById("body");
@@ -373,11 +410,12 @@ function makeRow(host, chain) {
     track.append(c);
   }
   const cells = [...track.children];
-  let idx = n - 1, W = 0, frame = 0, want = 0;
+  let idx = n - 1, W = 0, frame = 0, want = 0, snapEnd = 0;
   const base = () => -idx * W;
   // one transform write per frame, however many moves arrived in it
-  const put = (px, spring) => {
-    track.classList.toggle("snap", !!spring); want = px;
+  const put = (px, spring, mouse) => {
+    track.classList.toggle("snap", !!spring); track.classList.toggle("mouse", !!mouse); want = px;
+    if (spring) snapEnd = performance.now() + (still.matches ? 0 : mouse ? FEEL.ms : SNAP_MS);
     if (!frame) frame = requestAnimationFrame(() => { frame = 0; track.style.transform = "translate3d(" + want + "px,0,0)"; });
   };
   // where the eye sees the band right now — a press mid-spring grabs it THERE, not at the target
@@ -387,9 +425,9 @@ function makeRow(host, chain) {
     return over ? Math.sign(d) * W * 0.18 * (1 - Math.exp(-Math.abs(d) / (W * 0.5))) : d; };
   const layout = () => { W = view.clientWidth; cells.forEach((c) => c.style.width = W + "px"); put(base(), false); };
   const paint = () => { row.classList.toggle("back", idx < n - 1); };
-  const go = (i, open) => {
+  const go = (i, open, mouse) => {
     const to = Math.max(0, Math.min(n - 1, i)), moved = to !== idx;
-    idx = to; put(base(), true); paint();
+    idx = to; put(base(), true, mouse); paint();
     if (!moved && !open) return;
     for (const r of rows) r.row.classList.toggle("cur", r.row === row);
     show(chain, idx);
@@ -407,9 +445,11 @@ function makeRow(host, chain) {
   let g = null, swallowClick = false;
   view.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
-    const from = pull ? seen() - base() : 0;
-    if (pull) put(base() + from, false);
-    g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, from, dir: null, s: [[e.timeStamp, e.clientX]] };
+    const mouse = e.pointerType === "mouse";
+    // a finger grabs the band where the eye sees it; the mouse lets a running snap land first
+    const from = pull && !mouse ? seen() - base() : 0;
+    if (pull && !mouse) put(base() + from, false);
+    g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, from, dir: null, mouse, s: [[e.timeStamp, e.clientX]] };
   });
   view.addEventListener("pointermove", (e) => {
     if (!g || e.pointerId !== g.id) return;
@@ -418,18 +458,36 @@ function makeRow(host, chain) {
       if (Math.hypot(dx, dy) < SLOP) return;
       g.dir = pull && Math.abs(dx) > Math.abs(dy) ? "x" : "y";
       if (g.dir === "y") { if (pull) go(idx, false); g = null; return; }
-      g.x0 += Math.sign(dx) * SLOP;
+      if (!g.mouse) g.x0 += Math.sign(dx) * SLOP; // the mouse counts its pull from the press
       view.setPointerCapture(e.pointerId); view.classList.add("drag"); row.classList.add("dragging");
     }
     g.s.push([e.timeStamp, e.clientX]); if (g.s.length > 12) g.s.shift();
+    if (g.mouse) { lean(e.clientX); return; }
     put(base() + resist(g.from + e.clientX - g.x0), false);
   });
+  // the mouse leans the row, it never carries it: past T px the next session snaps in, and the
+  // pull counts again from wherever the pointer is once that snap has landed
+  const lean = (cx) => {
+    if (performance.now() < snapEnd) { g.rearm = true; return; }
+    if (g.rearm) { g.x0 = cx; g.rearm = false; }
+    const raw = cx - g.x0, can = raw > 0 ? idx > 0 : idx < n - 1;
+    if (can && Math.abs(raw) >= FEEL.T) { g.stepped = true; g.rearm = true; go(idx + (raw > 0 ? -1 : 1), false, true); return; }
+    const cap = W * FEEL.cap * (can ? 1 : 0.35);
+    put(base() + Math.sign(raw) * cap * (1 - Math.exp(-FEEL.k * Math.abs(raw) / cap)), false);
+  };
   const end = (e, cancelled) => {
     if (!g || e.pointerId !== g.id) return;
     const was = g; g = null; view.classList.remove("drag"); row.classList.remove("dragging");
     if (!was.dir) { if (!cancelled) go(idx, true); else put(base(), true); return; }
     swallowClick = true; setTimeout(() => { swallowClick = false; }, 0);
-    if (cancelled) { put(base(), true); return; }
+    if (cancelled) { put(base(), true, was.mouse); return; }
+    if (was.mouse) {
+      // under the threshold only a flick still switches; otherwise the lean springs back
+      const v = speed(was.s), raw = e.clientX - was.x0;
+      const flick = !was.rearm && Math.abs(v) > FLICK && Math.sign(v) === Math.sign(raw);
+      if (performance.now() >= snapEnd || flick) go(idx + (flick ? (raw > 0 ? -1 : 1) : 0), false, true);
+      return;
+    }
     go(idx + decide(was.from + e.clientX - was.x0, speed(was.s)), false);
   };
   view.addEventListener("pointerup", (e) => end(e, false));
@@ -455,7 +513,7 @@ function makeRow(host, chain) {
   view.addEventListener("keydown", (e) => {
     if (!pull) { if (e.key === "Enter") go(idx, true); return; }
     const to = { ArrowLeft: idx - 1, ArrowRight: idx + 1, Home: 0, End: n - 1, Escape: n - 1, Enter: idx }[e.key];
-    if (to === undefined) return; e.preventDefault(); go(to, e.key === "Enter");
+    if (to === undefined) return; e.preventDefault(); go(to, e.key === "Enter", true);
   });
   host.append(row);
   rows.push({ row, chain });

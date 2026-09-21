@@ -17521,6 +17521,46 @@ function successionRowView(s: Slot): { session: number; taken: number | null; ca
   return { session: f.session, taken: f.taken, cap: f.cap };
 }
 
+// THE LINE, SESSION BY SESSION — what the bar's chain (#band=d) shows when a past mark is hovered:
+// when that session began, when it handed over, and the id of its handoff report. Served on its
+// own route and NOT on the 2 s poll, whose budget successionRowView above is already rationed
+// against; the bar asks once per (slot, session) and keeps the answer.
+//
+// Where each fact comes from, so a null reads as "not recorded", never as "did not happen":
+//  · a LANE's past occupants are the handoff reports filed from its slot on its branch
+//    (`worker.openedAt` is when that occupant began, `reportedAt` when it laid the baton down);
+//    `session - 1` of them are shown, and a line longer than its surviving reports (retention,
+//    a succeed without a report) gets its oldest sessions as nulls.
+//  · a MAIN's past occupants are the `from` sides of its lineage records (the begin) and the
+//    records' `at` (the handover); its report is the handoff report that occupant filed, if any.
+interface SuccessionPast { session: number; startedAt: number | null; handedAt: number | null; report: string | null }
+function successionChain(s: Slot): { session: number; taken: number | null; cap: number | null; past: SuccessionPast[] } {
+  const f = successionFacts(s);
+  const handoffOf = (slot: number, openedAt: number): FleetReport | null =>
+    fleetReports.filter((r) => r.status === "handoff" && r.worker.slot === slot && r.worker.openedAt === openedAt)
+      .at(-1) ?? null;
+  const n = f.session - 1;
+  let known: Omit<SuccessionPast, "session">[];
+  if (s.worktree) {
+    const branch = s.worktree.branch;
+    const byOccupant = new Map<number, FleetReport>();
+    for (const r of fleetReports)
+      if (r.status === "handoff" && r.worker.slot === s.id && r.worker.branch === branch && r.worker.openedAt < s.openedAt)
+        byOccupant.set(r.worker.openedAt, r);
+    known = [...byOccupant.values()].sort((a, b) => a.worker.openedAt - b.worker.openedAt)
+      .map((r) => ({ startedAt: r.worker.openedAt, handedAt: r.reportedAt, report: r.id }));
+  } else {
+    known = [...(lineageStateOf(s)?.line ?? [])].sort((a, b) => a.at - b.at).map((h) => ({
+      startedAt: h.from.openedAt, handedAt: h.at, report: handoffOf(h.from.slot, h.from.openedAt)?.id ?? null }));
+  }
+  const tail = n > 0 ? known.slice(-n) : [];
+  const past = [
+    ...Array.from({ length: n - tail.length }, () => ({ startedAt: null, handedAt: null, report: null })),
+    ...tail,
+  ].map((p, i) => ({ session: i + 1, ...p }));
+  return { session: f.session, taken: f.taken, cap: f.cap, past };
+}
+
 function migrateMessage(fill: ContextFill, rail: MigrateRail): string {
   const opening = `[fleet] Dein Kontext ist bei ${fill.pct}% (${fill.usedTokens} von ${fill.windowTokens} Tokens im Fenster). `
     + "Das ist ein Server-Prädikat, keine Meldung von dir. Übergib jetzt in dieser Reihenfolge: ";
@@ -36207,6 +36247,12 @@ Bun.serve<WSData>({
       // what the succession rail has already done with it (successionFacts — read-only).
       return json({ ...p, worktree: s.worktree, setup: await sessionSetup(s, p.branch),
         succession: successionFacts(s) });
+    }
+    const chainMatch = /^\/api\/slots\/(\d+)\/succession$/.exec(url.pathname);
+    if (req.method === "GET" && chainMatch) {
+      const s = slotFrom(chainMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      return json(successionChain(s));
     }
     // lane map: every open worktree of the focused slot's repo, including ORPHANS (worktrees whose slot
     // was killed). Works from lane slots too: `worktree list` from a linked worktree covers the repo.

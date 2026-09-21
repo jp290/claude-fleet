@@ -14,7 +14,8 @@
 # live values are refused by name below rather than merely avoided.
 #
 #   ./testinstanz.sh up [mixed|full]        stage, start, plant EVERYTHING (fixtures, succession, ctx,
-#                                           codex states, painters), print the URL — the whole demo
+#                                           codex states, painters), print the URL — the whole demo;
+#                                           FLEET_TI_TOKEN=<old> keeps the link the owner holds
 #   ./testinstanz.sh fixtures [mixed|full]  replant against the running instance, no restart
 #   ./testinstanz.sh succession             plant the succession facts (stops+starts the server)
 #   ./testinstanz.sh states                 what the bar paints right now, per state
@@ -135,7 +136,9 @@ up)
   # checkout has none — because copying a state file is how a test instance adopts real sessions.
   rsync -a --exclude .git --exclude node_modules --exclude 'fleet.json*' "$SRC/" "$DIR/"
   ln -s "$SRC/node_modules" "$DIR/node_modules"
-  TOK=$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  # FLEET_TI_TOKEN keeps the owner's link across a down/up (a rebuild after a client change);
+  # without it every `up` mints a fresh one and the link he holds stops opening.
+  TOK="${FLEET_TI_TOKEN:-$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
   printf '%s' "$TOK" > "$TOKF"; chmod 600 "$TOKF"
   ADDR=$(ti_addr)
   ti_serve || exit 1

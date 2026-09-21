@@ -270,6 +270,17 @@
     font-size: var(--chat-ui-fs); line-height: 1.45; font-variant-numeric: tabular-nums;
     white-space: nowrap; color: var(--chat-mute);
     background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  /* FASSUNG D — the line as a chain, one mark per session, hung under the NAME (the needline's left
+     edge). Three readings by FILL and brightness, no text: past = filled in --chat-faint, the running
+     one = filled in --chat-ink, a baton still left under the cap = an empty --chat-faint outline.
+     A pill, not a disc, so no mark here can be read as the row's state glyph (.act, 8px round). */
+  .slot .succchain { display: flex; align-items: center; gap: 3px; min-height: 12px;
+    margin: 1px 0 0 calc(var(--mark-size, 26px) + 28px); }
+  .slot .sm { flex: none; width: 12px; height: 6px; border-radius: 3px; }
+  .slot .sm.past { background: var(--chat-faint); }
+  .slot .sm.now { background: var(--chat-ink); }
+  .slot .sm.free { box-shadow: inset 0 0 0 1px var(--chat-faint); }
+  .slot .sm.more { width: 4px; background: var(--chat-edge); }
   .slot .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     letter-spacing: -0.005em; }
   .slot.current .lbl { color: var(--chat-ink); }
@@ -293,12 +304,20 @@
     clip-path: polygon(20% 0, 50% 30%, 80% 0, 100% 20%, 70% 50%, 100% 80%, 80% 100%,
       50% 70%, 20% 100%, 0 80%, 30% 50%, 0 20%); }
   /* Actions replace the row's right edge on a solid matching surface, never overpaint facts. */
-  /* ...and it replaces the WHOLE reading zone (ctx + state), never a slice of it: with ctx on line 1
-     since 2026-09-21, a strip only as wide as ✕ cut the fill's last digits in half on every hover.
-     62px is "ctx 78%" + gap + the 8px state box; the actions sit at its right end. */
-  .slotact { position: absolute; right: 6px; top: 0; bottom: 0; display: none; align-items: center;
-    justify-content: flex-end; min-width: 62px;
+  /* ...and it HIDES the reading zone (ctx + state) instead of painting over a guessed width of it.
+     It used to be a solid strip of min-width 62px ("ctx 78%" + gap + the state box) — which on a
+     "ctx ?" row is 10px wider than what it covers, so it cut the ⎇+ chip in half on hover (measured
+     2026-09-21, slot 5 of the demo). Now the two readings keep their place but turn invisible, the
+     strip is as wide as its actions, and nothing to its left moves or is cut.
+     And it covers LINE 1 ONLY — the row's top padding + the line's min-height: down to bottom:0 it
+     laid its surface over the right end of every line under the row, and the Codex sentence read
+     "choose which convers…" on hover (owner screenshot 2026-09-21). */
+  .slotact { position: absolute; right: 6px; top: 0; height: calc(6px + 26px); display: none; align-items: center;
+    justify-content: flex-end;
     gap: 2px; padding-left: 6px; background: var(--rb); }
+  .slot.lane .slotact { height: calc(6px + 22px); }
+  .slot:hover .r1 .ctxfill, .slot:hover .r1 .act,
+  .slot:focus-within .r1 .ctxfill, .slot:focus-within .r1 .act { visibility: hidden; }
   .slot:hover .slotact, .slot:focus-within .slotact { display: flex; }
   .slot .kill { color: var(--chat-faint); font-size: 13px; padding: 2px 5px; border-radius: 5px; }
   .slot .kill:hover { color: var(--danger); background: var(--chat-raised); }
@@ -2631,7 +2650,7 @@
 
   /* touch devices: hover-revealed controls have no hover to reveal them — pin them in flow */
   @media (hover: none) {
-    .slotact { display: flex; position: static; padding-left: 0; background: none; }
+    .slotact, .slot.lane .slotact { display: flex; position: static; height: auto; padding-left: 0; background: none; }
     .pkrow .pkuse, .pkrow .pkpin { visibility: visible; }
   }
 

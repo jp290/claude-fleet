@@ -16938,6 +16938,27 @@ async function tickLaneAutoClose(): Promise<void> {
       autoCloseTried.set(s.id, s.openedAt);
       emitLaneOutcome({ ...row, autoClose: { reportId: report.id,
         disposition: decision.disposition, decidedAt: decision.at, decidedBySlot: decision.by.slot } });
+      // SAMMELZEILE A · a finished lane's tree goes with the lane, not into the orphan pile.
+      // Measured 2026-09-20: ~20 worktrees without a slot on disk, one per past auto-close — every
+      // kill keeps its tree (a HAND kill must), and this tick reused the hand close's teardown
+      // unchanged. An auto-close is by definition killed-empty and judged finished, so the tree
+      // goes BEFORE the slot closes, in the land's own order: removeWorktreeSafe, then teardown.
+      // A refusal is obeyed, never forced — the slot still closes and the log names the tree that
+      // stayed. `wt` is read before the await and the identity is re-proved after it: this git
+      // spawn opens exactly the recycle window whose closing keeps killSlot from tearing down
+      // whatever occupant it would otherwise find in the slot.
+      const wt = s.worktree;
+      if (wt && s.cwd) {
+        const rm = await removeWorktreeSafe(wt.repo, s.cwd, wt.branch, wt.form ?? "worktree");
+        if (rm) console.log(`lane auto-close: slot ${s.id} closed but its worktree stays (${wt.branch})`
+          + ` — ${rm.error.split("\n")[0]}`);
+        if (s.openedAt !== occupant.openedAt || s.sessionId !== occupant.sessionId
+          || s.cwd !== occupant.cwd) {
+          console.log(`lane auto-close: slot ${s.id} recorded ${row.branch} as closed but its occupant `
+            + "changed while the worktree was being removed — the slot is a new session's now");
+          continue;
+        }
+      }
       // `owner` is the SlotEnding a plain kill writes, and it is what an automatic close writes too:
       // that vocabulary lives in slotstats.ts, so this tick cannot add a word of its own without
       // widening past its write set. The discriminator that DOES exist is `autoClose` on the row
@@ -38422,8 +38443,18 @@ Bun.serve<WSData>({
         await killSlot(s, "shelved"); // keeps the worktree on disk (as any kill does) — now WITH a note to resume from
         return json({ ok: true });
       }
-      // plain kill (fall-through): record an abandoned lane's outcome before killSlot clears its
-      // state. Gated on s.worktree — a plain (non-lane) session kill leaves no lane outcome.
+      // plain kill (fall-through): read the kill's own body FIRST — the boundary validates the
+      // flag whether or not a lane follows. {archiveTask:true} is for a lane whose work is
+      // already accounted for: a plain kill hands its `sent` rows back to the queue (detachSlotTasks,
+      // and the parked dispatch tail requeues its own), which re-spawned a long-landed row two
+      // minutes after its lane was killed (9ae37525, 2026-09-15). The requeue paths are NOT
+      // touched — both already skip terminal rows; the rows are made terminal HERE, before the
+      // teardown can reach them, in the variant-loser order (decideVariantGroup).
+      const killBody = await readJson(req);
+      if (killBody?.archiveTask !== undefined && typeof killBody.archiveTask !== "boolean")
+        return json({ error: "archiveTask must be a boolean when present" }, 400);
+      // a founding-target kill is not a lane teardown — no queue rows ride it, so the flag has
+      // nothing to hold there and the founding path stays byte-identical.
       const foundingProgram = programs.find((program) => program.founding?.target.slot === s.id);
       if (foundingProgram?.founding) {
         const founding = foundingProgram.founding;
@@ -38434,6 +38465,14 @@ Bun.serve<WSData>({
           return json({ error: `founding target kill refused: ${e instanceof Error ? e.message : e}` }, 409);
         }
       }
+      const archiveRows = killBody?.archiveTask === true
+        ? tasks.filter((t) => t.slot === s.id && t.status === "sent") : [];
+      for (const t of archiveRows) {
+        t.status = "archived";
+        t.slot = null;
+        t.note = "archived on kill (archiveTask) — closed as finished, not requeued";
+      }
+      if (archiveRows.length) audit("task_kill_archive", s.id, archiveRows.map((t) => t.id).join(","));
       if (s.cwd && s.worktree) emitLaneOutcome(await buildLaneOutcome(s, "killed"));
       await killSlot(s, "owner");
       return json({ ok: true });

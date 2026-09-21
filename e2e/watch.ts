@@ -3975,7 +3975,7 @@ export async function run(): Promise<void> {
   // of main and produced no landable candidate — the lane that otherwise sits open forever holding
   // a dispatcher slot until the owner presses kill by hand.
   //
-  // Everything here is a REFUSAL except two lanes. That asymmetry is the design: the git/pane half
+  // Everything here is a REFUSAL except three lanes. That asymmetry is the design: the git/pane half
   // (`spent-looking`) cannot tell a lane that gave up from one that finished a read-only slice, so
   // the close is gated on a persisted human-read judgement AND on a fresh commit count, and every
   // fixture below differs from the closing one in exactly ONE fact.
@@ -4026,20 +4026,26 @@ export async function run(): Promise<void> {
     const reportlessLane = await d2NewLane();
     const outsideLineageLane = await d2NewLane();
     const clarifyLane = await d2NewLane();
+    const lockedLane = await d2NewLane(); // its tree refuses removal (locked) — the close must obey
     const d2Lanes = [acceptedLane, rejectedLane, dirtyLane, aheadLane, rejectedAheadLane,
-      undecidedLane, reportlessLane, outsideLineageLane, clarifyLane];
+      undecidedLane, reportlessLane, outsideLineageLane, clarifyLane, lockedLane];
     const d2Refusers = [dirtyLane, aheadLane, rejectedAheadLane, undecidedLane, reportlessLane,
       outsideLineageLane];
-    check("D2 fixtures: one MAIN occupant and nine distinct lanes exist",
+    // the deterministic stand-in for the race the refusal guard exists for: the served cache says
+    // clean and the tree IS clean, but `git worktree remove` refuses a locked tree all the same —
+    // exactly the shape a removal-refusal reaches the tick in. Lock is read by remove only; every
+    // git read the predicate and the outcome recorder make works unchanged on a locked tree.
+    const d2Lock = lockedLane.cwd ? spawnSync("git", ["-C", REPO, "worktree", "lock", lockedLane.cwd]) : null;
+    check("D2 fixtures: one MAIN occupant and ten distinct lanes exist, and the locked lane's tree is locked against removal",
       !!d2MainOpen?.ok && d2Lanes.every((l) => typeof l.slot === "number" && !!l.cwd && !!l.branch)
-        && new Set([d2Main, ...d2Lanes.map((l) => l.slot)]).size === 10,
-      JSON.stringify({ d2Main, lanes: d2Lanes.map((l) => l.slot) }));
+        && new Set([d2Main, ...d2Lanes.map((l) => l.slot)]).size === 11 && d2Lock?.status === 0,
+      JSON.stringify({ d2Main, lanes: d2Lanes.map((l) => l.slot), locked: d2Lock?.status ?? "no cwd" }));
     const d2MainTok = await paneEnv(`s${d2Main}`, "FLEET_SELF_TOKEN") ?? "";
     const d2Tok = new Map<number, string>();
     for (const l of d2Lanes) d2Tok.set(l.slot, await paneEnv(`s${l.slot}`, "FLEET_SELF_TOKEN") ?? "");
     check("D2 fixtures: every participant carries its own exact scoped credential",
       /^[0-9a-f]{32}$/.test(d2MainTok) && [...d2Tok.values()].every((t) => /^[0-9a-f]{32}$/.test(t))
-        && new Set([d2MainTok, ...d2Tok.values()]).size === 10,
+        && new Set([d2MainTok, ...d2Tok.values()]).size === 11,
       `lengths=${[d2MainTok, ...d2Tok.values()].map((t) => t.length).join("/")}`);
 
     // The Program binding and the per-lane queue identity, planted with srv down — the technique
@@ -4099,6 +4105,7 @@ export async function run(): Promise<void> {
     const d2Decide: [{ slot: number }, "accept" | "reject"][] = [
       [acceptedLane, "accept"], [rejectedLane, "reject"], [dirtyLane, "accept"],
       [aheadLane, "accept"], [rejectedAheadLane, "reject"], [clarifyLane, "accept"],
+      [lockedLane, "accept"],
     ];
     // the clarify lane's criterion, proposed by the lane itself BEFORE its report is judged — the
     // measured order of task b28b9d89 (criterion filed, needs-main report accepted, then closed).
@@ -4149,8 +4156,8 @@ export async function run(): Promise<void> {
       d2Proposed.status === 200 && d2ProposedBody.ok === true && d2ClarifyTaskId !== ""
         && d2CriterionBefore?.proposedAt === d2ProposedBody.proposedAt && d2CriterionBefore?.confirmedAt === null,
       JSON.stringify({ status: d2Proposed.status, body: d2ProposedBody, task: d2ClarifyTaskId, criterion: d2CriterionBefore }));
-    check("D2 fixtures: six reports carry a verdict by the exact lineage holder, one names a non-holder, one is undecided, and one lane filed nothing",
-      d2Verdicts.length === 6
+    check("D2 fixtures: seven reports carry a verdict by the exact lineage holder, one names a non-holder, one is undecided, and one lane filed nothing",
+      d2Verdicts.length === 7
         && d2Report.get(acceptedLane.slot)?.decision?.disposition === "accepted"
         && d2Report.get(rejectedLane.slot)?.decision?.disposition === "rejected"
         && d2Report.get(rejectedAheadLane.slot)?.decision?.disposition === "rejected"
@@ -4205,6 +4212,7 @@ export async function run(): Promise<void> {
       { slot: reportlessLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
       { slot: outsideLineageLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
       { slot: clarifyLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
+      { slot: lockedLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
     ];
     const d2Unmet = (snap: D2Sv[]): string[] => d2Want
       .filter((w) => !w.holds(snap.find((x) => x.id === w.slot)))
@@ -4216,14 +4224,14 @@ export async function run(): Promise<void> {
       d2SvBefore = await d2Sv();
       d2Missing = d2Unmet(d2SvBefore);
     }
-    check("D2 setup: both closing lanes reached the spent shape, and every refusing lane differs from them in exactly one fact",
+    check("D2 setup: the closing lanes reached the spent shape, and every refusing lane differs from them in exactly one fact",
       d2Missing.length === 0,
       JSON.stringify({ unmet: d2Missing,
         slots: d2SvBefore.filter((x) => d2Lanes.some((l) => l.slot === x.id))
           .map((x) => [x.id, x.stalled, x.git]) }));
 
     // --- (b) THE FLAG'S ABSENCE MEANS DO NOTHING, and this is where it is worth measuring: every
-    // fact the close needs is now true for two lanes, and the server was booted without the flag.
+    // fact the close needs is now true for three lanes, and the server was booted without the flag.
     const outcomesOf = async (branch: string): Promise<Record<string, unknown>[]> =>
       ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
         { outcomes: Record<string, unknown>[] }).outcomes.filter((o) => o.branch === branch);
@@ -4266,7 +4274,8 @@ export async function run(): Promise<void> {
     for (let i = 0; i < 120 && !closedBoth; i++) {
       const live = await liveSlots();
       closedBoth = (live.find((x) => x.id === acceptedLane.slot)?.cwd ?? null) === null
-        && (live.find((x) => x.id === rejectedLane.slot)?.cwd ?? null) === null;
+        && (live.find((x) => x.id === rejectedLane.slot)?.cwd ?? null) === null
+        && (live.find((x) => x.id === lockedLane.slot)?.cwd ?? null) === null;
       if (!closedBoth) await Bun.sleep(1000);
     }
     const d2LiveAfter = await liveSlots();
@@ -4299,11 +4308,24 @@ export async function run(): Promise<void> {
         && acceptedRow.autoClose.decidedAt === d2Report.get(acceptedLane.slot)?.decision?.at
         && acceptedRow.taskId === d2TaskId(acceptedLane.slot) && acceptedRow.programId === d2ProgramId,
       JSON.stringify({ rows: acceptedRows.length, row: acceptedRow ?? null }));
-    // …and the worktree survives the close exactly as it survives a hand kill: killSlot never
-    // removes a tree, so nothing this tick does can destroy work it decided not to look at.
-    check("D2 trail: the closed lane's worktree is still on disk, as after any hand kill",
-      existsSync(acceptedLane.cwd) && existsSync(rejectedLane.cwd),
+    // …and the trees are part of the close now, in the direction each one earned (SAMMELZEILE A):
+    // a clean finished lane's worktree is REMOVED before the slot closes — leaving it was measured
+    // as the orphan pile (~20 trees without a slot, 2026-09-20) — while a tree the removal refuses
+    // (locked, here: the deterministic stand-in for a tree that went dirty under the served cache)
+    // STAYS, obeyed and named, never forced. Each half kills one mutation: dropping the removal
+    // call turns the first red; forcing through a refusal turns the second red.
+    const lockedRows = await outcomesOf(lockedLane.branch);
+    const lockedRow = lockedRows[0] as { disposition?: string;
+      autoClose?: { disposition?: string; reportId?: string } } | undefined;
+    check("D2 trail: a closed lane's worktree is gone — an auto-close no longer orphans its tree",
+      !existsSync(acceptedLane.cwd) && !existsSync(rejectedLane.cwd),
       `${acceptedLane.cwd} ${rejectedLane.cwd}`);
+    check("D2 trail: a worktree whose removal is refused stays on disk, obeyed not forced, while the close itself is by the book",
+      existsSync(lockedLane.cwd) && (d2LiveAfter.find((x) => x.id === lockedLane.slot)?.cwd ?? null) === null
+      && lockedRows.length === 1 && lockedRow?.disposition === "killed-empty"
+      && lockedRow?.autoClose?.disposition === "accepted"
+      && lockedRow?.autoClose?.reportId === d2Report.get(lockedLane.slot)?.id,
+      JSON.stringify({ tree: existsSync(lockedLane.cwd), rows: lockedRows.length, row: lockedRow ?? null }));
 
     // --- (a) EVERY refusal, each isolated to one fact, measured on the same armed server.
     const refusalRows = await Promise.all(d2Refusers.map((l) => outcomesOf(l.branch)));
@@ -4496,6 +4518,12 @@ export async function run(): Promise<void> {
     for (const l of d2Refusers) await post(`/api/slots/${l.slot}/kill`, {});
     if (!clarifyClosed) await post(`/api/slots/${clarifyLane.slot}/kill`, {});
     if (d2Main) await post(`/api/slots/${d2Main}/kill`, {});
+    // the locked tree outlived its close by design; leave no lock and no orphan behind for the
+    // modules after this one — unlock first, or the remove would refuse exactly as the tick did.
+    if (lockedLane.cwd) {
+      spawnSync("git", ["-C", REPO, "worktree", "unlock", lockedLane.cwd]);
+      spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", lockedLane.cwd]);
+    }
     await stopSrv();
     const d2Cleaned = JSON.parse(readFileSync(d2Path, "utf8")) as {
       events?: { kind?: string }[]; fleetReports?: unknown[]; programs?: { id?: string }[];

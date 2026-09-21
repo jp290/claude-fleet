@@ -5406,6 +5406,53 @@ export async function run(ctx: Ctx): Promise<void> {
       (await contextReceipts()).total === failedReceiptCount);
     await post(`/api/tasks/${xT.task.id}/delete`, {});
 
+    // --- (f2k) SAMMELZEILE A · the kill door can make the bound row terminal INSTEAD of handing
+    // it back. Measured (9ae37525, 2026-09-15): a row whose lane was long landed was requeued by
+    // its own kill and the dispatch tick re-spawned it two minutes later as a fresh high lane.
+    // The requeue paths are the row's return ticket, so the flag works one step earlier: the rows
+    // go `archived` BEFORE the teardown reaches them, and both paths (detachSlotTasks, the parked
+    // tail) skip terminal rows untouched. Same door, same fixture discipline as the probe above:
+    // the kill lands inside the boot sleep, and the assertion is on the ROW, never on the 200. ---
+    const kT = (await (await post("/api/tasks", { text: "kill-archive-probe", queue: false })).json()) as { task: { id: string } };
+    const kd = await post(`/api/tasks/${kT.task.id}/dispatch`, { harness: "codex", model: FOREIGN_MODEL });
+    const kdJ = (await kd.json()) as { ok?: boolean; slot?: number };
+    const kSlot = typeof kdJ.slot === "number" ? kdJ.slot : -1;
+    const kCwd = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.find((s) => s.id === kSlot)?.cwd ?? null;
+    check("kill-archive fixture: the row is sent, bound to a lane that holds a worktree (setup)",
+      kd.ok && kSlot > 0 && (await f2Row(kT.task.id))?.status === "sent"
+      && !!kCwd && existsSync(`${kCwd}/.git`), `${kd.status} ${JSON.stringify(kdJ)} cwd=${kCwd}`);
+    const kKill = await post(`/api/slots/${kSlot}/kill`, { archiveTask: true });
+    let kRow: FRow | undefined;
+    for (let i = 0; i < 30; i++) {
+      kRow = await f2Row(kT.task.id);
+      if (kRow?.status === "archived" && !kRow.slot) break;
+      await Bun.sleep(500);
+    }
+    check("a kill with {archiveTask:true} archives the bound row before any requeue path can take it back",
+      kKill.ok && kRow?.status === "archived" && !kRow.slot
+      && kRow.note === "archived on kill (archiveTask) — closed as finished, not requeued",
+      `${kKill.status} ${JSON.stringify(kRow)}`);
+    // the counterfactual needs a tick's worth of patience, not a moment: the parked tail wakes
+    // ~4 s after the kill, and the dispatcher's own cadence is what re-spawned the measured row.
+    // The requeue probe above is the no-flag twin — its row requeues; this one stays terminal.
+    const kAfterKill = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.find((s) => s.id === kSlot)?.cwd ?? null;
+    await Bun.sleep(16_000);
+    const kRowLater = await f2Row(kT.task.id);
+    const kAudit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((l) => { try { return JSON.parse(l) as { event?: string; taskId?: string; detail?: string }; } catch { return {}; } });
+    const kRequeues = kAudit.filter((a) => a.event === "dispatch_requeued" && a.taskId === kT.task.id);
+    const kSpawns = kAudit.filter((a) => (a.event === "task_dispatch" || a.event === "task_wave_dispatch")
+      && (a.detail ?? "").startsWith(`${kT.task.id} `));
+    const kArchived = kAudit.filter((a) => a.event === "task_kill_archive" && a.detail === kT.task.id);
+    check("the archived row stays terminal past the parked tail and the next dispatch tick — no requeue, no second spawn",
+      kRowLater?.status === "archived" && !kRowLater.slot && kRequeues.length === 0 && kSpawns.length === 1
+      && kArchived.length === 1 && kAfterKill === null,
+      JSON.stringify({ row: kRowLater, requeues: kRequeues.length, spawns: kSpawns.length,
+        archived: kArchived.length, slotCwd: kAfterKill }));
+    await post(`/api/tasks/${kT.task.id}/delete`, {});
+
     // --- (f2b) pi-zai's SECOND model, on the same road: the dispatch may pin glm-5.3-flash, the
     // catalogue the pane writes must carry it beside glm-5.3, and a third model stays a 400 that
     // names both allowed ids. Same pane-command discipline as the codex probe above — never the

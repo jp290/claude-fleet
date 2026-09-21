@@ -2585,6 +2585,14 @@ dieses Feldes: das Vokabular `SlotEnding` liegt in `slotstats.ts`, deshalb zähl
 einen automatischen Schluss unter demselben `owner` wie einen Knopfdruck; wer die beiden trennen
 will, joint das Outcome-Ledger, nie eine Pane.
 
+**Der Baum geht MIT der Lane, nicht in den Waisen-Stapel** (seit 2026-09-20, SAMMELZEILE A: je
+früherem Schluss blieb ein Worktree ohne Slot auf Platte — ~20 Stück am 2026-09-20). Nach der Zeile,
+vor dem Teardown, entfernt der Tick den Worktree durch **dieselbe Tür wie ein Land**
+(`server.ts#removeWorktreeSafe`): eine saubere, verifizierbare Lane verliert ihren Baum, eine
+VERWEIGERUNG (unsauberer, unverifizierbarer Baum) wird gehorcht, nie erzwungen — der Slot schließt
+trotzdem, und das Log nennt den Baum, der blieb. `killed-empty` heißt: in diesem Baum war nichts zu
+verlieren; genau diese Sicherheit ist es, die die Entfernung vor dem Teardown trägt.
+
 **Und WARUM eine Lane noch steht, steht seit 2026-09-17 auf `GET /api/sessions`.** Jede Ablehnung
 oben trägt ihren eigenen Satz — der Tick hat ihn bis dahin berechnet und an seinen beiden
 `continue` fallen lassen, der Aktuator lehnte also STUMM ab. Zwei Felder, EINE Ableitung

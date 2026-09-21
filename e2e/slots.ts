@@ -1931,9 +1931,8 @@ export async function run(): Promise<void> {
           && /calc\(14px \* var\(--queue-scale\)\)/.test(cssBody("#sidetools #queuebtn .ico"))
           && /stroke-width: calc\(1\.8px \/ var\(--queue-scale\)\)/.test(cssBody("#sidetools #queuebtn .ico"))
           && /grid-template-columns: 23px 23px; grid-auto-rows: 23px/.test(cssBody("#layouts"))
-          && (indexSrc.match(/--queue-scale: [\d.]+;/g) ?? []).length === 2
-          && /--queue-scale: 1;/.test(cssBody('#sidetools[data-queue="iii"]'))
-          && cliSrc.includes('if (f === "iii") $("toolrow1").appendChild(q);'),
+          && (indexSrc.match(/--queue-scale: [\d.]+;/g) ?? []).length === 1
+          && !/data-queue|applyQueueFassung/.test(indexSrc + cliSrc),
         JSON.stringify({ sidetools: cssBody("#sidetools"), queue: cssBody("#sidetools #queuebtn .ico") }));
       const plusSrc = cut("const plusBtn = ", '$("sidetools").after(plusNote);');
       check("client: the + only says what is coming — it fetches nothing and opens nothing",

@@ -151,11 +151,9 @@
      that comes and goes grows leftwards, away from it. Row 1 what came in and what happened
      (attn · ops · audit · lands), row 2 setup (dev · saver · ⋯ · +); the conditional buttons lead
      their row. One button grammar: 23px squares, a drawn icon (src/icons.ts) whose stroke is
-     divided by the scale so a bigger icon draws the SAME line weight, the chat tokens.
-     ROUND 14 FASSUNGEN, until the owner picks (#queue= in the URL, client.ts#applyQueueFassung):
-     i = 34px neutral · ii = 34px in the accent · iii = 23px in the accent, back in row 1. */
+     divided by the scale so a bigger icon draws the SAME line weight, the chat tokens. Round 14
+     had three Fassungen (34px neutral / 34px accent / 23px accent); the owner took the first. */
   #sidetools { --queue-scale: 1.48; display: flex; align-items: center; gap: 8px; padding: 0 10px 8px; }
-  #sidetools[data-queue="iii"] { --queue-scale: 1; }
   #layouts { flex: none; display: grid; grid-template-columns: 23px 23px; grid-auto-rows: 23px; gap: 2px; }
   #toolrows { margin-left: auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .toolrow { display: flex; align-items: center; justify-content: flex-end; gap: 2px; min-width: 0; height: 23px; }
@@ -174,9 +172,6 @@
   #sidetools #queuebtn { width: calc(23px * var(--queue-scale)); height: calc(23px * var(--queue-scale)); }
   #sidetools #queuebtn .ico { width: calc(14px * var(--queue-scale)); height: calc(14px * var(--queue-scale));
     stroke-width: calc(1.8px / var(--queue-scale)); }
-  #sidetools[data-queue="ii"] #queuebtn, #sidetools[data-queue="iii"] #queuebtn { color: var(--accent);
-    border-color: color-mix(in srgb, var(--accent) 45%, var(--chat-edge));
-    background: color-mix(in srgb, var(--accent) 12%, var(--chat-raised)); }
   /* a count widens its button instead of squeezing the icon */
   #sidetools button:has(.hbadge) { padding: 0 5px; }
   #sidetools .hbadge { font-family: var(--chat-mono); font-size: var(--chat-ui-fs);

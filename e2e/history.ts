@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { check, get, post, plogPath, plogRead, ROOT, REPO, restartSrv, until, UntilTimeout } from "./harness";
 import { WORKER_CONTRACTS } from "../src/protocol";
+import { mdInto } from "../src/md";
 
 // Runs under the claude-gate harness, not run() below: the main history suite deliberately uses
 // FLEET_CMD=true and therefore has no pinned session identity. Keeping the probe in this family
@@ -441,6 +442,83 @@ export async function run(): Promise<void> {
   }
 
   await runForeignConversations();
+  runLinks();
+}
+
+// --- links in both views (owner 2026-09-21: "links sollten immer anklickbar und kopierbar sein") ---
+// The chat half renders the REAL src/md.ts into a stub document: mdInto only ever calls
+// createElement/createTextNode/appendChild/setAttribute/textContent/className/style, so a stub
+// that records exactly those is the whole DOM it can see. The terminal half is client-only
+// (xterm needs a browser), so it is pinned at the source and at the installed package.
+interface StubNode { tag: string; attrs: Record<string, string>; kids: StubNode[]; data?: string }
+const stubText = (n: StubNode): string => n.data ?? n.kids.map(stubText).join("");
+const stubAll = (n: StubNode, tag: string): StubNode[] =>
+  [...(n.tag === tag ? [n] : []), ...n.kids.flatMap((k) => stubAll(k, tag))];
+function renderStub(src: string): StubNode {
+  const make = (tag: string): StubNode & Record<string, unknown> => {
+    const n: StubNode & Record<string, unknown> = { tag, attrs: {}, kids: [], style: {} };
+    n.appendChild = (k: StubNode) => { n.kids.push(k); return k; };
+    n.setAttribute = (k: string, v: string) => { n.attrs[k] = v; };
+    Object.defineProperty(n, "textContent", { set: (v: string) => { n.kids = [{ tag: "#text", attrs: {}, kids: [], data: v }]; } });
+    Object.defineProperty(n, "className", { set: (v: string) => { n.attrs.class = v; } });
+    return n;
+  };
+  const g = globalThis as { document?: unknown };
+  const had = g.document;
+  g.document = { createElement: make, createTextNode: (data: string) => ({ tag: "#text", attrs: {}, kids: [], data }) };
+  try {
+    const root = make("div");
+    mdInto(root as unknown as HTMLElement, src);
+    return root;
+  } finally {
+    g.document = had;
+  }
+}
+
+function runLinks(): void {
+  const url = "https://example.com/a_b/c?x=1&y=2#frag";
+  const bare = stubAll(renderStub(`see ${url}. then`), "a");
+  check("chat view: a bare https url in running text becomes exactly one link",
+    bare.length === 1, `${bare.length} <a>`);
+  check("chat view: the bare url's href is the full url, the sentence's trailing '.' left outside",
+    bare[0]?.attrs.href === url, bare[0]?.attrs.href ?? "no <a>");
+  check("chat view: the bare url's link text is the full url, so selecting it copies the url",
+    bare[0] !== undefined && stubText(bare[0]) === url, bare[0] ? stubText(bare[0]) : "no <a>");
+  check("chat view: a bare url opens in a new tab with rel=noopener noreferrer",
+    bare[0]?.attrs.target === "_blank" && bare[0]?.attrs.rel === "noopener noreferrer", JSON.stringify(bare[0]?.attrs));
+  const md = stubAll(renderStub(`[docs](${url})`), "a");
+  check("chat view: a markdown link and a bare url get the same href, target and rel",
+    md.length === 1 && JSON.stringify({ ...md[0]!.attrs, class: "" }) === JSON.stringify({ ...bare[0]?.attrs, class: "" }),
+    JSON.stringify(md[0]?.attrs));
+
+  // safeHref's refusals stay refusals, by either road into the link path. Payloads carry no parens:
+  // `[x](javascript:alert(1))` never even matches the link grammar, so it would not reach safeHref.
+  const hostile = ["javascript:alert%281%29", "JaVaScRiPt:void0", "data:text/html,<b>x</b>", "vbscript:x", "//evil.example/x"];
+  const linked = hostile.filter((h) => stubAll(renderStub(`[x](${h}) and ${h}`), "a").length > 0);
+  check("chat view: javascript:, data:, vbscript: and protocol-relative urls never become a link",
+    linked.length === 0, linked.join(" | "));
+  const shown = renderStub("[x](javascript:void0)");
+  check("chat view: a refused markdown link is shown as its own source text, not dropped",
+    stubText(shown) === "[x](javascript:void0)", stubText(shown));
+
+  // the terminal: the official addon, in the version that pairs with the installed xterm
+  const pkg = JSON.parse(readFileSync(`${ROOT}/package.json`, "utf8")) as { dependencies: Record<string, string> };
+  const addonPkg = `${ROOT}/node_modules/@xterm/addon-web-links/package.json`;
+  const peer = existsSync(addonPkg)
+    ? (JSON.parse(readFileSync(addonPkg, "utf8")) as { peerDependencies?: Record<string, string> }).peerDependencies?.["@xterm/xterm"]
+    : undefined;
+  check("terminal: @xterm/addon-web-links is a dependency pinned to an exact version",
+    /^\d+\.\d+\.\d+$/.test(pkg.dependencies["@xterm/addon-web-links"] ?? ""), pkg.dependencies["@xterm/addon-web-links"] ?? "absent");
+  check("terminal: the installed addon's @xterm/xterm peer range admits the pinned xterm",
+    peer !== undefined && Bun.semver.satisfies(pkg.dependencies["@xterm/xterm"] ?? "", peer),
+    `peer ${peer ?? "(addon not installed)"} vs xterm ${pkg.dependencies["@xterm/xterm"]}`);
+  const client = readFileSync(`${ROOT}/src/client.ts`, "utf8");
+  check("terminal: bare urls are linkified by WebLinksAddon, through the same handler as OSC 8 links",
+    /loadAddon\(new WebLinksAddon\(openTermLink\)\)/.test(client) && /linkHandler: \{ activate: openTermLink \}/.test(client));
+  const opener = /function openTermLink\([\s\S]*?\n\}/.exec(client)?.[0] ?? "";
+  check("terminal: a link opens only as http(s), in a new tab, without an opener",
+    /proto !== "http:" && proto !== "https:"/.test(opener) && opener.includes(`window.open(uri, "_blank", "noopener,noreferrer")`),
+    opener ? `${opener.length} chars` : "openTermLink not found");
 }
 
 // --- the conversation view for pi-zai and codex (sixteenth cut): each reads its OWN file format

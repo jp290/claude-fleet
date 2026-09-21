@@ -12709,7 +12709,7 @@ exit 0
     spawnSync("git", ["-C", lidCwd, "add", "succession-lid.txt"]);
     spawnSync("git", ["-C", lidCwd, "commit", "-qm", "succession-lid: cut"]);
     await stopSrv();
-    const lidProgramId = "5ucc1d".padEnd(24, "0");
+    const lidProgramId = "5acc1d".padEnd(24, "0");
     const lidPlant = lidState();
     const lidAt = Date.now();
     lidPlant.programs = [...(lidPlant.programs ?? []), {
@@ -12727,9 +12727,12 @@ exit 0
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(lidPlant, null, 2), { mode: 0o600 });
     await restartSrv();
     const lidTok = lidState().slots?.[String(lidSlot)]?.selfToken ?? "";
-    check("succession lid setup: a codex lane on a Program row whose counter stands at 5",
+    // the Program is read back from the SERVER, not the file: a planted row the loader drops as
+    // malformed still sits in fleet.json, and every report below would then take the programless path
+    const lidProgramLoaded = (await ownerPrograms()).some((p) => p.id === lidProgramId);
+    check("succession lid setup: a codex lane on a LOADED Program row whose counter stands at 5",
       lidLane.ok === true && /^[0-9a-f]{32}$/.test(lidTok) && lidState().laneSucceedCounts?.[lidTaskId] === 5
-        && lidState().slots?.[String(lidSlot)]?.programId === lidProgramId,
+        && lidState().slots?.[String(lidSlot)]?.programId === lidProgramId && lidProgramLoaded,
       JSON.stringify(lidState().slots?.[String(lidSlot)] ?? {}).slice(0, 200));
 
     const lidComplete = await lidPost(lidTok, "/api/self/fleet-report", { status: "complete", text: "SUCCESSION LID: the cut is done." });
@@ -12738,7 +12741,7 @@ exit 0
     check("succession lid (a): succeed after a newest `complete` is a 409 that names the work as done",
       lidComplete.ok && lidAfterComplete.status === 409 && lidAfterCompleteText.includes("reported done")
         && lidState().laneSucceedCounts?.[lidTaskId] === 5,
-      `${lidAfterComplete.status} ${lidAfterCompleteText.slice(0, 200)}`);
+      `report=${lidComplete.status} succeed=${lidAfterComplete.status} ${lidAfterCompleteText.slice(0, 200)}`);
 
     const warnings = async (): Promise<{ status?: string; kind?: string; text?: string }[]> =>
       (((await (await get("/api/attention")).json()) as { requests?: { status?: string; kind?: string; text?: string }[] })
@@ -12761,7 +12764,7 @@ exit 0
       lidHandoff.ok && lidSixth.status === 200 && lidSixthBody.ok === true
         && lidState().laneSucceedCounts?.[lidTaskId] === 6
         && lidWarn.length === 1 && lidWarn[0]!.status === "open" && lidWarn[0]!.kind === "decision",
-      `${lidSixth.status} ${JSON.stringify(lidSixthBody).slice(0, 200)} warnings=${JSON.stringify(lidWarn).slice(0, 300)}`);
+      `handoff=${lidHandoff.status} ${lidSixth.status} ${JSON.stringify(lidSixthBody).slice(0, 200)} warnings=${JSON.stringify(lidWarn).slice(0, 300)}`);
 
     await post(`/api/slots/${lidSlot}/kill`, {});
     spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", lidCwd]);

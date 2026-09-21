@@ -342,7 +342,10 @@ because that is where the cursor is, and never back into the runner. Shared plum
 
 `e2e/pins.ts` is different: it holds the must-agree pairs whose other half is NOT TypeScript — a
 shell script, a doc, this file. It reads files and compares them, with no server and no network.
-Write a RULE there, never a snapshot.
+Write a RULE there, never a snapshot. A rule whose every input is the SOURCE checkout's own
+untracked state (its `CLAUDE.md`, `rulebook/`, `.env`) goes through `pinSource`: FAIL in the source
+checkout, but `SRC-FAIL` — printed with its difference, not counted — in a lane or a land gate's
+worktree, because no byte of that tree can repair it.
 
 ## How a check is written
 

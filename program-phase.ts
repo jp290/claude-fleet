@@ -56,7 +56,10 @@ export interface PhaseTaskFacts {
 export interface PhaseMergeFacts {
   inflight: boolean;
   start: boolean;
-  last: { status: string; landed: boolean; candidateSha: string | null } | null;
+  // `verifyOk` is the verdict's gate result as runVerify recorded it (null = absent or not a
+  // measurement). NO phase rule reads it, exactly like `preview`: the door reads it
+  // (server.ts#redVerdictDoor), because "may I land" is the door's question, not the rail's.
+  last: { status: string; landed: boolean; candidateSha: string | null; verifyOk: boolean | null } | null;
 }
 
 // I6 — the NEWEST lane-outcome row for this task id, or null when the ledger has none. `wave` is

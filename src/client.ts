@@ -1849,8 +1849,9 @@ function spentText(v: VerifyVerdict): string {
 // lands. Closes the gap where a conflict-free rebase auto-landed with no diff ever shown —
 // "textually clean" isn't "semantically correct", so the owner gets one look before it merges.
 // the one deterministic land signal made visible (F-A.3): did the rebased tree pass verify.
-// Informational only — a red, skipped, timed-out or stale badge NEVER disables land (owner
-// latitude stands; confirm-land deliberately does not block on a non-green verify). The FOUR
+// Informational only: the badge never disables a button. The SERVER holds the bar — a confirm over
+// a recorded verify that is not green is refused with 409 (578e8975); a stale green stays the
+// owner's call. The FOUR
 // ways of having no verdict are told apart and none reads green: no command CONFIGURED reads
 // "unverified", a command that DECLINED to run reads "skipped", one our own clock killed while it
 // was working reads "timed out", and one killed while it was still queued behind the suite mutex
@@ -1908,7 +1909,7 @@ function verifyBadge(v: VerifyVerdict | undefined): HTMLElement {
 
 // tail of a non-green verify's captured output — reachable from the red, the skipped and the
 // timed-out badge, so the owner can see WHY it failed, what the command said as it declined, or
-// how far it got before the clock killed it, before exercising land latitude.
+// how far it got before the clock killed it, before deciding how to repair it.
 function showVerifyOutput(v: VerifyVerdict): void {
   const skipped = v.ok === null;
   const overlay = el("div", "overlay riskoverlay");

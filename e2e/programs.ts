@@ -1516,8 +1516,16 @@ export async function run(ctx: Ctx): Promise<void> {
     covers: [{ branch: "d2-status-uncovered", mainAfter: "f".repeat(40), at: d2BaseAt + 250 }],
   })}\n`);
   await restartSrv();
+  // THE CAP IS ROOM FOR A BELEG (0c190377): one past it is refused whole, never truncated, and the
+  // accepted note below sits EXACTLY on it — far past the 300 that held one sentence.
+  const d2NoteAtCap = "D2 projection fixture ".padEnd(2000, "·");
+  const d2OverCap = await post("/api/post-land-audits/adjudicate",
+    { at: d2AuditAt, verdict: "flake", note: `${d2NoteAtCap}x` });
+  check("audit adjudication: a note one past the cap (2001 chars) is refused 400 and names the cap",
+    d2OverCap.status === 400 && ((await d2OverCap.json()) as { error?: string }).error?.includes("≤2000") === true,
+    String(d2OverCap.status));
   const d2Adjudication = await post("/api/post-land-audits/adjudicate",
-    { at: d2AuditAt, verdict: "flake", note: "D2 projection fixture" });
+    { at: d2AuditAt, verdict: "flake", note: d2NoteAtCap });
   // WAIT FOR THE RAIL, DO NOT GUESS AT IT. writeAuditAdjudication calls appendEvent WITHOUT
   // awaiting it and answers first, so the verdict reaches AUDIT_ADJUDICATION_FILE after the 200 —
   // and adjudicationsByAudit() reads only that file. A fixed sleep here is a flake with a timer on
@@ -1813,7 +1821,7 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(r6));
 
   const r7inflight = phaseOf(phaseInput({ merge: { inflight: true, start: false,
-    last: { status: "merged", landed: true, candidateSha: "d".repeat(40) } } }));
+    last: { status: "merged", landed: true, candidateSha: "d".repeat(40), verifyOk: true } } }));
   const r7start = phaseOf(phaseInput({ merge: { inflight: false, start: true, last: null } }));
   check("phase R7: either merge map holding the lane is INTEGRATING, and a persisted candidateSha is reported as the candidate",
     r7inflight.phase === "INTEGRATING" && r7inflight.candidate.basis === "merge-last"
@@ -1822,11 +1830,11 @@ export async function run(ctx: Ctx): Promise<void> {
       && r7start.candidate.sha === null,
     JSON.stringify({ r7inflight, r7start }));
 
-  const nonLand = { status: "blocked", landed: false, candidateSha: null };
+  const nonLand = { status: "blocked", landed: false, candidateSha: null, verifyOk: null };
   const r8 = phaseOf(phaseInput({ merge: { inflight: false, start: false, last: nonLand }, openAttention: 2 }));
   const r9 = phaseOf(phaseInput({ merge: { inflight: false, start: false, last: nonLand } }));
   const r9landed = phaseOf(phaseInput({ merge: { inflight: false, start: false,
-    last: { status: "merged", landed: true, candidateSha: null } } }));
+    last: { status: "merged", landed: true, candidateSha: null, verifyOk: true } } }));
   check("phase R8/R9: a non-land merge verdict is REVIEWABLE, OWNER_GATE once a question is open, and a landed verdict is neither",
     r8.phase === "OWNER_GATE" && basisHas(r8, "2 open attention rows")
       && r9.phase === "REVIEWABLE" && basisHas(r9, "merge-last non-land verdict")
@@ -2339,10 +2347,50 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ ready, row }));
   }
 
-  // …and the planted facts leave with the fixture: the report row and every suite job, so later
-  // modules read the fleet exactly as this one found it.
+  // (iv) THE RED VERDICT (563ec115): a measured red land gate on the lane's current head is R9
+  // REVIEWABLE, and the self-land route's progress guard refuses that candidate unchanged — so the
+  // door must name the refusal, not the land. The GEGENPROBE is the same verdict with the gate
+  // unmeasured (ok:null, a kill): that one stays retryable, and the land door comes back.
+  const execHead = spawnSync("git", ["-C", execLaneCwd, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  const execPlantVerdict = async (ok: boolean | null): Promise<void> => {
+    await stopSrv();
+    const st = readState();
+    st.merges = { ...(st.merges ?? {}), [String(executionLaneBody.slot)]: ({
+      status: "blocked", landed: false, branch: execLaneBranch, at: Date.now(),
+      detail: "execution door fixture: the land gate verdict",
+      mainSha: "a".repeat(40), candidateSha: execHead, diffHash: "b".repeat(40),
+      verify: { cmd: "fixture", ok, out: "fixture", at: Date.now(), mainSha: "a".repeat(40),
+        ...(ok === null ? { timedOut: true } : {}) },
+    } as unknown as { status?: string }) };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+    await restartSrv();
+  };
+  const execMergeBefore = readState().merges?.[String(executionLaneBody.slot)];
+  await execPlantJobs([]);
+  await execPlantVerdict(false);
+  const execRowRed = await execDoorRow();
+  check("ProgramExecutionView land door: a MEASURED red land verdict on the lane's head is R9 REVIEWABLE and names the refusal, never the land door",
+    execRowRed !== undefined && execRowRed.phase === "REVIEWABLE"
+      && execRowRed.phaseBasis.some((line) => line.startsWith("R9: "))
+      && (execRowRed.nextAction ?? "").includes(`ran red on candidate ${execHead.slice(0, 8)}`)
+      && (execRowRed.nextAction ?? "").includes("refuses that candidate unchanged")
+      && !(execRowRed.nextAction ?? "").includes("land it yourself"),
+    JSON.stringify({ head: execHead.slice(0, 8), row: execRowRed }));
+  await execPlantVerdict(null);
+  const execRowKilled = await execDoorRow();
+  check("ProgramExecutionView land door GEGENPROBE: the same verdict with an UNMEASURED gate (a kill) keeps the land door",
+    execRowKilled !== undefined && execRowKilled.phase === "REVIEWABLE"
+      && (execRowKilled.nextAction ?? "").includes("land it yourself"),
+    JSON.stringify({ row: execRowKilled }));
+
+  // …and the planted facts leave with the fixture: the report row, every suite job and the planted
+  // verdict, so later modules read the fleet exactly as this one found it.
   await stopSrv();
   const execDoorCleanup = readState() as FleetState & { laneSuiteJobs?: Record<string, unknown>[] };
+  if (execDoorCleanup.merges) {
+    if (execMergeBefore === undefined) delete execDoorCleanup.merges[String(executionLaneBody.slot)];
+    else execDoorCleanup.merges[String(executionLaneBody.slot)] = execMergeBefore;
+  }
   execDoorCleanup.fleetReports = (execDoorCleanup.fleetReports ?? []).filter((r) => r.id !== "ec".repeat(12));
   execDoorCleanup.laneSuiteJobs = (execDoorCleanup.laneSuiteJobs ?? [])
     .filter((j) => !execJobIds.includes(String(j.id)));

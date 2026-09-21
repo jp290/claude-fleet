@@ -116,18 +116,12 @@ function setInstMenu(open: boolean) {
 // to the page you are already on. Safe without a guard: every survivor passed INSTANCE_URL_RE.
 const instOriginOf = (url: string): string => new URL(url).origin;
 
-// THE DEVICE DISPLAY — two Fassungen behind #dev=a|b (owner 2026-09-21: "Das Gerät auf dem wir
-// sind sollte dabei aber vllt eine bessere Anzeige bekommen, die dem unerfahrenen Endnutzer vllt
-// auch darauf bringt das man mit Claude Fleet mehrere Computer gleichzeitig benutzen kann").
-// Without the hash the chip stands as it was. Both Fassungen draw from the same two facts the chip
-// has (FLEET_INSTANCE, FLEET_INSTANCES) and navigate the same way — the url, nothing appended.
-//   a  a row of its own under the title: every computer a tile, this one marked, the others one
-//      click away; a board with no list shows itself plus an empty "+" tile
-//   b  inside the title row: the chip gets a two-screens sign and "1/2", the menu names the idea
-const devRow = el("div", "");
-devRow.id = "devrow";
-$("sidehead").after(devRow);
-const HERE_NAME = "dieser Computer";
+// THE DEVICE DISPLAY (owner round 9, 2026-09-21: "Das Gerät auf dem wir sind sollte dabei aber
+// vllt eine bessere Anzeige bekommen, die dem unerfahrenen Endnutzer vllt auch darauf bringt das
+// man mit Claude Fleet mehrere Computer gleichzeitig benutzen kann"; round 10 chose Fassung B).
+// The chip in the title row: a two-screens sign and "1/2" when a list names several computers, one
+// screen and a "+" on a single host — the "+" is the hint, its title says what it means (there is
+// no setup path in the board yet, so it is not a button of its own). The menu adds one sentence.
 const MORE_HOSTS = "Claude Fleet kann mehrere Computer zugleich führen — jeder mit eigenen Sessions. "
   + "Verbunden werden sie über FLEET_INSTANCES.";
 function hostSign(name: IconName, text: string): HTMLElement[] {
@@ -135,35 +129,9 @@ function hostSign(name: IconName, text: string): HTMLElement[] {
   ic.appendChild(icon(name));
   return [ic, el("span", "devname", text)];
 }
-function renderDevRow(go: (link: InstanceLink) => () => void) {
-  const here = instanceLinks.find((l) => instOriginOf(l.url) === location.origin);
-  const tiles: HTMLElement[] = instanceLinks.map((link) => {
-    const isHere = link === here;
-    const t = el(isHere ? "span" : "button", `devtile${isHere ? " here" : ""}`);
-    t.append(...hostSign("screen", link.name), el("span", "devwhere", isHere ? "hier" : "↗"));
-    t.title = isHere ? `${link.name} — dieses Board` : `${link.name} öffnen (${link.url}, eigener Login)`;
-    if (!isHere) t.onclick = go(link);
-    return t;
-  });
-  if (!here) {
-    const t = el("span", "devtile here");
-    // unnamed, the name already says "here" — a second "hier" only cut it to "dieser Com…"
-    t.append(...hostSign("screen", instanceName ?? HERE_NAME));
-    if (instanceName !== null) t.appendChild(el("span", "devwhere", "hier"));
-    t.title = "dieses Board";
-    tiles.unshift(t);
-  }
-  if (instanceLinks.length < 2) {
-    const add = el("span", "devtile add");
-    add.append(...hostSign("plus", "Computer"));
-    add.title = MORE_HOSTS;
-    tiles.push(add);
-  }
-  devRow.replaceChildren(...tiles);
-}
 
 function renderInstanceHead() {
-  const key = JSON.stringify([instanceName, instanceLinks, DEV_VARIANT]);
+  const key = JSON.stringify([instanceName, instanceLinks]);
   if (key === instRendered) return; // an open menu must survive the 2 s poll
   instRendered = key;
   // the ONE navigation of this client (e2e/pins.ts): the link's own url, nothing appended
@@ -171,38 +139,16 @@ function renderInstanceHead() {
     setInstMenu(false);
     if (instOriginOf(link.url) !== location.origin) location.assign(link.url);
   };
-  devRow.classList.toggle("on", DEV_VARIANT === "a");
-  if (DEV_VARIANT === "a") {
-    setInstMenu(false);
-    instWrap.classList.remove("on");
-    renderDevRow(go);
-    return;
-  }
-  if (DEV_VARIANT !== "b" && instanceName === null && instanceLinks.length === 0) {
-    // the ordinary single-host board, byte for byte as it was before this cut
-    setInstMenu(false);
-    instWrap.classList.remove("on");
-    return;
-  }
   instWrap.classList.add("on");
   const pick = instanceLinks.length > 0;
-  if (DEV_VARIANT === "b") {
-    const n = Math.max(instanceLinks.length, 1);
-    const at = instanceLinks.findIndex((l) => instOriginOf(l.url) === location.origin);
-    // an unnamed single host shows only the screen and its "+": the title row has no room for a word
-    instBtn.replaceChildren(...hostSign(n > 1 ? "screens" : "screen", instanceName ?? ""),
-      el("span", "devcount", n > 1 ? `${at >= 0 ? at + 1 : "?"}/${n}` : "+"));
-    instBtn.classList.add("devb");
-    instBtn.title = n > 1
-      ? `Computer ${at >= 0 ? at + 1 : "?"} von ${n} — ${instanceName ?? "unbenannt"}. Klick zeigt die anderen.`
-      : MORE_HOSTS;
-  } else {
-    instBtn.textContent = (instanceName ?? "unnamed") + (pick ? " ▾" : "");
-    instBtn.classList.remove("devb");
-    instBtn.title = instanceName === null
-      ? "this fleet was given no FLEET_INSTANCE name"
-      : `this board is served by the fleet instance “${instanceName}”`;
-  }
+  const n = Math.max(instanceLinks.length, 1);
+  const at = instanceLinks.findIndex((l) => instOriginOf(l.url) === location.origin);
+  // an unnamed single host shows only the screen and its "+": the title row has no room for a word
+  instBtn.replaceChildren(...hostSign(n > 1 ? "screens" : "screen", instanceName ?? ""),
+    el("span", "devcount", n > 1 ? `${at >= 0 ? at + 1 : "?"}/${n}` : "+"));
+  instBtn.title = n > 1
+    ? `Computer ${at >= 0 ? at + 1 : "?"} von ${n} — ${instanceName ?? "unbenannt"}. Klick zeigt die anderen.`
+    : MORE_HOSTS;
   instBtn.classList.toggle("pick", pick);
   instBtn.onclick = pick ? () => setInstMenu(!instMenuOpen()) : null;
   instMenu.replaceChildren(...instanceLinks.map((link) => {
@@ -213,7 +159,7 @@ function renderInstanceHead() {
     row.onclick = go(link);
     return row;
   }));
-  if (DEV_VARIANT === "b" && pick) instMenu.appendChild(el("div", "instnote", MORE_HOSTS));
+  if (pick) instMenu.appendChild(el("div", "instnote", MORE_HOSTS));
   if (!pick) setInstMenu(false);
 }
 
@@ -6277,13 +6223,9 @@ function readVariant(key: string): "a" | "b" | "c" | "d" | null {
   } catch { return null; }
 }
 let BAND_VARIANT = readVariant("band");
-// The device display's two Fassungen (#dev=a|b, renderInstanceHead) — the same scaffolding, the
-// same exit: when the owner has chosen, the loser branch and this switch go with it.
-let DEV_VARIANT = readVariant("dev");
 addEventListener("hashchange", () => {
-  const b = readVariant("band"), d = readVariant("dev");
+  const b = readVariant("band");
   if (b !== BAND_VARIANT) { BAND_VARIANT = b; renderSlots(); }
-  if (d !== DEV_VARIANT) { DEV_VARIANT = d; instRendered = ""; renderInstanceHead(); }
 });
 // "session 3 · 2 of 5" is the right column's wording (srow("Baton", …)). The bar has a quarter of
 // that width, so the three numbers are spelled short here and the long form goes in the tooltip.

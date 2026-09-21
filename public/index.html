@@ -104,14 +104,14 @@
   #sidetitle { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* the instance chip + its switcher (dual-host S3). It names the fleet that answered this board;
      the menu it opens is a list of ORIGINS, so a click leaves this document entirely — which is
-     why it is a plain anchor-less button and never carries a token. Hidden until the poll says
-     there is something to name, and hidden by a CLASS rather than an inline style, or the
+     why it is a plain anchor-less button and never carries a token. Hidden until the first poll
+     has answered, and hidden by a CLASS rather than an inline style, or the
      collapsed-rail rule further down could never win against it. */
   #instwrap { display: none; position: relative; flex: none; }
   #instwrap.on { display: flex; }
-  #instbtn { max-width: 108px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  #instbtn { display: flex; align-items: center; gap: 4px; max-width: 120px; overflow: hidden;
     padding: 2px 6px; border-radius: 6px; border: 1px solid var(--chat-edge); background: var(--chat-raised);
-    color: var(--chat-mute); font-size: var(--chat-ui-fs); font-family: var(--chat-mono); line-height: 1.5; }
+    color: var(--chat-prose); font-size: var(--chat-ui-fs); font-family: var(--chat-mono); line-height: 1.5; }
   #instbtn.pick { cursor: pointer; }
   #instbtn.pick:hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
   #instmenu { display: none; position: absolute; z-index: 40; top: calc(100% + 4px); right: 0;
@@ -129,26 +129,13 @@
   .instrow .insturl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; color: var(--chat-faint); font-family: var(--chat-mono);
     font-size: var(--chat-ui-fs); text-align: right; }
-  /* THE DEVICE DISPLAY's two Fassungen (#dev=a|b, client.ts#renderInstanceHead) — SCAFFOLDING
-     until the owner has chosen. a: its own row of computer tiles under the title; b: the chip in
-     the title row with a two-screens sign and "1/2". Chat tokens only, like everything around. */
-  #devrow { display: none; gap: 4px; padding: 0 10px 8px; }
-  #devrow.on { display: flex; }
-  .devtile { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 5px; height: 26px;
-    padding: 0 7px; border-radius: 7px; border: 1px solid var(--chat-edge); background: none;
-    color: var(--chat-mute); font-family: inherit; font-size: var(--chat-ui-fs); text-align: left; }
-  button.devtile { cursor: pointer; }
-  button.devtile:hover { color: var(--chat-ink); border-color: var(--chat-mute); }
-  .devtile.here { color: var(--chat-ink); background: var(--chat-raised); }
-  .devtile.add { flex: 0 1 auto; border-style: dashed; color: var(--chat-faint); cursor: help; }
-  .devtile .ico, #instbtn.devb .ico { width: 14px; height: 14px; }
-  .devtile .tricon, #instbtn.devb .tricon { display: grid; place-items: center; flex: none; }
-  .devname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-family: var(--chat-mono); }
-  .devwhere { margin-left: auto; flex: none; color: var(--chat-faint); }
-  #instbtn.devb { display: flex; align-items: center; gap: 4px; max-width: 120px; color: var(--chat-prose); }
-  #instbtn.devb .devcount { flex: none; color: var(--chat-faint); font-family: var(--chat-mono);
-    font-variant-numeric: tabular-nums; }
+  /* THE DEVICE DISPLAY (client.ts#renderInstanceHead, owner round 10: Fassung B): the chip carries a
+     two-screens sign and "1/2" — or one screen and "+" on a single host. */
+  #instbtn .ico { width: 14px; height: 14px; }
+  #instbtn .tricon { display: grid; place-items: center; flex: none; }
+  #instbtn .devname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #instbtn .devname:empty { display: none; }
+  #instbtn .devcount { flex: none; color: var(--chat-faint); font-variant-numeric: tabular-nums; }
   .instnote { padding: 6px 7px 3px; border-top: 1px solid var(--chat-edge); margin-top: 2px;
     color: var(--chat-faint); font-size: var(--chat-ui-fs); line-height: 1.4; }
   /* row 2: the views on the left, the functions to their right (owner 2026-09-21: "Zuerst sollte
@@ -321,7 +308,7 @@
   /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
   #side.collapsed { width: 50px; }
   #side.collapsed #sidetitle, #side.collapsed #dot, #side.collapsed #sidetools, #side.collapsed #morepanel,
-  #side.collapsed #instwrap, #side.collapsed #devrow,
+  #side.collapsed #instwrap,
   #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .slotact,
   #side.collapsed .r2, #side.collapsed .mark, #side.collapsed .ctxfill,
   #side.collapsed .autobadge, #side.collapsed .quicklane, #side.collapsed .needline { display: none; }

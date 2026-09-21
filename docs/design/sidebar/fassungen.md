@@ -2,13 +2,11 @@
 
 Zwei Entwürfe stehen als Fassungen nebeneinander auf der stehenden Testinstanz
 (`./testinstanz.sh up`), keiner ist gebaute Meinung: **`#band=a|b|c`** für die Succession-Zeile,
-**`#dev=a|b`** für die Geräte-Anzeige im Kopf. Ohne Hash steht überall der heutige Stand.
+die Kopfreihe und die Geräte-Anzeige sind entschieden (unten). Ohne Hash steht überall der heutige Stand.
 
 ## So sieht man sie an
 
     <instanz-url>#band=a        eine Fassung
-    <instanz-url>#dev=b         die andere
-    <instanz-url>#band=a&dev=b  beide zugleich
 
 **Ein Hash-Wechsel wirkt SOFORT, ohne Neuladen** — seit dieser Runde. Vorher war das die teuerste
 Falle des Vergleichs: beide Schalter waren Modul-Level-`const`, einmal beim Start ausgewertet, und
@@ -64,28 +62,17 @@ vorher) als Dauerzustand; a und c sind samt Schalter entfernt. Dazu:
 
 `leiste-mess/kopfreihe-shot.js` fotografiert den alten `#head`-Schalter und ist damit Messgeschichte.
 
-## Geräte-Anzeige — zwei Fassungen hinter `#dev=a|b`
+## Geräte-Anzeige — entschieden: B (Owner-Runde 10, 2026-09-21: *„Ich finde B und B am besten"*)
 
-Owner-Runde 9: *„Das Gerät auf dem wir sind sollte dabei aber vllt eine bessere Anzeige bekommen, die
-dem unerfahrenen Endnutzer vllt auch darauf bringt das man mit Claude Fleet mehrere Computer
-gleichzeitig benutzen kann"*. Beide lesen dieselben zwei Fakten wie der Chip (`FLEET_INSTANCE`,
-`FLEET_INSTANCES`) und navigieren über dieselbe eine `location.assign`-Stelle (Pin in `e2e/pins.ts`).
-Ohne Hash steht der Chip wie vorher.
-
-| Fassung | Zwei Computer | Ein Computer | Kosten |
-|---|---|---|---|
-| **a** eigene Reihe | Kachel je Computer, diese „hier", die andere „↗" | „dieser Computer" + gestrichelte Kachel „+ Computer" (Tooltip) | eine Zeile, 34 px |
-| **b** im Titel | Zwei-Bildschirme-Zeichen + „mac 1/2", Menü plus ein erklärender Satz | Bildschirm + „+" (Tooltip) | keine Zeile |
-
-Die Testinstanz zeigt zwei Computer (`testinstanz.sh`, `FLEET_TI_INSTANCES` — leer gesetzt ergibt
-den Ein-Computer-Fall). Offen, von keiner Fassung beantwortet: die „+"-Kachel hat keinen Klickweg,
-weil es noch keinen Einrichtungsweg für einen zweiten Computer im Board gibt.
+Der Chip im Titel trägt das Zwei-Bildschirme-Zeichen und „mac 1/2", das Menü einen erklärenden
+Satz; ein einzelner Computer zeigt Bildschirm + „+" (Tooltip, kein Klickweg — es gibt noch keinen
+Einrichtungsweg im Board). Fassung A (eigene Kachelreihe) und der `#dev`-Schalter sind entfernt.
+Die Testinstanz zeigt zwei Computer (`testinstanz.sh`, `FLEET_TI_INSTANCES=` leer = ein Computer).
 
 ## Wenn die Wahl steht
 
-Beide Schalter sind Gerüst und gehen mit der Wahl: die verlorenen Zweige, `BAND_VARIANT`,
-`DEV_VARIANT`, der `hashchange`-Listener und die `#devrow`- bzw. `.devb`-Regeln der verlorenen Fassung
-fallen ersatzlos. Kein Schalter darf ein Land sehen.
+Beide Schalter sind Gerüst und gehen mit der Wahl: die verlorenen Zweige, `BAND_VARIANT`
+und der `hashchange`-Listener fallen ersatzlos. Kein Schalter darf ein Land sehen.
 
 Bilder (1000×950, dsf 2): `leiste-733b/ti-head-{a,b,c,none}.png` und `ti-band-{a,b,c}.png` auf dem
 Bild-Server dieser Maschine.

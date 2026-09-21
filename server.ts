@@ -8088,7 +8088,16 @@ function laneHandoffReportFor(s: Slot): FleetReport | null {
 // by originId (a wave's rows share it) and lives OUTSIDE the task row on purpose: a requeue
 // rewrites the row's status/slot/note and must not reset the budget, and an archived row must not
 // take the counter with it. 0 = off, like every other FLEET_ threshold.
-const FLEET_LANE_SUCCEED_MAX = Math.max(0, Number(process.env.FLEET_LANE_SUCCEED_MAX ?? 5) | 0);
+// SINCE 2026-09-21 THE LID IS OFF BY DEFAULT (owner: "die Nachfolgen selbst nicht begrenzen, hoechstens
+// ein weiches Signal"): it stopped the Leisten-lane f29538f8 mid-work after 5 batons at 36 % context.
+// The 89-loop is cut where it actually lived — the ticket gate refuses a baton after `complete` —
+// and a long line of batons mid-work only raises FLEET_LANE_SUCCEED_MAX_WARN's one question. The
+// hard number stays as an emergency brake an operator can set.
+const FLEET_LANE_SUCCEED_MAX = Math.max(0, Number(process.env.FLEET_LANE_SUCCEED_MAX ?? 0) | 0);
+// THE SOFT SIGNAL: the succession that takes a row PAST this many raises one attention ("ist der
+// Schnitt zu gross?") and passes anyway. Fires on the crossing (count before === WARN), so the
+// monotonic counter gives exactly one per row without a second record. 0 = off.
+const FLEET_LANE_SUCCEED_MAX_WARN = Math.max(0, Number(process.env.FLEET_LANE_SUCCEED_MAX_WARN ?? 5) | 0);
 const laneSucceedCounts = new Map<string, number>();
 
 // WHY THE PREDECESSOR HANDED OVER, named only from what the server itself observed. The one
@@ -8173,16 +8182,25 @@ interface LaneRowHold { task: Task; note: string | null }
 // text, so retries mint nothing; a programless lane has no inbox to file against, and its 409 is
 // the whole signal there.
 async function raiseSuccessionCapAttention(s: Slot, taken: number): Promise<void> {
-  if (!s.programId) return;
-  const text = `lane succession cap reached on ${s.worktree?.branch ?? "the lane branch"}: `
+  await raiseSuccessionAttention(s, "blocked", `lane succession cap reached on ${s.worktree?.branch ?? "the lane branch"}: `
     + `origin ${s.originId} took ${taken} of ${FLEET_LANE_SUCCEED_MAX} successions — the row needs `
-    + "a decision (its lane was told to file needs-main), not another session";
+    + "a decision (its lane was told to file needs-main), not another session");
+}
+// The soft half (owner 2026-09-21): same server-minted row, but the baton has ALREADY passed — it
+// asks, it does not stop anything. A `decision`, because the question is whether to cut the row.
+async function raiseSuccessionWarnAttention(s: Slot, taken: number): Promise<void> {
+  await raiseSuccessionAttention(s, "decision", `lane succession warning on ${s.worktree?.branch ?? "the lane branch"}: `
+    + `origin ${s.originId} has now taken ${taken} successions (FLEET_LANE_SUCCEED_MAX_WARN=${FLEET_LANE_SUCCEED_MAX_WARN}) `
+    + "mid-work — ist der Schnitt zu gross? Nothing is blocked; the lane keeps working");
+}
+async function raiseSuccessionAttention(s: Slot, kind: AttentionKind, text: string): Promise<void> {
+  if (!s.programId) return;
   const bound = (a: AttentionRequest): boolean => a.requester.slot === s.id
     && a.requester.openedAt === s.openedAt && a.requester.sessionId === s.sessionId;
   if (attentionRequests.some((a) => (a.status === "open" || a.status === "send-uncertain")
-    && a.kind === "blocked" && a.text === text && bound(a))) return;
+    && a.kind === kind && a.text === text && bound(a))) return;
   const request: AttentionRequest = {
-    id: randomBytes(12).toString("hex"), raisedAt: Date.now(), kind: "blocked", text,
+    id: randomBytes(12).toString("hex"), raisedAt: Date.now(), kind, text,
     requester: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId },
     programId: s.programId,
     provenance: { taskId: s.taskId, originId: s.originId, programId: s.programId,
@@ -8190,7 +8208,7 @@ async function raiseSuccessionCapAttention(s: Slot, taken: number): Promise<void
     status: "open", answer: null, refusedReason: null, closedAt: null,
   };
   attentionRequests = [...attentionRequests, request];
-  audit("attention_open", s.id, `${request.id} kind=blocked program=${s.programId} (succession cap)`);
+  audit("attention_open", s.id, `${request.id} kind=${kind} program=${s.programId} (succession ${kind === "blocked" ? "cap" : "warning"})`);
   await saveStateNow();
 }
 
@@ -8228,6 +8246,12 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   // commit (above), then the handoff report, then the baton.
   const mine = fleetReports.filter((r) => r.worker.slot === s.id && r.worker.openedAt === s.openedAt);
   const newest = mine[mine.length - 1];
+  // A `complete` gets its OWN reason (owner 2026-09-21): it is not paperwork missing, the work is
+  // declared done — a successor would inherit nothing to do, which is the 89-loop itself.
+  if (newest?.status === "complete")
+    return json({ error: "the newest report of this session is status complete, not handoff — the work is "
+      + "reported done, and a baton after `complete` hands a successor nothing to do (the 89-succession loop); "
+      + "go idle and let the MAIN decide. If work is genuinely still open, file a handoff report saying what" }, 409);
   if (!newest || newest.status !== "handoff")
     return json({ error: newest
       ? `the newest report of this session is status ${newest.status}, not handoff — file the handoff report (done / open / next step / open numbers) before handing the baton over`
@@ -8291,7 +8315,8 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
           `preview suite job ${j.id} (${j.state}) rides the baton — the successor on ${ref.branch} waits for it now`);
       }
     // the deckel counts PASSED successions only — a failed open above left the row where it was
-    if (s.originId) laneSucceedCounts.set(s.originId, (laneSucceedCounts.get(s.originId) ?? 0) + 1);
+    const before = s.originId ? laneSucceedCounts.get(s.originId) ?? 0 : 0;
+    if (s.originId) laneSucceedCounts.set(s.originId, before + 1);
     // ...and the rows come back exactly as they were. detachSlotTasks reads a recycle as an ABORT
     // and answers `pending` + "slot recycled before landing"; here the lane did not end, so the
     // abort's answer is the wrong one and is reversed on the same rows it was written to.
@@ -8301,6 +8326,10 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
       task.note = note;
     }
     saveState();
+    // the soft signal, AFTER the rows are restored: its save is an await, and before the restore
+    // the dispatcher would read this lane's rows as the abort's `pending`
+    if (s.originId && FLEET_LANE_SUCCEED_MAX_WARN > 0 && before === FLEET_LANE_SUCCEED_MAX_WARN)
+      await raiseSuccessionWarnAttention(s, before + 1);
 
     const openedAt = s.openedAt;
     const stillCurrent = (): boolean => !!s.cwd && s.openedAt === openedAt;

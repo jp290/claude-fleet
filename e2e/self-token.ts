@@ -315,7 +315,10 @@ export async function run(ctx: Ctx): Promise<void> {
     if (truthRow) { truthRow.status = "sent"; truthRow.slot = truthSlot; }
     truthPlant.laneSucceedCounts = { ...(truthPlant.laneSucceedCounts ?? {}), [truthTaskId]: 4 };
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(truthPlant, null, 2), { mode: 0o600 });
-    await restartSrv();
+    // the lid is OFF by default since 2026-09-21 (owner: soft signal only) — this block proves the
+    // emergency brake still holds when an operator sets it, so it boots with the brake at 5; the
+    // unplant restart below boots without it again
+    await restartSrv({ FLEET_LANE_SUCCEED_MAX: "5" });
     const truthTok = stateFile().slots?.[String(truthSlot)]?.selfToken ?? "";
     check("baton truth setup: the lane carries row, Program, codex harness and a succession counter at 4",
       /^[0-9a-f]{32}$/.test(truthTok)

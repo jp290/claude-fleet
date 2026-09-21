@@ -404,11 +404,22 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   ein 409 mit benanntem Grund:** (a) der neueste Fleet-Report DIESES Occupants muss `status:
   handoff` tragen — der direkte Schnitt gegen die 89er-Schleife, in der jede Nachfolgerin einem
   `complete` folgte; die Regelbuch-Reihenfolge (commit, handoff-Report, succeed) bleibt intakt.
-  (b) der Deckel `FLEET_LANE_SUCCEED_MAX` (Default 5, 0 = aus): so viele Successionen JE Zeile
-  (originId), dann 409 mit Hinweis auf `needs-main` und GENAU EINE Owner-Attention (auf die offene
-  Zeile dedupliziert; eine Program-lose Lane bekommt nur den 409). Der Zähler liegt außerhalb der
-  Zeile in `fleet.json` (`laneSucceedCounts`) — ein Requeue setzt ihn nicht zurück, eine
-  archivierte Zeile nimmt ihn nicht mit.
+  Ist der neueste Report `complete`, nennt der 409 seit 2026-09-21 den eigenen Grund („the work is
+  reported done … go idle and let the MAIN decide") — fertige Arbeit braucht keinen Staffelstab.
+  (b) der Deckel `FLEET_LANE_SUCCEED_MAX` — **seit 2026-09-21 Default 0 = aus** (Owner: „die
+  Nachfolgen selbst nicht begrenzen, hoechstens ein weiches Signal"; Anlass: Lane f29538f8 nach 5
+  Nachfolgen bei 36 % Kontext mitten in der Arbeit gestoppt). Gesetzt bleibt er eine Notbremse:
+  so viele Successionen JE Zeile (originId), dann 409 mit Hinweis auf `needs-main` und GENAU EINE
+  Owner-Attention (`blocked`, auf die offene Zeile dedupliziert; eine Program-lose Lane bekommt
+  nur den 409). Der Zähler liegt außerhalb der Zeile in `fleet.json` (`laneSucceedCounts`) — ein
+  Requeue setzt ihn nicht zurück, eine archivierte Zeile nimmt ihn nicht mit.
+- **Das weiche Signal:** `FLEET_LANE_SUCCEED_MAX_WARN` (Default 5, 0 = aus). Die Succession, die
+  eine Zeile ÜBER diese Zahl hebt (bei 5 also die sechste), läuft durch (200) und öffnet danach
+  genau eine Attention `kind: decision` („lane succession warning … ist der Schnitt zu gross?") im
+  Program der Lane — sie blockiert nichts. Genau eine je Zeile ergibt sich aus dem monotonen
+  Zähler (feuert beim Übergang, kein zweites Register). Eine Program-lose Lane hat keine Inbox,
+  gegen die der Server eine Attention führen kann: sie bekommt KEINE Notiz, nur den Zähler
+  (`laneSucceedCounts`, sichtbar in den succession facts) — benannte Grenze, nicht Versehen.
 - **Der erste Prompt der Nachfolgerin** ist servergebaut und trägt: den Auftrag im Wortlaut (`brief ?? text`
   je Zeile, bei einer Welle alle Zeilen in der Sensor-Reihenfolge), `git log --oneline <base>..HEAD`, den
   Beleg, dass der Baum sauber ist, den Text des letzten `handoff`-Reports DIESES Occupants, den

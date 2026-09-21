@@ -12683,4 +12683,96 @@ exit 0
   check("programs retention K2 cleanup: the pre-fixture registry is back and no planted row survives",
     k2Restored.every((id) => !id.startsWith("c20")) && k2Restored.length === (k2Snapshot.programs ?? []).length,
     `restored=${k2Restored.length} snapshot=${(k2Snapshot.programs ?? []).length}`);
+
+  // --- NO BATON AFTER `complete`, AND NO HARD LID MID-WORK (owner 2026-09-21: "die Nachfolgen selbst
+  // nicht begrenzen, hoechstens ein weiches Signal"; server.ts#succeedLane, #FLEET_LANE_SUCCEED_MAX).
+  // One codex lane on a planted row whose counter already stands at 5 — the old default lid. Two
+  // probes: (a) a newest `complete` is refused with the done-work reason; (b) after a handoff the
+  // SIXTH succession passes under the default env and raises exactly one warning attention.
+  // BREAKS IF: the default lid comes back, the warning blocks, fires twice, or never fires.
+  {
+    type LidState = { slots?: Record<string, { selfToken?: string; openedAt?: number; originId?: string | null;
+      programId?: string | null; harness?: string | null; taskId?: string | null }>;
+      tasks?: { id: string; status: string; slot: number | null }[]; programs?: { id: string }[];
+      fleetReports?: { provenance?: { taskId?: string | null } }[];
+      attentionRequests?: { text?: string }[]; laneSucceedCounts?: Record<string, number> };
+    const lidState = (): LidState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as LidState;
+    const lidPost = (token: string, path: string, body: unknown): Promise<Response> =>
+      fetch(BASE + path, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": token }, body: JSON.stringify(body) });
+    const lidLane = (await (await post("/api/lanes", { repo: REPO })).json()) as { ok?: boolean; slot?: number; cwd?: string };
+    const lidSlot = lidLane.slot ?? 0;
+    const lidCwd = lidLane.cwd ?? "";
+    const lidTaskId = ((await (await post("/api/tasks", { text: "SUCCESSION LID FIXTURE: a row mid-work", queue: false })).json()) as
+      { task?: { id?: string } }).task?.id ?? "";
+    writeFileSync(`${lidCwd}/succession-lid.txt`, "cut\n");
+    spawnSync("git", ["-C", lidCwd, "add", "succession-lid.txt"]);
+    spawnSync("git", ["-C", lidCwd, "commit", "-qm", "succession-lid: cut"]);
+    await stopSrv();
+    const lidProgramId = "5ucc1d".padEnd(24, "0");
+    const lidPlant = lidState();
+    const lidAt = Date.now();
+    lidPlant.programs = [...(lidPlant.programs ?? []), {
+      id: lidProgramId, title: "Succession lid fixture", intent: "Prove the succession lid is soft",
+      successCriterion: "complete refuses the baton, mid-work passes with one warning",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [], status: "active",
+      createdAt: lidAt - 1000, proposedBy: { kind: "owner" }, confirmedAt: lidAt - 900, activatedAt: lidAt - 800,
+    } as unknown as { id: string }];
+    const lidSlotRow = lidPlant.slots?.[String(lidSlot)];
+    if (lidSlotRow) { lidSlotRow.taskId = lidTaskId; lidSlotRow.originId = lidTaskId;
+      lidSlotRow.programId = lidProgramId; lidSlotRow.harness = "codex"; }
+    const lidRow = lidPlant.tasks?.find((t) => t.id === lidTaskId);
+    if (lidRow) { lidRow.status = "sent"; lidRow.slot = lidSlot; }
+    lidPlant.laneSucceedCounts = { ...(lidPlant.laneSucceedCounts ?? {}), [lidTaskId]: 5 };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(lidPlant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const lidTok = lidState().slots?.[String(lidSlot)]?.selfToken ?? "";
+    check("succession lid setup: a codex lane on a Program row whose counter stands at 5",
+      lidLane.ok === true && /^[0-9a-f]{32}$/.test(lidTok) && lidState().laneSucceedCounts?.[lidTaskId] === 5
+        && lidState().slots?.[String(lidSlot)]?.programId === lidProgramId,
+      JSON.stringify(lidState().slots?.[String(lidSlot)] ?? {}).slice(0, 200));
+
+    const lidComplete = await lidPost(lidTok, "/api/self/fleet-report", { status: "complete", text: "SUCCESSION LID: the cut is done." });
+    const lidAfterComplete = await lidPost(lidTok, "/api/self/succeed", {});
+    const lidAfterCompleteText = await lidAfterComplete.text();
+    check("succession lid (a): succeed after a newest `complete` is a 409 that names the work as done",
+      lidComplete.ok && lidAfterComplete.status === 409 && lidAfterCompleteText.includes("reported done")
+        && lidState().laneSucceedCounts?.[lidTaskId] === 5,
+      `${lidAfterComplete.status} ${lidAfterCompleteText.slice(0, 200)}`);
+
+    const warnings = async (): Promise<{ status?: string; kind?: string; text?: string }[]> =>
+      (((await (await get("/api/attention")).json()) as { requests?: { status?: string; kind?: string; text?: string }[] })
+        .requests ?? []).filter((a) => (a.text ?? "").includes("succession warning") && (a.text ?? "").includes(lidTaskId));
+    const lidHandoff = await lidPost(lidTok, "/api/self/fleet-report",
+      { status: "handoff", text: "SUCCESSION LID: mid-work; open is the next cut." });
+    const lidOpenedAt = lidState().slots?.[String(lidSlot)]?.openedAt ?? 0;
+    const lidPending = lidPost(lidTok, "/api/self/succeed", {});
+    let lidHeir = false;
+    for (let i = 0; i < 60 && !lidHeir; i++) {
+      await Bun.sleep(150);
+      const nowAt = lidState().slots?.[String(lidSlot)]?.openedAt ?? 0;
+      if (nowAt !== lidOpenedAt && nowAt > 0) lidHeir = true;
+    }
+    if (lidHeir) { await Bun.sleep(250); await plantScreen(lidSlot, ">_ OpenAI Codex (v0.147.0)", "succession lid fixture"); }
+    const lidSixth = await lidPending;
+    const lidSixthBody = (await lidSixth.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    const lidWarn = await warnings();
+    check("succession lid (b): the sixth succession mid-work passes (200) and raises EXACTLY ONE open warning attention",
+      lidHandoff.ok && lidSixth.status === 200 && lidSixthBody.ok === true
+        && lidState().laneSucceedCounts?.[lidTaskId] === 6
+        && lidWarn.length === 1 && lidWarn[0]!.status === "open" && lidWarn[0]!.kind === "decision",
+      `${lidSixth.status} ${JSON.stringify(lidSixthBody).slice(0, 200)} warnings=${JSON.stringify(lidWarn).slice(0, 300)}`);
+
+    await post(`/api/slots/${lidSlot}/kill`, {});
+    spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", lidCwd]);
+    await post(`/api/tasks/${lidTaskId}/delete`, {});
+    await stopSrv();
+    const lidUnplant = lidState();
+    lidUnplant.programs = (lidUnplant.programs ?? []).filter((p) => p.id !== lidProgramId);
+    lidUnplant.fleetReports = (lidUnplant.fleetReports ?? []).filter((r) => r.provenance?.taskId !== lidTaskId);
+    lidUnplant.attentionRequests = (lidUnplant.attentionRequests ?? []).filter((a) => !(a.text ?? "").includes(lidTaskId));
+    if (lidUnplant.laneSucceedCounts) delete lidUnplant.laneSucceedCounts[lidTaskId];
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(lidUnplant, null, 2), { mode: 0o600 });
+    await restartSrv();
+  }
 }

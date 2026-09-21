@@ -129,13 +129,52 @@
   .instrow .insturl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; color: var(--chat-faint); font-family: var(--chat-mono);
     font-size: var(--chat-ui-fs); text-align: right; }
-  /* row 2: view/layout tools, separate from the identity row above */
-  #sidetools { display: flex; align-items: center; gap: 3px; padding: 0 10px 8px; }
+  /* THE DEVICE DISPLAY's two Fassungen (#dev=a|b, client.ts#renderInstanceHead) — SCAFFOLDING
+     until the owner has chosen. a: its own row of computer tiles under the title; b: the chip in
+     the title row with a two-screens sign and "1/2". Chat tokens only, like everything around. */
+  #devrow { display: none; gap: 4px; padding: 0 10px 8px; }
+  #devrow.on { display: flex; }
+  .devtile { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 5px; height: 26px;
+    padding: 0 7px; border-radius: 7px; border: 1px solid var(--chat-edge); background: none;
+    color: var(--chat-mute); font-family: inherit; font-size: var(--chat-ui-fs); text-align: left; }
+  button.devtile { cursor: pointer; }
+  button.devtile:hover { color: var(--chat-ink); border-color: var(--chat-mute); }
+  .devtile.here { color: var(--chat-ink); background: var(--chat-raised); }
+  .devtile.add { flex: 0 1 auto; border-style: dashed; color: var(--chat-faint); cursor: help; }
+  .devtile .ico, #instbtn.devb .ico { width: 14px; height: 14px; }
+  .devtile .tricon, #instbtn.devb .tricon { display: grid; place-items: center; flex: none; }
+  .devname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--chat-mono); }
+  .devwhere { margin-left: auto; flex: none; color: var(--chat-faint); }
+  #instbtn.devb { display: flex; align-items: center; gap: 4px; max-width: 120px; color: var(--chat-prose); }
+  #instbtn.devb .devcount { flex: none; color: var(--chat-faint); font-family: var(--chat-mono);
+    font-variant-numeric: tabular-nums; }
+  .instnote { padding: 6px 7px 3px; border-top: 1px solid var(--chat-edge); margin-top: 2px;
+    color: var(--chat-faint); font-size: var(--chat-ui-fs); line-height: 1.4; }
+  /* row 2: the views on the left, the functions to their right (owner 2026-09-21: "Zuerst sollte
+     die Ansicht ganz links als quadrat dargestellt werden … Rechts davon zeigen wir dann
+     überarbeitete buttons für die Funktionen an"). ONE button grammar for the whole row: a 23px
+     square (four views and the five standing functions are 221px, the column gives 229 — at 24px
+     the ⋯ wrapped), a drawn icon (src/icons.ts, the tray's grammar), the chat tokens — the emoji and the
+     two raw UA buttons (#auditbtn/#outcomebtn had no css at all) are gone. What a button means is
+     its title and aria-label. The moment a conditional button (attn/ops/dev) speaks, the row wraps
+     instead of overflowing the 249px column. */
+  #sidetools { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 0 10px 8px; }
   #sidetools #queuebtn { margin-left: auto; }
+  #layouts { display: flex; gap: 2px; }
+  #sidetools button { flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 3px;
+    min-width: 23px; height: 23px; padding: 0; border-radius: 6px; border: 1px solid var(--chat-edge);
+    background: var(--chat-raised); color: var(--chat-mute); font-size: var(--chat-ui-fs);
+    font-family: inherit; cursor: pointer; }
+  #sidetools button:hover { color: var(--chat-ink); }
+  #layouts button.active { color: var(--chat-ink); border-color: var(--chat-mute); background: var(--chat-surface); }
+  #sidetools .tricon { display: grid; place-items: center; }
+  #sidetools .ico { width: 14px; height: 14px; }
+  /* a count widens its button instead of squeezing the icon */
+  #sidetools button:has(.hbadge) { padding: 0 5px; }
+  #sidetools .hbadge { font-family: var(--chat-mono); font-size: var(--chat-ui-fs);
+    font-variant-numeric: tabular-nums; line-height: 1; }
   /* ⋯ mehr: inline fold under the tool row (no overlay) — it wraps, so a phone drawer never scrolls sideways */
-  #morebtn { flex: none; width: 22px; height: 26px; border-radius: 7px; border: 1px solid var(--chat-edge);
-    background: var(--chat-raised); color: var(--chat-mute); font-size: 13px; font-family: inherit; cursor: pointer; padding: 0; }
-  #morebtn:hover { color: var(--chat-ink); }
   #morebtn.active { color: var(--chat-ink); border-color: var(--c-edge-hi); }
   #morepanel { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%;
     margin: 0 10px 8px; padding: 6px 8px 8px; border: 1px solid var(--chat-edge); border-radius: 10px; }
@@ -143,51 +182,6 @@
     text-transform: uppercase; }
   #morepanel .bbtn { margin-top: 0; }
   #morepanel[hidden] { display: none; }
-  /* THE HEAD ROW'S THREE FASSUNGEN (#head=a|b|c, client.ts HEAD_VARIANT) — SCAFFOLDING, and it
-     goes when the owner has chosen. Every rule here changes SHAPE and what is drawn INSIDE a
-     button that already exists; not one of them touches colour, edge, radius or type family, so
-     the comparison is about the kind of sign, not about a new palette. (That the row still uses
-     --line/--raised/--dim while the bar below it speaks --chat-* is a SEPARATE question and
-     deliberately not answered here.) */
-  #sidetools .tricon { display: grid; place-items: center; }
-  #sidetools .ico { width: 15px; height: 15px; }
-  #sidetools .trlabel { font-size: var(--chat-ui-fs); line-height: 1; }
-  #sidetools .hbadge { font-family: var(--chat-mono); font-size: var(--chat-ui-fs);
-    font-variant-numeric: tabular-nums; line-height: 1; }
-  /* ONE SKIN FOR ALL OF THEM, and it is the one the row already owns. #auditbtn and #outcomebtn
-     carry NO css today (grep them in this file: only the two <button> lines) — they are raw UA
-     buttons that happen to look tolerable while their content is a single emoji, and they turn
-     into white pills the moment the content changes. Every value below is copied from their
-     neighbours' rule (#queuebtn/#saverbtn), so a Fassung introduces no colour of its own — and
-     no literal hex either: `#layouts button.active` keeps its own state rule, which sits LATER in
-     this sheet at the same specificity and therefore still wins over the skin below. (Copying it
-     up here is what turned this preview red: e2e/slots.ts reads every #sidetools rule for a
-     literal colour, and that check is right — the bar declares no palette.) That
-     the row still speaks --line/--raised/--dim while the bar under it speaks --chat-* is a
-     separate question, deliberately not answered here. */
-  #sidetools.hv-a button, #sidetools.hv-b button, #sidetools.hv-c button {
-    display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-    height: 26px; border-radius: 7px; border: 1px solid var(--line); background: var(--raised);
-    color: var(--dim); font-size: 13px; font-family: inherit; cursor: pointer; }
-  #sidetools.hv-a button:hover, #sidetools.hv-b button:hover, #sidetools.hv-c button:hover { color: var(--text); }
-  /* a — icon + word, the tray's own grammar. Eight words do not fit one 249px line, so the row
-     WRAPS: this Fassung buys legibility with height, and it shows that price instead of hiding
-     it. Each button sizes to its word, so #queuebtn's `margin-left: auto` (which pushes the row
-     apart on one line) has to go, or the first wrapped line would be a single button. */
-  #sidetools.hv-a { flex-wrap: wrap; gap: 4px; }
-  #sidetools.hv-a button { width: auto; padding: 0 8px; }
-  #sidetools.hv-a #morebtn { width: auto; }
-  #sidetools.hv-a #queuebtn { margin-left: 0; }
-  /* b — one icon grammar, no words: the row keeps exactly today's geometry, and the only change
-     is that the meaning is drawn instead of hidden in a title. A button that carries a count
-     grows for it, as it does today. */
-  #sidetools.hv-b #queuebtn, #sidetools.hv-c #queuebtn,
-  #sidetools.hv-b #saverbtn, #sidetools.hv-c #saverbtn { width: auto; min-width: 26px; padding: 0 5px; }
-  /* c — only the daily row stays; audit, lands and saver move into ⋯ and read as full rows there.
-     The three conditional buttons are NOT moved (client.ts says why) — they appear in the row the
-     moment they have something to say, which is the one moment folding them would cost. */
-  #morepanel .hmoved { flex: 1 0 100%; justify-content: flex-start; width: auto; height: 26px;
-    padding: 0 8px; gap: 6px; }
   #collapse { flex: none; width: 22px; height: 22px; border-radius: 7px; border: 1px solid var(--chat-edge);
     background: var(--chat-raised); color: var(--chat-mute); font-size: 13px; font-family: inherit; cursor: pointer;
     display: flex; align-items: center; justify-content: center; line-height: 1; }
@@ -327,7 +321,7 @@
   /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
   #side.collapsed { width: 50px; }
   #side.collapsed #sidetitle, #side.collapsed #dot, #side.collapsed #sidetools, #side.collapsed #morepanel,
-  #side.collapsed #instwrap,
+  #side.collapsed #instwrap, #side.collapsed #devrow,
   #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .slotact,
   #side.collapsed .r2, #side.collapsed .mark, #side.collapsed .ctxfill,
   #side.collapsed .autobadge, #side.collapsed .quicklane, #side.collapsed .needline { display: none; }
@@ -360,6 +354,8 @@
   #panes { flex: 1; min-height: 0; display: grid; gap: 3px; padding: 3px; }
   #panes.l1 { grid-template-columns: 1fr; }
   #panes.l2 { grid-template-columns: 1fr 1fr; }
+  #panes.l3 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+  #panes.l3 > .pane:first-child { grid-row: 1 / span 2; }
   #panes.l4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
   .pane { position: relative; min-width: 0; min-height: 0; border: 1px solid var(--line-soft);
     border-radius: 8px; overflow: hidden; background: #000; }
@@ -541,10 +537,6 @@
     color: #ddd; font-size: 14px; align-items: center; justify-content: center;
     cursor: pointer; }
   .jump:hover { background: rgba(30, 30, 30, 1); }
-  #layouts { display: flex; gap: 3px; }
-  #layouts button { width: 27px; height: 25px; border-radius: 6px; border: 1px solid var(--line);
-    background: var(--raised); color: var(--dim); font-size: 13px; font-family: inherit; cursor: pointer; }
-  #layouts button.active { color: var(--accent); border-color: var(--sel); background: #1c2437; }
 
   #bar { flex: none; background: #000; border-top: 1px solid transparent;
     padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; }
@@ -1096,20 +1088,11 @@
   .qbtn:hover { background: var(--sel); }
   .qbtn.primary { background: var(--accent); border-color: var(--accent); color: #10131c; font-weight: 700; padding: 4px 16px; }
   .qbtn.primary:hover { background: #6a92e7; }
-  #queuebtn, #saverbtn { flex: none; width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--line);
-    background: var(--raised); color: var(--dim); font-size: 13px; font-family: inherit; cursor: pointer; }
-  #queuebtn:hover, #saverbtn:hover { color: var(--text); } #queuebtn.hot { color: var(--amber); border-color: #5a4a2a; }
-  /* wider than its neighbours because it carries a count, and hidden entirely at zero (client) */
-  #attnbtn { flex: none; height: 26px; padding: 0 7px; border-radius: 7px; border: 1px solid var(--line);
-    background: var(--raised); color: var(--dim); font-size: 12px; font-family: inherit; cursor: pointer; }
-  #attnbtn:hover { color: var(--text); } #attnbtn.hot { color: var(--amber); border-color: #5a4a2a; }
-  /* the OPERATIONS inbox: same shape as its neighbour, deliberately NOT the same button — an
-     operation fact is not a decision request, and conflating them is what this split undoes. */
-  #opsbtn { flex: none; height: 26px; padding: 0 7px; border-radius: 7px; border: 1px solid var(--line);
-    background: var(--raised); color: var(--dim); font-size: 12px; font-family: inherit; cursor: pointer; }
-  #opsbtn:hover { color: var(--text); } #opsbtn.hot { color: var(--amber); border-color: #5a4a2a; }
-  /* on = amber, same "this is engaged" vocabulary as #live.on / #queuebtn.hot */
-  #saverbtn.active { color: var(--amber); border-color: #5a4a2a; }
+  /* the head row's shape is #sidetools button (top of this sheet); what stays here is state.
+     attn/ops are hidden entirely at zero (client). The OPERATIONS inbox is deliberately NOT the
+     attention button — an operation fact is not a decision request. On = amber, the same "this is
+     engaged" vocabulary as #live.on. */
+  #queuebtn.hot, #attnbtn.hot, #opsbtn.hot, #saverbtn.active { color: var(--amber); border-color: #5a4a2a; }
 
   .overlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
     background: #000a; z-index: 20; }
@@ -2735,8 +2718,8 @@
     #comp #comptray button { flex: none; width: auto; min-height: 40px; font-size: 13px; }
     /* the phone is the only device this switch is for — give it a finger-sized target
        in the drawer instead of the 26px desktop chip */
-    #saverbtn { width: 40px; height: 40px; font-size: 17px; }
-    #morebtn { width: 40px; height: 40px; font-size: 17px; }
+    #sidetools #saverbtn, #sidetools #morebtn { width: 40px; height: 40px; }
+    #sidetools #saverbtn .ico, #sidetools #morebtn .ico { width: 18px; height: 18px; }
     #morepanel .bbtn { min-height: 40px; }
 
     .panel { max-width: 96vw; max-height: 86vh; padding: 13px; }
@@ -2778,9 +2761,10 @@
     </div>
     <div id="sidetools">
       <span id="layouts">
-        <button data-l="1" title="single pane">▢</button>
-        <button data-l="2" title="2-up split">◫</button>
-        <button data-l="4" title="2×2 grid">⊞</button>
+        <button data-l="1" title="single pane"></button>
+        <button data-l="2" title="2-up split"></button>
+        <button data-l="3" title="one tall pane, two beside it"></button>
+        <button data-l="4" title="2×2 grid"></button>
       </span>
       <button id="queuebtn" title="task queue">🗒</button>
       <button id="attnbtn" title="attention — what a program's main session raised for you (decision / blocked / review-ready)" style="display:none">📣</button>

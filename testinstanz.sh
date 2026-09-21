@@ -86,8 +86,15 @@ ti_serve() {
   # and die on a missing directory — before they ever reach the stand-in
   mkdir -p "$DIR/home/.codex" "$DIR/home/.pi"
   ti_shims
+  # TWO COMPUTERS, as the live fleet has them (mac + second-host), so the device display has something
+  # to show; "mac" is THIS instance's own origin, so the board marks it as here. The second-host link
+  # only navigates when clicked. FLEET_TI_INSTANCES= (set, empty) gives the single-host board.
+  TI_TWO='[{"name":"mac","url":"http://'"$(ti_addr):$PORT"'"},{"name":"second-host","url":"http://100.64.0.2:8790"}]'
+  TI_INST="${FLEET_TI_INSTANCES-$TI_TWO}"
+  TI_NAME="${FLEET_TI_INSTANCE-mac}"
+  [ -z "$TI_INST" ] && TI_NAME="${FLEET_TI_INSTANCE-}"
   ( cd "$DIR" && exec env HOME="$DIR/home" PATH="$DIR/bin:$PATH" FLEET_HOST="$(ti_addr)" FLEET_PORT="$PORT" FLEET_SOCK="$SOCK" FLEET_CMD=true \
-      FLEET_LANE_SUCCEED_MAX=5 FLEET_TOKEN="$(cat "$TOKF")" bun server.ts >> "$DIR/server.log" 2>&1 ) &
+      FLEET_INSTANCE="$TI_NAME" FLEET_INSTANCES="$TI_INST" FLEET_LANE_SUCCEED_MAX=5 FLEET_TOKEN="$(cat "$TOKF")" bun server.ts >> "$DIR/server.log" 2>&1 ) &
   echo $! > "$PIDF"
   i=0
   until curl -sf "http://$(ti_addr):$PORT/api/sessions" -H "authorization: Bearer $(cat "$TOKF")" >/dev/null 2>&1; do

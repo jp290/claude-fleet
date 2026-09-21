@@ -13,7 +13,8 @@
 # copy is what gives it its own state), and FLEET_CMD=true so no agent is ever spawned. The three
 # live values are refused by name below rather than merely avoided.
 #
-#   ./testinstanz.sh up [mixed|full]        stage, start, plant the fixtures, print the URL
+#   ./testinstanz.sh up [mixed|full]        stage, start, plant EVERYTHING (fixtures, succession, ctx,
+#                                           codex states, painters), print the URL — the whole demo
 #   ./testinstanz.sh fixtures [mixed|full]  replant against the running instance, no restart
 #   ./testinstanz.sh succession             plant the succession facts (stops+starts the server)
 #   ./testinstanz.sh states                 what the bar paints right now, per state
@@ -57,14 +58,72 @@ ti_plant() {
 # Start the server against the staged directory and wait until it answers. Used by `up` and by
 # `succession`, which stops it to edit the state file underneath and starts it again — the tmux
 # sessions stand through that, so the panes come back with the instance.
+# HOME is the instance's own: the context fill is read from $HOME/.claude/projects/<cwd>/<id>.jsonl
+# (server.ts#projDir), and the demo plants those transcripts. With the real HOME they would have to
+# go into the owner's ~/.claude — outside this checkout, which a lane does not touch.
+#
+# AND THE HARNESS BINARIES ARE STAND-INS. FLEET_CMD=true only replaces the CLAUDE command; a slot
+# opened with harness codex or pi still starts the REAL `codex` / `pi` from PATH (measured
+# 2026-09-21: slot 5 ran `node ~/.local/bin/codex`, slot 4 a live `pi`). Under the owner's HOME
+# those are logged in, and anything typed into their panes is a prompt to a real model. So the
+# instance puts $DIR/bin first on PATH (server.ts#PATH_EXPORT hands the server's PATH to every pane),
+# where `codex` and `pi` exec an idle bun under a SYMLINK named codex-agent / pi-agent: the pane
+# has a process whose name the liveness probe accepts (comms `codex` / `pi`, a prefix match on the
+# basename, server.ts#paneAgentAt), and nothing behind it can reach a network or a model. A symlink,
+# not a copy: a copied /bin/sleep is killed by macOS on launch (measured, exit 137), a symlink's
+# name is what `ps -o comm=` reports.
+ti_shims() {
+  mkdir -p "$DIR/bin"
+  for h in codex pi; do
+    ln -sf "$(command -v bun)" "$DIR/bin/$h-agent"
+    printf '#!/bin/sh\n# test-instance stand-in for the %s CLI (testinstanz.sh#ti_shims)\nexec "$(dirname "$0")/%s-agent" -e "setInterval(() => {}, 1 << 30)"\n' "$h" "$h" > "$DIR/bin/$h"
+    chmod +x "$DIR/bin/$h"
+  done
+}
 ti_serve() {
-  ( cd "$DIR" && exec env FLEET_HOST="$(ti_addr)" FLEET_PORT="$PORT" FLEET_SOCK="$SOCK" FLEET_CMD=true \
+  # the harness start lines write their trust entries under $HOME (codex: $HOME/.codex/config.toml)
+  # and die on a missing directory — before they ever reach the stand-in
+  mkdir -p "$DIR/home/.codex" "$DIR/home/.pi"
+  ti_shims
+  ( cd "$DIR" && exec env HOME="$DIR/home" PATH="$DIR/bin:$PATH" FLEET_HOST="$(ti_addr)" FLEET_PORT="$PORT" FLEET_SOCK="$SOCK" FLEET_CMD=true \
       FLEET_LANE_SUCCEED_MAX=5 FLEET_TOKEN="$(cat "$TOKF")" bun server.ts >> "$DIR/server.log" 2>&1 ) &
   echo $! > "$PIDF"
   i=0
   until curl -sf "http://$(ti_addr):$PORT/api/sessions" -H "authorization: Bearer $(cat "$TOKF")" >/dev/null 2>&1; do
     i=$((i+1)); [ "$i" -gt 60 ] && { echo "server never came up:" >&2; tail -20 "$DIR/server.log" >&2; return 1; }
     sleep 0.5
+  done
+}
+
+# Plant what no HTTP route can set (succession, ctx transcripts, codex states — see
+# testinstanz-fixtures.js). The server is stopped for the edit because it would otherwise write its
+# in-memory state back over it; the tmux sessions are left alone, so the panes are still there.
+ti_patch() {
+  kill "$(cat "$PIDF")" 2>/dev/null || true
+  i=0; while kill -0 "$(cat "$PIDF")" 2>/dev/null && [ "$i" -lt 40 ]; do i=$((i+1)); sleep 0.25; done
+  ti_plant succession-patch
+  ti_serve || return 1
+  sleep 3
+}
+
+# THE PAINTERS keep the four states standing for as long as the instance stands. A state is read
+# from the pane's last OUTPUT (src/client.ts#slotState): < 5 s working, < 30 min resting, beyond that
+# asleep. Without painters every row would fall asleep half an hour after `up`, and "working" would
+# last five seconds. So: lane 10 prints every 2 s (a working row that is not the one on screen), the
+# plain shell rows print every 10 min (resting for as long as the instance stands), slot 6 has no
+# process behind its pane at all (broken), and the HARNESS rows 4, 5 and 8 are never typed into —
+# a harness pane is an agent's input, and keys sent there are prompts. They fall asleep 30 min
+# after `up`, which is also how the demo gets its asleep row (slot 4): the one state that cannot be
+# hurried without touching the product. Typed on this instance's OWN socket, by session name —
+# never a pattern, never a socket this script did not create.
+ti_paint() {
+  tmux -L "$SOCK" send-keys -t s10 'clear; while :; do printf .; sleep 2; done' Enter 2>/dev/null || true
+  # slot 1 is the pane the demo opens on and counts as working because it is SHOWN — it needs no
+  # painter, it needs a clean screen (the server types its orchestrator hand-off into this shell)
+  tmux -L "$SOCK" send-keys -t s1 C-c 2>/dev/null || true
+  tmux -L "$SOCK" send-keys -t s1 'clear' Enter 2>/dev/null || true
+  for n in 2 3 7 9 11 12; do
+    tmux -L "$SOCK" send-keys -t "s$n" 'clear; while :; do sleep 600; printf .; done' Enter 2>/dev/null || true
   done
 }
 
@@ -81,6 +140,11 @@ up)
   ADDR=$(ti_addr)
   ti_serve || exit 1
   ti_plant "${2:-mixed}"
+  # ONE COMMAND, THE WHOLE DEMO. Succession used to be a second, separate step (`succession`) — an
+  # instance brought up with `up` alone showed no succession anywhere, on any #band.
+  ti_patch || exit 1
+  ti_paint
+  ti_plant states
   echo
   echo "TESTINSTANZ UP   http://$ADDR:$PORT/?token=$TOK"
   echo "  log $DIR/server.log · socket $SOCK · port $PORT · FLEET_CMD=true (no agent is ever spawned)"
@@ -95,11 +159,8 @@ succession)
   # server is stopped for the edit because it would otherwise write its in-memory state back over
   # it; the tmux sessions are left alone, so the panes are still there when it comes back.
   ti_alive || { echo "not up — ./testinstanz.sh up" >&2; exit 1; }
-  kill "$(cat "$PIDF")" 2>/dev/null || true
-  i=0; while kill -0 "$(cat "$PIDF")" 2>/dev/null && [ "$i" -lt 40 ]; do i=$((i+1)); sleep 0.25; done
-  ti_plant succession-patch
-  ti_serve || exit 1
-  sleep 3
+  ti_patch || exit 1
+  ti_paint
   ti_plant states
   ;;
 states)

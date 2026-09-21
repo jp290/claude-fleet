@@ -2,6 +2,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import qrcode from "qrcode-generator";
 import { mdInto, type MdEntityKind } from "./md";
 import { selectionMarkdown } from "./mdcopy";
@@ -53,6 +54,19 @@ const LAYOUTS: Record<string, number> = { "1": 1, "2": 2, "3": 3, "4": 4 };
 // must match the mobile media query in index.html
 const MOBILE_MQ = matchMedia("(max-width: 700px), ((pointer: coarse) and (max-height: 500px))");
 const isMobile = () => MOBILE_MQ.matches;
+
+// Terminal links (bare urls via WebLinksAddon, OSC 8 via the linkHandler option) open on
+// Cmd/Ctrl-click, not a plain click: xterm activates a link on mouseup whenever the mousedown hit
+// the same link (Linkifier._handleMouseUp), so a drag that selects the url to copy it would also
+// open it. A touch screen has no modifier and xterm there does no drag-selection, so a tap opens.
+// http(s) only — the same bar xterm's own OSC 8 path applies — in a new tab without an opener.
+function openTermLink(e: MouseEvent, uri: string): void {
+  if (!(e.metaKey || e.ctrlKey || isMobile())) return;
+  let proto = "";
+  try { proto = new URL(uri).protocol; } catch { return; }
+  if (proto !== "http:" && proto !== "https:") return;
+  window.open(uri, "_blank", "noopener,noreferrer");
+}
 
 let dataSaver = localStorage.getItem("fleet.datasaver") === "1";
 const plan = () => pollPlan(document.hidden, dataSaver);
@@ -738,9 +752,11 @@ class Pane {
       fontSize: isMobile() ? 11 : 12,
       fontFamily: "ui-monospace, Menlo, Consolas, monospace",
       theme: { background: "#000000", foreground: "#d8d8d8" }, // the chat view's black (index.html #main)
+      linkHandler: { activate: openTermLink },
     });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
+    this.term.loadAddon(new WebLinksAddon(openTermLink));
     this.term.open(termEl);
     // GPU renderers instead of the default DOM one (which paints every cell as a real DOM
     // node — scroll stutter on mobile Safari under streaming output). WebGL is the fastest

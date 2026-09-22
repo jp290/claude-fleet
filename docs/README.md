@@ -50,7 +50,6 @@ how the shelf grew to 52 docs whose claims nobody re-derived.
   und Ende-zu-Ende-Lebenszyklus. Es ist kein Runtime-Inventar.
 - **`agentic-control-plane-program-2026-08-20.md`** — datierter Outside-in-Program Brief mit
   Journeys, Acts, Agentenbriefing, Write-Leases und Canaries. Nach Umsetzung bleibt er Snapshot.
-- **`kontextschicht-analyse-2026-08-20.md`** — gemessener Ist-Befund, Korrekturen und offene
   Grenzen, nicht die laufende Systemwahrheit.
 
 ## Curated operative docs

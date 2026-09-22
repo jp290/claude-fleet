@@ -238,6 +238,11 @@ const HELPER_ARTIFACT_FILE = `${import.meta.dir}/helper-artifacts.jsonl`;
 // "the extractor has been returning gaps for a week" are the same observation. Same appendEvent
 // discipline/rotation as the trails above.
 const CARD_FILE = `${import.meta.dir}/cards.jsonl`;
+// THE STATE SNAPSHOT TRAIL — one row per STATE_SNAPSHOT_MS with the operating state a tick would
+// choose from (docs/messungen/2026-09-22-jev-treiber-schatten-label.md §e). Every other trail here
+// records an EVENT; this one records the STATE between them, which cannot be rebuilt afterwards.
+// Counts, enums and slot ids only — never text. Same appendEvent discipline/rotation as above.
+const STATE_SNAPSHOT_FILE = `${import.meta.dir}/state-snapshots.jsonl`;
 // the PENDING side of that trail: lands whose audit has not produced a row yet. Not an event log
 // (no rotation, no history) — a small mutable mirror of the in-memory queue, rewritten whole on
 // every mutation. Absent file = nothing pending. See savePostLandAuditQueue for why it exists.
@@ -3482,6 +3487,12 @@ const ATTENTION_MAX_OPEN_PER_REQUESTER = 5;
 const TICK_FLOOR_MS = 100;
 const AUTOS_TICK_MS = Math.max(TICK_FLOOR_MS, Number(process.env.FLEET_AUTOS_TICK_MS ?? 5000) | 0);
 const DISPATCH_TICK_MS = Math.max(TICK_FLOOR_MS, Number(process.env.FLEET_DISPATCH_TICK_MS ?? 8000) | 0);
+// THE STATE SNAPSHOT, a third cadence beside those two and NOT a scheduler: it only writes the
+// operating state as counts into state-snapshots.jsonl (see buildStateSnapshot), and nothing reads the
+// row back. Here 0 IS "off", like FLEET_CARD_MS: nothing pauses a writer, so the off state is no
+// timer at all, and a set value takes TICK_FLOOR_MS as its floor. Default 60 s.
+const STATE_SNAPSHOT_RAW = Number(process.env.FLEET_STATE_SNAPSHOT_MS ?? 60_000) | 0;
+const STATE_SNAPSHOT_MS = STATE_SNAPSHOT_RAW > 0 ? Math.max(TICK_FLOOR_MS, STATE_SNAPSHOT_RAW) : 0;
 const GIT_TIMEOUT_MS = Number(process.env.FLEET_GIT_TIMEOUT_MS) || 30_000;
 // The git/liveness display cache's cadence (tickGit). Unset is the old 10 s literal; the suites
 // shorten it for the families whose whole subject IS that cache (e2e/deploy-facts.ts), because
@@ -32547,6 +32558,30 @@ if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
   }
 }
 
+// The row the state snapshot tick writes. Every source is one the process already keeps: the lane
+// facts are laneSignalView, the view laneWatchSignal gets; `ev.held` is composerHolds, the map
+// noteComposerHold writes. Keys are fixed — a missing fact is null, never an absent key — so one
+// key set holds across all rows. The only string is the merge status, an enum.
+function buildStateSnapshot(now: number): Record<string, unknown> {
+  const q = { pending: 0, queued: 0, sent: 0, done: 0 };
+  for (const t of tasks) if (t.status !== "archived") q[t.status]++;
+  const lanes = slots.filter((s) => s.cwd && s.worktree).map((s) => {
+    const v = laneSignalView(s, now);
+    return { s: s.id, alive: v.alive, idleS: v.observed && v.idleMs !== null ? Math.round(v.idleMs / 1000) : null,
+      ahead: v.git?.ahead ?? null, dirty: v.git?.dirty ?? null, merge: v.merge?.status ?? null };
+  });
+  const open = (x: { status: string }) => x.status === "open" || x.status === "send-uncertain";
+  return {
+    ts: now, q, lanes,
+    rep: { open: fleetReports.filter((r) => !r.decision).length },
+    att: { open: attentionRequests.filter(open).length },
+    clar: { open: clarifications.filter(open).length },
+    ev: { held: composerHolds.size,
+      undelivered: fleetEvents.filter((e) => e.status === "pending" || e.status === "send-uncertain").length },
+    programs: { active: programs.filter((p) => p.status === "active").length },
+  };
+}
+
 // THE SCHEDULER TICKS: every one names itself to logError, because a tick that throws has skipped
 // its whole round and an empty catch hid that. The `p.kill()` and pty-chain catches stay empty on purpose.
 setInterval(() => void poll(), 100);
@@ -32560,6 +32595,9 @@ setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), 
 setInterval(() => { if (settleSuccessionDebts()) saveState(); }, GIT_TICK_MS);
 void tickGit().catch((e: unknown) => logError("tickGit", e)); // warm the badge cache so the first paint isn't blank
 setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispatch", e)), DISPATCH_TICK_MS);
+// written, never read back: no tick, gate or route reacts to a snapshot row
+if (STATE_SNAPSHOT_MS > 0) setInterval(() => void appendEvent(STATE_SNAPSHOT_FILE, buildStateSnapshot(Date.now())), STATE_SNAPSHOT_MS);
+console.log(`[fleet] state snapshot ${STATE_SNAPSHOT_MS > 0 ? `armed: FLEET_STATE_SNAPSHOT_MS=${STATE_SNAPSHOT_MS}` : "off (FLEET_STATE_SNAPSHOT_MS=0) — no tick registered"}`);
 // the brief compiler, off by default: a harness without a FLEET_ENHANCE_CMD stand-in MUST leave
 // FLEET_BRIEF_MS at 0, or the suite spawns a real agent. (A second timer stood beside it until
 // 2026-09-10 — the queue analyst's sweep on FLEET_ANALYSIS_MS.)

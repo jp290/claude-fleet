@@ -69,6 +69,7 @@ import * as verifyQueue from "./e2e/verify-queue";
 import * as deployFacts from "./e2e/deploy-facts";
 import * as errors from "./e2e/errors";
 import * as hostHygiene from "./e2e/host-hygiene";
+import * as stateSnapshot from "./e2e/state-snapshot";
 import * as trail from "./e2e/trail";
 import * as trailstats from "./e2e/trailstats";
 
@@ -333,6 +334,12 @@ const steps: Step[] = [
   // sections sharing a live fixture. It creates and kills no slot.
   { unit: "host-hygiene", module: "host-hygiene", run: async () => {
     await hostHygiene.run();
+  } },
+
+  // --- the state snapshot trail. Boots its OWN scratch instance (its rotation half needs a
+  // process-wide FLEET_AUDIT_ROTATE_BYTES the suite's srv must not get), so it touches no fixture here.
+  { unit: "state-snapshot", module: "state-snapshot", run: async () => {
+    await stateSnapshot.run();
   } },
 
   // --- steward principal: scoped token, typed+capped sends, read-only fleet-wide access ---

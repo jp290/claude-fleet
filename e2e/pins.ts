@@ -9673,6 +9673,28 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 // Stated as a rule about the two writers rather than as a snapshot of either line: the card reads
 // the observation, the brief reads the constant, and the day the brief is fixed this pin narrows to
 // its first half rather than failing.
+// 2026-09-22 · THE STATE SNAPSHOT TRAIL (server.ts#buildStateSnapshot). e2e/state-snapshot.ts proves
+// the behaviour on a scratch instance; this pins the three facts a suite cannot see from outside:
+// the default, that 0 registers NO timer, and that appendEvent is the only way a row reaches disk.
+{
+  const RULE_SNAP = "the state snapshot is a counted row written by appendEvent only, and 0 is no timer";
+  const srv = read("server.ts");
+  const dflt = /const STATE_SNAPSHOT_RAW = Number\(process\.env\.FLEET_STATE_SNAPSHOT_MS \?\? 60_000\) \| 0;/.test(srv);
+  pin(`${RULE_SNAP} — FLEET_STATE_SNAPSHOT_MS defaults to 60000`, dflt, `default=${dflt}`);
+  const off = /const STATE_SNAPSHOT_MS = STATE_SNAPSHOT_RAW > 0 \? Math\.max\(TICK_FLOOR_MS, STATE_SNAPSHOT_RAW\) : 0;/.test(srv)
+    && /\nif \(STATE_SNAPSHOT_MS > 0\) setInterval\(\(\) => void appendEvent\(STATE_SNAPSHOT_FILE, buildStateSnapshot\(Date\.now\(\)\)\), STATE_SNAPSHOT_MS\);/.test(srv);
+  pin(`${RULE_SNAP} — 0 (or unparseable) registers no tick; a set value takes TICK_FLOOR_MS as floor`, off, `armedOnly=${off}`);
+  // the file constant is named exactly twice: its definition and the one appendEvent call
+  const uses = srv.split("STATE_SNAPSHOT_FILE").length - 1;
+  const fn = /\nfunction buildStateSnapshot\([^]*?\n\}\n/.exec(srv)?.[0] ?? "";
+  const pure = fn.length > 0 && !/appendFileSync|writeFileSync|appendFile\(|Bun\.write/.test(fn);
+  pin(`${RULE_SNAP} — appendEvent is the only writer (no own append in buildStateSnapshot)`,
+    uses === 2 && pure, `STATE_SNAPSHOT_FILE uses=${uses} builderWritesNothing=${pure}`);
+  const ign = read(".gitignore").split("\n");
+  const ignored = ign.includes("state-snapshots.jsonl") && ign.includes("state-snapshots.jsonl.1") && ign.includes("*.jsonl.archive");
+  pin(`${RULE_SNAP} — all three generations are gitignored`, ignored, `ignored=${ignored}`);
+}
+
 {
   const RULE_CARD = "a stored model name is the model that RAN";
   const srv = read("server.ts");

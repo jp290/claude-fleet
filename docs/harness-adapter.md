@@ -134,6 +134,24 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   „hingesehen, war Rauschen" von „niemand hat hingesehen". Der Rundgang führt seither nur noch
   **un-adjudizierte** Rote als Section-1-Kandidat. Einen Knopf im Board gibt es dafür noch nicht.
 
+## Zustands-Schnappschuss (`state-snapshots.jsonl`)
+
+- **Seit 2026-09-22 schreibt der Server je `FLEET_STATE_SNAPSHOT_MS` (Default 60 000, `0` = aus,
+  sonst Untergrenze `TICK_FLOOR_MS`) eine Zeile Betriebszustand** nach `state-snapshots.jsonl`,
+  ausschliesslich ueber `server/persist.ts#appendEvent` (Rotation wie `audit.jsonl`: `.1`, dann
+  `.archive`, 0600). Die anderen Ledger tragen Ereignisse; dieses traegt den ZUSTAND zwischen ihnen,
+  aus dem ein Tick waehlen wuerde — rueckwirkend ist er nicht rekonstruierbar
+  (`docs/messungen/2026-09-22-jev-treiber-schatten-label.md` §e). Zeile: `server.ts#buildStateSnapshot`
+  — `ts`, `q{pending,queued,sent,done}`, `lanes[{s,alive,idleS,ahead,dirty,merge}]` (der
+  `laneSignalView`, den `laneWatchSignal` bekommt), `rep.open` (Reports ohne `decision`), `att.open`
+  und `clar.open` (open|send-uncertain), `ev{held,undelivered}` (`held` = die Karte, die
+  `server.ts#noteComposerHold` schreibt), `programs.active`. Nur Zaehler, Enums und Slot-Ids, nie
+  Text; ein fehlender Fakt ist `null`, nie ein fehlender Schluessel.
+- **Nur geschrieben, nie gelesen:** kein Tick, kein Gate, keine Route reagiert darauf, und
+  `GET /api/sessions` traegt nichts davon. Lesen heisst `tail`/`jq` am Ledger. Die Bootzeile sagt
+  `[fleet] state snapshot armed: …` oder `… off (FLEET_STATE_SNAPSHOT_MS=0) — no tick registered`.
+  Beweis: `e2e/state-snapshot.ts` (eigene Scratch-Instanz), Pin in `e2e/pins.ts`.
+
 ## auto-③
 
 - auto-③ (der Reviewer läuft von selbst auf einer `done-looking` Lane) ist **AN per Default** — anders als

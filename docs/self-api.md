@@ -2717,6 +2717,21 @@ fremde oder programmlose Lane schließen, einen dirty- oder `ahead>0`-Baum töte
 schreiben, oder vom Dispatch-Tick aus laufen — nichts auf dem Lane-START-Pfad beendet eine Lane. Der
 Worktree bleibt liegen wie nach jedem Kill.
 
+### Die Clone-Isolation überlebt den srv-Neustart (keine Route)
+
+Der Lane-Ref einer Clone-Lane trägt `worktree.form:"clone"` — geschrieben nur für Clones
+(`server.ts#openLaneInSlot`, `#dispatchTask`; eine Worktree-Lane trägt kein `form`, ihr Record
+bleibt byte-gleich mit der Vor-Feld-Form). Die Boot-Wiederherstellung baut den Lane-Ref als
+Whitelist neu und trägt `form` nach demselben Gesetz wie `letter`: **nur als geschrieben**. Nur
+der erwartete Wert `"clone"` kommt zurück; jeder andere fällt für sich weg und die Lane lädt als
+Worktree-Default — nie fällt die Zeile. Fehlte das Feld in der Whitelist, würde jeder srv-Neustart
+die Isolation lautlos kippen: auf Platte steht weiter ein Clone, aber jeder Leser, der aus `form`
+auf die Isolation schließt — der Teardown (`server.ts#removeWorktreeSafe`, gerufen aus Kill und
+`landLane`, entscheidet an `form`, ob `git worktree remove` gilt oder die Verzeichnis-Entfernung
+eines Clones) und der Ref-Spiegel (`server.ts#syncLaneRefs`) — liest eine Worktree-Lane, ohne Log
+und ohne Fehler. Beweis: `e2e/restart.ts` — Clone- und Worktree-Richtung auf EINEM Boot; die
+Mutationsprobe nimmt das Feld aus der Wiederherstellung und trifft genau diesen Check.
+
 ### Die zwei Ledger — `fleet-reports.jsonl` und `context-receipts.jsonl` (seit 2026-09-14)
 
 Beide liegen neben `fleet.json`, sind gitignored, append-only und rotieren wie jedes

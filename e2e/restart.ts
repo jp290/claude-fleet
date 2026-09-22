@@ -158,6 +158,20 @@ export async function run(ctx: Ctx): Promise<void> {
     }
   }
 
+  // --- clone lane (form:"clone"): opened HERE, next to the legacy lane, so its record rides the
+  // same srv restart below. The boot restore rebuilds s.worktree as a whitelist and carried
+  // `letter` (since 6a6d46fd) but never `form` — every restarted clone lane silently came back a
+  // worktree lane, and removeWorktreeSafe (kill/land) then ran its `git worktree remove` branch
+  // against a plain directory. ---
+  let cloneLane: { slot: number; cwd: string; branch: string } | null = null;
+  if (legacyRepo) {
+    const cl = (await (await post("/api/lanes", { repo: legacyRepo, form: "clone" })).json()) as
+      { slot?: number; cwd?: string; branch?: string; form?: string };
+    check("precondition: the clone-lane fixture opened as a clone", cl.form === "clone" && !!cl.slot && !!cl.cwd && !!cl.branch,
+      JSON.stringify(cl));
+    if (cl.slot && cl.cwd && cl.branch) cloneLane = { slot: cl.slot, cwd: cl.cwd, branch: cl.branch };
+  }
+
   // --- kill semantics ---
   const k1 = await post("/api/slots/1/kill", {});
   check("kill slot 1 accepted", k1.ok);
@@ -785,6 +799,25 @@ export async function run(ctx: Ctx): Promise<void> {
     if (wtRec) delete wtRec.baseSha;
     if (st) writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
   }
+  // server down → the state file is quiescent: pin BOTH written shapes before the boot. The clone
+  // lane's record carries form:"clone" (the writer's only written value); the legacy lane — a
+  // worktree lane written by today's writer — carries NO form key, the byte-identical pre-field
+  // shape the write-site comment demands. Without this pre-boot half, a restore that INVENTED a
+  // form for worktree lanes could not be told apart from one that carries the field faithfully.
+  if (cloneLane && legacyLane) {
+    const stFile = `${ROOT}/fleet.json`;
+    let st: { slots?: Record<string, { worktree?: { form?: string } | null }> } | null = null;
+    let stError = "";
+    try { st = JSON.parse(readFileSync(stFile, "utf8")) as
+      { slots?: Record<string, { worktree?: { form?: string } | null }> }; }
+    catch (e) { stError = e instanceof Error ? e.message : String(e); }
+    const clRec = st?.slots?.[String(cloneLane.slot)]?.worktree;
+    const lgRec = st?.slots?.[String(legacyLane.slot)]?.worktree;
+    check("precondition: the clone lane's state record carries form:\"clone\" as written",
+      !!clRec && clRec.form === "clone", `${stError} ${JSON.stringify(clRec)}`);
+    check("precondition: the worktree lane's state record carries NO form key (byte-identical shape)",
+      !!lgRec && !("form" in lgRec), `${stError} ${JSON.stringify(lgRec)}`);
+  }
   // server down → break slot 15's persisted context budget (window above the ceiling). The loader must
   // bring the slot back with the field absent, never drop the slot or keep the out-of-bounds pair.
   {
@@ -992,6 +1025,27 @@ export async function run(ctx: Ctx): Promise<void> {
       restRes.ok && restJ.auto?.slot === ctx.restartSelfSlot, `${restRes.status} ${JSON.stringify(restJ)}`);
     if (restJ.auto) await post(`/api/autos/${restJ.auto.id}/delete`, {});
     await post(`/api/slots/${ctx.restartSelfSlot}/kill`, {}); // tear the persistence lane down
+  }
+
+  // --- form on the SAME boot (both fixtures opened before the restart, records pinned while the
+  // server was down): the restore must carry `form` exactly as it carries `letter` — only as
+  // written. BOTH directions ride this ONE boot: the clone lane comes back a clone lane, and the
+  // worktree lane still carries NO form key. Taking the field back out of the restore turns
+  // exactly this check red (the clone half dies; the worktree half alone cannot prove carriage). ---
+  if (cloneLane && legacyLane) {
+    const sessF = (await (await get("/api/sessions")).json()) as
+      { slots: { id: number; worktree?: { form?: string } | null }[] };
+    const wtC = sessF.slots.find((x) => x.id === cloneLane.slot)?.worktree;
+    const wtW = sessF.slots.find((x) => x.id === legacyLane.slot)?.worktree;
+    check("after restart: form is carried exactly as written — the clone lane is still a clone lane, the worktree lane still has no form key",
+      !!wtC && wtC.form === "clone" && !!wtW && !("form" in wtW),
+      `clone=${JSON.stringify(wtC)} worktree=${JSON.stringify(wtW)}`);
+    // teardown before the legacy block below kills its own lane: with the fix the kill removes the
+    // clone itself (removeWorktreeSafe's clone branch, form restored); the rmSync + branch delete
+    // are the belt for a red run, where the lane is kept and the dir and its mirrored branch stay.
+    await post(`/api/slots/${cloneLane.slot}/kill`, {});
+    if (existsSync(cloneLane.cwd)) rmSync(cloneLane.cwd, { recursive: true, force: true });
+    spawnSync("git", ["branch", "-qD", cloneLane.branch], { cwd: legacyRepo });
   }
 
   // --- the pre-baseSha lane (set up before the kill-semantics section, field stripped from state

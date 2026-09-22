@@ -32459,6 +32459,7 @@ if (existsSync(STATE_FILE)) {
           && typeof (wt as { repo?: unknown }).repo === "string" && typeof (wt as { branch?: unknown }).branch === "string") {
           const anchor = normalizeLaneAnchor((wt as { anchor?: unknown }).anchor);
           const letter = (wt as { letter?: unknown }).letter;
+          const form = (wt as { form?: unknown }).form;
           s.worktree = { repo: (wt as { repo: string }).repo, branch: (wt as { branch: string }).branch,
             ...(typeof (wt as { base?: unknown }).base === "string" ? { base: (wt as { base: string }).base } : {}),
             ...(typeof (wt as { baseSha?: unknown }).baseSha === "string" ? { baseSha: (wt as { baseSha: string }).baseSha } : {}),
@@ -32467,7 +32468,16 @@ if (existsSync(STATE_FILE)) {
             // to the client's positional derivation for this one lane (the laneSeats discipline).
             // An OLDER build's restore stops before this line's spread and so ignores the field
             // wholesale — which is exactly the tolerance a newer state file may demand of it.
-            ...(typeof letter === "string" && letter ? { letter } : {}) };
+            ...(typeof letter === "string" && letter ? { letter } : {}),
+            // …and form by the same law, judged against the ONE value the writers ever put there
+            // (openLaneInSlot / dispatchTask write `form:"clone"` on a clone lane alone — a
+            // worktree lane's record stays byte-identical to its pre-field shape). Only a written
+            // clone comes back a clone; any other value drops alone, the lane restores as the
+            // worktree default, and the row itself is never killed by a bad field. Dropping this
+            // spread silently converts every restarted clone lane into a worktree lane: kill and
+            // land then run removeWorktreeSafe's `git worktree remove` branch against a plain
+            // directory, and syncLaneRefs stops mirroring its refs.
+            ...(form === "clone" ? { form: "clone" } : {}) };
         }
       }
     }

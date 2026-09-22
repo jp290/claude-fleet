@@ -1152,9 +1152,9 @@ export async function run(): Promise<void> {
   // numbers themselves are measured live in e2e/watch.ts against tickMigrate's own fixture.
   const succSrc = boardSrc.slice(boardSrc.indexOf("if (brief?.succession) {"),
     boardSrc.indexOf("// identifiers: machine strings in mono"));
-  check("client: the head names all four succession facts — fill, handover threshold, rail, baton",
+  check("client: the head names all four succession facts — fill, handover threshold, rail, handoff",
     /srow\("Fill",/.test(succSrc) && /srow\("Handover",/.test(succSrc)
-    && /srow\("Rail", sc\.rail/.test(succSrc) && /srow\("Baton",/.test(succSrc),
+    && /srow\("Rail", sc\.rail/.test(succSrc) && /srow\("Handoff",/.test(succSrc),
     "the succession rows in renderBoard");
   check("client: an unmeasurable fill reads \"not measurable\" — the percentage exists only inside the sc.fill branch",
     /: "not measurable"/.test(succSrc)
@@ -1165,8 +1165,8 @@ export async function run(): Promise<void> {
     && /`off — \$\{offWhy\[sc\.thresholdOff \?\? "rail"\]\}`/.test(succSrc),
     "the Handover row in renderBoard");
   check("client: the cap is drawn only where one exists — without one the row says `no cap`, never 0 of 5",
-    /sc\.cap !== null \? `session \$\{sc\.session\} · \$\{sc\.taken \?\? 0\} of \$\{sc\.cap\}`/.test(succSrc)
-    && /`session \$\{sc\.session\} · no cap`/.test(succSrc), "the Baton row in renderBoard");
+    /sc\.cap !== null \? `Session \$\{sc\.session\} · \$\{sc\.taken \?\? 0\} of \$\{sc\.cap\}`/.test(succSrc)
+    && /`Session \$\{sc\.session\} · no cap`/.test(succSrc), "the Handoff row in renderBoard");
   // THE SPACE CUT (owner, 2026-09-20: "vllt muss dann noch etwas für platz usw. optimiert
   // werden"). Three lines left the column, and each of them was a REPETITION or a non-event, never
   // a fact: the setup block's `Type` row said what the head's own state line says word for word,
@@ -1206,7 +1206,7 @@ export async function run(): Promise<void> {
   check("client: the suite meter's head carries the fleet scope and names what it CANNOT see",
     /const scopeTag = el\("span", "bscope", "fleet"\);/.test(cliSrc)
     && /instanceLinks\.filter\(\(l\) => l\.name !== instanceName\)/.test(cliSrc)
-    && /only`\)/.test(cliSrc) && /not a federation/.test(cliSrc),
+    && /el\("span", "smscope", `\$\{instanceName \?\? "this machine"\}`\)/.test(cliSrc) && /kein Verbund/.test(cliSrc),
     "renderSuiteMeter's head");
   // …and the place is the column that may NEVER give way. The row is ~267 px wide at the board's
   // real width, so something has to: the lane name shrinks, the suite name shrinks, the machine

@@ -142,7 +142,8 @@ und ändert sich nicht mit dem Repo.
   angefragte; `git push` endet in `the remote end hung up unexpectedly`.
 - **P1:** Fetch aus dem Helfer-Baum bringt `main` bis zu dessen letztem `daemon-update`.
 - **R:** `git ls-remote` vom kanonischen Host auf den Checkout des zweiten liefert dessen Refs.
-- **`fleet-sync.sh`, alle fünf Ausgänge** gegen ein Paar Wegwerf-Repos auf dem Folger (Linux, `sh`
+- **`fleet-sync.sh`, alle fünf Ausgänge** (die fünf, die es an diesem Tag gab — `6` und `7` kamen
+  am 2026-09-23 dazu) gegen ein Paar Wegwerf-Repos auf dem Folger (Linux, `sh`
   ist dort **dash**): aktuell `0` · Fast-Forward `0` · schmutzig `4` · unbekanntes Remote `4` ·
   auseinandergelaufen `3` · nicht auf `main` `4`.
 - **Der Build-Schritt** ist seit dem W2-Bundle-Land maschinell gehalten, nicht nur gemessen:

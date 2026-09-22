@@ -2672,50 +2672,55 @@ export async function run(ctx: Ctx): Promise<void> {
     `${ambiguousSuccession.status} ${ambiguousSuccessionText}`);
   await programPost(ambiguousProgram.id, "complete");
 
-  const capacityFilled: number[] = [];
-  for (const slot of (await sessions()).slots.filter((s) => !s.cwd)) {
-    const opened = await post(`/api/slots/${slot.id}/open`, { cwd: REPO, label: "succession-capacity-fixture" });
-    if (opened.ok) capacityFilled.push(slot.id);
-  }
-  const bindingBeforeNoFree = JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main);
-  const noFreeReceiptsBefore = await contextReceipts();
-  const noFreeSuccession = await selfSucceed(mainSelfTokenAfterRestart);
-  check("Program-MAIN succession no-free: the existing 409 leaves authority and receipts unchanged",
-    noFreeSuccession.status === 409 && (await noFreeSuccession.text()).includes("no free slot")
-      && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main) === bindingBeforeNoFree
-      && (await contextReceipts()).total === noFreeReceiptsBefore.total,
-    String(noFreeSuccession.status));
-  for (const slot of capacityFilled) await post(`/api/slots/${slot}/kill`, {});
-
+  // --- A DELIVERY THAT FAILS AFTER AN IN-PLACE RESPAWN, on a throwaway Program so the main one
+  // keeps its predecessor for the handover fixture below. Since server.ts#respawnInPlace the
+  // predecessor ends at the open and the binding moves with it; a blocked screen then costs the
+  // brief, never the line: the successor stands on the SAME slot, bound, and the audit says why.
+  // Red before the in-place cut: the rail opened a second slot, cleaned it up on the blocked screen
+  // and left the binding on the predecessor. ---
+  const ipfProgram = await activateNewProgram("In-place succession delivery failure");
+  const ipfLabel = "program-inplace-failure-before";
+  const ipfPending = beginBootstrap(ipfProgram.id, { cwd: REPO, label: ipfLabel, harness: "codex", model: "gpt-5.5", effort: "high" });
+  const ipfSlot = await waitForLabel(ipfLabel);
+  if (ipfSlot !== null) await respawnScreen(ipfSlot, ">_ OpenAI Codex (v0.147.0)");
+  const ipfBoot = await ipfPending;
+  const ipfBefore = (await ownerPrograms()).find((p) => p.id === ipfProgram.id)?.main;
+  const ipfToken = slotToken(ipfSlot);
+  check("in-place succession failure setup: a Standard Program-MAIN is bound and live",
+    ipfBoot.ok && ipfSlot !== null && ipfBefore?.slot === ipfSlot && ipfToken !== "",
+    `${ipfBoot.status} slot=${ipfSlot} main=${JSON.stringify(ipfBefore)}`);
+  const ipfReceiptsBefore = await contextReceipts();
   const failedLabel = "program-succession-blocked";
-  const failureReceiptsBeforeSuccession = await contextReceipts();
-  const failureBindingBefore = JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main);
-  const failureSuccessionPending = selfSucceed(mainSelfTokenAfterRestart, { label: failedLabel, carry: "blocked carry" });
+  const failureSuccessionPending = selfSucceed(ipfToken, { label: failedLabel, carry: "blocked carry" });
   const failureSuccessorSlot = await waitForLabel(failedLabel);
-  check("Program-MAIN succession failure setup: the reserved inherited-codex successor became observable",
-    failureSuccessorSlot !== null, String(failureSuccessorSlot));
-  const repeatedDuringTransfer = await selfSucceed(mainSelfTokenAfterRestart);
-  const bootstrapDuringTransfer = await beginBootstrap(mainProgram.id, { cwd: ROOT });
-  const repeatedDuringTransferText = await repeatedDuringTransfer.text();
-  const bootstrapDuringTransferBody = await bootstrapDuringTransfer.json() as { existing?: boolean };
+  // the label is published by the successor's open, which ran after the kill: the predecessor's
+  // credential names no session any more, which is the whole of "a second succeed" now
+  const repeatedDuringTransfer = await selfSucceed(ipfToken);
   if (failureSuccessorSlot !== null) {
     await Bun.sleep(250); // waitForLabel observes state before openSlot's pane spawn necessarily settles
     await respawnScreen(failureSuccessorSlot, "Do you trust the contents of this directory?");
   }
   const failureSuccession = await failureSuccessionPending;
-  const failureSuccessionText = await failureSuccession.text();
-  check("Program-MAIN succession concurrency: a second succeed is already-started and bootstrap sees the one existing authority",
-    repeatedDuringTransfer.status === 409 && repeatedDuringTransferText.includes("already started")
-      && bootstrapDuringTransfer.ok && bootstrapDuringTransferBody.existing === true,
-    `succeed=${repeatedDuringTransfer.status}:${repeatedDuringTransferText} bootstrap=${bootstrapDuringTransfer.status}:${JSON.stringify(bootstrapDuringTransferBody)}`);
-  check("Program-MAIN succession readiness failure: blocked screen cleans the successor without rebinding, retirement, or receipt",
-    failureSuccession.status === 500 && failureSuccessionText.includes("codex trust prompt")
-      && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main) === failureBindingBefore
-      && (await contextReceipts()).total === failureReceiptsBeforeSuccession.total
-      && !readState().slots?.[String(mainSlot)]?.successionRetirement
-      && failureSuccessorSlot !== null
-      && !(await sessions()).slots.some((s) => s.id === failureSuccessorSlot && s.cwd),
-    `${failureSuccession.status} ${failureSuccessionText}`);
+  const failureSuccessionBody = await failureSuccession.json() as { error?: string; delivered?: boolean; slot?: number };
+  const ipfAfter = (await ownerPrograms()).find((p) => p.id === ipfProgram.id)?.main;
+  const ipfSuccessorRow = readState().slots?.[String(failureSuccessorSlot)];
+  const bootstrapAfterFailure = await beginBootstrap(ipfProgram.id, { cwd: ROOT });
+  const bootstrapAfterFailureBody = await bootstrapAfterFailure.json() as { existing?: boolean };
+  check("Program-MAIN succession respawns IN PLACE: the successor opens on the predecessor's slot, and the ended predecessor's token is refused",
+    failureSuccessorSlot !== null && failureSuccessorSlot === ipfSlot && repeatedDuringTransfer.status === 401,
+    `successor=${failureSuccessorSlot} predecessor=${ipfSlot} second=${repeatedDuringTransfer.status}`);
+  check("Program-MAIN succession readiness failure: the blocked screen costs the brief, not the line — the successor stands BOUND on the same slot, no receipt",
+    failureSuccession.status === 500 && (failureSuccessionBody.error ?? "").includes("codex trust prompt")
+      && failureSuccessionBody.delivered === false
+      && ipfAfter?.slot === ipfSlot && ipfAfter.openedAt === ipfSuccessorRow?.openedAt && ipfAfter.openedAt !== ipfBefore?.openedAt
+      && (await contextReceipts()).total === ipfReceiptsBefore.total
+      && (await sessions()).slots.some((s) => s.id === failureSuccessorSlot && s.cwd),
+    `${failureSuccession.status} ${JSON.stringify(failureSuccessionBody)} main=${JSON.stringify(ipfAfter)}`);
+  check("...and bootstrap sees the one existing authority: the bound successor",
+    bootstrapAfterFailure.ok && bootstrapAfterFailureBody.existing === true,
+    `${bootstrapAfterFailure.status} ${JSON.stringify(bootstrapAfterFailureBody)}`);
+  await programPost(ipfProgram.id, "complete");
+  if (ipfSlot !== null) await post(`/api/slots/${ipfSlot}/kill`, {});
 
   // WHAT THE PREDECESSOR OWNS, minted through its OWN doors rather than planted. Two kinds die in
   // different ways: killSlot deletes autos and armed watches outright, so handover retains them.
@@ -3002,6 +3007,15 @@ export async function run(ctx: Ctx): Promise<void> {
   const carry = "Continue with the first bounded Program move.";
   const successorLabel = "program-succession-success";
   const receiptsBeforeSuccession = await contextReceipts();
+  // A FULL FLEET IS NO REASON TO REFUSE A HANDOVER ANY MORE: every free slot is taken first, and the
+  // succession must still pass — in place. Red before the in-place cut: "no free slot", 409.
+  const capacityFilled: number[] = [];
+  for (const slot of (await sessions()).slots.filter((s) => !s.cwd)) {
+    const opened = await post(`/api/slots/${slot.id}/open`, { cwd: REPO, label: "succession-capacity-fixture" });
+    if (opened.ok) capacityFilled.push(slot.id);
+  }
+  const freeBeforeSuccession = (await sessions()).slots.filter((s) => !s.cwd).length;
+  const predecessorOpenedAt = readState().slots?.[String(mainSlot)]?.openedAt;
   const successionPending = selfSucceed(mainSelfTokenAfterRestart, { label: successorLabel, carry });
   const successorSlot = await waitForLabel(successorLabel);
   check("Program-MAIN succession success setup: exactly one successor reservation became observable",
@@ -3011,6 +3025,15 @@ export async function run(ctx: Ctx): Promise<void> {
     await respawnScreen(successorSlot, ">_ OpenAI Codex (v0.147.0)");
   }
   const successionResponse = await successionPending;
+  for (const slot of capacityFilled) await post(`/api/slots/${slot}/kill`, {});
+  const successionBand = (await (await get(`/api/slots/${mainSlot}/succession`)).json()) as
+    { session?: number; past?: { startedAt: number | null }[] };
+  check("Program-MAIN succession with NO free slot succeeds IN PLACE: same slot, new openedAt, and the band shows the same line at session 2",
+    capacityFilled.length > 0 && freeBeforeSuccession === 0 && successionResponse.ok
+      && successorSlot === mainSlot && typeof predecessorOpenedAt === "number"
+      && (readState().slots?.[String(mainSlot)]?.openedAt ?? 0) > predecessorOpenedAt
+      && successionBand.session === 2 && successionBand.past?.[0]?.startedAt === predecessorOpenedAt,
+    `filled=${capacityFilled.length} free=${freeBeforeSuccession} status=${successionResponse.status} successor=${successorSlot} main=${mainSlot} band=${JSON.stringify(successionBand)}`);
   const successionBody = await successionResponse.json() as
     { ok?: boolean; slot?: number; label?: string | null; program?: { id?: string; status?: string; title?: string } };
   const transferredProgram = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
@@ -3216,7 +3239,7 @@ export async function run(ctx: Ctx): Promise<void> {
     inboxSuccessorView.response.ok && inboxSuccessorView.view?.program === mainProgram.id
       && inboxSuccessorView.view.entries.length === 3 && inboxSuccessorView.view.unread === 2
       && inboxSuccessorView.view.dropped === 7
-      && successorSlot !== mainSlot
+      && successorSlot === mainSlot && readState().slots?.[String(mainSlot)]?.openedAt !== bound?.openedAt
       && inboxSurvivedRead?.readBy?.slot === mainSlot
       && inboxSurvivedRead.readBy.openedAt === bound?.openedAt
       && inboxSurvivedUnread?.readBy === null && inboxSurvivedUnread.readAt === null,
@@ -3244,7 +3267,8 @@ export async function run(ctx: Ctx): Promise<void> {
   const msgStoredOut = (readState().messages as { entries?: MessageRow[] } | undefined)?.entries
     ?.find((e) => e.id === msgOutId);
   check("message rail survives succession: A's SUCCESSOR resolves BOTH ends of the thread its predecessor opened — the answer and the question replyTo names — while B's receipt on the outbound half still names B and only the inbound row counts as unread",
-    msgSuccessorView.response.ok && successorSlot !== null && successorSlot !== mainSlot
+    msgSuccessorView.response.ok && successorSlot !== null && successorSlot === mainSlot
+      && readState().slots?.[String(mainSlot)]?.openedAt !== bound?.openedAt
       && !!msgSuccessorReply && msgSuccessorReply.replyTo === msgOutId
       && msgSuccessorReply.payload.text === msgReplyText
       && !!msgSuccessorOwnOutbound && msgSuccessorOwnOutbound.payload.text === msgOutText
@@ -3460,7 +3484,7 @@ export async function run(ctx: Ctx): Promise<void> {
   check("ProgramExecutionView report join: the successor is bound and its task row carries an explicit report null before any row exists",
     beforePlantView.response.ok && !!beforePlantRow && beforePlantRow.report === null
       && beforePlantView.view?.programs[0]?.authority.boundSlot === successorSlot
-      && successorSlot !== bound?.slot,
+      && beforePlantView.view?.programs[0]?.authority.boundOpenedAt !== bound?.openedAt,
     JSON.stringify({ boundSlot: beforePlantView.view?.programs[0]?.authority.boundSlot,
       predecessor: bound?.slot, rowFound: !!beforePlantRow, report: beforePlantRow?.report ?? null }));
   const decidedReportId = "c".repeat(24);
@@ -3815,8 +3839,11 @@ export async function run(ctx: Ctx): Promise<void> {
   const unboundSuccLabel = "unbound-succession-successor";
   const unboundPending = selfSucceed(unboundToken, { label: unboundSuccLabel, carry: unboundCarry });
   const unboundSuccSlot = await waitForLabel(unboundSuccLabel);
-  check("unbound succession setup: exactly one successor reservation became observable",
-    unboundSuccSlot !== null && unboundSuccSlot !== unboundFreeSlot, String(unboundSuccSlot));
+  // in place since server.ts#respawnInPlace: the successor is a new occupation of the SAME slot
+  check("unbound succession setup: exactly one successor reservation became observable, on the predecessor's own slot",
+    unboundSuccSlot !== null && unboundSuccSlot === unboundFreeSlot
+      && (await sessions()).slots.find((s) => s.id === unboundSuccSlot)?.openedAt !== unboundPredOpenedAt,
+    String(unboundSuccSlot));
   // anchored on the successor's OWN openedAt, not on when this fixture noticed it: the server's
   // grace and readiness budget both start there, so a slow poll cannot eat the margin
   const unboundSuccOpenedAt = unboundSuccSlot === null ? Date.now()
@@ -3951,10 +3978,12 @@ export async function run(ctx: Ctx): Promise<void> {
     if (!/^[0-9a-f]{32}$/.test(orchToken)) await Bun.sleep(100);
   }
   const orchIntent = "zuerst die zwei roten Audit-Zeilen, dann das Klassen-Register";
+  // the successor is found by its OCCUPATION: it opens in place, on the predecessor's own slot
+  const orchPredOpenedAt = (await sessions()).slots.find((s) => s.id === orchSlot)?.openedAt;
   const orchSuccPending = selfSucceed(orchToken, { intent: orchIntent });
   let orchSuccSlot: number | null = null;
   for (let i = 0; i < 100 && orchSuccSlot === null; i++) {
-    const found = (await sessions()).slots.find((s) => s.cwd && s.label === orchLabel && s.id !== orchSlot);
+    const found = (await sessions()).slots.find((s) => s.cwd && s.label === orchLabel && s.openedAt !== orchPredOpenedAt);
     if (found && (await tmuxOut("has-session", "-t", `=s${found.id}`)).code === 0) orchSuccSlot = found.id;
     else await Bun.sleep(50);
   }
@@ -3971,7 +4000,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const orchSuccReceipt = (await contextReceipts()).receipts
     .filter((row) => row.slot === orchSuccSlot).at(-1);
   check("Orchestrator role card: the succession door delivers the SAME six blocks, over the line record it names",
-    orchSuccRes.ok && orchSuccBody.ok === true && orchSuccBody.slot === orchSuccSlot
+    orchSuccRes.ok && orchSuccBody.ok === true && orchSuccBody.slot === orchSuccSlot && orchSuccSlot === orchSlot
       && orchSuccBody.roleCard?.delivered === true && orchSuccBody.roleCard.receipt === true
       && orchSuccPrompt.startsWith("[fleet Orchestrator succession] ")
       && orchCard(orchSuccPrompt).length === 0
@@ -5342,61 +5371,59 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify((await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main ?? null) === carryBindingBefore,
     `open=${succSquatterOpen?.status} ${succSquatterText}`);
 
-  // SUCCESSION CRASH: the old MAIN remains the authority until the one durable binding cut. Kill
-  // srv after the target+marker exist but before readiness; boot must stop only the candidate,
-  // preserve predecessor+binding, clear the marker and mint no receipt.
-  const gmSuccessionCrashLabel = "program-main-game-maker-successor-crash";
-  const gmSuccessionCrashReceiptsBefore = (await contextReceipts()).total;
-  const gmBindingBeforeSuccessionCrash = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main;
-  const gmSuccessionCrashPending = selfSucceed(gmMainToken, { label: gmSuccessionCrashLabel }).catch(() => null);
-  const gmSuccessionCrashSlot = await waitForLabel(gmSuccessionCrashLabel);
-  const gmSuccessionCrashMarker = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.founding;
-  await restartSrv();
-  await gmSuccessionCrashPending;
-  const gmAfterSuccessionCrash = (await ownerPrograms()).find((p) => p.id === gmProgram.id);
-  check("game-maker succession restart: candidate rolls back while predecessor binding and receipt count stay unchanged",
-    gmSuccessionCrashSlot !== null && gmSuccessionCrashMarker?.mode === "succession"
-      && gmSuccessionCrashMarker.target.slot === gmSuccessionCrashSlot
-      && gmSuccessionCrashMarker.predecessor?.slot === gmSlot
-      && JSON.stringify(gmAfterSuccessionCrash?.main) === JSON.stringify(gmBindingBeforeSuccessionCrash)
-      && gmAfterSuccessionCrash?.founding === undefined
-      && !(await sessions()).slots.find((slot) => slot.id === gmSuccessionCrashSlot)?.cwd
-      && (await tmuxOut("has-session", "-t", `s${gmSuccessionCrashSlot}`)).code !== 0
-      && (await contextReceipts()).total === gmSuccessionCrashReceiptsBefore,
-    JSON.stringify({ marker: gmSuccessionCrashMarker, before: gmBindingBeforeSuccessionCrash,
-      after: gmAfterSuccessionCrash, receipts: [gmSuccessionCrashReceiptsBefore, (await contextReceipts()).total] }));
-
+  // THE IN-PLACE CUT (server.ts#respawnInPlace): the successor opens on the predecessor's own slot,
+  // and the binding moves right after that open — so the moment "marker durable, binding not yet
+  // moved" is a few milliseconds of real code. The after-open latch holds it open; the restart-mid-
+  // succession case this block used to time by hand is proven on the latch below
+  // ("…restart after the in-place open…"), where the kill is deterministic.
+  const gmSuccessionLatch = `${ROOT}/gm-succession-after-open-latch`;
+  for (const path of [gmSuccessionLatch, `${gmSuccessionLatch}.reached`, `${gmSuccessionLatch}.release`])
+    if (existsSync(path)) unlinkSync(path);
+  await restartSrv({ FLEET_TEST_SUCCESSION_AFTER_OPEN_LATCH: gmSuccessionLatch });
+  writeFileSync(gmSuccessionLatch, "armed\n", { mode: 0o600 });
+  const gmBindingBeforeSuccession = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main;
   const gmSuccessionReceiptsBefore = (await contextReceipts()).total;
   const gmSuccessionPending = selfSucceed(gmMainToken, { label: gmSuccessorLabel });
   const gmSuccessorSlot = await waitForLabel(gmSuccessorLabel);
+  for (let i = 0; i < 500 && !existsSync(`${gmSuccessionLatch}.reached`); i++) await Bun.sleep(20);
   const gmDuringSuccession = (await ownerPrograms()).find((p) => p.id === gmProgram.id);
   const gmCompleteDuringSuccession = await programPost(gmProgram.id, "complete");
   const gmCompleteDuringSuccessionText = await gmCompleteDuringSuccession.text();
-  check("game-maker founding marker: succession names target and predecessor and blocks completion without moving the old binding",
-    gmSuccessorSlot !== null && gmDuringSuccession?.founding?.mode === "succession"
+  check("game-maker founding marker: an in-place succession names the predecessor's own slot as target, and blocks completion before the binding moves",
+    existsSync(`${gmSuccessionLatch}.reached`)
+      && gmSuccessorSlot !== null && gmSuccessorSlot === gmSlot && gmDuringSuccession?.founding?.mode === "succession"
       && gmDuringSuccession.founding.target.slot === gmSuccessorSlot
       && gmDuringSuccession.founding.predecessor?.slot === gmSlot
-      && gmDuringSuccession.founding.predecessor.openedAt === readState().slots?.[String(gmSlot)]?.openedAt
-      && gmDuringSuccession.main?.slot === gmSlot
+      && gmDuringSuccession.founding.predecessor.openedAt === gmBindingBeforeSuccession?.openedAt
+      && gmDuringSuccession.founding.target.openedAt === readState().slots?.[String(gmSlot)]?.openedAt
+      && gmDuringSuccession.main?.slot === gmSlot && gmDuringSuccession.main.openedAt === gmBindingBeforeSuccession?.openedAt
       && gmCompleteDuringSuccession.status === 409 && gmCompleteDuringSuccessionText.includes("founding")
       && (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.status === "active",
-    JSON.stringify({ row: gmDuringSuccession,
+    JSON.stringify({ row: gmDuringSuccession, before: gmBindingBeforeSuccession,
       complete: [gmCompleteDuringSuccession.status, gmCompleteDuringSuccessionText] }));
   if (gmSuccessorSlot !== null) {
     await Bun.sleep(250);
     await respawnScreen(gmSuccessorSlot, ">_ OpenAI Codex (v0.147.0)");
   }
+  writeFileSync(`${gmSuccessionLatch}.release`, "release\n", { mode: 0o600 });
   const gmSuccessionResponse = await gmSuccessionPending;
   const gmSuccessionBody = await gmSuccessionResponse.json() as { ok?: boolean; slot?: number };
   const gmSuccessionHistory = typeof gmSuccessionBody.slot === "number"
     ? await (await get(`/api/slots/${gmSuccessionBody.slot}/history`)).json() as { history: { text: string }[] }
     : { history: [] as { text: string }[] };
   const gmSuccessionPrompt = gmSuccessionHistory.history.at(-1)?.text ?? "";
-  check("game-maker checkpoint: a readable committed checkpoint founds the successor and rebinds the Program",
+  for (const path of [gmSuccessionLatch, `${gmSuccessionLatch}.reached`, `${gmSuccessionLatch}.release`])
+    if (existsSync(path)) unlinkSync(path);
+  const gmReboundMain = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main;
+  const gmBand = (await (await get(`/api/slots/${gmSlot}/succession`)).json()) as { session?: number };
+  check("game-maker checkpoint: a readable committed checkpoint founds the successor IN PLACE and rebinds the Program to the new occupation",
     gmGoodCommit === 0 && gmSuccessionResponse.ok && gmSuccessionBody.slot === gmSuccessorSlot
-      && (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main?.slot === gmSuccessorSlot
+      && gmReboundMain?.slot === gmSuccessorSlot && gmReboundMain.openedAt !== gmBindingBeforeSuccession?.openedAt
+      && gmReboundMain.openedAt === readState().slots?.[String(gmSlot)]?.openedAt
+      && typeof gmBand.session === "number" && gmBand.session >= 2
+      && gmBand.session === (readState().programs?.find((p) => p.id === gmProgram.id)?.lineage?.entries.length ?? -1)
       && (await contextReceipts()).total === gmSuccessionReceiptsBefore + 1,
-    `commit=${gmGoodCommit} ${gmSuccessionResponse.status} ${JSON.stringify(gmSuccessionBody)}`);
+    `commit=${gmGoodCommit} ${gmSuccessionResponse.status} ${JSON.stringify(gmSuccessionBody)} main=${JSON.stringify(gmReboundMain)} band=${JSON.stringify(gmBand)}`);
   // THE SHARED BLOCK, byte for byte. Two founding seams, one text — the falsifier is a bootstrap
   // and a succession that drift into two nearly-identical role blocks nobody diffs again.
   const gmSuccessionRole = gmRoleOf(gmSuccessionPrompt);
@@ -5665,7 +5692,7 @@ export async function run(ctx: Ctx): Promise<void> {
   writeFileSync(afterOpenLatch, "armed\n", { mode: 0o600 });
   const standardSuccessorLabel = "standard-revocation-candidate";
   const standardSuccessionPending = selfSucceed(standardPredecessor.token,
-    { label: standardSuccessorLabel, carry: "must lose authority before receipt" });
+    { label: standardSuccessorLabel, carry: "must lose authority before the binding cut" });
   const standardCandidateSlot = await waitForLabel(standardSuccessorLabel);
   const afterOpenReached = await waitForSuccessionLatch(`${afterOpenLatch}.reached`,
     "succession revocation fixture: the Standard candidate reaches the post-open authority cut");
@@ -5675,17 +5702,23 @@ export async function run(ctx: Ctx): Promise<void> {
     ?.find((p) => p.id === standardRevocationProgram.id)?.founding;
   const standardCandidateDurable = standardCandidateSlot === null ? undefined
     : readState().slots?.[String(standardCandidateSlot)];
-  check("Standard succession v2: durable marker binds exact predecessor and candidate hashes while the API omits both",
-    afterOpenReached && standardCandidateSlot !== null
+  check("Standard succession v2: durable marker binds exact predecessor and candidate hashes — on ONE slot, two occupations — while the API omits both",
+    afterOpenReached && standardCandidateSlot !== null && standardCandidateSlot === standardPredecessor.slot
       && standardSuccessionPublic?.v === 2 && standardSuccessionPublic.profileKind === "standard"
       && standardSuccessionPublic.mode === "succession"
       && standardSuccessionPublic.predecessor?.slot === standardPredecessor.slot
       && standardSuccessionPublic.predecessor.openedAt === standardPredecessor.openedAt
+      && standardSuccessionPublic.target.openedAt === standardCandidateDurable?.openedAt
+      && standardSuccessionPublic.target.openedAt !== standardPredecessor.openedAt
       && standardSuccessionPublic.predecessor.selfTokenHash === undefined
       && standardSuccessionPublic.target.selfTokenHash === undefined
       && standardSuccessionDurable?.predecessor?.selfTokenHash === tokenHash(standardPredecessor.token)
       && standardSuccessionDurable.target.selfTokenHash === tokenHash(standardCandidateDurable?.selfToken ?? ""),
     JSON.stringify({ public: standardSuccessionPublic, durable: standardSuccessionDurable }));
+  // THE OWNER TAKES THE SLOT INSIDE THE RESPAWN: the kill stops the exact candidate and drops the
+  // marker (the kill route's founding-target rollback), and the reopen puts a stranger there. The
+  // rail must bind NOTHING and touch the stranger not at all — a recycled slot number is never the
+  // successor, and the Program keeps its stale binding, which bootstrap re-founds over.
   const standardOwnerKill = afterOpenReached
     ? await post(`/api/slots/${standardPredecessor.slot}/kill`, {}) : null;
   const standardRecycle = standardOwnerKill?.ok
@@ -5699,140 +5732,84 @@ export async function run(ctx: Ctx): Promise<void> {
   const standardAfter = (await ownerPrograms()).find((p) => p.id === standardRevocationProgram.id);
   const standardReceiptsAfter = (await contextReceipts()).receipts
     .filter((row) => row.programId === standardRevocationProgram.id).length;
-  const standardCandidateAbsent = standardCandidateSlot !== null
-    && !(await sessions()).slots.find((slot) => slot.id === standardCandidateSlot)?.cwd
-    && (await tmuxOut("has-session", "-t", `s${standardCandidateSlot}`)).code !== 0;
   const standardReplacementAfter = readState().slots?.[String(standardPredecessor.slot)];
-  check("Program-MAIN succession revocation after target open rejects before receipt and preserves recycled predecessor",
+  check("Program-MAIN succession: an owner recycle inside the in-place respawn is never bound, and the recycled occupant is preserved",
     standardHandoffCommit === 0 && afterOpenReached && standardOwnerKill?.ok === true
       && standardRecycle?.ok === true && standardRevokedResponse.status === 409
-      && standardRevokedText.includes("predecessor authority changed")
+      && standardRevokedText.includes("was not bound")
       && JSON.stringify(standardAfter?.main) === JSON.stringify(standardBindingBefore)
       && standardAfter?.founding === undefined && standardReceiptsAfter === standardReceiptsBefore
-      && standardCandidateAbsent
       && standardReplacementAfter?.cwd === realpathSync(gameWtSibling)
+      && standardReplacementAfter.label === "replacement-after-standard-revocation"
       && standardReplacementAfter.openedAt === standardReplacement?.openedAt
-      && standardReplacementAfter.selfToken === standardReplacement?.selfToken
-      && !standardReplacementAfter.successionRetirement,
+      && standardReplacementAfter.selfToken === standardReplacement?.selfToken,
     JSON.stringify({ handoff: standardHandoffCommit, reached: afterOpenReached,
       kill: standardOwnerKill?.status, recycle: standardRecycle?.status,
       response: [standardRevokedResponse.status, standardRevokedText],
       binding: [standardBindingBefore, standardAfter?.main],
       receipts: [standardReceiptsBefore, standardReceiptsAfter], candidate: standardCandidateSlot,
-      candidateAbsent: standardCandidateAbsent, replacement: standardReplacementAfter }));
-  if (standardCandidateSlot !== null
-    && (await sessions()).slots.find((slot) => slot.id === standardCandidateSlot)?.cwd)
-    await post(`/api/slots/${standardCandidateSlot}/kill`, {});
+      replacement: standardReplacementAfter }));
   if (standardRecycle?.ok) await post(`/api/slots/${standardPredecessor.slot}/kill`, {});
   await programPost(standardRevocationProgram.id, "complete");
   clearSuccessionLatch(afterOpenLatch);
 
-  const afterReceiptLatch = `${ROOT}/succession-after-receipt-latch`;
-  clearSuccessionLatch(afterReceiptLatch);
-  await restartSrv({ FLEET_TEST_SUCCESSION_AFTER_RECEIPT_LATCH: afterReceiptLatch });
-  const gmRevocationProgram = await activateNewProgram("Game-Maker succession authority revocation");
-  await setProfile(gmRevocationProgram.id, GAME_MAKER);
-  const gmRevocationPredecessor = await bootstrapRevocationMain(
-    gmRevocationProgram, gameWt, "game-maker-revocation-predecessor",
-    "succession revocation fixture: the Game-Maker predecessor is bound with an exact live identity");
-  const gmRevocationHandoffCommit = await commitRevocationHandoff(
-    gameWt, gmRevocationPredecessor.openedAt,
-    goodCheckpoint.replace("Critic: docs/critic/play-03.md",
-      "Critic: docs/critic/play-05-authority-revocation.md"),
-    "succession fixture: Game-Maker authority revocation");
-  const gmRevocationBindingBefore = (await ownerPrograms())
-    .find((p) => p.id === gmRevocationProgram.id)?.main;
-  const gmRevocationReceiptsBefore = (await contextReceipts()).receipts
-    .filter((row) => row.programId === gmRevocationProgram.id).length;
-  writeFileSync(afterReceiptLatch, "armed\n", { mode: 0o600 });
-  const gmRevocationSuccessorLabel = "game-maker-revocation-candidate";
-  const gmRevocationPending = selfSucceed(gmRevocationPredecessor.token,
-    { label: gmRevocationSuccessorLabel });
-  const gmRevocationCandidateSlot = await waitForLabel(gmRevocationSuccessorLabel);
-  if (gmRevocationCandidateSlot !== null) {
-    await Bun.sleep(250);
-    await respawnScreen(gmRevocationCandidateSlot, ">_ OpenAI Codex (v0.147.0)");
-  }
-  const afterReceiptReached = await waitForSuccessionLatch(`${afterReceiptLatch}.reached`,
-    "succession revocation fixture: the Game-Maker receipt is durable before authority is revoked");
-  const gmRevocationOwnerKill = afterReceiptReached
-    ? await post(`/api/slots/${gmRevocationPredecessor.slot}/kill`, {}) : null;
-  writeFileSync(`${afterReceiptLatch}.release`, "release\n", { mode: 0o600 });
-  const gmRevokedResponse = await gmRevocationPending;
-  const gmRevokedText = await gmRevokedResponse.text();
-  const gmRevocationAfter = (await ownerPrograms()).find((p) => p.id === gmRevocationProgram.id);
-  const gmRevocationReceiptsAfter = (await contextReceipts()).receipts
-    .filter((row) => row.programId === gmRevocationProgram.id);
-  const gmRevocationOrphan = gmRevocationReceiptsAfter.at(-1);
-  const gmRevocationCandidateAbsent = gmRevocationCandidateSlot !== null
-    && !(await sessions()).slots.find((slot) => slot.id === gmRevocationCandidateSlot)?.cwd
-    && (await tmuxOut("has-session", "-t", `s${gmRevocationCandidateSlot}`)).code !== 0;
-  check("Game-Maker succession revocation after receipt leaves one orphan receipt without transferring authority",
-    gmRevocationHandoffCommit === 0 && afterReceiptReached && gmRevocationOwnerKill?.ok === true
-      && gmRevokedResponse.status === 409 && gmRevokedText.includes("predecessor authority changed")
-      && JSON.stringify(gmRevocationAfter?.main) === JSON.stringify(gmRevocationBindingBefore)
-      && gmRevocationAfter?.founding === undefined && gmRevocationCandidateAbsent
-      && gmRevocationReceiptsAfter.length === gmRevocationReceiptsBefore + 1
-      && gmRevocationOrphan?.slot === gmRevocationCandidateSlot
-      && !readState().slots?.[String(gmRevocationPredecessor.slot)]?.successionRetirement,
-    JSON.stringify({ handoff: gmRevocationHandoffCommit, reached: afterReceiptReached,
-      kill: gmRevocationOwnerKill?.status, response: [gmRevokedResponse.status, gmRevokedText],
-      binding: [gmRevocationBindingBefore, gmRevocationAfter?.main],
-      receipts: [gmRevocationReceiptsBefore, gmRevocationReceiptsAfter.length],
-      orphan: gmRevocationOrphan, candidate: gmRevocationCandidateSlot,
-      candidateAbsent: gmRevocationCandidateAbsent }));
-  if (gmRevocationCandidateSlot !== null
-    && (await sessions()).slots.find((slot) => slot.id === gmRevocationCandidateSlot)?.cwd)
-    await post(`/api/slots/${gmRevocationCandidateSlot}/kill`, {});
-  await programPost(gmRevocationProgram.id, "complete");
-  clearSuccessionLatch(afterReceiptLatch);
-  await restartSrv();
-
-  const postReceiptCrashLatch = `${ROOT}/succession-post-receipt-crash-latch`;
-  clearSuccessionLatch(postReceiptCrashLatch);
-  await restartSrv({ FLEET_TEST_SUCCESSION_AFTER_RECEIPT_LATCH: postReceiptCrashLatch });
-  const postReceiptCrashProgram = await activateNewProgram("Standard succession post-receipt crash recovery");
-  const postReceiptCrashPredecessor = await bootstrapRevocationMain(
-    postReceiptCrashProgram, gameWt, "standard-post-receipt-crash-predecessor",
-    "post-receipt crash fixture: the Standard predecessor is bound with an exact live identity");
-  const postReceiptCrashHandoff = await commitRevocationHandoff(gameWt, postReceiptCrashPredecessor.openedAt,
-    `## Program succession\ncontinue ${postReceiptCrashProgram.title}\n`,
-    "succession fixture: Standard post-receipt crash");
-  const postReceiptCrashBinding = (await ownerPrograms())
-    .find((p) => p.id === postReceiptCrashProgram.id)?.main;
-  const postReceiptCrashReceiptsBefore = (await contextReceipts()).receipts
-    .filter((row) => row.programId === postReceiptCrashProgram.id).length;
-  writeFileSync(postReceiptCrashLatch, "armed\n", { mode: 0o600 });
-  const postReceiptCrashLabel = "standard-post-receipt-crash-candidate";
-  const postReceiptCrashPending = selfSucceed(postReceiptCrashPredecessor.token,
-    { label: postReceiptCrashLabel, carry: "receipt remains evidence only" }).catch(() => null);
-  const postReceiptCrashSlot = await waitForLabel(postReceiptCrashLabel);
-  if (postReceiptCrashSlot !== null) {
-    await Bun.sleep(250);
-    await respawnScreen(postReceiptCrashSlot, ">_ OpenAI Codex (v0.147.0)");
-  }
-  const postReceiptCrashReached = await waitForSuccessionLatch(`${postReceiptCrashLatch}.reached`,
-    "post-receipt crash fixture: the Standard receipt is durable before server death");
+  // THE RESTART INSIDE THE RESPAWN, on a Game-Maker Program so the boot's tree-occupant rule runs
+  // too. The predecessor is already gone when the server dies, so the boot can only do one honest
+  // thing: stop the exact candidate, drop the marker and leave the binding stale — closed in the
+  // lineage as `retire` — with no receipt; and that stale binding is exactly what bootstrap re-founds
+  // over. Before the in-place cut this block restarted AFTER a durable receipt and proved the old
+  // binding kept its (live) predecessor; there is no live predecessor left to keep.
+  const inPlaceCrashLatch = `${ROOT}/succession-in-place-crash-latch`;
+  clearSuccessionLatch(inPlaceCrashLatch);
+  await restartSrv({ FLEET_TEST_SUCCESSION_AFTER_OPEN_LATCH: inPlaceCrashLatch });
+  const inPlaceCrashProgram = await activateNewProgram("Game-Maker in-place succession crash recovery");
+  await setProfile(inPlaceCrashProgram.id, GAME_MAKER);
+  const inPlaceCrashPredecessor = await bootstrapRevocationMain(
+    inPlaceCrashProgram, gameWt, "game-maker-in-place-crash-predecessor",
+    "in-place crash fixture: the Game-Maker predecessor is bound with an exact live identity");
+  const inPlaceCrashHandoff = await commitRevocationHandoff(gameWt, inPlaceCrashPredecessor.openedAt,
+    goodCheckpoint.replace("Critic: docs/critic/play-03.md", "Critic: docs/critic/play-05-in-place-crash.md"),
+    "succession fixture: Game-Maker in-place crash");
+  const inPlaceCrashBinding = (await ownerPrograms()).find((p) => p.id === inPlaceCrashProgram.id)?.main;
+  const inPlaceCrashReceiptsBefore = (await contextReceipts()).receipts
+    .filter((row) => row.programId === inPlaceCrashProgram.id).length;
+  writeFileSync(inPlaceCrashLatch, "armed\n", { mode: 0o600 });
+  const inPlaceCrashLabel = "game-maker-in-place-crash-candidate";
+  const inPlaceCrashPending = selfSucceed(inPlaceCrashPredecessor.token, { label: inPlaceCrashLabel }).catch(() => null);
+  const inPlaceCrashSlot = await waitForLabel(inPlaceCrashLabel);
+  const inPlaceCrashReached = await waitForSuccessionLatch(`${inPlaceCrashLatch}.reached`,
+    "in-place crash fixture: the candidate stands on the predecessor's slot before the binding cut");
+  const inPlaceCrashMarker = (await ownerPrograms()).find((p) => p.id === inPlaceCrashProgram.id)?.founding;
   await stopSrv();
-  clearSuccessionLatch(postReceiptCrashLatch);
+  clearSuccessionLatch(inPlaceCrashLatch);
   await restartSrv();
-  await postReceiptCrashPending;
-  const postReceiptCrashAfter = (await ownerPrograms()).find((p) => p.id === postReceiptCrashProgram.id);
-  const postReceiptCrashReceiptsAfter = (await contextReceipts()).receipts
-    .filter((row) => row.programId === postReceiptCrashProgram.id);
-  check("Standard succession restart after receipt rolls back the exact candidate and leaves one orphan receipt as evidence without moving authority",
-    postReceiptCrashHandoff === 0 && postReceiptCrashReached && postReceiptCrashSlot !== null
-      && JSON.stringify(postReceiptCrashAfter?.main) === JSON.stringify(postReceiptCrashBinding)
-      && postReceiptCrashAfter?.founding === undefined
-      && !(await sessions()).slots.find((slot) => slot.id === postReceiptCrashSlot)?.cwd
-      && (await tmuxOut("has-session", "-t", `s${postReceiptCrashSlot}`)).code !== 0
-      && postReceiptCrashReceiptsAfter.length === postReceiptCrashReceiptsBefore + 1,
-    JSON.stringify({ handoff: postReceiptCrashHandoff, reached: postReceiptCrashReached,
-      binding: [postReceiptCrashBinding, postReceiptCrashAfter?.main],
-      receipts: [postReceiptCrashReceiptsBefore, postReceiptCrashReceiptsAfter.length],
-      candidate: postReceiptCrashSlot }));
-  await post(`/api/slots/${postReceiptCrashPredecessor.slot}/kill`, {});
-  await programPost(postReceiptCrashProgram.id, "complete");
+  await inPlaceCrashPending;
+  const inPlaceCrashAfter = (await ownerPrograms()).find((p) => p.id === inPlaceCrashProgram.id);
+  const inPlaceCrashLineage = readState().programs?.find((p) => p.id === inPlaceCrashProgram.id)?.lineage;
+  check("in-place succession restart: the exact candidate rolls back, the binding is left stale and closed as retire, no receipt",
+    inPlaceCrashHandoff === 0 && inPlaceCrashReached && inPlaceCrashSlot === inPlaceCrashPredecessor.slot
+      && inPlaceCrashMarker?.mode === "succession" && inPlaceCrashMarker.target.slot === inPlaceCrashPredecessor.slot
+      && inPlaceCrashMarker.predecessor?.openedAt === inPlaceCrashPredecessor.openedAt
+      && JSON.stringify(inPlaceCrashAfter?.main) === JSON.stringify(inPlaceCrashBinding)
+      && inPlaceCrashAfter?.founding === undefined
+      && !(await sessions()).slots.find((slot) => slot.id === inPlaceCrashSlot)?.cwd
+      && (await tmuxOut("has-session", "-t", `s${inPlaceCrashSlot}`)).code !== 0
+      && inPlaceCrashLineage?.entries.at(-1)?.openedAt === inPlaceCrashPredecessor.openedAt
+      && inPlaceCrashLineage.entries.at(-1)?.endedBy === "retire"
+      && (await contextReceipts()).receipts.filter((row) => row.programId === inPlaceCrashProgram.id).length
+        === inPlaceCrashReceiptsBefore,
+    JSON.stringify({ handoff: inPlaceCrashHandoff, reached: inPlaceCrashReached, marker: inPlaceCrashMarker,
+      binding: [inPlaceCrashBinding, inPlaceCrashAfter?.main], lineage: inPlaceCrashLineage?.entries.at(-1),
+      candidate: inPlaceCrashSlot }));
+  // …and that stale binding is recoverable through the ordinary door: bootstrap re-founds over it
+  const inPlaceRecovered = await bootstrapRevocationMain(inPlaceCrashProgram, gameWt,
+    "game-maker-in-place-crash-recovered",
+    "in-place crash recovery: bootstrap re-founds the Program over the stale binding the crash left");
+  check("…the recovered MAIN is the Program's live binding",
+    (await ownerPrograms()).find((p) => p.id === inPlaceCrashProgram.id)?.main?.openedAt === inPlaceRecovered.openedAt,
+    JSON.stringify((await ownerPrograms()).find((p) => p.id === inPlaceCrashProgram.id)?.main));
+  await post(`/api/slots/${inPlaceRecovered.slot}/kill`, {});
+  await programPost(inPlaceCrashProgram.id, "complete");
 
   // A composed founding send owns the candidate observed before it enters inputChain. This first
   // arm pauses before Paste, recycles the candidate, then proves the stale closure cannot resolve

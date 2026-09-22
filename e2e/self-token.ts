@@ -1004,10 +1004,18 @@ export async function run(ctx: Ctx): Promise<void> {
     const sj = (await succeeded.json()) as { ok?: boolean; slot?: number; label?: string | null;
       lineage?: { lineageId?: string; obligations?: number } };
     check("POST /api/self/succeed: an UNBOUND session succeeds with no HANDOFF.md commit, one labelled successor, label capped at MAX_LABEL",
-      succeeded.ok && sj.ok === true && !!sj.slot && sj.slot !== free
+      succeeded.ok && sj.ok === true && !!sj.slot
         && sj.label === longLabel.slice(0, 40) && /^[0-9a-f]{24}$/.test(sj.lineage?.lineageId ?? ""),
       `${succeeded.status} ${JSON.stringify(sj)}`);
     const successor = (await succRows()).find((x) => x.id === sj.slot);
+    // THE LINE STAYS ON ITS SLOT (owner 2026-09-21: "eigentlich sollte jetzt mit diesem band die
+    // session einfach auf dem slot bleiben"): the successor is a NEW occupation of the predecessor's
+    // slot, and no second slot was taken. Red before server.ts#respawnInPlace: the generic rail
+    // opened the first free slot and kept A alive beside it through the grace.
+    check("the generic succession respawns IN PLACE: successor slot === predecessor slot, openedAt new, no second slot occupied",
+      sj.slot === free && typeof successor?.openedAt === "number" && successor.openedAt > oldOpenedAt
+        && (await occupied()) === occupiedBefore,
+      `slot ${sj.slot} vs ${free}, openedAt ${successor?.openedAt} vs ${oldOpenedAt}, occupied ${await occupied()} vs ${occupiedBefore}`);
     check("the successor inherits cwd, model and default harness from the caller",
       successor?.cwd === sr && successor.model === "claude-sonnet-5" && successor.harness === undefined,
       JSON.stringify(successor));
@@ -1030,7 +1038,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const neutral = ["lineage.record", "HANDOFF.md", "README.md bzw. AGENTS.md"].map((x) => founding.indexOf(x));
     check("the founding brief names the LINE RECORD; a repo without .fleet/init.md gets the neutral entry: lineage.record · HANDOFF.md · README/AGENTS",
       neutral.every((x) => x >= 0) && neutral.every((x, i) => i === 0 || neutral[i - 1]! < x)
-        && founding.includes("Die Vorgängerin zieht sich gerade zurück")
+        && founding.includes("Die Vorgängerin ist auf diesem Slot beendet")
         && founding.includes(`Linien-Record ${sj.lineage?.lineageId}`) && founding.includes("1 Pflichten per ID")
         && !founding.includes("alles Übergebene steht in HANDOFF.md") && !founding.includes("Absicht: erst"),
       founding.slice(0, 600));
@@ -1055,8 +1063,8 @@ export async function run(ctx: Ctx): Promise<void> {
         && !JSON.stringify(lineB).includes("lineage-body-marker"),
       JSON.stringify(recB?.obligations));
 
-    // THE BAND READS A THROUGH THE RECORD. B sits on ANOTHER slot than A (the 2→6 case), so no
-    // report of B's slot could name A, and A filed none: only the pair in `from` ties A to its file.
+    // THE BAND READS A THROUGH THE RECORD. A filed no report, so only the pair in `from` ties A to
+    // its file — and since the in-place respawn B sits on A's own slot, so the band is where A was.
     const fromSeat = recB?.from as { sessionId?: unknown; cwd?: unknown } | undefined;
     check("(band) the lineage record's `from` names the leaving conversation: A's sessionId and A's cwd, read at the handover",
       fromSeat?.sessionId === bandSid && fromSeat.cwd === sr, JSON.stringify(recB?.from));
@@ -1065,21 +1073,18 @@ export async function run(ctx: Ctx): Promise<void> {
     const bandPast = await get(`/api/slots/${sj.slot}/succession/1/transcript`);
     const bandPastBody = (await bandPast.json()) as { assigned?: boolean; source?: string | null; report?: string | null;
       entries?: { role: string }[]; reason?: string };
-    check("(band) a MAIN succession onto another slot makes the predecessor's transcript readable through its cwd — no report needed",
-      free !== sj.slot && bandChain.session === 2 && bandChain.past?.[0]?.startedAt === oldOpenedAt
+    check("(band) a MAIN succession in place shows the same line with +1 session, and the predecessor's transcript is readable through its cwd — no report needed",
+      free === sj.slot && bandChain.session === 2 && bandChain.past?.[0]?.startedAt === oldOpenedAt
         && bandChain.past[0]?.report === null && !JSON.stringify(bandChain).includes(bandSid)
         && bandPast.status === 200 && bandPastBody.assigned === true && bandPastBody.source === `${bandSid}.jsonl`
         && (bandPastBody.entries ?? []).map((e) => e.role).join(",") === "user,assistant",
       `${bandPast.status} ${JSON.stringify({ ...bandPastBody, entries: bandPastBody.entries?.length })} chain=${JSON.stringify(bandChain).slice(0, 200)}`);
     rmSync(`${bandProj}/${bandSid}.jsonl`, { force: true });
 
-    let oldGone = false;
-    for (let i = 0; i < 50 && !oldGone; i++) {
-      oldGone = (await succRows()).find((x) => x.id === free)?.cwd === null;
-      if (!oldGone) await Bun.sleep(100);
-    }
-    check("the grace deadline retires the predecessor and clears its label even without /retire",
-      oldGone, JSON.stringify((await succRows()).find((x) => x.id === free)));
+    // no grace any more: A ended with the respawn, so its credential names no session at all
+    const oldTokAfter = await successionPost("retire", oldTok);
+    check("the predecessor ended with the in-place respawn — its token no longer names a session",
+      oldTokAfter.status === 401, `${oldTokAfter.status} ${await oldTokAfter.text()}`);
 
     // --- A WATCH ON THE LINE names its TARGET (2026-09-15: two audit watches reached the successor
     // only because their shas happened to sit in `intent`). B arms an audit watch here and hands the
@@ -1132,12 +1137,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const oj = (await overridden.json()) as { ok?: boolean; slot?: number };
     const overrideRow = (await succRows()).find((x) => x.id === oj.slot);
     check("POST /api/self/succeed {model, effort} opens the successor ON THE OVERRIDE — the record it will heal and restart from",
-      overridden.ok && !!oj.slot && oj.slot !== sj.slot && overrideRow?.cwd === sr
-        && overrideRow.model === "claude-opus-5[1m]" && overrideRow.effort === "max",
+      overridden.ok && !!oj.slot && oj.slot === sj.slot && overrideRow?.openedAt !== successor?.openedAt
+        && overrideRow?.cwd === sr && overrideRow.model === "claude-opus-5[1m]" && overrideRow.effort === "max",
       `${overridden.status} ${JSON.stringify(oj)} ${JSON.stringify(overrideRow)}`);
-    check("...while the predecessor's own record is untouched by the override (it retires on the grace deadline as before)",
-      (await succRows()).find((x) => x.id === sj.slot)?.model === "claude-sonnet-5",
-      JSON.stringify((await succRows()).find((x) => x.id === sj.slot)));
+    check("...and the override took no second slot: B's slot now holds C, and nothing else was opened",
+      (await occupied()) === occupiedBeforeOverride,
+      `occupied ${await occupied()} vs ${occupiedBeforeOverride}`);
     let overrideBrief = "";
     for (let i = 0; i < 40 && !overrideBrief; i++) {
       overrideBrief = await successionBriefOf(oj.slot);
@@ -1155,7 +1160,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const overrideTok = oj.slot ? await paneEnv(`s${oj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
     const lineC = await selfLineage(overrideTok);
     const onDisk = persistedLine().filter((r) => r.lineageId === sj.lineage?.lineageId);
-    const recordToB = onDisk.find((r) => r.to?.slot === sj.slot);
+    // matched on the OCCUPATION: A→B and B→C share one slot since the in-place respawn
+    const recordToB = onDisk.find((r) => r.to?.slot === sj.slot && r.to?.openedAt === successor?.openedAt);
     check("the line survives a second succession: C inherits the lineageId, and B's record carries supersededBy = C's occupation",
       lineC?.state === "present" && lineC.lineageId === sj.lineage?.lineageId && lineC.record?.from?.slot === sj.slot
         && lineC?.record?.intent === null && lineC?.record?.pointer === null && onDisk.length === 2
@@ -1190,14 +1196,15 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(rebuiltBody) === JSON.stringify(WATCH_BODY),
       `rebuilt=${JSON.stringify(rebuiltBody)} sent=${JSON.stringify(WATCH_BODY)}`);
 
+    // B ended with its own in-place respawn: nothing is left to retire, and the slot holds C
     const retired = await successionPost("retire", successorTok);
     const retiredRow = (await succRows()).find((x) => x.id === sj.slot);
-    check("POST /api/self/retire immediately removes the reporting successor and clears its label",
-      retired.ok && retiredRow?.cwd === null && retiredRow.label === null,
+    check("after B's in-place succession, B's token is dead and its slot holds C, not an empty row",
+      retired.status === 401 && retiredRow?.cwd === sr && retiredRow.openedAt === overrideRow?.openedAt,
       `${retired.status} ${JSON.stringify(retiredRow)}`);
     const landWatches = ((await (await get("/api/sessions")).json()) as { watches: { slot: number; mainAfter?: string }[] })
       .watches.filter((w) => w.mainAfter === auditMainAfter);
-    check("nothing was re-armed: once B retires, no watch on that land exists on any slot, C's included",
+    check("nothing was re-armed: once B ended, no watch on that land exists on any slot, C's included",
       landWatches.length === 0, `watches=${JSON.stringify(landWatches.map((w) => w.slot))}`);
 
     // --- C → D with a POINTER at a committed, dated section ---
@@ -1227,7 +1234,10 @@ export async function run(ctx: Ctx): Promise<void> {
       pointed.ok && lineD?.state === "present" && lineD.record?.pointer === "handoff-2026-09-14.md#next"
         && lineD.record.intent === null && lineD.lineageId === sj.lineage?.lineageId,
       `${pointed.status} ${JSON.stringify(lineD)}`);
-    await successionPost("retire", overrideTok);
+    // four sessions of one line on one slot: the band counts them where the owner last saw the line
+    const bandD = (await (await get(`/api/slots/${pj.slot}/succession`)).json()) as { session?: number };
+    check("(band) after A→B→C→D in place, D sits on A's slot and the band shows session 4 of the same line",
+      pj.slot === free && bandD.session === 4, `slot ${pj.slot} vs ${free} band=${JSON.stringify(bandD)}`);
 
     // --- DURABLE, and a record that cannot be read back is LOST, never "nothing owed" ---
     await restartSrv();
@@ -1277,7 +1287,38 @@ export async function run(ctx: Ctx): Promise<void> {
     check("free text in a typed target field is refused as a whole record",
       lineDProse?.state === "lost" && (lineDProse.handoverLost?.error ?? "").includes("target.mainAfter must be a full git object id"),
       `state=${lineDProse?.state} error=${lineDProse?.handoverLost?.error}`);
-    await successionPost("retire", pointerTok);
+
+    // --- THE RESPAWN THAT FAILS, the in-place cut's own risk: the predecessor is gone BEFORE the
+    // successor opens, so a failed open must leave an EMPTY slot and a ledger row with its reason —
+    // never an occupant row without a pane, never silence, never a record claiming a successor. The
+    // latch fails the open between the kill and the respawn, the one window no probe can hit by
+    // timing (server.ts#respawnInPlace). Red before it: the generic rail never ended its caller. ---
+    const respawnLatch = `${ROOT}/succession-respawn-fail.latch`;
+    writeFileSync(respawnLatch, "armed\n");
+    await restartSrv({ FLEET_TEST_SUCCESSION_RESPAWN_FAIL_LATCH: respawnLatch });
+    const lineRecords = (): number => persistedLine().filter((r) => r.lineageId === sj.lineage?.lineageId).length;
+    const recordsBeforeFail = lineRecords();
+    const failedSucc = await successionPost("succeed", pointerTok, { intent: "this handover must not be reported as done" });
+    const failedBody = (await failedSucc.json()) as { error?: string; respawned?: boolean; slot?: number };
+    const failedRow = (await succRows()).find((x) => x.id === pj.slot);
+    type AuditRow = { event: string; slot?: number; detail?: string };
+    let failAudit: AuditRow[] = [];
+    for (let i = 0; i < 30 && failAudit.length === 0; i++) {
+      failAudit = ((await (await get("/api/audit?limit=300")).json()) as { events: AuditRow[] }).events
+        .filter((e) => e.event === "main_succession" && e.slot === pj.slot && (e.detail ?? "").includes("respawn FAILED"));
+      if (failAudit.length === 0) await Bun.sleep(100);
+    }
+    check("a respawn that fails after the kill leaves the slot EMPTY and says so: 500, respawned:false, the reason and the cwd to reopen",
+      failedSucc.status === 500 && failedBody.respawned === false && failedBody.slot === pj.slot
+        && (failedBody.error ?? "").includes("forced respawn failure") && (failedBody.error ?? "").includes(sr)
+        && failedRow?.cwd === null && failedRow.label === null,
+      `${failedSucc.status} ${JSON.stringify(failedBody)} row=${JSON.stringify(failedRow)}`);
+    check("...and the failure stands in the audit ledger with its reason, while no handover record claims a successor",
+      failAudit.length === 1 && (failAudit[0]?.detail ?? "").includes("forced respawn failure")
+        && (failAudit[0]?.detail ?? "").includes(`reopen it on ${sr}`) && lineRecords() === recordsBeforeFail,
+      `audit=${JSON.stringify(failAudit)} records ${lineRecords()} vs ${recordsBeforeFail}`);
+    rmSync(respawnLatch, { force: true });
+    await restartSrv();
     rmSync(sr, { recursive: true, force: true });
   }
 

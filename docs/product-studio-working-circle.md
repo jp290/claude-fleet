@@ -216,17 +216,21 @@ machinery — is that severance in one form or another.
    mutation; only the exact internal attempt may cross its own reservation. A second live or
    in-flight session in the same worktree therefore refuses in either request order and after a
    Fleet restart. A succession's persisted predecessor remains its exact bound generation; its live
-   transfer authority is the pre-await `{slot, openedAt, cwd, selfToken}` until the binding cut. Another linked worktree
+   transfer authority is the pre-await `{slot, openedAt, cwd, selfToken}` until the in-place kill
+(`server.ts#respawnInPlace`, since 2026-09-22: the successor opens on the predecessor's own slot). Another linked worktree
    sharing the repository remains a different tree. Game-Maker MAIN starts at the canonical git
    toplevel; Standard cwd handling stays byte-identical. Preflight refusals land before a slot,
    binding or receipt exists. While a founding is in flight a **real profile change**, `complete`
    and another founding are locked (409); an identical grant/clear retry answers 200 before every
    lifecycle gate, with no new timestamp, audit or save. A succession request captures the caller's
    exact `{slot, openedAt, cwd, selfToken}` before its first await and revalidates it after the Git
-   handoff check, after target open, after send before receipt and after receipt immediately before
-   binding. This applies to Standard and Game-Maker succession. Self-retire is 409 while that token
-   is in flight, while owner kill/recycle remains authoritative, returns the old request as 409 and
-   rolls back only its exact candidate. A receipt written before revocation remains evidence only.
+   handoff check and immediately before the kill. Brief, plan and handover are built while the
+   predecessor still stands; after the open one check asks whether the exact candidate stands and the
+   Program still names the predecessor, and the binding moves right then — before delivery and
+   receipt, because the predecessor has already ended. This applies to Standard and Game-Maker
+   succession. Self-retire is 409 while that token is in flight, while owner kill/recycle remains
+   authoritative: before the kill it refuses the old request with 409 and only the marker falls; inside
+   the respawn a recycled slot is never bound and the stranger is left untouched.
 3. **Succession carries a checkpoint.** See the next section.
 
 **A restart never guesses authority.** New Standard and Game-Maker attempts share the closed v2
@@ -237,9 +241,12 @@ exact candidate is killed and its tmux absence proved before Slot and marker are
 different-root occupant is preserved. For Standard, a recycled target in the same root with another
 token hash is ambiguous and stops startup, but other slots in that root do not participate. For
 Game-Maker, every other occupant in the protected tree remains a conflict. Succession recovery leaves
-the predecessor binding unchanged. Fleet never re-sends the brief and never binds from a Receipt. On
-success the Receipt is written first; then one durable state mutation installs the exact target as
-`main`, removes `founding`, and applies exact predecessor retirement when needed. An orphan Receipt is
+the predecessor binding unchanged: if the exact predecessor still stands in the target slot only the
+marker falls; once the in-place kill has happened the binding is stale, its lineage entry closes as
+`retire`, and bootstrap re-founds the Program. Fleet never re-sends the brief and never binds from a
+Receipt. On bootstrap success the Receipt is written first; then one durable state mutation installs
+the exact target as `main` and removes `founding`. An in-place succession makes that one mutation right
+after the open, and its Receipt follows the send. An orphan Receipt is
 evidence of an interrupted delivery, not authority. The same row after a revoked transfer is still evidence only.
 
 A bounded `tmux new-session` failure returns 503 with `availability:"unknown"`,

@@ -312,8 +312,22 @@ curl -X POST http://<fleet-host>:<port>/api/self/succeed \
   -d '{"intent":"Absicht, Korrekturen, Reihenfolge — höchstens 2000 Zeichen"}'
 ```
 
-Fleet öffnet einen freien Slot im selben cwd mit Modell/Harness der Vorgängerin, schickt den servergebauten
-Gründungsbrief und räumt den alten Slot nach der Grace-Frist. `carry` ist optional und auf 500 Zeichen
+**Die Linie bleibt auf ihrem Slot (seit 2026-09-22, `server.ts#respawnInPlace`; Owner 2026-09-21: „eigentlich
+sollte jetzt mit diesem band die session einfach auf dem slot bleiben").** Jede Schiene — generisch,
+Supervisor, Program-MAIN, wie seit 2026-09-12 die Lane — beendet die Vorgängerin (`handoff`) und öffnet die
+Nachfolgerin AUF DEMSELBEN Slot, im selben cwd, mit Modell/Harness der Vorgängerin: gleicher Slot, neues
+`openedAt`, neues Token. Es gibt keine Grace-Frist mehr, in der beide leben, und „kein freier Slot" ist kein
+Ablehnungsgrund mehr. Der Preis ist die Überlappung: alles, was die Nachfolge braucht — Brief, Plan,
+Handover-Erfassung, Linien-Entwurf — wird gebaut, SOLANGE die Vorgängerin noch steht; jede Ablehnung bis
+dahin lässt sie stehen. Nach dem Open wandert die Bindung (Linien-Record, `supervisor`, `Program.main`)
+sofort auf die Nachfolgerin, erst danach laufen Boot-Grace, Delivery-Gate, Readiness und der Brief.
+Scheitert die Zustellung, bleibt die Nachfolgerin gebunden stehen (500, `delivered:false`, Audit
+`main_succession … brief-undelivered`) — sie wird nie wieder abgeräumt, der Brief ist von Hand
+nachzureichen. Scheitert der Respawn selbst nach dem Kill, bleibt der Slot LEER (nie eine Zeile ohne
+Pane), die Antwort ist 500 mit `respawned:false`, und das Audit trägt `main_succession … respawn FAILED`
+samt Grund und dem cwd zum Wiederöffnen; eine Program-Bindung ist dann stale und wird per Bootstrap neu
+gegründet. Die Antwort erreicht die Vorgängerin nicht mehr (ihre Pane ist beendet) — die Audit-Zeile ist
+der Bericht. `carry` ist optional und auf 500 Zeichen
 begrenzt; es ist ein unpersistierter Prompt-Satz, kein Transfer. **`model` und `effort` sind optional (seit 2026-09-02):**
 abwesend = wörtliche Vererbung aus dem Datensatz der Vorgängerin; vorhanden = der Nachfolger wird darauf
 geöffnet, validiert exakt wie `open`/`dispatch` gegen die geerbte Harness (`MODEL_RE` bzw.
@@ -321,12 +335,13 @@ geöffnet, validiert exakt wie `open`/`dispatch` gegen die geerbte Harness (`MOD
 ein vorhandenes `null`/`""` löscht (Modell → Fleet-Default, Effort → kein Flag). Die Harness selbst ist
 nicht überschreibbar. Gilt für alle drei Nachfolge-Pfade (generisch, Supervisor, Program-MAIN). Der Anlass:
 eine MAIN, die per `/model` in der Pane gewechselt hat, bekam ihren Nachfolger auf dem Spawn-Wert des
-Datensatzes — den korrigiert für einen LEBENDEN Slot die Owner-Route unten (§model). Nach dem Schlussbericht räumt `POST /api/self/retire` denselben
-Slot sofort. Während `succeed` läuft, antwortet `retire` für exakt diese Session 409. `succeed` hält ab
+Datensatzes — den korrigiert für einen LEBENDEN Slot die Owner-Route unten (§model). `POST /api/self/retire`
+räumt den eigenen Slot sofort, ohne Nachfolgerin. Während `succeed` läuft, antwortet `retire` für exakt
+diese Session 409; nach dem In-Place-Respawn ist ihr Token tot (401). `succeed` hält ab
 Request-Eintritt `{slot, openedAt, cwd, selfToken}` fest und prüft diese Identität nach dem Git-Handoff-
-Await erneut; Owner-Kill/Recycling bleibt erlaubt, kann den alten Request aber nicht auf die generische
-Nachfolge umlenken. Kein freier Slot (oder, nur beim Game-Maker, kein frischer sauberer Handoff) = 409, und
-die Vorgängerin bleibt stehen.
+Await und unmittelbar vor dem Kill erneut; Owner-Kill/Recycling bleibt erlaubt, kann den alten Request aber
+nicht auf die generische Nachfolge umlenken. Nur beim Game-Maker verweigert ein fehlender frischer sauberer
+Handoff mit 409, und die Vorgängerin bleibt stehen.
 
 **Die Schritte des Gründungsbriefs gehören dem Repo der Nachfolgerin (`server.ts#successionInitSteps`, seit
 2026-09-14).** Die Kopfzeile nennt immer den Linien-Record samt Pflichten-Zahl, darunter „Beginne exakt in
@@ -375,16 +390,17 @@ und sie bekommt keinen Linien-Record). Jede Nachfolge schreibt EINEN Record
   Pointer = 400; Pointer auf uncommittete Datei = 409. Lane- und Program-MAIN-Schiene verweigern
   `intent`/`pointer` mit 409 (ihr Kanal ist der `handoff`-Report bzw. der Program-Record);
 - `supersededBy` — `null`, bis die Linie weiterzieht; dann trägt der Record, der die Rolle an die
-  Vorgängerin gab, die Belegung der Nachfolgerin. Zwei gleich benannte Slots in der Grace-Frist sind so per
-  Record unterscheidbar.
+  Vorgängerin gab, die Belegung der Nachfolgerin. Da die Linie seit dem In-Place-Respawn auf EINEM Slot
+  bleibt, unterscheiden `from`/`to` die Belegungen allein über `openedAt`.
 
 Die Nachfolgerin liest `GET /api/self` → `lineage: {lineageId, state, record, handoverLost, losses, records}`
 (`null` = diese Session hält keine Linie). `state: "lost"` heißt: kein an diese Belegung adressierter Record
 ist lesbar — ein vom Loader abgewiesener Record hinterlässt eine Narbe (`lineageHandoverLosses`), und genau
-die steht in `handoverLost`; es heißt NIE „nichts geschuldet". Der Record wird geschrieben, nachdem der
-Gründungsbrief zugestellt ist, im selben State-Schnitt wie die Retirement-Frist; vorher wird der Entwurf
-gegen den eigenen Loader geprüft, und ein unlesbarer Entwurf verweigert die Nachfolge, bevor ein Slot
-öffnet. Behalten werden je Linie die fünf jüngsten Records (gekürzt wird nur ein bereits abgelöster).
+die steht in `handoverLost`; es heißt NIE „nichts geschuldet". Der Record wird unmittelbar nach dem
+In-Place-Open geschrieben, VOR der Brief-Zustellung — die Vorgängerin ist dann schon beendet, und ein Record,
+der auf den Brief wartete, fehlte der Nachfolgerin bei jedem Zustellfehler; vorher wird der Entwurf
+gegen den eigenen Loader geprüft, und ein unlesbarer Entwurf verweigert die Nachfolge, bevor die Vorgängerin
+endet. Scheitert der Respawn, entsteht kein Record — keiner behauptet eine Nachfolgerin, die es nicht gibt. Behalten werden je Linie die fünf jüngsten Records (gekürzt wird nur ein bereits abgelöster).
 `HANDOFF.md` ist für diese Schienen Historie, kein Gate.
 
 **Eine LANE succeedet auch — seit 2026-09-12, und auf einer eigenen Schiene** (`server.ts#succeedLane`).
@@ -466,7 +482,10 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   `ctx` = Kontextstand beim Übergeben aus dem Transkript der Session, sonst `null`). Bei einer Lane
   sind die vergangenen Sessions ihre Sitze auf dem Slot (`Slot.laneSeats`, geschrieben von
   `server.ts#succeedLane`, nicht beschnitten) und ihre `handoff`-Reports (Slot + Branch), bei einer
-  MAIN ihre Linien-Records, per Slot + `openedAt` einem Report zugeordnet. `null` heißt „nicht
+  Program-MAIN die Lineage-Einträge ihres Programs vor dem gerade gebundenen (`server.ts#programMainLineOf`
+  — die Linie einer Program-MAIN ist die Program-ID, sie trägt keinen Linien-Record; `dropped` zählt mit),
+  bei jeder anderen MAIN ihre Linien-Records, per Slot + `openedAt` einem Report zugeordnet. Da jede
+  Nachfolge in place läuft (§succeed), steht das Band dort, wo der Owner die Linie zuletzt sah. `null` heißt „nicht
   aufgezeichnet" (Retention, succeed ohne Report), nie „nicht passiert". Bewusst NICHT im 2-s-Poll:
   die Leiste fragt einmal je (Slot, Occupant, Session). Gemessen in `e2e/lanes-lifecycle.ts` an der
   echten Staffelstab-Fixture.
@@ -480,8 +499,11 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   ein Harness ohne Session-Kennung schreibt `null`), kommt `assigned: false` mit `reason`
   „Transkript nicht zugeordnet …" — nie die neueste Datei desselben cwd, kein Backfill über
   Zeitfenster. Ein `n`, das keine vergangene Session der Linie ist (0, die laufende, darüber), ist
-  404. Gemessen in `e2e/lanes-lifecycle.ts` (Staffelstab-Fixture, Sitz, gepflanzte Alt-Linie) und
-  `e2e/self-token.ts` (echte MAIN-Nachfolge auf einen anderen Slot).
+  404. Ein Program-Lineage-Eintrag nennt die `sessionId`, aber kein cwd: zuerst gilt das Paar des
+  `handoff`-Reports, sonst wird die `sessionId` unter dem cwd des Slots gesucht — eine Session-Kennung
+  benennt genau ein Gespräch, ein falsches cwd findet also nichts statt eines fremden Transkripts.
+  Gemessen in `e2e/lanes-lifecycle.ts` (Staffelstab-Fixture, Sitz, gepflanzte Alt-Linie) und
+  `e2e/self-token.ts` (echte MAIN-Nachfolge in place, A→B→C→D auf einem Slot).
 - **Die WARTESCHLANGE am Suite-Mutex ist seit 2026-09-20 dieselbe Frage wie der Lock:** `gate.queue`
   auf `/api/sessions` (`server.ts#suiteQueueView`) liest die Ticket-Verzeichnisse
   `t<n>.<pid>` unter `$FLEET_SUITE_LOCK.q`, die `e2e-stage.sh#_st_queue_scan` schreibt — in DEREN
@@ -3462,9 +3484,11 @@ Sessions denselben Baum betreten, auch über einen Server-Neustart hinweg. Eine 
 MAIN hält ihren konkreten linked worktree bis Kill oder Program-Abschluss exklusiv. Ein sibling
 linked worktree desselben Repositories bleibt erlaubt; Standard gegen Standard bleibt unverändert.
 Die Nachfolge besitzt als einzigen durablen Permit exakt `{slot, openedAt, selfTokenHash}` ihrer
-gebundenen Vorgängerin und lehnt jede weitere Besetzung ab. Als laufende Autorität reicht dieser
-persistierte Permit nicht:
-bis zum Bindungsschnitt muss zusätzlich die vor dem ersten Await erfasste Live-Identität
+gebundenen Vorgängerin und lehnt jede weitere Besetzung ab. Seit dem In-Place-Respawn
+(`server.ts#respawnInPlace`) ist ihr Target DERSELBE Slot: der Marker nennt Vorgänger und Target mit
+gleicher Slot-Nummer und verschiedenem `openedAt` (der Loader verweigert v2 nur noch bei gleicher
+Belegung, v1 weiter bei gleichem Slot). Als laufende Autorität reicht der persistierte Permit nicht:
+bis zum Kill muss zusätzlich die vor dem ersten Await erfasste Live-Identität
 `{slot, openedAt, cwd, selfToken}` unverändert im Vorgänger-Slot stehen.
 
 Preflight-Ablehnungen gelten für Bootstrap UND Nachfolge und kommen, BEVOR ein Slot geöffnet, eine
@@ -3472,7 +3496,8 @@ Bindung bewegt oder ein Context-Receipt geschrieben wurde. Sobald der Sicherheit
 ist er selbst die Crash-Barriere. Neue Standard- und Game-Maker-Versuche schreiben beide v2;
 Standard erhält dadurch keine Baum-Exklusivität, sondern nur Schutz für seinen exakten Target-Slot.
 Den Live-Identitätscheck bis zum Bindungsschnitt teilen Standard- und Game-Maker-Succession, weil
-Owner-Kill dieselbe Autorität in beiden beendet.
+Owner-Kill dieselbe Autorität in beiden beendet: vor dem Kill prüft er die Vorgängerin, nach dem
+In-Place-Open den exakten Kandidaten und die unveränderte Bindung des Programs.
 
 **Restart und der eine Erfolgsschnitt.** Der Loader akzeptiert den geschlossenen v2-Satz für
 Standard und Game-Maker sowie v1 ausschließlich als Game-Maker-Legacy. Null, unbekannte Versionen
@@ -3487,13 +3512,24 @@ Start; andere Slots im selben Root sind kein Konflikt. Beim Game-Maker verweiger
 widersprüchliche Belegung im geschützten Baum den Start und lässt Marker und Pane stehen. Eine
 Succession behält dabei ihre alte `Program.main`-Bindung. Es gibt weder
 Brief-Replay noch Auto-Bind; ein bereits geschriebenes Receipt darf verwaisen und ist nie
-Bindungsquelle. Nach Target-Open, nach Brief-Send vor dem Receipt und nach dem Receipt unmittelbar
-vor dem Bindungsschnitt wird die vollständige Live-Identität erneut geprüft. Owner-Kill oder Recycle
-der Vorgängerin ergibt 409 und räumt nur den exakten Kandidaten auf; ein bereits geschriebenes
-Receipt bleibt dabei als verwaiste Evidenz stehen. Erfolg schreibt zuerst das Receipt und verschiebt
-danach in genau einem durablen Program-State-Cut die Bindung, entfernt `founding` und pensioniert bei
-Nachfolge exakt den Vorgänger. Owner-Kill eines exakten Founding-Targets benutzt denselben
-kill→Abwesenheitsbeweis→Slot-/Marker-Cleanup-Pfad.
+Bindungsquelle. Für eine In-Place-Succession heißt das dreierlei: steht im Target-Slot noch die exakte
+Vorgängerin (Crash vor dem Kill), fällt nur der Marker und sie bleibt gebunden; ist der Slot leer (Crash
+zwischen Kill und Open), fällt der Marker; steht der exakte Kandidat dort, wird er beendet und der Marker
+fällt. In den beiden letzten Fällen ist die Vorgängerin schon beendet — die Bindung bleibt stale, ihr
+Lineage-Eintrag wird als `retire` geschlossen, und `bootstrap-main` gründet das Program neu.
+
+Bootstrap: nach Target-Open, nach Brief-Send vor dem Receipt und nach dem Receipt unmittelbar vor dem
+Bindungsschnitt wird die vollständige Live-Identität erneut geprüft; Erfolg schreibt zuerst das Receipt
+und verschiebt danach in genau einem durablen Program-State-Cut die Bindung und entfernt `founding`.
+Succession (in place): jede Ablehnung VOR dem Kill — Autorität geändert, Handover nicht rückladbar —
+entfernt nur den Marker, die Vorgängerin bleibt gebunden stehen. Nach dem Open prüft ein einziger
+Schnitt, ob der exakte Kandidat noch steht und das Program noch die Vorgängerin nennt; dann verschiebt
+genau ein durabler Program-State-Cut Bindung, Handover, Lineage und offene Attention und entfernt
+`founding` — VOR Brief und Receipt, denn die Vorgängerin ist bereits beendet. Ein Owner-Recycle in diesem
+Fenster wird nie gebunden (409, der Fremde bleibt unangetastet); eine abgewiesene Zustellung kostet den
+Brief, nicht die Linie. Das Receipt folgt dem Send als Evidenz. Owner-Kill eines exakten Founding-Targets
+benutzt denselben kill→Abwesenheitsbeweis→Slot-/Marker-Cleanup-Pfad; steht dort noch die Vorgängerin,
+fällt nur der Marker und der Kill trifft danach sie.
 
 Kann `tmux new-session` den Pane-Start nicht innerhalb seiner eigenen Frist belegen, antwortet das
 Founding mit 503, `availability:"unknown"` und nur `{attemptId, slot, openedAt}` unter `affected`.

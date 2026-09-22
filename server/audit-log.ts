@@ -336,6 +336,11 @@ type AuditEvent =
   // slot id is recycled and the count is the only thing that says a lane spanned n sessions —
   // sessionMs on the outcome row measures the LAST one alone.
   | "lane_succession"
+  // A MAIN LINE HANDED OVER IN PLACE (server.ts#respawnInPlace): the generic, Supervisor and
+  // Program-MAIN rails end the predecessor and open the successor on the SAME slot, like the lane
+  // baton. The detail names the rail and, when it did not go through, the reason and what the slot
+  // holds now — the predecessor is already gone at that point, so this row is the only account.
+  | "main_succession"
   | "dispatch_switch"
   | "guest_action"
   // a lane's own account of a verify-suite run: one line per phase change, so a run that dies

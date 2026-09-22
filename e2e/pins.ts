@@ -3572,7 +3572,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   pin("every program-aware founding rail and the dispatch tail share the BOUNDED readiness wait — a blind sleep is never the proof",
     /pane blocked on \$\{rd\.why\}/.test(server) && /never showed its ready marker within/.test(server)
     && /READY_WAIT_MS/.test(server) && /waitForFoundingReadiness\(free, \(\) => !identityLost\(\)\)/.test(server)
-    && /waitForFoundingReadiness\(free, candidateCurrent\)/.test(successionBody)
+    && /waitForFoundingReadiness\(s, stillCurrent\)/.test(successionBody)
     && /waitForFoundingReadiness\(free, stillCurrent\)/.test(bootstrapBody),
     "shared founding readiness wait used by briefAndSend, Program-MAIN bootstrap, and succession");
   // ...AND EVERY founding delivery is covered, counted rather than named. The 2026-09-03 cut was
@@ -3608,10 +3608,27 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const orchRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(orchRailBody)
     && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(orchRailBody)
     && /await sendText\(s, brief, true, \{ path: "[a-z-]+" \}\);/.test(orchRailBody);
+  // …and since the in-place cut (server.ts#respawnInPlace, owner 2026-09-21) the three MAIN
+  // succession rails found into the slot they already hold as well — generic, Supervisor and
+  // Program-MAIN — so they left the `free` count and are asserted in their own bodies like the lane
+  // baton: same three lines, each naming `s`.
+  const bodyOf = (from: string, to: string): string => {
+    const at = server.indexOf(from);
+    return at < 0 ? "" : server.slice(at, server.indexOf(to, at));
+  };
+  const inPlaceBodies = [
+    bodyOf("async function handleSelfSucceed(", "async function handleSelfRetire"),
+    bodyOf("async function succeedSupervisor(", "async function bootstrapSupervisor("),
+    bodyOf("async function succeedProgramMain(", "async function bootstrapProgramMain("),
+  ];
+  const inPlaceGated = inPlaceBodies.map((b) => /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(b)
+    && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(b)
+    && /await sendText\(s, [A-Za-z]+, true, \{ path: "[a-z-]+" \}\);/.test(b)
+    && /await respawnInPlace\(s, /.test(b));
   pin("all EIGHT founding deliveries are gated — same count of sends, bounded waits and shared boot graces, and no naked 4 s sleep left",
-    foundingSends === 6 && foundingWaits === 6 && foundingGraces === 8 && laneRailGated && orchRailGated
-      && !/await Bun\.sleep\(4000\);/.test(server),
-    `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces} laneRail=${laneRailGated} orchRail=${orchRailGated}`);
+    foundingSends === 3 && foundingWaits === 3 && foundingGraces === 8 && laneRailGated && orchRailGated
+      && inPlaceGated.every(Boolean) && !/await Bun\.sleep\(4000\);/.test(server),
+    `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces} laneRail=${laneRailGated} orchRail=${orchRailGated} inPlace=${inPlaceGated.join(",")}`);
   // ...and the ONE fixture that has to place a marker on the far side of that grace mirrors its
   // value. `unbound succession` proves the generic rail withholds a founding brief until the ready
   // marker appears, which only holds as a statement about READINESS if the marker lands after the
@@ -3653,13 +3670,22 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const svSuccessionAt = server.indexOf("async function succeedSupervisor(");
   const svSuccessionBody = svSuccessionAt < 0 ? ""
     : server.slice(svSuccessionAt, server.indexOf("async function bootstrapSupervisor(", svSuccessionAt));
-  const svSendAt = svSuccessionBody.indexOf("await sendText(free, deliveredBrief, true,");
-  const svBindAt = svSuccessionBody.indexOf("supervisor = {");
-  pin("Supervisor succession rewrites the binding only AFTER a successful send — loss before it keeps the predecessor",
-    svSendAt > 0 && svBindAt > svSendAt
-      && svSuccessionBody.indexOf("await saveStateNow();", svBindAt) > svBindAt
+  // INVERTED by the in-place cut (server.ts#respawnInPlace): the binding used to move only after a
+  // successful send because a loss before it kept the predecessor standing. The predecessor now ends
+  // AT the open, so a binding that waited for the send would name a dead occupant on every delivery
+  // failure — the stale record bootstrapSupervisor exists to replace. It moves right after the
+  // respawn, in the same save as the line record, and before any delivery step.
+  const svRespawnAt = svSuccessionBody.indexOf("await respawnInPlace(s, predecessor,");
+  const svBindAt = svSuccessionBody.indexOf("supervisor = { slot: s.id");
+  const svRecordAt = svSuccessionBody.indexOf("writeLineageHandover(draft, s,");
+  const svSendAt = svSuccessionBody.indexOf("await sendText(s, deliveredBrief, true,");
+  pin("Supervisor succession moves the binding right AFTER the in-place respawn and BEFORE the send — the predecessor is gone at the open",
+    svRespawnAt > 0 && svBindAt > svRespawnAt && svRecordAt > svBindAt
+      && svSuccessionBody.indexOf("await saveStateNow();", svRecordAt) > svRecordAt
+      && svSuccessionBody.indexOf("await saveStateNow();", svRecordAt) < svSendAt
+      && !/killSlot\(/.test(svSuccessionBody)
       && /programId: null/.test(svSuccessionBody),
-    `send=${svSendAt} bind=${svBindAt}`);
+    `respawn=${svRespawnAt} bind=${svBindAt} record=${svRecordAt} send=${svSendAt}`);
   // THREE doors share this body since the bind seam (2026-09-07): founding, succession and the
   // bind of an already-running session. The count is the point — a door that composes its OWN role
   // text is a second answer to "what is a Supervisor", and the two would drift with nothing saying so.
@@ -7157,7 +7183,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_FOUNDING_V2} — marker save precedes open and the exact Slot row is durable before tmux`,
     markerSaveAt >= 0
       && bootstrapBody.indexOf("await persistProgramFounding") < bootstrapBody.indexOf("await openSlot")
-      && succeedBody.indexOf("await persistProgramFounding") < succeedBody.indexOf("await openSlot")
+      && succeedBody.indexOf("await persistProgramFounding") >= 0
+      && succeedBody.indexOf("await persistProgramFounding") < succeedBody.indexOf("() => openSlot(s, openRoot")
       && openBody.includes("treeLease?.founding?.target.openedAt")
       && openBody.includes("treeLease?.targetSelfToken")
       && slotSaveAt >= 0 && slotSaveAt < ensureAt,
@@ -7234,7 +7261,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && bootstrapBody.indexOf("await persistProgramFounding") >= 0
       && bootstrapBody.indexOf("await persistProgramFounding") < bootstrapBody.indexOf("await openSlot")
       && succeedBody.indexOf("await persistProgramFounding") >= 0
-      && succeedBody.indexOf("await persistProgramFounding") < succeedBody.indexOf("await openSlot")
+      && succeedBody.indexOf("await persistProgramFounding") < succeedBody.indexOf("() => openSlot(s, openRoot")
       && server.includes("treeLease?.founding?.target.openedAt ?? Date.now()"),
     `bootstrap=${bootstrapBody.length} succession=${succeedBody.length}`);
   pin(`${RULE_GM_FOUNDING} — bootstrap persists marker plus unbound fallback, while succession retains its exact predecessor`,
@@ -7329,42 +7356,50 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
         recoveryBody.indexOf("!treePathsOverlap(targetRoot, markerRoot)"))
         > recoveryBody.indexOf("!treePathsOverlap(targetRoot, markerRoot)"),
     recoveryBody);
-  pin(`${RULE_GM_FOUNDING} — receipt precedes the one durable marker-to-binding state cut in both founding modes`,
+  // THE BOOTSTRAP keeps receipt-before-binding: its predecessor, if any, is a stale record, and a
+  // failed delivery leaves the Program unbound. THE SUCCESSION no longer can: it respawns in place
+  // (server.ts#respawnInPlace), so its predecessor ends at the open and the one marker-to-binding
+  // cut follows the open directly; the receipt comes after the send as evidence of delivered bytes.
+  const succRespawnAt = succeedBody.indexOf("await respawnInPlace(s, predecessor,");
+  const succCutAt = succeedBody.indexOf("delete program.founding;", succeedBody.indexOf("program.main = { slot: s.id"));
+  const succCutSaveAt = succeedBody.indexOf("await saveStateNow();", succCutAt);
+  const succSendAt = succeedBody.indexOf("await sendText(s, deliveredBrief, true,");
+  const succReceiptAt = succeedBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE");
+  pin(`${RULE_GM_FOUNDING} — bootstrap: receipt precedes the one durable marker-to-binding cut; in-place succession: that cut follows the respawn and precedes delivery and receipt`,
     server.includes("function appendEventStrict")
       && bootstrapBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE") >= 0
       && bootstrapBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE") < bootstrapBody.indexOf("delete program.founding")
       && bootstrapBody.indexOf("delete program.founding") < bootstrapBody.indexOf("await saveStateNow()", bootstrapBody.indexOf("delete program.founding"))
-      && succeedBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE") >= 0
-      && succeedBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE") < succeedBody.indexOf("delete program.founding")
-      && succeedBody.indexOf("delete program.founding") < succeedBody.indexOf("await saveStateNow()", succeedBody.indexOf("delete program.founding")),
-    `bootstrap=${bootstrapBody.length} succession=${succeedBody.length}`);
-  const candidateCurrentAt = succeedBody.indexOf("const candidateCurrent =");
-  const transferCurrentAt = succeedBody.indexOf("const transferCurrent =");
+      && succRespawnAt > 0 && succCutAt > succRespawnAt && succCutSaveAt > succCutAt
+      && succSendAt > succCutSaveAt && succReceiptAt > succSendAt,
+    `bootstrap=${bootstrapBody.length} respawn=${succRespawnAt} cut=${succCutAt}/${succCutSaveAt} send=${succSendAt} receipt=${succReceiptAt}`);
+  // THE IN-PLACE SUCCESSION'S AUTHORITY STORY, in source order. Before the kill every refusal drops
+  // only the marker (the predecessor still stands and is still bound); the plan, the handover capture
+  // and the brief are built there, against the successor identity the marker already fixes. After the
+  // open, the ONE check is whether the exact candidate still stands and the Program still names the
+  // predecessor — past the after-open latch, so E2E can revoke inside that window — and the successor
+  // is never killed by this rail: a missing brief costs the brief, not the line.
+  const refuseAt = succeedBody.indexOf("const refuse = async");
+  const captureAt = succeedBody.indexOf("captureProgramHandover(program, predecessor, successorAt");
+  const briefAt = succeedBody.indexOf("buildProgramMainSuccessionBrief(");
+  const reserveAt = succeedBody.indexOf("laneSpawn.add(s.id);");
+  const respawnAt = succeedBody.indexOf("await respawnInPlace(s, predecessor,");
   const afterOpenLatchAt = succeedBody.indexOf("SUCCESSION_AFTER_OPEN_LATCH");
-  const afterOpenRecheckAt = succeedBody.indexOf("if (!transferCurrent())", afterOpenLatchAt);
-  const sendAt = succeedBody.indexOf("await sendText(free, deliveredBrief, true,");
-  const afterSendRecheckAt = succeedBody.indexOf("if (!transferCurrent())", sendAt);
-  const receiptAt = succeedBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE");
-  const afterReceiptLatchAt = succeedBody.indexOf("SUCCESSION_AFTER_RECEIPT_LATCH", receiptAt);
-  const afterReceiptRecheckAt = succeedBody.indexOf("if (!transferCurrent())", afterReceiptLatchAt);
-  const bindingCutAt = succeedBody.indexOf("program.main = { slot: free.id", afterReceiptRecheckAt);
-  pin(`${RULE_GM_FOUNDING} — succession keeps candidate identity separate from live predecessor authority and rechecks both around delivery evidence`,
+  const candidateOkAt = succeedBody.indexOf("exactFoundingCandidate(s, founding) && sameProgramFounding(program.founding, founding)");
+  const bindingCutAt = succeedBody.indexOf("program.main = { slot: s.id");
+  pin(`${RULE_GM_FOUNDING} — in-place succession: pre-kill refusals roll back only the marker, the brief is built before the kill, and only the exact candidate of an unchanged Program is bound`,
     /interface SuccessionPredecessorIdentity\s*{\s*readonly slot:[\s\S]*?readonly openedAt:[\s\S]*?readonly cwd:[\s\S]*?readonly selfToken:/.test(server)
       && /readonly predecessor: ProgramFoundingIdentity \| null/.test(server)
       && server.includes("selfTokenHash: hashSelfToken(predecessor.selfToken)")
       && succeedBody.includes("predecessor: SuccessionPredecessorIdentity")
-      && candidateCurrentAt >= 0 && transferCurrentAt > candidateCurrentAt
-      && succeedBody.includes("sameSuccessionOccupant(free, candidateIdentity)")
       && succeedBody.includes("sameSuccessionOccupant(s, predecessor)")
-      && succeedBody.includes("const transferCurrent = (): boolean => candidateCurrent() && predecessorCurrent()")
-      && /if \(candidateCurrent\(\) \|\| !target\?\.cwd\)\s*await rollbackProgramFounding\(program, founding, "successor-failed"\)/.test(succeedBody)
-      && afterOpenLatchAt > transferCurrentAt && afterOpenRecheckAt > afterOpenLatchAt
-      && sendAt > afterOpenRecheckAt && afterSendRecheckAt > sendAt && afterSendRecheckAt < receiptAt
-      && afterReceiptLatchAt > receiptAt && afterReceiptRecheckAt > afterReceiptLatchAt
-      && bindingCutAt > afterReceiptRecheckAt
-      && read("e2e/programs.ts").includes("revocation after target open rejects before receipt and preserves recycled predecessor")
-      && read("e2e/programs.ts").includes("revocation after receipt leaves one orphan receipt without transferring authority"),
-    `candidate=${candidateCurrentAt} transfer=${transferCurrentAt} openLatch=${afterOpenLatchAt}/${afterOpenRecheckAt} send=${sendAt}/${afterSendRecheckAt} receipt=${receiptAt}/${afterReceiptLatchAt}/${afterReceiptRecheckAt} bind=${bindingCutAt}`);
+      && refuseAt > 0 && /const refuse = async[\s\S]*?await rollbackProgramFounding\(program, founding, detail\)/.test(succeedBody)
+      && captureAt > refuseAt && briefAt > captureAt && reserveAt > briefAt && respawnAt > reserveAt
+      && afterOpenLatchAt > respawnAt && candidateOkAt > afterOpenLatchAt && bindingCutAt > candidateOkAt
+      && !/killSlot\(/.test(succeedBody)
+      && read("e2e/programs.ts").includes("an owner recycle inside the in-place respawn is never bound, and the recycled occupant is preserved")
+      && read("e2e/programs.ts").includes("the blocked screen costs the brief, not the line"),
+    `refuse=${refuseAt} capture=${captureAt} brief=${briefAt} reserve=${reserveAt} respawn=${respawnAt} openLatch=${afterOpenLatchAt} candidate=${candidateOkAt} bind=${bindingCutAt}`);
   const runtimeCases = [
     "bootstrap persists the exact target before delivery, blocks complete",
     "the exact founding target follows kill, absence proof, slot and marker cleanup",
@@ -7384,9 +7419,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     "a dormant sibling-root Slot row does not block stale-marker cleanup",
     "retire is refused in flight, owner recycle cannot downgrade Program succession",
     '["a shuffled field order"',
-    "candidate rolls back while predecessor binding and receipt count stay unchanged",
-    "revocation after target open rejects before receipt and preserves recycled predecessor",
-    "revocation after receipt leaves one orphan receipt without transferring authority",
+    "the exact candidate rolls back, the binding is left stale and closed as retire, no receipt",
+    "an owner recycle inside the in-place respawn is never bound, and the recycled occupant is preserved",
+    "a readable committed checkpoint founds the successor IN PLACE",
   ];
   pin(`${RULE_GM_FOUNDING} — runtime suite names bootstrap, complete, pre-open, exact-candidate, foreign-target and succession crash arms`,
     runtimeCases.every((text) => read("e2e/programs.ts").includes(text)),

@@ -57,7 +57,7 @@ const FOUNDING_FIRST = "[fleet Supervisor] You are the one owner-side Supervisor
 const BIND_FIRST = "[fleet Supervisor bind] The owner has bound THIS already-running session as the one owner-side Supervisor session for this fleet; your working directory, your context and the work you were doing stay yours.";
 // the succession preamble names the ROLE-LINEAGE RECORD (e3e5084a) — its id is minted per line, so the
 // line is matched up to the id and from the door on
-const SUCCESSION_FIRST = "[fleet Supervisor succession] You are the CONTINUED owner-side Supervisor session; your predecessor is retiring; your handover is the role-lineage record ";
+const SUCCESSION_FIRST = "[fleet Supervisor succession] You are the CONTINUED owner-side Supervisor session; your predecessor has ended on this same slot; your handover is the role-lineage record ";
 
 // the Supervisor view's own line group (server.ts#supervisorLineageView): DERIVED three-valued
 // state, counts and occupant ids — deliberately no `intent`/`pointer` body, which belongs to the
@@ -272,24 +272,18 @@ export async function run(): Promise<void> {
     cleared.ok && (await ownerRead()).programs.find((p) => p.id === ambiguousId)?.status === "complete",
     String(cleared.status));
 
-  // --- no free slot: the transfer refuses rather than retiring into nothing. ---
+  // --- a FULL fleet: every slot is taken first, because a handover no longer needs a second one.
+  // The successor opens IN PLACE on the Supervisor's own slot (server.ts#respawnInPlace); red before
+  // that cut, when this exact state was a loud "no free slot" 409. ---
   const filled: number[] = [];
   for (const slot of (await sessions()).slots.filter((s) => !s.cwd)) {
     const opened = await post(`/api/slots/${slot.id}/open`, { cwd: ROOT, label: "supervisor-capacity-fixture" });
     if (opened.ok) filled.push(slot.id);
   }
   const fullSetup = (await sessions()).slots.every((s) => !!s.cwd);
-  check("supervisor no-free precondition: every slot is occupied by an observed session",
+  check("supervisor full-fleet precondition: every slot is occupied by an observed session",
     fullSetup, `filled=${filled.join(",")}`);
-  if (fullSetup) {
-    const noFree = await succeed(supervisorToken, {});
-    const noFreeText = await noFree.text();
-    check("supervisor succession: with no free slot the transfer is a loud 409 and the binding is unchanged",
-      noFree.status === 409 && noFreeText.includes("no free slot")
-        && sameBinding((await ownerRead()).supervisor, bound),
-      `${noFree.status} ${noFreeText}`);
-  }
-  for (const slot of filled) await post(`/api/slots/${slot}/kill`, {});
+  const occupiedBeforeSuccession = await occupied();
 
   // --- the transfer itself. ---
   const receiptsBeforeSuccession = await receipts();
@@ -305,12 +299,19 @@ export async function run(): Promise<void> {
   const successorSlot = successionBody.slot ?? 0;
   const transferred = (await ownerRead()).supervisor;
   const successorState = readState().slots?.[String(successorSlot)];
+  const occupiedAfterSuccession = await occupied();
+  for (const slot of filled) await post(`/api/slots/${slot}/kill`, {});
   check("supervisor succession: the successor's record carries the {model, effort} override, not the predecessor's pair",
     successorState?.model === successionSpawn.model && successorState.effort === successionSpawn.effort
       && (predecessorState?.model ?? null) !== successionSpawn.model,
     `pred=${JSON.stringify({ model: predecessorState?.model, effort: predecessorState?.effort })} succ=${JSON.stringify({ model: successorState?.model, effort: successorState?.effort })}`);
+  check("supervisor succession on a FULL fleet respawns IN PLACE: same slot, new occupation, no second slot taken",
+    fullSetup && succession.ok && successorSlot > 0 && successorSlot === bound?.slot
+      && typeof successorState?.openedAt === "number" && successorState.openedAt !== bound?.openedAt
+      && occupiedAfterSuccession === occupiedBeforeSuccession,
+    `${succession.status} slot=${successorSlot} bound=${JSON.stringify(bound)} occupied ${occupiedBeforeSuccession}→${occupiedAfterSuccession}`);
   check("supervisor succession: the binding moves to the successor and names its persisted identity exactly",
-    succession.ok && successorSlot > 0 && successorSlot !== bound?.slot && !!transferred
+    succession.ok && successorSlot > 0 && !!transferred
       && transferred.slot === successorSlot && transferred.openedAt === successorState?.openedAt
       && transferred.sessionId === (successorState?.sessionId ?? null)
       && sameBinding(successionBody.supervisor ?? null, transferred),
@@ -334,6 +335,12 @@ export async function run(): Promise<void> {
       && supSelf.lineage?.state === "present" && supSelf.lineage.lineageId === supLine[0].lineageId
       && (successorState as { lineageId?: string } | undefined)?.lineageId === supLine[0].lineageId,
     JSON.stringify({ supLine, self: supSelf.lineage ?? null }));
+  // the band reads that line where the owner last saw it: the same slot, one session further
+  const supLineLength = ((readState() as FleetState & { lineageHandovers?: LineRow[] }).lineageHandovers ?? [])
+    .filter((r) => r.lineageId === supLine[0]?.lineageId).length;
+  const supBand = (await (await get(`/api/slots/${successorSlot}/succession`)).json()) as { session?: number };
+  check("supervisor succession: the band on the Supervisor's slot shows the same line with +1 session",
+    supLineLength >= 1 && supBand.session === supLineLength + 1, `band=${JSON.stringify(supBand)} records=${supLineLength}`);
 
   const successionPrompt = await historyOf(successorSlot);
   const successionLines = successionPrompt.split("\n");
@@ -1453,9 +1460,12 @@ export async function run(): Promise<void> {
   const msgSuccessionBody = await msgSuccession.json() as { ok?: boolean; slot?: number };
   const msgSupSlot2 = msgSuccessionBody.slot ?? 0;
   const msgSupToken2 = readState().slots?.[String(msgSupSlot2)]?.selfToken ?? "";
-  check("message rail role succession setup: a real succession moved the binding to a different occupant",
-    msgSupOpenedAt > 0 && msgSuccession.ok && msgSupSlot2 > 0 && msgSupSlot2 !== msgSupSlot
+  const msgSupOpenedAt2 = readState().slots?.[String(msgSupSlot2)]?.openedAt ?? 0;
+  check("message rail role succession setup: a real succession moved the binding to a different occupant — of the same slot",
+    msgSupOpenedAt > 0 && msgSuccession.ok && msgSupSlot2 > 0 && msgSupSlot2 === msgSupSlot
+      && msgSupOpenedAt2 > 0 && msgSupOpenedAt2 !== msgSupOpenedAt
       && (await ownerRead()).supervisor?.slot === msgSupSlot2
+      && (await ownerRead()).supervisor?.openedAt === msgSupOpenedAt2
       && /^[0-9a-f]{32}$/.test(msgSupToken2) && msgSupToken2 !== msgSupToken,
     `openedAt=${msgSupOpenedAt} ${msgSuccession.status} ${msgSupSlot}→${msgSupSlot2}`);
 
@@ -1467,7 +1477,7 @@ export async function run(): Promise<void> {
   const msgSurvived = msgSupView2.view?.entries.find((e) => e.id === msgToRoleId);
   check("message rail role survives succession: the NEW Supervisor reads the same row under the same id, and the receipt still names the PREDECESSOR occupant",
     msgSupView2.response.ok && !!msgSurvived && msgSurvived.payload.text === msgRoleText
-      && msgSurvived.readBy?.slot === msgSupSlot && msgSurvived.readBy.slot !== msgSupSlot2
+      && msgSurvived.readBy?.slot === msgSupSlot && msgSurvived.readBy.openedAt === msgSupOpenedAt
       && JSON.stringify(msgSupView2.view?.addresses) === JSON.stringify([{ kind: "role", role: "supervisor" }]),
     JSON.stringify({ predecessor: msgSupSlot, successor: msgSupSlot2, row: msgSurvived ?? null }));
 
@@ -1479,16 +1489,15 @@ export async function run(): Promise<void> {
   const msgSupAnswer2Id = (await msgSupAnswer2.clone().json() as { message?: { id?: string } }).message?.id ?? "";
   const msgMainFinal = await readMessages(msgMainToken);
   const msgMainFinalSeen = msgMainFinal.view?.entries.find((e) => e.id === msgSupAnswer2Id);
-  // the predecessor is retiring on a grace timer; its credential must not still speak for the role
+  // the predecessor ended with the in-place respawn; its credential must not still speak for the role
   const msgPredecessorSend = await sendMessage(msgSupToken, { to: { kind: "program", id: msgProgramId },
     payload: { kind: "text", text: "the retired predecessor" }, idempotencyKey: "role-reply-stale" });
   check("message rail role survives succession: the successor ANSWERS as the same role, the MAIN reads it as role:supervisor, and the retired predecessor no longer speaks for the role",
     msgSupAnswer2.ok && !!msgMainFinalSeen && msgMainFinalSeen.replyTo === msgToRoleId
       && JSON.stringify(msgMainFinalSeen.from) === JSON.stringify({ kind: "role", role: "supervisor" })
-      // 409 while the retiring pane is still up, 401 once the grace timer has taken it: both are
-      // "this credential no longer speaks for the role", and which one lands is a race with the
-      // retirement, not a property of the rail.
-      && (msgPredecessorSend.status === 409 || msgPredecessorSend.status === 401),
+      // 401: the in-place respawn ended the predecessor before the successor opened, so there is no
+      // retiring pane left whose credential could still answer 409
+      && msgPredecessorSend.status === 401,
     `answer=${msgSupAnswer2.status} seen=${JSON.stringify(msgMainFinalSeen ?? null)} predecessor=${msgPredecessorSend.status}`);
 
   await post(`/api/slots/${msgMainSlot}/kill`, {});

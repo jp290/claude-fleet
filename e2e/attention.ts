@@ -58,8 +58,8 @@ const ownerRows = async (): Promise<AttentionRow[]> =>
   ((await (await get("/api/attention")).json()) as { requests?: AttentionRow[] }).requests ?? [];
 const attentionOpenCount = async (): Promise<number | undefined> =>
   ((await (await get("/api/sessions")).json()) as { attentionOpen?: number }).attentionOpen;
-const sessions = async (): Promise<{ slots: { id: number; cwd: string | null; label: string | null }[] }> =>
-  (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; label: string | null }[] };
+const sessions = async (): Promise<{ slots: { id: number; cwd: string | null; label: string | null; openedAt?: number }[] }> =>
+  (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; label: string | null; openedAt?: number }[] };
 const selfInbox = async (tok: string): Promise<{ response: Response; view: InboxView | null }> => {
   const response = await fetch(`${BASE}/api/self/inbox`, { headers: { "x-fleet-self-token": tok } });
   return { response, view: response.ok ? await response.json() as InboxView : null };
@@ -430,17 +430,16 @@ export async function run(): Promise<void> {
   // the row §7b follows past the succession: it must still be OPEN after a later, unrelated teardown
   const carriedText = "Carried across the succession: still mine to ask?";
   const carriedDecision = await raised(await selfRaise(tokA, { kind: "decision", text: carriedText }));
+  const openedAtA = (await sessions()).slots.find((s) => s.id === mainA)?.openedAt;
   const successionPending = selfSucceed(tokA, { label: successorLabel, carry: "Continue the attention fixture." });
   const successorSlot = await waitForLabel(successorLabel);
   if (successorSlot !== null)
     await plantScreen(successorSlot, ">_ OpenAI Codex (v0.147.0)", "attention succession fixture");
   const successionResponse = await successionPending;
   const successionResponseText = await successionResponse.clone().text();
-  let predecessorGone = false;
-  for (let i = 0; i < 40 && !predecessorGone; i++) {
-    predecessorGone = !(await sessions()).slots.some((s) => s.id === mainA && s.cwd);
-    if (!predecessorGone) await Bun.sleep(100);
-  }
+  // the predecessor OCCUPATION is gone: since the in-place respawn its slot holds the successor
+  const predecessorGone = typeof openedAtA === "number"
+    && !(await sessions()).slots.some((s) => s.id === mainA && s.cwd && s.openedAt === openedAtA);
   const successorToken = successorSlot === null ? "" :
     (JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { selfToken?: string }> })
       .slots?.[String(successorSlot)]?.selfToken ?? "";
@@ -450,7 +449,7 @@ export async function run(): Promise<void> {
   const successionInbox = successorToken ? await selfInbox(successorToken) : null;
   // BREAKS IF: reconcileAttention ignores why, or attentionFor filters only by requester triple.
   check("attention survives succession: after POST /api/self/succeed the open row is still open, the successor lists it, and the owner's answer reaches the successor's inbox",
-    successionResponse.ok && predecessorGone && successorSlot !== null && successorSlot !== mainA
+    successionResponse.ok && predecessorGone && successorSlot !== null && successorSlot === mainA
       && survived?.status === "open" && successorRows.some((a) => a.id === secondDecision?.id)
       && successionAnswer.ok
       && successionInbox?.view?.entries.some((e) => e.ref === secondDecision?.id

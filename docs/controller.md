@@ -159,8 +159,18 @@ Kennzahlen und der Wegweiser in die Volldaten, nicht die 68 KB Render.
   Bindung folgt nur über den eigenen Supervisor-Nachfolgepfad; stale/ungebunden darf er sich nicht selbst
   wieder einsetzen.
 
+**In allen vier Fällen bleibt die Linie auf ihrem Slot** (seit 2026-09-22, `server.ts#respawnInPlace`;
+Owner 2026-09-21: „eigentlich sollte jetzt mit diesem band die session einfach auf dem slot bleiben"):
+die Vorgängerin endet, die Nachfolgerin öffnet auf DEMSELBEN Slot mit neuem `openedAt` — keine
+Grace-Frist mit zwei lebenden Sessions, kein „no free slot". Bindung und Linien-Record wandern direkt
+nach dem Open, vor dem Brief; eine abgewiesene Zustellung lässt die Nachfolgerin gebunden stehen
+(Audit `main_succession`), ein gescheiterter Respawn lässt den Slot leer und nennt im Audit Grund und
+cwd zum Wiederöffnen. Das Band (`GET /api/slots/:id/succession`) zeigt die Linie damit dort, wo der Owner
+sie zuletzt sah, eine Session weiter.
+
 `POST /api/self/succeed` vererbt Harness und standardmäßig Modell/Effort, sofern der Body sie nicht
-gültig überschreibt; Lane und Steward werden abgewiesen. Nach jedem externen Await wird die exakte
+gültig überschreibt; die Lane hat ihre eigene Schiene (`server.ts#succeedLane`), der Steward wird
+abgewiesen. Nach jedem externen Await wird die exakte
 Occupant-Identität erneut geprüft. Keine Aussage hier behauptet, alle Reports, Watches oder offenen
 Fragen würden automatisch übertragen.
 

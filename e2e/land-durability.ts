@@ -559,9 +559,10 @@ export async function run(): Promise<void> {
       g(can, "config", "user.email", "e2e@fleet.local");
       g(can, "config", "user.name", "fleet e2e");
       g(can, "config", "commit.gpgsign", "false");
-      // the same shape as the real repo: the bundle is IGNORED, which is why a fetch can never
-      // carry it and why its absence is not a dirty tree.
-      writeFileSync(`${can}/.gitignore`, "public/*.js\n");
+      // the same shape as the real repo: the bundle and the instance's state file are IGNORED,
+      // which is why a fetch can never carry either and why their absence — or, for fleet.json,
+      // its presence — is not a dirty tree the script would refuse before it did anything.
+      writeFileSync(`${can}/.gitignore`, "public/*.js\nfleet.json\n");
       writeFileSync(`${can}/README`, "canonical\n");
       copyFileSync(script, `${can}/fleet-sync.sh`);
       chmodSync(`${can}/fleet-sync.sh`, 0o755);
@@ -580,9 +581,24 @@ export async function run(): Promise<void> {
       };
       const bundlesHere = (): string[] =>
         ["app.js", "share.js", "helper.js", "hub.js"].filter((f) => existsSync(`${fol}/public/${f}`));
-      const runSync = (buildCmd: string): { code: number; out: string } => {
+      // The INSTALL stand-in, and the dependency it is the only source of. `bun install` here would
+      // prove bun works on a repo with no package.json, which is not the question; the question is
+      // whether the script reaches for the install BEFORE the build and what it does when that comes
+      // back red. So the stand-in drops one file outside the repo, and BUILD_NEEDS_DEP — the shape
+      // of the 2026-09-22 incident, a fast-forward carrying a dependency nothing resolved — refuses
+      // to build without it.
+      const DEP = `${FIX}/dep-present`;
+      const IMARK = `${FIX}/install-ran`;
+      const INSTALL_OK = `echo dep > ${DEP} && echo ran >> ${IMARK}`;
+      const installs = (): number => {
+        try { return readFileSync(IMARK, "utf8").split("\n").filter(Boolean).length; } catch { return 0; }
+      };
+      const BUILD_NEEDS_DEP =
+        `test -f ${DEP} || { echo "stand-in build: the dependency this commit brought is not installed"; exit 1; }; ${BUILD_OK}`;
+      const runSync = (buildCmd: string, extra: Record<string, string> = {}): { code: number; out: string } => {
         const r = spawnSync("sh", [`${fol}/fleet-sync.sh`],
-          { cwd: fol, encoding: "utf8", env: { ...process.env, FLEET_SYNC_BUILD_CMD: buildCmd } });
+          { cwd: fol, encoding: "utf8",
+            env: { ...process.env, FLEET_SYNC_BUILD_CMD: buildCmd, FLEET_SYNC_INSTALL_CMD: INSTALL_OK, ...extra } });
         return { code: r.status ?? -1, out: `${(r.stdout ?? "").trim()} ${(r.stderr ?? "").trim()}`.trim() };
       };
       const moveCanonical = (name: string): string => {
@@ -628,6 +644,113 @@ export async function run(): Promise<void> {
       check("…and the failure line says BOTH halves: the sync landed, the bundle did not",
         /BUILD FAILED/.test(c.out) && c.out.includes(headC.slice(0, 7)),
         c.out);
+
+      // --- E: THE DEPENDENCY THE FAST-FORWARD BROUGHT. Measured on the follower 2026-09-23 00:4x:
+      // every sync since 2026-09-22 10:12 ended `SYNCED, then BUILD FAILED` — `@xterm/addon-web-
+      // links` had arrived in package.json and nothing had ever resolved it, so the board served an
+      // app.js from 21:24 two days earlier. A fetch carries the manifest and not the modules, so
+      // the install is ON this rail or it is nowhere.
+      rmSync(DEP, { force: true });
+      const headE = moveCanonical("moved-e.txt");
+      const beforeE = builds();
+      const beforeIE = installs();
+      const e = runSync(BUILD_NEEDS_DEP);
+      check("a fast-forward that brings a new dependency installs it and THEN builds — the bundle is current, not red",
+        e.code === 0 && g(fol, "rev-parse", "HEAD").out === headE && installs() === beforeIE + 1
+          && builds() === beforeE + 1 && bundlesHere().length === 4,
+        `exit=${e.code} head=${g(fol, "rev-parse", "HEAD").out.slice(0, 8)} want=${headE.slice(0, 8)} installs=${beforeIE}->${installs()} builds=${beforeE}->${builds()} :: ${e.out}`);
+
+      // --- F: and the install has an exit of its OWN. 5 already means "the tree moved, the bundle
+      // did not"; a reader who finds 5 goes looking at the bundler. An unresolved dependency is a
+      // different repair, so it is a different code — and the build must not run at all, or the
+      // journal would carry a red bundler on top of the real cause.
+      rmSync(DEP, { force: true });
+      const headF = moveCanonical("moved-f.txt");
+      const beforeF = builds();
+      const f = runSync(BUILD_NEEDS_DEP, { FLEET_SYNC_INSTALL_CMD: "exit 1" });
+      check("a red install is exit 6 — its own code, not the build's 5 — the build is never attempted and the ff still stands",
+        f.code === 6 && builds() === beforeF && g(fol, "rev-parse", "HEAD").out === headF
+          && /INSTALL FAILED/.test(f.out) && !/BUILD FAILED/.test(f.out),
+        `exit=${f.code} builds=${beforeF}->${builds()} head=${g(fol, "rev-parse", "HEAD").out.slice(0, 8)} want=${headF.slice(0, 8)} :: ${f.out}`);
+
+      // --- THE DEPLOY HALF. The third stale layer of the same incident: the bundle was two days
+      // old and the srv PROCESS was three. A current tree in front of an old process is the same
+      // lie one level up, so a green build asks this host's own instance through `POST /api/deploy`
+      // — the route, never `tmux kill-session -t srv`, because only the route knows that a land or
+      // an audit is in flight. A stand-in instance answers here: what is under test is which door
+      // the script knocks on, with which credential, and how it reads the three answers.
+      const TOK = "fixture-owner-token-9f2c41";
+      writeFileSync(`${fol}/fleet.json`, `${JSON.stringify({ token: TOK, slots: [] }, null, 2)}\n`);
+      check("(setup F/deploy) the instance's state file is gitignored — writing it does not make the follower dirty",
+        g(fol, "status", "--porcelain").out === "", g(fol, "status", "--porcelain").out);
+      const seen: { auth: string | null; path: string }[] = [];
+      let answer = { status: 202, body: JSON.stringify({ ok: null, stage: "restarting", id: "d0" }) };
+      const stub = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        fetch(req: Request): Response {
+          seen.push({ auth: req.headers.get("authorization"), path: `${req.method} ${new URL(req.url).pathname}` });
+          return new Response(answer.body, { status: answer.status, headers: { "content-type": "application/json" } });
+        },
+      });
+      const DEPLOY = { FLEET_SYNC_DEPLOY_URL: `http://127.0.0.1:${stub.port}` };
+      const lastSeen = (): { auth: string | null; path: string } | undefined => seen[seen.length - 1];
+      try {
+        // --- G: the accepted deploy. One POST, at the door the owner uses, with the token out of
+        // the instance's own state file — and NOT the token in the line it leaves in the journal.
+        const headG = moveCanonical("moved-g.txt");
+        const beforeG = seen.length;
+        const gr = runSync(BUILD_OK, DEPLOY);
+        check("after a green build the follower asks its OWN instance to deploy: one POST /api/deploy, owner token out of fleet.json",
+          gr.code === 0 && g(fol, "rev-parse", "HEAD").out === headG && seen.length === beforeG + 1
+            && lastSeen()?.path === "POST /api/deploy" && lastSeen()?.auth === `Bearer ${TOK}`
+            && /deploy accepted/.test(gr.out),
+          `exit=${gr.code} posts=${seen.length - beforeG} last=${lastSeen()?.path} authMatches=${lastSeen()?.auth === `Bearer ${TOK}`} :: ${gr.out}`);
+        check("…and the owner token is in no line the timer writes into the journal",
+          !gr.out.includes(TOK), gr.out);
+
+        // --- H: the REFUSAL. deployBlocker answers 409 while a land is reserved, an audit is
+        // running or a succession is in flight — all three are "ask again in fifteen minutes", and
+        // a unit left `failed` for them would teach its reader to ignore the colour.
+        answer = { status: 409, body: JSON.stringify({ ok: false, stage: "preflight",
+          reason: "a merge/land is reserved or running on fleet/260922-1 (slot 3) — restarting srv now would interrupt it before its terminal verdict" }) };
+        const headH = moveCanonical("moved-h.txt");
+        const h = runSync(BUILD_OK, DEPLOY);
+        check("a deploy the instance REFUSES with 409 is a deferred line and exit 0 — the next sync asks again, the unit does not go red",
+          h.code === 0 && /deploy deferred: a merge\/land is reserved or running/.test(h.out)
+            && g(fol, "rev-parse", "HEAD").out === headH,
+          `exit=${h.code} head=${g(fol, "rev-parse", "HEAD").out.slice(0, 8)} want=${headH.slice(0, 8)} :: ${h.out}`);
+
+        // --- I: any OTHER answer. The tree and its bundle are current and the process serving them
+        // is not — which is precisely the state a human was needed for, so it gets a code.
+        answer = { status: 500, body: JSON.stringify({ ok: false, stage: "build",
+          reason: "the build failed — the running server was left alone" }) };
+        const headI = moveCanonical("moved-i.txt");
+        const i = runSync(BUILD_OK, DEPLOY);
+        check("a deploy that could not be made is exit 7 — its own code — and the fast-forward it followed still stands",
+          i.code === 7 && /DEPLOY FAILED \(HTTP 500/.test(i.out) && g(fol, "rev-parse", "HEAD").out === headI,
+          `exit=${i.code} head=${g(fol, "rev-parse", "HEAD").out.slice(0, 8)} want=${headI.slice(0, 8)} :: ${i.out}`);
+
+        // --- J: a RED build asks for nothing. The deploy route would build again and refuse on its
+        // own, but the request must not be made at all: restarting srv onto a tree whose bundle
+        // just failed is the one move this whole rail exists to prevent.
+        answer = { status: 202, body: JSON.stringify({ ok: null, stage: "restarting", id: "d1" }) };
+        const headJ = moveCanonical("moved-j.txt");
+        const beforeJ = seen.length;
+        const j = runSync("exit 1", DEPLOY);
+        check("a RED build asks for no deploy at all — srv is never restarted onto a bundle that failed",
+          j.code === 5 && seen.length === beforeJ && g(fol, "rev-parse", "HEAD").out === headJ,
+          `exit=${j.code} posts=${seen.length - beforeJ} :: ${j.out}`);
+
+        // --- K: and neither does a tick with nothing to fast-forward. The deploy answers a MOVE.
+        // A 15-minute timer that posted every lap would restart the board four times an hour.
+        const beforeK = seen.length;
+        const k = runSync(BUILD_OK, DEPLOY);
+        check("a run with nothing to fast-forward asks for no deploy either — the deploy answers a move, not a tick",
+          k.code === 0 && seen.length === beforeK && /already current/.test(k.out),
+          `exit=${k.code} posts=${seen.length - beforeK} :: ${k.out}`);
+      } finally {
+        stub.stop(true);
+      }
 
       rmSync(FIX, { recursive: true, force: true });
     }

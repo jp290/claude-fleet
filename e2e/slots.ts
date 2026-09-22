@@ -2706,6 +2706,13 @@ export async function run(): Promise<void> {
       await restartSrv();
       try { return readFileSync(`${ROOT}/server.log`, "utf8").slice(logAt); } catch { return ""; }
     };
+    // THE ANCHOR: with srv stopped and every sN killed, the suite's tmux server would hold no
+    // session and EXIT — and the next restartSrv would start a NEW one from this runner, whose env
+    // carries every FLEET_* knob. Every later pane inherits that global env, so restart.ts's
+    // deliberately dropped FLEET_VERIFY_CMD came back and its three V1/P-7c checks went red on the
+    // helper preview d8af48c133bd. One non-slot session keeps the original server alive.
+    const anchor = "sock-owner-anchor";
+    await tmuxOut("new-session", "-d", "-s", anchor, "sleep 3600");
     await stopSrv();
     const originalBytes = readFileSync(statePath, "utf8");
     const original = JSON.parse(originalBytes) as Record<string, unknown> & { slots?: Record<string, unknown> };
@@ -2747,5 +2754,6 @@ export async function run(): Promise<void> {
       legacyRows === baseline, JSON.stringify({ baseline: baseline.slice(0, 300), legacyRows: legacyRows.slice(0, 300) }));
     check("…and that boot's save writes the field", legacySock === SOCK, JSON.stringify(legacySock));
     await post(`/api/slots/${F}/kill`, {});
+    await tmuxOut("kill-session", "-t", `=${anchor}`);
   }
 }

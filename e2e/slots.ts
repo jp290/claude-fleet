@@ -1019,6 +1019,12 @@ export async function run(): Promise<void> {
   try {
     indexSrc = readFileSync(`${sourceRoot}/public/index.html`, "utf8");
   } catch (e) { indexSrcError = e instanceof Error ? e.message : String(e); }
+  // the dialog helper (K3) — the drawer-close anchor of the reachability check below lives here
+  // since the six risk dialogs lost their own copies
+  let dlgSrc: string | null = null;
+  try {
+    dlgSrc = readFileSync(`${sourceRoot}/src/dialog.ts`, "utf8");
+  } catch { dlgSrc = null; }
   check("precondition: node_modules exposes src/client.ts for slot client checks",
     cliSrc !== null, cliSrcError);
   check("precondition: node_modules exposes public/index.html for slot presentation checks",
@@ -1894,12 +1900,19 @@ export async function run(): Promise<void> {
       const riskSrc = cut("function showRiskPreview(", "function confirmMidRun(");
       const zOf = (css: string): number => Number(/z-index:\s*(\d+)/.exec(css)?.[1] ?? NaN);
       const overlayZ = zOf(cssBody(".overlay")), drawerZ = zOf(/#side \{[^}]*\}/.exec(mobileCss)?.[0] ?? "");
+      // since K3 the drawer-close lives in ONE place: askRisk (src/dialog.ts) closes it before
+      // painting and client.ts registers setDrawer(false) once — the old anchor (setDrawer inside
+      // showRiskPreview) is gone on purpose with the six copies. Same reachability guarantee.
+      const drawerClosedByHelper = dlgSrc !== null
+        && dlgSrc.includes("closeDrawer?.()")
+        && /onDialogWillOpen\(\(\) => setDrawer\(false\)\)/.test(cliSrc)
+        && /askRisk\(/.test(riskSrc);
       check("client: every live row keeps a reachable ✕ — on the row, above the phone drawer, hidden only on a past band cell",
         /const kill = el\("span", "kill", "✕"\)/.test(rowSrc) && /act\.appendChild\(kill\);\s*row\.appendChild\(act\);/.test(rowSrc)
           && rowSrc.includes("post(`/api/slots/${s.id}/kill`, {})")
           && /\.slot\.back \.slotact/.test(indexSrc)
-          && (/^\s*setDrawer\(false\);/m.test(riskSrc.split("new Promise")[0] ?? "") || overlayZ > drawerZ),
-        JSON.stringify({ overlayZ, drawerZ, riskHead: riskSrc.split("new Promise")[0]?.trim().slice(-160) }));
+          && (drawerClosedByHelper || overlayZ > drawerZ),
+        JSON.stringify({ overlayZ, drawerZ, viaHelper: drawerClosedByHelper, dlgPresent: dlgSrc !== null }));
       // …and every live row can be RENAMED where it is seen (owner, same day: "ich übrigens auch
       // nicht richtig die sessions umbenennen"). bandify puts the past cells — each with its own
       // .lbl — BEFORE line 1 in the track; a bare `.lbl` lookup opened the input in the first past

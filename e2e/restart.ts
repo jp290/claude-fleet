@@ -843,6 +843,8 @@ export async function run(ctx: Ctx): Promise<void> {
   const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
     "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO", "FLEET_VERIFY_CMD_REPOS", "FLEET_CODEX_SESSIONS_DIR",
     "FLEET_PI_ZAI_AGENT_DIR", "FLEET_PI_ZAI_KEY_FILE", "FLEET_PI_OX_AGENT_DIR",
+    // set only off darwin (e2e-isolated.sh): dropped, the restarted server would refuse every pi-zai start there
+    "FLEET_PI_ZAI_SANDBOX_EXEC",
     // without these the post-restart server reverts to the 60s idle gate / 15s tick and no
     // auto-③ can be observed inside the suite's budget
     "FLEET_AUTO_REVIEW_MS", "FLEET_AUTO_REVIEW_IDLE_MS",

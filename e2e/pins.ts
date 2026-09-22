@@ -53,6 +53,8 @@ import {
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
 import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
 import { readEventLog, readLedger } from "../server/persist";
+// pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
+import { LIVE_TMUX_SOCK, piZaiFenceProfile } from "../server/pi-zai-fence";
 import { readJsonl } from "../briefstats";
 import { quotaPosition, newResetEntries } from "../codex-quota";
 import {
@@ -741,58 +743,68 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
   // reverse) is the silent deadlock the hand-down pins above exist for.
   {
     const RULE_INHERIT_BIRTH = "an inherited suite-mutex hold is honoured only over a holder whose process birth matches the lock's (shell and server agree)";
-    const lock = mkdtempSync(`${tmpdir()}/fleet-pins-inherit-`);
     const holder = process.pid;
-    try {
-      const live = spawnSync("ps", ["-o", "lstart=", "-p", String(holder)],
-        { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim().replace(/\s+/g, " ");
-      const other = live === "Mon Jan 1 00:00:00 2001" ? "Tue Jan 2 00:00:00 2001" : "Mon Jan 1 00:00:00 2001";
-      const fnsAt = stage.indexOf("_st_birth_of() {");
-      const fnsEnd = stage.indexOf("# Walk the queue once", fnsAt);
-      const blockAt = stage.indexOf('_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"');
-      const blockEnd = stage.indexOf('if [ "$_st_inherited" = 0 ]; then', blockAt);
-      const shellSrc = fnsAt < 0 || fnsEnd < 0 || blockAt < 0 || blockEnd < 0 ? ""
-        : `${stage.slice(fnsAt, fnsEnd)}\n${stage.slice(blockAt, blockEnd)}\nprintf '%s %s' "$_st_inherited" "$_st_lock_pid"\n`;
-      const shellSays = (): string => spawnSync("sh", ["-c", shellSrc],
-        { encoding: "utf8", timeout: 10_000,
-          env: { ...process.env, FLEET_SUITE_LOCK: lock, FLEET_SUITE_LOCK_HELD_BY: String(holder) } }).stdout.trim();
-      const birthSpan = serverU.span("const PROCESS_BIRTH_RE =", "\nfunction gateLock(");
-      const inheritSpan = serverU.span("function inheritedSuiteHolder(): number | null {", "\n}\n", 3);
-      let serverFn: (() => number | null) | null = null;
-      let serverErr = "";
-      if (birthSpan && inheritSpan && birthSpan.file === inheritSpan.file) {
-        const shim = { env: { ...process.env, FLEET_SUITE_LOCK_HELD_BY: String(holder) },
-          kill: (pid: number, sig: number) => process.kill(pid, sig) };
-        try {
-          serverFn = new Function("SUITE_LOCK", "readFileSync", "process",
-            new Bun.Transpiler({ loader: "ts" }).transformSync(`${birthSpan.text}\n${inheritSpan.text}`)
-              + "\nreturn inheritedSuiteHolder;")(lock, readFileSync, shim) as () => number | null;
-        } catch (e) { serverErr = e instanceof Error ? e.message : String(e); }
+    // `ps` may not START at all: it is setuid, and sandbox-exec refuses its exec under EVERY profile
+    // — a pi-zai lane runs behind one (docs/messungen/2026-09-21-pi-zai-lesezaun.md T5). Then spawnSync
+    // hands back no stdout, and `.stdout.trim()` used to throw a TypeError that took every later pin
+    // of this file with it. Not starting is not a birth: this rule is SKIPPED under its own name and
+    // the file runs on. A ps that starts and prints garbage still fails the fixture pin below.
+    const psRun = spawnSync("ps", ["-o", "lstart=", "-p", String(holder)],
+      { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+    if (psRun.error || typeof psRun.stdout !== "string") {
+      skip(RULE_INHERIT_BIRTH, `ps could not be started (${psRun.error?.message ?? `status ${psRun.status}`}) — no birth is measurable here`);
+    } else {
+      const lock = mkdtempSync(`${tmpdir()}/fleet-pins-inherit-`);
+      try {
+        const live = psRun.stdout.trim().replace(/\s+/g, " ");
+        const other = live === "Mon Jan 1 00:00:00 2001" ? "Tue Jan 2 00:00:00 2001" : "Mon Jan 1 00:00:00 2001";
+        const fnsAt = stage.indexOf("_st_birth_of() {");
+        const fnsEnd = stage.indexOf("# Walk the queue once", fnsAt);
+        const blockAt = stage.indexOf('_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"');
+        const blockEnd = stage.indexOf('if [ "$_st_inherited" = 0 ]; then', blockAt);
+        const shellSrc = fnsAt < 0 || fnsEnd < 0 || blockAt < 0 || blockEnd < 0 ? ""
+          : `${stage.slice(fnsAt, fnsEnd)}\n${stage.slice(blockAt, blockEnd)}\nprintf '%s %s' "$_st_inherited" "$_st_lock_pid"\n`;
+        const shellSays = (): string => spawnSync("sh", ["-c", shellSrc],
+          { encoding: "utf8", timeout: 10_000,
+            env: { ...process.env, FLEET_SUITE_LOCK: lock, FLEET_SUITE_LOCK_HELD_BY: String(holder) } }).stdout.trim();
+        const birthSpan = serverU.span("const PROCESS_BIRTH_RE =", "\nfunction gateLock(");
+        const inheritSpan = serverU.span("function inheritedSuiteHolder(): number | null {", "\n}\n", 3);
+        let serverFn: (() => number | null) | null = null;
+        let serverErr = "";
+        if (birthSpan && inheritSpan && birthSpan.file === inheritSpan.file) {
+          const shim = { env: { ...process.env, FLEET_SUITE_LOCK_HELD_BY: String(holder) },
+            kill: (pid: number, sig: number) => process.kill(pid, sig) };
+          try {
+            serverFn = new Function("SUITE_LOCK", "readFileSync", "process",
+              new Bun.Transpiler({ loader: "ts" }).transformSync(`${birthSpan.text}\n${inheritSpan.text}`)
+                + "\nreturn inheritedSuiteHolder;")(lock, readFileSync, shim) as () => number | null;
+          } catch (e) { serverErr = e instanceof Error ? e.message : String(e); }
+        }
+        pin(`${RULE_INHERIT_BIRTH} — fixture: both sides are extractable and this process has a valid birth`,
+          shellSrc !== "" && serverFn !== null && /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/.test(live),
+          `shell=${shellSrc.length} bytes server=${serverFn !== null}${serverErr ? ` (${serverErr})` : ""} birth=${JSON.stringify(live)}`);
+        const arm = (birth: string | null): { shell: string; server: number | null | string } => {
+          writeFileSync(`${lock}/pid`, `${holder}\n`);
+          rmSync(`${lock}/birth`, { force: true });
+          if (birth !== null) writeFileSync(`${lock}/birth`, `${birth}\n`);
+          let srv: number | null | string;
+          try { srv = serverFn ? serverFn() : "not extracted"; } catch (e) { srv = `threw: ${e instanceof Error ? e.message : String(e)}`; }
+          return { shell: shellSays(), server: srv };
+        };
+        const same = arm(live);
+        pin(`${RULE_INHERIT_BIRTH} — same pid, same birth: both inherit the hold`,
+          same.shell === `1 ${holder}` && same.server === holder, JSON.stringify(same));
+        const differs = arm(other);
+        pin(`${RULE_INHERIT_BIRTH} — same pid, DIFFERENT birth (a recycled pid): neither inherits, the shell stays an ordinary contender`,
+          /^0 \d+$/.test(differs.shell) && differs.shell !== `0 ${holder}` && differs.server === null, JSON.stringify(differs));
+        const missing = arm(null);
+        const malformed = arm("e2e-not-a-birth");
+        pin(`${RULE_INHERIT_BIRTH} — same pid, UNREADABLE birth (missing or malformed): neither inherits, the shell stays an ordinary contender`,
+          [missing, malformed].every((r) => /^0 \d+$/.test(r.shell) && r.shell !== `0 ${holder}` && r.server === null),
+          JSON.stringify({ missing, malformed }));
+      } finally {
+        rmSync(lock, { recursive: true, force: true });
       }
-      pin(`${RULE_INHERIT_BIRTH} — fixture: both sides are extractable and this process has a valid birth`,
-        shellSrc !== "" && serverFn !== null && /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/.test(live),
-        `shell=${shellSrc.length} bytes server=${serverFn !== null}${serverErr ? ` (${serverErr})` : ""} birth=${JSON.stringify(live)}`);
-      const arm = (birth: string | null): { shell: string; server: number | null | string } => {
-        writeFileSync(`${lock}/pid`, `${holder}\n`);
-        rmSync(`${lock}/birth`, { force: true });
-        if (birth !== null) writeFileSync(`${lock}/birth`, `${birth}\n`);
-        let srv: number | null | string;
-        try { srv = serverFn ? serverFn() : "not extracted"; } catch (e) { srv = `threw: ${e instanceof Error ? e.message : String(e)}`; }
-        return { shell: shellSays(), server: srv };
-      };
-      const same = arm(live);
-      pin(`${RULE_INHERIT_BIRTH} — same pid, same birth: both inherit the hold`,
-        same.shell === `1 ${holder}` && same.server === holder, JSON.stringify(same));
-      const differs = arm(other);
-      pin(`${RULE_INHERIT_BIRTH} — same pid, DIFFERENT birth (a recycled pid): neither inherits, the shell stays an ordinary contender`,
-        /^0 \d+$/.test(differs.shell) && differs.shell !== `0 ${holder}` && differs.server === null, JSON.stringify(differs));
-      const missing = arm(null);
-      const malformed = arm("e2e-not-a-birth");
-      pin(`${RULE_INHERIT_BIRTH} — same pid, UNREADABLE birth (missing or malformed): neither inherits, the shell stays an ordinary contender`,
-        [missing, malformed].every((r) => /^0 \d+$/.test(r.shell) && r.shell !== `0 ${holder}` && r.server === null),
-        JSON.stringify({ missing, malformed }));
-    } finally {
-      rmSync(lock, { recursive: true, force: true });
     }
   }
   // A WRAPPER'S BOOT PROBE HOLDS THE MUTEX WHILE IT WAITS (Astra-Befund 6, 2026-09-15). The boot
@@ -3962,6 +3974,43 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && (pzCode.match(/ZAI_API_KEY=/g) ?? []).length === 1
     && !/(?:readFileSync|Bun\.file|readText)\(PI_ZAI_KEY_FILE/.test(pzCode),
     pzCode.match(/ZAI_API_KEY=[^\n]+/)?.[0]?.slice(0, 180) ?? "no ZAI_API_KEY assignment");
+  // PI-ZAI'S READ FENCE (docs/messungen/2026-09-21-pi-zai-lesezaun.md §5 item 2). The builder runs
+  // over fixture paths and the GENERATED profile must carry the three rules that each, alone, would
+  // have failed a probe: T1 the fleet.json/.env regex (a literal missed the .bak copies), T3 the PAIR
+  // process-info-others + sysctl kern.proc (either alone left 508–531 PIDs' environments readable),
+  // T2 the live tmux socket — present even when the fixture names no socket of its own. Mutation:
+  // strike any one of those lines in server/pi-zai-fence.ts and this row is red. What the rules DO
+  // (EPERM, 2 PIDs) is executed, not read, in e2e/security.ts §6a.
+  {
+    const RULE_PZ_FENCE = "pi-zai's generated read fence holds the three measured rules: fleet.json/.env regex, process-info+sysctl pair, live tmux socket";
+    const fx = { home: "/Users/fx", fleetDir: "/Users/fx/claude-fleet", agentDir: "/Users/fx/.config/claude-fleet/pi-zai-agent",
+      keyFile: "/Users/fx/.config/claude-fleet/secrets/zai.key", cwd: "/Users/fx/claude-fleet.worktrees/lane-1",
+      tmuxDir: "/private/tmp/tmux-501", sockets: [] as string[] };
+    const prof = piZaiFenceProfile(fx) ?? "";
+    // the file-deny form runs up to the allow that re-opens this pane's own session
+    const dfAt = prof.indexOf("(deny file-read* file-write* ");
+    const denyFiles = dfAt < 0 ? "" : prof.slice(dfAt, prof.indexOf(")(allow file-read* file-write* ", dfAt));
+    const parts = {
+      regex: denyFiles.includes('(regex #"^/Users/fx/claude-fleet/(fleet[.]json|[.]env)")'),
+      procInfo: prof.includes("(deny process-info* (target others))"),
+      sysctl: prof.includes('(deny sysctl-read (sysctl-name-regex #"^kern[.]proc"))'),
+      liveSock: prof.includes(`(deny network-outbound (remote unix-socket (path-literal "/private/tmp/tmux-501/${LIVE_TMUX_SOCK}"))`)
+        && LIVE_TMUX_SOCK === "claudefleet",
+      allowDefault: prof.startsWith("(version 1)(allow default)"),
+    };
+    pin(RULE_PZ_FENCE, Object.values(parts).every(Boolean), JSON.stringify(parts));
+    pin(`${RULE_PZ_FENCE} — a path that could escape SBPL or shell quoting builds NO profile`,
+      piZaiFenceProfile({ ...fx, cwd: "/Users/fx/lane'1" }) === null && piZaiFenceProfile({ ...fx, cwd: '/Users/fx/lane"1' }) === null,
+      "quote-bearing cwd must yield null");
+    // ...and the adapter uses it the only safe way: a self-test at /usr/bin/true that refuses pi on
+    // failure, the absolute fence binary, and pi (never the key read) inside the fence.
+    pin(`${RULE_PZ_FENCE} — the pi-zai spawn line self-tests the fence and wraps pi alone`,
+      /const profile = piZaiFenceFor\(o\.cwd\);/.test(pzCode) && pzCode.includes("${sbx} /usr/bin/true; } `")
+        && pzCode.includes("|| { printf '%s\\\\n' '${PI_ZAI_FENCE_FAILED}'; exec ${SHELL}; }; `")
+        && pzCode.includes(`ZAI_API_KEY="$(cat '\${PI_ZAI_KEY_FILE}')" \${sbx} \${cmd}`)
+        && /\n\s*const PI_ZAI_SANDBOX_EXEC = \(\(\) => \{\n\s*const path = process\.env\.FLEET_PI_ZAI_SANDBOX_EXEC \?\? "\/usr\/bin\/sandbox-exec";/.test(server),
+      pzCode.match(/return `\$\{guard\}FLEET_PZ_SB[^\n]*/)?.[0]?.slice(0, 120) ?? "fenced return absent");
+  }
   // automation-eligibility FLIPPED 2026-09-18, coupled to its readiness seam the way codex's is:
   // the Trust prompt keeps `pi` alive, so only the rendered pane can refuse it, and on a suite
   // fleet (FLEET_HARNESS_AUTOMATION=0) a flip without the seam is invisible at runtime. The seam is

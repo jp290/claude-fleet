@@ -165,7 +165,10 @@ die Vorgängerin endet, die Nachfolgerin öffnet auf DEMSELBEN Slot mit neuem `o
 Grace-Frist mit zwei lebenden Sessions, kein „no free slot". Bindung und Linien-Record wandern direkt
 nach dem Open, vor dem Brief; eine abgewiesene Zustellung lässt die Nachfolgerin gebunden stehen
 (Audit `main_succession`), ein gescheiterter Respawn lässt den Slot leer und nennt im Audit Grund und
-cwd zum Wiederöffnen. Das Band (`GET /api/slots/:id/succession`) zeigt die Linie damit dort, wo der Owner
+cwd zum Wiederöffnen. In beiden Fällen bleibt eine Nachfolge-Schuld mit dem gebauten Brief (und dem
+Linien-Record, falls keine Nachfolgerin öffnete), dazu eine Owner-Inbox-Zeile; nachgesendet wird über
+`POST /api/succession-debts/:id/resend` (`docs/self-api.md` §succeed). Während einer laufenden Nachfolge
+verweigert der Deploy den srv-Restart. Das Band (`GET /api/slots/:id/succession`) zeigt die Linie damit dort, wo der Owner
 sie zuletzt sah, eine Session weiter.
 
 `POST /api/self/succeed` vererbt Harness und standardmäßig Modell/Effort, sofern der Body sie nicht

@@ -322,12 +322,29 @@ Handover-Erfassung, Linien-Entwurf — wird gebaut, SOLANGE die Vorgängerin noc
 dahin lässt sie stehen. Nach dem Open wandert die Bindung (Linien-Record, `supervisor`, `Program.main`)
 sofort auf die Nachfolgerin, erst danach laufen Boot-Grace, Delivery-Gate, Readiness und der Brief.
 Scheitert die Zustellung, bleibt die Nachfolgerin gebunden stehen (500, `delivered:false`, Audit
-`main_succession … brief-undelivered`) — sie wird nie wieder abgeräumt, der Brief ist von Hand
-nachzureichen. Scheitert der Respawn selbst nach dem Kill, bleibt der Slot LEER (nie eine Zeile ohne
-Pane), die Antwort ist 500 mit `respawned:false`, und das Audit trägt `main_succession … respawn FAILED`
-samt Grund und dem cwd zum Wiederöffnen; eine Program-Bindung ist dann stale und wird per Bootstrap neu
-gegründet. Die Antwort erreicht die Vorgängerin nicht mehr (ihre Pane ist beendet) — die Audit-Zeile ist
-der Bericht. `carry` ist optional und auf 500 Zeichen
+`main_succession … brief-undelivered`) — sie wird nie wieder abgeräumt. Scheitert der Respawn selbst nach
+dem Kill, bleibt der Slot LEER (nie eine Zeile ohne Pane), die Antwort ist 500 mit `respawned:false`, und
+das Audit trägt `main_succession … respawn FAILED` samt Grund und dem cwd zum Wiederöffnen; eine
+Program-Bindung ist dann stale und wird per Bootstrap neu gegründet.
+
+**Beide Fälle hinterlassen eine Nachfolge-Schuld (seit 2026-09-22, `server.ts#recordSuccessionDebt`).** Die
+Antwort erreicht die Vorgängerin nicht mehr (ihre Pane ist beendet), also hält der Server fest, was noch
+geschuldet ist: den Brief, wie er gebaut wurde, und bei gescheitertem Respawn auf der generischen und der
+Supervisor-Schiene den Linien-Record, den die Nachfolge geschrieben hätte. Dazu kommt eine Zeile in der
+Owner-Inbox (FleetEvent `succession-debt`, `respawned` true/false), die ein lebender Leser sieht, und bei
+gescheitertem Respawn eine Narbe auf der Linie (`lineageHandoverLosses`). Die Antwort nennt die Schuld als
+`debt`. Die Owner-Türen dazu:
+`GET /api/succession-debts` liest sie, und `POST /api/succession-debts/:id/resend` stellt den gehaltenen Brief
+der EXAKTEN Nachfolgerin zu, für die er gebaut wurde (Delivery-Gate + Readiness). Die Zustellung bezahlt die
+Schuld und quittiert die Inbox-Zeile; 409, solange der Schirm blockiert, 404 nach der Zahlung. Ein
+gescheiterter generischer Respawn wird vom nächsten Owner-`open` desselben Slots im selben cwd adoptiert:
+der gehaltene Record wird an die neue Besetzung adressiert (die Linie zeigt eine Session mehr), und danach
+kann der Brief nachgesendet werden. Einen gescheiterten Supervisor-Respawn übernimmt `bootstrapSupervisor`,
+sobald er genau die tote Bindung ersetzt: der Record wandert mit, der Brief ist durch das eigene
+Gründungs-Briefing ersetzt. Ein Program-MAIN re-gründet über den Bootstrap, denn der Program-Record trägt
+seine Zeilen. Solange eine Nachfolge oder Gründung läuft, verweigert `POST /api/deploy` den srv-Restart
+(`server.ts#deployBlocker`). Genauso bricht eine Nachfolge ab, deren Vorgängerin gerade von einem anderen
+Akt beendet oder neu gestartet wird: 409, nichts wird wieder geöffnet. `carry` ist optional und auf 500 Zeichen
 begrenzt; es ist ein unpersistierter Prompt-Satz, kein Transfer. **`model` und `effort` sind optional (seit 2026-09-02):**
 abwesend = wörtliche Vererbung aus dem Datensatz der Vorgängerin; vorhanden = der Nachfolger wird darauf
 geöffnet, validiert exakt wie `open`/`dispatch` gegen die geerbte Harness (`MODEL_RE` bzw.

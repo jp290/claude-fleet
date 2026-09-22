@@ -247,3 +247,21 @@ Code gelesen: `start-plan.ts` ganz; `task-metadata.ts` Z. 1–470; `card-extract
 - Nicht gelesen: `docs/queue-wellen-2026-09-06.md` (nur §1.4 und §3) und `docs/queue-redesign-2026-09.md`
   (nur Gliederung; es ist ein Ansichts-Entwurf, keine Dispatch-Mechanik) im Volltext,
   `server.ts#startVariantGroup`, der Rest von `#tickDispatch` nach dem Program-Deckel.
+
+## Nachtrag 2026-09-22 — Schnitt 2 umgesetzt (Zeile 4a470a9d)
+
+Umgesetzt: `task-metadata.ts#intentText` maskiert `LESEN:`-/`BELEG:`-/`ANLASS:`-Zeilen und die drei
+Zeilenformen des Quellpakets (Kopf, `- datei#symbol · Zeilen … · blob …`-Etikett, `ausgelassen:`-Zeile)
+wie VERIFY-Zeilen; `SURFACE_RESOLVER` steht auf `ranges-3`, also rechnet jede gespeicherte Flaeche
+einmal neu. Die Flaeche einer laufenden Lane im Startplan ist jetzt Zeilenflaeche ∪ Dateien mit
+vorhandenen Hunks (`start-plan.ts#startPlanLaneSurface`, gelesen von beiden Lane-Buildern,
+`server.ts#startPlanNow` und dem CLI) — die 62 %-Lehre aus (a) trifft den Plan schon während des
+Laufs, nicht erst beim Merge.
+
+Nachmessung zu (a), live gelesen gegen dem Stand des Haupt-Checkouts (35 offene `auftrag`-Zeilen
+pending/queued; die 33 oben sind der Stand von 2026-09-21): **1 Zeile ändert ihre abgeleitete
+Fläche** — d6bbca83 (derived) verliert `AGENTS.md`, benannt hinter `LESEN:` (1 → 0 Dateien; sie
+fällt in der Faltung von `flaeche-nur-abgeleitet` auf `keine-flaeche`). Die übrigen offenen Zeilen
+tragen `confirmed`-/`card`-Flächen (dort ändert die Maske nichts, sie liest nur Prosa) oder nennen
+ihre gelesenen Pfade ohne die Leads. Die 227 überbeanspruchten Dateien aus (a) sind an GELANDETEN Lanes
+gemessen; die Nachmessung derselben Auswertung (§Methode, q7) nach 7 Tagen bleibt fällig.

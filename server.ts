@@ -75,7 +75,7 @@ import { isTaskCardSize, type TaskCardSize, type TaskWaveInput, type TaskWaveRan
 import { laneHunkDiffArgs, laneHunkRanges } from "./land-collision-stats";
 // The START PLAN: which land wave starts next, and what its rows passed. GET /api/start-plan shows it,
 // tickDispatch starts by it and the wave door resolves its ids in it (pinned in e2e/pins.ts).
-import { projectStartPlan, releaseVerdict, startPlanCardPaths, startPlanChecks, startPlanLaneClaims, startPlanWaitNote, type StartPlan,
+import { projectStartPlan, releaseVerdict, startPlanCardPaths, startPlanChecks, startPlanLaneClaims, startPlanLaneSurface, startPlanWaitNote, type StartPlan,
   type StartPlanLane, type StartPlanReleaseVerdict, type StartPlanRepoCaps, type StartPlanRow, type StartPlanWave } from "./start-plan";
 import { renderWaveBrief, withCardHead } from "./wave-brief";
 // THE WAIT REGISTER: which row waits on what and whose move it is — derived from the plan on every
@@ -12609,7 +12609,9 @@ function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()):
     // halves fall together when it says no: `files: null` is what makes collision() find no edge at
     // all (it needs a shared file), and ranges left behind would be a surface half-stated. `hunks`
     // stays as measured — with ahead 0 and dirty 0 there is nothing in it, and it is a reading of
-    // what the tree holds, not a claim on it.
+    // what the tree holds, not a claim on it. startPlanLaneSurface decides WHAT the claim names:
+    // the rows' files plus every file the lane already wrote outside them (Schnitt 2 of
+    // docs/messungen/2026-09-21-dispatch-flaechen-buendeln.md).
     const claims = startPlanLaneClaims({
       criterion: foundingRowOf(s)?.criterion ?? null,
       awaiting: s.awaiting,
@@ -12617,8 +12619,7 @@ function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()):
     });
     return { slot: s.id, programId: s.programId, ...(variantOf ? { variantOf } : {}), ...(hunks ? { hunks } : {}),
       repo: s.worktree ? projectionRepoFor.get(s.worktree.repo) ?? s.worktree.repo : null,
-      files: claims && own.length && own.every((x) => x.files) ? own.flatMap((x) => x.files ?? []) : null,
-      ranges: claims && own.some((x) => x.ranges) ? own.flatMap((x) => x.ranges ?? []) : null };
+      ...startPlanLaneSurface(claims, own, hunks) };
   });
   const programIds = [...new Set(rows.map((r) => r.programId).filter((p): p is string => !!p))].sort();
   const caps: Record<string, StartPlanRepoCaps> = {};

@@ -217,6 +217,34 @@ export function startPlanLaneClaims(lane: StartPlanLaneClaim): boolean {
   if (!parkedOnOwner) return true;
   return !(lane.git !== null && lane.git.ahead === 0 && lane.git.dirty === 0);
 }
+
+/**
+ * THE LANE'S SURFACE IS ITS ROWS' SURFACE PLUS WHAT IT ALREADY WROTE (2026-09-21, Schnitt 2 of
+ * docs/messungen/2026-09-21-dispatch-flaechen-buendeln.md §a). collision() finds an edge only on a
+ * SHARED file, and "shared" read only the rows' files — a file the lane had ALREADY written outside
+ * them was invisible even while its hunks sat in `hunks`: rangesOn reads them, but only for a file
+ * the row named too. Measured over 201 landed lanes, 125 (62 %) wrote at least one file outside
+ * their surface — 349 files, e2e/pins.ts 41 times — and such a lane met the next row at the merge
+ * instead of at the plan. So the claim is the UNION: row files plus every file with hunks. Hunks
+ * are a reading of what the tree holds, not a claim made for it, and rangesOn keeps row ranges
+ * ahead of hunks on a file both name.
+ *
+ * The gates are startPlanLaneClaims' own, unchanged: a lane that claims nothing still claims
+ * nothing (both halves fall together), and a lane running no row — or one whose rows name no file
+ * at all — gains no surface from this union. It widens a claimed surface; it never creates one.
+ * ONE RULE, TWO LANE BUILDERS (see startPlanLaneClaims above): server.ts#startPlanNow off the live
+ * slot, the CLI below off a state file — both call this, neither owns it.
+ */
+export function startPlanLaneSurface(
+  claims: boolean, own: readonly { files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null }[],
+  hunks?: StartPlanLane["hunks"],
+): { files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null } {
+  return {
+    files: claims && own.length && own.every((x) => x.files)
+      ? [...new Set([...own.flatMap((x) => x.files ?? []), ...Object.keys(hunks ?? {})])] : null,
+    ranges: claims && own.some((x) => x.ranges) ? own.flatMap((x) => x.ranges ?? []) : null,
+  };
+}
 export interface StartPlanCap { max: number; source: "default" | "repo" }
 export interface StartPlanRepoCaps extends StartPlanCap {
   // the per-program cap this repo computes for each program (server.ts#programDispatchCap); a
@@ -566,7 +594,6 @@ async function cli(): Promise<void> {
     if (!laneRepo && !programId) continue;
     const ownRows = tasks.filter((t) => t.slot === Number(id) && t.status === "sent");
     const own = ownRows.map(surfaceOf);
-    const files = own.flatMap((s) => s.files ?? []);
     const variantOf = ownRows.map((t) => t.variantOf).find((v): v is string => typeof v === "string" && !!v);
     // the lane's real hunks, read here once per lane as server.ts#tickGit reads them per tick
     const forkSha = typeof slot.worktree?.baseSha === "string" && slot.worktree.baseSha ? slot.worktree.baseSha : null;
@@ -580,11 +607,11 @@ async function cli(): Promise<void> {
       awaiting: slot.awaiting === "owner" || slot.awaiting === "main" ? slot.awaiting : null,
       git: laneCwd && forkSha ? laneGitOf(laneCwd, forkSha) : null,
     });
-    lanes.push({ ...(diff?.success ? { hunks: laneHunkRanges(diff.stdout.toString()) } : {}), slot: Number(id), repo: laneRepo ? projectionRepoFor.get(canon(laneRepo)) ?? laneRepo : null, programId,
-      // one row without a known surface makes the lane's surface unknown as a whole, and a lane that
-      // claims nothing (startPlanLaneClaims) drops BOTH halves — a surface half-stated reads as a claim
-      files: claims && own.length && own.every((s) => s.files) ? files : null,
-      ranges: claims && own.some((s) => s.ranges) ? own.flatMap((s) => s.ranges ?? []) : null,
+    const hunks = diff?.success ? laneHunkRanges(diff.stdout.toString()) : undefined;
+    lanes.push({ ...(hunks ? { hunks } : {}), slot: Number(id), repo: laneRepo ? projectionRepoFor.get(canon(laneRepo)) ?? laneRepo : null, programId,
+      // startPlanLaneClaims decides WHETHER this lane claims a surface, startPlanLaneSurface WHAT:
+      // its rows' files plus every file it already wrote (start-plan.ts#startPlanLaneSurface)
+      ...startPlanLaneSurface(claims, own, hunks),
       ...(variantOf ? { variantOf } : {}) });
   }
   lanes.sort((a, b) => a.slot - b.slot);

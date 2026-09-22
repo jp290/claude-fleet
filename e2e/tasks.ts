@@ -9880,17 +9880,38 @@ export async function run(ctx: Ctx): Promise<void> {
     // so R2's note names sp-tick-reg.ts under BOTH readings and only the register pair flips
     // red (P2 held on the register) → green with the cut.
     {
-      const regKills: number[] = [];
-      for (const id of [tW1, tC]) { const slot = (await tRow(id))?.slot; if (typeof slot === "number") { regKills.push(slot); await post(`/api/slots/${slot}/kill`, {}); } }
+      const regRepo2Slots = async (): Promise<number[]> => ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; worktree: { repo: string } | null }[] }).slots
+        .filter((x) => x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2)).map((x) => x.id);
+      // THE FIELD IS KILLED BY REPO AND PROVED EMPTY, and the repo cap is RAISED FOR THE SCENARIO:
+      // a kill that lands under a spawn still in flight requeues that row a beat later (the spawn
+      // guard fires after the slot is gone — seconds later, unbounded by any grace this block
+      // could wait), and the resurrected row re-enters the sweep as an uninvited competitor.
+      // Fighting that timing lost twice (measured 2026-09-22: the resurrected C row took the next
+      // lane and P2 sat on "3/3 lanes busy" for the whole window, whatever grace was granted).
+      // So the scenario buys room instead: testrepo2's OWN lane cap goes to 6 through the owner
+      // door (POST /api/repo-lane-cap, one call, no restart) and is CLEARED again in the cleanup —
+      // the resurrected row may take its lane, and the three register-scenario starts still fit.
+      // Dispatch stays off from the first kill until the four rows are queued.
+      const regCap = await post("/api/repo-lane-cap", { repo: REPO2, maxLanes: 6 });
+      const regCapBody = (await regCap.json()) as { ok?: boolean; effective?: number };
+      await post("/api/dispatch", { on: false });
+      const regKills = await regRepo2Slots();
+      for (const id of regKills) await post(`/api/slots/${id}/kill`, {});
       await slotsEmptied(regKills);
       const tR1 = await tTask("SP-TICK reg+code row 1 on sp-tick-reg.ts", ["sp-tick-reg.ts", "docs/messungen/INDEX.md"]);
       const tR2 = await tTask("SP-TICK reg+code row 2 on sp-tick-reg.ts", ["sp-tick-reg.ts", "docs/messungen/INDEX.md"]);
       const tP1 = await tTask("SP-TICK register row 1 on the Messnotizen index", ["docs/messungen/INDEX.md"]);
       const tP2 = await tTask("SP-TICK register row 2 on the Messnotizen index", ["docs/messungen/INDEX.md"]);
       const regIds = [tR1, tR2, tP1, tP2];
-      check("(sp-tick-reg) fixture: four rows with confirmed surfaces registered, the code pair filed before the register pair",
-        regIds.every(Boolean), JSON.stringify(regIds));
       for (const id of regIds) await post(`/api/tasks/${id}/queue`, {});
+      const regLeft = await regRepo2Slots();
+      const regQueued = (await tRows()).filter((r) => r.status === "queued").map((r) => r.id);
+      check("(sp-tick-reg) fixture: four rows queued, the code pair filed first, the field empty and the repo cap raised — the three parallel starts ride over any resurrected straggler",
+        regIds.every(Boolean) && regCapBody.ok === true && regCapBody.effective === 6 && regLeft.length === 0
+        && regIds.every((id) => regQueued.includes(id)),
+        JSON.stringify({ ids: regIds, left: regLeft, cap: regCapBody, queued: regQueued }));
+      await post("/api/dispatch", { on: true });
       tLive = await tUntil((rows) => tOf(rows, tR1)?.status === "sent" && tOf(rows, tP1)?.status === "sent"
         && tOf(rows, tP2)?.status === "sent");
       const r1 = tOf(tLive, tR1), r2 = tOf(tLive, tR2), p1 = tOf(tLive, tP1), p2 = tOf(tLive, tP2);
@@ -9902,11 +9923,11 @@ export async function run(ctx: Ctx): Promise<void> {
         r1?.status === "sent" && r2?.status === "queued"
         && r2?.note === `waiting: collides with lane ${r1.slot} on sp-tick-reg.ts`,
         JSON.stringify({ r1, r2 }));
-      const regRows = await tRows();
       await post("/api/dispatch", { on: false }); // first: no tick may start R2 once R1's lane is gone
-      const regDone: number[] = [];
-      for (const id of regIds) { const slot = tOf(regRows, id)?.slot; if (typeof slot === "number") { regDone.push(slot); await post(`/api/slots/${slot}/kill`, {}); } }
+      const regDone = await regRepo2Slots();
+      for (const id of regDone) await post(`/api/slots/${id}/kill`, {});
       await slotsEmptied(regDone);
+      await post("/api/repo-lane-cap", { repo: REPO2, maxLanes: 0 }); // the scenario's raise is over — back to the machine default
       for (const id of regIds) {
         const row = tOf(await tRows(), id);
         if (row?.status === "queued") await post(`/api/tasks/${id}/unqueue`, {});

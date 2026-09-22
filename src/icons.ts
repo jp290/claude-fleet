@@ -12,6 +12,8 @@ const PATHS = {
   file: ["M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z", "M13.5 3v5.5H19"],
   image: ["M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z", "M4 16l4.5-4.5 4 4 2.5-2.5 5 5", "M15.5 9.5h.01"],
   history: ["M3.5 12a8.5 8.5 0 1 0 2.5-6", "M3.5 4v4h4", "M12 7.5v4.7l3 1.8"],
+  // the clockwise twin of history's sweep, without the clock hands — the Files block's re-read
+  reload: ["M20.5 12a8.5 8.5 0 1 1-2.5-6", "M20.5 4v4h-4"],
   clock: ["M20.5 12a8.5 8.5 0 1 1-17 0a8.5 8.5 0 1 1 17 0z", "M12 7.5v4.7l3 1.8"],
   keys: ["M3 6.5h18v11H3z", "M7 10h.01", "M10.3 10h.01", "M13.7 10h.01", "M17 10h.01", "M8 14h8"],
   // THE HEAD ROW'S SET (#sidetools). Same 24-unit box, stroke 1.8, currentColor as everything

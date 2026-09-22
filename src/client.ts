@@ -2362,20 +2362,17 @@ function renderSuiteMeter() {
   const hs = helperSummary();
   const devEl = hs ? el("button", "smdev", hs) as HTMLButtonElement : null;
   if (devEl) { devEl.title = "helper devices — open the register"; devEl.onclick = () => devbtn.click(); }
-  // WHOSE FACTS THESE ARE, and the honest end of them. This meter shows this fleet's own runs and
-  // the helpers THIS fleet lends work to. Another instance from the switcher is a separate server
-  // with its own mutex, and FLEET_INSTANCES is a link list, not a federation (docs/harness-adapter
-  // .md: no proxy, no shared token, one fetch in the whole server) — so its runs cannot be seen
-  // from here, and the meter says so instead of letting an empty station read as a quiet fleet.
+  // …and the named end of that reach, drawn only when another instance exists to be confused with.
+  // Owner words (owner 2026-09-21: "mac only" does not say what it narrows): the badge now says
+  // WHAT is counted, the German tooltip says what that leaves out.
   const elsewhere = instanceLinks.filter((l) => l.name !== instanceName);
   const scopeTag = el("span", "bscope", "fleet");
   scopeTag.title = "this fleet: its machine-wide suite mutex, the lanes on this box, and the helper devices it lends work to";
-  // …and the named end of that reach, drawn only when another instance exists to be confused with.
-  const scope = elsewhere.length ? el("span", "smscope", `${instanceName ?? "this machine"} only`) : null;
+  const scope = elsewhere.length ? el("span", "smscope", `counts ${instanceName ?? "this machine"} only`) : null;
   if (scope) scope.title = `${elsewhere.map((l) => l.name).join(", ")} `
-    + `${elsewhere.length === 1 ? "is a separate fleet" : "are separate fleets"} with its own suite mutex. `
-    + "The switcher can open it; nothing here can read it — FLEET_INSTANCES is a link list, not a federation, "
-    + "so none of its runs is counted in these numbers and an empty station here says nothing about it.";
+    + `${elsewhere.length === 1 ? "ist eine eigene Fleet" : "sind eigene Fleets"} mit eigener Suite-Warteschlange. `
+    + "Die Umschaltung kann sie öffnen, aber von hier aus wird keiner ihrer Läufe mitgezählt — eine leere Station hier sagt nichts über sie. "
+    + "(intern: FLEET_INSTANCES ist eine Linkliste, kein Verbund).";
   const tog = el("button", `smtog${meterOpen ? " open" : ""}`) as HTMLButtonElement;
   tog.append(el("span", "bchev"), el("span", "smtitle", "Suites"));
   tog.setAttribute("aria-expanded", String(meterOpen));
@@ -3004,8 +3001,12 @@ function fileTreeSection(slot: number, cwd: string): HTMLElement {
     big.title = "open the file explorer in a window — the place to actually read one";
     big.onclick = () => openExplorer(slot, cwd);
     hd.appendChild(big);
-    const again = el("button", "bbtn quiet", "Re-read");
+    const again = el("button", "bbtn quiet") as HTMLButtonElement;
+    // a glyph, not a word (G0.6): the sentence lives on title AND aria-label, because an icon
+    // button has no text for a screen reader to read out. The click behaviour is unchanged.
+    again.appendChild(icon("reload"));
     again.title = "re-read the tree (a new file only appears after this)";
+    again.setAttribute("aria-label", "re-read the tree (a new file only appears after this)");
     again.onclick = () => { fxTree.delete(cwd); void loadTree(slot, cwd); };
     hd.appendChild(again);
   }
@@ -3215,10 +3216,12 @@ async function renderBoard() {
       // ...and so is the device register: which machines can take work is a fact about the room,
       // not about the empty pane.
       const dv = devicesSection();
+      // the check alarm is about the MACHINE too — it shows even with no lane focused
+      const pla0 = plaBoardCard();
       // the same scroll rescue the main path has: these three sections can be taller than the
       // column, and without it the machine zone jumped back to the top on every tick
       const y0 = boardBody.scrollTop;
-      boardBody.replaceChildren(...(dp ? [dp] : []), ...(er ? [er] : []),
+      boardBody.replaceChildren(...(pla0 ? [pla0] : []), ...(dp ? [dp] : []), ...(er ? [er] : []),
         ...(dv ? [dv] : []), el("div", "bempty", "Focus a pane with a session to see its brief."));
       boardBody.scrollTop = y0;
       return;
@@ -3247,9 +3250,12 @@ async function renderBoard() {
     // suites) → HISTORY → folded TOOLS. Every function of the old flat list is kept, only regrouped;
     // the context fill left because the sidebar row already carries it.
 
-    // 0 — MACHINE: drawn only when due — "is what you are looking at even the code that is running",
-    // then "has that code been throwing". The gate lives in the meter; the helper register behind the
-    // meter's device count and the 💻 dialog.
+    // 0 — MACHINE: drawn only when due — the check alarm first (something failed ON MAIN, so it
+    // outranks every question about the pane), then "is what you are looking at even the code that
+    // is running", then "has that code been throwing". The gate lives in the meter; the helper
+    // register behind the meter's device count and the 💻 dialog.
+    const pla0 = plaBoardCard();
+    if (pla0) nodes.push(pla0);
     const dsec0 = deploySection();
     if (dsec0) nodes.push(dsec0);
     const esec0 = errorsSection();
@@ -3369,14 +3375,15 @@ async function renderBoard() {
       };
       srow("Rail", sc.rail, railWhy[sc.rail]);
       // the lid is keyed by the QUEUE ROW (originId), so a hand-opened lane has none to spend
-      srow("Baton", sc.cap !== null ? `session ${sc.session} · ${sc.taken ?? 0} of ${sc.cap}`
-        : sc.taken !== null ? `session ${sc.session} · ${sc.taken} taken, no cap`
-        : `session ${sc.session} · no cap`,
+      // owner words (G0.5, owner 2026-09-22): baton → handoff; the count reads "x von y"
+      srow("Handoff", sc.cap !== null ? `Session ${sc.session} · ${sc.taken ?? 0} von ${sc.cap}`
+        : sc.taken !== null ? `Session ${sc.session} · ${sc.taken} genutzt, keine Grenze`
+        : `Session ${sc.session} · keine Grenze`,
         sc.cap !== null
-          ? `past ${sc.cap} successions this row's baton cannot pass again (FLEET_LANE_SUCCEED_MAX) — the refusal names a needs-main report as the way out. The count is kept per queue row, so a requeue does not reset it.`
+          ? `Wie oft diese Aufgabe per Handoff in eine frische Session weiterlaufen darf: ${sc.cap}mal. Danach verweigert der Server das Weiterschicken und verlangt stattdessen einen Report (intern: FLEET_LANE_SUCCEED_MAX). Die Zählung hängt an der Aufgaben-Zeile — neu einreihen setzt sie nicht zurück.`
           : sc.rail === "lane"
-            ? "this lane holds no queue row, so no succession cap counts against it"
-            : "the main rails have no succession cap — only the lane rail does");
+            ? "Diese Lane trägt keine Aufgaben-Zeile, also begrenzt sie kein Handoff-Limit."
+            : "Diese Session läuft auf einer Hauptroute ohne Handoff-Limit — nur Lanes mit Aufgaben-Zeile haben eins.");
     }
     // identifiers: machine strings in mono, each a chip — hover says what it is, a click does the one
     // thing it is for (copy a sha or a branch; open the queue on a task or a program)
@@ -4733,6 +4740,7 @@ MOBILE_MQ.addEventListener("change", () => {
   setLive(false); // the live bar is a mobile-only surface
   applyCollapsed(); // strip the rail on mobile, restore it on desktop
   applyBoard(); // same for the right sideboard — a desktop-only surface
+  renderPostLandAudit(); // the alarm swaps surfaces: board section on desktop, #mhead bar on a phone
   setLayout(isMobile() ? 1 : layout, panes.map((p) => p.slot));
 });
 
@@ -7185,8 +7193,8 @@ function renderChips(chips: string[]) {
 // dashboard was checked, and the new work was simply absent — the page had been in the foreground
 // the whole time, the self-heal was armed and waiting, and nothing on screen said a newer client
 // existed. The comment above already predicted "missing buttons read as regression"; it did not
-// predict that the reader would be the owner. Deliberately NOT the .plaudit bar — that channel is
-// the post-land audit ALARM, and "there is a newer build" is not an alarm.
+// predict that the reader would be the owner. Deliberately NOT the post-land check card — that
+// channel is an ALARM, and "there is a newer build" is not an alarm.
 let bundleV = 0;
 let reloadArmed = false;
 function armReload() {
@@ -7204,50 +7212,127 @@ function armReload() {
   document.body.appendChild(b);
 }
 
-// --- verification tier 2 on the board: the post-land audit alarm --------------------------------
+// --- verification tier 2 on the board: the post-land check alarm ------------------------------
 // The server runs the full suite AFTER every land that moves main and gates NOTHING on the outcome
 // (server.ts, runPostLandAudit). Rendering it is therefore the entire safety net — an audit nobody
 // reads is an audit that never ran. The result rode the 2s poll payload for a client that had no
 // reader at all, and two RED audits on 2026-07-26 went unread as the direct consequence.
+//
+// WHERE IT LIVES (grammatik G2.1, decision W2): in flow, never an overlay. On the desktop the
+// alarm is the FIRST card of the board's machine zone — the same place as the deploy-due line,
+// above "is what you are looking at even the code that is running". A phone, whose board never
+// renders, keeps it as a full-width bar above #mhead that pushes the page down instead of
+// covering it. Ack (PLA_ACK_KEY) and the adjudicate paths (undo-land, suite.log) stay.
 let postLandAudit: PostLandAuditInfo | null = null;
-function renderPostLandAudit() {
-  const bar = $("plaudit");
-  const al = postLandAlarm(postLandAudit, Number(localStorage.getItem(PLA_ACK_KEY) ?? 0));
-  if (!al) {
-    bar.replaceChildren();
-    bar.style.display = "none";
-    return;
+let plaCard: HTMLElement | null = null;
+
+// The OWNER WORDS, built from the structured payload (proportional / remoteReason /
+// remoteTimeoutMs) rather than from the classifier's sentences: src/plaudit.ts decides WHETHER an
+// alarm exists and its tone (green is silent, red ≠ unknown — e2e/outcomes.ts runs it directly),
+// this surface decides how it reads. The red split is the classifier's own: since 2026-09-04 a
+// docs-only tip is audited by the short proportional chain, and calling that "the full suite"
+// would send the reader to the wrong log and the wrong repair.
+function plaOwnerHeadline(a: PostLandAuditInfo, tone: "red" | "unknown"): string {
+  if (tone === "red") {
+    return a.proportional
+      ? "The check after landing failed — the docs-only chain (install + pins) is failing on main"
+      : "The check after landing failed — the full suite is failing on main";
   }
-  const body = el("div", "plabody");
-  body.appendChild(el("div", "plahd", al.headline));
-  body.appendChild(el("div", "plawhere", al.where));
-  body.appendChild(el("div", "planote", `${fmtTs(postLandAudit?.at ?? 0)} · ${al.note}`));
+  if (a.remoteReason === "timeout") {
+    const s = a.remoteTimeoutMs ? ` after ${Math.round(a.remoteTimeoutMs / 1000)}s` : "";
+    return `The check after landing timed out${s} — it was killed on the helper, so no verdict exists for this land`;
+  }
+  if (a.remoteReason === "could-not-start")
+    return "The check after landing could not start — the suite never ran on the helper, so no verdict exists for this land";
+  return "The check after landing did not measure — no verdict exists for this land";
+}
+// the consequence under the headline: what this means for the reader, and the ways back out —
+// undo-land stays named as the lane's own button, so the sentence needs no ↩ glyph (G0.6).
+function plaOwnerNote(tone: "red" | "unknown"): string {
+  return tone === "red"
+    ? "Nothing was blocked and nothing was rolled back. “Undo last land” (in a lane’s Lanes section) reverses the newest lands, one press per land, at most 3 deep — which of them broke it is still yours to find."
+    : "A check that did not run is not a pass. Nothing about this land has been measured.";
+}
+
+// ONE BUILDER FOR BOTH SURFACES. Green is silent and an ack is keyed to THIS audit (PLA_ACK_KEY,
+// src/plaudit.ts — the module under test); the receipt card is what an ack leaves behind, and its
+// "show again" is the return path the dismissal never had (grammatik G5.1, card K7).
+function plaAlarmCard(): HTMLElement | null {
+  const al = postLandAlarm(postLandAudit, Number(localStorage.getItem(PLA_ACK_KEY) ?? 0));
+  if (!al) { plaCard = null; return null; }
+  const a = postLandAudit!;
+  const sec = el("div", `plasec ${al.tone}`);
+  sec.appendChild(scopeTag("machine"));
+  sec.appendChild(el("div", "plahd", plaOwnerHeadline(a, al.tone)));
+  sec.appendChild(el("div", "plawhere", al.where));
+  sec.appendChild(el("div", "planote", `${fmtTs(a.at)} · ${plaOwnerNote(al.tone)}`));
   // THE WHOLE LOG, when a remote helper handed one over. `out` on the row is a 4 KB tail, and for a
   // RED audit the next question is always "which checks, and what was around them" — an answer that
   // used to live only in a run directory the helper deletes in its own `finally`. Drawn only when
   // the rail actually joined something in: no link is "no log arrived", never an empty page.
-  const art = postLandAudit?.artifact;
+  const art = a.artifact;
   if (art) {
     const line = el("div", "planote");
-    const a = el("a", "plalog", `suite.log · ${Math.max(1, Math.round(art.bytes / 1024))} KB`) as HTMLAnchorElement;
-    a.href = art.url;
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.title = `The full suite log the helper uploaded after this verdict, ${art.bytes} bytes,`
+    const lg = el("a", "plalog", `suite.log · ${Math.max(1, Math.round(art.bytes / 1024))} KB`) as HTMLAnchorElement;
+    lg.href = art.url;
+    lg.target = "_blank";
+    lg.rel = "noopener";
+    lg.title = `The full suite log the helper uploaded after this verdict, ${art.bytes} bytes,`
       + ` sha256 ${art.sha256.slice(0, 12)}…. It arrived AFTER the row was written and is joined in`
       + ` from a side rail — nothing about it changed the result above.`;
-    line.appendChild(a);
-    body.appendChild(line);
+    line.appendChild(lg);
+    sec.appendChild(line);
   }
-  const ack = el("button", "plaack", "acknowledge") as HTMLButtonElement;
-  ack.title = "hide this alarm. The dismissal is keyed to THIS audit — the next non-green one raises it again.";
+  const ack = el("button", "plaack", "Gesehen") as HTMLButtonElement;
+  ack.title = "blendet diese Meldung aus — nur für diesen Prüflauf; die nächste nicht-grüne Prüfung meldet sich wieder (intern: fleet.plaudit.ack).";
   ack.onclick = () => {
     localStorage.setItem(PLA_ACK_KEY, String(postLandAudit?.at ?? 0));
     renderPostLandAudit();
   };
-  bar.className = `plaudit ${al.tone}`;
-  bar.replaceChildren(body, ack);
-  bar.style.display = "flex";
+  sec.appendChild(ack);
+  plaCard = sec;
+  return sec;
+}
+
+// the ack's RETURN PATH: one quiet line that says the newest non-green check was seen, and takes
+// the dismissal back. Absent while the alarm shows (it IS the un-acked state) and while green.
+function plaReceiptCard(): HTMLElement | null {
+  const a = postLandAudit;
+  if (!a || a.result === "green") return null;
+  if (Number(localStorage.getItem(PLA_ACK_KEY) ?? 0) !== a.at) return null;
+  const sec = el("div", "plasec seen");
+  sec.appendChild(scopeTag("machine"));
+  sec.appendChild(el("div", "planote",
+    `the ${a.result === "red" ? "failed" : "unfinished"} check after the last land (${fmtTs(a.at)}) is marked seen`));
+  const back = el("button", "plaack", "show again") as HTMLButtonElement;
+  back.title = "zeigt die Meldung wieder, die du als gesehen markiert hattest.";
+  back.onclick = () => { localStorage.removeItem(PLA_ACK_KEY); renderPostLandAudit(); };
+  sec.appendChild(back);
+  plaCard = sec;
+  return sec;
+}
+const plaBoardCard = (): HTMLElement | null => plaAlarmCard() ?? plaReceiptCard();
+
+function renderPostLandAudit() {
+  const bar = $("plaudit");
+  if (isMobile()) {
+    // the board never renders on a phone (renderBoard bails), so the phone's alarm surface IS
+    // #plaudit — the same card, full width above #mhead, in flow
+    const card = plaBoardCard();
+    bar.replaceChildren();
+    bar.style.display = card ? "block" : "none";
+    if (card) bar.appendChild(card);
+    return;
+  }
+  bar.replaceChildren();
+  bar.style.display = "none";
+  // DESKTOP: the alarm is a board section. Swap the card in place when the board has one — the
+  // alarm must not wait for the board's own repaint (it rides this 2s poll on purpose), and the
+  // board's repaint must not yank the reading position just for it.
+  const had = plaCard?.isConnected ? plaCard : null;
+  const card = plaBoardCard();
+  if (had) { if (card) had.replaceWith(card); else had.remove(); }
+  else if (card && boardOpen) void renderBoard();
 }
 
 let chipCmds: string[] = [];

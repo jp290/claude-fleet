@@ -5250,7 +5250,12 @@ pflanzt das tödliche Fenster mit dem eigenen Before-Paste-Latch der Suite — M
 geparkt, keine Abschlusszeile — und fährt beide Gate-Hälften dagegen: SETTLE muss den Neustart halten,
 solange der Versand mid-flight ist (die alte PID überlebt das Parken, der Kill landet erst nach dem
 Release, und die Reihe wird DELIVERED, nicht ermordet); ohne SETTLE (die Roh-Funktionen, die Mutation
-wörtlich genommen) muss OBSERVE die gekreuzt-offene, steckengebliebene Reihe unter eigenem Namen
-benennen; und die benannte Reihe ist gemerkt — der nächste Neustart wartet nicht erneut und benennt
-nicht doppelt. Jede Hälfte ist falsifizierbar: ohne die jeweilige Gate-Hälfte wird der jeweilige Check rot.
+wörtlich genommen) benennt OBSERVE die gekreuzt-offene, steckengebliebene Reihe durch die
+Melder-Einblendung: beide Hälften nehmen einen `report`-Parameter mit Default `check`, der Selbsttest
+gibt einen Sammler — ein Beweis, der check feuern ließ, buchte einen echten FAIL in die Suitensumme,
+und kein Lauf könnte je ALL PASS enden (gemessen, Bericht ed9a14fe). Die benannte Reihe ist gemerkt,
+und der MEMO-Beweis steht VOR dem Ack: die Reihe ist noch mid-flight, der nächste Neustart muss
+deutlich unter dem Settle-Budget zurückkommen und nichts buchen — nach dem Ack wäre der Check
+unfalsifizierbar, weil die terminale Reihe dem Prädikat ohnehin entglitten wäre. Jede Hälfte ist
+falsifizierbar: ohne die jeweilige Gate-Hälfte wird der jeweilige Check rot.
 Der Helfer fährt diesen Beweis mit der vollen Suite.

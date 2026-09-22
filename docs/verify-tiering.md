@@ -5250,12 +5250,18 @@ pflanzt das tödliche Fenster mit dem eigenen Before-Paste-Latch der Suite — M
 geparkt, keine Abschlusszeile — und fährt beide Gate-Hälften dagegen: SETTLE muss den Neustart halten,
 solange der Versand mid-flight ist (die alte PID überlebt das Parken, der Kill landet erst nach dem
 Release, und die Reihe wird DELIVERED, nicht ermordet); ohne SETTLE (die Roh-Funktionen, die Mutation
-wörtlich genommen) benennt OBSERVE die gekreuzt-offene, steckengebliebene Reihe durch die
-Melder-Einblendung: beide Hälften nehmen einen `report`-Parameter mit Default `check`, der Selbsttest
-gibt einen Sammler — ein Beweis, der check feuern ließ, buchte einen echten FAIL in die Suitensumme,
-und kein Lauf könnte je ALL PASS enden (gemessen, Bericht ed9a14fe). Die benannte Reihe ist gemerkt,
-und der MEMO-Beweis steht VOR dem Ack: die Reihe ist noch mid-flight, der nächste Neustart muss
-deutlich unter dem Settle-Budget zurückkommen und nichts buchen — nach dem Ack wäre der Check
-unfalsifizierbar, weil die terminale Reihe dem Prädikat ohnehin entglitten wäre. Jede Hälfte ist
-falsifizierbar: ohne die jeweilige Gate-Hälfte wird der jeweilige Check rot.
+wörtlich genommen) benennt der OBSERVE-Teil die gekreuzt-offene, steckengebliebene Reihe — und zwar
+NICHT-BLOCKIEREND: jeder Neustart hinterlässt eine Beobachtungsschuld (seine Pre-Open-Menge), das
+nächste Settle sammelt sie ein. Ein Beobachten, das IN restartSrv wartet, sitzt zwischen Boot und
+Fixture-Fenster — gemessen als der Q5-Recycle-Roter von 4788615d (der Check war in 823 Post-Land-
+Audits nie rot): eine an der Recovery-Latch gehaltene Reihe liest sich nach diesem Prädikat als
+mid-flight (Marker unten, Zähler oben, keine Abschlusszeile — genau was die Recovery-Refused-Zweige
+lassen), obwohl nichts in der Luft ist, und das 20-s-Budget aß das 10-s-Latch-Fenster der Fixture auf.
+Die benannte Reihe ist gemerkt, und der MEMO-Beweis steht VOR dem Ack: die Reihe ist noch mid-flight,
+der nächste Neustart muss deutlich unter dem Settle-Budget zurückkommen und nichts buchen — nach dem
+Ack wäre der Check unfalsifizierbar, weil die terminale Reihe dem Prädikat ohnehin entglitten wäre.
+Jede Hälfte ist falsifizierbar: ohne die jeweilige Gate-Hälfte wird der jeweilige Check rot.
+Und der Beweis selbst bucht keinen FAIL: der Detektor LIEFERT die benannten Reihen, nur der
+Schuldeneinsammler am echten Settle meldet sie über den Melder (Default `check`) — ein Lauf, der
+seinen eigenen Beweis als FAIL buchte, könnte nie ALL PASS enden (gemessen, Bericht ed9a14fe).
 Der Helfer fährt diesen Beweis mit der vollen Suite.

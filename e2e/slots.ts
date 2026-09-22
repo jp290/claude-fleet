@@ -1972,6 +1972,45 @@ export async function run(): Promise<void> {
           && indexSrc.includes(".panetools .termwidth, .panetools .panegear { display: none !important; }")
           && !/(^|\n)\s*\.boardtoggle \{/m.test(indexSrc),
         JSON.stringify({ group: cssBody(".panetools button"), pressed: cssBody(".panetools button[aria-pressed=\"true\"]") }));
+      // b3dc378b: the chat view names what runs. The server passes the tool_use id and the
+      // tool_result's tool_use_id through (TBlock id/ref); the client pairs a result to its call
+      // by id — a subagent call shows "läuft" until the result lands — and the view carries a
+      // work indicator on the sessionActive fact with the RECENT_MS hide bound as a one-shot
+      // timer (no new poll interval)
+      check("chat: a subagent call runs until its result — id through the server, paired on the client, no positional guess",
+        /TBlock \{ t: "text" \| "thinking" \| "tool" \| "tool_result"; text: string; name\?: string;\n  id\?: string; ref\?: string \}/.test(cliSrc)
+          && serverSrc.includes("typeof blk.tool_use_id === \"string\" && blk.tool_use_id ? { ref: blk.tool_use_id } : {}")
+          && serverSrc.includes("typeof blk.id === \"string\" && blk.id ? { id: blk.id } : {}")
+          && cliSrc.includes("private openAgents = new Map<string, { step: HTMLElement; run: HTMLElement }>()")
+          && cliSrc.includes("Pane.AGENT_TOOL.test(b.name)")
+          && cliSrc.includes("this.openAgents.has(b.ref)")
+          && cliSrc.includes("this.openAgents.delete(b.ref)")
+          && /background: var\(--q-live\)/.test(cssBody(".trundot")),
+        JSON.stringify({ dot: cssBody(".trundot"), run: cssBody(".trun") }));
+      check("chat: the work indicator rides sessionActive and hides at the RECENT_MS boundary by timer, not by a new poll",
+        cliSrc.includes("private readonly workEl = (() => {")
+          && cliSrc.includes("this.workTimer = setTimeout(() => { if (this.slot === slot) this.updateWork(); }, Math.max(left, 0));")
+          && /const left = RECENT_MS - \(serverNow - s\.lastOutput\);/.test(cliSrc)
+          && cliSrc.includes("if (past === null) this.updateWork();")
+          && /display: none/.test(cssBody(".chatwork[hidden]")),
+        JSON.stringify({ work: cssBody(".chatwork") }));
+      // b3dc378b: more hoverable ids — the ENT net widens to 7-12 hex, the KIND is the caller's
+      // answer asked in precedence order (task → program → sha), and an unknown string stays
+      // text: every branch is gated on the same entityOk answer the task path always used
+      let mdSrc = "";
+      try { mdSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/md.ts`, "utf8"); } catch { /* the check below reads as failed, not as skipped */ }
+      check("chat: ENT knows programs and commit-sha prefixes — marked only when the board knows them, unknown 8-hex stays text",
+        /const ENT = \/\\b\(\[0-9a-f\]\{7,12\}\)\\b\|\\b\(\[Ss\]lots\?\\s\*#\?\)/.test(mdSrc)
+          && mdSrc.includes("if (hex.length === 8 && ok(\"task\", hex)) return \"task\";")
+          && mdSrc.includes("if (hex.length === 8 && ok(\"program\", hex)) return \"program\";")
+          && mdSrc.includes("if (ok(\"sha\", hex)) return \"sha\";")
+          && mdSrc.includes("if (!kind) continue;")
+          && mdSrc.includes("entityOk(\"sha\", hex) ? \"sha\" : null")
+          && cliSrc.includes("if (kind === \"program\") return programsPoll.some((p) => p.id === id);")
+          && cliSrc.includes("if (kind === \"sha\") return knownSha(id);")
+          && cliSrc.includes("s.taskHead && s.taskHead.startsWith(id)")
+          && cliSrc.includes("if (brief) rememberShas(brief.head"),
+        "src/md.ts hexKind chain + src/client.ts entityKnown/knownSha");
       // rounds 12–14 (owner): the views square left and unchanged, the functions one right-aligned
       // block — two small rows, then the task queue as its own square in the right corner, sized
       // by ONE constant (--queue-scale 1.48 = 34px, the largest at which two rows still fit) and

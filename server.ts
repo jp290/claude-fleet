@@ -16019,8 +16019,10 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
       blocks.push({ t: "text", text: trim(content, 20_000) });
     } else if (Array.isArray(content)) {
       for (const b of content) {
-        const blk = b as { type?: unknown; content?: unknown; text?: unknown };
-        if (blk.type === "tool_result") blocks.push({ t: "tool_result", text: trim(resultText(blk.content), 3000) });
+        const blk = b as { type?: unknown; content?: unknown; text?: unknown; tool_use_id?: unknown };
+        if (blk.type === "tool_result")
+          blocks.push({ t: "tool_result", text: trim(resultText(blk.content), 3000),
+            ...(typeof blk.tool_use_id === "string" && blk.tool_use_id ? { ref: blk.tool_use_id } : {}) });
         else if (blk.type === "text" && typeof blk.text === "string" && !blk.text.startsWith("<system-reminder"))
           blocks.push({ t: "text", text: trim(blk.text, 20_000) });
       }
@@ -16030,12 +16032,13 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
     }
   } else if (Array.isArray(content)) {
     for (const b of content) {
-      const blk = b as { type?: unknown; text?: unknown; thinking?: unknown; name?: unknown; input?: unknown };
+      const blk = b as { type?: unknown; text?: unknown; thinking?: unknown; name?: unknown; input?: unknown; id?: unknown };
       if (blk.type === "text" && typeof blk.text === "string") blocks.push({ t: "text", text: trim(blk.text, 40_000) });
       else if (blk.type === "thinking" && typeof blk.thinking === "string" && blk.thinking)
         blocks.push({ t: "thinking", text: trim(blk.thinking, 10_000) });
       else if (blk.type === "tool_use")
-        blocks.push({ t: "tool", name: typeof blk.name === "string" ? blk.name : "tool", text: trim(JSON.stringify(blk.input ?? {}), 600) });
+        blocks.push({ t: "tool", name: typeof blk.name === "string" ? blk.name : "tool", text: trim(JSON.stringify(blk.input ?? {}), 600),
+          ...(typeof blk.id === "string" && blk.id ? { id: blk.id } : {}) });
     }
   }
   if (!blocks.length) return null;

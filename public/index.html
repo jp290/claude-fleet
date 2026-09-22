@@ -579,6 +579,18 @@
   .nibody { padding: 2px 10px 8px; margin: 0; white-space: pre-wrap; word-break: break-word;
     color: #8a8163; font-size: var(--chat-code-fs); font-family: var(--chat-mono); max-height: 260px; overflow-y: auto; }
   .chatempty { color: var(--chat-faint); font-size: var(--chat-ui-fs); padding: 40px 10px; text-align: center; }
+  /* G2.3 status line: the chat view of a WORKING session — one quiet line pinned to the reading
+     flow's bottom edge, state as a word, the dot in the state colour (--q-live: läuft von selbst).
+     [hidden] must beat the display:flex below — the attribute alone would not. */
+  .chatwork { position: sticky; bottom: 4px; display: flex; align-items: center; gap: 7px;
+    padding: 5px 2px; color: var(--chat-mute); font-family: var(--chat-sans); font-weight: 400;
+    font-size: var(--chat-ui-fs); }
+  .chatwork[hidden] { display: none; }
+  /* the same dot on a running subagent call inside a tool step ("Agent … läuft …") */
+  .trun { margin-left: 8px; display: inline-flex; align-items: center; gap: 5px;
+    font-family: var(--chat-sans); font-weight: 400; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  .trundot { flex: none; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--q-live); }
   /* text size: the Aa button in the corner group opens the sliders (src/chatsize.ts); the panel
      opens under the group, at the Aa's new place (second from right) */
   .sizepanel { display: none; position: absolute; top: 40px; right: 46px; z-index: 7; width: 250px;

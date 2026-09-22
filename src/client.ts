@@ -511,7 +511,8 @@ let serverClockSkew = 0;
 let shareBase = ""; // public URL prefix for share links (FLEET_SHARE_URL server-side)
 
 // --- transcript view model (mirrors server.ts's TEntry/TBlock) ---
-interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string }
+interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string;
+  id?: string; ref?: string }
 // meta = a harness-injected user turn (task-notification): shown folded, not as a "you" bubble
 interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[]; meta?: boolean }
 
@@ -571,7 +572,25 @@ function decorateCode(code: HTMLElement): void {
 // which ids in transcript text become hoverable: only ones this board already knows
 function entityKnown(kind: MdEntityKind, id: string): boolean {
   if (kind === "task") return tasksList.some((t) => t.id === id);
+  if (kind === "program") return programsPoll.some((p) => p.id === id);
+  if (kind === "sha") return knownSha(id);
   return fleet.some((sl) => sl.id === Number(id));
+}
+
+// COMMIT SHAS THE BOARD HAS SEEN. Transcripts cite shas as 7-12 char prefixes; the match is
+// prefix-of-a-known-sha, so `abc1234` resolves to the commit the board showed as `abc1234def…`.
+// Two sources, both already in memory: every lane's taskHead rides the 2 s poll and is checked
+// live; the brief's head and commit lists are remembered as their boards render them. A sha the
+// board never saw stays plain text — the negative case, and the honest one.
+const shasSeen = new Set<string>();
+function rememberShas(...candidates: (string | null | undefined)[]): void {
+  for (const c of candidates) if (c && /^[0-9a-f]{7,40}$/.test(c)) shasSeen.add(c);
+}
+function knownSha(id: string): boolean {
+  if (shasSeen.has(id)) return true;
+  for (const s of fleet) if (s.taskHead && s.taskHead.startsWith(id)) return true;
+  for (const s of shasSeen) if (s.startsWith(id)) return true;
+  return false;
 }
 
 const entTextAsked = new Set<string>();
@@ -598,6 +617,25 @@ function describeEntity(kind: string, id: string): EntFacts | null {
         ...(t.size ? [`size ${t.size}`] : []),
       ],
       later,
+    };
+  }
+  if (kind === "program") {
+    const p = programsPoll.find((x) => x.id === id) ?? programsList.find((x) => x.id === id);
+    if (!p) return null;
+    return {
+      meta: `program ${p.id} · ${p.status}`,
+      title: p.title,
+      lines: [`founded ${fmtDur(Math.max(0, now - p.createdAt))} ago`],
+    };
+  }
+  if (kind === "sha") {
+    if (!knownSha(id)) return null;
+    const lanes = fleet.filter((s) => s.taskHead && s.taskHead.startsWith(id))
+      .map((s) => `slot ${s.id}${s.label ? ` · ${s.label}` : ""}${s.worktree ? ` · ⎇ ${s.worktree.branch}` : ""}`);
+    return {
+      meta: `commit ${id}`,
+      title: lanes.length ? "head of a lane on this board" : "seen on this board (brief/head)",
+      lines: lanes.length ? lanes : ["no lane sits on this commit right now"],
     };
   }
   const sl = fleet.find((x) => x.id === Number(id));
@@ -946,9 +984,38 @@ class Pane {
     this.toolGroup = null;
     this.notifGroup = null;
     this.pending = [];
+    // a rebuilt view has no open agent calls: whatever ran in the old DOM is gone with it
+    this.openAgents.clear();
     // un-stick the busy flag so the reassigned pane's next pollChat() isn't blocked; the
     // old slot's in-flight fetch bails on the slot-identity guard in pollChat.
     this.chatBusy = false;
+  }
+
+  // --- THE WORK INDICATOR (Grammatik G2.3: one status line in the surface of the thing it is
+  // about — here: the chat view of a session that is producing output right now). The state is
+  // the same sessionActive() fact the sidebar dot reads; the HIDE side is precise: a one-shot
+  // timer re-checks exactly at the RECENT_MS boundary after the newest output, so the line is
+  // gone at latest RECENT_MS (+ timer jitter) after the agent stopped — without a new poll.
+  private readonly workEl = (() => {
+    const w = el("div", "chatwork");
+    w.append(el("span", "trundot"), "working …");
+    w.hidden = true;
+    return w;
+  })();
+  private workTimer: ReturnType<typeof setTimeout> | undefined;
+  private updateWork(): void {
+    clearTimeout(this.workTimer);
+    const slot = this.slot;
+    const active = !!slot && this.pastN === null && this.view === "chat" && sessionActive(slot);
+    // keep the line the last child in EVERY state: content appends must never push it out of
+    // place, and a rebuilt chatEl (reset/source change) gets it back on the next poll
+    this.chatEl.appendChild(this.workEl);
+    this.workEl.hidden = !active;
+    if (active) {
+      const s = fleet[slot - 1]!;
+      const left = RECENT_MS - (serverNow - s.lastOutput);
+      this.workTimer = setTimeout(() => { if (this.slot === slot) this.updateWork(); }, Math.max(left, 0));
+    }
   }
 
   // --- conversation rendering: the view exists so YOUR messages are findable.
@@ -976,8 +1043,16 @@ class Pane {
 
   private addStep(b: TBlock) {
     const g = this.ensureToolGroup();
-    if (b.t === "tool_result" && g.lastStep) {
-      // attach the result to the call it answers instead of its own row
+    if (b.t === "tool_result" && b.ref && this.openAgents.has(b.ref)) {
+      // the id pairs the result to its call even when other tool calls came in between — the
+      // marker goes, the result takes its place under the SAME step
+      const hit = this.openAgents.get(b.ref)!;
+      hit.run.remove();
+      hit.step.appendChild(el("pre", "tres", b.text));
+      this.openAgents.delete(b.ref);
+    } else if (b.t === "tool_result" && g.lastStep) {
+      // attach the result to the call it answers instead of its own row (positional fallback for
+      // blocks without ids — old transcripts, codex/pi)
       g.lastStep.appendChild(el("pre", "tres", b.text));
       g.lastStep = null;
     } else {
@@ -990,9 +1065,24 @@ class Pane {
       step.append(sum, el("pre", "", b.text));
       g.body.appendChild(step);
       g.count++;
+      if (b.t === "tool") this.addAgentStep(b, step, sum);
       g.lastStep = b.t === "tool" ? step : null;
     }
     g.sum.textContent = `⚙ ${g.count} step${g.count === 1 ? "" : "s"}`;
+  }
+
+  // SUBAGENT CALLS RUN UNTIL THEIR RESULT LANDS. A tool_use named Agent/Task whose result has not
+  // arrived yet carries a "läuft" marker (G2.3: the state as a word, the dot in the state colour);
+  // the id the server now passes through pairs the result to the call even when other tool calls
+  // came in between. The result REPLACES the marker; nothing else about the step changes.
+  private openAgents = new Map<string, { step: HTMLElement; run: HTMLElement }>();
+  private static readonly AGENT_TOOL = /^(agent|task)$/i;
+  private addAgentStep(b: TBlock, step: HTMLElement, sum: HTMLElement): void {
+    if (!b.id || !b.name || !Pane.AGENT_TOOL.test(b.name)) return;
+    const run = el("span", "trun");
+    run.append(el("span", "trundot"), "running …");
+    sum.appendChild(run);
+    this.openAgents.set(b.id, { step, run });
   }
 
   // harness task-notifications: collapsed by default under "🔔 n task notification(s)".
@@ -1180,6 +1270,7 @@ class Pane {
       if (this.chatSource !== null && data.source !== this.chatSource) {
         this.chatEl.replaceChildren();
         this.pending = [];
+        this.openAgents.clear();
         this.chatTotal = 0;
         this.chatSource = data.source;
         return; // next tick refills from 0
@@ -1229,6 +1320,9 @@ class Pane {
         if (focused === this.index) renderComposerOpts(false);
       }
       this.chatTotal = data.total;
+      // every poll re-reads the working fact and re-arms the RECENT_MS hide timer (the timer
+      // alone makes the bound, the poll only refreshes the fact when new output moved it)
+      if (past === null) this.updateWork();
     } catch {
       // transient fetch error — next tick retries
     } finally {
@@ -3340,6 +3434,10 @@ async function renderBoard() {
     ]);
     const { prompts, err: outlineErr } = outlineRes;
     const brief = briefRes.ok ? ((await briefRes.json()) as BriefInfo) : null;
+    // the brief is one of the two places the board SEES commit shas — remember them so transcript
+    // text citing a prefix of any of these can hover (the other source is fleet[].taskHead, live)
+    if (brief) rememberShas(brief.head, ...(brief.commits ?? []).map((c) => c.hash),
+      ...(brief.repoCommits ?? []).map((c) => c.hash));
     // WHY it is null, kept for the reader: a failed read used to remove Changes, History and Lanes
     // with no word at all, which is indistinguishable from a session that has done nothing.
     const briefErr = briefRes.ok ? null

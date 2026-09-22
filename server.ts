@@ -447,6 +447,12 @@ interface Harness {
     // whose usage record carries the window itself (codex), and then contextWindowFor is never
     // consulted for it — inventing a Codex model's window is the guess this whole seam refuses.
     windowFromFile?: true;
+    // OPTIONAL: the same tail read, answering one more question off the SAME bytes — is the last
+    // assistant line an API-error round the harness wrote itself (ApiErrorLine)? Present only for a
+    // harness whose transcript carries that mark (claude's isApiErrorMessage); its absence makes
+    // apiStall null, "unmeasured", never "no error". When present, contextFill reads through it so
+    // one poll costs one read, never a second pass over the file.
+    tail?(file: string, size: number): ContextTail;
   } | null;
   // The conversation view (💬) for a harness that writes no Claude Code transcript — the third
   // narrow seam beside `context`, and separate from `supports.transcript` for the same reason: that
@@ -659,7 +665,11 @@ const CLAUDE_HARNESS: Harness = {
     blocks: [CLAUDE_TRUST_DIALOG],
   }),
   // The default adapter follows the exact pinned path and parser contextFill used before the hook.
-  context: { file: (o) => `${projDir(o.cwd)}/${o.sessionId}.jsonl`, used: readUsedTokens },
+  context: {
+    file: (o) => `${projDir(o.cwd)}/${o.sessionId}.jsonl`,
+    used: readUsedTokens,
+    tail: readClaudeTail,
+  },
   pinsSession: IS_CLAUDE,
   // null = defer to HARNESS_COMMS, which IS the pre-per-slot behaviour for every slot that names no
   // harness: ["claude"] on a claude fleet, the operator's declaration on a declared one, and the
@@ -6753,7 +6763,8 @@ type SendPath =
   | "audit-ping"        // a post-land audit red offered to an eligible main session
   | "inbox-nudge"       // "your program's inbox has unread entries"
   | "backlog-nudge"     // the open-backlog reminder
-  | "migrate-nudge";    // the context-band / succession reminder (tickMigrate)
+  | "migrate-nudge"     // the context-band / succession reminder (tickMigrate)
+  | "api-stall-resume"; // "resume" into a claude pane parked on an API-error round (tickApiStallResume)
 // The per-slot, per-DAY counter /api/sessions serves. Kept in memory and SEEDED from the ledger at
 // boot — the opposite choice from stewardRecentSends one region up, and for the reason that
 // separates them: that counter is read once per send (capped at 6/h), this one rides the 2 s owner
@@ -17096,6 +17107,21 @@ const LANE_AUTOCLOSE_ON = /^(1|true|on|yes)$/i.test(LANE_AUTOCLOSE_RAW);
 if (LANE_AUTOCLOSE_RAW && !LANE_AUTOCLOSE_ON && !LANE_AUTOCLOSE_OFF_RE.test(LANE_AUTOCLOSE_RAW))
   console.log(`[fleet] FLEET_LANE_AUTOCLOSE=${JSON.stringify(LANE_AUTOCLOSE_RAW)} is not a recognised`
     + " value — the automatic lane close is OFF. Recognised: 1/true/on/yes · 0/off/false/no.");
+
+// --- API-STALL AUTO-RESUME (owner 2026-09-22: "fix the ones stuck with API errors. Think if we
+// could automatically detect this somehow"). Measured the same night: three lanes stood idle behind
+// "Server error mid-response" / "529 Overloaded" / "Connection lost mid-response", one ~55 min,
+// until a human typed "resume" — and each ran on. The DETECTION is apiStall (apiStallFact, served
+// on the polls); this is the optional actuator on top of it, in FLEET_LANE_AUTOCLOSE's shape: OFF
+// unless the owner arms it in watchdog.sh's srv-spawn line, an unrecognised value is OFF and says
+// so, and absence registers no tick at all.
+const API_STALL_RESUME_RAW = (process.env.FLEET_API_STALL_RESUME ?? "").trim();
+const API_STALL_RESUME_ON = /^(1|true|on|yes)$/i.test(API_STALL_RESUME_RAW);
+// declared up here because the setInterval that reads it sits above the tick's own region
+const API_STALL_TICK_MS = 15_000;
+if (API_STALL_RESUME_RAW && !API_STALL_RESUME_ON && !/^(0|off|false|no)$/i.test(API_STALL_RESUME_RAW))
+  console.log(`[fleet] FLEET_API_STALL_RESUME=${JSON.stringify(API_STALL_RESUME_RAW)} is not a recognised`
+    + " value — the API-stall auto-resume is OFF. Recognised: 1/true/on/yes · 0/off/false/no.");
 
 // the reports THIS occupant filed — the worker arm of fleetReportsFor, without the receiver arm. A
 // lane must never be closed on the strength of a report it merely RECEIVED (it cannot receive one),
@@ -32575,6 +32601,7 @@ if (ACCEPT_BY_LAND_MS > 0) setInterval(() => void tickAcceptByLand("tick").catch
 if (AUDIT_PING_MS > 0) setInterval(() => void tickAuditPing().catch((e: unknown) => logError("tickAuditPing", e)), AUDIT_PING_MS);
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickInboxNudge().catch((e: unknown) => logError("tickInboxNudge", e)), INBOX_NUDGE_MS);
 if (MIGRATE_PCT > 0) setInterval(() => void tickMigrate().catch((e: unknown) => logError("tickMigrate", e)), MIGRATE_TICK_MS);
+if (API_STALL_RESUME_ON) setInterval(() => void tickApiStallResume().catch((e: unknown) => logError("tickApiStallResume", e)), API_STALL_TICK_MS);
 // self-heal: recreate any activated slot whose pane died (crash, accidental kill-session).
 // ensureSlot is a cheap no-op (three tmux queries) per healthy slot
 setInterval(() => {
@@ -33050,11 +33077,23 @@ function transcriptFact(s: Slot): { bytes: number; mtime: number } | null {
 //   6. a reader that cannot map exactly one identity-anchored file to the slot. In particular,
 //      multiple Pi files naming the same pinned id are ambiguity, never a licence to pick by mtime.
 const CTX_TAIL_BYTES = 512 * 1024;
+// how much of an API-error round's own text apiStall carries — the measured texts run 50–260 chars
+const API_STALL_TEXT_MAX = 300;
 interface ContextFill { usedTokens: number; windowTokens: number; pct: number }
 // What a reader returns when its FILE names the window. The pair exists so that absence 5 can stay
 // absence for such a reader too: `used` alone would have to be divided by something, and there is
 // nothing honest to divide it by. Both numbers must come from ONE record — see readCodexContext.
 interface ContextRead { used: number; window: number }
+// The API-error round claude writes when a turn dies on the API side ("API Error: 529 Overloaded",
+// "Connection lost mid-response", …): an assistant line with isApiErrorMessage:true, model
+// "<synthetic>" and a usage of all zeros (measured on slot 3, 2026-09-22T01:16:35Z). `at` is the
+// line's own timestamp, `text` its message text, `kind` its `error` field ("server_error",
+// "rate_limit", "authentication_failed", "invalid_request", …) or null when the line has none.
+interface ApiErrorLine { at: number; text: string; kind: string | null }
+// One tail read, two answers: the numerator (as `used` returns it) and whether the LAST assistant
+// line is such an error round. apiError is null both for "the last assistant line is a real one"
+// and for "no assistant line in the tail" — neither is a stall anyone can act on.
+interface ContextTail { read: number | ContextRead | null; apiError: ApiErrorLine | null }
 // Positive source resolutions are cached separately: Pi needs one directory read + session-head
 // validation to find its timestamped filename, but after that an unchanged file must cost exactly
 // one stat and nothing else on the 2 s owner poll. Identity includes harness/cwd/session so recycling
@@ -33070,7 +33109,9 @@ const ctxFiles = new Map<number, { identity: string; file: string }>();
 //   - a FILE denominator (ContextRead, `windowFromFile`) belongs IN, for that same reason read the
 //     other way: it is a property of this file at this size/mtime, it cannot change while the key
 //     does not, and re-reading it separately could only pair it with a different record's counter.
-const ctxCache = new Map<number, { key: string; read: number | ContextRead | null }>();
+// The apiError half rides in the same entry: it is a property of the same bytes, and caching it
+// apart would be the second file access per poll this cache exists to prevent.
+const ctxCache = new Map<number, { key: string } & ContextTail>();
 // HOW a record's model was reached, stamped beside every model this server writes (the lane-outcome
 // row, the context receipt). Three values, not a boolean: "no pin" splits into a model Fleet can
 // name off the spawn line and one only the harness knows, and collapsing those two is what made the
@@ -33110,55 +33151,76 @@ function receiptModel(s: Slot): { model: string; modelOrigin: ModelOrigin } {
   return { model: r.model ?? "ambient", modelOrigin: r.modelOrigin };
 }
 function contextFill(s: Slot): ContextFill | null {
-  if (!s.cwd || !s.sessionId) return null;
+  return contextReading(s).ctx;
+}
+// contextFill and the API-error round off ONE cached tail read. The owner poll and the steward
+// view call this once per slot and derive both facts from the answer, so apiStall costs no second
+// stat and no second read; every other caller keeps asking contextFill for the number alone.
+function contextReading(s: Slot): { ctx: ContextFill | null; apiError: ApiErrorLine | null } {
+  const none = { ctx: null, apiError: null };
+  if (!s.cwd || !s.sessionId) return none;
   const h = harnessOf(s.harness);
   const reader = h.context;
-  if (!reader) return null;
+  if (!reader) return none;
   // A reader that carries its own denominator never reaches this: for Codex the window is in the
   // rollout, and contextWindowFor names no Codex model on purpose.
   const modelWindow = reader.windowFromFile ? null : contextWindowFor(s.model ?? harnessDefaultModel(h));
   // Absence 5 for a model-denominator reader, decided BEFORE any disk work exactly as before — so
-  // neither the answer nor the cost of the claude/pi/pi-zai path is touched by this branch.
-  if (!reader.windowFromFile && modelWindow === null) return null;
+  // neither the answer nor the cost of the pi/pi-zai path is touched by this branch. A reader with
+  // a `tail` (claude) still reads: the API-error round is a fact about the transcript, not about
+  // the window, and a model this server cannot name does not make a dead turn any less dead.
+  if (!reader.windowFromFile && modelWindow === null && !reader.tail) return none;
 
   const identity = `${h.id}\0${s.cwd}\0${s.sessionId}`;
   const known = ctxFiles.get(s.id);
   const file = known?.identity === identity ? known.file : reader.file({ cwd: s.cwd, sessionId: s.sessionId });
-  if (!file) return null;
+  if (!file) return none;
   if (known?.identity !== identity) ctxFiles.set(s.id, { identity, file });
 
-  let read: number | ContextRead | null;
+  let tail: ContextTail;
   try {
     const st = statSync(file);
     const key = `${file}:${st.size}:${st.mtimeMs}`;
     const hit = ctxCache.get(s.id);
     if (hit && hit.key === key) {
-      read = hit.read;
+      tail = hit;
     } else {
-      read = reader.used(file, st.size);
-      ctxCache.set(s.id, { key, read });
+      tail = reader.tail ? reader.tail(file, st.size) : { read: reader.used(file, st.size), apiError: null };
+      ctxCache.set(s.id, { key, ...tail });
     }
   } catch {
     // A timestamped Pi file can be replaced across a resume. Forget the positive resolution so the
     // next poll re-runs the identity check rather than holding a dead path forever.
     ctxFiles.delete(s.id);
-    return null;
+    return none;
   }
-  if (read === null) return null;
+  const { read, apiError } = tail;
+  if (read === null) return { ctx: null, apiError };
   const usedTokens = typeof read === "number" ? read : read.used;
   // Absence 5 again, and it is the same rule for both kinds of reader: a numerator whose
   // denominator this server cannot NAME is not a percentage, so the whole fact goes. A file
   // denominator that the tail did not carry arrives here as null from the reader, never as a
   // fallback to the model — that fallback would answer for a window nobody measured.
   const windowTokens = typeof read === "number" ? modelWindow : read.window;
-  if (windowTokens === null) return null;
-  return { usedTokens, windowTokens, pct: Math.round((usedTokens / windowTokens) * 1000) / 10 };
+  if (windowTokens === null) return { ctx: null, apiError };
+  return { ctx: { usedTokens, windowTokens, pct: Math.round((usedTokens / windowTokens) * 1000) / 10 }, apiError };
 }
-// the newest `message.usage` in the file's TAIL. Tail-read for the same reason pulseLastOutput is:
-// a transcript runs to megabytes and neither the poll nor a tick may slurp one. A usage line that
-// sits entirely beyond the tail therefore reads as "no usage line" → null, which is the honest
+// the newest REAL `message.usage` in the file's TAIL. Tail-read for the same reason pulseLastOutput
+// is: a transcript runs to megabytes and neither the poll nor a tick may slurp one. A usage line
+// that sits entirely beyond the tail therefore reads as "no usage line" → null, which is the honest
 // answer this file's rules already demand for every other thing it cannot see.
 function readUsedTokens(file: string, size: number): number | null {
+  const t = readClaudeTail(file, size).read;
+  return typeof t === "number" ? t : null;
+}
+// The claude tail, read once. Two rules for the numerator and one for the error round:
+//   - an API-error round (isApiErrorMessage:true) or any other locally made turn (message.model
+//     "<synthetic>") is SKIPPED for the numerator. Its usage is all zeros, and until 2026-09-22 this
+//     reader took it as the newest usage — /api/sessions said ctx 0 % while the pane's footer read
+//     41 %. The window did not empty; the last real turn still says what it holds.
+//   - the error round is decided by the LAST assistant line alone: a real reply after the error
+//     means the session moved on, and no older line may resurrect the stall.
+function readClaudeTail(file: string, size: number): ContextTail {
   const from = Math.max(0, size - CTX_TAIL_BYTES);
   let text: string;
   try {
@@ -33168,23 +33230,44 @@ function readUsedTokens(file: string, size: number): number | null {
     closeSync(fd);
     text = buf.toString("utf8", 0, n);
   } catch {
-    return null;
+    return { read: null, apiError: null };
   }
   const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
+  let read: number | null = null;
+  let decided = false;
+  let apiError: ApiErrorLine | null = null;
+  // every assistant line carries message.usage, so this one cheap filter finds both kinds of line
+  for (let i = lines.length - 1; i >= 0 && (read === null || !decided); i--) {
     if (!lines[i].includes('"usage"')) continue;
-    let u: unknown;
-    try { u = (JSON.parse(lines[i]) as { message?: { usage?: unknown } }).message?.usage; }
+    let d: { type?: unknown; timestamp?: unknown; error?: unknown; isApiErrorMessage?: unknown;
+      message?: { model?: unknown; usage?: unknown; content?: unknown } };
+    try { d = JSON.parse(lines[i]) as typeof d; }
     catch { continue; } // torn line (the tail's first line is usually a fragment) — keep walking back
+    if (typeof d !== "object" || d === null) continue;
+    const isError = d.isApiErrorMessage === true;
+    if (!decided && d.type === "assistant") {
+      decided = true;
+      const at = typeof d.timestamp === "string" ? Date.parse(d.timestamp) : NaN;
+      if (isError && Number.isFinite(at)) {
+        const c = d.message?.content;
+        const parts: unknown[] = Array.isArray(c) ? c : [];
+        const said = parts.map((p) => (typeof p === "object" && p !== null
+          && typeof (p as { text?: unknown }).text === "string" ? (p as { text: string }).text : ""))
+          .filter(Boolean).join(" ");
+        apiError = { at, text: said.slice(0, API_STALL_TEXT_MAX), kind: typeof d.error === "string" ? d.error : null };
+      }
+    }
+    if (read !== null || isError || d.message?.model === "<synthetic>") continue;
+    const u = d.message?.usage;
     if (typeof u !== "object" || u === null) continue;
     const num = (k: string): number => {
       const v = (u as Record<string, unknown>)[k];
       return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
     };
     // input + both cache tiers. output_tokens is absent from this sum on purpose — see the region note.
-    return num("input_tokens") + num("cache_creation_input_tokens") + num("cache_read_input_tokens");
+    read = num("input_tokens") + num("cache_creation_input_tokens") + num("cache_read_input_tokens");
   }
-  return null;
+  return { read, apiError };
 }
 
 // Pi puts the timestamp in the filename, so the pinned UUID is a suffix rather than the whole
@@ -33430,9 +33513,94 @@ function stalledFacts(s: Slot, sig: ReturnType<typeof laneSignalView>, now: numb
   };
 }
 
+// --- apiStall: a claude session parked on an API-error round -----------------------------------
+// The FACT is exact because claude writes it down: the dead turn is an assistant line with
+// isApiErrorMessage:true (readClaudeTail). Nothing here reads the pane's text — a grep for
+// "API Error" on the screen would match the owner quoting one, a scrolled-back old error, or a
+// lane writing about this very feature. Two conditions, both required:
+//   - the LAST assistant line of the transcript is that round (a later real reply ends it), and
+//   - the pane is quiet for API_STALL_QUIET_MS. Claude retries some failures itself before it gives
+//     up; a pane still painting is a session still doing something, and an unobserved pane
+//     (lastOutput 0) is "cannot tell", never "idle".
+// null for every harness without a `tail` reader: its transcript has no such mark, so the answer is
+// "unmeasured" — never a claim that no error happened.
+const API_STALL_QUIET_MS = 10_000;
+// the actuator's numbers (tickApiStallResume): first attempt 90 s after the error line, at most two
+// attempts per stall, the second 90 s after the first
+const API_STALL_RESUME_AFTER_MS = 90_000;
+const API_STALL_RESUME_MAX = 2;
+interface ApiStall { since: number; text: string; kind: string | null }
+function apiStallFact(s: Slot, apiError: ApiErrorLine | null, now: number): ApiStall | null {
+  if (!apiError || !s.cwd) return null;
+  if (s.lastOutput === 0 || now - s.lastOutput < API_STALL_QUIET_MS) return null;
+  return { since: apiError.at, text: apiError.text, kind: apiError.kind };
+}
+
+// ONE STALL, NOT ONE LINE. A resume that meets the same outage writes a NEW error round with a new
+// timestamp; counting attempts per line would therefore resume a persistent 529 forever, 90 s
+// apart. The budget belongs to the stall: it is spent while the last assistant line stays an error
+// round and is only given back when a REAL assistant line is read again (or the occupant changes).
+// After the second attempt apiStall simply stays on the polls — the next move is a person's.
+//
+// ONLY kind "server_error". The other rounds claude writes the same way are not transient:
+// "rate_limit" (out of credits, a limit until 20:00), "authentication_failed" (/login),
+// "invalid_request" (a safeguard refusal — typing "resume" re-sends the very turn that was flagged).
+// They stay visible as apiStall and are never typed into.
+interface ApiStallAttempt { openedAt: number; sessionId: string; tries: number; lastAt: number }
+const apiStallTried = new Map<number, ApiStallAttempt>();
+let apiStallTickBusy = false;
+async function tickApiStallResume(): Promise<void> {
+  if (apiStallTickBusy) return;
+  const now = Date.now();
+  const due: { s: Slot; attempt: ApiStallAttempt }[] = [];
+  for (const s of slots) {
+    const prior = apiStallTried.get(s.id);
+    if (!s.cwd || !s.sessionId || harnessOf(s.harness) !== CLAUDE_HARNESS) {
+      if (prior) apiStallTried.delete(s.id);
+      continue;
+    }
+    const { apiError } = contextReading(s);
+    if (!apiError) { if (prior) apiStallTried.delete(s.id); continue; }
+    // a parked clarify lane was told to wait, and a sleeping pane is not woken for this
+    if (s.sleeping || s.awaiting === "owner") continue;
+    const stall = apiStallFact(s, apiError, now);
+    if (!stall || stall.kind !== "server_error") continue;
+    const attempt = prior && prior.openedAt === s.openedAt && prior.sessionId === s.sessionId
+      ? prior : { openedAt: s.openedAt, sessionId: s.sessionId, tries: 0, lastAt: 0 };
+    if (attempt.tries >= API_STALL_RESUME_MAX) continue;
+    if (now - Math.max(stall.since, attempt.lastAt) < API_STALL_RESUME_AFTER_MS) continue;
+    due.push({ s, attempt });
+  }
+  if (!due.length) return;
+  apiStallTickBusy = true;
+  try {
+    for (const { s, attempt } of due) {
+      // THE OCCUPANT PIN: the session decided on above is the one typed into, or nothing is.
+      // sendText pins its own stream occupant from here on; this closes the gap before it.
+      if (s.openedAt !== attempt.openedAt || s.sessionId !== attempt.sessionId || !s.cwd) continue;
+      // the attempt is SPENT before the paste, delivered or not: "at most two" is a promise about
+      // what is typed into a stuck pane, and a failed paste must not buy a third try
+      const spent = { ...attempt, tries: attempt.tries + 1, lastAt: Date.now() };
+      apiStallTried.set(s.id, spent);
+      // every attempt is its own audit row: sendText books a `send` row with path
+      // "api-stall-resume" and its acceptance on success AND on failure (auditSend)
+      try {
+        await sendText(s, "resume", true, { path: "api-stall-resume", requireAgent: true });
+      } catch (e) {
+        logError("apiStallResume", e);
+      }
+      if (spent.tries >= API_STALL_RESUME_MAX)
+        console.log(`[fleet] api-stall: slot ${s.id} got ${spent.tries} resume attempts — apiStall stays up, the next move is the owner's`);
+    }
+  } finally {
+    apiStallTickBusy = false;
+  }
+}
+
 function stewardSlotsView(now: number) {
   return slots.map((s) => {
     const sig = laneSignalView(s, now);
+    const reading = contextReading(s);
     return {
       id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
       ...sig, worktree: s.worktree, model: s.model,
@@ -33480,7 +33648,10 @@ function stewardSlotsView(now: number) {
       // view is the pure predicate input (lane-signals.ts: "no git calls, no clock, no I/O") and is
       // rebuilt per slot on the 2 s owner poll — a file read in it would be paid by every tick that
       // asks a predicate a question about liveness. This route is on demand.
-      ctx: contextFill(s),
+      ctx: reading.ctx,
+      // the API-error round, off the same read (apiStallFact) — carried on every slot here, null
+      // when there is none or it cannot be measured; the owner poll omits it when null
+      apiStall: apiStallFact(s, reading.apiError, now),
     };
   });
 }
@@ -36212,6 +36383,9 @@ Bun.serve<WSData>({
           // It is on THIS route because this is the one every MAIN and the board already poll; the
           // steward route kept it where only a `⚙ steward` pane could reach it, and there was none.
           const st = stalledFacts(s, laneSignalView(s, pollNow), pollNow);
+          // ctx and apiStall off ONE tail read per slot per poll (contextReading)
+          const reading = contextReading(s);
+          const stall = apiStallFact(s, reading.apiError, pollNow);
           // B3 · what Fleet has TYPED into this pane today (the send ledger's own counter). Only
           // for an OCCUPIED row: the counter is keyed by slot number and outlives the occupant that
           // earned it, and a free row has no pane for the sentence to be about — nor does the board
@@ -36272,7 +36446,11 @@ Bun.serve<WSData>({
             // how full this session's context is. Present on EVERY slot (never omitted like `harness`) because
             // its null is an ANSWER — "Fleet cannot tell" — distinct from an empty context. Cached against the
             // file's identity; the separately armed tickMigrate reads the SAME function.
-            ctx: contextFill(s),
+            ctx: reading.ctx,
+            // a claude session parked on an API-error round (apiStallFact). OMITTED when null, the
+            // `stalled` rule: absent and null say the same sentence ("not known to be stuck on the
+            // API"), and an untroubled fleet pays nothing for it on this 2 s poll.
+            ...(stall ? { apiStall: stall } : {}),
             share: sh ? {
               id: sh.id, password: sh.secret, created: sh.created,
               guests: [...s.clients].filter((c) => c.data.share === sh.id).length,

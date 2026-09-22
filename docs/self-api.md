@@ -3825,3 +3825,49 @@ Steward-Sitz ist die Voraussetzung, sie zu lesen** — ein Slot mit dem Label `�
 BEIM `open` (`docs/steward.md`, „How to actually create one"), sonst bekommt die Pane das Token
 nie. Ohne diesen Sitz sind diese Felder berechnet und unadressiert, genau wie `stalled` es war; wer
 einen davon braucht, hebt ihn nach demselben Muster oder besetzt den Sitz.
+
+## apiStall — `GET /api/sessions` (OWNER-Route, nicht `/api/self/*`)
+
+Eine claude-Session, deren letzte Runde an der API starb („API Error: 529 Overloaded", „Server error
+mid-response", „Connection lost mid-response") und die seitdem idle steht. Anlass (Owner 2026-09-22:
+*„fix the ones stuck with API errors. Think if we could automatically detect this somehow"*): drei
+Lanes standen in derselben Nacht hinter solchen Fehlern, eine ~55 min, bis ein Mensch „resume"
+schickte.
+
+**Die Quelle ist das Transkript, nie der Pane-Text.** Claude Code schreibt die Fehler-Runde als
+assistant-Zeile mit `isApiErrorMessage:true`, `message.model "<synthetic>"` und einer usage aus
+lauter Nullen. `server.ts#readClaudeTail` liest sie aus DEMSELBEN Tail-Read wie `ctx`
+(`server.ts#contextReading`, ein Cache-Eintrag, kein zweiter Dateizugriff je Poll).
+
+**Nebenbefund, mit behoben:** `server.ts#readUsedTokens` nahm bis dahin die letzte usage-Zeile —
+also genau diese Nullen — und der Poll meldete `ctx` 0 % bei einem Footer von 41 %. Fehler-Runden
+und `<synthetic>`-Zeilen zählen für den Zähler nicht mehr; `ctx` bleibt auf der letzten ECHTEN Runde.
+
+**Die Form:**
+
+- `apiStall: {since, text, kind}` — `since` = Zeitstempel der Fehler-Zeile (epoch ms), `text` = ihr
+  Meldungstext (max. 300 Zeichen), `kind` = ihr `error`-Feld (`server_error`, `rate_limit`,
+  `authentication_failed`, `invalid_request`, …) oder `null`. Gesetzt GENAU dann, wenn die LETZTE
+  assistant-Zeile des Transkripts die Fehler-Runde ist UND die Pane seit 10 s nichts gemalt hat
+  (`server.ts#API_STALL_QUIET_MS`; eine nie beobachtete Pane gilt als „unbekannt", nicht als idle).
+  Eine spätere echte assistant-Zeile beendet den Fakt.
+- **Auf `/api/sessions` fehlt der Key, wenn der Wert `null` wäre** — die `stalled`-Regel oben
+  (`docs/data-saver.md` §1): abwesend heißt „nicht als API-blockiert bekannt". Auf
+  `GET /api/steward/sessions` steht `apiStall` auf JEDEM Slot, `null` inklusive.
+- **Nur claude.** Ein Harness ohne diese Markierung (Codex, pi, pi-zai) hat keinen `tail`-Leser; dort
+  ist der Fakt ungemessen und fehlt — nie eine Aussage „kein Fehler".
+
+**Der optionale Aktuator, `FLEET_API_STALL_RESUME`** (`server.ts#tickApiStallResume`): Default AUS;
+ein unerkannter Wert ist AUS und sagt es mit einer Logzeile (Form von `FLEET_LANE_AUTOCLOSE`);
+scharf schalten ist ein Owner-Akt in der srv-Zeile von `watchdog.sh`. Scharf: 90 s nach der
+Fehler-Zeile ein `resume` per `sendText` (Occupant-Pin: `openedAt` + `sessionId` wie beim Befund,
+sonst nichts), höchstens 2 Versuche je Stall, der zweite 90 s nach dem ersten; jeder Versuch ist eine
+`send`-Zeile im Audit mit `path:"api-stall-resume"`. Danach bleibt `apiStall` stehen. Zwei
+Lesarten, die der Code festlegt:
+
+- **Budget je Stall, nicht je Zeile.** Ein `resume` in denselben Ausfall schreibt eine NEUE
+  Fehler-Zeile; je Zeile gezählt liefe ein anhaltender 529 endlos im 90-s-Takt. Das Budget kommt
+  erst zurück, wenn wieder eine echte assistant-Zeile gelesen wird (oder die Besetzung wechselt).
+- **Nur `kind: "server_error"`.** `rate_limit` und `authentication_failed` löst kein `resume`, und bei
+  `invalid_request` (Safeguard-Verweigerung) schickte es genau die markierte Runde erneut. Diese
+  bleiben als `apiStall` sichtbar und werden nie beschrieben.

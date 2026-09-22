@@ -177,9 +177,6 @@
     font-family: inherit; cursor: pointer; }
   #sidetools button:hover { color: var(--chat-ink); }
   #sidetools #headplus { border-style: dashed; background: none; color: var(--chat-faint); }
-  .headnote { margin: 0 10px 8px; padding: 6px 8px; border: 1px solid var(--chat-edge); border-radius: 8px;
-    color: var(--chat-mute); font-size: var(--chat-ui-fs); line-height: 1.4; }
-  .headnote[hidden] { display: none; }
   #layouts button.active { color: var(--chat-ink); border-color: var(--chat-mute); background: var(--chat-surface); }
   #sidetools .tricon { display: grid; place-items: center; }
   #sidetools .ico { width: 14px; height: 14px; }
@@ -1209,6 +1206,22 @@
   .shellfoot:empty { display: none; }
   .shellhint { color: var(--faint); font-size: 12px; padding: 10px 2px; line-height: 1.5; }
 
+  /* the idea window (client.ts openIdee): ONE form — the detail pane is the whole window, on
+     desktop and mobile both, so the list column goes and the detail stays. The form speaks the
+     chat language already (its chrome follows .shellwin for every window, D-2). */
+  #shell-idee .shelllist { display: none; }
+  #shell-idee .shelldetail { display: block; }
+  #shell-idee .shellwin { width: min(620px, 95vw); height: auto; max-height: min(680px, 92vh); }
+  .ideepane { display: flex; flex-direction: column; gap: 8px; }
+  .ideelabel { font-size: 12.5px; color: var(--chat-ink); font-weight: 500; }
+  .ideeta { width: 100%; min-height: 110px; resize: vertical; box-sizing: border-box; padding: 9px 11px;
+    font-family: var(--chat-sans); font-size: var(--chat-ui-fs); line-height: 1.5;
+    color: var(--chat-prose); background: var(--chat-raised); border: 1px solid var(--chat-edge);
+    border-radius: var(--r2); }
+  .ideeta:focus { outline: none; border-color: var(--c-edge-hi); }
+  .ideeid { font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-ink); }
+  .ideeacts { display: flex; justify-content: flex-end; }
+
   /* section header inside the list — same vocabulary as the picker's .pkhead it replaces */
   .shellsec { display: flex; align-items: center; gap: 7px; padding: 10px 6px 4px; }
   .shellsec:first-child { padding-top: 2px; }
@@ -1659,6 +1672,7 @@
     .qlife-st { font-size: 11px; line-height: 20px; }
     .qkind-select { min-height: 44px; font-size: 16px; }
     #shell-queue .shellwin { width: 100vw; height: 100dvh; height: var(--vvh, 100dvh); border-radius: 0; }
+    #shell-idee .shellwin { width: 100vw; height: 100dvh; height: var(--vvh, 100dvh); border-radius: 0; }
     #shell-queue .qdrail > .pkdacts .shrbtn { min-height: 40px; }
     .qnewfields { grid-template-columns: 1fr; }
     #shell-queue .qview { flex: 1 0 100%; flex-basis: 100%; }

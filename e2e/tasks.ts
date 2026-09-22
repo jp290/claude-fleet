@@ -1001,6 +1001,47 @@ export async function run(ctx: Ctx): Promise<void> {
   check("unqueue a task", (await post(`/api/tasks/${tJson.task.id}/unqueue`, {})).ok);
   check("delete a task", (await post(`/api/tasks/${tJson.task.id}/delete`, {})).ok);
 
+  // --- IDEE VOM +-KNOPF (client.ts, the block between the IDEE markers): the "+" files the typed
+  // idea as a PENDING auftrag through the route — never a dispatch, never a release, never text in
+  // a pane. The source half reads exactly the marked block; the live half files with the same
+  // prefix shape the block composes and reads the row back.
+  {
+    const ideeStart = taskClientSource.indexOf("// --- IDEE VOM +-KNOPF ---");
+    const ideeEnd = taskClientSource.indexOf("// --- end IDEE VOM +-KNOPF ---", ideeStart);
+    const ideeSource = ideeStart >= 0 && ideeEnd > ideeStart ? taskClientSource.slice(ideeStart, ideeEnd) : "";
+    check("idee precondition: the marked #headplus block is readable in the client source",
+      ideeSource.includes('plusBtn.id = "headplus"'), ideeSource.slice(0, 120) || "block markers missing");
+    check("the + button's block never types into a pane — neither sendText nor /send",
+      !ideeSource.includes("sendText") && !ideeSource.includes('"/send"'),
+      "sendText or /send inside the idee block");
+    check("the + button files through POST /api/tasks — pending auftrag with the idee prefix",
+      ideeSource.includes('post("/api/tasks"') && ideeSource.includes('kind: "auftrag"')
+        && ideeSource.includes("queue: false") && ideeSource.includes("[IDEE VOM +-KNOPF · "),
+      "route, kind, queue or prefix missing in the idee block");
+    const pad2 = (n: number) => String(n).padStart(2, "0");
+    const now = new Date();
+    const prefix = `[IDEE VOM +-KNOPF · ${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}] `;
+    const ir = await post("/api/tasks", {
+      text: `${prefix}idee route probe — filed, never dispatched`, kind: "auftrag", queue: false });
+    const ij = (await ir.json()) as { ok: boolean; task: { id: string; kind: string; status: string; slot: number | null; text: string } };
+    check("a row filed through the idee route is kind auftrag, pending, without a slot",
+      ir.ok && ij.task.kind === "auftrag" && ij.task.status === "pending" && ij.task.slot === null,
+      JSON.stringify(ij.task));
+    check("the filed row keeps the idee prefix verbatim", ij.task.text.startsWith(prefix), ij.task.text.slice(0, 80));
+    check("cleanup: the idee probe row is deleted", (await post(`/api/tasks/${ij.task.id}/delete`, {})).ok);
+    // G0.5 (MAIN-Korrektur am Report 4e463993d326f782393b4087): sichtbarer Text Fleet-Englisch,
+    // nur der Tooltip des Kopf-Knopfs bleibt deutsch. Je sichtbarem Wort ein Anker hier, damit
+    // eine Sprach-Rückfall nicht ungemessen bleibt.
+    check("idee G0.5: the visible words are Fleet-English and only plusBtn's tooltip stays German",
+      ideeSource.includes('title: "New idea"') && ideeSource.includes('"What should the button do?"')
+        && ideeSource.includes('"File as task"') && ideeSource.includes('"Open in queue"')
+        && ideeSource.includes("Queue row ") && ideeSource.includes("more characters")
+        && ideeSource.includes('the server refused this filing')
+        && ideeSource.includes('plusBtn.title = "Eigene Idee')
+        && !ideeSource.includes('"In der Queue') && !ideeSource.includes('"Als Aufgabe'),
+      "visible words must be Fleet-English; plusBtn.title stays German");
+  }
+
   // --- ▸ queue IS A RELEASE, and only pending → queued is one (server.ts, the taskAct `queue` arm).
   // The route called releaseTask for any status, so a `done` row was reopened and a `sent` row went
   // back to queued for tickDispatch to start twice (the sent half is checked at the capacity-bypass

@@ -2164,9 +2164,16 @@ export async function run(): Promise<void> {
           && (indexSrc.match(/--queue-scale: [\d.]+;/g) ?? []).length === 1
           && !/data-queue|applyQueueFassung/.test(indexSrc + cliSrc),
         JSON.stringify({ sidetools: cssBody("#sidetools"), queue: cssBody("#sidetools #queuebtn .ico") }));
-      const plusSrc = cut("const plusBtn = ", '$("sidetools").after(plusNote);');
-      check("client: the + only says what is coming — it fetches nothing and opens nothing",
-        plusSrc.includes("kommt") && !/fetch\(|api\(|openActivity|showPanel/.test(plusSrc),
+      // the + is the idea window since 4b6854fa (owner 2026-09-22): it OPENS the shell window and
+      // files a row through /api/tasks — and it never types into a pane. The filing shape (kind,
+      // queue, prefix) is pinned at the source in e2e/tasks.ts's idee block; this pin holds the
+      // window-opening half and the /send ban at the head's own home (the slots family).
+      const plusSrc = cut("const plusBtn = ", "// --- end IDEE VOM +-KNOPF ---");
+      check("client: the + opens the idea window and only ever POSTs /api/tasks — never /send",
+        plusSrc.includes('openShell({ id: "idee", title: "New idea" })')
+          && plusSrc.includes('post("/api/tasks"')
+          && !plusSrc.includes('"/send"') && !plusSrc.includes("sendText")
+          && !/fetch\(|openActivity|showPanel/.test(plusSrc),
         plusSrc.slice(0, 120) || "no + block");
       check("client: a band's past session shows its ctx at the handover, from the line's own route",
         bandSrc.includes('el("span", "ctxfill", `${Math.round(p.ctx.pct)}%`)') && serverSrc.includes("ctx: p.who ? contextFillOf(s, p.who.cwd, p.who.sessionId) : null"),

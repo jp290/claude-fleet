@@ -13930,22 +13930,83 @@ $("toolrow2").appendChild(moreBtn);
 $("sidetools").after(morePanel);
 applyMore();
 
-// + — the place for a button the owner builds from an idea (round 12: "mit einem eigenen kleinen
-// plus button worüber der nutzer später dann mit einer eigenen Idee direkt einen button einbauen
-// kann"). The builder is its own queue row; until it lands, the click says so and nothing else.
+// + — EINE IDEE WIRD EINE QUEUE-ZEILE, NIE EIN KOMMANDO (owner 2026-09-22, Kommentar an der
+// Queue-Zeile, Program 0d51b4d4). The window files the typed idea as a PENDING row that every
+// device sees (fleet.json is the memory — no localStorage); it never dispatches, never releases
+// and never types into a pane. What is unclear the dispatcher sharpens (the card sweep reads the
+// row on its own, and a release needs a valid card anyway); the button-builder stays the idea's
+// own later row. The block markers are load-bearing: e2e/tasks.ts slices exactly this block and
+// pins that it files a row instead of sending text anywhere.
+// --- IDEE VOM +-KNOPF ---
 const plusBtn = el("button", "", "+") as HTMLButtonElement;
 plusBtn.id = "headplus";
-plusBtn.title = "eigener Knopf — kommt";
-const plusNote = el("div", "headnote", "Eigene Knöpfe — kommt: hier baust du später aus einer Idee einen eigenen Knopf.");
-plusNote.hidden = true;
-let plusNoteTimer = 0;
-plusBtn.onclick = () => {
-  plusNote.hidden = !plusNote.hidden;
-  clearTimeout(plusNoteTimer);
-  if (!plusNote.hidden) plusNoteTimer = window.setTimeout(() => { plusNote.hidden = true; }, 4000);
-};
+plusBtn.title = "Eigene Idee — als Aufgabe filen";
 $("toolrow2").appendChild(plusBtn);
-$("sidetools").after(plusNote);
+const IDEE_MIN_CHARS = 20; // after trim — the form asks for a direction, not a brief
+const ideeDate = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+let ideeShell: Shell | null = null;
+function openIdee(): void {
+  ideeShell?.close();
+  const shell = openShell({ id: "idee", title: "New idea" });
+  ideeShell = shell;
+  const pane = el("div", "ideepane");
+  const ta = el("textarea", "ideeta") as HTMLTextAreaElement;
+  const hint = el("div", "shellhint", "");
+  const filen = el("button", "shrbtn primary", "File as task") as HTMLButtonElement;
+  filen.type = "button";
+  const paint = () => {
+    const left = IDEE_MIN_CHARS - ta.value.trim().length;
+    filen.disabled = left > 0;
+    hint.textContent = left > 0 ? `${left} more characters` : "";
+  };
+  ta.addEventListener("input", paint);
+  ta.onkeydown = (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); filen.click(); }
+  };
+  filen.onclick = async () => {
+    const text = ta.value.trim();
+    if (text.length < IDEE_MIN_CHARS) return;
+    filen.disabled = true;
+    const r = await post("/api/tasks", {
+      text: `[IDEE VOM +-KNOPF · ${ideeDate()}] ${text}`, kind: "auftrag", queue: false });
+    const j = (await r.json().catch(() => null)) as { task?: { id: string }; error?: string } | null;
+    if (!r.ok || !j?.task) {
+      paint(); // the text stays in the box — a refused filing must not lose the idea
+      hint.textContent = j?.error ?? `the server refused this filing (${r.status})`;
+      return;
+    }
+    const id = j.task.id;
+    const openq = el("button", "shrbtn", "Open in queue") as HTMLButtonElement;
+    openq.type = "button";
+    openq.onclick = async () => {
+      shell.close();
+      await refresh();
+      openQueue();
+      qSelect(id);
+    };
+    pane.replaceChildren(
+      el("div", "ideeid", `Queue row ${id}`),
+      el("div", "shellhint",
+        "The row starts once its card is valid (goal, surface, DONE, VERIFY) - the dispatcher sharpens anything unclear, no lane asks back."),
+      openq,
+    );
+    openq.focus();
+  };
+  const acts = el("div", "ideeacts");
+  acts.append(filen);
+  pane.append(
+    el("div", "ideelabel", "What should the button do?"),
+    ta, hint, acts,
+  );
+  shell.detail.replaceChildren(pane);
+  ta.focus();
+  paint();
+}
+plusBtn.onclick = () => openIdee();
+// --- end IDEE VOM +-KNOPF ---
 
 // THE HEAD ROW — one icon grammar (owner 2026-09-21: "Rechts davon zeigen wir dann überarbeitete
 // buttons für die Funktionen an … mach das nur so das es gut passt"). Round 12 sorted the buttons

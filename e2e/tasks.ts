@@ -18,7 +18,7 @@ import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, ups
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
-  LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits,
+  LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, proposeBundles,
   type LandWave, type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
 import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanLaneClaims, startPlanLaneSurface, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
   type StartPlanLane, type StartPlanLaneClaim, type StartPlanRelease, type StartPlanRow } from "../start-plan";
@@ -9369,6 +9369,50 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(sp-flaeche) LESEN:, BELEG:, ANLASS: and the Quellpaket block name no surface — the write target and plain prose still do (task-metadata.ts#intentText), and the resolver moved so stored surfaces recompute",
       JSON.stringify(spMaskGot) === JSON.stringify({ lesen: ["start-plan.ts"], paket: ["docs/x.md"], prose: ["server.ts", "start-plan.ts"] })
       && String(SURFACE_RESOLVER) !== "ranges-2", JSON.stringify(spMaskGot));
+    // (buendel) SCHNITT 3: THE OWNER'S BUNDLE RULE AS A PROPOSAL (task-land-waves.ts#proposeBundles,
+    // docs/messungen/2026-09-21-dispatch-flaechen-buendeln.md §d, Owner 2026-09-18: gleiche Flaeche,
+    // hoechstens mittel, ein VERIFY, ein Program). The land fold bundles by collision; this is the
+    // narrower rule, and it is a SENSOR: GET /api/start-plan carries it, the tick starts nothing from
+    // it. Mutations: the unit sum dropped → mittel+klein pairs; the verify set ignored → different
+    // steps pair; the program or the shared file ignored → those pairs; the chain order dropped →
+    // queue order; a tick reading of buendel → the wiring check below red.
+    const bdRow = (id: string, created: number, o: { size?: "klein" | "mittel"; verify?: string; files?: string[];
+      programId?: string; after?: string[]; status?: string } = {}) => ({
+      id, created, kind: "auftrag", status: o.status ?? "queued", programId: o.programId ?? "prog",
+      size: o.size ?? "klein", files: o.files ?? ["shared.ts"], ...(o.verify ? { verify: o.verify } : {}),
+      ...(o.after ? { after: o.after } : {}) });
+    const bdGot = {
+      same: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2)] }),
+      diffVerify: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { verify: "install, pins, tsc, build" })] }),
+      sameVerifyAnyOrder: proposeBundles({ tasks: [bdRow("b1", 1, { verify: "install, pins" }), bdRow("b2", 2, { verify: "pins + install" })] }),
+      tooBig: proposeBundles({ tasks: [bdRow("b1", 1, { size: "mittel" }), bdRow("b2", 2)] }),
+      diffProgram: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { programId: "other" })] }),
+      diffSurface: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { files: ["other.ts"] })] }),
+      chain: proposeBundles({ tasks: [bdRow("p1", 1, { after: ["q1"] }), bdRow("q1", 2)] }),
+      terminal: proposeBundles({ tasks: [bdRow("b1", 1, { status: "done" }), bdRow("b2", 2, { status: "done" })] }),
+      landPure: !("buendel" in projectLandWaves({ tasks: [
+        { id: "b1", created: 1, kind: "auftrag", status: "queued", programId: "prog", filesOrigin: "confirmed", files: ["shared.ts"] },
+        { id: "b2", created: 2, kind: "auftrag", status: "queued", programId: "prog", filesOrigin: "confirmed", files: ["shared.ts"] },
+      ], costs: LAND_WAVE_COSTS_2026_09 })),
+    };
+    check("(buendel) two kleine rows of one program, shared file and verify set → ONE proposal in queue order · different verify steps, mittel+klein, different programs and disjoint surfaces propose nothing · the same steps in any wording pair",
+      JSON.stringify(bdGot.same.map((b) => ({ ids: b.ids, units: b.units }))) === JSON.stringify([{ ids: ["b1", "b2"], units: 2 }])
+      && bdGot.same[0]?.grund.includes("shared.ts") && bdGot.same[0]?.grund.includes("prog")
+      && bdGot.diffVerify.length === 0 && bdGot.sameVerifyAnyOrder.length === 1
+      && bdGot.tooBig.length === 0 && bdGot.diffProgram.length === 0 && bdGot.diffSurface.length === 0,
+      JSON.stringify(bdGot));
+    check("(buendel) an after-chain of the same surface is ONE proposal in CHAIN order, terminal rows propose none, and the LAND projection itself carries no buendel — the tick cannot start from a proposal",
+      JSON.stringify(bdGot.chain.map((b) => b.ids)) === JSON.stringify([["q1", "p1"]])
+      && bdGot.chain[0]?.grund.startsWith("after-Kette: ")
+      && bdGot.terminal.length === 0 && bdGot.landPure === true,
+      JSON.stringify(bdGot.chain));
+    const bdSrv = (() => { try { return readFileSync(`${ROOT}/server.ts`, "utf8"); } catch { return ""; } })();
+    const bdTickSrc = bdSrv.slice(bdSrv.indexOf("async function tickDispatch("), bdSrv.indexOf("\nasync function ownerSeedCapture("));
+    check("(buendel) PROBE + wiring: the tick reads no buendel and still walks startPlanWaves · StartPlanView carries the field, startPlanNow attaches it, the route serves it unchanged",
+      bdTickSrc.length > 1000 && !bdTickSrc.includes("buendel") && /startPlanWaves\(\)/.test(bdTickSrc)
+      && /type StartPlanView = StartPlan & \{ waits: WaitRow\[\]; stau: ReturnType<typeof stallView>; buendel: BundleProposal\[\] \};/.test(bdSrv)
+      && /return \{ \.\.\.plan, buendel, waits: waitsOf\(plan\), stau: stallView\(\) \};/.test(bdSrv)
+      && /return json\(startPlanNow\(\)\)/.test(bdSrv), `tick=${bdTickSrc.length}`);
     // (sp-criterion) A LANE PARKED ON THE OWNER WITH AN UNWRITTEN TREE HOLDS NO SURFACE
     // (start-plan.ts#startPlanLaneClaims). One rule, two lane builders — server.ts#startPlanNow off
     // the live slot, the CLI off a state file — so the rule is exercised directly here and the two
@@ -9816,24 +9860,28 @@ export async function run(ctx: Ctx): Promise<void> {
     const spSaved = spIds.length === 2 && await spOnDisk();
     // the route carries the wait register and the stall counters BESIDE the plan (server.ts#startPlanNow,
     // waits.ts) — the CLI has neither, so the comparison is the plan half, in the plan's own key order
-    const spGet = async (): Promise<string> => {
-      const { waits: _waits, stau: _stau, ...plan } = (await (await get("/api/start-plan")).json()) as Record<string, unknown>;
-      return JSON.stringify(plan);
+    const spGet = async (): Promise<{ plan: string; buendel: unknown }> => {
+      const { waits: _waits, stau: _stau, buendel, ...plan } = (await (await get("/api/start-plan")).json()) as Record<string, unknown>;
+      // buendel (Schnitt 3) travels BESIDE the plan, like waits and stau: the CLI prints the plan
+      // half only, so the comparison below reads the projection without it — and nothing that
+      // starts anything reads it (the tick walks plan.repos; pinned by the source probe below).
+      return { plan: JSON.stringify(plan), buendel };
     };
     const spRoute1 = await spGet();
     const spCli = spawnSync("bun", [`${ROOT}/start-plan.ts`, "--state", `${ROOT}/fleet.json`, "--default-repo", REPO],
       { encoding: "utf8", env: { ...process.env, FLEET_DISPATCH_REPO: REPO } });
     const spRoute2 = await spGet();
     const spCliOut = spCli.stdout.trim();
-    const spPlanLive = JSON.parse(spRoute2) as StartPlan;
+    const spPlanLive = JSON.parse(spRoute2.plan) as StartPlan;
     const spMine = spPlanLive.repos.flatMap((r) => r.waves).filter((w) => w.ids.some((id) => spIds.includes(id)));
     check("(sp) PROBE: both fixture rows reached the state file and the CLI ran",
       spSaved && spCli.status === 0, `saved=${spSaved} exit=${spCli.status} ${spCli.stderr.slice(0, 300)}`);
     check("(sp) the route and `bun start-plan.ts --state fleet.json` print the same object, and it carries the two rows with next + checks",
-      (spCliOut === spRoute1 || spCliOut === spRoute2) && spPlanLive.version === 1
+      (spCliOut === spRoute1.plan || spCliOut === spRoute2.plan) && spPlanLive.version === 1
+      && Array.isArray(spRoute2.buendel)
       && spMine.flatMap((w) => w.ids).sort().join(" ") === [...spIds].sort().join(" ")
       && spMine.every((w) => w.next !== undefined && w.rows.every((r) => r.checks?.filedBy === "owner")),
-      JSON.stringify({ route: spRoute2.slice(0, 600), cli: spCliOut.slice(0, 600) }));
+      JSON.stringify({ route: spRoute2.plan.slice(0, 600), cli: spCliOut.slice(0, 600), buendel: spRoute2.buendel }));
     for (const id of spIds) await post(`/api/tasks/${id}/delete`, {});
   }
 

@@ -1619,6 +1619,12 @@ interface LaneRef {
   // The one main-session occupant this lane was born under. Optional only for old/adopted lanes
   // and fresh lanes spawned while this repo had no eligible main session.
   anchor?: LaneAnchor;
+  // The lane's letter WITHIN its band (the anchor's slot; a parentless lane sits on band 0 exactly
+  // where the client's derivation collects orphans), assigned once at open as the smallest letter
+  // no live lane in the band holds and persisted so a neighbour's land or a srv restart can never
+  // rename the survivor. Optional only for lanes that predate the field: an older reader that has
+  // never heard of it ignores it, and src/client.ts#laneBandNames derives positionally for them.
+  letter?: string;
 }
 interface SuccessionRetirement { at: number; cwd: string; token: string }
 type CodexRecoveryState = "pending" | "bound" | "ambiguous" | "lost";

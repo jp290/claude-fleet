@@ -848,7 +848,10 @@ export async function run(ctx: Ctx): Promise<void> {
         String((detailSource.match(/mainBox\.appendChild\(/g) ?? []).length));
     check("task detail: ✕ delete sits in the folded ⋯ fold at the rail's end, never in the action row, the ends row or the head",
       detailSource.includes('const danger = qDetailSection(rail, "⋯ done · archive · delete", true, false)')
-        && detailSource.includes('dangerActs.appendChild(mk("✕ delete", "delete", "shrbtn danger"))')
+        // since K3 the button gates its qAct behind the dialog helper (src/dialog.ts#askRisk) —
+        // the wiring string changed with that, the placement claim did not
+        && detailSource.includes('el("button", "shrbtn danger", "✕ delete")')
+        && detailSource.includes("dangerActs.appendChild(del);")
         && !detailSource.includes('acts.appendChild(mk("✕ delete"')
         && !detailSource.includes('ends.appendChild(mk("✕ delete"')
         && !detailSource.includes('acts.appendChild(mk("done"'), "⋯ fold wiring");

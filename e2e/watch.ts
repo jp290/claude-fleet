@@ -90,7 +90,12 @@ const midFlightRows = async (): Promise<GateEventRow[]> => {
     && ledger.filter((r) => r.event === "fleet_event_send_uncertain"
       && (r.detail ?? "").includes(e.id)).length < e.attempts);
 };
-const settleForGate = async (label: string): Promise<void> => {
+// both halves take a MELDER (the reporter their named fail goes through), defaulting to check:
+// production calls pass nothing, and the self-test injects a collector — a proof that let check
+// fire would file a real FAIL into the suite's own sum, and every run would end red by
+// construction (MAIN verdict on report ed9a14fe).
+const settleForGate = async (label: string,
+  report: (name: string, ok: boolean, detail?: string) => void = check): Promise<void> => {
   // a server that is already down (a gated stop just ran) was settled by that stop
   if (!(await get("/api/sessions").then((r) => r.ok).catch(() => false))) return;
   let lastSeen: GateEventRow[] = [];
@@ -104,7 +109,7 @@ const settleForGate = async (label: string): Promise<void> => {
   } catch (e) {
     if (!(e instanceof UntilTimeout)) throw e;
     for (const row of lastSeen) killedRows.add(row.id);
-    check(`restart gate: a restart never strands an open delivery (${label})`, false,
+    report(`restart gate: a restart never strands an open delivery (${label})`, false,
       `restart killed a pending delivery — ${JSON.stringify(lastSeen.map((r) => [r.id, r.attempts]))} sat `
       + `send-uncertain with a raised attempt count and no concluding fleet_event_send_uncertain audit `
       + `row for ${GATE_SETTLE_MS} ms before ${label}: a marker that never concluded is an earlier `
@@ -117,7 +122,8 @@ const gateSnapshot = async (): Promise<Map<string, number>> => {
     if (e.status === "pending" || e.status === "send-uncertain") open.set(e.id, e.attempts);
   return open;
 };
-const postRestartWatch = async (label: string, pre: Map<string, number>): Promise<void> => {
+const postRestartWatch = async (label: string, pre: Map<string, number>,
+  report: (name: string, ok: boolean, detail?: string) => void = check): Promise<void> => {
   let lastSeen: GateEventRow[] = [];
   try {
     await until(async () => {
@@ -137,7 +143,7 @@ const postRestartWatch = async (label: string, pre: Map<string, number>): Promis
     const suspects = lastSeen.filter((r) => pre.has(r.id));
     if (!suspects.length) return; // nothing pre-open is stuck: this restart killed nothing
     for (const row of suspects) killedRows.add(row.id);
-    check(`restart gate: a restart never strands an open delivery (${label})`, false,
+    report(`restart gate: a restart never strands an open delivery (${label})`, false,
       `restart killed a pending delivery — ${JSON.stringify(suspects.map((r) =>
         [r.id, { attempts: r.attempts }]))} crossed ${label} open and is still mid-flight after the `
       + `boot: marker down, no concluding fleet_event_send_uncertain audit row, never replayed`);
@@ -3110,11 +3116,17 @@ export async function run(): Promise<void> {
     //           for is DELIVERED, not murdered. Falsifiable: remove the settle half and the kill
     //           lands within the first poll, so the pid moves while parked and this goes red.
     //   OBSERVE: kill mid-window ON PURPOSE (the raw harness functions, no settle — the exact
-    //           mutation) and feed the half the pre-restart open set: the stuck row must be named
-    //           under its own name. Falsifiable: a gate that cannot see mid-flight rows files
-    //           nothing and this goes red.
-    //   MEMO:   the named row is remembered — the next restart neither re-waits its budget nor
-    //           names it twice.
+    //           mutation) and hand the half the pre-restart open set THROUGH THE MELDER SEAM:
+    //           the self-test injects a collector, because a proof that let check fire would file
+    //           a real FAIL into the suite's own sum and no run could ever end ALL PASS (MAIN
+    //           verdict on report ed9a14fe). The collector must hold exactly one named fail
+    //           carrying the phrase and the row id, and the real register must have grown by
+    //           nothing. Falsifiable: a gate that cannot see mid-flight rows collects nothing
+    //           and this goes red.
+    //   MEMO:   the named row is remembered — asserted BEFORE the ack, while the row is still
+    //           mid-flight: the next restart must return well inside the settle budget and file
+    //           nothing. Falsifiable: drop the memo and this restart spins its full 20 s budget
+    //           and files a second named fail.
     {
       const gateLedger = `${ROOT}/post-land-audits.jsonl`;
       const gateLedgerExisted = existsSync(gateLedger);
@@ -3208,20 +3220,33 @@ export async function run(): Promise<void> {
         JSON.stringify({ watch: parked2.watchOk,
           row: stuckRow && [stuckRow.id, stuckRow.status, stuckRow.attempts] }));
       if (stuckOk && stuckRow) {
+        const collected: { name: string; ok: boolean; detail: string }[] = [];
+        const collect = (name: string, ok: boolean, detail = ""): void => {
+          collected.push({ name, ok, detail });
+        };
         const observeFailsBefore = gateFails().length;
         const pre = new Map([[stuckRow.id, stuckRow.attempts]]); // what the settle half would have snapshotted
-        await postRestartWatch("self-test observe", pre);
-        const named = gateFails().slice(observeFailsBefore);
-        check("restart gate self-test: without the settle half, OBSERVE names the killed line under its own name",
-          named.length === 1 && named[0]!.includes("restart killed a pending delivery")
-            && named[0]!.includes(stuckRow.id),
-          JSON.stringify({ named: named.length, line: named[0]?.slice(0, 300) }));
-        const ack = await ackEvent(mainTok, stuckRow.id); // hygiene: the named row goes terminal
-        const memoFailsBefore = gateFails().length;
+        await postRestartWatch("self-test observe", pre, collect);
+        const named = collected.filter((c) => !c.ok);
+        check("restart gate self-test: without the settle half, OBSERVE names the killed line through the injected melder — no real FAIL row filed",
+          named.length === 1 && !!named[0]
+            && named[0].detail.includes("restart killed a pending delivery")
+            && named[0].detail.includes(stuckRow.id)
+            && gateFails().length === observeFailsBefore,
+          JSON.stringify({ named: named.length, line: named[0]?.detail.slice(0, 300),
+            realFails: gateFails().length - observeFailsBefore }));
+        // MEMO, asserted BEFORE the ack on purpose: the row is still send-uncertain here, so a
+        // gate that had NOT memorized it would settle-wait its full budget on this restart and
+        // file a second named fail through the real reporter — budget and register prove the
+        // memo, never the absence of an already-terminal row.
+        const memoT0 = Date.now();
         await restartSrv({});
-        check("restart gate self-test: a named row is remembered — the next restart neither re-waits nor names it twice",
-          ack.ok && gateFails().length === memoFailsBefore,
-          JSON.stringify({ ack: ack.status, newGateFails: gateFails().length - memoFailsBefore }));
+        const memoMs = Date.now() - memoT0;
+        const ack = await ackEvent(mainTok, stuckRow.id); // hygiene: the named row goes terminal
+        check("restart gate self-test: a named row is remembered — the next restart returns well inside the settle budget and files nothing twice",
+          ack.ok && memoMs < GATE_SETTLE_MS && gateFails().length === observeFailsBefore,
+          JSON.stringify({ ack: ack.status, memoMs, budget: GATE_SETTLE_MS,
+            realFails: gateFails().length - observeFailsBefore }));
       }
 
       // restore: the later modules own the zero-row ledger and a latch-free server

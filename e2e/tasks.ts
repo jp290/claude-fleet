@@ -8238,6 +8238,76 @@ export async function run(ctx: Ctx): Promise<void> {
     }
   }
 
+  // --- (jb) A CLAUDE WORKER IN THE BLACKOUT (2026-09-22, cards.jsonl: 10 × "summarizer timed out
+  // without an answer" on 2026-09-21 19:12–19:52, every row read fine before and after).
+  // summaryViaSession pasted a fixed 2500 ms after the agent PROCESS appeared; claude is alive in
+  // ~20 ms but paints nothing for 1–26 s under load, and a paste in that blackout is lost
+  // (docs/messungen/2026-09-22-card-worker-paste-blackout.md). The claim: the worker pastes only
+  // onto a DRAWN frame, and a pane that never draws is refused by name, not waited out. Same
+  // vehicle and PATH swap as (jt); the stand-in's mode decides whether it ever paints the permission
+  // line CLAUDE_READY_FRAME reads — "dark" never does, "lit" does at once.
+  {
+    const bkDir = `${ROOT}/fakeblackout`;
+    const bkBin = `${bkDir}/bin`;
+    const bkStandIn = `${bkDir}/claude-standin`;
+    const bkMode = `${bkDir}/mode`;
+    const bkPasted = `${bkDir}/pasted`;
+    rmSync(bkDir, { recursive: true, force: true });
+    mkdirSync(bkBin, { recursive: true });
+    const cat = Bun.which("cat");
+    if (cat) symlinkSync(cat, bkStandIn);
+    const q = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
+    await Bun.write(`${bkBin}/claude`, [
+      "#!/bin/sh",
+      `[ "$(cat ${q(bkMode)})" = lit ] && printf '\\n  ⏵⏵ don'"'"'t ask on (shift+tab to cycle)\\n'`,
+      `exec ${q(bkStandIn)} >> ${q(bkPasted)}`,
+      "",
+    ].join("\n"));
+    chmodSync(`${bkBin}/claude`, 0o755);
+    const bkPath = `${bkBin}:${process.env.PATH ?? ""}`;
+    const resolved = Bun.which("claude", { PATH: bkPath });
+    check("(jb) setup: the worker's `claude` lookup resolves to the stand-in and nothing else",
+      !!cat && resolved === `${bkBin}/claude`, `cat=${cat} resolved=${resolved}`);
+    if (cat && resolved === `${bkBin}/claude`) {
+      await restartSrv({ FLEET_DISPATCH_REPO: REPO, PATH: bkPath });
+      const refineOnce = async (mode: "dark" | "lit"): Promise<{ id: string; took: number; note: string; pasted: string | null }> => {
+        await Bun.write(bkMode, mode);
+        rmSync(bkPasted, { force: true });
+        const t = (await (await post("/api/tasks", { text: `blackout probe (${mode}): a worker whose pane draws late`, queue: false, repo: REPO })).json()) as { task: { id: string } };
+        const start = Date.now();
+        const r = await post(`/api/tasks/${t.task.id}/refine`, {});
+        check(`(jb) setup: the ${mode} refine worker starts on the session route`, r.ok, String(r.status));
+        // dark: the refusal note; lit: the paste reaching the stand-in. Ceiling 15 s either way,
+        // far below the refine timeout the old fixed settle ran into.
+        let note = "";
+        let pasted: string | null = null;
+        for (let i = 0; i < 60; i++) {
+          const row = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; note?: string }[] }).tasks.find((x) => x.id === t.task.id);
+          note = row?.note ?? "";
+          pasted = existsSync(bkPasted) ? readFileSync(bkPasted, "utf8") : null;
+          if (mode === "dark" ? !!note : !!pasted) break;
+          await Bun.sleep(250);
+        }
+        return { id: t.task.id, took: Date.now() - start, note, pasted };
+      };
+      const dark = await refineOnce("dark");
+      // FLEET_READY_WAIT_MS=3000 in this suite's env is the bound, so ~3 s plus the spawn
+      check("(jb) a claude worker whose pane never draws is refused by name in under 10 s, not the timeout",
+        /^refine failed: summarizer session never drew its TUI within \d+s/.test(dark.note) && dark.took < 10_000,
+        `${dark.took}ms ${JSON.stringify(dark.note)}`);
+      check("(jb) …and nothing was pasted into the dark pane",
+        dark.pasted === "", JSON.stringify(dark.pasted?.slice(0, 120) ?? "no stand-in output file"));
+      const lit = await refineOnce("lit");
+      // the guard against a fix that refuses everything: a drawn frame takes the paste
+      check("(jb) a claude worker whose pane HAS drawn gets the paste",
+        !!lit.pasted && lit.pasted.length > 100 && !lit.note, `${lit.took}ms note=${JSON.stringify(lit.note)} pasted=${lit.pasted?.length ?? "none"}B`);
+      for (const id of [dark.id, lit.id]) await post(`/api/tasks/${id}/delete`, {});
+      await restartSrv({ FLEET_DISPATCH_REPO: REPO });
+      const bkLeft = (await tmuxOut("list-sessions", "-F", "#{session_name}")).out.split("\n").filter((n) => n.startsWith("sum-"));
+      check("(jb) …and no worker session outlives the probe", bkLeft.length === 0, bkLeft.join(" "));
+    }
+  }
+
   // --- (j2) THE CARD (S3): one small model turns a row's prose into a fixed shape, and every value
   // it returns is then checked against THIS tree. The split is the whole design, so the checks come
   // in two halves: what the extractor is ALLOWED to have said (pure, validateCard) and what the

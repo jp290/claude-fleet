@@ -2684,9 +2684,9 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // fields the create doors read; authorCardFrom's closed list decides it. A field renamed on one
   // side only would teach filers a 400 — and no compiler sees prose.
   const cardDoorFields = /const known = \[([^\]]+)\];\n  const extra = Object\.keys\(c\)/.exec(server)?.[1] ?? "";
-  const agentsCard = /optional `card\{ziel, surface\{files, symbols\}, done, verify, verboten, size\}`/.test(read("AGENTS.md"));
+  const agentsCard = /optional `card\{ziel, surface\{files, symbols\}, done, verify, verboten, size, after\?\}`/.test(read("AGENTS.md"));
   pin("AGENTS.md's card template names exactly the card fields the create doors read",
-    cardDoorFields.replace(/\s/g, "") === '"ziel","surface","done","verify","verboten","size"' && agentsCard
+    cardDoorFields.replace(/\s/g, "") === '"ziel","surface","done","verify","verboten","size","after"' && agentsCard
     && /ZIEL: [^\n]*\nFLAECHE: [^\n]*\nDONE: [^\n]*\nVERIFY: [^\n]*\nVERBOTEN: [^\n]*\nROLLE: /.test(read("AGENTS.md")),
     `door=[${cardDoorFields}] agents=${agentsCard}`);
   const briefSourceType = /type BriefSource = ([^;]+);/.exec(server)?.[1] ?? "";

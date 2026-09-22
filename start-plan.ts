@@ -18,6 +18,7 @@ import { rangesCollide, LAND_WAVE_BUDGET_DEFAULT, type LandWaveClass, type LandW
   type LandWaveReasonAgainst, type LandWaveUnresolved } from "./task-land-waves";
 import { isTaskCardSize, type TaskCardSize, type TaskWaveRange } from "./task-waves";
 import { laneHunkDiffArgs, laneHunkRanges } from "./land-collision-stats";
+import { namedAfterIds, afterOrderRefusal } from "./waits";
 
 export interface StartPlanChecks {
   // null = the row has no card at all — nobody read it, which is not the same fact as a refused card
@@ -35,17 +36,41 @@ export interface StartPlanChecks {
   cardFiles: number | null;
   // the brief was rewritten after the card was read, so the card speaks about an older text
   cardStale: boolean;
+  // Queue rows the TEXT orders this row after (waits.ts#namedAfterIds over text and brief) that the
+  // card does not carry as `after` (Schnitt 1, docs/messungen/2026-09-21-dispatch-flaechen-buendeln.md
+  // §c2). The plan reads a row's order from card.after ALONE — releaseVerdict refuses a card-valid
+  // start on this, and the two release doors refuse with the same sentence
+  // (waits.ts#afterOrderRefusal). [] = no uncarried order — or the caller handed no queueKnown and
+  // decided nothing; the release doors, which always know the queue, hold the line there.
+  afterMissing: string[];
 }
 
 export interface StartPlanCardFacts {
   valid?: unknown; surfaceValid?: unknown; done?: unknown; verify?: unknown; size?: unknown; gaps?: unknown;
-  at?: unknown; surface?: { files?: unknown; creates?: unknown } | null;
+  at?: unknown; surface?: { files?: unknown; creates?: unknown } | null; after?: unknown;
 }
 
 /** The checks a row carries, read off its card and its source — the one reader for server and CLI. */
-export function startPlanChecks(row: { text: string; source: string; card?: StartPlanCardFacts | null; briefAt?: number | null }): StartPlanChecks {
+export function startPlanChecks(row: {
+  text: string; source: string; card?: StartPlanCardFacts | null; briefAt?: number | null;
+  // the row's BRIEF text — namedAfterIds reads it beside the row text, the same reading
+  // server.ts#releaseCardRefusal makes (a NACH may stand in the brief; measured fa07734f)
+  briefText?: string | null;
+  // WHO IS A QUEUE ROW, asked for every id the text names as an order — a commit sha in prose is
+  // none (waits.ts#namedAfterIds leaves that decision to the caller). Absent = the caller decides
+  // nothing: no id counts as an order and afterMissing stays [].
+  queueKnown?: (id: string) => boolean;
+  // the row's own id — a row is never its own order
+  selfId?: string;
+}): StartPlanChecks {
   const card = row.card ?? null;
   const text1 = (v: unknown): string | null => typeof v === "string" && v.trim() ? v.trim() : null;
+  const cardAfter = Array.isArray(card?.after) ? (card?.after as unknown[]).filter((x): x is string => typeof x === "string") : [];
+  const afterMissing = row.queueKnown
+    ? namedAfterIds(`${row.text}\n${row.briefText ?? ""}`)
+      .filter((id) => id !== row.selfId && row.queueKnown!(id))
+      .filter((id) => !cardAfter.includes(id))
+    : [];
   return {
     cardValid: card ? card.valid === true : null,
     surfaceValid: card ? card.surfaceValid === true : null,
@@ -57,6 +82,7 @@ export function startPlanChecks(row: { text: string; source: string; card?: Star
     scout: /\[idee scout-/.test(row.text),
     cardFiles: card ? startPlanCardPaths(card).length : null,
     cardStale: !!card && typeof card.at === "number" && typeof row.briefAt === "number" && row.briefAt > card.at,
+    afterMissing,
   };
 }
 
@@ -93,7 +119,7 @@ const HARD_GAP = /^(?:done|answer|verify|surface\.files|surface\.creates):/;
 const clip = (s: string, n: number): string => s.length > n ? `${s.slice(0, n - 1)}…` : s;
 
 /** Is this row released, and by what? Pure over the row's status, its program's policy, a hold and its checks. */
-export function releaseVerdict(row: { status: string; checks: StartPlanChecks; release?: StartPlanRelease; held?: boolean }): StartPlanReleaseVerdict {
+export function releaseVerdict(row: { status: string; checks: StartPlanChecks; release?: StartPlanRelease; held?: boolean; after?: readonly string[] }): StartPlanReleaseVerdict {
   if (row.held) return { released: false, why: "held by its MAIN — a release lifts the hold" };
   if (row.status === "queued") return { released: true, by: "release", hints: [] };
   const policy = row.release ?? "manual";
@@ -112,6 +138,10 @@ export function releaseVerdict(row: { status: string; checks: StartPlanChecks; r
     if (!c.cardFiles || c.gaps.some((g) => /^surface\.(?:files|creates):/.test(g)))
       hard.push(`files not backed by the tree${gap(/^surface\.(?:files|creates):/)}`);
     if (c.cardStale) hard.push("the brief changed after the card was read");
+    // the order the text names, the card does not carry — the THIRD door that speaks this refusal
+    // (waits.ts#afterOrderRefusal): `after` carries `row.after`, the card's own list, so the
+    // sentence names what the card carries exactly as the two release doors do.
+    if (c.afterMissing.length) hard.push(afterOrderRefusal(c.afterMissing, row.after));
   }
   if (hard.length) return { released: false, why: `card-valid needs ${hard.join("; ")}` };
   const hints = [...(c.size ? [] : ["no size (weighs mittel)"]),
@@ -427,7 +457,7 @@ const argAfter = (name: string): string | null => {
 
 interface StateTask {
   id?: unknown; kind?: unknown; text?: unknown; source?: unknown; status?: unknown; slot?: unknown; programId?: unknown;
-  card?: (StartPlanCardFacts & { after?: unknown }) | null; brief?: { at?: unknown } | null; hold?: unknown;
+  card?: StartPlanCardFacts | null; brief?: { at?: unknown; text?: unknown } | null; hold?: unknown;
   variantOf?: unknown; variants?: unknown; criterion?: { proposedAt?: unknown; confirmedAt?: unknown } | null;
 }
 interface StateSlot { cwd?: unknown; worktree?: { repo?: unknown; baseSha?: unknown } | null; programId?: unknown;
@@ -475,6 +505,9 @@ async function cli(): Promise<void> {
   };
   const statuses: Record<string, string> = {};
   const rows: StartPlanRow[] = [];
+  // WHO IS A QUEUE ROW, for the order the text names: every id the state file carries, decided BEFORE
+  // the row loop so a NACH onto a later row is read exactly as the live server reads it.
+  const rowIds = new Set<string>(tasks.map((t) => t.id).filter((id): id is string => typeof id === "string"));
   // A VARIANT reads its card, text and brief off its GROUP row, as server.ts#startPlanRowOf does: the
   // group is the one source every variant is briefed from, and a variant carries no reading of its own.
   const sourceOf = (task: StateTask): StateTask =>
@@ -489,7 +522,9 @@ async function cli(): Promise<void> {
       ...surfaceOf(task), after: strings(src.card?.after),
       checks: startPlanChecks({ text: typeof src.text === "string" ? src.text : "",
         source: typeof task.source === "string" ? task.source : "unknown", card: src.card ?? null,
-        briefAt: typeof src.brief?.at === "number" ? src.brief.at : null }),
+        briefText: typeof src.brief?.text === "string" ? src.brief.text : null,
+        briefAt: typeof src.brief?.at === "number" ? src.brief.at : null,
+        queueKnown: (id) => rowIds.has(id), selfId: task.id }),
       ...(policyOf(task) !== "manual" ? { release: policyOf(task) } : {}),
       ...(task.hold ? { held: true } : {}),
       ...(typeof task.variantOf === "string" && task.variantOf ? { variantOf: task.variantOf } : {}) });

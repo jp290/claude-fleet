@@ -159,6 +159,7 @@ import { buildVariantCompareRow, countCheckedMet, decideVariantCompare, doneEntr
 import { audit, AUDIT_FILE } from "./server/audit-log";
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
+import { piSessionSlug, piZaiFenceProfile } from "./server/pi-zai-fence";
 import { STATIC, bundleV, staticResponse, finishHttp, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
 import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, FIND_FANOUT, FIND_MAX_SLOW,
   findSlow, knownSlow, readdirSoon, gitKind, subdirNames, DIRINFO_COMMITS, FILE_CAP, fileBody, editability,
@@ -778,6 +779,39 @@ const PI_ZAI_KEY_FILE = (() => {
     throw new Error("FLEET_PI_ZAI_KEY_FILE must be a safe absolute path without ..");
   return path.replace(/\/+$/, "");
 })();
+// pi-zai's READ fence (server/pi-zai-fence.ts; measured draft: docs/messungen/2026-09-21-pi-zai-
+// lesezaun.md). ABSOLUTE by default, never PATH-resolved: pi and its children may write anywhere
+// under the owner's home, and a `sandbox-exec` dropped into ~/.bun/bin would otherwise neuter the
+// fence of every later spawn. The override exists for one caller — e2e-isolated.sh on a host
+// without seatbelt (the Linux helper), where it names a pass-through stand-in; the real fence is
+// measured only where it exists (e2e/security.ts §6a). Same boot refusal as the two paths above.
+const PI_ZAI_SANDBOX_EXEC = (() => {
+  const path = process.env.FLEET_PI_ZAI_SANDBOX_EXEC ?? "/usr/bin/sandbox-exec";
+  if (!SPAWN_PATH_RE.test(path) || path.split("/").includes(".."))
+    throw new Error("FLEET_PI_ZAI_SANDBOX_EXEC must be a safe absolute path without ..");
+  return path;
+})();
+// SBPL compares resolved paths, and a path the fence names may not exist yet (the agent dir on a
+// first spawn): resolve the longest existing prefix and keep the rest literally.
+function realpathLoose(p: string): string {
+  try { return realpathSync(p); } catch { /* resolve the parent instead */ }
+  const parent = dirname(p);
+  return parent === p ? p : `${realpathLoose(parent)}/${basename(p)}`;
+}
+// null = the fence cannot be BUILT for this cwd; the spawn line then starts no pi (PI_ZAI_FENCE_FAILED).
+function piZaiFenceFor(cwd: string): string | null {
+  return piZaiFenceProfile({
+    home: realpathLoose(HOME), fleetDir: realpathLoose(import.meta.dir),
+    agentDir: realpathLoose(PI_ZAI_AGENT_DIR), keyFile: realpathLoose(PI_ZAI_KEY_FILE), cwd: realpathLoose(cwd),
+    tmuxDir: `${realpathLoose(process.env.TMUX_TMPDIR || "/tmp")}/tmux-${process.getuid?.() ?? 0}`, sockets: [SOCK],
+  });
+}
+// The pane's one line when pi is NOT started because its fence failed — unbuildable, or the self-test
+// at /usr/bin/true refused it (sandbox-exec missing: not found; invalid profile: exit 65, f18c1ec).
+// Mechanically visible too: no pi process, so comms finds nothing and canDeliver refuses the pane.
+// No apostrophe by construction: it sits inside a single-quoted shell word.
+const PI_ZAI_FENCE_FAILED = "pi-zai: pi was NOT started - its read fence (sandbox-exec) failed its self-test. "
+  + "This pane is a plain shell, not an agent.";
 // `pi-ox` owns one Pi home PER pinned Fleet session, deliberately separate from normal Pi,
 // pi-zai and every other pi-ox process. The operator chooses only this validated base; the child
 // is an already-validated Fleet UUID, so restart/resume returns to the same root without an
@@ -936,10 +970,22 @@ const PI_ZAI_HARNESS: Harness = {
     const catalog = `{"providers":{"zai":{"models":[${zaiEntry("glm-5.3", "GLM-5.3")},${zaiEntry("glm-5.3-flash", "GLM-5.3-Flash")}]}}}`;
     const keyError = `pi-zai: missing or empty Z.ai Coding Plan key file: ${PI_ZAI_KEY_FILE}`;
     const catalogError = `pi-zai: could not prepare process-local agent directory: ${PI_ZAI_AGENT_DIR}`;
-    return `${PATH_EXPORT}if [ ! -s '${PI_ZAI_KEY_FILE}' ]; then printf '%s\\n' '${keyError}'; exec ${SHELL}; fi; `
+    const guard = `${PATH_EXPORT}if [ ! -s '${PI_ZAI_KEY_FILE}' ]; then printf '%s\\n' '${keyError}'; exec ${SHELL}; fi; `
       + `mkdir -p '${PI_ZAI_AGENT_DIR}' && printf '%s\\n' '${catalog}' > '${PI_ZAI_AGENT_DIR}/models.json' `
-      + `|| { printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `
-      + `PI_CODING_AGENT_DIR='${PI_ZAI_AGENT_DIR}' ZAI_API_KEY="$(cat '${PI_ZAI_KEY_FILE}')" ${cmd}; exec ${SHELL}`;
+      + `|| { printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `;
+    // The fence wraps pi ALONE: `$(cat key)` runs in this outer shell, so the key reaches pi's env
+    // while the key FILE stays denied to pi and every child (trap (a) of the measurement). The
+    // session dir is created out here because the fence denies creating it under sessions/.
+    const profile = piZaiFenceFor(o.cwd);
+    if (!profile) {
+      console.error(`pi-zai: no read fence buildable for ${o.cwd} — pi not started`);
+      return `${guard}printf '%s\\n' '${PI_ZAI_FENCE_FAILED}'; exec ${SHELL}`;
+    }
+    const sbx = `'${PI_ZAI_SANDBOX_EXEC}' -p "$FLEET_PZ_SB"`;
+    return `${guard}FLEET_PZ_SB='${profile}'; `
+      + `{ mkdir -p '${PI_ZAI_AGENT_DIR}/sessions/${piSessionSlug(realpathLoose(o.cwd))}' && ${sbx} /usr/bin/true; } `
+      + `|| { printf '%s\\n' '${PI_ZAI_FENCE_FAILED}'; exec ${SHELL}; }; `
+      + `PI_CODING_AGENT_DIR='${PI_ZAI_AGENT_DIR}' ZAI_API_KEY="$(cat '${PI_ZAI_KEY_FILE}')" ${sbx} ${cmd}; exec ${SHELL}`;
   },
   // Unsupported for the same reason as Pi: there is no host Claude transcript return channel,
   // and Pi has no equivalent of the worker tier's Claude ToolProfile.
@@ -998,7 +1044,7 @@ const PI_ZAI_HARNESS: Harness = {
     selfSchedule: false,
     container: false,
   },
-  note: "fixed provider zai/glm-5.3 (default) or glm-5.3-flash (Coding Plan); key from ~/.config/claude-fleet/secrets/zai-coding-plan.key; full local reach like pi; process-local agent directory leaves ~/.pi untouched",
+  note: "fixed provider zai/glm-5.3 (default) or glm-5.3-flash (Coding Plan); key from ~/.config/claude-fleet/secrets/zai-coding-plan.key; read fence (sandbox-exec): owner secrets, fleet.json/.env, other sessions, other processes and the live tmux socket denied, writes and network open; process-local agent directory leaves ~/.pi untouched",
   role: "agent",
   browserProfile: "not-applicable", // Pi has no MCP layer
 };
@@ -33390,8 +33436,7 @@ function piOxContextFile(o: { cwd: string; sessionId: string }): string | null {
 function isolatedPiContextFile(root: string, o: { cwd: string; sessionId: string }): string | null {
   let real: string;
   try { real = realpathSync(o.cwd); } catch { real = o.cwd; }
-  const slug = `--${real.replace(/^\/+/, "").replaceAll("/", "-")}--`;
-  const dir = `${root}/sessions/${slug}`;
+  const dir = `${root}/sessions/${piSessionSlug(real)}`;
   let names: string[];
   try { names = readdirSync(dir).filter((n) => n.endsWith(`_${o.sessionId}.jsonl`)); }
   catch { return null; }

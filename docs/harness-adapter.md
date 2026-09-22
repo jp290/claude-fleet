@@ -634,6 +634,28 @@ und die Negativprobe ohne `.pi` (`docs/messungen/2026-09-18-pi-zai-start-readine
 (`src/protocol.ts#contextWindowFor`); für glm-5.3-flash steht dort keine Zeile — ein Flash-Slot
 meldet ctx `unknown`, bis eine eigene Messung die Zeile rechtfertigt.
 
+**Lesezaun (seit 2026-09-22, Owner-Auftrag).** pi läuft nur hinter einem je Pane erzeugten
+`sandbox-exec`-Profil (`server/pi-zai-fence.ts#piZaiFenceProfile`, Entwurf und Proben T1–T5:
+`docs/messungen/2026-09-21-pi-zai-lesezaun.md`). Die Startzeile testet es zuerst an `/usr/bin/true`;
+scheitert das (Binary fehlt, Profil ungültig, Pfad außerhalb des Zeichensatzes), startet pi
+**nicht**, die Pane druckt `pi-zai: pi was NOT started - its read fence (sandbox-exec) failed its
+self-test` und bleibt eine Shell (`comms` findet kein pi → `no-agent`). Das `$(cat key)` läuft
+außen, nur pi und seine Kinder sind gezäunt; die eigene Session-Unterordnung legt die äußere Shell
+an. Das Binary ist absolut (`/usr/bin/sandbox-exec`, `FLEET_PI_ZAI_SANDBOX_EXEC` nur für den
+Linux-Helfer der Suite), nie über `PATH`. **Gesperrt** (Lesen und Schreiben): `fleet.json*` und
+`.env*` im Server-Checkout (Regex, fängt die `.bak`-Kopien), `~/.ssh`, der Key und
+`~/.config/claude-fleet/secrets`, die Logins von codex/claude/gh/cloudflared/pi, die Transkripte
+aller claude-/codex-/pi-Sessions und fremder pi-zai-Slots; die Umgebung fremder Prozesse (das Paar
+`process-info*` others + `sysctl-read kern.proc`, gemessen 396 → 2 lesbare PIDs); der
+`claudefleet`-tmux-Socket; Keychain-Lookups. `e2e/pins.ts` hält das erzeugte Profil, `e2e/security.ts`
+§6a führt es aus. **Offen bleibt:** das eigene Env (`ZAI_API_KEY`, der eigene `FLEET_SELF_TOKEN`);
+das Netz — was lesbar ist, ist exfiltrierbar; alles außerhalb des Inventars, u. a. 38 weitere `.env`
+unter `~` (ein Deny-Profil ist so gut wie sein Inventar); andere tmux-Sockets als `claudefleet`.
+**Preis:** `ps` ist setuid und startet unter keinem `sandbox-exec`-Profil — `e2e/pins.ts`
+überspringt darum seine Geburts-Regel benannt, der Suite-Lock verweigert geschlossen (Suiten über
+Suite-Offer), `ctl.sh`-Owner-Verben fehlen. `sandbox-exec` ist von Apple als deprecated markiert;
+der Selbsttest fängt einen Bruch. Second-host/Linux ist ungemessen (Gegenstück wäre `bwrap`).
+
 ## Welches Modell läuft — die Rangfolge
 
 Drei Leser für „welches Modell läuft“, EINE Rangfolge, an EINEM Ort in Code benannt

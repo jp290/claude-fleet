@@ -952,6 +952,16 @@ mkdir -p "$PI_ZAI_AGENT_DIR"
 mkdir -p "$PI_OX_AGENT_DIR"
 printf '%s\n' 'fleet-e2e-zai-stand-in-key' > "$PI_ZAI_KEY_FILE"
 chmod 600 "$PI_ZAI_KEY_FILE"
+# pi-zai starts pi only behind a seatbelt read fence (server.ts#PI_ZAI_SANDBOX_EXEC). A host
+# without seatbelt (the Linux helper) would, correctly, refuse every pi-zai start, and each check
+# that needs the stand-in Pi live would go red for the platform, not the tree. So OFF darwin only,
+# the fence binary is a pass-through; e2e/security.ts §6a says out loud that no fence was measured.
+# EXPORTED like CODEX_HOME above: the srv and the runner (restartSrv forwards every FLEET_*) see it.
+if [ "$(uname -s)" != Darwin ]; then
+  printf '#!/bin/sh\n[ "$1" = -p ] && shift 2\nexec "$@"\n' > "$DIR/sandbox-exec-standin"
+  chmod +x "$DIR/sandbox-exec-standin"
+  export FLEET_PI_ZAI_SANDBOX_EXEC="$DIR/sandbox-exec-standin"
+fi
 # FLEET_SUITE_LOCK_HELD_BY: this server runs INSIDE the hold this wrapper is already holding, and
 # saying so is load-bearing since M1 (2026-09-06). The land gate's clean path now takes the suite
 # mutex IN THE SERVER before it spawns the gate — and this wrapper holds that very lock for its

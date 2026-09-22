@@ -1222,10 +1222,10 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     && piZai.supports.selfSchedule === false && piZai.supports.container === false
     && JSON.stringify(piZai.effortLevels) === JSON.stringify(["low", "high", "max"]),
     JSON.stringify(piZai));
-  check("§6a pi-zai's picker note names fixed zai/glm-5.3 (default) plus glm-5.3-flash, the default key path, local reach and isolated Pi home",
+  check("§6a pi-zai's picker note names fixed zai/glm-5.3 (default) plus glm-5.3-flash, the default key path, its read fence and isolated Pi home",
     /zai\/glm-5\.3/.test(piZai?.note ?? "") && /glm-5\.3-flash/.test(piZai?.note ?? "")
       && /~\/\.config\/claude-fleet\/secrets\/zai-coding-plan\.key/.test(piZai?.note ?? "")
-      && /full local reach/.test(piZai?.note ?? "") && /~\/\.pi untouched/.test(piZai?.note ?? ""),
+      && /read fence \(sandbox-exec\)/.test(piZai?.note ?? "") && /~\/\.pi untouched/.test(piZai?.note ?? ""),
     piZai?.note ?? "missing");
 
   // Every request boundary that accepts a harness/model/effort tuple must apply this adapter's
@@ -1316,6 +1316,63 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§6a pane_start_command contains $(cat key-path), never the stand-in key bytes",
     pzCmd.includes(`ZAI_API_KEY="$(cat '${zaiKeyFile}')"`) && !pzCmd.includes(zaiStandIn),
     pzCmd.slice(-320));
+  // --- §6a THE READ FENCE (server/pi-zai-fence.ts, docs/messungen/2026-09-21-pi-zai-lesezaun.md).
+  // Shape first, then the profile the pane ACTUALLY carries is executed: a profile that allowed
+  // everything would pass any assertion about its text. Lifted out of this pane's own command line,
+  // never rebuilt here — the failure that matters is a server that stops emitting it. The profile
+  // holds no backslash by construction, so the de-escaped copy is byte-for-byte what the pane runs.
+  const pzSbx = process.env.FLEET_PI_ZAI_SANDBOX_EXEC ?? "/usr/bin/sandbox-exec";
+  const pzProfile = /FLEET_PZ_SB='([^']*)'/.exec(pzCmd)?.[1] ?? "";
+  const pzFenceAt = pzCmd.indexOf(`'${pzSbx}' -p "$FLEET_PZ_SB" /usr/bin/true`);
+  check("§6a pi-zai spawn self-tests its read fence at /usr/bin/true and starts pi only inside it",
+    pzProfile.startsWith("(version 1)(allow default)") && pzFenceAt > 0
+      && pzCmd.includes(`ZAI_API_KEY="$(cat '${zaiKeyFile}')" '${pzSbx}' -p "$FLEET_PZ_SB" pi --provider zai`)
+      && !/(^|[\s;])pi --provider/.test(pzCmd.replace(`'${pzSbx}' -p "$FLEET_PZ_SB" pi --provider`, "")),
+    `profile=${pzProfile.length} bytes, selfTestAt=${pzFenceAt}`);
+  // FAIL-CLOSED, on every platform: the same line with an unreachable fence binary must print the
+  // named marker and never start pi: the marker branch ends in `exec $SHELL`, so no path leads
+  // from it to pi. Run through sh with no stdin, so that shell reads EOF and ends (a started
+  // stand-in would hold the run to its timeout instead); the pane's credential exports ride along
+  // and are never printed.
+  const pzBroken = spawnSync("/bin/sh", ["-c", pzCmd.replaceAll(`'${pzSbx}'`, "'/nonexistent/sandbox-exec'")],
+    { encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] });
+  const pzBrokenOut = `${pzBroken.stdout ?? ""}${pzBroken.stderr ?? ""}`;
+  check("§6a a pi-zai fence that cannot run prints its named marker and never starts pi",
+    pzBrokenOut.includes("pi-zai: pi was NOT started - its read fence (sandbox-exec) failed its self-test")
+      && pzBroken.error === undefined,
+    `${pzBroken.error?.message ?? `exit ${pzBroken.status}`} / ${pzBrokenOut.slice(-200)}`);
+  if (process.platform === "darwin") {
+    // The canary: fenced vs. unfenced, same probe, same path — without the control the EPERM
+    // measures nothing. Opens only; not one byte of either file is read.
+    const pzRun = (sh: string, fenced: boolean): string => {
+      if (!pzProfile) return "PROBE-DID-NOT-RUN";
+      const r = fenced ? spawnSync(pzSbx, ["-p", pzProfile, "/bin/sh", "-c", sh], { encoding: "utf8" })
+        : spawnSync("/bin/sh", ["-c", sh], { encoding: "utf8" });
+      return `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `spawn:${r.error.message}` : ""}`;
+    };
+    const opens = (f: string): string => `: < '${f}' && echo OPENED`;
+    const fleetJson = `${realpathSync(ROOT)}/fleet.json`;
+    const zaiOwn = `${realpathSync(zaiAgentDir)}/sessions/--${realpathSync(REPO).replace(/^\/+/, "").replaceAll("/", "-")}--`;
+    const zaiForeign = `${realpathSync(zaiAgentDir)}/sessions/--fleet-e2e-foreign-slot--`;
+    mkdirSync(zaiForeign, { recursive: true });
+    const ctl = [pzRun(opens(fleetJson), false), pzRun(opens(zaiKeyFile), false), pzRun(`ls '${zaiForeign}' && echo OPENED`, false)];
+    check("§6a fence canary control: fleet.json, the key file and a foreign session open WITHOUT the fence",
+      ctl.every((o) => o.includes("OPENED")), ctl.map((o) => o.trim().slice(0, 80)).join(" | "));
+    const fenced = [pzRun(opens(fleetJson), true), pzRun(opens(zaiKeyFile), true), pzRun(`ls '${zaiForeign}' && echo OPENED`, true)];
+    check("§6a fence canary: fleet.json, the key file and a foreign pi-zai session are refused MECHANICALLY behind the fence",
+      fenced.every((o) => o.includes("Operation not permitted") && !o.includes("OPENED")),
+      fenced.map((o) => o.trim().slice(-90)).join(" | "));
+    const own = pzRun(`echo x > '${zaiOwn}/fence-canary' && echo WROTE; rm -f '${zaiOwn}/fence-canary'`, true);
+    const lane = pzRun(`: < '${realpathSync(REPO)}/.git/HEAD' && echo OPENED`, true);
+    check("§6a fence canary: the pane's OWN session dir stays writable and the repo stays readable",
+      own.includes("WROTE") && lane.includes("OPENED"), `${own.trim().slice(0, 90)} | ${lane.trim().slice(0, 90)}`);
+    rmSync(zaiForeign, { recursive: true, force: true });
+  } else {
+    // No seatbelt on this host: the wrapper names a pass-through stand-in, so nothing above the
+    // marker check measured a fence — said here under its own name instead of reading as green.
+    check("§6a fence canary NOT measurable off darwin — the wrapper's pass-through stand-in is in use, not a fence",
+      pzSbx !== "/usr/bin/sandbox-exec" && existsSync(pzSbx), pzSbx);
+  }
   check("§6a the controlled Pi stand-in really started after the key guard",
     (await waitForPi(`s${HARNESS_SLOT}`)).includes("pi"));
   check("§6a models.json is the exact two-entry catalogue (glm-5.3 + glm-5.3-flash) in the scratch agent directory",

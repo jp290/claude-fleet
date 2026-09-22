@@ -8,7 +8,11 @@
 // three with one code path. `n` is the 1-based LINE number, exactly as for Claude: the client's
 // incremental `after` is a line count.
 
-export interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string }
+// id: the tool_use id an assistant block carries; ref: the tool_use_id a tool_result answers —
+// the pair is how the chat view can show a subagent call as RUNNING until its result lands
+// (without them, pairing stays positional as it always was; codex/pi blocks carry none)
+export interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string;
+  id?: string; ref?: string }
 // meta: a harness-injected user turn — real content, not typed by the owner (folded in the view)
 export interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[]; meta?: boolean }
 

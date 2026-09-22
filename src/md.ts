@@ -48,11 +48,14 @@ function node(tag: string, cls: string, text?: string): HTMLElement {
 // confirms exist; what a hover shows is the caller's business. Unset (the guest reader, §7b), the
 // text path below is the plain createTextNode it always was. Module state rather than a parameter
 // threaded through every recursion: mdInto is synchronous, so the hook cannot leak across calls.
-export type MdEntityKind = "task" | "slot";
+export type MdEntityKind = "task" | "slot" | "program" | "sha";
 export interface MdOpts { entity?: (kind: MdEntityKind, id: string) => boolean }
 let entityOk: MdOpts["entity"] | null = null;
 
-const ENT = /\b([0-9a-f]{8})\b|\b([Ss]lots?\s*#?)(\d{1,3}(?:\s*[/,+&]\s*#?\d{1,3})*)\b/g;
+// 7-12 hex covers task ids (8), program ids (8) and commit shas (7-12, cited as prefixes) — which
+// KIND a hex string names is the caller's answer (entityOk is asked in that order; an unknown
+// string stays plain text, the negative case the view relies on)
+const ENT = /\b([0-9a-f]{7,12})\b|\b([Ss]lots?\s*#?)(\d{1,3}(?:\s*[/,+&]\s*#?\d{1,3})*)\b/g;
 
 function entity(kind: MdEntityKind, id: string, text: string): HTMLElement {
   const e = node("span", `ent ent-${kind}`, text);
@@ -68,12 +71,20 @@ function text(target: HTMLElement, s: string): void {
   const put = (upto: number): void => {
     if (upto > at) target.appendChild(document.createTextNode(s.slice(at, upto)));
   };
+  // which kind a hex string names, asked in precedence order — unknown stays text
+  const hexKind = (hex: string): MdEntityKind | null => {
+    if (hex.length === 8 && ok("task", hex)) return "task";
+    if (hex.length === 8 && ok("program", hex)) return "program";
+    if (ok("sha", hex)) return "sha";
+    return null;
+  };
   for (const m of s.matchAll(ENT)) {
     const i = m.index ?? 0;
     if (m[1] !== undefined) {
-      if (!ok("task", m[1])) continue;
+      const kind = hexKind(m[1]);
+      if (!kind) continue;
       put(i);
-      target.appendChild(entity("task", m[1], m[1]));
+      target.appendChild(entity(kind, m[1], m[1]));
       at = i + m[0].length;
       continue;
     }
@@ -114,12 +125,18 @@ function inline(target: HTMLElement, src: string): void {
     if (m[2] !== undefined) {
       const body = m[2].replace(/^ (.*) $/, "$1");
       const code = node("code", "mdcode", body);
-      // a code span that IS a known id (`0617cf27`) is the most common way an agent writes one
-      const id = /^[0-9a-f]{8}$/.test(body) && entityOk?.("task", body) ? body : null;
-      if (id) {
-        code.className = "mdcode ent ent-task";
-        code.setAttribute("data-ent", "task");
-        code.setAttribute("data-id", id);
+      // a code span that IS a known id (`0617cf27`) is the most common way an agent writes one —
+      // same kind chain as the plain-text path, unknown stays a plain code span
+      const hex = /^[0-9a-f]{7,12}$/.test(body) ? body : null;
+      const kind = hex && entityOk
+        ? (hex.length === 8 && entityOk("task", hex) ? "task"
+          : hex.length === 8 && entityOk("program", hex) ? "program"
+          : entityOk("sha", hex) ? "sha" : null)
+        : null;
+      if (hex && kind) {
+        code.className = `mdcode ent ent-${kind}`;
+        code.setAttribute("data-ent", kind);
+        code.setAttribute("data-id", hex);
       }
       target.appendChild(code);
     } else if (m[3] !== undefined) {

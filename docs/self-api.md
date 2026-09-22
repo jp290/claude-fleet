@@ -337,9 +337,15 @@ gescheitertem Respawn eine Narbe auf der Linie (`lineageHandoverLosses`). Die An
 `GET /api/succession-debts` liest sie, und `POST /api/succession-debts/:id/resend` stellt den gehaltenen Brief
 der EXAKTEN Nachfolgerin zu, für die er gebaut wurde (Delivery-Gate + Readiness). Die Zustellung bezahlt die
 Schuld und quittiert die Inbox-Zeile; 409, solange der Schirm blockiert, 404 nach der Zahlung. Ein
-gescheiterter generischer Respawn wird vom nächsten Owner-`open` desselben Slots im selben cwd adoptiert:
-der gehaltene Record wird an die neue Besetzung adressiert (die Linie zeigt eine Session mehr), und danach
-kann der Brief nachgesendet werden. Einen gescheiterten Supervisor-Respawn übernimmt `bootstrapSupervisor`,
+gescheiterter generischer Respawn wird vom nächsten Owner-`open` desselben Slots im selben cwd adoptiert, aber
+nur unter dem Label, das die Nachfolgerin getragen hätte, und nur innerhalb von
+`FLEET_SUCCESSION_DEBT_ADOPT_MS` (Default 30 min) nach dem Fehlschlag. Slot und cwd allein sind keine Linie,
+denn die meisten MAINs sitzen im selben Haupt-Checkout. Der gehaltene Record wird an die neue Besetzung
+adressiert (die Linie zeigt eine Session mehr), und danach kann der Brief nachgesendet werden. Eine Schuld,
+die niemand mehr bezahlen kann, wird als verwaist erledigt: die Inbox-Zeile wird quittiert, und das Audit
+`succession_debt … settled as orphaned` nennt den Grund. Das trifft eine Nachfolgerin, die nicht mehr
+steht, eine generische Linie nach dem Fenster, eine Supervisor-Bindung, die die Vorgängerin nicht mehr
+nennt, und ein re-gegründetes oder inaktives Program. Einen gescheiterten Supervisor-Respawn übernimmt `bootstrapSupervisor`,
 sobald er genau die tote Bindung ersetzt: der Record wandert mit, der Brief ist durch das eigene
 Gründungs-Briefing ersetzt. Ein Program-MAIN re-gründet über den Bootstrap, denn der Program-Record trägt
 seine Zeilen. Solange eine Nachfolge oder Gründung läuft, verweigert `POST /api/deploy` den srv-Restart

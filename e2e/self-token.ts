@@ -1298,6 +1298,8 @@ export async function run(ctx: Ctx): Promise<void> {
     await restartSrv({ FLEET_TEST_SUCCESSION_RESPAWN_FAIL_LATCH: respawnLatch });
     const lineRecords = (): number => persistedLine().filter((r) => r.lineageId === sj.lineage?.lineageId).length;
     const recordsBeforeFail = lineRecords();
+    // the successor inherits the predecessor's label; adoption asks for exactly that label
+    const labelBeforeFail = (await succRows()).find((x) => x.id === pj.slot)?.label ?? null;
     const failedSucc = await successionPost("succeed", pointerTok, { intent: "this handover must not be reported as done" });
     const failedBody = (await failedSucc.json()) as { error?: string; respawned?: boolean; slot?: number };
     const failedRow = (await succRows()).find((x) => x.id === pj.slot);
@@ -1346,7 +1348,18 @@ export async function run(ctx: Ctx): Promise<void> {
     check("...the debt survives a server restart with its held record",
       JSON.stringify(debtAfterBoot?.draft ?? null) === JSON.stringify(failDebt?.draft ?? null) && debtAfterBoot?.brief === failDebt?.brief,
       JSON.stringify(debtAfterBoot ? { ...debtAfterBoot, brief: debtAfterBoot.brief.length } : null));
-    const reopened = await post(`/api/slots/${pj.slot}/open`, { cwd: sr, label: "main-reopened" });
+    // SLOT + CWD ARE NOT A LINE (review of 9cd113e7): an unrelated owner open of the same slot on the
+    // same checkout under ANOTHER label must not take the dead line's record. Red before the label rule.
+    const stranger = await post(`/api/slots/${pj.slot}/open`, { cwd: sr, label: "someone-else" });
+    const strangerBody = (await stranger.json()) as { successionDebt?: unknown };
+    const strangerTok = pj.slot ? await paneEnv(`s${pj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const strangerLine = await selfLineage(strangerTok);
+    check("...an owner open of that slot and cwd under ANOTHER label adopts nothing: no record, no debt named, the debt stays",
+      stranger.ok && strangerBody.successionDebt === undefined && (strangerLine === null || strangerLine === undefined)
+        && lineRecords() === recordsBeforeFail && (await debtsNow()).some((d) => d.id === failDebt?.id),
+      `${stranger.status} ${JSON.stringify(strangerBody)} line=${JSON.stringify(strangerLine)}`);
+    if (pj.slot) await post(`/api/slots/${pj.slot}/kill`, {});
+    const reopened = await post(`/api/slots/${pj.slot}/open`, labelBeforeFail === null ? { cwd: sr } : { cwd: sr, label: labelBeforeFail });
     const reopenedBody = (await reopened.json()) as { ok?: boolean; successionDebt?: { id?: string; adopted?: boolean } };
     const reopenedTok = pj.slot ? await paneEnv(`s${pj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
     const lineE = await selfLineage(reopenedTok);
@@ -1370,7 +1383,31 @@ export async function run(ctx: Ctx): Promise<void> {
     check("...and the held brief is resent to that occupant byte for byte, paying the debt",
       resentE?.ok === true && resentBrief === failDebt?.brief && !(await debtsNow()).some((d) => d.id === failDebt?.id),
       `${resentE?.status} ${resentE ? await resentE.clone().text().catch(() => "") : ""} brief=${resentBrief.slice(0, 60)}`);
+    // …AND NOT LATER: a second failure on the same line, whose adoption window has closed by the time
+    // the owner reopens. The debt is settled as orphaned (its inbox row acknowledged), and the open
+    // under the RIGHT label adopts nothing. Red before the window rule: debts never expired.
+    writeFileSync(respawnLatch, "armed\n");
+    await restartSrv({ FLEET_TEST_SUCCESSION_RESPAWN_FAIL_LATCH: respawnLatch });
+    const labelE = (await succRows()).find((x) => x.id === pj.slot)?.label ?? null;
+    const lateFail = await successionPost("succeed", reopenedTok, { intent: "a second failure, adopted too late" });
+    const lateBody = (await lateFail.json()) as { debt?: string; respawned?: boolean };
+    rmSync(respawnLatch, { force: true });
+    await restartSrv({ FLEET_SUCCESSION_DEBT_ADOPT_MS: "1" });
+    await Bun.sleep(50);
+    const lateDebts = await debtsNow();
+    const lateEvent = ((await (await get("/api/events")).json()) as { events?: { id: string; kind: string; status: string;
+      payload?: { debtId?: string } }[] }).events?.find((e) => e.kind === "succession-debt" && e.payload?.debtId === lateBody.debt);
+    const lateOpen = await post(`/api/slots/${pj.slot}/open`, labelE === null ? { cwd: sr } : { cwd: sr, label: labelE });
+    const lateOpenBody = (await lateOpen.json()) as { successionDebt?: unknown };
+    const lateTok = pj.slot ? await paneEnv(`s${pj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const lateLine = await selfLineage(lateTok);
+    check("...a debt past its adoption window is settled as orphaned — gone from the list, its owner row acknowledged — and an open under the right label adopts nothing",
+      lateFail.status === 500 && lateBody.respawned === false && typeof lateBody.debt === "string"
+        && !lateDebts.some((d) => d.id === lateBody.debt) && lateEvent?.status === "acknowledged"
+        && lateOpen.ok && lateOpenBody.successionDebt === undefined && (lateLine === null || lateLine === undefined),
+      `${lateFail.status} ${JSON.stringify(lateBody)} debts=${lateDebts.length} event=${lateEvent?.status} open=${JSON.stringify(lateOpenBody)} line=${JSON.stringify(lateLine)}`);
     if (pj.slot) await post(`/api/slots/${pj.slot}/kill`, {});
+    await restartSrv();
     rmSync(sr, { recursive: true, force: true });
   }
 

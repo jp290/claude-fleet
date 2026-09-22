@@ -54,7 +54,7 @@ Grammatik-Kommentar darüber). [b, c]
 suite, gate, mutex, tier, carry, srv, bundle, seed, TTL, ctx, „‹x› only"* stehen höchstens am
 Ende eines Tooltips hinter „intern:". Ein Tooltip beantwortet zuerst „was passiert, wenn ich
 klicke / was heißt das für mich", danach das Wie. Gleiches Ding, gleicher Name über alle Flächen.
-Sichtbare Beschriftungen sind **deutsch** (benannte Annahme, Frage 1). Anker: `.chatsizebtn`
+Sichtbare Beschriftungen: **Fleet-Englisch bleibt** — *land* und *lane* sind die sichtbaren Wörter, Handlungswörter werden nicht eingedeutscht; nur Jargon wird ersetzt (*baton* → *handoff*, *audit* → *check*, „‹instanz› only“ → der Instanzname, z. B. „Mac“), und Tooltips erklären auf Deutsch in einem Satz, was passiert (Owner-Antwort 2026-09-22 auf Frage 1 und 3; die frühere Annahme „deutsch überall“ ist damit überholt). Anker: `.chatsizebtn`
 (der einzige Eckknopf mit deutschem Tooltip heute). [a]
 
 **G0.6 Eine Glyphen-Sprache.** Ikonen kommen aus `src/icons.ts#icon` (SVG, `currentColor`), nicht
@@ -249,7 +249,7 @@ Vollbild-Fenster (G6.3).
 ## Widersprüche zwischen den Blickwinkeln — entschieden, nicht gemittelt
 
 - **W1 Sprache: deutsch (a) gegen „die App spricht englisch" (b hält die bestehende Sprache).**
-  Entschieden: deutsch für sichtbare Beschriftungen. Grund: der Owner schreibt und entscheidet auf
+  **Vom Owner am 2026-09-22 korrigiert: Fleet-Englisch bleibt für Handlungswörter (G0.5), deutsch sind Erklärtexte und Tooltips.** Ursprünglich entschieden: deutsch für sichtbare Beschriftungen. Grund: der Owner schreibt und entscheidet auf
   Deutsch, die zuletzt abgenommene Fläche spricht es schon (Aa-Tooltip „Schriftgröße …", `.sizereset`
   „Standard"), und Idee 3 verlangt Owner-Sprache. Die Umstellung passiert je Fläche mit ihrer Bauzeile, nicht als
   Suchen-und-Ersetzen. Offen als Frage 1.
@@ -323,7 +323,9 @@ umbenennt, prüft dort `bun run typecheck`.
 
 ---
 
-## Drei Fragen an den Owner
+## Drei Fragen an den Owner — beantwortet 2026-09-22
+
+Antworten (via Orchestratorin Slot 14): **1** Nein — Fleet-Englisch bleibt für Handlungswörter, nur Jargon wird ersetzt, Tooltips deutsch (eingearbeitet in G0.5 und W1). **2** Pane-Ecke, wie angenommen. **3** *land* und *lane* bleiben; *baton* → *handoff*, *audit* → *check*, „mac only“ → „Mac“.
 
 1. **Deutsch überall?** Die Grammatik stellt sichtbare Beschriftungen auf Deutsch um (W1) — auch
    Handlungswörter, die du heute englisch liest („Land lane", „Shelve", „Apply"). Oder sollen

@@ -14,6 +14,7 @@ import { attachEntityCards, type EntFacts } from "./entcard";
 import { loadChatSizes, sizePanel, stepChatSizes } from "./chatsize";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
+import { pendingSettledBy } from "./pendingsend";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
@@ -858,7 +859,7 @@ class Pane {
     mountComposer(); // the one composer takes the size of the focused pane's view
     clearTimeout(this.chatTimer);
     if (v === "chat") void this.pollChat();
-    else this.term.focus();
+    else { this.refit(); this.term.focus(); }
   }
 
   // 💬 only where a conversation can actually be read. A harness that writes no claude transcript
@@ -892,6 +893,7 @@ class Pane {
     this.chatSource = null;
     this.toolGroup = null;
     this.notifGroup = null;
+    this.pending = [];
     // un-stick the busy flag so the reassigned pane's next pollChat() isn't blocked; the
     // old slot's in-flight fetch bails on the slot-identity guard in pollChat.
     this.chatBusy = false;
@@ -900,6 +902,8 @@ class Pane {
   // --- conversation rendering: the view exists so YOUR messages are findable.
   // They render as prominent anchors; everything the agent did between two texts
   // collapses into one expandable "⚙ n steps" line instead of a wall of rows. ---
+  // prompts sent from the composer that the transcript has not brought back yet (src/pendingsend.ts)
+  private pending: { text: string; el: HTMLElement }[] = [];
   private toolGroup: { det: HTMLElement; sum: HTMLElement; body: HTMLElement; count: number;
     lastStep: HTMLElement | null } | null = null;
   // task-notifications between two of your messages fold into one collapsed accordion —
@@ -1018,6 +1022,7 @@ class Pane {
       if (b.t === "text") {
         this.toolGroup = null; // a message ends the current work block
         const text = e.role === "user" ? unwrapPasted(b.text) : b.text;
+        if (e.role === "user") this.settlePending(text);
         const msg = el("div", `msg ${e.role}`);
         const body = el("div", "mbody");
         mdInto(body, text, { entity: entityKnown });
@@ -1032,6 +1037,33 @@ class Pane {
         this.addStep(b);
       }
     }
+  }
+
+  // THE SENT PROMPT, BEFORE THE TRANSCRIPT HAS IT. Measured 2026-09-22
+  // (docs/messungen/2026-09-22-chat-absenden-zeitleiste.md): the bubble waited for POST /send (~350–500 ms) AND the next chat
+  // poll (up to chatMs, 1 s / 3 s with the data saver) — mid-turn until the agent wrote the queued
+  // prompt, 6.4 s. The local bubble shows at Enter; the transcript entry replaces it.
+  addPending(text: string): HTMLElement | null {
+    if (this.view !== "chat" || this.pastN !== null) return null;
+    const msg = el("div", "msg user pending");
+    msg.style.opacity = "0.6";
+    const body = el("div", "mbody");
+    mdInto(body, text, { entity: entityKnown });
+    const meta = el("div", "mmeta");
+    meta.appendChild(el("span", "mwho", "you · wird gesendet…"));
+    msg.append(body, meta);
+    this.chatEl.appendChild(msg);
+    this.pending = [...this.pending, { text, el: msg }];
+    this.chatEl.scrollTop = this.chatEl.scrollHeight;
+    return msg;
+  }
+  dropPending(msg: HTMLElement): void {
+    msg.remove();
+    this.pending = this.pending.filter((p) => p.el !== msg);
+  }
+  private settlePending(text: string): void {
+    const hit = this.pending.find((p) => pendingSettledBy(p.text, text));
+    if (hit) this.dropPending(hit.el);
   }
 
   // jump between YOUR messages — the reason this view exists
@@ -1095,6 +1127,7 @@ class Pane {
       // pinned file appeared) — start over from the top of the new file
       if (this.chatSource !== null && data.source !== this.chatSource) {
         this.chatEl.replaceChildren();
+        this.pending = [];
         this.chatTotal = 0;
         this.chatSource = data.source;
         return; // next tick refills from 0
@@ -1122,6 +1155,8 @@ class Pane {
           const at = startsRequest && e.ts ? Date.parse(e.ts) : NaN;
           if (at > this.lastTurnAt) this.lastTurnAt = at;
         }
+        // what has not arrived yet stays below what has
+        for (const p of this.pending) this.chatEl.appendChild(p.el);
         tickCacheAge();
         if (pinned) this.chatEl.scrollTop = this.chatEl.scrollHeight;
       }
@@ -4164,7 +4199,10 @@ function reshapeSurface(change: () => void): void {
     compSurface.style.height = "";
     compSurface.classList.remove("reshaping");
     // the panes above gave up (or got back) the height — the terminal refits once, at the end
-    requestAnimationFrame(() => { for (const p of panes) p.refit(); });
+    // …but not a terminal the chat view hides (visibility, so it keeps its box): fit() reflows its
+    // 10 000-line buffer, measured 1.0–2.7 s of main thread after a multi-line send
+    // (docs/messungen/2026-09-22-chat-absenden-zeitleiste.md); setView("term") refits it on the way back
+    requestAnimationFrame(() => { for (const p of panes) if (!p.isChat) p.refit(); });
   };
   clearTimeout(surfaceTimer);
   if (reduceMotion.matches) { settle(); return; }
@@ -14628,8 +14666,10 @@ async function doSend() {
   // that finds them apart refuses rather than guess (the seventeenth cut's misdelivery)
   if (slot !== draftSlot) { toast(`not sent — this draft belongs to slot ${draftSlot}`); return; }
   send.disabled = true;
+  const pending = pane.addPending(outgoing);
   try {
-    if (!await deliver(slot, outgoing)) return;
+    if (!await deliver(slot, outgoing)) { if (pending) pane.dropPending(pending); return; }
+    pending?.querySelector(".mwho")?.replaceChildren("you · gesendet");
     // the send IS the next turn: the counter restarts now, not one transcript poll later
     pane.lastTurnAt = Math.max(pane.lastTurnAt, serverClock());
     tickCacheAge();

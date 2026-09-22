@@ -1,3 +1,23 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb Slot 4 → Nachfolgerin (2026-09-22, ctx 29 %)
+
+Der Advisory-Deckel des Programs ist voll (10/10), daher steht diese Uebergabe hier statt als notiz-Zeile.
+
+```
+[UEBERGABE Program Fleet-Betrieb · MAIN Slot 4 -> Nachfolgerin · 2026-09-22 bei 29 % · NUR was sonst mit dieser Pane stirbt]
+
+1) NICHTS DRAENGT: keine armierten Watches/Autos; alle 11 Lands dieser Schicht haben ein gruenes Audit; Deploy 396c9639 (Orchestratorin Slot 14) ist live auf 4cefdd2a, deployGap 0.
+
+2) GELANDET: b4470b1c->96bb83c4 · 3488416a->22824ce5 · 860ce35f->f7ca1fdb+04ce3345 (0d51) · 9eabf6a8->2c701b9e+2a887f9a (0d51; Doc-Shas in 2197dfb7) · d3b69b83->070ff9bc · cac57555->6d1a0774+a2e15ae4 · 65f8b2fa->7c9af003+a1a14776 · c83bde65->83d910e1 · c8abaac1->a107fa01+8f4825ef · Welle 4a470a9d+0e5b85d6->5bdb5239+6df8e834 · 32014c79->7963f3f9..4cefdd2a (Nachfolge in place; zwei Review-Runden per Reviewer-Subagent, Befunde in der Lane geschlossen).
+
+3) OWNER-DELEGATION (via Orchestratorin 2026-09-22, "voll aus"): jede fertige Lane (Report complete + gruene Preview) SELBST landen, auch Zeilen aus Program 0d51. Programlose Zeilen: ./ctl.sh land <slot>, danach ./ctl.sh watch merge <slot>.
+
+4) HANDGRIFFE: .env FLEET_VERIFY_CMD_REPOS[claude-fleet] = watchdog.sh#VERIFY_CMD (7 tsc-Dateien fehlten; e2e/pins.ts#pinSource haelt es jetzt; rulebook/loader.md nachgezogen). bun install im Haupt-Checkout nach 860ce35f (neue Dep) — bei jeder Lane mit package.json-Diff vor dem Deploy pruefen. Preview-Verdikte: streams/helper-artifacts/<job>/*/suite.log (tail -1 + grep -c ^FAIL); das Verdikt geht an die LANE-Pane, nicht hierher. Nach Preview-Gruen ist die Lane oft kurz nicht done-looking (Land 409) -> ./ctl.sh watch lane <slot>.
+
+5) NEU GEFILET (Notizen): 0a25bc34 (19 Prozesse mit FLEET_TOKEN im Env + Drei-Stellen-Zaun) · d5af055e (Socket-Owner-Gate deckt landPending/tasks nicht).
+
+6) OFFEN, akzeptiert: 32014c79 — harter srv-Crash vor dem Kill verliert die Linie; Owner-Kill vor dem Nachfolge-Kill ohne Sonde. 65f8b2fa — 49105904/d5a399ff/057b1bf4/fa07734f werden an der Freigabe verweigert, bis ihre Karten after tragen.
+```
+
 # HANDOFF — Orchestrator Slot 8 → Nachfolgerin (Haupt-Checkout, Owner-Token): M5-Serie gebrochen und gruen bestaetigt, Master-Stop zurueckgedreht, Deploy nachgezogen, sol|terra als Varianten-Gruppe und das Sub-Routing gefilet; 2026-09-17 ~08:1x, ctx GEMESSEN 36,2 %
 
 ## 0. SOFORT BEIM ANTRITT

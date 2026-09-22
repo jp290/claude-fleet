@@ -253,6 +253,68 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
       check("context fill: the steward view carries ctx on EVERY slot and answers null for an empty one",
         stewFills.every((x) => "ctx" in x) && stewFills.filter((x) => !x.cwd).every((x) => x.ctx === null),
         JSON.stringify(stewFills.map((x) => [x.id, x.ctx?.pct ?? null])));
+
+      // (e) AN API-ERROR ROUND AFTER THE REAL TURNS. Claude writes a dead turn ("API Error: 529
+      //     Overloaded") as an assistant line with isApiErrorMessage:true, model "<synthetic>" and a
+      //     usage of all ZEROS (slot 3, 2026-09-22). Until then the reader took that as the newest
+      //     usage and the poll said ctx 0 % beside a footer of 41 %. The window did not empty, so
+      //     the number must stay the last REAL turn's. The error line is stamped 10 min in the
+      //     past so that an ARMED resume tick would be due at once — (g) depends on that.
+      type Stall = { since: number; text: string; kind: string | null };
+      const ERR_TS = new Date(Date.now() - 10 * 60_000).toISOString();
+      const ERR_TEXT = "API Error: 529 Overloaded. This is a server-side issue, usually temporary";
+      const errLine = JSON.stringify({ type: "assistant", timestamp: ERR_TS, error: "server_error", isApiErrorMessage: true,
+        message: { model: "<synthetic>", role: "assistant", content: [{ type: "text", text: ERR_TEXT }],
+          usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 } } });
+      const auditMark = Date.now();
+      writeFileSync(ctx.plantedTranscript, `${older}\n${newest}\n${after}\n${errLine}\n`);
+      type StallRow = { id: number; ctx: Fill; apiStall?: Stall | null };
+      const stallRows = async (): Promise<StallRow[]> =>
+        ((await (await get("/api/sessions")).json()) as { slots: StallRow[] }).slots;
+      // apiStall also wants the pane quiet for 10 s, so wait for it rather than for the ctx alone
+      let row: StallRow | undefined;
+      for (let i = 0; i < 60; i++) {
+        row = (await stallRows()).find((s) => s.id === 2);
+        if (row?.apiStall && row.ctx?.usedTokens !== undefined) break;
+        await Bun.sleep(500);
+      }
+      check("api error: ctx keeps the last REAL usage after a synthetic zero-usage error round (was 0)",
+        row?.ctx?.usedTokens === EXPECT_USED && row.ctx.pct === 75.2, JSON.stringify(row?.ctx));
+      // (f) the fact itself: the last assistant line is the error round and the pane is idle
+      check("api error: apiStall carries {since, text, kind} off the error line when the pane is idle",
+        row?.apiStall?.since === Date.parse(ERR_TS) && row.apiStall.text === ERR_TEXT
+          && row.apiStall.kind === "server_error", JSON.stringify(row?.apiStall));
+      const stewStall = ((await (await stewGet("/api/steward/sessions")).json()) as { slots: StallRow[] })
+        .slots.find((x) => x.id === 2)?.apiStall;
+      check("api error: the steward view serves the SAME apiStall as the owner poll",
+        JSON.stringify(stewStall) === JSON.stringify(row?.apiStall), `steward=${JSON.stringify(stewStall)}`);
+      const quiet = (await stallRows()).filter((s) => s.id !== 2);
+      check("api error: no other slot carries apiStall (absent = null on the poll)",
+        quiet.every((s) => !("apiStall" in s)), JSON.stringify(quiet.filter((s) => "apiStall" in s).map((s) => s.id)));
+      // (g) the auto-resume is OFF in this suite (FLEET_API_STALL_RESUME unset). The stall is
+      //     server_error, idle and 10 min old, i.e. due on the first tick of an armed server —
+      //     so a tick firing regardless of the flag would type within API_STALL_TICK_MS (15 s).
+      await Bun.sleep(16_000);
+      const resumes = (await auditRead()).filter((r) => r.ts >= auditMark && r.event === "send"
+        && (r as { path?: string }).path === "api-stall-resume");
+      check("api error: with FLEET_API_STALL_RESUME off nothing is typed into the stalled pane",
+        resumes.length === 0, JSON.stringify(resumes));
+      // (h) a later REAL assistant line ends the stall: the last line decides, the old error does not
+      const later = JSON.stringify({ type: "assistant", timestamp: new Date().toISOString(),
+        message: { model: "claude-opus-5", usage: { input_tokens: 3, cache_creation_input_tokens: 10, cache_read_input_tokens: 150_000, output_tokens: 5 } } });
+      writeFileSync(ctx.plantedTranscript, `${older}\n${newest}\n${after}\n${errLine}\n${later}\n`);
+      let cleared: StallRow | undefined;
+      for (let i = 0; i < 20; i++) {
+        cleared = (await stallRows()).find((s) => s.id === 2);
+        if (cleared?.ctx?.usedTokens === 150_013) break;
+        await Bun.sleep(250);
+      }
+      check("api error: a later real assistant line clears apiStall and ctx follows it",
+        cleared?.ctx?.usedTokens === 150_013 && !("apiStall" in (cleared ?? {})), JSON.stringify(cleared));
+      const stewCleared = ((await (await stewGet("/api/steward/sessions")).json()) as { slots: StallRow[] })
+        .slots.find((x) => x.id === 2);
+      check("api error: the steward view answers apiStall null (present, not omitted) once cleared",
+        stewCleared?.apiStall === null, JSON.stringify(stewCleared?.apiStall));
     }
   }
   if (ctx.plantedTranscript) (await import("node:fs")).rmSync(ctx.plantedTranscript, { force: true });

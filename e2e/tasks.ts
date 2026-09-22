@@ -9869,6 +9869,51 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(sp-tick)(3c) after B lands, C starts — the order was A, B, C",
       tOf(tLive, tC)?.status === "sent", JSON.stringify({ c: tOf(tLive, tC) }));
 
+    // --- (sp-tick-reg) THE APPEND REGISTER NEVER HOLDS THE TICK (2026-09-22, APPEND_REGISTERS in
+    // start-plan.ts#collision). Every Messnotiz appends exactly one line to
+    // docs/messungen/INDEX.md and a rebase conflict there resolves as "beide Zeilen behalten"
+    // (report e7381142), yet the unexcepted reading serialized three released rows 2 h behind one
+    // lane on that file (slot 13, 2026-09-21). So: two rows overlapping ONLY in the register both
+    // start, while two rows that ALSO share a real file stay serialized and the note names the
+    // real file. The code pair is filed FIRST so its verdict does not depend on the register rule,
+    // and its surfaces name the CODE file before the register — collision reads a.files in order,
+    // so R2's note names sp-tick-reg.ts under BOTH readings and only the register pair flips
+    // red (P2 held on the register) → green with the cut.
+    {
+      const regKills: number[] = [];
+      for (const id of [tW1, tC]) { const slot = (await tRow(id))?.slot; if (typeof slot === "number") { regKills.push(slot); await post(`/api/slots/${slot}/kill`, {}); } }
+      await slotsEmptied(regKills);
+      const tR1 = await tTask("SP-TICK reg+code row 1 on sp-tick-reg.ts", ["sp-tick-reg.ts", "docs/messungen/INDEX.md"]);
+      const tR2 = await tTask("SP-TICK reg+code row 2 on sp-tick-reg.ts", ["sp-tick-reg.ts", "docs/messungen/INDEX.md"]);
+      const tP1 = await tTask("SP-TICK register row 1 on the Messnotizen index", ["docs/messungen/INDEX.md"]);
+      const tP2 = await tTask("SP-TICK register row 2 on the Messnotizen index", ["docs/messungen/INDEX.md"]);
+      const regIds = [tR1, tR2, tP1, tP2];
+      check("(sp-tick-reg) fixture: four rows with confirmed surfaces registered, the code pair filed before the register pair",
+        regIds.every(Boolean), JSON.stringify(regIds));
+      for (const id of regIds) await post(`/api/tasks/${id}/queue`, {});
+      tLive = await tUntil((rows) => tOf(rows, tR1)?.status === "sent" && tOf(rows, tP1)?.status === "sent"
+        && tOf(rows, tP2)?.status === "sent");
+      const r1 = tOf(tLive, tR1), r2 = tOf(tLive, tR2), p1 = tOf(tLive, tP1), p2 = tOf(tLive, tP2);
+      check("(sp-tick-reg)(1) two rows overlapping ONLY in the append register start both, each on its own lane, and no note names the register",
+        p1?.status === "sent" && p2?.status === "sent" && typeof p1.slot === "number" && p1.slot !== p2.slot
+        && ![p1, p2].some((x) => (x.note ?? "").includes("docs/messungen/INDEX.md")),
+        JSON.stringify({ p1, p2 }));
+      check("(sp-tick-reg)(2) two rows that ALSO share a real file stay serialized — the note names the real file, never the register",
+        r1?.status === "sent" && r2?.status === "queued"
+        && r2?.note === `waiting: collides with lane ${r1.slot} on sp-tick-reg.ts`,
+        JSON.stringify({ r1, r2 }));
+      const regRows = await tRows();
+      await post("/api/dispatch", { on: false }); // first: no tick may start R2 once R1's lane is gone
+      const regDone: number[] = [];
+      for (const id of regIds) { const slot = tOf(regRows, id)?.slot; if (typeof slot === "number") { regDone.push(slot); await post(`/api/slots/${slot}/kill`, {}); } }
+      await slotsEmptied(regDone);
+      for (const id of regIds) {
+        const row = tOf(await tRows(), id);
+        if (row?.status === "queued") await post(`/api/tasks/${id}/unqueue`, {});
+        if (row && row.status !== "sent") await post(`/api/tasks/${id}/delete`, {});
+      }
+    }
+
     await post("/api/dispatch", { on: false });
     const tKills: number[] = [];
     for (const id of [tW1, tC]) { const slot = (await tRow(id))?.slot; if (typeof slot === "number") { tKills.push(slot); await post(`/api/slots/${slot}/kill`, {}); } }

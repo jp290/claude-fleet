@@ -241,10 +241,28 @@ const rangesOn = (s: Surface, file: string): readonly TaskWaveRange[] => {
 };
 
 /**
+ * ANHAENGE-REGISTER (2026-09-22): the pinned list of APPEND-ONLY registers, and the one exception
+ * the start collision knows. Every Messnotiz appends exactly one line to docs/messungen/INDEX.md
+ * and never edits another, so two rows that overlap only there never write the same line — while
+ * the unexcepted reading serialized them one at a time on a file whose rebase conflict resolves
+ * itself ("beide Zeilen behalten", report e7381142): measured 2026-09-21 on slot 13, three
+ * released rows stood 2 h behind one finished lane. Owner priority: queue throughput over features
+ * (2026-09-18). An EXPLICIT list on purpose — no heuristic, no glob over docs/: a file joins here
+ * only by an edit in this line, and only if its whole form is "lines are appended, never changed".
+ * It loosens nothing else: a row that shares a real file beside a register still collides on that
+ * file, and every code file keeps the full reading below.
+ */
+export const APPEND_REGISTERS: readonly string[] = ["docs/messungen/INDEX.md"];
+
+/**
  * Where two surfaces collide, or null. Per shared file the rule is task-land-waves.ts#rangesCollide
  * itself — no range on either side = collides — so a change to that fallback moves this plan too.
  * The card-surface guard of collidesOn is deliberately NOT applied: it may only SEPARATE rows for
  * bundling, and separating is the unsafe direction for a start.
+ *
+ * A pinned APPEND-REGISTER (APPEND_REGISTERS above) is no edge in any mode: an append-only register
+ * has no inside a lane could be standing in, and the `known` restriction gains nothing there — the
+ * safe direction for it is the parallel start, not the hold.
  *
  * A WHOLE SURFACE NOBODY KNOWS IS NO EDGE (Schnitt 2, 2026-09-14). The edge is a SHARED file
  * (entwurf §4 F4 step 3, collidesOn's own shape); the unknown-range fallback above lives inside a
@@ -268,6 +286,7 @@ function collision(a: Surface, b: Surface, known = false): { file: string; symbo
   if (!a.files?.length || !b.files?.length) return null;
   for (const file of a.files) {
     if (!b.files.includes(file)) continue;
+    if (APPEND_REGISTERS.includes(file)) continue;
     const ra = rangesOn(a, file);
     const rb = rangesOn(b, file);
     if (known && (!ra.length || !rb.length)) continue;

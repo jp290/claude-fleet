@@ -5240,9 +5240,17 @@ gleiche Protokoll- und Versuchszahlen (der Latch sitzt VOR dem Marker), und jede
 eine Reihe absichtlich offen lässt (ACP-26-Rollback, die Q6-geblockte Reihe), ackt sie vor dem
 nächsten Neustart.
 
-**Was der Beweis ist:** dreimal hintereinander ALL PASS für den Modulpaar-Lauf (`FLEET_E2E_MODULES=watch,slots`)
-auf dem Mac, und eine Mutationsprobe (die Wartebedingung raus) macht denselben Lauf reproduzierbar
-rot — mit der benannten Fail-Zeile, nicht mit dem verwirrenden Zustell-Symptom. Beide Tails liegen
-im Fleet-Report dieser Lane. Ein grüner Lauf allein beweist hier nichts: Das Rennen kann verlieren,
-ohne dass jemand davon erfährt — das ist genau die Familie, die dieser Absatz dem nächsten roten
-Lauf ersparen soll.
+**Was der Beweis ist — und was er NICHT war.** Die drei grünen Paarläufe (`FLEET_E2E_MODULES=watch,slots`,
+je 856 PASS/ALL PASS auf f52bc6c3) sind von MAIN auf dem Mac gemessen — aber die Naturrennen-Mutationsprobe
+(Wartebedingung raus → Lauf rot) ist GEMESSEN GESCHEITERT: ohne Gate bleibt derselbe Lauf grün, weil das
+Rennen nicht auf Verlangen feuert. Ein grüner Lauf beweist hier also strukturell nichts, und eine Mutation,
+die nicht zündet, widerlegt nichts — beides steht hier, damit der nächste Leser den Zirkel nicht neu baut.
+Der Beweis ist deshalb DETERMINISTISCH und mac-unabhängig: der Selbsttest in `e2e/watch.ts` („S3A SELF-TEST“)
+pflanzt das tödliche Fenster mit dem eigenen Before-Paste-Latch der Suite — Marker persistiert, Paste
+geparkt, keine Abschlusszeile — und fährt beide Gate-Hälften dagegen: SETTLE muss den Neustart halten,
+solange der Versand mid-flight ist (die alte PID überlebt das Parken, der Kill landet erst nach dem
+Release, und die Reihe wird DELIVERED, nicht ermordet); ohne SETTLE (die Roh-Funktionen, die Mutation
+wörtlich genommen) muss OBSERVE die gekreuzt-offene, steckengebliebene Reihe unter eigenem Namen
+benennen; und die benannte Reihe ist gemerkt — der nächste Neustart wartet nicht erneut und benennt
+nicht doppelt. Jede Hälfte ist falsifizierbar: ohne die jeweilige Gate-Hälfte wird der jeweilige Check rot.
+Der Helfer fährt diesen Beweis mit der vollen Suite.

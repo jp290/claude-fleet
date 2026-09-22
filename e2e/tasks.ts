@@ -456,6 +456,70 @@ export async function run(ctx: Ctx): Promise<void> {
     /@media \(max-width: 700px\)[\s\S]*?#shell-queue \.qview\s*\{[^}]*flex-basis:\s*100%/.test(taskPageSource)
       && /#shell-queue \.pkfilterin\s*\{[^}]*max-width:\s*none/.test(taskPageSource),
     "queue mobile CSS in public/index.html");
+  // --- DIALOG HELPER (K3 / G4.5, src/dialog.ts): ONE Rückfrage before a consequential action.
+  // What is proven: the six copied risk dialogs ask through askRisk and carry neither their own
+  // overlay shell nor a native confirm(); the helper closes the phone drawer before painting
+  // (measured error 1: #side z 30 sits above every .overlay z 20) and client hands over its
+  // setDrawer(false); ✕ delete and "Bring session back" ask through the helper (measured error 2);
+  // the four legacy overlay dialogs close on Escape. Form probe over the client source — the same
+  // posture as the source checks above; no live browser behind these.
+  {
+    let taskDialogSource = "";
+    try { taskDialogSource = readFileSync(`${resolve(realpathSync(`${ROOT}/node_modules`), "..")}/src/dialog.ts`, "utf8"); }
+    catch { /* the precondition check below carries the message */ }
+    check("dialog helper precondition: src/dialog.ts is readable", taskDialogSource.includes("export function askRisk"),
+      taskDialogSource ? "askRisk found" : "src/dialog.ts missing or unreadable");
+    // a top-level function's source: from its declaration to the next column-0 declaration —
+    // everything inside the body is indented, so column-0 anchors are the function boundary
+    const fnSrc = (src: string, name: string): string => {
+      const m = src.match(new RegExp(`^(?:async function|function) ${name}\\b`, "m"));
+      if (!m || m.index === undefined) return "";
+      const rest = src.slice(m.index + m[0].length);
+      const next = rest.search(/^(?:async function |function |const |let |var |type |interface |window\.|document\.|\/\/ ---)/m);
+      return next < 0 ? rest : rest.slice(0, next);
+    };
+    const SIX = ["showRiskPreview", "confirmCommand", "showLandReview", "confirmMidRun", "showCommitPreview", "showVerifyOutput"] as const;
+    check("dialog helper: all six risk dialogs ask through src/dialog.ts askRisk",
+      SIX.every((n) => fnSrc(taskClientSource, n).includes("askRisk(")),
+      SIX.map((n) => `${n}:${fnSrc(taskClientSource, n).includes("askRisk(") ? "helper" : "COPY"}`).join(" "));
+    check("dialog helper: the six carry neither their own overlay shell nor a native confirm()",
+      SIX.every((n) => { const s = fnSrc(taskClientSource, n); return s !== "" && !s.includes("confirm(") && !s.includes('el("div", "overlay'); }),
+      SIX.map((n) => { const s = fnSrc(taskClientSource, n); return `${n}:${!s.includes("confirm(") && !s.includes('el("div", "overlay') ? "clean" : "SHELL"}`; }).join(" "));
+    check("dialog helper: askRisk closes the phone drawer before painting — client hands over setDrawer(false)",
+      taskDialogSource.includes("closeDrawer?.()")
+      && taskDialogSource.includes("export function onDialogWillOpen")
+      && taskClientSource.includes("onDialogWillOpen(() => setDrawer(false))"),
+      `dialog.ts drawer close + client.ts registration${taskDialogSource ? "" : " (dialog source unreadable)"}`);
+    const delStart = taskClientSource.indexOf('el("button", "shrbtn danger", "✕ delete")');
+    const delEnd = taskClientSource.indexOf("danger.appendChild(dangerActs);", delStart);
+    const delSrc = delStart >= 0 && delEnd > delStart ? taskClientSource.slice(delStart, delEnd) : "";
+    check("dialog helper: ✕ delete in the queue detail asks through the helper before qAct delete",
+      delSrc.includes("askRisk(") && /qAct\(t\.id, "delete"\)/.test(delSrc)
+      && !taskClientSource.includes('mk("✕ delete", "delete"'),
+      delSrc.includes("askRisk(") ? "renderQueueDetail danger zone" : "direct-act delete button back or block moved");
+    const bringStart = taskClientSource.indexOf('item("Bring session back"');
+    const bringEnd = taskClientSource.indexOf("idsec.appendChild(menu);", bringStart);
+    const bringSrc = bringStart >= 0 && bringEnd > bringStart ? taskClientSource.slice(bringStart, bringEnd) : "";
+    check("dialog helper: Bring session back asks through the helper — no native confirm()",
+      bringSrc.includes("askRisk(") && !bringSrc.includes("confirm("),
+      bringSrc.includes("askRisk(") ? "board session menu" : "restart item moved or native confirm back");
+    const escStart = taskClientSource.indexOf('if (e.key === "Escape") {\n    // the picker and the review window');
+    const escEnd = taskClientSource.indexOf("\n});", escStart);
+    const escSrc = escStart >= 0 && escEnd > escStart ? taskClientSource.slice(escStart, escEnd) : "";
+    check("dialog helper: #attndlg #opsdlg #devdlg #codexdlg close on Escape in the global handler",
+      ["attndlg", "opsdlg", "devdlg", "codexdlg"].every((d) =>
+        escSrc.includes(`if (${d}.style.display === "flex") close`)),
+      ["attndlg", "opsdlg", "devdlg", "codexdlg"].filter((d) =>
+        !escSrc.includes(`if (${d}.style.display === "flex") close`)).join(",") || "global Escape handler");
+    check("dialog helper: the .riskbtn tones follow G1.2 — chat tokens, no hex literal, no blue hover",
+      /\.riskbtn \{[^}]*var\(--r1\)/.test(taskPageSource)
+      && /\.riskbtn \{[^}]*var\(--chat-edge\)/.test(taskPageSource)
+      && /\.riskbtn:hover \{ background: var\(--c-hover\)/.test(taskPageSource)
+      && /\.riskbtn\.danger \{ border-color: var\(--danger\); color: var\(--danger\)/.test(taskPageSource)
+      && !/\.riskbtn[^\n]*#[0-9a-fA-F]{3,8}\b/.test(taskPageSource)
+      && !/\.riskbtn:hover \{ background: var\(--sel\)/.test(taskPageSource),
+      "G1.2 tones for the dialog's word buttons in public/index.html");
+  }
   // L2 + L3 (owner, 2026-09-19: "L2 mit einer Option für L3"): the scope is a tree column left of
   // the list, or — switched, and always on a phone — one "repo / program" picker in the line. Both
   // shapes write the same two variables through one `choose`. Source probes, not a rendered screen.

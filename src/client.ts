@@ -15,6 +15,7 @@ import { loadChatSizes, onChatSize, sizePanel, stepChatSizes } from "./chatsize"
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
 import { pendingSettledBy } from "./pendingsend";
+import { askRisk, onDialogWillOpen } from "./dialog";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
@@ -80,6 +81,9 @@ function setConn(on: boolean) {
 function setDrawer(open: boolean) {
   document.body.classList.toggle("drawer", open);
 }
+// a dialog opened while the drawer is out would land UNDER it (#side z 30 > .overlay z 20) — the
+// dialog helper closes it first, through this one handover, so the mechanism stays setDrawer's
+onDialogWillOpen(() => setDrawer(false));
 $("menu").onclick = () => setDrawer(true);
 $("shade").onclick = () => setDrawer(false);
 // mobile's settings gear (#mset, on the place the duplicate #refresh freed — the reconnect lives
@@ -1747,49 +1751,33 @@ window.addEventListener("keydown", (e) => {
 // action is about to touch, before the click — not only after a refusal (the server always
 // re-verifies via worktreeRisk regardless of what this shows; this is purely informational).
 function showRiskPreview(title: string, risk: WtRisk, confirmLabel: string): Promise<boolean> {
-  // the phone drawer (#side, z 30) and its shade (29) sit above every .overlay (20): a lane's ✕ or
-  // ⏏ tapped in the drawer opened this panel UNDER it, where no tap could reach "kill" or "cancel"
-  setDrawer(false);
-  return new Promise((resolve) => {
-    const overlay = el("div", "overlay riskoverlay");
-    overlay.style.display = "flex";
-    const panel = el("div", "panel riskpanel");
-    panel.appendChild(el("h2", "", title));
-    if (risk.empty) {
-      panel.appendChild(el("div", "riskempty", "safe — no uncommitted changes, no unpushed commits"));
-    } else {
-      if (risk.dirtyFiles.length) {
-        panel.appendChild(el("div", "riskhead",
-          `${risk.dirtyFiles.length} uncommitted file${risk.dirtyFiles.length === 1 ? "" : "s"}`));
-        const list = el("div", "risklist");
-        for (const f of risk.dirtyFiles.slice(0, 40)) list.appendChild(el("div", "riskfile", f));
-        if (risk.dirtyFiles.length > 40) list.appendChild(el("div", "riskmore", `… ${risk.dirtyFiles.length - 40} more`));
-        panel.appendChild(list);
-      }
-      if (risk.unpushedCommits.length) {
-        panel.appendChild(el("div", "riskhead",
-          `${risk.unpushedCommits.length} unpushed commit${risk.unpushedCommits.length === 1 ? "" : "s"}`));
-        const list = el("div", "risklist");
-        for (const c of risk.unpushedCommits.slice(0, 40)) list.appendChild(el("div", "riskcommit", `${c.hash} ${c.subject}`));
-        panel.appendChild(list);
-      }
+  const body: HTMLElement[] = [];
+  if (risk.empty) {
+    body.push(el("div", "riskempty", "safe — no uncommitted changes, no unpushed commits"));
+  } else {
+    if (risk.dirtyFiles.length) {
+      body.push(el("div", "riskhead",
+        `${risk.dirtyFiles.length} uncommitted file${risk.dirtyFiles.length === 1 ? "" : "s"}`));
+      const list = el("div", "risklist");
+      for (const f of risk.dirtyFiles.slice(0, 40)) list.appendChild(el("div", "riskfile", f));
+      if (risk.dirtyFiles.length > 40) list.appendChild(el("div", "riskmore", `… ${risk.dirtyFiles.length - 40} more`));
+      body.push(list);
     }
-    const btns = el("div", "riskbtns");
-    const cancel = el("button", "riskbtn", "cancel") as HTMLButtonElement;
-    const go = el("button", "riskbtn danger", confirmLabel) as HTMLButtonElement;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.stopPropagation(); finish(false); }
-    };
-    const finish = (ok: boolean) => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(ok); };
-    // capture-phase so Escape closes THIS overlay before the global discardArm handler sees it
-    document.addEventListener("keydown", onKey, true);
-    cancel.onclick = () => finish(false);
-    go.onclick = () => finish(true);
-    overlay.onclick = (e) => { if (e.target === overlay) finish(false); };
-    btns.append(cancel, go);
-    panel.appendChild(btns);
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
+    if (risk.unpushedCommits.length) {
+      body.push(el("div", "riskhead",
+        `${risk.unpushedCommits.length} unpushed commit${risk.unpushedCommits.length === 1 ? "" : "s"}`));
+      const list = el("div", "risklist");
+      for (const c of risk.unpushedCommits.slice(0, 40)) list.appendChild(el("div", "riskcommit", `${c.hash} ${c.subject}`));
+      body.push(list);
+    }
+  }
+  return askRisk({
+    title,
+    body,
+    buttons: [
+      { label: "cancel", value: false },
+      { label: confirmLabel, danger: true, value: true },
+    ],
   });
 }
 // fail CLOSED: if the risk fetch itself fails, never claim "empty/safe" — show it as a
@@ -1979,28 +1967,16 @@ function sessionActive(slot: number): boolean {
 // snapshot a half-finished tree. Confirm, don't forbid — sometimes you DO want to save before
 // killing a stuck run.
 function confirmMidRun(slot: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const overlay = el("div", "overlay riskoverlay");
-    overlay.style.display = "flex";
-    const panel = el("div", "panel riskpanel");
-    panel.appendChild(el("h2", "", `Slot ${slot} is still working`));
-    panel.appendChild(el("div", "bmidrun",
+  return askRisk({
+    title: `Slot ${slot} is still working`,
+    body: [el("div", "bmidrun",
       "This session produced output a moment ago — it may be mid-edit. Committing now snapshots a half-finished "
       + "tree, and an agent message would describe that partial state. It's reversible (git reset), but usually "
-      + "you want to let the run finish first."));
-    const btns = el("div", "riskbtns");
-    const cancel = el("button", "riskbtn", "wait") as HTMLButtonElement;
-    const go = el("button", "riskbtn danger", "commit anyway") as HTMLButtonElement;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); finish(false); } };
-    const finish = (ok: boolean) => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(ok); };
-    document.addEventListener("keydown", onKey, true);
-    cancel.onclick = () => finish(false);
-    go.onclick = () => finish(true);
-    overlay.onclick = (e) => { if (e.target === overlay) finish(false); };
-    btns.append(cancel, go);
-    panel.appendChild(btns);
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
+      + "you want to let the run finish first.")],
+    buttons: [
+      { label: "wait", value: false },
+      { label: "commit anyway", danger: true, value: true },
+    ],
   });
 }
 
@@ -2009,38 +1985,28 @@ function confirmMidRun(slot: number): Promise<boolean> {
 // re-derives everything; this preview is the guardrail that makes a commit onto a shipped
 // branch as transparent as a lane commit onto a throwaway one.
 function showCommitPreview(title: string, tracked: string[], untracked: string[], active: boolean): Promise<boolean> {
-  return new Promise((resolve) => {
-    const overlay = el("div", "overlay riskoverlay");
-    overlay.style.display = "flex";
-    const panel = el("div", "panel riskpanel");
-    panel.appendChild(el("h2", "", title));
-    if (active) panel.appendChild(el("div", "bmidrun",
-      "⚠ this session is still working — you may be committing a half-finished snapshot."));
-    panel.appendChild(el("div", "riskhead", `${tracked.length} tracked file${tracked.length === 1 ? "" : "s"} → committed (git add -u)`));
-    const tl = el("div", "risklist");
-    for (const f of tracked.slice(0, 40)) tl.appendChild(el("div", "riskfile", f));
-    if (tracked.length > 40) tl.appendChild(el("div", "riskmore", `… ${tracked.length - 40} more`));
-    panel.appendChild(tl);
-    if (untracked.length) {
-      panel.appendChild(el("div", "riskhead skip", `${untracked.length} untracked file${untracked.length === 1 ? "" : "s"} → left alone`));
-      const ul = el("div", "risklist");
-      for (const f of untracked.slice(0, 20)) ul.appendChild(el("div", "riskfile skip", f.slice(3)));
-      if (untracked.length > 20) ul.appendChild(el("div", "riskmore", `… ${untracked.length - 20} more`));
-      panel.appendChild(ul);
-    }
-    const btns = el("div", "riskbtns");
-    const cancel = el("button", "riskbtn", "cancel") as HTMLButtonElement;
-    const go = el("button", "riskbtn", "commit") as HTMLButtonElement; // reversible → not styled destructive
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); finish(false); } };
-    const finish = (ok: boolean) => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(ok); };
-    document.addEventListener("keydown", onKey, true);
-    cancel.onclick = () => finish(false);
-    go.onclick = () => finish(true);
-    overlay.onclick = (e) => { if (e.target === overlay) finish(false); };
-    btns.append(cancel, go);
-    panel.appendChild(btns);
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
+  const body: HTMLElement[] = [];
+  if (active) body.push(el("div", "bmidrun",
+    "⚠ this session is still working — you may be committing a half-finished snapshot."));
+  body.push(el("div", "riskhead", `${tracked.length} tracked file${tracked.length === 1 ? "" : "s"} → committed (git add -u)`));
+  const tl = el("div", "risklist");
+  for (const f of tracked.slice(0, 40)) tl.appendChild(el("div", "riskfile", f));
+  if (tracked.length > 40) tl.appendChild(el("div", "riskmore", `… ${tracked.length - 40} more`));
+  body.push(tl);
+  if (untracked.length) {
+    body.push(el("div", "riskhead skip", `${untracked.length} untracked file${untracked.length === 1 ? "" : "s"} → left alone`));
+    const ul = el("div", "risklist");
+    for (const f of untracked.slice(0, 20)) ul.appendChild(el("div", "riskfile skip", f.slice(3)));
+    if (untracked.length > 20) ul.appendChild(el("div", "riskmore", `… ${untracked.length - 20} more`));
+    body.push(ul);
+  }
+  return askRisk({
+    title,
+    body,
+    buttons: [
+      { label: "cancel", value: false },
+      { label: "commit", value: true }, // reversible → not styled destructive
+    ],
   });
 }
 
@@ -2118,32 +2084,24 @@ function verifyBadge(v: VerifyVerdict | undefined): HTMLElement {
 // how far it got before the clock killed it, before deciding how to repair it.
 function showVerifyOutput(v: VerifyVerdict): void {
   const skipped = v.ok === null;
-  const overlay = el("div", "overlay riskoverlay");
-  overlay.style.display = "flex";
-  const panel = el("div", "panel riskpanel");
-  panel.appendChild(el("h2", "", v.waitedOut ? "verify — never started, output so far"
-    : v.timedOut ? "verify — timed out, output so far"
-    : v.serverDown ? "verify — a suite server did not come up, output"
-    : skipped ? "verify — skipped, output" : "verify ✗ — output"));
-  panel.appendChild(el("div", `diffstat ${skipped ? "warn" : "err"}`,
-    `${v.cmd} · ${v.waitedOut ? `killed while still queued behind the suite mutex — this tree was never looked at${spentText(v)}`
-      : v.timedOut ? `killed at the work timeout — nothing was checked${spentText(v)}`
-      : v.serverDown ? "a suite's own server did not come up — nothing was checked"
-      : skipped ? "declined to verify this tree — nothing was checked" : "exit non-zero"}`));
   const box = el("div", "difftxt");
   box.textContent = v.out || "(no output captured)";
-  panel.appendChild(box);
-  const btns = el("div", "riskbtns");
-  const close = el("button", "riskbtn", "close") as HTMLButtonElement;
-  const finish = () => { document.removeEventListener("keydown", onKey, true); overlay.remove(); };
-  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); finish(); } };
-  document.addEventListener("keydown", onKey, true);
-  close.onclick = finish;
-  overlay.onclick = (e) => { if (e.target === overlay) finish(); };
-  btns.append(close);
-  panel.appendChild(btns);
-  overlay.appendChild(panel);
-  document.body.appendChild(overlay);
+  // an output VIEWER, not a question — one close button; the promise's answer is ignored
+  void askRisk({
+    title: v.waitedOut ? "verify — never started, output so far"
+      : v.timedOut ? "verify — timed out, output so far"
+      : v.serverDown ? "verify — a suite server did not come up, output"
+      : skipped ? "verify — skipped, output" : "verify ✗ — output",
+    body: [
+      el("div", `diffstat ${skipped ? "warn" : "err"}`,
+        `${v.cmd} · ${v.waitedOut ? `killed while still queued behind the suite mutex — this tree was never looked at${spentText(v)}`
+          : v.timedOut ? `killed at the work timeout — nothing was checked${spentText(v)}`
+          : v.serverDown ? "a suite's own server did not come up — nothing was checked"
+          : skipped ? "declined to verify this tree — nothing was checked" : "exit non-zero"}`),
+      box,
+    ],
+    buttons: [{ label: "close", value: false }],
+  });
 }
 
 async function showLandReview(title: string, slot: number, verify?: VerifyVerdict): Promise<boolean> {
@@ -2154,47 +2112,39 @@ async function showLandReview(title: string, slot: number, verify?: VerifyVerdic
     .then(async (r) => (r.ok ? await r.json() : { loadFailed: true }))
     .catch(() => ({ loadFailed: true })) as
     { main?: string; branch?: string; files?: string[]; diff?: string; truncated?: boolean; error?: string; loadFailed?: boolean };
-  return new Promise((resolve) => {
-    const overlay = el("div", "overlay riskoverlay");
-    overlay.style.display = "flex";
-    const panel = el("div", "panel riskpanel landreviewpanel");
-    panel.appendChild(el("h2", "", title));
-    panel.appendChild(el("div", "landhint",
-      "This is the merge preview — everything that will land on main (main…HEAD). Committing does NOT clear it; only landing does. A clean worktree with commits ahead is exactly what a ready-to-land lane looks like."));
-    if (data.loadFailed) {
-      panel.appendChild(el("div", "diffstat err",
-        "couldn't load the merge preview — landing is disabled until it loads. Retry, or check the connection."));
-    } else if (data.error) {
-      panel.appendChild(el("div", "diffstat", data.error));
-    } else {
-      const n = data.files?.length ?? 0;
-      const stat = el("div", "diffstat",
-        `${data.branch ?? "?"} → ${data.main ?? "main"} · ${n} file${n === 1 ? "" : "s"}${data.truncated ? " · diff truncated" : ""} `);
-      stat.appendChild(verifyBadge(verify));
-      panel.appendChild(stat);
-      if (data.diff) { const box = el("div", "difftxt"); renderDiffInto(box, data.diff); panel.appendChild(box); }
-      else panel.appendChild(el("div", "diffstat", "no committed changes to land — landing just cleans up the worktree"));
-    }
-    const btns = el("div", "riskbtns");
-    const cancel = el("button", "riskbtn", "cancel") as HTMLButtonElement;
-    const go = el("button", "riskbtn", "⏏ land") as HTMLButtonElement;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); finish(false); } };
-    const finish = (ok: boolean) => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(ok); };
-    document.addEventListener("keydown", onKey, true);
-    cancel.onclick = () => finish(false);
-    go.onclick = () => finish(true);
-    overlay.onclick = (e) => { if (e.target === overlay) finish(false); };
-    if (data.loadFailed) {
-      go.disabled = true; // fail closed — no land gesture without a diff that actually loaded
-      const retry = el("button", "riskbtn", "retry") as HTMLButtonElement;
-      retry.onclick = () => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(showLandReview(title, slot, verify)); };
-      btns.append(cancel, retry, go);
-    } else {
-      btns.append(cancel, go);
-    }
-    panel.appendChild(btns);
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
+  const body: HTMLElement[] = [
+    el("div", "landhint",
+      "This is the merge preview — everything that will land on main (main…HEAD). Committing does NOT clear it; only landing does. A clean worktree with commits ahead is exactly what a ready-to-land lane looks like."),
+  ];
+  let landFailed = false;
+  if (data.loadFailed) {
+    body.push(el("div", "diffstat err",
+      "couldn't load the merge preview — landing is disabled until it loads. Retry, or check the connection."));
+    landFailed = true;
+  } else if (data.error) {
+    body.push(el("div", "diffstat", data.error));
+  } else {
+    const n = data.files?.length ?? 0;
+    const stat = el("div", "diffstat",
+      `${data.branch ?? "?"} → ${data.main ?? "main"} · ${n} file${n === 1 ? "" : "s"}${data.truncated ? " · diff truncated" : ""} `);
+    stat.appendChild(verifyBadge(verify));
+    body.push(stat);
+    if (data.diff) { const box = el("div", "difftxt"); renderDiffInto(box, data.diff); body.push(box); }
+    else body.push(el("div", "diffstat", "no committed changes to land — landing just cleans up the worktree"));
+  }
+  return askRisk({
+    title,
+    body,
+    panelClass: "riskpanel landreviewpanel",
+    buttons: landFailed ? [
+      { label: "cancel", value: false },
+      // fail closed — no land gesture without a diff that actually loaded
+      { label: "retry", value: false, next: () => showLandReview(title, slot, verify) },
+      { label: "⏏ land", value: true, disabled: true },
+    ] : [
+      { label: "cancel", value: false },
+      { label: "⏏ land", value: true },
+    ],
   });
 }
 
@@ -3649,9 +3599,16 @@ async function renderBoard() {
       // deterministic signal for "this pane wandered off", so the owner decides, not a detector.
       item("Bring session back", "restart this pane and resume the pinned conversation — the slot keeps its lane, "
         + "label, model, shares and scheduled prompts. Whatever the session is doing RIGHT NOW is lost.", async (b) => {
-        if (!confirm(`Restart slot ${slot}'s pane and resume the pinned conversation?\n\n`
-          + "Nothing about the slot is thrown away. But claude is killed, so anything it is doing "
-          + "right now — a running tool call, unsent output — is lost.")) return;
+        if (!(await askRisk({
+          title: `Restart slot ${slot}'s pane and resume the pinned conversation?`,
+          body: [el("div", "bmidrun",
+            "Nothing about the slot is thrown away. But claude is killed, so anything it is doing "
+            + "right now — a running tool call, unsent output — is lost.")],
+          buttons: [
+            { label: "cancel", value: false },
+            { label: "restart", danger: true, value: true },
+          ],
+        }))) return;
         b.disabled = true;
         b.textContent = "Restarting…";
         const r = await post(`/api/slots/${slot}/restart`, {});
@@ -4681,26 +4638,14 @@ function commandSwitch(slot: number, h: HarnessInfo): HTMLElement {
 // the ask a `confirm` command owes (VERBOTEN half of the commands card): a dialog that names the
 // command and what it does to this slot's context, with the send behind one more press.
 function confirmCommand(slot: number, name: string, purpose: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const overlay = el("div", "overlay riskoverlay");
-    overlay.style.display = "flex";
-    const panel = el("div", "panel riskpanel");
-    panel.appendChild(el("h2", "", `Send ${name} to slot ${slot}?`));
-    panel.appendChild(el("div", "bmidrun",
-      `${purpose}. This discards or rewrites the session's live context — the conversation it has read so far does not come back.`));
-    const btns = el("div", "riskbtns");
-    const cancel = el("button", "riskbtn", "cancel") as HTMLButtonElement;
-    const go = el("button", "riskbtn danger", `send ${name}`) as HTMLButtonElement;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); finish(false); } };
-    const finish = (ok: boolean) => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(ok); };
-    document.addEventListener("keydown", onKey, true);
-    cancel.onclick = () => finish(false);
-    go.onclick = () => finish(true);
-    overlay.onclick = (e) => { if (e.target === overlay) finish(false); };
-    btns.append(cancel, go);
-    panel.appendChild(btns);
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
+  return askRisk({
+    title: `Send ${name} to slot ${slot}?`,
+    body: [el("div", "bmidrun",
+      `${purpose}. This discards or rewrites the session's live context — the conversation it has read so far does not come back.`)],
+    buttons: [
+      { label: "cancel", value: false },
+      { label: `send ${name}`, danger: true, value: true },
+    ],
   });
 }
 
@@ -4934,6 +4879,11 @@ window.addEventListener("keydown", (e) => {
     if (hist.style.display === "flex") closeHist();
     if (sharedlg.style.display === "flex") closeShareDlg();
     if (autodlg.style.display === "flex") closeAutoDlg();
+    // the four legacy overlay dialogs used to close only per outside click or their own button
+    if (attndlg.style.display === "flex") closeAttnDlg();
+    if (opsdlg.style.display === "flex") closeOpsDlg();
+    if (devdlg.style.display === "flex") closeDevDlg();
+    if (codexdlg.style.display === "flex") closeCodexDlg();
     setDrawer(false);
   }
 });
@@ -11708,7 +11658,21 @@ function renderQueueDetail() {
   const danger = qDetailSection(rail, "⋯ done · archive · delete", true, false);
   if (ends.childElementCount) danger.appendChild(ends);
   const dangerActs = el("div", "pkdacts");
-  dangerActs.appendChild(mk("✕ delete", "delete", "shrbtn danger"));
+  // the one irreversible act on this pane asks first — through the dialog helper (G4.5), never
+  // the browser's confirm() (the inventory's measured error 2: it used to fire qAct directly)
+  const del = el("button", "shrbtn danger", "✕ delete") as HTMLButtonElement;
+  del.onclick = async () => {
+    const ok = await askRisk({
+      title: `Delete task ${t.id} for good?`,
+      body: [el("div", "bmidrun", "there is no restore — the row and its thread are dropped. 🗄 archive keeps it.")],
+      buttons: [
+        { label: "cancel", value: false },
+        { label: "✕ delete", danger: true, value: true },
+      ],
+    });
+    if (ok) void qAct(t.id, "delete");
+  };
+  dangerActs.appendChild(del);
   danger.appendChild(el("div", "shellhint",
     "deleting drops the row and its thread for good — there is no restore. 🗄 archive keeps it."));
   danger.appendChild(dangerActs);

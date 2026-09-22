@@ -1136,11 +1136,13 @@
     overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, Menlo, Consolas, monospace; }
   .riskmore { font-size: 11px; color: var(--faint); padding-top: 2px; }
   .riskbtns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
-  .riskbtn { padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--raised);
-    color: var(--text); font-size: 12px; font-family: inherit; cursor: pointer; }
-  .riskbtn:hover { background: var(--sel); }
-  .riskbtn.danger { border-color: #5e2c3a; color: var(--del); }
-  .riskbtn.danger:hover { background: #2a1a1a; }
+  .riskbtn { padding: 7px 14px; border-radius: var(--r1); border: 1px solid var(--chat-edge); background: var(--chat-surface);
+    color: var(--chat-ink); font-size: var(--chat-ui-fs); font-family: var(--chat-sans); cursor: pointer;
+    transition: background var(--t), border-color var(--t); }
+  .riskbtn:hover { background: var(--c-hover); border-color: var(--c-edge-hi); }
+  .riskbtn.primary { border-color: var(--chat-ink); background: var(--chat-ink); color: var(--chat-surface); font-weight: 500; }
+  .riskbtn.danger { border-color: var(--danger); color: var(--danger); background: none; }
+  .riskbtn.danger:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
   .difftxt { white-space: pre; overflow: auto; max-height: 60vh; background: #101010; border: 1px solid var(--line-soft);
     border-radius: 8px; padding: 10px 12px; font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace; }
   .difftxt .add { color: var(--add); } .difftxt .del { color: var(--del); } .difftxt .hdr { color: var(--accent); }

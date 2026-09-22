@@ -656,6 +656,28 @@ unter `~` (ein Deny-Profil ist so gut wie sein Inventar); andere tmux-Sockets al
 Suite-Offer), `ctl.sh`-Owner-Verben fehlen. `sandbox-exec` ist von Apple als deprecated markiert;
 der Selbsttest fängt einen Bruch. Second-host/Linux ist ungemessen (Gegenstück wäre `bwrap`).
 
+**Nutzungslimit am Pane lesen (seit 2026-09-22).** Pi schreibt keine API-Fehlerrunde ins
+Session-File, die Fleet lesen könnte (`tail`-Leser hat nur claude) — die einzige Sensorik für ein
+Z.ai-Nutzungslimit ist der SICHTBARE Screen. `server.ts#tickRateLimitResume` liest je pi-zai-Slot
+alle 10 s das sichtbare Pane (nicht den Scrollback — ein zitiertes oder weggerolltes altes Fehler-
+println darf nicht als lebender Stall gelten) und sucht die gemessene Zeilenform `Usage limit
+reached … Your limit will reset at YYYY-MM-DD HH:MM:SS`. Die Zeitangabe ist Z.ais **Serveruhr
+(UTC+8)**, nie die Ortszeit des Hosts — belegt am Vorfall 2026-09-22 (Slot 3, Lane
+fleet/260922090356-1eec: „reset at 18:19:39" bei 12:19 CEST; der erste erfolgreiche Turn
+derselben Session kam 11:31:26Z und widerlegt sowohl die CEST-Lesung 16:19:39Z als auch die
+UTC-Lesung 18:19:39Z — nur UTC+8, Reset 10:19:39Z, liegt im einzigen Daten-Intervall). Claude
+liefert dieselbe Tatsache weiter aus dem Transkript-Tail (`server.ts#readClaudeTail`):
+„You've hit your <Plan> limit · resets 8pm (Europe/Berlin)" — Wanduhr in einer benannten
+IANA-Zone ohne Datum, verankert am Zeitstempel der Fehlerzeile, ggf. ein Tag gerollt. Beide
+Formen stehen als `apiStall` mit `kind:"rate_limit"` und `resetAt` (ms) auf dem Owner-Poll —
+der Fakt gilt auch bei ausgeschaltetem Flag. Der Aktuator dahinter ist AUS, bis der Operator
+`FLEET_RATE_LIMIT_RESUME` setzt (1/true/on/yes; unbekannter Wert = AUS + Logzeile): dann tippt er
+genau einmal `resume`, frühestens `resetAt + 60 s`, Occupant auf `openedAt + sessionId` gepinnt,
+gebucht als Audit-`send` mit `path:"rate-limit-resume"`; ein erneutes Limit heißt neuer
+`resetAt`, höchstens 3 Versuche je Stall. Ohne lesbare Reset-Zeit wird NIE getippt — `apiStall`
+bleibt sichtbar. Der `server_error`-Pfad (`server.ts#tickApiStallResume`,
+`FLEET_API_STALL_RESUME`) ist von diesem Schnitt unberührt.
+
 ## Welches Modell läuft — die Rangfolge
 
 Drei Leser für „welches Modell läuft“, EINE Rangfolge, an EINEM Ort in Code benannt

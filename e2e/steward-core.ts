@@ -5,9 +5,10 @@ import { DONE_LOOKING_PROSE, STALLED_PROSE } from "../lane-signals";
 import { WORKER_CONTRACTS } from "../src/protocol";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname } from "node:path";
 import { CONTINUITY_REGIME_START, CONTINUITY_SOURCES, CONTINUITY_WINDOW_MS, type ContinuitySummary } from "../continuity";
-import { BASE, REPO, ROOT, check, get, paneEnv, plogRead, post, readText, restartSrv, stopSrv, tmuxOut } from "./harness";
+import { BASE, REPO, ROOT, check, get, paneEnv, plantScreen, plogRead, post, readText, restartSrv, stopSrv, tmuxOut } from "./harness";
 import type { Ctx, StewardCtx } from "./ctx";
 import { settleForMerge, waitMerge } from "./lane-helpers";
 import { newPlantedSid } from "./restart";
@@ -260,7 +261,7 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
       //     usage and the poll said ctx 0 % beside a footer of 41 %. The window did not empty, so
       //     the number must stay the last REAL turn's. The error line is stamped 10 min in the
       //     past so that an ARMED resume tick would be due at once — (g) depends on that.
-      type Stall = { since: number; text: string; kind: string | null };
+      type Stall = { since: number; text: string; kind: string | null; resetAt: number | null };
       const ERR_TS = new Date(Date.now() - 10 * 60_000).toISOString();
       const ERR_TEXT = "API Error: 529 Overloaded. This is a server-side issue, usually temporary";
       const errLine = JSON.stringify({ type: "assistant", timestamp: ERR_TS, error: "server_error", isApiErrorMessage: true,
@@ -315,9 +316,140 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
         .slots.find((x) => x.id === 2);
       check("api error: the steward view answers apiStall null (present, not omitted) once cleared",
         stewCleared?.apiStall === null, JSON.stringify(stewCleared?.apiStall));
+
+      // (i) THE RATE-LIMIT TEXT FORM, read off the SAME tail. Measured on a real transcript
+      //     (2026-09-02T14:25:49Z, Fable plan): "You've hit your Fable 5 limit · resets 8pm
+      //     (Europe/Berlin)" — wall clock in a NAMED zone, no date. The expected ms here are
+      //     derived a SECOND time from the documented rule, never imported from the server.
+      const RL_TS = new Date().toISOString();
+      const RL_TEXT = "You've hit your Fable 5 limit · resets 8pm (Europe/Berlin)";
+      const rlLine = JSON.stringify({ type: "assistant", timestamp: RL_TS, error: "rate_limit", isApiErrorMessage: true,
+        message: { model: "<synthetic>", role: "assistant", content: [{ type: "text", text: RL_TEXT }],
+          usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 } } });
+      writeFileSync(ctx.plantedTranscript, `${older}\n${newest}\n${after}\n${rlLine}\n`);
+      let rlRow: StallRow | undefined;
+      for (let i = 0; i < 60; i++) {
+        rlRow = (await stallRows()).find((s) => s.id === 2);
+        if (rlRow?.apiStall?.kind === "rate_limit") break;
+        await Bun.sleep(500);
+      }
+      // second derivation of "8pm Europe/Berlin on the error's own Berlin date, rolled one day
+      // ahead when already past": the offset read from Intl, applied twice so a DST edge settles.
+      const rlExpected = (() => {
+        const fmt = (ts: number): Record<string, string> => Object.fromEntries(new Intl.DateTimeFormat("en-US",
+          { timeZone: "Europe/Berlin", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit",
+            minute: "2-digit", second: "2-digit", hourCycle: "h23" })
+          .formatToParts(new Date(ts)).filter((p) => p.type !== "literal").map((p) => [p.type, p.value]));
+        const offsetAt = (ts: number): number => {
+          const p = fmt(ts);
+          return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - ts;
+        };
+        const at = Date.parse(RL_TS);
+        const d = fmt(at);
+        const wall = (plusDays: number): number => {
+          const guess = Date.UTC(+d.year, +d.month - 1, +d.day + plusDays, 20, 0);
+          return guess - offsetAt(guess - offsetAt(guess));
+        };
+        const first = wall(0);
+        return first > at ? first : wall(1);
+      })();
+      check("rate limit: the claude tail parses 'resets 8pm (Europe/Berlin)' into the zone's wall-clock ms",
+        rlRow?.apiStall?.since === Date.parse(RL_TS) && rlRow.apiStall.text === RL_TEXT
+          && rlRow.apiStall.kind === "rate_limit" && rlRow.apiStall.resetAt === rlExpected,
+        JSON.stringify(rlRow?.apiStall));
     }
   }
   if (ctx.plantedTranscript) (await import("node:fs")).rmSync(ctx.plantedTranscript, { force: true });
+
+  // --- rate_limit on pi-zai: the pane is the only sensor (pi writes no transcript error mark).
+  //     Line form measured on slot 3 (2026-09-22, lane fleet/260922090356-1eec). The timestamp is
+  //     Z.AI's own server clock, UTC+8 — verified against that session's own post-reset turn
+  //     (11:31:26Z), which refutes both the CEST and the UTC reading of the same line. ---
+  if (process.env.FLEET_PI_ZAI_AGENT_DIR) {
+    const rlSlots = async (): Promise<{ id: number; apiStall?: { kind: string | null; resetAt: number | null; text: string } | null }[]> =>
+      ((await (await get("/api/sessions")).json()) as unknown as { slots: { id: number; apiStall?: { kind: string | null; resetAt: number | null; text: string } | null }[] }).slots;
+    const freeRlSlot = async (): Promise<number | undefined> =>
+      (((await (await get("/api/sessions")).json()) as unknown as { slots: { id: number; cwd: string | null }[] }).slots
+        .filter((s) => s.cwd === null).map((s) => s.id).pop());
+    const rlSlot = await freeRlSlot();
+    const rlCwd = `${tmpdir()}/fleet-e2e-ratelimit-${process.pid}`;
+    mkdirSync(rlCwd, { recursive: true });
+    const rlOpen = rlSlot !== undefined ? await post(`/api/slots/${rlSlot}/open`, { cwd: rlCwd, harness: "pi-zai" }) : null;
+    check("rate limit fixture: the pi-zai slot opened", rlOpen?.ok === true && rlSlot !== undefined,
+      `slot=${rlSlot} status=${rlOpen?.status}`);
+    // the PAST-resetAt incident line, verbatim. Z.AI wrote 18:19:39 on its UTC+8 clock — the
+    // parse must land at 10:19:39.000Z, never at the host's local 18:19:39.
+    const RL_PAST_LINE = "Error: Retry failed after 3 attempts: 429: {\"code\":\"1308\",\"message\":\"Usage limit reached for 5 hour. Your limit will reset at 2026-09-22 18:19:39\"}";
+    const RL_PAST_RESET = Date.parse("2026-09-22T18:19:39+08:00");
+    const rlPlanted = rlSlot !== undefined
+      ? await plantScreen(rlSlot, RL_PAST_LINE, "rate-limit fixture") : false;
+    if (rlOpen?.ok && rlPlanted) {
+      let rlStall: { kind: string | null; resetAt: number | null } | null | undefined;
+      for (let i = 0; i < 80; i++) {
+        rlStall = (await rlSlots()).find((s) => s.id === rlSlot)?.apiStall;
+        if (rlStall?.kind === "rate_limit" && rlStall.resetAt === RL_PAST_RESET) break;
+        await Bun.sleep(500);
+      }
+      check("rate limit: the pi-zai pane line is parsed as UTC+8 (18:19:39 → 10:19:39Z), never local time",
+        rlStall?.kind === "rate_limit" && rlStall.resetAt === RL_PAST_RESET, JSON.stringify(rlStall));
+      const markOff = Date.now();
+      await Bun.sleep(26_000); // two ticks (10 s) plus margin: nothing may type while the flag is OFF
+      const offRows = (await auditRead()).filter((r) => r.ts >= markOff && r.event === "send"
+        && (r as { path?: string }).path === "rate-limit-resume");
+      check("rate limit: with FLEET_RATE_LIMIT_RESUME off nothing is typed even though resetAt has passed",
+        offRows.length === 0, JSON.stringify(offRows));
+
+      // THE ACTUATOR, armed. The slot and its painted pane survive the restart; the fact cache
+      // rebuilds on the first tick after boot.
+      await restartSrv({ FLEET_RATE_LIMIT_RESUME: "1" });
+      // the reset line Z.AI would print six hours from now, in ITS OWN wall clock (UTC+8) —
+      // built with formatToParts so the joined string is exactly its line's YYYY-MM-DD HH:MM:SS
+      const zaiWall = (ts: number): string => {
+        const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai",
+          year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+          second: "2-digit", hourCycle: "h23" }).formatToParts(new Date(ts))
+          .filter((x) => x.type !== "literal").map((x) => [x.type, x.value]));
+        return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
+      };
+      const markFuture = Date.now();
+      const futureLine = `Usage limit reached for 5 hour. Your limit will reset at ${zaiWall(Date.now() + 6 * 3600_000)}`;
+      await plantScreen(rlSlot!, futureLine, "rate-limit fixture: future reset");
+      await Bun.sleep(26_000);
+      const rlRowsSince = async (mark: number): Promise<{ ts: number; detail?: string }[]> =>
+        (await auditRead()).filter((r) => r.ts >= mark && r.event === "send"
+          && (r as { path?: string }).path === "rate-limit-resume");
+      const futureRows = await rlRowsSince(markFuture);
+      check("rate limit: with the flag armed, a future resetAt is never typed into",
+        futureRows.length === 0, JSON.stringify(futureRows));
+
+      // THE DUE CASE: the past resetAt is hours old, so quiet (10 s) + one tick is all that stands
+      // between the paint and the one send.
+      const markDue = Date.now();
+      await plantScreen(rlSlot!, RL_PAST_LINE, "rate-limit fixture: due reset");
+      let dueRows: { ts: number; detail?: string }[] = [];
+      for (let i = 0; i < 120 && dueRows.length === 0; i++) {
+        dueRows = await rlRowsSince(markDue);
+        if (!dueRows.length) await Bun.sleep(500);
+      }
+      check("rate limit: after resetAt + 60 s exactly one send is booked as audit-send path rate-limit-resume",
+        dueRows.length === 1, JSON.stringify(dueRows));
+      await Bun.sleep(26_000);
+      check("rate limit: the same resetAt window gets exactly ONE send — later ticks add none",
+        (await rlRowsSince(markDue)).length === 1, JSON.stringify(await rlRowsSince(markDue)));
+
+      // THE OCCUPANT PIN: a new occupant inherits neither the spent attempt nor the old pane fact.
+      // Its pane shows no limit line, so only a stale, identity-less fact could fire here.
+      const markOccupant = Date.now();
+      await post(`/api/slots/${rlSlot!}/kill`, {});
+      const reOpen = await post(`/api/slots/${rlSlot!}/open`, { cwd: rlCwd, harness: "pi-zai" });
+      check("rate limit fixture: the slot reopened as a new occupant", reOpen.ok, String(reOpen.status));
+      await Bun.sleep(26_000);
+      const occupantRows = await rlRowsSince(markOccupant);
+      check("rate limit: an occupant change leaves the old stall behind — no send for the new occupant",
+        occupantRows.length === 0, JSON.stringify(occupantRows));
+    }
+    if (rlSlot !== undefined) await post(`/api/slots/${rlSlot}/kill`, {}); // hand the slot back empty
+  }
 
   // --- bundle-staleness fact: deployGap's twin. public/*.js are gitignored BUILD artifacts, so
   //     landed client code stays invisible in the UI until `bun run build` runs (it cost an hour

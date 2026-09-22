@@ -6826,7 +6826,8 @@ type SendPath =
   | "inbox-nudge"       // "your program's inbox has unread entries"
   | "backlog-nudge"     // the open-backlog reminder
   | "migrate-nudge"     // the context-band / succession reminder (tickMigrate)
-  | "api-stall-resume"; // "resume" into a claude pane parked on an API-error round (tickApiStallResume)
+  | "api-stall-resume" // "resume" into a claude pane parked on an API-error round (tickApiStallResume)
+  | "rate-limit-resume"; // "resume" into a pane parked on a usage limit whose reset time has passed (tickRateLimitResume)
 // The per-slot, per-DAY counter /api/sessions serves. Kept in memory and SEEDED from the ledger at
 // boot — the opposite choice from stewardRecentSends one region up, and for the reason that
 // separates them: that counter is read once per send (capped at 6/h), this one rides the 2 s owner
@@ -17318,6 +17319,15 @@ const API_STALL_TICK_MS = 15_000;
 if (API_STALL_RESUME_RAW && !API_STALL_RESUME_ON && !/^(0|off|false|no)$/i.test(API_STALL_RESUME_RAW))
   console.log(`[fleet] FLEET_API_STALL_RESUME=${JSON.stringify(API_STALL_RESUME_RAW)} is not a recognised`
     + " value — the API-stall auto-resume is OFF. Recognised: 1/true/on/yes · 0/off/false/no.");
+// the rate-limit twin, same shape: OFF unless the operator arms it, an unrecognised value is OFF
+// and says so. Unlike its twin above, the tick it arms is registered unconditionally — the FACT
+// half (the pi-zai pane read) serves apiStall with the flag OFF; only actuation gates on this.
+const RATE_LIMIT_RESUME_RAW = (process.env.FLEET_RATE_LIMIT_RESUME ?? "").trim();
+const RATE_LIMIT_RESUME_ON = /^(1|true|on|yes)$/i.test(RATE_LIMIT_RESUME_RAW);
+const RATE_LIMIT_TICK_MS = 10_000;
+if (RATE_LIMIT_RESUME_RAW && !RATE_LIMIT_RESUME_ON && !/^(0|off|false|no)$/i.test(RATE_LIMIT_RESUME_RAW))
+  console.log(`[fleet] FLEET_RATE_LIMIT_RESUME=${JSON.stringify(RATE_LIMIT_RESUME_RAW)} is not a recognised`
+    + " value — the rate-limit auto-resume is OFF. Recognised: 1/true/on/yes · 0/off/false/no.");
 
 // the reports THIS occupant filed — the worker arm of fleetReportsFor, without the receiver arm. A
 // lane must never be closed on the strength of a report it merely RECEIVED (it cannot receive one),
@@ -32866,6 +32876,7 @@ if (AUDIT_PING_MS > 0) setInterval(() => void tickAuditPing().catch((e: unknown)
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickInboxNudge().catch((e: unknown) => logError("tickInboxNudge", e)), INBOX_NUDGE_MS);
 if (MIGRATE_PCT > 0) setInterval(() => void tickMigrate().catch((e: unknown) => logError("tickMigrate", e)), MIGRATE_TICK_MS);
 if (API_STALL_RESUME_ON) setInterval(() => void tickApiStallResume().catch((e: unknown) => logError("tickApiStallResume", e)), API_STALL_TICK_MS);
+setInterval(() => void tickRateLimitResume().catch((e: unknown) => logError("tickRateLimitResume", e)), RATE_LIMIT_TICK_MS);
 // self-heal: recreate any activated slot whose pane died (crash, accidental kill-session).
 // ensureSlot is a cheap no-op (three tmux queries) per healthy slot
 setInterval(() => {
@@ -33353,7 +33364,7 @@ interface ContextRead { used: number; window: number }
 // "<synthetic>" and a usage of all zeros (measured on slot 3, 2026-09-22T01:16:35Z). `at` is the
 // line's own timestamp, `text` its message text, `kind` its `error` field ("server_error",
 // "rate_limit", "authentication_failed", "invalid_request", …) or null when the line has none.
-interface ApiErrorLine { at: number; text: string; kind: string | null }
+interface ApiErrorLine { at: number; text: string; kind: string | null; resetAt: number | null }
 // One tail read, two answers: the numerator (as `used` returns it) and whether the LAST assistant
 // line is such an error round. apiError is null both for "the last assistant line is a real one"
 // and for "no assistant line in the tail" — neither is a stall anyone can act on.
@@ -33477,6 +33488,50 @@ function readUsedTokens(file: string, size: number): number | null {
   const t = readClaudeTail(file, size).read;
   return typeof t === "number" ? t : null;
 }
+// CLAUDE'S USAGE-LIMIT RESET, read off the error round's own words. Measured form (real
+// transcript, 2026-09-02T14:25:49Z, a Fable-plan slot): "You've hit your Fable 5 limit · resets
+// 8pm (Europe/Berlin)" — wall clock in a NAMED IANA zone, no date, optional am/pm. The anchor is
+// the error line's own timestamp: its date in the named zone is the reset's date, rolled one day
+// ahead when that wall time is already past (a limit hit late evening resets the next day). A
+// zone name Intl cannot honour, or a form this cannot parse (RPM bursts carry no reset time at
+// all — "Please try again later"), is null: "no readable reset time", and the actuator never
+// types into a stall without one.
+function claudeLimitResetAt(text: string, at: number): number | null {
+  const m = /\bresets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*\(([^()[\]"]+)\)/i.exec(text);
+  if (!m || !Number.isFinite(at)) return null;
+  const zone = m[4].trim();
+  let hour = Number(m[1]) % 24;
+  const minute = m[2] ? Number(m[2]) : 0;
+  const half = m[3]?.toLowerCase();
+  if (half === "pm" && hour < 12) hour += 12;
+  if (half === "am" && hour === 12) hour = 0;
+  const zonedParts = (ts: number): Record<string, string> | null => {
+    try {
+      return Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: zone, year: "numeric",
+        month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hourCycle: "h23" }).formatToParts(new Date(ts)).filter((p) => p.type !== "literal")
+        .map((p) => [p.type, p.value]));
+    } catch { return null; } // an unrecognised zone name
+  };
+  const zonedWallToMs = (y: number, mo: number, d: number): number | null => {
+    const guess = Date.UTC(y, mo - 1, d, hour, minute);
+    const parts = zonedParts(guess);
+    if (!parts) return null;
+    const off = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+      Number(parts.hour), Number(parts.minute), Number(parts.second)) - guess;
+    const settled = zonedParts(guess - off); // second pass settles a DST edge
+    if (!settled) return null;
+    return guess - (Date.UTC(Number(settled.year), Number(settled.month) - 1, Number(settled.day),
+      Number(settled.hour), Number(settled.minute), Number(settled.second)) - (guess - off));
+  };
+  const day = zonedParts(at);
+  if (!day) return null;
+  const first = zonedWallToMs(Number(day.year), Number(day.month), Number(day.day));
+  if (first === null) return null;
+  if (first > at) return first;
+  const next = zonedWallToMs(Number(day.year), Number(day.month), Number(day.day) + 1); // Date.UTC rolls month ends
+  return next !== null && next > at ? next : null;
+}
 // The claude tail, read once. Two rules for the numerator and one for the error round:
 //   - an API-error round (isApiErrorMessage:true) or any other locally made turn (message.model
 //     "<synthetic>") is SKIPPED for the numerator. Its usage is all zeros, and until 2026-09-22 this
@@ -33518,7 +33573,8 @@ function readClaudeTail(file: string, size: number): ContextTail {
         const said = parts.map((p) => (typeof p === "object" && p !== null
           && typeof (p as { text?: unknown }).text === "string" ? (p as { text: string }).text : ""))
           .filter(Boolean).join(" ");
-        apiError = { at, text: said.slice(0, API_STALL_TEXT_MAX), kind: typeof d.error === "string" ? d.error : null };
+        apiError = { at, text: said.slice(0, API_STALL_TEXT_MAX), kind: typeof d.error === "string" ? d.error : null,
+          resetAt: claudeLimitResetAt(said, at) };
       }
     }
     if (read !== null || isError || d.message?.model === "<synthetic>") continue;
@@ -33792,11 +33848,15 @@ const API_STALL_QUIET_MS = 10_000;
 // attempts per stall, the second 90 s after the first
 const API_STALL_RESUME_AFTER_MS = 90_000;
 const API_STALL_RESUME_MAX = 2;
-interface ApiStall { since: number; text: string; kind: string | null }
+interface ApiStall { since: number; text: string; kind: string | null; resetAt: number | null }
 function apiStallFact(s: Slot, apiError: ApiErrorLine | null, now: number): ApiStall | null {
-  if (!apiError || !s.cwd) return null;
+  // the pi-zai pane fact (paneLimitFacts below) rides the same shape: a harness whose transcript
+  // carries no error mark can still have one ON SCREEN. Null for every other harness and every
+  // unset entry — the transcript path above reads exactly as it did before this seam existed.
+  const err = apiError ?? paneLimitFactFor(s);
+  if (!err || !s.cwd) return null;
   if (s.lastOutput === 0 || now - s.lastOutput < API_STALL_QUIET_MS) return null;
-  return { since: apiError.at, text: apiError.text, kind: apiError.kind };
+  return { since: err.at, text: err.text, kind: err.kind, resetAt: err.resetAt };
 }
 
 // ONE STALL, NOT ONE LINE. A resume that meets the same outage writes a NEW error round with a new
@@ -33857,6 +33917,105 @@ async function tickApiStallResume(): Promise<void> {
     }
   } finally {
     apiStallTickBusy = false;
+  }
+}
+
+// --- rate_limit resume: the usage-limit seam the server_error tick deliberately excludes ------
+// The old resume types at once, and a usage limit answers the same 429 right back — that is WHY
+// its twin above refuses this kind. The readable RESET TIME is what makes the seam safe: a turn
+// parked on "your limit will reset at …" runs on by itself once that time has passed, and a
+// person no longer has to be the one who remembers. Where the time comes from is per-harness:
+// claude writes the round into its transcript (readClaudeTail reads it with the tail); pi writes
+// NO transcript error mark at all, so for pi-zai the VISIBLE PANE is the sensor — nothing else
+// (pi-zai has no `tail` reader; the scrollback is never read, a quoted or scrolled-back error
+// must not read as a live stall).
+//
+// Z.AI WRITES ITS OWN SERVER CLOCK, NOT THE PANE'S. Measured 2026-09-22 (slot 3, lane
+// fleet/260922090356-1eec): the pane named "reset at 2026-09-22 18:19:39" while the host read
+// 12:19 CEST — and the same session recorded a successful turn at 11:31:26Z, which refutes both
+// the local reading (16:19:39Z) and the UTC reading (18:19:39Z) and brackets only the UTC+8
+// reading (reset 10:19:39Z). So the timestamp is parsed as UTC+8, never as local time.
+const ZAI_LIMIT_LINE_RE = /Usage limit reached[^\n]*Your limit will reset at (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})/;
+interface RateLimitAttempt { openedAt: number; sessionId: string; tries: number; lastAt: number; lastResetAt: number }
+const rateLimitTried = new Map<number, RateLimitAttempt>();
+// the pane-read API-error fact per pi-zai slot — the FACT half of the tick, served on the polls
+// with the flag OFF too, and keyed by occupant identity so a recycled slot never inherits one
+const paneLimitFacts = new Map<number, { identity: string; err: ApiErrorLine | null }>();
+function paneLimitFactFor(s: Slot): ApiErrorLine | null {
+  const known = paneLimitFacts.get(s.id);
+  return known && known.identity === `${s.openedAt}\0${s.sessionId}` ? known.err : null;
+}
+const RATE_LIMIT_RESUME_AFTER_MS = 60_000; // never before resetAt + 60 s
+const RATE_LIMIT_RESUME_MAX = 3;           // at most three attempts per stall
+let rateLimitTickBusy = false;
+async function tickRateLimitResume(): Promise<void> {
+  if (rateLimitTickBusy) return;
+  rateLimitTickBusy = true;
+  try {
+    const now = Date.now();
+    // THE FACT HALF. One visible-pane capture per pi-zai slot per tick; a dead pane deletes the
+    // entry, which is the honest "cannot see it" rather than a stale last state.
+    for (const s of slots) {
+      if (!s.cwd || !s.sessionId || harnessOf(s.harness) !== PI_ZAI_HARNESS) { paneLimitFacts.delete(s.id); continue; }
+      const cap = await tmux("capture-pane", "-p", "-J", "-t", paneTarget(sess(s.id)));
+      if (cap.code !== 0) { paneLimitFacts.delete(s.id); continue; }
+      const identity = `${s.openedAt}\0${s.sessionId}`;
+      const line = cap.out.split("\n").find((l) => ZAI_LIMIT_LINE_RE.test(l));
+      paneLimitFacts.set(s.id, { identity, err: line ? (() => {
+        const m = ZAI_LIMIT_LINE_RE.exec(line);
+        const resetMs = m ? Date.parse(`${m[1]}T${m[2]}+08:00`) : NaN;
+        return { at: s.lastOutput > 0 ? s.lastOutput : now, text: line.trim().slice(0, API_STALL_TEXT_MAX),
+          kind: "rate_limit", resetAt: Number.isFinite(resetMs) ? resetMs : null };
+      })() : null });
+    }
+    if (!RATE_LIMIT_RESUME_ON) return;
+    // THE ACTUATOR HALF. Only kind "rate_limit" WITH a readable resetAt; every other round stays
+    // visible as apiStall and is never typed into.
+    const due: { s: Slot; attempt: RateLimitAttempt; resetAt: number }[] = [];
+    for (const s of slots) {
+      const prior = rateLimitTried.get(s.id);
+      if (!s.cwd || !s.sessionId) { if (prior) rateLimitTried.delete(s.id); continue; }
+      const h = harnessOf(s.harness);
+      const apiError = h === PI_ZAI_HARNESS ? paneLimitFactFor(s)
+        : h === CLAUDE_HARNESS ? contextReading(s).apiError : null;
+      if (!apiError || apiError.kind !== "rate_limit" || apiError.resetAt === null) {
+        // a cleared or unreadable stall gives the budget back — the same rule as the server_error
+        // tick: it belongs to the stall, not to the slot
+        if (prior) rateLimitTried.delete(s.id);
+        continue;
+      }
+      // a parked clarify lane was told to wait, and a sleeping pane is not woken for this
+      if (s.sleeping || s.awaiting === "owner") continue;
+      const stall = apiStallFact(s, apiError, now);
+      if (!stall) continue;
+      const attempt = prior && prior.openedAt === s.openedAt && prior.sessionId === s.sessionId
+        ? prior : { openedAt: s.openedAt, sessionId: s.sessionId, tries: 0, lastAt: 0, lastResetAt: 0 };
+      if (attempt.tries >= RATE_LIMIT_RESUME_MAX) continue;
+      // ONE SEND PER RESET WINDOW. A new limit round names a NEW resetAt; repeating the same one
+      // means the last attempt met the same limit, and typing again now buys nothing.
+      if (attempt.lastResetAt === apiError.resetAt) continue;
+      if (now - apiError.resetAt < RATE_LIMIT_RESUME_AFTER_MS) continue;
+      due.push({ s, attempt, resetAt: apiError.resetAt });
+    }
+    for (const { s, attempt, resetAt } of due) {
+      // THE OCCUPANT PIN, same as its twin: the session decided on is the one typed into, or
+      // nothing is — sendText pins its own stream occupant from here on.
+      if (s.openedAt !== attempt.openedAt || s.sessionId !== attempt.sessionId || !s.cwd) continue;
+      // spent BEFORE the paste, delivered or not — a refused paste must not buy a retry
+      const spent = { ...attempt, tries: attempt.tries + 1, lastAt: Date.now(), lastResetAt: resetAt };
+      rateLimitTried.set(s.id, spent);
+      // every attempt is its own audit row: sendText books a `send` row with path
+      // "rate-limit-resume" and its acceptance on success AND on failure (auditSend)
+      try {
+        await sendText(s, "resume", true, { path: "rate-limit-resume", requireAgent: true });
+      } catch (e) {
+        logError("rateLimitResume", e);
+      }
+      if (spent.tries >= RATE_LIMIT_RESUME_MAX)
+        console.log(`[fleet] rate-limit: slot ${s.id} got ${spent.tries} resume attempts — apiStall stays up, the next move is the owner's`);
+    }
+  } finally {
+    rateLimitTickBusy = false;
   }
 }
 

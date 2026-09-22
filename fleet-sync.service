@@ -9,14 +9,19 @@
 # (path b, 2026-09-05, docs/dual-host-git-transport.md) the CANONICAL host never fetches from the
 # follower and never runs this script, so installing this on it would be a category error.
 #
-# ONESHOT, AND ALLOWED TO FAIL LOUDLY — that is the whole design. fleet-sync.sh answers in five
+# ONESHOT, AND ALLOWED TO FAIL LOUDLY — that is the whole design. fleet-sync.sh answers in seven
 # exits (0 current or fast-forwarded · 2 fetch failed · 3 DIVERGED · 4 precondition refused · 5
-# client build failed), and anything but 0 leaves this unit `failed`, which is what
-# `systemctl --user status fleet-sync` and `systemctl --user list-timers` then show. Two of them
-# want a human. Exit 3 means this host has landed something, and under path b it must not. Exit 5
-# means the fast-forward STANDS and only the bundle behind it does not — the board this host serves
-# is then the old JS, or none at all, over new HTML. Do NOT add `SuccessExitStatus=` to quieten any
-# of them — a transport that fails silently is the failure this unit exists to make visible.
+# client build failed · 6 dependency install failed · 7 the deploy this host asked its own instance
+# for could not be made), and anything but 0 leaves this unit `failed`, which is what
+# `systemctl --user status fleet-sync` and `systemctl --user list-timers` then show. Four of them
+# want a human. Exit 3 means this host has landed something, and under path b it must not. Exits 5,
+# 6 and 7 all mean the fast-forward STANDS and something behind it does not: at 6 the dependencies
+# (so the build was never attempted), at 5 the bundle — the board this host serves is then the old
+# JS, or none at all, over new HTML — and at 7 the running srv, which keeps serving the code from
+# before this sync. A 409 from the deploy route is NOT 7: it is the route saying "a land or an
+# audit is in flight, ask again", the script prints it and exits 0, and the next timer run asks.
+# Do NOT add `SuccessExitStatus=` to quieten any of them — a transport that fails silently is the
+# failure this unit exists to make visible.
 #
 # WHAT IT DOES NOT GUARD, stated rather than implied. The tree it moves is the tree the follower's
 # sessions and suites read, and this unit takes no lock — not the suite mutex at /tmp/fleet-e2e.lock

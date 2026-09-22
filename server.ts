@@ -80,7 +80,7 @@ import { projectStartPlan, releaseVerdict, startPlanCardPaths, startPlanChecks, 
 import { renderWaveBrief, withCardHead } from "./wave-brief";
 // THE WAIT REGISTER: which row waits on what and whose move it is — derived from the plan on every
 // read (waits.ts), the stall sensor below reads its heads.
-import { deriveWaits, stallReadings, stallHeads, namedAfterIds, type WaitRow, type WaitRowFacts, type WaitLaneFacts,
+import { deriveWaits, stallReadings, stallHeads, namedAfterIds, afterOrderRefusal, type WaitRow, type WaitRowFacts, type WaitLaneFacts,
   type StallReading } from "./waits";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
@@ -11049,13 +11049,20 @@ function releaseCardRefusal(t: Task): string | null {
   if (!card.valid)
     return `its card is not valid: ${card.gaps.filter((g) => !cardAdvisoryGap(g)).join("; ").slice(0, 300)}`;
   if (t.brief && t.brief.at > card.at) return "the brief changed after the card was read — wait for the card sweep to re-read it";
+  return namedAfterRefusal(t);
+}
+
+// THE ONE ORDER REFUSAL ALL THREE RELEASE DOORS SHARE (Schnitt 1, dispatch-flaechen-buendeln §c):
+// this MAIN release door (releaseCardRefusal above), the owner's ▸ queue door and the card-valid
+// verdict (start-plan.ts#releaseVerdict through the one row builder). The plan reads a row's order
+// from card.after ALONE, so a text ordering the row after a queue row the card does not carry would
+// start out of order wherever the card is trusted — same sentence at every door
+// (waits.ts#afterOrderRefusal).
+function namedAfterRefusal(t: Task): string | null {
   const named = namedAfterIds([t.text, t.brief?.text ?? ""].join("\n"))
     .filter((id) => id !== t.id && tasks.some((x) => x.id === id));
-  const missing = named.filter((id) => !(card.after ?? []).includes(id));
-  if (missing.length)
-    return `the text orders it after ${missing.join(", ")} but card.after carries ${(card.after ?? []).join(", ") || "nothing"} — `
-      + "the plan reads the order from the card alone; put the ids on a NACH: header line so the card sweep reads them";
-  return null;
+  const missing = named.filter((id) => !(t.card?.after ?? []).includes(id));
+  return missing.length ? afterOrderRefusal(missing, t.card?.after) : null;
 }
 
 async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
@@ -12572,7 +12579,9 @@ const startPlanRowOf = (t: Task): StartPlanRow => {
   const src = variantSourceOf(t);
   return { id: t.id, status: t.status, programId: t.programId ?? null, ...startPlanSurfaceOf(t),
     after: src.card?.after ?? [],
-    checks: startPlanChecks({ text: src.text, source: t.source, card: src.card ?? null, briefAt: src.brief?.at ?? null }),
+    checks: startPlanChecks({ text: src.text, source: t.source, card: src.card ?? null,
+      briefText: src.brief?.text ?? null, briefAt: src.brief?.at ?? null,
+      queueKnown: (id) => tasks.some((x) => x.id === id), selfId: t.id }),
     ...(policy !== "manual" ? { release: policy } : {}), ...(t.hold ? { held: true } : {}),
     ...(t.variantOf ? { variantOf: t.variantOf } : {}) };
 };
@@ -13893,9 +13902,9 @@ function refineChildCard(c: RefineChild, programId: string | undefined,
 function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, programId: string | undefined):
   { ok: true; card: TaskCard } | { ok: false; status: 400 | 409; error: string } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
-    return { ok: false, status: 400, error: "card must be an object {ziel, surface{files, symbols}, done, verify, verboten, size?}" };
+    return { ok: false, status: 400, error: "card must be an object {ziel, surface{files, symbols}, done, verify, verboten, size?, after?}" };
   const c = raw as Record<string, unknown>;
-  const known = ["ziel", "surface", "done", "verify", "verboten", "size"];
+  const known = ["ziel", "surface", "done", "verify", "verboten", "size", "after"];
   const extra = Object.keys(c).filter((k) => !known.includes(k));
   if (extra.length) return { ok: false, status: 400, error: `card reads ${known.join(", ")} only — [${extra.join(", ")}] is not read` };
   const snapshot = repoRaw ? trackedSnapshotFor(repoRaw) : null;
@@ -38162,6 +38171,11 @@ Bun.serve<WSData>({
           // tickDispatch could start its lane a second time; a `done` row was reopened the same way.
           return json({ error: `task is ${t.status} — only a pending row can be released` }, 409);
         } else {
+          // THE ORDER THE TEXT NAMES rides card.after at every release door — the same refusal the
+          // MAIN release door makes (namedAfterRefusal), and ONLY that half: this door stays the one
+          // that may still release a row without a card at all.
+          const order = namedAfterRefusal(t);
+          if (order) return json({ error: `a release needs a valid card — ${order}` }, 409);
           // RELEASING IS THE DECISION — and until 2026-09-10 it could also be an OVERRIDE: a
           // release over the queue analyst's "needs-you" wrote the verdict into `note` and booked a
           // `task_override` audit line. With the analyst retired there is no objection to overrule,

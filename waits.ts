@@ -199,15 +199,24 @@ export function stallHeads(waits: readonly WaitRow[]): { adressat: string; wurze
 }
 
 // A text that names an order — `NACH: 1a2b3c4d` as a filing header, or inline "nach 1a2b3c4d",
-// "after 1a2b3c4d", "wartet auf 1a2b3c4d" — names ids a card must carry as `after` (4ae22c7a:
-// K3 started 13 min after filing because its NACH stood only in the prose). A header line counts
-// every 8-hex token on it; inline, only the token right after the word. The caller decides which
-// of these are queue rows — a commit sha in prose is not an order.
+// "after 1a2b3c4d", "wartet auf 1a2b3c4d", "folgt auf 1a2b3c4d" — names ids a card must carry as
+// `after` (4ae22c7a: K3 started 13 min after filing because its NACH stood only in the prose).
+// A header line counts every 8-hex token on it; inline, only the token right after the word. The
+// caller decides which of these are queue rows — a commit sha in prose is not an order.
 const NACH_HEADER = /^\s*NACH\s*:(.*)$/gim;
-const NACH_INLINE = /\b(?:nach|after|wartet auf)\s*:?\s+`?([0-9a-f]{8})\b/gi;
+const NACH_INLINE = /\b(?:nach|after|wartet auf|folgt auf)\s*:?\s+`?([0-9a-f]{8})\b/gi;
 export function namedAfterIds(text: string): string[] {
   const ids = new Set<string>();
   for (const m of text.matchAll(NACH_HEADER)) for (const id of m[1].match(/\b[0-9a-f]{8}\b/g) ?? []) ids.add(id);
   for (const m of text.matchAll(NACH_INLINE)) ids.add(m[1].toLowerCase());
   return [...ids];
+}
+
+// THE ONE SENTENCE all three release doors speak for an order the text names and the card does not
+// carry — the MAIN release door (server.ts#releaseCardRefusal), the owner's ▸ queue door and
+// start-plan.ts#releaseVerdict under card-valid. Shared verbatim so a row is refused in the same
+// words wherever the card is trusted (Schnitt 1, docs/messungen/2026-09-21-dispatch-flaechen-buendeln.md §c).
+export function afterOrderRefusal(missing: readonly string[], carried?: readonly string[]): string {
+  return `the text orders it after ${missing.join(", ")} but card.after carries ${(carried ?? []).join(", ") || "nothing"} — `
+    + "the plan reads the order from the card alone; put the ids on a NACH: header line so the card sweep reads them";
 }

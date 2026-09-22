@@ -9210,13 +9210,16 @@ export async function run(ctx: Ctx): Promise<void> {
     const spValid = { valid: true, surfaceValid: true, done: "done sentence", verify: "bun e2e/pins.ts", size: "klein", gaps: [] };
     const spRow = (id: string, created: number, files: string[] | null, o: { status?: string; after?: string[];
       ranges?: StartPlanRow["ranges"]; card?: StartPlanCardFacts | null; text?: string; programId?: string;
-      release?: StartPlanRelease; held?: boolean } = {}) => ({
+      release?: StartPlanRelease; held?: boolean; queueIds?: string[] } = {}) => ({
       wave: { id, created, kind: "auftrag", status: o.status ?? "queued", repo: spRepo, programId: o.programId ?? `p-${id}`,
         filesOrigin: "confirmed" as const, ...(files ? { files } : {}), ...(o.after ? { after: o.after } : {}),
         ranges: o.ranges ?? null } satisfies TaskWaveInput,
       row: { id, status: o.status ?? "queued", programId: o.programId ?? `p-${id}`, files, ranges: o.ranges ?? null,
         after: o.after ?? [], checks: startPlanChecks({ text: o.text ?? `row ${id}`, source: "main",
-          card: o.card === undefined ? spValid : o.card }),
+          card: o.card === undefined ? spValid : o.card,
+          // which fixture ids are QUEUE ROWS is each row's own explicit decision — the caller
+          // decides, exactly as server.ts#startPlanRowOf and the CLI do
+          queueKnown: (q: string) => (o.queueIds ?? []).includes(q), selfId: id }),
         ...(o.release ? { release: o.release } : {}), ...(o.held ? { held: true } : {}) } satisfies StartPlanRow,
     });
     const at = (file: string, symbol: string, startLine: number) => [{ file, symbol, startLine, endLine: startLine + 5 }];
@@ -9575,10 +9578,12 @@ export async function run(ctx: Ctx): Promise<void> {
         at: 100, surface: { files: ["x.ts"], creates: [] },
         gaps: ['surface.symbols: "x.ts#nope" does not resolve', 'rolle.harness: "Codex" is not a registered harness'] };
       const rv = (o: { status?: string; release?: StartPlanRelease; held?: boolean; source?: string; text?: string;
-        card?: StartPlanCardFacts | null; briefAt?: number }) => releaseVerdict({ status: o.status ?? "pending",
-        release: o.release ?? "card-valid", held: o.held,
+        card?: StartPlanCardFacts | null; briefAt?: number; after?: string[] }) => releaseVerdict({ status: o.status ?? "pending",
+        release: o.release ?? "card-valid", held: o.held, after: o.after,
         checks: startPlanChecks({ text: o.text ?? "row", source: o.source ?? "owner",
-          card: o.card === undefined ? full : o.card, briefAt: o.briefAt ?? null }) });
+          card: o.card === undefined ? full : o.card, briefAt: o.briefAt ?? null,
+          // the verdict's queue: exactly this probe id is a row, everything else in a text is prose
+          queueKnown: (id) => id === "1a2b3c4d", selfId: "selfrow" }) });
       const got = {
         hints: rv({}),
         main: rv({ source: "main", card: { ...full, size: "klein", gaps: [], valid: true, surfaceValid: true } }),
@@ -9600,6 +9605,12 @@ export async function run(ctx: Ctx): Promise<void> {
         all: rv({ release: "all", card: null, source: "intake" }),
         allScout: rv({ release: "all", text: "[idee scout-B 09-14] TITEL" }),
         sent: rv({ status: "sent" }),
+        // the order the text names, the card does not carry (Schnitt 1 §c2) — and the two controls:
+        // a sha that is no queue row is no order, and the carried id releases
+        nach: rv({ text: "row ordered, NACH 1a2b3c4d" }),
+        nachSha: rv({ text: "row ordered, NACH deadbeef" }),
+        carried: rv({ text: "row ordered, NACH 1a2b3c4d", after: ["1a2b3c4d"],
+          card: { ...full, size: "klein", gaps: [], valid: true, surfaceValid: true, after: ["1a2b3c4d"] } }),
       };
       const released = Object.entries(got).filter(([, v]) => v.released).map(([k]) => k);
       const why = (k: keyof typeof got): string => { const v = got[k]; return v.released ? "RELEASED" : v.why ?? "null"; };
@@ -9608,8 +9619,8 @@ export async function run(ctx: Ctx): Promise<void> {
           'surface.symbols: "x.ts#nope" does not resolve', 'rolle.harness: "Codex" is not a registered harness'] })
         && JSON.stringify(got.main) === JSON.stringify({ released: true, by: "policy", hints: [] }),
         JSON.stringify({ hints: got.hints, main: got.main }));
-      check("(rel) each HARD condition holds its own row with a named reason — verify, done, backed files, source, scout, card, freshness, hold",
-        released.sort().join(" ") === "all hints main queued"
+      check("(rel) each HARD condition holds its own row with a named reason — verify, done, backed files, source, scout, card, freshness, hold, named order",
+        released.sort().join(" ") === "all carried hints main nachSha queued"
         && why("noVerify").includes("no verify path") && why("badVerify").includes("no verify path")
         && why("noDone").includes("no done criterion") && why("answer").includes("no done criterion")
         && why("unbacked").includes("files not backed by the tree") && why("unbacked").includes("gibt-es-nicht.ts")
@@ -9617,6 +9628,8 @@ export async function run(ctx: Ctx): Promise<void> {
         && why("steward").includes("filed by steward") && why("intake").includes("filed by intake")
         && why("scout").includes("scout") && why("allScout").includes("scout")
         && why("noCard").includes("no card yet") && why("stale").includes("brief changed after the card")
+        && why("nach").includes("card-valid needs") && why("nach").includes(`orders it after 1a2b3c4d`)
+        && why("nach").includes("card.after carries nothing") && why("nachSha").includes("RELEASED")
         && why("held").startsWith("held by its MAIN") && why("heldQueued").startsWith("held by its MAIN")
         && JSON.stringify(got.manual) === JSON.stringify({ released: false, why: null })
         && JSON.stringify(got.sent) === JSON.stringify({ released: false, why: null })
@@ -9631,6 +9644,25 @@ export async function run(ctx: Ctx): Promise<void> {
       check("(rel) the plan starts a policy-released pending row, holds a held queued row and leaves a manual pending row unreleased",
         JSON.stringify(relPlan) === JSON.stringify([["p1", "now"], ["p2", { unreleased: ["p2"] }], ["p3", { unreleased: ["p3"] }]]),
         JSON.stringify(relPlan));
+      // …and the SAME refusal holds the wave (Schnitt 1 §c2): a card-valid row whose text orders it
+      // after queue row 1a2b3c4d is not started while its card carries nothing; the same row with
+      // the id on the card starts — here right away (the target is done), in the live (rc3) arm
+      // behind its pending predecessor. Mutations that turn this red: dropping the verdict clause
+      // (n1 starts), reading the order from the prose (n1 starts), or dropping the queue filter
+      // (a sha in prose would refuse its own row).
+      const nachCard = (id: string, carried: boolean): StartPlanCardFacts =>
+        ({ ...spValid, surface: { files: [id], creates: [] }, ...(carried ? { after: ["1a2b3c4d"] } : {}) });
+      const nachPlan = spNexts(projectStartPlan(spInput([
+        spRow("n1", 1, ["n1.ts"], { status: "pending", release: "card-valid", text: "row ordered, NACH 1a2b3c4d",
+          card: nachCard("n1.ts", false), queueIds: ["1a2b3c4d"] }),
+        spRow("n2", 2, ["n2.ts"], { status: "pending", release: "card-valid", text: "row ordered, NACH 1a2b3c4d",
+          card: nachCard("n2.ts", true), after: ["1a2b3c4d"], queueIds: ["1a2b3c4d"] }),
+        spRow("n3", 3, ["n3.ts"], { status: "pending", release: "card-valid", text: "row ordered, NACH deadbeef",
+          card: nachCard("n3.ts", false), queueIds: ["1a2b3c4d"] }),
+      ], [], { [spRepo]: { max: 5, source: "repo", programs: {} } }, { "1a2b3c4d": "done" })));
+      check("(rel) the plan does not start a card-valid row ordered NACH a queue row its card does not carry, and starts the carried one — a sha in prose is no order",
+        JSON.stringify(nachPlan) === JSON.stringify([["n1", { unreleased: ["n1"] }], ["n2", "now"], ["n3", "now"]]),
+        JSON.stringify(nachPlan));
     }
     // (sp-missing) AN `after` TARGET THAT IS NOT A ROW OF THE QUEUE AT ALL (2026-09-17). `statuses`
     // carries EVERY row, so an ABSENT key is a different fact from a row that has not landed: a
@@ -9714,6 +9746,13 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(namedAfterIds("NACH: 1a2b3c4d, 5e6f7a8b\nText nach 9c0d1e2f und after `abcdef12`; seit 3d9a73e4 gebaut"))
         === JSON.stringify(["1a2b3c4d", "5e6f7a8b", "9c0d1e2f", "abcdef12"]),
       JSON.stringify(namedAfterIds("NACH: 1a2b3c4d, 5e6f7a8b\nText nach 9c0d1e2f und after `abcdef12`; seit 3d9a73e4 gebaut")));
+    // the fourth signal word (Schnitt 1 §c3, measured on 25d9ac1e/b3dc3dc3: "folgt auf <id>" was
+    // invisible) — and the control that no prose near an id becomes an order
+    check("(waits) namedAfterIds reads \"folgt auf <id>\" as an order — and stays silent without a signal word",
+      JSON.stringify(namedAfterIds("folgt auf f29538f8, FOLGT AUF: 0a1b2c3d")) === JSON.stringify(["f29538f8", "0a1b2c3d"])
+        && JSON.stringify(namedAfterIds("nacheinander 1a2b3c4d, danach 5e6f7a8b, gefolgt von 9c0d1e2f")) === JSON.stringify([]),
+      JSON.stringify({ folgt: namedAfterIds("folgt auf f29538f8, FOLGT AUF: 0a1b2c3d"),
+        ohne: namedAfterIds("nacheinander 1a2b3c4d, danach 5e6f7a8b, gefolgt von 9c0d1e2f") }));
   }
 
   // --- (sp) THE START PLAN, live: GET /api/start-plan is owner-only, a read, and prints the SAME
@@ -10672,19 +10711,26 @@ export async function run(ctx: Ctx): Promise<void> {
     // (rc3)'s two rows are filed HERE, through the owner door with an author card, so their `after` can
     // ride on the one planting stop below: a release right after a second stop/restart of its own was
     // answered 401 in four previews in a row — the MAIN's self door found no slot for its token.
+    // rcAfter's card CARRIES `after: [rcPred]` through the door itself (Schnitt 1 §c1) — the (rc0)
+    // check reads back of the state file that the door, not a plant, wrote it.
     const rcEarlyCard = { ziel: "acp23 rc probe", surface: { files: ["AGENTS.md"], symbols: [] },
       done: "die Zeile ist freigegeben", verify: "bun e2e/pins.ts", verboten: [] };
-    const rcEarly = async (text: string): Promise<string> => ((await (await post("/api/tasks",
-      { text, queue: false, programId: mMainProgram, repo: REPO, card: rcEarlyCard })).json()) as { task?: { id: string } }).task?.id ?? "";
-    const rcPred = await rcEarly("acp23 rc predecessor");
-    const rcAfter = await rcEarly(`acp23 rc ordered with a card, NACH ${rcPred}`);
+    const rcEarly = async (text: string, after?: string[]): Promise<Response> => post("/api/tasks",
+      { text, queue: false, programId: mMainProgram, repo: REPO, card: after ? { ...rcEarlyCard, after } : rcEarlyCard });
+    const rcPredRes = await rcEarly("acp23 rc predecessor");
+    const rcPred = (((await rcPredRes.json()) as { task?: { id: string } }).task?.id ?? "");
+    const rcAfterRes0 = await rcEarly(`acp23 rc ordered with a card, NACH ${rcPred}`, rcPred ? [rcPred] : undefined);
+    const rcAfter = (((await rcAfterRes0.json()) as { task?: { id: string } }).task?.id ?? "");
     // The binding is PLANTED through the state file, the same way e2e/programs.ts plants its stale
     // and complete-bound fixtures: the bootstrap route spawns a fresh session and waits for a
     // harness screen, and none of that founding path is what this section measures.
     await stopSrv();
     const mPlanted = mState();
     const rcRow = ((mPlanted as { tasks?: { id: string; card?: Record<string, unknown> }[] }).tasks ?? []).find((t) => t.id === rcAfter);
-    if (rcRow?.card) rcRow.card = { ...rcRow.card, after: [rcPred] };
+    check("(rc0) the owner door takes an author card WITH after and stores it — the state file carries what the door wrote, no plant",
+      rcPredRes.status === 200 && rcAfterRes0.status === 200 && !!rcPred && !!rcAfter
+        && JSON.stringify(rcRow?.card?.after) === JSON.stringify([rcPred]),
+      `file=${rcPredRes.status}/${rcAfterRes0.status} card=${JSON.stringify(rcRow?.card?.after ?? null)} pred=${rcPred}`);
     const mSlotRow = mPlanted.slots?.[String(mSlot)];
     const mProgramRow = mPlanted.programs?.find((p) => p.id === mMainProgram);
     if (mProgramRow && mSlotRow?.openedAt)
@@ -10980,14 +11026,16 @@ export async function run(ctx: Ctx): Promise<void> {
       `before=${mSurfBefore} now=${(await mAll()).length}`);
 
     // --- (rc) NO RELEASE WITHOUT A VALID CARD (4ae22c7a, server.ts#releaseCardRefusal). The plan reads a
-    // row's order from `card.after` only, so a MAIN release of a row whose card is missing, or whose
-    // text orders it after a row the card does not carry, is a release the plan cannot keep. Three
-    // rows of THIS MAIN's program: no card → 409 naming it; an author card (which has no `after`
-    // field) under a text with `NACH <id>` → 409 naming the id; a card that carries the id → 200, and
-    // the start plan holds the row behind its predecessor, the wait register naming whose move it is.
-    // The third row and its predecessor are filed before the section's binding stop, which plants the
-    // card's `after` (no door writes one; the (sp-tick) pattern) — see rcEarly at the fixture.
-    // Mutation that turns (rc2) red: dropping the NACH comparison (the row releases, 200).
+    // row's order from `card.after` only, so a release of a row whose text orders it after a row the
+    // card does not carry is a release the plan cannot keep — refused at ALL THREE doors with the same
+    // sentence (Schnitt 1 §c2). Four rows of THIS MAIN's program: no card at the MAIN door → 409 naming
+    // it; an author card without `after` under a text with `NACH <id>` → 409 at the MAIN door naming the
+    // id; an author card with a FOREIGN after id → 400 at both filing doors naming the gap (Schnitt 1
+    // §c1: the door takes `after` and validates it like the card sweep does); a card that carries the id
+    // → 200 at both doors, and the start plan holds the row behind its predecessor, the wait register
+    // naming whose move it is. The carried rows are filed through the doors themselves — no plant — see
+    // rcEarly at the fixture and (rc0). Mutations that turn these red: dropping the NACH comparison
+    // ((rc2) releases, 200), dropping the after validation ((rc4) files, 200).
     await post("/api/dispatch", { on: false });
     const rcCard = { ziel: "acp23 rc probe", surface: { files: [M_TRACKED], symbols: [] },
       done: "die Zeile ist freigegeben", verify: "bun e2e/pins.ts", verboten: [] };
@@ -11009,6 +11057,30 @@ export async function run(ctx: Ctx): Promise<void> {
       !!rcNach && !!rcPred && rcNachRes.status === 409 && rcNachText.includes(`orders it after ${rcPred}`)
         && rcNachText.includes("card.after carries nothing") && (await mRow(rcNach))?.status === "pending",
       `${rcNachRes.status}:${rcNachText}`);
+    // (rc4) THE AUTHOR DOOR VALIDATES `after` LIKE THE CARD SWEEP DOES (Schnitt 1 §c1): an id that is
+    // no queue row, and an id the text does not name, are 400s naming the gap — at BOTH filing doors,
+    // which share authorCardFrom. Nothing is filed.
+    const rcBadRes = await post("/api/tasks", { text: "acp23 rc foreign after", queue: false,
+      programId: mMainProgram, repo: REPO, card: { ...rcCard, after: ["badbadbe"] } });
+    const rcBadText = await rcBadRes.text();
+    const rcUnnamedRes = await post("/api/tasks", { text: "acp23 rc unnamed after", queue: false,
+      programId: mMainProgram, repo: REPO, card: { ...rcCard, ...(rcPred ? { after: [rcPred] } : {}) } });
+    const rcUnnamedText = await rcUnnamedRes.text();
+    const rcMainBadRes = await mFile(mToken, { text: "acp23 rc main foreign after", kind: "auftrag",
+      card: { ...rcCard, after: ["badbadbe"] } });
+    check("(rc4) an author card whose after names no queue row, or names a row the text does not, is refused 400 naming the gap — at both filing doors",
+      rcBadRes.status === 400 && rcBadText.includes('after: "badbadbe" is not a queue row')
+        && rcUnnamedRes.status === 400 && rcUnnamedText.includes(`after: "${rcPred}" is not named in the request`)
+        && rcMainBadRes.status === 400,
+      `owner=${rcBadRes.status}:${rcBadText} unnamed=${rcUnnamedRes.status}:${rcUnnamedText} main=${rcMainBadRes.status}`);
+    // (rc2b) THE MAIN DOOR TAKES THE SAME CARD WITH after — and the RELEASE proves the stored id:
+    // releaseCardRefusal would 409 naming rcPred if the door had not written what the card carries.
+    const rcMainCarry = await rcFile({ text: `acp23 rc main-filed with after, NACH ${rcPred}`,
+      card: { ...rcCard, ...(rcPred ? { after: [rcPred] } : {}) } });
+    const rcMainCarryRes = await rcRelease(rcMainCarry);
+    check("(rc2b) the MAIN door takes an author card with after, stores it, and releases the row — the release proving the stored id",
+      !!rcMainCarry && !!rcPred && rcMainCarryRes.status === 200 && (await mRow(rcMainCarry))?.status === "queued",
+      `${rcMainCarryRes.status}:${rcMainCarryRes.status === 200 ? "" : await rcMainCarryRes.text()}`);
     const rcAfterRes = await rcRelease(rcAfter);
     interface RcWait { id: string; grund: string; adressat: string; kette: string[] }
     const rcPlan = (await (await get("/api/start-plan")).json()) as StartPlan & { waits?: RcWait[] };
@@ -11020,7 +11092,7 @@ export async function run(ctx: Ctx): Promise<void> {
         && rcWait?.grund === `wartet auf ${rcPred} (after, nicht gelandet)` && rcWait.adressat === `main:${mMainProgram}`
         && JSON.stringify(rcWait.kette) === JSON.stringify([`row ${rcPred} (after)`]),
       JSON.stringify({ release: rcAfterRes.status, releaseText: rcAfterRes.status === 200 ? "" : await rcAfterRes.text(), next: rcWave?.next ?? null, wait: rcWait ?? null }));
-    for (const id of [rcPred, rcBare, rcNach, rcAfter]) await post(`/api/tasks/${id}/delete`, {});
+    for (const id of [rcPred, rcBare, rcNach, rcMainCarry, rcAfter]) await post(`/api/tasks/${id}/delete`, {});
 
     // --- (stau) THE STALL SENSOR (server.ts#tickStallSensor, queue rows 80f61ed8 → 84888f35). On one
     // live instance in REPO2, rows of THIS MAIN's program (an attention needs a live bound MAIN):

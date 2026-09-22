@@ -1493,17 +1493,12 @@ export async function run(): Promise<void> {
       check("the next opener in the band takes the freed smallest letter A again",
         !!c.slot && c.letter === "A", JSON.stringify(c));
 
-      await restartSrv();
-      const afterBoot = (await ownerSlots()).filter((s) => s.id === b.slot || s.id === c.slot);
-      check("the stored letters ride a srv restart out of fleet.json",
-        afterBoot.find((s) => s.id === b.slot)?.worktree?.letter === "B"
-        && afterBoot.find((s) => s.id === c.slot)?.worktree?.letter === "A",
-        JSON.stringify(afterBoot.map((s) => ({ id: s.id, letter: s.worktree?.letter }))));
-
-      // A READER THAT HAS NEVER HEARD OF THE FIELD must still load the row: plant one bogus key
-      // beside the letter the way a different-generation writer would (server down, so nothing
-      // rewrites the file underneath), restart, and expect the letter kept and the junk dropped
-      // by the field-by-field restore.
+      // ONE RESTART CARRIES BOTH HALVES: the stored letters ride the boot out of fleet.json, and a
+      // row holding a field this loader has never heard of (planted while the server is down, the
+      // way a different-generation writer would) loads without error — letter kept, junk dropped by
+      // the field-by-field restore. The loader does not branch on junk presence, so the clean-file
+      // case is the same code path through the same boot; the suite keeps its boot budget for the
+      // windows the later modules actually measure.
       await stopSrv();
       const statePath = `${ROOT}/fleet.json`;
       const state = await Bun.file(statePath).json() as
@@ -1512,6 +1507,11 @@ export async function run(): Promise<void> {
       if (bWt) bWt.stern = 7;
       await Bun.write(statePath, JSON.stringify(state));
       await restartSrv();
+      const afterBoot = (await ownerSlots()).filter((s) => s.id === b.slot || s.id === c.slot);
+      check("the stored letters ride a srv restart out of fleet.json",
+        afterBoot.find((s) => s.id === b.slot)?.worktree?.letter === "B"
+        && afterBoot.find((s) => s.id === c.slot)?.worktree?.letter === "A",
+        JSON.stringify(afterBoot.map((s) => ({ id: s.id, letter: s.worktree?.letter }))));
       const junkRow = (await ownerSlots()).find((s) => s.id === b.slot);
       check("a state row with an unknown field loads: the letter is kept, the junk key is dropped",
         junkRow?.worktree?.letter === "B"

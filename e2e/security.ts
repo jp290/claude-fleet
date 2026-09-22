@@ -1338,14 +1338,17 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // with `\"` and `\\` escapes (measured on tmux 3.6a), and the backslash-stripped pzCmd keeps the
   // outer quotes — dash on the Linux helper then parsed a different line than the pane ran (first
   // helper preview, job 282fb099cb03). Unwrap once, unescape once: the pane's exact text.
-  const pzRaw = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
+  // trimEnd: without it the trailing newline defeats the anchored unwrap, sh runs the display copy
+  // as ONE word, and the `File name too long` error echoes that word — marker text included. That
+  // vacuous green is why the marker must also stand on a line of its own below.
+  const pzRaw = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out.trimEnd();
   const pzExact = /^".*"$/s.test(pzRaw) ? pzRaw.slice(1, -1).replace(/\\(.)/gs, "$1") : pzRaw;
   const pzBroken = spawnSync("/bin/sh", ["-c", pzExact.replaceAll(`'${pzSbx}'`, "'/nonexistent/sandbox-exec'")],
     { encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] });
   const pzBrokenOut = `${pzBroken.stdout ?? ""}${pzBroken.stderr ?? ""}`;
   check("§6a a pi-zai fence that cannot run prints its named marker and never starts pi",
-    pzBrokenOut.includes("pi-zai: pi was NOT started - its read fence (sandbox-exec) failed its self-test")
-      && pzBroken.error === undefined,
+    /^pi-zai: pi was NOT started - its read fence \(sandbox-exec\) failed its self-test\. This pane is a plain shell, not an agent\.$/m.test(pzBrokenOut)
+      && pzBroken.status === 0 && pzBroken.error === undefined,
     `${pzBroken.error?.message ?? `exit ${pzBroken.status}`} / ${pzBrokenOut.slice(-200)}`
       + ` / exact line runnable=${pzExact.includes(`'${pzSbx}'`) && !pzExact.startsWith('"')}`);
   if (process.platform === "darwin") {

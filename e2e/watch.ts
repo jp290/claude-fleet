@@ -55,13 +55,20 @@ import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, pane
 //      still be on its way". Budget 20 s: twice this module's own settleEvent budget (10 s,
 //      40×250 ms), because one send window is a tmux round-trip over ps/pgrep probes, not a
 //      constant, and a latch release can land inside it.
-//   2. OBSERVE (after the boot): settling halves the window but cannot zero it — a tick can persist
+//   2. OBSERVE (non-blocking): settling halves the window but cannot zero it — a tick can persist
 //      a marker in the sliver between the last clean poll and the kill, and a send parked at a
-//      latch dies with the marker already down and its attempt count already raised. So the rows
-//      that were open at the pre-restart snapshot are re-read after the boot: one STILL MID-FLIGHT
-//      (marker down, no concluding audit row — whatever its attempt count did) is a killed line,
-//      and it fails HERE, under its own name — "restart killed a pending delivery" — instead of as
-//      the delivery check it went on to break.
+//      latch dies with the marker already down and its attempt count already raised. So every
+//      restart leaves an OBSERVE DEBT — its pre-restart open set — and the NEXT settle collects
+//      it: the rows have had the whole inter-restart interval to conclude by then, and one STILL
+//      MID-FLIGHT (marker down, no concluding audit row — whatever its attempt count did) is a
+//      killed line, named under its own name — "restart killed a pending delivery".
+//      NON-BLOCKING ON PURPOSE, measured as the Q5-recycle regress of 4788615d (the check was
+//      never red in 823 post-land audits before this branch): a recovery row HELD at a latch —
+//      marker down, count raised, no audit row is what the recovery-refused branches leave —
+//      reads mid-flight per this predicate while nothing is in flight, so an observation that
+//      waited INSIDE restartSrv sat between the boot and the fixture's 10 s latch window and
+//      consumed it. The gate therefore never holds a boot: the debt is collected where settling
+//      already belongs.
 //
 // A row the gate has named is remembered (`killedRows`) so one stranded row cannot spin every
 // later restart to its budget. The deliberate parked-marker cases need no opt-out: a latch-parked
@@ -90,13 +97,17 @@ const midFlightRows = async (): Promise<GateEventRow[]> => {
     && ledger.filter((r) => r.event === "fleet_event_send_uncertain"
       && (r.detail ?? "").includes(e.id)).length < e.attempts);
 };
-// both halves take a MELDER (the reporter their named fail goes through), defaulting to check:
-// production calls pass nothing, and the self-test injects a collector — a proof that let check
-// fire would file a real FAIL into the suite's own sum, and every run would end red by
-// construction (MAIN verdict on report ed9a14fe).
+// THE MELDER SEAM: the settle half's named fail goes through a `report` parameter defaulting to
+// check — production calls pass nothing, and a proof that let check fire would file a real FAIL
+// into the suite's own sum, where no run could ever end ALL PASS (MAIN verdict on ed9a14fe). The
+// observe half needs no melder at the call sites: its detector RETURNS the killed rows, and only
+// the debt collector turns them into a report.
 const settleForGate = async (label: string,
   report: (name: string, ok: boolean, detail?: string) => void = check): Promise<void> => {
-  // a server that is already down (a gated stop just ran) was settled by that stop
+  // a server that is already down (a gated stop just ran) was settled by that stop; its debts
+  // stay queued for the next reachable settle
+  if (!(await get("/api/sessions").then((r) => r.ok).catch(() => false))) return;
+  await collectObserveDebts(label, report);
   if (!(await get("/api/sessions").then((r) => r.ok).catch(() => false))) return;
   let lastSeen: GateEventRow[] = [];
   try {
@@ -122,8 +133,10 @@ const gateSnapshot = async (): Promise<Map<string, number>> => {
     if (e.status === "pending" || e.status === "send-uncertain") open.set(e.id, e.attempts);
   return open;
 };
-const postRestartWatch = async (label: string, pre: Map<string, number>,
-  report: (name: string, ok: boolean, detail?: string) => void = check): Promise<void> => {
+// the observe half's detector: bounded wait for every mid-flight row to conclude, then the
+// pre-open rows still mid-flight are the killed ones — RETURNED (memoized so one stranded row
+// cannot spin every later settle to its budget), never filed from here
+const detectKilledRows = async (label: string, pre: Map<string, number>): Promise<GateEventRow[]> => {
   let lastSeen: GateEventRow[] = [];
   try {
     await until(async () => {
@@ -141,12 +154,22 @@ const postRestartWatch = async (label: string, pre: Map<string, number>,
     // concluding audit row — long after the boot. A row that merely concluded slowly left
     // midFlightRows by now; a row minted after the restart is not pre-open.
     const suspects = lastSeen.filter((r) => pre.has(r.id));
-    if (!suspects.length) return; // nothing pre-open is stuck: this restart killed nothing
     for (const row of suspects) killedRows.add(row.id);
-    report(`restart gate: a restart never strands an open delivery (${label})`, false,
-      `restart killed a pending delivery — ${JSON.stringify(suspects.map((r) =>
-        [r.id, { attempts: r.attempts }]))} crossed ${label} open and is still mid-flight after the `
-      + `boot: marker down, no concluding fleet_event_send_uncertain audit row, never replayed`);
+    return suspects;
+  }
+  return [];
+};
+// every restart owes one observation; the next settle collects the queue. An unreachable server
+// (stop→plant→restart) leaves its debts queued — the planted image keeps every pre-open id.
+const observeDebts: { label: string; pre: Map<string, number> }[] = [];
+const collectObserveDebts = async (label: string,
+  report: (name: string, ok: boolean, detail?: string) => void): Promise<void> => {
+  for (const debt of observeDebts.splice(0)) {
+    const killed = await detectKilledRows(debt.label, debt.pre);
+    if (killed.length) report(`restart gate: a restart never strands an open delivery (${debt.label})`, false,
+      `restart killed a pending delivery — ${JSON.stringify(killed.map((r) =>
+        [r.id, { attempts: r.attempts }]))} crossed ${debt.label} open and is still mid-flight at `
+      + `${label}: marker down, no concluding fleet_event_send_uncertain audit row, never replayed`);
   }
 };
 const restartSrv = async (extra: Record<string, string> = {}): Promise<void> => {
@@ -155,10 +178,12 @@ const restartSrv = async (extra: Record<string, string> = {}): Promise<void> => 
   const live = await gateSnapshot();
   await restartSrvRaw(extra);
   // after a stop→plant→restart the live read sees only a dead server; the stop's own snapshot is
-  // what was open at the kill
-  const pre = live.size ? live : stopSnapshot ?? live;
+  // what was open at the kill. The observation is a DEBT, never a wait: nothing from the gate
+  // may sit between a boot and the fixture section that follows it (the Q5-recycle regress of
+  // 4788615d measured exactly that cost). The next settle collects it — the rows have had the
+  // whole inter-restart interval to conclude by then, so a healthy run pays one fetch.
+  observeDebts.push({ label, pre: live.size ? live : stopSnapshot ?? live });
   stopSnapshot = null;
-  await postRestartWatch(label, pre);
 };
 const stopSrv = async (): Promise<void> => {
   const label = `stop #${++gateSeq}`;
@@ -3116,13 +3141,11 @@ export async function run(): Promise<void> {
     //           for is DELIVERED, not murdered. Falsifiable: remove the settle half and the kill
     //           lands within the first poll, so the pid moves while parked and this goes red.
     //   OBSERVE: kill mid-window ON PURPOSE (the raw harness functions, no settle — the exact
-    //           mutation) and hand the half the pre-restart open set THROUGH THE MELDER SEAM:
-    //           the self-test injects a collector, because a proof that let check fire would file
-    //           a real FAIL into the suite's own sum and no run could ever end ALL PASS (MAIN
-    //           verdict on report ed9a14fe). The collector must hold exactly one named fail
-    //           carrying the phrase and the row id, and the real register must have grown by
-    //           nothing. Falsifiable: a gate that cannot see mid-flight rows collects nothing
-    //           and this goes red.
+    //           mutation) and hand the detector the pre-restart open set: it must RETURN the
+    //           stuck row — asserted on the RETURNED set with the real register unchanged, so
+    //           the proof files no FAIL row of its own and the suite still ends ALL PASS (MAIN
+    //           verdict on report ed9a14fe). Falsifiable: a gate that cannot see mid-flight
+    //           rows returns nothing and this goes red.
     //   MEMO:   the named row is remembered — asserted BEFORE the ack, while the row is still
     //           mid-flight: the next restart must return well inside the settle budget and file
     //           nothing. Falsifiable: drop the memo and this restart spins its full 20 s budget
@@ -3220,20 +3243,13 @@ export async function run(): Promise<void> {
         JSON.stringify({ watch: parked2.watchOk,
           row: stuckRow && [stuckRow.id, stuckRow.status, stuckRow.attempts] }));
       if (stuckOk && stuckRow) {
-        const collected: { name: string; ok: boolean; detail: string }[] = [];
-        const collect = (name: string, ok: boolean, detail = ""): void => {
-          collected.push({ name, ok, detail });
-        };
         const observeFailsBefore = gateFails().length;
-        const pre = new Map([[stuckRow.id, stuckRow.attempts]]); // what the settle half would have snapshotted
-        await postRestartWatch("self-test observe", pre, collect);
-        const named = collected.filter((c) => !c.ok);
-        check("restart gate self-test: without the settle half, OBSERVE names the killed line through the injected melder — no real FAIL row filed",
-          named.length === 1 && !!named[0]
-            && named[0].detail.includes("restart killed a pending delivery")
-            && named[0].detail.includes(stuckRow.id)
+        const pre = new Map([[stuckRow.id, stuckRow.attempts]]); // what a settle would have snapshotted
+        const killed = await detectKilledRows("self-test observe", pre);
+        check("restart gate self-test: without the settle half, the detector names the killed line on its returned set — no FAIL row needed for the proof",
+          killed.length === 1 && !!killed[0] && killed[0].id === stuckRow.id
             && gateFails().length === observeFailsBefore,
-          JSON.stringify({ named: named.length, line: named[0]?.detail.slice(0, 300),
+          JSON.stringify({ killed: killed.map((r) => [r.id, r.attempts]),
             realFails: gateFails().length - observeFailsBefore }));
         // MEMO, asserted BEFORE the ack on purpose: the row is still send-uncertain here, so a
         // gate that had NOT memorized it would settle-wait its full budget on this restart and

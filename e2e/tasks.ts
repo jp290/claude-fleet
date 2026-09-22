@@ -8244,11 +8244,11 @@ export async function run(ctx: Ctx): Promise<void> {
   // ~20 ms but paints nothing for 1–26 s under load, and a paste in that blackout is lost
   // (docs/messungen/2026-09-22-card-worker-paste-blackout.md). The claim: the worker pastes only
   // onto a DRAWN frame, and a pane that never draws is refused by name, not waited out. Same
-  // vehicle and PATH swap as (jt); the stand-in's mode decides whether it ever paints the ctx footer
-  // CLAUDE_READY_FRAME reads — "dark" never does, "lit" does at once. The FOOTER and not the `⏵⏵`
-  // permission line, because it is the one ASCII alternative of the marker: the helper runs this
-  // suite under a systemd unit with no LANG, and a tmux without a UTF-8 locale captures `⏵⏵` as
-  // `__` (run e1f6badd63d8, 2026-09-22: "never drew its TUI within 3s", 0 B pasted).
+  // vehicle and PATH swap as (jt); the stand-in's mode decides whether it ever paints the permission
+  // line CLAUDE_READY_FRAME reads — "dark" never does, "lit" does at once. The banner line above it is
+  // load-bearing: server/tmux.ts#tmux trims the capture, so a marker on the FIRST painted row loses
+  // its two leading blanks and `^ {2}` never matches (preview runs e1f6badd63d8 and 6539b4b2b226,
+  // 2026-09-22: "never drew its TUI within 3s", 0 B pasted). Real claude paints its banner first.
   {
     const bkDir = `${ROOT}/fakeblackout`;
     const bkBin = `${bkDir}/bin`;
@@ -8262,7 +8262,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const q = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
     await Bun.write(`${bkBin}/claude`, [
       "#!/bin/sh",
-      `[ "$(cat ${q(bkMode)})" = lit ] && printf '\\n  main  |  ctx [----------] --%%  |  Sonnet 5\\n'`,
+      `[ "$(cat ${q(bkMode)})" = lit ] && printf 'Claude Code stand-in\\n\\n  ⏵⏵ don'"'"'t ask on (shift+tab to cycle)\\n'`,
       `exec ${q(bkStandIn)} >> ${q(bkPasted)}`,
       "",
     ].join("\n"));

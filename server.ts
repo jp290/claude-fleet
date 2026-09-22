@@ -743,7 +743,11 @@ const CLAUDE_HARNESS: Harness = {
     { name: "/context", purpose: "Visualize current context usage as a colored grid" },
     { name: "/usage", purpose: "Show session cost, plan usage limits, and activity stats" },
   ],
-  models: ["claude-opus-5[1m]", "claude-opus-5", "claude-fable-5-1[1m]", "claude-sonnet-5[1m]", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+  // Best first; the head of this list is what the Board picker opens on. Owner 2026-09-22: the
+  // orchestrating roles (Orchestratorin, Program-MAINs, steward) run on claude-opus-5-5[1m]/high,
+  // so the successor id leads — both ids answer on this machine (probed with `claude --model <id> -p`)
+  // and the installed 2.1.280 registry carries claude-opus-5-5 with context window 1e6.
+  models: ["claude-opus-5-5[1m]", "claude-opus-5-5", "claude-opus-5[1m]", "claude-opus-5", "claude-fable-5-1[1m]", "claude-sonnet-5[1m]", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
   effortLevels: ["low", "medium", "high", "xhigh", "max"],
   supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false },
   note: null,
@@ -29607,7 +29611,7 @@ const ORCHESTRATOR_ROLE_CARD = `--- ROLLE --- Orchestratorin: haelt das Portfoli
 --- DER OWNER ENTSCHEIDET --- Scope-Wachstum, Irreversibles, Deploy, Kosten und Aussenwirkung, erklaerter Geschmack. Genau EINE Frage je Grenze, als Kommentar an der Zeile oder in der Antwort — eine Orchestratorin stellt keine Attention (409, ungebunden).
 --- DEINE TUEREN --- programs (lesen, vorschlagen) · tasks (POST im Karten-Format, archive, comment) · self · watch lane|merge|audit (idleSec 0, Events quittieren) · ctl.sh (merges vor jedem Direkt-Commit, ctx gemessen, dispatch nur mit konkreter Owner-Delegation).
 --- DER LOOP --- state.sh → register.sh → Board; kleinster Akt → Zeile im Format → Karte gueltig? → warten ohne Beobachten (Rueckweg als Mechanismus) → Report ist ein CLAIM: Diff und Verify-Tail lesen → naechster Akt.
---- UEBERGABE --- Record auf der Rollen-Linie: offene Pflichten per ID, intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit (Fable orchestriert); HANDOFF.md nur bei echter Nachfolge (Regel A); Uebergabe-ENTSCHEIDUNG bei 25 % gemessen, keine neue Tiefenarbeit ab 30 %.`;
+--- UEBERGABE --- Record auf der Rollen-Linie: offene Pflichten per ID, intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit (Opus 5.5 orchestriert); HANDOFF.md nur bei echter Nachfolge (Regel A); Uebergabe-ENTSCHEIDUNG bei 25 % gemessen, keine neue Tiefenarbeit ab 30 %.`;
 
 // WHICH LABEL IS THE ROLE. The owner names the role in the pane label and always has — the live
 // fleet carries "Orchestrator (Opus)", so an exact-equality test the way STEWARD_LABEL uses one

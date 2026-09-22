@@ -520,6 +520,9 @@ export async function run(): Promise<void> {
     `${echoScreen.code} marker=${echoScreenReady} reader=${lineReaderReady} ${echoScreen.out}`);
   const nudgeBefore = successorSlot === null ? "" :
     (await tmuxOut("capture-pane", "-J", "-t", `s${successorSlot}`, "-p")).out;
+  // counted from here, never by slot number alone: the successor stands on the predecessor's slot
+  // (in-place succession), so an inbox prompt the predecessor got earlier carries the same number.
+  const plogBeforeNudge = (await plogRead()).length;
   await restartSrv({ FLEET_INBOX_NUDGE_MS: "100", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" });
   let nudgeAfter = nudgeBefore;
   for (let i = 0; i < 40 && inboxLineCount(nudgeAfter) === inboxLineCount(nudgeBefore); i++) {
@@ -530,7 +533,7 @@ export async function run(): Promise<void> {
   await Bun.sleep(400);
   const nudgeStable = successorSlot === null ? "" :
     (await tmuxOut("capture-pane", "-J", "-t", `s${successorSlot}`, "-p")).out;
-  const nudgedPrompts = (await plogRead()).filter((p) => p.slot === successorSlot && p.text.startsWith("[fleet inbox]"));
+  const nudgedPrompts = (await plogRead()).slice(plogBeforeNudge).filter((p) => p.slot === successorSlot && p.text.startsWith("[fleet inbox]"));
   await restartSrv({ FLEET_INBOX_NUDGE_MS: "0", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" });
   const noNudgeRow = await raised(await selfRaise(successorToken, { kind: "decision", text: "No nudge while disabled." }));
   const noNudgeAnswer = await post(`/api/attention/${noNudgeRow?.id}/answer`, { text: "Recorded without a timer." });

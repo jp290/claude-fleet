@@ -248,7 +248,7 @@ interface AutoInfo {
   id: string; slot: number; text: string; everySec: number | null; nextAt: number;
   runsLeft: number; idleSec: number; enabled: boolean; lastRun: number; lastResult: string | null;
 }
-interface WorktreeInfo { repo: string; branch: string; anchor?: LaneAnchor }
+interface WorktreeInfo { repo: string; branch: string; anchor?: LaneAnchor; letter?: string }
 interface SlotInfo {
   id: number; cwd: string | null; label: string | null; lastOutput: number;
   // Both are optional for compatibility with an older server. `repo` is the canonical toplevel;
@@ -6377,16 +6377,25 @@ const bandLetter = (i: number): string => i < 26
   ? String.fromCharCode(65 + i)
   : bandLetter(Math.floor(i / 26) - 1) + String.fromCharCode(65 + (i % 26));
 function laneBandNames(
-  stacks: readonly { anchor: { id: number } | null; lanes: readonly { id: number }[] }[],
+  stacks: readonly { anchor: { id: number } | null; lanes: readonly { id: number; worktree?: { letter?: string } | null }[] }[],
 ): Map<number, string> {
   const out = new Map<number, string>();
-  const bandless: number[] = [];
+  const bandless: { id: number; worktree?: { letter?: string } | null }[] = [];
   for (const g of [...stacks].sort((a, b) => (a.anchor?.id ?? 0) - (b.anchor?.id ?? 0))) {
-    if (!g.anchor) { bandless.push(...g.lanes.map((l) => l.id)); continue; }
+    if (!g.anchor) { bandless.push(...g.lanes); continue; }
     const band = g.anchor.id;
-    [...g.lanes].sort((a, b) => a.id - b.id).forEach((l, i) => out.set(l.id, `${band}${bandLetter(i)}`));
+    [...g.lanes].sort((a, b) => a.id - b.id).forEach((l, i) => {
+      // THE STORED LETTER IS THE NAME: server.ts assigned it once at open, so a neighbour's land or
+      // a srv restart cannot shift it. The positional run survives only for lanes that predate the
+      // field — an older state row, or an older loader that never copied the field across a boot.
+      const stored = l.worktree?.letter;
+      out.set(l.id, `${band}${typeof stored === "string" && stored ? stored : bandLetter(i)}`);
+    });
   }
-  bandless.sort((a, b) => a - b).forEach((id, i) => out.set(id, `0${bandLetter(i)}`));
+  bandless.sort((a, b) => a.id - b.id).forEach((l, i) => {
+    const stored = l.worktree?.letter;
+    out.set(l.id, `0${typeof stored === "string" && stored ? stored : bandLetter(i)}`);
+  });
   return out;
 }
 

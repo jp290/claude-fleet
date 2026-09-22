@@ -1341,7 +1341,7 @@ export async function run(): Promise<void> {
   if (REPO) {
     type AnchorWireSlot = {
       id: number; cwd: string | null; openedAt?: number; repo?: string | null; lastOutput: number;
-      worktree?: { repo: string; branch: string; anchor?: LaneAnchor } | null;
+      worktree?: { repo: string; branch: string; anchor?: LaneAnchor; letter?: string } | null;
     };
     const ownerSlots = async (): Promise<AnchorWireSlot[]> =>
       ((await (await get("/api/sessions")).json()) as { slots: AnchorWireSlot[] }).slots;
@@ -1452,6 +1452,78 @@ export async function run(): Promise<void> {
       JSON.stringify(implicitPersisted));
     check("implicit lane fixture cleans up through the normal land path",
       await cleanLane({ slot: 5, cwd: implicit.cwd }));
+
+    // --- S3a: DER LANE-BUCHSTABE WIRD FEST VERGEBEN. Two lanes opened into band 4 take A and B as
+    // PERSISTED fields on their refs; landing A frees the letter and never renames B; the next
+    // opener takes A again; the letters ride a srv restart out of fleet.json; and a state row
+    // carrying a field this loader has never heard of loads without error — the tolerance an
+    // older reader gives the letter field itself. Every lane is landed before the family returns. ---
+    {
+      const m4 = (await ownerSlots()).find((s) => s.id === 4);
+      const letterLane = async (branch: string): Promise<{ slot?: number; letter?: string }> => {
+        const res = await post("/api/lanes", {
+          repo: REPO, branch, parent: { slot: 4, openedAt: m4?.openedAt },
+        });
+        if (!res.ok) return {};
+        const j = (await res.json()) as { slot?: number };
+        let row = (await ownerSlots()).find((s) => s.id === j.slot);
+        for (let i = 0; i < 40 && !row?.worktree?.letter; i++) {
+          await Bun.sleep(50);
+          row = (await ownerSlots()).find((s) => s.id === j.slot);
+        }
+        return { slot: j.slot, letter: row?.worktree?.letter };
+      };
+      const a = await letterLane("e2e-letter-a");
+      const b = await letterLane("e2e-letter-b");
+      check("two lanes opened into one band take the smallest free letters, A then B, as persisted fields",
+        !!a.slot && !!b.slot && a.letter === "A" && b.letter === "B", JSON.stringify({ a, b }));
+
+      // THE SONDE: land A. The survivor's name must not move.
+      const landedA = a.slot ? await post(`/api/slots/${a.slot}/land`, {}) : null;
+      check("letter fixture: lane A lands through the normal path", landedA?.ok === true,
+        JSON.stringify(landedA ? await landedA.json() : "no slot").slice(0, 160));
+      let bRow = (await ownerSlots()).find((s) => s.id === b.slot);
+      for (let i = 0; i < 40 && bRow?.worktree?.letter !== "B"; i++) {
+        await Bun.sleep(50);
+        bRow = (await ownerSlots()).find((s) => s.id === b.slot);
+      }
+      check("landing a neighbour frees the letter but never renames the survivor — B is still B",
+        bRow?.worktree?.letter === "B", JSON.stringify(bRow?.worktree));
+      const c = await letterLane("e2e-letter-c");
+      check("the next opener in the band takes the freed smallest letter A again",
+        !!c.slot && c.letter === "A", JSON.stringify(c));
+
+      await restartSrv();
+      const afterBoot = (await ownerSlots()).filter((s) => s.id === b.slot || s.id === c.slot);
+      check("the stored letters ride a srv restart out of fleet.json",
+        afterBoot.find((s) => s.id === b.slot)?.worktree?.letter === "B"
+        && afterBoot.find((s) => s.id === c.slot)?.worktree?.letter === "A",
+        JSON.stringify(afterBoot.map((s) => ({ id: s.id, letter: s.worktree?.letter }))));
+
+      // A READER THAT HAS NEVER HEARD OF THE FIELD must still load the row: plant one bogus key
+      // beside the letter the way a different-generation writer would (server down, so nothing
+      // rewrites the file underneath), restart, and expect the letter kept and the junk dropped
+      // by the field-by-field restore.
+      await stopSrv();
+      const statePath = `${ROOT}/fleet.json`;
+      const state = await Bun.file(statePath).json() as
+        { slots?: Record<string, { worktree?: Record<string, unknown> }> };
+      const bWt = state.slots?.[String(b.slot)]?.worktree;
+      if (bWt) bWt.stern = 7;
+      await Bun.write(statePath, JSON.stringify(state));
+      await restartSrv();
+      const junkRow = (await ownerSlots()).find((s) => s.id === b.slot);
+      check("a state row with an unknown field loads: the letter is kept, the junk key is dropped",
+        junkRow?.worktree?.letter === "B"
+        && (junkRow?.worktree as Record<string, unknown> | null | undefined)?.stern === undefined,
+        JSON.stringify(junkRow?.worktree));
+
+      const cleanB = await post(`/api/slots/${b.slot}/land`, {});
+      const cleanC = await post(`/api/slots/${c.slot}/land`, {});
+      check("letter fixture cleans up through the normal land path", cleanB.ok && cleanC.ok,
+        `${cleanB.status}/${cleanC.status}`);
+    }
+
     await post("/api/slots/3/kill", {});
     await post("/api/slots/4/kill", {});
     rmSync(sub, { recursive: true, force: true });
@@ -1473,7 +1545,7 @@ export async function run(): Promise<void> {
     // the bar, that a bandless lane lands on band 0 rather than colliding with band 1, and that
     // neither ordering of the input changes an answer.
     const refSrc = cut("const bandLetter =", "// THE FOUR STATES A ROW");
-    type BandStack = { anchor: { id: number } | null; lanes: { id: number }[] };
+    type BandStack = { anchor: { id: number } | null; lanes: { id: number; worktree?: { letter?: string } | null }[] };
     let laneBandNames: ((stacks: readonly BandStack[]) => Map<number, string>) | null = null;
     try {
       laneBandNames = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(refSrc)
@@ -1530,6 +1602,41 @@ export async function run(): Promise<void> {
           { anchor: { id: 2 }, lanes: [{ id: 23 }] }, { anchor: null, lanes: [{ id: 24 }] }]);
         return !!all && new Set(all.values()).size === 4;
       })(), "four lanes over three bands");
+
+    // S3a: the letter is a PERSISTED field on the lane ref, not a position. The server assigns the
+    // smallest free letter at open; a lane that carries one keeps it whatever happens around it,
+    // and only lanes WITHOUT the field (every lane older than the field, or a loader that dropped
+    // it) fall back to the positional run.
+    const stored = laneBandNames?.([{ anchor: { id: 4 }, lanes: [
+      { id: 5, worktree: { letter: "C" } }, { id: 6, worktree: { letter: "A" } }, { id: 7 },
+    ] }]);
+    check("a stored letter IS the name regardless of id order, and a lane without the field still derives",
+      stored?.get(5) === "4C" && stored.get(6) === "4A" && stored.get(7) === "4B",
+      JSON.stringify([...stored?.entries() ?? []]));
+    const storedBandless = laneBandNames?.([
+      { anchor: null, lanes: [{ id: 8, worktree: { letter: "B" } }, { id: 9 }] },
+      { anchor: { id: 1 }, lanes: [{ id: 2 }] },
+    ]);
+    check("a stored letter carries onto band 0 too, where the derivation would move it",
+      storedBandless?.get(8) === "0B" && storedBandless.get(9) === "0A" && storedBandless.get(2) === "1A",
+      JSON.stringify([...storedBandless?.entries() ?? []]));
+    check("the server's letter alphabet is the client's, letter for letter — two derivations of one name are how they come apart",
+      (() => {
+        let clientLetter: ((i: number) => string) | null = null;
+        try {
+          clientLetter = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(refSrc)
+            + "\nreturn bandLetter;")() as (i: number) => string;
+        } catch { return false; }
+        if (!clientLetter) return false;
+        let serverLetter: ((i: number) => string) | null = null;
+        try {
+          const src = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/server.ts`, "utf8");
+          const a = src.indexOf("const bandLetterOf ="), b = src.indexOf("// A lane holds its letter", a);
+          serverLetter = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(src.slice(a, b))
+            + "\nreturn bandLetterOf;")() as (i: number) => string;
+        } catch { return false; }
+        return !!serverLetter && [0, 1, 25, 26, 27, 51, 52].every((i) => serverLetter!(i) === clientLetter!(i));
+      })(), "bandLetterOf vs bandLetter");
 
     // --- THE FOUR STATES, lifted the same way. What the bar could say before was "hot" or "not",
     // and the not held three different facts. Order is part of the rule: a broken session that

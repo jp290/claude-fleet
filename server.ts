@@ -5778,6 +5778,42 @@ async function persistProgramFounding(program: Program, lease: GameMakerTreeLeas
 // worktree paths mid-attach — see the attach race note in /api/lanes
 const attachBusy = new Set<string>();
 
+// THE LANE LETTER IS A PERSISTED NAME, not a position: assigned once at open as the smallest
+// letter no live lane in the band holds, written into the LaneRef, and read back by
+// src/client.ts#laneBandNames — so landing a neighbour or a srv restart never renames the
+// survivor. The band is the anchor's slot; a parentless lane collects on band 0, exactly where
+// the client's derivation puts orphans. bandLetter mirrors src/client.ts#bandLetter letter for
+// letter; e2e/slots.ts lifts both and pins the agreement.
+const bandLetterOf = (i: number): string => i < 26
+  ? String.fromCharCode(65 + i)
+  : bandLetterOf(Math.floor(i / 26) - 1) + String.fromCharCode(65 + (i % 26));
+// A lane holds its letter from the synchronous reserve below until openSlot has attached the ref
+// to a slot. The reservation map closes the one race in the scheme: two opens in one band
+// interleave at the awaits between reserve and attach (createWorktree, syncLaneRefs), and without
+// it both would scan the same live set and take the same smallest letter. The scan is deliberately
+// blind to letters a band would DERIVE for its field-less (pre-field) lanes — deriving is a
+// client-side rendering rule over a moving id order, and pretending to predict it here would be
+// the second derivation of one name that this field exists to retire.
+const laneLetterReservations = new Map<number, Set<string>>();
+function reserveLaneLetter(anchor: LaneAnchor | null): { band: number; letter: string } {
+  const band = anchor ? anchor.slot : 0;
+  const used = new Set(laneLetterReservations.get(band));
+  for (const s of slots) {
+    const w = s.worktree;
+    if (!w?.letter || (w.anchor ? w.anchor.slot : 0) !== band) continue;
+    used.add(w.letter);
+  }
+  let i = 0;
+  while (used.has(bandLetterOf(i))) i++;
+  const letter = bandLetterOf(i);
+  if (!laneLetterReservations.has(band)) laneLetterReservations.set(band, new Set());
+  laneLetterReservations.get(band)!.add(letter);
+  return { band, letter };
+}
+const releaseLaneLetter = (band: number, letter: string): void => {
+  laneLetterReservations.get(band)?.delete(letter);
+};
+
 async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null,
   harness: string | null = null, effort: string | null = null, form: LaneForm = "worktree",
   box: BoxPin = NO_BOX, parent: LaneAnchor | undefined = undefined, browser = false,
@@ -5791,15 +5827,21 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   const wt = await createWorktree(root, branch, form);
   const base = await integrationBranch(wt.repo);
   const baseSha = await laneForkSha(wt.path, base);
+  // reserve+construct is one synchronous step — see laneLetterReservations
+  const { band: letterBand, letter } = reserveLaneLetter(anchor);
   const ref: LaneRef = { repo: wt.repo, branch: wt.branch, base: base ?? undefined, baseSha,
-    ...(anchor ? { anchor } : {}),
+    ...(anchor ? { anchor } : {}), letter,
     ...(form === "clone" ? { form } : {}) }; // absent for a worktree lane — the persisted shape of
   // every lane that predates this field must stay byte-identical, so the default is written nowhere
   // A fresh clone's branch exists only in the clone. Mirror it up NOW rather than on the first
   // tick: until the root has the ref, worktreeRisk and drift read a branch that is not there and
   // would report an absence as a fact about the lane.
   await syncLaneRefs(ref, wt.path);
-  await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context);
+  try {
+    await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context);
+  } finally {
+    releaseLaneLetter(letterBand, letter);
+  }
   // a manual lane (no branch given → createWorktree auto-named it `fleet/<stamp>-<hex>`)
   // has no task text to derive a label from the way the dispatcher does (~tickDispatch,
   // `⎇ task ...`) — so it must NEVER surface that raw uniqueness timestamp as the
@@ -13211,20 +13253,27 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     const dispatchRepo = await repoRootOf(next.repo ?? DISPATCH_REPO);
     const anchor = await decideLaneAnchor(dispatchRepo, undefined);
     const wt = await createWorktree(dispatchRepo, "", dForm.form, variantBase ?? undefined);
+    // same synchronous reserve as openLaneInSlot: the tick can open a lane while an owner click
+    // opens another into the same band
+    const { band: letterBand, letter } = reserveLaneLetter(anchor);
     // no `base` here (the dispatcher lane keeps the live re-derivation), but the fork commit is
     // captured — the outcome record needs it after the land moves main. `label` stays null: the
     // line below names the slot.
     const dRef: LaneRef = { repo: wt.repo, branch: wt.branch,
       baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)),
-      ...(anchor ? { anchor } : {}),
+      ...(anchor ? { anchor } : {}), letter,
       // written only for a clone, exactly as openLaneInSlot writes it: a dispatched worktree lane's
       // persisted record must stay byte-identical to the one every dispatch before this produced.
       ...(dForm.form === "clone" ? { form: dForm.form } : {}) };
     // A fresh clone's branch exists only in the clone — mirror it up NOW: until the root has the
     // ref, every root-side reader (drift, risk, the land path) reports an absence. No-op for a worktree.
     await syncLaneRefs(dRef, wt.path);
-    await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort, NO_BOX, null, spawn.browser === true,
-      spawn.context ?? null);
+    try {
+      await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort, NO_BOX, null, spawn.browser === true,
+        spawn.context ?? null);
+    } finally {
+      releaseLaneLetter(letterBand, letter);
+    }
     free.label = `⎇ task ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
     // An attended click IS a release — the only one that never passes through `queued` — stamped
     // OVER whatever the row carried: the lane that actually ran was attended. The tick's path
@@ -32349,10 +32398,16 @@ if (existsSync(STATE_FILE)) {
         if (typeof wt === "object" && wt !== null
           && typeof (wt as { repo?: unknown }).repo === "string" && typeof (wt as { branch?: unknown }).branch === "string") {
           const anchor = normalizeLaneAnchor((wt as { anchor?: unknown }).anchor);
+          const letter = (wt as { letter?: unknown }).letter;
           s.worktree = { repo: (wt as { repo: string }).repo, branch: (wt as { branch: string }).branch,
             ...(typeof (wt as { base?: unknown }).base === "string" ? { base: (wt as { base: string }).base } : {}),
             ...(typeof (wt as { baseSha?: unknown }).baseSha === "string" ? { baseSha: (wt as { baseSha: string }).baseSha } : {}),
-            ...(anchor ? { anchor } : {}) };
+            ...(anchor ? { anchor } : {}),
+            // carried only as written: a non-string letter is dropped alone and the band falls back
+            // to the client's positional derivation for this one lane (the laneSeats discipline).
+            // An OLDER build's restore stops before this line's spread and so ignores the field
+            // wholesale — which is exactly the tolerance a newer state file may demand of it.
+            ...(typeof letter === "string" && letter ? { letter } : {}) };
         }
       }
     }
@@ -37543,9 +37598,15 @@ Bun.serve<WSData>({
           if (!wt) return json({ error: "not a worktree of this repo" }, 400);
           if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree already open in a slot" }, 409);
           const attachBase = await integrationBranch(top.out);
-          await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
-            baseSha: await laneForkSha(wt.path, attachBase) }, laneModel.model, null, laneH.harness, laneEffort.effort,
-            NO_BOX, null, laneBrowser.browser === true, laneContext.context);
+          // an attached lane is adopted without a parent — its band is 0, same reserve as every open
+          const { band: attachLetterBand, letter: attachLetter } = reserveLaneLetter(null);
+          try {
+            await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
+              baseSha: await laneForkSha(wt.path, attachBase), letter: attachLetter }, laneModel.model, null, laneH.harness, laneEffort.effort,
+              NO_BOX, null, laneBrowser.browser === true, laneContext.context);
+          } finally {
+            releaseLaneLetter(attachLetterBand, attachLetter);
+          }
           free.label = wt.branch.replace(/^fleet\//, "⎇ ");
           delete shelved[wt.path]; // resuming clears the shelve note — the lane is active again
           saveState();

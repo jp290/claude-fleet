@@ -105,6 +105,12 @@ run_build() {
 # and not a reason to skip the build above, which is what makes the bundle current even in the runs
 # where the deploy is deferred.
 #
+# IT ANSWERS A MOVE, NOT A TICK. Only a green build that followed a fast-forward asks; a tick with
+# nothing to fetch does not, or the 15-minute timer would restart the board four times an hour. The
+# cost is real and named: after a deferred or failed deploy the srv stays behind the tree until the
+# NEXT fast-forward asks again. A sensor for that GAP belongs to the instance (`bundleStale`, the
+# boot head in GET /api/deploys), not to this script.
+#
 # The address is resolved exactly as ctl.sh resolves it (FLEET_HOST/FLEET_PORT out of this
 # checkout's gitignored .env, else 127.0.0.1:8790) and the credential exactly as ctl.sh reads it
 # (the `token` key fleet.json's writer puts first). NO fleet.json means no Fleet instance has ever

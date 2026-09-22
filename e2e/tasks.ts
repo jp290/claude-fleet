@@ -12403,15 +12403,25 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify(haOwnNext) === JSON.stringify({ collides: { slot: haSlot, file: "code.txt" } }),
       JSON.stringify({ foreign: haForeignNext, own: haOwnNext }));
     // ...and the CLI's own lane builder answers the same, off the same state file: it resolves the
-    // anchor itself (start-plan.ts), so a CLI left on baseSha prints a collides edge the route does not
+    // anchor itself (start-plan.ts), so a CLI left on baseSha prints a collides edge the route does not.
+    // THE STATE FILE IS WAITED FOR FIRST, exactly as the (sp) block waits: the CLI reads fleet.json
+    // from disk, and a run fired before the server flushed these rows judges a queue without them.
+    let haOnDisk = false;
+    for (let i = 0; i < 50 && !haOnDisk; i++) {
+      try {
+        const rows = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: { id: string }[] }).tasks ?? [];
+        haOnDisk = [haForeignRow, haOwnRow].every((id) => rows.some((t) => t.id === id));
+      } catch { /* a write in progress reads as not-yet */ }
+      if (!haOnDisk) await Bun.sleep(100);
+    }
     const haCliRun = spawnSync("bun", [`${ROOT}/start-plan.ts`, "--state", `${ROOT}/fleet.json`, "--default-repo", REPO],
       { encoding: "utf8", env: { ...process.env, FLEET_DISPATCH_REPO: REPO } });
     const haCliPlan = ((): StartPlan | null => { try { return JSON.parse(haCliRun.stdout) as StartPlan; } catch { return null; } })();
     check("(ha) `bun start-plan.ts --state fleet.json` resolves the same anchor as the git tick — same verdict on both rows from the other lane builder",
-      haCliRun.status === 0 && !!haCliPlan
+      haOnDisk && haCliRun.status === 0 && !!haCliPlan
       && haNextOf(haCliPlan, haForeignRow) === "now"
       && JSON.stringify(haNextOf(haCliPlan, haOwnRow)) === JSON.stringify({ collides: { slot: haSlot, file: "code.txt" } }),
-      JSON.stringify({ exit: haCliRun.status, err: haCliRun.stderr.slice(0, 300),
+      JSON.stringify({ onDisk: haOnDisk, exit: haCliRun.status, err: haCliRun.stderr.slice(0, 300),
         foreign: haCliPlan ? haNextOf(haCliPlan, haForeignRow) : null, own: haCliPlan ? haNextOf(haCliPlan, haOwnRow) : null }));
     for (const id of [haForeignRow, haOwnRow]) await post(`/api/tasks/${id}/delete`, {});
     if (haSlot >= 0) await post(`/api/slots/${haSlot}/kill`, {});
@@ -12457,7 +12467,9 @@ export async function run(ctx: Ctx): Promise<void> {
     })).json()) as { program?: { id: string } }).program?.id ?? "";
     await post(`/api/programs/${wpProg}/confirm`, {});
     await post(`/api/programs/${wpProg}/activate`, {});
-    const wpBoot = await post(`/api/programs/${wpProg}/bootstrap-main`, { cwd: REPO2 });
+    const wpBootRes = await post(`/api/programs/${wpProg}/bootstrap-main`, { cwd: REPO2 });
+    const wpBootErr = wpBootRes.status === 200 ? "" : await wpBootRes.clone().text();
+    const wpBoot = wpBootRes;
     const wpMainSlot = await until(() => {
       try {
         const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { programs?: { id?: string; main?: { slot?: number } }[] };
@@ -12488,10 +12500,21 @@ export async function run(ctx: Ctx): Promise<void> {
     for (let i = 0; i < 5; i++) wpFill.push(await wpRow(`(wp) cap filler ${i + 1} of 5 — released before the partner arrives.`, "AGENTS.md"));
     const wpPartner = await wpRow("(wp) the partner — it shares AGENTS.md with the fillers, so it shares a wave with one of them.", "AGENTS.md");
     const wpIndep = await wpRow("(wp) the independent row — its own file, so its own wave, with nothing released in it.", "code.txt");
+    // THE SURFACES ARE CONFIRMED FIRST, and without this step the probe below cannot hold:
+    // task-land-waves.ts#classify gives a row a `reasonAgainst` unless its surface is CONFIRMED (a
+    // lifted CARD surface needs resolvable ranges, and `symbols: []` on a markdown file resolves
+    // none — "flaeche-ohne-bereich"), and wavesFor makes every row with a reasonAgainst a wave of
+    // ONE. Card-only rows would therefore each be their own wave and the partner would share a wave
+    // with nothing — measured exactly so on 2026-09-22 before this line existed.
+    const wpConfirm = await fetch(`${BASE}/api/self/tasks/confirm-cards`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": wpTok },
+      body: JSON.stringify({ ids: [...wpFill, wpPartner, wpIndep] }) });
+    const wpConfirmed = ((await wpConfirm.json()) as { confirmed?: { id: string }[]; skipped?: unknown[] });
     // THE CONTROL FIRST: the five fillers go out one by one, all 200 — the cap is reached honestly,
     // by releases this door itself made, not by a number written into the state
     const wpFillStatuses: number[] = [];
-    for (const id of wpFill) wpFillStatuses.push((await wpRelease(id)).status);
+    const wpFillErrs: string[] = [];
+    for (const id of wpFill) { const r = await wpRelease(id); wpFillStatuses.push(r.status); wpFillErrs.push(r.error); }
     // ...and the wave membership is READ, not assumed: the partner must actually share a wave with a
     // row that is already queued, and the independent row must share one with none. If the budget cut
     // ever lands differently this probe says so instead of letting the arms below pass for free.
@@ -12503,10 +12526,17 @@ export async function run(ctx: Ctx): Promise<void> {
     const wpIndepWave = wpWaveOf(wpIndep).filter((id) => id !== wpIndep && wpQueued.has(id));
     check("(wp) PROBE: a bound MAIN, the cap filled to 5 by this door's own releases, the partner sharing a wave with a released row and the independent row sharing one with none",
       wpBoot.status === 200 && typeof wpMainSlot === "number" && /^[0-9a-f]{32}$/.test(wpTok)
+      && wpConfirm.status === 200 && (wpConfirmed.confirmed?.length ?? 0) === 7
       && wpFillStatuses.length === 5 && wpFillStatuses.every((s) => s === 200)
-      && wpQueued.size === 5 && wpPartnerWave.length > 0 && wpIndepWave.length === 0,
-      JSON.stringify({ boot: wpBoot.status, slot: wpMainSlot, tok: wpTok.length, fills: wpFillStatuses.join(","),
-        queued: wpQueued.size, partnerWave: wpWaveOf(wpPartner), partnerReleased: wpPartnerWave, indepWave: wpWaveOf(wpIndep) }));
+      // MY fillers are the released set, and the cap is at least full — never a global equality:
+      // anything else this instance released into another program is not this probe's business
+      && wpFill.every((id) => wpQueued.has(id)) && wpQueued.size >= 5
+      && wpPartnerWave.length > 0 && wpIndepWave.length === 0,
+      JSON.stringify({ boot: wpBoot.status, bootErr: wpBootErr.slice(0, 200), slot: wpMainSlot, tok: wpTok.length,
+        confirmed: wpConfirmed.confirmed?.length ?? 0, skipped: JSON.stringify(wpConfirmed.skipped ?? []).slice(0, 200),
+        fills: wpFillStatuses.join(","), fillErrs: wpFillErrs.filter(Boolean).slice(0, 3),
+        queued: wpQueued.size, mine: wpFill.filter((id) => wpQueued.has(id)).length,
+        partnerWave: wpWaveOf(wpPartner), partnerReleased: wpPartnerWave, indepWave: wpWaveOf(wpIndep) }));
     const wpPartnerRes = await wpRelease(wpPartner);
     const wpIndepRes = await wpRelease(wpIndep);
     check("(wp) with the cap FULL the wave partner of an already-released row is released (200), while an independent row of the same program is still refused by the cap (409) — the exemption is the wave's, not a hole in the deckel",

@@ -510,7 +510,7 @@ async function cli(): Promise<void> {
     tasks?: Record<string, { files?: string[]; ranges?: TaskWaveRange[] | null }>;
   };
   const state = await Bun.file(statePath).json() as {
-    tasks?: unknown; slots?: unknown; repoLaneCaps?: unknown; programs?: unknown;
+    tasks?: unknown; slots?: unknown; repoLaneCaps?: unknown; programs?: unknown; repoBases?: unknown;
   };
   const tasks = Array.isArray(state.tasks) ? state.tasks as StateTask[] : [];
   const strings = (v: unknown): string[] => Array.isArray(v) ? v.filter((e): e is string => typeof e === "string") : [];
@@ -560,6 +560,35 @@ async function cli(): Promise<void> {
 
   // a lane's repo is stored canonical; map it back onto the projection's own repo string
   const projectionRepoFor = new Map(projection.repos.map((r) => [canon(r.repo), r.repo]));
+  // THE LANE'S BASE WHEN THE RECORD CARRIES NONE, resolved exactly as server.ts#laneBaseRef falls
+  // back (repoBases → the primary's branch → its HEAD sha). A DISPATCHED lane's persisted record
+  // has NO `base` at all — server.ts writes `dRef` with repo/branch/baseSha only — so without this
+  // the merge-base anchor below would resolve for hand-opened lanes and silently fall back to the
+  // spawn-time baseSha for every dispatched one, which is precisely the phantom the anchor removes.
+  // Measured 2026-09-22: the route was right and this CLI was wrong on the same tree, in the same
+  // second. Cached per repo — several lanes share one, and this shells out.
+  const bases: Record<string, string> = state.repoBases && typeof state.repoBases === "object"
+    ? Object.fromEntries(Object.entries(state.repoBases as Record<string, unknown>)
+      .filter((e): e is [string, string] => typeof e[1] === "string" && !!e[1])) : {};
+  const integrationBaseCache = new Map<string, string | null>();
+  const integrationBaseOf = (repo: string | null): string | null => {
+    if (!repo) return null;
+    const hit = integrationBaseCache.get(repo);
+    if (hit !== undefined) return hit;
+    const cfg = (bases[canon(repo)] ?? bases[repo]) || null;
+    const git = (...args: string[]): string | null => {
+      const r = Bun.spawnSync(["git", "-C", repo, ...args],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+      const out = r.stdout.toString().trim();
+      return r.success && out ? out : null;
+    };
+    const branch = cfg ?? ((): string | null => {
+      const b = git("rev-parse", "--abbrev-ref", "HEAD");
+      return b && b !== "HEAD" ? b : git("rev-parse", "HEAD");
+    })();
+    integrationBaseCache.set(repo, branch);
+    return branch;
+  };
   const slots = state.slots && typeof state.slots === "object" ? state.slots as Record<string, StateSlot> : {};
   // The two facts startPlanLaneClaims needs that a state file does not hold, read here once per lane
   // exactly as server.ts#tickGit caches them per tick: `ahead` as commits of the lane's own (HEAD
@@ -603,7 +632,9 @@ async function cli(): Promise<void> {
     // is the other half of the pair). baseSha remains the fallback for a lane whose base the state
     // file does not carry, or whose merge-base will not resolve — the last honest fork there is.
     const laneCwd = typeof slot.cwd === "string" ? slot.cwd : "";
-    const laneBase = typeof slot.worktree?.base === "string" && slot.worktree.base ? slot.worktree.base : null;
+    const laneRepoRaw = typeof slot.worktree?.repo === "string" ? slot.worktree.repo : null;
+    const laneBase = typeof slot.worktree?.base === "string" && slot.worktree.base
+      ? slot.worktree.base : integrationBaseOf(laneRepoRaw);
     const baseSha = typeof slot.worktree?.baseSha === "string" && slot.worktree.baseSha ? slot.worktree.baseSha : null;
     const mergeBase = ((): string | null => {
       if (!laneCwd || !laneBase) return null;

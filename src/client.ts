@@ -2363,12 +2363,12 @@ function renderSuiteMeter() {
   const devEl = hs ? el("button", "smdev", hs) as HTMLButtonElement : null;
   if (devEl) { devEl.title = "helper devices — open the register"; devEl.onclick = () => devbtn.click(); }
   // …and the named end of that reach, drawn only when another instance exists to be confused with.
-  // Owner words (owner 2026-09-21: "mac only" does not say what it narrows): the badge now says
-  // WHAT is counted, the German tooltip says what that leaves out.
+  // Owner words (G0.5, owner 2026-09-22): the badge is just the instance name; the German tooltip
+  // says what it narrows — the numbers count this machine only, the other fleet is not in them.
   const elsewhere = instanceLinks.filter((l) => l.name !== instanceName);
   const scopeTag = el("span", "bscope", "fleet");
   scopeTag.title = "this fleet: its machine-wide suite mutex, the lanes on this box, and the helper devices it lends work to";
-  const scope = elsewhere.length ? el("span", "smscope", `counts ${instanceName ?? "this machine"} only`) : null;
+  const scope = elsewhere.length ? el("span", "smscope", `${instanceName ?? "this machine"}`) : null;
   if (scope) scope.title = `${elsewhere.map((l) => l.name).join(", ")} `
     + `${elsewhere.length === 1 ? "ist eine eigene Fleet" : "sind eigene Fleets"} mit eigener Suite-Warteschlange. `
     + "Die Umschaltung kann sie öffnen, aber von hier aus wird keiner ihrer Läufe mitgezählt — eine leere Station hier sagt nichts über sie. "
@@ -3375,10 +3375,11 @@ async function renderBoard() {
       };
       srow("Rail", sc.rail, railWhy[sc.rail]);
       // the lid is keyed by the QUEUE ROW (originId), so a hand-opened lane has none to spend
-      // owner words (G0.5, owner 2026-09-22): baton → handoff; the count reads "x von y"
-      srow("Handoff", sc.cap !== null ? `Session ${sc.session} · ${sc.taken ?? 0} von ${sc.cap}`
-        : sc.taken !== null ? `Session ${sc.session} · ${sc.taken} genutzt, keine Grenze`
-        : `Session ${sc.session} · keine Grenze`,
+      // owner words (G0.5, owner 2026-09-22): baton → handoff; action words stay English, only
+      // the tooltip explains in German
+      srow("Handoff", sc.cap !== null ? `Session ${sc.session} · ${sc.taken ?? 0} of ${sc.cap}`
+        : sc.taken !== null ? `Session ${sc.session} · ${sc.taken} taken, no cap`
+        : `Session ${sc.session} · no cap`,
         sc.cap !== null
           ? `Wie oft diese Aufgabe per Handoff in eine frische Session weiterlaufen darf: ${sc.cap}mal. Danach verweigert der Server das Weiterschicken und verlangt stattdessen einen Report (intern: FLEET_LANE_SUCCEED_MAX). Die Zählung hängt an der Aufgaben-Zeile — neu einreihen setzt sie nicht zurück.`
           : sc.rail === "lane"
@@ -7283,7 +7284,7 @@ function plaAlarmCard(): HTMLElement | null {
     line.appendChild(lg);
     sec.appendChild(line);
   }
-  const ack = el("button", "plaack", "Gesehen") as HTMLButtonElement;
+  const ack = el("button", "plaack", "Seen") as HTMLButtonElement;
   ack.title = "blendet diese Meldung aus — nur für diesen Prüflauf; die nächste nicht-grüne Prüfung meldet sich wieder (intern: fleet.plaudit.ack).";
   ack.onclick = () => {
     localStorage.setItem(PLA_ACK_KEY, String(postLandAudit?.at ?? 0));

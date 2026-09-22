@@ -58,6 +58,10 @@
   .plasec.unknown { background: color-mix(in srgb, var(--amber) 13%, var(--chat-void));
     border-color: color-mix(in srgb, var(--amber) 30%, var(--chat-edge-soft));
     border-bottom-color: var(--amber); }
+  /* the receipt an ack leaves behind — the same card at its QUIETEST: no tint, no signal edge,
+     just the raised surface, one note line and the way back in */
+  .plasec.seen { background: var(--chat-raised);
+    border-color: var(--chat-edge-soft); border-bottom: 1px solid var(--chat-edge-soft); }
   /* "a newer client is being served than this page is running". Its own affordance, not the alarm
      bar above it: this is news, not a failure. Bottom-right so it never covers the header or the
      audit banner, and it only ever appears on a tab that has been in the FOREGROUND across a

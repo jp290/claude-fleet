@@ -86,3 +86,5 @@ und der `hashchange`-Listener fallen ersatzlos. Kein Schalter darf ein Land sehe
 
 Bilder (1000×950, dsf 2): `leiste-733b/ti-head-{a,b,c,none}.png` und `ti-band-{a,b,c}.png` auf dem
 Bild-Server dieser Maschine.
+
+**Weiter:** die Gestaltungsgrammatik für die ganze Oberfläche (Knöpfe, Hinweise, Aufklapper, Menüs, Einstellungen, Karten) steht in `docs/design/grammatik.md` — die Leiste ist dort Referenz, nicht Ausnahme.

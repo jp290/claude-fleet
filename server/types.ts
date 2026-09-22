@@ -2925,13 +2925,15 @@ interface SuccessionDebt {
   brief: string;
   path: "succession" | "founding";
   draft: LineageHandover | null;
+  // the successor's label as the rail would have opened it: adoption asks for it (server.ts#adoptSuccessionDebt)
+  label: string | null;
   eventId: string | null;
 }
 const SUCCESSION_DEBTS_MAX = 20;
 const SUCCESSION_DEBT_REASON_MAX = 400;
 const SUCCESSION_DEBT_BRIEF_MAX = 64 * 1024;
 const SUCCESSION_DEBT_KEYS = ["v", "id", "at", "rail", "slot", "cwd", "predecessorOpenedAt", "successorOpenedAt",
-  "reason", "brief", "path", "draft", "eventId"];
+  "reason", "brief", "path", "draft", "label", "eventId"];
 const loadSuccessionDebt = (value: unknown): SuccessionDebt | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const r = value as Record<string, unknown>;
@@ -2945,6 +2947,7 @@ const loadSuccessionDebt = (value: unknown): SuccessionDebt | null => {
     || typeof r.reason !== "string" || r.reason.length > SUCCESSION_DEBT_REASON_MAX
     || typeof r.brief !== "string" || !r.brief || r.brief.length > SUCCESSION_DEBT_BRIEF_MAX
     || (r.path !== "succession" && r.path !== "founding")
+    || !(r.label === null || (typeof r.label === "string" && r.label.length <= 200))
     || !(r.eventId === null || (typeof r.eventId === "string" && /^[0-9a-f]{24}$/.test(r.eventId)))) return null;
   let draft: LineageHandover | null = null;
   if (r.draft !== null) {
@@ -2954,7 +2957,8 @@ const loadSuccessionDebt = (value: unknown): SuccessionDebt | null => {
   }
   return { v: 1, id: r.id, at: r.at as number, rail: r.rail, slot: r.slot as number, cwd: r.cwd as string,
     predecessorOpenedAt: r.predecessorOpenedAt as number, successorOpenedAt: r.successorOpenedAt as number | null,
-    reason: r.reason, brief: r.brief, path: r.path, draft, eventId: r.eventId as string | null };
+    reason: r.reason, brief: r.brief, path: r.path, draft, label: r.label as string | null,
+    eventId: r.eventId as string | null };
 };
 
 // --- THE RECORD LOSS SCAR -----------------------------------------------------------------------

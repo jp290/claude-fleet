@@ -7853,7 +7853,8 @@ const SUCCESSION_RESPAWN_FAIL_LATCH = process.env.FLEET_TEST_SUCCESSION_RESPAWN_
 type InPlaceRespawn = { ok: true } | { ok: false; response: Response };
 // what a failed respawn leaves behind as a debt instead of losing it: the brief as built, and the
 // role-lineage record the rail would have written (null where the rail has none — Program-MAIN)
-interface SuccessionStranded { brief: string; path: "succession" | "founding"; draft: LineageHandover | null }
+interface SuccessionStranded { brief: string; path: "succession" | "founding"; draft: LineageHandover | null;
+  label: string | null }
 async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentity, rail: string,
   stranded: SuccessionStranded, open: () => Promise<void>, onLost: (error: unknown) => Promise<void>,
   // a refusal BEFORE the kill: the predecessor still stands, only the rail's own intent falls
@@ -7939,7 +7940,8 @@ function recordSuccessionDebt(s: Slot, rail: string, predecessor: SuccessionPred
   }
   const debt: SuccessionDebt = { v: 1, id, at, rail: railName, slot: s.id, cwd: predecessor.cwd,
     predecessorOpenedAt: predecessor.openedAt, successorOpenedAt, reason: why,
-    brief: stranded.brief.slice(0, SUCCESSION_DEBT_BRIEF_MAX), path: stranded.path, draft: stranded.draft, eventId };
+    brief: stranded.brief.slice(0, SUCCESSION_DEBT_BRIEF_MAX), path: stranded.path, draft: stranded.draft,
+    label: stranded.label, eventId };
   successionDebts = [...successionDebts, debt].slice(-SUCCESSION_DEBTS_MAX);
   audit("succession_debt", s.id, `${id} ${railName} ${successorOpenedAt === null ? "no successor opened" : `successor openedAt ${successorOpenedAt} stands without its brief`}`
     + ` — brief held (${debt.brief.length} chars)${stranded.draft ? `, line ${stranded.draft.lineageId} record held` : ""}`
@@ -7951,9 +7953,19 @@ function recordSuccessionDebt(s: Slot, rail: string, predecessor: SuccessionPred
 // the act the failure's own sentence asks for ("reopen it on <cwd>"). The record is addressed to the
 // new occupant and the debt now names it, so the held brief can be resent. The Supervisor and the
 // Program-MAIN rails re-found through their own bootstrap and are not adopted by a plain open.
+//
+// SLOT AND CWD ARE NOT A LINE: most MAINs, the orchestrator among them, sit in the one main checkout,
+// so any later, unrelated open of that slot there would silently take a dead line's record — and a
+// resend would paste its old brief into a stranger. Adoption therefore also asks for the successor's
+// LABEL and a short window after the failure; outside it the debt is settled as orphaned
+// (settleSuccessionDebts), never handed to whoever comes next.
+const SUCCESSION_DEBT_ADOPT_MS = Math.max(0, Number(process.env.FLEET_SUCCESSION_DEBT_ADOPT_MS ?? 30 * 60_000) | 0);
+const debtAdoptable = (d: SuccessionDebt, now: number): boolean =>
+  d.successorOpenedAt === null && d.rail === "generic" && now - d.at <= SUCCESSION_DEBT_ADOPT_MS;
 function adoptSuccessionDebt(s: Slot): SuccessionDebt | null {
-  const debt = successionDebts.findLast((d) => d.slot === s.id && d.successorOpenedAt === null
-    && d.rail === "generic" && d.cwd === s.cwd);
+  const now = Date.now();
+  const debt = successionDebts.findLast((d) => d.slot === s.id && debtAdoptable(d, now)
+    && d.cwd === s.cwd && d.label === s.label);
   if (!debt || !s.cwd) return null;
   if (debt.draft) writeLineageHandover(debt.draft, s, Date.now());
   const adopted: SuccessionDebt = { ...debt, successorOpenedAt: s.openedAt };
@@ -7977,6 +7989,40 @@ function adoptSupervisorDebt(replaced: SupervisorBinding | null, s: Slot): Succe
   return debt;
 }
 
+// A DEBT NOBODY CAN PAY ANY MORE is settled instead of standing in the owner inbox for good: a
+// successor that is gone, a generic line past its adoption window, a Supervisor binding that no longer
+// names the dead predecessor, a Program re-founded or no longer active. The debt goes, its inbox row
+// is acknowledged, and the audit row says why — the brief itself stays in that debt's first audit row
+// only by length, never by text.
+function successionDebtOrphaned(d: SuccessionDebt, now: number): string | null {
+  if (d.successorOpenedAt !== null) {
+    const s = slotFrom(d.slot);
+    return s?.cwd && s.openedAt === d.successorOpenedAt ? null
+      : `the successor (openedAt ${d.successorOpenedAt}) is gone`;
+  }
+  if (d.rail === "generic")
+    return debtAdoptable(d, now) ? null : `no owner open adopted it within ${SUCCESSION_DEBT_ADOPT_MS}ms`;
+  if (d.rail === "supervisor")
+    return supervisor?.slot === d.slot && supervisor.openedAt === d.predecessorOpenedAt ? null
+      : "the Supervisor binding no longer names the ended predecessor";
+  const programId = d.rail.startsWith("program ") ? d.rail.slice("program ".length) : null;
+  const program = programId ? programs.find((p) => p.id === programId) : undefined;
+  return program?.status === "active" && program.main?.slot === d.slot && program.main.openedAt === d.predecessorOpenedAt
+    ? null : "the Program was re-founded or is no longer active";
+}
+function settleSuccessionDebts(): boolean {
+  const now = Date.now();
+  const settled = successionDebts.flatMap((d) => { const why = successionDebtOrphaned(d, now); return why ? [{ d, why }] : []; });
+  if (!settled.length) return false;
+  const gone = new Set(settled.map((x) => x.d.id));
+  successionDebts = successionDebts.filter((d) => !gone.has(d.id));
+  for (const { d, why } of settled) {
+    closeSuccessionDebtEvent(d);
+    audit("succession_debt", d.slot, `${d.id} settled as orphaned: ${why}`);
+  }
+  return true;
+}
+
 function closeSuccessionDebtEvent(debt: SuccessionDebt): void {
   const now = Date.now();
   fleetEvents = fleetEvents.map((e) => e.id === debt.eventId && e.status === "inbox"
@@ -7985,8 +8031,9 @@ function closeSuccessionDebtEvent(debt: SuccessionDebt): void {
 
 const successionDebtResend = new Set<string>();
 async function resendSuccessionDebt(id: string): Promise<Response> {
+  if (settleSuccessionDebts()) await saveStateNow();
   const debt = successionDebts.find((d) => d.id === id);
-  if (!debt) return json({ error: "no such succession debt" }, 404);
+  if (!debt) return json({ error: "no such succession debt (paid, or settled as orphaned — see audit `succession_debt`)" }, 404);
   if (debt.successorOpenedAt === null)
     return json({ error: `no successor stands for this debt — reopen slot ${debt.slot} on ${debt.cwd}`
       + (debt.rail === "generic" ? " (the owner open adopts it)" : " through the role's own bootstrap") }, 409);
@@ -8784,7 +8831,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     laneSpawn.add(s.id); // the slot is empty between the kill and the open — see laneSpawn
     try {
       const respawned = await respawnInPlace(s, predecessorIdentity, "generic",
-        { brief, path: "succession", draft },
+        { brief, path: "succession", draft, label },
         () => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box),
         async () => {});
       if (!respawned.ok) return respawned.response;
@@ -8808,7 +8855,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       const failed = async (reason: string): Promise<Response> => {
         audit("main_succession", s.id, `generic brief-undelivered: ${reason}`);
         const debt = recordSuccessionDebt(s, "generic", predecessorIdentity, openedAt, reason,
-          { brief, path: "succession", draft: null });
+          { brief, path: "succession", draft: null, label: s.label });
         await saveStateNow().catch((e: unknown) => logError("successionDebt", e));
         return json({ error: `successor stands on slot ${s.id} but its founding brief was not delivered (${reason}) — `
           + `held as succession debt ${debt.id}: POST /api/succession-debts/${debt.id}/resend`,
@@ -29440,7 +29487,7 @@ async function succeedSupervisor(s: Slot, label: string | null, carry: string | 
     laneSpawn.add(s.id); // the slot is empty between the kill and the open — see laneSpawn
     try {
       const respawned = await respawnInPlace(s, predecessor, "supervisor",
-        { brief: deliveredBrief, path: "founding", draft },
+        { brief: deliveredBrief, path: "founding", draft, label },
         () => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box),
         async () => {});
       if (!respawned.ok) return respawned.response;
@@ -29465,7 +29512,7 @@ async function succeedSupervisor(s: Slot, label: string | null, carry: string | 
       const failed = async (reason: string): Promise<Response> => {
         audit("main_succession", s.id, `supervisor brief-undelivered: ${reason}`);
         const debt = recordSuccessionDebt(s, "supervisor", predecessor, openedAt, reason,
-          { brief: deliveredBrief, path: "founding", draft: null });
+          { brief: deliveredBrief, path: "founding", draft: null, label: s.label });
         await saveStateNow().catch((e: unknown) => logError("successionDebt", e));
         return json({ error: `Supervisor successor stands on slot ${s.id} but its founding brief was not delivered (${reason}) — `
           + `held as succession debt ${debt.id}: POST /api/succession-debts/${debt.id}/resend`,
@@ -30271,7 +30318,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     laneSpawn.add(s.id); // the slot is empty between the kill and the open — see laneSpawn
     try {
       const respawned = await respawnInPlace(s, predecessor, `program ${program.id}`,
-        { brief: deliveredBrief, path: "founding", draft: null },
+        { brief: deliveredBrief, path: "founding", draft: null, label },
         () => openSlot(s, openRoot, null, spawn.model, label, harness, spawn.effort, box, treeLease),
         // the predecessor is gone and no successor stands: drop the marker (stopping an exact
         // candidate the open left behind), which also closes the ended holding as `retire`. The
@@ -30349,7 +30396,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       const failed = async (reason: string): Promise<Response> => {
         audit("main_succession", s.id, `program ${program.id} brief-undelivered: ${reason}`);
         const debt = recordSuccessionDebt(s, `program ${program.id}`, predecessor, openedAt, reason,
-          { brief: deliveredBrief, path: "founding", draft: null });
+          { brief: deliveredBrief, path: "founding", draft: null, label: s.label });
         await saveStateNow().catch((e: unknown) => logError("successionDebt", e));
         return json({ error: `Program-MAIN successor stands on slot ${s.id} and is bound, but its founding brief was not delivered (${reason}) — `
           + `held as succession debt ${debt.id}: POST /api/succession-debts/${debt.id}/resend`,
@@ -32462,6 +32509,8 @@ setInterval(() => void tickWatches().catch((e: unknown) => logError("tickWatches
 // the owner's own parked /send (THE PARKED SEND): owner-initiated, so no automation switch holds it
 setInterval(() => void tickParkedSends().catch((e: unknown) => logError("tickParkedSends", e)), AUTOS_TICK_MS);
 setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), GIT_TICK_MS);
+// the owner inbox must not keep a debt nobody can pay — the read and the resend door settle too
+setInterval(() => { if (settleSuccessionDebts()) saveState(); }, GIT_TICK_MS);
 void tickGit().catch((e: unknown) => logError("tickGit", e)); // warm the badge cache so the first paint isn't blank
 setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispatch", e)), DISPATCH_TICK_MS);
 // the brief compiler, off by default: a harness without a FLEET_ENHANCE_CMD stand-in MUST leave
@@ -33839,6 +33888,8 @@ function deployBlocker(): string | null {
     blockers.push(`a merge/land is reserved or running on ${activeLands.join(", ")} — restarting srv now would interrupt it before its terminal verdict`);
   if (runningPostLandAudit)
     blockers.push(`a post-land audit is running on ${basename(runningPostLandAudit.repo)} — killing srv now would leave a red that measured nothing`);
+  else if (auditDraining)
+    blockers.push("a post-land audit is starting — killing srv now would leave a red that measured nothing");
   // A SUCCESSION OR FOUNDING IN FLIGHT: since the in-place cut its predecessor may already be gone
   // while the successor is not yet bound or briefed, and that window lives in this process alone.
   const successionSlots = [...successionInflight].map((tok) => slots.find((x) => x.selfToken === tok)?.id)
@@ -33850,8 +33901,6 @@ function deployBlocker(): string | null {
   ];
   if (successionInflight.size || inflight.length)
     blockers.push(`a succession or founding is in flight (${inflight.join(", ") || `${successionInflight.size} session(s)`}) — restarting srv now could end a line between its predecessor's kill and its successor's binding`);
-  else if (auditDraining)
-    blockers.push("a post-land audit is starting — killing srv now would leave a red that measured nothing");
   return blockers.length ? blockers.join("; ") : null;
 }
 
@@ -36492,8 +36541,10 @@ Bun.serve<WSData>({
     // THE SUCCESSION DEBTS (server.ts#recordSuccessionDebt): what an in-place succession still owes
     // after its predecessor ended — read them, and resend a held brief to the exact successor it was
     // built for. Owner-only by POSITION.
-    if (url.pathname === "/api/succession-debts" && req.method === "GET")
+    if (url.pathname === "/api/succession-debts" && req.method === "GET") {
+      if (settleSuccessionDebts()) await saveStateNow();
       return json({ debts: successionDebts });
+    }
     const debtResend = /^\/api\/succession-debts\/([0-9a-f]{24})\/resend$/.exec(url.pathname);
     if (debtResend && req.method === "POST") return await resendSuccessionDebt(debtResend[1]!);
     // THE DOSSIER (see the dossier region): six sources joined by branch into one lane's story, plus the

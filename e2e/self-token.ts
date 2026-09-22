@@ -940,6 +940,27 @@ export async function run(ctx: Ctx): Promise<void> {
     const oldTok = free ? await paneEnv(`s${free}`, "FLEET_SELF_TOKEN") ?? "" : "";
     check("self-succeed setup: the caller's pane carries its own token", /^[0-9a-f]{32}$/.test(oldTok), oldTok);
     const oldOpenedAt = (await succRows()).find((x) => x.id === free)?.openedAt ?? 0;
+    // --- S0 · THE LANE ANCHOR FOLLOWS THE LINE (notiz 2026-09-22-slot-baender-stufen-nach-32014c79 §2.1).
+    // Two lanes of this checkout: `follow` born under A, `stranger` re-planted below onto a DIFFERENT
+    // occupation of A's slot that no line records — slot equality alone must move nothing. ---
+    type AnchorRow = { worktree?: { anchor?: { slot: number; openedAt: number } } };
+    const persistedWorktree = (slot: number | undefined): string =>
+      JSON.stringify((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, AnchorRow> })
+        .slots?.[String(slot)]?.worktree ?? null);
+    const persistedAnchor = (slot: number | undefined): { slot: number; openedAt: number } | undefined =>
+      ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, AnchorRow> })
+        .slots?.[String(slot)]?.worktree?.anchor);
+    const anchorLane = async (): Promise<{ slot?: number; cwd?: string }> =>
+      (await (await post("/api/lanes", { repo: sr, parent: { slot: free, openedAt: oldOpenedAt } })).json()) as { slot?: number; cwd?: string };
+    const followLane = await anchorLane();
+    const strangerLane = await anchorLane();
+    check("S0 setup: two lanes of the succession checkout are born under A — its exact {slot, openedAt}",
+      typeof followLane.slot === "number" && typeof strangerLane.slot === "number"
+        && persistedAnchor(followLane.slot)?.openedAt === oldOpenedAt && persistedAnchor(strangerLane.slot)?.slot === free,
+      `${JSON.stringify(followLane)} ${JSON.stringify(strangerLane)} ${persistedWorktree(followLane.slot)}`);
+    const laneAnchorAudit = async (): Promise<{ slot?: number; detail?: string }[]> =>
+      ((await (await get("/api/audit?limit=500")).json()) as { events: { event: string; slot?: number; detail?: string }[] })
+        .events.filter((e) => e.event === "lane_anchor_rebound");
     // ONE obligation that dies with the predecessor, so the record has something to name by id — and a
     // body the record must NOT copy
     const AUTO_BODY = "lineage-body-marker: this check-in text must never appear inside a handover record";
@@ -994,8 +1015,11 @@ export async function run(ctx: Ctx): Promise<void> {
     await stopSrv();
     const bandState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, Record<string, unknown>> };
     if (bandState.slots?.[String(free)]) bandState.slots[String(free)]!.sessionId = bandSid;
+    const strangerRow = bandState.slots?.[String(strangerLane.slot)] as AnchorRow | undefined;
+    if (strangerRow?.worktree) strangerRow.worktree.anchor = { slot: free, openedAt: oldOpenedAt - 1 };
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(bandState, null, 2), { mode: 0o600 });
     await restartSrv();
+    const strangerBefore = persistedWorktree(strangerLane.slot);
 
     // --- A → B: no HANDOFF commit, a capped label, the intent ---
     const INTENT = "Absicht: erst die offene Welle landen, dann den Audit lesen.\nKorrektur: Slot 3 ist NICHT frei.";
@@ -1016,6 +1040,40 @@ export async function run(ctx: Ctx): Promise<void> {
       sj.slot === free && typeof successor?.openedAt === "number" && successor.openedAt > oldOpenedAt
         && (await occupied()) === occupiedBefore,
       `slot ${sj.slot} vs ${free}, openedAt ${successor?.openedAt} vs ${oldOpenedAt}, occupied ${await occupied()} vs ${occupiedBefore}`);
+    // Red before server.ts#rebindLaneAnchors: `follow` kept {free, oldOpenedAt}, a dead occupation,
+    // and the sidebar drew it as an orphan (band 0) — the live 0A-instead-of-4A of 2026-09-22.
+    check("S0: after the in-place succession the lane born under A carries B's anchor {same slot, B's openedAt}, persisted",
+      JSON.stringify(persistedAnchor(followLane.slot)) === JSON.stringify({ slot: free, openedAt: successor?.openedAt })
+        && (await laneAnchorAudit()).some((e) => e.slot === followLane.slot && (e.detail ?? "").includes(`@${oldOpenedAt} → @${successor?.openedAt}`)),
+      `follow=${persistedWorktree(followLane.slot)} B=${successor?.openedAt}`);
+    check("S0: a lane anchored on ANOTHER occupation of the same slot stays byte-identical",
+      strangerBefore !== "null" && persistedWorktree(strangerLane.slot) === strangerBefore,
+      `${persistedWorktree(strangerLane.slot)} vs ${strangerBefore}`);
+    // THE LOAD HEAL: `follow` is put back on A with the server stopped — the orphan a pre-S0 succession
+    // left behind. A and B stand in one recorded line (lineageHandovers), so the boot re-anchors it and
+    // says so; `stranger` has no line behind it and keeps its planted anchor.
+    await stopSrv();
+    const healState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, AnchorRow> };
+    const followRow = healState.slots?.[String(followLane.slot)];
+    if (followRow?.worktree) followRow.worktree.anchor = { slot: free, openedAt: oldOpenedAt };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(healState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    let healed = false;
+    for (let i = 0; i < 30 && !healed; i++) {
+      healed = (await laneAnchorAudit()).some((e) => e.slot === followLane.slot && (e.detail ?? "").includes("load: line "));
+      if (!healed) await Bun.sleep(100);
+    }
+    const liveFollow = ((await (await get("/api/sessions")).json()) as { slots: (AnchorRow & { id: number })[] })
+      .slots.find((x) => x.id === followLane.slot)?.worktree?.anchor;
+    check("S0 load heal: an anchor naming A — a predecessor of the SAME line on the same slot — is re-anchored on the live occupant at boot, with an audit row",
+      healed && JSON.stringify(liveFollow) === JSON.stringify({ slot: free, openedAt: successor?.openedAt }),
+      `healed=${healed} live=${JSON.stringify(liveFollow)} B=${successor?.openedAt}`);
+    check("S0 load heal: slot equality alone is no evidence — the unrecorded occupation's lane keeps its anchor through the boot",
+      JSON.stringify((((await (await get("/api/sessions")).json()) as { slots: (AnchorRow & { id: number })[] })
+        .slots.find((x) => x.id === strangerLane.slot)?.worktree?.anchor)) === JSON.stringify({ slot: free, openedAt: oldOpenedAt - 1 }),
+      persistedWorktree(strangerLane.slot));
+    if (typeof strangerLane.slot === "number") await post(`/api/slots/${strangerLane.slot}/kill`, {});
+
     check("the successor inherits cwd, model and default harness from the caller",
       successor?.cwd === sr && successor.model === "claude-sonnet-5" && successor.harness === undefined,
       JSON.stringify(successor));
@@ -1300,6 +1358,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const recordsBeforeFail = lineRecords();
     // the successor inherits the predecessor's label; adoption asks for exactly that label
     const labelBeforeFail = (await succRows()).find((x) => x.id === pj.slot)?.label ?? null;
+    const failingOpenedAt = (await succRows()).find((x) => x.id === pj.slot)?.openedAt;
+    const followBeforeFail = persistedWorktree(followLane.slot);
     const failedSucc = await successionPost("succeed", pointerTok, { intent: "this handover must not be reported as done" });
     const failedBody = (await failedSucc.json()) as { error?: string; respawned?: boolean; slot?: number };
     const failedRow = (await succRows()).find((x) => x.id === pj.slot);
@@ -1342,6 +1402,14 @@ export async function run(ctx: Ctx): Promise<void> {
         && failEvent.payload?.respawned === false,
       JSON.stringify({ debt: failDebt ? { ...failDebt, brief: failDebt.brief.length } : null, event: failEvent ?? null,
         losses: persistedLosses.length }));
+    check("S0: a respawn that FAILED re-anchors nothing — the lane still names the ended predecessor, byte for byte",
+      failedSucc.status === 500 && pj.slot === free && persistedAnchor(followLane.slot)?.openedAt === failingOpenedAt
+        && persistedWorktree(followLane.slot) === followBeforeFail,
+      `${persistedWorktree(followLane.slot)} vs ${followBeforeFail} failing=${failingOpenedAt}`);
+    if (typeof followLane.slot === "number") await post(`/api/slots/${followLane.slot}/kill`, {});
+    for (const lane of [followLane, strangerLane])
+      if (lane.cwd) spawnSync("git", ["-C", sr, "worktree", "remove", "--force", lane.cwd]);
+    rmSync(`${sr}.worktrees`, { recursive: true, force: true });
     rmSync(respawnLatch, { force: true });
     await restartSrv();
     const debtAfterBoot = (await debtsNow()).find((d) => d.id === failDebt?.id);

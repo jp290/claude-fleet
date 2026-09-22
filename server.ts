@@ -7963,7 +7963,61 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
       e instanceof GameMakerTreeConflict ? 409 : 500) };
   }
   audit("main_succession", s.id, `${rail} respawned in place (predecessor openedAt ${predecessor.openedAt} → ${s.openedAt})`);
+  // THE LANES FOLLOW THEIR MAIN'S LINE, in the same synchronous step as the open and before any rail
+  // binds or saves — so the rail's own state cut persists them. Only a SUCCESSFUL open reaches this
+  // line; a respawn that failed leaves every anchor naming the ended predecessor (respawnLost above).
+  rebindLaneAnchors({ slot: predecessor.slot, openedAt: predecessor.openedAt }, { slot: s.id, openedAt: s.openedAt },
+    `${rail} succession`);
   return { ok: true };
+}
+
+// S0 (docs/messungen/2026-09-22-slot-baender-stufen-nach-32014c79.md §2.1): a lane's anchor is the
+// exact main occupation {slot, openedAt} it was born under, and src/client.ts#stacksOf groups by
+// exactly that pair. An in-place succession keeps the number and changes openedAt, so without this
+// every lane of the MAIN fell to band 0. Only a lane naming exactly `from` moves; every other lane
+// keeps its object untouched.
+function rebindLaneAnchors(from: LaneAnchor, to: LaneAnchor, evidence: string): number[] {
+  const moved: number[] = [];
+  for (const lane of slots) {
+    const a = lane.worktree?.anchor;
+    if (!lane.worktree || !a || a.slot !== from.slot || a.openedAt !== from.openedAt) continue;
+    lane.worktree = { ...lane.worktree, anchor: { slot: to.slot, openedAt: to.openedAt } };
+    moved.push(lane.id);
+    audit("lane_anchor_rebound", lane.id, `anchor slot ${from.slot}@${from.openedAt} → @${to.openedAt} (${evidence})`);
+  }
+  return moved;
+}
+
+// THE LOAD HEAL for anchors the rail above never saw — lanes orphaned before it existed, or a crash
+// between the open and the rail's save. Slot equality is NOT evidence (a recycled slot is a stranger):
+// the anchored occupation and the live occupant must both stand in ONE recorded line — a Program's
+// lineage (the anchored entry older than the occupant's) or the occupant's role line in
+// lineageHandovers. Returns the evidence sentence, or null when the line says nothing.
+function laneAnchorLineEvidence(anchor: LaneAnchor, occupant: Slot): string | null {
+  const at = (x: { slot: number; openedAt: number }, y: LaneAnchor): boolean => x.slot === y.slot && x.openedAt === y.openedAt;
+  const live = { slot: occupant.id, openedAt: occupant.openedAt };
+  for (const p of programs) {
+    const entries = p.lineage?.entries ?? [];
+    const ia = entries.findIndex((e) => at(e, anchor));
+    const io = entries.findIndex((e) => at(e, live));
+    if (ia >= 0 && io > ia) return `program ${p.id} lineage`;
+  }
+  if (occupant.lineageId) {
+    const line = lineageHandovers.filter((r) => r.lineageId === occupant.lineageId);
+    if (line.some((r) => at(r.to, live)) && line.some((r) => at(r.from, anchor) || at(r.to, anchor)))
+      return `line ${occupant.lineageId}`;
+  }
+  return null;
+}
+function healLaneAnchorsOnLoad(): void {
+  for (const lane of slots) {
+    const a = lane.worktree?.anchor;
+    if (!a) continue;
+    const occupant = slots[a.slot - 1];
+    if (!occupant?.cwd || occupant.worktree || occupant.openedAt <= a.openedAt) continue;
+    const evidence = laneAnchorLineEvidence(a, occupant);
+    if (evidence) rebindLaneAnchors(a, { slot: occupant.id, openedAt: occupant.openedAt }, `load: ${evidence}`);
+  }
 }
 async function respawnLost(s: Slot, predecessor: SuccessionPredecessorIdentity, rail: string, reason: string,
   stranded: SuccessionStranded, onLost: () => Promise<void>, status = 500): Promise<Response> {
@@ -32192,6 +32246,9 @@ if (existsSync(STATE_FILE)) {
     for (const s of slots) backfillProgramMainSessionId(s);
     // the codex normalization above may have dropped the id the sleep was taken for — then it is no sleep
     for (const s of slots) if (s.sleeping && s.sleeping.sessionId !== s.sessionId) s.sleeping = null;
+    // THE SIXTH SITE: anchors orphaned by an in-place succession the rail did not rebind (above
+    // respawnInPlace). Needs the slots, the programs and the role lines, so it runs after all three.
+    healLaneAnchorsOnLoad();
     // THE FIFTH SITE, and it repairs NOTHING — it only says a fact out loud. The binding above was
     // rehydrated from its FORM alone, and it had to be: this loader runs before the slot loop, so
     // at that point no slot carries a cwd yet and no liveness question can be asked. By here the

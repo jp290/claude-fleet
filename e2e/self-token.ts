@@ -1317,8 +1317,60 @@ export async function run(ctx: Ctx): Promise<void> {
       failAudit.length === 1 && (failAudit[0]?.detail ?? "").includes("forced respawn failure")
         && (failAudit[0]?.detail ?? "").includes(`reopen it on ${sr}`) && lineRecords() === recordsBeforeFail,
       `audit=${JSON.stringify(failAudit)} records ${lineRecords()} vs ${recordsBeforeFail}`);
+    // THE HANDOVER OUTLIVES THE FAILED OPEN (server.ts#respawnLost → recordSuccessionDebt). Red before:
+    // `async () => {}` dropped the draft, so intent, pointer and obligations vanished with the open and
+    // the line was not even marked lost. Now the record is held as a debt, the line carries a scar,
+    // the owner gets one inbox row, and the next owner open of that slot on that cwd adopts it.
+    type DebtRow = { id: string; slot: number; rail: string; successorOpenedAt: number | null; brief: string;
+      draft: { lineageId?: string; intent?: string | null } | null; eventId: string | null };
+    const debtsNow = async (): Promise<DebtRow[]> =>
+      ((await (await get("/api/succession-debts")).json()) as { debts?: DebtRow[] }).debts ?? [];
+    const failDebt = (await debtsNow()).find((d) => d.id === (failedBody as { debt?: string }).debt);
+    const failEvent = ((await (await get("/api/events")).json()) as { events?: { id: string; kind: string; status: string;
+      receiverSlot: number | null; payload?: { respawned?: boolean } }[] }).events?.find((e) => e.id === failDebt?.eventId);
+    const persistedLosses = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { lineageHandoverLosses?: { lineageId: string | null; error: string }[] }).lineageHandoverLosses ?? [];
+    check("a failed respawn HOLDS the handover: the record with its intent is kept as a succession debt, the line carries a scar naming it, and one owner inbox row says no successor opened",
+      !!failDebt && failDebt.slot === pj.slot && failDebt.rail === "generic" && failDebt.successorOpenedAt === null
+        && failDebt.draft?.lineageId === sj.lineage?.lineageId
+        && failDebt.draft?.intent === "this handover must not be reported as done"
+        && failDebt.brief.startsWith("[fleet succession]")
+        && persistedLosses.some((l) => l.lineageId === sj.lineage?.lineageId && l.error.includes(failDebt.id))
+        && failEvent?.kind === "succession-debt" && failEvent.receiverSlot === null && failEvent.status === "inbox"
+        && failEvent.payload?.respawned === false,
+      JSON.stringify({ debt: failDebt ? { ...failDebt, brief: failDebt.brief.length } : null, event: failEvent ?? null,
+        losses: persistedLosses.length }));
     rmSync(respawnLatch, { force: true });
     await restartSrv();
+    const debtAfterBoot = (await debtsNow()).find((d) => d.id === failDebt?.id);
+    check("...the debt survives a server restart with its held record",
+      JSON.stringify(debtAfterBoot?.draft ?? null) === JSON.stringify(failDebt?.draft ?? null) && debtAfterBoot?.brief === failDebt?.brief,
+      JSON.stringify(debtAfterBoot ? { ...debtAfterBoot, brief: debtAfterBoot.brief.length } : null));
+    const reopened = await post(`/api/slots/${pj.slot}/open`, { cwd: sr, label: "main-reopened" });
+    const reopenedBody = (await reopened.json()) as { ok?: boolean; successionDebt?: { id?: string; adopted?: boolean } };
+    const reopenedTok = pj.slot ? await paneEnv(`s${pj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const lineE = await selfLineage(reopenedTok);
+    const reopenedRow = (await succRows()).find((x) => x.id === pj.slot);
+    const bandE = (await (await get(`/api/slots/${pj.slot}/succession`)).json()) as { session?: number };
+    // the band counts the line's records, and the D-record plants above removed D's own — so the claim
+    // is "+1 on the same line", measured against the records before the failure, not a fixed number
+    check("...the owner open of that slot on that cwd ADOPTS it: the new occupant reads the held record on its own door, and the band counts it as one more session of the same line",
+      reopened.ok && reopenedBody.successionDebt?.id === failDebt?.id && reopenedBody.successionDebt?.adopted === true
+        && lineE?.state === "present" && lineE.lineageId === sj.lineage?.lineageId
+        && lineE.record?.intent === "this handover must not be reported as done"
+        && lineE.record?.to?.openedAt === reopenedRow?.openedAt
+        && lineRecords() === recordsBeforeFail + 1 && bandE.session === lineRecords() + 1,
+      `${reopened.status} ${JSON.stringify(reopenedBody)} line=${JSON.stringify(lineE)} band=${JSON.stringify(bandE)} records=${lineRecords()} before=${recordsBeforeFail}`);
+    let resentE: Response | null = null;
+    for (let i = 0; i < 3 && !resentE?.ok; i++) {
+      if (i > 0) await Bun.sleep(1000);
+      resentE = failDebt ? await post(`/api/succession-debts/${failDebt.id}/resend`, {}) : null;
+    }
+    const resentBrief = await successionBriefOf(pj.slot);
+    check("...and the held brief is resent to that occupant byte for byte, paying the debt",
+      resentE?.ok === true && resentBrief === failDebt?.brief && !(await debtsNow()).some((d) => d.id === failDebt?.id),
+      `${resentE?.status} ${resentE ? await resentE.clone().text().catch(() => "") : ""} brief=${resentBrief.slice(0, 60)}`);
+    if (pj.slot) await post(`/api/slots/${pj.slot}/kill`, {});
     rmSync(sr, { recursive: true, force: true });
   }
 

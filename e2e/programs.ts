@@ -2719,6 +2719,49 @@ export async function run(ctx: Ctx): Promise<void> {
   check("...and bootstrap sees the one existing authority: the bound successor",
     bootstrapAfterFailure.ok && bootstrapAfterFailureBody.existing === true,
     `${bootstrapAfterFailure.status} ${JSON.stringify(bootstrapAfterFailureBody)}`);
+  // THE UNDELIVERED BRIEF IS A DEBT, NOT A 500 INTO A DEAD PANE. The caller that got the 500 was the
+  // predecessor, which is gone; bootstrap answers existing:true above, so without the debt there is
+  // no way back. The brief as built is held, one owner inbox row names it (the live reader), and the
+  // resend door delivers it to the exact successor once its screen allows. Red before
+  // server.ts#recordSuccessionDebt: no debt, no row, and nothing held to resend.
+  type DebtRow = { id: string; slot: number; rail: string; successorOpenedAt: number | null; brief: string;
+    path: string; draft: unknown; eventId: string | null };
+  type OwnerEvent = { id: string; kind: string; status: string; receiverSlot: number | null; delivery?: string;
+    subjectSlot?: number; payload?: { debtId?: string; respawned?: boolean; rail?: string } };
+  const debtsNow = async (): Promise<DebtRow[]> =>
+    ((await (await get("/api/succession-debts")).json()) as { debts?: DebtRow[] }).debts ?? [];
+  const ownerEvents = async (): Promise<OwnerEvent[]> =>
+    ((await (await get("/api/events")).json()) as { events?: OwnerEvent[] }).events ?? [];
+  const failureDebtId = (failureSuccessionBody as { debt?: string }).debt;
+  const ipfDebt = (await debtsNow()).find((d) => d.id === failureDebtId);
+  const ipfDebtEvent = (await ownerEvents()).find((e) => e.id === ipfDebt?.eventId);
+  check("Program-MAIN brief undelivered: the brief is held as a succession debt for the exact bound successor, and ONE owner inbox row names it",
+    typeof failureDebtId === "string" && ipfDebt?.slot === ipfSlot && ipfDebt.rail === `program ${ipfProgram.id}`
+      && ipfDebt.successorOpenedAt === ipfAfter?.openedAt && ipfDebt.path === "founding" && ipfDebt.draft === null
+      && ipfDebt.brief.length > 0 && (failureSuccessionBody.error ?? "").includes(`/api/succession-debts/${failureDebtId}/resend`)
+      && ipfDebtEvent?.kind === "succession-debt" && ipfDebtEvent.receiverSlot === null
+      && ipfDebtEvent.delivery === "inbox" && ipfDebtEvent.status === "inbox"
+      && ipfDebtEvent.subjectSlot === ipfSlot && ipfDebtEvent.payload?.debtId === failureDebtId
+      && ipfDebtEvent.payload.respawned === true,
+    JSON.stringify({ body: failureSuccessionBody, debt: ipfDebt ? { ...ipfDebt, brief: ipfDebt.brief.length } : null, event: ipfDebtEvent ?? null }));
+  const resendBlocked = failureDebtId ? await post(`/api/succession-debts/${failureDebtId}/resend`, {}) : null;
+  const resendBlockedText = resendBlocked ? await resendBlocked.text() : "";
+  check("...a resend while the screen still blocks delivers nothing, says why, and the debt stays",
+    resendBlocked?.status === 409 && resendBlockedText.includes("the debt stays")
+      && (await debtsNow()).some((d) => d.id === failureDebtId),
+    `${resendBlocked?.status} ${resendBlockedText}`);
+  if (ipfSlot !== null) await respawnScreen(ipfSlot, ">_ OpenAI Codex (v0.147.0)");
+  const resent = failureDebtId ? await post(`/api/succession-debts/${failureDebtId}/resend`, {}) : null;
+  const resentBody = resent ? await resent.json() as { ok?: boolean; delivered?: boolean } : {};
+  const resentPrompt = (await plogRead()).findLast((e) => e.slot === ipfSlot && e.openedAt === ipfAfter?.openedAt);
+  const resentEvent = (await ownerEvents()).find((e) => e.id === ipfDebt?.eventId);
+  check("...and once the screen allows, the resend delivers the held brief byte for byte to the exact successor, closes the debt and acknowledges its owner row",
+    resent?.ok === true && resentBody.delivered === true && resentPrompt?.text === ipfDebt?.brief
+      && !(await debtsNow()).some((d) => d.id === failureDebtId) && resentEvent?.status === "acknowledged",
+    `${resent?.status} ${JSON.stringify(resentBody)} prompt=${resentPrompt?.text.slice(0, 80)} event=${resentEvent?.status}`);
+  const resentAgain = failureDebtId ? await post(`/api/succession-debts/${failureDebtId}/resend`, {}) : null;
+  check("...a second resend of the paid debt is refused 404 — the brief is typed once",
+    resentAgain?.status === 404, `${resentAgain?.status}`);
   await programPost(ipfProgram.id, "complete");
   if (ipfSlot !== null) await post(`/api/slots/${ipfSlot}/kill`, {});
 
@@ -5715,6 +5758,15 @@ export async function run(ctx: Ctx): Promise<void> {
       && standardSuccessionDurable?.predecessor?.selfTokenHash === tokenHash(standardPredecessor.token)
       && standardSuccessionDurable.target.selfTokenHash === tokenHash(standardCandidateDurable?.selfToken ?? ""),
     JSON.stringify({ public: standardSuccessionPublic, durable: standardSuccessionDurable }));
+  // A RESTART NOW WOULD END THE LINE MID-RESPAWN: the predecessor is gone and the successor not yet
+  // bound. The deploy verb's precondition (server.ts#deployBlocker) must name the flight — read on the
+  // status route, never by POSTing a deploy into the test instance. Red before: only lands and audits.
+  const deployBlockedDuringSuccession = afterOpenReached
+    ? ((await (await get("/api/deploys")).json()) as { blocked?: string | null }).blocked ?? null : null;
+  check("deploy blocker: an in-flight succession blocks the srv restart and names its Program",
+    afterOpenReached && (deployBlockedDuringSuccession ?? "").includes("a succession or founding is in flight")
+      && (deployBlockedDuringSuccession ?? "").includes(`Program ${standardRevocationProgram.id}`),
+    `blocked=${deployBlockedDuringSuccession}`);
   // THE OWNER TAKES THE SLOT INSIDE THE RESPAWN: the kill stops the exact candidate and drops the
   // marker (the kill route's founding-target rollback), and the reopen puts a stranger there. The
   // rail must bind NOTHING and touch the stranger not at all — a recycled slot number is never the

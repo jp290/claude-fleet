@@ -424,9 +424,25 @@ interface SupervisorTransitionFleetEvent extends FleetEventBase {
   kind: "supervisor-transition";
   payload: SupervisorTransitionEventPayload;
 }
+// A SUCCESSION THAT LEFT A DEBT (server.ts#recordSuccessionDebt): the predecessor has ended on its
+// slot, and either the successor stands without its founding brief (`respawned: true`) or no
+// successor opened at all (`respawned: false`, the slot is empty). The caller's pane is gone by
+// then, so the 500 it got reached nobody; this row is the one reader that is still alive.
+// Watchless and OWNER-ONLY: the session that should read it is the one that never got its brief.
+interface SuccessionDebtEventPayload {
+  debtId: string;
+  rail: string;
+  respawned: boolean;
+  reason: string;
+}
+interface SuccessionDebtFleetEvent extends FleetEventBase {
+  subjectSlot: number;
+  kind: "succession-debt";
+  payload: SuccessionDebtEventPayload;
+}
 type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent
   | CommandJobFleetEvent | LaneSuiteFleetEvent | ClarificationFleetEvent | FleetReportFleetEvent
-  | SupervisorTransitionFleetEvent | HarnessBlockFleetEvent | LaneReviewFleetEvent;
+  | SupervisorTransitionFleetEvent | HarnessBlockFleetEvent | LaneReviewFleetEvent | SuccessionDebtFleetEvent;
 
 // `send-uncertain` mirrors the FleetEvent transport state exactly (see FACT 2 in tickWatches): it is
 // persisted BEFORE tmux is touched, so a process death anywhere after that point is visible after
@@ -643,11 +659,12 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
   // so every open red would have been erased by the next deploy. e2e/lane-suite.ts (LS.9) is the
   // probe that caught it on the first run that could.
   const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"
-    || e.kind === "lane-suite" || e.kind === "harness-block" || e.kind === "lane-review";
+    || e.kind === "lane-suite" || e.kind === "harness-block" || e.kind === "lane-review"
+    || e.kind === "succession-debt";
   // …and the kinds that may name the OWNER instead of a session. Same list on both sides of the
   // equivalence below, so a kind can never be admitted to one half and not the other.
   const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite" || e.kind === "harness-block"
-    || e.kind === "lane-review";
+    || e.kind === "lane-review" || e.kind === "succession-debt";
   // The owner-principal receiver, all three fields or none: a half-null triple is malformed, not a
   // transport choice — exactly as an unknown `delivery` is.
   const ownerReceiver = e.receiverSlot === null && e.receiverOpenedAt === null
@@ -672,7 +689,8 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     // be persisted without the other (a slot-bound inbox report would be typed at nobody; an
     // owner-receiver pane report would be typed at a pane that does not exist).
     || (e.kind === "clarification-request" && e.delivery === "inbox")
-    // THE OWNER PRINCIPAL EXISTS FOR EXACTLY FOUR KINDS (it was one until the preview rail: a red
+    // THE OWNER PRINCIPAL EXISTS FOR EXACTLY FIVE KINDS (`succession-debt` joined 2026-09-22: its
+    // subject is the session that could not be told, so the owner is its only reader) (it was one until the preview rail: a red
     // `lane-suite` files an owner row precisely so the process does not depend on the lane being
     // alive or well-behaved; `harness-block` joined for a lane with no live Program-MAIN, `lane-review` for the same reason). Every OTHER event is a Watch completion addressed to the session
     // that subscribed, and a null triple there names nobody at all: it could never be delivered,
@@ -889,6 +907,17 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       subjectOpenedAt: e.subjectOpenedAt, kind: e.kind,
       payload: { signal: p.signal, tool: p.tool, detail: p.detail, key: p.key, count: p.count!,
         escalated: p.escalated } };
+  }
+  if (e.kind === "succession-debt") {
+    // the owner row ONLY: the session this row is about is the one that could not be told
+    if (!ownerReceiver || !Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0) return null;
+    const p = e.payload as Partial<SuccessionDebtEventPayload> | undefined;
+    if (!p || typeof p.debtId !== "string" || !/^[0-9a-f]{24}$/.test(p.debtId)
+      || typeof p.rail !== "string" || !p.rail || p.rail.length > 200
+      || typeof p.respawned !== "boolean"
+      || typeof p.reason !== "string" || p.reason.length > SUCCESSION_DEBT_REASON_MAX) return null;
+    return { ...base, subjectSlot: Number(e.subjectSlot), kind: e.kind,
+      payload: { debtId: p.debtId, rail: p.rail, respawned: p.respawned, reason: p.reason } };
   }
   if (e.kind === "lane-review") {
     if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0
@@ -2878,6 +2907,56 @@ const loadLineageHandoverLoss = (value: unknown): LineageHandoverLoss | null => 
   return { v: 1, at: r.at, lineageId: r.lineageId as string | null, error: r.error };
 };
 
+// --- THE SUCCESSION DEBT (server.ts#recordSuccessionDebt) -----------------------------------------
+// What an in-place succession still owes after its predecessor ended: the founding brief as it was
+// built (so it can be sent again), and — when no successor opened at all — the role-lineage record
+// it would have written (so the handover is not lost with the failed open). `successorOpenedAt`
+// null = the slot was left empty; a number = that successor stands without its brief.
+interface SuccessionDebt {
+  v: 1;
+  id: string;
+  at: number;
+  rail: string;
+  slot: number;
+  cwd: string;
+  predecessorOpenedAt: number;
+  successorOpenedAt: number | null;
+  reason: string;
+  brief: string;
+  path: "succession" | "founding";
+  draft: LineageHandover | null;
+  eventId: string | null;
+}
+const SUCCESSION_DEBTS_MAX = 20;
+const SUCCESSION_DEBT_REASON_MAX = 400;
+const SUCCESSION_DEBT_BRIEF_MAX = 64 * 1024;
+const SUCCESSION_DEBT_KEYS = ["v", "id", "at", "rail", "slot", "cwd", "predecessorOpenedAt", "successorOpenedAt",
+  "reason", "brief", "path", "draft", "eventId"];
+const loadSuccessionDebt = (value: unknown): SuccessionDebt | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const r = value as Record<string, unknown>;
+  const pos = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
+  if (Object.keys(r).sort().join(",") !== [...SUCCESSION_DEBT_KEYS].sort().join(",") || r.v !== 1
+    || typeof r.id !== "string" || !/^[0-9a-f]{24}$/.test(r.id) || !pos(r.at)
+    || typeof r.rail !== "string" || !r.rail || r.rail.length > 200
+    || !Number.isInteger(r.slot) || (r.slot as number) < 1 || (r.slot as number) > MAX_SLOTS
+    || !lineagePathOk(r.cwd) || !pos(r.predecessorOpenedAt)
+    || !(r.successorOpenedAt === null || pos(r.successorOpenedAt))
+    || typeof r.reason !== "string" || r.reason.length > SUCCESSION_DEBT_REASON_MAX
+    || typeof r.brief !== "string" || !r.brief || r.brief.length > SUCCESSION_DEBT_BRIEF_MAX
+    || (r.path !== "succession" && r.path !== "founding")
+    || !(r.eventId === null || (typeof r.eventId === "string" && /^[0-9a-f]{24}$/.test(r.eventId)))) return null;
+  let draft: LineageHandover | null = null;
+  if (r.draft !== null) {
+    const read = loadLineageHandover(r.draft);
+    if (!read.ok) return null;
+    draft = read.handover;
+  }
+  return { v: 1, id: r.id, at: r.at as number, rail: r.rail, slot: r.slot as number, cwd: r.cwd as string,
+    predecessorOpenedAt: r.predecessorOpenedAt as number, successorOpenedAt: r.successorOpenedAt as number | null,
+    reason: r.reason, brief: r.brief, path: r.path, draft, eventId: r.eventId as string | null };
+};
+
 // --- THE RECORD LOSS SCAR -----------------------------------------------------------------------
 // A record of the degradation THIS FILE'S loaders perform, and it exists because that degradation
 // is otherwise INVISIBLE and PERMANENT. loadProgramInbox and loadProgramHandover refuse to repair
@@ -2976,7 +3055,7 @@ export type {
   DeployWatch, TransitionWatch, CommandJobWatch, Watch, FleetEventStatus, FleetEventRecoveryState,
   FleetEventRecovery, FleetEventBase, LaneFleetEvent, MergeFleetEvent, AuditFleetEvent,
   DeployFleetEvent, CommandJobFleetEvent, LaneSuiteFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
-  HelperCmdCheck, HarnessBlockFleetEvent, LaneReviewFleetEvent, TaskReviewMode,
+  HelperCmdCheck, HarnessBlockFleetEvent, LaneReviewFleetEvent, SuccessionDebtFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReportBasis,
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,
@@ -3000,6 +3079,7 @@ export type {
   LineageHandoverRead, LineageHandoverLoss,
 };
 export {
+  loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
   MAX_SLOTS, watchKind, TRANSITION_AWAITING_MAX, TRANSITION_DEADLINE_MIN_SEC,
   TRANSITION_DEADLINE_MAX_SEC, TRANSITION_DEADLINE_DEFAULT_SEC, watchFrom, FLEET_EVENT_TERMINAL,
   ATTENTION_KINDS, fleetEventRecoveryFrom, fleetEventFrom, clarificationFrom, fleetReportFrom,

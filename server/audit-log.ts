@@ -341,6 +341,9 @@ type AuditEvent =
   // baton. The detail names the rail and, when it did not go through, the reason and what the slot
   // holds now — the predecessor is already gone at that point, so this row is the only account.
   | "main_succession"
+  // …and what such a handover still OWES when it could not finish (server.ts#recordSuccessionDebt):
+  // the brief held for a resend, a line record held for the next owner open, and how it was paid.
+  | "succession_debt"
   | "dispatch_switch"
   | "guest_action"
   // a lane's own account of a verify-suite run: one line per phase change, so a run that dies

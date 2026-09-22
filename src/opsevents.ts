@@ -16,7 +16,7 @@ export interface FleetEventRow {
   delivery?: "pane" | "inbox";
   kind: "lane-ready" | "host-commit-ready" | "merge-terminal" | "post-land-audit"
     | "deploy-terminal" | "command-job" | "lane-suite" | "clarification-request" | "fleet-report"
-    | "supervisor-transition" | "harness-block" | "lane-review";
+    | "supervisor-transition" | "harness-block" | "lane-review" | "succession-debt";
   subjectSlot?: number; subjectBranch?: string; subjectCwd?: string;
   subjectRepo?: string; subjectMainAfter?: string; subjectDeployId?: string; subjectJobId?: string;
   payload?: Record<string, unknown>;
@@ -111,6 +111,7 @@ export const OPS_POLL_PAYLOAD_KEYS: Readonly<Record<FleetEventRow["kind"], reado
   "supervisor-transition": [],
   "harness-block": ["signal", "tool", "count", "escalated"],
   "lane-review": ["taskId", "findingCount", "describedThisDiff", "raw"],
+  "succession-debt": ["debtId", "rail", "respawned"],
 };
 
 export function opsPollRow(e: OpsPollSource): OpsPollRow {
@@ -140,6 +141,7 @@ export function opsSubject(e: OpsPollRow): string {
   if (e.kind === "deploy-terminal") return `deploy ${e.subjectDeployId ?? "?"}`;
   if (e.kind === "command-job") return `command job ${e.subjectJobId ?? "?"}`;
   if (e.kind === "lane-suite") return `preview suite ${e.subjectJobId ?? "?"}`;
+  if (e.kind === "succession-debt") return `slot ${e.subjectSlot ?? "?"} · succession`;
   return `slot ${e.subjectSlot ?? "?"} · ${e.subjectBranch ?? "?"}`;
 }
 
@@ -168,6 +170,9 @@ export function opsSummary(e: OpsPollRow): string {
     return `${p.signal === "denied" ? "dialog DENIED" : "WAITING for a person"}`
       + ` · ${typeof p.tool === "string" ? p.tool : "—"} · ${typeof p.count === "number" ? p.count : 1}×`
       + (p.escalated === true ? " · ESCALATED" : "");
+  if (e.kind === "succession-debt")
+    return `${p.respawned === true ? "successor WITHOUT its brief" : "NO successor opened"} · ${String(p.rail)}`
+      + ` · debt ${typeof p.debtId === "string" ? p.debtId.slice(0, 8) : "?"}`;
   if (e.kind === "lane-suite")
     return `result=${String(p.result)} · ${String(p.branch)}`
       + ` · ${typeof p.failCount === "number" ? p.failCount : 0} failure(s)`;

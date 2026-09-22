@@ -1956,6 +1956,22 @@ export async function run(): Promise<void> {
       check("client: the past bar's way back is not covered — ℹ, 💬 and ↻ all leave a past pane",
         /display: none/.test(cssBody(".pane.past .viewtoggle, .pane.past .panereload, .pane.past .boardtoggle")),
         cssBody(".pane.past .viewtoggle, .pane.past .panereload, .pane.past .boardtoggle") || "no such rule");
+      // K4 (Grammatik): the pane's corner buttons are ONE group with ONE base rule out of the app
+      // tokens — no per-button absolute top/right copies, no old-palette literals, gear rightmost
+      // (G5), gear + width toggle on the phone's surfaces they do not belong to
+      check("client: the corner buttons are one seated group on the chat tokens, gear rightmost — the width toggle never on the phone, its gear in #mhead",
+        cliSrc.includes('el("div", "panetools")')
+          && /var\(--chat-raised\)/.test(cssBody(".panetools button"))
+          && !/rgba\(/.test(cssBody(".panetools button"))
+          && /var\(--r1\)/.test(cssBody(".panetools button"))
+          && cssBody(".panetools button[aria-pressed=\"true\"]").length > 0
+          && cliSrc.includes("icon(\"gear\")")
+          && cliSrc.includes('openShell({ id: "board", title: "Info"')
+          && !cssBody(".boardtoggle").includes("position: absolute")
+          && /display: none !important/.test(cssBody(".panetools .termwidth, .panetools .panegear"))
+          && indexSrc.includes(".panetools .termwidth, .panetools .panegear { display: none !important; }")
+          && !/(^|\n)\s*\.boardtoggle \{/m.test(indexSrc),
+        JSON.stringify({ group: cssBody(".panetools button"), pressed: cssBody(".panetools button[aria-pressed=\"true\"]") }));
       // rounds 12–14 (owner): the views square left and unchanged, the functions one right-aligned
       // block — two small rows, then the task queue as its own square in the right corner, sized
       // by ONE constant (--queue-scale 1.48 = 34px, the largest at which two rows still fit) and

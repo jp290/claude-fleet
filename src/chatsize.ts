@@ -50,6 +50,10 @@ export function loadChatSizes(): void {
 
 export const chatSize = (k: SizeKey): number => sizes[k];
 
+// A subscriber for size changes — the pane corner's width toggle keeps its limited terminal on the
+// column: when the slider moves --chat-col, the pane reruns ITS OWN fit path (no second resize way).
+export function onChatSize(fn: () => void): void { listeners.add(fn); }
+
 export function setChatSize(k: SizeKey, n: number): void {
   sizes = { ...sizes, [k]: clamp(k, n) };
   apply();

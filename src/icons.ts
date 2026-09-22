@@ -35,6 +35,17 @@ const PATHS = {
   // the computers a fleet runs on: one screen, and two overlapping — the second says "more than one"
   screen: ["M4 5h16v11H4z", "M9 20h6", "M12 16v4"],
   screens: ["M8 9V4h13v9h-5", "M3 9h13v9H3z", "M7.5 21h4", "M9.5 18v3"],
+  // THE PANE'S CORNER GROUP (Grammatik K4/G0.6): the six emoji/unicode glyphs ↻ ℹ 💬 ↑ ↓ migrate
+  // here — ↻ reuses reload, the keyboard is the terminal side of the view toggle — plus the gear
+  // (settings, rightmost, G5) and the width arrows (terminal on the chat column's width). Same
+  // 24-unit box, stroke 1.8, round caps, currentColor as every set above.
+  info: ["M20.5 12a8.5 8.5 0 1 1-17 0a8.5 8.5 0 1 1 17 0z", "M12 11v5", "M12 7.6h.01"],
+  chat: ["M21 14a2 2 0 0 1-2 2H8l-4.5 4V6a2 2 0 0 1 2-2H19a2 2 0 0 1 2 2z"],
+  up: ["M12 19V5", "M6 11l6-6 6 6"],
+  down: ["M12 5v14", "M6 13l6 6 6-6"],
+  gear: ["M12 8.6a3.4 3.4 0 1 0 0 6.8a3.4 3.4 0 1 0 0-6.8", "M12 2.8v2.6", "M12 18.6v2.6", "M2.8 12h2.6",
+    "M18.6 12h2.6", "M5.5 5.5l1.8 1.8", "M16.7 16.7l1.8 1.8", "M18.5 5.5l-1.8 1.8", "M7.3 16.7l-1.8 1.8"],
+  width: ["M3.5 12h17", "M7.5 8l-4 4 4 4", "M16.5 8l4 4-4 4"],
 } as const;
 
 export type IconName = keyof typeof PATHS;

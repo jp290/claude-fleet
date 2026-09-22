@@ -11,7 +11,7 @@ import { harnessMark, icon, type IconName } from "./icons";
 import { modelLabel } from "./modelname";
 import { DraftBook } from "./drafts";
 import { attachEntityCards, type EntFacts } from "./entcard";
-import { loadChatSizes, sizePanel, stepChatSizes } from "./chatsize";
+import { loadChatSizes, onChatSize, sizePanel, stepChatSizes } from "./chatsize";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
 import { pendingSettledBy } from "./pendingsend";
@@ -82,11 +82,11 @@ function setDrawer(open: boolean) {
 }
 $("menu").onclick = () => setDrawer(true);
 $("shade").onclick = () => setDrawer(false);
-// mobile's #refresh (no layout switcher to force a reconnect through) and desktop's
-// #reload (quicker than toggling panes, and works in single-pane layout too) both
-// force the focused pane to reconnect — the server re-seeds scrollback at the
-// reconnecting client's width, so this is "fix my wrapping" on demand either way
-$("refresh").onclick = () => panes[focused]?.reconnect(); // mobile header (no per-pane controls there)
+// mobile's settings gear (#mset, on the place the duplicate #refresh freed — the reconnect lives
+// on the pane's own ↻ now, which the phone shows in the corner group). Desktop's gear sits in each
+// pane's group; both open the same window.
+$("mset").appendChild(icon("gear"));
+$("mset").onclick = () => openSettings();
 
 // --- desktop sidebar collapse (persisted). The .collapsed class is desktop-only:
 // on mobile #side is the slide-in drawer, so applyCollapsed strips it there ---
@@ -528,6 +528,9 @@ const fmtClock = (ts: string | null) =>
 
 // --- conversation view chrome: copy buttons, code-block heads, hoverable ids, text size ---
 loadChatSizes();
+// a column-width change pulls a LIMITED terminal along: the CSS width follows the var, the pane's
+// own fit path picks the new box up and tmux gets the new column count (no second resize way)
+onChatSize(() => { for (const p of panes) if (p.termIsLimited()) p.refit(); });
 
 const COPIED_MS = 1200;
 function copyButton(label: string, title: string, source: () => string): HTMLButtonElement {
@@ -650,6 +653,9 @@ class Pane {
   private readonly viewBtn: HTMLButtonElement;
   private readonly boardBtn: HTMLButtonElement;
   private readonly reloadBtn: HTMLButtonElement;
+  private readonly widthBtn: HTMLButtonElement;
+  private readonly gearBtn: HTMLButtonElement;
+  private readonly toolsBox: HTMLElement;
   private view: "term" | "chat" = "term";
   private chatTotal = 0;
   // when the newest transcript entry this pane has loaded was written (its `ts`, any role — a tool
@@ -688,6 +694,47 @@ class Pane {
       e.clipboardData.setData("text/plain", md);
       e.preventDefault();
     });
+    // THE PANE'S CORNER GROUP (Grammatik K4): one container, one base rule in index.html — no
+    // per-button absolute top/right arithmetic. Order left to right: ↻ ℹ 💬 ⇔ ↑ ↓ Aa ⚙, the gear
+    // rightmost (G5). Glyphs from src/icons.ts (G0.6), tooltips in owner words (G0.5), the toggle
+    // states as aria-pressed with "on" in ink (G1.3, CSS side). The onclick paths are untouched.
+    this.reloadBtn = el("button", "panereload") as HTMLButtonElement;
+    this.reloadBtn.appendChild(icon("reload"));
+    this.reloadBtn.title = "Neu verbinden — holt den Verlauf dieser Session neu vom Server";
+    this.reloadBtn.style.display = "none";
+    this.reloadBtn.onclick = (e) => { e.stopPropagation(); this.reconnect(); };
+    this.boardBtn = el("button", "boardtoggle") as HTMLButtonElement;
+    this.boardBtn.appendChild(icon("info"));
+    this.boardBtn.title = "Info-Spalte öffnen — Brief, Änderungen, Checks, Verlauf";
+    this.boardBtn.style.display = "none";
+    this.boardBtn.classList.toggle("active", boardOpen);
+    // board toggle describes the FOCUSED session, and clicking a pane focuses it first (root mousedown)
+    this.boardBtn.onclick = (e) => { e.stopPropagation(); focusPane(this.index); setBoard(!boardOpen); };
+    this.viewBtn = el("button", "viewtoggle") as HTMLButtonElement;
+    this.viewBtn.appendChild(icon("chat"));
+    this.viewBtn.title = "Konversation anzeigen";
+    this.viewBtn.style.display = "none";
+    this.viewBtn.setAttribute("aria-pressed", "false");
+    this.viewBtn.onclick = (e) => {
+      e.stopPropagation();
+      this.setView(this.view === "term" ? "chat" : "term");
+    };
+    // terminal on the chat column's width — one pane, terminal view, never a phone (VERBOTEN mobil);
+    // the phone never sees this button (mobile CSS hides it outright)
+    this.widthBtn = el("button", "termwidth") as HTMLButtonElement;
+    this.widthBtn.appendChild(icon("width"));
+    this.widthBtn.title = "Terminal auf Chat-Breite begrenzen";
+    this.widthBtn.style.display = "none";
+    this.widthBtn.setAttribute("aria-pressed", "false");
+    this.widthBtn.onclick = (e) => { e.stopPropagation(); setTermLimit(!termLimitOn); this.refit(); };
+    const navUp = el("button", "promptnav up") as HTMLButtonElement;
+    navUp.appendChild(icon("up"));
+    navUp.title = "Dein vorheriger Prompt";
+    navUp.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(-1); };
+    const navDn = el("button", "promptnav dn") as HTMLButtonElement;
+    navDn.appendChild(icon("down"));
+    navDn.title = "Dein nächster Prompt";
+    navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
     this.sizeBtn = el("button", "chatsizebtn", "Aa") as HTMLButtonElement;
     this.sizeBtn.title = "Schriftgröße — Text, Code, Oberfläche (Strg/⌘ + / − / 0)";
     this.sizeBtn.onclick = (e) => {
@@ -700,39 +747,18 @@ class Pane {
       this.root.appendChild(panel);
       panel.classList.add("open");
     };
-    this.viewBtn = el("button", "viewtoggle", "💬") as HTMLButtonElement;
-    this.viewBtn.title = "toggle conversation view";
-    this.viewBtn.style.display = "none";
-    this.viewBtn.onclick = (e) => {
-      e.stopPropagation();
-      this.setView(this.view === "term" ? "chat" : "term");
-    };
-    // board toggle sits beside the viewtoggle; the board always describes the
-    // FOCUSED session, and clicking a pane focuses it first (root mousedown)
-    this.boardBtn = el("button", "boardtoggle", "ℹ") as HTMLButtonElement;
-    this.boardBtn.title = "session brief — commits, changes, prompts, 📋 summary";
-    this.boardBtn.style.display = "none";
-    this.boardBtn.classList.toggle("active", boardOpen);
-    this.boardBtn.onclick = (e) => {
-      e.stopPropagation();
-      focusPane(this.index);
-      setBoard(!boardOpen);
-    };
-    // reload sits left of the ℹ/💬 cluster — forces THIS pane to reconnect + reseed
-    // scrollback (moved here from the sidebar so it acts on the pane you're looking at)
-    this.reloadBtn = el("button", "panereload", "↻") as HTMLButtonElement;
-    this.reloadBtn.title = "reload this session (reconnect + reseed scrollback)";
-    this.reloadBtn.style.display = "none";
-    this.reloadBtn.onclick = (e) => { e.stopPropagation(); this.reconnect(); };
-    const navUp = el("button", "promptnav up", "↑") as HTMLButtonElement;
-    navUp.title = "previous prompt of yours";
-    navUp.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(-1); };
-    const navDn = el("button", "promptnav dn", "↓") as HTMLButtonElement;
-    navDn.title = "next prompt of yours";
-    navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
+    // the gear opens the settings window — empty for now (Grammatik K8/D1 fills it); the phone
+    // hides this one and keeps its gear in #mhead instead (G5), so exactly one gear is ever visible
+    this.gearBtn = el("button", "panegear") as HTMLButtonElement;
+    this.gearBtn.appendChild(icon("gear"));
+    this.gearBtn.title = "Einstellungen öffnen";
+    this.gearBtn.onclick = (e) => { e.stopPropagation(); openSettings(); };
+    this.toolsBox = el("div", "panetools");
+    this.toolsBox.append(this.reloadBtn, this.boardBtn, this.viewBtn, this.widthBtn, navUp, navDn, this.sizeBtn,
+      this.gearBtn);
     this.pastBar = el("div", "pastbar");
-    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.sizeBtn,
-      this.viewBtn, this.boardBtn, this.reloadBtn, navUp, navDn);
+    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.toolsBox);
+    this.syncCornerButtons();
     this.term = new Terminal({
       // 10k, not the 50k this carried from the first commit (f43e3fb1) without ever being
       // revisited. The number is a PER-PANE cost and the board shows several at once, so a
@@ -850,8 +876,12 @@ class Pane {
   setView(v: "term" | "chat") {
     this.view = v;
     this.root.classList.toggle("chat", v === "chat");
-    this.viewBtn.textContent = v === "chat" ? "⌨" : "💬";
-    this.viewBtn.title = v === "chat" ? "back to terminal" : "toggle conversation view";
+    // the view toggle's two faces: the conversation bubble and, on the way back, the terminal
+    // (G0.6 glyphs; "an" state as aria-pressed, CSS paints it in ink — G1.3, not blue)
+    this.viewBtn.replaceChildren(icon(this.view === "chat" ? "keys" : "chat"));
+    this.viewBtn.title = this.view === "chat" ? "Zum Terminal zurück" : "Konversation anzeigen";
+    this.viewBtn.setAttribute("aria-pressed", this.view === "chat" ? "true" : "false");
+    this.syncCornerButtons();
     this.flakes.setActive(v === "chat");
     if (v !== "chat") sizePanel().classList.remove("open");
     saveView();
@@ -875,11 +905,33 @@ class Pane {
     // already-resolved load would schedule the next sync from inside the last one, forever.
     if (this.slot && !harnessesLoaded) void loadHarnesses().then(() => this.syncHarnessAffordances());
     const canChat = !this.slot || canChatOn(supportsOf(fleet.find((x) => x.id === this.slot)?.harness));
-    this.viewBtn.style.display = this.slot && canChat ? "block" : "none";
+    this.viewBtn.style.display = this.slot && canChat ? "flex" : "none";
+    this.syncCornerButtons();
     if (focused === this.index) renderComposerOpts(false);
     // a pane already sitting in the chat view must not be stranded there when its slot turns out
     // to have no transcript behind it
     if (this.slot && !canChat && this.view === "chat") this.setView("term");
+  }
+
+  // THE WIDTH TOGGLE'S TWO STATES. "Limited" = the pane's terminal runs on the chat column's
+  // width — only where the toggle may exist at all: ONE pane, terminal view, not a phone (the
+  // phone never sees the button, and its layout is always 1). At layout > 1 the button goes AND a
+  // set limit lifts with it (the class is only ever painted under these same conditions).
+  termIsLimited(): boolean {
+    return termLimitOn && layout === 1 && this.view === "term" && !isMobile();
+  }
+
+  // visibility + pressed state of the group's conditional member; called from the constructor,
+  // setView, and syncHarnessAffordances (assignment and every poll), so an isMobile() flip or a
+  // layout rebuild always lands on a consistent group. The SEAT exists whenever the button can
+  // exist at all (a session, one pane, desktop) — the chat view hides it by visibility (CSS), so
+  // the right-anchored group keeps every button at the same x across view switches.
+  syncCornerButtons(): void {
+    const lim = this.termIsLimited();
+    this.root.classList.toggle("tcolim", lim);
+    this.widthBtn.style.display = this.slot && layout === 1 && !isMobile() ? "flex" : "none";
+    this.widthBtn.setAttribute("aria-pressed", lim ? "true" : "false");
+    this.widthBtn.title = lim ? "Volle Breite wiederherstellen" : "Terminal auf Chat-Breite begrenzen";
   }
 
   private resetChat() {
@@ -1273,8 +1325,8 @@ class Pane {
     this.ws?.close();
     this.term.reset();
     this.resetChat();
-    this.boardBtn.style.display = slot ? "block" : "none";
-    this.reloadBtn.style.display = slot ? "block" : "none";
+    this.boardBtn.style.display = slot ? "flex" : "none";
+    this.reloadBtn.style.display = slot ? "flex" : "none";
     this.syncHarnessAffordances();
     if (slot && this.view === "chat") void this.pollChat();
     this.hint.style.display = slot ? "none" : "flex";
@@ -1421,6 +1473,15 @@ const repoOfSlot = (s: SlotInfo | undefined, brief: BriefInfo): string | null =>
 
 const boardBody = $("boardbody");
 let boardOpen = localStorage.getItem("fleet.board") === "1";
+// the width toggle's persisted state (Grammatik G5.1 pattern: one fleet.* key, try/catch, like
+// fleet.meter.open). The EFFECTIVE limit is termLimitOn AND the pane's own conditions — a reload
+// restores the toggle, layout > 1 or the phone view lifts it (Pane#termIsLimited).
+let termLimitOn = localStorage.getItem("fleet.termlimit") === "1";
+function setTermLimit(on: boolean) {
+  termLimitOn = on;
+  try { localStorage.setItem("fleet.termlimit", on ? "1" : "0"); } catch { /* the toggle still works this page */ }
+  for (const p of panes) p.syncCornerButtons();
+}
 let boardBusy = false;
 // THE BOARD'S FOLDS. Only what a reader reaches for rarely still sits behind a disclosure —
 // files and lanes became sections of their own, and the advisory agents left the column. Module
@@ -2072,15 +2133,59 @@ async function newLane(repo: string, parent?: LaneAnchor): Promise<void> {
   }
 }
 
+// THE SETTINGS WINDOW (Grammatik G5, one gear top right). Deliberately EMPTY for now — the
+// window itself is K8/D1; a hint says so instead of a bare grey box (G2.2). Toggle: a second click
+// closes. The list column has nothing to say here — the detail IS the window (.solo, index.html).
+let settingsShell: Shell | null = null;
+function openSettings(): void {
+  if (settingsShell?.isOpen()) { settingsShell.close(); settingsShell = null; return; }
+  settingsShell = openShell({
+    id: "settings", title: "Settings",
+    detailHint: "Empty for now — this window fills up section by section: text, this device, fleet.",
+  });
+  settingsShell.root.classList.add("solo");
+}
+
+// THE INFO COLUMN ON THE PHONE (owner 2026-09-22: „es gibt gar keinen button um die infoLeiste
+// aufzurufen"). ℹ moves the REAL #board element into a fullscreen window (G6.3) — the same live
+// content the column renders, not a copy; the column itself stays display:none on mobile
+// (applyBoard). On any close the element goes home to #app (its last child — where it started).
+let boardShell: Shell | null = null;
+function openBoardWindow(): void {
+  if (boardShell?.isOpen()) return;
+  const board = $("board");
+  const app = $("app");
+  if (!board || !app) return;
+  // the element reference is captured HERE, while #board is still in the document: on close the
+  // window root is already detached, and getElementById finds nothing outside the document — the
+  // board would die with the removed window (measured: appChildren without "board" after ✕)
+  boardShell = openShell({ id: "board", title: "Info", onClose: () => {
+    boardShell = null;
+    if (board.parentElement !== app) app.appendChild(board);
+    if (boardOpen) { boardOpen = false; localStorage.setItem("fleet.board", "0"); applyBoard(); }
+  } });
+  boardShell.root.classList.add("boardwin");
+  boardShell.detail.appendChild(board);
+}
+
 function applyBoard() {
   document.body.classList.toggle("board", boardOpen && !isMobile());
-  // the toggle lives per-pane (next to the 💬 viewtoggle) — sync them all
-  for (const b of document.querySelectorAll<HTMLButtonElement>(".boardtoggle"))
+  // the toggle lives per-pane (in the corner group) — sync them all; "on" is aria-pressed (G1.3),
+  // the .active class stays as the second state name the rest of the file already reads
+  for (const b of document.querySelectorAll<HTMLButtonElement>(".boardtoggle")) {
     b.classList.toggle("active", boardOpen);
+    b.setAttribute("aria-pressed", boardOpen ? "true" : "false");
+  }
 }
 function setBoard(on: boolean) {
   boardOpen = on;
   localStorage.setItem("fleet.board", on ? "1" : "0");
+  if (isMobile()) {
+    // the phone has no column: ℹ opens/closes the fullscreen window that carries #board (G6.3).
+    // close() runs onClose synchronously, which re-homes the element and un-presses the buttons.
+    if (on) openBoardWindow();
+    else boardShell?.close();
+  }
   applyBoard();
   // the board's width changed → terminals must refit (same rule as the sidebar collapse)
   requestAnimationFrame(() => { for (const p of panes) p.refit(); });
@@ -2344,7 +2449,7 @@ function helperSummary(): string | null {
   return known ? `${free} helper slot${free === 1 ? "" : "s"} free` : `${online.length} helper${online.length === 1 ? "" : "s"} online`;
 }
 function renderSuiteMeter() {
-  if (!boardOpen || isMobile()) return;
+  if (!boardOpen) return; // mobile too: the meter renders into #boardsuites, which travels with #board
   const m = meterModel();
   const focusSlot = panes[focused]?.slot ?? null;
   meterEl.className = `lock-${m.lock ?? "none"}`;
@@ -3203,7 +3308,9 @@ async function renderBoard() {
   // a render requested while one is in flight (e.g. focus moved mid-fetch) must not be
   // dropped — remember it and re-run once the current pass finishes
   if (boardBusy) { boardAgain = true; return; }
-  if (!boardOpen || isMobile()) return;
+  // boardOpen is the phone's info WINDOW too — the #board element lives inside it there, so the
+  // same render fills the same element and the old "empty on mobile" early return is gone
+  if (!boardOpen) return;
   boardBusy = true;
   try {
     const slot = panes[focused]?.slot;
@@ -4739,6 +4846,7 @@ window.addEventListener("resize", () => { for (const p of panes) p.refit(); });
 MOBILE_MQ.addEventListener("change", () => {
   setDrawer(false);
   setLive(false); // the live bar is a mobile-only surface
+  if (!isMobile() && boardShell?.isOpen()) setBoard(false); // the info WINDOW is the phone's surface
   applyCollapsed(); // strip the rail on mobile, restore it on desktop
   applyBoard(); // same for the right sideboard — a desktop-only surface
   renderPostLandAudit(); // the alarm swaps surfaces: board section on desktop, #mhead bar on a phone

@@ -304,6 +304,12 @@ const CLAUDE_CONTEXT_WINDOWS: Readonly<Record<string, number | undefined>> = {
   // "Usage credits required for 1M context"). Neither is visible from a model id, so this row is a
   // claim about THIS host, where the variable is unset (2026-09-19: `env | grep -c` → 0).
   "claude-opus-5": CONTEXT_WINDOW_1M,
+  // the successor id, read 2026-09-22 out of the installed Claude Code 2.1.280 model table
+  // (~/.local/share/claude/versions/2.1.280), which carries for this id verbatim
+  //   "claude-opus-5-5",…,fallback_3p:"claude-opus-5",context:{window:1e6,native_1m:!0,supports_1m_beta:!0,supports_1m_suffix:!0}
+  // — the id answers on this machine too (probed 2026-09-22 with `claude --model claude-opus-5-5 -p`).
+  // Owner 2026-09-22: the orchestrating roles run on it. The row is the id, never the family.
+  "claude-opus-5-5": CONTEXT_WINDOW_1M,
   "claude-sonnet-5": CONTEXT_WINDOW_1M,
   // 200k as a ceiling rather than a tier — there is no 1M variant of this one to ask for.
   "claude-haiku-4-5": CONTEXT_WINDOW_BASE,

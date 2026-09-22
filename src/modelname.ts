@@ -20,6 +20,9 @@ import { contextWindowFor } from "./protocol";
 // window, and only for a slug Codex's own catalogue lists. No row, no number.
 const DISPLAY_WINDOWS: Readonly<Record<string, number>> = {
   "claude-opus-5": 1_000_000,
+  // the successor id — same source as protocol.ts#CLAUDE_CONTEXT_WINDOWS: the installed 2.1.280
+  // model table carries display_name:"Opus 5.5" with context:{window:1e6,native_1m:!0,…} (read 2026-09-22)
+  "claude-opus-5-5": 1_000_000,
   "claude-sonnet-5": 1_000_000,
   "claude-fable-5-1": 1_000_000,
   "claude-haiku-4-5-20251001": 200_000,

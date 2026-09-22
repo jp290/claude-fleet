@@ -6951,7 +6951,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // needs: the standard rail's bytes are pinned to a baseline, so editing it is a deliberate act
   // that updates this constant, never a side effect of touching the profile beside it. Rewrite the
   // baseline ONLY when the text was meant to change, and say so in the commit body.
-  const RAIL_STANDARD_SHA256 = "5650ea0474ecb5acb98c140fb2aa5a0bbb4c569f62de12452082b96382791888";
+  // 2026-09-23 (System 1.5 R1): RAIL_TAIL's "treat an arriving report as a CLAIM" bullet now
+  // also asks the judging MAIN for the leading ERFUELLT: token on its verdict reason. A
+  // deliberate text change, so the baseline moves with it.
+  const RAIL_STANDARD_SHA256 = "5ff88adf7d252ee76ad1724438588af3a4450d9b5561452574e5c5da61b7654c";
   const railBody = (part: string): string =>
     part === "" ? "" : part.slice(part.indexOf("`") + 1, part.lastIndexOf("`"));
   const standardBytes = rail === ""

@@ -472,6 +472,14 @@ interface ClarificationRequest {
 // successor reconstructing a Program could not tell an accepted report from an unread one.
 const FLEET_REPORT_DISPOSITIONS = ["accepted", "rejected"] as const;
 type FleetReportDisposition = typeof FLEET_REPORT_DISPOSITIONS[number];
+// THE CRITERION VERDICT BESIDE THE DISPOSITION, and the two are deliberately not one word.
+// `accepted` says what the judging principal DID with the work; this says whether the row's Done
+// was actually met — and they come apart in the case that matters: a slice a MAIN accepts although
+// only part of the criterion is met, because the rest belongs to another row. Measured 2026-09-22
+// (docs/messungen/2026-09-22-system15-auswertung.md §1 R1): 3 of 258 acceptance reasons already
+// carried such a token by hand, in prose, where nothing could count it.
+const FLEET_REPORT_FULFILLED = ["ja", "teilweise", "nein"] as const;
+type FleetReportFulfilled = typeof FLEET_REPORT_FULFILLED[number];
 // ONE object rather than four parallel fields, for the reason ClarificationRequest.answer is one:
 // "who decided, when, which way and why" is a single fact, and a row carrying three of the four
 // would be a half-decision no reader could adjudicate. `reason` is optional PROSE and stays null
@@ -501,6 +509,15 @@ interface FleetReportDecision {
   at: number;
   by: { slot: number; openedAt: number; sessionId: string | null } | "owner" | { rule: FleetReportRuleName };
   reason: string | null;
+  // THE TYPED READING of a leading `ERFUELLT: ja|teilweise|nein` on `reason`, never a second prose
+  // field: the reason stays VERBATIM and this is what the doors read out of it. `null` is the
+  // measured "the judging principal wrote no token" — a reason without one is a valid reason and
+  // this field is what keeps that legible instead of making the token compulsory. Every verdict
+  // written since this field exists carries the key, the two RULE verdicts included: they write
+  // null because a rule reads a land and an audit, which say nothing about a criterion. ABSENT is
+  // the older fact "this row was stamped before the field existed" and is never repaired into a
+  // null, exactly as `decision` itself is never repaired into a judgement nobody gave.
+  fulfilled?: FleetReportFulfilled | null;
   mainAfter?: string;
   supersededBy?: string;
 }
@@ -1092,6 +1109,12 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
           || d.mainAfter !== undefined) return null;
       } else return null;
     } else if (d.mainAfter !== undefined || d.supersededBy !== undefined) return null;
+    // …and the criterion token, default-deny like every other half of this row: absent and null are
+    // the same "no token was written" fact and both pass, a present value must be one of the three,
+    // and a RULE verdict may carry none at all — accepted-by-land reads a land and an audit, and a
+    // row claiming a rule had read a criterion would be a judgement the rule never makes.
+    if (d.fulfilled !== undefined && d.fulfilled !== null
+      && (rule || !FLEET_REPORT_FULFILLED.includes(d.fulfilled as FleetReportFulfilled))) return null;
     if (d.by !== "owner" && !rule) {
       if (!occupant(d.by, false)) return null;
       const by = d.by as { slot: number; openedAt: number; sessionId: string | null };
@@ -3086,7 +3109,7 @@ export type {
   DeployFleetEvent, CommandJobFleetEvent, LaneSuiteFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
   HelperCmdCheck, HarnessBlockFleetEvent, LaneReviewFleetEvent, SuccessionDebtFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
-  ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReportBasis,
+  ClarificationRequest, FleetReportDisposition, FleetReportFulfilled, FleetReportDecision, FleetReportBasis,
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal, RefineChild,
@@ -3113,7 +3136,7 @@ export {
   TRANSITION_DEADLINE_MAX_SEC, TRANSITION_DEADLINE_DEFAULT_SEC, watchFrom, FLEET_EVENT_TERMINAL,
   ATTENTION_KINDS, fleetEventRecoveryFrom, fleetEventFrom, clarificationFrom, fleetReportFrom,
   attentionFrom, MAX_CLARIFICATION_QUESTION, MAX_CLARIFICATION_ANSWER, MAX_FLEET_REPORT_TEXT,
-  FLEET_REPORT_DISPOSITIONS, MAX_FLEET_REPORT_DECISION_REASON,
+  FLEET_REPORT_DISPOSITIONS, FLEET_REPORT_FULFILLED, MAX_FLEET_REPORT_DECISION_REASON,
   FLEET_REPORT_DELIVERY_STATES, MAX_FLEET_REPORT_DELIVERY_REASON,
   MAX_ATTENTION_TEXT, MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT,
   ATTENTION_CANDIDATE_SHA_RE, ATTENTION_BRANCH_RE, validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT,

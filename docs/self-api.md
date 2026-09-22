@@ -2384,13 +2384,36 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report/<report-id>/acc
   BEURTEILTE Objekt mit eigener Retention. Ein Urteil auf dem Event verschwände, während die Zeile,
   die es beurteilt, noch da ist — und es überlüde ein Wort (`acknowledged`) mit zwei Bedeutungen.
 - **`decision` ist EIN Objekt oder es ist nicht da**: `{disposition, at, by:{slot,openedAt,sessionId}|"owner"|{rule:"accepted-by-land"},
-  reason, mainAfter?}` — `mainAfter` steht GENAU auf einem Regelurteil (Abschnitt „Regelentscheide" unten). `disposition` ist genau einer von zwei (`FLEET_REPORT_DISPOSITIONS` in `server/types.ts`):
+  reason, fulfilled, mainAfter?}` — `mainAfter` steht GENAU auf einem Regelurteil (Abschnitt „Regelentscheide" unten). `disposition` ist genau einer von zwei (`FLEET_REPORT_DISPOSITIONS` in `server/types.ts`):
   `accepted` · `rejected`. Fehlt der Schlüssel oder ist er `null`, ist die Zeile UNBEURTEILT — eine
   vor dieser Tür persistierte Zeile bleibt beobachtbar unbeurteilt und wird nie zu einem Urteil
   repariert, das niemand gefällt hat. `reason` ist optionale Prosa ≤ 500 Zeichen oder `null`.
   `by: "owner"` ist die Owner-Tür unten — dieselbe Prinzipal-Asymmetrie wie
   `AttentionRequest.answer.by`, und sie ist von einem Occupant-Urteil UNTERSCHEIDBAR, weil sie ein
   Urteil von AUSSERHALB des Programs ist.
+- **`fulfilled` ist das Kriteriums-Urteil NEBEN der Disposition** (`"ja"|"teilweise"|"nein"|null`,
+  seit 2026-09-23, R1 der System-1.5-Auswertung). Beide Türen lesen ein FÜHRENDES
+  `ERFUELLT: ja|teilweise|nein` am Anfang deiner `reason` und legen es typisiert auf die Zeile;
+  `reason` bleibt dabei WÖRTLICH stehen, das Token wird nicht herausgeschnitten. Drei Eigenschaften,
+  jede davon eine Entscheidung:
+  - **Optional.** Eine `reason` ohne Token ist eine gültige `reason` und ergibt `fulfilled: null` —
+    kein Urteil hängt davon ab, weder Annahme noch Ablehnung. Was der Schnitt kauft, ist
+    Zählbarkeit: am 2026-09-22 trugen 3 von 258 Annahmegründen so ein Token von Hand, in Prosa, wo
+    es niemand auswerten konnte.
+  - **Verankert und GROSS geschrieben.** Das Schlüsselwort heisst `ERFUELLT:` und steht am Anfang
+    der (getrimmten) `reason`. Ein deutscher Satz darf mit „Erfuellt: …" beginnen — ein liberaler
+    Treffer würde diese Prosa in ein 400 verwandeln. Nur der WERT wird gross/klein-unempfindlich
+    gelesen.
+  - **Streng am Wert.** Steht das Schlüsselwort da, war das Wort gemeint: ein vierter Wert ist 400
+    (Tabelle unten), nicht stillschweigend „kein Token".
+  `disposition` und `fulfilled` sind ZWEI Fakten. Eine MAIN, die eine Scheibe annimmt, obwohl das
+  Done nur zur Hälfte erfüllt ist, sagt genau das (`accepted` + `teilweise`); das eine aus dem
+  anderen abzuleiten wäre der Verlust, den dieses Feld schliesst. Ein REGELURTEIL schreibt immer
+  `null`: `accepted-by-land` liest einen Land und einen Post-Land-Audit, `superseded` eine spätere
+  Zeile derselben Lane-Branch — keines davon ist ein Urteil über ein Kriterium. FEHLT der Schlüssel
+  ganz, wurde die Zeile vor diesem Schnitt gestempelt; das wird nie zu `null` repariert. Das Feld
+  steht auch auf der DECISION-Zeile in `fleet-reports.jsonl` — die Live-Liste ist ein begrenzter
+  Schwanz, und die Vorwärtsmessung kommt später.
 - **Bei den alten Event-Basen entscheidet die gebundene Empfänger-OCCUPATION** — `slot` + `openedAt`, und `sessionId` wird
   getragen, nie verglichen. Das ist exakt die Regel, mit der `clarificationReceiverFor` den
   Empfänger AUFLÖST („deliberately reported, never gated": ein Codex-Bind darf die Session-Id
@@ -2419,6 +2442,7 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report/<report-id>/acc
 | fremde oder ersetzte MAIN | 409 `fleet report belongs to another or replaced MAIN session` (dieselbe Form wie `replyClarification`) |
 | Body mit anderem Schlüssel | 400 `body must contain only reason` — dieselbe Disziplin wie `body must contain only status and text` |
 | `reason` kein String / > 500 | 400 mit der Grenze im Text |
+| `reason` beginnt mit `ERFUELLT:` und nennt einen vierten Wert | 400 `a reason starting with "ERFUELLT:" must name one of ja, teilweise, nein — or leave the token out entirely` — und die Zeile bleibt UNBEURTEILT: ein falsch geschriebenes Token kostet den Aufrufer nicht seine eine Entscheidung |
 
 **Wo ein Event existiert, wird der Transport mitgeschlossen, durch den SCHREIBER der ACK-Route,
 nicht durch einen zweiten.** Eine Program-Zeile besitzt kein Event und schreibt nur ihr Urteil.
@@ -2510,6 +2534,7 @@ curl -s -X POST http://<fleet-host>:<port>/api/fleet-report/<report-id>/accept \
 | bereits beurteilt | 409 `fleet report was already accepted\|rejected` (die stehende `decision` im Body) |
 | Body mit anderem Schlüssel | 400 `body must contain only reason` |
 | `reason` kein String / > 500 | 400 mit der Grenze im Text |
+| `reason` beginnt mit `ERFUELLT:` und nennt einen vierten Wert | 400 `a reason starting with "ERFUELLT:" must name one of ja, teilweise, nein — or leave the token out entirely` — und die Zeile bleibt UNBEURTEILT: ein falsch geschriebenes Token kostet den Aufrufer nicht seine eine Entscheidung |
 
 **ZWISCHEN DEN BEIDEN TÜREN LAG FÜR OCCUPANT-GEBUNDENE ZEILEN EIN FENSTER — gemessen am
 2026-09-09 an Report `4e330915`.** Während die Vorgängerin nach `succeed` noch in der Grace lebte,

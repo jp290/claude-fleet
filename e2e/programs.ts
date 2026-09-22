@@ -10562,6 +10562,131 @@ export async function run(ctx: Ctx): Promise<void> {
         && (cookieSelfText.includes("(absent)") || cookieSelfText.includes("already landed")),
       JSON.stringify({ outcome: cookieOutcome ?? null, selfLand: cookieSelfText.slice(0, 160) }));
 
+    // --- R1 · THE CRITERION TOKEN ON A VERDICT (System 1.5, docs/messungen/
+    // 2026-09-22-system15-auswertung.md §1 R1). A verdict carried ONE word — accepted or rejected —
+    // and whether the row's DONE was actually met lived in the reason's prose or nowhere: 3 of 258
+    // acceptance reasons carried an "ERFUELLT:" token by hand, where nothing could count them. The
+    // token stays OPTIONAL and moves no verdict; what this cut buys is one typed field beside it.
+    //
+    // Driven through BOTH live doors, because they parse through ONE function and a copy wired into
+    // one of them only is the drift no compiler sees: the MAIN's door while its pane is alive, the
+    // OWNER's door on the same fixture once that MAIN is gone. The rows are program-basis, which
+    // mints no FleetEvent — so this block leaves nothing behind on the sessions poll's byte budget.
+    //
+    // Mutations caught: drop the parse in either door (the fulfilled assertions read null); strip
+    // the token out of `reason` (the verbatim assertion falls); accept a fourth value (the 400
+    // check falls); forget the field in fleetReportFrom (the post-boot check falls, because the
+    // whole row is then discarded at hydration).
+    const fuProgram = await activateNewProgram("ERFUELLT token on a report verdict");
+    const fuBoot = await beginBootstrap(fuProgram.id, { cwd: REPO2, label: "erfuellt-main" });
+    const fuMainSlot = (await fuBoot.json() as { slot?: number }).slot ?? null;
+    const fuTok = slotToken(fuMainSlot);
+    if (fuMainSlot !== null) landFixtureMains.push(fuMainSlot);
+    const fuRowId = await makeTask({ text: "ERFUELLT token lane", programId: fuProgram.id, repo: REPO2 });
+    const fuLane = await conflictLane(fuRowId);
+    const fuLaneTok = slotToken(fuLane.slot);
+    check("ERFUELLT fixture: a bound MAIN and its lane, both credentialed, on their own Program",
+      fuBoot.ok && /^[0-9a-f]{32}$/.test(fuTok) && /^[0-9a-f]{32}$/.test(fuLaneTok)
+        && fuLane.slot !== null,
+      JSON.stringify({ boot: fuBoot.status, main: fuMainSlot, lane: fuLane.slot,
+        dispatch: fuLane.dispatch }));
+    // `needs-main` on purpose: a verdict is exactly what such a row is owed, and the accepted-by-land
+    // rule reads only `complete` rows — so no tick can judge these three out from under the doors.
+    const fuFile = async (text: string): Promise<string | null> => {
+      const r = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": fuLaneTok },
+        body: JSON.stringify({ status: "needs-main", text }) });
+      return r.ok ? (JSON.parse(await r.text()) as { report?: { id?: string } }).report?.id ?? null : null;
+    };
+    const fuJudge = async (door: "main" | "owner", id: string | null, verdict: "accept" | "reject",
+      reason: string): Promise<{ status: number; body: string }> => {
+      if (id === null) return { status: 0, body: "no report" };
+      const r = door === "main"
+        ? await fetch(`${BASE}/api/self/fleet-report/${id}/${verdict}`, { method: "POST",
+          headers: { "content-type": "application/json", "x-fleet-self-token": fuTok },
+          body: JSON.stringify({ reason }) })
+        : await post(`/api/fleet-report/${id}/${verdict}`, { reason });
+      return { status: r.status, body: (await r.text()).slice(0, 260) };
+    };
+    type FuDecision = { disposition?: string; reason?: string | null; fulfilled?: string | null };
+    const fuRow = async (id: string | null): Promise<{ decision?: FuDecision | null } | undefined> =>
+      id === null ? undefined
+        : ((await (await get("/api/fleet-report")).json()) as
+          { reports?: { id: string; decision?: FuDecision | null }[] }).reports?.find((r) => r.id === id);
+
+    // (a) THE FOURTH VALUE IS A 400, and the row is left UNJUDGED — a malformed token must not cost
+    // the caller its one decision. The error names all three allowed words, so the caller can fix it
+    // without reading this source.
+    const fuIdA = await fuFile("R1 (a): the verdict on this row carries a criterion token.");
+    const fuBad = await fuJudge("main", fuIdA, "accept", "ERFUELLT: vielleicht — weder ja noch nein");
+    const fuRowAfterBad = await fuRow(fuIdA);
+    check("ERFUELLT token: a leading token naming a fourth value is 400 at the MAIN's door, names the three allowed words, and the row stays UNJUDGED",
+      fuIdA !== null && fuBad.status === 400 && fuBad.body.includes("ja, teilweise, nein")
+        && (fuRowAfterBad?.decision ?? null) === null,
+      JSON.stringify({ id: fuIdA, refusal: fuBad, decision: fuRowAfterBad?.decision ?? null }));
+    // (b) …and the same row, judged properly a moment later: the token is READ, and the reason keeps
+    // every byte the MAIN wrote. Stripping it would turn a reason that said only the token into
+    // `null`, which by FleetReportDecision's own contract is the different claim "they wrote nothing".
+    const fuJaReason = "ERFUELLT: ja — Diff gelesen, Verify zitiert, Scheibe uebernommen";
+    const fuJa = await fuJudge("main", fuIdA, "accept", fuJaReason);
+    const fuJaRow = await fuRow(fuIdA);
+    check("ERFUELLT token: the MAIN's door reads a leading `ja` into decision.fulfilled and leaves the reason verbatim",
+      fuJa.status === 200 && fuJaRow?.decision?.fulfilled === "ja"
+        && fuJaRow.decision.reason === fuJaReason && fuJaRow.decision.disposition === "accepted",
+      JSON.stringify({ judged: fuJa.status, decision: fuJaRow?.decision ?? null }));
+    // (c) TEILWEISE ON A REJECT, which is the case the whole field exists for: the disposition and
+    // the criterion are different facts, and a door that derived one from the other could never
+    // record "I am taking this although only part of the Done is met" — nor its mirror image here.
+    const fuIdB = await fuFile("R1 (c): a row whose criterion is met only in part.");
+    const fuTeil = await fuJudge("main", fuIdB, "reject", "ERFUELLT: teilweise, der zweite Teil fehlt");
+    const fuTeilRow = await fuRow(fuIdB);
+    check("ERFUELLT token: `teilweise` is read on a REJECT too — the criterion and the disposition are two facts, not one",
+      fuTeil.status === 200 && fuTeilRow?.decision?.fulfilled === "teilweise"
+        && fuTeilRow.decision.disposition === "rejected",
+      JSON.stringify({ judged: fuTeil, decision: fuTeilRow?.decision ?? null }));
+    // (d) THE OWNER DOOR, on the same fixture once its MAIN is gone: same parse, same refusal, and a
+    // reason with NO token is a valid reason that records `null`. This is the half that keeps the
+    // token optional — a required token would have made every verdict below a 400.
+    const fuIdC = await fuFile("R1 (d): a row the owner judges after this Program's MAIN has ended.");
+    if (fuMainSlot !== null) await post(`/api/slots/${fuMainSlot}/kill`, {});
+    await slotsEmptied(fuMainSlot === null ? [] : [fuMainSlot]);
+    const fuOwnerBad = await fuJudge("owner", fuIdC, "accept", "ERFUELLT: teils/teils — kein erlaubter Wert");
+    const fuNoneReason = "kein Token, nur Prosa — und damit eine vollstaendig gueltige Begruendung";
+    const fuNone = await fuJudge("owner", fuIdC, "accept", fuNoneReason);
+    const fuNoneRow = await fuRow(fuIdC);
+    check("ERFUELLT token: the OWNER door refuses the same fourth value and records `null` for a reason that carries no token at all",
+      fuOwnerBad.status === 400 && fuOwnerBad.body.includes("ja, teilweise, nein")
+        && fuNone.status === 200 && fuNoneRow?.decision?.fulfilled === null
+        && fuNoneRow.decision.reason === fuNoneReason,
+      JSON.stringify({ refusal: fuOwnerBad, judged: fuNone.status, decision: fuNoneRow?.decision ?? null }));
+    // (e) THE LEDGER, because the live list is a bounded tail and the forward measurement this field
+    // was cut for is made long after these rows are pruned. Every decision row carries the key,
+    // normalised to null exactly as `mainAfter` is.
+    const fuLedgerOf = (id: string | null): Record<string, unknown> | undefined => id === null
+      ? undefined : reportLedger().find((row) => row.id === id && row.kind === "decision");
+    check("ERFUELLT token: fleet-reports.jsonl carries the criterion on every decision row, the token-less one as an explicit null",
+      fuLedgerOf(fuIdA)?.fulfilled === "ja" && fuLedgerOf(fuIdB)?.fulfilled === "teilweise"
+        && fuIdC !== null && fuLedgerOf(fuIdC) !== undefined && fuLedgerOf(fuIdC)?.fulfilled === null,
+      JSON.stringify([fuLedgerOf(fuIdA), fuLedgerOf(fuIdB), fuLedgerOf(fuIdC)]).slice(0, 400));
+    // (f) …AND IT SURVIVES THE BOOT. `fleetReportFrom` is default-deny: a field it does not admit
+    // does not degrade to absent, it DISCARDS the whole row. So this is the check that separates
+    // "the doors write it" from "the parser lets it come back".
+    await restartSrv();
+    const fuBootRows = await Promise.all([fuRow(fuIdA), fuRow(fuIdB), fuRow(fuIdC)]);
+    // "GONE" is the row itself missing (the parser threw it away), "UNJUDGED" a verdict that did not
+    // survive, "absent" the key the doors are supposed to write — each names its own defect.
+    const fuBootRead = fuBootRows.map((r) => r === undefined ? "GONE"
+      : r.decision === undefined || r.decision === null ? "UNJUDGED"
+        : r.decision.fulfilled === undefined ? "absent"
+          : r.decision.fulfilled === null ? "null" : r.decision.fulfilled).join(",");
+    check("ERFUELLT token: all three verdicts come back from the next boot with their criterion — the parser admits the field instead of discarding the row",
+      fuBootRead === "ja,teilweise,null",
+      `${fuBootRead} ${JSON.stringify(fuBootRows.map((r) => r?.decision ?? null)).slice(0, 300)}`);
+    if (fuLane.slot !== null) await post(`/api/slots/${fuLane.slot}/kill`, {});
+    await post(`/api/tasks/${fuRowId}/done`, {});
+    await post(`/api/tasks/${fuRowId}/delete`, {});
+    await programPost(fuProgram.id, "complete");
+
     // --- (6) THE BIND-BEFORE-LEARN WINDOW, and it is probed in the DANGEROUS direction first.
     // The binding's identity triple is stamped at BIND time; a harness that pins no session id at
     // spawn (codex) has `sessionId: null` there and learns the real id afterwards. Because the land

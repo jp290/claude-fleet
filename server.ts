@@ -99,7 +99,7 @@ import {
   TRANSITION_DEADLINE_MAX_SEC, TRANSITION_DEADLINE_DEFAULT_SEC, watchFrom, FLEET_EVENT_TERMINAL,
   ATTENTION_KINDS, fleetEventFrom, clarificationFrom, fleetReportFrom, attentionFrom,
   MAX_CLARIFICATION_QUESTION, MAX_CLARIFICATION_ANSWER, MAX_FLEET_REPORT_TEXT, MAX_ATTENTION_TEXT,
-  FLEET_REPORT_DISPOSITIONS, MAX_FLEET_REPORT_DECISION_REASON,
+  FLEET_REPORT_DISPOSITIONS, FLEET_REPORT_FULFILLED, MAX_FLEET_REPORT_DECISION_REASON,
   MAX_FLEET_REPORT_DELIVERY_REASON,
   MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT, ATTENTION_CANDIDATE_SHA_RE,
   validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind, TASK_REVIEW_MODES,
@@ -131,7 +131,7 @@ import {
   type LaneFleetEvent, type MergeFleetEvent, type AuditFleetEvent, type DeployFleetEvent,
   type CommandJobFleetEvent,
   type ClarificationFleetEvent, type FleetReportFleetEvent, type SupervisorTransitionFleetEvent,
-  type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition, type FleetReportDecision,
+  type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition, type FleetReportFulfilled, type FleetReportDecision,
   type AttentionKind,
   type LaneSuiteFleetEvent, type HarnessBlockFleetEvent, type SuccessionDebtFleetEvent, type SuccessionDebt,
   type LaneReviewFleetEvent, type TaskReviewMode,
@@ -9723,8 +9723,12 @@ function ledgerReportOpen(report: FleetReport): Promise<void> {
 }
 // called right after a door or the rule stamps `report.decision`; the row copies that stamp
 function ledgerReportDecision(report: FleetReport, decision: FleetReportDecision): Promise<void> {
+  // `fulfilled` rides the LEDGER row, not only the live one: the live list is a bounded tail
+  // (FLEET_REPORT_KEEP) and the whole point of the field is that somebody can count it later.
+  // Normalised to null exactly as `mainAfter` is — a ledger row always carries both keys.
   return appendEvent(FLEET_REPORT_LEDGER_FILE, { kind: "decision", id: report.id, disposition: decision.disposition,
-    by: decision.by, reason: decision.reason, mainAfter: decision.mainAfter ?? null, at: decision.at });
+    by: decision.by, reason: decision.reason, fulfilled: decision.fulfilled ?? null,
+    mainAfter: decision.mainAfter ?? null, at: decision.at });
 }
 
 function pruneFleetReports(): void {
@@ -9821,7 +9825,7 @@ function closeSupersededReports(report: FleetReport): Promise<void>[] {
     && r.worker.branch === report.worker.branch
     && r.reportedAt < report.reportedAt).map((r) => {
     r.decision = { disposition: "accepted", at: Date.now(), by: { rule: "superseded" },
-      supersededBy: report.id,
+      supersededBy: report.id, fulfilled: null,
       reason: `superseded by later report ${report.id} from the same lane branch` };
     const ledgered = ledgerReportDecision(r, r.decision);
     // the transport half through the ONE writer, exactly as both doors and the other rule settle
@@ -10272,6 +10276,34 @@ async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
       : ` (the pane's session id moved since filing: ${report.worker.sessionId ?? "none"} -> ${worker.sessionId ?? "none"})`));
 }
 
+// THE CRITERION TOKEN ON A VERDICT'S REASON, read by BOTH doors through this ONE function — a
+// second copy is how "accept parses it, reject does not" becomes reachable from an edit that looked
+// local. What it reads is a LEADING `ERFUELLT: ja|teilweise|nein`, and the three properties it has
+// are each a decision rather than an accident:
+//  · OPTIONAL. A reason without the token is a valid reason and yields `null`. The token was asked
+//    for in prose long before this field (3 of 258 acceptance reasons carried one, 2026-09-22); the
+//    cut makes those countable, it does not make them compulsory, and no verdict depends on it.
+//  · ANCHORED AND UPPERCASE. The keyword must stand at position 0 in the trimmed reason and must be
+//    spelled `ERFUELLT:`. A German sentence may perfectly well begin "Erfuellt: ...", and a liberal
+//    match would turn that prose into a 400 on a door whose whole job is to record a judgement.
+//  · STRICT ON THE VALUE. Once the keyword IS there the principal meant to say the word, so a
+//    fourth one is a mistake worth naming rather than silently reading as "no token" — the error
+//    carries the three that are allowed. Only the VALUE is matched case-insensitively.
+// The reason itself stays VERBATIM either way: stripping the token would turn a reason that said
+// only "ERFUELLT: ja" into `null`, which by FleetReportDecision's own contract is the different
+// claim "they wrote nothing".
+const FULFILLED_PREFIX = "ERFUELLT:";
+function fulfilledFromReason(reason: string | null):
+  { ok: true; value: FleetReportFulfilled | null } | { ok: false; error: string } {
+  if (reason === null || !reason.startsWith(FULFILLED_PREFIX)) return { ok: true, value: null };
+  const word = (/^ERFUELLT:[ \t]*([A-Za-z]*)/.exec(reason)?.[1] ?? "").toLowerCase();
+  const hit = FLEET_REPORT_FULFILLED.find((v) => v === word);
+  return hit === undefined
+    ? { ok: false, error: `a reason starting with "${FULFILLED_PREFIX}" must name one of `
+      + `${FLEET_REPORT_FULFILLED.join(", ")} — or leave the token out entirely` }
+    : { ok: true, value: hit };
+}
+
 async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDisposition,
   body: Record<string, unknown> | null): Promise<Response> {
   const report = fleetReports.find((r) => r.id === id);
@@ -10312,6 +10344,11 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
       return json({ error: `reason must be at most ${MAX_FLEET_REPORT_DECISION_REASON} chars` }, 400);
     reason = body.reason.trim() || null;
   }
+  // …and the ONE typed reading of that prose, through the same function the other door uses. It
+  // sits with the other body checks and therefore ABOVE the already-decided refusal: a malformed
+  // token is a malformed request, and answering it 409 would tell the caller about the wrong fault.
+  const fulfilled = fulfilledFromReason(reason);
+  if (!fulfilled.ok) return json({ error: fulfilled.error }, 400);
   // FIRST DECISION WINS, and a second call is refused rather than absorbed — even an identical one.
   // A report is judged once: this row is what a successor reconstructs from, and a door that
   // re-stamped it would let a later session quietly overwrite a predecessor's verdict with its own.
@@ -10321,7 +10358,7 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
 
   const at = Date.now();
   report.decision = { disposition, at,
-    by: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId }, reason };
+    by: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId }, reason, fulfilled: fulfilled.value };
   const ledgered = ledgerReportDecision(report, report.decision);
   // …and the transport half, through the ack route's OWN writer rather than a second one. A MAIN
   // that judged the report has by construction received it, so leaving the event open would let
@@ -10385,6 +10422,11 @@ async function ownerDecideFleetReport(id: string, disposition: FleetReportDispos
       return json({ error: `reason must be at most ${MAX_FLEET_REPORT_DECISION_REASON} chars` }, 400);
     reason = body.reason.trim() || null;
   }
+  // …and the ONE typed reading of that prose, through the same function the other door uses. It
+  // sits with the other body checks and therefore ABOVE the already-decided refusal: a malformed
+  // token is a malformed request, and answering it 409 would tell the caller about the wrong fault.
+  const fulfilled = fulfilledFromReason(reason);
+  if (!fulfilled.ok) return json({ error: fulfilled.error }, 400);
   // FIRST DECISION WINS across BOTH doors, and this is the one rule the pair must share: a report
   // judged by its MAIN before that MAIN ended is judged, and an owner arriving afterwards reads the
   // standing verdict instead of writing a second one over it.
@@ -10393,7 +10435,7 @@ async function ownerDecideFleetReport(id: string, disposition: FleetReportDispos
       decision: report.decision }, 409);
 
   const at = Date.now();
-  report.decision = { disposition, at, by: "owner", reason };
+  report.decision = { disposition, at, by: "owner", reason, fulfilled: fulfilled.value };
   const ledgered = ledgerReportDecision(report, report.decision);
   // The transport half, through the ack route's own writer, exactly as the self door does it. For
   // an orphaned bound row the event is already terminal (`receiver-gone`) and is left byte-for-byte
@@ -10581,10 +10623,14 @@ async function tickAcceptByLand(origin: "boot" | "tick" | "audit"): Promise<numb
       // re-read per row: a door may have judged it while the ledgers were being read
       const reading = await acceptByLandReading(report, outcomes.rows, auditRows, judged);
       if (!reading.accept || report.decision) continue;
+      // `fulfilled: null` is written, not omitted, and it is the one thing this rule can honestly
+      // say about a criterion: it read a land and a post-land audit, neither of which is anybody's
+      // judgement of whether the row's Done was met. An absent key would read as "stamped before
+      // the field existed", which of this verdict is false.
       report.decision = { disposition: "accepted", at: Date.now(), by: { rule: "accepted-by-land" },
         reason: `accepted-by-land: landed as ${reading.mainAfter.slice(0, 12)}, post-land audit ${reading.audit}`
           + (reading.via ? ` — ${reading.via}` : ""),
-        mainAfter: reading.mainAfter };
+        fulfilled: null, mainAfter: reading.mainAfter };
       const ledgered = ledgerReportDecision(report, report.decision);
       // the transport half exactly as both doors settle it: a decided report must not be re-pasted
       const event = report.eventId === null ? undefined : fleetEvents.find((e) => e.id === report.eventId);
@@ -29261,6 +29307,9 @@ THE LOOP, once per bounded act:
     An unanswered question is a lane standing still, and it is yours to close.
   * Treat an arriving report as a CLAIM, not as proof. Read the lane's actual diff and the exact
     verification output it quotes. A worker stating that a check passed is not a check passing.
+    When you then judge it with POST /api/self/fleet-report/<id>/accept|reject, begin your reason
+    with ERFUELLT: ja|teilweise|nein - your own one-word reading of whether that row's Done was
+    actually met, which is a separate fact from whether you accept the work and never changes it.
   * Land only when the projection grants it: that row's nextAction names
     POST /api/self/tasks/<taskId>/land when - and only when - this Program carries an owner-granted
     self-land promotion and the row is reviewable. If it names the board instead, the land is the

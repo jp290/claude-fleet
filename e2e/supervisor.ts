@@ -1126,7 +1126,7 @@ export async function run(): Promise<void> {
   const rebindState = readState().slots?.[String(rebindSlot)];
   check("supervisor rebind: a DEAD binding is overwritten instead of refused, and the response names what it replaced",
     rebind.ok && rebindBody.ok === true && rebindBody.existing !== true
-      && rebindSlot > 0 && rebindSlot !== staleBinding?.slot
+      && rebindSlot > 0 && rebindBody.supervisor?.openedAt !== staleBinding?.openedAt
       && sameBinding(rebindBody.replaced ?? null, staleBinding)
       && rebindBody.supervisor?.slot === rebindSlot
       && rebindBody.supervisor?.openedAt === rebindState?.openedAt

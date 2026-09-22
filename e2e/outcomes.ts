@@ -2,8 +2,8 @@
 // relation on it, the client-source assertions about how it renders, and the criteria counter.
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { BASE, REPO, ROOT, check, get, post, restartSrv } from "./harness";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { BASE, REPO, ROOT, check, get, post, restartSrv, stopSrv } from "./harness";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 import { postLandAlarm } from "../src/plaudit";
 import { FLEET_DEFAULT_MODEL } from "../src/protocol";
@@ -1434,5 +1434,179 @@ export async function run(): Promise<void> {
     check("disposition rail reports malformed separately from total too",
       dispoShape.malformed === 0 && dispoShape.total === dispoShape.dispositions.length,
       JSON.stringify({ total: dispoShape.total, malformed: dispoShape.malformed, rows: dispoShape.dispositions.length }));
+  }
+
+  // --- THE OWNER-INBOX PILE, MADE MECHANICAL (owner 2026-09-22 on the 47-entry measurement).
+  // (1) a harness-block or lane-suite row whose lane is gone does not sit open in the owner
+  // inbox: the sweep closes it subject-gone with the named "lane gone" reason, and a red goes
+  // to the lane's live program MAIN where there is one (the helper-side mint half lives in
+  // e2e/lane-suite.ts). (2) a newer fleet-report from the same lane branch supersedes its older
+  // undecided owner-inbox rows BY RULE — accepted, by "superseded", supersededBy naming the
+  // newer id — the newest row stays open. (3) rows with a living receiver are untouched by both. ---
+  {
+    const pileRepo = `${REPO}.inboxpile`;
+    spawnSync("git", ["init", "-q", "-b", "main", pileRepo]);
+    spawnSync("git", ["-C", pileRepo, "config", "user.email", "e2e@test"]);
+    spawnSync("git", ["-C", pileRepo, "config", "user.name", "e2e"]);
+    await Bun.write(`${pileRepo}/seed.txt`, "seed\n");
+    spawnSync("git", ["-C", pileRepo, "add", "seed.txt"]);
+    spawnSync("git", ["-C", pileRepo, "commit", "-qm", "seed"]);
+    type PileReport = { id: string; status: string; basis: string; receiver: { slot: number } | null;
+      eventId: string | null; decision?: { disposition?: string; by?: unknown; reason?: string | null;
+        supersededBy?: string } | null };
+    const reportsOf = async (): Promise<PileReport[]> =>
+      ((await (await get("/api/fleet-report")).json()) as { reports: PileReport[] }).reports;
+    type PileEvent = { id: string; kind: string; status: string; receiverSlot: number | null;
+      delivery?: string; payload?: { detail?: string } };
+    const eventsOf = async (): Promise<PileEvent[]> =>
+      ((await (await get("/api/events")).json()) as { events?: PileEvent[] }).events ?? [];
+    const pileLane = async (mark: string, programId?: string):
+      Promise<{ slot: number; token: string; branch: string; taskId: string }> => {
+      const t = (await (await post("/api/tasks", { text: mark, repo: pileRepo,
+        ...(programId ? { programId } : {}) })).json()) as { task: { id: string } };
+      const d = await post(`/api/tasks/${t.task.id}/dispatch`, {});
+      const j = (await d.json()) as { slot?: number; branch?: string };
+      let token = "";
+      for (let i = 0; i < 150 && j.slot && !token; i++) {
+        try {
+          token = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+            { slots?: Record<string, { selfToken?: string }> }).slots?.[String(j.slot)]?.selfToken ?? "";
+        } catch { /* atomic state rename can race this read; retry */ }
+        if (!token) await Bun.sleep(100);
+      }
+      return { slot: j.slot ?? 0, token, branch: j.branch ?? "", taskId: t.task.id };
+    };
+    const fileReport = async (token: string, text: string): Promise<{ status: number; id?: string }> => {
+      const res = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": token },
+        body: JSON.stringify({ status: "complete", text }) });
+      return { status: res.status, id: ((await res.json()) as { id?: string }).id };
+    };
+    const fileBlock = async (token: string, detail: string): Promise<{ status: number; event?: string }> => {
+      const res = await fetch(`${BASE}/api/self/harness-block`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": token },
+        body: JSON.stringify({ signal: "denied", tool: "Bash", detail }) });
+      return { status: res.status, event: ((await res.json()) as { event?: string }).event };
+    };
+
+    const pileA = await pileLane("inbox-pile probe lane A (supersede and sweep)");
+    const pileB = await pileLane("inbox-pile probe lane B (another branch)");
+    check("inbox-pile setup: two program-less task lanes with self tokens and DISTINCT branches",
+      pileA.slot > 0 && pileB.slot > 0 && !!pileA.token && !!pileB.token
+        && pileA.branch !== pileB.branch, JSON.stringify({ a: pileA.branch, b: pileB.branch }));
+
+    const r1 = await fileReport(pileA.token, "inbox-pile probe: the first report of lane A");
+    const r1Row = (await reportsOf()).find((r) => r.id === r1.id);
+    const r1Event = (await eventsOf()).find((e) => e.id === r1Row?.eventId);
+    check("inbox-pile (2) precondition: a program-less task lane's report files as an undecided owner-inbox row whose event sits open in the inbox",
+      r1.status === 200 && !!r1Row && r1Row.basis === "owner-inbox" && r1Row.receiver === null
+        && !r1Row.decision && !!r1Row.eventId && r1Event?.status === "inbox" && r1Event.receiverSlot === null,
+      JSON.stringify({ r1: r1.status, row: r1Row, event: r1Event?.status }));
+
+    // THE MUTATION PROBE'S OWN CHECK: this assertion is what goes red when the branch comparison
+    // is removed from closeSupersededReports — lane B is a DIFFERENT branch of the same repo, and
+    // its filing must leave lane A's older row exactly as it is.
+    const r2 = await fileReport(pileB.token, "inbox-pile probe: lane B files on ANOTHER branch");
+    const afterB = await reportsOf();
+    const r1AfterB = afterB.find((r) => r.id === r1.id);
+    check("inbox-pile (2): a newer report from a DIFFERENT branch supersedes nothing — lane A's older row stays undecided with its event open",
+      r2.status === 200 && !!r1AfterB && !r1AfterB.decision
+        && (await eventsOf()).find((e) => e.id === r1AfterB.eventId)?.status === "inbox",
+      JSON.stringify({ r2: r2.status, r1: r1AfterB }));
+
+    const r3 = await fileReport(pileA.token, "inbox-pile probe: lane A files again — the newest, stays open");
+    const r3Id = r3.id ?? "";
+    const afterA2 = await reportsOf();
+    const r1Closed = afterA2.find((r) => r.id === r1.id);
+    const r3Row = afterA2.find((r) => r.id === r3.id);
+    const r2Still = afterA2.find((r) => r.id === r2.id);
+    const r1EventAfter = (await eventsOf()).find((e) => e.id === r1Closed?.eventId);
+    check("inbox-pile (2): lane A's newer report closes its own older row BY RULE — accepted, by superseded, supersededBy naming the new id — while the newest stays open and lane B's row is untouched",
+      r3.status === 200 && !!r1Closed && r1Closed.decision?.disposition === "accepted"
+        && (r1Closed.decision?.by as { rule?: string } | undefined)?.rule === "superseded"
+        && r1Closed.decision?.supersededBy === r3Id
+        && (r1Closed.decision?.reason ?? "").includes(r3Id)
+        && r1EventAfter?.status === "acknowledged"
+        && !!r3Row && !r3Row.decision && !!r2Still && !r2Still.decision,
+      JSON.stringify({ r3: r3.status, closed: r1Closed?.decision, event: r1EventAfter?.status,
+        newest: r3Row?.decision ?? null, b: r2Still?.decision ?? null }));
+
+    // (1) THE SWEEP, driven through the harness-block kind: the program-less lane's block lands
+    // OPEN in the owner inbox, and killing the lane closes it at teardown — subject-gone, never
+    // acknowledged, with the named reason in the trail.
+    const blockA = `inbox-pile probe: lane A sits on a dialog no hook answered ${Date.now()}`;
+    const bA = await fileBlock(pileA.token, blockA);
+    const bARow = (await eventsOf()).find((e) => e.kind === "harness-block" && e.payload?.detail === blockA);
+    check("inbox-pile (1) precondition: the program-less lane's harness-block lands OPEN in the owner inbox",
+      bA.status === 200 && !!bARow && bARow.status === "inbox" && bARow.receiverSlot === null,
+      JSON.stringify({ bA: bA.status, row: bARow }));
+    await post(`/api/slots/${pileA.slot}/kill`, {});
+    const bAClosed = (await eventsOf()).find((e) => e.id === bARow?.id);
+    const bATrail = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n")
+      .some((l) => l.includes(`"event":"fleet_event_subject_gone"`) && l.includes(bARow?.id ?? "never")
+        && l.includes("lane gone"));
+    check("inbox-pile (1): killing the lane sweeps its open inbox row CLOSED — subject-gone with the named lane-gone reason in the trail, never acknowledged",
+      !!bAClosed && bAClosed.status === "subject-gone" && bAClosed.receiverSlot === null && bATrail,
+      JSON.stringify({ row: bAClosed, trail: bATrail }));
+
+    // (1b)+(3): A LIVE PROGRAM MAIN. The binding is planted rather than bootstrapped — what the
+    // receiver fork reads is programOccupancy (slot + openedAt of a living occupation), and a
+    // plain open session on a free slot is exactly that; the founding act itself is
+    // e2e/programs.ts's subject. The transport tick may terminate the pane row later (the planted
+    // MAIN has no agent), so these checks assert the ADDRESSING — receiver and delivery, fixed at
+    // mint — and the sweep boundary at the kill, never a pending status.
+    const pileProgramRes = await post("/api/programs", {
+      title: "Inbox-pile MAIN routing program",
+      intent: "Route a blocked lane's fact and its reports to the live Program-MAIN.",
+      successCriterion: "The row is addressed to the MAIN slot, never parked on the owner.",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [] });
+    const pileProgram = ((await pileProgramRes.json()) as { program?: { id: string } }).program?.id ?? "";
+    await post(`/api/programs/${pileProgram}/confirm`, {});
+    await post(`/api/programs/${pileProgram}/activate`, {});
+    const freeSlot = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null }[] }).slots.find((s) => !s.cwd)?.id ?? 0;
+    const mainOpen = await post(`/api/slots/${freeSlot}/open`, { cwd: pileRepo, label: "inbox-pile-main" });
+    let mainOpenedAt = 0;
+    for (let i = 0; i < 50 && !mainOpenedAt; i++) {
+      try {
+        mainOpenedAt = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { slots?: Record<string, { openedAt?: number }> }).slots?.[String(freeSlot)]?.openedAt ?? 0;
+      } catch { /* atomic state rename can race this read; retry */ }
+      if (!mainOpenedAt) await Bun.sleep(100);
+    }
+    await stopSrv();
+    const pileState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { programs?: { id: string; main?: unknown }[] };
+    for (const p of pileState.programs ?? []) if (p.id === pileProgram)
+      p.main = { slot: freeSlot, openedAt: mainOpenedAt, sessionId: null, boundAt: Date.now() };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(pileState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const pileC = await pileLane("inbox-pile probe lane C (program-bound)", pileProgram);
+    check("inbox-pile MAIN setup: an activated program, a planted live MAIN occupation, a program-bound lane",
+      !!pileProgram && mainOpen.ok && mainOpenedAt > 0 && pileC.slot > 0 && !!pileC.token,
+      JSON.stringify({ program: pileProgram, slot: freeSlot, openedAt: mainOpenedAt, c: pileC.slot }));
+
+    const blockC = `inbox-pile probe: lane C sits on a dialog ${Date.now()}`;
+    const bC = await fileBlock(pileC.token, blockC);
+    const bCRow = (await eventsOf()).find((e) => e.kind === "harness-block" && e.payload?.detail === blockC);
+    check("inbox-pile (1): a blocked program lane's fact is addressed to its LIVE program MAIN as pane transport — never parked in the owner inbox",
+      bC.status === 200 && !!bCRow && bCRow.receiverSlot === freeSlot && bCRow.delivery === "pane",
+      JSON.stringify({ bC: bC.status, row: bCRow }));
+
+    const p1 = await fileReport(pileC.token, "inbox-pile probe: lane C's first PROGRAM report");
+    const p2 = await fileReport(pileC.token, "inbox-pile probe: lane C files again — program rows are the MAIN's to judge");
+    await post(`/api/slots/${pileC.slot}/kill`, {});
+    const afterCKill = await reportsOf();
+    const p1Row = afterCKill.find((r) => r.id === p1.id);
+    const bCAfter = (await eventsOf()).find((e) => e.id === bCRow?.id);
+    check("inbox-pile (3): rows with a LIVING receiver are untouched by the new rules — killing the subject never flips the MAIN-addressed row subject-gone, and program-basis reports (the MAIN is their receiver-in-fact) are never superseded by rule",
+      p1.status === 200 && p2.status === 200 && !!p1Row && !p1Row.decision && p1Row.basis === "program"
+        && !!bCAfter && bCAfter.receiverSlot === freeSlot && bCAfter.status !== "subject-gone"
+        && bCAfter.status !== "inbox",
+      JSON.stringify({ p1: p1Row, block: bCAfter }));
+
+    for (const slot of [pileB.slot, freeSlot]) if (slot) await post(`/api/slots/${slot}/kill`, {});
+    for (const id of [pileA.taskId, pileB.taskId, pileC.taskId]) await post(`/api/tasks/${id}/delete`, {});
+    await post(`/api/programs/${pileProgram}/complete`, {});
   }
 }

@@ -6107,7 +6107,11 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     '|| (ownerAddressable && (e.delivery === "inbox") !== ownerReceiver)',
     '|| ((p.basis === "owner-inbox") !== ownerReceiver)) return null;',
     '|| (e.kind === "clarification-request" && e.delivery === "inbox")',
-    '|| (ownerReceiver && e.status !== "inbox" && e.status !== "acknowledged")',
+    // THREE states now, not two: `subject-gone` joined the owner row's vocabulary when the
+    // lane-gone closure made it producible (minted closed in mintLaneSuiteEvents, swept by
+    // markFleetEventsSubjectGone) — the pin holds the widened line so the third word cannot
+    // quietly fall out of the parser again.
+    '|| (ownerReceiver && e.status !== "inbox" && e.status !== "acknowledged"\n      && e.status !== "subject-gone")',
   ];
   const reportRowParser = server.match(/function fleetReportFrom\([\s\S]*?\n\}/)?.[0] ?? "";
   pin(`${RULE_RECEIVER} — every carrier of "filed to the owner" is bound to the receiver, in the parser (B4)`,

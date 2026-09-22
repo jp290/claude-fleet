@@ -2097,6 +2097,22 @@ an keiner Lane:** sie hat keinen Occupant, den ein Recycling entwerten könnte, 
 `pending`-Zustand (der Transport-Tick fasst sie nie an), und offene Zeilen werden nie geprunt.
 **Ein grünes Verdikt legt keine an** — sonst wäre die Liste in einer Woche Rauschen.
 
+**DER EMPFÄNGER EINES ROTS WIRD VORHER AUFGE LÖST, weiteste zuerst: das Program der Lane.** Eine
+Lane, die zu einem Coordinator gehört, parkt ihr Rot nicht beim Owner — dieselbe Regel, mit der
+die Report-Tür einer Zeile mit Program-Bindung den Owner-Inbox-Fallback verweigert. Gelesen wird
+das Program aus der LEBENDEN Belegung, solange es sie gibt, und aus der beim Angebot
+mitgeschriebenen `programId` des Jobs, wenn nicht mehr (die Slot-Zeile nullt das Feld beim
+Abbau; die Kopie im Job ist die, die die Lane überlebt). Ist das Program aktiv und seine MAIN
+lebendig, geht das Rot als Pane-Zeile DORT hin (Budget wie immer, `slotDeliveryBudget`) — nie
+doch auch zum Owner. Fällt die Auflösung dagegen auf „niemand“ zurück, entscheidet die
+Lane-Lage: lebt die Lane noch, gilt die Owner-Zeile wie oben; **ist auch sie weg (keine lebende
+Belegung, kein Worktree), wird die Zeile GESCHLOSSEN gemintet** — `subject-gone`, nie
+zugestellbar, nie ackbar, verprunbar wie jede fertige Zeile, mit dem benannten Grund „lane gone“
+in der Trail-Zeile (`lane_suite_event`). Das gemessene Abräumfenster dafür ist eng
+(`expireHelperClaims` reapt das Angebot einer toten Lane schon vor dem Verdikt, und der Test
+(LS.9b) hält diese 409 fest) — die Zweig ist die Absicherung genau dazwischen. Der Lastträger
+für den gemessenen Stapel ist der Sweep, der nächste Absatz.
+
 **Lesen und quittieren, ohne die Lane:**
 
 ```
@@ -2110,10 +2126,20 @@ curl -s -X POST -H "x-fleet-token: $FLEET_TOKEN" \
 `tail` · `job{…}` · `door`.
 Autorität ist die Posteingangs-Zeile, nicht `laneSuiteJobs`: die Map ist auf `LANE_SUITE_KEEP` (20)
 gedeckelte Angebote begrenzt, eine offene Zeile dagegen wird nicht geprunt — `job: null` heißt
-also „die Job-Zeile ist verdrängt", nie „es gibt kein Rot". Quittiert wird durch dieselbe Tür wie
+also „die Job-Zeile ist verdrängt", nie „es gibt kein Rot“. Quittiert wird durch dieselbe Tür wie
 jede andere Posteingangs-Zeile, `POST /api/events/:id/ack`. **Das Quittieren ist ein „jemand hat
 hingesehen", kein Urteil:** eine Vorschau gated nichts, sie wird durch diese Schiene nicht zum
 Gate, und es gibt dafür keinen `verdict`-Parameter wie bei der Audit-Adjudikation.
+
+**STIRBT DIE LANE, SCHLIESST DIE OFFENE ZEILE SICH SELBST.** Eine offene Owner-Zeile wird nie
+zugestellt und von keiner Session geackt — ihr einziger Lebenszyklus war bis zum 2026-09-22 ein
+menschlicher Ack, und der gemessene Stapel war genau das: 16 offene rote Vorschauen, deren Lanes
+alle längst weg waren. Der Subject-Sweep (`server.ts#markFleetEventsSubjectGone`, gerufen aus dem
+Abbau und dem Transport-Tick) schließt jetzt auch sie: eine offene Owner-Zeile von `lane-suite`
+oder `harness-block`, deren Belegung weg ist (keine Slot-Zeile mit gleicher `openedAt` und
+Worktree), wird `subject-gone` — terminal, nie acknowledged, mit „lane gone“ in der Trail-Zeile.
+Ein Job, dessen Zeile aus `LANE_SUITE_KEEP` verdrängt wurde, hält den Sweep an: verlorener Join
+ist `unknown`, nie `gone`.
 
 **Was KEINE solche Zeile erzeugt** (die Gegenprobe gegen Lärm): `withdrawn` · `abandoned` ·
 `lapsed` · `reaped`. Keiner dieser Ausgänge schreibt je ein `result`, und die Mint-Stelle ist aus
@@ -2223,6 +2249,19 @@ Fehlt beides, geht der Report daher in die **bestehende Owner-Operations-Inbox (
 - **`status: "inbox"`, `delivery: "inbox"`.** `inbox` ist kein pending-Zustand, und FACT 2 wählt
   ausschließlich `pending` — der Zeile kann strukturell kein `sendText`, kein History-Append und
   kein Prompt-Journal-Eintrag zustoßen. Kein Guard, ein Zustandsautomat.
+- **Eine Lane, die WIEDER filet, schließt ihre älteren offenen Zeilen selbst**
+  (`server.ts#closeSupersededReports`, gemessen 2026-09-22: 27 Owner-Inbox-Reports EINER Lane, 26
+  davon durch spätere Runden derselben Lane überholt und von Hand akzeptiert). Eine neue Filung
+  schließt alle älteren UNENTSCHIEDENEN Reports derselben Branch mit `basis:"owner-inbox"` als
+  UEBERHOLT: `decision.disposition:"accepted"`, `by:{rule:"superseded"}`, `supersededBy` = die Id
+  des neuen Reports, Grund mit Verweis — der neueste bleibt offen, und der AKTE ist die Filung
+  selbst, kein Urteil über den Inhalt. Der Dritte-Principal-Regel `accepted-by-land` zur Seite
+  gestellt: eine RULE entscheidet, nie der Owner, nie eine Session. Nur Owner-Inbox-Zeilen: eine
+  Program-Zeile gehört ihrem lebenden MAIN (keine Regel nimmt dem MAIN das Urteil ab), eine
+  gebundene Zeile ihrem Empfänger. Der Join ist die BRANCH, nicht die Belegung — die gemessenen
+  Runden waren Nachfolgerinnen und Respawnes, Slot-Nummern recyceln, die Branch benennt die
+  Arbeit. Das Urteil wird NICHT zur Lane getragen: die Lane, die den Nachfolger filte, hat die
+  Zeile selbst überholt und ist der eine Prinzipal, den niemand mehr sagen muss.
 - **Gebundene Pane-Zeilen können genau eine benannte Recovery tragen.** Wenn der erste
   `fleet-report`-Transport auf `send-uncertain` endet UND die Composer-Rollback-Messung
   `rollback=cleared` beweist, dass Fleets eigener Payload wieder aus der exakt gebundenen Empfänger-
@@ -2795,7 +2834,11 @@ curl -s -X POST "$FLEET_SELF_URL/api/self/harness-block" \
   — der Hook tut es auch, der Server verlässt sich nicht darauf.
 - **Empfänger:** die LIVE gebundene Program-MAIN der Lane (Pane-Zustellung, `receiverIdleSec: 0`),
   sonst die Owner-Inbox. Nicht die Empfängerkette der Reports: die kann ablehnen, und eine hängende
-  Lane ist genau der Fakt, der nicht mangels Watch abgelehnt werden darf.
+  Lane ist genau der Fakt, der nicht mangels Watch abgelehnt werden darf. **Und stirbt die Lane,
+  solange ihre Zeile noch offen im Posteingang liegt, schließt der Subject-Sweep sie selbst:**
+  `subject-gone` mit dem benannten Grund „lane gone“ in der Trail-Zeile — ein Dialog, den niemand
+  mehr beantworten kann, ist keine Schuld des Owners (2026-09-22: vier solcher Zeilen im gemessenen
+  Stapel, alle von Hand geschlossen). Zeilen an eine lebende MAIN fasst der Sweep nie an.
 - **Dedupe:** eine OFFENE `harness-block`-Zeile je (Lane-Belegung, Empfänger, `key`, `escalated`);
   `key` = sha256(signal, tool, detail), 16 Hex. Ein zweiter gleicher Aufruf erzeugt keine Zeile, er
   hebt `payload.count` der offenen. Antwort `{ok, event, deduped, count, escalated}`.

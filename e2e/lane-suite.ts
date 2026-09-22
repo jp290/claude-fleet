@@ -15,10 +15,10 @@
 // see: THE TREE THAT LEAVES IS THE LANE'S WORKING TREE. A bundle of HEAD is the plausible wrong
 // implementation, and it fails SILENTLY: the suite runs, it passes, and it answers a question about
 // code the lane has not got. (LS.3) is that assertion.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, ROOT, check, get, post, restartSrv } from "./harness";
+import { BASE, REPO, ROOT, check, get, post, restartSrv, stopSrv } from "./harness";
 import { laneSuiteWatchMessage } from "../lane-signals";
 import { openLane, type Lane } from "./lane-helpers";
 import { suiteMeter, laneTail, type MeterInput } from "../src/suitemeter";
@@ -953,8 +953,103 @@ export async function run(): Promise<void> {
     JSON.stringify(footerText.slice(Math.max(0, footerText.indexOf("/api/self/suite-offer") - 120),
       footerText.indexOf("/api/self/suite-offer") + 160)));
 
-  // cleanup: the offering lane's slot, and the scratch clone
+  // ===== (LS.11) A RED GOES TO THE LANE'S LIVE PROGRAM MAIN, NOT TO THE OWNER ====================
+  // The receiver fork of the mint (server.ts#mintLaneSuiteEvents) resolved widest-first: the
+  // offering lane's Program. A lane that reports to a coordinator does not park its red on the
+  // owner — the owner row is the fallback for a lane with NOWHERE else to go, and the measured
+  // 2026-09-22 pile showed exactly what parking every red there costs. The binding is planted
+  // rather than bootstrapped (the founding act is e2e/programs.ts's subject): what the fork reads
+  // is programOccupancy — slot + openedAt of a living occupation — and a plain open session on a
+  // free slot is exactly that. Addressing is asserted, never a pending status: the planted MAIN
+  // has no agent, so the transport tick may terminate the pane row on its own schedule, which is
+  // the transport working, not this rail failing.
+  {
+    const pileProgramRes = await post("/api/programs", {
+      title: "Lane-suite MAIN routing probe",
+      intent: "A program lane's red preview is its MAIN's to see first.",
+      successCriterion: "The red row is addressed to the MAIN slot and no owner row exists.",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [] });
+    const pileProgram = ((await pileProgramRes.json()) as { program?: { id: string } }).program?.id ?? "";
+    await post(`/api/programs/${pileProgram}/confirm`, {});
+    await post(`/api/programs/${pileProgram}/activate`, {});
+    const freeSlot = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null }[] }).slots.find((s) => !s.cwd)?.id ?? 0;
+    const mainOpen = await post(`/api/slots/${freeSlot}/open`, { cwd: REPO, label: "lanesuite-main" });
+    let mainOpenedAt = 0;
+    for (let i = 0; i < 50 && !mainOpenedAt; i++) {
+      try {
+        mainOpenedAt = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { slots?: Record<string, { openedAt?: number }> }).slots?.[String(freeSlot)]?.openedAt ?? 0;
+      } catch { /* atomic state rename can race this read; retry */ }
+      if (!mainOpenedAt) await Bun.sleep(100);
+    }
+    await stopSrv();
+    const pileState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { programs?: { id: string; main?: unknown }[] };
+    for (const p of pileState.programs ?? []) if (p.id === pileProgram)
+      p.main = { slot: freeSlot, openedAt: mainOpenedAt, sessionId: null, boundAt: Date.now() };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(pileState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const pileTask = (await (await post("/api/tasks", { text: "lane-suite MAIN routing probe lane",
+      repo: REPO, programId: pileProgram })).json()) as { task: { id: string } };
+    const pileDispatch = await post(`/api/tasks/${pileTask.task.id}/dispatch`, {});
+    const pileSlot = ((await pileDispatch.json()) as { slot?: number }).slot ?? 0;
+    const pileTok = pileSlot ? await selfTokenOf(pileSlot) : "";
+    check("(LS.11) setup: an activated program with a planted live MAIN, and a program-bound lane with a token",
+      pileProgramRes.ok && !!pileProgram && mainOpen.ok && mainOpenedAt > 0 && pileSlot > 0 && !!pileTok,
+      JSON.stringify({ program: pileProgram, main: [freeSlot, mainOpenedAt], lane: pileSlot, tok: !!pileTok }));
+    await beat(); // the mint gate wants a machine that is beating NOW (LS.0)
+    const mainOffer = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", pileTok));
+    const mainJob = mainOffer.offer?.id ?? "";
+    const mainClaim = await hpost("/api/helper/claim", { jobId: mainJob, deviceId: DEVICE });
+    const mainRed = await hpost("/api/helper/result", { jobId: mainJob, exitCode: 1,
+      tail: "FAIL  something\\n1 FAILURES" });
+    const mainRows = await suiteEventsFor(mainJob);
+    check("(LS.11) A PROGRAM LANE'S RED IS ADDRESSED TO ITS LIVE MAIN — two pane rows, and NO owner row, on the reds list, nowhere",
+      /^[0-9a-f]{12}$/.test(mainJob) && mainClaim.ok && mainRed.ok
+        && mainRows.length === 2
+        && mainRows.some((e) => e.receiverSlot === pileSlot && e.delivery === "pane")
+        && mainRows.some((e) => e.receiverSlot === freeSlot && e.delivery === "pane")
+        && !mainRows.some((e) => e.receiverSlot === null)
+        && !(await redsOf()).some((r) => r.jobId === mainJob),
+      `${mainRed.status} rows=${JSON.stringify(mainRows.map((e) => ({ r: e.receiverSlot, d: e.delivery, s: e.status })))}`);
+    await post(`/api/slots/${pileSlot}/kill`, {});
+    await post(`/api/slots/${freeSlot}/kill`, {});
+    await post(`/api/tasks/${pileTask.task.id}/delete`, {});
+    await post(`/api/programs/${pileProgram}/complete`, {});
+  }
+
+  // ===== (LS.10) THE OWNER ROW CLOSES ITSELF WHEN THE LANE IS GONE ===============================
+  // MEASURED 2026-09-22: 16 open red previews sat in the owner inbox although every lane behind
+  // them was long gone — the row's only lifecycle was a human ack. The sweep
+  // (server.ts#markFleetEventsSubjectGone) now closes an inbox row whose subject occupation ended:
+  // terminal subject-gone, the named "lane gone" reason in the trail, off the reds list. The row
+  // below is minted while the lane is ALIVE — the measured shape: the verdict arrived, the lane
+  // ended afterwards, and nobody was left to ack anything.
+  await beat(); // the mint gate wants a machine that is beating NOW (LS.0)
+  const pileOffer = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", laneTok));
+  const pileJob = pileOffer.offer?.id ?? "";
+  check("(LS.10) setup: the lane offers one more preview and the stand-in device claims and REDS it",
+    /^[0-9a-f]{12}$/.test(pileJob)
+      && (await hpost("/api/helper/claim", { jobId: pileJob, deviceId: DEVICE })).ok
+      && (await hpost("/api/helper/result", { jobId: pileJob, exitCode: 1, tail: RED_TAIL })).ok,
+    `job=${pileJob}`);
+  const pileOwner = (await suiteEventsFor(pileJob)).find((e) => e.receiverSlot === null);
+  check("(LS.10) …and while the lane lives, its red sits OPEN in the owner inbox, on the reds list",
+    pileOwner?.status === "inbox" && (await redsOf()).some((r) => r.jobId === pileJob),
+    JSON.stringify({ status: pileOwner?.status, reds: (await redsOf()).map((r) => r.jobId) }));
   await post(`/api/slots/${ln.slot}/kill`, {});
+  const pileClosed = (await suiteEventsFor(pileJob)).find((e) => e.receiverSlot === null);
+  const pileTrail = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n")
+    .some((l) => l.includes(`"event":"fleet_event_subject_gone"`) && l.includes(pileOwner?.id ?? "never")
+      && l.includes("lane gone"));
+  check("(LS.10) THE LANE DIES, THE ROW CLOSES ITSELF: subject-gone with the named lane-gone reason in the trail, never acknowledged, off the reds list",
+    pileClosed?.status === "subject-gone"
+      && !(await redsOf()).some((r) => r.jobId === pileJob) && pileTrail,
+    JSON.stringify({ status: pileClosed?.status, trail: pileTrail,
+      reds: (await redsOf()).map((r) => r.jobId) }));
+
+  // cleanup: the scratch clone and bundle (the offering lane's slot is already killed above)
   spawnSync("rm", ["-rf", clonePath]);
   spawnSync("rm", ["-f", bundlePath]);
 }

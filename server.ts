@@ -9288,6 +9288,30 @@ function markFleetEventsSubjectGone(): boolean {
       `${e.id} subject slot ${e.subjectSlot} ${e.subjectBranch}`);
     touched.add(e.receiverSlot);
   }
+  // THE OWNER-INBOX ARM, and the measured 2026-09-22 pile it closes (16 red previews + 4 harness
+  // blocks sat open although every lane behind them was long gone): an inbox row is never
+  // delivered and never acked by a session, so the SUBJECT is the only lifecycle it has — and
+  // when the lane it reports on is gone (no living occupation with a worktree), an open row is a
+  // debt nobody can act on. It closes with the same word the pane rows use, and the trail line
+  // names the reason: lane gone. A lane-suite row whose JOB row was evicted (LANE_SUITE_KEEP) is
+  // left exactly as it is — a lost join is `unknown`, never `gone`.
+  for (const e of fleetEvents) {
+    if (e.status !== "inbox" || e.receiverSlot !== null
+      || (e.kind !== "lane-suite" && e.kind !== "harness-block")) continue;
+    let occ: { slot: number; openedAt: number } | null = null;
+    if (e.kind === "lane-suite") {
+      const j = laneSuiteJobs.get(e.subjectJobId);
+      if (j) occ = { slot: j.slot, openedAt: j.slotOpenedAt };
+    } else {
+      occ = { slot: e.subjectSlot, openedAt: e.subjectOpenedAt };
+    }
+    if (!occ) continue;
+    if (slots.some((x) => x.id === occ.slot && x.openedAt === occ.openedAt && x.cwd)) continue;
+    e.status = "subject-gone";
+    audit("fleet_event_subject_gone", undefined,
+      `${e.id} ${e.kind} owner inbox row closed, lane gone (subject slot ${occ.slot} openedAt ${occ.openedAt})`);
+    touched.add(null);
+  }
   for (const id of touched) pruneFleetEvents(id);
   return touched.size > 0;
 }
@@ -9714,6 +9738,39 @@ function disarmLaneWatchesForReport(s: Slot,
   }
 }
 
+// THE SUPERSEDE RULE, and the measured pile it closes (2026-09-22: 27 owner-inbox reports from
+// ONE lane, 26 of them mooted by later rounds of that same lane and closed by hand): a lane that
+// files again has SPOKEN again, and its older undecided owner-inbox rows on the same branch are
+// no longer open questions — they are bookkeeping. The rule closes them exactly as the owner did
+// (accepted, with the pointer to the newer row) under the SAME principal accepted-by-land uses:
+// a RULE, never the owner and never a session. The row being filed is the newest and stays open.
+//   · OWNER-INBOX rows only (basis owner-inbox, which is receiver null's transport half): a
+//     program row's receiver-in-fact is its bound MAIN and no rule takes a MAIN's judgement; a
+//     bound row is its receiver's. (3) of the same measurement: a living receiver is untouched.
+//   · THE BRANCH is the join, not the occupation: the measured rounds were successions and
+//     respawns — slot numbers recycle, the branch names the work.
+//   · NO CARRY of the verdict to the lane: the lane that filed the successor made this row moot
+//     itself and is the one principal that needs no telling; accepted-by-land delivers because a
+//     waiting lane may still be blocked on the verdict, and that is not this shape.
+function closeSupersededReports(report: FleetReport): Promise<void>[] {
+  return fleetReports.filter((r) => r.id !== report.id
+    && !r.decision && r.basis === "owner-inbox" && r.receiver === null
+    && r.worker.branch === report.worker.branch
+    && r.reportedAt < report.reportedAt).map((r) => {
+    r.decision = { disposition: "accepted", at: Date.now(), by: { rule: "superseded" },
+      supersededBy: report.id,
+      reason: `superseded by later report ${report.id} from the same lane branch` };
+    const ledgered = ledgerReportDecision(r, r.decision);
+    // the transport half through the ONE writer, exactly as both doors and the other rule settle
+    // it: a closed row must not keep the inbox seat its closure just vacated.
+    const event = r.eventId === null ? undefined : fleetEvents.find((e) => e.id === r.eventId);
+    if (event && !FLEET_EVENT_TERMINAL.includes(event.status)) settleFleetEventAcknowledged(event);
+    audit("fleet_report_rule_decision", r.worker.slot,
+      `${r.id} superseded by ${report.id} on ${r.worker.branch}`);
+    return ledgered;
+  });
+}
+
 // The lane's committed paths its card does not name as write surface (FleetReport.outsideSurface).
 // One read at filing, on the report path: the land path's diffs are a different range (the rebased
 // candidate against the main it was rebased onto) and a different moment, and the land note carries
@@ -9777,12 +9834,14 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
     fleetReports = [...fleetReports, report];
     // the line is serialized NOW, in filing order; awaited below, so no await opens inside this block
     const ledgered = ledgerReportOpen(report);
+    const supersededLedgers = closeSupersededReports(report);
     audit("fleet_report_open", s.id,
       `${id} receiver=program:${program.id} status=${status} basis=program inbox=${entry.id}`);
     pruneFleetReports();
     disarmLaneWatchesForReport(s,
       programOccupancy(program) === "live" ? program.main! : null, id);
     await ledgered;
+    await Promise.all(supersededLedgers);
     await saveStateNow();
     return json({ ok: true, id, report: fleetReportReceipt(report), inbox: entry.id });
   }
@@ -9853,11 +9912,13 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   fleetReports = [...fleetReports, report];
   fleetEvents = [...fleetEvents, event];
   const ledgered = ledgerReportOpen(report);
+  const supersededLedgers = closeSupersededReports(report);
   audit("fleet_report_open", s.id,
     `${id} receiver=${bound ? bound.receiver.slot : "owner-inbox"} status=${status} basis=${report.basis}`);
   pruneFleetReports();
   disarmLaneWatchesForReport(s, bound?.receiver ?? null, id);
   await ledgered;
+  await Promise.all(supersededLedgers);
   await saveStateNow();
   return json({ ok: true, id, report: fleetReportReceipt(report) });
 }
@@ -21449,6 +21510,12 @@ interface LaneSuiteJob {
   repo: string;              // the integration repo the lane hangs off (git toplevel)
   cwd: string;               // the lane's worktree — where the tree is taken from
   branch: string;            // the lane's own branch, for the human reading the card
+  // THE LANE'S PROGRAM BRACKET, CAPTURED AT OFFER TIME, and the only copy that survives the lane:
+  // the slot row nulls programId at teardown, but a verdict can arrive AFTER the lane is gone —
+  // and a late red still needs its receiver resolved (server.ts#mintLaneSuiteEvents: the
+  // program's live MAIN, else the closed "lane gone" row). Null on a program-less lane and on
+  // every job offered before the field existed; absent means the same null there.
+  programId?: string | null;
   offeredAt: number;
   state: LaneSuiteState;
   // filled at CLAIM time, out of the bundle build itself — one moment, no second resolution
@@ -21664,6 +21731,36 @@ async function mintLaneSuiteEvents(j: LaneSuiteJob): Promise<void> {
       `job=${j.id} ${r.result} the offering occupation is gone (slot ${j.slot} openedAt ${j.slotOpenedAt}) — no pane delivery`);
   }
   if (r.result === "red") {
+    // THE RECEIVER OF A RED, resolved widest-first: the lane's own Program. A lane that reports to
+    // a coordinator does not park its red on the owner — the same rule the report door states for
+    // its own rows ("its result belongs to the MAIN that dispatched it"), now on the preview rail
+    // too. The program is read from the LIVE occupation where there still is one, and from the id
+    // captured at offer time where there is not (the slot row nulls programId at teardown; the
+    // job's copy is the one that survives the lane).
+    const programId = lane?.programId ?? j.programId ?? null;
+    const program = programId ? programs.find((p) => p.id === programId && p.status === "active") : undefined;
+    const main = program && programOccupancy(program) === "live" ? program.main! : null;
+    if (main) {
+      const budget = slotDeliveryBudget(main.slot);
+      if (budget.free === 0) {
+        audit("lane_suite_event_skipped", j.slot,
+          `job=${j.id} RED no delivery budget for program MAIN slot ${main.slot}`
+          + ` (${budget.deliveryDebts} open + ${budget.armedReservations} armed of ${budget.cap})`);
+      } else {
+        minted.push({ ...common, id: randomBytes(12).toString("hex"),
+          receiverSlot: main.slot, receiverOpenedAt: main.openedAt, receiverSessionId: main.sessionId,
+          status: "pending", delivery: "pane" });
+      }
+    } else if (!lane) {
+      // THE ORPHANED RED, and the measured 2026-09-22 pile this branch closes: the lane is gone
+      // (no living occupation, no worktree) and no live MAIN can act, so an OPEN owner row would
+      // be debt nobody can ever pay down except by hand. It is minted CLOSED instead — terminal
+      // subject-gone, no budget spent, prunable like every finished row, the named reason in the
+      // trail line. The verdict itself stays on the job, readable without this row.
+      minted.push({ ...common, id: randomBytes(12).toString("hex"),
+        receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null,
+        status: "subject-gone", delivery: "inbox" });
+    } else {
     // THE CAP IS THIS RAIL'S OWN, and deliberately NOT `ownerInboxDebts()` against the shared
     // FLEET_EVENT_MAX_OPEN_PER_SLOT the report door uses. Sharing it was the first shape written
     // here and it is wrong in the one direction that matters: five unread fleet-reports would then
@@ -21672,24 +21769,26 @@ async function mintLaneSuiteEvents(j: LaneSuiteJob): Promise<void> {
     // crowded out only by other unread REDS, and only past a number at which the owner is already
     // looking at a pile. LANE_SUITE_KEEP is the sibling bound (settled offers kept) and this is
     // deliberately the same size: one more open red than there are job rows to join them to.
-    const openReds = fleetEvents.filter((e) => e.kind === "lane-suite" && e.receiverSlot === null
-      && !FLEET_EVENT_TERMINAL.includes(e.status)).length;
-    if (openReds >= LANE_SUITE_RED_INBOX_MAX) {
-      // NAMED, never silent: a red that could NOT be filed is the loudest line this rail has, and
-      // it is the one case where the old failure mode is back — so it must be findable in the trail.
-      audit("lane_suite_event_skipped", j.slot,
-        `job=${j.id} RED could not be filed — ${openReds} unacknowledged red previews already sit in the owner inbox (cap ${LANE_SUITE_RED_INBOX_MAX})`);
-    } else {
-      minted.push({ ...common, id: randomBytes(12).toString("hex"),
-        receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null,
-        status: "inbox", delivery: "inbox" });
+      const openReds = fleetEvents.filter((e) => e.kind === "lane-suite" && e.receiverSlot === null
+        && !FLEET_EVENT_TERMINAL.includes(e.status)).length;
+      if (openReds >= LANE_SUITE_RED_INBOX_MAX) {
+        // NAMED, never silent: a red that could NOT be filed is the loudest line this rail has, and
+        // it is the one case where the old failure mode is back — so it must be findable in the trail.
+        audit("lane_suite_event_skipped", j.slot,
+          `job=${j.id} RED could not be filed — ${openReds} unacknowledged red previews already sit in the owner inbox (cap ${LANE_SUITE_RED_INBOX_MAX})`);
+      } else {
+        minted.push({ ...common, id: randomBytes(12).toString("hex"),
+          receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null,
+          status: "inbox", delivery: "inbox" });
+      }
     }
   }
   if (!minted.length) return;
   fleetEvents = [...fleetEvents, ...minted];
   for (const e of minted)
     audit("lane_suite_event", e.receiverSlot ?? undefined,
-      `${e.id} job=${j.id} ${r.result} → ${e.receiverSlot === null ? "owner inbox" : `slot ${e.receiverSlot}`}`);
+      `${e.id} job=${j.id} ${r.result} → ${e.status === "subject-gone" ? "closed, lane gone"
+        : e.receiverSlot === null ? "owner inbox" : `slot ${e.receiverSlot}`}`);
   await saveStateNow();
 }
 // THE SWEEP'S HAND-OFF TO THE RAIL ABOVE. `expireHelperClaims` is synchronous by construction
@@ -35919,7 +36018,8 @@ Bun.serve<WSData>({
           waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
       const job: LaneSuiteJob = {
         id: randomBytes(6).toString("hex"), slot: s.id, slotOpenedAt: s.openedAt,
-        repo: s.worktree.repo, cwd: s.cwd!, branch: s.worktree.branch, offeredAt: Date.now(),
+        repo: s.worktree.repo, cwd: s.cwd!, branch: s.worktree.branch,
+        programId: s.programId, offeredAt: Date.now(),
         state: "open", commitSha: null, treeSha: null, untracked: null, claim: null, result: null,
       };
       laneSuiteJobs.set(job.id, job);

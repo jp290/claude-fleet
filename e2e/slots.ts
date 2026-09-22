@@ -9,6 +9,7 @@ import { BASE, IP, PORT, REPO, ROOT, SOCK, check, get, paneEnv, plantScreen, plo
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
+import { pendingSettledBy } from "../src/pendingsend";
 import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
 import { composerResidue } from "../composer";
@@ -1059,6 +1060,29 @@ export async function run(): Promise<void> {
   check("client: the switch is persisted per device and read back at boot",
     /localStorage\.setItem\("fleet\.datasaver"/.test(cliSrc)
     && /localStorage\.getItem\("fleet\.datasaver"\) === "1"/.test(cliSrc), "setSaver / dataSaver in src/client.ts");
+
+  // --- the chat view's SENT bubble (docs/messungen/2026-09-22-chat-absenden-zeitleiste.md): a
+  // send showed nothing until POST /send answered AND the next chat poll brought the transcript
+  // entry — 0.4–1.7 s idle, 6.4 s mid-turn, measured in a browser against a scratch instance. The
+  // decision is run for real; the wiring is asserted by shape (no DOM here, same limits as above).
+  check("pending bubble: the transcript's own text retires it, re-wrapped whitespace included",
+    pendingSettledBy("fix it\nnow", "fix it\nnow") && pendingSettledBy("fix it\nnow ", " fix  it now"));
+  check("pending bubble: a DIFFERENT turn does not retire it — neither another text nor a prefix of it",
+    !pendingSettledBy("fix it now", "fix it later") && !pendingSettledBy("fix it now", "fix it"));
+  check("pending bubble: an empty or whitespace-only text never settles anything",
+    !pendingSettledBy("", "") && !pendingSettledBy("  \n", " "));
+  check("client: doSend shows the pending bubble BEFORE it awaits POST /send, and drops it when delivery fails",
+    /const pending = pane\.addPending\(outgoing\);\s*try \{\s*if \(!await deliver\(slot, outgoing\)\) \{ if \(pending\) pane\.dropPending\(pending\); return; \}/.test(cliSrc),
+    "doSend in src/client.ts");
+  check("client: a user entry from the transcript retires its pending bubble through src/pendingsend.ts",
+    /import \{ pendingSettledBy \} from "\.\/pendingsend"/.test(cliSrc)
+    && /if \(e\.role === "user"\) this\.settlePending\(text\);/.test(cliSrc)
+    && /this\.pending\.find\(\(p\) => pendingSettledBy\(p\.text, text\)\)/.test(cliSrc),
+    "Pane.appendEntry / settlePending in src/client.ts");
+  check("client: a composer reshape does not refit a terminal the chat view hides; the way back refits it",
+    /for \(const p of panes\) if \(!p\.isChat\) p\.refit\(\);/.test(cliSrc)
+    && /else \{ this\.refit\(\); this\.term\.focus\(\); \}/.test(cliSrc),
+    "reshapeSurface settle / Pane.setView in src/client.ts");
 
   // --- the board's SECTION ORDER. The owner set it twice: §F4 (briefs/ui-next-level-2026-08-06.md)
   // and the redesign of 2026-09-18/19 — machine alarms → head → changes → checks → history → the

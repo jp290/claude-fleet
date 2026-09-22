@@ -485,18 +485,24 @@ type FleetReportDisposition = typeof FLEET_REPORT_DISPOSITIONS[number];
 // could no longer take it, and a row that recorded it as the MAIN's would claim a judgement by a
 // session that had already ended.
 //
-// THE THIRD PRINCIPAL is a RULE, and only one exists: `accepted-by-land` (owner 2026-09-13, note
-// docs/messungen/2026-09-13-task-aggregation-a-e-fable.md §D). A `complete` report whose lane landed
-// and whose audit on that land is green or unknown is closed by the land itself — the MAIN that
-// landed it already took the work. `mainAfter` is present EXACTLY on a rule verdict: it is the
-// evidence the rule read, and a rule verdict without it would be a judgement nobody can re-derive.
-type FleetReportRuleName = "accepted-by-land";
+// THE THIRD PRINCIPAL is a RULE, and exactly two exist:
+//   · `accepted-by-land` (owner 2026-09-13, note docs/messungen/2026-09-13-task-aggregation-
+//     a-e-fable.md §D). A `complete` report whose lane landed and whose audit on that land is green
+//     or unknown is closed by the land itself — the MAIN that landed it already took the work.
+//     `mainAfter` is present EXACTLY on this verdict: it is the evidence the rule read, and a rule
+//     verdict without its evidence would be a judgement nobody can re-derive.
+//   · `superseded` (owner 2026-09-22, the 47-inbox measurement). A lane that files a NEW report
+//     has spoken again, and its older UNDECIDED owner-inbox rows on the same branch are closed as
+//     moot — the newest row is the live one. `supersededBy` is present EXACTLY on this verdict:
+//     the id of the report that replaced this one, the same evidence rule.
+type FleetReportRuleName = "accepted-by-land" | "superseded";
 interface FleetReportDecision {
   disposition: FleetReportDisposition;
   at: number;
   by: { slot: number; openedAt: number; sessionId: string | null } | "owner" | { rule: FleetReportRuleName };
   reason: string | null;
   mainAfter?: string;
+  supersededBy?: string;
 }
 
 // THE DELIVERY HALF OF A VERDICT, and it is a separate fact from the verdict itself for the reason
@@ -704,9 +710,13 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     // nobody, an owner-receiver pane row at a pane that does not exist.
     || (ownerAddressable && (e.delivery === "inbox") !== ownerReceiver)
     // FACT 2 selects `pending` alone, so an owner row can never be sent and can never go
-    // receiver-gone: `inbox` until the owner acks it, `acknowledged` after. Anything else on such
-    // a row is a state no code path can produce and is refused rather than repaired.
-    || (ownerReceiver && e.status !== "inbox" && e.status !== "acknowledged")
+    // receiver-gone: `inbox` until the owner acks it, `acknowledged` after — or `subject-gone`
+    // when the lane it reports on ended first (minted closed by server.ts#mintLaneSuiteEvents,
+    // or swept by server.ts#markFleetEventsSubjectGone; never delivered, never acknowledgeable,
+    // spending no budget). Anything else on such a row is a state no code path can produce and
+    // is refused rather than repaired.
+    || (ownerReceiver && e.status !== "inbox" && e.status !== "acknowledged"
+      && e.status !== "subject-gone")
     || typeof e.createdAt !== "number" || !Number.isFinite(e.createdAt) || e.createdAt <= 0
     || !Number.isInteger(e.attempts) || (e.attempts ?? -1) < 0
     || !(typeof e.deliveredAt === "number" || e.deliveredAt === null)
@@ -1066,13 +1076,22 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
       || !(d.reason === null || (typeof d.reason === "string" && !!d.reason.trim()
         && d.reason.length <= MAX_FLEET_REPORT_DECISION_REASON))) return null;
     const rule = typeof d.by === "object" && d.by !== null && "rule" in d.by;
-    // a rule verdict is `accepted`, names the land it read, and names nothing else; any other
-    // verdict carries no mainAfter at all, so the two shapes can never be mixed on hydration
+    // a rule verdict is `accepted` and names the ONE piece of evidence it read, and nothing else;
+    // any other verdict carries neither field at all, so the shapes can never be mixed on
+    // hydration: accepted-by-land names the land it read (mainAfter), superseded names the report
+    // that replaced this row (supersededBy).
     if (rule) {
       const by = d.by as { rule?: unknown };
-      if (by.rule !== "accepted-by-land" || Object.keys(by).length !== 1 || d.disposition !== "accepted"
-        || typeof d.mainAfter !== "string" || !/^[0-9a-f]{7,64}$/.test(d.mainAfter)) return null;
-    } else if (d.mainAfter !== undefined) return null;
+      if (by.rule === "accepted-by-land") {
+        if (Object.keys(by).length !== 1 || d.disposition !== "accepted"
+          || typeof d.mainAfter !== "string" || !/^[0-9a-f]{7,64}$/.test(d.mainAfter)
+          || d.supersededBy !== undefined) return null;
+      } else if (by.rule === "superseded") {
+        if (Object.keys(by).length !== 1 || d.disposition !== "accepted"
+          || typeof d.supersededBy !== "string" || !/^[0-9a-f]{24}$/.test(d.supersededBy)
+          || d.mainAfter !== undefined) return null;
+      } else return null;
+    } else if (d.mainAfter !== undefined || d.supersededBy !== undefined) return null;
     if (d.by !== "owner" && !rule) {
       if (!occupant(d.by, false)) return null;
       const by = d.by as { slot: number; openedAt: number; sessionId: string | null };

@@ -166,7 +166,8 @@ interface FleetState {
     verify?: { ok?: boolean | null } }>;
   slots?: Record<string, { cwd?: string; label?: string | null; selfToken?: string; openedAt?: number; sessionId?: string | null;
     harness?: string | null; model?: string | null; effort?: string | null; successionRetirement?: unknown;
-    taskId?: string | null; originId?: string | null; programId?: string | null }>;
+    taskId?: string | null; originId?: string | null; programId?: string | null;
+    worktree?: { repo?: string; branch?: string; anchor?: { slot: number; openedAt: number } } }>;
 }
 
 interface ProgramExecutionRow {
@@ -3052,6 +3053,16 @@ export async function run(ctx: Ctx): Promise<void> {
   const receiptsBeforeSuccession = await contextReceipts();
   // A FULL FLEET IS NO REASON TO REFUSE A HANDOVER ANY MORE: every free slot is taken first, and the
   // succession must still pass — in place. Red before the in-place cut: "no free slot", 409.
+  // S0 · A LANE OF THIS PROGRAM-MAIN, born under the predecessor occupation. It must follow the line
+  // onto the successor (notiz 2026-09-22-slot-baender-stufen-nach-32014c79 §2.1: Slot 2 drew as 0A).
+  const s0PredecessorOpenedAt = readState().slots?.[String(mainSlot)]?.openedAt;
+  const s0Lane = (await (await post("/api/lanes", { repo: REPO,
+    parent: { slot: mainSlot, openedAt: s0PredecessorOpenedAt } })).json()) as { slot?: number; cwd?: string; error?: string };
+  const s0Anchor = (): { slot: number; openedAt: number } | undefined =>
+    readState().slots?.[String(s0Lane.slot)]?.worktree?.anchor;
+  check("S0 setup: a lane of the Program-MAIN's checkout is born under the predecessor's exact occupation",
+    typeof s0Lane.slot === "number" && JSON.stringify(s0Anchor()) === JSON.stringify({ slot: mainSlot, openedAt: s0PredecessorOpenedAt }),
+    `${JSON.stringify(s0Lane)} anchor=${JSON.stringify(s0Anchor())}`);
   const capacityFilled: number[] = [];
   for (const slot of (await sessions()).slots.filter((s) => !s.cwd)) {
     const opened = await post(`/api/slots/${slot.id}/open`, { cwd: REPO, label: "succession-capacity-fixture" });
@@ -3114,6 +3125,36 @@ export async function run(ctx: Ctx): Promise<void> {
       && successionEntry.boundAt === transferredBinding.boundAt && successionEntry.via === "succeed"
       && successionEntry.endedAt === null && successionEntry.endedBy === null,
     JSON.stringify(successionLineage ?? null));
+  // Red before server.ts#rebindLaneAnchors: the anchor kept the predecessor's openedAt.
+  check("S0: after the Program-MAIN succession in place the lane carries the successor's anchor {same slot, bound openedAt}",
+    JSON.stringify(s0Anchor()) === JSON.stringify({ slot: mainSlot, openedAt: transferredBinding?.openedAt })
+      && transferredBinding?.openedAt !== s0PredecessorOpenedAt,
+    `anchor=${JSON.stringify(s0Anchor())} binding=${JSON.stringify(transferredBinding)}`);
+  // THE LOAD HEAL through Program.lineage: the anchor is put back on the predecessor with srv down —
+  // the orphan every in-place succession before S0 left. The lineage records predecessor then
+  // successor on this slot, so the boot re-anchors the lane and writes the audit row.
+  await stopSrv();
+  const s0State = readState();
+  const s0Row = s0State.slots?.[String(s0Lane.slot)];
+  if (s0Row?.worktree && typeof s0PredecessorOpenedAt === "number")
+    s0Row.worktree.anchor = { slot: mainSlot!, openedAt: s0PredecessorOpenedAt };
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(s0State, null, 2), { mode: 0o600 });
+  await restartSrv();
+  let s0Heal: { slot?: number; detail?: string } | undefined;
+  for (let i = 0; i < 30 && !s0Heal; i++) {
+    s0Heal = ((await (await get("/api/audit?limit=500")).json()) as { events: { event: string; slot?: number; detail?: string }[] })
+      .events.find((e) => e.event === "lane_anchor_rebound" && e.slot === s0Lane.slot
+        && (e.detail ?? "").includes(`load: program ${mainProgram.id} lineage`));
+    if (!s0Heal) await Bun.sleep(100);
+  }
+  const s0Live = ((await (await get("/api/sessions")).json()) as
+    { slots: { id: number; worktree?: { anchor?: { slot: number; openedAt: number } } }[] })
+    .slots.find((x) => x.id === s0Lane.slot)?.worktree?.anchor;
+  check("S0 load heal: an anchor naming the Program's previous MAIN on the same slot is re-anchored on the live occupant at boot, with an audit row naming the lineage",
+    !!s0Heal && JSON.stringify(s0Live) === JSON.stringify({ slot: mainSlot, openedAt: transferredBinding?.openedAt }),
+    `audit=${JSON.stringify(s0Heal ?? null)} live=${JSON.stringify(s0Live)}`);
+  if (typeof s0Lane.slot === "number") await post(`/api/slots/${s0Lane.slot}/kill`, {});
+  if (s0Lane.cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", s0Lane.cwd]);
   check("Program-MAIN target succession: delivered history keeps the target contract without repeating Fleet founding",
     successionPrompt.startsWith("[fleet Program-MAIN succession]")
       && targetContractPresent(successionPrompt, mainProgram.title) && targetContractClean(successionPrompt)

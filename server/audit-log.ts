@@ -341,6 +341,10 @@ type AuditEvent =
   // baton. The detail names the rail and, when it did not go through, the reason and what the slot
   // holds now — the predecessor is already gone at that point, so this row is the only account.
   | "main_succession"
+  // A LANE'S ANCHOR FOLLOWED ITS MAIN'S LINE (server.ts#rebindLaneAnchors): after an in-place
+  // succession, or at load when a recorded line (Program lineage or role line) ties the anchored
+  // occupation to the slot's live occupant. The detail names old and new openedAt and the evidence.
+  | "lane_anchor_rebound"
   // …and what such a handover still OWES when it could not finish (server.ts#recordSuccessionDebt):
   // the brief held for a resend, a line record held for the next owner open, and how it was paid.
   | "succession_debt"

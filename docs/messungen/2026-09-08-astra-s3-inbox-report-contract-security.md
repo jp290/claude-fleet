@@ -419,11 +419,11 @@ Genau diese zwei Schritte sind in dieser Reihenfolge ausgefuehrt worden. Origina
 Repos:
 `/private/tmp/claude-501/-Users-owner-claude-fleet-worktrees-fleet-260908100252-6767/636d1795-466b-4e12-bb4d-cbbca317721a/scratchpad/verify-s3-return.log`
 Baum: `ab6d01b913317c2d437259df696f6ee20fdd063e` plus die gestagete Korrektur dieser Datei; Host
-`Clawds-Air-2`, `2026-09-08T11:24:39Z`. Woertliche Zeilen aus dem Log (Kopf, Uebergang, Ende):
+`owner-mac`, `2026-09-08T11:24:39Z`. Woertliche Zeilen aus dem Log (Kopf, Uebergang, Ende):
 
 ```
 # verify per GET /api/self/gate localProof.steps = [install, pins]
-# tree: ab6d01b913317c2d437259df696f6ee20fdd063e (+ staged note); host: Clawds-Air-2; at: 2026-09-08T11:24:39Z
+# tree: ab6d01b913317c2d437259df696f6ee20fdd063e (+ staged note); host: owner-mac; at: 2026-09-08T11:24:39Z
 ### step 1/2: install
 bun install v1.3.9 (cf6cdbbb)
 Checked 9 installs across 10 packages (no changes) [17.00ms]

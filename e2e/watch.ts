@@ -27,7 +27,7 @@ import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsPollRow, opsPollVisible, ops
 // the terminal status words, taken from the one place that defines them rather than re-listed here:
 // the retention check below counts exactly the rows pruneFleetEvents counts.
 import { FLEET_EVENT_TERMINAL } from "../server/types";
-import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv as restartSrvRaw, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
+import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv as restartSrvRaw, results, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
 
 // === THE RESTART GATE — A DELIVERY LINE MUST NOT DIE INSIDE A RESTART (S3a) =====================
 // `server.ts#tickWatches` persists the crash marker (`send-uncertain`, `attempts++`) BEFORE it
@@ -56,11 +56,12 @@ import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, pane
 //      40×250 ms), because one send window is a tmux round-trip over ps/pgrep probes, not a
 //      constant, and a latch release can land inside it.
 //   2. OBSERVE (after the boot): settling halves the window but cannot zero it — a tick can persist
-//      a marker in the sliver between the last clean poll and the kill. So the rows that were open
-//      at the pre-restart snapshot are re-read after the boot: one that comes back `send-uncertain`
-//      with a FRESH attempt count and never concludes is a killed line, and it fails HERE, under
-//      its own name — "restart killed a pending delivery" — instead of as the delivery check it
-//      went on to break.
+//      a marker in the sliver between the last clean poll and the kill, and a send parked at a
+//      latch dies with the marker already down and its attempt count already raised. So the rows
+//      that were open at the pre-restart snapshot are re-read after the boot: one STILL MID-FLIGHT
+//      (marker down, no concluding audit row — whatever its attempt count did) is a killed line,
+//      and it fails HERE, under its own name — "restart killed a pending delivery" — instead of as
+//      the delivery check it went on to break.
 //
 // A row the gate has named is remembered (`killedRows`) so one stranded row cannot spin every
 // later restart to its budget. The deliberate parked-marker cases need no opt-out: a latch-parked
@@ -127,16 +128,19 @@ const postRestartWatch = async (label: string, pre: Map<string, number>): Promis
       last: () => JSON.stringify(lastSeen.map((r) => [r.id, r.attempts])) });
   } catch (e) {
     if (!(e instanceof UntilTimeout)) throw e;
-    const suspects = lastSeen.filter((r) => {
-      const before = pre.get(r.id);
-      return before !== undefined && r.attempts > before;
-    });
+    // the suspect test is the SAME mid-flight predicate, intersected with the pre-restart open
+    // set — NOT an attempt-count delta. A row killed while its paste sat parked at a latch comes
+    // back with an UNCHANGED count (the marker was already down at the snapshot, and the parked
+    // send never concluded); what identifies it is that it is still mid-flight — marker down, no
+    // concluding audit row — long after the boot. A row that merely concluded slowly left
+    // midFlightRows by now; a row minted after the restart is not pre-open.
+    const suspects = lastSeen.filter((r) => pre.has(r.id));
     if (!suspects.length) return; // nothing pre-open is stuck: this restart killed nothing
     for (const row of suspects) killedRows.add(row.id);
     check(`restart gate: a restart never strands an open delivery (${label})`, false,
       `restart killed a pending delivery — ${JSON.stringify(suspects.map((r) =>
-        [r.id, { before: pre.get(r.id), after: r.attempts }]))} crossed ${label} open and came back `
-      + `send-uncertain with a fresh attempt count that never concluded`);
+        [r.id, { attempts: r.attempts }]))} crossed ${label} open and is still mid-flight after the `
+      + `boot: marker down, no concluding fleet_event_send_uncertain audit row, never replayed`);
   }
 };
 const restartSrv = async (extra: Record<string, string> = {}): Promise<void> => {
@@ -3092,6 +3096,139 @@ export async function run(): Promise<void> {
       else rmSync(auditLedger, { force: true });
       setReportComposerMode("normal");
       clearLatch(recoveryLatch);
+    }
+
+    // === S3A SELF-TEST · THE GATE PROVES ITSELF ON A PLANTED WINDOW ==============================
+    // The MAIN verdict on report 86b03a33: three green pair runs prove nothing — the natural race
+    // does not fire on demand, so the gate needs a DETERMINISTIC proof, Mac-independent. This
+    // block plants the exact deadly window with the suite's own before-paste latch (it parks a
+    // send AFTER the crash marker is persisted and BEFORE the paste — the window a restart
+    // murders) and drives both halves of the gate against it:
+    //
+    //   SETTLE: the parked send holds the gate's restart — the old pid survives while the send is
+    //           in flight, the kill lands only after the release, and the line the gate waited
+    //           for is DELIVERED, not murdered. Falsifiable: remove the settle half and the kill
+    //           lands within the first poll, so the pid moves while parked and this goes red.
+    //   OBSERVE: kill mid-window ON PURPOSE (the raw harness functions, no settle — the exact
+    //           mutation) and feed the half the pre-restart open set: the stuck row must be named
+    //           under its own name. Falsifiable: a gate that cannot see mid-flight rows files
+    //           nothing and this goes red.
+    //   MEMO:   the named row is remembered — the next restart neither re-waits its budget nor
+    //           names it twice.
+    {
+      const gateLedger = `${ROOT}/post-land-audits.jsonl`;
+      const gateLedgerExisted = existsSync(gateLedger);
+      const gateLedgerBefore = gateLedgerExisted ? readFileSync(gateLedger, "utf8") : "";
+      const gateLatch = `${ROOT}/restart-gate-selftest.latch`;
+      const clearGateLatch = (): void => {
+        for (const suffix of ["", ".reached", ".release"]) rmSync(`${gateLatch}${suffix}`, { force: true });
+      };
+      const gateFails = (): string[] => results.filter((r) => r.startsWith("FAIL  restart gate"));
+      const gateAuditRow = (mainAfter: string): string => JSON.stringify({
+        at: Date.now(), startedAt: Date.now() - 1, ms: 1, repo: REPO, main: "main", mainSha: mainAfter,
+        result: "green", cmd: "gate-selftest", exitCode: 0, out: "ALL PASS",
+        checks: { ran: 1, failed: 0 },
+        covers: [{ branch: "fleet/gate-selftest", mainAfter, at: Date.now() - 2 }] }) + "\n";
+      // mint one audit-watch event and return it PARKED mid-flight: marker persisted, paste held
+      // at the latch, no concluding audit row — the state a kill turns into a murdered line. The
+      // latch file's marker text matches only audit-watch sends, so no other family's delivery
+      // can consume the latch's single use.
+      const parkOneAuditSend = async (mainAfter: string):
+        Promise<{ watchOk: boolean; row?: FleetEventRow }> => {
+        writeFileSync(gateLatch, "post-land audit [event", { mode: 0o600 });
+        appendFileSync(gateLedger, gateAuditRow(mainAfter));
+        const response = await post(`/api/slots/${main}/watch`,
+          { kind: "audit", repo: REPO, mainAfter, idleSec: 0 });
+        const watchId = ((await response.json()) as { watch?: { id: string } }).watch?.id ?? "";
+        let row: FleetEventRow | undefined;
+        for (let i = 0; i < 200; i++) {
+          row = (await eventRows()).find((e) => e.watchId === watchId);
+          if (row?.status === "send-uncertain" && existsSync(`${gateLatch}.reached`)) break;
+          await Bun.sleep(50);
+        }
+        return { watchOk: response.ok && watchId !== "", row };
+      };
+      const midFlightNow = async (row: FleetEventRow): Promise<boolean> =>
+        row.status === "send-uncertain" && !auditRows().some((r) =>
+          r.event === "fleet_event_send_uncertain" && (r.detail ?? "").includes(row.id));
+      const gateFailsAtStart = gateFails().length;
+
+      // --- SETTLE: the gate must hold the restart while a send is mid-flight, and the line must live
+      setReportComposerMode("normal");
+      clearGateLatch();
+      await restartSrv({ FLEET_TEST_SEND_BEFORE_PASTE_LATCH: gateLatch });
+      const parked = await parkOneAuditSend(`5a9e0001${"0".repeat(32)}`);
+      const parkOk = !!parked.row && parked.watchOk && parked.row.attempts === 1
+        && await midFlightNow(parked.row);
+      check("restart gate self-test precondition: the fixture parks one audit send mid-flight — marker persisted, paste held at the latch, no concluding audit row",
+        parkOk, JSON.stringify({ watch: parked.watchOk,
+          row: parked.row && [parked.row.id, parked.row.status, parked.row.attempts],
+          reached: existsSync(`${gateLatch}.reached`) }));
+      if (parkOk && parked.row) {
+        const pidAt = (): string => {
+          try { return readFileSync(`${ROOT}/fleet.pid`, "utf8").trim(); } catch { return ""; }
+        };
+        const pidParked = pidAt();
+        const gated = restartSrv({}); // unawaited on purpose: the settle half must HOLD here
+        await Bun.sleep(1500); // parked cannot conclude before the release — only .release ends the latch inside 10 s
+        const held = pidParked !== "" && pidAt() === pidParked; // still not killed while parked
+        writeFileSync(`${gateLatch}.release`, "ok\n", { mode: 0o600 }); // the paste completes
+        await gated; // the settle half lets go only after the row concluded
+        let delivered: FleetEventRow | undefined;
+        for (let i = 0; i < 200; i++) {
+          delivered = (await eventRows()).find((e) => e.id === parked.row!.id);
+          if (delivered?.status === "delivered") break;
+          await Bun.sleep(50);
+        }
+        check("restart gate self-test: SETTLE holds the kill while the send is mid-flight, and the line it waited for is delivered, not murdered",
+          held && pidAt() !== pidParked && delivered?.status === "delivered"
+            && gateFails().length === gateFailsAtStart,
+          JSON.stringify({ held, pidMoved: pidAt() !== pidParked,
+            row: delivered && [delivered.status, delivered.attempts],
+            newGateFails: gateFails().length - gateFailsAtStart }));
+      }
+
+      // --- OBSERVE: killed mid-window on purpose (raw functions, no settle — the mutation)
+      clearGateLatch();
+      await restartSrv({ FLEET_TEST_SEND_BEFORE_PASTE_LATCH: gateLatch }); // env armed, gate on (nothing to settle)
+      const parked2 = await parkOneAuditSend(`5a9e0002${"0".repeat(32)}`);
+      // THE MUTATION, deliberately: kill the server mid-window with the raw functions — no
+      // settle, no snapshot: exactly the pipeline the gate's halves exist to protect
+      await stopSrvRaw();
+      await restartSrvRaw({});
+      let stuckRow: FleetEventRow | undefined;
+      for (let i = 0; i < 200; i++) {
+        stuckRow = (await eventRows()).find((e) => e.id === parked2.row?.id);
+        if (stuckRow !== undefined) break;
+        await Bun.sleep(50);
+      }
+      const stuckOk = !!parked2.row && parked2.watchOk && !!stuckRow && await midFlightNow(stuckRow);
+      check("restart gate self-test precondition: the row the raw restart crossed is back and stuck mid-flight",
+        stuckOk,
+        JSON.stringify({ watch: parked2.watchOk,
+          row: stuckRow && [stuckRow.id, stuckRow.status, stuckRow.attempts] }));
+      if (stuckOk && stuckRow) {
+        const observeFailsBefore = gateFails().length;
+        const pre = new Map([[stuckRow.id, stuckRow.attempts]]); // what the settle half would have snapshotted
+        await postRestartWatch("self-test observe", pre);
+        const named = gateFails().slice(observeFailsBefore);
+        check("restart gate self-test: without the settle half, OBSERVE names the killed line under its own name",
+          named.length === 1 && named[0]!.includes("restart killed a pending delivery")
+            && named[0]!.includes(stuckRow.id),
+          JSON.stringify({ named: named.length, line: named[0]?.slice(0, 300) }));
+        const ack = await ackEvent(mainTok, stuckRow.id); // hygiene: the named row goes terminal
+        const memoFailsBefore = gateFails().length;
+        await restartSrv({});
+        check("restart gate self-test: a named row is remembered — the next restart neither re-waits nor names it twice",
+          ack.ok && gateFails().length === memoFailsBefore,
+          JSON.stringify({ ack: ack.status, newGateFails: gateFails().length - memoFailsBefore }));
+      }
+
+      // restore: the later modules own the zero-row ledger and a latch-free server
+      clearGateLatch();
+      setReportComposerMode("normal");
+      if (gateLedgerExisted) writeFileSync(gateLedger, gateLedgerBefore);
+      else rmSync(gateLedger, { force: true });
     }
 
     await stopSrv();

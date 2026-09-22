@@ -762,9 +762,12 @@ export async function run(): Promise<void> {
     check("§2c a step inside an inherited hold takes NO ticket — it would otherwise queue behind the lock it already holds",
       tickets().length === 0 && !/position \d+ of \d+/.test(inhOut),
       JSON.stringify([tickets(), inhOut.split("\n")[0]]));
+    // `after 0s` vs `after 1s` is a second-boundary coin flip, not a wait: the printf subtracts
+    // date +%s at acquire from the contender's t0, so a crossing prints 1s with nothing waited —
+    // the sibling check on the free path (:415) already accepts [01]s for the same at-once acquire.
     check("§2c it proceeds at once and reports in the ONE acquire format, naming the pid that actually holds the lock",
-      inhOut.includes(`acquired after 0s (pid ${holder.pid})`)
-        && /^\[suite-lock\] [^\n]* acquired after 0s \(pid \d+\)$/m.test(inhOut)
+      (inhOut.includes(`acquired after 0s (pid ${holder.pid})`) || inhOut.includes(`acquired after 1s (pid ${holder.pid})`))
+        && /^\[suite-lock\] [^\n]* acquired after [01]s \(pid \d+\)$/m.test(inhOut)
         && orderLines().join(",") === "inherited",
       JSON.stringify([inhOut.split("\n").filter(Boolean).slice(-1)[0], orderLines()]));
     check("§2c and it released nothing: the hold it ran inside is still recorded, untouched",

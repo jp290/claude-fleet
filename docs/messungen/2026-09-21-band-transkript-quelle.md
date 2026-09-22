@@ -70,7 +70,7 @@ Session 4. Zieh nach rechts rastet auf Session 3 ein (47 Beiträge), noch einmal
 nach links zurück auf 3. Auf Slot 1 zeigt Session 5 „Kein Transkript: a lineage record names slot +
 openedAt only …".
 
-## 4. Nachtrag: gebaut (2026-09-21, Branch `fleet/260921195502-0682`, Shas setzt die MAIN)
+## 4. Nachtrag: gebaut (2026-09-21, gelandet als `2c701b9e` + `2a887f9a`, Branch `fleet/260921195502-0682`)
 
 Anlass, Owner woertlich: „die private-repo-a-Session auf slot2 hat gerade eine succession auf slot6
 gemacht.. und wenn ich auf dem band ziehe, sehe ich nichtmal die alte session :(" — gemessen am

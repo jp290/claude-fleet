@@ -539,21 +539,31 @@ export async function run(ctx: Ctx): Promise<void> {
       && scopeSource.includes('o.value = `${repo}\\n${prog}`;')
       && scopeSource.includes('const [r, k] = sel.value.split("\\n");'),
     "paintQueueScope shapes");
-  // THE CHAT LANGUAGE ON THE QUEUE (Stilvorgabe 2026-09-19, angewandt 2026-09-19). What is proven
-  // here is what the Vorgabe forbids rather than what it recommends: inside the queue's own block
-  // every colour comes from the chat tokens or --danger, so a raw hex or the old blue accent fails
-  // this line. It does NOT claim the rendered pixel — there is no DOM in this suite — and it does
-  // not speak for the other three shells, which the block deliberately leaves alone.
+  // THE CHAT LANGUAGE ON THE QUEUE (Stilvorgabe 2026-09-19, angewandt 2026-09-19; chrome at the
+  // BASE rules since D-2, 2026-09-22). What is proven here is what the Vorgabe forbids rather
+  // than what it recommends: inside the queue's own block every colour comes from the chat tokens
+  // or --danger, so a raw hex or the old blue accent fails this line. It does NOT claim the
+  // rendered pixel — there is no DOM in this suite. The window/row chrome itself is asserted at
+  // its base rules right after, because that is where every window now reads it from.
   {
     const open = taskPageSource.indexOf("=== THE QUEUE IN THE CHAT LANGUAGE");
     const end = taskPageSource.indexOf("=== end THE QUEUE IN THE CHAT LANGUAGE", open);
     const block = open >= 0 && end > open ? taskPageSource.slice(open, end) : "";
-    check("queue style: the queue block exists, is scoped to #shell-queue and sets type and surface from the chat tokens",
+    const shellBase = taskPageSource.slice(taskPageSource.indexOf("the browse-and-inspect window (src/shell.ts)"), open);
+    check("queue style: the queue block exists, is scoped to #shell-queue and sets type and prose from the chat tokens",
       block.includes("#shell-queue { font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }")
-        && /#shell-queue \.shellwin \{[^}]*background: var\(--chat-surface\)/.test(block)
         && /--chat-ink: #e7e7ea/.test(taskPageSource) && /--r3: 18px/.test(taskPageSource)
         && (block.match(/#shell-queue /g) ?? []).length > 40,
       `${block.length} chars, ${(block.match(/#shell-queue /g) ?? []).length} scoped rules`);
+    check("queue style: the window and row chrome speak the chat tokens at the BASE rules, so every window reads them",
+      /\.shellwin \{[^}]*background: var\(--chat-surface\); border: 1px solid var\(--chat-edge\); border-radius: var\(--r3\);/.test(shellBase)
+        && /\.shellrow\.sel \{ background: var\(--chat-raised\); box-shadow: inset 0 0 0 1px var\(--chat-edge\); \}/.test(shellBase)
+        && /\.shellrow \{[^}]*border-radius: var\(--r1\)/.test(shellBase)
+        && /\.shellrow:hover \{ background: var\(--c-hover\); \}/.test(shellBase)
+        && /\.shellrow \.shrname \{ font-size: var\(--chat-fs\); color: var\(--chat-prose\);/.test(shellBase)
+        && /\.shelltitles h2 \{ font-size: var\(--chat-fs\); font-weight: 500; color: var\(--chat-ink\); \}/.test(shellBase)
+        && !/background: #1d1d1d/.test(shellBase) && !/border-radius: 14px/.test(shellBase),
+      "base window chrome rules");
     // every colour in the block is a token; the two hues that survive are --danger (a broken state)
     // and the ink scale. A hex value or the blue accent inside this block is the mutation caught.
     const hexes = block.match(/#[0-9a-fA-F]{3,8}\b/g) ?? [];
@@ -561,9 +571,9 @@ export async function run(ctx: Ctx): Promise<void> {
     check("queue style NEGATIVE: no raw hex and no pre-redesign accent inside the queue block — --danger is the only hue left",
       hexes.length === 0 && banned.every((b) => !block.includes(b)) && block.includes("var(--danger)"),
       `hex=${JSON.stringify(hexes.slice(0, 4))} banned=${JSON.stringify(banned.filter((b) => block.includes(b)))}`);
-    // the five places the blue used to reach the queue, each one answered in the block. A base rule
-    // that starts painting the queue blue again is only invisible here if its selector is listed.
-    const overridden = ["#shell-queue .shellrow.sel {", "#shell-queue .shrbtn.primary {",
+    // the five places the blue used to reach the queue, each one answered: four in the block, and
+    // since D-2 the row selection at the BASE .shellrow rule every window shares (asserted above).
+    const overridden = ["#shell-queue .shrbtn.primary {",
       "#shell-queue .qview button.on {", "#shell-queue .shellrow.qnew .shrname {", "#shell-queue .qchip.qc-prog"];
     // THE STRIPE, TWICE. Session 2 removed the five-hue 3px border (owner: "die klammern links …
     // werden auch noch ersetzt"); the evening of the same day he asked for a lifecycle mark back

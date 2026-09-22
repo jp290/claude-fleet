@@ -915,7 +915,7 @@
   .qprogsel:focus { outline: none; border-color: var(--focus); }
   .qbundlebtn { margin-left: auto; }
   /* L2: the scope tree, a column of its own left of the list */
-  .qtree { flex: none; width: 210px; overflow-y: auto; padding: 8px 4px; border-right: 1px solid var(--line-soft);
+  .qtree { flex: none; width: 210px; overflow-y: auto; padding: 8px 4px; border-right: 1px solid var(--chat-edge-soft);
     display: flex; flex-direction: column; gap: 1px; }
   .qtree[hidden] { display: none; }
   .qtreen { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 28px; padding: 0 8px;
@@ -1171,8 +1171,8 @@
   .overlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
     background: #000a; z-index: 20; }
   .panel { width: 520px; max-width: 92vw; max-height: 80vh; display: flex; flex-direction: column;
-    background: #1d1d1d; border: 1px solid var(--line); border-radius: 14px; padding: 16px; gap: 10px; }
-  .panel h2 { font-size: 13px; color: #e8e8e8; }
+    background: var(--chat-surface); border: 1px solid var(--chat-edge); border-radius: var(--r2); padding: 16px; gap: 10px; }
+  .panel h2 { font-size: 13px; color: var(--chat-ink); }
 
   /* --- the browse-and-inspect window (src/shell.ts) ---------------------------------------
      A list on the left, the selected thing rendered in full on the right. Four surfaces share
@@ -1182,29 +1182,29 @@
      here too, because every view builds the same two shapes into .shelllist. */
   .shellwin { display: flex; flex-direction: column; overflow: hidden;
     width: min(1400px, 95vw); height: min(880px, 92vh);
-    background: #1d1d1d; border: 1px solid var(--line); border-radius: 14px; }
+    background: var(--chat-surface); border: 1px solid var(--chat-edge); border-radius: var(--r3); }
   .shellhead { flex: none; display: flex; align-items: center; gap: 10px;
-    padding: 11px 13px; border-bottom: 1px solid var(--line-soft); }
+    padding: 11px 13px; border-bottom: 1px solid var(--chat-edge-soft); }
   .shellback { display: none; }  /* mobile-only: the detail pane is a pushed screen there */
   .shelltitles { flex: 1; min-width: 0; }
-  .shelltitles h2 { font-size: 13px; color: #e8e8e8; }
-  .shellsub { font-size: 11.5px; color: var(--dim); margin-top: 2px;
+  .shelltitles h2 { font-size: var(--chat-fs); font-weight: 500; color: var(--chat-ink); }
+  .shellsub { font-size: var(--chat-ui-fs); color: var(--chat-mute); margin-top: 2px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .shellsub:empty { display: none; }
-  .shellclose { flex: none; width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--line);
-    background: var(--raised); color: var(--dim); font-size: 12px; font-family: inherit; cursor: pointer; }
-  .shellclose:hover { color: var(--text); }
+  .shellclose { flex: none; width: 28px; height: 28px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
+    background: var(--chat-raised); color: var(--chat-mute); font-size: 12px; font-family: inherit; cursor: pointer; }
+  .shellclose:hover { color: var(--chat-ink); }
   .shelltools { flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 9px 13px; border-bottom: 1px solid var(--line-soft); }
+    padding: 9px 13px; border-bottom: 1px solid var(--chat-edge-soft); }
   .shelltools:empty { display: none; }
   .shellbody { flex: 1; min-height: 0; display: flex; }
   .shelllist { flex: none; width: var(--shell-list-w, 320px); overflow-y: auto;
-    border-right: 1px solid var(--line-soft); padding: 7px; display: flex; flex-direction: column; gap: 1px; }
+    border-right: 1px solid var(--chat-edge-soft); padding: 7px; display: flex; flex-direction: column; gap: 1px; }
   .shelldetail { flex: 1; min-width: 0; overflow: auto; padding: 12px 14px; }
-  .shellfoot { flex: none; padding: 8px 13px; border-top: 1px solid var(--line-soft);
+  .shellfoot { flex: none; padding: 8px 13px; border-top: 1px solid var(--chat-edge-soft);
     color: var(--faint); font-size: 11px; line-height: 1.5; }
   .shellfoot:empty { display: none; }
-  .shellhint { color: var(--faint); font-size: 12px; padding: 10px 2px; line-height: 1.5; }
+  .shellhint { color: var(--chat-mute); font-size: var(--chat-ui-fs); padding: 10px 2px; line-height: 1.5; }
 
   /* the idea window (client.ts openIdee): ONE form — the detail pane is the whole window, on
      desktop and mobile both, so the list column goes and the detail stays. The form speaks the
@@ -1231,16 +1231,16 @@
   /* the badge only becomes a control when it has something to confess ("3 · 5 hidden") */
   .shellsecn.reveal { color: #9aa0a6; cursor: pointer; }
   .shellsecn.reveal:hover { color: #ddd; background: #2d2d2d; }
-  .shellrow { display: flex; align-items: center; gap: 9px; padding: 6px 9px; border-radius: 7px;
-    cursor: pointer; min-width: 0; }
-  .shellrow:hover { background: var(--raised); }
-  .shellrow.sel { background: var(--sel); }
+  .shellrow { display: flex; align-items: center; gap: 9px; padding: 6px 9px; border-radius: var(--r1);
+    cursor: pointer; min-width: 0; transition: background var(--t), color var(--t); }
+  .shellrow:hover { background: var(--c-hover); }
+  .shellrow.sel { background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
   .shellrow .shrmain { flex: 1; min-width: 0; }
-  .shellrow .shrname { font-size: 12.5px; color: #ddd; overflow: hidden; text-overflow: ellipsis;
+  .shellrow .shrname { font-size: var(--chat-fs); color: var(--chat-prose); overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; }
-  .shellrow .shrsub { font-size: 10.5px; color: #6f6f6f; overflow: hidden; text-overflow: ellipsis;
+  .shellrow.sel .shrname { color: var(--chat-ink); }
+  .shellrow .shrsub { font-size: var(--chat-ui-fs); color: var(--chat-faint); overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; margin-top: 1px; }
-  .shellrow.sel .shrsub { color: #9aa7c7; }
   /* the lane line under a task row: the dispatcher's slot pointer resolved client-side
      (src/client.ts qLaneJoins) — one line, ellipsised, so the row never grows past it */
   .qlane { font-family: ui-monospace, Menlo, Consolas, monospace; margin-top: 2px; }
@@ -1279,12 +1279,14 @@
   .enttitle { color: var(--chat-ink); font-weight: 600; font-size: 1.08em; margin: 4px 0 7px; overflow-wrap: anywhere; }
 
   /* === THE QUEUE IN THE CHAT LANGUAGE (Stilvorgabe 2026-09-19) ==========================
-     Scoped to #shell-queue on purpose: .shellwin/.shellrow/.shrbtn are the chrome of FOUR
-     surfaces (review, picker, queue, outcomes), and only this one was redesigned. Colour is
-     ink → prose → mute → faint; the only hues left are --danger for a broken state and the
-     copy confirmation. Radii are --r1/--r2/--r3, motion is --t. Spacing stays as it is in
-     this cut — the 4/8/12/16 grid moves in the next one, together with the fold budget that
-     reads these boxes in e2e/tasks.ts. */
+     The WINDOW chrome (.shellwin/.shellhead/.shellclose/.shellrow, the .panel dialogs) speaks
+     the chat language at its BASE rules since D-2 (2026-09-22) — the overrides that only
+     restated it are gone. What stays scoped here is the queue's OWN type scale (--chat-fs 13px,
+     one step smaller than the chat's 14px) and its lifecycle vocabulary: the stage stripe, the
+     tints and the q* states below. Colour is ink → prose → mute → faint; the only hues left are
+     --danger for a broken state and the copy confirmation. Radii are --r1/--r2/--r3, motion is
+     --t. Spacing stays as it is in this cut — the 4/8/12/16 grid moves in the next one, together
+     with the fold budget that reads these boxes in e2e/tasks.ts. */
   /* ONE STEP SMALLER (owner, 2026-09-19: "die formattierungen überhaupt etwas kleiner"): the
      queue redefines the chat's type tokens for itself, so every rule below follows and the chat
      view keeps its own sizes. --chat-ui-fs stays: 11px is the floor for a label. */
@@ -1293,26 +1295,15 @@
   /* …and the window a size larger ("das dashboard insgesamt etwas größer"): 16px from every edge
      instead of min(1400px, 95vw) × min(880px, 92vh). The phone rule below takes the screen back. */
   #shell-queue .shellwin { width: calc(100vw - 32px); height: calc(100vh - 32px); }
-  #shell-queue .shellwin { background: var(--chat-surface); border: 1px solid var(--chat-edge);
-    border-radius: var(--r3); }
-  #shell-queue .shellhead, #shell-queue .shelltools { border-bottom-color: var(--chat-edge-soft); }
-  #shell-queue .shellfoot { border-top-color: var(--chat-edge-soft); }
-  #shell-queue .shelllist, #shell-queue .qtree { border-right-color: var(--chat-edge-soft); }
-  #shell-queue h2 { font-size: var(--chat-fs); font-weight: 500; color: var(--chat-ink); }
-  #shell-queue .shellsub, #shell-queue .shellhint, #shell-queue .qempty,
+  #shell-queue .shellsub, #shell-queue .qempty,
   #shell-queue .qdmain-why, #shell-queue .qreleasenote { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
   #shell-queue .qreleasenote { background: var(--chat-raised); border-color: var(--chat-edge); }
-  /* the LIST: the row's own words in ink, everything about it in mute/faint, and the stripe
-     that used to carry five hues now carries the three steps of the ink scale */
-  #shell-queue .shellrow { border-radius: var(--r1); transition: background var(--t), color var(--t); }
-  #shell-queue .shellrow:hover { background: var(--c-hover); }
-  #shell-queue .shellrow.sel { background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
-  #shell-queue .shellrow .shrname { font-size: var(--chat-fs); color: var(--chat-prose); }
-  #shell-queue .shellrow.sel .shrname { color: var(--chat-ink); }
-  #shell-queue .shellrow .shrsub, #shell-queue .shellrow.sel .shrsub,
-  #shell-queue .shellrow .qage { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  /* the LIST: the row's own words in ink, everything about it in mute/faint — the row vocabulary
+     itself is the base .shellrow rules since D-2; what follows is the queue's stage states */
   /* measured 2026-09-19: --chat-faint on the row is 2.85:1 (2.7:1 on a tinted row), under AA for
-     text — the age is information, so it reads in mute (≥ 4.5:1 on every tint) */
+     text — the age is information, so it reads in mute (≥ 4.5:1 on every tint). D-2 added the
+     chat-ui-fs size here; the measured colour keeps its own rule. */
+  #shell-queue .shellrow .qage { font-size: var(--chat-ui-fs); }
   #shell-queue .shellrow .qage { color: var(--chat-mute); }
   /* THE BRACKETS ARE GONE (owner, 2026-09-19: "ich hoffe die klammern links an den kästen werden
      auch noch ersetzt"). The 3px stripe said pending/queued/sent/held/flag in five hues — and the
@@ -1658,7 +1649,7 @@
     .shell.detailmode .shelllist { display: none; }
     .shell.detailmode .shelldetail { display: block; }
     .shell.detailmode .shellback { display: block; flex: none; width: 34px; height: 30px;
-      border-radius: 8px; border: 1px solid var(--line); background: var(--raised); color: var(--text);
+      border-radius: var(--r1); border: 1px solid var(--chat-edge); background: var(--chat-raised); color: var(--chat-prose);
       font-size: 16px; font-family: inherit; cursor: pointer; }
     .qkind { align-items: stretch; flex-direction: column; gap: 5px; }
     /* the head must be usable after a row selection without any horizontal scrolling: the one

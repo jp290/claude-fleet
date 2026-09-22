@@ -78,6 +78,26 @@ const VERIFY_LINE = /^[\s>*+\-\u2013\u2014\u2022\d.)\][]*\**\s*(?:verify|verifik
 const COMMAND_LEAD = /(?:^|[\s(\[])(\.\/|bun\s|bunx\s|curl\s)/;
 const FENCE_LINE = /^\s*```/;
 
+// A CITATION IS NOT INTENT (docs/messungen/2026-09-21-dispatch-flaechen-buendeln.md §a). Three more
+// filing leads sweep READ paths into the surface — the same false positive S1 removed for verify
+// lines: `LESEN:` names what to read before the first edit, `BELEG:`/`ANLASS:` cite the evidence
+// and the occasion. Measured over 201 landed lanes, 227 of the 696 claimed files (33 %) were never
+// touched, server.ts 24 times, because these lines fed the scan. Masked like VERIFY — the whole
+// line, so a path named there never becomes surface. The lead tolerance is VERIFY_LINE's own, but
+// the literals stay UPPERCASE on purpose: the filing convention writes them in caps, and a prose
+// sentence may open with "Anlass:" ("Anlass fuer diese Zeile ist X; geaendert wird server.ts"),
+// whose paths are exactly the ones the scan must keep.
+const CITATION_LINE = /^[\s>*+\-\u2013\u2014\u2022\d.)\][]*\**\s*(?:LESEN|BELEG|ANLASS):/;
+
+// THE SOURCE PACKAGE (context-snippets.ts#renderSnippetBlock) is attached READ-ONLY evidence: the
+// header, every `- datei#symbol · Zeilen … · blob …` label and the `ausgelassen:` omission line
+// quote paths at their exact landed state — none of them is a write target. Only the three line
+// SHAPES the renderer can emit are masked, never a block span: an excerpt's code can be any line
+// at all, and a stateful "until the block ends" would swallow real prose standing behind it.
+const PACKAGE_HEAD = /^Quellpaket — /;
+const PACKAGE_LABEL = /^- \S+#[^ ]+ · Zeilen \d+-\d+ · /;
+const PACKAGE_OMITTED = /^ausgelassen: /;
+
 /** Character spans of the inline `...` runs in one line, as [start, endExclusive] pairs. */
 function backtickSpans(line: string): [number, number][] {
   const spans: [number, number][] = [];
@@ -122,14 +142,17 @@ function maskCommands(line: string, inQuote: boolean): string {
 }
 
 /**
- * The scannable text of a task: every line with its verify citations and quoted commands blanked
- * out. Length-preserving, so a caller may still read offsets against the original.
+ * The scannable text of a task: every line with its verify citations, its citation leads
+ * (LESEN:/BELEG:/ANLASS:), the attached source package and quoted commands blanked out.
+ * Length-preserving, so a caller may still read offsets against the original.
  */
 export function intentText(text: string): string {
   let inFence = false;
   return text.split("\n").map((line) => {
     if (FENCE_LINE.test(line)) { inFence = !inFence; return " ".repeat(line.length); }
-    if (!inFence && VERIFY_LINE.test(line)) return " ".repeat(line.length);
+    if (!inFence && (VERIFY_LINE.test(line) || CITATION_LINE.test(line)
+      || PACKAGE_HEAD.test(line) || PACKAGE_LABEL.test(line) || PACKAGE_OMITTED.test(line)))
+      return " ".repeat(line.length);
     return maskCommands(line, inFence);
   }).join("\n");
 }
@@ -414,7 +437,9 @@ export interface SurfaceInputs {
 // The resolver CODE is an input of every stored surface, exactly like the two tree stamps are: a
 // change in what the same tree resolves to must move every stored sha once, or a row would keep
 // projecting a surface its own resolver no longer produces. Bump on any resolution change.
-export const SURFACE_RESOLVER = "ranges-2";
+// ranges-3 (2026-09-22): citation lines and the source package joined the mask, and the lane
+// surface gained its hunk half — every stored derivation must recompute once.
+export const SURFACE_RESOLVER = "ranges-3";
 
 export function surfaceSha(inputs: SurfaceInputs): string {
   const h = createHash("sha256");

@@ -12,7 +12,7 @@ import { briefReviewArm } from "../refine-validate";
 import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY, CARD_VALIDATOR_VERSION } from "../card-extract";
 import { renderWaveBrief, renderCardHead, renderRowComments, CARD_HEAD_MAX_BYTES, ROW_COMMENTS_MAX_BYTES, BRIEF_REVIEW_MARK } from "../wave-brief";
 import { LOCAL_PROOF_STEPS } from "../verify-proportion";
-import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, topLevelDeclarations,
+import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, SURFACE_RESOLVER, topLevelDeclarations,
   type SymbolIndex, type TaskCluster } from "../task-metadata";
 import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict,
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
@@ -20,7 +20,7 @@ import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
   LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits,
   type LandWave, type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
-import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanLaneClaims, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
+import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanLaneClaims, startPlanLaneSurface, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
   type StartPlanLane, type StartPlanLaneClaim, type StartPlanRelease, type StartPlanRow } from "../start-plan";
 import { laneHunkDiffArgs, laneHunkRanges } from "../land-collision-stats";
 import { deriveWaits, namedAfterIds, stallReadings, type WaitFacts } from "../waits";
@@ -9330,6 +9330,45 @@ export async function run(ctx: Ctx): Promise<void> {
       }) && JSON.stringify(spHunkNotes) === JSON.stringify([
         "waiting: collides with lane 3 on server.ts#rs", "waiting: collides with lane 3 on server.ts"]),
       JSON.stringify({ spHunkGot, spHunkNotes }));
+    // (sp-flaeche) THE LANE'S SURFACE IS ITS ROWS' SURFACE PLUS WHAT IT ALREADY WROTE (Schnitt 2 of
+    // docs/messungen/2026-09-21-dispatch-flaechen-buendeln.md). Measured over 201 landed lanes: 125
+    // (62 %) wrote at least one file outside their surface — 349 files, e2e/pins.ts 41 times — and
+    // such a file was invisible to collision() even while the lane had ALREADY written it. Mutations:
+    // the hunk half dropped from the union → the unit and (a) start; the claims/row-file gate dropped
+    // from startPlanLaneSurface → its null cases collide; the LESEN/BELEG/ANLASS mask or the
+    // Quellpaket shapes dropped from task-metadata.ts#intentText → the mask check names reads again.
+    const spPinsHunk = { "e2e/pins.ts": hunkAt("e2e/pins.ts", 100, 120) };
+    const spUnionLane = (files: string[] | null): StartPlanLane =>
+      ({ slot: 3, repo: spRepo, programId: null, files, ranges: null, hunks: spPinsHunk });
+    const spUnionNext = (rowFiles: string[], lane: StartPlanLane) =>
+      projectStartPlan(spInput([spRow("r", 1, rowFiles)], [lane], spCaps)).repos[0]?.waves[0]?.next;
+    const spUnionGot = {
+      unit: startPlanLaneSurface(true, [{ files: ["server.ts"], ranges: null }], spPinsHunk),
+      noClaims: startPlanLaneSurface(false, [{ files: ["server.ts"], ranges: null }], spPinsHunk).files,
+      noRows: startPlanLaneSurface(true, [], spPinsHunk).files,
+      noRowFiles: startPlanLaneSurface(true, [{ files: ["a.ts"], ranges: null }, { files: null, ranges: null }], spPinsHunk).files,
+      rangesPass: startPlanLaneSurface(true, [{ files: ["a.ts"], ranges: [{ file: "a.ts", symbol: "s", startLine: 1, endLine: 2 }] }], undefined),
+      holds: spUnionNext(["e2e/pins.ts"], spUnionLane(["server.ts", "e2e/pins.ts"])),
+      unrelated: spUnionNext(["docs/x.md"], spUnionLane(["server.ts", "e2e/pins.ts"])),
+    };
+    check("(sp-flaeche) the lane surface is rows' files ∪ hunk files, only a CLAIMING lane with row files gains the union, and the widened surface holds a row on the hunk-only file while an unrelated row starts",
+      JSON.stringify(spUnionGot.unit) === JSON.stringify({ files: ["server.ts", "e2e/pins.ts"], ranges: null })
+      && spUnionGot.noClaims === null && spUnionGot.noRows === null && spUnionGot.noRowFiles === null
+      && JSON.stringify(spUnionGot.rangesPass) === JSON.stringify({ files: ["a.ts"], ranges: [{ file: "a.ts", symbol: "s", startLine: 1, endLine: 2 }] })
+      && JSON.stringify(spUnionGot.holds) === JSON.stringify({ collides: { slot: 3, file: "e2e/pins.ts" } })
+      && spUnionGot.unrelated === "now", JSON.stringify(spUnionGot));
+    const spLesenCtx = { trackedPaths: new Set(["server.ts", "start-plan.ts", "docs/x.md", "docs/messungen/x.md"]),
+      project: "p", repoRoot: null, symbolIndex: null };
+    const spDerives = (text: string): string[] => deriveTaskMetadata({ text }, spLesenCtx)?.files ?? [];
+    const spLesenText = "LESEN: server.ts\nBELEG: docs/messungen/x.md\nANLASS: owner 2026-09-21, server.ts\nstart-plan.ts anfassen";
+    const spPaketText = "docs/x.md bauen\n\nQuellpaket — exakte Ausschnitte aus 83d910e142d6 (deterministisch gewaehlt; Zeilennummern sind die dieses Stands):\n"
+      + "- task-metadata.ts#intentText · Zeilen 108-155 · blob 707b625fb1e4 · zu 4a470a9d\n"
+      + "- start-plan.ts#collision · Zeilen 315-328 · blob abadd76ce81e\n``` ts\nconst x = 1;\n```\n"
+      + "ausgelassen: server.ts#startPlanNow (budget-exhausted)";
+    const spMaskGot = { lesen: spDerives(spLesenText), paket: spDerives(spPaketText), prose: spDerives("repair server.ts and start-plan.ts") };
+    check("(sp-flaeche) LESEN:, BELEG:, ANLASS: and the Quellpaket block name no surface — the write target and plain prose still do (task-metadata.ts#intentText), and the resolver moved so stored surfaces recompute",
+      JSON.stringify(spMaskGot) === JSON.stringify({ lesen: ["start-plan.ts"], paket: ["docs/x.md"], prose: ["server.ts", "start-plan.ts"] })
+      && String(SURFACE_RESOLVER) !== "ranges-2", JSON.stringify(spMaskGot));
     // (sp-criterion) A LANE PARKED ON THE OWNER WITH AN UNWRITTEN TREE HOLDS NO SURFACE
     // (start-plan.ts#startPlanLaneClaims). One rule, two lane builders — server.ts#startPlanNow off
     // the live slot, the CLI off a state file — so the rule is exercised directly here and the two
@@ -9375,22 +9414,22 @@ export async function run(ctx: Ctx): Promise<void> {
       check("(sp-criterion) PROBE: both lane builders are readable",
         spSrv.length > 1000 && spCliSrc.length > 1000, `server=${spSrv.length} cli=${spCliSrc.length}`);
       const spPlanFn = spSrv.match(/function startPlanNow\([\s\S]*?\n\}\n/)?.[0] ?? "";
-      check("(sp-criterion) startPlanNow reads the rule off the live slot — the founding row's criterion, the slot's own awaiting, the git tick's cached reading — and drops files AND ranges together",
+      check("(sp-criterion) startPlanNow reads the rule off the live slot — the founding row's criterion, the slot's own awaiting, the git tick's cached reading — and takes the surface itself from startPlanLaneSurface (rows' files plus what the lane already wrote)",
         /const claims = startPlanLaneClaims\(\{/.test(spPlanFn)
         && /criterion: foundingRowOf\(s\)\?\.criterion \?\? null,/.test(spPlanFn)
         && /awaiting: s\.awaiting,/.test(spPlanFn)
         && /git: gitInfo\.get\(s\.id\) \?\? null,/.test(spPlanFn)
-        && /files: claims && own\.length/.test(spPlanFn)
-        && /ranges: claims && own\.some/.test(spPlanFn),
-        spPlanFn.match(/const claims = startPlanLaneClaims[\s\S]{0,260}/)?.[0]?.replace(/\s+/g, " ") ?? "no claims call in startPlanNow");
+        && /\.\.\.startPlanLaneSurface\(claims, own, hunks\)/.test(spPlanFn)
+        && !/files: claims && own\.length/.test(spPlanFn) && !/ranges: claims && own\.some/.test(spPlanFn),
+        spPlanFn.match(/const claims = startPlanLaneClaims[\s\S]{0,300}/)?.[0]?.replace(/\s+/g, " ") ?? "no claims call in startPlanNow");
       const spCliLoop = spCliSrc.slice(spCliSrc.indexOf("const lanes: StartPlanLane[] = [];"));
-      check("(sp-criterion) the CLI lane builder reads the SAME rule off the state file — the slot's taskId row, its awaiting, and a git reading of its own that stays null when it cannot be taken",
+      check("(sp-criterion) the CLI lane builder reads the SAME rule off the state file — the slot's taskId row, its awaiting, a git reading of its own that stays null when it cannot be taken, and the surface from startPlanLaneSurface",
         /const claims = startPlanLaneClaims\(\{/.test(spCliLoop)
         && /criterion: criterionOf\(\(typeof slot\.taskId === "string" && ownRows\.find\(\(t\) => t\.id === slot\.taskId\)\) \|\| ownRows\[0\]\),/.test(spCliLoop)
         && /awaiting: slot\.awaiting === "owner" \|\| slot\.awaiting === "main" \? slot\.awaiting : null,/.test(spCliLoop)
         && /git: laneCwd && forkSha \? laneGitOf\(laneCwd, forkSha\) : null,/.test(spCliLoop)
-        && /files: claims && own\.length/.test(spCliLoop)
-        && /ranges: claims && own\.some/.test(spCliLoop)
+        && /startPlanLaneSurface\(claims, own, hunks\)/.test(spCliLoop)
+        && !/files: claims && own\.length/.test(spCliLoop) && !/ranges: claims && own\.some/.test(spCliLoop)
         && /if \(!ahead\.ok \|\| !dirty\.ok \|\| !Number\.isFinite\(n\)\) return null;/.test(spCliSrc),
         spCliLoop.match(/const claims = startPlanLaneClaims[\s\S]{0,320}/)?.[0]?.replace(/\s+/g, " ") ?? "no claims call in the CLI builder");
     }

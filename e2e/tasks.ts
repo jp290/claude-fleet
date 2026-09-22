@@ -9270,9 +9270,9 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(sp) each wave row carries its checks straight off the card and the row's source — invalid card with its gap, no card as null, scout flagged",
       JSON.stringify(spWave("e")?.rows[0]?.checks) === JSON.stringify({ cardValid: false, surfaceValid: true, done: "done sentence",
         verify: "bun e2e/pins.ts", size: "klein", filedBy: "main", gaps: ["verify: no command named"], scout: false,
-        cardFiles: 0, cardStale: false })
+        cardFiles: 0, cardStale: false, afterMissing: [] })
       && JSON.stringify(spWave("j")?.rows[0]?.checks) === JSON.stringify({ cardValid: null, surfaceValid: null, done: null,
-        verify: null, size: null, filedBy: "main", gaps: [], scout: false, cardFiles: null, cardStale: false })
+        verify: null, size: null, filedBy: "main", gaps: [], scout: false, cardFiles: null, cardStale: false, afterMissing: [] })
       && spWave("g")?.rows[0]?.checks?.scout === true && spWave("g")?.rows[0]?.checks?.cardValid === true
       && spPlan.repos[0]?.lanes === 3 && JSON.stringify(spPlan.repos[0]?.cap) === JSON.stringify({ max: 5, source: "repo" }),
       JSON.stringify(spPlan.repos[0]?.waves.map((w) => w.rows)));
@@ -11062,17 +11062,20 @@ export async function run(ctx: Ctx): Promise<void> {
     // which share authorCardFrom. Nothing is filed.
     const rcBadRes = await post("/api/tasks", { text: "acp23 rc foreign after", queue: false,
       programId: mMainProgram, repo: REPO, card: { ...rcCard, after: ["badbadbe"] } });
-    const rcBadText = await rcBadRes.text();
+    // the ERROR is read PARSED, never off the raw body: the wire form escapes the quotes the gap
+    // text carries, and a substring probe on .text() could not match its own expectation
+    const rcBadError = ((await rcBadRes.json()) as { error?: string }).error ?? "";
     const rcUnnamedRes = await post("/api/tasks", { text: "acp23 rc unnamed after", queue: false,
       programId: mMainProgram, repo: REPO, card: { ...rcCard, ...(rcPred ? { after: [rcPred] } : {}) } });
-    const rcUnnamedText = await rcUnnamedRes.text();
+    const rcUnnamedError = ((await rcUnnamedRes.json()) as { error?: string }).error ?? "";
     const rcMainBadRes = await mFile(mToken, { text: "acp23 rc main foreign after", kind: "auftrag",
       card: { ...rcCard, after: ["badbadbe"] } });
+    const rcMainBadError = ((await rcMainBadRes.json()) as { error?: string }).error ?? "";
     check("(rc4) an author card whose after names no queue row, or names a row the text does not, is refused 400 naming the gap — at both filing doors",
-      rcBadRes.status === 400 && rcBadText.includes('after: "badbadbe" is not a queue row')
-        && rcUnnamedRes.status === 400 && rcUnnamedText.includes(`after: "${rcPred}" is not named in the request`)
-        && rcMainBadRes.status === 400,
-      `owner=${rcBadRes.status}:${rcBadText} unnamed=${rcUnnamedRes.status}:${rcUnnamedText} main=${rcMainBadRes.status}`);
+      rcBadRes.status === 400 && rcBadError.includes('after: "badbadbe" is not a queue row')
+        && rcUnnamedRes.status === 400 && rcUnnamedError.includes(`after: "${rcPred}" is not named in the request`)
+        && rcMainBadRes.status === 400 && rcMainBadError.includes('after: "badbadbe" is not a queue row'),
+      `owner=${rcBadRes.status}:${rcBadError} unnamed=${rcUnnamedRes.status}:${rcUnnamedError} main=${rcMainBadRes.status}:${rcMainBadError}`);
     // (rc2b) THE MAIN DOOR TAKES THE SAME CARD WITH after — and the RELEASE proves the stored id:
     // releaseCardRefusal would 409 naming rcPred if the door had not written what the card carries.
     const rcMainCarry = await rcFile({ text: `acp23 rc main-filed with after, NACH ${rcPred}`,

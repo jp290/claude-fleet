@@ -5207,3 +5207,42 @@ genau so ist dieser Absatz zu lesen: kein Freifahrtschein, sondern eine benannte
 Empfehlung dieser Lane: 1 sofort (steht oben), 2 als promotionsreife Option, 3 verworfen mit dem
 `watch`-Gegenbeispiel. Keine dieser drei ist gebaut; der Runner pflanzt heute unverändert wie ein
 Shard ohne `core`.
+
+## 17. Die Restart-Fenster-Familie: „send-uncertain bei attempts 1, null Auditzeilen" ist die Sonde, nicht der Server (S3a, 2026-09-21)
+
+**Das Symptom, unter dem der nächste rote Lauf es wiedererkennen möge.** Drei pi-unfenced-Zustell-
+Checks fallen rot, das Event bleibt `send-uncertain` bei `attempts 1`, und das Audit-Protokoll
+enthält NULL `fleet_event_send_uncertain`-Zeilen für genau diese Reihen. Das ist kein
+Transportdefekt: Es ist die Crash-Marker-Semantik selbst. `tickWatches` persistiert den Marker
+(`send-uncertain`, `attempts++`) BEVOR tmux berührt wird (server.ts, FACT 2), und nur eine
+`pending`-Reihe wird je wieder aufgespielt — „send-uncertain is replayed only by the bounded
+fleet-report recovery". Fällt der Server zwischen Marker und Paste, sitzt die Reihe für immer im
+Marker, ohne Abschluss-Zeile im Protokoll, und jede spätere Zustell-Prüfung scheitert an einem
+Symptom, das wie ein kaputter Transport aussieht.
+
+**Die Kontrolle, die den Server entlastet** (Report 7ba905df, Lane fleet/260922142239-9eab):
+Baseline komplett grün, Paarlauf grün, `watch` allein auf demselben Baum grün, Linux-Helfer
+zweimal grün mit demselben Baum; die Phasensummen beider Läufe fast gleich, ein Lastbias des
+Servers damit ausgeschlossen. Die Fails wanderten mit der Lastform — ein Timing-Rennen der SONDE:
+`e2e/watch.ts` startet den Server ~50× mitten im Modul neu, der Suite-Tick steht auf 250 ms, das
+Rennen hatte also tausende Türen pro Lauf.
+
+**Die Reparatur liegt in der Sonde, nicht im Server** (`e2e/watch.ts`, „THE RESTART GATE"):
+vor JEDEM Neustart und jedem eigenständigen `stopSrv()` wartet das Modul bounded (20 s = 2× das
+eigene `settleEvent`-Budget von 10 s), bis keine Reihe mehr MID-FLIGHT ist — Marker persistiert,
+Versuchszähler erhöht, aber noch keine `fleet_event_send_uncertain`-Abschlusszeile. Nach dem Boot
+werden die im Schnappschuss offenen Reihen erneut gelesen: eine, die mit frischem Versuchszähler
+zurückkommt und nie abschließt, scheitert HIER unter eigenem Namen — „restart killed a pending
+delivery" — statt als die Zustell-Prüfung, die sie anschließend gebrochen hätte. Ein benannter
+Fehl wird gemerkt, damit eine gestrandete Reihe nicht an jedem späteren Neustart aufs Budget
+läuft. Die absichtlichen Marker-Fälle brauchen keinen Opt-out: eine am Latch geparkte Reihe hat
+gleiche Protokoll- und Versuchszahlen (der Latch sitzt VOR dem Marker), und jede Familie, die
+eine Reihe absichtlich offen lässt (ACP-26-Rollback, die Q6-geblockte Reihe), ackt sie vor dem
+nächsten Neustart.
+
+**Was der Beweis ist:** dreimal hintereinander ALL PASS für den Modulpaar-Lauf (`FLEET_E2E_MODULES=watch,slots`)
+auf dem Mac, und eine Mutationsprobe (die Wartebedingung raus) macht denselben Lauf reproduzierbar
+rot — mit der benannten Fail-Zeile, nicht mit dem verwirrenden Zustell-Symptom. Beide Tails liegen
+im Fleet-Report dieser Lane. Ein grüner Lauf allein beweist hier nichts: Das Rennen kann verlieren,
+ohne dass jemand davon erfährt — das ist genau die Familie, die dieser Absatz dem nächsten roten
+Lauf ersparen soll.

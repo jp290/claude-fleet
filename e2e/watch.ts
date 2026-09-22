@@ -27,7 +27,135 @@ import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsPollRow, opsPollVisible, ops
 // the terminal status words, taken from the one place that defines them rather than re-listed here:
 // the retention check below counts exactly the rows pruneFleetEvents counts.
 import { FLEET_EVENT_TERMINAL } from "../server/types";
-import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
+import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv as restartSrvRaw, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
+
+// === THE RESTART GATE — A DELIVERY LINE MUST NOT DIE INSIDE A RESTART (S3a) =====================
+// `server.ts#tickWatches` persists the crash marker (`send-uncertain`, `attempts++`) BEFORE it
+// touches tmux (its FACT 2), and only a `pending` row is ever replayed — "send-uncertain is
+// replayed only by the bounded fleet-report recovery". A server restart landing inside the
+// marker→paste window therefore murders the line SILENTLY: the row sits `send-uncertain` at its
+// raised attempt count, the audit ledger gains NO `fleet_event_send_uncertain` row (the send never
+// concluded, so nobody wrote one), and every later delivery check fails with a symptom that reads
+// like a broken transport. Measured as S3a (report 7ba905df, lane fleet/260922142239-9eab): three
+// pi-unfenced delivery checks red on this Mac with exactly that signature — event stuck
+// `send-uncertain` at attempts 1, zero send-uncertain audit rows — while baseline, pair run, watch
+// alone and the Linux helper all passed the same tree, and the fails wandered with the load shape:
+// a timing race of the sonde's OWN restarts, not a server regress. This module restarts the server
+// ~50 times, on a suite tick of 250 ms, so the race had thousands of doors per run.
+//
+// The gate makes every restart in this module settle first — or say so under its own name. The raw
+// harness functions are imported as *Raw; every call site below keeps reading `restartSrv(…)` /
+// `stopSrv()` and gets the gated twins. Two bounded halves:
+//
+//   1. SETTLE (before the kill): wait until no row is MID-FLIGHT. A row is mid-flight exactly while
+//      its marker is persisted with a raised attempt count and NO concluding
+//      `fleet_event_send_uncertain` audit row: every concluded send in server.ts (transport miss,
+//      recovery, bundle, unobservable acceptance) writes one naming the row id, and a refused send
+//      rolls the row back to `pending` — so marker-without-audit-row is precisely "the paste may
+//      still be on its way". Budget 20 s: twice this module's own settleEvent budget (10 s,
+//      40×250 ms), because one send window is a tmux round-trip over ps/pgrep probes, not a
+//      constant, and a latch release can land inside it.
+//   2. OBSERVE (after the boot): settling halves the window but cannot zero it — a tick can persist
+//      a marker in the sliver between the last clean poll and the kill. So the rows that were open
+//      at the pre-restart snapshot are re-read after the boot: one that comes back `send-uncertain`
+//      with a FRESH attempt count and never concludes is a killed line, and it fails HERE, under
+//      its own name — "restart killed a pending delivery" — instead of as the delivery check it
+//      went on to break.
+//
+// A row the gate has named is remembered (`killedRows`) so one stranded row cannot spin every
+// later restart to its budget. The deliberate parked-marker cases need no opt-out: a latch-parked
+// row has equal audit and attempt counts (the recovery latch sits BEFORE the marker), and every
+// section that leaves a row `send-uncertain` on purpose (ACP-26 rollback cases, the Q6 blocked
+// row) acks it before this module's next restart — audited per restart site when this gate went
+// in. A standalone `stopSrv()` (the stop→plant→restart shape) snapshots its open rows for the
+// restart that follows, whose own live read would only see a dead server.
+interface GateEventRow { id: string; status: FleetEventStatus; attempts: number }
+let gateSeq = 0;
+const killedRows = new Set<string>();
+let stopSnapshot: Map<string, number> | null = null;
+const GATE_SETTLE_MS = 20_000;
+const gateEventRows = async (): Promise<GateEventRow[]> =>
+  ((await (await get("/api/events")).json()) as { events: GateEventRow[] }).events;
+// a row is MID-FLIGHT exactly while the crash marker is down and no audit row has concluded its
+// send — the same fact S3a read from the debris, computed instead of remembered
+const midFlightRows = async (): Promise<GateEventRow[]> => {
+  const rows = await gateEventRows();
+  const ledger = auditRows();
+  // an unreadable ledger measures nothing: without it every row would LOOK un-concluded, so the
+  // gate stands down rather than false-name a healthy run (a probe that cannot run is silent here
+  // because the checks it would shadow still run and fail on their own facts)
+  if (auditReadError) return [];
+  return rows.filter((e) => e.status === "send-uncertain" && !killedRows.has(e.id)
+    && ledger.filter((r) => r.event === "fleet_event_send_uncertain"
+      && (r.detail ?? "").includes(e.id)).length < e.attempts);
+};
+const settleForGate = async (label: string): Promise<void> => {
+  // a server that is already down (a gated stop just ran) was settled by that stop
+  if (!(await get("/api/sessions").then((r) => r.ok).catch(() => false))) return;
+  let lastSeen: GateEventRow[] = [];
+  try {
+    await until(async () => {
+      lastSeen = await midFlightRows();
+      return lastSeen.length === 0;
+    }, { timeoutMs: GATE_SETTLE_MS, stepMs: 200,
+      what: `every mid-flight delivery to conclude before ${label}`,
+      last: () => JSON.stringify(lastSeen.map((r) => [r.id, r.attempts])) });
+  } catch (e) {
+    if (!(e instanceof UntilTimeout)) throw e;
+    for (const row of lastSeen) killedRows.add(row.id);
+    check(`restart gate: a restart never strands an open delivery (${label})`, false,
+      `restart killed a pending delivery — ${JSON.stringify(lastSeen.map((r) => [r.id, r.attempts]))} sat `
+      + `send-uncertain with a raised attempt count and no concluding fleet_event_send_uncertain audit `
+      + `row for ${GATE_SETTLE_MS} ms before ${label}: a marker that never concluded is an earlier `
+      + `restart's kill, or a section that left its row open and never acked it`);
+  }
+};
+const gateSnapshot = async (): Promise<Map<string, number>> => {
+  const open = new Map<string, number>();
+  for (const e of await gateEventRows().catch(() => [] as GateEventRow[]))
+    if (e.status === "pending" || e.status === "send-uncertain") open.set(e.id, e.attempts);
+  return open;
+};
+const postRestartWatch = async (label: string, pre: Map<string, number>): Promise<void> => {
+  let lastSeen: GateEventRow[] = [];
+  try {
+    await until(async () => {
+      lastSeen = await midFlightRows();
+      return lastSeen.length === 0;
+    }, { timeoutMs: GATE_SETTLE_MS, stepMs: 200,
+      what: `every mid-flight delivery to conclude after ${label}`,
+      last: () => JSON.stringify(lastSeen.map((r) => [r.id, r.attempts])) });
+  } catch (e) {
+    if (!(e instanceof UntilTimeout)) throw e;
+    const suspects = lastSeen.filter((r) => {
+      const before = pre.get(r.id);
+      return before !== undefined && r.attempts > before;
+    });
+    if (!suspects.length) return; // nothing pre-open is stuck: this restart killed nothing
+    for (const row of suspects) killedRows.add(row.id);
+    check(`restart gate: a restart never strands an open delivery (${label})`, false,
+      `restart killed a pending delivery — ${JSON.stringify(suspects.map((r) =>
+        [r.id, { before: pre.get(r.id), after: r.attempts }]))} crossed ${label} open and came back `
+      + `send-uncertain with a fresh attempt count that never concluded`);
+  }
+};
+const restartSrv = async (extra: Record<string, string> = {}): Promise<void> => {
+  const label = `restart #${++gateSeq}`;
+  await settleForGate(label);
+  const live = await gateSnapshot();
+  await restartSrvRaw(extra);
+  // after a stop→plant→restart the live read sees only a dead server; the stop's own snapshot is
+  // what was open at the kill
+  const pre = live.size ? live : stopSnapshot ?? live;
+  stopSnapshot = null;
+  await postRestartWatch(label, pre);
+};
+const stopSrv = async (): Promise<void> => {
+  const label = `stop #${++gateSeq}`;
+  await settleForGate(label);
+  stopSnapshot = await gateSnapshot();
+  await stopSrvRaw();
+};
 
 interface WatchRow {
   id: string; slot: number; target: number; targetCwd: string; targetBranch: string;

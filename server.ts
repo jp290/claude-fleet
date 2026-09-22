@@ -430,8 +430,10 @@ interface Harness {
   // SLOT_MODEL_RE), i.e. not the same question the slot probe asks. `blocks` rides along for the
   // same reason: the screens THAT binary can sit on alive while a paste is eaten, which the worker
   // refuses by name before pasting instead of waiting out its timeout.
+  // `accept` rides along for the same reason again: the frame that says THIS binary has drawn its
+  // TUI and keeps input. null = no measured marker, and the worker falls back to a fixed settle.
   worker(o: { sessionId: string; model: string; tools: ToolProfile }):
-    { cmd: string; comms: string[]; blocks: readonly ScreenBlock[] } | null;
+    { cmd: string; comms: string[]; blocks: readonly ScreenBlock[]; accept: RegExp | null } | null;
   // A context reader is deliberately separate from `supports.transcript`: the latter promises a
   // CLAUDE-CODE conversation that viewEntry can parse, while this narrower adapter hook promises
   // only a host-readable usage file and therefore cannot accidentally enable transcript/summary.
@@ -663,6 +665,9 @@ const CLAUDE_HARNESS: Harness = {
     cmd: `${PATH_EXPORT}claude --session-id ${o.sessionId} --model '${o.model}' ${o.tools}`,
     comms: ["claude"],
     blocks: [CLAUDE_TRUST_DIALOG],
+    // NOT behind IS_CLAUDE, unlike `readiness.accept` below: this line runs the claude binary
+    // whatever FLEET_CMD says, so the marker measured on that binary is the one it paints.
+    accept: CLAUDE_READY_FRAME,
   }),
   // The default adapter follows the exact pinned path and parser contextFill used before the hook.
   context: {
@@ -13973,6 +13978,7 @@ async function tickCardSweep(): Promise<void> {
     const index = symbolIndexFor(repo);
     let wrote = false;
     for (const t of batch) {
+      const runStarted = Date.now();
       try {
         const formatted = formatCardOf(t, snapshot, index);
         const run: { answer?: string } = {};
@@ -13998,9 +14004,10 @@ async function tickCardSweep(): Promise<void> {
         console.log(`card extractor: read failed for ${t.id}, the row keeps its prose: ${e instanceof Error ? e.message : e}`);
         logError("tickCardSweep", e);
         // `model` on an error row is the model that WOULD have run, the same convention every
-        // other worker's error record in this file carries — nothing ran, so there is nothing
-        // else true to write, and an absent field would make the row unjoinable with the rest.
-        await appendEvent(CARD_FILE, { at: Date.now(), taskId: t.id, source: "model", model: CARD_MODEL, ms: 0,
+        // other worker's error record in this file carries, and an absent field would make the row
+        // unjoinable with the rest. `ms` is the run's real wall time: it was a literal 0 until
+        // 2026-09-22, which made ten 120 s timeouts read as runs that failed before starting.
+        await appendEvent(CARD_FILE, { at: Date.now(), taskId: t.id, source: "model", model: CARD_MODEL, ms: Date.now() - runStarted,
           valid: false, gaps: [`run: ${e instanceof Error ? e.message : String(e)}`.slice(0, 300)] });
       }
     }
@@ -16300,14 +16307,28 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
       if (Date.now() - started > 30_000) throw new Error("summarizer session never initialized");
       await Bun.sleep(500);
     }
-    await Bun.sleep(2500);
-    // ...and the SCREEN, which the process probe cannot see: the adapter's blocks are screens this
-    // binary sits on alive while a paste is eaten (claude's trust dialog answers the Enter with
-    // "No, exit", and the run then waited out its whole timeout for a transcript never written).
-    // Refused by name before anything is pasted — the finally below still takes the session.
-    const screen = await tmux("capture-pane", "-p", "-t", paneTarget(name));
-    const block = screen.code === 0 ? w.blocks.find((b) => b.re.test(screen.out)) : undefined;
-    if (block) throw new Error(`${block.why} in ${cwd} — the worker never answers it`);
+    // ...and the SCREEN, which the process probe cannot see. Two questions, blocks first:
+    // a block is a screen this binary sits on alive while a paste is eaten (claude's trust dialog
+    // answers the Enter with "No, exit", and the run then waited out its whole timeout for a
+    // transcript never written) — refused by name before anything is pasted. `accept` is the frame
+    // that says the TUI has drawn at all. UNTIL 2026-09-22 THIS WAS A FIXED 2500 ms after `alive`,
+    // and that is the founding-paste blackout on the worker rail
+    // (docs/messungen/2026-09-21-founding-paste-blackout.md): claude is `alive` ~20 ms after the
+    // spawn but paints nothing for 1–26 s depending on load, and a paste inside that blackout is
+    // lost — the card tick booked 10 × "summarizer timed out without an answer" on 2026-09-21
+    // 19:12–19:52 (docs/messungen/2026-09-22-card-worker-paste-blackout.md). A marker that never
+    // appears within READY_WAIT_MS is refused by name too; the finally below takes the session.
+    const readyStarted = Date.now();
+    for (;;) {
+      const screen = await tmux("capture-pane", "-p", "-t", paneTarget(name));
+      const block = screen.code === 0 ? w.blocks.find((b) => b.re.test(screen.out)) : undefined;
+      if (block) throw new Error(`${block.why} in ${cwd} — the worker never answers it`);
+      if (!w.accept) { await Bun.sleep(2500); break; }
+      if (screen.code === 0 && w.accept.test(screen.out)) break;
+      if (Date.now() - readyStarted >= READY_WAIT_MS)
+        throw new Error(`summarizer session never drew its TUI within ${Math.round(READY_WAIT_MS / 1000)}s`);
+      await Bun.sleep(250);
+    }
     // deliver exactly like sendText: paste-buffer (no key interpretation), then Enter
     const buf = `sumbuf-${name}`;
     const lb = Bun.spawn(["tmux", "-L", SOCK, "load-buffer", "-b", buf, "-"], { stdin: "pipe" });

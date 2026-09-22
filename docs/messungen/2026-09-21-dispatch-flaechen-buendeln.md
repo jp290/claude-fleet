@@ -265,3 +265,15 @@ fällt in der Faltung von `flaeche-nur-abgeleitet` auf `keine-flaeche`). Die üb
 tragen `confirmed`-/`card`-Flächen (dort ändert die Maske nichts, sie liest nur Prosa) oder nennen
 ihre gelesenen Pfade ohne die Leads. Die 227 überbeanspruchten Dateien aus (a) sind an GELANDETEN Lanes
 gemessen; die Nachmessung derselben Auswertung (§Methode, q7) nach 7 Tagen bleibt fällig.
+
+## Nachtrag 2, 2026-09-22 — Schnitt 3 umgesetzt (Zeile 0e5b85d6)
+
+Die reine Funktion `task-land-waves.ts#proposeBundles` schlägt Buendel nach der Owner-Regel vor
+(ein Program, Einheitensumme ≤ 2, gleiche normalisierte VERIFY-Stufenmenge über
+`LOCAL_PROOF_STEPS`, gemeinsame Schreibflaeche; per `after` verkettede Zeilen gleicher Flaeche als
+EIN Vorschlag in Kettenordnung); `GET /api/start-plan` trägt sie im Feld `buendel` neben Wellen und
+Waits — der Tick startet nichts daraus (die Land-Projektion trägt kein `buendel`, gepinnt in
+e2e/tasks.ts). Live-Queue, CLI lesend gegen dem Stand des Haupt-Checkouts: **3 Vorschläge** —
+{25d9ac1e, bc98af80} auf src/client.ts, {9b5ebde3, 20cf559e} auf docs/messungen/INDEX.md,
+{7274be6f, 057b1bf4} auf public/index.html + src/client.ts, je 2 Einheiten und denselben VERIFY.
+(Stand daneben: 29 Wellen, 4 mehrzeilig — die Queue hat sich seit §d bewegt.)

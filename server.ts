@@ -68,8 +68,8 @@ import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NO
 // boundary: it asks THIS projector whether the ids it was handed are one of its own waves, so the
 // board, `bun task-land-waves.ts --state fleet.json` and the door all answer from one classifier.
 import {
-  LAND_WAVE_COSTS_2026_09, LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, projectLandWaves,
-  type LandWave, type LandWaveProjection,
+  LAND_WAVE_COSTS_2026_09, LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, projectLandWaves, proposeBundles,
+  type BundleProposal, type LandWave, type LandWaveProjection,
 } from "./task-land-waves";
 import { isTaskCardSize, type TaskCardSize, type TaskWaveInput, type TaskWaveRange } from "./task-waves";
 import { laneHunkDiffArgs, laneHunkRanges } from "./land-collision-stats";
@@ -12586,10 +12586,12 @@ const startPlanRowOf = (t: Task): StartPlanRow => {
     ...(policy !== "manual" ? { release: policy } : {}), ...(t.hold ? { held: true } : {}),
     ...(t.variantOf ? { variantOf: t.variantOf } : {}) };
 };
-// GET /api/start-plan's object: the plan, the wait register over it and the stall sensor's counters.
-// `projectStartPlan`'s own fields come first and unchanged, so the plan half is still byte for byte
-// what `bun start-plan.ts --state fleet.json` prints.
-type StartPlanView = StartPlan & { waits: WaitRow[]; stau: ReturnType<typeof stallView> };
+// GET /api/start-plan's object: the plan, the wait register over it, the stall sensor's counters and
+// the owner-rule bundle proposals beside them (Schnitt 3). `projectStartPlan`'s own fields come
+// first and unchanged, so the plan half is still byte for byte what `bun start-plan.ts --state
+// fleet.json` prints — buendel travels beside the plan, like waits and stau, and no reader that
+// STARTS anything reads it (the tick walks plan.repos through startPlanWaves()).
+type StartPlanView = StartPlan & { waits: WaitRow[]; stau: ReturnType<typeof stallView>; buendel: BundleProposal[] };
 function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()): StartPlanView {
   const statuses: Record<string, string> = {};
   const rows: StartPlanRow[] = [];
@@ -12631,7 +12633,23 @@ function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()):
     })) };
   }
   const plan = projectStartPlan({ projection, rows, statuses, lanes, caps });
-  return { ...plan, waits: waitsOf(plan), stau: stallView() };
+  // SCHNITT 3 (docs/messungen/2026-09-21-dispatch-flaechen-buendeln.md §d): the owner rule as a
+  // PROPOSAL, carried for the board beside the plan — and read by nobody who starts anything. The
+  // tick walks the plan's waves; the land projection above carries no bundle. The rows read the
+  // same surface the land fold reads (taskView files plus a surfaceValid card's creates), the
+  // card's verified verify text and its size — a proposal is a sensor answer, never a new reading.
+  const buendel = proposeBundles({ tasks: tasks
+    .filter((t) => t.kind === "auftrag" && (t.status === "queued" || t.status === "pending") && !t.variants && !t.variantOf)
+    .map((t) => {
+      const view = taskView(t);
+      const files = [...(view.files ?? []), ...(t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])];
+      return { id: t.id, created: t.created, kind: t.kind, status: t.status,
+        ...(t.programId ? { programId: t.programId } : {}),
+        ...(taskSizeOf(t) ? { size: taskSizeOf(t)! } : {}),
+        ...(t.card ? { verify: t.card.verify } : {}),
+        files, ...(t.card?.after?.length ? { after: t.card.after } : {}) };
+    }) });
+  return { ...plan, buendel, waits: waitsOf(plan), stau: stallView() };
 }
 // THE FACTS the wait register reads (waits.ts#deriveWaits), taken off the live state in one pass:
 // every row (an `after` target that left the plan is still a fact), every occupied slot's park —

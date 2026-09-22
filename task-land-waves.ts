@@ -16,7 +16,7 @@
 // Browser-safe like its sibling, and deliberately so — src/client.ts imports it. The CLI at the
 // bottom reaches the filesystem and the metadata derivation through Bun globals inside
 // `import.meta.main`, never through a top-level node import, so the client bundle stays clean.
-import { verificationProportionFor } from "./verify-proportion";
+import { verificationProportionFor, LOCAL_PROOF_STEPS } from "./verify-proportion";
 import { isTaskCardSize, type TaskCardSize, type TaskWaveInput, type TaskWaveRange } from "./task-waves";
 
 export type LandWaveClass = "docs" | "code";
@@ -435,6 +435,82 @@ export function projectLandWaves(input: ProjectLandWavesInput): LandWaveProjecti
   return { budget, repos, unresolved };
 }
 
+// --- SCHNITT 3: BUNDLE PROPOSALS UNDER THE OWNER'S RULE (2026-09-18, Schnitt 3 of
+// docs/messungen/2026-09-21-dispatch-flaechen-buendeln.md §d).
+//
+// The land fold above bundles by COLLISION — connected components over shared files. The owner's
+// rule for a Sammelzeile is narrower: one program, at most medium total size, one VERIFY, one
+// shared surface. Measured, the two disagree: 28 waves in claude-fleet, only 2 multi-row, the rest
+// alone because the fold's rules are not the owner's. This is the owner's rule as a PURE PROPOSAL —
+// what a bundle COULD be, for a MAIN or the owner to accept. It decides nothing: the tick reads the
+// land projection, and the land projection carries no bundle (pinned in e2e/tasks.ts); the proposal
+// travels beside the plan (server.ts#startPlanNow's `buendel` field) and in this module's CLI.
+//
+// VERIFY equality is read over the STEP NAMES card-extract.ts#validateCard already knows
+// (verify-proportion.ts#LOCAL_PROOF_STEPS): a stored card.verify names its steps — the filing
+// aliases "volle Kette"/"e2e-isolated" were rewritten into those names at validation — and two rows
+// may share a lane only when the SET of steps they will be held to is the same. Substring over the
+// step names is card-extract's own reading; the set is joined sorted, so wording and order do not.
+export interface BundleRowInput {
+  id: string; created: number; kind?: string; status: string;
+  programId?: string | null;
+  size?: TaskCardSize;
+  // the row's stored card verify text, as validated; null or absent = no card verify — the empty step set
+  verify?: string | null;
+  // the row's WRITE surface (its tracked files plus a surfaceValid card's creates)
+  files: readonly string[];
+  after?: readonly string[];
+  variantOf?: string;
+  variantGroup?: boolean;
+}
+export interface BundleProposal { ids: string[]; grund: string; units: number }
+
+const verifyStepSet = (verify: string | null | undefined): string =>
+  !verify ? "" : LOCAL_PROOF_STEPS.filter((step) => verify.includes(step)).join("+");
+
+/** Propose bundles under the owner's rule, in queue order; a row without a partner proposes nothing. */
+export function proposeBundles(input: { tasks: readonly BundleRowInput[] }): BundleProposal[] {
+  // the same open-shape filter projectLandWaves makes, plus the variant exclusions classify reads:
+  // a variant row bundles never (E4), a variant group is in no wave at all.
+  const candidates = input.tasks
+    .filter((task) => task.kind === "auftrag" && (task.status === "queued" || task.status === "pending")
+      && !task.variantGroup && !task.variantOf)
+    .slice()
+    .sort(rowOrder)
+    .map((task) => ({
+      id: task.id, created: task.created, programId: task.programId?.trim() || null,
+      units: landWaveUnits(task.size), steps: verifyStepSet(task.verify),
+      files: [...new Set(task.files ?? [])],
+      after: [...new Set(task.after ?? [])].filter((id) => id !== task.id),
+    }));
+  // THE OWNER RULE, pairwise: one program, summed units ≤ 2, one VERIFY, one shared file. The sum
+  // is the whole proposal's, so a gross row can never meet (3 > 2 alone) and mittel+klein neither —
+  // "hoechstens mittel" read as the total size of the Sammelzeile, exactly as the note records it.
+  const pairs = (a: (typeof candidates)[number], b: (typeof candidates)[number]): boolean =>
+    !!a.programId && a.programId === b.programId
+    && a.units + b.units <= 2
+    && a.steps === b.steps
+    && a.files.some((file) => b.files.includes(file));
+  const taken = new Set<string>();
+  const out: BundleProposal[] = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const a = candidates[i];
+    if (taken.has(a.id)) continue;
+    const b = candidates.slice(i + 1).find((x) => !taken.has(x.id) && pairs(a, x));
+    if (!b) continue;
+    taken.add(a.id);
+    taken.add(b.id);
+    // Per after chained rows of the same surface as ONE proposal in CHAIN order — the chain decides
+    // the order, queue order only breaks the tie. A cycle reads as the queue order; a proposal is
+    // two rows, and a chain whose sum would pass 2 never formed above.
+    const chained = a.after.includes(b.id) || b.after.includes(a.id);
+    const ids = a.after.includes(b.id) ? [b.id, a.id] : [a.id, b.id];
+    const shared = a.files.filter((file) => b.files.includes(file)).sort(textOrder);
+    out.push({ ids, units: a.units + b.units, grund: `${chained ? "after-Kette: " : ""}gleiches Program ${a.programId}, gemeinsame Flaeche ${shared.join(" ")}, Einheiten ${a.units + b.units}, gleiche VERIFY-Stufen ${a.steps || "keine"}` });
+  }
+  return out;
+}
+
 // --- CLI: the same projector for shell/read-only consumers. The MAIN runs it in the main checkout
 // (a lane has no fleet.json) to check the done sentence after a land:
 //   bun task-land-waves.ts --state fleet.json [--default-repo REPO] [--budget N]
@@ -446,7 +522,7 @@ const argAfter = (name: string): string | null => {
 
 interface StateTask {
   id?: unknown; kind?: unknown; status?: unknown; created?: unknown; repo?: unknown; programId?: unknown;
-  card?: { valid?: unknown; size?: unknown; surfaceValid?: unknown; after?: unknown; surface?: { creates?: unknown } };
+  card?: { valid?: unknown; size?: unknown; surfaceValid?: unknown; after?: unknown; verify?: unknown; surface?: { creates?: unknown } };
   variantOf?: unknown; variants?: unknown;
 }
 
@@ -473,6 +549,7 @@ async function cli(): Promise<void> {
   };
 
   const rows: TaskWaveInput[] = [];
+  const bundleRows: BundleRowInput[] = [];
   const strings = (v: unknown): string[] => Array.isArray(v) ? v.filter((e): e is string => typeof e === "string") : [];
   for (const task of tasks) {
     if (typeof task.id !== "string") continue;
@@ -500,6 +577,20 @@ async function cli(): Promise<void> {
       // the one that sends collidesOn back to the file level.
       ranges: derived?.ranges ?? null,
     });
+    // the SAME reading for the bundle proposal beside the projection: the write surface above, the
+    // card's verify as validated, the card's size — a proposal is a SENSOR answer, not a new reading
+    bundleRows.push({
+      id: task.id, created: typeof task.created === "number" ? task.created : 0,
+      kind: typeof task.kind === "string" ? task.kind : undefined,
+      status: typeof task.status === "string" ? task.status : "",
+      ...(typeof task.programId === "string" && task.programId ? { programId: task.programId } : {}),
+      ...(task.card?.valid === true && isTaskCardSize(task.card.size) ? { size: task.card.size } : {}),
+      ...(typeof task.card?.verify === "string" ? { verify: task.card.verify } : {}),
+      files,
+      ...(after.length ? { after } : {}),
+      ...(typeof task.variantOf === "string" && task.variantOf ? { variantOf: task.variantOf } : {}),
+      ...(Array.isArray(task.variants) ? { variantGroup: true as const } : {}),
+    });
   }
 
   const projection = projectLandWaves({
@@ -508,7 +599,8 @@ async function cli(): Promise<void> {
     ...(budgetArg && Number.isFinite(Number(budgetArg)) ? { budget: Number(budgetArg) } : {}),
     costs: LAND_WAVE_COSTS_2026_09,
   });
-  process.stdout.write(`${JSON.stringify({ version: 1, costs: LAND_WAVE_COSTS_2026_09, ...projection })}\n`);
+  process.stdout.write(`${JSON.stringify({ version: 1, costs: LAND_WAVE_COSTS_2026_09, ...projection,
+    buendel: proposeBundles({ tasks: bundleRows }) })}\n`);
 }
 
 if (import.meta.main) {

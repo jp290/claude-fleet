@@ -1334,13 +1334,20 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // from it to pi. Run through sh with no stdin, so that shell reads EOF and ends (a started
   // stand-in would hold the run to its timeout instead); the pane's credential exports ride along
   // and are never printed.
-  const pzBroken = spawnSync("/bin/sh", ["-c", pzCmd.replaceAll(`'${pzSbx}'`, "'/nonexistent/sandbox-exec'")],
+  // EXECUTED, so the display copy is not enough: tmux renders pane_start_command wrapped in `"…"`
+  // with `\"` and `\\` escapes (measured on tmux 3.6a), and the backslash-stripped pzCmd keeps the
+  // outer quotes — dash on the Linux helper then parsed a different line than the pane ran (first
+  // helper preview, job 282fb099cb03). Unwrap once, unescape once: the pane's exact text.
+  const pzRaw = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
+  const pzExact = /^".*"$/s.test(pzRaw) ? pzRaw.slice(1, -1).replace(/\\(.)/gs, "$1") : pzRaw;
+  const pzBroken = spawnSync("/bin/sh", ["-c", pzExact.replaceAll(`'${pzSbx}'`, "'/nonexistent/sandbox-exec'")],
     { encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] });
   const pzBrokenOut = `${pzBroken.stdout ?? ""}${pzBroken.stderr ?? ""}`;
   check("§6a a pi-zai fence that cannot run prints its named marker and never starts pi",
     pzBrokenOut.includes("pi-zai: pi was NOT started - its read fence (sandbox-exec) failed its self-test")
       && pzBroken.error === undefined,
-    `${pzBroken.error?.message ?? `exit ${pzBroken.status}`} / ${pzBrokenOut.slice(-200)}`);
+    `${pzBroken.error?.message ?? `exit ${pzBroken.status}`} / ${pzBrokenOut.slice(-200)}`
+      + ` / exact line runnable=${pzExact.includes(`'${pzSbx}'`) && !pzExact.startsWith('"')}`);
   if (process.platform === "darwin") {
     // The canary: fenced vs. unfenced, same probe, same path — without the control the EPERM
     // measures nothing. Opens only; not one byte of either file is read.

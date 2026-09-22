@@ -12356,6 +12356,17 @@ export async function run(ctx: Ctx): Promise<void> {
       return { status: r.status, out: (r.stdout ?? "").trim(), err: (r.stderr ?? "").trim() };
     };
     await post("/api/dispatch", { on: false });
+    // A SECOND TRACKED FILE, committed on main BEFORE the lane exists. It is the clock this check
+    // needs: the lane dirties it only AFTER the rebase (step 3b), so an edge on it can ONLY appear
+    // once tickGit has re-read the hunks on the rebased tree. Without such a signal the judgement
+    // below races the git tick — the lane's own row names code.txt, so the `own` edge stands on the
+    // DECLARED surface whether hunks were read or not, and waiting on it proves nothing. Measured
+    // 2026-09-22 by mutation probe A: with the anchor put back on baseSha the route check still
+    // read `foreign: "now"` and passed, because it judged before the tick had looked.
+    writeFileSync(`${REPO}/ha-lane-extra.txt`, "tracked baseline\n");
+    spawnSync("git", ["-C", REPO, "add", "ha-lane-extra.txt"], { encoding: "utf8" });
+    spawnSync("git", ["-C", REPO, "-c", "user.email=e2e@localhost", "-c", "user.name=e2e",
+      "commit", "-m", "(ha) tracked baseline for the hunk-only probe"], { encoding: "utf8" });
     const haMake = async (text: string, queue: boolean): Promise<string> =>
       ((await (await post("/api/tasks", { text, repo: REPO, queue })).json()) as { task?: { id: string } }).task?.id ?? "";
     // the lane, started attended so its row is `sent` on a slot this fixture knows by number
@@ -12376,25 +12387,41 @@ export async function run(ctx: Ctx): Promise<void> {
     haGit(REPO, "add", "ha-foreign.txt");
     const haMainCommit = haGit(REPO, "commit", "-m", "(ha) main moves a file the lane never touched");
     const haRebase = haCwd ? haGit(haCwd, "rebase", "main") : { status: 1, out: "", err: "no lane cwd" };
+    // (3b) ...and ONLY NOW does the lane touch the second file, uncommitted (the diff runs against
+    // the WORKTREE). An edge on it therefore dates the hunk reading to after the rebase.
+    if (haCwd) writeFileSync(`${haCwd}/ha-lane-extra.txt`, "tracked baseline\nlane touched this after the rebase\n");
     // the two judged rows, filed AFTER main's commit so ha-foreign.txt is a tracked path the surface
     // derivation can resolve; both released, or the wave's `unreleased` verdict answers before the
     // collision rule ever runs and the fixture would measure the release door instead
     const haForeignRow = await haMake("(ha) foreign row edits ha-foreign.txt", true);
     const haOwnRow = await haMake("(ha) own row edits code.txt", true);
+    // the clock row: it shares NO file with the lane's declared surface, so its only possible edge
+    // is the lane's post-rebase hunk on ha-lane-extra.txt
+    const haHunkRow = await haMake("(ha) hunk-only row edits ha-lane-extra.txt", true);
     const haPlanNow = async (): Promise<StartPlan> => (await (await get("/api/start-plan")).json()) as StartPlan;
     // the git tick (FLEET_GIT_TICK_MS) is what re-reads the hunks — poll for the anchor to have been
     // re-derived rather than sleep a remembered number
     const haNextOf = (plan: StartPlan, id: string): unknown =>
       plan.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(id))?.next;
+    const haCollidesOn = (plan: StartPlan, id: string, file: string): boolean => {
+      const n = haNextOf(plan, id) as { collides?: { file?: string } } | string | undefined;
+      return !!n && typeof n === "object" && n.collides?.file === file;
+    };
     let haPlan = await haPlanNow();
-    for (let i = 0; i < 60 && haNextOf(haPlan, haOwnRow) === undefined; i++) { await Bun.sleep(100); haPlan = await haPlanNow(); }
-    for (let i = 0; i < 60 && haNextOf(haPlan, haOwnRow) === "now"; i++) { await Bun.sleep(100); haPlan = await haPlanNow(); }
+    for (let i = 0; i < 60 && haNextOf(haPlan, haHunkRow) === undefined; i++) { await Bun.sleep(100); haPlan = await haPlanNow(); }
+    // WAIT ON THE CLOCK ROW, never on the `own` row: only this edge proves the tick has re-read the
+    // hunks since the rebase, and it is the difference between measuring the anchor and measuring
+    // which of two async things happened first.
+    for (let i = 0; i < 80 && !haCollidesOn(haPlan, haHunkRow, "ha-lane-extra.txt"); i++) { await Bun.sleep(100); haPlan = await haPlanNow(); }
     const haRepoRow = haPlan.repos.find((r) => r.waves.some((w) => w.ids.includes(haOwnRow)));
     check("(ha) PROBE: the lane really runs on a rebased worktree, both judged rows are in the plan, and the repo cap has room — without all four the verdicts below measure nothing",
       haSlot >= 0 && !!haCwd && haMainCommit.status === 0 && haRebase.status === 0
       && haNextOf(haPlan, haOwnRow) !== undefined && haNextOf(haPlan, haForeignRow) !== undefined
+      // the clock: the hunks were re-read AFTER the rebase, so the verdicts below measure the anchor
+      && haCollidesOn(haPlan, haHunkRow, "ha-lane-extra.txt")
       && !!haRepoRow?.cap && haRepoRow.lanes < haRepoRow.cap.max,
       JSON.stringify({ slot: haSlot, cwd: !!haCwd, mainCommit: haMainCommit.status, rebase: `${haRebase.status}:${haRebase.err.slice(0, 160)}`,
+        hunkClock: haNextOf(haPlan, haHunkRow),
         lanes: haRepoRow?.lanes ?? null, cap: haRepoRow?.cap ?? null, dispatched: haDispatched.error ?? null }));
     const haForeignNext = haNextOf(haPlan, haForeignRow);
     const haOwnNext = haNextOf(haPlan, haOwnRow);
@@ -12423,7 +12450,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify(haNextOf(haCliPlan, haOwnRow)) === JSON.stringify({ collides: { slot: haSlot, file: "code.txt" } }),
       JSON.stringify({ onDisk: haOnDisk, exit: haCliRun.status, err: haCliRun.stderr.slice(0, 300),
         foreign: haCliPlan ? haNextOf(haCliPlan, haForeignRow) : null, own: haCliPlan ? haNextOf(haCliPlan, haOwnRow) : null }));
-    for (const id of [haForeignRow, haOwnRow]) await post(`/api/tasks/${id}/delete`, {});
+    for (const id of [haForeignRow, haOwnRow, haHunkRow]) await post(`/api/tasks/${id}/delete`, {});
     if (haSlot >= 0) await post(`/api/slots/${haSlot}/kill`, {});
   }
   // --- (wp) A WAVE PARTNER OF AN ALREADY-RELEASED ROW DOES NOT PAY THE CAP AGAIN (2026-09-22,

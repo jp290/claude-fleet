@@ -3270,6 +3270,28 @@ export async function run(): Promise<void> {
       setReportComposerMode("normal");
       if (gateLedgerExisted) writeFileSync(gateLedger, gateLedgerBefore);
       else rmSync(gateLedger, { force: true });
+      // ...and main's event tail as it found it. The two lines this block minted are receiver-`main`
+      // rows (the SETTLE line ends delivered-unacked, the OBSERVE line acknowledged), and retention
+      // is PER RECEIVER: `server.ts#pruneFleetEvents` keeps FLEET_EVENT_KEEP_TERMINAL (5) terminal
+      // rows, oldest `acknowledgedAt ?? createdAt` first. Left in place, Q5-recycle's kill below
+      // turns the delivered one receiver-gone in the same tick as the recycle event, the tail
+      // reaches 6, and the recycle event — unacknowledged, so keyed by its early createdAt — is
+      // the one pruned in the very millisecond it goes receiver-gone (measured: kept instance
+      // fleet-e2e-instance-40375, audit rows fleet_event_receiver_gone + fleet_event_prune on
+      // 7cf8106b… at the same ts). Stripped from the stopped image, with their spent watches.
+      const mintedEvents = new Set([parked.row?.id, parked2.row?.id].filter((id): id is string => !!id));
+      if (mintedEvents.size) {
+        await stopSrv();
+        const image = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
+          events?: { id?: string; watchId?: string | null }[]; watches?: { id?: string }[];
+        };
+        const mintedWatches = new Set((image.events ?? [])
+          .filter((e) => mintedEvents.has(e.id ?? "")).map((e) => e.watchId ?? ""));
+        image.events = (image.events ?? []).filter((e) => !mintedEvents.has(e.id ?? ""));
+        if (image.watches) image.watches = image.watches.filter((w) => !mintedWatches.has(w.id ?? ""));
+        writeFileSync(reportStatePath, JSON.stringify(image, null, 2), { mode: 0o600 });
+        await restartSrv({});
+      }
     }
 
     await stopSrv();

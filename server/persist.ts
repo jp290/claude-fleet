@@ -129,3 +129,30 @@ export async function readEventLog(file: string): Promise<{ rows: Record<string,
   const { rows, total } = await readLedger<Record<string, unknown>>(file);
   return { rows, total };
 }
+
+// WHOSE PANES A STATE FILE DESCRIBES. Every slot row in fleet.json names a tmux session on ONE
+// socket, and the SOCKET is the identity that carries it, not FLEET_INSTANCE: `tmux -L <sock>` is
+// the only address those panes have, FLEET_INSTANCE is a display name that may be unset on both
+// sides (then it compares null to null) and that a scratch copy inherits verbatim whenever it copies
+// `.env` along (bun auto-loads it). A suite or scratch rig MUST move the socket to run safely at
+// all, so the socket is the one field a copied state reliably disagrees on. The 2026-09-20 incident
+// (report af1aa862) was exactly that shape: a scratch server on its own socket booted a copy of the
+// live state, found none of those slots' panes on ITS socket, and self-heal resumed the live
+// conversations there — slot 11's codex agent did not survive it.
+//
+// Returns null when the rows are this boot's to rehydrate, else a printable name of the owner.
+//
+// THE DANGEROUS LINE IS THE FIRST ONE. A state file WITHOUT the field — every fleet.json written
+// before this check existed, including the live one at the first deploy that carries it — counts
+// as OWNED BY WHOEVER READS IT. Reading absence as "foreign" would make that deploy boot the live
+// fleet with zero slots: every lane, MAIN and session pin gone in one restart. So absence keeps
+// today's behaviour, and the first saveState() of that boot writes the field, after which the file
+// is protected. The price is honest and bounded: a copy taken from a file that predates the field
+// is still adopted, exactly as before this change.
+// A PRESENT field that is not a string was written by no server, so it is not read as ours: the
+// hand-edit fails closed, towards an empty slot list, never towards foreign panes.
+export function foreignStateOwner(field: unknown, ownSock: string): string | null {
+  if (field === undefined) return null;
+  if (field === ownSock) return null;
+  return typeof field === "string" ? JSON.stringify(field.slice(0, 64)) : "an unreadable socket field";
+}

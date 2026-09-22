@@ -150,7 +150,7 @@ import {
   type SlotStreamOccupant, type TaskCriterionPart,
 } from "./server/types";
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
-import { appendEvent, appendEventStrict, coalescedSaver, readLedger, readEventLog } from "./server/persist";
+import { appendEvent, appendEventStrict, coalescedSaver, foreignStateOwner, readLedger, readEventLog } from "./server/persist";
 import { buildVariantCompareRow, countCheckedMet, decideVariantCompare, doneEntriesFor, stageOneTied,
   UNMEASURED_DIFF, type VariantCompareVariant, type VariantDecidedAt, type VariantDiffStat,
   type VariantDoneEntry, type VariantDoneResult, type VariantGate, type VariantStageCandidate } from "./variant-compare";
@@ -3708,7 +3708,8 @@ function stateSnapshot(): string {
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
-  return JSON.stringify({ token: persistedToken, stewardToken, helperToken,
+  // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
+  return JSON.stringify({ sock: SOCK, token: persistedToken, stewardToken, helperToken,
     helperClaims: Object.fromEntries(helperClaims), helperLapses, helperDevices: [...helperDevices.values()],
     // the sharded runs, for the claims' reason (a deploy mid-run must not hand the tree to the drain
     // while n helpers still run it). Only written when one exists, so a FLEET_AUDIT_SHARDS=1 state
@@ -31675,7 +31676,17 @@ if (existsSync(STATE_FILE)) {
         console.error(`laneSucceedCounts must be an object — loaded as empty`);
       }
     }
-    for (const [k, v] of Object.entries(persisted.slots ?? {})) {
+    // A STATE FILE WRITTEN FOR ANOTHER SOCKET'S PANES IS NOT REHYDRATED — the rows stay on disk in
+    // no form this boot will use, the boot goes on with an empty slot list rather than aborting (a
+    // suite booting from copied state must keep running), and the log names both sockets. Absent
+    // field = ours; that backwards-compatibility line and why it is the dangerous one:
+    // server/persist.ts#foreignStateOwner.
+    const stateOwner = foreignStateOwner((persisted as { sock?: unknown }).sock, SOCK);
+    if (stateOwner !== null)
+      console.log(`[fleet] state file belongs to tmux socket ${stateOwner}, this server runs on '${SOCK}' — `
+        + `its ${Object.keys(persisted.slots ?? {}).length} slot row(s) describe that fleet's panes and are NOT `
+        + `rehydrated; booting with an empty slot list`);
+    for (const [k, v] of Object.entries(stateOwner === null ? persisted.slots ?? {} : {})) {
       const s = slotFrom(k);
       if (s && typeof v?.cwd === "string") {
         s.cwd = v.cwd;

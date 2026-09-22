@@ -5,7 +5,7 @@ import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, realpa
 import { tmpdir } from "node:os";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
-import { BASE, IP, PORT, REPO, ROOT, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
+import { BASE, IP, PORT, REPO, ROOT, SOCK, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
@@ -2663,5 +2663,89 @@ export async function run(): Promise<void> {
     st2.programs = (st2.programs ?? []).filter((p) => p.id !== PROGRAM);
     writeFileSync(statePath, JSON.stringify(st2, null, 2), { mode: 0o600 });
     await restartSrv();
+  }
+
+  // --- A STATE FILE CARRIES THE SOCKET ITS PANES LIVE ON, and a boot on another socket rehydrates
+  // none of its slots (server/persist.ts#foreignStateOwner). The class: a scratch server booting a
+  // copy of the live fleet.json resumed the live sessions on its own socket (2026-09-20, report
+  // af1aa862, slot 11). Every sN pane is killed while the server is down, so a slot can only come
+  // back from the STATE FILE — boot's tmux adoption has nothing to find. Three boots:
+  //  (a) sock = another socket → zero slots, no pane spawned, the log names both sockets. Mutation:
+  //      drop the foreignStateOwner gate in server.ts → the rows rehydrate, ensureSlot respawns → red.
+  //  (b) the original bytes (sock = ours) → the identical slot list, every pane respawned.
+  //  (c) the field ABSENT (every pre-field file, the live one at first deploy) → still ours, and the
+  //      boot's own save writes the field. Mutation: read absence as foreign → red.
+  // The original bytes go back after (a), so what (a)'s save pruned (shares, autos, requeued tasks)
+  // is restored for the modules after this one. ---
+  {
+    const statePath = `${ROOT}/fleet.json`;
+    type Row = Record<string, unknown> & { id: number; cwd?: string | null };
+    const F = ((await (await get("/api/sessions")).json()) as { slots: Row[] }).slots
+      .filter((r) => !r.cwd).map((r) => r.id).pop() ?? 16;
+    const open = await post(`/api/slots/${F}/open`, { cwd: "~", label: "sock-owner-probe" });
+    check("sock-owner fixture: a labelled slot is open to be rehydrated", open.ok, `slot ${F}: ${open.status}`);
+    const keys = ["id", "cwd", "label", "mission", "awaiting", "worktree", "harness", "model", "effort", "taskId", "programId"];
+    const projection = async (): Promise<string> => {
+      const rows = ((await (await get("/api/sessions")).json()) as { slots: Row[] }).slots;
+      return JSON.stringify(rows.filter((r) => r.cwd).map((r) => Object.fromEntries(keys.map((k) => [k, r[k] ?? null]))));
+    };
+    const persistedSock = async (): Promise<unknown> => {
+      try { return (JSON.parse(readFileSync(statePath, "utf8")) as { sock?: unknown }).sock; } catch { return "unreadable"; }
+    };
+    const baseline = await projection();
+    let ownSock: unknown = null;
+    for (let i = 0; i < 100 && ownSock !== SOCK; i++) { ownSock = await persistedSock(); if (ownSock !== SOCK) await Bun.sleep(50); }
+    check("the state file names the tmux socket that wrote it", ownSock === SOCK, JSON.stringify({ ownSock, SOCK }));
+    const paneNames = async (): Promise<string[]> =>
+      (await tmuxOut("list-sessions", "-F", "#{session_name}")).out.split("\n").filter((n) => /^s\d+$/.test(n));
+    const bootWith = async (bytes: string): Promise<string> => {
+      await stopSrv();
+      for (const n of await paneNames()) await tmuxOut("kill-session", "-t", `=${n}`);
+      writeFileSync(statePath, bytes, { mode: 0o600 });
+      const logAt = (() => { try { return readFileSync(`${ROOT}/server.log`, "utf8").length; } catch { return 0; } })();
+      await restartSrv();
+      try { return readFileSync(`${ROOT}/server.log`, "utf8").slice(logAt); } catch { return ""; }
+    };
+    await stopSrv();
+    const originalBytes = readFileSync(statePath, "utf8");
+    const original = JSON.parse(originalBytes) as Record<string, unknown> & { slots?: Record<string, unknown> };
+    const rowCount = Object.keys(original.slots ?? {}).length;
+    const foreignLog = await bootWith(JSON.stringify({ ...original, sock: `${SOCK}-elsewhere` }, null, 2));
+    const foreignRows = await projection();
+    await Bun.sleep(1500); // a negative proof: give self-heal its window to respawn anything it holds
+    const foreignPanes = await paneNames();
+    check("a boot on another socket rehydrates NONE of the state file's slots",
+      rowCount >= 1 && foreignRows === "[]", JSON.stringify({ rowCount, foreignRows: foreignRows.slice(0, 300) }));
+    check("…spawns no session for them",
+      foreignPanes.length === 0, JSON.stringify(foreignPanes));
+    check("…and says so in one log line naming both sockets, then keeps serving",
+      foreignLog.includes(`state file belongs to tmux socket "${SOCK}-elsewhere", this server runs on '${SOCK}'`)
+        && foreignLog.includes(`its ${rowCount} slot row(s)`) && !foreignLog.includes("REFUSING TO START"),
+      foreignLog.split("\n").filter((l) => l.includes("state file belongs")).join(" | ").slice(0, 300) || foreignLog.slice(-300));
+
+    await bootWith(originalBytes);
+    const sameRows = await projection();
+    let respawned: string[] = [];
+    const want = (JSON.parse(baseline) as { id: number }[]).map((r) => `s${r.id}`).sort();
+    for (let i = 0; i < 100; i++) {
+      respawned = (await paneNames()).sort();
+      if (want.every((n) => respawned.includes(n))) break;
+      await Bun.sleep(50);
+    }
+    check("a boot on the SAME socket rehydrates every slot exactly as before — identical slot list",
+      sameRows === baseline && baseline.includes("sock-owner-probe"),
+      JSON.stringify({ baseline: baseline.slice(0, 300), sameRows: sameRows.slice(0, 300) }));
+    check("…and brings each of their panes back", want.every((n) => respawned.includes(n)),
+      JSON.stringify({ want, respawned }));
+
+    const { sock: _drop, ...legacy } = original;
+    await bootWith(JSON.stringify(legacy, null, 2));
+    const legacyRows = await projection();
+    let legacySock: unknown = null;
+    for (let i = 0; i < 100 && legacySock !== SOCK; i++) { legacySock = await persistedSock(); if (legacySock !== SOCK) await Bun.sleep(50); }
+    check("a state file WITHOUT the socket field counts as this boot's own — every slot rehydrated",
+      legacyRows === baseline, JSON.stringify({ baseline: baseline.slice(0, 300), legacyRows: legacyRows.slice(0, 300) }));
+    check("…and that boot's save writes the field", legacySock === SOCK, JSON.stringify(legacySock));
+    await post(`/api/slots/${F}/kill`, {});
   }
 }

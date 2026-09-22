@@ -1606,19 +1606,23 @@ export async function run(): Promise<void> {
     // S3a: the letter is a PERSISTED field on the lane ref, not a position. The server assigns the
     // smallest free letter at open; a lane that carries one keeps it whatever happens around it,
     // and only lanes WITHOUT the field (every lane older than the field, or a loader that dropped
-    // it) fall back to the positional run.
+    // it) fall back to the positional run — which counts every lane in the band, stored or not, so
+    // a mixed band (one pre-field lane among new ones) can double a name until the old lane ends.
+    // The fixtures keep the two halves deliberately apart — stored letters the positional run does
+    // not reach — so the check never blesses that doubling as intended.
     const stored = laneBandNames?.([{ anchor: { id: 4 }, lanes: [
-      { id: 5, worktree: { letter: "C" } }, { id: 6, worktree: { letter: "A" } }, { id: 7 },
+      { id: 5, worktree: { letter: "C" } }, { id: 6 }, { id: 7, worktree: { letter: "A" } },
     ] }]);
-    check("a stored letter IS the name regardless of id order, and a lane without the field still derives",
-      stored?.get(5) === "4C" && stored.get(6) === "4A" && stored.get(7) === "4B",
+    check("a stored letter IS the name — it wins over the positional run, which still derives for lanes without the field",
+      stored?.get(5) === "4C" && stored.get(6) === "4B" && stored.get(7) === "4A",
       JSON.stringify([...stored?.entries() ?? []]));
     const storedBandless = laneBandNames?.([
-      { anchor: null, lanes: [{ id: 8, worktree: { letter: "B" } }, { id: 9 }] },
+      { anchor: null, lanes: [{ id: 8 }, { id: 9, worktree: { letter: "C" } }, { id: 10, worktree: { letter: "B" } }] },
       { anchor: { id: 1 }, lanes: [{ id: 2 }] },
     ]);
     check("a stored letter carries onto band 0 too, where the derivation would move it",
-      storedBandless?.get(8) === "0B" && storedBandless.get(9) === "0A" && storedBandless.get(2) === "1A",
+      storedBandless?.get(8) === "0A" && storedBandless.get(9) === "0C" && storedBandless.get(10) === "0B"
+        && storedBandless.get(2) === "1A",
       JSON.stringify([...storedBandless?.entries() ?? []]));
     check("the server's letter alphabet is the client's, letter for letter — two derivations of one name are how they come apart",
       (() => {

@@ -4184,6 +4184,19 @@ async function laneForkSha(tree: string, base: string | null): Promise<string | 
   const mb = await git(tree, "merge-base", base, "HEAD");
   return mb.code === 0 && mb.out ? mb.out : undefined;
 }
+// THE ANCHOR THE LANE'S HUNKS ARE READ FROM, and it is deliberately NOT `worktree.baseSha`
+// (land-collision-stats.ts#laneHunkDiffArgs says why at length). baseSha is the fork as it stood at
+// spawn time and is never rewritten — after a rebase onto a newer integration tip everything main
+// changed in between diffs as the LANE's own work, and start-plan.ts#collision makes edges out of
+// files the lane never touched. The merge-base is re-derived here per read, so it follows the
+// rebase; `laneBaseRef` is the same base every other lane reader resolves, so this cannot drift
+// away from the ahead/behind count computed a few lines below from the very same ref.
+// Falls back to baseSha when the base is unresolvable — the honest last fork, exactly what
+// laneForkSha's own contract tells its callers to do.
+async function laneHunkAnchor(s: Slot): Promise<string | undefined> {
+  if (!s.cwd || !s.worktree) return undefined;
+  return (await laneForkSha(s.cwd, await laneBaseRef(s))) ?? s.worktree.baseSha;
+}
 // session-scoped changed-files list, porcelain-shaped ("M  path") so the client renders
 // both scopes the same way; untracked files ride along from live status
 function sessionFiles(nameStatusOut: string, statusOut: string): string[] {
@@ -4725,10 +4738,13 @@ async function tickGit(): Promise<void> {
       // `behind` would read 0 forever. Skipped mid-rebase for the same reason the merge guard above
       // exists: a lane whose git is being rewritten is not a lane to write refs into.
       if (!gitOp) await syncLaneRefs(s.worktree, s.cwd);
-      // only a lane that runs a row has a surface the plan compares, so only it pays the diff
-      const forkSha = s.worktree?.baseSha;
-      const hunks = forkSha && !gitOp && tasks.some((t) => t.slot === s.id && t.status === "sent")
-        ? await gitRead(s.cwd, ...laneHunkDiffArgs(forkSha)) : null;
+      // only a lane that runs a row has a surface the plan compares, so only it pays the diff —
+      // and the anchor is resolved INSIDE that gate, so a slot with no sent row pays no merge-base
+      // spawn either. `laneHunkAnchor` re-derives it per tick on purpose (see there): a rebased
+      // lane whose anchor stayed at spawn time reports main's commits as its own hunks.
+      const anchorSha = !gitOp && tasks.some((t) => t.slot === s.id && t.status === "sent")
+        ? await laneHunkAnchor(s) : undefined;
+      const hunks = anchorSha ? await gitRead(s.cwd, ...laneHunkDiffArgs(anchorSha)) : null;
       if (hunks?.code === 0) laneHunkInfo.set(s.id, laneHunkRanges(hunks.out)); else laneHunkInfo.delete(s.id);
       const st = await gitRead(s.cwd, "status", "--porcelain=v2", "--branch");
       if (st.code !== 0) { gitInfo.set(s.id, null); continue; }
@@ -11565,6 +11581,36 @@ function namedAfterRefusal(t: Task): string | null {
   return missing.length ? afterOrderRefusal(missing, t.card?.after) : null;
 }
 
+// THE ROWS OF t's OWN WAVE THAT ARE ALREADY RELEASED. The wave membership comes from the ONE
+// classifier the board, `bun task-land-waves.ts` and the wave door all answer from
+// (landWaveProjectionNow) — a second wave reading here would be a second thing to keep in step, and
+// the day the two disagreed this door would wave through a row the plan never bundled with
+// anything. Empty for a row in no wave, a row whose wave is all pending, and a row the projection
+// does not carry. Called ONLY when the cap would otherwise refuse, so the common release pays no
+// projection.
+//
+// THIS IS NOT THE START PLAN, and the distinction is the one releaseCardRefusal above is pinned on
+// ("a release is a decision, not a projection"): that rule keeps the SCHEDULER out of this door —
+// lanes, caps, collisions with running work, what starts next. The land-wave classifier is none of
+// those. It is a pure function of the queue's own rows, their surfaces and their `after`, and it
+// answers one question of fact — which rows are one wave — that the cap has to know to count a
+// wave once. No lane and no cap reaches this function.
+//
+// SCOPED TO t's OWN PROGRAM, because the cap it excuses is: a released row of another Program
+// spends another Program's number and can never be the reason this one may go past its own.
+function releasedWavePartnersOf(t: Task): string[] {
+  const released = new Set(tasks
+    .filter((x) => x.status === "queued" && (x.programId ?? null) === (t.programId ?? null))
+    .map((x) => x.id));
+  const partners = new Set<string>();
+  for (const repo of landWaveProjectionNow().repos)
+    for (const wave of repo.waves) {
+      if (!wave.ids.includes(t.id)) continue;
+      for (const id of wave.ids) if (id !== t.id && released.has(id)) partners.add(id);
+    }
+  return [...partners].sort();
+}
+
 async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // The authority bracket answers first and IN ITS OWN WORDS — "not bound" and "ambiguously bound"
   // stay two different refusals, because they tell the caller to go fix two different things.
@@ -11652,7 +11698,19 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // through (ACP-16, 200 instead of 409) — part 1's rewrite of this line lost the boundary.
   const groupVariants = t.variants ? variantsOfGroup(t).filter((v) => v.status === "pending").length : 0;
   const openReleased = tasks.filter((x) => x.programId === program.id && x.status === "queued" && !x.variants).length;
-  if (programReleasePolicy(t) === "manual" && openReleased + groupVariants >= PROGRAM_MAX_RELEASED)
+  // E5 · A WAVE PARTNER OF AN ALREADY-RELEASED ROW IS NOT A NEW WAVE (2026-09-22). A wave starts
+  // only when EVERY member of it is released (the plan's `unreleased` verdict — "a partner that is
+  // not released holds the whole wave"), so a released row whose partner is still pending starts
+  // nothing at all.
+  // Once released rows fill the cap, the one release that would free them — the partner's — is the
+  // one this door refuses, and the program deadlocks: measured on program 0d51b4d4, 5 queued rows
+  // and 0 startable. So the partner rides the wave that was already counted, exactly as a group's n
+  // variants count ONCE against the same number (E4 above). It is only the counting that changes:
+  // the wave semantics are untouched, the partner still waits for its wave, and a row that shares a
+  // wave with nothing released is an independent wave and meets the cap as before.
+  const capFull = programReleasePolicy(t) === "manual" && openReleased + groupVariants >= PROGRAM_MAX_RELEASED;
+  const wavePartners = capFull ? releasedWavePartnersOf(t) : [];
+  if (capFull && !wavePartners.length)
     return json({ error: `program release cap reached (${openReleased + groupVariants}/${PROGRAM_MAX_RELEASED} released rows not yet started${groupVariants ? ` — ${groupVariants} of them are the pending variants of group ${t.id}` : ""}) — let the tick start one first` }, 409);
   // (5) THROUGH THE HELPER, never a bare assignment: releaseTask is where `by` cannot be forgotten,
   // and a machine release that recorded nothing would be indistinguishable from the attended lands
@@ -11664,7 +11722,9 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   for (const v of releasedVariants) releaseTask(v, "machine");
   // (6) …and the trail row the helper's field cannot be, for the reason spelled out at the
   // "task_release" AuditEvent: `releasedBy` is overwritten by a later attended ▸ start.
-  audit("task_release", s.id, `${t.id} program=${program.id}${releasedVariants.length ? ` variants=${releasedVariants.map((v) => v.id).join(",")}` : ""}${liftedHold}`);
+  // the wave exemption is NAMED on the trail: a release that passed a full cap must say which
+  // already-released partner it rode in with, or the ledger shows a cap that simply did not hold
+  audit("task_release", s.id, `${t.id} program=${program.id}${releasedVariants.length ? ` variants=${releasedVariants.map((v) => v.id).join(",")}` : ""}${wavePartners.length ? ` wave-partner-of=${wavePartners.join(",")}` : ""}${liftedHold}`);
   await saveStateNow();
   // sessionIdMatch is REPORTED, never gated — ACP-13's doctrine, and the same shape openAttention
   // and handleSelfSucceed answer with.

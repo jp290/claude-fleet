@@ -12334,4 +12334,194 @@ export async function run(ctx: Ctx): Promise<void> {
       !taRestored.some((t) => t.id.startsWith("talive") || t.id.startsWith("taterm") || [taArc, taBare, taBad].includes(t.id)),
       `total=${taRestored.length}`);
   }
+  // --- (ha) THE LANE'S HUNK ANCHOR IS THE LIVE MERGE-BASE, NOT THE SPAWN-TIME baseSha (2026-09-22,
+  // server.ts#laneHunkAnchor · land-collision-stats.ts#laneHunkDiffArgs · the CLI's own half in
+  // start-plan.ts). `worktree.baseSha` is the fork as it stood when the lane was opened and is never
+  // rewritten. Once the lane (or the resolver) rebases onto a newer main, every file main changed in
+  // between sits between baseSha and the lane's HEAD and was read as the LANE's own hunk — and
+  // start-plan.ts#collision then built an edge on a file the lane never touched. Measured on lane
+  // fleet/260922003850-a399: `main...branch` held 2 docs files, the reading held three lines of
+  // e2e/slots.ts. This fixture reproduces that exact shape in REPO.
+  //
+  // NON-TAUTOLOGICAL BY CONTROL, and the control is the point: the lane's OWN file must still
+  // collide in the same breath. The mutation (anchor back to `s.worktree.baseSha`) turns the
+  // foreign row into a `collides` edge while the control stays green — a check that only asserted
+  // "no edge" would also pass on an empty plan, a lane that claims nothing, or a row whose surface
+  // never derived. Both readers are covered: the server's git tick answers GET /api/start-plan, and
+  // `bun start-plan.ts --state fleet.json` builds its lanes with its own anchor — the two objects
+  // must be identical, so a CLI left on baseSha shows up as a diff even though the route is right.
+  {
+    const haGit = (cwd: string, ...args: string[]): { status: number | null; out: string; err: string } => {
+      const r = spawnSync("git", ["-C", cwd, "-c", "user.email=e2e@localhost", "-c", "user.name=e2e", ...args], { encoding: "utf8" });
+      return { status: r.status, out: (r.stdout ?? "").trim(), err: (r.stderr ?? "").trim() };
+    };
+    await post("/api/dispatch", { on: false });
+    const haMake = async (text: string, queue: boolean): Promise<string> =>
+      ((await (await post("/api/tasks", { text, repo: REPO, queue })).json()) as { task?: { id: string } }).task?.id ?? "";
+    // the lane, started attended so its row is `sent` on a slot this fixture knows by number
+    const haLaneRow = await haMake("(ha) lane row edits code.txt", false);
+    const haDispatched = (await (await post(`/api/tasks/${haLaneRow}/dispatch`, {})).json()) as { slot?: number; error?: string };
+    const haSlot = typeof haDispatched.slot === "number" ? haDispatched.slot : -1;
+    const haCwd = haSlot < 0 ? "" : ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd?: string }[] })
+      .slots.find((s) => s.id === haSlot)?.cwd ?? "";
+    // (1) the lane does its OWN work and commits it — this is what must keep colliding
+    if (haCwd) {
+      writeFileSync(`${haCwd}/code.txt`, "root\nlane own line\n");
+      haGit(haCwd, "add", "code.txt");
+      haGit(haCwd, "commit", "-m", "(ha) the lane's own work on code.txt");
+    }
+    // (2) main moves on a file the lane never touches, and (3) the lane rebases onto it. A NEW file
+    // rather than an existing fixture path, so nothing measured earlier in this run is disturbed.
+    writeFileSync(`${REPO}/ha-foreign.txt`, "main moved this, the lane never did\n");
+    haGit(REPO, "add", "ha-foreign.txt");
+    const haMainCommit = haGit(REPO, "commit", "-m", "(ha) main moves a file the lane never touched");
+    const haRebase = haCwd ? haGit(haCwd, "rebase", "main") : { status: 1, out: "", err: "no lane cwd" };
+    // the two judged rows, filed AFTER main's commit so ha-foreign.txt is a tracked path the surface
+    // derivation can resolve; both released, or the wave's `unreleased` verdict answers before the
+    // collision rule ever runs and the fixture would measure the release door instead
+    const haForeignRow = await haMake("(ha) foreign row edits ha-foreign.txt", true);
+    const haOwnRow = await haMake("(ha) own row edits code.txt", true);
+    const haPlanNow = async (): Promise<StartPlan> => (await (await get("/api/start-plan")).json()) as StartPlan;
+    // the git tick (FLEET_GIT_TICK_MS) is what re-reads the hunks — poll for the anchor to have been
+    // re-derived rather than sleep a remembered number
+    const haNextOf = (plan: StartPlan, id: string): unknown =>
+      plan.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(id))?.next;
+    let haPlan = await haPlanNow();
+    for (let i = 0; i < 60 && haNextOf(haPlan, haOwnRow) === undefined; i++) { await Bun.sleep(100); haPlan = await haPlanNow(); }
+    for (let i = 0; i < 60 && haNextOf(haPlan, haOwnRow) === "now"; i++) { await Bun.sleep(100); haPlan = await haPlanNow(); }
+    const haRepoRow = haPlan.repos.find((r) => r.waves.some((w) => w.ids.includes(haOwnRow)));
+    check("(ha) PROBE: the lane really runs on a rebased worktree, both judged rows are in the plan, and the repo cap has room — without all four the verdicts below measure nothing",
+      haSlot >= 0 && !!haCwd && haMainCommit.status === 0 && haRebase.status === 0
+      && haNextOf(haPlan, haOwnRow) !== undefined && haNextOf(haPlan, haForeignRow) !== undefined
+      && !!haRepoRow?.cap && haRepoRow.lanes < haRepoRow.cap.max,
+      JSON.stringify({ slot: haSlot, cwd: !!haCwd, mainCommit: haMainCommit.status, rebase: `${haRebase.status}:${haRebase.err.slice(0, 160)}`,
+        lanes: haRepoRow?.lanes ?? null, cap: haRepoRow?.cap ?? null, dispatched: haDispatched.error ?? null }));
+    const haForeignNext = haNextOf(haPlan, haForeignRow);
+    const haOwnNext = haNextOf(haPlan, haOwnRow);
+    check("(ha) after the rebase the lane claims ONLY its own hunks: the row on main's file starts, while the row on the lane's own file still collides on it (the control that makes this non-vacuous)",
+      haForeignNext === "now"
+      && JSON.stringify(haOwnNext) === JSON.stringify({ collides: { slot: haSlot, file: "code.txt" } }),
+      JSON.stringify({ foreign: haForeignNext, own: haOwnNext }));
+    // ...and the CLI's own lane builder answers the same, off the same state file: it resolves the
+    // anchor itself (start-plan.ts), so a CLI left on baseSha prints a collides edge the route does not
+    const haCliRun = spawnSync("bun", [`${ROOT}/start-plan.ts`, "--state", `${ROOT}/fleet.json`, "--default-repo", REPO],
+      { encoding: "utf8", env: { ...process.env, FLEET_DISPATCH_REPO: REPO } });
+    const haCliPlan = ((): StartPlan | null => { try { return JSON.parse(haCliRun.stdout) as StartPlan; } catch { return null; } })();
+    check("(ha) `bun start-plan.ts --state fleet.json` resolves the same anchor as the git tick — same verdict on both rows from the other lane builder",
+      haCliRun.status === 0 && !!haCliPlan
+      && haNextOf(haCliPlan, haForeignRow) === "now"
+      && JSON.stringify(haNextOf(haCliPlan, haOwnRow)) === JSON.stringify({ collides: { slot: haSlot, file: "code.txt" } }),
+      JSON.stringify({ exit: haCliRun.status, err: haCliRun.stderr.slice(0, 300),
+        foreign: haCliPlan ? haNextOf(haCliPlan, haForeignRow) : null, own: haCliPlan ? haNextOf(haCliPlan, haOwnRow) : null }));
+    for (const id of [haForeignRow, haOwnRow]) await post(`/api/tasks/${id}/delete`, {});
+    if (haSlot >= 0) await post(`/api/slots/${haSlot}/kill`, {});
+  }
+  // --- (wp) A WAVE PARTNER OF AN ALREADY-RELEASED ROW DOES NOT PAY THE CAP AGAIN (2026-09-22,
+  // server.ts#releasedWavePartnersOf at the releaseTaskForMain cap). The deadlock it removes,
+  // measured on program 0d51b4d4 — 5 queued rows, 0 startable: a wave starts only when EVERY member
+  // of it is released, so a released row whose partner is still pending starts nothing and never
+  // leaves the released count; once such rows fill PROGRAM_MAX_RELEASED, the one release that would
+  // free them all — the partner's — is exactly the one the door refuses.
+  //
+  // THE TWO ARMS ARE THE POINT, and they run against the SAME full cap: the partner goes through
+  // (200) and an INDEPENDENT row of the same program, at that same instant, is still refused (409).
+  // Without the second arm this would pass just as well on a cap that had quietly stopped holding.
+  // Mutation: drop the `wavePartners` exemption → arm 1 is a 409 naming 5/5 and this goes red.
+  {
+    const wpSelfTokenOf = async (slot: number): Promise<string> => {
+      let seen = "";
+      for (let i = 0; i < 60 && !/^[0-9a-f]{32}$/.test(seen); i++) {
+        try {
+          seen = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, { selfToken?: string }> })
+            .slots?.[String(slot)]?.selfToken ?? "";
+        } catch { /* mid-write */ }
+        if (!/^[0-9a-f]{32}$/.test(seen)) await Bun.sleep(50);
+      }
+      return seen;
+    };
+    // released rows must stay released-but-unstarted, or the count below measures lanes the tick ran
+    await post("/api/dispatch", { on: false });
+    if (!existsSync(`${REPO2}/AGENTS.md`)) {
+      writeFileSync(`${REPO2}/AGENTS.md`, "# repo2\n\nscratch dispatch target for the e2e wave-partner probe.\n");
+      spawnSync("git", ["-C", REPO2, "add", "AGENTS.md"], { encoding: "utf8" });
+      spawnSync("git", ["-C", REPO2, "-c", "user.email=e2e@localhost", "-c", "user.name=e2e", "commit", "-m", "AGENTS.md"], { encoding: "utf8" });
+    }
+    const wpProg = ((await (await post("/api/programs", {
+      title: "wave-partner deckel probe",
+      intent: "Probe: releasing the wave partner of an already-released row does not pay PROGRAM_MAX_RELEASED twice.",
+      successCriterion: "With the cap full, the partner release is 200 and an independent row is still 409.",
+      nonGoals: ["No dispatch while the cap is measured"],
+      decisions: ["The program carries no release policy, so the manual deckel applies"],
+      evidence: ["docs/queue-analyst.md"],
+      openQuestions: [],
+    })).json()) as { program?: { id: string } }).program?.id ?? "";
+    await post(`/api/programs/${wpProg}/confirm`, {});
+    await post(`/api/programs/${wpProg}/activate`, {});
+    const wpBoot = await post(`/api/programs/${wpProg}/bootstrap-main`, { cwd: REPO2 });
+    const wpMainSlot = await until(() => {
+      try {
+        const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { programs?: { id?: string; main?: { slot?: number } }[] };
+        const mine = (st.programs ?? []).find((p) => p.id === wpProg);
+        // slot 0 is a real slot number, so the sentinel is a STRING for `until`'s truthiness test
+        return typeof mine?.main?.slot === "number" ? String(mine.main.slot) : null;
+      } catch { return null; }
+    }, { timeoutMs: 20_000, what: "(wp) the program's MAIN binding reaches fleet.json" })
+      .then((v) => Number(v)).catch(() => null);
+    const wpTok = typeof wpMainSlot === "number" ? await wpSelfTokenOf(wpMainSlot) : "";
+    const wpRelease = async (id: string): Promise<{ status: number; error: string }> => {
+      const res = await fetch(`${BASE}/api/self/tasks/${id}/release`, {
+        method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": wpTok }, body: "{}" });
+      let parsed: Record<string, unknown> = {};
+      try { parsed = (await res.json()) as Record<string, unknown>; } catch { /* non-json */ }
+      return { status: res.status, error: String(parsed.error ?? "") };
+    };
+    // a carded row on ONE named file: rows sharing a file are one collision component, which is what
+    // makes them wave partners at all; `file` is what decides whether a row joins that component
+    const wpRow = async (text: string, file: string): Promise<string> =>
+      ((await (await post("/api/tasks", {
+        text: `${text} The row's surface is ${file}.`, repo: REPO2, programId: wpProg,
+        card: { ziel: "probe row — what it costs the deckel is the whole point",
+          surface: { files: [file], symbols: [] },
+          done: `${file} is the tracked file this row's card names`, verify: "bun test", verboten: ["nothing"] } },
+      )).json()) as { task?: { id: string } }).task?.id ?? "";
+    const wpFill: string[] = [];
+    for (let i = 0; i < 5; i++) wpFill.push(await wpRow(`(wp) cap filler ${i + 1} of 5 — released before the partner arrives.`, "AGENTS.md"));
+    const wpPartner = await wpRow("(wp) the partner — it shares AGENTS.md with the fillers, so it shares a wave with one of them.", "AGENTS.md");
+    const wpIndep = await wpRow("(wp) the independent row — its own file, so its own wave, with nothing released in it.", "code.txt");
+    // THE CONTROL FIRST: the five fillers go out one by one, all 200 — the cap is reached honestly,
+    // by releases this door itself made, not by a number written into the state
+    const wpFillStatuses: number[] = [];
+    for (const id of wpFill) wpFillStatuses.push((await wpRelease(id)).status);
+    // ...and the wave membership is READ, not assumed: the partner must actually share a wave with a
+    // row that is already queued, and the independent row must share one with none. If the budget cut
+    // ever lands differently this probe says so instead of letting the arms below pass for free.
+    const wpPlan = (await (await get("/api/start-plan")).json()) as StartPlan;
+    const wpQueued = new Set(((await (await get("/api/tasks")).json()) as { tasks: { id: string; status: string; programId?: string }[] })
+      .tasks.filter((t) => t.status === "queued" && t.programId === wpProg).map((t) => t.id));
+    const wpWaveOf = (id: string): string[] => wpPlan.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(id))?.ids ?? [];
+    const wpPartnerWave = wpWaveOf(wpPartner).filter((id) => id !== wpPartner && wpQueued.has(id));
+    const wpIndepWave = wpWaveOf(wpIndep).filter((id) => id !== wpIndep && wpQueued.has(id));
+    check("(wp) PROBE: a bound MAIN, the cap filled to 5 by this door's own releases, the partner sharing a wave with a released row and the independent row sharing one with none",
+      wpBoot.status === 200 && typeof wpMainSlot === "number" && /^[0-9a-f]{32}$/.test(wpTok)
+      && wpFillStatuses.length === 5 && wpFillStatuses.every((s) => s === 200)
+      && wpQueued.size === 5 && wpPartnerWave.length > 0 && wpIndepWave.length === 0,
+      JSON.stringify({ boot: wpBoot.status, slot: wpMainSlot, tok: wpTok.length, fills: wpFillStatuses.join(","),
+        queued: wpQueued.size, partnerWave: wpWaveOf(wpPartner), partnerReleased: wpPartnerWave, indepWave: wpWaveOf(wpIndep) }));
+    const wpPartnerRes = await wpRelease(wpPartner);
+    const wpIndepRes = await wpRelease(wpIndep);
+    check("(wp) with the cap FULL the wave partner of an already-released row is released (200), while an independent row of the same program is still refused by the cap (409) — the exemption is the wave's, not a hole in the deckel",
+      wpPartnerRes.status === 200
+      && wpIndepRes.status === 409 && wpIndepRes.error.includes("release cap reached"),
+      JSON.stringify({ partner: wpPartnerRes, indep: wpIndepRes }));
+    // ...and the trail says WHY the partner passed a full cap, naming the row it rode in with
+    const wpAudit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((l) => JSON.parse(l) as { event?: string; detail?: string })
+      .filter((r) => r.event === "task_release" && (r.detail ?? "").startsWith(wpPartner));
+    check("(wp) the exempted release is named on the trail — `wave-partner-of=` carries the already-released row, so a cap that was passed is never silent",
+      wpAudit.length === 1 && /wave-partner-of=[0-9a-f]{4,}/.test(wpAudit[0]?.detail ?? "")
+      && wpPartnerWave.some((id) => (wpAudit[0]?.detail ?? "").includes(id)),
+      JSON.stringify({ rows: wpAudit.map((r) => r.detail) }));
+    for (const id of [...wpFill, wpPartner, wpIndep]) await post(`/api/tasks/${id}/delete`, {});
+    if (typeof wpMainSlot === "number") await post(`/api/slots/${wpMainSlot}/kill`, {});
+  }
 }

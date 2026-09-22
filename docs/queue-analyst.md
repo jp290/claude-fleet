@@ -345,6 +345,41 @@ Deckel und Verteilungspolitik unverändert (Gegenliste der Durchsatz-Notiz 2026-
 nur bei eingeschaltetem globalem Dispatcher — ein Program mit Grant unter gestopptem Fleet wird
 nicht erfasst.
 
+
+## 3e. Zwei Stillstaende am Startplan, beide 2026-09-22 vermessen
+
+**(A) Die Phantom-Kollision nach einem Rebase.** Die Hunks einer laufenden Lane
+(`start-plan.ts#StartPlanLane.hunks`, gelesen von `server.ts#tickGit` und vom CLI) wurden als
+Zweipunkt-Diff gegen `worktree.baseSha` gebildet — den Fork, wie er beim Spawn stand. `baseSha`
+wird nie nachgezogen (andere Leser haengen genau daran, es IST der unveraenderliche Fork). Rebast
+die Lane also auf ein neueres main, liegt alles, was main dazwischen geaendert hat, zwischen
+`baseSha` und dem Lane-HEAD und zaehlte als Hunk DER LANE; `start-plan.ts#collision` machte daraus
+Kanten auf Dateien, die die Lane nie angefasst hat. Gemessen an Lane `fleet/260922003850-a399`:
+`main...branch` trug 2 docs-Dateien, die Lesung hielt drei Zeilen auf `e2e/slots.ts` fest.
+**Der Anker ist seither die LIVE merge-base von Integrationszweig und Lane-HEAD**
+(`server.ts#laneHunkAnchor`, im CLI dieselbe Aufloesung; Vertrag in
+`land-collision-stats.ts#laneHunkDiffArgs`). Sie wandert mit dem Rebase, der Zweipunkt-Diff von ihr
+ist genau die eigene Arbeit der Lane, und `baseSha` bleibt unveraendert der Fallback, wenn keine
+Basis aufloest. Dieselbe merge-base ist es, gegen die der Server ohnehin `ahead`/`behind` zaehlt —
+die beiden Lesungen koennen jetzt nicht mehr auseinanderlaufen. Checks: `e2e/tasks.ts` (ha), mit
+der eigenen Datei der Lane als Kontrolle, die weiter kollidieren MUSS.
+
+**(B) Der Wellenpartner am Freigabe-Deckel.** Eine Welle startet erst, wenn JEDES ihrer Mitglieder
+freigegeben ist (`start-plan.ts`, „ein nicht freigegebener Partner haelt die Welle"). Eine
+freigegebene Zeile, deren Partner noch `pending` ist, startet also nichts und verlaesst den Zaehler
+`PROGRAM_MAX_RELEASED` nie. Fuellen solche Zeilen den Deckel, verweigert die Tuer ausgerechnet die
+eine Freigabe, die sie alle loesen wuerde — die des Partners: Deadlock, gemessen am Program
+`0d51b4d4` mit 5 queued Zeilen und 0 startbaren. **Seither zaehlt der Release eines Partners einer
+BEREITS freigegebenen Zeile derselben Welle nicht erneut** (`server.ts#releasedWavePartnersOf` am
+Deckel in `releaseTaskForMain`), genau wie die n Varianten einer Gruppe EINMAL zaehlen. Es aendert
+sich nur die Zaehlung: die Wellen-Semantik bleibt, der Partner wartet weiter auf seine Welle, und
+eine Zeile, die mit nichts Freigegebenem eine Welle teilt, trifft den Deckel wie zuvor. Die
+Wellen-Zugehoerigkeit kommt aus dem EINEN Klassifikator, den auch Board, CLI und Wellen-Tuer lesen
+(`landWaveProjectionNow`) — ein zweiter waere ein zweiter, den man in Takt halten muesste — und ist
+auf das eigene Program der Zeile begrenzt, weil der Deckel es ist. Der Trail nennt die Ausnahme
+(`wave-partner-of=`), damit ein passierter Deckel nie stumm bleibt. Checks: `e2e/tasks.ts` (wp),
+mit einer unabhaengigen Zeile als Gegenprobe, die im selben Moment weiter 409 bekommen MUSS.
+
 ## 4. What this deliberately is not
 
 It is **not a safety gate**, and since 2026-09-10 there is no worker here that could be mistaken for

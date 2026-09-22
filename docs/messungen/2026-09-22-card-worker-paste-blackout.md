@@ -81,7 +81,7 @@ Der Fix setzte `CLAUDE_HARNESS.readiness.accept` und liess `waitForFoundingReadi
 
 Gegenprobe: `e2e/tasks.ts` (jb), ein claude-Stand-in ueber den PATH wie (jt). „dark" malt nie →
 erwartet die benannte Verweigerung in < 10 s und **nichts** gepastet (alter Code: Paste nach 2,5 s,
-Pastedatei nicht leer → rot). „lit" malt sofort die Permission-Zeile → erwartet den Paste (schuetzt
+Pastedatei nicht leer → rot). „lit" malt sofort die ctx-Fusszeile (die ASCII-Alternative des Markers — der Helfer faehrt ohne `LANG`, sein tmux fing `⏵⏵` nicht ein, Lauf e1f6badd63d8) → erwartet den Paste (schuetzt
 gegen einen Fix, der alles verweigert).
 
 ## 6. Abhilfe ohne Code — keine noetig

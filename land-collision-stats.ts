@@ -65,10 +65,22 @@ const asRanges = (file: string, hunks: readonly Hunk[]): TaskWaveRange[] =>
   hunks.map((h) => ({ file, symbol: "hunk", startLine: h.start, endLine: h.end }));
 
 // A RUNNING lane's real change since its fork, for the start plan (start-plan.ts#StartPlanLane.hunks):
-// `git diff <forkSha>` against the WORKTREE, so uncommitted edits count, NEW-side hunks as R4 ranges.
+// `git diff <anchorSha>` against the WORKTREE, so uncommitted edits count, NEW-side hunks as R4 ranges.
 // A file with `[]` changed without line hunks; a file not in the record is not changed yet.
-export const laneHunkDiffArgs = (forkSha: string): string[] =>
-  ["-c", "core.quotepath=off", "diff", "--no-color", "--no-ext-diff", "--no-renames", "-U0", forkSha];
+//
+// THE ANCHOR IS THE LIVE MERGE-BASE OF THE INTEGRATION BRANCH AND THE LANE'S HEAD, never the
+// spawn-time `worktree.baseSha` (2026-09-22). baseSha is the fork as it stood when the lane was
+// opened and is never carried forward; once the lane (or the resolver) rebases onto a newer
+// integration tip, every file main changed in between sits between baseSha and the lane's HEAD and
+// is read here as the LANE's hunk — a phantom the start plan then turns into a collision edge
+// (start-plan.ts#collision). Measured on lane fleet/260922003850-a399: `main...branch` held 2 docs
+// files, this reading held three lines of e2e/slots.ts nobody in that lane had touched. The
+// merge-base moves with the rebase and the two-dot diff from it is exactly the lane's own work,
+// which is the only thing a collision edge may be built from. Callers resolve it the way
+// server.ts#laneForkSha does; a caller that cannot resolve one falls back to baseSha, because that
+// is then the only fork it honestly has.
+export const laneHunkDiffArgs = (anchorSha: string): string[] =>
+  ["-c", "core.quotepath=off", "diff", "--no-color", "--no-ext-diff", "--no-renames", "-U0", anchorSha];
 export function laneHunkRanges(diff: string): Record<string, TaskWaveRange[]> {
   return Object.fromEntries([...parseDiffHunks(diff, "new")].map(([file, hunks]) => [file, asRanges(file, hunks)]));
 }

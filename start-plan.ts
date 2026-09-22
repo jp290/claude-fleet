@@ -488,7 +488,7 @@ interface StateTask {
   card?: StartPlanCardFacts | null; brief?: { at?: unknown; text?: unknown } | null; hold?: unknown;
   variantOf?: unknown; variants?: unknown; criterion?: { proposedAt?: unknown; confirmedAt?: unknown } | null;
 }
-interface StateSlot { cwd?: unknown; worktree?: { repo?: unknown; baseSha?: unknown } | null; programId?: unknown;
+interface StateSlot { cwd?: unknown; worktree?: { repo?: unknown; base?: unknown; baseSha?: unknown } | null; programId?: unknown;
   taskId?: unknown; awaiting?: unknown }
 
 async function cli(): Promise<void> {
@@ -563,8 +563,10 @@ async function cli(): Promise<void> {
   const slots = state.slots && typeof state.slots === "object" ? state.slots as Record<string, StateSlot> : {};
   // The two facts startPlanLaneClaims needs that a state file does not hold, read here once per lane
   // exactly as server.ts#tickGit caches them per tick: `ahead` as commits of the lane's own (HEAD
-  // beyond its fork sha — zero precisely when the server's count against the base BRANCH is zero,
-  // which is the only value the rule reads), `dirty` as the working tree's own porcelain lines with
+  // beyond the merge-base anchor below — zero precisely when the server's count against the base
+  // BRANCH is zero, which is the only value the rule reads, and which holds only BECAUSE the anchor
+  // is that merge-base: against a spawn-time baseSha a rebased lane counts main's commits as its
+  // own and the two readings part), `dirty` as the working tree's own porcelain lines with
   // untracked included. A spawn that could not run, or a count that does not parse, leaves the
   // reading UNKNOWN — null, never an invented zero, because zero is what frees the surface.
   const laneGitOf = (cwd: string, forkSha: string): { ahead: number; dirty: number } | null => {
@@ -595,13 +597,26 @@ async function cli(): Promise<void> {
     const ownRows = tasks.filter((t) => t.slot === Number(id) && t.status === "sent");
     const own = ownRows.map(surfaceOf);
     const variantOf = ownRows.map((t) => t.variantOf).find((v): v is string => typeof v === "string" && !!v);
-    // the lane's real hunks, read here once per lane as server.ts#tickGit reads them per tick
-    const forkSha = typeof slot.worktree?.baseSha === "string" && slot.worktree.baseSha ? slot.worktree.baseSha : null;
-    const diff = forkSha && typeof slot.cwd === "string" && slot.cwd
-      ? Bun.spawnSync(["git", "-C", slot.cwd, ...laneHunkDiffArgs(forkSha)],
+    // the lane's real hunks, read here once per lane as server.ts#tickGit reads them per tick —
+    // and off the SAME anchor: the live merge-base of the lane's base branch and its HEAD, not the
+    // spawn-time baseSha (land-collision-stats.ts#laneHunkDiffArgs says why, server.ts#laneHunkAnchor
+    // is the other half of the pair). baseSha remains the fallback for a lane whose base the state
+    // file does not carry, or whose merge-base will not resolve — the last honest fork there is.
+    const laneCwd = typeof slot.cwd === "string" ? slot.cwd : "";
+    const laneBase = typeof slot.worktree?.base === "string" && slot.worktree.base ? slot.worktree.base : null;
+    const baseSha = typeof slot.worktree?.baseSha === "string" && slot.worktree.baseSha ? slot.worktree.baseSha : null;
+    const mergeBase = ((): string | null => {
+      if (!laneCwd || !laneBase) return null;
+      const r = Bun.spawnSync(["git", "-C", laneCwd, "merge-base", laneBase, "HEAD"],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+      const out = r.stdout.toString().trim();
+      return r.success && out ? out : null;
+    })();
+    const forkSha = mergeBase ?? baseSha;
+    const diff = forkSha && laneCwd
+      ? Bun.spawnSync(["git", "-C", laneCwd, ...laneHunkDiffArgs(forkSha)],
         { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } })
       : null;
-    const laneCwd = typeof slot.cwd === "string" ? slot.cwd : "";
     const claims = startPlanLaneClaims({
       criterion: criterionOf((typeof slot.taskId === "string" && ownRows.find((t) => t.id === slot.taskId)) || ownRows[0]),
       awaiting: slot.awaiting === "owner" || slot.awaiting === "main" ? slot.awaiting : null,

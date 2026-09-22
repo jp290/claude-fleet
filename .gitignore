@@ -35,6 +35,8 @@ post-land-audit-queue.json
 post-land-audit-queue.json.tmp
 deploys.jsonl
 deploys.jsonl.1
+state-snapshots.jsonl
+state-snapshots.jsonl.1
 deploy-inflight.json
 deploy-inflight.json.tmp
 # the rotation's third form: persist.ts appends the outgoing .1 to <name>.jsonl.archive before the

@@ -177,6 +177,7 @@ export const MODULE_FIXTURES: readonly ModuleFixtures[] = [
   { module: "deploy-facts" },
   { module: "errors" },
   { module: "host-hygiene" },
+  { module: "state-snapshot" },
   { module: "steward-core",
     reads: ["ctx.gapRepo", "ctx.auditPath", "ctx.plantedTranscript", "ctx.plantedTranscriptBytes",
       "ctx.plantedModel", "server:srv-env-after-restart"],

@@ -114,6 +114,7 @@ export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "deploy-facts", seconds: 88, modules: ["deploy-facts"] },
   { unit: "errors", seconds: 6, modules: ["errors"] },
   { unit: "host-hygiene", seconds: 40, modules: ["host-hygiene"] },
+  { unit: "state-snapshot", seconds: 12, modules: ["state-snapshot"] },
 ];
 
 // `k/n`, 1 ≤ k ≤ n. Anything else is null — the caller decides whether that is "no flag" or an error.

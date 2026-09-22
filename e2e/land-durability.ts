@@ -743,6 +743,10 @@ export async function run(): Promise<void> {
 
         // --- K: and neither does a tick with nothing to fast-forward. The deploy answers a MOVE.
         // A 15-minute timer that posted every lap would restart the board four times an hour.
+        // THE COST OF THAT, stated rather than implied: after a deferred (409) or failed (7)
+        // deploy the srv stays behind the tree until the NEXT fast-forward asks again, which on a
+        // quiet fleet is hours. Closing that needs a sensor for the GAP (the instance's own
+        // `bundleStale`/`bootHead`), which belongs to the instance and not to this script.
         const beforeK = seen.length;
         const k = runSync(BUILD_OK, DEPLOY);
         check("a run with nothing to fast-forward asks for no deploy either — the deploy answers a move, not a tick",

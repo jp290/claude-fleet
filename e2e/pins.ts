@@ -9834,12 +9834,19 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const off = /const STATE_SNAPSHOT_MS = STATE_SNAPSHOT_RAW > 0 \? Math\.max\(TICK_FLOOR_MS, STATE_SNAPSHOT_RAW\) : 0;/.test(srv)
     && /\nif \(STATE_SNAPSHOT_MS > 0\) setInterval\(\(\) => void appendEvent\(STATE_SNAPSHOT_FILE, buildStateSnapshot\(Date\.now\(\)\)\), STATE_SNAPSHOT_MS\);/.test(srv);
   pin(`${RULE_SNAP} — 0 (or unparseable) registers no tick; a set value takes TICK_FLOOR_MS as floor`, off, `armedOnly=${off}`);
-  // the file constant is named exactly twice: its definition and the one appendEvent call
-  const uses = srv.split("STATE_SNAPSHOT_FILE").length - 1;
+  // the file constant is defined once and WRITTEN once, by the one appendEvent call. Since
+  // 2026-09-24 (memory M3, task 91b039eb) the observation reader names it too — every other use
+  // must be one of the three READ forms of the M2 history path, never a writer's argument.
+  const uses = [...srv.matchAll(/(\S*)STATE_SNAPSHOT_FILE\b/g)].map((m) => m[1] ?? "");
+  const writes = uses.filter((u) => u.endsWith("appendEvent(")).length;
+  const defs = [...srv.matchAll(/\nconst STATE_SNAPSHOT_FILE =/g)].length;
+  const otherUses = uses.filter((u) => !u.endsWith("appendEvent(") && u !== "");
+  const readsOnly = otherUses.every((u) => /(ledgerCut|resolveGeneration|basename)\($/.test(u));
   const fn = /\nfunction buildStateSnapshot\([^]*?\n\}\n/.exec(srv)?.[0] ?? "";
   const pure = fn.length > 0 && !/appendFileSync|writeFileSync|appendFile\(|Bun\.write/.test(fn);
   pin(`${RULE_SNAP} — appendEvent is the only writer (no own append in buildStateSnapshot)`,
-    uses === 2 && pure, `STATE_SNAPSHOT_FILE uses=${uses} builderWritesNothing=${pure}`);
+    defs === 1 && writes === 1 && readsOnly && pure,
+    `defs=${defs} writes=${writes} otherUses=[${otherUses.join(" ")}] builderWritesNothing=${pure}`);
   const ign = read(".gitignore").split("\n");
   const ignored = ign.includes("state-snapshots.jsonl") && ign.includes("state-snapshots.jsonl.1") && ign.includes("*.jsonl.archive");
   pin(`${RULE_SNAP} — all three generations are gitignored`, ignored, `ignored=${ignored}`);

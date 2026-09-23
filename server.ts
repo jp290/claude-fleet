@@ -21500,7 +21500,7 @@ function validHelperInstance(value: unknown): value is HelperInstance {
   return typeof v.head === "string" && /^[0-9a-f]{40}$/.test(v.head)
     && typeof v.bundleStale === "boolean"
     && typeof v.behindCount === "number" && Number.isSafeInteger(v.behindCount) && v.behindCount >= 0
-    && typeof v.syncExit === "number" && Number.isInteger(v.syncExit) && v.syncExit >= 0 && v.syncExit <= 5
+    && typeof v.syncExit === "number" && Number.isInteger(v.syncExit) && v.syncExit >= 0 && v.syncExit <= 7
     && typeof v.at === "number" && Number.isSafeInteger(v.at) && v.at >= 0;
 }
 // Foreign strings land in a ledger row, a console line and an audit detail — same treatment the
@@ -24515,8 +24515,8 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
         return json({ error: "instance.bundleStale must be boolean" }, 400);
       if (typeof v.behindCount !== "number" || !Number.isSafeInteger(v.behindCount) || v.behindCount < 0)
         return json({ error: "instance.behindCount must be a non-negative integer" }, 400);
-      if (typeof v.syncExit !== "number" || !Number.isInteger(v.syncExit) || v.syncExit < 0 || v.syncExit > 5)
-        return json({ error: "instance.syncExit must be an integer between 0 and 5" }, 400);
+      if (typeof v.syncExit !== "number" || !Number.isInteger(v.syncExit) || v.syncExit < 0 || v.syncExit > 7)
+        return json({ error: "instance.syncExit must be an integer between 0 and 7" }, 400);
       if (typeof v.at !== "number" || !Number.isSafeInteger(v.at) || v.at < 0)
         return json({ error: "instance.at must be a non-negative integer" }, 400);
       reported.instance = { head: v.head, bundleStale: v.bundleStale,

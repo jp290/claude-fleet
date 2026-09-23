@@ -21,7 +21,7 @@ answer it, and all it does is switch a box on so it can start pulling.
 report its instance health on each heartbeat. The daemon reads that checkout only: its HEAD,
 `src/` and `public/{app,share,helper,hub}.js` mtimes, the local `canonical/main` ref for the
 commit distance, and `.fleet-sync-status.json` written by `fleet-sync.sh`. If any reading is
-missing or outside the heartbeat's supported `syncExit` range 0–5, it omits `instance`; an
+missing or outside the heartbeat's supported `syncExit` range 0–7, it omits `instance`; an
 omitted field means no measurement, not a healthy instance. Leave `instanceDir` out on a machine
 without that checkout.
 `GET /api/helper/token` (owner-gated — it is neither the owner token nor a slot's self token).

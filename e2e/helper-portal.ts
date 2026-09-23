@@ -316,10 +316,10 @@ export async function run(h: {
       && beat1Body.desiredMode === "active" && beat1Body.device.desiredMode === undefined,
     `${beat1.status} ${JSON.stringify(beat1Body)}`);
   const instance: InstanceView = { head: "a".repeat(40), bundleStale: true,
-    behindCount: 3, syncExit: 5, at: 1_790_000_000_000 };
+    behindCount: 3, syncExit: 7, at: 1_790_000_000_000 };
   const instanceBeat = await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, instance });
   const instanceReply = (await instanceBeat.json()) as { device?: DeviceView };
-  check("(K) an instance reading reaches the stored device and owner projection unchanged",
+  check("(K) syncExit 7 reaches the stored device and owner projection unchanged",
     instanceBeat.ok && JSON.stringify(instanceReply.device?.instance) === JSON.stringify(instance)
       && JSON.stringify(await instanceOnBoard()) === JSON.stringify(instance),
     `${instanceBeat.status} ${JSON.stringify(instanceReply.device?.instance)}`);
@@ -330,7 +330,7 @@ export async function run(h: {
       && JSON.stringify(await instanceOnBoard()) === JSON.stringify(instance),
     `${noInstance.status} ${JSON.stringify(noInstanceReply.device?.instance)}`);
   for (const [field, bad] of Object.entries({ head: "bad", bundleStale: "false", behindCount: -1,
-    syncExit: 6, at: 1.5 })) {
+    syncExit: 8, at: 1.5 })) {
     const res = await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME,
       instance: { ...instance, [field]: bad } });
     const body = (await res.json()) as { error?: string };

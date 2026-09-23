@@ -2441,7 +2441,8 @@ function settingsRow(d: PrefDef): HTMLElement {
   row.append(control, reset);
   function syncAll() {
     for (const f of sync) f();
-    reset.hidden = prefRaw(d.key) === null;
+    const raw = prefRaw(d.key);
+    reset.hidden = raw === null || raw === d.def;
   }
   syncAll();
   return row;

@@ -106,7 +106,7 @@ export function sizePanel(): HTMLElement {
   sync();
   const reset = document.createElement("button");
   reset.className = "sizereset";
-  reset.textContent = "Standard";
+  reset.textContent = "Reset";
   reset.title = "Standardgrößen und -breite (Strg/⌘ 0)";
   reset.addEventListener("click", () => stepChatSizes(0));
   const hint = document.createElement("div");

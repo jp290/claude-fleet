@@ -38667,7 +38667,7 @@ Bun.serve<WSData>({
       if (choice.spawn) t.spawn = choice.spawn;
       else delete t.spawn;
       saveState();
-      audit("task_spawn" as Parameters<typeof audit>[0], undefined,
+      audit("task_spawn", undefined,
         `${t.id} ${JSON.stringify(before ?? null)}->${JSON.stringify(choice.spawn ?? null)}`);
       return json({ ok: true, task: t });
     }

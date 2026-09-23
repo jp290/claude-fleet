@@ -1,7 +1,7 @@
 // The scoped self-scheduling credential: FLEET_SELF_TOKEN / FLEET_SELF_SLOT in EVERY session's
 // spawn env (lane or not, since 2026-08-07), and what the /api/self routes will and will not
 // accept it for — including both opposite scope rules (lane-only questions vs main-only exit).
-import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { BASE, IP, PORT, REPO, REPO2, REPO3, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv } from "./harness";
@@ -1772,6 +1772,122 @@ async function memoryDoor(): Promise<void> {
         // `"status":` is NOT in this list: the exit footer's own fleet-report curl carries it
         && !/"(hold|audit|grund)":/.test(b)),
       briefs.map((b) => b.length).join(","));
+    // --- M2 · view=evidence (task 72dc4f35): retained reports and lands, archive included ---
+    // What each check can turn red, stated as the mutation: read only the live tail (the pruned
+    // report vanishes); claim absence before the scan is through (a short page says complete);
+    // lift the per-page caps; follow a rotated generation onto other bytes; guess a decision's origin.
+    const laneSelf = (path: string, tok: string, body: unknown) => fetch(`${i.base}${path}`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify(body) });
+    // 21 reports from lane A; then lane A ENDS, so each verdict's carry settles at once as
+    // worker-gone (a live lane would hold it `pending` until its next idle, and a pending carry keeps
+    // the row out of the prune); MAIN A decides all 21, and lane B's next filing runs the prune over
+    // the 21 terminal rows — the oldest leaves the live tail. From here MAIN A reads task T0.
+    const filed: string[] = [];
+    for (let k = 0; k < 21; k++) {
+      const r = (await (await laneSelf("/api/self/fleet-report", laneTok[0]!, { status: "needs-main", text: `evidence report ${k}` })).json()) as { id?: string };
+      if (r.id) filed.push(r.id);
+    }
+    await opost(`/api/slots/${laneSlot[0]}/kill`, {});
+    const decided = await Promise.all(filed.map((f, k) =>
+      laneSelf(`/api/self/fleet-report/${f}/accept`, mainTok[0]!, { reason: `ERFUELLT: ja — ok ${k}` }).then((r) => r.ok)));
+    const pruner = ((await (await laneSelf("/api/self/fleet-report", laneTok[1]!, { status: "needs-main", text: "lane B files once" })).json()) as { id?: string }).id ?? "";
+    check("memory evidence fixture: 21 decided reports of a finished lane and one more filing elsewhere",
+      filed.length === 21 && decided.every(Boolean) && pruner !== "", `filed=${filed.length} decided=${decided.filter(Boolean).length}`);
+    // an ARCHIVE generation: one matching report whose decision names no known principal, one
+    // matching land, both behind more than 1 MiB of rows about other tasks, plus a torn line
+    const arch = `${dir}/fleet-reports.jsonl.archive`;
+    const archId = "e".repeat(24);
+    const pad = "p".repeat(900);
+    const filler = (n: number, tag: string) => Array.from({ length: n }, (_, k) => JSON.stringify({ kind: "open",
+      id: `${tag}${String(k).padStart(8, "0")}`.padEnd(24, "0"), taskId: "zz0000000000", programId: P[1], slot: 9,
+      branch: "fleet/other", status: "complete", basis: "program", text: pad, at: now - 90_000 + k })).join("\n") + "\n";
+    writeFileSync(arch, JSON.stringify({ kind: "open", id: archId, taskId: T[0], programId: P[0], slot: laneSlot[0],
+      branch: "fleet/archived", status: "complete", basis: "program", text: "ARCHIVED REPORT", at: now - 100_000 }) + "\n"
+      + JSON.stringify({ kind: "decision", id: archId, disposition: "accepted", reason: "legacy row", at: now - 99_000 }) + "\n"
+      + "{torn-archive-line\n" + filler(1200, "f"), { mode: 0o600 });
+    writeFileSync(`${dir}/lane-outcomes.jsonl.archive`, JSON.stringify({ ts: now - 100_000, branch: "fleet/archived", repo: rA,
+      disposition: "landed", headSha: sha("7"), mainAfter: sha("8"), taskId: T[0], programId: P[0] }) + "\n", { mode: 0o600 });
+    const archBytes = statSync(arch).size;
+    type EvPage = MemBody & { rows?: { carrier: string; id?: string; inLiveTail?: boolean; branch?: string;
+      decisions?: { origin: string }[] }[]; nextCursor?: string | null; page?: { scannedBytes: number } };
+    const evPage = async (tok: string, q: string): Promise<{ status: number; raw: string; body: EvPage }> => {
+      const r = await mem(tok, q);
+      const raw = await r.text();
+      let body: EvPage = {};
+      try { body = JSON.parse(raw) as EvPage; } catch { /* body stays empty; the checks say so */ }
+      return { status: r.status, raw, body };
+    };
+    const qA = `?view=evidence&task=${T[0]}`;
+    const pages: { status: number; raw: string; body: EvPage }[] = [await evPage(mainTok[0]!, qA)];
+    // a record appended AFTER the cut belongs to the next read, never to this cursor's pages
+    const late = "c".repeat(24);
+    appendFileSync(`${dir}/fleet-reports.jsonl`, JSON.stringify({ kind: "open", id: late, taskId: T[0], programId: P[0],
+      slot: laneSlot[0], branch: "fleet/late", status: "complete", basis: "program", text: "behind the cut", at: Date.now() }) + "\n");
+    while (pages.length < 20 && pages[pages.length - 1]!.body.nextCursor)
+      pages.push(await evPage(mainTok[0]!, `${qA}&cursor=${pages[pages.length - 1]!.body.nextCursor}`));
+    const all = pages.flatMap((p) => p.body.rows ?? []);
+    const first = pages[0]!.body;
+    check("memory evidence: the first page scans within budget and, not finished, says incomplete with a cursor — not absence",
+      pages[0]!.status === 200 && first.coverage === "incomplete" && typeof first.nextCursor === "string"
+        && !(first.rows ?? []).some((r) => r.id === archId)
+        && (first.unknown ?? []).some((u) => u.includes("NOT a statement of absence")) && archBytes > 1024 * 1024,
+      `${pages[0]!.status} coverage=${first.coverage} rows=${first.rows?.length} arch=${archBytes}`);
+    check("memory evidence: every page stays within 50 rows, 32 KiB and a 1 MiB scan; only the last one is complete",
+      pages.every((p) => p.status === 200 && (p.body.rows ?? []).length <= 50 && new TextEncoder().encode(p.raw).byteLength <= 32 * 1024
+        && (p.body.page?.scannedBytes ?? Infinity) <= 1024 * 1024)
+        && pages[pages.length - 1]!.body.coverage === "complete" && pages.slice(0, -1).every((p) => p.body.coverage === "incomplete"),
+      pages.map((p) => `${p.status}:${p.body.rows?.length}/${new TextEncoder().encode(p.raw).byteLength}B/${p.body.page?.scannedBytes}`).join(" "));
+    const pruned = all.find((r) => r.id === filed[0]);
+    check("memory evidence: the report pruned from the live tail is readable, with its MAIN's decision attributed as agent",
+      pruned?.inLiveTail === false && pruned.decisions?.length === 1 && pruned.decisions[0]!.origin === "agent"
+        && filed.every((f) => all.some((r) => r.id === f)) && all.find((r) => r.id === filed[20])?.inLiveTail === true,
+      JSON.stringify(pruned ?? null).slice(0, 300));
+    const archived = all.find((r) => r.id === archId);
+    check("memory evidence: the archive record behind > 1 MiB of other rows is found on a later page, its unknown-origin decision stays unknown",
+      pages.length > 1 && archived?.decisions?.[0]?.origin === "unknown"
+        && all.some((r) => r.carrier === "outcomes" && r.branch === "fleet/archived")
+        && pages.some((p) => (p.body.unknown ?? []).some((u) => u.includes("origin stays unknown"))),
+      JSON.stringify({ pages: pages.length, archived: archived ?? null }).slice(0, 300));
+    check("memory evidence: a torn line is counted as a hole, and a report appended behind the cut is not smuggled into this read",
+      pages.some((p) => (p.body.unknown ?? []).some((u) => u.includes("lines of fleet-reports.jsonl were not JSON records")))
+        && !all.some((r) => r.id === late),
+      JSON.stringify(pages.map((p) => p.body.unknown)).slice(0, 400));
+    // a LANE reads its own task's evidence to the end, and nothing else
+    const lanePages: EvPage[] = [(await evPage(laneTok[1]!, "?view=evidence")).body];
+    while (lanePages.length < 20 && lanePages[lanePages.length - 1]!.nextCursor)
+      lanePages.push((await evPage(laneTok[1]!, `?view=evidence&cursor=${lanePages[lanePages.length - 1]!.nextCursor}`)).body);
+    const laneRows = lanePages.flatMap((p) => p.rows ?? []);
+    check("memory evidence (lane B): its own report is found, its pages end complete, and no row of another task appears",
+      laneRows.some((r) => r.id === pruner) && lanePages[lanePages.length - 1]!.coverage === "complete"
+        && laneRows.every((r) => r.carrier !== "reports" || (r as { taskId?: string }).taskId === T[1]),
+      `pages=${lanePages.length} rows=${laneRows.length}`);
+    // counter-cases: wrong scope, a borrowed cursor, a rotation under the cursor
+    const wrong = await memJ(laneTok[1]!, `?view=evidence&task=${T[0]}`);
+    const noTask = await memJ(mainTok[0]!, "?view=evidence");
+    check("memory evidence refusal (wrong scope): a lane naming another row is foreign-task; a MAIN must name one task of its Program",
+      wrong.status === 409 && wrong.body.refusal === "foreign-task" && noTask.status === 400 && noTask.body.refusal === "task-required",
+      JSON.stringify([wrong, noTask]));
+    const fresh = await evPage(laneTok[1]!, "?view=evidence");
+    const borrowed = await memJ(mainTok[1]!, `?view=evidence&task=${T[1]}&cursor=${fresh.body.nextCursor}`);
+    check("memory evidence refusal (borrowed cursor): a cursor is bound to its occupant — MAIN B holding lane B's cursor for the same task gets cursor-stale",
+      typeof fresh.body.nextCursor === "string" && borrowed.status === 409 && borrowed.body.refusal === "cursor-stale",
+      JSON.stringify(borrowed));
+    // rotation: make .1 larger than one page's budget, cut, read one page (it stops inside .1), then
+    // rotate exactly as server/persist.ts#rotateEventLog does — .1 is appended to the archive and
+    // the active file replaces it. The cursor's generation is gone: stale, never continued elsewhere.
+    const act = `${dir}/fleet-reports.jsonl`;
+    appendFileSync(act, filler(1300, "g"));
+    renameSync(act, `${act}.1`);
+    writeFileSync(act, filler(1, "h"), { mode: 0o600 });
+    const before = await evPage(mainTok[0]!, qA);
+    appendFileSync(arch, readFileSync(`${act}.1`));
+    renameSync(act, `${act}.1`);
+    const after = await memJ(mainTok[0]!, `${qA}&cursor=${before.body.nextCursor}`);
+    const restart = await evPage(mainTok[0]!, qA);
+    check("memory evidence refusal (rotation mid-cursor): the rotated generation makes the cursor stale; a fresh read starts on the new cut",
+      before.body.coverage === "incomplete" && after.status === 409 && after.body.refusal === "cursor-stale"
+        && restart.status === 200 && Array.isArray(restart.body.rows),
+      JSON.stringify({ before: before.body.coverage, after }));
   } finally {
     await memStop(i);
     spawnSync("tmux", ["-L", i.sock, "kill-server"]);

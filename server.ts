@@ -152,7 +152,8 @@ import {
   type SlotStreamOccupant, type TaskCriterionPart,
 } from "./server/types";
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
-import { appendEvent, appendEventStrict, coalescedSaver, foreignStateOwner, readLedger, readEventLog } from "./server/persist";
+import { appendEvent, appendEventStrict, coalescedSaver, foreignStateOwner, readLedger, readEventLog,
+  ledgerCut, resolveGeneration, scanGenerationBackward, type GenerationCut } from "./server/persist";
 import { buildVariantCompareRow, countCheckedMet, decideVariantCompare, doneEntriesFor, stageOneTied,
   UNMEASURED_DIFF, type VariantCompareVariant, type VariantDecidedAt, type VariantDiffStat,
   type VariantDoneEntry, type VariantDoneResult, type VariantGate, type VariantStageCandidate } from "./variant-compare";
@@ -2843,7 +2844,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
 // occupant is not bound). `task=`/`program=` only NARROW that scope; a foreign subject is a named
 // refusal, never an empty success. Everything else — the steward, an unbound session — gets
 // `no-scope`: the portfolio reach is the owner-granted cut M4 and is not faked here.
-const MEMORY_VIEWS = ["work", "sources"] as const;
+const MEMORY_VIEWS = ["work", "sources", "evidence"] as const;
 type MemoryView = typeof MEMORY_VIEWS[number];
 const MEMORY_WORK_MAX_ROWS = 50;
 const MEMORY_PAGE_MAX_BYTES = 32 * 1024;
@@ -3111,6 +3112,189 @@ async function memorySourcesView(s: Slot, scope: Extract<MemoryScope, { ok: true
   return body;
 }
 
+// --- M2: RETAINED EVIDENCE (view=evidence; task 72dc4f35) ---------------------------------------
+// The reports and lands of ONE task in scope, read back through the history path in
+// server/persist.ts: per carrier, three generations (active, .1, .archive), backwards in append
+// order, under a 1 MiB scan budget per read. It exists because the live report list is a tail of
+// FLEET_REPORT_KEEP rows and readLedger sees two generations, while the bytes of every older report
+// are still on disk (fleet-reports.jsonl is append-only) — a successor lost them only for want of a
+// door. Nothing on the sessions poll reaches this code, and no raw row is ever rewritten.
+//
+// A PAGE NEVER CLAIMS ABSENCE: until every carrier is read to byte 0 of its oldest generation the
+// page says coverage:"incomplete" and hands out a cursor, however empty its rows are.
+//
+// THE CURSOR is server-side state keyed by an opaque id and bound to the occupant (slot, openedAt),
+// the principal, the one task and the fixed cut. A restart, an eviction, another occupant or another
+// task gets `cursor-stale`; so does a generation that rotated away from under it. Appends behind the
+// cut are allowed and belong to the next fresh read.
+//
+// A DECISION IS SHOWN ONLY WITH ITS OPEN ROW. The ledger's decision row names the report id, not the
+// task; its subject is established only when the scan (going backwards) reaches that report's open
+// row. Until then it waits in the cursor; a decision whose open row is never found is counted as
+// unjoined and not shown. ORIGIN is read from the stamp, never guessed: an occupant is `agent`, the
+// literal "owner" is `owner-principal` (a credential, not proof of a human), a rule is `rule`, and
+// anything else is `unknown`.
+const MEMORY_SCAN_BUDGET = 1024 * 1024;
+const MEMORY_EVIDENCE_ROW_BYTES = 28 * 1024; // leaves the envelope inside MEMORY_PAGE_MAX_BYTES
+const MEMORY_CURSOR_MAX = 128;
+const MEMORY_CURSOR_TTL_MS = 30 * 60_000;
+const MEMORY_PENDING_MAX = 2000;
+type EvidenceCarrierName = "reports" | "outcomes";
+interface EvidenceCarrier { carrier: EvidenceCarrierName; file: string; cut: GenerationCut[]; gen: number; offset: number;
+  done: boolean; malformed: number; oversize: number }
+interface EvidenceCursor { slot: number; openedAt: number; principal: string; taskId: string; issuedAt: number;
+  carriers: EvidenceCarrier[]; pending: Map<string, Record<string, unknown>[]>; pendingDropped: number; unjoined: number }
+const memoryCursors = new Map<string, EvidenceCursor>();
+
+const decisionOrigin = (by: unknown): "agent" | "owner-principal" | "rule" | "unknown" => {
+  if (by === "owner") return "owner-principal";
+  if (by === null || typeof by !== "object" || Array.isArray(by)) return "unknown";
+  const b = by as Record<string, unknown>;
+  if (typeof b.rule === "string") return "rule";
+  return typeof b.slot === "number" && typeof b.openedAt === "number" ? "agent" : "unknown";
+};
+
+async function memoryEvidenceView(s: Slot, scope: Extract<MemoryScope, { ok: true }>, url: URL): Promise<Response> {
+  const taskIds = scope.taskIds ?? [];
+  if (taskIds.length !== 1)
+    return json({ refusal: "task-required", error: scope.principal === "program-main"
+      ? "view=evidence reads ONE task: name task=<id> of your Program" : `this lane holds ${taskIds.length} rows — name task=<id>` }, 400);
+  const taskId = taskIds[0]!;
+  const now = Date.now();
+  for (const [id, c] of memoryCursors) if (now - c.issuedAt > MEMORY_CURSOR_TTL_MS) memoryCursors.delete(id);
+  const given = url.searchParams.get("cursor");
+  let cur: EvidenceCursor;
+  if (given !== null) {
+    const found = memoryCursors.get(given);
+    memoryCursors.delete(given); // one page per cursor: the answer carries the next one
+    if (!found)
+      return json({ refusal: "cursor-stale", error: `unknown or expired cursor (cursors live ${MEMORY_CURSOR_TTL_MS / 60_000} min in process memory; this server booted ${new Date(SERVER_BOOT_AT).toISOString()}) — start a fresh read without cursor` }, 409);
+    if (found.slot !== s.id || found.openedAt !== s.openedAt || found.principal !== scope.principal || found.taskId !== taskId)
+      return json({ refusal: "cursor-stale", error: "the cursor was issued to another occupant, principal or task — it grants nothing here" }, 409);
+    cur = found;
+  } else {
+    const carriers: EvidenceCarrier[] = [];
+    for (const [carrier, file] of [["reports", FLEET_REPORT_LEDGER_FILE], ["outcomes", LANE_OUTCOME_FILE]] as const) {
+      const cut = await ledgerCut(file);
+      carriers.push({ carrier, file, cut, gen: 0, offset: cut[0]!.end, done: false, malformed: 0, oversize: 0 });
+    }
+    cur = { slot: s.id, openedAt: s.openedAt, principal: scope.principal, taskId, issuedAt: now, carriers,
+      pending: new Map(), pendingDropped: 0, unjoined: 0 };
+  }
+  const rows: Record<string, unknown>[] = [];
+  let rowBytes = 0;
+  let scanned = 0;
+  const fits = (row: Record<string, unknown>): boolean => {
+    const b = new TextEncoder().encode(JSON.stringify(row)).byteLength;
+    if (rows.length >= MEMORY_WORK_MAX_ROWS || rowBytes + b > MEMORY_EVIDENCE_ROW_BYTES) return false;
+    rowBytes += b;
+    return true;
+  };
+  const liveIds = new Set(fleetReports.map((r) => r.id));
+  let pageFull = false;
+  // two passes: budget a finished carrier left unused goes to the ones still reading
+  for (let pass = 0; pass < 2 && !pageFull && scanned < MEMORY_SCAN_BUDGET; pass++) for (const [k, c] of cur.carriers.entries()) {
+    const left = cur.carriers.slice(k).filter((x) => !x.done).length;
+    let budget = Math.floor((MEMORY_SCAN_BUDGET - scanned) / Math.max(1, left));
+    while (!c.done && budget > 0 && !pageFull) {
+      const g = c.cut[c.gen];
+      if (!g) { c.done = true; break; }
+      if (g.ino === null || c.offset === 0) {
+        c.gen++; c.offset = c.cut[c.gen]?.end ?? 0;
+        if (c.gen >= c.cut.length) c.done = true;
+        continue;
+      }
+      const path = resolveGeneration(c.file, g);
+      if (!path)
+        return json({ refusal: "cursor-stale", error: `${basename(c.file)}${g.gen || " (active)"} rotated away under this cursor — its bytes can no longer be addressed as cut; start a fresh read` }, 409);
+      const genName = `${basename(c.file)}${g.gen}`;
+      const r = await scanGenerationBackward(path, c.offset, budget, (line) => {
+        if (line.row === null) { c.malformed++; return "take"; }
+        const row = line.row;
+        const sourceRef = { file: genName, offset: line.start };
+        if (c.carrier === "outcomes") {
+          if (row.taskId !== taskId) return "take";
+          const out = { carrier: "outcomes", ts: row.ts ?? null, branch: row.branch ?? null, repo: row.repo ?? null,
+            disposition: row.disposition ?? null, headSha: row.headSha ?? null, mainAfter: row.mainAfter ?? null,
+            verified: row.verified ?? null, commitCount: row.commitCount ?? null, taskId, programId: row.programId ?? null, sourceRef };
+          if (!fits(out)) { pageFull = true; return "stop"; }
+          rows.push(out);
+          return "take";
+        }
+        const id = typeof row.id === "string" ? row.id : null;
+        if (row.kind === "decision" && id) {
+          const list = cur.pending.get(id);
+          if (list) list.push(row);
+          else if (cur.pending.size < MEMORY_PENDING_MAX) cur.pending.set(id, [row]);
+          else cur.pendingDropped++;
+          return "take";
+        }
+        if (row.kind !== "open" || !id) return "take";
+        if (row.taskId !== taskId) { cur.pending.delete(id); return "take"; }
+        const decisions = (cur.pending.get(id) ?? []).map((d) => ({ disposition: d.disposition ?? null, at: d.at ?? null,
+          origin: decisionOrigin(d.by), by: d.by ?? null, fulfilled: d.fulfilled ?? null, reason: d.reason ?? null,
+          mainAfter: d.mainAfter ?? null }));
+        const text = typeof row.text === "string" ? row.text : null;
+        const out: Record<string, unknown> = { carrier: "reports", id, taskId, programId: row.programId ?? null,
+          status: row.status ?? null, basis: row.basis ?? null, slot: row.slot ?? null, branch: row.branch ?? null,
+          at: row.at ?? null, text, inLiveTail: liveIds.has(id), decisions, sourceRef };
+        // a record too large for any page is delivered as its reference, never cut mid-text
+        if (new TextEncoder().encode(JSON.stringify(out)).byteLength > MEMORY_EVIDENCE_ROW_BYTES / 2)
+          Object.assign(out, { text: null, textOmitted: { bytes: line.bytes, sourceRef } });
+        if (!fits(out)) { pageFull = true; return "stop"; }
+        cur.pending.delete(id);
+        rows.push(out);
+        return "take";
+      });
+      scanned += r.consumed; budget -= r.consumed;
+      c.offset = r.offset;
+      if (r.stop === "oversize") { c.oversize++; c.done = true; }
+      if (r.stop === "budget") break;
+    }
+  }
+  const complete = cur.carriers.every((c) => c.done);
+  if (complete) { cur.unjoined += [...cur.pending.values()].reduce((n, l) => n + l.length, 0); cur.pending.clear(); }
+  let nextCursor: string | null = null;
+  if (!complete) {
+    if (memoryCursors.size >= MEMORY_CURSOR_MAX) memoryCursors.delete(memoryCursors.keys().next().value!);
+    nextCursor = randomBytes(16).toString("hex");
+    memoryCursors.set(nextCursor, { ...cur, issuedAt: now });
+  }
+  const unknown: string[] = [];
+  if (!complete) {
+    const left = cur.carriers.reduce((n, c) => n + c.offset + c.cut.slice(c.gen + 1).reduce((m, g) => m + g.end, 0), 0);
+    unknown.push(`${left} bytes of the fixed cut are not scanned yet: this page is NOT a statement of absence — follow nextCursor.`);
+  }
+  for (const c of cur.carriers) {
+    if (c.malformed > 0) unknown.push(`${c.malformed} lines of ${basename(c.file)} were not JSON records: counted here, not delivered.`);
+    if (c.oversize > 0) unknown.push(`a record in ${basename(c.file)} is longer than the scanner reads (8 MiB); that generation's older rows are not reached.`);
+  }
+  if (cur.unjoined > 0) unknown.push(`${cur.unjoined} decision rows name a report whose open row is in none of the three generations; their subject stays unknown and they are not shown.`);
+  if (cur.pendingDropped > 0) unknown.push(`${cur.pendingDropped} decision rows could not be held while their open row was pending; a shown report may lack one of its decisions.`);
+  const unknownOrigins = rows.reduce((n, r) => n + (Array.isArray(r.decisions)
+    ? (r.decisions as { origin: string }[]).filter((d) => d.origin === "unknown").length : 0), 0);
+  if (unknownOrigins > 0) unknown.push(`${unknownOrigins} decisions on this page carry no recognisable \`by\`: their origin stays unknown, no label is inferred.`);
+  const body = {
+    schema: "fleet.memory.evidence/v1", view: "evidence",
+    scope: { principal: scope.principal, slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null, taskId },
+    generatedAt: Date.now(), bootEpoch: SERVER_BOOT_AT,
+    rows,
+    page: { rows: rows.length, scannedBytes: scanned, budgetBytes: MEMORY_SCAN_BUDGET, maxRows: MEMORY_WORK_MAX_ROWS,
+      maxBytes: MEMORY_PAGE_MAX_BYTES },
+    carriers: cur.carriers.map((c) => ({ carrier: c.carrier, file: basename(c.file),
+      cut: c.cut.map((g) => ({ gen: g.gen || "active", present: g.ino !== null, bytes: g.end })),
+      at: c.done ? null : { gen: c.cut[c.gen]?.gen || "active", offset: c.offset }, done: c.done, malformed: c.malformed })),
+    coverage: complete ? "complete" : "incomplete",
+    nextCursor,
+    notes: ["rows are in append order per carrier, newest first — never one sort across carriers",
+      "origin owner-principal means the owner credential decided; that is not proof of a human judgement",
+      "a wave follower's land is recorded under its head's task id",
+      "rotations before the archive existed (2026-09-15) overwrote .1; rows lost then are not reconstructible"],
+    unknown,
+  };
+  return json(body);
+}
+
 // THE START POINTER, ≤ 512 UTF-8 bytes by contract (e2e/self-token.ts measures the delivered
 // text): the reader and its limits, never the state it reads. A founding brief that copied task
 // status, holds or audit states would be a second, stale source the moment it was pasted.
@@ -3119,11 +3303,13 @@ function memoryPointer(role: "lane" | "main"): string {
   return role === "main"
     ? `YOUR MEMORY is ${door}?view=work (same header): this Program's tasks with status, hold.grund and
 audit state (queued/running/terminal/unknown), each naming its basis; view=sources: declared vs
-delivered context refs. Read it, never copy it into a handover. Its stated limits: readByAgent is
+delivered context refs; view=evidence&task=<id>: retained reports and lands, archive included.
+Read it, never copy it into a handover. Its stated limits: readByAgent is
 unknown, a row without provenance stays unknown, coverage=incomplete is not absence.`
     : `YOUR MEMORY: ${door}?view=work with header "x-fleet-self-token: $FLEET_SELF_TOKEN"
 gives your task's status, hold.grund, land and audit state, each naming its basis; view=sources:
-declared vs delivered context refs. Read it, never copy it. Its stated limits: readByAgent is
+declared vs delivered context refs; view=evidence: your task's retained reports and lands, archive
+included. Read it, never copy it. Its stated limits: readByAgent is
 unknown, a row without provenance stays unknown, coverage=incomplete is not absence.`;
 }
 
@@ -36199,10 +36385,11 @@ Bun.serve<WSData>({
         return json({ refusal: "bad-view", error: `view must be one of ${MEMORY_VIEWS.join(", ")}` }, 400);
       const scope = await memoryScopeFor(s, url);
       if (!scope.ok) return scope.response;
-      const body = view === "sources" ? await memorySourcesView(s, scope) : await memoryWorkView(s, scope);
+      const answer = view === "evidence" ? await memoryEvidenceView(s, scope, url)
+        : json(view === "sources" ? await memorySourcesView(s, scope) : await memoryWorkView(s, scope));
       if (s.openedAt !== openedAt || !s.selfToken || !secretEq(given, s.selfToken))
         return json({ refusal: "occupant-changed", error: "the slot changed occupant while this read ran — nothing of the new occupant's is served on the old credential" }, 409);
-      return json(body);
+      return answer;
     }
 
     // PROGRAM-SCOPED CONTEXT POINTERS (docs/self-api.md §program-context-packs). One writer: the bound

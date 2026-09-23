@@ -557,7 +557,8 @@ Block, byte-identisch in allen vier Varianten, angehängt zwischen Program-JSON 
   Pane schon exportiert ist. Der Falsifikator, den das schließt: eine frische MAIN, die Quelltext,
   Prozessliste oder State-Datei nach Fleets Adresse durchsucht.
 - **`GET /api/self/memory` ist das Gedächtnis** (seit 2026-09-23, §memory unten) — ein Absatz
-  `YOUR MEMORY …` ≤ 512 B am Ende des Kopfteils: Tür und Grenzen, nie der Zustand selbst.
+  `YOUR MEMORY …` ≤ 512 B am Ende des Kopfteils (work, sources, evidence): Tür und Grenzen, nie
+  der Zustand selbst.
 - **`GET /api/self/program-execution` ist die Lebenszyklus-Projektion** — `phase`, `phaseBasis`,
   `candidate`, `nextAction`, `unknown[]`. Gelesen statt geraten, vor jedem Akt.
 - **Die Rollenteilung ist ein URTEIL, keine Mauer** (Owner-Korrektur 2026-08-24: kein Pauschalverbot,
@@ -750,8 +751,38 @@ Träger stehen benannt in `missing[]` (kein Manifest, kein AGENTS.md, keine Prog
 Receipt, fremder Baum); ist die Deklaration nicht ableitbar (z. B. Ziel-Repo ohne AGENTS.md), ist
 `declaredNow: null` mit Grund in `unknown[]` und `coverage:"incomplete"` — nie eine leere Liste.
 
+**`view=evidence`** (seit 2026-09-23, Zeile 72dc4f35) — die erhaltenen Reports und Lands EINES
+Tasks im Scope (Lane: der eigene; MAIN: `task=<id>` Pflicht, sonst 400 `task-required`), auch aus
+dem Archiv. Leser ist der explizite History-Pfad `server/persist.ts#scanGenerationBackward` —
+`readLedger` und alle bisherigen Aufrufer bleiben unverändert (zwei Generationen, ganz gelesen), und
+nichts davon hängt am Sessions-Poll. Je Träger (`fleet-reports.jsonl`, `lane-outcomes.jsonl`) drei
+Generationen — aktiv, `.1`, `.archive` — rückwärts in Append-Reihenfolge (keine globale Zeitsortierung
+über Träger hinweg). Deckel je Seite: ≤ 50 Zeilen, ≤ 32 KiB Antwort, ≤ 1 MiB gescannte Bytes je Read
+(`page.scannedBytes`); ein Record, der allein zu groß ist, kommt als `textOmitted:{bytes,sourceRef}`.
+
+- **Keine Seite behauptet Abwesenheit.** Bis jeder Träger bis Byte 0 seiner ältesten Generation
+  gelesen ist, steht `coverage:"incomplete"` mit `nextCursor` und der Zeile „… NOT a statement of
+  absence" in `unknown[]` — auch bei leerem `rows`.
+- **Der Cursor** ist serverseitiger Zustand (Prozessspeicher, 30 min, höchstens 128), gebunden an
+  Occupant (slot + openedAt), Prinzipal, den einen Task und den beim ersten Read fixierten Cut (je
+  Generation Inode + Byte hinter der letzten VOLLSTÄNDIGEN Zeile). Append hinter dem Cut ist erlaubt
+  und gehört zum nächsten frischen Read. Eine Generation, deren Inode nicht mehr mit mindestens der
+  Cut-Größe auffindbar ist (die Rotation hat `.1` ins Archiv aufgelöst), ergibt 409 `cursor-stale`
+  — nie eine Fortsetzung auf anderen Bytes. Ebenso: unbekannter/abgelaufener Cursor, Neustart,
+  fremder Occupant/Prinzipal/Task.
+- **Eine Entscheidung erscheint nur mit ihrer Open-Zeile.** Die Decision-Zeile nennt nur die
+  Report-Id; ihr Subjekt steht erst fest, wenn der Rückwärtsscan die Open-Zeile erreicht. Bis dahin
+  wartet sie im Cursor; findet sich die Open-Zeile in keiner Generation, wird sie gezählt
+  (`unknown[]`) und nicht gezeigt. **`origin`** wird aus dem Stempel gelesen, nie geraten: Occupant →
+  `agent`, `"owner"` → `owner-principal` (ein Credential, kein Beweis menschlichen Urteils), Regel →
+  `rule`, alles andere → `unknown`.
+- Nicht-JSON-Zeilen werden je Träger gezählt (`carriers[].malformed`, `unknown[]`), nie still
+  verworfen. `inLiveTail` sagt je Report, ob der Live-Tail (`FLEET_REPORT_KEEP`) ihn noch hält.
+
 ```
 curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" "http://<fleet-host>:<port>/api/self/memory?view=work"
+curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" "http://<fleet-host>:<port>/api/self/memory?view=evidence&task=<id>"
+# weiter: …&cursor=<nextCursor>, bis coverage "complete" ist
 ```
 
 **Der Startpointer.** Der Program-MAIN-Rail (`server.ts#memoryPointer("main")`, in `RAIL_HEAD`) und
@@ -761,7 +792,9 @@ Standard-Nachfolgebrief zählt deshalb keine Task-Status mehr (`- Task rows: not
 Inbox- und Pflichtenzeilen des Handovers sind unverändert.
 
 Prüfung: `e2e/self-token.ts#memoryDoor` (eigene Scratch-Instanz, drei Repos × Lane/MAIN, vier
-Ablehnungen, Brief ohne Statuskopie), `e2e/programs.ts` (Rail-Pointer ≤ 512 B, Nachfolgebrief ohne
+Ablehnungen, Brief ohne Statuskopie; Evidence: 21 entschiedene Reports mit einem aus dem Live-Tail
+gefallenen, ein Archivrecord hinter > 1 MiB Nichttreffern, kaputte Zeile, Rotation im Cursorlauf,
+unbekannte Herkunft, geborgter Cursor), `e2e/programs.ts` (Rail-Pointer ≤ 512 B, Nachfolgebrief ohne
 Zählzeile).
 
 ## tasks — `POST /api/self/tasks`, `GET /api/self/program-execution`
@@ -2846,6 +2879,9 @@ behält, was der Prune löscht.
   gewinnt, gibt es je `id` höchstens eine `decision`-Zeile.
 - Eine Zeile, die vor 2026-09-14 gefilet wurde, hat keine `open`-Zeile. Fehlt eine Zeile, heißt das
   „vor dem Ledger", nicht „nie gefilet".
+- Lesbar für den eigenen Task seit 2026-09-23 über `GET /api/self/memory?view=evidence`
+  (§memory): aktiv, `.1` und `.archive`, seitenweise mit Coverage — der einzige Server-Leser
+  dieses Ledgers.
 
 **`context-receipts.jsonl`** (lesbar über `GET /api/context-receipts`, Owner) trägt zwei neue
 Felder an allen fünf Schreibern (Lane-Dispatch, zwei Supervisor-, zwei Program-MAIN-Gründungen):

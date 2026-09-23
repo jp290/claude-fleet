@@ -5252,11 +5252,20 @@ solange der Versand mid-flight ist (die alte PID überlebt das Parken, der Kill 
 Release, und die Reihe wird DELIVERED, nicht ermordet); ohne SETTLE (die Roh-Funktionen, die Mutation
 wörtlich genommen) benennt der OBSERVE-Teil die gekreuzt-offene, steckengebliebene Reihe — und zwar
 NICHT-BLOCKIEREND: jeder Neustart hinterlässt eine Beobachtungsschuld (seine Pre-Open-Menge), das
-nächste Settle sammelt sie ein. Ein Beobachten, das IN restartSrv wartet, sitzt zwischen Boot und
-Fixture-Fenster — gemessen als der Q5-Recycle-Roter von 4788615d (der Check war in 823 Post-Land-
-Audits nie rot): eine an der Recovery-Latch gehaltene Reihe liest sich nach diesem Prädikat als
+nächste Settle sammelt sie ein. Ein Beobachten, das IN restartSrv wartet, säße zwischen Boot und
+Fixture-Fenster: eine an der Recovery-Latch gehaltene Reihe liest sich nach diesem Prädikat als
 mid-flight (Marker unten, Zähler oben, keine Abschlusszeile — genau was die Recovery-Refused-Zweige
-lassen), obwohl nichts in der Luft ist, und das 20-s-Budget aß das 10-s-Latch-Fenster der Fixture auf.
+lassen), obwohl nichts in der Luft ist (am Prädikat gelesen, nicht als Rot gemessen). **Der
+Q5-Recycle-Rote von 44011307 (Lane-Sha 4788615d) war NICHT dieser Mechanismus** (Korrektur 2026-09-23, Program-MAIN
+Slot 4): er blieb auf 35cfdddf (Lane-Sha 2a7a6704), also mit nicht-blockierendem OBSERVE, rot — auf dem Mac wie auf dem
+Helfer. Gemessen an der aufbewahrten Instanz war es die RETENTION: `server.ts#pruneFleetEvents` hält
+je Empfänger `FLEET_EVENT_KEEP_TERMINAL` (5) terminale Reihen, älteste nach `acknowledgedAt ??
+createdAt` zuerst. Die zwei Selbsttest-Reihen auf Empfänger `main` plus der Recycle-Kill machten 6,
+und die unquittierte Recycle-Reihe (frühes `createdAt`) wurde im SELBEN Tick gepruned, in dem sie
+`receiver-gone` wurde (Auditzeilen `fleet_event_receiver_gone` und `fleet_event_prune` derselben Id
+auf demselben ts). Fix 1d0807d4: der Selbsttest nimmt seine zwei Reihen samt Watches aus dem
+gestoppten Abbild. Lehre für jede Fixture in `e2e/watch.ts`: wer Reihen auf einen Empfänger legt,
+verschiebt dessen Retention-Fenster für alle Sektionen danach.
 Die benannte Reihe ist gemerkt, und der MEMO-Beweis steht VOR dem Ack: die Reihe ist noch mid-flight,
 der nächste Neustart muss deutlich unter dem Settle-Budget zurückkommen und nichts buchen — nach dem
 Ack wäre der Check unfalsifizierbar, weil die terminale Reihe dem Prädikat ohnehin entglitten wäre.
@@ -5265,3 +5274,24 @@ Und der Beweis selbst bucht keinen FAIL: der Detektor LIEFERT die benannten Reih
 Schuldeneinsammler am echten Settle meldet sie über den Melder (Default `check`) — ein Lauf, der
 seinen eigenen Beweis als FAIL buchte, könnte nie ALL PASS enden (gemessen, Bericht ed9a14fe).
 Der Helfer fährt diesen Beweis mit der vollen Suite.
+
+**Die SETTLE-Mutation ist gefahren** (2026-09-23, Mac, Program-MAIN Slot 4, `FLEET_E2E_MODULES=watch`
+auf main 1d0807d4 mit beiden `await settleForGate(label)` auskommentiert): `FAIL  restart gate
+self-test: SETTLE holds the kill while the send is mid-flight …  ({"held":false,"pidMoved":true,
+"row":["send-uncertain",1],…})` — die Reihe bleibt ermordet stehen, genau der Rot, den der Check
+verspricht. Die übrigen vier Selbsttest-Zeilen blieben PASS (sie brauchen SETTLE nicht). Zwei
+weitere FAILs desselben Laufs gehören nicht zur Mutation: die `node_modules`-Vorbedingung (der
+Scratch-Worktree hatte keins) und §11.2ab (Backspace-Burst).
+
+**Zwei offene Beobachtungen, Rate ungemessen:**
+- *Audit-Rotation.* `midFlightRows` zählt `fleet_event_send_uncertain` über `auditRows()`, das
+  `audit.jsonl.1` und `audit.jsonl` liest. Eine ZWEITE Rotation im selben Lauf schiebt `.1` nach
+  `audit.jsonl.archive` (`server/persist.ts`), das nicht gelesen wird — gesunde Reihen sähen dann
+  mid-flight aus, und das Gate meldete falsch „restart killed a pending delivery". Am Code gelesen,
+  nie gesehen; bei 5 MB Schwelle in einem watch-Lauf unwahrscheinlich.
+- *Birth-Pin einmal rot im Land-Gate.* Land von fleet/260922204739-3482 (Kandidat 9ab3a6c2, nie auf main,
+  2026-09-23 ~01:5x) starb nach 2972 ms an Stufe pins: „an inherited suite-mutex hold is honoured
+  only over a holder whose process birth matches …" mit `birth=""` — `ps` startete, druckte aber
+  nichts. Derselbe Baum lokal ALL PASS; der nächste Gate-Lauf (25b3ca7d) und der Wiederholungs-Land
+  (1d0807d4) grün. `e2e/pins.ts` behandelt nur einen `ps`, der NICHT startet, als SKIP. Bei der
+  zweiten Sichtung: Reparatur-Zeile auf die Ursache des leeren `ps` im Gate-Kind.

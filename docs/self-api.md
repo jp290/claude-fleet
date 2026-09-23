@@ -787,7 +787,9 @@ curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" "http://<fleet-host>:<port>/a
 
 **Der Startpointer.** Der Program-MAIN-Rail (`server.ts#memoryPointer("main")`, in `RAIL_HEAD`) und
 jeder Lane-Gründungs- und Staffelstab-Brief (`memoryPointer("lane")`) tragen einen Absatz
-`YOUR MEMORY …` von höchstens 512 UTF-8-Bytes: die Tür und ihre Grenzen, kein kopierter Zustand. Der
+`YOUR MEMORY …` von höchstens 512 UTF-8-Bytes: die Tür und ihre Grenzen, kein kopierter Zustand. Im
+Lane-Gründungsbrief steht er HINTER dem Exit-Footer — die Spanne Brief…Footer vermessen die
+Dispatch-Proben als Notiz-/Quell-/Studio-/Anker-Region. Der
 Standard-Nachfolgebrief zählt deshalb keine Task-Status mehr (`- Task rows: not copied here …`);
 Inbox- und Pflichtenzeilen des Handovers sind unverändert.
 

@@ -14295,9 +14295,12 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // must not receive this text — the same re-check the boot sleep gets, at the last moment it helps.
     if (identityLost()) { await requeue("slot changed during brief assembly — requeued"); return; }
     // THE MEMORY POINTER (≤ 512 B): the reader and its limits, never a copy of the state it reads.
-    // Before the anchors for the anchors' reason; clarify gets none, like the notes and the footer.
+    // AFTER the exit footer, never between brief and footer: the dispatch probes (e2e/tasks.ts (d),
+    // (d3), (d5), the manifest seam; the studio splice in e2e/programs.ts) measure everything in
+    // that span as the notes/source/studio/anchor region, and a pointer there moved all of their
+    // bytes (preview b546fb2cccdb, 7 red). Clarify gets none, like the notes and the footer.
     const memoryBlock = clarify ? "" : `\n\n${memoryPointer("lane")}`;
-    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${memoryBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness)}`;
+    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness)}${memoryBlock}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     await sendText(free, deliveredBrief, true, { path: "brief" });

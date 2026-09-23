@@ -6817,7 +6817,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // a codex lane compacts its own window, so its copy of act 2 must not teach the baton door
   // (Fremdrepo-Befund 4) — but both exits must come from this one body, or the two drift.
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
-    /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{memoryBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness\)\}`;/.test(server)
+    /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness\)\}\$\{memoryBlock\}`;/.test(server)
       && /\]\.join\("\\n"\) \+ facts\.footer;/.test(server)
       && (server.split("laneExitFooter(").length - 1) === 3,
     `laneExitFooter call sites=${server.split("laneExitFooter(").length - 1}`);

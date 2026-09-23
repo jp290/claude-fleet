@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gründungsfenster · Entwurf</title>
+<!-- Statisches Mockup zu docs/messungen/2026-09-22-gruendungsfenster-entwurf.md. Kein Produktcode.
+     Stufen: ?s=1 Rolle (Comic-Seite) · ?s=2 Profil + Kontext · ?s=3a Repo mit Gesicht · ?s=3b Repo-Karte.
+     Ansehen: aus docs/design/ heraus serviert (ES-Module brauchen http, nicht file://), z. B.
+     python3 -m http.server 8799 --bind 127.0.0.1 -d docs/design → /gruendungsfenster/?s=1 -->
+<link rel="stylesheet" href="gf.css">
+</head>
+<body>
+<nav id="side" aria-label="Plätze"></nav>
+<main id="stage"><div class="ghost"></div></main>
+<section id="gf" role="dialog" aria-label="Neue Session"></section>
+<div id="caption"></div>
+<script type="module" src="gf.js"></script>
+</body>
+</html>

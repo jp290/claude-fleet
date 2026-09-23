@@ -1,3 +1,20 @@
+# HANDOFF — Orchestratorin Slot 9 (claude/Opus 5.5) → Nachfolgerin claude/Opus 5.5/high (2026-09-23 ~23:3x, ctx 30 %)
+
+Echte Nachfolge (Regel A). Owner-Auftrag, wörtlich: „Bitte mach dir ein akkurates Bild der Lage und werde Herr der Lage … Second-host … Das muss auch irgendwann mal richtig laufen und das Worktree's feature … Kümmer dich um alles sorgfältig und vernünftig, geh alles der Reihe nach an." Dazu „mach das meiste im zweifel selbst". Lanes vorläufig auf `claude-opus-5-5[1m]/high` (Owner-Pin laut Übergabe von Codex Slot 5, noch nicht als Memory promoviert).
+
+**Zuerst:** `./state.sh` · `./register.sh` · Board. Alles unten ist ein CLAIM, gemessen um ~23:2x.
+
+**Offene Pflichten, der Reihe nach:**
+1. **W5d T4 — Second-host landet selbst** (Kriterium an 29ad3230, Teil P4, bestätigt). Erfüllt: (a) T1–T3 laufen auf beiden Servern (Deploys Mac `8f2a1361`, Second-host `bbfca62f`, beide ok auf `7dc4e9dc`); (c) Nabe (liegt AUF dem Second-host: `~/git/claude-fleet.git`), Mac und Second-host gleich. (b) halb: Second-host-Sync holt von `hub` (Drop-in `~/.config/systemd/user/fleet-sync.service.d/hub.conf`). FEHLT: Rückweg des Mac (launchd-Job, `fleet-sync.sh` mit `FLEET_SYNC_REMOTE=hub FLEET_SYNC_BUILD_CMD=true`; Vorlage `launchd-example.plist`, `docs/dual-host-git-transport.md`). Danach Umschalten am Second-host (`FLEET_LANDS=1`, `FLEET_HUB_REMOTE='hub'` in `.env`, Deploy), Beweislauf = je ein Land pro Host über die Nabe, Messnotiz mit drei Sensorzeilen vorher/nachher.
+2. **Worktree-Kette:** bd84a89f (Zaun) → **19dff0a7 VOR d0211fbd** (mein Entscheid, an MAIN Slot 4 gesendet) → 6ec36333 → c617a142; Notizblock 1122e94c (Clarify, NACH 19dff0a7). 6ec36333/c617a142 brauchen vor Freigabe Owner-Entscheid zu Kosten/Erreichbarkeit.
+3. **Demo 2** (Program c3abe1e4, MAIN Slot 3): Design-Lane mit Varianten → Owner wählt EINMAL für Demo UND Webseite. Webseite = `~/private-repo-v/landing`, live aus dem Haupt-Checkout (Port 3490): jede Änderung sofort öffentlich; 31 schmutzige Pfade, ungetrackte Live-Dateien, kein AGENTS.md — vor jeder Lane dort klären. Verify-Eintrag für `~/claude-fleet-demo` in `FLEET_VERIFY_CMD_REPOS` fehlt (die MAIN schlägt vor, du trägst ein und deployst).
+4. **Sieben Karten mit Lücken** schärfen: cd0dda27, 5f8a6aad, 63ed4614, 4249c5ef, 758995fa, bc093267, 2a5ef2b6.
+5. Owner-offen: UI-Sichtung 64df734a (Geschmack) · Worktree f69a (ungelandete Chat-Designrunde, 1155 Z. Docs) übernehmen oder verwerfen.
+
+**Heute erledigt (nicht neu machen):** Private-repo-aa-Webzeilen 3cf96d68/49105904 archiviert (App ist nativ, `~/private-repo-aa-diorama`, Owner direkt in Slot 16) · Elektro-Demo gelandet `2783d1e` · sieben leere Orphan-Worktrees entfernt · gefilet: 917107cd (Loader verwirft `criterion.parts` bei jedem srv-Neustart — echter Bug), 4cd22a44 (Opus 5.5 in card-extract/lane-context-cost), 6ec36333, c617a142, 1122e94c.
+
+**Korrektur:** Die Orchestratorin hat heute zweimal gelandet/deployt unter Owner-Delegation, obwohl die Rollenkarte „landet nicht" sagt. Das bleibt die Ausnahme mit konkretem Owner-Wort, keine neue Regel.
+
 # HANDOFF — Orchestratorin Slot 14 (claude/Opus 5.5) → Orchestratorin auf codex/gpt-6-sol (2026-09-23 ~09:4x, ctx 32 %)
 
 Echte Nachfolge mit HARNESS-WECHSEL (Owner: „ich denke sol wird das als orchestratoring auch hinbekommen, wenn nicht kann ich immer noch wechseln"). `succeed` kann den Harness nicht wechseln, deshalb traegt diese Datei die Uebergabe, nicht ein Linien-Record (Weg: `docs/controller.md` §Nachfolge, letzter Absatz).

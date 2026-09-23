@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { ROOT, REPO, check, get, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
-import { MERGE_IDLE_MS, exists, settleForMerge } from "./lane-helpers";
+import { MERGE_IDLE_MS, exists, settleForMerge, trySettleForMerge } from "./lane-helpers";
 
 // newest-first ledger → the first row for a unique lane branch is its terminal record
 const outcomeFor = async (branch: string): Promise<Record<string, unknown> | undefined> =>
@@ -646,8 +646,9 @@ export async function run(lc: LaneCtx): Promise<void> {
     // whole fixture red although nothing about the refusal had changed. A pane that prints for
     // several seconds holds the state still long enough to be OBSERVED and then ACTED ON — the
     // rebase call below needs it to be true too, not only this poll.
+    const finishLine = `rebase-guard-finished-${Date.now()}`;
     await tmuxOut("send-keys", "-t", `s${ln.slot}`,
-      "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do echo rebase-guard $i; sleep 0.3; done", "Enter");
+      `for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do echo rebase-guard $i; sleep 0.3; done; echo ${finishLine}`, "Enter");
     let busy = false;
     for (let i = 0; i < 100 && !busy; i++) {
       const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
@@ -664,20 +665,34 @@ export async function run(lc: LaneCtx): Promise<void> {
       check("rebase refuses while the lane's agent is mid-turn, by name",
         working.status === 409 && working.j.reason === "lane-working", JSON.stringify(working.j));
     }
-    await settleForMerge(ln.slot);
+    // The loop can pause for longer than MERGE_IDLE_MS under load. Its final line proves that
+    // no more loop output is due; only then can lastOutput measure a full quiet window.
+    let finished = false;
+    for (let i = 0; i < 200 && !finished; i++) {
+      const pane = await tmuxOut("capture-pane", "-p", "-t", `s${ln.slot}`, "-S", "-100");
+      finished = pane.code === 0 && pane.out.split("\n").some((line) => line.trim() === finishLine);
+      if (!finished) await Bun.sleep(100);
+    }
+    if (finished) await Bun.sleep(MERGE_IDLE_MS);
+    const idle = finished ? await trySettleForMerge(ln.slot) : null;
+    check("rebase fixture: output loop finished and the pane cleared the idle gate before replay",
+      finished && idle?.ok === true,
+      !finished ? "loop finish line absent after 20 s" : `idle=${idle?.idleMs}ms gate=${MERGE_IDLE_MS}ms waited=${idle?.waitedMs}ms`);
 
     // 5 — and then it does the one thing it is for
-    const before = sha(ln.cwd);
-    const done = await rebase(ln.slot);
-    check("rebase replays the lane onto its base and reports what it moved",
-      done.status === 200 && done.j.ok === true && done.j.was === 1 && done.j.behind === 0,
-      JSON.stringify(done.j));
-    check("rebase moved HEAD and kept the lane's own commit",
-      sha(ln.cwd) !== before && exists(`${ln.cwd}/rebase-lane.txt`) && exists(`${ln.cwd}/rebase-main.txt`),
-      `${before.slice(0, 7)} → ${sha(ln.cwd).slice(0, 7)}`);
-    check("rebase leaves no rebase in progress behind it",
-      !exists(`${REPO}/.git/worktrees/${ln.branch.split("/").pop()}/rebase-merge`) && status(ln.cwd) === "",
-      JSON.stringify(status(ln.cwd)));
+    if (idle?.ok) {
+      const before = sha(ln.cwd);
+      const done = await rebase(ln.slot);
+      check("rebase replays the lane onto its base and reports what it moved",
+        done.status === 200 && done.j.ok === true && done.j.was === 1 && done.j.behind === 0,
+        JSON.stringify(done.j));
+      check("rebase moved HEAD and kept the lane's own commit",
+        sha(ln.cwd) !== before && exists(`${ln.cwd}/rebase-lane.txt`) && exists(`${ln.cwd}/rebase-main.txt`),
+        `${before.slice(0, 7)} → ${sha(ln.cwd).slice(0, 7)}`);
+      check("rebase leaves no rebase in progress behind it",
+        !exists(`${REPO}/.git/worktrees/${ln.branch.split("/").pop()}/rebase-merge`) && status(ln.cwd) === "",
+        JSON.stringify(status(ln.cwd)));
+    }
     await post(`/api/slots/${ln.slot}/kill`, {});
 
     // 6 — THE CONFLICT: a second lane touching the same line main moved. The route must ABORT and

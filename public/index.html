@@ -542,8 +542,7 @@
   .ent:hover { background: #1b2233; color: #fff; border-bottom-color: var(--accent); }
   .mdcode.ent { border-bottom: 1px dotted var(--chat-mute); }
   .entcard { position: fixed; z-index: 60; display: none; width: 320px; max-width: calc(100vw - 16px);
-    padding: 11px 14px 12px; background: rgba(12, 12, 14, 0.97); border: 1px solid var(--chat-edge);
-    border-radius: 12px; box-shadow: 0 16px 48px #000d; color: var(--chat-prose);
+    padding: 11px 14px 12px; color: var(--chat-prose);
     font-family: var(--chat-sans); font-size: calc(var(--chat-ui-fs) + 1px); line-height: 1.45;
     opacity: 0; transform: scale(0.98); transition: opacity 0.12s ease-out, transform 0.12s ease-out; }
   .entcard.open { opacity: 1; transform: scale(1); }
@@ -1261,22 +1260,6 @@
   .shellrow.ctx { background: #232a3a; }
   .shelldetail .difftxt { max-height: none; border: none; background: none; padding: 0; overflow: visible; }
   .diffstat.err { color: var(--del); }
-
-  /* ids the board knows — the card is src/entcard.ts. These rules are fleet/260919003602-4ba5's,
-     byte for byte, until that lane lands and the copy goes. */
-  /* ids the board knows (src/md.ts marks them, src/entcard.ts explains them on hover) */
-  .ent { font-family: var(--chat-mono); font-size: 0.92em; border-bottom: 1px dotted var(--chat-mute);
-    border-radius: 3px; cursor: help; transition: background 0.12s, color 0.12s; }
-  .ent:hover { background: #1b2233; color: #fff; border-bottom-color: var(--accent); }
-  .mdcode.ent { border-bottom: 1px dotted var(--chat-mute); }
-  .entcard { position: fixed; z-index: 60; display: none; width: 320px; max-width: calc(100vw - 16px);
-    padding: 11px 14px 12px; background: rgba(12, 12, 14, 0.97); border: 1px solid var(--chat-edge);
-    border-radius: 12px; box-shadow: 0 16px 48px #000d; color: var(--chat-prose);
-    font-family: var(--chat-sans); font-size: calc(var(--chat-ui-fs) + 1px); line-height: 1.45;
-    opacity: 0; transform: scale(0.98); transition: opacity 0.12s ease-out, transform 0.12s ease-out; }
-  .entcard.open { opacity: 1; transform: scale(1); }
-  .entmeta { font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-mute); }
-  .enttitle { color: var(--chat-ink); font-weight: 600; font-size: 1.08em; margin: 4px 0 7px; overflow-wrap: anywhere; }
 
   /* === THE QUEUE IN THE CHAT LANGUAGE (Stilvorgabe 2026-09-19) ==========================
      The WINDOW chrome (.shellwin/.shellhead/.shellclose/.shellrow, the .panel dialogs) speaks
@@ -2233,10 +2216,6 @@
   #boardhead { display: flex; align-items: center; gap: 6px; padding: 10px 10px 8px;
     font-size: 12px; font-weight: 700; color: var(--chat-ink); }
   #boardtitle { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #boardclose { flex: none; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--line);
-    background: var(--raised); color: var(--dim); font-size: 13px; font-family: inherit; cursor: pointer;
-    display: flex; align-items: center; justify-content: center; line-height: 1; }
-  #boardclose:hover { color: var(--text); }
   #boardbody { flex: 1; overflow-y: auto; padding: 4px 10px 14px; font-size: 11.5px; }
   /* --- the session brief, 2026-09 redesign. Everything below is scoped to #board so it outranks the
      shared .bsec/.bbtn rules without touching the other surfaces that reuse them.
@@ -2259,7 +2238,10 @@
   #board button { font-family: inherit; }
   #board :focus-visible { outline: 1.5px solid var(--accent); outline-offset: 1px; border-radius: 5px; }
   #board #boardhead { padding: 14px 16px 6px; font-size: 12px; font-weight: 600; color: var(--b-ink2); letter-spacing: .01em; }
-  #board #boardclose { border: 0; background: none; color: var(--b-ink3); width: 24px; height: 24px; }
+  /* the close box carries its whole rule here: the pre-alias #boardclose base above is gone (D-4),
+     the living bits (flex centering, cursor) moved in — nothing of the old palette is left */
+  #board #boardclose { border: 0; background: none; color: var(--b-ink3); flex: none; width: 24px; height: 24px;
+    font-size: 13px; display: flex; align-items: center; justify-content: center; line-height: 1; cursor: pointer; }
   #board #boardclose:hover { color: var(--b-ink); background: var(--b-hover); }
   #board #boardbody { padding: 0 16px 28px; font-size: 12.5px; line-height: 1.45; }
 
@@ -2292,7 +2274,7 @@
 
   /* head */
   #board .bhead { padding-top: 16px; }
-  #board .bheadtop { display: flex; align-items: flex-start; gap: 8px; }
+  #board .bheadtop { display: flex; align-items: flex-start; gap: 8px; position: relative; }
   #board .bheadname { flex: 1; min-width: 0; font-size: 16px; font-weight: 650; letter-spacing: -.012em; line-height: 1.25;
     color: #f4f4f4; overflow-wrap: anywhere; }
   #board .bheadmenu { flex: none; width: 26px; height: 24px; margin: -2px -6px 0 0; border: 0; border-radius: 6px;
@@ -2355,10 +2337,10 @@
   #shell-packs .cpkpath { font-family: var(--chat-mono); font-size: 11.5px; color: var(--chat-ink); overflow-wrap: anywhere; }
   #shell-packs .cpkanchor { margin-top: 3px; font-size: 11.5px; color: var(--chat-mute); overflow-wrap: anywhere; }
 
-  #board .bmenu { margin-top: 10px; padding: 4px; border: 1px solid var(--chat-edge); border-radius: 8px; background: var(--chat-surface); }
-  #board .bmenuitem { display: block; width: 100%; padding: 6px 8px; border: 0; border-radius: 5px; background: none;
+  /* the session menu hangs at its ⋯ button (G4.1 Zuhause) instead of shoving the column down */
+  #board .bmenu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 5; min-width: 220px; padding: 4px; }
+  #board .bmenuitem { display: block; width: 100%; padding: 6px 8px; border: 0; background: none;
     color: var(--b-ink); font-size: 12px; text-align: left; cursor: pointer; }
-  #board .bmenuitem:hover:not(:disabled) { background: var(--chat-raised); }
 
   /* buttons: bordered = an action, quiet = a lesser one, primary = THE action (one at a time) */
   #board .bbtnrow, #board .blandacts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
@@ -2753,7 +2735,15 @@
     /* the phone collapses the seats: no reservation, what is not for the phone is display:none */
     .pane:not(.chat) .promptnav, .pane:not(.chat) .chatsizebtn { display: none; }
     .panetools .termwidth, .panetools .panegear { display: none !important; }
-    .sizepanel { top: 56px; right: 10px; }
+    /* a popover becomes the full width of its surface, anchored at the bottom (G4.1 mobil,
+       Vorbild #comp .optpop): the instance menu over the viewport, the size panel over the pane,
+       the session menu over the window that carries the column */
+    .sizepanel { top: auto; bottom: 0; left: 0; right: 0; width: auto; }
+    #instmenu { position: fixed; top: auto; bottom: 0; left: 0; right: 0; min-width: 0; max-width: none; }
+    #board .bmenu { left: 0; right: 0; }
+    /* finger targets inside the popovers (G0.7) */
+    #instmenu .instrow, #board .bmenuitem, .optpop .cmdmodel, .optpop .cmdlevel, .optpop .cmdline,
+    .sizerow, .sizereset { min-height: 40px; }
     body.board #board { display: none; } /* must outrank the desktop body.board rule */
 
     /* ℹ on the phone opens the info column's content as a fullscreen window (G6.3): #board itself

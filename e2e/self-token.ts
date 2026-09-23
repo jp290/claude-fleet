@@ -2033,9 +2033,11 @@ async function memoryPortfolio(i: MemInstance, dir: string, repos: string[], mai
   const revoke = await owner("PATCH", "/api/slots/5/memory-grant", { expectedOpenedAt: orchOpened, expectedRevision: 2, revoke: true });
   const stale = await port(orchTok, `&limit=1&cursor=${page1b.body.nextCursor}`);
   const afterRevoke = await port(orchTok);
-  check("memory grant revoke: a cursor issued before the revoke is cursor-stale, and the reader is back to no-grant",
+  // with nothing in force the scope refusal answers before any cursor is read, so the pre-revoke
+  // cursor is no-grant here; that it is DEAD, not merely unreachable, is the re-grant probe below
+  check("memory grant revoke: a cursor issued before the revoke is refused, and the reader is back to no-grant",
     typeof page1.body.nextCursor === "string" && page2.status === 200 && (page2.body.projects ?? []).length === 1
-      && revoke.ok && stale.status === 409 && stale.body.refusal === "cursor-stale"
+      && revoke.ok && stale.status === 409 && stale.body.refusal === "no-grant"
       && afterRevoke.status === 409 && afterRevoke.body.refusal === "no-grant" && (await grantOf(5)).grant?.revision === 3,
     `${page2.status} revoke=${revoke.status} stale=${stale.status}:${stale.body.refusal} after=${afterRevoke.status}`);
   const auditRows = readFileSync(`${dir}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
@@ -2045,6 +2047,11 @@ async function memoryPortfolio(i: MemInstance, dir: string, repos: string[], mai
     auditRows.length === 4 && auditRows.every((r) => !repos.some((p) => (r.detail ?? "").includes(p)))
       && auditRows.some((r) => (r.detail ?? "").startsWith("write failed")) && auditRows.some((r) => (r.detail ?? "").startsWith("revoked")),
     JSON.stringify(auditRows.map((r) => (r.detail ?? "").slice(0, 60))));
+  const regrant = await owner("PATCH", "/api/slots/5/memory-grant", setBody(3, [kA, kB, kC]));
+  const staleAfter = await port(orchTok, `&limit=1&cursor=${page1b.body.nextCursor}`);
+  check("memory grant revoke: a new grant does not revive the pre-revoke cursor — it is cursor-stale under the new revision",
+    regrant.ok && (await grantOf(5)).grant?.revision === 4 && staleAfter.status === 409 && staleAfter.body.refusal === "cursor-stale",
+    `regrant=${regrant.status} stale=${staleAfter.status}:${staleAfter.body.refusal}`);
 
   // --- the Supervisor keeps its existing reach, without any grant ---
   const S = await port(supTok);

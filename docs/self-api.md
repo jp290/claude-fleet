@@ -825,7 +825,9 @@ Ein Grant-Projekt ohne Fakten (kein Träger nennt es jetzt) steht als `state:"un
 unlesbare Teilquelle (kaputte Ledgerzeile, kein Snapshot) setzt die betroffenen Projekte auf
 `coverage:"incomplete"` mit Grund in `unknown[]`, ohne den Scope zu ändern. Seiten: `limit=1…10`
 Projekte, Cursor gebunden an Occupant, Prinzipal, Grant-Id UND Revision — jede Änderung am Grant
-(Set, Revoke, Transfer) macht alte Cursor `cursor-stale`; ein währenddessen geänderter Grant ergibt
+(Set, Revoke, Transfer) macht alte Cursor `cursor-stale`; solange nach einem Revoke nichts in Kraft
+ist, antwortet vorher die Reichweite mit `no-grant`, und ein neuer Grant belebt den alten Cursor nicht
+(`cursor-stale`). Ein währenddessen geänderter Grant ergibt
 409 `grant-changed`. Der Grant ist reines Leserecht: keine Schreib-, Dispatch- oder Land-Tür fragt ihn.
 
 **Der Read-Grant** (`server/types.ts#MemoryGrant`, am Slot, persistiert in `fleet.json`):

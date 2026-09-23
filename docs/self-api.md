@@ -3144,6 +3144,44 @@ Seit M3 wird derselbe Fakt **zuerst** gemessen, in zwei git-Reads und ohne Gate:
   falsch gemacht: sobald im Haupt-Checkout committet oder gestasht ist, geht derselbe Land durch
   dieselbe Tür durch. Ein **abwesender** Grund bleibt UNKNOWN und blockiert.
 
+### Die Nabe hat zuerst zugegriffen: `errorReason: "hub-lost"` / `"hub-unreachable"` (W5d, seit 2026-09-23)
+
+Seit W5d schiedsrichtert die Nabe (`FLEET_HUB_REMOTE`) den Land, und sie tut es **bevor** `main`
+lokal bewegt wird: `server.ts#mergeJob` pusht die Lane-Spitze ff-only auf die Nabe, und erst ein
+ANGENOMMENER Push lässt `advanceIntegration` und `recordLand` überhaupt laufen. Damit kann ein Land
+jetzt von einer Maschine abgelehnt werden, die nicht diese ist — zwei getrennte Fakten, nie einer:
+
+```
+{"status":"error","landed":false,"errorReason":"hub-lost","verify":{"ok":true,…},
+ "detail":"rebase ok and the gate is green, but the hub took this main first …"}
+{"status":"error","landed":false,"errorReason":"hub-unreachable","verify":{"ok":true,…},
+ "detail":"… the hub (hub) could not be reached, so nothing decided whether this may land: …"}
+```
+
+- **`hub-lost` = der andere Lander war schneller.** Die Nabe hält Commits, die dieser Host nicht
+  hat. Der Server holt sie sich daraufhin selbst (`server.ts#catchUpMainToHub`, fetch + ff-only),
+  und danach spult die Lane nicht mehr auf `main` vor — also greift **dieselbe** gedeckelte
+  Schleife, die ein lokal verlorenes Fast-Forward beantwortet: re-rebase, **Gate neu**, erneut
+  anbieten (`LAND_FF_RETRY_ROUNDS`). Erst die letzte Ablehnung wird dieses Verdikt. Es heißt
+  ausdrücklich nicht `ff-lost`: die lokale Ref-Bewegung ist hier die FOLGE, nicht die Ursache, und
+  wer `ff-lost` läse, suchte einen Direkt-Commit in diesem Checkout, den es nie gab.
+- **`hub-unreachable` = es wurde gar nichts entschieden.** Kein Urteil über diesen Baum und keines
+  über den anderen Host. Es wird **nicht** wiederholt: dieselbe unerreichbare Nabe ein zweites Mal
+  zu fragen kostet den einen Suite-Mutex dieser Maschine und ändert nichts. Die Lane bleibt stehen,
+  das nächste ⏫ nimmt sie, sobald die Nabe antwortet.
+- **Die Unterscheidung ist getypt, nicht geraten** (`server.ts#HubPushResult.kind`): git schreibt
+  `! [rejected]` auf die Ref-Zeile und sonst nirgends; alles andere — inklusive eines von uns
+  GETÖTETEN Pushes, der per Definition keine Antwort bekam — ist `unreachable`. Unbekanntes fällt
+  bewusst auf die vorsichtige Seite: `rejected` ist der einzige Wert, der ein weiteres volles Gate
+  bezahlt, und den vergibt nur eine gemessene Ablehnung.
+- **Ohne `FLEET_HUB_REMOTE` existiert beides nicht.** Kein Push, kein `hubPush`-Feld, kein neues
+  Verdikt — der Ein-Host-Pfad ist byte-gleich zu vor W5d.
+- **Wirkung wie bei `ff-lost`:** beide Werte stehen in `MERGE_ERROR_REASONS` und blockieren
+  `done-looking` nicht. Die Lane ist sauber, ahead und grün; sie hat nichts falsch gemacht.
+- **Nicht betroffen:** `confirm-land` und die Boot-Nachholung. Beide bewegen `main` zuerst und
+  pushen danach in `recordLand` wie vor W5d — sie schiedsrichten nicht, und ihr abgelehnter Push
+  bleibt ein rotes `hubPush`-Feld auf der Land-Note.
+
 ### Wohin das Verdikt geht: an den, der gelandet hat (seit 2026-09-04)
 
 **Gemessen am 2026-09-04:** genau das `ff-lost`-Verdikt von oben wurde in die **LANE**-Pane

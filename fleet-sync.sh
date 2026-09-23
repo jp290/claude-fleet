@@ -1,33 +1,54 @@
 #!/bin/sh
-# fleet-sync.sh — the FOLLOWER half of the dual-host git transport (docs/dual-host-git-transport.md).
+# fleet-sync.sh — the PULL half of the dual-host git transport (docs/dual-host-git-transport.md).
 #
-# Runs on the machine whose checkout FOLLOWS: it fetches the canonical `main` from the other host,
-# fast-forwards this checkout onto it, resolves the dependencies that fast-forward brought, builds
-# the client bundle it invalidated, and asks this host's own Fleet instance to pull its srv onto
-# the new code. It is the twin of nothing on the canonical side — the canonical host never runs
-# this file, and this file never pushes, never resets and never touches a branch other than `main`.
+# Runs on a machine whose checkout has to catch up with the other one: it fetches `main` from the
+# named remote, fast-forwards this checkout onto it, resolves the dependencies that fast-forward
+# brought, builds the client bundle it invalidated, and asks this host's own Fleet instance to pull
+# its srv onto the new code. It never pushes, never resets and never touches a branch other
+# than `main`.
+#
+# W5d MADE IT SYMMETRIC (owner 2026-09-23, "beide landen, die Nabe schiedsrichtert"). It used to be
+# the FOLLOWER's half of a one-way rail, and its head said so: the canonical host never ran it.
+# Since both hosts land and the bare hub arbitrates, both hosts also have to pull the other's work,
+# and they pull it from the SAME place they land into — the hub, never from each other. That makes
+# this file the one both run, with two differences that are CONFIGURATION and not code:
+#   · the remote. `FLEET_SYNC_REMOTE=hub` (or the argument) on both, instead of `canonical`.
+#   · the build. `public/*.js` on the canonical host belongs to the deploy path and nobody else
+#     (see WHY THE BUILD IS HERE below), so that host sets `FLEET_SYNC_BUILD_CMD` to a no-op and
+#     lets `POST /api/deploy` — which builds before it restarts — own the bundle. A run that did
+#     not build says so in its own line rather than claiming a bundle it did not produce.
+# Neither difference is a branch in this script: it does the same five steps on both machines.
 #
 # NO HOST, NO ADDRESS, NO CREDENTIAL — this repository is public. The far side is named only by a
 # git REMOTE (`canonical` by default), whose URL lives in this checkout's gitignored .git/config, and
-# the key that reaches it lives in the follower user's ~/.ssh. Both are host state, never tracked.
+# the key that reaches it lives in that user's ~/.ssh. Both are host state, never tracked.
 #
 #   ./fleet-sync.sh            # fetch from `canonical`, ff `main`, install, build, ask for a deploy
-#   ./fleet-sync.sh <remote>   # same, from another remote name
+#   ./fleet-sync.sh <remote>   # same, from another remote name (`hub` under W5d)
 #
-# WHY FAST-FORWARD AND NOT RESET. A follower that resets throws away whatever the follower's own
-# Fleet has committed, and it does it silently. `merge --ff-only` is the same primitive the land
-# path itself uses (server.ts, grep `"merge", "--ff-only"`): it moves `main` when `main` has only
-# moved on the other side, and it REFUSES — loudly, exit 3 — the moment the two have diverged.
-# A divergence is the one event on this rail that a human has to look at, because it means this
-# host landed something, and under the standing decision (path b, 2026-09-05) it must not.
+# WHY FAST-FORWARD AND NOT RESET. A host that resets throws away whatever it has committed itself,
+# and it does it silently. `merge --ff-only` is the same primitive the land path itself uses
+# (server.ts, grep `"merge", "--ff-only"`): it moves `main` when `main` has only moved on the other
+# side, and it REFUSES — loudly, exit 3 — the moment the two have diverged.
+#
+# WHAT EXIT 3 MEANS NOW, and it is not what it meant before W5d. It used to mean "this host landed
+# something and under the standing decision (path b, 2026-09-05) it must not" — a rule violation.
+# Under two landing hosts, landing here is allowed and normal, and a land that reached the hub can
+# never produce this: the hub took it, so the hub's main contains it. So exit 3 means the narrower
+# and more useful thing: THIS HOST HOLDS COMMITS THE HUB DOES NOT. There are exactly two ways to
+# get there, and both are a human's to settle — a direct commit that was never pushed (ctl.sh's
+# `commit main` pushes for you; a bare `git commit` does not), or a land whose push the hub
+# refused. Either way nothing here can guess which, so it stops and says the shas.
 #
 # WHY THE BUILD IS HERE, AND NOT IN watchdog.sh. `public/*.js` is a gitignored BUILD artifact, so a
 # fast-forward moves `src/` and leaves NOTHING behind it: measured on the follower 2026-09-06 04:14,
 # `bundleStale {appJsMtime:null, shareJsMtime:null, helperJsMtime:null}` and no `public/*.js` in the
 # checkout at all — a board served as HTML with no JS. The obvious other home was watchdog.sh's srv
-# spawn, and it was refused: BOTH hosts boot the same watchdog, so a build there would also fire on
-# the canonical host, whose bundle is the deploy path's business and nobody else's. This script is
-# the only thing that runs on the follower and nowhere else, so this is where the build belongs.
+# spawn, and it was refused: BOTH hosts boot the same watchdog, so a build there would fire on
+# every boot, including on the canonical host, whose bundle is the deploy path's business and
+# nobody else's. This script runs on a schedule and answers a MOVE, which is the event the bundle
+# actually depends on — so this is where the build belongs, and where a host that does not want it
+# turns it off by naming its own command.
 #
 # WHY IT ALSO INSTALLS, AND WHY IT ASKS FOR A DEPLOY. Measured on the follower 2026-09-23 00:4x:
 # every sync since 2026-09-22 10:12 ended `SYNCED, then BUILD FAILED` because a fast-forward had
@@ -242,7 +263,7 @@ fi
 
 # `--is-ancestor` first, so a divergence is named as a divergence rather than as a merge error.
 git merge-base --is-ancestor "$before" "$after" || {
-  echo "fleet-sync: DIVERGED — local main $(git rev-parse --short "$before") is not an ancestor of $REMOTE/main $(git rev-parse --short "$after"); this host has landed something and must not have"
+  echo "fleet-sync: DIVERGED — local main $(git rev-parse --short "$before") is not an ancestor of $REMOTE/main $(git rev-parse --short "$after"); this host holds commits '$REMOTE' does not. A land that reached the hub cannot cause this, so look for a direct commit that was never pushed, or a land whose push the hub refused"
   exit 3; }
 
 git merge --ff-only "refs/remotes/$REMOTE/main"
@@ -254,5 +275,13 @@ run_build || {
   exit 5; }
 # The sync line is printed BEFORE the deploy is asked for, so the journal says where main ended up
 # even in a run whose deploy answer never comes.
-echo "fleet-sync: $(git rev-parse --short "$before") -> $(git rev-parse --short "$after"), bundle built"
+# AND IT SAYS WHICH OF THE TWO IT DID (W5d). On the canonical host the build command is a no-op,
+# because the bundle there belongs to `POST /api/deploy`; printing "bundle built" on a run that
+# built nothing would make the journal of the one host that needs watching the least trustworthy
+# line in the fleet. The default command keeps its original wording exactly.
+if [ "$BUILD_IS_DEFAULT" = 1 ]; then
+  echo "fleet-sync: $(git rev-parse --short "$before") -> $(git rev-parse --short "$after"), bundle built"
+else
+  echo "fleet-sync: $(git rev-parse --short "$before") -> $(git rev-parse --short "$after"), bundle step '$BUILD_CMD' ok (not the default build — this host's bundle is the deploy path's)"
+fi
 deploy_self || exit 7

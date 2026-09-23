@@ -20681,24 +20681,42 @@ interface LandProvenance {
   // lane lived. Absent where the slot recorded no fork — never `mainBefore` standing in for it.
   forkSha?: string;
 }
-// The outcome of ONE push attempt, and both halves are terminal: there is no retry and no rebase
-// against the hub (that is W5d). `ok:false` says the fleet's history stopped at this machine, which
-// a human resolves — a fleet that quietly kept pushing at a diverged hub would be the same silence
-// this field exists to end.
+// The outcome of ONE push attempt. `ok:false` says the fleet's history stopped at this machine.
+//
+// W5d SPLIT THE FALSE ARM IN TWO, and the split is what lets a caller decide instead of guess.
+// A hub that REJECTED the push has an opinion about this history — it holds commits we do not —
+// and that is a race with the other lander, answerable by fetching and going round again. A hub
+// that could not be REACHED has no opinion at all; nothing was arbitrated, and rolling the same
+// dice again inside one job would only spend the machine. The two must never be read as one: a
+// transport failure treated as "the hub moved" would buy a full re-gate for a network hiccup, and
+// a rejection treated as unreachable would abandon a land the next fetch would have settled.
+// UNKNOWN COUNTS AS `unreachable`, not as `rejected` — the conservative direction, because the
+// only thing `rejected` licenses is spending the gate again on a premise nobody measured.
+type HubPushFailure = "rejected" | "unreachable";
 type HubPushResult =
   | { ok: true; remote: string; sha: string }
-  | { ok: false; remote: string; reason: string };
-// Push the just-landed commit to the hub, fast-forward or not at all (a push without --force is
-// exactly that, and git refuses the rest on the remote side too). Runs AFTER the land and can never
-// undo it: every exit of this function is a FIELD, never a throw, and the caller's land verdict is
-// already written by the time it is called.
-async function pushLandToHub(repo: string, main: string, mainAfter: string): Promise<HubPushResult | null> {
+  | { ok: false; remote: string; reason: string; kind: HubPushFailure };
+// git says "! [rejected]" on the ref line for every non-fast-forward refusal and says it in no
+// other situation; a host that never answered produces a `fatal:` with no ref line at all. Read
+// off stderr because that is the only place git puts it — but the READING is narrow and the
+// default is the safe one, so a future git wording change degrades to "unreachable" (one land
+// stops and says why) rather than to a wrong retry.
+const HUB_REJECTED_RE = /!\s+\[rejected\]/;
+// Push ONE commit to the hub, fast-forward or not at all (a push without --force is exactly that,
+// and git refuses the rest on the remote side too). Every exit is a FIELD, never a throw.
+//
+// TWO CALLERS SINCE W5d, and they differ in WHEN, not in what this does. `mergeJob` calls it
+// BEFORE it moves main here, so the hub's answer is the land's authority; `recordLand` calls it
+// after the fact for the paths that did not arbitrate (confirm-land, boot recovery), where main
+// has already moved and nothing this function returns may take it back off.
+async function pushLandToHub(repo: string, main: string, sha: string): Promise<HubPushResult | null> {
   if (!HUB_REMOTE) return null;
   let killed = false;
   try {
-    // THE LANDED SHA, not `main` as it reads right now: a second land may already have moved the
-    // ref, and pushing whatever it points at would attribute that land's work to this note.
-    const p = Bun.spawn(["git", "-C", repo, "push", HUB_REMOTE, `${mainAfter}:refs/heads/${main}`],
+    // AN EXPLICIT SHA, not `main` as it reads right now: after the fact a second land may already
+    // have moved the ref, and pushing whatever it points at would attribute that land's work to
+    // this note; before the fact `main` here is not yet the commit being arbitrated at all.
+    const p = Bun.spawn(["git", "-C", repo, "push", HUB_REMOTE, `${sha}:refs/heads/${main}`],
       // a push that stops to ASK (ssh key prompt, credential helper) would hold the land path for
       // the whole budget and then fail anyway; refusing the prompt turns that into a fast reason.
       { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
@@ -20708,17 +20726,42 @@ async function pushLandToHub(repo: string, main: string, mainAfter: string): Pro
       // the end while the other fills its buffer is how a spawn wrapper deadlocks.
       const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
       const code = await p.exited;
-      if (code === 0) return { ok: true, remote: HUB_REMOTE, sha: mainAfter };
+      if (code === 0) return { ok: true, remote: HUB_REMOTE, sha };
       const said = err.trim() || out.trim() || `git push exited ${code} and said nothing`;
+      // a push we KILLED never got an answer, so it cannot have been rejected — the kill is read
+      // before the text, or a timeout that happened to carry an old ref line would be retried.
       return { ok: false, remote: HUB_REMOTE,
+        kind: !killed && HUB_REJECTED_RE.test(said) ? "rejected" : "unreachable",
         reason: (killed ? `no answer within ${HUB_PUSH_TIMEOUT_MS}ms, the push was killed: ${said}` : said).slice(0, 500) };
     } finally {
       clearTimeout(timer);
     }
   } catch (e) {
-    return { ok: false, remote: HUB_REMOTE,
+    return { ok: false, remote: HUB_REMOTE, kind: "unreachable",
       reason: (e instanceof Error ? e.message : "git push threw").slice(0, 500) };
   }
+}
+// …and the other half of the arbitration: bring THIS host's main up to what the hub already holds.
+// Called only after a REJECTED push, where the hub's ref is by definition not an ancestor of ours
+// — so this is the ordinary fetch-and-fast-forward a follower does, run at the one moment it is
+// provably needed rather than on a timer. It moves `main` and nothing else, and it moves it only
+// forward: `advanceIntegration`'s own primitive, with the same refusal over a dirty checkout.
+// Returns a sentence when it could not, and `null` when main now carries the hub's work — after
+// which the lane no longer fast-forwards onto main, which is exactly the state the bounded retry
+// below already knows how to answer.
+async function catchUpMainToHub(repo: string, main: string): Promise<string | null> {
+  if (!HUB_REMOTE) return null;
+  const ref = `refs/remotes/${HUB_REMOTE}/${main}`;
+  const fetched = await git(repo, "fetch", HUB_REMOTE, `+refs/heads/${main}:${ref}`);
+  if (fetched.code !== 0)
+    return `the hub rejected this land and could not then be fetched (${(fetched.err || fetched.out).slice(0, 200)})`;
+  const tip = (await git(repo, "rev-parse", ref)).out;
+  if (!/^[0-9a-f]{40,64}$/.test(tip)) return `${ref} does not name a commit after the fetch`;
+  const anc = await git(repo, "merge-base", "--is-ancestor", main, tip);
+  if (anc.code !== 0)
+    return `${main} here is not an ancestor of the hub's ${main} (${tip.slice(0, 8)}) — the two have diverged and no fast-forward can settle it`;
+  const adv = await advanceIntegration(repo, main, tip);
+  return adv ? `could not fast-forward ${main} onto the hub's ${tip.slice(0, 8)}: ${adv.error}` : null;
 }
 async function writeLandNote(repo: string, branch: string, mainBefore: string, mainAfter: string, prov: LandProvenance): Promise<void> {
   const tip = mainAfter; // the fast-forwarded integration branch IS the landed commit
@@ -20781,7 +20824,13 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
   // its outcome travels ON the note rather than in a second write nobody would join to it. The
   // price is honest and bounded: a hub that hangs delays the note (and the tier-2 audit queued a
   // line below) by at most HUB_PUSH_TIMEOUT_MS. It cannot change what landed.
-  const hubPush = await pushLandToHub(repo, main, mainAfter);
+  // …UNLESS THE CALLER ALREADY ARBITRATED (W5d). `mergeJob` pushes BEFORE it moves main, because
+  // under two landing hosts the hub's acceptance IS the land — so by the time it reaches here the
+  // question has been asked and answered, and asking again would be a second push of the same sha
+  // (harmless, "Everything up-to-date") whose result would overwrite the real arbitration verdict
+  // on the note. The other two callers did not arbitrate and still push here, after the fact,
+  // exactly as they did before: the confirm-land and the boot recovery both move main first.
+  const hubPush = prov.hubPush ?? await pushLandToHub(repo, main, mainAfter);
   await writeLandNote(repo, branch, mainBefore, mainAfter, hubPush ? { ...prov, hubPush } : prov); // best-effort — never throws
   // ACP-17 · THE ONE READER WHO IS NOT AT THE BOARD. Everything written above this line is a PULL
   // surface: the note lives at the commit, the trail row in audit.jsonl, and both are found by
@@ -28777,8 +28826,14 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             let ffHeld = gateHoldBy !== null;
             let ffLockDenied = false; // we wanted it, the machine never gave it to us
             let landMain = mainSha;   // the main THIS round is rebased onto and verified against
+            // W5d · which of the two races the CURRENT round lost, and it is per round rather than
+            // sticky: a round that lost to the hub followed by one that lost to a direct commit on
+            // this host is an `ff-lost`, and a verdict that remembered the older cause would name
+            // the wrong machine. Reset at the top of every round, set only where it is measured.
+            let hubLost = false;
             try {
               for (;;) {
+              hubLost = false;
               // land it — the state-changing step on the integration branch is the SERVER's, never the
               // agent's: advanceIntegration ff-merges (git refuses over a dirty tree) or advances the ref.
               const mainBefore = landMain;
@@ -28810,6 +28865,50 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               const dirtyNow = await dirtyMainStop(root, main, mainBefore, branch,
                 { verify, ...(ffRounds ? { ffRounds } : {}) });
               if (dirtyNow) { clearLandIntent(root); res = dirtyNow; break; }
+              // --- W5d · THE HUB ARBITRATES, AND IT DOES SO BEFORE main MOVES HERE --------------
+              // Two hosts land into one history. The bare repo needs no lock to decide who won —
+              // a non-force push is fast-forward or nothing and the remote ref update is atomic —
+              // but that decision is only worth anything if it is made BEFORE this host commits to
+              // its own answer. Until W5d the push ran inside `recordLand`, i.e. after main had
+              // already moved here: a rejected push left this host holding a commit the fleet's
+              // history does not contain, and said so in a note field nobody was waiting on.
+              // So the push moves here, one line above the local fast-forward, and its acceptance
+              // IS the land: nothing below this point runs for a commit the hub refused.
+              // WHAT IS PUSHED is the lane tip read ROOT-side — the commit main is about to become
+              // — and it is read fresh rather than reused from the intent, because a resolver
+              // commit or a retry rebase may have rewritten the branch since.
+              // NO HUB CONFIGURED = null = every line below behaves exactly as it did before W5d,
+              // which is what keeps a single-host fleet byte-for-byte unchanged.
+              const laneTip = (await git(root, "rev-parse", branch)).out;
+              const arb = await pushLandToHub(root, main, laneTip);
+              if (arb && !arb.ok && arb.kind === "unreachable") {
+                // NOTHING WAS ARBITRATED. Not a fact about this tree and not a fact about the
+                // other host either — going round would re-roll the same unreachable hub and
+                // spend the machine's one mutex on it, so this stops and says which of the two
+                // it was. The lane is kept; the next ⏫ takes it when the hub answers again.
+                clearLandIntent(root);
+                res = { status: "error", landed: false, branch, at: Date.now(), verify,
+                  errorReason: "hub-unreachable", ...(ffRounds ? { ffRounds } : {}),
+                  detail: `rebase ok and the gate is green, but the hub (${arb.remote}) could not be reached, so nothing decided whether this may land: ${arb.reason} — nothing was landed, lane kept`.slice(0, 600) };
+                break;
+              }
+              if (arb && !arb.ok) {
+                // REJECTED: the hub holds commits this host does not, i.e. the other lander won
+                // the race. That is the same event as a lost local fast-forward, one host further
+                // away, so it is answered by the same machinery rather than by a second copy of
+                // it: pull the hub's main down here, and the `advanceIntegration` below then
+                // refuses exactly as it does when a direct commit landed under us — which routes
+                // into the bounded re-rebase + RE-GATE retry already written there.
+                const caught = await catchUpMainToHub(root, main);
+                if (caught) {
+                  clearLandIntent(root);
+                  res = { status: "error", landed: false, branch, at: Date.now(), verify,
+                    errorReason: "hub-lost", ...(ffRounds ? { ffRounds } : {}),
+                    detail: `rebase ok, but the hub (${arb.remote}) rejected this land and ${caught} — nothing was landed, lane kept`.slice(0, 600) };
+                  break;
+                }
+                hubLost = true; // the terminal verdict below is about the HUB, not about a local race
+              }
               const adv = await advanceIntegration(root, main, branch);
               if (adv) {
                 clearLandIntent(root); // main never moved — the declaration is void, not pending
@@ -28873,16 +28972,31 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                   : ffLockDenied
                   ? ` (no retry: ${SUITE_LOCK} could not be taken within ${VERIFY_WAIT_MS}ms — another suite, or another land of this server, is holding the machine — so the re-verified retry never started; that is the machine, not this tree)`
                   : "";
-                res = { status: "error", landed: false, branch, at: Date.now(), verify,
-                  errorReason: "ff-lost", ...(ffRounds ? { ffRounds } : {}),
-                  detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept${ffNote}`.slice(0, 600) };
+                // W5d · WHICH MACHINE WON, in the verdict's own words. `hubLost` says this round's
+                // fast-forward was refused because we had just pulled the OTHER host's land down —
+                // the local ref moving is the consequence, not the cause. Reporting that as
+                // `ff-lost` would send a reader looking for a direct commit in this checkout that
+                // was never there. Two typed reasons, one shape, and the retry budget, the gate and
+                // the lane's fate are identical for both: nothing is wrong with this tree either way.
+                res = hubLost
+                  ? { status: "error", landed: false, branch, at: Date.now(), verify,
+                      errorReason: "hub-lost", ...(ffRounds ? { ffRounds } : {}),
+                      detail: `rebase ok and the gate is green, but the hub took this ${main} first — its work is now here and the lane no longer fast-forwards onto it: ${adv.error} — lane kept${ffNote}`.slice(0, 600) }
+                  : { status: "error", landed: false, branch, at: Date.now(), verify,
+                      errorReason: "ff-lost", ...(ffRounds ? { ffRounds } : {}),
+                      detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept${ffNote}`.slice(0, 600) };
                 break;
               } else {
                 const mainAfter = (await git(root, "rev-parse", main)).out;
                 if (LAND_PAUSE_MS) await Bun.sleep(LAND_PAUSE_MS); // TEST-ONLY, 0 in production
                 // main HAS moved — record the land (undo record + provenance note) NOW, before the teardown
                 // (coupling it to landLane used to leave a moved main with neither note nor undo on failure).
-                await recordLand(root, main, branch, mainBefore, mainAfter, prov);
+                // THE ARBITRATION RIDES ALONG (W5d): `arb` is the hub's own answer about THIS sha,
+                // taken a few lines above and before main moved, so recordLand writes it onto the
+                // note instead of asking a second time. `arb` is null on a fleet with no hub, and
+                // then this spread is empty and recordLand pushes nothing — the single-host path.
+                await recordLand(root, main, branch, mainBefore, mainAfter,
+                  arb?.ok ? { ...prov, hubPush: arb } : prov);
                 const landedOutcome: MergeLast = { status: "merged", landed: true, branch, at: Date.now(), verify,
                   detail: r.detail, ...(ffRounds ? { ffRounds } : {}),
                   ...(CLEAN_REVIEW_MODE === "gate" && cleanReview

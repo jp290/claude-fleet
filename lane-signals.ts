@@ -65,8 +65,19 @@ const MERGE_BLOCKING = ["blocked", "error"];
 // that in a git error string. Nothing in the LANE is wrong — it is idle, clean and ahead, and the
 // moment the human commits or stashes in their own checkout the same land goes through — so it
 // belongs on this list for exactly the reason `ff-lost` does, and for no weaker one.
-export type MergeErrorReason = "ff-lost" | "dirty-main";
-export const MERGE_ERROR_REASONS: readonly MergeErrorReason[] = ["ff-lost", "dirty-main"];
+// THE THIRD AND FOURTH VALUES ARE THE SAME SENTENCE ABOUT THE OTHER HOST (W5d, owner 2026-09-23,
+// "beide landen, die Nabe schiedsrichtert"). Since the hub arbitrates before main moves locally,
+// a land can now be refused by a machine that is not this one:
+//   · `hub-lost` — the hub already holds commits this host does not, i.e. the OTHER lander won the
+//     race. Byte for byte the argument `ff-lost` makes, one host further away: the tree passed its
+//     own gate, the land was authorised, somebody else's commit merely arrived first.
+//   · `hub-unreachable` — the hub could not be asked at all, so nothing decided anything. Also not
+//     a statement about the lane: it is idle, clean, ahead and green, and the same land goes
+//     through the moment the hub answers, exactly as `dirty-main` clears when the human commits.
+// Both are exempted for the reason the two above them are, and for no weaker one. Widening this
+// list stays what its own note says — a deliberate act per value, argued here and nowhere else.
+export type MergeErrorReason = "ff-lost" | "dirty-main" | "hub-lost" | "hub-unreachable";
+export const MERGE_ERROR_REASONS: readonly MergeErrorReason[] = ["ff-lost", "dirty-main", "hub-lost", "hub-unreachable"];
 
 export function mergeBlocksLane(m: LaneSignalView["merge"]): boolean {
   if (!MERGE_BLOCKING.includes(m?.status ?? "")) return false;

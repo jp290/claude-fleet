@@ -29,6 +29,10 @@ export type VerifyField = { cmd: string; ok: boolean | null; out: string; at: nu
 export type MergeVerdict = { status: string; detail: string; landed: boolean;
   mainSha?: string; candidateSha?: string; diffHash?: string;
   verify?: VerifyField; landError?: string; repairRounds?: number; conflicted?: string[];
+  // the typed half of a refusal (server.ts, lane-signals.ts#MergeErrorReason) and how many rounds
+  // it took. Read by the hub checks, which have to tell "the other lander won" from "the hub never
+  // answered" — and those two differ ONLY in this field, never in the prose beside it.
+  errorReason?: string; ffRounds?: number;
   cleanReview?: { verdict: string; reason: string } };
 // Poll the async merge job until it settles. The old bound (100×100ms = 10s) was too tight:
 // a real-git land (rebase + verify + ff + teardown) under concurrent load can overrun 10s, and

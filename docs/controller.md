@@ -126,7 +126,7 @@ Kennzahlen und der Wegweiser in die Volldaten, nicht die 68 KB Render.
   Empfaengerin messbar ist; ein fehlendes Feld ist „nicht messbar", nie 0 %. Daraus je Slot und
   LOKALEM Tag `inbound: {sends, bytes}` auf `/api/sessions` — nur ZUGESTELLTE Bytes, weggelassen,
   wenn heute nichts ankam.
-- **`ctl.sh commit main`** (auch `commit-main` geschrieben) wartet begrenzt (`--budget`, Sekunden) auf `merges` exit 0 und committet dann den bereits gestagten Index im Haupt-Checkout mit `-m <msgfile>`; sonst benannte Absage „a land is running (slot N) — nothing committed". Eine ungefragte Live-Hälfte (kein Owner-Token) ist `unknown` und sagt ebenfalls ab; das Verb staget nichts und umgeht keinen Hook.
+- **`ctl.sh commit main`** (auch `commit-main` geschrieben) wartet begrenzt (`--budget`, Sekunden) auf `merges` exit 0 und committet dann den bereits gestagten Index im Haupt-Checkout mit `-m <msgfile>`; sonst benannte Absage „a land is running (slot N) — nothing committed". Eine ungefragte Live-Hälfte (kein Owner-Token) ist `unknown` und sagt ebenfalls ab; das Verb staget nichts und umgeht keinen Hook. **Seit W5d** pusht dasselbe Verb den Commit anschließend ff-only auf `FLEET_HUB_REMOTE` (gelesen aus der `.env` des Checkouts; ohne die Variable wird nichts gepusht und nichts behauptet). Eine Ablehnung der Nabe ist **Exit 3** — ein eigener Code, nicht die 1 von „nichts committet": der Commit steht, er ist nur nicht auf der Nabe, und die Zeile nennt die beiden git-Kommandos, die das auflösen. Das ist der Preis dafür, dass ein Direkt-Commit unter zwei landenden Hosts sonst den nächsten Land dieses Hosts strandet (gemessen 2026-09-22: 1 h 54 min Verzug, 8 von 60 Commits).
 
 ## Arbeitsweise ohne Dauerpolling
 

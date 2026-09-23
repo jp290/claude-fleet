@@ -52,7 +52,9 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
   send --main <programId> <textfile> [--json]
                                    resolve the Program's bound MAIN slot NOW, refuse a lane/dead/recycled one, then /send
   commit main -m <msgfile> [--budget <sec>] [--json]      (also typed commit-main)
-                                   wait (bounded) for `merges` exit 0, then git commit the staged index in the main checkout
+                                   wait (bounded) for `merges` exit 0, git commit the staged index in the main
+                                   checkout, then push it ff-only to FLEET_HUB_REMOTE if one is set
+                                   (exit 3 = committed here, NOT on the hub; the line names the repair)
 
 Credentials (each verb names the one it is missing and exits 2):
   FLEET_CTL_URL    else FLEET_HOST from <home>/.env, port FLEET_PORT or 8790
@@ -1236,6 +1238,21 @@ commit-main)
 # WHAT IT COMMITS is the index as the caller staged it — this verb stages nothing and chooses nothing.
 # git's own refusal (nothing staged, a hook) is passed through. The window between the sensor's last
 # exit 0 and `git commit` is one process spawn wide; it is narrowed, not closed.
+#
+# …AND SINCE W5d IT PUSHES (owner 2026-09-23, "beide landen, die Nabe schiedsrichtert"). A direct
+# commit was never LOST to the hub — `server.ts#pushLandToHub` pushes the landed sha, and a direct
+# commit is that sha's ancestor, so the next land carries it along. What it was, was LATE: measured
+# 2026-09-22, b3ea7306 was committed at 22:02 and reached the hub at 23:56 with the next land,
+# 1 h 54 min later, and 8 of the 60 commits before it were the same shape. Under one lander that is
+# only a delay. Under two it is a window: if the other host lands inside it, this host's main now
+# holds a commit the hub refuses, and the next land here fails with it — the direct commit strands
+# the lane that had nothing to do with it. So the commit and its push are ONE move.
+#
+# ABSENCE IS OFF, the same doctrine as the server's: no FLEET_HUB_REMOTE, no push, and no claim
+# about one. And a REFUSED push never rewrites or discards the commit — it says, in words, that the
+# commit is here and not on the hub, and which two git commands settle it. Exit 3 is its own code
+# for exactly that state, distinct from 1 ("nothing was committed"): a reader who sees 3 knows the
+# work exists and knows where it is not.
   msgfile=""; budget=${FLEET_CTL_WAIT_MAX_SEC:-600}
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1253,6 +1270,14 @@ commit-main)
   msgabs=$(cd "$(dirname "$msgfile")" && pwd -P)/$(basename "$msgfile")
   export CTL_MSGFILE="$msgabs" CTL_BUDGET_SEC="$budget" CTL_POLL_SEC="${FLEET_CTL_POLL_SEC:-15}"
   export CTL_SCRIPT="$CTL_DIR/$(basename "$0")"
+  # The hub remote is the SERVER's setting, so it is read where the server reads it — out of the
+  # checkout's gitignored .env — rather than from this caller's shell, which is a different process
+  # with a different environment and no reason to agree. An explicit FLEET_HUB_REMOTE in the
+  # environment still wins, which is how the suite points this at a throwaway hub.
+  if [ -z "${FLEET_HUB_REMOTE:-}" ] && [ -f "$HOME_DIR/.env" ]; then
+    FLEET_HUB_REMOTE=$(sed -n "s/^FLEET_HUB_REMOTE=['\"]\{0,1\}\([^'\"]*\)['\"]\{0,1\}$/\1/p" "$HOME_DIR/.env" | tail -1)
+  fi
+  export CTL_HUB_REMOTE="${FLEET_HUB_REMOTE:-}"
   js_head
   cat >> "$CTL_TMP" <<'EOF'
 const { spawnSync } = require("child_process");
@@ -1287,7 +1312,44 @@ const c = spawnSync("git", ["-C", HOME, "commit", "-F", process.env.CTL_MSGFILE]
 if (c.status !== 0)
   refuse(1, `git commit in ${HOME} refused (exit ${c.status}): ${`${c.stdout ?? ""}${c.stderr ?? ""}`.trim().split("\n").slice(0, 3).join(" | ").slice(0, 300)}`);
 const sha = (spawnSync("git", ["-C", HOME, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout ?? "").trim();
-out({ ok: true, committed: true, sha, home: HOME }, [`commit-main: ${sha.slice(0, 12)} committed in ${HOME} — merges read exit 0 immediately before`]);
+// --- W5d: and the same commit goes to the hub, or this run says out loud that it did not -------
+// The commit HAS HAPPENED by the time anything below runs, and nothing below may take it back —
+// so every exit from here on reports `committed: true`, and the only question a reader is left
+// with is whether the fleet's history has it too.
+const hub = (process.env.CTL_HUB_REMOTE ?? "").trim();
+if (!hub) {
+  out({ ok: true, committed: true, pushed: null, sha, home: HOME },
+    [`commit-main: ${sha.slice(0, 12)} committed in ${HOME} — merges read exit 0 immediately before (no FLEET_HUB_REMOTE: nothing was pushed and nothing is claimed)`]);
+} else {
+  // the branch is READ, never assumed to be "main": this verb commits wherever the checkout
+  // stands, and pushing that onto a branch name it was not on would be a different act entirely.
+  const br = (spawnSync("git", ["-C", HOME, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).stdout ?? "").trim();
+  if (!br || br === "HEAD") {
+    if (JSONOUT) console.log(JSON.stringify({ ok: false, committed: true, pushed: false, sha, home: HOME,
+      refused: `the checkout is not on a branch (${br || "unreadable"}), so there is nothing to push onto` }, null, 2));
+    console.error(`commit-main: ${sha.slice(0, 12)} IS COMMITTED in ${HOME}, but the checkout is not on a branch — nothing was pushed to '${hub}'`);
+    process.exit(3);
+  }
+  // no --force, ever: fast-forward or nothing is the hub's one arbitration rule, and this verb is
+  // not the place that gets to be the exception to it.
+  const p = spawnSync("git", ["-C", HOME, "push", hub, `${sha}:refs/heads/${br}`],
+    { encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+  if (p.status === 0) {
+    out({ ok: true, committed: true, pushed: true, sha, home: HOME, hub },
+      [`commit-main: ${sha.slice(0, 12)} committed in ${HOME} and pushed to '${hub}' — merges read exit 0 immediately before`]);
+  } else {
+    const said = `${p.stderr ?? ""}${p.stdout ?? ""}`.trim().split("\n").slice(0, 4).join(" | ").slice(0, 300);
+    // THE REPAIR IS IN THE REFUSAL, because the caller is standing in a checkout that now holds a
+    // commit the hub does not. Naming the two commands is the difference between a message and a
+    // move — and neither of them is this verb's to run: a rebase rewrites the caller's history.
+    const fix = `git -C ${HOME} fetch ${hub} && git -C ${HOME} rebase ${hub}/${br} && git -C ${HOME} push ${hub} HEAD:refs/heads/${br}`;
+    if (JSONOUT) console.log(JSON.stringify({ ok: false, committed: true, pushed: false, sha, home: HOME,
+      hub, branch: br, refused: said, fix }, null, 2));
+    console.error(`commit-main: ${sha.slice(0, 12)} IS COMMITTED in ${HOME} and was NOT pushed to '${hub}': ${said}`);
+    console.error(`commit-main: this host now holds a commit the hub does not — the next land here will be refused until it is settled: ${fix}`);
+    process.exit(3);
+  }
+}
 EOF
   js_run
   ;;

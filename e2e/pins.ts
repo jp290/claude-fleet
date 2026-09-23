@@ -4346,11 +4346,20 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     const head = serverExec.slice(0, at);
     return Math.max(head.lastIndexOf("\nasync function "), head.lastIndexOf("\nfunction "));
   };
-  const advUnsynced = advCalls.filter((m) =>
+  // …and the rule is about advancing main TO A LANE BRANCH, which is the only thing a stale mirror
+  // can misrepresent. W5d added one call that advances main to the HUB's own remote-tracking ref
+  // (`catchUpMainToHub`): there is no clone, no mirror and no lane in that move, so demanding a
+  // refresh would be asking for a copy of something that was never copied. The exemption is by
+  // ARGUMENT, not by function name — a third argument that is not `branch` is not a lane advance —
+  // and the exempt sites are COUNTED into the evidence line, so a second one cannot appear quietly.
+  const advArg3 = (at: number): string =>
+    (serverExec.slice(at, serverExec.indexOf(")", at)).split(",")[2] ?? "").trim();
+  const laneAdvCalls = advCalls.filter((m) => advArg3(m.index) === "branch");
+  const advUnsynced = laneAdvCalls.filter((m) =>
     !serverExec.slice(Math.max(0, fnStartBefore(m.index)), m.index).includes("syncLaneRefs("));
-  pin("every advanceIntegration call site refreshes the lane mirror first (a clone lands from the mirror, not from the tree)",
-    advCalls.length > 0 && advUnsynced.length === 0,
-    `${advCalls.length} call sites, ${advUnsynced.length} without a syncLaneRefs earlier in the same function`);
+  pin("every advanceIntegration call site that lands a LANE refreshes the mirror first (a clone lands from the mirror, not from the tree)",
+    laneAdvCalls.length > 0 && advUnsynced.length === 0 && advCalls.length - laneAdvCalls.length <= 1,
+    `${laneAdvCalls.length} lane call sites, ${advUnsynced.length} without a syncLaneRefs earlier in the same function, ${advCalls.length - laneAdvCalls.length} non-lane advance(s)`);
   // --- THE PROMOTION RECORD HAS EXACTLY TWO WRITERS, and BOTH are owner acts on the owner route.
   // A self route that could write it would be a permission granting itself — the one shape this
   // whole record exists to prevent. It is a rule over the source because on a fleet with no
@@ -5722,29 +5731,30 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // --- THE HUB PUSH IS FF-ONLY, OFF BY DEFAULT, AND CANNOT UNDO A LAND (W5b, topology §6) -------
   // Three properties, none of them visible to a compiler. (1) Absence is OFF: an unset
   // FLEET_HUB_REMOTE means no push AND no note field — a default remote name would push the
-  // owner's history somewhere nobody chose. (2) The push is a plain non-force push of the LANDED
+  // owner's history somewhere nobody chose. (2) The push is a plain non-force push of ONE NAMED
   // sha: `--force` anywhere in that line would turn the nabe's one arbitration rule (fast-forward
-  // or nothing) into a silent overwrite of the other host's work. (3) It runs BEFORE the note, or
-  // the note could not carry its outcome and the only record of a refused push would be nowhere.
+  // or nothing) into a silent overwrite of the other host's work. (3) Its two failure kinds stay
+  // TYPED and stay apart — see the W5d pin below for why that distinction is load-bearing.
   const hubPushBody = server.slice(server.indexOf("async function pushLandToHub("),
     server.indexOf("\n}", server.indexOf("async function pushLandToHub(")));
-  pin(`${RULE_LAND} — the hub push is opt-in by env, ff-only, and pushes the landed sha with its own timeout`,
+  pin(`${RULE_LAND} — the hub push is opt-in by env, ff-only, and pushes one named sha with its own timeout`,
     /const HUB_REMOTE = \(process\.env\.FLEET_HUB_REMOTE \?\? ""\)\.trim\(\);/.test(server)
       && /const HUB_PUSH_TIMEOUT_MS = 60_000;/.test(server)
       && hubPushBody.includes("if (!HUB_REMOTE) return null;")
-      && hubPushBody.includes('"git", "-C", repo, "push", HUB_REMOTE, `${mainAfter}:refs/heads/${main}`')
+      && hubPushBody.includes('"git", "-C", repo, "push", HUB_REMOTE, `${sha}:refs/heads/${main}`')
       && !/--force/.test(hubPushBody)
       && hubPushBody.includes("}, HUB_PUSH_TIMEOUT_MS);"),
     JSON.stringify({ env: /FLEET_HUB_REMOTE/.test(server), body: hubPushBody.length,
       forced: /--force/.test(hubPushBody) }));
-  // …and the land is never the casualty: every exit of the push is a FIELD. The push sits between
-  // the land_actor row and the note write in recordLand — the one choke point every main-MOVING
-  // land funnels through, which is what makes the clean auto-land, the confirm-land and the boot
-  // recovery reach the hub by the same door.
+  // …and the land is never the casualty of the AFTER-THE-FACT push: every exit is a FIELD. That
+  // push still sits between the land_actor row and the note write in recordLand, which is what
+  // makes the confirm-land and the boot recovery reach the hub by the same door — and since W5d it
+  // is SKIPPED for the one caller that already asked (`prov.hubPush ??`), because asking twice
+  // would overwrite a real arbitration verdict with an "Everything up-to-date".
   const recordBody = server.slice(server.indexOf("async function recordLand("),
     server.indexOf("\n}", server.indexOf("async function recordLand(")));
-  const pushAt = recordBody.indexOf("const hubPush = await pushLandToHub(repo, main, mainAfter);");
-  pin(`${RULE_LAND} — the push runs at the land choke point, before the note, and only ever answers with a field`,
+  const pushAt = recordBody.indexOf("const hubPush = prov.hubPush ?? await pushLandToHub(repo, main, mainAfter);");
+  pin(`${RULE_LAND} — the after-the-fact push runs at the land choke point, before the note, and only ever answers with a field`,
     pushAt > recordBody.indexOf('audit("land_actor"')
       && pushAt < recordBody.indexOf("await writeLandNote(")
       && recordBody.includes("hubPush ? { ...prov, hubPush } : prov")
@@ -5754,6 +5764,42 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && /\n  hubPush\?: HubPushResult;/.test(provDecl),
     JSON.stringify({ pushAt, note: recordBody.indexOf("await writeLandNote("),
       redExits: (hubPushBody.match(/ok: false, remote: HUB_REMOTE/g) ?? []).length }));
+  // --- W5d · AND THE ARBITRATION HAPPENS BEFORE main MOVES HERE, WHICH IS THE WHOLE CUT ---------
+  // Under two landing hosts the hub's acceptance IS the land. That is an ORDERING, and it is the
+  // one property no compiler and no green suite can see: a push moved back below the local
+  // fast-forward would leave every assertion about `hubPush` true while this host once again
+  // committed to a history the fleet does not have. So the three steps are held in sequence inside
+  // mergeJob — push, then the local advance, then the record — together with the two things that
+  // make the sequence worth anything: the UNREACHABLE arm stops instead of retrying (a hub that
+  // never answered decided nothing, and re-rolling it spends this machine's one mutex), and the
+  // REJECTED arm catches main up and falls into the existing bounded re-rebase + RE-GATE retry
+  // rather than growing a second copy of it.
+  const mergeArb = server.indexOf("const arb = await pushLandToHub(root, main, laneTip);");
+  const mergeAdv = server.indexOf("const adv = await advanceIntegration(root, main, branch);", mergeArb);
+  const mergeRecord = server.indexOf("await recordLand(root, main, branch, mainBefore, mainAfter,", mergeAdv);
+  pin(`${RULE_LAND} — W5d: the hub arbitrates BEFORE the local fast-forward, and its two refusals are told apart`,
+    mergeArb > 0 && mergeAdv > mergeArb && mergeRecord > mergeAdv
+      && server.indexOf("const laneTip = (await git(root, \"rev-parse\", branch)).out;", mergeArb - 400) > 0
+      && server.includes('errorReason: "hub-unreachable"')
+      && server.includes("const caught = await catchUpMainToHub(root, main);")
+      && server.includes('errorReason: "hub-lost"')
+      && server.includes("arb?.ok ? { ...prov, hubPush: arb } : prov")
+      // the unreachable arm must NOT reach the catch-up/retry path: it is checked first and breaks
+      && server.indexOf('errorReason: "hub-unreachable"', mergeArb) < server.indexOf("const caught = await catchUpMainToHub(root, main);", mergeArb)
+      // one arbitration per land, and it is this one
+      && (server.match(/await pushLandToHub\(/g) ?? []).length === 2,
+    JSON.stringify({ arb: mergeArb, advance: mergeAdv, record: mergeRecord,
+      pushCallSites: (server.match(/await pushLandToHub\(/g) ?? []).length }));
+  // …and the failure kinds are a CLOSED pair read off git's own words, with the safe default. A
+  // killed push never got an answer, so it can never be read as a rejection; anything unrecognised
+  // is `unreachable`, because `rejected` is the only value that licenses a second full gate.
+  pin(`${RULE_LAND} — W5d: the push's two failure kinds are typed, and only a measured rejection is "rejected"`,
+    /type HubPushFailure = "rejected" \| "unreachable";/.test(server)
+      && /const HUB_REJECTED_RE = \/!\\s\+\\\[rejected\\\]\/;/.test(server)
+      && hubPushBody.includes('kind: !killed && HUB_REJECTED_RE.test(said) ? "rejected" : "unreachable"')
+      && hubPushBody.includes('kind: "unreachable"'),
+    JSON.stringify({ typed: /type HubPushFailure/.test(server),
+      re: /const HUB_REJECTED_RE/.test(server) }));
   // …and the owner's graph follows the moved main (Worktrail IV §3.5, Owner 2026-09-13), from the
   // same choke point and with none of the land's weight: not awaited, no suite lock, and only ever
   // in the PRIMARY checkout that holds main — a graphify-out/ in a lane blocks its land

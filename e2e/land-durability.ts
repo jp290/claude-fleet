@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { coalescedSaver } from "../server/persist";
 import { BASE, REPO, ROOT, check, get, post, restartSrv, stopSrv, tmuxOut } from "./harness";
-import { setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
+import { setMergeMode, settleForMerge, waitMerge, type MergeVerdict } from "./lane-helpers";
 import { resolveSourceTree } from "./trail-emit";
 
 const g = (dir: string, ...a: string[]): { out: string; err: string; code: number } => {
@@ -835,21 +835,22 @@ export async function run(): Promise<void> {
     // PARSED — an unparseable note is a different fact from an absent field and each check below
     // says which one it is looking at.
     const landOnce = async (file: string): Promise<{ before: string; after: string;
-      note: Record<string, unknown> | null; noteRaw: string }> => {
+      note: Record<string, unknown> | null; noteRaw: string; last: MergeVerdict | null }> => {
       const before = g(repo, "rev-parse", "main").out;
       const lane = (await (await post("/api/lanes", { repo })).json()) as
         { slot?: number; cwd?: string; branch?: string };
-      if (!lane.slot || !lane.cwd) return { before, after: before, note: null, noteRaw: "no lane" };
+      if (!lane.slot || !lane.cwd) return { before, after: before, note: null, noteRaw: "no lane", last: null };
       writeFileSync(`${lane.cwd}/${file}`, `${file}\n`);
       commitAll(lane.cwd, file);
       await settleForMerge(lane.slot);
       await post(`/api/slots/${lane.slot}/merge`, {});
-      await waitMerge(lane.slot);
+      const settled = await waitMerge(lane.slot);
       const after = g(repo, "rev-parse", "main").out;
       const raw = g(repo, "notes", "--ref=fleet/land", "show", after);
       let note: Record<string, unknown> | null = null;
       try { note = JSON.parse(raw.out) as Record<string, unknown>; } catch { /* reported as noteRaw */ }
-      return { before, after, note, noteRaw: `${raw.code} ${raw.out.slice(0, 200)}${raw.err.slice(0, 120)}` };
+      return { before, after, note, noteRaw: `${raw.code} ${raw.out.slice(0, 200)}${raw.err.slice(0, 120)}`,
+        last: settled.last };
     };
     const hubPushOf = (n: Record<string, unknown> | null): Record<string, unknown> | undefined =>
       (n?.hubPush ?? undefined) as Record<string, unknown> | undefined;
@@ -871,7 +872,13 @@ export async function run(): Promise<void> {
         && hubPushOf(one.note)?.sha === one.after,
       `main=${one.after.slice(0, 8)} hub=${hubMain().slice(0, 8)} tracking=${trackingMain().slice(0, 8)} note=${JSON.stringify(hubPushOf(one.note))} raw=${one.noteRaw}`);
 
-    // --- G2: the hub has moved on. The land STANDS; the push is a red field, not a red land ---
+    // --- G2: THE OTHER HOST LANDED FIRST, and since W5d that is a race this machine WINS BY
+    // GIVING WAY, not a red field on a land that already happened. Before W5d the push ran inside
+    // recordLand, i.e. after main had moved here: the land stood on a commit the fleet's history
+    // did not contain, and the note said so to nobody. Now the push is the arbitration and it runs
+    // BEFORE the local fast-forward, so a rejection costs the lane nothing but a round: the
+    // server fetches the hub's work, fast-forwards onto it, re-rebases the lane, RE-RUNS THE GATE
+    // and offers again. What must come out is one history containing BOTH commits.
     const cloned = spawnSync("git", ["clone", "-q", hub, other], { encoding: "utf8" });
     for (const kv of [["user.email", "e2e@fleet.local"], ["user.name", "fleet e2e"], ["commit.gpgsign", "false"]])
       g(other, "config", kv[0] as string, kv[1] as string);
@@ -885,13 +892,61 @@ export async function run(): Promise<void> {
       `clone=${cloned.status} commit=${foreignCommit.code} push=${foreignPush.code} hub=${diverged.slice(0, 8)} was=${one.after.slice(0, 8)}`);
     const two = await landOnce("hub-two.txt");
     const p2 = hubPushOf(two.note);
-    check("a hub that has moved on is a red hubPush field with git's own reason — the land itself still stands",
-      two.after !== one.after && g(repo, "merge-base", "--is-ancestor", one.after, two.after).code === 0
-        && p2?.ok === false && p2?.remote === "hub"
-        && typeof p2?.reason === "string" && /rejected|fetch first|non-fast-forward/i.test(p2.reason as string)
-        && (p2.reason as string).length <= 500
-        && verifyOkOf(two.note) === true && hubMain() === diverged,
-      `main=${two.after.slice(0, 8)} hub=${hubMain().slice(0, 8)} verify.ok=${String(verifyOkOf(two.note))} note=${JSON.stringify(p2)} raw=${two.noteRaw}`);
+    // READ OFF GIT AND THE NOTE, never off `last`: a land that SUCCEEDS tears its lane down, so
+    // waitMerge comes back `{gone:true, last:null}` and a check that asserted `last.landed===true`
+    // would be asserting the absence of the lane, not the presence of the land. The note is the
+    // durable record and it carries `ffRounds` for exactly this reason.
+    const ffRoundsOf = (n: Record<string, unknown> | null): unknown => n?.ffRounds;
+    check("W5d: a hub that moved on is ABSORBED — the land re-rebases onto the other host's commit, re-gates and lands on top",
+      two.after !== diverged && two.after !== one.after
+        // both histories are in this one: the other host's commit is an ancestor, and so is ours
+        && g(repo, "merge-base", "--is-ancestor", diverged, two.after).code === 0
+        && existsSync(`${repo}/foreign.txt`) && existsSync(`${repo}/hub-two.txt`)
+        // it cost exactly the bounded retry the lost-ff race costs, and the gate ran again
+        && Number(ffRoundsOf(two.note) ?? 0) >= 1 && verifyOkOf(two.note) === true,
+      `main=${two.after.slice(0, 8)} hubWas=${diverged.slice(0, 8)} ffRounds=${String(ffRoundsOf(two.note))} foreign=${existsSync(`${repo}/foreign.txt`)} ours=${existsSync(`${repo}/hub-two.txt`)} verify.ok=${String(verifyOkOf(two.note))} raw=${two.noteRaw}`);
+    check("…and the hub is where the land was decided: its main IS the landed commit, and the note carries that green push",
+      hubMain() === two.after && trackingMain() === two.after
+        && p2?.ok === true && p2?.remote === "hub" && p2?.sha === two.after,
+      `hub=${hubMain().slice(0, 8)} main=${two.after.slice(0, 8)} note=${JSON.stringify(p2)} raw=${two.noteRaw}`);
+
+    // --- G2b: THE SAME RACE WITH NO RETRY BUDGET. `LAND_FF_RETRY_ROUNDS=0` is the documented way
+    // back out of the whole retry, so it is also the only way to observe the TERMINAL verdict: the
+    // hub wins, nothing lands here, and the refusal is typed `hub-lost` — never `ff-lost`, which
+    // would send a reader hunting for a direct commit in this checkout that was never made.
+    // main MUST NOT carry the lane's work afterwards: that is the property the whole cut buys.
+    await restartSrv({ FLEET_HUB_REMOTE: "hub", FLEET_LAND_FF_RETRY_ROUNDS: "0" });
+    const otherAgain = g(other, "pull", "-q", "--ff-only");
+    writeFileSync(`${other}/foreign2.txt`, "the other host landed again\n");
+    const foreign2 = commitAll(other, "foreign work 2");
+    const foreignPush2 = g(other, "push", "-q", "origin", "main");
+    const diverged2 = hubMain();
+    check("(setup G2b) the other host has landed again and this server has no retry budget left to absorb it",
+      otherAgain.code === 0 && foreign2.code === 0 && foreignPush2.code === 0 && diverged2 !== two.after,
+      `pull=${otherAgain.code} commit=${foreign2.code} push=${foreignPush2.code} hub=${diverged2.slice(0, 8)} main=${two.after.slice(0, 8)}`);
+    const twoB = await landOnce("hub-two-b.txt");
+    check("W5d: with no retry budget the hub's refusal is the verdict — typed `hub-lost`, nothing landed, the lane kept",
+      twoB.last?.landed === false && twoB.last?.errorReason === "hub-lost"
+        && !existsSync(`${repo}/hub-two-b.txt`)
+        && g(repo, "log", "--format=%s", "-1", "main").out !== "hub-two-b.txt",
+      `landed=${String(twoB.last?.landed)} reason=${String(twoB.last?.errorReason)} main=${twoB.after.slice(0, 8)} detail=${(twoB.last?.detail ?? "").slice(0, 200)}`);
+    check("…and the hub is untouched by the attempt: it still holds exactly what the other host put there",
+      hubMain() === diverged2,
+      `hub=${hubMain().slice(0, 8)} want=${diverged2.slice(0, 8)}`);
+
+    // --- G2c: A HUB THAT CANNOT BE ASKED DECIDES NOTHING, and that is a DIFFERENT fact from being
+    // refused by one. The two share every visible symptom (green tree, no land) and differ only in
+    // the typed reason — so this is the check that keeps them apart. It must also NOT retry: the
+    // retry exists to absorb another lander's work, and there is no other lander here, only a
+    // broken path. Off-by-one danger named: `main` must be exactly where it was before the attempt.
+    await restartSrv({ FLEET_HUB_REMOTE: "nowhere" });
+    const beforeC = g(repo, "rev-parse", "main").out;
+    const twoC = await landOnce("hub-two-c.txt");
+    check("W5d: a hub that cannot be reached is `hub-unreachable`, not `hub-lost` — nothing was arbitrated and nothing landed",
+      twoC.last?.landed === false && twoC.last?.errorReason === "hub-unreachable"
+        && (twoC.last?.ffRounds ?? 0) === 0
+        && g(repo, "rev-parse", "main").out === beforeC && !existsSync(`${repo}/hub-two-c.txt`),
+      `landed=${String(twoC.last?.landed)} reason=${String(twoC.last?.errorReason)} ffRounds=${String(twoC.last?.ffRounds)} main=${g(repo, "rev-parse", "main").out.slice(0, 8)} was=${beforeC.slice(0, 8)} detail=${(twoC.last?.detail ?? "").slice(0, 200)}`);
 
     // --- G3: no FLEET_HUB_REMOTE, no push and no claim about one -----------------------------
     // The remote is STILL in .git/config, so what is switched off here is the fleet's behaviour and

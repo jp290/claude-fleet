@@ -19,7 +19,7 @@
 // section seeds one instead of reusing the harness's.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { BASE, ROOT, check, get, post } from "./harness";
 import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
@@ -1053,6 +1053,100 @@ export async function run(h: {
   check("(K7d) …and the machine is left idle with an empty queue for what follows",
     await waitNoLocalRun(120_000) && (await jobs()).jobs.length === 0,
     JSON.stringify((await jobs()).jobs));
+
+  // ===== (K7f) RED LOGS OUTLIVE THE PRUNE — FLEET_HELPER_ARTIFACT_KEEP_RED ======================
+  // The rail's prune kept the newest 30 artefacts and no more. That number is right for green and
+  // wrong for RED: an adjudicated red is the rot-audit label corpus, and a judgement whose log
+  // bytes are gone is unanswerable — 42/43 reds adjudicated before 2026-09-22 have no bytes left
+  // (docs/messungen/2026-09-22-system15-auswertung.md §1 R2). So red audit rows carry their OWN
+  // cap, `FLEET_HELPER_ARTIFACT_KEEP_RED`, default 120 (~40 days at the measured ~3 reds/day),
+  // and the newest-30 rule keeps applying to everything that is not a red audit row: green,
+  // unknown, and previews, which have no audit row to be red.
+  //
+  // THE FIXTURE is the ctl.ts shape, planted where the prune reads: the trail is REPLACED for the
+  // window (stashed and put back, `.1` included, both ledgers) and every `at` sits in 2001, where
+  // no real row and no other module's fixture collides. Each fixture row carries the SAME jobId
+  // its upload URL names — the route's cross-check, satisfied by construction — and uploads are
+  // distinct bodies, so "the dir survives" is checked against the exact bytes that were sent.
+  const fJobId = createHash("sha256").update(REPO).digest("hex").slice(0, 12);
+  const fRoot = `${ROOT}/streams/helper-artifacts/${fJobId}`;
+  const fLog = (s: string): string => `K7f ${s}\n`;
+  const fAt = (n: number): number => 1_000_000_000_000 + n;  // year 2001: no collision, /^\d{10,16}$/
+  const fDirHas = (at: number, want: string): boolean => {
+    try { return readFileSync(`${fRoot}/${at}/suite.log`, "utf8") === want; } catch { return false; }
+  };
+  const fRow = (at: number, result: string, extra: Record<string, unknown> = {}): string =>
+    JSON.stringify({ at, startedAt: at - 1000, ms: 1000, repo: REPO, main: "main", mainSha: "f".repeat(64),
+      result, cmd: "k7f fixture", exitCode: result === "red" ? 1 : 0, out: "", covers: [],
+      remote: { jobId: fJobId }, ...extra });
+  const fStash = ["post-land-audits.jsonl", "audit-adjudications.jsonl"]
+    .flatMap((f) => [`${ROOT}/${f}`, `${ROOT}/${f}.1`]);
+  const fSaved = fStash.filter(existsSync).map((p) => { renameSync(p, `${p}.k7fstash`); return p; });
+  try {
+    // --- part A: the DEFAULT caps (30 non-red / 120 red), one restart so the two envs are KNOWN.
+    // 31 green + 1 unknown + 2 red, one upload each. The reds BOTH survive with their bytes; the
+    // non-red bucket holds 32, so the newest-30 rule kills exactly its two oldest rows — the
+    // unknown (T+1) and the oldest green (T+10) — and keeps greens T+11 … T+40.
+    const fUnknown = fAt(1);
+    const fAtsGreen = Array.from({ length: 31 }, (_, i) => fAt(10 + i));
+    const fRed1 = fAt(101), fRed2 = fAt(102);
+    writeFileSync(`${ROOT}/post-land-audits.jsonl`,
+      [fRow(fUnknown, "unknown", { reason: "k7f fixture: never measured" }),
+        ...fAtsGreen.map((at) => fRow(at, "green")), fRow(fRed1, "red"), fRow(fRed2, "red")]
+        .join("\n") + "\n");
+    await killSrv();
+    check("(K7f) setup: the server restarts on the default caps (30 green / 120 red)",
+      await startSrv({ audit: true }));
+    await Bun.sleep(750);
+    const fUp = async (at: number): Promise<number> =>
+      (await hpostRaw(`/api/helper/artifact/${fJobId}?at=${at}`, fLog(`row ${at}`))).status;
+    const fStatuses: number[] = [];
+    for (const at of [fUnknown, ...fAtsGreen, fRed1, fRed2]) fStatuses.push(await fUp(at));
+    check("(K7f) setup: all 34 fixture uploads land 200", fStatuses.every((s) => s === 200),
+      fStatuses.join(","));
+    check("(K7f) BOTH RED LOGS SURVIVE the default prune, and the bytes are the ones that were sent",
+      fDirHas(fRed1, fLog(`row ${fRed1}`)) && fDirHas(fRed2, fLog(`row ${fRed2}`)),
+      `red1=${fDirHas(fRed1, fLog(`row ${fRed1}`))} red2=${fDirHas(fRed2, fLog(`row ${fRed2}`))}`);
+    const fGreenAlive = fAtsGreen.filter((at) => existsSync(`${fRoot}/${at}/suite.log`));
+    check("(K7f) the unknown and the OLDEST GREEN go — non-red rows keep the newest-30 rule",
+      !existsSync(`${fRoot}/${fUnknown}/suite.log`) && !existsSync(`${fRoot}/${fAtsGreen[0]!}/suite.log`)
+        && fGreenAlive.length === 30 && fGreenAlive[0] === fAtsGreen[1]
+        && fGreenAlive[fGreenAlive.length - 1] === fAtsGreen[30],
+      `unknownGone=${!existsSync(`${fRoot}/${fUnknown}/suite.log`)} `
+        + `oldestGone=${!existsSync(`${fRoot}/${fAtsGreen[0]!}/suite.log`)}`
+        + ` alive=${fGreenAlive.length} kept=${fGreenAlive[0] === fAtsGreen[1]
+          && fGreenAlive[fGreenAlive.length - 1] === fAtsGreen[30]}`);
+
+    // --- part B: the red cap EXCEEDED. Three MORE fixture reds, then a restart with the cap at 2 —
+    // the boot reloads the rail's ledger, so the map holds part A's uploads and (K7c)'s real red
+    // beside the new ones. Three reds against a cap of 2: the newest survives, the two oldest go —
+    // the red bucket now obeys the same shape as the green window, at its own number.
+    const fAtsRedB = [fAt(201), fAt(202), fAt(203)];
+    writeFileSync(`${ROOT}/post-land-audits.jsonl`,
+      fAtsRedB.map((at) => fRow(at, "red")).join("\n") + "\n");
+    await killSrv();
+    check("(K7f) setup: the server restarts with FLEET_HELPER_ARTIFACT_KEEP_RED=2",
+      await startSrv({ audit: true, extra: { FLEET_HELPER_ARTIFACT_KEEP_RED: "2" } }));
+    await Bun.sleep(750);
+    const fStatusesB: number[] = [];
+    for (const at of fAtsRedB) fStatusesB.push(await fUp(at));
+    check("(K7f) setup: the three part-B uploads land 200", fStatusesB.every((s) => s === 200),
+      fStatusesB.join(","));
+    check("(K7f) THE RED CAP EXCEEDED: the newest red survives, the two oldest reds go",
+      fDirHas(fAtsRedB[2]!, fLog(`row ${fAtsRedB[2]!}`))
+        && !existsSync(`${fRoot}/${fAtsRedB[0]!}/suite.log`)
+        && !existsSync(`${fRoot}/${fAtsRedB[1]!}/suite.log`),
+      `newest=${fDirHas(fAtsRedB[2]!, fLog(`row ${fAtsRedB[2]!}`))} `
+        + `old=${existsSync(`${fRoot}/${fAtsRedB[0]!}/suite.log`)}`
+        + ` mid=${existsSync(`${fRoot}/${fAtsRedB[1]!}/suite.log`)}`);
+    // and back to the default caps, so what follows finds the server it has always found
+    await killSrv();
+    check("(K7f) setup: the server is back on the default caps for what follows",
+      await startSrv({ audit: true }));
+    await Bun.sleep(750);
+  } finally {
+    for (const p of fSaved) renameSync(`${p}.k7fstash`, p);
+  }
 
   // ===== (K7e) A HELPER BETWEEN TWO HEARTBEATS IS STILL THERE ===================================
   // THE GAP BETWEEN TWO WINDOWS, and it was throwing the grace away. A heartbeat counts as FRESH

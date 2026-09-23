@@ -24611,7 +24611,7 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
     };
     rememberHelperArtifact(rec as unknown as Record<string, unknown>);
     appendEvent(HELPER_ARTIFACT_FILE, rec as unknown as Record<string, unknown>);
-    pruneHelperArtifacts();
+    await pruneHelperArtifacts();
     audit("helper_result", undefined,
       `suite.log ${rec.bytes}b for the ${verdict} ${subject} from job ${jobId}`.slice(0, 240));
     // `result` is echoed back UNCHANGED, the same confirmation writeAuditAdjudication returns and
@@ -25022,6 +25022,14 @@ const HELPER_ARTIFACT_DIR = `${STREAM_DIR}/helper-artifacts`;
 // caps how many BYTES a suite.log may carry. The env keys stay the brief's.
 const HELPER_ARTIFACT_BYTES_MAX = Math.max(64 * 1024, Number(process.env.FLEET_HELPER_ARTIFACT_MAX ?? 8 * 1024 * 1024) | 0);
 const HELPER_ARTIFACT_KEEP = Math.max(1, Number(process.env.FLEET_HELPER_ARTIFACT_KEEP ?? 30) | 0);
+// THE RED CAP, and why reds get their OWN number: an adjudicated red is the rot-audit label corpus
+// (docs/messungen/2026-09-22-system15-auswertung.md §1 R2) — 42/43 reds adjudicated before this cap
+// had their logs already pruned, so the judgement survived and the bytes under it did not, which
+// makes the label unanswerable exactly where it matters. Red audit rows are kept newest-KEEP_RED
+// (default 120 — ~40 days at the measured ~3 reds/day), INDEPENDENTLY of the green/unknown window
+// above; past the cap the oldest red goes, like any other row. Never unlimited: the cap IS the
+// retention decision, not the disk.
+const HELPER_ARTIFACT_KEEP_RED = Math.max(1, Number(process.env.FLEET_HELPER_ARTIFACT_KEEP_RED ?? 120) | 0);
 // The rail's in-memory index, and the ONE place a reader joins from. It differs from
 // adjudicationsByAudit() — which re-reads its file per call — for a measured reason: this field is
 // served on the /api/sessions payload, which is the 2 s poll and the largest response this server
@@ -25065,10 +25073,22 @@ function artifactViewFor(rowAt: unknown): { bytes: number; sha256: string; url: 
 // so counting rows would prune directories that are still pointed at. Newest `HELPER_ARTIFACT_KEEP`
 // row keys survive; the rail keeps its history either way, and a row whose bytes were pruned
 // still says truthfully how big they were and what they hashed to.
-function pruneHelperArtifacts(): void {
+// TWO CAPS since red retention, split on ONE property — the audit row's own `result`. RED rows are
+// the label corpus (see HELPER_ARTIFACT_KEEP_RED above), so they get the larger red window and the
+// newest-30 rule keeps applying to everything else: green, unknown, and the previews, which have
+// no audit row to be red and so fall in the non-red bucket unchanged. The result is joined from
+// POSTLAND_AUDIT_FILE fresh on every call, never cached: the map deliberately carries no verdict —
+// a verdict is the audit trail's word, not the rail's — and the file is the durable truth the same
+// way it is for every other reader of it.
+async function pruneHelperArtifacts(): Promise<void> {
   try {
+    const { rows } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
+    const redAt = new Set(rows.filter((r) => r.result === "red" && typeof r.at === "number")
+      .map((r) => r.at as number));
     const keys = [...helperArtifactByRow.values()].sort((a, b) => b.rowAt - a.rowAt);
-    for (const dead of keys.slice(HELPER_ARTIFACT_KEEP)) {
+    const reds = keys.filter((k) => redAt.has(k.rowAt));
+    const rest = keys.filter((k) => !redAt.has(k.rowAt));
+    for (const dead of [...reds.slice(HELPER_ARTIFACT_KEEP_RED), ...rest.slice(HELPER_ARTIFACT_KEEP)]) {
       const dir = `${HELPER_ARTIFACT_DIR}/${dead.jobId}/${dead.rowAt}`;
       try { rmSync(dir, { recursive: true, force: true }); } catch { /* a dir already gone is the goal */ }
     }

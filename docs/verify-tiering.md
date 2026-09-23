@@ -2854,6 +2854,8 @@ und die Nachbarfunktionen):
   Laufzeit-Verteilung nimmt eine Remote-Zeile bewusst NICHT auf (`auditCounts`) — ihre `ms` ist
   Claim→Report auf fremder Hardware und beantwortet nicht die Frage, für die die Verteilung da ist.
 
+**Die Aufbewahrung der Logs (2026-09-23):** das Artefakt-Pruning (`server.ts#pruneHelperArtifacts`) hält die Logs ROTER Audit-Zeilen unter einem eigenen Deckel `FLEET_HELPER_ARTIFACT_KEEP_RED` (Default 120, ~40 Tage bei den gemessenen ~3 roten Audits/Tag), während grüne, unbekannte und Vorschau-Zeilen bei der Neueste-30-Regel (`FLEET_HELPER_ARTIFACT_KEEP`) bleiben — bewiesen in (K7f), denn ein adjudiziertes Rot ohne Log-Bytes ist unbeantwortbar, und genau das war 42/43 der alten adjudizierten Rots (`docs/messungen/2026-09-22-system15-auswertung.md` §1 R2).
+
 **Was ein Claim überlebt:** einen Server-Neustart. Das ist die tragende Hälfte, nicht Kosmetik — das
 Deploy-Ritual hier ist land-dann-`kill-session -t srv`, ~10×/Tag; ein nur im Speicher lebender Claim
 würde von der routiniertesten Handlung dieser Maschine gelöscht, der Boot-Drain nähme den Baum, und

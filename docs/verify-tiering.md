@@ -4875,6 +4875,77 @@ das Audit-Rot in der 0/120 oben, und das ist kein Widerspruch, sondern eine Luec
 `history` — **1 rot / 48** im Trail (Nachzaehlkontrolle 2026-09-21: 1/50), und dieses eine Rot IST
 diese Gegenprobe. Erstes Rot der Familie; als offen notiert, nicht als geklaert.
 
+### 11.2ae Eine zweiunddreißigste Familie: der LS.10-Schluss-Check liest die fire-and-forget-Audit-Zeile, BEVOR sie auf der Platte ist (2026-09-23 registriert; Signatur aus dem aufbewahrten Trail-Lauf desselben Tages gelesen, Mechanismus am Code gelesen, sondenseitig REPARIERT im selben Schnitt wie dieser Eintrag; Mutationsprobe und drei Grün-Läufe auf dem Helfer gefahren)
+
+**Der Anlass.** Zwei unabhängige Helfer-Vorschauen des 2026-09-22 — Job `3a69799dcac3` (Baum `36a3106e`,
+Branch `fleet/260922182351-091b`) und `4c2ff40a0612` (Baum `fleet/260922204739-3482`) — fielen JE mit
+GENAU EINEM Fail: `(LS.10) THE LANE DIES, THE ROW CLOSES ITSELF: subject-gone with the named lane-gone
+reason in the trail, never acknowledged, off the reds list`. Die Post-Land-Audits desselben Tages
+liefen grün (`96aed96d`, `6a6d46fd`). Der Check war am selben Tag mit `c07427ce` neu gelandet. Die
+Startplan-Lane (`a38709a9`, Land `361b6395`) fuhr die Kontrolle: ihr Baum war in `server.ts`,
+`start-plan.ts` und `land-collision-stats.ts` BYTE-GLEICH zu main, und der Check fiel trotzdem —
+1 von 3 lokalen Shard-Läufen, 2 von 3 eigenen Helfer-Läufen. Ein Rot AM HEAD, kein Gruen.
+
+**Die Signatur, und was sie ausschließt.** Der lokale Rote Lauf ist im gemeinsamen Trail-Register
+aufbewahrt (`isolated-20260922T213631Z-91770`, Baum `361b6395`), sein Detail-Feld liest sich:
+
+```json
+{"status":"subject-gone","trail":false,"reds":[]}
+```
+
+Der Sweep HAT also gelaufen und die Zeile terminiert (Status `subject-gone`, Rot-Liste leer) — nur
+der dritte Konjunkt, der Trail-Grep, verfehlte. `phaseTop` bucht die 136 ms des Laufs auf
+`e2e/lane-suite.ts:1041`, den synchronen `readFileSync` von `audit.jsonl` direkt nach dem
+Kill-POST. Jede Erklärung „der Sweep reicht nicht unter Last“ ist damit ausgeschlossen: der
+In-Memory-Teil war fertig, der Server hatte geschlossen, nur die DATEI war noch nicht geschrieben.
+
+**Der Mechanismus, am Code gelesen.** `audit()` ist absichtlich fire-and-forget
+(`server/audit-log.ts` — das Promise wird verworfen, „a wedged disk must never block the request
+path“); `server/persist.ts#queueEventWrite` hängt jede Zeile asynchron an eine serialisierte
+Schreibkette (`appendFile`). Der Kill-Route antwortet nach `dropWatchesFor`
+(`server.ts#markFleetEventsSubjectGone`) — die Zeile IST terminiert, BEVOR die Antwort geht — aber
+ihr Trail-String landet erst „ein abwartbares Moment“ später auf der Platte. Der Check las die
+Datei synchron und unterstellte dem Writer eine Write-Through-Durchhaltbarkeit, die dieser nie
+versprochen hat. **Die Ursache liegt im CHECK, nicht im Server** — der Server-Vertrag ist
+dokumentiert und gewollt. Sie fällt damit NICHT in die VERBOTEN-Fläche `server.ts`.
+
+**Basisraten, gemessen 2026-09-23.** Lokales Trail-Register (9921 Dateien): 7 Läufe tragen den
+Check, **1 rot / 6 grün**. Helfer-Vorschauen: **2 rot / 3** (die drei Startplan-Läufe; ihre
+Detail-Ausgaben liegen auf dem Second-host und sind von diesem Host aus NICHT lesbar — die
+Lane-Sandbox blockiert ssh: `~/.ssh: Operation not permitted`, `Permission denied
+(publickey,password)`; genannt, nicht verschwiegen). Audit-Tier: **1 rot / 3** — zwei grüne am
+22., dann das Audit zu `1d0807d4` (at `1790122573934`, `FLEET_E2E_SHARD=k/3`, `checks {ran: 5743,
+failed: 1}`, `fails` nennt genau diesen Check) als ERSTE LS.10-Sichtung in 829 Audits
+(`./ctl.sh audits --fail LS.10`). Der Land änderte `e2e/watch.ts` + docs, nicht die Fläche des
+Checks — kein Regress. Das Bild über alle drei Tiers: sporadisch, lastabhängig, tier-übergreifend
+genau das, was ein Race gegen einen asynchronen Schreiber vorhersagt.
+
+**Die Reparatur, sondenseitig.** Der Check wartet jetzt auf die TATSACHE statt auf die Uhr
+(`until`, Budget 10 s, erster Poll identisch zum alten Lesezeitpunkt — ein grüner Lauf zahlt
+nichts): e2e/lane-suite.ts, der `(LS.10)`-Block. Die AUSSAGE ist unangetastet — Status,
+Rot-Liste und Trail-Zeile werden genau wie zuvor gefordert, und eine Zeile, die NIE erscheint,
+macht den Check weiterhin rot; der Fehlgrund steht im Detail-Feld (`trail:false`).
+
+**Die Probe, und was sie beweist.** Der Wortlaut der Owner-Arm-Zeile wurde temporär mutiert
+(`lane gone` → `lane closed PROBE`, temporärer Commit `a88b9777`, nach dem Rot per Reset
+entfernt — der Baum des Landes ist `ea8dad2f`, byte-identisch gepürft): die Helfer-Vorschau
+`75f1065ab6e5` fiel DETERMINISTISCH ROT an genau den zwei Checks, die diesen Wortlaut fordern
+(`LS.10` selbst und der `inbox-pile`-Check eines anderen Moduls). Danach drei VOLL-Suiten auf
+dem reparierten Baum: `1597fe20a99d`, `c0c48ddc77ef`, `917480473bb2` — je **ALL PASS**.
+
+**Abweichung vom Auftrags-Verify, benannt.** `FLEET_E2E_MODULES=lane-suite`-Shards waren von
+dieser Lane aus NICHT fahrbar: die Sandbox blockiert `ps` (`/bin/ps: Operation not permitted`),
+und ohne `ps -o lstart` verweigert der Wrapper den Suite-Lock nach Recht
+(„cannot record process birth … refusing to hold /tmp/fleet-e2e.lock“); die Offer-Tür trägt
+kein Env-Kanäl für den Helfer (nur Audit-Shards bekommen `FLEET_E2E_SHARD`,
+helper-daemon/daemon.ts#shardEnv). Gefahren sind darum VOLLE Suiten auf dem Helfer — dasselbe
+Instrument, dessen zwei Rote den Anlass stellten, und eine strikt stärkere Aussage als der Shard.
+
+**Geschwister, nicht repariert.** Der `inbox-pile`-Check fordert denselben Trail-Wortlaut und
+trag nach demselben Muster denselben synchronen Lesezeitpunkt — eigene Zeile für eine Folgezeile,
+hier aus der FLÄCHE des Auftrags gelassen.
+
+
 ## 15. Die Scratch-Halde unter `$TMPDIR` — drei Klassen, gemessen, und wer sie ab jetzt besitzt (2026-09-17)
 
 `e2e-isolated.sh` hat genau EINE Aufbewahrungsnaht, und sie ist eine Zeile:

@@ -38643,6 +38643,34 @@ Bun.serve<WSData>({
     // The start plan (start-plan.ts): what would start next and what each row passed. A read — no
     // state write, no audit row, no dispatch; the same object `bun start-plan.ts --state fleet.json` prints.
     if (url.pathname === "/api/start-plan" && req.method === "GET") return json(startPlanNow());
+    const taskSpawn = /^\/api\/tasks\/([a-z0-9]+)\/spawn$/.exec(url.pathname);
+    if (req.method === "POST" && taskSpawn) {
+      const t = tasks.find((x) => x.id === taskSpawn[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory — only an auftrag has a worker` }, 409);
+      if (t.variants?.length || t.variantOf !== undefined)
+        return json({ error: "a variant group's workers are fixed in its variants" }, 409);
+      if (t.status !== "pending" && t.status !== "queued")
+        return json({ error: `task is ${t.status} — only a pending or queued row can change its worker` }, 409);
+      if (dispatchingTasks.has(t.id)) return json({ error: "task is already being dispatched" }, 409);
+      const body = await readJson(req);
+      if (!body || Array.isArray(body)) return json({ error: "invalid json" }, 400);
+      const extra = Object.keys(body).filter((k) => k !== "harness" && k !== "model" && k !== "effort");
+      if (extra.length) return json({ error: `this door reads harness, model and effort only — [${extra.join(", ")}] is not read` }, 400);
+      const choice = taskSpawnFromBody(body);
+      if (!choice.ok) return json({ error: choice.error }, 400);
+      if (!tasks.includes(t) || t.kind !== "auftrag" || t.variants?.length || t.variantOf !== undefined
+        || (t.status !== "pending" && t.status !== "queued") || dispatchingTasks.has(t.id))
+        return json({ error: "task changed while its worker was being set" }, 409);
+      const before = t.spawn;
+      if (JSON.stringify(before) === JSON.stringify(choice.spawn)) return json({ ok: true, task: t, unchanged: true });
+      if (choice.spawn) t.spawn = choice.spawn;
+      else delete t.spawn;
+      saveState();
+      audit("task_spawn" as Parameters<typeof audit>[0], undefined,
+        `${t.id} ${JSON.stringify(before ?? null)}->${JSON.stringify(choice.spawn ?? null)}`);
+      return json({ ok: true, task: t });
+    }
     // The reversible category route. `adopt` predates the four-value model and remains below as a
     // compatibility alias for notiz→auftrag; this route is the complete owner surface, including
     // the route back. It sits past tokenGate, like every other owner task mutation.

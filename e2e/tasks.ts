@@ -1443,6 +1443,77 @@ export async function run(ctx: Ctx): Promise<void> {
     await post("/api/dispatch", { on: assignDispatchBefore });
   }
 
+  // The owner can replace a filed worker while the row is still open. Dispatch is off so a queued
+  // fixture remains queued until the concurrent manual-start probe deliberately starts it.
+  {
+    type SpawnRow = { id: string; status: string; spawn?: { harness: string | null; model: string | null; effort: string | null };
+      [key: string]: unknown };
+    const row = async (id: string): Promise<SpawnRow | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: SpawnRow[] }).tasks.find((t) => t.id === id);
+    const set = (id: string, body: unknown): Promise<Response> => post(`/api/tasks/${id}/spawn`, body);
+    const refusal = async (id: string, body: unknown): Promise<string> => {
+      const r = await set(id, body);
+      return `${r.status} ${await r.text()}`;
+    };
+    const auditRows = (): { event?: string; detail?: string }[] =>
+      readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { event?: string; detail?: string });
+    const dispatchWasOn = ((await (await get("/api/sessions")).json()) as { dispatch: { on: boolean } }).dispatch.on;
+    await post("/api/dispatch", { on: false });
+    const queued = ((await (await post("/api/tasks", {
+      text: "spawn replacement queued fixture", queue: true,
+      harness: "claude", model: "claude-opus-5", effort: "high",
+    })).json()) as { task: SpawnRow }).task;
+    const before = await row(queued.id);
+    const auditFrom = auditRows().length;
+    const changed = await set(queued.id, { harness: "codex", model: "gpt-6-sol", effort: "high" });
+    const changedBody = (await changed.json()) as { task?: SpawnRow };
+    const after = await row(queued.id);
+    const withoutSpawn = (t: SpawnRow | undefined): string => JSON.stringify(t && { ...t, spawn: undefined });
+    check("task spawn owner route replaces a queued claude worker with codex/gpt-6-sol/high while every other row field stays equal",
+      changed.status === 200 && changedBody.task?.spawn?.harness === "codex"
+        && after?.spawn?.model === "gpt-6-sol" && after?.spawn?.effort === "high"
+        && after?.status === "queued" && withoutSpawn(before) === withoutSpawn(after),
+      JSON.stringify({ status: changed.status, before, after }));
+    const badHarness = await refusal(queued.id, { harness: "not-a-harness" });
+    const badModel = await refusal(queued.id, { harness: "codex", model: "not a model!" });
+    check("task spawn rejects an unknown harness with named 400", badHarness.startsWith("400 ") && badHarness.includes("unknown harness"), badHarness);
+    check("task spawn rejects an invalid model with named 400", badModel.startsWith("400 ") && badModel.includes("bad model"), badModel);
+
+    const variant = ((await (await post("/api/tasks", {
+      text: "spawn replacement variant refusal", variants: [{ model: "claude-opus-5" }, { model: "claude-sonnet-5" }],
+    })).json()) as { task: SpawnRow; variants: SpawnRow[] });
+    const variantGroup = await refusal(variant.task.id, { harness: "codex", model: "gpt-6-sol", effort: "high" });
+    check("task spawn rejects a variant group with named 409", variantGroup.startsWith("409 ") && variantGroup.includes("variant group"), variantGroup);
+    for (const v of variant.variants) await post(`/api/tasks/${v.id}/delete`, {});
+    await post(`/api/tasks/${variant.task.id}/delete`, {});
+
+    const cleared = await set(queued.id, { harness: null, model: null, effort: null });
+    const clearBody = (await cleared.json()) as { task?: SpawnRow };
+    check("task spawn clears the persisted choice with three nulls without changing status or other row fields",
+      cleared.status === 200 && !clearBody.task?.spawn && !(await row(queued.id))?.spawn
+        && (await row(queued.id))?.status === "queued", `${cleared.status} ${JSON.stringify(clearBody)}`);
+    await until(() => auditRows().slice(auditFrom).filter((r) => r.event === "task_spawn" && r.detail?.startsWith(`${queued.id} `)).length === 2,
+      { timeoutMs: 5_000, what: "two task_spawn audit events for set and clear" });
+    const trail = auditRows().slice(auditFrom).filter((r) => r.event === "task_spawn" && r.detail?.startsWith(`${queued.id} `));
+    check("task spawn audits each change with old and new choices", trail.length === 2
+      && !!trail[0]?.detail?.includes("claude-opus-5") && !!trail[0]?.detail?.includes("gpt-6-sol")
+      && !!trail[1]?.detail?.includes("gpt-6-sol") && !!trail[1]?.detail?.endsWith("->null"), JSON.stringify(trail));
+
+    const sent = ((await (await post("/api/tasks", { text: "spawn replacement sent refusal", queue: false })).json()) as { task: SpawnRow }).task;
+    const starting = post(`/api/tasks/${sent.id}/dispatch`, {});
+    const midDispatch = await refusal(sent.id, { harness: "codex", model: "gpt-6-sol", effort: "high" });
+    const start = await starting;
+    const startBody = (await start.json()) as { slot?: number };
+    const sentRefusal = await refusal(sent.id, { harness: "codex", model: "gpt-6-sol", effort: "high" });
+    check("task spawn rejects a row in dispatchingTasks with named 409", midDispatch.startsWith("409 ") && midDispatch.includes("already being dispatched"), midDispatch);
+    check("task spawn rejects a sent row with named 409", start.status === 200 && sentRefusal.startsWith("409 ") && sentRefusal.includes("task is sent"),
+      `${start.status} ${sentRefusal}`);
+    if (typeof startBody.slot === "number") await post(`/api/slots/${startBody.slot}/kill`, {});
+    await post(`/api/tasks/${sent.id}/delete`, {});
+    await post(`/api/tasks/${queued.id}/delete`, {});
+    await post("/api/dispatch", { on: dispatchWasOn });
+  }
+
   // --- Task.kind: four values, reversible owner route, legacy load migration, and dispatch bolt. ---
   {
     type KRow = { id: string; kind: string; status: string; note: string | null;

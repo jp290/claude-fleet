@@ -1339,7 +1339,7 @@ export async function run(): Promise<void> {
       /postLandAudit\?:/.test(cliSrc) && /postLandAudit = data\.postLandAudit \?\? null/.test(cliSrc)
       && /renderPostLandAudit\(\)/.test(cliSrc), "refresh() in src/client.ts");
     check("client: the ack button records THIS audit's `at`, so a later alarm is not pre-dismissed",
-      /localStorage\.setItem\(PLA_ACK_KEY, String\(postLandAudit\?\.at \?\? 0\)\)/.test(cliSrc),
+      /prefSet\(PLA_ACK_KEY, String\(postLandAudit\?\.at \?\? 0\)\)/.test(cliSrc),
       "renderPostLandAudit in src/client.ts");
 
     // (9i) ABSENT ≠ FALSE at the land-shape render sites. `confirmedByHuman` is OPTIONAL on the row,

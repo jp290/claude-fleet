@@ -9,6 +9,7 @@
 // repo's one rule (fleet-e2e-security.ts §7) is that nothing untrusted becomes markup, asserted as
 // "no HTML sink exists in src/ at all" rather than as an escaping test per call site. So: `el()`
 // and `textContent`, and no `innerHTML` anywhere below.
+import { prefSet, prefText } from "./prefs";
 const TOKEN = new URLSearchParams(location.search).get("token") ?? "";
 const HDR: Record<string, string> = TOKEN ? { "x-fleet-helper-token": TOKEN } : {};
 
@@ -53,11 +54,11 @@ const clear = (node: HTMLElement): void => { while (node.firstChild) node.remove
 // whenever what is stored does not match the shape the server accepts, so a hand-edited or
 // truncated value cannot wedge the page into permanent 400s.
 function deviceIdOf(): string {
-  const stored = localStorage.getItem("fleetHelperDevice") ?? "";
+  const stored = prefText("fleetHelperDevice");
   if (/^[a-z0-9]{8,32}$/.test(stored)) return stored;
   const fresh = Array.from(crypto.getRandomValues(new Uint8Array(8)),
     (b) => b.toString(16).padStart(2, "0")).join("");
-  localStorage.setItem("fleetHelperDevice", fresh);
+  prefSet("fleetHelperDevice", fresh);
   return fresh;
 }
 const deviceId = deviceIdOf();
@@ -93,13 +94,13 @@ const failure = (a: Answer<unknown>): string => a.body.error ?? (a.status ? `HTT
 // machine on the same tree, but nothing stops one person from claiming two different repos.
 let claimed: ClaimedJob | null = null;
 try {
-  const raw = localStorage.getItem("fleetHelperClaim");
+  const raw = prefText("fleetHelperClaim");
   claimed = raw ? (JSON.parse(raw) as ClaimedJob) : null;
 } catch { claimed = null; } // a corrupt entry is no claim, not a broken page
 function setClaimed(c: ClaimedJob | null): void {
   claimed = c;
-  if (c) localStorage.setItem("fleetHelperClaim", JSON.stringify(c));
-  else localStorage.removeItem("fleetHelperClaim");
+  if (c) prefSet("fleetHelperClaim", JSON.stringify(c));
+  else prefSet("fleetHelperClaim", null);
 }
 
 function bootstrapText(job: ClaimedJob): string {

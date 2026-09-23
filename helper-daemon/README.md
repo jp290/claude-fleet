@@ -16,6 +16,14 @@ answer it, and all it does is switch a box on so it can start pulling.
     bun helper-daemon/daemon.ts /etc/fleet-helper/config.json
 
 `config.example.json` is the full field list. Get the token from the Fleet host, as the owner:
+
+`instanceDir` is optional. Set it to the absolute path of this machine's Fleet checkout to
+report its instance health on each heartbeat. The daemon reads that checkout only: its HEAD,
+`src/` and `public/{app,share,helper,hub}.js` mtimes, the local `canonical/main` ref for the
+commit distance, and `.fleet-sync-status.json` written by `fleet-sync.sh`. If any reading is
+missing or outside the heartbeat's supported `syncExit` range 0–5, it omits `instance`; an
+omitted field means no measurement, not a healthy instance. Leave `instanceDir` out on a machine
+without that checkout.
 `GET /api/helper/token` (owner-gated — it is neither the owner token nor a slot's self token).
 
 ## The rules this file exists to keep

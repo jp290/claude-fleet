@@ -14,7 +14,7 @@
 // and had read the wish — so a probe that could not measure fails as ITSELF rather than as the
 // property it was aiming at.
 import { chmodSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
-  statSync, writeFileSync } from "node:fs";
+  statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { BASE, ROOT, check, get, post } from "./harness";
@@ -24,7 +24,7 @@ import { run as checkResultRetry } from "./helper-result";
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
-import { failNamesOf, freeSuiteSlots, inQuietHours, jobsToStart, loadConfig, localMode, pruneRuns, shardEnv, stricter, tailOf,
+import { failNamesOf, freeSuiteSlots, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode, pruneRuns, shardEnv, stricter, tailOf,
   trailIdOf, withdrawnRuns, DAEMON_FEATURES, EXIT_CONFIG, EXIT_UPDATED, type HelperConfig, type JobView } from "../helper-daemon/daemon";
 
 interface Row {
@@ -187,6 +187,42 @@ export async function run(h: {
   check("(HD) the cap defaults to 1, floors at 1 and takes whole slots — 0, a negative and a fraction cannot describe this machine",
     cfgWith(undefined) === 1 && cfgWith(0) === 1 && cfgWith(-3) === 1 && cfgWith(2.9) === 2 && cfgWith(2) === 2,
     `default=${cfgWith(undefined)} zero=${cfgWith(0)} neg=${cfgWith(-3)} frac=${cfgWith(2.9)}`);
+  const cfgBase = { fleetUrl: "http://h", token: "t", deviceId: "abcdefgh", name: "n", workDir: "/w" };
+  check("(HD) instanceDir is absent by default and accepts only an explicit absolute directory",
+    loadConfig("/x", cfgBase, 0o600).instanceDir === undefined
+      && loadConfig("/x", { ...cfgBase, instanceDir: "/instance" }, 0o600).instanceDir === "/instance"
+      && (() => { try { loadConfig("/x", { ...cfgBase, instanceDir: "relative" }, 0o600); return false; }
+        catch (e) { return String(e).includes("instanceDir"); } })(), "config field");
+  const instanceDir = `${ROOT}/daemon-instance-fixture`;
+  rmSync(instanceDir, { recursive: true, force: true });
+  mkdirSync(`${instanceDir}/src`, { recursive: true });
+  mkdirSync(`${instanceDir}/public`, { recursive: true });
+  writeFileSync(`${instanceDir}/src/client.ts`, "// source\n");
+  for (const name of ["app", "share", "helper", "hub"])
+    writeFileSync(`${instanceDir}/public/${name}.js`, "// bundle\n");
+  const git = (...args: string[]): number => spawnSync("git", ["-C", instanceDir, ...args], { stdio: "ignore" }).status ?? -1;
+  const seeded = git("init", "-q") === 0 && git("add", "src/client.ts") === 0
+    && git("-c", "user.name=e2e", "-c", "user.email=e2e@example.test", "commit", "-qm", "seed") === 0
+    && git("update-ref", "refs/remotes/canonical/main", "HEAD") === 0;
+  check("(HD) setup: the instance fixture has a commit and a canonical/main ref", seeded, `${seeded}`);
+  const stamp = Math.floor(Date.now() / 1000) - 100;
+  utimesSync(`${instanceDir}/src/client.ts`, stamp, stamp);
+  for (const name of ["app", "share", "helper", "hub"])
+    utimesSync(`${instanceDir}/public/${name}.js`, stamp + 10, stamp + 10);
+  writeFileSync(`${instanceDir}/.fleet-sync-status.json`, JSON.stringify({ at: 1, exit: 5, head: "a".repeat(40) }));
+  const fresh = await instanceOf(instanceDir);
+  check("(HD) the instance reader measures HEAD, fresh bundles, distance zero and the recorded sync exit",
+    !!fresh && /^[0-9a-f]{40}$/.test(fresh.head) && fresh.bundleStale === false
+      && fresh.behindCount === 0 && fresh.syncExit === 5 && Number.isSafeInteger(fresh.at),
+    JSON.stringify(fresh));
+  utimesSync(`${instanceDir}/src/client.ts`, stamp + 20, stamp + 20);
+  const stale = await instanceOf(instanceDir);
+  check("(HD) a source newer than public/*.js makes the instance bundle stale",
+    stale?.bundleStale === true, JSON.stringify(stale));
+  rmSync(`${instanceDir}/.fleet-sync-status.json`);
+  check("(HD) a missing sync-status file leaves the instance unreported instead of inventing an exit",
+    await instanceOf(instanceDir) === undefined, "missing sync status");
+  rmSync(instanceDir, { recursive: true, force: true });
 
   // THE SHARD FORK (the sharded audit). The suite env a shard job gets is exactly FLEET_E2E_SHARD=k/n,
   // an unsharded job gets nothing, and a shard string the runner would refuse is refused HERE — as null,

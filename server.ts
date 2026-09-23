@@ -21472,6 +21472,7 @@ interface HelperDevice {
   capabilities?: string[];   // ...and what it says it can run
   desiredMode?: DeviceMode;  // the OWNER's wish. Never written by the helper principal
   daemonSha?: string;        // the commit the daemon says it RUNS FROM (40 hex) — measured there, or absent
+  instance?: HelperInstance;
   // THE TWO CAPACITY NUMBERS, and neither is this server's reading of anything: both are the
   // DEVICE's own words about its own machine, echoed back to the board. `load` says how busy the
   // box is; these say how much of that is the fleet's and how much more it will take.
@@ -21484,12 +21485,24 @@ interface HelperDevice {
   lastWakeAt?: number;       // when a magic packet last LEFT this box for it. Not "it woke up" — see sendWakeFrame
   features?: string[];       // what the daemon's CODE says it can do (AUDIT_SHARD_FEATURE) — replaced on every beat
 }
+interface HelperInstance {
+  head: string; bundleStale: boolean; behindCount: number; syncExit: number; at: number;
+}
 const helperDevices = new Map<string, HelperDevice>();
 // What a heartbeat is allowed to carry. Keys are present only when the device actually sent them,
 // so a plain lastSeen touch (the claim paths) can spread this over the stored row without erasing
 // the last real report.
 type HelperHeartbeat = { mode?: DeviceMode; load?: number; capabilities?: string[]; daemonSha?: string;
-  maxParallelSuites?: number; running?: number; features?: string[] };
+  maxParallelSuites?: number; running?: number; features?: string[]; instance?: HelperInstance };
+function validHelperInstance(value: unknown): value is HelperInstance {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.head === "string" && /^[0-9a-f]{40}$/.test(v.head)
+    && typeof v.bundleStale === "boolean"
+    && typeof v.behindCount === "number" && Number.isSafeInteger(v.behindCount) && v.behindCount >= 0
+    && typeof v.syncExit === "number" && Number.isInteger(v.syncExit) && v.syncExit >= 0 && v.syncExit <= 5
+    && typeof v.at === "number" && Number.isSafeInteger(v.at) && v.at >= 0;
+}
 // Foreign strings land in a ledger row, a console line and an audit detail — same treatment the
 // device name already gets: printable only, and short.
 function printableShort(raw: string, cap: number): string {
@@ -23317,6 +23330,7 @@ interface HelperDeviceView {
   claims: HelperDeviceClaimView[];
   lapses: number;
   daemonSha?: string;              // what the daemon says it runs — absent until a daemon that measures it beats
+  instance?: HelperInstance;
   // the capacity pair, and it rides as a PAIR (see helperDevicesView): how many jobs that machine
   // had running at its last beat, out of how many its own config lets it run at once
   maxParallelSuites?: number;
@@ -23344,6 +23358,7 @@ function helperDevicesView(): HelperDeviceView[] {
     // identity first, name only for rows written before deviceId was booked (see HelperLapse)
     lapses: helperLapses.filter((l) => (l.deviceId ? l.deviceId === d.id : l.name === d.name)).length,
     ...(d.daemonSha ? { daemonSha: d.daemonSha } : {}),
+    ...(d.instance ? { instance: d.instance } : {}),
     // shipped as a PAIR or not at all: "2 running" with no cap beside it is a number the panel
     // cannot draw a meaning for, and inventing the missing half here is exactly the lie the
     // absent-means-never-said rule above exists to prevent
@@ -24488,6 +24503,24 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
       if (typeof body.daemonSha !== "string" || !/^[0-9a-f]{40}$/.test(body.daemonSha))
         return json({ error: "daemonSha must be 40 hex digits" }, 400);
       reported.daemonSha = body.daemonSha;
+    }
+    if (body && Object.prototype.hasOwnProperty.call(body, "instance")) {
+      const instance = body.instance;
+      if (!instance || typeof instance !== "object" || Array.isArray(instance))
+        return json({ error: "instance must be an object" }, 400);
+      const v = instance as Record<string, unknown>;
+      if (typeof v.head !== "string" || !/^[0-9a-f]{40}$/.test(v.head))
+        return json({ error: "instance.head must be 40 hex digits" }, 400);
+      if (typeof v.bundleStale !== "boolean")
+        return json({ error: "instance.bundleStale must be boolean" }, 400);
+      if (typeof v.behindCount !== "number" || !Number.isSafeInteger(v.behindCount) || v.behindCount < 0)
+        return json({ error: "instance.behindCount must be a non-negative integer" }, 400);
+      if (typeof v.syncExit !== "number" || !Number.isInteger(v.syncExit) || v.syncExit < 0 || v.syncExit > 5)
+        return json({ error: "instance.syncExit must be an integer between 0 and 5" }, 400);
+      if (typeof v.at !== "number" || !Number.isSafeInteger(v.at) || v.at < 0)
+        return json({ error: "instance.at must be a non-negative integer" }, 400);
+      reported.instance = { head: v.head, bundleStale: v.bundleStale,
+        behindCount: v.behindCount, syncExit: v.syncExit, at: v.at };
     }
     // THE CAPACITY PAIR. Refused loudly when present and wrong, for the same reason `mode` is: the
     // claim door below reads these, and a fraction or a negative stored as though it were a count
@@ -31831,6 +31864,7 @@ if (existsSync(STATE_FILE)) {
               : {}),
             ...(isDeviceMode(d.desiredMode) ? { desiredMode: d.desiredMode } : {}),
             ...(typeof d.daemonSha === "string" && /^[0-9a-f]{40}$/.test(d.daemonSha) ? { daemonSha: d.daemonSha } : {}),
+            ...(validHelperInstance(d.instance) ? { instance: d.instance } : {}),
             // the CAP survives a restart (it is a property of that machine's config, and the board
             // should not go blank over a deploy); the COUNT does not, and that asymmetry is the
             // point. `running` is a live fact about another machine's processes, and a restored one

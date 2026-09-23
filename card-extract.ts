@@ -51,8 +51,9 @@ export const CARD_KEY = "card";
 //                    the triple cut) and ADVISORY: a `rolle.*` gap no longer makes a card invalid;
 //                    the prompt asks for `surface.creates` and `after`
 //   6 (2026-09-18) — verify `POST /api/self/criterion` (CLARIFY_CLOSE_ROUTE) is a clarify row's proof
+//   7 (2026-09-23) — foreign repos validate VERIFY against their configured repo command
 // Bump it whenever a change here can turn a refusal into an acceptance.
-export const CARD_VALIDATOR_VERSION = 6;
+export const CARD_VALIDATOR_VERSION = 7;
 
 export interface TaskCardRole { harness: string | null; model: string | null; effort: string | null }
 // `creates` are files the row will ADD. They cannot pass `files`' tracked-tree check by definition,
@@ -86,6 +87,8 @@ export interface RawCard {
 }
 
 export interface CardValidationContext {
+  // undefined = Fleet's unchanged chain rule; null = foreign repo without its own verify entry.
+  foreignVerifyCommand?: string | null;
   // The row's own text, exactly as the extractor saw it. It is what makes the quote rule a
   // MECHANICAL property instead of a request in the prompt: a path the text names only inside a
   // quoted command or a verify line is masked out of the intent text, so it cannot become surface
@@ -186,6 +189,16 @@ const namesChainStep = (verify: string): boolean =>
 const CLARIFY_CLOSE = new RegExp(`(?<![\\w/-])${CLARIFY_CLOSE_ROUTE}(?![\\w/-])`);
 const namesClarifyClose = (verify: string): boolean => CLARIFY_CLOSE.test(verify);
 
+const namesRepoVerify = (verify: string, command: string): boolean => {
+  if (verify.replace(/\s+/g, " ").trim() === command.replace(/\s+/g, " ").trim()) return true;
+  const scripts = command.matchAll(/(?:^|[^\w./-])((?:\.\/|\/)[\w./-]+\.sh)(?=$|[^\w./-])/g);
+  for (const [, path] of scripts) {
+    const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`(?<![\\w./-])${escaped}(?![\\w./-])`).test(verify)) return true;
+  }
+  return false;
+};
+
 // THE TWO NAMED ALIASES of a verify value, and nothing beyond them. The filing format itself writes
 // "VERIFY: volle Kette" (the comment above FORMAT_KEYS), and "e2e-isolated" without `./` slipped
 // past the command regex — measured 2026-09-13: 3 of 8 waiting Fleet-Betrieb rows refused on that
@@ -216,11 +229,20 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   if (!ziel) gaps.push("ziel: the extractor returned no goal sentence");
   const done = text1(raw.done);
   if (!done) gaps.push("done: no checkable done sentence");
-  const { verify, aliased } = verifyAliased(text1(raw.verify));
+  const rawVerify = text1(raw.verify);
+  const { verify, aliased } = ctx.foreignVerifyCommand === undefined
+    ? verifyAliased(rawVerify) : { verify: rawVerify, aliased: false };
   // The verify field is checked against the chain this repo actually runs, not against being
   // non-empty: "run the tests" is the shape of an answer, not one.
-  if (!verify) gaps.push("verify: no command named");
-  else if (!aliased && !namesChainStep(verify) && !namesClarifyClose(verify))
+  if (!verify) gaps.push(ctx.foreignVerifyCommand === null
+    ? "verify: no command named; FLEET_VERIFY_CMD_REPOS has no entry for this repository"
+    : "verify: no command named");
+  else if (ctx.foreignVerifyCommand !== undefined) {
+    if (ctx.foreignVerifyCommand === null)
+      gaps.push(`verify: "${verify}" cannot be checked — FLEET_VERIFY_CMD_REPOS has no entry for this repository`);
+    else if (!namesRepoVerify(verify, ctx.foreignVerifyCommand))
+      gaps.push(`verify: "${verify}" does not name this repository's configured verify command or script`);
+  } else if (!aliased && !namesChainStep(verify) && !namesClarifyClose(verify))
     gaps.push(`verify: "${verify}" names no known chain step (${LOCAL_PROOF_STEPS.join(", ")})`);
   // A HEADER LINE THE PARSER READ PAST (set only by the filing-format parser): a field whose value
   // ran over more than one line ends the header block on that line, and every key from there on

@@ -1120,6 +1120,23 @@
   /* shared risk-preview panel (showRiskPreview) — real file names/commit subjects before
      a destructive click, not only after a refusal. Built dynamically, styled off .overlay/.panel */
   .riskpanel { gap: 8px; }
+  /* THE EXPORT MENU (client.ts#openExportDlg): a segment for the content and one for the format
+     (G3.1 — the chosen one on --c-hover with an inset edge), toggles for the conversation's parts
+     (G1.3 — on = ink with a --chat-mute edge on --chat-surface), hints in the .hint base (G2.2) */
+  .exportpanel { width: min(480px, 94vw); }
+  .expbody { display: flex; flex-direction: column; gap: 12px; }
+  .explabel { margin-bottom: 5px; font-family: var(--chat-sans); font-size: var(--chat-ui-fs); font-weight: 500;
+    color: var(--chat-mute); }
+  .expseg, .expopts { display: flex; flex-wrap: wrap; gap: 4px; }
+  .expseg button, .expopt { min-height: 30px; padding: 0 10px; border-radius: var(--r1); font-family: var(--chat-sans);
+    font-size: var(--chat-ui-fs); font-weight: 500; cursor: pointer; }
+  .expseg button { border: 0; background: none; color: var(--chat-mute); }
+  .expseg button:hover:not(:disabled) { color: var(--chat-ink); background: var(--c-hover); }
+  .expseg button.on { color: var(--chat-ink); background: var(--c-hover); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .expseg button:disabled { color: var(--chat-faint); cursor: default; }
+  .expopt { border: 1px solid var(--chat-edge); background: var(--chat-raised); color: var(--chat-mute); }
+  .expopt:hover { color: var(--chat-ink); }
+  .expopt.on { color: var(--chat-ink); border-color: var(--chat-mute); background: var(--chat-surface); }
   /* land review shows a full diff, so it needs more width than the file-list risk preview */
   .landreviewpanel { width: min(760px, 94vw); }
   /* explainer so the merge-preview diff isn't misread as unsaved work — committing doesn't clear it, landing does */
@@ -2355,6 +2372,8 @@
      word buttons' text so the two sizes read as one row */
   #board .bbtn.quiet .ico { width: 14px; height: 14px; }
   #board .bmergedetail { color: var(--b-ink3); font-size: 11.5px; }
+  /* the head's three visible session actions: quiet word buttons, their words on the head's left edge */
+  #board .bheadacts { margin-left: -7px; }
 
   /* rows: every clickable line is a real button, full width, one hover */
   #board .brow, #board .bfile, #board .buncf, #board .bprompt {
@@ -2774,6 +2793,7 @@
       color: var(--chat-prose); font-family: inherit; font-size: var(--chat-fs); text-align: left; cursor: pointer; }
     .rowmenuitem:active, .rowmenuitem:focus-visible { background: var(--c-hover); color: var(--chat-ink); outline: none; }
     .rowmenuitem.danger { color: var(--danger); }
+    .expseg button, .expopt { min-height: 40px; }
     .bbtn { padding: 8px 12px; font-size: 13px; }
     .renamein { height: 26px; font-size: 16px; }
 

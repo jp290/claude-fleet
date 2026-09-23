@@ -19,7 +19,12 @@ import type { TaskCluster, TaskFilesOrigin, TaskSurface } from "../task-metadata
 import type { TaskCardBody } from "../card-extract";
 import type { ProgramContextPack } from "../context-plan";
 
-const MAX_SLOTS = 16; // fixed places — the sidebar always shows all of them
+const BAND_SLOTS = 16;
+const SEPARATE_LANE_SLOTS = process.env.FLEET_SEPARATE_LANE_SLOTS === "1";
+const configuredMaxSessions = Number(process.env.FLEET_MAX_SESSIONS ?? 16);
+const FLEET_MAX_SESSIONS = Number.isSafeInteger(configuredMaxSessions) && configuredMaxSessions >= 1
+  && configuredMaxSessions <= 100 ? configuredMaxSessions : 16;
+const MAX_SLOTS = BAND_SLOTS + (SEPARATE_LANE_SLOTS ? FLEET_MAX_SESSIONS : 0);
 
 // `browser`: the lane needs the Playwright MCP (Slot.browser). Absent = a text lane, which is the
 // default; only `true` is ever stored, so every row that predates the field keeps its exact shape.
@@ -3132,7 +3137,7 @@ export type {
 };
 export {
   loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
-  MAX_SLOTS, watchKind, TRANSITION_AWAITING_MAX, TRANSITION_DEADLINE_MIN_SEC,
+  MAX_SLOTS, BAND_SLOTS, SEPARATE_LANE_SLOTS, FLEET_MAX_SESSIONS, watchKind, TRANSITION_AWAITING_MAX, TRANSITION_DEADLINE_MIN_SEC,
   TRANSITION_DEADLINE_MAX_SEC, TRANSITION_DEADLINE_DEFAULT_SEC, watchFrom, FLEET_EVENT_TERMINAL,
   ATTENTION_KINDS, fleetEventRecoveryFrom, fleetEventFrom, clarificationFrom, fleetReportFrom,
   attentionFrom, MAX_CLARIFICATION_QUESTION, MAX_CLARIFICATION_ANSWER, MAX_FLEET_REPORT_TEXT,

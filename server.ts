@@ -95,7 +95,7 @@ import {
 import { opsPollRow, opsPollVisible } from "./src/opsevents";
 // the persisted domain model and its parsers — P4 Slice 1 moved them out whole; see server/types.ts
 import {
-  MAX_SLOTS, watchKind, TRANSITION_AWAITING_MAX, TRANSITION_DEADLINE_MIN_SEC,
+  MAX_SLOTS, BAND_SLOTS, SEPARATE_LANE_SLOTS, FLEET_MAX_SESSIONS, watchKind, TRANSITION_AWAITING_MAX, TRANSITION_DEADLINE_MIN_SEC,
   TRANSITION_DEADLINE_MAX_SEC, TRANSITION_DEADLINE_DEFAULT_SEC, watchFrom, FLEET_EVENT_TERMINAL,
   ATTENTION_KINDS, fleetEventFrom, clarificationFrom, fleetReportFrom, attentionFrom,
   MAX_CLARIFICATION_QUESTION, MAX_CLARIFICATION_ANSWER, MAX_FLEET_REPORT_TEXT, MAX_ATTENTION_TEXT,
@@ -2096,6 +2096,17 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   inputChain: Promise.resolve(),
   resizeChain: Promise.resolve(),
 }));
+const sessionCount = (): number => slots.filter((s) => s.cwd || laneSpawn.has(s.id)).length;
+const sessionLimitError = (): string | null => SEPARATE_LANE_SLOTS && sessionCount() >= FLEET_MAX_SESSIONS
+  ? `FLEET_MAX_SESSIONS reached (${sessionCount()}/${FLEET_MAX_SESSIONS} occupied or reserved, including sleeping sessions)` : null;
+const freeSessionSlot = (kind: "main" | "lane"): Slot | undefined => {
+  if (sessionLimitError()) return undefined;
+  return slots.find((s) => !s.cwd && !laneSpawn.has(s.id)
+    && (!SEPARATE_LANE_SLOTS || (kind === "main" ? s.id <= BAND_SLOTS : s.id > BAND_SLOTS)));
+};
+const freeLaneSlots = (n: number): Slot[] => sessionLimitError() || (SEPARATE_LANE_SLOTS
+  && sessionCount() + n > FLEET_MAX_SESSIONS) ? [] : slots.filter((s) => !s.cwd && !laneSpawn.has(s.id)
+    && (!SEPARATE_LANE_SLOTS || s.id > BAND_SLOTS)).slice(0, n);
 let recents: string[] = [];
 let pins: string[] = []; // owner-pinned project roots, surfaced first in the picker (persisted like recents)
 // repo root → the branch lanes integrate into (rebase onto + land into). Unset for a repo
@@ -2121,7 +2132,7 @@ let repoBases: Record<string, string> = {};
 // entry is owner-only, persisted, and one API call — no deploy, because a value that needs a
 // restart is a value the owner cannot correct while the queue is stalled.
 let repoLaneCaps: Record<string, number> = {};
-const REPO_MAX_LANES_MAX = MAX_SLOTS;
+const REPO_MAX_LANES_MAX = SEPARATE_LANE_SLOTS ? FLEET_MAX_SESSIONS : MAX_SLOTS;
 let mainDirectPreflights: Record<string, MainDirectPreflight> = {};
 const isGameMaker = (p: Program | undefined | null): boolean => p?.profile?.kind === "game-maker";
 
@@ -5835,6 +5846,10 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   box: BoxPin = NO_BOX, parent: LaneAnchor | undefined = undefined, browser = false,
   context: SlotContext | null = null): Promise<{ cwd: string; branch: string }> {
   const h = harnessOf(harness);
+  if (SEPARATE_LANE_SLOTS && s.id <= BAND_SLOTS) throw new Error("lane requires a place above bands 1..16");
+  if (SEPARATE_LANE_SLOTS && !s.cwd
+    && slots.filter((other) => other.id !== s.id && (other.cwd || laneSpawn.has(other.id))).length >= FLEET_MAX_SESSIONS)
+    throw new Error(`FLEET_MAX_SESSIONS reached (${FLEET_MAX_SESSIONS} occupied or reserved, including sleeping sessions)`);
   // Refuse before createWorktree: a main-only adapter must not leave an orphan working copy as the
   // side effect of discovering its policy too late.
   if (!h.allowsLanes) throw new Error(`harness ${h.id} is main-session only — it cannot open a lane`);
@@ -6183,6 +6198,13 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   openSlotIntents.add(openIntent);
   try {
   const h = harnessOf(harness);
+  if (SEPARATE_LANE_SLOTS && (worktree
+    ? s.id <= BAND_SLOTS && !(s.cwd && s.worktree?.branch === worktree.branch)
+    : s.id > BAND_SLOTS))
+    throw new Error(worktree ? "lane requires a place above bands 1..16" : "MAIN requires a band in 1..16");
+  if (SEPARATE_LANE_SLOTS && !s.cwd
+    && slots.filter((other) => other.id !== s.id && (other.cwd || laneSpawn.has(other.id))).length >= FLEET_MAX_SESSIONS)
+    throw new Error(`FLEET_MAX_SESSIONS reached (${FLEET_MAX_SESSIONS} occupied or reserved, including sleeping sessions)`);
   // Defence in depth for every caller, including future ones that bypass openLaneInSlot.
   if (worktree && !h.allowsLanes) throw new Error(`harness ${h.id} is main-session only — it cannot open a lane`);
   if (h.singleton) {
@@ -6220,6 +6242,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
     // the marker after orphan teardown. Recheck before publishing
     // even one byte of the new occupant; the process-local lease alone is not durable authority.
     assertProgramFoundingTargetOpen(s, treeLease);
+    if (SEPARATE_LANE_SLOTS && !s.cwd
+      && slots.filter((other) => other.id !== s.id && (other.cwd || laneSpawn.has(other.id))).length >= FLEET_MAX_SESSIONS)
+      throw new Error(`FLEET_MAX_SESSIONS reached (${FLEET_MAX_SESSIONS} occupied or reserved, including sleeping sessions)`);
   } catch (e) {
     if (h.singleton) singletonSpawn.delete(h.id);
     throw e;
@@ -13329,6 +13354,11 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
   if (next.variants) return { ok: false, error: "a variant group never runs itself — its variants do, all started together" };
   if (next.variantOf && !variantBase)
     return { ok: false, error: "a variant starts only with its whole group, from one base commit — start the group" };
+  if (SEPARATE_LANE_SLOTS && free.id <= BAND_SLOTS)
+    return { ok: false, error: "lane requires a place above bands 1..16" };
+  if (SEPARATE_LANE_SLOTS && !free.cwd
+    && slots.filter((s) => s.id !== free.id && (s.cwd || laneSpawn.has(s.id))).length >= FLEET_MAX_SESSIONS)
+    return { ok: false, error: `FLEET_MAX_SESSIONS reached (${FLEET_MAX_SESSIONS} occupied or reserved, including sleeping sessions)` };
   // THE BOLT, restated where the choice now arrives: a stored foreign choice reaching an unattended
   // call answers to the same two conditions as every other unattended path, in the same order, so
   // the refusal reason is the specific one. The tick's own row gate refuses the same rows BEFORE a
@@ -15194,11 +15224,13 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
         return hold("waiting: no bound MAIN to land — a policy never starts a variant group without one");
     }
   }
-  const free = slots.filter((s) => !s.cwd && !laneSpawn.has(s.id)).slice(0, n);
+  const free = freeLaneSlots(n);
   // the third capacity hold, and the only FLEET-wide one — free slots are the one resource no
   // repo or program boundary partitions. Bolt (a) reads the board itself here: a group needing
   // more slots than the machine has could never start.
-  if (free.length < n) return hold(`waiting: variant group needs ${n} free slots — ${free.length} free`,
+  if (free.length < n) return hold(SEPARATE_LANE_SLOTS && sessionCount() + n > FLEET_MAX_SESSIONS
+    ? `waiting: FLEET_MAX_SESSIONS reached (${sessionCount()} occupied or reserved + ${n} needed / ${FLEET_MAX_SESSIONS}, including sleeping sessions)`
+    : `waiting: variant group needs ${n} free slots — ${free.length} free`,
     n <= slots.length ? { n, scope: { kind: "fleet" } } : null);
   if (!ownerAct) {
     const quietWaived = !!programDispatchOn(rows[0]) && rows.every((r) => r.releasedBy === "machine");
@@ -15692,8 +15724,8 @@ async function tickDispatch(): Promise<void> {
       if (reserved) { waiting(variantReserveNote(reserved)); continue; }
       const reviewLeft = briefReviewWaitLeft(rows, Date.now()); // …and is waited for here, bounded
       if (reviewLeft > 0) { waiting(briefReviewWaitNote(reviewLeft)); continue; }
-      const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
-      if (!free) { waiting("waiting: no free slot"); return; }
+      const free = freeSessionSlot("lane");
+      if (!free) { waiting(`waiting: ${sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free lane place" : "no free slot")}`); return; }
       // THE UNATTENDED INVARIANT STOOD HERE, and it is gone with the reader that satisfied it.
       // Until 2026-09-10 an unattended start required a queue-analyst verdict on this row, fresh
       // against the tree it would run on (analysis-staleness.ts) and against the exact brief it
@@ -30106,8 +30138,8 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
   try {
     const preflight = await preflightProgramMain(body.cwd);
     if (!preflight.ok) return json({ error: preflight.error }, 400);
-    const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
-    if (!free) return json({ error: "no free slot" }, 409);
+    const free = freeSessionSlot("main");
+    if (!free) return json({ error: sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free MAIN band" : "no free slot") }, 409);
     laneSpawn.add(free.id);
     try {
       const label = typeof body.label === "string"
@@ -31033,8 +31065,8 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
       if (e instanceof GameMakerTreeConflict) return json({ error: e.message }, 409);
       throw e;
     }
-    const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
-    if (!free) return json({ error: "no free slot" }, 409);
+    const free = freeSessionSlot("main");
+    if (!free) return json({ error: sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free MAIN band" : "no free slot") }, 409);
     laneSpawn.add(free.id);
     try {
       let founding: ProgramFounding;
@@ -37771,8 +37803,8 @@ Bun.serve<WSData>({
       if (!laneBox.ok) return json({ error: laneBox.why }, 400);
       const laneForm = laneFormOf(body, laneHarness); // explicit form wins; absent → the adapter's
       if (!laneForm.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
-      const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
-      if (!free) return json({ error: "no free slot" }, 409);
+      const free = freeSessionSlot("lane");
+      if (!free) return json({ error: sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free lane place" : "no free slot") }, 409);
       // the slot is reserved below, but for attach the WORKTREE is the contended resource too:
       // the "already open in a slot" check and openSlot are awaits apart, so two attach
       // requests for the same orphan would otherwise both pass it and double-seat the tree.
@@ -38932,8 +38964,8 @@ Bun.serve<WSData>({
       if (!wBrowser.ok) return json({ error: wBrowser.error }, 400);
       const wContext = contextOf(wBody?.context !== undefined ? wBody : { context: wRowSpawn.context }, wHarness);
       if (!wContext.ok) return json({ error: wContext.error }, 400);
-      const wFree = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
-      if (!wFree) return json({ error: "no free slot" }, 409);
+      const wFree = freeSessionSlot("lane");
+      if (!wFree) return json({ error: sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free lane place" : "no free slot") }, 409);
       // captured BEFORE dispatchTask mutates anything, for the reason its own `wasStatus` is: a
       // failed spawn must put every follower back on the status it came from, and `queued` and
       // `pending` are not the same row to the tick.
@@ -39006,8 +39038,8 @@ Bun.serve<WSData>({
       // ...and the context budget the same way, re-judged against the EFFECTIVE harness
       const dContext = contextOf(dBody?.context !== undefined ? dBody : { context: dRowSpawn.context }, dHarness);
       if (!dContext.ok) return json({ error: dContext.error }, 400);
-      const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
-      if (!free) return json({ error: "no free slot" }, 409);
+      const free = freeSessionSlot("lane");
+      if (!free) return json({ error: sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free lane place" : "no free slot") }, 409);
       // A RAW START is one where the lane receives the owner's DRAFT rather than a brief — the
       // `briefOrigin: "raw"` case at the delivery seam. This route gates on none of it, but the
       // UI's acknowledgment (src/client.ts, .qrawack) rides into the audit detail. Recorded ONLY

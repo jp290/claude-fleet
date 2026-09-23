@@ -7333,6 +7333,7 @@ function renderSlots() {
   const stackAt = new Map(stacks.map((g) => [g.at, g]));
   const stackedLanes = new Set(stacks.flatMap((g) => g.lanes.map((lane) => lane.id)));
   for (const s of fleet) {
+    if (s.id > 16 && !isActive(s)) continue;
     if (!isActive(s)) { slotsEl.appendChild(emptyRow(s)); continue; }
     const g = stackAt.get(s.id);
     if (g) { renderStack(g, refs); continue; }

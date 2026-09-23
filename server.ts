@@ -243,7 +243,8 @@ const CARD_FILE = `${import.meta.dir}/cards.jsonl`;
 // THE STATE SNAPSHOT TRAIL — one row per STATE_SNAPSHOT_MS with the operating state a tick would
 // choose from (docs/messungen/2026-09-22-jev-treiber-schatten-label.md §e). Every other trail here
 // records an EVENT; this one records the STATE between them, which cannot be rebuilt afterwards.
-// Counts, enums and slot ids only — never text. Same appendEvent discipline/rotation as above.
+// Counts, enums, ids and the lane's branch only — never text (task, pane, path). Same appendEvent
+// discipline/rotation as above. Read back by exactly one route, GET /api/self/memory?view=observations.
 const STATE_SNAPSHOT_FILE = `${import.meta.dir}/state-snapshots.jsonl`;
 // the PENDING side of that trail: lands whose audit has not produced a row yet. Not an event log
 // (no rotation, no history) — a small mutable mirror of the in-memory queue, rewritten whole on
@@ -2850,7 +2851,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
 // occupant is not bound). `task=`/`program=` only NARROW that scope; a foreign subject is a named
 // refusal, never an empty success. Everything else — the steward, an unbound session — gets
 // `no-scope`: the portfolio reach is the owner-granted cut M4 and is not faked here.
-const MEMORY_VIEWS = ["work", "sources", "evidence"] as const;
+const MEMORY_VIEWS = ["work", "sources", "evidence", "observations"] as const;
 type MemoryView = typeof MEMORY_VIEWS[number];
 const MEMORY_WORK_MAX_ROWS = 50;
 const MEMORY_PAGE_MAX_BYTES = 32 * 1024;
@@ -3299,6 +3300,169 @@ async function memoryEvidenceView(s: Slot, scope: Extract<MemoryScope, { ok: tru
     unknown,
   };
   return json(body);
+}
+
+// --- M3: OBSERVATIONS (view=observations; task 91b039eb) --------------------------------------
+// The state-snapshot samples of ONE task in scope, read back from state-snapshots.jsonl (active,
+// .1, .archive) backwards in append order, through the same bounded scanner and cut as M2. It
+// replaces the narrated "slot N was lane X back then" with the occupant each sample NAMED: a sample
+// belongs to this task only when its lane element says taskId, and it is grouped by occupant
+// (slot + openedAt), so two occupations of one slot never merge — not even two of the same task.
+//
+// WHAT IT NEVER DOES: attribute a legacy element (written before these keys existed) by its slot
+// number, backfill today's occupant into an old row, or read a boot stamp as observed quiet.
+// Legacy rows and elements are COUNTED as unattributed; a sample whose `obs` is not "output" has
+// activity `unknown`. It is an observation history, never a live gate: nothing here authorises or
+// dispatches anything.
+const projectKeyOf = (repo: string): string =>
+  createHash("sha256").update(`fleet-project:${repoCanon(repo)}`).digest("hex").slice(0, 16);
+// which boot stamped each rehydrated occupant's lastOutput, so the snapshot can tell that stamp
+// from observed output (buildStateSnapshot's `obs`). Keyed by slot, bound to the occupant.
+const bootOutputStamps = new Map<number, { openedAt: number; at: number }>();
+function observationBasis(s: Slot): "output" | "boot" | "none" {
+  if (s.lastOutput === 0) return "none";
+  const b = bootOutputStamps.get(s.id);
+  return b && b.openedAt === s.openedAt && b.at === s.lastOutput ? "boot" : "output";
+}
+interface ObservationCursor { slot: number; openedAt: number; principal: string; taskId: string; issuedAt: number;
+  cut: GenerationCut[]; gen: number; offset: number; done: boolean; malformed: number; oversize: boolean;
+  legacyRows: number; legacyBySlot: Map<number, number>; slotsSeen: Set<number> }
+const observationCursors = new Map<string, ObservationCursor>();
+
+async function memoryObservationsView(s: Slot, scope: Extract<MemoryScope, { ok: true }>, url: URL): Promise<Response> {
+  const taskIds = scope.taskIds ?? [];
+  if (taskIds.length !== 1)
+    return json({ refusal: "task-required", error: scope.principal === "program-main"
+      ? "view=observations reads ONE task: name task=<id> of your Program" : `this lane holds ${taskIds.length} rows — name task=<id>` }, 400);
+  const taskId = taskIds[0]!;
+  const now = Date.now();
+  for (const [id, c] of observationCursors) if (now - c.issuedAt > MEMORY_CURSOR_TTL_MS) observationCursors.delete(id);
+  const given = url.searchParams.get("cursor");
+  let cur: ObservationCursor;
+  if (given !== null) {
+    const found = observationCursors.get(given);
+    observationCursors.delete(given);
+    if (!found)
+      return json({ refusal: "cursor-stale", error: `unknown or expired cursor (process memory, ${MEMORY_CURSOR_TTL_MS / 60_000} min; this server booted ${new Date(SERVER_BOOT_AT).toISOString()}) — start a fresh read without cursor` }, 409);
+    if (found.slot !== s.id || found.openedAt !== s.openedAt || found.principal !== scope.principal || found.taskId !== taskId)
+      return json({ refusal: "cursor-stale", error: "the cursor was issued to another occupant, principal or task — it grants nothing here" }, 409);
+    cur = found;
+  } else {
+    const cut = await ledgerCut(STATE_SNAPSHOT_FILE);
+    cur = { slot: s.id, openedAt: s.openedAt, principal: scope.principal, taskId, issuedAt: now, cut, gen: 0,
+      offset: cut[0]!.end, done: false, malformed: 0, oversize: false, legacyRows: 0, legacyBySlot: new Map(),
+      slotsSeen: new Set() };
+  }
+  const rows: Record<string, unknown>[] = [];
+  let rowBytes = 0;
+  let scanned = 0;
+  let pageFull = false;
+  const genName = (g: GenerationCut): string => `${basename(STATE_SNAPSHOT_FILE)}${g.gen}`;
+  while (!cur.done && !pageFull && scanned < MEMORY_SCAN_BUDGET) {
+    const g = cur.cut[cur.gen];
+    if (!g) { cur.done = true; break; }
+    if (g.ino === null || cur.offset === 0) {
+      cur.gen++; cur.offset = cur.cut[cur.gen]?.end ?? 0;
+      if (cur.gen >= cur.cut.length) cur.done = true;
+      continue;
+    }
+    const path = resolveGeneration(STATE_SNAPSHOT_FILE, g);
+    if (!path)
+      return json({ refusal: "cursor-stale", error: `${genName(g)}${g.gen ? "" : " (active)"} rotated away under this cursor — start a fresh read` }, 409);
+    const r = await scanGenerationBackward(path, cur.offset, MEMORY_SCAN_BUDGET - scanned, (line) => {
+      if (line.row === null || !Array.isArray(line.row.lanes)) { cur.malformed++; return "take"; }
+      const row = line.row;
+      const bootEpoch = typeof row.bootEpoch === "number" ? row.bootEpoch : null;
+      const mine: Record<string, unknown>[] = [];
+      const legacySlots: number[] = [];
+      const seen: number[] = [];
+      for (const el of row.lanes as unknown[]) {
+        if (el === null || typeof el !== "object") continue;
+        const l = el as Record<string, unknown>;
+        if (!("taskId" in l)) {
+          // a legacy element: its slot number is all it says, and a slot number is not an occupant
+          if (typeof l.s === "number") legacySlots.push(l.s);
+          continue;
+        }
+        if (l.taskId !== taskId) continue;
+        if (typeof l.s === "number") seen.push(l.s);
+        const obs = l.obs === "output" || l.obs === "boot" || l.obs === "none" ? l.obs : null;
+        mine.push({ ts: row.ts ?? null, bootEpoch, slot: l.s ?? null, openedAt: l.openedAt ?? null,
+          sessionId: l.sessionId ?? null, branch: l.branch ?? null, projectKey: l.projectKey ?? null,
+          programId: l.programId ?? null, alive: l.alive ?? null,
+          activity: obs === "output" ? { basis: "output", idleS: l.idleS ?? null }
+            : { basis: obs ?? "unknown", idleS: null, state: "unknown",
+              why: obs === "boot" ? `no pane output observed since the boot at ${bootEpoch}: the idle clock is the boot stamp`
+                : obs === "none" ? "this pane's output was never observed" : "the sample names no observation basis" },
+          ahead: l.ahead ?? null, dirty: l.dirty ?? null, merge: l.merge ?? null,
+          sourceRef: { file: genName(g), offset: line.start } });
+      }
+      const b = mine.reduce((n, m) => n + new TextEncoder().encode(JSON.stringify(m)).byteLength, 0);
+      // not consumed and not counted: the next page reads this row again
+      if (rows.length + mine.length > MEMORY_WORK_MAX_ROWS || rowBytes + b > MEMORY_EVIDENCE_ROW_BYTES) { pageFull = true; return "stop"; }
+      if (bootEpoch === null) cur.legacyRows++;
+      for (const slot of legacySlots) cur.legacyBySlot.set(slot, (cur.legacyBySlot.get(slot) ?? 0) + 1);
+      for (const slot of seen) cur.slotsSeen.add(slot);
+      rows.push(...mine);
+      rowBytes += b;
+      return "take";
+    });
+    scanned += r.consumed;
+    cur.offset = r.offset;
+    if (r.stop === "oversize") { cur.oversize = true; cur.gen++; cur.offset = cur.cut[cur.gen]?.end ?? 0; if (cur.gen >= cur.cut.length) cur.done = true; }
+    if (r.stop === "budget") break;
+  }
+  // …and a legacy element the scan counted BEFORE it knew the task's slots is still counted: the
+  // slots this task is known to have used are summed at the end, over every page read so far
+  const legacyAtTaskSlots = [...cur.slotsSeen].reduce((n, slot) => n + (cur.legacyBySlot.get(slot) ?? 0), 0);
+  let nextCursor: string | null = null;
+  if (!cur.done) {
+    if (observationCursors.size >= MEMORY_CURSOR_MAX) observationCursors.delete(observationCursors.keys().next().value!);
+    nextCursor = randomBytes(16).toString("hex");
+    observationCursors.set(nextCursor, { ...cur, issuedAt: now });
+  }
+  const occupancies = new Map<string, { slot: unknown; openedAt: unknown; sessionIds: Set<unknown>; branch: unknown;
+    projectKey: unknown; programId: unknown; samples: number; firstTs: number; lastTs: number }>();
+  for (const r of rows) {
+    const k = `${r.slot}@${r.openedAt}`;
+    const ts = typeof r.ts === "number" ? r.ts : 0;
+    const o = occupancies.get(k) ?? { slot: r.slot, openedAt: r.openedAt, sessionIds: new Set(), branch: r.branch,
+      projectKey: r.projectKey, programId: r.programId, samples: 0, firstTs: ts, lastTs: ts };
+    o.sessionIds.add(r.sessionId);
+    o.samples++; o.firstTs = Math.min(o.firstTs, ts); o.lastTs = Math.max(o.lastTs, ts);
+    occupancies.set(k, o);
+  }
+  const unknown: string[] = [];
+  if (!cur.done) {
+    const left = cur.offset + cur.cut.slice(cur.gen + 1).reduce((m, g) => m + g.end, 0);
+    unknown.push(`${left} bytes of the fixed cut are not scanned yet: this page is NOT a statement of absence — follow nextCursor.`);
+  }
+  if (cur.legacyRows > 0)
+    unknown.push(`${cur.legacyRows} snapshot rows predate the identity keys: their lane elements name a slot number only and are attributed to no occupant.`);
+  if (legacyAtTaskSlots > 0)
+    unknown.push(`${legacyAtTaskSlots} legacy lane elements sit on a slot this task used; which occupant they saw is unknown — they are not in rows.`);
+  if (cur.malformed > 0) unknown.push(`${cur.malformed} lines of ${basename(STATE_SNAPSHOT_FILE)} were not snapshot records: counted here, not delivered.`);
+  if (cur.oversize) unknown.push(`a line in ${basename(STATE_SNAPSHOT_FILE)} is longer than the scanner reads (8 MiB); the rest of that generation is not reached.`);
+  if (rows.some((r) => (r.activity as { state?: string }).state === "unknown"))
+    unknown.push("a sample whose activity is `unknown` carries no observed pane output: after a boot the idle clock is a stamp, not a quiet phase.");
+  if (STATE_SNAPSHOT_MS === 0) unknown.push("the snapshot tick is off on this server (FLEET_STATE_SNAPSHOT_MS=0): no new samples are being written.");
+  return json({
+    schema: "fleet.memory.observations/v1", view: "observations",
+    scope: { principal: scope.principal, slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null, taskId },
+    generatedAt: Date.now(), bootEpoch: SERVER_BOOT_AT, cadenceMs: STATE_SNAPSHOT_MS,
+    occupancies: [...occupancies.values()].map((o) => ({ ...o, sessionIds: [...o.sessionIds] })),
+    rows,
+    page: { rows: rows.length, scannedBytes: scanned, budgetBytes: MEMORY_SCAN_BUDGET, maxRows: MEMORY_WORK_MAX_ROWS,
+      maxBytes: MEMORY_PAGE_MAX_BYTES },
+    carrier: { file: basename(STATE_SNAPSHOT_FILE), cut: cur.cut.map((g) => ({ gen: g.gen || "active", present: g.ino !== null, bytes: g.end })),
+      at: cur.done ? null : { gen: cur.cut[cur.gen]?.gen || "active", offset: cur.offset }, done: cur.done },
+    unattributed: { legacyRows: cur.legacyRows, legacyElementsOnTaskSlots: legacyAtTaskSlots },
+    coverage: cur.done ? "complete" : "incomplete",
+    nextCursor,
+    notes: ["rows are newest first in append order; one occupancy is one (slot, openedAt) — a recycled slot is another occupancy",
+      "a sample is an observation of its time, never today's state and never a gate"],
+    unknown,
+  });
 }
 
 // THE START POINTER, ≤ 512 UTF-8 bytes by contract (e2e/self-token.ts measures the delivered
@@ -4039,8 +4203,8 @@ const TICK_FLOOR_MS = 100;
 const AUTOS_TICK_MS = Math.max(TICK_FLOOR_MS, Number(process.env.FLEET_AUTOS_TICK_MS ?? 5000) | 0);
 const DISPATCH_TICK_MS = Math.max(TICK_FLOOR_MS, Number(process.env.FLEET_DISPATCH_TICK_MS ?? 8000) | 0);
 // THE STATE SNAPSHOT, a third cadence beside those two and NOT a scheduler: it only writes the
-// operating state as counts into state-snapshots.jsonl (see buildStateSnapshot), and nothing reads the
-// row back. Here 0 IS "off", like FLEET_CARD_MS: nothing pauses a writer, so the off state is no
+// operating state as counts into state-snapshots.jsonl (see buildStateSnapshot); only the memory door's
+// observation view reads the rows back, and no tick or gate does. Here 0 IS "off", like FLEET_CARD_MS: nothing pauses a writer, so the off state is no
 // timer at all, and a set value takes TICK_FLOOR_MS as its floor. Default 60 s.
 const STATE_SNAPSHOT_RAW = Number(process.env.FLEET_STATE_SNAPSHOT_MS ?? 60_000) | 0;
 const STATE_SNAPSHOT_MS = STATE_SNAPSHOT_RAW > 0 ? Math.max(TICK_FLOOR_MS, STATE_SNAPSHOT_RAW) : 0;
@@ -33573,6 +33737,7 @@ for (const s of slots) {
   // canDeliver's busy gate and auto-③'s idle clause on every deploy. Boot time is the honest
   // reading — unknown is never permission (pulseLastOutput). Narrativ: server-narrativ-archiv.md#boot-slot-rehydration
   s.lastOutput = Date.now();
+  bootOutputStamps.set(s.id, { openedAt: s.openedAt, at: s.lastOutput });
   if (existsSync(historyPath(s.id))) {
     try {
       const h: unknown = await Bun.file(historyPath(s.id)).json();
@@ -33692,18 +33857,32 @@ if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
 // The row the state snapshot tick writes. Every source is one the process already keeps: the lane
 // facts are laneSignalView, the view laneWatchSignal gets; `ev.held` is composerHolds, the map
 // noteComposerHold writes. Keys are fixed — a missing fact is null, never an absent key — so one
-// key set holds across all rows. The only string is the merge status, an enum.
+// key set holds across all rows. The only free strings are ids and the branch name; the merge
+// status and `obs` are enums.
+//
+// THE LANE'S IDENTITY (memory M3, task 91b039eb): `s` alone names a slot NUMBER, and slots are
+// recycled, so a row written before 2026-09-24 cannot say which occupation it saw (0/335 elements
+// in the 2026-09-22 extract). Each element now carries the join keys the observation reader needs —
+// the occupant (s + openedAt), the conversation (sessionId, null until known, never guessed), the
+// opaque projectKey (never the repo path), the branch, the queue row and its Program — and the row
+// carries its bootEpoch. `obs` is the basis of `idleS`: "output" = pane output observed by this
+// process, "boot" = the idle clock is this boot's rehydration stamp (bootOutputStamps) and nothing
+// has been seen since, "none" = never observed; idleS is null for the last two, because a stamp is
+// not an observed quiet phase. Old rows keep their old shape; nothing is backfilled.
 function buildStateSnapshot(now: number): Record<string, unknown> {
   const q = { pending: 0, queued: 0, sent: 0, done: 0 };
   for (const t of tasks) if (t.status !== "archived") q[t.status]++;
   const lanes = slots.filter((s) => s.cwd && s.worktree).map((s) => {
     const v = laneSignalView(s, now);
-    return { s: s.id, alive: v.alive, idleS: v.observed && v.idleMs !== null ? Math.round(v.idleMs / 1000) : null,
+    const obs = observationBasis(s);
+    return { s: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null, projectKey: projectKeyOf(s.worktree!.repo),
+      branch: s.worktree!.branch, taskId: s.taskId, programId: s.programId, obs, alive: v.alive,
+      idleS: obs === "output" && v.idleMs !== null ? Math.round(v.idleMs / 1000) : null,
       ahead: v.git?.ahead ?? null, dirty: v.git?.dirty ?? null, merge: v.merge?.status ?? null };
   });
   const open = (x: { status: string }) => x.status === "open" || x.status === "send-uncertain";
   return {
-    ts: now, q, lanes,
+    ts: now, bootEpoch: SERVER_BOOT_AT, q, lanes,
     rep: { open: fleetReports.filter((r) => !r.decision).length },
     att: { open: attentionRequests.filter(open).length },
     clar: { open: clarifications.filter(open).length },
@@ -33726,7 +33905,7 @@ setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), 
 setInterval(() => { if (settleSuccessionDebts()) saveState(); }, GIT_TICK_MS);
 void tickGit().catch((e: unknown) => logError("tickGit", e)); // warm the badge cache so the first paint isn't blank
 setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispatch", e)), DISPATCH_TICK_MS);
-// written, never read back: no tick, gate or route reacts to a snapshot row
+// no tick or gate reacts to a snapshot row; the one reader is the memory door (view=observations)
 if (STATE_SNAPSHOT_MS > 0) setInterval(() => void appendEvent(STATE_SNAPSHOT_FILE, buildStateSnapshot(Date.now())), STATE_SNAPSHOT_MS);
 console.log(`[fleet] state snapshot ${STATE_SNAPSHOT_MS > 0 ? `armed: FLEET_STATE_SNAPSHOT_MS=${STATE_SNAPSHOT_MS}` : "off (FLEET_STATE_SNAPSHOT_MS=0) — no tick registered"}`);
 // the brief compiler, off by default: a harness without a FLEET_ENHANCE_CMD stand-in MUST leave
@@ -36395,6 +36574,7 @@ Bun.serve<WSData>({
       const scope = await memoryScopeFor(s, url);
       if (!scope.ok) return scope.response;
       const answer = view === "evidence" ? await memoryEvidenceView(s, scope, url)
+        : view === "observations" ? await memoryObservationsView(s, scope, url)
         : json(view === "sources" ? await memorySourcesView(s, scope) : await memoryWorkView(s, scope));
       if (s.openedAt !== openedAt || !s.selfToken || !secretEq(given, s.selfToken))
         return json({ refusal: "occupant-changed", error: "the slot changed occupant while this read ran — nothing of the new occupant's is served on the old credential" }, 409);

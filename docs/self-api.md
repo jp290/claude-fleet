@@ -785,6 +785,26 @@ curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" "http://<fleet-host>:<port>/a
 # weiter: …&cursor=<nextCursor>, bis coverage "complete" ist
 ```
 
+**`view=observations`** (seit 2026-09-24, Zeile 91b039eb) — die State-Snapshot-Samples EINES Tasks
+im Scope (wie `view=evidence`: Lane der eigene, MAIN `task=<id>` Pflicht), aus
+`state-snapshots.jsonl` (aktiv, `.1`, `.archive`) über denselben Rückwärtsscanner, Cut und dieselben
+Deckel wie M2; Cursor ebenso gebunden (Occupant, Prinzipal, Task, Cut). Der Writer
+(`server.ts#buildStateSnapshot`) stempelt seit diesem Schnitt je Lane-Element die Join-Schlüssel
+`s` (Slot), `openedAt`, `sessionId` (nullable, nie geraten), `projectKey` (opak: 16 hex über den
+kanonischen Repo-Pfad — nie der Pfad selbst), `branch`, `taskId`, `programId` und `obs`, je Zeile
+`bootEpoch`. Kein Tasktext, keine Pane-Prosa, kein Credential.
+
+- **Zugeordnet wird nach dem Occupant, den die Zeile NENNT**: ein Sample gehört zum Task nur, wenn
+  sein Element `taskId` trägt; gruppiert wird nach `(slot, openedAt)` (`occupancies[]`) — zwei
+  Belegungen eines Slots verschmelzen nie. Altzeilen ohne diese Schlüssel werden nie per Slotnummer
+  zugeordnet, nur gezählt (`unattributed.legacyRows`, `.legacyElementsOnTaskSlots`); nichts wird
+  rückgefüllt.
+- **`obs` ist die Beobachtungsbasis von `idleS`**: `output` = Pane-Output von diesem Prozess
+  gesehen; `boot` = die Idle-Uhr ist der Rehydrierungsstempel dieses Boots und seither kam nichts;
+  `none` = nie beobachtet. Bei `boot`/`none` ist `idleS: null` und die Aktivität des Samples
+  `unknown` — ein Bootstempel ist keine beobachtete Ruhephase.
+- Eine Beobachtung ist Historie ihrer Zeit, kein Live-Gate: nichts autorisiert oder dispatcht daraus.
+
 **Der Startpointer.** Der Program-MAIN-Rail (`server.ts#memoryPointer("main")`, in `RAIL_HEAD`) und
 jeder Lane-Gründungs- und Staffelstab-Brief (`memoryPointer("lane")`) tragen einen Absatz
 `YOUR MEMORY …` von höchstens 512 UTF-8-Bytes: die Tür und ihre Grenzen, kein kopierter Zustand. Im
@@ -792,6 +812,9 @@ Lane-Gründungsbrief steht er HINTER dem Exit-Footer — die Spanne Brief…Foot
 Dispatch-Proben als Notiz-/Quell-/Studio-/Anker-Region. Der
 Standard-Nachfolgebrief zählt deshalb keine Task-Status mehr (`- Task rows: not copied here …`);
 Inbox- und Pflichtenzeilen des Handovers sind unverändert.
+
+Prüfung M3: `e2e/state-snapshot.ts` §f (zwei Belegungen eines Slots gegen die von außen
+beobachteten Fenster, Altzeilen, Reboot mit Bootbasis, fremder Task, 0 Geheimnisse im Ledger).
 
 Prüfung: `e2e/self-token.ts#memoryDoor` (eigene Scratch-Instanz, drei Repos × Lane/MAIN, vier
 Ablehnungen, Brief ohne Statuskopie; Evidence: 21 entschiedene Reports mit einem aus dem Live-Tail

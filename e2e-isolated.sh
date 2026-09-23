@@ -962,6 +962,17 @@ if [ "$(uname -s)" != Darwin ]; then
   chmod +x "$DIR/sandbox-exec-standin"
   export FLEET_PI_ZAI_SANDBOX_EXEC="$DIR/sandbox-exec-standin"
 fi
+# pi-zai's fence is unbuildable without FLEET_PI_ZAI_DENY_ROOTS (server/pi-zai-fence.ts), and the
+# owner's real roots are private names that live only in the host's .env. The suite fences five
+# SYNTHETIC roots under $DIR instead, each with a real child file, so e2e/security.ts §6a can run the
+# spawned profile against root AND child. EXPORTED like the stand-in above: srv and runner see it.
+FLEET_PI_ZAI_DENY_ROOTS=
+for r in deny-a deny-b deny-b.worktrees deny-c deny-d; do
+  mkdir -p "$DIR/pi-zai-deny-roots/$r/child"
+  printf 'synthetic\n' > "$DIR/pi-zai-deny-roots/$r/child/canary"
+  FLEET_PI_ZAI_DENY_ROOTS="${FLEET_PI_ZAI_DENY_ROOTS:+$FLEET_PI_ZAI_DENY_ROOTS:}$DIR/pi-zai-deny-roots/$r"
+done
+export FLEET_PI_ZAI_DENY_ROOTS
 # FLEET_SUITE_LOCK_HELD_BY: this server runs INSIDE the hold this wrapper is already holding, and
 # saying so is load-bearing since M1 (2026-09-06). The land gate's clean path now takes the suite
 # mutex IN THE SERVER before it spawns the gate — and this wrapper holds that very lock for its

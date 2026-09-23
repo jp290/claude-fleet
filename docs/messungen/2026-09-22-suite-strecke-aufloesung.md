@@ -211,7 +211,7 @@ Wire-Felder und Schreibstellen stammen aus dem Code, die Fundstellen stehen in d
 rg -n 'gateInfo\s*=|postLandLive\s*=|meterSuites\s*=' src/client.ts         # 8122–8135
 rg -n 'reportServerRun\(|gateRun' server.ts                                 # zwei Schreibstellen
 rg -n 'const SUITE_LOCK_RE|const SUITE_LOCK_LINE' server.ts; sed -n 400,415p e2e-stage.sh
-curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" http://100.64.0.1:8790/api/self/gate
+curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" ${FLEET_SELF_URL:-http://<fleet-host>:8790}/api/self/gate
 ```
 
 Die Dauern stammen aus Ledgern im Haupt-Checkout, nur lesend. Das Zeitfenster endet am jeweils

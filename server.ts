@@ -17292,7 +17292,10 @@ function resultText(c: unknown): string {
   return "";
 }
 
-function viewEntry(raw: unknown, n: number): TEntry | null {
+// `full` lifts the view's cuts — the conversation EXPORT (row 11e541e0) must carry a block whole,
+// the chat view and every other reader keep them
+function viewEntry(raw: unknown, n: number, full = false): TEntry | null {
+  const cap = (t: string, max: number) => (full ? t : trim(t, max));
   const d = raw as {
     type?: unknown; isMeta?: unknown; isSidechain?: unknown; timestamp?: unknown;
     message?: { content?: unknown };
@@ -17315,7 +17318,7 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
     return {
       n, role: "user",
       ts: ts ?? (typeof a.timestamp === "string" ? a.timestamp : null),
-      blocks: [{ t: "text", text: trim(a.prompt, 20_000) }],
+      blocks: [{ t: "text", text: cap(a.prompt, 20_000) }],
     };
   }
   const content = d.message?.content;
@@ -17325,15 +17328,15 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
     if (typeof content === "string") {
       if (content.startsWith("<system-reminder")) return null; // harness noise, not the user
       if (content.startsWith("<task-notification")) meta = true; // background task reported back
-      blocks.push({ t: "text", text: trim(content, 20_000) });
+      blocks.push({ t: "text", text: cap(content, 20_000) });
     } else if (Array.isArray(content)) {
       for (const b of content) {
         const blk = b as { type?: unknown; content?: unknown; text?: unknown; tool_use_id?: unknown };
         if (blk.type === "tool_result")
-          blocks.push({ t: "tool_result", text: trim(resultText(blk.content), 3000),
+          blocks.push({ t: "tool_result", text: cap(resultText(blk.content), 3000),
             ...(typeof blk.tool_use_id === "string" && blk.tool_use_id ? { ref: blk.tool_use_id } : {}) });
         else if (blk.type === "text" && typeof blk.text === "string" && !blk.text.startsWith("<system-reminder"))
-          blocks.push({ t: "text", text: trim(blk.text, 20_000) });
+          blocks.push({ t: "text", text: cap(blk.text, 20_000) });
       }
       // a pure tool_result entry renders as part of the assistant's turn, not a user bubble
       if (blocks.length && blocks.every((x) => x.t === "tool_result"))
@@ -17342,11 +17345,11 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
   } else if (Array.isArray(content)) {
     for (const b of content) {
       const blk = b as { type?: unknown; text?: unknown; thinking?: unknown; name?: unknown; input?: unknown; id?: unknown };
-      if (blk.type === "text" && typeof blk.text === "string") blocks.push({ t: "text", text: trim(blk.text, 40_000) });
+      if (blk.type === "text" && typeof blk.text === "string") blocks.push({ t: "text", text: cap(blk.text, 40_000) });
       else if (blk.type === "thinking" && typeof blk.thinking === "string" && blk.thinking)
-        blocks.push({ t: "thinking", text: trim(blk.thinking, 10_000) });
+        blocks.push({ t: "thinking", text: cap(blk.thinking, 10_000) });
       else if (blk.type === "tool_use")
-        blocks.push({ t: "tool", name: typeof blk.name === "string" ? blk.name : "tool", text: trim(JSON.stringify(blk.input ?? {}), 600),
+        blocks.push({ t: "tool", name: typeof blk.name === "string" ? blk.name : "tool", text: cap(JSON.stringify(blk.input ?? {}), 600),
           ...(typeof blk.id === "string" && blk.id ? { id: blk.id } : {}) });
     }
   }
@@ -17357,7 +17360,7 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
 // the conversation view's data source, shared by the owner chat view and the guest
 // reader — `after` = line count the client has already consumed, so entry numbering
 // must be absolute line numbers
-async function transcriptPayload(s: Slot, afterRaw: number):
+async function transcriptPayload(s: Slot, afterRaw: number, full = false):
   Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"]; model?: string | null; effort?: string | null }> {
   const conv = harnessOf(s.harness).conversation;
   if (conv) return conversationPayload(s, conv, afterRaw);
@@ -17384,7 +17387,7 @@ async function transcriptPayload(s: Slot, afterRaw: number):
       const parsed: unknown = JSON.parse(lines[i]);
       const u = parsed as { type?: unknown; source_uuid?: unknown };
       if (queued.size && u.type === "user" && typeof u.source_uuid === "string" && queued.has(u.source_uuid)) continue;
-      const e = viewEntry(parsed, i + 1);
+      const e = viewEntry(parsed, i + 1, full);
       if (e) entries.push(e);
     } catch {
       // only the FINAL line may be a partial mid-append (cap total so the next poll
@@ -17439,6 +17442,141 @@ async function conversationPayload(s: Slot, conv: NonNullable<Harness["conversat
   // lines are no longer the conversation, and a changed source is how it learns to start over
   const source = (file.split("/").pop() ?? "") + (read.branch ? `#${read.branch}` : "");
   return { entries: read.entries.filter((e) => e.n > after), total: read.total, source, cache: read.cache, model: read.model, effort: read.effort };
+}
+
+// --- THE CONVERSATION EXPORT (row 11e541e0; owner 2026-09-22: "ein Untermenü … bei dem man dann
+// alles auswählen kann … tools calls weg, komplett mit allen reasoning traces"). The screen export
+// above stays as it is; this one reads the TRANSCRIPT through the same reader the chat view uses,
+// and the owner's choices act HERE, on the server: a switch that is off never reaches the file.
+// Whatever the file carries leaves this machine with the owner, so every string passes the
+// redactor first — the live secrets this server holds, key-shaped strings, this host's address
+// and the home directory.
+interface ConversationPick { user: boolean; assistant: boolean; tools: boolean; results: boolean; thinking: boolean; time: boolean }
+const EXPORT_FORMATS = ["md", "html", "jsonl"] as const;
+type ExportFormat = (typeof EXPORT_FORMATS)[number];
+// unset = the default the menu opens with: the conversation's words and their times, no tool
+// traffic, no reasoning. Any other value than "1" is OFF, so a typo exports less, never more.
+function conversationPick(q: URLSearchParams): ConversationPick {
+  const on = (k: string, dflt: boolean) => { const v = q.get(k); return v === null ? dflt : v === "1"; };
+  return { user: on("user", true), assistant: on("assistant", true), tools: on("tools", false),
+    results: on("results", false), thinking: on("thinking", false), time: on("time", true) };
+}
+// where this slot's conversation would be read from, and — when nowhere — the sentence the menu
+// shows instead of offering "Gespräch" (a foreign harness without a transcript, or none written yet)
+function conversationSource(s: Slot): { file: string | null; why: string | null } {
+  const h = harnessOf(s.harness);
+  if (h.conversation) {
+    const f = s.cwd && s.sessionId ? h.conversation.file({ cwd: s.cwd, sessionId: s.sessionId }) : null;
+    return f && existsSync(f) ? { file: f, why: null }
+      : { file: null, why: `Für diese ${h.id}-Session ist noch kein Gesprächsprotokoll zu finden — exportierbar ist nur der Bildschirm.` };
+  }
+  if (!h.supports.transcript)
+    return { file: null, why: `Der Harness „${h.id}" schreibt kein Gesprächsprotokoll, das Fleet lesen kann — exportierbar ist nur der Bildschirm.` };
+  const f = transcriptFile(s);
+  return f ? { file: f, why: null }
+    : { file: null, why: "Für diese Session liegt noch kein Gesprächsprotokoll vor — exportierbar ist nur der Bildschirm." };
+}
+// the redactor: exact values first (longest first, so a token that contains another is taken
+// whole), then key-shaped patterns. Counts what it replaced — the export says how much it hid.
+function exportRedactor(): { clean(t: string): string; hits(): number } {
+  const exact: [string, string][] = [];
+  const secret = (v: string | undefined | null) => { if (v && v.length >= 12) exact.push([v, "[redacted]"]); };
+  secret(TOKEN);
+  for (const o of slots) secret(o.selfToken);
+  for (const [k, v] of Object.entries(process.env)) if (/TOKEN|SECRET|PASSWORD|API_KEY/.test(k)) secret(v);
+  if (HOST !== "127.0.0.1" && HOST !== "0.0.0.0" && HOST !== "localhost") exact.push([HOST, "<host>"]);
+  exact.sort((a, b) => b[0].length - a[0].length);
+  const patterns: RegExp[] = [
+    /\bsk-ant-[A-Za-z0-9_-]{16,}/g, /\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}/g,
+    /\b((?:FLEET_[A-Z_]*TOKEN|[A-Z_]*API_KEY|[A-Z_]*SECRET)=)[^\s'"]+/g, /(x-fleet-self-token:\s*)[^\s'"]+/gi, /([?&]token=)[^\s&'"]+/g,
+  ];
+  let n = 0;
+  return {
+    clean(t: string): string {
+      let out = t;
+      for (const [v, r] of exact) if (out.includes(v)) { n += out.split(v).length - 1; out = out.split(v).join(r); }
+      for (const re of patterns) out = out.replace(re, (_m: string, keep?: string) => { n++; return `${typeof keep === "string" ? keep : ""}[redacted]`; });
+      if (HOME && out.includes(HOME)) { n += out.split(HOME).length - 1; out = out.split(HOME).join("~"); }
+      return out;
+    },
+    hits: () => n,
+  };
+}
+// the switches, applied: a block survives only when its kind is on; an entry with nothing left
+// is dropped; a harness-injected turn (meta) is not the owner's words and never exported as them
+function pickConversation(entries: TEntry[], pick: ConversationPick): TEntry[] {
+  const keep = (e: TEntry, b: TBlock) => b.t === "text" ? (e.role === "user" ? pick.user : pick.assistant)
+    : b.t === "thinking" ? pick.thinking : b.t === "tool" ? pick.tools : pick.results;
+  const out: TEntry[] = [];
+  for (const e of entries) {
+    if (e.meta) continue;
+    const blocks = e.blocks.filter((b) => keep(e, b));
+    if (blocks.length) out.push({ ...e, blocks });
+  }
+  return out;
+}
+// one format per switch, and JSONL speaks the transcript's own block names (text, thinking,
+// tool_use, tool_result) so a machine reading it needs no Fleet vocabulary
+function renderConversation(entries: TEntry[], pick: ConversationPick, fmt: ExportFormat,
+  head: { name: string; slot: number; picked: string; cut: string | null; redact: ReturnType<typeof exportRedactor> }): string {
+  const r = head.redact.clean;
+  if (fmt === "jsonl") {
+    return entries.map((e) => JSON.stringify({
+      n: e.n, role: e.role, ...(pick.time && e.ts ? { ts: e.ts } : {}),
+      content: e.blocks.map((b) => b.t === "text" ? { type: "text", text: r(b.text) }
+        : b.t === "thinking" ? { type: "thinking", thinking: r(b.text) }
+        : b.t === "tool" ? { type: "tool_use", name: b.name ?? "tool", input: r(b.text) }
+        : { type: "tool_result", content: r(b.text) }),
+    })).join("\n") + (entries.length ? "\n" : "");
+  }
+  const who = (e: TEntry) => (e.role === "user" ? "You" : "Assistant");
+  const when = (e: TEntry) => (pick.time && e.ts ? ` · ${e.ts.replace("T", " ").slice(0, 19)}` : "");
+  if (fmt === "md") {
+    const fence = (t: string) => "`".repeat(Math.max(3, ...[...t.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+    const lines: string[] = [`# ${r(head.name)}`, "", `slot ${head.slot} · exportiert ${new Date().toISOString().slice(0, 16).replace("T", " ")} · ${head.picked}`];
+    if (head.cut) lines.push("", `> ${head.cut}`);
+    for (const e of entries) {
+      lines.push("", `## ${who(e)}${when(e)}`);
+      for (const b of e.blocks) {
+        const t = r(b.text);
+        if (b.t === "text") lines.push("", t);
+        else if (b.t === "thinking") lines.push("", "**Reasoning**", "", ...t.split("\n").map((l) => `> ${l}`));
+        else { const f = fence(t); lines.push("", b.t === "tool" ? `**Tool: ${b.name ?? "tool"}**` : "**Tool result**", "", f, t, f); }
+      }
+    }
+    return lines.join("\n") + "\n";
+  }
+  const esc = (t: string) => t.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  const body = entries.map((e) => `<section class="${e.role}"><h2>${who(e)}<span>${esc(when(e))}</span></h2>`
+    + e.blocks.map((b) => {
+      const t = esc(r(b.text));
+      if (b.t === "text") return `<div class="text">${t}</div>`;
+      if (b.t === "thinking") return `<div class="thinking"><b>Reasoning</b>${t}</div>`;
+      return `<div class="tool"><b>${b.t === "tool" ? `Tool: ${esc(b.name ?? "tool")}` : "Tool result"}</b><pre>${t}</pre></div>`;
+    }).join("") + "</section>").join("\n");
+  return `<!doctype html>
+<html lang="de"><head><meta charset="utf-8">
+<title>${esc(r(head.name))} — Claude Fleet export</title>
+<style>
+  body { margin: 0 auto; max-width: 760px; padding: 0 24px 40px; background: #fff; color: #1a1a1a;
+    font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { padding: 18px 0 12px; border-bottom: 1px solid #ddd; }
+  h1 { margin: 0 0 4px; font-size: 16px; }
+  .meta, h2 span { color: #666; font-size: 11px; font-weight: 400; }
+  .cut { margin-top: 8px; color: #8a5a00; font-size: 11px; }
+  section { padding: 12px 0; border-bottom: 1px solid #eee; break-inside: avoid-page; }
+  h2 { margin: 0 0 6px; font-size: 12px; }
+  .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .thinking { margin: 6px 0; padding: 6px 10px; border-left: 3px solid #ccc; color: #555; white-space: pre-wrap; }
+  .tool pre { margin: 4px 0 0; padding: 8px 10px; background: #f5f5f5; border-radius: 6px; white-space: pre-wrap;
+    word-break: break-word; font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+  b { display: block; font-size: 11px; color: #444; }
+  @media print { @page { margin: 14mm; } }
+</style></head><body>
+<header><h1>${esc(r(head.name))}</h1>
+<div class="meta">slot ${head.slot} · exportiert ${new Date().toLocaleString()} · ${esc(head.picked)}</div>${head.cut ? `<div class="cut">${esc(head.cut)}</div>` : ""}</header>
+${body}
+</body></html>`;
 }
 
 // --- terminal-prompt harvester: prompts typed DIRECTLY into the pty never pass /send,
@@ -38596,6 +38734,41 @@ Bun.serve<WSData>({
 <pre>${esc(cap.out)}</pre>
 </body></html>`;
       return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
+    // the conversation export (row 11e541e0, helpers at conversationPick): ?probe=1 answers whether
+    // this slot HAS a readable conversation and, when not, the sentence the menu shows instead.
+    const convExportMatch = /^\/api\/slots\/(\d+)\/export\/conversation$/.exec(url.pathname);
+    if (req.method === "GET" && convExportMatch) {
+      const s = slotFrom(convExportMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      const src = conversationSource(s);
+      if (url.searchParams.get("probe") === "1") return json({ available: src.file !== null, why: src.why });
+      if (!src.file) return json({ error: src.why }, 409);
+      const fmt = EXPORT_FORMATS.find((f) => f === (url.searchParams.get("format") ?? "md"));
+      if (!fmt) return json({ error: `format must be one of ${EXPORT_FORMATS.join(", ")}` }, 400);
+      const pick = conversationPick(url.searchParams);
+      const entries = pickConversation((await transcriptPayload(s, 0, true)).entries, pick);
+      const words: [boolean, string][] = [[pick.user, "Nutzer"], [pick.assistant, "Assistent"], [pick.tools, "Tool-Aufrufe"],
+        [pick.results, "Tool-Ergebnisse"], [pick.thinking, "Reasoning"], [pick.time, "Zeitstempel"]];
+      const picked = `mit: ${words.filter(([on]) => on).map(([, w]) => w).join(", ") || "nichts"}`
+        + (words.some(([on]) => !on) ? ` · ohne: ${words.filter(([on]) => !on).map(([, w]) => w).join(", ")}` : "")
+        + " · Geheimnisse, Host-Adresse und Home-Pfad geschwärzt";
+      // codex and pi are read through their own readers, which keep the chat view's cuts — said
+      // in the file itself, so a shortened block is never mistaken for the whole one
+      const cut = harnessOf(s.harness).conversation
+        ? "Blöcke sind wie in der Chat-Ansicht gekürzt (Text 20 000/40 000, Reasoning 10 000, Tool-Aufruf 600, Tool-Ergebnis 3 000 Zeichen); gekürzte Stellen enden auf „… [+N chars]“."
+        : null;
+      const redact = exportRedactor();
+      const name = s.label ?? s.cwd.split("/").pop() ?? s.cwd;
+      const out = renderConversation(entries, pick, fmt, { name, slot: s.id, picked, cut, redact });
+      const file = `fleet-s${s.id}-${new Date().toISOString().slice(0, 10)}-gespraech.${fmt}`;
+      return new Response(out, {
+        headers: {
+          "content-type": fmt === "html" ? "text/html; charset=utf-8" : fmt === "md" ? "text/markdown; charset=utf-8" : "application/x-ndjson; charset=utf-8",
+          ...(fmt === "html" ? {} : { "content-disposition": `attachment; filename="${file}"` }),
+          "x-fleet-redacted": String(redact.hits()),
+        },
+      });
     }
     const trMatch = /^\/api\/slots\/(\d+)\/transcript$/.exec(url.pathname);
     if (req.method === "GET" && trMatch) {

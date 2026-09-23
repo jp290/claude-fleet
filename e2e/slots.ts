@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { BASE, IP, PORT, REPO, ROOT, SOCK, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
+import { BASE, IP, PORT, REPO, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
@@ -2524,7 +2524,7 @@ export async function run(): Promise<void> {
     const menuSrc = cut("function toggleRowMenu(", "popover({\n  panel: () => rowMenu,");
     const menuLabels = [...menuSrc.matchAll(/item\("([^"]+)"/g)].map((m) => m[1]);
     check("phone drawer: the ⋯ menu carries every action of the old strip, unchanged, kill last in --danger",
-      JSON.stringify(menuLabels) === JSON.stringify(["Rename", "Export", "Save", "Land", "Shelve", "Kill session"])
+      JSON.stringify(menuLabels) === JSON.stringify(["Rename", "Export…", "Save", "Land", "Shelve", "Kill session"])
         && menuSrc.includes('item(s.share ? "Shared — view only…" : "Share…"') && menuSrc.includes("() => openShareDlg(s.id)")
         && menuSrc.includes("startRename(row, s)")
         && /if \(s\.worktree\) item\("Save", [^\n]*doCommit\(s\.id, "quick"\)/.test(menuSrc)
@@ -2533,6 +2533,33 @@ export async function run(): Promise<void> {
         && /\.rowmenuitem\.danger \{ color: var\(--danger\); \}/.test(mobileCss)
         && /\.rowmenu\.open \{[^}]*position: fixed;[^}]*left: 0; right: 0; bottom: 0;/.test(mobileCss),
       JSON.stringify(menuLabels));
+    // ROW 11e541e0: Rename, Share and Export at ONE visible place per session — the Info tab's head
+    // (desktop column, phone through ℹ), as quiet word buttons, not behind ⋯ and not on hover.
+    // Export opens the menu of choices; the choices travel to the server as switches.
+    {
+      const boardSrc = cut("async function renderBoard()", "// 1b — SETUP");
+      const expSrc = cut("type ExportPart = ", "async function killSlot(");
+      const bmenuSrc = boardSrc.slice(boardSrc.indexOf('const menu = el("div", "bmenu")'));
+      check("session actions: Rename, Share and Export are visible word buttons in the Info tab's head, not behind ⋯",
+        /const acts = el\("div", "bbtnrow bheadacts"\)/.test(boardSrc) && /el\("button", "bbtn quiet", label\)/.test(boardSrc)
+          && boardSrc.includes('act("Rename", ') && boardSrc.includes('act(s.share ? "Shared — view only…" : "Share…", ')
+          && boardSrc.includes('act("Export…", ') && boardSrc.includes("void openExportDlg(slot, sessName)")
+          && !/item\("(Rename|Export)"|item\(s\.share/.test(bmenuSrc) && bmenuSrc.includes('item("Bring session back"')
+          && menuSrc.includes('item("Export…", ') && menuSrc.includes("void openExportDlg(s.id, "),
+        "renderBoard head + board ⋯ + row menu");
+      const parts = [...expSrc.matchAll(/\["(\w+)", "[^"]+", "[^"]+"\],/g)].map((m) => m[1]);
+      check("export menu: content, the five parts plus timestamps, and three conversation formats — sent as server switches",
+        JSON.stringify(parts.slice(0, 6)) === JSON.stringify(["user", "assistant", "tools", "results", "thinking", "time"])
+          && /\["conversation", "Conversation", [^\n]*!canConv\]/.test(expSrc) && expSrc.includes('["screen", "Screen", ')
+          && expSrc.includes('["md", "Markdown", ') && expSrc.includes('["html", "HTML", ') && expSrc.includes('["jsonl", "JSONL", ')
+          && expSrc.includes("q.set(k, on[k] ? \"1\" : \"0\")") && expSrc.includes("`/api/slots/${slot}/export/conversation?${q}`")
+          && expSrc.includes('`/api/slots/${slot}/export${st.screenFmt === "txt" ? "?format=txt" : ""}`'),
+        JSON.stringify(parts));
+      check("export menu: a slot without a readable conversation offers the screen only and shows the server's reason",
+        expSrc.includes("`/api/slots/${slot}/export/conversation?probe=1`") && expSrc.includes('content: canConv ? "conversation" : "screen"')
+          && /if \(!canConv\) body\.appendChild\(el\("div", "hint", probe\?\.why \?\? /.test(expSrc),
+        "openExportDlg probe branch");
+    }
   }
 
   const wsNoTok = await new Promise<boolean>((resolve) => {
@@ -2593,6 +2620,99 @@ export async function run(): Promise<void> {
   check("txt export contains session content", (await expTxt.text()).includes("compose-box-to-slot-two"));
   const expInactive = await get("/api/slots/4/export");
   check("export rejects inactive slot", expInactive.status === 400);
+
+  // --- THE CONVERSATION EXPORT (row 11e541e0): the menu's switches act on the SERVER. A planted
+  // claude transcript carries one block of every kind — user text, assistant text, a reasoning
+  // trace longer than the chat view's 10 000-char cut, a tool call and its result — plus the owner
+  // token and this user's home path inside the words. Each "off" is proven against an "on" over
+  // the same fixture, so a filter that drops everything cannot pass as a filter that works.
+  {
+    const cvCwd = `${tmpdir()}/fleet-e2e-convexport-${process.pid}`;
+    const cvProj = `${process.env.HOME}/.claude/projects/${cvCwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    mkdirSync(cvCwd, { recursive: true });
+    mkdirSync(cvProj, { recursive: true });
+    const longTrace = `export-thinking-trace ${"x".repeat(12_000)} END-OF-LONG-TRACE`;
+    const line = (type: string, content: unknown[]) =>
+      `${JSON.stringify({ type, cwd: cvCwd, timestamp: "2026-09-23T10:00:00.000Z", message: { content } })}\n`;
+    writeFileSync(`${cvProj}/conv.jsonl`,
+      line("user", [{ type: "text", text: `export-user-words <script>x</script> key ${TOKEN} file ${process.env.HOME}/notes.md` }])
+      + line("assistant", [{ type: "thinking", thinking: longTrace }, { type: "text", text: "export-assistant-words" },
+        { type: "tool_use", id: "tu1", name: "Bash", input: { command: "echo export-tool-input" } }])
+      + line("user", [{ type: "tool_result", tool_use_id: "tu1", content: "export-tool-output" }]));
+    const cvFree = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.filter((s) => s.cwd === null).map((s) => s.id).pop();
+    const cvOpened = cvFree !== undefined && (await post(`/api/slots/${cvFree}/open`, { cwd: cvCwd })).ok;
+    check("conversation export fixture: a free slot opens on a throwaway cwd with a planted transcript", cvOpened, `slot=${cvFree}`);
+    if (cvOpened) {
+      const url = (q: string) => `/api/slots/${cvFree}/export/conversation?${q}`;
+      const probe = (await (await get(url("probe=1"))).json()) as { available?: boolean; why?: string | null };
+      check("conversation export: the probe finds the slot's conversation", probe.available === true && probe.why === null, JSON.stringify(probe));
+      type ExportRow = { role: string; ts?: string; content: { type: string; text?: string; thinking?: string; content?: string; input?: string }[] };
+      const rows = async (q: string): Promise<ExportRow[]> => (await (await get(url(q))).text()).split("\n").filter(Boolean).map((l) => JSON.parse(l) as ExportRow);
+      const types = (rs: ExportRow[]) => new Set(rs.flatMap((r) => r.content.map((c) => c.type)));
+      const all = await rows("format=jsonl&tools=1&results=1&thinking=1");
+      const dflt = await rows("format=jsonl");
+      const noThink = await rows("format=jsonl&tools=1&results=1&thinking=0");
+      const noTools = await rows("format=jsonl&tools=0&results=0&thinking=1&time=0");
+      check("conversation export: all switches on carry text, thinking, tool_use and tool_result",
+        ["text", "thinking", "tool_use", "tool_result"].every((t) => types(all).has(t)), JSON.stringify([...types(all)]));
+      check("conversation export: 'Tool-Calls aus' carries no tool_use and no tool_result block",
+        !types(noTools).has("tool_use") && !types(noTools).has("tool_result") && types(noTools).has("thinking"),
+        JSON.stringify([...types(noTools)]));
+      check("conversation export: 'Reasoning aus' carries no thinking block, the tool traffic stays",
+        !types(noThink).has("thinking") && types(noThink).has("tool_use") && types(noThink).has("tool_result"),
+        JSON.stringify([...types(noThink)]));
+      check("conversation export: the default is the words only — no tools, no reasoning",
+        [...types(dflt)].join() === "text" && dflt.some((r) => r.role === "user") && dflt.some((r) => r.role === "assistant"),
+        JSON.stringify([...types(dflt)]));
+      check("conversation export: timestamps follow their switch",
+        dflt.every((r) => r.ts === "2026-09-23T10:00:00.000Z") && noTools.every((r) => r.ts === undefined),
+        JSON.stringify({ on: dflt[0]?.ts, off: noTools[0]?.ts }));
+      const trace = all.flatMap((r) => r.content).find((c) => c.type === "thinking")?.thinking ?? "";
+      check("conversation export: a claude reasoning trace leaves whole, past the chat view's cut",
+        trace.endsWith("END-OF-LONG-TRACE") && !trace.includes("[+"), `${trace.length} chars`);
+      const allText = JSON.stringify(all);
+      const redacted = (await get(url("format=jsonl"))).headers.get("x-fleet-redacted");
+      check("conversation export: the owner token and the home path never reach the file",
+        TOKEN.length >= 12 && !allText.includes(TOKEN) && allText.includes("key [redacted]")
+          && !allText.includes(`${process.env.HOME}/`) && allText.includes("file ~/notes.md") && Number(redacted) >= 2,
+        `token planted: ${TOKEN.length >= 12}, x-fleet-redacted=${redacted}`);
+      const md = await get(url("format=md&tools=1&results=1"));
+      const mdBody = await md.text();
+      check("conversation export: Markdown is a download with the turns as headings and tool blocks fenced",
+        md.ok && (md.headers.get("content-disposition") ?? "").includes(".md") && mdBody.includes("## You · 2026-09-23 10:00:00")
+          && mdBody.includes("**Tool: Bash**") && mdBody.includes("export-tool-output") && !mdBody.includes("export-thinking-trace"),
+        mdBody.slice(0, 200));
+      const html = await get(url("format=html"));
+      const htmlBody = await html.text();
+      check("conversation export: HTML is a printable page that escapes the conversation",
+        html.ok && (html.headers.get("content-type") ?? "").includes("text/html")
+          && htmlBody.includes("&lt;script&gt;x&lt;/script&gt;") && !htmlBody.includes("<script>x"),
+        htmlBody.slice(0, 120));
+      const badFmt = await get(url("format=pdf"));
+      check("conversation export: an unknown format is refused by name", badFmt.status === 400
+        && ((await badFmt.json()) as { error?: string }).error?.includes("md, html, jsonl") === true, String(badFmt.status));
+      await post(`/api/slots/${cvFree}/kill`, {});
+    }
+    rmSync(`${cvProj}/conv.jsonl`, { force: true });
+    try { rmdirSync(cvProj); } catch { /* not ours to empty */ }
+    rmSync(cvCwd, { recursive: true, force: true });
+    // a slot with no transcript behind it: the probe says why, and the export itself refuses. Its
+    // own empty cwd — "~" would find whatever conversations this machine's user ever had there.
+    const bareCwd = `${tmpdir()}/fleet-e2e-convbare-${process.pid}`;
+    mkdirSync(bareCwd, { recursive: true });
+    const bare = await post("/api/slots/3/open", { cwd: bareCwd });
+    if (bare.ok) {
+      const p3 = (await (await get("/api/slots/3/export/conversation?probe=1")).json()) as { available?: boolean; why?: string | null };
+      const e3 = await get("/api/slots/3/export/conversation?format=md");
+      check("conversation export: a slot without a readable conversation offers the screen only and says why",
+        p3.available === false && typeof p3.why === "string" && p3.why.includes("Bildschirm") && e3.status === 409,
+        JSON.stringify({ p3, status: e3.status }));
+      await post("/api/slots/3/kill", {});
+    } else check("conversation export: fixture slot 3 opens for the no-transcript probe", false, String(bare.status));
+    rmSync(bareCwd, { recursive: true, force: true });
+    check("conversation export rejects an inactive slot", (await get("/api/slots/4/export/conversation?probe=1")).status === 400);
+  }
 
   // --- the owner /send RECEIPT and its journal attribution (Communication Cut 3) ---
   // The defect this family closes: a slot number identifies a ROW, and rows are recycled, so a

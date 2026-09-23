@@ -3943,15 +3943,18 @@ async function renderBoard() {
     const esec0 = errorsSection();
     if (esec0) nodes.push(esec0);
 
-    // 1 — HEAD: the session's name, its state, what it is for, and its identifiers as chips. The
-    // session-level actions (share, export, rename, bring back) sit behind ⋯ — they are rare, and
-    // four bordered buttons in the head outweighed everything the head is for.
+    // 1 — HEAD: the session's name, its state, what it is for, and its identifiers as chips. Rename,
+    // Share and Export are VISIBLE at the head's foot as quiet word buttons (row 11e541e0; owner
+    // 2026-09-22: "wir aktuell keine vernünftigen buttons haben um die sessions neu zu benennen, zu
+    // sharen, oder zu exportieren") — quiet, not bordered, because four bordered buttons outweighed
+    // everything the head is for. The rarer two (copy the worktree path, bring the session back)
+    // stay behind ⋯. The phone reaches this head through ℹ, and its drawer row through ⋯.
     const idsec = el("div", "bsec bhead");
     const top = el("div", "bheadtop");
     top.appendChild(el("div", "bheadname", s.label ?? baseName(s.cwd)));
     top.appendChild(scopeTag("session"));
     const mbtn = el("button", `bheadmenu${boardMenuOpen ? " on" : ""}`, "⋯") as HTMLButtonElement;
-    mbtn.title = "session actions — share, export, rename, bring the session back";
+    mbtn.title = "Weitere Aktionen — Worktree-Pfad kopieren, die Session zurückholen";
     mbtn.setAttribute("aria-expanded", String(boardMenuOpen));
     mbtn.onclick = () => { boardMenuOpen = !boardMenuOpen; boardMenuSlot = slot; void renderBoard(); };
     top.appendChild(mbtn);
@@ -4103,6 +4106,24 @@ async function renderBoard() {
       chips.appendChild(c);
     }
     if (chips.childElementCount) idsec.appendChild(chips);
+    {
+      const sessName = s.label ?? baseName(s.cwd);
+      const acts = el("div", "bbtnrow bheadacts");
+      const act = (label: string, title: string, run: () => void) => {
+        const b = el("button", "bbtn quiet", label) as HTMLButtonElement;
+        b.title = title;
+        b.onclick = run;
+        acts.appendChild(b);
+      };
+      act("Rename", "Diese Session umbenennen — der Name steht dann in der Leiste.", () => {
+        const row = slotsEl.querySelector(`[data-slot="${slot}"]`);
+        if (row instanceof HTMLElement) startRename(row, s);
+      });
+      act(s.share ? "Shared — view only…" : "Share…", "Diese Session nur lesend teilen — ein Link mit Passwort.", () => openShareDlg(slot));
+      act("Export…", "Die Session exportieren — Gespräch oder Bildschirm, du wählst Teile und Format.",
+        () => { void openExportDlg(slot, sessName); });
+      idsec.appendChild(acts);
+    }
     if (boardMenuOpen && boardMenuSlot !== slot) boardMenuOpen = false; // it was another session's menu
     if (boardMenuOpen) {
       const menu = el("div", "bmenu");
@@ -4116,12 +4137,6 @@ async function renderBoard() {
         const cwd = s.cwd;
         item("Copy worktree path", cwd, (b) => { copyText(cwd); b.textContent = "Copied"; });
       }
-      item(s.share ? "Shared — view only…" : "Share…", "share this session read-only", () => openShareDlg(slot));
-      item("Export", "export the session — print or save as PDF", () => window.open(`/api/slots/${slot}/export`, "_blank"));
-      item("Rename", "rename this session", () => {
-        const row = slotsEl.querySelector(`[data-slot="${slot}"]`);
-        if (row instanceof HTMLElement) startRename(row, s);
-      });
       // bring session back — the repair for a pane that switched conversations on you. Claude Code
       // can change session IN-PROCESS: the pane keeps the argv it was spawned with, so nothing on
       // the outside can tell, and Escape does not undo it. A respawn does, because the slot still
@@ -7894,6 +7909,97 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
   return row;
 }
 
+// THE EXPORT MENU (row 11e541e0; owner 2026-09-22: "ein Untermenü … bei dem man dann alles
+// auswählen kann … tools calls weg, komplett mit allen reasoning traces"). More than one list, so a
+// window, not a popover (G4 Zuhause) — the askRisk window with the chat material. What to export
+// (the conversation, or the screen as before), which parts of the conversation, which format. The
+// choices travel as query switches and act on the SERVER (server.ts#conversationPick): nothing that
+// is switched off ever reaches the file. A slot without a readable conversation offers the screen
+// only and says why — the server's own sentence from ?probe=1.
+type ExportPart = "user" | "assistant" | "tools" | "results" | "thinking" | "time";
+const EXPORT_PARTS: [ExportPart, string, string][] = [
+  ["user", "Your messages", "Was du geschrieben hast."],
+  ["assistant", "Assistant text", "Was die Session geantwortet hat."],
+  ["tools", "Tool calls", "Welche Werkzeuge die Session aufgerufen hat, mit ihren Argumenten (intern: tool_use)."],
+  ["results", "Tool results", "Was die Werkzeuge zurückgegeben haben (intern: tool_result)."],
+  ["thinking", "Reasoning", "Die Denk-Spuren der Session, wo das Protokoll sie enthält (intern: thinking)."],
+  ["time", "Timestamps", "Die Uhrzeit jeder Nachricht."],
+];
+async function openExportDlg(slot: number, name: string) {
+  let probe: { available?: boolean; why?: string | null } | null = null;
+  try {
+    const r = await api(`/api/slots/${slot}/export/conversation?probe=1`);
+    if (r.ok) probe = (await r.json()) as { available?: boolean; why?: string | null };
+  } catch { /* probe stays null: the menu then offers the screen and says it could not look */ }
+  const canConv = probe?.available === true;
+  const st: { content: "conversation" | "screen"; convFmt: "md" | "html" | "jsonl"; screenFmt: "html" | "txt" } =
+    { content: canConv ? "conversation" : "screen", convFmt: "md", screenFmt: "html" };
+  const on: Record<ExportPart, boolean> = { user: true, assistant: true, tools: false, results: false, thinking: false, time: true };
+  const body = el("div", "expbody");
+  const seg = <T extends string>(label: string, opts: [T, string, string, boolean?][], cur: T, pick: (v: T) => void) => {
+    const g = el("div", "expgroup");
+    g.appendChild(el("div", "explabel", label));
+    const row = el("div", "expseg");
+    for (const [v, text, title, disabled] of opts) {
+      const b = el("button", v === cur ? "on" : "", text) as HTMLButtonElement;
+      b.title = title;
+      b.disabled = !!disabled;
+      b.setAttribute("aria-pressed", String(v === cur));
+      b.onclick = () => { pick(v); paint(); };
+      row.appendChild(b);
+    }
+    g.appendChild(row);
+    return g;
+  };
+  const paint = () => {
+    body.replaceChildren(seg("Content", [
+      ["conversation", "Conversation", "Das Gespräch aus dem Protokoll der Session — du wählst unten, was hinein soll.", !canConv],
+      ["screen", "Screen", "Der Bildschirm der Pane, wie er heute exportiert wird (intern: tmux scrollback)."],
+    ], st.content, (v) => { st.content = v; }));
+    if (!canConv) body.appendChild(el("div", "hint", probe?.why ?? "Ob diese Session ein Gesprächsprotokoll hat, ließ sich nicht prüfen — exportierbar ist der Bildschirm."));
+    if (st.content === "conversation") {
+      const g = el("div", "expgroup");
+      g.appendChild(el("div", "explabel", "Includes"));
+      const row = el("div", "expopts");
+      for (const [k, text, title] of EXPORT_PARTS) {
+        const b = el("button", "expopt" + (on[k] ? " on" : ""), text) as HTMLButtonElement;
+        b.title = title;
+        b.setAttribute("aria-pressed", String(on[k]));
+        b.onclick = () => { on[k] = !on[k]; paint(); };
+        row.appendChild(b);
+      }
+      g.appendChild(row);
+      body.appendChild(g);
+      body.appendChild(seg("Format", [
+        ["md", "Markdown", "Eine .md-Datei zum Weitergeben oder Weiterverarbeiten."],
+        ["html", "HTML", "Eine Seite zum Drucken oder als PDF sichern."],
+        ["jsonl", "JSONL", "Ein Eintrag je Zeile, maschinenlesbar, mit den Blocknamen des Protokolls."],
+      ], st.convFmt, (v) => { st.convFmt = v; }));
+      body.appendChild(el("div", "hint", "Zugangsschlüssel, die Adresse dieses Rechners und dein Home-Pfad werden im Export geschwärzt."));
+    } else {
+      body.appendChild(seg("Format", [
+        ["html", "HTML", "Eine Seite zum Drucken oder als PDF sichern."],
+        ["txt", "Text", "Der Bildschirminhalt als .txt-Datei."],
+      ], st.screenFmt, (v) => { st.screenFmt = v; }));
+    }
+  };
+  paint();
+  const ok = await askRisk({
+    title: `Export — ${name}`,
+    body: [body],
+    buttons: [{ label: "cancel", value: false }, { label: "Export", primary: true, value: true }],
+    panelClass: "riskpanel exportpanel",
+  });
+  if (!ok) return;
+  if (st.content === "screen") {
+    window.open(`/api/slots/${slot}/export${st.screenFmt === "txt" ? "?format=txt" : ""}`, "_blank");
+    return;
+  }
+  const q = new URLSearchParams({ format: st.convFmt });
+  for (const [k] of EXPORT_PARTS) q.set(k, on[k] ? "1" : "0");
+  window.open(`/api/slots/${slot}/export/conversation?${q}`, "_blank");
+}
+
 async function killSlot(s: ActiveSlot) {
   if (s.worktree) {
     // a lane-holding slot never had real git-state context on kill before — fetch it,
@@ -7942,7 +8048,7 @@ function toggleRowMenu(s: ActiveSlot) {
     if (row instanceof HTMLElement) startRename(row, s);
   });
   item(s.share ? "Shared — view only…" : "Share…", "Diese Session nur lesend teilen — ein Link mit Passwort.", () => openShareDlg(s.id));
-  item("Export", "Die Session exportieren — drucken oder als PDF sichern.", () => window.open(`/api/slots/${s.id}/export`, "_blank"));
+  item("Export…", "Die Session exportieren — Gespräch oder Bildschirm, du wählst Teile und Format.", () => { void openExportDlg(s.id, s.label ?? baseName(s.cwd)); });
   // save = quick-commit this lane's uncommitted work — lets a phone user save outside the
   // conversation (land/merge refuse a dirty tree; a kill would otherwise lose it)
   if (s.worktree) item("Save", "Die offene Arbeit dieser Lane committen (intern: quick commit).", () => { void doCommit(s.id, "quick"); });

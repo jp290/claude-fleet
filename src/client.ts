@@ -2294,7 +2294,7 @@ function settingsRow(d: PrefDef): HTMLElement {
   const row = el("div", "setrow");
   const main = el("div", "setmain");
   main.appendChild(el("div", "setlabel", d.label));
-  const std = d.kind === "bool" ? (d.def === "1" ? "an" : "aus")
+  const std = d.kind === "bool" ? (d.def === "1" ? "on" : "off")
     : d.kind === "choice" ? SET_CHOICE_WORDS[d.def] ?? d.def : null;
   main.appendChild(el("div", "setnote", [d.hint, std !== null ? `Standard: ${std}` : ""].filter(Boolean).join(" ")));
   row.appendChild(main);
@@ -2306,7 +2306,7 @@ function settingsRow(d: PrefDef): HTMLElement {
     b.onclick = () => { prefSetBool(d.key, !prefBool(d.key)); PREF_APPLY[d.key]?.(); syncAll(); };
     sync.push(() => {
       const on = prefBool(d.key);
-      b.textContent = on ? "an" : "aus";
+      b.textContent = on ? "on" : "off";
       b.setAttribute("aria-pressed", on ? "true" : "false");
     });
     control = b;
@@ -2324,7 +2324,7 @@ function settingsRow(d: PrefDef): HTMLElement {
     sync.push(() => { val.textContent = SET_VALUE[d.key]?.() ?? prefText(d.key); });
     control = val;
   }
-  const reset = el("button", "setreset", "Standard") as HTMLButtonElement;
+  const reset = el("button", "setreset", "Reset") as HTMLButtonElement;
   reset.title = `${d.label} auf den Standard zurücksetzen`;
   reset.onclick = () => { prefSet(d.key, null); PREF_APPLY[d.key]?.(); syncAll(); };
   row.append(control, reset);

@@ -34133,7 +34133,7 @@ async function tickApiStallResume(): Promise<void> {
 // 12:19 CEST — and the same session recorded a successful turn at 11:31:26Z, which refutes both
 // the local reading (16:19:39Z) and the UTC reading (18:19:39Z) and brackets only the UTC+8
 // reading (reset 10:19:39Z). So the timestamp is parsed as UTC+8, never as local time.
-const ZAI_LIMIT_LINE_RE = /Usage limit reached[^\n]*Your limit will reset at (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})/;
+const ZAI_LIMIT_LINE_RE = /^(?:(?:Error: Retry failed after \d+ attempts: )?429:?\s+\{"code":"(?:1308|1310)","message":"|)(?:Usage limit reached|Weekly\/Monthly Limit Exhausted)[^\n]*Your limit will reset at (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})/;
 interface RateLimitAttempt { openedAt: number; sessionId: string; tries: number; lastAt: number; lastResetAt: number }
 const rateLimitTried = new Map<number, RateLimitAttempt>();
 // the pane-read API-error fact per pi-zai slot — the FACT half of the tick, served on the polls
@@ -34158,7 +34158,7 @@ async function tickRateLimitResume(): Promise<void> {
       const cap = await tmux("capture-pane", "-p", "-J", "-t", paneTarget(sess(s.id)));
       if (cap.code !== 0) { paneLimitFacts.delete(s.id); continue; }
       const identity = `${s.openedAt}\0${s.sessionId}`;
-      const line = cap.out.split("\n").find((l) => ZAI_LIMIT_LINE_RE.test(l));
+      const line = cap.out.split("\n").map((l) => l.trim()).find((l) => ZAI_LIMIT_LINE_RE.test(l));
       paneLimitFacts.set(s.id, { identity, err: line ? (() => {
         const m = ZAI_LIMIT_LINE_RE.exec(line);
         const resetMs = m ? Date.parse(`${m[1]}T${m[2]}+08:00`) : NaN;

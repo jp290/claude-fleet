@@ -893,6 +893,8 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
     // parse must land at 10:19:39.000Z, never at the host's local 18:19:39.
     const RL_PAST_LINE = "Error: Retry failed after 3 attempts: 429: {\"code\":\"1308\",\"message\":\"Usage limit reached for 5 hour. Your limit will reset at 2026-09-22 18:19:39\"}";
     const RL_PAST_RESET = Date.parse("2026-09-22T18:19:39+08:00");
+    const RL_WEEKLY_LINE = "429 {\"code\":\"1310\",\"message\":\"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-09-26 16:53:22\"}";
+    const RL_WEEKLY_RESET = Date.parse("2026-09-26T16:53:22+08:00");
     const rlPlanted = rlSlot !== undefined
       ? await plantScreen(rlSlot, RL_PAST_LINE, "rate-limit fixture") : false;
     if (rlOpen?.ok && rlPlanted) {
@@ -904,6 +906,22 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
       }
       check("rate limit: the pi-zai pane line is parsed as UTC+8 (18:19:39 → 10:19:39Z), never local time",
         rlStall?.kind === "rate_limit" && rlStall.resetAt === RL_PAST_RESET, JSON.stringify(rlStall));
+      await plantScreen(rlSlot!, RL_WEEKLY_LINE, "rate-limit fixture: weekly/monthly reset");
+      let weeklyStall: { kind: string | null; resetAt: number | null; text: string } | null | undefined;
+      for (let i = 0; i < 80; i++) {
+        weeklyStall = (await rlSlots()).find((s) => s.id === rlSlot)?.apiStall;
+        if (weeklyStall?.resetAt === RL_WEEKLY_RESET) break;
+        await Bun.sleep(500);
+      }
+      check("rate limit: the 1310 weekly/monthly pane error carries apiStall and its UTC+8 resetAt",
+        weeklyStall?.kind === "rate_limit" && weeklyStall.resetAt === RL_WEEKLY_RESET
+          && weeklyStall.text.includes("Weekly/Monthly Limit Exhausted"), JSON.stringify(weeklyStall));
+      await plantScreen(rlSlot!, `> ${RL_WEEKLY_LINE}`, "rate-limit fixture: quoted error");
+      await Bun.sleep(12_000);
+      const quotedStall = (await rlSlots()).find((s) => s.id === rlSlot)?.apiStall;
+      check("rate limit: a quoted 1310 error is not a live pane stall",
+        quotedStall == null, JSON.stringify(quotedStall));
+      await plantScreen(rlSlot!, RL_PAST_LINE, "rate-limit fixture: past reset restored");
       const markOff = Date.now();
       await Bun.sleep(26_000); // two ticks (10 s) plus margin: nothing may type while the flag is OFF
       const offRows = (await auditRead()).filter((r) => r.ts >= markOff && r.event === "send"
@@ -933,6 +951,25 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
       const futureRows = await rlRowsSince(markFuture);
       check("rate limit: with the flag armed, a future resetAt is never typed into",
         futureRows.length === 0, JSON.stringify(futureRows));
+
+      const markWeeklyFuture = Date.now();
+      const weeklyFutureWall = zaiWall(Date.now() + 6 * 3600_000);
+      await plantScreen(rlSlot!, `Weekly/Monthly Limit Exhausted. Your limit will reset at ${weeklyFutureWall}`,
+        "rate-limit fixture: weekly/monthly future reset");
+      const weeklyFutureReset = Date.parse(`${weeklyFutureWall.replace(" ", "T")}+08:00`);
+      let weeklyFutureStall: { kind: string | null; resetAt: number | null } | null | undefined;
+      for (let i = 0; i < 80; i++) {
+        weeklyFutureStall = (await rlSlots()).find((s) => s.id === rlSlot)?.apiStall;
+        if (weeklyFutureStall?.resetAt === weeklyFutureReset) break;
+        await Bun.sleep(500);
+      }
+      check("rate limit: a future 1310 resetAt is served on apiStall",
+        weeklyFutureStall?.kind === "rate_limit" && weeklyFutureStall.resetAt === weeklyFutureReset,
+        JSON.stringify(weeklyFutureStall));
+      await Bun.sleep(26_000);
+      const weeklyFutureRows = await rlRowsSince(markWeeklyFuture);
+      check("rate limit: a future 1310 resetAt is never resumed early",
+        weeklyFutureRows.length === 0, JSON.stringify(weeklyFutureRows));
 
       // THE DUE CASE: the past resetAt is hours old, so quiet (10 s) + one tick is all that stands
       // between the paint and the one send.

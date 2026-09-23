@@ -42,6 +42,10 @@ interface HelperJobs {
 interface DeviceView {
   id: string; name: string; lastSeen: number;
   mode?: string; load?: number; capabilities?: string[]; desiredMode?: string;
+  instance?: InstanceView;
+}
+interface InstanceView {
+  head: string; bundleStale: boolean; behindCount: number; syncExit: number; at: number;
 }
 // The OWNER's projection of the same register (server.ts#helperDevicesView), carried on the 2 s
 // poll and shaped differently on purpose: it holds the two JOINS the helper's own view has no
@@ -52,6 +56,7 @@ interface DeviceView {
 interface OwnerDeviceView {
   id: string; name: string; lastSeen: number;
   mode?: string; load?: number; capabilities?: string[];
+  instance?: InstanceView;
   desiredMode: string; desiredSet: boolean;
   claims: { kind: string; repo: string; ref: string; expiresAt: number }[];
   lapses: number;
@@ -184,6 +189,8 @@ export async function run(h: {
   // read failure: the server omits the field entirely while no device has ever registered.
   const ownerDevices = async (): Promise<OwnerDeviceView[] | undefined> =>
     ((await (await get("/api/sessions")).json()) as { helperDevices?: OwnerDeviceView[] }).helperDevices;
+  const instanceOnBoard = async (): Promise<InstanceView | undefined> =>
+    (await ownerDevices())?.find((d) => d.id === DEVICE)?.instance;
   const jobFor = async (repo: string): Promise<HelperJob | undefined> =>
     (await jobs()).jobs.find((j) => j.repo === repo.split("/").pop());
   const liveRepo = async (): Promise<string | null> =>
@@ -308,6 +315,30 @@ export async function run(h: {
       && JSON.stringify(beat1Body.device.capabilities) === '["bun","tmux"]'
       && beat1Body.desiredMode === "active" && beat1Body.device.desiredMode === undefined,
     `${beat1.status} ${JSON.stringify(beat1Body)}`);
+  const instance: InstanceView = { head: "a".repeat(40), bundleStale: true,
+    behindCount: 3, syncExit: 5, at: 1_790_000_000_000 };
+  const instanceBeat = await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, instance });
+  const instanceReply = (await instanceBeat.json()) as { device?: DeviceView };
+  check("(K) an instance reading reaches the stored device and owner projection unchanged",
+    instanceBeat.ok && JSON.stringify(instanceReply.device?.instance) === JSON.stringify(instance)
+      && JSON.stringify(await instanceOnBoard()) === JSON.stringify(instance),
+    `${instanceBeat.status} ${JSON.stringify(instanceReply.device?.instance)}`);
+  const noInstance = await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME });
+  const noInstanceReply = (await noInstance.json()) as { device?: DeviceView };
+  check("(K) a heartbeat without instance leaves the stored instance byte-identical",
+    noInstance.ok && JSON.stringify(noInstanceReply.device?.instance) === JSON.stringify(instance)
+      && JSON.stringify(await instanceOnBoard()) === JSON.stringify(instance),
+    `${noInstance.status} ${JSON.stringify(noInstanceReply.device?.instance)}`);
+  for (const [field, bad] of Object.entries({ head: "bad", bundleStale: "false", behindCount: -1,
+    syncExit: 6, at: 1.5 })) {
+    const res = await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME,
+      instance: { ...instance, [field]: bad } });
+    const body = (await res.json()) as { error?: string };
+    check(`(K) should-reject: malformed instance.${field} is 400 and names the field`,
+      res.status === 400 && body.error?.includes(field) === true
+        && JSON.stringify(await instanceOnBoard()) === JSON.stringify(instance),
+      `${res.status} ${JSON.stringify(body)}`);
+  }
   // …and the two refusals. A mode outside the closed set is a version skew on one side or the
   // other, and storing the string would leave the board showing a mode nothing can act on.
   const beatBad = await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, mode: "turbo" });
@@ -446,6 +477,10 @@ export async function run(h: {
     afterBoot?.desiredMode === "quiet" && afterBoot.mode === "quiet"
       && JSON.stringify(afterBoot.capabilities) === '["bun","tmux"]',
     JSON.stringify(afterBoot));
+  check("(K) the instance reading survives the server restart byte-identical",
+    JSON.stringify(afterBoot?.instance) === JSON.stringify(instance)
+      && JSON.stringify(await instanceOnBoard()) === JSON.stringify(instance),
+    JSON.stringify(afterBoot?.instance));
   check("(K) …and the boot-time drain does not audit it either",
     (await newRepoRows()).length === 0, JSON.stringify((await newRepoRows()).map((r) => r.result)));
 
@@ -1368,7 +1403,7 @@ export async function run(h: {
   check("(W1) the MAC appears in NO form anywhere in the owner's poll",
     macForms.every((f) => !sessText.toLowerCase().includes(f.toLowerCase())), macForms.join(" "));
   const KNOWN_DEV_KEYS = ["id", "name", "lastSeen", "mode", "load", "capabilities", "desiredMode",
-    "desiredSet", "claims", "lapses", "daemonSha", "update", "lastWakeAt", "wakeConfigured"];
+    "desiredSet", "claims", "lapses", "daemonSha", "instance", "update", "lastWakeAt", "wakeConfigured"];
   const strayKeys = Object.keys(wakeCfg ?? {}).filter((k) => !KNOWN_DEV_KEYS.includes(k));
   check("(W1) the device row carries no field beyond the known set — a leaked address would need one",
     !!wakeCfg && strayKeys.length === 0, `stray=[${strayKeys}]`);

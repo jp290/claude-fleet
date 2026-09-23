@@ -38,10 +38,10 @@
 // `RestartForceExitStatus=75`, so systemd starts the next daemon from the link. The old tree is
 // left in place: pointing the link back at it by hand is the whole rollback. A tree that fails the
 // parse never becomes the link's target — check first, swap second, and the daemon keeps running.
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readlinkSync, renameSync, rmSync,
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync,
   statSync, symlinkSync } from "node:fs";
 import { loadavg } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { retryResult } from "./result-retry";
 
 // --- config ------------------------------------------------------------------------------------
@@ -51,6 +51,7 @@ export interface HelperConfig {
   deviceId: string;      // /^[a-z0-9]{8,32}$/ — the shape the portal's routes validate
   name: string;          // what the ledger row will say produced the verdict
   workDir: string;
+  instanceDir?: string;
   checkoutLink: string;  // the symlink the unit's ExecStart runs through; a daemon-update moves it
   pollSec: number;
   offRecheckSec: number;
@@ -123,9 +124,12 @@ export function loadConfig(path: string, raw: unknown, mode: number): HelperConf
     return { from, to };
   })();
   const workDir = str(c.workDir, "workDir");
+  if (c.instanceDir !== undefined && (typeof c.instanceDir !== "string" || !isAbsolute(c.instanceDir)))
+    throw new ConfigFault("instanceDir must be an absolute path");
   return {
     fleetUrl, token: str(c.token, "token"), deviceId, name: str(c.name, "name"),
     workDir,
+    ...(typeof c.instanceDir === "string" ? { instanceDir: c.instanceDir } : {}),
     checkoutLink: typeof c.checkoutLink === "string" && c.checkoutLink ? c.checkoutLink : `${workDir}/current`,
     // the floors are TYPO GUARDS (a 0 or a NaN would spin this loop), not policy — the same
     // reading server.ts gives its own HELPER_CLAIM_TIMEOUT_MS floor. The e2e drives 2 s polls.
@@ -349,6 +353,52 @@ async function clonedHeadOf(dir: string): Promise<string | undefined> {
 // other machine — and, like `clonedSha`, it is measured or absent: a daemon started from a plain
 // copy outside any git checkout sends no field rather than a guess.
 let daemonSha: string | undefined;
+
+export interface InstanceReading {
+  head: string; bundleStale: boolean; behindCount: number; syncExit: number; at: number;
+}
+function newestSourceMtime(dir: string): number | undefined {
+  let newest: number | undefined;
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      const mtime = entry.isDirectory() ? newestSourceMtime(path) : statSync(path).mtimeMs;
+      if (mtime === undefined) return undefined;
+      newest = Math.max(newest ?? mtime, mtime);
+    }
+  } catch { return undefined; }
+  return newest;
+}
+async function gitReading(dir: string, ...args: string[]): Promise<string | undefined> {
+  try {
+    const p = Bun.spawn(["git", "-C", dir, ...args],
+      { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: childEnv() });
+    const out = (await new Response(p.stdout).text()).trim();
+    return (await p.exited) === 0 ? out : undefined;
+  } catch { return undefined; }
+}
+export async function instanceOf(dir: string): Promise<InstanceReading | undefined> {
+  const head = await gitReading(dir, "rev-parse", "HEAD");
+  if (!head || !/^[0-9a-f]{40}$/.test(head)) return undefined;
+  const remote = process.env.FLEET_SYNC_REMOTE || "canonical";
+  const count = await gitReading(dir, "rev-list", "--count", `${head}..${remote}/main`);
+  const behindCount = count === undefined ? NaN : Number(count);
+  if (!Number.isSafeInteger(behindCount) || behindCount < 0) return undefined;
+  let syncExit: number;
+  try {
+    const status = JSON.parse(readFileSync(join(dir, ".fleet-sync-status.json"), "utf8")) as { exit?: unknown };
+    syncExit = status.exit as number;
+    if (!Number.isInteger(syncExit) || syncExit < 0 || syncExit > 5) return undefined;
+  } catch { return undefined; }
+  const sourceMtime = newestSourceMtime(join(dir, "src"));
+  if (sourceMtime === undefined) return undefined;
+  let bundleStale = false;
+  for (const file of ["app.js", "share.js", "helper.js", "hub.js"]) {
+    try { if (statSync(join(dir, "public", file)).mtimeMs < sourceMtime) bundleStale = true; }
+    catch { return undefined; }
+  }
+  return { head, bundleStale, behindCount, syncExit, at: Date.now() };
+}
 
 // the last N lines, read out of the tail of the file rather than the whole of it: a real
 // ./e2e-isolated.sh log is hundreds of kilobytes and only its end is ever sent.
@@ -913,6 +963,7 @@ export async function tick(cfg: HelperConfig, st: LoopState): Promise<void> {
       // count the claim that follows was decided against and never a figure from mid-decision.
       running: runningJobs, maxParallelSuites: cfg.maxParallelSuites,
       ...(daemonSha ? { daemonSha } : {}),
+      ...(cfg.instanceDir ? { instance: await instanceOf(cfg.instanceDir) } : {}),
       features: DAEMON_FEATURES,
     }),
   });

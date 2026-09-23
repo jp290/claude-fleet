@@ -130,6 +130,102 @@ export async function readEventLog(file: string): Promise<{ rows: Record<string,
   return { rows, total };
 }
 
+// THE EXPLICIT HISTORY PATH (memory M2, task 72dc4f35) — the bounded, BACKWARD reader beside
+// readLedger. readLedger stays exactly what it was for every existing caller: two generations, read
+// whole, oldest first. Nothing here is reached from a poll; the one caller is the memory door's
+// evidence view, which reads page by page under a byte budget and says how far it got.
+//
+// THREE GENERATIONS PER CARRIER, newest first: the active file, `.1`, and `.archive` (rotateEventLog
+// appends the outgoing `.1` there). Reading them backwards IN APPEND ORDER is the only order this
+// claims — never a global sort by event time across carriers.
+//
+// THE CUT. A read fixes, per generation, the file identity (inode) and the byte just past the last
+// COMPLETE line. Every later page reads only below that cut: an append behind it is allowed and
+// simply not part of this read, a torn line at the tail is not a record yet. A rotation moves a
+// generation to another path — it is followed by inode — and dissolves the old `.1` into the
+// archive; a generation whose inode can no longer be found at or above its cut size is STALE, and
+// the caller must say so instead of continuing on different bytes.
+export const LEDGER_GENERATIONS = ["", ".1", ".archive"] as const;
+export interface GenerationCut { gen: string; ino: number | null; end: number }
+const SCAN_CHUNK = 64 * 1024;
+const SCAN_LINE_MAX = 8 * 1024 * 1024; // a single record longer than this is reported, never read
+
+async function lastLineEnd(path: string, size: number): Promise<number> {
+  for (let chunk = SCAN_CHUNK; ; chunk *= 2) {
+    const from = Math.max(0, size - chunk);
+    const bytes = new Uint8Array(await Bun.file(path).slice(from, size).arrayBuffer());
+    const nl = bytes.lastIndexOf(10);
+    if (nl >= 0) return from + nl + 1;
+    if (from === 0) return 0;
+  }
+}
+export async function ledgerCut(file: string): Promise<GenerationCut[]> {
+  const cut: GenerationCut[] = [];
+  for (const gen of LEDGER_GENERATIONS) {
+    const path = `${file}${gen}`;
+    if (!existsSync(path)) { cut.push({ gen, ino: null, end: 0 }); continue; }
+    const st = statSync(path);
+    cut.push({ gen, ino: Number(st.ino), end: await lastLineEnd(path, st.size) });
+  }
+  return cut;
+}
+// where the bytes of one cut generation live NOW, or null when they cannot be found unchanged
+export function resolveGeneration(file: string, cut: GenerationCut): string | null {
+  for (const gen of LEDGER_GENERATIONS) {
+    const path = `${file}${gen}`;
+    if (!existsSync(path)) continue;
+    const st = statSync(path);
+    if (Number(st.ino) === cut.ino && st.size >= cut.end) return path;
+  }
+  return null;
+}
+export interface BackwardLine { start: number; bytes: number; row: Record<string, unknown> | null }
+export type BackwardStop = "exhausted" | "budget" | "stopped" | "oversize";
+// One generation, from `offset` (exclusive end, always a line boundary) towards byte 0. `visit`
+// answers "take" (consumed) or "stop" (NOT consumed — the returned offset still includes it, so the
+// next page reads it again). `row: null` is a line that is not a JSON record: counted by the
+// caller, never dropped silently. The budget counts consumed bytes; it is exceeded only by the
+// first line of a call, so a record is never split across pages.
+export async function scanGenerationBackward(path: string, offset: number, budget: number,
+  visit: (line: BackwardLine) => "take" | "stop"): Promise<{ offset: number; consumed: number; stop: BackwardStop }> {
+  let consumed = 0;
+  let chunk = SCAN_CHUNK;
+  const decoder = new TextDecoder();
+  while (offset > 0) {
+    const from = Math.max(0, offset - chunk);
+    const bytes = new Uint8Array(await Bun.file(path).slice(from, offset).arrayBuffer());
+    let pos = bytes.length; // relative end of the unread region; bytes[pos - 1] is a newline
+    for (;;) {
+      if (pos === 0) break;
+      const prev = pos >= 2 ? bytes.lastIndexOf(10, pos - 2) : -1; // a negative fromIndex counts from the END
+      if (prev < 0 && from > 0) break; // this line starts before the chunk — read further back
+      const start = prev + 1;
+      const len = pos - start;
+      if (consumed > 0 && consumed + len > budget) return { offset: from + pos, consumed, stop: "budget" };
+      const text = decoder.decode(bytes.subarray(start, pos - 1));
+      if (text.trim() !== "") {
+        let row: Record<string, unknown> | null = null;
+        try {
+          const parsed: unknown = JSON.parse(text);
+          if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) row = parsed as Record<string, unknown>;
+        } catch { /* a hole, reported as row:null */ }
+        if (visit({ start: from + start, bytes: len, row }) === "stop") return { offset: from + pos, consumed, stop: "stopped" };
+      }
+      consumed += len;
+      pos = start;
+    }
+    if (pos === bytes.length) { // not one complete line in this chunk: the line is longer than it
+      if (chunk >= SCAN_LINE_MAX) return { offset, consumed, stop: "oversize" };
+      chunk *= 2;
+      continue;
+    }
+    offset = from + pos;
+    chunk = SCAN_CHUNK;
+    if (consumed >= budget) return { offset, consumed, stop: offset > 0 ? "budget" : "exhausted" };
+  }
+  return { offset: 0, consumed, stop: "exhausted" };
+}
+
 // WHOSE PANES A STATE FILE DESCRIBES. Every slot row in fleet.json names a tmux session on ONE
 // socket, and the SOCKET is the identity that carries it, not FLEET_INSTANCE: `tmux -L <sock>` is
 // the only address those panes have, FLEET_INSTANCE is a display name that may be unset on both

@@ -1,0 +1,66 @@
+/* Querformat-Mockups — gemeinsames Material. Kein Produktcode: die Werte sind die --chat-*-Tokens
+   aus public/index.html (:root), abgeschrieben, damit die Bilder die heutige Sprache tragen (G0.1).
+   Geometrie gemessen an IMG_2494 (2436x1125 = 812x375 css @3x): Safari-Leiste 0..89,
+   Tastatur ab 211, iOS-Accessory-Leiste 153..197 x 97..714 (Seiten-y 64..108). */
+:root {
+  --chat-ink: #e7e7ea; --chat-prose: #d4d4d8; --chat-mute: #8b8b94; --chat-faint: #5c5c66;
+  --chat-surface: #111113; --chat-raised: #17171a; --chat-edge: #26262b; --chat-edge-soft: #1b1b1f;
+  --chat-void: #000; --c-hover: #202024; --c-edge-hi: #4a4a52;
+  --chat-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  --chat-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --r1: 6px; --r2: 10px; --r3: 18px;
+  --safari: 89px; --vv-kb: 122px; --vv-free: 286px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { background: #0a0a0a; color: var(--chat-prose); font: 13px/1.5 var(--chat-sans); }
+body { padding: 24px; }
+h1 { font-size: 15px; font-weight: 600; color: var(--chat-ink); }
+.sub { margin-top: 6px; max-width: 86ch; color: var(--chat-mute); }
+.state { margin-top: 26px; }
+.state h2 { font-size: 13px; font-weight: 500; color: var(--chat-ink); margin-bottom: 8px; }
+.state p { max-width: 86ch; color: var(--chat-mute); margin-top: 8px; }
+
+/* the phone: 812 x 375, Safari bar on top, the page below it */
+.phone { position: relative; width: 812px; height: 375px; overflow: hidden; border-radius: 28px;
+  background: var(--chat-void); outline: 1px solid #2c2c2e; }
+.safari { position: absolute; left: 0; right: 0; top: 0; height: var(--safari); background: #1b1b1d;
+  border-bottom: 1px solid #2c2c2e; color: #8a8a8e; font: 15px -apple-system, system-ui;
+  display: flex; align-items: flex-end; justify-content: center; padding-bottom: 12px; }
+.page { position: absolute; left: 0; right: 0; top: var(--safari); height: var(--vv-free); overflow: hidden; }
+.phone.kb .page { height: var(--vv-kb); }
+.kbd { display: none; position: absolute; left: 0; right: 0; top: 211px; bottom: 0; background: #2b2b2d;
+  border-radius: 22px 22px 0 0; color: #ddd; font: 21px -apple-system, system-ui; letter-spacing: 21px;
+  text-align: center; padding-top: 14px; z-index: 50; }
+.acc { display: none; position: absolute; left: 97px; width: 617px; top: 153px; height: 44px; z-index: 50;
+  background: #1c1c1e; border: 1px solid #333; border-radius: 22px; color: #ddd; font: 19px -apple-system;
+  align-items: center; justify-content: space-between; padding: 0 22px; }
+.phone.kb .kbd { display: block; }
+.phone.kb .acc { display: flex; }
+
+/* the transcript: the real terminal font on the phone, 11 px on a 13 px row (src/client.ts, fontSize) */
+.term { position: absolute; background: var(--chat-void); color: #cfcfd4; overflow: hidden;
+  font: 11px/13px var(--chat-mono); white-space: pre; padding: 3px 8px; display: flex; flex-direction: column;
+  justify-content: flex-end; }
+.term .u { color: var(--chat-ink); font-weight: 600; }
+.term .d { color: var(--chat-mute); }
+
+/* shared controls */
+.btn { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: var(--r1);
+  border: 1px solid var(--chat-edge); background: var(--chat-raised); color: var(--chat-ink);
+  font: 16px var(--chat-sans); }
+.btn.ghost { background: rgba(23,23,26,.72); border-color: rgba(74,74,82,.6); backdrop-filter: blur(6px); }
+.key { height: 40px; display: grid; place-items: center; border-radius: var(--r1); border: 1px solid var(--chat-edge);
+  background: var(--chat-raised); color: #aaa; font: 13px var(--chat-mono); }
+.field { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; border-radius: var(--r3);
+  border: 1px solid var(--chat-edge); background: var(--chat-surface); padding: 4px 4px 4px 12px;
+  color: var(--chat-faint); font: 16px var(--chat-sans); }
+.field .ph { flex: 1; }
+.send { width: 40px; height: 40px; border-radius: 12px; background: var(--c-hover); color: var(--chat-mute);
+  display: grid; place-items: center; font-size: 18px; }
+.corner { position: absolute; top: 7px; right: 8px; display: grid; grid-template-columns: repeat(3, 40px);
+  gap: 6px; z-index: 5; }
+.corner .btn { font-size: 15px; }
+.tray { display: flex; gap: 4px; color: var(--chat-mute); font: 13px var(--chat-sans); }
+.tray span { min-height: 40px; display: flex; align-items: center; padding: 0 8px; }
+.note { position: absolute; z-index: 60; font: 11px var(--chat-sans); color: #0a0a0a; background: #f5c542;
+  border-radius: 4px; padding: 1px 5px; }

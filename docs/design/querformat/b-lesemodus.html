@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Querformat · B · Lesemodus</title>
+<!-- Mockup, kein Produktcode. Richtung B fuer das Handy quer (812 x 375): Kopf, Tastenreihe und Tray
+     weg, das Transkript randlos ueber die ganze Flaeche; zwei schwebende Knoepfe (Tasten, Schreiben);
+     die Eingabe klappt als Overlay OBEN auf, ueber der iOS-Accessory-Leiste.
+     Notiz: docs/messungen/2026-09-22-mobil-querformat-entwurf.md. Glyphen sind Platzhalter fuer
+     src/icons.ts (G0.6). -->
+<link rel="stylesheet" href="mock.css">
+<style>
+  .b .term { inset: 0; }
+  .b .tl { position: absolute; top: 7px; left: 8px; display: flex; align-items: center; gap: 8px; z-index: 5; }
+  .b .tl .t { color: var(--chat-mute); font: 500 12px var(--chat-sans); background: rgba(23,23,26,.9);
+    border-radius: var(--r1); padding: 3px 8px; }
+  .b .br { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 6px; z-index: 5; }
+  .b .btn.on { background: var(--c-hover); border-color: var(--c-edge-hi); }
+  .b .keysrow { position: absolute; left: 0; right: 0; bottom: 0; padding: 6px 8px; display: flex; gap: 5px;
+    background: var(--chat-surface); border-top: 1px solid var(--chat-edge); z-index: 4; }
+  .b .keysrow .key { flex: 1; }
+  .b .keysrow .gap { width: 92px; flex: none; }
+  .b .overlay { position: absolute; left: 0; right: 0; top: 0; height: 48px; padding: 4px 8px; display: flex; gap: 6px;
+    background: var(--chat-surface); border-bottom: 1px solid var(--chat-edge); z-index: 6; }
+</style>
+</head>
+<body>
+<h1>Richtung B · Lesemodus</h1>
+<p class="sub">Quer ist das Handy zum Lesen da. Kopf, Tastenreihe und Tray fallen weg, das Transkript läuft randlos über die ganze Fläche.
+Zwei schwebende Knöpfe unten rechts: ⌨ klappt die Tastenreihe auf, ✎ öffnet die Eingabe. Die Eingabe erscheint als Overlay
+oben, über der iOS-Accessory-Leiste statt darunter. Gilt nur im zweiten Arm von <code>MOBILE_MQ</code>.</p>
+
+<section class="state" id="b1">
+  <h2>B1 · quer, lesen</h2>
+  <div class="phone b" data-shot="b1-lesen">
+    <div class="safari">⚠ Nicht sicher – 100.x.y.z:8790</div>
+    <div class="page">
+      <div class="term"></div>
+      <div class="tl"><span class="btn ghost">☰</span><span class="t">Orchestrator</span></div>
+      <div class="corner"><span class="btn ghost">⌕</span><span class="btn ghost">▭</span><span class="btn ghost">ⓘ</span></div>
+      <div class="br"><span class="btn ghost">⌨</span><span class="btn ghost">✎</span></div>
+    </div>
+  </div>
+  <p>Transkript 812 × 286 px: 21 Zeilen bei voller Breite (heute 6), davon 3 links unter dem ☰-Band und rechts unter der
+  Eckgruppe, beide halbtransparent. Das Zahnrad ist über ☰ erreichbar (Schublade), ↻ über ⓘ.</p>
+</section>
+
+<section class="state" id="b2">
+  <h2>B2 · quer, Tasten aufgeklappt</h2>
+  <div class="phone b" data-shot="b2-tasten">
+    <div class="safari">⚠ Nicht sicher – 100.x.y.z:8790</div>
+    <div class="page">
+      <div class="term" style="bottom: 53px"></div>
+      <div class="tl"><span class="btn ghost">☰</span><span class="t">Orchestrator</span></div>
+      <div class="corner"><span class="btn ghost">⌕</span><span class="btn ghost">▭</span><span class="btn ghost">ⓘ</span></div>
+      <div class="keysrow"><span class="key">esc</span><span class="key">tab</span><span class="key">⇧tab</span><span class="key">↑</span>
+        <span class="key">↓</span><span class="key">←</span><span class="key">→</span><span class="key">⏎</span><span class="key">^C</span><span class="gap"></span></div>
+      <div class="br"><span class="btn on">⌨</span><span class="btn">✎</span></div>
+    </div>
+  </div>
+  <p>Für eine Auswahl im Terminal (↑ ↓ ⏎) ohne Bildschirmtastatur. Die Reihe kostet 53 px, das Transkript behält 17 Zeilen.</p>
+</section>
+
+<section class="state" id="b3">
+  <h2>B3 · quer, schreiben (Tastatur offen)</h2>
+  <div class="phone b kb" data-shot="b3-schreiben">
+    <div class="safari">⚠ Nicht sicher – 100.x.y.z:8790</div>
+    <div class="page">
+      <div class="term" style="top: 51px; padding-bottom: 6px"></div>
+      <div class="overlay"><div class="field"><span class="ph">Prompt…</span><span class="send">↑</span></div><span class="btn">⋯</span></div>
+    </div>
+    <div class="acc"><span>⌃ ⌄</span><span>✓</span></div>
+    <div class="kbd">qwertzuiopü</div>
+  </div>
+  <p>Sichtbare Seite 122 px. Das Feld sitzt oben (0 bis 48) und ist ganz frei; heute liegt es zu 36 von 46 px unter der
+  Accessory-Leiste. Vom Transkript bleibt darunter genau 1 ganz lesbare Zeile (wie heute); ✓ oder Senden schließt die
+  Tastatur und gibt die 21 Zeilen zurück.</p>
+</section>
+<script src="mock.js"></script>
+</body>
+</html>

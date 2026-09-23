@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Querformat · A · Nebeneinander</title>
+<!-- Mockup, kein Produktcode. Richtung A fuer das Handy quer (812 x 375): das Transkript links ueber
+     die volle Hoehe, Kopf + Composer + Tastenreihe + Tray als schmale Spalte rechts (280 px).
+     Notiz: docs/messungen/2026-09-22-mobil-querformat-entwurf.md. Glyphen sind Platzhalter fuer
+     src/icons.ts (G0.6). -->
+<link rel="stylesheet" href="mock.css">
+<style>
+  .a .term { left: 0; top: 0; bottom: 0; width: 532px; }
+  .a .col { position: absolute; top: 0; bottom: 0; left: 532px; right: 0; background: var(--chat-surface);
+    border-left: 1px solid var(--chat-edge); padding: 6px; display: flex; flex-direction: column; gap: 6px; }
+  .a .head { display: flex; align-items: center; gap: 8px; }
+  .a .head .t { flex: 1; min-width: 0; color: var(--chat-ink); font: 500 13px var(--chat-sans);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .a .dot { width: 8px; height: 8px; border-radius: 50%; background: #3ecf5a; margin-right: 4px; }
+  .a .field { align-items: flex-start; }
+  .a .field .ph { padding-top: 8px; }
+  .a .keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+  .a .tray { justify-content: space-between; }
+  .a .tray span { padding: 0 4px; }
+  .a .corner { right: calc(280px + 8px); }
+  .a.kb .col .head, .a.kb .col .keys, .a.kb .col .tray, .a.kb .corner { display: none; }
+  .a.kb .col .field { flex: none; height: 52px; }
+  .a .inrow { display: flex; gap: 6px; flex: 1; min-height: 0; }
+  .a.kb .inrow { flex: none; }
+</style>
+</head>
+<body>
+<h1>Richtung A · Nebeneinander</h1>
+<p class="sub">Das Transkript steht links über die ganze Höhe. Rechts liegt eine 280 px breite Spalte mit Kopf,
+Composer, Tastenreihe (als 3×3-Raster) und Tray. Beim Tippen fällt die Spalte auf das Eingabefeld zusammen, das Transkript
+bleibt links stehen. Gilt nur im zweiten Arm von <code>MOBILE_MQ</code> (<code>(pointer: coarse) and (max-height: 500px)</code>).</p>
+
+<section class="state" id="a1">
+  <h2>A1 · quer, Tastatur zu</h2>
+  <div class="phone a" data-shot="a1-tastatur-zu">
+    <div class="safari">⚠ Nicht sicher – 100.x.y.z:8790</div>
+    <div class="page">
+      <div class="term"></div>
+      <div class="corner"><span class="btn">⌕</span><span class="btn">▭</span><span class="btn">ⓘ</span>
+        <span></span><span></span><span class="btn">↻</span></div>
+      <div class="col">
+        <div class="head"><span class="btn">☰</span><span class="t">Orchestrator</span><span class="btn">⚙</span><span class="dot"></span></div>
+        <div class="inrow"><div class="field"><span class="ph">Prompt for slot 1…</span><span class="send">↑</span></div></div>
+        <div class="keys"><span class="key">esc</span><span class="key">tab</span><span class="key">⇧tab</span>
+          <span class="key">↑</span><span class="key">↓</span><span class="key">⏎</span>
+          <span class="key">←</span><span class="key">→</span><span class="key">^C</span></div>
+        <div class="tray"><span>▢ Files</span><span>◷ History</span><span>⏲</span><span>⌨ Live</span></div>
+      </div>
+    </div>
+  </div>
+  <p>Transkript 532 × 286 px: 21 Zeilen (heute 6). Die Spalte kostet 280 px Breite, das sind rund 42 Terminal-Spalten.</p>
+</section>
+
+<section class="state" id="a2">
+  <h2>A2 · quer, Tastatur offen</h2>
+  <div class="phone a kb" data-shot="a2-tastatur-offen">
+    <div class="safari">⚠ Nicht sicher – 100.x.y.z:8790</div>
+    <div class="page">
+      <div class="term"></div>
+      <div class="col">
+        <div class="inrow"><div class="field"><span class="ph">Prompt…</span><span class="send">↑</span></div><span class="btn">⋯</span></div>
+      </div>
+    </div>
+    <div class="acc"><span>⌃ ⌄</span><span>✓</span></div>
+    <div class="kbd">qwertzuiopü</div>
+  </div>
+  <p>Sichtbare Seite 122 px. Das Transkript hat links 9 Zeilen, davon liegen 5 unter der Accessory-Leiste (Seiten-y 64 bis 108 ab x 97);
+  ganz lesbar bleiben 4 (heute 1). Das Eingabefeld sitzt oben in der Spalte über der Leiste und ist ganz frei. Tastenreihe und Tray stecken hinter ⋯.</p>
+</section>
+<script src="mock.js"></script>
+</body>
+</html>

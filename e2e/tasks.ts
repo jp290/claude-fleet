@@ -87,6 +87,15 @@ const CLAUDE_COMPOSER_SCREEN = [
 ].join("\n");
 
 export async function run(ctx: Ctx): Promise<void> {
+  const repo2VerifyCommand = (() => {
+    if (!REPO2) return "";
+    try {
+      const entries: unknown = JSON.parse(process.env.FLEET_VERIFY_CMD_REPOS ?? "{}");
+      if (!entries || typeof entries !== "object" || Array.isArray(entries)) return "";
+      const command = (entries as Record<string, unknown>)[realpathSync(REPO2)];
+      return typeof command === "string" ? command : "";
+    } catch { return ""; }
+  })();
   interface ContextReceipt {
     id: string; hash: string; at: number; repo: string; head: string;
     taskId: string | null; originId: string | null; programId: string | null;
@@ -3266,6 +3275,8 @@ export async function run(ctx: Ctx): Promise<void> {
       } catch { return null; }
     }, (id) => id !== null) ?? null;
     const rMainTok = rMainSlot !== null ? await selfTokenOf(rMainSlot) : "";
+    check("(v-res)(4) fixture: REPO2 has its own configured verify command",
+      repo2VerifyCommand.endsWith("/fakeverify2"), repo2VerifyCommand);
     check("(v-res)(4) fixture: the probe program is active with a bound MAIN in REPO2 holding a self token",
       rBoot.status === 200 && rConfirm.status === 200 && rActivate.status === 200
       && typeof rMainSlot === "number" && /^[0-9a-f]{32}$/.test(rMainTok),
@@ -3281,7 +3292,7 @@ export async function run(ctx: Ctx): Promise<void> {
         text: `${text} The row's surface is AGENTS.md.`, repo: REPO2, programId: rProg, variants,
         card: { ziel: "probe row — its deckel cost is the point, nothing else",
           surface: { files: ["AGENTS.md"], symbols: [] },
-          done: "AGENTS.md is the tracked file this row's card names", verify: "bun test", verboten: ["nothing"] } },
+          done: "AGENTS.md is the tracked file this row's card names", verify: repo2VerifyCommand, verboten: ["nothing"] } },
       )).json()) as { task?: { id: string } };
       return j.task?.id ?? "";
     };
@@ -12731,7 +12742,7 @@ export async function run(ctx: Ctx): Promise<void> {
         text: `${text} The row's surface is ${file}.`, repo: REPO2, programId: wpProg,
         card: { ziel: "probe row — what it costs the deckel is the whole point",
           surface: { files: [file], symbols: [] },
-          done: `${file} is the tracked file this row's card names`, verify: "bun test", verboten: ["nothing"] } },
+          done: `${file} is the tracked file this row's card names`, verify: repo2VerifyCommand, verboten: ["nothing"] } },
       )).json()) as { task?: { id: string } }).task?.id ?? "";
     const wpFill: string[] = [];
     for (let i = 0; i < 5; i++) wpFill.push(await wpRow(`(wp) cap filler ${i + 1} of 5 — released before the partner arrives.`, "AGENTS.md"));

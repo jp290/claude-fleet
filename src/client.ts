@@ -7727,8 +7727,8 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
   // wofür das ist)". Plus the ⎇+ chip he named as the one button that is right as it is. It is ONE
   // line now. Everything else the row used to carry has no sentence of his and left it — but no
   // function left with it; each one says below where it went (the label's tooltip, the state's
-  // tooltip, the hover row, the lane-count chip, or the board). `.slotact` and `.rowacts` stay
-  // children of the ROW: the first overlays its right edge on hover, the second is the phone strip.
+  // tooltip, the hover row, the lane-count chip, or the board). `.slotact` stays a child of the
+  // ROW: it overlays the row's right edge on hover, and on a phone it shares line 1's flex line.
   const r1 = el("div", "r1");
   {
       const displayLabel = s.label ?? baseName(s.cwd);
@@ -7873,44 +7873,18 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       }
       const kill = el("span", "kill", "✕");
       kill.title = "Diese Session beenden — was sie gerade tut, geht verloren (intern: kill).";
-      kill.onclick = async (e) => {
-        e.stopPropagation();
-        if (s.worktree) {
-          // a lane-holding slot never had real git-state context on kill before — fetch it,
-          // same risk preview the board's land action uses (kill leaves the worktree on disk;
-          // land/remove it from the board)
-          const risk = await fetchSlotRisk(s.id);
-          const ok = await showRiskPreview(
-            `Kill session ${s.id} (${baseName(s.cwd!)})? The worktree is left on disk (open the board to land or remove it).`, risk, "kill");
-          if (!ok) return;
-        } else if (!confirm(`Kill session ${s.id} (${baseName(s.cwd!)})? The claude session and its history are gone.`)) {
-          return;
-        }
-        await post(`/api/slots/${s.id}/kill`, {});
-        for (const p of panes) if (p.slot === s.id) p.assign(0);
-        await refresh();
-      };
+      kill.onclick = (e) => { e.stopPropagation(); void killSlot(s); };
       act.appendChild(kill);
+      // ⋯ — THE PHONE'S ONE DOOR to the row's actions (row 69bdf591). They used to be a strip of
+      // their own under every row (⤴ ⇩ ✎ ✔ ⏏ ⇲, plus ✕ on a line of its own) and a phone showed three
+      // and a half sessions. CSS-hidden on the desktop, where the hover strip and the board carry them.
+      const more = el("button", "rowmore") as HTMLButtonElement;
+      more.appendChild(icon("dots"));
+      more.title = "Aktionen dieser Session — umbenennen, teilen, exportieren, beenden";
+      more.setAttribute("aria-haspopup", "menu");
+      more.onclick = (e) => { e.stopPropagation(); toggleRowMenu(s); };
+      act.appendChild(more);
       row.appendChild(act);
-      // mobile-only action strip: share/export/rename/land moved off the row into the
-      // desktop-only board, leaving phones with no reachable share/export/rename/land.
-      // These are CSS-hidden on desktop (.rowacts { display:none }) so the row stays clean.
-      const rowacts = el("div", "rowacts");
-      const mkact = (glyph: string, title: string, fn: () => void) => {
-        const b = el("span", "rowact", glyph);
-        b.title = title;
-        b.onclick = (e) => { e.stopPropagation(); fn(); };
-        rowacts.appendChild(b);
-      };
-      mkact("⤴", "share", () => openShareDlg(s.id));
-      mkact("⇩", "export", () => window.open(`/api/slots/${s.id}/export`, "_blank"));
-      mkact("✎", "rename", () => startRename(row, s));
-      // ✔ save = quick-commit this lane's uncommitted work — lets a phone user save outside
-      // the conversation (land/merge refuse a dirty tree; a kill would otherwise lose it)
-      if (s.worktree) mkact("✔", "save (commit work)", () => { void doCommit(s.id, "quick"); });
-      if (s.worktree && landsEnabled) mkact("⏏", "land", () => { void doLand(s.id); });
-      if (s.worktree) mkact("⇲", "shelve (set aside + note)", () => { void doShelve(s.id); });
-      row.appendChild(rowacts);
       // §F3 click semantics, in the owner's words ("erst aufklappt und klickbar wenn man auf ihn
       // drückt, bleibt dann auf"): clicking a FOLDED stack only unfolds it — it does not steal the
       // pane. Once open the anchor is an ordinary row again and focuses its session. Folding back is
@@ -7919,6 +7893,76 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
   }
   return row;
 }
+
+async function killSlot(s: ActiveSlot) {
+  if (s.worktree) {
+    // a lane-holding slot never had real git-state context on kill before — fetch it,
+    // same risk preview the board's land action uses (kill leaves the worktree on disk;
+    // land/remove it from the board)
+    const risk = await fetchSlotRisk(s.id);
+    const ok = await showRiskPreview(
+      `Kill session ${s.id} (${baseName(s.cwd)})? The worktree is left on disk (open the board to land or remove it).`, risk, "kill");
+    if (!ok) return;
+  } else if (!confirm(`Kill session ${s.id} (${baseName(s.cwd)})? The claude session and its history are gone.`)) {
+    return;
+  }
+  await post(`/api/slots/${s.id}/kill`, {});
+  for (const p of panes) if (p.slot === s.id) p.assign(0);
+  await refresh();
+}
+
+// THE ROW MENU behind ⋯ (phone only): a G4.2 context menu in the G4.1 material, full width at the
+// foot of the drawer (G4.1 mobil). It lives in #side, not in #slots, because the bar rebuilds its
+// rows on every changed poll and must not shut an open menu; the trigger is looked up by slot.
+// Every action the old strip carried is here, each one tap after ⋯, with unchanged behaviour —
+// kill last and in --danger.
+const rowMenu = el("div", "rowmenu");
+rowMenu.setAttribute("role", "menu");
+$("side").appendChild(rowMenu);
+let rowMenuSlot: number | null = null;
+const rowMenuTrigger = () => rowMenuSlot === null ? null
+  : slotsEl.querySelector<HTMLElement>(`.slot[data-slot="${rowMenuSlot}"] .rowmore`);
+function closeRowMenu() {
+  rowMenuSlot = null;
+  rowMenu.classList.remove("open");
+  rowMenu.replaceChildren();
+}
+function toggleRowMenu(s: ActiveSlot) {
+  if (rowMenuSlot === s.id) { closeRowMenu(); return; }
+  rowMenu.replaceChildren(el("div", "rowmenuhead", s.label ?? baseName(s.cwd)));
+  const item = (label: string, title: string, run: () => void, danger = false) => {
+    const b = el("button", "rowmenuitem" + (danger ? " danger" : ""), label) as HTMLButtonElement;
+    b.title = title;
+    b.setAttribute("role", "menuitem");
+    b.onclick = (e) => { e.stopPropagation(); closeRowMenu(); run(); };
+    rowMenu.appendChild(b);
+  };
+  item("Rename", "Diese Session umbenennen — der Name steht dann in der Leiste.", () => {
+    const row = slotsEl.querySelector(`.slot[data-slot="${s.id}"]`);
+    if (row instanceof HTMLElement) startRename(row, s);
+  });
+  item(s.share ? "Shared — view only…" : "Share…", "Diese Session nur lesend teilen — ein Link mit Passwort.", () => openShareDlg(s.id));
+  item("Export", "Die Session exportieren — drucken oder als PDF sichern.", () => window.open(`/api/slots/${s.id}/export`, "_blank"));
+  // save = quick-commit this lane's uncommitted work — lets a phone user save outside the
+  // conversation (land/merge refuse a dirty tree; a kill would otherwise lose it)
+  if (s.worktree) item("Save", "Die offene Arbeit dieser Lane committen (intern: quick commit).", () => { void doCommit(s.id, "quick"); });
+  if (s.worktree && landsEnabled) item("Land", "Diese Lane in main einbauen.", () => { void doLand(s.id); });
+  if (s.worktree) item("Shelve", "Diese Lane beiseitelegen, mit Notiz.", () => { void doShelve(s.id); });
+  item("Kill session", "Diese Session beenden — was sie gerade tut, geht verloren (intern: kill).", () => { void killSlot(s); }, true);
+  rowMenuSlot = s.id;
+  rowMenu.classList.add("open");
+}
+popover({
+  panel: () => rowMenu,
+  trigger: rowMenuTrigger,
+  isOpen: () => rowMenuSlot !== null,
+  close: (refocus) => {
+    const t = rowMenuTrigger();
+    closeRowMenu();
+    if (refocus) t?.focus();
+  },
+  rows: () => [...rowMenu.querySelectorAll<HTMLElement>(".rowmenuitem")],
+});
 
 function renderChips(chips: string[]) {
   if (chipsEl.childElementCount === chips.length) return;

@@ -336,9 +336,9 @@
   .slot:hover .slotact, .slot:focus-within .slotact { display: flex; }
   .slot .kill { color: var(--chat-faint); font-size: 13px; padding: 2px 5px; border-radius: 5px; }
   .slot .kill:hover { color: var(--danger); background: var(--chat-raised); }
-  /* mobile-only per-row action strip (share/export/rename/land); hidden on desktop where
-     the board carries these actions — the mobile media query flips it to a flex row */
-  .rowacts { display: none; }
+  /* the phone's ⋯ and the row menu it opens (client.ts#toggleRowMenu); hidden on the desktop,
+     where the hover strip and the board carry these actions — the mobile block shows them */
+  .rowmore, .rowmenu { display: none; }
   /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
   #side.collapsed { width: 50px; }
   #side.collapsed #sidetitle, #side.collapsed #dot, #side.collapsed #sidetools, #side.collapsed #morepanel,
@@ -2740,19 +2740,40 @@
     #shell-board .shelldetail { display: flex; padding: 0; }
     #shell-board #board { display: flex !important; width: auto; flex: 1; min-width: 0; border-left: none; }
     #side.collapsed { width: min(80vw, 300px); } /* the desktop-only rail must never shrink the drawer */
-    .slot { padding: 12px 11px; font-size: var(--chat-fs); }
-    /* finger-sized kill target; share/export/rename/land come back as .rowacts on mobile
-       (the desktop-only board is display:none under 700px) */
-    .slot .kill { padding: 8px 10px; font-size: 16px; }
-    /* the row and its existing touch actions wrap instead of clipping in narrow drawers. The row
-       itself is a block since the bar moved onto the chat language, so it is LINE 1 that wraps. */
-    .slot .r1 { flex-wrap: wrap; }
-    .rowacts { display: flex; flex: 1 0 100%; width: 100%; max-width: 100%; gap: 8px;
-      margin-top: 6px; flex-wrap: wrap; }
-    .rowacts .rowact { display: flex; flex: 1 1 40px; align-items: center; justify-content: center;
-      min-width: 40px; min-height: 40px; border-radius: 10px; border: 1px solid var(--chat-edge);
-      background: var(--chat-raised); color: var(--chat-prose); font-size: 16px; cursor: pointer; }
-    .rowacts .rowact:active { background: var(--c-hover); color: var(--chat-ink); border-color: var(--c-edge-hi); }
+    /* ONE LINE PER SESSION IN THE DRAWER (row 69bdf591; owner 2026-09-22: "die slotLeiste ist viel
+       zu groß"). A row used to be three lines — the readings, ✕ on a line of its own, and a strip of
+       big ⤴ ⇩ ✎ (✔ ⏏ ⇲ on a lane) — 132–176px, three and a half sessions per screen. Now line 1 and
+       the hover strip share ONE flex line: the strip keeps its badges (⏱ ⏸ 💬, each still one tap)
+       and ends in ⋯, which opens every other action one tap further (client.ts#toggleRowMenu);
+       ✕ moves into that menu, last and in --danger (G4.2). 40px is the row's floor (G0.7 finger
+       target), and ⋯ stretches over the row's full height for the same reason. */
+    .slot { display: flex; align-items: center; flex-wrap: wrap; min-height: 40px;
+      padding: 7px 8px 7px 6px; font-size: var(--chat-fs); }
+    .slot > .r1, .slot > .bandview { flex: 1 1 0; min-width: 0; }
+    .slot > .needline { order: 1; flex: 0 0 calc(100% - var(--mark-size, 26px) - 28px); }
+    /* in flow under MOBILE_MQ whatever the pointer — a narrow desktop window has hover, and ⋯
+       must not wait for it (same selectors as the hover rules above, later in the sheet) */
+    .slotact, .slot.lane .slotact { display: flex; position: static; height: auto; padding-left: 0; background: none; }
+    .slot:hover .r1 .ctxfill, .slot:hover .r1 .act, .slot:hover .r1 .lc,
+    .slot:focus-within .r1 .ctxfill, .slot:focus-within .r1 .act, .slot:focus-within .r1 .lc { visibility: visible; }
+    .slotact .kill { display: none; }
+    .rowmore { display: flex; flex: none; align-self: stretch; align-items: center; justify-content: center;
+      width: 36px; min-height: 40px; margin: -7px -8px -7px 0; padding: 0; border: 0; border-radius: var(--r1);
+      background: none; color: var(--chat-mute); cursor: pointer; }
+    .rowmore .ico { width: 18px; height: 18px; }
+    .rowmore:active { background: var(--c-hover); color: var(--chat-ink); }
+    /* the menu: full width at the foot of the drawer (G4.1 mobil — #side's will-change makes it the
+       containing block of this fixed box), in the popover material of #instmenu */
+    .rowmenu.open { display: flex; flex-direction: column; gap: 2px; position: fixed; z-index: 40;
+      left: 0; right: 0; bottom: 0; padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+      border-top: 1px solid var(--chat-edge); border-radius: var(--r2) var(--r2) 0 0; background: var(--chat-raised);
+      box-shadow: 0 -8px 22px color-mix(in srgb, var(--chat-void) 70%, transparent); }
+    .rowmenuhead { padding: 4px 10px 6px; font-size: var(--chat-ui-fs); color: var(--chat-mute);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rowmenuitem { min-height: 40px; padding: 0 10px; border: 0; border-radius: var(--r1); background: none;
+      color: var(--chat-prose); font-family: inherit; font-size: var(--chat-fs); text-align: left; cursor: pointer; }
+    .rowmenuitem:active, .rowmenuitem:focus-visible { background: var(--c-hover); color: var(--chat-ink); outline: none; }
+    .rowmenuitem.danger { color: var(--danger); }
     .bbtn { padding: 8px 12px; font-size: 13px; }
     .renamein { height: 26px; font-size: 16px; }
 

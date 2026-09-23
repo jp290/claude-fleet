@@ -2097,7 +2097,7 @@ export async function run(): Promise<void> {
       const css = indexSrc.slice(indexSrc.indexOf("<style>"), indexSrc.indexOf("</style>"))
         .replace(/\/\*[\s\S]*?\*\//g, "");
       const rules = [...css.matchAll(/(^|\n)([^{}\n][^{}]*?)\{([^{}]*)\}/g)];
-      const isBar = (sel: string) => /(^|[\s,])(#side|#slots|#sidehead|#sidetitle|#sidetools|#sidefoot|#instwrap|#instbtn|#instmenu|#morebtn|#morepanel|#collapse|\.instrow|\.slot|\.slotact|\.renamein|\.rowacts|\.cmtb|\.revb)\b/.test(sel);
+      const isBar = (sel: string) => /(^|[\s,])(#side|#slots|#sidehead|#sidetitle|#sidetools|#sidefoot|#instwrap|#instbtn|#instmenu|#morebtn|#morepanel|#collapse|\.instrow|\.slot|\.slotact|\.renamein|\.rowmore|\.rowmenu\w*|\.cmtb|\.revb)\b/.test(sel);
       const withHex = rules.filter((m) => isBar(m[2]) && /#[0-9a-fA-F]{3,8}\b/.test(m[3]));
       check("client: the sidebar's CSS carries no palette of its own — every colour is a token",
         withHex.length === 0 && rules.some((m) => /^#side\b/.test(m[2].trim())
@@ -2247,8 +2247,12 @@ export async function run(): Promise<void> {
         && dlgSrc.includes("closeDrawer?.()")
         && /onDialogWillOpen\(\(\) => setDrawer\(false\)\)/.test(cliSrc)
         && /askRisk\(/.test(riskSrc);
-      check("client: every live row keeps a reachable ✕ — on the row, above the phone drawer, hidden only on a past band cell",
-        /const kill = el\("span", "kill", "✕"\)/.test(rowSrc) && /act\.appendChild\(kill\);\s*row\.appendChild\(act\);/.test(rowSrc)
+      // Since row 69bdf591 the phone reaches it one tap further: the strip's ✕ hides under
+      // MOBILE_MQ and the row's ⋯ menu carries "Kill session" — the same killSlot, last in the list.
+      check("client: every live row keeps a reachable ✕ — on the row (phone: behind its ⋯), above the phone drawer, hidden only on a past band cell",
+        /const kill = el\("span", "kill", "✕"\)/.test(rowSrc) && /kill\.onclick = \(e\) => \{ e\.stopPropagation\(\); void killSlot\(s\); \};\s*act\.appendChild\(kill\);/.test(rowSrc)
+          && /act\.appendChild\(more\);\s*row\.appendChild\(act\);/.test(rowSrc)
+          && /item\("Kill session", [^\n]*void killSlot\(s\); \}, true\);\s*rowMenuSlot = s\.id;/.test(rowSrc)
           && rowSrc.includes("post(`/api/slots/${s.id}/kill`, {})")
           && /\.slot\.back \.slotact/.test(indexSrc)
           && (drawerClosedByHelper || overlayZ > drawerZ),
@@ -2330,19 +2334,20 @@ export async function run(): Promise<void> {
           && indexSrc.includes(".panetools .termwidth, .panetools .panegear { display: none !important; }")
           && !/(^|\n)\s*\.boardtoggle \{/m.test(indexSrc),
         JSON.stringify({ group: cssBody(".panetools button"), pressed: cssBody(".panetools button[aria-pressed=\"true\"]") }));
-      // K5 (Grammatik): exactly ONE module owns outside-click and Escape for the three popovers —
-      // #instmenu, .optpop and #board .bmenu register in src/popover.ts. (sizePanel was the
+      // K5 (Grammatik): exactly ONE module owns outside-click and Escape for the four popovers —
+      // #instmenu, .optpop, #board .bmenu and the phone's row menu (.rowmenu, row 69bdf591)
+      // register in src/popover.ts. (sizePanel was the
       // fourth until K8: its ONE home is now the settings window's "Schrift" section, G5.3 —
       // no popover of its own anymore.) A second document-level listener for them in client.ts
       // or chatsize.ts would fork the behaviour (close semantics, focus return, arrow walk
       // drift apart) — the form this check pins. Mutation probe: re-adding any old listener
-      // form below (or a popover() call outside the counted 3+0) turns this red.
+      // form below (or a popover() call outside the counted 4+0) turns this red.
       const popCount = (s: string | null): number => s ? (s.match(/popover\(\{/g) ?? []).length : 0;
-      check("client: the three popovers share ONE outside-click/Escape module — no second document listener",
+      check("client: the four popovers share ONE outside-click/Escape module — no second document listener",
         popSrc !== null
         && popSrc.includes('document.addEventListener("pointerdown"')
         && popSrc.includes('addEventListener("keydown"')
-        && popCount(cliSrc) === 3 && popCount(chatSrc) === 0
+        && popCount(cliSrc) === 4 && popCount(chatSrc) === 0
         && !/document\.addEventListener\("click", \(e\) => \{\s*if \(instMenuOpen/.test(cliSrc ?? "")
         && !/window\.addEventListener\("keydown", \(e\) => \{ if \(e\.key === "Escape" && instMenuOpen/.test(cliSrc ?? "")
         && !/document\.addEventListener\("pointerdown", \(e\) => \{\s*const t = e\.target;\s*if \(!optOpen/.test(cliSrc ?? "")
@@ -2495,18 +2500,39 @@ export async function run(): Promise<void> {
     check("unknown context remains the literal ? reading, and a known one is a bare percentage",
       rowSrc.includes('c ? `${Math.round(c.pct)}%` : "?"'),
       "slotRow context source");
-    const mobileRowacts = /(?:^|\n)\s*\.rowacts\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";
-    const mobileRowact = /(?:^|\n)\s*\.rowacts \.rowact\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";
-    check("mobile rows and existing actions wrap within the drawer without clipping",
-      // the row became a BLOCK when the bar moved onto the chat language, so what wraps in a narrow
-      // drawer is line 1 — asserting the old `.slot { flex-wrap }` here would pass on a rule that
-      // no longer does anything
-      /\.slot \.r1\s*\{[^}]*flex-wrap:\s*wrap/.test(mobileCss)
-        && /flex-wrap:\s*wrap/.test(mobileRowacts)
-        && /max-width:\s*100%/.test(mobileRowacts)
-        && /min-width:\s*40px/.test(mobileRowact)
-        && /min-height:\s*40px/.test(mobileRowact),
-      JSON.stringify({ mobileRowacts: mobileRowacts.trim(), mobileRowact: mobileRowact.trim() }));
+    // ONE LINE PER SESSION IN THE PHONE DRAWER (row 69bdf591; owner 2026-09-22 "die slotLeiste ist
+    // viel zu groß"). The row's own line and the action strip share one flex line, the old
+    // per-row strip of big buttons is gone, and every action it carried is one tap after ⋯.
+    // Measured at 390x844 on a test instance (mixed fixture): 12 of 12 occupied rows visible,
+    // 42px each, where the old form showed 4 at 132–176px.
+    const mobileSlot = /(?:^|\n)\s*\.slot\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";
+    const mobileMore = /(?:^|\n)\s*\.rowmore\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";
+    check("phone drawer: a session row is ONE flex line of at least 40px, and no row carries a second action line",
+      /display:\s*flex/.test(mobileSlot) && /min-height:\s*40px/.test(mobileSlot) && /padding:\s*7px 8px 7px 6px/.test(mobileSlot)
+        && /\.slot > \.r1, \.slot > \.bandview \{ flex: 1 1 0; min-width: 0; \}/.test(mobileCss)
+        && /\.slotact, \.slot\.lane \.slotact \{ display: flex; position: static;/.test(mobileCss)
+        && /\.slotact \.kill \{ display: none; \}/.test(mobileCss)
+        && !/rowacts|rowact\b|mkact/.test(indexSrc + rowSrc),
+      JSON.stringify({ mobileSlot: mobileSlot.trim() }));
+    check("phone drawer: ⋯ is a finger target on every live row and hidden on the desktop",
+      /min-height:\s*40px/.test(mobileMore) && /width:\s*36px/.test(mobileMore) && /align-self:\s*stretch/.test(mobileMore)
+        && /\.rowmore, \.rowmenu \{ display: none; \}/.test(indexSrc)
+        && /const more = el\("button", "rowmore"\)[^\n]*\n\s*more\.appendChild\(icon\("dots"\)\);/.test(rowSrc),
+      mobileMore.trim());
+    // every action the old strip carried (share/export/rename, and save/land/shelve on a lane),
+    // plus kill — same handlers, same guards, in the grammar's context-menu order (danger last)
+    const menuSrc = cut("function toggleRowMenu(", "popover({\n  panel: () => rowMenu,");
+    const menuLabels = [...menuSrc.matchAll(/item\("([^"]+)"/g)].map((m) => m[1]);
+    check("phone drawer: the ⋯ menu carries every action of the old strip, unchanged, kill last in --danger",
+      JSON.stringify(menuLabels) === JSON.stringify(["Rename", "Export", "Save", "Land", "Shelve", "Kill session"])
+        && menuSrc.includes('item(s.share ? "Shared — view only…" : "Share…"') && menuSrc.includes("() => openShareDlg(s.id)")
+        && menuSrc.includes("startRename(row, s)")
+        && /if \(s\.worktree\) item\("Save", [^\n]*doCommit\(s\.id, "quick"\)/.test(menuSrc)
+        && /if \(s\.worktree && landsEnabled\) item\("Land", [^\n]*doLand\(s\.id\)/.test(menuSrc)
+        && /if \(s\.worktree\) item\("Shelve", [^\n]*doShelve\(s\.id\)/.test(menuSrc)
+        && /\.rowmenuitem\.danger \{ color: var\(--danger\); \}/.test(mobileCss)
+        && /\.rowmenu\.open \{[^}]*position: fixed;[^}]*left: 0; right: 0; bottom: 0;/.test(mobileCss),
+      JSON.stringify(menuLabels));
   }
 
   const wsNoTok = await new Promise<boolean>((resolve) => {

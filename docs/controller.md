@@ -177,6 +177,16 @@ abgewiesen. Nach jedem externen Await wird die exakte
 Occupant-Identität erneut geprüft. Keine Aussage hier behauptet, alle Reports, Watches oder offenen
 Fragen würden automatisch übertragen.
 
+**Harness-Wechsel geht NICHT über `succeed`** (`server.ts#handleSelfSucceed`: „that harness is not
+overridable here" — nur Modell/Effort innerhalb des geerbten Harness). Der Weg, gegangen am 2026-09-23
+für die Orchestratorin von claude/Opus 5.5 auf codex/gpt-6-sol (Owner: „ich denke sol wird das als
+orchestratoring auch hinbekommen, wenn nicht kann ich immer noch wechseln"): `POST /api/slots/:id/open`
+auf einem freien Slot mit `harness`/`model`/`effort` und einem Label, das `server.ts#isOrchestratorLabel`
+erkennt — dann liefert `server.ts#deliverOrchestratorSpawnCard` die Rollenkarte. Einen Linien-Record
+schreibt dieser Weg nicht; die Übergabe trägt deshalb ein committeter `HANDOFF.md`-Abschnitt (echte
+Nachfolge nach Regel A), auf den die Vorgängerin die Nachfolgerin per `/send` zeigt, bevor sie endet.
+Codex lädt `AGENTS.md`, nicht `CLAUDE.md`: der Hinweis nennt die benötigten Regelbuch-Abschnitte namentlich.
+
 ## Kontext-Hinweis des Servers
 
 Der Tick `server.ts#tickMigrate` (nur registriert bei `FLEET_MIGRATE_PCT > 0`) stupst ausschließlich

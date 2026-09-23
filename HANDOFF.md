@@ -1,3 +1,27 @@
+# HANDOFF — Orchestratorin Slot 14 (claude/Opus 5.5) → Orchestratorin auf codex/gpt-6-sol (2026-09-23 ~09:4x, ctx 32 %)
+
+Echte Nachfolge mit HARNESS-WECHSEL (Owner: „ich denke sol wird das als orchestratoring auch hinbekommen, wenn nicht kann ich immer noch wechseln"). `succeed` kann den Harness nicht wechseln, deshalb traegt diese Datei die Uebergabe, nicht ein Linien-Record (Weg: `docs/controller.md` §Nachfolge, letzter Absatz).
+
+**Zuerst:** `./state.sh` · `./register.sh` · Board. Du laedst `AGENTS.md`, nicht `CLAUDE.md` — lies aus `CLAUDE.md` (gitignored, im Haupt-Checkout) die Abschnitte „Einstieg für eine frische MAIN-Session", „Die MAIN-Tueren", „Self-scheduling from inside a session" und „Deploy". Rollenkarte: `docs/controller.md`.
+
+**Owner-Regeln, die sonst nur im claude-Memory stehen (du siehst es nicht):**
+- Worker NUR `codex/gpt-6-sol/high` oder `pi-zai/glm-5.3-flash/high`, Triple IM POST-Body; Z.ai-Kontingent ist laut Owner (09:3x) „erstmal wieder weg" → derzeit nur Sol. Keine Opus-Lanes.
+- Den Worker einer gefileten Zeile aendert `POST /api/tasks/:id/spawn` (Owner-Token, seit Deploy 43a8836b live).
+- Knappe Faelle per Default-Regel entscheiden, nie „Owner entscheidet" · Design-Fragen („wir sollten ueberlegen") → Denkauftrag-Lane mit Mess-Notiz · aus dem Register antworten, nicht aus Docs · die Orchestratorin darf deployen (`POST /api/deploy`, Verdikt am naechsten Boot pruefen) · Mess-Zeilen: Flaeche per `POST /api/tasks/:id/files` selbst bestaetigen · Astra nur fuer anspruchsvolle Arbeit, ±10-Punkte-Regel (`bun codex-quota.ts`, `docs/astra-auftraege.md`) · MAIN-Slot vor `/send` aufloesen (`./ctl.sh send --main <programId>`).
+- Owner will es heute ENTSPANNT angehen (Claude-Usage bis heute Abend knapp).
+
+**In Flug:**
+- `bbac253c` Worktree-Lebenszyklus-Denkauftrag (Sol), per Hand ueber den Lane-Deckel gestartet (Owner-Ja), Slot 3, Branch `fleet/260923072953-ad5f` → Notiz `docs/messungen/2026-09-23-worktree-lebenszyklus.md`. Ernte: Notiz lesen, 2 Belege pruefen, Karten filen. Owner nennt Worktrees + Datenschichten/Profile als die Punkte mit echtem Impact; er will eigene Ideen „laenger implementieren und testen, bevor ich sie merge" — der fehlende Zustand „offen, in Erprobung" ist der erste Schnitt.
+- Memory-System M1 `42da6bdc` → M2 `72dc4f35`/M3 `91b039eb` → M4 `41641179` (Fleet-Betrieb, pending, Sol). Grundlage: `docs/messungen/2026-09-23-memory-system.md`. Freigabe durch MAIN Slot 4.
+- `1ff551fd` Handover-Record markiert Erledigtes (Fleet-Betrieb stand bei 32/45 → Nachfolge-Verweigerung in ~5 Tagen). pending, Sol.
+
+**Offen beim Owner (je eine Frage):**
+- `f02fbb36` Jev S2 in `~/private-repo-ad` (Sol): Release geht weder ueber die MAIN-Tuer (Repo-Grenze) noch ueber den Validator (`./verify.sh` erst nach `71df256f`) → Hand-Start nur mit Owner-Ja.
+- Private-repo-aa `3cf96d68`/`49105904` stehen auf `gpt-6-astra/medium`; Program 247a3746 hat keine lebende MAIN (Bindung zeigt auf alten Slot 5). Slot 16 „private-repo-aa" ist die EIGENE Codex-Session des Owners — nicht anfassen.
+- Program-MAINs auf Sol umstellen: Owner hat es fuer die Orchestratorin gewollt; MAINs folgen beim naechsten Anlass (neuer Slot + Label, wie hier).
+
+**Aufraeumen:** Video-Server fuer den Owner: PID 26519, `python3 -m http.server 8931` in `~/private-repo-aa-diorama/artifacts/` — stoppen per `kill 26519`, wenn er es gesehen hat. Slot 14 (ich) beendet sich nach deiner Bestaetigung; ist er noch da, darfst DU ihn schliessen (Brief-Uebergabe).
+
 # HANDOFF — Program-MAIN Fleet-Betrieb Slot 4 → Nachfolgerin (2026-09-22, ctx 29 %)
 
 Der Advisory-Deckel des Programs ist voll (10/10), daher steht diese Uebergabe hier statt als notiz-Zeile.

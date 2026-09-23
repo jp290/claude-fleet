@@ -1677,30 +1677,66 @@ export async function run(): Promise<void> {
 
       // --- (5) THE COUNTERPROBE. The draft goes away; the LIVING subject's event is delivered on
       // its first real attempt, and nothing about the dead lane is ever typed into that pane.
+      // The preceding budget/teardown work may consume the entire hold interval under host load.
+      // Releasing then can interleave our 45 queued BSpaces with Fleet's first paste. Start just
+      // after a completed refusal, while its own nextProbeInMs still leaves room to clear the pane.
+      const holdsBeforeRelease = holdRowsFor(livingEvent?.id ?? "x").length;
+      let releaseProbe: AuditRow | undefined;
+      for (let i = 0; i < 200 && !releaseProbe; i++) {
+        const rows = holdRowsFor(livingEvent?.id ?? "x");
+        const latest = rows.at(-1);
+        if (latest && latest.phase === "repeat" && rows.length > holdsBeforeRelease
+          && (latest.nextProbeInMs ?? 0) - (Date.now() - (latest.ts ?? 0)) >= 1500)
+          releaseProbe = latest;
+        if (!releaseProbe) await Bun.sleep(100);
+      }
       const releaseAt = Date.now();
       await tmuxOut("send-keys", "-t", `s${uId}`, "-N", String([...draft].length), "BSpace");
+      let releasedFrame = "";
+      let releasedBuffer = stateBuffer();
+      for (let i = 0; i < 20; i++) {
+        releasedFrame = composerResidue({ kind: "rules" },
+          (await tmuxOut("capture-pane", "-p", "-e", "-t", `s${uId}`)).out) ?? "?";
+        releasedBuffer = stateBuffer();
+        if (releasedBuffer.text === "" && releasedFrame === "") break;
+        await Bun.sleep(50);
+      }
+      const releaseState = await eventById(livingEvent?.id ?? "x");
+      const releaseReady = !!releaseProbe && releasedBuffer.text === "" && releasedFrame === ""
+        && releaseState?.status === "pending" && releaseState.attempts === 0;
+      check("counterprobe fixture: a fresh hold gives the receiver a fully cleared composer before its first attempt",
+        releaseReady,
+        JSON.stringify({ probe: releaseProbe && [releaseProbe.holds, releaseProbe.nextProbeInMs, releaseProbe.ts],
+          clearMs: Date.now() - releaseAt, bufferBytes: releasedBuffer.text.length,
+          frameBytes: releasedFrame.length, status: releaseState?.status, attempts: releaseState?.attempts }));
       let deliveredLiving: FleetEventRow | undefined;
-      for (let i = 0; i < 160 && deliveredLiving?.status !== "delivered"; i++) {
+      for (let i = 0; i < 160 && releaseReady && deliveredLiving?.status !== "delivered"; i++) {
         deliveredLiving = await eventById(livingEvent?.id ?? "x");
         if (deliveredLiving?.status !== "delivered") await Bun.sleep(250);
       }
       const deliveredAfterReleaseMs = Date.now() - releaseAt;
       const finalGone = await settleEvent(await eventById(doomedEvent?.id ?? "x"));
       const plog = await plogRead();
+      const livingPrompts = plog.filter((e) => e.slot === uId
+        && e.text.includes(livingEvent?.id ?? "no-living-event"));
+      const doomedPrompts = plog.filter((e) => e.slot === uId
+        && e.text.includes(doomedEvent?.id ?? "no-doomed-event"));
+      const livingPromptIsWatch = livingPrompts.length === 1 && (
+        livingPrompts[0]?.text.startsWith(`[fleet] slot ${living.slot} (${living.branch})`)
+        || /^\[fleet\] \d+ events for this session: /.test(livingPrompts[0]?.text ?? ""));
       // The composer is deliberately empty from here on, so only the PANE is this window's
       // precondition. It matters: a delivery counted "on its FIRST attempt" is a statement about
       // one occupant, and a replaced pane makes both halves of the sentence unmeasurable.
       const counterIntact = await windowIntact("counterprobe", holdWindow);
-      if (counterIntact && subjectsSubscribed)
+      if (releaseReady && counterIntact && subjectsSubscribed)
         check("counterprobe: the live subject's held event is delivered on its FIRST attempt; the dead one is never typed",
           deliveredLiving?.status === "delivered" && deliveredLiving.attempts === 1
-          && plog.filter((e) => e.slot === uId
-            && e.text.startsWith(`[fleet] slot ${living.slot} (${living.branch})`)).length === 1
-          && !plog.some((e) => e.slot === uId
-            && e.text.startsWith(`[fleet] slot ${doomed.slot} (${doomed.branch})`))
+          && livingPromptIsWatch && doomedPrompts.length === 0
           && finalGone?.status === "subject-gone",
           JSON.stringify({ living: deliveredLiving?.status, attempts: deliveredLiving?.attempts,
-            doomed: finalGone?.status,
+            doomed: finalGone?.status, livingPrompts: livingPrompts.length,
+            doomedPrompts: doomedPrompts.length, promptIsWatch: livingPromptIsWatch,
+            promptPrefix: livingPrompts[0]?.text.slice(0, 60) ?? null,
             // §11.2j recorded this block reading `pending` for a row the block above had just read
             // as `subject-gone`. Whichever way that resolves, it resolves HERE: the id each read
             // asked for, the id of the row it got back, the status the block above saw, and how
@@ -1718,7 +1754,7 @@ export async function run(): Promise<void> {
       // its cap, which is the one way a bounded retry turns into permanent silence.
       const livingHoldRows = holdRowsFor(livingEvent?.id ?? "x");
       const livingEnd = livingHoldRows.filter((r) => r.phase === "end");
-      if (counterIntact && subjectsSubscribed)
+      if (releaseReady && counterIntact && subjectsSubscribed)
         check("held backoff: the cleared composer is probed again within the documented ceiling and the hold ends exactly once",
           deliveredLiving?.status === "delivered"
           && deliveredAfterReleaseMs <= HOLD_BACKOFF_MAX_MS + AUTOS_TICK_MS * 4 + 2000

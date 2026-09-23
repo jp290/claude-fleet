@@ -144,8 +144,10 @@ liefert eine FORM, geprueft wird gegen eine Tatsache.
   (Queue-Zeilen, Pane-Text) liegt hinter dem DPA-Tor im naechsten Punkt.
 - Ob DPA und Privacy Policy des Anbieters das Senden von Fleet-Daten tragen: die Vertragstexte sind am
   2026-09-21 gelesen (`docs/messungen/2026-09-21-jev-vertragstexte-gelesen.md`) — kein Training auf
-  Input, aber keine Aufbewahrungsfrist, kein Loeschanspruch, unbefristet freie „Telemetry", ZDR nur
-  Enterprise. Tragbar fuer bereits oeffentliches Material; eine Freigabe gibt es weiterhin nicht. Bis
+  Input, aber keine feste Aufbewahrungsfrist (DPA), Loeschen auf Anfrage nur fuer personenbezogene
+  Daten und unter Zweck-/Gesetzesvorbehalt (Privacy Policy „Retention“), keine Loeschpflicht fuer
+  sonstige Kundendaten (MCA 10.3), unbefristet freie „Telemetry“ (MCA 4.1 c, 4.3), ZDR nur Enterprise
+  (Formel am 2026-09-23 gegen die Live-Texte nachgeschaerft; vorher pauschal „kein Loeschanspruch“). Tragbar fuer bereits oeffentliches Material; eine Freigabe gibt es weiterhin nicht. Bis
   dahin kein API-Aufruf mit Fleet-Daten. Vertraglich ausgeschlossen: Jev-Urteile als Trainingslabels
   fuer ein eigenes Modell (MCA 2.3 b).
 - Bestand der Schnittstelle: drei Tage oeffentlich, ein Anbieter, geschlossene Gewichte, Limits in

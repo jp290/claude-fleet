@@ -743,9 +743,18 @@ class Pane {
       e.preventDefault();
     });
     // THE PANE'S CORNER GROUP (Grammatik K4): one container, one base rule in index.html — no
-    // per-button absolute top/right arithmetic. Order left to right: ↻ ℹ 💬 ⇔ ↑ ↓ Aa ⚙, the gear
-    // rightmost (G5). Glyphs from src/icons.ts (G0.6), tooltips in owner words (G0.5), the toggle
-    // states as aria-pressed with "on" in ink (G1.3, CSS side). The onclick paths are untouched.
+    // per-button absolute top/right arithmetic. TWO ROWS (owner 2026-09-22: "die buttons die
+    // jeweils für den terminal oder chat-mode eigen's sind, in die zweite reihe"): the top row
+    // carries only what holds in BOTH views — ⚙ 💬 ℹ, ℹ RIGHTMOST, exactly on the pane corner —
+    // so the info toggle never moves, and the column's close box (see #boardhead's padding) can
+    // sit precisely on its spot: "auf genau der position ist, wo der button zum zuklappen ist
+    // (info tab) ausgefahren. So das ich quasi doppelklicken kann" — one spot, click opens, click
+    // again closes. That corner seat for ℹ is WHY the gear gives up its rightmost place here (G5
+    // Zuhause was written for the single row this round replaces). The view row carries the
+    // active view's own buttons (terminal: ↻ ⇔ — chat: ↑ ↓ Aa; the mapping is read from the
+    // display rules in index.html and pinned in e2e/slots.ts). Glyphs from src/icons.ts (G0.6),
+    // tooltips in owner words (G0.5), toggle states as aria-pressed with "on" in ink (G1.3,
+    // CSS side). The onclick paths are untouched.
     this.reloadBtn = el("button", "panereload") as HTMLButtonElement;
     this.reloadBtn.appendChild(icon("reload"));
     this.reloadBtn.title = "Neu verbinden — holt den Verlauf dieser Session neu vom Server";
@@ -801,9 +810,12 @@ class Pane {
     this.gearBtn.appendChild(icon("gear"));
     this.gearBtn.title = "Einstellungen öffnen";
     this.gearBtn.onclick = (e) => { e.stopPropagation(); openSettings(); };
+    const toolsTop = el("div", "ptrow ptboth");
+    toolsTop.append(this.gearBtn, this.viewBtn, this.boardBtn);
+    const toolsView = el("div", "ptrow ptview");
+    toolsView.append(this.reloadBtn, this.widthBtn, navUp, navDn, this.sizeBtn);
     this.toolsBox = el("div", "panetools");
-    this.toolsBox.append(this.reloadBtn, this.boardBtn, this.viewBtn, this.widthBtn, navUp, navDn, this.sizeBtn,
-      this.gearBtn);
+    this.toolsBox.append(toolsTop, toolsView);
     this.pastBar = el("div", "pastbar");
     this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.toolsBox);
     this.syncCornerButtons();

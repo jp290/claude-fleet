@@ -458,20 +458,23 @@
      glyphs from src/icons.ts (G0.6), "on" as ink on surface with the mute edge, never blue
      (G1.3 — state also as aria-pressed, set in src/client.ts). The gear is the group's rightmost
      button (G5 Zuhause); per-button rules below only decide VISIBILITY per view. */
-  .panetools { position: absolute; top: 8px; right: 10px; z-index: 6; display: flex; gap: 6px; align-items: center; }
+  .panetools { position: absolute; top: 8px; right: 10px; z-index: 6; display: flex; flex-direction: column;
+    gap: 6px; align-items: flex-end; }
+  .panetools .ptrow { display: flex; gap: 6px; align-items: center; }
   .panetools button { width: 30px; height: 26px; flex: none; display: flex; align-items: center; justify-content: center;
     padding: 0; border-radius: var(--r1); border: 1px solid var(--chat-edge); background: var(--chat-raised);
     color: var(--chat-mute); font-size: 13px; font-family: inherit; cursor: pointer; }
   .panetools button:hover { color: var(--chat-ink); }
   .panetools .ico { width: 14px; height: 14px; }
   .panetools button[aria-pressed="true"] { color: var(--chat-ink); border-color: var(--chat-mute); background: var(--chat-surface); }
-  /* visibility per view: session buttons are shown by JS (assign/poll). The view-bound trio keeps
-     ITS SEAT in both views (visibility, not display) — the group is right-anchored, so without the
-     reserved seats ℹ would drift whenever ⇔ swaps for ↑↓Aa. The owner's ask is that ℹ sits at the
-     SAME place in terminal and chat view; on the phone the seats collapse (mobile block). */
+  /* visibility per view: session buttons are shown by JS (assign/poll). The TOP row is the same
+     in both views (ℹ 💬 ⚙), so ℹ cannot drift; the view row swaps its members (↻ ⇔ terminal,
+     ↑ ↓ Aa chat) by visibility, not display — the row keeps its seat while they change. The
+     mapping is read from Pane's build and pinned in e2e/slots.ts; on the phone it collapses
+     (mobile block). */
   .promptnav, .chatsizebtn { visibility: hidden; }
   .pane.chat .promptnav, .pane.chat .chatsizebtn { visibility: visible; }
-  .pane.chat .termwidth { visibility: hidden; }
+  .pane.chat .termwidth, .pane.chat .panereload { visibility: hidden; }
   /* the width toggle's "on": the terminal takes the chat column's width, centred — the pane's own
      fit path reads the new box and tmux gets the new column count; no second resize path */
   .pane.tcolim .paneterm { left: 0; right: 0; width: min(var(--chat-col), 100%); margin-inline: auto; }
@@ -2237,7 +2240,13 @@
     font-family: var(--b-sans); color: var(--b-ink); -webkit-font-smoothing: antialiased; }
   #board button { font-family: inherit; }
   #board :focus-visible { outline: 1.5px solid var(--accent); outline-offset: 1px; border-radius: 5px; }
-  #board #boardhead { padding: 14px 16px 6px; font-size: 12px; font-weight: 600; color: var(--b-ink2); letter-spacing: .01em; }
+  /* the head's padding SETS the alignment the owner asked for (2026-09-22: "der button für die
+     info-leiste, auf genau der position ist, wo der button zum zuklappen ist (info tab)
+     ausgefahren" — one spot: ℹ opens, the box in the same place closes; the corner group's ℹ is
+     therefore RIGHTMOST in its row, on the pane corner). padding 13/16 + a 24px box puts
+     #boardclose's center at (W−28, 25), the ℹ center at #panes 3 + right 10 + half 30 = 28,
+     top 3 + 8 + half 26 = 24.5 → the same spot. Pinned in e2e/slots.ts. */
+  #board #boardhead { padding: 13px 16px 6px; font-size: 12px; font-weight: 600; color: var(--b-ink2); letter-spacing: .01em; }
   /* the close box carries its whole rule here: the pre-alias #boardclose base above is gone (D-4),
      the living bits (flex centering, cursor) moved in — nothing of the old palette is left */
   #board #boardclose { border: 0; background: none; color: var(--b-ink3); flex: none; width: 24px; height: 24px;

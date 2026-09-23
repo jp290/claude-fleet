@@ -2123,6 +2123,47 @@ export async function run(): Promise<void> {
         && !(cliSrc ?? "").includes('compOpts.addEventListener("keydown"')
         && !/addEventListener\("(pointerdown|keydown)"/.test(chatSrc ?? ""),
         JSON.stringify({ helper: popSrc !== null, popoverCalls: { client: popCount(cliSrc), chatsize: popCount(chatSrc) } }));
+      // ECKKNOPFE RUNDE 2 (owner 2026-09-22): the open column's close box sits EXACTLY where the
+      // corner group's top row sits when the column is closed — one spot, click opens, click
+      // again closes. Proven as arithmetic over the CSS constants that produce it (the browser
+      // measurement travels in the lane's report): #boardclose center = head padding + box/2;
+      // ℹ center = #panes padding + .panetools offset + button/2. Mutation probe: nudge either
+      // padding and dx or dy leaves the 2px budget.
+      {
+        const num = (s: string, re: RegExp): number => Number(re.exec(s)?.[1] ?? NaN);
+        const pair = (s: string): [number, number] => {
+          const m = /padding:\s*([\d.]+)px\s+([\d.]+)px/.exec(s);
+          return m ? [Number(m[1]), Number(m[2])] : [NaN, NaN];
+        };
+        const [headTop, headRight] = pair(cssBody("#board #boardhead"));
+        const closeCss = cssBody("#board #boardclose");
+        const toolsCss = cssBody(".panetools");
+        const cw = num(closeCss, /width:\s*([\d.]+)px/), ch = num(closeCss, /height:\s*([\d.]+)px/);
+        const toolsTop = num(toolsCss, /top:\s*([\d.]+)px/), toolsRight = num(toolsCss, /right:\s*([\d.]+)px/);
+        const btnCss = cssBody(".panetools button");
+        const bw = num(btnCss, /width:\s*([\d.]+)px/), bh = num(btnCss, /height:\s*([\d.]+)px/);
+        const panesPad = num(cssBody("#panes"), /padding:\s*([\d.]+)px/);
+        // ℹ is the top row's RIGHTMOST button: its center sits at the row's right edge minus half
+        // a button — row right edge = pane corner − panes padding − tools right offset
+        const closeCenter = [headRight + cw / 2, headTop + ch / 2];
+        const toggleCenter = [panesPad + toolsRight + bw / 2, panesPad + toolsTop + bh / 2];
+        const dx = Math.abs(closeCenter[0] - toggleCenter[0]);
+        const dy = Math.abs(closeCenter[1] - toggleCenter[1]);
+        check("client: #boardclose lands on the closed ℹ spot — centers within 2px at any width",
+          Number.isFinite(dx) && Number.isFinite(dy) && dx <= 2 && dy <= 2,
+          JSON.stringify({ closeCenter, toggleCenter, dx, dy }));
+      }
+      // …and the two rows split both-view from view-bound: ℹ 💬 ⚙ never move (top), the active
+      // view's own sit below — terminal ↻ ⇔, chat ↑ ↓ Aa (the mapping Pane's build encodes and
+      // index.html's visibility rules paint). Mutation probe: move widthBtn into toolsTop and
+      // this goes red.
+      check("client: the corner group's rows split both-view (⚙ 💬 ℹ) from view-bound (terminal ↻ ⇔ / chat ↑ ↓ Aa) — ℹ rightmost, on the corner the close box must land on",
+        cliSrc.includes("toolsTop.append(this.gearBtn, this.viewBtn, this.boardBtn)")
+        && cliSrc.includes("toolsView.append(this.reloadBtn, this.widthBtn, navUp, navDn, this.sizeBtn)")
+        && /flex-direction:\s*column/.test(cssBody(".panetools"))
+        && /visibility:\s*hidden/.test(cssBody(".pane.chat .termwidth, .pane.chat .panereload"))
+        && /visibility:\s*visible/.test(cssBody(".pane.chat .promptnav, .pane.chat .chatsizebtn")),
+        JSON.stringify({ tools: cssBody(".panetools"), viewRow: cssBody(".pane.chat .termwidth, .pane.chat .panereload") }));
       // b3dc378b: the chat view names what runs. The server passes the tool_use id and the
       // tool_result's tool_use_id through (TBlock id/ref); the client pairs a result to its call
       // by id — a subagent call shows "läuft" until the result lands — and the view carries a

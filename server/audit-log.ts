@@ -394,6 +394,11 @@ type AuditEvent =
   // nothing anywhere said so (measured 2026-09-07: slot 5 openedAt 1787497726285, bound 21.08.,
   // against a slot recycled into a lane). Detail names the dead occupation only.
   | "supervisor_binding_stale"
+  // THE PORTFOLIO READ GRANT (memory M4, server.ts#patchMemoryGrant / #transferMemoryGrant): the
+  // owner set or revoked a grant on one occupant, a generic succession carried it (same or narrower)
+  // to the successor, or a set failed to reach disk and was rolled back. Detail names grant id,
+  // revision, occupant, project count and views — never a repository path.
+  | "memory_grant"
   // the recorded MAIN binding learned the session id its pane discovered AFTER the bind
   // (backfillProgramMainSessionId). Detail names the program and the id that filled the `null`;
   // there is no row for the no-op case, because "nothing to fill" is not an event.

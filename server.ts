@@ -150,6 +150,7 @@ import {
   type ProgramFoundingV2, type ProgramFounding, type ProgramFoundingRead, type ProgramContent,
   type ProgramValidation, type SupervisorBinding, type ProgramDigest, type DispatchSpawn, type SlotContext,
   type SlotStreamOccupant, type TaskCriterionPart,
+  MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, type MemoryGrant, type MemoryGrantView,
 } from "./server/types";
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
 import { appendEvent, appendEventStrict, coalescedSaver, foreignStateOwner, readLedger, readEventLog,
@@ -2086,6 +2087,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   releasedBy: null,
   laneSuccessions: 0,
   laneSeats: [],
+  memoryGrant: null,
   lineageId: null,
   selfToken: randomBytes(16).toString("hex"),
   offset: 0,
@@ -2851,7 +2853,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
 // occupant is not bound). `task=`/`program=` only NARROW that scope; a foreign subject is a named
 // refusal, never an empty success. Everything else — the steward, an unbound session — gets
 // `no-scope`: the portfolio reach is the owner-granted cut M4 and is not faked here.
-const MEMORY_VIEWS = ["work", "sources", "evidence", "observations"] as const;
+const MEMORY_VIEWS = ["work", "sources", "evidence", "observations", "portfolio"] as const;
 type MemoryView = typeof MEMORY_VIEWS[number];
 const MEMORY_WORK_MAX_ROWS = 50;
 const MEMORY_PAGE_MAX_BYTES = 32 * 1024;
@@ -3463,6 +3465,317 @@ async function memoryObservationsView(s: Slot, scope: Extract<MemoryScope, { ok:
       "a sample is an observation of its time, never today's state and never a gate"],
     unknown,
   });
+}
+
+// --- M4: THE PORTFOLIO (view=portfolio; task 41641179) ---------------------------------------
+// The project memories FOLDED: one bounded projection per project the reader may see, and totals
+// whose every value names the project slices it sums and each slice's source version. No project
+// memory is copied anywhere — the fold is computed from the carriers M1/M3 read, on each request.
+//
+// WHO MAY FOLD WHAT. The bound Supervisor keeps its existing cross-program reach (every project this
+// server knows). Anyone else needs a READ GRANT the owner set on its exact occupant and line
+// (MemoryGrant; PATCH /api/slots/:id/memory-grant): the grant names the projectKeys and projections.
+// A label ("Orchestrator"), a model or a lane grants nothing — no-grant / lane-scope 409. The grant
+// is read permission only: no write, dispatch or land path consults it.
+//
+// A PROJECT WITHOUT FACTS IS UNKNOWN, NOT EMPTY: a granted key no carrier names now is listed with
+// state "unknown" and left out of every total (`partial: true`); an unreadable source marks the
+// projects it feeds `coverage: "incomplete"` and never shrinks or grows the scope.
+const MEMORY_PORTFOLIO_PAGE_MAX = 10;
+const MEMORY_PORTFOLIO_SNAPSHOT_SCAN = 256 * 1024;
+// the projects this server can name now: the dispatch repo, every live row's repo, every lane's repo
+function knownProjects(): Map<string, string> {
+  const out = new Map<string, string>();
+  const add = (repo: string | null | undefined): void => {
+    if (!repo) return;
+    const c = repoCanon(repo);
+    out.set(projectKeyOf(c), c);
+  };
+  add(DISPATCH_REPO);
+  for (const t of tasks) if (t.status !== "archived") add(t.repo ?? DISPATCH_REPO);
+  for (const s of slots) if (s.cwd && s.worktree) add(s.worktree.repo);
+  return out;
+}
+// the grant IN FORCE on this occupant: a set whose write is still in flight is not yet in force
+// (the previous grant is), a revoke in flight already is (nothing is) — memoryGrantInFlight
+const memoryGrantInFlight = new Map<number, MemoryGrant | null>();
+function effectiveGrant(s: Slot): MemoryGrant | null {
+  const g = memoryGrantInFlight.has(s.id) ? memoryGrantInFlight.get(s.id) ?? null : s.memoryGrant;
+  return g && g.revokedAt === null && g.occupant.slot === s.id && g.occupant.openedAt === s.openedAt
+    && g.lineageId === s.lineageId ? g : null;
+}
+type PortfolioScope =
+  | { ok: true; principal: "supervisor" | "grant"; keys: string[]; views: MemoryGrantView[]; grant: MemoryGrant | null }
+  | { ok: false; response: Response };
+function memoryPortfolioScope(s: Slot, url: URL): PortfolioScope {
+  if (s.worktree)
+    return memoryRefusal("lane-scope", "a lane reads its own task only — the portfolio is folded for the Supervisor or an owner-granted occupant");
+  const isSupervisor = !!supervisor && supervisor.slot === s.id && supervisor.openedAt === s.openedAt;
+  const grant = effectiveGrant(s);
+  let scope: Extract<PortfolioScope, { ok: true }>;
+  if (isSupervisor) scope = { ok: true, principal: "supervisor", keys: [...knownProjects().keys()].sort(), views: [...MEMORY_GRANT_VIEWS], grant: null };
+  else if (grant) scope = { ok: true, principal: "grant", keys: [...grant.projectKeys], views: [...grant.views], grant };
+  else return memoryRefusal("no-grant", `no read grant is in force on this occupant (slot ${s.id}, openedAt ${s.openedAt})`
+    + `${isOrchestratorLabel(s.label) ? " — a role label grants nothing" : ""}; the owner sets one with PATCH /api/slots/${s.id}/memory-grant`);
+  const want = url.searchParams.get("project");
+  if (want !== null) {
+    if (!scope.keys.includes(want))
+      return memoryRefusal("foreign-project", `project ${want.slice(0, 32)} is not in this reader's scope (${scope.keys.length} project(s)) — project= only narrows`);
+    scope = { ...scope, keys: [want] };
+  }
+  return scope;
+}
+interface PortfolioCursor { slot: number; openedAt: number; principal: string; grantId: string | null; revision: number;
+  keys: string[]; next: number; issuedAt: number }
+const portfolioCursors = new Map<string, PortfolioCursor>();
+const shortHash = (v: unknown): string => createHash("sha256").update(JSON.stringify(v)).digest("hex").slice(0, 16);
+
+async function memoryPortfolioView(s: Slot, scope: Extract<PortfolioScope, { ok: true }>, url: URL): Promise<Response> {
+  const now = Date.now();
+  for (const [id, c] of portfolioCursors) if (now - c.issuedAt > MEMORY_CURSOR_TTL_MS) portfolioCursors.delete(id);
+  const limitRaw = Number(url.searchParams.get("limit") ?? MEMORY_PORTFOLIO_PAGE_MAX);
+  const limit = Number.isSafeInteger(limitRaw) && limitRaw >= 1 ? Math.min(limitRaw, MEMORY_PORTFOLIO_PAGE_MAX) : MEMORY_PORTFOLIO_PAGE_MAX;
+  const given = url.searchParams.get("cursor");
+  let keys = scope.keys;
+  let from = 0;
+  if (given !== null) {
+    const c = portfolioCursors.get(given);
+    portfolioCursors.delete(given);
+    // REVOKE LOCKS OLD CURSORS: a cursor names the grant id AND revision it was issued under, so
+    // any set, revoke or transfer since then makes it stale — never a page under another scope
+    if (!c || c.slot !== s.id || c.openedAt !== s.openedAt || c.principal !== scope.principal
+      || c.grantId !== (scope.grant?.grantId ?? null) || c.revision !== (scope.grant?.revision ?? 0))
+      return json({ refusal: "cursor-stale", error: "unknown or expired cursor, or the grant it was issued under changed or was revoked — start a fresh read" }, 409);
+    keys = c.keys.filter((k) => scope.keys.includes(k));
+    from = c.next;
+  }
+  const pageKeys = keys.slice(from, from + limit);
+  const known = knownProjects();
+  const [outcomeLedger, auditLedger] = await Promise.all([
+    readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE),
+    readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE),
+  ]);
+  // THE NEWEST IDENTITY-BEARING SNAPSHOT (M3), read backwards from the active generation under a
+  // small budget: the one observation every project's lane summary is taken from
+  let sample: { row: Record<string, unknown>; ref: { file: string; offset: number } } | null = null;
+  let sampleWhy = "no snapshot row carrying lane identity (bootEpoch) was found in the newest generation's last 256 KiB";
+  if (scope.views.includes("observations")) {
+    try {
+      const cut = await ledgerCut(STATE_SNAPSHOT_FILE);
+      const g = cut[0]!;
+      const path = g.ino !== null ? resolveGeneration(STATE_SNAPSHOT_FILE, g) : null;
+      if (path) await scanGenerationBackward(path, g.end, MEMORY_PORTFOLIO_SNAPSHOT_SCAN, (line) => {
+        if (line.row && typeof line.row.bootEpoch === "number" && Array.isArray(line.row.lanes)) {
+          sample = { row: line.row, ref: { file: basename(STATE_SNAPSHOT_FILE), offset: line.start } };
+          return "stop";
+        }
+        return "take";
+      });
+      else sampleWhy = "state-snapshots.jsonl has no active generation";
+    } catch (e) {
+      sampleWhy = `state-snapshots.jsonl could not be read: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}`;
+    }
+  }
+  const unknown: string[] = [];
+  const projects: Record<string, unknown>[] = [];
+  const sumOf: Record<string, { value: number; parts: { projectKey: string; value: number; sourceVersion: string }[] }> = {};
+  const add = (name: string, pk: string, value: number, version: string): void => {
+    const t = sumOf[name] ?? { value: 0, parts: [] };
+    sumOf[name] = { value: t.value + value, parts: [...t.parts, { projectKey: pk, value, sourceVersion: version }] };
+  };
+  for (const pk of pageKeys) {
+    const repo = known.get(pk);
+    if (!repo) {
+      projects.push({ projectKey: pk, state: "unknown",
+        why: "no carrier this server reads names this project now (no live row, lane or dispatch repo) — unknown, not empty" });
+      continue;
+    }
+    const pUnknown: string[] = [];
+    const section: Record<string, unknown> = { projectKey: pk, state: "known", repo: basename(repo) };
+    const versionParts: Record<string, unknown> = {};
+    const numbers: [string, number][] = [];
+    if (scope.views.includes("work")) {
+      const rows = tasks.filter((t) => t.status !== "archived" && (t.repo ?? DISPATCH_REPO) !== ""
+        && projectKeyOf(t.repo ?? DISPATCH_REPO) === pk);
+      const byStatus = { pending: 0, queued: 0, sent: 0, done: 0 };
+      for (const t of rows) if (t.status !== "archived") byStatus[t.status]++;
+      const held = rows.filter((t) => t.hold);
+      const lanes = slots.filter((x) => x.cwd && x.worktree && projectKeyOf(x.worktree.repo) === pk);
+      const sameRepo = (r: string): boolean => repoCanon(r) === repo;
+      const queued = [...auditQueue].filter(([r]) => sameRepo(r)).reduce((n, [, q]) => n + q.covers.length, 0);
+      const running = !!runningPostLandAudit && sameRepo(runningPostLandAudit.repo);
+      const lastAudit = [...auditLedger.rows].reverse().find((r) => typeof r.repo === "string" && sameRepo(r.repo));
+      const lands = outcomeLedger.rows.filter((r) => typeof r.repo === "string" && sameRepo(r.repo) && r.disposition === "landed");
+      section.work = {
+        tasks: byStatus, held: held.length, heldWithoutGrund: held.filter((t) => !t.hold?.grund).length,
+        programs: [...new Set(rows.map((t) => t.programId).filter((p): p is string => !!p))].length,
+        lanes: lanes.length,
+        audit: { running, queued, last: lastAudit ? { result: lastAudit.result ?? null, at: lastAudit.at ?? null } : null },
+        landsReadable: lands.length,
+        basis: { rows: "state (fleet.json, in-memory copy)", audit: "volatile run + persisted audit queue + post-land-audits.jsonl (.1 + active)",
+          lands: "lane-outcomes.jsonl (.1 + active)" },
+      };
+      versionParts.state = rows.map((t) => [t.id, t.status, t.hold?.at ?? null]).concat(lanes.map((x) => [x.id, x.openedAt, x.taskId]));
+      versionParts.audit = [running, queued, lastAudit?.at ?? null, lands.length, outcomeLedger.total, auditLedger.total];
+      for (const [k, v] of Object.entries(byStatus)) numbers.push([`tasks.${k}`, v]);
+      numbers.push(["held", held.length], ["lanes", lanes.length], ["audit.queued", queued]);
+      if (outcomeLedger.malformed > 0) pUnknown.push(`${outcomeLedger.malformed} malformed lane-outcomes rows: a land of this project may be missing.`);
+      if (auditLedger.malformed > 0) pUnknown.push(`${auditLedger.malformed} malformed post-land-audits rows: this project's last audit may be another.`);
+    }
+    if (scope.views.includes("observations")) {
+      const found = sample as { row: Record<string, unknown>; ref: { file: string; offset: number } } | null;
+      if (!found) {
+        section.observations = { state: "unknown", why: sampleWhy };
+        pUnknown.push(`observations: ${sampleWhy}.`);
+      } else {
+        const els = (found.row.lanes as Record<string, unknown>[]).filter((l) => l && l.projectKey === pk);
+        section.observations = { sampleAt: found.row.ts ?? null, bootEpoch: found.row.bootEpoch, lanes: els.length,
+          alive: els.filter((l) => l.alive === true).length,
+          activity: { output: els.filter((l) => l.obs === "output").length, boot: els.filter((l) => l.obs === "boot").length,
+            none: els.filter((l) => l.obs === "none").length },
+          sourceRef: found.ref };
+        versionParts.snapshot = found.ref;
+      }
+    }
+    const sourceVersion = shortHash(versionParts);
+    section.sourceVersion = sourceVersion;
+    section.coverage = pUnknown.length ? "incomplete" : "complete";
+    section.unknown = pUnknown;
+    for (const [name, v] of numbers) add(name, pk, v, sourceVersion);
+    projects.push(section);
+  }
+  const unknownProjects = projects.filter((p) => p.state === "unknown").length;
+  if (unknownProjects > 0)
+    unknown.push(`${unknownProjects} project(s) in scope have no readable facts now: listed as unknown and left out of every total — the totals are partial, not zero.`);
+  let nextCursor: string | null = null;
+  if (from + limit < keys.length) {
+    if (portfolioCursors.size >= MEMORY_CURSOR_MAX) portfolioCursors.delete(portfolioCursors.keys().next().value!);
+    nextCursor = randomBytes(16).toString("hex");
+    portfolioCursors.set(nextCursor, { slot: s.id, openedAt: s.openedAt, principal: scope.principal,
+      grantId: scope.grant?.grantId ?? null, revision: scope.grant?.revision ?? 0, keys, next: from + limit, issuedAt: now });
+  }
+  return json({
+    schema: "fleet.memory.portfolio/v1", view: "portfolio",
+    scope: { principal: scope.principal, slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null,
+      grant: scope.grant ? { grantId: scope.grant.grantId, revision: scope.grant.revision } : null,
+      projectKeys: keys, views: scope.views },
+    generatedAt: Date.now(), bootEpoch: SERVER_BOOT_AT,
+    projects,
+    // every total names its parts: the value of each project slice and that slice's source version
+    totals: { over: "the projects on this page with state known", partial: unknownProjects > 0, sums: sumOf },
+    page: { projects: pageKeys.length, from, limit, of: keys.length },
+    coverage: nextCursor ? "incomplete" : projects.some((p) => p.coverage === "incomplete" || p.state === "unknown") ? "incomplete" : "complete",
+    nextCursor,
+    notes: ["a projectKey is opaque: sha256 over the canonical repository path, 16 hex",
+      "this is a fold of read-only projections — it grants no write, dispatch or land"],
+    unknown,
+  });
+}
+
+// THE GRANT WRITER — PATCH /api/slots/:id/memory-grant, behind the owner gate (a self credential
+// never reaches it). Set: {expectedOpenedAt, expectedRevision, projectKeys, views}; revoke:
+// {expectedOpenedAt, expectedRevision, revoke: true}. A wrong occupant or revision is a 409 and
+// changes nothing. THE WRITE COMES BEFORE THE RIGHT: the new record is persisted with saveStateNow
+// first and is only in force once that resolved and the occupant is re-proved; a failed write
+// rolls the slot back to its previous grant — zero effective new grants.
+async function patchMemoryGrant(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
+  if (!s.cwd) return json({ refusal: "not-active", error: "slot not active" }, 409);
+  if (s.worktree)
+    return json({ refusal: "lane-scope", error: "a lane reads its own task only — a read grant is set on a non-lane session" }, 409);
+  const openedAt = s.openedAt;
+  if (body?.expectedOpenedAt !== openedAt)
+    return json({ refusal: "occupant-changed", error: `expectedOpenedAt must name this slot's current occupant (${openedAt})` }, 409);
+  const current = s.memoryGrant;
+  const revision = current?.revision ?? 0;
+  if (body?.expectedRevision !== revision)
+    return json({ refusal: "revision-mismatch", error: `expectedRevision must be the grant's current revision (${revision})`, revision }, 409);
+  if (memoryGrantInFlight.has(s.id) || successionInflight.has(s.selfToken))
+    return json({ refusal: "in-flight", error: "another grant write or a succession of this occupant is in flight — retry" }, 409);
+  const at = Date.now();
+  let next: MemoryGrant;
+  if (body.revoke === true) {
+    if (!current || current.revokedAt !== null) return json({ refusal: "nothing-to-revoke", error: "no grant is set on this occupant" }, 409);
+    next = { ...current, revision: revision + 1, revokedAt: at };
+  } else {
+    const keys = body.projectKeys;
+    const views = body.views;
+    const known = knownProjects();
+    if (!Array.isArray(keys) || keys.length < 1 || keys.length > MEMORY_GRANT_PROJECTS_MAX
+      || !keys.every((k) => typeof k === "string" && PROJECT_KEY_RE.test(k)) || new Set(keys).size !== keys.length)
+      return json({ refusal: "bad-projects", error: `projectKeys must be 1–${MEMORY_GRANT_PROJECTS_MAX} distinct 16-hex keys (GET this route lists the known ones)` }, 400);
+    const unknownKeys = (keys as string[]).filter((k) => !known.has(k));
+    if (unknownKeys.length)
+      return json({ refusal: "unknown-project", error: `not a project this server knows now: ${unknownKeys.join(", ")}` }, 400);
+    if (!Array.isArray(views) || views.length < 1 || new Set(views).size !== views.length
+      || !views.every((v) => (MEMORY_GRANT_VIEWS as readonly unknown[]).includes(v)))
+      return json({ refusal: "bad-views", error: `views must be distinct values of ${MEMORY_GRANT_VIEWS.join(", ")}` }, 400);
+    next = { v: 1, grantId: current && current.revokedAt === null ? current.grantId : randomBytes(12).toString("hex"),
+      revision: revision + 1, issuedBy: "owner-principal", issuedAt: at, lineageId: s.lineageId,
+      occupant: { slot: s.id, openedAt }, projectKeys: [...(keys as string[])].sort(),
+      views: MEMORY_GRANT_VIEWS.filter((v) => (views as unknown[]).includes(v)), revokedAt: null, transferredFrom: null };
+  }
+  memoryGrantInFlight.set(s.id, next.revokedAt !== null ? null : effectiveGrant(s));
+  s.memoryGrant = next;
+  try {
+    await saveStateNow();
+  } catch (e) {
+    if (s.openedAt === openedAt) s.memoryGrant = current;
+    memoryGrantInFlight.delete(s.id);
+    const why = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+    audit("memory_grant", s.id, `write failed, rolled back to revision ${revision}: ${why}`);
+    return json({ refusal: "not-persisted", error: `the grant could not be written to disk (${why}) — nothing changed; revision stays ${revision}` }, 500);
+  }
+  memoryGrantInFlight.delete(s.id);
+  if (s.openedAt !== openedAt)
+    return json({ refusal: "occupant-changed", error: "the slot changed occupant while the grant was written — the new occupant holds nothing" }, 409);
+  audit("memory_grant", s.id, `${next.revokedAt !== null ? "revoked" : "set"} grant ${next.grantId} revision ${next.revision} `
+    + `on openedAt ${openedAt}: ${next.projectKeys.length} project(s), views ${next.views.join("+")} (owner-principal)`);
+  return json({ ok: true, grant: next });
+}
+function memoryGrantView(s: Slot): Response {
+  return json({ slot: s.id, openedAt: s.cwd ? s.openedAt : null, lineageId: s.lineageId, grant: s.memoryGrant,
+    inForce: s.cwd ? effectiveGrant(s) !== null : false,
+    knownProjects: [...knownProjects()].map(([projectKey, repo]) => ({ projectKey, repo })) });
+}
+
+// THE SUCCESSION CARRY (generic rail only — the Orchestrator's and every unbound line's). A grant
+// in force moves to the successor of the SAME line, either whole or narrowed by the succeed body's
+// `memoryGrant: {projectKeys?, views?}`; a key or view outside it is scope growth and refused before
+// anything ends. The Supervisor and Program-MAIN rails carry no grant: those roles hold their reach
+// from their binding, and a grant set on such an occupant ends with it.
+function memoryGrantCarry(s: Slot, raw: unknown):
+  { ok: true; carry: MemoryGrant | null } | { ok: false; status: number; refusal: string; error: string } {
+  const g = effectiveGrant(s);
+  if (raw === undefined) return { ok: true, carry: g };
+  if (!g) return { ok: false, status: 409, refusal: "no-grant", error: "memoryGrant narrows a read grant this session holds — it holds none" };
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    return { ok: false, status: 400, refusal: "bad-grant", error: "memoryGrant must be an object {projectKeys?, views?}" };
+  const r = raw as { projectKeys?: unknown; views?: unknown };
+  const keys = r.projectKeys ?? g.projectKeys;
+  const views = r.views ?? g.views;
+  if (!Array.isArray(keys) || keys.length < 1 || new Set(keys).size !== keys.length
+    || !Array.isArray(views) || views.length < 1 || new Set(views).size !== views.length)
+    return { ok: false, status: 400, refusal: "bad-grant", error: "memoryGrant.projectKeys/views must be non-empty distinct lists" };
+  const grown = [...keys.filter((k) => !g.projectKeys.includes(k as string)), ...views.filter((v) => !g.views.includes(v as MemoryGrantView))];
+  if (grown.length)
+    return { ok: false, status: 409, refusal: "scope-growth", error: `a succession keeps or narrows the grant, never widens it: ${grown.map(String).join(", ").slice(0, 200)} is not in it` };
+  return { ok: true, carry: { ...g, projectKeys: [...(keys as string[])].sort(), views: MEMORY_GRANT_VIEWS.filter((v) => views.includes(v)) } };
+}
+// called in the SAME synchronous step that writes the line record onto the successor
+function transferMemoryGrant(successor: Slot, carry: MemoryGrant, from: { slot: number; openedAt: number }): void {
+  successor.memoryGrant = { ...carry, revision: carry.revision + 1, issuedBy: "succession", issuedAt: Date.now(),
+    lineageId: successor.lineageId, occupant: { slot: successor.id, openedAt: successor.openedAt },
+    transferredFrom: { slot: from.slot, openedAt: from.openedAt } };
+  audit("memory_grant", successor.id, `transferred grant ${carry.grantId} revision ${carry.revision + 1} from openedAt ${from.openedAt} `
+    + `to ${successor.openedAt}: ${carry.projectKeys.length} project(s), views ${carry.views.join("+")} (succession)`);
+}
+
+// the orchestrating session's start pointer (≤ 512 B, e2e/programs.ts measures the delivered text)
+function memoryPortfolioPointer(): string {
+  return `YOUR PORTFOLIO MEMORY: GET http://${HOST}:${PORT}/api/self/memory?view=portfolio (same header)
+folds each project an owner-set read grant names (PATCH /api/slots/<id>/memory-grant, owner only);
+every total names its project slices and their source versions. No grant = 409 no-grant: a label
+grants nothing. Read it on demand, never copy its tables into a handover.`;
 }
 
 // THE START POINTER, ≤ 512 UTF-8 bytes by contract (e2e/self-token.ts measures the delivered
@@ -4454,11 +4767,12 @@ function stateSnapshot(): string {
     container: string | null; containerContext: string | null;
     taskId: string | null; originId: string | null; programId: string | null;
     releasedBy: "owner" | "machine" | null; laneSuccessions: number; laneSeats?: LaneSeat[]; lineageId: string | null; selfToken: string;
+    memoryGrant?: MemoryGrant;
     browser?: true; context?: SlotContext; sleeping?: SlotSleep }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -6935,6 +7249,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // session's outcome row. The dispatcher stamps it back immediately after this call for the one
   // case that has an answer; every other open (hand-opened lane, plain checkout) genuinely has none
   s.lineageId = null; // a recycled slot is not the role line; the succession rails stamp it back
+  s.memoryGrant = null; // ...nor its read grant: the generic succession rail alone carries one across
   s.laneSuccessions = 0; // ...and a recycled slot starts a NEW lane's count at zero. succeedLane is
   // the one caller that stamps it back (prior + 1) right after this call, for the one case where
   // the slot keeps the same worktree and the same work across the session boundary
@@ -7118,6 +7433,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.originId = null;
   s.programId = null;
   s.releasedBy = null;
+  s.memoryGrant = null;
   detachSlotTasks(s.id, closedNote);
   for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
   shares = shares.filter((x) => x.slot !== s.id);
@@ -9649,6 +9965,8 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       // byte for byte as before this cut, and a second channel beside it could disagree with it
       if (namesChannel)
         return json({ error: "a Program-MAIN succession takes no intent or pointer — the Program record is its handover, and its founding brief carries the optional `carry`" }, 409);
+      if (body?.memoryGrant !== undefined)
+        return json({ refusal: "no-carry", error: "the Program-MAIN rail carries no read grant — its reach is its Program binding" }, 409);
       // AFTER the rail classification and BEFORE succeedProgramMain, which is where the slot
       // opens. A Standard Program never reaches this line's body, so `carry` keeps its exact
       // meaning and its exact bytes on that rail — which is what the 2026-09-08 handover cut
@@ -9678,7 +9996,14 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
         sessionId: seatSessionId(s.sessionId), cwd: predecessorIdentity.cwd },
       captureLineageObligations({ slot: predecessorIdentity.slot, openedAt: predecessorIdentity.openedAt }), channel);
     if (typeof draft === "string") return json({ error: draft }, 409);
-    if (isSupervisor) return await succeedSupervisor(s, label, carry, spawn, predecessorIdentity, draft);
+    if (isSupervisor) {
+      if (body?.memoryGrant !== undefined)
+        return json({ refusal: "no-carry", error: "the Supervisor rail carries no read grant — its reach is its binding" }, 409);
+      return await succeedSupervisor(s, label, carry, spawn, predecessorIdentity, draft);
+    }
+    // THE READ GRANT rides the generic line whole or narrowed, judged BEFORE anything ends
+    const grantCarry = memoryGrantCarry(s, body?.memoryGrant);
+    if (!grantCarry.ok) return json({ refusal: grantCarry.refusal, error: grantCarry.error }, grantCarry.status);
 
     // EVERYTHING THE BRIEF READS IS READ WHILE THE PREDECESSOR STILL STANDS (respawnInPlace): the
     // cwd, the draft and the successor's label. A git read that fails here refuses nothing and ends
@@ -9710,6 +10035,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       // would leave the successor's GET /api/self without its handover on every delivery failure.
       const openedAt = s.openedAt;
       const record = writeLineageHandover(draft, s, Date.now());
+      if (grantCarry.carry) transferMemoryGrant(s, grantCarry.carry, predecessorIdentity);
       try {
         await saveStateNow();
       } catch (e) {
@@ -30689,6 +31015,8 @@ function buildOrchestratorSpawnBrief(anchorBlock: string): string {
     "1. Führe ./state.sh aus.",
     "2. Führe ./register.sh aus.",
     "3. Lies das Board und entscheide aus den Fakten den nächsten begrenzten Portfolio-Akt.",
+    "",
+    memoryPortfolioPointer(),
   ].join("\n") + anchorBlock;
 }
 
@@ -30705,6 +31033,8 @@ function buildOrchestratorSuccessionBrief(steps: readonly string[], carry: strin
     "Beginne exakt in dieser Reihenfolge:",
     ...steps,
     ...next,
+    "",
+    memoryPortfolioPointer(),
   ].join("\n") + anchorBlock;
 }
 
@@ -33405,6 +33735,17 @@ if (existsSync(STATE_FILE)) {
           s.laneSeats = pse.map(laneSeatFrom).filter((x): x is LaneSeat => x !== null).slice(-LANE_SEATS_MAX);
         const pli = (v as { lineageId?: unknown }).lineageId;
         if (typeof pli === "string" && LINEAGE_ID_RE.test(pli)) s.lineageId = pli;
+        // THE READ GRANT comes back only onto the exact occupant and line it names, and never onto a
+        // lane: any doubt (malformed, another openedAt, another line) drops it — a boot that cannot
+        // confirm a grant refuses it, it does not guess (MemoryGrant; docs/self-api.md §memory)
+        const pmg = (v as { memoryGrant?: unknown }).memoryGrant;
+        if (pmg !== undefined) {
+          const g = loadMemoryGrant(pmg);
+          const wtRaw = (v as { worktree?: unknown }).worktree;
+          if (g && g.occupant.slot === s.id && g.occupant.openedAt === s.openedAt && g.lineageId === s.lineageId
+            && (wtRaw === undefined || wtRaw === null)) s.memoryGrant = g;
+          else console.log(`[fleet] slot ${s.id}: persisted memory grant dropped at boot — it does not name this occupant and line exactly`);
+        }
         const wt = (v as { worktree?: unknown }).worktree;
         if (typeof wt === "object" && wt !== null
           && typeof (wt as { repo?: unknown }).repo === "string" && typeof (wt as { branch?: unknown }).branch === "string") {
@@ -36571,6 +36912,17 @@ Bun.serve<WSData>({
       const view = url.searchParams.get("view") ?? "work";
       if (!MEMORY_VIEWS.includes(view as MemoryView))
         return json({ refusal: "bad-view", error: `view must be one of ${MEMORY_VIEWS.join(", ")}` }, 400);
+      if (view === "portfolio") {
+        const pScope = memoryPortfolioScope(s, url);
+        if (!pScope.ok) return pScope.response;
+        const folded = await memoryPortfolioView(s, pScope, url);
+        const g = effectiveGrant(s);
+        if (s.openedAt !== openedAt || !s.selfToken || !secretEq(given, s.selfToken))
+          return json({ refusal: "occupant-changed", error: "the slot changed occupant while this read ran — nothing of the new occupant's is served on the old credential" }, 409);
+        if (pScope.principal === "grant" && (g?.grantId !== pScope.grant?.grantId || g?.revision !== pScope.grant?.revision))
+          return json({ refusal: "grant-changed", error: "the read grant was changed or revoked while this read ran — start a fresh read" }, 409);
+        return folded;
+      }
       const scope = await memoryScopeFor(s, url);
       if (!scope.ok) return scope.response;
       const answer = view === "evidence" ? await memoryEvidenceView(s, scope, url)
@@ -38041,6 +38393,15 @@ Bun.serve<WSData>({
     // Attended Codex recovery: owner-only by POSITION, deliberately NOT in the 2 s poll (one bounded full
     // historical walk, identity metadata only, never transcript content). No pane-lifetime window: an
     // older manually resumed conversation is exactly what the owner is here to identify.
+    // THE PORTFOLIO READ GRANT (memory M4; docs/self-api.md §memory): owner-only by POSITION — a
+    // self credential is 401 here like on every owner route. GET lists the grant and the project
+    // keys a grant may name; PATCH sets or revokes it against the expected occupant and revision.
+    const grantMatch = /^\/api\/slots\/(\d+)\/memory-grant$/.exec(url.pathname);
+    if (grantMatch && (req.method === "GET" || req.method === "PATCH")) {
+      const s = slotFrom(grantMatch[1]);
+      if (!s) return json({ error: "unknown slot" }, 404);
+      return req.method === "GET" ? memoryGrantView(s) : await patchMemoryGrant(s, await readJson(req));
+    }
     const codexCandidatesMatch = /^\/api\/slots\/(\d+)\/codex-candidates$/.exec(url.pathname);
     if (req.method === "GET" && codexCandidatesMatch) {
       const s = slotFrom(codexCandidatesMatch[1]);

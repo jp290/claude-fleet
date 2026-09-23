@@ -80,6 +80,9 @@ export interface TaskCardBody {
 export interface RawCard {
   ziel?: unknown; rolle?: unknown; surface?: unknown;
   done?: unknown; verify?: unknown; verboten?: unknown; program?: unknown; size?: unknown; after?: unknown;
+  // set only by the filing-format parser: header lines that stood AFTER the block it read. The
+  // model path never carries one, so absence is the case for every other reading.
+  strayHeaderLines?: unknown;
 }
 
 export interface CardValidationContext {
@@ -219,6 +222,13 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   if (!verify) gaps.push("verify: no command named");
   else if (!aliased && !namesChainStep(verify) && !namesClarifyClose(verify))
     gaps.push(`verify: "${verify}" names no known chain step (${LOCAL_PROOF_STEPS.join(", ")})`);
+  // A HEADER LINE THE PARSER READ PAST (set only by the filing-format parser): a field whose value
+  // ran over more than one line ends the header block on that line, and every key from there on
+  // was never filed — the reading came back valid with a silently empty field (measured 2026-09-20,
+  // row d3f73751: valid:true, verboten [], the constraint bytes inside ziel). Each stray line is a
+  // named refusing gap; the parser itself stays a non-guessing reader.
+  for (const line of list(raw.strayHeaderLines))
+    gaps.push(`format: header line "${line.slice(0, 80)}" stands after the header block — its key is not filed (a field above it ran over more than one line)`);
 
   const rawRole = (raw.rolle && typeof raw.rolle === "object" ? raw.rolle : {}) as Record<string, unknown>;
   const roleText = (key: "harness" | "model" | "effort"): string => typeof rawRole[key] === "string" ? (rawRole[key] as string).trim() : "";
@@ -471,6 +481,10 @@ export function parseFormattedCard(text: string): RawCard | null {
   // the first PARAGRAPH, not the first line: a goal written over two lines is one goal, and
   // `text1` collapses the join to the single sentence every other card path stores.
   const rest = lines.slice(at);
+  // a line after the block that still carries a header key is not prose but an unfiled field: the
+  // only way one gets past the block is a value above that reached for a second line. Collected,
+  // never guessed at — the validator names each one as a gap.
+  const strayHeaderLines = rest.filter((line) => FORMAT_LINE.test(line)).map((line) => line.trim());
   const from = rest.findIndex((line) => line.trim());
   const blank = from < 0 ? -1 : rest.findIndex((line, i) => i > from && !line.trim());
   const prose = from < 0 ? title : rest.slice(from, blank < 0 ? rest.length : blank).join(" ");
@@ -481,6 +495,7 @@ export function parseFormattedCard(text: string): RawCard | null {
     done: field("DONE"), verify: field("VERIFY"), verboten: formatPhrases(field("VERBOTEN")),
     ...(size ? { size } : {}),
     after: formatTokens(field("NACH")),
+    ...(strayHeaderLines.length ? { strayHeaderLines } : {}),
   };
 }
 

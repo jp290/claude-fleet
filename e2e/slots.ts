@@ -23,8 +23,18 @@ export async function run(): Promise<void> {
     JSON.stringify(fixed.slots.map((s) => s.id)));
 
   const separateLanes: { slot: number; cwd: string }[] = [];
+  const tmuxEnvKeys = ["FLEET_VERIFY_CMD", "FLEET_SEPARATE_LANE_SLOTS", "FLEET_MAX_SESSIONS"];
+  const tmuxEnvBefore = await Promise.all(tmuxEnvKeys.map(async (key) => {
+    const shown = await tmuxOut("show-environment", "-g", key);
+    return shown.code === 0 ? shown.out.slice(key.length + 1).trimEnd() : null;
+  }));
+  const restartSeparate = (enabled: boolean, max: number): Promise<void> => restartSrv({
+    FLEET_SEPARATE_LANE_SLOTS: enabled ? "1" : "0", FLEET_MAX_SESSIONS: String(max),
+    FLEET_E2E_COMPOSER_MODE: process.env.FLEET_E2E_COMPOSER_MODE ?? "",
+    FLEET_E2E_COMPOSER_STATE: process.env.FLEET_E2E_COMPOSER_STATE ?? "",
+  });
   try {
-    await restartSrv({ FLEET_SEPARATE_LANE_SLOTS: "1", FLEET_MAX_SESSIONS: "16" });
+    await restartSeparate(true, 16);
     const openedMains: Response[] = [];
     for (let id = 1; id <= 16; id++) openedMains.push(await post(`/api/slots/${id}/open`, { cwd: REPO }));
     check("separate places allow 16 MAINs under the default 16-session ceiling",
@@ -48,7 +58,7 @@ export async function run(): Promise<void> {
     check("one MAIN plus 15 lanes refuses the next lane at FLEET_MAX_SESSIONS",
       fullMixed.status === 409 && !!fullMixedBody.error?.includes("FLEET_MAX_SESSIONS"),
       JSON.stringify(fullMixedBody));
-    await restartSrv({ FLEET_SEPARATE_LANE_SLOTS: "1", FLEET_MAX_SESSIONS: "16" });
+    await restartSeparate(true, 16);
     const adopted = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] };
     check("a server restart adopts all numbered internal lane places",
       separateLanes.every((lane) => adopted.slots.find((s) => s.id === lane.slot)?.cwd === lane.cwd),
@@ -61,7 +71,7 @@ export async function run(): Promise<void> {
       const response = await post(`/api/slots/${id}/open`, { cwd: REPO });
       if (!response.ok) break;
     }
-    await restartSrv({ FLEET_SEPARATE_LANE_SLOTS: "1", FLEET_MAX_SESSIONS: "25" });
+    await restartSeparate(true, 25);
     const seventeenth = await post("/api/lanes", { repo: REPO });
     const seventeenthBody = (await seventeenth.json()) as { slot?: number; cwd?: string; error?: string };
     check("a 25-session ceiling opens session 17 as a lane outside bands 1..16",
@@ -69,7 +79,7 @@ export async function run(): Promise<void> {
       JSON.stringify(seventeenthBody));
     if (seventeenthBody.slot && seventeenthBody.cwd)
       separateLanes.push({ slot: seventeenthBody.slot, cwd: seventeenthBody.cwd });
-    await restartSrv({ FLEET_SEPARATE_LANE_SLOTS: "1", FLEET_MAX_SESSIONS: "25" });
+    await restartSeparate(true, 25);
     const adopted25 = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] };
     check("a restart adopts the seventeenth session on its lane place",
       !!seventeenthBody.slot && adopted25.slots.find((s) => s.id === seventeenthBody.slot)?.cwd === seventeenthBody.cwd,
@@ -80,7 +90,12 @@ export async function run(): Promise<void> {
       spawnSync("git", ["worktree", "remove", "--force", lane.cwd], { cwd: REPO });
     }
     for (let id = 1; id <= 16; id++) await post(`/api/slots/${id}/kill`, {});
-    await restartSrv({ FLEET_SEPARATE_LANE_SLOTS: "0", FLEET_MAX_SESSIONS: "16" });
+    await restartSeparate(false, 16);
+    for (const [i, key] of tmuxEnvKeys.entries()) {
+      const value = tmuxEnvBefore[i];
+      if (value === null) await tmuxOut("set-environment", "-gu", key);
+      else await tmuxOut("set-environment", "-g", key, value);
+    }
     const legacy = (await (await get("/api/sessions")).json()) as { slots: { id: number }[] };
     check("switch off restores the exact 16-row slot board",
       legacy.slots.length === 16 && legacy.slots.every((s, i) => s.id === i + 1),

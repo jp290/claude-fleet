@@ -358,7 +358,7 @@ Antworten (via Orchestratorin Slot 14): **1** Nein — Fleet-Englisch bleibt fü
 Grundlage: Owner-Wörter 2026-09-22 (baton→handoff · succession→handoff · audit→check ·
 „‹instanz› only"→Instanzname; rail, suite, gate, mutex, tier, carry, srv, bundle, seed, TTL, ctx
 nur noch hinter „intern:" am Tooltip-Ende). Wo der Owner kein Wort gab, steht der Vermerk
-**[MAIN]** — abgeleitet von MAIN Slot 13 aus audit→check, **Owner-Sichtung offen**.
+**[MAIN]** — abgeleitet von MAIN Slot 13 aus audit→check, **vom Owner bestätigt 2026-09-23** (Sichtung Paket B, Attention 96afad1b: „yep passt“; dieselbe Antwort bestätigt ℹ ganz rechts in der Eckreihe).
 Die zwei Einzelfälle „Baton" und „‹instanz› only" im rechten Tab kamen mit d5a60f5e (e0e496c8+9ac2d74f)
 in den Baum — hier nur geprüft, nicht erneut umbenannt.
 

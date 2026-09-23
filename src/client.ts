@@ -509,6 +509,10 @@ let dispatch: DispatchInfo = { available: false, on: false, maxLanes: 0, repo: "
 // with the queue analyst.
 let briefCompilerOn: boolean | undefined;
 let intakeOn = false;
+// the automation kill-switch and quiet hours, as the owner poll carries them. Read by the settings
+// window's "Fleet" rows only; null until the first poll (and on a server that predates the fields).
+let autosOnSrv: boolean | null = null;
+let quietHoursSrv: { start: number; end: number } | null = null;
 // Whether THIS fleet writes the integration branch (server.ts, FLEET_LANDS). A follower instance
 // fast-forwards main from the canonical host and refuses both land doors with a 409; offering ⏏
 // there would be a button whose only possible outcome is an alert. Defaults to TRUE and is set from
@@ -2312,8 +2316,8 @@ async function newLane(repo: string, parent?: LaneAnchor): Promise<void> {
 // THE SETTINGS WINDOW (Grammatik G5, cards K2+K8): one gear top right, one window, three
 // sections. "Dieses Gerät" renders the registry (src/prefs.ts): every key with a row shows its
 // label, its control, its default and a way back (G5.1). "Schrift" is the size panel's ONE home
-// (G5.3) — the Aa corner button opens the window right there. "Fleet" stays empty until a theme
-// row brings its server route (G5.2). On the phone the sections become tabs (G3.1); on the
+// (G5.3) — the Aa corner button opens the window right there. "Fleet" holds the five server
+// switches whose routes already exist (G5.2, card D-3, fleetSection). On the phone the sections become tabs (G3.1); on the
 // desktop all three stack. Esc, backdrop and ✕ come from openShell (G6.3); the focus returns to
 // the button that opened the window (G4).
 let settingsShell: Shell | null = null;
@@ -2382,8 +2386,7 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift"): void {
   schrift.appendChild(sizePanel()); // the ONE panel moves in here (G5.3, kein zweites Zuhause)
   const fleetsec = el("section", "setsec");
   fleetsec.appendChild(el("h3", "", "Fleet"));
-  fleetsec.appendChild(el("div", "hint setnote",
-    "Hier ziehen serverseitige Werte ein, sobald eine Themen-Zeile ihre Route mitbringt — sie gelten für alle Geräte dieser Fleet."));
+  fleetSection(fleetsec);
 
   shell.detail.append(tabs, device, schrift, fleetsec);
   syncTabs();
@@ -2446,6 +2449,258 @@ function settingsRow(d: PrefDef): HTMLElement {
   }
   syncAll();
   return row;
+}
+
+// THE "FLEET" SECTION (G5.2 + G4.4, card D-3): five server switches over routes that already
+// exist — nothing here is a value of this browser, every row changes the fleet for all devices
+// and sessions. A changed control is only STAGED (ink edge on the row); the one primary "Apply"
+// writes each staged row through its route, and the row then shows the value the SERVER answers
+// with — the poll for dispatcher/autos/quiet, GET /api/repo-lane-caps for the cap, the route's own
+// answer for the branch — never the typed one. A refusal (4xx) stays at its row as a hint and the
+// staged value stays. The dispatcher row reads the same `dispatch` the queue foot reads: no
+// second state lives in this window. Not here, on purpose: repoWorkers (a stored command),
+// .env/watchdog.sh values, and slot/program switches (they live at their thing).
+// e2e/tasks.ts pins the route set of this block — a sixth route is a new card, not a new row.
+interface FleetSetRow {
+  row: HTMLElement; val: HTMLElement; err: HTMLElement;
+  staged(): boolean; write(): Promise<Response>; paint(): void; done(answer: unknown): void;
+}
+function fleetSection(sec: HTMLElement): void {
+  let caps: Record<string, number> = {};
+  let capDefault: number | null = null;
+  let capMax = 99;
+  // the branch has no read route: a repo's stored value is known here only once a write answered
+  const bases = new Map<string, string | null>();
+  const repos = [...new Set([dispatch.repo, ...fleet.map((s) => s.cwd ? s.repo ?? s.worktree?.repo ?? "" : "")]
+    .filter((r): r is string => !!r))].sort();
+  const onOff = (v: boolean | null) => v === null ? "?" : v ? "on" : "off";
+  const hh = (h: number) => `${String(h).padStart(2, "0")}:00`;
+  const rows: FleetSetRow[] = [];
+
+  function shell(label: string, hint: string, tip: string): { row: HTMLElement; val: HTMLElement; err: HTMLElement; ctl: HTMLElement } {
+    const row = el("div", "setrow fleetrow");
+    row.title = tip;
+    const main = el("div", "setmain");
+    const err = el("div", "hint setnote seterr");
+    err.hidden = true;
+    main.append(el("div", "setlabel", label), el("div", "hint setnote", hint), err);
+    const val = el("span", "setval");
+    val.title = "Wert, wie ihn der Server zuletzt gemeldet hat";
+    const ctl = el("div", "setctl");
+    row.append(main, val, ctl);
+    sec.appendChild(row);
+    return { row, val, err, ctl };
+  }
+  function toggle(): HTMLButtonElement {
+    return el("button", "settoggle") as HTMLButtonElement;
+  }
+  function repoPick(onPick: () => void): HTMLSelectElement {
+    const pick = el("select", "setin") as HTMLSelectElement;
+    for (const r of repos) {
+      const o = el("option", "", baseName(r)) as HTMLOptionElement;
+      o.value = r; o.title = r;
+      pick.appendChild(o);
+    }
+    pick.value = dispatch.repo && repos.includes(dispatch.repo) ? dispatch.repo : repos[0] ?? "";
+    pick.onchange = onPick;
+    return pick;
+  }
+
+  // 1 · dispatcher
+  {
+    const s = shell("Dispatcher",
+      "An: freigegebene Aufgaben starten ohne dich als Lanes, für alle Sessions dieser Fleet; aus: sie warten, bis du sie startest.",
+      "Schaltet den Dispatcher der ganzen Fleet — derselbe Schalter wie am Fuß der Queue.");
+    let want: boolean | null = null;
+    const b = toggle();
+    b.disabled = !dispatch.available;
+    b.onclick = () => { const cur = want ?? dispatch.on; want = !cur === dispatch.on ? null : !cur; sync(); };
+    s.ctl.appendChild(b);
+    const r: FleetSetRow = { ...s,
+      staged: () => want !== null,
+      write: () => post("/api/dispatch", { on: want }),
+      paint: () => { s.val.textContent = dispatch.available ? onOff(dispatch.on) : "unavailable"; },
+      done: () => { want = null; },
+    };
+    function sync() {
+      const on = want ?? dispatch.on;
+      b.textContent = onOff(on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      b.classList.toggle("staged", want !== null);
+      syncStaged();
+    }
+    rows.push({ ...r, paint: () => { r.paint(); sync(); } });
+  }
+  // 2 · automatic prompts (the kill-switch)
+  {
+    const s = shell("Automatic prompts",
+      "Aus hält jeden geplanten Prompt in jeder Session an, bis du sie wieder einschaltest; einmalige Handlungen von dir bleiben möglich.",
+      "Not-Aus für alle geplanten Prompts der Fleet.");
+    let want: boolean | null = null;
+    const b = toggle();
+    b.onclick = () => { const cur = want ?? autosOnSrv ?? true; want = !cur === autosOnSrv ? null : !cur; sync(); };
+    s.ctl.appendChild(b);
+    const r: FleetSetRow = { ...s,
+      staged: () => want !== null,
+      write: () => post("/api/autos/switch", { on: want }),
+      paint: () => { s.val.textContent = onOff(autosOnSrv); },
+      done: () => { want = null; },
+    };
+    function sync() {
+      const on = want ?? autosOnSrv ?? true;
+      b.textContent = onOff(on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      b.classList.toggle("staged", want !== null);
+      syncStaged();
+    }
+    rows.push({ ...r, paint: () => { r.paint(); sync(); } });
+  }
+  // 3 · quiet hours
+  {
+    const s = shell("Quiet hours",
+      "In diesem Fenster (Uhrzeit dieses Rechners) schickt die Fleet keiner Session wiederkehrende Prompts; einmalige bleiben.",
+      "Setzt das Ruhefenster für wiederkehrende Prompts aller Sessions.");
+    const from = el("select", "setin") as HTMLSelectElement;
+    const to = el("select", "setin") as HTMLSelectElement;
+    const off = el("option", "", "off") as HTMLOptionElement;
+    off.value = "";
+    from.appendChild(off);
+    for (let h = 0; h < 24; h++) {
+      const a = el("option", "", hh(h)) as HTMLOptionElement; a.value = String(h); from.appendChild(a);
+      const z = el("option", "", hh(h)) as HTMLOptionElement; z.value = String(h); to.appendChild(z);
+    }
+    const dash = el("span", "setdash", "–");
+    s.ctl.append(from, dash, to);
+    const cur = () => from.value === "" ? null : { start: Number(from.value), end: Number(to.value) };
+    const same = (a: { start: number; end: number } | null, b: { start: number; end: number } | null) =>
+      a === b || (!!a && !!b && a.start === b.start && a.end === b.end);
+    let touched = false;
+    from.onchange = to.onchange = () => { touched = true; sync(); };
+    const staged = () => touched && !same(cur(), quietHoursSrv);
+    function sync() {
+      to.disabled = from.value === "";
+      dash.hidden = to.hidden = from.value === "";
+      from.classList.toggle("staged", staged());
+      to.classList.toggle("staged", staged());
+      syncStaged();
+    }
+    rows.push({ ...s, staged,
+      write: () => post("/api/autos/quiet", cur() ?? { start: null }),
+      paint: () => {
+        s.val.textContent = quietHoursSrv ? `${hh(quietHoursSrv.start)}–${hh(quietHoursSrv.end)}` : "off";
+        if (!staged()) {
+          touched = false;
+          from.value = quietHoursSrv ? String(quietHoursSrv.start) : "";
+          to.value = String(quietHoursSrv?.end ?? 7);
+        }
+        sync();
+      },
+      done: () => { touched = false; },
+    });
+  }
+  // 4 · lane cap per repo
+  {
+    const s = shell("Lane cap per repo",
+      "So viele Lanes startet die Fleet in diesem Repo höchstens ohne dich; leer heißt Standard der Maschine.",
+      "Setzt den Deckel für unbeaufsichtigte Lanes in einem Repo, für alle Sessions.");
+    const pick = repoPick(() => { typed = null; paintRow(); });
+    const n = el("input", "setin setnum") as HTMLInputElement;
+    n.type = "number"; n.min = "0"; n.step = "1"; n.inputMode = "numeric";
+    let typed: string | null = null;
+    n.oninput = () => { typed = n.value.trim(); sync(); };
+    s.ctl.append(pick, n);
+    const stored = () => caps[pick.value] ?? null;
+    const staged = () => typed !== null && typed !== String(stored() ?? "");
+    function sync() { n.classList.toggle("staged", staged()); syncStaged(); }
+    function paintRow() {
+      const v = stored();
+      s.val.textContent = !pick.value ? "no repo" : v !== null ? String(v) : `default ${capDefault ?? "?"}`;
+      n.max = String(capMax);
+      n.placeholder = capDefault !== null ? String(capDefault) : "";
+      if (!staged()) { typed = null; n.value = v !== null ? String(v) : ""; }
+      n.disabled = pick.disabled = !pick.value;
+      sync();
+    }
+    rows.push({ ...s, staged,
+      // empty → null (clear to the machine default); anything else goes as typed and the server judges it
+      write: () => post("/api/repo-lane-cap", { repo: pick.value, maxLanes: typed === "" ? null : Number(typed) }),
+      paint: paintRow,
+      done: () => { typed = null; },
+    });
+  }
+  // 5 · integration branch per repo
+  {
+    const s = shell("Integration branch per repo",
+      "In diesen Branch landen alle Lanes dieses Repos; leer heißt: der Branch, auf dem der Haupt-Checkout steht.",
+      "Setzt den Integrations-Branch eines Repos, für alle Sessions.");
+    const pick = repoPick(() => { typed = null; paintRow(); });
+    const t = el("input", "setin setbranch") as HTMLInputElement;
+    t.type = "text"; t.spellcheck = false; t.autocapitalize = "off"; t.placeholder = "branch";
+    let typed: string | null = null;
+    t.oninput = () => { typed = t.value.trim(); sync(); };
+    s.ctl.append(pick, t);
+    const staged = () => typed !== null && (!bases.has(pick.value) || typed !== (bases.get(pick.value) ?? ""));
+    function sync() { t.classList.toggle("staged", staged()); syncStaged(); }
+    function paintRow() {
+      const known = bases.has(pick.value);
+      const v = bases.get(pick.value) ?? null;
+      s.val.textContent = !pick.value ? "no repo" : !known ? "?" : v ?? "not set";
+      s.val.title = known ? "Wert, wie ihn der Server zuletzt gemeldet hat"
+        : "Unbekannt: es gibt keinen Leseweg, der Server meldet den Wert erst als Antwort auf Apply.";
+      if (!staged()) { typed = null; t.value = v ?? ""; }
+      t.disabled = pick.disabled = !pick.value;
+      sync();
+    }
+    rows.push({ ...s, staged,
+      write: () => post("/api/repo-base", { repo: pick.value, branch: typed ?? "" }),
+      paint: paintRow,
+      done: (answer) => {
+        const a = answer as { base?: string | null } | null;
+        bases.set(pick.value, typeof a?.base === "string" ? a.base : null);
+        typed = null;
+      },
+    });
+  }
+
+  const foot = el("div", "setfoot");
+  const note = el("span", "hint setnote", "");
+  const apply = el("button", "cmdapply", "Apply") as HTMLButtonElement;
+  apply.title = "Schreibt alle vorgemerkten Werte an den Server und zeigt danach, was er gespeichert hat.";
+  foot.append(note, apply);
+  sec.appendChild(foot);
+  function syncStaged() {
+    const n = rows.filter((r) => r.staged()).length;
+    for (const r of rows) r.row.classList.toggle("staged", r.staged());
+    apply.disabled = n === 0;
+    note.textContent = n ? `${n} vorgemerkt — gilt erst nach Apply` : "";
+  }
+  async function readCaps() {
+    const r = await api("/api/repo-lane-caps").catch(() => null);
+    const j = r?.ok ? (await r.json().catch(() => null)) as { default?: number; max?: number; caps?: Record<string, number> } | null : null;
+    if (!j) return;
+    caps = j.caps ?? {};
+    capDefault = typeof j.default === "number" ? j.default : null;
+    if (typeof j.max === "number") capMax = j.max;
+  }
+  apply.onclick = async () => {
+    apply.disabled = true;
+    for (const r of rows.filter((x) => x.staged())) {
+      const res = await r.write().catch(() => null);
+      const j = res ? await res.json().catch(() => null) as { error?: string } | null : null;
+      if (res?.ok) {
+        r.err.hidden = true;
+        r.done(j);
+      } else {
+        r.err.hidden = false;
+        r.err.textContent = `Server lehnt ab: ${j?.error ?? (res ? `HTTP ${res.status}` : "keine Verbindung")}`;
+      }
+    }
+    await refresh();
+    await readCaps();
+    for (const r of rows) r.paint();
+  };
+  for (const r of rows) r.paint();
+  void readCaps().then(() => { for (const r of rows) r.paint(); });
 }
 
 // THE INFO COLUMN ON THE PHONE (owner 2026-09-22: „es gibt gar keinen button um die infoLeiste
@@ -7826,7 +8081,8 @@ async function refresh() {
       reportsAwaitingOwner?: number;
       // the owner poll's CUT and PROJECTION of the trail (src/opsevents.ts#opsPollRow); full rows: GET /api/events
       events?: OpsPollRow[];
-      deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null };
+      deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null;
+      autosOn?: boolean; quietHours?: { start: number; end: number } | null };
     if (data.v) {
       if (!bundleV) bundleV = data.v;
       else if (data.v !== bundleV) armReload();
@@ -7855,6 +8111,8 @@ async function refresh() {
     renderInstanceHead();
     briefCompilerOn = data.briefCompiler?.on;
     intakeOn = data.intake ?? false;
+    autosOnSrv = typeof data.autosOn === "boolean" ? data.autosOn : null;
+    quietHoursSrv = data.quietHours ?? null;
     // tier 2's only reader. Rendered on every poll rather than behind the render-key diff below:
     // that key is about the slot tiles, and an alarm must not wait on an unrelated change to appear.
     postLandAudit = data.postLandAudit ?? null;

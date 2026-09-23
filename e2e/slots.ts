@@ -2346,16 +2346,16 @@ export async function run(): Promise<void> {
         JSON.stringify({ helper: popSrc !== null, popoverCalls: { client: popCount(cliSrc), chatsize: popCount(chatSrc) } }));
       // K8 (Grammatik G5): the gear's window renders the registry — the device rows come FROM the
       // PREFS table (not hand-wired), the size panel is the "Schrift" section's one home,
-      // "Fleet" stays empty until a theme row brings its route, and the focus returns to the
+      // "Fleet" holds its server rows (pinned route by route in e2e/tasks.ts), and the focus returns to the
       // trigger (G4). Mutation probe: wiring a row by hand instead of over PREFS turns this red.
-      check("client: the settings window renders the registry — device rows from PREFS, Schrift as the panel's home, Fleet awaiting its route",
+      check("client: the settings window renders the registry — device rows from PREFS, Schrift as the panel's home, Fleet over its server rows",
         /id: "settings", title: "Einstellungen"/.test(cliSrc)
         && /for \(const d of PREFS\)/.test(cliSrc)
         && /appendChild\(sizePanel\(\)\)/.test(cliSrc)
-        && /Hier ziehen serverseitige Werte ein/.test(cliSrc)
+        && /fleetSection\(fleetsec\);/.test(cliSrc)
         && /trigger\?\.focus\(\)/.test(cliSrc),
         JSON.stringify({ title: /title: "Einstellungen"/.test(cliSrc), prefsRows: /for \(const d of PREFS\)/.test(cliSrc),
-          schrift: /appendChild\(sizePanel\(\)\)/.test(cliSrc), fleetNote: /Hier ziehen serverseitige Werte ein/.test(cliSrc),
+          schrift: /appendChild\(sizePanel\(\)\)/.test(cliSrc), fleetRows: /fleetSection\(fleetsec\);/.test(cliSrc),
           focusReturn: /trigger\?\.focus\(\)/.test(cliSrc) }));
       // ECKKNOPFE RUNDE 2 (owner 2026-09-22): the open column's close box sits EXACTLY where the
       // corner group's top row sits when the column is closed — one spot, click opens, click

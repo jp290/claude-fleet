@@ -2859,8 +2859,9 @@
 
   /* THE SETTINGS WINDOW (src/client.ts#openSettings, Grammatik G5, cards K2+K8): three sections —
      "Dieses Gerät" (the src/prefs.ts registry rows, G5.1), "Schrift" (the size panel's one home,
-     G5.3), "Fleet" (empty until a theme row brings its route, G5.2). Rows: label left, control
-     right, value in mono, hint under (G5.3). On the phone the sections become tabs (G3.1) — the
+     G5.3), "Fleet" (five server switches over existing routes, G5.2, card D-3 — a changed value
+     is staged with an ink edge until Apply, G4.4). Rows: label left, control right, value in
+     mono, hint under (G5.3). On the phone the sections become tabs (G3.1) — the
      tab row and the one-section view exist only under MOBILE_MQ; the desktop stacks all three. */
   .settab { border: 1px solid transparent; background: none; color: var(--chat-mute); font: inherit;
     font-size: var(--chat-ui-fs); padding: 6px 10px; border-radius: var(--r1); cursor: pointer; }
@@ -2884,12 +2885,31 @@
     border: 1px solid var(--chat-edge); border-radius: var(--r1); padding: 4px 8px; cursor: pointer; }
   .setreset:hover { color: var(--chat-ink); }
   .setreset[hidden] { display: none; }
+  .fleetrow { flex-wrap: wrap; }
+  .fleetrow .setlabel { font-family: var(--chat-sans); font-weight: 500; } /* label Sans, value Mono — G0.3 */
+  .fleetrow.staged { box-shadow: inset 2px 0 0 var(--chat-ink); padding-left: 10px; } /* vorgemerkt = ink edge, G4.4 */
+  .setctl { flex: none; display: flex; align-items: center; gap: 4px; }
+  .setin { font: 400 11px var(--chat-mono); color: var(--chat-ink); background: var(--chat-raised);
+    border: 1px solid var(--chat-edge); border-radius: var(--r1); padding: 4px 6px; min-width: 0; }
+  .setin:disabled { color: var(--chat-faint); }
+  .setin.staged, .settoggle.staged { border-color: var(--chat-ink); color: var(--chat-ink); }
+  .setnum { width: 5em; }
+  .setbranch { width: 10em; }
+  .setdash { color: var(--chat-mute); }
+  .setdash[hidden], .setin[hidden], .seterr[hidden] { display: none; }
+  .setfoot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 0 2px; }
+  .setfoot .setnote { flex: 1; margin: 0; }
   .settabs { display: none; }
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
     #shell-settings .settabs { display: flex; gap: 4px; padding: 2px 0 10px; }
     #shell-settings .setsec { display: none; }
     #shell-settings .setsec.on { display: block; }
-    .settoggle, .settab, .setreset { min-height: 40px; } /* finger targets, G0.7 */
+    .settoggle, .settab, .setreset, .setin, .setfoot .cmdapply { min-height: 40px; } /* finger targets, G0.7 */
+    .setin { font-size: 16px; } /* no iOS zoom, G0.7 */
+    .fleetrow .setmain { flex-basis: 100%; }
+    .fleetrow .setval { flex: 1; max-width: none; }
+    .fleetrow .setctl { flex-wrap: wrap; justify-content: flex-end; }
+    .setbranch { width: 8em; }
   }
 </style>
 </head>

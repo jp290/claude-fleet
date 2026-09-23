@@ -453,6 +453,9 @@
     padding: 0; border-radius: var(--r1); border: 1px solid var(--chat-edge); background: var(--chat-raised);
     color: var(--chat-mute); font-size: 13px; font-family: inherit; cursor: pointer; }
   .panetools button:hover { color: var(--chat-ink); }
+  .panetools .panereload.degraded { position: relative; }
+  .panetools .panereload.degraded::after { content: ""; position: absolute; right: 2px; top: 2px;
+    width: 5px; height: 5px; border-radius: 50%; background: var(--amber); }
   .panetools .ico { width: 14px; height: 14px; }
   .panetools .loupe { width: 13px; height: 13px; border: 2px solid currentColor; border-radius: 50%; position: relative; }
   .panetools .loupe::after { content: ""; position: absolute; width: 7px; height: 2px; background: currentColor;

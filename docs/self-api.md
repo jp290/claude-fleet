@@ -556,6 +556,8 @@ Block, byte-identisch in allen vier Varianten, angehängt zwischen Program-JSON 
   `HOST`/`PORT` in den Brief — und der Header `x-fleet-self-token: $FLEET_SELF_TOKEN`, der in jeder
   Pane schon exportiert ist. Der Falsifikator, den das schließt: eine frische MAIN, die Quelltext,
   Prozessliste oder State-Datei nach Fleets Adresse durchsucht.
+- **`GET /api/self/memory` ist das Gedächtnis** (seit 2026-09-23, §memory unten) — ein Absatz
+  `YOUR MEMORY …` ≤ 512 B am Ende des Kopfteils: Tür und Grenzen, nie der Zustand selbst.
 - **`GET /api/self/program-execution` ist die Lebenszyklus-Projektion** — `phase`, `phaseBasis`,
   `candidate`, `nextAction`, `unknown[]`. Gelesen statt geraten, vor jedem Akt.
 - **Die Rollenteilung ist ein URTEIL, keine Mauer** (Owner-Korrektur 2026-08-24: kein Pauschalverbot,
@@ -704,6 +706,63 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
   http://<fleet-host>:<port>/api/self/program-context-packs \
   -d '{"packs":[{"id":"grok-antwort-1","useWhen":"Bevor du eine Delegations-Zeile baust","sources":[{"path":"docs/messungen/INDEX.md","anchor":"# Index der Messnotizen"}]}]}'
 ```
+
+## memory — `GET /api/self/memory` (seit 2026-09-23, Zeile 42da6bdc)
+
+Das Projektgedächtnis einer Session, gelesen über die EIGENE Self-Tür — in jedem Repo, ohne
+`ctl.sh`, ohne Owner-Token. Es speichert nichts: jede Antwort ist aus den Trägern komponiert, die
+die Fakten schon besitzen (Task-Zeile samt Hold, Program, `lane-outcomes.jsonl`,
+`post-land-audits.jsonl`, die Audit-Queue, der laufende Audit, `context-receipts.jsonl`, git am
+HEAD), und jeder Wert nennt seinen Träger als `basis`. Anlass und Zielbild:
+`~/fleet-notes/memory/2026-09-23-memory-system.md` §2/§4 (M1).
+
+**Scope wird abgeleitet, nie erfragt** (`server.ts#memoryScopeFor`):
+
+| Prinzipal | liest | Ablehnung |
+|---|---|---|
+| Lane | ihren eigenen Task (eine Welle: ihre n Zeilen) und ihr Program-Kopfdatum | `foreign-task`, `foreign-program` (409) |
+| gebundene MAIN eines AKTIVEN Programs (`boundProgramForMain`, slot UND openedAt) | alle Zeilen dieses Programs | `foreign-task` (auch für archivierte Zeilen, über `tasks-archive.jsonl`), `foreign-program` (409), unbekannte Zeile 404 `unknown-task` |
+| jede andere Session (Steward, ungebundene, recycelter Occupant) | nichts | 409 `no-scope` |
+
+`task=<id>` und `program=<id>` VERENGEN nur. Nach dem letzten Await wird der Occupant erneut geprüft:
+ein währenddessen recycelter Slot bekommt 409 `occupant-changed`, nie das Slice des Nachfolgers.
+Ein Owner-Token ist hier 401 wie überall in der Self-Familie — es gibt keinen Owner-Rückfall.
+
+**`view=work`** (Default) — `{schema:"fleet.memory.work/v1", scope, generatedAt, bootEpoch,
+stateRevision, sources:{persisted[], volatile[]}, program, tasks:{rows, total, omitted}, occupants,
+coverage, unknown[]}`. Je Zeile: `status`, `kind`, `slot`, **`hold:{grund,at,by,slot}|null`**
+(`grund:null` = Hold ohne Grund, sichtbar), `land` (neueste Outcome-Zeile), `audit`, `report`
+(neuester Report im Live-Tail), `basis`. Der Auditstatus ist explizit und hat eine feste Rangfolge:
+`running`/`starting` (flüchtig, Prozessspeicher) → `queued` (persistierte Queue, nur bei
+konfiguriertem Audit) → `terminal` (Ledger, mit `result`, `adjudication`) → `not-configured` →
+`unknown` (mit `why`); ohne Land `not-landed`. **Eine fehlende Auditzeile ist nie `running`.**
+`stateRevision` ist ein Hash über die in DIESER Antwort kopierten State-Felder, kein globaler
+Zähler; `bootEpoch` ist der Serverstart. Seite: höchstens 50 Zeilen und 32 KiB, was nicht passt,
+wird gezählt (`omitted`, `coverage:"truncated"`), nie still verworfen.
+
+**`view=sources`** — heute Deklariertes gegen damals Zugestelltes, nie vermischt:
+`declaredNow` wird JETZT aus git am Integrations-HEAD abgeleitet (dieselben drei Planer wie die
+Dispatch-Naht bzw. die MAIN-Gründung; `selected[].origin` = `fleet-seed` | `repo-manifest` |
+`program`; `nativeRules:{path:"AGENTS.md", trackedAtHead}` — die Repo-Regeln bleiben Originalquelle
+und werden nie kopiert). `deliveredThen` sind die Receipts aus `context-receipts.jsonl` (.1 + aktiv).
+`readByAgent` ist IMMER `"unknown"`: ein Receipt belegt Bytes in einer Pane, keine Lektüre. Fehlende
+Träger stehen benannt in `missing[]` (kein Manifest, kein AGENTS.md, keine Program-Packs, kein
+Receipt, fremder Baum); ist die Deklaration nicht ableitbar (z. B. Ziel-Repo ohne AGENTS.md), ist
+`declaredNow: null` mit Grund in `unknown[]` und `coverage:"incomplete"` — nie eine leere Liste.
+
+```
+curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" "http://<fleet-host>:<port>/api/self/memory?view=work"
+```
+
+**Der Startpointer.** Der Program-MAIN-Rail (`server.ts#memoryPointer("main")`, in `RAIL_HEAD`) und
+jeder Lane-Gründungs- und Staffelstab-Brief (`memoryPointer("lane")`) tragen einen Absatz
+`YOUR MEMORY …` von höchstens 512 UTF-8-Bytes: die Tür und ihre Grenzen, kein kopierter Zustand. Der
+Standard-Nachfolgebrief zählt deshalb keine Task-Status mehr (`- Task rows: not copied here …`);
+Inbox- und Pflichtenzeilen des Handovers sind unverändert.
+
+Prüfung: `e2e/self-token.ts#memoryDoor` (eigene Scratch-Instanz, drei Repos × Lane/MAIN, vier
+Ablehnungen, Brief ohne Statuskopie), `e2e/programs.ts` (Rail-Pointer ≤ 512 B, Nachfolgebrief ohne
+Zählzeile).
 
 ## tasks — `POST /api/self/tasks`, `GET /api/self/program-execution`
 

@@ -67,6 +67,11 @@ const PRE_AUTH_ROUTES = [
   // confirms, activates, completes, dispatches, or writes a task; those remain owner acts.
   '= /api/self/programs',
   '= /api/self/program-execution', // read-only and slot-bound; non-lanes only, with no mutation or foreign-slot reach
+  // The project memory door (2026-09-23, tasks 42da6bdc/72dc4f35). Read-only and slot-bound; open to
+  // BOTH principals, because the scope is derived from the credential rather than from the route: a
+  // lane reads its own task, the bound MAIN of an active Program reads that Program, everyone else
+  // is refused 409 `no-scope`. Query parameters only narrow; a foreign task/program is a named 409.
+  '= /api/self/memory',
   // Program-scoped context pointers (2026-09-15, Task b28b9d89). Writes ONE field of ONE Program: the
   // Program the caller is bound MAIN of (boundProgramForMain), never one a body names; a lane 409s.
   // It stores tracked path/anchor pointers only, validated against the caller's own integration HEAD,

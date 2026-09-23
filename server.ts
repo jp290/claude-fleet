@@ -2829,6 +2829,304 @@ async function programExecutionView(s: Slot): Promise<Response> {
     programs: projected,
   });
 }
+// --- THE PROJECT MEMORY DOOR, M1 (GET /api/self/memory; docs/self-api.md §memory) --------------
+// WHAT IT IS: the readers above, COMPOSED into one bounded answer a session reads through its own
+// self credential — in any repository, with no ctl.sh and no owner token behind it. It stores
+// nothing and it writes nothing: every value below is read from the carrier that already owns it
+// (the task row, the Program, the outcome and audit ledgers, the audit queue, the receipt ledger,
+// git at HEAD), and every value names that carrier as its `basis`. The measured gap it closes
+// (~/fleet-notes/memory/2026-09-23-memory-system.md §0 U1, §1): the same task/hold/audit facts were
+// joined by hand from raw files 1 480 times against 131 route reads, and copied into handover prose.
+//
+// SCOPE IS DERIVED, NEVER ASKED FOR. A lane reads its own task (a wave: its n rows); the bound MAIN
+// of an ACTIVE Program reads that Program (boundProgramForMain — slot AND openedAt, so a recycled
+// occupant is not bound). `task=`/`program=` only NARROW that scope; a foreign subject is a named
+// refusal, never an empty success. Everything else — the steward, an unbound session — gets
+// `no-scope`: the portfolio reach is the owner-granted cut M4 and is not faked here.
+const MEMORY_VIEWS = ["work", "sources"] as const;
+type MemoryView = typeof MEMORY_VIEWS[number];
+const MEMORY_WORK_MAX_ROWS = 50;
+const MEMORY_PAGE_MAX_BYTES = 32 * 1024;
+const MEMORY_RECEIPTS_MAX = 20;
+
+type MemoryScope =
+  | { ok: true; principal: "lane"; taskIds: string[]; programId: string | null }
+  | { ok: true; principal: "program-main"; program: Program; taskIds: string[] | null }
+  | { ok: false; response: Response };
+const memoryRefusal = (refusal: string, error: string, status = 409): { ok: false; response: Response } =>
+  ({ ok: false, response: json({ refusal, error }, status) });
+
+async function memoryScopeFor(s: Slot, url: URL): Promise<MemoryScope> {
+  const wantTask = url.searchParams.get("task");
+  const wantProgram = url.searchParams.get("program");
+  if (s.label === STEWARD_LABEL)
+    return memoryRefusal("no-scope", "the steward holds no task or Program binding; a cross-program memory reach is a separate, owner-granted cut");
+  if (s.worktree) {
+    const taskIds = [...new Set([...(s.taskId ? [s.taskId] : []), ...waveRowsOf(s.id).map((t) => t.id)])];
+    const programId = s.programId ?? null;
+    if (wantProgram !== null && wantProgram !== programId)
+      return memoryRefusal("foreign-program", `program ${wantProgram} is not this lane's program (${programId ?? "none"}) — a lane reads its own task only`);
+    if (wantTask !== null && !taskIds.includes(wantTask))
+      return memoryRefusal("foreign-task", `task ${wantTask} is not this lane's task (${taskIds.join(", ") || "none"}) — a lane reads its own task only`);
+    return { ok: true, principal: "lane", taskIds: wantTask !== null ? [wantTask] : taskIds, programId };
+  }
+  const bound = boundProgramForMain(s);
+  if (!bound.ok)
+    return memoryRefusal("no-scope", `${bound.error} — memory is read from a lane's own task or from the Program this session is the bound MAIN of`);
+  if (wantProgram !== null && wantProgram !== bound.program.id)
+    return memoryRefusal("foreign-program", `program ${wantProgram} is not the Program this session is bound MAIN of (${bound.program.id})`);
+  if (wantTask === null) return { ok: true, principal: "program-main", program: bound.program, taskIds: null };
+  const t = tasks.find((x) => x.id === wantTask) ?? await youngestArchivedTask(wantTask);
+  if (!t) return memoryRefusal("unknown-task", `task ${wantTask} is neither in the queue nor in tasks-archive.jsonl`, 404);
+  if (t.programId !== bound.program.id)
+    return memoryRefusal("foreign-task", `task ${wantTask} belongs to ${t.programId ? `program ${t.programId}` : "no program"}, not to ${bound.program.id}`);
+  return { ok: true, principal: "program-main", program: bound.program, taskIds: [wantTask] };
+}
+
+// THE AUDIT STATE OF ONE LAND, and the order is the claim: a run in flight outranks the queue,
+// the queue outranks the ledger, and nothing that is missing is ever read as running. `unknown` is
+// its own state with its own sentence — the ledger reader sees two generations (.1 + active), so a
+// land whose audit row has rotated further back is not "never audited".
+type MemoryAuditState =
+  | { state: "not-landed"; basis: "ledger lane-outcomes.jsonl" }
+  | { state: "running"; startedAt: number; basis: "volatile (process memory)" }
+  | { state: "starting"; basis: "volatile (process memory)" }
+  | { state: "queued"; queuedAt: number; basis: "persisted audit queue" }
+  | { state: "terminal"; result: string; at: number; mainSha: string | null;
+    adjudication: string | null; basis: "ledger post-land-audits.jsonl" }
+  | { state: "not-configured"; basis: "server env" }
+  | { state: "unknown"; why: string };
+function memoryAuditState(land: Record<string, unknown> | null, auditRows: readonly Record<string, unknown>[],
+  judged: ReadonlyMap<number, AuditAdjudication>): MemoryAuditState {
+  const mainAfter = typeof land?.mainAfter === "string" ? land.mainAfter : null;
+  const branch = typeof land?.branch === "string" ? land.branch : null;
+  if (!land || !mainAfter || !branch) return { state: "not-landed", basis: "ledger lane-outcomes.jsonl" };
+  const repo = typeof land.repo === "string" ? repoCanon(land.repo) : null;
+  const sameRepo = (r: string): boolean => repo === null || repoCanon(r) === repo;
+  const names = (c: AuditCover): boolean => c.branch === branch && c.mainAfter === mainAfter;
+  const r = runningPostLandAudit;
+  if (r && sameRepo(r.repo) && r.covers.some(names)) return { state: "running", startedAt: r.startedAt, basis: "volatile (process memory)" };
+  for (const [qRepo, q] of auditQueue) {
+    if (!sameRepo(qRepo)) continue;
+    const c = q.covers.find(names);
+    if (c) return auditDraining && !r ? { state: "starting", basis: "volatile (process memory)" }
+      : { state: "queued", queuedAt: c.at, basis: "persisted audit queue" };
+  }
+  for (let i = auditRows.length - 1; i >= 0; i--) {
+    const row = auditRows[i]!;
+    if (!Array.isArray(row.covers) || !(row.covers as unknown[]).some((c) =>
+      (c as AuditCover | null)?.branch === branch
+        && ((c as AuditCover).mainAfter === undefined || (c as AuditCover).mainAfter === mainAfter))) continue;
+    const at = typeof row.at === "number" ? row.at : 0;
+    return { state: "terminal", result: typeof row.result === "string" ? row.result : "unknown", at,
+      mainSha: typeof row.mainSha === "string" ? row.mainSha : null,
+      adjudication: judged.get(at)?.verdict ?? null, basis: "ledger post-land-audits.jsonl" };
+  }
+  if (repo !== null && !auditCmdFor(repo)) return { state: "not-configured", basis: "server env" };
+  return { state: "unknown", why: `no running, queued or terminal audit names ${branch}@${mainAfter.slice(0, 8)} — the audit ledger is read in its two newest generations (.1 + active) only` };
+}
+
+// One task, projected: the row's own facts (status, the MAIN's hold with its reason, its slot),
+// its newest land from the outcome ledger, that land's audit state, and the newest report the
+// live tail still holds. `basis` names the carrier of every half, which is the whole point: a
+// reader must be able to tell a persisted row from a volatile run from a capped tail.
+async function memoryTaskRow(id: string, outcomes: readonly Record<string, unknown>[],
+  auditRows: readonly Record<string, unknown>[], judged: ReadonlyMap<number, AuditAdjudication>): Promise<Record<string, unknown>> {
+  const live = tasks.find((t) => t.id === id) ?? null;
+  const t = live ?? await youngestArchivedTask(id);
+  let land: Record<string, unknown> | null = null;
+  for (const o of outcomes)
+    if (o.taskId === id && (!land || (typeof o.ts === "number" ? o.ts : 0) > (typeof land.ts === "number" ? land.ts : 0))) land = o;
+  let report: FleetReport | null = null;
+  for (const r of fleetReports)
+    if (r.provenance.taskId === id && (!report || r.reportedAt > report.reportedAt)) report = r;
+  return {
+    id, from: live ? "live" : t ? "archive" : null,
+    status: t?.status ?? null, kind: t?.kind ?? null, programId: t?.programId ?? null, slot: t?.slot ?? null,
+    // THE HOLD WITH ITS REASON — the field program-execution does not carry. `grund: null` is a
+    // hold without a reason and stays visible as that; `hold: null` is no hold at all.
+    hold: t?.hold ? { grund: t.hold.grund, at: t.hold.at, by: t.hold.by, slot: t.hold.slot } : null,
+    land: land ? { branch: land.branch ?? null, repo: land.repo ?? null, disposition: land.disposition ?? null,
+      headSha: land.headSha ?? null, mainAfter: land.mainAfter ?? null, at: land.ts ?? null } : null,
+    audit: memoryAuditState(land, auditRows, judged),
+    report: report ? { id: report.id, status: report.status, reportedAt: report.reportedAt,
+      disposition: report.decision?.disposition ?? null } : null,
+    basis: { row: live ? "state (fleet.json, in-memory copy)" : t ? "ledger tasks-archive.jsonl" : "none",
+      land: "ledger lane-outcomes.jsonl (.1 + active)", report: `live tail (at most ${FLEET_REPORT_KEEP} terminal rows)` },
+  };
+}
+
+// A LIVE page is bounded by rows AND bytes; what does not fit is COUNTED, never dropped silently.
+function memoryFit(rows: Record<string, unknown>[], envelope: (kept: Record<string, unknown>[], omitted: number) => unknown): unknown {
+  let kept = rows.slice(0, MEMORY_WORK_MAX_ROWS);
+  for (;;) {
+    const body = envelope(kept, rows.length - kept.length);
+    if (kept.length === 0 || new TextEncoder().encode(JSON.stringify(body)).byteLength <= MEMORY_PAGE_MAX_BYTES) return body;
+    kept = kept.slice(0, kept.length - 1);
+  }
+}
+
+async function memoryWorkView(s: Slot, scope: Extract<MemoryScope, { ok: true }>): Promise<unknown> {
+  const [outcomeLedger, auditLedger, judged] = await Promise.all([
+    readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE),
+    readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE),
+    adjudicationsByAudit(),
+  ]);
+  const program = scope.principal === "program-main" ? scope.program
+    : scope.programId ? programs.find((p) => p.id === scope.programId) ?? null : null;
+  // a MAIN's slice: live rows first (they are where acts are owed), newest first inside each half
+  const ids = scope.taskIds ?? tasks.filter((t) => t.programId === program?.id)
+    .sort((a, b) => Number(taskTerminal(a)) - Number(taskTerminal(b)) || b.created - a.created).map((t) => t.id);
+  const rows: Record<string, unknown>[] = [];
+  for (const id of ids.slice(0, MEMORY_WORK_MAX_ROWS)) rows.push(await memoryTaskRow(id, outcomeLedger.rows, auditLedger.rows, judged));
+  const occupants = (scope.principal === "lane" ? [s] : [s, ...slots.filter((x) => x.cwd && x.worktree && x.programId === program?.id)])
+    .map((x) => ({ slot: x.id, openedAt: x.openedAt, sessionId: x.sessionId ?? null,
+      role: x.worktree ? "lane" : "program-main", taskId: x.taskId ?? null,
+      repo: x.worktree?.repo ?? x.cwd ?? null, branch: x.worktree?.branch ?? null,
+      // lastOutput 0 is "never observed", not "idle since the epoch"; a boot resets it
+      lastOutputAt: x.lastOutput > 0 ? x.lastOutput : null }));
+  const unknown: string[] = [];
+  if (scope.principal === "lane" && !scope.taskIds.length)
+    unknown.push("this lane carries no task id (a hand-opened lane): there is no task slice to read.");
+  if (ids.length > MEMORY_WORK_MAX_ROWS)
+    unknown.push(`${ids.length - MEMORY_WORK_MAX_ROWS} further task rows of this program are not in this page (cap ${MEMORY_WORK_MAX_ROWS}); narrow with task=<id>.`);
+  if (rows.some((r) => r.from === null))
+    unknown.push("a task id in scope resolves neither in the queue nor in tasks-archive.jsonl; its row fields are null, not empty.");
+  if (outcomeLedger.malformed > 0) unknown.push(`${outcomeLedger.malformed} malformed lane-outcomes rows: a land may be missing from this view.`);
+  if (auditLedger.malformed > 0) unknown.push(`${auditLedger.malformed} malformed post-land-audits rows: an audit may be missing from this view.`);
+  if (fleetReports.length >= FLEET_REPORT_KEEP)
+    unknown.push(`the live report tail is at its ceiling of ${FLEET_REPORT_KEEP}; report:null may mean dropped from the tail, not never filed.`);
+  if (rows.some((r) => ids.length && (r.audit as MemoryAuditState).state === "unknown"))
+    unknown.push("an audit state `unknown` means no queue entry, run or readable ledger row names that land — never that it is running.");
+  const stateRevision = createHash("sha256").update(JSON.stringify({
+    rows: rows.map((r) => [r.id, r.status, r.hold, r.slot]),
+    program: program ? [program.id, program.status, program.main] : null,
+    occupants: occupants.map((o) => [o.slot, o.openedAt, o.taskId, o.branch]),
+  })).digest("hex").slice(0, 16);
+  const program_ = program ? { id: program.id, status: program.status, title: program.title,
+    main: program.main ? { slot: program.main.slot, openedAt: program.main.openedAt } : null } : null;
+  return memoryFit(rows, (kept, omitted) => ({
+    schema: "fleet.memory.work/v1", view: "work",
+    scope: { principal: scope.principal, slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null,
+      programId: program?.id ?? null, taskIds: ids.slice(0, MEMORY_WORK_MAX_ROWS) },
+    generatedAt: Date.now(), bootEpoch: SERVER_BOOT_AT, stateRevision,
+    // THE TWO KINDS OF SOURCE, kept apart: what survives a restart and what dies with the process
+    sources: {
+      persisted: ["fleet.json (tasks, holds, program, slots — the in-memory copy the server writes)",
+        "post-land-audit-queue.json (queued audits)", "lane-outcomes.jsonl (.1 + active)",
+        "post-land-audits.jsonl (.1 + active)", `fleet reports: live tail of at most ${FLEET_REPORT_KEEP} terminal rows`],
+      volatile: ["the running post-land audit (re-run from the queue after a restart)",
+        "occupants' lastOutputAt (reset at boot)"],
+    },
+    program: program_,
+    tasks: { rows: kept, total: ids.length, omitted: ids.length - kept.length },
+    occupants,
+    coverage: omitted > 0 || ids.length > MEMORY_WORK_MAX_ROWS ? "truncated" : "complete",
+    unknown: omitted > 0 ? [...unknown, `${omitted} rows did not fit the ${MEMORY_PAGE_MAX_BYTES}-byte page; narrow with task=<id>.`] : unknown,
+  }));
+}
+
+// DECLARED NOW against DELIVERED THEN, and never merged: today's plan is derived from git at the
+// current integration HEAD (the same three planners the dispatch seam runs); the receipts are what
+// the ledger says was delivered at founding. `readByAgent` is always unknown — a receipt proves
+// bytes reached a pane, not that anyone read them. A carrier that does not exist is NAMED.
+async function memorySourcesView(s: Slot, scope: Extract<MemoryScope, { ok: true }>): Promise<unknown> {
+  const unknown: string[] = [];
+  const missing: string[] = [];
+  const program = scope.principal === "program-main" ? scope.program
+    : scope.programId ? programs.find((p) => p.id === scope.programId) ?? null : null;
+  const repoPath = s.worktree?.repo ?? s.cwd ?? null;
+  let declaredNow: Record<string, unknown> | null = null;
+  const origin = (id: string, fromSeed: boolean, fromProgram: boolean): string =>
+    fromProgram ? "program" : fromSeed ? "fleet-seed" : "repo-manifest";
+  try {
+    if (!repoPath) throw new Error("this session names no repository");
+    let repoRoot: string; let head: string | null; let facts: ContextPlanInput;
+    if (scope.principal === "lane") {
+      repoRoot = await repoRootOf(repoPath);
+      head = await integrationHead(repoRoot);
+      facts = { sourceTree: await dispatchSourceTree(repoPath), harness: s.harness ?? null, mode: DISPATCH_CONTEXT_MODE,
+        triggers: DISPATCH_CONTEXT_TRIGGERS, capabilities: DISPATCH_CONTEXT_CAPABILITIES };
+    } else {
+      const pre = await preflightProgramMain(repoPath);
+      if (!pre.ok) throw new Error(pre.error);
+      repoRoot = pre.value.repoRoot; head = pre.value.head;
+      facts = programMainContextFacts(pre.value.frame, s.harness ?? null);
+    }
+    if (!head) throw new Error(`the integration HEAD of ${basename(repoRoot)} could not be read`);
+    const base = planContext(facts);
+    const { repoPlan, blobShas, manifest } = await repoManifestContextPlan(repoRoot, head, facts);
+    const programPlan = planProgramContext({ program, trackedPaths: new Set(blobShas.keys()) });
+    const seeds = new Set(base.selected.map((p) => p.id));
+    const fromProgram = new Set(programPlan.selected.map((p) => p.id));
+    const selected = contextReceiptSelections(stampObservedSourceHashes(
+      [...base.selected, ...repoPlan.selected, ...programPlan.selected], blobShas));
+    declaredNow = {
+      basis: "derived now from git at the integration HEAD (nothing persisted)", observedAt: Date.now(),
+      repo: repoRoot, head, sourceTree: facts.sourceTree,
+      selected: selected.map((sel) => ({ ...sel, origin: origin(sel.id, seeds.has(sel.id), fromProgram.has(sel.id)) })),
+      omitted: [...base.omitted, ...repoPlan.omitted, ...programPlan.omitted],
+      // NATIVE RULES STAY ORIGINAL SOURCES: this door says whether the repository tracks its own
+      // contract at HEAD and where — it never carries a copy of it.
+      nativeRules: { path: "AGENTS.md", trackedAtHead: blobShas.has("AGENTS.md") },
+    };
+    if (manifest.kind === "absent")
+      missing.push(`${basename(repoRoot)} tracks no ${CONTEXT_MANIFEST_PATH} at ${head.slice(0, 8)}: the repository declares no packs of its own`);
+    else if (manifest.kind === "invalid")
+      missing.push(`${basename(repoRoot)}'s ${CONTEXT_MANIFEST_PATH} at ${head.slice(0, 8)} is invalid (${manifest.detail}): its packs are omitted, not delivered`);
+    if (facts.sourceTree === "foreign")
+      missing.push("this is not the Fleet tree: every Fleet seed pack is omitted as source-unavailable");
+    if (!blobShas.has("AGENTS.md")) missing.push(`${basename(repoRoot)} tracks no AGENTS.md at ${head.slice(0, 8)}`);
+  } catch (e) {
+    unknown.push(`the declared sources could not be derived now: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
+  }
+  if (program && !(program.contextPacks?.length)) missing.push(`program ${program.id} carries no context packs`);
+  if (!program) missing.push("no Program is in scope, so no Program packs apply");
+  const receiptLedger = await readLedger<Record<string, unknown>>(CONTEXT_RECEIPT_FILE);
+  const mine = receiptLedger.rows.filter((r) => scope.principal === "lane"
+    ? (typeof r.taskId === "string" && scope.taskIds.includes(r.taskId))
+      || (r.slot === s.id && r.branch === s.worktree?.branch)
+    : r.programId === program?.id && (scope.taskIds === null || (typeof r.taskId === "string" && scope.taskIds.includes(r.taskId))))
+    .sort((a, b) => (typeof b.at === "number" ? b.at : 0) - (typeof a.at === "number" ? a.at : 0));
+  if (receiptLedger.malformed > 0)
+    unknown.push(`${receiptLedger.malformed} malformed context-receipts rows: a delivery in scope may be missing from deliveredThen.`);
+  if (!mine.length) missing.push("no context receipt in the readable generations (.1 + active) names this scope: what was delivered at founding is not on record here");
+  const body = {
+    schema: "fleet.memory.sources/v1", view: "sources",
+    scope: { principal: scope.principal, slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null,
+      programId: program?.id ?? null, taskIds: scope.taskIds },
+    generatedAt: Date.now(), bootEpoch: SERVER_BOOT_AT,
+    declaredNow,
+    deliveredThen: {
+      basis: "ledger context-receipts.jsonl (.1 + active) — what reached a pane at founding",
+      receipts: mine.slice(0, MEMORY_RECEIPTS_MAX).map((r) => ({ id: r.id, at: r.at, head: r.head, repo: r.repo,
+        branch: r.branch, slot: r.slot, taskId: r.taskId ?? null, programId: r.programId ?? null,
+        selected: Array.isArray(r.selected) ? r.selected : [], briefHash: r.briefHash ?? null })),
+      total: mine.length, malformed: receiptLedger.malformed,
+    },
+    readByAgent: "unknown",
+    coverage: declaredNow === null || receiptLedger.malformed > 0 ? "incomplete" : "complete",
+    missing, unknown,
+  };
+  return body;
+}
+
+// THE START POINTER, ≤ 512 UTF-8 bytes by contract (e2e/self-token.ts measures the delivered
+// text): the reader and its limits, never the state it reads. A founding brief that copied task
+// status, holds or audit states would be a second, stale source the moment it was pasted.
+function memoryPointer(role: "lane" | "main"): string {
+  const door = `GET http://${HOST}:${PORT}/api/self/memory`;
+  return role === "main"
+    ? `YOUR MEMORY is ${door}?view=work (same header): this Program's tasks with status, hold.grund and
+audit state (queued/running/terminal/unknown), each naming its basis; view=sources: declared vs
+delivered context refs. Read it, never copy it into a handover. Its stated limits: readByAgent is
+unknown, a row without provenance stays unknown, coverage=incomplete is not absence.`
+    : `YOUR MEMORY: ${door}?view=work with header "x-fleet-self-token: $FLEET_SELF_TOKEN"
+gives your task's status, hold.grund, land and audit state, each naming its basis; view=sources:
+declared vs delivered context refs. Read it, never copy it. Its stated limits: readByAgent is
+unknown, a row without provenance stays unknown, coverage=incomplete is not absence.`;
+}
+
 // repo root → worker name → the executable that worker runs as, for THAT repo.
 //
 // The FLEET_*_CMD stand-ins are module constants read from the server's env, which makes each of
@@ -8668,6 +8966,8 @@ function buildLaneSuccessionBrief(facts: { branch: string; base: string; session
       : "Zu dieser Zeile liegt keine Entscheidung vor; der Auftrag unten gilt im Wortlaut.",
     "Lies zuerst den Auftrag, dann was schon drin ist, dann die Übergabe.",
     "",
+    memoryPointer("lane"),
+    "",
     "--- DER AUFTRAG (unverändert, im Wortlaut)",
     laneSuccessionRowLines(facts.rows),
     "",
@@ -13808,7 +14108,10 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // Every await since the readiness wait was git or state work, and a kill or re-open in that window
     // must not receive this text — the same re-check the boot sleep gets, at the last moment it helps.
     if (identityLost()) { await requeue("slot changed during brief assembly — requeued"); return; }
-    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness)}`;
+    // THE MEMORY POINTER (≤ 512 B): the reader and its limits, never a copy of the state it reads.
+    // Before the anchors for the anchors' reason; clarify gets none, like the notes and the footer.
+    const memoryBlock = clarify ? "" : `\n\n${memoryPointer("lane")}`;
+    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${memoryBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness)}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     await sendText(free, deliveredBrief, true, { path: "brief" });
@@ -29318,7 +29621,7 @@ async function treeListingAt(dir: string, commit: string): Promise<TreeListing> 
 
 async function repoManifestContextPlan(repoRoot: string, head: string,
   facts: Omit<ContextPlanInput, "sourceTree">): Promise<{ repoPlan: ContextPlan; blobShas: ReadonlyMap<string, string>;
-    blobModes: ReadonlyMap<string, string> }> {
+    blobModes: ReadonlyMap<string, string>; manifest: ContextManifestRead }> {
   const raw = await showAtHead(repoRoot, head, CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES);
   const manifest: ContextManifestRead = raw.kind === "unread"
     ? { kind: "invalid", detail: "manifest could not be read at head within its byte bound" }
@@ -29326,7 +29629,7 @@ async function repoManifestContextPlan(repoRoot: string, head: string,
 
   // It runs even with no manifest: the Fleet seeds still need their version.
   const { trackedPaths, blobShas, blobModes } = await treeListingAt(repoRoot, head);
-  if (manifest.kind === "absent") return { repoPlan: { selected: [], omitted: [] }, blobShas, blobModes };
+  if (manifest.kind === "absent") return { repoPlan: { selected: [], omitted: [] }, blobShas, blobModes, manifest };
 
   const sourceBytes = new Map<string, string>();
   if (manifest.kind === "packs") {
@@ -29338,7 +29641,7 @@ async function repoManifestContextPlan(repoRoot: string, head: string,
       if (bytes.kind === "bytes") sourceBytes.set(path, bytes.text);
     }
   }
-  return { repoPlan: planRepoContext({ manifest, repo: { trackedPaths, sourceBytes }, facts }), blobShas, blobModes };
+  return { repoPlan: planRepoContext({ manifest, repo: { trackedPaths, sourceBytes }, facts }), blobShas, blobModes, manifest };
 }
 
 // The Fleet seeds and the repository's own declared packs land in ONE plan and one receipt. In a
@@ -29400,7 +29703,9 @@ YOUR LIFECYCLE PROJECTION is GET /api/self/program-execution. It is the server's
 where every row of your Program stands - phase, phaseBasis, candidate and a per-row nextAction that
 names the door belonging to that row right now, plus an explicit unknown list naming any input that
 is missing. Read it before each act instead of inferring state. It says where a row IS; it never
-grades the work, and it actuates nothing.`;
+grades the work, and it actuates nothing.
+
+${memoryPointer("main")}`;
 
 // The generic role judgement, unchanged: the owner's correction of 2026-08-24 in its own shape.
 const RAIL_ROLE_STANDARD = `
@@ -29857,9 +30162,6 @@ function handoverCaptureRefusal(handover: ProgramHandover): string | null {
 }
 
 function standardHandoverLines(program: Program, handover: ProgramHandover): string[] {
-  const rows = tasks.filter((t) => t.programId === program.id);
-  const open = rows.filter((t) => t.status === "pending" || t.status === "queued" || t.status === "sent");
-  const inState = (want: Task["status"]): number => open.filter((t) => t.status === want).length;
   const inbox = programInboxStatus(program);
   const entries = program.inbox?.entries.length ?? 0;
   const of = (kind: ProgramHandoverObligation["kind"]): ProgramHandoverObligation[] =>
@@ -29882,7 +30184,9 @@ function standardHandoverLines(program: Program, handover: ProgramHandover): str
   return [
     ``,
     `YOUR HANDOVER IS THIS PROGRAM'S OWN RECORD, measured at the moment of transfer. Every count below ages immediately; the door beside it does not, so re-read rather than trust the number.`,
-    `- Open task rows: ${open.length} of ${rows.length} (pending ${inState("pending")}, queued ${inState("queued")}, sent ${inState("sent")}). GET /api/self/program-execution gives each row its phase and the one door that belongs to it.`,
+    // NO TASK COUNTS (task 42da6bdc): a status tally pasted here was a second, instantly stale copy
+    // of rows the successor reads live — the memory door names each row's status, hold and audit.
+    `- Task rows: not copied here. GET /api/self/memory?view=work reads each row's status, hold.grund and audit state with its basis; GET /api/self/program-execution gives each row its phase and the one door that belongs to it.`,
     program.inboxLost
       ? `- Program inbox: LOST at ${new Date(program.inboxLost.at).toISOString()} — the persisted record could not be read (${program.inboxLost.error}) and every pointer written before then is gone for good. An empty answer from GET /api/self/inbox proves nothing about what was there; the same loss is on that route's own \`unknown\` list.`
       : `- Program inbox: ${inbox.unread} unread of ${entries} entries${inbox.oldestAt === null ? "" : `, oldest unread ${new Date(inbox.oldestAt).toISOString()}`}. GET /api/self/inbox reads them; POST /api/self/inbox/<id>/read receipts one.`,
@@ -35879,6 +36183,26 @@ Bun.serve<WSData>({
       if (s.worktree)
         return json({ error: "programs are brackets above lanes; a lane cannot read execution as its own" }, 409);
       return programExecutionView(s);
+    }
+
+    // THE PROJECT MEMORY DOOR (docs/self-api.md §memory). Read-only and slot-bound like its neighbour
+    // above, but open to BOTH principals: the scope is derived in memoryScopeFor (a lane's own task, a
+    // bound MAIN's own Program) and a query parameter can only narrow it. The occupant is re-checked
+    // after the last await, so a slot recycled mid-read answers 409 instead of a foreign slice.
+    if (url.pathname === "/api/self/memory" && req.method === "GET") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      const openedAt = s.openedAt;
+      const view = url.searchParams.get("view") ?? "work";
+      if (!MEMORY_VIEWS.includes(view as MemoryView))
+        return json({ refusal: "bad-view", error: `view must be one of ${MEMORY_VIEWS.join(", ")}` }, 400);
+      const scope = await memoryScopeFor(s, url);
+      if (!scope.ok) return scope.response;
+      const body = view === "sources" ? await memorySourcesView(s, scope) : await memoryWorkView(s, scope);
+      if (s.openedAt !== openedAt || !s.selfToken || !secretEq(given, s.selfToken))
+        return json({ refusal: "occupant-changed", error: "the slot changed occupant while this read ran — nothing of the new occupant's is served on the old credential" }, 409);
+      return json(body);
     }
 
     // PROGRAM-SCOPED CONTEXT POINTERS (docs/self-api.md §program-context-packs). One writer: the bound

@@ -1,9 +1,10 @@
 // The scoped self-scheduling credential: FLEET_SELF_TOKEN / FLEET_SELF_SLOT in EVERY session's
 // spawn env (lane or not, since 2026-08-07), and what the /api/self routes will and will not
 // accept it for — including both opposite scope rules (lane-only questions vs main-only exit).
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, REPO2, REPO3, ROOT, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv } from "./harness";
+import { randomBytes } from "node:crypto";
+import { BASE, IP, PORT, REPO, REPO2, REPO3, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv } from "./harness";
 import type { Ctx } from "./ctx";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor } from "../verify-proportion";
 // the same table the runner reads, so this family measures the advice AND the closure it implies
@@ -1483,4 +1484,297 @@ export async function run(ctx: Ctx): Promise<void> {
   // the restart section (guards fix A) uses this token, then tears the lane down.
   ctx.restartSelfTok = selfTok;
   ctx.restartSelfSlot = lnTok.slot;
+
+  await memoryDoor();
+}
+
+// --- THE PROJECT MEMORY DOOR (GET /api/self/memory, server.ts#memoryScopeFor) -----------------
+// ITS OWN SCRATCH INSTANCE, the state-snapshot.ts pattern: three throwaway repositories, three
+// Programs bound to three plain MAIN slots, one dispatched lane each — planted into an EMPTY state,
+// so nothing here reaches the suite server's slots, queue or ledgers. A = manifest + AGENTS.md,
+// B = AGENTS.md only, C = neither (a MAIN there cannot even derive its declared sources).
+// What each group can turn red, stated as the mutation:
+//   positive ×6 — drop hold.grund/audit/basis from the row, or serve a lane its program's rows.
+//   sources     — merge declaredNow into deliveredThen, or report an absent carrier as nothing.
+//   refusals ×4 — answer a foreign task/program/recycled occupant with 200, or an unreadable
+//                 source with a clean answer.
+//   pointer     — copy task status/hold into a founding brief, or grow the pointer past 512 B.
+const MEM_FIX = `${process.env.TMPDIR ?? "/tmp"}/fleet-e2e-memory-${process.pid}`;
+const MEM_TOKEN = `mem-${randomBytes(8).toString("hex")}`;
+const MEM_SKIP = /^(\.git|node_modules|streams|e2e-trail|drops|fleet\.json.*|fleet\.pid|.*\.jsonl(\.\d+|\.archive)?|.*\.log|post-land-audit-queue\.json.*|deploy-inflight\.json.*)$/;
+interface MemSlotRow { selfToken?: string; openedAt?: number; sessionId?: string | null; cwd?: string | null;
+  worktree?: unknown; taskId?: string | null }
+interface MemRow { id: string; status: string | null; hold: { grund: string | null } | null;
+  audit: { state: string }; basis: Record<string, string> }
+interface MemReceipt { taskId: string | null; selected: { id: string }[] }
+interface MemBody {
+  refusal?: string; error?: string; scope?: { principal: string }; program?: { id: string } | null;
+  tasks?: { rows: MemRow[] }; occupants?: { slot: number }[]; sources?: { persisted: string[]; volatile: string[] };
+  stateRevision?: string; bootEpoch?: number; generatedAt?: number; unknown?: string[]; coverage?: string;
+  declaredNow?: { selected: { id: string; origin: string }[]; nativeRules?: { trackedAtHead: boolean } } | null;
+  deliveredThen?: { receipts: MemReceipt[] }; readByAgent?: string; missing?: string[];
+}
+interface MemInstance { dir: string; base: string; sock: string; proc: ReturnType<typeof Bun.spawn> | null; log: string }
+
+async function memBoot(i: MemInstance): Promise<boolean> {
+  i.proc = Bun.spawn(["bun", "server.ts"], {
+    cwd: i.dir, stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, FLEET_HOST: IP, FLEET_PORT: i.base.split(":").pop()!, FLEET_SOCK: i.sock,
+      FLEET_TOKEN: MEM_TOKEN, FLEET_CMD: "true", FLEET_AUTO_REVIEW_MS: "0", FLEET_STATE_SNAPSHOT_MS: "0",
+      FLEET_POSTLAND_AUDIT_CMD: "true", FLEET_AUDIT_ROTATE_BYTES: "50000000" },
+  });
+  const drain = async (s: ReadableStream<Uint8Array>) => { for await (const c of s) i.log += new TextDecoder().decode(c); };
+  void drain(i.proc.stdout as ReadableStream<Uint8Array>);
+  void drain(i.proc.stderr as ReadableStream<Uint8Array>);
+  for (let n = 0; n < 150; n++) {
+    if (await fetch(`${i.base}/api/sessions`, { headers: { authorization: `Bearer ${MEM_TOKEN}` } }).then((r) => r.ok, () => false)) return true;
+    await Bun.sleep(100);
+  }
+  return false;
+}
+async function memStop(i: MemInstance): Promise<void> {
+  if (!i.proc) return;
+  i.proc.kill("SIGTERM");
+  await Promise.race([i.proc.exited, Bun.sleep(5000)]);
+  i.proc.kill("SIGKILL");
+  i.proc = null;
+}
+function memRepo(name: string, files: Record<string, string>): string {
+  const dir = `${MEM_FIX}/${name}`;
+  mkdirSync(dir, { recursive: true });
+  const g = (...a: string[]) => spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" });
+  g("init", "-q", "-b", "main");
+  g("config", "user.email", "e2e@fleet"); g("config", "user.name", "e2e");
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(`${dir}/${path}`.replace(/\/[^/]+$/, ""), { recursive: true });
+    writeFileSync(`${dir}/${path}`, text);
+  }
+  g("add", "-A"); g("commit", "-q", "-m", "fixture");
+  return realpathSync(dir);
+}
+const memPack = (id: string, path: string, anchor: string) => ({
+  id, useWhen: `when ${id} applies`, scope: "repo-contract", audience: "agent", triggers: ["always"],
+  hardness: "guidance", sources: [{ path, anchor }], requiredCapabilities: ["tracked-source-read"],
+  harnesses: ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"], modes: ["read-only", "mutating"],
+  estimatedBytes: 100, evidence: "tree-anchor", owner: "owner", status: "active",
+});
+
+async function memoryDoor(): Promise<void> {
+  rmSync(MEM_FIX, { recursive: true, force: true });
+  mkdirSync(`${MEM_FIX}/srv`, { recursive: true });
+  const dir = `${MEM_FIX}/srv`;
+  for (const e of readdirSync(ROOT)) if (!MEM_SKIP.test(e)) cpSync(`${ROOT}/${e}`, `${dir}/${e}`, { recursive: true });
+  if (!existsSync(`${dir}/node_modules`)) symlinkSync(`${ROOT}/node_modules`, `${dir}/node_modules`);
+  const rA = memRepo("repoA", { "AGENTS.md": "# A contract\n", "docs/a.md": "# A anchor\n",
+    ".fleet/context-packs.json": JSON.stringify([memPack("a-pack", "docs/a.md", "# A anchor")], null, 2) });
+  const rB = memRepo("repoB", { "AGENTS.md": "# B contract\n", "src/b.txt": "b\n" });
+  const rC = memRepo("repoC", { "README.md": "# C has no contract\n" });
+  const i: MemInstance = { dir, base: `http://${IP}:${PORT + 25}`, sock: `${SOCK}mem25`, proc: null, log: "" };
+  const H2 = { "content-type": "application/json", authorization: `Bearer ${MEM_TOKEN}` };
+  const opost = (path: string, body: unknown) => fetch(`${i.base}${path}`, { method: "POST", headers: H2, body: JSON.stringify(body) });
+  const oget = (path: string) => fetch(`${i.base}${path}`, { headers: H2 });
+  const mem = (tok: string, q: string) => fetch(`${i.base}/api/self/memory${q}`, { headers: { "x-fleet-self-token": tok } });
+  const memJ = async (tok: string, q: string): Promise<{ status: number; body: MemBody }> => {
+    const r = await mem(tok, q);
+    return { status: r.status, body: (await r.json().catch(() => ({}))) as MemBody };
+  };
+  const readState = () => JSON.parse(readFileSync(`${dir}/fleet.json`, "utf8")) as {
+    slots: Record<string, MemSlotRow>; programs?: Record<string, unknown>[]; tasks?: Record<string, unknown>[] };
+  try {
+    const up = await memBoot(i);
+    check("memory fixture: the scratch instance boots on its own port and socket", up, i.log.slice(-300));
+    if (!up) return;
+    const repos = [rA, rB, rC];
+    for (const [n, r] of repos.entries()) await opost(`/api/slots/${n + 1}/open`, { cwd: r, label: `mem-main-${"ABC"[n]}` });
+    let rows: MemSlotRow[] = [];
+    for (let n = 0; n < 60; n++) {
+      rows = [1, 2, 3].map((k) => readState().slots[String(k)] ?? {});
+      if (rows.every((x) => /^[0-9a-f]{32}$/.test(x.selfToken ?? "") && typeof x.openedAt === "number")) break;
+      await Bun.sleep(100);
+    }
+    check("memory fixture: three plain MAIN slots are open with their own credentials",
+      rows.every((x) => /^[0-9a-f]{32}$/.test(x.selfToken ?? "")), JSON.stringify(rows.map((x) => x.cwd)));
+
+    // THE BINDINGS ARE SERVER FACTS, planted as such (e2e/attention.ts pattern): three active
+    // Programs, each bound to its MAIN's exact occupant, and four rows each — T (dispatched below),
+    // H (held below), D (a planted land), X (a sibling nobody holds).
+    await memStop(i);
+    const now = Date.now();
+    const planted = readState();
+    const P = ["a", "b", "c"].map((c) => c.repeat(24));
+    const id = (k: string, n: number) => `${k}${n}`.padEnd(12, "0").toLowerCase().replace(/[^a-z0-9]/g, "0");
+    const T = [0, 1, 2].map((n) => id("t", n)); const Hh = [0, 1, 2].map((n) => id("h", n));
+    const D = [0, 1, 2].map((n) => id("d", n)); const X = [0, 1, 2].map((n) => id("x", n));
+    planted.programs = P.map((p, n) => ({
+      id: p, title: `Memory fixture ${"ABC"[n]}`, intent: "read memory", successCriterion: "memory reads",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [], status: "active", createdAt: now - 1000,
+      proposedBy: { kind: "owner" }, confirmedAt: now - 900, activatedAt: now - 800,
+      main: { slot: n + 1, openedAt: rows[n]!.openedAt, sessionId: rows[n]!.sessionId ?? null, boundAt: now - 700 },
+    }));
+    const row = (tid: string, n: number, status: string, text: string) => ({ id: tid, text, source: "owner", from: null,
+      kind: "auftrag", repo: repos[n], status, created: now - 600 + n, slot: null, note: null, programId: P[n] });
+    planted.tasks = [0, 1, 2].flatMap((n) => [row(T[n]!, n, "pending", `memory lane task ${n}`),
+      row(Hh[n]!, n, "pending", `memory held task ${n}`), row(D[n]!, n, "done", `memory landed task ${n}`),
+      row(X[n]!, n, "pending", `memory sibling task ${n}`)]);
+    writeFileSync(`${dir}/fleet.json`, JSON.stringify(planted, null, 2), { mode: 0o600 });
+    const sha = (c: string) => c.repeat(40);
+    // D0 landed and was audited green; D1 landed and no audit row names it; D2 never landed
+    writeFileSync(`${dir}/lane-outcomes.jsonl`, [0, 1].map((n) => JSON.stringify({ ts: now - 500, branch: `fleet/mem-d${n}`,
+      repo: repos[n], disposition: "landed", headSha: sha("1"), mainAfter: sha(String(n + 2)), taskId: D[n], programId: P[n] })).join("\n") + "\n", { mode: 0o600 });
+    writeFileSync(`${dir}/post-land-audits.jsonl`, JSON.stringify({ at: now - 400, ms: 1, result: "green", repo: rA, main: "main",
+      mainSha: sha("2"), covers: [{ branch: "fleet/mem-d0", mainAfter: sha("2"), at: now - 450 }], cmd: "true", exitCode: 0, out: "" }) + "\n", { mode: 0o600 });
+    check("memory fixture: the instance reboots on the planted bindings", await memBoot(i), i.log.slice(-300));
+    const mainTok = rows.map((x) => x.selfToken as string);
+
+    // the MAIN holds H with a reason, through its own door
+    const grund = [0, 1, 2].map((n) => `GRUND-${n}-${randomBytes(4).toString("hex")}`);
+    const held = await Promise.all([0, 1, 2].map((n) => fetch(`${i.base}/api/self/tasks/${Hh[n]}/hold`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": mainTok[n]! },
+      body: JSON.stringify({ grund: grund[n] }) })));
+    check("memory fixture: each bound MAIN holds its H row with a reason", held.every((r) => r.ok),
+      held.map((r) => r.status).join(","));
+    // one lane per Program, dispatched by the owner: a real founding brief and a real receipt
+    const laneSlot: (number | null)[] = [];
+    for (const n of [0, 1, 2])
+      laneSlot.push(((await (await opost(`/api/tasks/${T[n]}/dispatch`, {})).json()) as { slot?: number }).slot ?? null);
+    const laneTok: string[] = [];
+    for (const [n, slot] of laneSlot.entries()) {
+      let tok = "";
+      for (let k = 0; k < 80 && slot !== null; k++) {
+        const sl = readState().slots[String(slot)];
+        if (sl?.worktree && sl.taskId === T[n] && /^[0-9a-f]{32}$/.test(sl.selfToken ?? "")) { tok = sl.selfToken ?? ""; break; }
+        await Bun.sleep(100);
+      }
+      laneTok.push(tok);
+    }
+    check("memory fixture: one lane per repository was dispatched on its T row", laneTok.every(Boolean),
+      JSON.stringify(laneSlot));
+    // wait for the founding brief of every lane (the receipt is appended right after the send)
+    let prompts: { slot: number; text: string }[] = [];
+    for (let k = 0; k < 100; k++) {
+      prompts = existsSync(`${dir}/streams/prompts.jsonl`) ? readFileSync(`${dir}/streams/prompts.jsonl`, "utf8")
+        .trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as { slot: number; text: string }) : [];
+      if (laneSlot.every((s) => prompts.some((p) => p.slot === s && p.text.includes("HOW THIS LANE ENDS")))) break;
+      await Bun.sleep(150);
+    }
+
+    // --- six positive cases: 3 repositories × {lane, Program-MAIN} ---
+    for (const n of [0, 1, 2]) {
+      const L = await memJ(laneTok[n]!, "?view=work");
+      const lrows = (L.body.tasks?.rows ?? []) as MemRow[];
+      check(`memory work (repo ${"ABC"[n]}, lane): its own task only — status, hold null, audit not-landed, every half with a basis`,
+        L.status === 200 && L.body.scope?.principal === "lane" && lrows.length === 1 && lrows[0]!.id === T[n]
+          && lrows[0]!.status === "sent" && lrows[0]!.hold === null && lrows[0]!.audit.state === "not-landed"
+          && typeof lrows[0]!.basis?.row === "string" && L.body.occupants?.[0]?.slot === laneSlot[n],
+        `${L.status} ${JSON.stringify(L.body).slice(0, 400)}`);
+      check(`memory work (repo ${"ABC"[n]}, lane): freshness and source limits are named — persisted and volatile apart, revision, boot`,
+        Array.isArray(L.body.sources?.persisted) && L.body.sources.persisted.length > 0
+          && Array.isArray(L.body.sources?.volatile) && L.body.sources.volatile.length > 0
+          && /^[0-9a-f]{16}$/.test(L.body.stateRevision ?? "") && typeof L.body.bootEpoch === "number"
+          && typeof L.body.generatedAt === "number" && Array.isArray(L.body.unknown),
+        JSON.stringify({ sources: L.body.sources, rev: L.body.stateRevision }));
+      const M = await memJ(mainTok[n]!, "?view=work");
+      const mrows = (M.body.tasks?.rows ?? []) as MemRow[];
+      const byId = new Map(mrows.map((r) => [r.id, r]));
+      const wantD = n === 0 ? "terminal" : n === 1 ? "unknown" : "not-landed";
+      check(`memory work (repo ${"ABC"[n]}, MAIN): its Program's four rows, H with its hold.grund, D's audit state ${wantD}`,
+        M.status === 200 && M.body.scope?.principal === "program-main" && M.body.program?.id === P[n]
+          && mrows.length === 4 && [T[n], Hh[n], D[n], X[n]].every((t) => byId.has(t!))
+          && byId.get(Hh[n]!)?.hold?.grund === grund[n] && byId.get(X[n]!)?.hold === null
+          && byId.get(D[n]!)?.audit.state === wantD && mrows.every((r) => typeof r.audit?.state === "string")
+          && M.body.occupants?.some((o: { slot: number }) => o.slot === laneSlot[n]) === true,
+        `${M.status} ${JSON.stringify(mrows.map((r) => [r.id, r.status, r.hold?.grund, r.audit.state]))}`);
+    }
+
+    // --- sources: declared now against delivered then ---
+    const LA = await memJ(laneTok[0]!, "?view=sources");
+    const declaredA = (LA.body.declaredNow?.selected ?? []) as { id: string; origin: string }[];
+    const deliveredA = (LA.body.deliveredThen?.receipts ?? []) as { taskId: string; selected: { id: string }[] }[];
+    check("memory sources (lane A): the manifest pack is declared now AND was delivered then, as two separate carriers; readByAgent stays unknown",
+      LA.status === 200 && declaredA.some((p) => p.id === "a-pack" && p.origin === "repo-manifest")
+        && deliveredA.some((r) => r.taskId === T[0] && r.selected.some((s) => s.id === "a-pack"))
+        && LA.body.readByAgent === "unknown" && LA.body.declaredNow?.nativeRules?.trackedAtHead === true,
+      JSON.stringify({ declaredA, deliveredA: deliveredA.map((r) => r.selected.map((s) => s.id)) }));
+    // move the repository's declaration AFTER the delivery: today's plan changes, the receipt does not
+    writeFileSync(`${rA}/.fleet/context-packs.json`, JSON.stringify([memPack("a-pack", "docs/a.md", "# A anchor"),
+      memPack("a-pack-late", "AGENTS.md", "# A contract")], null, 2));
+    spawnSync("git", ["-C", rA, "commit", "-qam", "declare a second pack"]);
+    const LA2 = await memJ(laneTok[0]!, "?view=sources");
+    check("memory sources (lane A): a pack declared after the founding shows in declaredNow and never in the delivery receipt",
+      (LA2.body.declaredNow?.selected ?? []).some((p: { id: string }) => p.id === "a-pack-late")
+        && !(LA2.body.deliveredThen?.receipts ?? []).some((r: { selected: { id: string }[] }) => r.selected.some((s) => s.id === "a-pack-late")),
+      JSON.stringify(LA2.body.declaredNow?.selected?.map((p: { id: string }) => p.id)));
+    const LB = await memJ(laneTok[1]!, "?view=sources");
+    check("memory sources (lane B): a repository without a manifest is a NAMED missing carrier, not an empty catalogue",
+      LB.status === 200 && (LB.body.missing ?? []).some((m: string) => m.includes(".fleet/context-packs.json"))
+        && (LB.body.missing ?? []).some((m: string) => m.includes("not the Fleet tree")),
+      JSON.stringify(LB.body.missing));
+
+    // a MAIN whose repository tracks no AGENTS.md cannot even derive today's plan: that is an
+    // unknown with its reason and incomplete coverage — never declaredNow: [] read as "nothing declared"
+    const MC = await memJ(mainTok[2]!, "?view=sources");
+    check("memory sources (MAIN C): an underivable declaration is null + a named unknown + coverage incomplete, while the delivered half still answers",
+      MC.status === 200 && MC.body.declaredNow === null && MC.body.coverage === "incomplete"
+        && (MC.body.unknown ?? []).some((u: string) => u.includes("AGENTS.md")) && Array.isArray(MC.body.deliveredThen?.receipts),
+      JSON.stringify({ d: MC.body.declaredNow, u: MC.body.unknown, c: MC.body.coverage }));
+
+    // --- four refusals: foreign task, foreign program, recycled occupant, unreadable source ---
+    const fT = await memJ(laneTok[0]!, `?view=work&task=${Hh[0]}`);
+    const fTm = await memJ(mainTok[0]!, `?view=work&task=${T[1]}`);
+    check("memory refusal (foreign task): a lane asking for its program's other row, and a MAIN asking for another program's row, are named 409s",
+      fT.status === 409 && fT.body.refusal === "foreign-task" && fTm.status === 409 && fTm.body.refusal === "foreign-task"
+        && !JSON.stringify(fT.body).includes(grund[0]!) && !JSON.stringify(fTm.body).includes("memory lane task 1"),
+      JSON.stringify([fT, fTm]));
+    const fP = await memJ(mainTok[0]!, `?view=work&program=${P[1]}`);
+    const fPl = await memJ(laneTok[0]!, `?view=sources&program=${P[1]}`);
+    check("memory refusal (foreign program): program= can only narrow — another Program is a named 409 for MAIN and lane alike",
+      fP.status === 409 && fP.body.refusal === "foreign-program" && fPl.status === 409 && fPl.body.refusal === "foreign-program",
+      JSON.stringify([fP, fPl]));
+    // the MAIN of C is replaced by a new occupant of the same slot: its Program binding is now stale
+    await opost("/api/slots/3/kill", {});
+    await opost("/api/slots/3/open", { cwd: rC, label: "mem-recycled" });
+    let recycledTok = "";
+    for (let k = 0; k < 60; k++) {
+      const t = readState().slots["3"]?.selfToken ?? "";
+      if (/^[0-9a-f]{32}$/.test(t) && t !== mainTok[2]) { recycledTok = t; break; }
+      await Bun.sleep(100);
+    }
+    const rec = await memJ(recycledTok, "?view=work");
+    const old = await mem(mainTok[2]!, "?view=work");
+    check("memory refusal (recycled occupant): the new occupant of the MAIN's slot gets no-scope and none of the Program's rows; the old credential is dead",
+      recycledTok !== "" && rec.status === 409 && rec.body.refusal === "no-scope" && !JSON.stringify(rec.body).includes(P[2]!)
+        && old.status === 401,
+      `${rec.status} ${JSON.stringify(rec.body)} old=${old.status}`);
+    // an unreadable source is named, never answered as a clean slice
+    appendFileSync(`${dir}/lane-outcomes.jsonl`, "{torn-outcome\n");
+    appendFileSync(`${dir}/context-receipts.jsonl`, "{torn-receipt\n");
+    const U = await memJ(mainTok[0]!, "?view=work");
+    const Us = await memJ(laneTok[0]!, "?view=sources");
+    check("memory refusal (unreadable source): a torn ledger line is an unknown line and incomplete coverage, never a silent clean answer",
+      U.status === 200 && (U.body.unknown ?? []).some((u: string) => u.includes("malformed lane-outcomes"))
+        && Us.body.coverage === "incomplete" && (Us.body.unknown ?? []).some((u: string) => u.includes("malformed context-receipts")),
+      JSON.stringify([U.body.unknown, Us.body.coverage, Us.body.unknown]));
+
+    // --- the start pointer: ≤ 512 B, and the founding brief carries no second status copy ---
+    const paragraph = (text: string): string => {
+      const at = text.indexOf("YOUR MEMORY");
+      if (at < 0) return "";
+      const end = text.indexOf("\n\n", at);
+      return end < 0 ? text.slice(at) : text.slice(at, end);
+    };
+    const briefs = laneSlot.map((s) => prompts.find((p) => p.slot === s && p.text.includes("HOW THIS LANE ENDS"))?.text ?? "");
+    check("memory pointer: every founding lane brief carries the reader pointer, at most 512 UTF-8 bytes",
+      briefs.every((b) => paragraph(b).includes("/api/self/memory?view=work")
+        && new TextEncoder().encode(paragraph(b)).byteLength <= 512),
+      briefs.map((b) => new TextEncoder().encode(paragraph(b)).byteLength).join(","));
+    check("memory pointer: the founding brief copies no mechanical state — no sibling's hold reason, no sibling row, no audit state",
+      briefs.every((b, n) => b !== "" && !b.includes(grund[n]!) && !b.includes(Hh[n]!) && !b.includes(D[n]!)
+        // `"status":` is NOT in this list: the exit footer's own fleet-report curl carries it
+        && !/"(hold|audit|grund)":/.test(b)),
+      briefs.map((b) => b.length).join(","));
+  } finally {
+    await memStop(i);
+    spawnSync("tmux", ["-L", i.sock, "kill-server"]);
+    rmSync(MEM_FIX, { recursive: true, force: true });
+  }
 }

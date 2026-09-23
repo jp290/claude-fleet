@@ -3168,10 +3168,9 @@ export async function run(ctx: Ctx): Promise<void> {
   // constant. The three properties, in the order they matter: the tree paid no commit; the
   // Program's live record is IN the delivered brief; and the predecessor's dying obligations are
   // quoted there, because nothing else can ever hand them over again.
-  const handoverStates = (want: string): number =>
-    handoverOpenRows.filter((t) => t.status === want).length;
-  const expectedOpenLine = `- Open task rows: ${handoverOpenRows.length} of ${handoverTaskRows.length}`
-    + ` (pending ${handoverStates("pending")}, queued ${handoverStates("queued")}, sent ${handoverStates("sent")}).`;
+  // the task half is a POINTER since task 42da6bdc, never a tally: the counts it printed were a
+  // second, instantly stale copy of rows the successor reads live through the memory door
+  const expectedTaskLine = "- Task rows: not copied here. GET /api/self/memory?view=work reads each row's status, hold.grund and audit state";
   const expectedInboxLine = `- Program inbox: ${handoverUnread.length} unread of ${handoverInbox?.entries.length ?? 0} entries`
     + `${handoverOldest === null ? "" : `, oldest unread ${new Date(handoverOldest).toISOString()}`}.`;
   const successionHeadAfter = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
@@ -3185,11 +3184,11 @@ export async function run(ctx: Ctx): Promise<void> {
   // both expected lines are derived from the same state the server read, one instant earlier.
   check("Program-MAIN Standard succession handover: the delivered brief carries the Program's own record, measured, with the door that re-reads each line",
     successionPrompt.includes("YOUR HANDOVER IS THIS PROGRAM'S OWN RECORD")
-      && successionPrompt.includes(expectedOpenLine)
+      && successionPrompt.includes(expectedTaskLine) && !successionPrompt.includes("- Open task rows:")
       && successionPrompt.includes("GET /api/self/program-execution gives each row its phase")
       && successionPrompt.includes(expectedInboxLine)
       && successionPrompt.includes("GET /api/self/inbox reads them; POST /api/self/inbox/<id>/read receipts one."),
-    JSON.stringify({ expectedOpenLine, expectedInboxLine,
+    JSON.stringify({ expectedTaskLine, expectedInboxLine,
       got: successionPrompt.split("\n").filter((line) => line.startsWith("- ")) }));
   // --- DYING OBLIGATIONS ARE RETAINED; PROGRAM ATTENTION STAYS LIVE. ----------------------------
   // Watches and autos disappear with the predecessor, so the successor reads their complete rows
@@ -4159,6 +4158,19 @@ export async function run(ctx: Ctx): Promise<void> {
       && rail.includes('watch {"kind":"merge","target":<laneSlot>}')
       && rail.includes('{"kind":"audit","repo":"<this checkout\'s git toplevel>","mainAfter":"<that candidate sha>"}'),
     `base=${rail.includes(`answers this pane at ${BASE} `)} missing=[${railDoors.filter((d) => !rail.includes(d)).join(", ")}]`);
+  // THE MEMORY POINTER (task 42da6bdc): the rail names the reader and its limits in at most 512
+  // UTF-8 bytes, and the four founding shapes copy no mechanical state beside it — a held row's
+  // reason, a row's status or an audit state pasted into a brief is stale the moment it is read.
+  const memoryAt = rail.indexOf("YOUR MEMORY is GET ");
+  const memoryEnd = memoryAt < 0 ? -1 : rail.indexOf("\n\n", memoryAt);
+  const memoryParagraph = memoryAt < 0 ? "" : rail.slice(memoryAt, memoryEnd < 0 ? undefined : memoryEnd);
+  check("Program-MAIN rail: it carries the memory start pointer — the reader at the server's own address, at most 512 UTF-8 bytes",
+    memoryParagraph.includes(`GET ${BASE}/api/self/memory?view=work`) && memoryParagraph.includes("view=sources")
+      && memoryParagraph.includes("never copy") && new TextEncoder().encode(memoryParagraph).byteLength <= 512,
+    `bytes=${new TextEncoder().encode(memoryParagraph).byteLength} at=${memoryAt}`);
+  check("Program-MAIN founding shapes: no second mechanical status/hold/audit copy beside the pointer",
+    railShapes.every(([, prompt]) => !/"(hold|audit|grund|status)":/.test(prompt)),
+    railShapes.filter(([, prompt]) => /"(hold|audit|grund|status)":/.test(prompt)).map(([name]) => name).join(","));
   // THE AUTHORITY SPLIT, in the delivered text (cut S4 §2b, "Du entscheidest / der Owner
   // entscheidet"). The falsifier it closes is a session that either stalls on a decision it owns or
   // commits one it does not: until 2026-09-17 the block named only where the work ENDS, so what was

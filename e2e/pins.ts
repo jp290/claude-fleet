@@ -6817,7 +6817,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // a codex lane compacts its own window, so its copy of act 2 must not teach the baton door
   // (Fremdrepo-Befund 4) — but both exits must come from this one body, or the two drift.
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
-    /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness\)\}`;/.test(server)
+    /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{memoryBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness\)\}`;/.test(server)
       && /\]\.join\("\\n"\) \+ facts\.footer;/.test(server)
       && (server.split("laneExitFooter(").length - 1) === 3,
     `laneExitFooter call sites=${server.split("laneExitFooter(").length - 1}`);
@@ -7021,7 +7021,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // 2026-09-23 (System 1.5 R1): RAIL_TAIL's "treat an arriving report as a CLAIM" bullet now
   // also asks the judging MAIN for the leading ERFUELLT: token on its verdict reason. A
   // deliberate text change, so the baseline moves with it.
-  const RAIL_STANDARD_SHA256 = "5ff88adf7d252ee76ad1724438588af3a4450d9b5561452574e5c5da61b7654c";
+  // 2026-09-23 (memory M1, task 42da6bdc): RAIL_HEAD now ends with the memory start pointer
+  // (server.ts#memoryPointer, GET /api/self/memory) — a pointer to the reader, no copied state.
+  const RAIL_STANDARD_SHA256 = "b18c86a4623498538e34173bba58cd9a789655531ffe2dda9bd6b5df50206127";
   const railBody = (part: string): string =>
     part === "" ? "" : part.slice(part.indexOf("`") + 1, part.lastIndexOf("`"));
   const standardBytes = rail === ""

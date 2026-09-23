@@ -209,11 +209,11 @@ export async function run(h: {
   utimesSync(`${instanceDir}/src/client.ts`, stamp, stamp);
   for (const name of ["app", "share", "helper", "hub"])
     utimesSync(`${instanceDir}/public/${name}.js`, stamp + 10, stamp + 10);
-  writeFileSync(`${instanceDir}/.fleet-sync-status.json`, JSON.stringify({ at: 1, exit: 5, head: "a".repeat(40) }));
+  writeFileSync(`${instanceDir}/.fleet-sync-status.json`, JSON.stringify({ at: 1, exit: 7, head: "a".repeat(40) }));
   const fresh = await instanceOf(instanceDir);
-  check("(HD) the instance reader measures HEAD, fresh bundles, distance zero and the recorded sync exit",
+  check("(HD) the instance reader measures HEAD, fresh bundles, distance zero and sync exit 7",
     !!fresh && /^[0-9a-f]{40}$/.test(fresh.head) && fresh.bundleStale === false
-      && fresh.behindCount === 0 && fresh.syncExit === 5 && Number.isSafeInteger(fresh.at),
+      && fresh.behindCount === 0 && fresh.syncExit === 7 && Number.isSafeInteger(fresh.at),
     JSON.stringify(fresh));
   utimesSync(`${instanceDir}/src/client.ts`, stamp + 20, stamp + 20);
   const stale = await instanceOf(instanceDir);

@@ -388,7 +388,7 @@ export async function instanceOf(dir: string): Promise<InstanceReading | undefin
   try {
     const status = JSON.parse(readFileSync(join(dir, ".fleet-sync-status.json"), "utf8")) as { exit?: unknown };
     syncExit = status.exit as number;
-    if (!Number.isInteger(syncExit) || syncExit < 0 || syncExit > 5) return undefined;
+    if (!Number.isInteger(syncExit) || syncExit < 0 || syncExit > 7) return undefined;
   } catch { return undefined; }
   const sourceMtime = newestSourceMtime(join(dir, "src"));
   if (sourceMtime === undefined) return undefined;

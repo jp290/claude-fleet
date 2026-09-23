@@ -12,6 +12,7 @@ export interface EntFacts {
   title: string;
   lines: string[];
   later?: Promise<unknown>;
+  open?: () => void;
 }
 
 const OPEN_MS = 350;
@@ -25,7 +26,7 @@ let closeTimer: ReturnType<typeof setTimeout> | undefined;
 function ensureCard(): HTMLElement {
   if (card) return card;
   card = document.createElement("div");
-  card.className = "entcard";
+  card.className = "entcard xterm-hover";
   card.setAttribute("role", "tooltip");
   card.addEventListener("pointerenter", () => clearTimeout(closeTimer));
   card.addEventListener("pointerleave", () => scheduleClose());
@@ -46,8 +47,15 @@ function paint(target: HTMLElement, describe: (kind: string, id: string) => EntF
   const facts = describe(kind, id);
   if (!facts) { close(); return; }
   const c = ensureCard();
-  c.replaceChildren(line("entmeta", facts.meta), line("enttitle", facts.title),
-    ...facts.lines.map((l) => line("entline", l)));
+  c.replaceChildren(line("enttitle", facts.title), line("entmeta", facts.meta),
+    ...facts.lines.slice(0, kind === "file" ? 12 : 4).map((l) => line("entline", l)));
+  if (facts.open) {
+    const button = document.createElement("button");
+    button.className = "entopen";
+    button.textContent = "Datei öffnen";
+    button.onclick = facts.open;
+    c.appendChild(button);
+  }
   // measure hidden-but-laid-out, then place: below the span, flipped above when it would clip
   c.classList.remove("open");
   c.style.display = "block";
@@ -86,9 +94,18 @@ export function attachEntityCards(root: HTMLElement, describe: (kind: string, id
     openTimer = setTimeout(() => { current = target; paint(target, describe); }, current ? 0 : OPEN_MS);
   };
   root.addEventListener("pointerover", (e) => { const t = entOf(e.target); if (t) enter(t); });
+  root.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "touch") return;
+    const t = entOf(e.target);
+    if (!t) { close(); return; }
+    clearTimeout(openTimer);
+    if (t === current) close();
+    else { current = t; paint(t, describe); }
+  });
   root.addEventListener("pointerout", (e) => {
     const t = entOf(e.target);
     if (!t || t.contains(e.relatedTarget as Node | null)) return;
+    if (e.pointerType === "touch") return;
     clearTimeout(openTimer);
     if (current) scheduleClose();
   });
@@ -96,5 +113,26 @@ export function attachEntityCards(root: HTMLElement, describe: (kind: string, id
   root.addEventListener("focusout", () => scheduleClose());
   root.addEventListener("scroll", close, { passive: true });
 }
+
+export function showEntityCard(kind: string, id: string, x: number, y: number,
+  describe: (kind: string, id: string) => EntFacts | null): void {
+  const anchor = document.createElement("span");
+  anchor.dataset.ent = kind;
+  anchor.dataset.id = id;
+  anchor.getBoundingClientRect = () => new DOMRect(x, y, 0, 0);
+  clearTimeout(openTimer);
+  clearTimeout(closeTimer);
+  current = anchor;
+  paint(anchor, describe);
+}
+
+export function hideEntityCard(): void { scheduleClose(); }
+export function closeEntityCard(): void { close(); }
+
+document.addEventListener("pointerdown", (e) => {
+  if (e.pointerType !== "touch" || !card) return;
+  if (e.target instanceof Element && (e.target.closest("[data-ent]") || card.contains(e.target))) return;
+  close();
+});
 
 window.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });

@@ -454,6 +454,9 @@
     color: var(--chat-mute); font-size: 13px; font-family: inherit; cursor: pointer; }
   .panetools button:hover { color: var(--chat-ink); }
   .panetools .ico { width: 14px; height: 14px; }
+  .panetools .loupe { width: 13px; height: 13px; border: 2px solid currentColor; border-radius: 50%; position: relative; }
+  .panetools .loupe::after { content: ""; position: absolute; width: 7px; height: 2px; background: currentColor;
+    right: -6px; bottom: -3px; transform: rotate(48deg); border-radius: 1px; }
   .panetools button[aria-pressed="true"] { color: var(--chat-ink); border-color: var(--chat-mute); background: var(--chat-surface); }
   /* visibility per view: session buttons are shown by JS (assign/poll). The TOP row is the same
      in both views (ℹ 💬 ⚙), so ℹ cannot drift; the view row swaps its members (↻ ⇔ terminal,
@@ -532,14 +535,18 @@
     border-radius: 3px; cursor: help; transition: background 0.12s, color 0.12s; }
   .ent:hover { background: #1b2233; color: #fff; border-bottom-color: var(--accent); }
   .mdcode.ent { border-bottom: 1px dotted var(--chat-mute); }
-  .entcard { position: fixed; z-index: 60; display: none; width: 320px; max-width: calc(100vw - 16px);
-    padding: 11px 14px 12px; color: var(--chat-prose);
+  .entcard { position: fixed; z-index: 60; display: none; width: 420px; max-width: calc(100vw - 16px);
+    padding: 11px 14px 12px; color: var(--chat-prose); background: var(--chat-raised);
+    border: 1px solid var(--chat-edge); border-radius: var(--r2); box-shadow: 0 12px 36px #0009;
     font-family: var(--chat-sans); font-size: calc(var(--chat-ui-fs) + 1px); line-height: 1.45;
+    max-height: min(75vh, 580px); overflow-y: auto;
     opacity: 0; transform: scale(0.98); transition: opacity 0.12s ease-out, transform 0.12s ease-out; }
   .entcard.open { opacity: 1; transform: scale(1); }
   .entmeta { font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-mute); }
   .enttitle { color: var(--chat-ink); font-weight: 600; font-size: 1.08em; margin: 4px 0 7px; overflow-wrap: anywhere; }
-  .entline { color: #a1a1aa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .entline { color: #a1a1aa; white-space: pre; overflow-x: auto; font-family: var(--chat-mono); font-size: var(--chat-code-fs); }
+  .entopen { margin-top: 8px; padding: 5px 9px; border: 1px solid var(--chat-edge); border-radius: var(--r1);
+    background: var(--chat-surface); color: var(--chat-ink); cursor: pointer; }
   /* everything the agent did between two messages: ONE quiet expandable line */
   .toolgroup { margin: 0 0 16px; border: 1px solid var(--chat-edge-soft); border-radius: 10px; background: #0a0a0bcc; }
   .toolgroup > summary { cursor: pointer; padding: 6px 12px; font-size: var(--chat-ui-fs); color: var(--chat-mute);

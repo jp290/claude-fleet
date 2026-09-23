@@ -52,7 +52,7 @@ function paint(target: HTMLElement, describe: (kind: string, id: string) => EntF
   if (facts.open) {
     const button = document.createElement("button");
     button.className = "entopen";
-    button.textContent = "Datei öffnen";
+    button.textContent = "Open file";
     button.onclick = facts.open;
     c.appendChild(button);
   }

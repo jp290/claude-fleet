@@ -49,7 +49,10 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
     const parent = dirname(p);
     if (parent === p) return null;
     const resolvedParent = realpathLoose(parent);
-    return resolvedParent === null ? null : `${resolvedParent}/${basename(p)}`;
+    // a missing chain that reaches `/` must not write `//<name>`: that is not the path the kernel
+    // resolves, so its subpath would match nothing (measured on Linux, where /Users is absent)
+    if (resolvedParent === null) return null;
+    return resolvedParent === "/" ? `/${basename(p)}` : `${resolvedParent}/${basename(p)}`;
   };
   const socks = [...new Set([LIVE_TMUX_SOCK, ...i.sockets])].map((s) => `${i.tmuxDir}/${s}`);
   const own = `${i.agentDir}/sessions/${piSessionSlug(i.cwd)}`;

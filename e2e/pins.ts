@@ -4009,6 +4009,14 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     pin("pi-zai's generated file-read/file-write deny covers all four application subtrees",
       applicationRoots.every((p) => denyFiles.includes(`(subpath "${p}")`)),
       `${applicationRoots.filter((p) => !denyFiles.includes(`(subpath "${p}")`)).length} missing roots`);
+    // HOST-NEUTRAL, the row above only on a host where /Users exists: a home whose FIRST missing
+    // ancestor sits at `/` must still yield single-slash subpaths. The resolver joined `/` + `/`
+    // + name into `//Users/fx/…`, which the Mac never showed and the second-host's pins did (4 roots).
+    const rootless = `/pi-zai-absent-${process.pid}/fx`;
+    const rootlessProf = piZaiFenceProfile({ ...fx, home: rootless }) ?? "";
+    pin("pi-zai's application-root subpaths stay single-slash when the missing chain reaches /",
+      rootlessProf.includes(`(subpath "${rootless}/claudeJobApplication")`) && !rootlessProf.includes('(subpath "//'),
+      (rootlessProf.match(/\(subpath "[^"]*claudeJobApplication"\)/) ?? ["no claudeJobApplication subpath"])[0]);
     const symlinkFixture = realpathSync(mkdtempSync(`${tmpdir()}/pi-zai-roots-`));
     try {
       mkdirSync(`${symlinkFixture}/home`);

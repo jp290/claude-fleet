@@ -54,7 +54,7 @@ import {
 import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
 import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
-import { LIVE_TMUX_SOCK, piZaiFenceProfile } from "../server/pi-zai-fence";
+import { LIVE_TMUX_SOCK, parsePiZaiDenyRoots, piZaiFenceProfile } from "../server/pi-zai-fence";
 import { readJsonl } from "../briefstats";
 import { quotaPosition, newResetEntries } from "../codex-quota";
 import {
@@ -3986,7 +3986,10 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     const RULE_PZ_FENCE = "pi-zai's generated read fence holds the three measured rules: fleet.json/.env regex, process-info+sysctl pair, live tmux socket";
     const fx = { home: "/Users/fx", fleetDir: "/Users/fx/claude-fleet", agentDir: "/Users/fx/.config/claude-fleet/pi-zai-agent",
       keyFile: "/Users/fx/.config/claude-fleet/secrets/zai.key", cwd: "/Users/fx/claude-fleet.worktrees/lane-1",
-      tmuxDir: "/private/tmp/tmux-501", sockets: [] as string[] };
+      tmuxDir: "/private/tmp/tmux-501", sockets: [] as string[],
+      // five SYNTHETIC deny roots — the owner's real ones are private names and live only in the
+      // host's .env; no tracked file may carry them
+      denyRoots: ["/Users/fx/deny-a", "/Users/fx/deny-b", "/Users/fx/deny-b.worktrees", "/Users/fx/Desktop/deny-c", "/Users/fx/deny-d"] };
     const prof = piZaiFenceProfile(fx) ?? "";
     // the file-deny form runs up to the allow that re-opens this pane's own session
     const dfAt = prof.indexOf("(deny file-read* file-write* ");
@@ -4000,32 +4003,46 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       allowDefault: prof.startsWith("(version 1)(allow default)"),
     };
     pin(RULE_PZ_FENCE, Object.values(parts).every(Boolean), JSON.stringify(parts));
-    const applicationRoots = [
-      "/Users/fx/claudeJobApplication",
-      "/Users/fx/private-repo-a",
-      "/Users/fx/private-repo-a.worktrees",
-      "/Users/fx/Desktop/Bewerbungen_April2026",
-    ];
-    pin("pi-zai's generated file-read/file-write deny covers all four application subtrees",
-      applicationRoots.every((p) => denyFiles.includes(`(subpath "${p}")`)),
-      `${applicationRoots.filter((p) => !denyFiles.includes(`(subpath "${p}")`)).length} missing roots`);
-    // HOST-NEUTRAL, the row above only on a host where /Users exists: a home whose FIRST missing
+    pin("pi-zai's generated file-read/file-write deny covers every configured deny root",
+      fx.denyRoots.every((p) => denyFiles.includes(`(subpath "${p}")`)),
+      `${fx.denyRoots.filter((p) => !denyFiles.includes(`(subpath "${p}")`)).length} missing roots`);
+    // FAIL-CLOSED CONFIG: FLEET_PI_ZAI_DENY_ROOTS absent, empty or malformed parses to null, and a
+    // null or empty list builds NO profile — so the spawn starts no pi instead of a fence without
+    // the private roots. Each malformed form is one way a hand-written .env line goes wrong.
+    const env = fx.denyRoots.join(":");
+    const badEnv: [string, string | undefined][] = [["absent", undefined], ["empty", ""], ["relative", "deny-a:/x/b"],
+      ["empty entry", "/x/a::/x/b"], ["trailing colon", "/x/a:"], ["`..` segment", "/x/a:/x/../b"], ["root", "/x/a:/"],
+      ["quote", "/x/a:/x/b'c"], ["leading blank", "/x/a: /x/b"], ["duplicate", "/x/a:/x/a"]];
+    const parsedBad = badEnv.filter(([, raw]) => parsePiZaiDenyRoots(raw) !== null).map(([what]) => what);
+    pin("FLEET_PI_ZAI_DENY_ROOTS parses deterministically: five colon-separated roots round-trip, every malformed form is null",
+      JSON.stringify(parsePiZaiDenyRoots(env)) === JSON.stringify(fx.denyRoots) && parsedBad.length === 0,
+      `accepted malformed: [${parsedBad.join(", ")}] / parsed=${JSON.stringify(parsePiZaiDenyRoots(env))}`);
+    pin("pi-zai builds NO fence without deny roots (null or empty), so pi does not start",
+      piZaiFenceProfile({ ...fx, denyRoots: null }) === null && piZaiFenceProfile({ ...fx, denyRoots: [] }) === null,
+      "a profile was built without deny roots");
+    // ...and the server feeds the builder from exactly that env var, never from a tracked list
+    const pzFor = server.slice(server.indexOf("function piZaiFenceFor("), server.indexOf("\n}\n", server.indexOf("function piZaiFenceFor(")));
+    pin("server.ts#piZaiFenceFor passes the parsed FLEET_PI_ZAI_DENY_ROOTS as denyRoots",
+      /\nconst PI_ZAI_DENY_ROOTS = parsePiZaiDenyRoots\(process\.env\.FLEET_PI_ZAI_DENY_ROOTS\);/.test(server)
+        && /\bdenyRoots: PI_ZAI_DENY_ROOTS,/.test(pzFor),
+      pzFor.match(/denyRoots:[^\n]*/)?.[0] ?? "no denyRoots in piZaiFenceFor");
+    // HOST-NEUTRAL, the row above only on a host where /Users exists: a root whose FIRST missing
     // ancestor sits at `/` must still yield single-slash subpaths. The resolver joined `/` + `/`
     // + name into `//Users/fx/…`, which the Mac never showed and the second-host's pins did (4 roots).
     const rootless = `/pi-zai-absent-${process.pid}/fx`;
-    const rootlessProf = piZaiFenceProfile({ ...fx, home: rootless }) ?? "";
-    pin("pi-zai's application-root subpaths stay single-slash when the missing chain reaches /",
-      rootlessProf.includes(`(subpath "${rootless}/claudeJobApplication")`) && !rootlessProf.includes('(subpath "//'),
-      (rootlessProf.match(/\(subpath "[^"]*claudeJobApplication"\)/) ?? ["no claudeJobApplication subpath"])[0]);
+    const rootlessProf = piZaiFenceProfile({ ...fx, home: rootless, denyRoots: [`${rootless}/deny-a`] }) ?? "";
+    pin("pi-zai's deny-root subpaths stay single-slash when the missing chain reaches /",
+      rootlessProf.includes(`(subpath "${rootless}/deny-a")`) && !rootlessProf.includes('(subpath "//'),
+      (rootlessProf.match(/\(subpath "[^"]*deny-a"\)/) ?? ["no deny-a subpath"])[0]);
     const symlinkFixture = realpathSync(mkdtempSync(`${tmpdir()}/pi-zai-roots-`));
     try {
       mkdirSync(`${symlinkFixture}/home`);
       mkdirSync(`${symlinkFixture}/actual`);
-      symlinkSync(`${symlinkFixture}/actual`, `${symlinkFixture}/home/claudeJobApplication`);
-      const linked = piZaiFenceProfile({ ...fx, home: `${symlinkFixture}/home` }) ?? "";
-      pin("pi-zai resolves an application-root symlink before writing the SBPL subpath",
+      symlinkSync(`${symlinkFixture}/actual`, `${symlinkFixture}/home/deny-a`);
+      const linked = piZaiFenceProfile({ ...fx, home: `${symlinkFixture}/home`, denyRoots: [`${symlinkFixture}/home/deny-a`] }) ?? "";
+      pin("pi-zai resolves a deny-root symlink before writing the SBPL subpath",
         linked.includes(`(subpath "${symlinkFixture}/actual")`)
-          && !linked.includes(`(subpath "${symlinkFixture}/home/claudeJobApplication")`),
+          && !linked.includes(`(subpath "${symlinkFixture}/home/deny-a")`),
         `resolved=${linked.includes(`(subpath "${symlinkFixture}/actual")`)}`);
     } finally { rmSync(symlinkFixture, { recursive: true, force: true }); }
     pin(`${RULE_PZ_FENCE} — a path that could escape SBPL or shell quoting builds NO profile`,

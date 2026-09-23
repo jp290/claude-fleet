@@ -160,7 +160,7 @@ import { buildVariantCompareRow, countCheckedMet, decideVariantCompare, doneEntr
 import { audit, AUDIT_FILE } from "./server/audit-log";
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
-import { piSessionSlug, piZaiFenceProfile } from "./server/pi-zai-fence";
+import { parsePiZaiDenyRoots, piSessionSlug, piZaiFenceProfile } from "./server/pi-zai-fence";
 import { STATIC, bundleV, staticResponse, finishHttp, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
 import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, FIND_FANOUT, FIND_MAX_SLOW,
   findSlow, knownSlow, readdirSoon, gitKind, subdirNames, DIRINFO_COMMITS, FILE_CAP, fileBody, editability,
@@ -796,6 +796,11 @@ const PI_ZAI_SANDBOX_EXEC = (() => {
     throw new Error("FLEET_PI_ZAI_SANDBOX_EXEC must be a safe absolute path without ..");
   return path;
 })();
+// The owner's private deny roots (server/pi-zai-fence.ts#parsePiZaiDenyRoots), set only in the
+// host's gitignored .env. Unlike the three paths above, a missing or invalid value does NOT refuse
+// the boot: every other harness stays usable, and pi-zai alone starts no pi (piZaiFenceFor → null).
+const PI_ZAI_DENY_ROOTS = parsePiZaiDenyRoots(process.env.FLEET_PI_ZAI_DENY_ROOTS);
+if (!PI_ZAI_DENY_ROOTS) console.error("pi-zai: FLEET_PI_ZAI_DENY_ROOTS is missing or invalid — no pi-zai spawn will start pi");
 // SBPL compares resolved paths, and a path the fence names may not exist yet (the agent dir on a
 // first spawn): resolve the longest existing prefix and keep the rest literally.
 function realpathLoose(p: string): string {
@@ -809,6 +814,7 @@ function piZaiFenceFor(cwd: string): string | null {
     home: realpathLoose(HOME), fleetDir: realpathLoose(import.meta.dir),
     agentDir: realpathLoose(PI_ZAI_AGENT_DIR), keyFile: realpathLoose(PI_ZAI_KEY_FILE), cwd: realpathLoose(cwd),
     tmuxDir: `${realpathLoose(process.env.TMUX_TMPDIR || "/tmp")}/tmux-${process.getuid?.() ?? 0}`, sockets: [SOCK],
+    denyRoots: PI_ZAI_DENY_ROOTS,
   });
 }
 // The pane's one line when pi is NOT started because its fence failed — unbuildable, or the self-test

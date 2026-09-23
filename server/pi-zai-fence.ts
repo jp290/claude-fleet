@@ -1,6 +1,7 @@
 // pi-zai's READ fence: the SBPL profile a pi-zai pane runs pi behind (server.ts#PI_ZAI_HARNESS).
-// The spawn supplies resolved base paths; the additional private roots are resolved here before
-// the profile is built. e2e/pins.ts runs the builder over fixture paths, not a prose copy.
+// The spawn supplies resolved base paths; the owner's private deny roots come from local config
+// (parsePiZaiDenyRoots) and are resolved here before the profile is built. e2e/pins.ts runs the
+// builder over fixture paths, not a prose copy.
 //
 // The shape and every rule are the measured draft of docs/messungen/2026-09-21-pi-zai-lesezaun.md
 // §2, probed there as T1–T5: `allow default` plus targeted denies, so pi keeps writing, building,
@@ -28,6 +29,19 @@ export function piSessionSlug(realCwd: string): string {
   return `--${realCwd.replace(/^\/+/, "").replaceAll("/", "-")}--`;
 }
 
+// FLEET_PI_ZAI_DENY_ROOTS: the owner's private roots, colon-separated absolute paths. They live
+// only in the host's gitignored .env — their NAMES are private too, so no tracked file may carry
+// them. Every entry must pass the fence charset (which holds no `:`), be neither `/` nor carry a
+// `..` segment, and appear once; an empty entry (`a::b`, a trailing `:`) fails the charset. Any
+// violation, an empty value or an absent one is null: the fence is then unbuildable and pi-zai
+// starts no pi — a fence that silently dropped the private roots would read as protection.
+export function parsePiZaiDenyRoots(raw: string | undefined): string[] | null {
+  if (raw === undefined) return null;
+  const roots = raw.split(":");
+  if (!roots.every((p) => FENCE_PATH_RE.test(p) && p !== "/" && !p.split("/").includes(".."))) return null;
+  return new Set(roots).size === roots.length ? roots : null;
+}
+
 export interface PiZaiFenceInput {
   home: string;       // the owner's home, written out: SBPL expands no `~`
   fleetDir: string;   // the server's own checkout, where fleet.json and .env live
@@ -36,6 +50,7 @@ export interface PiZaiFenceInput {
   cwd: string;        // the slot's cwd
   tmuxDir: string;    // the tmux socket directory, `<TMUX_TMPDIR|/tmp>/tmux-<uid>`
   sockets: readonly string[]; // further socket names to deny beside LIVE_TMUX_SOCK
+  denyRoots: readonly string[] | null; // parsePiZaiDenyRoots' result; null or empty builds NO profile
 }
 
 // Every path in the generated profile must be a realpath: SBPL compares against the path the kernel resolved, and
@@ -56,15 +71,11 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
   };
   const socks = [...new Set([LIVE_TMUX_SOCK, ...i.sockets])].map((s) => `${i.tmuxDir}/${s}`);
   const own = `${i.agentDir}/sessions/${piSessionSlug(i.cwd)}`;
-  const roots = [
-    `${i.home}/claudeJobApplication`,
-    `${i.home}/private-repo-a`,
-    `${i.home}/private-repo-a.worktrees`,
-    `${i.home}/Desktop/Bewerbungen_April2026`,
-  ].map(realpathLoose);
+  if (!i.denyRoots || i.denyRoots.length === 0) return null;
+  const roots = i.denyRoots.map(realpathLoose);
   if (roots.some((p) => p === null)) return null;
-  const applicationRoots = roots.filter((p): p is string => p !== null);
-  const paths = [i.home, i.fleetDir, i.agentDir, i.keyFile, i.cwd, own, ...socks, ...applicationRoots];
+  const denyRoots = roots.filter((p): p is string => p !== null);
+  const paths = [i.home, i.fleetDir, i.agentDir, i.keyFile, i.cwd, own, ...socks, ...denyRoots];
   if (!paths.every((p) => FENCE_PATH_RE.test(p) && !p.split("/").includes(".."))) return null;
   const rx = (p: string): string => p.replace(/[.+]/g, (c) => `[${c}]`);
   const sub = (p: string): string => `(subpath "${p}")`;
@@ -78,7 +89,7 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
     + ` ${lit(`${h}/.codex/auth.json`)} ${lit(`${h}/.claude/.credentials.json`)} ${lit(`${h}/.claude.json`)}`
     + ` ${sub(`${h}/.config/gh`)} ${sub(`${h}/.cloudflared`)} ${lit(`${h}/.pi/agent/auth.json`)}`
     + ` ${sub(`${h}/.claude/projects`)} ${sub(`${h}/.codex/sessions`)} ${sub(`${h}/.pi/agent/sessions`)}`
-    + ` ${sub(`${i.agentDir}/sessions`)} ${applicationRoots.map(sub).join(" ")})`
+    + ` ${sub(`${i.agentDir}/sessions`)} ${denyRoots.map(sub).join(" ")})`
     // ...and this pane's OWN session back open; SBPL lets the later rule win. Without it pi dies at
     // the mkdir of its session directory before any prompt (attic, "Der pi-Zaun").
     + `(allow file-read* file-write* ${sub(own)})`

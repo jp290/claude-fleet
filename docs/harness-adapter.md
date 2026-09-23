@@ -269,7 +269,7 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
     (Urteile, auf die ein Land gated) sind ausdrücklich NICHT konfigurierbar, und der Pin in `e2e/pins.ts`
     hält `REPO_WORKER_KEYS` und die `workerCmdFor`-Aufrufstellen als dieselbe MENGE. Damit ist
     `worker-deepseek.py` einschaltbar — für DIESES Repo, ohne die Diffs von
-    `private-repo-a`/`private-repo-b` an einen Dritten zu schicken; das Einschalten selbst bleibt ein
+    fremden Repos an einen Dritten zu schicken; das Einschalten selbst bleibt ein
     Owner-Akt.
   - **`audit` (2026-09-02) ist kein Modell-Worker, sondern das Stufe-2-Kommando DIESES Repos** — dieselbe
     Tür, dieselbe Validierung (absoluter Pfad auf ein Executable, keine Argumente; wer Argumente braucht,
@@ -645,18 +645,24 @@ an. Das Binary ist absolut (`/usr/bin/sandbox-exec`, `FLEET_PI_ZAI_SANDBOX_EXEC`
 Linux-Helfer der Suite), nie über `PATH`. **Gesperrt** (Lesen und Schreiben): `fleet.json*` und
 `.env*` im Server-Checkout (Regex, fängt die `.bak`-Kopien), `~/.ssh`, der Key und
 `~/.config/claude-fleet/secrets`, die Logins von codex/claude/gh/cloudflared/pi, die Transkripte
-aller claude-/codex-/pi-Sessions und fremder pi-zai-Slots; außerdem die beim Profilbau per Realpath
-aufgelösten Unterbäume `~/claudeJobApplication`, `~/private-repo-a`,
-`~/private-repo-a.worktrees` und `~/Desktop/Bewerbungen_April2026` (Lesen und Schreiben, einschließlich
-Unterpfaden). §6a prüft die vier Wurzeln mit offenen Kontrollproben und `EPERM` aus dem tatsächlich
-gespawnten Profil, ohne Dateiinhalte auszugeben. Die Umgebung fremder Prozesse (das Paar
+aller claude-/codex-/pi-Sessions und fremder pi-zai-Slots; außerdem die privaten Wurzeln des Owners
+aus `FLEET_PI_ZAI_DENY_ROOTS` (seit 2026-09-24; Lesen und Schreiben, einschließlich Unterpfaden, beim
+Profilbau per Realpath aufgelöst). Ihre NAMEN sind selbst privat und stehen nur in der gitignorten
+`.env` des Hosts, nie in einer getrackten Datei: doppelpunktgetrennte absolute Pfade, jeder im
+Zaun-Zeichensatz, weder `/` noch mit `..`-Segment, keiner doppelt
+(`server/pi-zai-fence.ts#parsePiZaiDenyRoots`). Fehlt der Wert, ist er leer oder verletzt ein
+Eintrag die Form, ist der Zaun nicht baubar und pi startet nicht (Pane-Zeile wie oben, beim Boot
+zusätzlich eine `console.error`-Zeile); der Server selbst bootet weiter, die übrigen Harnesses
+bleiben nutzbar. `e2e/pins.ts` hält Parser und Leer-Verweigerung, `e2e/security.ts` §6a prüft fünf
+synthetische Wurzeln der Suite (je Wurzel und echte Kinddatei, nur Metadaten) mit offener
+Kontrollprobe und `EPERM` aus dem tatsächlich gespawnten Profil. Die Umgebung fremder Prozesse (das Paar
 `process-info*` others + `sysctl-read kern.proc`, gemessen 396 → 2 lesbare PIDs); der
 `claudefleet`-tmux-Socket; Keychain-Lookups. `e2e/pins.ts` hält das erzeugte Profil, `e2e/security.ts`
 §6a führt es aus. **Offen bleibt:** das eigene Env (`ZAI_API_KEY`, der eigene `FLEET_SELF_TOKEN`);
 das Netz — was lesbar ist, ist exfiltrierbar; alles außerhalb des Inventars, u. a. 38 weitere `.env`
 unter `~` (ein Deny-Profil ist so gut wie sein Inventar); andere tmux-Sockets als `claudefleet`.
-Ein bereits laufender pi-zai-Prozess behält sein altes Profil; erst Owner-Deploy und neuer Spawn
-übernehmen diese vier Regeln. Bei späterer Umleitung einer Wurzel per Symlink muss erneut gespawnt
+Ein bereits laufender pi-zai-Prozess behält sein altes Profil; wirksam wird eine Wurzel erst, wenn
+der Owner sie in der `.env` setzt, deployt und neu spawnt. Bei späterer Umleitung einer Wurzel per Symlink muss erneut gespawnt
 werden; ein Symlink aus einem geschützten Baum auf ein Ziel außerhalb des Baums bleibt eine Grenze
 des pfadbasierten Zauns. **Preis:** `ps` ist setuid und startet unter keinem `sandbox-exec`-Profil — `e2e/pins.ts`
 überspringt darum seine Geburts-Regel benannt, der Suite-Lock verweigert geschlossen (Suiten über

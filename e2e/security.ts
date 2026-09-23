@@ -1377,25 +1377,27 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     check("§6a fence canary: fleet.json, the key file and a foreign pi-zai session are refused MECHANICALLY behind the fence",
       fenced.every((o) => o.includes("Operation not permitted") && !o.includes("OPENED")),
       fenced.map((o) => o.trim().slice(-90)).join(" | "));
-    const applicationRoots = [
-      `${process.env.HOME}/claudeJobApplication`,
-      `${process.env.HOME}/private-repo-a`,
-      `${process.env.HOME}/private-repo-a.worktrees`,
-      `${process.env.HOME}/Desktop/Bewerbungen_April2026`,
-    ];
-    check("§6a application fence canary has all four actual roots available for the probe",
-      applicationRoots.every((p) => existsSync(p)),
-      `${applicationRoots.filter((p) => !existsSync(p)).length} missing roots`);
-    for (const [index, root] of applicationRoots.entries()) {
+    // THE DENY ROOTS: five SYNTHETIC roots the wrapper made under its instance dir, each with a real
+    // child file (e2e-isolated.sh, FLEET_PI_ZAI_DENY_ROOTS) — the owner's real roots are private
+    // names and never enter a tracked probe. Metadata only (`stat`), control first: an EPERM on a
+    // path that does not open unfenced either measures nothing.
+    const denyRoots = (process.env.FLEET_PI_ZAI_DENY_ROOTS ?? "").split(":").filter(Boolean);
+    check("§6a deny-root canary has five configured synthetic roots, each with a real child file",
+      denyRoots.length === 5 && denyRoots.every((p) => existsSync(`${p}/child/canary`)),
+      `${denyRoots.length} roots, ${denyRoots.filter((p) => !existsSync(`${p}/child/canary`)).length} without child`);
+    check("§6a the spawned profile names every deny root by its realpath",
+      denyRoots.length > 0 && denyRoots.every((p) => existsSync(p) && pzProfile.includes(`(subpath "${realpathSync(p)}")`)),
+      `${denyRoots.filter((p) => !existsSync(p) || !pzProfile.includes(`(subpath "${realpathSync(p)}")`)).length} roots absent from the profile`);
+    for (const [index, root] of denyRoots.entries()) {
       if (!existsSync(root)) continue;
       const resolved = realpathSync(root);
-      for (const path of [resolved, `${resolved}/.`]) {
+      for (const [kind, path] of [["root", resolved], ["child", `${resolved}/child/canary`]] as const) {
         const probe = `stat -f %N '${path}' >/dev/null && echo OPENED`;
         const open = pzRun(probe, false);
         const denied = pzRun(probe, true);
-        check(`§6a application root ${index + 1} ${path === resolved ? "root" : "subpath"} opens without the fence`,
+        check(`§6a deny root ${index + 1} ${kind} opens without the fence`,
           open.includes("OPENED"), open.trim().slice(-90));
-        check(`§6a application root ${index + 1} ${path === resolved ? "root" : "subpath"} gets EPERM behind the spawned fence`,
+        check(`§6a deny root ${index + 1} ${kind} gets EPERM behind the spawned fence`,
           denied.includes("Operation not permitted") && !denied.includes("OPENED"), denied.trim().slice(-90));
       }
     }

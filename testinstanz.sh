@@ -47,6 +47,17 @@ ti_addr() {
   echo 127.0.0.1
 }
 
+# The second-host's address is private deployment configuration and this repo is public, so it is
+# never written here: it comes from FLEET_TI_SECOND-HOST_URL, else from the `second-host` entry of
+# FLEET_INSTANCES in this checkout's gitignored .env (the same line the live instances boot with),
+# else a CGNAT placeholder — the link only navigates when clicked, so a placeholder costs nothing.
+ti_second-host_url() {
+  if [ -n "${FLEET_TI_SECOND-HOST_URL:-}" ]; then echo "$FLEET_TI_SECOND-HOST_URL"; return; fi
+  u=""
+  [ -f "$SRC/.env" ] && u=$(sed -n 's/^FLEET_INSTANCES=.*"name" *: *"second-host" *, *"url" *: *"\([^"]*\)".*/\1/p' "$SRC/.env" | tail -1)
+  echo "${u:-http://100.64.0.1:8790}"
+}
+
 ti_alive() { [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; }
 
 # The fixtures are replanted against the RUNNING instance, so switching between the two stands
@@ -89,7 +100,7 @@ ti_serve() {
   # TWO COMPUTERS, as the live fleet has them (mac + second-host), so the device display has something
   # to show; "mac" is THIS instance's own origin, so the board marks it as here. The second-host link
   # only navigates when clicked. FLEET_TI_INSTANCES= (set, empty) gives the single-host board.
-  TI_TWO='[{"name":"mac","url":"http://'"$(ti_addr):$PORT"'"},{"name":"second-host","url":"http://100.64.0.2:8790"}]'
+  TI_TWO='[{"name":"mac","url":"http://'"$(ti_addr):$PORT"'"},{"name":"second-host","url":"'"$(ti_second-host_url)"'"}]'
   TI_INST="${FLEET_TI_INSTANCES-$TI_TWO}"
   TI_NAME="${FLEET_TI_INSTANCE-mac}"
   [ -z "$TI_INST" ] && TI_NAME="${FLEET_TI_INSTANCE-}"

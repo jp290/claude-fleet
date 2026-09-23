@@ -8898,6 +8898,30 @@ export async function run(ctx: Ctx): Promise<void> {
       clarifyRefused.every((r) => r.gaps.length === 1 && r.gaps[0] === unknownStepGap(r.v))
       && validateCard({ ziel: "z", done: "d", verify: "make check-all" }, cardCtx).valid === false,
       JSON.stringify(clarifyRefused));
+    const repoCommand = "cd /Users/owner/private-repo-ad && ./verify.sh";
+    const foreignCtx = { ...cardCtx, foreignVerifyCommand: repoCommand };
+    const foreignScript = validateCard({ ziel: "z", done: "d", verify: "./verify.sh" }, foreignCtx);
+    const foreignExact = validateCard({ ziel: "z", done: "d", verify: repoCommand }, foreignCtx);
+    const foreignFleetStep = validateCard({ ziel: "z", done: "d", verify: "bun install" }, foreignCtx);
+    const foreignNearMiss = validateCard({ ziel: "z", done: "d", verify: "./verify.sh.backup" }, foreignCtx);
+    check("(v7) a foreign repo with a verify entry accepts its command or script, but not Fleet steps or a near-miss",
+      foreignScript.valid && foreignExact.valid && !foreignFleetStep.valid && !foreignNearMiss.valid,
+      JSON.stringify({ script: foreignScript.gaps, exact: foreignExact.gaps,
+        fleet: foreignFleetStep.gaps, nearMiss: foreignNearMiss.gaps }));
+    const fleetScript = validateCard({ ziel: "z", done: "d", verify: "./verify.sh" }, cardCtx);
+    const fleetInstall = validateCard({ ziel: "z", done: "d", verify: "bun install" }, cardCtx);
+    check("(v7) Fleet cards retain the chain-step verify rule and its exact refusal",
+      !fleetScript.valid && fleetScript.gaps.includes(unknownStepGap("./verify.sh")) && fleetInstall.valid,
+      JSON.stringify({ script: fleetScript.gaps, install: fleetInstall.gaps }));
+    const noEntry = validateCard({ ziel: "z", done: "d", verify: "./verify.sh" },
+      { ...cardCtx, foreignVerifyCommand: null });
+    const noEntryFleetStep = validateCard({ ziel: "z", done: "d", verify: "bun install" },
+      { ...cardCtx, foreignVerifyCommand: null });
+    check("(v7) a foreign repo without a verify entry has a named configuration gap",
+      !noEntry.valid && !noEntryFleetStep.valid
+      && noEntry.gaps.some((g) => g.startsWith("verify:") && g.includes("FLEET_VERIFY_CMD_REPOS"))
+      && noEntryFleetStep.gaps.some((g) => g.startsWith("verify:") && g.includes("FLEET_VERIFY_CMD_REPOS")),
+      JSON.stringify({ script: noEntry.gaps, fleet: noEntryFleetStep.gaps }));
     // S7: the SIZE is quote-checked like a path. The filing header states it; an ordinary "kleiner"
     // in prose does not, and a value outside the three classes is a gap rather than a nearest guess.
     const sizeCtx = (sourceText: string) => ({ ...cardCtx, sourceText });
@@ -9141,8 +9165,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && longAnswer.answerBytes === 6001
       && JSON.stringify(cardAnswerForLedger("{}")) === JSON.stringify({ answer: "{}", answerBytes: 2 }),
       JSON.stringify({ answer: cardRow?.answer ?? null, answerBytes: cardRow?.answerBytes ?? null, long: longAnswer.answerBytes }));
-    check("(v6) CARD_VALIDATOR_VERSION is 6, so every card refused before the clarify close (and by the v4 role rule) is read once more",
-      CARD_VALIDATOR_VERSION === 6, String(CARD_VALIDATOR_VERSION));
+    check("(v7) CARD_VALIDATOR_VERSION is 7, so cards refused before foreign-repo verify (or by earlier rules) are read once more",
+      CARD_VALIDATOR_VERSION === 7, String(CARD_VALIDATOR_VERSION));
 
     // --- S4 (queue row a672b626): THE CARD REACHES THE LANE FIRST. A valid card puts a KARTE head
     // in front of the prose, and the receipt says so; an invalid card changes nothing — neither the

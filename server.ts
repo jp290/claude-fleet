@@ -12442,6 +12442,9 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   const mainRepo = await repoKeyOf(s);
   if (!mainRepo)
     return json({ error: "this session's checkout is not a git repository — the row's target repo cannot be derived" }, 409);
+  const mainText = body.text.slice(0, MAX_TASK_TEXT).trim();
+  const authorCard = body.card === undefined ? null : await authorCardFrom(body.card, mainText, mainRepo, program.id);
+  if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
   // (4b) THE TWO RE-PROOFS, and they are the last thing between the awaits above and the first
   // mutation below (there is no await from here to `tasks = capTasks`). The succession door states
   // the rule this implements: "no await can admit a revoked caller".
@@ -12482,10 +12485,6 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
     if (openPendingAdvisory >= PROGRAM_MAX_PENDING_ADVISORY)
       return json({ error: `program advisory filing cap reached (${openPendingAdvisory}/${PROGRAM_MAX_PENDING_ADVISORY} pending advisory rows awaiting owner disposition) — ask the owner to dispose or drop one first` }, 409);
   }
-  const mainText = body.text.slice(0, MAX_TASK_TEXT).trim();
-  // (5b) THE AUTHOR'S CARD, validated against the row's own repo before anything is minted
-  const authorCard = body.card === undefined ? null : authorCardFrom(body.card, mainText, mainRepo, program.id);
-  if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
   // (5c) THE PROPOSAL'S READING OF THE TRACKED TREE, taken through the same helper both surface
   // doors use so all three answer it identically — and REPORTED, never gating: a path the work will
   // CREATE is the ordinary case, which is precisely why neither door refuses one. The three states
@@ -14177,8 +14176,23 @@ const cardTokens = (run: WorkerRunObservation): { tokens?: number } => {
 // a path it has already found in `trackedPaths` — and keeps each file's text for the life of this
 // one context, so a card naming five symbols in server.ts reads server.ts once. An unreadable file
 // (tracked but deleted in the working tree) declares nothing.
+const cardVerifyCommands = new Map<string, string | null | undefined>();
+const cardForeignVerifyCommand = async (repo: string): Promise<string | null | undefined> => {
+  const key = repoCanon(repo);
+  if (cardVerifyCommands.has(key)) return cardVerifyCommands.get(key);
+  const common = await gitCommonDirOf(repo);
+  const command = common !== null && common === FLEET_GIT_COMMON ? undefined : await verifyEntryFor(repo);
+  cardVerifyCommands.set(key, command);
+  return command;
+};
+const cardVerifyCommandOf = (snapshot: TrackedSnapshot | null): string | null | undefined => {
+  if (!snapshot) return null;
+  const key = repoCanon(snapshot.repo);
+  if (!cardVerifyCommands.has(key)) throw new Error(`card verify command was not resolved for ${key}`);
+  return cardVerifyCommands.get(key);
+};
 const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | null,
-  index: SymbolIndexSnapshot | null): CardValidationContext => {
+  index: SymbolIndexSnapshot | null, foreignVerifyCommand?: string | null): CardValidationContext => {
   const sources = new Map<string, string>();
   const sourceOf = (file: string): string => {
     const hit = sources.get(file);
@@ -14189,6 +14203,7 @@ const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | n
     return text;
   };
   return {
+    foreignVerifyCommand,
     sourceText,
     trackedPaths: snapshot?.paths ?? new Set<string>(),
     symbolIndex: index?.index ?? null,
@@ -14217,7 +14232,7 @@ function formatCardOf(t: Task, snapshot: TrackedSnapshot | null, index: SymbolIn
   const source = [t.brief?.text, t.text].filter((x): x is string => !!x).join("\n\n");
   const raw = (t.brief?.text ? parseFormattedCard(t.brief.text) : null) ?? parseFormattedCard(t.text);
   if (!raw) return null;
-  const checked = validateCard(raw, cardValidationContext(source, snapshot, index));
+  const checked = validateCard(raw, cardValidationContext(source, snapshot, index, cardVerifyCommandOf(snapshot)));
   return { ...checked.body, model: "format", at: Date.now(), ms: 0, valid: checked.valid,
     surfaceValid: checked.surfaceValid, validatorVersion: CARD_VALIDATOR_VERSION, gaps: checked.gaps };
 }
@@ -14253,7 +14268,7 @@ async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | nu
   }
   // the SAME string the extractor was given, so the quote rule is decided against the text the
   // answer was actually about and not against a second reading of the row
-  const checked = validateCard(raw, cardValidationContext(source, snapshot, index));
+  const checked = validateCard(raw, cardValidationContext(source, snapshot, index, cardVerifyCommandOf(snapshot)));
   return { ...checked.body, model: observed.model, at: Date.now(), ms,
     valid: checked.valid, surfaceValid: checked.surfaceValid, validatorVersion: CARD_VALIDATOR_VERSION,
     gaps: checked.gaps, ...cardTokens(observed) };
@@ -14308,6 +14323,7 @@ async function tickCardSweep(): Promise<void> {
     }
     const snapshot = trackedSnapshotFor(repo);
     const index = symbolIndexFor(repo);
+    await cardForeignVerifyCommand(repo);
     let wrote = false;
     for (const t of batch) {
       const runStarted = Date.now();
@@ -14520,10 +14536,11 @@ function refineChildText(c: RefineChild): string {
 // quote rule sees the paths the refiner named. `model: "refine"` names the producer: no extractor
 // ran, and a card that claimed one would repeat the mis-stamp TaskCard.model exists to avoid.
 function refineChildCard(c: RefineChild, programId: string | undefined,
-  snapshot: TrackedSnapshot | null, index: SymbolIndexSnapshot | null, now: number): TaskCard {
+  snapshot: TrackedSnapshot | null, index: SymbolIndexSnapshot | null, now: number,
+  foreignVerifyCommand?: string | null): TaskCard {
   const checked = validateCard({ ziel: c.text, surface: { files: c.files, symbols: [] },
     done: c.doneCriterion, verify: c.verify, verboten: [], ...(programId ? { program: programId } : {}) },
-  cardValidationContext(refineChildText(c), snapshot, index));
+  cardValidationContext(refineChildText(c), snapshot, index, foreignVerifyCommand));
   return { ...checked.body, model: "refine", at: now, ms: 0, valid: checked.valid,
     surfaceValid: checked.surfaceValid, validatorVersion: CARD_VALIDATOR_VERSION, gaps: checked.gaps };
 }
@@ -14539,8 +14556,8 @@ function refineChildCard(c: RefineChild, programId: string | undefined,
 //     so a model cannot lift a path out of a proof line; an author declaring the surface is the
 //     declaration itself — a verify line in the text is still masked (task-metadata.ts#intentText).
 // `model: "author"` names the producer. Absent card: the door behaves exactly as before.
-function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, programId: string | undefined):
-  { ok: true; card: TaskCard } | { ok: false; status: 400 | 409; error: string } {
+async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, programId: string | undefined): Promise<
+  { ok: true; card: TaskCard } | { ok: false; status: 400 | 409; error: string }> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     return { ok: false, status: 400, error: "card must be an object {ziel, surface{files, symbols}, done, verify, verboten, size?, after?}" };
   const c = raw as Record<string, unknown>;
@@ -14554,9 +14571,10 @@ function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, prog
   const declared = [surface.files, surface.symbols].flatMap((v) => Array.isArray(v) ? v : [])
     .filter((v): v is string => typeof v === "string");
   const now = Date.now();
+  const foreignVerifyCommand = await cardForeignVerifyCommand(snapshot.repo);
   const checked = validateCard({ ...c, ...(programId ? { program: programId } : {}) },
     // an author's size is its own declaration, exactly like the surface line beside it
-    cardValidationContext(`${text}\nFLAECHE: ${declared.join(" ")}${typeof c.size === "string" ? `\nGROESSE: ${c.size.trim().toLowerCase()}` : ""}`, snapshot, repoRaw ? symbolIndexFor(repoRaw) : null));
+    cardValidationContext(`${text}\nFLAECHE: ${declared.join(" ")}${typeof c.size === "string" ? `\nGROESSE: ${c.size.trim().toLowerCase()}` : ""}`, snapshot, repoRaw ? symbolIndexFor(repoRaw) : null, foreignVerifyCommand));
   if (!checked.valid) return { ok: false, status: 400, error: `card rejected, nothing filed: ${checked.gaps.join("; ")}` };
   return { ok: true, card: { ...checked.body, model: "author", at: now, ms: 0, valid: true, surfaceValid: true,
     validatorVersion: CARD_VALIDATOR_VERSION, gaps: [] } };
@@ -38670,7 +38688,7 @@ Bun.serve<WSData>({
       const ownerText = body.text.slice(0, MAX_TASK_TEXT).trim();
       // the author's card (authorCardFrom): validated against the repo the row will dispatch into
       const authorCard = body.card === undefined ? null
-        : authorCardFrom(body.card, ownerText, taskRepo ?? (DISPATCH_REPO || null), taskProgramId);
+        : await authorCardFrom(body.card, ownerText, taskRepo ?? (DISPATCH_REPO || null), taskProgramId);
       if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
       const id = randomBytes(4).toString("hex");
       const t: Task = {
@@ -39068,9 +39086,13 @@ Bun.serve<WSData>({
       const now = Date.now();
       const originId = t.originId ?? t.id;
       const rSymbols = rRepoRaw ? symbolIndexFor(rRepoRaw) : null;
+      const foreignVerifyCommand = rRepoRaw ? await cardForeignVerifyCommand(rRepoRaw) : null;
+      if (!tasks.includes(t) || t.refine?.proposal !== proposal || (t.status !== "pending" && t.status !== "queued")
+        || refineInflight.has(t.id))
+        return json({ error: "the task or its refinement changed while its verify command was resolved — nothing promoted" }, 409);
       const kids: Task[] = proposal.tasks.map((c) => {
         const id = randomBytes(4).toString("hex");
-        const card = refineChildCard(c, t.programId, rSnapshot, rSymbols, now);
+        const card = refineChildCard(c, t.programId, rSnapshot, rSymbols, now, foreignVerifyCommand);
         return {
           id, originId, ...(t.programId ? { programId: t.programId } : {}),
           // a valid card carries done/verify/files as fields — the text does not say them twice

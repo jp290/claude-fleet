@@ -192,7 +192,7 @@ export async function run(): Promise<void> {
       at: 9, origin: "server", branch: null };
     const audit = suiteMeter({ ...base, audit: live, gate: { lock: { pid: 1, alive: true }, reports: [serverAuditRow] } });
     check("(LS.meter) the post-land audit is ONE ball in 'run' (its slotless lock row steps aside), its folded land waits",
-      at(audit) === "run:post-land audit:plain wait:post-land audit:plain"
+      at(audit) === "run:post-land check:plain wait:post-land check:plain"
         && audit.balls.find((b) => b.station === "run")?.what === "main@abcdef01"
         && audit.balls.find((b) => b.station === "wait")?.what === "after 2222", JSON.stringify(audit.balls));
     const onHelper = suiteMeter({ ...base, audit: live,
@@ -232,7 +232,7 @@ export async function run(): Promise<void> {
       reports: [], queue: [q(1, 901, true, 1), q(2, 902, true, 2)] } });
     check("(LS.meter) every live ticket at the mutex is one WAITING ball carrying its own position",
       queued.balls.filter((b) => b.station === "wait").length === 2
-        && queued.balls.filter((b) => b.station === "wait").every((b) => b.name === "queued suite")
+        && queued.balls.filter((b) => b.station === "wait").every((b) => b.name === "queued check run")
         && queued.balls.some((b) => b.what === "position 1 of 2")
         && queued.balls.some((b) => b.what === "position 2 of 2"),
       JSON.stringify(queued.balls.map((b) => [b.station, b.what])));
@@ -245,7 +245,7 @@ export async function run(): Promise<void> {
         && /its process is gone/.test(orphan.balls[0].what), JSON.stringify(orphan.balls));
     check("(LS.meter) a server that sends no queue draws no waiters — absent is 'not reported', not 'nobody waits'",
       suiteMeter({ ...base, gate: { lock: { pid: 900, alive: true }, reports: [rep(2, "running")] } })
-        .balls.filter((b) => b.name === "queued suite").length === 0, "a phantom waiter");
+        .balls.filter((b) => b.name === "queued check run").length === 0, "a phantom waiter");
   }
 
   if (!REPO) return; // the runner only calls this inside its REPO block, but say so rather than throw

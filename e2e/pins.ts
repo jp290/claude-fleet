@@ -2977,15 +2977,16 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // that reaches past the accessor to DISPATCH_MAX_LANES here would make every per-repo entry
   // silently inert — the value stored, echoed back by the route, and never counted against.
   // Unlike the per-program cap this one may RAISE the env default, so the ceiling that keeps it
-  // honest is a different one and is asserted as itself: REPO_MAX_LANES_MAX is the slot board.
+  // honest is a different one and is asserted as itself: REPO_MAX_LANES_MAX follows the session
+  // ceiling with separate lane places and the fixed board otherwise.
   const repoCapFn = server.match(/const repoLaneCap = \(repo: string\): RepoLaneCap => \{[\s\S]*?\n\};/)?.[0] ?? "";
-  pin("the repo cap number is read through repoLaneCap (entry-then-env), and its ceiling is the slot board",
+  pin("the repo cap number is read through repoLaneCap (entry-then-env), and its ceiling follows FLEET_MAX_SESSIONS",
     /const repoCap = repoLaneCap\(repo\);/.test(tBody)
     && !/DISPATCH_MAX_LANES\b/.test(tBody)
     && /repoLaneCaps\[repoCanon\(repo\)\]/.test(repoCapFn)
     && /\{ max: DISPATCH_MAX_LANES, source: "default" \}/.test(repoCapFn)
     && /Math\.min\(v, REPO_MAX_LANES_MAX\)/.test(repoCapFn)
-    && /const REPO_MAX_LANES_MAX = MAX_SLOTS;/.test(server),
+    && /const REPO_MAX_LANES_MAX = SEPARATE_LANE_SLOTS \? FLEET_MAX_SESSIONS : MAX_SLOTS;/.test(server),
     repoCapFn.slice(0, 400) || "repoLaneCap missing");
   // ...and the note carries the SOURCE next to the number. Two owner actions hide behind one
   // sentence — the machine default needs an env change and a restart, a repo entry needs one API

@@ -5,6 +5,7 @@ import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, realpa
 import { tmpdir } from "node:os";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { BASE, IP, PORT, REPO, ROOT, SOCK, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
@@ -20,6 +21,71 @@ export async function run(): Promise<void> {
   check("the sidebar API exposes all 16 fixed slots in order",
     fixed.slots.length === 16 && fixed.slots.every((s, i) => s.id === i + 1),
     JSON.stringify(fixed.slots.map((s) => s.id)));
+
+  const separateLanes: { slot: number; cwd: string }[] = [];
+  try {
+    await restartSrv({ FLEET_SEPARATE_LANE_SLOTS: "1", FLEET_MAX_SESSIONS: "16" });
+    const openedMains: Response[] = [];
+    for (let id = 1; id <= 16; id++) openedMains.push(await post(`/api/slots/${id}/open`, { cwd: REPO }));
+    check("separate places allow 16 MAINs under the default 16-session ceiling",
+      openedMains.every((r) => r.ok), JSON.stringify(openedMains.map((r) => r.status)));
+    const fullMains = await post("/api/lanes", { repo: REPO });
+    const fullMainsBody = (await fullMains.json()) as { error?: string };
+    check("16 MAINs leave no lane capacity, with a named total-ceiling refusal",
+      fullMains.status === 409 && !!fullMainsBody.error?.includes("FLEET_MAX_SESSIONS"),
+      JSON.stringify(fullMainsBody));
+    for (let id = 2; id <= 16; id++) await post(`/api/slots/${id}/kill`, {});
+    for (let i = 0; i < 15; i++) {
+      const response = await post("/api/lanes", { repo: REPO });
+      const body = (await response.json()) as { slot?: number; cwd?: string; error?: string };
+      if (response.ok && body.slot && body.cwd) separateLanes.push({ slot: body.slot, cwd: body.cwd });
+    }
+    check("one MAIN and 15 lanes fill the 16-session ceiling without taking a band number",
+      separateLanes.length === 15 && separateLanes.every((lane) => lane.slot > 16),
+      JSON.stringify(separateLanes.map((lane) => lane.slot)));
+    const fullMixed = await post("/api/lanes", { repo: REPO });
+    const fullMixedBody = (await fullMixed.json()) as { error?: string };
+    check("one MAIN plus 15 lanes refuses the next lane at FLEET_MAX_SESSIONS",
+      fullMixed.status === 409 && !!fullMixedBody.error?.includes("FLEET_MAX_SESSIONS"),
+      JSON.stringify(fullMixedBody));
+    await restartSrv({ FLEET_SEPARATE_LANE_SLOTS: "1", FLEET_MAX_SESSIONS: "16" });
+    const adopted = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] };
+    check("a server restart adopts all numbered internal lane places",
+      separateLanes.every((lane) => adopted.slots.find((s) => s.id === lane.slot)?.cwd === lane.cwd),
+      JSON.stringify(separateLanes.map((lane) => [lane.slot, adopted.slots.find((s) => s.id === lane.slot)?.cwd])));
+    for (const lane of separateLanes.splice(0)) {
+      await post(`/api/slots/${lane.slot}/kill`, {});
+      spawnSync("git", ["worktree", "remove", "--force", lane.cwd], { cwd: REPO });
+    }
+    for (let id = 2; id <= 16; id++) {
+      const response = await post(`/api/slots/${id}/open`, { cwd: REPO });
+      if (!response.ok) break;
+    }
+    await restartSrv({ FLEET_SEPARATE_LANE_SLOTS: "1", FLEET_MAX_SESSIONS: "25" });
+    const seventeenth = await post("/api/lanes", { repo: REPO });
+    const seventeenthBody = (await seventeenth.json()) as { slot?: number; cwd?: string; error?: string };
+    check("a 25-session ceiling opens session 17 as a lane outside bands 1..16",
+      seventeenth.ok && !!seventeenthBody.slot && seventeenthBody.slot > 16,
+      JSON.stringify(seventeenthBody));
+    if (seventeenthBody.slot && seventeenthBody.cwd)
+      separateLanes.push({ slot: seventeenthBody.slot, cwd: seventeenthBody.cwd });
+    await restartSrv({ FLEET_SEPARATE_LANE_SLOTS: "1", FLEET_MAX_SESSIONS: "25" });
+    const adopted25 = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] };
+    check("a restart adopts the seventeenth session on its lane place",
+      !!seventeenthBody.slot && adopted25.slots.find((s) => s.id === seventeenthBody.slot)?.cwd === seventeenthBody.cwd,
+      JSON.stringify(adopted25.slots.filter((s) => s.cwd).map((s) => s.id)));
+  } finally {
+    for (const lane of separateLanes) {
+      await post(`/api/slots/${lane.slot}/kill`, {});
+      spawnSync("git", ["worktree", "remove", "--force", lane.cwd], { cwd: REPO });
+    }
+    for (let id = 1; id <= 16; id++) await post(`/api/slots/${id}/kill`, {});
+    await restartSrv({ FLEET_SEPARATE_LANE_SLOTS: "0", FLEET_MAX_SESSIONS: "16" });
+    const legacy = (await (await get("/api/sessions")).json()) as { slots: { id: number }[] };
+    check("switch off restores the exact 16-row slot board",
+      legacy.slots.length === 16 && legacy.slots.every((s, i) => s.id === i + 1),
+      JSON.stringify(legacy.slots.map((s) => s.id)));
+  }
 
   // --- the harness catalogue's commands field (the ⌘-overlay's fact layer, 2026-09-19). The card's
   // evidence rule made mechanical: the SETS below are the documented bare commands (claude: the

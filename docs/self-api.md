@@ -1016,6 +1016,12 @@ Owner-Token, **keine** Self-Route; Entwurf B aus `docs/messungen/2026-09-15-frei
   bestätigtes oder aktives Program im Repo dieses Programs (`server.ts#programRepoOf`: Checkout der
   lebenden MAIN, sonst Dispatch-Repo) und schreibt ein `task_program`-Event; `queued`/`sent`/`done`/`archived`,
   eine Zeile mit Program (Umhängen), ein fremdes Repo und ein nicht bestätigtes Program sind 409.
+- `POST /api/tasks/:id/spawn {"harness","model","effort"}` setzt mit Owner-Token die persistierte
+  Worker-Wahl eines `pending`- oder `queued`-Auftrags neu (`server.ts#taskSpawnFromBody`). Ein leerer Body
+  oder drei `null`-Werte entfernen `Task.spawn` und stellen den Default bei Dispatch wieder her. Die
+  Route lässt Status, Hold, Karte, Program und Kommentare stehen; `sent` und Variantengruppen sind 409.
+  Jede tatsächliche Änderung schreibt `task_spawn` mit alter und neuer Wahl ins Audit. Es gibt keine
+  `/api/self/*`-Route dafür.
 
 ## hold — `POST /api/self/tasks/:id/hold`
 

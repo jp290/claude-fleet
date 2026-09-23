@@ -457,6 +457,44 @@ Note (sonst koennte die Note sein Ergebnis nicht tragen). **Eine Folge fuer W5d,
 `FLEET_HUB_REMOTE` steht in keinem `.env` und auf keiner Spawn-Zeile; das Umschalten ist W5d und
 Owner-Akt.
 
+**STAND 2026-09-23 — der Satz darüber ist überholt (gemessen, Lane `fleet/260922230144-9078`).**
+`FLEET_HUB_REMOTE='hub'` steht auf dem kanonischen Host seit längerem in der `.env` und ist scharf:
+15 von 15 notentragenden Lands der letzten 30 `main`-Commits tragen `hubPush {ok:true}`, und
+`git ls-remote hub main` = `git rev-parse main` auf beiden Hosts = derselbe Commit. Was NICHT
+umgeschaltet ist, ist der zweite Host: dort steht `FLEET_LANDS='0'` (Kommentar vom 2026-09-05) und
+kein `FLEET_HUB_REMOTE`, und sein `fleet-sync`-Timer ruft das Skript ohne Argument auf, zieht also
+weiter von `canonical` statt von der Nabe. Zwei Branches des zweiten Hosts liegen seit 2026-09-11
+unverarbeitet auf der Nabe (`second-host/leak-pin-lan-name`, `second-host/md-renderer`, beide nicht in
+`main`) — der Beleg, dass der Rückweg „Branch, und die kanonische Fleet landet ihn" nicht gefahren
+wird.
+
+**W5d T1–T3 gelandet (Kriterium `29ad3230`, Owner-Bestätigung 2026-09-23 19:23:44Z; aus der Lane
+`fleet/260922230144-9078`, die Land-Shas trägt die MAIN nach).** Der Satz aus W5b, ein abgelehnter
+Push sei nur ein Notenfeld, gilt damit nicht mehr für den sauberen Auto-Land:
+
+- **T1** — der Push wandert aus `server.ts#recordLand` in die R2'-Schleife von `server.ts#mergeJob`
+  und **vor** `advanceIntegration`. Die Annahme der Nabe IST der Land; lokales `main` bewegt sich
+  nie auf einen Commit, den die Nabe nicht hat. Eine Ablehnung sammelt `server.ts#catchUpMainToHub`
+  ein (fetch + ff-only) und fällt danach in die **bestehende** gedeckelte Schleife: re-rebase,
+  Gate neu, erneut anbieten. Zwei neue getypte Gründe in `lane-signals.ts#MergeErrorReason`:
+  `hub-lost` (der andere Lander war schneller) und `hub-unreachable` (es wurde nichts entschieden),
+  unterschieden an git's eigenem `! [rejected]`, mit `unreachable` als sicherem Default.
+  `confirm-land` und die Boot-Nachholung arbitrieren NICHT und pushen weiter nachträglich.
+- **T2** — `fleet-sync.sh` verliert die Folger-Exklusivität; beide Hosts ziehen von der Nabe.
+  Exit 3 behält seinen Code, wechselt die Bedeutung (siehe Kopf von `docs/dual-host-git-transport.md`).
+  Der kanonische Host baut im Sync NICHT (`FLEET_SYNC_BUILD_CMD=true`) — das Bundle gehört dort
+  `POST /api/deploy`; ein Lauf mit nicht-default Build-Kommando behauptet kein „bundle built" mehr.
+- **T3** — `ctl.sh commit main` pusht den Direkt-Commit ff-only mit. Die Annahme „Direkt-Commits
+  erreichen den Hub nie" war falsch: sie erreichen ihn huckepack auf dem nächsten Land (gemessen
+  2026-09-22: `b3ea7306` um 22:02 committet, 23:56 auf der Nabe — 1 h 54 min; 8 der letzten 60
+  `main`-Commits sind Direkt-Commits). Der Preis war Verzug; unter zwei Landern ist der Verzug ein
+  Strandungsfenster. Eine Ablehnung ist **Exit 3** mit dem Reparaturweg im Text, der Commit steht.
+- **T4 — NICHT ausgeführt.** Die Host-Akte (`FLEET_LANDS=1`, `FLEET_HUB_REMOTE`,
+  `FLEET_SYNC_REMOTE=hub` auf beiden, `FLEET_SYNC_BUILD_CMD=true` auf dem kanonischen) sind Owner-
+  bzw. Deploy-Akte und bleiben offen, bis T1–T3 auf **beiden** Servern laufen. Reihenfolge und
+  Sensoren stehen im bestätigten Kriterium; ein Flip vor dem Deploy ließe den zweiten Host mit dem
+  ALTEN Code landen und erzeugte genau die Divergenz ohne Schiedsrichter, die W5d verhindert.
+
 **Zwei Suiten gleichzeitig auf dem Second-host — der Deckel ZAEHLT jetzt, statt Last zu messen
 (2026-09-06).** Die Messnotiz `docs/messungen/2026-09-06-second-host-parallel-suiten.md` nannte den
 Mechanismus: der Lastdeckel des Daemons (`helper-daemon/daemon.ts#localMode`, `maxLoad1`) hat

@@ -1159,10 +1159,14 @@ export async function run(): Promise<void> {
   const cmNoMsg = await ctl(["commit-main"], homeEnv);
   check("ctl commit-main: no -m is refused with exit 2 before the sensor is asked",
     cmNoMsg.code === 2 && cmNoMsg.err.includes("-m <msgfile>"), `exit ${cmNoMsg.code} ${cmNoMsg.err.slice(0, 160)}`);
+  // NOT read off the human line: `--json` prints the object INSTEAD of those lines, so asserting
+  // the sentence here would be asserting the output mode, not the behaviour. The JSON carries the
+  // whole claim — `pushed: null` is "not attempted", distinct from the `false` a refusal writes,
+  // and no `hub` key at all is the "nothing is claimed" half.
   check("ctl commit-main: with no FLEET_HUB_REMOTE nothing is pushed and nothing is claimed about one",
     (cmWaited.json as { pushed?: unknown })?.pushed === null
-      && cmWaited.out.includes("nothing was pushed and nothing is claimed"),
-    `pushed=${JSON.stringify((cmWaited.json as { pushed?: unknown })?.pushed)} :: ${cmWaited.out.slice(0, 200)}`);
+      && !("hub" in ((cmWaited.json ?? {}) as Record<string, unknown>)),
+    `json=${JSON.stringify(cmWaited.json)}`);
 
   // --- W5d: THE PUSH HALF. A direct commit that stays on one host is the window that strands the
   // NEXT land here, so the commit and its push are one move — and a refused push is a named state

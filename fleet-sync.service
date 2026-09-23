@@ -4,17 +4,26 @@
 # a git REMOTE in the follower's gitignored .git/config, and the key that reaches it lives in that
 # user's ~/.ssh — the same rule fleet-sync.sh itself states in its head.
 #
-# THE FOLLOWER ONLY, AND IT HAS NO TWIN. fleet-watchdog.service has one (launchd-example.plist)
-# because both hosts boot the same watchdog. This pair does not: under the standing decision
-# (path b, 2026-09-05, docs/dual-host-git-transport.md) the CANONICAL host never fetches from the
-# follower and never runs this script, so installing this on it would be a category error.
+# IT HAS A TWIN NOW, AND THE TWIN IS NOT A FILE (W5d, owner 2026-09-23). Until W5d this pair was
+# the FOLLOWER's only: under the standing decision (path b, 2026-09-05) the canonical host never
+# fetched from the follower and never ran this script, so installing it there was a category error.
+# Both hosts land now and the bare hub arbitrates, so both have to pull the other's work — and both
+# pull it from the HUB, never from each other. The canonical host therefore runs the same script on
+# the same schedule; what differs is two Environment= lines, not a second file:
+#   Environment=FLEET_SYNC_REMOTE=hub        (on BOTH hosts — the hub is the only place to pull from)
+#   Environment=FLEET_SYNC_BUILD_CMD=true    (canonical host ONLY — public/*.js there belongs to
+#                                             POST /api/deploy, which builds before it restarts)
+# A run with a non-default build command says so in its own line instead of claiming a bundle it
+# did not produce, so the journal of the host that builds nothing stays readable.
 #
 # ONESHOT, AND ALLOWED TO FAIL LOUDLY — that is the whole design. fleet-sync.sh answers in seven
 # exits (0 current or fast-forwarded · 2 fetch failed · 3 DIVERGED · 4 precondition refused · 5
 # client build failed · 6 dependency install failed · 7 the deploy this host asked its own instance
 # for could not be made), and anything but 0 leaves this unit `failed`, which is what
 # `systemctl --user status fleet-sync` and `systemctl --user list-timers` then show. Four of them
-# want a human. Exit 3 means this host has landed something, and under path b it must not. Exits 5,
+# want a human. Exit 3 means this host HOLDS COMMITS THE HUB DOES NOT — since W5d landing here is
+# allowed and a land that reached the hub can never cause this, so it is a direct commit that was
+# never pushed, or a land whose push the hub refused, and the line names both. Exits 5,
 # 6 and 7 all mean the fast-forward STANDS and something behind it does not: at 6 the dependencies
 # (so the build was never attempted), at 5 the bundle — the board this host serves is then the old
 # JS, or none at all, over new HTML — and at 7 the running srv, which keeps serving the code from
@@ -45,7 +54,7 @@
 # is paid once for both: without it this user's whole systemd manager stops at logout.
 
 [Unit]
-Description=claude-fleet follower sync (fast-forward this checkout onto the canonical host's main)
+Description=claude-fleet sync (fast-forward this checkout onto the remote's main; hub under W5d)
 Documentation=file://FLEET-DIR/fleet-sync.sh
 
 [Service]

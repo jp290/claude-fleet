@@ -1,5 +1,18 @@
 # Der Git-Transport zwischen den beiden Fleet-Hosts
 
+> **W5d, Owner 2026-09-23 — der Entscheid unten ist ÜBERHOLT, die Mechanik darunter nicht.**
+> „Beide landen, die Nabe schiedsrichtert": beide Hosts landen, das Bare-Repo auf dem Second-host
+> entscheidet per ff-only-Ref-Update, wer gewonnen hat, und **beide Hosts ziehen von der NABE**
+> (`FLEET_SYNC_REMOTE=hub`), nicht mehr voneinander. Damit gilt: `fleet-sync.sh` ist nicht länger
+> die Folger-Hälfte einer Einbahnstraße, sondern das Skript, das **beide** fahren — der kanonische
+> Host mit `FLEET_SYNC_BUILD_CMD=true`, weil sein Bundle dem Deploy-Pfad gehört. **Exit 3 behält
+> seinen Code und wechselt die Bedeutung**: nicht mehr „dieser Host hat gelandet und darf das
+> nicht" (das ist jetzt erlaubt und normal), sondern „dieser Host hält Commits, die die Nabe nicht
+> hat" — ein Direkt-Commit, der nie gepusht wurde, oder ein Land, dessen Push die Nabe abgelehnt
+> hat. Ein Land, das die Nabe angenommen hat, kann Exit 3 strukturell nicht erzeugen.
+> Was unten über P1/P2/R, über ff-statt-reset und über den Build steht, gilt unverändert.
+> Kriterium `29ad3230`, Land: siehe `docs/self-api.md` §`hub-lost`/`hub-unreachable`.
+
 Owner-Entscheid 2026-09-05 (Weg **b**, über Controller Slot 12): **ein Host bleibt kanonisch für
 alle Repos**, der zweite **zieht per git über das private Netz, fährt Sessions und Suiten und
 LANDET NICHT**. Das Zielbild danach — kanonisch je REPO statt je Fleet — ist ausdrücklich eine

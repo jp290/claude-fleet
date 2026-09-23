@@ -1107,20 +1107,28 @@ export async function run(h: {
     check("(K7f) BOTH RED LOGS SURVIVE the default prune, and the bytes are the ones that were sent",
       fDirHas(fRed1, fLog(`row ${fRed1}`)) && fDirHas(fRed2, fLog(`row ${fRed2}`)),
       `red1=${fDirHas(fRed1, fLog(`row ${fRed1}`))} red2=${fDirHas(fRed2, fLog(`row ${fRed2}`))}`);
+    // The map is not the fixture's alone: earlier modules' uploads sit in it too, stamped with real
+    // (2026) times — newer than every 2001 fixture row and, with the trail replaced, not red. They
+    // take the TOP of the non-red window first, so the fixture greens get 30 minus their count.
+    const fOwn = new Set([fUnknown, ...fAtsGreen, fRed1, fRed2].map(String));
+    const fArtRoot = `${ROOT}/streams/helper-artifacts`;
+    const fOthers = readdirSync(fArtRoot).flatMap((job) => {
+      try { return readdirSync(`${fArtRoot}/${job}`).filter((at) => !(job === fJobId && fOwn.has(at))); }
+      catch { return []; }
+    }).length;
+    const fWant = 30 - fOthers;
     const fGreenAlive = fAtsGreen.filter((at) => existsSync(`${fRoot}/${at}/suite.log`));
-    check("(K7f) the unknown and the OLDEST GREEN go — non-red rows keep the newest-30 rule",
-      !existsSync(`${fRoot}/${fUnknown}/suite.log`) && !existsSync(`${fRoot}/${fAtsGreen[0]!}/suite.log`)
-        && fGreenAlive.length === 30 && fGreenAlive[0] === fAtsGreen[1]
-        && fGreenAlive[fGreenAlive.length - 1] === fAtsGreen[30],
-      `unknownGone=${!existsSync(`${fRoot}/${fUnknown}/suite.log`)} `
-        + `oldestGone=${!existsSync(`${fRoot}/${fAtsGreen[0]!}/suite.log`)}`
-        + ` alive=${fGreenAlive.length} kept=${fGreenAlive[0] === fAtsGreen[1]
-          && fGreenAlive[fGreenAlive.length - 1] === fAtsGreen[30]}`);
+    const fKeptNewest = fGreenAlive.join() === fAtsGreen.slice(fAtsGreen.length - fWant).join();
+    check("(K7f) the unknown and the OLDEST greens go — non-red rows keep the newest-30 rule",
+      fOthers < 30 && !existsSync(`${fRoot}/${fUnknown}/suite.log`)
+        && fGreenAlive.length === fWant && fKeptNewest,
+      `others=${fOthers} unknownGone=${!existsSync(`${fRoot}/${fUnknown}/suite.log`)}`
+        + ` alive=${fGreenAlive.length} want=${fWant} keptNewest=${fKeptNewest}`);
 
     // --- part B: the red cap EXCEEDED. Three MORE fixture reds, then a restart with the cap at 2 —
-    // the boot reloads the rail's ledger, so the map holds part A's uploads and (K7c)'s real red
-    // beside the new ones. Three reds against a cap of 2: the newest survives, the two oldest go —
-    // the red bucket now obeys the same shape as the green window, at its own number.
+    // the planted trail now names ONLY these three as red, so part A's reds fall into the non-red
+    // window. Three reds against a cap of 2: the newest TWO survive, the oldest goes — the red
+    // bucket obeys the same shape as the green window, at its own number.
     const fAtsRedB = [fAt(201), fAt(202), fAt(203)];
     writeFileSync(`${ROOT}/post-land-audits.jsonl`,
       fAtsRedB.map((at) => fRow(at, "red")).join("\n") + "\n");
@@ -1132,10 +1140,10 @@ export async function run(h: {
     for (const at of fAtsRedB) fStatusesB.push(await fUp(at));
     check("(K7f) setup: the three part-B uploads land 200", fStatusesB.every((s) => s === 200),
       fStatusesB.join(","));
-    check("(K7f) THE RED CAP EXCEEDED: the newest red survives, the two oldest reds go",
+    check("(K7f) THE RED CAP EXCEEDED: the newest two reds survive, the oldest red goes",
       fDirHas(fAtsRedB[2]!, fLog(`row ${fAtsRedB[2]!}`))
-        && !existsSync(`${fRoot}/${fAtsRedB[0]!}/suite.log`)
-        && !existsSync(`${fRoot}/${fAtsRedB[1]!}/suite.log`),
+        && fDirHas(fAtsRedB[1]!, fLog(`row ${fAtsRedB[1]!}`))
+        && !existsSync(`${fRoot}/${fAtsRedB[0]!}/suite.log`),
       `newest=${fDirHas(fAtsRedB[2]!, fLog(`row ${fAtsRedB[2]!}`))} `
         + `old=${existsSync(`${fRoot}/${fAtsRedB[0]!}/suite.log`)}`
         + ` mid=${existsSync(`${fRoot}/${fAtsRedB[1]!}/suite.log`)}`);

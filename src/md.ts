@@ -48,7 +48,7 @@ function node(tag: string, cls: string, text?: string): HTMLElement {
 // confirms exist; what a hover shows is the caller's business. Unset (the guest reader, §7b), the
 // text path below is the plain createTextNode it always was. Module state rather than a parameter
 // threaded through every recursion: mdInto is synchronous, so the hook cannot leak across calls.
-export type MdEntityKind = "task" | "slot" | "program" | "sha";
+export type MdEntityKind = "task" | "slot" | "program" | "sha" | "file";
 export interface MdOpts { entity?: (kind: MdEntityKind, id: string) => boolean }
 let entityOk: MdOpts["entity"] | null = null;
 
@@ -56,11 +56,39 @@ let entityOk: MdOpts["entity"] | null = null;
 // KIND a hex string names is the caller's answer (entityOk is asked in that order; an unknown
 // string stays plain text, the negative case the view relies on)
 const ENT = /\b([0-9a-f]{7,12})\b|\b([Ss]lots?\s*#?)(\d{1,3}(?:\s*[/,+&]\s*#?\d{1,3})*)\b/g;
+const FILE_REF = /\b((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z][\w-]*(?::\d+(?:-\d+)?|#[A-Za-z_$][\w.$-]*))\b/g;
+
+export function entityMatches(s: string, ok: (kind: MdEntityKind, id: string) => boolean):
+  { kind: MdEntityKind; id: string; start: number; end: number }[] {
+  const found: { kind: MdEntityKind; id: string; start: number; end: number }[] = [];
+  for (const m of s.matchAll(FILE_REF)) {
+    const start = m.index ?? 0, id = m[1];
+    if (id && ok("file", id)) found.push({ kind: "file", id, start, end: start + id.length });
+  }
+  for (const m of s.matchAll(ENT)) {
+    const start = m.index ?? 0;
+    if (found.some((f) => start >= f.start && start < f.end)) continue;
+    if (m[1]) {
+      const id = m[1];
+      const kind = id.length === 8 && ok("task", id) ? "task"
+        : id.length === 8 && ok("program", id) ? "program" : ok("sha", id) ? "sha" : null;
+      if (kind) found.push({ kind, id, start, end: start + id.length });
+    } else {
+      let pos = start + m[2].length;
+      for (const part of m[3].split(/(\d+)/)) {
+        if (/^\d+$/.test(part) && ok("slot", part)) found.push({ kind: "slot", id: part, start: pos, end: pos + part.length });
+        pos += part.length;
+      }
+    }
+  }
+  return found.sort((a, b) => a.start - b.start);
+}
 
 function entity(kind: MdEntityKind, id: string, text: string): HTMLElement {
   const e = node("span", `ent ent-${kind}`, text);
   e.setAttribute("data-ent", kind);
   e.setAttribute("data-id", id);
+  e.setAttribute("tabindex", "0");
   return e;
 }
 
@@ -71,33 +99,10 @@ function text(target: HTMLElement, s: string): void {
   const put = (upto: number): void => {
     if (upto > at) target.appendChild(document.createTextNode(s.slice(at, upto)));
   };
-  // which kind a hex string names, asked in precedence order — unknown stays text
-  const hexKind = (hex: string): MdEntityKind | null => {
-    if (hex.length === 8 && ok("task", hex)) return "task";
-    if (hex.length === 8 && ok("program", hex)) return "program";
-    if (ok("sha", hex)) return "sha";
-    return null;
-  };
-  for (const m of s.matchAll(ENT)) {
-    const i = m.index ?? 0;
-    if (m[1] !== undefined) {
-      const kind = hexKind(m[1]);
-      if (!kind) continue;
-      put(i);
-      target.appendChild(entity(kind, m[1], m[1]));
-      at = i + m[0].length;
-      continue;
-    }
-    // "Slots 6/7/12": the word stays text, each number that names a known slot becomes its own span
-    put(i);
-    target.appendChild(document.createTextNode(m[2]));
-    let j = i + m[2].length;
-    for (const part of m[3].split(/(\d+)/)) {
-      if (/^\d+$/.test(part) && ok("slot", part)) target.appendChild(entity("slot", part, part));
-      else if (part) target.appendChild(document.createTextNode(part));
-      j += part.length;
-    }
-    at = j;
+  for (const m of entityMatches(s, ok)) {
+    put(m.start);
+    target.appendChild(entity(m.kind, m.id, s.slice(m.start, m.end)));
+    at = m.end;
   }
   put(s.length);
 }
@@ -133,10 +138,12 @@ function inline(target: HTMLElement, src: string): void {
           : hex.length === 8 && entityOk("program", hex) ? "program"
           : entityOk("sha", hex) ? "sha" : null)
         : null;
-      if (hex && kind) {
-        code.className = `mdcode ent ent-${kind}`;
-        code.setAttribute("data-ent", kind);
-        code.setAttribute("data-id", hex);
+      const file = entityMatches(body, entityOk ?? (() => false)).find((x) => x.kind === "file" && x.start === 0 && x.end === body.length);
+      if ((hex && kind) || file) {
+        code.className = `mdcode ent ent-${kind ?? "file"}`;
+        code.setAttribute("data-ent", kind ?? "file");
+        code.setAttribute("data-id", hex && kind ? hex : body);
+        code.setAttribute("tabindex", "0");
       }
       target.appendChild(code);
     } else if (m[3] !== undefined) {

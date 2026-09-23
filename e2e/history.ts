@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { check, get, post, plogPath, plogRead, ROOT, REPO, restartSrv, until, UntilTimeout } from "./harness";
 import { WORKER_CONTRACTS } from "../src/protocol";
-import { mdInto } from "../src/md";
+import { entityMatches, mdInto, type MdEntityKind } from "../src/md";
 
 // Runs under the claude-gate harness, not run() below: the main history suite deliberately uses
 // FLEET_CMD=true and therefore has no pinned session identity. Keeping the probe in this family
@@ -454,7 +454,7 @@ interface StubNode { tag: string; attrs: Record<string, string>; kids: StubNode[
 const stubText = (n: StubNode): string => n.data ?? n.kids.map(stubText).join("");
 const stubAll = (n: StubNode, tag: string): StubNode[] =>
   [...(n.tag === tag ? [n] : []), ...n.kids.flatMap((k) => stubAll(k, tag))];
-function renderStub(src: string): StubNode {
+function renderStub(src: string, entity?: (kind: MdEntityKind, id: string) => boolean): StubNode {
   const make = (tag: string): StubNode & Record<string, unknown> => {
     const n: StubNode & Record<string, unknown> = { tag, attrs: {}, kids: [], style: {} };
     n.appendChild = (k: StubNode) => { n.kids.push(k); return k; };
@@ -468,7 +468,7 @@ function renderStub(src: string): StubNode {
   g.document = { createElement: make, createTextNode: (data: string) => ({ tag: "#text", attrs: {}, kids: [], data }) };
   try {
     const root = make("div");
-    mdInto(root as unknown as HTMLElement, src);
+    mdInto(root as unknown as HTMLElement, src, { entity });
     return root;
   } finally {
     g.document = had;
@@ -476,6 +476,19 @@ function renderStub(src: string): StubNode {
 }
 
 function runLinks(): void {
+  const known = (kind: MdEntityKind, id: string) =>
+    kind === "task" && id === "d5a399ff" || kind === "slot" && id === "12"
+    || kind === "file" && (id === "src/client.ts:680" || id === "src/md.ts#entityMatches");
+  const refs = stubAll(renderStub("d5a399ff slot 12 src/client.ts:680 src/md.ts#entityMatches", known), "span")
+    .filter((n) => n.attrs["data-ent"]);
+  check("chat: known references are keyboard-focusable", refs.length === 4 && refs.every((n) => n.attrs.tabindex === "0"),
+    refs.map((n) => `${n.attrs["data-ent"]}:${n.attrs.tabindex}`).join(","));
+  check("chat: without the hover option no entity span is rendered",
+    stubAll(renderStub("d5a399ff src/client.ts:680"), "span").every((n) => !n.attrs["data-ent"]));
+  const rejected = entityMatches("host:8790 14:52 src/client.ts:680", known);
+  check("references: ports and clock times are never file references",
+    rejected.length === 1 && rejected[0]?.kind === "file" && rejected[0]?.id === "src/client.ts:680",
+    JSON.stringify(rejected));
   const url = "https://example.com/a_b/c?x=1&y=2#frag";
   const bare = stubAll(renderStub(`see ${url}. then`), "a");
   check("chat view: a bare https url in running text becomes exactly one link",
@@ -523,6 +536,13 @@ function runLinks(): void {
   if (!client) return;
   check("terminal: bare urls are linkified by WebLinksAddon, through the same handler as OSC 8 links",
     /loadAddon\(new WebLinksAddon\(openTermLink\)\)/.test(client) && /linkHandler: \{ activate: openTermLink \}/.test(client));
+  check("terminal: reference links reuse the entity card and disappear with the loupe off",
+    client.includes("registerLinkProvider") && client.includes("entityMatches(line")
+      && client.includes("if (!this.hoverOn || !this.term) return") && client.includes("showEntityCard(m.kind"));
+  const index = readFileSync(`${ROOT}/public/index.html`, "utf8");
+  check("hover: exactly one card style and a touch pointerdown path",
+    (index.match(/\.entcard \{/g) ?? []).length === 1
+      && readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/entcard.ts`, "utf8").includes('e.pointerType !== "touch"'));
   const opener = /function openTermLink\([\s\S]*?\n\}/.exec(client)?.[0] ?? "";
   check("terminal: a link opens only as http(s), in a new tab, without an opener",
     /proto !== "http:" && proto !== "https:"/.test(opener) && opener.includes(`window.open(uri, "_blank", "noopener,noreferrer")`),

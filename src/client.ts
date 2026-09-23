@@ -4,13 +4,13 @@ import { CanvasAddon } from "@xterm/addon-canvas";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import qrcode from "qrcode-generator";
-import { mdInto, type MdEntityKind } from "./md";
+import { entityMatches, mdInto, type MdEntityKind } from "./md";
 import { selectionMarkdown } from "./mdcopy";
 import { Flakes } from "./flakes";
 import { harnessMark, icon, type IconName } from "./icons";
 import { modelLabel } from "./modelname";
 import { DraftBook } from "./drafts";
-import { attachEntityCards, type EntFacts } from "./entcard";
+import { attachEntityCards, closeEntityCard, hideEntityCard, showEntityCard, type EntFacts } from "./entcard";
 import { loadChatSizes, onChatSize, sizePanel, stepChatSizes } from "./chatsize";
 import { PREFS, prefBool, prefJSON, prefNumber, prefRaw, prefSet, prefSetBool, prefText, type PrefDef } from "./prefs";
 import { popover } from "./popover";
@@ -581,7 +581,18 @@ function decorateCode(code: HTMLElement): void {
 }
 
 // which ids in transcript text become hoverable: only ones this board already knows
-function entityKnown(kind: MdEntityKind, id: string): boolean {
+function fileReference(id: string): { path: string; line?: number; symbol?: string } | null {
+  const m = /^(.+?)(?::(\d+)(?:-\d+)?|#([A-Za-z_$][\w.$-]*))$/.exec(id);
+  if (!m || !m[1] || m[1].includes("..")) return null;
+  return { path: m[1], line: m[2] ? Number(m[2]) : undefined, symbol: m[3] };
+}
+
+function entityKnown(kind: MdEntityKind, id: string, slot = 0): boolean {
+  if (kind === "file") {
+    const ref = fileReference(id), cwd = fleet.find((s) => s.id === slot)?.cwd;
+    const tree = cwd ? fxTree.get(cwd) : null;
+    return !!ref && !!tree && !("error" in tree) && tree.files.includes(ref.path);
+  }
   if (kind === "task") return tasksList.some((t) => t.id === id);
   if (kind === "program") return programsPoll.some((p) => p.id === id);
   if (kind === "sha") return knownSha(id);
@@ -605,22 +616,53 @@ function knownSha(id: string): boolean {
 }
 
 const entTextAsked = new Set<string>();
-function describeEntity(kind: string, id: string): EntFacts | null {
+const fileCardCache = new Map<string, { text?: string; error?: string; later?: Promise<void> }>();
+function describeEntity(kind: string, id: string, slot = 0): EntFacts | null {
+  if (kind === "file") {
+    if (!entityKnown("file", id, slot)) return null;
+    const ref = fileReference(id)!;
+    const cwd = fleet.find((s) => s.id === slot)!.cwd!;
+    const key = `${cwd}/${ref.path}`;
+    let cached = fileCardCache.get(key);
+    if (!cached) {
+      cached = {};
+      fileCardCache.set(key, cached);
+      const row = cached;
+      row.later = loadFile({ path: key }).then((r) => {
+        row.text = r?.text;
+        row.error = r?.error ?? (!r?.text ? "Datei konnte nicht gelesen werden" : undefined);
+        row.later = undefined;
+      });
+    }
+    const lines = cached.text?.split("\n") ?? [];
+    const line = ref.line ?? (ref.symbol ? lines.findIndex((s) => s.includes(ref.symbol!)) + 1 : 0);
+    const from = Math.max(1, line - 5), to = Math.min(lines.length, line + 6);
+    const excerpt = line > 0 && line <= lines.length
+      ? lines.slice(from - 1, to).map((s, i) => `${from + i}: ${s}`) : [];
+    return {
+      meta: `${ref.path}${line ? `:${line}` : `#${ref.symbol ?? ""}`}`,
+      title: ref.path.split("/").pop() ?? ref.path,
+      lines: cached.error ? [cached.error] : cached.later ? ["…"] : excerpt.length ? excerpt : ["Stelle nicht gefunden"],
+      later: cached.later,
+      open: () => { openExplorer(slot, cwd, ref.path, line || undefined); closeEntityCard(); },
+    };
+  }
   const now = Date.now();
   if (kind === "task") {
     const t = tasksList.find((x) => x.id === id);
     if (!t) return null;
     const text = taskText.get(id);
     // the prompt text is not on the 2 s poll; ask the queue's own loader ONCE per id, then repaint
-    const later = text === undefined && !entTextAsked.has(id)
-      ? (entTextAsked.add(id), loadTaskTexts()) : undefined;
+    const later = text !== undefined ? undefined : taskTextBusy
+      ? new Promise<void>((resolve) => taskTextWaiters.push(resolve))
+      : !entTextAsked.has(id) ? (entTextAsked.add(id), loadTaskTexts()) : undefined;
     const worker = t.slot ? fleet.find((sl) => sl.id === t.slot) : undefined;
     const workerLine = t.slot
       ? `worker: slot ${t.slot}${worker?.label ? ` · ${worker.label}` : ""}${worker?.model ? ` · ${worker.model}` : ""}`
       : "worker: —";
     return {
       meta: [`task ${t.id}`, t.status, t.kind].filter(Boolean).join(" · "),
-      title: text ? qFirstLine(text) : later ? "…" : "(no text on this board)",
+      title: text ? qFirstLine(text) : taskTextBusy || later ? "…" : "(no text on this board)",
       lines: [
         workerLine,
         `${taskSourceLabel(t)} · filed ${fmtDur(Math.max(0, now - t.created))} ago`,
@@ -662,6 +704,7 @@ function describeEntity(kind: string, id: string): EntFacts | null {
       sl.worktree ? `branch ${sl.worktree.branch}` : sl.cwd,
       ...(taskLine ? [taskLine] : []),
       ...(sl.lastOutput ? [`last output ${fmtDur(Math.max(0, now - sl.lastOutput))} ago`] : []),
+      "Slot-Belegung kann sich seit dieser Nachricht geändert haben.",
     ],
   };
 }
@@ -704,6 +747,9 @@ class Pane {
   private readonly reloadBtn: HTMLButtonElement;
   private readonly widthBtn: HTMLButtonElement;
   private readonly gearBtn: HTMLButtonElement;
+  private readonly hoverBtn: HTMLButtonElement;
+  private hoverOn = false;
+  private linkProvider: ReturnType<Terminal["registerLinkProvider"]> | null = null;
   private readonly toolsBox: HTMLElement;
   private view: "term" | "chat" = "term";
   private chatTotal = 0;
@@ -729,12 +775,13 @@ class Pane {
   private readonly pastBar: HTMLElement;
 
   constructor(readonly index: number) {
+    this.hoverOn = prefJSON<{ hovers?: boolean[] }>("fleet.view").hovers?.[index] ?? false;
     this.root = el("div", "pane");
     const termEl = el("div", "paneterm");
     this.hint = el("div", "panehint", "no session — click a slot");
     this.jump = el("button", "jump", "▼");
     this.chatEl = el("div", "panechat");
-    attachEntityCards(this.chatEl, describeEntity);
+    attachEntityCards(this.chatEl, (kind, id) => this.hoverOn ? describeEntity(kind, id, this.slot) : null);
     // a selection copies as the Markdown it was rendered from (src/mdcopy.ts); a selection the
     // serializer declines (nothing of ours in it) keeps the browser's own copy
     this.chatEl.addEventListener("copy", (e) => {
@@ -804,8 +851,24 @@ class Pane {
     this.gearBtn.appendChild(icon("gear"));
     this.gearBtn.title = "Einstellungen öffnen";
     this.gearBtn.onclick = (e) => { e.stopPropagation(); openSettings(this.gearBtn); };
+    this.hoverBtn = el("button", "panehover") as HTMLButtonElement;
+    this.hoverBtn.appendChild(el("span", "loupe"));
+    this.hoverBtn.title = "Referenzen erklären";
+    this.hoverBtn.setAttribute("aria-pressed", String(this.hoverOn));
+    this.hoverBtn.onclick = (e) => {
+      e.stopPropagation();
+      this.hoverOn = !this.hoverOn;
+      saveView();
+      this.hoverBtn.setAttribute("aria-pressed", String(this.hoverOn));
+      closeEntityCard();
+      this.syncEntityLinks();
+      const cwd = fleet.find((sl) => sl.id === this.slot)?.cwd;
+      if (this.hoverOn && cwd && !fxTree.has(cwd)) {
+        void loadTree(this.slot, cwd).then(() => this.refreshEntities());
+      } else this.refreshEntities();
+    };
     const toolsTop = el("div", "ptrow ptboth");
-    toolsTop.append(this.gearBtn, this.viewBtn, this.boardBtn);
+    toolsTop.append(this.gearBtn, this.hoverBtn, this.viewBtn, this.boardBtn);
     const toolsView = el("div", "ptrow ptview");
     toolsView.append(this.reloadBtn, this.widthBtn, navUp, navDn, this.sizeBtn);
     this.toolsBox = el("div", "panetools");
@@ -839,6 +902,7 @@ class Pane {
     this.term.loadAddon(this.fit);
     this.term.loadAddon(new WebLinksAddon(openTermLink));
     this.term.open(termEl);
+    this.syncEntityLinks();
     // GPU renderers instead of the default DOM one (which paints every cell as a real DOM
     // node — scroll stutter on mobile Safari under streaming output). WebGL is the fastest
     // and crispest; it can fail (no context on old GPUs, context loss later) — fall back to
@@ -907,6 +971,41 @@ class Pane {
     this.jump.onclick = () => { this.term.scrollToBottom(); this.focus(); };
     this.root.addEventListener("mousedown", () => focusPane(this.index));
     this.root.addEventListener("animationend", () => this.root.classList.remove("flash"));
+  }
+
+  get savedHover(): boolean { return this.hoverOn; }
+
+  private refreshEntities(): void {
+    if (this.view !== "chat") return;
+    this.resetChat();
+    void this.pollChat();
+  }
+
+  private syncEntityLinks(): void {
+    this.linkProvider?.dispose();
+    this.linkProvider = null;
+    if (!this.hoverOn || !this.term) return;
+    this.linkProvider = this.term.registerLinkProvider({
+      provideLinks: (row, done) => {
+        const line = this.term.buffer.active.getLine(row - 1)?.translateToString(true) ?? "";
+        const matches = entityMatches(line, (kind, id) => entityKnown(kind, id, this.slot));
+        done(matches.map((m) => ({
+          text: m.id,
+          range: { start: { x: m.start + 1, y: row }, end: { x: m.end, y: row } },
+          activate: (event: MouseEvent) => {
+            if (m.kind === "file") {
+              const ref = fileReference(m.id)!;
+              const cwd = fleet.find((sl) => sl.id === this.slot)?.cwd;
+              if (cwd) openExplorer(this.slot, cwd, ref.path, ref.line);
+            } else showEntityCard(m.kind, m.id, event.clientX, event.clientY,
+              (kind, id) => describeEntity(kind, id, this.slot));
+          },
+          hover: (event: MouseEvent) => showEntityCard(m.kind, m.id, event.clientX, event.clientY,
+            (kind, id) => describeEntity(kind, id, this.slot)),
+          leave: () => hideEntityCard(),
+        })));
+      },
+    });
   }
 
   // briefly rings the pane in the focus-blue accent — desktop only (mobile only ever
@@ -1182,7 +1281,7 @@ class Pane {
         if (e.role === "user") this.settlePending(text);
         const msg = el("div", `msg ${e.role}`);
         const body = el("div", "mbody");
-        mdInto(body, text, { entity: entityKnown });
+        mdInto(body, text, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
         for (const code of body.querySelectorAll<HTMLElement>(".code")) decorateCode(code);
         const meta = el("div", "mmeta");
         const who = e.role === "user" ? "you" : "claude";
@@ -1205,7 +1304,7 @@ class Pane {
     const msg = el("div", "msg user pending");
     msg.style.opacity = "0.6";
     const body = el("div", "mbody");
-    mdInto(body, text, { entity: entityKnown });
+    mdInto(body, text, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
     const meta = el("div", "mmeta");
     meta.appendChild(el("span", "mwho", "you · wird gesendet…"));
     msg.append(body, meta);
@@ -1429,6 +1528,10 @@ class Pane {
     if (slot === this.slot) { this.focus(); return; }
     this.leavePast();
     this.slot = slot;
+    if (this.hoverOn) {
+      const cwd = fleet.find((sl) => sl.id === slot)?.cwd;
+      if (cwd && !fxTree.has(cwd)) void loadTree(slot, cwd).then(() => this.refreshEntities());
+    }
     this.retries = 0; // a different pane: the old one's backoff says nothing about this one
     this.gen++; // orphan the old socket before close so its onclose can't reconnect
     this.ws?.close();
@@ -3353,7 +3456,7 @@ function fileTreeSection(slot: number, cwd: string): HTMLElement {
 // The explorer window. It is the same shell every other browse-and-inspect surface uses, and the
 // detail pane is showFileView — the viewer the diff window, the picker and the commit lens already
 // share. F5 adds an ENTRY POINT to that stair, not a second file view.
-function openExplorer(slot: number, cwd: string, startAt?: string) {
+function openExplorer(slot: number, cwd: string, startAt?: string, line?: number) {
   const t = fxTree.get(cwd);
   if (!t || "error" in t) return;
   fxShell?.close();
@@ -3381,6 +3484,7 @@ function openExplorer(slot: number, cwd: string, startAt?: string) {
       label: rel.split("/").pop() ?? rel,
       source: "as it is on disk right now",
       edit: { slot },
+      line,
       back: { label: "the tree", go: () => {
         picked = null;
         path.textContent = "";
@@ -5135,7 +5239,7 @@ function saveView() {
   // `chats`: which panes show the conversation view — a reload used to land every pane back on the
   // terminal, and with it the composer's switches and cache counter were gone (seventeenth cut)
   prefSet("fleet.view", JSON.stringify({ layout, panes: panes.map((p) => p.slot), focused,
-    chats: panes.map((p) => p.savedChat) }));
+    chats: panes.map((p) => p.savedChat), hovers: panes.map((p) => p.savedHover) }));
 }
 
 // --- directory picker ---
@@ -6162,6 +6266,7 @@ interface FileViewOpts {
   // is exactly the containment the write route enforces on its side. A commit's file view never
   // passes it — there is no editing a revision — so the gesture cannot appear where it is a lie.
   edit?: { slot: number };
+  line?: number;
   back: { label: string; go: () => void };
 }
 type FileResp = { path?: string; rev?: string | null; size?: number; text?: string;
@@ -6224,7 +6329,7 @@ function showFileView(shell: Shell, o: FileViewOpts) {
   if (isMobile()) shell.showDetail(true);
 }
 
-async function loadFile(o: FileViewOpts): Promise<FileResp | null> {
+async function loadFile(o: Pick<FileViewOpts, "path" | "repo" | "rev">): Promise<FileResp | null> {
   const q = new URLSearchParams({ path: o.path });
   if (o.rev && o.repo) { q.set("rev", o.rev); q.set("repo", o.repo); }
   const res = await api(`/api/file?${q.toString()}`).catch(() => null);
@@ -6253,6 +6358,10 @@ function renderFileBody(shell: Shell, body: HTMLElement, o: FileViewOpts, r: Fil
   const pre = el("div", "fvtext");
   pre.textContent = text || "(this file is empty)";
   body.appendChild(pre);
+  if (o.line) requestAnimationFrame(() => {
+    const height = parseFloat(getComputedStyle(pre).lineHeight);
+    if (Number.isFinite(height)) shell.detail.scrollTop = pre.offsetTop + (o.line! - 1) * height - shell.detail.clientHeight / 3;
+  });
   const facts: string[] = [];
   if (typeof r.size === "number") facts.push(`${(r.size / 1024).toFixed(1)} KB`);
   facts.push(`${text.split("\n").length} lines`);
@@ -8386,6 +8495,7 @@ const taskNotesFull = new Map<string, TaskNotePinView[]>();
 const taskVerdictsFull = new Map<string, TaskNoteVerdictView[]>();
 let taskTextKey = ""; // the id+full-data-generation set this cache was last filled for
 let taskTextBusy = false;
+const taskTextWaiters: (() => void)[] = [];
 // The poll's briefAt invalidates every browser. This local epoch still prevents a brief save in
 // THIS browser from being overtaken by an older GET /api/tasks before the next poll arrives.
 let taskTextEpoch = 0;
@@ -8766,6 +8876,7 @@ async function loadTaskTexts() {
     // server briefly unreachable — rows keep the placeholder, the next poll retries
   }
   taskTextBusy = false;
+  for (const resolve of taskTextWaiters.splice(0)) resolve();
   if (epoch !== taskTextEpoch) { void loadTaskTexts(); return; }
   // texts arrived: rows AND the open detail carry them now — the detail's criterion textarea
   // renders from taskCriterionFull, which was empty until this very fetch

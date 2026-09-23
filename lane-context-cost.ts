@@ -51,13 +51,15 @@ export const DEFAULT_A_FROM = "2026-09-13T01:17:00+02:00";
 /** the first lane brief that carried a rendered source package */
 export const DEFAULT_B_FROM = "2026-09-13T20:57:00+02:00";
 export const OPUS_MODELS: ReadonlySet<string> = new Set(["claude-opus-5[1m]", "claude-opus-5", "claude-bridge/claude-opus-5"]);
+/** its own class: Opus 5.5 lanes neither fall into "andere" nor into the Opus-5 medians */
+export const OPUS_5_5_MODELS: ReadonlySet<string> = new Set(["claude-opus-5-5[1m]", "claude-opus-5-5"]);
 const WRITE_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
 const DELEGATE_TOOLS = new Set(["Agent", "Task"]);
 const PACKAGE_HEAD = "\n\nQuellpaket — ";
 const CARD_HEAD = `${CARD_HEAD_MARK} · gegen den Baum validiert`;
 const QUALIFIED = /(?:[/~])?[A-Za-z0-9_@.][A-Za-z0-9_@./-]*\.[A-Za-z0-9]+#[A-Za-z_$][A-Za-z0-9_$]*/;
 
-export type ModelClass = "opus-5" | "fable-5.1" | "andere";
+export type ModelClass = "opus-5" | "opus-5.5" | "fable-5.1" | "andere";
 type Key = readonly [number, string, number, number, number];
 type Row = Record<string, unknown>;
 
@@ -101,7 +103,7 @@ export interface LaneRow {
 /** a ledger model id first; only when that is null, the single model the transcript's requests named */
 export function classify(ledger: string | null, transcript: readonly string[]): { cls: ModelClass | null; source: LaneRow["modelSource"] } {
   const of = (m: string): ModelClass =>
-    OPUS_MODELS.has(m) ? "opus-5" : /^(claude-)?fable/.test(m) ? "fable-5.1" : "andere";
+    OPUS_MODELS.has(m) ? "opus-5" : OPUS_5_5_MODELS.has(m) ? "opus-5.5" : /^(claude-)?fable/.test(m) ? "fable-5.1" : "andere";
   if (ledger !== null) return { cls: of(ledger), source: "ledger" };
   const named = transcript.filter((m) => m.startsWith("claude-"));
   return named.length === 1 ? { cls: of(named[0]!), source: "transcript" } : { cls: null, source: null };

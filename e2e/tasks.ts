@@ -12,6 +12,7 @@ import { briefReviewArm } from "../refine-validate";
 import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY, CARD_VALIDATOR_VERSION } from "../card-extract";
 import { renderWaveBrief, renderCardHead, renderRowComments, CARD_HEAD_MAX_BYTES, ROW_COMMENTS_MAX_BYTES, BRIEF_REVIEW_MARK } from "../wave-brief";
 import { LOCAL_PROOF_STEPS } from "../verify-proportion";
+import { classify as laneModelClass } from "../lane-context-cost";
 import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, SURFACE_RESOLVER, topLevelDeclarations,
   type SymbolIndex, type TaskCluster } from "../task-metadata";
 import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict,
@@ -8749,6 +8750,36 @@ export async function run(ctx: Ctx): Promise<void> {
       && roleOf({ harness: "x", model: "a b", effort: "y" }).valid === true
       && validateCard({ ...clean, done: "", rolle: { harness: "x", model: "a b", effort: "y" } }, roleCtx).valid === false,
       JSON.stringify(roles.unresolvable));
+    // Opus 5.5 is its own model (row "ZWEI STELLEN KENNEN DAS NEUE MODELL NICHT", 2026-09-23): its
+    // spellings resolve to claude-opus-5-5[1m] — including a lone "ROLLE: Opus 5.5", which the parser
+    // files in the harness slot — while "opus"/"Opus 5" keep naming Opus 5, never silently upgraded.
+    // The adopted spawn is this rolle (server.ts#adoptSpawnFromCard), so the model here IS spawn.model.
+    const roleLine = (line: string) => {
+      const text = ["[OPUS-5.5-PROBE]", `ROLLE: ${line}`, "GROESSE: klein", "FLAECHE: server.ts", "VERIFY: bun e2e/pins.ts", "DONE: x", "BAU: y"].join("\n");
+      const raw = parseFormattedCard(text);
+      return raw ? validateCard(raw, { ...roleCtx, sourceText: text }).body.rolle.model : `unparsed: ${line}`;
+    };
+    const opus55 = {
+      line: roleLine("Opus 5.5"), triple: roleLine("claude/opus 5.5/high"),
+      lower: roleOf({ harness: "claude", model: "opus 5.5", effort: "high" }).body.rolle.model,
+      claude: roleOf({ harness: "claude", model: "claude opus 5.5", effort: "high" }).body.rolle.model,
+      opus: roleLine("claude/opus/high"), opus5Line: roleLine("Opus 5"),
+      opus5: roleOf({ harness: "claude", model: "Opus 5", effort: "high" }).body.rolle.model,
+      bareWordStaysGap: roleLine("pi-zai-gibt-es-nicht"),
+    };
+    check("(v5) card rolle: \"ROLLE: Opus 5.5\", \"opus 5.5\" and \"claude opus 5.5\" name claude-opus-5-5[1m]; \"opus\" and \"Opus 5\" still name claude-opus-5[1m]",
+      [opus55.line, opus55.triple, opus55.lower, opus55.claude].every((m) => m === "claude-opus-5-5[1m]")
+      && [opus55.opus, opus55.opus5Line, opus55.opus5].every((m) => m === "claude-opus-5[1m]")
+      && opus55.bareWordStaysGap === null,
+      JSON.stringify(opus55));
+    // …and the lane-cost measurement counts it as its own class: not "andere", not inside the Opus-5 medians
+    const cls = (m: string) => laneModelClass(m, []).cls;
+    const classes = { bracket: cls("claude-opus-5-5[1m]"), bare: cls("claude-opus-5-5"), opus5: cls("claude-opus-5[1m]"),
+      transcript: laneModelClass(null, ["claude-opus-5-5"]).cls, fable: cls("claude-fable-5-1[1m]"), other: cls("claude-sonnet-5") };
+    check("lane-context-cost: claude-opus-5-5[1m] and claude-opus-5-5 classify as \"opus-5.5\", Opus 5 stays \"opus-5\"",
+      classes.bracket === "opus-5.5" && classes.bare === "opus-5.5" && classes.transcript === "opus-5.5"
+      && classes.opus5 === "opus-5" && classes.fable === "fable-5.1" && classes.other === "andere",
+      JSON.stringify(classes));
     check("(j2) card: an unreadable answer is null, not a throw and not a half-card",
       parseCardAnswer("this is not JSON at all") === null
       && parseCardAnswer('{"other": {"ziel": "x"}}') === null

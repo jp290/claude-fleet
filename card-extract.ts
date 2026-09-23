@@ -154,6 +154,7 @@ export function cardAnswerForLedger(answer: string): { answer: string; answerByt
 // that are NOT already an id: `claude-opus-5` stays what it says, it is a real id.
 const MODEL_ALIASES: Readonly<Record<string, string>> = {
   "opus": "claude-opus-5[1m]", "opus 5": "claude-opus-5[1m]", "claude opus 5": "claude-opus-5[1m]",
+  "opus 5.5": "claude-opus-5-5[1m]", "claude opus 5.5": "claude-opus-5-5[1m]",
   "sonnet": "claude-sonnet-5", "sonnet 5": "claude-sonnet-5", "claude sonnet 5": "claude-sonnet-5",
   "fable": "claude-fable-5-1[1m]", "fable 5.1": "claude-fable-5-1[1m]", "claude fable 5.1": "claude-fable-5-1[1m]",
   "astra": "gpt-6-astra", "gpt-6 astra": "gpt-6-astra",
@@ -263,12 +264,16 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
     !v ? null : known(v) ? v : known(v.toLowerCase()) ? v.toLowerCase() : null;
   const harnessId = lower(ctx.harnessKnown);
   const effortId = lower(ctx.effortKnown);
+  const modelAlias = (v: string): string | undefined => MODEL_ALIASES[v.toLowerCase().replace(/\s+/g, " ")];
   const modelId = (v: string): string | null =>
-    !v ? null : MODEL_ALIASES[v.toLowerCase().replace(/\s+/g, " ")] ?? (ctx.modelKnown(v) ? v : null);
+    !v ? null : modelAlias(v) ?? (ctx.modelKnown(v) ? v : null);
   // "M2-Art-Director, claude" → "claude": a role NAME before the harness is cut, the last word counts
   const lastWord = (v: string): string => v.split(/[\s,;:()]+/).filter(Boolean).pop() ?? "";
   let harness = roleText("harness"), model = roleText("model"), effort = roleText("effort");
   if (!harness && harnessId(model)) { harness = model; model = ""; }
+  // "ROLLE: Opus 5.5" — the parser puts a lone value in the harness slot; only a named ALIAS moves,
+  // a bare word that merely fits MODEL_RE stays a harness gap
+  if (!model && !harnessId(lastWord(harness)) && modelAlias(harness)) { model = harness; harness = ""; }
   // the whole triple in one field ("claude/claude-opus-5[1m]/high", possibly behind a role name):
   // it fills the fields that do not already resolve on their own
   const triple = [harness, model].flatMap((v) => v.split(/[\s,;]+/)).map((token) => token.split("/"))

@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Datei-Explorer Entwurf</title>
+<!--
+  Statisches Mockup zur Owner-Wahl, kein Produktcode. Notiz: docs/messungen/2026-09-22-datei-explorer-entwurf.md.
+  Material ausschliesslich aus docs/design/grammatik.md: die --chat-*-Tokens und --r1..--r3, --t,
+  Zustandsfarben nur als Signal (G0.2). Werte hier von public/index.html abgeschrieben, nicht neu erfunden.
+  Ein Rahmen pro Bild: ?f=a · a-datei · a-menue · a-schreiben · b · dnd. Ohne ?f stehen alle untereinander.
+  Der Baum ist eine Fixture (Pfade aus diesem Repo, Zaehler 969 = git ls-files dieses Baums; die
+  3 geaenderten und 1 ungetrackte Datei sind erfunden, damit die Markierungen sichtbar werden).
+-->
+<style>
+  :root {
+    --chat-fs: 14px; --chat-code-fs: 12.5px; --chat-ui-fs: 11px;
+    --chat-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    --chat-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --chat-ink: #e7e7ea; --chat-prose: #d4d4d8; --chat-mute: #8b8b94; --chat-faint: #5c5c66;
+    --chat-surface: #111113; --chat-raised: #17171a; --chat-edge: #26262b; --chat-edge-soft: #1b1b1f;
+    --chat-void: #000;
+    --c-hover: #202024; --c-edge-hi: #4a4a52;
+    --r1: 6px; --r2: 10px; --r3: 18px;
+    --amber: #e0af68; --add: #9ece6a; --del: #f7768e; --danger: #f85149;
+    --q-live: #3fb950; --q-wait: #cc9a6b;
+    --t: 160ms cubic-bezier(0.2, 0.7, 0.2, 1);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--chat-void); color: var(--chat-ink);
+    font: 400 var(--chat-fs)/1.45 var(--chat-sans); }
+  button { font: inherit; color: inherit; }
+  svg.i { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8;
+    stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  .mono { font-family: var(--chat-mono); }
+
+  /* ---------- overview page (no ?f) ---------- */
+  .ov { max-width: 1240px; margin: 0 auto; padding: 24px 16px 64px; }
+  .ov h1 { font-size: 20px; font-weight: 500; margin: 0 0 4px; }
+  .ov > p { color: var(--chat-mute); margin: 0 0 20px; max-width: 72ch; }
+  .cap { margin: 32px 0 8px; }
+  .cap h2 { font-size: 15px; font-weight: 500; margin: 0; }
+  .cap p { margin: 2px 0 0; color: var(--chat-mute); font-size: 13px; max-width: 80ch; }
+  .stage { position: relative; height: 720px; border: 1px solid var(--chat-edge-soft);
+    border-radius: var(--r2); overflow: hidden; background: var(--chat-void); }
+  body.frame .ov > h1, body.frame .ov > p, body.frame .cap { display: none; }
+  body.frame .ov { max-width: none; padding: 0; }
+  body.frame .stage { display: none; height: 100vh; border: 0; border-radius: 0; }
+  body.frame .stage.show { display: block; }
+  /* the D&D sheet is a page, not a window: it grows with its content so one full-page shot holds it */
+  body.frame .stage[data-f="dnd"], .stage[data-f="dnd"] { height: auto; }
+  .stage[data-f="dnd"] .dnd { position: static; }
+
+  /* the board behind the window, dimmed — only so the window reads as a window */
+  .behind { position: absolute; inset: 0; display: grid; grid-template-columns: 250px 1fr 300px;
+    opacity: .35; }
+  .behind > div { border-right: 1px solid var(--chat-edge-soft); }
+  .scrim { position: absolute; inset: 0; background: color-mix(in srgb, var(--chat-void) 55%, transparent); }
+
+  /* ---------- the window (G6.3: openShell, chat material) ---------- */
+  .win { position: absolute; inset: 16px; display: flex; flex-direction: column;
+    background: var(--chat-surface); border: 1px solid var(--chat-edge); border-radius: var(--r2);
+    overflow: hidden; }
+  .whead { display: flex; align-items: center; gap: 10px; padding: 10px 12px 8px 14px; }
+  .whead .back { display: none; }
+  .wtitle { flex: 1; min-width: 0; }
+  .wtitle h2 { margin: 0; font-size: 14px; font-weight: 500; }
+  .wsub { font-size: var(--chat-ui-fs); color: var(--chat-mute); white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .wsub .mono { color: var(--chat-prose); }
+  .ib { width: 26px; height: 26px; display: inline-grid; place-items: center; border-radius: var(--r1);
+    background: var(--chat-raised); border: 1px solid var(--chat-edge); color: var(--chat-mute); padding: 0; }
+  .ib:hover { color: var(--chat-ink); }
+
+  .wtools { display: flex; align-items: center; gap: 8px; padding: 0 12px 10px 14px; flex-wrap: nowrap;
+    border-bottom: 1px solid var(--chat-edge-soft); }
+  .search { flex: 0 1 340px; display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px;
+    background: var(--chat-void); border: 1px solid var(--chat-edge); border-radius: var(--r1);
+    color: var(--chat-faint); font-size: 12px; min-width: 0; }
+  .search span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .seg { display: inline-flex; gap: 2px; }
+  .seg button { border: 0; background: none; color: var(--chat-mute); font-size: 12px; font-weight: 500;
+    height: 26px; padding: 0 9px; border-radius: var(--r1); white-space: nowrap; }
+  .seg button.on { background: var(--c-hover); box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-ink); }
+  .seg .n { color: var(--chat-faint); margin-left: 4px; font-weight: 400; }
+  .tog { height: 26px; padding: 0 9px; border-radius: var(--r1); font-size: 12px; font-weight: 500;
+    background: var(--chat-surface); border: 1px solid var(--chat-mute); color: var(--chat-ink); white-space: nowrap; }
+  .grow { flex: 1; }
+  .wb { height: 26px; padding: 0 10px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
+    background: none; color: var(--chat-prose); font-size: 12px; font-weight: 500; display: inline-flex;
+    align-items: center; gap: 5px; white-space: nowrap; }
+  .wb:hover { background: var(--c-hover); border-color: var(--c-edge-hi); }
+  .wb.primary { background: var(--chat-ink); color: var(--chat-void); border-color: var(--chat-ink); }
+  .wb.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--chat-edge)); }
+
+  .wbody { flex: 1; display: flex; min-height: 0; }
+  .tree { flex: none; width: 300px; overflow: auto; border-right: 1px solid var(--chat-edge-soft);
+    padding: 6px 0; }
+  .row { display: flex; align-items: center; gap: 6px; height: 26px; padding-right: 8px; font-size: 13px;
+    color: var(--chat-prose); position: relative; white-space: nowrap; }
+  .row .tw { width: 14px; color: var(--chat-faint); display: inline-grid; place-items: center; }
+  .row .tw svg { width: 12px; height: 12px; }
+  .row .tw.shut svg { transform: rotate(-90deg); }
+  .row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .row .ct { color: var(--chat-faint); font-size: var(--chat-ui-fs); font-variant-numeric: tabular-nums; }
+  .row.dir .nm { color: var(--chat-ink); }
+  .row.hov { background: var(--c-hover); }
+  .row.picked { background: var(--c-hover); box-shadow: inset 2px 0 0 var(--chat-ink); color: var(--chat-ink); }
+  .row .more { display: none; color: var(--chat-mute); }
+  .row.hov .more, .row.picked .more { display: inline-grid; }
+  .row.untr .nm { color: var(--chat-mute); font-style: italic; }
+  .row.drop { background: color-mix(in srgb, var(--chat-ink) 8%, var(--chat-surface));
+    box-shadow: inset 0 0 0 1px var(--chat-mute); }
+  .st { flex: none; width: 16px; height: 16px; display: inline-grid; place-items: center; border-radius: 4px;
+    font: 700 9.5px/1 var(--chat-mono); }
+  .st.mod { color: var(--amber); background: color-mix(in srgb, var(--amber) 14%, var(--chat-void)); }
+  .st.new { color: var(--chat-mute); background: var(--chat-raised); }
+  .st.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); margin: 0 5px; }
+
+  .detail { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .fhead { padding: 10px 16px 8px; border-bottom: 1px solid var(--chat-edge-soft); }
+  .fhead1 { display: flex; align-items: center; gap: 8px; }
+  .crumb { flex: 1; min-width: 0; font: 500 13px var(--chat-mono); color: var(--chat-mute); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .crumb b { color: var(--chat-ink); font-weight: 500; }
+  .fmeta { font-size: var(--chat-ui-fs); color: var(--chat-mute); margin-top: 4px; display: flex; gap: 12px;
+    align-items: center; flex-wrap: wrap; }
+  .fmeta .seg button { height: 22px; font-size: 11.5px; }
+  .code { flex: 1; overflow: auto; font: var(--chat-code-fs)/1.55 var(--chat-mono); padding: 8px 0 24px; }
+  .ln { display: flex; white-space: pre; }
+  .ln i { font-style: normal; flex: none; width: 48px; padding-right: 12px; text-align: right;
+    color: var(--chat-faint); user-select: none; border-right: 2px solid transparent; margin-right: 12px; }
+  .ln.chg i { border-right-color: var(--amber); color: var(--chat-mute); }
+  .ln span { color: var(--chat-prose); }
+  .ln .c { color: var(--chat-faint); }
+  .ln .k { color: var(--chat-ink); }
+
+  .wfoot { display: flex; align-items: center; gap: 14px; padding: 7px 14px; border-top: 1px solid var(--chat-edge-soft);
+    font-size: var(--chat-ui-fs); color: var(--chat-mute); white-space: nowrap; overflow: hidden; }
+  .live { width: 7px; height: 7px; border-radius: 50%; background: var(--q-live); display: inline-block;
+    margin-right: 6px; vertical-align: 1px; }
+  .keys { margin-left: auto; color: var(--chat-faint); }
+  .tabnum { font-variant-numeric: tabular-nums; }
+
+  /* ---------- popover (G4.1) and dialog (G4.5) ---------- */
+  .pop { position: absolute; z-index: 5; min-width: 220px; padding: 4px; background: var(--chat-raised);
+    border: 1px solid var(--chat-edge); border-radius: var(--r2);
+    box-shadow: 0 12px 32px color-mix(in srgb, var(--chat-void) 70%, transparent); }
+  .pop .pi { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; border-radius: var(--r1);
+    font-size: 13px; color: var(--chat-prose); }
+  .pop .pi.cur { background: var(--c-hover); color: var(--chat-ink); }
+  .pop .pi .kb { margin-left: auto; color: var(--chat-faint); font: 11px var(--chat-mono); }
+  .pop .sep { height: 1px; background: var(--chat-edge-soft); margin: 4px 6px; }
+  .pop .pi.danger { color: var(--danger); }
+  .pop .ph { font-size: var(--chat-ui-fs); color: var(--chat-faint); padding: 6px 10px 2px; }
+
+  .dlgback { position: absolute; inset: 0; z-index: 6; background: color-mix(in srgb, var(--chat-void) 60%, transparent);
+    display: grid; place-items: center; padding: 16px; }
+  .dlg { width: min(520px, 100%); background: var(--chat-raised); border: 1px solid var(--chat-edge);
+    border-radius: var(--r2); padding: 16px; box-shadow: 0 16px 40px color-mix(in srgb, var(--chat-void) 70%, transparent); }
+  .dlg h3 { margin: 0 0 10px; font-size: 14px; font-weight: 500; }
+  .field { display: flex; align-items: center; height: 32px; padding: 0 10px; border-radius: var(--r1);
+    background: var(--chat-void); border: 1px solid var(--chat-mute); font: 13px var(--chat-mono); color: var(--chat-ink); }
+  .field .fx { color: var(--chat-faint); }
+  .warn { margin: 12px 0 0; padding: 9px 11px; border-radius: var(--r2); font-size: 12.5px; line-height: 1.45;
+    background: color-mix(in srgb, var(--amber) 11%, var(--chat-void));
+    border: 1px solid color-mix(in srgb, var(--amber) 30%, var(--chat-edge-soft)); color: var(--chat-ink); }
+  .facts { margin: 12px 0 0; padding: 0; list-style: none; font-size: 12.5px; color: var(--chat-prose); }
+  .facts li { display: flex; gap: 8px; padding: 3px 0; }
+  .facts li > b { flex: none; width: 88px; font-weight: 500; color: var(--chat-mute); }
+  .facts code { font: var(--chat-code-fs) var(--chat-mono); color: var(--chat-ink); }
+  .dbtns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  .dbtns .wb { height: 30px; padding: 0 14px; }
+
+  /* the drag ghost (a) */
+  .ghost { position: absolute; z-index: 4; display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
+    border-radius: var(--r1); background: var(--chat-raised); border: 1px dashed var(--chat-mute);
+    font-size: 13px; color: var(--chat-ink); box-shadow: 0 8px 20px color-mix(in srgb, var(--chat-void) 70%, transparent); }
+
+  /* ---------- variant B: columns ---------- */
+  .cols { flex: none; height: 38%; display: flex; overflow-x: auto; border-bottom: 1px solid var(--chat-edge-soft); }
+  .col { flex: none; width: 250px; overflow: auto; border-right: 1px solid var(--chat-edge-soft); padding: 6px 0; }
+  .col .row { padding-left: 10px; }
+  .col .row .go { color: var(--chat-faint); }
+  .col .row .go svg { width: 12px; height: 12px; transform: rotate(-90deg); }
+  .colhint { flex: 1; min-width: 200px; padding: 14px; font-size: 12.5px; color: var(--chat-faint); }
+
+  /* ---------- the drag & drop sheet ---------- */
+  .dnd { position: absolute; inset: 0; overflow: auto; padding: 20px 20px 28px; }
+  .dnd h2 { margin: 0 0 4px; font-size: 16px; font-weight: 500; }
+  .dnd > p { margin: 0 0 16px; color: var(--chat-mute); font-size: 13px; max-width: 90ch; }
+  .dgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .dcard { background: var(--chat-surface); border: 1px solid var(--chat-edge); border-radius: var(--r2);
+    padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .dcard h3 { margin: 0; font-size: 14px; font-weight: 500; }
+  .dcard .sub { font-size: 12px; color: var(--chat-mute); margin-top: -6px; }
+  .sk { position: relative; height: 150px; border-radius: var(--r1); background: var(--chat-void);
+    border: 1px solid var(--chat-edge-soft); overflow: hidden; }
+  .sk .row { height: 24px; font-size: 12px; }
+  .sk .arrow { position: absolute; stroke: var(--chat-mute); fill: none; stroke-width: 1.4; stroke-dasharray: 4 3; }
+  .sk .lbl { position: absolute; font-size: 11px; color: var(--chat-mute); }
+  .comp { position: absolute; left: 12px; right: 12px; bottom: 10px; height: 48px; border-radius: 14px;
+    border: 1px solid var(--chat-edge); background: var(--chat-surface); padding: 8px 12px; font-size: 12px;
+    color: var(--chat-prose); }
+  .comp .tok { font-family: var(--chat-mono); font-size: 11.5px; background: var(--chat-raised); border: 1px solid var(--chat-edge);
+    border-radius: 4px; padding: 0 4px; color: var(--chat-ink); }
+  .desk { position: absolute; display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; color: var(--chat-mute); }
+  .desk svg { width: 30px; height: 30px; }
+  .dl { margin: 0; font-size: 12.5px; color: var(--chat-prose); }
+  .dl dt { font-weight: 500; color: var(--chat-mute); font-size: 11.5px; margin-top: 6px; }
+  .dl dd { margin: 1px 0 0; }
+  .verdict { align-self: flex-start; font-size: 11.5px; font-weight: 500; padding: 3px 8px; border-radius: var(--r1);
+    border: 1px solid var(--chat-edge); color: var(--chat-mute); }
+  .verdict.yes { color: var(--chat-ink); border-color: var(--chat-mute); }
+  .rec { margin-top: 16px; padding: 12px 14px; border-radius: var(--r2); border: 1px solid var(--chat-edge);
+    background: var(--chat-surface); font-size: 13px; max-width: 110ch; }
+  .rec b { font-weight: 500; }
+
+  /* ---------- mobile (G0.7: MOBILE_MQ; window full-bleed, list→detail push) ---------- */
+  @media (max-width: 700px) {
+    .behind, .scrim { display: none; }
+    .win { inset: 0; border: 0; border-radius: 0; }
+    .whead { padding: 10px 10px 8px 12px; }
+    .ib { width: 40px; height: 40px; }
+    .wtools { flex-wrap: wrap; row-gap: 8px; padding: 0 10px 10px 12px; }
+    .search { flex: 1 1 100%; height: 40px; font-size: 16px; }
+    .wtools .hide-m { display: none; }
+    .seg { overflow-x: auto; }
+    .seg button, .tog, .wb { height: 36px; }
+    .tree { width: 100%; border-right: 0; }
+    .row { height: 40px; font-size: 15px; }
+    .row .more { display: inline-grid; }
+    .detail { display: none; }
+    .win.detailmode .tree, .win.detailmode .wtools { display: none; }
+    .win.detailmode .detail { display: flex; }
+    .win.detailmode .whead .back { display: inline-grid; }
+    .fhead1 { flex-wrap: wrap; row-gap: 8px; }
+    .fhead1 .crumb { flex: 1 1 100%; }
+    .fhead1 .wb { height: 40px; }
+    .code { font-size: 12px; }
+    .ln i { width: 34px; padding-right: 8px; margin-right: 8px; }
+    .keys { display: none; }
+    .cols { display: none; }
+    .win.b .tree { display: block; }
+    .dgrid { grid-template-columns: 1fr; }
+    .dnd { padding: 16px; }
+    .dlg { padding: 14px; }
+    .facts li { display: block; }
+    .facts li > b { display: block; width: auto; }
+    .facts code, .field { word-break: break-all; }
+    .pop { left: 8px !important; right: 8px; top: auto !important; bottom: 8px; }
+  }
+  @media (min-width: 701px) { .win.b .tree { display: none; } .win.b .detail { display: flex; } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M7 7l10 10"/><path d="M17 7L7 17"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h3.2l1.8 2H19a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M13.5 3v5.5H19"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><path d="M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M4 16l4.5-4.5 4 4 2.5-2.5 5 5"/><path d="M15.5 9.5h.01"/></symbol>
+  <symbol id="i-reload" viewBox="0 0 24 24"><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 4v4h-4"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></symbol>
+  <symbol id="i-dots" viewBox="0 0 24 24"><path d="M6 12h.01"/><path d="M12 12h.01"/><path d="M18 12h.01"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><path d="M10.5 17a6.5 6.5 0 1 0 0-13a6.5 6.5 0 1 0 0 13z"/><path d="M20 20l-4.8-4.8"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><path d="M9 9h10v11H9z"/><path d="M5 15V4h10"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V6"/><path d="M6 11l6-6 6 6"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M14 6l-6 6 6 6"/></symbol>
+</svg>
+
+<div class="ov">
+<h1>Datei-Explorer: Entwurf</h1>
+<p>Zwei Anordnungen (A Werkbank, B Spalten) und die drei Bedeutungen von Drag &amp; Drop. Die
+  Begründung, der heutige Funktionsumfang und die Bauzeilen stehen in
+  <span class="mono">docs/messungen/2026-09-22-datei-explorer-entwurf.md</span>. Statisch: kein Knopf
+  hier tut etwas. Ein einzelner Rahmen: <span class="mono">?f=a</span>, <span class="mono">a-datei</span>,
+  <span class="mono">a-menue</span>, <span class="mono">a-schreiben</span>, <span class="mono">b</span>,
+  <span class="mono">dnd</span>.</p>
+
+<!-- ======================= A — Werkbank ======================= -->
+<div class="cap"><h2>A · Werkbank: Baum links, Datei rechts, Handlungen am Dateikopf</h2>
+  <p>Fenster fast bildschirmfüllend wie die Queue. Suche über Pfade ODER Inhalte, Filter „Changed",
+  ungetrackte Dateien gedimmt mit „?". Handlungen dort, wo die Datei steht; die Fußzeile sagt, ob die
+  Session gerade arbeitet.</p></div>
+<div class="stage" data-f="a">
+  <div class="behind"><div></div><div></div><div></div></div><div class="scrim"></div>
+  <div class="win">
+    <!-- WINDOW:A -->
+  </div>
+</div>
+
+<div class="cap"><h2>A · Datei geöffnet (Handy)</h2>
+  <p>Am Handy schiebt sich die Datei über die Liste (heute schon so in <span class="mono">openShell</span>);
+  die Handlungen brechen in eine eigene Zeile um, Trefferflächen 40 px.</p></div>
+<div class="stage" data-f="a-datei">
+  <div class="behind"><div></div><div></div><div></div></div><div class="scrim"></div>
+  <div class="win detailmode">
+    <!-- WINDOW:A -->
+  </div>
+</div>
+
+<div class="cap"><h2>A · Kontextmenü an einer Zeile</h2>
+  <p>⋯ an der Zeile (oder Rechtsklick) öffnet ein G4.2-Menü: erst die harmlosen Handlungen, die
+  schreibenden darunter, Löschen zuletzt und rot. „New ▾" in der Werkzeugleiste legt an.</p></div>
+<div class="stage" data-f="a-menue">
+  <div class="behind"><div></div><div></div><div></div></div><div class="scrim"></div>
+  <div class="win">
+    <!-- WINDOW:A -->
+    <div class="pop" style="left: 262px; top: 283px;">
+      <div class="pi cur">Mention in prompt<span class="kb">⏎ ⌥</span></div>
+      <div class="pi">Copy path<span class="kb">⌘ C</span></div>
+      <div class="pi">Show what changed</div>
+      <div class="sep"></div>
+      <div class="ph">schreibt in das Arbeitsverzeichnis von Session 7</div>
+      <div class="pi">Rename…<span class="kb">F2</span></div>
+      <div class="pi">Move to…</div>
+      <div class="sep"></div>
+      <div class="pi danger">Delete…</div>
+    </div>
+  </div>
+</div>
+
+<div class="cap"><h2>A · Eine Schreib-Operation: Verschieben (per Ziehen oder „Move to…")</h2>
+  <p>Jede Schreib-Operation geht durch denselben Dialog (G4.5). Arbeitet die Session gerade, steht
+  oben derselbe Hinweis, den „✎ edit this file" heute trägt. Darunter: was genau passiert, was
+  danach in der Lane liegt, und was die Operation NICHT mitzieht.</p></div>
+<div class="stage" data-f="a-schreiben">
+  <div class="behind"><div></div><div></div><div></div></div><div class="scrim"></div>
+  <div class="win">
+    <!-- WINDOW:A -->
+    <div class="dlgback">
+      <div class="dlg" role="dialog" aria-label="Move file">
+        <h3>Move <span class="mono">src/filetree.ts</span></h3>
+        <div class="field"><span class="fx">src/</span>tree/filetree.ts</div>
+        <div class="warn">this session is working right now — it may write this same file while you
+          decide, and a move it does not know about makes its next edit land on the old path or fail.</div>
+        <ul class="facts">
+          <li><b>Runs</b><code>git mv src/filetree.ts src/tree/filetree.ts</code></li>
+          <li><b>Where</b><code>~/claude-fleet.worktrees/…-7916</code> (Session 7, lane)</li>
+          <li><b>Afterwards</b>1 staged rename in this lane. It lands only with a commit.</li>
+          <li><b>Not moved</b>2 files import this path: <code>src/client.ts</code>, <code>e2e/explorer.ts</code></li>
+        </ul>
+        <div class="dbtns"><button class="wb">Cancel</button><button class="wb primary">Move</button></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= B — Spalten ======================= -->
+<div class="cap"><h2>B · Spalten: Ordner als Spalten oben, Datei in voller Breite darunter</h2>
+  <p>Wie der Finder in Spaltenansicht. Tiefe Pfade sind nebeneinander statt eingerückt; die Datei
+  bekommt die ganze Breite. Kostet Höhe: bei 900 px bleiben der Datei gut 500 px.</p></div>
+<div class="stage" data-f="b">
+  <div class="behind"><div></div><div></div><div></div></div><div class="scrim"></div>
+  <div class="win b">
+    <!-- WINDOW:B -->
+  </div>
+</div>
+
+<!-- ======================= Drag & Drop ======================= -->
+<div class="cap"><h2>Drag &amp; Drop: drei Bedeutungen</h2>
+  <p>Je eine Skizze, ein Satz Kosten, ein Satz Risiko. Empfehlung unten.</p></div>
+<div class="stage" data-f="dnd">
+  <div class="dnd">
+    <h2>Was heißt „eine Datei ziehen"?</h2>
+    <p>Heute gibt es genau eine Richtung: Dateien vom Schreibtisch auf die Pane werden zur Session
+      hochgeladen (<span class="mono">uploadDrops</span> → <span class="mono">drops/</span>, nur wenn das
+      Repo <span class="mono">drops/</span> ignoriert). Drei neue Bedeutungen stehen zur Wahl:</p>
+    <div class="dgrid">
+      <div class="dcard">
+        <h3>(a) Im Baum verschieben</h3>
+        <div class="sub">Zeile auf einen Ordner ziehen → <span class="mono">git mv</span></div>
+        <div class="sk">
+          <div class="row dir" style="padding-left:10px;margin-top:8px"><span class="tw"><svg class="i"><use href="#i-chev"/></svg></span><span class="nm">src</span></div>
+          <div class="row dir drop" style="padding-left:24px"><span class="tw shut"><svg class="i"><use href="#i-chev"/></svg></span><span class="nm">tree</span><span class="ct" style="color:var(--chat-mute)">hier ablegen</span></div>
+          <div class="row" style="padding-left:38px"><span class="nm">client.ts</span></div>
+          <div class="row" style="padding-left:38px;opacity:.4"><span class="nm">filetree.ts</span></div>
+          <div class="ghost" style="left:120px;top:44px;height:24px;font-size:12px"><svg class="i"><use href="#i-file"/></svg>filetree.ts</div>
+          <div class="lbl" style="left:14px;bottom:8px">→ öffnet den Move-Dialog, nie sofort</div>
+        </div>
+        <dl class="dl">
+          <dt>Kosten</dt><dd>Neue Route mit derselben Eindämmung wie <span class="mono">/api/file/write</span>, der Dialog aus Bild „a-schreiben", Zieh-Logik im Baum: mittel.</dd>
+          <dt>Risiko</dt><dd>Schreibt ins Arbeitsverzeichnis einer vielleicht laufenden Session: ihre nächste Änderung trifft den alten Pfad, Importe bleiben stehen, die Lane trägt einen unkommittierten Umzug.</dd>
+        </dl>
+        <span class="verdict">zweiter Schritt, nur mit Dialog + Hinweis</span>
+      </div>
+      <div class="dcard">
+        <h3>(b) In den Composer ziehen</h3>
+        <div class="sub">Zeile auf das Eingabefeld → Pfad im Prompt</div>
+        <div class="sk">
+          <div class="row dir" style="padding-left:10px;margin-top:8px"><span class="tw"><svg class="i"><use href="#i-chev"/></svg></span><span class="nm">src</span></div>
+          <div class="row picked" style="padding-left:24px"><span class="nm">filetree.ts</span></div>
+          <svg class="arrow" style="left:120px;top:44px" width="80" height="50"><path d="M4 4 C 50 4, 60 30, 70 44"/></svg>
+          <div class="comp">schau dir <span class="tok">src/filetree.ts</span> an und …</div>
+        </div>
+        <dl class="dl">
+          <dt>Kosten</dt><dd>Nur Client: die Zeile wird ziehbar, <span class="mono">#main</span> nimmt neben „Files" auch einen Pfad an und fügt ihn als Text ein. Kein Server, keine Route: klein.</dd>
+          <dt>Risiko</dt><dd>Keine Schreib-Operation. Einzige Falle: den Pfad NICHT als <span class="mono">@</span>-Erwähnung einfügen, das öffnet im CLI die Vervollständigung und schluckt das Enter (gemessen, <span class="mono">server.ts#dropMention</span>).</dd>
+        </dl>
+        <span class="verdict yes">empfohlen zuerst</span>
+      </div>
+      <div class="dcard">
+        <h3>(c) Vom Schreibtisch in einen Ordner</h3>
+        <div class="sub">Datei aus dem Finder auf einen Repo-Ordner → dort ablegen</div>
+        <div class="sk">
+          <div class="desk" style="left:18px;top:18px"><svg class="i"><use href="#i-image"/></svg>skizze.png</div>
+          <svg class="arrow" style="left:60px;top:30px" width="110" height="60"><path d="M4 10 C 50 0, 80 20, 100 52"/></svg>
+          <div class="row dir" style="padding-left:130px;margin-top:70px"><span class="tw"><svg class="i"><use href="#i-chev"/></svg></span><span class="nm">docs</span></div>
+          <div class="row dir drop" style="padding-left:144px"><span class="tw shut"><svg class="i"><use href="#i-chev"/></svg></span><span class="nm">design</span></div>
+        </div>
+        <dl class="dl">
+          <dt>Kosten</dt><dd>Zweite Upload-Route mit frei gewähltem Ziel, Überschreib-Schutz bei gleichem Namen, Dialog: mittel.</dd>
+          <dt>Risiko</dt><dd>Das Ergebnis ist eine ungetrackte Datei in einem nicht ignorierten Ordner, genau der Fall, den die Upload-Route heute mit 409 ablehnt, weil er das Land blockiert.</dd>
+        </dl>
+        <span class="verdict">nicht bauen, bis der Owner es will</span>
+      </div>
+    </div>
+    <div class="rec"><b>Empfehlung.</b> (b) zuerst: der Gewinn ist täglich (Pfad in einen Prompt,
+      ohne Tippen) und es schreibt nichts. (a) danach, aber nur als Auslöser des Move-Dialogs, nie als
+      sofortiges <span class="mono">git mv</span>. (c) nicht, solange die Land-Regel „keine ungetrackten
+      Dateien" gilt; wer eine Datei ins Repo legen will, legt sie der Session hin (heute schon) und
+      lässt sie committen.</div>
+  </div>
+</div>
+</div>
+
+<template id="win-a">
+    <div class="whead">
+      <button class="ib back" title="Zurück zur Liste"><svg class="i"><use href="#i-back"/></svg></button>
+      <div class="wtitle"><h2>Files</h2>
+        <div class="wsub"><span class="mono">claude-fleet</span> · <span class="mono">fleet/260923213514-7916</span> · <span class="tabnum">969 tracked · 3 changed · 1 untracked</span></div></div>
+      <button class="ib" title="Baum neu lesen"><svg class="i"><use href="#i-reload"/></svg></button>
+      <button class="ib" title="Schließen (Esc)"><svg class="i"><use href="#i-x"/></svg></button>
+    </div>
+    <div class="wtools">
+      <div class="search"><svg class="i"><use href="#i-search"/></svg><span>search paths — e.g. e2e/pins</span></div>
+      <div class="seg" role="group"><button class="on" aria-pressed="true">Paths</button><button aria-pressed="false">Contents</button></div>
+      <div class="seg" role="group"><button class="on">All<span class="n">970</span></button><button>Changed<span class="n">4</span></button></div>
+      <button class="tog hide-m" aria-pressed="true" title="Ungetrackte Dateien zeigen (gitignorte nie)">Untracked</button>
+      <span class="grow hide-m"></span>
+      <button class="wb hide-m"><svg class="i"><use href="#i-plus"/></svg>New<svg class="i" style="width:12px;height:12px"><use href="#i-chev"/></svg></button>
+    </div>
+    <div class="wbody">
+      <div class="tree">
+        <div class="row dir" style="padding-left:10px"><span class="tw shut"><svg class="i"><use href="#i-chev"/></svg></span><span class="nm">.claude</span><span class="ct">14</span></div>
+        <div class="row dir" style="padding-left:10px"><span class="tw shut"><svg class="i"><use href="#i-chev"/></svg></span><span class="nm">docs</span><span class="ct">412</span></div>
+        <div class="row dir" style="padding-left:10px"><span class="tw shut"><svg class="i"><use href="#i-chev"/></svg></span><span class="nm">e2e</span><span class="st dot" title="enthält Änderungen"></span><span class="ct">61</span></div>
+        <div class="row dir" style="padding-left:10px"><span class="tw shut"><svg class="i"><use href="#i-chev"/></svg></span><span class="nm">public</span><span class="ct">9</span></div>
+        <div class="row dir" style="padding-left:10px"><span class="tw shut"><svg class="i"><use href="#i-chev"/></svg></span><span class="nm">server</span><span class="ct">23</span></div>
+        <div class="row dir" style="padding-left:10px"><span class="tw"><svg class="i"><use href="#i-chev"/></svg></span><span class="nm">src</span><span class="st dot"></span><span class="ct">49</span></div>
+        <div class="row" style="padding-left:38px"><span class="nm">backoff.ts</span></div>
+        <div class="row" style="padding-left:38px"><span class="nm">chatsize.ts</span></div>
+        <div class="row hov" style="padding-left:38px"><span class="nm">client.ts</span><span class="st mod" title="geändert, nicht committet">M</span><span class="more"><svg class="i"><use href="#i-dots"/></svg></span></div>
+        <div class="row" style="padding-left:38px"><span class="nm">drafts.ts</span></div>
+        <div class="row" style="padding-left:38px"><span class="nm">entcard.ts</span></div>
+        <div class="row picked" style="padding-left:38px"><span class="nm">filetree.ts</span><span class="st mod">M</span><span class="more"><svg class="i"><use href="#i-dots"/></svg></span></div>
+        <div class="row" style="padding-left:38px"><span class="nm">gitpath.ts</span></div>
+        <div class="row" style="padding-left:38px"><span class="nm">icons.ts</span></div>
+        <div class="row" style="padding-left:38px"><span class="nm">md.ts</span></div>
+        <div class="row" style="padding-left:38px"><span class="nm">protocol.ts</span></div>
+        <div class="row" style="padding-left:38px"><span class="nm">shell.ts</span></div>
+        <div class="row untr" style="padding-left:38px"><span class="nm">tree-notes.md</span><span class="st new" title="ungetrackt: nicht in git, blockiert das Land">?</span></div>
+        <div class="row" style="padding-left:38px"><span class="nm">…  34 more</span></div>
+        <div class="row" style="padding-left:24px"><span class="nm">AGENTS.md</span></div>
+        <div class="row" style="padding-left:24px"><span class="nm">package.json</span></div>
+        <div class="row" style="padding-left:24px"><span class="nm">server.ts</span><span class="st mod">M</span></div>
+      </div>
+      <div class="detail">
+        <!-- FILE -->
+      </div>
+    </div>
+    <div class="wfoot">
+      <span><span class="live"></span>Session 7 is working right now</span>
+      <span class="tabnum">tree read 12 s ago</span>
+      <span class="keys">↑↓ walk · Enter open · / search · F2 rename</span>
+    </div>
+</template>
+
+<template id="file">
+        <div class="fhead">
+          <div class="fhead1">
+            <div class="crumb">src/<b>filetree.ts</b></div>
+            <button class="wb" title="Diese Datei bearbeiten"><span aria-hidden="true">✎</span>Edit</button>
+            <button class="wb" title="Den Pfad in den Prompt dieser Session einfügen"><svg class="i"><use href="#i-send"/></svg>Mention</button>
+            <button class="ib" title="Pfad kopieren"><svg class="i"><use href="#i-copy"/></svg></button>
+            <button class="ib" title="Weitere Handlungen"><svg class="i"><use href="#i-dots"/></svg></button>
+          </div>
+          <div class="fmeta">
+            <span>as it is on disk right now</span><span class="tabnum">37 lines · 1.9 KB</span>
+            <span class="seg"><button class="on">The whole file</button><button>What changed <span class="n">+3 −1</span></button></span>
+          </div>
+        </div>
+        <div class="code">
+<div class="ln"><i>1</i><span class="c">// the explorer tree and its search, kept out of client.ts so they can be unit-tested without</span></div>
+<div class="ln"><i>2</i><span class="c">// a DOM (e2e/explorer.ts calls treeOf/matchTree directly; paintTree stays in client.ts).</span></div>
+<div class="ln"><i>3</i><span></span></div>
+<div class="ln"><i>4</i><span class="c">// the tree as a nested map, derived from the flat path list on every paint. Cheap (a few thousand</span></div>
+<div class="ln"><i>5</i><span class="c">// strings at most, capped server-side) and it keeps ONE source of truth — the flat list the server</span></div>
+<div class="ln"><i>6</i><span class="c">// sent — instead of a parallel structure that could disagree with it.</span></div>
+<div class="ln"><i>7</i><span><span class="k">export interface</span> TreeNode { dirs: Map&lt;string, TreeNode&gt;; files: string[] }</span></div>
+<div class="ln"><i>8</i><span><span class="k">export function</span> treeOf(paths: string[]): TreeNode {</span></div>
+<div class="ln"><i>9</i><span>  <span class="k">const</span> root: TreeNode = { dirs: <span class="k">new</span> Map(), files: [] };</span></div>
+<div class="ln"><i>10</i><span>  <span class="k">for</span> (<span class="k">const</span> p <span class="k">of</span> paths) {</span></div>
+<div class="ln"><i>11</i><span>    <span class="k">const</span> parts = p.split(<span>"/"</span>);</span></div>
+<div class="ln"><i>12</i><span>    <span class="k">let</span> node = root;</span></div>
+<div class="ln"><i>13</i><span>    <span class="k">for</span> (<span class="k">const</span> seg <span class="k">of</span> parts.slice(0, -1)) {</span></div>
+<div class="ln"><i>14</i><span>      <span class="k">let</span> next = node.dirs.get(seg);</span></div>
+<div class="ln"><i>15</i><span>      <span class="k">if</span> (!next) { next = { dirs: <span class="k">new</span> Map(), files: [] }; node.dirs.set(seg, next); }</span></div>
+<div class="ln"><i>16</i><span>      node = next;</span></div>
+<div class="ln"><i>17</i><span>    }</span></div>
+<div class="ln"><i>18</i><span>    node.files.push(parts[parts.length - 1]);</span></div>
+<div class="ln"><i>19</i><span>  }</span></div>
+<div class="ln"><i>20</i><span>  <span class="k">return</span> root;</span></div>
+<div class="ln"><i>21</i><span>}</span></div>
+<div class="ln"><i>22</i><span></span></div>
+<div class="ln"><i>23</i><span class="c">// The search. It matches the WHOLE relative path, not the basename, because the question the</span></div>
+<div class="ln"><i>24</i><span class="c">// explorer could not answer was "where is the file whose path contains …" — `e2e/pins`, `docs/ver`</span></div>
+<div class="ln"><i>25</i><span class="c">// and `client.ts` all have to find something. Space-separated terms are ANDed in any order, so</span></div>
+<div class="ln"><i>26</i><span class="c">// `pins e2e` and `e2e pins` are the same query; case is ignored.</span></div>
+<div class="ln"><i>27</i><span class="c">//</span></div>
+<div class="ln"><i>28</i><span class="c">// A hit list is FLAT and deliberately so: a filtered tree still has to be walked open folder by</span></div>
+<div class="ln"><i>29</i><span class="c">// open folder, which is the work the search exists to remove. Sorted shortest-path-first so the</span></div>
+<div class="ln"><i>30</i><span class="c">// closest match to a short query is the first row rather than the alphabetically luckiest one.</span></div>
+<div class="ln chg"><i>31</i><span><span class="k">export function</span> matchTree(paths: string[], query: string): string[] {</span></div>
+<div class="ln chg"><i>32</i><span>  <span class="k">const</span> terms = query.toLowerCase().split(/\s+/).filter(Boolean);</span></div>
+<div class="ln chg"><i>33</i><span>  <span class="k">if</span> (!terms.length) <span class="k">return</span> [];</span></div>
+<div class="ln"><i>34</i><span>  <span class="k">return</span> paths</span></div>
+<div class="ln"><i>35</i><span>    .filter((p) =&gt; { <span class="k">const</span> lc = p.toLowerCase(); <span class="k">return</span> terms.every((t) =&gt; lc.includes(t)); })</span></div>
+<div class="ln"><i>36</i><span>    .sort((a, b) =&gt; a.length - b.length || a.localeCompare(b));</span></div>
+<div class="ln"><i>37</i><span>}</span></div>
+        </div>
+</template>
+
+<template id="win-b">
+    <div class="whead">
+      <button class="ib back" title="Zurück zur Liste"><svg class="i"><use href="#i-back"/></svg></button>
+      <div class="wtitle"><h2>Files</h2>
+        <div class="wsub"><span class="mono">claude-fleet</span> › <span class="mono">src</span> · <span class="tabnum">969 tracked · 3 changed · 1 untracked</span></div></div>
+      <button class="ib" title="Baum neu lesen"><svg class="i"><use href="#i-reload"/></svg></button>
+      <button class="ib" title="Schließen (Esc)"><svg class="i"><use href="#i-x"/></svg></button>
+    </div>
+    <div class="wtools">
+      <div class="search"><svg class="i"><use href="#i-search"/></svg><span>search paths — e.g. e2e/pins</span></div>
+      <div class="seg" role="group"><button class="on">Paths</button><button>Contents</button></div>
+      <div class="seg" role="group"><button class="on">All<span class="n">970</span></button><button>Changed<span class="n">4</span></button></div>
+      <button class="tog hide-m" aria-pressed="true">Untracked</button>
+      <span class="grow hide-m"></span>
+      <button class="wb hide-m"><svg class="i"><use href="#i-plus"/></svg>New<svg class="i" style="width:12px;height:12px"><use href="#i-chev"/></svg></button>
+    </div>
+    <div class="cols">
+      <div class="col">
+        <div class="row dir"><span class="nm">.claude</span><span class="ct">14</span><span class="go"><svg class="i"><use href="#i-chev"/></svg></span></div>
+        <div class="row dir"><span class="nm">docs</span><span class="ct">412</span><span class="go"><svg class="i"><use href="#i-chev"/></svg></span></div>
+        <div class="row dir"><span class="nm">e2e</span><span class="st dot"></span><span class="ct">61</span><span class="go"><svg class="i"><use href="#i-chev"/></svg></span></div>
+        <div class="row dir"><span class="nm">public</span><span class="ct">9</span><span class="go"><svg class="i"><use href="#i-chev"/></svg></span></div>
+        <div class="row dir"><span class="nm">server</span><span class="ct">23</span><span class="go"><svg class="i"><use href="#i-chev"/></svg></span></div>
+        <div class="row dir picked"><span class="nm">src</span><span class="st dot"></span><span class="ct">49</span><span class="go"><svg class="i"><use href="#i-chev"/></svg></span></div>
+        <div class="row"><span class="nm">AGENTS.md</span></div>
+        <div class="row"><span class="nm">package.json</span></div>
+        <div class="row"><span class="nm">server.ts</span><span class="st mod">M</span></div>
+      </div>
+      <div class="col">
+        <div class="row"><span class="nm">backoff.ts</span></div>
+        <div class="row"><span class="nm">chatsize.ts</span></div>
+        <div class="row"><span class="nm">client.ts</span><span class="st mod">M</span></div>
+        <div class="row"><span class="nm">drafts.ts</span></div>
+        <div class="row"><span class="nm">entcard.ts</span></div>
+        <div class="row picked"><span class="nm">filetree.ts</span><span class="st mod">M</span><span class="more"><svg class="i"><use href="#i-dots"/></svg></span></div>
+        <div class="row"><span class="nm">gitpath.ts</span></div>
+        <div class="row"><span class="nm">icons.ts</span></div>
+        <div class="row untr"><span class="nm">tree-notes.md</span><span class="st new">?</span></div>
+      </div>
+      <div class="colhint">Eine Spalte je Ordnerebene. Tiefe Pfade laufen nach rechts; die Leiste scrollt waagerecht.</div>
+    </div>
+    <div class="wbody">
+      <div class="tree">
+        <div class="row dir" style="padding-left:10px"><span class="tw"><svg class="i"><use href="#i-back"/></svg></span><span class="nm">claude-fleet</span></div>
+        <div class="row" style="padding-left:34px"><span class="nm">backoff.ts</span></div>
+        <div class="row" style="padding-left:34px"><span class="nm">chatsize.ts</span></div>
+        <div class="row" style="padding-left:34px"><span class="nm">client.ts</span><span class="st mod">M</span></div>
+        <div class="row" style="padding-left:34px"><span class="nm">drafts.ts</span></div>
+        <div class="row" style="padding-left:34px"><span class="nm">entcard.ts</span></div>
+        <div class="row picked" style="padding-left:34px"><span class="nm">filetree.ts</span><span class="st mod">M</span><span class="more"><svg class="i"><use href="#i-dots"/></svg></span></div>
+        <div class="row" style="padding-left:34px"><span class="nm">gitpath.ts</span></div>
+        <div class="row" style="padding-left:34px"><span class="nm">icons.ts</span></div>
+        <div class="row untr" style="padding-left:34px"><span class="nm">tree-notes.md</span><span class="st new">?</span></div>
+      </div>
+      <div class="detail">
+        <!-- FILE -->
+      </div>
+    </div>
+    <div class="wfoot">
+      <span><span class="live"></span>Session 7 is working right now</span>
+      <span class="tabnum">tree read 12 s ago</span>
+      <span class="keys">←→ columns · ↑↓ walk · Enter open</span>
+    </div>
+</template>
+
+<script>
+  // static assembly only: the two window bodies are written once and stamped into each frame, and
+  // ?f= picks the one frame a screenshot shows. No behaviour is simulated.
+  const file = document.getElementById("file").innerHTML;
+  const a = document.getElementById("win-a").innerHTML.replace("<!-- FILE -->", file);
+  const b = document.getElementById("win-b").innerHTML.replace("<!-- FILE -->", file);
+  for (const w of document.querySelectorAll(".stage .win")) {
+    w.innerHTML = w.innerHTML.replace("<!-- WINDOW:A -->", a).replace("<!-- WINDOW:B -->", b);
+  }
+  const f = new URLSearchParams(location.search).get("f");
+  if (f) {
+    document.body.classList.add("frame");
+    document.querySelector(`.stage[data-f="${CSS.escape(f)}"]`)?.classList.add("show");
+  }
+</script>
+</body>
+</html>

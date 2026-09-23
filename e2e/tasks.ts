@@ -498,7 +498,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && !taskClientSource.includes('mk("✕ delete", "delete"'),
       delSrc.includes("askRisk(") ? "renderQueueDetail danger zone" : "direct-act delete button back or block moved");
     const bringStart = taskClientSource.indexOf('item("Bring session back"');
-    const bringEnd = taskClientSource.indexOf("idsec.appendChild(menu);", bringStart);
+    const bringEnd = taskClientSource.indexOf("top.appendChild(menu);", bringStart);
     const bringSrc = bringStart >= 0 && bringEnd > bringStart ? taskClientSource.slice(bringStart, bringEnd) : "";
     check("dialog helper: Bring session back asks through the helper — no native confirm()",
       bringSrc.includes("askRisk(") && !bringSrc.includes("confirm("),

@@ -10,7 +10,8 @@ import { Flakes } from "./flakes";
 import { harnessMark, icon, type IconName } from "./icons";
 import { modelLabel } from "./modelname";
 import { DraftBook } from "./drafts";
-import { attachEntityCards, closeEntityCard, hideEntityCard, showEntityCard, type EntFacts } from "./entcard";
+import { attachEntityCards, type EntFacts } from "./entcard";
+import { closeEntityCard, hideEntityCard, showEntityCard } from "./entcard";
 import { loadChatSizes, onChatSize, sizePanel, stepChatSizes } from "./chatsize";
 import { PREFS, prefBool, prefJSON, prefNumber, prefRaw, prefSet, prefSetBool, prefText, type PrefDef } from "./prefs";
 import { popover } from "./popover";
@@ -720,6 +721,12 @@ window.addEventListener("keydown", (e) => {
 });
 
 // --- panes: each visible terminal owns its Terminal, WS, and resize state ---
+function seedFramePlan(socketGeneration: number, currentGeneration: number, firstFrame: boolean):
+  { reset: boolean; pin: boolean } | null {
+  if (socketGeneration !== currentGeneration) return null;
+  return { reset: firstFrame, pin: firstFrame };
+}
+
 class Pane {
   slot = 0; // 0 = unassigned
   private gen = 0; // bump to suppress a stale socket's reconnect loop
@@ -727,6 +734,7 @@ class Pane {
   // which renderer this pane actually ended up on — see the block in the constructor.
   // Reported in the ⟳ tooltip because a silent one-way downgrade is otherwise invisible.
   private renderer = "dom";
+  private rendererAddon: WebglAddon | CanvasAddon | null = null;
   private retries = 0; // consecutive failed/flapping reconnects — indexes reconnectDelay()
   private ws: WebSocket | null = null;
   private lastCols = 0;
@@ -903,52 +911,13 @@ class Pane {
     this.term.loadAddon(new WebLinksAddon(openTermLink));
     this.term.open(termEl);
     this.syncEntityLinks();
-    // GPU renderers instead of the default DOM one (which paints every cell as a real DOM
-    // node — scroll stutter on mobile Safari under streaming output). WebGL is the fastest
-    // and crispest; it can fail (no context on old GPUs, context loss later) — fall back to
-    // the canvas renderer either way. Addons are disposed by term.dispose().
-    //
-    // WHY THIS IS WORTH SEEING (owner report 2026-09-11: "es wechselt irgendwie immer
-    // zwischen diesen beiden Zuständen" — scrolling is clean, then it stutters, then it is
-    // clean again after a reload). The fallback below is SILENT and ONE-WAY: once a pane's
-    // WebGL context is lost it runs on canvas for the rest of that page load, and nothing
-    // anywhere says so. Two panes side by side can therefore sit on different renderers,
-    // and the same pane can feel different before and after a reload — with no visible
-    // cause. A context is lost for reasons that have nothing to do with Fleet (GPU driver
-    // reset, the tab being backgrounded, the browser reclaiming contexts under memory
-    // pressure) and also for one that does: setLayout() disposes every pane and builds n
-    // new ones, so each layout switch returns n contexts and immediately asks for n more,
-    // and browsers release them lazily.
-    //
-    // So the renderer is RECORDED and shown in the ⟳ button's tooltip. It is deliberately
-    // only a report: nothing here re-acquires WebGL, because a retry that keeps failing
-    // would thrash the very thing it is trying to fix, and the decision of whether to
-    // retry needs this number from a real session first. If a stuttering pane says
-    // "canvas" and a smooth one says "webgl", the mechanism above is confirmed and the
-    // fix belongs in the renderer policy (e.g. WebGL only for the focused pane). If BOTH
-    // say "webgl", the stutter is not the renderer and this comment saved the next reader
-    // the same detour.
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => {
-        webgl.dispose();
-        this.term.loadAddon(new CanvasAddon());
-        this.renderer = "canvas (WebGL-Kontext verloren)";
-        this.markRenderer();
-        console.warn(`[fleet] slot ${this.slot}: WebGL context lost — pane fell back to canvas for the rest of this page load`);
-      });
-      this.term.loadAddon(webgl);
-      this.renderer = "webgl";
-    } catch {
-      this.term.loadAddon(new CanvasAddon());
-      this.renderer = "canvas (kein WebGL)";
-    }
-    this.markRenderer();
+    this.loadRenderer();
     // on touch devices all input goes through the compose bar + key row; inputMode=none
     // lets xterm keep focus for scrolling without popping the on-screen keyboard
     if (isMobile() && this.term.textarea) this.term.textarea.inputMode = "none";
     this.term.onData((d) => this.sendRaw(d));
     this.term.attachCustomKeyEventHandler((e) => {
+      if (e.type === "keydown" && e.key === "Escape") closeEntityCard();
       // the canvas renderer paints cells as pixels, not DOM text, so a drag-selection has
       // nothing for the browser's native ⌘C to copy (no real Selection exists) — copy the
       // selection text directly instead. Guard e.type: xterm invokes this handler from both
@@ -1015,6 +984,34 @@ class Pane {
     this.root.classList.remove("flash");
     void this.root.offsetWidth; // force reflow so re-adding the class retriggers the CSS animation
     this.root.classList.add("flash");
+  }
+
+  private loadRenderer(): void {
+    this.rendererAddon?.dispose();
+    this.rendererAddon = null;
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        if (this.rendererAddon !== webgl) return;
+        webgl.dispose();
+        this.rendererAddon = null;
+        this.loadCanvasRenderer("canvas (WebGL-Kontext verloren)");
+      });
+      this.term.loadAddon(webgl);
+      this.rendererAddon = webgl;
+      this.renderer = "webgl";
+    } catch {
+      this.loadCanvasRenderer("canvas (kein WebGL)");
+    }
+    this.markRenderer();
+  }
+
+  private loadCanvasRenderer(reason: string): void {
+    const canvas = new CanvasAddon();
+    this.term.loadAddon(canvas);
+    this.rendererAddon = canvas;
+    this.renderer = reason;
+    this.markRenderer();
   }
 
   private copySelection() {
@@ -1494,12 +1491,21 @@ class Pane {
     this.ws = ws;
     ws.binaryType = "arraybuffer";
     let openedAt = 0;
+    let firstFrame = true;
     ws.onopen = () => {
+      if (g !== this.gen) { ws.close(); return; }
       openedAt = Date.now();
       if (focused === this.index) setConn(true);
       this.sendResize(true);
     };
     ws.onmessage = (e) => {
+      const action = seedFramePlan(g, this.gen, firstFrame);
+      if (!action) return;
+      if (action.reset) {
+        this.term.reset();
+        this.pinPending = action.pin;
+        firstFrame = false;
+      }
       // the seed (a scrollback capture, on every path) is always the first frame the
       // server sends on open. Once it's parsed, the buffer sits at ydisp===ybase, but
       // xterm's DOM viewport can be parked at row 0 — its Viewport refresh multiplies
@@ -1568,6 +1574,7 @@ class Pane {
     this.term.reset();
     this.fit.fit();
     this.pinPending = true;
+    this.loadRenderer();
     this.connect(true);
   }
 
@@ -1611,15 +1618,16 @@ class Pane {
     void post("/resize", { slot: this.slot, cols: this.term.cols, rows: this.term.rows });
   }
 
-  // the ⟳ tooltip is the only place a pane's renderer is visible, and ⟳ is also the button
-  // that fixes a degraded one (reload rebuilds the Terminal and asks for a fresh context)
+  // A canvas fallback stays visible until ⟳ retries WebGL through loadRenderer().
   private markRenderer() {
-    this.reloadBtn.title = `reload this session (reconnect + reseed scrollback)\nrenderer: ${this.renderer}`;
+    this.reloadBtn.classList.toggle("degraded", this.renderer !== "webgl");
+    this.reloadBtn.title = `Neu verbinden — Verlauf neu laden\nRenderer: ${this.renderer}`;
   }
 
   dispose() {
     this.gen++;
     this.ws?.close();
+    this.linkProvider?.dispose();
     clearTimeout(this.resizeTimer);
     clearTimeout(this.chatTimer);
     // an in-flight pollChat() fetch resolving after dispose would otherwise re-arm its

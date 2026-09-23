@@ -536,6 +536,14 @@ function runLinks(): void {
   if (!client) return;
   check("terminal: bare urls are linkified by WebLinksAddon, through the same handler as OSC 8 links",
     /loadAddon\(new WebLinksAddon\(openTermLink\)\)/.test(client) && /linkHandler: \{ activate: openTermLink \}/.test(client));
+  const reconnect = /  reconnect\(\) \{[\s\S]*?\n  \}/.exec(client)?.[0] ?? "";
+  check("terminal: explicit reload retries WebGL after a context loss and marks canvas visibly",
+    reconnect.includes("this.loadRenderer();")
+      && client.includes('this.reloadBtn.classList.toggle("degraded", this.renderer !== "webgl")')
+      && client.includes("private loadRenderer(): void"));
+  check("terminal: every socket gates stale frames and resets before its first seed write",
+    client.includes("seedFramePlan(g, this.gen, firstFrame)")
+      && /if \(action\.reset\) \{[\s\S]*?this\.term\.reset\(\)/.test(client));
   check("terminal: reference links reuse the entity card and disappear with the loupe off",
     client.includes("registerLinkProvider") && client.includes("entityMatches(line")
       && client.includes("if (!this.hoverOn || !this.term) return") && client.includes("showEntityCard(m.kind"));

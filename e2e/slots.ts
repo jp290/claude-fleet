@@ -1039,6 +1039,34 @@ export async function run(): Promise<void> {
   check("precondition: node_modules exposes public/index.html for slot presentation checks",
     indexSrc !== null, indexSrcError);
   if (cliSrc === null || indexSrc === null) return;
+  const seedSource = /function seedFramePlan[\s\S]*?\n\}/.exec(cliSrc)?.[0] ?? "";
+  check("precondition: the client exposes a pure seed-frame plan for the reconnect probe", seedSource.length > 0);
+  if (seedSource) {
+    const seedFramePlan = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(seedSource.replace(/^export /, ""))
+      + "\nreturn seedFramePlan;")() as
+      (socket: number, current: number, first: boolean) => { reset: boolean; pin: boolean } | null;
+    let buffer: string[] = [];
+    let pinned = 0;
+    for (let generation = 1; generation <= 5; generation++) {
+      const stale = seedFramePlan(generation - 1, generation, true);
+      if (stale?.reset) buffer = [];
+      const seed = seedFramePlan(generation, generation, true);
+      if (seed?.reset) buffer = [];
+      if (seed?.pin) pinned++;
+      buffer.push("seed-1", "seed-2", "seed-3");
+      const live = seedFramePlan(generation, generation, false);
+      if (live?.reset) buffer = [];
+      buffer.push("live-4");
+    }
+    check("terminal reconnect: five seeds leave each captured line exactly once",
+      buffer.join(",") === "seed-1,seed-2,seed-3,live-4" && pinned === 5,
+      `${buffer.join(",")} · pinned ${pinned}`);
+    check("terminal reconnect: a detached socket cannot reset or write into the new pane",
+      seedFramePlan(4, 5, true) === null && seedFramePlan(5, 5, false)?.reset === false);
+    check("terminal reconnect: only the first frame requests reset and pin",
+      seedFramePlan(5, 5, true)?.reset === true && seedFramePlan(5, 5, true)?.pin === true
+        && seedFramePlan(5, 5, false)?.pin === false);
+  }
   // what is asserted about client.ts is that it SHIPS the module under test — a plan re-inlined
   // there would leave the checks below measuring code the bundle never runs
   check("client: the poll pump takes pollPlan from src/pollplan.ts, the module under test",
@@ -2232,8 +2260,8 @@ export async function run(): Promise<void> {
       // view's own sit below — terminal ↻ ⇔, chat ↑ ↓ Aa (the mapping Pane's build encodes and
       // index.html's visibility rules paint). Mutation probe: move widthBtn into toolsTop and
       // this goes red.
-      check("client: the corner group's rows split both-view (⚙ 💬 ℹ) from view-bound (terminal ↻ ⇔ / chat ↑ ↓ Aa) — ℹ rightmost, on the corner the close box must land on",
-        cliSrc.includes("toolsTop.append(this.gearBtn, this.viewBtn, this.boardBtn)")
+      check("client: the corner group's rows split both-view (⚙ ⌕ 💬 ℹ) from view-bound (terminal ↻ ⇔ / chat ↑ ↓ Aa) — ℹ rightmost, on the corner the close box must land on",
+        cliSrc.includes("toolsTop.append(this.gearBtn, this.hoverBtn, this.viewBtn, this.boardBtn)")
         && cliSrc.includes("toolsView.append(this.reloadBtn, this.widthBtn, navUp, navDn, this.sizeBtn)")
         && /flex-direction:\s*column/.test(cssBody(".panetools"))
         && /visibility:\s*hidden/.test(cssBody(".pane.chat .termwidth, .pane.chat .panereload"))
@@ -2268,10 +2296,10 @@ export async function run(): Promise<void> {
       try { mdSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/md.ts`, "utf8"); } catch { /* the check below reads as failed, not as skipped */ }
       check("chat: ENT knows programs and commit-sha prefixes — marked only when the board knows them, unknown 8-hex stays text",
         /const ENT = \/\\b\(\[0-9a-f\]\{7,12\}\)\\b\|\\b\(\[Ss\]lots\?\\s\*#\?\)/.test(mdSrc)
-          && mdSrc.includes("if (hex.length === 8 && ok(\"task\", hex)) return \"task\";")
-          && mdSrc.includes("if (hex.length === 8 && ok(\"program\", hex)) return \"program\";")
-          && mdSrc.includes("if (ok(\"sha\", hex)) return \"sha\";")
-          && mdSrc.includes("if (!kind) continue;")
+          && mdSrc.includes('id.length === 8 && ok("task", id)')
+          && mdSrc.includes('id.length === 8 && ok("program", id)')
+          && mdSrc.includes('ok("sha", id) ? "sha" : null')
+          && mdSrc.includes('if (kind) found.push({ kind, id, start, end: start + id.length });')
           && mdSrc.includes("entityOk(\"sha\", hex) ? \"sha\" : null")
           && cliSrc.includes("if (kind === \"program\") return programsPoll.some((p) => p.id === id);")
           && cliSrc.includes("if (kind === \"sha\") return knownSha(id);")

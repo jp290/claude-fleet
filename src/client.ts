@@ -180,7 +180,7 @@ function renderInstanceHead() {
     row.onclick = go(link);
     return row;
   }));
-  if (pick) instMenu.appendChild(el("div", "instnote", MORE_HOSTS));
+  if (pick) instMenu.appendChild(el("div", "hint instnote", MORE_HOSTS));
   if (!pick) setInstMenu(false);
 }
 
@@ -2134,7 +2134,7 @@ async function showLandReview(title: string, slot: number, verify?: VerifyVerdic
     .catch(() => ({ loadFailed: true })) as
     { main?: string; branch?: string; files?: string[]; diff?: string; truncated?: boolean; error?: string; loadFailed?: boolean };
   const body: HTMLElement[] = [
-    el("div", "landhint",
+    el("div", "hint landhint",
       "This is the merge preview — everything that will land on main (main…HEAD). Committing does NOT clear it; only landing does. A clean worktree with commits ahead is exactly what a ready-to-land lane looks like."),
   ];
   let landFailed = false;
@@ -2271,7 +2271,7 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift"): void {
   schrift.appendChild(sizePanel()); // the ONE panel moves in here (G5.3, kein zweites Zuhause)
   const fleetsec = el("section", "setsec");
   fleetsec.appendChild(el("h3", "", "Fleet"));
-  fleetsec.appendChild(el("div", "setnote",
+  fleetsec.appendChild(el("div", "hint setnote",
     "Hier ziehen serverseitige Werte ein, sobald eine Themen-Zeile ihre Route mitbringt — sie gelten für alle Geräte dieser Fleet."));
 
   shell.detail.append(tabs, device, schrift, fleetsec);
@@ -2296,7 +2296,7 @@ function settingsRow(d: PrefDef): HTMLElement {
   main.appendChild(el("div", "setlabel", d.label));
   const std = d.kind === "bool" ? (d.def === "1" ? "on" : "off")
     : d.kind === "choice" ? SET_CHOICE_WORDS[d.def] ?? d.def : null;
-  main.appendChild(el("div", "setnote", [d.hint, std !== null ? `Standard: ${std}` : ""].filter(Boolean).join(" ")));
+  main.appendChild(el("div", "hint setnote", [d.hint, std !== null ? `Standard: ${std}` : ""].filter(Boolean).join(" ")));
   row.appendChild(main);
 
   const sync: (() => void)[] = [];
@@ -2985,9 +2985,9 @@ function renderDevDlg() {
   devpanel.appendChild(el("h2", "", "Helper devices — the machines that take work off this box"));
   if (!helperDevicesInfo.length) {
     // reachable only with the dialog already open when the last device is evicted
-    devpanel.appendChild(el("div", "shrhint", "No device has ever registered here."));
+    devpanel.appendChild(el("div", "hint shrhint", "No device has ever registered here."));
   } else {
-    devpanel.appendChild(el("div", "shrhint",
+    devpanel.appendChild(el("div", "hint shrhint",
       "Online/offline is DERIVED from the last heartbeat, never reported: a machine that stops "
       + "beating simply goes quiet, and anything it holds falls back to this box when its claim "
       + "expires. The mode you pick is a WISH — it is stored here and the device reads it on its "
@@ -3385,7 +3385,7 @@ function openExplorer(slot: number, cwd: string, startAt?: string) {
         picked = null;
         path.textContent = "";
         shell.setCloseGuard(null);
-        shell.detail.replaceChildren(el("div", "shellhint", "Pick a file on the left."));
+        shell.detail.replaceChildren(el("div", "hint shellhint", "Pick a file on the left."));
         repaint();
       } },
     });
@@ -3438,14 +3438,14 @@ function openPacks(setup: BriefSetup, want?: string): void {
     shell.detail.appendChild(el("div", "rvhead", p.id));
     if (p.useWhen) shell.detail.appendChild(el("div", "cpkwhen", p.useWhen));
     if (p.privateSourceId) {
-      shell.detail.appendChild(el("div", "shellhint",
+      shell.detail.appendChild(el("div", "hint shellhint",
         "a private pack: its source lives outside this repo, so the server cannot read it. What the "
         + "receipt proves is that this opaque source was pointed at — nothing more."));
       shell.detail.appendChild(el("div", "cpkpath", p.privateSourceId));
       return;
     }
     const sources = p.sources ?? [];
-    if (!sources.length) { shell.detail.appendChild(el("div", "shellhint", "this pack names no source.")); return; }
+    if (!sources.length) { shell.detail.appendChild(el("div", "hint shellhint", "this pack names no source.")); return; }
     shell.detail.appendChild(el("div", "cpksub",
       `${sources.length} source${sources.length === 1 ? "" : "s"} — an anchor is where to start reading, not a span`));
     for (const src of sources) {
@@ -3968,10 +3968,10 @@ async function renderBoard() {
           work.appendChild(crow);
         }
       } else if (ahead) {
-        work.appendChild(el("div", "bnote ready",
+        work.appendChild(el("div", "hint bnote ready",
           `${ahead} commit${ahead === 1 ? "" : "s"} ready to ${brief.worktree ? "land" : "push"}`));
       } else {
-        work.appendChild(el("div", "bnote", "Nothing uncommitted, nothing ahead."));
+        work.appendChild(el("div", "hint bnote", "Nothing uncommitted, nothing ahead."));
         if (!brief.worktree) {
           const db = el("button", "bbtn quiet", "View diff") as HTMLButtonElement;
           db.onclick = () => void openDiff(slot);
@@ -3996,7 +3996,7 @@ async function renderBoard() {
             + "and it does not land, and on a conflict it aborts and leaves the lane exactly as it is.";
           rebaseBtn.onclick = () => void doRebase(slot);
         } else {
-          work.appendChild(el("div", "bnote", `${behind} commit${behind === 1 ? "" : "s"} behind ${baseName_}`));
+          work.appendChild(el("div", "hint bnote", `${behind} commit${behind === 1 ? "" : "s"} behind ${baseName_}`));
         }
       }
       // …and what the last rebase did, which outlives the count it removed: a rebase that WORKED
@@ -4006,7 +4006,7 @@ async function renderBoard() {
         const note = rebaseNote.get(slot);
         if (!note) return null;
         if (Date.now() - note.at > REBASE_NOTE_MS) { rebaseNote.delete(slot); return null; }
-        const n = el("div", note.ok ? "bnote ready" : "bstate rbfail", note.text);
+        const n = el("div", note.ok ? "hint bnote ready" : "bstate rbfail", note.text);
         if (note.files?.length) {
           const list = el("div", "bunc");
           for (const f of note.files) list.appendChild(el("div", "bfile", f));
@@ -4997,7 +4997,9 @@ function setLayout(n: number, assignments?: number[]) {
     }
   }
   for (const b of document.querySelectorAll<HTMLButtonElement>("#layouts button"))
-    b.classList.toggle("active", b.dataset.l === String(n));
+    b.classList.toggle("on", b.dataset.l === String(n));
+  for (const b of document.querySelectorAll<HTMLButtonElement>("#layouts button"))
+    b.setAttribute("aria-pressed", String(b.dataset.l === String(n)));
   requestAnimationFrame(() => { for (const p of panes) p.refit(); });
   focusPane(Math.min(focused, n - 1));
 }
@@ -5917,7 +5919,7 @@ function renderDirDetail(path: string, load: DirLoad) {
   shell.detail.appendChild(acts);
   appendSpawnOptions(shell.detail);
 
-  if (load.st === "loading") { shell.detail.appendChild(el("div", "shellhint", "reading…")); return; }
+  if (load.st === "loading") { shell.detail.appendChild(el("div", "hint shellhint", "reading…")); return; }
   if (load.st === "fail") { shell.detail.appendChild(el("div", "diffstat err", load.why)); return; }
   if (!info) return; // unreachable: st === "ok" carries one
   if (info.error) { shell.detail.appendChild(el("div", "diffstat err", info.error)); return; }
@@ -5926,7 +5928,7 @@ function renderDirDetail(path: string, load: DirLoad) {
     return;
   }
   if (!info.git) {
-    shell.detail.appendChild(el("div", "shellhint",
+    shell.detail.appendChild(el("div", "hint shellhint",
       "not a git repo — a session here works fine, there is just nothing to branch, diff or land"));
     appendDirContents(shell.detail, info);
     return;
@@ -5960,7 +5962,7 @@ function renderDirDetail(path: string, load: DirLoad) {
   if (commits.length) sec.appendChild(el("span", "shellsecn", String(commits.length)));
   shell.detail.appendChild(sec);
   if (!commits.length) {
-    shell.detail.appendChild(el("div", "shellhint", "no commits yet in this repo"));
+    shell.detail.appendChild(el("div", "hint shellhint", "no commits yet in this repo"));
     return;
   }
   for (const c of commits) {
@@ -5971,7 +5973,7 @@ function renderDirDetail(path: string, load: DirLoad) {
   }
   // says what this list is NOT, so nobody reads five subjects as the repo's history: the audit
   // trail and the activity window's commits lens are where the full record lives.
-  shell.detail.appendChild(el("div", "shellhint",
+  shell.detail.appendChild(el("div", "hint shellhint",
     `the newest ${commits.length} — a glance at what this repo has been doing, not its history.`
     + " The activity window's Commits lens carries the full list."));
 }
@@ -6107,7 +6109,7 @@ function appendDirContents(target: HTMLElement, info: DirInfoResp) {
   const entries = info.entries;
   if (entries === undefined) {
     target.appendChild(sec);
-    target.appendChild(el("div", "shellhint",
+    target.appendChild(el("div", "hint shellhint",
       "this folder's contents could not be read — that is a permissions answer, not an empty folder"));
     return;
   }
@@ -6122,7 +6124,7 @@ function appendDirContents(target: HTMLElement, info: DirInfoResp) {
   sec.appendChild(el("span", "shellsecn", parts.join(" · ")));
   target.appendChild(sec);
   if (!entries.length) {
-    target.appendChild(el("div", "shellhint",
+    target.appendChild(el("div", "hint shellhint",
       info.hidden ? "nothing here but dot-entries — the folder is not empty, its contents are all hidden"
         : "this folder is empty"));
     return;
@@ -6187,10 +6189,13 @@ function showFileView(shell: Shell, o: FileViewOpts) {
   // the "view option": where a change EXISTS, it is the default — a file in a commit is interesting
   // for what the commit did to it. The whole file is one click away, never the other way round.
   let tab: "change" | "file" = o.diff ? "change" : "file";
-  const tabs = el("div", "actlens");
+  const tabs = el("div", "tabrow actlens");
   const paint = () => {
-    for (const b of Array.from(tabs.children)) b.classList.toggle("active",
-      (b as HTMLElement).dataset.tab === tab);
+    for (const b of Array.from(tabs.children)) {
+      const selected = (b as HTMLElement).dataset.tab === tab;
+      b.classList.toggle("on", selected);
+      b.setAttribute("aria-pressed", String(selected));
+    }
     body.replaceChildren();
     if (tab === "change" && o.diff) {
       const box = el("div", "difftxt");
@@ -6198,7 +6203,7 @@ function showFileView(shell: Shell, o: FileViewOpts) {
       body.appendChild(box);
       return;
     }
-    body.appendChild(el("div", "shellhint", "reading the file…"));
+    body.appendChild(el("div", "hint shellhint", "reading the file…"));
     void loadFile(o).then((r) => {
       if (!shell.isOpen() || seq !== fileSeq) return;
       body.replaceChildren();
@@ -6233,13 +6238,13 @@ function renderFileBody(shell: Shell, body: HTMLElement, o: FileViewOpts, r: Fil
   if (!r) { body.appendChild(el("div", "diffstat err", "the server's answer was not readable JSON")); return; }
   if (r.error) { body.appendChild(el("div", "diffstat err", r.error)); return; }
   if (r.binary) {
-    body.appendChild(el("div", "shellhint",
+    body.appendChild(el("div", "hint shellhint",
       "this is a binary file — there is nothing to read as text, and showing the decode would be"
       + " noise, not content"));
     return;
   }
   const text = r.text ?? "";
-  if (!text && !r.hash) { body.appendChild(el("div", "shellhint", "this file is empty")); return; }
+  if (!text && !r.hash) { body.appendChild(el("div", "hint shellhint", "this file is empty")); return; }
   // EVERY file is shown as its own text, .md included. The tempting move is to run mdInto over
   // markdown — it has rendered real structure since 2026-09-11 and would look good here — and it
   // would still be wrong: a viewer is for reading what the file SAYS, and a rendered heading hides
@@ -6260,7 +6265,7 @@ function renderFileBody(shell: Shell, body: HTMLElement, o: FileViewOpts, r: Fil
   // revision, a file the server declined to hand an editable hash for, a caller that named no slot.
   if (!o.edit) return;
   if (!r.hash) {
-    if (r.noEdit) body.appendChild(el("div", "shellhint", `not editable here — ${r.noEdit}`));
+    if (r.noEdit) body.appendChild(el("div", "hint shellhint", `not editable here — ${r.noEdit}`));
     return;
   }
   const slot = o.edit.slot;
@@ -7063,7 +7068,7 @@ function renderCodexDlg() {
   codexpanel.appendChild(el("div", "cxstate", `Recovery state: ${current.state}`
     + (current.sessionId ? ` · bound ${current.sessionId}` : " · no conversation bound")));
   if (codexCandidateLoading) {
-    codexpanel.appendChild(el("div", "shrhint", "Reading Codex conversation identities…"));
+    codexpanel.appendChild(el("div", "hint shrhint", "Reading Codex conversation identities…"));
   } else if (codexCandidateError) {
     // Server refusals are owner decisions and therefore stay verbatim — no client paraphrase.
     codexpanel.appendChild(el("div", "cxerr", codexCandidateError));
@@ -7074,7 +7079,7 @@ function renderCodexDlg() {
         "Candidate inventory unknown — the Codex sessions root is not configured or readable."));
     } else {
       const count = data.total ?? 0;
-      codexpanel.appendChild(el("div", "shrhint", count === 0
+      codexpanel.appendChild(el("div", "hint shrhint", count === 0
         ? "0 eligible conversations for this exact working directory."
         : `${count} eligible conversation${count === 1 ? "" : "s"}; choose one exact UUID.`));
       const list = el("div", "cxlist");
@@ -7092,7 +7097,7 @@ function renderCodexDlg() {
       }
       codexpanel.appendChild(list);
       if (data.truncated)
-        codexpanel.appendChild(el("div", "shrhint", `Showing the newest ${data.candidates.length} of ${count}.`));
+        codexpanel.appendChild(el("div", "hint shrhint", `Showing the newest ${data.candidates.length} of ${count}.`));
       if (data.boundElsewhere.length) {
         codexpanel.appendChild(el("div", "cxstate", "Bound to another active slot (not selectable)"));
         const blocked = el("div", "cxlist");
@@ -7573,14 +7578,14 @@ function plaAlarmCard(): HTMLElement | null {
   sec.appendChild(scopeTag("machine"));
   sec.appendChild(el("div", "plahd", plaOwnerHeadline(a, al.tone)));
   sec.appendChild(el("div", "plawhere", al.where));
-  sec.appendChild(el("div", "planote", `${fmtTs(a.at)} · ${plaOwnerNote(al.tone)}`));
+  sec.appendChild(el("div", "hint planote", `${fmtTs(a.at)} · ${plaOwnerNote(al.tone)}`));
   // THE WHOLE LOG, when a remote helper handed one over. `out` on the row is a 4 KB tail, and for a
   // RED audit the next question is always "which checks, and what was around them" — an answer that
   // used to live only in a run directory the helper deletes in its own `finally`. Drawn only when
   // the rail actually joined something in: no link is "no log arrived", never an empty page.
   const art = a.artifact;
   if (art) {
-    const line = el("div", "planote");
+    const line = el("div", "hint planote");
     const lg = el("a", "plalog", `suite.log · ${Math.max(1, Math.round(art.bytes / 1024))} KB`) as HTMLAnchorElement;
     lg.href = art.url;
     lg.target = "_blank";
@@ -7610,7 +7615,7 @@ function plaReceiptCard(): HTMLElement | null {
   if (prefNumber(PLA_ACK_KEY) !== a.at) return null;
   const sec = el("div", "plasec seen");
   sec.appendChild(scopeTag("machine"));
-  sec.appendChild(el("div", "planote",
+  sec.appendChild(el("div", "hint planote",
     `the ${a.result === "red" ? "failed" : "unfinished"} check after the last land (${fmtTs(a.at)}) is marked seen`));
   const back = el("button", "plaack", "show again") as HTMLButtonElement;
   back.title = "zeigt die Meldung wieder, die du als gesehen markiert hattest.";
@@ -8127,7 +8132,7 @@ async function openReview(slotId: number, initial: RvSource, startAt?: RvPick) {
     if (pick.k === "untracked") {
       const cwd = fleet.find((s) => s.id === slotId)?.cwd;
       const path = pick.path;
-      if (!cwd) { shell.detail.appendChild(el("div", "shellhint", "this slot has no working directory")); return; }
+      if (!cwd) { shell.detail.appendChild(el("div", "hint shellhint", "this slot has no working directory")); return; }
       showFileView(shell, {
         path: `${cwd}/${path}`, label: path.split("/").pop() ?? path,
         source: "untracked — git has never seen this file, so there is no diff to show. This is all"
@@ -8138,7 +8143,7 @@ async function openReview(slotId: number, initial: RvSource, startAt?: RvPick) {
       return;
     }
     const d = diffs.get(source);
-    if (!d) { shell.detail.appendChild(el("div", "shellhint", "loading…")); return; }
+    if (!d) { shell.detail.appendChild(el("div", "hint shellhint", "loading…")); return; }
     const hash = pickCommit(pick);
     if (hash) {
       const c = commits?.commits.find((x) => x.hash === hash);
@@ -8146,7 +8151,7 @@ async function openReview(slotId: number, initial: RvSource, startAt?: RvPick) {
       shell.detail.appendChild(el("div", "rvhead", c?.subject ?? "commit"));
       shell.detail.appendChild(el("div", "diffstat",
         c ? `${c.hash} · ${fmtTs(c.ts)}${c.stat ? ` · ${c.stat}` : ""}` : hash));
-      if (!cd) { shell.detail.appendChild(el("div", "shellhint", "loading…")); return; }
+      if (!cd) { shell.detail.appendChild(el("div", "hint shellhint", "loading…")); return; }
       if (cd.failed) {
         shell.detail.appendChild(el("div", "diffstat err",
           "couldn't load this commit's diff — pick it again to retry"));
@@ -8159,14 +8164,14 @@ async function openReview(slotId: number, initial: RvSource, startAt?: RvPick) {
         // `newPath` too: a rename ROW reads "old → new", while every caller that sends a path
         // (the board's changed-files card) sends the side that still exists.
         const f = cd.files.find((x) => x.path === path || x.newPath === path);
-        if (!f) { shell.detail.appendChild(el("div", "shellhint", "that file is not in this commit")); return; }
+        if (!f) { shell.detail.appendChild(el("div", "hint shellhint", "that file is not in this commit")); return; }
         shell.detail.appendChild(el("div", "rvsub", `${f.path} · +${f.add} −${f.del}`));
         rvWholeFile(f.newPath, f.text, hash);
         showDiffText(shell.detail, f.text);
         return;
       }
       if (!cd.diff) {
-        shell.detail.appendChild(el("div", "shellhint",
+        shell.detail.appendChild(el("div", "hint shellhint",
           "no textual diff — a merge commit shows none here, and neither does an empty commit"));
         return;
       }
@@ -8183,14 +8188,14 @@ async function openReview(slotId: number, initial: RvSource, startAt?: RvPick) {
     if (pick.k === "file") {
       const path = pick.path;
       const f = d.files.find((x) => x.path === path || x.newPath === path);
-      if (!f) { shell.detail.appendChild(el("div", "shellhint", "that file is no longer in this diff")); return; }
+      if (!f) { shell.detail.appendChild(el("div", "hint shellhint", "that file is no longer in this diff")); return; }
       shell.detail.appendChild(el("div", "rvhead", f.path));
       shell.detail.appendChild(el("div", "diffstat", `+${f.add} −${f.del}`));
       rvWholeFile(f.newPath, f.text, null);
       showDiffText(shell.detail, f.text);
       return;
     }
-    if (d.empty) { shell.detail.appendChild(el("div", "shellhint", d.empty)); return; }
+    if (d.empty) { shell.detail.appendChild(el("div", "hint shellhint", d.empty)); return; }
     showDiffText(shell.detail, d.diff);
   };
 
@@ -8265,7 +8270,7 @@ async function openReview(slotId: number, initial: RvSource, startAt?: RvPick) {
           // a file of this commit is selected → mark the commit as the context that file sits in
           ctx: c.hash === hash && pick.k === "file",
           sub: `${c.hash} · ${fmtTs(c.ts)}${c.stat ? ` · ${c.stat}` : ""}` });
-      if (commits.capped) shell.list.appendChild(el("div", "shellhint", "…older commits not listed"));
+      if (commits.capped) shell.list.appendChild(el("div", "hint shellhint", "…older commits not listed"));
     }
     if (commitsErr) {
       sec("Commits");
@@ -10135,7 +10140,7 @@ function qDetailSection(parent: HTMLElement, title: string, disclosure = false, 
 function renderProgramDetail(shell: Shell, id: string): void {
   const p = programsList.find((x) => x.id === id);
   if (!p) {
-    shell.detail.appendChild(el("div", "shellhint", programsRead === "fail"
+    shell.detail.appendChild(el("div", "hint shellhint", programsRead === "fail"
       ? "GET /api/programs did not answer — this row cannot be read right now"
       : "that program is gone — it was discarded or completed"));
     return;
@@ -10173,11 +10178,11 @@ function renderProgramDetail(shell: Shell, id: string): void {
       !room ? "dim" : room.free === 0 ? "warn" : "ok",
       `${budgetNote} — as read at ${fmtTs(programsAt)}`));
   shell.detail.appendChild(facts);
-  shell.detail.appendChild(el("div", "shellhint", why));
+  shell.detail.appendChild(el("div", "hint shellhint", why));
   // the sentence itself, not only as a tooltip, exactly where it costs something: a closed return
   // path and an unreadable one are the two states an owner must not scroll past.
   if (budgetNote && (!room || room.free === 0))
-    shell.detail.appendChild(el("div", "shellhint", budgetNote));
+    shell.detail.appendChild(el("div", "hint shellhint", budgetNote));
   // …and the identity sentence in full where it COSTS something: a divergent identity is a MAIN
   // whose lands are already being refused, and a tooltip is not where an owner finds that out.
   if (hs.state === "divergent") shell.detail.appendChild(el("div", "pkdwarn", hs.sentence));
@@ -10191,7 +10196,7 @@ function renderProgramDetail(shell: Shell, id: string): void {
       statusFacts.appendChild(chip(fact.label, fact.tone, fact.sentence));
     status.appendChild(statusFacts);
   }
-  status.appendChild(el("div", "shellhint",
+  status.appendChild(el("div", "hint shellhint",
     "This owner list carries D2's in-memory projection only. lastLand, lastAudit and deploy exist"
     + " only on the bound MAIN's self projection, so this board cannot attribute or render them."));
 
@@ -10270,8 +10275,8 @@ function renderProgramDetail(shell: Shell, id: string): void {
           ? "a record IS stored, but this build cannot read its stamp — an unreadable stamp is not a date"
           : "no record is stored at all, so there is no date to show"));
     pr.appendChild(prFacts);
-    pr.appendChild(el("div", "shellhint", prSt.sentence));
-    pr.appendChild(el("div", "shellhint",
+    pr.appendChild(el("div", "hint shellhint", prSt.sentence));
+    pr.appendChild(el("div", "hint shellhint",
       `POST /api/programs/${p.id}/profile — the owner-only door, and the only writer of this record.`
       + " It is FIXED while a live bound MAIN holds this program, and on a complete program, because"
       + " that session was founded under it; a stale or unbound active program stays writable so the"
@@ -10374,8 +10379,8 @@ function renderProgramDetail(shell: Shell, id: string): void {
       st.stamped ? "the server's own confirmedAt on this record — it stamps the act, no client clock is involved"
         : "no readable grant is stored, so there is no date to show"));
     pm.appendChild(pmFacts);
-    pm.appendChild(el("div", "shellhint", st.sentence));
-    pm.appendChild(el("div", "shellhint",
+    pm.appendChild(el("div", "hint shellhint", st.sentence));
+    pm.appendChild(el("div", "hint shellhint",
       `POST /api/programs/${p.id}/promotion — the owner-only door, and the only writer of this`
       + " record. green-only is the ordinary grant: it ends the routine attention on a clean land"
       + " without handing over an unreviewed conflict. Each act below is sent on its own click,"
@@ -10486,8 +10491,8 @@ function renderProgramDetail(shell: Shell, id: string): void {
           ? "a record IS stored, but this build cannot read its stamp — an unreadable stamp is not a date"
           : "no record is stored at all, so there is no date to show"));
     pd.appendChild(pdFacts);
-    pd.appendChild(el("div", "shellhint", pdSt.sentence));
-    pd.appendChild(el("div", "shellhint",
+    pd.appendChild(el("div", "hint shellhint", pdSt.sentence));
+    pd.appendChild(el("div", "hint shellhint",
       `POST /api/programs/${p.id}/dispatch — the owner-only door, and the only writer of this record.`
       + " It reaches ONE thing: whether the fleet tick may start this program's released rows while"
       + " the global dispatcher is stopped, and how many of its lanes may run at once. It does not"
@@ -10548,7 +10553,7 @@ function renderProgramDetail(shell: Shell, id: string): void {
 
   if (mark === "unknown") {
     const st = qDetailSection(shell.detail, "Binding");
-    st.appendChild(el("div", "shellhint", programsRead === "fail"
+    st.appendChild(el("div", "hint shellhint", programsRead === "fail"
         ? "No button here: the last GET /api/programs did not answer, so this row is cached context"
           + " and its binding is unknown. Founding resumes when a fresh read succeeds — an unknown"
           + " binding is not an absent one, and bootstrap-main would 409 on one that still stands."
@@ -10558,7 +10563,7 @@ function renderProgramDetail(shell: Shell, id: string): void {
   }
   if (mark === "stale") {
     const st = qDetailSection(shell.detail, "Binding");
-    st.appendChild(el("div", "shellhint",
+    st.appendChild(el("div", "hint shellhint",
       "The recorded MAIN occupant is gone. The founding form below may replace the stale binding;"
         + " the server rechecks that no live occupant still owns it before opening a new session and"
         + " names the replaced binding in its success response."));
@@ -10634,7 +10639,7 @@ function renderProgramDetail(shell: Shell, id: string): void {
     };
 
     const pr = qDetailSection(shell.detail, "Promote");
-    pr.appendChild(el("div", "shellhint", p.status === "proposed"
+    pr.appendChild(el("div", "hint shellhint", p.status === "proposed"
       ? `POST /api/programs/${p.id}/confirm, then /activate — the owner-only pair that turns a`
         + " proposal into a program Fleet will act on. Both are sent empty, so nothing here rewrites"
         + " the proposal; every refusal below is the server's own sentence, word for word."
@@ -10652,7 +10657,7 @@ function renderProgramDetail(shell: Shell, id: string): void {
       const rqFacts = el("div", "ocfacts");
       rqFacts.appendChild(chip(rq.label, rq.tone, rq.sentence));
       pr.appendChild(rqFacts);
-      pr.appendChild(el("div", rq.state === "unreadable" ? "pkdwarn" : "shellhint", rq.sentence));
+      pr.appendChild(el("div", rq.state === "unreadable" ? "pkdwarn" : "hint shellhint", rq.sentence));
     }
     if (qPlErr) pr.appendChild(el("div", "pkdwarn", qPlErr));
     const pacts = el("div", "pkdacts");
@@ -10672,7 +10677,7 @@ function renderProgramDetail(shell: Shell, id: string): void {
   if (mark === "live") return;
 
   const bs = qDetailSection(shell.detail, "Found a Program-MAIN");
-  bs.appendChild(el("div", "shellhint",
+  bs.appendChild(el("div", "hint shellhint",
     `POST /api/programs/${p.id}/bootstrap-main opens a free slot in the directory below and sends the`
     + " server-built founding brief. Fleet accepts it only for an ACTIVE program and only while a slot"
     + " is free; every refusal below is the server's own sentence, word for word."));
@@ -10872,7 +10877,7 @@ function renderQueueDetail() {
   // BUNDLE MODE owns the pane: what the marked rows would become, before the one click makes it
   if (qBundleMode) {
     shell.detail.appendChild(el("div", "qdtitle-t", "Bundle"));
-    shell.detail.appendChild(el("div", "shellhint", "Click rows on the left to mark them. The bundle is one new"
+    shell.detail.appendChild(el("div", "hint shellhint", "Click rows on the left to mark them. The bundle is one new"
       + " row carrying every marked text whole; the marked rows are archived as \"gebündelt in <id>\", and"
       + " ⧉ auflösen on the bundle restores them — released ones released again."));
     const ids = [...qSel];
@@ -10886,7 +10891,7 @@ function renderQueueDetail() {
       const draft = qBundleDraft(ids);
       shell.detail.appendChild(typeof draft === "string"
         ? el("div", "qdfind unk", draft)
-        : el("div", "shellhint", `→ one ${draft.queue ? "released" : "pending"} row`
+        : el("div", "hint shellhint", `→ one ${draft.queue ? "released" : "pending"} row`
           + `${draft.programId ? ` in ${programsList.find((p) => p.id === draft.programId)?.title ?? draft.programId}` : ""}`
           + `, ${draft.text.length} characters`));
     }
@@ -10910,7 +10915,7 @@ function renderQueueDetail() {
           ? ["History", "Select a done or archived task to inspect its record."]
           : ["Waves", "Select a projected task to inspect its evidence and actions."];
       shell.detail.appendChild(el("div", "rvhead", emptyDetail[0]));
-      shell.detail.appendChild(el("div", "shellhint", emptyDetail[1]));
+      shell.detail.appendChild(el("div", "hint shellhint", emptyDetail[1]));
       restoreFocus();
       return;
     }
@@ -10962,7 +10967,7 @@ function renderQueueDetail() {
     qProgSel.value = bindable.some((x) => x.id === keepProg) ? keepProg : "";
     const field = (label: string, control: HTMLElement, hint: string) => {
       const f = el("label", "qnewfield");
-      f.append(el("span", "qnewlabel", label), control, el("span", "qnewhint", hint));
+      f.append(el("span", "qnewlabel", label), control, el("span", "hint qnewhint", hint));
       return f;
     };
     const fields = el("div", "qnewfields");
@@ -11017,7 +11022,7 @@ function renderQueueDetail() {
   }
   const t = tasksList.find((x) => x.id === qPick);
   if (!t) {
-    shell.detail.appendChild(el("div", "shellhint", "that task is gone — it was completed or deleted"));
+    shell.detail.appendChild(el("div", "hint shellhint", "that task is gone — it was completed or deleted"));
     restoreFocus();
     return;
   }
@@ -11162,7 +11167,7 @@ function renderQueueDetail() {
       undo.disabled = qBundleBusy;
       undo.onclick = () => void qDissolveBundle(t);
       sec.appendChild(undo);
-    } else sec.appendChild(el("div", "shellhint", t.status === "archived"
+    } else sec.appendChild(el("div", "hint shellhint", t.status === "archived"
       ? "this bundle is archived — dissolved, or set aside; its sources are listed above"
       : `this bundle is ${t.status} — past the point where it can be split back`));
   }
@@ -11195,7 +11200,7 @@ function renderQueueDetail() {
       go.onclick = () => void qAct(sel.value, "notes", { note: t.id, attach: true });
       pickRow.append(sel, go);
       sec.appendChild(pickRow);
-    } else if (!holders.length) sec.appendChild(el("div", "shellhint", "no open task in this repo to attach it to"));
+    } else if (!holders.length) sec.appendChild(el("div", "hint shellhint", "no open task in this repo to attach it to"));
   }
   // WHAT HANGS OFF THE ROW, right under what can be done with it: assigned notes, verdicts, and
   // the comment thread. Never a fold — the comment box is a draft a repaint must not close.
@@ -11213,11 +11218,11 @@ function renderQueueDetail() {
   const laneLine = qLaneLine(laneJoin);
   if (laneLine) {
     evidence.appendChild(laneLine);
-    if (laneJoin.kind === "refused") evidence.appendChild(el("div", "shellhint", laneJoin.why));
+    if (laneJoin.kind === "refused") evidence.appendChild(el("div", "hint shellhint", laneJoin.why));
   } else {
-    evidence.appendChild(el("div", "shellhint", "no lane pointer on this row"));
+    evidence.appendChild(el("div", "hint shellhint", "no lane pointer on this row"));
   }
-  evidence.appendChild(el("div", "shellhint",
+  evidence.appendChild(el("div", "hint shellhint",
     "verify and land facts are not on this poll — unknown here, not green"));
   // the row's provenance and its file surface: evidence for bundling and waves, folded, because
   // it answers "why is it grouped like that", not "what do I do next"
@@ -11251,7 +11256,7 @@ function renderQueueDetail() {
       : t.filesOrigin === "card" ? "card surface, lifted without a confirming act — bundles only where both rows"
         + " name nearby ranges (FLEET_CARD_AUTOLIFT); confirming it below makes it a confirmed surface"
         : "derived from prose — never bundled until confirmed"));
-  overview.appendChild(el("div", "shellhint", t.files?.length
+  overview.appendChild(el("div", "hint shellhint", t.files?.length
     ? `known files · ${origin}: ${t.files.join(", ")}`
     : "file surface unknown — absence is not an empty surface"));
   // The PROPOSED surface, drawn UNDER the standing one and never merged into it: holding those two
@@ -11260,7 +11265,7 @@ function renderQueueDetail() {
   // door is a self route, and there is no self mirror of the confirm.
   const fprop = t.filesProposal;
   if (fprop) {
-    overview.appendChild(el("div", "shellhint",
+    overview.appendChild(el("div", "hint shellhint",
       `proposed · ${fprop.by || "unknown"} (${fmtTs(fprop.at)}): ${fprop.files.join(", ")}`));
     // two severities, two colours, never merged — the same distinction the refine validation draws
     // one section below: "this repo does not track it" is a measured finding, "the tree could not
@@ -11298,7 +11303,7 @@ function renderQueueDetail() {
     // exactly the boxes that are still ticked, read off the DOM at click time so "the paths shown"
     // and "the paths sent" cannot drift apart.
     const picks: { path: string; box: HTMLInputElement }[] = [];
-    overview.appendChild(el("div", "shellhint",
+    overview.appendChild(el("div", "hint shellhint",
       "nothing below is confirmed. Untick what the row does not actually touch — a path the brief"
       + " merely QUOTED (a verify command, a doc reference) is the common false positive — then confirm."));
     for (const path of t.files) {
@@ -11326,17 +11331,17 @@ function renderQueueDetail() {
     overview.appendChild(dacts);
     // --- end DERIVED SURFACE REVIEW ---
   }
-  if (t.cluster) overview.appendChild(el("div", "shellhint",
+  if (t.cluster) overview.appendChild(el("div", "hint shellhint",
     `cluster projection: ${[t.cluster.projekt, t.cluster.prozess, t.cluster.unterprozess].filter(Boolean).join(" / ")}`));
-  else overview.appendChild(el("div", "shellhint", "cluster projection unavailable"));
+  else overview.appendChild(el("div", "hint shellhint", "cluster projection unavailable"));
   if (qView === "waves") {
     const location = qWaveLocation(t.id, qWaveProjection());
-    if (location?.kind === "wave") overview.appendChild(el("div", "shellhint",
+    if (location?.kind === "wave") overview.appendChild(el("div", "hint shellhint",
       `Waves: Wave ${location.wave} in ${baseName(location.repo)} — no known file intersection.`));
     else if (location?.kind === "unresolved") {
       const why = location.item.reason === "unknown-files" ? "file surface unknown"
         : location.item.reason === "unknown-repo" ? "target repo unknown" : "lane capacity is zero";
-      overview.appendChild(el("div", "shellhint", `Waves: outside — ${why}.`));
+      overview.appendChild(el("div", "hint shellhint", `Waves: outside — ${why}.`));
     }
   }
   // N3 · SOURCES / VERDICTS — above the comments, because an assignment is an INSTRUCTION and a
@@ -11347,7 +11352,7 @@ function renderQueueDetail() {
     const pins = taskNotesFull.get(t.id) ?? [];
     const rows = qNoteSourceRows(pins, tasksList, taskText);
     discussion.appendChild(el("div", "rvhead", rows.length ? `Quellen · ${rows.length}` : "Quellen"));
-    if (rows.length === 0) discussion.appendChild(el("div", "shellhint",
+    if (rows.length === 0) discussion.appendChild(el("div", "hint shellhint",
       "keine — diese Zeile bekommt Notizen nur ueber die Datei-Flaeche, als Hinweis, nicht als Auftrag"));
     for (const row of rows) {
       qTextBlock(discussion, row.noteId, row.text);
@@ -11355,7 +11360,7 @@ function renderQueueDetail() {
       // "unknown" is rendered as itself. A pinned id the queue no longer answers is not an empty
       // assignment: the lane's own brief will report it the same way, and hiding it here would
       // make the two surfaces disagree about the one fact this section exists to show.
-      line.appendChild(el("div", "shellhint", row.known
+      line.appendChild(el("div", "hint shellhint", row.known
         ? `${row.status} · angeheftet von ${row.by}`
         : "unbekannt — keine Queue-Zeile traegt diese Id mehr"));
       const rx = el("button", "shrbtn", "\u2715") as HTMLButtonElement;
@@ -11379,13 +11384,13 @@ function renderQueueDetail() {
       aacts.appendChild(ab);
       discussion.appendChild(abox);
       discussion.appendChild(aacts);
-    } else discussion.appendChild(el("div", "shellhint",
+    } else discussion.appendChild(el("div", "hint shellhint",
       `die Zuordnung ist eingefroren: ein Land-Brief ist aus ihr gebaut worden (${t.status})`));
   }
   if (t.kind === "notiz") {
     const vs = qNoteVerdictRows(taskVerdictsFull.get(t.id) ?? [], tasksList);
     discussion.appendChild(el("div", "rvhead", vs.length ? `Urteile je Aufgabe · ${vs.length}` : "Urteile je Aufgabe"));
-    if (vs.length === 0) discussion.appendChild(el("div", "shellhint",
+    if (vs.length === 0) discussion.appendChild(el("div", "hint shellhint",
       "keins — diese Notiz wurde noch unter keiner Aufgabe beurteilt"));
     for (const v of vs) {
       discussion.appendChild(el("div", "qdtext", v.text));
@@ -11414,9 +11419,9 @@ function renderQueueDetail() {
     // WHO said it and WHAT they claimed, beside the timestamp. Only `erledigt` ever moves this row,
     // and only when the branch that wrote it lands — said here rather than left to be inferred,
     // because a `widerlegt` sitting under a still-pending note otherwise reads as an ignored report.
-    if (c.verdict) cline.appendChild(el("div", "shellhint",
+    if (c.verdict) cline.appendChild(el("div", "hint shellhint",
       `${c.verdict} · ${c.from ?? "lane"}${c.verdict === "erledigt" ? " — closes this note when that branch lands" : ""}`));
-    cline.appendChild(el("div", "shellhint", fmtTs(c.ts)));
+    cline.appendChild(el("div", "hint shellhint", fmtTs(c.ts)));
     const cx = el("button", "shrbtn", "✕") as HTMLButtonElement;
     cx.title = "delete this comment";
     cx.onclick = () => void qAct(t.id, "comment-delete", { comment: c.id });
@@ -11538,7 +11543,7 @@ function renderQueueDetail() {
   read.prepend(arrived);
   if (brief) request.appendChild(el("div", "rvhead", "your draft, as filed"));
   if (body) qTextBlock(request, brief ? "your draft" : "request", body);
-  else request.appendChild(el("div", "shellhint", "loading the prompt text…"));
+  else request.appendChild(el("div", "hint shellhint", "loading the prompt text…"));
   // ↻ the refine proposal. Rendered BELOW the original text on purpose: the two are meant to be
   // read against each other, and what the owner promotes is the compiled version — so the thing
   // being replaced stays visible right above it until they decide.
@@ -11824,7 +11829,7 @@ function renderQueueDetail() {
     if (ok) void qAct(t.id, "delete");
   };
   dangerActs.appendChild(del);
-  danger.appendChild(el("div", "shellhint",
+  danger.appendChild(el("div", "hint shellhint",
     "deleting drops the row and its thread for good — there is no restore. 🗄 archive keeps it."));
   danger.appendChild(dangerActs);
   restoreFocus();
@@ -12207,7 +12212,7 @@ function renderQueue() {
     head.appendChild(el("span", "shellsecn", String(count)));
     head.title = hint;
     shell.list.appendChild(head);
-    if (visibleHint) shell.list.appendChild(el("div", "qwavehint", hint));
+    if (visibleHint) shell.list.appendChild(el("div", "hint qwavehint", hint));
     return head;
   };
 
@@ -12440,7 +12445,7 @@ function renderQueue() {
         // A bundlable row that simply found no partner has no reason AGAINST it — say that, rather
         // than borrowing one of the three verdicts it did not earn.
         const reason = wave.reasonAgainst ?? (wave.ids.length > 1 ? "bündelbar" : "kein Partner");
-        const line = el("div", "qwavehint qwaveland",
+        const line = el("div", "hint qwavehint qwaveland",
           `${baseName(repo)} · ${wave.ids.join(" + ")} · ${wave.klasse} · ${wave.savingsSec}s · ${reason}`);
         if (wave.ids.length > 1) qLandWaveStart(line, wave);
         shell.list.appendChild(line);
@@ -12507,7 +12512,7 @@ function openQueue() {
   });
   qShell = shell;
 
-  const view = el("div", "qview");
+  const view = el("div", "tabrow qview");
   view.setAttribute("role", "group");
   view.setAttribute("aria-label", "Task queue views");
   const views = ([
@@ -12806,14 +12811,14 @@ function renderAuditDetail(e: AuditEntry) {
   // of one repo differ in the part it has to cut
   const where = auditProject.get(e);
   if (where) shell.detail.appendChild(el("div", "pkdpath", where.replace(/^\/Users\/[^/]+/, "~")));
-  else if (typeof e.slot === "number") shell.detail.appendChild(el("div", "shellhint",
+  else if (typeof e.slot === "number") shell.detail.appendChild(el("div", "hint shellhint",
     "no project on record for this event — the slot's opening is older than the loaded window,"
     + " or the slot had been closed. Deliberately not filled in from a LATER opening: that folder"
     + " is where the slot went next, not where this happened."));
   if (e.detail) shell.detail.appendChild(el("div", "qdtext", e.detail));
 
   if (typeof e.slot !== "number") {
-    shell.detail.appendChild(el("div", "shellhint",
+    shell.detail.appendChild(el("div", "hint shellhint",
       "this event is not attached to a slot, so there is no per-slot timeline to show"));
     return;
   }
@@ -12840,7 +12845,7 @@ function renderAuditDetail(e: AuditEntry) {
   }
   shell.detail.appendChild(tl);
   if (own.length > near.length)
-    shell.detail.appendChild(el("div", "shellhint",
+    shell.detail.appendChild(el("div", "hint shellhint",
       `showing ${near.length} of this slot's ${own.length} loaded events — filter the list to slot`
       + ` ${e.slot} to read them all`));
 }
@@ -12947,8 +12952,8 @@ function renderCommits() {
   shell.list.replaceChildren();
   cmRowOf = new Map();
   if (cmErr) { shell.list.appendChild(el("div", "diffstat err", cmErr)); shell.setRows([]); return; }
-  if (!cmData) { shell.list.appendChild(el("div", "shellhint", "loading…")); shell.setRows([]); return; }
-  if (cmData.error) { shell.list.appendChild(el("div", "shellhint", cmData.error)); shell.setRows([]); return; }
+  if (!cmData) { shell.list.appendChild(el("div", "hint shellhint", "loading…")); shell.setRows([]); return; }
+  if (cmData.error) { shell.list.appendChild(el("div", "hint shellhint", cmData.error)); shell.setRows([]); return; }
 
   // repo chooser — only when Fleet actually has more than one open, so the common case is quiet
   const ctl = el("div", "auditctl");
@@ -13036,7 +13041,7 @@ function renderCommitDetail(c: RvCommit) {
   // the pane showed a provenance note and nothing about the code, so the lens could tell you a
   // commit existed and never what it did.
   const body = el("div", "cmdiff");
-  body.appendChild(el("div", "shellhint", "reading the change…"));
+  body.appendChild(el("div", "hint shellhint", "reading the change…"));
   shell.detail.appendChild(body);
   const seq = ++cmDiffSeq;
   void (async () => {
@@ -13048,7 +13053,7 @@ function renderCommitDetail(c: RvCommit) {
     // a superseded fetch must not paint over the commit the cursor has since moved to
     if (!shell.isOpen() || seq !== cmDiffSeq) return;
     body.replaceChildren();
-    if (!repo) { body.appendChild(el("div", "shellhint", "no repo selected")); return; }
+    if (!repo) { body.appendChild(el("div", "hint shellhint", "no repo selected")); return; }
     if (!res) { body.appendChild(el("div", "diffstat err", "couldn't reach the server")); return; }
     if (res.status === 404) { body.appendChild(el("div", "diffstat err", SKEW_NOTE)); return; }
     const d = (await res.json().catch(() => null)) as
@@ -13086,7 +13091,7 @@ function renderCommitDetail(c: RvCommit) {
     if (!d.diff) {
       // a merge commit legitimately has no textual diff against its first parent. Saying "no
       // changes" there would be false; saying nothing at all is what the pane did before.
-      body.appendChild(el("div", "shellhint",
+      body.appendChild(el("div", "hint shellhint",
         "no textual diff — a merge commit shows none against its first parent, and a commit that"
         + " only moves metadata (a mode or an empty tree) has none either"));
       return;
@@ -13094,7 +13099,7 @@ function renderCommitDetail(c: RvCommit) {
     const box = el("div", "difftxt");
     renderDiffInto(box, d.diff);
     body.appendChild(box);
-    if (d.truncated) body.appendChild(el("div", "shellhint", "diff truncated — open the commit in a terminal for the rest"));
+    if (d.truncated) body.appendChild(el("div", "hint shellhint", "diff truncated — open the commit in a terminal for the rest"));
   })();
 
   // the JOIN the two lenses exist to make: did this commit arrive through a Fleet land, or not.
@@ -13107,13 +13112,13 @@ function renderCommitDetail(c: RvCommit) {
   if (!actLoaded.has("lands")) {
     // the ledger is not loaded YET — that is this window's bookkeeping, not a fact about the commit,
     // so it is fetched rather than reported. Re-renders this pane once, if it is still the one shown.
-    const note = el("div", "shellhint", "checking the land ledger…");
+    const note = el("div", "hint shellhint", "checking the land ledger…");
     shell.detail.appendChild(note);
     void loadLens("lands").then(() => {
       if (shell.isOpen() && cmPick === c.hash && actLens === "commits") renderCommitDetail(c);
     });
   } else if (!near.length) {
-    shell.detail.appendChild(el("div", "shellhint",
+    shell.detail.appendChild(el("div", "hint shellhint",
       "no land recorded within an hour of this commit — it was probably committed by hand"));
   } else {
     for (const o of near) {
@@ -13122,7 +13127,7 @@ function renderCommitDetail(c: RvCommit) {
         + `${o.shortstat ? ` · ${o.shortstat}` : ""}`;
       shell.detail.appendChild(line);
     }
-    shell.detail.appendChild(el("div", "shellhint",
+    shell.detail.appendChild(el("div", "hint shellhint",
       "matched by TIME (±1h), not identity — the ledger records a branch and a moment, not the"
       + " commit that resulted. Treat this as a lead, never as provenance."));
   }
@@ -13534,9 +13539,9 @@ function renderOutcomeDetail(o: OutcomeRow) {
       }
       row.appendChild(list);
       if (touched.length > OC_FILE_ROWS)
-        row.appendChild(el("div", "shellhint", `${OC_FILE_ROWS} of ${touched.length} shown`));
+        row.appendChild(el("div", "hint shellhint", `${OC_FILE_ROWS} of ${touched.length} shown`));
       if (!at)
-        row.appendChild(el("div", "shellhint", dispo === "landed" || dispo === "reverted"
+        row.appendChild(el("div", "hint shellhint", dispo === "landed" || dispo === "reverted"
           ? "these names cannot be opened — this row was recorded before it carried its repository"
           : "this lane never landed, so there is no revision to read these files at"));
     }
@@ -13644,7 +13649,7 @@ function akteSource<T>(host: HTMLElement, title: string, src: Measured<T>, empty
   }
   const v = src.value as unknown as { rows?: unknown[] } | unknown[] | null;
   const n = Array.isArray(v) ? v.length : Array.isArray(v?.rows) ? v.rows.length : v === null ? 0 : 1;
-  if (n === 0) { host.appendChild(el("div", "shellhint", emptyWord)); return null; }
+  if (n === 0) { host.appendChild(el("div", "hint shellhint", emptyWord)); return null; }
   return src.value;
 }
 
@@ -13705,7 +13710,7 @@ function renderAkte() {
   shell.setRows(shRows);
   if (selIdx >= 0) shell.select(selIdx, false, false);
   if (akteDoc && akteDoc.branch === aktePick) renderAkteDetail(akteDoc);
-  else if (akteBusy) { shell.detail.replaceChildren(); shell.detail.appendChild(el("div", "shellhint", "reading…")); }
+  else if (akteBusy) { shell.detail.replaceChildren(); shell.detail.appendChild(el("div", "hint shellhint", "reading…")); }
 }
 
 async function loadAkteDoc(branch: string) {
@@ -13786,7 +13791,7 @@ function renderAkteDetail(d: Dossier) {
     events && events.total > events.rows.length ? `${events.total - events.rows.length} older slot event(s)` : "",
     commits && commits.total > commits.rows.length ? `${commits.total - commits.rows.length} older commit(s)` : "",
   ].filter(Boolean);
-  if (cut.length) host.appendChild(el("div", "shellhint", `not shown: ${cut.join(", ")} — this trail is capped at its most recent entries`));
+  if (cut.length) host.appendChild(el("div", "hint shellhint", `not shown: ${cut.join(", ")} — this trail is capped at its most recent entries`));
   for (const s of steps) akteStep(host, s.kind, s.ts, s.title, s.sub);
   // the two sources that ride inside ② still get their own verdict line when they could not be read
   if (d.events.state === "unknown") akteSource(host, "slot events", d.events, "");
@@ -13820,7 +13825,7 @@ function renderAkteDetail(d: Dossier) {
       `${note.confirmedByHuman ? "confirmed by the owner" : "unattended"}`
       + `${Array.isArray(note.conflicted) && note.conflicted.length ? ` · resolved ${note.conflicted.length} conflict(s)` : ""}`);
     if (!v) {
-      host.appendChild(el("div", "shellhint", "no verify is recorded on this note — the land ran none"));
+      host.appendChild(el("div", "hint shellhint", "no verify is recorded on this note — the land ran none"));
       continue;
     }
     // the six verify states the merge verdict names, kept apart here for the same reason they are
@@ -13888,10 +13893,11 @@ function renderActivity() {
   const shell = ocShell;
   if (!shell) return;
   shell.tools.replaceChildren();
-  const sw = el("div", "actlens");
+  const sw = el("div", "tabrow actlens");
   for (const l of ACT_LENS) {
-    const b = el("button", `shrbtn${actLens === l.k ? " active" : ""}`, l.label) as HTMLButtonElement;
+    const b = el("button", `shrbtn${actLens === l.k ? " on" : ""}`, l.label) as HTMLButtonElement;
     b.title = l.title;
+    b.setAttribute("aria-pressed", String(actLens === l.k));
     b.onclick = () => { if (actLens !== l.k) void switchLens(l.k); };
     sw.appendChild(b);
   }
@@ -14096,7 +14102,7 @@ function openIdee(): void {
   ideeShell = shell;
   const pane = el("div", "ideepane");
   const ta = el("textarea", "ideeta") as HTMLTextAreaElement;
-  const hint = el("div", "shellhint", "");
+  const hint = el("div", "hint shellhint", "");
   const filen = el("button", "shrbtn primary", "File as task") as HTMLButtonElement;
   filen.type = "button";
   const paint = () => {
@@ -14131,7 +14137,7 @@ function openIdee(): void {
     };
     pane.replaceChildren(
       el("div", "ideeid", `Queue row ${id}`),
-      el("div", "shellhint",
+      el("div", "hint shellhint",
         "The row starts once its card is valid (goal, surface, DONE, VERIFY) - the dispatcher sharpens anything unclear, no lane asks back."),
       openq,
     );
@@ -14264,7 +14270,7 @@ function renderShareDlg() {
       img.src = qr.createDataURL(6, 3); // self-contained GIF data URI — no innerHTML, no network
       img.alt = shareUrl;
       box.appendChild(img);
-      box.appendChild(el("div", "shrqrhint", "scan to open the share link — password still needed"));
+      box.appendChild(el("div", "hint shrqrhint", "scan to open the share link — password still needed"));
       sharepanel.appendChild(box);
     }
     sharepanel.appendChild(copyLine("password", sh.password));
@@ -14274,7 +14280,7 @@ function renderShareDlg() {
     accessRow.appendChild(el("span", "k", "access"));
     accessRow.appendChild(el("span", "v", "view only"));
     sharepanel.appendChild(accessRow);
-    sharepanel.appendChild(el("div", "shrhint",
+    sharepanel.appendChild(el("div", "hint shrhint",
       "Guests watch — nothing they type reaches the terminal. Give link and password separately."));
     const cmts = el("div", "shrcmts");
     cmts.appendChild(el("div", "shrcmthead",
@@ -14335,7 +14341,7 @@ function renderShareDlg() {
     accessRow.appendChild(el("span", "k", "access"));
     accessRow.appendChild(el("span", "v", "view only"));
     sharepanel.appendChild(accessRow);
-    sharepanel.appendChild(el("div", "shrhint",
+    sharepanel.appendChild(el("div", "hint shrhint",
       "Guests see the live terminal but can't type or send anything."));
     const btns = el("div", "shrbtns");
     const create = el("button", "shrbtn primary", "create share link") as HTMLButtonElement;
@@ -14412,7 +14418,7 @@ function renderAutoDlg() {
   autopanel.replaceChildren();
   autopanel.appendChild(el("h2", "", `Scheduled prompts — ${s.label ?? baseName(s.cwd)}`));
   const mine = autosList.filter((a) => a.slot === autoSlot);
-  if (!mine.length) autopanel.appendChild(el("div", "shrhint", "No schedules for this session."));
+  if (!mine.length) autopanel.appendChild(el("div", "hint shrhint", "No schedules for this session."));
   for (const a of mine) {
     const row = el("div", `autorow${a.enabled ? "" : " off"}`);
     const txt = el("span", "autotext", a.text);
@@ -14642,14 +14648,14 @@ function attnClosedRow(a: AttentionRow): HTMLElement {
 // the MAIN has it. This line says what the server can prove, and "unknown" where it cannot.
 function attnDeliveryLine(d: AttentionDelivery): HTMLElement {
   if (d.state === "read")
-    return el("div", "shrhint", `read by slot ${d.readBy.slot} · ${fmtSince(d.readAt)}`);
+    return el("div", "hint shrhint", `read by slot ${d.readBy.slot} · ${fmtSince(d.readAt)}`);
   if (d.state === "unknown") return el("div", "attnwarn", `delivery unknown — ${d.why}`);
   const n = d.lastNudge;
   const nudge = n.outcome === "unknown" ? `last nudge unknown (${n.why})`
     : n.outcome === "accepted" ? `last nudge accepted ${fmtSince(n.at)}`
     : n.outcome === "unobserved" ? `last nudge typed, acceptance ${n.acceptance} ${fmtSince(n.at)}`
     : `last nudge NOT accepted ${fmtSince(n.at)}: ${n.reason}`;
-  return el("div", n.outcome === "accepted" ? "shrhint" : "attnwarn", `unread since ${fmtSince(d.since)} · ${nudge}`);
+  return el("div", n.outcome === "accepted" ? "hint shrhint" : "attnwarn", `unread since ${fmtSince(d.since)} · ${nudge}`);
 }
 
 function renderAttnDlg() {
@@ -14658,7 +14664,7 @@ function renderAttnDlg() {
   if (attnErr) attnpanel.appendChild(el("div", "attnwarn", attnErr));
   const live = attnRows.filter((a) => a.status === "open" || a.status === "send-uncertain");
   const closed = attnRows.filter((a) => a.status === "answered" || a.status === "refused");
-  if (!live.length) attnpanel.appendChild(el("div", "shrhint", "Nothing is waiting on you."));
+  if (!live.length) attnpanel.appendChild(el("div", "hint shrhint", "Nothing is waiting on you."));
   for (const a of live) attnpanel.appendChild(attnOpenRow(a));
   if (closed.length) {
     attnpanel.appendChild(el("div", "attnsep", "settled"));
@@ -14847,14 +14853,14 @@ function ownerReportRowEl(r: OwnerReportRow): HTMLElement {
   row.appendChild(head);
   // WHY THIS ROW IS HERE AT ALL, stated rather than left to be inferred from an empty receiver
   // field: an absence that looks like "nobody has looked at it" is the state this section removes.
-  row.appendChild(el("div", "shrhint", r.basis === "program"
+  row.appendChild(el("div", "hint shrhint", r.basis === "program"
     ? `Filed to Program ${r.provenance.programId}; it currently has no live bound MAIN, so the owner may judge it.`
     : r.liveness === "owner-inbox"
       ? "Filed to you directly — the lane had no coordinating session to report to."
       : `Filed to slot ${r.receiver?.slot}, whose session has since ended. No session can judge it any more.`));
   row.appendChild(el("div", "attntext", r.text));
   if (r.outsideSurface?.length)
-    row.appendChild(el("div", "shrhint", `Committed outside the card's write surface: ${r.outsideSurface.join(", ")}`));
+    row.appendChild(el("div", "hint shrhint", `Committed outside the card's write surface: ${r.outsideSurface.join(", ")}`));
   const ta = document.createElement("textarea");
   ta.className = "attnta";
   ta.rows = 2;
@@ -14906,12 +14912,12 @@ function opsUnackedRow(e: OpsPollRow, now: number): HTMLElement {
     ? `transport outcome uncertain; recovery ${e.recovery?.state ?? "unavailable"}`
     : "transport reported sent; no session acknowledgement"));
   if (uncertain && e.recovery) {
-    row.appendChild(el("div", "shrhint", `state: ${e.recovery.state}`));
-    row.appendChild(el("div", "shrhint", `next: ${e.recovery.nextAction}`));
-    row.appendChild(el("div", "shrhint", `reason: ${e.recovery.reason}`));
-    row.appendChild(el("div", "shrhint", `effect: ${e.recovery.effect}`));
+    row.appendChild(el("div", "hint shrhint", `state: ${e.recovery.state}`));
+    row.appendChild(el("div", "hint shrhint", `next: ${e.recovery.nextAction}`));
+    row.appendChild(el("div", "hint shrhint", `reason: ${e.recovery.reason}`));
+    row.appendChild(el("div", "hint shrhint", `effect: ${e.recovery.effect}`));
   } else {
-    row.appendChild(el("div", "shrhint", uncertain
+    row.appendChild(el("div", "hint shrhint", uncertain
       ? `Recorded uncertain ${secs}s ago, before Fleet could prove whether tmux accepted anything. The `
         + "text may or may not be in the pane, and no session acknowledgement has arrived either way."
       : `tmux took the keystrokes ${secs}s ago. Whether the session read them is not known — only its `
@@ -14926,16 +14932,16 @@ function renderOpsDlg() {
   const live = opsOpenNonReport(opsRows);
   const awaiting = ownerReportRows.filter(ownerReportAwaiting);
   if (!live.length && !awaiting.length && reportsAwaitingOwner === 0)
-    opspanel.appendChild(el("div", "shrhint", "Nothing is filed."));
+    opspanel.appendChild(el("div", "hint shrhint", "Nothing is filed."));
   for (const e of live) opspanel.appendChild(opsRow(e));
   if (reportsAwaitingOwner > 0 || awaiting.length) {
     opspanel.appendChild(el("h2", "", "Worker reports no session can judge — your verdict"));
-    opspanel.appendChild(el("div", "shrhint",
+    opspanel.appendChild(el("div", "hint shrhint",
       "Either the MAIN each of these was filed to is gone, or none was ever bound — so the acceptance "
       + "door inside a session is closed for good. Accepting or rejecting here is recorded as YOUR "
       + "decision, not as that MAIN's; it moves no task, lands nothing and closes no lane."));
-    if (ownerReportErr) opspanel.appendChild(el("div", "shrhint", ownerReportErr));
-    else if (!awaiting.length) opspanel.appendChild(el("div", "shrhint", "Loading…"));
+    if (ownerReportErr) opspanel.appendChild(el("div", "hint shrhint", ownerReportErr));
+    else if (!awaiting.length) opspanel.appendChild(el("div", "hint shrhint", "Loading…"));
     for (const r of awaiting) opspanel.appendChild(ownerReportRowEl(r));
   }
   const now = Date.now();
@@ -14943,7 +14949,7 @@ function renderOpsDlg() {
   if (unacked.length) {
     opspanel.appendChild(el("h2", "",
       "Pane transport without a session acknowledgement — a report, nothing to close"));
-    opspanel.appendChild(el("div", "shrhint",
+    opspanel.appendChild(el("div", "hint shrhint",
       `Sent into a pane over ${Math.round(PANE_ACK_STALE_MS / 1000)}s ago and still unacknowledged by `
       + "the receiving session. These rows are read-only here: the server-owned recovery state names any next action."));
     for (const e of unacked) opspanel.appendChild(opsUnackedRow(e, now));

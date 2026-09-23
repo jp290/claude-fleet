@@ -452,10 +452,12 @@ export async function run(ctx: Ctx): Promise<void> {
     /search\.focus\(\)/.test(openQueueSource)
       && taskPageSource.includes("#shell-queue .qview button:focus-visible")
       && taskPageSource.includes("#shell-queue .pkfilterin:focus-visible"), "openQueue + queue focus CSS");
-  check("task workbench source: 390px queue navigation gets full-width controls without horizontal overflow",
-    /@media \(max-width: 700px\)[\s\S]*?#shell-queue \.qview\s*\{[^}]*flex-basis:\s*100%/.test(taskPageSource)
+  check("task workbench source: 390px queue tabs occupy one scrolling row with touch targets",
+    /@media \(max-width: 700px\)[\s\S]*?\.tabrow \{ overflow-x: auto; flex-wrap: nowrap; max-width: 100%/.test(taskPageSource)
+      && /\.qview button \{ flex: none; min-height: 40px; \}/.test(taskPageSource)
+      && /#shell-queue \.qview\s*\{[^}]*flex-basis:\s*100%/.test(taskPageSource)
       && /#shell-queue \.pkfilterin\s*\{[^}]*max-width:\s*none/.test(taskPageSource),
-    "queue mobile CSS in public/index.html");
+    "queue mobile tab CSS in public/index.html");
   // --- DIALOG HELPER (K3 / G4.5, src/dialog.ts): ONE Rückfrage before a consequential action.
   // What is proven: the six copied risk dialogs ask through askRisk and carry neither their own
   // overlay shell nor a native confirm(); the helper closes the phone drawer before painting
@@ -512,10 +514,10 @@ export async function run(ctx: Ctx): Promise<void> {
       ["attndlg", "opsdlg", "devdlg", "codexdlg"].filter((d) =>
         !escSrc.includes(`if (${d}.style.display === "flex") close`)).join(",") || "global Escape handler");
     check("dialog helper: the .riskbtn tones follow G1.2 — chat tokens, no hex literal, no blue hover",
-      /\.riskbtn \{[^}]*var\(--r1\)/.test(taskPageSource)
-      && /\.riskbtn \{[^}]*var\(--chat-edge\)/.test(taskPageSource)
-      && /\.riskbtn:hover \{ background: var\(--c-hover\)/.test(taskPageSource)
-      && /\.riskbtn\.danger \{ border-color: var\(--danger\); color: var\(--danger\)/.test(taskPageSource)
+      /\.wordbtn, :is\(\.riskbtn, \.shrbtn, \.qbtn, \.bbtn\) \{[^}]*var\(--chat-edge\)[^}]*var\(--r1\)/.test(taskPageSource)
+      && /:is\(\.wordbtn, \.riskbtn, \.shrbtn, \.qbtn, \.bbtn\):hover:not\(:disabled\) \{\s*background: var\(--c-hover\)/.test(taskPageSource)
+      && /:is\(\.wordbtn, \.riskbtn, \.shrbtn, \.qbtn, \.bbtn\)\.danger \{\s*border-color: var\(--danger\); color: var\(--danger\)/.test(taskPageSource)
+      && !/\.riskbtn\.danger \{/.test(taskPageSource)
       && !/\.riskbtn[^\n]*#[0-9a-fA-F]{3,8}\b/.test(taskPageSource)
       && !/\.riskbtn:hover \{ background: var\(--sel\)/.test(taskPageSource),
       "G1.2 tones for the dialog's word buttons in public/index.html");
@@ -571,10 +573,9 @@ export async function run(ctx: Ctx): Promise<void> {
     check("queue style NEGATIVE: no raw hex and no pre-redesign accent inside the queue block — --danger is the only hue left",
       hexes.length === 0 && banned.every((b) => !block.includes(b)) && block.includes("var(--danger)"),
       `hex=${JSON.stringify(hexes.slice(0, 4))} banned=${JSON.stringify(banned.filter((b) => block.includes(b)))}`);
-    // the five places the blue used to reach the queue, each one answered: four in the block, and
-    // since D-2 the row selection at the BASE .shellrow rule every window shares (asserted above).
-    const overridden = ["#shell-queue .shrbtn.primary {",
-      "#shell-queue .qview button.on {", "#shell-queue .shellrow.qnew .shrname {", "#shell-queue .qchip.qc-prog"];
+    // Buttons and tabs use the same material across windows; the queue keeps only state-specific rules.
+    const sharedControls = [".wordbtn, :is(.riskbtn, .shrbtn, .qbtn, .bbtn) {",
+      ".tabrow button.on {", 'const view = el("div", "tabrow qview")'];
     // THE STRIPE, TWICE. Session 2 removed the five-hue 3px border (owner: "die klammern links …
     // werden auch noch ersetzt"); the evening of the same day he asked for a lifecycle mark back
     // ("eine schmale vertikale linie links"). What came back is not the old border: ONE 2px mark per
@@ -637,9 +638,12 @@ export async function run(ctx: Ctx): Promise<void> {
       /copy\.textContent = "copy"; copy\.classList\.remove\("ok"\);/.test(taskClientSource)
         && /setTimeout\(\(\) => \{ copy\.textContent = "copy"/.test(taskClientSource),
       "copy receipt reset");
-    check("queue style: every rule that carried the blue accent into the queue has an override in the block",
-      overridden.every((sel) => block.includes(sel)),
-      JSON.stringify(overridden.filter((sel) => !block.includes(sel))));
+    check("queue style: word buttons and tabs inherit the shared chat controls",
+      sharedControls.slice(0, 2).every((sel) => taskPageSource.includes(sel))
+        && taskClientSource.includes(sharedControls[2])
+        && block.includes("#shell-queue .shrbtn.primary { color: var(--chat-void); }")
+        && !block.includes("#shell-queue .qview button.on {"),
+      "shared word button and tab rules");
   }
 
   // --- TASK DETAIL HEAD (src/client.ts, between "// --- TASK DETAIL HEAD" and its closing

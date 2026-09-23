@@ -150,25 +150,14 @@
   #instbtn .devname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #instbtn .devname:empty { display: none; }
   #instbtn .devcount { flex: none; color: var(--chat-faint); font-variant-numeric: tabular-nums; }
-  .instnote { padding: 6px 7px 3px; border-top: 1px solid var(--chat-edge); margin-top: 2px;
-    color: var(--chat-faint); font-size: var(--chat-ui-fs); line-height: 1.4; }
-  /* THE HEAD UNDER THE TITLE (owner 2026-09-21, rounds 10/12/13/14: "die pane-split buttons in ein
-     quadrat packen" · "das viererbündel … linksbündig … und der rest rechts und dann sauber
-     sortiert" · "der task-queue button darf größer" · "so jetzt doch viel zu groß … irgendwo
-     dazwischen … oder vllt auch ne andere Farbe"). Left, the four views as ONE square — a 2×2
-     grid of 23px buttons, 48px a side. Right, one right-aligned block: the small functions in
-     TWO rows and, in the corner, the task queue as a square of its own, sized by ONE constant
-     (--queue-scale). 1.48 makes it 34px: the largest size at which two rows still fit with room
-     to spare — the rows get 166px minus the queue, and with attn, ops and dev showing a count
-     each row is 130px wide, so 36px is the ceiling and 34 keeps 2px. The queue takes the corner
-     because the most important button belongs on the one spot that never moves: everything
-     that comes and goes grows leftwards, away from it. Row 1 what came in and what happened
-     (attn · ops · audit · lands), row 2 setup (dev · saver · ⋯ · +); the conditional buttons lead
-     their row. One button grammar: 23px squares, a drawn icon (src/icons.ts) whose stroke is
-     divided by the scale so a bigger icon draws the SAME line weight, the chat tokens. Round 14
-     had three Fassungen (34px neutral / 34px accent / 23px accent); the owner took the first. */
+  .instnote { padding: 6px 7px 3px; border-top: 1px solid var(--chat-edge); margin-top: 2px; }
+  /* Layout choices use the tab row; the function controls keep their two-row grouping. */
   #sidetools { --queue-scale: 1.48; display: flex; align-items: center; gap: 8px; padding: 0 10px 8px; }
   #layouts { flex: none; display: grid; grid-template-columns: 23px 23px; grid-auto-rows: 23px; gap: 2px; }
+  #sidetools #layouts.tabrow { display: flex; align-items: center; padding: 0; border: 0; background: none; }
+  #sidetools #layouts.tabrow button { border: 0; background: transparent; }
+  #sidetools #layouts.tabrow button.on { color: var(--chat-ink); background: var(--c-hover);
+    box-shadow: inset 0 0 0 1px var(--chat-edge); }
   #toolrows { margin-left: auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .toolrow { display: flex; align-items: center; justify-content: flex-end; gap: 2px; min-width: 0; height: 23px; }
   #sidetools button { flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 3px;
@@ -177,7 +166,6 @@
     font-family: inherit; cursor: pointer; }
   #sidetools button:hover { color: var(--chat-ink); }
   #sidetools #headplus { border-style: dashed; background: none; color: var(--chat-faint); }
-  #layouts button.active { color: var(--chat-ink); border-color: var(--chat-mute); background: var(--chat-surface); }
   #sidetools .tricon { display: grid; place-items: center; }
   #sidetools .ico { width: 14px; height: 14px; }
   #sidetools #queuebtn { width: calc(23px * var(--queue-scale)); height: calc(23px * var(--queue-scale)); }
@@ -910,8 +898,7 @@
   /* the queue's scope, inline in the toolbar line: project switch + program picker */
   .qscope { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .qscope:empty { display: none; }
-  .qview button .qtabn { margin-left: 6px; font-size: 10px; color: var(--faint); }
-  .qview button.on .qtabn { color: #b4c6f5; }
+  .tabrow button .qtabn { margin-left: 6px; color: var(--chat-faint); font-variant-numeric: tabular-nums; }
   .qprogsel { height: 32px; max-width: 220px; color: var(--text); background: var(--raised); border: 1px solid var(--line);
     border-radius: 8px; padding: 0 8px; font: 12px ui-monospace, Menlo, Consolas, monospace; }
   .qprogsel:focus { outline: none; border-color: var(--focus); }
@@ -933,19 +920,22 @@
   .qbundlebtn.on { color: #e6d3ff; background: #2d2140; border-color: #4b3670; }
   .qempty { font-size: 11.5px; color: var(--faint); padding: 4px 10px 8px; }
   .qdisp { flex: 1; font-size: 11.5px; color: var(--dim); display: flex; align-items: center; gap: 8px; }
-  .qview { flex: none; display: flex; padding: 2px; border: 1px solid var(--line); border-radius: 8px;
-    background: #181818; }
-  .qview button { min-height: 26px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent;
-    color: var(--dim); font: inherit; font-size: 11.5px; cursor: pointer; }
-  .qview button:hover { color: var(--text); }
-  .qview button.on { color: #dbe6ff; background: var(--sel); box-shadow: inset 0 0 0 1px #3b4b70; }
+  .tabrow { display: flex; gap: 2px; min-width: 0; padding: 2px; border: 1px solid var(--chat-edge);
+    border-radius: var(--r2); background: var(--chat-surface); overflow-x: auto; flex-wrap: nowrap; }
+  .tabrow button { flex: none; min-height: 26px; padding: 0 10px; border: 0; border-radius: var(--r1);
+    background: transparent; color: var(--chat-mute); font-family: var(--chat-sans);
+    font-size: var(--chat-ui-fs); white-space: nowrap; cursor: pointer; }
+  .tabrow button:hover { color: var(--chat-ink); }
+  .tabrow button.on { color: var(--chat-ink); background: var(--c-hover);
+    box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .qview { flex: none; }
   #shell-queue .qview button:focus-visible, #shell-queue .pkfilterin:focus-visible,
   .shellclose:focus-visible, .shellback:focus-visible, .qfold:focus-visible {
     outline: 2px solid var(--focus); outline-offset: 2px;
   }
   /* Visible rather than title-only: touch screens have no hover, and the evidence caveat is the
      difference between “no known collision” and a promise of safety. It is not a row fact. */
-  .qwavehint { padding: 0 7px 6px; color: var(--faint); font-size: 10.5px; line-height: 1.4; }
+  .qwavehint { padding: 0 7px 6px; }
   /* W3 · the evidence a ▸ start wave button is pressed ON. Indented under its own wave line so the
      rows it lists read as that wave's members and not as further waves; the shared-file line is the
      one FACT the bundling stands on, so it is the one that is not dimmed further. */
@@ -1116,14 +1106,13 @@
   .qattach select { flex: 1; min-width: 0; }
   .shellsec.qfoldhead:hover .shellsect { color: #9aa0a6; }
   .qfoldmark { font-size: 10px; color: var(--faint); width: 8px; }
-  .shrbtn.danger { border-color: #5e2c3a; color: var(--del); }
   /* shared risk-preview panel (showRiskPreview) — real file names/commit subjects before
      a destructive click, not only after a refusal. Built dynamically, styled off .overlay/.panel */
   .riskpanel { gap: 8px; }
   /* land review shows a full diff, so it needs more width than the file-list risk preview */
   .landreviewpanel { width: min(760px, 94vw); }
   /* explainer so the merge-preview diff isn't misread as unsaved work — committing doesn't clear it, landing does */
-  .landhint { color: var(--accent); font-size: 11.5px; padding: 2px 0 4px; line-height: 1.45; }
+  .landhint { padding: 2px 0 4px; line-height: 1.45; }
   .riskempty { color: var(--add); font-size: 12.5px; padding: 6px 0; }
   .riskhead { color: var(--amber); font-size: 11px; font-weight: 700; margin-top: 4px; }
   /* "left alone" section of the commit preview — muted, so it reads as skipped, not committed */
@@ -1135,13 +1124,24 @@
     overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, Menlo, Consolas, monospace; }
   .riskmore { font-size: 11px; color: var(--faint); padding-top: 2px; }
   .riskbtns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
-  .riskbtn { padding: 7px 14px; border-radius: var(--r1); border: 1px solid var(--chat-edge); background: var(--chat-surface);
-    color: var(--chat-ink); font-size: var(--chat-ui-fs); font-family: var(--chat-sans); cursor: pointer;
+  .wordbtn, :is(.riskbtn, .shrbtn, .qbtn, .bbtn) { border: 1px solid var(--chat-edge);
+    border-radius: var(--r1); background: var(--chat-surface); color: var(--chat-ink);
+    font-family: var(--chat-sans); font-size: var(--chat-ui-fs); font-weight: 500; cursor: pointer;
     transition: background var(--t), border-color var(--t); }
-  .riskbtn:hover { background: var(--c-hover); border-color: var(--c-edge-hi); }
-  .riskbtn.primary { border-color: var(--chat-ink); background: var(--chat-ink); color: var(--chat-surface); font-weight: 500; }
-  .riskbtn.danger { border-color: var(--danger); color: var(--danger); background: none; }
-  .riskbtn.danger:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+  :is(.wordbtn, .riskbtn, .shrbtn, .qbtn, .bbtn):hover:not(:disabled) {
+    background: var(--c-hover); border-color: var(--c-edge-hi); }
+  :is(.wordbtn, .riskbtn, .shrbtn, .qbtn, .bbtn).primary {
+    border-color: var(--chat-ink); background: var(--chat-ink); color: var(--chat-void); }
+  :is(.wordbtn, .riskbtn, .shrbtn, .qbtn, .bbtn).primary:hover:not(:disabled) {
+    background: var(--chat-ink); border-color: var(--chat-ink); color: var(--chat-void); }
+  :is(.wordbtn, .riskbtn, .shrbtn, .qbtn, .bbtn).danger {
+    border-color: var(--danger); color: var(--danger); background: var(--chat-surface); }
+  :is(.wordbtn, .riskbtn, .shrbtn, .qbtn, .bbtn).danger:hover:not(:disabled) {
+    border-color: var(--danger); color: var(--danger); background: var(--c-hover); }
+  .hint { font-family: var(--chat-sans); font-size: var(--chat-ui-fs); color: var(--chat-mute);
+    line-height: 1.5; overflow-wrap: anywhere; }
+  .hint.boxed { padding: 8px 10px; border: 1px solid var(--chat-edge); border-radius: var(--r2); }
+  .riskbtn { padding: 7px 14px; }
   .difftxt { white-space: pre; overflow: auto; max-height: 60vh; background: #101010; border: 1px solid var(--line-soft);
     border-radius: 8px; padding: 10px 12px; font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace; }
   .difftxt .add { color: var(--add); } .difftxt .del { color: var(--del); } .difftxt .hdr { color: var(--accent); }
@@ -1159,11 +1159,8 @@
   .qaddin:focus { outline: none; border-color: var(--focus); }
   .qlegend { color: var(--faint); font-size: 11px; line-height: 1.5; margin: 2px 0 12px;
     padding: 8px 10px; background: #161616; border-radius: 8px; }
-  .qbtn { flex: none; padding: 4px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised);
-    color: var(--text); font-size: 11px; cursor: pointer; font-family: inherit; }
-  .qbtn:hover { background: var(--sel); }
-  .qbtn.primary { background: var(--accent); border-color: var(--accent); color: #10131c; font-weight: 700; padding: 4px 16px; }
-  .qbtn.primary:hover { background: #6a92e7; }
+  .qbtn { flex: none; padding: 4px 9px; }
+  .qbtn.primary { padding: 4px 16px; }
   /* the head row's shape is #sidetools button (top of this sheet); what stays here is state.
      attn/ops are hidden entirely at zero (client). The OPERATIONS inbox is deliberately NOT the
      attention button — an operation fact is not a decision request. On = amber, the same "this is
@@ -1406,11 +1403,11 @@
   .qnewfield { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .qnewfield .qaddin, .qnewfield .pkdsel { width: 100%; box-sizing: border-box; min-height: 32px; }
   .qnewlabel { font-size: 11px; font-weight: 500; color: var(--dim); }
-  .qnewhint { font-size: 11px; line-height: 15px; color: var(--faint); }
+  .qnewhint { line-height: 15px; }
   .qnewfoot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
   .qnewkey { font-size: 11px; color: var(--faint); font-family: ui-monospace, Menlo, monospace; }
   #shell-queue .qnewsub, #shell-queue .qnewlabel { color: var(--chat-mute); }
-  #shell-queue .qnewhint, #shell-queue .qnewkey { color: var(--chat-faint); }
+  #shell-queue .qnewkey { color: var(--chat-faint); }
   #shell-queue .qnewform .qnewtext { font-family: var(--chat-sans); font-size: var(--chat-fs); line-height: 1.6;
     padding: 12px; }
   #shell-queue .qaddin:focus, #shell-queue .qdcrit:focus, #shell-queue .pkdsel:focus {
@@ -1519,26 +1516,16 @@
   #shell-queue textarea.qdcrit { padding: 8px 12px; margin: 8px 0; }
   /* BUTTONS: the accent is the ink. A primary button is the one that reads brightest, not the
      one that is blue; ✕ delete keeps --danger, which is now the only red on the surface. */
-  #shell-queue .shrbtn { font-family: var(--chat-sans); font-size: var(--chat-ui-fs);
-    border-radius: var(--r2); background: var(--chat-raised); border-color: var(--chat-edge);
-    color: var(--chat-mute); transition: color var(--t), background var(--t), border-color var(--t); }
-  #shell-queue .shrbtn:hover { color: var(--chat-ink); background: var(--c-hover); border-color: var(--c-edge-hi); }
-  #shell-queue .shrbtn.primary { background: var(--c-hover); border-color: var(--c-edge-hi);
-    color: var(--chat-ink); font-weight: 500; }
+  #shell-queue .shrbtn { color: var(--chat-mute); }
+  #shell-queue .shrbtn.primary { color: var(--chat-void); }
+  #shell-queue .shrbtn.danger { color: var(--danger); }
   #shell-queue .shrbtn.qraw { color: var(--chat-mute); background: var(--chat-raised); border-style: dashed;
     border-color: var(--c-edge-hi); }
-  #shell-queue .shrbtn.danger, #shell-queue .shrbtn.danger:hover { color: var(--danger); border-color: var(--chat-edge); }
-  #shell-queue .qview, #shell-queue .qprogsel, #shell-queue .pkfilterin, #shell-queue .qkind-select,
+  #shell-queue .qprogsel, #shell-queue .pkfilterin, #shell-queue .qkind-select,
   #shell-queue .qdcrit, #shell-queue .qaddin { font-family: var(--chat-sans); font-size: var(--chat-ui-fs);
     border-radius: var(--r2); background: var(--chat-raised); border-color: var(--chat-edge); color: var(--chat-prose); }
   #shell-queue .qdcrit, #shell-queue .qaddin { font-family: var(--chat-mono); font-size: var(--chat-code-fs); }
-  #shell-queue .qview { padding: 2px; background: var(--chat-surface); }
-  #shell-queue .qview button { border-radius: var(--r1); color: var(--chat-mute); font-size: var(--chat-ui-fs);
-    transition: color var(--t), background var(--t); }
-  #shell-queue .qview button:hover { color: var(--chat-ink); }
-  #shell-queue .qview button.on { color: var(--chat-ink); background: var(--c-hover); box-shadow: inset 0 0 0 1px var(--chat-edge); }
-  #shell-queue .qview button .qtabn, #shell-queue .qtreen .qtabn { color: var(--chat-faint); font-variant-numeric: tabular-nums; }
-  #shell-queue .qview button.on .qtabn { color: var(--chat-mute); }
+  #shell-queue .qtreen .qtabn { color: var(--chat-faint); font-variant-numeric: tabular-nums; }
   #shell-queue .qtreen { font-size: var(--chat-ui-fs); border-radius: var(--r1); color: var(--chat-mute);
     transition: color var(--t), background var(--t); }
   #shell-queue .qtreen:hover { color: var(--chat-ink); background: var(--c-hover); }
@@ -1627,6 +1614,9 @@
 
   /* condition MUST match MOBILE_MQ in src/client.ts and src/shell.ts */
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
+    :is(.riskbtn, .shrbtn, .qbtn, .bbtn) { min-height: 40px; }
+    .tabrow { overflow-x: auto; flex-wrap: nowrap; max-width: 100%; }
+    .tabrow button { min-height: 40px; flex: none; }
     .shell { align-items: stretch; justify-content: stretch; }
     .shellwin { width: 100vw; height: 100dvh; height: var(--vvh, 100dvh);
       border: none; border-radius: 0; padding-top: env(safe-area-inset-top); }
@@ -1658,9 +1648,9 @@
     #shell-queue .qbundlebtn { margin-left: 0; min-height: 40px; }
     #shell-queue .qnewbtn { margin-left: 0; min-height: 40px; }
     #shell-queue .qtree, #shell-queue .qlayoutbtn { display: none; }
-    .qview button { flex: 1; min-height: 40px; }
+    .qview button { flex: none; min-height: 40px; }
     #shell-queue .pkfilterin { flex: 1 0 100%; max-width: none; min-height: 40px; }
-    .qwavehint { font-size: 11px; padding-bottom: 8px; }
+    .qwavehint { padding-bottom: 8px; }
   }
 
   /* picker controls, built by openPicker into the window's .shelltools. They sit on ONE line and
@@ -1927,7 +1917,7 @@
     padding: 6px 8px; font-family: inherit; font-size: 12px; }
   .auditctl .auditcount { margin-left: auto; color: var(--faint); font-size: 11px; }
   /* the lens switch sits above whatever controls the current lens brings */
-  .actlens { display: flex; gap: 6px; flex-basis: 100%; }
+  .actlens { flex-basis: 100%; }
   /* the selected event's own slot timeline, in the detail pane */
   .audtl { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
   .audtlrow { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; border-radius: 6px;
@@ -2119,13 +2109,8 @@
   .shrqr { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 10px 0 4px; }
   .shrqr img { width: 196px; height: 196px; border-radius: 8px; background: #fff; padding: 6px;
     image-rendering: pixelated; }
-  .shrqrhint { font-size: 10px; color: var(--dim); }
-  .shrbtn { padding: 7px 13px; border-radius: 7px; border: 1px solid var(--line); background: var(--raised);
-    color: var(--text); cursor: pointer; font-family: inherit; font-size: 12px; }
-  .shrbtn.primary { background: var(--accent); color: #10131c; border-color: var(--accent); font-weight: 700; }
-  .shrbtn.danger:hover { color: var(--danger); border-color: #5a2a2a; }
-  .shrbtn.active { color: var(--accent); border-color: var(--sel); background: #1c2437; }
-  .shrhint { font-size: 11px; color: var(--dim); line-height: 1.5; }
+  .shrbtn { padding: 7px 13px; }
+  .shrbtn.active { color: var(--chat-ink); border-color: var(--chat-mute); background: var(--chat-surface); }
   .shrbtns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
   #codexpanel { gap: 12px; }
   .cxstate { font-size: 11px; color: #aaa; line-height: 1.5; }
@@ -2261,8 +2246,7 @@
   #board .bsec > h3 + .bsubhead { margin-top: 0; }
   #board .bsubhead { margin: 12px 0 4px; font-size: 11.5px; letter-spacing: 0; text-transform: none; color: var(--b-ink3); }
   #board .bsubstat { margin-left: 8px; font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3); }
-  #board .bstate, #board .bnote { color: var(--b-ink2); line-height: 1.45; }
-  #board .bnote.ready { color: var(--add); }
+  #board .bstate { color: var(--b-ink2); line-height: 1.45; }
   #board .bstate .editing { color: var(--amber); }
   #board .bempty { padding: 2px 0; color: var(--b-ink3); }
   #board .bstale { color: var(--amber); font-size: 11.5px; margin-top: 6px; }
@@ -2353,11 +2337,7 @@
 
   /* buttons: bordered = an action, quiet = a lesser one, primary = THE action (one at a time) */
   #board .bbtnrow, #board .blandacts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
-  #board .bbtn { margin-top: 0; padding: 5px 11px; border: 1px solid var(--chat-edge); border-radius: 6px; background: none;
-    color: var(--b-ink); font-size: 12px; font-weight: 500; }
-  #board .bbtn:hover:not(:disabled) { border-color: var(--chat-faint); background: var(--b-hover); color: var(--chat-ink); }
-  #board .bbtn.primary { border-color: var(--chat-ink); background: var(--chat-ink); color: var(--chat-surface); font-weight: 600; }
-  #board .bbtn.primary:hover:not(:disabled) { background: var(--chat-ink); color: var(--chat-surface); }
+  #board .bbtn { margin-top: 0; padding: 5px 11px; }
   #board .bbtn.quiet { border-color: transparent; color: var(--b-ink2); padding: 5px 7px; }
   #board .bbtn.quiet:hover:not(:disabled) { color: var(--b-ink); background: var(--b-hover); border-color: transparent; }
   /* the glyph-only quiet button (the Files block's re-read): the .ico is one step under the
@@ -2517,8 +2497,7 @@
     letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; }
   .bmore:hover { color: #bbb; }
   /* a lifecycle status line: amber = uncommitted, green(ready) = something to land */
-  .bnote { color: #8a8a8a; line-height: 1.5; margin-top: 4px; }
-  .bnote.ready { color: var(--add); }
+  .bnote { margin-top: 4px; }
   /* interrupted rebase/merge warning — amber, bordered, so it reads as "act on me" */
   .bgitop { color: var(--amber); background: #2a2320; border: 1px solid #5a4a2a; border-radius: 7px;
     padding: 7px 9px; font-size: 11px; line-height: 1.5; margin: 2px 0 8px; }
@@ -2529,26 +2508,14 @@
   /* mid-run commit warning (in the confirm / staging preview) */
   .bmidrun { color: var(--amber); background: #2a2320; border: 1px solid #5a4a2a; border-radius: 7px;
     padding: 8px 10px; font-size: 11.5px; line-height: 1.55; }
-  /* --- ONE board button family: every action reads the same; lifecycle colour only where
-     it carries meaning (amber = uncommitted work to save, green = ready to land) --- */
+  /* Board actions share the word-button tones. */
   .bbtnrow { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
-  .bbtn { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px;
-    padding: 5px 11px; border-radius: 7px; border: 1px solid var(--line); background: var(--raised);
-    color: #cbd2e0; font-size: 11px; font-family: inherit; cursor: pointer; }
+  .bbtn { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; padding: 5px 11px; }
   .bbtnrow .bbtn { margin-top: 0; }
-  .bbtn:hover:not(:disabled) { border-color: var(--focus); color: #fff; }
   .bbtn:disabled { opacity: 0.55; cursor: default; }
-  .bbtn.amber { border-color: #5a4a2a; background: #241d12; color: var(--amber); }
-  .bbtn.amber:hover:not(:disabled) { background: #2e2416; border-color: #6a552f; color: #f0c078; }
-  .bbtn.green { border-color: #2c5e3a; background: #16281c; color: var(--add); }
-  .bbtn.green:hover:not(:disabled) { background: #1d3826; color: #b6e08a; }
-  .bbtn.accent { border-color: var(--sel); background: #1c2437; color: var(--accent); }
-  .bbtn.accent:hover:not(:disabled) { background: #26314f; color: #9ab8ff; }
-  .bbtn.on { border-color: #5a4a2a; background: #241d12; color: var(--amber); }
+  .bbtn.on { border-color: var(--chat-mute); background: var(--chat-surface); color: var(--chat-ink); }
   .bbtn.ghost { background: transparent; }
-  .bbtn.ghost:hover:not(:disabled) { background: #1d1710; }
-  .bbtn.subtle { margin-top: 5px; padding: 3px 9px; font-size: 10px; color: var(--dim); }
-  .bbtn.subtle:hover:not(:disabled) { color: var(--text); border-color: #3a3a44; }
+  .bbtn.subtle { margin-top: 5px; padding: 3px 9px; color: var(--chat-mute); }
   /* one helper device: a card in the machine-level group. The board is 264px wide and a device
      names ITSELF (up to 40 chars), so the name must wrap rather than push the panel sideways —
      everything else in here is an ordinary block and wraps on its own. */
@@ -2899,7 +2866,7 @@
       <span id="instwrap"><button id="instbtn"></button><div id="instmenu"></div></span>
     </div>
     <div id="sidetools">
-      <span id="layouts">
+      <span id="layouts" class="tabrow" role="group" aria-label="Pane layouts">
         <button data-l="1" title="single pane"></button>
         <button data-l="2" title="2-up split"></button>
         <button data-l="3" title="one tall pane, two beside it"></button>

@@ -1210,9 +1210,9 @@ export async function run(): Promise<void> {
   // numbers themselves are measured live in e2e/watch.ts against tickMigrate's own fixture.
   const succSrc = boardSrc.slice(boardSrc.indexOf("if (brief?.succession) {"),
     boardSrc.indexOf("// identifiers: machine strings in mono"));
-  check("client: the head names all four succession facts — fill, handover threshold, rail, handoff",
+  check("client: the head names all four succession facts — fill, handover threshold, kind, handoff (G0.5: rail→Kind, MAIN-abgeleitet)",
     /srow\("Fill",/.test(succSrc) && /srow\("Handover",/.test(succSrc)
-    && /srow\("Rail", sc\.rail/.test(succSrc) && /srow\("Handoff",/.test(succSrc),
+    && /srow\("Kind", sc\.rail/.test(succSrc) && !/srow\("Rail"/.test(succSrc) && /srow\("Handoff",/.test(succSrc),
     "the succession rows in renderBoard");
   check("client: an unmeasurable fill reads \"not measurable\" — the percentage exists only inside the sc.fill branch",
     /: "not measurable"/.test(succSrc)

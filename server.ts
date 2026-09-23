@@ -15763,9 +15763,9 @@ async function tickDispatch(): Promise<void> {
 // Applies wherever a chunk reaches the socket — the queue flush in open() and, once ready,
 // every later broadcast: the overlapping bytes may not have been queued yet when open()
 // finished, since poll() only runs every 100 ms.
-// Compares ABSOLUTE positions rather than counting bytes off a snapshot of s.offset: the
-// resize reseed and slot adoption both move that cursor without broadcasting, and a
-// count-based skip would then eat live output — a gap, i.e. the failure this exists to avoid.
+// Compares ABSOLUTE positions rather than counting bytes off a snapshot of s.offset:
+// slot adoption can move that cursor without broadcasting, and a count-based skip
+// would then eat live output — a gap, i.e. the failure this exists to avoid.
 function afterSeed(ws: ServerWebSocket<WSData>, from: number, chunk: Uint8Array): Uint8Array | null {
   if (ws.data.seedUntil <= 0) return chunk;
   // from < 0 marks a non-stream chunk: CLEAR, broadcast when the stream was truncated
@@ -15777,8 +15777,8 @@ function afterSeed(ws: ServerWebSocket<WSData>, from: number, chunk: Uint8Array)
   return drop > 0 ? chunk.subarray(drop) : chunk;
 }
 
-// The owner reseed's capture and the stream position it covers (websocket.open, matching-width
-// branch). stat1 → capture → stat2: equal sizes mean no byte reached the stream file while the
+// A reseed's capture and the stream position it covers (websocket.open). stat1 → capture → stat2:
+// equal sizes mean no byte reached the stream file while the
 // capture ran, so stat1 is exactly where the seed ends. Unequal: capture again, stat2 becomes the
 // new stat1, at most OWNER_SEED_ROUNDS captures. HARD INVARIANT (gap safety): seedUntil is never
 // larger than a stat read BEFORE the capture that is sent — at the cap that is the stat before the
@@ -15815,13 +15815,16 @@ function broadcast(s: Slot, from: number, chunk: Uint8Array): void {
   }
 }
 
+const pollingSlots = new Set<number>();
 async function poll(): Promise<void> {
   await Promise.all(
     slots.map(async (s) => {
+      if (pollingSlots.has(s.id)) return;
       const occupant = slotStreamOccupant(s);
       if (!occupant) return;
-      const file = occupantStreamPath(occupant);
+      pollingSlots.add(s.id);
       try {
+        const file = occupantStreamPath(occupant);
         const size = (await stat(file)).size;
         if (!sameSlotStreamOccupant(s, occupant)) return;
         if (size < s.offset) {
@@ -15857,6 +15860,8 @@ async function poll(): Promise<void> {
         }
       } catch {
         // stream file briefly missing during recreate — next tick picks it up
+      } finally {
+        pollingSlots.delete(s.id);
       }
     }),
   );
@@ -39895,18 +39900,10 @@ Bun.serve<WSData>({
           if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
           s.cols = cols;
           s.rows = rows;
-          // -e (color) is safe here: MEASURED on tmux 3.6a (2026-08-05), `-e` minus SGR is BYTE-IDENTICAL to
-          // the plain capture and carries ZERO cursor-motion escapes. The old fear is now a CHECK: e2e/slots.ts
-          // pins that the seed carries SGR and no cursor motion. Measurement: server-narrativ-archiv.md#websocket-open
-          const cap = await tmux("capture-pane", "-t", target.paneId, "-e", "-p", "-S", `-${seedLines}`);
-          if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
-          ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
-          try {
-            const size = (await stat(streamFile)).size;
-            if (sameSlotStreamOccupant(s, occupant) && !slotTeardownInflight.has(s.id)) s.offset = size;
-          } catch {
-            // stream file briefly missing during recreate — next poll tick picks it up
-          }
+          const seeded = await ownerSeedCapture(s, occupant, streamFile, target, seedLines);
+          if (!seeded) return;
+          ws.data.seedUntil = seeded.seedUntil;
+          ws.send(new TextEncoder().encode(crlf(seeded.cap) + "\r\n"));
           if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
           await repaint(target.windowId);
         });

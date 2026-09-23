@@ -888,6 +888,56 @@ export async function run(): Promise<void> {
   const rszSame = await post("/resize", { slot: 2, cols: reseedCols, rows: reseedRows });
   check("/resize accepts matching size (no-op)", rszSame.ok);
 
+  // Keep one viewer attached while a second forces the resize/reseed branch. The first viewer
+  // must receive every live line even when the second captures the pane; the second must see
+  // each line once across its capture and the subsequent stream.
+  {
+    const marks = (text: string) => [...text.matchAll(/T2MARK-(\d+)\b/g)].map((m) => Number(m[1]));
+    const complete = (values: number[]) => values.length === 50
+      && values.every((n, i) => n === i + 1);
+    const first = new WebSocket(wsUrl(2));
+    first.binaryType = "arraybuffer";
+    let firstText = "", secondText = "", secondSeed = "";
+    let firstReady = false, firstError = false, secondError = false;
+    first.onmessage = (e) => {
+      firstReady = true;
+      firstText += new TextDecoder().decode(e.data as ArrayBuffer);
+    };
+    first.onerror = () => { firstError = true; };
+    const waitFor = async (ready: () => boolean, timeoutMs: number): Promise<boolean> => {
+      const until = Date.now() + timeoutMs;
+      while (Date.now() < until) {
+        if (ready()) return true;
+        await Bun.sleep(25);
+      }
+      return ready();
+    };
+    const attached = await waitFor(() => firstReady || firstError, 5000);
+    check("resize reseed fixture: first socket receives its seed", attached && firstReady && !firstError);
+    await tmuxOut("send-keys", "-t", "s2", "for i in $(seq 1 50); do echo T2MARK-$i; sleep 0.05; done", "Enter");
+    const flowing = await waitFor(() => marks(firstText).length >= 12 || firstError, 10000);
+    check("resize reseed fixture: live markers flow before second socket opens",
+      flowing && marks(firstText).length >= 12 && !firstError, `${marks(firstText).length} marks`);
+    const second = new WebSocket(`${wsUrl(2)}&cols=${reseedCols}&rows=${reseedRows}&force=1`);
+    second.binaryType = "arraybuffer";
+    second.onmessage = (e) => {
+      const frame = new TextDecoder().decode(e.data as ArrayBuffer);
+      if (!secondSeed) secondSeed = frame;
+      secondText += frame;
+    };
+    second.onerror = () => { secondError = true; };
+    await waitFor(() => (marks(firstText).includes(50) && marks(secondText).includes(50))
+      || firstError || secondError, 15000);
+    first.close();
+    second.close();
+    const firstMarks = marks(firstText), secondMarks = marks(secondText), seedMarks = marks(secondSeed);
+    check("resize reseed keeps the first socket's live markers exactly once",
+      complete(firstMarks), `${firstMarks.length} marks, ${firstMarks[0]}..${firstMarks[firstMarks.length - 1]}`);
+    check("forced second socket receives capture and live markers exactly once",
+      complete(secondMarks) && seedMarks.length >= 12 && seedMarks.length < 50,
+      `${secondMarks.length} marks, ${secondMarks[0]}..${secondMarks[secondMarks.length - 1]}; seed ${seedMarks.length}`);
+  }
+
   // --- the owner reseed at a MATCHING width (no cols/rows on the URL → server.ts's third
   // websocket.open branch). It used to answer with a tail of the raw stream capped at 2 MB,
   // which bound at its full value on every live pane whose stream had outgrown it. It now

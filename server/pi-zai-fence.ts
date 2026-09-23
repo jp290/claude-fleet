@@ -1,6 +1,6 @@
 // pi-zai's READ fence: the SBPL profile a pi-zai pane runs pi behind (server.ts#PI_ZAI_HARNESS).
-// Pure — every path arrives resolved, nothing here touches the disk — so e2e/pins.ts can run the
-// builder over fixture paths and hold the profile it GENERATES, not a prose copy of it.
+// The spawn supplies resolved base paths; the additional private roots are resolved here before
+// the profile is built. e2e/pins.ts runs the builder over fixture paths, not a prose copy.
 //
 // The shape and every rule are the measured draft of docs/messungen/2026-09-21-pi-zai-lesezaun.md
 // §2, probed there as T1–T5: `allow default` plus targeted denies, so pi keeps writing, building,
@@ -11,6 +11,9 @@
 // The live fleet's tmux socket name (server/tmux.ts#SOCK's default). Denied on EVERY build, not
 // only when this server drives it: a test or scratch server's pi-zai pane must not reach the live
 // panes either.
+import { realpathSync } from "node:fs";
+import { basename, dirname } from "node:path";
+
 export const LIVE_TMUX_SOCK = "claudefleet";
 
 // The same charset server.ts#SPAWN_PATH_RE admits, repeated here because this module must stay
@@ -35,14 +38,30 @@ export interface PiZaiFenceInput {
   sockets: readonly string[]; // further socket names to deny beside LIVE_TMUX_SOCK
 }
 
-// Every path MUST already be a realpath: SBPL compares against the path the kernel resolved, and
+// Every path in the generated profile must be a realpath: SBPL compares against the path the kernel resolved, and
 // on macOS /tmp and $TMPDIR are symlinks (/private/...), so a literal would silently match nothing.
 // The regex below holds no backslash on purpose: `.` and `+` are escaped as `[.]`/`[+]`, so the
 // profile survives a tmux display copy that strips backslashes byte-for-byte.
 export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
+  const realpathLoose = (p: string): string | null => {
+    try { return realpathSync(p); }
+    catch (err) { if ((err as NodeJS.ErrnoException).code !== "ENOENT") return null; }
+    const parent = dirname(p);
+    if (parent === p) return null;
+    const resolvedParent = realpathLoose(parent);
+    return resolvedParent === null ? null : `${resolvedParent}/${basename(p)}`;
+  };
   const socks = [...new Set([LIVE_TMUX_SOCK, ...i.sockets])].map((s) => `${i.tmuxDir}/${s}`);
   const own = `${i.agentDir}/sessions/${piSessionSlug(i.cwd)}`;
-  const paths = [i.home, i.fleetDir, i.agentDir, i.keyFile, i.cwd, own, ...socks];
+  const roots = [
+    `${i.home}/claudeJobApplication`,
+    `${i.home}/private-repo-a`,
+    `${i.home}/private-repo-a.worktrees`,
+    `${i.home}/Desktop/Bewerbungen_April2026`,
+  ].map(realpathLoose);
+  if (roots.some((p) => p === null)) return null;
+  const applicationRoots = roots.filter((p): p is string => p !== null);
+  const paths = [i.home, i.fleetDir, i.agentDir, i.keyFile, i.cwd, own, ...socks, ...applicationRoots];
   if (!paths.every((p) => FENCE_PATH_RE.test(p) && !p.split("/").includes(".."))) return null;
   const rx = (p: string): string => p.replace(/[.+]/g, (c) => `[${c}]`);
   const sub = (p: string): string => `(subpath "${p}")`;
@@ -56,7 +75,7 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
     + ` ${lit(`${h}/.codex/auth.json`)} ${lit(`${h}/.claude/.credentials.json`)} ${lit(`${h}/.claude.json`)}`
     + ` ${sub(`${h}/.config/gh`)} ${sub(`${h}/.cloudflared`)} ${lit(`${h}/.pi/agent/auth.json`)}`
     + ` ${sub(`${h}/.claude/projects`)} ${sub(`${h}/.codex/sessions`)} ${sub(`${h}/.pi/agent/sessions`)}`
-    + ` ${sub(`${i.agentDir}/sessions`)})`
+    + ` ${sub(`${i.agentDir}/sessions`)} ${applicationRoots.map(sub).join(" ")})`
     // ...and this pane's OWN session back open; SBPL lets the later rule win. Without it pi dies at
     // the mkdir of its session directory before any prompt (attic, "Der pi-Zaun").
     + `(allow file-read* file-write* ${sub(own)})`

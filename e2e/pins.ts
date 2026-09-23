@@ -21,7 +21,7 @@
 // NOT what this file is for: e2e/dirs-pins.ts, an unrelated neighbour, tests the directory picker's
 // bookmark list. "Pin" there is a UI feature; "pin" here is a fastener between two files.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
@@ -3999,6 +3999,26 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       allowDefault: prof.startsWith("(version 1)(allow default)"),
     };
     pin(RULE_PZ_FENCE, Object.values(parts).every(Boolean), JSON.stringify(parts));
+    const applicationRoots = [
+      "/Users/fx/claudeJobApplication",
+      "/Users/fx/private-repo-a",
+      "/Users/fx/private-repo-a.worktrees",
+      "/Users/fx/Desktop/Bewerbungen_April2026",
+    ];
+    pin("pi-zai's generated file-read/file-write deny covers all four application subtrees",
+      applicationRoots.every((p) => denyFiles.includes(`(subpath "${p}")`)),
+      `${applicationRoots.filter((p) => !denyFiles.includes(`(subpath "${p}")`)).length} missing roots`);
+    const symlinkFixture = realpathSync(mkdtempSync(`${tmpdir()}/pi-zai-roots-`));
+    try {
+      mkdirSync(`${symlinkFixture}/home`);
+      mkdirSync(`${symlinkFixture}/actual`);
+      symlinkSync(`${symlinkFixture}/actual`, `${symlinkFixture}/home/claudeJobApplication`);
+      const linked = piZaiFenceProfile({ ...fx, home: `${symlinkFixture}/home` }) ?? "";
+      pin("pi-zai resolves an application-root symlink before writing the SBPL subpath",
+        linked.includes(`(subpath "${symlinkFixture}/actual")`)
+          && !linked.includes(`(subpath "${symlinkFixture}/home/claudeJobApplication")`),
+        `resolved=${linked.includes(`(subpath "${symlinkFixture}/actual")`)}`);
+    } finally { rmSync(symlinkFixture, { recursive: true, force: true }); }
     pin(`${RULE_PZ_FENCE} — a path that could escape SBPL or shell quoting builds NO profile`,
       piZaiFenceProfile({ ...fx, cwd: "/Users/fx/lane'1" }) === null && piZaiFenceProfile({ ...fx, cwd: '/Users/fx/lane"1' }) === null,
       "quote-bearing cwd must yield null");

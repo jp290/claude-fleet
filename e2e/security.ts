@@ -1372,6 +1372,28 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     check("§6a fence canary: fleet.json, the key file and a foreign pi-zai session are refused MECHANICALLY behind the fence",
       fenced.every((o) => o.includes("Operation not permitted") && !o.includes("OPENED")),
       fenced.map((o) => o.trim().slice(-90)).join(" | "));
+    const applicationRoots = [
+      `${process.env.HOME}/claudeJobApplication`,
+      `${process.env.HOME}/private-repo-a`,
+      `${process.env.HOME}/private-repo-a.worktrees`,
+      `${process.env.HOME}/Desktop/Bewerbungen_April2026`,
+    ];
+    check("§6a application fence canary has all four actual roots available for the probe",
+      applicationRoots.every((p) => existsSync(p)),
+      `${applicationRoots.filter((p) => !existsSync(p)).length} missing roots`);
+    for (const [index, root] of applicationRoots.entries()) {
+      if (!existsSync(root)) continue;
+      const resolved = realpathSync(root);
+      for (const path of [resolved, `${resolved}/.`]) {
+        const probe = `stat -f %N '${path}' >/dev/null && echo OPENED`;
+        const open = pzRun(probe, false);
+        const denied = pzRun(probe, true);
+        check(`§6a application root ${index + 1} ${path === resolved ? "root" : "subpath"} opens without the fence`,
+          open.includes("OPENED"), open.trim().slice(-90));
+        check(`§6a application root ${index + 1} ${path === resolved ? "root" : "subpath"} gets EPERM behind the spawned fence`,
+          denied.includes("Operation not permitted") && !denied.includes("OPENED"), denied.trim().slice(-90));
+      }
+    }
     const own = pzRun(`echo x > '${zaiOwn}/fence-canary' && echo WROTE; rm -f '${zaiOwn}/fence-canary'`, true);
     const lane = pzRun(`: < '${realpathSync(REPO)}/.git/HEAD' && echo OPENED`, true);
     check("§6a fence canary: the pane's OWN session dir stays writable and the repo stays readable",

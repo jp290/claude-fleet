@@ -645,13 +645,20 @@ an. Das Binary ist absolut (`/usr/bin/sandbox-exec`, `FLEET_PI_ZAI_SANDBOX_EXEC`
 Linux-Helfer der Suite), nie über `PATH`. **Gesperrt** (Lesen und Schreiben): `fleet.json*` und
 `.env*` im Server-Checkout (Regex, fängt die `.bak`-Kopien), `~/.ssh`, der Key und
 `~/.config/claude-fleet/secrets`, die Logins von codex/claude/gh/cloudflared/pi, die Transkripte
-aller claude-/codex-/pi-Sessions und fremder pi-zai-Slots; die Umgebung fremder Prozesse (das Paar
+aller claude-/codex-/pi-Sessions und fremder pi-zai-Slots; außerdem die beim Profilbau per Realpath
+aufgelösten Unterbäume `~/claudeJobApplication`, `~/private-repo-a`,
+`~/private-repo-a.worktrees` und `~/Desktop/Bewerbungen_April2026` (Lesen und Schreiben, einschließlich
+Unterpfaden). §6a prüft die vier Wurzeln mit offenen Kontrollproben und `EPERM` aus dem tatsächlich
+gespawnten Profil, ohne Dateiinhalte auszugeben. Die Umgebung fremder Prozesse (das Paar
 `process-info*` others + `sysctl-read kern.proc`, gemessen 396 → 2 lesbare PIDs); der
 `claudefleet`-tmux-Socket; Keychain-Lookups. `e2e/pins.ts` hält das erzeugte Profil, `e2e/security.ts`
 §6a führt es aus. **Offen bleibt:** das eigene Env (`ZAI_API_KEY`, der eigene `FLEET_SELF_TOKEN`);
 das Netz — was lesbar ist, ist exfiltrierbar; alles außerhalb des Inventars, u. a. 38 weitere `.env`
 unter `~` (ein Deny-Profil ist so gut wie sein Inventar); andere tmux-Sockets als `claudefleet`.
-**Preis:** `ps` ist setuid und startet unter keinem `sandbox-exec`-Profil — `e2e/pins.ts`
+Ein bereits laufender pi-zai-Prozess behält sein altes Profil; erst Owner-Deploy und neuer Spawn
+übernehmen diese vier Regeln. Bei späterer Umleitung einer Wurzel per Symlink muss erneut gespawnt
+werden; ein Symlink aus einem geschützten Baum auf ein Ziel außerhalb des Baums bleibt eine Grenze
+des pfadbasierten Zauns. **Preis:** `ps` ist setuid und startet unter keinem `sandbox-exec`-Profil — `e2e/pins.ts`
 überspringt darum seine Geburts-Regel benannt, der Suite-Lock verweigert geschlossen (Suiten über
 Suite-Offer), `ctl.sh`-Owner-Verben fehlen. `sandbox-exec` ist von Apple als deprecated markiert;
 der Selbsttest fängt einen Bruch. Second-host/Linux ist ungemessen (Gegenstück wäre `bwrap`).

@@ -1111,7 +1111,11 @@ export async function run(): Promise<void> {
   const busyState = JSON.stringify({ merges: { "999": { status: "interrupted", landed: false, at: 1 } }, slots: {} });
   writeFileSync(`${CH}/fleet.json`, busyState);
   writeFileSync(`${CH}/staged.txt`, "staged\n"); cg("add", "staged.txt");
-  const homeEnv = { FLEET_CTL_HOME: CH };
+  // FLEET_HUB_REMOTE is pinned EMPTY for the block below rather than left to whatever the process
+  // inherited: "no hub configured" is a behaviour under test here (nothing pushed, nothing
+  // claimed), and a suite that happened to run with the variable set would silently test the other
+  // one. The hub checks further down set it explicitly, per run.
+  const homeEnv = { FLEET_CTL_HOME: CH, FLEET_HUB_REMOTE: "" };
   const commitsBefore = cg("rev-list", "--count", "HEAD");
 
   const t0 = Date.now();
@@ -1155,6 +1159,63 @@ export async function run(): Promise<void> {
   const cmNoMsg = await ctl(["commit-main"], homeEnv);
   check("ctl commit-main: no -m is refused with exit 2 before the sensor is asked",
     cmNoMsg.code === 2 && cmNoMsg.err.includes("-m <msgfile>"), `exit ${cmNoMsg.code} ${cmNoMsg.err.slice(0, 160)}`);
+  check("ctl commit-main: with no FLEET_HUB_REMOTE nothing is pushed and nothing is claimed about one",
+    (cmWaited.json as { pushed?: unknown })?.pushed === null
+      && cmWaited.out.includes("nothing was pushed and nothing is claimed"),
+    `pushed=${JSON.stringify((cmWaited.json as { pushed?: unknown })?.pushed)} :: ${cmWaited.out.slice(0, 200)}`);
+
+  // --- W5d: THE PUSH HALF. A direct commit that stays on one host is the window that strands the
+  // NEXT land here, so the commit and its push are one move — and a refused push is a named state
+  // of its own, never a silent success and never a rewritten commit.
+  const HUBD = `${ROOT}/ctl-commit-hub.git`;
+  const OTHER = `${ROOT}/ctl-commit-other`;
+  for (const p of [HUBD, OTHER]) rmSync(p, { recursive: true, force: true });
+  const hubInit = spawnSync("git", ["init", "-q", "--bare", "-b", "main", HUBD], { encoding: "utf8" });
+  cg("branch", "-M", "main");
+  cg("remote", "add", "hub", HUBD);
+  const seeded = cg("push", "-q", "hub", "main");
+  const hubEnv = { FLEET_CTL_HOME: CH, FLEET_HUB_REMOTE: "hub" };
+  const hubHead = (): string => gitOut(HUBD, "rev-parse", "main");
+  check("(setup) a bare hub exists and the throwaway home can reach it as remote `hub`",
+    hubInit.status === 0 && hubHead() === cg("rev-parse", "HEAD"),
+    `init=${hubInit.status} hub=${hubHead().slice(0, 8)} home=${cg("rev-parse", "HEAD").slice(0, 8)} push=${seeded}`);
+
+  writeFileSync(`${CH}/pushed.txt`, "pushed\n"); cg("add", "pushed.txt");
+  const cmPush = await ctl(["commit-main", "-m", commitMsg, "--json"], hubEnv);
+  check("ctl commit-main: with a hub configured the commit is pushed ff-only in the same move",
+    cmPush.code === 0 && (cmPush.json as { pushed?: boolean })?.pushed === true
+      && (cmPush.json as { sha?: string })?.sha === cg("rev-parse", "HEAD")
+      && hubHead() === cg("rev-parse", "HEAD"),
+    `exit=${cmPush.code} json=${JSON.stringify(cmPush.json)} hub=${hubHead().slice(0, 8)} home=${cg("rev-parse", "HEAD").slice(0, 8)}`);
+
+  // the hub moves on under us, exactly as the other landing host would move it
+  const cloned2 = spawnSync("git", ["clone", "-q", HUBD, OTHER], { encoding: "utf8" });
+  for (const kv of [["user.email", "ctl@probe"], ["user.name", "ctl probe"], ["commit.gpgsign", "false"]])
+    gitOut(OTHER, "config", kv[0] as string, kv[1] as string);
+  writeFileSync(`${OTHER}/foreign.txt`, "the other host\n");
+  gitOut(OTHER, "add", "foreign.txt"); gitOut(OTHER, "commit", "-qm", "foreign");
+  gitOut(OTHER, "push", "-q", "origin", "main");
+  const hubAhead = hubHead();
+  writeFileSync(`${CH}/stranded.txt`, "stranded\n"); cg("add", "stranded.txt");
+  const headBeforeRefusal = cg("rev-parse", "HEAD");
+  const cmRefused = await ctl(["commit-main", "-m", commitMsg, "--json"], hubEnv);
+  check("ctl commit-main: a hub that moved on is exit 3 — the commit STANDS here and the refusal says so",
+    cmRefused.code === 3 && (cmRefused.json as { committed?: boolean })?.committed === true
+      && (cmRefused.json as { pushed?: boolean })?.pushed === false
+      // the commit really happened: HEAD moved and carries the staged file
+      && cg("rev-parse", "HEAD") !== headBeforeRefusal
+      && cg("show", "--name-only", "--format=", "HEAD") === "stranded.txt"
+      && cmRefused.err.includes("IS COMMITTED"),
+    `exit=${cmRefused.code} committed=${JSON.stringify((cmRefused.json as { committed?: unknown })?.committed)} head=${headBeforeRefusal.slice(0, 8)}->${cg("rev-parse", "HEAD").slice(0, 8)} err=${cmRefused.err.slice(0, 200)}`);
+  check("…and the refusal names the repair rather than describing the problem — fetch, rebase, push, none of them run for you",
+    typeof (cmRefused.json as { fix?: unknown })?.fix === "string"
+      && /fetch hub/.test((cmRefused.json as { fix: string }).fix)
+      && /rebase hub\/main/.test((cmRefused.json as { fix: string }).fix)
+      && /push hub HEAD:refs\/heads\/main/.test((cmRefused.json as { fix: string }).fix)
+      // and it did NOT quietly run any of them: the hub is untouched and HEAD was not rewritten
+      && hubHead() === hubAhead,
+    `fix=${JSON.stringify((cmRefused.json as { fix?: unknown })?.fix)} hub=${hubHead().slice(0, 8)} want=${hubAhead.slice(0, 8)}`);
+  for (const p of [HUBD, OTHER]) rmSync(p, { recursive: true, force: true });
   for (const p of [CH, msgFile, commitMsg]) rmSync(p, { recursive: true, force: true });
 
   // === credentials ==============================================================================

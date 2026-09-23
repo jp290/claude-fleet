@@ -66,7 +66,7 @@ Scope and sources, so the omissions are not silent:
 - `fleet-e2e-postland-audit.ts` — e2e for VERIFICATION TIER 2 — the post-land audit (server.ts, grep POSTLAND_AUDIT_CMD). The MAIN
 - `fleet-e2e-security.ts` — Security e2e: the perimeter properties that must not silently regress. This is a SEPARATE
 - `fleet-e2e.ts` — e2e for claude-fleet: run from the repo root with the server already up.
-- `fleet-sync.sh` — fleet-sync.sh — the FOLLOWER half of the dual-host git transport (docs/dual-host-git-transport.md).
+- `fleet-sync.sh` — fleet-sync.sh — the PULL half of the dual-host git transport (docs/dual-host-git-transport.md).
 - `graph-coverage.ts` — graph-coverage.ts — share of server function declarations missing from the graphify graph.
 - `handoff-rotate.ts` — handoff-rotate.ts — keeps HANDOFF.md's top `#` section and appends every other one, byte for byte, to docs/attic.
 - `land-candidate.ts` — land-candidate.ts — pure, read-only projection of merge facts for future PromotionPolicy work.

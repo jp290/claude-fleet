@@ -230,6 +230,11 @@ Zeile nicht um; er LIEST sie: `card-extract.ts` gibt einem Haiku genau einen Str
 sonst den Rohtext — und bekommt ein festes Objekt zurück
 (`{ziel, rolle{harness,model,effort}, surface{files,symbols,creates}, done, verify, verboten, program?, size?, after?}`).
 
+Kopf-Format (`ROLLE:/GROESSE:/FLAECHE:/NEU:/NACH:/VERIFY:/DONE:/VERBOTEN:`, darunter die Ziel-Prosa): der Wert eines
+Kopfzeils reicht bis zum Zeilenende — DONE ist EIN Absatz; läuft sein Satz in eine zweite Zeile, endet dort der
+Kopfblock, und eine erst danach stehende Kopfzeile (etwa `VERBOTEN:`) wird als benannte `format:`-Lücke gemeldet,
+statt still `valid:true` mit leerem `verboten` zu geben (Zeile d3f73751, 2026-09-20).
+
 **Der Extraktor bekommt KEIN Repository und keine Werkzeuge** (`tools: TEXT_ONLY_TOOLS`, gepinnt in
 `e2e/pins.ts`). Das ist kein Sparzwang, sondern die Konstruktion: jedes Feld, das er zurückgibt,
 wird danach gegen eine Tatsache geprüft, die dieser Prozess selbst feststellen kann —

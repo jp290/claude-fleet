@@ -9003,6 +9003,44 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(fmt) an empty VERBOTEN (the \u2014 renderCardHead writes) and an absent one both read as NO constraint, not an invented one",
       JSON.stringify(vbNone?.verboten) === "[]" && JSON.stringify(vbAbsent?.verboten) === "[]",
       JSON.stringify({ none: vbNone?.verboten ?? null, absent: vbAbsent?.verboten ?? null }));
+    // A HEADER LINE AFTER THE BLOCK (measured live 2026-09-20, row d3f73751): a DONE that reaches
+    // for a second line ends the block on that line, and the VERBOTEN: after it was neither field
+    // nor prose — the card read back valid:true with verboten [] and the constraint bytes inside
+    // ziel, while a9b96235's single-line DONE kept all eight entries. The stray line must come
+    // back as a named refusing gap; a single-line card must stay exactly what it was.
+    const d3Text = [
+      "[FLEET-BETRIEB · KOPFBLOCK-PROBE]",
+      "ROLLE: claude/claude-opus-5[1m]/high",
+      "GROESSE: klein",
+      "FLAECHE: server.ts",
+      "VERIFY: bun e2e/pins.ts",
+      "DONE: der DONE-Satz laeuft in eine zweite Zeile",
+      "und diese Fortsetzungszeile beendet den Kopfblock",
+      "VERBOTEN: nichts an code.txt \u00b7 kein Auto-Dispatch",
+    ].join("\n");
+    const d3Raw = parseFormattedCard(d3Text);
+    const d3 = d3Raw ? validateCard(d3Raw, { ...cardCtx, sourceText: d3Text }) : null;
+    check("(fmt) a DONE over two lines breaks the header block: the VERBOTEN line after it is a named format gap, not a valid card with verboten []",
+      !!d3 && d3.valid === false
+      && d3.body.verboten.length === 0 && d3.body.done === "der DONE-Satz laeuft in eine zweite Zeile"
+      && d3.gaps.some((g) => g.startsWith("format:") && g.includes("VERBOTEN") && g.includes("kein Auto-Dispatch")),
+      JSON.stringify(d3));
+    const a9Text = [
+      "[FLEET-BETRIEB · EINZEILER-PROBE]",
+      "ROLLE: claude/claude-opus-5[1m]/high",
+      "GROESSE: klein",
+      "FLAECHE: server.ts",
+      "VERIFY: bun e2e/pins.ts",
+      "DONE: der ganze DONE-Satz steht in genau einer Zeile",
+      "VERBOTEN: eins \u00b7 zwei \u00b7 drei \u00b7 vier \u00b7 fuenf \u00b7 sechs \u00b7 sieben \u00b7 acht",
+    ].join("\n");
+    const a9Raw = parseFormattedCard(a9Text);
+    const a9 = a9Raw ? validateCard(a9Raw, { ...cardCtx, sourceText: a9Text }) : null;
+    check("(fmt) a single-line DONE keeps the block intact: the card stays valid and carries every verboten entry (a9b96235 kept 8/8)",
+      !!a9 && a9.valid === true && a9.gaps.length === 0
+      && JSON.stringify(a9.body.verboten)
+        === JSON.stringify(["eins", "zwei", "drei", "vier", "fuenf", "sechs", "sieben", "acht"]),
+      JSON.stringify(a9));
 
     // the LIVE half: file that row, let the tick read it through the format path (no model runs),
     // then move its brief and watch the re-read land on the SAME two fields.

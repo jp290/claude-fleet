@@ -154,8 +154,9 @@ liefert eine FORM, geprueft wird gegen eine Tatsache.
   (Baseline v2) trifft 8/12 auf einem frischen, vorab gelabelten Satz; das fehlende Drittel sind
   Zweck-Fragen, die das Praefix nicht sieht (`docs/messungen/2026-09-23-jev-session-klassen-pilot.md`).
   Pakete, Filter und Offline-Validator stehen lokal bereit. Der Jev-Lauf auf den 12 Paketen folgt nach
-  Owner-Reihenfolge erst, wenn die Sperre der Fremdwurzeln fuer neue GLM-Sessions gelandet,
-  deployt und an einem neuen Spawn wirksam ist; danach wird der Versand dem Owner erneut vorgelegt.
+  Owner-Reihenfolge erst, wenn die Sperre der Fremdwurzeln fuer neue GLM-Sessions steht (Stand
+  2026-09-23: Nachfolger bd84a89f gelandet, Owner-.env und Deploy erfolgt, ein neuer pi-zai-Spawn
+  belegt die fuenf Root-/Kindpfad-Denies); danach wird der Versand dem Owner erneut vorgelegt.
   Bis dahin ist Praefix plus Rolle die Antwort.
 - Bestand der Schnittstelle: drei Tage oeffentlich, ein Anbieter, geschlossene Gewichte, Limits in
   Bewegung. Deshalb steht Jev nie auf einem kritischen Pfad.

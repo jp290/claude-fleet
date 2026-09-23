@@ -12,6 +12,7 @@ import { modelLabel } from "./modelname";
 import { DraftBook } from "./drafts";
 import { attachEntityCards, type EntFacts } from "./entcard";
 import { loadChatSizes, onChatSize, sizePanel, stepChatSizes } from "./chatsize";
+import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
 import { pendingSettledBy } from "./pendingsend";
@@ -182,10 +183,15 @@ function renderInstanceHead() {
   if (!pick) setInstMenu(false);
 }
 
-document.addEventListener("click", (e) => {
-  if (instMenuOpen() && !instWrap.contains(e.target as Node)) setInstMenu(false);
-}, true);
-window.addEventListener("keydown", (e) => { if (e.key === "Escape" && instMenuOpen()) setInstMenu(false); });
+// the instance menu's outside-click and Escape live in src/popover.ts (G4.1/K5) — like every
+// popover on this page, one helper owns closing, focus return and the arrow-key row walk
+popover({
+  panel: () => instMenu,
+  trigger: () => instBtn,
+  isOpen: instMenuOpen,
+  close: (refocus) => { setInstMenu(false); if (refocus) instBtn.focus(); },
+  rows: () => [...instMenu.querySelectorAll<HTMLButtonElement>(".instrow")],
+});
 
 // navigator.clipboard only exists in a secure context (HTTPS or localhost) — this
 // dashboard is normally reached over plain HTTP via a Tailscale IP, so it's undefined
@@ -1683,6 +1689,20 @@ async function doRebase(slot: number): Promise<void> {
 // session's share/export/rename under another session's name.
 let boardMenuOpen = false;
 let boardMenuSlot: number | null = null;
+// the session menu's outside-click, Escape and arrow walk live in src/popover.ts too (G4.1/K5);
+// the board REBUILDS itself, so panel, trigger and rows are read at event time, and the focus
+// return waits one frame for the rebuild the close itself triggers
+popover({
+  panel: () => boardBody.querySelector<HTMLElement>(".bmenu"),
+  trigger: () => boardBody.querySelector<HTMLElement>(".bheadmenu.on"),
+  isOpen: () => boardMenuOpen,
+  close: (refocus) => {
+    boardMenuOpen = false;
+    void renderBoard();
+    if (refocus) requestAnimationFrame(() => boardBody.querySelector<HTMLElement>(".bheadmenu")?.focus());
+  },
+  rows: () => [...boardBody.querySelectorAll<HTMLButtonElement>(".bmenu .bmenuitem")],
+});
 // per-slot outline cursor, incremental like pollChat: full fetch once, then only new entries
 const outline = new Map<number, { total: number; source: string | null; prompts: string[]; err: string | null }>();
 // A review finding as the OUTCOME LENS reads it (src/client.ts, the outcome detail): the board's
@@ -2922,15 +2942,17 @@ function errorsSection(): HTMLElement | null {
   const sec = el("div", "bsec balert");
   sec.appendChild(scopeTag("machine"));
   const many = e.total !== e.distinct;
-  const head = el("div", "bstate",
-    `⚠ ${e.total} server error${e.total === 1 ? "" : "s"}${many ? ` · ${e.distinct} distinct` : ""}`
-    + ` · since ${fmtTs(e.since)}`);
-  head.title = "Thrown by the server since it booted. Held in memory only — a restart clears this list,"
-    + " and server.log keeps the history. Click for the rows.";
-  // inline rather than a new class: the stylesheet lives in public/index.html, which the demo repo
+  // a BUTTON, not a clickable div: the error line is one of the column's actions (D-4 rest).
+  // Inline rather than a new class: the stylesheet lives in public/index.html, which the demo repo
   // derives its own page from (CLAUDE.md) — and a lane cannot build that repo to check it. One
   // property here has no reach outside this file; a rule there has one nothing available can test.
-  head.style.cursor = "pointer";
+  const head = el("button", "bstate",
+    `⚠ ${e.total} server error${e.total === 1 ? "" : "s"}${many ? ` · ${e.distinct} distinct` : ""}`
+    + ` · since ${fmtTs(e.since)}`) as HTMLButtonElement;
+  head.style.cssText =
+    "background:none;border:0;padding:0;width:100%;text-align:left;font:inherit;color:inherit;cursor:pointer;";
+  head.title = "Thrown by the server since it booted. Held in memory only — a restart clears this list,"
+    + " and server.log keeps the history. Click for the rows.";
   head.onclick = () => {
     errorsOpen = !errorsOpen;
     // one fetch per (boot, total): reopening after nothing new happened costs no request
@@ -3619,7 +3641,7 @@ async function renderBoard() {
         b.textContent = j?.resumed ? "Session back" : "Restarted fresh — the conversation could not be resumed";
         await refresh();
       });
-      idsec.appendChild(menu);
+      top.appendChild(menu); // the menu hangs at its ⋯ button (G4.1), not in the section's flow
     }
     nodes.push(idsec);
 
@@ -4761,10 +4783,18 @@ function optSwitch(field: "model" | "effort", slot: number, current: string, sho
   wrap.append(btn, pop);
   return wrap;
 }
-document.addEventListener("pointerdown", (e) => {
-  const t = e.target;
-  if (!optOpen || (t instanceof Element && t.closest(".optswrap"))) return;
-  closeOpts();
+// the composer popovers' outside-click and Escape also live in src/popover.ts (G4.1/K5), scoped
+// to compOpts so a handled Escape never reaches the shell windows' window-level handler
+popover({
+  panel: () => compOpts.querySelector<HTMLElement>(".optpop.open"),
+  trigger: () => compOpts.querySelector<HTMLElement>(".optsw.on"),
+  isOpen: () => optOpen !== null,
+  scope: compOpts,
+  close: (refocus) => {
+    if (optConfirm && refocus) { cancelConfirm(); return; }
+    closeOpts(refocus ? (optOpen ?? undefined) : undefined);
+  },
+  rows: () => [...compOpts.querySelectorAll<HTMLButtonElement>(".optpop.open .cmdmodel, .optpop.open .cmdlevel, .optpop.open .cmdline")],
 });
 // Cancel on the model-switch question: back to the list, the pick still staged, nothing sent
 function cancelConfirm(): void {
@@ -4772,15 +4802,6 @@ function cancelConfirm(): void {
   renderComposerOpts(true);
   compOpts.querySelector<HTMLElement>(".optswrap.model .cmdapply")?.focus();
 }
-// Escape cancels the question if one is open, otherwise closes the switch popover (discarding) and
-// hands focus back to its switch
-compOpts.addEventListener("keydown", (e) => {
-  if (e.key !== "Escape" || !optOpen) return;
-  e.preventDefault();
-  e.stopPropagation();
-  if (optConfirm) cancelConfirm();
-  else closeOpts(optOpen);
-});
 
 // --- the tray under the surface. ENTRIES ARE DATA: a later one is a row here, not a rebuild.
 // Every entry is an existing function of this board that used to own an icon button of its own.

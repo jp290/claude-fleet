@@ -22,6 +22,8 @@ const KEYS = Object.keys(SIZE_SPEC) as SizeKey[];
 
 const DEFAULTS: Record<SizeKey, number> = { text: SIZE_SPEC.text.def, code: SIZE_SPEC.code.def, ui: SIZE_SPEC.ui.def, width: SIZE_SPEC.width.def };
 let sizes: Record<SizeKey, number> = { ...DEFAULTS };
+import { popover } from "./popover";
+
 const listeners = new Set<() => void>();
 
 const clamp = (k: SizeKey, n: number): number =>
@@ -112,11 +114,17 @@ export function sizePanel(): HTMLElement {
   hint.textContent = "Strg/⌘ + / − / 0";
   box.append(...rows.map((r) => r.row), reset, hint);
   const shut = () => box.classList.remove("open");
-  document.addEventListener("pointerdown", (e) => {
-    const t = e.target;
-    if (t instanceof Element && !box.contains(t) && !t.closest(".chatsizebtn")) shut();
+  // outside click, Escape and the focus return live in src/popover.ts (G4.1/K5); no rows here —
+  // the arrows already belong to the sliders (a range input's ArrowUp/Down changes its value)
+  popover({
+    panel: () => box,
+    trigger: () => box.parentElement?.querySelector<HTMLElement>(".chatsizebtn") ?? null,
+    isOpen: () => box.classList.contains("open"),
+    close: (refocus) => {
+      shut();
+      if (refocus) box.parentElement?.querySelector<HTMLElement>(".chatsizebtn")?.focus();
+    },
   });
-  window.addEventListener("keydown", (e) => { if (e.key === "Escape") shut(); });
   panel = box;
   return box;
 }

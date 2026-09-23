@@ -1025,6 +1025,15 @@ export async function run(): Promise<void> {
   try {
     dlgSrc = readFileSync(`${sourceRoot}/src/dialog.ts`, "utf8");
   } catch { dlgSrc = null; }
+  // the popover helper (K5) — the ONE outside-click/Escape module the four surfaces must share
+  let popSrc: string | null = null;
+  try {
+    popSrc = readFileSync(`${sourceRoot}/src/popover.ts`, "utf8");
+  } catch { popSrc = null; }
+  let chatSrc: string | null = null;
+  try {
+    chatSrc = readFileSync(`${sourceRoot}/src/chatsize.ts`, "utf8");
+  } catch { chatSrc = null; }
   check("precondition: node_modules exposes src/client.ts for slot client checks",
     cliSrc !== null, cliSrcError);
   check("precondition: node_modules exposes public/index.html for slot presentation checks",
@@ -2096,6 +2105,24 @@ export async function run(): Promise<void> {
           && indexSrc.includes(".panetools .termwidth, .panetools .panegear { display: none !important; }")
           && !/(^|\n)\s*\.boardtoggle \{/m.test(indexSrc),
         JSON.stringify({ group: cssBody(".panetools button"), pressed: cssBody(".panetools button[aria-pressed=\"true\"]") }));
+      // K5 (Grammatik): exactly ONE module owns outside-click and Escape for the four popovers —
+      // #instmenu, .optpop, #board .bmenu and sizePanel register in src/popover.ts. A second
+      // document-level listener for them in client.ts or chatsize.ts would fork the behaviour
+      // (close semantics, focus return, arrow walk drift apart) — the form this check pins.
+      // Mutation probe: re-adding any old listener form below (or a popover() call outside the
+      // counted 3+1) turns this red.
+      const popCount = (s: string | null): number => s ? (s.match(/popover\(\{/g) ?? []).length : 0;
+      check("client: the four popovers share ONE outside-click/Escape module — no second document listener",
+        popSrc !== null
+        && popSrc.includes('document.addEventListener("pointerdown"')
+        && popSrc.includes('addEventListener("keydown"')
+        && popCount(cliSrc) === 3 && popCount(chatSrc) === 1
+        && !/document\.addEventListener\("click", \(e\) => \{\s*if \(instMenuOpen/.test(cliSrc ?? "")
+        && !/window\.addEventListener\("keydown", \(e\) => \{ if \(e\.key === "Escape" && instMenuOpen/.test(cliSrc ?? "")
+        && !/document\.addEventListener\("pointerdown", \(e\) => \{\s*const t = e\.target;\s*if \(!optOpen/.test(cliSrc ?? "")
+        && !(cliSrc ?? "").includes('compOpts.addEventListener("keydown"')
+        && !/addEventListener\("(pointerdown|keydown)"/.test(chatSrc ?? ""),
+        JSON.stringify({ helper: popSrc !== null, popoverCalls: { client: popCount(cliSrc), chatsize: popCount(chatSrc) } }));
       // b3dc378b: the chat view names what runs. The server passes the tool_use id and the
       // tool_result's tool_use_id through (TBlock id/ref); the client pairs a result to its call
       // by id — a subagent call shows "läuft" until the result lands — and the view carries a

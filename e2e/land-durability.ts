@@ -562,8 +562,9 @@ export async function run(): Promise<void> {
       // the same shape as the real repo: the bundle and the instance's state file are IGNORED,
       // which is why a fetch can never carry either and why their absence — or, for fleet.json,
       // its presence — is not a dirty tree the script would refuse before it did anything. The
-      // status line rides ignored like the real repo's, tmp prefix included.
-      writeFileSync(`${can}/.gitignore`, "public/*.js\nfleet.json\n.fleet-sync-status.json*\n");
+      // status line rides ignored like the real repo's, tmp prefix included, and so does `.env`,
+      // the other place the deploy half reads an owner token from.
+      writeFileSync(`${can}/.gitignore`, "public/*.js\nfleet.json\n.fleet-sync-status.json*\n.env\n");
       writeFileSync(`${can}/README`, "canonical\n");
       copyFileSync(script, `${can}/fleet-sync.sh`);
       chmodSync(`${can}/fleet-sync.sh`, 0o755);
@@ -609,10 +610,15 @@ export async function run(): Promise<void> {
       // a guard: a later check added between the two would knock on the owner's own instance. A
       // closed port is the guard, and it fails as itself — exit 7 with `Connection refused`.
       const NOWHERE = { FLEET_SYNC_DEPLOY_URL: "http://127.0.0.1:1" };
+      // FLEET_TOKEN in the env is the FIRST source the deploy half reads, so an inherited one —
+      // the suite's own instance token, whenever its caller exported it — would outrank every
+      // file the checks below write and prove the env instead of them. Stripped; a check that
+      // means the env passes it in `extra`.
+      const { FLEET_TOKEN: _inherited, ...ENV } = process.env;
       const runSync = async (buildCmd: string, extra: Record<string, string> = {}): Promise<{ code: number; out: string }> => {
         const pr = Bun.spawn(["sh", `${fol}/fleet-sync.sh`], {
           cwd: fol, stdin: "ignore", stdout: "pipe", stderr: "pipe",
-          env: { ...process.env, FLEET_SYNC_BUILD_CMD: buildCmd, FLEET_SYNC_INSTALL_CMD: INSTALL_OK, ...NOWHERE, ...extra },
+          env: { ...ENV, FLEET_SYNC_BUILD_CMD: buildCmd, FLEET_SYNC_INSTALL_CMD: INSTALL_OK, ...NOWHERE, ...extra },
         });
         const outP = new Response(pr.stdout).text().catch(() => "");
         const errP = new Response(pr.stderr).text().catch(() => "");
@@ -751,6 +757,38 @@ export async function run(): Promise<void> {
           `exit=${gr.code} posts=${seen.length - beforeG} last=${lastSeen()?.path} authMatches=${lastSeen()?.auth === `Bearer ${TOK}`} :: ${gr.out}`);
         check("…and the owner token is in no line the timer writes into the journal",
           !gr.out.includes(TOK), gr.out);
+
+        // --- G2: the token in `.env`, not in fleet.json. The second-host's own shape, measured in its
+        // journal 2026-09-23: the instance is started with FLEET_TOKEN out of the gitignored .env
+        // and its state file carries `"token": null`, so every sync from 18:44 on ended `DEPLOY
+        // FAILED: …fleet.json carries no owner token` and exit 7 — a tree and bundle moving forward
+        // in front of a srv that never did. The value is quoted the way .env writers quote it.
+        const ENV_TOK = "fixture-env-owner-token-5b7e03";
+        writeFileSync(`${fol}/fleet.json`, `${JSON.stringify({ token: null, slots: [] }, null, 2)}\n`);
+        writeFileSync(`${fol}/.env`, `FLEET_HOST=127.0.0.1\nFLEET_TOKEN='${ENV_TOK}'\n`);
+        const headG2 = moveCanonical("moved-g2.txt");
+        const beforeG2 = seen.length;
+        const g2 = await runSync(BUILD_OK, DEPLOY);
+        check("a host whose owner token lives in .env (fleet.json `token: null`) still deploys: one POST /api/deploy with exactly that token",
+          g2.code === 0 && g(fol, "rev-parse", "HEAD").out === headG2 && seen.length === beforeG2 + 1
+            && lastSeen()?.path === "POST /api/deploy" && lastSeen()?.auth === `Bearer ${ENV_TOK}`
+            && /deploy accepted/.test(g2.out) && !g2.out.includes(ENV_TOK),
+          `exit=${g2.code} posts=${seen.length - beforeG2} last=${lastSeen()?.path} authMatches=${lastSeen()?.auth === `Bearer ${ENV_TOK}`} tokenPrinted=${g2.out.includes(ENV_TOK)} :: ${g2.out}`);
+
+        // --- G3: no token anywhere. Exit 7 without a knock on the door — and the line names all
+        // three places it looked, so its reader repairs the right one instead of fleet.json alone.
+        writeFileSync(`${fol}/.env`, "FLEET_HOST=127.0.0.1\n");
+        const headG3 = moveCanonical("moved-g3.txt");
+        const beforeG3 = seen.length;
+        const g3 = await runSync(BUILD_OK, DEPLOY);
+        check("with no owner token in env, .env or fleet.json the deploy is exit 7, no POST, and the line names all three sources",
+          g3.code === 7 && seen.length === beforeG3 && g(fol, "rev-parse", "HEAD").out === headG3
+            && /DEPLOY FAILED: no owner token/.test(g3.out)
+            && /FLEET_TOKEN in the environment/.test(g3.out) && g3.out.includes("follower/.env,")
+            && g3.out.includes("follower/fleet.json"),
+          `exit=${g3.code} posts=${seen.length - beforeG3} head=${g(fol, "rev-parse", "HEAD").out.slice(0, 8)} want=${headG3.slice(0, 8)} :: ${g3.out}`);
+        rmSync(`${fol}/.env`, { force: true });
+        writeFileSync(`${fol}/fleet.json`, `${JSON.stringify({ token: TOK, slots: [] }, null, 2)}\n`);
 
         // --- H: the REFUSAL. deployBlocker answers 409 while a land is reserved, an audit is
         // running or a succession is in flight — all three are "ask again in fifteen minutes", and

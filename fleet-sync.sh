@@ -163,10 +163,14 @@ run_build() {
 # boot head in GET /api/deploys), not to this script.
 #
 # The address is resolved exactly as ctl.sh resolves it (FLEET_HOST/FLEET_PORT out of this
-# checkout's gitignored .env, else 127.0.0.1:8790) and the credential exactly as ctl.sh reads it
-# (the `token` key fleet.json's writer puts first). NO fleet.json means no Fleet instance has ever
-# run in this checkout — a bare clone, or the throwaway pair the suite builds — and then there is
-# no srv to pull forward: that is a named skip, not a failure.
+# checkout's gitignored .env, else 127.0.0.1:8790), and the credential in ctl.sh's order minus its
+# FLEET_CTL_* override: FLEET_TOKEN from this process's env, else FLEET_TOKEN out of the same .env,
+# else the `token` key fleet.json's writer puts first. The .env step is not decoration: a host
+# whose instance is started with FLEET_TOKEN from .env keeps `"token": null` in fleet.json, and on
+# the second-host every sync from 2026-09-23 18:44 on ended exit 7 for reading fleet.json alone.
+# NO fleet.json means no Fleet instance has ever run in this checkout — a bare clone, or the
+# throwaway pair the suite builds — and then there is no srv to pull forward: that is a named skip,
+# not a failure, whichever source would have held a token.
 #
 # TOKEN HYGIENE (CLAUDE.md §Self-scheduling): the owner token never reaches curl's argv, where
 # `ps` would print it for every account on the box. It travels through curl's config on stdin, and
@@ -188,9 +192,13 @@ deploy_self() {
     echo "fleet-sync: deploy skipped: no fleet.json in $FLEET_DIR — no Fleet instance runs out of this checkout, so no srv is behind the tree"
     return 0
   fi
-  _tok=$(sed -n 's/^  "token": "\([^"]*\)".*/\1/p' "$FLEET_DIR/fleet.json" | head -1)
+  _tok=${FLEET_TOKEN:-}
+  if [ -z "$_tok" ] && [ -f "$FLEET_DIR/.env" ]; then
+    _tok=$(sed -n "s/^FLEET_TOKEN=['\"]\{0,1\}\([^'\"]*\)['\"]\{0,1\}$/\1/p" "$FLEET_DIR/.env" | tail -1)
+  fi
+  [ -n "$_tok" ] || _tok=$(sed -n 's/^  "token": "\([^"]*\)".*/\1/p' "$FLEET_DIR/fleet.json" | head -1)
   if [ -z "$_tok" ]; then
-    echo "fleet-sync: DEPLOY FAILED: $FLEET_DIR/fleet.json carries no owner token — srv still runs the code from before this sync"
+    echo "fleet-sync: DEPLOY FAILED: no owner token — not FLEET_TOKEN in the environment, not FLEET_TOKEN in $FLEET_DIR/.env, not \`token\` in $FLEET_DIR/fleet.json — srv still runs the code from before this sync"
     return 1
   fi
   _body="${TMPDIR:-/tmp}/fleet-sync-deploy.$$"

@@ -404,6 +404,35 @@ export async function run(ctx: Ctx): Promise<void> {
   }
   const openQueueSource = taskClientSource.slice(taskClientSource.indexOf("function openQueue"),
     taskClientSource.indexOf("// --- audit trail overlay", taskClientSource.indexOf("function openQueue")));
+  // D-3 (Grammatik G5.2 + G4.4): the settings window's "Fleet" section writes over EXACTLY the five
+  // routes that existed before it — dispatcher, autos kill-switch, quiet hours, lane cap, integration
+  // branch — each as one row's post(), and nothing reaches a route except through the section's Apply;
+  // the only other route the block names is the cap READ. The dispatcher row reads the same `dispatch`
+  // the queue foot writes. Mutation probes: a sixth route (repo-worker, a slot or program switch), a
+  // dropped row, a post() fired from a control instead of from write(), or write() called outside
+  // apply.onclick — each turns this red.
+  {
+    const fsAt = taskClientSource.indexOf("function fleetSection(");
+    const fsEnd = taskClientSource.indexOf("// THE INFO COLUMN ON THE PHONE", fsAt);
+    const fsSrc = fsAt >= 0 && fsEnd > fsAt ? taskClientSource.slice(fsAt, fsEnd) : "";
+    const FLEET_WRITES = ["/api/autos/quiet", "/api/autos/switch", "/api/dispatch", "/api/repo-base", "/api/repo-lane-cap"];
+    const named = [...new Set([...fsSrc.matchAll(/["'`](\/api\/[^"'`]+)["'`]/g)].map((m) => m[1]))].sort();
+    const posted = [...fsSrc.matchAll(/post\("(\/api\/[^"]+)"/g)].map((m) => m[1]).sort();
+    const writeCalls = (fsSrc.match(/\.write\(\)/g) ?? []).length;
+    const applyBody = /apply\.onclick = async \(\) => \{([\s\S]*?)\n  \};/.exec(fsSrc)?.[1] ?? "";
+    check("settings Fleet section: exactly the five existing routes, each written only through Apply",
+      fsSrc.length > 0
+        && JSON.stringify(posted) === JSON.stringify(FLEET_WRITES)
+        && JSON.stringify(named) === JSON.stringify([...FLEET_WRITES, "/api/repo-lane-caps"].sort())
+        && (fsSrc.match(/\bpost\(/g) ?? []).length === 5
+        && (fsSrc.match(/write: \(\) => post\(/g) ?? []).length === 5
+        && writeCalls === 1 && applyBody.includes("r.write()")
+        && fsSrc.includes('el("button", "cmdapply", "Apply")')
+        && /const on = want \?\? dispatch\.on;/.test(fsSrc)
+        && openQueueSource.includes('post("/api/dispatch", { on: !dispatch.on })')
+        && /fleetSection\(fleetsec\);/.test(taskClientSource),
+      JSON.stringify({ found: fsSrc.length > 0, posted, named, writeCalls, applyWrites: applyBody.includes("r.write()") }));
+  }
   check("task workbench source: Work is default and Programs + History are explicit selections",
     /type QView = "work" \| "notes" \| "programs" \| "history" \| "waves"/.test(taskClientSource)
       && /let qView: QView = "work"/.test(taskClientSource)

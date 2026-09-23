@@ -12,8 +12,8 @@
 // Both are reproduced here against a REAL kill of the real server, not a simulated one.
 import { spawnSync } from "node:child_process";
 import {
-  chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync,
-  writeFileSync,
+  chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync,
+  rmSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -561,8 +561,9 @@ export async function run(): Promise<void> {
       g(can, "config", "commit.gpgsign", "false");
       // the same shape as the real repo: the bundle and the instance's state file are IGNORED,
       // which is why a fetch can never carry either and why their absence — or, for fleet.json,
-      // its presence — is not a dirty tree the script would refuse before it did anything.
-      writeFileSync(`${can}/.gitignore`, "public/*.js\nfleet.json\n");
+      // its presence — is not a dirty tree the script would refuse before it did anything. The
+      // status line rides ignored like the real repo's, tmp prefix included.
+      writeFileSync(`${can}/.gitignore`, "public/*.js\nfleet.json\n.fleet-sync-status.json*\n");
       writeFileSync(`${can}/README`, "canonical\n");
       copyFileSync(script, `${can}/fleet-sync.sh`);
       chmodSync(`${can}/fleet-sync.sh`, 0o755);
@@ -634,6 +635,28 @@ export async function run(): Promise<void> {
         a.code === 0 && bundlesHere().length === 4 && builds() === 1,
         `exit=${a.code} bundles=[${bundlesHere()}] builds=${builds()} :: ${a.out}`);
 
+      // THE STATUS LINE. Every run ends in one JSON line in the follower checkout — the OTHER
+      // host's board reads the last sync's outcome from it (measurement §K2), and what it may
+      // rely on is the code the PROCESS returned, not a code the EXIT trap invented. Proven once
+      // per polarity: this green run and the exit-5 red-build run further down.
+      const syncStatus = (dir: string): { at: number; exit: number; head: string; lines: number } | null => {
+        try {
+          const raw = readFileSync(`${dir}/.fleet-sync-status.json`, "utf8");
+          return { ...(JSON.parse(raw) as { at: number; exit: number; head: string }), lines: raw.trim().split("\n").length };
+        } catch { return null; }
+      };
+      const sa = syncStatus(fol);
+      check("the exit-0 run leaves one status line: the code the process returned, its full HEAD, a ms timestamp",
+        sa !== null && sa.lines === 1 && sa.exit === 0 && /^[0-9a-f]{40}$/.test(sa.head)
+          && sa.head === g(fol, "rev-parse", "HEAD").out
+          && Number.isFinite(sa.at) && Math.abs(sa.at - Date.now()) < 60_000,
+        JSON.stringify(sa));
+      check("…the status line is gitignored and no tmp is left — the sensor cannot make the NEXT run's dirty-tree refusal fire",
+        g(fol, "status", "--porcelain").out === ""
+          && readdirSync(fol).filter((f) => f.startsWith(".fleet-sync-status.json.tmp")).length === 0,
+        `porcelain=${JSON.stringify(g(fol, "status", "--porcelain").out)} `
+        + `tmp=${JSON.stringify(readdirSync(fol).filter((f) => f.startsWith(".fleet-sync-status.json.tmp")))}`);
+
       // --- D: …and having built it, it does NOT build again. The counter-proof to A: a script that
       // simply always builds would pass A and turn a 15-minute timer into a bundler loop.
       const beforeD = builds();
@@ -661,6 +684,10 @@ export async function run(): Promise<void> {
       check("…and the failure line says BOTH halves: the sync landed, the bundle did not",
         /BUILD FAILED/.test(c.out) && c.out.includes(headC.slice(0, 7)),
         c.out);
+      const sc = syncStatus(fol);
+      check("the exit-5 run's status line carries the SAME code the process returned, on the HEAD the fast-forward left",
+        sc !== null && sc.lines === 1 && sc.exit === 5 && c.code === 5 && sc.head === headC,
+        `file=${JSON.stringify(sc)} process=${c.code} head=${headC.slice(0, 8)}`);
 
       // --- E: THE DEPENDENCY THE FAST-FORWARD BROUGHT. Measured on the follower 2026-09-23 00:4x:
       // every sync since 2026-09-22 10:12 ended `SYNCED, then BUILD FAILED` — `@xterm/addon-web-

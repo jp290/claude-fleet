@@ -39,6 +39,12 @@ state-snapshots.jsonl
 state-snapshots.jsonl.1
 deploy-inflight.json
 deploy-inflight.json.tmp
+
+# fleet-sync.sh's status line — the follower's last sync exit/head/at, read off this checkout by
+# the other host's board (docs/messungen/2026-09-23-zwei-geraete-board-und-queue.md §K2). A status
+# the next run refused as a dirty tree would be a sensor that breaks the thing it watches, and the
+# tmp prefix rides along because a kill between tmp and rename must not dirty the tree either.
+.fleet-sync-status.json*
 # the rotation's third form: persist.ts appends the outgoing .1 to <name>.jsonl.archive before the
 # ledger starts over — the file exists at every ledger from its first rotation on, never tracked.
 *.jsonl.archive

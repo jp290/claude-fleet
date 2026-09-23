@@ -52,6 +52,36 @@ FLEET_DIR="$(cd "$(dirname "$0")" && pwd)"
 REMOTE="${1:-${FLEET_SYNC_REMOTE:-canonical}}"
 cd "$FLEET_DIR"
 
+# THE STATUS LINE (docs/messungen/2026-09-23-zwei-geraete-board-und-queue.md §K2). The journal and
+# the unit's `failed` state are readable only by a human on THIS host; the other host's board sees
+# nothing of this machine but the checkout itself. So every run — every exit, caught by the EXIT
+# trap rather than sprinkled beside each `exit` — leaves one JSON line in the checkout: time in ms,
+# the exit code, the HEAD the run ended on. Three properties are the contract, each with a reason:
+#   · the exit code is NOT the trap's to change, twice over: the code is captured into _sc BEFORE
+#     errexit is dropped — `set +e` itself zeroes $?, measured on sh, bash and dash — and no `exit`
+#     runs inside the trap, because a failing command under `set -e` would re-kill the shell with
+#     status 1 and silently rewrite a 5 into a 1 (both measured on this exact script shape).
+#   · atomic through tmp+rename in the same directory: a reader never sees a half-written line.
+#   · the file and its tmp leftovers are gitignored: a status the next run refused as a dirty tree
+#     would be a sensor that breaks the thing it watches.
+now_ms() {
+  _t="$(date +%s%N 2>/dev/null)" || true
+  case "$_t" in
+    ?????????????*) printf '%.13s\n' "$_t" ;;  # %N: nanoseconds, cut to milliseconds
+    *) echo "$(( $(date +%s) * 1000 ))" ;;     # no %N: seconds in ms clothing
+  esac
+}
+fleet_sync_status() {
+  _sc=$?
+  set +e
+  _sh="$(git rev-parse HEAD 2>/dev/null)"
+  _sp="$FLEET_DIR/.fleet-sync-status.json.tmp.$$"
+  printf '{"at":%s,"exit":%s,"head":"%s"}\n' "$(now_ms)" "$_sc" "$_sh" > "$_sp" \
+    && mv -f "$_sp" "$FLEET_DIR/.fleet-sync-status.json" \
+    || rm -f "$_sp"
+}
+trap fleet_sync_status EXIT
+
 # = server.ts#BUNDLES, the three the board actually loads. `sh` cannot read that constant, so the
 # list is spelled here and the pin in e2e/pins.ts is what keeps the two from drifting apart.
 BUNDLES="app.js share.js helper.js hub.js"

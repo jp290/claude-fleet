@@ -27,13 +27,14 @@ interface Brief { branch: string | null; sessionStart: number | null; uncommitte
 const FONT_KEY = "fleetShareFont";
 const NAME_KEY = "fleetShareName";
 const SIDE_KEY = "fleetShareSide";
+import { prefRaw, prefSet, prefText } from "./prefs";
 const MIN_FONT = 8, MAX_FONT = 22;
 const NARROW = () => matchMedia("(max-width: 860px)").matches;
 
 let term: Terminal | null = null;
 let ws: WebSocket | null = null;
 let gen = 0;
-let fontSize = Math.min(MAX_FONT, Math.max(MIN_FONT, Number(localStorage.getItem(FONT_KEY)) || 12));
+let fontSize = Math.min(MAX_FONT, Math.max(MIN_FONT, Number(prefText(FONT_KEY)) || 12));
 let sessionStart: number | null = null;
 let cmtCount = 0; // server-side comment count (from /info)
 let cmtSeen = 0; // count last shown in the chat tab — the badge is the difference
@@ -88,7 +89,7 @@ function syncMtabs() {
 function setSide(open: boolean) {
   document.body.classList.toggle("side-open", open);
   $("sidebtn").classList.toggle("open", open);
-  localStorage.setItem(SIDE_KEY, open ? "1" : "0");
+  prefSet(SIDE_KEY, open ? "1" : "0");
   if (open) activateTab(activeTab); // refresh whatever is visible
   else syncMtabs();
 }
@@ -318,7 +319,7 @@ function applyInfo(info: Info) {
 const cmtlist = $("cmtlist"), cmtmsg = $("cmtmsg"),
   cmtname = $("cmtname") as HTMLInputElement, cmtinput = $("cmtinput") as HTMLTextAreaElement,
   cmtpost = $("cmtpost") as HTMLButtonElement;
-cmtname.value = localStorage.getItem(NAME_KEY) ?? "";
+cmtname.value = prefText(NAME_KEY);
 let cmtRendered = ""; // id fingerprint of the rendered thread — skip no-op re-renders
 
 function renderComments(comments: ShareComment[]) {
@@ -369,7 +370,7 @@ async function postComment() {
   if (!text || cmtpost.disabled) return;
   cmtpost.disabled = true;
   cmtmsg.textContent = "";
-  localStorage.setItem(NAME_KEY, cmtname.value.trim());
+  prefSet(NAME_KEY, cmtname.value.trim());
   try {
     const res = await fetch(`/s/${shareId}/comments`, {
       method: "POST",
@@ -454,7 +455,7 @@ function setFont(delta: number) {
   // fitted 7px + A+ = manual 8px, not a jarring jump back to the pre-fit size
   fontSize = Math.min(MAX_FONT, Math.max(MIN_FONT, (fitOn ? fitFont() : fontSize) + delta));
   fitOn = false;
-  localStorage.setItem(FONT_KEY, String(fontSize));
+  prefSet(FONT_KEY, String(fontSize));
   applyFont();
 }
 $("fminus").onclick = () => setFont(-1);
@@ -632,8 +633,8 @@ function start(info: Info) {
   applyInfo(info);
   // sidebar: remembered preference on wide screens; phones ALWAYS start on the stream —
   // an app opens on its content, not on a half-screen sheet from last visit
-  const saved = localStorage.getItem(SIDE_KEY);
-  setSide(NARROW() ? false : (saved === null || saved === "1"));
+  const saved = prefText(SIDE_KEY);
+  setSide(NARROW() ? false : (saved === "" || saved === "1"));
   setInterval(() => { void fetchInfo().then((i) => { if (i) applyInfo(i); }); }, 10_000);
   setInterval(() => { if (sideOpen() && activeTab === "info") void loadBrief(); }, 30_000);
   term = new Terminal({
@@ -653,7 +654,7 @@ function start(info: Info) {
   term.onWriteParsed(() => updateJump());
   // phone first visit (no saved font): start fitted, IF the session is narrow enough for
   // fit to stay legible — a 200-col session at 5px is worse than panning at 12px
-  if (NARROW() && localStorage.getItem(FONT_KEY) === null && fitFont() >= 8) {
+  if (NARROW() && prefRaw(FONT_KEY) === null && fitFont() >= 8) {
     fitOn = true;
     applyFont();
   }

@@ -12,6 +12,7 @@ import { modelLabel } from "./modelname";
 import { DraftBook } from "./drafts";
 import { attachEntityCards, type EntFacts } from "./entcard";
 import { loadChatSizes, onChatSize, sizePanel, stepChatSizes } from "./chatsize";
+import { PREFS, prefBool, prefJSON, prefNumber, prefRaw, prefSet, prefSetBool, prefText, type PrefDef } from "./prefs";
 import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
@@ -71,7 +72,7 @@ function openTermLink(e: MouseEvent, uri: string): void {
   window.open(uri, "_blank", "noopener,noreferrer");
 }
 
-let dataSaver = localStorage.getItem("fleet.datasaver") === "1";
+let dataSaver = prefBool("fleet.datasaver");
 const plan = () => pollPlan(document.hidden, dataSaver);
 
 const mdot = $("mdot"), mtitle = $("mtitle");
@@ -91,7 +92,7 @@ $("shade").onclick = () => setDrawer(false);
 // on the pane's own ↻ now, which the phone shows in the corner group). Desktop's gear sits in each
 // pane's group; both open the same window.
 $("mset").appendChild(icon("gear"));
-$("mset").onclick = () => openSettings();
+$("mset").onclick = () => openSettings($("mset"));
 
 // --- desktop sidebar collapse (persisted). The .collapsed class is desktop-only:
 // on mobile #side is the slide-in drawer, so applyCollapsed strips it there ---
@@ -104,7 +105,7 @@ function applyCollapsed() {
 }
 function setCollapsed(on: boolean) {
   sideCollapsed = on;
-  localStorage.setItem("fleet.sidecollapsed", on ? "1" : "0");
+  prefSetBool("fleet.sidecollapsed", on);
   applyCollapsed();
   // the sidebar's width changed → terminals must refit to the freed/returned space
   requestAnimationFrame(() => { for (const p of panes) p.refit(); });
@@ -793,23 +794,16 @@ class Pane {
     navDn.title = "Dein nächster Prompt";
     navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
     this.sizeBtn = el("button", "chatsizebtn", "Aa") as HTMLButtonElement;
-    this.sizeBtn.title = "Schriftgröße — Text, Code, Oberfläche (Strg/⌘ + / − / 0)";
-    this.sizeBtn.onclick = (e) => {
-      e.stopPropagation();
-      const panel = sizePanel();
-      if (panel.parentElement === this.root && panel.classList.contains("open")) {
-        panel.classList.remove("open");
-        return;
-      }
-      this.root.appendChild(panel);
-      panel.classList.add("open");
-    };
+    this.sizeBtn.title = "Schrift und Spalte — in den Einstellungen (Strg/⌘ + / − / 0)";
+    // the Aa panel's ONE home is the settings window's "Schrift" section (G5.3, kein zweites
+    // Zuhause); the button is the shortcut that opens the window right there
+    this.sizeBtn.onclick = (e) => { e.stopPropagation(); openSettings(this.sizeBtn, "schrift"); };
     // the gear opens the settings window — empty for now (Grammatik K8/D1 fills it); the phone
     // hides this one and keeps its gear in #mhead instead (G5), so exactly one gear is ever visible
     this.gearBtn = el("button", "panegear") as HTMLButtonElement;
     this.gearBtn.appendChild(icon("gear"));
     this.gearBtn.title = "Einstellungen öffnen";
-    this.gearBtn.onclick = (e) => { e.stopPropagation(); openSettings(); };
+    this.gearBtn.onclick = (e) => { e.stopPropagation(); openSettings(this.gearBtn); };
     const toolsTop = el("div", "ptrow ptboth");
     toolsTop.append(this.gearBtn, this.viewBtn, this.boardBtn);
     const toolsView = el("div", "ptrow ptview");
@@ -943,7 +937,6 @@ class Pane {
     this.viewBtn.setAttribute("aria-pressed", this.view === "chat" ? "true" : "false");
     this.syncCornerButtons();
     this.flakes.setActive(v === "chat");
-    if (v !== "chat") sizePanel().classList.remove("open");
     saveView();
     this.syncHarnessAffordances();
     mountComposer(); // the one composer takes the size of the focused pane's view
@@ -1588,27 +1581,24 @@ const repoOfSlot = (s: SlotInfo | undefined, brief: BriefInfo): string | null =>
   brief.worktree?.repo ?? s?.cwd ?? null;
 
 const boardBody = $("boardbody");
-let boardOpen = localStorage.getItem("fleet.board") === "1";
-// the width toggle's persisted state (Grammatik G5.1 pattern: one fleet.* key, try/catch, like
-// fleet.meter.open). The EFFECTIVE limit is termLimitOn AND the pane's own conditions — a reload
-// restores the toggle, layout > 1 or the phone view lifts it (Pane#termIsLimited).
-let termLimitOn = localStorage.getItem("fleet.termlimit") === "1";
+let boardOpen = prefBool("fleet.board");
+// the width toggle's persisted state (a src/prefs.ts row). The EFFECTIVE limit is termLimitOn AND
+// the pane's own conditions — a reload restores the toggle, layout > 1 or the phone view lifts it
+// (Pane#termIsLimited).
+let termLimitOn = prefBool("fleet.termlimit");
 function setTermLimit(on: boolean) {
   termLimitOn = on;
-  try { localStorage.setItem("fleet.termlimit", on ? "1" : "0"); } catch { /* the toggle still works this page */ }
+  prefSetBool("fleet.termlimit", on);
   for (const p of panes) p.syncCornerButtons();
 }
 let boardBusy = false;
 // THE BOARD'S FOLDS. Only what a reader reaches for rarely still sits behind a disclosure —
 // files and lanes became sections of their own, and the advisory agents left the column. Module
 // state, so the 3s re-render cannot snap one shut while you read in it; remembered per browser.
-const FOLD_KEY = "fleet.board.folds";
 const boardFolds: Set<string> = (() => {
-  try {
-    const v: unknown = JSON.parse(localStorage.getItem(FOLD_KEY) ?? "[]");
-    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
-  } catch { return new Set(); } // a hand-edited or foreign value is "nothing open", not a crash
-})();
+  const v: unknown = prefJSON<unknown>("fleet.board.folds");
+  return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+})(); // a hand-edited or foreign value is "nothing open", not a crash — prefJSON degrades, the shape guard stays here
 // --- WHOSE FACT IS THIS? (owner, 2026-09-20: "manche info's z.b die suites, system übergreifend
 // erfassen"). The column mixes four reaches and used to say which for none of them, so a fleet-wide
 // number read as a number about the session under the cursor. One word per section head, from a
@@ -1645,8 +1635,7 @@ function boardFold(key: string, title: string, count: string | null, fill: (body
   hd.append(el("span", "bchev"), el("span", "bfoldt", title), ...(count !== null ? [el("span", "bfoldn", count)] : []));
   hd.onclick = () => {
     if (boardFolds.has(key)) boardFolds.delete(key); else boardFolds.add(key);
-    try { localStorage.setItem(FOLD_KEY, JSON.stringify([...boardFolds])); }
-    catch { /* storage refused — the fold still works for this page */ }
+    prefSet("fleet.board.folds", JSON.stringify([...boardFolds]));
     void renderBoard();
   };
   box.appendChild(hd);
@@ -2209,17 +2198,142 @@ async function newLane(repo: string, parent?: LaneAnchor): Promise<void> {
   }
 }
 
-// THE SETTINGS WINDOW (Grammatik G5, one gear top right). Deliberately EMPTY for now — the
-// window itself is K8/D1; a hint says so instead of a bare grey box (G2.2). Toggle: a second click
-// closes. The list column has nothing to say here — the detail IS the window (.solo, index.html).
+// THE SETTINGS WINDOW (Grammatik G5, cards K2+K8): one gear top right, one window, three
+// sections. "Dieses Gerät" renders the registry (src/prefs.ts): every key with a row shows its
+// label, its control, its default and a way back (G5.1). "Schrift" is the size panel's ONE home
+// (G5.3) — the Aa corner button opens the window right there. "Fleet" stays empty until a theme
+// row brings its server route (G5.2). On the phone the sections become tabs (G3.1); on the
+// desktop all three stack. Esc, backdrop and ✕ come from openShell (G6.3); the focus returns to
+// the button that opened the window (G4).
 let settingsShell: Shell | null = null;
-function openSettings(): void {
-  if (settingsShell?.isOpen()) { settingsShell.close(); settingsShell = null; return; }
-  settingsShell = openShell({
-    id: "settings", title: "Settings",
-    detailHint: "Empty for now — this window fills up section by section: text, this device, fleet.",
+let settingsTab = "device";
+const SET_TABS: [string, string][] = [["device", "Dieses Gerät"], ["schrift", "Schrift"], ["fleet", "Fleet"]];
+const SET_CHOICE_WORDS: Record<string, string> = { tree: "Baum", line: "Zeile" };
+
+// The live effect of a row beyond the write itself — the SAME setters the original surfaces
+// call, so a settings toggle can never mean something else than its own button (K2: Bedeutung
+// unverändert). Absent = the write IS the whole effect, the value is read at use.
+const PREF_APPLY: Record<string, () => void> = {
+  "fleet.datasaver": () => setSaver(prefBool("fleet.datasaver")),
+  "fleet.board": () => setBoard(prefBool("fleet.board")),
+  "fleet.sidecollapsed": () => setCollapsed(prefBool("fleet.sidecollapsed")),
+  "fleet.termlimit": () => setTermLimit(prefBool("fleet.termlimit")),
+  "fleet.meter.open": () => { meterOpen = prefBool("fleet.meter.open"); renderSuiteMeter(); },
+  "fleet.more": () => { moreOpen = prefBool("fleet.more"); applyMore(); },
+  "fleet.histall": () => { histAll = prefBool("fleet.histall"); if (hist.style.display === "flex") void renderHist(); },
+  "fleet.hidewt": () => { hideWorktrees = prefBool("fleet.hidewt"); if (pkHideBtn) renderHideWtBtn(); },
+  "fleet.pkdot": () => {
+    showHidden = prefBool("fleet.pkdot");
+    if (pkDotBtn) { renderDotBtn(); if (pkShell?.isOpen()) void reloadTree(); }
+  },
+  "fleet.queue.scope": () => { qTreeOn = prefText("fleet.queue.scope") !== "line"; if (qShell?.isOpen()) { qKey = ""; renderQueue(); } },
+  "fleet.board.folds": () => { boardFolds.clear(); void renderBoard(); },
+  "fleet.stacks.closed": () => { stackClosed.clear(); renderSlots(); },
+  "fleet.plaudit.ack": () => renderPostLandAudit(),
+  "fleet.view": () => setLayout(1, [panes[focused]?.slot ?? 0]),
+};
+
+// what a value row shows right now (mono, G5.3)
+const SET_VALUE: Record<string, () => string> = {
+  "fleet.pkdir": () => prefText("fleet.pkdir"),
+  "fleet.board.folds": () => `${boardFolds.size} zugeklappt`,
+  "fleet.stacks.closed": () => `${stackClosed.size} zugeklappt`,
+  "fleet.view": () => `${layout} ${layout === 1 ? "Pane" : "Panes"}`,
+  "fleet.plaudit.ack": () => { const at = prefNumber(PLA_ACK_KEY); return at ? fmtTs(at) : "keine"; },
+};
+
+function openSettings(trigger?: HTMLElement | null, at?: "schrift"): void {
+  if (settingsShell?.isOpen()) { settingsShell.close(); return; }
+  settingsTab = at ?? "device";
+  const shell = openShell({
+    id: "settings", title: "Einstellungen",
+    onClose: () => { settingsShell = null; trigger?.focus(); },
   });
-  settingsShell.root.classList.add("solo");
+  settingsShell = shell;
+  shell.root.classList.add("solo");
+
+  const tabs = el("div", "settabs");
+  const tabBtns = SET_TABS.map(([id, word]) => {
+    const b = el("button", "settab", word) as HTMLButtonElement;
+    b.onclick = () => { settingsTab = id; syncTabs(); };
+    tabs.appendChild(b);
+    return b;
+  });
+
+  const device = el("section", "setsec");
+  device.appendChild(el("h3", "", "Dieses Gerät"));
+  for (const d of PREFS) {
+    if (!d.row || (d.desktopOnly && MOBILE_MQ.matches)) continue;
+    device.appendChild(settingsRow(d));
+  }
+  const schrift = el("section", "setsec");
+  schrift.appendChild(el("h3", "", "Schrift"));
+  schrift.appendChild(sizePanel()); // the ONE panel moves in here (G5.3, kein zweites Zuhause)
+  const fleetsec = el("section", "setsec");
+  fleetsec.appendChild(el("h3", "", "Fleet"));
+  fleetsec.appendChild(el("div", "setnote",
+    "Hier ziehen serverseitige Werte ein, sobald eine Themen-Zeile ihre Route mitbringt — sie gelten für alle Geräte dieser Fleet."));
+
+  shell.detail.append(tabs, device, schrift, fleetsec);
+  syncTabs();
+
+  function syncTabs() {
+    SET_TABS.forEach(([id], i) => {
+      tabBtns[i].classList.toggle("on", settingsTab === id);
+      tabBtns[i].setAttribute("aria-pressed", settingsTab === id ? "true" : "false");
+    });
+    device.classList.toggle("on", settingsTab === "device");
+    schrift.classList.toggle("on", settingsTab === "schrift");
+    fleetsec.classList.toggle("on", settingsTab === "fleet");
+  }
+}
+
+// one registry row (G5.3): label left, control right, the value in mono, a hint under the row —
+// and the way back: "Standard" forgets the key, so the next read falls back to the default.
+function settingsRow(d: PrefDef): HTMLElement {
+  const row = el("div", "setrow");
+  const main = el("div", "setmain");
+  main.appendChild(el("div", "setlabel", d.label));
+  const std = d.kind === "bool" ? (d.def === "1" ? "an" : "aus")
+    : d.kind === "choice" ? SET_CHOICE_WORDS[d.def] ?? d.def : null;
+  main.appendChild(el("div", "setnote", [d.hint, std !== null ? `Standard: ${std}` : ""].filter(Boolean).join(" ")));
+  row.appendChild(main);
+
+  const sync: (() => void)[] = [];
+  let control: HTMLElement;
+  if (d.row === "toggle") {
+    const b = el("button", "settoggle") as HTMLButtonElement;
+    b.onclick = () => { prefSetBool(d.key, !prefBool(d.key)); PREF_APPLY[d.key]?.(); syncAll(); };
+    sync.push(() => {
+      const on = prefBool(d.key);
+      b.textContent = on ? "an" : "aus";
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    control = b;
+  } else if (d.row === "choice") {
+    const wrap = el("div", "setchoice");
+    for (const v of d.values ?? []) {
+      const b = el("button", "settab", SET_CHOICE_WORDS[v] ?? v) as HTMLButtonElement;
+      b.onclick = () => { prefSet(d.key, v); PREF_APPLY[d.key]?.(); syncAll(); };
+      sync.push(() => b.classList.toggle("on", prefText(d.key) === v));
+      wrap.appendChild(b);
+    }
+    control = wrap;
+  } else {
+    const val = el("span", "setval");
+    sync.push(() => { val.textContent = SET_VALUE[d.key]?.() ?? prefText(d.key); });
+    control = val;
+  }
+  const reset = el("button", "setreset", "Standard") as HTMLButtonElement;
+  reset.title = `${d.label} auf den Standard zurücksetzen`;
+  reset.onclick = () => { prefSet(d.key, null); PREF_APPLY[d.key]?.(); syncAll(); };
+  row.append(control, reset);
+  function syncAll() {
+    for (const f of sync) f();
+    reset.hidden = prefRaw(d.key) === null;
+  }
+  syncAll();
+  return row;
 }
 
 // THE INFO COLUMN ON THE PHONE (owner 2026-09-22: „es gibt gar keinen button um die infoLeiste
@@ -2238,7 +2352,7 @@ function openBoardWindow(): void {
   boardShell = openShell({ id: "board", title: "Info", onClose: () => {
     boardShell = null;
     if (board.parentElement !== app) app.appendChild(board);
-    if (boardOpen) { boardOpen = false; localStorage.setItem("fleet.board", "0"); applyBoard(); }
+    if (boardOpen) { boardOpen = false; prefSetBool("fleet.board", false); applyBoard(); }
   } });
   boardShell.root.classList.add("boardwin");
   boardShell.detail.appendChild(board);
@@ -2255,7 +2369,7 @@ function applyBoard() {
 }
 function setBoard(on: boolean) {
   boardOpen = on;
-  localStorage.setItem("fleet.board", on ? "1" : "0");
+  prefSetBool("fleet.board", on);
   if (isMobile()) {
     // the phone has no column: ℹ opens/closes the fullscreen window that carries #board (G6.3).
     // close() runs onClose synchronously, which re-homes the element and un-presses the buttons.
@@ -2473,7 +2587,7 @@ function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
 const meterEl = $("boardsuites");
 const meterBalls = new Map<string, HTMLElement>();
 let meterSuites: SuiteOfferRow[] = [];
-let meterOpen = localStorage.getItem("fleet.meter.open") === "1";
+let meterOpen = prefBool("fleet.meter.open");
 const METER_WORD: Record<MeterStation, string> = { wait: "waiting", run: "running", helper: "on helper", done: "done" };
 // a finished ball says HOW it finished — the station alone would call a red run "done"
 // WHAT IT IS DOING, which is not the same question as WHERE (the row's place column). A ball at
@@ -2560,7 +2674,7 @@ function renderSuiteMeter() {
   tog.title = meterOpen ? "Lesung zuklappen" : "Lesung aufklappen — Sperre, laufende Checks, jede Meldung (intern: gate reading)";
   tog.onclick = () => {
     meterOpen = !meterOpen;
-    try { localStorage.setItem("fleet.meter.open", meterOpen ? "1" : "0"); } catch { /* the toggle still works for this page */ }
+    prefSetBool("fleet.meter.open", meterOpen);
     renderSuiteMeter();
   };
   meterHead.replaceChildren(tog, scopeTag, lockEl, ...(scope ? [scope] : []), ...(devEl ? [devEl] : []));
@@ -4461,12 +4575,11 @@ let optsSlot = 0;
 // Twelfth cut: Apply on the MODEL switch first asks (owner: a model switch costs the session its
 // prompt cache). The ask is state, not DOM, for the reason optOpen is — the poll repaints the row.
 let optConfirm = false;
-const WARN_KEY = "fleet.modelSwitchWarn";
 function modelWarnOff(): boolean {
-  try { return localStorage.getItem(WARN_KEY) === "off"; } catch { return false; }
+  return !prefBool("fleet.modelSwitchWarn"); // asking is the default — the key stores only "off"
 }
 function setModelWarnOff(): void {
-  try { localStorage.setItem(WARN_KEY, "off"); } catch { /* private window: it simply asks again */ }
+  prefSetBool("fleet.modelSwitchWarn", false); // private window: it simply asks again next time
 }
 
 // THE CACHE COUNTER (owner, twelfth cut: "seit der letzten Nachricht … ob der Cache noch warm sein
@@ -5019,7 +5132,7 @@ for (const b of document.querySelectorAll<HTMLButtonElement>("#layouts button"))
 function saveView() {
   // `chats`: which panes show the conversation view — a reload used to land every pane back on the
   // terminal, and with it the composer's switches and cache counter were gone (seventeenth cut)
-  localStorage.setItem("fleet.view", JSON.stringify({ layout, panes: panes.map((p) => p.slot), focused,
+  prefSet("fleet.view", JSON.stringify({ layout, panes: panes.map((p) => p.slot), focused,
     chats: panes.map((p) => p.savedChat) }));
 }
 
@@ -5040,11 +5153,11 @@ let pkShell: Shell | null = null;
 let pkPins = new Set<string>(); // pinned paths, refreshed from /api/dirs on every browse()
 // worktree lanes clutter the picker (recents are mostly `*.worktrees/fleet-*`); hide them by
 // default. View-only pref, per device — kept in localStorage like the board/histall toggles.
-let hideWorktrees = localStorage.getItem("fleet.hidewt") !== "0";
+let hideWorktrees = prefBool("fleet.hidewt");
 // dotfolders were filtered out of every listing, so .claude and .github simply did not exist in the
 // picker — you could not start a session in one without typing its path. Off by default (a home
 // directory has more dot-entries than real ones), per device, like the lane toggle above.
-let showHidden = localStorage.getItem("fleet.pkdot") === "1";
+let showHidden = prefBool("fleet.pkdot");
 // a path is a lane if it lives under (or is) a `.worktrees` dir — reliable, no false positives
 function isWtPath(p: string): boolean { return /\.worktrees(\/|$)/.test(p); }
 
@@ -5309,7 +5422,7 @@ async function browse(path: string): Promise<boolean> {
   pkPathIn.classList.remove("bad");
   renderCrumb(data.path);
   pkPins = new Set(data.pins ?? []);
-  localStorage.setItem("fleet.pkdir", data.path); // next openPicker starts where you left off
+  prefSet("fleet.pkdir", data.path); // next openPicker starts where you left off
   pkFilter.value = "";
   // a new root is a new tree: nothing below it is expanded, and the cached children of the old
   // root's descendants would only be stale weight. A search belongs to the root it ran under, so
@@ -6318,7 +6431,7 @@ function openPicker(slotId: number) {
   pkHideBtn = el("button", "pktoggle") as HTMLButtonElement;
   pkHideBtn.onclick = () => {
     hideWorktrees = !hideWorktrees;
-    localStorage.setItem("fleet.hidewt", hideWorktrees ? "1" : "0");
+    prefSetBool("fleet.hidewt", hideWorktrees);
     renderHideWtBtn();
     applyWtHide();
   };
@@ -6328,7 +6441,7 @@ function openPicker(slotId: number) {
   pkDotBtn = el("button", "pktoggle") as HTMLButtonElement;
   pkDotBtn.onclick = () => {
     showHidden = !showHidden;
-    localStorage.setItem("fleet.pkdot", showHidden ? "1" : "0");
+    prefSetBool("fleet.pkdot", showHidden);
     renderDotBtn();
     void reloadTree();
   };
@@ -6379,7 +6492,7 @@ function openPicker(slotId: number) {
     : "click selects and opens · double-click (or ⌘Enter) starts a session here"
       + " · →/← expand and collapse · Enter re-roots the tree · ⌘D pins";
 
-  const last = localStorage.getItem("fleet.pkdir") ?? "~";
+  const last = prefText("fleet.pkdir");
   void browse(last).then(async (ok) => {
     if (!ok && last !== "~") await browse("~"); // remembered dir may have been deleted
     // focusing an input on mobile would pop the keyboard over the folder list
@@ -6522,22 +6635,16 @@ interface Stack {
 // nicht das sie immer eingeklappt sind" (owner, 2026-09-20). A new key rather than a migration,
 // because the old list cannot be read as the new one: a stack missing from it meant CLOSED there
 // and means OPEN here. The legacy key is dropped on the first write so it cannot rot in place.
-const STACK_LS = "fleet.stacks.closed";
-const STACK_LS_LEGACY = "fleet.stacks";
 const stackClosed = new Set<string>(((): string[] => {
-  try {
-    const v: unknown = JSON.parse(localStorage.getItem(STACK_LS) ?? "[]");
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  } catch { return []; }
+  const v: unknown = prefJSON<unknown>("fleet.stacks.closed");
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 })());
 const stackIsOpen = (foldKey: string): boolean => !stackClosed.has(foldKey);
 function setStackOpen(g: Stack, on: boolean) {
   if (on) stackClosed.delete(g.foldKey);
   else stackClosed.add(g.foldKey);
-  try {
-    localStorage.setItem(STACK_LS, JSON.stringify([...stackClosed]));
-    localStorage.removeItem(STACK_LS_LEGACY);
-  } catch { /* private window, blocked site data: the fold still works for this session */ }
+  prefSet("fleet.stacks.closed", JSON.stringify([...stackClosed]));
+  prefSet("fleet.stacks", null); // the legacy key dies on the first write so it cannot rot in place
   renderSlots();
 }
 
@@ -7459,7 +7566,7 @@ function plaOwnerNote(tone: "red" | "unknown"): string {
 // src/plaudit.ts — the module under test); the receipt card is what an ack leaves behind, and its
 // "show again" is the return path the dismissal never had (grammatik G5.1, card K7).
 function plaAlarmCard(): HTMLElement | null {
-  const al = postLandAlarm(postLandAudit, Number(localStorage.getItem(PLA_ACK_KEY) ?? 0));
+  const al = postLandAlarm(postLandAudit, prefNumber(PLA_ACK_KEY));
   if (!al) { plaCard = null; return null; }
   const a = postLandAudit!;
   const sec = el("div", `plasec ${al.tone}`);
@@ -7487,7 +7594,7 @@ function plaAlarmCard(): HTMLElement | null {
   const ack = el("button", "plaack", "Seen") as HTMLButtonElement;
   ack.title = "blendet diese Meldung aus — nur für diesen Prüflauf; die nächste nicht-grüne Prüfung meldet sich wieder (intern: fleet.plaudit.ack).";
   ack.onclick = () => {
-    localStorage.setItem(PLA_ACK_KEY, String(postLandAudit?.at ?? 0));
+    prefSet(PLA_ACK_KEY, String(postLandAudit?.at ?? 0));
     renderPostLandAudit();
   };
   sec.appendChild(ack);
@@ -7500,14 +7607,14 @@ function plaAlarmCard(): HTMLElement | null {
 function plaReceiptCard(): HTMLElement | null {
   const a = postLandAudit;
   if (!a || a.result === "green") return null;
-  if (Number(localStorage.getItem(PLA_ACK_KEY) ?? 0) !== a.at) return null;
+  if (prefNumber(PLA_ACK_KEY) !== a.at) return null;
   const sec = el("div", "plasec seen");
   sec.appendChild(scopeTag("machine"));
   sec.appendChild(el("div", "planote",
     `the ${a.result === "red" ? "failed" : "unfinished"} check after the last land (${fmtTs(a.at)}) is marked seen`));
   const back = el("button", "plaack", "show again") as HTMLButtonElement;
   back.title = "zeigt die Meldung wieder, die du als gesehen markiert hattest.";
-  back.onclick = () => { localStorage.removeItem(PLA_ACK_KEY); renderPostLandAudit(); };
+  back.onclick = () => { prefSet(PLA_ACK_KEY, null); renderPostLandAudit(); };
   sec.appendChild(back);
   plaCard = sec;
   return sec;
@@ -7777,7 +7884,7 @@ function applySaver() {
 }
 function setSaver(on: boolean) {
   dataSaver = on;
-  localStorage.setItem("fleet.datasaver", on ? "1" : "0");
+  prefSetBool("fleet.datasaver", on);
   applySaver();
 }
 saverBtn.onclick = () => setSaver(!dataSaver);
@@ -8296,7 +8403,7 @@ let qScopeBar: HTMLElement | null = null;
 // the list — all, then each repo, then the programs of the chosen one — or, switched, ONE picker
 // "repo / program" in the toolbar line. Per-device pref; a phone always gets the line.
 let qTree: HTMLElement | null = null;
-let qTreeOn = localStorage.getItem("fleet.queue.scope") !== "line";
+let qTreeOn = prefText("fleet.queue.scope") !== "line";
 let qLayoutBtn: HTMLButtonElement | null = null;
 const qSel = new Set<string>();   // rows ticked for a bundle; cleared on open, on scope change and after an act
 let qBundleBusy = false;
@@ -12443,7 +12550,7 @@ function openQueue() {
   layoutBtn.type = "button";
   layoutBtn.onclick = () => {
     qTreeOn = !qTreeOn;
-    localStorage.setItem("fleet.queue.scope", qTreeOn ? "tree" : "line");
+    prefSet("fleet.queue.scope", qTreeOn ? "tree" : "line");
     qKey = ""; renderQueue();
   };
   qLayoutBtn = layoutBtn;
@@ -13931,7 +14038,7 @@ $("outcomebtn").onclick = () => void openActivity("lands");
 
 // ⋯ mehr — the board-wide fold under the header row: every NEW or secondary board action goes
 // in here first, never into the row above; promoting one to the row is its own owner call.
-let moreOpen = localStorage.getItem("fleet.more") === "1";
+let moreOpen = prefBool("fleet.more");
 const moreBtn = el("button", "", "⋯") as HTMLButtonElement;
 moreBtn.id = "morebtn";
 const morePanel = el("div", "");
@@ -13958,7 +14065,7 @@ morePanel.append(
 );
 moreBtn.onclick = () => {
   moreOpen = !moreOpen;
-  localStorage.setItem("fleet.more", moreOpen ? "1" : "0");
+  prefSetBool("fleet.more", moreOpen);
   applyMore();
 };
 $("toolrow2").appendChild(moreBtn);
@@ -14886,7 +14993,7 @@ hist.addEventListener("click", (e) => {
 
 // the directory view: every composed send ever, across all slots and slot lifetimes
 interface PromptDirEntry { ts: number; slot: number; cwd: string | null; label: string | null; source: string; text: string }
-let histAll = localStorage.getItem("fleet.histall") === "1";
+let histAll = prefBool("fleet.histall");
 
 // one row per prompt; meta = timestamp, plus origin session in the directory view.
 // click loads the prompt into the compose box for editing — it never auto-sends
@@ -14921,7 +15028,7 @@ async function renderHist() {
   const bAll = el("button", `shrbtn${all ? " active" : ""}`, "all sessions") as HTMLButtonElement;
   const setAll = (on: boolean) => {
     histAll = on;
-    localStorage.setItem("fleet.histall", on ? "1" : "0");
+    prefSetBool("fleet.histall", on);
     void renderHist();
   };
   bThis.onclick = () => setAll(false);
@@ -15305,13 +15412,8 @@ buildTray(); // the tray's entries are the functions that used to own an icon bu
 void (async () => {
   await refresh();
   void loadDispositions(); // so an already-labeled ③ review renders its label, not "unbewertet"
-  let view: { layout?: number; panes?: number[]; focused?: number; chats?: boolean[] } = {};
-  try {
-    view = JSON.parse(localStorage.getItem("fleet.view") ?? "{}") as typeof view;
-  } catch {
-    view = {};
-  }
-  const legacy = Number(localStorage.getItem("fleet.current"));
+  const view = prefJSON<{ layout?: number; panes?: number[]; focused?: number; chats?: boolean[] }>("fleet.view");
+  const legacy = prefNumber("fleet.current");
   const n = !isMobile() && view.layout && LAYOUTS[String(view.layout)] ? view.layout : 1;
   const assignments = view.panes ?? (legacy ? [legacy] : []);
   if (!assignments.some((s) => s && fleet[s - 1]?.cwd)) {
@@ -15323,5 +15425,5 @@ void (async () => {
   // (syncHarnessAffordances sends a slot without one back to the terminal on its own)
   panes.forEach((p, i) => { if (view.chats?.[i] && p.slot && p.slot === view.panes?.[i]) p.setView("chat"); });
   focusPane(Math.min(view.focused ?? 0, n - 1));
-  setCollapsed(localStorage.getItem("fleet.sidecollapsed") === "1");
+  setCollapsed(prefBool("fleet.sidecollapsed"));
 })();

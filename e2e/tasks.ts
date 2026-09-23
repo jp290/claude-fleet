@@ -527,7 +527,7 @@ export async function run(ctx: Ctx): Promise<void> {
     taskClientSource.indexOf("function renderQueue()"));
   check("queue scope: a tree column beside the list, or one picker in the line — a per-device pref, a phone always gets the line",
     /qTree = el\("nav", "qtree"\);\s*shell\.list\.before\(qTree\)/.test(openQueueSource)
-      && /localStorage\.setItem\("fleet\.queue\.scope", qTreeOn \? "tree" : "line"\)/.test(openQueueSource)
+      && /prefSet\("fleet\.queue\.scope", qTreeOn \? "tree" : "line"\)/.test(openQueueSource)
       && scopeSource.includes("const asTree = qTreeOn && !MOBILE_MQ.matches;")
       && scopeSource.includes("tree.hidden = !asTree;")
       && /@media \(max-width: 700px\)[\s\S]*?#shell-queue \.qtree, #shell-queue \.qlayoutbtn \{ display: none; \}/.test(taskPageSource),

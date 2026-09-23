@@ -7,6 +7,8 @@
 // max width. Its top stop is FULL — no cap, the column fills the pane (the padding keeps 18px).
 export type SizeKey = "text" | "code" | "ui" | "width";
 
+import { prefJSON, prefSet } from "./prefs";
+
 export const SIZE_SPEC: Record<SizeKey, { label: string; min: number; max: number; def: number; step: number; v: string }> = {
   text: { label: "Text", min: 11, max: 24, def: 14, step: 0.5, v: "--chat-fs" },
   code: { label: "Code", min: 10, max: 22, def: 12.5, step: 0.5, v: "--chat-code-fs" },
@@ -17,12 +19,10 @@ export const COLUMN_FULL = SIZE_SPEC.width.max;
 const cssValue = (k: SizeKey, n: number): string => (k === "width" && n >= COLUMN_FULL ? "100000px" : `${n}px`);
 const shown = (k: SizeKey, n: number): string => (k === "width" && n >= COLUMN_FULL ? "voll" : `${n}px`);
 
-const KEY = "fleet.chatsize";
 const KEYS = Object.keys(SIZE_SPEC) as SizeKey[];
 
 const DEFAULTS: Record<SizeKey, number> = { text: SIZE_SPEC.text.def, code: SIZE_SPEC.code.def, ui: SIZE_SPEC.ui.def, width: SIZE_SPEC.width.def };
 let sizes: Record<SizeKey, number> = { ...DEFAULTS };
-import { popover } from "./popover";
 
 const listeners = new Set<() => void>();
 
@@ -35,18 +35,16 @@ function apply(): void {
 }
 
 function save(): void {
-  try { localStorage.setItem(KEY, JSON.stringify(sizes)); } catch { /* private mode — the size just isn't remembered */ }
+  prefSet("fleet.chatsize", JSON.stringify(sizes));
 }
 
 export function loadChatSizes(): void {
-  try {
-    const raw = JSON.parse(localStorage.getItem(KEY) ?? "null") as Partial<Record<SizeKey, unknown>> | null;
-    if (raw && typeof raw === "object") {
-      const next = { ...sizes };
-      for (const k of KEYS) if (typeof raw[k] === "number" && Number.isFinite(raw[k])) next[k] = clamp(k, raw[k]);
-      sizes = next;
-    }
-  } catch { /* unreadable or blocked storage — defaults */ }
+  const raw = prefJSON<Partial<Record<SizeKey, unknown>> | null>("fleet.chatsize");
+  if (raw && typeof raw === "object") {
+    const next = { ...sizes };
+    for (const k of KEYS) if (typeof raw[k] === "number" && Number.isFinite(raw[k])) next[k] = clamp(k, raw[k]);
+    sizes = next;
+  }
   apply();
 }
 
@@ -72,8 +70,10 @@ export function stepChatSizes(dir: -1 | 0 | 1): void {
   save();
 }
 
-// The popover the view's "Aa" button opens: one range per variable plus a reset. A single element
-// for the page — the pane that opens it moves it into itself — so a layout switch leaks nothing.
+// The "Schrift" section of the settings window: one range per variable plus a reset. A single
+// element for the page — the window (src/client.ts#openSettings) moves it into itself — so a
+// reopened window leaks nothing. Its ONE home is that section (G5.3); the Aa corner button opens
+// the window right there, the panel has no popover of its own anymore.
 let panel: HTMLElement | null = null;
 export function sizePanel(): HTMLElement {
   if (panel) return panel;
@@ -113,18 +113,6 @@ export function sizePanel(): HTMLElement {
   hint.className = "sizehint";
   hint.textContent = "Strg/⌘ + / − / 0";
   box.append(...rows.map((r) => r.row), reset, hint);
-  const shut = () => box.classList.remove("open");
-  // outside click, Escape and the focus return live in src/popover.ts (G4.1/K5); no rows here —
-  // the arrows already belong to the sliders (a range input's ArrowUp/Down changes its value)
-  popover({
-    panel: () => box,
-    trigger: () => box.parentElement?.querySelector<HTMLElement>(".chatsizebtn") ?? null,
-    isOpen: () => box.classList.contains("open"),
-    close: (refocus) => {
-      shut();
-      if (refocus) box.parentElement?.querySelector<HTMLElement>(".chatsizebtn")?.focus();
-    },
-  });
   panel = box;
   return box;
 }

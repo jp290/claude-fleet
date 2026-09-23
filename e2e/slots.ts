@@ -1072,9 +1072,27 @@ export async function run(): Promise<void> {
   check("client: the chat chain is CLEARED on the way out, not merely left to stop re-arming",
     /chatPump\(\) \{\s*clearTimeout\(this\.chatTimer\);\s*if \(this\.view === "chat" && plan\(\)\.chatMs\)/.test(cliSrc),
     "Pane.chatPump in src/client.ts");
-  check("client: the switch is persisted per device and read back at boot",
-    /localStorage\.setItem\("fleet\.datasaver"/.test(cliSrc)
-    && /localStorage\.getItem\("fleet\.datasaver"\) === "1"/.test(cliSrc), "setSaver / dataSaver in src/client.ts");
+  check("client: the switch is persisted per device and read back at boot — through the prefs registry (G5.1)",
+    /prefSetBool\("fleet\.datasaver", on\)/.test(cliSrc)
+    && /let dataSaver = prefBool\("fleet\.datasaver"\)/.test(cliSrc), "setSaver / dataSaver in src/client.ts");
+  // K2 (Grammatik G5.1): the registry in src/prefs.ts is the ONE localStorage home. No consumer
+  // carries a naked call anymore, and every key named through prefs is a row of the PREFS table —
+  // a key that reads or writes without being registered would be invisible in the settings window.
+  let prefsSrc: string | null = null, shareSrc: string | null = null, helperSrc: string | null = null;
+  try { prefsSrc = readFileSync(`${sourceRoot}/src/prefs.ts`, "utf8"); } catch { prefsSrc = null; }
+  try { shareSrc = readFileSync(`${sourceRoot}/src/share.ts`, "utf8"); } catch { shareSrc = null; }
+  try { helperSrc = readFileSync(`${sourceRoot}/src/helper.ts`, "utf8"); } catch { helperSrc = null; }
+  const lsCall = /localStorage\.(getItem|setItem|removeItem)/;
+  const prefCall = /pref(?:SetBool|Set|Bool|Number|Text|JSON|Def|Raw)\("([^"]+)"/g;
+  const sources = [cliSrc, chatSrc, shareSrc, helperSrc];
+  const namedKeys = sources.flatMap((s) => s ? [...s.matchAll(prefCall)].map((m) => m[1]!) : []);
+  check("client: the prefs registry is the ONE localStorage home — no naked call outside src/prefs.ts",
+    prefsSrc !== null && lsCall.test(prefsSrc)
+    && sources.every((s) => s === null || !lsCall.test(s)),
+    JSON.stringify({ prefs: prefsSrc !== null, naked: sources.map((s) => s === null ? "missing" : lsCall.test(s)) }));
+  check("client: every key the code reads or writes through prefs stands in the PREFS table",
+    namedKeys.length >= 20 && namedKeys.every((k) => prefsSrc!.includes(`key: "${k}"`)),
+    JSON.stringify([...new Set(namedKeys.filter((k) => !prefsSrc!.includes(`key: "${k}"`)))]));
 
   // --- the chat view's SENT bubble (docs/messungen/2026-09-22-chat-absenden-zeitleiste.md): a
   // send showed nothing until POST /send answered AND the next chat poll brought the transcript
@@ -2148,24 +2166,38 @@ export async function run(): Promise<void> {
           && indexSrc.includes(".panetools .termwidth, .panetools .panegear { display: none !important; }")
           && !/(^|\n)\s*\.boardtoggle \{/m.test(indexSrc),
         JSON.stringify({ group: cssBody(".panetools button"), pressed: cssBody(".panetools button[aria-pressed=\"true\"]") }));
-      // K5 (Grammatik): exactly ONE module owns outside-click and Escape for the four popovers —
-      // #instmenu, .optpop, #board .bmenu and sizePanel register in src/popover.ts. A second
-      // document-level listener for them in client.ts or chatsize.ts would fork the behaviour
-      // (close semantics, focus return, arrow walk drift apart) — the form this check pins.
-      // Mutation probe: re-adding any old listener form below (or a popover() call outside the
-      // counted 3+1) turns this red.
+      // K5 (Grammatik): exactly ONE module owns outside-click and Escape for the three popovers —
+      // #instmenu, .optpop and #board .bmenu register in src/popover.ts. (sizePanel was the
+      // fourth until K8: its ONE home is now the settings window's "Schrift" section, G5.3 —
+      // no popover of its own anymore.) A second document-level listener for them in client.ts
+      // or chatsize.ts would fork the behaviour (close semantics, focus return, arrow walk
+      // drift apart) — the form this check pins. Mutation probe: re-adding any old listener
+      // form below (or a popover() call outside the counted 3+0) turns this red.
       const popCount = (s: string | null): number => s ? (s.match(/popover\(\{/g) ?? []).length : 0;
-      check("client: the four popovers share ONE outside-click/Escape module — no second document listener",
+      check("client: the three popovers share ONE outside-click/Escape module — no second document listener",
         popSrc !== null
         && popSrc.includes('document.addEventListener("pointerdown"')
         && popSrc.includes('addEventListener("keydown"')
-        && popCount(cliSrc) === 3 && popCount(chatSrc) === 1
+        && popCount(cliSrc) === 3 && popCount(chatSrc) === 0
         && !/document\.addEventListener\("click", \(e\) => \{\s*if \(instMenuOpen/.test(cliSrc ?? "")
         && !/window\.addEventListener\("keydown", \(e\) => \{ if \(e\.key === "Escape" && instMenuOpen/.test(cliSrc ?? "")
         && !/document\.addEventListener\("pointerdown", \(e\) => \{\s*const t = e\.target;\s*if \(!optOpen/.test(cliSrc ?? "")
         && !(cliSrc ?? "").includes('compOpts.addEventListener("keydown"')
         && !/addEventListener\("(pointerdown|keydown)"/.test(chatSrc ?? ""),
         JSON.stringify({ helper: popSrc !== null, popoverCalls: { client: popCount(cliSrc), chatsize: popCount(chatSrc) } }));
+      // K8 (Grammatik G5): the gear's window renders the registry — the device rows come FROM the
+      // PREFS table (not hand-wired), the size panel is the "Schrift" section's one home,
+      // "Fleet" stays empty until a theme row brings its route, and the focus returns to the
+      // trigger (G4). Mutation probe: wiring a row by hand instead of over PREFS turns this red.
+      check("client: the settings window renders the registry — device rows from PREFS, Schrift as the panel's home, Fleet awaiting its route",
+        /id: "settings", title: "Einstellungen"/.test(cliSrc)
+        && /for \(const d of PREFS\)/.test(cliSrc)
+        && /appendChild\(sizePanel\(\)\)/.test(cliSrc)
+        && /Hier ziehen serverseitige Werte ein/.test(cliSrc)
+        && /trigger\?\.focus\(\)/.test(cliSrc),
+        JSON.stringify({ title: /title: "Einstellungen"/.test(cliSrc), prefsRows: /for \(const d of PREFS\)/.test(cliSrc),
+          schrift: /appendChild\(sizePanel\(\)\)/.test(cliSrc), fleetNote: /Hier ziehen serverseitige Werte ein/.test(cliSrc),
+          focusReturn: /trigger\?\.focus\(\)/.test(cliSrc) }));
       // ECKKNOPFE RUNDE 2 (owner 2026-09-22): the open column's close box sits EXACTLY where the
       // corner group's top row sits when the column is closed — one spot, click opens, click
       // again closes. Proven as arithmetic over the CSS constants that produce it (the browser

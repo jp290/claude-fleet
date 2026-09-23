@@ -92,6 +92,16 @@ abgeleitet aus `docs/messungen/2026-09-14-rollen-briefe-synthese.md` §2b) und w
 ändert daran nichts: sie nennt weiter den **Linien-Record** als die eine Übergabe (§Nachfolge unten,
 `e3e5084a`); die Karte ist ein zusätzlicher TEXT, kein zweiter Kanal.
 
+**Das Portfolio-Gedächtnis ist eine Owner-Zuteilung, keine Rollenfolge** (seit 2026-09-24, Zeile
+41641179). Beide Briefe tragen nach den Schritten den Pointer `YOUR PORTFOLIO MEMORY …`
+(`server.ts#memoryPortfolioPointer`, ≤ 512 B) auf `GET /api/self/memory?view=portfolio` — die
+Faltung der Projekte, die ein vom Owner gesetzter Read-Grant nennt, jede Summe auf Projekt und
+Quellversion rückführbar. Das Label „Orchestrator" gewährt ihn nicht (409 `no-grant`); der Owner
+setzt ihn mit `PATCH /api/slots/:id/memory-grant`, er ist reines Leserecht, und die generische
+Nachfolge trägt ihn gleich oder verengt (`succeed` mit `memoryGrant`), nie weiter. Die Briefe
+kopieren keine Portfolio-Tabelle: die manuelle projektübergreifende Übersicht im Übergabetext
+entfällt, gelesen wird sie aus der Tür. Vertrag: `docs/self-api.md` §memory.
+
 Die beiden Sensoren des Loop haben Kurzformen: `./state.sh --brief` und `./register.sh --brief`
 geben je höchstens 40 Zeilen, und ihre erste Zeile nennt Zeilen- und Byte-Zahl der Vollausgabe samt
 dem Kommando, das sie druckt; die Vollausgabe selbst bleibt byteidentisch und beginnt mit derselben

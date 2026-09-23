@@ -1,7 +1,7 @@
 // The scoped self-scheduling credential: FLEET_SELF_TOKEN / FLEET_SELF_SLOT in EVERY session's
 // spawn env (lane or not, since 2026-08-07), and what the /api/self routes will and will not
 // accept it for — including both opposite scope rules (lane-only questions vs main-only exit).
-import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { BASE, IP, PORT, REPO, REPO2, REPO3, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv } from "./harness";
@@ -1586,10 +1586,16 @@ async function memoryDoor(): Promise<void> {
     if (!up) return;
     const repos = [rA, rB, rC];
     for (const [n, r] of repos.entries()) await opost(`/api/slots/${n + 1}/open`, { cwd: r, label: `mem-main-${"ABC"[n]}` });
+    // M4: slot 4 becomes the bound Supervisor (planted below), slot 5 carries the Orchestrator LABEL
+    // and a model name — renamed after the open, so no role card is founded into it
+    await opost("/api/slots/4/open", { cwd: rA, label: "mem-supervisor" });
+    await opost("/api/slots/5/open", { cwd: rA, label: "mem-orch", model: "claude-opus-5[1m]" });
+    await opost("/api/slots/5/rename", { label: "🎛 Orchestrator (mem)" });
     let rows: MemSlotRow[] = [];
     for (let n = 0; n < 60; n++) {
       rows = [1, 2, 3].map((k) => readState().slots[String(k)] ?? {});
-      if (rows.every((x) => /^[0-9a-f]{32}$/.test(x.selfToken ?? "") && typeof x.openedAt === "number")) break;
+      const extra = [4, 5].map((k) => readState().slots[String(k)] ?? {});
+      if ([...rows, ...extra].every((x) => /^[0-9a-f]{32}$/.test(x.selfToken ?? "") && typeof x.openedAt === "number")) break;
       await Bun.sleep(100);
     }
     check("memory fixture: three plain MAIN slots are open with their own credentials",
@@ -1602,6 +1608,8 @@ async function memoryDoor(): Promise<void> {
     const now = Date.now();
     const planted = readState();
     const P = ["a", "b", "c"].map((c) => c.repeat(24));
+    const sup = planted.slots["4"] ?? {};
+    (planted as Record<string, unknown>).supervisor = { slot: 4, openedAt: sup.openedAt, sessionId: sup.sessionId ?? null, boundAt: now - 700 };
     const id = (k: string, n: number) => `${k}${n}`.padEnd(12, "0").toLowerCase().replace(/[^a-z0-9]/g, "0");
     const T = [0, 1, 2].map((n) => id("t", n)); const Hh = [0, 1, 2].map((n) => id("h", n));
     const D = [0, 1, 2].map((n) => id("d", n)); const X = [0, 1, 2].map((n) => id("x", n));
@@ -1888,9 +1896,196 @@ async function memoryDoor(): Promise<void> {
       before.body.coverage === "incomplete" && after.status === 409 && after.body.refusal === "cursor-stale"
         && restart.status === 200 && Array.isArray(restart.body.rows),
       JSON.stringify({ before: before.body.coverage, after }));
+    await memoryPortfolio(i, dir, [rA, rB, rC], mainTok, laneTok, X);
   } finally {
     await memStop(i);
     spawnSync("tmux", ["-L", i.sock, "kill-server"]);
     rmSync(MEM_FIX, { recursive: true, force: true });
   }
+}
+
+// --- M4 · view=portfolio and the owner's read grant (task 41641179), on memoryDoor's instance ---
+// Slot 4 is the bound Supervisor, slot 5 an Orchestrator by LABEL (and model) only; the three
+// repositories are the three projects. What each group can turn red, stated as the mutation:
+//   label/model/lane/MAIN — grant portfolio reach from a label, a model, a lane or a Program binding.
+//   admin ×2 — let a self credential through the owner gate, or ignore expectedRevision.
+//   fold — sum a total that does not equal its parts, or drop a part's sourceVersion.
+//   foreign project / cursor — serve a key outside the grant, or honour a cursor after a revoke.
+//   persistence — keep a grant in force whose write failed.
+//   boot — rehydrate a grant onto another occupant, or read an unknown project as empty.
+//   recycle — let a new occupant of the slot inherit the grant.
+async function memoryPortfolio(i: MemInstance, dir: string, repos: string[], mainTok: string[], laneTok: string[], X: string[]): Promise<void> {
+  const H2 = { "content-type": "application/json", authorization: `Bearer ${MEM_TOKEN}` };
+  const owner = (method: string, path: string, body?: unknown, headers: Record<string, string> = H2) =>
+    fetch(`${i.base}${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  type Grant = { grantId: string; revision: number; projectKeys: string[]; views: string[]; revokedAt: number | null;
+    occupant: { slot: number; openedAt: number } };
+  type GrantView = { openedAt: number | null; grant: Grant | null; inForce: boolean; knownProjects: { projectKey: string; repo: string }[] };
+  const grantOf = async (slot: number): Promise<GrantView> => (await (await owner("GET", `/api/slots/${slot}/memory-grant`)).json()) as GrantView;
+  type Part = { projectKey: string; value: number; sourceVersion: string };
+  type Project = { projectKey: string; state: string; sourceVersion?: string; coverage?: string; unknown?: string[];
+    work?: { held: number; lanes: number; tasks: Record<string, number>; audit: { queued: number } };
+    observations?: { state?: string } };
+  type Port = { refusal?: string; error?: string; scope?: { principal: string; projectKeys: string[] }; projects?: Project[];
+    totals?: { partial: boolean; sums: Record<string, { value: number; parts: Part[] }> }; nextCursor?: string | null; unknown?: string[] };
+  const port = async (tok: string, q = ""): Promise<{ status: number; body: Port; raw: string }> => {
+    const r = await fetch(`${i.base}/api/self/memory?view=portfolio${q}`, { headers: { "x-fleet-self-token": tok } });
+    const raw = await r.text();
+    let body: Port = {};
+    try { body = JSON.parse(raw) as Port; } catch { /* the checks say so */ }
+    return { status: r.status, body, raw };
+  };
+  const slotRow = (k: number) => (JSON.parse(readFileSync(`${dir}/fleet.json`, "utf8")) as { slots: Record<string, MemSlotRow & { memoryGrant?: unknown }> }).slots[String(k)];
+  const known = (await grantOf(5)).knownProjects;
+  const [kA, kB, kC] = repos.map((r) => known.find((p) => p.repo === r)?.projectKey ?? "");
+  const orchTok = slotRow(5)?.selfToken ?? "";
+  const orchOpened = slotRow(5)?.openedAt ?? 0;
+  const supTok = slotRow(4)?.selfToken ?? "";
+  check("memory portfolio fixture: the three repositories are three known projects with opaque keys, and slot 5 holds no grant",
+    [kA, kB, kC].every((k) => /^[0-9a-f]{16}$/.test(k)) && new Set([kA, kB, kC]).size === 3 && (await grantOf(5)).grant === null
+      && /^[0-9a-f]{32}$/.test(orchTok) && /^[0-9a-f]{32}$/.test(supTok),
+    JSON.stringify(known.map((p) => p.projectKey)));
+
+  // --- no grant: label, model, lane and a Program binding reach nothing ---
+  const byLabel = await port(orchTok);
+  const byLane = await port(laneTok[1]!);
+  const byMain = await port(mainTok[0]!);
+  check("memory portfolio refusal (label/model only): the Orchestrator-labelled session with a model gets no-grant and no project",
+    byLabel.status === 409 && byLabel.body.refusal === "no-grant" && /label grants nothing/.test(byLabel.body.error ?? "")
+      && ![kA, kB, kC].some((k) => byLabel.raw.includes(k)),
+    `${byLabel.status} ${byLabel.raw.slice(0, 300)}`);
+  check("memory portfolio refusal: a lane is lane-scope and a bound Program-MAIN is no-grant — neither binding is portfolio reach",
+    byLane.status === 409 && byLane.body.refusal === "lane-scope" && byMain.status === 409 && byMain.body.refusal === "no-grant",
+    `${byLane.status}:${byLane.body.refusal} ${byMain.status}:${byMain.body.refusal}`);
+
+  // --- the two administrative counter-cases ---
+  const setBody = (rev: number, keys: string[], views = ["work", "observations"]) =>
+    ({ expectedOpenedAt: orchOpened, expectedRevision: rev, projectKeys: keys, views });
+  const viaSelf = await owner("PATCH", "/api/slots/5/memory-grant", setBody(0, [kA]), { "content-type": "application/json", "x-fleet-self-token": orchTok });
+  const viaSelfBearer = await owner("PATCH", "/api/slots/5/memory-grant", setBody(0, [kA]), { "content-type": "application/json", authorization: `Bearer ${orchTok}` });
+  const wrongRev = await owner("PATCH", "/api/slots/5/memory-grant", setBody(3, [kA]));
+  const wrongRevBody = (await wrongRev.json().catch(() => ({}))) as { refusal?: string };
+  check("memory grant admin refusal: a self credential (header or bearer) cannot set a grant, and a wrong expected revision is a 409 — nothing written",
+    viaSelf.status === 401 && viaSelfBearer.status === 401 && wrongRev.status === 409 && wrongRevBody.refusal === "revision-mismatch"
+      && (await grantOf(5)).grant === null && slotRow(5)?.memoryGrant === undefined,
+    `${viaSelf.status} ${viaSelfBearer.status} ${wrongRev.status}:${wrongRevBody.refusal}`);
+
+  // --- a failed persistence step: the state directory refuses the write ---
+  chmodSync(dir, 0o555);
+  let failed: Response;
+  try { failed = await owner("PATCH", "/api/slots/5/memory-grant", setBody(0, [kA, kB, kC])); } finally { chmodSync(dir, 0o755); }
+  const failedBody = (await failed.json().catch(() => ({}))) as { refusal?: string };
+  const afterFail = await port(orchTok);
+  check("memory grant persistence: a set whose write fails is a 500 not-persisted and leaves 0 effective grants — the reader still says no-grant",
+    failed.status === 500 && failedBody.refusal === "not-persisted" && (await grantOf(5)).grant === null
+      && afterFail.status === 409 && afterFail.body.refusal === "no-grant",
+    `${failed.status}:${failedBody.refusal} read=${afterFail.status}:${afterFail.body.refusal}`);
+
+  // --- the grant set: three projects, folded ---
+  const set1 = await owner("PATCH", "/api/slots/5/memory-grant", setBody(0, [kC, kA, kB]));
+  const g1 = ((await set1.json().catch(() => ({}))) as { grant?: Grant }).grant;
+  const onDisk = slotRow(5)?.memoryGrant as Grant | undefined;
+  check("memory grant: the owner sets revision 1 on the exact occupant, and it is on disk before the answer",
+    set1.ok && g1?.revision === 1 && g1.occupant.openedAt === orchOpened && JSON.stringify(g1.projectKeys) === JSON.stringify([kA, kB, kC].sort())
+      && onDisk?.grantId === g1.grantId && onDisk.revision === 1,
+    `${set1.status} ${JSON.stringify(g1 ?? null)}`);
+  const P1 = await port(orchTok);
+  const projects = P1.body.projects ?? [];
+  const byKey = new Map(projects.map((p) => [p.projectKey, p]));
+  const sums = P1.body.totals?.sums ?? {};
+  const traced = Object.entries(sums).length > 0 && Object.entries(sums).every(([name, t]) =>
+    t.value === t.parts.reduce((n, p) => n + p.value, 0) && t.parts.every((p) => {
+      const sec = byKey.get(p.projectKey);
+      const path = name.split(".");
+      let v: unknown = sec?.work;
+      for (const k of path) v = (v as Record<string, unknown> | undefined)?.[k];
+      if (name === "audit.queued") v = sec?.work?.audit.queued;
+      return !!sec && p.sourceVersion === sec.sourceVersion && v === p.value;
+    }));
+  check("memory portfolio: the grant folds exactly its three projects, each a known slice with its own source version",
+    P1.status === 200 && P1.body.scope?.principal === "grant" && projects.length === 3
+      && [kA, kB, kC].every((k) => byKey.get(k)?.state === "known" && /^[0-9a-f]{16}$/.test(byKey.get(k)?.sourceVersion ?? ""))
+      && [kA, kB, kC].every((k) => byKey.get(k)?.work?.held === 1),
+    `${P1.status} ${P1.raw.slice(0, 400)}`);
+  check("memory portfolio: every total equals the sum of its parts, and each part is its project's own value at that project's source version",
+    traced && sums.held?.value === 3 && sums.held.parts.length === 3,
+    JSON.stringify(sums).slice(0, 400));
+  check("memory portfolio (unreadable partial source): a torn outcome line and an absent snapshot trail mark each project incomplete and unknown — the scope stays exactly three",
+    projects.every((p) => p.coverage === "incomplete" && (p.unknown ?? []).some((u) => u.includes("malformed lane-outcomes"))
+      && p.observations?.state === "unknown") && JSON.stringify(P1.body.scope?.projectKeys) === JSON.stringify([kA, kB, kC].sort()),
+    JSON.stringify(projects.map((p) => [p.coverage, p.unknown])).slice(0, 400));
+  const noWrite = await fetch(`${i.base}/api/self/tasks/${X[0]}/hold`, { method: "POST",
+    headers: { "content-type": "application/json", "x-fleet-self-token": orchTok }, body: JSON.stringify({ grund: "grant is read-only" }) });
+  check("memory grant is read-only: its holder cannot hold a row of a granted project", noWrite.status >= 400, String(noWrite.status));
+
+  // --- narrowed to two: the third is a foreign project; cursors die with the revision ---
+  const set2 = await owner("PATCH", "/api/slots/5/memory-grant", setBody(1, [kA, kB], ["work"]));
+  const P2 = await port(orchTok);
+  const fC = await port(orchTok, `&project=${kC}`);
+  check("memory portfolio refusal (not granted): after narrowing to two projects the third is absent, and project= naming it is foreign-project",
+    set2.ok && P2.status === 200 && (P2.body.projects ?? []).length === 2 && !P2.raw.includes(kC)
+      && (P2.body.projects ?? []).every((p) => p.observations === undefined)
+      && fC.status === 409 && fC.body.refusal === "foreign-project",
+    `${set2.status} ${P2.status} n=${P2.body.projects?.length} ${fC.status}:${fC.body.refusal}`);
+  const page1 = await port(orchTok, "&limit=1");
+  const page2 = await port(orchTok, `&limit=1&cursor=${page1.body.nextCursor}`);
+  const page1b = await port(orchTok, "&limit=1");
+  const revoke = await owner("PATCH", "/api/slots/5/memory-grant", { expectedOpenedAt: orchOpened, expectedRevision: 2, revoke: true });
+  const stale = await port(orchTok, `&limit=1&cursor=${page1b.body.nextCursor}`);
+  const afterRevoke = await port(orchTok);
+  check("memory grant revoke: a cursor issued before the revoke is cursor-stale, and the reader is back to no-grant",
+    typeof page1.body.nextCursor === "string" && page2.status === 200 && (page2.body.projects ?? []).length === 1
+      && revoke.ok && stale.status === 409 && stale.body.refusal === "cursor-stale"
+      && afterRevoke.status === 409 && afterRevoke.body.refusal === "no-grant" && (await grantOf(5)).grant?.revision === 3,
+    `${page2.status} revoke=${revoke.status} stale=${stale.status}:${stale.body.refusal} after=${afterRevoke.status}`);
+  const auditRows = readFileSync(`${dir}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+    .map((l) => { try { return JSON.parse(l) as { event?: string; detail?: string }; } catch { return {}; } })
+    .filter((r) => r.event === "memory_grant");
+  check("memory grant audit: set, narrow, revoke and the failed write are four attributed rows naming no repository path",
+    auditRows.length === 4 && auditRows.every((r) => !repos.some((p) => (r.detail ?? "").includes(p)))
+      && auditRows.some((r) => (r.detail ?? "").startsWith("write failed")) && auditRows.some((r) => (r.detail ?? "").startsWith("revoked")),
+    JSON.stringify(auditRows.map((r) => (r.detail ?? "").slice(0, 60))));
+
+  // --- the Supervisor keeps its existing reach, without any grant ---
+  const S = await port(supTok);
+  check("memory portfolio (Supervisor): the bound Supervisor folds every known project from its existing reach, no grant set",
+    S.status === 200 && S.body.scope?.principal === "supervisor" && [kA, kB, kC].every((k) => (S.body.scope?.projectKeys ?? []).includes(k)),
+    `${S.status} ${JSON.stringify(S.body.scope ?? S.body)}`.slice(0, 300));
+
+  // --- boot: only a grant naming its exact occupant and line comes back ---
+  await memStop(i);
+  const st = JSON.parse(readFileSync(`${dir}/fleet.json`, "utf8")) as { slots: Record<string, Record<string, unknown>> };
+  const ghost = "f".repeat(16);
+  const mk = (slot: number, openedAt: number, keys: string[]) => ({ v: 1, grantId: "9".repeat(24), revision: 7, issuedBy: "owner-principal",
+    issuedAt: Date.now(), lineageId: null, occupant: { slot, openedAt }, projectKeys: keys, views: ["work"], revokedAt: null, transferredFrom: null });
+  st.slots["5"]!.memoryGrant = mk(5, orchOpened, [kA, ghost]);
+  st.slots["1"]!.memoryGrant = mk(1, (st.slots["1"]!.openedAt as number) - 1, [kA]);
+  writeFileSync(`${dir}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+  const reup = await memBoot(i);
+  const B5 = await port(orchTok);
+  const B1 = await port(mainTok[0]!);
+  const ghostP = (B5.body.projects ?? []).find((p) => p.projectKey === ghost);
+  check("memory grant boot: the grant naming its exact occupant is back; the one naming another openedAt is dropped with a boot line",
+    reup && B5.status === 200 && B5.body.scope?.principal === "grant" && B1.status === 409 && B1.body.refusal === "no-grant"
+      && (await grantOf(1)).grant === null && i.log.includes("slot 1: persisted memory grant dropped at boot"),
+    `up=${reup} B5=${B5.status} B1=${B1.status}:${B1.body.refusal}`);
+  check("memory portfolio (project without facts): a granted key no carrier names is state unknown, left out of the totals, which say partial",
+    ghostP?.state === "unknown" && B5.body.totals?.partial === true
+      && Object.values(B5.body.totals?.sums ?? {}).every((t) => t.parts.every((p) => p.projectKey !== ghost)),
+    JSON.stringify({ ghost: ghostP ?? null, partial: B5.body.totals?.partial }));
+
+  // --- recycled occupant: a new session on slot 5 inherits nothing ---
+  await owner("POST", "/api/slots/5/kill", {});
+  await owner("POST", "/api/slots/5/open", { cwd: repos[0], label: "mem-orch-recycled" });
+  let recTok = "";
+  for (let k = 0; k < 60; k++) {
+    const t = slotRow(5)?.selfToken ?? "";
+    if (/^[0-9a-f]{32}$/.test(t) && t !== orchTok) { recTok = t; break; }
+    await Bun.sleep(100);
+  }
+  const R = await port(recTok);
+  const oldR = await fetch(`${i.base}/api/self/memory?view=portfolio`, { headers: { "x-fleet-self-token": orchTok } });
+  check("memory portfolio refusal (recycled occupant): the new session on slot 5 gets no-grant, the old credential is dead",
+    recTok !== "" && R.status === 409 && R.body.refusal === "no-grant" && oldR.status === 401 && (await grantOf(5)).grant === null,
+    `${R.status}:${R.body.refusal} old=${oldR.status}`);
 }

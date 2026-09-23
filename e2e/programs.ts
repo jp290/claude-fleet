@@ -4063,7 +4063,20 @@ export async function run(ctx: Ctx): Promise<void> {
   const orchIntent = "zuerst die zwei roten Audit-Zeilen, dann das Klassen-Register";
   // the successor is found by its OCCUPATION: it opens in place, on the predecessor's own slot
   const orchPredOpenedAt = (await sessions()).slots.find((s) => s.id === orchSlot)?.openedAt;
-  const orchSuccPending = selfSucceed(orchToken, { intent: orchIntent });
+  // M4 (task 41641179): an owner read grant on this Orchestrator rides its line. Widening it at
+  // succession is refused before anything ends; the real succession NARROWS the views.
+  const orchKnown = ((await (await get(`/api/slots/${orchSlot}/memory-grant`)).json()) as
+    { knownProjects?: { projectKey: string }[] }).knownProjects ?? [];
+  const orchKey = orchKnown[0]?.projectKey ?? "";
+  const orchGrantSet = await fetch(`${BASE}/api/slots/${orchSlot}/memory-grant`, { method: "PATCH", headers: H,
+    body: JSON.stringify({ expectedOpenedAt: orchPredOpenedAt, expectedRevision: 0, projectKeys: [orchKey], views: ["work", "observations"] }) });
+  const orchGrow = await selfSucceed(orchToken, { intent: orchIntent, memoryGrant: { projectKeys: [orchKey, "0".repeat(16)] } });
+  const orchGrowBody = (await orchGrow.json().catch(() => ({}))) as { refusal?: string };
+  check("Orchestrator read grant: a succession that would WIDEN the grant is refused before anything ends — same occupant, same grant",
+    orchGrantSet.ok && orchGrow.status === 409 && orchGrowBody.refusal === "scope-growth"
+      && (await sessions()).slots.find((s) => s.id === orchSlot)?.openedAt === orchPredOpenedAt,
+    `set=${orchGrantSet.status} grow=${orchGrow.status}:${orchGrowBody.refusal} key=${orchKey}`);
+  const orchSuccPending = selfSucceed(orchToken, { intent: orchIntent, memoryGrant: { views: ["work"] } });
   let orchSuccSlot: number | null = null;
   for (let i = 0; i < 100 && orchSuccSlot === null; i++) {
     const found = (await sessions()).slots.find((s) => s.cwd && s.label === orchLabel && s.openedAt !== orchPredOpenedAt);
@@ -4101,6 +4114,27 @@ export async function run(ctx: Ctx): Promise<void> {
       && orchSuccReceipt.deliveredBytes === new TextEncoder().encode(orchSuccPrompt).byteLength
       && orchSuccReceipt.id !== orchReceipt?.id,
     JSON.stringify(orchSuccReceipt ?? null));
+  const orchSuccGrant = ((await (await get(`/api/slots/${orchSlot}/memory-grant`)).json()) as { openedAt?: number; grant?: {
+    revision: number; issuedBy: string; lineageId: string | null; projectKeys: string[]; views: string[];
+    occupant: { openedAt: number }; transferredFrom: { openedAt: number } | null } | null }) ?? {};
+  const g = orchSuccGrant.grant;
+  check("Orchestrator read grant: the succession carries it to the successor of the same line, narrowed, never wider",
+    !!g && g.issuedBy === "succession" && g.revision === 2 && JSON.stringify(g.projectKeys) === JSON.stringify([orchKey])
+      && JSON.stringify(g.views) === JSON.stringify(["work"]) && g.occupant.openedAt === orchSuccGrant.openedAt
+      && g.occupant.openedAt !== orchPredOpenedAt && g.transferredFrom?.openedAt === orchPredOpenedAt
+      && g.lineageId === (orchSuccBody.lineage?.lineageId ?? null),
+    JSON.stringify(orchSuccGrant));
+  const portfolioPara = (text: string): string => {
+    const at = text.indexOf("YOUR PORTFOLIO MEMORY");
+    if (at < 0) return "";
+    const end = text.indexOf("\n\n", at);
+    return end < 0 ? text.slice(at) : text.slice(at, end);
+  };
+  check("Orchestrator briefs: spawn and succession carry the portfolio pointer (<= 512 B) and 0 copied portfolio tables",
+    [orchPrompt, orchSuccPrompt].every((p) => portfolioPara(p).includes("/api/self/memory?view=portfolio")
+      && new TextEncoder().encode(portfolioPara(p)).byteLength <= 512
+      && !/"(projects|totals|sums|sourceVersion)":/.test(p) && !p.includes(orchKey)),
+    [orchPrompt, orchSuccPrompt].map((p) => new TextEncoder().encode(portfolioPara(p)).byteLength).join(","));
   if (orchSuccSlot !== null) await post(`/api/slots/${orchSuccSlot}/kill`, {});
   if (orchSlot > 0) await post(`/api/slots/${orchSlot}/kill`, {});
 

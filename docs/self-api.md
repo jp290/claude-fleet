@@ -725,7 +725,8 @@ HEAD), und jeder Wert nennt seinen Träger als `basis`. Anlass und Zielbild:
 | gebundene MAIN eines AKTIVEN Programs (`boundProgramForMain`, slot UND openedAt) | alle Zeilen dieses Programs | `foreign-task` (auch für archivierte Zeilen, über `tasks-archive.jsonl`), `foreign-program` (409), unbekannte Zeile 404 `unknown-task` |
 | jede andere Session (Steward, ungebundene, recycelter Occupant) | nichts | 409 `no-scope` |
 
-`task=<id>` und `program=<id>` VERENGEN nur. Nach dem letzten Await wird der Occupant erneut geprüft:
+Das gilt für `work`, `sources`, `evidence` und `observations`; `view=portfolio` hat seine eigene
+Reichweite (Supervisor oder Owner-Grant, Tabelle unten). `task=<id>` und `program=<id>` VERENGEN nur. Nach dem letzten Await wird der Occupant erneut geprüft:
 ein währenddessen recycelter Slot bekommt 409 `occupant-changed`, nie das Slice des Nachfolgers.
 Ein Owner-Token ist hier 401 wie überall in der Self-Familie — es gibt keinen Owner-Rückfall.
 
@@ -805,6 +806,52 @@ kanonischen Repo-Pfad — nie der Pfad selbst), `branch`, `taskId`, `programId` 
   `unknown` — ein Bootstempel ist keine beobachtete Ruhephase.
 - Eine Beobachtung ist Historie ihrer Zeit, kein Live-Gate: nichts autorisiert oder dispatcht daraus.
 
+**`view=portfolio`** (seit 2026-09-24, Zeile 41641179) — die Projektgedächtnisse GEFALTET: je
+Projekt eine begrenzte Projektion (`work`: Taskstatus-Zählung, Holds samt ohne-Grund, Programs,
+Lanes, Auditlauf/-queue/-letzter, lesbare Lands; `observations`: Lane-Zusammenfassung aus dem
+neuesten Snapshot mit Identität) mit eigener `sourceVersion`, dazu `totals.sums` — **jeder
+Summenwert nennt seine Teile** `{projectKey, value, sourceVersion}`. Nichts wird kopiert oder
+gespeichert; gefaltet wird bei jedem Request aus den Trägern von M1/M3.
+
+| Prinzipal | faltet | Ablehnung |
+|---|---|---|
+| gebundener Supervisor (`supervisor`-Binding, slot + openedAt) | jedes Projekt, das der Server kennt (bestehende Reichweite) | — |
+| Occupant mit einem vom Owner gesetzten Read-Grant | genau `grant.projectKeys` × `grant.views` | `project=` außerhalb: 409 `foreign-project` |
+| jede andere Session, auch mit Label „Orchestrator" oder einem Modellnamen, auch eine gebundene MAIN | nichts | 409 `no-grant` |
+| Lane | nichts | 409 `lane-scope` |
+
+Ein Grant-Projekt ohne Fakten (kein Träger nennt es jetzt) steht als `state:"unknown"` in
+`projects[]`, fehlt in jeder Summe, und `totals.partial` ist `true` — nie „erfolgreich leer". Eine
+unlesbare Teilquelle (kaputte Ledgerzeile, kein Snapshot) setzt die betroffenen Projekte auf
+`coverage:"incomplete"` mit Grund in `unknown[]`, ohne den Scope zu ändern. Seiten: `limit=1…10`
+Projekte, Cursor gebunden an Occupant, Prinzipal, Grant-Id UND Revision — jede Änderung am Grant
+(Set, Revoke, Transfer) macht alte Cursor `cursor-stale`; ein währenddessen geänderter Grant ergibt
+409 `grant-changed`. Der Grant ist reines Leserecht: keine Schreib-, Dispatch- oder Land-Tür fragt ihn.
+
+**Der Read-Grant** (`server/types.ts#MemoryGrant`, am Slot, persistiert in `fleet.json`):
+`{v, grantId, revision, issuedBy, issuedAt, lineageId, occupant:{slot, openedAt}, projectKeys[],
+views[] ⊆ {work, observations}, revokedAt, transferredFrom}` — keine Credentials, keine Projektkopie.
+Schreiber ist allein die Owner-Route (hinter dem Owner-Gate, ein Self-Token ist 401):
+
+```
+GET   /api/slots/<id>/memory-grant   → {grant, inForce, knownProjects:[{projectKey, repo}]}
+PATCH /api/slots/<id>/memory-grant   {"expectedOpenedAt":…, "expectedRevision":N, "projectKeys":[…], "views":["work"]}
+PATCH /api/slots/<id>/memory-grant   {"expectedOpenedAt":…, "expectedRevision":N, "revoke":true}
+```
+
+Falscher Occupant 409 `occupant-changed`, falsche Revision 409 `revision-mismatch`, unbekannter
+projectKey 400 `unknown-project`, Lane 409 `lane-scope`. **Erst geschrieben, dann gültig:** der
+neue Record gilt erst, wenn `saveStateNow` aufgelöst hat und der Occupant erneut bewiesen ist;
+scheitert der Schreibschritt, rollt der Slot auf den vorigen Grant zurück (500 `not-persisted`, 0
+wirksame neue Grants). Jeder Set/Revoke/Transfer und jeder gescheiterte Schreibversuch ist eine
+`memory_grant`-Auditzeile (ohne Repo-Pfad). **Boot** holt einen Grant nur auf exakt den Occupant
+und die Linie zurück, die er nennt, nie auf eine Lane; alles andere wird mit Bootzeile verworfen.
+**Nachfolge:** allein die generische Schiene (Orchestratorin, jede ungebundene Linie) trägt den
+Grant — ganz oder per `POST /api/self/succeed` mit `"memoryGrant":{"projectKeys"?,"views"?}`
+verengt; ein Schlüssel oder View außerhalb ist 409 `scope-growth`, bevor etwas endet. Supervisor-
+und Program-MAIN-Schiene tragen keinen (409 `no-carry` bei gesetztem Feld); ihre Reichweite ist ihr
+Binding. Ein recycelter Slot erbt nichts.
+
 **Der Startpointer.** Der Program-MAIN-Rail (`server.ts#memoryPointer("main")`, in `RAIL_HEAD`) und
 jeder Lane-Gründungs- und Staffelstab-Brief (`memoryPointer("lane")`) tragen einen Absatz
 `YOUR MEMORY …` von höchstens 512 UTF-8-Bytes: die Tür und ihre Grenzen, kein kopierter Zustand. Im
@@ -813,8 +860,15 @@ Dispatch-Proben als Notiz-/Quell-/Studio-/Anker-Region. Der
 Standard-Nachfolgebrief zählt deshalb keine Task-Status mehr (`- Task rows: not copied here …`);
 Inbox- und Pflichtenzeilen des Handovers sind unverändert.
 
-Prüfung M3: `e2e/state-snapshot.ts` §f (zwei Belegungen eines Slots gegen die von außen
-beobachteten Fenster, Altzeilen, Reboot mit Bootbasis, fremder Task, 0 Geheimnisse im Ledger).
+Beide Orchestratorin-Briefe (Gründung und Nachfolge) tragen `server.ts#memoryPortfolioPointer`
+(`YOUR PORTFOLIO MEMORY …`, ≤ 512 B): die Tür und dass ohne Grant `no-grant` kommt — keine Tabelle.
+
+Prüfung M3/M4: `e2e/state-snapshot.ts` §f (zwei Belegungen eines Slots gegen die von außen
+beobachteten Fenster, Altzeilen, Reboot mit Bootbasis, fremder Task, 0 Geheimnisse im Ledger),
+`e2e/self-token.ts#memoryPortfolio` (Label/Modell/Lane/MAIN ohne Grant, Self-Token und falsche
+Revision beim PATCH, gescheiterter Schreibschritt, Faltung mit rückführbaren Summen, fremdes Projekt,
+Cursor nach Revoke, Supervisor-Reichweite, Boot, Projekt ohne Fakten, recycelter Occupant),
+`e2e/programs.ts` (Orchestratorin: Weitern bei Nachfolge verweigert, verengter Transfer, Pointer).
 
 Prüfung: `e2e/self-token.ts#memoryDoor` (eigene Scratch-Instanz, drei Repos × Lane/MAIN, vier
 Ablehnungen, Brief ohne Statuskopie; Evidence: 21 entschiedene Reports mit einem aus dem Live-Tail

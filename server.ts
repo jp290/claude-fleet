@@ -28907,6 +28907,22 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                     detail: `rebase ok, but the hub (${arb.remote}) rejected this land and ${caught} — nothing was landed, lane kept`.slice(0, 600) };
                   break;
                 }
+                // …AND THE CATCH-UP MUST HAVE MOVED SOMETHING, or the premise was wrong. A race is
+                // the only rejection this arm can answer: the hub holds commits we do not, so
+                // fetching them moves `main` here and the advance below refuses. If `main` did NOT
+                // move, the hub refused for some other reason (a pre-receive hook, a ref lock, a
+                // protected branch) — and then the advance below would SUCCEED, landing on a main
+                // the hub has already said no to. That is precisely the state this whole cut
+                // exists to make impossible, so it stops here instead, naming what it measured
+                // rather than the race it assumed.
+                const afterCatch = (await git(root, "rev-parse", main)).out;
+                if (afterCatch === mainBefore) {
+                  clearLandIntent(root);
+                  res = { status: "error", landed: false, branch, at: Date.now(), verify,
+                    errorReason: "hub-lost", ...(ffRounds ? { ffRounds } : {}),
+                    detail: `rebase ok, but the hub (${arb.remote}) refused this land and holds nothing we are missing — so it is not the other host racing us: ${arb.reason} — nothing was landed, lane kept`.slice(0, 600) };
+                  break;
+                }
                 hubLost = true; // the terminal verdict below is about the HUB, not about a local race
               }
               const adv = await advanceIntegration(root, main, branch);

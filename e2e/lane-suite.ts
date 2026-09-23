@@ -18,7 +18,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, ROOT, check, get, post, restartSrv, stopSrv } from "./harness";
+import { BASE, REPO, ROOT, UntilTimeout, until, check, get, post, restartSrv, stopSrv } from "./harness";
 import { laneSuiteWatchMessage } from "../lane-signals";
 import { openLane, type Lane } from "./lane-helpers";
 import { suiteMeter, laneTail, type MeterInput } from "../src/suitemeter";
@@ -1040,9 +1040,24 @@ export async function run(): Promise<void> {
     JSON.stringify({ status: pileOwner?.status, reds: (await redsOf()).map((r) => r.jobId) }));
   await post(`/api/slots/${ln.slot}/kill`, {});
   const pileClosed = (await suiteEventsFor(pileJob)).find((e) => e.receiverSlot === null);
-  const pileTrail = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n")
-    .some((l) => l.includes(`"event":"fleet_event_subject_gone"`) && l.includes(pileOwner?.id ?? "never")
-      && l.includes("lane gone"));
+  // The sweep itself runs synchronously INSIDE the kill route — the row is terminal before the
+  // route answers — but its trail line does not travel with it: audit() is deliberately
+  // fire-and-forget (server/audit-log.ts, server/persist.ts#queueEventWrite — a wedged disk must
+  // never block the request path), so the line lands on audit.jsonl an awaitable moment AFTER the
+  // kill has returned. MEASURED 2026-09-22: a red run read {"status":"subject-gone","trail":
+  // false,"reds":[]} — row already closed, file read ~137 ms after the kill still without the
+  // line (docs/verify-tiering.md §11.2ae). The statement is unchanged: the read waits on the
+  // FACT (harness until), it does not race the writer; a line that never appears is still red.
+  let pileTrail = false;
+  try {
+    await until(() => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n")
+        .some((l) => l.includes(`"event":"fleet_event_subject_gone"`) && l.includes(pileOwner?.id ?? "never")
+          && l.includes("lane gone")),
+      { timeoutMs: 10_000, what: "the owner row's subject-gone trail line" });
+    pileTrail = true;
+  } catch (e) {
+    if (!(e instanceof UntilTimeout)) throw e; // the check below reports the miss: trail:false
+  }
   check("(LS.10) THE LANE DIES, THE ROW CLOSES ITSELF: subject-gone with the named lane-gone reason in the trail, never acknowledged, off the reds list",
     pileClosed?.status === "subject-gone"
       && !(await redsOf()).some((r) => r.jobId === pileJob) && pileTrail,

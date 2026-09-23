@@ -438,7 +438,11 @@ export function projectStartPlan(input: StartPlanInput): StartPlan {
       // ranges that collide: with the fallback, one row waiting on a lane held every row on its range-less
       // files — 17 released waves, 0 now, a cap of 3 acting as 1. An overtaken row later meets the
       // overtaking lane under the full rule. Decision and price: docs/messungen/2026-09-15-start-plan-stau-schnitt.md.
-      const claims = typeof next === "string" || !("unreleased" in next || "unchecked" in next);
+      // The verdict is read off the ROWS, not off which step the chain returned at (2026-09-22): step 1
+      // (`after`) returns BEFORE step 2 (`unreleased`), so an unreleased wave with an open `after` never
+      // carries `{unreleased}` — reading the claim out of `next` let exactly that wave hold released rows
+      // behind it (live 2026-09-22: f2a66799 held five released Fleet-Betrieb rows on server.ts#tickDispatch).
+      const claims = known.length === members.length && known.every((row) => releaseVerdict(row).released);
       if (claims) for (const row of known) claimed.push({ row, starts: next === "now" });
       return {
         ids: [...wave.ids], klasse: wave.klasse, units: wave.units, reasonAgainst: wave.reasonAgainst, next,

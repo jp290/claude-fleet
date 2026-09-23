@@ -9596,6 +9596,29 @@ export async function run(ctx: Ctx): Promise<void> {
         [["p", { cap: "1/1 lanes busy in program prog" }]],
         [["n", { cap: "no lane cap known for sp" }]],
       ]), JSON.stringify([spDone, spUnknown, spProgram, spNoCap]));
+    // (sp-claim) A WAVE CLAIMS ITS FILES ONLY WHEN EVERY ROW IS RELEASED (2026-09-22, start-plan.ts#claims).
+    // The chain's step 1 (`after`) returns BEFORE step 2 (`unreleased`), so an unreleased wave with an
+    // open `after` carries `{after}` and never `{unreleased}` — reading the claim out of `next` let
+    // exactly that wave hold released rows behind it (live: f2a66799 held five released Fleet-Betrieb
+    // rows on server.ts#tickDispatch). u (pending, manual) waits on z and shares hold.ts with the
+    // RELEASED r behind it: r starts, u stays visibly waiting on its after. GEGENPROBE, sonst ist der
+    // Check vakuum: a RELEASED wave with an open after (h1) keeps holding h2 — its claim survives the
+    // open after. Ranges on both sides are the point: a waiting wave holds only on colliding ranges
+    // (2026-09-15), so range-less rows would stay green under the mutation too.
+    const spClaimCaps = { [spRepo]: { max: 5, source: "default" as const, programs: {} } };
+    const spClaimGot = spNexts(projectStartPlan(spInput([
+      spRow("u", 1, ["hold.ts"], { status: "pending", after: ["z"], ranges: at("hold.ts", "us", 10) }),
+      spRow("r", 2, ["hold.ts"], { ranges: at("hold.ts", "rs", 12) }),
+      spRow("h1", 3, ["held.ts"], { after: ["z"], ranges: at("held.ts", "h1s", 10) }),
+      spRow("h2", 4, ["held.ts"], { ranges: at("held.ts", "h2s", 12) }),
+    ], [], spClaimCaps)));
+    check("(sp-claim) an unreleased wave with an open after claims nothing — the released row behind it starts while it stays visibly waiting · a RELEASED wave with an open after still holds the row behind it",
+      JSON.stringify(spClaimGot) === JSON.stringify([
+        ["u", { after: "z" }],
+        ["r", "now"],
+        ["h1", { after: "z" }],
+        ["h2", { collides: { row: "h1", file: "held.ts", symbol: "h2s" } }],
+      ]), JSON.stringify(spClaimGot));
     // (sp-hunk) A RUNNING LANE COLLIDES WITH ITS REAL HUNKS (start-plan.ts#rangesOn): for a lane's file
     // its row ranges first, else the hunks it already wrote there, else the whole file. Mutations:
     // hunks ignored → (a) and (f) collide; a named file without a hunk read as free → (c) and (g) start;

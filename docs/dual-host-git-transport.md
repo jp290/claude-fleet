@@ -119,8 +119,10 @@ statt die Abhängigkeit.
 Und ein frisches Bundle vor einem alten Prozess ist dieselbe Lüge eine Schicht höher. Darum bittet
 ein **grüner Build nach einem Fast-Forward** die eigene Instanz dieses Hosts per
 `POST /api/deploy` um den srv-Nachzug: Adresse wie `ctl.sh` sie auflöst (`FLEET_HOST`/`FLEET_PORT`
-aus der gitignorierten `.env`, sonst `127.0.0.1:8790`), Owner-Token aus der lokalen `fleet.json`,
-und das Token erreicht curls `argv` nie — es reist durch curls Config auf stdin, und keine Zeile
+aus der gitignorierten `.env`, sonst `127.0.0.1:8790`), Owner-Token in `ctl.sh`-Reihenfolge ohne
+den `FLEET_CTL_*`-Override (`FLEET_TOKEN` aus der Umgebung, sonst `FLEET_TOKEN` aus derselben
+`.env`, sonst `token` aus der lokalen `fleet.json` — ein Host, dessen Instanz mit dem Token aus
+der `.env` startet, trägt dort `"token": null`), und das Token erreicht curls `argv` nie — es reist durch curls Config auf stdin, und keine Zeile
 im Journal enthält es. Keine `fleet.json` heißt „hier läuft keine Instanz" und ist ein benannter
 Skip, kein Fehler.
 

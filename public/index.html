@@ -657,6 +657,7 @@
   #comppark { padding: 0 8px; font: 400 12px var(--chat-sans); color: var(--chat-mute); }
   #comppark[hidden] { display: none; }
   #compspace { flex: 1; }
+  #mobmore { display: none; }
   #input { flex: 1; min-height: 24px; max-height: 140px; resize: none; padding: 4px 0; border: 0;
     background: transparent; color: var(--chat-ink); caret-color: var(--chat-ink);
     font: 400 var(--chat-fs) / 1.5 var(--chat-sans); outline: none; }
@@ -2784,6 +2785,38 @@
     /* the tray entries carry labels now: finger height, natural width, scroll instead of overlap */
     #comptray { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
     #comp #comptray button { flex: none; width: auto; min-height: 40px; font-size: 13px; }
+    /* iOS keyboard: the transcript gets the space the header, tray and second composer row used.
+       The one ⋯ button restores them while the field stays focused (G0.7, G1.3, G3.3). */
+    body.keyboard-open:not(.keyboard-options) #mhead { display: none; }
+    body.keyboard-open #bar { padding: 2px 6px 4px; gap: 2px; }
+    body.keyboard-open.keyboard-options #menu,
+    body.keyboard-open.keyboard-options #mset { width: 40px; height: 40px; }
+    body.keyboard-open #keys { gap: 3px; }
+    body.keyboard-open #keys button { height: 40px; min-width: 40px; }
+    body.keyboard-open #comp { max-width: 100%; gap: 2px; }
+    body.keyboard-open #comp.bar #compsurface,
+    body.keyboard-open #comp.tall #compsurface { flex-flow: row wrap; align-items: center; gap: 2px;
+      padding: 2px 5px; border-radius: var(--r2); }
+    body.keyboard-open #comp #comprow { display: contents; }
+    body.keyboard-open #comp #compspace { display: none; }
+    body.keyboard-open #comp #input { flex: 1 1 90px; order: 0; min-width: 0; min-height: 40px;
+      max-height: 82px; padding: 6px 4px; }
+    body.keyboard-open #comp #send { order: 3; width: 40px; height: 40px; }
+    body.keyboard-open #mobmore { display: grid; place-items: center; order: 2; flex: none;
+      width: 40px; height: 40px; padding: 0; border-radius: var(--r1);
+      border: 1px solid var(--chat-edge); background: var(--chat-raised); color: var(--chat-ink);
+      cursor: pointer; }
+    body.keyboard-open #mobmore .ico { width: 18px; height: 18px; }
+    body.keyboard-open #mobmore[aria-expanded="true"] { background: var(--chat-surface); border-color: var(--chat-mute); }
+    body.keyboard-open:not(.keyboard-options) #comp #dropbtn,
+    body.keyboard-open:not(.keyboard-options) #comp #compopts,
+    body.keyboard-open:not(.keyboard-options) #comptray { display: none; }
+    body.keyboard-open.keyboard-options #comp #dropbtn { order: 1; width: 40px; height: 40px; margin: 0; }
+    body.keyboard-open.keyboard-options #comp #compopts:not(:empty) { display: flex; order: 4;
+      flex: 1 0 100%; justify-content: space-between; min-width: 0; }
+    body.keyboard-open.keyboard-options #comptray { display: flex; }
+    body.keyboard-open:not(.keyboard-options) .panetools,
+    body.keyboard-open:not(.keyboard-options) .jump { display: none !important; }
     /* the phone is the only device this switch is for — give it a finger-sized target
        in the drawer instead of the 26px desktop chip */
     #sidetools #saverbtn, #sidetools #morebtn { width: 40px; height: 40px; }
@@ -2932,6 +2965,7 @@
             <button id="dropbtn" title="attach files — drag&amp;drop and paste do the same thing"><span class="tricon"></span></button>
             <div id="compspace"></div>
             <div id="compopts"></div>
+            <button id="mobmore" type="button" title="Weitere Eingabeoptionen öffnen" aria-expanded="false"></button>
             <button id="send" title="send to this session"></button>
           </div>
         </div>

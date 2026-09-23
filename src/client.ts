@@ -5159,11 +5159,36 @@ MOBILE_MQ.addEventListener("change", () => {
 // iOS Safari: the on-screen keyboard shrinks the visual viewport but not the layout
 // viewport — track it so the compose bar stays visible above the keyboard
 const vv = window.visualViewport;
+let keyboardPlaceholder: string | null = null;
+const mobileMore = $("mobmore") as HTMLButtonElement;
+mobileMore.appendChild(icon("dots"));
+mobileMore.onclick = () => {
+  const open = !document.body.classList.contains("keyboard-options");
+  document.body.classList.toggle("keyboard-options", open);
+  mobileMore.setAttribute("aria-expanded", String(open));
+  mobileMore.title = open ? "Eingabeoptionen einklappen" : "Weitere Eingabeoptionen öffnen";
+};
 if (vv) {
   let vvRefitTimer: ReturnType<typeof setTimeout> | undefined;
   const sync = () => {
     if (isMobile()) document.documentElement.style.setProperty("--vvh", `${Math.round(vv.height)}px`);
     else document.documentElement.style.removeProperty("--vvh");
+    const focusedInput = document.activeElement === ta || document.activeElement === $("livein");
+    const keyboardOpen = isMobile() && focusedInput && window.innerHeight - vv.height > 120;
+    document.body.classList.toggle("keyboard-open", keyboardOpen);
+    if (keyboardOpen && keyboardPlaceholder === null) {
+      keyboardPlaceholder = ta.placeholder;
+      ta.placeholder = "Prompt…";
+      fitTextarea();
+    } else if (!keyboardOpen && keyboardPlaceholder !== null) {
+      ta.placeholder = keyboardPlaceholder;
+      keyboardPlaceholder = null;
+      fitTextarea();
+    }
+    if (!keyboardOpen) {
+      document.body.classList.remove("keyboard-options");
+      mobileMore.setAttribute("aria-expanded", "false");
+    }
     window.scrollTo(0, 0);
     // the keyboard opening/closing and its predictive-text bar toggling fire several of
     // these in a burst while typing; settle before refitting so a mid-transition height
@@ -5173,6 +5198,9 @@ if (vv) {
     vvRefitTimer = setTimeout(() => { for (const p of panes) p.refit(); }, 200);
   };
   vv.addEventListener("resize", sync);
+  document.addEventListener("focusin", sync);
+  document.addEventListener("focusout", () => requestAnimationFrame(sync));
+  sync();
 }
 
 // mobile key row: terminal keys a virtual keyboard doesn't have (raw bytes over the WS)

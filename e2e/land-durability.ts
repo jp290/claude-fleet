@@ -601,10 +601,17 @@ export async function run(): Promise<void> {
       // first measurement of these checks paid it in full: curl connected, nobody ever answered,
       // and three runs ended `curl: (28) Operation timed out after 330142 ms` — 16 minutes of a
       // suite spent proving that a blocked event loop cannot serve a request.
+      // AND THE DEPLOY TARGET IS PINNED SHUT BY DEFAULT. Unset, the script resolves the address the
+      // way ctl.sh does — `.env`, else `127.0.0.1:8790`, which on this machine is the LIVE fleet.
+      // The fixture never gets there today (the follower has no fleet.json until the deploy block,
+      // and every run after it names the stand-in), but that is an ORDERING, and an ordering is not
+      // a guard: a later check added between the two would knock on the owner's own instance. A
+      // closed port is the guard, and it fails as itself — exit 7 with `Connection refused`.
+      const NOWHERE = { FLEET_SYNC_DEPLOY_URL: "http://127.0.0.1:1" };
       const runSync = async (buildCmd: string, extra: Record<string, string> = {}): Promise<{ code: number; out: string }> => {
         const pr = Bun.spawn(["sh", `${fol}/fleet-sync.sh`], {
           cwd: fol, stdin: "ignore", stdout: "pipe", stderr: "pipe",
-          env: { ...process.env, FLEET_SYNC_BUILD_CMD: buildCmd, FLEET_SYNC_INSTALL_CMD: INSTALL_OK, ...extra },
+          env: { ...process.env, FLEET_SYNC_BUILD_CMD: buildCmd, FLEET_SYNC_INSTALL_CMD: INSTALL_OK, ...NOWHERE, ...extra },
         });
         const outP = new Response(pr.stdout).text().catch(() => "");
         const errP = new Response(pr.stderr).text().catch(() => "");

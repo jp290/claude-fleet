@@ -595,11 +595,21 @@ export async function run(): Promise<void> {
       };
       const BUILD_NEEDS_DEP =
         `test -f ${DEP} || { echo "stand-in build: the dependency this commit brought is not installed"; exit 1; }; ${BUILD_OK}`;
-      const runSync = (buildCmd: string, extra: Record<string, string> = {}): { code: number; out: string } => {
-        const r = spawnSync("sh", [`${fol}/fleet-sync.sh`],
-          { cwd: fol, encoding: "utf8",
-            env: { ...process.env, FLEET_SYNC_BUILD_CMD: buildCmd, FLEET_SYNC_INSTALL_CMD: INSTALL_OK, ...extra } });
-        return { code: r.status ?? -1, out: `${(r.stdout ?? "").trim()} ${(r.stderr ?? "").trim()}`.trim() };
+      // NOT spawnSync, and that is the whole reason this helper is async. The deploy half of the
+      // script talks HTTP to an instance, and the instance answering it below is `Bun.serve` on
+      // THIS process's event loop — which a synchronous spawn holds shut for the entire run. The
+      // first measurement of these checks paid it in full: curl connected, nobody ever answered,
+      // and three runs ended `curl: (28) Operation timed out after 330142 ms` — 16 minutes of a
+      // suite spent proving that a blocked event loop cannot serve a request.
+      const runSync = async (buildCmd: string, extra: Record<string, string> = {}): Promise<{ code: number; out: string }> => {
+        const pr = Bun.spawn(["sh", `${fol}/fleet-sync.sh`], {
+          cwd: fol, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+          env: { ...process.env, FLEET_SYNC_BUILD_CMD: buildCmd, FLEET_SYNC_INSTALL_CMD: INSTALL_OK, ...extra },
+        });
+        const outP = new Response(pr.stdout).text().catch(() => "");
+        const errP = new Response(pr.stderr).text().catch(() => "");
+        const code = await pr.exited;
+        return { code, out: `${(await outP).trim()} ${(await errP).trim()}`.trim() };
       };
       const moveCanonical = (name: string): string => {
         writeFileSync(`${can}/${name}`, `${name}\n`);
@@ -612,7 +622,7 @@ export async function run(): Promise<void> {
       check("(setup F/A) the fresh clone is current with canonical and carries NO bundle",
         g(fol, "rev-parse", "HEAD").out === g(can, "rev-parse", "HEAD").out && bundlesHere().length === 0,
         `bundles=[${bundlesHere()}]`);
-      const a = runSync(BUILD_OK);
+      const a = await runSync(BUILD_OK);
       check("a follower that is CURRENT but has no client bundle builds one, and still exits 0",
         a.code === 0 && bundlesHere().length === 4 && builds() === 1,
         `exit=${a.code} bundles=[${bundlesHere()}] builds=${builds()} :: ${a.out}`);
@@ -620,7 +630,7 @@ export async function run(): Promise<void> {
       // --- D: …and having built it, it does NOT build again. The counter-proof to A: a script that
       // simply always builds would pass A and turn a 15-minute timer into a bundler loop.
       const beforeD = builds();
-      const d = runSync(BUILD_OK);
+      const d = await runSync(BUILD_OK);
       check("a follower that is current WITH its bundle runs no build at all",
         d.code === 0 && builds() === beforeD && /already current/.test(d.out) && !/build/.test(d.out),
         `exit=${d.code} builds=${beforeD}->${builds()} :: ${d.out}`);
@@ -629,7 +639,7 @@ export async function run(): Promise<void> {
       // though all four files are sitting right there — presence is not currency.
       const headB = moveCanonical("moved-b.txt");
       const beforeB = builds();
-      const b = runSync(BUILD_OK);
+      const b = await runSync(BUILD_OK);
       check("a fast-forward is followed by a build even when all four bundles already exist",
         b.code === 0 && g(fol, "rev-parse", "HEAD").out === headB && builds() === beforeB + 1,
         `exit=${b.code} head=${g(fol, "rev-parse", "HEAD").out.slice(0, 8)} want=${headB.slice(0, 8)} builds=${beforeB}->${builds()} :: ${b.out}`);
@@ -637,7 +647,7 @@ export async function run(): Promise<void> {
       // --- C: the build comes back RED. The sync has already happened by then and it STANDS —
       // which is the whole reason this is exit 5 and not 4: 4 means nothing moved.
       const headC = moveCanonical("moved-c.txt");
-      const c = runSync("exit 1");
+      const c = await runSync("exit 1");
       check("a red build is exit 5 — a code of its own — and the fast-forward it followed still stands",
         c.code === 5 && g(fol, "rev-parse", "HEAD").out === headC,
         `exit=${c.code} head=${g(fol, "rev-parse", "HEAD").out.slice(0, 8)} want=${headC.slice(0, 8)} :: ${c.out}`);
@@ -654,7 +664,7 @@ export async function run(): Promise<void> {
       const headE = moveCanonical("moved-e.txt");
       const beforeE = builds();
       const beforeIE = installs();
-      const e = runSync(BUILD_NEEDS_DEP);
+      const e = await runSync(BUILD_NEEDS_DEP);
       check("a fast-forward that brings a new dependency installs it and THEN builds — the bundle is current, not red",
         e.code === 0 && g(fol, "rev-parse", "HEAD").out === headE && installs() === beforeIE + 1
           && builds() === beforeE + 1 && bundlesHere().length === 4,
@@ -667,7 +677,7 @@ export async function run(): Promise<void> {
       rmSync(DEP, { force: true });
       const headF = moveCanonical("moved-f.txt");
       const beforeF = builds();
-      const f = runSync(BUILD_NEEDS_DEP, { FLEET_SYNC_INSTALL_CMD: "exit 1" });
+      const f = await runSync(BUILD_NEEDS_DEP, { FLEET_SYNC_INSTALL_CMD: "exit 1" });
       check("a red install is exit 6 — its own code, not the build's 5 — the build is never attempted and the ff still stands",
         f.code === 6 && builds() === beforeF && g(fol, "rev-parse", "HEAD").out === headF
           && /INSTALL FAILED/.test(f.out) && !/BUILD FAILED/.test(f.out),
@@ -699,7 +709,7 @@ export async function run(): Promise<void> {
         // the instance's own state file — and NOT the token in the line it leaves in the journal.
         const headG = moveCanonical("moved-g.txt");
         const beforeG = seen.length;
-        const gr = runSync(BUILD_OK, DEPLOY);
+        const gr = await runSync(BUILD_OK, DEPLOY);
         check("after a green build the follower asks its OWN instance to deploy: one POST /api/deploy, owner token out of fleet.json",
           gr.code === 0 && g(fol, "rev-parse", "HEAD").out === headG && seen.length === beforeG + 1
             && lastSeen()?.path === "POST /api/deploy" && lastSeen()?.auth === `Bearer ${TOK}`
@@ -714,7 +724,7 @@ export async function run(): Promise<void> {
         answer = { status: 409, body: JSON.stringify({ ok: false, stage: "preflight",
           reason: "a merge/land is reserved or running on fleet/260922-1 (slot 3) — restarting srv now would interrupt it before its terminal verdict" }) };
         const headH = moveCanonical("moved-h.txt");
-        const h = runSync(BUILD_OK, DEPLOY);
+        const h = await runSync(BUILD_OK, DEPLOY);
         check("a deploy the instance REFUSES with 409 is a deferred line and exit 0 — the next sync asks again, the unit does not go red",
           h.code === 0 && /deploy deferred: a merge\/land is reserved or running/.test(h.out)
             && g(fol, "rev-parse", "HEAD").out === headH,
@@ -725,7 +735,7 @@ export async function run(): Promise<void> {
         answer = { status: 500, body: JSON.stringify({ ok: false, stage: "build",
           reason: "the build failed — the running server was left alone" }) };
         const headI = moveCanonical("moved-i.txt");
-        const i = runSync(BUILD_OK, DEPLOY);
+        const i = await runSync(BUILD_OK, DEPLOY);
         check("a deploy that could not be made is exit 7 — its own code — and the fast-forward it followed still stands",
           i.code === 7 && /DEPLOY FAILED \(HTTP 500/.test(i.out) && g(fol, "rev-parse", "HEAD").out === headI,
           `exit=${i.code} head=${g(fol, "rev-parse", "HEAD").out.slice(0, 8)} want=${headI.slice(0, 8)} :: ${i.out}`);
@@ -736,7 +746,7 @@ export async function run(): Promise<void> {
         answer = { status: 202, body: JSON.stringify({ ok: null, stage: "restarting", id: "d1" }) };
         const headJ = moveCanonical("moved-j.txt");
         const beforeJ = seen.length;
-        const j = runSync("exit 1", DEPLOY);
+        const j = await runSync("exit 1", DEPLOY);
         check("a RED build asks for no deploy at all — srv is never restarted onto a bundle that failed",
           j.code === 5 && seen.length === beforeJ && g(fol, "rev-parse", "HEAD").out === headJ,
           `exit=${j.code} posts=${seen.length - beforeJ} :: ${j.out}`);
@@ -748,7 +758,7 @@ export async function run(): Promise<void> {
         // quiet fleet is hours. Closing that needs a sensor for the GAP (the instance's own
         // `bundleStale`/`bootHead`), which belongs to the instance and not to this script.
         const beforeK = seen.length;
-        const k = runSync(BUILD_OK, DEPLOY);
+        const k = await runSync(BUILD_OK, DEPLOY);
         check("a run with nothing to fast-forward asks for no deploy either — the deploy answers a move, not a tick",
           k.code === 0 && seen.length === beforeK && /already current/.test(k.out),
           `exit=${k.code} posts=${seen.length - beforeK} :: ${k.out}`);

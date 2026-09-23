@@ -2323,7 +2323,7 @@ async function newLane(repo: string, parent?: LaneAnchor): Promise<void> {
 let settingsShell: Shell | null = null;
 let settingsTab = "device";
 const SET_TABS: [string, string][] = [["device", "Dieses Gerät"], ["schrift", "Schrift"], ["fleet", "Fleet"]];
-const SET_CHOICE_WORDS: Record<string, string> = { tree: "Baum", line: "Zeile" };
+const SET_CHOICE_WORDS: Record<string, string> = { tree: "Baum", line: "Zeile", all: "alle" };
 
 // The live effect of a row beyond the write itself — the SAME setters the original surfaces
 // call, so a settings toggle can never mean something else than its own button (K2: Bedeutung
@@ -2341,6 +2341,7 @@ const PREF_APPLY: Record<string, () => void> = {
     showHidden = prefBool("fleet.pkdot");
     if (pkDotBtn) { renderDotBtn(); if (pkShell?.isOpen()) void reloadTree(); }
   },
+  "fleet.bandDepth": () => renderSlots(),
   "fleet.queue.scope": () => { qTreeOn = prefText("fleet.queue.scope") !== "line"; if (qShell?.isOpen()) { qKey = ""; renderQueue(); } },
   "fleet.board.folds": () => { boardFolds.clear(); void renderBoard(); },
   "fleet.stacks.closed": () => { stackClosed.clear(); renderSlots(); },
@@ -7074,14 +7075,15 @@ function setStackOpen(g: Stack, on: boolean) {
 //    the eye sees it; no click fires after a drag. ← → Home End Esc Enter on focus.
 //  · THE DOTS show only on hover, focus, while pulling and for a moment after a step; past eight
 //    sessions they are a window of seven with a small end dot.
-//  · DEPTH is how far back a row reaches, read in ONE place (bandReach). A later "only the last 3"
-//    is that one value; the row and the dots count the capped depth, the pane the real number.
+//  · DEPTH is how far back a row reaches, read in ONE place (bandReach) — the device setting
+//    fleet.bandDepth (alle / 3 / 5, owner 2026-09-21: "nur die letzten 3 oder 5 session"); the route
+//    still sends the whole line. The row and the dots count the capped depth, the pane the real number.
 // WHICH past session is shown lives in ONE place, the pane (Pane#pastN): the sidebar is rebuilt on
 // the poll, and a row built fresh reads its position from the pane that shows its slot — through a
 // percentage transform, so no width has to be measured to draw it. While a gesture runs the
 // sidebar is not rebuilt at all (renderSlots, bandGesture), or the row would vanish under the hand.
-const DEPTH = Infinity;
-const bandReach = (session: number): number => Math.min(session - 1, DEPTH);
+const bandDepth = (): number => { const v = Number(prefText("fleet.bandDepth")); return v > 0 ? v : Infinity; };
+const bandReach = (session: number): number => Math.min(session - 1, bandDepth());
 const BAND_SLOP = 7, BAND_COMMIT = 0.2, BAND_FLICK = 0.35, BAND_SWIPE_COMMIT = 0.33;
 const BAND_WHEEL_IDLE = 90, BAND_MOMENTUM_GAP = 180, BAND_SNAP_MS = 340;
 const BAND_MOUSE = { T: 40, k: 0.8, cap: 0.28, ms: 380 };

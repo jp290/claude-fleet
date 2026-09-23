@@ -44,6 +44,8 @@ export const PREFS: PrefDef[] = [
     hint: "Die rechte Spalte mit den Infos zur fokussierten Sitzung." },
   { key: "fleet.sidecollapsed", kind: "bool", label: "Seitenleiste zugeklappt", def: "0", row: "toggle", desktopOnly: true,
     hint: "Die linke Leiste eingeklappt — ein Klick auf ‹ öffnet sie wieder." },
+  { key: "fleet.bandDepth", kind: "choice", label: "Zieh-Band: wie weit zurück", def: "all", values: ["all", "3", "5"], row: "choice",
+    hint: "Wie viele frühere Sitzungen eine Zeile der linken Leiste beim Ziehen erreicht." },
   { key: "fleet.termlimit", kind: "bool", label: "Terminal auf die Textspalte begrenzen", def: "0", row: "toggle",
     hint: "Wirkt, wo das Layout Platz dafür lässt — ein Mehrfach-Layout oder das Telefon heben es auf." },
   { key: "fleet.meter.open", kind: "bool", label: "Checks im Info-Bereich aufgeklappt", def: "0", row: "toggle",

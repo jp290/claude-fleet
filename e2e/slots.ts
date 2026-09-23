@@ -2280,9 +2280,14 @@ export async function run(): Promise<void> {
         /if \(s\.succession && s\.succession\.session > 1\) bandify\(row, r1, s, s\.succession\.session\)/.test(rowSrc)
           && bandSrc.includes("r1.replaceWith(view)") && bandSrc.includes("track.appendChild(r1)"),
         "slotRow + bandify");
-      check("client: DEPTH is one constant, read in one place",
-        (code.match(/\bDEPTH\b/g) ?? []).length === 2 && /const bandReach = \(session: number\): number => Math\.min\(session - 1, DEPTH\)/.test(code),
-        `${(code.match(/\bDEPTH\b/g) ?? []).length} code uses`);
+      // the depth is the device setting fleet.bandDepth (alle / 3 / 5), read in one place; the route
+      // is never capped. Mutation probe: a second bandDepth() reader or a fixed number turns this red.
+      check("client: the band depth is the fleet.bandDepth setting, read in one place",
+        (code.match(/\bbandDepth\(\)/g) ?? []).length === 1
+          && /const bandReach = \(session: number\): number => Math\.min\(session - 1, bandDepth\(\)\)/.test(code)
+          && /const bandDepth = \(\): number => \{ const v = Number\(prefText\("fleet\.bandDepth"\)\)/.test(code)
+          && !/\bDEPTH\b/.test(code),
+        `${(code.match(/\bbandDepth\(\)/g) ?? []).length} code reads`);
       check("client: the mouse is 'weich' and trackpad/finger is round 5 — the chosen values, nowhere else",
         cliSrc.includes("const BAND_MOUSE = { T: 40, k: 0.8, cap: 0.28, ms: 380 };")
           && cliSrc.includes("const BAND_SLOP = 7, BAND_COMMIT = 0.2, BAND_FLICK = 0.35, BAND_SWIPE_COMMIT = 0.33;")

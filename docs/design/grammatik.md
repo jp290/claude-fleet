@@ -352,3 +352,88 @@ Antworten (via Orchestratorin Slot 14): **1** Nein — Fleet-Englisch bleibt fü
   Popover/Menüs aus G4.1 (hier sieben) bestätigen oder erweitern — jede neu gefundene Fläche
   bekommt eine Zeile in der Tabelle, keine neue Regel.
 - Die Demo nicht gebaut.
+
+## Wortschatz — alt/neu je Beschriftung (K9, gelandet aus der Lane 2026-09-23)
+
+Grundlage: Owner-Wörter 2026-09-22 (baton→handoff · succession→handoff · audit→check ·
+„‹instanz› only"→Instanzname; rail, suite, gate, mutex, tier, carry, srv, bundle, seed, TTL, ctx
+nur noch hinter „intern:" am Tooltip-Ende). Wo der Owner kein Wort gab, steht der Vermerk
+**[MAIN]** — abgeleitet von MAIN Slot 13 aus audit→check, **Owner-Sichtung offen**.
+Die zwei Einzelfälle „Baton" und „‹instanz› only" im rechten Tab kamen mit d5a60f5e (e0e496c8+9ac2d74f)
+in den Baum — hier nur geprüft, nicht erneut umbenannt.
+
+### Info-Tab · Baton-Block (`srow`)
+
+| alt | neu | Quelle |
+|---|---|---|
+| Zeile „Baton" | „Handoff" (deutscher Tooltip mit „intern: FLEET_LANE_SUCCEED_MAX") | d5a60f5e — nur geprüft |
+| Zeile „Rail" | „Kind" — die Werte (lane / standard-main / game-maker-main / handoff) bleiben | **[MAIN]** |
+| Wert „this rail's own threshold is 0" | „this kind's own threshold is 0" | **[MAIN]** (aus dem Rail-Label) |
+| Fill-Tooltip EN („…the measurement the succession threshold is compared against") | DE: „…gegen diese Zahl misst der Server, wann die Session weitergeben soll (intern: succession fill · threshold)." | G0.5 |
+| Handover-Tooltip EN („…handover instructions delivered…") | DE: „Bei N % tippt der Server … einen Weitergabe-Hinweis hinein (intern: succession nudge)." | G0.5 |
+| Rail-Tooltips EN („…no handover commit is a gate…") | DE, je Route ein Satz, „intern: rail=…" | G0.5 |
+
+### Info-Tab · Suite-Strecke (`renderSuiteMeter`, `src/suitemeter.ts`)
+
+| alt | neu | Quelle |
+|---|---|---|
+| Kopf „Suites" | „Checks" | **[MAIN]** |
+| „⏳/⚠/⏸ suite gate · held by pid N" | „⏳ check run busy · pid N" (idle/parked/stale auf denselben Begriff gezogen) | **[MAIN]** |
+| Ballname „post-land audit" | „post-land check" | Owner (audit→check) |
+| Ballname „suite offer" | „offered check run" | **[MAIN]** |
+| Ballname „queued suite" | „queued check run" | **[MAIN]** |
+| Zeile „waiting for an audit · …" | „waiting for its check · …" | Owner (audit→check) |
+| Leerzeile „nothing on the gate" | „nothing reported running" | G0.5 (ohne neues Wort) |
+| Zeilen-Titel „… · click to open the lane" | „… · Klick öffnet die Lane" | G0.5 |
+| Meter-Tooltips EN (Stationen, Sperre, Helfer, fleet-Schild, Lesung) | DE, je ein Satz, Jargon hinten hinter „intern: …" | G0.5 |
+| Kopf in VERSALIEN (FLEET, SESSION) | unverändert — Stil (G2.3/G3.2), nicht Wortschatz | — |
+
+### Info-Tab · Schild und deploy-due
+
+| alt | neu | Quelle |
+|---|---|---|
+| „mac only" | der Instanzname („Mac") | d5a60f5e — nur geprüft |
+| „⚠ deploy due · srv is running server code from N commits ago — restart srv" | „⚠ deploy due · the running server is N commits behind — restart it" | G0.5 (srv raus, Handlung statt Befehl) |
+| „⚠ deploy due · the client bundle is older than src/ — run bun run build" | „⚠ deploy due · the code in the browser is older than src/ — rebuild it" (Befehl nur im Tooltip) | G0.5 (bundle raus) |
+| deploy-Tooltips EN | DE mit dem Befehl bzw. der Messbasis hinter „intern: …" | G0.5 |
+
+### Tray
+
+| alt | neu | Quelle |
+|---|---|---|
+| Files-Tooltip EN | „Dateien an diese Session anhängen." | G0.5 |
+| Live/History/Schedule-Tooltips EN (Markup) | DE | G0.5 |
+| Labels Files · History · Schedule · Live | unverändert — Fleet-Englisch, kein Jargon | Owner (Frage 1) |
+
+### .slotact-Streifen
+
+| alt | neu | Quelle |
+|---|---|---|
+| ⏱ „has scheduled prompts — …" | „Diese Session hat geplante Prompts — das Schedule-Fach unter dem Composer listet sie (intern: autos)." | G0.5 |
+| ⏸ „agent conflict resolutions nobody has reviewed — …" | „Konflikte, die der Agent aufgelöst hat, ohne dass jemand sie prüfte — Klick öffnet das Board zum Prüfen und Landen (intern: merge review)." | G0.5 |
+| 💬 „guest chat — N messages" | „Gäste-Chat — N Nachrichten" | G0.5 |
+| ✕ „kill session" | „Diese Session beenden — was sie gerade tut, geht verloren (intern: kill)." | G0.5 |
+| Glyphen ⏱ ⏸ 💬 ✕ | unverändert — icons.ts ist G0.6, nicht diese Karte | — |
+
+### Gründungsfenster (`openPicker`)
+
+| alt | neu | Quelle |
+|---|---|---|
+| „⎇ hide lanes"-Tooltip EN | DE („Klick blendet die Worktree-Lanes aus") — Label bleibt (lane = Owner-Wort) | G0.5 |
+| „· hidden"-Tooltip EN | DE | G0.5 |
+| docker-context-Tooltip EN | DE mit „intern: docker context" | G0.5 |
+| Felder harness / model / effort / container | unverändert — nicht auf der Jargon-Liste | Owner-Liste (geschlossen) |
+
+### Pins, die mitgezogen wurden
+
+- `e2e/lane-suite.ts`: die Ballnamen-Pins (post-land check, queued check run) auf die neuen
+  sichtbaren Namen gezogen.
+- `e2e/slots.ts`: fünf neue G0.5-Anker-Checks (Baton-Block, Suite-Strecke, deploy-due, .slotact,
+  Tray + Gründungsfenster) — je sichtbarem Wort ein Anker, so kann ein Sprach-Rückfall nicht
+  ungemessen bleiben (Vorlage: der Idee-Fenster-Check).
+
+### Sichtbarer Jargon außerhalb dieser Karte (nicht angefasst, eigene Zeilen wert)
+
+- `#devbtn`/Helfer-Register: Tooltip „…take suite and audit work off this box" (eigene Fläche).
+- `laneCountChip`: Tooltip „…agent conflict resolutions nobody has reviewed" (linke Leiste).
+- Post-Land-Alarm `.plaudit` (K7), Composer-Cache-Tooltip mit TTL (K2/K8-Gebiet).

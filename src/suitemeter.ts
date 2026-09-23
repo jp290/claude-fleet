@@ -101,22 +101,24 @@ export function suiteMeter(inp: MeterInput): Meter {
     // the PLACE of an offer is the device that took it; an offer nobody claimed is not running
     // anywhere yet, and saying "here" about it would be the one wrong answer
     balls.push({ key: `offer:${o.slot}:${o.branch}`, station, slot: o.slot,
-      name: nameOf(o.slot, null, o.branch), what: "suite offer",
+      // owner words (G0.5, owner 2026-09-22): "suite" leaves the visible text; "check" is the
+      // owner's word for an audit — this name derived by MAIN from that mapping (Slot 13)
+      name: nameOf(o.slot, null, o.branch), what: "offered check run",
       where: o.state === "open" ? "unclaimed" : o.device ?? "helper", tone, at: o.at });
   }
 
   if (auditRuns) {
     const sha = (auditRuns.mainSha ?? "").slice(0, 8);
     const tree = `${auditRuns.main ?? "main"}${sha ? `@${sha}` : ""}`;
-    balls.push({ key: "audit:run", station: auditHeld ? "helper" : "run", slot: null, name: "post-land audit",
+    balls.push({ key: "audit:run", station: auditHeld ? "helper" : "run", slot: null, name: "post-land check",
       what: auditRuns.phase === "starting" && !auditHeld ? "starting" : tree,
       where: auditHeld ? auditHeld.device : here, tone: "plain", at: auditRuns.startedAt ?? 0 });
   } else if (auditHeld) {
-    balls.push({ key: "audit:run", station: "helper", slot: null, name: "post-land audit",
+    balls.push({ key: "audit:run", station: "helper", slot: null, name: "post-land check",
       what: auditHeld.claim.ref, where: auditHeld.device, tone: "plain", at: 0 });
   }
   for (const w of inp.audit?.waiting ?? []) {
-    balls.push({ key: `audit:wait:${w.branch}`, station: "wait", slot: null, name: "post-land audit",
+    balls.push({ key: `audit:wait:${w.branch}`, station: "wait", slot: null, name: "post-land check",
       what: `after ${laneTail(w.branch)}`, where: here, tone: "plain", at: w.at });
   }
 
@@ -129,7 +131,7 @@ export function suiteMeter(inp: MeterInput): Meter {
   const queue = inp.gate?.queue ?? [];
   const inLine = queue.filter((t) => t.alive).length;
   for (const t of queue) {
-    balls.push({ key: `queue:${t.n}.${t.pid}`, station: "wait", slot: null, name: "queued suite",
+    balls.push({ key: `queue:${t.n}.${t.pid}`, station: "wait", slot: null, name: "queued check run",
       what: t.alive ? `position ${t.position} of ${inLine}` : `ticket ${t.n} · its process is gone`,
       where: here, tone: t.alive ? "plain" : "warn",
       at: t.sinceMs === null ? 0 : Date.now() - t.sinceMs });

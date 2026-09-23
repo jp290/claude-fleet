@@ -2362,8 +2362,8 @@ function auditLiveRows(): HTMLElement[] {
   if (r?.phase === "starting") {
     // the drain holds its one-at-a-time lock but no run has stamped itself. Named rather than
     // folded into "nothing is running", which is the one thing this state is NOT.
-    const row = el("div", "bstate", "⏳ post-land audit · starting — a run is claimed, its target is not stamped yet");
-    row.title = "The tier-2 drain holds its lock. This is not an idle machine and not a wedge; it is the moment before a run names its tree.";
+    const row = el("div", "bstate", "⏳ post-land check · starting — a run is claimed, its target is not stamped yet");
+    row.title = "Der Abfluss hält die Sperre, noch kein Lauf hat seinen Baum genannt — weder Leerlauf noch Festhänger (intern: tier-2 drain).";
     rows.push(row);
   } else if (r) {
     const st = live.stats;
@@ -2380,22 +2380,22 @@ function auditLiveRows(): HTMLElement[] {
     // `mainSha: null` is "the run has not resolved its tip yet" — a real moment at the head of every
     // run, and it says so rather than printing an empty sha that would read as a bug in this line.
     row.appendChild(document.createTextNode(
-      `⏳ post-land audit · ${r.repo ?? "?"} ${r.main ?? "?"}@${sha || "(tip not resolved yet)"} · running `));
+      `⏳ post-land check · ${r.repo ?? "?"} ${r.main ?? "?"}@${sha || "(tip not resolved yet)"} · running `));
     row.appendChild(age);
     if (st) row.appendChild(document.createTextNode(` · p50 ${mmss(st.p50)} · p90 ${mmss(st.p90)} (n=${st.n})`));
     row.title = st
-      ? `The full suite against the integration tip, tier 2 — it gates nothing. p50/p90 are past runs of this repo (n=${st.n}); past p90 is when a run stops looking ordinary.`
-      : "The full suite against the integration tip, tier 2 — it gates nothing. Too few past runs on this repo to say what normal looks like.";
+      ? `Der ganze Check gegen den Integrationsspit-Stand — er entscheidet nichts (intern: tier 2). p50/p90 stammen aus früheren Läufen dieses Repos (n=${st.n}); hinter der alten p90 sieht ein Lauf ungewöhnlich aus.`
+      : "Der ganze Check gegen den Integrationsspit-Stand — er entscheidet nichts. Zu wenige frühere Läufe auf diesem Repo, um zu sagen, was normal aussieht (intern: tier 2).";
     rows.push(row);
     if (r.covers.length) {
       const c = el("div", "bidmeta", `covering ${r.covers.join(", ")}`);
-      c.title = "The land(s) this one run stands for. A run is coalesced: it audits a TREE, so it covers every land folded into that tree.";
+      c.title = "Die Länder, für die dieser eine Lauf steht — ein Lauf prüft einen ganzen Baum und deckt so jedes eingrollte Land ab (intern: coalesced).";
       rows.push(c);
     }
   }
   for (const w of live.waiting) {
-    const row = el("div", "bidmeta", `waiting for an audit · ${w.branch} → ${w.main}@${w.mainAfter.slice(0, 8)} · landed ${gateAge(Date.now() - w.at)} ago`);
-    row.title = "This land has no audit yet — it is folded into the NEXT run. Not the same as 'no audit planned', which is what it used to look like.";
+    const row = el("div", "bidmeta", `waiting for its check · ${w.branch} → ${w.main}@${w.mainAfter.slice(0, 8)} · landed ${gateAge(Date.now() - w.at)} ago`);
+    row.title = "Dieses Land hat noch keinen Check — es rollt in den NÄCHSTEN Lauf ein. Nicht dasselbe wie „kein Check geplant“ (intern: audit waiting).";
     rows.push(row);
   }
   return rows;
@@ -2423,8 +2423,8 @@ function gateSection(): HTMLElement | null {
     // the reader that must not blur it: a lane's row is its own word about itself, fleet's row is
     // written by the process actually running the suite. Neither one gates anything.
     row.title = r.origin === "server"
-      ? "Fleet's own run, reported by the process running it — this one is measured, not volunteered. It still gates nothing: the mutex decides what runs."
-      : "Self-reported by that lane. Advisory — the mutex, not this, decides what runs.";
+      ? "Fleets eigener Lauf, gemeldet vom Prozess, der ihn fährt — gemessen, nicht zugesagt. Er entscheidet nichts: die Sperre sagt, was läuft (intern: origin=server)."
+      : "Von der Lane selbst gemeldet — Hinweis, keine Messung. Die Sperre entscheidet, was läuft (intern: origin=lane).";
     sec.appendChild(row);
   }
   return sec;
@@ -2444,20 +2444,20 @@ function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
   // gateAge measures from the CLAIM (the pid file's mtime), not from the holder's death — which
   // nothing here knows. So a dead holder is "claimed 18m ago", never "ended 18m ago".
   const head = el("div", "bstate",
-    !lk ? "· suite gate · lock free"
-      : state === "parked" ? `⏸ suite gate · parked by hand (no pid) · ${age}`
-      : state === "held" ? `⏳ suite gate · held by ${who} · ${id} · ${age}`
-      : state === "overdue" ? `⚠ suite gate · ${who} has held for ${age} · ${id} — longer than any suite here takes`
-      : state === "unknown" ? `? suite gate · holder identity unknown (${who}) · ${age}`
-      // NEUTRAL on purpose: every finished suite leaves its dir behind (release is implicit), so
+    !lk ? "· check runs · idle"
+      : state === "parked" ? `⏸ check runs · parked by hand (no pid) · ${age}`
+      : state === "held" ? `⏳ check run busy · ${who} · ${id} · ${age}`
+      : state === "overdue" ? `⚠ check run busy · ${who} for ${age} · ${id} — longer than any check here takes`
+      : state === "unknown" ? `? check run · holder identity unknown (${who}) · ${age}`
+      // NEUTRAL on purpose: every finished run leaves its dir behind (release is implicit), so
       // this is what an idle machine looks like — it was a ⚠ for one day and shouted constantly.
-      : `· suite gate · no suite running · stale lock (${who}, ${id}, claimed ${age} ago)`);
-  head.title = state === "free" ? "No suite is holding the machine-wide mutex right now."
+      : `· check runs · none running · stale lock (${who}, ${id}, claimed ${age} ago)`);
+  head.title = state === "free" ? "Kein Check hält gerade die maschinenweite Sperre (intern: suite mutex)."
     : lk?.reason || lk?.effect
-      ? `reason: ${lk.reason ?? "unknown"}; next: ${lk.nextAction ?? "unknown"}; effect: ${lk.effect ?? "unknown"}`
-    : state === "stale" ? "Nothing is running. A finished suite leaves its lock dir behind by design; the next suite clears it."
-    : state === "overdue" ? "This holder is still alive but has held far longer than any suite on this machine takes — check whether it is wedged."
-    : "The machine-wide suite mutex, read off disk. Fleet only reads it — reaping a dead holder belongs to the wrappers.";
+      ? `Grund: ${lk.reason ?? "unknown"}; Nächstes: ${lk.nextAction ?? "unknown"}; Wirkung: ${lk.effect ?? "unknown"} (intern: lock reason/nextAction/effect)`
+    : state === "stale" ? "Nichts läuft — ein beendeter Check lässt sein Sperr-Verzeichnis absichtlich zurück, der nächste räumt es weg (intern: stale lock)."
+    : state === "overdue" ? "Der Halter lebt noch, hält aber viel länger als jeder Check auf dieser Maschine braucht — prüfe, ob er feststeckt (intern: overdue)."
+    : "Die maschinenweite Sperre, von der Platte gelesen — Fleet liest nur, das Aufräumen eines toten Halters ist Sache der Wrapper (intern: suite mutex).";
   return head;
 }
 
@@ -2491,10 +2491,10 @@ function meterModel() {
   });
 }
 const METER_TITLE: Record<MeterStation, string> = {
-  wait: "asked for, not started — a lane waiting on the suite mutex, an offer no helper took yet, a land whose post-land audit is folded into the next run",
-  run: "running on this box — whatever holds the machine-wide suite mutex",
-  helper: "running on a helper device — a lane's preview or an audit taken off this box",
-  done: "finished in the last few minutes — green, red, or nothing measured",
+  wait: "Angefragt, nicht gestartet — eine Lane wartet auf die Sperre, ein Angebot nahm noch kein Helfer, ein Land rollt in den nächsten Check ein (intern: suite mutex · post-land check).",
+  run: "Läuft auf dieser Maschine — was gerade die maschinenweite Sperre hält (intern: suite mutex).",
+  helper: "Läuft auf einem Helfer-Gerät — ein Check, den diese Maschine abgegeben hat (intern: suite offer).",
+  done: "In den letzten Minuten beendet — grün, rot oder ohne Messung.",
 };
 const METER_ROWS_MAX = 6;
 const meterTube = el("div", "smtube");
@@ -2537,27 +2537,27 @@ function renderSuiteMeter() {
   const lockWord = m.lock === null ? "not reported" : m.lock === "free" || m.lock === "stale" ? "idle"
     : m.lock === "overdue" ? `stuck${held}` : m.lock === "parked" ? `parked${held}` : m.lock === "unknown" ? `unknown holder${held}` : `busy${held}`;
   const lockEl = el("span", "smlock", lockWord);
-  lockEl.title = m.lock === null ? "This server sends no gate reading — nothing here has measured the mutex."
-    : m.lock === "overdue" ? "The suite mutex has been held longer than any suite here takes — its holder is probably wedged. Open the reading for the pid."
-    : "The machine-wide suite mutex (e2e-stage.sh) — one suite at a time on this box.";
+  lockEl.title = m.lock === null ? "Dieser Server schickt keine Sperr-Lesung — hier hat nichts gemessen (intern: gate reading)."
+    : m.lock === "overdue" ? "Der Lauf hält die Sperre länger als jeder Check hier braucht — er steckt vermutlich fest (intern: suite mutex)."
+    : "Die maschinenweite Sperre — nur ein Check läuft gleichzeitig auf dieser Kiste (intern: suite mutex, e2e-stage.sh).";
   const hs = helperSummary();
   const devEl = hs ? el("button", "smdev", hs) as HTMLButtonElement : null;
-  if (devEl) { devEl.title = "helper devices — open the register"; devEl.onclick = () => devbtn.click(); }
+  if (devEl) { devEl.title = "Helfer-Geräte — das Register öffnen"; devEl.onclick = () => devbtn.click(); }
   // …and the named end of that reach, drawn only when another instance exists to be confused with.
   // Owner words (G0.5, owner 2026-09-22): the badge is just the instance name; the German tooltip
   // says what it narrows — the numbers count this machine only, the other fleet is not in them.
   const elsewhere = instanceLinks.filter((l) => l.name !== instanceName);
   const scopeTag = el("span", "bscope", "fleet");
-  scopeTag.title = "this fleet: its machine-wide suite mutex, the lanes on this box, and the helper devices it lends work to";
+  scopeTag.title = "Diese Fleet: ihre maschinenweite Sperre, die Lanes auf dieser Kiste und die Helfer-Geräte, an die sie Arbeit verleiht (intern: suite mutex).";
   const scope = elsewhere.length ? el("span", "smscope", `${instanceName ?? "this machine"}`) : null;
   if (scope) scope.title = `${elsewhere.map((l) => l.name).join(", ")} `
     + `${elsewhere.length === 1 ? "ist eine eigene Fleet" : "sind eigene Fleets"} mit eigener Suite-Warteschlange. `
     + "Die Umschaltung kann sie öffnen, aber von hier aus wird keiner ihrer Läufe mitgezählt — eine leere Station hier sagt nichts über sie. "
     + "(intern: FLEET_INSTANCES ist eine Linkliste, kein Verbund).";
   const tog = el("button", `smtog${meterOpen ? " open" : ""}`) as HTMLButtonElement;
-  tog.append(el("span", "bchev"), el("span", "smtitle", "Suites"));
+  tog.append(el("span", "bchev"), el("span", "smtitle", "Checks"));
   tog.setAttribute("aria-expanded", String(meterOpen));
-  tog.title = meterOpen ? "hide the gate reading" : "show the gate reading — lock holder, running audit, every report";
+  tog.title = meterOpen ? "Lesung zuklappen" : "Lesung aufklappen — Sperre, laufende Checks, jede Meldung (intern: gate reading)";
   tog.onclick = () => {
     meterOpen = !meterOpen;
     try { localStorage.setItem("fleet.meter.open", meterOpen ? "1" : "0"); } catch { /* the toggle still works for this page */ }
@@ -2613,7 +2613,7 @@ function renderSuiteMeter() {
     // and the place — the half a truncated row used to lose — took its column. (2026-09-20)
     row.append(el("span", "smdot"), el("span", "smname", b.name), el("span", "smwhat", b.what),
       el("span", "smplace", b.where));
-    row.title = `${b.name} — ${b.what} · ${b.where} · ${meterState(b)}${b.slot !== null ? " · click to open the lane" : ""}`;
+    row.title = `${b.name} — ${b.what} · ${b.where} · ${meterState(b)}${b.slot !== null ? " · Klick öffnet die Lane" : ""}`;
     const slot = b.slot;
     if (slot !== null && fleet[slot - 1]?.cwd) row.onclick = () => showSlot(slot);
     else row.disabled = true;
@@ -2621,7 +2621,7 @@ function renderSuiteMeter() {
   }), ...(order.length > METER_ROWS_MAX ? [el("div", "smmore", `+${order.length - METER_ROWS_MAX} more — ▸ for all`)] : []));
 
   const g = meterOpen ? gateSection() : null;
-  meterDetail.replaceChildren(...(g ? [g] : meterOpen ? [el("div", "bempty", "nothing on the gate")] : []));
+  meterDetail.replaceChildren(...(g ? [g] : meterOpen ? [el("div", "bempty", "nothing reported running")] : []));
 }
 
 // --- WHICH MACHINES TAKE WORK OFF THIS BOX: the helper device register --------------------------
@@ -2916,13 +2916,13 @@ function deploySection(): HTMLElement | null {
   if (codeDue) {
     const n = deployGapInfo?.behindCount ?? null;
     const row = el("div", "bstate",
-      `⚠ deploy due · srv is running server code from ${n === null ? "an earlier commit" : `${n} commit${n === 1 ? "" : "s"} ago`} — restart srv`);
-    row.title = "The running server booted from an older commit than HEAD, and the difference touches server code. Measured against the COMMITTED tree, not the working copy.";
+      `⚠ deploy due · the running server is ${n === null ? "behind HEAD" : `${n} commit${n === 1 ? "" : "s"} behind`} — restart it`);
+    row.title = "Der laufende Server bootet von einem älteren Commit als HEAD, und der Unterschied berührt Server-Code — starte ihn neu, dann läuft dieser Baum (intern: gegen den COMMITTETEN Baum gemessen, nicht die Arbeitskopie).";
     sec.appendChild(row);
   }
   if (bundleDue) {
-    const row = el("div", "bstate", "⚠ deploy due · the client bundle is older than src/ — run bun run build");
-    row.title = "public/*.js are gitignored build artifacts: landed client code stays invisible in the browser until someone rebuilds them.";
+    const row = el("div", "bstate", "⚠ deploy due · the code in the browser is older than src/ — rebuild it");
+    row.title = "Der Browser zeigt einen älteren Stand — im Terminal `bun run build` ausführen, dann ist er aktuell (intern: public/*.js sind gitignorierte Bauartefakte).";
     sec.appendChild(row);
   }
   return sec;
@@ -3535,12 +3535,12 @@ async function renderBoard() {
         ? `${tok(sc.fill.usedTokens)} / ${tok(sc.fill.windowTokens)} · ${Math.round(sc.fill.pct)} %`
         : "not measurable",
         sc.fill
-          ? `${sc.fill.usedTokens} of ${sc.fill.windowTokens} tokens in the window — the measurement the succession threshold is compared against`
-          : "Fleet cannot measure this session's context: no pinned conversation, no usage record yet, or no window it can name. That is not an empty context.");
+          ? `${sc.fill.usedTokens} von ${sc.fill.windowTokens} Tokens im Fenster — gegen diese Zahl misst der Server, wann die Session weitergeben soll (intern: succession fill · threshold).`
+          : "Fleet kann diesen Kontext nicht messen: keine gepinnte Konversation, noch kein Nutzungsrecord, kein benennbares Fenster — das ist kein leerer Kontext (intern: succession fill).");
       // threshold AND nudge on ONE line, because the second is only ever news about the first
       const offWhy: Record<NonNullable<BriefSuccession["thresholdOff"]>, string> = {
         fleet: "migration is not armed on this fleet",
-        rail: "this rail's own threshold is 0",
+        rail: "this kind's own threshold is 0",
         harness: `${s.harness ?? "this harness"} is not on the handover band`,
         steward: "the planning pane is not nudged",
         waiting: "this session waits on the owner",
@@ -3554,15 +3554,18 @@ async function renderBoard() {
       srow("Handover", sc.thresholdPct !== null ? `at ${sc.thresholdPct} % — ${nudge}`
         : `off — ${offWhy[sc.thresholdOff ?? "rail"]}`,
         sc.thresholdPct !== null
-          ? `${sc.nudges} of at most ${sc.maxNudges} handover instructions delivered to this conversation. The server types one into this pane at ${sc.thresholdPct} %; the count is kept in memory only, so a server restart forgets it.`
-          : "nothing in the server would ask this session to hand over; the succession routes still work by hand.");
+          ? `Bei ${sc.thresholdPct} % tippt der Server dieser Konversation selbstständig einen Weitergabe-Hinweis hinein — bisher ${sc.nudges} von höchstens ${sc.maxNudges}. Der Zähler lebt nur im Speicher des Servers: ein Neustart vergisst ihn (intern: succession nudge).`
+          : "Nichts in diesem Server würde diese Session zum Weitergeben auffordern — von Hand geht es weiterhin (intern: succession routes).");
+      // "Kind" — the MAIN-derived label (Slot 13, abgeleitet aus audit→check, Owner-Sichtung
+      // offen): the row says WHICH kind of handover route this session has, so the values below
+      // stay exactly as they are. "rail" itself must not be visible (G0.5).
       const railWhy: Record<BriefSuccession["rail"], string> = {
-        lane: "the successor is a fresh session on THIS worktree, branch and slot — commit, file a handoff report, then POST /api/self/succeed",
-        "standard-main": "a bound Program-MAIN hands over through the Program record the server already keeps — no handover commit is a gate",
-        "game-maker-main": "the committed `## Current game checkpoint` section in HANDOFF.md is the one handover channel, and it takes no carry",
-        handoff: "watches, autos and reports carry by id; succeed with an intent OR a committed pointer, never both",
+        lane: "Die Nachfolge ist eine frische Session auf DIESEM Worktree, gleichem Branch und Slot — committen, Handoff-Report filen, dann POST /api/self/succeed (intern: rail).",
+        "standard-main": "Ein gebundener Program-MAIN gibt über den Programm-Eintrag weiter, den der Server ohnehin führt — kein Handoff-Commit nötig (intern: rail=standard-main).",
+        "game-maker-main": "Der committete Abschnitt `## Current game checkpoint` in HANDOFF.md ist der einzige Weitergabe-Kanal (intern: rail=game-maker-main).",
+        handoff: "Watches, Autos und Reports ziehen per Id mit; das Succeed nimmt einen Intent ODER einen committeten Zeiger, nie beides (intern: rail=handoff).",
       };
-      srow("Rail", sc.rail, railWhy[sc.rail]);
+      srow("Kind", sc.rail, railWhy[sc.rail]);
       // the lid is keyed by the QUEUE ROW (originId), so a hand-opened lane has none to spend
       // owner words (G0.5, owner 2026-09-22): baton → handoff; action words stay English, only
       // the tooltip explains in German
@@ -4827,7 +4830,7 @@ function buildTray(): void {
   for (const entry of TRAY) {
     if (entry.run) {
       const b = el("button", "") as HTMLButtonElement;
-      b.title = "attach files to this session";
+      b.title = "Dateien an diese Session anhängen.";
       b.append(el("span", "tricon"), el("span", "trlabel", entry.label));
       b.onclick = entry.run;
       compTray.appendChild(b);
@@ -5129,15 +5132,15 @@ function applyPkFilter() {
 function renderHideWtBtn() {
   pkHideBtn.textContent = "⎇ hide lanes";
   pkHideBtn.classList.toggle("on", hideWorktrees);
-  pkHideBtn.title = hideWorktrees ? "worktree lanes hidden — click to show them" : "click to hide worktree lanes";
+  pkHideBtn.title = hideWorktrees ? "Worktree-Lanes sind ausgeblendet — Klick zeigt sie wieder" : "Klick blendet die Worktree-Lanes aus";
 }
 
 function renderDotBtn() {
   pkDotBtn.textContent = "· hidden";
   pkDotBtn.classList.toggle("on", showHidden);
   pkDotBtn.title = showHidden
-    ? "dotfolders (.claude, .github) are listed — click to hide them again"
-    : "click to list dotfolders too (.claude, .github) — they are hidden by default";
+    ? "Punkt-Ordner (.claude, .github) sind gelistet — Klick blendet sie wieder aus"
+    : "Klick listet auch Punkt-Ordner (.claude, .github) — sie sind standardmäßig ausgeblendet";
 }
 
 // crisp monochrome glyphs (stroke = currentColor, tinted per row-kind in CSS). Static markup,
@@ -5715,8 +5718,7 @@ function appendSpawnOptions(host: HTMLElement, before: Node | null = null): void
     xIn.type = "text";
     xIn.placeholder = containerDefaults?.containerContext ?? "docker context";
     xIn.value = spawnContainerContext;
-    xIn.title = "which docker daemon — an image lives in exactly one, so this must be the context the"
-      + " container's image was built in";
+    xIn.title = "Auf welchem Docker-Daemon der Container läuft — ein Image lebt in genau einem, deshalb der Context, in dem es gebaut wurde (intern: docker context).";
     xIn.oninput = () => { spawnContainerContext = xIn.value.trim(); };
     row.appendChild(labelled("docker context", xIn));
   }
@@ -7305,24 +7307,24 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       const act = el("div", "slotact");
       if (autosList.some((a) => a.slot === s.id && a.enabled)) {
         const b = el("span", "autobadge", "⏱");
-        b.title = "has scheduled prompts — the Schedule tray under the composer lists them";
+        b.title = "Diese Session hat geplante Prompts — das Schedule-Fach unter dem Composer listet sie (intern: autos).";
         act.appendChild(b);
       }
       if (s.mergePending) {
         const rb = el("span", "revb", "⏸");
-        rb.title = "agent conflict resolutions nobody has reviewed — review & land (open the board)";
+        rb.title = "Konflikte, die der Agent aufgelöst hat, ohne dass jemand sie prüfte — Klick öffnet das Board zum Prüfen und Landen (intern: merge review).";
         rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
         act.appendChild(rb);
       }
       if (s.share) {
         const n = s.share.comments;
         const ca = el("span", "cmtact" + (n > 0 ? " hot" : ""), n > 0 ? `💬${n}` : "💬");
-        ca.title = n > 0 ? `guest chat — ${n} message${n === 1 ? "" : "s"}` : "guest chat";
+        ca.title = n > 0 ? `Gäste-Chat — ${n} Nachricht${n === 1 ? "" : "en"}` : "Gäste-Chat";
         ca.onclick = (e) => { e.stopPropagation(); openShareDlg(s.id); };
         act.appendChild(ca);
       }
       const kill = el("span", "kill", "✕");
-      kill.title = "kill session";
+      kill.title = "Diese Session beenden — was sie gerade tut, geht verloren (intern: kill).";
       kill.onclick = async (e) => {
         e.stopPropagation();
         if (s.worktree) {

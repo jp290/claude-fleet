@@ -1099,6 +1099,49 @@ export async function run(): Promise<void> {
     && /else \{ this\.refit\(\); this\.term\.focus\(\); \}/.test(cliSrc),
     "reshapeSurface settle / Pane.setView in src/client.ts");
 
+  // --- G0.5 OWNER VOCABULARY (owner 2026-09-22, card K9): the four surfaces this lane re-worded
+  // — the Info-Tab's succession block, the suite meter's stretch, the deploy-due lines, the
+  // .slotact strip — plus tray and founding window. Per surface ONE check whose anchors are the
+  // visible words themselves: the owner word PRESENT, the old jargon ABSENT, and the German
+  // one-sentence tooltip that explains it. "Rail"→"Kind", "Suites"→"Checks", "suite offer"→
+  // "offered check run", "queued suite"→"queued check run", "suite gate · held by pid N"→
+  // "check run busy · pid N" are MAIN-derived (Slot 13, aus audit→check) — owner sighting open.
+  check("G0.5 succession block: the rows read Kind/Handoff in owner words and their tooltips explain in German",
+    cliSrc.includes('srow("Kind", sc.rail') && !cliSrc.includes('srow("Rail"')
+    && cliSrc.includes("this kind's own threshold is 0") && !cliSrc.includes("this rail's own threshold is 0")
+    && cliSrc.includes("gegen diese Zahl misst der Server, wann die Session weitergeben soll (intern: succession fill · threshold)")
+    && !cliSrc.includes("the measurement the succession threshold is compared against")
+    && cliSrc.includes("Die Nachfolge ist eine frische Session auf DIESEM Worktree")
+    && !cliSrc.includes("watches, autos and reports carry by id"),
+    "srow labels + tooltips in src/client.ts");
+  check("G0.5 suite stretch: the meter reads Checks, its status lines and ball names carry no suite/audit/gate",
+    cliSrc.includes('el("span", "smtitle", "Checks")') && !cliSrc.includes('"smtitle", "Suites"')
+    && !cliSrc.includes("suite gate ·") && cliSrc.includes("check run busy · ")
+    && cliSrc.includes("⏳ post-land check · ") && !cliSrc.includes("⏳ post-land audit · ")
+    && cliSrc.includes("waiting for its check · ") && !cliSrc.includes("waiting for an audit · ")
+    && cliSrc.includes("Angefragt, nicht gestartet") && !cliSrc.includes("asked for, not started")
+    && cliSrc.includes("nothing reported running") && !cliSrc.includes("nothing on the gate")
+    && cliSrc.includes("· Klick öffnet die Lane") && !cliSrc.includes("click to open the lane"),
+    "meter head, gate lock head, audit rows in src/client.ts");
+  check("G0.5 deploy due: consequence + action in owner words, the command and srv/bundle live in the tooltip",
+    cliSrc.includes("the running server is ") && !cliSrc.includes("srv is running") && !cliSrc.includes("restart srv")
+    && cliSrc.includes("the code in the browser is older than src/") && !cliSrc.includes("client bundle"),
+    "deploySection in src/client.ts");
+  check("G0.5 slotact strip: the hover actions explain in German, not in internal verbs",
+    cliSrc.includes("Diese Session beenden — was sie gerade tut, geht verloren (intern: kill).")
+    && !cliSrc.includes('title = "kill session"')
+    && cliSrc.includes("Konflikte, die der Agent aufgelöst hat")
+    && !cliSrc.includes('rb.title = "agent conflict resolutions')
+    && cliSrc.includes("Diese Session hat geplante Prompts")
+    && cliSrc.includes("Gäste-Chat — "),
+    "slotact titles in src/client.ts");
+  check("G0.5 tray and founding window: German tooltips, Fleet-English labels untouched",
+    cliSrc.includes("Dateien an diese Session anhängen.") && !cliSrc.includes("attach files to this session")
+    && cliSrc.includes("Klick blendet die Worktree-Lanes aus") && !cliSrc.includes("worktree lanes hidden")
+    && indexSrc.includes("Live-Mitschreiben") && indexSrc.includes("Prompt-Verlauf")
+    && indexSrc.includes("Geplante Prompts für diese Session"),
+    "tray titles in client.ts + public/index.html");
+
   // --- the board's SECTION ORDER. The owner set it twice: §F4 (briefs/ui-next-level-2026-08-06.md)
   // and the redesign of 2026-09-18/19 — machine alarms → head → changes → checks → history → the
   // sections and one fold. Nothing else in the suite would notice a re-sort

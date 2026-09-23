@@ -77,6 +77,14 @@ EOF
 # The boot-race fixtures must delay the AGENT PROCESS, not merely delay an already-visible harn.
 # A script has the interpreter's comm, so these wrappers are intentionally NOT recognised by
 # FLEET_HARNESS_COMMS=harn. Only their later `exec harn-*` transition can satisfy paneAgentAt.
+# THAT IS macOS SEMANTICS, and Linux does not share it: there a shebang script's comm is its OWN
+# file name, so the wrapper installed as `harn` sleeps as comm `harn` and paneAgentAt
+# (comm.startsWith) calls it alive before any agent exists — measured on the second-host's first land
+# gate 2026-09-23, both "no declared harn process exists before /send" probes red with `zsh,harn`.
+# So each wrapper's first line re-execs /bin/sh on itself: execve of the interpreter binary makes
+# the comm `sh` on both hosts, and on macOS it already was. The `harn` comm lives only for that one
+# exec (well under the time /api/slots/:id/open takes to return), and every paneAgentAt the fixtures
+# depend on runs inside a /send, after it.
 # boot-flush clears input BEFORE it execs the declared harn-agent. This ordering is mechanical:
 # paneAgentAt cannot call the agent alive in the tiny exec→main window before tcflush, which made
 # the former combined binary's probe depend on scheduler timing. An old send queued during the
@@ -115,17 +123,20 @@ int main(void) {
 EOF
 cat > "$FAKEBIN/harn-boot" <<'EOF'
 #!/bin/sh
+[ -n "${FX_HARN_REEXEC:-}" ] || FX_HARN_REEXEC=1 exec /bin/sh "$0" "$@"
 sleep 2
 base="$(dirname "$0")"
 exec "$base/boot-flush" "$base/harn-agent"
 EOF
 cat > "$FAKEBIN/harn-observed" <<'EOF'
 #!/bin/sh
+[ -n "${FX_HARN_REEXEC:-}" ] || FX_HARN_REEXEC=1 exec /bin/sh "$0" "$@"
 sleep 3
 exec "$(dirname "$0")/harn-print"
 EOF
 cat > "$FAKEBIN/harn-never" <<'EOF'
 #!/bin/sh
+[ -n "${FX_HARN_REEXEC:-}" ] || FX_HARN_REEXEC=1 exec /bin/sh "$0" "$@"
 sleep 6
 EOF
 "$CC" -O0 -o "$FAKEBIN/claude-exit" "$FAKEBIN/claude-exit.c" || exit 1

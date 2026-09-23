@@ -8917,10 +8917,9 @@ export async function run(ctx: Ctx): Promise<void> {
       { ...cardCtx, foreignVerifyCommand: null });
     const noEntryFleetStep = validateCard({ ziel: "z", done: "d", verify: "bun install" },
       { ...cardCtx, foreignVerifyCommand: null });
-    check("(v7) a foreign repo without a verify entry has a named configuration gap",
-      !noEntry.valid && !noEntryFleetStep.valid
-      && noEntry.gaps.some((g) => g.startsWith("verify:") && g.includes("FLEET_VERIFY_CMD_REPOS"))
-      && noEntryFleetStep.gaps.some((g) => g.startsWith("verify:") && g.includes("FLEET_VERIFY_CMD_REPOS")),
+    check("(v7) a foreign repo without a verify entry keeps the chain rule, and its gap names the missing entry",
+      !noEntry.valid && noEntryFleetStep.valid
+      && noEntry.gaps.some((g) => g.startsWith(unknownStepGap("./verify.sh")) && g.includes("FLEET_VERIFY_CMD_REPOS")),
       JSON.stringify({ script: noEntry.gaps, fleet: noEntryFleetStep.gaps }));
     // S7: the SIZE is quote-checked like a path. The filing header states it; an ordinary "kleiner"
     // in prose does not, and a value outside the three classes is a gap rather than a nearest guess.

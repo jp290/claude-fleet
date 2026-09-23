@@ -87,7 +87,8 @@ export interface RawCard {
 }
 
 export interface CardValidationContext {
-  // undefined = Fleet's unchanged chain rule; null = foreign repo without its own verify entry.
+  // undefined = Fleet's chain rule; string = the foreign repo's own verify entry, checked instead;
+  // null = foreign repo without an entry: the chain rule still applies, its gap names the entry.
   foreignVerifyCommand?: string | null;
   // The row's own text, exactly as the extractor saw it. It is what makes the quote rule a
   // MECHANICAL property instead of a request in the prompt: a path the text names only inside a
@@ -230,20 +231,21 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   const done = text1(raw.done);
   if (!done) gaps.push("done: no checkable done sentence");
   const rawVerify = text1(raw.verify);
-  const { verify, aliased } = ctx.foreignVerifyCommand === undefined
-    ? verifyAliased(rawVerify) : { verify: rawVerify, aliased: false };
+  const repoCommand = ctx.foreignVerifyCommand;
+  const { verify, aliased } = typeof repoCommand === "string"
+    ? { verify: rawVerify, aliased: false } : verifyAliased(rawVerify);
+  // A foreign repo WITHOUT its own entry keeps the chain rule it had before v7 — refusing all of
+  // its cards would turn every such repo's valid rows invalid — and the gap names the missing entry.
+  const noEntry = repoCommand === null
+    ? "; FLEET_VERIFY_CMD_REPOS has no entry for this repository, so its own command cannot be checked" : "";
   // The verify field is checked against the chain this repo actually runs, not against being
   // non-empty: "run the tests" is the shape of an answer, not one.
-  if (!verify) gaps.push(ctx.foreignVerifyCommand === null
-    ? "verify: no command named; FLEET_VERIFY_CMD_REPOS has no entry for this repository"
-    : "verify: no command named");
-  else if (ctx.foreignVerifyCommand !== undefined) {
-    if (ctx.foreignVerifyCommand === null)
-      gaps.push(`verify: "${verify}" cannot be checked — FLEET_VERIFY_CMD_REPOS has no entry for this repository`);
-    else if (!namesRepoVerify(verify, ctx.foreignVerifyCommand))
+  if (!verify) gaps.push(`verify: no command named${noEntry}`);
+  else if (typeof repoCommand === "string") {
+    if (!namesRepoVerify(verify, repoCommand))
       gaps.push(`verify: "${verify}" does not name this repository's configured verify command or script`);
   } else if (!aliased && !namesChainStep(verify) && !namesClarifyClose(verify))
-    gaps.push(`verify: "${verify}" names no known chain step (${LOCAL_PROOF_STEPS.join(", ")})`);
+    gaps.push(`verify: "${verify}" names no known chain step (${LOCAL_PROOF_STEPS.join(", ")})${noEntry}`);
   // A HEADER LINE THE PARSER READ PAST (set only by the filing-format parser): a field whose value
   // ran over more than one line ends the header block on that line, and every key from there on
   // was never filed — the reading came back valid with a silently empty field (measured 2026-09-20,

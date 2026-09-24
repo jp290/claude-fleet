@@ -66,7 +66,10 @@ interface ProgramHandover {
   v: number; at: number;
   from: { slot: number; openedAt: number; sessionId: string | null };
   to: { slot: number; openedAt: number };
-  obligations: ProgramHandoverObligation[]; dropped: number;
+  obligations: ProgramHandoverObligation[];
+  // carried rows a later succession measured settled — `how` names the capture's own test
+  settled: (ProgramHandoverObligation & { settled: { at: number; how: string } })[];
+  dropped: number;
 }
 interface Program extends ProgramContent {
   id: string;
@@ -1094,7 +1097,8 @@ export async function run(ctx: Ctx): Promise<void> {
   const fleetLineRecords = ((readState() as { lineageHandovers?: { from?: { slot?: number; openedAt?: number } }[] }).lineageHandovers ?? [])
     .filter((r) => r.from?.slot === fleetSlot && r.from.openedAt === fleetAOpenedAt);
   check("Program-MAIN Fleet succession: the Program record keeps its exact shape and no role-lineage record or line id is written",
-    !!fleetRetained && JSON.stringify(Object.keys(fleetRetained).sort()) === JSON.stringify(["at", "dropped", "from", "obligations", "to", "v"])
+    !!fleetRetained && JSON.stringify(Object.keys(fleetRetained).sort()) === JSON.stringify(["at", "dropped", "from", "obligations", "settled", "to", "v"])
+      && Array.isArray(fleetRetained.settled) && fleetRetained.settled.length === 0
       && JSON.stringify(Object.keys(fleetRetained.from).sort()) === JSON.stringify(["openedAt", "sessionId", "slot"])
       && JSON.stringify(Object.keys(fleetRetained.to).sort()) === JSON.stringify(["openedAt", "slot"])
       && fleetRetained.obligations.every((o) => JSON.stringify(Object.keys(o).sort()) === JSON.stringify(["at", "detail", "id", "kind", "text"]))
@@ -1111,6 +1115,46 @@ export async function run(ctx: Ctx): Promise<void> {
   //
   // B DELIBERATELY DOES NOTHING HERE. It raises no attention, arms no watch, schedules no check-in
   // and never reads the record. That is the whole point: C must still be able to read what A owed.
+  //
+  // --- …AND A CARRIED ROW STAYS AN OBLIGATION ONLY WHILE IT IS OPEN (2026-09-23). -----------------
+  // Two older audit-watch rows are planted into the record B holds, as if an earlier occupant had
+  // owed them: neither has a watch row left (the registrant's teardown deleted it), one land has a
+  // post-land-audits row covering its mainAfter and one has none. Plus A's lane watch W1, whose row
+  // A's teardown deleted. At B→C the capture must keep ONLY the uncovered audit row open and move
+  // W1 (watch-row-gone) and the covered one (audit-recorded) to `settled`. The ledger row names a
+  // repo path that exists nowhere, so no other reader of the audit ledger can join to it, and it is
+  // taken away again in the handover-loss plant below (same `cmd` marker).
+  const settleProbeRepo = `${ROOT}/handover-settle-probe-repo`;
+  const settleOpenAfter = "0a".repeat(20);
+  const settleDoneAfter = "0d".repeat(20);
+  const settleOpenId = "a0d17e01";
+  const settleDoneId = "a0d17e02";
+  const settleProbeCmd = "handover-settle-probe";
+  const settleAuditRow = (id: string, mainAfter: string): ProgramHandoverObligation => ({
+    kind: "watch", id, at: Date.now() - 60_000, text: "",
+    detail: { kind: "audit", idleSec: 60, delivery: "pane", repo: settleProbeRepo, mainAfter,
+      owedBy: "slot 1@1", reArm: "POST /api/self/watch" },
+  });
+  await stopSrv();
+  const settlePlant = readState();
+  const settleProgram = settlePlant.programs?.find((p) => p.id === fleetProgram.id);
+  if (settleProgram?.handover) settleProgram.handover = { ...settleProgram.handover,
+    obligations: [...settleProgram.handover.obligations,
+      settleAuditRow(settleOpenId, settleOpenAfter), settleAuditRow(settleDoneId, settleDoneAfter)] };
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(settlePlant, null, 2), { mode: 0o600 });
+  appendFileSync(`${ROOT}/post-land-audits.jsonl`, `${JSON.stringify({
+    at: Date.now(), startedAt: Date.now() - 10, ms: 10, repo: settleProbeRepo, main: "main",
+    mainSha: "0e".repeat(20), result: "green", cmd: settleProbeCmd, exitCode: 0, out: "ALL PASS",
+    checks: { ran: 1, failed: 0 }, covers: [{ branch: settleProbeCmd, mainAfter: settleDoneAfter, at: Date.now() }],
+  })}\n`);
+  await restartSrv();
+  check("Program-MAIN chain setup: the record B holds carries A's watch and the two planted audit-watch rows, none of them with a live watch row",
+    !!settleProgram?.handover
+      && (readState().programs ?? []).find((p) => p.id === fleetProgram.id)?.handover?.obligations
+        .filter((o) => [fleetWatchId, settleOpenId, settleDoneId].includes(o.id)).length === 3
+      && !(readState().watches ?? []).some((w) => [fleetWatchId, settleOpenId, settleDoneId].includes(String(w.id))),
+    JSON.stringify((readState().programs ?? []).find((p) => p.id === fleetProgram.id)?.handover?.obligations
+      .map((o) => [o.kind, o.id]) ?? null));
   const chainLabel = "program-main-fleet-third";
   // B IS AN OCCUPANT, NOT A SLOT NUMBER. Slot ids recycle inside one instance, and how the shard
   // mixes the families decides which number B gets: audit 5619800c (2-shard) counted
@@ -1135,7 +1179,7 @@ export async function run(ctx: Ctx): Promise<void> {
       (a as { slot?: number }).slot === fleetSuccessionBody.slot).length,
   };
   const chainPending = selfSucceed(bToken, { label: chainLabel });
-  const chainSlot = await waitForLabel(chainLabel);
+  let chainSlot = await waitForLabel(chainLabel);
   if (chainSlot !== null) {
     await Bun.sleep(250);
     await respawnScreen(chainSlot, ">_ OpenAI Codex (v0.147.0)");
@@ -1147,20 +1191,23 @@ export async function run(ctx: Ctx): Promise<void> {
       && /^[0-9a-f]{32}$/.test(bToken) && bOpenedAt > 0 && bFresh.attention === 0 && bFresh.autos === 0,
     `${chainRes.status} slot=${chainSlot} b=${fleetSuccessionBody.slot}@${bOpenedAt} bFresh=${JSON.stringify(bFresh)}`
       + ` otherOccupantsOnBSlot=${onBSlot.length - bFresh.attention}`);
-  const chainToken = chainSlot === null ? "" : readState().slots?.[String(chainSlot)]?.selfToken ?? "";
+  let chainToken = chainSlot === null ? "" : readState().slots?.[String(chainSlot)]?.selfToken ?? "";
   const chainOnDisk = (readState().programs ?? []).find((p) => p.id === fleetProgram.id)?.handover ?? null;
   const chainView = await selfExecution(chainToken);
   const chainRetained = chainView.view?.programs.find((x) => x.program.id === fleetProgram.id)?.handover ?? null;
   const chainRow = (kind: string, pick: (o: ProgramHandoverObligation) => boolean): ProgramHandoverObligation | undefined =>
     (chainRetained?.obligations ?? []).find((o) => o.kind === kind && pick(o));
   const chainAttention = chainRow("attention", (o) => o.text === fleetSaveText);
-  const chainWatch = chainRow("watch", (o) => o.id === fleetWatchId);
+  const chainSettled = (id: string) => (chainRetained?.settled ?? []).find((o) => o.kind === "watch" && o.id === id);
+  const chainWatch = chainSettled(fleetWatchId);
   const chainAttentionView = await (await fetch(`${BASE}/api/self/attention`,
     { headers: { "x-fleet-self-token": chainToken } })).json() as
     { requests?: { text?: string; status?: string }[] };
   // BREAKS IF: the record is replaced instead of carried forward, or live Program attention is
-  // reconciled by B's handoff. The two kinds travel through their respective single sources.
-  check("Program-MAIN chain: C reads A's live decision and retained watch after B re-created nothing",
+  // reconciled by B's handoff. The two kinds travel through their respective single sources. A's
+  // watch is no longer an obligation — its row died with A — but it is not lost either: it sits in
+  // `settled` with its target, its owner and how the capture measured it.
+  check("Program-MAIN chain: C reads A's live decision and A's watch as SETTLED (watch-row-gone), after B re-created nothing",
     chainRes.ok && !!chainRetained && !!chainOnDisk
       && chainRetained.from.slot === fleetSuccessionBody.slot
       && chainRetained.to.slot === chainSlot
@@ -1168,10 +1215,24 @@ export async function run(ctx: Ctx): Promise<void> {
       && (chainAttentionView.requests ?? []).some((a) => a.text === fleetSaveText
         && a.status === "open")
       && !!chainWatch && chainWatch.detail.target === fleetWatchLaneSlot
-      && chainWatch.detail.owedBy === fleetOwnedByA
+      && chainWatch.detail.owedBy === fleetOwnedByA && chainWatch.settled.how === "watch-row-gone"
+      && !chainRow("watch", (o) => o.id === fleetWatchId)
       && chainRetained.dropped === 0,
     JSON.stringify({ from: chainRetained?.from ?? null, to: chainRetained?.to ?? null,
-      rows: (chainRetained?.obligations ?? []).map((o) => [o.kind, o.id, o.detail.owedBy]) }));
+      rows: (chainRetained?.obligations ?? []).map((o) => [o.kind, o.id, o.detail.owedBy]),
+      settled: (chainRetained?.settled ?? []).map((o) => [o.kind, o.id, o.settled.how]) }));
+  // BREAKS IF: an audit watch settles on its row vanishing alone, or never settles at all. Both
+  // planted rows lost their watch row the same way; only the audit ledger tells them apart.
+  check("Program-MAIN chain: an audit watch settles only once an audit covers its mainAfter — the uncovered one stays an obligation",
+    !!chainRow("watch", (o) => o.id === settleOpenId && o.detail.mainAfter === settleOpenAfter)
+      && !chainSettled(settleOpenId)
+      && chainSettled(settleDoneId)?.settled.how === "audit-recorded"
+      && chainSettled(settleDoneId)?.detail.mainAfter === settleDoneAfter
+      && !chainRow("watch", (o) => o.id === settleDoneId)
+      && (chainRetained?.obligations.length ?? -1) === 1 && (chainRetained?.settled.length ?? -1) === 2
+      && JSON.stringify(chainOnDisk?.settled ?? null) === JSON.stringify(chainRetained?.settled ?? []),
+    JSON.stringify({ open: (chainRetained?.obligations ?? []).map((o) => [o.kind, o.id]),
+      settled: (chainRetained?.settled ?? []).map((o) => [o.kind, o.id, o.settled.how]) }));
   // …and the brief tells C the truth about both halves: none of these rows is B's, and the record
   // is carried on rather than replaced — the sentence the old version had exactly backwards.
   const chainPrompt = chainSlot === null ? "" : ((await (await get(`/api/slots/${chainSlot}/history`))
@@ -1241,12 +1302,60 @@ export async function run(ctx: Ctx): Promise<void> {
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(wdUnplant, null, 2), { mode: 0o600 });
   await restartSrv();
 
+  // --- C → D: THE THIRD SUCCESSION. What is open stays open, what settled stays settled. ---------
+  // C arms one live watch of its own (W3, the same still-alive lane A watched), so D's record has a
+  // FRESH open row beside the carried uncovered audit row. After this succession the record must
+  // hold exactly those two as obligations and exactly W1 + the covered audit row as settled — the
+  // settled history carried unchanged, nothing re-settled, nothing duplicated.
+  const thirdWatchRes = await selfPost("/api/self/watch", chainToken, { kind: "lane", target: fleetWatchLaneSlot });
+  const thirdWatchId = (await thirdWatchRes.clone().json() as { watch?: { id?: string } }).watch?.id ?? "";
+  const thirdLabel = "program-main-fleet-fourth";
+  const thirdPending = selfSucceed(chainToken, { label: thirdLabel });
+  const thirdSlot = await waitForLabel(thirdLabel);
+  if (thirdSlot !== null) {
+    await Bun.sleep(250);
+    await respawnScreen(thirdSlot, ">_ OpenAI Codex (v0.147.0)");
+  }
+  const thirdRes = await thirdPending;
+  const thirdBody = await thirdRes.json() as { ok?: boolean; slot?: number };
+  const thirdToken = thirdSlot === null ? "" : readState().slots?.[String(thirdSlot)]?.selfToken ?? "";
+  const thirdView = await selfExecution(thirdToken);
+  const thirdRetained = thirdView.view?.programs.find((x) => x.program.id === fleetProgram.id)?.handover ?? null;
+  const thirdOnDisk = (readState().programs ?? []).find((p) => p.id === fleetProgram.id)?.handover ?? null;
+  const idsOf = (rows: { kind: string; id: string }[]): string =>
+    JSON.stringify(rows.map((o) => `${o.kind}/${o.id}`).sort());
+  // BREAKS IF: a settled row is carried back into obligations, re-settled with a new `at`, dropped
+  // from `settled`, or an open row (fresh or carried) is settled by a succession that never measured
+  // it closed. Three successions, two settled watches, and the open list is exactly the open rows.
+  check("Program-MAIN chain: after the THIRD succession obligations hold exactly the open rows and settled exactly the 2 settled watches with how",
+    thirdWatchRes.ok && !!thirdWatchId && thirdRes.ok && thirdBody.ok === true && !!thirdRetained
+      && idsOf(thirdRetained.obligations) === idsOf([{ kind: "watch", id: thirdWatchId }, { kind: "watch", id: settleOpenId }])
+      && thirdRetained.settled.length === 2
+      && JSON.stringify(thirdRetained.settled.map((o) => [o.kind, o.id, o.settled.how]))
+        === JSON.stringify([["watch", fleetWatchId, "watch-row-gone"], ["watch", settleDoneId, "audit-recorded"]])
+      && JSON.stringify(thirdRetained.settled) === JSON.stringify(chainRetained?.settled ?? null)
+      && JSON.stringify(thirdOnDisk?.settled ?? null) === JSON.stringify(thirdRetained.settled)
+      && thirdRetained.dropped === 0,
+    JSON.stringify({ status: thirdRes.status, watch: thirdWatchRes.status,
+      open: (thirdRetained?.obligations ?? []).map((o) => [o.kind, o.id, o.detail.owedBy]),
+      settled: (thirdRetained?.settled ?? []).map((o) => [o.kind, o.id, o.settled.how, o.settled.at]) }));
+  // D is the Program-MAIN now; the loss section below reads through it
+  if (thirdSlot !== null) {
+    if (chainSlot !== null && chainSlot !== thirdSlot) await post(`/api/slots/${chainSlot}/kill`, {});
+    chainSlot = thirdSlot;
+    chainToken = thirdToken;
+  }
+
   // --- AND THE HANDOVER'S OWN LOSS IS AS VISIBLE AS THE INBOX'S. -------------------------------
   // Same disease, same cure, same proof: the loader drops an unreadable handover to absent, which
   // reads as "nothing was ever owed" — and here that is worse than for the inbox, because this
   // record IS the only copy. Corrupt → boot → the Program's own reader → an ordinary save → a
   // second boot → the same reader. The second boot never sees a broken byte.
   await stopSrv();
+  // the settle probe's ledger row goes with this stop — nothing after reads it
+  const settleLedger = `${ROOT}/post-land-audits.jsonl`;
+  if (existsSync(settleLedger)) writeFileSync(settleLedger, readFileSync(settleLedger, "utf8").split("\n")
+    .filter((line) => !line.includes(`"cmd":"${settleProbeCmd}"`)).join("\n"));
   const handoverPlant = readState();
   const handoverRow = handoverPlant.programs?.find((p) => p.id === fleetProgram.id);
   if (handoverRow) handoverRow.handover =

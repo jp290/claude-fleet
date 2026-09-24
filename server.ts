@@ -114,6 +114,7 @@ import {
   PROGRAM_RECORD_LOSS_ERROR_MAX,
   PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, loadProgramHandover,
   type ProgramHandover, type ProgramHandoverObligation, type ProgramHandoverDetail,
+  type ProgramHandoverSettled, type ProgramHandoverSettledHow,
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE, type LaneSeat,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
   loadLineageHandover, loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
@@ -2733,8 +2734,10 @@ async function programExecutionView(s: Slot): Promise<Response> {
       // the only place it still exists. It re-arms nothing: reading it is not acting on it.
       // `null` means no Standard succession has happened here; `obligations: []` means one has and
       // measured nothing owed. Newest succession only, and the brief says so.
+      // `obligations` is what is still OPEN; `settled` is what a later succession measured settled
+      // (settled{at, how}), oldest first, the oldest falling past PROGRAM_HANDOVER_MAX.
       handover: p.handover ? { at: p.handover.at, from: p.handover.from, to: p.handover.to,
-        obligations: p.handover.obligations, dropped: p.handover.dropped } : null,
+        obligations: p.handover.obligations, settled: p.handover.settled, dropped: p.handover.dropped } : null,
       tasks: {
         rows: programTasks.map((t) => {
           // DERIVED per request, stored nowhere. `phase` says where the row sits on the rail; it
@@ -31720,7 +31723,7 @@ const handoverDetail = (fields: Record<string, unknown>): ProgramHandoverDetail 
   return detail;
 };
 function captureProgramHandover(program: Program, predecessor: SuccessionPredecessorIdentity,
-  successor: { slot: number; openedAt: number }, at: number): ProgramHandover {
+  successor: { slot: number; openedAt: number }, at: number, auditRows: PostLandAuditRow[]): ProgramHandover {
   // joined on the full occupant PAIR, never the slot alone: slot ids are recycled, and a successor
   // told about a stranger's obligations would re-ask a stranger's question. `autos` is the one
   // exception and it is the row's own shape, not a shortcut — an Auto carries no openedAt, and
@@ -31763,17 +31766,46 @@ function captureProgramHandover(program: Program, predecessor: SuccessionPredece
   // lets C read what A owed; acting on it stays C's own deliberate act through the ordinary doors.
   const held = new Set(fresh.map((o) => `${o.kind}/${o.id}`));
   const carried = (program.handover?.obligations ?? []).filter((o) => !held.has(`${o.kind}/${o.id}`));
+  // --- …BUT ONLY WHILE IT IS STILL OPEN (2026-09-23). ------------------------------------------
+  // Carried unconditionally, a row outlived everything it pointed at: f170dc46 held 32 rows from
+  // 21 predecessors, none of its 29 watch ids still in watches[], and successors copied them into
+  // their notes as open work. Each carried row is measured here against the live tables it names —
+  // read, never written: nothing is re-armed or deleted — and a settled one MOVES to `settled`
+  // with how it was measured. An attention row has no such test and stays carried as before.
+  const openWatchIds = new Set(watches.map((w) => w.id));
+  const openAutoIds = new Set(autos.map((a) => a.id));
+  const settledHow = (o: ProgramHandoverObligation): ProgramHandoverSettledHow | null => {
+    if (o.kind === "auto") return openAutoIds.has(o.id) ? null : "auto-row-gone";
+    if (o.kind !== "watch" || openWatchIds.has(o.id)) return null;
+    if (o.detail.kind !== "audit") return "watch-row-gone";
+    // an audit watch whose row is gone is settled only once the audit it waited for EXISTS — the
+    // row vanishing with its registrant says nothing about whether the land was ever audited
+    const repo = typeof o.detail.repo === "string" ? repoCanon(o.detail.repo) : null;
+    const mainAfter = typeof o.detail.mainAfter === "string" ? o.detail.mainAfter : null;
+    return repo !== null && mainAfter !== null && auditRows.some((row) => auditRowMatches(row, repo, mainAfter))
+      ? "audit-recorded" : null;
+  };
+  const stillOpen: ProgramHandoverObligation[] = [];
+  const nowSettled: ProgramHandoverSettled[] = [];
+  for (const o of carried) {
+    const how = settledHow(o);
+    if (how === null) stillOpen.push(o);
+    else nowSettled.push({ ...o, settled: { at, how } });
+  }
+  // oldest first, so the cap drops from the front: what fell off was settled longest ago
+  const settled = [...(program.handover?.settled ?? []), ...nowSettled].slice(-PROGRAM_HANDOVER_MAX);
   // ALWAYS a record, even with zero rows. `handover: null` then means "no Standard succession has
   // happened here", and `obligations: []` means "one has, and it measured nothing owed" — two
   // different facts that an absent record would collapse into one.
   //
   // `dropped` is written 0 and stays 0 through every path this server takes: nothing is sliced to
   // fit, and a list past the cap is refused below rather than shortened. The field remains because
-  // the loader validates it and a hand-written file may carry one.
+  // the loader validates it and a hand-written file may carry one. (`settled` dropping its oldest
+  // is not counted here: those rows were answered, and `dropped` counts OPEN rows lost.)
   return { v: 1, at,
     from: { slot: predecessor.slot, openedAt: predecessor.openedAt, sessionId: null },
     to: { slot: successor.slot, openedAt: successor.openedAt },
-    obligations: [...fresh, ...carried], dropped: 0 };
+    obligations: [...fresh, ...stillOpen], settled, dropped: 0 };
 }
 
 // THE LOSSLESS EXCEPTION PATH, and it is a refusal. If the record this succession would persist is
@@ -32911,8 +32943,14 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     // state cut that persists them — one read, two consumers, so the preview can never name a
     // row the record does not hold. `null` on the game-maker rail: its handover is the committed
     // checkpoint and nothing else.
+    // the audit ledger is read HERE, before the capture, because the capture runs in one tick with
+    // no await: every live table it reads is then the same instant's
+    const handoverAuditRows = isGameMaker(program) ? [] : (await readLedger<unknown>(POSTLAND_AUDIT_FILE)).rows
+      .map(validAuditRow).filter((row): row is PostLandAuditRow => row !== null);
+    if (!predecessorCurrent())
+      return await refuse(409, "Program-MAIN predecessor authority changed while the handover read the audit ledger", "predecessor-revoked-before-open");
     const retained = isGameMaker(program)
-      ? null : captureProgramHandover(program, predecessor, successorAt, Date.now());
+      ? null : captureProgramHandover(program, predecessor, successorAt, Date.now(), handoverAuditRows);
     // …and if that record would not survive its own loader, the succession stops instead of
     // reporting a handover it is about to destroy — before the kill, so the predecessor stays.
     const retentionRefusal = retained === null ? null : handoverCaptureRefusal(retained);

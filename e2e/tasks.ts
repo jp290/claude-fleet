@@ -4490,6 +4490,131 @@ export async function run(ctx: Ctx): Promise<void> {
     await restartSrv();
   }
 
+  // --- (e6-limit) NO UNATTENDED START INTO A MEASURED USAGE LIMIT (server.ts#noteHarnessLimits).
+  // Measured by Program-MAIN Slot 4 (2026-09-23): after the kill of an empty pi-zai lane standing on
+  // Z.ai's weekly limit, the tick started the SAME row on pi-zai again at once — a row's spawn is
+  // fixed at filing. Five checks, one controlled instance:
+  //   (a) a pi-zai row is held queued with a note naming the scope and resetAt, while a pane of that
+  //       harness shows a limit whose reset is in the future. The row pins glm-5.3-flash and the pane
+  //       runs the default glm-5.3: the Coding Plan limit is the ACCOUNT's, not the model's.
+  //       Mutation: drop the gate from tickDispatch -> the row starts at once -> red.
+  //   (b) COUNTER-PROOF, same tick: a row on another harness (the default claude spawn) starts.
+  //       Mutation: hold every row while any limit stands -> red.
+  //   (c) the spawn is never rewritten: the held row still carries pi-zai/glm-5.3-flash.
+  //   (d) THE MEASURED CASE: the pane that measured the limit is killed and the row stays held.
+  //       Mutation: read only live panes (no memory) -> the row starts on the next tick -> red.
+  //   (e) after resetAt the row starts normally, with no hand act in between.
+  // FLEET_HARNESS_AUTOMATION=1 for the same reason as (e6): at 0 every named harness is held by the
+  // FLAG and (a) would measure the flag instead of the limit. The cap is 2 so the claude lane of (b)
+  // leaves room for the pi-zai start of (e). ---
+  if (process.env.FLEET_PI_ZAI_AGENT_DIR) {
+    type LRow = { id: string; status: string; note?: string | null; slot?: number | null;
+      spawn?: { harness?: string; model?: string | null } | null };
+    type LSlot = { id: number; cwd: string | null; worktree: { repo: string } | null;
+      apiStall?: { kind: string | null; resetAt: number | null } | null };
+    const lSess = async (): Promise<{ slots: LSlot[]; tasks: LRow[] }> =>
+      (await (await get("/api/sessions")).json()) as { slots: LSlot[]; tasks: LRow[] };
+    // GET /api/tasks serves the whole row (taskView) — the poll's digest carries no `spawn`, and (c) reads it
+    const lRow = async (id: string): Promise<LRow | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: LRow[] }).tasks.find((t) => t.id === id);
+    const lTill = async (id: string, ok: (r: LRow | undefined) => boolean, tries = 80): Promise<LRow | undefined> => {
+      let last = await lRow(id);
+      for (let i = 0; i < tries && !ok(last); i++) { await Bun.sleep(250); last = await lRow(id); }
+      return last;
+    };
+    // Z.AI's own wall clock is UTC+8 (server.ts#ZAI_LIMIT_LINE_RE) — the line is written in it
+    const zaiWall = (ts: number): string => {
+      const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai",
+        year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+        second: "2-digit", hourCycle: "h23" }).formatToParts(new Date(ts))
+        .filter((x) => x.type !== "literal").map((x) => [x.type, x.value]));
+      return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
+    };
+
+    await restartSrv({ FLEET_DISPATCH_MAX_LANES: "2", FLEET_HARNESS_AUTOMATION: "1" });
+    const lKills = (await lSess()).slots.filter((x) => x.worktree && x.id !== ctx.restartSelfSlot);
+    for (const x of lKills) await post(`/api/slots/${x.id}/kill`, {});
+    await slotsEmptied(lKills.map((x) => x.id));
+    for (const t of (await lSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+    // the stand-in submits every pasted line in `normal` mode, which requeues a multi-line founding
+    // brief as `partial` (e2e/programs.ts, the self-land pi-zai arm) — (e) measures the START, not Pi
+    const lComposerMode = process.env.FLEET_E2E_COMPOSER_MODE ?? "";
+    if (lComposerMode) writeFileSync(lComposerMode, "unobservable\n");
+
+    // THE LIMIT, painted on a pi-zai pane outside the dispatch repo (it holds no repo lane). resetAt
+    // is whole seconds (the line has no finer grain) and far enough out that (a)–(d) all sit before it.
+    const lSlot = (await lSess()).slots.filter((s) => s.cwd === null).map((s) => s.id).pop();
+    const lCwd = `${tmpdir()}/fleet-e2e-harness-limit-${process.pid}`;
+    mkdirSync(lCwd, { recursive: true });
+    const lOpen = lSlot !== undefined ? await post(`/api/slots/${lSlot}/open`, { cwd: lCwd, harness: "pi-zai" }) : null;
+    const lReset = Math.ceil((Date.now() + 75_000) / 1000) * 1000;
+    const lPlanted = lOpen?.ok && lSlot !== undefined
+      ? await plantScreen(lSlot, `Usage limit reached for 5 hour. Your limit will reset at ${zaiWall(lReset)}`, "(e6-limit) fixture") : false;
+    let lStall: LSlot["apiStall"] = null;
+    for (let i = 0; i < 100 && lPlanted; i++) { // quiet 10 s + one 10 s fact tick
+      lStall = (await lSess()).slots.find((s) => s.id === lSlot)?.apiStall ?? null;
+      if (lStall?.kind === "rate_limit" && lStall.resetAt === lReset) break;
+      await Bun.sleep(500);
+    }
+    check("(e6-limit) fixture: a pi-zai pane carries apiStall rate_limit with the future resetAt",
+      lStall?.kind === "rate_limit" && lStall.resetAt === lReset && lReset - Date.now() > 30_000,
+      JSON.stringify({ slot: lSlot ?? null, open: lOpen?.status ?? null, stall: lStall, leftMs: lReset - Date.now() }));
+
+    await post("/api/dispatch", { on: true });
+    const lZaiRow = (await (await post("/api/tasks", {
+      text: "(e6-limit) pi-zai row — must wait for the measured Z.ai reset, then start",
+      queue: true, repo: REPO2, harness: "pi-zai", model: "glm-5.3-flash",
+    })).json()) as { task: { id: string } };
+    const lOtherRow = (await (await post("/api/tasks", {
+      text: "(e6-limit) counter-proof row on the default claude spawn — the Z.ai limit is not its limit",
+      queue: true, repo: REPO2,
+    })).json()) as { task: { id: string } };
+    const LIMIT_NOTE = `waiting: pi-zai limit until ${new Date(lReset).toISOString()} (measured on slot ${lSlot})`;
+    const lHeld = await lTill(lZaiRow.task.id, (r) => (r?.note ?? "").startsWith(LIMIT_NOTE));
+    const lStarted = await lTill(lOtherRow.task.id, (r) => r?.status === "sent");
+    check("(e6-limit)(a) a pi-zai row is held queued while a pane shows a future Z.ai limit, and the note names the scope and resetAt",
+      lHeld?.status === "queued" && (lHeld?.note ?? "").startsWith(LIMIT_NOTE),
+      JSON.stringify({ status: lHeld?.status, note: lHeld?.note ?? null, want: LIMIT_NOTE }));
+    check("(e6-limit)(b) COUNTER-PROOF: a row on another harness starts past the held one on the same ticks",
+      lStarted?.status === "sent" && typeof lStarted?.slot === "number",
+      JSON.stringify({ status: lStarted?.status, slot: lStarted?.slot ?? null, note: lStarted?.note ?? null }));
+    check("(e6-limit)(c) the held row's spawn is not rewritten — the worker choice stays the filer's",
+      lHeld?.spawn?.harness === "pi-zai" && lHeld?.spawn?.model === "glm-5.3-flash",
+      JSON.stringify(lHeld?.spawn ?? null));
+
+    // (d) the pane that measured the limit goes away — the account's limit does not
+    if (lSlot !== undefined) await post(`/api/slots/${lSlot}/kill`, {});
+    await slotsEmptied(lSlot !== undefined ? [lSlot] : []);
+    let lKept = true;
+    let lDrift: LRow | undefined;
+    for (let i = 0; i < 16; i++) { // ~4 s = many 250 ms dispatch ticks after the kill
+      lDrift = await lRow(lZaiRow.task.id);
+      if (lDrift?.status !== "queued" || !(lDrift?.note ?? "").startsWith(LIMIT_NOTE)) { lKept = false; break; }
+      await Bun.sleep(250);
+    }
+    check("(e6-limit)(d) THE MEASURED CASE: killing the pane that showed the limit does not release the row before resetAt",
+      lKept && Date.now() < lReset, JSON.stringify({ kept: lKept, row: lDrift ?? null, leftMs: lReset - Date.now() }));
+
+    // (e) resetAt passes — the next tick starts it, nothing else moves
+    const lBefore = await lRow(lZaiRow.task.id);
+    await Bun.sleep(Math.max(0, lReset - Date.now()));
+    const lAfter = await lTill(lZaiRow.task.id, (r) => r?.status === "sent" && typeof r.slot === "number", 120);
+    check("(e6-limit)(e) after resetAt the row starts on the tick, on its own pi-zai spawn — held until then",
+      lBefore?.status === "queued" && lAfter?.status === "sent" && typeof lAfter?.slot === "number"
+      && lAfter?.spawn?.harness === "pi-zai",
+      JSON.stringify({ before: lBefore?.status, after: lAfter?.status, slot: lAfter?.slot ?? null, note: lAfter?.note ?? null }));
+
+    await post("/api/dispatch", { on: false });
+    if (lComposerMode) writeFileSync(lComposerMode, "normal\n");
+    for (const x of (await lSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+    for (const id of [lZaiRow.task.id, lOtherRow.task.id]) {
+      await post(`/api/tasks/${id}/done`, {});
+      await post(`/api/tasks/${id}/delete`, {});
+    }
+    rmSync(lCwd, { recursive: true, force: true });
+    await restartSrv();
+  }
+
   // --- (d3) THE COUNTER-PROOF TO (d). An empty anchor block in a foreign tree is, on its own,
   // equally compatible with a planner that selects nothing anywhere. So the same seam is driven
   // once more with the only difference that may matter: the target repository's git toplevel. ROOT

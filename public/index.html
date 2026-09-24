@@ -41,6 +41,7 @@
   .dot.on { background: #3fb950; } .dot.off { background: var(--danger); }
 
   #mhead { display: none; }
+  #mread { display: none; }
   #shade { display: none; position: fixed; inset: 0; background: #0009; z-index: 29; }
   /* verification tier 2 — the post-land check alarm (grammatik G2.1): IN FLOW, never an overlay.
      On the desktop it is the first card of the board's machine zone — the same place as the
@@ -3000,6 +3001,63 @@
     .pkbtns button { padding: 11px 18px; }
   }
 
+  /* --- mobile LANDSCAPE: the reading mode (Richtung B, owner's pick 2026-09-24; measured and drawn
+     in docs/messungen/2026-09-22-mobil-querformat-entwurf.md, mockup docs/design/querformat/
+     b-lesemodus.html). Exactly the SECOND arm of MOBILE_MQ — no width limit of its own (G0.7): a phone
+     on its side has 286 px of page without the keyboard and 122 with it, and the portrait treatment
+     left 6 transcript rows of that. Here #mhead, #keys and the tray fold away and the transcript runs
+     edge to edge (21 rows); #mread floats ☰ + title, ⌨ and ✎ over it in a see-through material.
+     ⌨ = body.landkeys, the key row as a band at the foot. ✎ = body.landwrite until the field loses
+     focus, and with the keyboard up (body.keyboard-open, the portrait mechanism) #main runs
+     column-reverse: the composer stands IN FLOW at the top, clear of iOS's accessory bar (page
+     y 64–108), and the pane shrinks under it. ⋯ brings back the tray as a second row there — never
+     #mhead, whose settings gear moves into the pane's corner group instead (G5: one gear). After
+     the mobile block on purpose: it inherits all of it and overrides by order. */
+  @media (pointer: coarse) and (max-height: 500px) {
+    :root { --read-glass: color-mix(in srgb, var(--chat-raised) 72%, transparent);
+      --read-glass-edge: color-mix(in srgb, var(--c-edge-hi) 60%, transparent); }
+    #mhead, #keys, #chips, #comp { display: none; }
+    #panes { padding: 0; gap: 0; }
+    #panes > .pane { border: 0; }
+    #bar { padding: 0; border-top: 0; gap: 0; }
+    .jump { bottom: 8px; right: 102px; }
+    .pane:not(.past) .panetools .panegear { display: flex !important; }
+    .panetools button { background: var(--read-glass); border-color: var(--read-glass-edge);
+      -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+
+    #mread { display: block; position: absolute; inset: 0; z-index: 7; pointer-events: none; }
+    #mreadtl, #mreadbr { position: absolute; display: flex; align-items: center; gap: 6px; pointer-events: auto; }
+    #mreadtl { top: 8px; left: 8px; max-width: calc(100% - 200px); }
+    #mreadbr { right: 8px; bottom: 8px; }
+    #mread button { width: 40px; height: 40px; flex: none; display: grid; place-items: center; padding: 0;
+      border: 1px solid var(--read-glass-edge); border-radius: var(--r1); background: var(--read-glass);
+      -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); color: var(--chat-ink); cursor: pointer; }
+    #mread button .ico { width: 18px; height: 18px; }
+    #mread button[aria-pressed="true"] { background: var(--chat-surface); border-color: var(--chat-mute); }
+    #mreadtitle { min-width: 0; padding: 3px 8px; border-radius: var(--r1); background: var(--read-glass);
+      color: var(--chat-mute); font: 500 12px var(--chat-sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #mreadtitle:empty { display: none; }
+
+    /* ⌨: the key row as a band at the foot, its right end left free for ⌨ ✎ */
+    body.landkeys #bar { padding: 6px 8px; border-top: 1px solid var(--chat-edge); background: var(--chat-surface); }
+    body.landkeys #keys { display: flex; padding-right: 94px; }
+    body.landkeys #keys button { height: 40px; }
+
+    /* ✎ and the keyboard: the composer at the top, in flow; the reading group and the band step aside */
+    body.landwrite #main, body.keyboard-open #main { flex-direction: column-reverse; }
+    body.landwrite #mread, body.keyboard-open #mread,
+    body.landwrite #keys, body.keyboard-open #keys { display: none; }
+    body.landwrite #comp, body.keyboard-open #comp { display: flex; }
+    body.landwrite #bar, body.keyboard-open #bar { padding: 2px 6px 4px; gap: 2px; border-top: 0;
+      border-bottom: 1px solid var(--chat-edge); background: #000; }
+    /* the field grows to where the accessory bar starts (y 64) and scrolls inside beyond it */
+    body.keyboard-open #comp #input { max-height: 56px; }
+    body.keyboard-open .panetools, body.keyboard-open .jump { display: none !important; }
+    /* ⋯ quer: the tray as the second row and + beside the field — the model/effort row would be a
+       third and break the 122 px */
+    body.keyboard-open.keyboard-options #comp #compopts:not(:empty) { display: none; }
+  }
+
   /* a window without a list — the settings gear's window (src/client.ts#openSettings): the detail
      IS the window. After the mobile block on purpose: on a phone it must out-late the
      .shelldetail display:none above, which exists for the list→detail push. */
@@ -3150,6 +3208,12 @@
       </div>
     </div>
     <div id="droplay">Drop to hand the file to this session</div>
+    <!-- the phone on its side only (index.html, the reading-mode block): ☰ + title top left,
+         ⌨ ✎ bottom right, floating over the edge-to-edge transcript -->
+    <div id="mread">
+      <div id="mreadtl"><button id="mreadmenu" type="button" title="Sessions"></button><span id="mreadtitle"></span></div>
+      <div id="mreadbr"><button id="mreadkeys" type="button" title="Tastenreihe einblenden" aria-pressed="false"></button><button id="mreadwrite" type="button" title="Prompt schreiben"></button></div>
+    </div>
   </div>
   <div id="board">
     <div id="boardhead"><span id="boardtitle">Session brief</span>

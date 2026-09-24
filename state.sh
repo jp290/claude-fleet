@@ -17,7 +17,7 @@ cd "$(dirname "$0")" || exit 1
 # that prints it. The full render is produced by exact self-replay with no arguments — the full path
 # below stays untouched, so the two modes cannot drift: what the digest announces, the digest itself
 # just rendered. An unknown flag is exit 2 with the flag named, never a silent full run.
-BRIEF_KEYRE='^  (outcomes |main-direct |post-land audits |newest audit: |check-trail runs |land-quality |land notes |merge verdicts |audit\.jsonl: |hub |lanes [0-9]|a worktree with no slot|e2e tmux sockets: |other tmux sockets|orphaned codex|TMPDIR e2e scratch|suites running now: |HANDOFF\.md |UNKNOWN: )|^  /.+\[|^    (model: |size: |gate |landed [0-9]|conflict resolver |resolver|unowned beside)'
+BRIEF_KEYRE='^  (outcomes |main-direct |post-land audits |newest audit: |check-trail runs |land-quality |land notes |merge verdicts |audit\.jsonl: |hub |lanes [0-9]|slot [0-9]+  |lane slots |a worktree with no slot|e2e tmux sockets: |other tmux sockets|orphaned codex|TMPDIR e2e scratch|suites running now: |HANDOFF\.md |UNKNOWN: )|^  /.+\[|^    (model: |size: |gate |landed [0-9]|conflict resolver |resolver|unowned beside)'
 case "${1:-}" in
 "" | --since) ;;
 --brief)
@@ -84,6 +84,28 @@ for d in "$MAIN_CHECKOUT".worktrees/*/; do
   [ -d "${d}.git" ] || continue
   echo "  ${d%/}  [clone: $(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)]"
 done
+# THE LANE'S NAME NEXT TO ITS SLOT (S5). `4A` is how the Leiste shows a lane and what ctl.sh and the
+# /api/slots routes take: band (the anchor's slot, 0 without one) plus the letter persisted on the
+# ref — server.ts#laneNameOf, read here off fleet.json because that is where the letter lives. A
+# lane older than the letter field has no name and says so; an unreadable fleet.json is UNKNOWN,
+# never "no lanes". Every repo's lanes, not only this one's: the worktree list above is per repo.
+python3 - <<'PY'
+import json, os
+fp = os.path.join(os.environ.get('MAIN_CHECKOUT') or '.', 'fleet.json')
+try:
+    slots = json.load(open(fp)).get('slots') or {}
+except (OSError, ValueError) as e:
+    print(f"  lane slots UNKNOWN — {fp} unreadable ({type(e).__name__}), not the same as none")
+    raise SystemExit
+lanes = sorted((int(k), v) for k, v in slots.items() if (v or {}).get('worktree'))
+for sid, v in lanes:
+    w = v['worktree']
+    band = w['anchor']['slot'] if w.get('anchor') else 0
+    name = f"{band}{w['letter']}" if w.get('letter') else "(no name: a lane from before the letter field)"
+    print(f"  slot {sid}  {name}  {w.get('branch') or '?'}  {v.get('cwd') or '-'}")
+if not lanes:
+    print("  lane slots 0 — no slot holds a lane")
+PY
 echo "  a worktree with no slot is an orphan: land it or discard it"
 echo
 echo "=== ledgers (fleet-wide, gitignored — they exist only in the main checkout) ==="

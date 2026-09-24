@@ -63,9 +63,12 @@ aus Emoji oder Unicode-Pfeilen. Ausgenommen bleibt `PK_ICONS` (vom Security-Pin 
 
 **G0.7 Mobil ist eine Bedingung, nicht zwei.** Mobil heißt `MOBILE_MQ`
 (`(max-width: 700px), ((pointer: coarse) and (max-height: 500px))`, in `src/client.ts` und
-`src/shell.ts` gleich) — Hoch- und Querformat bekommen dieselbe Behandlung; dort Trefferflächen
-≥ 40 px und Eingaben 16 px (kein iOS-Zoom). Keine Fläche erfindet eine eigene Breitengrenze.
-Anker: `MOBILE_MQ`. [b, c]
+`src/shell.ts` gleich) — Hoch- und Querformat teilen Trefferflächen und Eingabegröße; das
+Querformat (zweiter Arm von `MOBILE_MQ`) darf Kopf, Tastenreihe und Tray einklappen. Dort
+Trefferflächen ≥ 40 px und Eingaben 16 px (kein iOS-Zoom). Keine Fläche erfindet eine eigene
+Breitengrenze. Anker: `MOBILE_MQ`; das Querformat ist der Lesemodus-Block in `public/index.html`
+(`#mread`), Messung und Wahl in `docs/messungen/2026-09-22-mobil-querformat-entwurf.md` §4
+(Owner-Wahl B, 2026-09-24). [b, c]
 
 ---
 
@@ -289,7 +292,7 @@ Vollbild-Fenster (G6.3).
 | Hover-Karte (`src/entcard.ts`) | G6.1 | Material `rgba(12,12,14,.97)` statt G4.1, Radius 12; CSS-Block doppelt; `ctx`, `lane` im Text |
 | Gründungsfenster am leeren Slot (`openPicker`) | G6.3, G4.4 | `openShell` (stimmt); Filter/Pfad-Felder mit Literalen (`.pkfilterin`, `.pkpathin`), „harness", „⎇ hide lanes" |
 | Mobil hoch (390 × 844) | G0.7 und je Klasse | `#mhead` alte Palette, Titel in Mono (Screenshot m390); ↻ doppelt (`#refresh` + `.panereload`); `#keys` alte Palette |
-| Mobil quer (844 × 390) | G0.7 | gleiche Behandlung wie hoch (gewollt, `MOBILE_MQ`); die Eckreihe frisst von 390 px Höhe vier Knopfhöhen — nicht gesondert vermessen |
+| Mobil quer (812 × 375) | G0.7 | Lesemodus (2026-09-24, zweiter Arm von `MOBILE_MQ`): `#mhead`, `#keys`, Tray und Composer eingeklappt, Transkript randlos (21 statt 6 Zeilen bei 286 px Seite); `#mread` ☰ ⌨ ✎ und die Eckgruppe halbtransparent (`--read-glass`), das Zahnrad der Eckgruppe ersetzt das von `#mhead` (G5); mit Tastatur steht der Composer oben im Fluss, frei von der iOS-Accessory-Leiste, ⋯ holt nur den Tray (und + im Feld). Offen: `#chips` quer nicht erreichbar; Tray-Zeile mit ⋯ liegt unter der Accessory-Leiste; Safe-Area links/rechts nicht modelliert |
 
 ---
 

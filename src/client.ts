@@ -59,6 +59,8 @@ const LAYOUTS: Record<string, number> = { "1": 1, "2": 2, "3": 3, "4": 4 };
 // must match the mobile media query in index.html
 const MOBILE_MQ = matchMedia("(max-width: 700px), ((pointer: coarse) and (max-height: 500px))");
 const isMobile = () => MOBILE_MQ.matches;
+// MOBILE_MQ's second arm alone — the phone on its side (index.html's reading-mode block), no limit of its own
+const LANDSCAPE_MQ = matchMedia("(pointer: coarse) and (max-height: 500px)");
 
 // Terminal links (bare urls via WebLinksAddon, OSC 8 via the linkHandler option) open on
 // Cmd/Ctrl-click, not a plain click: xterm activates a link on mouseup whenever the mousedown hit
@@ -76,7 +78,7 @@ function openTermLink(e: MouseEvent, uri: string): void {
 let dataSaver = prefBool("fleet.datasaver");
 const plan = () => pollPlan(document.hidden, dataSaver);
 
-const mdot = $("mdot"), mtitle = $("mtitle");
+const mdot = $("mdot"), mtitle = $("mtitle"), mreadTitle = $("mreadtitle");
 function setConn(on: boolean) {
   for (const d of [dot, mdot]) d.className = `dot ${on ? "on" : "off"}`;
 }
@@ -5861,6 +5863,28 @@ mobileMore.onclick = () => {
   document.body.classList.toggle("keyboard-options", open);
   mobileMore.setAttribute("aria-expanded", String(open));
   mobileMore.title = open ? "Eingabeoptionen einklappen" : "Weitere Eingabeoptionen öffnen";
+  // quer the tray row takes its height from the pane's 69 px, and no viewport event reports that
+  if (LANDSCAPE_MQ.matches) requestAnimationFrame(() => { for (const p of panes) p.refit(); });
+};
+// the phone on its side (MOBILE_MQ's second arm, index.html's reading-mode block): #mread's three
+// buttons. ☰ is #menu's own drawer. ⌨ lays the key row out as a band at the foot — a height change
+// no viewport event reports, so the terminal refits here. ✎ brings the composer up and focuses it
+// inside the tap (iOS opens the keyboard only for a focus the gesture made); body.landwrite holds
+// it until the field loses focus (sync below), and body.keyboard-open takes over from there.
+const mreadKeys = $("mreadkeys"), mreadWrite = $("mreadwrite");
+$("mreadmenu").appendChild(icon("menu"));
+$("mreadmenu").onclick = () => $("menu").click();
+mreadKeys.appendChild(icon("keys"));
+mreadKeys.onclick = () => {
+  const on = document.body.classList.toggle("landkeys");
+  mreadKeys.setAttribute("aria-pressed", String(on));
+  mreadKeys.title = on ? "Tastenreihe ausblenden" : "Tastenreihe einblenden";
+  requestAnimationFrame(() => { for (const p of panes) p.refit(); });
+};
+mreadWrite.appendChild(icon("pencil"));
+mreadWrite.onclick = () => {
+  document.body.classList.add("landwrite");
+  ta.focus();
 };
 if (vv) {
   let vvRefitTimer: ReturnType<typeof setTimeout> | undefined;
@@ -5869,6 +5893,7 @@ if (vv) {
     else document.documentElement.style.removeProperty("--vvh");
     const focusedInput = document.activeElement === ta || document.activeElement === $("livein");
     const keyboardOpen = isMobile() && focusedInput && window.innerHeight - vv.height > 120;
+    if (!focusedInput) document.body.classList.remove("landwrite");
     document.body.classList.toggle("keyboard-open", keyboardOpen);
     if (keyboardOpen && keyboardPlaceholder === null) {
       keyboardPlaceholder = ta.placeholder;
@@ -7891,6 +7916,7 @@ function updateTitle() {
   const slot = panes[focused]?.slot ?? 0;
   const s = slot ? fleet[slot - 1] : undefined;
   mtitle.textContent = s?.cwd ? (s.label ?? baseName(s.cwd)) : "Claude Fleet";
+  mreadTitle.textContent = mtitle.textContent;
 }
 
 // --- attended Codex bind ---------------------------------------------------------------

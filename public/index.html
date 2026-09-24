@@ -1898,6 +1898,12 @@
     background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: var(--r2);
     box-shadow: 0 18px 48px color-mix(in srgb, var(--chat-void) 70%, transparent), 0 0 0 1px var(--chat-void);
     font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-ink); }
+  /* the mockup resets every button globally, the board page does not — without this the browser
+     paints its own light ButtonFace under each control (measured: rgb(239,239,239) + a 2px border
+     on Cancel, the off segments and the repo rows). :where keeps the reset at ZERO specificity,
+     so every class rule below still wins. */
+  .gfwin :where(button) { appearance: none; border: 0; background: none; padding: 0; margin: 0;
+    font: inherit; color: inherit; text-align: left; cursor: pointer; }
   .gfnotch { position: absolute; left: -7px; width: 12px; height: 12px; transform: rotate(45deg);
     background: var(--chat-raised); border-left: 1px solid var(--chat-edge); border-bottom: 1px solid var(--chat-edge); }
   .gfhead { flex: none; display: flex; align-items: center; gap: 12px; padding: 12px 14px 10px; }
@@ -1937,7 +1943,10 @@
      left, one sentence at the bottom, panel number top right. Pick = Tintenkante (G4.4). */
   .gfcomic { display: grid; gap: 9px; padding: 9px; margin-bottom: 10px; background: var(--chat-void);
     border-radius: var(--r1); grid-template-columns: 1.12fr 1fr;
-    grid-template-rows: 178px 178px 96px;
+    /* the third row carries the plain/Steward panels: caption box, subtitle and the say line must
+       all fit INSIDE the panel — at 96px the caption ran into the picture and the bottom edge cut
+       (owner's rejection, 2026-09-24). 132px holds all three. */
+    grid-template-rows: 178px 178px 132px;
     grid-template-areas: "orch wt-new" "orch wt-old" "plain steward"; }
   .gfpanel { position: relative; overflow: hidden; text-align: left; background: var(--chat-surface);
     border-radius: var(--r1); box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-mute); cursor: pointer; }
@@ -2392,7 +2401,7 @@
     .gfhead { flex-wrap: wrap; row-gap: 6px; }
     .gfsteps { margin-left: 0; order: 3; width: 100%; }
     .gfx { margin-left: auto; }
-    .gfcomic { grid-template-columns: 1fr; grid-template-rows: 200px 150px 150px 110px 110px;
+    .gfcomic { grid-template-columns: 1fr; grid-template-rows: 200px 150px 150px 132px 132px;
       grid-template-areas: "orch" "wt-new" "wt-old" "plain" "steward"; }
     .gftwo, .gfsplit { grid-template-columns: 1fr; }
     .gfcard { max-height: none; }

@@ -1,14 +1,31 @@
-# Die stehende Testinstanz (`./testinstanz.sh`)
+# Die Testinstanz je Worktree (`./testinstanz.sh`)
 
-Eine Fleet-Instanz auf DIESEM Checkout, die der Owner im Browser bedient — keine Wegwerf-Instanz,
-die nach dem Schuss abräumt. Sie existiert, weil die linke Leiste vor dem Land ausgiebig angesehen
-werden soll und weil drei ihrer vier Zustände an einer frischen Instanz gar nicht vorkommen.
+Eine Fleet-Instanz, die zu GENAU EINEM Worktree gehört: jeder Checkout leitet Port, tmux-Socket
+und Verzeichnis aus seinem eigenen Pfad ab, zwei Lanes laufen deshalb nebeneinander statt sich
+8862/fleetti733b zu teilen (gemessen 2026-09-24: alle Kopien antworteten mit dem Stand einer
+fremden Lane). Sie läuft von selbst ab (TTL), und sie trägt keine Live-Werte.
 
-    ./testinstanz.sh up [mixed|full]        aufstellen, Fixtures pflanzen, URL drucken
-    ./testinstanz.sh fixtures [mixed|full]  neu pflanzen, ohne Neustart
-    ./testinstanz.sh states                 was die Leiste JETZT malt, je Zustand
-    ./testinstanz.sh status                 läuft sie, wo — und wer hält den Suite-Mutex
-    ./testinstanz.sh down                   Server aus, ihr tmux per Socket, Verzeichnis weg
+    ./testinstanz.sh up [mixed|full] [--ttl <min>]   aufstellen, bauen, starten, Fixtures pflanzen
+    ./testinstanz.sh fixtures [mixed|full]           neu pflanzen, ohne Neustart
+    ./testinstanz.sh states                          was die Leiste JETZT malt, je Zustand
+    ./testinstanz.sh status                          läuft sie, wo, Restzeit — und wer den Mutex hält
+    ./testinstanz.sh list                            jede Testinstanz der Maschine, aus State-Dateien
+    ./testinstanz.sh down                            Server aus, ihr tmux per Socket, Verzeichnis weg
+
+## Die Ableitung — eine Instanz je Worktree
+
+`cksum` über den absoluten Worktree-Pfad (POSIX, auf Mac und Second-host dasselbe) ergibt den
+kurzen Hash `<h>`; daraus werden Socket `fleetti<h>` und Verzeichnis
+`/tmp/fleet-testinstanz-<h>` abgeleitet. Der Port ist `8900 + hash mod 100`; ist er belegt, wird
+der nächste freie im Bereich 8900–8999 genommen. Was tatsächlich gewählt wurde, steht in der
+State-Datei der Instanz (`testinstanz.state`) — dieselbe Datei ist das Maschinen-Verzeichnis für
+`list` und den Abräum-Lauf. `FLEET_TI_PORT`, `FLEET_TI_SOCK`, `FLEET_TI_DIR`, `FLEET_TI_TOKEN`,
+`FLEET_TI_INSTANCE(S)`, `FLEET_TI_SECOND-HOST_URL` gelten unverändert weiter und schlagen die
+Ableitung; ein explizit gesetzter Port wird genau genommen und bindet oder scheitert ehrlich.
+
+Zwei `up` aus zwei verschiedenen Worktrees laufen nebeneinander; `down` in dem einen lässt den
+anderen laufen, weil Socket und Verzeichnis disjunkt sind. Derselbe Worktree teilt sich eine
+Instanz: das zweite `up` meldet „already up".
 
 ## Warum nicht `instanz-shot.sh`
 
@@ -18,14 +35,44 @@ solange der Tab offen ist, und jeder Land-Gate und jeder Post-Land-Audit dieser 
 dahinter in der Schlange. `testinstanz.sh` staged deshalb mit `rsync` und fasst `e2e-stage.sh` nicht
 an. `status` druckt `./ctl.sh lock` mit — der Beweis gehört neben die Behauptung.
 
+## Keine Live-Werte — der Zaun in drei Schichten
+
+1. **Beim Kopieren:** das rsync trägt `.env`, `fleet.json*` und `*.jsonl` nicht über — keine
+   private Konfiguration, keine fremden Sessions, keine Transkripte im Klon.
+2. **Beim Start:** der Instanz-Server startet hinter `env -i` und bekommt nur die acht
+   `FLEET_*`-Werte, die das Skript selbst setzt. Vor dem Start schreibt das Skript deren NAMEN
+   (nie Werte) in `<instanzdir>/env-names`; keiner von `FLEET_HUB_REMOTE`, `FLEET_HELPER_*`,
+   `FLEET_SHARE_*` kann darin stehen, und das Skript prüft das mit einer scharfen Verweigerung,
+   statt es nur anzunehmen.
+3. **Beim Ableiten:** Port 8790, Socket `claudefleet` und ein Verzeichnis INNERHALB des Checkouts
+   werden mit Namen abgewiesen (exit 2) — ein Env-Override ist genau der Weg, auf dem jemand dem
+   Skript versehentlich den Live-Fleet reicht. Abräumt wird per notierter PID und
+   `tmux -L <socket> kill-server`, nie über ein Namensmuster.
+
+Dazu: `FLEET_CMD=true`, also wird nie ein Agent gespawnt; die Harness-CLI in den Panes ist ein
+stand-in (siehe den Kopf von `testinstanz.sh`). Die State-Datei trägt den Token nicht — der
+bleibt in `.testinstanz.token`, und `list` druckt die URL OHNE Token.
+
+## Bauen, TTL, Abräumen
+
+`up` führt **vor** dem Serverstart `bun run build` in der Kopie aus; scheitert der Build, startet
+nichts und das Skript endet mit exit 1 — eine Instanz, die das Client-Bundle von gestern zeigt,
+ist schlimmer als keine.
+
+`up --ttl <min>` (Default 240) schreibt `expiresAt` in die State-Datei; `status` zeigt die
+Restzeit und die URL. Der Lauf `scratch-reap.sh` (derselbe, der die e2e-Scratch-Halde besitzt)
+beendet eine abgelaufene Instanz über die NOTIERTE PID, killt ihr tmux per Socket, löscht ihr
+Verzeichnis und nennt jede in einer Zeile. State-Dateien ohne `expiresAt` (alte Instanzen) werden
+nur gelistet, nie beendet.
+
+`testinstanz.sh list` liest ausschließlich State-Dateien — nie `ps` (Kommandozeilen tragen
+Tokens), nie Sockets — und zeigt Worktree, Port, URL ohne Token und Restzeit.
+
 ## Die Grenzen, und sie sind namentlich verweigert
 
 Eigener Port, eigener tmux-Socket, eigenes Verzeichnis (die State-Datei leitet der Server aus
 SEINEM Verzeichnis ab — `STATE_FILE = import.meta.dir/fleet.json` —, deshalb ist die Kopie das, was
-ihr eigenen Zustand gibt), `FLEET_CMD=true`, also wird **nie ein Agent gespawnt**. Port 8790, Socket
-`claudefleet` und ein Verzeichnis INNERHALB des Checkouts weist das Skript mit Namen ab, statt sie
-nur zu meiden: ein Env-Override ist genau der Weg, auf dem jemand ihm versehentlich den Live-Fleet
-reicht. Abgeräumt wird per `tmux -L <socket> kill-server`, nie über ein Namensmuster.
+ihr eigenen Zustand gibt).
 
 ## Die vier Zustände der Leiste — welche gepflanzt werden können und welche nicht
 

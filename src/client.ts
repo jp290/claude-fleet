@@ -22,7 +22,7 @@ import { askRisk, onDialogWillOpen } from "./dialog";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
-import { METER_STATIONS, laneTail, suiteMeter, type MeterBall, type MeterStation } from "./suitemeter";
+import { METER_STATIONS, laneTail, meterLine, mmss, suiteMeter, type MeterBall, type MeterStation } from "./suitemeter";
 import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsSubject, opsSummary, type OpsPollRow } from "./opsevents";
 import {
   projectTaskWaves,
@@ -2814,7 +2814,7 @@ interface GateInfo {
     identityProven?: boolean | null; birth?: { stored: string | null; current: string | null; state: string };
     nextAction?: string; reason?: string; effect?: string; state?: string } | null;
   reports: { slot: number | null; label: string | null; phase: string; suite: string; exitCode: number | null; at: number;
-    origin?: string; branch?: string | null }[];
+    origin?: string; branch?: string | null; stage?: string; stats?: { n: number; p50: number; p90: number } }[];
   // the ticket line at the machine-wide suite mutex (server.ts#suiteQueueView). Absent from an
   // older server, and absent then means NOT REPORTED — never "nobody is waiting".
   queue?: { n: number; pid: number; alive: boolean; dead?: string; sinceMs: number | null; position: number }[];
@@ -2839,13 +2839,9 @@ const gateAge = (ms: number): string => (ms < 90_000 ? `${Math.max(0, Math.round
 //     contract), so there are routinely lands whose audit has not begun — today indistinguishable
 //     from "no audit planned", which is one of the three signatures the Rundgang is asked to spot.
 let postLandLive: PostLandAuditLiveInfo | null = null;
-// m:ss, not fmtDur's whole minutes. This number ticks once a second in front of someone deciding
-// whether to keep waiting, and a display that reads "8m" for sixty seconds looks frozen — which is
-// the state ("is it still going?") this surface exists to answer.
-const mmss = (ms: number): string => {
-  const s = Math.max(0, Math.round(ms / 1000));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-};
+// m:ss (src/suitemeter.ts#mmss), not fmtDur's whole minutes. This number ticks once a second in
+// front of someone deciding whether to keep waiting, and a display that reads "8m" for sixty seconds
+// looks frozen — which is the state ("is it still going?") this surface exists to answer.
 function auditLiveRows(): HTMLElement[] {
   const live = postLandLive;
   if (!live) return [];
@@ -2910,7 +2906,10 @@ function gateSection(): HTMLElement | null {
     const who = r.slot === null ? (r.label ?? "fleet itself") : `slot ${r.slot}${r.label ? ` · ${r.label}` : ""}`;
     const what = r.phase === "failed" && r.exitCode !== null ? `failed exit ${r.exitCode}` : r.phase;
     const where = r.branch ? ` · ${r.branch}` : "";
-    const row = el("div", "bidmeta", `${who} · ${what} ${r.suite}${where} · ${gateAge(Date.now() - r.at)}`);
+    // fleet's own rows by their owner word (G0.5) — the wire label "land gate" stays on the wire
+    const suite = r.origin !== "server" ? r.suite
+      : `${r.slot === null ? "post-land check" : "land check"}${r.stage ? ` · ${r.stage}` : ""}`;
+    const row = el("div", "bidmeta", `${who} · ${what} ${suite}${where} · ${gateAge(Date.now() - r.at)}`);
     // MEASUREMENT vs HEARSAY, the distinction the server keeps on the wire (`origin`) and this is
     // the reader that must not blur it: a lane's row is its own word about itself, fleet's row is
     // written by the process actually running the suite. Neither one gates anything.
@@ -3075,7 +3074,7 @@ function renderSuiteMeter() {
       ball.style.left = meterX(i, (j - (here.length - 1) / 2) * 9);
       // only the leading ball of a crowd trails a streak — the rest would draw theirs across it
       ball.className = `smball tone-${b.tone}${b.slot !== null && b.slot === focusSlot ? " mine" : ""}${j > 0 ? " tail" : ""}`;
-      ball.title = `${b.name} — ${b.what}`;
+      ball.title = `${b.name} — ${meterLine(b, serverClock()).join(" · ")}`;
     });
   });
   for (const [key, ball] of meterBalls) if (!seen.has(key)) { ball.remove(); meterBalls.delete(key); }
@@ -3103,9 +3102,17 @@ function renderSuiteMeter() {
     // rows exist for — "a lane is NAMED, never cut to three letters". So the state moved onto the
     // dot (hollow = waiting, filled = running, ringed = how it ended) and into the row's title,
     // and the place — the half a truncated row used to lose — took its column. (2026-09-20)
-    row.append(el("span", "smdot"), el("span", "smname", b.name), el("span", "smwhat", b.what),
+    // …and the middle column says KIND → CLOCK → STAGE in one ellipsised span (src/suitemeter.ts#
+    // meterLine), so a narrow board cuts the stage first and the place never. The clock is
+    // recomputed on this repaint (the /api/sessions poll), no timer of its own, on serverClock()
+    // because `at` is the server's stamp.
+    const line = meterLine(b, serverClock()).join(" · ");
+    row.append(el("span", "smdot"), el("span", "smname", b.name), el("span", "smwhat", line),
       el("span", "smplace", b.where));
-    row.title = `${b.name} — ${b.what} · ${b.where} · ${meterState(b)}${b.slot !== null ? " · Klick öffnet die Lane" : ""}`;
+    row.title = `${b.name} — ${line} · ${b.where} · ${meterState(b)}`
+      + (b.expect ? ` · „~“ ist der Median früherer Läufe dieser Art (n=${b.expect.n}), „länger als üblich“ heißt: über ihrem 90. Perzentil` : "")
+      + (b.kind === "land check" ? " · Die Uhr zählt das Warten auf die maschinenweite Sperre mit (intern: suite mutex)" : "")
+      + (b.slot !== null ? " · Klick öffnet die Lane" : "");
     const slot = b.slot;
     if (slot !== null && fleet[slot - 1]?.cwd) row.onclick = () => showSlot(slot);
     else row.disabled = true;
@@ -3128,7 +3135,7 @@ function renderSuiteMeter() {
 // absent, which is what "no register" looks like), and a device that has never reported a mode has
 // no `mode` key. `mode` is typed as a plain string, not the closed set: a value this client does
 // not know must render as the text it is, never be silently mapped onto one this client does know.
-interface HelperDeviceClaim { kind?: string; repo: string; ref: string; expiresAt: number }
+interface HelperDeviceClaim { kind?: string; repo: string; ref: string; claimedAt?: number; expiresAt: number }
 interface HelperDeviceUpdate {
   state?: string; requestedAt?: number; mainSha?: string;
   result?: { ok?: boolean; exitCode?: number | null; mainSha?: string; note?: string };
@@ -4529,11 +4536,12 @@ async function renderBoard() {
         ck.appendChild(boardHead("Checks", "session"));
         for (const b of mine) {
           const row = el("div", `bcheck tone-${b.tone}`);
-          row.append(el("span", "smdot"), el("span", "bcheckwhat", b.what), el("span", "bcheckstate", meterState(b)));
+          // a land still before its first suite has no stage yet — its kind word stands in
+          row.append(el("span", "smdot"), el("span", "bcheckwhat", b.what || b.kind), el("span", "bcheckstate", meterState(b)));
           // serverClock(), not Date.now(): `b.at` is the SERVER's stamp, and this pane's clock
           // may sit minutes away from it — the same correction every other age here uses
           if (b.at > 0) row.appendChild(el("span", "bcheckage", gateAge(serverClock() - b.at)));
-          row.title = `${b.what} — ${meterState(b)}`;
+          row.title = `${b.what || b.kind} — ${meterState(b)}`;
           ck.appendChild(row);
         }
         if (mine.length) nodes.push(ck);

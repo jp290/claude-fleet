@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, 
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
 import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage, laneSubject, type LaneSelfWord,
@@ -21029,6 +21030,19 @@ function suiteWait(text: string): { waitMs: number; stages: number; blocked: num
 // to catch, and here it would be invisible — a format one reader sees and the other does not would
 // simply put the clock on the wrong budget, silently.
 const SUITE_LOCK_LINE = new RegExp(SUITE_LOCK_RE.source);
+// …and the WRAPPER an acquire line names (e2e-stage.sh prints `basename "$0"` first). A second
+// expression rather than a new group in SUITE_LOCK_RE: e2e/pins.ts holds that group 1 is the
+// waiting/acquired verb, and runVerify only asks this one of a line SUITE_LOCK_LINE already matched.
+const SUITE_LOCK_WHO = /^\[suite-lock\] (\S+) acquired after /;
+// "security (2/3)": the wrapper by its step name, numbered among the chain's SUITE steps — the
+// steps before them (install, pins, tsc, build) print no suite-lock line and are not counted. A
+// wrapper the plan does not list (a foreign repo's chain has no fleet step names) is named bare.
+function suiteStageOf(wrapper: string, steps: readonly string[]): string {
+  const name = wrapper.replace(/^e2e-/, "").replace(/\.sh$/, "");
+  const suites = steps.filter((st) => !["install", "pins", "tsc", "build"].includes(st));
+  const k = suites.indexOf(name) + 1;
+  return k ? `${name} (${k}/${suites.length})` : name;
+}
 // Read a pipe to EOF, optionally handing over each complete line as it arrives. The old code did
 // `await new Response(p.stdout).text()`, which cannot report anything until the process is done —
 // so the acquire line that says "the queue is behind me now, the work starts here" arrived, at the
@@ -21199,6 +21213,11 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
   if (!plan) return undefined;
   const heldWait = Math.max(0, Math.floor(heldWaitMs / 1000) * 1000);
   const { cmd, proportional, steps } = plan;
+  // the serverRuns row this run is reported under (the board's "land check" line), when it runs
+  // inside reportServerRun. The chain is decided now, and which suite it is in arrives below with
+  // each acquire line — sight only, the verdict never reads either.
+  const runKey = serverRunScope.getStore() ?? null;
+  if (runKey) serverRunNote(runKey, { proportional });
   const startedAt = Date.now();
   const p = Bun.spawn(["sh", "-c", cmd],
     { cwd, stdout: "pipe", stderr: "pipe", env: verifyChildEnv(heldSuiteLock) });
@@ -21257,7 +21276,11 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
     if (!m) return;
     const s = Number(m[2]);
     if (!Number.isFinite(s)) return;
-    if (m[1] === "acquired after") { waitedMs += s * 1000; queuedSince = null; }
+    if (m[1] === "acquired after") {
+      waitedMs += s * 1000; queuedSince = null;
+      const who = SUITE_LOCK_WHO.exec(line)?.[1];
+      if (runKey && who) serverRunNote(runKey, { stage: suiteStageOf(who, steps) });
+    }
     else if (queuedSince === null) queuedSince = Date.now();
     else return; // a heartbeat of a queue we are already timing tells us nothing new
     arm();
@@ -23470,11 +23493,36 @@ function recordAuditDuration(row: PostLandAuditRow): void {
 // nearest-rank percentile on a copy — small arrays (≤ AUDIT_DURATION_KEEP), and the alternative
 // (keeping the window sorted) would cost the chronological order the rolling drop needs.
 function auditStats(repo: string): { n: number; p50: number; p90: number } | null {
-  const d = auditDurations.get(repo);
+  return nearestRankStats(auditDurations.get(repo));
+}
+function nearestRankStats(d: number[] | undefined): { n: number; p50: number; p90: number } | null {
   if (!d || d.length < AUDIT_DURATION_MIN_N) return null;
   const s = [...d].sort((a, b) => a - b);
   const at = (q: number): number => s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))];
   return { n: s.length, p50: at(0.5), p90: at(0.9) };
+}
+// THE LAND GATE'S DISTRIBUTION, the same bookkeeping one surface over: the board's land-check row
+// reads "2:41 / ~3:38" off it. Per repo AND per chain, because the two chains are two different
+// costs — install+pins in seconds against a suite chain's minutes (7 days on 2026-09-23: 27 short
+// runs ≤ 11 s, 65 full runs p50 218 s, docs/messungen/2026-09-22-suite-strecke-aufloesung.md §3b) —
+// and a mixed p50 would describe neither. The chain is `verify.proportional`, never a threshold on
+// the duration: a slow short chain is still the short chain.
+// Samples: landed verdicts with a measured gate (`ms` > 0, neither killed clock). A land's gate is
+// green by construction, so a red gate that stopped early never shortens the number. `ms` is WALL
+// clock including the mutex wait, for the reason recordAuditDuration gives: the row's clock that
+// this is compared against counts from the moment the land asked for the machine.
+// Seeded at boot from audit.jsonl's merge_verdict rows; a row written before 2026-09-24 carries no
+// `repo`/`proportional` and cannot be placed in either chain, so it is not a sample.
+const gateDurations = new Map<string, number[]>();
+const gateDurationKey = (repo: string, proportional: boolean): string => `${repo}\0${proportional ? "short" : "full"}`;
+function recordGateDuration(repo: string, proportional: boolean, ms: number): void {
+  if (!(ms > 0)) return;
+  const key = gateDurationKey(repo, proportional);
+  const d = [...(gateDurations.get(key) ?? []), ms];
+  gateDurations.set(key, d.slice(-AUDIT_DURATION_KEEP));
+}
+function gateStats(repo: string, proportional: boolean): { n: number; p50: number; p90: number } | null {
+  return nearestRankStats(gateDurations.get(gateDurationKey(repo, proportional)));
 }
 // ...and its DURABLE mirror. Measured gap (docs/attic/mining-2026-07-26.md finding 1): four lands
 // between 18:31 and 18:37 on 2026-07-26 were followed by a watchdog respawn at 18:37:52, and every
@@ -23670,7 +23718,7 @@ async function drainPostLandAudits(): Promise<void> {
       // is cleared here: the drain's frame is the one that certainly outlives the run, on every
       // exit including a throw. Sight only; deleting this wrapper restores today's behaviour.
       await reportServerRun("audit",
-        { slot: null, label: basename(repo), branch: q.main, suite: "post-land audit", cwd: null },
+        { slot: null, label: basename(repo), branch: q.main, suite: "post-land audit", cwd: null, repo },
         // The proportion is decided HERE, on the frozen slice, in the same turn as the selection —
         // not inside the run, which would re-read a `q.covers` a concurrent land may already have
         // grown. What this run stands for and what chain it earns are one decision over one list.
@@ -24671,7 +24719,8 @@ function helperJobsView(forDevice?: string): {
 //     bookkeeping lag.
 //   · `repo` is a basename, exactly like on the portal. A git toplevel is a path on this box and
 //     the panel has no use for one.
-interface HelperDeviceClaimView { kind: "audit" | "lane-suite" | "daemon-update" | "command"; repo: string; ref: string; expiresAt: number }
+// `claimedAt` is when the machine took it — the only start a helper-held run has on the wire.
+interface HelperDeviceClaimView { kind: "audit" | "lane-suite" | "daemon-update" | "command"; repo: string; ref: string; claimedAt: number; expiresAt: number }
 interface HelperDeviceView {
   id: string; name: string; lastSeen: number;
   mode?: DeviceMode; load?: number; capabilities?: string[];
@@ -24727,29 +24776,29 @@ function heldClaimsByDevice(): Map<string, HelperDeviceClaimView[]> {
     if (list) list.push(c); else held.set(deviceId, [c]);
   };
   for (const [repo, c] of helperClaims)
-    if (helperClaimOf(repo)) push(c.deviceId, { kind: "audit", repo: basename(repo), ref: c.main, expiresAt: c.expiresAt });
+    if (helperClaimOf(repo)) push(c.deviceId, { kind: "audit", repo: basename(repo), ref: c.main, claimedAt: c.claimedAt, expiresAt: c.expiresAt });
   // ONE ROW PER SHARD CLAIM: each is one suite on that machine, so helperSaturation counts it as one slot
   const now = Date.now();
   for (const run of auditShardRuns.values())
     for (const s of run.shards)
       if (s.claim && now < s.claim.expiresAt)
-        push(s.claim.deviceId, { kind: "audit", repo: basename(run.repo), ref: run.main, expiresAt: s.claim.expiresAt });
+        push(s.claim.deviceId, { kind: "audit", repo: basename(run.repo), ref: run.main, claimedAt: s.claim.claimedAt, expiresAt: s.claim.expiresAt });
   // the STATE guard beside the clock, the same pair helperJobsView uses: a settled offer nulls its
   // claim (reported/withdrawn/reaped all do), so this is belt-and-braces — but "holds a preview" is
   // a sentence about another machine's next 13 minutes, and it may not survive one forgotten null.
   for (const j of laneSuiteJobs.values()) {
     if (j.state !== "claimed") continue;
     const c = laneSuiteClaimOf(j);
-    if (c) push(c.deviceId, { kind: "lane-suite", repo: basename(j.repo), ref: j.branch, expiresAt: c.expiresAt });
+    if (c) push(c.deviceId, { kind: "lane-suite", repo: basename(j.repo), ref: j.branch, claimedAt: c.claimedAt, expiresAt: c.expiresAt });
   }
   for (const j of commandJobs.values()) {
     if (j.state !== "claimed") continue;
     const c = commandJobClaimOf(j);
-    if (c) push(c.deviceId, { kind: "command", repo: basename(j.repo), ref: j.branch, expiresAt: c.expiresAt });
+    if (c) push(c.deviceId, { kind: "command", repo: basename(j.repo), ref: j.branch, claimedAt: c.claimedAt, expiresAt: c.expiresAt });
   }
   for (const u of helperUpdates.values()) {
     const c = helperUpdateClaimOf(u);
-    if (c) push(u.deviceId, { kind: "daemon-update", repo: basename(u.repo), ref: u.main, expiresAt: c.expiresAt });
+    if (c) push(u.deviceId, { kind: "daemon-update", repo: basename(u.repo), ref: u.main, claimedAt: c.claimedAt, expiresAt: c.expiresAt });
   }
   return held;
 }
@@ -28180,17 +28229,31 @@ const verifyIntents = new Map<number, VerifyIntent>(); // slot id → its LAST r
 // `phase` is not stored: a server-side run is on this surface only WHILE it runs (see the finally
 // in reportServerRun), so its phase is `running` by construction. Its terminal outcome is not
 // sight — it is the merge verdict and the post-land-audit ledger, both durable, both elsewhere.
-interface ServerRun { slot: number | null; label: string | null; branch: string; suite: string; cwd: string | null; at: number }
+// `repo`, `proportional` and `stage` are what the board's row needs to say HOW FAR the run is:
+// `repo` + `proportional` pick the duration distribution (gateStats), `stage` is the suite the
+// chain last acquired the mutex for (runVerify). The last two are unknown until runVerify starts —
+// a land still queued for the mutex has neither, and says so by their absence.
+interface ServerRun { slot: number | null; label: string | null; branch: string; suite: string; cwd: string | null;
+  repo: string | null; at: number; proportional?: boolean; stage?: string }
 const serverRuns = new Map<string, ServerRun>();
+// a patch onto a row that is still in flight; a finished run's row is gone and stays gone
+function serverRunNote(key: string, patch: Pick<ServerRun, "proportional"> | Pick<ServerRun, "stage">): void {
+  const r = serverRuns.get(key);
+  if (r) serverRuns.set(key, { ...r, ...patch });
+}
 // Design question (3): TERMINALITY, not ageing. A lane report ages out because a lane can die
 // between `running` and `done` and nothing here would ever hear about it. A server-side run
 // cannot: the job ends in this very process, in this very frame, so the entry is removed the
 // instant the run stops — including on a throw. The only way to orphan one is to kill the
 // process, and that clears the map with it. So there is deliberately no timer and no stale
 // window on this half; a row here means a run is in flight right now.
+// The row's KEY rides the async context of `fn`, so a runVerify anywhere inside it can say how far
+// it is (serverRunNote) without every call site passing the key down — two lands of two slots run
+// at once, and a module-level "current run" would hand one land's stage to the other.
+const serverRunScope = new AsyncLocalStorage<string>();
 async function reportServerRun<T>(key: string, rec: Omit<ServerRun, "at">, fn: () => Promise<T>): Promise<T> {
   serverRuns.set(key, { ...rec, at: Date.now() });
-  try { return await fn(); } finally { serverRuns.delete(key); }
+  try { return await serverRunScope.run(key, fn); } finally { serverRuns.delete(key); }
 }
 // How long a LIVE holder may hold before the surface calls it out. Measured on this machine: a
 // full isolated run takes 5.8–9.8 min (six runs, post-land-audits.jsonl) and the gate chain's
@@ -28234,7 +28297,11 @@ interface GateLock {
 // pane. Reporting it as slot 0, or leaving it off the surface, would both be claims; the absence
 // of a slot is the fact. `origin` is what keeps measurement and hearsay apart now that both ride
 // this one list — the UI reads it to decide what the row may be trusted for.
-interface GateReport { slot: number | null; label: string | null; phase: VerifyPhase; suite: string; exitCode: number | null; at: number; origin: "lane" | "server"; branch: string | null }
+// `stage` and `stats` ride a SERVER land row only, and only once they are known: `stage` is the suite
+// the chain last acquired the mutex for ("security (2/3)"), `stats` the distribution of past gates
+// of the same repo and chain (gateStats; absent below three samples, never a made-up number).
+interface GateReport { slot: number | null; label: string | null; phase: VerifyPhase; suite: string; exitCode: number | null; at: number; origin: "lane" | "server"; branch: string | null;
+  stage?: string; stats?: { n: number; p50: number; p90: number } }
 interface GateView { lock: GateLock | null; reports: GateReport[]; queue?: GateQueueTicket[] }
 // The lock as it is on disk right now. `null` = the dir does not exist, i.e. nothing holds the
 // mutex. Costs two stats, a small read and one signal-0 per call, which is why it is computed per
@@ -28698,8 +28765,10 @@ function gateView(): GateView | null {
       // the same run reappear on the next poll. Hidden, not forgotten.
       if (!s?.cwd || s.cwd !== r.cwd) continue;
     }
+    const stats = r.slot !== null && r.repo && r.proportional !== undefined ? gateStats(r.repo, r.proportional) : null;
     reports.push({ slot: r.slot, label: r.label, phase: "running", suite: r.suite, exitCode: null,
-      at: r.at, origin: "server", branch: r.branch });
+      at: r.at, origin: "server", branch: r.branch,
+      ...(r.stage ? { stage: r.stage } : {}), ...(stats ? { stats } : {}) });
   }
   const lock = suiteLockView();
   // the waiters are read even when the lock reads free: a ticket outliving its holder by a moment
@@ -29008,7 +29077,7 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
   if (!opts.byHuman) {
     const verifyPlan = await verifyPlanFor(cwd, repo, mainBefore);
     fresh = await reportServerRun(`land:${s.id}`,
-      { slot: s.id, label: s.label, branch, suite: "guarded confirm gate", cwd },
+      { slot: s.id, label: s.label, branch, suite: "guarded confirm gate", cwd, repo },
       () => runVerify(cwd, mainBefore, verifyPlan));
     if (!fresh || fresh.ok !== true)
       return { status: 409, body: { status: "resolved", landed: false, branch, verify: fresh ?? null,
@@ -29550,7 +29619,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   // that queue is the state the board most needs to be able to name. Sight only: nothing below
   // reads `serverRuns`, and deleting this wrapper restores today's behaviour byte for byte.
   const gateRun = <T,>(fn: () => Promise<T>): Promise<T> =>
-    reportServerRun(`land:${s.id}`, { slot: s.id, label: s.label, branch, suite: "land gate", cwd }, fn);
+    reportServerRun(`land:${s.id}`, { slot: s.id, label: s.label, branch, suite: "land gate", cwd, repo: root }, fn);
   const bindCandidate = async (r: MergeLast): Promise<MergeLast> => {
     const reviewable = r.status === "resolved" || r.status === "awaiting-author"
       || (r.status === "interrupted" && (r.conflicted?.length ?? 0) > 0);
@@ -29605,7 +29674,12 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         ...(bound.verify?.timedOut ? { timedOut: true } : {}),
         ...(bound.verify?.ms !== undefined ? { ms: bound.verify.ms } : {}),
         ...(bound.verify?.waitMs !== undefined ? { waitMs: bound.verify.waitMs } : {}),
+        // which chain and which repo this gate measured — what gateStats files the sample under
+        ...(bound.verify?.proportional !== undefined ? { repo: root, proportional: bound.verify.proportional } : {}),
       });
+      if (bound.landed && bound.verify?.ms !== undefined && bound.verify.proportional !== undefined
+        && !bound.verify.timedOut && !bound.verify.waitedOut)
+        recordGateDuration(root, bound.verify.proportional, bound.verify.ms);
       // Candidate identity belongs to the on-demand merge row, not the bounded event facts that
       // ride the 2 s /api/sessions hot poll. The event vocabulary is intentionally unchanged.
       await mintMergeEvents(s.id, cwd, branch, r);
@@ -34453,6 +34527,17 @@ try {
 } catch (e) {
   console.log(`post-land audit trail: runtime distribution not seeded (${e instanceof Error ? e.message : e})`
     + " — the board shows an elapsed clock with no comparison until three audits have run.");
+}
+// …and the LAND GATE's, from the merge_verdict rows (rotation-safe: readEventLog reads both
+// generations). Same filter as the live write in mergeJob's record.
+try {
+  for (const e of (await readEventLog(AUDIT_FILE)).rows)
+    if (e.event === "merge_verdict" && e.landed === true && typeof e.repo === "string"
+      && typeof e.proportional === "boolean" && typeof e.ms === "number" && !e.timedOut && !e.waitedOut)
+      recordGateDuration(e.repo, e.proportional, e.ms);
+} catch (e) {
+  console.log(`audit trail: land-gate distribution not seeded (${e instanceof Error ? e.message : e})`
+    + " — the board shows a land check's clock with no comparison until three lands per chain have run.");
 }
 // fire-and-forget (backfillUnknowableAudits): nothing at boot waits on it. The carried-flake pass runs
 // behind it so a backfilled row is already judged when the rule reads the rail.

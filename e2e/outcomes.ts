@@ -7,8 +7,108 @@ import { BASE, REPO, ROOT, check, get, post, restartSrv, stopSrv } from "./harne
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 import { postLandAlarm } from "../src/plaudit";
 import { FLEET_DEFAULT_MODEL } from "../src/protocol";
+import { meterLine, suiteMeter, type MeterInput } from "../src/suitemeter";
 
 export async function run(): Promise<void> {
+  // ===== THE SUITE STRIP'S ROW: KIND → CLOCK → STAGE (note 2026-09-22 §4) — no server, no DOM =====
+  // Every name row under the tube says what KIND of run it is in an owner word, how long it has run
+  // (m:ss since `at`), against the usual time where one is known, and — on a land — which suite the
+  // chain is in. Driven through src/suitemeter.ts the way the renderer calls it.
+  {
+    const now = 10_000_000;
+    const base: MeterInput = { instance: "mac", gate: null, audit: null, offers: [], devices: [], slots: [] };
+    const stats = { n: 65, p50: 218_000, p90: 353_000 };
+    const land = (over: Record<string, unknown>) => ({ slot: 7, label: "auth-fix", phase: "running", suite: "land gate",
+      exitCode: null, at: now - 161_000, origin: "server", branch: "fleet/x-1a2b", ...over });
+    const lineOf = (inp: MeterInput) => { const b = suiteMeter(inp).balls[0]; return b ? meterLine(b, now) : null; };
+
+    // (1) a land row carrying the suite its chain is in
+    const staged = lineOf({ ...base, gate: { lock: null, reports: [land({ stage: "security (2/3)", stats })] } });
+    check("(meter-row) a land row reads KIND → CLOCK / ~p50 → STAGE, in that order",
+      JSON.stringify(staged) === JSON.stringify(["land check", "2:41 / ~3:38", "security (2/3)"]), JSON.stringify(staged));
+    check("(meter-row) should NOT show the wire label 'land gate' anywhere in the row",
+      !!staged && !staged.join(" · ").includes("land gate"), JSON.stringify(staged));
+    const late = lineOf({ ...base, gate: { lock: null, reports: [land({ stage: "claude-gate (3/3)", stats, at: now - 400_000 })] } });
+    check("(meter-row) past p90 the clock says 'länger als üblich' — a word, the tone stays plain (G0.2)",
+      late?.[1] === "6:40 / ~3:38 länger als üblich"
+        && suiteMeter({ ...base, gate: { lock: null, reports: [land({ stats, at: now - 400_000 })] } }).balls[0]?.tone === "plain",
+      JSON.stringify(late));
+    check("(meter-row) at p90 exactly it is still usual — the word needs the run to be LONGER",
+      lineOf({ ...base, gate: { lock: null, reports: [land({ stats, at: now - 353_000 })] } })?.[1] === "5:53 / ~3:38",
+      JSON.stringify(lineOf({ ...base, gate: { lock: null, reports: [land({ stats, at: now - 353_000 })] } })));
+
+    // (2) a sharded post-land check on a helper: three claims, ONE ball that counts them
+    const claim = (claimedAt: number) => ({ kind: "audit", repo: "claude-fleet", ref: "main", claimedAt, expiresAt: now + 60_000 });
+    const sharded = suiteMeter({ ...base, devices: [{ name: "second-host",
+      claims: [claim(now - 600_000), claim(now - 662_000), claim(now - 540_000), { ...claim(now - 1), kind: "lane-suite" }] }] });
+    const shardBall = sharded.balls.find((b) => b.key === "audit:run");
+    check("(meter-row) three audit shard claims are ONE ball saying '3 parts', clocked from the FIRST claim, on the helper",
+      sharded.balls.filter((b) => b.name === "post-land check").length === 1 && shardBall?.station === "helper"
+        && shardBall.where === "second-host" && shardBall.at === now - 662_000
+        && JSON.stringify(meterLine(shardBall, now)) === JSON.stringify(["11:02", "3 parts"]),
+      JSON.stringify(shardBall && { ...shardBall, line: meterLine(shardBall, now) }));
+    const twoHosts = suiteMeter({ ...base, devices: [{ name: "second-host", claims: [claim(now - 5_000)] },
+      { name: "attic", claims: [claim(now - 4_000)] }] }).balls.find((b) => b.key === "audit:run");
+    check("(meter-row) shards on two machines name both as the place",
+      twoHosts?.where === "second-host, attic" && twoHosts.what === "2 parts", JSON.stringify(twoHosts));
+    const oldClaim = suiteMeter({ ...base, devices: [{ name: "second-host",
+      claims: [{ kind: "audit", repo: "claude-fleet", ref: "main", expiresAt: now + 1 }] }] }).balls[0];
+    check("(meter-row) should draw NO clock for a claim an older server sent without claimedAt — never 'since 1970'",
+      !!oldClaim && oldClaim.at === 0 && JSON.stringify(meterLine(oldClaim, now)) === JSON.stringify(["main"]),
+      JSON.stringify(oldClaim));
+    const heldLocal = suiteMeter({ ...base, audit: { running: { phase: "running", repo: "claude-fleet", main: "main",
+      mainSha: "abcdef0123456789", startedAt: now - 30_000, covers: [] }, waiting: [], stats },
+      devices: [{ name: "second-host", claims: [claim(now - 20_000)] }] }).balls[0];
+    check("(meter-row) should NOT compare a helper-held check against THIS machine's audit distribution",
+      !!heldLocal && heldLocal.expect === null && !meterLine(heldLocal, now).join(" ").includes("~"),
+      JSON.stringify(heldLocal && meterLine(heldLocal, now)));
+
+    // (3) no distribution → no expectation drawn at all
+    const bare = lineOf({ ...base, gate: { lock: null, reports: [land({ at: now - 12_000 })] } });
+    check("(meter-row) a land row without stats (and before its first suite) draws its clock and NOTHING else",
+      JSON.stringify(bare) === JSON.stringify(["land check", "0:12"]), JSON.stringify(bare));
+    const zero = lineOf({ ...base, gate: { lock: null, reports: [land({ stats: { n: 3, p50: 0, p90: 0 } })] } });
+    check("(meter-row) should NEVER draw '~0:00' — a zero median is no expectation",
+      !!zero && !zero.join(" ").includes("~0:00") && !zero.join(" ").includes("länger"), JSON.stringify(zero));
+    const lane = suiteMeter({ ...base, gate: { lock: null, reports: [{ slot: 3, label: "L3", phase: "running",
+      suite: "e2e-isolated", exitCode: null, at: now - 75_000, origin: "lane", branch: null }] } }).balls[0];
+    check("(meter-row) a lane's own run is a 'preview', its own label is the stage, and it has no expectation",
+      !!lane && JSON.stringify(meterLine(lane, now)) === JSON.stringify(["preview", "1:15", "e2e-isolated"]),
+      JSON.stringify(lane && meterLine(lane, now)));
+    const done = suiteMeter({ ...base, gate: { lock: null, reports: [{ slot: 3, label: "L3", phase: "failed",
+      suite: "e2e-isolated", exitCode: 1, at: now - 30_000, origin: "lane", branch: null }] } }).balls[0];
+    check("(meter-row) a finished run's clock says how long AGO, never reads as a runtime",
+      !!done && JSON.stringify(meterLine(done, now)) === JSON.stringify(["preview", "0:30 ago", "e2e-isolated · exit 1"]),
+      JSON.stringify(done && meterLine(done, now)));
+    const skew = lineOf({ ...base, gate: { lock: null, reports: [land({ at: now + 4_000 })] } });
+    check("(meter-row) a server clock ahead of this device reads 0:00, never a negative age",
+      skew?.[1] === "0:00", JSON.stringify(skew));
+    const post = suiteMeter({ ...base, audit: { running: { phase: "running", repo: "claude-fleet", main: "main",
+      mainSha: "abcdef0123456789", startedAt: now - 60_000, covers: [] }, waiting: [], stats: { n: 200, p50: 1_446_000, p90: 2_053_000 } } }).balls[0];
+    check("(meter-row) the local post-land check says its kind once (the name) and compares against its own p50",
+      !!post && JSON.stringify(meterLine(post, now)) === JSON.stringify(["1:00 / ~24:06", "main@abcdef01"]),
+      JSON.stringify(post && meterLine(post, now)));
+
+    // THE WIRE SIDE of (1): the stage comes from the wrapper name on e2e-stage.sh's acquire line,
+    // read by a second expression in server.ts. A printf on one side and a RegExp on the other —
+    // render the one against the other so a drift in either fails here, not silently on the board.
+    // from the SOURCE checkout (the node_modules symlink's parent): the scratch copy carries only
+    // the import closure, and e2e-stage.sh is no import
+    const srcRoot = dirname(realpathSync(`${ROOT}/node_modules`));
+    const srv = readFileSync(`${srcRoot}/server.ts`, "utf8");
+    const stageSh = readFileSync(`${srcRoot}/e2e-stage.sh`, "utf8");
+    const whoSrc = /const SUITE_LOCK_WHO = \/(.+?)\/;/.exec(srv)?.[1] ?? "";
+    const acquireFmt = [...stageSh.matchAll(/printf '(\[suite-lock\][^']*acquired after[^']*)\\n'/g)].map((m) => m[1]);
+    const rendered = acquireFmt[0]?.replace("%s", "e2e-security.sh").replace(/%s/g, "0") ?? "";
+    check("(meter-row) server.ts reads the wrapper's name off the acquire line e2e-stage.sh actually prints",
+      !!whoSrc && acquireFmt.length === 1 && new RegExp(whoSrc).exec(rendered)?.[1] === "e2e-security.sh",
+      `re=${whoSrc} fmts=${JSON.stringify(acquireFmt)} line=${rendered}`);
+    check("(meter-row) runVerify hands the stage to its own serverRuns row, and gateView ships stage + stats",
+      /serverRunNote\(runKey, \{ stage: suiteStageOf\(who, steps\) \}\)/.test(srv)
+        && /\.\.\.\(r\.stage \? \{ stage: r\.stage \} : \{\}\), \.\.\.\(stats \? \{ stats \} : \{\}\)/.test(srv),
+      "server.ts#runVerify / #gateView");
+  }
+
   // --- per-lane attributed-outcome RECORDER: drive a lane through each terminal event and
   // assert the server-stamped fact reaches GET /api/lane-outcomes. Own throwaway repo so the
   // records are precise and independent of the merge sequence above. ---

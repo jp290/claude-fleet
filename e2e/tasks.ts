@@ -408,7 +408,8 @@ export async function run(ctx: Ctx): Promise<void> {
   // D-3 (Grammatik G5.2 + G4.4): the settings window's "Fleet" section writes over EXACTLY the five
   // routes that existed before it — dispatcher, autos kill-switch, quiet hours, lane cap, integration
   // branch — each as one row's post(), and nothing reaches a route except through the section's Apply;
-  // the only other route the block names is the cap READ. The dispatcher row reads the same `dispatch`
+  // the only other route the block names is the cap READ, whose answer also carries the stored
+  // integration branch per repo (`bases`, card D-3b). The dispatcher row reads the same `dispatch`
   // the queue foot writes. Mutation probes: a sixth route (repo-worker, a slot or program switch), a
   // dropped row, a post() fired from a control instead of from write(), or write() called outside
   // apply.onclick — each turns this red.
@@ -421,6 +422,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const posted = [...fsSrc.matchAll(/post\("(\/api\/[^"]+)"/g)].map((m) => m[1]).sort();
     const writeCalls = (fsSrc.match(/\.write\(\)/g) ?? []).length;
     const applyBody = /apply\.onclick = async \(\) => \{([\s\S]*?)\n  \};/.exec(fsSrc)?.[1] ?? "";
+    const readBases = /j\.bases \?\? \{\}/.test(fsSrc) && /bases\.set\(repo, null\)/.test(fsSrc);
     check("settings Fleet section: exactly the five existing routes, each written only through Apply",
       fsSrc.length > 0
         && JSON.stringify(posted) === JSON.stringify(FLEET_WRITES)
@@ -431,8 +433,9 @@ export async function run(ctx: Ctx): Promise<void> {
         && fsSrc.includes('el("button", "cmdapply", "Apply")')
         && /const on = want \?\? dispatch\.on;/.test(fsSrc)
         && openQueueSource.includes('post("/api/dispatch", { on: !dispatch.on })')
+        && readBases
         && /fleetSection\(fleetsec\);/.test(taskClientSource),
-      JSON.stringify({ found: fsSrc.length > 0, posted, named, writeCalls, applyWrites: applyBody.includes("r.write()") }));
+      JSON.stringify({ found: fsSrc.length > 0, posted, named, writeCalls, applyWrites: applyBody.includes("r.write()"), readBases }));
   }
   check("task workbench source: Work is default and Programs + History are explicit selections",
     /type QView = "work" \| "notes" \| "programs" \| "history" \| "waves"/.test(taskClientSource)
@@ -4249,12 +4252,30 @@ export async function run(ctx: Ctx): Promise<void> {
     // ...and the read tells "no entry" from "an entry equal to the default": REPO3 must be absent
     // from `caps` entirely, which is what makes (b) below a statement about the ABSENCE of an entry.
     const fCaps = (await (await get("/api/repo-lane-caps")).json()) as
-      { default?: number; max?: number; caps?: Record<string, number> };
+      { default?: number; max?: number; caps?: Record<string, number>; bases?: Record<string, string> };
     check("(e4) the read separates the stored entries from the machine default — the untouched repo has no entry at all",
       fCaps.default === 1 && typeof fCaps.max === "number" && fCaps.max >= 2
       && Object.values(fCaps.caps ?? {}).includes(2)
       && !Object.keys(fCaps.caps ?? {}).some((k) => realpathSync(k) === realpathSync(REPO3)),
       JSON.stringify(fCaps));
+    // ...and the SAME read carries the stored integration branch per repo (`bases`, server.ts#repoBases)
+    // — the settings window's branch row fills its map from it (card D-3b), so a once-written value is
+    // visible on open instead of "?". Round-trip through the write route on REPO2: set, read, clear,
+    // read. Mutations: drop `bases: repoBases` from the answer → red; key the map by anything but the
+    // canonical toplevel → red (the client's picker speaks the same canonical paths as `caps`).
+    // REPO2's HEAD branch is read off the repo, never assumed.
+    const fHead = spawnSync("git", ["-C", REPO2, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" });
+    const fBranch = fHead.status === 0 ? fHead.stdout.trim() : "";
+    const fBaseSet = (await (await post("/api/repo-base", { repo: REPO2, branch: fBranch })).json()) as { ok?: boolean; base?: string | null };
+    const fBasesOn = ((await (await get("/api/repo-lane-caps")).json()) as { bases?: Record<string, string> }).bases ?? {};
+    await post("/api/repo-base", { repo: REPO2, branch: "" });
+    const fBasesOff = ((await (await get("/api/repo-lane-caps")).json()) as { bases?: Record<string, string> }).bases ?? {};
+    const fBaseKey = Object.keys(fBasesOn).find((k) => realpathSync(k) === realpathSync(REPO2));
+    check("(e4) the same read carries the stored integration branch per repo (bases) — set on REPO2, read back, cleared, gone",
+      !!fBranch && fBaseSet.ok === true && fBaseSet.base === fBranch
+      && !!fBaseKey && fBasesOn[fBaseKey] === fBranch
+      && !Object.keys(fBasesOff).some((k) => realpathSync(k) === realpathSync(REPO2)),
+      JSON.stringify({ fBranch, fBaseSet, basesOn: fBasesOn, basesOff: fBasesOff }));
 
     // one attended lane in EACH repo: both repos now sit at exactly 1 lane, which is AT the machine
     // default and BELOW the entry. That single shared field is what makes the two rows below a

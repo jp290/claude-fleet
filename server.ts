@@ -38618,8 +38618,9 @@ Bun.serve<WSData>({
             // wherever a transcript names a model would hide a push's read-back — right after a push
             // the file still names the old request, and modelPushedAt is exactly how its landing is seen.
             git: gitInfo.get(s.id) ?? null, worktree: s.worktree, model: s.model,
-            // the lane's address (laneNameOf, S3c); omitted for a MAIN and a pre-letter lane
-            ...(() => { const name = laneNameOf(s); return name ? { name } : {}; })(),
+            // the lane's address (laneNameOf, S3c); omitted for a MAIN and a pre-letter lane;
+            // spelled `name: name`, not shorthand: e2e/pins.ts derives the emitted keys from `key:`
+            ...(() => { const name = laneNameOf(s); return name ? { name: name } : {}; })(),
             // what the session is FOR — the board's head reads these; they were on the slot and in
             // /api/self all along, and the owner poll was the one reader that never got them
             ...(s.mission ? { mission: s.mission } : {}),

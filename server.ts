@@ -4523,7 +4523,23 @@ function releaseTask(t: Task, by: "owner" | "machine"): void {
   t.releasedBy = by;
   // a release is the act a hold waits for (TaskHold) — whoever releases, the stop is lifted with it
   t.hold = undefined;
+  // …and the act a PARKED row waits for: a fresh queue starts the screen streak at zero
+  dispatchScreenStreak.delete(t.id);
 }
+// THE SAME BLOCKING SCREEN, DISPATCH AFTER DISPATCH (briefAndSend's requeue). A screen only a human
+// answers (claude's trust dialog, codex sign-in) does not resolve by retrying, and until 2026-09-24
+// the tick retried anyway: 55 requeues of f02fbb36 in 8 minutes, 243 of 52c33c3b in two hours, a fresh
+// worktree and session every ~8 s, one lane place held, and nothing on the board reading as a stall.
+// Per row: the screen the last post-spawn refusal named and how many refusals in a row named it. Any
+// other outcome clears it (a delivered brief, another screen, another reason), and so does every
+// release (releaseTask). At DISPATCH_PARK_AFTER the row goes to `pending` and stays there: it is
+// neither the tick's (tickOwnsRow) nor a policy's to start (startPlanRowOf) until someone queues it.
+// In memory on purpose — a restart forgets the streak, which costs at most DISPATCH_PARK_AFTER more
+// attempts under a release policy and nothing under `manual`, where the parked `pending` row stays.
+const DISPATCH_PARK_AFTER = 3;
+const dispatchScreenStreak = new Map<string, { screen: string; n: number }>();
+const dispatchParked = (t: Task): boolean =>
+  t.status === "pending" && (dispatchScreenStreak.get(t.id)?.n ?? 0) >= DISPATCH_PARK_AFTER;
 // THE ONE WRITE OF A CHANGED KIND (Task.kindChanges): the category and its on-row pair move together,
 // so no door can change a row's kind without the row remembering it. It adds no condition — each
 // caller keeps its own refusals and runs this only once it has decided to change the kind.
@@ -8932,7 +8948,7 @@ async function paneReadiness(s: Slot): Promise<{ state: "ready" | "blocked" | "p
 // docs/messungen/2026-09-21-founding-paste-blackout.md §6.
 async function waitForFoundingReadiness(s: Slot, stillCurrent: () => boolean,
   opts: { marker?: boolean } = {}): Promise<
-  { ok: true } | { ok: false; kind: "identity" | "blocked" | "timeout"; reason: string }
+  { ok: true } | { ok: false; kind: "identity" | "blocked" | "timeout"; reason: string; screen?: string }
 > {
   if (!harnessOf(s.harness).readiness) return { ok: true };
   const started = Date.now();
@@ -8942,7 +8958,7 @@ async function waitForFoundingReadiness(s: Slot, stillCurrent: () => boolean,
     if (!rd || rd.state === "ready") return { ok: true };
     if (rd.state === "pending" && opts.marker === false) return { ok: true };
     if (rd.state === "blocked")
-      return { ok: false, kind: "blocked", reason: `pane blocked on ${rd.why} — brief withheld` };
+      return { ok: false, kind: "blocked", reason: `pane blocked on ${rd.why} — brief withheld`, screen: rd.why };
     if (Date.now() - started >= READY_WAIT_MS)
       return { ok: false, kind: "timeout",
         reason: `pane never showed its ready marker within ${Math.round(READY_WAIT_MS / 1000)}s` };
@@ -14780,7 +14796,8 @@ const startPlanRowOf = (t: Task): StartPlanRow => {
     checks: startPlanChecks({ text: src.text, source: t.source, card: src.card ?? null,
       briefText: src.brief?.text ?? null, briefAt: src.brief?.at ?? null,
       queueKnown: (id) => tasks.some((x) => x.id === id), selfId: t.id }),
-    ...(policy !== "manual" ? { release: policy } : {}), ...(t.hold ? { held: true } : {}),
+    // a PARKED row reads as `manual`: pending and waiting for a release, which is exactly what it does
+    ...(policy !== "manual" && !dispatchParked(t) ? { release: policy } : {}), ...(t.hold ? { held: true } : {}),
     ...(t.variantOf ? { variantOf: t.variantOf } : {}) };
 };
 // GET /api/start-plan's object: the plan, the wait register over it, the stall sensor's counters and
@@ -15206,7 +15223,9 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // write, and a land that is still RUNNING on this lane owns it outright: no teardown under its
   // rebase, no row write it would then fail to retire. A kill's `pending` is NOT terminal and keeps
   // today's answer — a lost lane requeues its row (e2e/tasks.ts, the foreign-harness kill probe).
-  const requeue = async (note: string): Promise<void> => {
+  // `screen` = the blocking screen this refusal named (canDeliver's blocked-screen, or the readiness
+  // wait's own blocked verdict — the same screen seen a moment later); null for every other reason.
+  const requeue = async (note: string, screen: string | null = null): Promise<void> => {
     const ours = free.cwd === wt.path && free.worktree?.branch === wt.branch;
     const landing = ours && (mergeInflight.has(free.id) || mergeStart.has(free.id));
     const owned = waveRows.filter((row) => row.status !== "done" && row.status !== "archived");
@@ -15228,17 +15247,39 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // left on `sent` would point at a slot that no longer holds it — and `queued` is right here for
     // the same reason it is right for the head: a post-spawn hold is transient and the dispatcher
     // picks the row up again. (An ABORT is the other shape and keeps its own answer: detachSlotTasks.)
+    // …unless the SAME screen refused this row DISPATCH_PARK_AFTER times in a row (dispatchScreenStreak):
+    // then it goes to `pending`, parked, with the screen, the repo and the count in its note, and the
+    // tick leaves it there until someone queues it again. The teardown above is the same either way.
+    const parked: Task[] = [];
+    let parkedAfter = 0;
     for (const row of owned) {
-      row.status = "queued";
+      const prev = dispatchScreenStreak.get(row.id);
+      const n = screen === null ? 0 : prev?.screen === screen ? prev.n + 1 : 1;
+      if (screen === null) dispatchScreenStreak.delete(row.id);
+      else dispatchScreenStreak.set(row.id, { screen, n });
       row.slot = null;
-      row.note = `${note}${kept}`.slice(0, 200);
+      if (n >= DISPATCH_PARK_AFTER) {
+        parkedAfter = Math.max(parkedAfter, n);
+        row.status = "pending";
+        row.note = `dispatch parked: blocked-screen "${screen}" in ${wt.repo} on ${n} attempts in a row — answer it there, then queue again${kept}`.slice(0, 300);
+        parked.push(row);
+      } else {
+        row.status = "queued";
+        row.note = `${note}${kept}`.slice(0, 200);
+      }
     }
+    const requeued = owned.filter((row) => !parked.includes(row));
     saveState();
     // the row's note is overwritten by the next dispatch attempt, so without this line a requeue left
     // no durable trace: 0 in 14 d of audit (docs/messungen/2026-09-14-codex-lane-verdrahtung.md §M5)
-    audit("dispatch_requeued", free.id,
-      `${owned.map((row) => row.id).join(",")} (${wt.branch}): ${note}${kept}`.slice(0, 240),
-      { taskId: next.id, reason: note.slice(0, 200) });
+    if (requeued.length)
+      audit("dispatch_requeued", free.id,
+        `${requeued.map((row) => row.id).join(",")} (${wt.branch}): ${note}${kept}`.slice(0, 240),
+        { taskId: requeued[0].id, reason: note.slice(0, 200) });
+    if (parked.length && screen !== null)
+      audit("dispatch_parked", free.id,
+        `${parked.map((row) => row.id).join(",")} (${wt.branch}): ${screen} in ${wt.repo} ×${parkedAfter}${kept}`.slice(0, 240),
+        { taskId: parked[0].id, screen, repo: wt.repo, attempts: parkedAfter });
   };
   // the owner may have killed/re-opened this slot during the boot sleep — re-verify it
   // is still OUR lane before injecting external text, or we'd prompt an unrelated session
@@ -15267,13 +15308,17 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   const boot = await canDeliver(free, { now: Date.now(), ...gateOpts });
   // the gate's detail (today: which blocking screen) rides into the note — a requeue whose reason
   // is generic is the silent skip in a milder costume
-  if (!boot.ok) { await requeue(`dispatch held (${boot.gate}${boot.detail ? `: ${boot.detail}` : ""}) — requeued`); return; }
+  if (!boot.ok) {
+    await requeue(`dispatch held (${boot.gate}${boot.detail ? `: ${boot.detail}` : ""}) — requeued`,
+      boot.gate === "blocked-screen" ? boot.detail ?? boot.gate : null);
+    return;
+  }
   // SCREEN readiness, bounded — only for a harness that declares it. The boot sleep is a grace
   // period, not a readiness proof; here, unlike at the delivery gates, "pending" is NOT deliverable:
   // this pane is seconds old, so "neither marker yet" means "still booting". Measured 2026-08-12
   // (paste+Enter into the trust prompt ANSWERS it): server-narrativ-archiv.md#briefandsend
   const readiness = await waitForFoundingReadiness(free, () => !identityLost());
-  if (!readiness.ok) { await requeue(`${readiness.reason} — requeued`); return; }
+  if (!readiness.ok) { await requeue(`${readiness.reason} — requeued`, readiness.screen ?? null); return; }
   try {
     // The pack sources are Fleet-owned, so the tree being dispatched into decides whether they
     // exist — derived from git, never assumed (the literal "fleet" once receipted foreign lanes untruly).
@@ -15384,6 +15429,8 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     await sendText(free, deliveredBrief, true, { path: "brief" });
+    // a delivered brief ends every screen streak this lane's rows carried (dispatchScreenStreak)
+    for (const row of waveRows) dispatchScreenStreak.delete(row.id);
     const at = Date.now();
     // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
     // facts. A later reader reconstructs every byte from the row and the renderer the row NAMES
@@ -16447,7 +16494,7 @@ const programReleasePolicy = (t: Pick<Task, "programId">): ProgramReleasePolicy 
 // …whether the TICK looks at a row at all: released by hand, or pending under a policy that might
 // release it. A pending row under `manual` is not the tick's, and its note stays byte-identical.
 const tickOwnsRow = (t: Task): boolean =>
-  t.status === "queued" || (t.status === "pending" && programReleasePolicy(t) !== "manual");
+  t.status === "queued" || (t.status === "pending" && programReleasePolicy(t) !== "manual" && !dispatchParked(t));
 // …and the verdict on one row as it stands NOW, through the same row builder the plan reads.
 const releaseVerdictNow = (t: Task): StartPlanReleaseVerdict => releaseVerdict(startPlanRowOf(t));
 // Does this program have a MAIN that can land what a policy starts? The exact binding

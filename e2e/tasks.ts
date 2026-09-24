@@ -6194,6 +6194,58 @@ export async function run(ctx: Ctx): Promise<void> {
         if (lane.slot > 0) await post(`/api/slots/${lane.slot}/kill`, {});
         await post(`/api/tasks/${lane.id}/delete`, {});
       }
+
+      // THE SAME SCREEN, AGAIN AND AGAIN (2026-09-24: 55 and 243 requeues of two rows, a fresh
+      // worktree every ~8 s, each on "blocked-screen: claude trust dialog"). The third refusal in a
+      // row by ONE screen parks the row on `pending` instead of requeueing it; the codex stand-in
+      // gives two distinct screens, which is what the reset half needs. Every attempt is an attended
+      // ▸ dispatch of the SAME row — the door does not reset the streak, only a queue does.
+      const park = (await (await post("/api/tasks", { text: "readiness-probe park", queue: false })).json()) as { task: { id: string } };
+      const parkId = park.task.id;
+      const parkAttempt = async (screen: string, what: string): Promise<FRow | undefined> => {
+        const d = (await (await post(`/api/tasks/${parkId}/dispatch`, { harness: "codex" })).json()) as { ok?: boolean; slot?: number };
+        check(`park probe (${what}): codex dispatch accepted (fixture setup)`, d.ok === true && typeof d.slot === "number", JSON.stringify(d));
+        if (typeof d.slot === "number") await plantScreen(d.slot, screen, `park probe (${what})`);
+        return rowAfter(parkId, (r) => r?.status === "queued" || r?.status === "pending");
+      };
+      const parkAudit = (): { event?: string; taskId?: string; screen?: string; repo?: string; attempts?: number }[] =>
+        readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+          .map((l) => { try { return JSON.parse(l) as { event?: string; taskId?: string }; } catch { return {}; } })
+          .filter((a) => a.event === "dispatch_parked" && a.taskId === parkId);
+      const TRUST = "Do you trust the contents of this directory?";
+      const SIGNIN = "Sign in with ChatGPT to use Codex";
+      await parkAttempt(TRUST, "trust 1");
+      const park2 = await parkAttempt(TRUST, "trust 2");
+      check("two refusals by the same screen do NOT park the row — it is requeued, no dispatch_parked",
+        park2?.status === "queued" && /codex trust prompt/.test(park2.note ?? "") && parkAudit().length === 0,
+        JSON.stringify(park2));
+      const park3 = await parkAttempt(TRUST, "trust 3");
+      const parked = parkAudit();
+      check("the THIRD refusal in a row by the same screen parks the row on pending — screen, repo and count in the note",
+        park3?.status === "pending" && !park3.slot && /parked/.test(park3.note ?? "")
+          && (park3.note ?? "").includes("codex trust prompt") && (park3.note ?? "").includes("3 attempts")
+          && parked.length === 1 && !!parked[0].repo && (park3.note ?? "").includes(parked[0].repo!),
+        JSON.stringify({ row: park3, audit: parked }));
+      check("…and one dispatch_parked audit line names the screen, the repo and 3 attempts",
+        parked.length === 1 && parked[0].screen === "codex trust prompt" && parked[0].attempts === 3
+          && !!parked[0].repo && realpathSync(parked[0].repo) === realpathSync(REPO),
+        JSON.stringify(parked));
+      // the tick is off in this suite, so a parked row that stayed parked is simply one nobody moved;
+      // the RE-QUEUE is the act that must start over: one more trust refusal is attempt 1, not 4
+      const reQ = await post(`/api/tasks/${parkId}/queue`, {});
+      check("park probe: the owner re-queues the parked row (fixture setup)", reQ.ok, `${reQ.status} ${await reQ.text()}`);
+      const afterQ = await parkAttempt(TRUST, "trust after re-queue");
+      check("a re-queue starts the streak at zero — the next same-screen refusal requeues instead of parking",
+        afterQ?.status === "queued" && parkAudit().length === 1, JSON.stringify(afterQ));
+      // trust (2 in a row) → sign-in → trust: without the reset on a screen change this is the third
+      // trust refusal since the re-queue and would park
+      await parkAttempt(TRUST, "trust 2 after re-queue");
+      await parkAttempt(SIGNIN, "sign-in");
+      const afterSwitch = await parkAttempt(TRUST, "trust after sign-in");
+      check("a DIFFERENT screen resets the streak — trust, trust, sign-in, trust stays queued",
+        afterSwitch?.status === "queued" && /codex trust prompt/.test(afterSwitch.note ?? "") && parkAudit().length === 1,
+        JSON.stringify(afterSwitch));
+      await post(`/api/tasks/${parkId}/delete`, {});
     }
 
     // ...and the OTHER failure shape, the one that never reaches a pane: a spawn that throws must

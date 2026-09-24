@@ -1369,6 +1369,33 @@ export async function run(): Promise<void> {
     && indexSrc.includes("Live-Mitschreiben") && indexSrc.includes("Prompt-Verlauf")
     && indexSrc.includes("Geplante Prompts für diese Session"),
     "tray titles in client.ts + public/index.html");
+  // --- THE FOUNDING WINDOW (Gruendungsfenster B1) at the empty slot: the click opens the comic
+  // page, the tree stays behind "Anderer Ordner". Anchors are the visible words themselves, the
+  // K9 way: role names and the German say-lines PRESENT, the old tree entry ABSENT from the
+  // empty row, the honest context sentence, the B3 facts on the card, and the F4 rename.
+  const gfSrc = cliSrc.slice(cliSrc.indexOf("THE FOUNDING WINDOW (Gruendungsfenster B1"),
+    cliSrc.indexOf("function openTreePicker(slotId: number) {"));
+  check("founding window: the empty slot opens the roles page, the tree only behind Anderer Ordner",
+    /row\.onclick = \(\) => openPicker\(s\.id\)/.test(cliSrc)
+    && gfSrc.includes('type GfRole = "orch" | "wt-new" | "wt-old" | "plain" | "steward"')
+    && ["Orchestrator", "auf neuem Worktree", "auf vorhandenem Worktree", "in einem Ordner", "Steward"]
+      .every((w) => gfSrc.includes(w))
+    && gfSrc.includes("Anderer Ordner …") && gfSrc.includes("closeFounding();\n    openTreePicker(slot);"),
+    "GF_ROLES + the tree handoff in src/client.ts");
+  check("founding window: the context column tells the truth about a founding by hand, no pack switches",
+    gfSrc.includes("Rollenkarte mit Ankern — beim Start stellt der Server der Orchestrator ihre Karte mit Kontext-Ankern zu.")
+    && gfSrc.includes("Keine Packs — eine Gründung von Hand bekommt keinen Brief zugestellt.")
+    && gfSrc.includes("Welche Packs ein Repo mitbringt, zeigt Schritt 3 nach der Repo-Wahl.")
+    // falsifiable, not vacuous: the context COLUMN renders no button at all, and the mockup's
+    // open "+ Pack zusammenstecken … (Form: Frage an dich)" row is B2, not this slice
+    && !gfSrc.slice(gfSrc.indexOf('"Kontext"'), gfSrc.indexOf("two.append(ctx);")).includes('el("button"')
+    && !gfSrc.includes("zusammenstecken"),
+    "the context column in src/client.ts");
+  check("founding window: the repo card carries the two B3 facts and the attach role seats an orphan here",
+    gfSrc.includes("Context-Packs des Repos") && gfSrc.includes("info.packs.error")
+    && gfSrc.includes("info.orphans ?? []")
+    && gfSrc.includes('/api/lanes", { repo: gfRepo, attach: gfOrphan, slot, ...spawnBody() }'),
+    "gfStep3 in src/client.ts");
 
   // --- the board's SECTION ORDER. The owner set it twice: §F4 (briefs/ui-next-level-2026-08-06.md)
   // and the redesign of 2026-09-18/19 — machine alarms → head → changes → checks → history → the
@@ -1397,7 +1424,10 @@ export async function run(): Promise<void> {
   // of founding choices. Source is the evidence — this suite has no DOM.
   const setupSrc = boardSrc.slice(boardSrc.indexOf('el("div", "bsec bsetup")'), boardSrc.indexOf("if (brief) {"));
   check("client: the setup block names the profile and the context packs",
-    /row\("Profile", setup\?\.profile \?\? "standard"/.test(setupSrc)
+    // "Program type" since the founding window (F4): "Profile" is the founding choice there, the
+    // machine profile of the program needed the name that cannot be read as it
+    /row\("Program type", setup\?\.profile \?\? "standard"/.test(setupSrc)
+    && !/row\("Profile", setup/.test(setupSrc)
     && /const packs = setup\?\.packs \?\? \[\];/.test(setupSrc)
     // a chip is a BUTTON since the packs became openable — the span form was the read-only one
     && /el\("button", "bspack", p\.id\)/.test(setupSrc), "the setup section in renderBoard");

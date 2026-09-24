@@ -36,7 +36,7 @@ import {
 } from "./rulebook";
 import { validateRefineProposal, briefReviewArm, briefReviewEligible, isBriefReviewKind,
   type RefineValidation } from "./refine-validate";
-import { planContext, planProgramContext, programContextPacksFrom, validateProgramContextPacks, PROGRAM_CONTEXT_PACKS_MAX,
+import { planContext, planProgramContext, programContextPacksFrom, resolveContextHarness, validateProgramContextPacks, PROGRAM_CONTEXT_PACKS_MAX,
   PROGRAM_CONTEXT_PACK_SOURCES_MAX, type ContextPlan, type ContextPlanInput, type ContextPlanSelection,
   type ProgramContextPack } from "./context-plan";
 import { buildSnippetPackage, planSnippets, snippetReceipt, renderSnippetBlock, type SnippetFile, type SnippetReceipt } from "./context-snippets";
@@ -31386,6 +31386,98 @@ async function programMainContextPlan(preflight: ProgramMainPreflight,
   };
 }
 
+// THE HAND-FOUNDING PLAN (Gruendungsfenster B2a): what planContext would choose for a founding the
+// owner is about to make by hand — the same Fleet seeds, the same repo manifest at the same commit,
+// the same facts the machine seams assemble. `main` is the plain/MAIN session in a checkout, whose
+// facts are programMainContextFacts' (frame-classified); `lane` is a worktree founding, whose facts
+// are the dispatch seam's. NO SECOND SELECTION LOGIC: this composes planContext +
+// repoManifestContextPlan exactly as programMainContextPlan and the dispatch seam do — the only new
+// decision here is WHICH existing fact set a planned founding of each kind would run under. A hand
+// founding carries no Program (manual opens stamp programId null), so Program packs are deliberately
+// not part of this plan; the doors that could carry one (dispatch, bootstrap) already assemble
+// planProgramContext themselves.
+type FoundingPlanMode = "main" | "lane";
+type FoundingPlan = {
+  readonly repoRoot: string;
+  readonly head: string;
+  /** the checkout's branch; a lane's own branch is named on the slot, not here */
+  readonly branch: string | null;
+  readonly mode: ContextPackMode;
+  readonly triggers: readonly ContextPackTrigger[];
+  readonly plan: ContextPlan;
+};
+async function foundingPlanOf(repo: string, harness: string | null,
+  foundingMode: FoundingPlanMode): Promise<{ ok: true; value: FoundingPlan } | { ok: false; error: string }> {
+  let repoRoot: string;
+  try {
+    repoRoot = await repoRootOf(repo);
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "not a git repository" };
+  }
+  // The commit the plan AND the later receipt assert — the integration tip, the same choice the
+  // dispatch seam and preflightProgramMain make, so no seam invents its own head rule.
+  const head = await integrationHead(repoRoot);
+  if (!head) return { ok: false, error: "could not read the repository's integration HEAD" };
+  const branchRead = await gitRead(repoRoot, "symbolic-ref", "--short", "HEAD");
+  // THE ONE CLASSIFIER, shared with dispatch: which tree this founding is about, derived from the
+  // git toplevel comparison dispatchSourceTree owns — never declared, never re-classified here.
+  const sourceTree = await dispatchSourceTree(repoRoot);
+  const frame: ProgramMainFrame = sourceTree === "fleet" ? "fleet-control" : "target-repo";
+  const facts = foundingMode === "lane"
+    ? { sourceTree, harness,
+        mode: DISPATCH_CONTEXT_MODE, triggers: DISPATCH_CONTEXT_TRIGGERS,
+        capabilities: DISPATCH_CONTEXT_CAPABILITIES }
+    : programMainContextFacts(frame, harness);
+  const base = planContext(facts);
+  const { repoPlan, blobShas } = await repoManifestContextPlan(repoRoot, head, facts);
+  return { ok: true, value: { repoRoot, head,
+    branch: branchRead.code === 0 && branchRead.out ? branchRead.out : null,
+    mode: facts.mode, triggers: facts.triggers,
+    plan: {
+      selected: stampObservedSourceHashes([...base.selected, ...repoPlan.selected], blobShas),
+      omitted: [...base.omitted, ...repoPlan.omitted],
+    } } };
+}
+
+// THE `packs` FIELD at the three founding doors (owner answer F4): the name is `packs`, never
+// `context` — that word is the codex context window (contextOf) and stays its only meaning.
+// ABSENT means today's founding, byte for byte. PRESENT — including empty — is an explicit owner
+// choice, and `[]` is "deliberately no packs": nothing delivered, nothing owed.
+function packsOf(body: Record<string, unknown> | null):
+  { ok: true; packs: string[] | null } | { ok: false; error: string } {
+  const raw = body?.packs;
+  if (raw === undefined) return { ok: true, packs: null };
+  if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string"))
+    return { ok: false, error: "packs must be an array of pack ids" };
+  const ids = raw as string[];
+  const dup = ids.find((id, i) => ids.indexOf(id) !== i);
+  return dup !== undefined
+    ? { ok: false, error: `packs names ${dup} more than once` }
+    : { ok: true, packs: ids };
+}
+
+// THE OWNER'S LIST AGAINST THE PLAN, and the shape of the refusal is the whole point: a selected id
+// is deliverable; an omitted id is REFUSED WITH ITS REASON (409 — never a silent drop, so the owner
+// learns the omission at the door instead of from a missing anchor later); anything else is not a
+// pack of this founding at all (400). The chosen rows stay rows OF THE PLAN — a subset, never a
+// second selection.
+function chooseFoundingPacks(plan: ContextPlan, requested: readonly string[]):
+  { ok: true; chosen: ContextPlanSelection[] }
+  | { ok: false; code: number; error: string } {
+  const chosen: ContextPlanSelection[] = [];
+  for (const id of requested) {
+    const selected = plan.selected.find((pack) => pack.id === id);
+    if (selected) {
+      chosen.push(selected);
+      continue;
+    }
+    const omitted = plan.omitted.find((pack) => pack.id === id);
+    if (omitted) return { ok: false, code: 409, error: `pack ${id} is omitted for this founding: ${omitted.why}` };
+    return { ok: false, code: 400, error: `unknown pack id for this founding: ${id}` };
+  }
+  return { ok: true, chosen };
+}
+
 // THE PROGRAM-MAIN EXECUTION RAIL — one block, delivered byte-identically by all four MAIN founding
 // variants (Fleet frame and target-repo frame, bootstrap and succession).
 //
@@ -32208,6 +32300,63 @@ async function deliverOrchestratorSpawnCard(s: Slot): Promise<Record<string, unk
   return ctx.ok
     ? { delivered: true, receipt: true }
     : { delivered: true, receipt: false, contextPlan: `unknown: ${ctx.error}` };
+}
+
+// THE SPAWN SEAM'S TWIN for hand-foundings (Gruendungsfenster B2a): a founding made WITH a `packs`
+// list delivers exactly the chosen packs after the spawn — the same boot grace, the same delivery
+// gates, the same bounded readiness as the role card above. THE FOUNDING ITSELF IS NOT AT RISK, by
+// the same rule: a held, uncertain or identity-lost send is `packsDelivered: false` with the reason
+// in the founding response, never healed and never a true. The receipt is written only over a
+// delivered send, and it receipts the OWNER'S SUBSET: `selected` is what crossed, `omitted` the
+// plan's own omissions, unchanged. A founding without packs never enters this function.
+async function deliverFoundingPacks(s: Slot, founding: FoundingPlan,
+  chosen: readonly ContextPlanSelection[]): Promise<Record<string, unknown>> {
+  const openedAt = s.openedAt;
+  const stillCurrent = (): boolean => !!s.cwd && s.openedAt === openedAt;
+  await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
+  if (!stillCurrent()) return { packsDelivered: false, reason: "the slot changed during boot" };
+  const gate = await canDeliver(s, { now: Date.now(), idleMs: 0,
+    killSwitch: false, quietHours: false, harness: false });
+  if (!gate.ok)
+    return { packsDelivered: false, reason: `delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` };
+  const readiness = await waitForFoundingReadiness(s, stillCurrent);
+  if (!readiness.ok) return { packsDelivered: false, reason: readiness.reason };
+  const anchorBlock = renderContextAnchorBlock({ selected: chosen, omitted: [] });
+  const deliveredBrief = "[fleet] Diese Gruendung traegt die beim Spawn gewaehlten Kontext-Packs — Owner-Wahl,"
+    + " beratende Anker, kein Quelltext:\n" + anchorBlock;
+  if (!stillCurrent()) return { packsDelivered: false, reason: "the slot changed before the packs were sent" };
+  try {
+    await sendText(s, deliveredBrief, true, { path: "founding" });
+  } catch (e) {
+    // Neither delivered nor failed is an OBSERVED fact once tmux has thrown — bindSupervisor's
+    // rule, and the journal line is mandatory for exactly the same reason.
+    logPrompt(s, deliveredBrief, "auto", Date.now(), undefined, "uncertain");
+    return { packsDelivered: false,
+      reason: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` };
+  }
+  const at = Date.now();
+  const selected = contextReceiptSelections(chosen);
+  const omitted = founding.plan.omitted.map((entry) => ({ ...entry }));
+  const hash = createHash("sha256").update(JSON.stringify({
+    anchorBlock,
+    planFacts: { harness: s.harness, mode: founding.mode, triggers: founding.triggers, selected, omitted },
+  })).digest("hex");
+  // A lane's own branch is the one the session sits on; a plain session names its checkout's.
+  const branch = s.worktree?.branch ?? founding.branch;
+  await appendEvent(CONTEXT_RECEIPT_FILE, {
+    id: randomBytes(16).toString("hex"), hash, at, repo: founding.repoRoot, head: founding.head,
+    taskId: s.taskId, originId: s.originId, programId: s.programId,
+    slot: s.id, branch, harness: s.harness, ...receiptModel(s), effort: s.effort,
+    mode: founding.mode, triggers: founding.triggers, selected, omitted,
+    deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+    snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
+    briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
+  });
+  s.history = [...s.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
+  saveHistory(s);
+  logPrompt(s, deliveredBrief, "auto", at);
+  await saveStateNow();
+  return { packsDelivered: true };
 }
 
 async function succeedSupervisor(s: Slot, label: string | null, carry: string | null,
@@ -40308,6 +40457,26 @@ Bun.serve<WSData>({
       const laneForm = laneFormOf(body, laneHarness); // explicit form wins; absent → the adapter's
       if (!laneForm.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
       const attachPath = typeof body.attach === "string" && body.attach ? body.attach : null;
+      // THE OWNER'S PACKS (Gruendungsfenster B2a), validated against the plan THIS lane founding
+      // would have had — before anything is created, so a wrong id refuses the founding instead of
+      // leaving a worktree it cannot ground. ATTACH seats a worktree that PREDATES this founding:
+      // its manifest may say something the integration tip's plan does not, so a non-empty list is
+      // refused BY NAME rather than delivered against a plan the seat cannot prove. An empty list
+      // promises nothing and passes either way; absent stays today's founding.
+      const lanePo = packsOf(body);
+      if (!lanePo.ok) return json({ error: lanePo.error }, 400);
+      if (lanePo.packs !== null && lanePo.packs.length > 0 && attachPath)
+        return json({ error: "attach seats a worktree that predates this founding — packs delivers only at a fresh founding" }, 400);
+      let laneFounding: FoundingPlan | null = null;
+      let laneChosen: ContextPlanSelection[] = [];
+      if (lanePo.packs !== null && lanePo.packs.length > 0) {
+        const fp = await foundingPlanOf(body.repo, laneH.harness, "lane");
+        if (!fp.ok) return json({ error: `no context plan for this founding: ${fp.error}` }, 400);
+        const pick = chooseFoundingPacks(fp.value.plan, lanePo.packs);
+        if (!pick.ok) return json({ error: pick.error }, pick.code);
+        laneFounding = fp.value;
+        laneChosen = pick.chosen;
+      }
       // THE CLICKED PLACE (Gruendungsfenster B3): an attach may name the slot the owner clicked, and
       // then gets exactly that one or a 409 naming who sits there — never the next free place, which
       // is what the server picks without `slot`. Band and session-cap rules stay openSlot's.
@@ -40392,11 +40561,16 @@ Bun.serve<WSData>({
           await saveStateNow(); // the rebound rows and the resume record are on disk before the answer
           void tickGit().catch(() => {});
           return json({ ok: true, slot: free.id, cwd: free.cwd, branch: wt.branch,
+            ...(lanePo.packs !== null ? { packsDelivered: true } : {}),
             ...(parked ? { resumed: { candidate: parked.id, head: parked.head, reportId: parked.reportId,
               taskIds: rebound, verify: "stale" } } : {}) });
         }
         const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box, laneParent.parent, laneBrowser.browser === true, laneContext.context);
-        return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch, form: laneForm.form });
+        const lanePacksResult = laneFounding
+          ? await deliverFoundingPacks(free, laneFounding, laneChosen)
+          : lanePo.packs !== null ? { packsDelivered: true } : null;
+        return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch, form: laneForm.form,
+          ...(lanePacksResult ? lanePacksResult : {}) });
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "lane failed" },
           e instanceof GameMakerTreeConflict ? 409 : 400);
@@ -41197,6 +41371,32 @@ Bun.serve<WSData>({
         files: ns.code === 0 ? ns.out.split("\n").filter(Boolean) : [],
         diff: diff.length > DIFF_CAP ? `${diff.slice(0, DIFF_CAP)}\n… truncated` : diff,
         truncated: diff.length > DIFF_CAP,
+      });
+    }
+    // THE FOUNDING-WINDOW PLAN ROUTE (Gruendungsfenster B2a): for a founding the owner is
+    // PLANNING — repo, harness, main-or-lane — what planContext would choose. A reader, nothing
+    // else: it delivers nothing, writes nothing, and assembles the same plan the doors below
+    // validate a `packs` list against, so what the window showed is what the door will judge by.
+    if (url.pathname === "/api/founding-plan" && req.method === "GET") {
+      const repo = url.searchParams.get("repo") ?? "";
+      const mode = url.searchParams.get("mode") ?? "";
+      if (!repo) return json({ error: "repo is required" }, 400);
+      if (mode !== "main" && mode !== "lane") return json({ error: "mode must be 'main' or 'lane'" }, 400);
+      const ho = harnessIdOf({ harness: url.searchParams.get("harness") ?? undefined });
+      if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
+      const fp = await foundingPlanOf(repo, ho.harness, mode);
+      if (!fp.ok) return json({ error: fp.error }, 400);
+      const seedIds = new Set<string>(CONTEXT_PACKS.map((pack) => pack.id));
+      const { plan } = fp.value;
+      return json({
+        repo: fp.value.repoRoot, head: fp.value.head, branch: fp.value.branch,
+        mode, harness: resolveContextHarness(ho.harness),
+        selected: plan.selected.map((pack) => ({
+          id: pack.id, bytes: pack.estimatedBytes,
+          source: seedIds.has(pack.id) ? "fleet-seed" : "repo-manifest",
+          ...(pack.useWhen !== undefined ? { useWhen: pack.useWhen } : {}),
+        })),
+        omitted: plan.omitted.map((entry) => ({ id: entry.id, reason: entry.why })),
       });
     }
     // what the folder under the picker's cursor actually IS. A SEPARATE route from /api/dirs on purpose:
@@ -42229,12 +42429,30 @@ Bun.serve<WSData>({
         if (!bo.ok) return json({ error: bo.why }, 400);
         const co = contextOf(body, hh);
         if (!co.ok) return json({ error: co.error }, 400);
+        const po = packsOf(body);
+        if (!po.ok) return json({ error: po.error }, 400);
         // optional label AT SPAWN (same validation as /rename): the pane's env is fixed the
         // moment tmux creates it, so a label-keyed export (FLEET_STEWARD_TOKEN) can only be
         // baked in by naming the slot here — open-then-rename is always too late.
         if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL))
           return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
         const label = typeof body.label === "string" ? body.label.trim() || null : null;
+        // THE OWNER'S PACKS, validated against the plan THIS founding would have had — before the
+        // spawn, so a wrong id refuses the founding instead of seating a session it cannot ground.
+        // An empty list is "deliberately no packs": nothing owed, so nothing runs and the answer
+        // still carries packsDelivered (kept, vacuously). Absent stays today's founding.
+        let founding: FoundingPlan | null = null;
+        let chosen: ContextPlanSelection[] = [];
+        let packsResult: Record<string, unknown> | null = po.packs !== null && po.packs.length === 0
+          ? { packsDelivered: true } : null;
+        if (po.packs !== null && po.packs.length > 0) {
+          const fp = await foundingPlanOf(typeof body.cwd === "string" ? body.cwd : "~", ho.harness, "main");
+          if (!fp.ok) return json({ error: `no context plan for this founding: ${fp.error}` }, 400);
+          const pick = chooseFoundingPacks(fp.value.plan, po.packs);
+          if (!pick.ok) return json({ error: pick.error }, pick.code);
+          founding = fp.value;
+          chosen = pick.chosen;
+        }
         try {
           await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
             null, false, co.context);
@@ -42250,7 +42468,9 @@ Bun.serve<WSData>({
         // …and for exactly one label, the role card (deliverOrchestratorSpawnCard). Every other
         // open returns the same bytes it always did.
         const roleCard = isOrchestratorLabel(s.label) ? await deliverOrchestratorSpawnCard(s) : null;
+        if (founding) packsResult = await deliverFoundingPacks(s, founding, chosen);
         return json({ ok: true, cwd: s.cwd, label: s.label, ...(roleCard ? { roleCard } : {}),
+          ...(packsResult ? packsResult : {}),
           ...(adopted ? { successionDebt: { id: adopted.id, adopted: true,
             resend: `POST /api/succession-debts/${adopted.id}/resend` } } : {}) });
       }
@@ -42275,10 +42495,30 @@ Bun.serve<WSData>({
         if (!co.ok) return json({ error: co.error }, 400);
         const fo = laneFormOf(body, hh); // explicit form wins; absent → the adapter's
         if (!fo.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
+        const po = packsOf(body);
+        if (!po.ok) return json({ error: po.error }, 400);
+        // THE OWNER'S PACKS, validated against the plan THIS lane founding would have had — before
+        // the reservation and the spawn, so a wrong id refuses the founding instead of leaving a
+        // working copy it cannot ground. An empty list is "deliberately no packs": nothing owed,
+        // nothing delivered, and the answer still carries packsDelivered (kept, vacuously).
+        let founding: FoundingPlan | null = null;
+        let chosen: ContextPlanSelection[] = [];
+        let packsResult: Record<string, unknown> | null = po.packs !== null && po.packs.length === 0
+          ? { packsDelivered: true } : null;
+        if (po.packs !== null && po.packs.length > 0) {
+          const fp = await foundingPlanOf(body.repo, ho.harness, "lane");
+          if (!fp.ok) return json({ error: `no context plan for this founding: ${fp.error}` }, 400);
+          const pick = chooseFoundingPacks(fp.value.plan, po.packs);
+          if (!pick.ok) return json({ error: pick.error }, pick.code);
+          founding = fp.value;
+          chosen = pick.chosen;
+        }
         laneSpawn.add(s.id); // reserve before the first await — see laneSpawn
         try {
           const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent, wo.browser === true, co.context);
-          return json({ ok: true, cwd: r.cwd, branch: r.branch, form: fo.form });
+          if (founding) packsResult = await deliverFoundingPacks(s, founding, chosen);
+          return json({ ok: true, cwd: r.cwd, branch: r.branch, form: fo.form,
+            ...(packsResult ? packsResult : {}) });
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "worktree failed",
             ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}) },

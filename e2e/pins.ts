@@ -2583,7 +2583,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && /readLedger<Record<string, unknown>>\(CONTEXT_RECEIPT_FILE\)/.test(routeBody),
     routeBody ? `${routeBody.length} route bytes` : "reader route missing");
 
-  // EVERY writer carries the brief pair, and the count is asserted so a seventh delivery seam cannot
+  // EVERY writer carries the brief pair, and the count is asserted so a further delivery seam cannot
   // be added silently without it. Absent on a row means "written before the field existed" — a
   // date — so one writer omitting it would forever read as an old row instead of a gap. The two
   // values are a PAIR by construction: briefHash without briefSource cannot say by which route the
@@ -2592,10 +2592,13 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // or into the successor slot, so it names its slot `s` rather than `free` — the same shape shift
   // the lane baton made on the founding-gate pin below, and the reason the two slot names are both
   // accepted here instead of the regex being widened to any identifier.
+  // The SEVENTH writer (2026-09-22, the founding window's packs at hand-foundings,
+  // server.ts#deliverFoundingPacks) is a third rail of that shape: the door has already opened the
+  // pane, so the chosen packs found into the slot the caller is holding and name `s` too.
   const receiptWrites = [...server.matchAll(/appendEvent(?:Strict)?\(CONTEXT_RECEIPT_FILE, \{[\s\S]*?\n\s*\}\);/g)]
     .map((m) => m[0]);
   pin("every context-receipt writer carries briefHash AND briefSource — the ledger has one row shape, not two",
-    receiptWrites.length === 6
+    receiptWrites.length === 7
     && receiptWrites.every((w) => /briefHash: briefHashOf\(deliveredBrief\)/.test(w)
       && /briefSource(: FOUNDING_BRIEF_SOURCE)?,/.test(w)),
     `${receiptWrites.length} writer(s), ${receiptWrites.filter((w) => !/briefHash/.test(w)).length} without briefHash`);
@@ -2603,7 +2606,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // that went back to `model: free.model` would write null for every unpinned slot again; one
   // without `snippet` would read as a row from before the count existed.
   pin("every context-receipt writer resolves the model through receiptModel and carries a snippet account",
-    receiptWrites.length === 6
+    receiptWrites.length === 7
     && receiptWrites.every((w) => /\.\.\.receiptModel\((?:free|s)\)/.test(w) && !/model: (?:free|s)\.model/.test(w)
       && /snippet: (snippet\.receipt|NO_SNIPPET_RECEIPT)/.test(w)),
     `${receiptWrites.filter((w) => !/receiptModel/.test(w)).length} without receiptModel, `
@@ -3671,13 +3674,21 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // same shape: `POST /api/slots/:id/open` has already opened the pane, so the card founds into the
   // slot the caller is holding and its three lines name `s` too. Asserted in its own body for the
   // lane baton's reason — and its GRACE still lands in the shared count above, because that line
-  // names no slot at all.
-  const orchRailStart = server.indexOf("async function deliverOrchestratorSpawnCard(");
-  const orchRailBody = orchRailStart < 0 ? ""
-    : server.slice(orchRailStart, server.indexOf("async function succeedSupervisor", orchRailStart));
-  const orchRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(orchRailBody)
-    && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(orchRailBody)
-    && /await sendText\(s, brief, true, \{ path: "[a-z-]+" \}\);/.test(orchRailBody);
+  // names no slot at all. The NINTH (2026-09-22, the founding window's packs at hand-foundings,
+  // server.ts#deliverFoundingPacks) is the third rail of that shape, for the same reason: the
+  // founding door has already opened the pane when the chosen packs are delivered.
+  const railBody = (from: string, to: string): string => {
+    const at = server.indexOf(from);
+    return at < 0 ? "" : server.slice(at, server.indexOf(to, at));
+  };
+  const orchBody = railBody("async function deliverOrchestratorSpawnCard(", "async function deliverFoundingPacks(");
+  const orchRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(orchBody)
+    && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(orchBody)
+    && /await sendText\(s, brief, true, \{ path: "[a-z-]+" \}\);/.test(orchBody);
+  const packsRailBody = railBody("async function deliverFoundingPacks(", "async function succeedSupervisor");
+  const packsRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(packsRailBody)
+    && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(packsRailBody)
+    && /await sendText\(s, [A-Za-z]+, true, \{ path: "founding" \}\);/.test(packsRailBody);
   // …and since the in-place cut (server.ts#respawnInPlace, owner 2026-09-21) the three MAIN
   // succession rails found into the slot they already hold as well — generic, Supervisor and
   // Program-MAIN — so they left the `free` count and are asserted in their own bodies like the lane
@@ -3695,10 +3706,10 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(b)
     && /await sendText\(s, [A-Za-z]+, true, \{ path: "[a-z-]+" \}\);/.test(b)
     && /await respawnInPlace\(s, /.test(b));
-  pin("all EIGHT founding deliveries are gated — same count of sends, bounded waits and shared boot graces, and no naked 4 s sleep left",
-    foundingSends === 3 && foundingWaits === 3 && foundingGraces === 8 && laneRailGated && orchRailGated
-      && inPlaceGated.every(Boolean) && !/await Bun\.sleep\(4000\);/.test(server),
-    `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces} laneRail=${laneRailGated} orchRail=${orchRailGated} inPlace=${inPlaceGated.join(",")}`);
+  pin("all NINE founding deliveries are gated — same count of sends, bounded waits and shared boot graces, and no naked 4 s sleep left",
+    foundingSends === 3 && foundingWaits === 3 && foundingGraces === 9 && laneRailGated && orchRailGated
+      && packsRailGated && inPlaceGated.every(Boolean) && !/await Bun\.sleep\(4000\);/.test(server),
+    `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces} laneRail=${laneRailGated} orchRail=${orchRailGated} packsRail=${packsRailGated} inPlace=${inPlaceGated.join(",")}`);
   // ...and the ONE fixture that has to place a marker on the far side of that grace mirrors its
   // value. `unbound succession` proves the generic rail withholds a founding brief until the ready
   // marker appears, which only holds as a statement about READINESS if the marker lands after the

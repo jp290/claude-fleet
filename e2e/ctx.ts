@@ -90,7 +90,8 @@ export interface StewardCtx {
 // 1 239 s with programs), not from the reference trail — the trail never split them.
 export interface ShardUnit { unit: string; seconds: number; modules: readonly string[] }
 export const SHARD_UNITS: readonly ShardUnit[] = [
-  { unit: "pure", seconds: 0, modules: ["context-packs", "context-plan", "prompts", "briefstats"] },
+  { unit: "pure", seconds: 0, modules: ["context-plan", "prompts", "briefstats"] },
+  { unit: "context-packs", seconds: 30, modules: ["context-packs"] },
   { unit: "auth", seconds: 1, modules: ["auth", "dirs-pins"] },
   { unit: "core", seconds: 626, modules: ["slots", "history", "summary", "transport", "autos", "share",
     "review", "self-token", "trailstats", "outcomes", "tasks", "intake", "restart", "steward-core",

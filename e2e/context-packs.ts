@@ -1,8 +1,12 @@
 // Small pure P1-B family. The validator receives all facts; only this fixture reads the real tree.
 // Direct entry point (no server, tmux, or network): bun e2e/context-packs.ts
-import { dirname, resolve } from "node:path";
-import { readFileSync, realpathSync } from "node:fs";
+// The SERVER-BACKED half at the bottom needs an isolated instance (FLEET_SOCK/FLEET_PORT, as the
+// runner sets them) and skips itself, under its own name, in a direct run.
+import { dirname, join, resolve } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import {
   CONTEXT_PACK_CAPABILITIES,
   CONTEXT_PACK_HARNESSES,
@@ -305,11 +309,287 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
     }
   }
 
+  // ================================================================================================
+  // SERVER-BACKED HALF: the founding-window plan route and the `packs` field (Gruendungsfenster B2a)
+  // ================================================================================================
+  await foundingPacksServerHalf(check);
+
   if (!externalCheck) {
     console.log(rows.join("\n"));
     console.log(failures ? `\n${failures} FAILURES` : "\nALL PASS");
     if (failures) process.exitCode = 1;
   }
+}
+
+// One receipt as the founding seam writes it; only the fields the checks below read are typed.
+interface FoundingReceiptRow {
+  id: string; at: number; repo: string; head: string; branch: string;
+  slot: number; harness: string | null; mode: string; triggers: string[];
+  selected: { id: string; anchors: unknown; sourceHash?: string }[];
+  omitted: { id: string; why: string }[];
+  deliveredBytes: number; renderer: string;
+  briefHash?: string | null; briefSource?: string;
+}
+
+// server-side receipt hash, verbatim — the join is only worth asserting if the test recomputes it
+// the way the ledger's writer does (the supervisor family's promptHash, over this seam's brief).
+const foundingReceiptHash = (prompt: string, receipt: FoundingReceiptRow): string => {
+  const anchorAt = prompt.indexOf("\n\nContextPlan v2 anchors");
+  const anchorBlock = anchorAt >= 0 ? prompt.slice(anchorAt) : "";
+  return createHash("sha256").update(JSON.stringify({
+    anchorBlock,
+    planFacts: { harness: receipt.harness, mode: receipt.mode, triggers: receipt.triggers,
+      selected: receipt.selected, omitted: receipt.omitted },
+  })).digest("hex");
+};
+
+async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
+  // The runner environment is the one pair of variables both halves of the isolated suite share;
+  // a direct `bun e2e/context-packs.ts` has neither and gets this half's skip line instead.
+  if (!process.env.FLEET_SOCK || !process.env.FLEET_PORT) {
+    console.log("SKIP  founding packs server half: no isolated instance env (FLEET_SOCK/FLEET_PORT)");
+    return;
+  }
+  const { BASE, ROOT, get, post } = await import("./harness");
+
+  // --- the fixture: a target repo whose committed manifest declares one deliverable pack and one
+  // broken pointer. Built in tmpdir (the stand-in precedent: outside the tree the server reads
+  // head facts from), committed, so the plan route and the doors read it AT a commit.
+  const fixture = mkdtempSync(join(tmpdir(), "fleet-e2e-founding-packs-"));
+  const gitIn = (...args: string[]) =>
+    spawnSync("git", ["-C", fixture, ...args], { encoding: "utf8" });
+  const packEntry = (over: Record<string, unknown>): Record<string, unknown> => ({
+    scope: "product-quality", audience: "agent", triggers: ["always"], hardness: "guidance",
+    requiredCapabilities: ["tracked-source-read"], harnesses: ["claude", "codex", "pi"],
+    modes: ["read-only", "mutating"], estimatedBytes: 900, evidence: "tree-anchor",
+    owner: "owner", status: "active", ...over,
+  });
+  mkdirSync(join(fixture, "docs"), { recursive: true });
+  mkdirSync(join(fixture, ".fleet"), { recursive: true });
+  writeFileSync(join(fixture, "AGENTS.md"), "# Target contract\n\n## Repo contract\nProve with the repo's own chain.\n");
+  writeFileSync(join(fixture, "docs", "promise.md"), "# Promise\n\n## Product promise\nThe first minute must feel good.\n");
+  writeFileSync(join(fixture, ".fleet", "context-packs.json"), JSON.stringify([
+    packEntry({ id: "promise-anchor", useWhen: "The repo's own contract, before the first act.", sources: [
+      { path: "AGENTS.md", anchor: "## Repo contract" },
+      { path: "docs/promise.md", anchor: "## Product promise" }] }),
+    packEntry({ id: "broken-pointer", scope: "repo-contract",
+      sources: [{ path: "docs/absent.md", anchor: "## Never tracked" }] }),
+  ], null, 2));
+  gitIn("init", "-q", "-b", "main");
+  gitIn("config", "user.email", "t@t");
+  gitIn("config", "user.name", "t");
+  gitIn("config", "commit.gpgsign", "false");
+  gitIn("add", "-A");
+  const fixtureReady = gitIn("commit", "-qm", "declare context packs").status === 0;
+  check("founding packs: the fixture repo carries the manifest and its sources at a real commit",
+    fixtureReady && gitIn("ls-files", "--error-unmatch", ".fleet/context-packs.json").status === 0,
+    fixture);
+
+  const planRoute = async (query: string): Promise<{ status: number; body: Record<string, unknown> }> => {
+    const res = await get(`/api/founding-plan${query}`);
+    return { status: res.status, body: await res.json() as Record<string, unknown> };
+  };
+  const receipts = async (): Promise<{ receipts: FoundingReceiptRow[]; total: number }> =>
+    (await (await get("/api/context-receipts")).json()) as { receipts: FoundingReceiptRow[]; total: number };
+  const sessions = async (): Promise<{ slots: { id: number; cwd: string | null }[] }> =>
+    (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] };
+  const freeSlot = async (): Promise<number | null> =>
+    (await sessions()).slots.find((s) => !s.cwd)?.id ?? null;
+  const worktreeCount = (): number =>
+    gitIn("worktree", "list").stdout.split("\n").filter((line) => line.startsWith("worktree ")).length;
+  const opened: number[] = [];
+  const kill = async (slot: number): Promise<void> => { await post(`/api/slots/${slot}/kill`, {}); };
+
+  if (fixtureReady) {
+    // --- (a) the plan route, and its refusals ---
+    const [noRepo, badMode, badHarness] = await Promise.all([
+      planRoute("?mode=main"), planRoute(`?repo=${encodeURIComponent(fixture)}&mode=bogus`),
+      planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=not-a-harness`),
+    ]);
+    const noRepoText = JSON.stringify(noRepo.body);
+    const badModeText = JSON.stringify(badMode.body);
+    const badHarnessText = JSON.stringify(badHarness.body);
+    check("founding plan: the route refuses a missing repo, an unknown mode, and an unknown harness by name",
+      noRepo.status === 400 && noRepoText.includes("repo is required")
+        && badMode.status === 400 && badModeText.includes("mode must be 'main' or 'lane'")
+        && badHarness.status === 400 && badHarnessText.includes("unknown harness"),
+      `${noRepo.status}:${noRepoText} | ${badMode.status}:${badModeText} | ${badHarness.status}:${badHarnessText}`);
+
+    const plan = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude`);
+    const selected = Array.isArray(plan.body.selected) ? plan.body.selected as { id: string; bytes?: number; source?: string }[] : [];
+    const omitted = Array.isArray(plan.body.omitted) ? plan.body.omitted as { id: string; reason?: string }[] : [];
+    const promiseRow = selected.find((pack) => pack.id === "promise-anchor");
+    check("founding plan: the repo pack is selected with its declared bytes and its source named",
+      plan.status === 200 && !!promiseRow && promiseRow.bytes === 900 && promiseRow.source === "repo-manifest",
+      JSON.stringify(plan.body).slice(0, 300));
+    const manifestIds = ["promise-anchor", "broken-pointer"];
+    const namedOnce = manifestIds.every((id) =>
+      selected.filter((pack) => pack.id === id).length + omitted.filter((pack) => pack.id === id).length === 1);
+    check("founding plan: every manifest pack id appears exactly once across selected and omitted",
+      plan.status === 200 && namedOnce,
+      `selected=[${selected.map((p) => p.id).join(",")}] omitted=[${omitted.map((p) => p.id).join(",")}]`);
+    const brokenRow = omitted.find((pack) => pack.id === "broken-pointer");
+    check("founding plan: the broken pointer is an omitted row naming its own reason",
+      !!brokenRow && brokenRow.reason === "manifest-invalid",
+      JSON.stringify(brokenRow ?? null));
+    const seedOmissions = ["portable-core", "verify-e2e"].map((id) =>
+      omitted.find((pack) => pack.id === id));
+    check("founding plan: the Fleet seeds stay named omissions on a foreign target repo",
+      seedOmissions.every((row) => !!row && row.reason === "source-unavailable"),
+      JSON.stringify(seedOmissions));
+
+    const lanePlan = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=lane`);
+    const laneSelected = Array.isArray(lanePlan.body.selected) ? lanePlan.body.selected as { id: string }[] : [];
+    check("founding plan: the lane mode plans the same repo pack through the dispatch facts",
+      lanePlan.status === 200 && laneSelected.some((pack) => pack.id === "promise-anchor"),
+      JSON.stringify(lanePlan.body).slice(0, 300));
+
+    // THE SAME LOGIC OVER FLEET'S OWN CHECKOUT: the plan route and the machine seams must agree on
+    // the seeds. Membership, never exact sets — the checkout's own manifest rides along by design.
+    const rootGit = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" });
+    if (rootGit.status !== 0) {
+      check("founding packs — PROBE: the instance checkout is a git repository", false, rootGit.stderr.trim());
+    } else {
+      const fleetPlan = await planRoute(`?repo=${encodeURIComponent(ROOT)}&mode=main`);
+      const fleetSelected = Array.isArray(fleetPlan.body.selected) ? fleetPlan.body.selected as { id: string; source?: string }[] : [];
+      const seedsAsFleet = ["portable-core", "verify-e2e"].every((id) =>
+        fleetSelected.some((pack) => pack.id === id && pack.source === "fleet-seed"));
+      check("founding plan: the fleet checkout's plan names the seed packs as fleet-seed selections",
+        fleetPlan.status === 200 && seedsAsFleet,
+        `status=${fleetPlan.status} selected=[${fleetSelected.map((p) => `${p.id}:${p.source}`).join(",")}]`);
+    }
+
+    // --- (d) the doors refuse BEFORE any spawn ---
+    const rejectSlot = await freeSlot();
+    if (rejectSlot === null) {
+      check("founding packs — PROBE: a free slot exists for the founding doors", false,
+        JSON.stringify((await sessions()).slots));
+    } else {
+      const unknownId = await post(`/api/slots/${rejectSlot}/open`, { cwd: fixture, packs: ["no-such-pack"] });
+      const unknownText = await unknownId.text();
+      const stillFree = (await freeSlot()) === rejectSlot;
+      check("founding packs: an unknown pack id is a 400 that names it, and the slot stays free",
+        unknownId.status === 400 && unknownText.includes("unknown pack id for this founding: no-such-pack") && stillFree,
+        `${unknownId.status} ${unknownText} free=${stillFree}`);
+      const omittedId = await post(`/api/slots/${rejectSlot}/open`, { cwd: fixture, packs: ["broken-pointer"] });
+      const omittedText = await omittedId.text();
+      const stillFreeAfter = (await freeSlot()) === rejectSlot;
+      check("founding packs: an omitted pack id is a 409 naming the omission, and the slot stays free",
+        omittedId.status === 409 && omittedText.includes("omitted for this founding: manifest-invalid") && stillFreeAfter,
+        `${omittedId.status} ${omittedText} free=${stillFreeAfter}`);
+    }
+    const worktreesBefore = worktreeCount();
+    const laneUnknown = await post("/api/lanes", { repo: fixture, packs: ["no-such-pack"] });
+    const laneUnknownText = await laneUnknown.text();
+    check("founding packs: the lane door refuses an unknown pack id before any worktree exists",
+      laneUnknown.status === 400 && laneUnknownText.includes("unknown pack id for this founding: no-such-pack")
+        && worktreeCount() === worktreesBefore,
+      `${laneUnknown.status} ${laneUnknownText} worktrees=${worktreesBefore}->${worktreeCount()}`);
+    const attachPacks = await post("/api/lanes", { repo: fixture, attach: "/nonexistent-path", packs: ["promise-anchor"] });
+    const attachText = await attachPacks.text();
+    check("founding packs: attach refuses a packs list by name",
+      attachPacks.status === 400 && attachText.includes("predates this founding"),
+      `${attachPacks.status} ${attachText}`);
+
+    // --- (b) /open with a chosen pack: delivery, exactly one receipt line, joined to the text ---
+    const beforeOpen = await receipts();
+    const openSlot = await freeSlot();
+    if (openSlot === null) {
+      check("founding packs — PROBE: a free slot exists for the /open founding", false,
+        JSON.stringify((await sessions()).slots));
+    } else {
+      opened.push(openSlot);
+      const founding = await post(`/api/slots/${openSlot}/open`, { cwd: fixture, packs: ["promise-anchor"] });
+      const foundingBody = await founding.json() as { ok?: boolean; packsDelivered?: boolean; reason?: string };
+      const afterOpen = await receipts();
+      const rows = afterOpen.receipts.filter((row) => row.slot === openSlot);
+      check("founding packs: /open with a chosen pack answers packsDelivered and appends exactly one receipt line naming it",
+        founding.ok && foundingBody.packsDelivered === true && afterOpen.total === beforeOpen.total + 1
+          && rows.length === 1 && rows[0]!.selected.length === 1 && rows[0]!.selected[0]!.id === "promise-anchor"
+          && /^[a-f0-9]{64}$/.test(rows[0]!.selected[0]!.sourceHash ?? "") && rows[0]!.briefSource === "founding",
+        `${founding.status} ${JSON.stringify(foundingBody)} rows=${JSON.stringify(rows)}`);
+      const historyBody = await (await get(`/api/slots/${openSlot}/history`)).json() as { history: { text: string }[] };
+      const delivered = historyBody.history.at(-1)?.text ?? "";
+      const row = rows[0];
+      check("founding packs: the receipt joins the delivered founding text by hash and byte count",
+        !!row && row.briefHash === foundingReceiptHash(delivered, row)
+          && row.deliveredBytes === new TextEncoder().encode(delivered).byteLength
+          && row.repo === realpathSync(fixture) && row.renderer === "v2",
+        JSON.stringify(row ?? null));
+      check("founding packs: the delivered founding text carries the anchor block and the chosen pack id",
+        delivered.includes("ContextPlan v2 anchors") && delivered.includes("promise-anchor")
+          && delivered.includes("AGENTS.md | ## Repo contract"),
+        delivered.slice(-200));
+      await kill(openSlot);
+      opened.splice(opened.indexOf(openSlot), 1);
+
+      // --- (c) without packs, today's founding: no receipt line, promised nothing ---
+      const beforeBare = await receipts();
+      const bareSlot = await freeSlot();
+      if (bareSlot === null) {
+        check("founding packs — PROBE: a free slot exists for the bare /open founding", false,
+          JSON.stringify((await sessions()).slots));
+      } else {
+        opened.push(bareSlot);
+        const bare = await post(`/api/slots/${bareSlot}/open`, { cwd: fixture });
+        const afterBare = await receipts();
+        check("founding packs: an open without packs stays unreceipted",
+          bare.ok && afterBare.total === beforeBare.total
+            && afterBare.receipts.every((row) => row.slot !== bareSlot),
+          `${bare.status} total=${beforeBare.total}->${afterBare.total}`);
+        await kill(bareSlot);
+        opened.splice(opened.indexOf(bareSlot), 1);
+      }
+      const beforeEmpty = await receipts();
+      const emptySlot = await freeSlot();
+      if (emptySlot === null) {
+        check("founding packs — PROBE: a free slot exists for the empty-list founding", false,
+          JSON.stringify((await sessions()).slots));
+      } else {
+        opened.push(emptySlot);
+        const empty = await post(`/api/slots/${emptySlot}/open`, { cwd: fixture, packs: [] });
+        const emptyBody = await empty.json() as { ok?: boolean; packsDelivered?: boolean };
+        const afterEmpty = await receipts();
+        check("founding packs: an empty packs list is a kept no-pack promise, not a delivery",
+          empty.ok && emptyBody.packsDelivered === true && afterEmpty.total === beforeEmpty.total
+            && afterEmpty.receipts.every((row) => row.slot !== emptySlot),
+          `${empty.status} ${JSON.stringify(emptyBody)} total=${beforeEmpty.total}->${afterEmpty.total}`);
+        await kill(emptySlot);
+        opened.splice(opened.indexOf(emptySlot), 1);
+      }
+    }
+
+    // --- the lane doors deliver and receipt on the lane's own branch ---
+    const beforeLane = await receipts();
+    const lane = await post("/api/lanes", { repo: fixture, packs: ["promise-anchor"] });
+    const laneBody = await lane.json() as { ok?: boolean; slot?: number; branch?: string; cwd?: string; packsDelivered?: boolean; reason?: string };
+    const laneSlot = laneBody.slot ?? null;
+    if (laneSlot !== null) opened.push(laneSlot);
+    const afterLane = await receipts();
+    const laneRow = laneSlot === null ? null : afterLane.receipts.filter((row) => row.slot === laneSlot).at(-1) ?? null;
+    check("founding packs: the lane door delivers the chosen pack and receipts it on the lane's own branch",
+      lane.ok && laneBody.packsDelivered === true && afterLane.total === beforeLane.total + 1
+        && !!laneRow && laneRow.selected.length === 1 && laneRow.selected[0]!.id === "promise-anchor"
+        && laneRow.branch === laneBody.branch,
+      `${lane.status} ${JSON.stringify(laneBody)} row=${JSON.stringify(laneRow)}`);
+    if (laneSlot !== null) {
+      // the same place, refounded through the SECOND lane door — its slot choice is already proven
+      // lane-eligible, so this founding needs no slot logic of its own
+      const beforeWt = await receipts();
+      const wt = await post(`/api/slots/${laneSlot}/open-worktree`, { repo: fixture, packs: ["promise-anchor"] });
+      const wtBody = await wt.json() as { ok?: boolean; branch?: string; packsDelivered?: boolean; reason?: string };
+      const afterWt = await receipts();
+      const wtRow = afterWt.receipts.filter((row) => row.slot === laneSlot).at(-1) ?? null;
+      check("founding packs: open-worktree delivers the chosen pack through the second lane door",
+        wt.ok && wtBody.packsDelivered === true && afterWt.total === beforeWt.total + 1
+          && !!wtRow && wtRow.selected.length === 1 && wtRow.selected[0]!.id === "promise-anchor"
+          && wtRow.branch === wtBody.branch,
+        `${wt.status} ${JSON.stringify(wtBody)} row=${JSON.stringify(wtRow)}`);
+    }
+  }
+
+  for (const slot of opened) await kill(slot).catch(() => {});
+  rmSync(fixture, { recursive: true, force: true });
 }
 
 if (import.meta.main) await run();

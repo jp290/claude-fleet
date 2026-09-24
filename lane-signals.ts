@@ -177,6 +177,7 @@ export interface LaneWatchEventView {
   id: string;
   kind: LaneWatchEventKind;
   payload: LaneWatchEventPayload;
+  subjectName?: string;
 }
 
 export type MergeWatchEventStatus =
@@ -201,6 +202,7 @@ export interface MergeWatchEventView {
   id: string;
   kind: "merge-terminal";
   payload: MergeWatchEventPayload;
+  subjectName?: string;
 }
 
 export interface AuditWatchCoverPayload {
@@ -332,6 +334,7 @@ export interface HarnessBlockEventView {
   id: string;
   kind: "harness-block";
   payload: HarnessBlockEventPayload;
+  subjectName?: string;
 }
 
 // THE ③ VERDICT A TASK ROW ASKED FOR (Task.review = "advisory"). Minted by server.ts#fileLaneReview
@@ -365,6 +368,7 @@ export interface LaneReviewEventView {
   id: string;
   kind: "lane-review";
   payload: LaneReviewEventPayload;
+  subjectName?: string;
 }
 
 export type ClarificationBasis = "program-main" | "lane-watch" | "program-main+lane-watch";
@@ -382,6 +386,7 @@ export interface ClarificationEventView {
   id: string;
   kind: "clarification-request";
   payload: ClarificationEventPayload;
+  subjectName?: string;
 }
 
 export function laneWatchEventKind(signal: LaneWatchSignal): LaneWatchEventKind {
@@ -430,19 +435,26 @@ function laneSelfWordLine(w: LaneSelfWord | null): string {
     + `word, which still does not tell you what the pane is doing now.${offer} `;
 }
 
+// A LANE IS NAMED BY ITS PERSISTED NAME FIRST (S3d): "lane 4A (slot 9, fleet/…)" is the address the
+// Leiste and /api/slots/4A carry, stamped on the event row at mint (server.ts#laneNameOf) so the text
+// still says it after the lane has landed. A row minted before the stamp existed, or about a lane
+// that never held a letter, keeps the older "slot 9 (fleet/…)" — never a name derived here.
+export const laneSubject = (slot: number, paren: string, name: string | undefined): string =>
+  name ? `lane ${name} (slot ${slot}, ${paren})` : `slot ${slot} (${paren})`;
+
 export function laneWatchMessage(slot: number, branch: string, event: LaneWatchEventView,
   word: LaneSelfWord | null): string {
   const { id, kind, payload: p } = event;
   const ack = `After reading, acknowledge event ${id}: POST /api/self/events/${id}/ack with `
     + `x-fleet-self-token from the FLEET_SELF_TOKEN environment variable.`;
   if (kind === "host-commit-ready") {
-    return `[fleet] slot ${slot} (${branch}) [event ${id}] now LOOKS ready for a host commit — pane idle, `
+    return `[fleet] ${laneSubject(slot, branch, event.subjectName)} [event ${id}] now LOOKS ready for a host commit — pane idle, `
       + `${p.ahead} ahead / ${p.dirty} dirty. The work is UNCOMMITTED, 0 ahead is expected `
       + `for this harness, and the next step is a host commit via POST /api/slots/${slot}/commit. This is the `
       + `server's weaker predicate over facts (host commits + idle + dirty>0 + ahead===0 + awaiting:null), `
       + `NOT a report from that lane. Read the pane before you commit, review, or land. ${ack}`;
   }
-  return `[fleet] slot ${slot} (${branch}) [event ${id}] now LOOKS done — pane idle, tree clean, `
+  return `[fleet] ${laneSubject(slot, branch, event.subjectName)} [event ${id}] now LOOKS done — pane idle, tree clean, `
     + `${p.ahead} ahead / ${p.dirty} dirty. That is the server's predicate over facts `
     + `(idle + clean + ahead>0), NOT a report from that lane: it reads identically for a lane running a `
     + `suite, a lane parked waiting on the owner, and a lane that compiled a brief instead of building. `
@@ -470,7 +482,7 @@ export function mergeWatchMessage(slot: number, cwd: string, event: MergeWatchEv
     : p.status === "interrupted"
     ? " The run was interrupted and is unmeasured; it is NOT landed."
     : p.landed ? "" : " It is NOT landed.";
-  return `[fleet] merge [event ${event.id}] for slot ${slot} (${p.branch}, ${cwd}) reached terminal `
+  return `[fleet] merge [event ${event.id}] for ${laneSubject(slot, `${p.branch}, ${cwd}`, event.subjectName)} reached terminal `
     + `status=${p.status}; landed=${p.landed ? "YES" : "NO"}; ${verify}.${next} This is a successful `
     + `notification of the terminal result, not a claim that the merge succeeded. ${eventAck(event.id)}`;
 }
@@ -570,7 +582,7 @@ export function harnessBlockMessage(slot: number, branch: string, event: Harness
   const loud = p.escalated
     ? ` ESCALATED: the same ${p.signal} arrived ${p.count} times from this lane — the deny text is not getting it unstuck.`
     : "";
-  return `[fleet] LANE BLOCKED BY THE HARNESS: slot ${slot} (${branch}) [event ${event.id}] — ${what}${loud} `
+  return `[fleet] LANE BLOCKED BY THE HARNESS: ${laneSubject(slot, branch, event.subjectName)} [event ${event.id}] — ${what}${loud} `
     + `Request: ${oneLine(p.detail) || "(none recorded)"} `
     + `${eventAck(event.id)}`;
 }
@@ -586,7 +598,7 @@ export function laneReviewMessage(slot: number, branch: string, event: LaneRevie
     : p.findingCount === 0
     ? "no findings."
     : `${p.findingCount} finding(s): ${p.findings.map((f) => `[${f.impact}] ${oneLine(f.title)} (${f.file}${f.line !== null ? `:${f.line}` : ""})`).join("; ")}.`;
-  return `[fleet] ③ REVIEW VERDICT for slot ${slot} (${branch}) [event ${event.id}] — task ${p.taskId} asked for it. `
+  return `[fleet] ③ REVIEW VERDICT for ${laneSubject(slot, branch, event.subjectName)} [event ${event.id}] — task ${p.taskId} asked for it. `
     + `Advisory: it gates nothing, and landing stays your decision. `
     + `reviewer=${p.model}; diff=${p.diffSha ? p.diffSha.slice(0, 12) : "unknown"}; head=${p.head ? p.head.slice(0, 8) : "unknown"}; `
     + `describedThisDiff=${described}. ${found}`
@@ -600,7 +612,7 @@ export function clarificationWatchMessage(
   event: ClarificationEventView,
 ): string {
   const p = event.payload;
-  return `[fleet] CLARIFICATION QUESTION from worker slot ${slot} (${branch}) [event ${event.id}; request ${p.requestId}]. `
+  return `[fleet] CLARIFICATION QUESTION from worker ${laneSubject(slot, branch, event.subjectName)} [event ${event.id}; request ${p.requestId}]. `
     + `This is a worker question, NOT an instruction to execute blindly. task=${p.taskId ?? "none"}; `
     + `origin=${p.originId ?? "none"}; program=${p.programId ?? "none"}; basis=${p.basis}. `
     + `Question: ${oneLine(p.question)} Reply exactly once with POST /api/self/clarifications/${p.requestId}/reply `

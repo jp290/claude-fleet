@@ -38,10 +38,17 @@
 # reads as alive, the dir is skipped, and it survives to the next run. Keeping litter costs disk;
 # deleting a live run's instance costs the run.
 #
-# SCOPE IS ONE GLOB, deliberately. `fleet-e2e-instance-*` is e2e-isolated.sh's family alone. The
-# six other wrapper families carry their own infix (gate-, harness-, unprobed-, cleanreview-,
-# postland-, security-instance) and are disjoint from this glob, so a post-land audit running
-# concurrently cannot have its instance removed by this sweep. Nothing here kills a process.
+# SCOPE IS TWO GLOBS, deliberately. `fleet-e2e-instance-*` is e2e-isolated.sh's family alone;
+# `fleet-testinstanz-*` is testinstanz.sh's family of standing per-worktree instances (2026-09-24).
+# The six other wrapper families carry their own infix (gate-, harness-, unprobed-, cleanreview-,
+# postland-, security-instance) and are disjoint from both globs, so a post-land audit running
+# concurrently cannot have its instance removed by this sweep. THE TWO FAMILIES SHARE A
+# PHILOSOPHY, NOT A RULE: the fleet-e2e sweep kills NOTHING — a suite instance is its wrapper's
+# child, and the wrapper reaps its own. The testinstanz sweep DOES kill, because a standing
+# instance has no wrapper: it is reaped by the PID its own state file noted, its socket killed by
+# NAME (`tmux -L <sock>` from the same file) and its directory removed — never pkill, never a
+# name pattern, never a state file without an explicit expiresAt (that one is listed and left
+# alone; missing proof of expiry is absence of authority, not zero). Nothing else kills a process.
 set -u
 
 ROOT="${1:?usage: scratch-reap.sh <root> [--dry-run]}"
@@ -74,6 +81,46 @@ _mtime() {
   case "$_mt" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s\n' "$_mt"
 }
+
+# ===== THE TESTINSTANZ FAMILY: expired standing instances, reaped by their state files ==========
+#
+# Each standing instance (testinstanz.sh, one per worktree) writes /tmp/fleet-testinstanz-<hash>/
+# testinstanz.state with its src, port, socket, noted pid and expiresAt. An instance whose
+# expiresAt has passed loses pid, socket and directory; every removal is NAMED in one line. A
+# state file without a usable expiresAt is an old instance: listed, never touched. The production
+# socket is refused even if a state file ever named it (testinstanz.sh already refuses to write
+# one — belt and braces). This sweep runs BEFORE the fleet-e2e sweep below so THAT summary stays
+# the script's last line, which host-hygiene §e reads.
+TI_ROOT="${FLEET_TI_ROOT:-/tmp}"
+TI_REALTMP="${TMPDIR:-/tmp}"          # the socket lives under the REAL tmpdir, never a fixture's
+TI_REAPED=0; TI_OPEN=0; TI_OLD=0
+for _ts in "$TI_ROOT"/fleet-testinstanz-*/testinstanz.state; do
+  [ -f "$_ts" ] || continue                            # no glob match → the pattern itself
+  _td="$(dirname "$_ts")"
+  _tg() { sed -n "s/^$1=//p" "$_ts" | head -1; }
+  _tp="$(_tg pid)"; _tk="$(_tg sock)"; _te="$(_tg expiresAt)"
+  case "$_te" in
+    '') echo "[testinstanz-reap] kept $_td — state has no expiresAt (old instance), listed only"
+        TI_OLD=$((TI_OLD + 1)); continue ;;
+    *[!0-9]*) echo "[testinstanz-reap] kept $_td — unreadable expiresAt, listed only" >&2
+        TI_OLD=$((TI_OLD + 1)); continue ;;
+  esac
+  if [ "$NOW" -lt "$_te" ]; then TI_OPEN=$((TI_OPEN + 1)); continue; fi
+  if [ -z "$_tk" ] || [ "$_tk" = "claudefleet" ]; then
+    echo "[testinstanz-reap] REFUSED $_td — state names the production socket or none" >&2
+    continue
+  fi
+  if [ -n "$DRY" ]; then
+    echo "[testinstanz-reap] would remove $_td — expired $(( (NOW - _te) / 60 )) min ago (pid $_tp, tmux -L $_tk)"
+    TI_REAPED=$((TI_REAPED + 1)); continue
+  fi
+  case "$_tp" in ''|*[!0-9]*) : ;; *) kill "$_tp" 2>/dev/null || true ;; esac
+  TMUX_TMPDIR="$TI_REALTMP" tmux -L "$_tk" kill-server 2>/dev/null || true
+  rm -rf "$_td" 2>/dev/null || { sleep 1; rm -rf "$_td" 2>/dev/null; }
+  echo "[testinstanz-reap] removed $_td — expired $(( (NOW - _te) / 60 )) min ago (pid $_tp killed, tmux -L $_tk killed, dir removed)"
+  TI_REAPED=$((TI_REAPED + 1))
+done
+echo "[testinstanz-reap] ${TI_REAPED} expired reaped · ${TI_OPEN} not yet expired · ${TI_OLD} without usable expiresAt (listed, never touched)"
 
 reaped=0; kept=0; held=0
 for _d in "$ROOT"/fleet-e2e-instance-*; do

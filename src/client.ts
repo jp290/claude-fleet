@@ -3507,10 +3507,11 @@ function errorsSection(): HTMLElement | null {
 
 // --- the file explorer (§F5) --------------------------------------------------------------
 //
-// The tree is `git ls-files` and nothing else — see the /api/tree comment in server.ts for why,
-// and for the one thing it therefore cannot show (untracked files; the card above shows those).
-// `-z` also means the server's list is the ONE git path shape that is never quoted, so nothing
-// here needs GITPATH's decoder; the changed-file cards above, which read porcelain, do.
+// The tree is `git ls-files` — see the /api/tree comment in server.ts for why, and for the one
+// thing that route therefore cannot list: untracked files. Those come from the OTHER read the board
+// already makes, the brief's `git status --porcelain` (fxGit below), and join the tree while the
+// Untracked switch is on. `-z` means the tree's list is the ONE git path shape that is never
+// quoted; the status lines are porcelain and go through GITPATH's decoder (fxStatusOf).
 //
 // Two rules this cache exists to keep, both of them about the 3s board repaint:
 //   · it is fetched ONCE per working directory, never from the repaint loop. /api/sessions at 2s
@@ -3529,6 +3530,13 @@ const fxAsked = new Set<string>();  // the latch: one fetch per cwd, retried onl
 const fxOpen = new Map<string, Set<string>>();   // cwd → directories expanded, as "a/b" prefixes
 const fxQuery = new Map<string, string>();       // cwd → the card's search text
 const fxScroll = new Map<string, number>();      // cwd → the card tree's scroll offset
+const fxTreeAt = new Map<string, number>();      // cwd → when the tree was read (the window's footer)
+// The git state both homes paint: the brief's porcelain lines, written by the board on every render
+// of that slot and by the window on open and ↻ — never a request of its own (X1: no new route).
+type FxGit = { lines: string[]; total: number; branch: string | null } | { error: string };
+const fxGit = new Map<string, FxGit>();
+const fxUntracked = new Map<string, boolean>();  // cwd → the Untracked switch; absent = ON (owner 2026-09-24)
+const fxChanged = new Map<string, boolean>();    // cwd → the window's Changed filter
 let fxShell: Shell | null = null;
 // The card's search box is REBUILT by every 3s repaint (renderBoard replaceChildren's the whole
 // board), so surviving the refresh cannot mean "keep the element" — the element is gone. It means
@@ -3565,6 +3573,12 @@ const fxOpenSet = (cwd: string): Set<string> => {
 // tree tabbable, Enter/Space-activatable and focus-ringed without a keydown handler that could
 // drift from the click handler. `onRows` hands the flat visual order back to a caller that has a
 // window shell to drive with it (↑↓ + Enter) — the card has no shell and passes none.
+//
+// The GIT STATE rides on the same rows (X1, owner's pick 2026-09-24): `status` is the brief's own
+// `git status --porcelain` read — the lines the Info tab's "uncommitted" card already shows — keyed
+// by path, so this renderer asks nothing new of the server. A file row carries its letter, a folder
+// a dot when anything below it is changed or new, an untracked row is dimmed with "?".
+// `changedOnly` is the Changed filter: the same flat list a search gives, of what git status names.
 interface PaintOpts {
   open: Set<string>;
   onPick: (rel: string) => void;
@@ -3575,6 +3589,9 @@ interface PaintOpts {
   capped?: boolean;
   shown?: number;               // how many paths the server actually delivered
   total?: number;               // how many it says exist
+  status?: Map<string, string>; // path → porcelain XY, from fxStatusOf
+  statusMore?: number;          // status lines the server read but did not send (its 200-line cap)
+  changedOnly?: boolean;
 }
 function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void {
   // Folding repaints this container, which DETACHES the row that was just activated — so a reader
@@ -3586,12 +3603,60 @@ function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void {
     wantFocus = null;
     row.focus();
   };
+  const status = o.status ?? new Map<string, string>();
+  // every folder that holds a change somewhere below it, as "a/b" prefixes — computed once per
+  // paint, so a folder row asks a Set instead of walking the status list
+  const dirty = new Set<string>();
+  for (const p of status.keys()) {
+    const parts = p.replace(/\/$/, "").split("/");
+    for (let i = 1; i < parts.length; i++) dirty.add(parts.slice(0, i).join("/"));
+  }
+  const counts = new Map<TreeNode, number>();
+  const countOf = (n: TreeNode): number => {
+    let c = counts.get(n);
+    if (c === undefined) {
+      c = n.files.length;
+      for (const kid of n.dirs.values()) c += countOf(kid);
+      counts.set(n, c);
+    }
+    return c;
+  };
+  // the letter git itself prints, and a German sentence for it (G0.5: tooltips say what it means)
+  const mark = (row: HTMLElement, rel: string) => {
+    const xy = status.get(rel);
+    if (!xy) return;
+    const untracked = xy === "??";
+    if (untracked) row.className += " fxuntr";
+    const letter = untracked ? "?" : (xy[1] !== " " ? xy[1] : xy[0]) ?? "M";
+    const b = el("span", `fxst ${untracked ? "fxnew" : "fxmod"}`, letter);
+    const what: Record<string, string> = { M: "geändert", A: "neu hinzugefügt", D: "gelöscht",
+      R: "umbenannt", C: "kopiert", T: "Typ geändert", U: "Konflikt" };
+    b.title = untracked ? "ungetrackt — git kennt diese Datei noch nicht; committet ist sie erst nach git add"
+      : `${what[letter] ?? "verändert"}, nicht committet (git status: ${xy.replace(/ /g, "·")})`;
+    row.appendChild(b);
+    row.title = `${rel} — ${b.title}`;
+  };
   const redraw = () => { into.replaceChildren(); const rows: ShellRow[] = []; walk(rows); o.onRows?.(rows); };
   const fileRow = (rel: string, name: string, depth: number, rows: ShellRow[]) => {
     const row = el("button", `fxrow fxfile${o.picked() === rel ? " fxpicked" : ""}`) as HTMLButtonElement;
-    row.style.paddingLeft = `${depth * 12 + 12}px`;
+    row.style.paddingLeft = `${depth * 14 + 26}px`;
     row.appendChild(el("span", "fxname", name));
     row.title = rel;
+    mark(row, rel);
+    const act = () => { o.onPick(rel); redraw(); };
+    row.onclick = act;
+    into.appendChild(row);
+    rows.push({ el: row, open: act });
+  };
+  // a search hit or a Changed row: a PATH, whose directory half is context, not the answer
+  const flatRow = (rel: string, rows: ShellRow[]) => {
+    const row = el("button", `fxrow fxfile fxhit${o.picked() === rel ? " fxpicked" : ""}`) as HTMLButtonElement;
+    const bare = rel.replace(/\/$/, "");
+    const cut = bare.lastIndexOf("/");
+    if (cut >= 0) row.appendChild(el("span", "fxdim", `${rel.slice(0, cut)}/`));
+    row.appendChild(el("span", "fxname", cut >= 0 ? rel.slice(cut + 1) : rel));
+    row.title = rel;
+    mark(row, rel);
     const act = () => { o.onPick(rel); redraw(); };
     row.onclick = act;
     into.appendChild(row);
@@ -3602,10 +3667,18 @@ function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void {
       const rel = prefix ? `${prefix}/${name}` : name;
       const open = o.open.has(rel);
       const row = el("button", `fxrow fxdir${open ? " fxopen" : ""}`) as HTMLButtonElement;
-      row.style.paddingLeft = `${depth * 12}px`;
-      row.appendChild(el("span", "fxtwist", open ? "▾" : "▸"));
+      row.style.paddingLeft = `${depth * 14 + 8}px`;
+      const twist = el("span", open ? "fxtwist" : "fxtwist shut");
+      twist.appendChild(icon("chevron"));
+      row.appendChild(twist);
       row.appendChild(el("span", "fxname", name));
-      row.title = `${rel}/ — ${open ? "collapse" : "expand"}`;
+      if (dirty.has(rel)) {
+        const dot = el("span", "fxdot");
+        dot.title = "enthält Änderungen, die noch nicht committet sind";
+        row.appendChild(dot);
+      }
+      row.appendChild(el("span", "fxcount", String(countOf(kid))));
+      row.title = `${rel}/ — ${open ? "zuklappen" : "aufklappen"}`;
       row.setAttribute("aria-expanded", open ? "true" : "false");
       const act = () => { if (open) o.open.delete(rel); else o.open.add(rel); wantFocus = rel; redraw(); };
       row.onclick = act;
@@ -3620,6 +3693,21 @@ function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void {
   };
   const walk = (rows: ShellRow[]): void => {
     const q = (o.query ?? "").trim();
+    if (o.changedOnly) {
+      // what git status names, in path order — a DELETED file is here too, though the tree has no
+      // row for it any more: the filter answers "what changed", not "what is on disk"
+      const changed = Array.from(status.keys()).sort((a, b) => a.localeCompare(b));
+      const hits = q ? matchTree(changed, q) : changed;
+      if (!hits.length) {
+        into.appendChild(el("div", "bempty", !changed.length
+          ? "nothing changed — git status is clean for what this list shows"
+          : `${changed.length} changed, none of them matches “${q}”`));
+      }
+      for (const rel of hits) flatRow(rel, rows);
+      if (o.statusMore) into.appendChild(el("div", "bempty",
+        `… ${o.statusMore} more — the server reads at most 200 status lines`));
+      return;
+    }
     if (!q) { walkTree(root, "", 0, rows); return; }
     const hits = matchTree(o.all ?? [], q);
     if (!hits.length) {
@@ -3632,22 +3720,41 @@ function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void {
         : `nothing matches “${q}” among the ${o.total ?? o.shown ?? 0} tracked files in this repo`));
       return;
     }
-    for (const rel of hits) {
-      const row = el("button", `fxrow fxfile fxhit${o.picked() === rel ? " fxpicked" : ""}`) as HTMLButtonElement;
-      const cut = rel.lastIndexOf("/");
-      if (cut >= 0) row.appendChild(el("span", "fxdim", `${rel.slice(0, cut)}/`));
-      row.appendChild(el("span", "fxname", cut >= 0 ? rel.slice(cut + 1) : rel));
-      row.title = rel;
-      const act = () => { o.onPick(rel); redraw(); };
-      row.onclick = act;
-      into.appendChild(row);
-      rows.push({ el: row, open: act });
-    }
+    for (const rel of hits) flatRow(rel, rows);
     if (o.capped) into.appendChild(el("div", "bempty",
       `${hits.length} match${hits.length === 1 ? "" : "es"} — searched only the first ${o.shown ?? 0}`
       + ` of ${o.total ?? 0} tracked files the server delivered`));
   };
   redraw();
+}
+// porcelain lines → path → XY. With `untracked` off the "??" lines are dropped here, and with them
+// every trace of an untracked file: its row, its "?", and the dot it would put on its folder.
+// Ignored files never arrive — `git status --porcelain` without --ignored does not list them.
+function fxStatusOf(lines: string[], untracked: boolean): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const l of lines) {
+    if (l.length < 4 || (l.startsWith("??") && !untracked)) continue;
+    m.set(porcelainPath(l), l.slice(0, 2));
+  }
+  return m;
+}
+// treeOf, plus the one shape git status adds: an untracked NEW folder is a single line `dir/`
+// (git folds it and so does this list), which becomes one leaf row named `dir/` under its parent
+// rather than an empty folder that would open onto nothing.
+function fxTreeOf(paths: string[]): TreeNode {
+  const root = treeOf(paths.filter((p) => !p.endsWith("/")));
+  for (const p of paths) {
+    if (!p.endsWith("/")) continue;
+    const parts = p.slice(0, -1).split("/");
+    let node = root;
+    for (const seg of parts.slice(0, -1)) {
+      let next = node.dirs.get(seg);
+      if (!next) { next = { dirs: new Map(), files: [] }; node.dirs.set(seg, next); }
+      node = next;
+    }
+    node.files.push(`${parts[parts.length - 1]}/`);
+  }
+  return root;
 }
 async function loadTree(slot: number, cwd: string): Promise<void> {
   const res = await api(`/api/tree?slot=${slot}`).catch(() => null);
@@ -3658,7 +3765,32 @@ async function loadTree(slot: number, cwd: string): Promise<void> {
     const e = res ? ((await res.json().catch(() => null)) as { error?: string } | null) : null;
     fxTree.set(cwd, { error: e?.error ?? "the file tree could not be read" });
   }
+  fxTreeAt.set(cwd, Date.now());
   void renderBoard();
+}
+// the window's read of the git state: the SAME brief route the board already polls for the focused
+// slot — the window may be open on a slot the board is not showing, so it asks once itself
+async function loadGit(slot: number, cwd: string): Promise<void> {
+  const res = await api(`/api/slots/${slot}/brief`).catch(() => null);
+  const b = res?.ok ? ((await res.json().catch(() => null)) as BriefInfo | null) : null;
+  fxGit.set(cwd, b ? { lines: b.uncommittedFiles, total: b.uncommitted, branch: b.branch }
+    : { error: "git status could not be read" });
+}
+// What both homes paint, derived in ONE place so the card and the window cannot disagree about
+// which rows exist: the tracked list, plus — with Untracked on — the untracked lines of git status.
+function fxView(cwd: string, t: TreeInfo) {
+  const g = fxGit.get(cwd);
+  const lines = g && !("error" in g) ? g.lines : [];
+  const untrackedOn = fxUntracked.get(cwd) ?? true;
+  const status = fxStatusOf(lines, untrackedOn);
+  const untracked = lines.filter((l) => l.startsWith("??")).map(porcelainPath);
+  const paths = untrackedOn ? [...t.files, ...untracked] : t.files;
+  return {
+    g, status, paths, untrackedOn,
+    untrackedN: untracked.length,
+    changedN: lines.length - untracked.length,
+    statusMore: g && !("error" in g) ? Math.max(0, g.total - g.lines.length) : 0,
+  };
 }
 
 // The search box, built the same way for the card and for the window. It is one function because
@@ -3720,13 +3852,17 @@ function fileTreeSection(slot: number, cwd: string): HTMLElement {
   const inp = fxSearchInput(cwd, () => repaint(), false);
   fxInputEl.set(cwd, inp);
   sec.appendChild(inp);
-  const repaint = () => paintTree(box, treeOf(t.files), {
-    open: fxOpenSet(cwd),
-    onPick: (rel) => openExplorer(slot, cwd, rel),
-    picked: () => null,
-    query: fxQuery.get(cwd) ?? "",
-    all: t.files, capped: t.capped, shown: t.files.length, total: t.total,
-  });
+  const repaint = () => {
+    const v = fxView(cwd, t);
+    paintTree(box, fxTreeOf(v.paths), {
+      open: fxOpenSet(cwd),
+      onPick: (rel) => openExplorer(slot, cwd, rel),
+      picked: () => null,
+      query: fxQuery.get(cwd) ?? "",
+      all: v.paths, capped: t.capped, shown: t.files.length, total: t.total,
+      status: v.status,
+    });
+  };
   repaint();
   // the 3s repaint discards this element and builds a new one, so the offset has to be carried in
   // module state and re-applied; without it the card silently jumped to the top every three seconds
@@ -3740,68 +3876,201 @@ function fileTreeSection(slot: number, cwd: string): HTMLElement {
   return sec;
 }
 
-// The explorer window. It is the same shell every other browse-and-inspect surface uses, and the
-// detail pane is showFileView — the viewer the diff window, the picker and the commit lens already
-// share. F5 adds an ENTRY POINT to that stair, not a second file view.
+// The explorer window, arrangement A "Werkbank" (owner's pick 2026-09-24; mockup
+// docs/design/datei-explorer/entwurf.html?f=a): it takes the screen the way the queue does, the
+// tree on the left and the file on the right at full height. It is the same shell every other
+// browse-and-inspect surface uses, and the file is showFileView — the viewer the diff window, the
+// picker and the commit lens share. This window adds only its own file HEAD (the path, which
+// version, the jump to what changed) and asks the viewer for line numbers.
+//
+// READ-ONLY (X1). Nothing here writes: the ✎ under a file is the viewer's existing edit stair,
+// unchanged, and New/Rename/Move/Delete wait for X3 and its dialog.
 function openExplorer(slot: number, cwd: string, startAt?: string, line?: number) {
-  const t = fxTree.get(cwd);
-  if (!t || "error" in t) return;
+  const t0 = fxTree.get(cwd);
+  if (!t0 || "error" in t0) return;
   fxShell?.close();
   let picked: string | null = null;
+  let timer: ReturnType<typeof setInterval> | undefined;
   const shell = openShell({
     id: "files",
     title: "Files",
-    // TREE_CAP is a property of the ANSWER, not of the card that first showed it: the window is
-    // where the reader searches, so it is the window that most needs to say the list is partial.
-    subtitle: `${baseName(cwd)} · ${t.total} tracked`
-      + (t.capped ? ` · only the first ${t.files.length} were sent` : ""),
-    detailHint: "Pick a file on the left. Reading is all it does until you press ✎.",
-    listWidth: 340,
-    onClose: () => { fxShell = null; },
+    detailHint: "Pick a file on the left. This window only reads — ✎ under a file is one extra click.",
+    listWidth: 300,
+    onClose: () => { fxShell = null; clearInterval(timer); },
   });
   fxShell = shell;
-  // the path of what is open, above the list — a basename in the header is not an answer to
-  // "which of the four files called index.ts am I reading"
-  const path = el("div", "fxpath", "");
-  const open = (rel: string) => {
+  // a ↻ that failed leaves the error in fxTree; the window keeps painting the last tree it had
+  const tree = (): TreeInfo => { const t = fxTree.get(cwd); return t && !("error" in t) ? t : t0; };
+
+  // ↻ in the window's own head, beside ✕ (G1.1). Before this the window showed a tree it had read
+  // once, and a file the agent had just written stayed missing until the CARD's ↻.
+  const again = el("button", "fxreload") as HTMLButtonElement;
+  again.appendChild(icon("reload"));
+  again.title = "Baum und Git-Zustand neu lesen — eine neue Datei erscheint erst danach";
+  again.setAttribute("aria-label", again.title);
+  shell.root.querySelector(".shellclose")?.before(again);
+
+  // the subtitle: repo and branch are ADDRESSES (mono, G0.3), the counts are the reader's
+  const sub = shell.root.querySelector<HTMLElement>(".shellsub");
+  const paintHead = () => {
+    const t = tree();
+    const v = fxView(cwd, t);
+    const parts: (string | HTMLElement)[] = [el("span", "fxmono", baseName(cwd))];
+    if (v.g && !("error" in v.g) && v.g.branch) parts.push(" · ", el("span", "fxmono", v.g.branch));
+    const counts = [`${t.total} tracked`];
+    if (v.g && "error" in v.g) counts.push(v.g.error);
+    else if (v.g) counts.push(`${v.changedN}${v.statusMore ? "+" : ""} changed`, `${v.untrackedN} untracked`);
+    if (t.capped) counts.push(`only the first ${t.files.length} were sent`);
+    const tr = fxTree.get(cwd);
+    if (tr && "error" in tr) counts.push(`re-read failed: ${tr.error}`);
+    parts.push(" · ", el("span", "fxnum", counts.join(" · ")));
+    sub?.replaceChildren(...parts);
+  };
+
+  // the tool row: search, the All | Changed filter (G3.1), the Untracked switch (G1.3)
+  const search = fxSearchInput(cwd, () => repaint(), true);
+  const seg = el("div", "fxseg");
+  seg.setAttribute("role", "group");
+  const allB = el("button", "") as HTMLButtonElement;
+  allB.title = "Den ganzen Baum zeigen";
+  const chB = el("button", "") as HTMLButtonElement;
+  chB.title = "Nur zeigen, was git status als geändert oder neu nennt — als flache Pfadliste";
+  allB.onclick = () => { fxChanged.set(cwd, false); repaint(); };
+  chB.onclick = () => { fxChanged.set(cwd, true); repaint(); };
+  seg.append(allB, chB);
+  const untr = el("button", "fxtog", "Untracked") as HTMLButtonElement;
+  untr.title = "Ungetrackte Dateien zeigen, gedimmt mit „?“ — gitignorte nie";
+  untr.onclick = () => { fxUntracked.set(cwd, !(fxUntracked.get(cwd) ?? true)); paintHead(); repaint(); };
+  shell.tools.append(search, seg, untr);
+  const paintTools = () => {
+    const v = fxView(cwd, tree());
+    const changed = fxChanged.get(cwd) ?? false;
+    allB.replaceChildren("All", el("span", "fxn", String(v.paths.length)));
+    chB.replaceChildren("Changed", el("span", "fxn", `${v.status.size}${v.statusMore ? "+" : ""}`));
+    for (const [b, on] of [[allB, !changed], [chB, changed], [untr, v.untrackedOn]] as const) {
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", String(on));
+    }
+  };
+
+  // the footer (G2.3): whether the session is writing in this tree right now, and how old the tree is
+  const live = el("span", "fxlive");
+  const age = el("span", "fxage");
+  const keys = el("span", "fxkeys", "↑↓ walk · Enter open · Esc close");
+  shell.foot.append(live, age, keys);
+  const paintFoot = () => {
+    const on = sessionActive(slot);
+    live.classList.toggle("on", on);
+    live.textContent = on ? `Session ${slot} is working right now` : `Session ${slot} is idle`;
+    live.title = on
+      ? "Die Session hat in den letzten Sekunden Ausgabe erzeugt — sie kann gerade Dateien in diesem Baum schreiben"
+      : "Die Session erzeugt gerade keine Ausgabe";
+    const at = fxTreeAt.get(cwd);
+    age.textContent = at ? `tree read ${fmtSince(at)}` : "";
+  };
+  timer = setInterval(() => { if (shell.isOpen()) paintFoot(); }, 2000);
+
+  // the file head: the path as a crumb, which version this is, and — for a file git calls changed —
+  // the jump to the review window on exactly this file. A JUMP, not a second window on top: two
+  // stacked shells would both close on one Escape (see openReview).
+  let head: HTMLElement | null = null;
+  let facts: HTMLElement | null = null;
+  const fileHead = (rel: string): HTMLElement => {
+    const xy = fxView(cwd, tree()).status.get(rel);
+    const h = el("div", "fxfhead");
+    const crumb = el("div", "fxcrumb");
+    const bare = rel.replace(/\/$/, "");
+    const cut = bare.lastIndexOf("/");
+    if (cut >= 0) crumb.appendChild(el("span", "", rel.slice(0, cut + 1)));
+    crumb.appendChild(el("b", "", rel.slice(cut + 1)));
+    crumb.title = `${cwd}/${rel}`;
+    h.appendChild(crumb);
+    const meta = el("div", "fxfmeta");
+    meta.appendChild(el("span", "", xy === "??"
+      ? "untracked — as it is on disk; git has never seen it, so there is no diff"
+      : "as it is on disk right now"));
+    if (facts) meta.appendChild(facts);
+    if (xy && xy !== "??") {
+      const b = el("button", "fxjump", "What changed") as HTMLButtonElement;
+      b.title = "Öffnet das Review-Fenster auf genau dieser Datei: was sich seit dem letzten Commit geändert hat (der Explorer schließt dabei)";
+      b.onclick = () => { shell.close(); void openReview(slot, "working", { k: "file", path: rel }); };
+      meta.appendChild(b);
+    }
+    h.appendChild(meta);
+    return h;
+  };
+  const open = (rel: string, at?: number) => {
     picked = rel;
-    path.textContent = rel;
-    showFileView(shell, {
-      path: `${cwd}/${rel}`,
-      label: rel.split("/").pop() ?? rel,
-      source: "as it is on disk right now",
-      edit: { slot },
-      line,
-      back: { label: "the tree", go: () => {
-        picked = null;
-        path.textContent = "";
-        shell.setCloseGuard(null);
-        shell.detail.replaceChildren(el("div", "hint shellhint", "Pick a file on the left."));
-        repaint();
-      } },
-    });
+    facts = el("span", "fxfacts");
+    head = fileHead(rel);
+    if (rel.endsWith("/")) {
+      shell.setCloseGuard(null);
+      shell.detail.replaceChildren(head, el("div", "hint shellhint",
+        "a new folder git has not seen yet — git status folds it into this one line, so its files"
+        + " are not listed one by one. They appear here once they are added to git."));
+      if (isMobile()) shell.showDetail(true);
+    } else {
+      showFileView(shell, {
+        path: `${cwd}/${rel}`, label: rel.split("/").pop() ?? rel,
+        source: "as it is on disk right now", edit: { slot }, line: at,
+        head, facts, numbered: true,
+      });
+    }
     repaint();
   };
-  const repaint = () => paintTree(shell.list, treeOf(t.files), {
-    open: fxOpenSet(cwd),
-    onPick: open,
-    picked: () => picked,
-    query: fxQuery.get(cwd) ?? "",
-    all: t.files, capped: t.capped, shown: t.files.length, total: t.total,
-    // ↑↓ walk the rows and Enter opens the selected one — the same keyboard contract every other
-    // window here has. Without it this list was mouse-only, alone among the four.
-    onRows: (rows) => {
-      shell.setRows(rows);
-      // clicking a row also moves the shell's cursor there, so Enter afterwards means "this row"
-      for (const [i, r] of rows.entries()) r.el.onfocus = () => shell.select(i, false, false);
-    },
-  });
-  shell.tools.appendChild(fxSearchInput(cwd, repaint, true));
-  shell.tools.appendChild(path);
-  repaint();
-  if (startAt) open(startAt);
-}
 
+  let scrollToPicked = false;
+  const repaint = () => {
+    const t = tree();
+    const v = fxView(cwd, t);
+    paintTools();
+    paintTree(shell.list, fxTreeOf(v.paths), {
+      open: fxOpenSet(cwd),
+      onPick: (rel) => open(rel),
+      picked: () => picked,
+      query: fxQuery.get(cwd) ?? "",
+      all: v.paths, capped: t.capped, shown: t.files.length, total: t.total,
+      status: v.status, statusMore: v.statusMore, changedOnly: fxChanged.get(cwd) ?? false,
+      // ↑↓ walk the rows and Enter opens the selected one — the same keyboard contract every other
+      // window here has. Without it this list was mouse-only, alone among the four.
+      onRows: (rows) => {
+        shell.setRows(rows);
+        // clicking a row also moves the shell's cursor there, so Enter afterwards means "this row"
+        for (const [i, r] of rows.entries()) r.el.onfocus = () => shell.select(i, false, false);
+        if (scrollToPicked) {
+          scrollToPicked = false;
+          rows.find((r) => r.el.classList.contains("fxpicked"))?.el.scrollIntoView({ block: "center" });
+        }
+      },
+    });
+  };
+
+  const reread = async () => {
+    again.disabled = true;
+    await Promise.all([loadTree(slot, cwd), loadGit(slot, cwd)]);
+    again.disabled = false;
+    if (!shell.isOpen()) return;
+    paintHead(); paintFoot(); repaint();
+    if (picked && head) { const h = fileHead(picked); head.replaceWith(h); head = h; }
+  };
+  again.onclick = () => void reread();
+
+  // a path opened from outside (terminal link, hover card, the card's row) unfolds its folders,
+  // so the row it names is visible and marked rather than hidden under a shut `src`
+  if (startAt) {
+    const segs = startAt.replace(/\/$/, "").split("/");
+    for (let i = 1; i < segs.length; i++) fxOpenSet(cwd).add(segs.slice(0, i).join("/"));
+    scrollToPicked = true;
+  }
+  paintHead(); paintFoot(); repaint();
+  if (startAt) open(startAt, line);
+  // the git state is read fresh for THIS window — the board holds it only for the slot it shows
+  void loadGit(slot, cwd).then(() => {
+    if (fxShell !== shell) return;
+    paintHead(); repaint();
+    if (picked && head) { const h = fileHead(picked); head.replaceWith(h); head = h; }
+  });
+}
 
 let boardAgain = false;
 // THE CONTEXT PACKS OF ONE SESSION, opened from a chip in the board's setup block. What a pack
@@ -4646,6 +4915,7 @@ async function renderBoard() {
       // not push Lanes and the rest of the column off the screen.
       if (brief.branch) {
         const known = fxTree.get(s.cwd);
+        fxGit.set(s.cwd, { lines: brief.uncommittedFiles, total: brief.uncommitted, branch: brief.branch });
         const fx = fileTreeSection(slot, s.cwd);
         const fhd = boardHead("Files", "repo");
         if (known && !("error" in known)) fhd.appendChild(el("span", "bsubstat", String(known.total)));
@@ -6673,7 +6943,12 @@ interface FileViewOpts {
   // passes it — there is no editing a revision — so the gesture cannot appear where it is a lie.
   edit?: { slot: number };
   line?: number;
-  back: { label: string; go: () => void };
+  back?: { label: string; go: () => void };
+  // a caller that draws its OWN head passes it here, and the default block (‹ back, label, path,
+  // source) is not drawn: the explorer's tree stays beside the file, so ‹ back has nowhere to go
+  head?: HTMLElement;
+  facts?: HTMLElement;       // where "N lines · KB" goes; absent = under the text
+  numbered?: boolean;        // a line-number gutter beside the text
 }
 type FileResp = { path?: string; rev?: string | null; size?: number; text?: string;
   binary?: boolean; truncated?: boolean; error?: string;
@@ -6689,12 +6964,18 @@ function showFileView(shell: Shell, o: FileViewOpts) {
   // about to be replaced, and an orphaned one would make the window refuse to close for nothing
   shell.setCloseGuard(null);
   shell.detail.replaceChildren();
-  const back = el("button", "fvback", `‹ ${o.back.label}`);
-  back.onclick = () => o.back.go();
-  shell.detail.appendChild(back);
-  shell.detail.appendChild(el("div", "rvhead", o.label));
-  shell.detail.appendChild(el("div", "pkdpath", o.path.replace(/^\/Users\/[^/]+/, "~")));
-  shell.detail.appendChild(el("div", "fvsource", o.source));
+  if (o.head) shell.detail.appendChild(o.head);
+  else {
+    const goBack = o.back;
+    if (goBack) {
+      const back = el("button", "fvback", `‹ ${goBack.label}`);
+      back.onclick = () => goBack.go();
+      shell.detail.appendChild(back);
+    }
+    shell.detail.appendChild(el("div", "rvhead", o.label));
+    shell.detail.appendChild(el("div", "pkdpath", o.path.replace(/^\/Users\/[^/]+/, "~")));
+    shell.detail.appendChild(el("div", "fvsource", o.source));
+  }
   const body = el("div", "fvbody");
 
   // the "view option": where a change EXISTS, it is the default — a file in a commit is interesting
@@ -6763,15 +7044,26 @@ function renderFileBody(shell: Shell, body: HTMLElement, o: FileViewOpts, r: Fil
   // conversation; this one does not because a file is a source.
   const pre = el("div", "fvtext");
   pre.textContent = text || "(this file is empty)";
-  body.appendChild(pre);
+  // a final newline ends the last line, it does not start one — the count wc -l and an editor give
+  const lineCount = text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+  if (o.numbered && text) {
+    // ONE text node for the whole gutter, not a row per line: a 512 KB file is ten thousand
+    // lines, and the numbers only have to sit level with the text, which the shared line-height does
+    const gut = el("div", "fvgut", Array.from({ length: lineCount }, (_, i) => String(i + 1)).join("\n"));
+    gut.setAttribute("aria-hidden", "true");
+    const box = el("div", "fvnum");
+    box.append(gut, pre);
+    body.appendChild(box);
+  } else body.appendChild(pre);
   if (o.line) requestAnimationFrame(() => {
     const height = parseFloat(getComputedStyle(pre).lineHeight);
     if (Number.isFinite(height)) shell.detail.scrollTop = pre.offsetTop + (o.line! - 1) * height - shell.detail.clientHeight / 3;
   });
   const facts: string[] = [];
   if (typeof r.size === "number") facts.push(`${(r.size / 1024).toFixed(1)} KB`);
-  facts.push(`${text.split("\n").length} lines`);
-  body.appendChild(el("div", "diffstat", facts.join(" · ")));
+  facts.push(`${lineCount} line${lineCount === 1 ? "" : "s"}`);
+  if (o.facts) o.facts.textContent = facts.join(" · ");
+  else body.appendChild(el("div", "diffstat", facts.join(" · ")));
   if (r.truncated) body.appendChild(el("div", "ocwarn",
     "this file is longer than the viewer serves — what is above is the beginning of it, not all of it"));
   // ── the third step of the stair: read → understand → change ────────────────────────────────

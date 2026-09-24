@@ -163,7 +163,8 @@ export async function run(): Promise<void> {
   // the decoder and the tree are the imports above; what is asserted about client.ts is that it
   // SHIPS those same modules — a copy re-inlined there would leave the suite measuring dead code
   check("explorer precondition: the paint block is extractable, and client.ts takes the decoder and the tree from the modules under test",
-    fxSrc.includes("function paintTree")
+    fxSrc.includes("function paintTree") && fxSrc.includes("function fxStatusOf")
+    && fxSrc.includes("function fxTreeOf")
     && /import \{[^}]*\bporcelainPath\b[^}]*\} from "\.\/gitpath"/.test(cliSrc)
     && /import \{[^}]*\bmatchTree\b[^}]*\} from "\.\/filetree"/.test(cliSrc),
     JSON.stringify({ explorer: fxSrc.length }));
@@ -173,6 +174,8 @@ export async function run(): Promise<void> {
   // is the imported module itself, handed in as the free identifier the paint reads it by.
   const PRELUDE = `
     const document = { createElement: (t) => makeNode(t) };
+    // src/icons.ts#icon, reduced to a node the stand-in can hold; the tree only appends it
+    function icon(name) { const n = makeNode("svg"); n.className = "ico"; n.attrs.name = name; return n; }
     function el(tag, className, text) {
       const e = document.createElement(tag);
       if (className) e.className = className;
@@ -187,15 +190,17 @@ export async function run(): Promise<void> {
     treeOf: (paths: string[]) => unknown;
     matchTree: (paths: string[], q: string) => string[];
     paintTree: Painter;
+    fxStatusOf: (lines: string[], untracked: boolean) => Map<string, string>;
+    fxTreeOf: (paths: string[]) => unknown;
   }
   let cut: Cut | null = null;
   let cutErr = "";
   try {
     const ts = new Bun.Transpiler({ loader: "ts" });
-    const painted = new Function("makeNode", "matchTree",
-      `${PRELUDE}\n${ts.transformSync(fxSrc)}\n` + "return { paintTree };")(makeNode, matchTree) as
-      { paintTree: Painter };
-    cut = { gitUnquote, porcelainPath, treeOf, matchTree, paintTree: painted.paintTree };
+    const painted = new Function("makeNode", "matchTree", "treeOf", "porcelainPath",
+      `${PRELUDE}\n${ts.transformSync(fxSrc)}\n` + "return { paintTree, fxStatusOf, fxTreeOf };")(
+      makeNode, matchTree, treeOf, porcelainPath) as Pick<Cut, "paintTree" | "fxStatusOf" | "fxTreeOf">;
+    cut = { gitUnquote, porcelainPath, treeOf, matchTree, ...painted };
   } catch (e) { cutErr = e instanceof Error ? e.message : String(e); }
   check("explorer precondition: the extracted block evaluates against the DOM stand-in",
     !!cut, cutErr || "ok");
@@ -249,7 +254,7 @@ export async function run(): Promise<void> {
   const dirRows = rowsOf(box).filter((r) => r.className.includes("fxdir"));
   check("tree: the top level renders FOLDERS, collapsed, and says so on the row itself",
     dirRows.length === 4 && dirRows.every((r) => r.getAttribute("aria-expanded") === "false")
-    && dirRows.every((r) => textOf(r).includes("▸")),
+    && dirRows.every((r) => r.children.some((c) => c.className === "fxtwist shut")),
     JSON.stringify(dirRows.map((r) => textOf(r))));
   // rowsOf() already filters by tag, so it cannot answer this — ask the CONTAINER instead, or the
   // check would pass by construction on a paint that emitted nothing but divs.
@@ -344,4 +349,80 @@ export async function run(): Promise<void> {
   check("panes: a SECOND repo's tree starts collapsed — one pane's open folders are not the other's",
     rowsOf(other).every((r) => r.getAttribute("aria-expanded") !== "true") && folders.has("e2e"),
     JSON.stringify({ other: rowsOf(other).map((r) => textOf(r)), first: [...folders] }));
+
+  // --- B7: the GIT STATE in the tree (X1). The lines are shaped exactly as the brief delivers
+  // them — `git status --porcelain`, whose untracked NEW folder is one line ending in `/`.
+  const LINES = [" M src/client.ts", "?? src/new-notes.md", "?? scratch/", "M  e2e/pins.ts"];
+  const stOn = cut.fxStatusOf(LINES, true);
+  const stOff = cut.fxStatusOf(LINES, false);
+  check("git state: every status line becomes path → XY, the untracked folder kept as ONE `dir/` entry",
+    stOn.size === 4 && stOn.get("src/client.ts") === " M" && stOn.get("src/new-notes.md") === "??"
+    && stOn.get("scratch/") === "??" && stOn.get("e2e/pins.ts") === "M ",
+    JSON.stringify([...stOn]));
+  check("git state: with Untracked OFF the ?? lines are gone — and only they",
+    stOff.size === 2 && !stOff.has("src/new-notes.md") && !stOff.has("scratch/") && stOff.has("src/client.ts"),
+    JSON.stringify([...stOff]));
+  const GFILES = [...FILES, "src/new-notes.md", "scratch/"];
+  const gFolders = new Set<string>(["src"]);
+  const gPaint = (into: StubNode, extra: Record<string, unknown> = {}) => cut!.paintTree(into, cut!.fxTreeOf(GFILES), {
+    open: gFolders, query: "", all: GFILES, capped: false, shown: FILES.length, total: FILES.length,
+    status: stOn, onPick: () => { /* not exercised here */ }, picked: () => null, ...extra,
+  } as unknown as Record<string, unknown>);
+  const gBox = makeNode("div");
+  gPaint(gBox);
+  const badge = (r: StubNode | undefined) => r?.children.find((c) => c.className.startsWith("fxst"));
+  const newRow = rowsOf(gBox).find((r) => r.title.startsWith("src/new-notes.md"));
+  const modRow = rowsOf(gBox).find((r) => r.title.startsWith("src/client.ts"));
+  const plainRow = rowsOf(gBox).find((r) => r.title === "src/shell.ts");
+  check("tree: an UNTRACKED file is shown by default, dimmed, and marked `?`",
+    !!newRow && newRow.className.includes("fxuntr") && badge(newRow)?.textContent === "?"
+    && badge(newRow)?.className.includes("fxnew") === true,
+    JSON.stringify({ cls: newRow?.className, badge: badge(newRow)?.textContent }));
+  check("tree: a modified file carries `M` and is NOT dimmed; an unchanged one carries nothing",
+    !!modRow && !modRow.className.includes("fxuntr") && badge(modRow)?.textContent === "M"
+    && badge(modRow)?.className.includes("fxmod") === true && !!plainRow && !badge(plainRow),
+    JSON.stringify({ mod: [modRow?.className, badge(modRow)?.textContent], plain: plainRow?.children.map((c) => c.className) }));
+  const gDirs = rowsOf(gBox).filter((r) => r.className.includes("fxdir"));
+  const dotted = (name: string) => gDirs.find((r) => textOf(r).includes(name))?.children.some((c) => c.className === "fxdot");
+  check("tree: a folder holding a change carries the dot, a clean folder does not",
+    dotted("src") === true && dotted("e2e") === true && dotted("docs") === false,
+    JSON.stringify(gDirs.map((r) => [textOf(r), r.children.map((c) => c.className)])));
+  const scratch = rowsOf(gBox).filter((r) => r.title.startsWith("scratch/"));
+  check("tree: an untracked NEW folder is ONE row `scratch/`, not a folder that opens onto nothing",
+    scratch.length === 1 && scratch[0].className.includes("fxfile") && !scratch[0].className.includes("fxdir")
+    && textOf(scratch[0]).startsWith("scratch/") && !gDirs.some((r) => textOf(r).startsWith("scratch")),
+    JSON.stringify(scratch.map((r) => [r.className, textOf(r)])));
+  const offBox = makeNode("div");
+  cut.paintTree(offBox, cut.fxTreeOf(FILES), {
+    open: gFolders, query: "", all: FILES, capped: false, shown: FILES.length, total: FILES.length,
+    status: stOff, onPick: () => { /* not exercised here */ }, picked: () => null,
+  } as unknown as Record<string, unknown>);
+  check("tree: with Untracked OFF no `?` row is painted anywhere",
+    !rowsOf(offBox).some((r) => r.className.includes("fxuntr") || badge(r)?.textContent === "?")
+    && rowsOf(offBox).some((r) => badge(r)?.textContent === "M"),
+    JSON.stringify(rowsOf(offBox).map((r) => r.title)));
+
+  // the Changed filter: exactly what git status names, flat, each with its mark
+  const chBox = makeNode("div");
+  gPaint(chBox, { changedOnly: true });
+  const chRows = rowsOf(chBox);
+  check("Changed: the list is EXACTLY the four status paths, flat, in path order, each marked",
+    JSON.stringify(chRows.map((r) => r.title.split(" — ")[0]))
+      === JSON.stringify(["e2e/pins.ts", "scratch/", "src/client.ts", "src/new-notes.md"])
+    && chRows.every((r) => r.className.includes("fxhit") && !!badge(r)),
+    JSON.stringify(chRows.map((r) => r.title)));
+  const chQ = makeNode("div");
+  // `e2e` matches two TRACKED files, one of them changed — only the changed one may come back
+  gPaint(chQ, { changedOnly: true, query: "e2e" });
+  check("Changed + search: the query narrows the changed list, never widens it to the tree",
+    rowsOf(chQ).length === 1 && rowsOf(chQ)[0].title.startsWith("e2e/pins.ts"),
+    JSON.stringify(rowsOf(chQ).map((r) => r.title)));
+  const chClean = makeNode("div");
+  gPaint(chClean, { changedOnly: true, status: new Map() });
+  check("Changed: a clean tree paints NO rows and says it is clean — never a fallback to everything",
+    rowsOf(chClean).length === 0 && /nothing changed/.test(textOf(chClean)), textOf(chClean));
+  const chCap = makeNode("div");
+  gPaint(chCap, { changedOnly: true, statusMore: 7 });
+  check("Changed: a status list the server capped says how many lines it did not send",
+    /7 more/.test(textOf(chCap)) && /200 status lines/.test(textOf(chCap)), textOf(chCap));
 }

@@ -2103,36 +2103,132 @@
   .fvedit-ta:focus { outline: none; border-color: var(--accent); }
   .fveditfoot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
   .fveditfoot .diffstat { flex: 1; margin: 0; }
-  /* the explorer tree — one renderer, in the board card and in the window's list pane */
+  /* the explorer tree — one renderer, in the board card and in the window's list pane. Chat
+     material (G0.1): tokens only, ink in three steps, colour only as signal — --amber for a change
+     git has not committed, nothing blue (G0.2). */
   .fxtree { margin-top: 4px; max-height: 320px; overflow-y: auto; }
   .shelllist .fxtree, .shelllist > .fxrow { max-height: none; }
   /* rows are <button>s so the tree is tabbable and Enter/Space-activatable without a keydown
      handler that could drift from the click handler — hence the reset before the styling */
-  .fxrow { display: flex; align-items: center; gap: 4px; padding: 2px 4px; cursor: pointer;
-    border-radius: 4px; font-size: 11.5px; white-space: nowrap; overflow: hidden;
-    width: 100%; text-align: left; background: none; border: 0; color: inherit;
-    font-family: inherit; appearance: none; }
-  .fxrow:hover { background: #242424; }
-  .fxrow.sel { background: #1c2437; }
+  .fxrow { display: flex; align-items: center; gap: 6px; padding: 2px 8px 2px 4px; cursor: pointer;
+    border-radius: var(--r1); font-size: var(--chat-ui-fs); white-space: nowrap; overflow: hidden;
+    width: 100%; text-align: left; background: none; border: 0; color: var(--chat-prose);
+    font-family: var(--chat-sans); appearance: none; flex: none; transition: background var(--t); }
+  .fxrow:hover { background: var(--c-hover); }
+  .fxrow.sel { background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
   /* .sel is the keyboard CURSOR (the shell owns it); .fxpicked is the file actually open in the
      detail pane. Two different facts, so two different marks — one would hide the other. */
-  .fxrow.fxpicked { background: #1d2a1f; box-shadow: inset 2px 0 0 var(--add); }
-  .fxrow:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-  .fxtwist { color: #667; width: 9px; flex: none; font-size: 9px; }
-  .fxdir .fxname { color: #b8b8b8; }
-  .fxfile .fxname { color: #8a8a8a; }
-  .fxfile:hover .fxname, .fxrow.sel .fxname, .fxrow.fxpicked .fxname { color: #cfe0ff; }
-  .fxname { overflow: hidden; text-overflow: ellipsis; }
+  .fxrow.fxpicked { background: var(--c-hover); box-shadow: inset 2px 0 0 var(--chat-ink); color: var(--chat-ink); }
+  .fxrow:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: -1px; }
+  .fxtwist { width: 14px; flex: none; display: inline-grid; place-items: center; color: var(--chat-faint); }
+  .fxtwist .ico { width: 12px; height: 12px; }
+  .fxtwist.shut .ico { transform: rotate(-90deg); }
+  .fxdir .fxname { color: var(--chat-ink); }
+  .fxname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .fxfile:hover .fxname, .fxrow.sel .fxname, .fxrow.fxpicked .fxname { color: var(--chat-ink); }
+  .fxcount { flex: none; color: var(--chat-faint); font-variant-numeric: tabular-nums; }
+  /* git state (X1): the letter git prints, a dot on a folder that holds a change, untracked dimmed */
+  .fxst { flex: none; width: 16px; height: 16px; display: inline-grid; place-items: center; border-radius: 4px;
+    font: 700 9.5px/1 var(--chat-mono); }
+  .fxst.fxmod { color: var(--amber); background: color-mix(in srgb, var(--amber) 14%, var(--chat-void)); }
+  .fxst.fxnew { color: var(--chat-mute); background: var(--chat-raised); }
+  .fxdot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); margin: 0 3px; }
+  .fxrow.fxuntr .fxname { color: var(--chat-mute); font-style: italic; }
   /* a search hit is a PATH, and the directory half of it is context, not the answer */
-  .fxdim { color: #5c5c66; flex: none; }
-  .fxhit { padding-left: 4px !important; }
-  .fxfilterin { width: 100%; margin-top: 6px; height: 26px; padding: 0 8px; border-radius: 6px;
-    border: 1px solid var(--line); background: #141414; color: #ddd; font-size: 11px;
-    font-family: inherit; }
-  .fxfilterin:focus { outline: none; border-color: var(--focus); }
-  .fxpath { flex: 1 1 100%; min-width: 0; color: var(--dim); font-size: 11px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .fxpath:empty { display: none; }
+  .fxdim { color: var(--chat-faint); flex: none; }
+  .fxhit { padding-left: 8px !important; }
+  .fxhit .fxname { flex: 0 1 auto; margin-right: auto; }
+  .fxfilterin { width: 100%; margin-top: 6px; height: 26px; padding: 0 8px; border-radius: var(--r1);
+    border: 1px solid var(--chat-edge); background: var(--chat-void); color: var(--chat-ink);
+    font-size: var(--chat-ui-fs); font-family: var(--chat-sans); }
+  .fxfilterin:focus { outline: none; border-color: var(--chat-mute); }
+
+  /* === THE EXPLORER WINDOW, arrangement A "Werkbank" (owner's pick 2026-09-24, X1) =========
+     mockup docs/design/datei-explorer/entwurf.html?f=a. The window takes the screen like the queue
+     (16px from every edge), the tree 300px on the left, the file at full height on the right. */
+  #shell-files { font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
+  #shell-files .shellwin { width: calc(100vw - 32px); height: calc(100vh - 32px); border-radius: var(--r2); }
+  #shell-files .shellhead { border-bottom: 0; padding-bottom: 6px; }
+  #shell-files .fxmono { font-family: var(--chat-mono); color: var(--chat-prose); }
+  #shell-files .fxnum { font-variant-numeric: tabular-nums; }
+  /* ↻ beside ✕, the same G1.1 icon button */
+  .fxreload { flex: none; width: 28px; height: 28px; display: inline-grid; place-items: center; padding: 0;
+    border-radius: var(--r1); border: 1px solid var(--chat-edge); background: var(--chat-raised);
+    color: var(--chat-mute); cursor: pointer; }
+  .fxreload:hover { color: var(--chat-ink); }
+  .fxreload:disabled { opacity: .5; cursor: default; }
+  .fxreload .ico { width: 15px; height: 15px; }
+  #shell-files .shelltools { flex-wrap: nowrap; }
+  #shell-files .pkfilterin { flex: 0 1 340px; height: 28px; border-radius: var(--r1); font-size: var(--chat-ui-fs);
+    background: var(--chat-void); border: 1px solid var(--chat-edge); color: var(--chat-ink); }
+  #shell-files .pkfilterin:focus { border-color: var(--chat-mute); }
+  /* All | Changed — G3.1 tabs; Untracked — G1.3 switch */
+  .fxseg { display: inline-flex; gap: 2px; flex: none; }
+  .fxseg button, .fxtog { height: 26px; padding: 0 9px; border-radius: var(--r1); font: 500 var(--chat-ui-fs) var(--chat-sans);
+    white-space: nowrap; cursor: pointer; transition: background var(--t), color var(--t); }
+  .fxseg button { border: 0; background: none; color: var(--chat-mute); }
+  .fxseg button:hover { color: var(--chat-ink); }
+  .fxseg button.on { background: var(--c-hover); box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-ink); }
+  .fxseg .fxn { color: var(--chat-faint); margin-left: 5px; font-weight: 400; font-variant-numeric: tabular-nums; }
+  .fxtog { flex: none; background: var(--chat-raised); border: 1px solid var(--chat-edge); color: var(--chat-mute); }
+  .fxtog:hover { color: var(--chat-ink); }
+  .fxtog.on { background: var(--chat-surface); border-color: var(--chat-mute); color: var(--chat-ink); }
+  .fxseg button:focus-visible, .fxtog:focus-visible, .fxjump:focus-visible, .fxreload:focus-visible {
+    outline: 1px solid var(--chat-mute); outline-offset: 1px; }
+  #shell-files .shelllist { padding: 6px 4px; }
+  #shell-files .fxrow { height: 26px; font-size: var(--chat-fs); flex: none; }
+  #shell-files .fxcount { font-size: var(--chat-ui-fs); }
+  #shell-files .shelldetail { padding: 0; display: flex; flex-direction: column; }
+  #shell-files .shelldetail > .shellhint, #shell-files .shelldetail > .hint { padding: 14px 16px; }
+  /* the file head: path crumb in mono, which version, N lines, the What-changed jump */
+  .fxfhead { flex: none; padding: 10px 16px 8px; border-bottom: 1px solid var(--chat-edge-soft);
+    position: sticky; top: 0; z-index: 1; background: var(--chat-surface); }
+  .fxcrumb { font: 500 var(--chat-code-fs) var(--chat-mono); color: var(--chat-mute); white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .fxcrumb b { color: var(--chat-ink); font-weight: 500; }
+  .fxfmeta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px;
+    font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  .fxfacts { font-variant-numeric: tabular-nums; }
+  .fxfacts:empty { display: none; }
+  .fxjump { height: 22px; padding: 0 9px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
+    background: none; color: var(--chat-prose); font: 500 var(--chat-ui-fs) var(--chat-sans); cursor: pointer; }
+  .fxjump:hover { background: var(--c-hover); border-color: var(--c-edge-hi); color: var(--chat-ink); }
+  #shell-files .fvbody { flex: 1; min-height: 0; margin: 0; padding: 8px 0 24px; }
+  #shell-files .fvbody > .fvedit, #shell-files .fvbody > .fveditfoot, #shell-files .fvbody > .fvedit-ta,
+  #shell-files .fvbody > .hint, #shell-files .fvbody > .diffstat, #shell-files .fvbody > .ocwarn { margin-left: 16px; margin-right: 16px; }
+  #shell-files .fvbody > .fvedit-ta { width: calc(100% - 32px); }
+  /* the numbered text: the gutter and the text share one line-height, so one text node of numbers
+     sits level with the file without a row per line */
+  .fvnum { display: flex; align-items: flex-start; }
+  .fvgut { flex: none; min-width: 48px; padding: 0 12px 0 8px; text-align: right; white-space: pre;
+    color: var(--chat-faint); user-select: none; -webkit-user-select: none;
+    font: var(--chat-code-fs)/1.55 var(--chat-mono); font-variant-numeric: tabular-nums; }
+  .fvnum .fvtext { flex: 1; min-width: 0; padding-right: 16px; }
+  #shell-files .fvtext { font: var(--chat-code-fs)/1.55 var(--chat-mono); color: var(--chat-prose); }
+  /* the footer, a G2.3 status line */
+  #shell-files .shellfoot { display: flex; align-items: center; gap: 14px; padding: 7px 14px;
+    font-size: var(--chat-ui-fs); color: var(--chat-mute); white-space: nowrap; overflow: hidden; }
+  .fxlive::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    margin-right: 6px; vertical-align: 1px; background: var(--chat-faint); }
+  .fxlive.on::before { background: var(--q-live); }
+  .fxage { font-variant-numeric: tabular-nums; }
+  .fxkeys { margin-left: auto; color: var(--chat-faint); }
+  @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
+    #shell-files .shellwin { width: 100vw; height: 100dvh; height: var(--vvh, 100dvh); border-radius: 0; }
+    #shell-files .shelltools { flex-wrap: wrap; row-gap: 8px; }
+    #shell-files .pkfilterin { flex: 1 0 100%; max-width: none; height: 40px; font-size: 16px; }
+    .fxseg { overflow-x: auto; }
+    .fxseg button, .fxtog { height: 40px; }
+    .fxreload { width: 40px; height: 40px; }
+    #shell-files .fxrow { height: 40px; }
+    #shell-files .shellclose { width: 40px; height: 40px; }
+    #shell-files .shelldetail { display: none; }
+    #shell-files.detailmode .shelldetail { display: flex; }
+    #shell-files.detailmode .shelltools { display: none; }
+    .fxjump { height: 40px; }
+    .fvgut { min-width: 34px; padding: 0 8px 0 4px; }
+    .fxkeys { display: none; }
+  }
   .ocsub { font-size: 10.5px; color: var(--dim); margin-top: 5px; }
   .ocnote { font-size: 11px; color: #999; line-height: 1.45; margin-top: 4px; }
   .ocwarn { font-size: 11px; color: var(--amber); line-height: 1.45; margin-top: 4px; }

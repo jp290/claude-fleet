@@ -285,7 +285,7 @@ Vollbild-Fenster (G6.3).
 | Dialoge der Leiste: kill, rename, risk (`showRiskPreview`, `startRename`, `confirm()`) | G4.5, G4.2 | Risiko-Dialog sechsfach kopiert; kill per nativem `confirm()`; rename inline über das `.bmenu`-Menü (folgt G4.2, Menü selbst ohne Esc/Außenklick) |
 | Verstreute `fleet.*`-localStorage-Schalter | G5.1 | 23 Schlüssel ohne Registry, ohne Übersicht, teils ohne Rückweg |
 | Künftiges Einstellungsmenü oben rechts | G5 (ganz) | existiert nicht |
-| Datei-Explorer (`openExplorer`) | G6.3 | `openShell`-Fenster (Zuhause stimmt), Material noch `.panel`-Palette |
+| Datei-Explorer (`openExplorer`) | G6.3 | seit X1 (2026-09-24) Anordnung A im Chat-Material (`#shell-files`); offen: ✕ und ‹ der Shell sind Unicode statt `icons.ts` (G0.6, `src/shell.ts`), die Dateiansicht darunter (`showFileView`, `.fvback`, `.fvedit-ta`) noch alte Palette |
 | Hover-Karte (`src/entcard.ts`) | G6.1 | Material `rgba(12,12,14,.97)` statt G4.1, Radius 12; CSS-Block doppelt; `ctx`, `lane` im Text |
 | Gründungsfenster am leeren Slot (`openPicker`) | G6.3, G4.4 | `openShell` (stimmt); Filter/Pfad-Felder mit Literalen (`.pkfilterin`, `.pkpathin`), „harness", „⎇ hide lanes" |
 | Mobil hoch (390 × 844) | G0.7 und je Klasse | `#mhead` alte Palette, Titel in Mono (Screenshot m390); ↻ doppelt (`#refresh` + `.panereload`); `#keys` alte Palette |

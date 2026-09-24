@@ -30390,7 +30390,17 @@ function transportReport(): Record<string, unknown> {
   return { since: transportSince, now: Date.now(), peerCount: peers.length, totals, byPeer: peers, byPath: paths };
 }
 
+// THE LANE NAME AS AN ADDRESS (S3c). A lane's name is its band plus its PERSISTED letter
+// (reserveLaneLetter) — "4A" — and resolves only through that field, never through a number:
+// Number("4A") is NaN, so a name can never fall through to band 4. A lane older than the letter
+// field has no name here (the client still derives one for display; an address must not). Unique
+// by construction: reserveLaneLetter hands out each letter once per band among the refs it scans.
+const LANE_NAME_RE = /^\d+[A-Z]+$/;
+const laneNameOf = (s: Slot): string | null => s.worktree?.letter
+  ? `${s.worktree.anchor ? s.worktree.anchor.slot : 0}${s.worktree.letter}` : null;
+
 function slotFrom(raw: unknown): Slot | null {
+  if (typeof raw === "string" && LANE_NAME_RE.test(raw)) return slots.find((s) => laneNameOf(s) === raw) ?? null;
   const id = Number(raw);
   if (!Number.isInteger(id) || id < 1 || id > MAX_SLOTS) return null;
   return slots[id - 1];
@@ -38403,6 +38413,24 @@ Bun.serve<WSData>({
     // everything below carries authority — token required
     if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
 
+    // /api/slots/<lane name>/… (S3c): resolved ONCE here, then rewritten to the lane's numeric
+    // place so every /api/slots/:id route below serves it unchanged. After the token gate on
+    // purpose — a 404/409 would otherwise tell an unauthenticated caller which names exist. A
+    // letter is handed out again once its lane is gone, so `?openedAt=` pins the occupant the
+    // caller read; a different one answers 409 and nothing runs (the /send pin, for names).
+    const laneAddr = /^\/api\/slots\/(\d+[A-Z]+)(\/.+)$/.exec(url.pathname);
+    if (laneAddr) {
+      const name = laneAddr[1];
+      const s = slotFrom(name);
+      if (!s) return json({ error: `no lane named ${name} — the name is free or was never given` }, 404);
+      const pin = url.searchParams.get("openedAt");
+      if (pin !== null && !(Number(pin) > 0)) return json({ error: "bad openedAt" }, 400);
+      if (pin !== null && Number(pin) !== s.openedAt)
+        return json({ error: `lane ${name} is held by a different occupant (openedAt ${s.openedAt}, not ${pin}) — nothing done`,
+          occupant: { slot: s.id, name, openedAt: s.openedAt, lane: s.worktree?.branch ?? null } }, 409);
+      url.pathname = `/api/slots/${s.id}${laneAddr[2]}`;
+    }
+
     const wsMatch = /^\/ws\/(\d+)$/.exec(url.pathname);
     if (wsMatch) {
       const s = slotFrom(wsMatch[1]);
@@ -38590,6 +38618,8 @@ Bun.serve<WSData>({
             // wherever a transcript names a model would hide a push's read-back — right after a push
             // the file still names the old request, and modelPushedAt is exactly how its landing is seen.
             git: gitInfo.get(s.id) ?? null, worktree: s.worktree, model: s.model,
+            // the lane's address (laneNameOf, S3c); omitted for a MAIN and a pre-letter lane
+            ...(() => { const name = laneNameOf(s); return name ? { name } : {}; })(),
             // what the session is FOR — the board's head reads these; they were on the slot and in
             // /api/self all along, and the owner poll was the one reader that never got them
             ...(s.mission ? { mission: s.mission } : {}),

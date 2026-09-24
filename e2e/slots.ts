@@ -1570,6 +1570,7 @@ export async function run(): Promise<void> {
   if (REPO) {
     type AnchorWireSlot = {
       id: number; cwd: string | null; openedAt?: number; repo?: string | null; lastOutput: number;
+      label?: string | null; name?: string;
       worktree?: { repo: string; branch: string; anchor?: LaneAnchor; letter?: string } | null;
     };
     const ownerSlots = async (): Promise<AnchorWireSlot[]> =>
@@ -1707,6 +1708,29 @@ export async function run(): Promise<void> {
       check("two lanes opened into one band take the smallest free letters, A then B, as persisted fields",
         !!a.slot && !!b.slot && a.letter === "A" && b.letter === "B", JSON.stringify({ a, b }));
 
+      // --- S3c: 4A IS AN ADDRESS OF THE OWNER ROUTES. The name resolves through the persisted
+      // letter, never through the band number: a rename sent to /api/slots/4A must move lane A's
+      // label and leave MAIN 4's alone. A never-given name is 404 naming it. ---
+      const named = await ownerSlots();
+      const rowA = named.find((s) => s.id === a.slot);
+      const main4Label = named.find((s) => s.id === 4)?.label;
+      check("GET /api/sessions carries each lane's name, and none on the MAIN of its band",
+        rowA?.name === "4A" && named.find((s) => s.id === b.slot)?.name === "4B"
+        && named.find((s) => s.id === 4)?.name === undefined,
+        JSON.stringify(named.filter((s) => s.id === 4 || s.id === a.slot || s.id === b.slot)
+          .map((s) => ({ id: s.id, name: s.name }))));
+      const byName = await post("/api/slots/4A/rename", { label: "via-4A" });
+      const afterByName = await ownerSlots();
+      check("/api/slots/4A/… reaches lane 4A and never band 4",
+        byName.ok && afterByName.find((s) => s.id === a.slot)?.label === "via-4A"
+        && afterByName.find((s) => s.id === 4)?.label === main4Label,
+        `${byName.status} ${JSON.stringify(afterByName.filter((s) => s.id === 4 || s.id === a.slot)
+          .map((s) => ({ id: s.id, label: s.label })))}`);
+      const neverGiven = await post("/api/slots/9A/rename", { label: "x" });
+      const neverText = await neverGiven.text();
+      check("a never-given lane name answers 404 with the name in the text",
+        neverGiven.status === 404 && neverText.includes("9A"), `${neverGiven.status} ${neverText.slice(0, 160)}`);
+
       // THE SONDE: land A. The survivor's name must not move.
       const landedA = a.slot ? await post(`/api/slots/${a.slot}/land`, {}) : null;
       check("letter fixture: lane A lands through the normal path", landedA?.ok === true,
@@ -1718,9 +1742,28 @@ export async function run(): Promise<void> {
       }
       check("landing a neighbour frees the letter but never renames the survivor — B is still B",
         bRow?.worktree?.letter === "B", JSON.stringify(bRow?.worktree));
+      const freed = await post("/api/slots/4A/rename", { label: "x" });
+      const freedText = await freed.text();
+      check("a freed lane name answers 404 with the name in the text",
+        freed.status === 404 && freedText.includes("4A"), `${freed.status} ${freedText.slice(0, 160)}`);
       const c = await letterLane("e2e-letter-c");
       check("the next opener in the band takes the freed smallest letter A again",
         !!c.slot && c.letter === "A", JSON.stringify(c));
+
+      // S3c: the letter A is handed out again, so a caller that read lane A's occupant before the
+      // land still holds A's openedAt. Its pin must refuse (409, nothing done); the current pin runs.
+      const cOpenedAt = (await ownerSlots()).find((s) => s.id === c.slot)?.openedAt;
+      const stalePin = await post(`/api/slots/4A/rename?openedAt=${rowA?.openedAt}`, { label: "stale" });
+      const staleText = await stalePin.text();
+      const afterStale = (await ownerSlots()).find((s) => s.id === c.slot);
+      check("a re-given letter under the old occupant's openedAt pin answers 409 and changes nothing",
+        stalePin.status === 409 && staleText.includes("4A") && !!rowA?.openedAt
+        && rowA.openedAt !== cOpenedAt && afterStale?.label !== "stale",
+        `${stalePin.status} ${staleText.slice(0, 160)}`);
+      const freshPin = await post(`/api/slots/4A/rename?openedAt=${cOpenedAt}`, { label: "via-pin" });
+      check("...and the current occupant's pin reaches the lane that holds 4A now",
+        freshPin.ok && (await ownerSlots()).find((s) => s.id === c.slot)?.label === "via-pin",
+        String(freshPin.status));
 
       // ONE RESTART CARRIES BOTH HALVES: the stored letters ride the boot out of fleet.json, and a
       // row holding a field this loader has never heard of (planted while the server is down, the

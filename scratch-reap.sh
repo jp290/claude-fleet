@@ -45,10 +45,13 @@
 # concurrently cannot have its instance removed by this sweep. THE TWO FAMILIES SHARE A
 # PHILOSOPHY, NOT A RULE: the fleet-e2e sweep kills NOTHING — a suite instance is its wrapper's
 # child, and the wrapper reaps its own. The testinstanz sweep DOES kill, because a standing
-# instance has no wrapper: it is reaped by the PID its own state file noted, its socket killed by
-# NAME (`tmux -L <sock>` from the same file) and its directory removed — never pkill, never a
-# name pattern, never a state file without an explicit expiresAt (that one is listed and left
-# alone; missing proof of expiry is absence of authority, not zero). Nothing else kills a process.
+# instance has no wrapper: it is reaped through its own state file — its socket killed by NAME
+# (`tmux -L <sock>` from that file), its directory removed, and its noted pid signalled ONLY when
+# that pid still HOLDS the port the same file records (`lsof -iTCP:<port> -sTCP:LISTEN -t`):
+# expiry is authority over the instance, never over a PID number, which a recycle has since given
+# to a stranger. Never pkill, never a name pattern, never a state file without an explicit
+# expiresAt (that one is listed and left alone; missing proof of expiry is absence of authority,
+# not zero). Nothing else kills a process.
 set -u
 
 ROOT="${1:?usage: scratch-reap.sh <root> [--dry-run]}"
@@ -91,14 +94,16 @@ _mtime() {
 # socket is refused even if a state file ever named it (testinstanz.sh already refuses to write
 # one — belt and braces). This sweep runs BEFORE the fleet-e2e sweep below so THAT summary stays
 # the script's last line, which host-hygiene §e reads.
-TI_ROOT="${FLEET_TI_ROOT:-/tmp}"
+TI_ROOT="${FLEET_TI_ROOT:-$ROOT}"  # the family is looked up where the caller pointed the sweep —
+                                   # e2e-isolated.sh passes the real tmpdir, host-hygiene §e its
+                                   # fixture root; /tmp is only the family's own default
 TI_REALTMP="${TMPDIR:-/tmp}"          # the socket lives under the REAL tmpdir, never a fixture's
 TI_REAPED=0; TI_OPEN=0; TI_OLD=0
 for _ts in "$TI_ROOT"/fleet-testinstanz-*/testinstanz.state; do
   [ -f "$_ts" ] || continue                            # no glob match → the pattern itself
   _td="$(dirname "$_ts")"
   _tg() { sed -n "s/^$1=//p" "$_ts" | head -1; }
-  _tp="$(_tg pid)"; _tk="$(_tg sock)"; _te="$(_tg expiresAt)"
+  _tp="$(_tg pid)"; _tk="$(_tg sock)"; _te="$(_tg expiresAt)"; _to="$(_tg port)"
   case "$_te" in
     '') echo "[testinstanz-reap] kept $_td — state has no expiresAt (old instance), listed only"
         TI_OLD=$((TI_OLD + 1)); continue ;;
@@ -110,14 +115,41 @@ for _ts in "$TI_ROOT"/fleet-testinstanz-*/testinstanz.state; do
     echo "[testinstanz-reap] REFUSED $_td — state names the production socket or none" >&2
     continue
   fi
+  # THE IDENTITY GATE. The noted pid dies ONLY when it is the process LISTENING on the port its
+  # own state file records. A recycled pid is somebody else's process by then; killing it by
+  # number would be the pattern-kill this file forswears, spelled in digits. Identity is proven
+  # by the port (`lsof -iTCP:<port> -sTCP:LISTEN -t`, the noted pid among the listeners); without
+  # lsof nothing is provable and the pid is spared — the safe direction. Socket and directory
+  # are OURS by name in either case and are retired regardless.
+  _holds=0; _nolsof=""
+  case "$_tp" in ''|*[!0-9]*) _tp="" ;; esac
+  case "$_to" in ''|*[!0-9]*) _to="" ;; esac
+  if command -v lsof >/dev/null 2>&1; then
+    if [ -n "$_tp" ] && [ -n "$_to" ]; then
+      for _lp in $(lsof -nP -iTCP:"$_to" -sTCP:LISTEN -t 2>/dev/null); do
+        if [ "$_lp" = "$_tp" ]; then _holds=1; fi
+      done
+    fi
+  else
+    _nolsof=" (no lsof on this host — identity unprovable)"
+  fi
   if [ -n "$DRY" ]; then
-    echo "[testinstanz-reap] would remove $_td — expired $(( (NOW - _te) / 60 )) min ago (pid $_tp, tmux -L $_tk)"
+    if [ "$_holds" = 1 ]; then
+      echo "[testinstanz-reap] would remove $_td — expired $(( (NOW - _te) / 60 )) min ago (pid $_tp holds port $_to, would be killed; tmux -L $_tk)"
+    else
+      echo "[testinstanz-reap] would remove $_td — expired $(( (NOW - _te) / 60 )) min ago (pid $_tp holds no port ${_to:-from state}, spared$_nolsof; tmux -L $_tk)"
+    fi
     TI_REAPED=$((TI_REAPED + 1)); continue
   fi
-  case "$_tp" in ''|*[!0-9]*) : ;; *) kill "$_tp" 2>/dev/null || true ;; esac
+  if [ "$_holds" = 1 ]; then
+    kill "$_tp" 2>/dev/null || true
+    _why="pid $_tp killed (held port $_to)"
+  else
+    _why="pid $_tp SPARED (holds no port ${_to:-in state}$_nolsof)"
+  fi
   TMUX_TMPDIR="$TI_REALTMP" tmux -L "$_tk" kill-server 2>/dev/null || true
   rm -rf "$_td" 2>/dev/null || { sleep 1; rm -rf "$_td" 2>/dev/null; }
-  echo "[testinstanz-reap] removed $_td — expired $(( (NOW - _te) / 60 )) min ago (pid $_tp killed, tmux -L $_tk killed, dir removed)"
+  echo "[testinstanz-reap] removed $_td — expired $(( (NOW - _te) / 60 )) min ago ($_why, tmux -L $_tk killed, dir removed)"
   TI_REAPED=$((TI_REAPED + 1))
 done
 echo "[testinstanz-reap] ${TI_REAPED} expired reaped · ${TI_OPEN} not yet expired · ${TI_OLD} without usable expiresAt (listed, never touched)"

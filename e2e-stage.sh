@@ -470,7 +470,9 @@ done
 
 # --- the OTHER half of that reap: the pane CHILDREN a dead instance left behind ----------------
 # The loop above retires a dead server's socket, and `scratch-reap.sh` retires its directory —
-# neither touches a PROCESS ("Nothing here kills a process", scratch-reap.sh's own header). Only
+# neither touches a PROCESS (its fleet-e2e sweep kills nothing; only its testinstanz sweep
+# signals, and only a noted pid that still holds the port its state file records — a recycled
+# pid number is a stranger's process, and expiry gives no authority over it). Only
 # e2e-isolated.sh reaps pane children, and it can do it only through a socket's pane list: once
 # that socket is gone (killed, or unlinked by the loop above), the children are reparented to init
 # and nothing in any of the seven wrappers can still see them. What they DO still have is their

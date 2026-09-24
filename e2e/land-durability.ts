@@ -1022,6 +1022,65 @@ export async function run(): Promise<void> {
         && skipped4?.remote === "hub" && skipped4?.reason === "no-remote"
         && hubMain() === before4,
       `remotes=[${g(repo, "remote").out}] main=${four.before.slice(0, 8)}->${four.after.slice(0, 8)} reason=${String(four.last?.errorReason)} detail=${(four.last?.detail ?? "").slice(0, 200)} note=${four.noteRaw}`);
+
+    // --- G5 (9e587653): THE HUB SAID YES, THEN A DIRECT COMMIT BEAT THE LOCAL FAST-FORWARD -------
+    // The push takes network time and the main checkout belongs to a human. The window is made
+    // real by the hub itself: a one-shot post-receive hook commits directly into this repo's main
+    // checkout while the push is still returning — i.e. after the hub accepted laneTip on
+    // mainBefore and before advanceIntegration runs. What must come out: a typed `hub-only` stop,
+    // NO retry round (a retry would push a new tip, be rejected, find the two diverged and end
+    // `hub-lost`), both shas in the detail, the direct commit untouched, the hub holding the lane.
+    // A FRESH bare hub, seeded with this main: the G2 hub has diverged from it on purpose.
+    const hub5 = `${REPO}.hubpush5.git`;
+    const armed5 = `${hub5}.armed`;
+    const fired5 = `${hub5}.fired`;
+    for (const f of [hub5, armed5, fired5]) rmSync(f, { recursive: true, force: true });
+    const seed5 = ((): number => {
+      if (spawnSync("git", ["init", "-q", "--bare", "-b", "main", hub5]).status !== 0) return 1;
+      if (g(repo, "remote", "add", "hub", hub5).code !== 0) return 2;
+      if (g(repo, "push", "-q", "hub", "main").code !== 0) return 3;
+      // the hook runs INSIDE the bare repo's git environment; every GIT_* variable is dropped so
+      // the commit below is made in the checkout and not in the hub. Retries ride out the
+      // server's own index.lock on that checkout (the race commitAll documents).
+      writeFileSync(`${hub5}/hooks/post-receive`, [
+        "#!/bin/sh",
+        `[ -f '${armed5}' ] || exit 0`,
+        `rm -f '${armed5}'`,
+        "for v in $(env | sed -n 's/^\\(GIT_[A-Za-z0-9_]*\\)=.*/\\1/p'); do unset \"$v\"; done",
+        `cd '${repo}' || exit 0`,
+        "echo 'a human committed here while the push was in flight' > direct-g5.txt",
+        "i=0; while [ $i -lt 50 ]; do",
+        "  git add direct-g5.txt 2>/dev/null && git commit -qm 'direct commit during the hub push' 2>/dev/null && break",
+        "  i=$((i+1)); sleep 0.2",
+        "done",
+        `git rev-parse HEAD > '${fired5}'`,
+        "exit 0", ""].join("\n"), { mode: 0o755 });
+      writeFileSync(armed5, "armed\n");
+      return 0;
+    })();
+    check("(setup G5) a fresh bare hub equal to this main, with a one-shot hook that commits into the main checkout",
+      seed5 === 0 && g(hub5, "rev-parse", "main").out === g(repo, "rev-parse", "main").out,
+      `step=${seed5} hub=${g(hub5, "rev-parse", "main").out.slice(0, 8)} main=${g(repo, "rev-parse", "main").out.slice(0, 8)}`);
+    const five = await landOnce("hub-five.txt");
+    const direct5 = existsSync(fired5) ? readFileSync(fired5, "utf8").trim() : "";
+    const hub5Main = g(hub5, "rev-parse", "main").out;
+    const local5 = g(repo, "rev-parse", "main").out;
+    const detail5 = five.last?.detail ?? "";
+    check("(setup G5) the hook fired: a direct commit landed on this main while the hub push was returning",
+      /^[0-9a-f]{40}$/.test(direct5) && g(repo, "log", "--format=%s", "-1", direct5).out === "direct commit during the hub push",
+      `fired=${direct5 || "no"}`);
+    check("9e587653: hub accepted, local advance failed → typed `hub-only`, no retry round, both shas named, the direct commit kept",
+      five.last?.landed === false && five.last?.errorReason === "hub-only"
+        && (five.last?.ffRounds ?? 0) === 0
+        && local5 === direct5 && g(repo, "rev-parse", `${direct5}^`).out === five.before
+        && hub5Main !== five.before && g(hub5, "rev-parse", `${hub5Main}^`).out === five.before
+        && detail5.includes(hub5Main) && detail5.includes(local5),
+      `landed=${String(five.last?.landed)} reason=${String(five.last?.errorReason)} ffRounds=${String(five.last?.ffRounds)} local=${local5.slice(0, 8)} direct=${direct5.slice(0, 8)} hub=${hub5Main.slice(0, 8)} before=${five.before.slice(0, 8)} detail=${detail5.slice(0, 300)}`);
+    rmSync(hub5, { recursive: true, force: true });
+    for (const f of [armed5, fired5]) rmSync(f, { force: true });
+    // back to the env every later section was written against: G4/G5 left FLEET_HUB_REMOTE set,
+    // and §H lands in REPO, which has no remote by that name — its verdicts must not depend on G4.
+    await restartSrv();
   }
 
   // === H — THE NOTE LIFECYCLE AT THE LAND SITE (N2) =====================================

@@ -76,8 +76,13 @@ const MERGE_BLOCKING = ["blocked", "error"];
 //     through the moment the hub answers, exactly as `dirty-main` clears when the human commits.
 // Both are exempted for the reason the two above them are, and for no weaker one. Widening this
 // list stays what its own note says — a deliberate act per value, argued here and nowhere else.
-export type MergeErrorReason = "ff-lost" | "dirty-main" | "hub-lost" | "hub-unreachable";
-export const MERGE_ERROR_REASONS: readonly MergeErrorReason[] = ["ff-lost", "dirty-main", "hub-lost", "hub-unreachable"];
+// THE FIFTH (9e587653, W5d follow-up): `hub-only` — the hub ACCEPTED the land and this host's own
+// fast-forward then failed (a direct commit, or a dirty checkout, in the push's network window).
+// The hub holds the lane tip on the old main; local main does not. Still nothing wrong with the
+// lane — it passed its gate and was accepted — so it is exempted like the four above. What differs
+// is the remedy: not a re-land but a human reconciling two shas, which is why it never retries.
+export type MergeErrorReason = "ff-lost" | "dirty-main" | "hub-lost" | "hub-unreachable" | "hub-only";
+export const MERGE_ERROR_REASONS: readonly MergeErrorReason[] = ["ff-lost", "dirty-main", "hub-lost", "hub-unreachable", "hub-only"];
 
 export function mergeBlocksLane(m: LaneSignalView["merge"]): boolean {
   if (!MERGE_BLOCKING.includes(m?.status ?? "")) return false;

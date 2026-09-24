@@ -30170,6 +30170,28 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               const adv = await advanceIntegration(root, main, branch);
               if (adv) {
                 clearLandIntent(root); // main never moved — the declaration is void, not pending
+                // --- 9e587653 · THE HUB SAID YES AND THIS HOST THEN COULD NOT FOLLOW -------------
+                // The push takes network time, and the main checkout belongs to a human: a direct
+                // commit there between `dirtyMainStop` and this advance (or a checkout that went
+                // dirty in that window) makes the ff refuse AFTER the hub already took `laneTip` on
+                // `mainBefore`. That is not the race the loop below answers. Going round would
+                // rebase onto the direct commit, push a new tip the hub must reject (it holds
+                // laneTip, which is not an ancestor), find the two diverged in catchUpMainToHub and
+                // end `hub-lost` — and every later land of this host would end the same way until a
+                // human reconciles. So it stops HERE, under its own name, and names both shas.
+                // NAMING, NOT REPAIRING: resolving it means moving or discarding somebody's commit —
+                // the direct one here or the land on the hub — and that is not this server's call.
+                if (arb?.ok) {
+                  const localNow = (await git(root, "rev-parse", main)).out;
+                  const split = localNow === mainBefore
+                    ? `${main} here did not move (${adv.error.slice(0, 160)}) and is now BEHIND the hub`
+                    : `${main} here moved to ${localNow} under this land, so the hub and this host have DIVERGED`;
+                  audit("land_hub_only", s.id, `${basename(root)} ${branch} hub ${main}=${arb.sha.slice(0, 12)} local ${main}=${localNow.slice(0, 12)}`);
+                  res = { status: "error", landed: false, branch, at: Date.now(), verify,
+                    errorReason: "hub-only", ...(ffRounds ? { ffRounds } : {}),
+                    detail: `REPAIR CASE — the hub (${arb.remote}) accepted this land as ${arb.sha} on ${mainBefore}, but ${split}. Hub ${main}=${arb.sha} · local ${main}=${localNow}. Nothing was reset, discarded or retried; lane kept — reconcile the two by hand before this host lands again`.slice(0, 600) };
+                  break;
+                }
                 // ROUND AGAIN? Only while the budget lasts AND we hold the machine. The mutex is
                 // asked for once (`ffHeld` latches); if another suite holds it for the whole budget
                 // we do NOT retry unheld — that would spend the queue three times over, which is the

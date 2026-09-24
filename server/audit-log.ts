@@ -205,6 +205,10 @@ type AuditEvent =
   // fleetwide, the remote is per repo, and such a repo lands locally with no hub. Written at the
   // same choke point as land_actor, beside the `hubSkipped` field on the note that says the same.
   | "hub_skip"
+  // 9e587653: the hub ACCEPTED a land and this host's own fast-forward then failed — the hub holds
+  // the lane tip, local main does not. A repair case for a human; detail names both shas, because
+  // the merge verdict that also names them dies with the lane.
+  | "land_hub_only"
   // an owner-token merge arriving over bearer/query on a lane whose task belongs to a Program with
   // a LIVE bound MAIN — i.e. the shape a session reaching for fleet.json's token produces. The land
   // PROCEEDS (the owner's own scripts use Bearer); this row is what makes the actor class countable

@@ -172,9 +172,16 @@ export async function run(lc: LaneCtx): Promise<void> {
         .slots.find((x) => x.id === sh.slot)?.cwd === null);
     check("shelved worktree kept on disk (not destroyed)", exists(sh.cwd));
     check("uncommitted work survives the shelve", exists(`${sh.cwd}/shelve-work.txt`));
-    const wmap = (await (await get(`/api/slots/${lc.lnSlot}/worktrees`)).json()) as
-      { worktrees: { path: string; slot: number | null; note: string | null }[] };
-    const orphan = wmap.worktrees.find((w) => w.path === sh.cwd);
+    // the board route is a DISPLAY cache (server.ts, THE SWITCH CONTRACT): an entry older than
+    // GIT_TICK_MS is served as-is while it recomputes, so a lane opened seconds ago may not be in the
+    // list yet — a fast module-only run read it on the stale answer and failed at HEAD 8498717c too.
+    // The row is awaited; its FIELDS are then asserted on the answer that carries it.
+    type ShRow = { path: string; slot: number | null; note: string | null };
+    let orphan: ShRow | undefined;
+    try {
+      orphan = await until(async () => ((await (await get(`/api/slots/${lc.lnSlot}/worktrees`)).json()) as
+        { worktrees: ShRow[] }).worktrees.find((w) => w.path === sh.cwd), { timeoutMs: 10_000, what: "the shelved lane on the board" });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     check("shelved lane is an orphan (no holding slot)", orphan != null && orphan.slot === null, JSON.stringify(orphan));
     check("shelve note surfaced on the orphan", orphan?.note === "finish the parser, then add a test", JSON.stringify(orphan));
     const reopen = (await (await post("/api/lanes", { repo: REPO, attach: sh.cwd })).json()) as { ok?: boolean; slot?: number; error?: string };

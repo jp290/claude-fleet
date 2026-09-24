@@ -122,7 +122,7 @@ import {
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
   PROGRAM_RELEASE_POLICIES, loadProgramRelease, type ProgramReleasePolicy, loadTaskHold, TASK_HOLD_GRUND_MAX,
-  REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume,
+  REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume, loadLanePreview,
   loadStallSensor, type StallSensorState,
   type TaskDisposition, loadTaskDisposition, TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX,
   type Studio, type StudioContent, type ProgramStudioBinding, type StudioStage,
@@ -143,7 +143,7 @@ import {
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskCard, type TaskCriterion, type TaskFilesProposal,
   type RefineChild, type RefineProposal,
-  type TaskRefine, type TaskBriefReview, type BriefReviewFinding, type LaneForm, type LaneRef, type LaneReviewCandidate, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep,
+  type TaskRefine, type TaskBriefReview, type BriefReviewFinding, type LaneForm, type LaneRef, type LaneReviewCandidate, type LanePreview, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
   type PromotionSelfLand, type PromotionPolicy, type PromotionRequest, type ProgramProfileKind, type ProgramProfile,
   type ProgramLineageVia, type ProgramLineageEndedBy, type ProgramLineageEntry, type ProgramLineage,
@@ -3910,6 +3910,7 @@ function reviewParkOf(taskId: string): { path: string; candidate: LaneReviewCand
 function dropShelved(path: string, why: string): void {
   const candidate = shelved[path]?.review;
   delete shelved[path];
+  dropLanePreviewsAt(path, why);
   if (!candidate) return;
   for (const t of tasks) {
     if (candidate.taskIds.includes(t.id) && t.status === "sent" && t.slot === null) {
@@ -3917,6 +3918,201 @@ function dropShelved(path: string, why: string): void {
       t.note = `review candidate ${candidate.id} dropped — ${why}; review and requeue if still wanted`;
     }
   }
+}
+
+// ===== THE REVIEW PREVIEW (server/types.ts#LanePreview, lane-preview.sh) =====================
+// The owner's two decisions on row 6ec36333 (2026-09-24) are the budget and the clock: at most
+// LANE_PREVIEW_MAX live previews fleet-wide, exactly one per candidate, each ended after
+// LANE_PREVIEW_TTL_MS — env knobs, so moving them is a restart, not a code change. Reachability is
+// the board's own: a preview binds exactly HOST, never a wildcard. Ports come from their own band
+// (the note under e2e-isolated.sh's PORT BAND TABLE), bind-probed here, never 8790/8899.
+const lanePreviewKnob = (raw: string | undefined, dflt: number, lo: number, hi: number): number => {
+  const n = raw === undefined || raw === "" ? dflt : Number(raw);
+  return Number.isInteger(n) && n >= lo && n <= hi ? n : dflt;
+};
+const LANE_PREVIEW_MAX = lanePreviewKnob(process.env.FLEET_LANE_PREVIEW_MAX, 2, 1, 8);
+const LANE_PREVIEW_TTL_MS = lanePreviewKnob(process.env.FLEET_LANE_PREVIEW_TTL_MS, 30 * 60_000, 1_000, 24 * 3_600_000);
+const LANE_PREVIEW_PORT_BASE = 25400;
+const LANE_PREVIEW_PORT_SPAN = 20;
+// the script's own backstop fires this long AFTER the server's timer, so the timer is the normal end
+const LANE_PREVIEW_REAP_GRACE_SEC = 30;
+const LANE_PREVIEW_START_TIMEOUT_MS = 180_000;
+const LANE_PREVIEW_STOP_TIMEOUT_MS = 30_000;
+const LANE_PREVIEW_SCRIPT = `${import.meta.dir}/lane-preview.sh`;
+// candidate id -> its ONE record (start, stop and expiry evidence in one)
+let lanePreviews: Record<string, LanePreview> = {};
+const lanePreviewTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const lanePreviewLive = (p: LanePreview): boolean => p.state === "starting" || p.state === "running";
+const lanePreviewUrl = (p: LanePreview): string =>
+  `http://${p.host.includes(":") ? `[${p.host}]` : p.host}:${p.port}/?token=${p.token}`;
+
+// THE SCRIPT'S ENVIRONMENT IS AN ALLOWLIST, not this server's env minus a list: whatever credential
+// the live server was started with (owner token, API keys, FLEET_* of every kind) is simply never
+// named. HOME is the preview's own, so nothing under the owner's home is the instance's to read;
+// the bun cache is the one thing of the real HOME it is pointed at, so an install stays offline.
+function lanePreviewEnv(dir: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const k of ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMUX_TMPDIR", "USER", "LOGNAME", "SHELL", "TERM"]) {
+    const v = process.env[k];
+    if (v) env[k] = v;
+  }
+  env.HOME = `${dir}/home`;
+  env.BUN_INSTALL_CACHE_DIR = process.env.BUN_INSTALL_CACHE_DIR ?? `${process.env.BUN_INSTALL ?? `${HOME}/.bun`}/install/cache`;
+  return env;
+}
+
+async function runLanePreviewScript(args: string[], dir: string, stdin: string | null, timeoutMs: number):
+  Promise<{ code: number; out: string; err: string }> {
+  const p = Bun.spawn(["sh", LANE_PREVIEW_SCRIPT, ...args],
+    { env: lanePreviewEnv(dir), stdin: stdin === null ? "ignore" : "pipe", stdout: "pipe", stderr: "pipe" });
+  if (stdin !== null && p.stdin) { p.stdin.write(stdin); await p.stdin.end(); }
+  const timer = setTimeout(() => p.kill(), timeoutMs);
+  const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  clearTimeout(timer);
+  return { code, out: out.trim(), err: err.trim() };
+}
+
+// a port is free when THIS process can bind it on HOST right now; the instance binds it seconds later
+function lanePreviewPortFree(port: number): boolean {
+  try {
+    Bun.serve({ hostname: HOST, port, fetch: () => new Response(null) }).stop(true);
+    return true;
+  } catch {
+    return false; // in use, or not ours to bind — either way not a port to hand out
+  }
+}
+
+function armLanePreviewExpiry(p: LanePreview): void {
+  const prior = lanePreviewTimers.get(p.candidate);
+  if (prior) clearTimeout(prior);
+  lanePreviewTimers.set(p.candidate, setTimeout(() => {
+    lanePreviewTimers.delete(p.candidate);
+    endLanePreview(p.candidate, "expired", LANE_PREVIEW_TTL_MS >= 60_000
+      ? `its ${Math.round(LANE_PREVIEW_TTL_MS / 60_000)}-minute deadline passed`
+      : `its ${Math.round(LANE_PREVIEW_TTL_MS / 1000)}-second deadline passed`)
+      .catch((e: unknown) => logError("lane-preview-expiry", e));
+  }, Math.max(0, p.expiresAt - Date.now())));
+}
+
+type LanePreviewResult = { ok: true; preview: LanePreview } | { ok: false; code: number; error: string };
+
+// THE START. Every refusal is named and every one is decided BEFORE the first await: the record is
+// claimed as `starting` synchronously, so a second start of the same candidate — or one past the
+// budget — that arrives while this one installs and boots is refused, never raced.
+async function startLanePreview(candidateId: string): Promise<LanePreviewResult> {
+  const no = (code: number, error: string) => ({ ok: false as const, code, error });
+  let path: string | null = null;
+  let c: LaneReviewCandidate | null = null;
+  for (const [p, sh] of Object.entries(shelved)) if (sh.review?.id === candidateId) { path = p; c = sh.review; }
+  if (path === null || c === null) return no(404, `no parked review candidate ${candidateId}`);
+  const prior = lanePreviews[c.id];
+  if (prior && lanePreviewLive(prior))
+    return no(409, `candidate ${c.id} already has preview ${prior.id} (${prior.state}) on port ${prior.port} until ${new Date(prior.expiresAt).toISOString()} — one preview per candidate; stop it first`);
+  const live = Object.values(lanePreviews).filter(lanePreviewLive);
+  if (live.length >= LANE_PREVIEW_MAX)
+    return no(409, `preview budget spent: ${live.length} of ${LANE_PREVIEW_MAX} running fleet-wide (candidates ${live.map((p) => p.candidate).join(", ")}) — stop one or wait for its deadline`);
+  if (HOST === "0.0.0.0" || HOST === "::" || HOST === "")
+    return no(409, `this server binds the wildcard host '${HOST}' — a preview binds one named address only, so none is started`);
+  if (!existsSync(path)) return no(409, `the candidate's worktree ${path} is gone — nothing to preview`);
+  const taken = new Set(live.map((p) => p.port));
+  let port = 0;
+  for (let i = 0; i < LANE_PREVIEW_PORT_SPAN && !port; i++) {
+    const cand = LANE_PREVIEW_PORT_BASE + i;
+    if (!taken.has(cand) && cand !== PORT && cand !== 8790 && cand !== 8899 && lanePreviewPortFree(cand)) port = cand;
+  }
+  if (!port) return no(409, `no free port in the preview band ${LANE_PREVIEW_PORT_BASE}–${LANE_PREVIEW_PORT_BASE + LANE_PREVIEW_PORT_SPAN - 1}`);
+  const id = randomBytes(6).toString("hex");
+  const now = Date.now();
+  const rec: LanePreview = { id, candidate: c.id, path, branch: c.branch, head: c.head, host: HOST, port,
+    sock: `fleetpv${id}`, dir: `${tmpdir()}/fleet-lane-preview-${id}`, token: randomBytes(24).toString("hex"),
+    startedAt: now, expiresAt: now + LANE_PREVIEW_TTL_MS, state: "starting", endedAt: null, why: null };
+  lanePreviews[c.id] = rec;
+  audit("lane_preview", undefined, `start candidate:${c.id} preview:${id} port:${port}`);
+  const reapSec = String(Math.ceil(LANE_PREVIEW_TTL_MS / 1000) + LANE_PREVIEW_REAP_GRACE_SEC);
+  const r = await runLanePreviewScript(["start", path, c.head, rec.dir, HOST, String(port), rec.sock, reapSec],
+    rec.dir, `${rec.token}\n`, LANE_PREVIEW_START_TIMEOUT_MS);
+  if (r.code !== 0) {
+    // the script cleans up after its own refusals; a start killed on the timeout did not get to
+    await runLanePreviewScript(["stop", rec.dir, rec.sock], rec.dir, null, LANE_PREVIEW_STOP_TIMEOUT_MS);
+    const why = (r.err.split("\n").pop() ?? "").slice(0, 400) || `lane-preview.sh exited ${r.code}`;
+    Object.assign(rec, { state: "failed", endedAt: Date.now(), why: `start failed: ${why}` });
+    audit("lane_preview", undefined, `failed candidate:${c.id} preview:${id}`);
+    await saveStateNow();
+    return no(502, rec.why ?? why);
+  }
+  rec.state = "running";
+  // a worktree removed during the start left no board row to show or stop this preview on
+  if (!existsSync(path)) {
+    await endLanePreview(c.id, "stopped", "its worktree left the board while it was starting");
+    return no(409, `the candidate's worktree ${path} went away while preview ${id} started — it was stopped`);
+  }
+  armLanePreviewExpiry(rec);
+  await saveStateNow();
+  return { ok: true, preview: rec };
+}
+
+// THE ONE END of a live preview — the owner's stop, the deadline, a boot past the deadline, a
+// candidate whose worktree went away. The state is written BEFORE the script runs, so a second end
+// arriving meanwhile finds nothing live and returns; a stop script that failed says so in `why`
+// (the detached backstop in lane-preview.sh still ends the instance at its deadline).
+async function endLanePreview(candidateId: string, state: "stopped" | "expired", why: string): Promise<LanePreview | null> {
+  const rec = lanePreviews[candidateId];
+  if (!rec || rec.state !== "running") return rec ?? null;
+  const timer = lanePreviewTimers.get(candidateId);
+  if (timer) { clearTimeout(timer); lanePreviewTimers.delete(candidateId); }
+  Object.assign(rec, { state, endedAt: Date.now(), why });
+  const r = await runLanePreviewScript(["stop", rec.dir, rec.sock], rec.dir, null, LANE_PREVIEW_STOP_TIMEOUT_MS);
+  if (r.code !== 0) rec.why = `${why} — the stop script exited ${r.code}: ${(r.err.split("\n").pop() ?? "").slice(0, 200)}`;
+  audit("lane_preview", undefined, `${state} candidate:${candidateId} preview:${rec.id}`);
+  saveState();
+  return rec;
+}
+
+// a worktree that leaves the board takes its previews with it: a live one is ended, and every
+// record naming the path is dropped, since no board row is left to show it on
+function dropLanePreviewsAt(path: string, why: string): void {
+  for (const rec of Object.values(lanePreviews)) {
+    if (rec.path !== path) continue;
+    if (rec.state === "running")
+      endLanePreview(rec.candidate, "stopped", `its worktree left the board — ${why}`)
+        .catch((e: unknown) => logError("lane-preview-drop", e));
+    if (rec.state !== "starting") delete lanePreviews[rec.candidate];
+  }
+}
+
+// AT BOOT: a preview the server was starting when it died is ended as failed (the script may have
+// half-built it), a running one past its deadline is ended now, the rest get their timers back.
+async function reconcileLanePreviewsAtBoot(): Promise<void> {
+  for (const rec of Object.values(lanePreviews)) {
+    if (rec.state === "starting") {
+      await runLanePreviewScript(["stop", rec.dir, rec.sock], rec.dir, null, LANE_PREVIEW_STOP_TIMEOUT_MS);
+      Object.assign(rec, { state: "failed", endedAt: Date.now(), why: "the server restarted while this preview was starting" });
+    } else if (rec.state === "running") {
+      if (Date.now() >= rec.expiresAt) await endLanePreview(rec.candidate, "expired", "its deadline passed while the server was down");
+      else if ((await Bun.spawn(["tmux", "-L", rec.sock, "has-session", "-t", "srv"], { stdout: "ignore", stderr: "ignore" }).exited) !== 0)
+        await endLanePreview(rec.candidate, "stopped", "its instance was gone at boot");
+      else armLanePreviewExpiry(rec);
+    }
+  }
+}
+
+// THE BOARD'S VIEW of the newest record on a worktree path: identity, the URL only while it runs,
+// and `stale` — the lane's HEAD read now against the stored head the preview was built from (one
+// rev-parse per previewed row; `null` when HEAD could not be read, never "not stale").
+interface LanePreviewView {
+  id: string; candidate: string; branch: string; head: string; state: LanePreview["state"];
+  url: string | null; startedAt: number; expiresAt: number; endedAt: number | null; why: string | null;
+  laneHead: string | null; stale: boolean | null;
+}
+async function lanePreviewView(path: string): Promise<LanePreviewView | null> {
+  let rec: LanePreview | null = null;
+  for (const p of Object.values(lanePreviews)) if (p.path === path && (!rec || p.startedAt > rec.startedAt)) rec = p;
+  if (!rec) return null;
+  const h = existsSync(path) ? await git(path, "rev-parse", "HEAD") : null;
+  const laneHead = h && h.code === 0 && /^[0-9a-f]{40,64}$/.test(h.out) ? h.out : null;
+  return { id: rec.id, candidate: rec.candidate, branch: rec.branch, head: rec.head, state: rec.state,
+    url: rec.state === "running" ? lanePreviewUrl(rec) : null, startedAt: rec.startedAt, expiresAt: rec.expiresAt,
+    endedAt: rec.endedAt, why: rec.why, laneHead, stale: laneHead === null ? null : laneHead !== rec.head };
 }
 const MAX_TASKS = 200;
 // cap the task list WITHOUT dropping non-terminal tasks: a still-pending/queued/sent task
@@ -4820,7 +5016,7 @@ function stateSnapshot(): string {
     ...(laneSucceedCounts.size ? { laneSucceedCounts: Object.fromEntries(laneSucceedCounts) } : {}),
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
-    repoBases, repoWorkers, repoLaneCaps, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
+    repoBases, repoWorkers, repoLaneCaps, shelved, ...(Object.keys(lanePreviews).length ? { lanePreviews } : {}), undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
     landPending: Object.fromEntries(landPending), mainDirectPreflights,
     // the stall sensor's clock (tickStallSensor) — only once it ever ran, so a state file of a
     // fleet that never stood stuck carries no new key
@@ -6140,6 +6336,7 @@ interface WorktreeBoardRow {
   path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number;
   dirtyFiles: string[]; unpushedCommits: CommitRow[]; shortstat: string | null; empty: boolean; note: string | null;
   review: ReviewCandidateView | null;
+  preview: LanePreviewView | null;
 }
 // the parked candidate as the board shows it: its identity plus the one derived word, whether its
 // deadline has passed. `expired` asks for a decision; nothing acts on it.
@@ -6155,7 +6352,8 @@ const worktreeBoardRecomputing = new Set<string>();
 // …and the four fields in that body which are NOT git-derived: `main` (the configured
 // integration branch — a plain object read unless it has to be derived from the primary's HEAD),
 // `slot` (the holding session, from `slots`), `note` (the shelve note, in memory) and `review` (the
-// review-park candidate beside that note). They cost
+// review-park candidate beside that note) — plus `preview`, whose one git read (lanePreviewView)
+// rides the same overlay because its state moves on clicks and a deadline. They cost
 // nothing to recompute, so EVERY answer gets them fresh — cached or not. Serving them stale is
 // what the post-land audit of ea3b141b caught: a repo-base change, a shelve and a resume were
 // each invisible for up to GIT_TICK_MS, because the mutation never touched git and the cache
@@ -6166,12 +6364,15 @@ async function freshenWorktreeBoard(b: WorktreeBoard): Promise<WorktreeBoard> {
   return {
     ...b,
     main: intb ?? b.main, // null = primary is detached; the computed fallback stands
-    worktrees: b.worktrees.map((w) => ({
+    worktrees: await Promise.all(b.worktrees.map(async (w) => ({
       ...w,
       slot: slots.find((x) => x.cwd === w.path)?.id ?? null,
       note: shelved[w.path]?.note ?? null,
       review: reviewCandidateView(w.path),
-    })),
+      // the preview's state moves on the owner's clicks and its deadline, never on git time; its
+      // `stale` is one rev-parse, and only for a row that has a preview record at all
+      preview: await lanePreviewView(w.path),
+    }))),
   };
 }
 
@@ -34343,6 +34544,14 @@ if (existsSync(STATE_FILE)) {
           const review = loadLaneReviewCandidate((v as { review?: unknown }).review);
           shelved[k] = { at: (v as { at: number }).at, note: (v as { note: string }).note, ...(review ? { review } : {}) };
         }
+    // the review previews come back record by record, whole or not at all (loadLanePreview);
+    // reconcileLanePreviewsAtBoot then settles the ones the downtime overtook
+    const plps = (persisted as { lanePreviews?: unknown }).lanePreviews;
+    if (typeof plps === "object" && plps !== null && !Array.isArray(plps))
+      for (const v of Object.values(plps as Record<string, unknown>)) {
+        const lp = loadLanePreview(v);
+        if (lp) lanePreviews[lp.candidate] = lp;
+      }
     // undoable lands survive deploys. MIGRATION, load-bearing: the pre-stack shape was ONE record per
     // repo, and a boot that only understood the array would read every pre-upgrade land as "no
     // land" — so a bare object is read as a one-element stack.
@@ -34371,7 +34580,7 @@ if (existsSync(STATE_FILE)) {
     // ...and so does the land that was still IN FLIGHT. Restored here, resolved against git a few
     // lines below (finishLandsInFlight) — the restore only reads the file.
     const plp = (persisted as { landPending?: unknown }).landPending;
-    if (typeof plp === "object" && plp !== null && !Array.isArray(plp))
+    if (typeof plps === "object" && plps !== null && !Array.isArray(plps))
       for (const [k, v] of Object.entries(plp as Record<string, unknown>))
         if (typeof k === "string" && typeof v === "object" && v !== null
           && typeof (v as LandPending).main === "string" && typeof (v as LandPending).branch === "string"
@@ -34491,6 +34700,7 @@ pruneAttention();
 // …EXCEPT a row a review candidate holds (reviewParkOf): it is `sent` with no slot BY DESIGN, and
 // requeuing it here is the silent restart the park exists to rule out. A candidate whose worktree
 // vanished while the server was down cannot be resumed, so its rows go back to owner review instead.
+await reconcileLanePreviewsAtBoot();
 for (const [path, sh] of Object.entries(shelved))
   if (sh.review && !existsSync(path)) dropShelved(path, "its worktree was gone at boot");
 for (const t of tasks) {
@@ -39436,6 +39646,7 @@ Bun.serve<WSData>({
             empty: dirtyFiles.length === 0 && unpushedCommits.length === 0,
             note: shelved[w.path]?.note ?? null, // shelve note, if this orphan was set aside
             review: reviewCandidateView(w.path), // …and the review candidate, if it was parked for review
+            preview: await lanePreviewView(w.path), // …and its time-boxed preview, if one was started
           };
         };
         const rows: WorktreeBoardRow[] = new Array(targets.length);
@@ -39632,6 +39843,23 @@ Bun.serve<WSData>({
       void tickGit().catch(() => {});
       return json({ ok: true, removed: wt.path, branch: wt.branch,
         head: head.code === 0 ? head.out : null, branchDeleted });
+    }
+    // THE REVIEW PREVIEW (startLanePreview): one time-boxed isolated instance of a parked candidate's
+    // stored head, for the owner to look at before land. The answer carries the record — the board
+    // row carries it too, with the URL and `stale`. A view, never a verify or land-gate result.
+    const lpMatch = /^\/api\/review-candidates\/([0-9a-f]{12})\/preview(\/stop)?$/.exec(url.pathname);
+    if (lpMatch && req.method === "POST") {
+      if (!lpMatch[2]) {
+        const r = await startLanePreview(lpMatch[1]);
+        if (!r.ok) return json({ error: r.error }, r.code);
+        return json({ ok: true, preview: { ...r.preview, token: undefined, url: lanePreviewUrl(r.preview) } });
+      }
+      const cur = lanePreviews[lpMatch[1]];
+      if (!cur) return json({ error: `candidate ${lpMatch[1]} has no preview` }, 404);
+      if (cur.state === "starting") return json({ error: `preview ${cur.id} is still starting — stop it once it runs, or it ends at its deadline` }, 409);
+      if (cur.state !== "running") return json({ error: `preview ${cur.id} already ended (${cur.state}${cur.why ? `: ${cur.why}` : ""})` }, 409);
+      const ended = await endLanePreview(lpMatch[1], "stopped", "stopped by the owner");
+      return json({ ok: true, preview: ended ? { ...ended, token: undefined } : null });
     }
     // set/clear a repo's integration branch — the branch lanes land into. Setting it lets the
     // owner park the primary checkout on a working branch while lanes still land onto `main`.

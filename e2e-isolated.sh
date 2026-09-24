@@ -42,7 +42,10 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 #   drills/drill-3.sh      17400 – 19399
 #   e2e-security.sh        21400 – 23399
 #   acceptance-probe.sh    23400 – 25399
-# Next free base: 25400. Add a new harness to this table FIRST, then copy the base into it.
+# Not a harness, so not a table row (e2e/pins.ts §2 parses the rows): the review previews of
+# lane-preview.sh take ports 25400–25419, handed out and bind-probed by the SERVER
+# (server.ts#LANE_PREVIEW_PORT_BASE), never derived from $$.
+# Next free base: 25420. Add a new harness to this table FIRST, then copy the base into it.
 # Disjoint from each other is only half of it — a band also has to be clear of what else listens
 # on this box. Checked with `lsof -nP -iTCP -sTCP:LISTEN` when security was re-spaced: the obvious
 # squatter is cloudflared's metrics pair 20241/20242, which is why security skips 19400 and takes
@@ -62,7 +65,7 @@ mkdir -p "$DIR"
 # to this wrapper — and now neither does a new top-level directory, which used to need one. The
 # other three are not this runner's: e2e/pins.ts is the land gate's own first stage, and
 # e2e/helper-daemon.ts + e2e/helper-portal.ts belong to fleet-e2e-postland-audit.ts.
-# STAGE_EXTRA is THREE files, all there for the reason (3) in e2e-stage.sh names: e2e/ctl.ts
+# STAGE_EXTRA is FOUR files, all there for the reason (3) in e2e-stage.sh names: e2e/ctl.ts
 # SPAWNS ctl.sh and e2e/tasks.ts §TA spawns register.sh, and a spawn is invisible to an import scan.
 # (register.sh must also run INSIDE the instance: it reads the tasks-archive.jsonl beside it, and
 # from the source tree it would fall back to the main checkout's live ledger.) ctl.sh's history:
@@ -81,7 +84,9 @@ mkdir -p "$DIR"
 # NOT staged.
 # scratch-reap.sh joins them for the same reason: e2e/host-hygiene.ts §e SPAWNS it (against a
 # fixture root, never $TMPDIR), and a spawn is invisible to an import scan.
-STAGE_EXTRA="ctl.sh register.sh scratch-reap.sh"
+# lane-preview.sh is the fourth: the SERVER spawns it by path (server.ts#LANE_PREVIEW_SCRIPT) when
+# e2e/lanes-lifecycle.ts starts a review preview, and without it every start answers 502.
+STAGE_EXTRA="ctl.sh register.sh scratch-reap.sh lane-preview.sh"
 . "$SRC/e2e-stage.sh"
 stage_instance "$SRC" "$DIR" server.ts fleet-e2e.ts || exit 1
 

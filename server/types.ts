@@ -1723,6 +1723,39 @@ const loadLaneResume = (value: unknown): LaneResume | null => {
   return { candidate: r.candidate, head: r.head, reportId: r.reportId, parkedAt: r.parkedAt,
     resumedAt: r.resumedAt, verify: "stale" };
 };
+// THE REVIEW PREVIEW (task 6ec36333, docs/messungen/2026-09-23-worktree-lebenszyklus.md §3 Karte 2):
+// ONE time-boxed, isolated instance of ONE review candidate's STORED head, started by the owner and
+// run by lane-preview.sh in a scratch copy with its own socket, port and token. The record is the
+// candidate's start, stop and expiry evidence in one (`endedAt` + `why` name which end it met); a
+// later start of the same candidate replaces it. `head` is the candidate's head, so a lane head that
+// moved away marks the record stale. A VIEW, never a verify or land-gate result — no gate reads it.
+// Unrelated to server.ts#lanePreviewFact, which is the lane's isolated SUITE job.
+type LanePreviewState = "starting" | "running" | "stopped" | "expired" | "failed";
+interface LanePreview {
+  id: string; candidate: string; path: string; branch: string; head: string;
+  host: string; port: number; sock: string; dir: string; token: string;
+  startedAt: number; expiresAt: number; state: LanePreviewState;
+  endedAt: number | null; why: string | null;
+}
+const LANE_PREVIEW_STATES: readonly LanePreviewState[] = ["starting", "running", "stopped", "expired", "failed"];
+const loadLanePreview = (value: unknown): LanePreview | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const r = value as Record<string, unknown>;
+  if (typeof r.id !== "string" || !REVIEW_CANDIDATE_ID_RE.test(r.id)
+    || typeof r.candidate !== "string" || !REVIEW_CANDIDATE_ID_RE.test(r.candidate)
+    || typeof r.path !== "string" || !r.path || typeof r.branch !== "string" || !r.branch
+    || typeof r.head !== "string" || !GIT_SHA_RE.test(r.head) || typeof r.host !== "string" || !r.host
+    || typeof r.port !== "number" || !Number.isInteger(r.port) || r.port < 1 || r.port > 65535
+    || typeof r.sock !== "string" || !/^fleetpv[0-9a-f]{12}$/.test(r.sock)
+    || typeof r.dir !== "string" || !/\/fleet-lane-preview-[0-9a-f]{12}$/.test(r.dir)
+    || typeof r.token !== "string" || !/^[0-9a-f]{32,64}$/.test(r.token)
+    || !finiteTime(r.startedAt) || !finiteTime(r.expiresAt)
+    || !LANE_PREVIEW_STATES.includes(r.state as LanePreviewState)
+    || !(r.endedAt === null || finiteTime(r.endedAt)) || !(r.why === null || typeof r.why === "string")) return null;
+  return { id: r.id, candidate: r.candidate, path: r.path, branch: r.branch, head: r.head, host: r.host,
+    port: r.port, sock: r.sock, dir: r.dir, token: r.token, startedAt: r.startedAt, expiresAt: r.expiresAt,
+    state: r.state as LanePreviewState, endedAt: r.endedAt, why: r.why };
+};
 interface SuccessionRetirement { at: number; cwd: string; token: string }
 // THE PORTFOLIO READ GRANT (memory M4, task 41641179; docs/self-api.md §memory). A READ permission
 // the owner sets on one exact occupant: which projects (opaque projectKeys) and which of their
@@ -3239,7 +3272,7 @@ export type {
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal, RefineChild,
-  RefineProposal, TaskRefine, BriefReviewFinding, TaskBriefReview, LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
+  RefineProposal, TaskRefine, BriefReviewFinding, TaskBriefReview, LaneForm, LaneRef, LaneReviewCandidate, LaneResume, LanePreview, LanePreviewState, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
@@ -3285,7 +3318,7 @@ export {
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,
   PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold, TASK_HOLD_GRUND_MAX, loadStallSensor,
-  REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume,
+  REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume, loadLanePreview,
   TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX, loadTaskDisposition,
   HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck,
   HELPER_ARTIFACT_GLOB_MAX, HELPER_ARTIFACT_MAX, HELPER_ARTIFACT_PATH_MAX,

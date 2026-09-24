@@ -1832,7 +1832,12 @@ interface ReviewFinding { title: string; file: string; line: number | null;
 interface WtRisk { dirtyFiles: string[]; unpushedCommits: { hash: string; subject: string }[];
   shortstat: string | null; empty: boolean }
 interface WtRow extends WtRisk { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number; note?: string | null;
-  review?: ReviewCandidateInfo | null }
+  review?: ReviewCandidateInfo | null; preview?: LanePreviewInfo | null }
+// server.ts#LanePreviewView — the time-boxed isolated preview of a candidate's stored head; `url` only
+// while it runs, `stale` when the lane's HEAD moved off that head (null = HEAD unreadable)
+interface LanePreviewInfo { id: string; candidate: string; branch: string; head: string;
+  state: "starting" | "running" | "stopped" | "expired" | "failed"; url: string | null; startedAt: number;
+  expiresAt: number; endedAt: number | null; why: string | null; laneHead: string | null; stale: boolean | null }
 // server.ts#ReviewCandidateView — a lane parked for later owner review, with its identity
 interface ReviewCandidateInfo { id: string; parkedAt: number; expiresAt: number; expired: boolean; branch: string;
   head: string; base: string | null; baseSha: string | null; taskIds: string[]; reportId: string }
@@ -4767,7 +4772,62 @@ async function renderBoard() {
               + ` · report ${c.reportId.slice(0, 8)} · tasks ${c.taskIds.join(", ")}`
               + (c.expired ? ` · Frist abgelaufen ${new Date(c.expiresAt).toLocaleString()} — Entscheidung fällig`
                 : ` · Frist ${new Date(c.expiresAt).toLocaleString()}`)));
+            const live = w.preview && (w.preview.state === "running" || w.preview.state === "starting");
+            if (!live) {
+              const pvb = el("button", "bwtact", "preview") as HTMLButtonElement;
+              pvb.title = `start a 30-minute isolated test instance of candidate ${c.id} at its stored head ${c.head.slice(0, 10)} — own socket, port and token, no live data; a view, not a verify result`;
+              pvb.onclick = async () => {
+                if (laneReqBusy) return;
+                laneReqBusy = true;
+                pvb.disabled = true;
+                pvb.textContent = "starting…";
+                try {
+                  const r = await post(`/api/review-candidates/${c.id}/preview`, {});
+                  if (!r.ok) alert(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "preview failed");
+                } finally {
+                  laneReqBusy = false;
+                  void renderBoard();
+                }
+              };
+              crow.appendChild(pvb);
+            }
             sec.appendChild(crow);
+          }
+          // THE PREVIEW of that candidate: which candidate, which commit, where, until when — and
+          // whether the lane has moved off that commit since. It stays after a resume (the lane then
+          // carries on) and shows its end; it is a view the owner opens, never a verify result.
+          if (w.preview) {
+            const p = w.preview;
+            const prow = el("div", "sweepv shelved");
+            prow.appendChild(el("span", "sweepvbadge", `preview ${p.state}`));
+            const when = (t: number) => new Date(t).toLocaleTimeString();
+            const where = el("span", "sweepvreason",
+              `candidate ${p.candidate} · commit ${p.head.slice(0, 10)}`
+              + (p.state === "running" || p.state === "starting" ? ` · läuft bis ${when(p.expiresAt)}`
+                : ` · beendet ${p.endedAt ? when(p.endedAt) : "?"}${p.why ? ` — ${p.why}` : ""}`)
+              + (p.stale === true ? ` · VERALTET: Lane-Head ${p.laneHead?.slice(0, 10) ?? "?"} ≠ Vorschau-Commit`
+                : p.stale === null ? " · Lane-Head unlesbar — Aktualität unbekannt" : "")
+              + " · kein Verify-Beleg");
+            prow.appendChild(where);
+            if (p.url) {
+              const a = el("a", "bwtact", p.url.replace(/\?token=.*$/, "")) as HTMLAnchorElement;
+              a.href = p.url;
+              a.target = "_blank";
+              a.rel = "noopener";
+              a.title = "open the preview instance (its own token rides in the link; it is not the board's)";
+              prow.appendChild(a);
+            }
+            if (p.state === "running") {
+              const stop = el("button", "bwtact del", "stop") as HTMLButtonElement;
+              stop.title = "stop this preview now — its instance and scratch copy are removed";
+              stop.onclick = async () => {
+                const r = await post(`/api/review-candidates/${p.candidate}/preview/stop`, {});
+                if (!r.ok) alert(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "stop failed");
+                void renderBoard();
+              };
+              prow.appendChild(stop);
+            }
+            sec.appendChild(prow);
           }
           // the confirm panel is not a dialog: the consequences ARE the wait screen. The
           // destructive button unlocks only after the read window, counted from the first
@@ -13331,6 +13391,8 @@ function decodeAudit(event: string, detail?: string): string {
       return detail === "landed" ? "closed after landing"
         : detail === "owner" ? "closed by the owner"
         : `closed${detail ? ` (${detail})` : ""}`;
+    case "lane_preview":
+      return `review preview · ${detail ?? ""}`;
     case "slot_shelve": {
       const m = detail?.match(/^note:(\d+)(?: review:([0-9a-f]{12}))?$/);
       return m ? `${m[2] ? `parked for review · candidate ${m[2]}` : "shelved"} · ${m[1]}-char note` : "shelved";

@@ -107,6 +107,16 @@ Die Orchestratorin hat §3 Punkt 1 per Kommentar 45da307f/b84f7ae0 an Zeile bbac
 
 Karten 2 und 3 bleiben wie oben unter der Linie. Sie setzen jetzt einen geparkten Kandidaten voraus statt eines gehaltenen Slots.
 
+### Nachtrag 2026-09-24 — Karte 2 gebaut: Vorschau eines geparkten Kandidaten
+
+Zeile 6ec36333, auf Branch `fleet/260924072307-c3f2` (Shas setzt die MAIN nach dem Land ein). Die zwei offenen Festlegungen hat die Orchestratorin nach Owner-Freigabe gesetzt: **Erreichbarkeit** = die Bind-Adresse des Boards (`FLEET_HOST`), nie eine Wildcard; **Budget** = höchstens 2 gleichzeitige Vorschauen fleet-weit, je Kandidat genau eine, Ablauf 30 Minuten. Budget und Ablauf sind Env-Knöpfe (`FLEET_LANE_PREVIEW_MAX`, `FLEET_LANE_PREVIEW_TTL_MS`).
+
+- `POST /api/review-candidates/:id/preview` (Owner) startet `lane-preview.sh`. Das Skript nimmt per `git archive` nur den **getrackten Baum des gespeicherten Heads**. Arbeitsbaum, `.env`, `fleet.json`, Ledger und `CLAUDE.md` kommen nicht mit, und das Skript prüft vor dem Start, dass sie fehlen. Die Instanz bekommt ein eigenes Scratch-Verzeichnis, einen tmux-Socket `fleetpv<id>`, einen Port aus 25400–25419 (Bind-Probe, nie 8790/8899) und einen frischen Token. Ihr `HOME` ist eigen, `FLEET_CMD=true`, alle Agent-Kommandos zeigen auf `false`. Die Umgebung des Skripts ist eine Allowlist, kein Abzug von der Server-Umgebung.
+- `server.ts#startLanePreview` belegt den Datensatz synchron als `starting`. Ein zweiter Start desselben Kandidaten und ein Start über das Budget werden darum mit Namen abgelehnt, nie gerannt. Je Kandidat gibt es genau einen Datensatz `server/types.ts#LanePreview` mit Start, Ende (`stopped`/`expired`/`failed`) und Grund. Er ist getrennt von `server.ts#lanePreviewFact`, das den Suite-Job der Lane beschreibt.
+- Das Ende kommt über `POST …/preview/stop`, über den Server-Timer, beim Boot nach verpasster Frist oder wenn der Worktree verschwindet (`dropShelved`). Als Rückfall für einen Server, der zur Frist nicht läuft, beendet `lane-preview.sh reap` die Instanz 30 s später selbst. Beendet wird nur über den eigenen Socket und notierte PIDs.
+- Die Board-Zeile (`server.ts#lanePreviewView`, Lanes-Liste in `src/client.ts#renderBoard`) zeigt Kandidat, Commit, URL und Ablauf. `stale` vergleicht den aktuellen Lane-HEAD mit dem gespeicherten Head; `null` heißt unlesbar. Die Zeile trägt den Hinweis „kein Verify-Beleg“, und kein Gate liest sie.
+- Rest, benannt: Cookies sind host-, nicht portgebunden. Ein Browser schickt das Board-Cookie `fleet_8790` darum auch an die Vorschau auf derselben Adresse. Die Vorschau liest es nicht (`server/auth.ts#cookieName` ist je Port eigen), aber ihr Prozess sieht es im Header. Ein getrennter Hostname (MagicDNS statt IP) würde das schließen; das ist eine Owner-Entscheidung.
+
 ## §N Nicht gemessen
 
 Keine laufende Lane, kein Worktree und keine Test-Instanz wurde geöffnet, gestartet oder berührt. Keine Live-Env, `fleet.json` oder `.env` wurde gelesen. Die Haupt-Checkout-Ledger wurden nur aggregiert; `post-land-audits.jsonl` wurde für diese Frage nicht benötigt und nicht gezählt. Es gibt keine beobachtete Reviewzeit, keinen Nachweis, dass frühes Resolve spätere Konflikte spart, und keinen gemessenen Betriebspreis für 30-Minuten-Previews oder wiederholte Agentläufe. Die Wirksamkeit der Karten ist eine Hypothese bis zu ihren DONE-Proben.

@@ -140,8 +140,11 @@ const need = <T>(v: T | null, who: string): T => {
   return v;
 };
 const steps: Step[] = [
-  // --- PURE-function unit tests (no server needed) ---
-  { unit: "pure", module: "context-packs", run: async () => {
+  // --- the context-pack planning rules (pure) plus their seams (server-backed since B2a): the
+  // founding-plan route and the three doors' `packs` field need the instance, so the module owns
+  // its own unit instead of riding the no-server pure one. Still the FIRST step — the pure half
+  // of the module always ran first, and its server half changes no state another module reads.
+  { unit: "context-packs", module: "context-packs", run: async () => {
     await contextPacks.run(check);
   } },
   { unit: "pure", module: "context-plan", run: async () => {

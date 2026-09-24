@@ -489,11 +489,11 @@ Push sei nur ein Notenfeld, gilt damit nicht mehr für den sauberen Auto-Land:
   2026-09-22: `b3ea7306` um 22:02 committet, 23:56 auf der Nabe — 1 h 54 min; 8 der letzten 60
   `main`-Commits sind Direkt-Commits). Der Preis war Verzug; unter zwei Landern ist der Verzug ein
   Strandungsfenster. Eine Ablehnung ist **Exit 3** mit dem Reparaturweg im Text, der Commit steht.
-- **T4 — NICHT ausgeführt.** Die Host-Akte (`FLEET_LANDS=1`, `FLEET_HUB_REMOTE`,
-  `FLEET_SYNC_REMOTE=hub` auf beiden, `FLEET_SYNC_BUILD_CMD=true` auf dem kanonischen) sind Owner-
-  bzw. Deploy-Akte und bleiben offen, bis T1–T3 auf **beiden** Servern laufen. Reihenfolge und
-  Sensoren stehen im bestätigten Kriterium; ein Flip vor dem Deploy ließe den zweiten Host mit dem
-  ALTEN Code landen und erzeugte genau die Divergenz ohne Schiedsrichter, die W5d verhindert.
+- **T4 — gefahren 2026-09-23/24** (Owner-/Deploy-Akt der Orchestratorin, nach T1–T3 auf beiden
+  Servern): Second-host `FLEET_LANDS=1` + `FLEET_HUB_REMOTE=hub`, beide Hosts syncen von der Nabe, der
+  kanonische ohne Build. Beweislauf je ein Land pro Host über die Nabe; Sensoren vorher/nachher und
+  was offen bleibt (Mac-Sync pausiert bis `ab179938`, Regression `5857e934`):
+  `docs/messungen/2026-09-24-w5d-t4-umschaltung.md`.
 
 **Zwei Suiten gleichzeitig auf dem Second-host — der Deckel ZAEHLT jetzt, statt Last zu messen
 (2026-09-06).** Die Messnotiz `docs/messungen/2026-09-06-second-host-parallel-suiten.md` nannte den

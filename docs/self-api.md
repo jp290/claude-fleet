@@ -966,19 +966,23 @@ weder Zeile noch Vorschlag.
 
 Jede Program-Zeile trägt `status`: eine pro Request berechnete Sicht, die nichts speichert und
 nichts bewegt. `main {slot, occupancy, sessionIdMatch}`, `attention {open}` und
-`lanes {running, queued, waiting}` stammen aus dem aktuellen Speicherzustand. `lastLand` liest die
-neueste gelandete Outcome-Zeile des Programs; `lastAudit` verbindet deren `mainAfter` mit dem
-Audit-Trail und seiner Adjudikation. Wo kein passender Fakt existiert, steht `null` — nie ein
-erfundener Erfolg. `deploy` erscheint nur, wenn der letzte Land in genau dem Checkout liegt, den
-der Server selbst vermisst (`REPO_DIR`, also `FLEET_REPO_DIR` oder das Verzeichnis von
-`server.ts`) — sonst `null`, denn `codeBehind` ist ein Fakt ÜBER diesen Checkout und über keinen
-anderen. Gelesen wird der bereits gecachte Wert vom git-Tick; die View startet kein `git`, und
-solange der Cache leer ist, ist `codeBehind` `null` (unbekannt), nie `false`.
+`lanes {running, queued, waiting}` stammen aus dem aktuellen Speicherzustand. `lastLand` ist je
+Repo des Programs eine Zeile: die neueste gelandete Outcome-Zeile DIESES Repos (`repo`, `land`)
+und die Deploy-Zelle dieses Repos — nicht ein neuester Land über alle Repos, der Facts von
+mehreren Checkouts auf eine Zeile hängt. `lastAudit` verbindet die `mainAfter` der gelandeten
+Zeilen mit dem Audit-Trail und seiner Adjudikation. Wo kein passender Fakt existiert, steht
+`null` — nie ein erfundener Erfolg. Die Deploy-Zelle einer Zeile trägt `deploy {codeBehind}`,
+wenn der Server genau diesen Checkout vermisst (`REPO_DIR`, also `FLEET_REPO_DIR` oder das
+Verzeichnis von `server.ts`); jedes andere Repo nennt in `deployGrund` den Grund („kein
+Deploy-Sensor fuer dieses Repo“), statt als blankes `null` unerreichbar zu bleiben, denn
+`codeBehind` ist ein Fakt ÜBER diesen Checkout und über keinen anderen. Gelesen wird der
+bereits gecachte Wert vom git-Tick; die View startet kein `git`, und solange der Cache leer
+ist, ist `codeBehind` `null` (unbekannt), nie `false`.
 
 Die gepollte Owner-Liste `GET /api/programs` öffnet keine Ledger. Sie trägt dieselbe
 Speicherhälfte unter `executionStatus`; der Name ist absichtlich verschieden, weil `status` dort
 bereits der persistierte Program-Lebenszyklus (`proposed|confirmed|active|complete`) ist.
-`lastLand`, `lastAudit` und `deploy` sind in dieser Liste weggelassen. Der Owner-Poll
+`lastLand` und `lastAudit` sind in dieser Liste weggelassen. Der Owner-Poll
 `GET /api/sessions` trägt `programsStale` nur, wenn mindestens ein aktives Program eine stale
 MAIN-Bindung hat; bei null ist das Feld wegen des Poll-Budgets abwesend.
 

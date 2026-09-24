@@ -134,11 +134,12 @@ interface ProgramStatusViewMemory {
   lanes: { running: number; queued: number; waiting: number };
 }
 interface ProgramStatusView extends ProgramStatusViewMemory {
-  lastLand: { sha: string; branch: string | null; verifyOk: boolean | null; at: number;
-    repo: string | null } | null;
+  lastLand: { repo: string | null;
+    land: { sha: string; branch: string | null; verifyOk: boolean | null; at: number } | null;
+    deploy: { codeBehind: boolean | null } | null;
+    deployGrund: string | null }[];
   lastAudit: { at: number; result: "green" | "red" | "unknown"; fails: string[] | null;
     adjudicated: "real" | "flake" | "stale-test" | "unknowable" | null } | null;
-  deploy: { codeBehind: boolean | null } | null;
 }
 interface Studio {
   v: number; id: string; name: string; createdAt: number; confirmedAt: number; rev: number;
@@ -1625,6 +1626,14 @@ export async function run(ctx: Ctx): Promise<void> {
     branch: "d2-status-older", headSha: d2LandB, mainAfter: d2LandB,
     verified: true, repo: REPO,
   })}\n`);
+  // …and the SECOND REPO the card is about: the same program's newest land overall, in a repo this
+  // server does not measure. The collapse this cut repairs hung THIS fact on the claude-fleet line
+  // and answered the deploy cell for neither repo.
+  appendFileSync(d2OutcomePath, `${JSON.stringify({
+    ts: d2BaseAt + 260, programId: mainProgram.id, disposition: "landed",
+    branch: "d2-status-fremd", headSha: "9".repeat(40), mainAfter: "9".repeat(40),
+    verified: null, repo: `${REPO}-fremd`,
+  })}\n`);
   appendFileSync(d2AuditPath, `${JSON.stringify({
     at: d2AuditAt - 100, startedAt: d2AuditAt - 110, ms: 10, repo: REPO, main: "main",
     mainSha: d2LandB, result: "green", cmd: "d2-status-probe", exitCode: 0, out: "ALL PASS",
@@ -1670,16 +1679,38 @@ export async function run(ctx: Ctx): Promise<void> {
     await Bun.sleep(100);
   }
   // BREAKS IF: either join uses branch instead of mainAfter, selects the oldest row, drops fails, or omits the verdict rail.
+  // lastLand reads the row of ITS repo: the newest land OVERALL (d2-status-fremd, +260) must not
+  // displace the claude-fleet row, and the collapse mutation (grouping without the repo key)
+  // folds both rows into one and fails this and the next check together.
+  const d2RepoRow = d2ExecutionStatus?.lastLand?.find((r) => r.repo === REPO);
   check("program status: lastLand and lastAudit join by mainAfter, newest first, and carry fails and the adjudication verdict",
-    d2Adjudication.ok && d2ExecutionStatus?.lastLand?.sha === d2LandA
-      && d2ExecutionStatus.lastLand.branch === "d2-status-newer"
-      && d2ExecutionStatus.lastLand.verifyOk === null
-      && d2ExecutionStatus.lastLand.at === d2BaseAt + 200
+    d2Adjudication.ok && d2ExecutionStatus !== undefined && d2RepoRow?.land?.sha === d2LandA
+      && d2RepoRow.land.branch === "d2-status-newer"
+      && d2RepoRow.land.verifyOk === null
+      && d2RepoRow.land.at === d2BaseAt + 200
       && d2ExecutionStatus.lastAudit?.at === d2AuditAt
       && d2ExecutionStatus.lastAudit.result === "red"
       && JSON.stringify(d2ExecutionStatus.lastAudit.fails) === JSON.stringify(["d2 status probe"])
       && d2ExecutionStatus.lastAudit.adjudicated === "flake",
     JSON.stringify(d2ExecutionStatus ?? null));
+  // THE REPO-AXE CHECK (Messung 2026-09-23 §5): lands in two repos must read as two rows, each
+  // newest FOR ITS REPO, and each repo's deploy cell must say WHY it has no value — the measured
+  // checkout carries codeBehind, a foreign repo names the sensor it does not have. BREAKS IF: the
+  // grouping drops the repo key (both rows collapse onto the newest overall, length 1), a row
+  // shows another repo's land, or a no-sensor cell degrades to a bare null without its reason.
+  const d2FremdRow = d2ExecutionStatus?.lastLand?.find((r) => r.repo === `${REPO}-fremd`);
+  check("program status: a program with lands in two repos reads as one row per repo, each with its own newest land, and a repo without a deploy sensor names the reason instead of null",
+    d2ExecutionStatus !== undefined && d2ExecutionStatus.lastLand.length === 2
+      && d2FremdRow?.land?.sha === "9".repeat(40)
+      && d2FremdRow.land.at === d2BaseAt + 260
+      && d2FremdRow.deploy === null
+      && d2FremdRow.deployGrund === "kein Deploy-Sensor fuer dieses Repo"
+      && d2RepoRow !== undefined
+      && d2RepoRow.deploy !== null
+      && d2RepoRow.deployGrund === null
+      && d2ExecutionStatus.lastLand[0]?.repo === `${REPO}-fremd`
+      && d2ExecutionStatus.lastLand[1]?.repo === REPO,
+    JSON.stringify(d2ExecutionStatus?.lastLand ?? null));
 
   const d2OwnerProgram = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
   // BREAKS IF: the polled owner list starts reading or serializing either ledger half.

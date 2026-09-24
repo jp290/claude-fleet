@@ -12391,17 +12391,43 @@ interface ProgramStatusMemoryView {
   inbox: { unread: number; oldestAt: number | null };
   lanes: { running: number; queued: number; waiting: number };
 }
+// ONE ROW PER REPO THE PROGRAM HAS LANDED IN — the newest land of THAT repo, and THAT repo's
+// deploy cell. Grouping key is the row's own `repo` (a landed row that names no repo stays under
+// null rather than being filed under a guessed name); newest-row-wins per group, the same
+// latest-reading discipline the whole-file trails use.
+interface ProgramStatusRepoLand {
+  repo: string | null;
+  land: { sha: string; branch: string | null; verifyOk: boolean | null; at: number } | null;
+  // THE DEPLOY CELL OF THIS ROW'S REPO. Present only where a sensor exists; a repo this server
+  // does not measure names the reason instead of a bare null.
+  deploy: { codeBehind: boolean | null } | null;
+  deployGrund: string | null;
+}
 interface ProgramStatusView extends ProgramStatusMemoryView {
-  lastLand: { sha: string; branch: string | null; verifyOk: boolean | null; at: number;
-    repo: string | null } | null;
+  lastLand: ProgramStatusRepoLand[];
   lastAudit: { at: number; result: "green" | "red" | "unknown"; fails: string[] | null;
     adjudicated: AdjudicationVerdict | null } | null;
-  deploy: { codeBehind: boolean | null } | null;
 }
 interface ProgramStatusContext {
   outcomeRows: Record<string, unknown>[];
   auditRows: unknown[];
   judged: Map<number, AuditAdjudication>;
+}
+
+// THE GUARD NAMES THE CHECKOUT THE FACT WAS MEASURED IN, and that is REPO_DIR, not this file's
+// directory: deployGap() runs its BOOT_HEAD..HEAD count in REPO_DIR, which is
+// `process.env.FLEET_REPO_DIR || import.meta.dir`. Where the two differ, comparing against
+// import.meta.dir would hang a codeBehind measured in one checkout onto a land in another —
+// an invented answer, which is the one thing this projection may never produce. A repo without
+// a sensor names the reason instead of collapsing to a bare null (null stays the shape of
+// "measured, not yet read": the git tick has not filled deployFacts, unknown, never false).
+const DEPLOY_NO_SENSOR = "kein Deploy-Sensor fuer dieses Repo";
+function deployCellFor(repo: string | null): {
+  deploy: { codeBehind: boolean | null } | null; deployGrund: string | null;
+} {
+  if (repo === null || repoCanon(repo) !== repoCanon(REPO_DIR))
+    return { deploy: null, deployGrund: DEPLOY_NO_SENSOR };
+  return { deploy: { codeBehind: deployFacts?.gap.codeBehind ?? null }, deployGrund: null };
 }
 
 // D2 is one read-only projection over the existing in-memory and ledger facts. The owner list calls
@@ -12427,18 +12453,30 @@ function programStatusView(p: Program, ctx?: ProgramStatusContext): ProgramStatu
 
   const landed = ctx.outcomeRows.filter((row) => row.programId === p.id
     && row.disposition === "landed");
-  const newestLand = landed.reduce<Record<string, unknown> | null>((newest, row) =>
-    newest === null || (typeof row.ts === "number" ? row.ts : 0)
-      > (typeof newest.ts === "number" ? newest.ts : 0) ? row : newest, null);
-  const landSha = typeof newestLand?.mainAfter === "string" ? newestLand.mainAfter
-    : typeof newestLand?.headSha === "string" ? newestLand.headSha : null;
-  const lastLand = newestLand && landSha && typeof newestLand.ts === "number" ? {
-    sha: landSha,
-    branch: typeof newestLand.branch === "string" ? newestLand.branch : null,
-    verifyOk: newestLand.verified === true ? true : newestLand.verified === false ? false : null,
-    at: newestLand.ts,
-    repo: typeof newestLand.repo === "string" ? newestLand.repo : null,
-  } : null;
+  // THE REPO-AXE CUT (Messung 2026-09-23 §5): one newest land over all repos hung a claude-fleet
+  // fact and a private-repo-ad fact on one line and answered the deploy cell for neither. Group by
+  // the row's own repo, take the newest row per group, and let each group carry its own deploy
+  // cell. Newest-row-wins stays per GROUP: an unreadable newest row stays unreadable for its repo
+  // and is not laundered by reading an older one instead.
+  const landedByRepo = new Map<string | null, Record<string, unknown>[]>();
+  for (const row of landed) {
+    const key = typeof row.repo === "string" ? row.repo : null;
+    landedByRepo.set(key, [...(landedByRepo.get(key) ?? []), row]);
+  }
+  const lastLand: ProgramStatusRepoLand[] = [...landedByRepo.entries()].map(([repo, rows]) => {
+    const newestLand = rows.reduce<Record<string, unknown> | null>((newest, row) =>
+      newest === null || (typeof row.ts === "number" ? row.ts : 0)
+        > (typeof newest.ts === "number" ? newest.ts : 0) ? row : newest, null);
+    const landSha = typeof newestLand?.mainAfter === "string" ? newestLand.mainAfter
+      : typeof newestLand?.headSha === "string" ? newestLand.headSha : null;
+    const land = newestLand && landSha && typeof newestLand.ts === "number" ? {
+      sha: landSha,
+      branch: typeof newestLand.branch === "string" ? newestLand.branch : null,
+      verifyOk: newestLand.verified === true ? true : newestLand.verified === false ? false : null,
+      at: newestLand.ts,
+    } : null;
+    return { repo, land, ...deployCellFor(repo) };
+  }).sort((a, b) => (b.land?.at ?? 0) - (a.land?.at ?? 0));
 
   const landedMainAfter = new Set(landed.flatMap((row) =>
     typeof row.mainAfter === "string" ? [row.mainAfter] : []));
@@ -12456,17 +12494,7 @@ function programStatusView(p: Program, ctx?: ProgramStatusContext): ProgramStatu
       ? newestAudit.fails : null,
     adjudicated: ctx.judged.get(newestAudit.at)?.verdict ?? null,
   };
-  // THE GUARD NAMES THE CHECKOUT THE FACT WAS MEASURED IN, and that is REPO_DIR, not this file's
-  // directory: deployGap() runs its BOOT_HEAD..HEAD count in REPO_DIR, which is
-  // `process.env.FLEET_REPO_DIR || import.meta.dir`. Where the two differ, comparing against
-  // import.meta.dir would hang a codeBehind measured in one checkout onto a land in another —
-  // an invented answer, which is the one thing this projection may never produce. `deploy` is
-  // therefore null for every land outside the measured checkout, and `codeBehind` stays null
-  // while the git tick has not yet filled deployFacts (unknown, never false).
-  const deploy = lastLand !== null && lastLand.repo !== null
-    && repoCanon(lastLand.repo) === repoCanon(REPO_DIR)
-    ? { codeBehind: deployFacts?.gap.codeBehind ?? null } : null;
-  return { ...memory, lastLand, lastAudit, deploy };
+  return { ...memory, lastLand, lastAudit };
 }
 
 // V1b — THE RETURN PATH AS A SHARED HEALTH FACT, and the reason it is one helper and not two

@@ -11940,8 +11940,9 @@ function renderProgramDetail(shell: Shell, id: string): void {
     status.appendChild(statusFacts);
   }
   status.appendChild(el("div", "hint shellhint",
-    "This owner list carries D2's in-memory projection only. lastLand, lastAudit and deploy exist"
-    + " only on the bound MAIN's self projection, so this board cannot attribute or render them."));
+    "This owner list carries D2's in-memory projection only. lastLand, lastAudit and the per-repo"
+    + " deploy cells exist only on the bound MAIN's self projection, so this board cannot"
+    + " attribute or render them."));
 
   if (p.intent || p.successCriterion) {
     const frame = qDetailSection(shell.detail, "Frame", true, false);

@@ -9060,6 +9060,25 @@ export async function run(ctx: Ctx): Promise<void> {
       foreignScript.valid && foreignExact.valid && !foreignFleetStep.valid && !foreignNearMiss.valid,
       JSON.stringify({ script: foreignScript.gaps, exact: foreignExact.gaps,
         fleet: foreignFleetStep.gaps, nearMiss: foreignNearMiss.gaps }));
+    // (v8) AN INLINE REPO COMMAND LONGER THAN THE 400-CHAR SENTENCE CUT (~/claude-fleet-demo, 2026-09-24:
+    // ~480 chars, no .sh). Repeated verbatim — whitespace spelled differently — it validates and the
+    // card keeps it whole; a value that shares its first 400 chars but ends differently, and another
+    // command, keep the gap.
+    const longCommand = `cd /Users/owner/claude-fleet-demo && ${Array.from({ length: 12 }, (_, i) => `bun run step-${i} --flag-${"x".repeat(20)}`).join(" && ")}`;
+    const longCtx = { ...cardCtx, foreignVerifyCommand: longCommand };
+    const longGap = (v: string) => `verify: "${v.slice(0, 400)}" does not name this repository's configured verify command or script`;
+    const longExact = validateCard({ ziel: "z", done: "d", verify: longCommand.replace(/ && /g, "\n  &&  ") }, longCtx);
+    check("(v8) a foreign card repeating its repo's inline verify command verbatim validates even past 400 chars, and keeps the whole command",
+      longCommand.length > 450 && longExact.valid && !longExact.gaps.some((g) => g.startsWith("verify"))
+      && longExact.body.verify === longCommand,
+      JSON.stringify({ len: longCommand.length, gaps: longExact.gaps, stored: longExact.body.verify.length }));
+    const longTail = `${longCommand} && rm -rf dist`;
+    const longOther = validateCard({ ziel: "z", done: "d", verify: longTail }, longCtx);
+    const shortOther = validateCard({ ziel: "z", done: "d", verify: "bun run typecheck" }, longCtx);
+    check("(v8) a foreign card naming a different command keeps the verify gap — also one sharing the long command's first 400 chars",
+      !longOther.valid && longOther.gaps.includes(longGap(longTail)) && longOther.body.verify.length === 400
+      && !shortOther.valid && shortOther.gaps.includes(longGap("bun run typecheck")),
+      JSON.stringify({ tail: longOther.gaps, short: shortOther.gaps }));
     const fleetScript = validateCard({ ziel: "z", done: "d", verify: "./verify.sh" }, cardCtx);
     const fleetInstall = validateCard({ ziel: "z", done: "d", verify: "bun install" }, cardCtx);
     check("(v7) Fleet cards retain the chain-step verify rule and its exact refusal",
@@ -9316,8 +9335,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && longAnswer.answerBytes === 6001
       && JSON.stringify(cardAnswerForLedger("{}")) === JSON.stringify({ answer: "{}", answerBytes: 2 }),
       JSON.stringify({ answer: cardRow?.answer ?? null, answerBytes: cardRow?.answerBytes ?? null, long: longAnswer.answerBytes }));
-    check("(v7) CARD_VALIDATOR_VERSION is 7, so cards refused before foreign-repo verify (or by earlier rules) are read once more",
-      CARD_VALIDATOR_VERSION === 7, String(CARD_VALIDATOR_VERSION));
+    check("(v8) CARD_VALIDATOR_VERSION is 8, so cards refused before the verbatim long repo command (or by earlier rules) are read once more",
+      CARD_VALIDATOR_VERSION === 8, String(CARD_VALIDATOR_VERSION));
 
     // --- S4 (queue row a672b626): THE CARD REACHES THE LANE FIRST. A valid card puts a KARTE head
     // in front of the prose, and the receipt says so; an invalid card changes nothing — neither the

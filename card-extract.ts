@@ -52,8 +52,10 @@ export const CARD_KEY = "card";
 //                    the prompt asks for `surface.creates` and `after`
 //   6 (2026-09-18) — verify `POST /api/self/criterion` (CLARIFY_CLOSE_ROUTE) is a clarify row's proof
 //   7 (2026-09-23) — foreign repos validate VERIFY against their configured repo command
+//   8 (2026-09-24) — a VERIFY that repeats the repo command verbatim is compared before the
+//                    MAX_SENTENCE cut, so an inline command longer than 400 chars validates
 // Bump it whenever a change here can turn a refusal into an acceptance.
-export const CARD_VALIDATOR_VERSION = 7;
+export const CARD_VALIDATOR_VERSION = 8;
 
 export interface TaskCardRole { harness: string | null; model: string | null; effort: string | null }
 // `creates` are files the row will ADD. They cannot pass `files`' tracked-tree check by definition,
@@ -167,7 +169,8 @@ export { declaresSymbol, splitSymbolRef };
 
 const MAX_SENTENCE = 400;
 const MAX_LIST = 20;
-const text1 = (v: unknown): string => (typeof v === "string" ? v : "").replace(/\s+/g, " ").trim().slice(0, MAX_SENTENCE);
+const collapse = (v: string): string => v.replace(/\s+/g, " ").trim();
+const text1 = (v: unknown): string => collapse(typeof v === "string" ? v : "").slice(0, MAX_SENTENCE);
 const list = (v: unknown): string[] => (Array.isArray(v) ? v : [])
   .filter((e): e is string => typeof e === "string" && !!e.trim())
   .map((e) => e.trim().slice(0, 300)).slice(0, MAX_LIST);
@@ -192,7 +195,7 @@ const CLARIFY_CLOSE = new RegExp(`(?<![\\w/-])${CLARIFY_CLOSE_ROUTE}(?![\\w/-])`
 const namesClarifyClose = (verify: string): boolean => CLARIFY_CLOSE.test(verify);
 
 const namesRepoVerify = (verify: string, command: string): boolean => {
-  if (verify.replace(/\s+/g, " ").trim() === command.replace(/\s+/g, " ").trim()) return true;
+  if (collapse(verify) === collapse(command)) return true;
   const scripts = command.matchAll(/(?:^|[^\w./-])((?:\.\/|\/)[\w./-]+\.sh)(?=$|[^\w./-])/g);
   for (const [, path] of scripts) {
     const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -231,8 +234,14 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   if (!ziel) gaps.push("ziel: the extractor returned no goal sentence");
   const done = text1(raw.done);
   if (!done) gaps.push("done: no checkable done sentence");
-  const rawVerify = text1(raw.verify);
   const repoCommand = ctx.foreignVerifyCommand;
+  // THE REPO COMMAND VERBATIM is compared BEFORE the sentence cut: an inline FLEET_VERIFY_CMD_REPOS
+  // entry can be longer than MAX_SENTENCE (measured 2026-09-24, ~/claude-fleet-demo: ~480 chars),
+  // and the cut copy never equals it — every card of that repo was refused. The match keeps the
+  // whole command, so the brief shows what the gate runs; any other value is cut as before.
+  const fullVerify = typeof raw.verify === "string" ? collapse(raw.verify) : "";
+  const verbatim = typeof repoCommand === "string" && !!fullVerify && fullVerify === collapse(repoCommand);
+  const rawVerify = verbatim ? fullVerify : text1(raw.verify);
   const { verify, aliased } = typeof repoCommand === "string"
     ? { verify: rawVerify, aliased: false } : verifyAliased(rawVerify);
   // A foreign repo WITHOUT its own entry keeps the chain rule it had before v7 — refusing all of
@@ -243,7 +252,7 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   // non-empty: "run the tests" is the shape of an answer, not one.
   if (!verify) gaps.push(`verify: no command named${noEntry}`);
   else if (typeof repoCommand === "string") {
-    if (!namesRepoVerify(verify, repoCommand))
+    if (!verbatim && !namesRepoVerify(verify, repoCommand))
       gaps.push(`verify: "${verify}" does not name this repository's configured verify command or script`);
   } else if (!aliased && !namesChainStep(verify) && !namesClarifyClose(verify))
     gaps.push(`verify: "${verify}" names no known chain step (${LOCAL_PROOF_STEPS.join(", ")})${noEntry}`);

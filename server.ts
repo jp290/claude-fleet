@@ -27997,7 +27997,12 @@ function processBirthFingerprint(pid: number): string | null {
   // locally 2026-09-02; the writers (e2e-stage.sh#_st_birth_of, e2e/verify-queue.ts#processBirthOf)
   // have always been fenced, this reader was the one that was not.
   // docs/messungen/second-host-baseline-2026-08-29.md §Plattform-Signatur.
-  const p = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], { env: { ...process.env, LC_ALL: "C" } });
+  // A spawn that THROWS is the same fact as a non-zero exit — no birth measured, the family falls
+  // closed. posix_spawn raises instead of exiting (EPERM inside the pi-zai read fence, ENOEXEC,
+  // ENOENT), and uncaught that turned /api/sessions into a 500 for as long as anyone held the lock.
+  let p: ReturnType<typeof Bun.spawnSync>;
+  try { p = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], { env: { ...process.env, LC_ALL: "C" } }); }
+  catch { return null; }
   if (p.exitCode !== 0) return null;
   const out = normalizeProcessBirth(new TextDecoder().decode(p.stdout));
   return out && PROCESS_BIRTH_RE.test(out) ? out : null;
@@ -32917,7 +32922,11 @@ async function handleIntake(req: Request): Promise<Response> {
 // cold-start race and the 2026-07-19 incident: server-narrativ-archiv.md#claiminstancelock
 function pidIsLiveFleetServer(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
-  const p = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]);
+  // a ps that cannot even be spawned sees nothing, and this lock refuses only what it can SEE —
+  // the throw used to kill the boot before Bun.serve (same posix_spawn case as processBirthFingerprint)
+  let p: ReturnType<typeof Bun.spawnSync>;
+  try { p = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]); }
+  catch { return false; }
   if (p.exitCode !== 0) return false; // no such process
   return new TextDecoder().decode(p.stdout).includes("server.ts");
 }

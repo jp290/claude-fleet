@@ -21,7 +21,7 @@
 // NOT what this file is for: e2e/dirs-pins.ts, an unrelated neighbour, tests the directory picker's
 // bookmark list. "Pin" there is a UI feature; "pin" here is a fastener between two files.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
@@ -2460,6 +2460,47 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       `land-quality rows=${viaLandQuality.rows.length} malformed=${viaLandQuality.malformed} · `
         + `lane-context-cost rows=${viaLaneCost.length} · ${copies.join(" · ")}`);
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ...and a generation that VANISHES between the reader's decision and its read is missing, never a
+// throw. server/persist.ts#rotateEventLog renames `x.jsonl` to `x.jsonl.1` while readLedger awaits;
+// under the old existsSync-then-read that surfaced as ENOENT out of server.ts#seedInbound's top-level
+// await and killed the boot before Bun.serve (lane 1370e250: `ENOENT ... audit.jsonl` right after
+// `taking it over`). The race is FORCED, not waited for: Bun.file is wrapped so the rotation's rename
+// lands exactly when the current generation is opened. The second pin keeps the catch narrow.
+{
+  const RULE_VANISH = "readLedger counts a generation that vanished before its read as missing (ENOENT), and only ENOENT";
+  const dir = mkdtempSync(`${tmpdir()}/fleet-pins-vanish-`);
+  const realFile = Bun.file;
+  try {
+    const file = `${dir}/audit.jsonl`;
+    writeFileSync(`${file}.1`, '{"event":"older","ts":1}\n');
+    writeFileSync(file, '{"event":"current","ts":2}\n');
+    let opened = 0;
+    Bun.file = ((path: string, options?: BlobPropertyBag) => {
+      if (path === file && opened++ === 0) renameSync(file, `${file}.1`); // rotateEventLog's rename, mid-read
+      return realFile(path, options);
+    }) as typeof Bun.file;
+    let got: string;
+    try {
+      const r = await readLedger<Record<string, unknown>>(file);
+      got = `total=${r.total} malformed=${r.malformed} rows=${JSON.stringify(r.rows)}`;
+    } catch (e: unknown) {
+      got = `THREW ${(e as { code?: string }).code ?? String(e)}`;
+    } finally {
+      Bun.file = realFile;
+    }
+    pin(`${RULE_VANISH} — the current generation renamed away mid-read yields what was read, no throw`,
+      opened === 1 && got === 'total=1 malformed=0 rows=[{"event":"older","ts":1}]', `opened=${opened} ${got}`);
+    const dirGen = `${dir}/dirgen.jsonl`;
+    mkdirSync(dirGen);
+    const other = await readLedger(dirGen).then(() => "no throw", (e: unknown) => `threw ${(e as { code?: string }).code}`);
+    pin(`${RULE_VANISH} — any other read error still throws (a generation that is a directory: EISDIR)`,
+      other === "threw EISDIR", other);
+  } finally {
+    Bun.file = realFile;
     rmSync(dir, { recursive: true, force: true });
   }
 }

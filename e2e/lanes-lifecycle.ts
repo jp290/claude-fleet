@@ -3,7 +3,7 @@
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
 import { spawnSync } from "node:child_process";
 import { lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
 import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastReviewPromptFor, plogRead, post, restartSrv,
   reviewRunsFor, stopSrv, tmuxOut, until } from "./harness";
@@ -191,6 +191,99 @@ export async function run(lc: LaneCtx): Promise<void> {
       JSON.stringify(wmap2.worktrees.find((w) => w.path === sh.cwd)));
     check("shelve rejects a non-worktree slot", (await post("/api/slots/2/shelve", { note: "x" })).status === 400);
     await post(`/api/slots/${reopen.slot ?? 0}/kill`, {}); // free the slot for later tests
+  }
+
+  // --- THE CLICKED PLACE and the repo card (Gruendungsfenster B3): attach takes the slot the owner
+  // clicked — exactly that one, or a 409 naming who sits there — and dirinfo carries the repo's
+  // orphans (worktrees no slot holds) and its declared pack ids at HEAD. Attach WITHOUT `slot` is
+  // the shelve → resume round-trip above, unchanged. ---
+  {
+    type Sl = { id: number; cwd: string | null; label: string | null };
+    const slotsNow = async (): Promise<Sl[]> => ((await (await get("/api/sessions")).json()) as { slots: Sl[] }).slots;
+    type Info = { git?: boolean; packs?: string[] | { error: string }; orphans?: { path: string; branch: string }[] };
+    const info = async (p: string): Promise<Info> =>
+      (await (await get(`/api/dirinfo?path=${encodeURIComponent(p)}`)).json()) as Info;
+    const isOrphan = (i: Info, p: string): boolean | undefined => i.orphans?.some((o) => o.path === p);
+
+    const ob = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    check("clicked-place probe setup: a lane opened", typeof ob.slot === "number" && exists(ob.cwd), JSON.stringify(ob));
+    await post(`/api/slots/${ob.slot}/kill`, {});
+    const listed = spawnSync("git", ["-C", REPO, "worktree", "list", "--porcelain"], { encoding: "utf8" }).stdout
+      .split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9));
+    check("clicked-place probe setup: git lists the primary, the held lane and the killed lane as worktrees",
+      listed.length >= 3 && listed.includes(lc.lnPath) && listed.includes(ob.cwd), JSON.stringify(listed));
+    const before = await info(REPO);
+    check("dirinfo lists a killed lane's worktree as an orphan, with its branch",
+      before.orphans?.some((o) => o.path === ob.cwd && o.branch === ob.branch) === true, JSON.stringify(before.orphans));
+    check("…and neither a worktree a slot holds nor the primary checkout",
+      isOrphan(before, lc.lnPath) === false && isOrphan(before, listed[0]) === false, JSON.stringify(before.orphans));
+
+    const held = (await slotsNow()).find((x) => x.id === lc.lnSlot);
+    const heldName = held?.label || basename(held?.cwd ?? "");
+    const busy = await post("/api/lanes", { repo: REPO, attach: ob.cwd, slot: lc.lnSlot });
+    const busyJ = (await busy.json()) as { error?: string; occupant?: { slot: number; name: string } };
+    check("attach onto an occupied clicked slot is refused 409 and names who sits there",
+      heldName !== "" && busy.status === 409 && busyJ.occupant?.slot === lc.lnSlot && busyJ.occupant.name === heldName
+        && (busyJ.error ?? "").includes(heldName), `${busy.status} ${JSON.stringify(busyJ)} expected ${heldName}`);
+    check("…and the refused attach seated nothing: the tree is still an orphan, the slot still its holder's",
+      isOrphan(await info(REPO), ob.cwd) === true && (await slotsNow()).find((x) => x.id === lc.lnSlot)?.cwd === lc.lnPath);
+    check("slot without attach is refused 400 — a new lane on a clicked place is open-worktree",
+      (await post("/api/lanes", { repo: REPO, slot: lc.lnSlot })).status === 400);
+    check("a slot that is not an integer place is refused 400",
+      (await post("/api/lanes", { repo: REPO, attach: ob.cwd, slot: "3" })).status === 400
+        && (await post("/api/lanes", { repo: REPO, attach: ob.cwd, slot: 0 })).status === 400);
+
+    // the LAST free place, so a server that ignored `slot` and took its own first-free pick is caught
+    const freeIds = (await slotsNow()).filter((x) => !x.cwd).map((x) => x.id);
+    const target = freeIds[freeIds.length - 1];
+    check("clicked-place probe setup: two free places, so the clicked one is not the server's own pick",
+      freeIds.length >= 2, JSON.stringify(freeIds));
+    const seated = (await (await post("/api/lanes", { repo: REPO, attach: ob.cwd, slot: target })).json()) as
+      { ok?: boolean; slot?: number; error?: string };
+    check("attach with a free clicked slot seats the orphan exactly there, not in the first free place",
+      seated.ok === true && seated.slot === target && target !== freeIds[0], JSON.stringify({ seated, freeIds }));
+    check("…the clicked slot now holds the orphan's tree, and dirinfo no longer calls it an orphan",
+      (await slotsNow()).find((x) => x.id === target)?.cwd === ob.cwd && isOrphan(await info(REPO), ob.cwd) === false);
+    await post(`/api/slots/${target}/kill`, {});
+    spawnSync("git", ["worktree", "remove", "--force", ob.cwd], { cwd: REPO });
+
+    // packs are read at HEAD from a fixture repo of their own, so REPO's history stays as the
+    // merge sections expect it
+    const pk = `${REPO}.dirinfo-packs-fixture`;
+    rmSync(pk, { recursive: true, force: true });
+    mkdirSync(pk, { recursive: true });
+    const g = (...a: string[]): number | null =>
+      spawnSync("git", ["-C", pk, "-c", "user.email=e2e@test", "-c", "user.name=e2e", ...a]).status;
+    writeFileSync(`${pk}/README.md`, "fixture\n");
+    check("packs probe setup: a fixture repo with one commit and no manifest",
+      g("init", "-q", "-b", "main") === 0 && g("add", "README.md") === 0 && g("commit", "-qm", "no manifest") === 0);
+    const none = await info(pk);
+    check("dirinfo on a repo without .fleet/context-packs.json: packs is [] (measured absent)",
+      none.git === true && Array.isArray(none.packs) && none.packs.length === 0, JSON.stringify(none.packs));
+    check("…and a repo without other worktrees has orphans []",
+      Array.isArray(none.orphans) && none.orphans.length === 0, JSON.stringify(none.orphans));
+    mkdirSync(`${pk}/.fleet`);
+    writeFileSync(`${pk}/.fleet/context-packs.json`, JSON.stringify([{ id: "alpha" }, { id: "beta" }]));
+    const unborn = await info(pk);
+    check("packs are read at HEAD: a manifest on disk but not committed is not there yet",
+      Array.isArray(unborn.packs) && unborn.packs.length === 0, JSON.stringify(unborn.packs));
+    g("add", ".fleet/context-packs.json");
+    g("commit", "-qm", "manifest");
+    const two = await info(pk);
+    check("dirinfo carries the manifest's pack ids at HEAD, in file order",
+      JSON.stringify(two.packs) === JSON.stringify(["alpha", "beta"]), JSON.stringify(two.packs));
+    writeFileSync(`${pk}/.fleet/context-packs.json`, "[{ not json");
+    g("commit", "-qam", "broken manifest");
+    const broken = await info(pk);
+    check("an unparseable manifest is the packs field WITH a reason, never a silent []",
+      broken.packs !== undefined && !Array.isArray(broken.packs) && typeof broken.packs.error === "string"
+        && broken.packs.error.length > 0, JSON.stringify(broken.packs));
+    writeFileSync(`${pk}/.fleet/context-packs.json`, JSON.stringify([{ id: "alpha" }, { useWhen: "no id" }]));
+    g("commit", "-qam", "pack without id");
+    const noId = await info(pk);
+    check("a pack without an id is an error naming its index, not a shortened list",
+      noId.packs !== undefined && !Array.isArray(noId.packs) && noId.packs.error.includes("pack 1"), JSON.stringify(noId.packs));
+    rmSync(pk, { recursive: true, force: true });
   }
 
   // --- the OTHER teardown, and the one that had none: a dispatch that requeues after the lane is

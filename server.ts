@@ -17615,6 +17615,11 @@ interface DirInfo {
   entryTotal?: number;              // how many visible children there are, so the cap below is visible
   hidden?: number;                  // dot-entries not listed — a repo whose visible children are none is not "empty"
   lanes?: number;                   // Fleet lanes forked from this repo (<path>.worktrees/*)
+  // pack ids of CONTEXT_MANIFEST_PATH at this path's HEAD: [] = no manifest there; a manifest that
+  // cannot be read or parsed is `{ error }`, never an empty list (a broken manifest is not "no packs")
+  packs?: string[] | { error: string };
+  // git worktrees of this repo that no slot holds and whose directory exists — what attach can seat
+  orphans?: { path: string; branch: string }[];
 }
 
 // --- drops: a file the owner hands to a session --------------------------------------------
@@ -17695,8 +17700,13 @@ async function dirInfo(raw: string): Promise<DirInfo> {
     lanes = (await readdir(`${path}.worktrees`, { withFileTypes: true })).filter((e) => e.isDirectory()).length;
   } catch { /* no lanes forked from this repo */ }
   const recent = lg.code === 0 && lg.out ? parseCommitLog(lg.out) : [];
+  const orphans = (await listWorktrees(path))
+    .filter((w) => !w.primary && existsSync(w.path) && !attachBusy.has(w.path) && !slots.some((s) => s.cwd === w.path))
+    .map((w) => ({ path: w.path, branch: w.branch }));
   return {
     path, exists: true, git: true, worktree,
+    packs: await manifestPackIds(path),
+    orphans,
     branch: br.code === 0 && br.out ? br.out : null,
     dirty: st.code === 0 ? st.lines.length : 0,
     behind: ok ? counts[0] : null,
@@ -31198,6 +31208,24 @@ async function showAtHead(repoRoot: string, head: string, path: string, maxBytes
   return blob.code === 0 ? { kind: "bytes", text: blob.out } : { kind: "unread" };
 }
 
+// The ids a repository's manifest declares at `dir`'s HEAD, for the founding window's repo card
+// (GET /api/dirinfo). Only the ids: whether a pack would be DELIVERED is planContext's question,
+// asked at a founding against the receipted commit (repoManifestContextPlan), not here.
+async function manifestPackIds(dir: string): Promise<string[] | { error: string }> {
+  const raw = await showAtHead(dir, "HEAD", CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES);
+  if (raw.kind === "unread") return { error: `${CONTEXT_MANIFEST_PATH} could not be read at HEAD within ${CONTEXT_MANIFEST_MAX_BYTES} bytes` };
+  const manifest = readContextManifest(raw.kind === "bytes" ? raw.text : null);
+  if (manifest.kind === "absent") return [];
+  if (manifest.kind === "invalid") return { error: manifest.detail };
+  const ids: string[] = [];
+  for (const [i, pack] of manifest.packs.entries()) {
+    const id = typeof pack === "object" && pack !== null ? (pack as { id?: unknown }).id : undefined;
+    if (typeof id !== "string" || !id) return { error: `pack ${i} has no id` };
+    ids.push(id);
+  }
+  return ids;
+}
+
 // A REPOSITORY'S OWN DECLARED PACKS, read at the commit the caller will receipt. Returns ONLY the
 // repo-declared rows: every caller owns its own base plan (the Fleet seeds) and merges these onto
 // it, so one manifest reader serves every delivery seam instead of one per seam. The repository is
@@ -40204,14 +40232,30 @@ Bun.serve<WSData>({
       if (!laneBox.ok) return json({ error: laneBox.why }, 400);
       const laneForm = laneFormOf(body, laneHarness); // explicit form wins; absent → the adapter's
       if (!laneForm.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
-      const free = freeSessionSlot("lane");
+      const attachPath = typeof body.attach === "string" && body.attach ? body.attach : null;
+      // THE CLICKED PLACE (Gruendungsfenster B3): an attach may name the slot the owner clicked, and
+      // then gets exactly that one or a 409 naming who sits there — never the next free place, which
+      // is what the server picks without `slot`. Band and session-cap rules stay openSlot's.
+      // A NEW lane on a clicked place already has its door (POST /api/slots/:id/open-worktree).
+      let clicked: Slot | null = null;
+      if (body.slot !== undefined) {
+        if (!attachPath)
+          return json({ error: "slot is taken only with attach — a new lane on a clicked place is POST /api/slots/:id/open-worktree" }, 400);
+        if (typeof body.slot !== "number" || !Number.isInteger(body.slot) || body.slot < 1 || body.slot > MAX_SLOTS)
+          return json({ error: `slot must be an integer 1..${MAX_SLOTS}` }, 400);
+        clicked = slots[body.slot - 1];
+        if (clicked.cwd || laneSpawn.has(clicked.id)) {
+          const name = clicked.label || (clicked.cwd ? basename(clicked.cwd) : "a session being opened");
+          return json({ error: `slot ${clicked.id} is occupied by ${name}`, occupant: { slot: clicked.id, name } }, 409);
+        }
+      }
+      const free = clicked ?? freeSessionSlot("lane");
       if (!free) return json({ error: sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free lane place" : "no free slot") }, 409);
       // the slot is reserved below, but for attach the WORKTREE is the contended resource too:
       // the "already open in a slot" check and openSlot are awaits apart, so two attach
       // requests for the same orphan would otherwise both pass it and double-seat the tree.
       // The attachBusy 409 must come BEFORE laneSpawn.add — a return before the try/finally
       // would otherwise leak the laneSpawn reservation and wedge the slot forever.
-      const attachPath = typeof body.attach === "string" && body.attach ? body.attach : null;
       // Adoption preserves what is known about the old worktree. It has no trustworthy birth
       // session, so even an attended request may not invent one at reattach time.
       if (attachPath && laneParent.parent)

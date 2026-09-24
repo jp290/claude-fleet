@@ -316,6 +316,8 @@ type AuditEvent =
   // wrote is the record, readable back by the deciding MAIN); an owner verdict has no session to
   // read it from, so this line and the row are the only places it surfaces.
   | "fleet_report_owner_decision"
+  // …and the owner's REPORT DELEGATE: a verdict, or an escalation back to the owner (no verdict)
+  | "fleet_report_delegate_decision" | "fleet_report_delegate_escalation"
   // …and the RULE half (accepted-by-land): no session and no owner took it, so like the owner verdict
   // the row and this line are where it surfaces — one line per closed report, naming the land.
   | "fleet_report_rule_decision"
@@ -407,6 +409,9 @@ type AuditEvent =
   // to the successor, or a set failed to reach disk and was rolled back. Detail names grant id,
   // revision, occupant, project count and views — never a repository path.
   | "memory_grant"
+  // THE REPORT DELEGATION (server.ts#patchReportDelegate / #transferReportDelegate): the owner set or
+  // revoked it on one occupant, a generic succession carried it, or a set was rolled back.
+  | "report_delegate"
   // the recorded MAIN binding learned the session id its pane discovered AFTER the bind
   // (backfillProgramMainSessionId). Detail names the program and the id that filled the `null`;
   // there is no row for the no-op case, because "nothing to fill" is not an event.

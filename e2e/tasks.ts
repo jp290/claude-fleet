@@ -3962,6 +3962,75 @@ export async function run(ctx: Ctx): Promise<void> {
     await cDrop(s2Group);
     cGitCleanup();
 
+    // (9) · THE PARTS SURVIVE A RESTART — and a hand-edited part set does not. Until this fix the
+    // boot normalizer rebuilt `criterion` from text/proposedAt/confirmedAt only: parts reached the
+    // two doors in 6a53a490 and never the loader, so every deploy silently turned each criterion's
+    // checks into an unmeasured one (29ad3230: four parts at 15:24, none after the 20:27 boot).
+    // One part with a check and one without, compared as the JSON the doors stored; the tampered
+    // sets are the three shapes criterionPartsFromBody refuses at the door, each planted alone.
+    const pGroup = await cFile("(v-cmp)(9) the restart group — its criterion parts must outlive a boot");
+    const pStart = await cStart(pGroup);
+    await cTrack(pGroup);
+    await cFixture("(v-cmp)(9)", pStart);
+    const pParts = [
+      { text: "P: the worktree holds px.txt", check: { cmd: "test -f px.txt", expectExit: 0 } },
+      { text: "P: the report names the file" },
+    ];
+    const pWant = JSON.stringify(pParts);
+    type PCrit = { text?: string; confirmedAt?: number | null; parts?: unknown };
+    const pOnDisk = (): PCrit | undefined => {
+      try {
+        return ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: { id?: string; criterion?: PCrit }[] })
+          .tasks ?? []).find((t) => t.id === pGroup)?.criterion;
+      } catch { return undefined; }
+    };
+    const pServed = async (): Promise<PCrit | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: { id: string; criterion?: PCrit }[] })
+        .tasks.find((t) => t.id === pGroup)?.criterion;
+    const pEnv = { FLEET_DISPATCH_MAX_LANES: "8", FLEET_VARIANT_WAIT_MS: "2000", FLEET_VARIANT_CHECK_TIMEOUT_MS: "1200" };
+    const pPropose = await cPropose(pStart.toks[0] ?? "", pGroup, pParts, "(v-cmp)(9) the criterion that must outlive a boot");
+    // saveState is fire-and-forget: the proposal ON DISK is the precondition a restart can read
+    await until(() => JSON.stringify(pOnDisk()?.parts) === pWant,
+      { timeoutMs: 5_000, stepMs: 50, what: `fleet.json to persist ${pGroup}'s proposed parts` });
+    check("(v-cmp)(9) fixture: the proposal with two parts is accepted and served before any restart",
+      pPropose.status === 200 && JSON.stringify((await pServed())?.parts) === pWant,
+      JSON.stringify({ propose: pPropose, served: await pServed() }));
+    await restartSrv(pEnv);
+    const pAfterPropose = await pServed();
+    check("(v-cmp)(9a) a PROPOSED criterion keeps both parts byte-equal across a restart, still unconfirmed",
+      JSON.stringify(pAfterPropose?.parts) === pWant && pAfterPropose?.confirmedAt === null,
+      JSON.stringify({ want: pParts, got: pAfterPropose }));
+    const pConfirm = await post(`/api/tasks/${pGroup}/criterion-confirm`, {});
+    const pConfirmedAt = ((await pConfirm.json()) as { criterion?: { confirmedAt?: number } }).criterion?.confirmedAt;
+    await until(() => pOnDisk()?.confirmedAt === pConfirmedAt,
+      { timeoutMs: 5_000, stepMs: 50, what: `fleet.json to persist ${pGroup}'s confirm` });
+    await restartSrv(pEnv);
+    const pAfterConfirm = await pServed();
+    check("(v-cmp)(9b) a CONFIRMED criterion keeps both parts byte-equal across a restart, confirmedAt unchanged",
+      pConfirm.status === 200 && typeof pConfirmedAt === "number"
+      && JSON.stringify(pAfterConfirm?.parts) === pWant && pAfterConfirm?.confirmedAt === pConfirmedAt,
+      JSON.stringify({ confirm: pConfirm.status, confirmedAt: pConfirmedAt ?? null, got: pAfterConfirm }));
+    const pTampers: [string, unknown][] = [
+      ["a check without cmd", [{ text: "T: no cmd", check: { expectExit: 0 } }]],
+      ["expectExit 300", [{ text: "T: exit out of range", check: { cmd: "true", expectExit: 300 } }]],
+      ["13 parts", Array.from({ length: 13 }, (_, i) => ({ text: `T: part ${i}`, check: { cmd: "true", expectExit: 0 } }))],
+    ];
+    for (const [label, planted] of pTampers) {
+      await stopSrv();
+      const pState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: { id?: string; criterion?: PCrit }[] };
+      const pRow = pState.tasks?.find((t) => t.id === pGroup);
+      if (pRow?.criterion) pRow.criterion = { ...pRow.criterion, parts: planted };
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(pState, null, 2), { mode: 0o600 });
+      await restartSrv(pEnv);
+      const pTampered = await pServed();
+      check(`(v-cmp)(9c) a hand-planted part set (${label}) is DROPPED at load — the criterion stays, confirmedAt unchanged`,
+        !!pRow?.criterion && pTampered?.parts === undefined && typeof pTampered?.text === "string"
+        && pTampered?.confirmedAt === pConfirmedAt,
+        JSON.stringify({ planted: !!pRow?.criterion, got: pTampered }));
+    }
+    await cDrop(pGroup);
+    cGitCleanup();
+
     // THE SHAPE: one line per group, in the binding field form (variant-compare.ts is the type).
     const allLines = await cLedger();
     const cGroupIds = [uGroup, cGroup, d1Group, d2Group, wGroup, hGroup, sGroup, s2Group];

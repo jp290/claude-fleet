@@ -1832,7 +1832,13 @@ interface ReviewFinding { title: string; file: string; line: number | null;
 interface WtRisk { dirtyFiles: string[]; unpushedCommits: { hash: string; subject: string }[];
   shortstat: string | null; empty: boolean }
 interface WtRow extends WtRisk { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number; note?: string | null;
-  review?: ReviewCandidateInfo | null; preview?: LanePreviewInfo | null }
+  review?: ReviewCandidateInfo | null; preview?: LanePreviewInfo | null; reviews?: CandidateReviewInfo[] | null }
+// server.ts#CandidateReviewView — an owner-pressed advisory review of a candidate's stored head, bound
+// to the patch it read; `stale` when the worktree now carries another patch (null = unreadable)
+interface CandidateReviewInfo { id: string; candidate: string; head: string; base: string; patchId: string;
+  startedAt: number; at: number | null; state: "running" | "filed" | "failed"; why: string | null;
+  model: string | null; scope: string; notes: string; raw: boolean | null; findings: ReviewFinding[];
+  patchNow: string | null; stale: boolean | null }
 // server.ts#LanePreviewView — the time-boxed isolated preview of a candidate's stored head; `url` only
 // while it runs, `stale` when the lane's HEAD moved off that head (null = HEAD unreadable)
 interface LanePreviewInfo { id: string; candidate: string; branch: string; head: string;
@@ -5061,7 +5067,47 @@ async function renderBoard() {
               };
               crow.appendChild(pvb);
             }
+            // THE REVIEW ON PRESS: one advisory diff review of the stored head, only ever on this click
+            if (!w.reviews?.some((r) => r.state === "running")) {
+              const rvb = el("button", "bwtact", "review") as HTMLButtonElement;
+              rvb.title = `one advisory agent review of candidate ${c.id}'s stored head ${c.head.slice(0, 10)} against its base — filed as a dated comment bound to the patch; not a gate, not a land decision`;
+              rvb.onclick = async () => {
+                if (laneReqBusy) return;
+                laneReqBusy = true;
+                rvb.disabled = true;
+                rvb.textContent = "reviewing…";
+                try {
+                  const r = await post(`/api/review-candidates/${c.id}/review`, {});
+                  if (!r.ok) alert(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "review failed");
+                } finally {
+                  laneReqBusy = false;
+                  void renderBoard();
+                }
+              };
+              crow.appendChild(rvb);
+            }
             sec.appendChild(crow);
+          }
+          // the review COMMENTS on this worktree, oldest first: date, patch, and whether the tree still
+          // carries that patch. They stay across a resume; a changed patch marks them stale, never removes them.
+          for (const rv of w.reviews ?? []) {
+            const rrow = el("div", "sweepv shelved");
+            rrow.appendChild(el("span", "sweepvbadge", `review ${rv.state}`));
+            rrow.appendChild(el("span", "sweepvreason",
+              `${new Date(rv.at ?? rv.startedAt).toLocaleString()} · candidate ${rv.candidate} · patch ${rv.patchId.slice(0, 10)}`
+              + ` · head ${rv.head.slice(0, 10)} vs ${rv.base}`
+              + (rv.stale === true ? ` · VERALTET: der Worktree trägt jetzt Patch ${rv.patchNow?.slice(0, 10) ?? "?"}`
+                : rv.stale === null ? " · aktueller Patch unlesbar — Aktualität unbekannt" : "")
+              + (rv.state === "failed" && rv.why ? ` — ${rv.why}` : "")
+              + " · beratend, kein Gate"));
+            sec.appendChild(rrow);
+            if (rv.state === "filed") {
+              // the outcome lens's own frame: green while the tree carries this patch, amber once it moved on
+              const body = el("div", `ocrev rel-${rv.stale === false ? "covered" : rv.stale ? "superseded" : "unmeasured"}`);
+              for (const n of reviewBody({ ...rv, raw: rv.raw ?? undefined, at: rv.at ?? undefined, model: rv.model ?? undefined }))
+                body.appendChild(n);
+              sec.appendChild(body);
+            }
           }
           // THE PREVIEW of that candidate: which candidate, which commit, where, until when — and
           // whether the lane has moved off that commit since. It stays after a resume (the lane then
@@ -13696,6 +13742,8 @@ function decodeAudit(event: string, detail?: string): string {
         : `closed${detail ? ` (${detail})` : ""}`;
     case "lane_preview":
       return `review preview · ${detail ?? ""}`;
+    case "candidate_review":
+      return `candidate review · ${detail ?? ""}`;
     case "slot_shelve": {
       const m = detail?.match(/^note:(\d+)(?: review:([0-9a-f]{12}))?$/);
       return m ? `${m[2] ? `parked for review · candidate ${m[2]}` : "shelved"} · ${m[1]}-char note` : "shelved";

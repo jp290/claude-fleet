@@ -117,6 +117,16 @@ Zeile 6ec36333, auf Branch `fleet/260924072307-c3f2` (Shas setzt die MAIN nach d
 - Die Board-Zeile (`server.ts#lanePreviewView`, Lanes-Liste in `src/client.ts#renderBoard`) zeigt Kandidat, Commit, URL und Ablauf. `stale` vergleicht den aktuellen Lane-HEAD mit dem gespeicherten Head; `null` heißt unlesbar. Die Zeile trägt den Hinweis „kein Verify-Beleg“, und kein Gate liest sie.
 - Rest, benannt: Cookies sind host-, nicht portgebunden. Ein Browser schickt das Board-Cookie `fleet_8790` darum auch an die Vorschau auf derselben Adresse. Die Vorschau liest es nicht (`server/auth.ts#cookieName` ist je Port eigen), aber ihr Prozess sieht es im Header. Ein getrennter Hostname (MagicDNS statt IP) würde das schließen; das ist eine Owner-Entscheidung.
 
+### Nachtrag 2026-09-24 — Karte 3 gebaut: Review auf Knopfdruck statt Takt
+
+Owner 2026-09-24 auf den Vorschlag der Orchestratorin („nur auf Knopfdruck, nie periodisch“): „ja, beide so freigeben“. Das ersetzt den 60-Minuten-Takt von c617a142 vollständig; die Karte oben unter der Linie gilt in diesem Punkt nicht mehr. Gebaut auf Branch `fleet/260924100550-1051` (Shas setzt die MAIN nach dem Land ein).
+
+- `POST /api/review-candidates/:id/review` (Owner) ist die einzige Tür, `server.ts#startCandidateReview` der einzige Läufer. Kein Tick, kein Timer, kein Boot-Pfad ruft ihn; `server.ts#tickAutoReview` und `FLEET_AUTO_REVIEW_MS` sind unberührt und sehen einen geparkten Kandidaten nicht (er hält keinen Slot).
+- Gegenstand ist der **gespeicherte Head gegen die Base** (`git diff <base>...<head>` aus Git-Objekten), nicht der Arbeitsbaum. Volle Dateien als Kontext reiten nur mit, solange der Worktree genau dieser Head und sauber ist. Reviewer und Parser sind die des ③ (`server.ts#reviewDiffs`, aus `runReview` herausgelöst).
+- Ergebnis: ein datierter Kommentar `server/types.ts#CandidateReview`, gebunden an die Patch-ID, gespeichert je Worktree-Pfad (`candidateReviews` in `fleet.json`). Er überlebt Neustart und Resume; `dropShelved` und ein beim Boot fehlender Pfad nehmen ihn mit.
+- Benannte Weigerungen: unbekannte ID (404); Kandidat in eine laufende Lane resumed oder Worktree ohne Review geshelved (409); ein laufender Lauf (409); **zweiter Druck auf dieselbe Patch-ID** (409, nennt den Kommentar); **5 Läufe je Kandidat**, fehlgeschlagene mitgezählt (409). Ein fehlgeschlagener Reviewer ist 502 und legt keinen Kommentar an.
+- Das Board (`server.ts#candidateReviewsView`, Lanes-Liste in `src/client.ts#renderBoard` über `src/client.ts#reviewBody`) zeigt je Kommentar Datum, Kandidat, Patch und `stale` = Patch des Worktrees jetzt ≠ gelesener Patch (`null` = unlesbar). Beratend: kein Gate, keine Owner-Entscheidung, kein Land liest ihn.
+
 ## §N Nicht gemessen
 
 Keine laufende Lane, kein Worktree und keine Test-Instanz wurde geöffnet, gestartet oder berührt. Keine Live-Env, `fleet.json` oder `.env` wurde gelesen. Die Haupt-Checkout-Ledger wurden nur aggregiert; `post-land-audits.jsonl` wurde für diese Frage nicht benötigt und nicht gezählt. Es gibt keine beobachtete Reviewzeit, keinen Nachweis, dass frühes Resolve spätere Konflikte spart, und keinen gemessenen Betriebspreis für 30-Minuten-Previews oder wiederholte Agentläufe. Die Wirksamkeit der Karten ist eine Hypothese bis zu ihren DONE-Proben.

@@ -5,7 +5,8 @@ import { spawnSync } from "node:child_process";
 import { lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
-import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
+import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastReviewPromptFor, plogRead, post, restartSrv,
+  reviewRunsFor, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
@@ -1108,10 +1109,15 @@ export async function run(lc: LaneCtx): Promise<void> {
       fleetReports?: { id: string; worker: { sessionId: string | null }; decision?: unknown }[];
       shelved?: Record<string, { note: string; at?: number; review?: RpCandidate }>;
       lanePreviews?: Record<string, unknown>;
+      candidateReviews?: Record<string, unknown>;
     };
     type PvView = { id: string; candidate: string; head: string; state: string; url: string | null; expiresAt: number;
       endedAt: number | null; why: string | null; laneHead: string | null; stale: boolean | null };
-    type RpBoard = { path: string; slot: number | null; note: string | null; review?: RpCandidate | null; preview?: PvView | null };
+    type CrRec = { id: string; candidate: string; head: string; base: string; patchId: string; at: number | null;
+      state: string; why: string | null; scope: string; notes: string; raw: boolean | null;
+      findings: { title: string; impact: string }[]; patchNow?: string | null; stale?: boolean | null };
+    type RpBoard = { path: string; slot: number | null; note: string | null; review?: RpCandidate | null; preview?: PvView | null;
+      reviews?: CrRec[] | null };
     const rpState = (): RpState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as RpState;
     // the rows through the API, not the state file: a queued save may still be in flight after a response
     const rpRows = async (ids: string[]): Promise<(RpRow | undefined)[]> => {
@@ -1368,6 +1374,105 @@ export async function run(lc: LaneCtx): Promise<void> {
         disc.ok && !exists(pvbPath), String(disc.status));
     }
 
+    // === THE REVIEW ON PRESS of this candidate (server.ts#startCandidateReview; owner 2026-09-24 "nur
+    // auf Knopfdruck, nie periodisch"). The reviewer is the FLEET_REVIEW_CMD stand-in, never an agent,
+    // and its per-cwd spawn log is the fact behind every "ran"/"did not run". What each check turns red
+    // on: a run nobody pressed for; a subject read from the worktree instead of the stored head; a
+    // second run of one patch; a comment that stays "current" after the patch moved; a sixth run of one
+    // candidate; comments lost on a restart.
+    const crCand = parked?.id ?? "-";
+    const crCtl = ROOT; // the stand-in reads its switches next to itself
+    const crPress = async (cand: string) => {
+      const r = await post(`/api/review-candidates/${cand}/review`, {});
+      return { status: r.status, body: (await r.json().catch(() => ({}))) as { ok?: boolean; review?: CrRec; error?: string } };
+    };
+    const crRuns0 = reviewRunsFor(rpCwd);
+    await Bun.sleep(2500); // more than two auto-③ ticks (FLEET_AUTO_REVIEW_MS=1000 in this suite)
+    check("(review on press) nothing runs without a press: a parked candidate past two auto-review ticks has no comment and no spawn",
+      reviewRunsFor(rpCwd) === crRuns0 && ((await rpBoard())?.reviews ?? null) === null && !rpState().candidateReviews,
+      `${reviewRunsFor(rpCwd)} vs ${crRuns0}`);
+    const crUnknown = await crPress("0123456789ab");
+    check("(review on press) an id that names no parked candidate is refused by name",
+      crUnknown.status === 404 && (crUnknown.body.error ?? "").includes("no parked review candidate"), `${crUnknown.status} ${crUnknown.body.error}`);
+
+    // a failed reviewer files nothing, and the run counts
+    writeFileSync(`${crCtl}/reviewfail`, "1");
+    const crFail = await crPress(crCand);
+    rmSync(`${crCtl}/reviewfail`, { force: true });
+    check("(review on press) a failed reviewer is a named 502 that files no comment",
+      crFail.status === 502 && (crFail.body.error ?? "").includes("failed") && reviewRunsFor(rpCwd) === crRuns0 + 1
+        && ((await rpBoard())?.reviews ?? []).map((r) => r.state).join() === "failed",
+      `${crFail.status} ${crFail.body.error} runs=${reviewRunsFor(rpCwd) - crRuns0}`);
+
+    // THE SUBJECT IS THE STORED HEAD: the worktree moves on first, and the review must not read that
+    writeFileSync(`${rpCwd}/review-moved.txt`, "a commit after the park\n");
+    spawnSync("git", ["-C", rpCwd, "add", "review-moved.txt"]);
+    spawnSync("git", ["-C", rpCwd, "commit", "-qm", "review: moved after the park"]);
+    const crMoved = spawnSync("git", ["-C", rpCwd, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+    const crOk = await crPress(crCand);
+    const c1 = crOk.body.review;
+    const c1Prompt = lastReviewPromptFor(rpCwd);
+    check("(review on press) a press runs the stand-in ONCE and files a dated comment bound to the stored head's patch",
+      crOk.status === 200 && c1?.state === "filed" && c1.candidate === crCand && c1.head === rpHead && /^[0-9a-f]{40}$/.test(c1.patchId)
+        && typeof c1.at === "number" && c1.findings.map((f) => f.impact).join() === "high,low" && c1.raw === false
+        && reviewRunsFor(rpCwd) === crRuns0 + 2,
+      `${crOk.status} ${JSON.stringify(crOk.body).slice(0, 300)}`);
+    check("(review on press) the reviewer read the stored head's diff, not the worktree that moved on",
+      c1Prompt.includes("review-park.txt") && !c1Prompt.includes("review-moved.txt") && (c1?.scope ?? "").includes("stored head"),
+      `${c1Prompt.length} chars, moved=${c1Prompt.includes("review-moved.txt")} scope=${c1?.scope}`);
+    const crAgain = await crPress(crCand);
+    check("(review on press) a second press on the same patch is refused by name, and runs nothing",
+      crAgain.status === 409 && (crAgain.body.error ?? "").includes("already reviewed") && (crAgain.body.error ?? "").includes(c1?.id ?? "-")
+        && reviewRunsFor(rpCwd) === crRuns0 + 2,
+      `${crAgain.status} ${crAgain.body.error}`);
+    const crB1 = (await rpBoard())?.reviews?.find((r) => r.id === c1?.id);
+    spawnSync("git", ["-C", rpCwd, "reset", "-q", "--hard", rpHead]);
+    const crB2 = (await rpBoard())?.reviews?.find((r) => r.id === c1?.id);
+    check("(review on press) the comment is stale while the worktree carries another patch, and current on the stored head",
+      crB1?.stale === true && crB1.patchNow !== c1?.patchId && typeof crB1.patchNow === "string"
+        && crB2?.stale === false && crB2.patchNow === c1?.patchId,
+      JSON.stringify({ moved: crB1 && { stale: crB1.stale, now: crB1.patchNow }, back: crB2 && { stale: crB2.stale, now: crB2.patchNow } }));
+
+    // A LATER PARK of the same tree at the moved head (planted: the subject is the review, not the
+    // park door, which the checks above already cover) — a second candidate, a changed patch
+    await stopSrv();
+    const crPlant = rpState();
+    const crA = crPlant.shelved?.[rpCwd]?.review;
+    const crBId = "c0c0c0c0c0c0";
+    if (crPlant.shelved?.[rpCwd] && crA) crPlant.shelved[rpCwd].review = { ...crA, id: crBId, head: crMoved };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(crPlant, null, 2), { mode: 0o600 });
+    spawnSync("git", ["-C", rpCwd, "reset", "-q", "--hard", crMoved]);
+    await restartSrv();
+    writeFileSync(`${crCtl}/reviewfail`, "1");
+    const crFails: number[] = [];
+    for (let i = 0; i < 4; i++) crFails.push((await crPress(crBId)).status);
+    rmSync(`${crCtl}/reviewfail`, { force: true });
+    const crB = await crPress(crBId);
+    const c2 = crB.body.review;
+    const crBoard3 = (await rpBoard())?.reviews ?? [];
+    check("(review on press) the changed patch gets its own comment, and marks the earlier one visibly stale",
+      crB.status === 200 && c2?.state === "filed" && c2.head === crMoved && !!c1 && c2.patchId !== c1.patchId
+        && crBoard3.find((r) => r.id === c1.id)?.stale === true && crBoard3.find((r) => r.id === c2.id)?.stale === false,
+      `${crB.status} ${JSON.stringify(crBoard3.map((r) => ({ id: r.id, state: r.state, stale: r.stale })))}`);
+    const crCap = await crPress(crBId);
+    check("(review on press) a candidate is capped at 5 runs, failed ones counted — the sixth press is refused and runs nothing",
+      crFails.every((x) => x === 502) && crCap.status === 409 && (crCap.body.error ?? "").includes("5 of 5")
+        && reviewRunsFor(rpCwd) === crRuns0 + 7,
+      `${crFails.join()} ${crCap.status} ${crCap.body.error} runs=${reviewRunsFor(rpCwd) - crRuns0}`);
+
+    // back to the real candidate for the park checks below; the comments must survive the restart
+    await stopSrv();
+    const crRestore = rpState();
+    if (crRestore.shelved?.[rpCwd] && crA) crRestore.shelved[rpCwd].review = crA;
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(crRestore, null, 2), { mode: 0o600 });
+    spawnSync("git", ["-C", rpCwd, "reset", "-q", "--hard", rpHead]);
+    await restartSrv();
+    const crBoard4 = (await rpBoard())?.reviews ?? [];
+    check("(review on press) the comments survive a restart, and staleness follows the tree back to the first patch",
+      crBoard4.length === 7 && crBoard4.find((r) => r.id === c1?.id)?.stale === false
+        && crBoard4.find((r) => r.id === c2?.id)?.stale === true && reviewRunsFor(rpCwd) === crRuns0 + 7,
+      JSON.stringify(crBoard4.map((r) => ({ id: r.id, state: r.state, stale: r.stale }))));
+
     // RESTART, with the deadline moved into the past: the rows must not be requeued by the boot
     // reconcile, and an expired candidate is marked — never removed.
     await stopSrv();
@@ -1403,6 +1508,11 @@ export async function run(lc: LaneCtx): Promise<void> {
     const board3 = await rpBoard();
     check("(review park) the resume consumed the candidate: the board shows no candidate and no note",
       board3?.slot === rpSlot2 && board3.review == null && board3.note == null, JSON.stringify(board3));
+    const crLive = await crPress(crCand);
+    check("(review on press) a candidate resumed into a live lane is refused by name, and runs nothing",
+      crLive.status === 409 && (crLive.body.error ?? "").includes(`live lane slot ${rpSlot2}`) && reviewRunsFor(rpCwd) >= crRuns0 + 7
+        && ((await rpBoard())?.reviews ?? []).length === 7,
+      `${crLive.status} ${crLive.body.error}`);
     const second = await post("/api/lanes", { repo: REPO, attach: rpCwd });
     check("(review park) a second attach of the same worktree is refused and moves no row",
       second.status === 409 && (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === rpSlot2), String(second.status));
@@ -1416,6 +1526,10 @@ export async function run(lc: LaneCtx): Promise<void> {
         && (await rpRows(rpIds)).every((t) => t?.status === "pending" && t.slot === null),
       `${JSON.stringify(plainBody)} ${JSON.stringify(board4)} ${JSON.stringify((await rpRows(rpIds)))}`);
 
+    const crPlain = await crPress(crCand);
+    check("(review on press) a worktree shelved without review is not a candidate — refused by name",
+      crPlain.status === 409 && (crPlain.body.error ?? "").includes("shelved without review"), `${crPlain.status} ${crPlain.body.error}`);
+
     // the planted records leave the way they came (the 2 s poll's budget, see the baton cleanup)
     spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", rpCwd]);
     for (const id of rpIds) await post(`/api/tasks/${id}/delete`, {});
@@ -1425,6 +1539,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     rpUnplant.fleetReports = (rpUnplant.fleetReports ?? []).filter((r) => r.id !== rpReportId);
     if (rpUnplant.shelved) delete rpUnplant.shelved[rpCwd];
     delete rpUnplant.lanePreviews; // the ended preview records of this fixture — no instance is left behind them
+    delete rpUnplant.candidateReviews; // …and the review comments on its removed worktree
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpUnplant, null, 2), { mode: 0o600 });
     await restartSrv();
     check("(review park) fixture cleanup: Program, report and rows are gone",

@@ -1777,6 +1777,55 @@ const loadLanePreview = (value: unknown): LanePreview | null => {
     port: r.port, sock: r.sock, dir: r.dir, token: r.token, startedAt: r.startedAt, expiresAt: r.expiresAt,
     state: r.state as LanePreviewState, endedAt: r.endedAt, why: r.why };
 };
+// THE REVIEW ON PRESS (row after 6ec36333, docs/messungen/2026-09-23-worktree-lebenszyklus.md §3
+// Karte 3; owner 2026-09-24 "nur auf Knopfdruck, nie periodisch"): ONE advisory diff review of a
+// parked candidate's STORED head against its base, run only when the owner presses for it, kept as a
+// dated comment bound to the patch id it read. Keyed by the worktree path, not the candidate, so a
+// comment outlives a resume and a later park of the same tree — and a changed patch there shows it
+// stale. `running` is the claim that makes a second press a refusal, `failed` a run that filed
+// nothing (it still counts toward the per-candidate cap). Advisory only: no gate reads any of it.
+type CandidateReviewState = "running" | "filed" | "failed";
+interface CandidateReviewFinding {
+  title: string; file: string; line: number | null; impact: "high" | "medium" | "low";
+  cost: string; basis: "verified" | "inferred"; detail: string;
+}
+interface CandidateReview {
+  id: string; candidate: string; path: string; branch: string; head: string; base: string; patchId: string;
+  startedAt: number; at: number | null; state: CandidateReviewState; why: string | null;
+  model: string | null; scope: string; notes: string; raw: boolean | null; findings: CandidateReviewFinding[];
+}
+const CANDIDATE_REVIEW_STATES: readonly CandidateReviewState[] = ["running", "filed", "failed"];
+const CANDIDATE_REVIEW_IMPACTS = ["high", "medium", "low"] as const;
+const loadCandidateReviewFinding = (value: unknown): CandidateReviewFinding | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const f = value as Record<string, unknown>;
+  if (typeof f.title !== "string" || typeof f.file !== "string" || !f.file
+    || !(f.line === null || (typeof f.line === "number" && Number.isInteger(f.line)))
+    || !CANDIDATE_REVIEW_IMPACTS.includes(f.impact as CandidateReviewFinding["impact"])
+    || typeof f.cost !== "string" || (f.basis !== "verified" && f.basis !== "inferred")
+    || typeof f.detail !== "string") return null;
+  return { title: f.title, file: f.file, line: f.line, impact: f.impact as CandidateReviewFinding["impact"],
+    cost: f.cost, basis: f.basis, detail: f.detail };
+};
+// whole or not at all, like every loader here — a torn finding drops its comment, never itself alone
+const loadCandidateReview = (value: unknown): CandidateReview | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const r = value as Record<string, unknown>;
+  if (typeof r.id !== "string" || !REVIEW_CANDIDATE_ID_RE.test(r.id)
+    || typeof r.candidate !== "string" || !REVIEW_CANDIDATE_ID_RE.test(r.candidate)
+    || typeof r.path !== "string" || !r.path || typeof r.branch !== "string" || !r.branch
+    || typeof r.head !== "string" || !GIT_SHA_RE.test(r.head) || typeof r.base !== "string" || !r.base
+    || typeof r.patchId !== "string" || !GIT_SHA_RE.test(r.patchId) || !finiteTime(r.startedAt)
+    || !(r.at === null || finiteTime(r.at)) || !CANDIDATE_REVIEW_STATES.includes(r.state as CandidateReviewState)
+    || !(r.why === null || typeof r.why === "string") || !(r.model === null || typeof r.model === "string")
+    || typeof r.scope !== "string" || typeof r.notes !== "string" || !(r.raw === null || typeof r.raw === "boolean")
+    || !Array.isArray(r.findings)) return null;
+  const findings = r.findings.map(loadCandidateReviewFinding);
+  if (findings.some((f) => f === null)) return null;
+  return { id: r.id, candidate: r.candidate, path: r.path, branch: r.branch, head: r.head, base: r.base,
+    patchId: r.patchId, startedAt: r.startedAt, at: r.at, state: r.state as CandidateReviewState, why: r.why,
+    model: r.model, scope: r.scope, notes: r.notes, raw: r.raw, findings: findings as CandidateReviewFinding[] };
+};
 interface SuccessionRetirement { at: number; cwd: string; token: string }
 // THE PORTFOLIO READ GRANT (memory M4, task 41641179; docs/self-api.md §memory). A READ permission
 // the owner sets on one exact occupant: which projects (opaque projectKeys) and which of their
@@ -3293,7 +3342,7 @@ export type {
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind, TaskKindChange,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal, RefineChild,
-  RefineProposal, TaskRefine, BriefReviewFinding, TaskBriefReview, LaneForm, LaneRef, LaneReviewCandidate, LaneResume, LanePreview, LanePreviewState, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
+  RefineProposal, TaskRefine, BriefReviewFinding, TaskBriefReview, LaneForm, LaneRef, LaneReviewCandidate, LaneResume, LanePreview, LanePreviewState, CandidateReview, CandidateReviewFinding, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
@@ -3339,7 +3388,7 @@ export {
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,
   PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold, TASK_HOLD_GRUND_MAX, loadTaskKindChanges, loadStallSensor,
-  REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume, loadLanePreview,
+  REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume, loadLanePreview, loadCandidateReview,
   TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX, loadTaskDisposition,
   HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck,
   HELPER_ARTIFACT_GLOB_MAX, HELPER_ARTIFACT_MAX, HELPER_ARTIFACT_PATH_MAX,

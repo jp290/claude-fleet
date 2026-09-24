@@ -475,7 +475,10 @@ type AuditEvent =
   | "send_parked"
   // a review candidate's isolated preview (server.ts#startLanePreview): start / stopped / expired /
   // failed, the candidate and preview ids and the port — never the instance token
-  | "lane_preview";
+  | "lane_preview"
+  // an owner-pressed advisory review of a parked candidate (server.ts#startCandidateReview): start /
+  // filed / failed, the candidate and review ids and the patch id — never a finding's text
+  | "candidate_review";
 // `fields` — machine-readable columns for the rows that need them, beside (not instead of) the
 // prose `detail` every other event uses. The four identity keys are RESERVED: a caller cannot
 // overwrite what row this is, which is why they are filtered rather than merely documented.

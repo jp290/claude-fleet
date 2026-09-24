@@ -339,13 +339,22 @@
   /* the phone's ⋯ and the row menu it opens (client.ts#toggleRowMenu); hidden on the desktop,
      where the hover strip and the board carry these actions — the mobile block shows them */
   .rowmore, .rowmenu { display: none; }
+  /* THE STROKE AFTER EVERY FOURTH PLACE (client.ts#renderSlots, sepBefore): a dashed 1px line on
+     an 8px strip (owner's pick 2026-09-24: gestrichelt). The -2px margins eat the column's 2px gaps
+     on both sides, so the rows under it move by exactly the strip's own 8 - 2 = 6px and not a pixel
+     more; the strip touches the rows without overlapping them and takes no pointer, so no row loses
+     click area. Colour only from the chat tokens (grammatik G0.1): --chat-edge is the ink every
+     hairline in the bar already uses. */
+  .slotsep { flex: none; height: 8px; margin: -2px 8px -2px 6px; pointer-events: none;
+    background: repeating-linear-gradient(90deg, var(--chat-edge) 0 5px, transparent 5px 9px) center / 100% 1px no-repeat; }
   /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
   #side.collapsed { width: 50px; }
   #side.collapsed #sidetitle, #side.collapsed #dot, #side.collapsed #sidetools, #side.collapsed #morepanel,
   #side.collapsed #instwrap,
   #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .slotact,
   #side.collapsed .r2, #side.collapsed .mark, #side.collapsed .ctxfill,
-  #side.collapsed .autobadge, #side.collapsed .quicklane, #side.collapsed .needline { display: none; }
+  #side.collapsed .autobadge, #side.collapsed .quicklane, #side.collapsed .needline,
+  #side.collapsed .slotsep { display: none; }
   #side.collapsed #sidehead { padding: 10px 0 6px; justify-content: center; }
   #side.collapsed #slots { padding: 4px 4px; }
   #side.collapsed .slot { padding: 8px 2px; }

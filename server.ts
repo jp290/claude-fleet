@@ -7927,6 +7927,48 @@ type SendPath =
   | "migrate-nudge"     // the context-band / succession reminder (tickMigrate)
   | "api-stall-resume" // "resume" into a claude pane parked on an API-error round (tickApiStallResume)
   | "rate-limit-resume"; // "resume" into a pane parked on a usage limit whose reset time has passed (tickRateLimitResume)
+
+// THE DELIVERY HEADER (4b085fd9): one line TYPED into a claude pane before the pasted body, naming the
+// path and the source the server actually knows. Claude Code frames a collapsed paste as
+// <pasted_content>, and a session that sees only pasted text with no sentence of its own may refuse it
+// as foreign: 18 of 75 paste-only deliveries to claude-fable-5-1 were refused that way between
+// 2026-09-01 and 09-24 (c6159823 Z. 23/37/43, 05d37158). Typed text is the one thing the TUI keeps
+// outside that envelope (measured on Claude Code 2.1.281, docs/messungen/2026-09-24-zustellung-kopfzeile.md),
+// and AGENTS.md §Hard invariants gives the line its meaning. It states provenance, never a speaker:
+// `owner` names the CREDENTIAL, because the orchestrator sends through the same door with the same
+// token and the server cannot tell the two apart. null = no header: `/model` must be the first thing
+// the composer holds, or claude takes it as prose.
+const DELIVERY_HEADER_PREFIX = "[fleet-zustellung · ";
+const DELIVERY_SOURCE: Record<SendPath, string | null> = {
+  "owner": "POST /send mit Owner-Credential",
+  "brief": "Gruendungs-Brief einer Lane",
+  "founding": "Gruendungs-/Bind-Brief (Program-MAIN, Supervisor, Orchestratorin)",
+  "succession": "Nachfolge-Brief (POST /api/self/succeed)",
+  "auto": "geplanter Check-in",
+  "steward": "Steward-Sendetuer",
+  "fleet-event": "Fleet-Ereignis (Watch/Report/Land)",
+  "clarification-reply": "Antwort der MAIN auf eine Rueckfrage",
+  "report-decision": "Entscheidung zu einem fleet-report",
+  "model-push": null,
+  "merge-author": "Konfliktauftrag des Merge-Pfads",
+  "merge-verdict": "Merge-Urteil",
+  "supervisor-nudge": "Supervisor-Hinweis",
+  "audit-ping": "Post-Land-Audit-Hinweis",
+  "inbox-nudge": "Inbox-Hinweis",
+  "backlog-nudge": "Backlog-Erinnerung",
+  "migrate-nudge": "Kontext-/Nachfolge-Erinnerung",
+  "api-stall-resume": "Fortsetzen nach API-Fehler",
+  "rate-limit-resume": "Fortsetzen nach Nutzungslimit",
+};
+// Only the default adapter gets it, and not when the operator declared a foreign FLEET_CMD for it:
+// codex, pi and every declared harness keep the paste byte for byte (no measurement says what their
+// TUI does with a typed prefix). An undeclared stand-in (`true`) takes it, which is what lets the
+// suites see the form.
+function deliveryHeader(form: Harness, path: SendPath, slot: number): string | null {
+  const source = DELIVERY_SOURCE[path];
+  if (!source || form !== CLAUDE_HARNESS || DECLARED_HARNESS) return null;
+  return `${DELIVERY_HEADER_PREFIX}${source} · path=${path} · Slot ${slot}] `;
+}
 // The per-slot, per-DAY counter /api/sessions serves. Kept in memory and SEEDED from the ledger at
 // boot — the opposite choice from stewardRecentSends one region up, and for the reason that
 // separates them: that counter is read once per send (capped at 6/h), this one rides the 2 s owner
@@ -8198,6 +8240,9 @@ async function sendText(s: Slot, given: string, submit: boolean,
   const form = harnessOf(s.harness);
   const composer = form.composer ?? null;
   const comms = commsFor(s);
+  // what the composer holds once this send has typed: the delivery header, then the pasted body
+  const header = deliveryHeader(form, options.path, occupant.slot);
+  const composed = header ? header + text : text;
   const bootSettleMs = form.bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS;
   // THE LEDGER'S TWO NUMBERS, taken here and set below rather than at the call sites: `payloadBytes`
   // is what this send would cost, `pasted` is what it did cost — they differ exactly when the send
@@ -8278,6 +8323,13 @@ async function sendText(s: Slot, given: string, submit: boolean,
         s.quietUntil = Date.now() + OWN_PASTE_QUIET_MS;
         ownPasteQuiet = true;
       }
+      if (header) {
+        // -l: literal keys, never a key name — the header is TYPED so the TUI keeps it outside the
+        // paste envelope; one line, no newline, so nothing is submitted before the body arrives
+        const hk = await tmux("send-keys", "-t", bound.paneId, "-l", header);
+        if (hk.code !== 0) throw new Error("tmux send-keys failed — delivery header not typed");
+        if (!sameBoundPane(s, bound)) throw new Error("slot changed after delivery header");
+      }
       const pb = await tmux("paste-buffer", "-p", "-b", buf, "-t", bound.paneId);
       if (pb.code !== 0) throw new Error("tmux paste-buffer failed — session gone?");
       pasted = payloadBytes; // the bytes are in the pane from here on, whatever the submit half does
@@ -8294,11 +8346,11 @@ async function sendText(s: Slot, given: string, submit: boolean,
       // turn" only if the payload was ever IN that composer. `null` = never asked (no composer form).
       let arrival: ComposerArrival | null = null;
       if (observes) {
-        arrival = await awaitArrival(s, bound, text);
+        arrival = await awaitArrival(s, bound, composed);
         // identity first: a slot that changed under the window must report THAT, not a verdict.
         if (!sameBoundPane(s, bound)) throw new Error("slot changed during arrival probe");
         if (arrival === "partial") throw new SendNotAccepted(
-          `prompt not submitted — the composer still held only part of the ${[...text].length}-char `
+          `prompt not submitted — the composer still held only part of the ${[...composed].length}-char `
             + `payload after ${ACCEPT_WAIT_MS}ms; no Enter was sent`);
       }
       if (!sameBoundPane(s, bound)) throw new Error("slot changed before Enter");
@@ -8324,7 +8376,7 @@ async function sendText(s: Slot, given: string, submit: boolean,
       }
       if (after === null) return { acceptance: "unobservable" as const };
       const rollback = options.rollbackOwnPayload
-        ? await rollbackOwnComposerPayload(s, bound, text) : null;
+        ? await rollbackOwnComposerPayload(s, bound, composed) : null;
       throw new SendNotAccepted(
         `prompt not accepted — composer still holds ${after.length} chars after ${ACCEPT_WAIT_MS}ms`
           + (rollback ? `; Fleet payload rollback ${rollback}` : ""),

@@ -1287,6 +1287,19 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       codex === null ? "no '## If you are a Codex or Pi lane' section" : `missing=[${missing}]`);
   }
 
+  // The delivery header (4b085fd9) is two halves that mean nothing apart: server.ts types the line,
+  // AGENTS.md §Hard invariants tells the receiving session what it is. A reworded prefix on either
+  // side leaves claude reading a header the contract never defined — the refusal it exists to end.
+  const RULE_DELIVERY_HEADER = "AGENTS.md §Hard invariants defines the delivery header server.ts types";
+  if (agents === null) skip(RULE_DELIVERY_HEADER, "no AGENTS.md in this tree");
+  else {
+    const prefix = /const DELIVERY_HEADER_PREFIX = "([^"]+)";/.exec(server)?.[1] ?? null;
+    const hard = /\n### Hard invariants\n([\s\S]*?)(?=\n### |\n## |$)/.exec(agents)?.[1] ?? "";
+    const defined = prefix !== null && hard.includes("`" + prefix) && hard.includes("`server.ts#deliveryHeader`");
+    pin(RULE_DELIVERY_HEADER, defined,
+      prefix === null ? "no DELIVERY_HEADER_PREFIX in server.ts" : `prefix=${JSON.stringify(prefix)} in-contract=${defined}`);
+  }
+
   // The FOREIGN-REPO half of the filing template. A lane outside claude-fleet gets no Fleet rulebook
   // at all (createWorktree copies the ignored scaffolding out of ITS repo), so every obligation this
   // file drops has to stand in the row — and the measured price of dropping them is row 2fd387de
@@ -7264,7 +7277,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const enqueueAt = sendBody.indexOf("s.inputChain.then");
   const targetAt = sendBody.indexOf("await existingTmuxTarget(sess(occupant.slot))", enqueueAt);
   const pasteAt = sendBody.indexOf('tmux("paste-buffer"');
-  const enterAt = sendBody.indexOf('tmux("send-keys"');
+  // the Enter by name: since 4b085fd9 a typed delivery header is the FIRST send-keys, before the paste
+  const enterAt = sendBody.indexOf('tmux("send-keys", "-t", bound.paneId, "Enter")');
   pin(`${RULE_GM_TREE} — every composed send binds one caller-time occupant and immutable pane through paste, Enter, reads and rollback`,
     occupantCaptureAt >= 0 && occupantCaptureAt < enqueueAt && targetAt > enqueueAt
       && sendBody.includes("sameBoundPane(s, bound)")

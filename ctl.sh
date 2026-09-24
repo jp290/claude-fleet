@@ -56,6 +56,9 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
                                    checkout, then push it ff-only to FLEET_HUB_REMOTE if one is set
                                    (exit 3 = committed here, NOT on the hub; the line names the repair)
 
+<slot> is a slot number or a lane name like 4A (band + letter, the `name` GET /api/sessions serves);
+a name no lane holds exits 1 and says the name. `send` takes neither: it is addressed by Program.
+
 Credentials (each verb names the one it is missing and exits 2):
   FLEET_CTL_URL    else FLEET_HOST from <home>/.env, port FLEET_PORT or 8790
   FLEET_CTL_TOKEN  else FLEET_TOKEN, else `token` in <home>/fleet.json   (owner verbs)
@@ -125,6 +128,17 @@ need_state() {
     exit 2
   fi
 }
+# A SLOT ARGUMENT IS A NUMBER OR A LANE NAME (S5). A lane's name is its band plus its persisted
+# letter — `4A`, what the Leiste shows and GET /api/sessions serves as `name` (server.ts#laneNameOf).
+# Only the FORM is checked here; the name is resolved by the embedded program (`slotArg`) against
+# that poll, which needs the owner token even for a verb that otherwise runs on the self token.
+# Anything else is refused before a request is built — `Number("x")` used to put NaN on the route.
+slot_arg() {
+  printf '%s' "$2" | grep -Eq '^[0-9]+([A-Z]+)?$' || {
+    printf 'ctl.sh %s: "%s" is neither a slot number nor a lane name like 4A\n' "$1" "$2" >&2; exit 2; }
+  case "$2" in *[A-Z]) need_owner "$1" ;; esac
+  export CTL_SLOT="$2"
+}
 
 # --- the embedded bun program ------------------------------------------------------------------
 # The JS travels through a TEMP MODULE, never through `$(cat <<EOF)`. That shape looks tidier and is
@@ -162,6 +176,27 @@ const verifyWord = (v) => {
   if (v.waitedOut) return "waitedOut";
   if (v.timedOut) return "timedOut";
   return "skipped";
+};
+// The slot a verb was given, off the /api/sessions rows: a number is itself, a lane name is the one
+// row whose `name` it is. A name no lane holds EXITS 1 and says the name — it never falls through to
+// the number of its band, which is the one mistake an address like `4A` makes possible.
+const slotArg = (raw, rows, verb) => {
+  if (!/^\d+[A-Z]+$/.test(raw)) return { id: Number(raw), name: null, row: (rows ?? []).find((x) => x.id === Number(raw)) ?? null };
+  const row = (rows ?? []).find((x) => x.name === raw);
+  // a server from before S3c serves lettered lanes and no `name`: that is "cannot resolve", not "free"
+  if (!row && (rows ?? []).some((x) => x.worktree?.letter) && !(rows ?? []).some((x) => x.name)) {
+    console.error(`${verb}: cannot resolve ${raw} — this server serves no lane names (older than S3c); give the slot number`);
+    process.exit(2);
+  }
+  if (!row) { console.error(`${verb}: no lane named ${raw} on this fleet — the name is free or was never given`); process.exit(1); }
+  return { id: row.id, name: raw, row };
+};
+const slotWord = (a) => a.name ? `slot ${a.id} (${a.name})` : `slot ${a.id}`;
+// the rows slotArg reads, for the verbs that had no reason to fetch them before a name was given
+const sessionRows = async (verb) => {
+  const r = await api("/api/sessions", { headers: ownerH() });
+  if (!r.ok) { console.error(`${verb}: /api/sessions ${r.status} — a lane name cannot be resolved without it`); process.exit(2); }
+  return r.body.slots ?? [];
 };
 EOF
 }
@@ -498,19 +533,19 @@ ctx)
     printf 'ctx: no slot — give one, or run in a pane where FLEET_SELF_SLOT is exported\n' >&2; exit 2
   fi
   need_owner ctx
-  export CTL_SLOT="$slot"
+  slot_arg ctx "$slot"
   js_head
   cat >> "$CTL_TMP" <<'EOF'
-const want = Number(process.env.CTL_SLOT);
 const r = await api("/api/sessions", { headers: ownerH() });
 if (!r.ok) { console.error(`ctx: /api/sessions ${r.status} ${JSON.stringify(r.body).slice(0, 200)}`); process.exit(2); }
-const s = (r.body.slots ?? []).find((x) => x.id === want);
+const arg = slotArg(process.env.CTL_SLOT, r.body.slots, "ctx");
+const want = arg.id, s = arg.row;
 if (!s) { console.error(`ctx: no slot ${want} on this fleet`); process.exit(1); }
 const c = s.ctx ?? null;
 const lines = c
-  ? [`slot ${want} (${s.label ?? "-"}): ${c.pct}% — ${c.usedTokens} of ${c.windowTokens} tokens`]
-  : [`slot ${want} (${s.label ?? "-"}): UNMEASURABLE — Fleet cannot read this session's context (not the same as empty)`];
-out({ slot: want, label: s.label ?? null, ctx: c, occupied: s.cwd !== null }, lines);
+  ? [`${slotWord(arg)} (${s.label ?? "-"}): ${c.pct}% — ${c.usedTokens} of ${c.windowTokens} tokens`]
+  : [`${slotWord(arg)} (${s.label ?? "-"}): UNMEASURABLE — Fleet cannot read this session's context (not the same as empty)`];
+out({ slot: want, name: s.name ?? null, label: s.label ?? null, ctx: c, occupied: s.cwd !== null }, lines);
 process.exit(c ? 0 : 1);
 EOF
   js_run
@@ -793,7 +828,7 @@ watch)
     fi
     export CTL_MAIN_AFTER="$full" CTL_REPO="$repo"
   else
-    export CTL_TARGET="$arg"
+    slot_arg "watch $kind" "$arg"
   fi
   export CTL_KIND="$kind" CTL_IDLE="$idle"
   js_head
@@ -801,9 +836,13 @@ watch)
 const kind = process.env.CTL_KIND;
 if (!["lane", "merge", "audit"].includes(kind)) { console.error(`watch: kind must be lane, merge or audit — got ${kind}`); process.exit(2); }
 const idleSec = Number(process.env.CTL_IDLE ?? 0) | 0;
+// the route's `target` is a number; a lane name is resolved to one here (the route has no names)
+const target = kind === "audit" ? null
+  : /^\d+[A-Z]+$/.test(process.env.CTL_SLOT) ? slotArg(process.env.CTL_SLOT, await sessionRows(`watch ${kind}`), `watch ${kind}`)
+  : { id: Number(process.env.CTL_SLOT), name: null };
 const body = kind === "audit"
   ? { kind, repo: process.env.CTL_REPO, mainAfter: process.env.CTL_MAIN_AFTER, idleSec }
-  : { kind, target: Number(process.env.CTL_TARGET), idleSec };
+  : { kind, target: target.id, idleSec };
 const r = await api("/api/self/watch", { method: "POST", headers: selfH(), body: JSON.stringify(body) });
 if (!r.ok) {
   // verbatim: every rejection this route gives says "this watch could never fire", and paraphrasing
@@ -813,8 +852,8 @@ if (!r.ok) {
   process.exit(1);
 }
 const w = r.body.watch ?? {};
-out({ ok: true, watch: w, existing: r.body.existing === true, request: body },
-  [`watch ${kind} ${w.id}  armed=${w.armed}  idleSec=${w.idleSec}${r.body.existing ? "  (existing — same question, still armed)" : ""}`]);
+out({ ok: true, watch: w, existing: r.body.existing === true, request: body, name: target?.name ?? null },
+  [`watch ${kind} ${w.id}${target ? ` on ${slotWord(target)}` : ""}  armed=${w.armed}  idleSec=${w.idleSec}${r.body.existing ? "  (existing — same question, still armed)" : ""}`]);
 EOF
   js_run
   ;;
@@ -869,29 +908,35 @@ land)
 # lane-outcomes.jsonl by branch. The fourth — silence to the budget — is what this stopped being.
   slot=""; wait=0
   for a in "$@"; do case "$a" in --json) CTL_JSON=1 ;; --wait) wait=1 ;; --*) printf 'land: unknown flag %s\n' "$a" >&2; exit 2 ;; *) slot=$a ;; esac; done
-  [ -n "$slot" ] || { printf 'land: give a slot number\n' >&2; exit 2; }
+  [ -n "$slot" ] || { printf 'land: give a slot number or a lane name\n' >&2; exit 2; }
   need_owner land
-  export CTL_SLOT="$slot" CTL_WAIT="$wait" CTL_SELF="${FLEET_SELF_TOKEN:-}"
+  slot_arg land "$slot"
+  export CTL_WAIT="$wait" CTL_SELF="${FLEET_SELF_TOKEN:-}"
   export CTL_POLL_SEC="${FLEET_CTL_POLL_SEC:-15}" CTL_WAIT_MAX_SEC="${FLEET_CTL_WAIT_MAX_SEC:-3600}"
   js_head
   cat >> "$CTL_TMP" <<'EOF'
-const slot = Number(process.env.CTL_SLOT);
 const pollMs = Math.max(1, Number(process.env.CTL_POLL_SEC || 15)) * 1000;
 // read the lane's identity BEFORE the land: a landed lane's slot is torn down, and its repo and
 // branch are exactly what the audit watch and the outcome-ledger join need afterwards.
 const sess = await api("/api/sessions", { headers: ownerH() });
-const row = (sess.body?.slots ?? []).find((x) => x.id === slot);
+if (!sess.ok && /^\d+[A-Z]+$/.test(process.env.CTL_SLOT)) { console.error(`land: /api/sessions ${sess.status} — a lane name cannot be resolved without it`); process.exit(2); }
+const arg = slotArg(process.env.CTL_SLOT, sess.body?.slots, "land");
+const slot = arg.id, row = arg.row;
 const lane = row?.worktree ? { repo: row.worktree.repo, branch: row.worktree.branch } : null;
 
-const started = await api(`/api/slots/${slot}/merge`, { method: "POST", headers: ownerH(), body: "{}" });
-const lines = [`land slot ${slot}: ${started.status} ${JSON.stringify(started.body).slice(0, 300)}`];
+// A NAME IS POSTED AS THE NAME, pinned to the occupant just read (S3c's ?openedAt=): a letter is
+// handed out again once its lane is gone, and a land that went to whoever took `4A` since the read
+// would be a land nobody asked for. The route answers that case 409 and runs nothing.
+const started = await api(arg.name ? `/api/slots/${arg.name}/merge?openedAt=${row.openedAt}` : `/api/slots/${slot}/merge`,
+  { method: "POST", headers: ownerH(), body: "{}" });
+const lines = [`land ${slotWord(arg)}: ${started.status} ${JSON.stringify(started.body).slice(0, 300)}`];
 // A BLOCKED LAND IS A 200, and calling that a success is the mistake this line exists to stop: the
 // door answers `{"status":"blocked", …}` with HTTP 200 for an uncommitted tree, a busy pane, a
 // git op in progress or a collision. Exit 0 means "a job is running" or "it landed", nothing else.
 const startedOk = started.ok && (started.body?.running === true || started.body?.landed === true);
 if (!startedOk || process.env.CTL_WAIT !== "1") {
   if (started.ok && !startedOk) lines.push(`  NOT STARTED — ${started.body?.status ?? "the door refused"}: nothing was merged`);
-  out({ started: started.body, status: started.status, startedOk, lane }, lines);
+  out({ started: started.body, status: started.status, startedOk, lane, slot, name: arg.name }, lines);
   process.exit(startedOk ? 0 : 1);
 }
 // `{running:true}` is the ONLY answer that means a job was started. Every other 200 this door gives
@@ -1041,12 +1086,16 @@ wait-merge)
 # the wait with a named non-answer (exit 3) instead of polling on about a lane that is not there.
   slot=""
   for a in "$@"; do case "$a" in --json) CTL_JSON=1 ;; --*) printf 'wait merge: unknown flag %s\n' "$a" >&2; exit 2 ;; *) slot=$a ;; esac; done
-  [ -n "$slot" ] || { printf 'wait merge: give a slot number\n' >&2; exit 2; }
+  [ -n "$slot" ] || { printf 'wait merge: give a slot number or a lane name\n' >&2; exit 2; }
   need_owner "wait merge"
-  export CTL_SLOT="$slot" CTL_POLL_SEC="${FLEET_CTL_POLL_SEC:-15}" CTL_WAIT_MAX_SEC="${FLEET_CTL_WAIT_MAX_SEC:-3600}"
+  slot_arg "wait merge" "$slot"
+  export CTL_POLL_SEC="${FLEET_CTL_POLL_SEC:-15}" CTL_WAIT_MAX_SEC="${FLEET_CTL_WAIT_MAX_SEC:-3600}"
   js_head
   cat >> "$CTL_TMP" <<'EOF'
-const slot = Number(process.env.CTL_SLOT);
+// a name is resolved ONCE, to the place its lane holds now; from there the wait binds to the lane
+// it first sees (below), so a letter handed on later cannot redirect it
+const slot = /^\d+[A-Z]+$/.test(process.env.CTL_SLOT)
+  ? slotArg(process.env.CTL_SLOT, await sessionRows("wait merge"), "wait merge").id : Number(process.env.CTL_SLOT);
 const pollMs = Math.max(1, Number(process.env.CTL_POLL_SEC || 15)) * 1000;
 const deadline = Date.now() + Math.max(1, Number(process.env.CTL_WAIT_MAX_SEC || 3600)) * 1000;
 // WHICH LANE THIS WAIT IS ABOUT, learned from the endpoint's first answer rather than assumed from

@@ -28,7 +28,7 @@
 // FLEET_CTL_TOKEN / FLEET_CTL_HOME. Those three env overrides exist for exactly this, and their
 // absence is what a real controller runs with.
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { BASE, REPO, ROOT, TOKEN, check, get, post, results } from "./harness";
 import { openLane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
@@ -497,18 +497,24 @@ export async function run(): Promise<void> {
   // The idle gate can still refuse the FIRST attempt on a freshly-spawned pane (`status: "blocked"`
   // — the pane's own shell prompt is output), which is a FIXTURE fact, not a ctl.sh fact: retry the
   // way lane-helpers#driveMerge does, so a refused first try never reads as a broken verb.
-  const landRetry = async (slot: number, args: string[]): Promise<CtlRun> => {
-    let r = await ctl(["land", String(slot), ...args]);
+  // `as` is what ctl.sh is handed for that slot — the number, or the lane's name (S5)
+  const landRetry = async (slot: number, args: string[], as: string = String(slot)): Promise<CtlRun> => {
+    let r = await ctl(["land", as, ...args]);
     // only the IDLE-GATE refusal is retried; a conflict verdict is a result, not a flaky start
     for (let i = 0; i < 8 && r.code !== 0 && r.out.includes("actively working right now"); i++) {
       await settleForMerge(slot);
       await Bun.sleep(800);
-      r = await ctl(["land", String(slot), ...args]);
+      r = await ctl(["land", as, ...args]);
     }
     return r;
   };
+  // a lane's name as the poll serves it (server.ts#laneNameOf) — the one source ctl.sh resolves from
+  const nameOf = async (slot: number): Promise<string | null> =>
+    ((await (await get("/api/sessions")).json()) as { slots: { id: number; name?: string }[] })
+      .slots.find((s) => s.id === slot)?.name ?? null;
   const la = await openLane(REPO, "ctlland");
   await settleForMerge(la.slot);
+  const laName = await nameOf(la.slot);
   const mainBefore = gitOut(REPO, "rev-parse", "main");
   const landed = await landRetry(la.slot, ["--wait", "--json"]);
   const lj = landed.json as {
@@ -554,6 +560,27 @@ export async function run(): Promise<void> {
       && lj.auditWatch.id === undefined,
     JSON.stringify(lj?.auditWatch ?? null).slice(0, 200));
 
+  // === a lane NAME where a slot number goes (S5) ================================================
+  // The land above freed its lane's name, and nothing has taken the letter again yet (the next
+  // openLane below would). A freed name and a never-given one must each be refused by EVERY verb
+  // that takes a slot, with the name in the message — never resolved to the number of its band.
+  const NEVER = "99Z";
+  const freeNames = laName === null ? [] : [laName, NEVER];
+  const refusals: string[] = [];
+  for (const n of freeNames) {
+    for (const args of [["ctx", n], ["land", n], ["watch", "lane", n], ["watch", "merge", n], ["wait", "merge", n]]) {
+      const r = await ctl(args);
+      if (!(r.code === 1 && r.err.includes(`no lane named ${n}`))) refusals.push(`${args.join(" ")} → exit ${r.code} ${r.err.trim().slice(0, 100)}`);
+    }
+  }
+  check("ctl <slot verbs>: a freed lane name and a never-given one are refused by ctx, land, watch lane|merge and wait merge — exit 1, the name in the message",
+    laName !== null && refusals.length === 0,
+    laName === null ? "UNMEASURED — the landed lane carried no name in /api/sessions" : `names=${freeNames.join(",")} wrong=[${refusals.join(" | ")}]`);
+  const malformed = await ctl(["land", "4a"]);
+  check("ctl <slot verbs>: an argument that is neither a number nor a lane name is refused before any request (exit 2)",
+    malformed.code === 2 && malformed.err.includes('"4a" is neither a slot number nor a lane name'),
+    `exit ${malformed.code} ${malformed.err.trim().slice(0, 120)}`);
+
   // === merges, over a land that did NOT finish ==================================================
   // The sensor is only worth anything on an UNFINISHED land, so one is produced deliberately: a
   // lane whose rebase conflicts reaches the fake merge agent, whose default mode answers `blocked`
@@ -596,16 +623,65 @@ export async function run(): Promise<void> {
   check("ctl merges: a settled-but-unlanded verdict is NOT counted as in flight — exit 0, running=no",
     mergesAfter.code === 0 && stuck?.running === false,
     `exit ${mergesAfter.code} running=${stuck?.running}`);
+  // THE NAME IS THE LANE, NOT ITS BAND: `ctx <name>` answers for the lane's own place, and `wait
+  // merge <name>` returns the verdict that place holds — the same answer the number gets.
+  const lcName = await nameOf(lc.slot);
+  const ctxByName = await ctl(["ctx", lcName ?? "-", "--json"]);
+  const cbn = ctxByName.json as { slot?: number; name?: string | null } | null;
+  const waitByName = await ctl(["wait", "merge", lcName ?? "-", "--json"]);
+  const waitByNum = await ctl(["wait", "merge", String(lc.slot), "--json"]);
+  const wbn = waitByName.json as { last?: { status: string; landed: boolean } | null } | null;
+  check("ctl ctx / wait merge: a lane name resolves to that lane's own slot and gets the answer its number gets",
+    lcName !== null && /^\d+[A-Z]+$/.test(lcName) && cbn?.slot === lc.slot && cbn?.name === lcName
+      && waitByName.code === 0 && wbn?.last?.landed === false
+      && JSON.stringify(wbn?.last) === JSON.stringify((waitByNum.json as { last?: unknown } | null)?.last),
+    `name=${lcName} ctx=${JSON.stringify(cbn)} wait=${waitByName.code}/${JSON.stringify(wbn?.last ?? null).slice(0, 120)} byNum=${waitByNum.code}`);
+
+  // === state.sh prints the name next to the slot (S5) ===========================================
+  // state.sh reads the MAIN checkout's fleet.json, so it runs in a fixture repo holding a copy of
+  // THIS instance's state — plus one lane from before the letter field, which must say it has no
+  // name rather than borrow one. Each name it prints is held against the poll's `name` for the slot.
+  // The script comes through the node_modules pointer home, as e2e/outcomes.ts takes it: it is not
+  // staged, and the pointer resolves in the audit's `git archive` source too.
+  {
+    const stRepo = `${REPO}.ctl-state-fixture`;
+    rmSync(stRepo, { recursive: true, force: true });
+    mkdirSync(stRepo, { recursive: true });
+    spawnSync("git", ["init", "-q", "-b", "main", stRepo]);
+    writeFileSync(`${stRepo}/state.sh`, readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/state.sh`, "utf8"));
+    writeFileSync(`${stRepo}/server.ts`, "// fixture\n");
+    const st = stateFile() as { slots?: Record<string, unknown> };
+    const PRE = "31";
+    writeFileSync(`${stRepo}/fleet.json`, JSON.stringify({ ...st,
+      slots: { ...st.slots, [PRE]: { cwd: `${stRepo}/pre`, worktree: { repo: REPO, branch: "e2e-ctl-preletter" } } } }, null, 2));
+    spawnSync("git", ["-C", stRepo, "add", "state.sh", "server.ts"]);
+    spawnSync("git", ["-C", stRepo, "-c", "user.email=e2e@test", "-c", "user.name=e2e", "commit", "-qm", "fixture"]);
+    const polled = ((await (await get("/api/sessions")).json()) as { slots: { id: number; name?: string; worktree?: unknown }[] })
+      .slots.filter((x) => x.worktree && x.name && (st.slots ?? {})[String(x.id)]);
+    const stOut = spawnSync("sh", ["state.sh"], { cwd: stRepo, encoding: "utf8" }).stdout ?? "";
+    const slotLines = stOut.split("\n").filter((l) => /^  slot \d+  /.test(l));
+    const missing = polled.filter((x) => !slotLines.some((l) => l.startsWith(`  slot ${x.id}  ${x.name}  `)));
+    check("state.sh: every lane's slot line carries the name the poll serves for it (4A), and a pre-letter lane says it has none",
+      polled.length > 0 && missing.length === 0
+        && slotLines.some((l) => l.startsWith(`  slot ${PRE}  (no name`) && l.includes("e2e-ctl-preletter")),
+      `polled=${polled.map((x) => `${x.id}:${x.name}`).join(",")} missing=${missing.map((x) => x.id).join(",")} lines=${JSON.stringify(slotLines).slice(0, 300)}`);
+    rmSync(stRepo, { recursive: true, force: true });
+  }
   await post(`/api/slots/${lc.slot}/kill`, {});
   if (modeBefore !== null) await Bun.write(modeFile, modeBefore);
 
   // === watch merge + wait merge =================================================================
+  // …addressed BY NAME: the land is posted as the name (pinned to the occupant it read), and the
+  // watch resolves the name to the subject slot the route's `target` wants.
   const lb = await openLane(REPO, "ctlwatch");
   await settleForMerge(lb.slot);
-  const started = await landRetry(lb.slot, ["--json"]);
-  check("ctl land (no --wait): the POST is made and reported without blocking",
-    started.code === 0, `exit ${started.code} ${started.out.slice(0, 200)}`);
-  const wMerge = await ctl(["watch", "merge", String(lb.slot), "--json"]);
+  const lbName = await nameOf(lb.slot);
+  const started = await landRetry(lb.slot, ["--json"], lbName ?? "-");
+  const sj = started.json as { slot?: number; name?: string | null } | null;
+  check("ctl land <name> (no --wait): the POST is made for the named lane and reported without blocking",
+    started.code === 0 && lbName !== null && sj?.slot === lb.slot && sj?.name === lbName,
+    `exit ${started.code} name=${lbName} ${started.out.slice(0, 200)}`);
+  const wMerge = await ctl(["watch", "merge", lbName ?? "-", "--json"]);
   const wj = wMerge.json as { ok?: boolean; watch?: { id: string; kind?: string; idleSec: number; armed: boolean } } | null;
   const mine = ((await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": selfTok } })).json()) as
     { watches: { id: string; target?: number; idleSec: number }[] }).watches;

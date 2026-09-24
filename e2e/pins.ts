@@ -5859,6 +5859,17 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && (server.match(/await pushLandToHub\(/g) ?? []).length === 2,
     JSON.stringify({ arb: mergeArb, advance: mergeAdv, record: mergeRecord,
       pushCallSites: (server.match(/await pushLandToHub\(/g) ?? []).length }));
+  // …and once the hub has SAID YES, a local advance that fails is a repair case and never a race
+  // (9e587653): the `hub-only` stop sits inside the failed-advance arm and AHEAD of the retry, so no
+  // second round can push a new tip onto a hub that already holds this one.
+  const hubOnlyAt = server.indexOf('errorReason: "hub-only"', mergeAdv);
+  pin(`${RULE_LAND} — 9e587653: after an accepted hub push a failed local advance stops as \`hub-only\` before any retry round`,
+    mergeAdv > 0 && hubOnlyAt > mergeAdv
+      && server.indexOf("if (arb?.ok) {", mergeAdv) > mergeAdv
+      && server.indexOf("if (arb?.ok) {", mergeAdv) < hubOnlyAt
+      && hubOnlyAt < server.indexOf("if (mainMoved && ffRounds < LAND_FF_RETRY_ROUNDS && ffHeld) {", mergeAdv),
+    JSON.stringify({ advance: mergeAdv, hubOnly: hubOnlyAt,
+      retry: server.indexOf("if (mainMoved && ffRounds < LAND_FF_RETRY_ROUNDS && ffHeld) {", mergeAdv) }));
   // …and the failure kinds are a CLOSED pair read off git's own words, with the safe default. A
   // killed push never got an answer, so it can never be read as a rejection; anything unrecognised
   // is `unreachable`, because `rejected` is the only value that licenses a second full gate.

@@ -1090,4 +1090,187 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("(baton) fixture cleanup: the planted Program is gone — the 2 s poll must not carry a fixture for the rest of the suite",
       !remaining.some((p) => p.id === batonProgramId), `${remaining.length} program(s) left`);
   }
+
+  // === THE REVIEW PARK: a finished lane set aside for a LATER owner review, slot freed, identity kept ==
+  // (docs/messungen/2026-09-23-worktree-lebenszyklus.md §3, corrected: a park that frees the slot, not
+  // a halt that holds it). What each check below turns red on: a park that admits an unaccepted or
+  // dirty lane; rows that go back to pending/queued (the old detach) or come back after a restart
+  // (the boot requeue); a board without the identity; a resume that forgets the rows, keeps the old
+  // verify as current, or seats the tree twice; and a plain shelve that changed on the way.
+  {
+    type RpRow = { id: string; status: string; slot: number | null; note?: string | null; programId?: string | null };
+    type RpCandidate = { id: string; parkedAt: number; expiresAt: number; expired?: boolean; branch: string; head: string;
+      base: string | null; baseSha: string | null; taskIds: string[]; taskId: string | null; programId: string | null; reportId: string };
+    type RpState = {
+      slots?: Record<string, { selfToken?: string; openedAt?: number; sessionId?: string | null; taskId?: string | null;
+        programId?: string | null; worktree?: { branch?: string; resumedFrom?: Record<string, unknown> } | null }>;
+      tasks?: RpRow[]; programs?: Record<string, unknown>[];
+      fleetReports?: { id: string; worker: { sessionId: string | null }; decision?: unknown }[];
+      shelved?: Record<string, { note: string; review?: RpCandidate }>;
+    };
+    type RpBoard = { path: string; slot: number | null; note: string | null; review?: RpCandidate | null };
+    const rpState = (): RpState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as RpState;
+    // the rows through the API, not the state file: a queued save may still be in flight after a response
+    const rpRows = async (ids: string[]): Promise<(RpRow | undefined)[]> => {
+      const all = ((await (await get("/api/tasks")).json()) as { tasks: RpRow[] }).tasks;
+      return ids.map((id) => all.find((t) => t.id === id));
+    };
+    const rpSelfPost = (token: string, path: string, body: unknown): Promise<Response> =>
+      fetch(BASE + path, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": token }, body: JSON.stringify(body) });
+    const rpSessions = async () => ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null; worktree?: { branch: string; resumedFrom?: Record<string, unknown> } | null }[] }).slots;
+    const rpLane = (await (await post("/api/lanes", { repo: REPO })).json()) as { ok?: boolean; slot?: number; cwd?: string; branch?: string };
+    const rpSlot = rpLane.slot ?? 0;
+    const rpCwd = rpLane.cwd ?? "";
+    const rpBoard = async (): Promise<RpBoard | undefined> =>
+      ((await (await get(`/api/slots/${lc.lnSlot}/worktrees`)).json()) as { worktrees: RpBoard[] }).worktrees.find((w) => w.path === rpCwd);
+    const rpIds: string[] = [];
+    for (const text of ["REVIEW PARK FIXTURE: the founding row", "REVIEW PARK FIXTURE: the wave follower"])
+      rpIds.push(((await (await post("/api/tasks", { text, queue: false })).json()) as { task?: { id: string } }).task?.id ?? "");
+    writeFileSync(`${rpCwd}/review-park.txt`, "finished work\n");
+    spawnSync("git", ["-C", rpCwd, "add", "review-park.txt"]);
+    spawnSync("git", ["-C", rpCwd, "commit", "-qm", "review park: the finished cut"]);
+    const rpHead = spawnSync("git", ["-C", rpCwd, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+    await stopSrv();
+    const rpProgramId = "7e71e0".padEnd(24, "0");
+    const rpPlant = rpState();
+    const rpAt = Date.now();
+    rpPlant.programs = [...(rpPlant.programs ?? []), {
+      id: rpProgramId, title: "Review park fixture", intent: "Prove a finished lane parks for review",
+      successCriterion: "The parked lane resumes with its rows", nonGoals: [], decisions: [], evidence: [],
+      openQuestions: [], status: "active", createdAt: rpAt - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: rpAt - 900, activatedAt: rpAt - 800,
+    }];
+    const rpSl = rpPlant.slots?.[String(rpSlot)];
+    if (rpSl) { rpSl.taskId = rpIds[0]; rpSl.programId = rpProgramId; }
+    for (const row of rpPlant.tasks ?? [])
+      if (rpIds.includes(row.id)) { row.status = "sent"; row.slot = rpSlot; row.programId = rpProgramId; }
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpPlant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const rpTok = rpState().slots?.[String(rpSlot)]?.selfToken ?? "";
+    check("review park setup: a committed lane carries two sent rows and a Program",
+      rpLane.ok === true && rpSlot > 0 && exists(rpCwd) && /^[0-9a-f]{40}$/.test(rpHead) && /^[0-9a-f]{32}$/.test(rpTok)
+        && (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === rpSlot),
+      JSON.stringify({ lane: rpLane, rows: (await rpRows(rpIds)) }));
+
+    const park = (body: Record<string, unknown>) => post(`/api/slots/${rpSlot}/shelve`, { note: "review me", review: true, ...body });
+    const noReport = await park({});
+    check("(review park) refused without a report — nothing parked, the slot still holds the lane",
+      noReport.status === 409 && (await noReport.text()).includes("filed no report")
+        && (await rpSessions()).find((x) => x.id === rpSlot)?.cwd === rpCwd, String(noReport.status));
+    const repRes = await rpSelfPost(rpTok, "/api/self/fleet-report", { status: "complete", text: "REVIEW PARK FIXTURE: done and verified." });
+    const rpReportId = ((await repRes.json()) as { report?: { id: string } }).report?.id ?? "";
+    const undecided = await park({});
+    check("(review park) refused while the MAIN has not accepted the report",
+      repRes.ok && undecided.status === 409 && (await undecided.text()).includes("undecided"), `${repRes.status} ${undecided.status}`);
+    // the acceptance planted as the program MAIN's verdict: the subject here is the park, not the decision door
+    await stopSrv();
+    const rpDecide = rpState();
+    const rpRep = rpDecide.fleetReports?.find((r) => r.id === rpReportId);
+    if (rpRep) rpRep.decision = { disposition: "accepted", at: Date.now(), by: { slot: 3, openedAt: rpAt - 500, sessionId: null },
+      reason: null, fulfilled: null };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpDecide, null, 2), { mode: 0o600 });
+    await restartSrv();
+    writeFileSync(`${rpCwd}/review-park-dirty.txt`, "uncommitted\n");
+    const dirty = await park({});
+    const dirtyText = await dirty.text();
+    rmSync(`${rpCwd}/review-park-dirty.txt`, { force: true });
+    check("(review park) refused on an unclean tree, naming the file",
+      dirty.status === 409 && dirtyText.includes("not clean") && dirtyText.includes("review-park-dirty.txt"), `${dirty.status} ${dirtyText.slice(0, 160)}`);
+    check("(review park) a malformed deadline is a 400, not a default",
+      (await park({ hours: 0 })).status === 400 && (await park({ hours: "2" })).status === 400);
+    check("(review park) every refusal left the lane and its rows exactly as they were",
+      (await rpSessions()).find((x) => x.id === rpSlot)?.cwd === rpCwd
+        && (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === rpSlot) && !rpState().shelved?.[rpCwd],
+      JSON.stringify((await rpRows(rpIds))));
+
+    // THE PARK
+    const parkRes = await park({ hours: 2 });
+    const parked = ((await parkRes.json()) as { ok?: boolean; candidate?: RpCandidate }).candidate;
+    check("(review park) an accepted, clean lane parks as ONE candidate with rows, branch, head, base, report and deadline",
+      parkRes.ok && !!parked && /^[0-9a-f]{12}$/.test(parked.id) && parked.branch === rpLane.branch && parked.head === rpHead
+        && typeof parked.base === "string" && parked.base !== "" && /^[0-9a-f]{40}$/.test(parked.baseSha ?? "")
+        && JSON.stringify([...parked.taskIds].sort()) === JSON.stringify([...rpIds].sort()) && parked.taskId === rpIds[0]
+        && parked.reportId === rpReportId && parked.expiresAt - parked.parkedAt === 2 * 3_600_000,
+      JSON.stringify(parked));
+    check("(review park) the slot is free and the worktree with its commit stays on disk",
+      (await rpSessions()).find((x) => x.id === rpSlot)?.cwd === null && exists(`${rpCwd}/review-park.txt`));
+    check("(review park) the rows stay SENT with no slot — not handed back to pending or queued",
+      (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === null && (t.note ?? "").includes(parked?.id ?? "-")),
+      JSON.stringify((await rpRows(rpIds))));
+    const rpDispatch = await post(`/api/tasks/${rpIds[0]}/dispatch`, {});
+    const rpQueue = await post(`/api/tasks/${rpIds[1]}/queue`, {});
+    const rpUnqueue = await post(`/api/tasks/${rpIds[0]}/unqueue`, {});
+    check("(review park) no door can start a parked row again: dispatch, queue and unqueue all refuse",
+      rpDispatch.status === 409 && rpQueue.status === 409 && rpUnqueue.status === 409
+        && (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === null),
+      `${rpDispatch.status} ${rpQueue.status} ${rpUnqueue.status} ${JSON.stringify((await rpRows(rpIds)))}`);
+    const board1 = await rpBoard();
+    check("(review park) the board shows the candidate's identity on the orphan",
+      board1?.slot === null && board1.note === "review me" && board1.review?.id === parked?.id
+        && board1.review?.head === rpHead && board1.review?.reportId === rpReportId && board1.review?.expired === false
+        && board1.review?.taskIds.length === 2, JSON.stringify(board1));
+
+    // RESTART, with the deadline moved into the past: the rows must not be requeued by the boot
+    // reconcile, and an expired candidate is marked — never removed.
+    await stopSrv();
+    const rpAge = rpState();
+    const rpShelf = rpAge.shelved?.[rpCwd]?.review;
+    if (rpShelf) rpShelf.expiresAt = Date.now() - 1000;
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpAge, null, 2), { mode: 0o600 });
+    await restartSrv();
+    check("(review park) across a restart the rows stay parked — no boot requeue, no second dispatch",
+      (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === null), JSON.stringify((await rpRows(rpIds))));
+    const board2 = await rpBoard();
+    check("(review park) a passed deadline marks the candidate expired and keeps its worktree",
+      board2?.review?.id === parked?.id && board2?.review?.expired === true && exists(`${rpCwd}/review-park.txt`),
+      JSON.stringify(board2));
+
+    // RESUME
+    const resumeRes = await post("/api/lanes", { repo: REPO, attach: rpCwd });
+    const resumed = (await resumeRes.json()) as { ok?: boolean; slot?: number;
+      resumed?: { candidate: string; head: string; reportId: string; taskIds: string[]; verify: string } };
+    const rpSlot2 = resumed.slot ?? 0;
+    check("(review park) reopening the worktree resumes the candidate and binds both rows back",
+      resumeRes.ok && rpSlot2 > 0 && resumed.resumed?.candidate === parked?.id && resumed.resumed?.verify === "stale"
+        && JSON.stringify([...(resumed.resumed?.taskIds ?? [])].sort()) === JSON.stringify([...rpIds].sort())
+        && (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === rpSlot2),
+      `${resumeRes.status} ${JSON.stringify(resumed)} ${JSON.stringify((await rpRows(rpIds)))}`);
+    const rpSeat = rpState().slots?.[String(rpSlot2)];
+    const rpFrom = (await rpSessions()).find((x) => x.id === rpSlot2)?.worktree?.resumedFrom;
+    check("(review park) the resumed lane carries its founding row and Program, and marks the pre-park verify stale",
+      rpSeat?.taskId === rpIds[0] && rpSeat.programId === rpProgramId && rpFrom?.candidate === parked?.id
+        && rpFrom?.verify === "stale" && rpFrom?.head === rpHead && rpFrom?.reportId === rpReportId
+        && rpSeat.worktree?.resumedFrom?.candidate === parked?.id,
+      JSON.stringify({ seat: rpSeat, from: rpFrom }));
+    const board3 = await rpBoard();
+    check("(review park) the resume consumed the candidate: the board shows no candidate and no note",
+      board3?.slot === rpSlot2 && board3.review == null && board3.note == null, JSON.stringify(board3));
+    const second = await post("/api/lanes", { repo: REPO, attach: rpCwd });
+    check("(review park) a second attach of the same worktree is refused and moves no row",
+      second.status === 409 && (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === rpSlot2), String(second.status));
+
+    // THE PLAIN SHELVE, unchanged: no candidate, and its rows go back to owner review as before
+    const plain = await post(`/api/slots/${rpSlot2}/shelve`, { note: "plain" });
+    const plainBody = (await plain.json()) as { ok?: boolean; candidate?: unknown };
+    const board4 = await rpBoard();
+    check("(review park) a shelve without review:true is the old shelve — no candidate, rows back to pending",
+      plain.ok && plainBody.ok === true && plainBody.candidate === undefined && board4?.note === "plain" && board4.review == null
+        && (await rpRows(rpIds)).every((t) => t?.status === "pending" && t.slot === null),
+      `${JSON.stringify(plainBody)} ${JSON.stringify(board4)} ${JSON.stringify((await rpRows(rpIds)))}`);
+
+    // the planted records leave the way they came (the 2 s poll's budget, see the baton cleanup)
+    spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", rpCwd]);
+    for (const id of rpIds) await post(`/api/tasks/${id}/delete`, {});
+    await stopSrv();
+    const rpUnplant = rpState();
+    rpUnplant.programs = (rpUnplant.programs ?? []).filter((p) => p.id !== rpProgramId);
+    rpUnplant.fleetReports = (rpUnplant.fleetReports ?? []).filter((r) => r.id !== rpReportId);
+    if (rpUnplant.shelved) delete rpUnplant.shelved[rpCwd];
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpUnplant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    check("(review park) fixture cleanup: Program, report and rows are gone",
+      !(rpState().programs ?? []).some((p) => p.id === rpProgramId) && !rpIds.some((id) => rpState().tasks?.some((t) => t.id === id)));
+  }
 }

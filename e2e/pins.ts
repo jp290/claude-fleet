@@ -5564,8 +5564,9 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       // The gate this depends on, in its post-2026-09-05 shape: the window still vetoes the
       // REFRESH — which is the starvation half above — and no longer vetoes the transition out of
       // `lastOutput === 0`, because "never seen" is a different fact from "last seen at T"
-      // (e2e/slots.ts measures that half against a live pane).
-      && server.includes("if (Date.now() > s.quietUntil || s.lastOutput === 0) s.lastOutput = Date.now();"),
+      // (e2e/slots.ts measures that half against a live pane). Since 2026-09-24 a title-only
+      // increment (titlebytes.ts) loses the refresh the same way and keeps the transition too.
+      && server.includes("if ((Date.now() > s.quietUntil && !title.titleOnly) || s.lastOutput === 0) s.lastOutput = Date.now();"),
     JSON.stringify({ open: sendBodyForQuiet.indexOf("OWN_PASTE_QUIET_MS"), tail: sendBodyForQuiet.indexOf("OWN_PASTE_QUIET_TAIL_MS") }));
 
   const selfApiForRecovery = read("docs/self-api.md");

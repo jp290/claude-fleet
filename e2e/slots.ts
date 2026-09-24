@@ -14,6 +14,7 @@ import { pendingSettledBy } from "../src/pendingsend";
 import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
 import { composerResidue } from "../composer";
+import { scanTitleOnly, type TitleCarry } from "../titlebytes";
 
 export async function run(): Promise<void> {
   // --- slots ---
@@ -3188,6 +3189,85 @@ export async function run(): Promise<void> {
     if (measured && verdict)
       check("a stream burst consumed inside a quiet window still ends the pane's never-observed state",
         verdict.lastOutput > 0, JSON.stringify(verdict));
+    await post("/api/slots/3/kill", {});
+  }
+
+  // --- TITLE BYTES ARE NOT WORK (titlebytes.ts, server.ts#poll). Measured 2026-09-24: a codex MAIN
+  // waiting on its own question blinked its window title (`ESC ]0;[.] Action Required | … BEL`
+  // alternating with `[!]`), ~240 B every 3 s into a pane that had not painted for an hour, and each
+  // tick refreshed `lastOutput` — the board said "running" while the session waited for input. The
+  // pure scanner first, byte for byte; then a fixture pane that does only that, against one that
+  // writes visible text. ---
+  {
+    const enc = (x: string) => new TextEncoder().encode(x);
+    const scan = (chunks: string[], carry: TitleCarry = "text") => chunks.map((c) => {
+      const r = scanTitleOnly(enc(c), carry);
+      carry = r.carry;
+      return r.titleOnly;
+    });
+    const same = (a: boolean[], b: boolean[]) => JSON.stringify(a) === JSON.stringify(b);
+    const t0 = scan(["\x1b]0;[!] Action Required | x\x07"]);
+    const t2 = scan(["\x1b]2;title\x1b\\"]);
+    const t1 = scan(["\x1b]1;icon\x07\x1b]0;[.] a\x07\x1b]2;b\x1b\\"]);
+    check("title scanner: OSC 0/1/2 increments ended by BEL or by ESC-backslash are title-only",
+      same(t0, [true]) && same(t2, [true]) && same(t1, [true]), JSON.stringify({ t0, t2, t1 }));
+    // a sequence cut by a read boundary: the second half is title text, not output
+    const splitMid = scan(["\x1b]0;Action Req", "uired\x07"]);
+    const splitSt = scan(["\x1b]2;x\x1b", "\\"]);
+    const splitIntro = scan(["\x1b", "]0;x\x07"]);
+    check("title scanner: a title sequence split across two reads is title-only where it is decided",
+      same(splitMid, [true, true]) && same(splitSt, [false, true]) && same(splitIntro, [false, true]),
+      JSON.stringify({ splitMid, splitSt, splitIntro }));
+    // the same second half with NO carry is output, and one plain byte anywhere makes the whole
+    // increment output — before, inside the ESC-intro, or after the terminator
+    const noCarry = scan(["uired\x07"]);
+    const mixed = scan(["a\x1b]0;x\x07", "\x1b]0;x\x07b", "\x1b]0;x\x07\r\n", "\x1b[2J\x1b]0;x\x07"]);
+    check("title scanner: an increment with at least one other byte is activity",
+      same(noCarry, [false]) && same(mixed, [false, false, false, false]), JSON.stringify({ noCarry, mixed }));
+    // other OSC kinds (7 cwd, 8 hyperlink, 11 colour query, 133 prompt mark) are not titles, and
+    // neither is an OSC aborted by an ESC that is not ST
+    const others = scan(["\x1b]7;file:///tmp\x07", "\x1b]8;;http://x\x07", "\x1b]11;?\x07",
+      "\x1b]133;A\x07", "\x1b];x\x07"]);
+    const aborted = scan(["\x1b]0;x\x1b[31m"]);
+    check("title scanner: other OSC kinds and an aborted title are activity; an empty read is not title-only",
+      same(others, [false, false, false, false, false]) && same(aborted, [false])
+        && scanTitleOnly(new Uint8Array(0), "text").titleOnly === false,
+      JSON.stringify({ others, aborted }));
+
+    const row3 = async () =>
+      ((await (await get("/api/sessions")).json()) as { slots: { id: number; lastOutput: number }[] })
+        .slots.find((s) => s.id === 3)?.lastOutput ?? 0;
+    const stream3 = (): number => {
+      const f = readdirSync(`${ROOT}/streams`).find((x) => x.startsWith("s3-") && x.endsWith(".raw"));
+      return f ? Bun.file(`${ROOT}/streams/${f}`).size : -1;
+    };
+    // one loop, driven by the shell's own printf; the typed line's echo is ordinary output, so the
+    // window is read only after it settled (the quiet window of the open is long gone by then)
+    const watch = async (loop: string) => {
+      await tmuxOut("send-keys", "-t", "s3", "-l", loop);
+      await tmuxOut("send-keys", "-t", "s3", "Enter");
+      await Bun.sleep(1500);
+      const before = { at: await row3(), bytes: stream3() };
+      await Bun.sleep(3000);
+      const after = { at: await row3(), bytes: stream3() };
+      await tmuxOut("send-keys", "-t", "s3", "C-c");
+      await Bun.sleep(300);
+      return { before, after, grew: after.bytes - before.bytes };
+    };
+    const opened = await post("/api/slots/3/open", { cwd: "~" });
+    await Bun.sleep(2500);
+    const blink = await watch(
+      "while :; do printf '\\033]0;[!] Action Required\\007'; sleep 0.2; printf '\\033]0;[.] Action Required\\033\\\\'; sleep 0.2; done");
+    const text = await watch("while :; do printf 'visible tick\\n'; sleep 0.2; done");
+    const measured = opened.ok && blink.grew >= 200 && text.grew >= 100 && blink.before.at > 0;
+    check("title fixture: a pane blinking only its title, and one writing text, both grew the stream",
+      measured, JSON.stringify({ status: opened.status, blink, text }));
+    if (measured) {
+      check("title fixture: the pane that only blinks its title goes idle — lastOutput stays where the echo left it",
+        blink.after.at === blink.before.at, JSON.stringify(blink));
+      check("title fixture: the pane that writes visible text stays active — lastOutput keeps moving",
+        text.after.at > text.before.at && Date.now() - text.after.at < 3000, JSON.stringify(text));
+    }
     await post("/api/slots/3/kill", {});
   }
 

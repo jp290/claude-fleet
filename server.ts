@@ -54,6 +54,7 @@ import { composerArrival, composerBuffer, composerHoldsExactly, composerRows,
   type ComposerArrival, type ComposerForm } from "./composer";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
+import { scanTitleOnly } from "./titlebytes";
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
 import {
   clusterForFiles, deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp, readSymbolIndexSnapshot,
@@ -2093,6 +2094,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   lineageId: null,
   selfToken: randomBytes(16).toString("hex"),
   offset: 0,
+  titleCarry: "text",
   lastOutput: 0,
   quietUntil: 0,
   cols: 200,
@@ -7802,6 +7804,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   reapLaneSuiteOffersFor(s.id);
   s.history = [];
   s.offset = 0;
+  s.titleCarry = "text";
   s.lastOutput = 0;
   s.quietUntil = 0;
   s.cols = 200;
@@ -17288,6 +17291,7 @@ async function poll(): Promise<void> {
         if (!sameSlotStreamOccupant(s, occupant)) return;
         if (size < s.offset) {
           s.offset = 0;
+          s.titleCarry = "text";
           // stream was truncated (session recreated) — clear stale scrollback on connected clients
           broadcast(s, -1, CLEAR);
         }
@@ -17314,8 +17318,16 @@ async function poll(): Promise<void> {
           // only writer of 0 is the teardown that also clears `s.cwd`. What it does NOT do is claim
           // an agent is there — that is `alive` (paneAgentAt), a separate probe, and canDeliver's
           // fresh liveness gate is untouched by this line.
-          if (Date.now() > s.quietUntil || s.lastOutput === 0) s.lastOutput = Date.now();
-          broadcast(s, from, new Uint8Array(buf));
+          // A THIRD kind of byte is not work either: a title-only increment (titlebytes.ts). Codex
+          // blinks its window title while its own question waits for an answer, and those bytes
+          // kept a pane that had not painted for an hour reading as busy. They lose the REFRESH
+          // like a quiet window's bytes do, and, like them, keep the TRANSITION out of 0. The
+          // bytes themselves still go to every client below, unfiltered.
+          const bytes = new Uint8Array(buf);
+          const title = scanTitleOnly(bytes, s.titleCarry);
+          s.titleCarry = title.carry;
+          if ((Date.now() > s.quietUntil && !title.titleOnly) || s.lastOutput === 0) s.lastOutput = Date.now();
+          broadcast(s, from, bytes);
         }
       } catch {
         // stream file briefly missing during recreate — next tick picks it up
@@ -34887,6 +34899,7 @@ for (const s of slots) {
   if (!sameSlotStreamOccupant(s, streamOccupant)) continue;
   const file = occupantStreamPath(streamOccupant);
   s.offset = existsSync(file) ? (await stat(file)).size : 0;
+  s.titleCarry = "text";
   // ...and the restart must not leave the pane looking IDLE SINCE THE EPOCH: lastOutput 0 disarmed
   // canDeliver's busy gate and auto-③'s idle clause on every deploy. Boot time is the honest
   // reading — unknown is never permission (pulseLastOutput). Narrativ: server-narrativ-archiv.md#boot-slot-rehydration

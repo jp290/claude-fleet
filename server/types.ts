@@ -12,6 +12,7 @@ import { LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_FAIL_NAME_MAX, LANE_SUITE_
   type LaneSuiteWatchEventPayload, HARNESS_BLOCK_DETAIL_MAX, HARNESS_BLOCK_TOOL_MAX,
   type HarnessBlockEventPayload, LANE_REVIEW_FINDINGS_MAX, LANE_REVIEW_TITLE_MAX, LANE_REVIEW_FILE_MAX,
   LANE_REVIEW_NOTES_MAX, type LaneReviewEventPayload } from "../lane-signals";
+import type { TitleCarry } from "../titlebytes";
 import type { BriefReviewArm, BriefReviewKind, RefineValidation } from "../refine-validate";
 import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, type FleetReportStatus,
   type LaneAnchor } from "../src/protocol";
@@ -1972,6 +1973,7 @@ interface Slot {
   // Minted fresh in openSlot every time the slot is (re)activated, so a recycled slot can't
   // be self-scheduled against by a session that was talking to whatever used to live here.
   offset: number;
+  titleCarry: TitleCarry; // title-scanner position at s.offset (titlebytes.ts) — reset wherever offset jumps
   lastOutput: number;
   quietUntil: number; // resize/repaint make the TUI redraw — don't count that as activity
   cols: number; // last tmux window size we applied — lets a same-size reconnect skip reseeding

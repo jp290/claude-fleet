@@ -1281,6 +1281,14 @@ interface Task {
   // advisory categories without their own motor (owner decision 2026-08-10); promoting one is
   // still a valid propose-outcome signal, but every dispatch path skips it and leaves that fact
   // standing on the row.
+  // THE KIND AS AN ON-ROW PAIR (System 1.5 R3): the category a row was filed as, and every change
+  // since. The audit line `task_kind` stays, but audit.jsonl rotates — measured W5: all 13 kind acts
+  // stood in .1/.archive, the current file held 0 — while a row carries its fields into
+  // tasks-archive.jsonl whole. `kindAtCreate` is written by the create doors only and never again;
+  // ABSENT on every row filed before the field (never backfilled — the kind it was born as is not
+  // derivable). `kindChanges` gains one entry per change, in order; absent until the first one.
+  kindAtCreate?: TaskKind;
+  kindChanges?: TaskKindChange[];
   repo: string | null; // the task's TARGET repo — where its lane spawns. OWNER-only: intake and
   // steward can never choose where external text materializes as a working session. null =
   // the dispatcher default (FLEET_DISPATCH_REPO), which is also every pre-field row's meaning.
@@ -1484,6 +1492,19 @@ const loadTaskDisposition = (value: unknown): TaskDisposition | undefined => {
   return { grund: r.grund.slice(0, TASK_DISPOSITION_GRUND_MAX),
     ...(typeof r.beleg === "string" && r.beleg.trim() ? { beleg: r.beleg.slice(0, TASK_DISPOSITION_BELEG_MAX) } : {}),
     by: "owner", at: r.at };
+};
+// one kind change (Task.kindChanges). Both writers — POST /api/tasks/:id/kind and the `adopt` alias —
+// sit past the owner token gate, so `by` has one value today.
+interface TaskKindChange { from: TaskKind; to: TaskKind; at: number; by: "owner" }
+// the pair back off disk: a malformed entry is dropped, never repaired into a change nobody made
+const loadTaskKindChanges = (value: unknown): TaskKindChange[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const out = value.flatMap((c): TaskKindChange[] => {
+    const r = (c && typeof c === "object" && !Array.isArray(c) ? c : {}) as Record<string, unknown>;
+    return isTaskKind(r.from) && isTaskKind(r.to) && typeof r.at === "number" && Number.isFinite(r.at) && r.by === "owner"
+      ? [{ from: r.from, to: r.to, at: r.at, by: "owner" }] : [];
+  });
+  return out.length ? out : undefined;
 };
 interface TaskHold { by: "main"; slot: number; at: number; grund: string | null }
 const TASK_HOLD_GRUND_MAX = 500;
@@ -3270,7 +3291,7 @@ export type {
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportFulfilled, FleetReportDecision, FleetReportBasis,
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,
-  AttentionNudgeReading, AttentionDelivery, TaskKind,
+  AttentionNudgeReading, AttentionDelivery, TaskKind, TaskKindChange,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, BriefReviewFinding, TaskBriefReview, LaneForm, LaneRef, LaneReviewCandidate, LaneResume, LanePreview, LanePreviewState, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
@@ -3317,7 +3338,7 @@ export {
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,
-  PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold, TASK_HOLD_GRUND_MAX, loadStallSensor,
+  PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold, TASK_HOLD_GRUND_MAX, loadTaskKindChanges, loadStallSensor,
   REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume, loadLanePreview,
   TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX, loadTaskDisposition,
   HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck,

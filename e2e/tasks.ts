@@ -1625,6 +1625,70 @@ export async function run(ctx: Ctx): Promise<void> {
       && kindAudit.some((e) => e.event === "task_kind" && e.detail === `${reversible.id}:auftrag->notiz`));
     await post(`/api/tasks/${reversible.id}/delete`, {});
 
+    // THE KIND AS AN ON-ROW PAIR (System 1.5 R3): audit.jsonl rotates, the row travels whole into
+    // tasks-archive.jsonl. Birth kind written once, every change an ordered {from,to,at,by} entry.
+    {
+      type KcChange = { from?: unknown; to?: unknown; at?: unknown; by?: unknown };
+      type KcRow = KRow & { kindAtCreate?: unknown; kindChanges?: KcChange[] };
+      const kcRow = async (id: string): Promise<KcRow | undefined> =>
+        ((await kRows()) as KcRow[]).find((t) => t.id === id);
+      const kcBorn = ((await (await post("/api/tasks", {
+        text: "kind pair birth probe", kind: "auftrag", queue: false,
+      })).json()) as { task: KcRow }).task;
+      check("Task.kindAtCreate: a new row carries the kind it was filed as, and no kindChanges yet",
+        kcBorn.kindAtCreate === "auftrag" && kcBorn.kindChanges === undefined
+          && (await kcRow(kcBorn.id))?.kindAtCreate === "auftrag", JSON.stringify(kcBorn));
+      const kcBefore = Date.now();
+      const kcChange = await post(`/api/tasks/${kcBorn.id}/kind`, { kind: "notiz" });
+      const kcChanged = await kcRow(kcBorn.id);
+      const kcPair = kcChanged?.kindChanges?.[0];
+      check("Task.kindChanges: auftrag→notiz writes ONE pair {from,to,at,by} and leaves kindAtCreate unchanged",
+        kcChange.status === 200 && kcChanged?.kind === "notiz" && kcChanged.kindAtCreate === "auftrag"
+          && kcChanged.kindChanges?.length === 1 && kcPair?.from === "auftrag" && kcPair.to === "notiz"
+          && kcPair.by === "owner" && typeof kcPair.at === "number" && kcPair.at >= kcBefore && kcPair.at <= Date.now(),
+        `${kcChange.status} ${JSON.stringify(kcChanged)}`);
+      const kcSame = await post(`/api/tasks/${kcBorn.id}/kind`, { kind: "notiz" });
+      const kcBad = await post(`/api/tasks/${kcBorn.id}/kind`, { kind: "fuenftes" });
+      const kcAfter = await kcRow(kcBorn.id);
+      check("Task.kindChanges SHOULD-REJECT a pair for a non-change: a same-kind write and a 400 add nothing",
+        kcSame.status === 200 && kcBad.status === 400 && kcAfter?.kindChanges?.length === 1,
+        `same=${kcSame.status} bad=${kcBad.status} ${JSON.stringify(kcAfter?.kindChanges)}`);
+      await post(`/api/tasks/${kcBorn.id}/kind`, { kind: "auftrag" });
+      const kcBack = await kcRow(kcBorn.id);
+      check("Task.kindChanges appends in order: a second change is the second pair, the first untouched",
+        kcBack?.kindChanges?.length === 2 && kcBack.kindChanges[0]?.to === "notiz"
+          && kcBack.kindChanges[1]?.from === "notiz" && kcBack.kindChanges[1]?.to === "auftrag"
+          && kcBack.kindAtCreate === "auftrag", JSON.stringify(kcBack?.kindChanges));
+      const kcDefault = ((await (await post("/api/tasks", {
+        text: "kind pair default probe", queue: false,
+      })).json()) as { task: KcRow }).task;
+      check("Task.kindAtCreate: a row filed without a kind carries the door's default (owner: auftrag)",
+        kcDefault.kind === "auftrag" && kcDefault.kindAtCreate === "auftrag"
+          && (await kcRow(kcDefault.id))?.kindAtCreate === "auftrag", JSON.stringify(kcDefault));
+      const kcNote = ((await (await post("/api/tasks", {
+        text: "kind pair adopt probe", kind: "notiz", queue: false,
+      })).json()) as { task: KcRow }).task;
+      const kcAdopt = await post(`/api/tasks/${kcNote.id}/adopt`, {});
+      const kcAdopted = await kcRow(kcNote.id);
+      check("Task.kindChanges: the adopt alias is a kind change too — one notiz→auftrag pair, kindAtCreate notiz",
+        kcAdopt.status === 200 && kcAdopted?.kind === "auftrag" && kcAdopted.kindAtCreate === "notiz"
+          && kcAdopted.kindChanges?.length === 1 && kcAdopted.kindChanges[0]?.from === "notiz"
+          && kcAdopted.kindChanges[0]?.to === "auftrag" && kcAdopted.kindChanges[0]?.by === "owner",
+        `${kcAdopt.status} ${JSON.stringify(kcAdopted)}`);
+      await post(`/api/tasks/${kcNote.id}/delete`, {});
+      // the reason the field exists: the pair rides the terminal line into tasks-archive.jsonl
+      await post(`/api/tasks/${kcBorn.id}/archive`, {});
+      const kcArchiveFile = `${ROOT}/tasks-archive.jsonl`;
+      const kcLine = await until(() => (existsSync(kcArchiveFile) ? readFileSync(kcArchiveFile, "utf8") : "")
+        .split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l) as { event?: string; task?: KcRow }]; } catch { return []; } })
+        .find((l) => l.event === "terminal" && l.task?.id === kcBorn.id), { timeoutMs: 5_000, what: "terminal archive line of the kind-pair probe" })
+        .catch(() => undefined);
+      check("Task.kindChanges and kindAtCreate travel whole into the tasks-archive.jsonl terminal line",
+        kcLine?.task?.kindAtCreate === "auftrag" && JSON.stringify(kcLine.task.kindChanges) === JSON.stringify(kcBack?.kindChanges),
+        JSON.stringify(kcLine?.task ?? null));
+      await post(`/api/tasks/${kcDefault.id}/delete`, {});
+    }
+
     // Plant the exact pre-2026-08-10 values while the state file is quiescent, then ask the real
     // load parser twice. Comparing the whole JSON row (with only the expected kind substituted)
     // makes every unrelated field part of the assertion instead of sampling a few favourites.

@@ -103,7 +103,7 @@ import {
   FLEET_REPORT_DISPOSITIONS, FLEET_REPORT_FULFILLED, MAX_FLEET_REPORT_DECISION_REASON,
   MAX_FLEET_REPORT_DELIVERY_REASON,
   MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT, ATTENTION_CANDIDATE_SHA_RE,
-  validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind, TASK_REVIEW_MODES,
+  validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind, loadTaskKindChanges, TASK_REVIEW_MODES,
   PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, loadPromotionRequest, PROGRAM_PROFILE_KINDS, loadProgramProfile,
   PROGRAM_LINEAGE_MAX, loadProgramLineage, foundingOccupantFrom, foundingIdentityFrom,
   PROGRAM_INBOX_MAX, loadProgramInbox, type ProgramRecordLoss, loadProgramRecordLoss,
@@ -138,7 +138,7 @@ import {
   type LaneSuiteFleetEvent, type HarnessBlockFleetEvent, type SuccessionDebtFleetEvent, type SuccessionDebt,
   type LaneReviewFleetEvent, type TaskReviewMode,
   type FleetReportDeliveryState,
-  type AttentionRequest, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type Task, type TaskVariantDecision, type TaskBrief, type BriefAuthor, type TaskComment,
+  type AttentionRequest, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type TaskKindChange, type Task, type TaskVariantDecision, type TaskBrief, type BriefAuthor, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskCard, type TaskCriterion, type TaskFilesProposal,
@@ -1807,7 +1807,7 @@ function variantRowsFor(group: Task, variants: readonly DispatchSpawn[]): Task[]
     const chosen = v.harness !== null || v.model !== null || v.effort !== null || v.browser === true || !!v.context;
     return {
       id: randomBytes(4).toString("hex"), originId: group.originId ?? group.id, text: group.text,
-      source: group.source, kind: "auftrag", repo: group.repo,
+      source: group.source, kind: "auftrag", kindAtCreate: "auftrag", repo: group.repo,
       ...(group.programId ? { programId: group.programId } : {}),
       ...(chosen ? { spawn: { ...v } } : {}),
       ...(group.review ? { review: group.review } : {}),
@@ -4319,6 +4319,13 @@ function releaseTask(t: Task, by: "owner" | "machine"): void {
   t.releasedBy = by;
   // a release is the act a hold waits for (TaskHold) — whoever releases, the stop is lifted with it
   t.hold = undefined;
+}
+// THE ONE WRITE OF A CHANGED KIND (Task.kindChanges): the category and its on-row pair move together,
+// so no door can change a row's kind without the row remembering it. It adds no condition — each
+// caller keeps its own refusals and runs this only once it has decided to change the kind.
+function changeTaskKind(t: Task, to: TaskKind, by: TaskKindChange["by"]): void {
+  t.kindChanges = [...(t.kindChanges ?? []), { from: t.kind, to, at: Date.now(), by }];
+  t.kind = to;
 }
 const MAX_TASK_TEXT = 20_000;
 // What a task looks like on /api/sessions. The prompt `text` is deliberately absent: that
@@ -13807,7 +13814,7 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   const id = randomBytes(4).toString("hex");
   const t: Task = {
     id, originId: id, text: mainText,
-    source: "main", kind, repo: mainRepo, programId: program.id,
+    source: "main", kind, kindAtCreate: kind, repo: mainRepo, programId: program.id,
     ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
     ...(authorCard?.ok ? { card: authorCard.card } : {}),
     // BESIDE the surface and never in it — no `files`, no `filesOrigin` on any row this door mints.
@@ -33529,7 +33536,7 @@ async function handleIntake(req: Request): Promise<Response> {
   // gets the same 200, it simply does not survive the request.
   const t: Task = {
     id, originId: id, text, source: "intake",
-    kind: "auftrag", repo: null, status: "pending", created: now, slot: null, note: null,
+    kind: "auftrag", kindAtCreate: "auftrag", repo: null, status: "pending", created: now, slot: null, note: null,
   };
   tasks = capTasks([...tasks, t]);
   saveState();
@@ -33809,6 +33816,10 @@ if (existsSync(STATE_FILE)) {
         // that guards the strip reads it as one (e2e/pins.ts, the analysis-retirement section).
         .map(({ analysis: _retiredAnalysis, from: _retiredFrom, ...t }: Task & { analysis?: unknown; from?: unknown }) => ({ ...t,
           kind: loadTaskKind((t as { kind?: unknown }).kind, t.source),
+          // the on-row kind pair: a valid persisted value or ABSENT — a pre-field row is never
+          // backfilled with the kind it loads as, which may be a migration's, not its birth's
+          kindAtCreate: isTaskKind(t.kindAtCreate) ? t.kindAtCreate : undefined,
+          kindChanges: loadTaskKindChanges((t as { kindChanges?: unknown }).kindChanges),
           repo: typeof t.repo === "string" ? t.repo : null,
           // the persisted agent choice comes back through loadTaskSpawn: registered harness only,
           // malformed degrades to null/ABSENT — never to a pass.
@@ -37345,9 +37356,10 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     if (body.kind !== undefined && !isTaskKind(body.kind))
       return json({ error: `kind must be one of: ${TASK_KINDS.join(", ")}` }, 400);
     const id = randomBytes(4).toString("hex");
+    const stewardKind: TaskKind = isTaskKind(body.kind) ? body.kind : "notiz";
     const t: Task = {
       id, originId: id, text: body.text.slice(0, MAX_TASK_TEXT).trim(),
-      source: "steward", kind: isTaskKind(body.kind) ? body.kind : "notiz",
+      source: "steward", kind: stewardKind, kindAtCreate: stewardKind,
       repo: null, // never body.repo — a steward text must not choose where a lane spawns
       status: "pending", created: Date.now(), slot: null, note: null,
       ...(ref ? { ref } : {}),
@@ -40691,15 +40703,16 @@ Bun.serve<WSData>({
         : await authorCardFrom(body.card, ownerText, taskRepo ?? (DISPATCH_REPO || null), taskProgramId);
       if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
       const id = randomBytes(4).toString("hex");
+      const ownerKind: TaskKind = isTaskKind(body.kind) ? body.kind : "auftrag";
       const t: Task = {
         id, originId: id, text: ownerText,
-        source: "owner", kind: isTaskKind(body.kind) ? body.kind : "auftrag", repo: taskRepo,
+        source: "owner", kind: ownerKind, kindAtCreate: ownerKind, repo: taskRepo,
         ...(taskProgramId ? { programId: taskProgramId } : {}),
         ...(authorCard?.ok ? { card: authorCard.card } : {}),
         ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
         ...(reviewChoice.review ? { review: reviewChoice.review } : {}),
         status: body.queue === true ? "queued" : "pending", created: Date.now(), slot: null,
-        note: body.queue === true ? taskKindNote(isTaskKind(body.kind) ? body.kind : "auftrag") : null,
+        note: body.queue === true ? taskKindNote(ownerKind) : null,
         // create-and-release in one call is still a release (see releaseTask, which the separate
         // ▸ queue button routes through) — a row that arrives already queued was released by the
         // owner who posted it. A row that arrives `pending` was not released at all: no field.
@@ -40769,7 +40782,7 @@ Bun.serve<WSData>({
       if (kindHolders.length > 0)
         return json({ error: `this note is an assigned SOURCE of ${kindHolders.join(", ")} — detach it there first; a kind change is not a way to release an assignment` }, 409);
       const oldStandingNote = taskKindNote(before);
-      t.kind = body.kind;
+      changeTaskKind(t, body.kind, "owner");
       // A queued advisory row must always explain why it stays put. If a prior promote left that
       // marker standing after unqueue, carry/clear the marker with the category instead of leaving
       // a sentence that now names the wrong kind. Other notes belong to other mechanisms.
@@ -41100,7 +41113,7 @@ Bun.serve<WSData>({
           // source "owner": the owner is confirming this text. NO `brief` — a child is a NEW
           // draft and must reach the compiler as one. `repo` rides along, or the split would silently retarget
           // the dispatcher default. Children land `pending`, never `queued`: releasing stays a separate owner act.
-          source: "owner", kind: "auftrag", repo: t.repo,
+          source: "owner", kind: "auftrag", kindAtCreate: "auftrag", repo: t.repo,
           // the paths the refiner verified against the tree, as the row's confirmed surface (the card
           // above holds them too, as a READING). Not a model judgement ABOUT this row the way `brief` is.
           ...(c.files.length ? {
@@ -41362,7 +41375,7 @@ Bun.serve<WSData>({
       if (taskAct[2] === "adopt") {
         if (t.kind !== "notiz") return json({ error: "only a notiz can be adopted as an auftrag" }, 409);
         if (t.status !== "pending") return json({ error: `task is ${t.status} — only a pending notiz can be adopted` }, 409);
-        t.kind = "auftrag";
+        changeTaskKind(t, "auftrag", "owner");
         t.note = "adopted from an observation — a work brief now, still yours to release";
       } else if (taskAct[2] === "delete") tasks = tasks.filter((x) => x.id !== t.id);
       else if (taskAct[2] === "queue") {

@@ -15,7 +15,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { attentionAnswerMessage, auditWatchMessage, clarificationReplyMessage, laneHostCommitLooking, laneSpentLooking, laneStalled, laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
+import { attentionAnswerMessage, auditWatchMessage, clarificationReplyMessage, laneHostCommitLooking, laneSpentLooking, laneStalled, laneSubject, laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
   SPENT_RULES, STALLED_RULES,
   type AuditWatchEventPayload, type AuditWatchEventView, type ClarificationEventPayload, type LaneSignalView,
   type LaneWatchEventPayload } from "../lane-signals";
@@ -286,6 +286,15 @@ interface FleetReportEventRow {
   recovery?: { state: "retryable" | "blocked" | "terminal"; reason: string; nextAction: string;
     effect: string; updatedAt: number };
 }
+// S3d: a lane's name as the poll carries it (S3c's `name`, backed by the persisted letter), read
+// while the lane is live — the lead-in a check below expects never derives a name of its own.
+const laneNameNow = async (slot: number): Promise<string | undefined> =>
+  ((await (await get("/api/sessions")).json()) as { slots: { id: number; name?: string }[] })
+    .slots.find((x) => x.id === slot)?.name;
+const laneLeadNow = async (lane: { slot: number; branch: string }): Promise<string> =>
+  `[fleet] ${laneSubject(lane.slot, lane.branch, await laneNameNow(lane.slot))}`;
+// …and the prefix every lane-subject watch text opens with, in either form
+const LANE_WATCH_TEXT = /^\[fleet\] (?:lane \d+[A-Z]+ \(slot \d+, |slot \d+ \()/;
 const watchRows = async (): Promise<WatchRow[]> =>
   ((await (await get("/api/sessions")).json()) as { watches: WatchRow[] }).watches;
 const watchRow = async (id: string): Promise<WatchRow | undefined> =>
@@ -1047,9 +1056,26 @@ export async function run(): Promise<void> {
     }
   }
 
+  // --- S3d · THE TEXT NAMES THE LANE THE WAY THE LEISTE DOES. A row stamped at mint with the lane's
+  // persisted name opens "lane 4A (slot 9, <branch>)"; a row minted before the stamp (or about a lane
+  // that never held a letter) keeps "slot 9 (<branch>)". Same event, both forms, so a builder that
+  // ignored the stamp — or invented a name for an unstamped row — fails one of the two halves.
+  {
+    const ev = { id: "namedfixture", kind: "lane-ready" as const, payload: { ahead: 1, dirty: 0, idleMs: 5000,
+      observed: true, gitOp: false, awaiting: null, hostCommits: false } };
+    const named = laneWatchMessage(9, "fleet/named", { ...ev, subjectName: "4A" }, null);
+    const bare = laneWatchMessage(9, "fleet/named", ev, null);
+    check("S3d laneWatchMessage: a stamped row names the lane before its slot, an unstamped row keeps 'slot N'",
+      named.startsWith("[fleet] lane 4A (slot 9, fleet/named) [event namedfixture] now LOOKS done")
+        && bare.startsWith("[fleet] slot 9 (fleet/named) [event namedfixture] now LOOKS done")
+        && !bare.includes("4A") && named.slice(named.indexOf("[event")) === bare.slice(bare.indexOf("[event")),
+      JSON.stringify({ named: named.slice(0, 90), bare: bare.slice(0, 90) }));
+  }
+
   // --- the original subject: a lane that commits and goes quiet (idle + clean + ahead>0) ---
   const tgt = (await (await post("/api/lanes", { repo: REPO })).json()) as
     { slot: number; cwd: string; branch: string };
+  const tgtName = await laneNameNow(tgt.slot);
   await Bun.write(`${tgt.cwd}/watch-target.txt`, "the work the watcher is waiting for\n");
   spawnSync("git", ["-C", tgt.cwd, "add", "watch-target.txt"]);
   spawnSync("git", ["-C", tgt.cwd, "commit", "-qm", "watch target lane work"]);
@@ -1067,6 +1093,7 @@ export async function run(): Promise<void> {
     // with it, so neither family's evidence can satisfy or poison the other.
     const uTgt = (await (await post("/api/lanes", { repo: REPO })).json()) as
       { slot: number; cwd: string; branch: string };
+    const uTgtLead = await laneLeadNow(uTgt);
     await Bun.write(`${uTgt.cwd}/watch-pi-unfenced-target.txt`, "isolated watch target\n");
     spawnSync("git", ["-C", uTgt.cwd, "add", "watch-pi-unfenced-target.txt"]);
     spawnSync("git", ["-C", uTgt.cwd, "commit", "-qm", "pi-unfenced watch target"]);
@@ -1443,6 +1470,7 @@ export async function run(): Promise<void> {
         subjectLanes.push(lane);
       }
       const [doomed, living] = subjectLanes;
+      const livingLead = await laneLeadNow(living);
       let subjectsReady = false;
       for (let i = 0; i < 90 && !subjectsReady; i++) {
         const rows = ((await (await get("/api/sessions")).json()) as
@@ -1722,7 +1750,7 @@ export async function run(): Promise<void> {
       const doomedPrompts = plog.filter((e) => e.slot === uId
         && e.text.includes(doomedEvent?.id ?? "no-doomed-event"));
       const livingPromptIsWatch = livingPrompts.length === 1 && (
-        livingPrompts[0]?.text.startsWith(`[fleet] slot ${living.slot} (${living.branch})`)
+        livingPrompts[0]?.text.startsWith(livingLead)
         || /^\[fleet\] \d+ events for this session: /.test(livingPrompts[0]?.text ?? ""));
       // The composer is deliberately empty from here on, so only the PANE is this window's
       // precondition. It matters: a delivery counted "on its FIRST attempt" is a statement about
@@ -1867,6 +1895,7 @@ export async function run(): Promise<void> {
 
         const doomedLane = (await (await post("/api/lanes", { repo: REPO })).json()) as
           { slot: number; cwd: string; branch: string };
+        const doomedLead = await laneLeadNow(doomedLane);
         await Bun.write(`${doomedLane.cwd}/acp27-tick-window.txt`, "tick window subject\n");
         spawnSync("git", ["-C", doomedLane.cwd, "add", "acp27-tick-window.txt"]);
         spawnSync("git", ["-C", doomedLane.cwd, "commit", "-qm", "acp27 tick window subject"]);
@@ -1913,7 +1942,7 @@ export async function run(): Promise<void> {
         await Bun.sleep(AUTOS_TICK_MS * 8 + 1500);
         const afterRelease = await eventById(parked?.eventId ?? "x");
         const typedAfter = (await plogRead()).filter((e) => e.slot === uId
-          && e.text.startsWith(`[fleet] slot ${doomedLane.slot} (${doomedLane.branch})`));
+          && e.text.startsWith(doomedLead));
         const budgetAfter = await receiverBudget();
         const tickIntact = await windowIntact("tick window", tickWindow, "");
         if (tickIntact)
@@ -1987,7 +2016,7 @@ export async function run(): Promise<void> {
       paused?.armed === false && pausedEvent?.status === "pending"
       && (await eventRows()).filter((e) => e.watchId === subscribedJ.watch?.id).length === 1
       && !(await plogRead()).some((e) => e.slot === uId
-        && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`)),
+        && e.text.startsWith(uTgtLead)),
       JSON.stringify({ watch: paused, event: pausedEvent }));
     check("watch pi-unfenced kill-switch fixture: owner releases automation",
       (await post("/api/autos/switch", { on: true })).ok);
@@ -2009,7 +2038,7 @@ export async function run(): Promise<void> {
         delivered?.status === "delivered" && delivered.attempts === 1
         && delivered.acknowledgedAt === null, JSON.stringify(delivered));
       const uMessages = (await plogRead()).filter((e) => e.slot === uId
-        && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`));
+        && e.text.startsWith(uTgtLead));
       check("the fixed completion notification has exactly one matching prompt-log row on pi-unfenced",
         uMessages.length === 1, `${uMessages.length}: ${uMessages.map((m) => m.text.slice(0, 80)).join(" | ")}`);
       await Bun.sleep(AUTOS_TICK_MS * 4 + 1500);
@@ -2021,7 +2050,7 @@ export async function run(): Promise<void> {
         check("the pi-unfenced event remains one-shot across later ticks and never records the old skip",
           uAfter?.armed === false && uAfter.lastResult === "sent" && uEventAfter?.status === "delivered"
           && (await plogRead()).filter((e) => e.slot === uId
-            && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`)).length === 1
+            && e.text.startsWith(uTgtLead)).length === 1
           && !(await watchRows()).some((w) => w.slot === uId && (w.lastResult ?? "").includes(oldPolicySkip)),
           JSON.stringify({ watch: uAfter, event: uEventAfter }));
     }
@@ -2655,6 +2684,7 @@ export async function run(): Promise<void> {
     const makeLane = async () => (await (await post("/api/lanes", { repo: REPO })).json()) as
       { slot: number; cwd: string; branch: string };
     const completeLane = await makeLane();
+    const completeName = await laneNameNow(completeLane.slot);
     const needsLane = await makeLane();
     const failedLane = await makeLane();
     const noReceiverLane = await makeLane();
@@ -2901,6 +2931,18 @@ export async function run(): Promise<void> {
       delivered?.status === "delivered" && delivered.attempts === 2 && reportPrompts.length === 1
         && ack.ok && acknowledged?.status === "acknowledged" && acknowledged.acknowledgedAt !== null,
       JSON.stringify({ delivered, prompts: reportPrompts.length, ack: ack.status, acknowledged }));
+    // S3d, on the report rail: the text the receiver reads (GET /api/self/events/:id renders it from
+    // the row, exactly as the transport does) names the filing lane by the persisted name the poll
+    // showed for it while it was live, before its slot. The fallback half is measured in Q6 below,
+    // on this same row once a restart has taken the stamp off it.
+    const readReportText = async (): Promise<string> => ((await (await fetch(
+      `${BASE}/api/self/events/${completeReport?.eventId}`, { headers: { "x-fleet-self-token": mainTok } }))
+      .json().catch(() => ({}))) as { text?: string }).text ?? "";
+    const namedReportText = await readReportText();
+    check("S3d fleetReportMessage: a stamped report row opens with the lane's persisted name before its slot",
+      !!completeName && namedReportText.startsWith(`[fleet] WORKER REPORT from lane ${completeName} `
+        + `(slot ${completeLane.slot}, ${completeLane.branch}) [event ${completeReport?.eventId}; report ${completeReport?.id}]`),
+      `name=${completeName} ${namedReportText.slice(0, 160)}`);
 
     // === Q6 · THE RECOVERY CAP AND THE INBOX IT STARVED. Measured on FleetEvent
     // 8ca8c38e7af3433051ac78e5 (FleetReport ad4b19f375d44e075ee3f5cf, receiver slot 7): every
@@ -2975,9 +3017,12 @@ export async function run(): Promise<void> {
       const restartWithKnob = async (value: string, extra: Record<string, string> = {}): Promise<void> => {
         await stopSrv();
         const image = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
-          events?: { id?: string; receiverIdleSec?: number }[];
+          events?: { id?: string; receiverIdleSec?: number; subjectName?: string }[];
         };
         for (const event of image.events ?? []) if (event.id === rowId) event.receiverIdleSec = 0;
+        // S3d's fallback half: the acknowledged `complete` row rides these restarts anyway, so it
+        // loses its name stamp here and becomes the row minted before the stamp existed
+        for (const event of image.events ?? []) if (event.id === completeReport?.eventId) delete event.subjectName;
         writeFileSync(reportStatePath, JSON.stringify(image, null, 2), { mode: 0o600 });
         clearLatch(recoveryLatch);
         writeFileSync(recoveryLatch, rowId, { mode: 0o600 });
@@ -3021,6 +3066,12 @@ export async function run(): Promise<void> {
         JSON.stringify({ rowIdPresent: rowId !== "",
           rounds: knobRounds.map((r) => [r.value, r.latchReached ?? null]),
           onMiss: "no release, no further restarts — dependent transport/cap/ack contracts and the cap-6 ladder stay unclaimed" }));
+      const bareReportText = await readReportText();
+      check("S3d fleetReportMessage: the same report row without its stamp falls back to 'slot N (branch)', no name derived",
+        bareReportText.startsWith(`[fleet] WORKER REPORT from slot ${completeLane.slot} (${completeLane.branch}) `
+          + `[event ${completeReport?.eventId}; report ${completeReport?.id}]`)
+          && (!completeName || !bareReportText.includes(`lane ${completeName}`)),
+        bareReportText.slice(0, 160));
       let starvedDelivered: FleetEventRow | undefined;
       // Everything below CONSUMES the knob precondition: on a miss the probe is aborted
       // above, this whole chain is skipped, and no contract verdict is claimed at all.
@@ -5433,7 +5484,7 @@ export async function run(): Promise<void> {
   // these two receiver identities were opened; an earlier occupant's Watch is not this fixture's.
   const ownerWatchLogStart = (await plogRead()).length;
   const ownerWatchMessages = async (slot: number) => (await plogRead()).slice(ownerWatchLogStart)
-    .filter((e) => e.slot === slot && e.text.startsWith("[fleet] slot "));
+    .filter((e) => e.slot === slot && LANE_WATCH_TEXT.test(e.text));
 
   // --- REJECTIONS. Every one answers the same question — can this watch ever fire? A watch that
   // cannot is worse than none, because it is a silent forever-wait, which is the failure the whole
@@ -5652,7 +5703,7 @@ export async function run(): Promise<void> {
       dead.length === 5 && dead.every((w) => (w.lastResult ?? "").includes("target session ended")),
       JSON.stringify(dead.map((w) => `${w.target}:${w.lastResult}`)));
     check("and nothing was ever typed into the subscriber's pane — no watch here ever fired",
-      !(await plogRead()).some((e) => e.slot === cId && e.text.startsWith("[fleet] slot ")));
+      !(await plogRead()).some((e) => e.slot === cId && LANE_WATCH_TEXT.test(e.text)));
     await post(`/api/slots/${cId}/kill`, {});
   }
 
@@ -5758,7 +5809,12 @@ export async function run(): Promise<void> {
     `${msgs.length}: ${msgs.map((m) => m.text.slice(0, 40)).join(" | ")}`);
   const msg = msgs[0]?.text ?? "";
   check("the message names the target slot AND its branch",
-    msg.includes(`slot ${tgt.slot} (${tgt.branch})`), msg.slice(0, 120));
+    msg.includes(`slot ${tgt.slot}, ${tgt.branch})`), msg.slice(0, 120));
+  // S3d, on the live transport: the lane's persisted name (read off the poll while it was live)
+  // leads, the slot number follows — the same name the Leiste shows for it
+  check("S3d the delivered lane watch text opens with the lane's persisted name before its slot",
+    !!tgtName && msg.startsWith(`[fleet] lane ${tgtName} (slot ${tgt.slot}, ${tgt.branch}) [event `),
+    `name=${tgtName} ${msg.slice(0, 120)}`);
   check("the message carries the facts the predicate fired on (ahead/dirty)",
     msg.includes("1 ahead / 0 dirty"), msg.slice(0, 200));
   check("the message says LOOKS done, and says why that is not 'is done'",
@@ -5769,7 +5825,7 @@ export async function run(): Promise<void> {
     msg.slice(0, 260));
   const capA = await tmuxOut("capture-pane", "-t", `s${aId}`, "-p");
   check("the notification is really in the receiving pane, not just the log",
-    capA.out.includes("[fleet] slot "), capA.out.slice(-200));
+    capA.out.includes("[fleet] lane "), capA.out.slice(-200));
 
   // --- THE §11.2r RACE, PROVOKED INSTEAD OF WAITED FOR. The re-subscribe above races the tick that
   // spends wA; here wA has fired for certain (eventA exists) and `tgt` has not printed since, so
@@ -5857,6 +5913,7 @@ export async function run(): Promise<void> {
     const rcvOpen = rcv ? await post(`/api/slots/${rcv}/open`, { cwd: REPO }) : null;
     const rcvTok = rcv ? await paneEnv(`s${rcv}`, "FLEET_SELF_TOKEN") ?? "" : "";
     const wl = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    const wlLead = await laneLeadNow(wl);
     await Bun.write(`${wl.cwd}/watch-word.txt`, "the work whose report the watcher cannot see\n");
     spawnSync("git", ["-C", wl.cwd, "add", "watch-word.txt"]);
     spawnSync("git", ["-C", wl.cwd, "commit", "-qm", "watch word lane work"]);
@@ -5869,7 +5926,7 @@ export async function run(): Promise<void> {
       JSON.stringify({ rcv, open: rcvOpen?.status, lane: wl.slot }));
     const wordLogStart = (await plogRead()).length;
     const wordMessages = async () => (await plogRead()).slice(wordLogStart)
-      .filter((e) => e.slot === rcv && e.text.startsWith(`[fleet] slot ${wl.slot} `));
+      .filter((e) => e.slot === rcv && e.text.startsWith(wlLead));
     const deliveredFor = async (watchId: string): Promise<FleetEventRow | undefined> => {
       let ev: FleetEventRow | undefined;
       for (let i = 0; i < 180 && ev?.status !== "delivered"; i++) {

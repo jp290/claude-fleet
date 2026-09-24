@@ -342,6 +342,11 @@ interface LaneFleetEvent extends FleetEventBase {
   // lane this row reports on" from "whoever holds that number now". Optional: a row minted before
   // this existed hydrates without it and is then judged on slot+branch alone (laneEventSubject).
   subjectOpenedAt?: number;
+  // THE SUBJECT'S NAME (S3d) — band + persisted letter, "4A" (server.ts#laneNameOf), stamped at
+  // mint on the six lane-subject kinds so the pane text names the lane the way the Leiste does, even
+  // after it has landed. Absent on a row minted before the stamp and for a lane without a letter;
+  // the text then says "slot N", and no reader derives a name in its place.
+  subjectName?: string;
 }
 interface MergeFleetEvent extends FleetEventBase {
   subjectSlot: number;
@@ -349,6 +354,7 @@ interface MergeFleetEvent extends FleetEventBase {
   subjectBranch: string;
   kind: "merge-terminal";
   payload: MergeWatchEventPayload;
+  subjectName?: string; // S3d, see LaneFleetEvent
 }
 interface AuditFleetEvent extends FleetEventBase {
   subjectRepo: string;
@@ -390,6 +396,7 @@ interface HarnessBlockFleetEvent extends FleetEventBase {
   subjectOpenedAt: number;
   kind: "harness-block";
   payload: HarnessBlockEventPayload;
+  subjectName?: string; // S3d, see LaneFleetEvent
 }
 // The ③ verdict a task row opted into (Task.review). Watchless — the row's author asked, not the
 // receiver — and owner-addressable for harness-block's reason: a lane with no live Program-MAIN
@@ -401,18 +408,21 @@ interface LaneReviewFleetEvent extends FleetEventBase {
   subjectOpenedAt: number;
   kind: "lane-review";
   payload: LaneReviewEventPayload;
+  subjectName?: string; // S3d, see LaneFleetEvent
 }
 interface ClarificationFleetEvent extends FleetEventBase {
   subjectSlot: number;
   subjectBranch: string;
   kind: "clarification-request";
   payload: ClarificationEventPayload;
+  subjectName?: string; // S3d, see LaneFleetEvent
 }
 interface FleetReportFleetEvent extends FleetEventBase {
   subjectSlot: number;
   subjectBranch: string;
   kind: "fleet-report";
   payload: FleetReportEventPayload;
+  subjectName?: string; // S3d, see LaneFleetEvent
 }
 // STN-1. The subject is the Supervisor occupant that completed the Watch — stamped, never claimed —
 // and the payload carries the Controller's own `awaiting` back beside the Supervisor's text, so
@@ -674,6 +684,12 @@ function fleetEventRecoveryFrom(raw: unknown): FleetEventRecovery | undefined | 
   };
 }
 
+// S3d: the stamped lane name rides last and only when present, so a row minted before it serializes
+// byte-identically; anything but the S3c name shape is dropped (the text falls back to "slot N"),
+// never repaired into a name and never a reason to lose the row.
+const subjectNameFrom = (v: unknown): { subjectName: string } | Record<never, never> =>
+  typeof v === "string" && /^\d+[A-Z]+$/.test(v) ? { subjectName: v } : {};
+
 function fleetEventFrom(raw: unknown): FleetEvent | null {
   if (!raw || typeof raw !== "object") return null;
   const e = raw as Partial<FleetEvent> & Record<string, unknown>;
@@ -764,7 +780,7 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     return { ...base, subjectSlot: Number(e.subjectSlot), subjectBranch: e.subjectBranch,
       kind: e.kind, payload: { requestId: p.requestId, question: p.question,
         taskId: p.taskId, originId: p.originId, programId: p.programId,
-        basis: p.basis as ClarificationBasis } };
+        basis: p.basis as ClarificationBasis }, ...subjectNameFrom(e.subjectName) };
   }
   if (e.kind === "fleet-report") {
     if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0
@@ -794,7 +810,7 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
         text: p.text, taskId: p.taskId, originId: p.originId, programId: p.programId,
         // the report payload's own union, NOT ClarificationBasis: the two vocabularies differ by
         // exactly this value, and casting to the narrower one would re-hide the mismatch above.
-        basis: p.basis as FleetReportEventPayload["basis"] } };
+        basis: p.basis as FleetReportEventPayload["basis"] }, ...subjectNameFrom(e.subjectName) };
   }
   if (e.kind === "lane-ready" || e.kind === "host-commit-ready") {
     if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0 || typeof e.subjectBranch !== "string") return null;
@@ -823,6 +839,7 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       // hydrates without the key and stays unstamped rather than acquiring a fabricated identity.
       ...(typeof e.subjectOpenedAt === "number" && Number.isFinite(e.subjectOpenedAt)
         && e.subjectOpenedAt > 0 ? { subjectOpenedAt: e.subjectOpenedAt } : {}),
+      ...subjectNameFrom(e.subjectName),
     };
   }
   if (e.kind === "merge-terminal") {
@@ -846,7 +863,7 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
         ...(v.waitedOut ? { waitedOut: true as const } : {}), ...(v.stale ? { stale: true as const } : {}) } } : {}),
       ...(p.conflicted ? { conflicted: [...p.conflicted] } : {}), ...(p.resolvedBy ? { resolvedBy: p.resolvedBy } : {}) };
     return { ...base, subjectSlot: Number(e.subjectSlot), subjectCwd: e.subjectCwd,
-      subjectBranch: e.subjectBranch, kind: e.kind, payload };
+      subjectBranch: e.subjectBranch, kind: e.kind, payload, ...subjectNameFrom(e.subjectName) };
   }
   if (e.kind === "post-land-audit") {
     if (typeof e.subjectRepo !== "string" || typeof e.subjectMainAfter !== "string") return null;
@@ -938,7 +955,7 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     return { ...base, subjectSlot: Number(e.subjectSlot), subjectBranch: e.subjectBranch,
       subjectOpenedAt: e.subjectOpenedAt, kind: e.kind,
       payload: { signal: p.signal, tool: p.tool, detail: p.detail, key: p.key, count: p.count!,
-        escalated: p.escalated } };
+        escalated: p.escalated }, ...subjectNameFrom(e.subjectName) };
   }
   if (e.kind === "succession-debt") {
     // the owner row ONLY: the session this row is about is the one that could not be told
@@ -979,7 +996,7 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       payload: { taskId: p.taskId, programId: p.programId ?? null, diffSha: p.diffSha ?? null, head: p.head ?? null, model: p.model,
         describedThisDiff: p.describedThisDiff, raw: p.raw, findingCount: p.findingCount!,
         findings: p.findings.map((f) => ({ title: f.title, file: f.file, line: f.line, impact: f.impact })),
-        notes: p.notes } };
+        notes: p.notes }, ...subjectNameFrom(e.subjectName) };
   }
   if (e.kind === "supervisor-transition") {
     if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0

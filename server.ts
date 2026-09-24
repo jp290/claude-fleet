@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
-import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage, type LaneSelfWord,
+import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage, laneSubject, type LaneSelfWord,
   mergeWatchMessage, auditWatchMessage, deployWatchMessage, laneWatchEventKind, laneWatchPayload,
   clarificationWatchMessage, clarificationReplyMessage, fleetReportDecisionMessage,
   type MergeWatchEventPayload,
@@ -8809,6 +8809,7 @@ function spendWatch(w: Watch, event: FleetEvent): boolean {
 async function mintMergeEvents(target: number, cwd: string, branch: string, outcome: MergeLast): Promise<void> {
   let dirty = false;
   const now = Date.now();
+  const subject = slotFrom(target) ?? undefined;
   for (const w of watches) {
     if (!w.armed || watchKind(w) !== "merge" || !("target" in w)
       || w.target !== target || w.targetCwd !== cwd || w.targetBranch !== branch) continue;
@@ -8820,6 +8821,7 @@ async function mintMergeEvents(target: number, cwd: string, branch: string, outc
       receiverIdleSec: w.idleSec, subjectSlot: target, subjectCwd: cwd, subjectBranch: branch,
       kind: "merge-terminal", payload: mergeEventPayload(outcome), createdAt: now,
       ...mintTransport(w), attempts: 0, deliveredAt: null, acknowledgedAt: null,
+      ...(subject?.cwd === cwd ? subjectNameStamp(subject, branch) : {}),
     };
     dirty = spendWatch(w, event) || dirty;
   }
@@ -10537,6 +10539,7 @@ async function openHarnessBlock(s: Slot, body: Record<string, unknown> | null): 
     ...(main ? { status: "pending" as const, delivery: "pane" as const }
       : { status: "inbox" as const, delivery: "inbox" as const }),
     attempts: 0, deliveredAt: null, acknowledgedAt: null,
+    ...subjectNameStamp(s, s.worktree!.branch),
   };
   fleetEvents = [...fleetEvents, event];
   booked(`minted ${event.id}`);
@@ -10584,6 +10587,7 @@ async function openClarification(s: Slot, body: Record<string, unknown> | null):
     payload: { requestId: id, question, taskId: s.taskId, originId: s.originId,
       programId: s.programId, basis: resolved.basis },
     createdAt: askedAt, status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+    ...subjectNameStamp(s, s.worktree!.branch),
   };
   clarifications = [...clarifications, request];
   fleetEvents = [...fleetEvents, event];
@@ -10815,7 +10819,7 @@ function supervisorTransitionMessage(event: SupervisorTransitionFleetEvent): str
 }
 
 function fleetReportMessage(event: FleetReportFleetEvent): string {
-  return `[fleet] WORKER REPORT from slot ${event.subjectSlot} (${event.subjectBranch}) `
+  return `[fleet] WORKER REPORT from ${laneSubject(event.subjectSlot, event.subjectBranch, event.subjectName)} `
     + `[event ${event.id}; report ${event.payload.reportId}]. Read the typed row with `
     + `GET /api/self/fleet-report, then acknowledge receipt with POST /api/self/events/${event.id}/ack using `
     + `x-fleet-self-token from the FLEET_SELF_TOKEN environment variable.`;
@@ -11023,6 +11027,7 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
     // journal entry can exist for it. That is a property of the state machine, not of a guard.
     ...(bound ? { status: "pending" as const } : { status: "inbox" as const, delivery: "inbox" as const }),
     attempts: 0, deliveredAt: null, acknowledgedAt: null,
+    ...subjectNameStamp(s, s.worktree!.branch),
   };
   fleetReports = [...fleetReports, report];
   fleetEvents = [...fleetEvents, event];
@@ -18547,7 +18552,8 @@ async function tickAutoReview(optInOnly: boolean): Promise<void> {
       reviewAutoTried.set(s.id, rs.key);
       autoReviewRunning++;
       // the occupation this review is FOR, frozen now: filing happens up to REVIEW_TIMEOUT_MS later
-      const subject = { slot: s.id, openedAt: s.openedAt, branch: s.worktree.branch, cwd: s.cwd };
+      // …and its name with it (S3d): the lane may have landed by then, and the verdict still names it
+      const subject = { slot: s.id, openedAt: s.openedAt, branch: s.worktree.branch, cwd: s.cwd, name: laneNameOf(s) };
       // fire-and-forget: the tick must never hold its own busy flag across a 180s agent run, and
       // a failed auto-review changes nothing — no retry, no state change, no alarm. It is COUNTED
       // though: reviewAutoTried was already set above, so a throw here means this tree has spent
@@ -18600,7 +18606,8 @@ const laneReviewFiledFor = (taskId: string, diffSha: string): boolean =>
 const LANE_REVIEW_INBOX_MAX = 20;
 
 async function fileLaneReview(s: Slot, t: Task, result: ReviewResult,
-  subject = { slot: s.id, openedAt: s.openedAt, branch: s.worktree?.branch ?? "", cwd: s.cwd ?? "" }): Promise<void> {
+  subject = { slot: s.id, openedAt: s.openedAt, branch: s.worktree?.branch ?? "", cwd: s.cwd ?? "",
+    name: laneNameOf(s) }): Promise<void> {
   if (laneReviewFiledResults.has(result)) return;
   if (result.patchId !== null && laneReviewFiledFor(t.id, result.patchId)) { laneReviewFiledResults.add(result); return; }
   if (!subject.branch) return;
@@ -18649,6 +18656,7 @@ async function fileLaneReview(s: Slot, t: Task, result: ReviewResult,
     ...(main ? { status: "pending" as const, delivery: "pane" as const }
       : { status: "inbox" as const, delivery: "inbox" as const }),
     attempts: 0, deliveredAt: null, acknowledgedAt: null,
+    ...(subject.name ? { subjectName: subject.name } : {}),
   };
   fleetEvents = [...fleetEvents, event];
   booked(`minted ${event.id}`);
@@ -20308,6 +20316,7 @@ async function tickWatches(): Promise<void> {
           // stamped from the slot the predicate actually fired on, last so a legacy row without it
           // keeps its byte order (same rule as `delivery`)
           subjectOpenedAt: t.openedAt,
+          ...subjectNameStamp(t, t.worktree?.branch ?? w.targetBranch),
         };
         fleetEvents = [...fleetEvents, minted];
         event = minted;
@@ -30398,6 +30407,13 @@ function transportReport(): Record<string, unknown> {
 const LANE_NAME_RE = /^\d+[A-Z]+$/;
 const laneNameOf = (s: Slot): string | null => s.worktree?.letter
   ? `${s.worktree.anchor ? s.worktree.anchor.slot : 0}${s.worktree.letter}` : null;
+// …and the same name STAMPED on a lane-subject event at mint (S3d), so the pane text still says
+// "lane 4A" after the lane has landed. Only while `s` still holds the event's branch: a recycled
+// number must never lend its new occupant's name to a row about the old one.
+const subjectNameStamp = (s: Slot | undefined, branch: string): { subjectName: string } | Record<never, never> => {
+  const name = s && s.worktree?.branch === branch ? laneNameOf(s) : null;
+  return name ? { subjectName: name } : {};
+};
 
 function slotFrom(raw: unknown): Slot | null {
   if (typeof raw === "string" && LANE_NAME_RE.test(raw)) return slots.find((s) => laneNameOf(s) === raw) ?? null;

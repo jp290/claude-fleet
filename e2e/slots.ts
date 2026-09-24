@@ -2631,6 +2631,14 @@ export async function run(): Promise<void> {
   await Bun.sleep(700);
   const cap2 = await tmuxOut("capture-pane", "-t", "s2", "-p");
   check("composed text visible in s2 pane", cap2.out.includes("compose-box-to-slot-two"));
+  // THE DELIVERY HEADER (4b085fd9): the default adapter is claude's, so the send is preceded by the
+  // typed provenance line — path and slot as the server knows them, the credential and never a
+  // speaker. -J joins the wrapped rows: the header alone is wider than the pane.
+  // BREAKS IF: sendText pastes without typing the header, names another path/slot, or types it after the body.
+  const cap2j = await tmuxOut("capture-pane", "-t", "s2", "-p", "-J");
+  check("delivery header: a /send into the default (claude) adapter types the provenance line directly before the body",
+    cap2j.out.includes("[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 2] compose-box-to-slot-two"),
+    cap2j.out.split("\n").filter((l) => l.includes("compose-box-to-slot-two")).join(" / ").slice(-240));
   check("no cross-talk (s1 text absent from s2)", !cap2.out.includes("hello-fleet-typing"));
   const cap1b = await tmuxOut("capture-pane", "-t", "s1", "-p");
   check("no cross-talk (s2 text absent from s1)", !cap1b.out.includes("compose-box-to-slot-two"));
@@ -2655,6 +2663,18 @@ export async function run(): Promise<void> {
     && !exp3Body.includes("<script>window"));
   check("export escapes a real metachar in the label (title/h1)", exp3Body.includes(`&lt;b&gt;"pwn'd&lt;/b&gt;`)
     && !exp3Body.includes(`<b>"pwn`));
+  await post("/api/slots/3/kill", {});
+  // ...and a foreign harness keeps the paste byte for byte: no measurement says what pi's TUI makes
+  // of a typed prefix, so the header is claude's alone (VERBOTEN on 4b085fd9: codex/pi unchanged).
+  // BREAKS IF: deliveryHeader stops asking for the default adapter and heads every harness.
+  const o3pi = await post("/api/slots/3/open", { cwd: "~", harness: "pi" });
+  const piSend = o3pi.ok ? await post("/send", { slot: 3, text: "pi-paste-without-header", submit: false }) : null;
+  await Bun.sleep(400);
+  const cap3pi = await tmuxOut("capture-pane", "-t", "s3", "-p", "-J");
+  check("delivery header: a /send into a pi slot pastes the body alone, no provenance line",
+    !!piSend?.ok && cap3pi.out.includes("pi-paste-without-header") && !cap3pi.out.includes("[fleet-zustellung"),
+    JSON.stringify({ open: o3pi.status, send: piSend?.status ?? null,
+      line: cap3pi.out.split("\n").filter((l) => l.includes("pi-paste")).join(" / ").slice(-200) }));
   await post("/api/slots/3/kill", {});
   const expTxt = await get("/api/slots/2/export?format=txt");
   check("export?format=txt is a plain-text download", expTxt.ok

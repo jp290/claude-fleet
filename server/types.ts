@@ -1653,7 +1653,59 @@ interface LaneRef {
   // rename the survivor. Optional only for lanes that predate the field: an older reader that has
   // never heard of it ignores it, and src/client.ts#laneBandNames derives positionally for them.
   letter?: string;
+  // Present only on a lane that was RESUMED from a review-parked candidate (LaneReviewCandidate):
+  // which candidate, the head and accepted report it was parked with, and `verify: "stale"` — every
+  // verify fact gathered before the park describes that parked state, not this occupation, and no
+  // reader may count it as current. Absent on every other lane, whose record stays byte-identical.
+  resumedFrom?: LaneResume;
 }
+// THE REVIEW CANDIDATE: a finished lane parked for a LATER owner review (task 260924000549-f855,
+// docs/messungen/2026-09-23-worktree-lebenszyklus.md §3, corrected there from a slot-holding halt to
+// a park that frees the slot). Minted only by the opt-in `review:true` of POST /api/slots/:id/shelve,
+// only on a clean tree whose newest report its MAIN accepted, and held in the shelve record of the
+// worktree path. It is a REVIEW RECORD, not gate-green: nothing lands, verifies or deploys from it.
+// `taskIds` are the rows that rode the lane; they stay `sent` with no slot while parked, so no
+// release or dispatch door can start them a second time, and the attach that resumes this worktree
+// binds exactly them again. `expiresAt` marks the candidate stale and asks for a decision — it
+// never removes the working copy.
+interface LaneReviewCandidate {
+  id: string; parkedAt: number; expiresAt: number;
+  branch: string; head: string; base: string | null; baseSha: string | null;
+  taskIds: string[]; taskId: string | null; originId: string | null; programId: string | null;
+  reportId: string;
+}
+interface LaneResume { candidate: string; head: string; reportId: string; parkedAt: number; resumedAt: number; verify: "stale" }
+const REVIEW_PARK_DEFAULT_HOURS = 168;
+const REVIEW_PARK_MAX_HOURS = 720;
+const REVIEW_CANDIDATE_ID_RE = /^[0-9a-f]{12}$/;
+const GIT_SHA_RE = /^[0-9a-f]{40,64}$/;
+const finiteTime = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
+const strOrNull = (v: unknown): v is string | null => v === null || (typeof v === "string" && v !== "");
+// default-deny like every loader here: a torn candidate is dropped WHOLE, never repaired field-wise
+const loadLaneReviewCandidate = (value: unknown): LaneReviewCandidate | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const r = value as Record<string, unknown>;
+  if (typeof r.id !== "string" || !REVIEW_CANDIDATE_ID_RE.test(r.id) || !finiteTime(r.parkedAt)
+    || !finiteTime(r.expiresAt) || typeof r.branch !== "string" || !r.branch
+    || typeof r.head !== "string" || !GIT_SHA_RE.test(r.head) || !strOrNull(r.base)
+    || !(r.baseSha === null || (typeof r.baseSha === "string" && GIT_SHA_RE.test(r.baseSha)))
+    || !Array.isArray(r.taskIds) || r.taskIds.length === 0
+    || !r.taskIds.every((t) => typeof t === "string" && t !== "")
+    || !strOrNull(r.taskId) || !strOrNull(r.originId) || !strOrNull(r.programId)
+    || typeof r.reportId !== "string" || !r.reportId) return null;
+  return { id: r.id, parkedAt: r.parkedAt, expiresAt: r.expiresAt, branch: r.branch, head: r.head,
+    base: r.base, baseSha: r.baseSha, taskIds: [...new Set(r.taskIds as string[])], taskId: r.taskId,
+    originId: r.originId, programId: r.programId, reportId: r.reportId };
+};
+const loadLaneResume = (value: unknown): LaneResume | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const r = value as Record<string, unknown>;
+  if (typeof r.candidate !== "string" || !REVIEW_CANDIDATE_ID_RE.test(r.candidate)
+    || typeof r.head !== "string" || !GIT_SHA_RE.test(r.head) || typeof r.reportId !== "string" || !r.reportId
+    || !finiteTime(r.parkedAt) || !finiteTime(r.resumedAt) || r.verify !== "stale") return null;
+  return { candidate: r.candidate, head: r.head, reportId: r.reportId, parkedAt: r.parkedAt,
+    resumedAt: r.resumedAt, verify: "stale" };
+};
 interface SuccessionRetirement { at: number; cwd: string; token: string }
 // THE PORTFOLIO READ GRANT (memory M4, task 41641179; docs/self-api.md §memory). A READ permission
 // the owner sets on one exact occupant: which projects (opaque projectKeys) and which of their
@@ -3170,7 +3222,7 @@ export type {
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal, RefineChild,
-  RefineProposal, TaskRefine, BriefReviewFinding, TaskBriefReview, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
+  RefineProposal, TaskRefine, BriefReviewFinding, TaskBriefReview, LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
@@ -3216,6 +3268,7 @@ export {
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,
   PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold, TASK_HOLD_GRUND_MAX, loadStallSensor,
+  REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume,
   TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX, loadTaskDisposition,
   HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck,
   HELPER_ARTIFACT_GLOB_MAX, HELPER_ARTIFACT_MAX, HELPER_ARTIFACT_PATH_MAX,

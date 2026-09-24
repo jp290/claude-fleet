@@ -96,6 +96,17 @@ Ein begrenzter periodischer Opt-in auf server.ts#tickAutoReview und server.ts#fi
 
 Die Karten beschreiben ein mögliches Programm, nicht eine Befugnis dieser Lane. Die Vorarbeit zu großen Diffs empfiehlt weiterhin das Review-Paket je Änderung und einen prüfbaren Schnitt **vor** Arbeitsbeginn. Der Program-Lebenszyklus-Entwurf `docs/program-lebenszyklus-2026-09-04.md` §0/§3 ist Vorarbeit, kein Beleg für hier bereits gebaute Vorschau oder Checkpoints. `docs/messungen/ernte-arbeit-worktrees-2026-08-26.md` zeigt patch-echte Alt-Worktrees und Grenzen ihrer Ernte; keine dortige Worktree-Klassifikation wurde hier wiederholt. `docs/messungen/denksession-zusammenarbeit-2026-09-02.md` §2 und `2026-09-04-architektur-zusammenarbeit.md` §1 liefern die Zusammenarbeits- und Lebenszyklusfrage als Vorarbeit, ihre damaligen Ledgerzahlen werden hier nicht übernommen.
 
+### Nachtrag 2026-09-24 — Karte 1 korrigiert: Parken statt Halt
+
+Die Orchestratorin hat §3 Punkt 1 per Kommentar 45da307f/b84f7ae0 an Zeile bbac253c revidiert: ein Halt, der Slot und Schreibfläche besetzt, verschärft die gemessene Lastform (5/7 Lane-Kapazität belegt, 14 queued). Gebaut wurde darum auf Branch `fleet/260924000549-f855` (Shas setzt die MAIN nach dem Land ein) ein **Review-Parken, das den Slot freigibt**, als opt-in der bestehenden Shelve-/Attach-Wege:
+
+- `POST /api/slots/:id/shelve` mit `review:true` (optional `hours`, Default 168, Deckel 720) nimmt nur einen sauberen Baum an, dessen neuester eigener Report `complete` ist und von seiner MAIN angenommen wurde (Owner- oder Regel-Verdikt zählt nicht). Es erzeugt genau einen `server/types.ts#LaneReviewCandidate` mit Task-IDs, Branch, Head, Base, Report-ID und Frist, gespeichert im Shelve-Eintrag des Pfads. Ohne `review` bleibt Shelve unverändert.
+- `server.ts#detachSlotTasks` lässt die Zeilen des Kandidaten `sent` ohne Slot. Keine Release-/Dispatch-Tür startet sie, der Boot-Requeue überspringt sie, `unqueue` verweigert. Verschwindet der Worktree (remove, discard, beim Boot fehlend), gehen sie auf `pending` zurück.
+- Das Board (`server.ts#freshenWorktreeBoard`) zeigt die Identität und `expired` nach Fristablauf. Die Frist entfernt nichts.
+- Der Attach desselben Worktrees nimmt den Kandidaten wieder auf: gleiche Base/BaseSha, dieselben Zeilen an den neuen Slot, Gründungszeile und Program zurück auf den Slot, `LaneRef.resumedFrom` mit `verify:"stale"`. Ein zweiter Attach antwortet 409.
+
+Karten 2 und 3 bleiben wie oben unter der Linie. Sie setzen jetzt einen geparkten Kandidaten voraus statt eines gehaltenen Slots.
+
 ## §N Nicht gemessen
 
 Keine laufende Lane, kein Worktree und keine Test-Instanz wurde geöffnet, gestartet oder berührt. Keine Live-Env, `fleet.json` oder `.env` wurde gelesen. Die Haupt-Checkout-Ledger wurden nur aggregiert; `post-land-audits.jsonl` wurde für diese Frage nicht benötigt und nicht gezählt. Es gibt keine beobachtete Reviewzeit, keinen Nachweis, dass frühes Resolve spätere Konflikte spart, und keinen gemessenen Betriebspreis für 30-Minuten-Previews oder wiederholte Agentläufe. Die Wirksamkeit der Karten ist eine Hypothese bis zu ihren DONE-Proben.

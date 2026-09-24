@@ -121,6 +121,7 @@ import {
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
   PROGRAM_RELEASE_POLICIES, loadProgramRelease, type ProgramReleasePolicy, loadTaskHold, TASK_HOLD_GRUND_MAX,
+  REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume,
   loadStallSensor, type StallSensorState,
   type TaskDisposition, loadTaskDisposition, TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX,
   type Studio, type StudioContent, type ProgramStudioBinding, type StudioStage,
@@ -141,7 +142,7 @@ import {
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskCard, type TaskCriterion, type TaskFilesProposal,
   type RefineChild, type RefineProposal,
-  type TaskRefine, type TaskBriefReview, type BriefReviewFinding, type LaneForm, type LaneRef, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep,
+  type TaskRefine, type TaskBriefReview, type BriefReviewFinding, type LaneForm, type LaneRef, type LaneReviewCandidate, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
   type PromotionSelfLand, type PromotionPolicy, type PromotionRequest, type ProgramProfileKind, type ProgramProfile,
   type ProgramLineageVia, type ProgramLineageEndedBy, type ProgramLineageEntry, type ProgramLineage,
@@ -3893,8 +3894,29 @@ let auditPings: Record<string, AuditPingState> = {};
 // worktree path -> shelve note ("what's left"), set when a lane is shelved. killSlot keeps the
 // worktree on disk as any kill does; this note is what makes "set aside for later" a real state
 // instead of a bare, context-less orphan. Survives the slot; cleared on resume/remove/discard.
-// Deliberately NOT a LaneRecord — just the one field the feature needs.
-let shelved: Record<string, { at: number; note: string }> = {};
+// Deliberately NOT a LaneRecord — just the one field the feature needs, plus `review` on the opt-in
+// review park alone (LaneReviewCandidate): the identity a later owner review and the resume need.
+let shelved: Record<string, { at: number; note: string; review?: LaneReviewCandidate }> = {};
+// The candidate that holds a row, if any. Linear over at most a handful of shelve records.
+function reviewParkOf(taskId: string): { path: string; candidate: LaneReviewCandidate } | null {
+  for (const [path, sh] of Object.entries(shelved))
+    if (sh.review?.taskIds.includes(taskId)) return { path, candidate: sh.review };
+  return null;
+}
+// THE ONE WAY a candidate ends without a resume (its worktree removed, discarded, or gone at boot):
+// its rows leave `sent` for `pending` — back to owner review, never auto-queued, exactly the
+// detachSlotTasks answer for an aborted lane — so no row is left `sent` with nothing that can run it.
+function dropShelved(path: string, why: string): void {
+  const candidate = shelved[path]?.review;
+  delete shelved[path];
+  if (!candidate) return;
+  for (const t of tasks) {
+    if (candidate.taskIds.includes(t.id) && t.status === "sent" && t.slot === null) {
+      t.status = "pending";
+      t.note = `review candidate ${candidate.id} dropped — ${why}; review and requeue if still wanted`;
+    }
+  }
+}
 const MAX_TASKS = 200;
 // cap the task list WITHOUT dropping non-terminal tasks: a still-pending/queued/sent task
 // must never be evicted just because 200 terminal tasks piled up — only the terminal
@@ -6116,14 +6138,23 @@ async function worktreeRisk(repo: string, path: string): Promise<WorktreeRisk> {
 interface WorktreeBoardRow {
   path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number;
   dirtyFiles: string[]; unpushedCommits: CommitRow[]; shortstat: string | null; empty: boolean; note: string | null;
+  review: ReviewCandidateView | null;
+}
+// the parked candidate as the board shows it: its identity plus the one derived word, whether its
+// deadline has passed. `expired` asks for a decision; nothing acts on it.
+type ReviewCandidateView = LaneReviewCandidate & { expired: boolean };
+function reviewCandidateView(path: string, now = Date.now()): ReviewCandidateView | null {
+  const c = shelved[path]?.review;
+  return c ? { ...c, taskIds: [...c.taskIds], expired: now >= c.expiresAt } : null;
 }
 interface WorktreeBoard { repo: string; main: string; worktrees: WorktreeBoardRow[] }
 const worktreeBoardCache = new Map<string, { body: WorktreeBoard; at: number }>();
 const worktreeBoardRecomputing = new Set<string>();
 
-// …and the three fields in that body which are NOT git-derived: `main` (the configured
+// …and the four fields in that body which are NOT git-derived: `main` (the configured
 // integration branch — a plain object read unless it has to be derived from the primary's HEAD),
-// `slot` (the holding session, from `slots`) and `note` (the shelve note, in memory). They cost
+// `slot` (the holding session, from `slots`), `note` (the shelve note, in memory) and `review` (the
+// review-park candidate beside that note). They cost
 // nothing to recompute, so EVERY answer gets them fresh — cached or not. Serving them stale is
 // what the post-land audit of ea3b141b caught: a repo-base change, a shelve and a resume were
 // each invisible for up to GIT_TICK_MS, because the mutation never touched git and the cache
@@ -6138,6 +6169,7 @@ async function freshenWorktreeBoard(b: WorktreeBoard): Promise<WorktreeBoard> {
       ...w,
       slot: slots.find((x) => x.cwd === w.path)?.id ?? null,
       note: shelved[w.path]?.note ?? null,
+      review: reviewCandidateView(w.path),
     })),
   };
 }
@@ -6180,7 +6212,7 @@ async function removeWorktreeSafe(repo: string, path: string, branch: string, fo
     const rmv = await git(repo, "worktree", "remove", path);
     if (rmv.code !== 0) return { error: `worktree remove failed (lane kept): ${(rmv.err || rmv.out).slice(0, 300)}`, code: 409 };
   }
-  delete shelved[path]; // the tree is gone — drop any shelve note with it
+  dropShelved(path, "its worktree was removed"); // the tree is gone — drop any shelve note with it
   return null;
 }
 
@@ -7310,9 +7342,14 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
 
 // a task's `sent` state is only meaningful while ITS lane lives in that slot; unresolved, it
 // re-runs after a restart or attaches to the next lane. Landing marks done BEFORE killSlot.
-function detachSlotTasks(slotId: number, note: string): void {
+// A REVIEW PARK is the one teardown that keeps them `sent`: the rows its candidate names only lose
+// the slot, so nothing can start them again until the attach of that worktree binds them back.
+function detachSlotTasks(slotId: number, note: string, parked: LaneReviewCandidate | null = null): void {
   for (const t of tasks) {
-    if (t.slot === slotId && t.status === "sent") {
+    if (t.slot === slotId && t.status === "sent" && parked?.taskIds.includes(t.id)) {
+      t.slot = null;
+      t.note = `review-parked as candidate ${parked.id} — resume by reopening ${parked.branch}`;
+    } else if (t.slot === slotId && t.status === "sent") {
       t.status = "pending"; // back to owner review, NOT auto-queued — the abort was deliberate
       t.note = note;
       t.slot = null;
@@ -7398,6 +7435,10 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   const closedNote = s.worktree && tasks.some((t) => t.slot === s.id && t.status === "sent")
     ? await laneClosedNote(s.worktree, await laneBaseRef(s))
     : LANE_CLOSED_UNKNOWN;
+  // read while s.cwd and s.worktree still name this lane: only the review park writes a candidate
+  // under this path before its kill, and only one naming THIS branch may keep the rows sent
+  const parkedHere = s.cwd && s.worktree ? shelved[s.cwd]?.review ?? null : null;
+  const parked = parkedHere && parkedHere.branch === s.worktree?.branch ? parkedHere : null;
   if (!sameSlotStreamOccupant(s, streamOccupant))
     throw new Error(`slot ${streamOccupant.slot} occupant changed during the closed-lane probe`);
 
@@ -7434,7 +7475,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.programId = null;
   s.releasedBy = null;
   s.memoryGrant = null;
-  detachSlotTasks(s.id, closedNote);
+  detachSlotTasks(s.id, closedNote, parked);
   for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
   shares = shares.filter((x) => x.slot !== s.id);
   autos = autos.filter((x) => x.slot !== s.id);
@@ -18541,6 +18582,43 @@ if (RATE_LIMIT_RESUME_RAW && !RATE_LIMIT_RESUME_ON && !/^(0|off|false|no)$/i.tes
 function laneOwnReports(s: Slot): FleetReport[] {
   return fleetReports.filter((r) => r.worker.slot === s.id && r.worker.openedAt === s.openedAt
     && r.worker.sessionId === s.sessionId);
+}
+
+// THE REVIEW PARK'S ADMISSION (LaneReviewCandidate): named refusals over facts that must be KNOWN,
+// in laneAutoCloseRefusal's direction — an unreadable fact refuses, never permits. It admits exactly
+// one shape: a clean committed tree, rows this lane carries, and a NEWEST own report that is
+// `complete` and that its MAIN accepted. An owner or rule verdict is not that acceptance (the same
+// line the autoclose draws), and a newer report of any kind means the lane has spoken since.
+async function mintReviewCandidate(s: Slot, hours: number):
+  Promise<{ ok: true; candidate: LaneReviewCandidate } | { ok: false; code: number; error: string }> {
+  const no = (code: number, error: string) => ({ ok: false as const, code, error });
+  if (!s.cwd || !s.worktree) return no(400, "not a fleet-created worktree lane");
+  if (slotTeardownInflight.has(s.id) || restarting.has(s.id)) return no(409, "a teardown or restart already holds this slot");
+  if (mergeInflight.has(s.id) || mergeStart.has(s.id) || commitInflight.has(s.id) || reviewInflight.has(s.id))
+    return no(409, "a merge, commit or review job holds this lane");
+  if (needsMergeReview(s.id)) return no(409, "a ⏸ merge verdict on this lane awaits review — settle it before parking");
+  if (!s.taskId) return no(409, "no queue row founded this lane — a review candidate names its rows");
+  const rows = tasks.filter((t) => t.slot === s.id && t.status === "sent");
+  if (!rows.some((t) => t.id === s.taskId)) return no(409, "the lane's founding row is not sent to it");
+  if (rows.some((t) => t.variantOf)) return no(409, "a variant lane is decided by its group, not parked for review");
+  const own = laneOwnReports(s);
+  const report = own.reduce<FleetReport | null>((a, r) => (!a || r.reportedAt > a.reportedAt ? r : a), null);
+  if (!report) return no(409, "this lane filed no report — a review candidate carries its accepted report");
+  if (report.status !== "complete") return no(409, `the lane's newest report is ${report.status}, not complete`);
+  const d = report.decision;
+  if (!d) return no(409, `report ${report.id} is undecided — its MAIN has not accepted it`);
+  if (d.disposition !== "accepted") return no(409, `report ${report.id} was ${d.disposition}`);
+  if (d.by === "owner" || "rule" in d.by) return no(409, `report ${report.id} was not accepted by its MAIN`);
+  if (report.provenance.taskId !== s.taskId) return no(409, `report ${report.id} names another row than this lane's founding row`);
+  const st = await statusLines(s.cwd);
+  if (st.code !== 0) return no(409, "git status failed — the tree could not be proved clean");
+  if (st.lines.length) return no(409, `the tree is not clean:\n${st.lines.join("\n").slice(0, 400)}`);
+  const head = await git(s.cwd, "rev-parse", "HEAD");
+  if (head.code !== 0 || !/^[0-9a-f]{40,64}$/.test(head.out)) return no(409, "the lane's HEAD could not be read");
+  const now = Date.now();
+  return { ok: true, candidate: { id: randomBytes(6).toString("hex"), parkedAt: now, expiresAt: now + hours * 3_600_000,
+    branch: s.worktree.branch, head: head.out, base: await laneBaseRef(s), baseSha: s.worktree.baseSha ?? null,
+    taskIds: rows.map((t) => t.id), taskId: s.taskId, originId: s.originId, programId: s.programId, reportId: report.id } };
 }
 
 // THE PERMISSION, as a list of NAMED refusals rather than one boolean. Every clause is a positive
@@ -33765,6 +33843,7 @@ if (existsSync(STATE_FILE)) {
           const anchor = normalizeLaneAnchor((wt as { anchor?: unknown }).anchor);
           const letter = (wt as { letter?: unknown }).letter;
           const form = (wt as { form?: unknown }).form;
+          const resumedFrom = loadLaneResume((wt as { resumedFrom?: unknown }).resumedFrom);
           s.worktree = { repo: (wt as { repo: string }).repo, branch: (wt as { branch: string }).branch,
             ...(typeof (wt as { base?: unknown }).base === "string" ? { base: (wt as { base: string }).base } : {}),
             ...(typeof (wt as { baseSha?: unknown }).baseSha === "string" ? { baseSha: (wt as { baseSha: string }).baseSha } : {}),
@@ -33782,7 +33861,9 @@ if (existsSync(STATE_FILE)) {
             // spread silently converts every restarted clone lane into a worktree lane: kill and
             // land then run removeWorktreeSafe's `git worktree remove` branch against a plain
             // directory, and syncLaneRefs stops mirroring its refs.
-            ...(form === "clone" ? { form: "clone" } : {}) };
+            ...(form === "clone" ? { form: "clone" } : {}),
+            // …and the resume record by the same law: whole or absent, never a lane killed over it
+            ...(resumedFrom ? { resumedFrom } : {}) };
         }
       }
     }
@@ -33916,8 +33997,11 @@ if (existsSync(STATE_FILE)) {
     if (typeof psh === "object" && psh !== null && !Array.isArray(psh))
       for (const [k, v] of Object.entries(psh as Record<string, unknown>))
         if (typeof k === "string" && typeof v === "object" && v !== null
-          && typeof (v as { note?: unknown }).note === "string" && typeof (v as { at?: unknown }).at === "number")
-          shelved[k] = { at: (v as { at: number }).at, note: (v as { note: string }).note };
+          && typeof (v as { note?: unknown }).note === "string" && typeof (v as { at?: unknown }).at === "number") {
+          // the candidate comes back whole or not at all (loadLaneReviewCandidate); the note stands either way
+          const review = loadLaneReviewCandidate((v as { review?: unknown }).review);
+          shelved[k] = { at: (v as { at: number }).at, note: (v as { note: string }).note, ...(review ? { review } : {}) };
+        }
     // undoable lands survive deploys. MIGRATION, load-bearing: the pre-stack shape was ONE record per
     // repo, and a boot that only understood the array would read every pre-upgrade land as "no
     // land" — so a bare object is read as a one-element stack.
@@ -34063,7 +34147,13 @@ pruneAttention();
 // a task dispatched just before shutdown is persisted as `sent` pointing at a slot; if that
 // slot didn't come back as a live lane (worktree removed out-of-band, pane gone), requeue it
 // instead of leaving it "sent" forever with nothing running
+// …EXCEPT a row a review candidate holds (reviewParkOf): it is `sent` with no slot BY DESIGN, and
+// requeuing it here is the silent restart the park exists to rule out. A candidate whose worktree
+// vanished while the server was down cannot be resumed, so its rows go back to owner review instead.
+for (const [path, sh] of Object.entries(shelved))
+  if (sh.review && !existsSync(path)) dropShelved(path, "its worktree was gone at boot");
 for (const t of tasks) {
+  if (t.status === "sent" && t.slot === null && reviewParkOf(t.id)) continue;
   if (t.status === "sent" && !(t.slot != null && slotFrom(t.slot)?.worktree)) {
     t.status = "queued";
     t.note = "requeued after restart";
@@ -38934,6 +39024,7 @@ Bun.serve<WSData>({
             shortstat: sh.code === 0 && sh.out ? sh.out : null,
             empty: dirtyFiles.length === 0 && unpushedCommits.length === 0,
             note: shelved[w.path]?.note ?? null, // shelve note, if this orphan was set aside
+            review: reviewCandidateView(w.path), // …and the review candidate, if it was parked for review
           };
         };
         const rows: WorktreeBoardRow[] = new Array(targets.length);
@@ -39029,21 +39120,55 @@ Bun.serve<WSData>({
           const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === attachPath);
           if (!wt) return json({ error: "not a worktree of this repo" }, 400);
           if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree already open in a slot" }, 409);
-          const attachBase = await integrationBranch(top.out);
+          // RESUMING A REVIEW CANDIDATE is this same attach, with the candidate's identity instead of a
+          // fresh one: its fork point, its rows, its provenance. A branch that moved under the path is
+          // no longer the tree that was parked, and binding the rows to it would be a claim nobody made.
+          const parked = shelved[wt.path]?.review ?? null;
+          if (parked && parked.branch !== wt.branch)
+            return json({ error: `review candidate ${parked.id} names branch ${parked.branch}, the worktree now holds ${wt.branch} — nothing was resumed` }, 409);
+          const attachBase = parked ? parked.base : await integrationBranch(top.out);
+          const attachSha = parked ? parked.baseSha : await laneForkSha(wt.path, attachBase);
           // an attached lane is adopted without a parent — its band is 0, same reserve as every open
           const { band: attachLetterBand, letter: attachLetter } = reserveLaneLetter(null);
+          const resumedAt = Date.now();
           try {
             await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
-              baseSha: await laneForkSha(wt.path, attachBase), letter: attachLetter }, laneModel.model, null, laneH.harness, laneEffort.effort,
+              baseSha: attachSha ?? undefined, letter: attachLetter,
+              ...(parked ? { resumedFrom: { candidate: parked.id, head: parked.head, reportId: parked.reportId,
+                parkedAt: parked.parkedAt, resumedAt, verify: "stale" as const } } : {}) },
+              laneModel.model, null, laneH.harness, laneEffort.effort,
               NO_BOX, null, laneBrowser.browser === true, laneContext.context);
           } finally {
             releaseLaneLetter(attachLetterBand, attachLetter);
           }
           free.label = wt.branch.replace(/^fleet\//, "⎇ ");
+          // the rows come back onto the edge they left (t.slot), and the provenance the lane was
+          // founded under onto the slot — only rows still parked: one the owner closed meanwhile stays closed
+          const rebound: string[] = [];
+          if (parked) {
+            for (const t of tasks) {
+              if (!parked.taskIds.includes(t.id) || t.status !== "sent" || t.slot !== null) continue;
+              t.slot = free.id;
+              t.note = `lane ${wt.branch} — resumed from review candidate ${parked.id}; verify evidence from before the park is stale`;
+              rebound.push(t.id);
+            }
+            if (parked.taskId && rebound.includes(parked.taskId)) {
+              free.taskId = parked.taskId;
+              free.originId = parked.originId;
+              free.programId = parked.programId;
+            }
+            // THE ONE PRE-PARK VERIFY FACT that could otherwise pass as this occupation's: a lane's
+            // self-reported run is keyed by slot and pruned only on a cwd mismatch (gateView), and a
+            // resume into the same slot at the same path matches both. It describes the parked state.
+            const vi = verifyIntents.get(free.id);
+            if (vi && vi.at < resumedAt) verifyIntents.delete(free.id);
+          }
           delete shelved[wt.path]; // resuming clears the shelve note — the lane is active again
-          saveState();
+          await saveStateNow(); // the rebound rows and the resume record are on disk before the answer
           void tickGit().catch(() => {});
-          return json({ ok: true, slot: free.id, cwd: free.cwd, branch: wt.branch });
+          return json({ ok: true, slot: free.id, cwd: free.cwd, branch: wt.branch,
+            ...(parked ? { resumed: { candidate: parked.id, head: parked.head, reportId: parked.reportId,
+              taskIds: rebound, verify: "stale" } } : {}) });
         }
         const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box, laneParent.parent, laneBrowser.browser === true, laneContext.context);
         return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch, form: laneForm.form });
@@ -39089,7 +39214,7 @@ Bun.serve<WSData>({
       const head = await git(wt.path, "rev-parse", "HEAD");
       const rmv = await git(top.out, "worktree", "remove", "--force", wt.path);
       if (rmv.code !== 0) return json({ error: `worktree remove failed: ${(rmv.err || rmv.out).slice(0, 300)}` }, 409);
-      delete shelved[wt.path]; // worktree destroyed — drop any shelve note
+      dropShelved(wt.path, "its worktree was discarded"); // worktree destroyed — drop any shelve note
       mergeParked.delete(wt.branch); // deliberate destruction takes the parked ⏸ with it
       const branchDeleted = wt.branch !== "(detached)"
         && (await git(top.out, "branch", "-D", wt.branch)).code === 0;
@@ -40549,6 +40674,12 @@ Bun.serve<WSData>({
       // a running lane's founding task must stay tracked. `delete` shares the guard: deleting a sent row
       // orphaned the lane — /api/self/criterion resolves the founding task by slot+status "sent"
       // (incident 2026-08-05: server-narrativ-archiv.md#fetch-task-actions).
+      // A REVIEW-PARKED row is `sent` with no slot, and `unqueue` would turn it pending and so
+      // releasable — a second start of work that sits parked on disk. Only `done` stays open: the
+      // owner may close the row outright; the resume then simply does not bind it again.
+      const parkedBy = t.status === "sent" && t.slot === null ? reviewParkOf(t.id) : null;
+      if (parkedBy && taskAct[2] !== "done")
+        return json({ error: `task is review-parked with candidate ${parkedBy.candidate.id} — reopen ${parkedBy.candidate.branch} to resume it, or remove that worktree to hand the row back` }, 409);
       if ((taskAct[2] === "archive" || taskAct[2] === "delete") && t.status === "sent")
         return json({ error: "task is running in a lane — land or kill the lane first" }, 409);
       // E4 · a GROUP is the one source its variants are briefed from: deleting it under an open
@@ -40963,6 +41094,36 @@ Bun.serve<WSData>({
         if (!s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
         const body = await readJson(req);
         const note = typeof body?.note === "string" ? body.note.slice(0, 500).trim() : "";
+        // THE REVIEW PARK is opt-in and only opt-in: `review:true` mints a LaneReviewCandidate or
+        // refuses by name, and without the flag this door stays byte-for-byte the shelve it was.
+        if (body?.review !== undefined && typeof body.review !== "boolean")
+          return json({ error: "review must be a boolean when present" }, 400);
+        if (body?.review === true) {
+          const hours = body.hours === undefined ? REVIEW_PARK_DEFAULT_HOURS : body.hours;
+          if (typeof hours !== "number" || !Number.isInteger(hours) || hours < 1 || hours > REVIEW_PARK_MAX_HOURS)
+            return json({ error: `hours must be an integer 1..${REVIEW_PARK_MAX_HOURS} (default ${REVIEW_PARK_DEFAULT_HOURS})` }, 400);
+          const cwd = s.cwd;
+          const openedAt = s.openedAt;
+          const minted = await mintReviewCandidate(s, hours);
+          if (!minted.ok) return json({ error: minted.error }, minted.code);
+          // the awaits above were git reads: re-prove the lane is still the occupant that was judged
+          if (s.cwd !== cwd || s.openedAt !== openedAt || s.worktree?.branch !== minted.candidate.branch)
+            return json({ error: "the lane changed while it was checked — nothing was parked" }, 409);
+          const candidate = minted.candidate;
+          shelved[cwd] = { at: candidate.parkedAt, note, review: candidate };
+          audit("slot_shelve", s.id, `note:${note.length} review:${candidate.id}`);
+          emitLaneOutcome(await buildLaneOutcome(s, "shelved"));
+          try {
+            await killSlot(s, "shelved"); // teardownSlotOccupant hands the candidate to detachSlotTasks
+          } catch (e) {
+            // a teardown that could not finish leaves the lane standing — and a candidate for a live
+            // lane would be a park that never happened
+            if (shelved[cwd]?.review?.id === candidate.id) delete shelved[cwd];
+            throw e;
+          }
+          await saveStateNow(); // the candidate is durable before the owner is told it exists
+          return json({ ok: true, candidate });
+        }
         shelved[s.cwd] = { at: Date.now(), note }; // keyed by worktree path; survives the kill below
         audit("slot_shelve", s.id, `note:${note.length}`); // never the note TEXT — same hygiene as prompt logging
         emitLaneOutcome(await buildLaneOutcome(s, "shelved")); // record BEFORE killSlot clears lane state

@@ -256,7 +256,9 @@ interface AutoInfo {
   id: string; slot: number; text: string; everySec: number | null; nextAt: number;
   runsLeft: number; idleSec: number; enabled: boolean; lastRun: number; lastResult: string | null;
 }
-interface WorktreeInfo { repo: string; branch: string; anchor?: LaneAnchor; letter?: string }
+interface WorktreeInfo { repo: string; branch: string; anchor?: LaneAnchor; letter?: string; resumedFrom?: LaneResumeInfo }
+// server/types.ts#LaneResume — present only on a lane reopened from a review candidate
+interface LaneResumeInfo { candidate: string; head: string; reportId: string; parkedAt: number; resumedAt: number; verify: "stale" }
 interface SlotInfo {
   id: number; cwd: string | null; label: string | null; lastOutput: number;
   // Both are optional for compatibility with an older server. `repo` is the canonical toplevel;
@@ -1829,7 +1831,11 @@ interface ReviewFinding { title: string; file: string; line: number | null;
 // lane map + ⏫ merge agent (async job on the server; the board's 3s poll carries state)
 interface WtRisk { dirtyFiles: string[]; unpushedCommits: { hash: string; subject: string }[];
   shortstat: string | null; empty: boolean }
-interface WtRow extends WtRisk { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number; note?: string | null }
+interface WtRow extends WtRisk { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number; note?: string | null;
+  review?: ReviewCandidateInfo | null }
+// server.ts#ReviewCandidateView — a lane parked for later owner review, with its identity
+interface ReviewCandidateInfo { id: string; parkedAt: number; expiresAt: number; expired: boolean; branch: string;
+  head: string; base: string | null; baseSha: string | null; taskIds: string[]; reportId: string }
 interface WtInfo { repo: string; main: string; worktrees: WtRow[] }
 // 💾 lane commit in flight, per slot — carries the MODE so the button can label itself
 // ("… saving" vs "… writing message") while the request runs.
@@ -2025,12 +2031,16 @@ async function doMergeLand(slot: number) {
 // records the note (keyed by worktree path) and kills the slot; the worktree stays on disk as an
 // orphan, now resumable WITH context. The safe third exit beside land — no work lost, no
 // destruction. The note shows on the lanes list and clears when the lane is reopened.
-async function doShelve(slot: number) {
+// `review` is the opt-in REVIEW PARK: the server mints a candidate (task ids, branch, head, base,
+// accepted report, deadline) or refuses by name — only a clean lane whose MAIN accepted its report.
+async function doShelve(slot: number, review = false) {
   const s = fleet[slot - 1];
   if (!s?.worktree) return;
-  const note = prompt("Shelve this lane — what's left to do? (shown when you resume it)");
+  const note = prompt(review
+    ? "Park this lane for your review — frees the slot, keeps worktree and task identity. Note?"
+    : "Shelve this lane — what's left to do? (shown when you resume it)");
   if (note === null) return; // cancelled
-  const r = await post(`/api/slots/${slot}/shelve`, { note });
+  const r = await post(`/api/slots/${slot}/shelve`, review ? { note, review: true } : { note });
   if (!r.ok) {
     const j = (await r.json().catch(() => ({}))) as { error?: string };
     alert(j.error ?? "shelve failed");
@@ -4429,6 +4439,11 @@ async function renderBoard() {
         shb.title = "set this lane aside with a note (what's left) — kills the slot, keeps the worktree to resume later; nothing lost, nothing destroyed";
         shb.onclick = () => void doShelve(slot);
         land.appendChild(shb);
+        const pkb = el("button", "bbtn quiet", "Park for review") as HTMLButtonElement;
+        pkb.disabled = !!mg?.running;
+        pkb.title = "park this finished lane for a later review — frees the slot, keeps worktree, task ids, head, base and the accepted report; the tasks do not start again, reopening binds them back (verify then counts as stale)";
+        pkb.onclick = () => void doShelve(slot, true);
+        land.appendChild(pkb);
         // ↻ rebase sits with the other lane verbs, because it is one: it moves this lane, and the
         // reader decides between "land it" and "bring it up to date" in one place.
         if (rebaseBtn) land.appendChild(rebaseBtn);
@@ -4666,8 +4681,10 @@ async function renderBoard() {
             }
             row.appendChild(chip);
           } else {
-            const open = el("button", "bwtact", "open") as HTMLButtonElement;
-            open.title = "no session holds this worktree — reopen it in a free slot (reviewable/landable again)";
+            const open = el("button", "bwtact", w.review ? "resume" : "open") as HTMLButtonElement;
+            open.title = w.review
+              ? `reopen review candidate ${w.review.id} in a free slot — its tasks bind back to it, and verify evidence from before the park counts as stale`
+              : "no session holds this worktree — reopen it in a free slot (reviewable/landable again)";
             open.onclick = async () => {
               if (laneReqBusy) return;
               laneReqBusy = true;
@@ -4712,9 +4729,22 @@ async function renderBoard() {
           // context (cleared server-side when the lane is reopened, removed, or discarded)
           if (w.note != null) {
             const nrow = el("div", "sweepv shelved");
-            nrow.appendChild(el("span", "sweepvbadge", "⇲ shelved"));
+            nrow.appendChild(el("span", "sweepvbadge", w.review ? "⏸ review" : "⇲ shelved"));
             nrow.appendChild(el("span", "sweepvreason", w.note || "(no note)"));
             sec.appendChild(nrow);
+          }
+          // the review candidate's IDENTITY — what was parked, against what, carrying which verdict.
+          // A review record, not gate-green; the deadline asks for a decision and removes nothing.
+          if (w.review) {
+            const c = w.review;
+            const crow = el("div", "sweepv shelved");
+            crow.appendChild(el("span", "sweepvbadge", `candidate ${c.id}`));
+            crow.appendChild(el("span", "sweepvreason",
+              `head ${c.head.slice(0, 10)} · base ${c.base ?? "unknown"}${c.baseSha ? ` @ ${c.baseSha.slice(0, 10)}` : ""}`
+              + ` · report ${c.reportId.slice(0, 8)} · tasks ${c.taskIds.join(", ")}`
+              + (c.expired ? ` · Frist abgelaufen ${new Date(c.expiresAt).toLocaleString()} — Entscheidung fällig`
+                : ` · Frist ${new Date(c.expiresAt).toLocaleString()}`)));
+            sec.appendChild(crow);
           }
           // the confirm panel is not a dialog: the consequences ARE the wait screen. The
           // destructive button unlocks only after the read window, counted from the first
@@ -7721,6 +7751,8 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
           facts.push(`${lc} — ${s.git.dirty} uncommitted, ${s.git.ahead} to land, ${s.git.behind} behind`);
         }
         facts.push(`slot ${s.id} · ${s.cwd}`);
+        const rf = s.worktree.resumedFrom;
+        if (rf) facts.push(`resumed from review candidate ${rf.candidate} — verify evidence from before the park (head ${rf.head.slice(0, 10)}) is stale`);
       } else {
         facts.push(s.cwd ?? "");
       }
@@ -13071,8 +13103,8 @@ function decodeAudit(event: string, detail?: string): string {
         : detail === "owner" ? "closed by the owner"
         : `closed${detail ? ` (${detail})` : ""}`;
     case "slot_shelve": {
-      const m = detail?.match(/^note:(\d+)$/);
-      return m ? `shelved · ${m[1]}-char note` : "shelved";
+      const m = detail?.match(/^note:(\d+)(?: review:([0-9a-f]{12}))?$/);
+      return m ? `${m[2] ? `parked for review · candidate ${m[2]}` : "shelved"} · ${m[1]}-char note` : "shelved";
     }
     // `created:no-session` / `created:no-transcript` — the reason is the whole point of the field:
     // no-session is the harmless open race, no-transcript is a slot that lost its conversation

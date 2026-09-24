@@ -34546,9 +34546,9 @@ if (existsSync(STATE_FILE)) {
         }
     // the review previews come back record by record, whole or not at all (loadLanePreview);
     // reconcileLanePreviewsAtBoot then settles the ones the downtime overtook
-    const plps = (persisted as { lanePreviews?: unknown }).lanePreviews;
-    if (typeof plps === "object" && plps !== null && !Array.isArray(plps))
-      for (const v of Object.values(plps as Record<string, unknown>)) {
+    const persistedPreviews = (persisted as { lanePreviews?: unknown }).lanePreviews;
+    if (typeof persistedPreviews === "object" && persistedPreviews !== null && !Array.isArray(persistedPreviews))
+      for (const v of Object.values(persistedPreviews as Record<string, unknown>)) {
         const lp = loadLanePreview(v);
         if (lp) lanePreviews[lp.candidate] = lp;
       }
@@ -34580,7 +34580,7 @@ if (existsSync(STATE_FILE)) {
     // ...and so does the land that was still IN FLIGHT. Restored here, resolved against git a few
     // lines below (finishLandsInFlight) — the restore only reads the file.
     const plp = (persisted as { landPending?: unknown }).landPending;
-    if (typeof plps === "object" && plps !== null && !Array.isArray(plps))
+    if (typeof plp === "object" && plp !== null && !Array.isArray(plp))
       for (const [k, v] of Object.entries(plp as Record<string, unknown>))
         if (typeof k === "string" && typeof v === "object" && v !== null
           && typeof (v as LandPending).main === "string" && typeof (v as LandPending).branch === "string"

@@ -439,6 +439,34 @@ export async function run(ctx: Ctx): Promise<void> {
       && /let qView: QView = "work"/.test(taskClientSource)
       && ["Work", "Notes", "Programs", "History", "Waves"].every((label) => openQueueSource.includes(`"${label}"`)),
     openQueueSource.slice(0, 180));
+  // SUGGESTED BUNDLES in Waves READ the machine's proposal and write nothing (card 2026-09-23: no
+  // button that releases, archives, bundles or starts a lane; no second poll interval). The verdict
+  // runs over the real block AND over a copy with one post() injected — the second must be red, or
+  // the pin cannot fail.
+  {
+    const bundleVerdict = (src: string): string[] => {
+      const start = src.indexOf("// --- SUGGESTED BUNDLES (Waves, read-only)");
+      const end = src.indexOf("// --- end SUGGESTED BUNDLES", start);
+      if (start < 0 || end <= start) return ["block markers missing"];
+      const block = src.slice(start, end);
+      const why: string[] = [];
+      const reads = block.match(/\bapi\(([^)]*)\)/g) ?? [];
+      if (JSON.stringify(reads) !== JSON.stringify(['api("/api/start-plan")'])) why.push(`reads ${JSON.stringify(reads)}`);
+      for (const bad of ["post(", "method:", "fetch(", "setInterval", "setTimeout", '"button"', "qAct(", "qMakeBundle("])
+        if (block.includes(bad)) why.push(`contains ${bad}`);
+      for (const hint of ['"no bundle suggested"', '"bundles unknown', "b.grund", "b.units", "qSelect(id)", 'dataset.ent = "task"'])
+        if (!block.includes(hint)) why.push(`lacks ${hint}`);
+      if (!src.includes("qRenderBundles(shell.list, addSection);")) why.push("Waves does not render the section");
+      if (!src.includes('if (next === "waves") void loadBundles(true);')) why.push("opening Waves does not read");
+      return why;
+    };
+    const real = bundleVerdict(taskClientSource);
+    const mutated = bundleVerdict(taskClientSource.replace("  if (!qBundles.length)",
+      '  void post("/api/tasks/x/archive", {});\n  if (!qBundles.length)'));
+    check("task workbench source: Waves' Suggested bundles read only GET /api/start-plan, show ids/grund/units, and write nothing (an injected post() turns the verdict red)",
+      real.length === 0 && mutated.some((w) => w.startsWith("contains post(")),
+      JSON.stringify({ real, mutated }));
+  }
   // THE NOTES, AGGREGATED (owner, 2026-09-19: "die zumindest aktuell in der queue stehenden
   // notizen einbauen, aggregieren und das insbesondere visuell darstellen"). The aggregator is
   // EXECUTED on fixtures, not grepped: kind, MAIN source, attachment, program and age bin are each

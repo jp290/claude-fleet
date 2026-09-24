@@ -29,7 +29,7 @@ import {
   type ProjectedWaveTask, type TaskCardSize, type TaskWaveProjection, type TaskWaveUnresolved,
 } from "../task-waves";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_ROWS_MAX,
-  type LandWave, type LandWaveCosts, type LandWaveProjection } from "../task-land-waves";
+  type BundleProposal, type LandWave, type LandWaveCosts, type LandWaveProjection } from "../task-land-waves";
 // the same first-sentence reduction the dispatched notes block renders with — imported rather than
 // re-spelled so the wave evidence and the brief's note lines cut a row at the same place
 import { noteFirstSentence } from "../task-notes";
@@ -10586,6 +10586,71 @@ function qWaveLocation(id: string, projection: TaskWaveProjection): QWaveLocatio
   return unresolved ? { kind: "unresolved", item: unresolved } : null;
 }
 
+// --- SUGGESTED BUNDLES (Waves, read-only): the machine's own proposal, GET /api/start-plan → buendel
+// (task-land-waves.ts#proposeBundles, Schnitt 3 of docs/messungen/2026-09-21-dispatch-flaechen-buendeln.md).
+// The section SHOWS it and does nothing else: no button, no write — whether two rows share a lane
+// stays the owner's call, made through ⧉ Bundle in Work. Read when Waves opens and again when the
+// 2 s poll moves a task fact the proposal reads; no timer of its own. A failed read says so and
+// never draws as "none".
+let qBundlesRead: "unread" | "ok" | "fail" = "unread";
+let qBundles: BundleProposal[] = [];
+let qBundlesKey = "";
+let qBundlesBusy = false;
+const qBundlesTaskKey = () => JSON.stringify([qWaveProjectionKey(),
+  tasksList.map((t) => [t.size, t.briefAt, t.variantOf, t.variants?.length])]);
+async function loadBundles(force = false): Promise<void> {
+  const key = qBundlesTaskKey();
+  if (qBundlesBusy || (!force && key === qBundlesKey)) return;
+  qBundlesBusy = true;
+  const before = JSON.stringify([qBundlesRead, qBundles]);
+  try {
+    const res = await api("/api/start-plan");
+    if (res.ok) {
+      const data = (await res.json()) as { buendel?: BundleProposal[] };
+      if (Array.isArray(data.buendel)) { qBundles = data.buendel; qBundlesRead = "ok"; } else qBundlesRead = "fail";
+    } else qBundlesRead = "fail";
+  } catch {
+    qBundlesRead = "fail";
+  }
+  qBundlesKey = key;
+  qBundlesBusy = false;
+  if (JSON.stringify([qBundlesRead, qBundles]) !== before && qView === "waves") { qKey = ""; renderQueue(); }
+}
+function qRenderBundles(parent: HTMLElement, addSection: (name: string, count: number, hint: string) => void): void {
+  addSection("Suggested bundles", qBundlesRead === "ok" ? qBundles.length : 0,
+    "Vorschlag der Maschine: zwei offene Zeilen desselben Programs mit gemeinsamer Datei-Flaeche,"
+    + " zusammen hoechstens mittel und mit denselben VERIFY-Stufen koennten eine Lane teilen."
+    + " Nur Anzeige — zusammenlegen geht ueber ⧉ Bundle in Work.");
+  if (qBundlesRead !== "ok") {
+    parent.appendChild(el("div", "hint qwavehint", qBundlesRead === "fail"
+      ? "bundles unknown — der Vorschlag konnte nicht gelesen werden"
+      : "bundles unknown — wird gelesen"));
+    return;
+  }
+  if (!qBundles.length) { parent.appendChild(el("div", "hint qwavehint", "no bundle suggested")); return; }
+  for (const b of qBundles) {
+    const line = el("div", "qsuggest qbundlesug");
+    b.ids.forEach((id, i) => {
+      const ids = el("div", "qsuggestt");
+      if (i) ids.append("+ ");
+      const span = el("span", "ent ent-task", id);
+      span.dataset.ent = "task";
+      span.dataset.id = id;
+      span.tabIndex = 0;
+      span.setAttribute("role", "link");
+      span.onclick = () => qSelect(id);
+      span.onkeydown = (e) => { if (e.key === "Enter") qSelect(id); };
+      ids.appendChild(span);
+      ids.append(` ${qFirstLine(qTaskText(id)).slice(0, 60)}`);
+      line.appendChild(ids);
+    });
+    line.appendChild(el("div", "qsuggestf", b.grund));
+    line.appendChild(el("div", "qsuggestf", `${b.units} unit${b.units === 1 ? "" : "s"}`));
+    parent.appendChild(line);
+  }
+}
+// --- end SUGGESTED BUNDLES
+
 function qTextDraft(current: QTextDraft | null, id: string, seed: string, rows: number): QTextDraft {
   if (!current || current.for !== id) {
     const box = el("textarea", "qdcrit") as HTMLTextAreaElement;
@@ -12668,6 +12733,7 @@ function renderQueue() {
   if (!shell || !shell.isOpen()) return;
   void loadTaskTexts(); // no-op unless the visible task set changed
   void loadPrograms();  // no-op unless the poll's digest moved or the floor elapsed
+  if (qView === "waves") void loadBundles(); // no-op unless a task fact the proposal reads moved
   const scoped = tasksList.filter(qInScope);
   const model = qTaskListModel(scoped, taskText, programsList, qQuery);
   const shown = model.work;
@@ -12681,6 +12747,7 @@ function renderQueue() {
     // in the detail pane: without it here the checkbox flips, renderQueue is called, the key has
     // not moved, and the early return below leaves the button it unlocks disabled.
     qView === "waves" ? qWaveAck : null,
+    qView === "waves" ? [qBundlesRead, qBundles] : null,
     // the lane line is derived from the slots too — a lane going idle or dirty moves no task field
     qLaneKey(laneJoins),
     // the MARK is derived from the slots, so it moves without any program field moving. Leaving
@@ -12980,6 +13047,7 @@ function renderQueue() {
         ? ` Choose History to inspect ${model.history.length} done or archived task${model.history.length === 1 ? "" : "s"}.`
         : ""}`));
   } else if (projection) {
+    qRenderBundles(shell.list, addSection);
     const visibleIds = new Set(shown.map((t) => t.id));
     const taskById = new Map(tasksList.map((t) => [t.id, t]));
     for (const repo of projection.repos) for (const wave of repo.waves) {
@@ -13125,6 +13193,7 @@ function openQueue() {
     if (qPick !== null) qBsSeq++;
     qView = next;
     if (next !== "work") { qBundleMode = false; qSel.clear(); }
+    if (next === "waves") void loadBundles(true);
     qPick = null;
     qRawAck = null;
     qKey = "";
@@ -13170,6 +13239,8 @@ function openQueue() {
   qBundleBtn = bundleBtn;
   // one card for the whole detail pane — the pane node survives every repaint, its children do not
   attachEntityCards(shell.detail, describeEntity);
+  // and one for the list, where only the Waves bundle ids carry data-ent
+  attachEntityCards(shell.list, describeEntity);
   // ＋ NEW TASK as a button of its own (owner, 2026-09-19: "es gibt auch keinen knopf 'new task'"):
   // the list's first row stays, but it scrolls away and is hidden while a search runs
   const newBtn = el("button", "shrbtn primary qnewbtn", "＋ New task") as HTMLButtonElement;

@@ -422,7 +422,16 @@ export async function run(ctx: Ctx): Promise<void> {
     const posted = [...fsSrc.matchAll(/post\("(\/api\/[^"]+)"/g)].map((m) => m[1]).sort();
     const writeCalls = (fsSrc.match(/\.write\(\)/g) ?? []).length;
     const applyBody = /apply\.onclick = async \(\) => \{([\s\S]*?)\n  \};/.exec(fsSrc)?.[1] ?? "";
-    const readBases = /j\.bases \?\? \{\}/.test(fsSrc) && /bases\.set\(repo, null\)/.test(fsSrc);
+    // readCaps fills the branch map ONLY under the guard for a response that HAS `bases`: absence of
+    // the FIELD is an old server and must read as "?" — a fill outside the guard would mark every
+    // repo known-null and claim "not set" (false knowledge). Mutations: drop the guard (fill runs on
+    // every answer) → the capture misses the statements → red; drop `bases` from the SERVER answer →
+    // the (e4) round-trip check below turns red instead.
+    const guardBody = /if \(j\.bases && typeof j\.bases === "object"\) \{([\s\S]*?)\n    \}/.exec(fsSrc)?.[1] ?? "";
+    const readBases = guardBody !== ""
+      && guardBody.includes("bases.clear()")
+      && guardBody.includes("Object.entries(j.bases)")
+      && guardBody.includes("bases.set(repo, null)");
     check("settings Fleet section: exactly the five existing routes, each written only through Apply",
       fsSrc.length > 0
         && JSON.stringify(posted) === JSON.stringify(FLEET_WRITES)

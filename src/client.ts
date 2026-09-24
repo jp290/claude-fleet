@@ -2701,12 +2701,17 @@ function fleetSection(sec: HTMLElement): void {
     const j = r?.ok ? (await r.json().catch(() => null)) as { default?: number; max?: number; caps?: Record<string, number>; bases?: Record<string, string> } | null : null;
     if (!j) return;
     caps = j.caps ?? {};
-    bases.clear();
-    for (const [repo, branch] of Object.entries(j.bases ?? {})) if (branch) bases.set(repo, branch);
-    // absence in the answer is an answer too: after one successful read every picker repo is
-    // known, so the branch row shows the stored value or "not set" — "?" stays reserved for a
-    // server that cannot be reached at all
-    for (const repo of repos) if (!bases.has(repo)) bases.set(repo, null);
+    // only a server that answers WITH the map may speak about branches: absence of the FIELD is an
+    // old server (live is codeBehind), and an old answer must read as "?" — never as "not set" for
+    // every repo — so bases stays unchanged and no repo is marked known here
+    if (j.bases && typeof j.bases === "object") {
+      bases.clear();
+      for (const [repo, branch] of Object.entries(j.bases)) if (branch) bases.set(repo, branch);
+      // absence IN the answer is an answer too: after one successful read every picker repo is
+      // known, so the branch row shows the stored value or "not set" — "?" stays reserved for a
+      // server that cannot be reached, or one that predates the field
+      for (const repo of repos) if (!bases.has(repo)) bases.set(repo, null);
+    }
     capDefault = typeof j.default === "number" ? j.default : null;
     if (typeof j.max === "number") capMax = j.max;
   }

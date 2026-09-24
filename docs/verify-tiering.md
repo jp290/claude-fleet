@@ -4740,6 +4740,18 @@ Zeile mit `phase:"entered"`, mit voller Nutzlast als `residue`, oder mit einer A
 ist es NICHT — dann ist die Rueckrollung wirklich ausgeblieben, und das ist ein Produktbefund an
 `server.ts:6221-6238`, der dem gehoert, der ihn sieht.
 
+**Nachtrag 2026-09-24 — eine ZWEITE Signatur derselben Familie: `{"lines":1,"phase":"","residue":""}`.**
+Gesehen einmal, Helfer-Vorschau Job `be7b15e4ba97` (second-host, Baum `7f76f11e`, `5736 gelaufen / 1 rot`);
+im Trail-Register bisher NIE (alle zwoelf frueheren Sichtungen sind `backspace:none` mit Praefix). Die
+Sonde las eine LEERE Zustandsdatei, waehrend die Journalzeile schon stand. Mechanismus gelesen, nicht
+gemessen: `save_state` im Stand-in (`e2e-isolated.sh`) ist `fopen(…, "w")` → schreiben → `fclose` —
+zwischen Truncate und Flush ist die Datei leer, und der Burst oeffnet dieses Fenster N-mal. Das ist
+dieselbe Lesung mitten im Burst, nur im Truncate-Fenster statt zwischen zwei Schreibvorgaengen.
+Ein Produktbefund waere es nur mit nicht-leerer `residue`. Der Baum, der sie zeigte, aenderte an
+`server.ts` nur einen Kommentar. **Fuer die Reparatur-Richtung oben:** die Schleife muss BEIDE
+Konjunkte als Endzustand verlangen (`phase` beginnt mit `backspace:` UND Puffer leer) — auf
+`holdComposerBuf === ""` allein wuerde eine leere Zerrlesung sofort gruen.
+
 ### 11.2ac Eine dreissigste Familie: die beiden self-land-Checks in `e2e/programs.ts`, die §11.2h ausdruecklich fuer immun erklaert hat — dieselbe Requeue-Wurzel, und §11.2h's Begruendung ist die falsifizierte Stelle (2026-09-20 registriert; Rate ueber das GANZE lokale Register per Direktscan gerechnet, Signatur aus den `detail`-Feldern gelesen, Wurzel bereits REPARIERT in `f8f3ee90`)
 
 **Die zwei Checks** (`e2e/programs.ts#9689` und `#9726`, self-land-Sektion):

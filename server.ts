@@ -34240,10 +34240,13 @@ if (existsSync(STATE_FILE)) {
               ...(t.brief.by === "owner" || t.brief.by === "main" ? { by: t.brief.by } : {}) }
             : undefined,
           // a malformed criterion degrades to "none proposed", never to a confirmed one — the
-          // confirmation is an owner act and must not be forgeable by editing the state file
+          // confirmation is an owner act and must not be forgeable by editing the state file. The
+          // parts pass the SAME validator as the two doors (criterionPartsFromBody): a part set the
+          // doors would refuse is dropped whole, never repaired — the comparator executes these.
           criterion: t.criterion && typeof t.criterion.text === "string" && t.criterion.text
-            ? { text: t.criterion.text.slice(0, MAX_CRITERION), proposedAt: Number(t.criterion.proposedAt) || 0,
-              confirmedAt: Number(t.criterion.confirmedAt) || null }
+            ? ((parts) => ({ text: t.criterion.text.slice(0, MAX_CRITERION), proposedAt: Number(t.criterion.proposedAt) || 0,
+              confirmedAt: Number(t.criterion.confirmedAt) || null,
+              ...(parts.ok && parts.parts.length ? { parts: parts.parts } : {}) }))(criterionPartsFromBody(t.criterion.parts))
             : undefined,
           // a hand-edited ref that no longer parses as a slug is dropped, not repaired — dedup
           // against a mangled key would silently stop matching the pulse's next filing anyway

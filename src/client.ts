@@ -6121,6 +6121,41 @@ const PK_ICONS: Record<string, string> = {
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v4.7l3 1.8"/></svg>',
   up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 11l6-6 6 6"/></svg>',
   star: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 3l2.6 5.8 6.4.6-4.8 4.2 1.4 6.2L12 17l-5.6 2.8 1.4-6.2L3 9.4l6.4-.6z"/></svg>',
+  // the founding window's role art (gfStep1): same class of static literal, same one renderer
+  "gf-orch": `<svg class="gfart" viewBox="0 0 260 368" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
+      <g stroke-width="1" opacity=".35"><path d="M130 158 L56 76"/><path d="M130 158 L206 70"/><path d="M130 158 L40 170"/><path d="M130 158 L222 176"/><path d="M130 158 L78 248"/><path d="M130 158 L188 252"/></g>
+      <g stroke-width="1.2" opacity=".55"><rect x="44" y="62" width="24" height="18" rx="4"/><rect x="194" y="56" width="24" height="18" rx="4"/><rect x="28" y="162" width="24" height="18" rx="4"/><rect x="210" y="168" width="24" height="18" rx="4"/><rect x="66" y="240" width="24" height="18" rx="4"/><rect x="176" y="244" width="24" height="18" rx="4"/><path d="M206 74 v18 q0 8 8 8 h10"/><circle cx="228" cy="100" r="3"/><path d="M40 180 v16 q0 8 -8 8 h-6"/><circle cx="22" cy="204" r="3"/></g>
+      <g stroke-width="1.6"><circle cx="130" cy="158" r="20" opacity=".9"/><circle cx="130" cy="158" r="5" fill="currentColor" opacity=".8"/><circle cx="130" cy="158" r="36" opacity=".28" stroke-dasharray="2 5"/><circle cx="130" cy="158" r="54" opacity=".14" stroke-dasharray="2 7"/></g>
+    </svg>`,
+  "gf-wt-new": `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
+      <path d="M18 128 H232" stroke-width="1.6" opacity=".45"/>
+      <g opacity=".45" fill="currentColor" stroke="none"><circle cx="46" cy="128" r="3.5"/><circle cx="86" cy="128" r="3.5"/><circle cx="126" cy="128" r="3.5"/><circle cx="196" cy="128" r="3.5"/></g>
+      <path d="M126 128 C 146 128 150 84 176 80 L 196 78" stroke-width="1.8" opacity=".9"/>
+      <circle cx="206" cy="78" r="9" stroke-width="1.8" opacity=".95"/>
+      <path d="M206 73 v10 M201 78 h10" stroke-width="1.6"/>
+      <g stroke-width="1.2" opacity=".55"><path d="M222 60 l6 -6"/><path d="M226 74 h9"/><path d="M218 94 l6 6"/></g>
+    </svg>`,
+  "gf-wt-old": `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
+      <path d="M18 132 H232" stroke-width="1.6" opacity=".45"/>
+      <g opacity=".45" fill="currentColor" stroke="none"><circle cx="40" cy="132" r="3.5"/><circle cx="80" cy="132" r="3.5"/><circle cx="210" cy="132" r="3.5"/></g>
+      <path d="M80 132 C 100 132 104 90 126 88 H 190" stroke-width="1.8" opacity=".75"/>
+      <g fill="currentColor" stroke="none" opacity=".75"><circle cx="140" cy="88" r="3.5"/><circle cx="162" cy="88" r="3.5"/><circle cx="184" cy="88" r="3.5"/></g>
+      <g stroke-width="1.7" opacity=".95"><circle cx="203" cy="50" r="6"/><path d="M203 57 v14 M203 71 l-7 12 M203 71 l7 12 M195 63 l8 -3 8 3"/></g>
+      <path d="M186 60 q-8 14 -2 24" stroke-width="1.3" stroke-dasharray="2 4" opacity=".7"/>
+    </svg>`,
+  "gf-plain": `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
+      <path d="M45 62 h56 l14 14 h90 a8 8 0 0 1 8 8 v40 a8 8 0 0 1 -8 8 H45 a8 8 0 0 1 -8 -8 V70 a8 8 0 0 1 8 -8 z" stroke-width="1.8" opacity=".85"/>
+      <circle cx="125" cy="101" r="9" stroke-width="1.8" opacity=".95"/>
+      <circle cx="125" cy="101" r="2.5" fill="currentColor" stroke="none" opacity=".8"/>
+      <g stroke-width="1.2" opacity=".4"><path d="M186 84 h18"/><path d="M186 118 h18"/></g>
+    </svg>`,
+  "gf-steward": `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
+      <path d="M25 128 H225" stroke-width="1.6" opacity=".45"/>
+      <path d="M55 78 Q125 34 195 78 Q125 118 55 78 z" stroke-width="1.8" opacity=".9"/>
+      <circle cx="125" cy="77" r="13" stroke-width="1.8" opacity=".95"/>
+      <circle cx="125" cy="77" r="4" fill="currentColor" stroke="none" opacity=".8"/>
+      <g stroke-width="1.2" opacity=".5"><path d="M125 128 v-24"/><path d="M87 128 q4 -14 18 -20"/><path d="M163 128 q-4 -14 -18 -20"/></g>
+    </svg>`,
 };
 function pkIcon(kind: string): HTMLElement {
   const s = el("span", "pkicon");
@@ -7332,51 +7367,17 @@ interface GfRepo { repo: string; name: string; mains: SlotInfo[]; lanes: SlotInf
 // the roles of step 1. The three the owner named first carry the mockup's art; "Session" and
 // "Steward" are his F1 answer ("die einfache Session in einem Ordner + Steward kommen auf die
 // Rollen-Seite") and get art in the same stroke language. Texts explain in German (G0.5).
-const GF_ROLES: { id: GfRole; name: string; sub: string; say: string; art: string }[] = [
+const GF_ROLES: { id: GfRole; name: string; sub: string; say: string }[] = [
   { id: "orch", name: "Orchestrator", sub: "hält die Fleet zusammen",
-    say: "Hält das Portfolio, schärft Aufträge und verteilt Arbeit — sie landet nicht selbst. Beim Start bekommt sie ihre Rollenkarte.",
-    art: `<svg class="gfart" viewBox="0 0 260 368" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <g stroke-width="1" opacity=".35"><path d="M130 158 L56 76"/><path d="M130 158 L206 70"/><path d="M130 158 L40 170"/><path d="M130 158 L222 176"/><path d="M130 158 L78 248"/><path d="M130 158 L188 252"/></g>
-      <g stroke-width="1.2" opacity=".55"><rect x="44" y="62" width="24" height="18" rx="4"/><rect x="194" y="56" width="24" height="18" rx="4"/><rect x="28" y="162" width="24" height="18" rx="4"/><rect x="210" y="168" width="24" height="18" rx="4"/><rect x="66" y="240" width="24" height="18" rx="4"/><rect x="176" y="244" width="24" height="18" rx="4"/><path d="M206 74 v18 q0 8 8 8 h10"/><circle cx="228" cy="100" r="3"/><path d="M40 180 v16 q0 8 -8 8 h-6"/><circle cx="22" cy="204" r="3"/></g>
-      <g stroke-width="1.6"><circle cx="130" cy="158" r="20" opacity=".9"/><circle cx="130" cy="158" r="5" fill="currentColor" opacity=".8"/><circle cx="130" cy="158" r="36" opacity=".28" stroke-dasharray="2 5"/><circle cx="130" cy="158" r="54" opacity=".14" stroke-dasharray="2 7"/></g>
-    </svg>` },
+    say: "Hält das Portfolio, schärft Aufträge und verteilt Arbeit — sie landet nicht selbst. Beim Start bekommt sie ihre Rollenkarte." },
   { id: "wt-new", name: "Worker", sub: "auf neuem Worktree",
-    say: "Eine eigene Lane auf frischem Branch: arbeitet, beweist, wird gelandet.",
-    art: `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <path d="M18 128 H232" stroke-width="1.6" opacity=".45"/>
-      <g opacity=".45" fill="currentColor" stroke="none"><circle cx="46" cy="128" r="3.5"/><circle cx="86" cy="128" r="3.5"/><circle cx="126" cy="128" r="3.5"/><circle cx="196" cy="128" r="3.5"/></g>
-      <path d="M126 128 C 146 128 150 84 176 80 L 196 78" stroke-width="1.8" opacity=".9"/>
-      <circle cx="206" cy="78" r="9" stroke-width="1.8" opacity=".95"/>
-      <path d="M206 73 v10 M201 78 h10" stroke-width="1.6"/>
-      <g stroke-width="1.2" opacity=".55"><path d="M222 60 l6 -6"/><path d="M226 74 h9"/><path d="M218 94 l6 6"/></g>
-    </svg>` },
+    say: "Eine eigene Lane auf frischem Branch: arbeitet, beweist, wird gelandet." },
   { id: "wt-old", name: "Worker", sub: "auf vorhandenem Worktree",
-    say: "Setzt einen liegengebliebenen Worktree wieder in einen Platz — die Arbeit darauf bleibt.",
-    art: `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <path d="M18 132 H232" stroke-width="1.6" opacity=".45"/>
-      <g opacity=".45" fill="currentColor" stroke="none"><circle cx="40" cy="132" r="3.5"/><circle cx="80" cy="132" r="3.5"/><circle cx="210" cy="132" r="3.5"/></g>
-      <path d="M80 132 C 100 132 104 90 126 88 H 190" stroke-width="1.8" opacity=".75"/>
-      <g fill="currentColor" stroke="none" opacity=".75"><circle cx="140" cy="88" r="3.5"/><circle cx="162" cy="88" r="3.5"/><circle cx="184" cy="88" r="3.5"/></g>
-      <g stroke-width="1.7" opacity=".95"><circle cx="203" cy="50" r="6"/><path d="M203 57 v14 M203 71 l-7 12 M203 71 l7 12 M195 63 l8 -3 8 3"/></g>
-      <path d="M186 60 q-8 14 -2 24" stroke-width="1.3" stroke-dasharray="2 4" opacity=".7"/>
-    </svg>` },
+    say: "Setzt einen liegengebliebenen Worktree wieder in einen Platz — die Arbeit darauf bleibt." },
   { id: "plain", name: "Session", sub: "in einem Ordner",
-    say: "Ein Agent, ein Ordner — keine Rolle und keine Lane, das heutige Standard-Gründen.",
-    art: `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <path d="M45 62 h56 l14 14 h90 a8 8 0 0 1 8 8 v40 a8 8 0 0 1 -8 8 H45 a8 8 0 0 1 -8 -8 V70 a8 8 0 0 1 8 -8 z" stroke-width="1.8" opacity=".85"/>
-      <circle cx="125" cy="101" r="9" stroke-width="1.8" opacity=".95"/>
-      <circle cx="125" cy="101" r="2.5" fill="currentColor" stroke="none" opacity=".8"/>
-      <g stroke-width="1.2" opacity=".4"><path d="M186 84 h18"/><path d="M186 118 h18"/></g>
-    </svg>` },
+    say: "Ein Agent, ein Ordner — keine Rolle und keine Lane, das heutige Standard-Gründen." },
   { id: "steward", name: "Steward", sub: "hält den Betrieb im Blick",
-    say: "Beobachtet die Fleet, meldet Stillstand und Widerspruch — nie eine zweite Owner-Stimme.",
-    art: `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <path d="M25 128 H225" stroke-width="1.6" opacity=".45"/>
-      <path d="M55 78 Q125 34 195 78 Q125 118 55 78 z" stroke-width="1.8" opacity=".9"/>
-      <circle cx="125" cy="77" r="13" stroke-width="1.8" opacity=".95"/>
-      <circle cx="125" cy="77" r="4" fill="currentColor" stroke="none" opacity=".8"/>
-      <g stroke-width="1.2" opacity=".5"><path d="M125 128 v-24"/><path d="M87 128 q4 -14 18 -20"/><path d="M163 128 q-4 -14 -18 -20"/></g>
-    </svg>` },
+    say: "Beobachtet die Fleet, meldet Stillstand und Widerspruch — nie eine zweite Owner-Stimme." },
 ];
 
 const GF_STEPS: [number, string][] = [[1, "Rolle"], [2, "Profil & Kontext"], [3, "Repo"]];
@@ -7529,9 +7530,11 @@ function gfStep1(win: HTMLElement, body: HTMLElement) {
     const p = el("button", `gfpanel gf-${r.id}`) as HTMLButtonElement;
     if (r.id === gfRole) p.classList.add("pick");
     p.title = r.say;
-    const t = document.createElement("template");
-    t.innerHTML = r.art.trim();
-    p.append(t.content.firstChild!);
+    // the role art rides the one reviewed static-icon path (fleet-e2e-security.ts §7): it lives in
+    // PK_ICONS, and the wrapper is display:contents so .gfpanel stays the art's containing block
+    const art = pkIcon(`gf-${r.id}`);
+    art.className = "gfartwrap";
+    p.append(art);
     const cap = el("div", "gfcap", r.name);
     cap.append(el("small", "", r.sub));
     const say = el("div", "gfsay");

@@ -90,6 +90,11 @@ zum Gegenpruefen. Die Hebel sind Tempo, Kosten, Abdeckung (Stichprobe wird Volle
 (einmal wird jeder Tick) oder eine neue Faehigkeit. Zwoelf wiederkehrende Zuege aus 45 Fremdprojekten:
 `docs/messungen/2026-09-18-grok-jev-rohantworten.md`, Runde 3.
 
+Die Form laeuft seit 2026-09-24 live: in `~/example-project` waehlt Jev im Tick unter Optionen, die Code
+als legal gebaut hat, und kam in 3/3 Laeufen bis zur Holzspitzhacke, mit 0 ungueltigen Antworten und
+unter 0,001 $ (`docs/messungen/2026-09-24-example-project-s3-live.md`). Ein Fehler zeigte sich in der
+Optionsbeschreibung, nicht in Jev.
+
 Zwei Bauformen folgen aus §3.1: **ein Aufruf je Ereignis mit dem ganzen Frage-Set**, und die
 Umkehrung — **das Gemeinsame in den State, die N Items als N Fragen**. Wie gut Jev bei langen Fragen
 ist, hat niemand gemessen.

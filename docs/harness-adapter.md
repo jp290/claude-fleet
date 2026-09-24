@@ -462,6 +462,10 @@ Netzwerkkosten werden nicht als null behauptet.
     `disposition` bleibt commit-basiert — ein `killed-empty` mit `dirtyFiles > 0` hatte uncommittete
     Arbeit. Audit-Event `dispatch_requeued` (`server.ts#briefAndSend`, `requeue`) auf jedem Requeue des
     Dispatch-Tails, Felder `taskId` + `reason`, Detail mit allen zurueckgelegten Zeilen-Ids.
+    Nennt die Absage zum `server.ts#DISPATCH_PARK_AFTER`-ten Mal in Folge DENSELBEN blockierenden
+    Screen (`server.ts#dispatchScreenStreak`, seit 2026-09-24), geht die Zeile statt `queued` auf
+    `pending` (Note: Screen, Repo, Versuchszahl) und `dispatch_parked` (Felder `taskId`, `screen`,
+    `repo`, `attempts`) ersetzt `dispatch_requeued`; erst ein erneutes Queue (`releaseTask`) zaehlt neu.
     `LaneOutcome.modelResolved` nur auf Codex-Zeilen mit `model: null`: das Modell des NEUESTEN
     `turn_context`-Records im gebundenen Rollout (`codexRolloutFacts`), sonst `null` — nie der Default
     aus `~/.codex/config.toml`.

@@ -1171,6 +1171,56 @@ export async function run(): Promise<void> {
   check("precondition: node_modules exposes public/index.html for slot presentation checks",
     indexSrc !== null, indexSrcError);
   if (cliSrc === null || indexSrc === null) return;
+  // THE OWNER REPORT PANEL UNDER A REPORT DELEGATE. With a delegate in force the poll's
+  // `reportsAwaitingOwner` counts only the rows the delegate escalated and `reportsAwaitingDelegate`
+  // the rest, while GET /api/fleet-report still returns every row. The panel's list must be cut by
+  // the same fact, or the 📥 number and the rows under it disagree and the owner is shown the
+  // delegate's queue as his own. The predicate is lifted from the shipped source and run over rows
+  // in every state; the delegate count is its only free variable.
+  {
+    const decl = /\nconst ownerReportAwaiting = [\s\S]*?;\n/.exec(cliSrc)?.[0] ?? "";
+    type Awaits = (delegated: number) => (r: Record<string, unknown>) => boolean;
+    const awaits = ((): Awaits | null => {
+      try {
+        return decl ? new Function(`return (reportsAwaitingDelegate) => {\n${
+          new Bun.Transpiler({ loader: "ts" }).transformSync(decl)}\nreturn ownerReportAwaiting; };`)() as Awaits : null;
+      } catch { return null; }
+    })();
+    check("precondition: the client exposes ownerReportAwaiting as one liftable predicate", awaits !== null,
+      decl.slice(0, 200));
+    if (awaits) {
+      const esc = { at: 1, by: { slot: 3, openedAt: 1, sessionId: null }, reason: "needs the owner" };
+      const rows = [
+        { id: "gone", liveness: "gone" },
+        { id: "inbox", liveness: "owner-inbox" },
+        { id: "gone-esc", liveness: "gone", escalation: esc },
+        { id: "inbox-esc", liveness: "owner-inbox", escalation: esc },
+        { id: "gone-null-esc", liveness: "gone", escalation: null },
+        { id: "live-esc", liveness: "live", escalation: esc },
+        { id: "decided-esc", liveness: "gone", escalation: esc,
+          decision: { disposition: "accepted", at: 2, by: "owner", reason: null } },
+        { id: "decided", liveness: "gone", decision: { disposition: "rejected", at: 2, by: "owner", reason: "x" } },
+      ];
+      const ids = (delegated: number): string => rows.filter(awaits(delegated)).map((r) => r.id).join(",");
+      // the server's split (server.ts, /api/sessions): owner = pending escalated, delegate = pending rest
+      const pending = rows.filter(awaits(0));
+      const ownerCount = pending.filter((r) => r.escalation).length;
+      const delegateCount = pending.length - ownerCount;
+      check("owner report panel: with a delegate in force it lists exactly the escalated unjudged rows",
+        ids(delegateCount) === "gone-esc,inbox-esc", `delegated=${delegateCount} rows=[${ids(delegateCount)}]`);
+      check("owner report panel: under a delegate the row count equals the badge's reportsAwaitingOwner",
+        rows.filter(awaits(delegateCount)).length === ownerCount && ownerCount === 2,
+        `rows=${rows.filter(awaits(delegateCount)).length} owner=${ownerCount}`);
+      check("owner report panel: without a delegate the list is every unjudged non-live row, escalated or not",
+        ids(0) === "gone,inbox,gone-esc,inbox-esc,gone-null-esc", ids(0));
+    }
+    const dlg = /\nfunction renderOpsDlg\(\)[\s\S]*?\n\}\n/.exec(cliSrc)?.[0] ?? "";
+    check("owner report panel: the list is ownerReportAwaiting over the loaded rows and the poll feeds the delegate count",
+      /ownerReportRows\.filter\(ownerReportAwaiting\)/.test(dlg)
+        && /setReportsAwaitingDelegate\(data\.reportsAwaitingDelegate \?\? 0\)/.test(cliSrc)
+        && /function setReportsAwaitingDelegate\(n: number\)[\s\S]{0,200}?reportsAwaitingDelegate = n;[\s\S]{0,200}?renderOpsDlg\(\)/.test(cliSrc),
+      dlg.slice(0, 200));
+  }
   const seedSource = /function seedFramePlan[\s\S]*?\n\}/.exec(cliSrc)?.[0] ?? "";
   check("precondition: the client exposes a pure seed-frame plan for the reconnect probe", seedSource.length > 0);
   if (seedSource) {

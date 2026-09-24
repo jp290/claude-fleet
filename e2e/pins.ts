@@ -2738,7 +2738,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   pin("fleet-reports.jsonl gets an OPEN row at every report filing and a DECISION row at every verdict stamp",
     /const FLEET_REPORT_LEDGER_FILE = `\$\{import\.meta\.dir\}\/fleet-reports\.jsonl`;/.test(server)
     && reportOpens === 2 && server.split("const ledgered = ledgerReportOpen(report);").length - 1 === reportOpens
-    && decisionStamps === 3
+    && decisionStamps === 4
     && server.split("const ledgered = ledgerReportDecision(report, report.decision);").length - 1 === decisionStamps
     && read(".gitignore").split("\n").includes("fleet-reports.jsonl"),
     `opens=${reportOpens} stamps=${decisionStamps}`);
@@ -6399,10 +6399,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // occupant would DISCARD every owner verdict at the next boot — silently, one whole row at a time.
   pin(`${RULE_RECEIVER} — an owner verdict is stamped "owner" and survives hydration (D1b)`,
     ownerDoor.includes('by: "owner"') && !/by: \{ slot/.test(ownerDoor)
-      && reportRowParser.includes('if (d.by !== "owner" && !rule)')
+      && reportRowParser.includes('if (d.by !== "owner" && !rule && !delegate)')
       && /by\.openedAt !== r\.receiver\.openedAt/.test(reportRowParser)
       && !/by\.sessionId !== r\.receiver\.sessionId/.test(reportRowParser),
-    `stamp=${ownerDoor.includes('by: "owner"')} parser=${reportRowParser.includes('if (d.by !== "owner" && !rule)')}`);
+    `stamp=${ownerDoor.includes('by: "owner"')} parser=${reportRowParser.includes('if (d.by !== "owner" && !rule && !delegate)')}`);
   // The owner door actuates nothing either, and no TICK may reach it: an owner act is what closes a
   // report, and a scheduled one would age an absence into a verdict nobody gave.
   const ownerForbidden = ["sendText", "mergeJob", "killSlot", "landLane", "detachSlotTasks",
@@ -6419,8 +6419,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const pruneFn = server.match(/function pruneFleetReports\([\s\S]*?\n\}/)?.[0] ?? "";
   pin(`${RULE_RECEIVER} — a report awaiting the owner is held out of the retention tail and counted on the poll (D1b)`,
     pruneFn.includes("if (reportAwaitsOwner(report)) return false;")
-      && server.includes("const awaiting = fleetReports.filter(reportAwaitsOwner).length;")
+      && server.includes("const pending = fleetReports.filter(reportAwaitsOwner);")
       && server.includes("reportsAwaitingOwner: awaiting")
+      && server.includes("reportsAwaitingDelegate: delegated")
       && clientU.text.includes("reportsAwaitingOwner")
       && clientU.text.includes('api("/api/fleet-report")'),
     `prune=${pruneFn.includes("reportAwaitsOwner")} poll=${server.includes("reportsAwaitingOwner: awaiting")}`);
@@ -6494,10 +6495,13 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // …and the WATCH TICK is the fourth (b5dc4dc2): it hands a verdict that met a busy pane back to the
   // same deliverer at that lane's next quiet window, and it hands back ONLY the open "pending" record.
   const watchTick = server.match(/async function tickWatches\([\s\S]*?\n\}/)?.[0] ?? "";
-  pin(`${RULE_RECEIVER} — ONE deliverer carries a verdict to the lane, and BOTH doors, the land rule and the watch tick call it (D1c)`,
-    carryFn !== "" && carrySites === 4
+  // …and the owner's REPORT DELEGATE (2026-09-24) is the fifth: its verdict reaches the lane the same way
+  const delegateDoor = server.match(/async function delegateDecideFleetReport\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — ONE deliverer carries a verdict to the lane, and ALL THREE doors, the land rule and the watch tick call it (D1c)`,
+    carryFn !== "" && carrySites === 5
       && decisionDoor.includes("await deliverFleetReportDecision(report);")
       && ownerDoor.includes("await deliverFleetReportDecision(report);")
+      && delegateDoor.includes("await deliverFleetReportDecision(report);")
       && ruleTick.includes("await deliverFleetReportDecision(report);")
       && watchTick.includes("await deliverFleetReportDecision(report);")
       && watchTick.includes('if (report.decisionDelivery?.state !== "pending") continue;'),

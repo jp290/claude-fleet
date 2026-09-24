@@ -2765,6 +2765,56 @@ Die Lane-Fußzeile (`LANE_EXIT_FOOTER`) bleibt **unverändert**: sie sagt der LA
 committen, einen getypten Report filen, idle gehen. Was die MAIN danach mit dem Report tut, ist
 nicht ihr Wissen und gehört nicht in ihren Brief.
 
+### Der Report-DELEGIERTE — `PATCH /api/slots/:id/report-delegate` · `POST /api/self/fleet-report/:id/delegate/accept|reject|escalate` (seit 2026-09-24)
+
+Owner 2026-09-24 wörtlich, auf die Frage, ob die Orchestratorin die 96 `reportsAwaitingOwner`
+selbst beurteilen darf: „ja, beurteil die Reports selbst, nur Ausnahmen an mich" — und direkt danach
+„das sollten wir eigentlich auch genau so ins system integrieren". Vorher gab es für eine verwaiste
+Zeile nur die Owner-Tür oben; wer dort mit dem Owner-Token urteilte, stand im Ledger als
+`by:"owner"`, was nicht stimmte. Die Delegation ist jetzt eine BENANNTE, widerrufbare Berechtigung
+(`server/types.ts#ReportDelegate`, Muster `MemoryGrant`):
+
+```
+# Owner: setzen / widerrufen / lesen (Owner-Gate; ein Self-Token ist hier 401)
+PATCH /api/slots/<id>/report-delegate   {"expectedOpenedAt":…, "expectedRevision":N}
+PATCH /api/slots/<id>/report-delegate   {"expectedOpenedAt":…, "expectedRevision":N, "revoke":true}
+GET   /api/slots/<id>/report-delegate   → {delegate, inForce, holder:{slot, openedAt}|null}
+
+# der Delegierte (Self-Token, NIE eine Lane)
+GET  /api/self/fleet-report/delegated              → {delegate, reports:[… mit liveness], escalated}
+POST /api/self/fleet-report/<id>/delegate/accept   {"reason":"ERFUELLT: ja — …"}
+POST /api/self/fleet-report/<id>/delegate/reject   {"reason":"…"}
+POST /api/self/fleet-report/<id>/delegate/escalate {"reason":"warum das deine Entscheidung ist"}
+```
+
+- **Genau ein Occupant, fleet-weit höchstens einer in Kraft.** Gebunden an `occupant` (slot +
+  openedAt) UND `lineageId`; ein Label, ein Modell oder eine Rolle berechtigt nichts (409
+  `not-delegate`, bei Orchestrator-Label mit „a role label grants nothing"). Ein Setzen, während ein
+  ANDERER Occupant hält, ist 409 `delegate-held` mit `holder` — erst dort widerrufen. Eine Lane ist an
+  beiden Türen 409 `lane-scope`. `revision` zählt jedes Setzen, Widerrufen und Übertragen; ein
+  widerrufener Record bleibt stehen, damit die Zählung überlebt.
+- **Der Delegierte urteilt genau die Zeilen, für die `server.ts#reportAwaitsOwner` gilt** — unbeurteilt,
+  kein lebender Empfänger. Lebt der Empfänger, bleibt das Urteil dessen (409 `receiver-live`, die
+  Grenze der Owner-Tür aus derselben Funktion). Bereits beurteilt: 409 wie an den anderen Türen.
+- **`decision.by` ist `{delegate: {slot, openedAt, sessionId}}`** — nie `"owner"`, nie die nackte
+  Occupant-Form. Ledger (`fleet-reports.jsonl`), Lane-Zustellung und Event-Settle laufen über
+  dieselben Schreiber wie bei den anderen Türen. Wie ein Owner- oder Regel-Urteil bewaffnet ein
+  Delegierten-Urteil weder den automatischen Lane-Schluss noch den Review-Park: beide lesen ein
+  Urteil als „die MAIN hat gelesen", und das trägt es nicht. Die Land-Vorbedingung liest es wie
+  jedes geschriebene Urteil.
+- **`escalate` ist KEIN Urteil.** Es verlangt einen Grund (400 ohne), schreibt `escalation: {at, by,
+  reason}` auf die Zeile und eine Ledger-Zeile `kind:"escalation"`, lässt `decision` leer und das
+  Event unberührt. Ab dann urteilt nur noch der Owner (Delegierten-Tür 409 `escalated`).
+- **Die Zählung auf `/api/sessions`:** mit einem Delegierten in Kraft zählt `reportsAwaitingOwner`
+  nur noch eskalierte wartende Zeilen, `reportsAwaitingDelegate` den Rest (bei 0 weggelassen). Ohne
+  Delegierten ist beides byte-gleich zum Stand davor: das neue Feld erscheint nie, und keine Zeile
+  trägt `escalation`.
+- **Nachfolge:** die generische Schiene (`POST /api/self/succeed` ohne Program-/Supervisor-Bindung)
+  trägt die Delegation ganz zur Nachfolgerin derselben Linie (`issuedBy:"succession"`,
+  `transferredFrom`); Program-MAIN- und Supervisor-Schiene beenden sie. Ein Widerruf wirkt sofort,
+  schon während er geschrieben wird.
+- **Kein Tick, kein Automat** ruft die Delegierten-Tür — sie ist ein Session-Akt wie die anderen beiden.
+
 ### Regelentscheide — wer entscheidet was (seit 2026-09-13, keine Route)
 
 Owner-Entscheid 2026-09-13 („Bitte entscheide du"), Spezifikation

@@ -154,6 +154,7 @@ import {
   type ProgramValidation, type SupervisorBinding, type ProgramDigest, type DispatchSpawn, type SlotContext,
   type SlotStreamOccupant, type TaskCriterionPart,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, type MemoryGrant, type MemoryGrantView,
+  loadReportDelegate, type ReportDelegate, type FleetReportDecider,
 } from "./server/types";
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
 import { appendEvent, appendEventStrict, coalescedSaver, foreignStateOwner, readLedger, readEventLog,
@@ -2091,6 +2092,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   laneSuccessions: 0,
   laneSeats: [],
   memoryGrant: null,
+  reportDelegate: null,
   lineageId: null,
   selfToken: randomBytes(16).toString("hex"),
   offset: 0,
@@ -3159,11 +3161,12 @@ interface EvidenceCursor { slot: number; openedAt: number; principal: string; ta
   carriers: EvidenceCarrier[]; pending: Map<string, Record<string, unknown>[]>; pendingDropped: number; unjoined: number }
 const memoryCursors = new Map<string, EvidenceCursor>();
 
-const decisionOrigin = (by: unknown): "agent" | "owner-principal" | "rule" | "unknown" => {
+const decisionOrigin = (by: unknown): "agent" | "owner-principal" | "rule" | "delegate" | "unknown" => {
   if (by === "owner") return "owner-principal";
   if (by === null || typeof by !== "object" || Array.isArray(by)) return "unknown";
   const b = by as Record<string, unknown>;
   if (typeof b.rule === "string") return "rule";
+  if (b.delegate !== null && typeof b.delegate === "object") return "delegate";
   return typeof b.slot === "number" && typeof b.openedAt === "number" ? "agent" : "unknown";
 };
 
@@ -3772,6 +3775,95 @@ function transferMemoryGrant(successor: Slot, carry: MemoryGrant, from: { slot: 
     transferredFrom: { slot: from.slot, openedAt: from.openedAt } };
   audit("memory_grant", successor.id, `transferred grant ${carry.grantId} revision ${carry.revision + 1} from openedAt ${from.openedAt} `
     + `to ${successor.openedAt}: ${carry.projectKeys.length} project(s), views ${carry.views.join("+")} (succession)`);
+}
+
+// === THE REPORT DELEGATION (ReportDelegate; owner 2026-09-24) =====================================
+// The owner's words, on whether the Orchestrator may judge the 96 reportsAwaitingOwner itself: "ja,
+// beurteil die Reports selbst, nur Ausnahmen an mich" — and then "das sollten wir eigentlich auch
+// genau so ins system integrieren". Before this the only door for such a row was the owner's own, so
+// a delegated judgement had to be taken with the owner token and stood in the ledger as by:"owner",
+// which it was not. This makes the spoken delegation a NAMED, REVOCABLE permission on one occupant:
+//  · the owner sets it (PATCH /api/slots/:id/report-delegate) on one exact occupant and its line —
+//    fleet-wide at most ONE in force; a label, a model or a lane grants nothing (a lane is 409);
+//  · the delegate judges exactly the rows reportAwaitsOwner names, through its own door, and a row
+//    with a LIVING receiver stays that receiver's (409, the owner door's own boundary);
+//  · `escalate` hands a row back to the owner with a reason — the "Ausnahmen an mich";
+//  · no tick and no automation reaches it, and the land precondition keeps reading only a WRITTEN
+//    verdict: a delegate verdict is one, stamped {delegate: occupant}, never "owner".
+// Same in-flight rule as the read grant: a set is in force once persisted, a revoke at once.
+const reportDelegateInFlight = new Map<number, ReportDelegate | null>();
+function effectiveDelegate(s: Slot): ReportDelegate | null {
+  const d = reportDelegateInFlight.has(s.id) ? reportDelegateInFlight.get(s.id) ?? null : s.reportDelegate;
+  return s.cwd && !s.worktree && d && d.revokedAt === null && d.occupant.slot === s.id && d.occupant.openedAt === s.openedAt
+    && d.lineageId === s.lineageId ? d : null;
+}
+function reportDelegateHolder(): Slot | null {
+  return slots.find((x) => effectiveDelegate(x) !== null) ?? null;
+}
+// PATCH, behind the owner gate. Set: {expectedOpenedAt, expectedRevision}; revoke: {…, revoke: true}.
+// A wrong occupant or revision is a 409 and changes nothing; so is a set while ANOTHER occupant holds
+// the delegation — the owner revokes that one first, so two delegates can never split one inbox.
+async function patchReportDelegate(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
+  if (!s.cwd) return json({ refusal: "not-active", error: "slot not active" }, 409);
+  if (s.worktree)
+    return json({ refusal: "lane-scope", error: "a lane files its own result — it is never the owner's report delegate" }, 409);
+  if (body && Object.keys(body).some((k) => !["expectedOpenedAt", "expectedRevision", "revoke"].includes(k)))
+    return json({ refusal: "bad-body", error: "body takes only expectedOpenedAt, expectedRevision and revoke" }, 400);
+  const openedAt = s.openedAt;
+  if (body?.expectedOpenedAt !== openedAt)
+    return json({ refusal: "occupant-changed", error: `expectedOpenedAt must name this slot's current occupant (${openedAt})` }, 409);
+  const current = s.reportDelegate;
+  const revision = current?.revision ?? 0;
+  if (body?.expectedRevision !== revision)
+    return json({ refusal: "revision-mismatch", error: `expectedRevision must be the delegation's current revision (${revision})`, revision }, 409);
+  if (reportDelegateInFlight.size > 0 || successionInflight.has(s.selfToken))
+    return json({ refusal: "in-flight", error: "another delegation write or a succession of this occupant is in flight — retry" }, 409);
+  const at = Date.now();
+  let next: ReportDelegate;
+  if (body.revoke === true) {
+    if (!current || current.revokedAt !== null) return json({ refusal: "nothing-to-revoke", error: "no delegation is set on this occupant" }, 409);
+    next = { ...current, revision: revision + 1, revokedAt: at };
+  } else {
+    if (body.revoke !== undefined) return json({ refusal: "bad-body", error: "revoke must be true or absent" }, 400);
+    const holder = reportDelegateHolder();
+    if (holder?.id === s.id) return json({ refusal: "already-set", error: "this occupant already holds the report delegation" }, 409);
+    if (holder)
+      return json({ refusal: "delegate-held", error: `slot ${holder.id} holds the report delegation — revoke it there first; one delegate judges the inbox`,
+        holder: { slot: holder.id, openedAt: holder.openedAt } }, 409);
+    next = { v: 1, delegateId: randomBytes(12).toString("hex"), revision: revision + 1, issuedBy: "owner-principal", issuedAt: at,
+      lineageId: s.lineageId, occupant: { slot: s.id, openedAt }, revokedAt: null, transferredFrom: null };
+  }
+  reportDelegateInFlight.set(s.id, next.revokedAt !== null ? null : effectiveDelegate(s));
+  s.reportDelegate = next;
+  try {
+    await saveStateNow();
+  } catch (e) {
+    if (s.openedAt === openedAt) s.reportDelegate = current;
+    reportDelegateInFlight.delete(s.id);
+    const why = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+    audit("report_delegate", s.id, `write failed, rolled back to revision ${revision}: ${why}`);
+    return json({ refusal: "not-persisted", error: `the delegation could not be written to disk (${why}) — nothing changed; revision stays ${revision}` }, 500);
+  }
+  reportDelegateInFlight.delete(s.id);
+  if (s.openedAt !== openedAt)
+    return json({ refusal: "occupant-changed", error: "the slot changed occupant while the delegation was written — the new occupant holds nothing" }, 409);
+  audit("report_delegate", s.id, `${next.revokedAt !== null ? "revoked" : "set"} delegation ${next.delegateId} revision ${next.revision} `
+    + `on openedAt ${openedAt} (owner-principal)`);
+  return json({ ok: true, delegate: next });
+}
+function reportDelegateView(s: Slot): Response {
+  const holder = reportDelegateHolder();
+  return json({ slot: s.id, openedAt: s.cwd ? s.openedAt : null, lineageId: s.lineageId, delegate: s.reportDelegate,
+    inForce: effectiveDelegate(s) !== null, holder: holder ? { slot: holder.id, openedAt: holder.openedAt } : null });
+}
+// the generic succession rail's carry, called in the SAME synchronous step that writes the line
+// record onto the successor — the delegation moves whole; the Supervisor and Program-MAIN rails end it
+function transferReportDelegate(successor: Slot, carry: ReportDelegate, from: { slot: number; openedAt: number }): void {
+  successor.reportDelegate = { ...carry, revision: carry.revision + 1, issuedBy: "succession", issuedAt: Date.now(),
+    lineageId: successor.lineageId, occupant: { slot: successor.id, openedAt: successor.openedAt },
+    transferredFrom: { slot: from.slot, openedAt: from.openedAt } };
+  audit("report_delegate", successor.id, `transferred delegation ${carry.delegateId} revision ${carry.revision + 1} `
+    + `from openedAt ${from.openedAt} to ${successor.openedAt} (succession)`);
 }
 
 // the orchestrating session's start pointer (≤ 512 B, e2e/programs.ts measures the delivered text)
@@ -5103,11 +5195,12 @@ function stateSnapshot(): string {
     taskId: string | null; originId: string | null; programId: string | null;
     releasedBy: "owner" | "machine" | null; laneSuccessions: number; laneSeats?: LaneSeat[]; lineageId: string | null; selfToken: string;
     memoryGrant?: MemoryGrant;
+    reportDelegate?: ReportDelegate;
     browser?: true; context?: SlotContext; sleeping?: SlotSleep }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -7603,6 +7696,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // case that has an answer; every other open (hand-opened lane, plain checkout) genuinely has none
   s.lineageId = null; // a recycled slot is not the role line; the succession rails stamp it back
   s.memoryGrant = null; // ...nor its read grant: the generic succession rail alone carries one across
+  s.reportDelegate = null; // ...nor its report delegation, on the same terms
   s.laneSuccessions = 0; // ...and a recycled slot starts a NEW lane's count at zero. succeedLane is
   // the one caller that stamps it back (prior + 1) right after this call, for the one case where
   // the slot keeps the same worktree and the same work across the session boundary
@@ -7796,6 +7890,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.programId = null;
   s.releasedBy = null;
   s.memoryGrant = null;
+  s.reportDelegate = null;
   detachSlotTasks(s.id, closedNote, parked);
   for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
   shares = shares.filter((x) => x.slot !== s.id);
@@ -10025,7 +10120,8 @@ function latestRowDecisionLine(rows: readonly Task[]): string | null {
   }
   if (!best?.decision) return null;
   const by = best.decision.by;
-  const who = typeof by === "string" ? by : "rule" in by ? by.rule : `slot ${by.slot}`;
+  const who = typeof by === "string" ? by : "rule" in by ? by.rule
+    : "delegate" in by ? `delegate slot ${by.delegate.slot}` : `slot ${by.slot}`;
   return `fleet-report ${best.id}: ${best.decision.disposition}`
     + ` — ${best.decision.reason ?? "(ohne genannten Grund)"} (${who}, ${new Date(best.decision.at).toISOString()})`;
 }
@@ -10421,6 +10517,8 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     // THE READ GRANT rides the generic line whole or narrowed, judged BEFORE anything ends
     const grantCarry = memoryGrantCarry(s, body?.memoryGrant);
     if (!grantCarry.ok) return json({ refusal: grantCarry.refusal, error: grantCarry.error }, grantCarry.status);
+    // …and the report delegation beside it, whole — read while the predecessor still holds it
+    const delegateCarry = effectiveDelegate(s);
 
     // EVERYTHING THE BRIEF READS IS READ WHILE THE PREDECESSOR STILL STANDS (respawnInPlace): the
     // cwd, the draft and the successor's label. A git read that fails here refuses nothing and ends
@@ -10453,6 +10551,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       const openedAt = s.openedAt;
       const record = writeLineageHandover(draft, s, Date.now());
       if (grantCarry.carry) transferMemoryGrant(s, grantCarry.carry, predecessorIdentity);
+      if (delegateCarry) transferReportDelegate(s, delegateCarry, predecessorIdentity);
       try {
         await saveStateNow();
       } catch (e) {
@@ -11115,7 +11214,8 @@ function reportStandingForLand(cwd: string, branch: string): LandReportStanding 
 // part that differs between the doors, because what a caller can DO about it differs.
 function rejectedReportRefusal(v: NonNullable<ReturnType<typeof rejectedReportForLand>>,
   exit: string): string {
-  const who = v.by === "owner" ? "the owner" : "rule" in v.by ? `rule ${v.by.rule}` : `slot ${v.by.slot}`;
+  const who = v.by === "owner" ? "the owner" : "rule" in v.by ? `rule ${v.by.rule}`
+    : "delegate" in v.by ? `the owner's report delegate (slot ${v.by.delegate.slot})` : `slot ${v.by.slot}`;
   // the receiver's own words, collapsed and capped: the reason IS the refusal's content, and a
   // reader who has to go find it will land instead of reading it.
   const why = v.reason
@@ -11886,6 +11986,63 @@ async function ownerDecideFleetReport(id: string, disposition: FleetReportDispos
     `${report.id} ${disposition} receiver=${report.basis === "program"
       ? `program:${report.provenance.programId}`
       : report.receiver?.slot ?? "owner-inbox"}`);
+  await saveStateNow();
+  return json({ ok: true, report });
+}
+
+// THE DELEGATE DOOR (ReportDelegate): the owner door's reach, walked by the one occupant the owner
+// named. accept|reject write a verdict stamped {delegate: occupant} through the same ledger, settle
+// and carry as the other two doors; escalate writes no verdict at all — it hands the row back to the
+// owner with a reason, and from then on only his door judges it. The boundary is the owner door's,
+// asked through the same one function: a row with a LIVING receiver is that receiver's.
+async function delegateDecideFleetReport(s: Slot, id: string, act: "accept" | "reject" | "escalate",
+  body: Record<string, unknown> | null): Promise<Response> {
+  if (!effectiveDelegate(s))
+    return json({ refusal: "not-delegate", error: `no report delegation is in force on this occupant (slot ${s.id}, openedAt ${s.openedAt})`
+      + `${isOrchestratorLabel(s.label) ? " — a role label grants nothing" : ""}; the owner names one with PATCH /api/slots/<id>/report-delegate` }, 409);
+  const report = fleetReports.find((r) => r.id === id);
+  if (!report) return json({ error: "unknown fleet report" }, 404);
+  if (reportReceiverLiveness(report) === "live")
+    return json({ refusal: "receiver-live", error: report.basis === "program"
+      ? `fleet report belongs to program ${report.provenance.programId}, whose live bound MAIN judges it through POST /api/self/fleet-report/${report.id}/accept|reject`
+      : `fleet report receiver slot ${report.receiver?.slot} is live — the verdict belongs to that MAIN through POST /api/self/fleet-report/${report.id}/accept|reject` }, 409);
+  if (body && Object.keys(body).some((key) => key !== "reason"))
+    return json({ error: "body must contain only reason" }, 400);
+  let reason: string | null = null;
+  if (body && body.reason !== undefined) {
+    if (typeof body.reason !== "string") return json({ error: "reason must be a string" }, 400);
+    if (body.reason.length > MAX_FLEET_REPORT_DECISION_REASON)
+      return json({ error: `reason must be at most ${MAX_FLEET_REPORT_DECISION_REASON} chars` }, 400);
+    reason = body.reason.trim() || null;
+  }
+  // an escalation IS its reason: the owner is handed an exception, and one without a why is a pile
+  if (act === "escalate" && reason === null)
+    return json({ error: "escalate needs a reason — say why this one is the owner's" }, 400);
+  const fulfilled = act === "escalate" ? { ok: true as const, value: null } : fulfilledFromReason(reason);
+  if (!fulfilled.ok) return json({ error: fulfilled.error }, 400);
+  if (report.decision)
+    return json({ error: `fleet report was already ${report.decision.disposition}`, decision: report.decision }, 409);
+  if (report.escalation)
+    return json({ refusal: "escalated", error: `fleet report was escalated to the owner at ${new Date(report.escalation.at).toISOString()} — `
+      + `the verdict is his now, through POST /api/fleet-report/${report.id}/accept|reject`, escalation: report.escalation }, 409);
+
+  const at = Date.now();
+  const by: FleetReportDecider = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
+  if (act === "escalate") {
+    report.escalation = { at, by, reason: reason! };
+    await appendEvent(FLEET_REPORT_LEDGER_FILE, { kind: "escalation", id: report.id, by, reason, at });
+    audit("fleet_report_delegate_escalation", report.worker.slot, `${report.id} escalated by slot ${s.id}`);
+    await saveStateNow();
+    return json({ ok: true, report });
+  }
+  const disposition: FleetReportDisposition = act === "accept" ? "accepted" : "rejected";
+  report.decision = { disposition, at, by: { delegate: by }, reason, fulfilled: fulfilled.value };
+  const ledgered = ledgerReportDecision(report, report.decision);
+  const event = report.eventId === null ? undefined : fleetEvents.find((e) => e.id === report.eventId);
+  if (event && !FLEET_EVENT_TERMINAL.includes(event.status)) settleFleetEventAcknowledged(event);
+  await ledgered;
+  await deliverFleetReportDecision(report);
+  audit("fleet_report_delegate_decision", report.worker.slot, `${report.id} ${disposition} by delegate slot ${s.id}`);
   await saveStateNow();
   return json({ ok: true, report });
 }
@@ -19154,7 +19311,7 @@ async function mintReviewCandidate(s: Slot, hours: number):
   const d = report.decision;
   if (!d) return no(409, `report ${report.id} is undecided — its MAIN has not accepted it`);
   if (d.disposition !== "accepted") return no(409, `report ${report.id} was ${d.disposition}`);
-  if (d.by === "owner" || "rule" in d.by) return no(409, `report ${report.id} was not accepted by its MAIN`);
+  if (d.by === "owner" || "rule" in d.by || "delegate" in d.by) return no(409, `report ${report.id} was not accepted by its MAIN`);
   if (report.provenance.taskId !== s.taskId) return no(409, `report ${report.id} names another row than this lane's founding row`);
   const st = await statusLines(s.cwd);
   if (st.code !== 0) return no(409, "git status failed — the tree could not be proved clean");
@@ -19240,6 +19397,9 @@ function laneAutoCloseRefusal(s: Slot, now: number): string | null {
     // reads a land, not a MAIN that is finished with this lane.
     if ("rule" in d.by)
       return "a report of this lane was accepted by rule, not by its MAIN";
+    // …nor the owner's REPORT DELEGATE: it judges exactly where the MAIN no longer can
+    if ("delegate" in d.by)
+      return "a report of this lane was judged by the owner's report delegate, not by its MAIN";
     const by = d.by;
     // the decision names the receiver OCCUPATION. fleetReportFrom enforces this on the way in and
     // decideFleetReport on the way through, which is precisely why it is re-tested here: a
@@ -19296,7 +19456,7 @@ async function tickLaneAutoClose(): Promise<void> {
       // reason and written out for it: an actuator that could close a lane on a verdict taken from
       // outside its Program is the one shape the branch above exists to make impossible.
       if (!report || !decision || decision.by === "owner") continue;
-      if ("rule" in decision.by) continue;
+      if ("rule" in decision.by || "delegate" in decision.by) continue;
       const occupant = { openedAt: s.openedAt, sessionId: s.sessionId, cwd: s.cwd };
       // the ledger's OWN recorder, with its own git reads — never a second count of this lane's
       // commits. buildLaneOutcome resolves killed-dirty vs killed-empty from `commitCount` itself.
@@ -34543,6 +34703,15 @@ if (existsSync(STATE_FILE)) {
             && (wtRaw === undefined || wtRaw === null)) s.memoryGrant = g;
           else console.log(`[fleet] slot ${s.id}: persisted memory grant dropped at boot — it does not name this occupant and line exactly`);
         }
+        // THE REPORT DELEGATION, on the read grant's exact terms (ReportDelegate)
+        const prd = (v as { reportDelegate?: unknown }).reportDelegate;
+        if (prd !== undefined) {
+          const d = loadReportDelegate(prd);
+          const wtRaw = (v as { worktree?: unknown }).worktree;
+          if (d && d.occupant.slot === s.id && d.occupant.openedAt === s.openedAt && d.lineageId === s.lineageId
+            && (wtRaw === undefined || wtRaw === null)) s.reportDelegate = d;
+          else console.log(`[fleet] slot ${s.id}: persisted report delegation dropped at boot — it does not name this occupant and line exactly`);
+        }
         const wt = (v as { worktree?: unknown }).worktree;
         if (typeof wt === "object" && wt !== null
           && typeof (wt as { repo?: unknown }).repo === "string" && typeof (wt as { branch?: unknown }).branch === "string") {
@@ -38023,6 +38192,29 @@ Bun.serve<WSData>({
     // Worker result reports are the immutable sibling of clarifications on the SAME FleetEvent
     // transport. Only a real lane may POST (the steward is a standing role, not a lane); GET is
     // dual-scoped to the exact worker or receiver occupant. Every identity is derived server-side.
+    // THE REPORT DELEGATE'S two doors (ReportDelegate): GET the rows it may judge, POST a verdict or an
+    // escalation. NON-lane only; everything else — who holds the delegation, which row is open to it —
+    // is decided in the handler, never by a label.
+    const selfDelegateDecision = /^\/api\/self\/fleet-report\/([0-9a-f]{24})\/delegate\/(accept|reject|escalate)$/.exec(url.pathname);
+    if ((selfDelegateDecision && req.method === "POST")
+      || (url.pathname === "/api/self/fleet-report/delegated" && req.method === "GET")) {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree)
+        return json({ refusal: "lane-scope", error: "a lane may not judge a fleet report — a lane files its own result" }, 409);
+      if (selfDelegateDecision)
+        return delegateDecideFleetReport(s, selfDelegateDecision[1]!,
+          selfDelegateDecision[2] as "accept" | "reject" | "escalate", await readJson(req));
+      const d = effectiveDelegate(s);
+      if (!d) return json({ refusal: "not-delegate", error: `no report delegation is in force on this occupant (slot ${s.id}, openedAt ${s.openedAt})` }, 409);
+      const pending = fleetReports.filter(reportAwaitsOwner);
+      return json({ delegate: { delegateId: d.delegateId, revision: d.revision },
+        reports: pending.filter((r) => !r.escalation).sort((a, b) => b.reportedAt - a.reportedAt)
+          .map((r) => ({ ...r, liveness: reportReceiverLiveness(r) })),
+        escalated: pending.filter((r) => r.escalation).length });
+    }
+
     if (url.pathname === "/api/self/fleet-report" && (req.method === "GET" || req.method === "POST")) {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
@@ -39138,9 +39330,15 @@ Bun.serve<WSData>({
         // can judge any more and that nobody has judged. The bodies are behind GET /api/fleet-report.
         // OMITTED AT ZERO; absent reads as zero. It is the count that makes the 📥 affordance appear
         // for a row whose FleetEvent went terminal on teardown and therefore lights nothing itself.
+        // WITH A REPORT DELEGATE IN FORCE the owner's number is his exceptions alone — the rows the
+        // delegate escalated — and `reportsAwaitingDelegate` counts the rest; with none it is
+        // byte-for-byte the old number and the new field never appears.
         ...(() => {
-          const awaiting = fleetReports.filter(reportAwaitsOwner).length;
-          return awaiting > 0 ? { reportsAwaitingOwner: awaiting } : {};
+          const pending = fleetReports.filter(reportAwaitsOwner);
+          const delegated = reportDelegateHolder() ? pending.filter((r) => !r.escalation).length : 0;
+          const awaiting = pending.length - delegated;
+          return { ...(awaiting > 0 ? { reportsAwaitingOwner: awaiting } : {}),
+            ...(delegated > 0 ? { reportsAwaitingDelegate: delegated } : {}) };
         })(),
         // digests only — the prompt texts live behind GET /api/tasks (see TaskDigest)
         tasks: tasks.map(taskDigest),
@@ -39327,6 +39525,13 @@ Bun.serve<WSData>({
       const s = slotFrom(grantMatch[1]);
       if (!s) return json({ error: "unknown slot" }, 404);
       return req.method === "GET" ? memoryGrantView(s) : await patchMemoryGrant(s, await readJson(req));
+    }
+    // THE REPORT DELEGATION (ReportDelegate): owner-only by POSITION like the read grant beside it
+    const delegateMatch = /^\/api\/slots\/(\d+)\/report-delegate$/.exec(url.pathname);
+    if (delegateMatch && (req.method === "GET" || req.method === "PATCH")) {
+      const s = slotFrom(delegateMatch[1]);
+      if (!s) return json({ error: "unknown slot" }, 404);
+      return req.method === "GET" ? reportDelegateView(s) : await patchReportDelegate(s, await readJson(req));
     }
     const codexCandidatesMatch = /^\/api\/slots\/(\d+)\/codex-candidates$/.exec(url.pathname);
     if (req.method === "GET" && codexCandidatesMatch) {

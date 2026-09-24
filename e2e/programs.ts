@@ -4035,6 +4035,77 @@ export async function run(ctx: Ctx): Promise<void> {
   const CARD_BLOCKS = ["--- ROLLE ---", "--- DU ENTSCHEIDEST ---", "--- DER OWNER ENTSCHEIDET ---",
     "--- DEINE TUEREN ---", "--- DER LOOP ---", "--- UEBERGABE ---"] as const;
   const orchCard = (prompt: string): string[] => CARD_BLOCKS.filter((b) => !prompt.includes(b));
+  // --- THE REPORT DELEGATION (owner 2026-09-24: "ja, beurteil die Reports selbst, nur Ausnahmen an
+  // mich … das sollten wir eigentlich auch genau so ins system integrieren"). The owner names ONE
+  // occupant that judges every report no living receiver can; the Orchestrator below is that
+  // occupant, because its generic succession rail is the one that has to carry the delegation.
+  // Six PLANTED rows: five whose receiver is gone (the delegate's to judge) and one whose receiver
+  // is a LIVE session (never the delegate's). Planted rather than filed: a lane that files again
+  // supersedes its own older owner-inbox rows, and what is under test is the judging door.
+  const dlgTokOf = async (slot: number, not = ""): Promise<string> => {
+    for (let i = 0; i < 50; i++) {
+      const tok = readState().slots?.[String(slot)]?.selfToken ?? "";
+      if (/^[0-9a-f]{32}$/.test(tok) && tok !== not) return tok;
+      await Bun.sleep(100);
+    }
+    return "";
+  };
+  const dlgOutsiderSlot = (await sessions()).slots.find((s) => !s.cwd)?.id ?? 0;
+  const dlgOutsiderOpen = await post(`/api/slots/${dlgOutsiderSlot}/open`, { cwd: REPO, label: "delegate-outsider" });
+  const dlgLane = (await (await post("/api/lanes", { repo: REPO })).json().catch(() => ({}))) as { slot?: number };
+  const dlgOutsiderTok = await dlgTokOf(dlgOutsiderSlot);
+  const dlgLaneTok = dlgLane.slot ? await dlgTokOf(dlgLane.slot) : "";
+  const dlgOutsiderOpenedAt = readState().slots?.[String(dlgOutsiderSlot)]?.openedAt ?? 0;
+  const dlgIds = { acc: "d1".repeat(12), rej: "d2".repeat(12), esc: "d3".repeat(12), succ: "d4".repeat(12),
+    rev: "d5".repeat(12), live: "d6".repeat(12) };
+  const dlgAllIds = Object.values(dlgIds);
+  const dlgRow = (id: string, receiver: { slot: number; openedAt: number; sessionId: null }): Record<string, unknown> => ({
+    id, reportedAt: Date.now() - 60_000, status: "complete",
+    text: "report delegation fixture: a typed result only the owner, or the delegate he named, may judge.",
+    worker: { slot: 1, openedAt: 1, sessionId: null, cwd: "/nonexistent/delegate-fixture", branch: `fleet/delegate-${id.slice(0, 4)}` },
+    provenance: { taskId: null, originId: null, programId: null },
+    receiver, basis: "program-main", eventId: id.replace(/^d/, "c") });
+  const dlgGone = { slot: 1, openedAt: 1, sessionId: null };
+  await stopSrv();
+  const dlgPlant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { fleetReports?: unknown[] };
+  dlgPlant.fleetReports = [...(dlgPlant.fleetReports ?? []),
+    ...[dlgIds.acc, dlgIds.rej, dlgIds.esc, dlgIds.succ, dlgIds.rev].map((id) => dlgRow(id, dlgGone)),
+    dlgRow(dlgIds.live, { slot: dlgOutsiderSlot, openedAt: dlgOutsiderOpenedAt, sessionId: null })];
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(dlgPlant, null, 2), { mode: 0o600 });
+  await restartSrv();
+  type DlgBy = { delegate?: { slot: number; openedAt: number } } | "owner";
+  type DlgRow = { id: string; liveness?: string; decision?: { disposition?: string; by?: DlgBy; fulfilled?: string | null } | null;
+    escalation?: { reason?: string; by?: { slot: number } } | null };
+  const dlgOwnerRows = async (): Promise<DlgRow[]> =>
+    ((await (await get("/api/fleet-report")).json()) as { reports?: DlgRow[] }).reports ?? [];
+  const dlgCounts = async (): Promise<{ owner: number; delegate: number | null; rows: DlgRow[] }> => {
+    const b = await (await get("/api/sessions")).json() as { reportsAwaitingOwner?: number; reportsAwaitingDelegate?: number };
+    return { owner: b.reportsAwaitingOwner ?? 0, delegate: "reportsAwaitingDelegate" in b ? b.reportsAwaitingDelegate ?? -1 : null,
+      rows: await dlgOwnerRows() };
+  };
+  const dlgPending = (rows: DlgRow[]): DlgRow[] => rows.filter((r) => !r.decision && r.liveness !== "live");
+  const dlgPatch = (slot: number, body: unknown): Promise<Response> =>
+    fetch(`${BASE}/api/slots/${slot}/report-delegate`, { method: "PATCH", headers: H, body: JSON.stringify(body) });
+  const dlgDoor = (tok: string, id: string, act: string, body: unknown = {}): Promise<Response> =>
+    fetch(`${BASE}/api/self/fleet-report/${id}/delegate/${act}`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify(body) });
+  const dlgRefusal = async (r: Response): Promise<string> =>
+    `${r.status}:${((await r.json().catch(() => ({}))) as { refusal?: string; error?: string }).refusal ?? "-"}`;
+  const dlgBase = await dlgCounts();
+  const dlgView0 = (await (await get(`/api/slots/${dlgOutsiderSlot}/report-delegate`)).json()) as { delegate?: unknown; holder?: unknown };
+  check("report delegation fixture: an outsider session, a lane and six planted rows — five orphaned, one with a LIVE receiver",
+    dlgOutsiderOpen.ok && !!dlgLane.slot && dlgOutsiderTok !== "" && dlgLaneTok !== ""
+      && dlgAllIds.every((id) => dlgBase.rows.some((r) => r.id === id))
+      && dlgBase.rows.find((r) => r.id === dlgIds.live)?.liveness === "live"
+      && [dlgIds.acc, dlgIds.rej, dlgIds.esc, dlgIds.succ, dlgIds.rev].every((id) => dlgPending(dlgBase.rows).some((r) => r.id === id)),
+    JSON.stringify({ outsider: dlgOutsiderSlot, lane: dlgLane.slot ?? null, held: dlgAllIds.map((id) => dlgBase.rows.find((r) => r.id === id)?.liveness ?? null) }));
+  // WITHOUT A DELEGATE NOTHING CHANGES: the poll counts every orphan for the owner, the new field is
+  // absent, and no row carries an escalation key.
+  check("report delegation: with no delegate the owner counts every orphaned row, reportsAwaitingDelegate is ABSENT and no row carries an escalation",
+    dlgBase.delegate === null && dlgBase.owner === dlgPending(dlgBase.rows).length
+      && dlgBase.rows.every((r) => !("escalation" in r)) && dlgView0.delegate === null && dlgView0.holder === null,
+    JSON.stringify({ owner: dlgBase.owner, delegate: dlgBase.delegate, pending: dlgPending(dlgBase.rows).length, view: dlgView0 }));
+
   const orchLabel = "🎛 Orchestrator (e2e)";
   const orchSlot = (await sessions()).slots.find((s) => !s.cwd)?.id ?? 0;
   // The door is `slots/<id>/open`, so the SLOT is known before the pane is — waitForLabel, which
@@ -4097,6 +4168,82 @@ export async function run(ctx: Ctx): Promise<void> {
     orchGrantSet.ok && orchGrow.status === 409 && orchGrowBody.refusal === "scope-growth"
       && (await sessions()).slots.find((s) => s.id === orchSlot)?.openedAt === orchPredOpenedAt,
     `set=${orchGrantSet.status} grow=${orchGrow.status}:${orchGrowBody.refusal} key=${orchKey}`);
+  // THE DELEGATION ITSELF, before the succession. Every refusal first: no delegation → 409 for the
+  // outsider; a lane can neither be named (PATCH) nor walk the door.
+  const dlgNoDelegate = await dlgRefusal(await dlgDoor(dlgOutsiderTok, dlgIds.acc, "accept"));
+  const dlgLanePatch = dlgLane.slot ? await dlgRefusal(await dlgPatch(dlgLane.slot,
+    { expectedOpenedAt: readState().slots?.[String(dlgLane.slot)]?.openedAt, expectedRevision: 0 })) : "no-lane";
+  const dlgLaneDoor = await dlgRefusal(await dlgDoor(dlgLaneTok, dlgIds.acc, "accept"));
+  check("report delegation: without a delegation the door is 409 not-delegate, and a lane is 409 lane-scope at BOTH the owner route and the door",
+    dlgNoDelegate === "409:not-delegate" && dlgLanePatch === "409:lane-scope" && dlgLaneDoor === "409:lane-scope",
+    JSON.stringify({ outsider: dlgNoDelegate, lanePatch: dlgLanePatch, laneDoor: dlgLaneDoor }));
+  const dlgSet = await dlgPatch(orchSlot, { expectedOpenedAt: orchPredOpenedAt, expectedRevision: 0 });
+  const dlgSetBody = (await dlgSet.json().catch(() => ({}))) as { delegate?: { revision?: number; issuedBy?: string;
+    occupant?: { slot: number; openedAt: number }; revokedAt?: number | null } };
+  const dlgSecond = await dlgPatch(dlgOutsiderSlot, { expectedOpenedAt: dlgOutsiderOpenedAt, expectedRevision: 0 });
+  const dlgSecondBody = (await dlgSecond.json().catch(() => ({}))) as { refusal?: string; holder?: { slot?: number } };
+  const dlgAfterSet = await dlgCounts();
+  check("report delegation: the owner names the Orchestrator's occupant, a second delegate is refused while it holds, and the poll hands the orphans to the delegate",
+    dlgSet.ok && dlgSetBody.delegate?.revision === 1 && dlgSetBody.delegate.issuedBy === "owner-principal"
+      && dlgSetBody.delegate.occupant?.slot === orchSlot && dlgSetBody.delegate.occupant.openedAt === orchPredOpenedAt
+      && dlgSecond.status === 409 && dlgSecondBody.refusal === "delegate-held" && dlgSecondBody.holder?.slot === orchSlot
+      && dlgAfterSet.owner === 0 && dlgAfterSet.delegate === dlgPending(dlgAfterSet.rows).length && dlgAfterSet.delegate >= 5,
+    JSON.stringify({ set: dlgSet.status, delegate: dlgSetBody.delegate ?? null, second: dlgSecondBody,
+      owner: dlgAfterSet.owner, delegated: dlgAfterSet.delegate }));
+  const dlgAcc = await dlgDoor(orchToken, dlgIds.acc, "accept", { reason: "ERFUELLT: ja — read the diff, the slice holds" });
+  const dlgAccBody = (await dlgAcc.json().catch(() => ({}))) as { report?: DlgRow };
+  const dlgRej = await dlgDoor(orchToken, dlgIds.rej, "reject", { reason: "criterion not met" });
+  const dlgRejBody = (await dlgRej.json().catch(() => ({}))) as { report?: DlgRow };
+  const dlgAccBy = dlgAccBody.report?.decision?.by;
+  const dlgRejBy = dlgRejBody.report?.decision?.by;
+  check("report delegation: the delegate accepts and rejects orphaned rows, and decision.by names it as DELEGATE with its occupant, never as owner",
+    dlgAcc.ok && dlgAccBody.report?.decision?.disposition === "accepted" && dlgAccBody.report.decision.fulfilled === "ja"
+      && typeof dlgAccBy === "object" && dlgAccBy.delegate?.slot === orchSlot && dlgAccBy.delegate.openedAt === orchPredOpenedAt
+      && dlgRej.ok && dlgRejBody.report?.decision?.disposition === "rejected"
+      && typeof dlgRejBy === "object" && dlgRejBy.delegate?.slot === orchSlot,
+    JSON.stringify({ acc: dlgAcc.status, accDecision: dlgAccBody.report?.decision ?? null, rej: dlgRej.status,
+      rejDecision: dlgRejBody.report?.decision ?? null }));
+  const dlgAgain = await dlgDoor(orchToken, dlgIds.acc, "reject", { reason: "second thoughts" });
+  const dlgAgainText = await dlgAgain.text();
+  const dlgLiveRes = await dlgRefusal(await dlgDoor(orchToken, dlgIds.live, "accept"));
+  const dlgOutsiderStill = await dlgRefusal(await dlgDoor(dlgOutsiderTok, dlgIds.esc, "accept"));
+  check("report delegation: refused — an already-decided row (409), a row whose receiver is LIVE (409 receiver-live), and a foreign slot while the delegate holds (409 not-delegate)",
+    dlgAgain.status === 409 && dlgAgainText.includes("already accepted")
+      && dlgLiveRes === "409:receiver-live" && dlgOutsiderStill === "409:not-delegate"
+      && !(await dlgOwnerRows()).find((r) => r.id === dlgIds.live)?.decision,
+    JSON.stringify({ again: `${dlgAgain.status}:${dlgAgainText.slice(0, 80)}`, live: dlgLiveRes, outsider: dlgOutsiderStill }));
+  const dlgEscBare = await dlgDoor(orchToken, dlgIds.esc, "escalate", {});
+  const dlgEscReason = "Befund widerspricht der Owner-Vorgabe — das ist seine Entscheidung";
+  const dlgEsc = await dlgDoor(orchToken, dlgIds.esc, "escalate", { reason: dlgEscReason });
+  const dlgEscBody = (await dlgEsc.json().catch(() => ({}))) as { report?: DlgRow };
+  const dlgEscJudge = await dlgRefusal(await dlgDoor(orchToken, dlgIds.esc, "accept"));
+  const dlgEscTwice = await dlgRefusal(await dlgDoor(orchToken, dlgIds.esc, "escalate", { reason: "again" }));
+  const dlgAfterEsc = await dlgCounts();
+  const dlgEscPending = dlgPending(dlgAfterEsc.rows);
+  check("report delegation: escalate needs a reason, leaves the row UNDECIDED with the owner, closes the delegate door on it, and moves it into the owner's count",
+    dlgEscBare.status === 400 && dlgEsc.ok && !dlgEscBody.report?.decision
+      && dlgEscBody.report?.escalation?.reason === dlgEscReason && dlgEscBody.report.escalation.by?.slot === orchSlot
+      && dlgEscJudge === "409:escalated" && dlgEscTwice === "409:escalated"
+      && dlgAfterEsc.owner === dlgEscPending.filter((r) => r.escalation).length && dlgAfterEsc.owner === 1
+      && dlgAfterEsc.delegate === dlgEscPending.length - 1,
+    JSON.stringify({ bare: dlgEscBare.status, esc: dlgEsc.status, escalation: dlgEscBody.report?.escalation ?? null,
+      judge: dlgEscJudge, twice: dlgEscTwice, owner: dlgAfterEsc.owner, delegated: dlgAfterEsc.delegate, pending: dlgEscPending.length }));
+  const dlgList = (await (await fetch(`${BASE}/api/self/fleet-report/delegated`,
+    { headers: { "x-fleet-self-token": orchToken } })).json()) as { reports?: { id: string }[]; escalated?: number };
+  const dlgListIds = (dlgList.reports ?? []).map((r) => r.id);
+  const dlgOwnerEsc = await post(`/api/fleet-report/${dlgIds.esc}/accept`, { reason: "the owner takes the exception" });
+  const dlgOwnerEscBody = (await dlgOwnerEsc.json().catch(() => ({}))) as { report?: DlgRow };
+  check("report delegation: the delegate's list holds the open orphans and none it judged, escalated or cannot reach — and the owner door still judges the exception, as owner",
+    dlgListIds.includes(dlgIds.succ) && dlgListIds.includes(dlgIds.rev)
+      && ![dlgIds.acc, dlgIds.rej, dlgIds.esc, dlgIds.live].some((id) => dlgListIds.includes(id)) && dlgList.escalated === 1
+      && dlgOwnerEsc.ok && dlgOwnerEscBody.report?.decision?.by === "owner",
+    JSON.stringify({ list: dlgListIds.map((id) => id.slice(0, 4)), escalated: dlgList.escalated ?? null, owner: dlgOwnerEsc.status }));
+  const dlgLedger = readFileSync(`${ROOT}/fleet-reports.jsonl`, "utf8").split("\n").filter(Boolean)
+    .map((l) => JSON.parse(l) as { kind?: string; id?: string; by?: { delegate?: { slot?: number } }; reason?: string });
+  check("report delegation: fleet-reports.jsonl books the delegate verdict with by.delegate and the escalation as its own row",
+    dlgLedger.some((r) => r.kind === "decision" && r.id === dlgIds.acc && r.by?.delegate?.slot === orchSlot)
+      && dlgLedger.some((r) => r.kind === "escalation" && r.id === dlgIds.esc && r.reason === dlgEscReason),
+    JSON.stringify(dlgLedger.filter((r) => dlgAllIds.includes(r.id ?? "")).map((r) => `${r.kind}:${(r.id ?? "").slice(0, 4)}`)));
   const orchSuccPending = selfSucceed(orchToken, { intent: orchIntent, memoryGrant: { views: ["work"] } });
   let orchSuccSlot: number | null = null;
   for (let i = 0; i < 100 && orchSuccSlot === null; i++) {
@@ -4145,6 +4292,41 @@ export async function run(ctx: Ctx): Promise<void> {
       && g.occupant.openedAt !== orchPredOpenedAt && g.transferredFrom?.openedAt === orchPredOpenedAt
       && g.lineageId === (orchSuccBody.lineage?.lineageId ?? null),
     JSON.stringify(orchSuccGrant));
+  // THE CARRY: the delegation moves to the successor of the same line like the read grant, and the
+  // successor judges under its OWN occupant; the owner's revoke then ends it at once.
+  const dlgSuccView = (await (await get(`/api/slots/${orchSlot}/report-delegate`)).json()) as { openedAt?: number; inForce?: boolean;
+    delegate?: { revision?: number; issuedBy?: string; occupant?: { openedAt: number }; transferredFrom?: { openedAt: number } | null } | null };
+  const dlgSuccTok = await dlgTokOf(orchSlot, orchToken);
+  const dlgSuccAcc = await dlgDoor(dlgSuccTok, dlgIds.succ, "accept", { reason: "the successor read it" });
+  const dlgSuccBy = ((await dlgSuccAcc.json().catch(() => ({}))) as { report?: DlgRow }).report?.decision?.by;
+  check("report delegation: the generic succession carries it to the successor, which judges under its own occupant",
+    dlgSuccView.inForce === true && dlgSuccView.delegate?.issuedBy === "succession" && dlgSuccView.delegate.revision === 2
+      && dlgSuccView.delegate.occupant?.openedAt === dlgSuccView.openedAt && dlgSuccView.openedAt !== orchPredOpenedAt
+      && dlgSuccView.delegate.transferredFrom?.openedAt === orchPredOpenedAt
+      && dlgSuccAcc.ok && typeof dlgSuccBy === "object" && dlgSuccBy.delegate?.openedAt === dlgSuccView.openedAt,
+    JSON.stringify({ view: dlgSuccView, acc: dlgSuccAcc.status, by: dlgSuccBy ?? null }));
+  const dlgRevoke = await dlgPatch(orchSlot, { expectedOpenedAt: dlgSuccView.openedAt, expectedRevision: 2, revoke: true });
+  const dlgAfterRevoke = await dlgRefusal(await dlgDoor(dlgSuccTok, dlgIds.rev, "accept"));
+  const dlgRevCounts = await dlgCounts();
+  check("report delegation: the owner's revoke ends it at once — the next verdict is 409, the new field is gone and every orphan counts for the owner again",
+    dlgRevoke.ok && dlgAfterRevoke === "409:not-delegate" && dlgRevCounts.delegate === null
+      && dlgRevCounts.owner === dlgPending(dlgRevCounts.rows).length
+      && dlgPending(dlgRevCounts.rows).some((r) => r.id === dlgIds.rev),
+    JSON.stringify({ revoke: dlgRevoke.status, door: dlgAfterRevoke, owner: dlgRevCounts.owner, delegated: dlgRevCounts.delegate }));
+  // TEARDOWN, and the revoked record must come back from disk as ITSELF (the loader fails closed)
+  await post(`/api/slots/${dlgOutsiderSlot}/kill`, {});
+  if (dlgLane.slot) await post(`/api/slots/${dlgLane.slot}/kill`, {});
+  await stopSrv();
+  const dlgCleanup = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { fleetReports?: { id?: string }[] };
+  dlgCleanup.fleetReports = (dlgCleanup.fleetReports ?? []).filter((r) => !dlgAllIds.includes(r.id ?? ""));
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(dlgCleanup, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const dlgBooted = (await (await get(`/api/slots/${orchSlot}/report-delegate`)).json()) as { inForce?: boolean;
+    delegate?: { revision?: number; revokedAt?: number | null } | null };
+  check("report delegation teardown: the revoked record survives a boot as itself, and no planted row survives into the next block",
+    dlgBooted.inForce === false && dlgBooted.delegate?.revision === 3 && typeof dlgBooted.delegate.revokedAt === "number"
+      && !(await dlgOwnerRows()).some((r) => dlgAllIds.includes(r.id)),
+    JSON.stringify({ booted: dlgBooted }));
   const portfolioPara = (text: string): string => {
     const at = text.indexOf("YOUR PORTFOLIO MEMORY");
     if (at < 0) return "";

@@ -40527,9 +40527,11 @@ Bun.serve<WSData>({
       return json({ ok: true, repo, maxLanes: repoLaneCaps[repo] ?? null, effective: eff.max, source: eff.source });
     }
     // ...and the read. `caps` is only what is STORED; `default` is what an unlisted repo gets, so a
-    // caller can tell "no entry" from "an entry equal to the default" without guessing.
+    // caller can tell "no entry" from "an entry equal to the default" without guessing. `bases` is
+    // the stored integration branch per repo (repoBases, same canonical keys) — the settings
+    // window's branch row reads it here, so a once-written value is visible without a write first.
     if (url.pathname === "/api/repo-lane-caps" && req.method === "GET")
-      return json({ default: DISPATCH_MAX_LANES, max: REPO_MAX_LANES_MAX, caps: repoLaneCaps });
+      return json({ default: DISPATCH_MAX_LANES, max: REPO_MAX_LANES_MAX, caps: repoLaneCaps, bases: repoBases });
     // ↩ undo the last land on a repo: ONE record per call, off the top of the stack (two lands = two
     // calls, each its own git gate and `reverted` ledger row). GIT decides, never optimism: reset ONLY
     // while main is still EXACTLY where that land left it AND no discarded commit has reached a remote.

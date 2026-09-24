@@ -2479,8 +2479,8 @@ function settingsRow(d: PrefDef): HTMLElement {
 // exist — nothing here is a value of this browser, every row changes the fleet for all devices
 // and sessions. A changed control is only STAGED (ink edge on the row); the one primary "Apply"
 // writes each staged row through its route, and the row then shows the value the SERVER answers
-// with — the poll for dispatcher/autos/quiet, GET /api/repo-lane-caps for the cap, the route's own
-// answer for the branch — never the typed one. A refusal (4xx) stays at its row as a hint and the
+// with — the poll for dispatcher/autos/quiet, GET /api/repo-lane-caps for the cap and the stored
+// bases, the route's own answer for the branch — never the typed one. A refusal (4xx) stays at its row as a hint and the
 // staged value stays. The dispatcher row reads the same `dispatch` the queue foot reads: no
 // second state lives in this window. Not here, on purpose: repoWorkers (a stored command),
 // .env/watchdog.sh values, and slot/program switches (they live at their thing).
@@ -2493,7 +2493,7 @@ function fleetSection(sec: HTMLElement): void {
   let caps: Record<string, number> = {};
   let capDefault: number | null = null;
   let capMax = 99;
-  // the branch has no read route: a repo's stored value is known here only once a write answered
+  // a repo's stored branch: filled from GET /api/repo-lane-caps (`bases`) and from each write's answer
   const bases = new Map<string, string | null>();
   const repos = [...new Set([dispatch.repo, ...fleet.map((s) => s.cwd ? s.repo ?? s.worktree?.repo ?? "" : "")]
     .filter((r): r is string => !!r))].sort();
@@ -2669,8 +2669,6 @@ function fleetSection(sec: HTMLElement): void {
       const known = bases.has(pick.value);
       const v = bases.get(pick.value) ?? null;
       s.val.textContent = !pick.value ? "no repo" : !known ? "?" : v ?? "not set";
-      s.val.title = known ? "Wert, wie ihn der Server zuletzt gemeldet hat"
-        : "Unbekannt: es gibt keinen Leseweg, der Server meldet den Wert erst als Antwort auf Apply.";
       if (!staged()) { typed = null; t.value = v ?? ""; }
       t.disabled = pick.disabled = !pick.value;
       sync();
@@ -2700,9 +2698,15 @@ function fleetSection(sec: HTMLElement): void {
   }
   async function readCaps() {
     const r = await api("/api/repo-lane-caps").catch(() => null);
-    const j = r?.ok ? (await r.json().catch(() => null)) as { default?: number; max?: number; caps?: Record<string, number> } | null : null;
+    const j = r?.ok ? (await r.json().catch(() => null)) as { default?: number; max?: number; caps?: Record<string, number>; bases?: Record<string, string> } | null : null;
     if (!j) return;
     caps = j.caps ?? {};
+    bases.clear();
+    for (const [repo, branch] of Object.entries(j.bases ?? {})) if (branch) bases.set(repo, branch);
+    // absence in the answer is an answer too: after one successful read every picker repo is
+    // known, so the branch row shows the stored value or "not set" — "?" stays reserved for a
+    // server that cannot be reached at all
+    for (const repo of repos) if (!bases.has(repo)) bases.set(repo, null);
     capDefault = typeof j.default === "number" ? j.default : null;
     if (typeof j.max === "number") capMax = j.max;
   }

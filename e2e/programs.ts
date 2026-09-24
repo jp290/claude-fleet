@@ -1698,6 +1698,9 @@ export async function run(ctx: Ctx): Promise<void> {
   // checkout carries codeBehind, a foreign repo names the sensor it does not have. BREAKS IF: the
   // grouping drops the repo key (both rows collapse onto the newest overall, length 1), a row
   // shows another repo's land, or a no-sensor cell degrades to a bare null without its reason.
+  // The fixture REPO is NOT the instance's REPO_DIR (the staged server.ts directory), so here BOTH
+  // rows are no-sensor rows — red on the helper 69bb367222b8 when the REPO row asserted a sensor.
+  // The measured-checkout branch needs FLEET_REPO_DIR on a restarted srv (e2e/deploy-facts.ts).
   const d2FremdRow = d2ExecutionStatus?.lastLand?.find((r) => r.repo === `${REPO}-fremd`);
   check("program status: a program with lands in two repos reads as one row per repo, each with its own newest land, and a repo without a deploy sensor names the reason instead of null",
     d2ExecutionStatus !== undefined && d2ExecutionStatus.lastLand.length === 2
@@ -1706,8 +1709,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && d2FremdRow.deploy === null
       && d2FremdRow.deployGrund === "kein Deploy-Sensor fuer dieses Repo"
       && d2RepoRow !== undefined
-      && d2RepoRow.deploy !== null
-      && d2RepoRow.deployGrund === null
+      && d2RepoRow.deploy === null
+      && d2RepoRow.deployGrund === "kein Deploy-Sensor fuer dieses Repo"
       && d2ExecutionStatus.lastLand[0]?.repo === `${REPO}-fremd`
       && d2ExecutionStatus.lastLand[1]?.repo === REPO,
     JSON.stringify(d2ExecutionStatus?.lastLand ?? null));

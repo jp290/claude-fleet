@@ -46,8 +46,8 @@ an. `status` druckt `./ctl.sh lock` mit — der Beweis gehört neben die Behaupt
    statt es nur anzunehmen.
 3. **Beim Ableiten:** Port 8790, Socket `claudefleet` und ein Verzeichnis INNERHALB des Checkouts
    werden mit Namen abgewiesen (exit 2) — ein Env-Override ist genau der Weg, auf dem jemand dem
-   Skript versehentlich den Live-Fleet reicht. Abräumt wird per notierter PID und
-   `tmux -L <socket> kill-server`, nie über ein Namensmuster.
+   Skript versehentlich den Live-Fleet reicht. Abräumt wird per notierter PID — aber nur bei
+   Port-Identität — und `tmux -L <socket> kill-server`, nie über ein Namensmuster.
 
 Dazu: `FLEET_CMD=true`, also wird nie ein Agent gespawnt; die Harness-CLI in den Panes ist ein
 stand-in (siehe den Kopf von `testinstanz.sh`). Die State-Datei trägt den Token nicht — der
@@ -60,10 +60,14 @@ nichts und das Skript endet mit exit 1 — eine Instanz, die das Client-Bundle v
 ist schlimmer als keine.
 
 `up --ttl <min>` (Default 240) schreibt `expiresAt` in die State-Datei; `status` zeigt die
-Restzeit und die URL. Der Lauf `scratch-reap.sh` (derselbe, der die e2e-Scratch-Halde besitzt)
-beendet eine abgelaufene Instanz über die NOTIERTE PID, killt ihr tmux per Socket, löscht ihr
-Verzeichnis und nennt jede in einer Zeile. State-Dateien ohne `expiresAt` (alte Instanzen) werden
-nur gelistet, nie beendet.
+Restzeit und die URL. Der Lauf `scratch-reap.sh` (derselbe, der die e2e-Scratch-Halde besitzt,
+und der die Familie DORT sucht, wohin sein Argument zeigt) beendet eine abgelaufene Instanz
+per `tmux -L <socket> kill-server`, löscht ihr Verzeichnis — und signalisiert die notierte PID
+NUR, wenn sie noch den Port hält, den dieselbe Datei verzeichnet (`lsof -iTCP:<port>
+-sTCP:LISTEN -t`). Ein recycelter PID-Kreis ist inzwischen ein fremder Prozess; Alter und
+Ablauf geben über ihn keine Autorität, der Port ist der Identitätsbeweis. Ohne Beweis wird
+verschont (safe direction), und jede Entscheidung steht in einer Zeile. State-Dateien ohne
+`expiresAt` (alte Instanzen) werden nur gelistet, nie beendet.
 
 `testinstanz.sh list` liest ausschließlich State-Dateien — nie `ps` (Kommandozeilen tragen
 Tokens), nie Sockets — und zeigt Worktree, Port, URL ohne Token und Restzeit.

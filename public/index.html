@@ -1889,6 +1889,160 @@
   .pkdlast { font-size: 12.5px; color: #ddd; margin-top: 4px; }
   .pkdcommit { padding: 5px 0; border-bottom: 1px solid #1e1e1e; }
   .pkdcommit:last-of-type { border-bottom: 0; }
+
+  /* THE FOUNDING WINDOW (Gruendungsfenster B1, openPicker) — the comic page of roles, profile
+     + context, the repo card. Material is G4.1 (raised, --chat-edge, --r2, the void-shadow), the
+     place is the owner's own: right of the clicked row, notch at it (W6). Every colour here is a
+     --chat-* token; the art svgs draw themselves in currentColor. Widths per step: 640/800/840. */
+  .gfwin { position: fixed; z-index: 40; display: flex; flex-direction: column; max-height: calc(100vh - 24px);
+    background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: var(--r2);
+    box-shadow: 0 18px 48px color-mix(in srgb, var(--chat-void) 70%, transparent), 0 0 0 1px var(--chat-void);
+    font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-ink); }
+  .gfnotch { position: absolute; left: -7px; width: 12px; height: 12px; transform: rotate(45deg);
+    background: var(--chat-raised); border-left: 1px solid var(--chat-edge); border-bottom: 1px solid var(--chat-edge); }
+  .gfhead { flex: none; display: flex; align-items: center; gap: 12px; padding: 12px 14px 10px; }
+  .gfttl { font-weight: 500; }
+  .gfttl .mono { color: var(--chat-mute); font-size: var(--chat-code-fs); font-family: var(--chat-mono); }
+  .gfsteps { display: flex; align-items: center; gap: 6px; margin-left: auto;
+    font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  .gfs { padding: 3px 8px; border-radius: var(--r1); white-space: nowrap; }
+  .gfs.on { color: var(--chat-ink); background: var(--c-hover); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .gfs.done { color: var(--chat-mute); }
+  .gfsep { width: 10px; height: 1px; background: var(--chat-edge); }
+  .gfx { flex: none; width: 23px; height: 23px; display: grid; place-items: center; border-radius: var(--r1);
+    color: var(--chat-mute); background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .gfx:hover { color: var(--chat-ink); }
+  .gfbody { padding: 0 14px 2px; min-height: 0; flex: 1 1 auto; overflow-y: auto; }
+  .gffoot { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 14px 12px; }
+  .gfhint { flex: 1; font-size: var(--chat-ui-fs); color: var(--chat-faint); line-height: 1.4; }
+  .gfbtn { font: 500 var(--chat-ui-fs)/1 var(--chat-sans); padding: 7px 11px; border-radius: var(--r1);
+    box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-prose); cursor: pointer; }
+  .gfbtn:hover { background: var(--c-hover); }
+  .gfbtn.primary { background: var(--chat-ink); color: var(--chat-void); box-shadow: none; }
+  .gfbtn:disabled { opacity: .45; cursor: not-allowed; }
+  .gferror { font-size: var(--chat-ui-fs); color: var(--amber); background: color-mix(in srgb, var(--amber) 9%, var(--chat-void));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--amber) 40%, transparent); border-radius: var(--r1);
+    padding: 7px 9px; margin: 0 0 10px; line-height: 1.45; word-break: break-word; }
+  .gfcarry { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0 10px;
+    font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  .gfchip { padding: 2px 7px; border-radius: var(--r1); background: var(--chat-surface);
+    box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-prose); font: 500 var(--chat-ui-fs)/1.5 var(--chat-sans); }
+  .gfchip.m { font-family: var(--chat-mono); font-weight: 400; }
+  .gfchip.warn { color: var(--amber); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--amber) 40%, transparent); }
+  .gfchip.ok { color: var(--chat-prose); }
+  .gfback { color: var(--chat-faint); text-decoration: underline; text-underline-offset: 2px; margin-left: 4px; cursor: pointer; }
+  .gfback:hover { color: var(--chat-prose); }
+
+  /* step 1 — the comic page. Black gutters (--chat-void), one picture per panel, caption box top
+     left, one sentence at the bottom, panel number top right. Pick = Tintenkante (G4.4). */
+  .gfcomic { display: grid; gap: 9px; padding: 9px; margin-bottom: 10px; background: var(--chat-void);
+    border-radius: var(--r1); grid-template-columns: 1.12fr 1fr;
+    grid-template-rows: 178px 178px 96px;
+    grid-template-areas: "orch wt-new" "orch wt-old" "plain steward"; }
+  .gfpanel { position: relative; overflow: hidden; text-align: left; background: var(--chat-surface);
+    border-radius: var(--r1); box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-mute); cursor: pointer; }
+  .gfpanel:hover { background: var(--chat-raised); color: var(--chat-prose); }
+  .gfpanel:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--chat-mute); }
+  .gf-orch { grid-area: orch; } .gf-wt-new { grid-area: wt-new; } .gf-wt-old { grid-area: wt-old; }
+  .gf-plain { grid-area: plain; } .gf-steward { grid-area: steward; }
+  .gfpanel svg.gfart { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .gfcap { position: absolute; left: 0; top: 0; padding: 6px 10px; background: var(--chat-raised);
+    border-right: 1px solid var(--chat-edge); border-bottom: 1px solid var(--chat-edge);
+    border-bottom-right-radius: var(--r1); font-weight: 500; color: var(--chat-ink); font-size: 13px; }
+  .gfcap small { display: block; font-weight: 400; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  .gfsay { position: absolute; left: 10px; right: 10px; bottom: 8px; font-size: var(--chat-ui-fs); line-height: 1.4;
+    color: var(--chat-prose); }
+  .gfsay span { background: color-mix(in srgb, var(--chat-void) 72%, transparent); box-decoration-break: clone;
+    -webkit-box-decoration-break: clone; padding: 1px 4px; border-radius: var(--r1); }
+  .gfnum { position: absolute; right: 8px; top: 6px; font: 400 var(--chat-ui-fs)/1 var(--chat-mono); color: var(--chat-faint); }
+  .gfpanel.pick { box-shadow: inset 0 0 0 1px var(--chat-ink); background: var(--chat-raised); color: var(--chat-prose); }
+  .gfpanel.pick .gfcap { border-color: var(--chat-ink); }
+  .gfpanel.pick .gfnum { color: var(--chat-ink); }
+
+  /* step 2 — profile left, context beside it (the owner: "und daneben dann auch die Kontext-
+     Konfiguration"). Segment buttons G3.1, model switch G4.3, the Mehr reiter G3.2. */
+  .gftwo { display: grid; grid-template-columns: 300px 1fr; gap: 12px; margin-bottom: 10px; }
+  .gfcol { background: var(--chat-surface); border-radius: var(--r2); box-shadow: inset 0 0 0 1px var(--chat-edge-soft);
+    padding: 12px; min-width: 0; }
+  .gfcol h3 { margin: 0 0 2px; font-size: 13px; font-weight: 500; color: var(--chat-ink); }
+  .gfsub { font-size: var(--chat-ui-fs); color: var(--chat-mute); margin-bottom: 10px; line-height: 1.45; }
+  .gffld { margin: 0 0 11px; }
+  .gfk { font-size: var(--chat-ui-fs); color: var(--chat-mute); margin-bottom: 5px; font-weight: 500; }
+  .gfseg { display: flex; flex-wrap: wrap; gap: 2px; }
+  .gfsegbtn { font: 500 var(--chat-ui-fs)/1 var(--chat-sans); padding: 6px 8px; border-radius: var(--r1);
+    color: var(--chat-mute); cursor: pointer; }
+  .gfsegbtn:hover { color: var(--chat-ink); }
+  .gfsegbtn.on { background: var(--c-hover); color: var(--chat-ink); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .gfsegbtn:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--chat-mute); }
+  .gfhint2 { font-size: var(--chat-ui-fs); color: var(--chat-faint); margin-top: 5px; line-height: 1.4; }
+  .gfswrap { position: relative; }
+  .gfsw { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 6px 8px; border-radius: var(--r1); background: var(--chat-raised);
+    box-shadow: inset 0 0 0 1px var(--chat-edge); font: 400 var(--chat-code-fs)/1.3 var(--chat-mono);
+    color: var(--chat-prose); cursor: pointer; }
+  .gfsw:hover { color: var(--chat-ink); }
+  .gfsw svg { width: 14px; height: 14px; flex: none; color: var(--chat-faint); }
+  .gfpop { display: none; position: absolute; z-index: 5; bottom: calc(100% + 6px); left: 0; right: 0;
+    background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: var(--r2);
+    box-shadow: 0 18px 48px color-mix(in srgb, var(--chat-void) 70%, transparent); padding: 6px; }
+  .gfpop.open { display: grid; gap: 2px; }
+  .gfpoprow { text-align: left; font: 400 var(--chat-code-fs)/1.3 var(--chat-mono); color: var(--chat-prose);
+    padding: 6px 8px; border-radius: var(--r1); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gfpoprow:hover { background: var(--c-hover); }
+  .gfpoprow.on { background: var(--c-hover); color: var(--chat-ink); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .gfpopin { display: grid; gap: 3px; font-size: var(--chat-ui-fs); color: var(--chat-faint);
+    border-top: 1px solid var(--chat-edge-soft); margin-top: 4px; padding-top: 6px; }
+  .gfpopin input { font: 400 var(--chat-code-fs)/1.3 var(--chat-mono); color: var(--chat-ink);
+    background: var(--chat-void); border: 1px solid var(--chat-edge); border-radius: var(--r1); padding: 6px 8px; }
+  .gfpopin input:focus { outline: none; border-color: var(--chat-mute); }
+  .gfmore { border-top: 1px solid var(--chat-edge-soft); padding-top: 6px; }
+  .gfmorehead { width: 100%; display: flex; align-items: center; justify-content: space-between;
+    font-size: var(--chat-ui-fs); color: var(--chat-mute); cursor: pointer; padding: 2px 0; }
+  .gfmorehead:hover { color: var(--chat-ink); }
+  .gfmorehead svg { width: 14px; height: 14px; flex: none; }
+  .gfmorebox { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; padding-top: 8px; }
+  .gfnote { font-size: var(--chat-ui-fs); color: var(--chat-prose); line-height: 1.5;
+    border: 1px solid var(--chat-edge); border-radius: var(--r1); padding: 8px 10px; margin: 0 0 8px; }
+
+  /* step 3 — the repos of the fleet left, the repo card right (F2, Lesart b). The dot carries
+     projectHue(repo); every line of the card is a fact a route serves today. */
+  .gfsplit { display: grid; grid-template-columns: 210px 1fr; gap: 12px; margin-bottom: 10px; }
+  .gfrl { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .gfr { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: var(--r1);
+    color: var(--chat-prose); cursor: pointer; text-align: left; min-width: 0; }
+  .gfr:hover { background: var(--c-hover); }
+  .gfr .gfdt { width: 8px; height: 8px; border-radius: 50%; background: hsl(var(--h, 0) 55% 60%); flex: none; }
+  .gfr .gfc { margin-left: auto; font: 400 var(--chat-ui-fs)/1 var(--chat-mono); color: var(--chat-faint); }
+  .gfr.on { background: var(--c-hover); box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-ink); }
+  .gfr.other { color: var(--chat-faint); border: 1px dashed var(--c-edge-hi); }
+  .gfr.other:hover { color: var(--chat-prose); }
+  .gfcard { background: var(--chat-surface); border-radius: var(--r2); box-shadow: inset 0 0 0 1px var(--chat-edge-soft);
+    padding: 12px 14px; min-width: 0; overflow-y: auto; max-height: 56vh; }
+  .gfhead { display: flex; align-items: center; gap: 10px; }
+  .gfnm { font-weight: 500; font-size: 15px; }
+  .gfpth { font: 400 var(--chat-ui-fs)/1.4 var(--chat-mono); color: var(--chat-faint); word-break: break-all; }
+  .gffacts { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .gfsec { margin-top: 12px; }
+  .gfsh { font-size: var(--chat-ui-fs); color: var(--chat-mute); font-weight: 500; margin-bottom: 4px; }
+  .gfag { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 8px;
+    padding: 3px 0; font-size: 12.5px; color: var(--chat-prose); }
+  .gfag .gfid { font: 500 var(--chat-ui-fs)/1.45 var(--chat-mono); color: var(--chat-mute); text-align: center;
+    padding: 0 4px; border-radius: var(--r1); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .gfag .gfhm { font: 400 var(--chat-ui-fs)/1 var(--chat-mono); color: var(--chat-faint); }
+  .gfgv { display: grid; grid-template-columns: 1fr auto; gap: 5px 10px; font-size: 12.5px; color: var(--chat-prose); align-items: center; }
+  .gfgv .gv { font: 400 var(--chat-ui-fs)/1.5 var(--chat-mono); color: var(--chat-mute); text-align: right; }
+  .gfgv .gv.miss { color: var(--amber); }
+  .gfgv .gvgv { display: flex; flex-direction: column; gap: 3px; align-items: flex-end; }
+  .gforph { display: flex; gap: 8px; align-items: baseline; font: 400 var(--chat-code-fs)/1.4 var(--chat-mono);
+    color: var(--chat-prose); background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge);
+    border-radius: var(--r1); padding: 4px 8px; cursor: pointer; text-align: right; }
+  .gforph:hover { color: var(--chat-ink); }
+  .gforph.pick { color: var(--chat-ink); box-shadow: inset 0 0 0 1px var(--chat-mute); background: var(--chat-surface); }
+  .gforph .gforphb { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  .gfcm { display: grid; grid-template-columns: 64px 1fr auto; gap: 8px; font-size: 12px; color: var(--chat-prose); padding: 2px 0; }
+  .gfcm .sha { font: 400 var(--chat-ui-fs)/1.6 var(--chat-mono); color: var(--chat-mute); }
+  .gfcm .ago { font: 400 var(--chat-ui-fs)/1.6 var(--chat-mono); color: var(--chat-faint); }
+  .gfcm .s { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* the folder's own children — drawn with the same elbows as the tree on the left.
      NO max-height and NO scroller of its own: it had `max-height: 340px; overflow-y: auto`, which
      sealed 1020px of listing into a 340px box while 197px of the detail pane below it sat empty.
@@ -2229,6 +2383,24 @@
     .fxjump { height: 40px; }
     .fvgut { min-width: 34px; padding: 0 8px 0 4px; }
     .fxkeys { display: none; }
+    /* the founding window is fullscreen here (G0.7/G4 mobil): nothing to anchor a popover to, so
+       the notch goes and the steps wrap onto their own line; columns stack; inputs 16px so iOS
+       does not zoom; foot buttons at touch height. The desktop block above owns the shapes. */
+    .gfwin { inset: 0 !important; left: 0 !important; top: 0 !important; width: auto !important;
+      max-height: none; border-radius: 0; border: 0; }
+    .gfnotch { display: none; }
+    .gfhead { flex-wrap: wrap; row-gap: 6px; }
+    .gfsteps { margin-left: 0; order: 3; width: 100%; }
+    .gfx { margin-left: auto; }
+    .gfcomic { grid-template-columns: 1fr; grid-template-rows: 200px 150px 150px 110px 110px;
+      grid-template-areas: "orch" "wt-new" "wt-old" "plain" "steward"; }
+    .gftwo, .gfsplit { grid-template-columns: 1fr; }
+    .gfcard { max-height: none; }
+    .gfhint { display: none; }
+    .gffoot { justify-content: flex-end; }
+    .gfbtn { padding: 12px 16px; font-size: 13px; min-height: 40px; }
+    .gfpopin input, .gfmorebox input { font-size: 16px; }
+    .gfpop { position: fixed; left: 8px; right: 8px; bottom: auto; top: 30vh; z-index: 60; }
   }
   .ocsub { font-size: 10.5px; color: var(--dim); margin-top: 5px; }
   .ocnote { font-size: 11px; color: #999; line-height: 1.45; margin-top: 4px; }

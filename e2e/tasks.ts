@@ -2634,6 +2634,33 @@ export async function run(ctx: Ctx): Promise<void> {
     check("with both gates open the dispatcher DOES consume the same task (proves the gate, not a dead queue)",
       consumed, `task=${JSON.stringify(tEnd)} dispatchOn=${sessEnd.dispatch.on} autosOn=${sessEnd.autosOn} quiet=${JSON.stringify(sessEnd.quietHours)}`);
 
+    // (c-base) THE TICK'S LANE RECORDS ITS INTEGRATION BASE, like an openLaneInSlot lane. Until
+    // 2026-09-24 dispatchTask wrote repo/branch/baseSha only, so every `worktree.base` reader
+    // (server.ts#laneBaseRef, start-plan.ts's laneBase) fell to its fallback for EVERY dispatched
+    // lane — all four open lanes on the live fleet.json. A non-empty string here IS the first branch
+    // of both readers, so neither re-derives. Expected value read off REPO independently (no
+    // repo-base is configured for it here, so the integration branch is its HEAD branch). The key
+    // ORDER is openLaneInSlot's and nothing else: `base` is the one field that joined, `form` stays
+    // absent on a worktree lane. Mutation: drop `base` from dRef → base undefined → red.
+    const cbGit = spawnSync("git", ["-C", REPO, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" });
+    const cbExpected = cbGit.status === 0 ? cbGit.stdout.trim() : "";
+    const cbSlot = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; slot?: number | null }[] })
+      .tasks.find((x) => x.id === tid)?.slot ?? null;
+    let cbRec: Record<string, unknown> | undefined;
+    for (let i = 0; i < 40 && typeof cbSlot === "number"; i++) {
+      try {
+        cbRec = ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { slots?: Record<string, { worktree?: Record<string, unknown> | null }> }).slots?.[String(cbSlot)]?.worktree) ?? undefined;
+      } catch { /* mid-write */ }
+      if (cbRec) break;
+      await Bun.sleep(100);
+    }
+    const cbKeys = Object.keys(cbRec ?? {}).filter((k) => k !== "anchor");
+    check("(c-base) a TICK-dispatched lane persists `base` = the repo's integration branch, in openLaneInSlot's key order",
+      /^[\w./-]+$/.test(cbExpected) && cbRec?.base === cbExpected
+      && JSON.stringify(cbKeys) === JSON.stringify(["repo", "branch", "base", "baseSha", "letter"]),
+      `slot=${cbSlot} expected=${cbExpected} rec=${JSON.stringify(cbRec)}`);
+
     // (d) the lane's founding prompt starts with the STORED BRIEF byte-for-byte, followed only by
     // the fresh ContextPlan pointer block — never the raw draft and never a fresh model compile.
     // Proven off the prompt ledger: logPrompt records the exact value sendText received.
@@ -5924,6 +5951,32 @@ export async function run(ctx: Ctx): Promise<void> {
       `${dState?.cwd} / ${JSON.stringify(dState?.worktree)}`);
     if (typeof ddJ.slot === "number") await post(`/api/slots/${ddJ.slot}/kill`, {});
     await post(`/api/tasks/${dT.task.id}/delete`, {});
+
+    // (c-base) GEGENPROBE: a repo whose integration base does NOT resolve (detached HEAD, no
+    // repo-base) still dispatches, and its record carries NO `base` key — the same omission as
+    // openLaneInSlot, so this record is byte-identical to what dispatch wrote before `base` joined.
+    // No base also means no fork commit (laneForkSha(null) → undefined), so no `baseSha` either.
+    // Mutation: write `base: base ?? ""` (or null) → the key appears → red.
+    const NOBASE = `${ROOT}/detached-base-probe`;
+    mkdirSync(NOBASE, { recursive: true });
+    const nbGit = (...a: string[]): number =>
+      spawnSync("git", ["-C", NOBASE, "-c", "user.email=e2e@x", "-c", "user.name=e2e", ...a], { encoding: "utf8" }).status ?? -1;
+    const nbSetup = [nbGit("init", "-q"), nbGit("commit", "-q", "--allow-empty", "-m", "root"), nbGit("checkout", "-q", "--detach")];
+    const nbT = (await (await post("/api/tasks", { text: "nobase-dispatch-probe", queue: false, repo: NOBASE })).json()) as { task: { id: string } };
+    const nbd = await post(`/api/tasks/${nbT.task.id}/dispatch`, {});
+    const nbJ = (await nbd.json()) as { ok?: boolean; slot?: number; error?: string };
+    const nbState = typeof nbJ.slot === "number"
+      ? ((await Bun.file(`${ROOT}/fleet.json`).json()) as
+        { slots: Record<string, { cwd?: string; worktree?: Record<string, unknown> } | undefined> }).slots[String(nbJ.slot)]
+      : undefined;
+    check("(c-base) GEGENPROBE: an unresolvable base still dispatches, and its record carries NO base (nor baseSha) key",
+      nbSetup.every((c) => c === 0) && nbd.ok && nbJ.ok === true
+      && !!nbState?.cwd && existsSync(nbState.cwd)
+      && !!nbState.worktree && typeof nbState.worktree.branch === "string"
+      && !("base" in nbState.worktree) && !("baseSha" in nbState.worktree) && !("form" in nbState.worktree),
+      `setup=${nbSetup} ${nbd.status} ${JSON.stringify(nbJ)} / ${JSON.stringify(nbState?.worktree)}`);
+    if (typeof nbJ.slot === "number") await post(`/api/slots/${nbJ.slot}/kill`, {});
+    await post(`/api/tasks/${nbT.task.id}/delete`, {});
 
     // THE MODEL SPLIT stays two charsets, asserted with the SAME string on both sides so the rows
     // cannot drift apart: a foreign-only pattern is accepted for codex (above) and refused for the

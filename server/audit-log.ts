@@ -472,7 +472,10 @@ type AuditEvent =
   // an owner /send parked behind an occupied composer (server.ts, THE PARKED SEND). `phase` entry =
   // parked (`deadlineAt`), end = settled (`delivery` delivered/dropped/uncertain, `holds`, `heldMs`);
   // the detail names the sendId and the draft's LENGTH — never the text, never the draft.
-  | "send_parked";
+  | "send_parked"
+  // a review candidate's isolated preview (server.ts#startLanePreview): start / stopped / expired /
+  // failed, the candidate and preview ids and the port — never the instance token
+  | "lane_preview";
 // `fields` — machine-readable columns for the rows that need them, beside (not instead of) the
 // prose `detail` every other event uses. The four identity keys are RESERVED: a caller cannot
 // overwrite what row this is, which is why they are filtered rather than merely documented.

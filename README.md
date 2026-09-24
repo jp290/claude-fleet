@@ -1,211 +1,130 @@
 # Claude Fleet
 
-**A local control plane that runs coding-agent sessions in tmux panes, hands each one a queue row
-to work in an isolated working copy, and lands that work on the integration branch through a
-server-side verify gate the lane cannot talk its way past.**
+**Run a whole team of coding agents from one browser tab — and let nothing reach `main` that
+didn't pass your tests.**
 
-It is a web dashboard (desktop + mobile) over 16 persistent tmux-backed sessions on one machine,
-plus the machinery around them: a queue, isolated lanes, Programs, a land path with a proportional
-proof, a post-land audit, and append-only ledgers. `SYSTEM.md` describes a target model that the
-code does not fully implement; this file describes what the code does today. Where they disagree,
-the code wins. Grew out of [claude-deck](https://github.com/jp290/claude-deck).
+Claude Fleet is a self-hosted dashboard for Claude Code, Codex and Pi. Every agent lives in a
+persistent tmux session on the machine running the server, so closing the tab doesn't kill it.
+Hand an agent a task and it works in its own git worktree; when it's done, the server — not the
+agent — rebases, runs your verify command and lands the branch only if it passes.
 
-![claude-fleet — four agent sessions in a 2×2 grid, two lanes stacked under a session in the sidebar](docs/screenshot.png)
+![Four agent sessions in a 2×2 grid; two lanes stacked under a session in the sidebar](docs/screenshot.png)
+
+## Why
+
+- **Many agents, one screen.** Up to 16 sessions in a 1–4 pane grid, with live terminals you can
+  type into, activity dots, and a structured chat view of each agent's transcript.
+- **Parallel without chaos.** Each task runs in an isolated *lane* — a throwaway worktree on its
+  own branch — so agents never edit the same checkout.
+- **A gate the agent can't talk its way past.** Landing is a server-side job: rebase, run your
+  verify command under a machine-wide lock, fast-forward `main` only on green. Conflicts go to a
+  resolver agent and then wait for your review. The last land in a repo can be undone as long as
+  `main` hasn't moved or been pushed since.
+- **A queue, not a chat log.** File tasks, release them when you're ready, and let the dispatcher
+  start lanes for them — or start each one by hand.
+- **Works from your phone.** The same page becomes a mobile layout with a key row
+  (esc, tab, arrows, ^C) and a prompt bar.
 
 <p>
-<img src="docs/screenshot-queue.png" alt="The task queue: backlog per repo, a pending row with its lifecycle and release controls" width="68%">
-<img src="docs/screenshot-mobile.png" alt="The same dashboard on a phone: one pane, key row, prompt bar" width="28%">
+<img src="docs/screenshot-queue.png" alt="The task queue: backlog per repo, one pending task with its lifecycle and release controls" width="68%">
+<img src="docs/screenshot-mobile.png" alt="The dashboard on a phone: one pane, key row, prompt bar" width="28%">
 </p>
 
-<sub>Screenshots are staged on a throwaway instance with canned agent output, not a live fleet.</sub>
+<sub>Screenshots come from a throwaway instance with canned agent output.</sub>
 
-**Requirements:** [Bun](https://bun.sh), tmux, at least one agent CLI, macOS or Linux.
+## Quickstart
+
+You need [Bun](https://bun.sh), tmux, macOS or Linux, and at least one agent CLI on your `PATH`
+(`claude` by default).
 
 ```sh
+git clone https://github.com/jp290/claude-fleet.git
+cd claude-fleet
 bun install
 bun run build
-bun server.ts            # binds 127.0.0.1:8790 unless FLEET_HOST/FLEET_PORT say otherwise
+bun server.ts
 ```
-On boot the server prints a one-click login URL carrying the access token — but only when stdout is
-a terminal; redirected to a log it withholds the token, which then has to be read out of
-`fleet.json`. The token goes into a `SameSite=Strict` cookie, so you log in once per browser.
 
-## The core objects
+The server listens on `127.0.0.1:8790` and prints a login link that carries your access token.
+Open it — the token is stored in a cookie, so you log in once per browser.
 
-**Slot and session.** A slot is one of 16 fixed places (`server/types.ts#MAX_SLOTS`), each backed by
-a tmux session on the configured socket. `server.ts#ensureSlot` builds the pane and bakes the
-session's own credentials into its shell; `server.ts#openSlot` gives it a working
-directory, an optional lane ref, a label, a harness, a model and an effort. The pane's output is tailed from a `pipe-pane` stream and broadcast per
-slot over a WebSocket, and a self-heal loop rebuilds a pane whose tmux session died — resuming the
-pinned conversation where the adapter supports it, rather than starting a new one. `server.ts#sleepSlot` / `#wakeSlot` tear the
-pane down and bring it back without ending the occupancy.
+Then:
 
-**Lane and worktree.** A lane is a session whose cwd is a throwaway working copy on its own branch —
-a git worktree by default, or a clone (`server/types.ts` `LaneForm`) — created by
-`server.ts#createWorktree`. It is the unit of isolation: the lane commits into its own
-tree, and nothing it does touches the integration branch until a land runs. `server.ts#laneDrift`
-tells a lane whether main has moved under it, `server.ts#gateView` tells it what will actually gate
-its land, and `server.ts#removeWorktreeSafe` is the only way a lane's tree goes away.
+1. **Start a session.** Click a free slot, pick a directory, and an agent starts there.
+2. **Start a lane.** In a git repo, use the `⎇+` button (or *new lane* in the directory picker).
+   The agent gets its own worktree and branch.
+3. **Land it.** When the lane has committed its work, open the ⓘ info column and press
+   **Land lane**. The server rebases, runs your verify command and fast-forwards `main` on green.
+4. **Queue work.** Open the task queue, write what should be true when the task is done, and
+   **release** it. With `FLEET_DISPATCH_REPO` set and the dispatcher switched on, released tasks
+   start lanes by themselves.
 
-**Task and kinds.** A queue row (`server/types.ts` `Task`) carries text, an optional compiled brief,
-a target repo, a chosen agent (`spawn`), a file surface and a card. Four kinds exist
-(`server/types.ts#TASK_KINDS`) and only `auftrag` is executable — `richtung`, `notiz` and `betrieb`
-are advisory and every dispatch path skips them. A row is created `pending` and moves to `queued`
-only through `server.ts#releaseTask` — called by the owner, by a bound Program MAIN for its own rows,
-or by a release policy the owner set on a Program. Text arriving through the public intake address
-is data until then, never a command.
+Tell the gate how to test your code with `FLEET_VERIFY_CMD` (for example
+`FLEET_VERIFY_CMD="bun test"`). Without it, any lane that rebases cleanly lands unverified.
 
-**Program.** A Program is an owner-confirmed bracket around rows, with a bound Project MAIN session.
-Its statuses are `proposed · confirmed · active · complete` (`server/types.ts#PROGRAM_STATUSES`) and
-only the owner promotes between them. A bound MAIN gets its own doors — file a row, release it,
-raise attention, read a derived lifecycle projection (`server.ts#programExecutionView`) — and
-`server.ts#boundProgramForMain` is what decides whether a caller has that binding at all.
+## Configuration
 
-**Land.** Landing is a server-side job, not a git command an agent runs: `server.ts#mergeJob`
-takes the machine-wide suite mutex, rebases the lane, runs the verify command, and only then
-fast-forwards the integration branch (`server.ts#advanceIntegration`, `server.ts#recordLand`). A
-verify that was skipped, timed out, or never started because it sat in the mutex queue is treated as
-*no verdict about this tree* and does not auto-land; the owner keeps the latitude to land anyway.
-A docs-only land in this repo runs a short proof instead of the full chain and skips the mutex. A
-conflicted land goes through a resolver agent and then always stops for owner review. Two other
-routes to main exist and are deliberate: a Project MAIN may land its own reviewed row where the
-owner granted it a promotion (`server.ts#selfLandTaskForMain`), and a non-lane MAIN session that
-commits to main directly must report it (`POST /api/self/main-direct`).
+Everything is set through environment variables. The most useful ones:
 
-**Audit.** After a land, an optional second tier re-runs the full suite against the landed tree
-(`server.ts#drainPostLandAudits`, `server.ts#runPostLandAudit`) and writes one row per run. It is off
-unless `FLEET_POSTLAND_AUDIT_CMD` is set. A red audit is not automatically a regression: it is
-adjudicated (`server.ts#writeAuditAdjudication`), including carrying a known flake forward, and the
-verdict reaches the Programs whose rows the land covered.
+| Variable | What it does |
+|---|---|
+| `FLEET_HOST`, `FLEET_PORT` | Bind address and port. Default `127.0.0.1:8790`. |
+| `FLEET_TOKEN` | Fixed access token instead of the generated one (stored in `fleet.json`). |
+| `FLEET_ALLOWED_HOSTS` | Hostnames the dashboard may be reached under, e.g. a Tailscale name. |
+| `FLEET_CMD` | The agent command for the Claude adapter. Default `claude`, with its own permission prompts. |
+| `FLEET_VERIFY_CMD` | The command that must pass before a lane lands. |
+| `FLEET_POSTLAND_AUDIT_CMD` | Optional slower suite, re-run against `main` after each land. |
+| `FLEET_DISPATCH_REPO` | Repo the dispatcher starts lanes in for released tasks. |
+| `FLEET_DISPATCH_MAX_LANES` | How many lanes the dispatcher runs at once (default 3). |
+| `FLEET_SHARE_HOSTS` | Hostnames for read-only share links (see [SHARING.md](SHARING.md)). |
 
-## The life of one row
+For an always-on setup, run the server under the included watchdog (`watchdog.sh`, with
+`launchd-example.plist` or `fleet-watchdog.service`), so it survives crashes and reboots.
 
-1. **Filed** — owner, public intake, a steward pulse, or a bound Program MAIN writes a `pending` row.
-2. **Compiled** — optional sweeps turn the row's text into a brief (`server.ts#compileBriefs`) and a
-   card extracted by a small model and then checked deterministically (`card-extract.ts`).
-3. **Released** — an owner act (or a Program's release policy) moves it to `queued`.
-4. **Dispatched** — with a `FLEET_DISPATCH_REPO` configured and the dispatcher switched on (it
-   boots off; the owner toggles it on the board), `server.ts#tickDispatch` runs on a timer, picks a queued row that fits the caps
-   and the wave projection, creates the worktree, spawns the lane, and sends it a founding brief with
-   its context anchors (`server.ts#briefAndSend`, `context-plan.ts`, `context-packs.ts`).
-5. **Worked** — the lane commits in its own tree, may ask its MAIN a question
-   (`POST /api/self/clarifications`), may schedule its own check-in (`server.ts#createAutoForSlot`),
-   and may hand a preview run to another machine (`server.ts#claimLaneSuite`).
-6. **Reported** — the lane files one typed report (`server.ts#openFleetReport`, status
-   `complete · needs-main · failed · handoff`). The report is a message, never a state change.
-7. **Landed** — `mergeJob` as above; conflicts may go through a resolver agent and a repair round
-   (`server.ts#runMerge`, `server.ts#runRepair`), and the verdict is delivered to whoever landed.
-8. **Audited** — tier 2, then adjudication.
-9. **Deployed** — `POST /api/deploy` (`server.ts#deployVerb`) rebuilds the client bundles and
-   restarts the server; because the restart kills the process, the verdict is written by the next
-   boot (`server.ts#judgeDeploy`) and read back at `GET /api/deploys`.
+## Security — read this first
 
-Every step leaves a row somewhere: the slot and action trail in `audit.jsonl` (`server/audit-log.ts`), how a
-lane ended in `lane-outcomes.jsonl` (`server.ts#buildLaneOutcome`), audits in
-`post-land-audits.jsonl`, reports in `fleet-reports.jsonl`, sends in `streams/prompts.jsonl`, and
-what a lane was actually given in `context-receipts.jsonl`. `server.ts#laneDossier` is the join over
-them for one lane. The big trails rotate at 5 MB rather than growing forever.
+A reachable fleet is **remote code execution as your user**: every session is a shell.
 
-## Harness adapters
+- It binds to loopback by default. Only expose it on a network you trust end to end, such as
+  Tailscale or WireGuard — traffic is plain HTTP/WebSocket, there is no TLS.
+- There is one owner token, no user accounts, and no rate limit on the owner API.
+- Each session gets its own scoped token that can only act on its own slot.
+- Share links are view-only, password-protected, and served on separate hostnames.
+- The Claude adapter keeps Claude Code's permission prompts unless you change `FLEET_CMD`. The
+  Codex adapter always runs with `--dangerously-bypass-approvals-and-sandbox`, and Pi has no
+  permission layer — choose your harness knowing that.
 
-A harness is *how* an agent runs — not just which model. Each adapter (`server.ts` `Harness`)
-declares its spawn line, whether it can host a throwaway worker session, how to read its context
-usage, whether it pins a session id at spawn, which process names prove its agent is alive, and
-which pane screens silently eat a pasted prompt. Seven are registered today
-(`server.ts#HARNESSES`): the default Claude adapter, three Pi variants, an unfenced Pi, a
-containerised one, and Codex. `server.ts#harnessOf` resolves an id, and model and effort are
-validated against *that* adapter at set time, so a spawn line can never carry a value the adapter
-never admitted. The default Claude adapter may always be driven unattended; every other adapter only
-if it declares itself automatable *and* `FLEET_HARNESS_AUTOMATION=1` is set. Design notes: `docs/harness-adapter.md`.
+## How it works
 
-## Security and trust model
+```
+task ──release──▶ queued ──dispatch──▶ lane (worktree + agent) ──report──▶ land ──▶ audit
+                                             │                              │
+                                     commits on its branch      rebase → verify → fast-forward main
+```
 
-A reachable fleet is **remote code execution as your user** — every session is a shell. In order:
+- **Slots** are 16 fixed places, each backed by a tmux session. A dead pane is rebuilt and, where
+  the agent supports it, resumed in the same conversation.
+- **Harness adapters** describe how each agent runs: Claude Code, several Pi variants, a
+  containerised one, and Codex.
+- **Programs** group tasks under one supervising "main" session that can file, release and land
+  its own work within limits you set.
+- **Ledgers** (JSONL files) record what every lane was given, what it reported, and what landed.
 
-1. **Bind address** — loopback by default. `FLEET_HOST` should only ever name a private address on a
-   network you trust end to end; traffic is plain `ws://`, so anything but an encrypted overlay is
-   sniffable.
-2. **Owner token** — required on every owner API and WebSocket request (`server.ts#tokenGate`), generated
-   on first boot, persisted in `fleet.json` at mode 600, overridable with `FLEET_TOKEN`. It is the
-   whole owner authority: there is one principal, not accounts.
-3. **Self-token** — each session additionally holds a scoped credential (`Slot.selfToken`) that can
-   only ever act on its own slot. It is what makes `/api/self/*` safe to hand to an agent: the route
-   binds to the token's slot, a `slot` field in the body is ignored, and lane-only doors answer a
-   non-lane `409`, never `401`. Because the credential is exported into the pane's shell, it is
-   visible in that machine's process list — a hygiene fact, not isolation. Scope list:
-   `docs/self-api.md`.
-4. **Share links** — a share is a *window*, not an account: password-gated, view-only, one slot, and
-   served on its own hostname set (`FLEET_SHARE_HOSTS`) where everything but the share page, the
-   landing page and the secret-gated `/intake` 404s. See
-   [SHARING.md](SHARING.md).
-5. **Cross-site guards** — `SameSite=Strict` cookie plus Origin and Host checks
-   (`server/auth.ts#guard`) block cross-site WebSocket hijacking, CSRF and DNS rebinding. Reaching
-   the fleet by hostname needs that name in `FLEET_ALLOWED_HOSTS`.
-6. **Session command** — the Claude adapter defaults to the plain CLI with its own permission
-   prompts; unattended mode is an explicit opt-in via `FLEET_CMD`. Not so for the others: the Codex
-   adapter always spawns with `--dangerously-bypass-approvals-and-sandbox`, and Pi has no permission
-   layer at all — pick a harness knowing that. Stream files and state are chmod 600/700, because terminal
-   output contains secrets.
+The full picture — every object, the lifecycle of a task, the trust model, with pointers into the
+code — is in [docs/architecture.md](docs/architecture.md). Agents working *on* this repo follow
+[AGENTS.md](AGENTS.md).
 
-Not provided: TLS, multiple users, rate limiting on the owner API (intake and share logins do have
-attempt caps and lockouts). Two suites hold the perimeter rather than one:
-`e2e/security.ts` pins which routes are reachable *above* the owner gate at source level, and
-`fleet-e2e-security.ts` (run by `./e2e-security.sh`, which the land gate runs) drives the share
-brute-force lockout, the injection charsets, the self-token's out-of-scope refusals, and the proof
-that a `pending` row is never dispatched.
+## Status
 
-## The dashboard
+A personal project, used daily on real repositories, and moving fast. Expect rough edges:
 
-One page, one bundle: a terminal grid (1, 2, 3 or 2×2 panes) with xterm.js and direct stdin, and a
-sidebar of all 16 slots with activity dots, where lanes stack under the session of their repo. The
-header row opens the Attention panel, the Inbox, the task queue, the audit trail, the Lands feed,
-Devices (helper machines) and a data-saver toggle. The queue board has five tabs — Work, Notes,
-Programs, History, Waves — and renders each row's lifecycle, card, file surface and brief
-(`src/client.ts#renderQueue`, `#renderQueueDetail`). Each pane can switch to a conversation view
-that renders the agent's transcript as structured messages, and has an info column with the lane's
-brief and changes; around the prompt bar sit file attach, prompt history and scheduled prompts.
-Below 700px the same page becomes a phone layout with a key row, a live-typing bar and a
-keyboard-safe shell. The guest share page, the helper portal, the multi-instance hub and the
-landing page are separate documents in `public/`.
+- The web UI is English with some German left in places.
+- Only one suite runs at a time per machine, so lands can queue behind each other.
+- One terminal size per session — two browsers on one slot fight over width.
+- Terminal logs (`streams/*.raw`) grow without bound.
 
-The UI is English, with some German left in places — task kinds (`auftrag`, `notiz`, …) and a few
-newer panels.
+More in [docs/architecture.md](docs/architecture.md#known-limits).
 
-## Ops
+## License
 
-The recommended setup is the launchd/systemd watchdog, which survives crashes *and* reboots and is
-also where the live land-path configuration is written: `watchdog.sh` holds the spawn line, and
-`FLEET_VERIFY_CMD`, `FLEET_POSTLAND_AUDIT_CMD` and `FLEET_CLEAN_REVIEW` on it decide what the gate,
-tier 2 and the advisory reviewer actually do. As shipped, the gate runs pins, typecheck, build and the
-clean-review, security and claude-gate suites; `./e2e-isolated.sh` — the full suite against a
-throwaway instance on its own tmux socket and port — is the post-land audit, not part of the gate.
-`bun run build` rebuilds the four client bundles (app, share, helper, hub), and `bun e2e/pins.ts` is
-the millisecond-fast first stage that catches drift no compiler sees. `bun review-sweep.ts` and
-`bun repo-map.ts` are sensors over the tree itself (the latter writes `docs/repo-map.generated.md`).
-`ctl.sh` wraps the API for operators; the `Dockerfile` backs the containerised harness
-(`docs/container.md`).
-
-Env worth knowing: `FLEET_HOST`, `FLEET_PORT`, `FLEET_SOCK`, `FLEET_TOKEN`, `FLEET_ALLOWED_HOSTS`,
-`FLEET_CMD`, `FLEET_DISPATCH_REPO`, `FLEET_DISPATCH_MAX_LANES` (default 3),
-`FLEET_HARNESS_AUTOMATION`, `FLEET_VERIFY_CMD`, `FLEET_POSTLAND_AUDIT_CMD`, `FLEET_SHARE_HOSTS`,
-`FLEET_INSTANCES` (links other fleets into the instance switcher).
-
-## Known limits
-
-- **One suite at a time.** The verify gate, the previews and the audit all serialize on a single
-  machine-wide lock (`server.ts#holdSuiteLock`), unless a preview or audit is handed to a helper
-  machine. A land can therefore wait minutes for the machine
-  without ever looking at its own tree, and the code says so rather than calling it a red.
-- **The suite is not deterministic.** Known flake families are tracked in `docs/verify-tiering.md`
-  and adjudicated per audit row; a green re-run at a base rate of a few percent proves little, which
-  is why the trail register exists instead of a re-run rule.
-- **Caps are blunt.** Tasks, programs, watches, autos and report sizes are fixed numbers in
-  `server.ts`; lanes per repo and a few Program caps can be set by the owner or by env. They bound
-  damage; they do not schedule intelligently.
-- **The land path mutates a tree someone may be sitting in** — if a worktree has the integration
-  branch checked out, the fast-forward happens inside it (`docs/land-mechanics.md`).
-- Single shared owner token, no TLS, no rate limiting: the private network is part of the trust
-  boundary.
-- `streams/*.raw` grow unbounded; killing a slot deletes its stream.
-- One terminal size per session, last writer wins — two clients on one slot fight over width.
-- xterm is pinned at 5.5.0.
+MIT. Grew out of [claude-deck](https://github.com/jp290/claude-deck).

@@ -14370,14 +14370,18 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     const dispatchRepo = await repoRootOf(next.repo ?? DISPATCH_REPO);
     const anchor = await decideLaneAnchor(dispatchRepo, undefined);
     const wt = await createWorktree(dispatchRepo, "", dForm.form, variantBase ?? undefined);
+    // `base` from the same source and with the same omission as openLaneInSlot: a dispatched lane
+    // that left it out sent every `worktree.base` reader (laneBaseRef, the plan CLI's lane read) to
+    // its fallback in the normal case — all four open lanes on the live fleet.json, 2026-09-22.
+    // Unresolvable → undefined → no key, so that record stays byte-identical to before.
+    const base = await integrationBranch(wt.repo);
+    const baseSha = await laneForkSha(wt.path, base);
     // same synchronous reserve as openLaneInSlot: the tick can open a lane while an owner click
     // opens another into the same band
     const { band: letterBand, letter } = reserveLaneLetter(anchor);
-    // no `base` here (the dispatcher lane keeps the live re-derivation), but the fork commit is
-    // captured — the outcome record needs it after the land moves main. `label` stays null: the
-    // line below names the slot.
-    const dRef: LaneRef = { repo: wt.repo, branch: wt.branch,
-      baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)),
+    // the fork commit is captured — the outcome record needs it after the land moves main.
+    // `label` stays null: the line below names the slot.
+    const dRef: LaneRef = { repo: wt.repo, branch: wt.branch, base: base ?? undefined, baseSha,
       ...(anchor ? { anchor } : {}), letter,
       // written only for a clone, exactly as openLaneInSlot writes it: a dispatched worktree lane's
       // persisted record must stay byte-identical to the one every dispatch before this produced.

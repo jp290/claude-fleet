@@ -826,6 +826,39 @@ export async function run(): Promise<void> {
       silent.stop(true);
     }
   }
+  // ===== §2e a ps that cannot be SPAWNED is an unmeasurable birth, not a 500 =====
+  // Inside the pi-zai read fence `ps` is EPERM and posix_spawn THROWS instead of exiting non-zero;
+  // uncaught in server.ts#processBirthFingerprint that answered /api/sessions with 500 for as long
+  // as anyone held the lock (MAIN Oberflaeche slot 13, lane report 113ec360). The stand-in here is
+  // a `ps` first on the server's PATH that no kernel will exec (ENOEXEC) — the same throw, portable.
+  // The lock is planted only AFTER the boot, so the fixture measures the boot (claimInstanceLock's
+  // own ps probe) and the claim measures the route. Expected: the gate's unknown-identity row —
+  // alive, identity unproven, birth unmeasurable — which is the existing fail-CLOSED answer.
+  {
+    const FAKE_PS = `${TMP}/fleet-e2e-fakeps-${process.pid}`;
+    mkdirSync(FAKE_PS, { recursive: true });
+    writeFileSync(`${FAKE_PS}/ps`, "\0\x01\x02 not an executable");
+    chmodSync(`${FAKE_PS}/ps`, 0o755);
+    rmSync(OWN_LOCK, { recursive: true, force: true });
+    const booted = await restartSrv({ FLEET_SUITE_LOCK: OWN_LOCK, PATH: `${FAKE_PS}:${process.env.PATH ?? ""}` })
+      .then(() => "ok", (e: unknown) => String(e));
+    check("§2e fixture: srv boots with a ps on its PATH that posix_spawn refuses",
+      booted === "ok", `${booted} · server.log tail: ${(await readText(`${ROOT}/server.log`)).slice(-300)}`);
+    if (booted === "ok") {
+      mkdirSync(OWN_LOCK, { recursive: true });
+      writeFileSync(`${OWN_LOCK}/pid`, `${process.pid}\n`);
+      writeFileSync(`${OWN_LOCK}/birth`, `${thisBirth}\n`);
+      const r = await get("/api/sessions");
+      const lock = r.ok ? ((await r.json()) as { gate?: Gate | null }).gate?.lock : null;
+      check("§2e a ps spawn that throws leaves /api/sessions 200 and reads as birth unmeasurable, never proven",
+        r.status === 200 && lock?.pid === process.pid && lock.alive === true && lock.identityProven === null
+          && lock.birth?.state === "unmeasurable" && lock.birth.current === null && lock.state === "unknown",
+        `status=${r.status} lock=${JSON.stringify(lock)}`);
+    }
+    rmSync(OWN_LOCK, { recursive: true, force: true });
+    rmSync(FAKE_PS, { recursive: true, force: true });
+  }
+
   // back to the real lock for everything below — and back to the env every later module expects
   await restartSrv();
   check("§2 the default lock path is restored: the real mutex is visible again",

@@ -107,8 +107,16 @@ export async function readLedger<T>(file: string): Promise<Ledger<T>> {
   const rows: T[] = [];
   let malformed = 0;
   for (const f of [`${file}.1`, file]) { // .1 is the OLDER generation → this order is chronological
-    if (!existsSync(f)) continue;
-    for (const line of (await Bun.file(f).text()).split("\n")) {
+    // No existsSync in front: rotateEventLog renames `file` to `.1` inside the await, so a check-
+    // then-read threw ENOENT out of server.ts#seedInbound's top-level await, before Bun.serve. A
+    // generation gone by read time is simply missing; any other read error still throws.
+    let text: string;
+    try { text = await Bun.file(f).text(); }
+    catch (e: unknown) {
+      if ((e as { code?: string }).code === "ENOENT") continue;
+      throw e;
+    }
+    for (const line of text.split("\n")) {
       if (!line) continue;
       let row: unknown;
       try {

@@ -2655,6 +2655,17 @@ export async function run(): Promise<void> {
   const cap1 = await tmuxOut("capture-pane", "-t", "s1", "-p");
   check("typed bytes visible in s1 pane", cap1.out.includes("hello-fleet-typing"));
 
+  // THE READER IS `cat`, NOT THE SHELL: behind the `true` stand-in s2 runs `$SHELL`, and a line
+  // editor redraws what it is typed instead of echoing it. zsh wraps at the margin with its own
+  // " \r\e[K", which tmux never flags as a wrap, so -J cannot join the rows; and any editor in a C
+  // locale counts the three U+00B7 in the header as six columns and wipes the header's first row.
+  // Green therefore needed bash plus a UTF-8 locale (the helper) and was red on zsh plus C (this
+  // Mac). A cooked tty echoes the received bytes in order and lets the terminal autowrap them.
+  await tmuxOut("send-keys", "-t", "s2", "cat", "Enter");
+  for (let i = 0; i < 50; i++) {
+    if ((await tmuxOut("display-message", "-p", "-t", "s2", "#{pane_current_command}")).out.trim() === "cat") break;
+    await Bun.sleep(100);
+  }
   const snd = await post("/send", { slot: 2, text: "compose-box-to-slot-two", submit: false });
   check("/send accepted", snd.ok);
   await Bun.sleep(700);
@@ -2668,7 +2679,8 @@ export async function run(): Promise<void> {
   const cap2j = await tmuxOut("capture-pane", "-t", "s2", "-p", "-J");
   check("delivery header: a /send into the default (claude) adapter types the provenance line directly before the body",
     cap2j.out.includes("[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 2] compose-box-to-slot-two"),
-    cap2j.out.split("\n").filter((l) => l.includes("compose-box-to-slot-two")).join(" / ").slice(-240));
+    JSON.stringify({ reader: (await tmuxOut("display-message", "-p", "-t", "s2", "#{pane_current_command} #{pane_width}")).out.trim(),
+      rows: cap2j.out.trimEnd().split("\n").slice(-3).map((l) => l.slice(0, 160)) }));
   check("no cross-talk (s1 text absent from s2)", !cap2.out.includes("hello-fleet-typing"));
   const cap1b = await tmuxOut("capture-pane", "-t", "s1", "-p");
   check("no cross-talk (s2 text absent from s1)", !cap1b.out.includes("compose-box-to-slot-two"));
@@ -2712,6 +2724,7 @@ export async function run(): Promise<void> {
     && (expTxt.headers.get("content-type") ?? "").includes("text/plain")
     && (expTxt.headers.get("content-disposition") ?? "").includes("attachment"), expTxt.headers.get("content-disposition") ?? "");
   check("txt export contains session content", (await expTxt.text()).replaceAll("\n", "").includes("compose-box-to-slot-two"));
+  await tmuxOut("send-keys", "-t", "s2", "C-c"); // hand s2 back to its shell: the reader's job is done
   const expInactive = await get("/api/slots/4/export");
   check("export rejects inactive slot", expInactive.status === 400);
 

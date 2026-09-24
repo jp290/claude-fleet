@@ -201,6 +201,10 @@ type AuditEvent =
   // lives in the repo and travels with the commit, this row lives in the fleet's own trail and
   // survives a repo that was never cloned anywhere.
   | "land_actor"
+  // a land in a repo that has no remote under FLEET_HUB_REMOTE's name (5857e934): the variable is
+  // fleetwide, the remote is per repo, and such a repo lands locally with no hub. Written at the
+  // same choke point as land_actor, beside the `hubSkipped` field on the note that says the same.
+  | "hub_skip"
   // an owner-token merge arriving over bearer/query on a lane whose task belongs to a Program with
   // a LIVE bound MAIN — i.e. the shape a session reaching for fleet.json's token produces. The land
   // PROCEEDS (the owner's own scripts use Bearer); this row is what makes the actor class countable

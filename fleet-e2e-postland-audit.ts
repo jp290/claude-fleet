@@ -722,9 +722,11 @@ check("(H) an unknown audit key is 404, never a dangling judgement", ghost.statu
 const badVerdict = await post("/api/post-land-audits/adjudicate", { at: theRed.at, verdict: "probably-fine" });
 check("(H) the verdict vocabulary is a CLOSED set — a free-text verdict is refused",
   badVerdict.status === 400, String(badVerdict.status));
-const longNote = "x".repeat(301);
+// the cap is MAX_COMMENT_TEXT (2000) since 96bb83c4; this line said 301 until then and went red
+// unseen, because no gate runs this harness
+const longNote = "x".repeat(2001);
 const capped = await post("/api/post-land-audits/adjudicate", { at: theRed.at, verdict: "flake", note: longNote });
-check("(H) the note cap is enforced SERVER-SIDE (301 chars → 400), not trusted to the client",
+check("(H) the note cap is enforced SERVER-SIDE (2001 chars → 400), not trusted to the client",
   capped.status === 400, `${capped.status} ${(await capped.text()).slice(0, 120)}`);
 check("(H) ...and none of the three rejected calls left a judgement behind",
   (await rowAt(theRed.at))?.adjudication === undefined && railRows().length === 0,

@@ -36206,7 +36206,10 @@ async function recordUnattributedBoot(): Promise<void> {
 
 // The precondition, checked by the verb and not by its caller. A reserved/running land is an
 // in-memory act whose process must survive through its terminal verdict. For audits only the RUNNER
-// blocks: the queue is replayed at boot, so a waiting audit loses nothing to a restart.
+// blocks: the queue is replayed at boot, so a waiting audit loses nothing to a restart. Nor does one
+// held on a HELPER (a claim, or a sharded run's claims): both are restored from the state file, and
+// the daemon retries its result across the restart gap (helper-daemon/result-retry.ts) — proven by
+// e2e/helper-portal.ts (K) unsharded and (K11) mid-run, so an open helper claim is not a blocker.
 function deployBlocker(): string | null {
   const activeLands = [...new Set([...mergeStart, ...mergeInflight.keys()])]
     .sort((a, b) => a - b)

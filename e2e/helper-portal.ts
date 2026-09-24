@@ -1954,10 +1954,11 @@ export async function run(h: {
     const shardLine = (r: Row | undefined): string =>
       (r?.shards ?? []).map((s) => `${s.k}:${s.result}:${s.ran}:${s.failed}:${s.exitCode}`).join(",");
 
+    const shardEnv = { FLEET_AUDIT_SHARDS: "3", FLEET_AUDIT_HELPER_GRACE_MS: "120000",
+      FLEET_HELPER_CLAIM_TIMEOUT_MS: "20000", FLEET_HELPER_SWEEP_MS: "1000" };
     await killSrv();
     check("(K11) setup: the server restarts with FLEET_AUDIT_SHARDS=3, a long grace, a 20 s claim window and a 1 s sweep",
-      await startSrv({ audit: true, extra: { FLEET_AUDIT_SHARDS: "3", FLEET_AUDIT_HELPER_GRACE_MS: "120000",
-        FLEET_HELPER_CLAIM_TIMEOUT_MS: "20000", FLEET_HELPER_SWEEP_MS: "1000" } }));
+      await startSrv({ audit: true, extra: shardEnv }));
     await Bun.sleep(750);
     await setAuditMode("green");
     await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
@@ -2024,6 +2025,26 @@ export async function run(h: {
         r1.ok && r2.ok && (await newRepoRows()).length === rowsBefore
           && midList.length === 1 && midList[0]?.shard === "3/3" && midList[0].claim?.name === SHARD_NAME,
         `${r1.status}/${r2.status} rows=${(await newRepoRows()).length}/${rowsBefore} list=${JSON.stringify(midList.map((j) => j.shard))}`);
+      // (3b) A DEPLOY'S RESTART MID-RUN. server.ts#deployBlocker lets a deploy through while shards are
+      // out on a helper — only a LOCAL runner blocks — and that is right only if the restart ADOPTS the
+      // run: the claim still owed, the two verdicts already in, and no local audit of the same tree. The
+      // restart is the deploy's own (`kill-session -t srv`, rebooted on the same env), and the green row
+      // below is then written from shards reported on BOTH sides of it. Inside the 20 s claim window:
+      // the restart's own ms is in the detail. MUTATION: drop the auditShardRuns restore at boot ⇒ the
+      // entry is offered as three fresh unclaimed shards ⇒ red here, and shard 3/3's report is a 409.
+      const restartAt = Date.now();
+      await killSrv();
+      const rebooted = await startSrv({ audit: true, extra: shardEnv });
+      const restartMs = Date.now() - restartAt;
+      await Bun.sleep(1200);
+      const adopted = repoJobs(await boxJobs());
+      const adoptedBox = ((await ownerDevices()) ?? []).find((d) => d.id === SHARDBOX);
+      check("(K11) A RESTART MID-RUN ADOPTS IT: shard 3/3 is still listed claimed by the box, the board still shows that one audit claim, and no row and no local run appeared",
+        rebooted && adopted.length === 1 && adopted[0]?.shard === "3/3" && adopted[0].claim?.name === SHARD_NAME
+          && adoptedBox?.claims.length === 1 && adoptedBox.claims[0]?.kind === "audit"
+          && (await newRepoRows()).length === rowsBefore && (await liveRepo()) === null,
+        `restart=${restartMs}ms rebooted=${rebooted} list=${JSON.stringify(adopted.map((j) => `${j.shard}:${j.claim?.name ?? "open"}`))}`
+          + ` board=${JSON.stringify(adoptedBox?.claims)} rows=${(await newRepoRows()).length}/${rowsBefore}`);
       const r3 = await report(ids[2]!, { exitCode: 0, fails: [], trail: "isolated-20260914T1200Z-3333",
         tail: "PASS  shard three a\nALL PASS" });
       const r3Body = (await r3.json()) as { result?: string; auditResult?: string; artifactAt?: number };
@@ -2035,7 +2056,7 @@ export async function run(h: {
           && shardLine(gRow) === "1:green:2:0:0,2:green:2:0:0,3:green:1:0:0"
           && (gRow.shards ?? []).map((s) => s.jobId).join(",") === ids.join(",")
           && gRow.covers.some((c) => c.branch === g.branch) && gRow.remote?.name === SHARD_NAME,
-        `rows=${gRows.length - rowsBefore} ${JSON.stringify(gRow).slice(0, 400)}`);
+        `rows=${gRows.length - rowsBefore} ${(JSON.stringify(gRow) ?? "(no row)").slice(0, 400)}`);
       check("(K11) …ms runs from the FIRST claim to the LAST result, and the answer that wrote the row hands back its key",
         !!gRow && gRow.startedAt === minClaimedAt && gRow.remote?.claimedAt === minClaimedAt
           && gRow.ms === (gRow.remote?.reportedAt ?? 0) - minClaimedAt && gRow.ms >= 0

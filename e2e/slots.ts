@@ -3259,7 +3259,9 @@ export async function run(): Promise<void> {
     const blink = await watch(
       "while :; do printf '\\033]0;[!] Action Required\\007'; sleep 0.2; printf '\\033]0;[.] Action Required\\033\\\\'; sleep 0.2; done");
     const text = await watch("while :; do printf 'visible tick\\n'; sleep 0.2; done");
-    const measured = opened.ok && blink.grew >= 200 && text.grew >= 100 && blink.before.at > 0;
+    // floors of a few writes each (measured 2026-09-24: 221 B blink, 126 B text in 3 s): the
+    // precondition is that bytes flowed, not how many — a loaded box runs the loop fewer times
+    const measured = opened.ok && blink.grew >= 60 && text.grew >= 28 && blink.before.at > 0;
     check("title fixture: a pane blinking only its title, and one writing text, both grew the stream",
       measured, JSON.stringify({ status: opened.status, blink, text }));
     if (measured) {

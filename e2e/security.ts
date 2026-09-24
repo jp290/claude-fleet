@@ -165,6 +165,15 @@ const PRE_AUTH_ROUTES = [
   // beyond the row is the transport half — settleFleetEventAcknowledged on the report's own event,
   // through the ack route's single writer, and an already-terminal event is left exactly as it is.
   String.raw`~ /^\/api\/self\/fleet-report\/([0-9a-f]{24})\/(accept|reject)$/`,
+  // THE REPORT DELEGATE's pair (2026-09-24, server.ts#delegateDecideFleetReport): non-lane-only, and
+  // then refused (409 not-delegate) unless the owner named THIS exact occupant and line through the
+  // owner-gated PATCH /api/slots/:id/report-delegate — no label, model or role grants it. It reaches
+  // only rows no living receiver can judge (reportAwaitsOwner; a live receiver is 409), writes the
+  // same verdict row, ledger line, event settle and lane carry as the two doors above, or on
+  // `escalate` only an escalation record; GET lists those rows. No foreign slot is reached, no task
+  // status, land, dispatch or tick moves.
+  String.raw`~ /^\/api\/self\/fleet-report\/([0-9a-f]{24})\/delegate\/(accept|reject|escalate)$/`,
+  '= /api/self/fleet-report/delegated',
   // The owner-facing twin of the fleet-report pair above, and it is the QUIETEST entry on this list: it writes
   // nothing into any pane and reaches no foreign slot. POST is non-lane-only AND requires the
   // caller to be the current bound MAIN of an active program (programId is derived from that

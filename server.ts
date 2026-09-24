@@ -16606,6 +16606,11 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
       if (!harnessAutomatableFor(h))
         return hold(`waiting: variant ${r.variantIndex}/${n} runs harness ${h.id}, which is not automatable — no unattended path may drive it (${harnessAutomationWhy()})`);
     }
+    // the tick's measured-limit gate (noteHarnessLimits), for every variant: a group starts whole
+    for (const r of rows) {
+      const limited = harnessLimitFor(taskSpawnOf(r));
+      if (limited) return hold(`waiting: variant ${r.variantIndex}/${n} — ${harnessLimitNote(limited.scope, limited.limit).replace(/^waiting: /, "")}`);
+    }
     const released = rows.filter((r) => releaseVerdictNow(r).released).length;
     if (released < n) return hold(`waiting: variant group ${group.id} starts only with all ${n} variants released — ${released}/${n} are`);
     const nextOf = new Map(startPlanWaves().flatMap(({ plan }) => plan.ids.map((id) => [id, plan.next] as const)));
@@ -17072,6 +17077,8 @@ async function tickDispatch(): Promise<void> {
         waiting(startPlanWaitNote(plan.next));
         continue;
       }
+      const rowLimit = harnessLimitFor(rowSpawn); // a measured usage limit — rule at noteHarnessLimits
+      if (rowLimit) { waiting(harnessLimitNote(rowLimit.scope, rowLimit.limit)); continue; }
       for (const row of rows) briefReviewKick(row); // the counter-read starts here (briefReviewKick)
       // count lanes in the task's TARGET repo: the cap bounds unattended fan-out per project —
       // a hand-driven lane in an unrelated repo used to eat the budget and stall the queue
@@ -36218,6 +36225,62 @@ function paneLimitFactFor(s: Slot): ApiErrorLine | null {
   const known = paneLimitFacts.get(s.id);
   return known && known.identity === `${s.openedAt}\0${s.sessionId}` ? known.err : null;
 }
+
+// --- harness limits: no unattended start into a MEASURED usage limit --------------------------
+// Measured by Program-MAIN Slot 4 (2026-09-23): a pi-zai lane stood empty on Z.ai's weekly limit,
+// was killed, and the very next dispatch tick started the SAME row on pi-zai again — a row's spawn
+// triple is fixed at filing, and nothing between the kill and the start knew about the limit. So
+// the limit is remembered PER SCOPE, not per pane: a pane that measured it may be killed, and the
+// reset time it named still holds for the account behind it.
+//
+// THE SCOPE is the account the limit belongs to. For pi-zai that is the Z.ai Coding Plan, shared
+// by glm-5.3 and glm-5.3-flash, so the harness alone. For claude it is the MODEL: the measured
+// round names it ("You've hit your Fable 5 limit · resets 8pm"), and a Fable limit says nothing
+// about an Opus row. Every other harness carries no rate_limit apiStall at all, so it never gets
+// an entry — and no entry is exactly today: an unknown limit is neither "free" nor "blocked".
+//
+// ONLY a fact with a readable resetAt IN THE FUTURE is recorded. A rate_limit without a reset time
+// (a claude RPM burst) and a reset already past are "cannot tell" and "over" — neither holds a row.
+// An entry ends when its resetAt passes; nothing else clears it.
+//
+// THE GATE in tickDispatch (and startVariantGroup's unattended branch) SKIPS a limited row like the
+// harness-automation gate does — a property of this row's spawn, so a row on another harness starts
+// past it — and it never rewrites the spawn: which worker runs a row stays the owner's or a MAIN's
+// choice, and an attended dispatch is not held at all. It sits above both caps, because a lane
+// closing does not lift a limit, and after the plan's verdict, because a row still waiting on
+// `after` would not start at resetAt either.
+interface HarnessLimit { resetAt: number; slot: number; since: number }
+const harnessLimits = new Map<string, HarnessLimit>();
+function harnessLimitScope(h: Harness, model: string | null): string {
+  return h === CLAUDE_HARNESS ? `${h.id}/${model ?? "?"}` : h.id;
+}
+// Reads every slot's apiStall (the poll's own derivation: contextReading + apiStallFact) and keeps
+// the latest resetAt per scope; returns the entries still in force. Called from the rate-limit
+// tick's fact half, which runs unconditionally every RATE_LIMIT_TICK_MS — so a limit is known
+// before the pane that measured it can be killed — and again by the dispatch tick before it reads.
+function noteHarnessLimits(now: number): Map<string, HarnessLimit> {
+  for (const s of slots) {
+    if (!s.cwd) continue;
+    const stall = apiStallFact(s, contextReading(s).apiError, now);
+    if (!stall || stall.kind !== "rate_limit" || stall.resetAt === null || stall.resetAt <= now) continue;
+    const scope = harnessLimitScope(harnessOf(s.harness), resolvedModel(s).model);
+    const known = harnessLimits.get(scope);
+    if (!known || known.resetAt < stall.resetAt) harnessLimits.set(scope, { resetAt: stall.resetAt, slot: s.id, since: stall.since });
+  }
+  for (const [scope, l] of harnessLimits) if (l.resetAt <= now) harnessLimits.delete(scope);
+  return harnessLimits;
+}
+// The limit a ROW would start into, by the spawn it carries — the one the tick hands dispatchTask.
+// Refreshes the memory first, so a limit a pane shows right now counts on this very tick.
+function harnessLimitFor(spawn: DispatchSpawn): { scope: string; limit: HarnessLimit } | null {
+  const h = harnessOf(spawn.harness);
+  const scope = harnessLimitScope(h, spawn.model ?? harnessDefaultModel(h));
+  const limit = noteHarnessLimits(Date.now()).get(scope);
+  return limit ? { scope, limit } : null;
+}
+const harnessLimitNote = (scope: string, l: HarnessLimit): string =>
+  `waiting: ${scope} limit until ${new Date(l.resetAt).toISOString()} (measured on slot ${l.slot}) — the tick starts it after the reset; a hand dispatch is not held`;
+
 const RATE_LIMIT_RESUME_AFTER_MS = 60_000; // never before resetAt + 60 s
 const RATE_LIMIT_RESUME_MAX = 3;           // at most three attempts per stall
 let rateLimitTickBusy = false;
@@ -36241,6 +36304,7 @@ async function tickRateLimitResume(): Promise<void> {
           kind: "rate_limit", resetAt: Number.isFinite(resetMs) ? resetMs : null };
       })() : null });
     }
+    noteHarnessLimits(now); // the dispatch gate's memory — fed here, where the tick runs regardless
     if (!RATE_LIMIT_RESUME_ON) return;
     // THE ACTUATOR HALF. Only kind "rate_limit" WITH a readable resetAt; every other round stays
     // visible as apiStall and is never typed into.

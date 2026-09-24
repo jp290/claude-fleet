@@ -183,6 +183,28 @@ producer of the bytes a lane is founded on — pinned in `e2e/pins.ts`.
    nie als Server-Hänger), und mit einer Umgebung, die KEIN `FLEET_*` trägt (`verifyChildEnv(null)
    — weder Owner- noch irgendein Self-Token erreicht einen Kriterien-Check).
 
+9. **Kein unbeaufsichtigter Start in ein GEMESSENES Nutzungslimit.** Gemessen von Program-MAIN
+   Slot 4 (2026-09-23): nach dem Kill einer leeren `pi-zai`-Lane, die auf dem Z.ai-Wochenlimit
+   stand, startete der Tick dieselbe Zeile sofort wieder auf `pi-zai` — `t.spawn` steht ab Filing
+   fest, und zwischen Kill und Start wusste nichts vom Limit. Seitdem merkt sich der Server jedes
+   `apiStall` mit `kind: "rate_limit"` und einem `resetAt` in der Zukunft PRO KONTO
+   (`server.ts#noteHarnessLimits`; `pi-zai` = der Harness, weil glm-5.3 und glm-5.3-flash auf
+   demselben Coding-Plan-Schlüssel laufen; `claude` = Harness + Modell, weil der gemessene Satz das
+   Modell nennt). Der Eintrag überlebt die Pane, die ihn gemessen hat, und endet allein mit seinem
+   `resetAt`. Eine Zeile, deren Spawn auf ein solches Konto zeigt, bleibt `queued` mit
+   `waiting: <scope> limit until <resetAt ISO> (measured on slot N) — …`; nach `resetAt` startet sie
+   beim nächsten Tick ohne Handgriff. Drei Grenzen, je ein Check (`e2e/tasks.ts` §(e6-limit)):
+   - **Die Worker-Wahl bleibt, wo sie war.** Der Tick schreibt den Spawn einer Zeile nie um; ein
+     Hand-Dispatch (`POST /api/tasks/:id/dispatch`, mit oder ohne anderes Tripel) wird nicht gehalten.
+   - **Die Gegenprobe:** eine Zeile auf einem anderen Harness startet an der gehaltenen vorbei.
+   - **Unbekannt bleibt unbekannt.** Ein Harness ohne `apiStall`-Sensor, ein `rate_limit` ohne
+     lesbare Resetzeit und ein verstrichenes `resetAt` legen keinen Eintrag an — die Zeile läuft wie
+     vorher. Der Eintrag ist prozess-lokal: ein Neustart vergisst ihn, bis eine lebende Pane ihn
+     erneut misst.
+   Die Prüfung steht unter dem Harness-Automatisierungs-Gate und dem Wellen-Urteil des Startplans und
+   über beiden Deckeln, weil ein schließendes Lane kein Limit aufhebt; `startVariantGroup` fragt sie
+   für jede Variante im unbeaufsichtigten Zweig.
+
 An invariant that RETIRED with the analyst, named so nobody looks for it: *"nothing starts
 unattended against a tree it was not read on."* There is no reading, so there is no staleness, and a
 guard nobody can clear is a deadlock wearing a safety property's clothes — which is why that guard

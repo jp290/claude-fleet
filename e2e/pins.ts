@@ -2887,8 +2887,10 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // this slice, and a tickDispatch that swallowed the file would make each of them vacuously true.
   // Raised 20_000 → 21_000 on 2026-09-17 for the variant-group reservation gate (~600 B of gate and
   // its pointer; the rule itself is written at server.ts#variantReserveHolds, outside this body).
+  // Raised 21_000 → 21_500 on 2026-09-24 for the measured-usage-limit gate (two lines; the rule is
+  // written at server.ts#noteHarnessLimits, outside this body — the body stood at ~20.9 kB before).
   pin("tickDispatch's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",
-    tStart > 0 && tBody.length > 500 && tBody.length < 21_000, `${tBody.length} bytes`);
+    tStart > 0 && tBody.length > 500 && tBody.length < 21_500, `${tBody.length} bytes`);
   // THE TICK STARTS BY THE START PLAN SINCE SCHNITT 2 (docs/messungen/2026-09-13-queue-pipeline-
   // system-entwurf.md §5). Four rules over the source, none visible to tsc:
   //   · the tick walks startPlanWaves() and nothing else — no second oldest-first sweep over `tasks`

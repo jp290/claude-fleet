@@ -2629,7 +2629,8 @@ export async function run(): Promise<void> {
   const snd = await post("/send", { slot: 2, text: "compose-box-to-slot-two", submit: false });
   check("/send accepted", snd.ok);
   await Bun.sleep(700);
-  const cap2 = await tmuxOut("capture-pane", "-t", "s2", "-p");
+  // -J: since 4b085fd9 the typed delivery header precedes the text, so it straddles the pane's wrap
+  const cap2 = await tmuxOut("capture-pane", "-t", "s2", "-p", "-J");
   check("composed text visible in s2 pane", cap2.out.includes("compose-box-to-slot-two"));
   // THE DELIVERY HEADER (4b085fd9): the default adapter is claude's, so the send is preceded by the
   // typed provenance line — path and slot as the server knows them, the credential and never a
@@ -2646,7 +2647,8 @@ export async function run(): Promise<void> {
   const expHtml = await get("/api/slots/2/export");
   const expBody = await expHtml.text();
   check("export returns HTML", expHtml.ok && (expHtml.headers.get("content-type") ?? "").includes("text/html"));
-  check("export contains session content", expBody.includes("compose-box-to-slot-two"));
+  // the export keeps the pane's wrapped rows, and the delivery header pushes the text across one
+  check("export contains session content", expBody.replaceAll("\n", "").includes("compose-box-to-slot-two"));
   check("export escapes HTML metachars", !/<script/i.test(expBody) && expBody.includes("<pre>"));
 
   // --- regression: the check above never puts a real metacharacter into the source, so
@@ -2680,7 +2682,7 @@ export async function run(): Promise<void> {
   check("export?format=txt is a plain-text download", expTxt.ok
     && (expTxt.headers.get("content-type") ?? "").includes("text/plain")
     && (expTxt.headers.get("content-disposition") ?? "").includes("attachment"), expTxt.headers.get("content-disposition") ?? "");
-  check("txt export contains session content", (await expTxt.text()).includes("compose-box-to-slot-two"));
+  check("txt export contains session content", (await expTxt.text()).replaceAll("\n", "").includes("compose-box-to-slot-two"));
   const expInactive = await get("/api/slots/4/export");
   check("export rejects inactive slot", expInactive.status === 400);
 
@@ -3018,7 +3020,7 @@ export async function run(): Promise<void> {
       check("a malformed openedAt pin is a 400, never a silent unpinned send", badPin.status === 400, String(badPin.status));
       let pinCap = "";
       for (let i = 0; i < 30 && !pinCap.includes("pin-probe-current-occupant"); i++) {
-        pinCap = (await tmuxOut("capture-pane", "-t", "s3", "-p")).out;
+        pinCap = (await tmuxOut("capture-pane", "-t", "s3", "-p", "-J")).out; // -J: the delivery header wraps the row
         if (!pinCap.includes("pin-probe-current-occupant")) await Bun.sleep(100);
       }
       check("the pane holds the pinned-current text and neither the stale-pin nor the malformed-pin text",

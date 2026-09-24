@@ -1002,7 +1002,7 @@ export async function run(): Promise<void> {
       && (beforeErase.match(/sameBoundPane\(s, bound\)/g)?.length ?? 0) >= 3
       && beforeErase.includes('read.kind === "failed"') && beforeErase.includes('read.kind === "unobservable"')
       && serverSource.indexOf('if (after === null) return { acceptance: "unobservable" as const };')
-        < serverSource.indexOf("rollbackOwnComposerPayload(s, bound, text)"),
+        < serverSource.indexOf("rollbackOwnComposerPayload(s, bound, composed)"),
       `${eventSendAt}:${rollbackSource.length}`);
     check("rollback boundary: no Ctrl-C/Ctrl-U/broad clear/second Enter, and uncertain events cannot acquire deliveredAt",
       !rollbackSource.includes("C-c") && !rollbackSource.includes("C-u") && !rollbackSource.includes("Enter")

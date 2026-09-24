@@ -1,3 +1,22 @@
+# HANDOFF — Orchestratorin Slot 9 (claude/Opus 5.5) → Nachfolgerin claude/Opus 5.5/high (2026-09-24 ~05:2x, ctx 32 %)
+
+Echte Nachfolge (Regel A). Owner-Auftrag unverändert: „werde Herr der Lage … geh alles der Reihe nach an“, dazu heute Nacht „bitte babysitte slot3“ und „räum das gesamte Board auf“. **Zuerst:** `./state.sh` · `./register.sh` · Board. Alles unten ist ein CLAIM, gemessen um ~05:1x.
+
+**Erledigt (nicht neu machen):**
+- **W5d T4 gefahren, beide Richtungen.** Mac-Rückweg: launchd `com.claude-fleet.sync` (`~/Library/LaunchAgents/com.claude-fleet.sync.plist`, `FLEET_SYNC_REMOTE=hub`, `FLEET_SYNC_BUILD_CMD=true`, 15 min). Second-host: `.env` `FLEET_LANDS='1'` + `FLEET_HUB_REMOTE='hub'`, Deploy `c4f9a250` ok. Beweislauf: Second-host-Land `3e343f40` über die Nabe (hubPush ok, verify ok); der nächste Mac-Land (Slot 7) holte ihn nach → Nabe = Mac-main `39c69bfd`. Der Second-host-Land brauchte vier Linux-Fixes (Lane dort, mit gelandet): fleet-sync-Token aus `.env`, echter IP-Leak in `testinstanz.sh`, `//`-Subpath im pi-zai-Zaun, harn-Wrapper-comm unter Linux. Second-host-`rulebook/` vom Mac nachgezogen (Backup `~/fleet-host-backups`); Claude Code dort 2.1.281.
+- **Demo 2 (Program c3abe1e4, MAIN Slot 3):** Design 3A von Hand gelandet (`6cb8d3b` + `db23c3d` in `~/claude-fleet-demo`; Gate grün, Nabe-Push unmöglich, s. u.), Lane mit archiveTask geschlossen. Webseite `~/private-repo-v` von der MAIN aufbereitet (`af60649`, `062e36b`). Paket-Lane `691e12f0` queued (ersetzt 7070ee28). Verify-Eintrag `claude-fleet-demo` in `.env`, Mac-Deploy `e782d22c` ok.
+- **Board:** 9 Zeilen archiviert (8bcbc718 be42b531 227153fa f3326769 2ef2cb69 00279c52 59135216 1832c7eb, Dublette 1542b57c) → 96 offen.
+
+**Offen, der Reihe nach:**
+1. **5857e934 DRINGEND** (Fleet-Betrieb, an MAIN Slot 4 gemeldet): Regression aus W5d T1 — ein Repo ohne Remote `hub` kann auf dem Mac nicht landen (verify ok, status error). Bis gelandet: Fremd-Repo-Lanes nur von Hand (ff-only im Haupt-Checkout, Kommentar an der Zeile).
+2. **ab179938** (Fleet-Betrieb): `deployBlocker` sieht Helfer-geshardete Audits nicht. **Bis das steht, bleibt der Mac-Sync-Job PAUSIERT** (wieder an: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.claude-fleet.sync.plist`). Ohne ihn holt der Mac Second-host-Lands nur beim eigenen nächsten Land nach.
+3. **Owner-Fragen offen (je eine):** Sessions 15/16/11 beenden (Vorschlag mit Abwägung liegt dem Owner vor) · Programs ohne lebende MAIN pausieren: Private-repo-j 9ce08219, Leichtgewicht f9dc8e10, Private-repo-aa 247a3746 · Jev S2 f02fbb36 freigeben (Jev-MAIN Slot 10 wartet).
+4. W5d-Messnotiz (drei Sensorzeilen vorher/nachher) ist NICHT geschrieben — Belege stehen oben.
+5. Board-Rest: Dubletten zusammenführen 85078178→ba7df947, 9e7c309e→32a4c38a; gelieferte Jev-Zeilen 68278162/1f110dce/7e9dac9b nach 24 h archivieren; sieben Owner-richtung-Zeilen ohne Program.
+6. Aus dem vorigen Handoff: Worktree-Kette bd84a89f (läuft) → 19dff0a7 → 6ec36333/c617a142 (Owner: Kosten) · Notizblock 1122e94c · sieben Karten mit Lücken (meist Clarify-first, bewusst zurückgestellt).
+
+**Korrekturen an mir:** Ein Deploy-Loop wartete ~3 h zu lang, weil `./ctl.sh merges` auch bei terminalen Nicht-Lands („resolved“) exit 1 gab — kein reiner Land-Sensor; die Route selbst (409) ist der Blocker-Sensor. „Owner-Confirm landet ein skipped Gate“ war falsch (seit 96bb83c4 nicht mehr). Eine `ps`-Zeile hat ein Second-host-Lane-Self-Token angeschnitten gedruckt.
+
 # HANDOFF — Orchestratorin Slot 9 (claude/Opus 5.5) → Nachfolgerin claude/Opus 5.5/high (2026-09-23 ~23:3x, ctx 30 %)
 
 Echte Nachfolge (Regel A). Owner-Auftrag, wörtlich: „Bitte mach dir ein akkurates Bild der Lage und werde Herr der Lage … Second-host … Das muss auch irgendwann mal richtig laufen und das Worktree's feature … Kümmer dich um alles sorgfältig und vernünftig, geh alles der Reihe nach an." Dazu „mach das meiste im zweifel selbst". Lanes vorläufig auf `claude-opus-5-5[1m]/high` (Owner-Pin laut Übergabe von Codex Slot 5, noch nicht als Memory promoviert).

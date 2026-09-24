@@ -846,9 +846,10 @@ export async function run(): Promise<void> {
   // Dual-host topology §6: two hosts land into one history and a bare repo on the second-host is the
   // nabe. The push after each land was a HAND step of the controller's, and the failure mode of a
   // hand step is that the land nobody watched never leaves the machine — after which the other
-  // host rebases onto a main that is missing commits. Three facts, against a REAL bare repo:
-  // the push happens and is recorded; a hub that has moved on is a NOTE FIELD and not a failed
-  // land; and with no FLEET_HUB_REMOTE nothing is pushed and nothing is claimed.
+  // host rebases onto a main that is missing commits. Against a REAL bare repo: the push happens
+  // and is recorded; a hub that has moved on is absorbed or typed `hub-lost` (W5d); an unreachable
+  // one is `hub-unreachable`; with no FLEET_HUB_REMOTE nothing is pushed and nothing is claimed; and
+  // a repo without the named remote lands with no hub (G4, 5857e934).
   {
     const repo = `${REPO}.hubpush`;
     const hub = `${REPO}.hubpush.git`;
@@ -977,6 +978,12 @@ export async function run(): Promise<void> {
     // the typed reason — so this is the check that keeps them apart. It must also NOT retry: the
     // retry exists to absorb another lander's work, and there is no other lander here, only a
     // broken path. Off-by-one danger named: `main` must be exactly where it was before the attempt.
+    // `nowhere` is a REAL remote of this repo whose URL leads nowhere — since 5857e934 a name the
+    // repo does not have at all is not an unreachable hub but no hub (G4), so the fixture has to
+    // configure the remote for this check to still be about reachability.
+    const addNowhere = g(repo, "remote", "add", "nowhere", `${REPO}.hubpush.nowhere.git`);
+    check("(setup G2c) the repo has a remote `nowhere` whose URL is not a repository",
+      addNowhere.code === 0 && !existsSync(`${REPO}.hubpush.nowhere.git`), `add=${addNowhere.code} ${addNowhere.err}`);
     await restartSrv({ FLEET_HUB_REMOTE: "nowhere" });
     const beforeC = g(repo, "rev-parse", "main").out;
     const twoC = await landOnce("hub-two-c.txt");
@@ -997,6 +1004,24 @@ export async function run(): Promise<void> {
       three.after !== two.after && three.note !== null && !("hubPush" in (three.note ?? {}))
         && hubMain() === before3 && g(repo, "remote").out.split("\n").includes("hub"),
       `keys=${Object.keys(three.note ?? {}).join(",")} hub=${hubMain().slice(0, 8)} was=${before3.slice(0, 8)} raw=${three.noteRaw}`);
+
+    // --- G4 (5857e934): FLEET_HUB_REMOTE IS SET, BUT THIS REPO HAS NO REMOTE BY THAT NAME ---------
+    // The variable is fleetwide and the remote is per repo. On 2026-09-24 the demo repo (`git
+    // remote` empty) ended every land `hub-unreachable` with a green gate, because git read the
+    // missing name as an unreachable host and W5d had made the push the land. Such a repo has no
+    // hub: it lands locally exactly as before W5d, the note says why no hub was asked, and the hub
+    // this server does know about is not touched. Every remote is removed, the demo's shape.
+    for (const r of g(repo, "remote").out.split("\n").filter(Boolean)) g(repo, "remote", "remove", r);
+    await restartSrv({ FLEET_HUB_REMOTE: "hub" });
+    const before4 = hubMain();
+    const four = await landOnce("hub-four.txt");
+    const skipped4 = (four.note?.hubSkipped ?? undefined) as Record<string, unknown> | undefined;
+    check("5857e934: a repo without the FLEET_HUB_REMOTE remote lands locally — no hubPush, a named hubSkipped on the note, the hub untouched",
+      g(repo, "remote").out === "" && four.after !== four.before && existsSync(`${repo}/hub-four.txt`)
+        && four.note !== null && !("hubPush" in four.note)
+        && skipped4?.remote === "hub" && skipped4?.reason === "no-remote"
+        && hubMain() === before4,
+      `remotes=[${g(repo, "remote").out}] main=${four.before.slice(0, 8)}->${four.after.slice(0, 8)} reason=${String(four.last?.errorReason)} detail=${(four.last?.detail ?? "").slice(0, 200)} note=${four.noteRaw}`);
   }
 
   // === H — THE NOTE LIFECYCLE AT THE LAND SITE (N2) =====================================

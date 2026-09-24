@@ -3352,6 +3352,10 @@ jetzt von einer Maschine abgelehnt werden, die nicht diese ist — zwei getrennt
   bezahlt, und den vergibt nur eine gemessene Ablehnung.
 - **Ohne `FLEET_HUB_REMOTE` existiert beides nicht.** Kein Push, kein `hubPush`-Feld, kein neues
   Verdikt — der Ein-Host-Pfad ist byte-gleich zu vor W5d.
+- **Ein Repo ohne Remote unter diesem Namen hat ebenfalls keine Nabe** (seit 5857e934,
+  `server.ts#hubRemoteMissing`): der Land läuft lokal wie vor W5d, die Note trägt
+  `hubSkipped {remote, reason:"no-remote"}` statt `hubPush`. Ein vorhandener, aber unerreichbarer
+  Remote bleibt `hub-unreachable`.
 - **Wirkung wie bei `ff-lost`:** beide Werte stehen in `MERGE_ERROR_REASONS` und blockieren
   `done-looking` nicht. Die Lane ist sauber, ahead und grün; sie hat nichts falsch gemacht.
 - **Nicht betroffen:** `confirm-land` und die Boot-Nachholung. Beide bewegen `main` zuerst und

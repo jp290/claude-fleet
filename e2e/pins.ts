@@ -5807,6 +5807,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     /const HUB_REMOTE = \(process\.env\.FLEET_HUB_REMOTE \?\? ""\)\.trim\(\);/.test(server)
       && /const HUB_PUSH_TIMEOUT_MS = 60_000;/.test(server)
       && hubPushBody.includes("if (!HUB_REMOTE) return null;")
+      // 5857e934: a repo with no remote by that name has no hub either — the same null, not a push
+      // that git answers with "does not appear to be a git repository" (read as unreachable)
+      && hubPushBody.includes("if (await hubRemoteMissing(repo)) return null;")
       && hubPushBody.includes('"git", "-C", repo, "push", HUB_REMOTE, `${sha}:refs/heads/${main}`')
       && !/--force/.test(hubPushBody)
       && hubPushBody.includes("}, HUB_PUSH_TIMEOUT_MS);"),
@@ -5823,7 +5826,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_LAND} — the after-the-fact push runs at the land choke point, before the note, and only ever answers with a field`,
     pushAt > recordBody.indexOf('audit("land_actor"')
       && pushAt < recordBody.indexOf("await writeLandNote(")
-      && recordBody.includes("hubPush ? { ...prov, hubPush } : prov")
+      && recordBody.includes("hubPush ? { ...prov, hubPush } : hubSkipped ? { ...prov, hubSkipped } : prov")
       && (hubPushBody.match(/ok: false, remote: HUB_REMOTE/g) ?? []).length === 2
       && !/throw /.test(hubPushBody)
       && /\n      \.\.\.\(prov\.hubPush \? \{ hubPush: prov\.hubPush \} : \{\}\),/.test(noteWriter)

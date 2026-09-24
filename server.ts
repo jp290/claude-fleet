@@ -21884,6 +21884,9 @@ interface LandProvenance {
   // was configured — never "the push went fine", which is why this is written from the push's own
   // return value and never defaulted.
   hubPush?: HubPushResult;
+  // …or that it went NOWHERE because this repo has no remote under FLEET_HUB_REMOTE's name
+  // (5857e934). Only ever beside a configured hub — with the variable unset neither field appears.
+  hubSkipped?: { remote: string; reason: "no-remote" };
   // …and where the lane FORKED (LaneOutcome.forkSha, the same `worktree.baseSha`). The note's own
   // `mainBefore` is the rebase target, so without this a note cannot say what main did while the
   // lane lived. Absent where the slot recorded no fork — never `mainBefore` standing in for it.
@@ -21910,6 +21913,21 @@ type HubPushResult =
 // default is the safe one, so a future git wording change degrades to "unreachable" (one land
 // stops and says why) rather than to a wrong retry.
 const HUB_REJECTED_RE = /!\s+\[rejected\]/;
+// THE VARIABLE IS FLEETWIDE, THE REMOTE IS PER REPO (5857e934). FLEET_HUB_REMOTE names a remote,
+// and a repo that has no remote by that name (the demo, any repo that was never given a nabe) has
+// no hub: it lands the way every repo did before W5d, and `pushLandToHub` answers null for it
+// exactly as it does for an unset variable. Until this existed the push ran anyway, git said
+// "'hub' does not appear to be a git repository", that read as `unreachable`, and since W5d made the
+// push the arbitration EVERY such repo stopped landing (2026-09-24, Slot 5, claude-fleet-demo).
+// ABSENCE MEASURED, NEVER ASSUMED: only a `git remote` that answered and does not list the name
+// counts as missing. A read that failed says nothing about the repo, so it falls through to the
+// push, which then fails under its own name — a hub this repo DOES have is never skipped on a
+// hiccup, because a skipped arbitration is how the two hosts' histories diverge.
+// A remote that EXISTS but cannot be reached is not missing; it stays `hub-unreachable`.
+async function hubRemoteMissing(repo: string): Promise<boolean> {
+  const r = await gitRead(repo, "remote");
+  return r.code === 0 && !r.out.split("\n").map((l) => l.trim()).includes(HUB_REMOTE);
+}
 // Push ONE commit to the hub, fast-forward or not at all (a push without --force is exactly that,
 // and git refuses the rest on the remote side too). Every exit is a FIELD, never a throw.
 //
@@ -21919,6 +21937,7 @@ const HUB_REJECTED_RE = /!\s+\[rejected\]/;
 // has already moved and nothing this function returns may take it back off.
 async function pushLandToHub(repo: string, main: string, sha: string): Promise<HubPushResult | null> {
   if (!HUB_REMOTE) return null;
+  if (await hubRemoteMissing(repo)) return null;
   let killed = false;
   try {
     // AN EXPLICIT SHA, not `main` as it reads right now: after the fact a second land may already
@@ -21987,6 +22006,7 @@ async function writeLandNote(repo: string, branch: string, mainBefore: string, m
       ...(prov.candidateSha ? { candidateSha: prov.candidateSha } : {}),
       ...(prov.verify ? { verify: prov.verify } : {}),
       ...(prov.hubPush ? { hubPush: prov.hubPush } : {}),
+      ...(prov.hubSkipped ? { hubSkipped: prov.hubSkipped } : {}),
       confirmedByHuman: prov.confirmedByHuman,
       actor: prov.actor,
       at: Date.now(),
@@ -22039,7 +22059,15 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
   // on the note. The other two callers did not arbitrate and still push here, after the fact,
   // exactly as they did before: the confirm-land and the boot recovery both move main first.
   const hubPush = prov.hubPush ?? await pushLandToHub(repo, main, mainAfter);
-  await writeLandNote(repo, branch, mainBefore, mainAfter, hubPush ? { ...prov, hubPush } : prov); // best-effort — never throws
+  // 5857e934 · a hub IS configured and this repo has no remote by its name — the only other way
+  // `pushLandToHub` answers null. Named on the note and in the trail, because it is a decision about
+  // THIS repo and not the fleet's off switch: an unset variable still writes neither.
+  const hubSkipped = !hubPush && HUB_REMOTE
+    ? { remote: HUB_REMOTE, reason: "no-remote" as const } : undefined;
+  if (hubSkipped) audit("hub_skip", undefined,
+    `${basename(repo)} ${branch} ${mainAfter.slice(0, 8)}: no remote named ${HUB_REMOTE} in this repo — landed here, no hub`);
+  await writeLandNote(repo, branch, mainBefore, mainAfter,
+    hubPush ? { ...prov, hubPush } : hubSkipped ? { ...prov, hubSkipped } : prov); // best-effort — never throws
   // ACP-17 · THE ONE READER WHO IS NOT AT THE BOARD. Everything written above this line is a PULL
   // surface: the note lives at the commit, the trail row in audit.jsonl, and both are found by
   // someone who already suspects there is something to find. The Program-MAIN whose self-land door
@@ -30091,7 +30119,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               // — and it is read fresh rather than reused from the intent, because a resolver
               // commit or a retry rebase may have rewritten the branch since.
               // NO HUB CONFIGURED = null = every line below behaves exactly as it did before W5d,
-              // which is what keeps a single-host fleet byte-for-byte unchanged.
+              // which is what keeps a single-host fleet byte-for-byte unchanged. A repo with no
+              // remote under that name is the same null (5857e934, `hubRemoteMissing`).
               const laneTip = (await git(root, "rev-parse", branch)).out;
               const arb = await pushLandToHub(root, main, laneTip);
               if (arb && !arb.ok && arb.kind === "unreachable") {

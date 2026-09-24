@@ -3482,12 +3482,25 @@ export async function run(): Promise<void> {
       return { status: r.status, body: (await r.json()) as never };
     };
     const hasPane = async (slot: number): Promise<boolean> => (await tmuxOut("has-session", "-t", `=s${slot}`)).code === 0;
-    const settleIdle = async (slot: number): Promise<void> => {
+    const settleIdle = async (slot: number): Promise<boolean> => {
       for (let i = 0; i < 60; i++) {
         const row = (await rows()).find((r) => r.id === slot);
-        if (row && Date.now() - row.lastOutput > MERGE_IDLE_MS + 200) return;
+        if (row && Date.now() - row.lastOutput > MERGE_IDLE_MS + 200) return true;
         await Bun.sleep(100);
       }
+      return false;
+    };
+    // A settle timeout is its OWN named FAIL, never a silent run-on: on the second-host (preview job
+    // 4e470a435a7b, tree 226d935e) slot 16 was still busy after the restart, the timeout went
+    // unreported, and the fault surfaced six checks later as "busy" on the no-transcript refusal
+    // with five more falling in the cascade. The 1 s containment after a failed settle lets the
+    // downstream checks measure the sleep door rather than this fixture fault — a pane that is
+    // still genuinely noisy stays red everywhere, as it should.
+    const settle = async (slot: number, where: string): Promise<void> => {
+      const ok = await settleIdle(slot);
+      check(`fixture: slot ${slot} wurde nicht ruhig — ${where}`, ok,
+        ok ? "" : `lastOutput never aged past ${MERGE_IDLE_MS + 200}ms within 6s`);
+      if (!ok) await Bun.sleep(1000);
     };
     const free = (await rows()).filter((r) => !r.cwd).map((r) => r.id).reverse();
     const [N, P] = [free[0], free[1]];
@@ -3498,7 +3511,7 @@ export async function run(): Promise<void> {
     check("sleep fixture: two plain slots and one lane are open", nOpen.ok && pOpen.ok && lRes.ok && typeof L === "number",
       `N=${N}:${nOpen.status} P=${P}:${pOpen.status} lane=${lRes.status}`);
 
-    await settleIdle(N);
+    await settle(N, "before the no-session refusal");
     const noSession = await sleepAt(N);
     check("sleep refuses a slot with no session id, by name — it could not be resumed, so it stays awake",
       noSession.status === 409 && noSession.body.reason === "no-session" && await hasPane(N), JSON.stringify(noSession));
@@ -3513,6 +3526,17 @@ export async function run(): Promise<void> {
     check("sleep refuses a pane mid-turn (output inside the owner-act idle gate), by name",
       busy.status === 409 && busy.body.reason === "busy" && await hasPane(N), JSON.stringify(busy));
     await tmuxOut("send-keys", "-t", `=s${N}:`, "C-c");
+    await settle(N, "after the busy probe's C-c");
+    // The C-c is the graceful end and the settle above proves it; the restart makes the end
+    // DETERMINISTIC. A C-c that loses the race leaves the loop running in the pane, the pane
+    // survives stopSrv (it kills only the srv session), and the slot holds "busy" across the
+    // restart — exactly the second-host failure this fixture was repaired for. kill-pane takes the
+    // loop with the pane, so what is rebuilt below cannot still be the probe.
+    const probeRespawn = await post(`/api/slots/${N}/restart`, {});
+    const probeRespawnBody = (await probeRespawn.json()) as { ok?: boolean; error?: string };
+    check("fixture: the busy probe's pane is rebuilt, so the probe has ended for good",
+      probeRespawn.ok && await hasPane(N), `${probeRespawn.status} ${JSON.stringify(probeRespawnBody).slice(0, 200)}`);
+    await settle(N, "after the busy probe's respawn");
 
     const lane = typeof L === "number" ? await sleepAt(L) : null;
     check("sleep refuses a lane, by name — its worktree and land path hang on the session",
@@ -3538,12 +3562,12 @@ export async function run(): Promise<void> {
     writeFileSync(statePath, JSON.stringify(st, null, 2), { mode: 0o600 });
     await restartSrv();
 
-    await settleIdle(P);
+    await settle(P, "before the program-main refusal");
     const main = await sleepAt(P);
     check("sleep refuses a bound Program-MAIN, by name — its Program would have no reachable addressee",
       main.status === 409 && main.body.reason === "program-main" && await hasPane(P), JSON.stringify(main));
 
-    await settleIdle(N);
+    await settle(N, "before the no-transcript refusal");
     const noTranscript = await sleepAt(N);
     check("sleep refuses a pinned slot whose transcript is not on disk — a fresh TUI must never wake under the old id",
       noTranscript.status === 409 && noTranscript.body.reason === "no-transcript" && await hasPane(N),
@@ -3551,7 +3575,7 @@ export async function run(): Promise<void> {
 
     mkdirSync(transcriptDir, { recursive: true });
     writeFileSync(transcript, `${JSON.stringify({ type: "user", timestamp: "2026-09-19T12:00:00Z" })}\n`);
-    await settleIdle(N);
+    await settle(N, "before the sleep");
     const slept = await sleepAt(N);
     check("sleep puts an idle, pinned, resumable plain session down and names the evidence and the composer loss",
       slept.status === 200 && slept.body.sleeping?.sessionId === SID && slept.body.sleeping?.transcript === transcript

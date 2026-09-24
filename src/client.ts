@@ -7702,12 +7702,23 @@ function renderSlots() {
   const refs = laneBandNames(stacks);
   const stackAt = new Map(stacks.map((g) => [g.at, g]));
   const stackedLanes = new Set(stacks.flatMap((g) => g.lanes.map((lane) => lane.id)));
+  // A QUIET STROKE AFTER EVERY FOURTH PLACE (owner 2026-09-21: "alle 4 slots, ein … Trennstrich").
+  // Counted by the place's NUMBER, never by the visible row: a stack's lanes ride inside their
+  // anchor's group, so unfolding them moves no stroke to another number. Drawn only BETWEEN two
+  // groups that both render — never a trailing stroke under the axis.
+  let group = 0;
+  const sepBefore = (id: number) => {
+    const g = Math.ceil(id / 4);
+    if (group && g !== group) slotsEl.appendChild(el("div", "slotsep"));
+    group = g;
+  };
   for (const s of fleet) {
     if (s.id > 16 && !isActive(s)) continue;
-    if (!isActive(s)) { slotsEl.appendChild(emptyRow(s)); continue; }
+    if (!isActive(s)) { sepBefore(s.id); slotsEl.appendChild(emptyRow(s)); continue; }
     const g = stackAt.get(s.id);
-    if (g) { renderStack(g, refs); continue; }
+    if (g) { sepBefore(s.id); renderStack(g, refs); continue; }
     if (stackedLanes.has(s.id)) continue; // folded (or drawn) under its persisted anchor/header
+    sepBefore(s.id);
     slotsEl.appendChild(slotRow(s, undefined, refs)); // plain session, including another main with no lanes
   }
   if (bandFocus) slotsEl.querySelector<HTMLElement>(`.slot[data-slot="${bandFocus}"] .bandview`)?.focus();

@@ -2118,6 +2118,34 @@ export async function run(): Promise<void> {
         && /(?:^|;)\s*flex-direction:\s*column(?:;|$)/.test(slotsCss)
         && /(?:^|;)\s*overflow-y:\s*auto(?:;|$)/.test(slotsCss),
       JSON.stringify({ slotCss: slotCss.trim(), slotsCss: slotsCss.trim() }));
+    // THE STROKE AFTER EVERY FOURTH PLACE (row bc98af80). Position: by the place's NUMBER
+    // (Math.ceil(id / 4)), decided at the three places a numbered row enters the axis and NOT inside
+    // renderStack — a lane under its MAIN rides in the MAIN's group, so folding moves no stroke.
+    {
+      const stackSrc = cut("function renderStack(", "// Edge 1:");
+      const sepCalls = renderSrc.match(/sepBefore\(s\.id\)/g) ?? [];
+      check("sidebar: a stroke separates the places by number after 4, 8, 12 — lanes under their MAIN never count",
+        /const g = Math\.ceil\(id \/ 4\);\s*if \(group && g !== group\) slotsEl\.appendChild\(el\("div", "slotsep"\)\);/.test(renderSrc)
+          && sepCalls.length === 3
+          && /sepBefore\(s\.id\); slotsEl\.appendChild\(emptyRow\(s\)\)/.test(renderSrc)
+          && /sepBefore\(s\.id\); renderStack\(g, refs\)/.test(renderSrc)
+          && /continue; \/\/ folded[^\n]*\n\s*sepBefore\(s\.id\);\s*slotsEl\.appendChild\(slotRow\(s, undefined, refs\)\)/.test(renderSrc)
+          && !/sepBefore|slotsep/.test(stackSrc),
+        `${sepCalls.length} sepBefore calls; renderStack ${/slotsep/.test(stackSrc) ? "draws" : "draws no"} stroke`);
+      const sepRules = [...indexSrc.matchAll(/(?:^|\n)\s*([^{}\n]*\.slotsep[^{}\n]*)\{([^}]*)\}/g)];
+      const painted = sepRules.filter((m) => /background|mask/.test(m[2]));
+      // ONE Fassung: the owner picked gestrichelt (2026-09-24) — a second painted rule is a switch
+      // creeping back, and the dash itself is the repeating gradient, not a dot or a wave mask
+      check("sidebar: the stroke is ONE dashed rule from --chat-edge, takes no pointer and hides in the collapsed rail",
+        painted.length === 1 && painted[0][1].trim() === ".slotsep"
+          && /repeating-linear-gradient\(90deg, var\(--chat-edge\) 0 5px, transparent 5px 9px\)/.test(painted[0][2])
+          && !/mask|#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/.test(painted[0][2])
+          && !/dataset\.sep\b|#slots\[data-/.test(indexSrc + renderSrc)
+          && /pointer-events:\s*none/.test(cssBody(".slotsep"))
+          && /height:\s*8px/.test(cssBody(".slotsep")) && /margin:\s*-2px 8px -2px 6px/.test(cssBody(".slotsep"))
+          && /#side\.collapsed \.slotsep \{ display: none; \}/.test(indexSrc),
+        painted.map((m) => m[1].trim()).join(" | ") || "no painted .slotsep rule");
+    }
     // A FREE PLACE IS A PLACE: numbered, visible in the axis, and clickable across the whole row.
     // "Visible" is the part a hairline treatment would quietly lose, so the label says what a click
     // does instead of leaving the row to be read as a gap.
@@ -2140,7 +2168,7 @@ export async function run(): Promise<void> {
       const css = indexSrc.slice(indexSrc.indexOf("<style>"), indexSrc.indexOf("</style>"))
         .replace(/\/\*[\s\S]*?\*\//g, "");
       const rules = [...css.matchAll(/(^|\n)([^{}\n][^{}]*?)\{([^{}]*)\}/g)];
-      const isBar = (sel: string) => /(^|[\s,])(#side|#slots|#sidehead|#sidetitle|#sidetools|#sidefoot|#instwrap|#instbtn|#instmenu|#morebtn|#morepanel|#collapse|\.instrow|\.slot|\.slotact|\.renamein|\.rowmore|\.rowmenu\w*|\.cmtb|\.revb)\b/.test(sel);
+      const isBar = (sel: string) => /(^|[\s,])(#side|#slots|#sidehead|#sidetitle|#sidetools|#sidefoot|#instwrap|#instbtn|#instmenu|#morebtn|#morepanel|#collapse|\.instrow|\.slot|\.slotact|\.slotsep|\.renamein|\.rowmore|\.rowmenu\w*|\.cmtb|\.revb)\b/.test(sel);
       const withHex = rules.filter((m) => isBar(m[2]) && /#[0-9a-fA-F]{3,8}\b/.test(m[3]));
       check("client: the sidebar's CSS carries no palette of its own — every colour is a token",
         withHex.length === 0 && rules.some((m) => /^#side\b/.test(m[2].trim())

@@ -7116,7 +7116,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // deliberate text change, so the baseline moves with it.
   // 2026-09-23 (memory M1, task 42da6bdc): RAIL_HEAD now ends with the memory start pointer
   // (server.ts#memoryPointer, GET /api/self/memory) — a pointer to the reader, no copied state.
-  const RAIL_STANDARD_SHA256 = "b18c86a4623498538e34173bba58cd9a789655531ffe2dda9bd6b5df50206127";
+  // 2026-09-24: RAIL_TAIL's filing bullet now explains the card header fields with one example
+  // whose VERIFY is the repository's own command — a foreign-repo MAIN has no other source for it.
+  const RAIL_STANDARD_SHA256 = "9e259eb591c45a3a092b142a854b1172965be1dbb7ad4e3dd857fef5ba5c4d2a";
   const railBody = (part: string): string =>
     part === "" ? "" : part.slice(part.indexOf("`") + 1, part.lastIndexOf("`"));
   const standardBytes = rail === ""

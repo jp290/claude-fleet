@@ -11,6 +11,7 @@ import { observedSourceHash } from "../context-manifest";
 import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09 } from "../task-land-waves";
+import { parseFormattedCard, validateCard, type CardValidationContext, type RawCard } from "../card-extract";
 
 // A KILLED SLOT READS EMPTY — the fact the fixed `Bun.sleep(600)` after a round of kills stood in
 // for (2026-09-18). The kill route awaits the teardown, so this usually holds on the first read;
@@ -368,6 +369,26 @@ const waitForLabel = async (label: string): Promise<number | null> => {
   check(`founding fixture: a slot labelled ${label} came up with a live pane`, false,
     seen === undefined ? "no slot ever carried the label" : `slot ${seen} never grew a pane`);
   return null;
+};
+
+// The card-format section of the Program-MAIN rail (server.ts#RAIL_TAIL): from its head to the
+// next loop bullet. The example is the indented block after "For example:", one header per line.
+const CARD_SECTION_HEAD = "\n    THE CARD: a \"text\" that OPENS";
+const cardSectionOf = (prompt: string): string => {
+  const from = prompt.indexOf(CARD_SECTION_HEAD);
+  const to = from < 0 ? -1 : prompt.indexOf("\n  * ", from + 1);
+  return from < 0 || to < 0 ? "" : prompt.slice(from, to);
+};
+const cardExampleOf = (prompt: string): string => {
+  const section = cardSectionOf(prompt);
+  const at = section.indexOf("For example:\n");
+  if (at < 0) return "";
+  const lines: string[] = [];
+  for (const line of section.slice(at).split("\n").slice(1)) {
+    if (!line.startsWith("      ")) break;
+    lines.push(line.trim());
+  }
+  return lines.join("\n");
 };
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -5562,6 +5583,20 @@ export async function run(ctx: Ctx): Promise<void> {
       && gmSuccessionPrompt.split(GM_HEAD).length === 2
       && !gmSuccessionPrompt.includes(GENERIC_ROLE_SENTENCE),
     `bootstrap=${gmRole.length} succession=${gmSuccessionRole.length} equal=${gmSuccessionRole === gmRole}`);
+  // THE CARD FORMAT RIDES THE RAIL (2026-09-24). A foreign-repo MAIN has no claude-fleet rulebook,
+  // so the filing step is the only place it can learn the card headers. RAIL_TAIL is shared, so
+  // both profiles carry it by composition — held here as the delivered text of all six shapes,
+  // because a later profile that re-spelled its own tail would drop it silently.
+  const cardShapes: readonly (readonly [string, string])[] = [...railShapes,
+    ["gm-bootstrap", gmPrompt], ["gm-succession", gmSuccessionPrompt]];
+  const cardCounts = cardShapes.map(([, prompt]) => prompt.split(CARD_SECTION_HEAD).length - 1);
+  const cardSection = cardSectionOf(rail);
+  check("Program-MAIN rail: the card-format section stands exactly once in every founding and succession shape of both profiles, at most 1200 UTF-8 bytes",
+    cardCounts.every((n) => n === 1) && cardSection.length > 0
+      && cardShapes.every(([, prompt]) => cardSectionOf(prompt) === cardSection)
+      && new TextEncoder().encode(cardSection).byteLength <= 1200
+      && ["ROLLE", "GROESSE", "FLAECHE", "VERIFY", "DONE", "VERBOTEN", "NEU", "NACH"].every((key) => new RegExp(`\\b${key}\\b`).test(cardSection)),
+    `${cardShapes.map(([name], i) => `${name}=${cardCounts[i]}`).join(" ")} bytes=${new TextEncoder().encode(cardSection).byteLength}`);
   // AND THE SUCCESSOR'S ORDER OF OPERATIONS. What it must do before it changes anything, and what
   // it may never reconstruct the state from. The ordering is asserted as POSITIONS in the delivered
   // text, not as presence: a successor told to replay somewhere below "start working" has been told
@@ -9514,6 +9549,52 @@ export async function run(ctx: Ctx): Promise<void> {
         && (landMainState?.cwd ?? "").includes("testrepo2"),
       JSON.stringify({ boot: landBoot.status, err: landBoot.ok ? "" : JSON.stringify(landBootBody),
         slot: landMainSlot, cwd: landMainState?.cwd }));
+    // THE RAIL'S CARD EXAMPLE, READ OUT OF A FOREIGN-REPO FOUNDING AND VALIDATED (2026-09-24). This
+    // MAIN is the one bound in a repo with its own FLEET_VERIFY_CMD_REPOS entry, so its brief is the
+    // text a foreign MAIN actually learns filing from. The example must pass card-extract.ts#
+    // validateCard under a foreign repo's own command — and fail without VERIFY, and fail under
+    // Fleet's chain rule, which is the proof it does not teach the claude-fleet chain.
+    const landBrief = landMainSlot === null ? ""
+      : ((await (await get(`/api/slots/${landMainSlot}/history`)).json()) as { history: { text: string }[] })
+        .history.map((entry) => entry.text).find((text) => text.includes(CARD_SECTION_HEAD)) ?? "";
+    const example = cardExampleOf(landBrief);
+    const exampleVerify = /^VERIFY: (.*)$/m.exec(example)?.[1] ?? "";
+    const repo2Command = (() => {
+      try {
+        const map = JSON.parse(process.env.FLEET_VERIFY_CMD_REPOS ?? "{}") as Record<string, unknown>;
+        const command = REPO2 ? map[realpathSync(REPO2)] : undefined;
+        return typeof command === "string" ? command : "";
+      } catch { return ""; }
+    })();
+    const cardCtx = (text: string, foreignVerifyCommand: string | null | undefined): CardValidationContext => ({
+      foreignVerifyCommand, sourceText: text,
+      trackedPaths: new Set(["src/parser.ts", "test/parser.test.ts"]), symbolIndex: null,
+      harnessKnown: (v) => v === "claude", modelKnown: (v) => v === "claude-opus-5-5[1m]",
+      effortKnown: (v) => v === "high", declares: () => false, rowKnown: () => false,
+    });
+    const judge = (text: string, command: string | null | undefined, over: Partial<RawCard> = {}) => {
+      const raw = parseFormattedCard(text);
+      return raw ? validateCard({ ...raw, ...over }, cardCtx(text, command)) : null;
+    };
+    const asIs = judge(example, exampleVerify);
+    const inChain = judge(example, `bun install --frozen-lockfile && ${exampleVerify}`);
+    const repo2Text = example.replace(/^VERIFY: .*$/m, `VERIFY: ${repo2Command}`);
+    const onRepo2 = judge(repo2Text, repo2Command);
+    const withoutVerifyText = example.replace(/^VERIFY: .*\n/m, "");
+    const noVerify = judge(example, exampleVerify, { verify: undefined });
+    const fleetRule = judge(example, undefined);
+    check("Program-MAIN rail: the foreign-repo brief's card example passes validateCard with the repo's own VERIFY, and fails without VERIFY or under Fleet's chain",
+      landBrief.split(CARD_SECTION_HEAD).length === 2 && exampleVerify.length > 0 && repo2Command.length > 0
+        && asIs?.valid === true && asIs.gaps.length === 0 && asIs.body.verify === exampleVerify
+        && asIs.body.size === "klein" && asIs.body.verboten.length === 2
+        && JSON.stringify(asIs.body.surface.files) === JSON.stringify(["src/parser.ts", "test/parser.test.ts"])
+        && inChain?.valid === true && onRepo2?.valid === true && onRepo2.body.verify === repo2Command
+        && parseFormattedCard(withoutVerifyText) === null
+        && noVerify?.valid === false && noVerify.gaps.some((gap) => gap.startsWith("verify: no command named"))
+        && fleetRule?.valid === false && fleetRule.gaps.some((gap) => gap.includes("names no known chain step")),
+      JSON.stringify({ briefHits: landBrief.split(CARD_SECTION_HEAD).length - 1, exampleVerify, repo2Command,
+        asIs: asIs?.gaps, inChain: inChain?.gaps, onRepo2: onRepo2?.gaps,
+        withoutVerifyParsed: parseFormattedCard(withoutVerifyText) !== null, noVerify: noVerify?.gaps, fleetRule: fleetRule?.gaps }));
 
     const greenRowId = await makeTask({ text: "self-land green row", programId: landProgram.id, repo: REPO2 });
     const greenDispatch = await post(`/api/tasks/${greenRowId}/dispatch`, {});

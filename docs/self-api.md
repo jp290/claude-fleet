@@ -603,7 +603,10 @@ Block, byte-identisch in allen vier Varianten, angehängt zwischen Program-JSON 
   versiegelten Bytes; Blindheit und Zustellung bestätigt der Operator, sonst bleiben sie `unknown`.
 - **Die Schleife:** bounded Akt wählen → für einen Akt, der nach dem Urteil oben eine Lane will,
   `POST /api/self/tasks` mit EXPLIZITEM `kind:"auftrag"` und
-  bewusst gewähltem Spawn-Triple (`harness`/`model`/`effort`; der Default `notiz` läuft nie) →
+  bewusst gewähltem Spawn-Triple (`harness`/`model`/`effort`; der Default `notiz` läuft nie);
+  der `text` öffnet mit den Karten-Kopfzeilen `ROLLE`/`GROESSE`/`FLAECHE`/`VERIFY`/`DONE` (optional
+  `NEU`/`NACH`/`VERBOTEN`), und `VERIFY` nennt das EIGENE Prüfkommando des Repos — der Brief zeigt
+  seit 2026-09-24 ein Beispiel dafür (`card-extract.ts#parseFormattedCard`) →
   `POST /api/self/tasks/:id/release` → **die Antwort ist ein QUEUE-FAKT, keine Lane** (kein Slot,
   kein Branch, keine Worker-Identität; wer darauf wartet, wartet auf nichts) → **warten ohne
   beobachten**: der typisierte Worker-Report und jedes terminale Event kommen von selbst in die Pane,

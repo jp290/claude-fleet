@@ -31277,6 +31277,20 @@ THE LOOP, once per bounded act:
     nothing will ever start. The optional spawn triple is the worker you are hiring: choose harness,
     model and effort deliberately per act, not by habit. The row arrives pending; that is all this
     door does.
+    THE CARD: a "text" that OPENS with these header lines, one per line, is read as the row's card
+    without a model; the first paragraph after them is its goal. Required, each exactly once and on
+    ONE line: ROLLE (harness/model/effort), GROESSE (klein, mittel or gross), FLAECHE (the tracked
+    files the act changes; file#symbol allowed), VERIFY, DONE (one checkable sentence). Optional:
+    NEU (files it adds), NACH (queue ids it waits on), VERBOTEN (entries split by " · "). VERIFY
+    names THIS repository's own proof command, verbatim as its AGENTS.md or scripts define it -
+    never another repository's chain. A card without VERIFY is invalid. For example:
+      ROLLE: claude/claude-opus-5-5[1m]/high
+      GROESSE: klein
+      FLAECHE: src/parser.ts, test/parser.test.ts
+      VERIFY: ./scripts/check.sh
+      DONE: parse("") returns [] and test/parser.test.ts asserts it
+      VERBOTEN: no new dependency · no public API change
+      Empty input no longer throws in the parser.
   * Release it: POST /api/self/tasks/<taskId>/release. The reply is a QUEUE FACT - the row moved
     pending to queued - and it is NOT a lane: no slot, no branch and no worker identity exist yet,
     and none will appear in that reply however long you look. The dispatch tick starts the row when

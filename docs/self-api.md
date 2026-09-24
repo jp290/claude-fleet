@@ -982,6 +982,28 @@ bereits der persistierte Program-Lebenszyklus (`proposed|confirmed|active|comple
 `GET /api/sessions` trägt `programsStale` nur, wenn mindestens ein aktives Program eine stale
 MAIN-Bindung hat; bei null ist das Feld wegen des Poll-Budgets abwesend.
 
+### Der Übergabe-Record `handover` (`GET /api/self/program-execution`)
+
+Jede Program-Zeile trägt `handover`: `null`, solange keine Standard-Nachfolge stattfand, sonst
+`{at, from, to, obligations, settled, dropped}` — der persistierte Record
+(`server.ts#captureProgramHandover`, Form `server/types.ts#ProgramHandover`). Er armiert nichts neu
+und löscht nichts; Neu-Registrieren bleibt der eigene Akt der Nachfolgerin über die normalen Türen.
+
+- **`obligations` = die OFFENEN Pflichten**, je Zeile `{kind, id, at, text, detail}` mit `detail.owedBy`
+  (welche Session sie schuldete). Frisch erfasst werden die bewaffneten Watches und die Autos der
+  scheidenden Session; aus dem vorigen Record weitergetragen wird eine Zeile nur, solange sie OFFEN
+  ist. `PROGRAM_HANDOVER_MAX` (45) bleibt die Verweigerungsgrenze: mehr offene Zeilen verweigern die
+  Nachfolge, statt eine zu verlieren.
+- **`settled` = die in einer Nachfolge als erledigt GEMESSENEN Zeilen**, dieselbe Zeilenform plus
+  `settled{at, how}`, älteste zuerst, Deckel ebenfalls 45 — darüber fällt die älteste. `how` nennt
+  den Test, kein Urteil über die Arbeit: `watch-row-gone` (keine Zeile mit dieser id mehr in
+  `watches[]`), `audit-recorded` (bei `detail.kind: "audit"` zusätzlich: eine
+  `post-land-audits`-Zeile deckt ihr `mainAfter`, gelesen über die zwei neuesten Ledger-Generationen),
+  `auto-row-gone` (keine Auto-Zeile dieser id mehr). Eine Audit-Watch ohne deckende Audit-Zeile
+  bleibt offen, auch wenn ihre Watch-Zeile weg ist. Historische `attention`-Zeilen haben keinen
+  solchen Test und werden weiter getragen.
+- Ein Record von vor 2026-09-23 hat kein `settled` und lädt als `settled: []`.
+
 ### Die abgeleitete `phase` (`GET /api/self/program-execution`)
 
 Jede Zeile in `tasks.rows[]` trägt seit Slice A vier zusätzliche Felder. **Sie werden pro Request

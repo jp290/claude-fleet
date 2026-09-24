@@ -2914,13 +2914,25 @@ const loadMessages = (value: unknown): MessagesRead => {
 //     brief says so in as many words, because a bound that is stated is a bound and a bound that is
 //     silent is a loss. The route caps make one succession's worth naturally small: at most five
 //     open attentions per requester, five watches and five autos per slot.
+// And ONE thing it does since 2026-09-23: it tells an OPEN obligation from a SETTLED one. Until then
+// every carried row stayed an obligation forever, so f170dc46 read 32 rows from 21 predecessors that
+// no longer pointed at anything live, successors copied them into their notes as open work, and the
+// cap below was five days from refusing the Program's succession outright. A settled row is not
+// dropped — it moves to `settled` with WHEN and HOW the capture measured it settled.
 type ProgramHandoverKind = "attention" | "watch" | "auto";
 const PROGRAM_HANDOVER_KINDS: ProgramHandoverKind[] = ["attention", "watch", "auto"];
 // (5 + 5 + 5) is ONE occupant's worth — the three route caps summed, stated as the sum so a raised
 // route cap shows up here as an arithmetic mismatch. Times three because the record CARRIES
 // FORWARD what the previous succession still owed (captureProgramHandover), so a chain of three
-// fully-loaded handovers fits. Past that the succession REFUSES; this record never drops.
+// fully-loaded handovers fits. Past that the succession REFUSES; OPEN rows never drop. The settled
+// history is bounded by the same number and there the OLDEST falls: it is a record of what was
+// already answered, and a succession refused over it would trade a live handover for a history.
 const PROGRAM_HANDOVER_MAX = 3 * (5 + 5 + 5);
+// HOW a carried row was measured settled — the capture's own test, named, never a verdict on the
+// work: `watch-row-gone` = no row with the watch's id is left in watches[]; `audit-recorded` = that,
+// AND a post-land-audits row covers the audit watch's mainAfter; `auto-row-gone` = no auto of that id.
+type ProgramHandoverSettledHow = "watch-row-gone" | "audit-recorded" | "auto-row-gone";
+const PROGRAM_HANDOVER_SETTLED_HOWS: ProgramHandoverSettledHow[] = ["watch-row-gone", "audit-recorded", "auto-row-gone"];
 const PROGRAM_HANDOVER_TEXT_MAX = 10_000;   // the auto route's own text ceiling; attentions cap at 2000
 const PROGRAM_HANDOVER_DETAIL_KEYS_MAX = 16;
 // Wide enough that nothing a route can produce reaches it (the longest fields are a worktree path
@@ -2940,16 +2952,21 @@ interface ProgramHandoverObligation {
   text: string;    // the attention's question or the auto's check-in, COMPLETE. "" for a watch.
   detail: ProgramHandoverDetail;
 }
+type ProgramHandoverSettled = ProgramHandoverObligation & { settled: { at: number; how: ProgramHandoverSettledHow } };
 interface ProgramHandover {
   v: 1;
   at: number;
   from: { slot: number; openedAt: number; sessionId: string | null };
   to: { slot: number; openedAt: number };
   obligations: ProgramHandoverObligation[];
+  // oldest first, at most PROGRAM_HANDOVER_MAX. A record written before 2026-09-23 has no key and
+  // loads as [] — no row of it was ever measured settled.
+  settled: ProgramHandoverSettled[];
   dropped: number;
 }
 type ProgramHandoverRead = { ok: true; handover: ProgramHandover } | { ok: false; error: string };
-const PROGRAM_HANDOVER_KEYS = ["v", "at", "from", "to", "obligations", "dropped"];
+const PROGRAM_HANDOVER_KEYS = ["v", "at", "from", "to", "obligations", "settled", "dropped"];
+const PROGRAM_HANDOVER_LEGACY_KEYS = PROGRAM_HANDOVER_KEYS.filter((k) => k !== "settled");
 const PROGRAM_HANDOVER_OBLIGATION_KEYS = ["kind", "id", "at", "text", "detail"];
 const loadProgramHandoverDetail = (value: unknown, index: number): ProgramHandoverDetail | string => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return `obligation ${index} detail must be an object`;
@@ -3001,8 +3018,9 @@ const loadProgramHandoverObligation = (value: unknown, index: number): ProgramHa
 const loadProgramHandover = (value: unknown): ProgramHandoverRead => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "must be an object" };
   const r = value as Record<string, unknown>;
-  if (Object.keys(r).some((k) => !PROGRAM_HANDOVER_KEYS.includes(k))
-    || Object.keys(r).length !== PROGRAM_HANDOVER_KEYS.length)
+  const legacy = !Object.prototype.hasOwnProperty.call(r, "settled");
+  const want = legacy ? PROGRAM_HANDOVER_LEGACY_KEYS : PROGRAM_HANDOVER_KEYS;
+  if (Object.keys(r).some((k) => !want.includes(k)) || Object.keys(r).length !== want.length)
     return { ok: false, error: `must contain exactly ${PROGRAM_HANDOVER_KEYS.join(", ")}` };
   if (r.v !== 1) return { ok: false, error: "v must be 1" };
   if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0)
@@ -3042,12 +3060,31 @@ const loadProgramHandover = (value: unknown): ProgramHandoverRead => {
     seen.add(key);
     obligations.push(row);
   }
+  const settled: ProgramHandoverSettled[] = [];
+  if (!legacy) {
+    if (!Array.isArray(r.settled)) return { ok: false, error: "settled must be an array" };
+    if (r.settled.length > PROGRAM_HANDOVER_MAX)
+      return { ok: false, error: `settled must hold at most ${PROGRAM_HANDOVER_MAX} rows` };
+    for (const [index, raw] of r.settled.entries()) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: `settled ${index} must be an object` };
+      const { settled: mark, ...rest } = raw as Record<string, unknown>;
+      const row = loadProgramHandoverObligation(rest, index);
+      if (typeof row === "string") return { ok: false, error: `settled ${row}` };
+      if (!mark || typeof mark !== "object" || Array.isArray(mark))
+        return { ok: false, error: `settled ${index} settled must be an object` };
+      const m = mark as Record<string, unknown>;
+      if (Object.keys(m).length !== 2 || typeof m.at !== "number" || !Number.isFinite(m.at) || m.at <= 0
+        || !PROGRAM_HANDOVER_SETTLED_HOWS.includes(m.how as ProgramHandoverSettledHow))
+        return { ok: false, error: `settled ${index} settled must be exactly { at: positive number, how: ${PROGRAM_HANDOVER_SETTLED_HOWS.join(" | ")} }` };
+      settled.push({ ...row, settled: { at: m.at, how: m.how as ProgramHandoverSettledHow } });
+    }
+  }
   const from = r.from as { slot: number; openedAt: number; sessionId: string | null };
   const to = r.to as { slot: number; openedAt: number };
   return { ok: true, handover: { v: 1, at: r.at,
     from: { slot: from.slot, openedAt: from.openedAt, sessionId: from.sessionId },
     to: { slot: to.slot, openedAt: to.openedAt },
-    obligations, dropped: r.dropped as number } };
+    obligations, settled, dropped: r.dropped as number } };
 };
 
 // --- THE ROLE-LINEAGE HANDOVER (e3e5084a) ------------------------------------------------------
@@ -3416,6 +3453,7 @@ export type {
   ProgramInboxKind, ProgramInboxEntry, ProgramInbox, ProgramInboxRead,
   MessageRole, MessageAddress, MessagePayload, Message, Messages, MessagesRead,
   ProgramHandoverKind, ProgramHandoverDetail, ProgramHandoverObligation, ProgramHandover,
+  ProgramHandoverSettledHow, ProgramHandoverSettled,
   ProgramHandoverRead, ProgramRecordLoss, ProgramRecordLossRead,
   ProgramFoundingMode, ProgramFoundingOccupant, ProgramFoundingV1, ProgramFoundingProfileKind,
   ProgramFoundingIdentity, ProgramFoundingV2, ProgramFounding, ProgramFoundingRead, ProgramContent,
@@ -3446,7 +3484,7 @@ export {
   loadProgramInboxEntry, loadProgramInbox,
   MESSAGE_ROLES, MESSAGE_PAYLOAD_KINDS, MESSAGE_ENTRY_KEYS, MESSAGE_IDEMPOTENCY_KEY_MAX,
   MESSAGES_MAX, loadMessageAddress, loadMessagePayload, loadMessageEntry, loadMessages,
-  PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, PROGRAM_HANDOVER_KINDS,
+  PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, PROGRAM_HANDOVER_KINDS, PROGRAM_HANDOVER_SETTLED_HOWS,
   loadProgramHandover, loadProgramRecordLoss,
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LINEAGE_OBLIGATIONS_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,

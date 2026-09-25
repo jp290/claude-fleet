@@ -2865,6 +2865,20 @@ export async function run(): Promise<void> {
     && (expTxt.headers.get("content-type") ?? "").includes("text/plain")
     && (expTxt.headers.get("content-disposition") ?? "").includes("attachment"), expTxt.headers.get("content-disposition") ?? "");
   check("txt export contains session content", (await expTxt.text()).replaceAll("\n", "").includes("compose-box-to-slot-two"));
+  await tmuxOut("send-keys", "-t", "s2", "Enter");
+  const helloSend = await post("/send", { slot: 2, text: "hallo", submit: false });
+  await Bun.sleep(400);
+  const helloCapture = await tmuxOut("capture-pane", "-t", "s2", "-p", "-J");
+  const helloLine = helloCapture.out.split("\n").find((line) => line.endsWith("] hallo"));
+  await tmuxOut("send-keys", "-t", "s2", "Enter");
+  const slashSend = await post("/send", { slot: 2, text: "/effort high", submit: false });
+  await Bun.sleep(400);
+  const slashCapture = await tmuxOut("capture-pane", "-t", "s2", "-p", "-J");
+  const slashLine = slashCapture.out.split("\n").find((line) => line.includes("/effort high"));
+  check("delivery header: owner /send heads hallo but keeps /effort high first in the claude composer",
+    helloSend.ok && !!helloLine?.includes("[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 2]")
+      && slashSend.ok && slashLine?.trim() === "/effort high",
+    JSON.stringify({ hello: helloLine?.slice(0, 160) ?? null, slash: slashLine?.slice(0, 160) ?? null }));
   await tmuxOut("send-keys", "-t", "s2", "C-c"); // hand s2 back to its shell: the reader's job is done
   const expInactive = await get("/api/slots/4/export");
   check("export rejects inactive slot", expInactive.status === 400);

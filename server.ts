@@ -8533,9 +8533,10 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
 // codex, pi and every declared harness keep the paste byte for byte (no measurement says what their
 // TUI does with a typed prefix). An undeclared stand-in (`true`) takes it, which is what lets the
 // suites see the form.
-function deliveryHeader(form: Harness, path: SendPath, slot: number): string | null {
+function deliveryHeader(form: Harness, path: SendPath, slot: number, text: string): string | null {
   const source = DELIVERY_SOURCE[path];
-  if (!source || form !== CLAUDE_HARNESS || DECLARED_HARNESS) return null;
+  if (!source || form !== CLAUDE_HARNESS || DECLARED_HARNESS
+    || (path === "owner" && text.trimStart().startsWith("/"))) return null;
   return `${DELIVERY_HEADER_PREFIX}${source} · path=${path} · Slot ${slot}] `;
 }
 // The per-slot, per-DAY counter /api/sessions serves. Kept in memory and SEEDED from the ledger at
@@ -8810,7 +8811,7 @@ async function sendText(s: Slot, given: string, submit: boolean,
   const composer = form.composer ?? null;
   const comms = commsFor(s);
   // what the composer holds once this send has typed: the delivery header, then the pasted body
-  const header = deliveryHeader(form, options.path, occupant.slot);
+  const header = deliveryHeader(form, options.path, occupant.slot, text);
   const composed = header ? header + text : text;
   const bootSettleMs = form.bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS;
   // THE LEDGER'S TWO NUMBERS, taken here and set below rather than at the call sites: `payloadBytes`

@@ -252,6 +252,27 @@ const IN_SOURCE = SOURCE_DIR === ROOT;
 // ================================================================================================
 // 0. Public-repository deployment identity
 // ================================================================================================
+{
+  const RULE = "leak-pin: tracked files contain no Tailscale address beyond the placeholders";
+  const octet = String.raw`(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])`;
+  const address = String.raw`100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.` + octet + String.raw`\.` + octet;
+  const boundary = String.raw`(^|[^[:digit:].])` + address + String.raw`([^[:digit:].]|$)`;
+  const foundAddress = new RegExp(String.raw`(^|[^0-9.])(` + address + String.raw`)(?=[^0-9.]|$)`, "g");
+  const placeholders = new Set(["100.64.0.0", "100.64.0.1"]);
+  const probe = spawnSync("git", ["-C", ROOT, "grep", "-a", "-n", "-E", "-e", boundary, "--"],
+    { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
+  if (probe.error || probe.status === null || probe.status > 1) {
+    pin("leak-pin: Tailscale address search probe completed", false,
+      (probe.error?.message || probe.stderr || `git grep exited ${String(probe.status)}`).trim().slice(0, 160));
+  } else {
+    const locations = probe.status === 1 ? [] : probe.stdout.trim().split("\n").filter(Boolean).flatMap((line) => {
+      const location = /^(.+?:\d+):/.exec(line)?.[1] ?? "tracked file (line unavailable)";
+      return [...line.matchAll(foundAddress)].some((match) => !placeholders.has(match[2])) ? [location] : [];
+    });
+    pin(RULE, locations.length === 0, `${locations.length} forbidden hit(s): [${locations.join(", ")}]`);
+  }
+}
+
 // The forbidden values are private configuration, so writing them into this tracked probe would
 // reproduce the leak it guards. Derive the configured hosts at runtime, then ask git to search
 // only paths it tracks. A public clone has neither source; that is an explicit unprobed result.

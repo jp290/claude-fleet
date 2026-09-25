@@ -21543,6 +21543,25 @@ const VERIFY_TIMEOUT_MS = Math.max(5_000, Number(process.env.FLEET_VERIFY_TIMEOU
 // credited only for wait it can prove, and that credit is capped at this budget (see `arm`), so a
 // command that misreports its queueing cannot buy itself unbounded runtime.
 const VERIFY_WAIT_MS = Math.max(1_000, Number(process.env.FLEET_VERIFY_WAIT_MS ?? 900_000) | 0);
+// THE OWNER-ONLY MACHINE SETTINGS VIEW (Grammatik G5.3, card D-5): this is a reviewed allowlist,
+// not a projection of process.env. `value` is what this process actually uses after validation and
+// clamping; `default` is the fallback in the declaration above; `how` names the operator seam that
+// owns the live deployment. Class-3 values (credentials, hosts, commands and paths) cannot enter an
+// answer by acquiring the FLEET_ prefix because no prefix scan exists here.
+const MACHINE_SETTINGS = [
+  { name: "FLEET_DISPATCH_MAX_LANES", value: DISPATCH_MAX_LANES, default: 3, how: "watchdog.sh + kickstart" },
+  { name: "FLEET_VERIFY_TIMEOUT_MS", value: VERIFY_TIMEOUT_MS, default: 120_000, how: "watchdog.sh + kickstart" },
+  { name: "FLEET_VERIFY_WAIT_MS", value: VERIFY_WAIT_MS, default: 900_000, how: "watchdog.sh + kickstart" },
+  { name: "FLEET_MIGRATE_PCT", value: MIGRATE_PCT, default: 0, how: ".env + Neustart" },
+  { name: "FLEET_LANE_MIGRATE_PCT", value: LANE_MIGRATE_PCT, default: 40, how: ".env + Neustart" },
+  { name: "FLEET_MODEL", value: DEFAULT_MODEL, default: FLEET_DEFAULT_MODEL, how: ".env + Neustart" },
+  { name: "FLEET_STALLED_IDLE_MS", value: STALLED_IDLE_MS, default: 30 * 60_000, how: ".env + Neustart" },
+  { name: "FLEET_CARD_MS", value: CARD_TICK_MS, default: 0, how: ".env + Neustart" },
+  { name: "FLEET_BRIEF_MS", value: BRIEF_TICK_MS, default: 0, how: ".env + Neustart" },
+  { name: "FLEET_LAND_FF_RETRY_ROUNDS", value: LAND_FF_RETRY_ROUNDS, default: 2, how: ".env + Neustart" },
+  { name: "FLEET_MERGE_REPAIR_ROUNDS", value: MERGE_REPAIR_ROUNDS, default: 2, how: ".env + Neustart" },
+  { name: "FLEET_AUTO_REVIEW_MS", value: AUTO_REVIEW_MS, default: 15_000, how: "watchdog.sh + kickstart" },
+] as const;
 const VERIFY_OUT_CAP = 2048; // verify.out is a byte-capped RETENTION of stdout+stderr (~2KB) — see retainRunOutput
 // --- the SKIP contract, and the decision behind it -------------------------------------------
 // A verify command may be repo-guarded: one FLEET_VERIFY_CMD string serves every repo a lane can
@@ -38278,6 +38297,25 @@ Bun.serve<WSData>({
       const pub = ["/share.js", "/xterm.css", "/icon.svg", "/icon-180.png", "/favicon.ico"].includes(url.pathname)
         || /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief|summary|transcript))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
       if (!pub) return new Response("not found", { status: 404 });
+    }
+
+    // One read-only owner route for the fixed class-2 allowlist above. It lives before the shared
+    // owner gate only so a valid scoped credential gets the required existence-hiding 404 rather
+    // than the gate's generic 401; it grants no unauthenticated read. Owner wins first because the
+    // browser may legitimately carry an old share cookie beside its owner cookie on the same host.
+    if (url.pathname === "/api/machine-settings") {
+      if (req.method !== "GET") return json({ error: "not found" }, 404);
+      const offered = tokenFrom(req);
+      if (tokenOk(offered)) return json({ settings: MACHINE_SETTINGS });
+      const selfHeader = req.headers.get("x-fleet-self-token") ?? "";
+      const scopedSelf = !!selfHeader
+        || (!!offered && slots.some((s) => s.cwd && s.selfToken && secretEq(offered, s.selfToken)));
+      const cookies = req.headers.get("cookie") ?? "";
+      const scopedShare = /(?:^|;\s*)share_[a-z0-9]+=/.test(cookies)
+        || (!!offered && shares.some((sh) => secretEq(offered, sh.secret)));
+      if (scopedSelf || scopedShare) return json({ error: "not found" }, 404);
+      await tokenGate(offered);
+      return json({ error: "unauthorized" }, 401);
     }
 
     // the session's own row — the read half of the self family, and it belongs to EVERY session, not

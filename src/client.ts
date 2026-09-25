@@ -2336,16 +2336,17 @@ async function newLane(repo: string, parent?: LaneAnchor): Promise<void> {
   }
 }
 
-// THE SETTINGS WINDOW (Grammatik G5, cards K2+K8): one gear top right, one window, three
+// THE SETTINGS WINDOW (Grammatik G5, cards K2+K8+D-5): one gear top right, one window, four
 // sections. "Dieses Gerät" renders the registry (src/prefs.ts): every key with a row shows its
 // label, its control, its default and a way back (G5.1). "Schrift" is the size panel's ONE home
 // (G5.3) — the Aa corner button opens the window right there. "Fleet" holds the five server
-// switches whose routes already exist (G5.2, card D-3, fleetSection). On the phone the sections become tabs (G3.1); on the
-// desktop all three stack. Esc, backdrop and ✕ come from openShell (G6.3); the focus returns to
+// switches whose routes already exist (G5.2, card D-3, fleetSection). "This machine" reads the fixed
+// class-2 allowlist and renders no control (card D-5). On the phone the sections become tabs (G3.1);
+// on the desktop all four stack. Esc, backdrop and ✕ come from openShell (G6.3); the focus returns to
 // the button that opened the window (G4).
 let settingsShell: Shell | null = null;
 let settingsTab = "device";
-const SET_TABS: [string, string][] = [["device", "Dieses Gerät"], ["schrift", "Schrift"], ["fleet", "Fleet"]];
+const SET_TABS: [string, string][] = [["device", "Dieses Gerät"], ["schrift", "Schrift"], ["fleet", "Fleet"], ["machine", "This machine"]];
 const SET_CHOICE_WORDS: Record<string, string> = { tree: "Baum", line: "Zeile", all: "alle" };
 
 // The live effect of a row beyond the write itself — the SAME setters the original surfaces
@@ -2411,8 +2412,11 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift"): void {
   const fleetsec = el("section", "setsec");
   fleetsec.appendChild(el("h3", "", "Fleet"));
   fleetSection(fleetsec);
+  const machine = el("section", "setsec");
+  machine.appendChild(el("h3", "", "This machine"));
+  machineSection(machine);
 
-  shell.detail.append(tabs, device, schrift, fleetsec);
+  shell.detail.append(tabs, device, schrift, fleetsec, machine);
   syncTabs();
 
   function syncTabs() {
@@ -2423,6 +2427,7 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift"): void {
     device.classList.toggle("on", settingsTab === "device");
     schrift.classList.toggle("on", settingsTab === "schrift");
     fleetsec.classList.toggle("on", settingsTab === "fleet");
+    machine.classList.toggle("on", settingsTab === "machine");
   }
 }
 
@@ -2473,6 +2478,48 @@ function settingsRow(d: PrefDef): HTMLElement {
   }
   syncAll();
   return row;
+}
+
+interface MachineSetting {
+  name: string;
+  value: string | number;
+  default: string | number;
+  how: ".env + Neustart" | "watchdog.sh + kickstart";
+}
+
+// THE "THIS MACHINE" SECTION (G5.3, card D-5): server-start values are observations, not form
+// state. Each row therefore has only the label, effective mono value and explanatory hint — no
+// input, toggle, Reset or Apply path. The route itself owns the security allowlist.
+function machineSection(sec: HTMLElement): void {
+  const status = el("div", "hint setnote", "Loading machine settings…");
+  status.title = "Lädt die wirksamen Startwerte dieses Servers.";
+  sec.appendChild(status);
+  void (async () => {
+    const res = await api("/api/machine-settings").catch(() => null);
+    const body = res?.ok ? await res.json().catch(() => null) as { settings?: unknown } | null : null;
+    const settings = Array.isArray(body?.settings) ? body.settings.filter((raw): raw is MachineSetting => {
+      if (!raw || typeof raw !== "object") return false;
+      const x = raw as Partial<MachineSetting>;
+      return typeof x.name === "string" && (typeof x.value === "string" || typeof x.value === "number")
+        && (typeof x.default === "string" || typeof x.default === "number")
+        && (x.how === ".env + Neustart" || x.how === "watchdog.sh + kickstart");
+    }) : [];
+    if (!res?.ok || !body || settings.length === 0) {
+      status.textContent = "Machine settings unavailable.";
+      status.title = "Die Startwerte konnten nicht vom Server gelesen werden.";
+      return;
+    }
+    status.remove();
+    for (const setting of settings) {
+      const row = el("div", "setrow fleetrow");
+      row.title = "Zeigt den wirksamen Startwert dieses Servers und den Weg zu seiner Änderung.";
+      const main = el("div", "setmain");
+      main.append(el("div", "setlabel", setting.name),
+        el("div", "hint setnote", `ändern: ${setting.how}; Standard: ${setting.default}`));
+      row.append(main, el("span", "setval", String(setting.value)));
+      sec.appendChild(row);
+    }
+  })();
 }
 
 // THE "FLEET" SECTION (G5.2 + G4.4, card D-3): five server switches over routes that already

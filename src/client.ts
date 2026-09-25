@@ -1834,7 +1834,7 @@ interface ReviewFinding { title: string; file: string; line: number | null;
 interface WtRisk { dirtyFiles: string[]; unpushedCommits: { hash: string; subject: string }[];
   shortstat: string | null; empty: boolean }
 interface WtRow extends WtRisk { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number; note?: string | null;
-  review?: ReviewCandidateInfo | null; preview?: LanePreviewInfo | null; reviews?: CandidateReviewInfo[] | null }
+  notepad?: string | null; review?: ReviewCandidateInfo | null; preview?: LanePreviewInfo | null; reviews?: CandidateReviewInfo[] | null }
 // server.ts#CandidateReviewView — an owner-pressed advisory review of a candidate's stored head, bound
 // to the patch it read; `stale` when the worktree now carries another patch (null = unreadable)
 interface CandidateReviewInfo { id: string; candidate: string; head: string; base: string; patchId: string;
@@ -4220,7 +4220,66 @@ function openPacks(setup: BriefSetup, want?: string): void {
   }
 }
 
+// --- THE OWNER'S NOTEPAD on a worktree (owner 2026-09-23/24: "einen Notizblock oben rechts über
+// den Suiten, so dass man darin wirklich langfristig arbeiten kann"). ONE plain free text per
+// worktree path — no Markdown, no history, no second comment rail beside Task.comments — stored
+// server-side on the PATH, so it rides a review park, a resume of the same tree and a restart, and
+// a tree that leaves the board takes it along. Drawn in the board's detail view above the suite
+// area for the focused lane, and under a parked candidate's rows in the Lanes list (a parked
+// candidate holds no slot, so it has no board column of its own).
+const WORKTREE_NOTE_MAX = 20_000; // the server's cap (server.ts#WORKTREE_NOTE_MAX), restated for the live counter
+const notepadDraft = new Map<string, string>(); // path → unsent text — survives every board re-render
+function notepadBlock(repo: string, w: WtRow): HTMLElement {
+  const saved = w.notepad ?? "";
+  const box = el("div", "bnote");
+  const ta = document.createElement("textarea") as HTMLTextAreaElement;
+  ta.value = notepadDraft.get(w.path) ?? saved;
+  ta.rows = 4;
+  ta.placeholder = "Notiz zu diesem Worktree — wandert beim Parken und Weiterarbeiten mit";
+  ta.style.cssText = "width:100%;box-sizing:border-box;resize:vertical;background:#101010;color:#c8c8c8;"
+    + "border:1px solid var(--sel);border-radius:7px;padding:10px 12px;"
+    + "font:12px ui-monospace,Menlo,Consolas,monospace;line-height:1.5;margin-top:6px;";
+  const meta = el("div", "bstate");
+  const err = el("div", "brefusal");
+  const save = el("button", "bwtact", "Notiz sichern") as HTMLButtonElement;
+  const sync = () => {
+    const t = ta.value;
+    notepadDraft.set(w.path, t);
+    const over = t.length > WORKTREE_NOTE_MAX;
+    meta.textContent = over
+      ? `${t.length} / ${WORKTREE_NOTE_MAX} — über dem Deckel, kürzen (der Server nimmt nicht mehr an)`
+      : `${t.length} / ${WORKTREE_NOTE_MAX}${t === saved ? " · gesichert" : " · ungesichert"}`;
+    save.disabled = over || t === saved;
+  };
+  ta.addEventListener("input", sync);
+  save.title = `sichert den Text an diesem Worktree-Pfad — er bleibt beim Parken, Wiederaufnehmen und über Neustarts erhalten`;
+  save.onclick = async () => {
+    save.disabled = true;
+    save.textContent = "sichere…";
+    err.textContent = "";
+    try {
+      const r = await post("/api/worktrees/note", { repo, path: w.path, text: ta.value });
+      if (!r.ok) {
+        err.textContent = ((await r.json().catch(() => ({}))) as { error?: string }).error ?? "Sichern fehlgeschlagen";
+        return;
+      }
+      notepadDraft.delete(w.path); // the board now carries the saved text — the draft has served
+      void renderBoard();
+    } finally {
+      save.disabled = false;
+      save.textContent = "Notiz sichern";
+    }
+  };
+  box.append(ta, meta, save, err);
+  sync();
+  return box;
+}
+
 async function renderBoard() {
+  // never rebuild the board out from under an open note edit (the sidebar rename precedent): the
+  // draft map keeps the TEXT across re-renders, this check keeps the CARET — a board tick that
+  // lands mid-typing simply waits for the next one
+  if (document.activeElement instanceof HTMLTextAreaElement && boardBody.contains(document.activeElement)) return;
   // a render requested while one is in flight (e.g. focus moved mid-fetch) must not be
   // dropped — remember it and re-run once the current pass finishes
   if (boardBusy) { boardAgain = true; return; }
@@ -4602,6 +4661,19 @@ async function renderBoard() {
       nodes.push(su);
     }
 
+    // THE NOTEPAD — the owner's free text on THIS lane's worktree, directly above the suite area
+    // (owner 2026-09-23: "oben rechts über den Suiten"). Drawn from the lanes read alone, so it
+    // stands even when the brief failed; a repo session (the primary checkout is no board row) and
+    // a failed lanes read draw none.
+    {
+      const ownWt = wts?.worktrees.find((x) => x.path === s.cwd);
+      if (ownWt && wts) {
+        const noteSec = el("div", "bsec");
+        noteSec.appendChild(boardHead("Notizblock", "repo"));
+        noteSec.appendChild(notepadBlock(wts.repo, ownWt));
+        nodes.push(noteSec);
+      }
+    }
     if (briefErr) {
       const fail = el("div", "bsec bfail");
       fail.appendChild(boardHead("Changes, history and lanes are missing", "session"));
@@ -5206,6 +5278,9 @@ async function renderBoard() {
             }
             sec.appendChild(prow);
           }
+          // THE OWNER'S NOTEPAD under the row of a worktree no slot holds — the parked candidate's
+          // (or shelved orphan's) detail area, the same one text per path the live board shows.
+          if (w.slot == null) sec.appendChild(notepadBlock(wts.repo, w));
           // the confirm panel is not a dialog: the consequences ARE the wait screen. The
           // destructive button unlocks only after the read window, counted from the first
           // click and re-derived on every 3s board re-render, so polling can't reset or

@@ -1208,6 +1208,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       tasks?: RpRow[]; programs?: Record<string, unknown>[];
       fleetReports?: { id: string; worker: { sessionId: string | null }; decision?: unknown }[];
       shelved?: Record<string, { note: string; at?: number; review?: RpCandidate }>;
+      worktreeNotes?: Record<string, string>;
       lanePreviews?: Record<string, unknown>;
       candidateReviews?: Record<string, unknown>;
     };
@@ -1216,8 +1217,8 @@ export async function run(lc: LaneCtx): Promise<void> {
     type CrRec = { id: string; candidate: string; head: string; base: string; patchId: string; at: number | null;
       state: string; why: string | null; scope: string; notes: string; raw: boolean | null;
       findings: { title: string; impact: string }[]; patchNow?: string | null; stale?: boolean | null };
-    type RpBoard = { path: string; slot: number | null; note: string | null; review?: RpCandidate | null; preview?: PvView | null;
-      reviews?: CrRec[] | null };
+    type RpBoard = { path: string; slot: number | null; note: string | null; notepad?: string | null;
+      review?: RpCandidate | null; preview?: PvView | null; reviews?: CrRec[] | null };
     const rpState = (): RpState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as RpState;
     // the rows through the API, not the state file: a queued save may still be in flight after a response
     const rpRows = async (ids: string[]): Promise<(RpRow | undefined)[]> => {
@@ -1307,6 +1308,39 @@ export async function run(lc: LaneCtx): Promise<void> {
         && (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === rpSlot) && !rpState().shelved?.[rpCwd],
       JSON.stringify((await rpRows(rpIds))));
 
+    // === THE OWNER'S NOTEPAD on this worktree (owner 2026-09-23/24): one free text per PATH that
+    // rides review park, resume and restart, capped with a named refusal, the owner's alone. What
+    // each check turns red on: a save the board cannot read back; a cap the server evicts or
+    // truncates instead of refusing; a text a lane's self token can read or write; a park, a
+    // restart or a resume that loses it; a discarded tree whose note stays behind as an orphan.
+    const noteText = "NOTEPAD FIXTURE: langfristig arbeiten — bleibt über Park und Neustart";
+    const notePost = (text: string): Promise<Response> =>
+      post("/api/worktrees/note", { repo: REPO, path: rpCwd, text });
+    const noteSave = await notePost(noteText);
+    const noteSavedBoard = await rpBoard();
+    check("(notepad) the owner saves a note on the live lane's worktree and the board row carries it back",
+      noteSave.ok && noteSavedBoard?.notepad === noteText, `${noteSave.status} ${JSON.stringify(noteSavedBoard)}`);
+    const overRes = await notePost("x".repeat(20_001));
+    const overBody = await overRes.text();
+    check("(notepad) a note above the 20000-character cap is refused by name and the stored note survives whole",
+      overRes.status === 400 && overBody.includes("20000") && (await rpBoard())?.notepad === noteText,
+      `${overRes.status} ${overBody.slice(0, 120)}`);
+    const atCapRes = await notePost("y".repeat(20_000));
+    check("(notepad) exactly 20000 characters are accepted", atCapRes.ok && (await rpBoard())?.notepad?.length === 20_000,
+      String(atCapRes.status));
+    await notePost(noteText); // the small survival note rides the park/resume/restart checks below
+    const selfWriteHdr = await fetch(BASE + "/api/worktrees/note", { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": rpTok },
+      body: JSON.stringify({ repo: REPO, path: rpCwd, text: "the lane wrote this" }) });
+    const selfWriteBearer = await fetch(BASE + "/api/worktrees/note", { method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${rpTok}` },
+      body: JSON.stringify({ repo: REPO, path: rpCwd, text: "the lane wrote this" }) });
+    const selfRead = await fetch(BASE + `/api/slots/${lc.lnSlot}/worktrees`, { headers: { authorization: `Bearer ${rpTok}` } });
+    check("(notepad) a lane's self token can neither write (header or bearer) nor read the note — 401 every way, text unchanged",
+      selfWriteHdr.status === 401 && selfWriteBearer.status === 401 && selfRead.status === 401
+        && (await rpBoard())?.notepad === noteText,
+      `${selfWriteHdr.status}/${selfWriteBearer.status}/${selfRead.status}`);
+
     // THE PARK
     const parkRes = await park({ hours: 2 });
     const parked = ((await parkRes.json()) as { ok?: boolean; candidate?: RpCandidate }).candidate;
@@ -1333,6 +1367,8 @@ export async function run(lc: LaneCtx): Promise<void> {
       board1?.slot === null && board1.note === "review me" && board1.review?.id === parked?.id
         && board1.review?.head === rpHead && board1.review?.reportId === rpReportId && board1.review?.expired === false
         && board1.review?.taskIds.length === 2, JSON.stringify(board1));
+    check("(notepad) the note rides the review park — the parked row still carries it",
+      board1?.notepad === noteText, (board1?.notepad ?? "null").slice(0, 60));
 
     // === THE REVIEW PREVIEW of this candidate (lane-preview.sh, server.ts#startLanePreview): one
     // time-boxed isolated instance of the STORED head. What turns each check red: a start that copies
@@ -1370,6 +1406,10 @@ export async function run(lc: LaneCtx): Promise<void> {
       check("(preview) setup: the lane worktree carries a .env the copy must NOT take, and a second candidate is on the board",
         exists(`${rpCwd}/.env`) && exists(pvbPath) && (await rpBoard())?.review?.id === cand,
         JSON.stringify({ env: exists(`${rpCwd}/.env`), pvb: exists(pvbPath) }));
+      const pvbNote = "pvb notepad fixture — geht mit dem Baum weg";
+      const pvbSaved = await post("/api/worktrees/note", { repo: REPO, path: pvbPath, text: pvbNote });
+      check("(notepad) the second candidate's worktree carries a note of its own",
+        pvbSaved.ok && rpState().worktreeNotes?.[pvbPath] === pvbNote, String(pvbSaved.status));
 
       const a = await pvStart(cand);
       const pa = a.body.preview;
@@ -1472,6 +1512,9 @@ export async function run(lc: LaneCtx): Promise<void> {
       const disc = await post("/api/worktrees/discard", { repo: REPO, path: pvbPath, branch: pvbBranch });
       check("(preview) fixture cleanup: the planted candidate's worktree is discarded",
         disc.ok && !exists(pvbPath), String(disc.status));
+      check("(notepad) a discarded worktree takes its note along — no orphan entry, the parked tree's note untouched",
+        rpState().worktreeNotes?.[pvbPath] === undefined && rpState().worktreeNotes?.[rpCwd] === noteText,
+        JSON.stringify(rpState().worktreeNotes ?? {}).slice(0, 200));
     }
 
     // === THE REVIEW ON PRESS of this candidate (server.ts#startCandidateReview; owner 2026-09-24 "nur
@@ -1587,6 +1630,8 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("(review park) a passed deadline marks the candidate expired and keeps its worktree",
       board2?.review?.id === parked?.id && board2?.review?.expired === true && exists(`${rpCwd}/review-park.txt`),
       JSON.stringify(board2));
+    check("(notepad) the note survives the restart beside the expired candidate",
+      board2?.notepad === noteText, (board2?.notepad ?? "null").slice(0, 60));
 
     // RESUME
     const resumeRes = await post("/api/lanes", { repo: REPO, attach: rpCwd });
@@ -1608,6 +1653,8 @@ export async function run(lc: LaneCtx): Promise<void> {
     const board3 = await rpBoard();
     check("(review park) the resume consumed the candidate: the board shows no candidate and no note",
       board3?.slot === rpSlot2 && board3.review == null && board3.note == null, JSON.stringify(board3));
+    check("(notepad) the note survives the resume — the live lane's row carries it again",
+      board3?.notepad === noteText && board3?.slot === rpSlot2, (board3?.notepad ?? "null").slice(0, 60));
     const crLive = await crPress(crCand);
     check("(review on press) a candidate resumed into a live lane is refused by name, and runs nothing",
       crLive.status === 409 && (crLive.body.error ?? "").includes(`live lane slot ${rpSlot2}`) && reviewRunsFor(rpCwd) >= crRuns0 + 7
@@ -1644,5 +1691,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     await restartSrv();
     check("(review park) fixture cleanup: Program, report and rows are gone",
       !(rpState().programs ?? []).some((p) => p.id === rpProgramId) && !rpIds.some((id) => rpState().tasks?.some((t) => t.id === id)));
+    check("(notepad) fixture cleanup: the removed worktree's note was swept at boot — no orphan entry",
+      rpState().worktreeNotes?.[rpCwd] === undefined, JSON.stringify(rpState().worktreeNotes ?? null));
   }
 }

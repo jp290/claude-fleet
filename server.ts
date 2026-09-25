@@ -3995,6 +3995,15 @@ let auditPings: Record<string, AuditPingState> = {};
 // Deliberately NOT a LaneRecord — just the one field the feature needs, plus `review` on the opt-in
 // review park alone (LaneReviewCandidate): the identity a later owner review and the resume need.
 let shelved: Record<string, { at: number; note: string; review?: LaneReviewCandidate }> = {};
+// worktree path -> the OWNER'S free-text notepad (owner 2026-09-23/24: "einen Notizblock oben
+// rechts über den Suiten, so dass man darin wirklich langfristig arbeiten kann"). ONE plain text
+// per worktree PATH — no Markdown, no history, no thread beside Task.comments — keyed by the path
+// so it rides a review park, a resume of the same tree and a server restart, and a worktree that
+// leaves the board (remove/discard/gone at boot) takes its text along: no orphan entry. Owner-only
+// reads and writes; the text travels between this map, the state file and the owner's own board
+// row — never into /api/self, a pane env, the audit log or a server log.
+let worktreeNotes: Record<string, string> = {};
+const WORKTREE_NOTE_MAX = 20_000; // characters, enforced with a named refusal — never evicted silently
 // The candidate that holds a row, if any. Linear over at most a handful of shelve records.
 function reviewParkOf(taskId: string): { path: string; candidate: LaneReviewCandidate } | null {
   for (const [path, sh] of Object.entries(shelved))
@@ -4009,6 +4018,7 @@ function dropShelved(path: string, why: string): void {
   delete shelved[path];
   dropLanePreviewsAt(path, why);
   delete candidateReviews[path]; // no board row is left to show them on, and no tree to be stale against
+  delete worktreeNotes[path]; // the tree is gone and its notepad goes with it — no orphan entry
   if (!candidate) return;
   for (const t of tasks) {
     if (candidate.taskIds.includes(t.id) && t.status === "sent" && t.slot === null) {
@@ -5244,7 +5254,7 @@ function stateSnapshot(): string {
     ...(laneSucceedCounts.size ? { laneSucceedCounts: Object.fromEntries(laneSucceedCounts) } : {}),
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
-    repoBases, repoWorkers, repoLaneCaps, shelved, ...(Object.keys(lanePreviews).length ? { lanePreviews } : {}), ...(Object.keys(candidateReviews).length ? { candidateReviews } : {}), undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
+    repoBases, repoWorkers, repoLaneCaps, shelved, ...(Object.keys(lanePreviews).length ? { lanePreviews } : {}), ...(Object.keys(candidateReviews).length ? { candidateReviews } : {}), ...(Object.keys(worktreeNotes).length ? { worktreeNotes } : {}), undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
     landPending: Object.fromEntries(landPending), mainDirectPreflights,
     // the stall sensor's clock (tickStallSensor) — only once it ever ran, so a state file of a
     // fleet that never stood stuck carries no new key
@@ -6563,6 +6573,7 @@ async function worktreeRisk(repo: string, path: string): Promise<WorktreeRisk> {
 interface WorktreeBoardRow {
   path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number;
   dirtyFiles: string[]; unpushedCommits: CommitRow[]; shortstat: string | null; empty: boolean; note: string | null;
+  notepad: string | null; // the owner's free-text notepad on this path (never in any other surface)
   review: ReviewCandidateView | null;
   preview: LanePreviewView | null;
   reviews: CandidateReviewView[] | null;
@@ -6578,10 +6589,11 @@ interface WorktreeBoard { repo: string; main: string; worktrees: WorktreeBoardRo
 const worktreeBoardCache = new Map<string, { body: WorktreeBoard; at: number }>();
 const worktreeBoardRecomputing = new Set<string>();
 
-// …and the four fields in that body which are NOT git-derived: `main` (the configured
+// …and the five fields in that body which are NOT git-derived: `main` (the configured
 // integration branch — a plain object read unless it has to be derived from the primary's HEAD),
-// `slot` (the holding session, from `slots`), `note` (the shelve note, in memory) and `review` (the
-// review-park candidate beside that note) — plus `preview`, whose one git read (lanePreviewView)
+// `slot` (the holding session, from `slots`), `note` (the shelve note, in memory), `notepad` (the
+// owner's free-text notepad, in memory) and `review` (the review-park candidate beside that note)
+// — plus `preview`, whose one git read (lanePreviewView)
 // rides the same overlay because its state moves on clicks and a deadline. They cost
 // nothing to recompute, so EVERY answer gets them fresh — cached or not. Serving them stale is
 // what the post-land audit of ea3b141b caught: a repo-base change, a shelve and a resume were
@@ -6597,6 +6609,7 @@ async function freshenWorktreeBoard(b: WorktreeBoard): Promise<WorktreeBoard> {
       ...w,
       slot: slots.find((x) => x.cwd === w.path)?.id ?? null,
       note: shelved[w.path]?.note ?? null,
+      notepad: worktreeNotes[w.path] ?? null,
       review: reviewCandidateView(w.path),
       // the preview's state moves on the owner's clicks and its deadline, never on git time; its
       // `stale` is one rev-parse, and only for a row that has a preview record at all
@@ -35287,6 +35300,11 @@ if (existsSync(STATE_FILE)) {
           const review = loadLaneReviewCandidate((v as { review?: unknown }).review);
           shelved[k] = { at: (v as { at: number }).at, note: (v as { note: string }).note, ...(review ? { review } : {}) };
         }
+    // the notepads come back as plain strings on known-shaped keys, never repaired field-wise
+    const pwn = (persisted as { worktreeNotes?: unknown }).worktreeNotes;
+    if (typeof pwn === "object" && pwn !== null && !Array.isArray(pwn))
+      for (const [k, v] of Object.entries(pwn as Record<string, unknown>))
+        if (typeof k === "string" && typeof v === "string") worktreeNotes[k] = v;
     // the review previews come back record by record, whole or not at all (loadLanePreview);
     // reconcileLanePreviewsAtBoot then settles the ones the downtime overtook
     const persistedPreviews = (persisted as { lanePreviews?: unknown }).lanePreviews;
@@ -35460,6 +35478,10 @@ for (const [path, rs] of Object.entries(candidateReviews)) {
   for (const r of rs) if (r.state === "running")
     Object.assign(r, { state: "failed", at: Date.now(), why: "the server restarted while this review was running" });
 }
+// …and a notepad whose tree vanished while the server was down goes with the tree (the boot's
+// saveState below persists the sweep)
+for (const path of Object.keys(worktreeNotes))
+  if (!existsSync(path)) delete worktreeNotes[path];
 for (const t of tasks) {
   if (t.status === "sent" && t.slot === null && reviewParkOf(t.id)) continue;
   if (t.status === "sent" && !(t.slot != null && slotFrom(t.slot)?.worktree)) {
@@ -40516,6 +40538,7 @@ Bun.serve<WSData>({
             shortstat: sh.code === 0 && sh.out ? sh.out : null,
             empty: dirtyFiles.length === 0 && unpushedCommits.length === 0,
             note: shelved[w.path]?.note ?? null, // shelve note, if this orphan was set aside
+            notepad: worktreeNotes[w.path] ?? null, // the owner's notepad on this path
             review: reviewCandidateView(w.path), // …and the review candidate, if it was parked for review
             preview: await lanePreviewView(w.path), // …and its time-boxed preview, if one was started
             reviews: await candidateReviewsView(w.path), // …and the review comments the owner pressed for
@@ -40750,12 +40773,34 @@ Bun.serve<WSData>({
       const rmv = await git(top.out, "worktree", "remove", "--force", wt.path);
       if (rmv.code !== 0) return json({ error: `worktree remove failed: ${(rmv.err || rmv.out).slice(0, 300)}` }, 409);
       dropShelved(wt.path, "its worktree was discarded"); // worktree destroyed — drop any shelve note
+      await saveStateNow(); // the candidate, its previews and its notepad are on disk GONE before the answer
       mergeParked.delete(wt.branch); // deliberate destruction takes the parked ⏸ with it
       const branchDeleted = wt.branch !== "(detached)"
         && (await git(top.out, "branch", "-D", wt.branch)).code === 0;
       void tickGit().catch(() => {});
       return json({ ok: true, removed: wt.path, branch: wt.branch,
         head: head.code === 0 ? head.out : null, branchDeleted });
+    }
+    // THE OWNER'S NOTEPAD on a worktree (owner 2026-09-23/24, "Notizblock"): one free text per
+    // worktree path, saved only by this door. Sits below the owner gate, so a lane's self token is
+    // simply no credential here (401) — and the text travels between this map, the state file and
+    // the owner's own board row, never into /api/self, a pane env, the audit log or a server log.
+    // An empty string clears the note (no empty-string entries); above the cap the save is refused
+    // by name, never truncated and never evicting the stored text.
+    if (url.pathname === "/api/worktrees/note" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.repo !== "string" || typeof body.path !== "string" || typeof body.text !== "string")
+        return json({ error: "expected { repo, path, text }" }, 400);
+      if (body.text.length > WORKTREE_NOTE_MAX)
+        return json({ error: `note is ${body.text.length} characters — the cap is ${WORKTREE_NOTE_MAX}; shorten it (the stored note is unchanged)` }, 400);
+      const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
+      if (top.code !== 0) return json({ error: "not a git repository" }, 400);
+      const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === body.path);
+      if (!wt) return json({ error: "not a worktree of this repo" }, 400);
+      if (body.text === "") delete worktreeNotes[wt.path];
+      else worktreeNotes[wt.path] = body.text;
+      await saveStateNow(); // the note is on disk before the answer — a restart right after keeps it
+      return json({ ok: true, path: wt.path, length: body.text.length });
     }
     // THE REVIEW PREVIEW (startLanePreview): one time-boxed isolated instance of a parked candidate's
     // stored head, for the owner to look at before land. The answer carries the record — the board

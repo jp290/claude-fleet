@@ -51,6 +51,9 @@ async function selfTokenOf(slot: number, not = ""): Promise<string> {
 const PRE_AUTH_ROUTES = [
   '= /',                  // login (?token=, tokenGate'd) AND the share-host landing page
   '= /api/dispositions',  // pre-check only: 403s a self token, then falls through to the owner gate
+  // Owner-only despite sitting before the shared gate: the handler performs its own owner check so
+  // valid scoped credentials can get an existence-hiding 404. No credential and unknown tokens 401.
+  '= /api/machine-settings',
   // The self family's principal is per-SLOT, not per-lane. It was per-lane until 2026-08-07: the
   // credential was minted for every slot all along, but exported into a lane's pane only, and the
   // widening (server.ts, grep `selfExport`) hands it to every session with a cwd — the ⚙ steward
@@ -785,6 +788,39 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     { name: "a plain session's selfToken in its own header", headers: { "x-fleet-self-token": plainSelf } },
     { name: "the steward token", headers: { authorization: `Bearer ${sc.token}` } },
   ];
+  // D-5 · the class-2 read is owner-only and closed by construction. The control first proves the
+  // route returned its documented row shape; every forbidden class-3 example then gets its own
+  // negative assertion so one disappearing check cannot hide behind the rest of the set.
+  const MACHINE_SETTING_NAMES = [
+    "FLEET_DISPATCH_MAX_LANES", "FLEET_VERIFY_TIMEOUT_MS", "FLEET_VERIFY_WAIT_MS",
+    "FLEET_MIGRATE_PCT", "FLEET_LANE_MIGRATE_PCT", "FLEET_MODEL", "FLEET_STALLED_IDLE_MS",
+    "FLEET_CARD_MS", "FLEET_BRIEF_MS", "FLEET_LAND_FF_RETRY_ROUNDS",
+    "FLEET_MERGE_REPAIR_ROUNDS", "FLEET_AUTO_REVIEW_MS",
+  ];
+  const [machineOwner, machineSelf, machineShare] = await Promise.all([
+    fetch(BASE + "/api/machine-settings", { headers: H }),
+    fetch(BASE + "/api/machine-settings", { headers: { "x-fleet-self-token": plainSelf } }),
+    fetch(BASE + "/api/machine-settings", { headers: { cookie: ctx.shICookie } }),
+  ]);
+  const machineBody = await machineOwner.json().catch(() => null) as
+    { settings?: { name?: unknown; value?: unknown; default?: unknown; how?: unknown }[] } | null;
+  const machineRows = Array.isArray(machineBody?.settings) ? machineBody.settings : [];
+  const machineNames = machineRows.map((r) => r.name).filter((name): name is string => typeof name === "string");
+  check("§2 machine settings: the owner reads only the reviewed allowlist, at most twelve complete rows",
+    machineOwner.status === 200 && machineRows.length === machineNames.length && machineNames.length <= 12
+      && new Set(machineNames).size === machineNames.length
+      && machineNames.every((name) => MACHINE_SETTING_NAMES.includes(name))
+      && machineRows.every((r) => (typeof r.value === "string" || typeof r.value === "number")
+        && (typeof r.default === "string" || typeof r.default === "number")
+        && (r.how === ".env + Neustart" || r.how === "watchdog.sh + kickstart")),
+    `${machineOwner.status} [${machineNames.join(",")}]`);
+  for (const forbidden of ["FLEET_TOKEN", "FLEET_SELF_TOKEN", "FLEET_HOST", "FLEET_CMD", "FLEET_HUB_REMOTE"]) {
+    check(`§2 machine settings: ${forbidden} is absent`,
+      machineOwner.status === 200 && !machineNames.includes(forbidden), machineNames.join(","));
+  }
+  check("§2 machine settings: valid Self- and Share-credentials get existence-hiding 404",
+    machineSelf.status === 404 && machineShare.status === 404,
+    `self=${machineSelf.status} share=${machineShare.status}`);
   for (const p of principals) {
     const res = await Promise.all(probes.map(async (probe) => ({ probe, status: (await fire(probe, p.headers)).status })));
     const leaked = res.filter((r) => r.status !== 401 && r.status !== 403);

@@ -128,14 +128,16 @@ export async function run(ctx: Ctx): Promise<void> {
   // render wiring, mobile geometry and focus affordance, not pixels from a live authenticated UI.
   let taskClientSource = "";
   let taskPageSource = "";
+  let taskServerSource = "";
   let taskClientReadError = "";
   try {
     const checkout = resolve(realpathSync(`${ROOT}/node_modules`), "..");
     taskClientSource = readFileSync(`${checkout}/src/client.ts`, "utf8");
     taskPageSource = readFileSync(`${checkout}/public/index.html`, "utf8");
+    taskServerSource = readFileSync(`${checkout}/server.ts`, "utf8");
   } catch (e) { taskClientReadError = e instanceof Error ? e.message : String(e); }
-  check("task workbench precondition: client source and page CSS are readable",
-    taskClientSource.length > 0 && taskPageSource.length > 0, taskClientReadError);
+  check("task workbench precondition: client source, server source and page CSS are readable",
+    taskClientSource.length > 0 && taskServerSource.length > 0 && taskPageSource.length > 0, taskClientReadError);
   const taskModelStart = taskClientSource.indexOf("type QGroup =");
   const taskModelEnd = taskClientSource.indexOf("function qWaveProjection", taskModelStart);
   const taskModelSource = taskModelStart >= 0 && taskModelEnd > taskModelStart
@@ -445,6 +447,47 @@ export async function run(ctx: Ctx): Promise<void> {
         && readBases
         && /fleetSection\(fleetsec\);/.test(taskClientSource),
       JSON.stringify({ found: fsSrc.length > 0, posted, named, writeCalls, applyWrites: applyBody.includes("r.write()"), readBases }));
+  }
+  // D-5 (Grammatik G5.3): the machine section is one read-only projection of a literal server
+  // allowlist. This pins both halves of the boundary: every allowed name has a concrete effective
+  // constant read in server.ts, while a process.env enumeration or FLEET_ prefix scan turns red.
+  {
+    const expected = [
+      "FLEET_DISPATCH_MAX_LANES", "FLEET_VERIFY_TIMEOUT_MS", "FLEET_VERIFY_WAIT_MS",
+      "FLEET_MIGRATE_PCT", "FLEET_LANE_MIGRATE_PCT", "FLEET_MODEL", "FLEET_STALLED_IDLE_MS",
+      "FLEET_CARD_MS", "FLEET_BRIEF_MS", "FLEET_LAND_FF_RETRY_ROUNDS",
+      "FLEET_MERGE_REPAIR_ROUNDS", "FLEET_AUTO_REVIEW_MS",
+    ];
+    const listAt = taskServerSource.indexOf("const MACHINE_SETTINGS = [");
+    const listEnd = taskServerSource.indexOf("] as const;", listAt);
+    const listSrc = listAt >= 0 && listEnd > listAt ? taskServerSource.slice(listAt, listEnd) : "";
+    const names = [...listSrc.matchAll(/name: "(FLEET_[A-Z_]+)"/g)].map((m) => m[1]);
+    check("settings This machine: the literal allowlist is the twelve reviewed names and every name has an effective server read",
+      names.length <= 12 && JSON.stringify(names) === JSON.stringify(expected)
+        && names.every((name) => taskServerSource.includes(`process.env.${name}`)),
+      JSON.stringify({ names, unread: names.filter((name) => !taskServerSource.includes(`process.env.${name}`)) }));
+
+    const routeAt = taskServerSource.indexOf('if (url.pathname === "/api/machine-settings")');
+    const routeEnd = taskServerSource.indexOf("// the session's own row", routeAt);
+    const routeSrc = routeAt >= 0 && routeEnd > routeAt ? taskServerSource.slice(routeAt, routeEnd) : "";
+    const projectedSrc = `${listSrc}\n${routeSrc}`;
+    const enumeratesEnv = /Object\.(?:keys|values|entries)\(\s*process\.env\s*\)/.test(projectedSrc)
+      || /(?:startsWith|includes)\(["'`]FLEET_/.test(projectedSrc) || /\/\^FLEET_/.test(projectedSrc);
+    check("settings This machine: the route projects the fixed list without process.env enumeration or a FLEET_ prefix scan",
+      routeSrc.includes("json({ settings: MACHINE_SETTINGS })") && !enumeratesEnv
+        && (taskServerSource.match(/url\.pathname === "\/api\/machine-settings"/g) ?? []).length === 1,
+      JSON.stringify({ found: routeSrc.length > 0, enumeratesEnv }));
+
+    const uiAt = taskClientSource.indexOf("function machineSection(");
+    const uiEnd = taskClientSource.indexOf('// THE "FLEET" SECTION', uiAt);
+    const uiSrc = uiAt >= 0 && uiEnd > uiAt ? taskClientSource.slice(uiAt, uiEnd) : "";
+    check("settings This machine: one UI section shows mono values and change hints with no form control",
+      uiSrc.includes('api("/api/machine-settings")') && uiSrc.includes('el("span", "setval"')
+        && uiSrc.includes('`ändern: ${setting.how}; Standard: ${setting.default}`')
+        && !/el\("(?:button|input|select)"/.test(uiSrc) && !/\.(?:onclick|oninput|onchange)\s*=/.test(uiSrc)
+        && /machineSection\(machine\);/.test(taskClientSource)
+        && (taskClientSource.match(/["']This machine["']/g) ?? []).length >= 2,
+      JSON.stringify({ found: uiSrc.length > 0, controls: [...uiSrc.matchAll(/el\("(button|input|select)"/g)].map((m) => m[1]) }));
   }
   check("task workbench source: Work is default and Programs + History are explicit selections",
     /type QView = "work" \| "notes" \| "programs" \| "history" \| "waves"/.test(taskClientSource)

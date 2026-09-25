@@ -11,7 +11,7 @@
 // evidence window exists to prevent. Since 2026-09-24 the sweep follows its argument for BOTH
 // families it owns, so this fixture root is also where the testinstanz fixtures go.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { CheckFn } from "./host-hygiene-table";
 
@@ -139,6 +139,81 @@ export async function scratchReapChecks(check: CheckFn): Promise<void> {
     fullOut.split("\n").filter((l) => l.startsWith("[testinstanz-reap]")).join(" | "));
   sleepChild.kill();
   holdChild.kill();
+
+  const modulesReady = existsSync(`${ROOT}/node_modules`);
+  const source = modulesReady ? resolve(realpathSync(`${ROOT}/node_modules`), "..") : ROOT;
+  const tiScript = `${source}/testinstanz.sh`;
+  const tiHome = `${FIXROOT}/ti-port`;
+  const canonicalRoot = realpathSync(FIXROOT);
+  const hashPort = (path: string): number => {
+    const sum = spawnSync("cksum", { input: path, encoding: "utf8" });
+    return 8900 + Number(sum.stdout?.split(" ")[0]) % 100;
+  };
+  let tiSource = "";
+  let tiPort = 0;
+  for (let i = 0; i < 100; i++) {
+    const candidate = `${canonicalRoot}/ti-source-${i}`;
+    const port = hashPort(candidate);
+    if (port !== 8790 && spawnSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN"]).status === 1) {
+      tiSource = candidate;
+      tiPort = port;
+      break;
+    }
+  }
+  const ready = modulesReady && existsSync(tiScript) && tiSource !== "";
+  check("host-hygiene §e8 probe can stage a testinstanz source with a free hash port",
+    ready, `modules=${modulesReady} script=${existsSync(tiScript)} hashPort=${tiPort}`);
+  if (ready) {
+    mkdirSync(tiSource, { recursive: true });
+    const copied = spawnSync("rsync", ["-a", "--exclude=.git", "--exclude=node_modules",
+      "--exclude=.env", "--exclude=fleet.json*", "--exclude=*.jsonl", `${source}/`, `${tiSource}/`],
+      { encoding: "utf8", timeout: 30_000 });
+    if (copied.status === 0) {
+      const linked = spawnSync("ln", ["-s", `${source}/node_modules`, `${tiSource}/node_modules`]);
+      const env: NodeJS.ProcessEnv = { ...process.env, FLEET_TI_ROOT: tiHome, FLEET_TI_SOCK: `fleettiprobe${process.pid}`,
+        FLEET_CMD: "true" };
+      delete env.FLEET_TI_PORT;
+      delete env.FLEET_TI_DIR;
+      delete env.FLEET_TI_TOKEN;
+      const run = (verb: string) => spawnSync(`${tiSource}/testinstanz.sh`, [verb],
+        { env, encoding: "utf8", timeout: 120_000 });
+      try {
+        if (linked.status === 0) {
+          const up = run("up");
+          const stateDir = `${tiHome}/fleet-testinstanz-${spawnSync("cksum", { input: tiSource,
+            encoding: "utf8" }).stdout?.split(" ")[0]}`;
+          const state = existsSync(`${stateDir}/testinstanz.state`)
+            ? readFileSync(`${stateDir}/testinstanz.state`, "utf8") : "";
+          check("host-hygiene §e8 testinstanz starts on its free hash port",
+            up.status === 0 && state.includes(`\nport=${tiPort}\n`),
+            `exit=${up.status} savedPort=${state.match(/^port=(.*)$/m)?.[1] ?? "missing"} tail=${up.stderr?.trim().split("\n").slice(-1)[0] ?? ""}`);
+          if (up.status === 0) {
+            const status = run("status");
+            check("host-hygiene §e8 status names the saved port, not the next free port",
+              new RegExp(`http://[^/]+:${tiPort}/`).test(status.stdout),
+              `exit=${status.status} line=${status.stdout?.split("\n")[0]?.replace(/\?token=.*/, "?token=[redacted]") ?? ""}`);
+            const again = run("up");
+            check("host-hygiene §e8 up on the running instance keeps its saved port",
+              again.status === 0 && again.stdout.includes("already up")
+                && existsSync(`${stateDir}/testinstanz.state`)
+                && readFileSync(`${stateDir}/testinstanz.state`, "utf8").includes(`\nport=${tiPort}\n`),
+              `exit=${again.status} line=${again.stdout?.trim().split("\n")[0] ?? ""}`);
+          }
+        } else {
+          check("host-hygiene §e8 probe can link its node_modules", false, `exit=${linked.status}`);
+        }
+      } finally {
+        const down = run("down");
+        check("host-hygiene §e8 down names and frees the saved port",
+          down.status === 0 && down.stdout.includes(`port ${tiPort} free`)
+            && spawnSync("lsof", ["-nP", `-iTCP:${tiPort}`, "-sTCP:LISTEN"]).status === 1,
+          `exit=${down.status} line=${down.stdout?.trim().split("\n").slice(-1)[0] ?? ""}`);
+      }
+    } else {
+      check("host-hygiene §e8 probe can copy its isolated source", false,
+        `exit=${copied.status} tail=${copied.stderr?.trim().split("\n").slice(-1)[0] ?? ""}`);
+    }
+  }
 
   rmSync(FIXROOT, { recursive: true, force: true });
 }

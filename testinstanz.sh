@@ -33,37 +33,42 @@ set -e
 
 # THE DERIVATION — one instance per worktree. Port, tmux socket and directory come from the
 # ABSOLUTE worktree path (cksum: POSIX, same answer on mac and second-host), so a lane derives its
-# own triple and never fights a neighbour. The port is hash mod 100 inside 8900-8999 — well clear
-# of the old fixed 8862 and of every live port; if the derived one is bound, the NEXT FREE in the
-# range wins. An explicit FLEET_TI_* override keeps winning over all three (the measured workflows
-# in docs/messungen rely on it) and binds or fails honestly. Whatever was actually chosen is
-# written to the instance's state file below — `list` and scratch-reap.sh read THAT, never ps.
+# own triple and never fights a neighbour. A NEW `up` starts at hash mod 100 inside 8900-8999 and
+# takes the next free port; every command for an existing instance reads the chosen port from its
+# state file. An explicit FLEET_TI_* override selects a new instance's values (the measured
+# workflows in docs/messungen rely on it) and binds or fails honestly.
 TI_ROOT="${FLEET_TI_ROOT:-/tmp}"
 SRC=$(cd "$(dirname "$0")" && pwd -P)
 HASH=$(printf '%s' "$SRC" | cksum | awk '{print $1}')
 PORT="${FLEET_TI_PORT:-$((8900 + HASH % 100))}"
-if [ -z "${FLEET_TI_PORT:-}" ]; then
-  TI_P=$PORT; TI_I=0
-  while lsof -nP -iTCP:"$TI_P" -sTCP:LISTEN >/dev/null 2>&1; do
-    TI_P=$((TI_P + 1))
-    if [ "$TI_P" -gt 8999 ]; then TI_P=8900; fi
-    TI_I=$((TI_I + 1))
-    if [ "$TI_I" -ge 100 ]; then echo "refused: no free port in 8900-8999" >&2; exit 2; fi
-  done
-  PORT=$TI_P
-fi
 SOCK="${FLEET_TI_SOCK:-fleetti$HASH}"
 DIR="${FLEET_TI_DIR:-$TI_ROOT/fleet-testinstanz-$HASH}"
 STATE="$DIR/testinstanz.state"
+PIDF="$DIR/.testinstanz.pid"
+TOKF="$DIR/.testinstanz.token"
+ti_alive() { [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; }
+
+if [ "${1:-}" = up ] && ! ti_alive; then
+  if [ -z "${FLEET_TI_PORT:-}" ]; then
+    TI_P=$PORT; TI_I=0
+    while lsof -nP -iTCP:"$TI_P" -sTCP:LISTEN >/dev/null 2>&1; do
+      TI_P=$((TI_P + 1))
+      if [ "$TI_P" -gt 8999 ]; then TI_P=8900; fi
+      TI_I=$((TI_I + 1))
+      if [ "$TI_I" -ge 100 ]; then echo "refused: no free port in 8900-8999" >&2; exit 2; fi
+    done
+    PORT=$TI_P
+  fi
+elif [ -f "$STATE" ]; then
+  PORT=$(sed -n 's/^port=//p' "$STATE" | head -1)
+  case "$PORT" in ''|*[!0-9]*) echo "refused: invalid port in $STATE" >&2; exit 2;; esac
+fi
 
 # The three live values, refused by NAME. Avoiding them by choosing other defaults is not the same
 # thing: an env override is exactly how someone would hand this script the live fleet by accident.
 [ "$PORT" = "8790" ] && { echo "refused: 8790 is the live port" >&2; exit 2; }
 [ "$SOCK" = "claudefleet" ] && { echo "refused: claudefleet is the live tmux socket" >&2; exit 2; }
 case "$DIR" in "$SRC"|"$SRC"/*) echo "refused: the instance may not live inside the checkout" >&2; exit 2;; esac
-
-PIDF="$DIR/.testinstanz.pid"
-TOKF="$DIR/.testinstanz.token"
 
 # The address the owner opens. Derived at RUN time, never written into this file: a tracked file
 # that names this machine's address fails `leak-pin: tracked files contain no configured deploy
@@ -85,8 +90,6 @@ ti_second-host_url() {
   [ -f "$SRC/.env" ] && u=$(sed -n 's/^FLEET_INSTANCES=.*"name" *: *"second-host" *, *"url" *: *"\([^"]*\)".*/\1/p' "$SRC/.env" | tail -1)
   echo "${u:-http://100.64.0.1:8790}"
 }
-
-ti_alive() { [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; }
 
 # The fixtures are replanted against the RUNNING instance, so switching between the two stands
 # (free places in the axis / all sixteen taken) costs no restart.

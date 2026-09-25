@@ -585,6 +585,10 @@ const dangerous = (slot: number): Probe[] => [
   // GET /api/tasks serves the full prompt texts (intake mail included) that the 2 s poll no
   // longer carries — a read route, but the most content-bearing one the queue has
   { path: "/api/tasks", method: "GET", owner: 200 },
+  // the repo sheet (K2): one owner reading per canonical repo over lands, audits, adjudications
+  // and queue rows — per-repo ledger content no scoped credential may read. A junk canon answers
+  // the owner a real 200 over empty layers, which carries the positive control.
+  { path: "/api/repos/authprobe/view", method: "GET", owner: 200 },
   // Full Program bodies are owner-only. Empty POST is a side-effect-free named 400; GET proves
   // the content-bearing read exists while the principal matrix proves scoped credentials do not.
   { path: "/api/programs", method: "POST", body: {}, owner: 400 },

@@ -32984,6 +32984,104 @@ async function supervisorView(s: Slot): Promise<Response> {
   });
 }
 
+// THE REPO SHEET (Karte K2, Messung 2026-09-23 §5) — ONE owner reading per CANONICAL repo, over
+// the layers that carry their repo key and had no sight: open lanes (L3, straight off the slots),
+// the queue rows that target it (L2, the null rows joined through FLEET_DISPATCH_REPO), the newest
+// lands with verify/branch (L4), the newest audit with its adjudication (L5), the deploy cell — a
+// sensor exists ONLY for REPO_DIR, every other repo names the reason instead of a bare null (L6,
+// the same deployCellFor programStatusView answers with) — and the repo's lane cap with its
+// source. Each layer names its source in its own `quelle`, so a reader never has to guess which
+// store a row came from; the lands layer names its truncation instead of silently slicing.
+// ON DEMAND, NEVER ON THE POLL (the D2 doctrine supervisorView states too): every ledger here is
+// opened by THIS request and closed with it — /api/sessions and /api/programs stay memory-only —
+// and the route writes nothing anywhere: read-only by construction, not by discipline.
+const REPO_SHEET_LANDS = 10;
+const REPO_SHEET_TEXT = 200;
+async function repoSheetView(rawRepo: string): Promise<Response> {
+  const canon = repoCanon(rawRepo);
+  const [outcomeLedger, auditLedger, judged] = await Promise.all([
+    readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE),
+    readLedger<unknown>(POSTLAND_AUDIT_FILE),
+    adjudicationsByAudit(),
+  ]);
+  const num = (v: unknown): number => typeof v === "number" ? v : 0;
+  const str = (v: unknown): string | null => typeof v === "string" ? v : null;
+  const unknown: string[] = [];
+  if (outcomeLedger.malformed > 0)
+    unknown.push(`${outcomeLedger.malformed} malformed lane-outcomes rows: a land of this repo may be missing from the sheet.`);
+  if (auditLedger.malformed > 0)
+    unknown.push(`${auditLedger.malformed} malformed post-land-audits rows: an audit of this repo may be missing from the sheet.`);
+
+  // L3 — every activated slot whose worktree lives in this repo. Hand-opened lanes answer
+  // taskId/programId null, which is honest (no queue row spawned them), never a dropped column.
+  const laneRows = slots.filter((s) => s.cwd && s.worktree
+    && (s.worktree.repo === canon || repoCanon(s.worktree.repo) === canon))
+    .map((s) => ({
+      slot: s.id, branch: s.worktree ? s.worktree.branch : null, label: s.label,
+      taskId: s.taskId, programId: s.programId, openedAt: s.openedAt,
+    }));
+
+  // L2 — live queue rows whose TARGET is this repo. `null` means the dispatcher default, so the
+  // join goes through FLEET_DISPATCH_REPO exactly like the dispatch door resolves it; while the
+  // dispatcher has no repo, a null row has no target at all, and the sheet COUNTS those instead of
+  // silently reading them as belonging to whichever repo was asked.
+  const queueRows = tasks.filter((t) => {
+    const target = t.repo ?? (DISPATCH_REPO || null);
+    return target !== null && repoCanon(target) === canon;
+  }).map((t) => ({
+    id: t.id, status: t.status, kind: t.kind, programId: t.programId ?? null,
+    text: t.text.slice(0, REPO_SHEET_TEXT),
+  }));
+  const nullRepoWithoutTarget = DISPATCH_REPO ? 0
+    : tasks.filter((t) => t.repo === null).length;
+
+  // L4 — the newest N landed rows OF THIS REPO, newest first. Exact repo strings: the ledger
+  // carries LaneRef.repo, which is canonical at write time — the same reading programStatusView
+  // groups by, so the two repo-axe views cannot disagree about the same row.
+  const landed = outcomeLedger.rows.filter((r) => r.disposition === "landed"
+    && (r.repo === canon || (typeof r.repo === "string" && repoCanon(r.repo) === canon))
+    && typeof r.ts === "number")
+    .sort((a, b) => num(b.ts) - num(a.ts));
+  const landRows = landed.slice(0, REPO_SHEET_LANDS).map((r) => ({
+    at: num(r.ts), branch: str(r.branch),
+    verified: r.verified === true ? true : r.verified === false ? false : null,
+    mainAfter: str(r.mainAfter),
+  }));
+
+  // L5 — the newest audit row for this repo plus the verdict rail's answer for it. The rail can
+  // stay silent; `adjudicated: null` is "nobody ruled", never "ruled nothing to see".
+  const newestAudit = auditLedger.rows.map(validAuditRow)
+    .filter((r): r is PostLandAuditRow => r !== null
+      && (r.repo === canon || repoCanon(r.repo) === canon))
+    .reduce<PostLandAuditRow | null>((newest, r) =>
+      newest === null || r.at > newest.at ? r : newest, null);
+  const auditRow = newestAudit === null ? null : {
+    at: newestAudit.at, mainSha: newestAudit.mainSha, result: newestAudit.result,
+    ...(Array.isArray(newestAudit.fails) ? { fails: newestAudit.fails } : {}),
+    adjudicated: judged.get(newestAudit.at)?.verdict ?? null,
+  };
+
+  const deploy = deployCellFor(canon);
+  const cap = repoLaneCap(canon);
+  return json({
+    repo: canon,
+    layers: {
+      lanes: { quelle: "fleet.json#slots (in memory)", rows: laneRows },
+      queue: { quelle: "fleet.json#tasks (in memory)", rows: queueRows,
+        ...(nullRepoWithoutTarget > 0 ? { nullRepoWithoutTarget } : {}) },
+      lands: { quelle: "lane-outcomes.jsonl (.1 + active)", limit: REPO_SHEET_LANDS,
+        total: landed.length, rows: landRows },
+      audit: { quelle: "post-land-audits.jsonl (.1 + active) · verdict rail: audit-adjudications.jsonl",
+        row: auditRow },
+      deploy: { ...deploy,
+        quelle: deploy.deploy ? "deployFacts (git tick over REPO_DIR)" : DEPLOY_NO_SENSOR },
+      cap: { ...cap,
+        quelle: cap.source === "repo" ? "fleet.json#repoLaneCaps" : "FLEET_DISPATCH_MAX_LANES (machine default)" },
+    },
+    unknown,
+  });
+}
+
 // The Supervisor's ONE voice, and every bound on it is structural rather than advisory.
 //
 // THE RECEIVER IS DERIVED, NEVER NOMINATED. No body field names a slot: the caller states which
@@ -40734,6 +40832,14 @@ Bun.serve<WSData>({
     // window's branch row reads it here, so a once-written value is visible without a write first.
     if (url.pathname === "/api/repo-lane-caps" && req.method === "GET")
       return json({ default: DISPATCH_MAX_LANES, max: REPO_MAX_LANES_MAX, caps: repoLaneCaps, bases: repoBases });
+    // The repo sheet (server.ts#repoSheetView): one owner reading per canonical repo, its layers
+    // ON DEMAND. Owner-only by position like its neighbours — the sheet joins queue rows, lands,
+    // audits and adjudications, which is owner reading. GET by construction: the handler opens
+    // ledgers and writes nothing. The canon segment travels percent-encoded (an absolute path
+    // carries slashes); `url.pathname` keeps the encoding, so the one-segment regex is exact.
+    const sheetRepo = /^\/api\/repos\/([^/]+)\/view$/.exec(url.pathname);
+    if (sheetRepo && req.method === "GET")
+      return repoSheetView(decodeURIComponent(sheetRepo[1]!));
     // ↩ undo the last land on a repo: ONE record per call, off the top of the stack (two lands = two
     // calls, each its own git gate and `reverted` ledger row). GIT decides, never optimism: reset ONLY
     // while main is still EXACTLY where that land left it AND no discarded commit has reached a remote.

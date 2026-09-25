@@ -1781,6 +1781,246 @@ export async function run(ctx: Ctx): Promise<void> {
   // bound to a slot the later fixtures recycle.
   if (foreignStatusSlot > 0) await post(`/api/slots/${foreignStatusSlot}/kill`, {});
 
+  // --- THE REPO SHEET (K2, Messung 2026-09-23 §5): GET /api/repos/:canon/view — one owner reading
+  // per canonical repo, Ledger AUF ABRUF (never a poll field), layers: L3 lanes from slots, L2
+  // queue rows incl. the null-repo rows through FLEET_DISPATCH_REPO (this wrapper sets it to REPO,
+  // so a null row and an explicit REPO row must both arrive), L4 the newest lands with
+  // verified/branch, L5 the newest audit with result + adjudication, L6 a deploy cell ONLY for
+  // REPO_DIR (the fixture is not REPO_DIR, so the reason is the answer), plus the lane cap.
+  // Je Schicht ein Check; the presence check is the one an omitted layer must trip, and the
+  // client half runs the transpiled model against THIS route's real answer, D2-style.
+  {
+    const sheetAt = Date.now();
+    const sheetNew = "1".repeat(40);
+    const sheetOld = "2".repeat(40);
+    const sheetFremd = "9".repeat(40);
+    const sheetAuditAt = sheetAt + 900;
+    await stopSrv();
+    appendFileSync(`${ROOT}/lane-outcomes.jsonl`, `${JSON.stringify({
+      ts: sheetAt + 200, disposition: "landed", branch: "rv-sheet-newer", headSha: "3".repeat(40),
+      mainAfter: sheetNew, verified: false, repo: REPO,
+    })}\n`);
+    appendFileSync(`${ROOT}/lane-outcomes.jsonl`, `${JSON.stringify({
+      ts: sheetAt + 100, disposition: "landed", branch: "rv-sheet-older", headSha: sheetOld,
+      mainAfter: sheetOld, verified: true, repo: REPO,
+    })}\n`);
+    // the repo-axe control: a NEWEST land in another repo must not displace or bleed into this one
+    appendFileSync(`${ROOT}/lane-outcomes.jsonl`, `${JSON.stringify({
+      ts: sheetAt + 300, disposition: "landed", branch: "rv-sheet-fremd", headSha: sheetFremd,
+      mainAfter: sheetFremd, verified: null, repo: `${REPO}-fremd`,
+    })}\n`);
+    // a non-landed row of the SAME repo: the lands layer counts lands, not lane endings
+    appendFileSync(`${ROOT}/lane-outcomes.jsonl`, `${JSON.stringify({
+      ts: sheetAt + 150, disposition: "killed", branch: "rv-sheet-killed", headSha: "4".repeat(40),
+      verified: null, repo: REPO,
+    })}\n`);
+    appendFileSync(`${ROOT}/post-land-audits.jsonl`, `${JSON.stringify({
+      at: sheetAuditAt - 100, startedAt: sheetAuditAt - 110, ms: 10, repo: REPO, main: "main",
+      mainSha: sheetOld, result: "green", cmd: "rv-sheet-probe", exitCode: 0, out: "ALL PASS",
+      checks: { ran: 1, failed: 0 }, covers: [{ branch: "rv-sheet-older", mainAfter: sheetOld }],
+    })}\n`);
+    appendFileSync(`${ROOT}/post-land-audits.jsonl`, `${JSON.stringify({
+      at: sheetAuditAt, startedAt: sheetAuditAt - 10, ms: 10, repo: REPO, main: "main",
+      mainSha: sheetNew, result: "red", cmd: "rv-sheet-probe", exitCode: 1,
+      out: "FAIL  rv sheet probe", fails: ["rv sheet probe"], checks: { ran: 1, failed: 1 },
+      covers: [{ branch: "rv-sheet-newer", mainAfter: sheetNew }],
+    })}\n`);
+    await restartSrv();
+
+    // L2 fixtures: an explicit REPO row, a NULL row (joins through FLEET_DISPATCH_REPO = REPO
+    // here), and a foreign-repo row that must stay out of this repo's sheet. Pending rows —
+    // the dispatcher never touches them, so the fixture spawns no lane by accident.
+    const sheetTasks: string[] = [];
+    const sheetTaskMake = async (body: Record<string, unknown>): Promise<string> => {
+      const r = (await (await post("/api/tasks", { queue: false, ...body })).json()) as { task?: { id?: string } };
+      const id = r.task?.id ?? "";
+      if (id) sheetTasks.push(id);
+      return id;
+    };
+    const sheetTaskRepo = await sheetTaskMake({ text: "REPO SHEET fixture: targets the fixture repo", repo: REPO });
+    const sheetTaskNull = await sheetTaskMake({ text: "REPO SHEET fixture: null repo joins the dispatch default" });
+    const sheetTaskFremd = await sheetTaskMake({ text: "REPO SHEET fixture: targets the other repo", repo: `${REPO}-fremd` });
+    // L3 fixture: one open lane in REPO (killed again below, with its worktree)
+    const sheetLaneRes = await post("/api/lanes", { repo: REPO });
+    const sheetLaneSlot = ((await sheetLaneRes.json()) as { slot?: number }).slot ?? 0;
+    let sheetLaneCwd = "";
+    let sheetLaneBranch = "";
+    for (let i = 0; i < 60 && !sheetLaneBranch; i++) {
+      await Bun.sleep(100);
+      const st = readState().slots?.[String(sheetLaneSlot)];
+      sheetLaneCwd = st?.cwd ?? "";
+      sheetLaneBranch = st?.worktree?.branch ?? "";
+    }
+    // L5 fixture: the verdict rail answers the planted red audit
+    const sheetAdj = await post("/api/post-land-audits/adjudicate",
+      { at: sheetAuditAt, verdict: "flake", note: "repo sheet fixture" });
+    // L9 fixture: a STORED cap (cleared again below) — the sheet must read the repo entry, not the default
+    const sheetCapSet = await post("/api/repo-lane-cap", { repo: REPO, maxLanes: 2 });
+
+    const sheetCanon = realpathSync(REPO);
+    const sheetGet = await get(`/api/repos/${encodeURIComponent(REPO)}/view`);
+    const sheet = sheetGet.ok
+      ? (await sheetGet.json()) as {
+          repo?: unknown;
+          layers?: Record<string, { quelle?: unknown; rows?: Record<string, unknown>[]; row?: unknown;
+            deploy?: unknown; deployGrund?: unknown; max?: unknown; source?: unknown;
+            total?: unknown; limit?: unknown; nullRepoWithoutTarget?: unknown } | unknown>;
+          unknown?: unknown;
+        }
+      : null;
+    interface SheetLayer { quelle?: unknown; rows?: Record<string, unknown>[]; row?: unknown;
+      deploy?: unknown; deployGrund?: unknown; max?: unknown; source?: unknown;
+      total?: unknown; limit?: unknown; nullRepoWithoutTarget?: unknown }
+    const sheetLayers = (sheet?.layers ?? {}) as Record<string, SheetLayer>;
+    const sheetLaneRows = sheetLayers.lanes?.rows ?? [];
+    const sheetQueueIds = (sheetLayers.queue?.rows ?? []).map((r) => String(r.id ?? ""));
+    const sheetLandRows = sheetLayers.lands?.rows ?? [];
+    let sheetAuditRow = (sheetLayers.audit?.row ?? null) as
+      { at?: unknown; result?: unknown; fails?: unknown; adjudicated?: unknown } | null;
+    // the verdict rail appends AFTER its 200 (writeAuditAdjudication does not await appendEvent),
+    // so the adjudicated half is polled for like the D2 fixture polls for it — bounded, never a clock
+    for (let i = 0; i < 40 && !(sheetAuditRow && sheetAuditRow.adjudicated != null); i++) {
+      await Bun.sleep(100);
+      const again = await get(`/api/repos/${encodeURIComponent(REPO)}/view`);
+      if (!again.ok) continue;
+      const row = ((((await again.json()) as typeof sheet)?.layers ?? {}) as Record<string, SheetLayer>).audit?.row ?? null;
+      if (row && (row as { adjudicated?: unknown }).adjudicated != null)
+        sheetAuditRow = row as { at?: unknown; result?: unknown; fails?: unknown; adjudicated?: unknown };
+    }
+
+    check("repo sheet: the six layers are all present and each names its source — an omitted layer is a named defect, never an empty answer",
+      sheet !== null && sheet.repo === sheetCanon
+      && ["lanes", "queue", "lands", "audit", "deploy", "cap"].every((k) =>
+        Object.prototype.hasOwnProperty.call(sheet!.layers, k)
+        && typeof (sheetLayers[k]?.quelle) === "string" && (sheetLayers[k]!.quelle as string).length > 0)
+      && Array.isArray(sheet?.unknown),
+      JSON.stringify({ status: sheetGet.status, keys: sheet ? Object.keys(sheetLayers) : null,
+        repo: sheet?.repo ?? null }));
+    check("repo sheet L3: the open lane of this repo is on the sheet with its branch, and a hand-opened lane reads taskId null",
+      sheetLaneRes.ok && sheetLaneRows.some((r) => r.slot === sheetLaneSlot && r.branch === sheetLaneBranch)
+        && sheetLaneRows.every((r) => !("taskId" in r) || r.taskId === null || typeof r.taskId === "string"),
+      JSON.stringify({ laneSlot: sheetLaneSlot, branch: sheetLaneBranch, rows: sheetLaneRows }));
+    check("repo sheet L2: the explicit and the null-repo row both target this repo through FLEET_DISPATCH_REPO, the foreign row does not",
+      sheetQueueIds.includes(sheetTaskRepo) && sheetQueueIds.includes(sheetTaskNull)
+        && !sheetQueueIds.includes(sheetTaskFremd),
+      JSON.stringify({ queueIds: sheetQueueIds, repo: sheetTaskRepo, null: sheetTaskNull, fremd: sheetTaskFremd }));
+    check("repo sheet L4: the newest lands of THIS repo, newest first, carrying verified and branch; the fremd land and the killed row stay out",
+      sheetLandRows.length === 2
+        && sheetLandRows[0]?.branch === "rv-sheet-newer" && sheetLandRows[0]?.verified === false
+        && sheetLandRows[0]?.at === sheetAt + 200 && sheetLandRows[0]?.mainAfter === sheetNew
+        && sheetLandRows[1]?.branch === "rv-sheet-older" && sheetLandRows[1]?.verified === true
+        && !sheetLandRows.some((r) => r.branch === "rv-sheet-fremd" || r.branch === "rv-sheet-killed"),
+      JSON.stringify(sheetLandRows));
+    check("repo sheet L5: the newest audit of this repo with result and named fails, and the verdict rail's answer on it",
+      sheetAdj.ok && sheetAuditRow?.at === sheetAuditAt && sheetAuditRow?.result === "red"
+        && JSON.stringify(sheetAuditRow?.fails) === JSON.stringify(["rv sheet probe"])
+        && sheetAuditRow?.adjudicated === "flake",
+      JSON.stringify({ adj: sheetAdj.status, row: sheetAuditRow }));
+    check("repo sheet L6: a repo the instance does not measure names the missing sensor instead of a bare null",
+      sheetLayers.deploy?.deploy === null
+        && sheetLayers.deploy?.deployGrund === "kein Deploy-Sensor fuer dieses Repo",
+      JSON.stringify(sheetLayers.deploy ?? null));
+    check("repo sheet cap: the stored repoLaneCaps entry beats the machine default, and clearing returns the default",
+      sheetCapSet.ok && sheetLayers.cap?.max === 2 && sheetLayers.cap?.source === "repo",
+      JSON.stringify({ set: sheetCapSet.status, cap: sheetLayers.cap ?? null }));
+
+    // THE REPO AXE, on the sheet itself: the other repo reads as ITS OWN sheet — its land, its
+    // queue row, and no audit of this repo bleeding in. One key difference per repo, not one sheet.
+    const fremdGet = await get(`/api/repos/${encodeURIComponent(`${REPO}-fremd`)}/view`);
+    const fremdSheet = fremdGet.ok ? (await fremdGet.json()) as typeof sheet : null;
+    const fremdLayers = (fremdSheet?.layers ?? {}) as Record<string, SheetLayer>;
+    check("repo sheet: a second repo reads as its own sheet — its newest land and its queue row, and none of this repo's audit",
+      fremdSheet !== null && fremdSheet.repo === `${sheetCanon}-fremd`
+        && (fremdLayers.lands?.rows ?? []).length === 1
+        && fremdLayers.lands?.rows?.[0]?.branch === "rv-sheet-fremd"
+        && (fremdLayers.queue?.rows ?? []).some((r) => String(r.id ?? "") === sheetTaskFremd)
+        && fremdLayers.audit?.row === null,
+      JSON.stringify({ status: fremdGet.status, lands: fremdLayers.lands?.rows ?? null,
+        audit: fremdLayers.audit?.row ?? null, queue: fremdLayers.queue?.rows ?? null }));
+
+    // THE AUTH POSITION: the sheet is owner reading (queue rows, lands, adjudications), so a
+    // credential-less call is refused like every owner route — by the gate, not by the handler.
+    const sheetAnon = await fetch(`${BASE}/api/repos/${encodeURIComponent(REPO)}/view`);
+    check("repo sheet: no credential, no sheet — the route sits behind the owner gate",
+      sheetAnon.status === 401, String(sheetAnon.status));
+
+    // THE POLL STAYS CLEAN (D2 doctrine, the negation the card demands): the planted branch exists
+    // ONLY in a ledger, so if either poll route ever grew the sheet's ledger half, the marker
+    // would show up here. The sheet route itself is the only place it may ever appear.
+    const sheetPollSessions = await (await get("/api/sessions")).text();
+    const sheetPollPrograms = await (await get("/api/programs")).text();
+    check("repo sheet: the 2-s poll carries no ledger half — the planted land reaches the owner only through the sheet route",
+      !sheetPollSessions.includes("rv-sheet-newer") && !sheetPollPrograms.includes("rv-sheet-newer")
+        && sheetPollPrograms.includes("\"programs\""),
+      `sessions=${sheetPollSessions.includes("rv-sheet-newer")} programs=${sheetPollPrograms.includes("rv-sheet-newer")}`);
+
+    // THE CLIENT HALF, executed rather than regexed (the D2 pattern): the transpiled model over
+    // this route's REAL answer names every layer; deleting one layer from the answer must turn
+    // into a NAMED omission, not an invented zero.
+    let sheetClientSource = "";
+    let sheetClientError = "";
+    try {
+      sheetClientSource = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+    } catch (e) { sheetClientError = e instanceof Error ? e.message : String(e); }
+    const sheetModelStart = sheetClientSource.indexOf("type RepoSheetFact =");
+    const sheetModelEnd = sheetClientSource.indexOf("// the repo sheet's DOM painter", sheetModelStart);
+    const sheetModelSource = sheetModelStart >= 0 && sheetModelEnd > sheetModelStart
+      ? sheetClientSource.slice(sheetModelStart, sheetModelEnd) : "";
+    const sheetFactsFn = sheetModelSource
+      ? new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(sheetModelSource)
+        + "\nreturn repoSheetFacts;")() as
+          ((view: unknown, read: "ok" | "fail") =>
+            { facts: { label: string; tone: string; sentence: string }[]; reason: string | null })
+      : null;
+    check("repo sheet client: the rendering model is executable from src/client.ts",
+      sheetFactsFn !== null, sheetClientError || sheetModelSource.slice(0, 120) || "model block not found");
+    const sheetRendered = sheetFactsFn?.(sheet, sheet ? "ok" : "fail") ?? null;
+    check("repo sheet client: every served layer becomes exactly one fact, and the answer carries no omission",
+      sheetRendered !== null && sheetRendered.facts.length === 6 && sheetRendered.reason === null
+        && sheetRendered.facts.some((f) => f.label.includes("open lane"))
+        && sheetRendered.facts.some((f) => f.label.includes("queue row"))
+        && sheetRendered.facts.some((f) => f.label.includes("lands"))
+        && sheetRendered.facts.some((f) => f.label === "audit red")
+        && sheetRendered.facts.some((f) => f.label.includes("kein Deploy-Sensor"))
+        && sheetRendered.facts.some((f) => f.label.includes("lane cap 2")),
+      JSON.stringify(sheetRendered ?? null));
+    const sheetMuted = sheet ? JSON.parse(JSON.stringify(sheet)) as typeof sheet : null;
+    if (sheetMuted?.layers) delete sheetMuted.layers.lands;
+    const sheetMutedRendered = sheetFactsFn?.(sheetMuted, "ok") ?? null;
+    check("repo sheet client MUTATION: a layer the answer omits is named as missing, never rendered as zero",
+      sheetMutedRendered !== null && sheetMutedRendered.facts.length === 5
+        && sheetMutedRendered.reason?.includes("lands (L4)") === true,
+      JSON.stringify(sheetMutedRendered ?? null));
+    check("repo sheet client wiring: the painter consumes the model over the route, the tree offers the sheet",
+      sheetClientSource.includes('const rendered = repoSheetFacts(v, "ok");')
+      && sheetClientSource.includes("renderRepoDetail(shell, qPick.slice(5))")
+      && sheetClientSource.includes("qPick = `repo:${r}`")
+      && sheetClientSource.includes("/api/repos/${encodeURIComponent(repo)}/view"),
+      sheetClientSource.slice(0, 120));
+    // THE POLL-HONESTY HALF, read off the source: the refresh repaint block must carry a repo
+    // branch that repaints NOTHING — an auto-refresh there would be the ledger poll again.
+    const sheetPollBlock = sheetClientSource.slice(sheetClientSource.indexOf("keep an open task DETAIL honest"),
+      sheetClientSource.indexOf("keep an open share dialog honest"));
+    const sheetRepoBranch = sheetPollBlock.includes('qPick.startsWith("repo:")')
+      && sheetPollBlock.includes('qPick.startsWith("prog:")')
+      ? sheetPollBlock.slice(sheetPollBlock.indexOf('qPick.startsWith("repo:")'), sheetPollBlock.indexOf('qPick.startsWith("prog:")'))
+      : "";
+    check("repo sheet client: the 2-s poll repaint block has a repo branch that repaints NOTHING — auf Abruf stays auf Abruf",
+      sheetRepoBranch.includes('qPick.startsWith("repo:")')
+        && !sheetRepoBranch.includes("renderQueueDetail()") && !sheetRepoBranch.includes("renderRepoDetail("),
+      JSON.stringify(sheetRepoBranch.slice(0, 200)));
+
+    // the fixture leaves nothing behind: lane, worktree, queue rows, the stored cap
+    if (sheetLaneSlot > 0) await post(`/api/slots/${sheetLaneSlot}/kill`, {});
+    if (sheetLaneCwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", sheetLaneCwd]);
+    for (const id of sheetTasks) await post(`/api/tasks/${id}/delete`, {});
+    await post("/api/repo-lane-cap", { repo: REPO, maxLanes: null });
+    const sheetCapAfter = (await (await get("/api/repo-lane-caps")).json()) as { caps?: Record<string, number> };
+    check("repo sheet teardown: the stored cap is gone again — the fixture leaves the default to the sections after it",
+      sheetCapAfter.caps?.[sheetCanon] === undefined && sheetCapAfter.caps?.[REPO] === undefined,
+      JSON.stringify(sheetCapAfter.caps ?? null));
+  }
+
   // --- I14 / D4: WHO judged the audit, MEASURED. `by:"owner"` names the only principal this route
   // has, so the fact the rail was missing is the CHANNEL — and, on bearer/query, whether the judged
   // audit covers a land of an ACTIVE Program whose bound MAIN is LIVE. That is exactly the shape the

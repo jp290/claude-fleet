@@ -9603,7 +9603,12 @@ async function refresh() {
     // proposal arrived on this poll, but the detail only ever repainted on reselect — the
     // owner sat in front of a stale pane while the lane waited on them. Keyed on the fields
     // the detail actually paints, so hover and an in-progress criterion edit survive quiet polls.
-    if (qShell?.isOpen() && qPick !== null && qPick.startsWith("prog:")) {
+    if (qShell?.isOpen() && qPick !== null && qPick.startsWith("repo:")) {
+      // THE REPO SHEET IS ON DEMAND (K2): the pane fetches GET /api/repos/:canon/view itself and
+      // carries no poll field, so there is deliberately NO detail key here — repainting it on
+      // every poll would turn "Ledger auf Abruf" into a 2-s ledger poll through the client's
+      // back door. It repaints only when reopened or on its own "read again" button.
+    } else if (qShell?.isOpen() && qPick !== null && qPick.startsWith("prog:")) {
       // the same rule for a program pane: its MARK moves with the SLOTS, not with the program,
       // so a pane keyed on the program alone would keep claiming a MAIN that just died
       const p = programsList.find((x) => `prog:${x.id}` === qPick);
@@ -12721,6 +12726,192 @@ function qLaneKey(joins: ReadonlyMap<string, QLaneJoin>): unknown[] {
 const qLaneJoinOf = (id: string): QLaneJoin =>
   qLaneJoins(tasksList, fleet, dispatch.repo, serverNow).get(id) ?? { kind: "none" };
 
+// THE REPO SHEET'S MODEL (Karte K2) — the executable rendering model over GET /api/repos/:canon/view,
+// the sibling of programStatusRender one axe lower: the route joins the layers, this model names
+// them. It accepts the route's JSON whole, and every layer contributes exactly one fact — so a
+// layer the server stops serving is a MISSING fact with a named reason, never an invented zero.
+// The `quelle` lines travel verbatim into the sentences: the model renders the route, it joins
+// nothing and counts nothing the route did not already count. DOM-free on purpose — the e2e
+// client-half check transpiles and runs exactly this block (see e2e/programs.ts, repo sheet).
+type RepoSheetFact = { label: string; tone: "ok" | "dim" | "warn"; sentence: string };
+interface RepoSheetRender { facts: RepoSheetFact[]; reason: string | null }
+interface RepoSheetView {
+  repo?: unknown;
+  layers?: {
+    lanes?: { quelle?: unknown; rows?: unknown };
+    queue?: { quelle?: unknown; rows?: unknown; nullRepoWithoutTarget?: unknown };
+    lands?: { quelle?: unknown; limit?: unknown; total?: unknown; rows?: unknown };
+    audit?: { quelle?: unknown; row?: unknown };
+    deploy?: { quelle?: unknown; deploy?: unknown; deployGrund?: unknown };
+    cap?: { quelle?: unknown; max?: unknown; source?: unknown };
+  };
+  unknown?: unknown;
+}
+function repoSheetFacts(view: RepoSheetView | null, read: "ok" | "fail"): RepoSheetRender {
+  if (read !== "ok") return { facts: [], reason: read === "fail"
+    ? "The last GET /api/repos/:canon/view did not answer, so this repo's layers are unreadable."
+    : "GET /api/repos/:canon/view has not been read yet, so this repo's layers are unknown." };
+  const layers = view?.layers;
+  const str = (v: unknown): string => typeof v === "string" ? v : "";
+  const count = (v: unknown): number => Array.isArray(v) ? v.length : 0;
+  const missing: string[] = [];
+  const facts: RepoSheetFact[] = [];
+  if (!Array.isArray(layers?.lanes?.rows) || typeof layers?.lanes?.quelle !== "string") missing.push("lanes (L3)");
+  else {
+    const n = count(layers.lanes.rows);
+    facts.push({ label: `${n} open lane${n === 1 ? "" : "s"}`, tone: n > 0 ? "ok" : "dim",
+      sentence: str(layers.lanes.quelle) });
+  }
+  if (!Array.isArray(layers?.queue?.rows) || typeof layers?.queue?.quelle !== "string") missing.push("queue (L2)");
+  else {
+    const n = count(layers.queue.rows);
+    const stray = layers.queue.nullRepoWithoutTarget;
+    facts.push({ label: `${n} queue row${n === 1 ? "" : "s"}`, tone: n > 0 ? "warn" : "dim",
+      sentence: str(layers.queue.quelle)
+        + (typeof stray === "number" && stray > 0
+          ? ` — ${stray} null-repo row${stray === 1 ? "" : "s"} target no repo (FLEET_DISPATCH_REPO unset)` : "") });
+  }
+  if (!Array.isArray(layers?.lands?.rows) || typeof layers?.lands?.quelle !== "string"
+    || typeof layers?.lands?.total !== "number") missing.push("lands (L4)");
+  else {
+    const shown = count(layers.lands.rows);
+    const total = layers.lands.total as number;
+    facts.push({ label: `${shown}/${total} lands`, tone: "dim",
+      sentence: str(layers.lands.quelle)
+        + (shown < total ? " — oldest lands beyond the route's limit are not shown" : "") });
+  }
+  if (layers?.audit === undefined || typeof layers?.audit?.quelle !== "string") missing.push("audit (L5)");
+  else {
+    const row = (layers.audit.row ?? null) as { result?: unknown; adjudicated?: unknown; fails?: unknown } | null;
+    const result = typeof row?.result === "string" ? row.result : null;
+    const adjudicated = typeof row?.adjudicated === "string" ? row.adjudicated : null;
+    const fails = Array.isArray(row?.fails) ? row.fails.length : 0;
+    facts.push({ label: result === null ? "no audit" : `audit ${result}`,
+      tone: result === "green" ? "ok" : result === "red" ? "warn" : "dim",
+      sentence: str(layers.audit.quelle)
+        + (adjudicated ? ` — adjudicated: ${adjudicated}` : "")
+        + (fails > 0 ? ` — ${fails} named fail${fails === 1 ? "" : "s"}` : "") });
+  }
+  if (layers?.deploy === undefined || typeof layers?.deploy?.quelle !== "string") missing.push("deploy (L6)");
+  else {
+    const cell = (layers.deploy.deploy ?? null) as { codeBehind?: unknown } | null;
+    const grund = typeof layers.deploy.deployGrund === "string" ? layers.deploy.deployGrund : null;
+    const behind = cell === null ? null : typeof cell.codeBehind === "boolean" ? cell.codeBehind : null;
+    facts.push({ label: grund !== null ? grund : behind === null ? "deploy not yet read"
+        : behind ? "deploy: code behind" : "deploy: current",
+      tone: behind === true ? "warn" : behind === false ? "ok" : "dim",
+      sentence: str(layers.deploy.quelle) });
+  }
+  if (layers?.cap === undefined || typeof layers?.cap?.quelle !== "string"
+    || typeof layers?.cap?.max !== "number") missing.push("lane cap");
+  else {
+    const src = typeof layers.cap.source === "string" ? layers.cap.source : "unknown";
+    facts.push({ label: `lane cap ${layers.cap.max} (${src})`, tone: "dim",
+      sentence: str(layers.cap.quelle) });
+  }
+  if (!Array.isArray(view?.unknown)) missing.push("unknown");
+  return {
+    facts,
+    reason: read === "ok" && view?.repo === undefined ? "The answer names no repo — this sheet cannot say what it read."
+      : missing.length > 0 ? `The answer omits ${missing.join(", ")} — the server's sheet is incomplete this build cannot repair.`
+      : null,
+  };
+}
+
+// the repo sheet's DOM painter — one fetch per open (and per "read again"), never a poll
+// subscription: the layers are auf Abruf, and an auto-refresh here would be the 2-s ledger poll
+// through the client's back door. Every ROW line below is printed in the order and the shape the
+// ROUTE served; the pane computes nothing the route did not already count.
+function renderRepoDetail(shell: Shell, repo: string): void {
+  shell.detail.appendChild(el("div", "rvhead", baseName(repo)));
+  shell.detail.appendChild(el("div", "hint shellhint", repo));
+  const body = el("div", "");
+  shell.detail.appendChild(body);
+  let seq = 0; // a re-open or refresh orphans every fetch still in flight
+  const paint = async (): Promise<void> => {
+    const mine = ++seq;
+    body.replaceChildren(el("div", "hint shellhint",
+      "reading GET /api/repos/:canon/view — the layers are fetched on demand; the poll does not keep this pane fresh"));
+    const r = await api(`/api/repos/${encodeURIComponent(repo)}/view`).catch(() => null);
+    if (mine !== seq || !body.isConnected) return;
+    if (!r || !r.ok) {
+      body.replaceChildren(el("div", "hint shellhint", r
+        ? `GET /api/repos/:canon/view answered ${r.status} — the layers of this repo are unreadable.`
+        : "No answer — the layers of this repo are unknown right now."));
+      return;
+    }
+    const v = (await r.json().catch(() => null)) as RepoSheetView | null;
+    if (mine !== seq || !body.isConnected) return;
+    body.replaceChildren();
+    const rendered = repoSheetFacts(v, "ok");
+    if (rendered.reason) body.appendChild(el("div", "pkdwarn", rendered.reason));
+    const facts = el("div", "ocfacts");
+    for (const f of rendered.facts) facts.appendChild(chip(f.label, f.tone, f.sentence));
+    body.appendChild(facts);
+    if (!v) return;
+    const line = (parent: HTMLElement, text: string): void => { parent.appendChild(el("div", "qdtext", text)); };
+    const L = v.layers;
+    if (L?.lanes?.rows && Array.isArray(L.lanes.rows)) {
+      const sec = qDetailSection(body, "Lanes (L3)");
+      sec.appendChild(el("div", "hint shellhint", `quelle: ${String(L.lanes.quelle)}`));
+      for (const row of L.lanes.rows) {
+        const l = row as { slot?: unknown; branch?: unknown; taskId?: unknown; programId?: unknown };
+        line(sec, `⎇ ${String(l.branch)} · slot ${String(l.slot)}`
+          + (l.taskId ? ` · ${String(l.taskId)}` : "") + (l.programId ? ` · prog ${String(l.programId)}` : ""));
+      }
+    }
+    if (L?.queue?.rows && Array.isArray(L.queue.rows)) {
+      const sec = qDetailSection(body, "Queue (L2)");
+      sec.appendChild(el("div", "hint shellhint", `quelle: ${String(L.queue.quelle)}`));
+      for (const row of L.queue.rows) {
+        const q = row as { id?: unknown; status?: unknown; text?: unknown };
+        line(sec, `[${String(q.status)}] ${String(q.id)} — ${String(q.text)}`);
+      }
+    }
+    if (L?.lands?.rows && Array.isArray(L.lands.rows)) {
+      const sec = qDetailSection(body, "Lands (L4)");
+      sec.appendChild(el("div", "hint shellhint", `quelle: ${String(L.lands.quelle)}`));
+      for (const row of L.lands.rows) {
+        const d = row as { at?: unknown; branch?: unknown; verified?: unknown; mainAfter?: unknown };
+        line(sec, `${typeof d.at === "number" ? fmtTs(d.at) : "?"} · ${String(d.branch)} · verify ${
+          d.verified === true ? "✓" : d.verified === false ? "✗" : "—"}`
+          + (typeof d.mainAfter === "string" ? ` · ${d.mainAfter.slice(0, 12)}` : ""));
+      }
+    }
+    if (L?.audit !== undefined) {
+      const sec = qDetailSection(body, "Audit (L5)");
+      sec.appendChild(el("div", "hint shellhint", `quelle: ${String(L.audit.quelle)}`));
+      const a = (L.audit.row ?? null) as { at?: unknown; result?: unknown; adjudicated?: unknown; fails?: unknown } | null;
+      if (a === null) line(sec, "no audit row for this repo");
+      else line(sec, `${String(a.result)} @ ${typeof a.at === "number" ? fmtTs(a.at) : "?"}`
+        + (a.adjudicated ? ` · adjudicated: ${String(a.adjudicated)}` : " · not adjudicated")
+        + (Array.isArray(a.fails) && a.fails.length ? ` · fails: ${a.fails.map(String).join(", ")}` : ""));
+    }
+    if (L?.deploy !== undefined) {
+      const sec = qDetailSection(body, "Deploy (L6)");
+      sec.appendChild(el("div", "hint shellhint", `quelle: ${String(L.deploy.quelle)}`));
+      const d = (L.deploy.deploy ?? null) as { codeBehind?: unknown } | null;
+      line(sec, d === null ? String(L.deploy.deployGrund)
+        : typeof d.codeBehind === "boolean" ? (d.codeBehind ? "code behind" : "current")
+        : "not yet read (git tick)");
+    }
+    if (L?.cap !== undefined) {
+      const sec = qDetailSection(body, "Lane cap");
+      sec.appendChild(el("div", "hint shellhint", `quelle: ${String(L.cap.quelle)}`));
+      line(sec, `max ${String(L.cap.max)} (${String(L.cap.source)})`);
+    }
+    for (const u of Array.isArray(v.unknown) ? v.unknown : [])
+      body.appendChild(el("div", "pkdwarn", String(u)));
+  };
+  const foot = el("div", "qdsection");
+  const again = el("button", "shrbtn", "read again") as HTMLButtonElement;
+  again.title = "one fetch, on demand — the poll never refreshes this pane by itself";
+  again.onclick = () => void paint();
+  foot.appendChild(again);
+  shell.detail.appendChild(foot);
+  void paint();
+}
+
 function renderQueueDetail() {
   const shell = qShell;
   if (!shell) return;
@@ -12882,6 +13073,11 @@ function renderQueueDetail() {
     const foot = el("div", "qnewfoot");
     foot.append(el("span", "qnewkey", "⌘↵"), add);
     form.appendChild(foot);
+    restoreFocus();
+    return;
+  }
+  if (qPick.startsWith("repo:")) {
+    renderRepoDetail(shell, qPick.slice(5));
     restoreFocus();
     return;
   }
@@ -13790,11 +13986,26 @@ function paintQueueScope() {
       b.setAttribute("aria-pressed", String(on));
       b.onclick = act;
       tree.appendChild(b);
+      return b;
     };
     node("All", open.length, qRepo === null, "all", () => choose(null, null), "every project");
     for (const [r, n] of repoList) {
       const chosen = qRepo === r;
-      node(`${chosen ? "▾" : "▸"} ${repoLabel(r)}`, n, chosen && !qProg, "repo", () => choose(r, null), repoTitle(r));
+      const b = node(`${chosen ? "▾" : "▸"} ${repoLabel(r)}`, n, chosen && !qProg, "repo", () => choose(r, null), repoTitle(r));
+      // THE REPO SHEET (K2): a second affordance on the node, beside the scoping click — the sheet
+      // is a READ of one repo's layers (GET /api/repos/:canon/view), not a scope change, so it is
+      // its own click target and writes qPick only. A fake key ("no repo") opens nothing.
+      if (r !== Q_NO_REPO) {
+        const sheet = el("span", "qtabn", "▤");
+        sheet.title = `open the repo sheet — this repo's layers on demand (GET /api/repos/:canon/view)`;
+        sheet.onclick = (e) => {
+          e.stopPropagation();
+          qPick = `repo:${r}`;
+          qDetailKey = "";
+          renderQueueDetail();
+        };
+        b.appendChild(sheet);
+      }
       if (!chosen || qView !== "work") continue;
       const progs = progsOf(r);
       if (progs.length < 2 && !qProg) continue;

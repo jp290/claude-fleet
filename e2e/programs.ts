@@ -1790,10 +1790,17 @@ export async function run(ctx: Ctx): Promise<void> {
   // Je Schicht ein Check; the presence check is the one an omitted layer must trip, and the
   // client half runs the transpiled model against THIS route's real answer, D2-style.
   {
-    const sheetAt = Date.now();
+    // RANK DETERMINISM AGAINST THE SHARED LEDGER (helper 27c928446562): this family plants into the
+    // SAME files earlier sections of THIS module planted into — the D2 fixture stamps its rows up to
+    // 5 s into the future, and this block can run within that window, which inverted every
+    // newest-first rank this suite used to assume. So the sheet fixture stamps itself ABOVE every
+    // row the module can have planted (d2UncoveredAt is the highest planted ts above), and the
+    // assertions below rank only rows this block can name; the second repo gets its OWN unused
+    // suffix so no other section's rows can collide with it at all.
+    const sheetAt = Math.max(Date.now(), d2UncoveredAt + 1000);
     const sheetNew = "1".repeat(40);
     const sheetOld = "2".repeat(40);
-    const sheetFremd = "9".repeat(40);
+    const sheetFremdRepo = `${REPO}-sheetfremd`;
     const sheetAuditAt = sheetAt + 900;
     await stopSrv();
     appendFileSync(`${ROOT}/lane-outcomes.jsonl`, `${JSON.stringify({
@@ -1806,8 +1813,8 @@ export async function run(ctx: Ctx): Promise<void> {
     })}\n`);
     // the repo-axe control: a NEWEST land in another repo must not displace or bleed into this one
     appendFileSync(`${ROOT}/lane-outcomes.jsonl`, `${JSON.stringify({
-      ts: sheetAt + 300, disposition: "landed", branch: "rv-sheet-fremd", headSha: sheetFremd,
-      mainAfter: sheetFremd, verified: null, repo: `${REPO}-fremd`,
+      ts: sheetAt + 300, disposition: "landed", branch: "rv-sheet-fremd", headSha: "9".repeat(40),
+      mainAfter: "9".repeat(40), verified: null, repo: sheetFremdRepo,
     })}\n`);
     // a non-landed row of the SAME repo: the lands layer counts lands, not lane endings
     appendFileSync(`${ROOT}/lane-outcomes.jsonl`, `${JSON.stringify({
@@ -1839,7 +1846,7 @@ export async function run(ctx: Ctx): Promise<void> {
     };
     const sheetTaskRepo = await sheetTaskMake({ text: "REPO SHEET fixture: targets the fixture repo", repo: REPO });
     const sheetTaskNull = await sheetTaskMake({ text: "REPO SHEET fixture: null repo joins the dispatch default" });
-    const sheetTaskFremd = await sheetTaskMake({ text: "REPO SHEET fixture: targets the other repo", repo: `${REPO}-fremd` });
+    const sheetTaskFremd = await sheetTaskMake({ text: "REPO SHEET fixture: targets the other repo", repo: sheetFremdRepo });
     // L3 fixture: one open lane in REPO (killed again below, with its worktree)
     const sheetLaneRes = await post("/api/lanes", { repo: REPO });
     const sheetLaneSlot = ((await sheetLaneRes.json()) as { slot?: number }).slot ?? 0;
@@ -1904,13 +1911,14 @@ export async function run(ctx: Ctx): Promise<void> {
       sheetQueueIds.includes(sheetTaskRepo) && sheetQueueIds.includes(sheetTaskNull)
         && !sheetQueueIds.includes(sheetTaskFremd),
       JSON.stringify({ queueIds: sheetQueueIds, repo: sheetTaskRepo, null: sheetTaskNull, fremd: sheetTaskFremd }));
-    check("repo sheet L4: the newest lands of THIS repo, newest first, carrying verified and branch; the fremd land and the killed row stay out",
-      sheetLandRows.length === 2
+    check("repo sheet L4: this block's lands rank first, newest first, carrying verified and branch; the sheetfremd land and the killed row stay out",
+      sheetLandRows.length >= 2
         && sheetLandRows[0]?.branch === "rv-sheet-newer" && sheetLandRows[0]?.verified === false
         && sheetLandRows[0]?.at === sheetAt + 200 && sheetLandRows[0]?.mainAfter === sheetNew
-        && sheetLandRows[1]?.branch === "rv-sheet-older" && sheetLandRows[1]?.verified === true
+        && sheetLandRows.some((r) => r.branch === "rv-sheet-older" && r.verified === true)
+        && sheetLandRows.every((r, i) => i === 0 || (r.at as number) <= ((sheetLandRows[i - 1]?.at as number) ?? 0))
         && !sheetLandRows.some((r) => r.branch === "rv-sheet-fremd" || r.branch === "rv-sheet-killed"),
-      JSON.stringify(sheetLandRows));
+      JSON.stringify(sheetLandRows.slice(0, 4)));
     check("repo sheet L5: the newest audit of this repo with result and named fails, and the verdict rail's answer on it",
       sheetAdj.ok && sheetAuditRow?.at === sheetAuditAt && sheetAuditRow?.result === "red"
         && JSON.stringify(sheetAuditRow?.fails) === JSON.stringify(["rv sheet probe"])
@@ -1925,12 +1933,13 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ set: sheetCapSet.status, cap: sheetLayers.cap ?? null }));
 
     // THE REPO AXE, on the sheet itself: the other repo reads as ITS OWN sheet — its land, its
-    // queue row, and no audit of this repo bleeding in. One key difference per repo, not one sheet.
-    const fremdGet = await get(`/api/repos/${encodeURIComponent(`${REPO}-fremd`)}/view`);
+    // queue row, and no audit of this repo bleeding in. The suffix is this block's OWN (no other
+    // section plants into it), so the exact counts here are facts about THIS fixture alone.
+    const fremdGet = await get(`/api/repos/${encodeURIComponent(sheetFremdRepo)}/view`);
     const fremdSheet = fremdGet.ok ? (await fremdGet.json()) as typeof sheet : null;
     const fremdLayers = (fremdSheet?.layers ?? {}) as Record<string, SheetLayer>;
     check("repo sheet: a second repo reads as its own sheet — its newest land and its queue row, and none of this repo's audit",
-      fremdSheet !== null && fremdSheet.repo === `${sheetCanon}-fremd`
+      fremdSheet !== null && fremdSheet.repo === `${sheetCanon}-sheetfremd`
         && (fremdLayers.lands?.rows ?? []).length === 1
         && fremdLayers.lands?.rows?.[0]?.branch === "rv-sheet-fremd"
         && (fremdLayers.queue?.rows ?? []).some((r) => String(r.id ?? "") === sheetTaskFremd)
@@ -1944,15 +1953,19 @@ export async function run(ctx: Ctx): Promise<void> {
     check("repo sheet: no credential, no sheet — the route sits behind the owner gate",
       sheetAnon.status === 401, String(sheetAnon.status));
 
-    // THE POLL STAYS CLEAN (D2 doctrine, the negation the card demands): the planted branch exists
-    // ONLY in a ledger, so if either poll route ever grew the sheet's ledger half, the marker
-    // would show up here. The sheet route itself is the only place it may ever appear.
+    // THE POLL STAYS CLEAN (D2 doctrine, the negation the card demands) — negated on the SHEET'S
+    // SHAPE, not on the planted branch string: the branch string can legitimately reach
+    // GET /api/sessions through the PRE-EXISTING postLandAudit alarm field, whose boot loads the
+    // newest audit ledger row into lastPostLandAudit (helper 27c928446562 measured exactly that —
+    // the poll's own path, not the sheet's). What may never ride the poll is the sheet's shape.
     const sheetPollSessions = await (await get("/api/sessions")).text();
     const sheetPollPrograms = await (await get("/api/programs")).text();
-    check("repo sheet: the 2-s poll carries no ledger half — the planted land reaches the owner only through the sheet route",
-      !sheetPollSessions.includes("rv-sheet-newer") && !sheetPollPrograms.includes("rv-sheet-newer")
-        && sheetPollPrograms.includes("\"programs\""),
-      `sessions=${sheetPollSessions.includes("rv-sheet-newer")} programs=${sheetPollPrograms.includes("rv-sheet-newer")}`);
+    check("repo sheet: the 2-s poll carries no sheet shape — neither poll names quelle/repoSheet/layers, and Programs stays readable",
+      !sheetPollSessions.includes('"quelle"') && !sheetPollSessions.includes("repoSheet")
+        && !sheetPollSessions.includes('"layers"')
+        && !sheetPollPrograms.includes('"quelle"') && !sheetPollPrograms.includes("repoSheet")
+        && sheetPollPrograms.includes('"programs"'),
+      `sessions quelle=${sheetPollSessions.includes('"quelle"')} repoSheet=${sheetPollSessions.includes("repoSheet")}`);
 
     // THE CLIENT HALF, executed rather than regexed (the D2 pattern): the transpiled model over
     // this route's REAL answer names every layer; deleting one layer from the answer must turn
@@ -2019,6 +2032,29 @@ export async function run(ctx: Ctx): Promise<void> {
     check("repo sheet teardown: the stored cap is gone again — the fixture leaves the default to the sections after it",
       sheetCapAfter.caps?.[sheetCanon] === undefined && sheetCapAfter.caps?.[REPO] === undefined,
       JSON.stringify(sheetCapAfter.caps ?? null));
+
+    // THE FIXTURE'S LEDGER STRIP (helper 27c928446562, fail 5): at the block's end its planted rows
+    // are the NEWEST outcome/audit rows on file, and later families read "the newest audit"
+    // (steward-core's anchor view did exactly that and went red on rows it had never planted).
+    // So the block removes EXACTLY the lines it planted — counted, srv stopped — and the sections
+    // after it read the ledger this block found, not this block's fixtures.
+    await stopSrv();
+    const sheetStrip: [string, string, number][] = [
+      ["lane-outcomes.jsonl", '"branch":"rv-sheet-', 4],
+      ["post-land-audits.jsonl", "rv-sheet-probe", 2],
+      ["audit-adjudications.jsonl", "repo sheet fixture", 1],
+    ];
+    let sheetStripped = 0;
+    for (const [file, marker, planted] of sheetStrip) {
+      const p = `${ROOT}/${file}`;
+      const lines = readFileSync(p, "utf8").split("\n").filter(Boolean);
+      const kept = lines.filter((l) => !l.includes(marker));
+      sheetStripped += lines.length - kept.length;
+      writeFileSync(p, kept.length ? `${kept.join("\n")}\n` : "", { mode: 0o600 });
+    }
+    await restartSrv();
+    check("repo sheet teardown: exactly the 7 planted ledger lines are gone again — later sections read the ledger this block found",
+      sheetStripped === 7, String(sheetStripped));
   }
 
   // --- I14 / D4: WHO judged the audit, MEASURED. `by:"owner"` names the only principal this route

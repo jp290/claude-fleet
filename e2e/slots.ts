@@ -1310,6 +1310,12 @@ export async function run(): Promise<void> {
   // decision is run for real; the wiring is asserted by shape (no DOM here, same limits as above).
   check("pending bubble: the transcript's own text retires it, re-wrapped whitespace included",
     pendingSettledBy("fix it\nnow", "fix it\nnow") && pendingSettledBy("fix it\nnow ", " fix  it now"));
+  check("pending bubble: one leading delivery header is ignored when the transcript repeats the sent text",
+    pendingSettledBy("fix it now", "[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 9] fix it now"));
+  check("pending bubble: a leading delivery header does not make a different transcript turn match",
+    !pendingSettledBy("fix it now", "[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 9] fix it later"));
+  check("pending bubble: a delivery header in the middle of transcript text stays significant",
+    !pendingSettledBy("fix it now", "prefix [fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 9] fix it now"));
   check("pending bubble: a DIFFERENT turn does not retire it — neither another text nor a prefix of it",
     !pendingSettledBy("fix it now", "fix it later") && !pendingSettledBy("fix it now", "fix it"));
   check("pending bubble: an empty or whitespace-only text never settles anything",

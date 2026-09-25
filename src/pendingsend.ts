@@ -5,7 +5,13 @@
 // the TUI may re-wrap it. Nothing else — a pending bubble that retires on a DIFFERENT turn would
 // hide a send that never arrived.
 const norm = (t: string): string => t.replace(/\s+/g, " ").trim();
+const DELIVERY_HEADER_PREFIX = "[fleet-zustellung · ";
+const withoutDeliveryHeader = (entry: string): string => {
+  if (!entry.startsWith(DELIVERY_HEADER_PREFIX)) return entry;
+  const end = entry.indexOf("] ", DELIVERY_HEADER_PREFIX.length);
+  return end < 0 ? entry : entry.slice(end + 2);
+};
 export function pendingSettledBy(pending: string, entry: string): boolean {
   const p = norm(pending);
-  return p !== "" && p === norm(entry);
+  return p !== "" && p === norm(withoutDeliveryHeader(entry));
 }

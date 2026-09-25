@@ -1812,6 +1812,7 @@ function variantRowsFor(group: Task, variants: readonly DispatchSpawn[]): Task[]
       id: randomBytes(4).toString("hex"), originId: group.originId ?? group.id, text: group.text,
       source: group.source, kind: "auftrag", kindAtCreate: "auftrag", repo: group.repo,
       ...(group.programId ? { programId: group.programId } : {}),
+      ...(group.base ? { base: group.base } : {}),
       ...(chosen ? { spawn: { ...v } } : {}),
       ...(group.review ? { review: group.review } : {}),
       status: group.status, created: group.created, slot: null, note: null,
@@ -5547,11 +5548,32 @@ async function sessionCommits(s: Slot): Promise<CommitRow[]> {
 // (repoBases) wins so the primary can be parked off the integration branch; otherwise fall
 // back to the primary's current HEAD, which is exactly the legacy behavior. Returns null on a
 // detached/unresolvable HEAD with no config (callers treat that as "can't resolve").
-async function integrationBranch(repo: string): Promise<string | null> {
+async function integrationBranch(repo: string, requested?: string): Promise<string | null> {
+  if (requested !== undefined) {
+    const base = requested.trim();
+    const valid = base ? await git(repo, "check-ref-format", "--branch", base) : { code: 1 };
+    if (valid.code !== 0) throw new Error(`invalid base branch: ${requested}`);
+    const exists = await git(repo, "rev-parse", "--verify", "--quiet", `refs/heads/${base}`);
+    if (exists.code !== 0 || !exists.out) throw new Error(`base branch does not exist: ${base}`);
+    return base;
+  }
   const cfg = repoBases[repo];
   if (cfg) return cfg;
   const br = await git(repo, "rev-parse", "--abbrev-ref", "HEAD");
   return br.code === 0 && br.out && br.out !== "HEAD" ? br.out : null;
+}
+async function taskBaseFromBody(body: Record<string, unknown>, repo: string): Promise<
+  { ok: true; base: string | undefined } | { ok: false; error: string }
+> {
+  if (body.base === undefined || body.base === null) return { ok: true, base: undefined };
+  if (typeof body.base !== "string" || !body.base.trim())
+    return { ok: false, error: "base must name an existing local branch" };
+  try {
+    const base = await integrationBranch(repo, body.base);
+    return base ? { ok: true, base } : { ok: false, error: `base branch does not exist: ${body.base.trim()}` };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "base branch could not be validated" };
+  }
 }
 async function laneBaseRef(s: Slot): Promise<string | null> {
   if (!s.worktree) return null;
@@ -6593,7 +6615,7 @@ async function listWorktrees(root: string): Promise<WtEntry[]> {
 // one that enforces it (removeWorktreeSafe). "empty" = provably safe to drop: clean tree
 // AND nothing unpushed — the destructive click becomes a no-op cleanup, not a judgment call.
 interface WorktreeRisk { dirtyFiles: string[]; unpushedCommits: CommitRow[]; shortstat: string | null; empty: boolean }
-async function worktreeRisk(repo: string, path: string): Promise<WorktreeRisk> {
+async function worktreeRisk(repo: string, path: string, preservedBy?: string): Promise<WorktreeRisk> {
   const st = await statusLines(path); // column-preserving — see statusLines
   const dirtyFiles = st.code === 0 ? st.lines.slice(0, 200) : [];
   let unpushedCommits: CommitRow[] = [];
@@ -6602,7 +6624,7 @@ async function worktreeRisk(repo: string, path: string): Promise<WorktreeRisk> {
   // branch. Measured against the integration branch — NOT the primary's HEAD, which may be
   // parked off it — so a lane landed via a ref-advance still reads as merged/safe-to-remove.
   // @{push} is unresolvable for a branch with no upstream — same fallback as before.
-  const intRef = (await integrationBranch(repo)) ?? "HEAD";
+  const intRef = preservedBy ?? (await integrationBranch(repo)) ?? "HEAD";
   const unpushed = await git(path, "log", "--no-color", "@{push}..", "--format=%h%x09%ct%x09%s");
   if (unpushed.code === 0) {
     unpushedCommits = parseCommitLog(unpushed.out);
@@ -6687,7 +6709,8 @@ async function freshenWorktreeBoard(b: WorktreeBoard): Promise<WorktreeBoard> {
 // "safe to drop" checks + removal, shared by land and orphan cleanup: git's OWN
 // dirty/unmerged refusal in `worktree remove` is the backstop — on top we refuse while
 // commits are neither pushed to any remote nor merged, so removal can never eat work
-async function removeWorktreeSafe(repo: string, path: string, branch: string, form: LaneForm = "worktree"): Promise<{ error: string; code: number } | null> {
+async function removeWorktreeSafe(repo: string, path: string, branch: string, form: LaneForm = "worktree",
+  preservedBy?: string): Promise<{ error: string; code: number } | null> {
   const st = await git(path, "status", "--porcelain");
   if (st.code !== 0) return { error: "git status failed — worktree gone?", code: 400 };
   // A clone's commits are invisible to the root until mirrored, and the "is this work preserved"
@@ -6697,7 +6720,7 @@ async function removeWorktreeSafe(repo: string, path: string, branch: string, fo
   // and this function's whole job is to be the thing that never eats work.
   const sync = form === "clone" ? await syncLaneRefs({ repo, branch, form }, path) : null;
   if (sync) return { error: `${sync.error} — lane kept, its state could not be verified`, code: 409 };
-  const risk = await worktreeRisk(repo, path);
+  const risk = await worktreeRisk(repo, path, preservedBy);
   if (risk.dirtyFiles.length) return { error: `worktree has uncommitted changes:\n${risk.dirtyFiles.join("\n").slice(0, 400)}`, code: 409 };
   if (risk.unpushedCommits.length)
     return { error: `unpushed commits:\n${risk.unpushedCommits.map((c) => `${c.hash} ${c.subject}`).join("\n").slice(0, 400)}`, code: 409 };
@@ -6891,7 +6914,7 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   // assemble the "landed" outcome while the worktree still exists (git reads need the tree);
   // emit only AFTER teardown succeeds, so a failed removeWorktreeSafe records no false land.
   const landed = await buildLaneOutcome(s, "landed", facts);
-  const fail = await removeWorktreeSafe(repo, path, branch, s.worktree.form ?? "worktree");
+  const fail = await removeWorktreeSafe(repo, path, branch, s.worktree.form ?? "worktree", s.worktree.base);
   if (fail) return fail;
   // the branch is landed and gone — a parked ⏸ must not outlive it. BOTH keyed views have to go,
   // because the park is RE-CREATED from the slot-keyed one: killSlot below calls parkMergeVerdict,
@@ -7393,6 +7416,40 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   saveState();
   void tickGit().catch(() => {}); // badge should appear on the next sessions poll
   return { cwd: s.cwd ?? wt.path, branch: wt.branch };
+}
+
+async function retargetLaneBase(s: Slot, requested: string): Promise<
+  { ok: true; base: string; baseSha: string; baseTip: string } | { ok: false; status: number; error: string }
+> {
+  if (!s.cwd || !s.worktree) return { ok: false, status: 400, error: "not a fleet-created worktree lane" };
+  const { repo, branch } = s.worktree;
+  let base: string;
+  try {
+    base = await integrationBranch(repo, requested) ?? "";
+  } catch (e) {
+    return { ok: false, status: 400, error: e instanceof Error ? e.message : "base branch could not be validated" };
+  }
+  if (!base) return { ok: false, status: 400, error: "base must name an existing local branch" };
+  if (base === branch) return { ok: false, status: 409, error: "the integration branch is the lane branch itself" };
+  const synced = await syncLaneRefs(s.worktree, s.cwd);
+  if (synced) return { ok: false, status: 409, error: `${synced.error} — base unchanged` };
+  const [tip, common] = await Promise.all([
+    git(repo, "rev-parse", `refs/heads/${base}`),
+    git(repo, "merge-base", branch, `refs/heads/${base}`),
+  ]);
+  if (tip.code !== 0 || !tip.out)
+    return { ok: false, status: 400, error: `base branch does not exist: ${base}` };
+  if (common.code !== 0 || !common.out)
+    return { ok: false, status: 409, error: `${branch} and ${base} have no common ancestor — base unchanged` };
+  s.worktree.base = base;
+  s.worktree.baseSha = common.out;
+  for (const t of tasks) if (t.slot === s.id && t.status === "sent") t.base = base;
+  mergeLast.delete(s.id);
+  mergeParked.delete(branch);
+  gitInfo.delete(s.id);
+  driftCache.delete(s.id);
+  await saveStateNow();
+  return { ok: true, base, baseSha: common.out, baseTip: tip.out };
 }
 
 interface TmuxTarget { paneId: string; windowId: string }
@@ -14092,9 +14149,9 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   // keeps its historic "text and kind only" opening as a stable prefix — the spawn triple is named
   // separately because it is optional and travels as a unit, not three independent fields.
   const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card", "variants", "files"];
-  const extra = Object.keys(body).filter((k) => !SELF_TASK_FIELDS.includes(k));
+  const extra = Object.keys(body).filter((k) => !SELF_TASK_FIELDS.includes(k)).filter((k) => k !== "base");
   if (extra.length)
-    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), an optional card, optional variants and an optional files PROPOSAL — [${extra.join(", ")}] is not read: repo comes from this session's checkout, and a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
+    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), an optional card, optional variants, an optional files PROPOSAL and optional base — [${extra.join(", ")}] is not read: repo comes from this session's checkout, and a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
   if (typeof body.text !== "string" || !body.text.trim())
     return json({ error: "text must be a non-empty string" }, 400);
   // (3) THE KIND, through the SAME four-value validator the owner and steward create routes use —
@@ -14150,6 +14207,10 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   const mainRepo = await repoKeyOf(s);
   if (!mainRepo)
     return json({ error: "this session's checkout is not a git repository — the row's target repo cannot be derived" }, 409);
+  if (body.base !== undefined && kind !== "auftrag")
+    return json({ error: `${kind} is advisory — only an auftrag row can name an integration base` }, 400);
+  const taskBase = await taskBaseFromBody(body, mainRepo);
+  if (!taskBase.ok) return json({ error: taskBase.error }, 400);
   const mainText = body.text.slice(0, MAX_TASK_TEXT).trim();
   const authorCard = body.card === undefined ? null : await authorCardFrom(body.card, mainText, mainRepo, program.id);
   if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
@@ -14209,6 +14270,7 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   const t: Task = {
     id, originId: id, text: mainText,
     source: "main", kind, kindAtCreate: kind, repo: mainRepo, programId: program.id,
+    ...(taskBase.base ? { base: taskBase.base } : {}),
     ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
     ...(authorCard?.ok ? { card: authorCard.card } : {}),
     // BESIDE the surface and never in it — no `files`, no `filesOrigin` on any row this door mints.
@@ -14819,6 +14881,7 @@ interface WaveDispatch {
   klasse: "docs" | "code";
   units: number;
 }
+interface LaneForkBase { ref: string; sha: string }
 // THE ONE BRIDGE from a queue row to a spawn choice: the row's own persisted, SET-time-validated
 // field, DEFAULT_SPAWN on absence. Every unattended reader goes through this accessor — never a
 // request value, never an env default (pinned in e2e/pins.ts).
@@ -15024,7 +15087,7 @@ function startPlanWaves(): { plan: StartPlanWave; land: LandWave }[] {
 // that predates the button therefore produces byte-identical behaviour. The followers ride into the
 // same lane on the same edge the head uses (`t.slot`), which is what makes one land close all n.
 async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify = false,
-  spawn: DispatchSpawn = DEFAULT_SPAWN, wave: WaveDispatch | null = null, variantBase: string | null = null):
+  spawn: DispatchSpawn = DEFAULT_SPAWN, wave: WaveDispatch | null = null, variantBase: LaneForkBase | null = null):
   Promise<{ ok: true; slot: number; branch: string; tail: Promise<void> } | { ok: false; error: string }> {
   // Last lock, shared by the tick and the attended route: only an auftrag may ever cross from a
   // queue row into a lane. Callers filter too so they can return the right status/reason, but a
@@ -15071,13 +15134,19 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // the parent BEFORE materialising the tree, exactly like openLaneInSlot.
     const dispatchRepo = await repoRootOf(next.repo ?? DISPATCH_REPO);
     const anchor = await decideLaneAnchor(dispatchRepo, undefined);
-    const wt = await createWorktree(dispatchRepo, "", dForm.form, variantBase ?? undefined);
+    if (wave?.followers.some((t) => t.base !== next.base))
+      throw new Error("one wave cannot mix task integration bases");
+    const base = variantBase?.ref ?? await integrationBranch(dispatchRepo, next.base);
+    const baseTip = variantBase?.sha ?? (base
+      ? (await git(dispatchRepo, "rev-parse", `refs/heads/${base}`)).out
+      : undefined);
+    if (base && !baseTip) throw new Error(`base branch does not exist at dispatch: ${base}`);
+    const wt = await createWorktree(dispatchRepo, "", dForm.form, baseTip);
     // `base` from the same source and with the same omission as openLaneInSlot: a dispatched lane
     // that left it out sent every `worktree.base` reader (laneBaseRef, the plan CLI's lane read) to
     // its fallback in the normal case — all four open lanes on the live fleet.json, 2026-09-22.
     // Unresolvable → undefined → no key, so that record stays byte-identical to before.
-    const base = await integrationBranch(wt.repo);
-    const baseSha = await laneForkSha(wt.path, base);
+    const baseSha = base ? await laneForkSha(wt.path, base) ?? baseTip : undefined;
     // same synchronous reserve as openLaneInSlot: the tick can open a lane while an owner click
     // opens another into the same band
     const { band: letterBand, letter } = reserveLaneLetter(anchor);
@@ -16966,9 +17035,21 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
     const pre = await canDeliver(free[0], { now: Date.now(), alive: false, ...(quietWaived ? { quietHours: false } : {}) });
     if (!pre.ok) return { started: false, why: pre.gate, ...(pre.gate === "quiet-hours" ? {} : { stop: true as const }) };
   }
-  let base: string | null = null;
-  try { base = await integrationHead(await repoRootOf(repo)); } catch { base = null; }
-  if (!base) return { started: false, why: "could not read the integration head — no base to fork the group from" };
+  const requestedBase = rows[0]?.base;
+  if (rows.some((r) => r.base !== requestedBase))
+    return { started: false, why: "variant group rows name different integration bases — nothing started" };
+  let forkBase: LaneForkBase | null = null;
+  try {
+    const root = await repoRootOf(repo);
+    const ref = await integrationBranch(root, requestedBase);
+    if (ref) {
+      const tip = await git(root, "rev-parse", `refs/heads/${ref}`);
+      if (tip.code === 0 && tip.out) forkBase = { ref, sha: tip.out };
+    }
+  } catch { forkBase = null; }
+  if (!forkBase) return { started: false, why: requestedBase
+    ? `base branch does not exist at dispatch: ${requestedBase}`
+    : "could not read the integration head — no base to fork the group from" };
   // every await above may have moved the group or taken a slot: re-read before the first mutation
   if (rows.some((r) => !tasks.includes(r) || dispatchingTasks.has(r.id) || (r.status !== "pending" && r.status !== "queued")
       || (!ownerAct && !releaseVerdictNow(r).released)) || free.some((s) => s.cwd || laneSpawn.has(s.id)))
@@ -16991,9 +17072,9 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
     for (const [i, r] of rows.entries()) {
       const d = VARIANT_SPAWN_FAIL_LATCH === String(r.variantIndex)
         ? { ok: false as const, error: `forced spawn failure (FLEET_TEST_VARIANT_SPAWN_FAIL_LATCH=${VARIANT_SPAWN_FAIL_LATCH})` }
-        : await dispatchTask(r, free[i], ownerAct, false, taskSpawnOf(r), null, base);
+        : await dispatchTask(r, free[i], ownerAct, false, taskSpawnOf(r), null, forkBase);
       if (!d.ok) { partial = `variant ${r.variantIndex}/${n} failed to start: ${d.error}`; break; }
-      r.note = `${r.note ?? ""} · variant ${r.variantIndex}/${n} of ${group.id} @${base.slice(0, 8)}`.slice(0, 300);
+      r.note = `${r.note ?? ""} · variant ${r.variantIndex}/${n} of ${group.id} @${forkBase.sha.slice(0, 8)}`.slice(0, 300);
       started.push({ row: r, slot: d.slot, tail: d.tail });
     }
   } finally {
@@ -17025,9 +17106,9 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
     saveState();
     return { started: false, why: partial };
   }
-  group.note = `${n} variants running on slots ${started.map((x) => x.slot).join(", ")} @${base.slice(0, 8)}`;
+  group.note = `${n} variants running on slots ${started.map((x) => x.slot).join(", ")} @${forkBase.sha.slice(0, 8)}`;
   audit("variant_group_start", started[0].slot,
-    `${group.id} n=${n} started=${started.length} base=${base.slice(0, 12)} slots=${started.map((x) => x.slot).join(",")} by=${ownerAct ? "owner" : "tick"}`);
+    `${group.id} n=${n} started=${started.length} base=${forkBase.ref}@${forkBase.sha.slice(0, 12)} slots=${started.map((x) => x.slot).join(",")} by=${ownerAct ? "owner" : "tick"}`);
   saveState();
   return { started: true, slots: started.map((x) => x.slot), tails: started.map((x) => x.tail), partial: null };
 }
@@ -34663,6 +34744,7 @@ if (existsSync(STATE_FILE)) {
           kindAtCreate: isTaskKind(t.kindAtCreate) ? t.kindAtCreate : undefined,
           kindChanges: loadTaskKindChanges((t as { kindChanges?: unknown }).kindChanges),
           repo: typeof t.repo === "string" ? t.repo : null,
+          base: typeof t.base === "string" && t.base ? t.base : undefined,
           // the persisted agent choice comes back through loadTaskSpawn: registered harness only,
           // malformed degrades to null/ABSENT — never to a pass.
           spawn: loadTaskSpawn((t as { spawn?: unknown }).spawn),
@@ -41170,6 +41252,28 @@ Bun.serve<WSData>({
       return json({ ok: true, base, was: behind, behind: m1 ? Number(m1[1]) : 0, ahead: m1 ? Number(m1[2]) : 0,
         head, from: before.slice(0, 7) });
     }
+    // Retarget an already-open lane without changing the repository-wide integration base. The
+    // route changes metadata only: the merge job remains the one place that rebases and lands.
+    const laneBaseMatch = /^\/api\/slots\/(\d+)\/base$/.exec(url.pathname);
+    if (laneBaseMatch && req.method === "POST") {
+      const s = slotFrom(laneBaseMatch[1]);
+      if (!s || !s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
+      if (mergeInflight.has(s.id) || mergeStart.has(s.id))
+        return json({ error: "a merge/land or base change is already running for this lane" }, 409);
+      mergeStart.add(s.id);
+      try {
+        const body = await readJson(req);
+        if (!body || typeof body.base !== "string" || !body.base.trim())
+          return json({ error: "base must name an existing local branch" }, 400);
+        const extra = Object.keys(body).filter((k) => k !== "base");
+        if (extra.length) return json({ error: `this door reads base only — [${extra.join(", ")}] is not read` }, 400);
+        const changed = await retargetLaneBase(s, body.base);
+        return changed.ok ? json(changed) : json({ error: changed.error }, changed.status);
+      } finally {
+        mergeStart.delete(s.id);
+      }
+    }
+
     // ⏫ agent merge & land. POST: deterministic guards → start the background job (the
     // fuzzy middle: rebase + conflict resolution in the lane) → deterministic re-verify,
     // server-side ff-merge and landLane inside the job. GET: job state for the board's
@@ -41277,8 +41381,8 @@ Bun.serve<WSData>({
         // that (idleMs 0): a pure ff of an already-reviewed resolution must not bounce off trailing pane output.
         const landGate = await canDeliver(s, { now: Date.now(), killSwitch: false, harness: false, alive: false, quietHours: false, idleMs: body?.confirm ? 0 : MERGE_IDLE_MS });
         if (!landGate.ok) return json({ status: "blocked", detail: "the session is actively working right now — let it settle for a moment, then land" });
-        const main = await integrationBranch(repo);
-        if (!main) return json({ error: "cannot resolve the repo's main branch" }, 400);
+        const main = await laneBaseRef(s);
+        if (!main) return json({ error: "cannot resolve this lane's integration branch" }, 400);
         if (main === branch) return json({ error: "the integration branch is the lane branch itself" }, 409);
         // the collision guard only matters when the integration branch is checked out somewhere: an ff-merge
         // THERE rewrites files on disk. Checked out nowhere (primary parked off it), landing advances the
@@ -41832,16 +41936,24 @@ Bun.serve<WSData>({
         if (!existsSync(dir) || !statSync(dir).isDirectory()) return json({ error: `repo is not a directory: ${dir}` }, 400);
         taskRepo = dir;
       }
+      const ownerKind: TaskKind = isTaskKind(body.kind) ? body.kind : "auftrag";
+      if (body.base !== undefined && ownerKind !== "auftrag")
+        return json({ error: `${ownerKind} is advisory — only an auftrag row can name an integration base` }, 400);
+      const targetRepo = taskRepo ?? (DISPATCH_REPO || null);
+      if (body.base !== undefined && !targetRepo)
+        return json({ error: "base needs a target repo — set repo on this task or configure FLEET_DISPATCH_REPO" }, 400);
+      const taskBase = targetRepo ? await taskBaseFromBody(body, targetRepo) : { ok: true as const, base: undefined };
+      if (!taskBase.ok) return json({ error: taskBase.error }, 400);
       const ownerText = body.text.slice(0, MAX_TASK_TEXT).trim();
       // the author's card (authorCardFrom): validated against the repo the row will dispatch into
       const authorCard = body.card === undefined ? null
         : await authorCardFrom(body.card, ownerText, taskRepo ?? (DISPATCH_REPO || null), taskProgramId);
       if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
       const id = randomBytes(4).toString("hex");
-      const ownerKind: TaskKind = isTaskKind(body.kind) ? body.kind : "auftrag";
       const t: Task = {
         id, originId: id, text: ownerText,
         source: "owner", kind: ownerKind, kindAtCreate: ownerKind, repo: taskRepo,
+        ...(taskBase.base ? { base: taskBase.base } : {}),
         ...(taskProgramId ? { programId: taskProgramId } : {}),
         ...(authorCard?.ok ? { card: authorCard.card } : {}),
         ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
@@ -42126,6 +42238,14 @@ Bun.serve<WSData>({
       if (t.status !== "pending" && t.status !== "queued")
         return json({ error: `task is ${t.status} — only a pending or queued task can be started` }, 409);
       if (dispatchingTasks.has(t.id)) return json({ error: "task is already being dispatched" }, 409);
+      if (t.base) {
+        try {
+          const dispatchRepo = await repoRootOf(t.repo ?? DISPATCH_REPO);
+          await integrationBranch(dispatchRepo, t.base);
+        } catch (e) {
+          return json({ error: e instanceof Error ? e.message : "base branch could not be validated" }, 400);
+        }
+      }
       // `clarify`: same spawn, different founding prompt — settle the done-criterion with the
       // owner first (clarify-prompt.ts). Only reachable from this attended route.
       const dBody = await readJson(req);

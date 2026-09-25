@@ -1321,6 +1321,9 @@ interface Task {
   repo: string | null; // the task's TARGET repo — where its lane spawns. OWNER-only: intake and
   // steward can never choose where external text materializes as a working session. null =
   // the dispatcher default (FLEET_DISPATCH_REPO), which is also every pre-field row's meaning.
+  base?: string; // optional per-task integration branch. Absent preserves the repo-wide/default
+  // integrationBranch reading; present is validated as an existing local branch at filing and
+  // again at dispatch, then copied into LaneRef.base so every land reader follows the same target.
   spawn?: DispatchSpawn; // the row's persisted agent choice — WHICH harness/model/effort its lane
   // runs, in exactly the shape the attended ▸ start button already sends. Validated at SET time
   // (taskSpawnFromBody: the same three adapter validators as the attended route, harness first),

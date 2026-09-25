@@ -3,7 +3,7 @@
 // verify gate, and the orphan reattach / remove / discard flows.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut } from "./harness";
+import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { authorFallbackGates, exists, fakeClaudeInPane, serverLogMark, setMergeMode, settleForAuthorMerge,
   settleForMerge, waitMerge } from "./lane-helpers";
@@ -2082,6 +2082,120 @@ export async function run(lc: LaneCtx): Promise<void> {
     }
     for (const ln of [...plantedTo, lnHeir]) await dropLane(ln);
     await restartSrv(); // back to the suite's own cadence for everything after this block
+  }
+
+  // Per-task integration base plus the owner repair for lanes that were already open when the
+  // target changed. Both land through the ordinary merge route; neither changes repoBases.
+  {
+    await restartSrv({ FLEET_POSTLAND_AUDIT_CMD: "printf 'ALL PASS\\n'", FLEET_AUDIT_HELPER_GRACE_MS: "0" });
+    spawnSync("git", ["-C", REPO, "branch", "-D", "overhaul"]);
+    const mainBefore = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
+    spawnSync("git", ["-C", REPO, "branch", "overhaul", mainBefore]);
+    const missing = await post("/api/tasks", {
+      text: "per-task base missing branch refusal", repo: REPO, queue: false, base: "overhaul-missing",
+    });
+    const missingBody = (await missing.json()) as { error?: string };
+    check("integration base: filing refuses a missing branch with a loud 4xx and no main fallback",
+      missing.status === 400 && (missingBody.error ?? "").includes("base branch does not exist"),
+      `${missing.status} ${JSON.stringify(missingBody)}`);
+    const staleFiledR = await post("/api/tasks", {
+      text: "per-task base removed before dispatch", repo: REPO, queue: false, base: "overhaul",
+    });
+    const staleFiled = (await staleFiledR.json()) as { task?: { id?: string }; error?: string };
+    spawnSync("git", ["-C", REPO, "branch", "-D", "overhaul"]);
+    const staleDispatch = staleFiled.task?.id ? await post(`/api/tasks/${staleFiled.task.id}/dispatch`, {}) : null;
+    const staleBody = staleDispatch ? (await staleDispatch.json()) as { error?: string } : null;
+    check("integration base: dispatch refuses a task whose filed branch disappeared with a loud 4xx",
+      staleFiledR.ok && staleDispatch?.status === 400 && (staleBody?.error ?? "").includes("base branch does not exist"),
+      JSON.stringify({ filed: staleFiledR.status, dispatch: staleDispatch?.status, body: staleBody }));
+    if (staleFiled.task?.id) await post(`/api/tasks/${staleFiled.task.id}/delete`, {});
+    spawnSync("git", ["-C", REPO, "branch", "overhaul", mainBefore]);
+
+    const filedR = await post("/api/tasks", {
+      text: "per-task overhaul integration base", repo: REPO, queue: false, base: "overhaul",
+    });
+    const filed = (await filedR.json()) as { task?: { id?: string; base?: string }; error?: string };
+    const dispatchR = filed.task?.id ? await post(`/api/tasks/${filed.task.id}/dispatch`, {}) : null;
+    const dispatched = dispatchR ? (await dispatchR.json()) as { slot?: number; branch?: string; error?: string } : null;
+    const sessions = (await (await get("/api/sessions")).json()) as {
+      slots: { id: number; cwd: string | null; worktree?: { base?: string; baseSha?: string } }[];
+    };
+    const taskLane = sessions.slots.find((s) => s.id === dispatched?.slot);
+    const taskFork = taskLane?.cwd
+      ? spawnSync("git", ["-C", taskLane.cwd, "rev-parse", "HEAD"]).stdout.toString().trim() : "";
+    const overhaulBefore = spawnSync("git", ["-C", REPO, "rev-parse", "overhaul"]).stdout.toString().trim();
+    check("integration base: a task carries overhaul into LaneRef and forks at its tip",
+      filedR.ok && filed.task?.base === "overhaul" && dispatchR?.ok === true
+        && taskLane?.worktree?.base === "overhaul" && taskFork === overhaulBefore,
+      JSON.stringify({ filed, dispatched, lane: taskLane?.worktree, taskFork, overhaulBefore }));
+    let taskLand: { merge: number; gone: boolean; laneTip: string; overhaulAfter: string; mainAfter: string } | null = null;
+    if (taskLane?.cwd && dispatched?.slot) {
+      await Bun.write(`${taskLane.cwd}/overhaul-task.txt`, "task base overhaul\n");
+      spawnSync("git", ["-C", taskLane.cwd, "add", "overhaul-task.txt"]);
+      spawnSync("git", ["-C", taskLane.cwd, "commit", "-qm", "task lands on overhaul"]);
+      const laneTip = spawnSync("git", ["-C", taskLane.cwd, "rev-parse", "HEAD"]).stdout.toString().trim();
+      await settleForMerge(dispatched.slot);
+      const mergeR = await post(`/api/slots/${dispatched.slot}/merge`, {});
+      const verdict = await waitMerge(dispatched.slot);
+      const overhaulAfter = spawnSync("git", ["-C", REPO, "rev-parse", "overhaul"]).stdout.toString().trim();
+      const mainAfter = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
+      taskLand = { merge: mergeR.status, gone: verdict.gone, laneTip, overhaulAfter, mainAfter };
+    }
+
+    const retargetMainFork = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
+    const openR = await post("/api/lanes", { repo: REPO });
+    const open = (await openR.json()) as { slot?: number; cwd?: string; branch?: string; error?: string };
+    const openFork = open.cwd
+      ? spawnSync("git", ["-C", open.cwd, "rev-parse", "HEAD"]).stdout.toString().trim() : "";
+    if (open.cwd) {
+      await Bun.write(`${open.cwd}/retargeted-lane.txt`, "opened on main, lands on overhaul\n");
+      spawnSync("git", ["-C", open.cwd, "add", "retargeted-lane.txt"]);
+      spawnSync("git", ["-C", open.cwd, "commit", "-qm", "retarget open lane to overhaul"]);
+    }
+    const retargetR = open.slot ? await post(`/api/slots/${open.slot}/base`, { base: "overhaul" }) : null;
+    const retarget = retargetR ? (await retargetR.json()) as
+      { ok?: boolean; base?: string; baseSha?: string; baseTip?: string; error?: string } : null;
+    const common = open.branch
+      ? spawnSync("git", ["-C", REPO, "merge-base", open.branch, "overhaul"]).stdout.toString().trim() : "";
+    check("integration base: an open main-forked lane can be retargeted with its real common fork anchor",
+      openR.ok && openFork === retargetMainFork && retargetR?.ok === true && retarget?.base === "overhaul"
+        && retarget.baseSha === common && retarget.baseTip === spawnSync("git", ["-C", REPO, "rev-parse", "overhaul"]).stdout.toString().trim(),
+      JSON.stringify({ open, openFork, retargetMainFork, retarget, common }));
+    let retargetLand: { merge: number; gone: boolean; finalTip: string; mainAfter: string;
+      auditRow: { main?: string; mainSha?: string; covers?: { branch?: string; mainAfter?: string }[] } | null } | null = null;
+    if (open.slot && open.cwd) {
+      await settleForMerge(open.slot);
+      const mergeR = await post(`/api/slots/${open.slot}/merge`, {});
+      const verdict = await waitMerge(open.slot);
+      const finalTip = spawnSync("git", ["-C", REPO, "rev-parse", "overhaul"]).stdout.toString().trim();
+      const mainAfter = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
+      let auditRow: { main?: string; mainSha?: string;
+        covers?: { branch?: string; mainAfter?: string }[] } | null = null;
+      try {
+        auditRow = await until(async () => {
+          const body = (await (await get("/api/post-land-audits?limit=20")).json()) as {
+            audits?: { main?: string; mainSha?: string;
+              covers?: { branch?: string; mainAfter?: string }[] }[];
+          };
+          return body.audits?.find((r) => r.main === "overhaul" && r.mainSha === finalTip) ?? null;
+        }, { timeoutMs: 3_000, what: "post-land audit row for the overhaul tip" });
+      } catch { /* the assertion below reports the missing audit as this check's own failure */ }
+      retargetLand = { merge: mergeR.status, gone: verdict.gone, finalTip, mainAfter, auditRow };
+    }
+    check("integration base: task and retargeted lanes land on overhaul; main stays byte-identical and audit names the tip",
+      taskLand?.merge === 200 && taskLand.gone && taskLand.overhaulAfter === taskLand.laneTip
+        && taskLand.mainAfter === mainBefore && retargetLand?.merge === 200 && retargetLand.gone
+        && retargetLand.finalTip.length > 0 && retargetLand.mainAfter === mainBefore
+        && retargetLand.auditRow?.main === "overhaul" && retargetLand.auditRow.mainSha === retargetLand.finalTip
+        && retargetLand.auditRow.covers?.some((cover) =>
+          cover.branch === open.branch && cover.mainAfter === retargetLand?.finalTip) === true,
+      JSON.stringify({ taskLand, retargetLand, mainBefore }));
+    spawnSync("git", ["-C", REPO, "branch", "-D", "overhaul"]);
+    await stopSrv();
+    rmSync(`${ROOT}/post-land-audits.jsonl`, { force: true });
+    rmSync(`${ROOT}/post-land-audits.jsonl.1`, { force: true });
+    rmSync(`${ROOT}/post-land-audit-queue.json`, { force: true });
+    await restartSrv();
   }
 
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,

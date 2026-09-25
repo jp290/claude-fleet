@@ -32325,15 +32325,15 @@ async function deliverFoundingPacks(s: Slot, founding: FoundingPlan,
   const deliveredBrief = "[fleet] Diese Gruendung traegt die beim Spawn gewaehlten Kontext-Packs — Owner-Wahl,"
     + " beratende Anker, kein Quelltext:\n" + anchorBlock;
   if (!stillCurrent()) return { packsDelivered: false, reason: "the slot changed before the packs were sent" };
-  // MUTATION PROBE (reverted after the run): the delivery commented out
-  // try {
-  //   await sendText(s, deliveredBrief, true, { path: "founding" });
-  // } catch (e) {
-  //   logPrompt(s, deliveredBrief, "auto", Date.now(), undefined, "uncertain");
-  //   return { packsDelivered: false,
-  //     reason: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` };
-  // }
-  return { packsDelivered: false, reason: "mutation probe: the send is commented out" };
+  try {
+    await sendText(s, deliveredBrief, true, { path: "founding" });
+  } catch (e) {
+    // Neither delivered nor failed is an OBSERVED fact once tmux has thrown — bindSupervisor's
+    // rule, and the journal line is mandatory for exactly the same reason.
+    logPrompt(s, deliveredBrief, "auto", Date.now(), undefined, "uncertain");
+    return { packsDelivered: false,
+      reason: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` };
+  }
   const at = Date.now();
   const selected = contextReceiptSelections(chosen);
   const omitted = founding.plan.omitted.map((entry) => ({ ...entry }));

@@ -323,7 +323,7 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
 
 // One receipt as the founding seam writes it; only the fields the checks below read are typed.
 interface FoundingReceiptRow {
-  id: string; at: number; repo: string; head: string; branch: string;
+  id: string; hash: string; at: number; repo: string; head: string; branch: string;
   slot: number; harness: string | null; mode: string; triggers: string[];
   selected: { id: string; anchors: unknown; sourceHash?: string }[];
   omitted: { id: string; why: string }[];
@@ -332,7 +332,8 @@ interface FoundingReceiptRow {
 }
 
 // server-side receipt hash, verbatim — the join is only worth asserting if the test recomputes it
-// the way the ledger's writer does (the supervisor family's promptHash, over this seam's brief).
+// the way the ledger's writer does: `hash` is the planFacts chain over the anchor block, and
+// `briefHash` is the delivered TEXT, truncated to 12 hex exactly as server.ts#briefHashOf truncates.
 const foundingReceiptHash = (prompt: string, receipt: FoundingReceiptRow): string => {
   const anchorAt = prompt.indexOf("\n\nContextPlan v2 anchors");
   const anchorBlock = anchorAt >= 0 ? prompt.slice(anchorAt) : "";
@@ -342,6 +343,7 @@ const foundingReceiptHash = (prompt: string, receipt: FoundingReceiptRow): strin
       selected: receipt.selected, omitted: receipt.omitted },
   })).digest("hex");
 };
+const foundingBriefHash = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 12);
 
 async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
   // The runner environment is the one pair of variables both halves of the isolated suite share;
@@ -375,7 +377,7 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
     packEntry({ id: "broken-pointer", scope: "repo-contract",
       sources: [{ path: "docs/absent.md", anchor: "## Never tracked" }] }),
   ], null, 2));
-  gitIn("init", "-q", "-b", "main");
+  gitIn("init", "-q", "-b", "b2a-founding-packs");
   gitIn("config", "user.email", "t@t");
   gitIn("config", "user.name", "t");
   gitIn("config", "commit.gpgsign", "false");
@@ -502,17 +504,20 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
       const founding = await post(`/api/slots/${openSlot}/open`, { cwd: fixture, packs: ["promise-anchor"] });
       const foundingBody = await founding.json() as { ok?: boolean; packsDelivered?: boolean; reason?: string };
       const afterOpen = await receipts();
+      const rowsBefore = beforeOpen.receipts.filter((row) => row.slot === openSlot);
       const rows = afterOpen.receipts.filter((row) => row.slot === openSlot);
+      const row = rows.at(-1) ?? null;
       check("founding packs: /open with a chosen pack answers packsDelivered and appends exactly one receipt line naming it",
         founding.ok && foundingBody.packsDelivered === true && afterOpen.total === beforeOpen.total + 1
-          && rows.length === 1 && rows[0]!.selected.length === 1 && rows[0]!.selected[0]!.id === "promise-anchor"
-          && /^[a-f0-9]{64}$/.test(rows[0]!.selected[0]!.sourceHash ?? "") && rows[0]!.briefSource === "founding",
+          && rows.length === rowsBefore.length + 1 && !!row && row.selected.length === 1
+          && row.selected[0]!.id === "promise-anchor"
+          && /^[a-f0-9]{64}$/.test(row.selected[0]!.sourceHash ?? "") && row.briefSource === "founding",
         `${founding.status} ${JSON.stringify(foundingBody)} rows=${JSON.stringify(rows)}`);
       const historyBody = await (await get(`/api/slots/${openSlot}/history`)).json() as { history: { text: string }[] };
       const delivered = historyBody.history.at(-1)?.text ?? "";
-      const row = rows[0];
       check("founding packs: the receipt joins the delivered founding text by hash and byte count",
-        !!row && row.briefHash === foundingReceiptHash(delivered, row)
+        !!row && row.briefHash === foundingBriefHash(delivered)
+          && row.hash === foundingReceiptHash(delivered, row)
           && row.deliveredBytes === new TextEncoder().encode(delivered).byteLength
           && row.repo === realpathSync(fixture) && row.renderer === "v2",
         JSON.stringify(row ?? null));
@@ -533,10 +538,11 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
         opened.push(bareSlot);
         const bare = await post(`/api/slots/${bareSlot}/open`, { cwd: fixture });
         const afterBare = await receipts();
+        const bareRowsBefore = beforeBare.receipts.filter((row) => row.slot === bareSlot).length;
+        const bareRowsAfter = afterBare.receipts.filter((row) => row.slot === bareSlot).length;
         check("founding packs: an open without packs stays unreceipted",
-          bare.ok && afterBare.total === beforeBare.total
-            && afterBare.receipts.every((row) => row.slot !== bareSlot),
-          `${bare.status} total=${beforeBare.total}->${afterBare.total}`);
+          bare.ok && bareRowsAfter === bareRowsBefore && afterBare.total === beforeBare.total,
+          `${bare.status} rows=${bareRowsBefore}->${bareRowsAfter} total=${beforeBare.total}->${afterBare.total}`);
         await kill(bareSlot);
         opened.splice(opened.indexOf(bareSlot), 1);
       }
@@ -550,10 +556,12 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
         const empty = await post(`/api/slots/${emptySlot}/open`, { cwd: fixture, packs: [] });
         const emptyBody = await empty.json() as { ok?: boolean; packsDelivered?: boolean };
         const afterEmpty = await receipts();
+        const emptyRowsBefore = beforeEmpty.receipts.filter((row) => row.slot === emptySlot).length;
+        const emptyRowsAfter = afterEmpty.receipts.filter((row) => row.slot === emptySlot).length;
         check("founding packs: an empty packs list is a kept no-pack promise, not a delivery",
-          empty.ok && emptyBody.packsDelivered === true && afterEmpty.total === beforeEmpty.total
-            && afterEmpty.receipts.every((row) => row.slot !== emptySlot),
-          `${empty.status} ${JSON.stringify(emptyBody)} total=${beforeEmpty.total}->${afterEmpty.total}`);
+          empty.ok && emptyBody.packsDelivered === true && emptyRowsAfter === emptyRowsBefore
+            && afterEmpty.total === beforeEmpty.total,
+          `${empty.status} ${JSON.stringify(emptyBody)} rows=${emptyRowsBefore}->${emptyRowsAfter} total=${beforeEmpty.total}->${afterEmpty.total}`);
         await kill(emptySlot);
         opened.splice(opened.indexOf(emptySlot), 1);
       }
@@ -574,7 +582,10 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
       `${lane.status} ${JSON.stringify(laneBody)} row=${JSON.stringify(laneRow)}`);
     if (laneSlot !== null) {
       // the same place, refounded through the SECOND lane door — its slot choice is already proven
-      // lane-eligible, so this founding needs no slot logic of its own
+      // lane-eligible, so this founding needs no slot logic of its own. The lane must LEAVE first:
+      // open-worktree seats a free slot, and the founding above is its occupant until then.
+      await kill(laneSlot);
+      opened.splice(opened.indexOf(laneSlot), 1);
       const beforeWt = await receipts();
       const wt = await post(`/api/slots/${laneSlot}/open-worktree`, { repo: fixture, packs: ["promise-anchor"] });
       const wtBody = await wt.json() as { ok?: boolean; branch?: string; packsDelivered?: boolean; reason?: string };

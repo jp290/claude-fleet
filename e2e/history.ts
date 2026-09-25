@@ -1,6 +1,6 @@
 // Prompt history per slot, the global append-only prompt log and the /api/prompts directory
 // served from it, plus the transcript and session-brief reads.
-import { appendFileSync, existsSync, statSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, statSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { check, get, post, plogPath, plogRead, ROOT, REPO, restartSrv, until, UntilTimeout } from "./harness";
@@ -96,6 +96,29 @@ export async function run(): Promise<void> {
   check("prompt log ignores raw WS typing", !plog1.some((e) => e.text.includes("hello-fleet-typing")));
   check("prompt log entries carry ts + cwd", plog1.every((e) => typeof e.ts === "number" && typeof e.cwd === "string"));
   check("prompt log file is 600", (statSync(plogPath).mode & 0o777) === 0o600, (statSync(plogPath).mode & 0o777).toString(8));
+  {
+    const fixtureDir = mkdtempSync(`${tmpdir()}/fleet-e2e-plog-`);
+    const fixture = `${fixtureDir}/prompts.jsonl`;
+    const row = (ts: number, text: string) => JSON.stringify({ ts, slot: 1, cwd: null, label: null, source: "owner", text });
+    let tailRows: Awaited<ReturnType<typeof plogRead>> = [];
+    let tailError = "";
+    let middleThrew = false;
+    try {
+      writeFileSync(fixture, `${row(1, "first")}\n${row(2, "second")}\n{"ts":3,"text":"unterminated`);
+      try { tailRows = await plogRead(fixture); }
+      catch (e) { tailError = e instanceof Error ? e.message : String(e); }
+      writeFileSync(fixture, `${row(1, "first")}\n{"ts":\n${row(2, "second")}\n`);
+      try { await plogRead(fixture); }
+      catch { middleThrew = true; }
+    } finally {
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
+    const tailOk = tailError === "" && tailRows.map((entry) => entry.text).join(",") === "first,second";
+    check("prompt log reader ignores only a torn final line",
+      tailOk && middleThrew,
+      !tailOk ? `torn tail: ${tailError || tailRows.map((entry) => entry.text).join(",")}`
+        : !middleThrew ? "middle corruption did not throw" : "");
+  }
 
   // --- /api/prompts: the global prompt directory served from that log, newest first ---
   const pd = (await (await get("/api/prompts")).json()) as { prompts: { ts: number; slot: number; text: string }[]; total: number };

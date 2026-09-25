@@ -6784,13 +6784,18 @@ function labelled(text: string, control: HTMLElement): HTMLElement {
 
 // the options every spawn from this pane carries. Absent fields mean "the default", which is
 // exactly what the server reads them as.
-function spawnBody(): { harness?: string; model?: string; effort?: string; container?: string; containerContext?: string } {
+function spawnBody(): { harness?: string; model?: string; effort?: string; container?: string; containerContext?: string; packs?: string[] } {
   return {
     ...(spawnHarness ? { harness: spawnHarness } : {}),
     ...(spawnModel ? { model: spawnModel } : {}),
     ...(spawnEffort ? { effort: spawnEffort } : {}),
     ...(spawnContainer ? { container: spawnContainer } : {}),
     ...(spawnContainerContext ? { containerContext: spawnContainerContext } : {}),
+    // the founding packs (B2b), only ever as an explicit choice: with no switch on the body is
+    // byte-identical to the founding this window made before the packs existed — absent is the
+    // door's "today's founding", and the switches live only in an open founding window
+    // (closeFounding clears them), so the tree picker's spawn can never inherit a choice
+    ...(gfPacks.size ? { packs: [...gfPacks] } : {}),
   };
 }
 
@@ -7291,16 +7296,23 @@ async function startSession(path: string, label?: string, onError?: (msg: string
   // the label is the ROLE at founding time: the server keys its one role card and the steward
   // token export off exactly this string, so the founding window sends it here and nowhere else
   const res = await post(`/api/slots/${slot}/open`, { cwd: path, ...(label ? { label } : {}), ...spawnBody() });
+  const j = (await res.json().catch(() => ({}))) as { error?: string; packsDelivered?: boolean; reason?: string };
   if (!res.ok) {
     // the options row can now make this fail for a reason the path field cannot express (an
     // unknown harness, a model the chosen harness rejects) — say which, instead of only
     // flashing the path box red as if the folder were at fault. The founding window has no
     // path box: there the refusal is said where the click was, not in a dialog above it.
-    const err = (await res.json().catch(() => ({}))) as { error?: string };
     pkPathIn?.classList.add("bad");
     setTimeout(() => pkPathIn?.classList.remove("bad"), 1200);
-    if (onError) onError(err.error ?? `the server answered ${res.status}`);
-    else if (err.error) alert(`Session failed: ${err.error}`);
+    if (onError) onError(j.error ?? `the server answered ${res.status}`);
+    else if (j.error) alert(`Session failed: ${j.error}`);
+    return;
+  }
+  if (j.packsDelivered === false) {
+    // B2b: the founding stands, the packs did not cross — said where the click was (gfError),
+    // and the window stays open: closing it would read the delivery as having succeeded
+    if (onError) onError(j.reason ?? "the packs were not delivered");
+    else alert(`Session opened, but the packs were not delivered: ${j.reason ?? "unknown reason"}`);
     return;
   }
   closeFounding();
@@ -7322,12 +7334,19 @@ async function startWorktree(repo: string, onError?: (msg: string) => void) {
   // branch names are plumbing, not something to type: the server auto-names the lane
   // (fleet/<stamp>-<rand>) and the slot label is what you actually rename
   const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "", ...spawnBody() });
+  const j = (await res.json().catch(() => ({}))) as { error?: string; packsDelivered?: boolean; reason?: string };
   if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { error?: string };
     pkPathIn?.classList.add("bad");
     setTimeout(() => pkPathIn?.classList.remove("bad"), 1200);
-    if (onError) onError(err.error ?? `the server answered ${res.status}`);
-    else if (err.error) alert(`Lane failed: ${err.error}`);
+    if (onError) onError(j.error ?? `the server answered ${res.status}`);
+    else if (j.error) alert(`Lane failed: ${j.error}`);
+    return;
+  }
+  if (j.packsDelivered === false) {
+    // B2b: the lane stands, the packs did not cross — said where the click was (gfError),
+    // and the window stays open: closing it would read the delivery as having succeeded
+    if (onError) onError(j.reason ?? "the packs were not delivered");
+    else alert(`Lane opened, but the packs were not delivered: ${j.reason ?? "unknown reason"}`);
     return;
   }
   closeFounding();
@@ -7371,6 +7390,19 @@ let gfMoreOpen = false;                 // the "Mehr" reiter (G3.2), closed by d
 let gfRestoreFocus: HTMLElement | null | undefined;
 let gfTeardown: (() => void) | null = null;
 
+// THE FOUNDING PLAN (Gruendungsfenster B2b): GET /api/founding-plan for the repo, harness and
+// mode this founding would have. It hangs off the REPO (the server plan reads one), the repo is
+// only chosen in step 3 (F5), so the plan loads there — latest-wins like gfLoadDir, its own
+// counter because the two loads race different routes.
+interface GfPlanPack { id: string; bytes: number; source: string; useWhen?: string }
+interface GfPlan { selected: GfPlanPack[]; omitted: { id: string; reason: string }[] }
+let gfPlan: GfPlan | null = null;     // the plan of (repo, harness, mode) — null while reading
+let gfPlanErr: string | null = null;  // a plan that could not be read — SKEW_NOTE for a 404
+let gfPlanFor: string | null = null;  // the key the last attempt was for — a mismatch refetches
+let gfPlanSeq = 0;
+let gfPacks = new Set<string>();      // the switched-on ids — default off IS today's founding
+let gfBusy = false;                   // a founding with packs answers only after the boot grace
+
 interface GfRepo { repo: string; name: string; mains: SlotInfo[]; lanes: SlotInfo[] }
 
 // the roles of step 1. The three the owner named first carry the mockup's art; "Session" and
@@ -7401,6 +7433,13 @@ function closeFounding() {
   pickerSlot = 0;
   gfMoreOpen = false;
   gfError = null;
+  // the pack choice dies with the window it was made in: "Anderer Ordner" founds through the tree
+  // with the SAME slot, and that founding must stay byte-identical when no switch was flipped —
+  // a choice for the founding repo must never ride along to a different one
+  gfPlan = null;
+  gfPlanErr = null;
+  gfPacks = new Set();
+  gfBusy = false;
   // G4.1: the focus goes back to the trigger — best effort. The bar's rows are not in the tab
   // order, so focus() on one is a no-op until a card gives the bar a tab order; named, not hidden.
   gfRestoreFocus?.focus?.();
@@ -7465,7 +7504,10 @@ function gfChooseRepo(repo: string) {
   gfOrphan = null;
   gfDir = null;
   gfDirErr = null;
+  gfPlan = null;
+  gfPlanErr = null;
   void gfLoadDir();
+  void gfLoadPlan();
 }
 
 async function gfLoadDir() {
@@ -7483,27 +7525,68 @@ async function gfLoadDir() {
   renderGf();
 }
 
+// the plan of THIS founding, for the repo just chosen, the profile chosen in step 2 and the mode
+// the role spells (wt-new/wt-old are lane foundings, the rest are mains). 404 reads as SKEW_NOTE:
+// a page newer than its server must say so, never pose as a repo without packs.
+function gfPlanKey(): string {
+  const harness = spawnHarness ?? harnesses.find((h) => h.default)?.id ?? "";
+  const mode = gfRole === "wt-new" || gfRole === "wt-old" ? "lane" : "main";
+  return `${gfRepo ?? ""}|${harness}|${mode}`;
+}
+
+async function gfLoadPlan() {
+  const seq = ++gfPlanSeq;
+  const path = gfRepo;
+  if (!path) return;
+  gfPlanFor = gfPlanKey(); // the attempt is the memory — a failed plan is not refetched on every render
+  gfPlan = null;
+  gfPacks = new Set();     // a fresh plan is a fresh choice — old switches never ride across
+  const harness = spawnHarness ?? harnesses.find((h) => h.default)?.id ?? "";
+  const mode = gfRole === "wt-new" || gfRole === "wt-old" ? "lane" : "main";
+  const res = await api(`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`);
+  if (seq !== gfPlanSeq || !gfWin || gfRepo !== path) return; // latest-wins, like gfLoadDir
+  if (res.status === 404) { gfPlanErr = SKEW_NOTE; renderGf(); return; }
+  if (!res.ok) { gfPlanErr = `the server answered ${res.status} for this founding plan`; renderGf(); return; }
+  const j = (await res.json().catch(() => null)) as GfPlan | null;
+  if (seq !== gfPlanSeq || !gfWin || gfRepo !== path) return;
+  if (!j || !Array.isArray(j.selected) || !Array.isArray(j.omitted)) {
+    gfPlanErr = "the server's answer was not readable JSON"; renderGf(); return;
+  }
+  gfPlanErr = null;
+  gfPlan = j;
+  renderGf();
+}
+
 async function gfStart() {
   const onError = (msg: string) => { gfError = msg; renderGf(); };
-  if (gfRole === "wt-new") {
-    if (gfRepo) await startWorktree(gfRepo, onError);
-  } else if (gfRole === "wt-old") {
-    if (gfRepo && gfOrphan) {
-      // THE CLICKED PLACE (B3): the lane is seated exactly here or refused naming who sits there
-      const slot = pickerSlot;
-      const res = await post("/api/lanes", { repo: gfRepo, attach: gfOrphan, slot, ...spawnBody() });
-      if (!res.ok) {
-        const err = (await res.json().catch(() => ({}))) as { error?: string };
-        onError(err.error ?? `the server answered ${res.status}`);
-        return;
+  // a founding WITH packs answers only after the door's boot grace plus readiness — the button
+  // says so instead of sitting silent, and a packsDelivered:false lands here as gfError, the
+  // same place a refused founding speaks, never as a success
+  const sending = gfPacks.size > 0 && gfRole !== "wt-old";
+  if (sending) { gfBusy = true; renderGf(); }
+  try {
+    if (gfRole === "wt-new") {
+      if (gfRepo) await startWorktree(gfRepo, onError);
+    } else if (gfRole === "wt-old") {
+      if (gfRepo && gfOrphan) {
+        // THE CLICKED PLACE (B3): the lane is seated exactly here or refused naming who sits there
+        const slot = pickerSlot;
+        const res = await post("/api/lanes", { repo: gfRepo, attach: gfOrphan, slot, ...spawnBody() });
+        if (!res.ok) {
+          const err = (await res.json().catch(() => ({}))) as { error?: string };
+          onError(err.error ?? `the server answered ${res.status}`);
+          return;
+        }
+        const j = (await res.json().catch(() => ({}))) as { slot?: number };
+        closeFounding();
+        await refresh();
+        showSlot(j.slot ?? slot);
       }
-      const j = (await res.json().catch(() => ({}))) as { slot?: number };
-      closeFounding();
-      await refresh();
-      showSlot(j.slot ?? slot);
+    } else if (gfRole && gfRepo) {
+      await startSession(gfRepo, gfRoleLabel(gfRole), onError);
     }
-  } else if (gfRole && gfRepo) {
-    await startSession(gfRepo, gfRoleLabel(gfRole), onError);
+  } finally {
+    if (sending) { gfBusy = false; renderGf(); }
   }
 }
 
@@ -7552,6 +7635,9 @@ function gfStep1(win: HTMLElement, body: HTMLElement) {
     p.onclick = () => {
       gfRole = r.id;
       gfError = null;
+      // a role is a different founding shape — the pack choice (B2b) dies with it, so a leftover
+      // switch from wt-new can never ride into an attach, whose door refuses packs by name
+      gfPacks.clear();
       for (const other of gfWin?.querySelectorAll(".gfpanel") ?? []) other.classList.toggle("pick", other === p);
       const next = gfWin?.querySelector<HTMLButtonElement>(".gffoot .gfbtn.primary");
       if (next) next.disabled = false;
@@ -7704,7 +7790,7 @@ function gfStep2(win: HTMLElement, body: HTMLElement) {
       "Rollenkarte mit Ankern — beim Start stellt der Server der Orchestrator ihre Karte mit Kontext-Ankern zu."));
   } else {
     ctx.append(el("div", "gfnote", "Keine Packs — eine Gründung von Hand bekommt keinen Brief zugestellt."),
-      el("div", "gfhint2", "Welche Packs ein Repo mitbringt, zeigt Schritt 3 nach der Repo-Wahl."));
+      el("div", "gfhint2", "Packs wählst du in Schritt 3, nach der Repo-Wahl."));
   }
   two.append(ctx);
   body.append(two);
@@ -7733,6 +7819,9 @@ function gfStep3(win: HTMLElement, body: HTMLElement) {
     body.append(el("div", "gfnote",
       "Kein Repo der Fleet hat gerade eine Session — „Anderer Ordner …“ öffnet den Verzeichnisbaum."));
   }
+  // a profile or role changed since the plan was attempted — refetch. gfLoadPlan clears the stale
+  // plan synchronously, so no switch of the outdated plan is clickable while it runs.
+  if (gfRepo && gfPlanFor !== gfPlanKey()) void gfLoadPlan();
   const split = el("div", "gfsplit");
   const list = el("div", "gfrl");
   for (const r of gfRepos) {
@@ -7804,12 +7893,45 @@ function gfStep3(win: HTMLElement, body: HTMLElement) {
       gv.append(el("span", "", k), typeof v === "string" ? el("span", "gv" + (warn ? " miss" : ""), v) : v);
     };
     const has = (name: string) => info.entries?.some((e) => !e.dir && e.name === name);
-    g("AGENTS.md — der portable Vertrag", has("AGENTS.md") ? "liegt da" : "fehlt", !has("AGENTS.md"));
-    g("CLAUDE.md — das Regelbuch", has("CLAUDE.md") ? "liegt da" : "fehlt", !has("CLAUDE.md"));
     // THE TWO FACTS B3 ADDED. A broken manifest is an error, never an empty list — the value
     // keeps the distinction the server drew.
-    if (Array.isArray(info.packs)) g("Context-Packs des Repos", info.packs.length ? info.packs.join(", ") : "kein Manifest");
-    else if (info.packs) g("Context-Packs des Repos", info.packs.error, true);
+    g("AGENTS.md — der portable Vertrag", has("AGENTS.md") ? "liegt da" : "fehlt", !has("AGENTS.md"));
+    g("CLAUDE.md — das Regelbuch", has("CLAUDE.md") ? "liegt da" : "fehlt", !has("CLAUDE.md"));
+    // THE FOUNDING PACKS (Gruendungsfenster B2b), in the place of the read-only line the card had:
+    // the plan hangs off the repo, the repo is only chosen here (F5), so this is where the choice
+    // lives (F3) — each selected pack a switch, DEFAULT OFF (today's founding), each omitted pack
+    // visible with its reason and not switchable. wt-old seats a worktree that predates this
+    // founding — the door refuses a packs list by name, so here the switches stand locked.
+    const pv = el("div", "gfpv");
+    if (gfPlanErr) {
+      pv.append(el("span", "gv miss", gfPlanErr));
+    } else if (!gfPlan) {
+      pv.append(el("span", "gv", "liest …"));
+    } else {
+      const kb = (n: number): string =>
+        `${n >= 10000 ? String(Math.round(n / 1000)) : (n / 1000).toFixed(1).replace(".", ",")} KB`;
+      const srcOf = (s: string): string =>
+        s === "fleet-seed" ? "Fleet-Samen" : s === "repo-manifest" ? "Repo-Manifest" : s;
+      for (const p of gfPlan.selected) {
+        const on = gfPacks.has(p.id);
+        const b = el("button", "gfpack" + (on ? " on" : "")) as HTMLButtonElement;
+        if (gfRole === "wt-old") b.disabled = true;
+        b.setAttribute("aria-pressed", String(on));
+        b.title = `${p.useWhen ? `${p.useWhen} — ` : ""}${srcOf(p.source)}`;
+        b.append(el("span", "gfpn", p.id), el("span", "gfpb", kb(p.bytes)),
+          el("span", "gfpt" + (on ? " on" : ""), on ? "an" : "aus"));
+        b.onclick = () => { if (gfPacks.has(p.id)) gfPacks.delete(p.id); else gfPacks.add(p.id); renderGf(); };
+        pv.append(b);
+      }
+      for (const o of gfPlan.omitted) {
+        const d = el("div", "gfpack omit");
+        d.title = o.reason;
+        d.append(el("span", "gfpn", o.id), el("span", "gfpr", o.reason));
+        pv.append(d);
+      }
+      if (!gfPlan.selected.length && !gfPlan.omitted.length) pv.append(el("span", "gv", "keine"));
+    }
+    g("Kontext-Packs — je Pack an/aus", pv);
     g("Worktrees auf der Platte", String(info.lanes ?? 0));
     const orphans = info.orphans ?? [];
     if (gfRole === "wt-old") {
@@ -7828,6 +7950,9 @@ function gfStep3(win: HTMLElement, body: HTMLElement) {
       g("davon ohne Platz", String(orphans.length));
     }
     gives.append(gv);
+    if (gfRole === "wt-old" && gfPlan && gfPlan.selected.length)
+      gives.append(el("div", "gfhint2",
+        "attach seats a worktree that predates this founding — packs delivers only at a fresh founding"));
     card.append(gives);
 
     if (info.recent?.length) {
@@ -7848,9 +7973,10 @@ function gfStep3(win: HTMLElement, body: HTMLElement) {
     ? "Den Worktree in der Karte vormerken, dann übernimmt der Knopf — der Platz ist dieser hier."
     : "Das Repo trägt dieselben Fakten, nach denen man einen Worker wählt: wer dort arbeitet, was er mitbekommt."));
   foot.append(gfBtn("Back", false, () => { gfStep = 2; renderGf(); }));
-  const go = gfBtn(gfRole === "wt-new" ? "Start lane ▸" : gfRole === "wt-old" ? "Attach lane ▸" : "Start session",
+  const go = gfBtn(gfBusy ? "Packs werden zugestellt …"
+    : gfRole === "wt-new" ? "Start lane ▸" : gfRole === "wt-old" ? "Attach lane ▸" : "Start session",
     true, () => void gfStart());
-  go.disabled = !gfRepo || (gfRole === "wt-old" && !gfOrphan);
+  go.disabled = gfBusy || !gfRepo || (gfRole === "wt-old" && !gfOrphan);
   foot.append(go);
   win.append(body, foot);
 }
@@ -7864,6 +7990,7 @@ function openPicker(slotId: number) {
   // inherited by whatever this slot becomes next (the server clears the same three on recycle).
   spawnHarness = null; spawnModel = ""; spawnEffort = ""; spawnContainer = ""; spawnContainerContext = "";
   gfStep = 1; gfRole = null; gfRepo = null; gfDir = null; gfDirErr = null; gfOrphan = null; gfError = null;
+  gfPlan = null; gfPlanErr = null; gfPlanFor = null; gfPacks = new Set(); gfBusy = false;
   gfRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const win = el("div", "gfwin");
   win.id = "gf";

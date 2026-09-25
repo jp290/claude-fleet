@@ -2495,6 +2495,10 @@ function programPhaseInput(t: Task, programId: string, outcome: PhaseOutcomeFact
   const openAttention = attentionRequests.filter((a) => a.programId === programId
     && a.provenance?.taskId === t.id
     && (a.status === "open" || a.status === "send-uncertain")).length;
+  const parked = reviewParkOf(t.id);
+  const reviewPark = parked?.candidate.programId === programId
+    ? { id: parked.candidate.id, expiresAt: parked.candidate.expiresAt, path: parked.path }
+    : null;
   // I4. A legacy verdict without candidateSha carries null through; absence is UNKNOWN, never a
   // synthesised sha (the MergeLast comment states the same rule at the source).
   const last = lane ? mergeLast.get(lane.id) ?? null : null;
@@ -2518,6 +2522,7 @@ function programPhaseInput(t: Task, programId: string, outcome: PhaseOutcomeFact
     // pin forbids the ledger and the report array in program-phase.ts itself)
     report: lane ? newestLaneReportFor(t.id, lane) : null,
     preview: lane ? lanePreviewFact(lane) : null,
+    reviewPark,
   };
 }
 
@@ -2630,6 +2635,10 @@ function owedPreviewDoor(preview: { state: "offered" | "running" | "red"; id: st
   return preview.state === "red"
     ? `the lane's isolated suite preview ran red (job ${preview.id}) — land after a green rerun`
     : `the lane's isolated suite preview is ${preview.state} (job ${preview.id}) — land after it reports green`;
+}
+
+function reviewParkDoor(parked: { id: string; path: string }): string {
+  return `resume candidate ${parked.id} → POST /api/lanes {repo:<program repo>,attach:${JSON.stringify(parked.path)}}`;
 }
 
 // ProgramExecutionView v1 is deliberately a projection, never a second lifecycle model. The
@@ -2757,7 +2766,9 @@ async function programExecutionView(s: Slot): Promise<Response> {
             // reading this view is exactly the principal that now has a land door, and a projection
             // that showed REVIEWABLE without naming the door left the MAIN to rediscover it (or,
             // measured once as `9cc8b1e`, to reach for the owner token instead).
-            nextAction: input.preview !== null && derived.phase === "REVIEWABLE"
+            nextAction: derived.phase === "REVIEW_PARKED" && input.reviewPark !== null
+              ? reviewParkDoor(input.reviewPark)
+              : input.preview !== null && derived.phase === "REVIEWABLE"
               ? owedPreviewDoor(input.preview)
               : derived.phase === "REVIEWABLE" && input.merge.last?.verifyOk === false
                 && !input.merge.last.landed && p.promotion && p.promotion.selfLand !== "off"
@@ -19476,6 +19487,51 @@ async function mintReviewCandidate(s: Slot, hours: number):
   return { ok: true, candidate: { id: randomBytes(6).toString("hex"), parkedAt: now, expiresAt: now + hours * 3_600_000,
     branch: s.worktree.branch, head: head.out, base: await laneBaseRef(s), baseSha: s.worktree.baseSha ?? null,
     taskIds: rows.map((t) => t.id), taskId: s.taskId, originId: s.originId, programId: s.programId, reportId: report.id } };
+}
+
+async function reviewParkTaskForMain(s: Slot, taskId: string,
+  body: Record<string, unknown> | null): Promise<Response> {
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return json({ error: bound.error }, 409);
+  const { program, sessionIdMatch } = bound;
+  const t = tasks.find((x) => x.id === taskId);
+  if (!t) return json({ error: "unknown task" }, 404);
+  if (t.programId !== program.id)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN parks only rows of program ${program.id}` }, 409);
+  if (t.status !== "sent" || t.slot === null)
+    return json({ error: `task is ${t.status} with slot ${t.slot ?? "null"} — only a sent row held by a live lane can be parked for review` }, 409);
+  const lane = slotFrom(t.slot);
+  if (!lane?.cwd || !lane.worktree || lane.programId !== program.id
+    || !tasks.some((x) => x.id === t.id && x.slot === lane.id && x.status === "sent"))
+    return json({ error: "the task's recorded slot is not a live lane of this Program — nothing was parked" }, 409);
+  const hours = body?.hours === undefined ? REVIEW_PARK_DEFAULT_HOURS : body.hours;
+  if (typeof hours !== "number" || !Number.isInteger(hours) || hours < 1 || hours > REVIEW_PARK_MAX_HOURS)
+    return json({ error: `hours must be an integer 1..${REVIEW_PARK_MAX_HOURS} (default ${REVIEW_PARK_DEFAULT_HOURS})` }, 400);
+  const note = typeof body?.note === "string" ? body.note.slice(0, 500).trim() : "";
+  const caller = slotStreamOccupant(s);
+  const target = slotStreamOccupant(lane);
+  if (!caller || !target) return json({ error: "the MAIN or target lane changed before it could be checked — nothing was parked" }, 409);
+  const cwd = lane.cwd;
+  const minted = await mintReviewCandidate(lane, hours);
+  if (!minted.ok) return json({ error: minted.error }, minted.code);
+  const stillBound = boundProgramForMain(s);
+  if (!sameSlotStreamOccupant(s, caller) || !stillBound.ok || stillBound.program.id !== program.id)
+    return json({ error: "the Program-MAIN binding changed while the lane was checked — nothing was parked" }, 409);
+  if (!sameSlotStreamOccupant(lane, target) || lane.cwd !== cwd
+    || lane.worktree?.branch !== minted.candidate.branch)
+    return json({ error: "the lane changed while it was checked — nothing was parked" }, 409);
+  const candidate = minted.candidate;
+  shelved[cwd] = { at: candidate.parkedAt, note, review: candidate };
+  audit("slot_shelve", lane.id, `note:${note.length} review:${candidate.id} by-main:${s.id}`);
+  emitLaneOutcome(await buildLaneOutcome(lane, "shelved"));
+  try {
+    await killSlot(lane, "shelved");
+  } catch (e) {
+    if (shelved[cwd]?.review?.id === candidate.id) delete shelved[cwd];
+    throw e;
+  }
+  await saveStateNow();
+  return json({ ok: true, candidate, sessionIdMatch });
 }
 
 // THE PERMISSION, as a list of NAMED refusals rather than one boolean. Every clause is a positive
@@ -38904,6 +38960,25 @@ Bun.serve<WSData>({
         `kept ${spKept.map((t) => t.id).join("+")} back ${spBack.map((t) => t.id).join("+")}: ${spReason.slice(0, 120)}`);
       return json({ ok: true, kept: spKept.map((t) => t.id), returned: spBack.map((t) => t.id),
         head: s.taskId ?? null });
+    }
+
+    // REVIEW PARK is a reviewed per-row door beside release/hold/land. The path names the row; the
+    // closed body carries only the owner's existing note/deadline inputs, while Program and target
+    // lane are still derived and cannot be nominated by the caller.
+    const selfTaskReviewPark = /^\/api\/self\/tasks\/([a-z0-9]+)\/park$/.exec(url.pathname);
+    if (selfTaskReviewPark && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not park itself for review — its bound Program-MAIN decides when the finished lane leaves its slot" }, 409);
+      if (s.label === STEWARD_LABEL)
+        return json({ error: "the steward may not park a Program lane — it is a standing role across programs, not the MAIN of one" }, 409);
+      const body = await readJson(req);
+      const extra = Object.keys(body ?? {}).filter((key) => !["note", "hours"].includes(key));
+      if (extra.length)
+        return json({ error: `this door reads only note and hours — [${extra.join(", ")}] is not read` }, 400);
+      return reviewParkTaskForMain(s, selfTaskReviewPark[1]!, body);
     }
 
     // ACP-23 · Program-MAIN filing. Non-lane only, for the same "one edge per role" reason as its

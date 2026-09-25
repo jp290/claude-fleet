@@ -1017,8 +1017,8 @@ Funktion über eine geschlossene Eingabeliste.
 
 | Feld | Typ | Bedeutung |
 |---|---|---|
-| `phase` | `READY · RUNNING · REVIEWABLE · INTEGRATING · OWNER_GATE · CONTINUE · UNKNOWN` | wo die Zeile auf der Schiene sitzt |
-| `phaseBasis` | `string[]` | die Regel, die entschied (`R0`…`R13`), plus bei `RUNNING` die nicht erfüllten Klauseln des Lane-Prädikats im Wortlaut von `lane-signals.ts` |
+| `phase` | `READY · RUNNING · REVIEWABLE · REVIEW_PARKED · INTEGRATING · OWNER_GATE · CONTINUE · UNKNOWN` | wo die Zeile auf der Schiene sitzt |
+| `phaseBasis` | `string[]` | die Regel, die entschied (`R0`…`R13`, einschliesslich `R6p`), plus bei `RUNNING` die nicht erfüllten Klauseln des Lane-Prädikats im Wortlaut von `lane-signals.ts` |
 | `note` | `string \| null` | `task.note` wörtlich, **nur** wenn sie mit `waiting:` beginnt (der Satz, den der Dispatch-Tick selbst geschrieben hat) — sonst `null` |
 | `candidate` | `{sha, basis: "merge-last" \| "lane-outcome" \| "none"}` | eine bereits persistierte Kandidaten-Sha, nie eine erzeugte |
 
@@ -1029,8 +1029,13 @@ Owner. Und sie AKTUIERT nichts: die persistierten Übergänge schreiben weiterhi
 Dispatch-Tick (`queued→sent`), `landLane` (`sent→done`), der Watch-Tick (Prädikat→Event) und der
 Owner (Merge-Route, Attention-Antwort).
 
+**`REVIEW_PARKED` ist ein mechanischer Ort, kein Urteil.** R6p steht unmittelbar vor R6 und greift
+nur fuer eine `sent`-Zeile ohne lebende Lane, die ein persistierter Review-Candidate ihres Programs
+benennt. `phaseBasis` nennt Candidate-ID und `expiresAt`; fehlt dieser Candidate, bleibt dieselbe
+Form R6/`UNKNOWN`.
+
 **`UNKNOWN` ist ein WERT, kein Default-Zweig.** Es ist die Antwort, wenn eine benötigte Eingabe
-fehlt, `null` oder widersprüchlich ist — eine `sent`-Zeile ohne lebende Lane (R6, Boot-Recovery),
+fehlt, `null` oder widersprüchlich ist — eine `sent`-Zeile ohne lebende Lane und ohne Review-Candidate (R6, Boot-Recovery),
 eine Lane, deren Pane nie beobachtet wurde oder deren git-Fakten der Tick noch nicht geholt hat
 (R10), eine terminale Zeile ohne `landed`-Outcome (R2). Jede solche Zeile legt zusätzlich **einen
 nummerierten Satz** in das bestehende `unknown[]` der View, der die fehlende Eingabe benennt.
@@ -1251,6 +1256,31 @@ queue row …`) · Body mit fremdem Feld oder leerem Grund (400) · keine/mehrde
 `boundProgramForMain`) · unbekannt (404) · fremdes Program (409 `… holds only rows of program <id>`)
 · `kind != auftrag` (409) · Status weder `pending` noch `queued` (409) · kein git-Checkout oder
 anderes Repo (409).
+
+
+## review-park — `POST /api/self/tasks/:id/park`
+
+Die gebundene Program-MAIN kann die lebende Lane einer `sent`-Zeile ihres EIGENEN Programs fuer
+eine spaetere Review aus dem Slot nehmen. Die Tuer mintet denselben `LaneReviewCandidate` wie
+`POST /api/slots/:id/shelve {review:true}` und benutzt unveraendert dessen Zulassung: sauberer,
+committeter Baum; die Lane traegt die Zeile; ihr neuester eigener Report ist `complete` und von
+ihrer MAIN akzeptiert; kein Merge-, Commit-, Review-, Restart- oder Teardown-Job haelt die Lane.
+Die Task-ID kommt aus dem Pfad. Der geschlossene Body erlaubt `note` (auf 500 Zeichen begrenzt wie
+an der Owner-Tuer) sowie `hours` als ganze Zahl `1..REVIEW_PARK_MAX_HOURS`; ohne `hours` gilt
+`REVIEW_PARK_DEFAULT_HOURS`.
+
+```sh
+curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/park \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"note":"spaeter reviewen","hours":2}'
+```
+
+Erfolg: `{ok:true,candidate,sessionIdMatch}`. Die Lane endet, der Worktree bleibt, und alle vom
+Candidate benannten Zeilen bleiben `sent` mit `slot:null`. Ablehnungen: Lane-Token und Steward
+(409) · keine/mehrdeutige MAIN-Bindung (409, Wortlaut von `boundProgramForMain`) · unbekannte
+Zeile (404) · fremdes Program (409) · Zeile ohne lebende Program-Lane (409) · ungueltige Frist
+(400) · danach saemtliche benannten Ablehnungen von `server.ts#mintReviewCandidate`. Der Body kann
+weder Slot noch Program nominieren; beides wird aus Zeile und MAIN-Bindung gelesen.
 
 
 ## confirm-cards — `POST /api/self/tasks/confirm-cards`
@@ -3672,6 +3702,7 @@ dieser Zeile gehört gerade keine Tür".
 | READY (`queued`) | der Dispatch-Tick startet sie; keine Tür |
 | REVIEWABLE **mit** Promotion (≠ `off`) | `inspect the diff, then land it yourself → POST /api/self/tasks/:id/land` |
 | REVIEWABLE **ohne** Promotion | der Owner landet vom Board — und der Satz sagt warum |
+| REVIEW_PARKED | Candidate-ID und `POST /api/lanes {repo:<program repo>,attach:<worktree path>}` zum Resume |
 | INTEGRATING | `{kind:"merge"}` abonnieren und den Ausgang dort lesen |
 | OWNER_GATE | eine offene Frage wartet auf den Owner |
 | RUNNING · CONTINUE · UNKNOWN | `null` |

@@ -1238,6 +1238,8 @@ export async function run(lc: LaneCtx): Promise<void> {
     const rpIds: string[] = [];
     for (const text of ["REVIEW PARK FIXTURE: the founding row", "REVIEW PARK FIXTURE: the wave follower"])
       rpIds.push(((await (await post("/api/tasks", { text, queue: false })).json()) as { task?: { id: string } }).task?.id ?? "");
+    const rpForeignId = ((await (await post("/api/tasks", { text: "REVIEW PARK FIXTURE: foreign program refusal", queue: false })).json()) as
+      { task?: { id: string } }).task?.id ?? "";
     writeFileSync(`${rpCwd}/review-park.txt`, "finished work\n");
     // …and what makes its head PREVIEWABLE (lane-preview.sh wants server.ts, package.json and a
     // build): a stub server that answers on the port it was given and writes down the environment it
@@ -1255,15 +1257,20 @@ export async function run(lc: LaneCtx): Promise<void> {
     spawnSync("git", ["-C", rpCwd, "add", "review-park.txt", "package.json", "server.ts"]);
     spawnSync("git", ["-C", rpCwd, "commit", "-qm", "review park: the finished cut"]);
     const rpHead = spawnSync("git", ["-C", rpCwd, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+    const rpMainSlot = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots
+      .find((x) => x.cwd === null && x.id !== lc.lnSlot)?.id ?? 0;
+    const rpMainOpen = await post(`/api/slots/${rpMainSlot}/open`, { cwd: REPO, label: "review-park-main" });
     await stopSrv();
     const rpProgramId = "7e71e0".padEnd(24, "0");
     const rpPlant = rpState();
     const rpAt = Date.now();
+    const rpMain = rpPlant.slots?.[String(rpMainSlot)];
     rpPlant.programs = [...(rpPlant.programs ?? []), {
       id: rpProgramId, title: "Review park fixture", intent: "Prove a finished lane parks for review",
       successCriterion: "The parked lane resumes with its rows", nonGoals: [], decisions: [], evidence: [],
       openQuestions: [], status: "active", createdAt: rpAt - 1000, proposedBy: { kind: "owner" },
       confirmedAt: rpAt - 900, activatedAt: rpAt - 800,
+      main: { slot: rpMainSlot, openedAt: rpMain?.openedAt ?? 0, sessionId: rpMain?.sessionId ?? null, boundAt: rpAt - 700 },
     }];
     const rpSl = rpPlant.slots?.[String(rpSlot)];
     if (rpSl) { rpSl.taskId = rpIds[0]; rpSl.programId = rpProgramId; }
@@ -1272,15 +1279,28 @@ export async function run(lc: LaneCtx): Promise<void> {
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpPlant, null, 2), { mode: 0o600 });
     await restartSrv();
     const rpTok = rpState().slots?.[String(rpSlot)]?.selfToken ?? "";
+    const rpMainTok = rpState().slots?.[String(rpMainSlot)]?.selfToken ?? "";
     check("review park setup: a committed lane carries two sent rows and a Program",
-      rpLane.ok === true && rpSlot > 0 && exists(rpCwd) && /^[0-9a-f]{40}$/.test(rpHead) && /^[0-9a-f]{32}$/.test(rpTok)
+      rpLane.ok === true && rpMainOpen.ok && rpSlot > 0 && rpMainSlot > 0 && exists(rpCwd)
+        && /^[0-9a-f]{40}$/.test(rpHead) && /^[0-9a-f]{32}$/.test(rpTok) && /^[0-9a-f]{32}$/.test(rpMainTok)
         && (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === rpSlot),
       JSON.stringify({ lane: rpLane, rows: (await rpRows(rpIds)) }));
 
     const park = (body: Record<string, unknown>) => post(`/api/slots/${rpSlot}/shelve`, { note: "review me", review: true, ...body });
+    const selfPark = (token: string, id: string, body: Record<string, unknown>) =>
+      rpSelfPost(token, `/api/self/tasks/${id}/park`, { note: "review me", ...body });
+    const laneDenied = await selfPark(rpTok, rpIds[0] ?? "", {});
+    const foreignDenied = await selfPark(rpMainTok, rpForeignId, {});
+    check("(review park self) lane tokens and rows outside the bound MAIN's Program are 409",
+      laneDenied.status === 409 && foreignDenied.status === 409
+        && (await laneDenied.text()).includes("lane may not park itself")
+        && (await foreignDenied.text()).includes("parks only rows of program"),
+      `${laneDenied.status} ${foreignDenied.status}`);
     const noReport = await park({});
+    const selfNoReport = await selfPark(rpMainTok, rpIds[0] ?? "", {});
     check("(review park) refused without a report — nothing parked, the slot still holds the lane",
-      noReport.status === 409 && (await noReport.text()).includes("filed no report")
+      noReport.status === 409 && selfNoReport.status === 409 && (await noReport.text()).includes("filed no report")
+        && (await selfNoReport.text()).includes("filed no report")
         && (await rpSessions()).find((x) => x.id === rpSlot)?.cwd === rpCwd, String(noReport.status));
     const repRes = await rpSelfPost(rpTok, "/api/self/fleet-report", { status: "complete", text: "REVIEW PARK FIXTURE: done and verified." });
     const rpReportId = ((await repRes.json()) as { report?: { id: string } }).report?.id ?? "";
@@ -1291,7 +1311,8 @@ export async function run(lc: LaneCtx): Promise<void> {
     await stopSrv();
     const rpDecide = rpState();
     const rpRep = rpDecide.fleetReports?.find((r) => r.id === rpReportId);
-    if (rpRep) rpRep.decision = { disposition: "accepted", at: Date.now(), by: { slot: 3, openedAt: rpAt - 500, sessionId: null },
+    if (rpRep) rpRep.decision = { disposition: "accepted", at: Date.now(), by: { slot: rpMainSlot,
+      openedAt: rpMain?.openedAt ?? 0, sessionId: rpMain?.sessionId ?? null },
       reason: null, fulfilled: null };
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpDecide, null, 2), { mode: 0o600 });
     await restartSrv();
@@ -1342,7 +1363,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       `${selfWriteHdr.status}/${selfWriteBearer.status}/${selfRead.status}`);
 
     // THE PARK
-    const parkRes = await park({ hours: 2 });
+    const parkRes = await selfPark(rpMainTok, rpIds[0] ?? "", { hours: 2 });
     const parked = ((await parkRes.json()) as { ok?: boolean; candidate?: RpCandidate }).candidate;
     check("(review park) an accepted, clean lane parks as ONE candidate with rows, branch, head, base, report and deadline",
       parkRes.ok && !!parked && /^[0-9a-f]{12}$/.test(parked.id) && parked.branch === rpLane.branch && parked.head === rpHead
@@ -1355,6 +1376,19 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("(review park) the rows stay SENT with no slot — not handed back to pending or queued",
       (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === null && (t.note ?? "").includes(parked?.id ?? "-")),
       JSON.stringify((await rpRows(rpIds))));
+    const projected = (await (await fetch(BASE + "/api/self/program-execution",
+      { headers: { "x-fleet-self-token": rpMainTok } })).json()) as { programs?: { program: { id: string };
+        tasks: { rows: { id: string; phase: string; phaseBasis: string[]; nextAction: string | null }[] };
+        unknown: string[] }[] };
+    const projectedProgram = projected.programs?.find((p) => p.program.id === rpProgramId);
+    const parkedProjection = projectedProgram?.tasks.rows.find((t) => t.id === rpIds[0]);
+    check("(review park projection) the candidate is REVIEW_PARKED with identity, deadline and resume door",
+      parkedProjection?.phase === "REVIEW_PARKED"
+        && parkedProjection.phaseBasis.some((line) => line.startsWith("R6p:") && line.includes(parked?.id ?? "-")
+          && line.includes(`expiresAt=${parked?.expiresAt}`))
+        && parkedProjection.nextAction?.includes("POST /api/lanes") === true
+        && parkedProjection.nextAction.includes(rpCwd),
+      JSON.stringify({ parked: parkedProjection, unknown: projectedProgram?.unknown }));
     const rpDispatch = await post(`/api/tasks/${rpIds[0]}/dispatch`, {});
     const rpQueue = await post(`/api/tasks/${rpIds[1]}/queue`, {});
     const rpUnqueue = await post(`/api/tasks/${rpIds[0]}/unqueue`, {});
@@ -1679,7 +1713,7 @@ export async function run(lc: LaneCtx): Promise<void> {
 
     // the planted records leave the way they came (the 2 s poll's budget, see the baton cleanup)
     spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", rpCwd]);
-    for (const id of rpIds) await post(`/api/tasks/${id}/delete`, {});
+    for (const id of [...rpIds, rpForeignId]) await post(`/api/tasks/${id}/delete`, {});
     await stopSrv();
     const rpUnplant = rpState();
     rpUnplant.programs = (rpUnplant.programs ?? []).filter((p) => p.id !== rpProgramId);
@@ -1689,8 +1723,10 @@ export async function run(lc: LaneCtx): Promise<void> {
     delete rpUnplant.candidateReviews; // …and the review comments on its removed worktree
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpUnplant, null, 2), { mode: 0o600 });
     await restartSrv();
+    await post(`/api/slots/${rpMainSlot}/kill`, {});
     check("(review park) fixture cleanup: Program, report and rows are gone",
-      !(rpState().programs ?? []).some((p) => p.id === rpProgramId) && !rpIds.some((id) => rpState().tasks?.some((t) => t.id === id)));
+      !(rpState().programs ?? []).some((p) => p.id === rpProgramId)
+        && ![...rpIds, rpForeignId].some((id) => rpState().tasks?.some((t) => t.id === id)));
     check("(notepad) fixture cleanup: the removed worktree's note was swept at boot — no orphan entry",
       rpState().worktreeNotes?.[rpCwd] === undefined, JSON.stringify(rpState().worktreeNotes ?? null));
   }

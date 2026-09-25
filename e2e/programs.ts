@@ -1834,6 +1834,12 @@ export async function run(ctx: Ctx): Promise<void> {
     })}\n`);
     await restartSrv();
 
+    // THE SHEETFREMD REPO IS A REAL DIRECTORY, because the task door accepts only one
+    // (server.ts, POST /api/tasks: "repo is not a directory"): helper run eaf15d3adaba measured
+    // the consequence — the queue row never existed, and the sheet check reported its own setup
+    // failure as a sheet failure. Created here, removed with the rest of the fixture below.
+    mkdirSync(sheetFremdRepo, { recursive: true });
+    spawnSync("git", ["-C", sheetFremdRepo, "init", "-q"]);
     // L2 fixtures: an explicit REPO row, a NULL row (joins through FLEET_DISPATCH_REPO = REPO
     // here), and a foreign-repo row that must stay out of this repo's sheet. Pending rows —
     // the dispatcher never touches them, so the fixture spawns no lane by accident.
@@ -1939,7 +1945,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const fremdSheet = fremdGet.ok ? (await fremdGet.json()) as typeof sheet : null;
     const fremdLayers = (fremdSheet?.layers ?? {}) as Record<string, SheetLayer>;
     check("repo sheet: a second repo reads as its own sheet — its newest land and its queue row, and none of this repo's audit",
-      fremdSheet !== null && fremdSheet.repo === `${sheetCanon}-sheetfremd`
+      fremdSheet !== null && sheetTaskFremd !== "" && fremdSheet.repo === `${sheetCanon}-sheetfremd`
         && (fremdLayers.lands?.rows ?? []).length === 1
         && fremdLayers.lands?.rows?.[0]?.branch === "rv-sheet-fremd"
         && (fremdLayers.queue?.rows ?? []).some((r) => String(r.id ?? "") === sheetTaskFremd)
@@ -2026,6 +2032,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // the fixture leaves nothing behind: lane, worktree, queue rows, the stored cap
     if (sheetLaneSlot > 0) await post(`/api/slots/${sheetLaneSlot}/kill`, {});
     if (sheetLaneCwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", sheetLaneCwd]);
+    rmSync(sheetFremdRepo, { recursive: true, force: true });
     for (const id of sheetTasks) await post(`/api/tasks/${id}/delete`, {});
     await post("/api/repo-lane-cap", { repo: REPO, maxLanes: null });
     const sheetCapAfter = (await (await get("/api/repo-lane-caps")).json()) as { caps?: Record<string, number> };

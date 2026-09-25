@@ -3006,6 +3006,12 @@ Kopie, aus demselben Grund, aus dem `stalled` eine ist):
 | `laneAutoclose` | einmal pro Antwort, neben `lands` | ob der Schalter auf DIESER Fleet scharf ist |
 | `autoCloseRefusal` | je LANE-Zeile, nur wenn scharf | der Satz, auf den der nächste Tick entscheidet; `null` = nichts lehnt ab, der nächste Tick schließt sie |
 
+`removeWorktreeSafe` löscht beim erfolgreichen Teardown den Branch nur, wenn `git rev-list
+<Fork-SHA>..<Branch>` null Commits ergibt. Fehlt der gespeicherte Fork-Punkt, bleibt der Branch.
+Ein gelandeter Branch mit eigener Arbeit bleibt für `undo-land` erhalten. Der Dispatch-Tail zählt
+jeden gleichen Ablehnungsgrund pro Task-Zeile; beim
+dritten gleichen Versuch setzt er sie auf `pending` und schreibt den Grund in die Note.
+
 Auf einer Nicht-Lane fehlt der Schlüssel ganz (die Antwort der Liste wäre „not a fleet-created
 worktree lane" — Rauschen auf 13 von 16 Zeilen); auf einer unscharfen Fleet fehlt er auch, weil
 `laneAutoclose` diesen Fall EINMAL beantwortet statt 16×.
@@ -3415,8 +3421,10 @@ Seit M3 wird derselbe Fakt **zuerst** gemessen, in zwei git-Reads und ohne Gate:
   dort wäre `dirty-main` eine Aussage über einen fremden Baum, die ungeprüfte Auflösungen verdeckt.
 - **Was gemessen wird:** die schmutzige Seite aus `git status --porcelain -z` des Checkouts, der
   main HÄLT (kein Halter ⇒ `branch -f` bewegt eine Ref, kein Baum steht im Weg ⇒ leer, nie
-  unbekannt), geschnitten mit `git diff --name-only --no-renames -z <mainSha>..<branch>`.
+  unbekannt), geschnitten mit `git diff --name-only --no-renames -z <merge-base>..<branch>`.
   `--no-renames` mit Absicht: die Vorspulung muss den neuen Pfad schreiben UND den alten entfernen.
+  Die Owner-Merge-Route und `mergeJob` rufen dafür dieselbe `dirtyMainStop`-Funktion; auch eine
+  untracked Datei mit einem vom Land angelegten Namen wird auf beiden Wegen verweigert.
 - **Eine Sonde, die nicht laufen konnte, mintet nichts.** Ein unlesbarer Status oder Diff gibt
   `null` und der Land läuft wie vor M3 weiter — die Vorspulung selbst fängt den Fall dann immer
   noch. Der Schnitt ist eine Abkürzung, kein neues Tor.
@@ -3482,6 +3490,14 @@ jetzt von einer Maschine abgelehnt werden, die nicht diese ist — zwei getrennt
   bleibt ein rotes `hubPush`-Feld auf der Land-Note.
 
 ### Wohin das Verdikt geht: an den, der gelandet hat (seit 2026-09-04)
+
+`merge_verdict` im Audit-Trail trägt aus dem einzigen `mergeJob#record`-Schreibort immer
+`verifyOk` (`true`, `false`, `null`) und `stopKind` (`conflict`, `red`, `unmeasured`, `review`,
+`null`). Ein rotes Verify auf sauberem Rebase bleibt `status:resolved`, wird aber als
+`verifyOk:false, stopKind:red` gezählt. Wenn ein konfiguriertes Audit-Kommando seine Repo-Voraussetzungen
+nicht erfüllt, schreibt der Land-Pfad eine `post-land-audits.jsonl`-Zeile mit `result:not-applicable`;
+die Lane sieht dann
+`postlandAudit:false` auf `GET /api/self/gate`.
 
 **Gemessen am 2026-09-04:** genau das `ff-lost`-Verdikt von oben wurde in die **LANE**-Pane
 gepastet. Die Lane las es als Arbeitsauftrag und fuhr ihre komplette Verify-Kette neu — je ~10 min

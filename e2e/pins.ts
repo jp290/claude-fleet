@@ -6168,7 +6168,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && ffIntent < m3Second
       && m3Entry < server.indexOf("gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS, holdOwner));")
       && (server.match(/errorReason: "dirty-main"/g) ?? []).length === 1
-      && (server.match(/await dirtyMainStop\(/g) ?? []).length === 3
+      && (server.match(/await dirtyMainStop\(/g) ?? []).length === 4
       && server.includes("if (dirtyNow) { clearLandIntent(root); res = dirtyNow; break; }"),
     `entry=${m3Entry} pre=${m3Pre} plan=${m3Plan} second=${m3Second} intent=${ffIntent} advance=${ffAdvance}`);
   // …and the probe cannot MINT what it could not MEASURE: an unreadable status or diff returns

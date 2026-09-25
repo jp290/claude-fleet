@@ -6353,6 +6353,15 @@ export async function run(ctx: Ctx): Promise<void> {
       check("a DIFFERENT screen resets the streak — trust, trust, sign-in, trust stays queued",
         afterSwitch?.status === "queued" && /codex trust prompt/.test(afterSwitch.note ?? "") && parkAudit().length === 1,
         JSON.stringify(afterSwitch));
+      const noMarker = "booting, no marker yet";
+      await parkAttempt(noMarker, "never alive 1");
+      const noMarker2 = await parkAttempt(noMarker, "never alive 2");
+      const noMarker3 = await parkAttempt(noMarker, "never alive 3");
+      check("dispatch-tail mutation: two equal non-screen refusals requeue, the third parks this row with its reason",
+        noMarker2?.status === "queued" && noMarker3?.status === "pending"
+          && (noMarker3.note ?? "").includes("never showed its ready marker")
+          && (noMarker3.note ?? "").includes("3 attempts"),
+        JSON.stringify({ two: noMarker2, three: noMarker3 }));
       await post(`/api/tasks/${parkId}/delete`, {});
     }
 

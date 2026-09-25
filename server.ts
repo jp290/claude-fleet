@@ -4544,22 +4544,22 @@ function releaseTask(t: Task, by: "owner" | "machine"): void {
   // a release is the act a hold waits for (TaskHold) — whoever releases, the stop is lifted with it
   t.hold = undefined;
   // …and the act a PARKED row waits for: a fresh queue starts the screen streak at zero
-  dispatchScreenStreak.delete(t.id);
+  dispatchRefusalStreak.delete(t.id);
 }
-// THE SAME BLOCKING SCREEN, DISPATCH AFTER DISPATCH (briefAndSend's requeue). A screen only a human
+// THE SAME POST-SPAWN REFUSAL, DISPATCH AFTER DISPATCH (briefAndSend's requeue). A screen only a human
 // answers (claude's trust dialog, codex sign-in) does not resolve by retrying, and until 2026-09-24
 // the tick retried anyway: 55 requeues of f02fbb36 in 8 minutes, 243 of 52c33c3b in two hours, a fresh
 // worktree and session every ~8 s, one lane place held, and nothing on the board reading as a stall.
-// Per row: the screen the last post-spawn refusal named and how many refusals in a row named it. Any
+// Per row: the reason the last post-spawn refusal named and how many refusals in a row named it. Any
 // other outcome clears it (a delivered brief, another screen, another reason), and so does every
 // release (releaseTask). At DISPATCH_PARK_AFTER the row goes to `pending` and stays there: it is
 // neither the tick's (tickOwnsRow) nor a policy's to start (startPlanRowOf) until someone queues it.
 // In memory on purpose — a restart forgets the streak, which costs at most DISPATCH_PARK_AFTER more
 // attempts under a release policy and nothing under `manual`, where the parked `pending` row stays.
 const DISPATCH_PARK_AFTER = 3;
-const dispatchScreenStreak = new Map<string, { screen: string; n: number }>();
+const dispatchRefusalStreak = new Map<string, { reason: string; n: number }>();
 const dispatchParked = (t: Task): boolean =>
-  t.status === "pending" && (dispatchScreenStreak.get(t.id)?.n ?? 0) >= DISPATCH_PARK_AFTER;
+  t.status === "pending" && (dispatchRefusalStreak.get(t.id)?.n ?? 0) >= DISPATCH_PARK_AFTER;
 // THE ONE WRITE OF A CHANGED KIND (Task.kindChanges): the category and its on-row pair move together,
 // so no door can change a row's kind without the row remembering it. It adds no condition — each
 // caller keeps its own refusals and runs this only once it has decided to change the kind.
@@ -6708,7 +6708,7 @@ async function freshenWorktreeBoard(b: WorktreeBoard): Promise<WorktreeBoard> {
 // dirty/unmerged refusal in `worktree remove` is the backstop — on top we refuse while
 // commits are neither pushed to any remote nor merged, so removal can never eat work
 async function removeWorktreeSafe(repo: string, path: string, branch: string, form: LaneForm = "worktree",
-  preservedBy?: string): Promise<{ error: string; code: number } | null> {
+  preservedBy?: string, forkSha?: string): Promise<{ error: string; code: number } | null> {
   const st = await git(path, "status", "--porcelain");
   if (st.code !== 0) return { error: "git status failed — worktree gone?", code: 400 };
   // A clone's commits are invisible to the root until mirrored, and the "is this work preserved"
@@ -6742,6 +6742,12 @@ async function removeWorktreeSafe(repo: string, path: string, branch: string, fo
   } else {
     const rmv = await git(repo, "worktree", "remove", path);
     if (rmv.code !== 0) return { error: `worktree remove failed (lane kept): ${(rmv.err || rmv.out).slice(0, 300)}`, code: 409 };
+  }
+  // A moving main ref reads zero after land even when this lane produced commits; undo needs
+  // that branch, so only the lane's recorded fork SHA can justify deleting it.
+  if (forkSha && /^[0-9a-f]{40,64}$/.test(forkSha)) {
+    const ahead = await git(repo, "rev-list", "--count", `${forkSha}..${branch}`);
+    if (ahead.code === 0 && ahead.out === "0") await git(repo, "branch", "-D", branch);
   }
   dropShelved(path, "its worktree was removed"); // the tree is gone — drop any shelve note with it
   return null;
@@ -6912,7 +6918,7 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   // assemble the "landed" outcome while the worktree still exists (git reads need the tree);
   // emit only AFTER teardown succeeds, so a failed removeWorktreeSafe records no false land.
   const landed = await buildLaneOutcome(s, "landed", facts);
-  const fail = await removeWorktreeSafe(repo, path, branch, s.worktree.form ?? "worktree", s.worktree.base);
+  const fail = await removeWorktreeSafe(repo, path, branch, s.worktree.form ?? "worktree", s.worktree.base, s.worktree.baseSha);
   if (fail) return fail;
   // the branch is landed and gone — a parked ⏸ must not outlive it. BOTH keyed views have to go,
   // because the park is RE-CREATED from the slot-keyed one: killSlot below calls parkMergeVerdict,
@@ -7011,7 +7017,7 @@ async function advanceIntegration(repo: string, main: string, branch: string): P
 //   · the dirty side from the HOLDER of main, found exactly as advanceIntegration finds it. No
 //     holder means `branch -f` moves a ref with no working tree in the way, so there is nothing
 //     to be dirty: that is an EMPTY answer (measured absence), never an unknown.
-//   · the touched side from `mainSha..branch`, the commits this land is about to put on main.
+//   · the touched side from `merge-base(mainSha, branch)..branch`, the lane's changes.
 //     `--no-renames` on purpose: with rename detection a moved file reports only its NEW name,
 //     and the ff has to write the new path AND remove the old one — the old name is exactly the
 //     kind of path a stale editor buffer is sitting on.
@@ -7049,7 +7055,9 @@ async function dirtyMainOverlap(repo: string, main: string, mainSha: string, bra
   if (st.code !== 0) return null;
   const dirty = porcelainZPaths(st.out);
   if (dirty.size === 0) return [];
-  const diff = await gitReadRaw(repo, "diff", "--name-only", "--no-renames", "-z", `${mainSha}..${branch}`);
+  const base = await gitRead(repo, "merge-base", mainSha, branch);
+  if (base.code !== 0 || !base.out) return null;
+  const diff = await gitReadRaw(repo, "diff", "--name-only", "--no-renames", "-z", `${base.out}..${branch}`);
   if (diff.code !== 0) return null;
   const hit = new Set<string>();
   for (const path of diff.out.split("\0")) if (path && dirty.has(path)) hit.add(path);
@@ -9493,7 +9501,7 @@ function validAuditRow(raw: unknown): PostLandAuditRow | null {
   if (!raw || typeof raw !== "object") return null;
   const row = raw as Partial<PostLandAuditRow>;
   if (typeof row.repo !== "string" || typeof row.mainSha !== "string"
-    || !["green", "red", "unknown"].includes(String(row.result)) || !Array.isArray(row.covers)
+    || !["green", "red", "unknown", "not-applicable"].includes(String(row.result)) || !Array.isArray(row.covers)
     || row.covers.some((c) => !c || typeof c.branch !== "string" || typeof c.mainAfter !== "string")) return null;
   return row as PostLandAuditRow;
 }
@@ -9512,7 +9520,7 @@ function auditEventPayload(row: PostLandAuditRow, mainAfter: string): AuditWatch
   let covers = all.slice(-50);
   const match = all.find((c) => c.mainAfter === mainAfter);
   if (match && !covers.some((c) => c.mainAfter === mainAfter)) covers = [match, ...covers.slice(-49)];
-  return { result: row.result, mainSha: row.mainSha, covers, checks: row.checks,
+  return { result: row.result as AuditWatchEventPayload["result"], mainSha: row.mainSha, covers, checks: row.checks,
     ...(row.reason ? { reason: row.reason.slice(0, 200) } : {}),
     ...(row.proportional ? { proportional: true as const } : {}) };
 }
@@ -12538,7 +12546,7 @@ interface ProgramStatusRepoLand {
 }
 interface ProgramStatusView extends ProgramStatusMemoryView {
   lastLand: ProgramStatusRepoLand[];
-  lastAudit: { at: number; result: "green" | "red" | "unknown"; fails: string[] | null;
+  lastAudit: { at: number; result: "green" | "red" | "unknown" | "not-applicable"; fails: string[] | null;
     adjudicated: AdjudicationVerdict | null } | null;
 }
 interface ProgramStatusContext {
@@ -15396,8 +15404,6 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // write, and a land that is still RUNNING on this lane owns it outright: no teardown under its
   // rebase, no row write it would then fail to retire. A kill's `pending` is NOT terminal and keeps
   // today's answer — a lost lane requeues its row (e2e/tasks.ts, the foreign-harness kill probe).
-  // `screen` = the blocking screen this refusal named (canDeliver's blocked-screen, or the readiness
-  // wait's own blocked verdict — the same screen seen a moment later); null for every other reason.
   const requeue = async (note: string, screen: string | null = null): Promise<void> => {
     const ours = free.cwd === wt.path && free.worktree?.branch === wt.branch;
     const landing = ours && (mergeInflight.has(free.id) || mergeStart.has(free.id));
@@ -15412,7 +15418,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     if (other) {
       kept = `; lane kept (slot ${other.id} holds it)`;
     } else {
-      const fail = await removeWorktreeSafe(wt.repo, wt.path, wt.branch, wt.form);
+      const fail = await removeWorktreeSafe(wt.repo, wt.path, wt.branch, wt.form, free.worktree?.base, free.worktree?.baseSha);
       if (fail) kept = `; lane kept (${fail.error.split("\n")[0]})`;
       else if (ours) await killSlot(free, "reopen");
     }
@@ -15420,21 +15426,21 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // left on `sent` would point at a slot that no longer holds it — and `queued` is right here for
     // the same reason it is right for the head: a post-spawn hold is transient and the dispatcher
     // picks the row up again. (An ABORT is the other shape and keeps its own answer: detachSlotTasks.)
-    // …unless the SAME screen refused this row DISPATCH_PARK_AFTER times in a row (dispatchScreenStreak):
+    // …unless the SAME reason refused this row DISPATCH_PARK_AFTER times in a row:
     // then it goes to `pending`, parked, with the screen, the repo and the count in its note, and the
     // tick leaves it there until someone queues it again. The teardown above is the same either way.
     const parked: Task[] = [];
     let parkedAfter = 0;
     for (const row of owned) {
-      const prev = dispatchScreenStreak.get(row.id);
-      const n = screen === null ? 0 : prev?.screen === screen ? prev.n + 1 : 1;
-      if (screen === null) dispatchScreenStreak.delete(row.id);
-      else dispatchScreenStreak.set(row.id, { screen, n });
+      const prev = dispatchRefusalStreak.get(row.id);
+      const reason = screen ?? note.replace(/ — requeued$/, "");
+      const n = prev?.reason === reason ? prev.n + 1 : 1;
+      dispatchRefusalStreak.set(row.id, { reason, n });
       row.slot = null;
       if (n >= DISPATCH_PARK_AFTER) {
         parkedAfter = Math.max(parkedAfter, n);
         row.status = "pending";
-        row.note = `dispatch parked: blocked-screen "${screen}" in ${wt.repo} on ${n} attempts in a row — answer it there, then queue again${kept}`.slice(0, 300);
+        row.note = `dispatch parked: ${reason} in ${wt.repo} on ${n} attempts in a row — answer it there, then queue again${kept}`.slice(0, 300);
         parked.push(row);
       } else {
         row.status = "queued";
@@ -15449,10 +15455,10 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       audit("dispatch_requeued", free.id,
         `${requeued.map((row) => row.id).join(",")} (${wt.branch}): ${note}${kept}`.slice(0, 240),
         { taskId: requeued[0].id, reason: note.slice(0, 200) });
-    if (parked.length && screen !== null)
+    if (parked.length)
       audit("dispatch_parked", free.id,
-        `${parked.map((row) => row.id).join(",")} (${wt.branch}): ${screen} in ${wt.repo} ×${parkedAfter}${kept}`.slice(0, 240),
-        { taskId: parked[0].id, screen, repo: wt.repo, attempts: parkedAfter });
+        `${parked.map((row) => row.id).join(",")} (${wt.branch}): ${screen ?? note} in ${wt.repo} ×${parkedAfter}${kept}`.slice(0, 240),
+        { taskId: parked[0].id, ...(screen ? { screen } : { reason: note }), repo: wt.repo, attempts: parkedAfter });
   };
   // the owner may have killed/re-opened this slot during the boot sleep — re-verify it
   // is still OUR lane before injecting external text, or we'd prompt an unrelated session
@@ -15602,8 +15608,8 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     await sendText(free, deliveredBrief, true, { path: "brief" });
-    // a delivered brief ends every screen streak this lane's rows carried (dispatchScreenStreak)
-    for (const row of waveRows) dispatchScreenStreak.delete(row.id);
+    // a delivered brief ends every refusal streak this lane's rows carried
+    for (const row of waveRows) dispatchRefusalStreak.delete(row.id);
     const at = Date.now();
     // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
     // facts. A later reader reconstructs every byte from the row and the renderer the row NAMES
@@ -17135,7 +17141,7 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
       if (!s) continue;
       const ref = s.worktree;
       await killSlot(s, "owner");
-      if (ref) await removeWorktreeSafe(ref.repo, s.cwd ?? "", ref.branch, ref.form ?? "worktree");
+      if (ref) await removeWorktreeSafe(ref.repo, s.cwd ?? "", ref.branch, ref.form ?? "worktree", ref.base, ref.baseSha);
       laneSpawn.delete(slot);
       row.status = was.get(row.id) ?? "queued";
       row.slot = null;
@@ -19827,7 +19833,7 @@ async function tickLaneAutoClose(): Promise<void> {
       // whatever occupant it would otherwise find in the slot.
       const wt = s.worktree;
       if (wt && s.cwd) {
-        const rm = await removeWorktreeSafe(wt.repo, s.cwd, wt.branch, wt.form ?? "worktree");
+        const rm = await removeWorktreeSafe(wt.repo, s.cwd, wt.branch, wt.form ?? "worktree", wt.base, wt.baseSha);
         if (rm) console.log(`lane auto-close: slot ${s.id} closed but its worktree stays (${wt.branch})`
           + ` — ${rm.error.split("\n")[0]}`);
         if (s.openedAt !== occupant.openedAt || s.sessionId !== occupant.sessionId
@@ -23058,7 +23064,7 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
   // …carrying the gate's own proportion verdict, which the note one line above has just recorded
   // under `verify.proportional`. `prov.verify` absent (no gate configured) or `proportional` absent
   // (an older persisted verdict) both mean NOT PROVEN and buy the full suite.
-  schedulePostLandAudit(repo, main, branch, mainAfter, prov.verify?.proportional === true);
+  await schedulePostLandAudit(repo, main, branch, mainAfter, prov.verify?.proportional === true);
   // the owner's graph follows the moved main — synchronous and never awaited, like the line above
   scheduleMainGraphRebuild(repo, main);
   // ...and only now is the land fully recorded. Clearing LAST, after the note and the audit
@@ -23147,7 +23153,10 @@ type AuditCmdSource = "repo-worker" | "env" | "proportional";
 function auditCmdFor(repo: string): { cmd: string; source: AuditCmdSource } | null {
   const own = workerCmdFor("audit", repo, null);
   if (own) return { cmd: own, source: "repo-worker" };
-  return POSTLAND_AUDIT_CMD ? { cmd: POSTLAND_AUDIT_CMD, source: "env" } : null;
+  if (!POSTLAND_AUDIT_CMD) return null;
+  const root = repoCanon(repo);
+  if (auditCmdPreconditions(POSTLAND_AUDIT_CMD).some((f) => !existsSync(`${root}/${f}`))) return null;
+  return { cmd: POSTLAND_AUDIT_CMD, source: "env" };
 }
 // "is tier 2 armed at all" — for the surfaces that speak about the deployment rather than a repo
 // (the ledgers view's auditConfigured, the audit route's `configured`, the drain kick). A
@@ -23290,7 +23299,8 @@ const HELPER_CLAIM_BAR_REASON: Record<HelperClaimBar, string> = {
 // since the previous run, so the two questions this tier exists to answer are plain joins over the
 // trail: "which land was the last GREEN audit" = the newest green row's covers/mainSha, and "which
 // lands came after a RED one" = every cover in every row after that red row (plus the red row's own).
-// `result` is TRI-STATE, and the third state is load-bearing (A4, unknown ≠ zero): an audit that
+// `result` distinguishes a measured pass or failure, unknown measurement, and no applicable command:
+// an audit that
 // timed out, could not be started, or declined to run is `unknown` — never green, and never red
 // either (a failed measurement is not evidence of a defect).
 interface PostLandAuditChecks { ran: number; failed: number; ranIsLowerBound?: true }
@@ -23333,8 +23343,8 @@ interface PostLandAuditRow {
   repo: string;        // git toplevel — joins to the LandRecord / the fleet/land note's repo
   main: string;        // integration branch name
   mainSha: string;     // the tip the audit actually ran against — joins to a note's `mainAfter`
-  result: "green" | "red" | "unknown";
-  reason?: string;     // present on `unknown` only: WHY no measurement happened
+  result: "green" | "red" | "unknown" | "not-applicable";
+  reason?: string;     // why an unknown run or a not-applicable land had no measurement
   cmd: string;
   // which config chose `cmd` — the repo's own worker or the env default. Optional so historical
   // rows (all env) and remote rows (the helper's own suite) claim nothing they never recorded.
@@ -24468,9 +24478,18 @@ function savePostLandAuditQueue(): void {
 // into exactly ONE follow-up run against the then-current tip, and that run's `covers` names every
 // land it stands for. Nothing is silently dropped: a land is either covered by the run in flight's
 // successor or by the run it triggered.
-function schedulePostLandAudit(repo: string, main: string, branch: string, mainAfter: string,
-  proportional: boolean): void {
-  if (!auditCmdFor(repo)) return; // tier 2 not configured FOR THIS REPO — today's behaviour, unchanged
+async function schedulePostLandAudit(repo: string, main: string, branch: string, mainAfter: string,
+  proportional: boolean): Promise<void> {
+  if (!auditCmdFor(repo)) {
+    if (!POSTLAND_AUDIT_CMD) return;
+    const at = Date.now();
+    const row: PostLandAuditRow = { at, startedAt: at, ms: 0, repo, main, mainSha: mainAfter,
+      result: "not-applicable", reason: "no audit command applies to this repo", cmd: "",
+      exitCode: null, out: "", checks: null, covers: [{ branch, mainAfter, at }] };
+    await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
+    lastPostLandAudit = row;
+    return;
+  }
   const q = auditQueue.get(repo) ?? { main, covers: [] };
   q.main = main;
   // the flag is written ONLY when the gate proved it, never as `proportional: false` — absence is
@@ -26094,7 +26113,7 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
 // remote green and a local green mean the same thing only if ONE function decides what green is.
 // Tri-state, and the third state is load-bearing (A4, unknown ≠ zero) — a command that declined
 // (VERIFY_SKIP_EXIT) or could not be started (126/127) measured NOTHING, which is never a red.
-function remoteVerdictOf(exitCode: number | null): { result: PostLandAuditRow["result"]; reason?: string } {
+function remoteVerdictOf(exitCode: number | null): { result: "green" | "red" | "unknown"; reason?: string } {
   if (exitCode === null) return { result: "unknown", reason: "the helper reported no exit code — no verdict" };
   if (exitCode === VERIFY_SKIP_EXIT) return { result: "unknown", reason: `the audit command declined to run (exit ${VERIFY_SKIP_EXIT})` };
   if (exitCode === 126 || exitCode === 127) return { result: "unknown", reason: `the audit command could not be started (exit ${exitCode})` };
@@ -30576,6 +30595,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       // waited 0s" are different sentences, and every count built on this row depends on it.
       audit("merge_verdict", s.id, branch, {
         status: bound.status, landed: bound.landed, actor: actor.kind,
+        verifyOk: bound.verify?.ok ?? null,
+        stopKind: bound.verify?.ok === false ? "red"
+          : bound.verify?.ok === null ? "unmeasured"
+          : (bound.conflicted?.length ?? 0) > 0 ? "conflict"
+          : bound.status === "resolved" || bound.status === "awaiting-author" ? "review" : null,
         ...(bound.errorReason ? { errorReason: bound.errorReason } : {}),
         ...(bound.ffRounds !== undefined ? { ffRounds: bound.ffRounds } : {}),
         ...(bound.waitRounds !== undefined ? { waitRounds: bound.waitRounds } : {}),
@@ -30585,7 +30609,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         ...(bound.verify?.waitMs !== undefined ? { waitMs: bound.verify.waitMs } : {}),
         // which chain and which repo this gate measured — what gateStats files the sample under
         ...(bound.verify?.proportional !== undefined ? { repo: root, proportional: bound.verify.proportional } : {}),
-      });
+      } as unknown as NonNullable<Parameters<typeof audit>[3]>);
       if (bound.landed && bound.verify?.ms !== undefined && bound.verify.proportional !== undefined
         && !bound.verify.timedOut && !bound.verify.waitedOut)
         recordGateDuration(root, bound.verify.proportional, bound.verify.ms);
@@ -41427,37 +41451,10 @@ Bun.serve<WSData>({
         // the collision guard only matters when the integration branch is checked out somewhere: an ff-merge
         // THERE rewrites files on disk. Checked out nowhere (primary parked off it), landing advances the
         // ref with branch -f and touches no working tree — skip the guard entirely.
-        const landHolder = (await listWorktrees(repo)).find((w) => w.branch === main);
-        if (landHolder) {
-          // an ff-merge rewrites ONLY the files the lane changed — so refuse only if one of THOSE is
-          // uncommitted in the holder tree; an unrelated dirty file (a working HANDOFF.md) must not block.
-          // git's own --ff-only stays the final arbiter below. Narrativ: server-narrativ-archiv.md#fetch-post-apislotsidmerge
-          const pst = await git(landHolder.path, "status", "--porcelain");
-          if (pst.code === 0 && pst.out) {
-            const rows = pst.out.split("\n").filter((l) => l && !l.startsWith("!!"));
-            const pathOf = (l: string): string =>
-              (l.includes(" -> ") ? l.slice(l.indexOf(" -> ") + 4) : l.slice(3)).trim();
-            const dirty = new Set(rows.filter((l) => !l.startsWith("??")).map(pathOf));
-            // UNTRACKED twin of the same refusal (2026-08-05): git's ff-only refuses to overwrite an untracked
-            // holder file just as hard — caught here, before the verify spend. Only a name the lane itself adds collides.
-            const untracked = new Set(rows.filter((l) => l.startsWith("??")).map(pathOf));
-            if (dirty.size || untracked.size) {
-              const mb = await git(repo, "merge-base", main, branch);
-              const changed = mb.code === 0 && mb.out
-                ? await git(repo, "diff", "--name-only", `${mb.out}..${branch}`)
-                : { code: 1, out: "", err: "" };
-              const laneFiles = changed.code === 0
-                ? changed.out.split("\n").map((f) => f.trim()).filter(Boolean) : null;
-              // couldn't compute the lane's file set → fall back to the safe (broad) refusal
-              const collide = laneFiles ? laneFiles.filter((f) => dirty.has(f)) : [...dirty];
-              if (collide.length) return json({ status: "blocked",
-                detail: `${main} is checked out at ${landHolder.path} with uncommitted changes to ${collide.join(", ")} — the land would overwrite them; commit or stash there first` });
-              const collideU = laneFiles ? laneFiles.filter((f) => untracked.has(f)) : [];
-              if (collideU.length) return json({ status: "blocked",
-                detail: `${main} is checked out at ${landHolder.path} with UNTRACKED files this lane also adds (${collideU.join(", ")}) — the land would overwrite them; move or commit them there first` });
-            }
-          }
-        }
+        const mainSha = await git(repo, "rev-parse", main);
+        if (mainSha.code !== 0 || !mainSha.out) return json({ status: "blocked", detail: `cannot read ${main} before land` });
+        const dirty = await dirtyMainStop(repo, main, mainSha.out, branch, {});
+        if (dirty) return json({ status: "blocked", detail: dirty.detail, errorReason: dirty.errorReason });
         // confirm-land: the owner reviewed an agent conflict resolution and is landing it. No agent, no
         // trust in the stored verdict — the guarantee is purely git: main is an ancestor of the clean lane
         // branch. If main moved since, the ancestry fails and they re-run ⏫.

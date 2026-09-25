@@ -21,7 +21,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { BASE, ROOT, check, get, post } from "./harness";
+import { BASE, ROOT, check, get, paneEnv, post } from "./harness";
 import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 import { laneSuiteWatchMessage } from "../lane-signals";
 
@@ -1858,6 +1858,13 @@ export async function run(h: {
     const floBefore = (await rowsFor(FLO)).length;
     for (const [dir, name] of [[DECOY, "guardforeign"], [HALF, "guardhalf"], [FLO, "guardfleet"]] as const) {
       const ln = await openLane(dir, name);
+      if (dir === DECOY) {
+        const selfToken = await paneEnv(`s${ln.slot}`, "FLEET_SELF_TOKEN");
+        const gate = selfToken ? await fetch(`${BASE}/api/self/gate`, { headers: { "x-fleet-self-token": selfToken } }) : null;
+        const view = gate?.ok ? (await gate.json()) as { postlandAudit?: boolean } : null;
+        check("audit applicability mutation: a foreign lane's self gate reports postlandAudit:false",
+          gate?.ok === true && view?.postlandAudit === false, `${gate?.status} ${JSON.stringify(view)}`);
+      }
       await driveMerge(ln, ln.branch);
     }
     const floSha = spawnSync("git", ["-C", FLO, "rev-parse", "main"]).stdout.toString().trim();
@@ -1878,14 +1885,14 @@ export async function run(h: {
     const foreignErr = ((await foreignClaim.json()) as { error?: string; job?: unknown });
     const halfClaim = await hpost("/api/helper/claim", { jobId: idOf(HALF), deviceId: DEVICE });
     const halfErr = ((await halfClaim.json()) as { error?: string; job?: unknown });
-    check("(K10) A FOREIGN TREE IS NOT HANDED OVER: off the list, its claim is a 409 naming the guard, no job object, no bundle built",
-      !listed.some((j) => j.repo === base(DECOY)) && foreignClaim.status === 409
-        && (foreignErr.error ?? "").includes("guard") && foreignErr.job === undefined
+    check("(K10) A FOREIGN TREE IS NOT HANDED OVER: off the list, its claim is a 404, no job object, no bundle built",
+      !listed.some((j) => j.repo === base(DECOY)) && foreignClaim.status === 404
+        && foreignErr.job === undefined
         && bundlesFor(idOf(DECOY)).length === 0,
       `listed=${listed.some((j) => j.repo === base(DECOY))} ${foreignClaim.status} ${JSON.stringify(foreignErr)} bundles=${bundlesFor(idOf(DECOY))}`);
     check("(K10) …and neither is a tree with the sentinel but no package.json — the helper installs before it runs anything",
-      !listed.some((j) => j.repo === base(HALF)) && halfClaim.status === 409
-        && (halfErr.error ?? "").includes("package.json") && bundlesFor(idOf(HALF)).length === 0,
+      !listed.some((j) => j.repo === base(HALF)) && halfClaim.status === 404
+        && bundlesFor(idOf(HALF)).length === 0,
       `listed=${listed.some((j) => j.repo === base(HALF))} ${halfClaim.status} ${JSON.stringify(halfErr)}`);
 
     const floClaim = await hpost("/api/helper/claim", { jobId: floJob?.id ?? "", deviceId: DEVICE });
@@ -1902,13 +1909,12 @@ export async function run(h: {
     const halfRows = await waitRowsFor(HALF, halfBefore + 1, 60_000);
     const floRows = await waitRowsFor(FLO, floBefore + 1, 30_000);
     const foreignRow = foreignRows[0];
-    check("(K10) …AND THE FOREIGN ENTRY IS ANSWERED HERE, as the guard's own non-measurement: local, unknown, exit 42",
+    check("(K10) foreign audit mutation: the land writes not-applicable without running the guarded command",
       foreignRows.length === foreignBefore + 1 && !!foreignRow && !foreignRow.remote
-        && foreignRow.result === "unknown" && foreignRow.exitCode === 42
-        && foreignRow.out.includes("audit skipped: not the fleet repo"),
+        && foreignRow.result === "not-applicable" && foreignRow.exitCode === null && foreignRow.cmd === "",
       JSON.stringify(foreignRow).slice(0, 300));
-    check("(K10) …the half tree is run here too (its guard passes locally), and the control's only row is the remote one",
-      halfRows.length === halfBefore + 1 && !halfRows[0]?.remote
+    check("(K10) the half tree also declines because the configured chain lacks its install input; the control stays remote",
+      halfRows.length === halfBefore + 1 && halfRows[0]?.result === "not-applicable"
         && floReport.ok && floRows.length === floBefore + 1 && floRows[0]?.remote?.name === DEVICE_NAME
         && floRows[0]?.mainSha === floSha,
       `half=${JSON.stringify(halfRows[0]).slice(0, 160)} flo=${JSON.stringify(floRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);

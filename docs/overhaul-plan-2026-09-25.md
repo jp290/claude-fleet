@@ -54,6 +54,17 @@ Folgen (die Nummern sind die Interview-Fragen):
 Folgen:
 - **Neuer Strang S9 · Schlanke Datenschichten und Antworten:** Ledger, `fleet.json`-Tabellen, Poll- und Self-Antworten, `ctl.sh`-Ausgaben und Briefe werden auf das geschnitten, was ein Leser braucht. Erster Schnitt: Messnotiz — je Route/Ledger/Ausgabe Bytes pro Aufruf × Aufrufe pro Tag × wer liest was davon (K5 §2 `prompts.jsonl` 35 MB ungerotiert und bei jedem Dossier ganz gelesen; K2 Zustellung 1,4–8,6× Verfasstes; K4 ~988-B-Block in 213/313). Daraus eine gerankte Schnittliste mit Byte-Ersparnis. Gehoert zu „Overhaul Kern“, beruehrt S5 (Index statt Vollscan) und S7(a).
 - **Welle 0 · EIN Overhaul-Integrationszweig:** Der Code des Overhauls landet NICHT Schnitt fuer Schnitt auf `main` (das der Live-Server faehrt), sondern auf einem Zweig `overhaul` mit eigenem Worktree und eigener Testinstanz (`testinstanz.sh`). Lanes des Overhauls forken von `overhaul` und landen dorthin; `main` wird erst nach Gesamtpruefung auf der Testinstanz in einem Zug nachgezogen. Messnotizen ohne Code (S2-Synthese, S3-Sichtung, S4-Messung, S9-Messung) duerfen weiter auf `main`, weil sie nichts brechen und andere Sessions sie lesen. Offen und ERSTER Schnitt von „Overhaul Kern“: ob der Land-Pfad das heute kann — `server.ts#integrationBranch` liest EINE Basis je Repo (`repoBases`, Route `/api/repo-base`), die Lane merkt sich ihre Basis beim Fork (`worktree.base`, `server.ts#laneBaseRef`); ob `landLane`, Post-Land-Audit und der ff des Haupt-Checkouts einer Lane mit Basis `overhaul` folgen, ist ungeprueft. DONE: e2e-Check — eine Lane mit Basis `overhaul` landet dorthin, `main` bleibt unbewegt, das Audit laeuft gegen den `overhaul`-Tip; Mutationsprobe: Land-Ziel hart auf `main` → Check rot. Bis das steht, laeuft Code-Arbeit des Overhauls in genau einem Worktree nach dem Muster von 52a25990 (Sessions nacheinander im selben Worktree, gelandet wird als Ganzes).
+- **Stand Welle 0 (2026-09-25):** gelandet als `01d2e641` (Task-Feld `base`, Owner-Route `POST /api/slots/:id/base`, e2e in `e2e/merge.ts`). Branch `overhaul` mit Worktree `claude-fleet.worktrees/overhaul`. Offenes Loch: `server.ts#selfLandTaskForMain` ignoriert die Lane-Basis (Zeile a1ddfac8); bis dahin landen overhaul-Lanes nur ueber die Owner-Route.
+
+
+### 0c. Owner-Nachtrag (2026-09-25 ~22:3x, ueber die Orchestratorin, woertlich)
+
+- Sprechende Branchnamen (Notiz 065f375a, Stufe 2: `fleet/<yymmdd>-<slug>-<4hex>`, slug ≤ 24 Zeichen aus dem Kurztitel): "hmm, dann müssen wir das mit bedacht angehen aber ich denke es würde Sinn machen."
+- Full-Trace-View: "Was ich aber eigentlich auch noch implementieren will ist ein full-trace view. Ich will auf einem Zeitstrahl in sauberer und kompakter form die Arbeit mit bearbeiteten Files und allem nachvollziehen können. Ich will am liebsten sogar einzommen oder auf elemente draufklicken können wollen und mir die sesison bzw. die einzelnen tool call, und ihre jev geindexte bedeutung dazu angucken wollen. Ich denke Das so ein klarer detailierter zeitlicher Blick wirklich viel zum Verständnis der WorkerAgenten und die Audits ihrer Trails, beitragen könnte :)"
+
+Folgen:
+- **Branchnamen, "mit Bedacht":** Zuerst ein Inventar ALLER Leser, die Branchnamen parsen (`src/suitemeter.ts#laneTail`, Pins, Ledger-Leser, `register.sh`/`state.sh`, Client), mit rg-Beleg. Danach der Bau auf `overhaul`. Beide Formen bleiben lesbar, die alten Namen stehen in den Ledgern.
+- **S5 wird zur Full-Trace-Sicht erweitert** (§2 S5, Punkte T1–T4). Die Datenfrage (Transkript-Quelle je Harness, Horizont, Groesse) ist ein Denkauftrag und kommt als Messnotiz vor dem Bau.
 
 ---
 
@@ -243,6 +254,10 @@ nicht gelandet ist, geschieht das per Skript.
   - `trace-index.ts` baut `TraceEvent`s (Modell K5 §6) über alle drei Generationen, die Land-Notizen und
     `git log`.
   - Dazu die Route `GET /api/trace?task=` mit Horizont je Quelle.
+  - `TraceEvent` ist offen fuer spaetere Quellen: `source` (Ledger-, Notiz- oder Transkript-Name), `kind`
+    aus einer erweiterbaren Menge, `at`, `refs{task,slot,branch,sha}`, `files[]` (leer erlaubt) und ein
+    optionales `detailRef` (Zeiger auf das Rohereignis, nie der Rohinhalt). Tool-Call-Ereignisse (T1)
+    kommen so ohne Schemawechsel dazu.
   - **DONE:**
     - e2e: Die Spur für `e01a4e95` zeigt alle Stufen.
     - Eine Task, die älter als ihr Horizont ist, liefert `unmeasured` mit Quellnamen und nie ein leeres
@@ -256,6 +271,18 @@ nicht gelandet ist, geschieht das per Skript.
   - Ein Sammler `commit.direct`.
   - Reports aus dem Ledger statt aus dem 20er-Tail lesen (K5 Ä4).
 - **Dritter Schnitt:** Die Seite selbst, Desktop und Mobile, im Program 0d51b4d4 nach S8.
+- **Full-Trace-Erweiterung (Owner 2026-09-25 ~22:3x, §0c):**
+  - **T1 · Granularitaet bis zum Tool-Call:** Jede Session einer Lane wird als Folge ihrer Tool-Calls
+    sichtbar. Quellen sind Claude-jsonl, Codex-Rollouts und pi-Logs, je nach Harness.
+  - **T2 · Bearbeitete Files je Zeitpunkt:** Welche Datei wann geschrieben wurde, aus den Tool-Calls
+    und aus den Commits.
+  - **T3 · Jev-indizierte Bedeutung je Tool-Call:** Anschluss an Konzeptgedaechtnis (Program 31aa88ea)
+    und Jev (Program 98f3eef9). Jev waehlt unter Optionen, die der Code baut, und ist nie ein Gate.
+  - **T4 · Seite mit Zeitstrahl, Zoom und Klick ins Element:** gehoert zum dritten Schnitt (Program
+    0d51b4d4).
+  - **Reihenfolge:** Zuerst die Messnotiz zur Datenfrage (Quelle je Harness, Horizont, Groesse,
+    Zuordnung Session → Lane → Task). Der erste Schnitt oben geht ohne T1–T3, sein Schema nimmt sie aber
+    auf. T1/T2 werden erst danach gebaut, T3 nach der ersten Messung des Konzeptgedaechtnisses.
 - **Abhängigkeiten:** S2 (`actor`) macht die Seite ehrlich, der erste Schnitt geht aber ohne.
 
 ### S6 · Eingang von außen (Zielbild 9, Interview 6)

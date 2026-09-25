@@ -21,7 +21,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
-import { REPO, ROOT, check, get, post } from "./harness";
+import { BASE, REPO, ROOT, check, get, post } from "./harness";
 import { gitUnquote, porcelainPath } from "../src/gitpath";
 import { matchTree, treeOf } from "../src/filetree";
 
@@ -34,8 +34,10 @@ interface StubNode {
   children: StubNode[]; style: Record<string, string>; dataset: Record<string, string>;
   value: string; type: string; placeholder: string; spellcheck: boolean; autocomplete: string;
   selectionStart: number | null;
+  draggable: boolean;
   onclick: (() => void) | null; oninput: (() => void) | null; onscroll: (() => void) | null;
   onfocus: (() => void) | null; onblur: (() => void) | null;
+  ondragstart: ((e: unknown) => void) | null;
   scrollTop: number; focused: boolean;
   appendChild(n: StubNode): StubNode;
   append(...n: StubNode[]): void;
@@ -50,7 +52,8 @@ function makeNode(tag: string): StubNode {
   const n: StubNode = {
     tag, className: "", textContent: "", title: "", children: [], style: {}, dataset: {},
     value: "", type: "", placeholder: "", spellcheck: false, autocomplete: "",
-    selectionStart: 0, onclick: null, oninput: null, onscroll: null, onfocus: null, onblur: null,
+    selectionStart: 0, draggable: false, onclick: null, oninput: null, onscroll: null, onfocus: null, onblur: null,
+    ondragstart: null,
     scrollTop: 0, focused: false, attrs: {},
     appendChild(c) { n.children.push(c); return c; },
     append(...c) { n.children.push(...c); },
@@ -64,7 +67,9 @@ function makeNode(tag: string): StubNode {
 }
 // every row the paint produced, flattened, in visual order — the order a reader tabs through
 const rowsOf = (n: StubNode): StubNode[] =>
-  n.children.filter((c) => c.tag === "button" && c.className.includes("fxrow"));
+  n.children.flatMap((c) => [
+    ...(c.tag === "button" && c.className.includes("fxrow") ? [c] : []), ...rowsOf(c),
+  ]);
 const textOf = (n: StubNode): string =>
   n.textContent + n.children.map(textOf).join("");
 
@@ -76,7 +81,9 @@ export async function run(): Promise<void> {
   spawnSync("git", ["-C", REPO, "commit", "--allow-empty", "-qm", "explorer: base history B"]);
   const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as
     { slot: number; cwd: string; branch: string };
-  await Bun.write(`${ln.cwd}/explorer-lane.txt`, "lane work\n");
+  const contentMarker = "fleet explorer contents cap marker";
+  await Bun.write(`${ln.cwd}/explorer-lane.txt`, Array.from({ length: 230 }, (_, i) =>
+    `${contentMarker} ${i + 1}\n`).join(""));
   spawnSync("git", ["-C", ln.cwd, "add", "explorer-lane.txt"]);
   for (let i = 0; i < 12; i++) {
     spawnSync("git", ["-C", ln.cwd, "commit", "-qm", "explorer: the lane's own commit"]);
@@ -137,6 +144,29 @@ export async function run(): Promise<void> {
   check("the explorer tree lists this lane's tracked files, uncapped, with a total",
     (tr.files ?? []).includes("explorer-lane.txt") && tr.capped === false
     && tr.total === (tr.files ?? []).length, JSON.stringify({ n: tr.files?.length, capped: tr.capped }));
+  const cleanBeforeContents = spawnSync("git", ["-C", ln.cwd, "status", "--porcelain"]).stdout.toString();
+  const contentsRes = await get(`/api/contents?slot=${ln.slot}&q=${encodeURIComponent(contentMarker)}`);
+  const contents = await contentsRes.json() as { matches?: { path: string; line: number; text: string }[];
+    capped?: boolean; timedOut?: boolean; limit?: number; error?: string };
+  check("Contents: git grep returns path + line and the global hit cap is explicit",
+    contentsRes.status === 200 && contents.matches?.length === 200 && contents.limit === 200
+    && contents.capped === true && contents.timedOut === false
+    && contents.matches[0]?.path === "explorer-lane.txt" && contents.matches[0]?.line === 1,
+    `${contentsRes.status} ${JSON.stringify({ n: contents.matches?.length, capped: contents.capped,
+      first: contents.matches?.[0], error: contents.error })}`);
+  const cleanAfterContents = spawnSync("git", ["-C", ln.cwd, "status", "--porcelain"]).stdout.toString();
+  check("Contents is read-only: the capped search leaves the slot worktree byte-for-byte clean in git",
+    cleanBeforeContents === "" && cleanAfterContents === cleanBeforeContents,
+    JSON.stringify({ before: cleanBeforeContents, after: cleanAfterContents }));
+  const unauthContents = await fetch(`${BASE}/api/contents?slot=${ln.slot}&q=marker`);
+  check("Contents is owner-authenticated: the same read without the owner token is refused",
+    unauthContents.status === 401 && /unauthorized/.test(await unauthContents.text()), String(unauthContents.status));
+  const badContents = await get(`/api/contents?slot=${ln.slot}&q=${encodeURIComponent("bad\nquery")}`);
+  check("Contents rejects invalid input by name: the error names q",
+    badContents.status === 400 && /\bq\b/.test(await badContents.text()), String(badContents.status));
+  const foreignContents = await get("/api/contents?slot=99999&q=marker");
+  check("Contents rejects a foreign slot by name: the error names slot 99999",
+    foreignContents.status === 400 && /slot 99999/.test(await foreignContents.text()), String(foreignContents.status));
   // A DETACHED HEAD keeps the card: `brief.branch` is the STRING "HEAD" there, not null, so the
   // `if (brief.branch)` gate the card sits behind stays truthy. Measured, because the comment at
   // that gate says a detached HEAD loses the card — and the tree route serves it either way.
@@ -192,19 +222,31 @@ export async function run(): Promise<void> {
     paintTree: Painter;
     fxStatusOf: (lines: string[], untracked: boolean) => Map<string, string>;
     fxTreeOf: (paths: string[]) => unknown;
+    fxPathDrop: (raw: string) => { slot: number; path: string } | null;
+    fxAppendPath: (text: string, path: string) => string;
   }
   let cut: Cut | null = null;
   let cutErr = "";
   try {
     const ts = new Bun.Transpiler({ loader: "ts" });
     const painted = new Function("makeNode", "matchTree", "treeOf", "porcelainPath",
-      `${PRELUDE}\n${ts.transformSync(fxSrc)}\n` + "return { paintTree, fxStatusOf, fxTreeOf };")(
-      makeNode, matchTree, treeOf, porcelainPath) as Pick<Cut, "paintTree" | "fxStatusOf" | "fxTreeOf">;
+      `${PRELUDE}\n${ts.transformSync(fxSrc)}\n` + "return { paintTree, fxStatusOf, fxTreeOf, fxPathDrop, fxAppendPath };")(
+      makeNode, matchTree, treeOf, porcelainPath) as Pick<Cut, "paintTree" | "fxStatusOf" | "fxTreeOf" | "fxPathDrop" | "fxAppendPath">;
     cut = { gitUnquote, porcelainPath, treeOf, matchTree, ...painted };
   } catch (e) { cutErr = e instanceof Error ? e.message : String(e); }
   check("explorer precondition: the extracted block evaluates against the DOM stand-in",
     !!cut, cutErr || "ok");
   if (!cut) return; // every check below would report a client defect it never measured
+
+  const dropped = cut.fxPathDrop(JSON.stringify({ slot: 7, path: "src/client.ts" }));
+  check("drop: the private explorer payload becomes only a slot-bound relative path in composer text",
+    dropped?.slot === 7 && dropped.path === "src/client.ts"
+    && cut.fxAppendPath("please inspect", dropped.path) === "please inspect\nsrc/client.ts",
+    JSON.stringify({ dropped, text: dropped ? cut.fxAppendPath("please inspect", dropped.path) : null }));
+  check("drop: malformed or desktop-shaped data is refused, never treated as a repo path",
+    cut.fxPathDrop(JSON.stringify({ slot: 7, path: "bad\npath" })) === null
+    && cut.fxPathDrop(JSON.stringify({ slot: 0, path: "src/client.ts" })) === null
+    && cut.fxPathDrop("") === null, "invalid payloads accepted");
 
   // --- B1: the path decoder, against the shapes git was MEASURED to emit (2026-08-20) ---
   check("GITPATH: a space makes git quote a porcelain path — and it is decoded back",
@@ -262,6 +304,21 @@ export async function run(): Promise<void> {
   check("tree: rows are <button>s — tabbable and Enter/Space-activatable without a key handler",
     rowish.length > 0 && rowish.every((r) => r.tag === "button"),
     JSON.stringify(rowish.map((r) => r.tag)));
+
+  let dragged = "";
+  const actionBox = makeNode("div");
+  cut.paintTree(actionBox, cut.treeOf(["src/client.ts"]), {
+    open: new Set(["src"]), query: "", all: ["src/client.ts"], capped: false, shown: 1, total: 1,
+    onPick: () => { /* not exercised here */ }, picked: () => null,
+    onDrag: (rel: string) => { dragged = rel; }, actions: () => makeNode("button"),
+  } as unknown as Record<string, unknown>);
+  const draggable = rowsOf(actionBox).find((r) => r.title === "src/client.ts");
+  draggable?.ondragstart?.({});
+  check("tree action row: the file remains a real button, gains a sibling action, and drags its full path",
+    draggable?.tag === "button" && draggable.draggable === true && dragged === "src/client.ts"
+    && actionBox.children.some((c) => c.className === "fxline" && c.children.length === 2),
+    JSON.stringify({ tag: draggable?.tag, draggable: draggable?.draggable, dragged,
+      lines: actionBox.children.map((c) => [c.className, c.children.length]) }));
 
   // click a folder → it opens, in place, and its children appear
   const e2eRow = dirRows.find((r) => textOf(r).includes("e2e"));

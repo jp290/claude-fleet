@@ -132,12 +132,45 @@ export function renderCardHead(card: TaskCardBody): string {
   return clipBytes(head, CARD_HEAD_MAX_BYTES);
 }
 
+const CARD_PROSE_FIELD = /^\s*(?:ZIEL|ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|VERIFY|DONE|VERBOTEN)\s*:/i;
+const CARD_PROSE_ROLE = /^\s*ROLLE\s*:/i;
+
+function laneProse(prose: string, renderedCard: boolean): string {
+  const lines = prose.split("\n");
+  let at = 0;
+  while (at < lines.length && !lines[at]!.trim()) at++;
+  if (renderedCard && lines[at]?.startsWith(CARD_HEAD_MARK)) {
+    const end = lines.indexOf("--- AUFTRAG ---", at + 1);
+    if (end >= 0) lines.splice(at, end - at + 1);
+  }
+  while (at < lines.length && !lines[at]!.trim()) at++;
+  const title = lines[at]?.trim().startsWith("[") ? at++ : -1;
+  const first = at;
+  let fields = 0;
+  while (at < lines.length) {
+    if (CARD_PROSE_FIELD.test(lines[at]!)) { fields++; at++; continue; }
+    if (fields > 0 && /^\s+\S/.test(lines[at]!)) { at++; continue; }
+    break;
+  }
+  if (at > first) {
+    if (renderedCard) lines.splice(first, at - first);
+    else {
+      const kept = lines.slice(first, at).filter((line) => !CARD_PROSE_ROLE.test(line));
+      lines.splice(first, at - first, ...kept);
+    }
+  }
+  const keptTitle = title >= 0 ? lines[title]?.trim() : "";
+  const body = lines.join("\n").replace(/^\s*\n/, "").trimStart();
+  return keptTitle && !body.startsWith(keptTitle) ? `${keptTitle}\n\n${body}` : body;
+}
+
 /** A row's lane-facing body: the card head before the prose when a valid card exists, else the
  *  prose — and the row's comment block and counter-read block behind it, each absent (not empty)
  *  when the row has none. */
 export function withCardHead(card: TaskCardBody | null, prose: string,
   comments?: readonly RowCommentInput[], review?: readonly BriefReviewFindingInput[]): string {
-  return `${card ? `${renderCardHead(card)}\n\n` : ""}${prose}${renderRowComments(comments)}${renderBriefReviewBlock(review)}`;
+  const body = laneProse(prose, !!card);
+  return `${card ? `${renderCardHead(card)}${body ? "\n\n" : ""}` : ""}${body}${renderRowComments(comments)}${renderBriefReviewBlock(review)}`;
 }
 
 export interface WaveBriefRow {

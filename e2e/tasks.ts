@@ -10,7 +10,7 @@ import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt, buildBriefReviewPrompt } from "../refine-prompt";
 import { briefReviewArm } from "../refine-validate";
 import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY, CARD_VALIDATOR_VERSION } from "../card-extract";
-import { renderWaveBrief, renderCardHead, renderRowComments, CARD_HEAD_MAX_BYTES, ROW_COMMENTS_MAX_BYTES, BRIEF_REVIEW_MARK } from "../wave-brief";
+import { renderWaveBrief, renderCardHead, renderRowComments, withCardHead, CARD_HEAD_MARK, CARD_HEAD_MAX_BYTES, ROW_COMMENTS_MAX_BYTES, BRIEF_REVIEW_MARK } from "../wave-brief";
 import { LOCAL_PROOF_STEPS } from "../verify-proportion";
 import { classify as laneModelClass } from "../lane-context-cost";
 import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, SURFACE_RESOLVER, topLevelDeclarations,
@@ -5035,15 +5035,14 @@ export async function run(ctx: Ctx): Promise<void> {
       n6("foreign", ["a.ts"], { repo: "/other" }),
       n6("notanote", ["a.ts"], { kind: "auftrag" }),
     ];
-    // (a) THE TWO POPULATIONS. `s2` shares NO file with T6 and must still arrive, because it was
-    // chosen; the join hits must arrive without a `taskIds` field, because nobody chose them.
-    // Mutation that breaks it: resolving a pin through notesForTask (s2 would vanish).
+    // (a) THE TWO POPULATIONS SHARE ONE FLOOR. A pin scopes the verdict but does not widen delivery:
+    // `s2` shares NO file with T6 and must stay out; `s1` intersects and carries the task id.
+    // Mutation that breaks it: removing the `sharedFiles.length` guard in laneNoteSources.
     const one = laneNoteSources(t6, [{ id: "T6", noteIds: ["s1", "s2"] }], pop);
-    check("(d6-a) an explicit pin is delivered whatever the surface says, and carries the row that named it",
-      one.shown.slice(0, 2).map((r) => r.id).join(",") === "s1,s2"
-      && one.shown[0]!.taskIds?.join(",") === "T6" && one.shown[1]!.taskIds?.join(",") === "T6"
-      && one.shown[1]!.sharedFiles.length === 0
-      && one.shown.slice(2).every((r) => r.taskIds === undefined)
+    check("(s7a-notes) a pinned note without a surface intersection is not delivered; an intersecting one is",
+      one.shown[0]!.id === "s1" && one.shown[0]!.taskIds?.join(",") === "T6"
+      && !one.reachable.some((r) => r.id === "s2")
+      && one.shown.slice(1).every((r) => r.taskIds === undefined)
       && one.unknown.length === 0,
       JSON.stringify(one.shown.map((r) => [r.id, r.taskIds ?? null, r.sharedFiles])));
     // (b) A NOTE THAT IS BOTH is EXPLICIT. A coincidence does not un-choose a source, and the
@@ -5067,14 +5066,14 @@ export async function run(ctx: Ctx): Promise<void> {
     // five get a sentence, two are NAMED, and all seven are reachable. Mutation that breaks it:
     // slicing `reachable` by the cap — the lane would then be unable to read a source it was
     // assigned, and neither surface would say so.
-    const seven = ["s1", "s2", "j1", "j2", "j3", "j4", "j5"];
+    const seven = ["s1", "j1", "j2", "j3", "j4", "j5", "j6"];
     const capped = laneNoteSources(t6, [{ id: "T6", noteIds: seven }], pop);
     const cappedBlock = renderNotesBlock(capped.shown, undefined, capped.overflow);
     check("(d6-d) the cap limits the PREVIEW to five and leaves all seven explicit sources reachable",
       capped.shown.length === 5 && capped.overflow.length === 2 && capped.reachable.length === 7
       && capped.reachable.map((r) => r.id).join(",") === seven.join(",")
       && cappedBlock.includes("+ 2 weitere angeheftete Quellen")
-      && cappedBlock.includes("j4 zu T6") && cappedBlock.includes("j5 zu T6")
+      && cappedBlock.includes("j5 zu T6") && cappedBlock.includes("j6 zu T6")
       && cappedBlock.split("\n").filter((l) => l.startsWith("- notiz ")).length === 5,
       `shown=${capped.shown.length} overflow=${capped.overflow.length} reach=${capped.reachable.length}`);
     // (e) ABSENCE STAYS UNKNOWN — and the three kinds of absence are all unknown, none of them a
@@ -5251,6 +5250,41 @@ export async function run(ctx: Ctx): Promise<void> {
       await post(`/api/slots/${slot}/kill`, {});
       if (cwd) { spawnSync("git", ["-C", ROOT, "worktree", "remove", "--force", cwd]); rootLanes.push(cwd); }
     };
+
+    const s7Goal = "Der Kartenkopf wird genau einmal an die Lane geschickt.";
+    const s7Done = "die gesendeten Bytes tragen genau einen Kartenkopf";
+    const s7Brief = [
+      "[S7A · LIVE-RENDER-PROBE]",
+      "ROLLE: claude/claude-opus-5-5[1m]/high",
+      "GROESSE: klein",
+      "FLAECHE: wave-brief.ts",
+      `ZIEL: ${s7Goal}`,
+      "VERIFY: bun e2e/pins.ts",
+      `DONE: ${s7Done}`,
+      "VERBOTEN: kein Auto-Dispatch",
+      "",
+      "S7A-LIVE-PROSA bleibt als Auftrag erhalten.",
+    ].join("\n");
+    const s7Post = await post("/api/tasks", { text: s7Brief, kind: "auftrag", queue: false, repo: ROOT,
+      card: { ziel: s7Goal, surface: { files: ["wave-brief.ts"], symbols: [] }, done: s7Done,
+        verify: "bun e2e/pins.ts", verboten: ["kein Auto-Dispatch"] } });
+    const s7RenderId = ((await s7Post.json()) as { task?: { id?: string } }).task?.id ?? "";
+    const s7Sent = await dispatchAndRead(s7RenderId, s7Brief);
+    await closeLane(s7Sent.slot);
+    const s7HeadCount = s7Sent.prompt.split(CARD_HEAD_MARK).length - 1;
+    // Named mutation probe: withCardHead's former raw concatenation makes headCount/goalCount 2
+    // and exposes ROLLE; reading a reconstructed value instead of the prompt journal cannot pass.
+    check("(s7a-live-render) the exact bytes sent to the lane contain one rendered card head",
+      s7Post.ok && s7Sent.prompt.length > 0 && s7HeadCount === 1
+      && s7Sent.prompt.split("ZIEL:").length - 1 === 1
+      && s7Sent.prompt.includes("S7A-LIVE-PROSA bleibt als Auftrag erhalten."),
+      `post=${s7Post.status} heads=${s7HeadCount} ${s7Sent.prompt.slice(0, 500)}`);
+    check("(s7a-live-role) sent bytes omit ROLLE while the dispatch receipt keeps role metadata",
+      !/(^|\n)ROLLE\s*:/i.test(s7Sent.prompt)
+      && s7Sent.receipt?.harness === null
+      && s7Sent.receipt.model === FLEET_DEFAULT_MODEL && s7Sent.receipt.modelOrigin === "default"
+      && s7Sent.receipt.effort === null,
+      JSON.stringify({ receipt: s7Sent.receipt ?? null, prompt: s7Sent.prompt.slice(0, 300) }));
 
     // (b1) THE CONTROL: the same brief, the same task text, in a world with no notes at all.
     const HUB_TEXT = "N1 hub probe over server.ts, AGENTS.md and task-metadata.ts";
@@ -5542,10 +5576,9 @@ export async function run(ctx: Ctx): Promise<void> {
       [n3Bad.status, n3NotANote.status, n3OntoNote.status, n3Malformed.status, n3BadFlag.status,
         n3UnknownTask.status].join("/"));
 
-    // (c) THE DISPATCH. Two pinned sources, one of which (`nG`) shares NOTHING with this task's
-    // surface — the whole point: a source arrives because it was chosen, not because a file
-    // coincided. `nHub` is pinned too and would be invisible to the join for the same reason the
-    // (d5-live-b) control is. Mutation that breaks it: resolving pins through the surface join.
+    // (c) THE DISPATCH. `nF` and `nG` are pinned and intersect continuity.ts; `nHub` is pinned but
+    // shares only hub files, so it stays out. A pin scopes an intersecting source; it never widens
+    // the delivery surface. Mutation that breaks it: accepting an explicit row before intersection.
     await n3AssignRes(n3Task, { note: nHub, attach: true });
     const N3BRIEF = "N3-SOURCES-FIXTURE";
     await post(`/api/tasks/${n3Task}/brief`, { text: N3BRIEF });
@@ -5553,10 +5586,10 @@ export async function run(ctx: Ctx): Promise<void> {
     const n3Block = n3Disp.prompt.slice(N3BRIEF.length,
       n3Disp.prompt.indexOf("\n\nContextPlan v2 anchors") >= 0
         ? n3Disp.prompt.indexOf("\n\nContextPlan v2 anchors") : undefined);
-    check("(n3-c) the brief names each pinned source with the ROW it was pinned to, whatever the file surface says",
+    check("(n3-c) the brief names intersecting pinned sources with their ROW and excludes a hub-only pin",
       n3Block.includes(`- notiz ${nF} · zu ${n3Task} · `)
       && n3Block.includes(`- notiz ${nG} · zu ${n3Task} · `)
-      && n3Block.includes(`- notiz ${nHub} · zu ${n3Task} · `)
+      && !n3Block.includes(`notiz ${nHub}`)
       && n3Block.includes("Wirksam wird ein `erledigt` erst mit dem Land GENAU DIESER Aufgabe"),
       JSON.stringify(n3Block.split("\n").filter((l) => l.startsWith("- notiz "))));
     // (d) THE RECEIPT records the ASSIGNMENT, not only the delivery. Mutation that breaks it:
@@ -5566,8 +5599,9 @@ export async function run(ctx: Ctx): Promise<void> {
     const n3Receipt = n3Disp.receipt as N3Receipt | undefined;
     check("(n3-d) the receipt names each explicit source WITH its row, beside the flat delivered list",
       JSON.stringify(n3Receipt?.noteSources) === JSON.stringify(
-        [nF, nG, nHub].map((id) => ({ id, taskIds: [n3Task] })))
-      && [nF, nG, nHub].every((id) => (n3Receipt?.notes ?? []).includes(id)),
+        [nF, nG].map((id) => ({ id, taskIds: [n3Task] })))
+      && [nF, nG].every((id) => (n3Receipt?.notes ?? []).includes(id))
+      && !(n3Receipt?.notes ?? []).includes(nHub),
       `${JSON.stringify(n3Receipt?.noteSources ?? null)} notes=${JSON.stringify(n3Receipt?.notes ?? null)}`);
 
     // (e) THE LANE'S OWN READ. The four surfaces must hand back the SAME ids and the SAME original
@@ -5599,7 +5633,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const n3SeenF = (n3Read.notes ?? []).find((x) => x.id === nF);
     check("(n3-e) API, brief, receipt and the lane's read door name the same sources — and the door serves the ORIGINAL text",
       !!n3Tok
-      && [nF, nG, nHub].every((id) => (n3Read.notes ?? []).some((x) => x.id === id))
+      && [nF, nG].every((id) => (n3Read.notes ?? []).some((x) => x.id === id))
+      && !(n3Read.notes ?? []).some((x) => x.id === nHub)
       && n3SeenF?.explicit === true
       && JSON.stringify(n3SeenF?.taskIds) === JSON.stringify([n3Task])
       && JSON.stringify(n3SeenF?.judgeableUnder) === JSON.stringify([n3Task])
@@ -5653,7 +5688,7 @@ export async function run(ctx: Ctx): Promise<void> {
 
     // (h) THE PREVIEW CAP BOUNDS THE PREVIEW, NEVER THE REACH — live. Seven sources on one row:
     // five get a sentence, two are named, and the lane's read door serves all seven in full.
-    const n3Cap = await mkTask("Auftrag N3 Deckel: docs/verify-tiering.md.", "auftrag");
+    const n3Cap = await mkTask("Auftrag N3 Deckel: continuity.ts, lane-signals.ts, slotstats.ts, trailstats.ts und docs/verify-tiering.md.", "auftrag");
     const sevenIds = [nA, nB, nC, nD, nE, nF, nG];
     for (const id of sevenIds) await n3AssignRes(n3Cap, { note: id, attach: true });
     const CAPBRIEF = "N3-CAP-FIXTURE";
@@ -5777,7 +5812,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // proved — so the cleanup has to release before it removes, exactly as a human would.
     for (const id of [n3Task, n3Cap, n3Holder, n3Own, n3Keep, n3Src, ...n3Filler])
       await post(`/api/tasks/${id}/delete`, {});
-    for (const id of [...fixtureIds, ctlId, hubId, rankId, clarifyId]) await post(`/api/tasks/${id}/delete`, {});
+    for (const id of [...fixtureIds, s7RenderId, ctlId, hubId, rankId, clarifyId]) await post(`/api/tasks/${id}/delete`, {});
     if (rootLanes.length) rmSync(`${ROOT}.worktrees`, { recursive: true, force: true });
   }
 
@@ -7723,6 +7758,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // the impact proof at the end of this block a wave at all: a gate-changing path (e2e/pins.ts)
     // would be refused by R2 however well it was confirmed, and the check would then measure R2.
     const WFILE = "AGENTS.md";
+    const WNOTEFILE = ".gitignore";
     const WGHOST = "docs/this-path-is-not-tracked.md";
     // Both rows NAME the file in their prose, so each one carries a DERIVED surface before anything
     // is confirmed. That is the control the impact proof needs: the pair goes from two waves of one
@@ -7996,6 +8032,12 @@ export async function run(ctx: Ctx): Promise<void> {
       && wAfter.savingsSec === LAND_WAVE_COSTS_2026_09.docsGateSec + LAND_WAVE_COSTS_2026_09.docsAuditSec,
       JSON.stringify({ before: wBeforeA, after: wAfter }));
 
+    // N3's source needs a real NON-HUB intersection, while W2 above deliberately proves its
+    // existing AGENTS.md surface. Add the fixture repo's tracked prose file only after that proof;
+    // this changes task metadata, not the shared repository's index, HEAD or working tree.
+    await post(`/api/tasks/${wA}/files`, { files: [WFILE, WNOTEFILE] });
+    await post(`/api/tasks/${wB}/files`, { files: [WFILE, WNOTEFILE] });
+
     // --- W3 · ▸ START WAVE: one owner click, ONE lane, n rows, ONE land. Runs on the pair the
     // impact proof above just measured — the only rows in this harness that ARE a wave — so a
     // failure here is about the button and not about a fixture that stopped folding. The lane the
@@ -8055,7 +8097,7 @@ export async function run(ctx: Ctx): Promise<void> {
       // N3 · one SOURCE, pinned to both rows of the wave before it starts. It is the fixture for
       // the sentence a returned row has to obey: a split hands the row back, and from that instant
       // a verdict under it would be a claim about work this lane will not carry.
-      w3Note = await wMint(`Notiz zur Welle: ${WFILE} traegt zwei Behauptungen. Zweiter Satz.`,
+      w3Note = await wMint(`Notiz zur Welle: ${WNOTEFILE} traegt zwei Behauptungen. Zweiter Satz.`,
         { kind: "notiz", programId: provenanceProgramId });
       const w3PinA = await post(`/api/tasks/${wA}/notes`, { note: w3Note, attach: true });
       const w3PinB = await post(`/api/tasks/${wB}/notes`, { note: w3Note, attach: true });
@@ -8073,7 +8115,8 @@ export async function run(ctx: Ctx): Promise<void> {
       check("(w3) the owner button opens ONE lane on both rows and answers with the sensor's own wave",
         w3Res.ok && w3Body.ok === true && typeof w3Body.slot === "number"
         && w3Body.wave?.ids.length === 2 && w3Body.wave.klasse === "docs"
-        && w3Body.wave.sharedFiles.join(" ") === WFILE && (w3Body.wave.savingsSec ?? 0) > 0,
+        && w3Body.wave.sharedFiles.join(" ") === [WFILE, WNOTEFILE].sort().join(" ")
+        && (w3Body.wave.savingsSec ?? 0) > 0,
         `${w3Res.status} ${JSON.stringify(w3Body)}`);
       check("(w3) the wave's order is the SENSOR'S (created, id) and not the order the body listed",
         w3Body.wave?.ids[0] === w3ExpectedHead,
@@ -9646,6 +9689,61 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify(vbAgain.verboten) === JSON.stringify(["nichts an code.txt", "kein Auto-Dispatch"]),
       `${vbBrief.status} first=${vbFirstAt} ${JSON.stringify(vbAgain ?? null)}`);
 
+    const s7GoalRows: string[] = [];
+    const labeledGoal = "Das ausdruecklich beschriftete Ziel wird gebaut.";
+    const labeledText = [
+      "[S7A · ZIEL-PROBE]",
+      "ROLLE: claude/claude-opus-5[1m]/high",
+      "GROESSE: klein",
+      "FLAECHE: fleet-e2e.ts",
+      `ZIEL: ${labeledGoal}`,
+      "VERIFY: bun e2e/pins.ts",
+      "DONE: die Karte liest das beschriftete Ziel",
+      "VERBOTEN: kein Auto-Dispatch",
+      "",
+      "Diese Prosa ist nicht das Ziel.",
+    ].join("\n");
+    const labeledRow = ((await (await post("/api/tasks", { text: labeledText, queue: false, repo: REPO })).json()) as
+      { task: { id: string } }).task;
+    s7GoalRows.push(labeledRow.id);
+    let labeledCard: CRow["card"];
+    for (let i = 0; i < 40 && !labeledCard; i++) {
+      labeledCard = await cardOf(labeledRow.id);
+      if (!labeledCard) await Bun.sleep(250);
+    }
+    // Named mutation probe: routing this text through parseFormattedCard unchanged reads
+    // "ZIEL: ..." as prose and either includes the label in ziel or misses the later headers.
+    check("(s7a-ziel-label) a ZIEL header is the card goal, not the following prose",
+      labeledCard?.model === "format" && labeledCard.valid === true && labeledCard.ziel === labeledGoal,
+      JSON.stringify(labeledCard ?? null));
+
+    const falseGoalCards: { lead: string; card?: CRow["card"] }[] = [];
+    for (const lead of ["SUCHE", "WARUM", "NACH", "QUELLEN", "VORBEDINGUNG"]) {
+      const text = [
+        `[S7A · ${lead}-PROBE]`,
+        "ROLLE: claude/claude-opus-5[1m]/high",
+        "GROESSE: klein",
+        "FLAECHE: fleet-e2e.ts",
+        "VERIFY: bun e2e/pins.ts",
+        "DONE: die falsche Zielform wird benannt verweigert",
+        "VERBOTEN: kein Auto-Dispatch",
+        "",
+        `${lead}: rg -n 'probe' fleet-e2e.ts`,
+      ].join("\n");
+      const row = ((await (await post("/api/tasks", { text, queue: false, repo: REPO })).json()) as
+        { task: { id: string } }).task;
+      s7GoalRows.push(row.id);
+      let card: CRow["card"];
+      for (let i = 0; i < 40 && !card; i++) { card = await cardOf(row.id); if (!card) await Bun.sleep(250); }
+      falseGoalCards.push({ lead, card });
+    }
+    // Named mutation probe: accepting the legacy first paragraph without the five-prefix guard
+    // turns every card valid and removes its prefix-specific refusal reason.
+    check("(s7a-ziel-refusal) a missing ZIEL label before each known false-goal prefix is invalid for that named reason",
+      falseGoalCards.every(({ lead, card }) => card?.model === "format" && card.valid === false
+        && card.gaps.some((gap) => gap === `ziel: missing ZIEL: header; first prose paragraph begins with ${lead}`)),
+      JSON.stringify(falseGoalCards));
+
     // --- THE BRIEF REPAIRS A BROKEN CARD (measured 2026-09-20 on two live rows): a row whose
     // ORIGINAL text opens with filing headers carries an invalid card when one header is broken,
     // and the brief is the ONLY sharpening tool that can reach it — the raw text is immutable.
@@ -10017,6 +10115,7 @@ export async function run(ctx: Ctx): Promise<void> {
 
     await post(`/api/tasks/${cBad.id}/delete`, {});
     await post(`/api/tasks/${cOff.id}/delete`, {});
+    for (const id of s7GoalRows) await post(`/api/tasks/${id}/delete`, {});
     await restartSrv({ FLEET_DISPATCH_REPO: REPO });
   }
 
@@ -11260,6 +11359,27 @@ export async function run(ctx: Ctx): Promise<void> {
       surface: { files: ["wave-brief.ts"], symbols: ["wave-brief.ts#renderWaveBrief"], ranges: null },
       done: "der Kopf steht vor der Prosa", verify: "bun e2e/pins.ts", verboten: ["kein Auto-Dispatch"],
     };
+    const repeatedHeadProse = [
+      "[S7A-RENDER-PROBE]",
+      "ROLLE: claude/claude-opus-5-5[1m]/high",
+      "GROESSE: klein",
+      "FLAECHE: wave-brief.ts#renderWaveBrief",
+      `ZIEL: ${cardBody.ziel}`,
+      `VERIFY: ${cardBody.verify}`,
+      `DONE: ${cardBody.done}`,
+      `VERBOTEN: ${cardBody.verboten[0]}`,
+      "",
+      "Die Prosa hinter dem Kopf bleibt erhalten.",
+    ].join("\n");
+    const renderedOnce = withCardHead(cardBody, repeatedHeadProse);
+    const occurrences = (text: string, needle: string): number => text.split(needle).length - 1;
+    // Named mutation probe: restoring the old raw `${renderCardHead(card)}\n\n${prose}` assembly
+    // makes both assertions red — it duplicates ZIEL and leaks the stale ROLLE into lane bytes.
+    check("(s7a-render-once) a prose header is rendered exactly once and its prose body survives",
+      occurrences(renderedOnce, CARD_HEAD_MARK) === 1 && occurrences(renderedOnce, "ZIEL:") === 1
+      && renderedOnce.includes("Die Prosa hinter dem Kopf bleibt erhalten."), renderedOnce.slice(0, 500));
+    check("(s7a-role-bytes) the rendered lane bytes contain no ROLLE line",
+      !/(^|\n)ROLLE\s*:/i.test(renderedOnce), renderedOnce.slice(0, 500));
     const wave = renderWaveBrief({
       rows: [
         { id: "aaaa1111", text: "ROW-A-PROSA", brief: null, criterion: null, card: cardBody },

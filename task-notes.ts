@@ -112,9 +112,8 @@ export function notesForTask(
 // --- N3: THE SOURCES A LANE ACTUALLY RECEIVES -------------------------------------------------
 // Two populations, and keeping them apart is the point of this whole module:
 //   · EXPLICIT — a `notiz` the owner (or a bound Program-MAIN) PINNED to one of this lane's rows.
-//     It is a source under a named task, it is delivered whatever the file surfaces say, and the
-//     preview cap may never make it unreachable: the cap bounds how many get a rendered sentence,
-//     the receipt carries every one of them, and `GET /api/self/notes` serves their full text.
+//     It is a source under a named task only when it also intersects that lane's non-hub surface.
+//     The pin decides the verdict scope; it does not widen which notes reach the lane.
 //   · JOIN — a pending note that merely shares a non-hub file with this lane's surface. Exactly
 //     what N1 delivered, ranked by notesForTask, and it is the population the cap actually bounds:
 //     an un-previewed coincidence was never chosen by anybody and delivering it would be noise.
@@ -129,7 +128,7 @@ export interface LaneNoteRow {
   noteIds: readonly string[];
 }
 export interface LaneNoteSources {
-  /** every source this lane may READ — all explicit pins plus the join hits that fit the cap */
+  /** every intersecting source this lane may READ — scoped pins plus the join hits that fit the cap */
   reachable: NoteRow[];
   /** the subset that gets a preview line; `reachable` minus this is named but not previewed */
   shown: NoteRow[];
@@ -177,6 +176,7 @@ export function laneNoteSources(
         continue;
       }
       const sharedFiles = [...new Set(notiz.files ?? [])].filter((path) => surface.has(path)).sort();
+      if (sharedFiles.length === 0) continue;
       const sameCluster = !!auftrag.cluster && !!notiz.cluster
         && auftrag.cluster.prozess === notiz.cluster.prozess;
       const made: NoteRow = { id: noteId, sharedFiles, sameCluster,
@@ -191,8 +191,8 @@ export function laneNoteSources(
   // §3, §5 Befund 3): every EXPLICIT pin consumes one join slot — the join half receives only
   // `cap - explicit.length` places, so the loss is gradual, not first at cap — and at `cap`
   // explicit pins ALL join hits fall, out of `reachable`, not only out of `shown`, because
-  // `reachable` takes its join half from `shown`. Explicit pins are never lost (`...explicit`
-  // rides complete, the excess is named as `overflow`); the displaced join hits have no
+  // `reachable` takes its join half from `shown`. Intersecting explicit pins are never lost
+  // (`...explicit` rides complete, the excess is named as `overflow`); the displaced join hits have no
   // counter-entry and vanish without a trace. Documented, not repaired: at measurement time
   // exactly one pin stood fleet-wide, so what was missing was the knowledge, not the mechanism.
   const joined = notesForTask(auftrag, notizen, opts).filter((r) => !seen.has(r.id));
